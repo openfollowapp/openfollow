@@ -5,12 +5,14 @@
 from __future__ import annotations
 
 import socket
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 import openfollow.network.psutil_adapter as psutil_adapter
-from openfollow.network.adapter import Ipv4Config, Ipv4Method
+from openfollow import net_utils
+from openfollow.network.adapter import VLAN_UNSUPPORTED_MESSAGE, Ipv4Config, Ipv4Method
 from openfollow.network.psutil_adapter import PsutilReadOnlyAdapter
 
 pytestmark = pytest.mark.unit
@@ -45,7 +47,8 @@ class TestPsutilAdapter:
         resolv = tmp_path / "resolv.conf"
         resolv.write_text("nameserver 8.8.8.8\nnameserver 1.1.1.1\n")
         monkeypatch.setattr(psutil_adapter, "_RESOLV_CONF", resolv)
-        monkeypatch.setattr(psutil_adapter, "_PROC_ROUTE", tmp_path / "missing.route")
+
+        monkeypatch.setattr(net_utils, "_PROC_NET_ROUTE", tmp_path / "missing.route")
         adapter = PsutilReadOnlyAdapter()
         state = adapter.get_state("eth0")
         assert state is not None
@@ -68,55 +71,59 @@ class TestPsutilAdapter:
     def test_is_writable_false(self) -> None:
         assert PsutilReadOnlyAdapter().is_writable() is False
 
-    def test_read_gateway_from_proc_route(self, monkeypatch, tmp_path) -> None:
-        # Default route to 192.168.1.1 on eth0; gateway in little-endian hex.
-        route = tmp_path / "route"
-        # 192.168.1.1 little-endian = 0101A8C0
-        route.write_text("Iface\tDestination\tGateway\tFlags\neth0\t00000000\t0101A8C0\t0003\n")
-        monkeypatch.setattr(psutil_adapter, "_PROC_ROUTE", route)
-        assert psutil_adapter._read_gateway("eth0") == "192.168.1.1"
+    @staticmethod
+    def _routes(monkeypatch, tmp_path, *rows: tuple[str, str, str, int]) -> None:
+        """``(iface, destination, gateway, metric)`` rows the way the kernel prints them."""
+        import sys
 
-    def test_read_gateway_missing_file(self, monkeypatch, tmp_path) -> None:
-        monkeypatch.setattr(psutil_adapter, "_PROC_ROUTE", tmp_path / "missing")
-        assert psutil_adapter._read_gateway("eth0") is None
+        def word(address: str) -> str:
+            return f"{int.from_bytes(socket.inet_aton(address), sys.byteorder):08X}"
 
-    def test_read_gateway_skips_short_lines(self, monkeypatch, tmp_path) -> None:
+        header = "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT"
+        lines = [
+            f"{iface}\t{word(dest)}\t{word(gw)}\t0003\t0\t0\t{metric}\t{word(mask)}\t0\t0\t0"
+            for iface, dest, gw, metric in rows
+            for mask in ["0.0.0.0" if dest == "0.0.0.0" else "255.255.255.0"]
+        ]
         route = tmp_path / "route"
-        route.write_text("Iface\tDestination\nshort\n")
-        monkeypatch.setattr(psutil_adapter, "_PROC_ROUTE", route)
-        assert psutil_adapter._read_gateway("eth0") is None
+        route.write_text("\n".join([header, *lines, "short"]) + "\n")
+        monkeypatch.setattr(net_utils, "_PROC_NET_ROUTE", route)
 
-    def test_read_gateway_skips_non_default_routes(self, monkeypatch, tmp_path) -> None:
-        route = tmp_path / "route"
-        route.write_text(
-            "Iface\tDestination\tGateway\tFlags\neth0\t01010101\t0101A8C0\t0003\n"  # destination != 0
+    def _router(self, monkeypatch, tmp_path) -> str | None:
+        monkeypatch.setattr(psutil_adapter, "_RESOLV_CONF", tmp_path / "missing.resolv")
+        state = PsutilReadOnlyAdapter().get_state("eth0")
+        assert state is not None
+        return state.ipv4.router
+
+    def test_the_router_is_the_interfaces_default_gateway(self, fake_psutil, monkeypatch, tmp_path) -> None:
+        self._routes(monkeypatch, tmp_path, ("eth0", "0.0.0.0", "192.168.1.1", 100))
+        assert self._router(monkeypatch, tmp_path) == "192.168.1.1"
+
+    def test_the_lowest_metric_default_wins(self, fake_psutil, monkeypatch, tmp_path) -> None:
+        self._routes(
+            monkeypatch, tmp_path, ("eth0", "0.0.0.0", "192.168.1.254", 600), ("eth0", "0.0.0.0", "192.168.1.1", 100)
         )
-        monkeypatch.setattr(psutil_adapter, "_PROC_ROUTE", route)
-        assert psutil_adapter._read_gateway("eth0") is None
+        assert self._router(monkeypatch, tmp_path) == "192.168.1.1"
 
-    def test_read_gateway_skips_routes_without_gateway_flag(
-        self,
-        monkeypatch,
-        tmp_path,
+    @pytest.mark.parametrize(
+        "row",
+        [
+            ("eth0", "192.168.1.0", "192.168.1.1", 100),
+            ("eth0", "0.0.0.0", "0.0.0.0", 100),
+            ("wlan0", "0.0.0.0", "192.168.1.1", 100),
+        ],
+        ids=["not-default", "directly-connected", "other-interface"],
+    )
+    def test_no_router_without_a_default_gateway_on_the_interface(
+        self, fake_psutil, monkeypatch, tmp_path, row: tuple[str, str, str, int]
     ) -> None:
-        route = tmp_path / "route"
-        route.write_text(
-            "Iface\tDestination\tGateway\tFlags\neth0\t00000000\t0101A8C0\t0001\n"  # flags=0001, no RTF_GATEWAY
-        )
-        monkeypatch.setattr(psutil_adapter, "_PROC_ROUTE", route)
-        assert psutil_adapter._read_gateway("eth0") is None
+        self._routes(monkeypatch, tmp_path, row)
+        assert self._router(monkeypatch, tmp_path) is None
 
-    def test_read_gateway_handles_bad_flags(self, monkeypatch, tmp_path) -> None:
-        route = tmp_path / "route"
-        route.write_text("Iface\tDestination\tGateway\tFlags\neth0\t00000000\t0101A8C0\tNOTHEX\n")
-        monkeypatch.setattr(psutil_adapter, "_PROC_ROUTE", route)
-        assert psutil_adapter._read_gateway("eth0") is None
+    def test_no_router_without_a_route_table(self, fake_psutil, monkeypatch, tmp_path) -> None:
 
-    def test_read_gateway_handles_bad_gateway(self, monkeypatch, tmp_path) -> None:
-        route = tmp_path / "route"
-        route.write_text("Iface\tDestination\tGateway\tFlags\neth0\t00000000\tNOTHEX\t0003\n")
-        monkeypatch.setattr(psutil_adapter, "_PROC_ROUTE", route)
-        assert psutil_adapter._read_gateway("eth0") is None
+        monkeypatch.setattr(net_utils, "_PROC_NET_ROUTE", tmp_path / "missing.route")
+        assert self._router(monkeypatch, tmp_path) is None
 
     def test_read_dns_missing_file(self, monkeypatch, tmp_path) -> None:
         monkeypatch.setattr(psutil_adapter, "_RESOLV_CONF", tmp_path / "missing")
@@ -167,10 +174,9 @@ class TestPsutilAdapter:
         # ``get_state`` calls ``list_interfaces`` first (which uses
         # ``net_if_addrs``); we want the *second* call inside get_state to
         # raise. Wrap it in a counter so only call #2 trips the except.
-        # Patch ``_RESOLV_CONF`` / ``_PROC_ROUTE`` so the test doesn't
-        # leak onto the host's real files.
+        # Point the resolver and route files away from the host's real ones.
         monkeypatch.setattr(psutil_adapter, "_RESOLV_CONF", tmp_path / "resolv.conf")
-        monkeypatch.setattr(psutil_adapter, "_PROC_ROUTE", tmp_path / "missing.route")
+        monkeypatch.setattr(net_utils, "_PROC_NET_ROUTE", tmp_path / "missing.route")
         original = psutil_adapter.psutil.net_if_addrs
         call_count = {"n": 0}
 
@@ -236,7 +242,6 @@ class TestAdapterDefaults:
 class TestResolvAndRouteOsError:
     def test_read_dns_handles_oserror(self, monkeypatch, tmp_path) -> None:
         """Path exists but reading it raises OSError mid-read (e.g. fs flaky)."""
-        from pathlib import Path
 
         resolv = tmp_path / "resolv.conf"
         resolv.write_text("nameserver 8.8.8.8\n")
@@ -247,19 +252,6 @@ class TestResolvAndRouteOsError:
 
         monkeypatch.setattr(Path, "read_text", boom)
         assert psutil_adapter._read_dns() == ()
-
-    def test_read_gateway_handles_oserror(self, monkeypatch, tmp_path) -> None:
-        from pathlib import Path
-
-        route = tmp_path / "route"
-        route.write_text("Iface\tDestination\tGateway\tFlags\neth0\t00000000\t0101A8C0\t0003\n")
-        monkeypatch.setattr(psutil_adapter, "_PROC_ROUTE", route)
-
-        def boom(self, *args, **kwargs):
-            raise OSError("flaky")
-
-        monkeypatch.setattr(Path, "read_text", boom)
-        assert psutil_adapter._read_gateway("eth0") is None
 
 
 class TestGetStateInnerErrors:
@@ -272,8 +264,8 @@ class TestGetStateInnerErrors:
         stats = {"eth0": SimpleNamespace(isup=True)}
         monkeypatch.setattr(psutil_adapter.psutil, "net_if_addrs", lambda: addrs)
         monkeypatch.setattr(psutil_adapter.psutil, "net_if_stats", lambda: stats)
-        monkeypatch.setattr(psutil_adapter, "_RESOLV_CONF", __import__("pathlib").Path("/nope/resolv.conf"))
-        monkeypatch.setattr(psutil_adapter, "_PROC_ROUTE", __import__("pathlib").Path("/nope/route"))
+        monkeypatch.setattr(psutil_adapter, "_RESOLV_CONF", Path("/nope/resolv.conf"))
+        monkeypatch.setattr(net_utils, "_PROC_NET_ROUTE", Path("/nope/route"))
         state = PsutilReadOnlyAdapter().get_state("eth0")
         assert state is not None
         assert state.ipv4.address is None
@@ -290,8 +282,28 @@ class TestGetStateInnerErrors:
         stats = {"eth0": SimpleNamespace(isup=True)}
         monkeypatch.setattr(psutil_adapter.psutil, "net_if_addrs", lambda: addrs)
         monkeypatch.setattr(psutil_adapter.psutil, "net_if_stats", lambda: stats)
-        monkeypatch.setattr(psutil_adapter, "_RESOLV_CONF", __import__("pathlib").Path("/nope/resolv.conf"))
-        monkeypatch.setattr(psutil_adapter, "_PROC_ROUTE", __import__("pathlib").Path("/nope/route"))
+        monkeypatch.setattr(psutil_adapter, "_RESOLV_CONF", Path("/nope/resolv.conf"))
+        monkeypatch.setattr(net_utils, "_PROC_NET_ROUTE", Path("/nope/route"))
         state = PsutilReadOnlyAdapter().get_state("eth0")
         assert state is not None
         assert state.ipv4.address is None
+
+
+class TestVlansUnsupported:
+    """psutil reads interfaces, it does not create links."""
+
+    def test_reports_unsupported(self) -> None:
+        assert PsutilReadOnlyAdapter().supports_vlans() is False
+
+    def test_lists_nothing(self) -> None:
+        assert PsutilReadOnlyAdapter().list_vlans() == []
+
+    def test_create_refuses(self) -> None:
+        result = PsutilReadOnlyAdapter().create_vlan("eth0", 10)
+        assert result.ok is False
+        assert result.message == VLAN_UNSUPPORTED_MESSAGE
+
+    def test_delete_refuses(self) -> None:
+        result = PsutilReadOnlyAdapter().delete_vlan("eth0.10")
+        assert result.ok is False
+        assert result.message == VLAN_UNSUPPORTED_MESSAGE

@@ -1,32 +1,36 @@
-# Network Settings
+# Network Interface Settings
 
-The station's IPv4 configuration – the same settings the on-device **Settings → Network** screen writes.
+The station's network adapters and their IPv4 settings. When this page is unreachable, the station's own **Settings → Network** screen lists the addresses that reach it.
 
-**Interface** – the adapter to configure (often just `eth0`). Switching it reloads the form for that adapter.
+## The list
 
-**Method**:
+One row per adapter:
 
-- `DHCP (automatic)` – the router assigns everything.
-- `DHCP with manual address` – DHCP provides the subnet and router; you pin the IP.
-- `Static` – you enter address, subnet mask, and router yourself.
+- **Dot** – green: up with an address. Grey: no address.
+- **Address** – with its prefix, or `(no address)`.
+- **Method tag** – `DHCP`, `DHCP + manual` or `Static`.
+- **VLAN n** – a tagged VLAN sub-interface and its ID.
+- **This session** – the address answering your browser belongs to this adapter. Changing its addressing drops this page.
 
-**Address fields** (always shown; editable in `Static` or `DHCP with manual address`):
+Open a row to see its settings. **Scan** re-reads the adapter list, for example after a USB adapter is plugged in.
 
-- **IP address** – this station's IPv4 address; used for PSN output, peer discovery, and the web server.
-- **Subnet mask** – required for `Static`; inherited from the lease in `DHCP with manual address`.
-- **Router** (optional) – default gateway; leave blank on a LAN with no internet connection. Must sit inside the subnet or it's rejected.
+## Settings
 
-**DNS (Server 1–3)** – resolver addresses in priority order. Only needed to reach external hostnames (e.g. software updates); leave blank on an offline LAN.
+- **Method** – `DHCP (automatic)`: the network assigns everything. `DHCP with manual address`: DHCP provides the subnet and router, the address is fixed. `Static`: address, subnet mask and router are entered here.
+- **IP address**, **Subnet mask** (required for `Static`), **Router** (optional; must sit inside the subnet).
+- **DNS (Server 1–3)** – only needed to reach outside hostnames; blank on an offline LAN.
+- **Lease remaining** – time left on the DHCP lease.
 
-**Lease remaining** – countdown on the active DHCP lease (read-only, refreshes every 5 s).
+An adapter on DHCP with no DHCP server on its network gives itself a `169.254.x.x` address within a few seconds, and the HUD marks it `DHCP unavailable`. It takes a normal address as soon as a server answers.
 
-> Applying may disconnect this web session. A static/manual address reloads the UI at the new address automatically; for DHCP, reconnect manually if the session drops.
+## VLANs
 
-**Modes:** the form opens in **View mode** – fields are locked so settings can't change by mistake. Use **Switch to edit view** to unlock them; **Edit mode** then shows Apply / Renew / Cancel. On a station whose network backend is read-only, the form shows a **Read only** badge instead – configure from the on-screen **Settings → Network** menu, or see openfollow.app for troubleshooting and how to enable web editing.
+**+ Add VLAN** creates a sub-interface for one 802.1Q tag: **Parent interface** (never another VLAN) and **VLAN ID** (`1`–`4094`). It is named `<parent>.<id>`, with the parent part shortened when the name would be too long, and starts without an address. VLANs need NetworkManager; on another network backend the controls are not shown.
 
-**Buttons:**
+## Buttons
 
-- **Switch to edit view** – unlocks the fields (enters Edit mode). Absent when the backend is read-only.
-- **Apply** – validates and commits the form. Invalid input is rejected and nothing is written.
-- **Renew DHCP lease** – requests a fresh lease (DHCP methods only).
-- **Cancel** – discards unsaved edits and returns to View mode.
+- **Edit** – unlocks one row's fields. Absent on a read-only station, which shows a **Read only** badge.
+- **Apply** – checks and saves the row. Without a cable, or with no DHCP server answering yet, the settings are saved and the result says so.
+- **Renew DHCP lease** – asks for a fresh lease.
+- **Remove VLAN** – removes the station's interface for that VLAN; anything pinned to it stops sending. Refused for the interface answering your browser.
+- **Cancel** – discards unsaved edits.

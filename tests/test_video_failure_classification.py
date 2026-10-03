@@ -225,8 +225,34 @@ class TestOperatorText:
             "stalled",
             "device_unavailable",
             "unsupported_mode",
+            "interface_down",
+            "wrong_interface",
             "unknown",
         }
+
+    def test_an_interface_pin_refusal_reads_as_what_was_observed(self) -> None:
+        down = VideoFailure.INTERFACE_DOWN
+        wrong = VideoFailure.WRONG_INTERFACE
+        assert failure_chip(down) == "Interface down"
+        assert failure_chip(wrong) == "Wrong interface"
+        assert failure_sentence(down) == "The interface pinned for video input has no address."
+        assert (
+            failure_sentence(wrong, where="rtsp://192.0.2.20/stream")
+            == "rtsp://192.0.2.20/stream is not reached through the interface pinned for video input."
+        )
+        assert "Network Interface Assignment" in failure_action(down)
+        assert failure_action(wrong) == "Check the camera's address, or pin the interface that reaches it."
+
+    def test_a_listener_off_the_pin_is_told_about_its_own_address(self) -> None:
+        """RTP dials nothing: the address at fault is the one it listens at."""
+        wrong = VideoFailure.WRONG_INTERFACE
+        where = "RTP 192.0.2.10:5004 H264 (unicast)"
+        assert failure_sentence(wrong, where=where, kind=SourceKind.LISTENER) == (
+            f"{where} listens at an address the interface pinned for video input does not have."
+        )
+        assert failure_action(wrong, kind=SourceKind.LISTENER) == (
+            "Set the RTP URL's address to 0.0.0.0, or pin the interface that has it."
+        )
 
 
 class TestRefusalArrivesInTheDebugString:

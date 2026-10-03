@@ -112,6 +112,7 @@ def housekeeping(app: OpenFollowApp) -> bool:
         app._check_camera_setup_requests,
         app._check_marker_speeds_persist,
         app._check_frame_loop_stall,
+        app._observe_network_planes,
     ):
         try:
             check()
@@ -178,12 +179,6 @@ def animate(app: OpenFollowApp) -> None:
     # rather than the frame rate.
     app._check_video_disconnect_banner()
     app._process_input(dt)
-
-    if app._iface_selection_active:
-        now = time.monotonic()
-        if now - app._last_iface_refresh >= 1.0:
-            app._last_iface_refresh = now
-            app._refresh_iface_list()
 
     svc = app._runtime_services
 

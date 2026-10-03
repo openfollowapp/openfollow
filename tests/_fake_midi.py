@@ -108,5 +108,7 @@ class FakeOscService:
         port: int,
         protocol: str = "udp",
         framing: str = "slip",
-    ) -> None:
+        egress: object = None,
+    ) -> bool:
         self.calls.append((address, list(args)))
+        return True

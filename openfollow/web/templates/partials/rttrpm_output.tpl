@@ -46,6 +46,16 @@
                 <span id="rttrpm-output-context-error" class="field-error"></span>
                 <span class="field-note">User-defined context value (0–4294967295)</span>
             </div>
+            <div class="field">
+                <label>Source Interface</label>
+                %# Read-only pointer – the pin is edited centrally in
+                %# General > Network Interface Assignment, alongside every other plane.
+                <div class="ia-pointer">
+                    <span class="ia-pointer-value">{{config.rttrpm_output.source_iface or 'Follows station default interface'}}</span>
+                    <a class="ia-link" href="#interface-assignment"
+                       onclick="goToSection('general', 'interface-assignment'); return false;">Change in General &rsaquo; Network Interface Assignment</a>
+                </div>
+            </div>
         </div>
     </div>
 

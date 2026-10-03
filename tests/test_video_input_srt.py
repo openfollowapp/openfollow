@@ -486,3 +486,178 @@ def test_source_endpoint_marks_srt_as_not_connect_probeable() -> None:
 
 def test_source_endpoint_is_none_for_the_wildcard_default() -> None:
     assert SrtInput.source_endpoint({"srt_host": "srt://0.0.0.0:5000"}) is None
+
+
+# ---------------------------------------------------------------------------
+# Video input pin
+# ---------------------------------------------------------------------------
+
+
+class TestSrtInterfacePin:
+    """On Linux libsrt binds its own socket to the pinned device."""
+
+    def _uri(self, config: dict[str, object], *, linux: bool, monkeypatch: pytest.MonkeyPatch) -> str:
+        from openfollow.video.inputs import srt
+
+        monkeypatch.setattr(srt, "FORCES_DEVICE", linux)
+        return str(TestSrtPassphrase()._srtsrc(config).properties["uri"])
+
+    def test_a_pin_binds_the_socket_to_the_device(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        uri = self._uri(
+            {"srt_host": "srt://192.0.2.20:5000", "video_input_iface": "eth1"}, linux=True, monkeypatch=monkeypatch
+        )
+        assert uri == "srt://192.0.2.20:5000?bindtodevice=eth1"
+
+    def test_the_pin_joins_an_existing_query(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        uri = self._uri(
+            {"srt_host": "srt://192.0.2.20:5000?latency=20", "video_input_iface": "eth0.13"},
+            linux=True,
+            monkeypatch=monkeypatch,
+        )
+        assert uri == "srt://192.0.2.20:5000?latency=20&bindtodevice=eth0.13"
+
+    def test_the_pin_outranks_a_device_carried_in_the_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        uri = self._uri(
+            {"srt_host": "srt://192.0.2.20:5000?bindtodevice=wlan0", "video_input_iface": "eth1"},
+            linux=True,
+            monkeypatch=monkeypatch,
+        )
+        assert uri.count("bindtodevice=") == 1
+        assert uri.endswith("bindtodevice=eth1")
+
+    @pytest.mark.parametrize(
+        ("config", "linux"),
+        [
+            ({"video_input_iface": ""}, True),
+            ({"video_input_iface": "eth1"}, False),
+            ({"srt_host": "srt://127.0.0.1:5000?bindtodevice=wlan0&latency=20", "video_input_iface": "eth1"}, True),
+        ],
+        ids=["no-pin", "not-linux", "local-destination"],
+    )
+    def test_a_device_typed_into_the_url_never_reaches_libsrt(
+        self, config: dict[str, object], linux: bool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The panel owns the interface; a URL device would pin the socket behind its back."""
+        uri = self._uri(
+            {"srt_host": "srt://192.0.2.20:5000?bindtodevice=wlan0&latency=20", **config},
+            linux=linux,
+            monkeypatch=monkeypatch,
+        )
+        assert "bindtodevice" not in uri
+        assert "latency=20" in uri
+
+    def test_a_crafted_pin_cannot_add_url_options(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        uri = self._uri(
+            {"srt_host": "srt://192.0.2.20:5000", "video_input_iface": "eth1&passphrase=x"},
+            linux=True,
+            monkeypatch=monkeypatch,
+        )
+        assert "&passphrase" not in uri
+        assert uri.endswith("bindtodevice=eth1%26passphrase%3Dx")
+
+    @pytest.mark.parametrize(
+        ("config", "linux"),
+        [({"video_input_iface": ""}, True), ({}, True), ({"video_input_iface": "eth1"}, False)],
+        ids=["blank", "absent", "not-linux"],
+    )
+    def test_no_device_binding_without_a_pin_or_off_linux(
+        self, config: dict[str, object], linux: bool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        uri = self._uri({"srt_host": "srt://192.0.2.20:5000", **config}, linux=linux, monkeypatch=monkeypatch)
+        assert uri == "srt://192.0.2.20:5000"
+
+    @pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "192.0.2.10"])
+    def test_a_camera_on_this_station_is_not_bound_to_the_device(
+        self, host: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A device-bound socket cannot reach this station's own addresses, and
+        traffic to them never leaves the box anyway."""
+        import socket
+        from types import SimpleNamespace
+
+        from openfollow.video.inputs import _pin
+
+        monkeypatch.setattr(
+            _pin.psutil,
+            "net_if_addrs",
+            lambda: {"eth0": [SimpleNamespace(family=socket.AF_INET, address="192.0.2.10")]},
+        )
+        uri = self._uri(
+            {"srt_host": f"srt://{host}:9000", "video_input_iface": "eth1"}, linux=True, monkeypatch=monkeypatch
+        )
+        assert "bindtodevice" not in uri
+
+    @pytest.mark.parametrize(
+        ("host", "answers"),
+        [("[2001:db8::20]", None), ("camera.example", ["192.0.2.20", "2001:db8::20"])],
+        ids=["ipv6-literal", "dual-stack-name"],
+    )
+    def test_an_ipv6_camera_is_not_bound_to_the_device(
+        self, host: str, answers: list[str] | None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """libsrt refuses a device on an IPv6 socket, so binding one fails every
+        connection; the pin check judges these by the routing table instead."""
+        import socket
+
+        from openfollow.video.inputs import _pin
+
+        if answers is not None:
+            from openfollow.net_utils import BoundedResolver
+
+            monkeypatch.setattr(_pin, "_resolver", BoundedResolver(ttl_s=30.0))
+            monkeypatch.setattr(
+                _pin.socket,
+                "getaddrinfo",
+                lambda *a, **k: [(socket.AF_INET6 if ":" in x else socket.AF_INET, 2, 17, "", (x, 0)) for x in answers],
+            )
+            _pin._resolver.lookup(host, 1.0)
+        uri = self._uri(
+            {"srt_host": f"srt://{host}:5000", "video_input_iface": "eth1"}, linux=True, monkeypatch=monkeypatch
+        )
+        assert "bindtodevice" not in uri
+
+    def test_the_pin_lands_in_the_query_ahead_of_a_fragment(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        uri = self._uri(
+            {"srt_host": "srt://192.0.2.20:9000?streamid=#!::r=live,m=request", "video_input_iface": "eth1"},
+            linux=True,
+            monkeypatch=monkeypatch,
+        )
+        assert uri == "srt://192.0.2.20:9000?streamid=&bindtodevice=eth1#!::r=live,m=request"
+
+    def test_the_pin_is_a_config_field_the_panel_owns(self) -> None:
+        field = next(f for f in SrtInput.config_fields() if f.name == "video_input_iface")
+        assert field.device_editable is False
+        assert SrtInput.config_fields()[0].name == "srt_host"
+        assert SrtInput.pins_interface is True
+        assert "video_input_iface" not in SrtInput.web_ui_html({"video_input_iface": "eth1"})
+
+
+class TestSrtPreflight:
+    def _asked(self, config: dict[str, object], monkeypatch: pytest.MonkeyPatch) -> list[tuple]:
+        from openfollow.video.inputs import srt
+
+        asked: list[tuple] = []
+        monkeypatch.setattr(srt, "check_video_pin", lambda *a, **kw: asked.append((a, kw)))
+        SrtInput.preflight(config)
+        return asked
+
+    def test_a_caller_checks_its_camera_under_the_pin(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        asked = self._asked({"srt_host": "srt://192.0.2.20:1600", "video_input_iface": "eth1"}, monkeypatch)
+        assert asked == [(("eth1", "192.0.2.20", 1600), {})]
+
+    def test_a_listener_checks_only_the_pin(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        asked = self._asked({"srt_host": "srt://0.0.0.0:5000", "video_input_iface": "eth1"}, monkeypatch)
+        assert asked == [(("eth1",), {})]
+
+    def test_a_down_pin_refuses_a_listener(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from openfollow import net_egress
+        from openfollow.video.failure import VideoFailure
+
+        monkeypatch.setattr(net_egress, "get_iface_ipv4", lambda iface: "")
+        refusal = SrtInput.preflight({"srt_host": "srt://0.0.0.0:5000", "video_input_iface": "eth9"})
+        assert refusal is not None and refusal.failure is VideoFailure.INTERFACE_DOWN
+
+
+def test_route_target_is_the_camera_an_srt_caller_dials() -> None:
+    assert SrtInput.route_target({"srt_host": "srt://192.0.2.20:5000"}) == "192.0.2.20"
+    assert SrtInput.route_target({"srt_host": "srt://0.0.0.0:5000"}) == ""

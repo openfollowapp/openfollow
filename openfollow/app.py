@@ -67,9 +67,6 @@ from openfollow.runtime.app_modes import (
     confirm_field_choice_picker as runtime_confirm_field_choice_picker,
 )
 from openfollow.runtime.app_modes import (
-    confirm_iface_selection as runtime_confirm_iface_selection,
-)
-from openfollow.runtime.app_modes import (
     confirm_source_type_selection as runtime_confirm_source_type_selection,
 )
 from openfollow.runtime.app_modes import (
@@ -83,9 +80,6 @@ from openfollow.runtime.app_modes import (
 )
 from openfollow.runtime.app_modes import (
     enter_field_choice_picker as runtime_enter_field_choice_picker,
-)
-from openfollow.runtime.app_modes import (
-    enter_iface_selection as runtime_enter_iface_selection,
 )
 from openfollow.runtime.app_modes import (
     enter_settings_menu as runtime_enter_settings_menu,
@@ -157,9 +151,6 @@ from openfollow.runtime.app_modes import (
     process_field_choice_picker_input as runtime_process_field_choice_picker_input,
 )
 from openfollow.runtime.app_modes import (
-    process_iface_selection_input as runtime_process_iface_selection_input,
-)
-from openfollow.runtime.app_modes import (
     process_input as runtime_process_input,
 )
 from openfollow.runtime.app_modes import (
@@ -170,9 +161,6 @@ from openfollow.runtime.app_modes import (
 )
 from openfollow.runtime.app_modes import (
     process_source_type_selection_input as runtime_process_source_type_selection_input,
-)
-from openfollow.runtime.app_modes import (
-    refresh_iface_list as runtime_refresh_iface_list,
 )
 from openfollow.runtime.app_orchestration import (
     animate as runtime_animate,
@@ -254,6 +242,8 @@ class OpenFollowApp:
         self._canvas: GtkNativeSinkWindow | None = None
         self._camera: Camera | None = None
         self._video_receiver: GstNativeSinkReceiver | None = None
+        # A live video swap failed and is retried on the next config pass.
+        self._video_swap_owed = False
         self._video_logged: bool = False
         self._video_aspect: tuple[int, int] | None = None
         self._server: PsnServer | None = None
@@ -280,10 +270,6 @@ class OpenFollowApp:
         self._web_server: ConfigWebServer | None = None
         self._input_manager: InputManager | None = None
 
-        self._iface_selection_active: bool = False
-        self._available_interfaces: list[str] = []
-        self._selected_iface_index: int = 0
-        self._last_iface_refresh: float = 0.0
         # ``time.perf_counter()`` of the previous animate call (monotonic, not
         # wall clock); drives the real-elapsed frame dt and the stall watchdog.
         self._last_animate_time: float | None = None
@@ -364,23 +350,37 @@ class OpenFollowApp:
         self._pi_network_index: int = 0
         self._pi_network_interfaces: list[_NetworkInterface] = []
         self._pi_network_active_iface: str = ""
+        # Interface name -> "DHCP" / "Static", read on refresh because the
+        # rows are rebuilt every frame and this costs an adapter call each.
+        self._pi_network_methods: dict[str, str] = {}
+        # Which interface's own screen is open; "" is the interface list.
+        # Separate from ``_pi_network_active_iface``, which says whose state is
+        # loaded from the adapter and has to stay set for the static editor.
+        self._pi_network_open_iface: str = ""
+        # Interface-address enumeration for the screen's rows, held briefly so
+        # the frame loop isn't walking every NIC on every tick.
+        self._pi_network_addr_cache: dict[str, str] = {}
+        self._pi_network_addr_ts: float = 0.0
         self._pi_network_state_cache: _NetworkState | None = None
         self._pi_network_pending_config: _Ipv4Config | None = None
-        self._pi_network_iface_picker_active: bool = False
-        self._pi_network_iface_picker_index: int = 0
-        self._pi_network_method_picker_active: bool = False
-        self._pi_network_method_picker_index: int = 0
+        # True while the static-address fields are revealed on the screen.
+        self._pi_network_static_edit: bool = False
         self._pi_network_field_edit_active: bool = False
         self._pi_network_field_name: str = ""
         self._pi_network_field_value: str = ""
+        # The value is the editor's own starting digits, not the operator's.
+        self._pi_network_field_seeded: bool = False
+        # Cursor into the field editor's digit grid, for d-pad entry.
+        self._pi_network_field_digit_index: int = 0
         self._pi_network_banner: str = ""
+        self._pi_network_banner_level: str = ""
         self._pi_network_busy: bool = False
         self._pi_network_worker: threading.Thread | None = None
         # Generation counter to drop results from orphaned worker threads
         self._pi_network_worker_generation: int = 0
         # Hand-off slot for a finished network worker, drained on the main tick.
         self._pi_network_worker_lock = threading.Lock()
-        self._pi_network_pending_result: tuple[Any, str, int, Any] | None = None
+        self._pi_network_pending_result: tuple[Any, str, str, int, Any] | None = None
 
         self._show_hud_help: bool = True
 
@@ -516,6 +516,10 @@ class OpenFollowApp:
     def _animate(self) -> None:
         runtime_animate(self)
 
+    def _observe_network_planes(self) -> None:
+        """Keep each network plane on its configured interface (polled)."""
+        self._runtime_services.observe_network_planes()
+
     def _run_housekeeping(self) -> bool:
         return runtime_housekeeping(self)
 
@@ -561,9 +565,6 @@ class OpenFollowApp:
 
     def _process_source_selection_input(self) -> None:
         runtime_process_source_selection_input(self)
-
-    def _process_iface_selection_input(self) -> None:
-        runtime_process_iface_selection_input(self)
 
     def _process_browser_input(self) -> None:
         runtime_process_browser_input(self)
@@ -637,15 +638,6 @@ class OpenFollowApp:
 
     def _enter_source_selection(self) -> None:
         runtime_enter_source_selection(self)
-
-    def _refresh_iface_list(self) -> None:
-        runtime_refresh_iface_list(self)
-
-    def _enter_iface_selection(self) -> None:
-        runtime_enter_iface_selection(self)
-
-    def _confirm_iface_selection(self) -> None:
-        runtime_confirm_iface_selection(self)
 
     def _enter_button_detection(self) -> None:
         runtime_enter_button_detection(self)
@@ -827,14 +819,20 @@ class OpenFollowApp:
                 list(self._viewer_ids),
             )
 
-        # Bind sync to PSN interface for multi-homed hosts.
+        # Sync follows the station interface, and stops with it: an empty
+        # iface_ip joins the multicast group on whatever the OS picks, so a
+        # station whose interface was down would trade marker names with peers
+        # over a network nobody chose. A dark interface yields None, which the
+        # sync holds as "stay silent" - constructed either way, because the
+        # observer's recovery path can only repoint a sync that exists.
+        iface_ip = self._runtime_services.station_source_ip_or_none()
         sync = MarkerCatalogSync(
             self._marker_catalog,
             self._config.station_id,
             station_name_provider=lambda: self._config.psn_system_name,
             selection_provider=_selection_provider,
             on_change=_on_change,
-            iface_ip=self._runtime_services._resolved_source_ip(),
+            iface_ip=iface_ip,
         )
         # Track before start so a mid-``start`` thread-launch failure still
         # leaves the partially-started sync visible to shutdown().

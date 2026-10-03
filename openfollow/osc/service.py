@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from openfollow.configuration import VALID_OSC_FRAMINGS as _VALID_OSC_FRAMINGS_TUPLE
+from openfollow.net_egress import Egress, pin_socket_egress
+from openfollow.net_utils import IPV4_RESOLVER, join_multicast_group_on_iface
 from openfollow.osc.transport import TcpOscSender
 
 logger = logging.getLogger(__name__)
@@ -41,6 +43,14 @@ _VALID_FRAMINGS: frozenset[str] = frozenset(_VALID_OSC_FRAMINGS_TUPLE)
 # UDP rows pin to this framing in the cache key so the key shape stays a
 # uniform 4-tuple across transports (framing is a TCP-only concern).
 _UDP_FRAMING_PIN = "length_prefix"
+
+# How long a pinned target whose client could not be created waits before the
+# next attempt. The address a pin needs can lag the interface by an observer
+# debounce, so the failure is expected to clear on its own.
+_PINNED_CREATE_RETRY_S = 1.0
+
+# One cached client per target and the interface it is pinned to.
+_CacheKey = tuple[str, int, str, str, Egress | None]
 
 
 def _cache_framing(protocol: str, framing: str) -> str:
@@ -81,53 +91,24 @@ def _udp_dest_class(host: str) -> str:
 # unbounded ``getaddrinfo`` on a slow/unreachable resolver would stall
 # every other transmitter row dispatched on that thread until it returns.
 _RESOLVE_TIMEOUT_S = 1.0
-# Remember a failed/timed-out lookup so a misconfigured host doesn't respawn a
-# resolver thread on every 60 Hz send. Keyed by host (bounded by config rows).
-_RESOLVE_NEG_TTL_S = 30.0
-_resolve_failures: dict[str, float] = {}
-_resolve_lock = threading.Lock()
+# IPv4 only: the client, its multicast options and an interface pin are all IPv4.
+# A lookup older than the wait answers the next send at once, so a host that
+# never resolves never stalls every 60 Hz send.
+_resolver = IPV4_RESOLVER
 
 
 def _resolve_host(host: str) -> str:
-    """Resolve ``host`` to an IPv4 literal, bounding the DNS lookup.
-
-    Literals pass through. A hostname resolves on a daemon thread capped at
-    ``_RESOLVE_TIMEOUT_S``; a timeout/failure raises ``OSError`` and is cached
-    for ``_RESOLVE_NEG_TTL_S`` so repeats don't respawn threads.
-    """
-    try:
-        socket.inet_aton(host)
-        return host  # already an IPv4 literal – no lookup needed
-    except OSError:
-        pass
-    now = time.monotonic()
-    with _resolve_lock:
-        until = _resolve_failures.get(host)
-        if until is not None and now < until:
-            raise OSError(f"DNS lookup for {host!r} recently failed")
-    result: list[str] = []
-    error: list[BaseException] = []
-
-    def _lookup() -> None:
-        try:
-            result.append(socket.gethostbyname(host))
-        except BaseException as exc:  # noqa: BLE001 – relayed to the caller below
-            error.append(exc)
-
-    worker = threading.Thread(target=_lookup, name="OscDns", daemon=True)
-    worker.start()
-    worker.join(_RESOLVE_TIMEOUT_S)
-    if worker.is_alive():
-        with _resolve_lock:
-            _resolve_failures[host] = now + _RESOLVE_NEG_TTL_S
-        raise OSError(f"DNS lookup for {host!r} timed out after {_RESOLVE_TIMEOUT_S:g}s")
-    if error:
-        with _resolve_lock:
-            _resolve_failures[host] = now + _RESOLVE_NEG_TTL_S
-        raise OSError(f"DNS lookup for {host!r} failed: {error[0]}")
-    with _resolve_lock:
-        _resolve_failures.pop(host, None)
-    return result[0]
+    """Resolve ``host`` to an IPv4 literal within ``_RESOLVE_TIMEOUT_S``, or raise ``OSError``."""
+    found = _resolver.lookup(host, _RESOLVE_TIMEOUT_S)
+    if found.addresses:
+        return found.addresses[0]
+    if found.outcome == "literal":
+        raise OSError(f"OSC output is IPv4 only, and {host!r} is not an IPv4 address")
+    if found.outcome == "pending":
+        raise OSError(f"DNS lookup for {host!r} has not answered within {_RESOLVE_TIMEOUT_S:g}s")
+    if found.outcome == "skipped":
+        raise OSError(f"DNS lookup for {host!r} could not start: {found.error}")
+    raise OSError(f"DNS lookup for {host!r} failed: {found.error}")
 
 
 def _make_client(
@@ -135,6 +116,7 @@ def _make_client(
     port: int,
     protocol: str,
     framing: str,
+    egress: Egress | None = None,
 ) -> Any:
     """Construct the cached client for ``protocol``.
 
@@ -148,17 +130,35 @@ def _make_client(
     DNS lookup.
     """
     if protocol == "tcp":
-        return TcpOscSender(host, port, framing)
+        return TcpOscSender(host, port, framing, egress=egress)
     # pragma: no branch – protocol is validated against ``_VALID_PROTOCOLS``
     # before reaching here, so the only remaining value is ``"udp"``.
     dest = _udp_dest_class(host)
     resolved = _resolve_host(host)
     client = SimpleUDPClient(resolved, port, allow_broadcast=dest == "broadcast")
+    if egress is not None:
+        try:
+            pin_socket_egress(client._sock, egress, multicast=dest == "multicast")
+        except OSError:
+            client._sock.close()
+            raise
     if dest == "multicast":
         sock = client._sock
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, _MULTICAST_TTL)
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 1)
     return client
+
+
+def _close_clients_in_background(clients: list[Any]) -> None:
+    """Close *clients* off the calling thread: a TCP close joins its reader for up to 1 s."""
+    if not clients:
+        return
+
+    def _close_all() -> None:
+        for client in clients:
+            _close_client(client)
+
+    threading.Thread(target=_close_all, daemon=True, name="OscEvict").start()
 
 
 def _close_client(client: Any) -> None:
@@ -286,9 +286,13 @@ class OscService:
     before the listener starts and stay subscribed across restarts.
     """
 
-    def __init__(self) -> None:
-        self._cache: dict[tuple[str, int, str, str], _ClientEntry] = {}
+    def __init__(self, *, close_async: Callable[[list[Any]], None] = _close_clients_in_background) -> None:
+        self._cache: dict[_CacheKey, _ClientEntry] = {}
         self._cache_lock = threading.Lock()
+        # Pinned targets whose client could not be created, and when to try
+        # again: a refused pin would otherwise be retried and logged per send.
+        self._create_retry_at: dict[_CacheKey, float] = {}
+        self._close_async = close_async
 
         self._dispatcher: Any = _GuardedDispatcher() if _PYTHONOSC_AVAILABLE else None
         self._subscriptions: dict[str, OscHandler] = {}
@@ -302,6 +306,10 @@ class OscService:
         # Whether the live socket actually joined that group – a failed
         # IP_ADD_MEMBERSHIP is non-fatal, so "requested" can differ from "joined".
         self._listener_multicast_joined: bool = False
+        # Interface address the multicast membership is taken on: "" = let the
+        # routing table pick, an address = that interface, None = an interface
+        # is pinned but currently has no address, so no membership is held.
+        self._listener_multicast_iface: str | None = ""
         self._listener_lock = threading.Lock()
 
         self._missing_dep_warned = False
@@ -319,24 +327,29 @@ class OscService:
         port: int,
         protocol: str = "udp",
         framing: str = "slip",
-    ) -> None:
-        """Send a single OSC message.
+        egress: Egress | None = None,
+    ) -> bool:
+        """Send a single OSC message; True once it reached the socket.
 
         Empty ``address`` is silently dropped. ``host``/``port`` must be
         valid (non-empty / >0); callers resolve any default fallback first.
         ``framing`` selects the TCP wire framing (ignored for UDP); invalid
-        values fall back to ``"slip"`` with a warning.
+        values fall back to ``"slip"`` with a warning. ``egress`` pins the
+        send to an interface; a down one sends nothing rather than roam.
+        Never raises: anything that stops the message returns False.
         """
         if not address:
-            return
+            return False
+        if egress is not None and egress.down:
+            return False
         if not host or port <= 0:
-            return
+            return False
         if protocol not in _VALID_PROTOCOLS:
             logger.warning(
                 "OSC send: unknown protocol %r (expected 'udp' or 'tcp')",
                 protocol,
             )
-            return
+            return False
         # Framing matters only for TCP; restrict the validate-and-warn to
         # ``protocol == "tcp"`` so a UDP row with a stray framing value stays
         # silent (``_get_or_create_client`` normalises the cache key anyway).
@@ -350,11 +363,11 @@ class OscService:
             if not self._missing_dep_warned:
                 logger.warning("python-osc not installed – OSC output disabled. Run: pip install python-osc")
                 self._missing_dep_warned = True
-            return
+            return False
 
-        entry = self._get_or_create_client(host, port, protocol, framing)
+        entry = self._get_or_create_client(host, port, protocol, framing, egress)
         if entry is None:
-            return
+            return False
         # Broad catch upholds the documented "never raises" contract: pythonosc
         # raises BuildError (not OSError/ValueError) on un-encodable args.
         try:
@@ -375,9 +388,10 @@ class OscService:
                     errors,
                     exc,
                 )
-            return
+            return False
         with self._cache_lock:
             entry.stats.total_sent += 1
+        return True
 
     def evict(
         self,
@@ -385,14 +399,31 @@ class OscService:
         port: int,
         protocol: str = "udp",
         framing: str = "slip",
+        egress: Egress | None = None,
     ) -> None:
         """Close and drop the cached client for a target, if any."""
-        key = (host, int(port), protocol, _cache_framing(protocol, framing))
+        key = (host, int(port), protocol, _cache_framing(protocol, framing), egress)
         with self._cache_lock:
             entry = self._cache.pop(key, None)
         if entry is None:
             return
         _close_client(entry.client)
+
+    def evict_egress(self, iface: str) -> None:
+        """Drop every client pinned to *iface*, at any address, so the next send rebuilds it."""
+        self._drop_pinned(lambda egress: egress.iface == iface)
+
+    def retain_egress(self, live: frozenset[Egress]) -> None:
+        """Drop pinned clients whose interface and address are no longer in *live*."""
+        self._drop_pinned(lambda egress: egress not in live)
+
+    def _drop_pinned(self, drop: Callable[[Egress], bool]) -> None:
+        with self._cache_lock:
+            keys = [key for key in self._cache if key[4] is not None and drop(key[4])]
+            clients = [self._cache.pop(key).client for key in keys]
+            for key in [key for key in self._create_retry_at if key[4] is not None and drop(key[4])]:
+                del self._create_retry_at[key]
+        self._close_async(clients)
 
     def shutdown_clients(self) -> None:
         """Drain the entire client cache. Called at app shutdown."""
@@ -408,10 +439,11 @@ class OscService:
         port: int,
         protocol: str = "udp",
         framing: str = "slip",
+        egress: Egress | None = None,
     ) -> ClientStats:
         """Return a snapshot of per-target stats; empty stats for an
         unknown target."""
-        key = (host, int(port), protocol, _cache_framing(protocol, framing))
+        key = (host, int(port), protocol, _cache_framing(protocol, framing), egress)
         with self._cache_lock:
             entry = self._cache.get(key)
             if entry is None:
@@ -428,17 +460,21 @@ class OscService:
         port: int,
         protocol: str,
         framing: str,
+        egress: Egress | None = None,
     ) -> _ClientEntry | None:
         cache_framing = _cache_framing(protocol, framing)
-        key = (host, int(port), protocol, cache_framing)
+        key: _CacheKey = (host, int(port), protocol, cache_framing, egress)
         with self._cache_lock:
             entry = self._cache.get(key)
             if entry is not None:
                 return entry
+            if time.monotonic() < self._create_retry_at.get(key, 0.0):
+                return None
         try:
-            client = _make_client(host, port, protocol, cache_framing)
+            client = _make_client(host, port, protocol, cache_framing, egress)
         except (OSError, ValueError) as exc:
-            # OSError: socket/DNS failure. ValueError: malformed host string.
+            # OSError: socket/DNS failure or a refused pin. ValueError:
+            # malformed host string.
             logger.error(
                 "Failed to create OSC client for %s://%s:%d – %s",
                 protocol,
@@ -446,6 +482,9 @@ class OscService:
                 port,
                 exc,
             )
+            if egress is not None:
+                with self._cache_lock:
+                    self._create_retry_at[key] = time.monotonic() + _PINNED_CREATE_RETRY_S
             return None
         new_entry = _ClientEntry(client=client)
         with self._cache_lock:
@@ -493,24 +532,30 @@ class OscService:
         *,
         allowed_ips: Iterable[str] = (),
         multicast_group: str = "",
+        multicast_iface: str | None = "",
     ) -> None:
         """Start the inbound UDP listener.
 
         Idempotent: a second call with the same parameters is a no-op.
-        A call with different parameters (port / allowlist / multicast
-        group) is treated as ``restart_listener``.
+        A call with a different port, allowlist, multicast group or interface
+        is treated as ``restart_listener``.
         """
         normalised_ips = frozenset(ip.strip() for ip in allowed_ips if isinstance(ip, str) and ip.strip())
         group = multicast_group.strip()
         with self._listener_lock:
-            if self._listener is not None:
-                if (
-                    self._listener_port == port
-                    and self._listener_allowed_ips == normalised_ips
-                    and self._listener_multicast_group == group
-                ):
-                    return
-        self.restart_listener(port=port, allowed_ips=normalised_ips, multicast_group=group)
+            if self._listener is not None and (
+                self._listener_port == port
+                and self._listener_allowed_ips == normalised_ips
+                and self._listener_multicast_group == group
+                and self._listener_multicast_iface == multicast_iface
+            ):
+                return
+        self.restart_listener(
+            port=port,
+            allowed_ips=normalised_ips,
+            multicast_group=group,
+            multicast_iface=multicast_iface,
+        )
 
     def stop_listener(self) -> None:
         """Stop the inbound listener. No-op if not running."""
@@ -523,6 +568,7 @@ class OscService:
             self._listener_allowed_ips = frozenset()
             self._listener_multicast_group = ""
             self._listener_multicast_joined = False
+            self._listener_multicast_iface = ""
         if listener is not None:
             listener.shutdown()
             listener.server_close()
@@ -535,15 +581,23 @@ class OscService:
         port: int,
         allowed_ips: Iterable[str],
         multicast_group: str = "",
+        multicast_iface: str | None = "",
     ) -> None:
         """Stop, rebind, and restart the inbound listener atomically.
 
         Raises ``OSError`` on bind failure so the caller can revert the
         config (transactional hot-reload contract).
 
-        When ``multicast_group`` is set, the bound socket also joins that
-        IPv4 multicast group (``IP_ADD_MEMBERSHIP`` on ``INADDR_ANY``). A
-        failed join is non-fatal (logged); only a failed bind raises.
+        The socket always binds every interface. Binding it to one address
+        would stop it receiving multicast and broadcast entirely - the kernel
+        matches a datagram's destination against the bound address, and a group
+        address never equals an interface address - so the interface pin
+        governs the *membership* and nothing else. ``multicast_iface`` is that
+        pin, resolved: ``""`` lets the routing table choose, an address takes
+        the membership on that interface, and ``None`` means an interface is
+        pinned but has no address, so no membership is taken at all.
+
+        A failed join is non-fatal (logged); only a failed bind raises.
         """
         if not _PYTHONOSC_AVAILABLE:  # pragma: no cover
             logger.warning("python-osc not installed – OSC input disabled. Run: pip install python-osc")
@@ -563,7 +617,7 @@ class OscService:
                 port,
             )
             raise
-        joined_group = _join_multicast_group(listener.socket, group, port) if group else False
+        joined_group = _join_multicast_group(listener.socket, group, port, iface_ip=multicast_iface) if group else False
         thread = threading.Thread(
             target=listener.serve_forever,
             daemon=True,
@@ -581,6 +635,7 @@ class OscService:
             self._listener_allowed_ips = normalised_ips
             self._listener_multicast_group = group
             self._listener_multicast_joined = joined_group
+            self._listener_multicast_iface = multicast_iface
             try:
                 thread.start()
             except Exception:
@@ -593,9 +648,17 @@ class OscService:
                 self._listener_allowed_ips = frozenset()
                 self._listener_multicast_group = ""
                 self._listener_multicast_joined = False
+                self._listener_multicast_iface = ""
                 listener.server_close()
                 raise
-        group_note = f"; joined multicast group {group}" if joined_group else ""
+        group_note = ""
+        if group:
+            via = f" via {multicast_iface}" if multicast_iface else ""
+            group_note = (
+                f"; joined multicast group {group}{via}"
+                if joined_group
+                else f"; NOT subscribed to multicast group {group}"
+            )
         if normalised_ips:
             logger.info(
                 "OSC input listening on UDP port %d; accepting packets only from %s%s",
@@ -612,6 +675,53 @@ class OscService:
                 group_note,
             )
 
+    def set_multicast_iface(self, multicast_iface: str | None) -> bool:
+        """Move the multicast membership to *multicast_iface*, rebinding the listener.
+
+        The membership is released by closing the socket, never by dropping
+        it. ``IP_DROP_MEMBERSHIP`` is keyed by interface address, so the case
+        that matters most - a pinned interface that lost its address - is
+        exactly the one where that address no longer resolves: the kernel
+        reports the drop as successful and releases nothing. The group then
+        stays subscribed on an interface the operator has moved off, and the
+        stranded membership outlives the socket, the process and a link
+        bounce. Closing releases every membership the socket holds, whatever
+        became of the address it took them on.
+
+        Rebinding costs the subscriptions nothing - they live on the service's
+        dispatcher, which each listener generation is handed - so what it costs
+        is a sub-millisecond gap in inbound OSC, against a group that otherwise
+        stays live on the wrong adapter.
+
+        ``None`` takes no membership at all, which is what a pinned interface
+        with no address has to mean. The listener still binds every interface,
+        so unicast and broadcast keep arriving throughout.
+
+        Returns whether a membership is now held. A no-op (and False) when no
+        listener is running or no group is configured. Raises ``OSError`` if
+        the rebind fails, so a caller following an interface records the
+        failure rather than reading a silent no-op as success.
+        """
+        with self._listener_lock:
+            listener = self._listener
+            group = self._listener_multicast_group
+            port = self._listener_port
+            allowed_ips = self._listener_allowed_ips
+            current = self._listener_multicast_iface
+            joined = self._listener_multicast_joined
+        if listener is None or not group or port is None:
+            return False
+        if current == multicast_iface and joined == (multicast_iface is not None):
+            return joined
+        self.restart_listener(
+            port=port,
+            allowed_ips=allowed_ips,
+            multicast_group=group,
+            multicast_iface=multicast_iface,
+        )
+        with self._listener_lock:
+            return self._listener_multicast_joined
+
     @property
     def listener_port(self) -> int | None:
         """Currently-bound listener port, or None if stopped."""
@@ -619,12 +729,20 @@ class OscService:
 
     def listener_status(self) -> dict[str, Any]:
         """Live inbound-listener state for diagnostics: bound port, the
-        multicast group the socket joined (and whether the join actually
-        succeeded), and the sender allowlist (empty = open to any LAN device)."""
+        multicast group and the interface the membership is held on (and
+        whether it actually succeeded), and the sender allowlist (empty = open
+        to any LAN device).
+
+        ``multicast_iface`` is what the socket really did, not the pin that
+        asked for it: ``""`` is a membership on whichever interface the routing
+        table chose, an address is the pinned one, and ``None`` is a pin whose
+        interface has no address, so no membership is held.
+        """
         with self._listener_lock:
             return {
                 "port": self._listener_port,
                 "multicast_group": self._listener_multicast_group,
+                "multicast_iface": self._listener_multicast_iface,
                 "multicast_joined": self._listener_multicast_joined,
                 "allowed_sender_ips": sorted(self._listener_allowed_ips),
             }
@@ -650,21 +768,33 @@ class OscService:
 # ---------------------------------------------------------------------------
 
 
-def _join_multicast_group(sock: Any, group: str, port: int) -> bool:
-    """Join ``group`` on ``sock`` (best-effort, INADDR_ANY interface).
+def _join_multicast_group(sock: Any, group: str, port: int, *, iface_ip: str | None = "") -> bool:
+    """Join ``group`` on ``sock``, via ``iface_ip`` when one is given.
 
-    Returns True on success, False if the join failed (logged + swallowed).
-    ``group`` is assumed already validated as an IPv4 multicast address;
-    ``inet_aton`` is the only runtime guard.
+    ``INADDR_ANY`` does not subscribe on every interface - the kernel picks one
+    by routing table, so an unpinned listener can take the group on a different
+    adapter from one restart to the next.
+
+    Returns True on success, False if no membership is held (logged +
+    swallowed): the listener keeps serving unicast and broadcast either way, so
+    a group it could not take is a degraded state, not a fatal one.
     """
-    try:
-        mreq = socket.inet_aton(group) + socket.inet_aton("0.0.0.0")
-        sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
-    except OSError as exc:
-        logger.warning(
-            "OSC listener on port %d could not join multicast group %s: %s – unicast/broadcast still active.",
+    if iface_ip is None:
+        logger.error(
+            "OSC listener on port %d is not subscribed to multicast group %s: the configured "
+            "interface has no address, and it will not take the group on another one.",
             port,
             group,
+        )
+        return False
+    try:
+        join_multicast_group_on_iface(sock, group, iface_ip)
+    except OSError as exc:
+        logger.warning(
+            "OSC listener on port %d could not join multicast group %s via %s: %s – unicast/broadcast still active.",
+            port,
+            group,
+            iface_ip or "the default interface",
             exc,
         )
         return False

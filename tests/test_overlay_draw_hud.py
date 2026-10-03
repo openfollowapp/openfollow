@@ -32,8 +32,6 @@ from openfollow.runtime.overlay_draw_hud import (
     draw_field_choice_picker_overlay,
     draw_help_block,
     draw_hud,
-    draw_iface_selection,
-    draw_iface_selection_overlay,
     draw_marker_card,
     draw_modal_scrim,
     draw_modal_shell,
@@ -41,10 +39,6 @@ from openfollow.runtime.overlay_draw_hud import (
     draw_panel_background,
     draw_pi_network_field_edit,
     draw_pi_network_field_edit_overlay,
-    draw_pi_network_iface_picker,
-    draw_pi_network_iface_picker_overlay,
-    draw_pi_network_method_picker,
-    draw_pi_network_method_picker_overlay,
     draw_pi_network_screen,
     draw_pi_network_screen_overlay,
     draw_selectable_list,
@@ -62,10 +56,19 @@ from openfollow.runtime.overlay_draw_hud import (
     draw_virtual_faders,
 )
 from openfollow.runtime.overlay_draw_style import (
+    CHEVRON_SIZE,
     COLOR_ACCENT,
     COLOR_ACCENT_SOFT,
     COLOR_BG_BASE,
+    COLOR_CAUTION_BORDER,
+    COLOR_CAUTION_FILL,
+    COLOR_DANGER_BG,
+    COLOR_INFO_BORDER,
+    COLOR_INFO_FILL,
     COLOR_OK,
+    COLOR_SUCCESS_BG,
+    COLOR_SUCCESS_BORDER,
+    COLOR_SUCCESS_FILL,
     COLOR_TEXT,
     COLOR_TEXT_MUTED,
     COLOR_WARNING_BORDER,
@@ -377,10 +380,10 @@ class TestSelectableList:
         assert a_text.bold is False
         assert b_text.bold is True
 
-    def test_long_list_shows_scroll_down_indicator(self) -> None:
+    def test_long_list_shows_scroll_down_indicator(self, chevrons: list) -> None:
         cr = FakeCairo()
         items = [f"item-{i}" for i in range(20)]
-        # Short vertical height means only a few items fit → scroll-down "v".
+        # Short vertical height means only a few items fit → a down chevron.
         draw_selectable_list(
             FakeRenderer(),
             cr,
@@ -392,11 +395,10 @@ class TestSelectableList:
             h=80.0,
             empty_message="x",
         )
-        assert "v" in cr.show_text_strings()
-        # At scroll_offset == 0 the "up" indicator is suppressed.
-        assert "^" not in cr.show_text_strings()
+        # Centred under the list; at scroll_offset == 0 there is no "up" hint.
+        assert chevrons == [(200.0, 80.0 - 3.5, "down")]
 
-    def test_selecting_far_down_scrolls_and_shows_up_indicator(self) -> None:
+    def test_selecting_far_down_scrolls_and_shows_up_indicator(self, chevrons: list) -> None:
         cr = FakeCairo()
         items = [f"item-{i}" for i in range(20)]
         draw_selectable_list(
@@ -410,7 +412,7 @@ class TestSelectableList:
             h=80.0,
             empty_message="x",
         )
-        assert "^" in cr.show_text_strings()
+        assert (200.0, 3.5, "up") in chevrons
 
     def test_out_of_range_selected_idx_hits_break_guard(self) -> None:
         """Defensive ``break`` when ``scroll_offset`` pushes past ``len(items)``.
@@ -477,23 +479,6 @@ class TestSelectionMenus:
         cr = FakeCairo()
         draw_source_selection_overlay(FakeRenderer(state=state), cr, state, 1600, 900)
         # Scrim draws one full-frame rectangle.
-        frame_rects = [r for r in cr.rects if r[:2] == (0, 0) and r[2:] == (1600, 900)]
-        assert len(frame_rects) == 1
-
-    def test_iface_selection_maps_empty_to_auto_detect(self) -> None:
-        state = _base_state()
-        state.available_interfaces = ["en0", ""]  # second is "auto"
-        state.selected_iface_index = 1
-        cr = FakeCairo()
-        draw_iface_selection(FakeRenderer(state=state), cr, state, 1600, 900)
-        texts = cr.show_text_strings()
-        assert "en0" in texts
-        assert "Auto-detect" in texts
-
-    def test_iface_selection_overlay_adds_scrim(self) -> None:
-        state = _base_state(available_interfaces=["en0"], selected_iface_index=0)
-        cr = FakeCairo()
-        draw_iface_selection_overlay(FakeRenderer(state=state), cr, state, 1600, 900)
         frame_rects = [r for r in cr.rects if r[:2] == (0, 0) and r[2:] == (1600, 900)]
         assert len(frame_rects) == 1
 
@@ -697,6 +682,10 @@ class TestSelectionMenus:
         # Error message body is rendered (may be word-wrapped, so
         # check for a substring rather than the exact line).
         assert any("Connection refused" in t for t in texts)
+        # The error chip, at the box's 2 px border.
+        assert ("rgba", *COLOR_WARNING_FILL) in cr.calls
+        assert ("rgb", *COLOR_WARNING_BORDER) in cr.calls
+        assert ("line_width", 2.0) in cr.calls
 
     def test_settings_menu_skips_error_box_when_message_empty(self) -> None:
         """No error → no red box; keeps the modal lean when the
@@ -995,6 +984,80 @@ class TestBottomLeftInfoPanel:
         assert "Video Source:" in texts
         assert "192.168.1.2" in texts
         assert any("NDI" in t for t in texts)
+
+    def test_hostname_row_renders_alongside_the_ip(self) -> None:
+        """``<slug>.local`` is the recovery route that survives an address
+        change, so it is on the panel whenever the host has a usable name."""
+        state = _base_state(ip_text="192.168.1.2")
+        state.hostname_text = "openfollow-noble-bear.local"
+        cr = FakeCairo()
+        draw_bottom_left_info_panel(FakeRenderer(state=state), cr, state, 1920, 1080)
+        texts = cr.show_text_strings()
+        assert "Web address:" in texts
+        assert "openfollow-noble-bear.local" in texts
+
+    def test_no_hostname_row_when_the_host_has_no_name(self) -> None:
+        state = _base_state(ip_text="192.168.1.2")
+        state.hostname_text = ""
+        cr = FakeCairo()
+        draw_bottom_left_info_panel(FakeRenderer(state=state), cr, state, 1920, 1080)
+        assert "Web address:" not in cr.show_text_strings()
+
+    def test_link_local_address_carries_the_dhcp_qualifier(self) -> None:
+        """Without it an operator reads a 169.254 address as a working lease."""
+        state = _base_state(ip_text="169.254.8.31")
+        state.ip_is_fallback = True
+        cr = FakeCairo()
+        draw_bottom_left_info_panel(FakeRenderer(state=state), cr, state, 1920, 1080)
+        assert any("DHCP unavailable" in t for t in cr.show_text_strings())
+
+    def test_routable_address_carries_no_qualifier(self) -> None:
+        state = _base_state(ip_text="192.168.1.2")
+        state.ip_is_fallback = False
+        cr = FakeCairo()
+        draw_bottom_left_info_panel(FakeRenderer(state=state), cr, state, 1920, 1080)
+        assert not any("DHCP unavailable" in t for t in cr.show_text_strings())
+
+    def test_panel_height_follows_the_row_count(self) -> None:
+        """The height was hardcoded for three rows; a fourth row has to grow
+        the panel rather than render outside it."""
+        without = _base_state(ip_text="192.168.1.2")
+        without.hostname_text = ""
+        with_host = _base_state(ip_text="192.168.1.2")
+        with_host.hostname_text = "openfollow-noble-bear.local"
+
+        spans = []
+        for state in (without, with_host):
+            cr = FakeCairo()
+            draw_bottom_left_info_panel(FakeRenderer(state=state), cr, state, 1920, 1080)
+            ys = [t.y for t in cr.texts]
+            spans.append((max(ys) - min(ys), min(ys)))
+        # One more row of text, and the panel grows upward to hold it – the
+        # bottom row stays put because the panel is bottom-anchored.
+        assert spans[1][0] > spans[0][0]
+        assert spans[1][1] < spans[0][1]
+
+    def test_a_down_plane_turns_the_panel_red_but_its_text_goes_top_right(self) -> None:
+        """The sentence is a top-right status row, like every other fault; the
+        panel only takes the error chrome."""
+        state = _base_state(ip_text="192.168.1.2")
+        state.network_alerts = ["PSN: eth0.10 is down", "OTP output: eth0.20 is down"]
+        cr = FakeCairo()
+        draw_bottom_left_info_panel(FakeRenderer(state=state), cr, state, 1920, 1080)
+        texts = cr.show_text_strings()
+        assert "Network:" not in texts
+        assert not any("is down" in text for text in texts)
+        assert ("rgba", *COLOR_WARNING_FILL) in cr.calls
+        assert ("rgb", *COLOR_WARNING_BORDER) in cr.calls
+        assert ("line_width", 1.6) in cr.calls
+
+    def test_no_network_row_when_every_plane_is_up(self) -> None:
+        state = _base_state(ip_text="192.168.1.2")
+        state.network_alerts = []
+        cr = FakeCairo()
+        draw_bottom_left_info_panel(FakeRenderer(state=state), cr, state, 1920, 1080)
+        assert "Network:" not in cr.show_text_strings()
+        assert ("rgba", *COLOR_WARNING_FILL) not in cr.calls
 
     def test_empty_ip_falls_back_to_unavailable(self) -> None:
         state = _base_state(ip_text="")
@@ -2126,10 +2189,6 @@ def _network_state(**overrides: object):
     s.banner = ""
     s.rows = []
     s.selected_index = 0
-    s.iface_picker_items = ["eth0", "wlan0"]
-    s.iface_picker_selected_index = 0
-    s.method_picker_items = ["DHCP", "Static"]
-    s.method_picker_selected_index = 0
     s.field_label = "IP Address"
     s.field_value = "192.168.1.50"
     for k, v in overrides.items():
@@ -2137,7 +2196,231 @@ def _network_state(**overrides: object):
     return s
 
 
+@pytest.fixture
+def chevrons(monkeypatch: pytest.MonkeyPatch) -> list[tuple[float, float, str]]:
+    """Every chevron drawn, as ``(cx, cy, direction)``."""
+    import openfollow.runtime.overlay_draw_hud as hud
+
+    drawn: list[tuple[float, float, str]] = []
+    real = hud.draw_chevron
+
+    def _record(cr: Any, cx: float, cy: float, direction: str = "right", **kwargs: Any) -> None:
+        drawn.append((cx, cy, direction))
+        real(cr, cx, cy, direction, **kwargs)
+
+    monkeypatch.setattr(hud, "draw_chevron", _record)
+    return drawn
+
+
+class TestTheChevron:
+    def test_it_is_drawn_as_heavily_as_the_signs_beside_it(self) -> None:
+        """A text glyph drew it thin and small on the station's screen. It is
+        now a stroked angle the size of the level signs, at their weight."""
+        import inspect
+
+        from openfollow.runtime.overlay_draw_style import CHEVRON_SIZE, draw_chevron, draw_level_sign
+
+        cr = FakeCairo()
+        draw_chevron(cr, 100.0, 50.0)
+        ys = [y for _x, y in cr.move_tos + cr.line_tos]
+        assert inspect.signature(draw_level_sign).parameters["size"].default == CHEVRON_SIZE
+        assert max(ys) - min(ys) >= 0.8 * CHEVRON_SIZE
+        assert ("line_width", CHEVRON_SIZE * 0.18) in cr.calls
+        assert CHEVRON_SIZE * 0.18 >= 2.0
+
+    @pytest.mark.parametrize("direction", ["down", "up"])
+    def test_turned_it_is_wider_than_tall(self, direction: str) -> None:
+        from openfollow.runtime.overlay_draw_style import draw_chevron
+
+        cr = FakeCairo()
+        draw_chevron(cr, 100.0, 50.0, direction)
+        xs = [x for x, _y in cr.move_tos + cr.line_tos]
+        ys = [y for _x, y in cr.move_tos + cr.line_tos]
+        assert max(xs) - min(xs) > max(ys) - min(ys)
+
+
+class TestTheSettingsMenuMarksWhatOpensAScreen:
+    def test_an_entry_that_opens_a_screen_gets_a_chevron(self, chevrons: list) -> None:
+        state = _base_state()
+        state.settings_menu_active = True
+        state.settings_items = ["Network", "Restart"]
+        state.settings_items_enabled = [True, True]
+        state.settings_items_disabled_reasons = ["", ""]
+        state.settings_items_submenu = [True, False]
+        cr = FakeCairo()
+        draw_settings_menu(FakeRenderer(state=state), cr, state, 1600, 900)
+        # One chevron for Network, none for Restart, which acts where it stands.
+        assert [direction for _x, _y, direction in chevrons] == ["right"]
+
+    def test_a_list_too_long_for_its_panel_hints_below_its_middle(self, chevrons: list) -> None:
+        """A ``v`` at the right edge of the last row read as that row's
+        chevron knocked over; a scroll hint sits centred under the list."""
+        state = _base_state()
+        state.settings_menu_active = True
+        state.settings_items = [f"Entry {i}" for i in range(40)]
+        state.settings_items_enabled = [True] * 40
+        state.settings_items_disabled_reasons = [""] * 40
+        state.settings_items_submenu = [True] + [False] * 39
+        cr = FakeCairo()
+        draw_settings_menu(FakeRenderer(state=state), cr, state, 1600, 900)
+        row = next(c for c in chevrons if c[2] == "right")
+        (hint,) = [c for c in chevrons if c[2] == "down"]
+        assert hint[0] < row[0] - 100.0
+        assert hint[1] > row[1]
+        assert not [t for t in cr.texts if t.text in ("v", "^")]
+
+
 class TestDrawPiNetworkScreen:
+    def test_a_row_that_opens_a_screen_is_marked(self, chevrons: list) -> None:
+        """A d-pad menu otherwise hides which rows take you somewhere until
+        you have already pressed one."""
+        rows = [
+            {"kind": "choice", "key": "iface:eth0", "label": "eth0", "value": "10.0.0.2", "opens": True},
+            {"kind": "display", "key": "mdns", "label": "http://x.local", "value": "any interface"},
+        ]
+        state = _base_state(pi_network=_network_state(rows=rows))
+        cr = FakeCairo()
+        draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
+        assert len(chevrons) == 1
+
+    def test_the_chevron_and_the_pill_do_not_share_a_place(self, chevrons: list) -> None:
+        """Both want the right edge; the chevron takes it and the pill moves
+        inboard, or they draw on top of each other."""
+        rows = [
+            {
+                "kind": "choice",
+                "key": "iface:eth0",
+                "label": "eth0",
+                "value": "10.0.0.2",
+                "pill": "DHCP",
+                "opens": True,
+            }
+        ]
+        state = _base_state(pi_network=_network_state(rows=rows))
+        cr = FakeCairo()
+        draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
+        (chevron,) = chevrons
+        bare = FakeCairo()
+        bare_state = _base_state(pi_network=_network_state(rows=[{k: v for k, v in rows[0].items() if k != "pill"}]))
+        draw_pi_network_screen(FakeRenderer(state=bare_state), bare, bare_state, 1600, 900)
+        pill_arcs = [arc for arc in cr.arcs if arc not in bare.arcs]
+        pill_right = max(cx + radius for cx, _cy, radius in pill_arcs)
+        # The chevron's left arm reaches about a third of its size from its centre.
+        assert pill_right < chevron[0] - 0.3 * CHEVRON_SIZE
+
+    def test_the_chevron_sits_in_its_row(self, chevrons: list) -> None:
+        """Centred on the row it marks, so it reads as that row's and not the next."""
+        rows = [{"kind": "choice", "key": "iface:eth0", "label": "eth0", "value": "10.0.0.2", "opens": True}]
+        state = _base_state(pi_network=_network_state(rows=rows, selected_index=-1))
+        cr = FakeCairo()
+        draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
+        (chevron,) = chevrons
+        label = next(t for t in cr.texts if t.text == "eth0")
+        # The label's baseline sits below the row's middle by under its font size.
+        assert 0.0 < label.y - chevron[1] < label.font_size
+
+    def test_a_pill_is_no_rounder_than_the_row_it_sits_in(self) -> None:
+        """An inner corner is never rounder than its container, which is what
+        gives the HUD's pills the web's square-ish corners."""
+        from collections import Counter
+
+        from openfollow.runtime.overlay_draw_style import ROW_RADIUS
+
+        def arcs(row: dict) -> Counter:
+            state = _base_state(pi_network=_network_state(rows=[row]))
+            cr = FakeCairo()
+            draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
+            return Counter(cr.arcs)
+
+        row = {"kind": "choice", "key": "iface:eth0", "label": "eth0", "value": "10.0.0.2"}
+        pill_arcs = arcs({**row, "pill": "fallback", "pill_level": "error"}) - arcs(row)
+        assert pill_arcs
+        assert {radius for _x, _y, radius in pill_arcs} == {ROW_RADIUS}
+
+    def test_a_pill_is_drawn_and_keeps_clear_of_the_value(self) -> None:
+        """The pill sits at the right edge, so the value has to stop short of
+        it - a value drawn to the full width would run underneath."""
+        rows = [
+            {"kind": "choice", "key": "iface:eth0", "label": "eth0", "value": "192.168.1.5", "pill": "DHCP"},
+        ]
+        state = _base_state(pi_network=_network_state(rows=rows))
+        cr = FakeCairo()
+        draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
+        pill = next(t for t in cr.texts if t.text == "DHCP")
+        value = next(t for t in cr.texts if t.text == "192.168.1.5")
+        assert pill.x > value.x
+
+    @pytest.mark.parametrize(
+        ("pill", "level", "fill", "border"),
+        [
+            ("fallback", "error", COLOR_WARNING_FILL, COLOR_WARNING_BORDER),
+            ("web UI not here", "info", COLOR_INFO_FILL, COLOR_INFO_BORDER),
+        ],
+    )
+    def test_a_state_pill_takes_its_levels_chip_colours(self, pill, level, fill, border) -> None:  # noqa: ANN001
+        rows = [
+            {"kind": "choice", "key": "iface:eth0", "label": "eth0", "value": "", "pill": pill, "pill_level": level},
+            {"kind": "choice", "key": "iface:wlan0", "label": "wlan0", "value": "10.0.0.2", "pill": "DHCP"},
+        ]
+        state = _base_state(pi_network=_network_state(rows=rows))
+        cr = FakeCairo()
+        draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
+        assert ("rgba", *fill) in cr.calls
+        assert ("rgb", *border) in cr.calls
+        # Off-white on the level's fill; the neutral pill keeps its muted text.
+        assert next(t for t in cr.texts if t.text == pill).rgba == (*COLOR_TEXT, 1.0)
+        assert next(t for t in cr.texts if t.text == "DHCP").rgba == COLOR_TEXT_MUTED
+
+    @pytest.mark.parametrize(
+        "level",
+        [{}, {"pill_level": ""}, {"pill_level": None}],
+        ids=["absent", "empty", "none"],
+    )
+    def test_a_neutral_pill_draws_no_status_colour(self, level: dict) -> None:
+        rows = [{"kind": "choice", "key": "iface:eth0", "label": "eth0", "value": "", "pill": "no address", **level}]
+        state = _base_state(pi_network=_network_state(rows=rows))
+        cr = FakeCairo()
+        draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
+        fills = {c[1:] for c in cr.calls if c[0] == "rgba"}
+        assert not fills & {COLOR_WARNING_FILL, COLOR_INFO_FILL, COLOR_CAUTION_FILL}
+
+    @pytest.mark.parametrize("level", ["warning", "ERROR", 5, ["info"]], ids=["unknown", "wrong-case", "int", "list"])
+    def test_a_pill_level_nobody_defined_draws_as_an_error(self, level: object) -> None:
+        """A malformed writer shows as a fault, not as the neutral grey of no state at all."""
+        rows = [
+            {"kind": "choice", "key": "iface:eth0", "label": "eth0", "value": "", "pill": "odd", "pill_level": level}
+        ]
+        state = _base_state(pi_network=_network_state(rows=rows))
+        cr = FakeCairo()
+        draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
+        assert ("rgba", *COLOR_WARNING_FILL) in cr.calls
+        assert ("rgb", *COLOR_WARNING_BORDER) in cr.calls
+        assert next(t for t in cr.texts if t.text == "odd").rgba == (*COLOR_TEXT, 1.0)
+
+    def test_a_row_without_a_pill_draws_none(self) -> None:
+        rows = [{"kind": "choice", "key": "iface:eth0", "label": "eth0", "value": "192.168.1.5"}]
+        state = _base_state(pi_network=_network_state(rows=rows))
+        cr = FakeCairo()
+        draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
+        assert [t for t in cr.texts if t.text in {"DHCP", "fallback", "no address"}] == []
+
+    def test_a_heading_is_not_drawn_in_the_warning_colour(self) -> None:
+        """Amber on this screen means a row needs attention. A heading that
+        shares it raises a false alarm on a screen the operator only reaches
+        when something is already wrong, and leaves the real warnings reading
+        as furniture. Asserts they differ rather than naming a colour, so a
+        palette change cannot quietly reunite them."""
+        rows = [
+            {"kind": "header", "label": "Fix reachability"},
+            {"kind": "notice", "label": "eth0 has no address"},
+        ]
+        state = _base_state(pi_network=_network_state(rows=rows))
+        cr = FakeCairo()
+        draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
+        heading = next(t for t in cr.texts if "FIX REACHABILITY" in t.text)
+        warning = next(t for t in cr.texts if "no address" in t.text)
+        assert heading.rgba != warning.rgba
+
     def test_renders_sectioned_layout(self) -> None:
         rows = [
             {"kind": "header", "label": "Interface"},
@@ -2161,6 +2444,133 @@ class TestDrawPiNetworkScreen:
         assert any("Selected" in t for t in texts)
         # Action row text rendered.
         assert any("Apply Changes" in t for t in texts)
+
+    @pytest.mark.parametrize(
+        ("level", "fill", "border"),
+        [
+            ("error", COLOR_WARNING_FILL, COLOR_WARNING_BORDER),
+            ("caution", COLOR_CAUTION_FILL, COLOR_CAUTION_BORDER),
+            ("info", COLOR_INFO_FILL, COLOR_INFO_BORDER),
+        ],
+    )
+    def test_a_notice_is_a_status_row_of_its_level(self, level, fill, border) -> None:  # noqa: ANN001
+        """Off-white text on the level's fill, as the web boxes: never a tinted text."""
+        rows = [{"kind": "notice", "level": level, "label": "Web UI is served only at 10.0.0.2", "value": ""}]
+        state = _base_state(pi_network=_network_state(rows=rows))
+        cr = FakeCairo()
+        draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
+        assert ("rgba", *fill) in cr.calls
+        assert ("rgb", *border) in cr.calls
+        assert next(t for t in cr.texts if "served only" in t.text).rgba == (*COLOR_TEXT, 1.0)
+
+    def test_a_notice_keeps_clear_of_the_row_above_and_the_heading_below(self) -> None:
+        rows = [
+            {"kind": "choice", "key": "iface:eth0", "label": "eth0", "value": "192.0.2.10"},
+            {"kind": "notice", "level": "info", "label": "Web UI is served only at 192.0.2.10"},
+            {"kind": "header", "label": "If you still can't reach it"},
+        ]
+        state = _base_state(pi_network=_network_state(rows=rows))
+        cr = FakeCairo()
+        draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
+        row = next(t for t in cr.texts if t.text == "eth0")
+        notice = next(t for t in cr.texts if "served only" in t.text)
+        heading = next(t for t in cr.texts if t.text == "IF YOU STILL CAN'T REACH IT")
+        # Baseline to baseline: a data row followed by an unspaced notice sat 27px apart, the heading 35px below.
+        assert notice.y - row.y > 30
+        assert heading.y - notice.y > 40
+
+    def test_an_error_notice_leads_with_the_warning_sign(self) -> None:
+        rows = [{"kind": "notice", "level": "error", "label": "eth0 has no lease", "value": ""}]
+        state = _base_state(pi_network=_network_state(rows=rows))
+        cr = FakeCairo()
+        draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
+        # The "!" is cut into the triangle in the warning red.
+        assert ("rgb", *COLOR_DANGER_BG) in cr.calls
+        assert not any(t.text.startswith("! ") for t in cr.texts)
+
+    def test_a_long_notice_wraps_rather_than_losing_its_end(self) -> None:
+        """The fallback sentence says who will not reach the station; truncated
+        to one line, that is the half an operator never sees."""
+        label = (
+            "No DHCP server answered, so eth0 gave itself 169.254.8.31. "
+            "Other machines on this network will not reach the station here."
+        )
+        rows = [{"kind": "notice", "level": "error", "label": label, "value": ""}]
+        state = _base_state(pi_network=_network_state(rows=rows))
+        cr = FakeCairo()
+        draw_pi_network_screen(FakeRenderer(state=state), cr, state, 800, 900)
+        drawn = [t.text for t in cr.texts if t.rgba == (*COLOR_TEXT, 1.0) and t.text.strip()]
+        assert len(drawn) > 1
+        assert "reach the station here." in drawn[-1]
+
+    def test_a_notice_stops_at_three_lines(self) -> None:
+        """A backend message can run on; past three lines it is cut, not left to push the list off the panel."""
+        rows = [{"kind": "notice", "level": "error", "label": "word " * 400, "value": ""}]
+        state = _base_state(pi_network=_network_state(rows=rows))
+        cr = FakeCairo()
+        draw_pi_network_screen(FakeRenderer(state=state), cr, state, 800, 900)
+        assert len([t for t in cr.texts if t.rgba == (*COLOR_TEXT, 1.0) and "word" in t.text]) == 3
+
+    @pytest.mark.parametrize(
+        ("level", "fill"),
+        [
+            ("error", COLOR_WARNING_FILL),
+            ("caution", COLOR_CAUTION_FILL),
+            ("info", COLOR_INFO_FILL),
+            ("success", COLOR_SUCCESS_FILL),
+        ],
+    )
+    def test_a_result_banner_takes_its_levels_colours(self, level, fill) -> None:  # noqa: ANN001
+        state = _base_state(pi_network=_network_state(banner="Apply failed: refused", banner_level=level))
+        cr = FakeCairo()
+        draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
+        assert ("rgba", *fill) in cr.calls
+        assert any("Apply failed" in t for t in cr.show_text_strings())
+
+    def test_a_confirmation_is_a_green_row_led_by_the_off_white_check(self) -> None:
+        """As the web success box: the success fill and border, the sign off-white like every row's."""
+        state = _base_state(pi_network=_network_state(banner="Apply ok.", banner_level="success"))
+        cr = FakeCairo()
+        draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
+        assert ("rgba", *COLOR_SUCCESS_FILL) in cr.calls
+        assert ("rgb", *COLOR_SUCCESS_BORDER) in cr.calls
+        assert ("rgb", *COLOR_SUCCESS_BG) in cr.calls  # the check, cut out of the off-white disc
+        assert ("rgb", *COLOR_OK) not in cr.calls
+
+    @pytest.mark.parametrize("busy", [True, False])
+    def test_an_action_in_progress_is_led_by_the_spinner(self, monkeypatch: pytest.MonkeyPatch, busy: bool) -> None:
+        """As the web's busy box: the spinner in the sign's place until the
+        answer comes, and the sign again once it has."""
+        import openfollow.runtime.overlay_draw_hud as hud
+
+        drawn: list[str] = []
+        monkeypatch.setattr(hud, "draw_spinner", lambda *args, **kwargs: drawn.append("spinner"))
+        monkeypatch.setattr(hud, "draw_level_sign", lambda cr, level, *args, **kwargs: drawn.append(level))
+        net = _network_state(banner="Apply in progress…", banner_level="info")
+        net.busy = busy
+        state = _base_state(pi_network=net)
+        draw_pi_network_screen(FakeRenderer(state=state), FakeCairo(), state, 1600, 900)
+        assert drawn[0] == ("spinner" if busy else "info")
+        assert ("info" in drawn) is not busy
+
+    @pytest.mark.parametrize("level", ["", "warning"], ids=["no-level", "unknown-level"])
+    def test_a_result_without_a_known_level_reads_as_a_fault(self, level: str) -> None:
+        """As the status badge: a malformed writer's line shows as an error, not as news."""
+        state = _base_state(pi_network=_network_state(banner="Apply failed: refused", banner_level=level))
+        cr = FakeCairo()
+        draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
+        assert ("rgba", *COLOR_WARNING_FILL) in cr.calls
+        assert ("rgba", *COLOR_INFO_FILL) not in cr.calls
+
+    @pytest.mark.parametrize("level", [None, "warning", ["error"]], ids=["no-level", "unknown-level", "unhashable"])
+    def test_a_notice_without_a_known_level_reads_as_a_fault(self, level: object) -> None:
+        """It draws as an error rather than taking the screen down with it."""
+        rows = [{"kind": "notice", "level": level, "label": "eth0 has no address", "value": ""}]
+        state = _base_state(pi_network=_network_state(rows=rows))
+        cr = FakeCairo()
+        draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
+        assert ("rgba", *COLOR_WARNING_FILL) in cr.calls
+        assert any("no address" in t for t in cr.show_text_strings())
 
     def test_renders_banner_when_set(self) -> None:
         rows = [
@@ -2219,46 +2629,135 @@ class TestDrawPiNetworkScreen:
         assert any("Configure" in t for t in texts)
 
 
-class TestDrawPiNetworkIfacePicker:
-    def test_renders_iface_list(self) -> None:
+def _stroked_segments(cr) -> list[tuple[float, float, float, float]]:
+    """``(x0, y0, x1, y1)`` for each move_to immediately followed by line_to."""
+    segments = []
+    for prev, cur in zip(cr.calls, cr.calls[1:], strict=False):
+        if prev[0] == "move_to" and cur[0] == "line_to":
+            segments.append((prev[1], prev[2], cur[1], cur[2]))
+    return segments
+
+
+class TestTheFieldEditorShowsTheDpadCursor:
+    """Without this the gamepad entry path has no visual feedback at all:
+    left/right move nothing on screen, and up then changes a digit at a
+    position the operator cannot see."""
+
+    def _underlines(self, caret: int) -> list[tuple[float, float, float, float]]:
         state = _base_state(
             pi_network=_network_state(
-                iface_picker_items=["eth0", "wlan0"],
-                iface_picker_selected_index=1,
+                field_label="IP Address",
+                field_value="192.168.001.005",
+                field_caret_offset=caret,
+                field_edit_active=True,
             )
         )
         cr = FakeCairo()
-        draw_pi_network_iface_picker(FakeRenderer(state=state), cr, state, 1280, 720)
-        texts = cr.show_text_strings()
-        assert any("eth0" in t for t in texts)
-        assert any("wlan0" in t for t in texts)
+        draw_pi_network_field_edit(FakeRenderer(state=state), cr, state, 1280, 720)
+        return [seg for seg in _stroked_segments(cr) if abs(seg[1] - seg[3]) < 0.5]
 
-    def test_overlay_wraps_with_scrim(self) -> None:
-        state = _base_state(pi_network=_network_state())
-        cr = FakeCairo()
-        draw_pi_network_iface_picker_overlay(FakeRenderer(state=state), cr, state, 1280, 720)
-        assert (0, 0, 1280, 720) in cr.rects
+    def test_the_marker_tracks_the_digit_the_cursor_names(self) -> None:
+        """Asserted by moving it: the panel chrome draws horizontal strokes
+        too, so "a horizontal line exists" would pass with no cursor drawn
+        at all."""
+        first = set(self._underlines(0))
+        last = set(self._underlines(14))
+        moved = last - first
+        assert moved, "the cursor marker did not move with the cursor"
+        assert min(seg[0] for seg in moved) > max(seg[0] for seg in first - last)
 
-
-class TestDrawPiNetworkMethodPicker:
-    def test_renders_method_list(self) -> None:
+    def test_a_typed_value_keeps_the_end_of_string_caret(self) -> None:
+        """A freely typed value has no fixed slot-to-character mapping, so a
+        digit underline would sit under an arbitrary character."""
         state = _base_state(
             pi_network=_network_state(
-                method_picker_items=["DHCP", "DHCP with manual address", "Static"],
-                method_picker_selected_index=2,
+                field_label="IP Address",
+                field_value="192.168.1.5",
+                field_caret_offset=-1,
+                field_edit_active=True,
             )
         )
         cr = FakeCairo()
-        draw_pi_network_method_picker(FakeRenderer(state=state), cr, state, 1280, 720)
-        texts = cr.show_text_strings()
-        assert any("DHCP" in t for t in texts)
-        assert any("Static" in t for t in texts)
+        draw_pi_network_field_edit(FakeRenderer(state=state), cr, state, 1280, 720)
+        verticals = [seg for seg in _stroked_segments(cr) if abs(seg[0] - seg[2]) < 0.5]
+        assert verticals, "no caret drawn for a typed value"
 
-    def test_overlay_wraps_with_scrim(self) -> None:
-        state = _base_state(pi_network=_network_state())
+    def _subtitle(self, buttons: dict[str, str] | None = None) -> str:
+        state = _base_state(pi_network=_network_state(field_label="IP Address", field_edit_active=True))
+        state.button_labels = {"menu_confirm": "A", "menu_cancel": "B"} if buttons is None else buttons
         cr = FakeCairo()
-        draw_pi_network_method_picker_overlay(FakeRenderer(state=state), cr, state, 1280, 720)
-        assert (0, 0, 1280, 720) in cr.rects
+        draw_pi_network_field_edit(FakeRenderer(state=state), cr, state, 1280, 720)
+        return next(t for t in cr.show_text_strings() if "digit" in t or "Type digits" in t)
+
+    def test_the_subtitle_names_the_pad_buttons_that_save_and_cancel(self) -> None:
+        """A station with no keyboard is the case this editor exists for. The
+        gamepad has always been able to save and cancel; the dialog named only
+        Enter and Esc, so from the operator's side it needed a keyboard.
+        """
+        subtitle = self._subtitle()
+        assert "A saves" in subtitle
+        assert "B cancels" in subtitle
+
+    def test_the_title_says_what_is_being_changed(self) -> None:
+        """ "Address" is the internal key for the row; the operator-facing name
+        is the one the row itself carries."""
+        state = _base_state(
+            pi_network=_network_state(field_label="IP Address", field_edit_active=True, active_iface="eth0")
+        )
+        cr = FakeCairo()
+        draw_pi_network_field_edit(FakeRenderer(state=state), cr, state, 1280, 720)
+        assert any("CHANGE IP ADDRESS" in t for t in cr.show_text_strings())
+
+    def test_the_subtitle_names_the_interface_first(self) -> None:
+        """On a multi-NIC station the field alone does not say which interface
+        is about to change, and the subtitle is truncated from the end - so an
+        interface appended to it is the part that disappears."""
+        state = _base_state(
+            pi_network=_network_state(field_label="IP Address", field_edit_active=True, active_iface="eth0.13")
+        )
+        state.button_labels = {"menu_confirm": "A", "menu_cancel": "B"}
+        cr = FakeCairo()
+        draw_pi_network_field_edit(FakeRenderer(state=state), cr, state, 1280, 720)
+        subtitle = next(t for t in cr.show_text_strings() if "digit" in t)
+        assert subtitle.startswith("eth0.13")
+
+    def test_the_subtitle_says_which_way_each_axis_goes(self) -> None:
+        """Naming the d-pad without naming its axes leaves the operator to
+        guess which one picks the digit and which one changes it - on the
+        screen they are using precisely because the web UI is out of reach."""
+        subtitle = self._subtitle()
+        assert "Left/Right" in subtitle
+        assert "Up/Down" in subtitle
+
+    def test_it_names_the_operator_s_own_bindings(self) -> None:
+        """Naming the defaults would send an operator who rebound these to a
+        button that does nothing."""
+        subtitle = self._subtitle({"menu_confirm": "START", "menu_cancel": "BACK"})
+        assert "Start saves" in subtitle
+        assert "Back cancels" in subtitle
+
+    def test_unbound_buttons_fall_back_to_the_keyboard_wording(self) -> None:
+        """Promising a pad button that is not bound is worse than naming the
+        keys, which always work."""
+        subtitle = self._subtitle({"menu_confirm": "", "menu_cancel": ""})
+        assert "Enter to save" in subtitle
+        assert "Esc to cancel" in subtitle
+
+
+class TestTheScreenDoesNotTruncateAUrl:
+    def test_a_station_hostname_url_fits_the_label_column(self) -> None:
+        """The ``<slug>.local`` row is the headline of the recovery screen and
+        the line an operator reads out over comms. At the old 180px split it
+        ellipsised for a realistic station name."""
+        url = "http://openfollow-eager-moose.local"
+        rows = [
+            {"kind": "header", "label": "Open on a computer on the same network"},
+            {"kind": "display", "key": "mdns", "label": url, "value": "any interface"},
+        ]
+        state = _base_state(pi_network=_network_state(rows=rows, selected_index=1))
+        cr = FakeCairo()
+        draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1280, 720)
+        assert url in cr.show_text_strings()
 
 
 class TestDrawPiNetworkFieldEdit:
@@ -2280,7 +2779,7 @@ class TestDrawPiNetworkFieldEdit:
         cr = FakeCairo()
         draw_pi_network_field_edit(FakeRenderer(state=state), cr, state, 1280, 720)
         texts = cr.show_text_strings()
-        assert "VALUE" in texts
+        assert "CHANGE VALUE" in texts
 
     def test_overlay_wraps_with_scrim(self) -> None:
         state = _base_state(pi_network=_network_state())

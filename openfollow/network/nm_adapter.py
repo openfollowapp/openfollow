@@ -8,6 +8,8 @@ import logging
 import subprocess
 import time
 from collections.abc import Sequence
+from pathlib import Path
+from typing import NamedTuple
 
 from openfollow.network.adapter import (
     ApplyResult,
@@ -17,10 +19,13 @@ from openfollow.network.adapter import (
     NetworkAdapter,
     NetworkInterface,
     NetworkState,
+    VlanInterface,
 )
-from openfollow.network.validate import validate_apply
+from openfollow.network.validate import validate_apply, vlan_interface_name
 from openfollow.privilege.broker import PrivilegeBroker, PrivilegeError
 from openfollow.privilege.capabilities import (
+    NETWORK_NM_CON_ADD,
+    NETWORK_NM_CON_DELETE,
     NETWORK_NM_CON_DOWN,
     NETWORK_NM_CON_MOD,
     NETWORK_NM_CON_UP,
@@ -30,6 +35,78 @@ from openfollow.privilege.capabilities import (
 logger = logging.getLogger(__name__)
 
 _NMCLI_TIMEOUT = 8
+
+_PROFILE_LIST_FIELDS = "NAME,UUID,AUTOCONNECT,AUTOCONNECT-PRIORITY,TIMESTAMP"
+
+# nmcli(1) EXIT STATUS
+_NMCLI_NOT_FOUND = 10
+
+_SYS_CLASS_NET = Path("/sys/class/net")
+
+# Shown when the privilege broker is absent, which on a real device means the
+# sudoers rules were never installed. Kept short: the on-screen result line wraps
+# to three lines and cuts the rest.
+_NO_BROKER_MESSAGE = "Cannot change network settings - the privileged helper is not configured."
+
+
+def _split_terse(line: str) -> list[str]:
+    """Split one nmcli ``-t`` row on its *unescaped* field separators.
+
+    ``nmcli -t`` emits a literal ``:`` inside a value as ``\\:``, so splitting
+    on every colon shifts each field after a colon-bearing one: a profile named
+    ``Wired connection: office`` yields a fragment where the UUID belongs, and
+    the device column lands on the type. Unescapes as it goes, so callers get
+    finished values.
+    """
+    fields: list[str] = []
+    current: list[str] = []
+    i = 0
+    n = len(line)
+    while i < n:
+        char = line[i]
+        if char == "\\" and i + 1 < n:
+            current.append(line[i + 1])
+            i += 2
+        elif char == ":":
+            fields.append("".join(current))
+            current = []
+            i += 1
+        else:
+            current.append(char)
+            i += 1
+    fields.append("".join(current))
+    return fields
+
+
+def _name_and_device(line: str) -> tuple[str, str]:
+    """Split one ``NAME,DEVICE`` row, tolerating a colon in the profile name.
+
+    ``partition(":")`` cuts at the escaped colon inside the name, so the device
+    column lands in the remainder and never matches - which makes a profile
+    called ``Wired connection: office`` invisible to every lookup, and reports
+    "no profile bound to eth0" for an interface that has one.
+    """
+    fields = _split_terse(line)
+    if len(fields) < 2:
+        return ("", "")
+    return (fields[0], fields[1])
+
+
+def _as_int(value: str) -> int:
+    try:
+        return int(value)
+    except ValueError:
+        return 0
+
+
+def _show_records(text: str) -> list[tuple[str, str]]:
+    """``(field, value)`` per line of a terse ``connection show``, in order."""
+    out: list[tuple[str, str]] = []
+    for line in text.splitlines():
+        key, sep, value = line.partition(":")
+        if sep:
+            out.append((key.strip(), _unescape_terse(value.strip())))
+    return out
 
 
 def _unescape_terse(value: str) -> str:
@@ -50,6 +127,12 @@ def _unescape_terse(value: str) -> str:
             out.append(value[i])
             i += 1
     return "".join(out)
+
+
+class _Privileged(NamedTuple):
+    ok: bool
+    detail: str
+    returncode: int | None = None  # the command's own exit status, when it ran and failed
 
 
 class NetworkManagerAdapter(NetworkAdapter):
@@ -78,10 +161,10 @@ class NetworkManagerAdapter(NetworkAdapter):
         argv: list[str],
         *,
         reason: str,
-    ) -> tuple[bool, str]:
-        """Invoke capability via broker, return (ok, detail)."""
+    ) -> _Privileged:
+        """Invoke capability via broker."""
         if self._broker is None:
-            return (False, "Broker not configured.")
+            return _Privileged(False, _NO_BROKER_MESSAGE)
         try:
             proc = self._broker.run(
                 capability,
@@ -90,10 +173,10 @@ class NetworkManagerAdapter(NetworkAdapter):
                 timeout=_NMCLI_TIMEOUT,
             )
         except PrivilegeError as exc:
-            return (False, str(exc))
+            return _Privileged(False, str(exc), exc.returncode)
         # Real broker raises on any non-zero rc, so reaching here means
         # success. The stdout is the only useful detail at this point.
-        return (True, (proc.stdout or "").strip())
+        return _Privileged(True, (proc.stdout or "").strip())
 
     # ---- list / get -----------------------------------------------------
 
@@ -128,19 +211,100 @@ class NetworkManagerAdapter(NetworkAdapter):
         except (RuntimeError, FileNotFoundError, subprocess.SubprocessError):
             return None
         for line in res.stdout.splitlines():
-            name, _, dev = line.partition(":")
+            name, dev = _name_and_device(line)
             if dev == iface:
                 return name
-        # Fallback to any profile bound to this device
+        return self._saved_connection_for(iface)
+
+    def _saved_connection_for(self, iface: str) -> str | None:
+        """The saved profile NetworkManager would bring up on *iface*.
+
+        An inactive profile lists no DEVICE, so it is found by the interface it
+        names. Ranked as autoconnect ranks them: enabled, priority, last used. A
+        profile naming no interface is never claimed: it can come up on any adapter.
+        """
         try:
-            res = self._run(["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show"])
+            res = self._run(["nmcli", "-t", "-f", _PROFILE_LIST_FIELDS, "connection", "show"])
+        except (RuntimeError, FileNotFoundError, subprocess.SubprocessError):
+            return None
+        profiles: dict[str, tuple[tuple[bool, int, int], str]] = {}
+        for line in res.stdout.splitlines():
+            fields = _split_terse(line)
+            if len(fields) < 5:
+                continue
+            name, uuid, autoconnect, priority, timestamp = fields[:5]
+            profiles[uuid] = ((autoconnect == "yes", _as_int(priority), _as_int(timestamp)), name)
+        if not profiles:
+            return None
+        argv = ["nmcli", "-t", "-f", "connection.uuid,connection.interface-name", "connection", "show"]
+        for uuid in profiles:
+            argv += ["uuid", uuid]
+        try:
+            res = self._run(argv)
+        except (RuntimeError, FileNotFoundError, subprocess.SubprocessError):
+            return None
+        bound: list[tuple[tuple[bool, int, int], str]] = []
+        uuid = ""
+        for key, value in _show_records(res.stdout):
+            if key == "connection.uuid":
+                uuid = value
+            elif key == "connection.interface-name" and value == iface and uuid in profiles:
+                bound.append(profiles[uuid])
+        return max(bound)[1] if bound else None
+
+    def _device_state(self, iface: str) -> str | None:
+        """nmcli's STATE word for *iface*, ``""`` if absent, ``None`` if unreadable.
+
+        The three are different and the callers rely on it: a read failure is
+        not evidence the device is gone, and telling an operator their plugged-in
+        adapter "is not present" because nmcli timed out contradicts the card
+        they just clicked.
+        """
+        try:
+            res = self._run(["nmcli", "-t", "-f", "DEVICE,STATE", "device"])
         except (RuntimeError, FileNotFoundError, subprocess.SubprocessError):
             return None
         for line in res.stdout.splitlines():
-            name, _, dev = line.partition(":")
-            if dev == iface:
-                return name
-        return None
+            name, _, state = line.partition(":")
+            if name == iface:
+                return state.strip().lower()
+        return ""
+
+    def _has_carrier(self, iface: str) -> bool:
+        """False only when the kernel reports no link on *iface*.
+
+        Not NetworkManager's device state: a cable-less adapter reads
+        ``disconnected`` there once a profile has been up on it. An admin-down
+        interface (rfkill) or an unreadable flag counts as a link, so the profile is
+        still brought up and a real failure reported, never a reassuring "pending".
+        """
+        try:
+            return (_SYS_CLASS_NET / iface / "carrier").read_text(encoding="utf-8").strip() != "0"
+        except OSError:
+            return True
+
+    def _awaiting_dhcp(self, iface: str) -> bool:
+        """NetworkManager is running the profile and still asking for a lease.
+
+        With no DHCP server on the network the activation never completes, so
+        ``con up`` outlasts the broker's timeout although the profile is applied.
+        """
+        return (self._device_state(iface) or "").startswith("connecting")
+
+    def _no_profile_message(self, iface: str) -> str:
+        """Say what the operator should check, not what the adapter didn't find.
+
+        Kept to one short sentence: the on-screen result line wraps to three
+        lines and cuts the rest, which would be the actionable half.
+        """
+        state = self._device_state(iface)
+        if state is None:
+            return f"Could not read {iface} from NetworkManager. Try Scan."
+        if state == "unmanaged":
+            return f"{iface} is not managed by NetworkManager. See the help drawer."
+        if not state:
+            return f"{iface} is not present. Check the adapter, then Scan."
+        return f"No saved profile for {iface}. Connect the cable once to create one."
 
     def _parse_show(self, text: str) -> dict[str, list[str]]:
         out: dict[str, list[str]] = {}
@@ -301,7 +465,7 @@ class NetworkManagerAdapter(NetworkAdapter):
         if not name:
             return ApplyResult(
                 ok=False,
-                message=f"No NetworkManager connection profile bound to {iface}.",
+                message=self._no_profile_message(iface),
             )
         # Use long argv form to match sudoers rule. The explicit ``id``
         # keyword (``con mod id <name>``) makes a profile name beginning
@@ -378,48 +542,182 @@ class NetworkManagerAdapter(NetworkAdapter):
         else:
             return ApplyResult(ok=False, message=f"Unsupported method: {config.method}")
 
-        ok, detail = self._run_privileged(
+        ok, detail, _ = self._run_privileged(
             NETWORK_NM_CON_MOD,
             modify_argv,
             reason=f"Modify NetworkManager profile {name}",
         )
         if not ok:
-            return ApplyResult(ok=False, message=detail or "nmcli con mod failed")
+            return ApplyResult(
+                ok=False,
+                message=f"Could not save the settings to profile '{name}'; nothing was changed ({detail})."
+                if detail
+                else f"Could not save the settings to profile '{name}'; nothing was changed.",
+            )
+
+        if not self._has_carrier(iface):
+            # Saved only: con down here leaves the profile blocked from
+            # autoconnect, so it would not come up when the cable goes in.
+            return ApplyResult(
+                ok=True,
+                pending=True,
+                message=f"Saved; the settings take effect when {iface} has a link.",
+            )
 
         partial: list[str] = []
-        # con down can fail; con up failure is fatal.
-        down_ok, down_detail = self._run_privileged(
+        # con down can fail; con up failure is fatal. A profile that is not
+        # active is already in the state con down asks for.
+        down = self._run_privileged(
             NETWORK_NM_CON_DOWN,
             ["/usr/bin/nmcli", "con", "down", "id", name],
             reason=f"Bring NetworkManager profile {name} down",
         )
-        if not down_ok and down_detail:
-            partial.append(f"nmcli con down: {down_detail}")
+        if not down.ok and down.returncode != _NMCLI_NOT_FOUND and down.detail:
+            partial.append(f"nmcli con down: {down.detail}")
 
-        up_ok, up_detail = self._run_privileged(
+        up = self._run_privileged(
             NETWORK_NM_CON_UP,
             ["/usr/bin/nmcli", "con", "up", "id", name],
             reason=f"Bring NetworkManager profile {name} up",
         )
-        if not up_ok:
-            return ApplyResult(ok=False, message=up_detail or "nmcli con up failed")
+        if not up.ok:
+            if config.method == Ipv4Method.DHCP and self._awaiting_dhcp(iface):
+                return ApplyResult(
+                    ok=True,
+                    pending=True,
+                    message=f"Saved; no DHCP server has answered on {iface} yet.",
+                    partial_failures=tuple(partial),
+                )
+            return ApplyResult(
+                ok=False,
+                message=f"Saved, but {iface} could not be brought up ({up.detail})."
+                if up.detail
+                else f"Saved, but {iface} could not be brought up.",
+            )
         return ApplyResult(ok=True, message="Applied.", partial_failures=tuple(partial))
 
     def renew_lease(self, iface: str) -> ApplyResult:
         name = self._connection_for(iface)
         if not name:
-            return ApplyResult(ok=False, message=f"No NetworkManager profile for {iface}.")
+            return ApplyResult(ok=False, message=self._no_profile_message(iface))
+        if not self._has_carrier(iface):
+            return ApplyResult(ok=False, message=f"{iface} has no link, so there is no lease to request.")
         # NM has no explicit renew verb; use down/up cycle.
         self._run_privileged(
             NETWORK_NM_CON_DOWN,
             ["/usr/bin/nmcli", "con", "down", "id", name],
             reason=f"Bring NetworkManager profile {name} down",
         )
-        up_ok, up_detail = self._run_privileged(
+        up = self._run_privileged(
             NETWORK_NM_CON_UP,
             ["/usr/bin/nmcli", "con", "up", "id", name],
             reason=f"Renew DHCP lease via NetworkManager profile {name}",
         )
-        if not up_ok:
-            return ApplyResult(ok=False, message=up_detail or "nmcli con up failed")
+        if not up.ok:
+            if self._awaiting_dhcp(iface):
+                return ApplyResult(ok=False, message=f"No DHCP server has answered on {iface} yet.")
+            return ApplyResult(
+                ok=False,
+                message=f"Could not renew {iface} ({up.detail})." if up.detail else f"Could not renew {iface}.",
+            )
         return ApplyResult(ok=True, message="Lease renewed.")
+
+    # ---- VLAN sub-interfaces --------------------------------------------
+
+    def supports_vlans(self) -> bool:
+        return True
+
+    def _vlan_profiles(self) -> tuple[list[tuple[str, str]], dict[str, str]]:
+        """Return ``([(profile name, device)], {uuid: device})`` for the
+        connection list, filtered to VLAN profiles. The UUID map covers every
+        profile, not just VLANs, because it exists to resolve a VLAN's parent
+        reference back to an interface name."""
+        try:
+            res = self._run(["nmcli", "-t", "-f", "NAME,UUID,TYPE,DEVICE", "connection", "show"])
+        except (RuntimeError, FileNotFoundError, subprocess.SubprocessError) as exc:
+            logger.warning("nmcli VLAN profile list failed: %s", exc)
+            return ([], {})
+        out: list[tuple[str, str]] = []
+        device_by_uuid: dict[str, str] = {}
+        for line in res.stdout.splitlines():
+            parts = _split_terse(line)
+            if len(parts) < 4:
+                continue
+            name, uuid, kind, device = parts[0], parts[1], parts[2], parts[3]
+            device_by_uuid[uuid] = device
+            if kind == "vlan":
+                out.append((name, device))
+        return (out, device_by_uuid)
+
+    def list_vlans(self) -> list[VlanInterface]:
+        profiles, device_by_uuid = self._vlan_profiles()
+        vlans: list[VlanInterface] = []
+        for name, device in profiles:
+            try:
+                res = self._run(["nmcli", "-t", "-f", "vlan.parent,vlan.id", "connection", "show", "id", name])
+            except (RuntimeError, FileNotFoundError, subprocess.SubprocessError):
+                continue
+            parsed = self._parse_show(res.stdout)
+            raw_parent = (parsed.get("vlan.parent") or [""])[0]
+            raw_id = (parsed.get("vlan.id") or [""])[0]
+            try:
+                vlan_id = int(raw_id)
+            except ValueError:
+                continue
+            # ``vlan.parent`` holds either the parent interface name or the
+            # UUID of the parent's own profile, depending on how the VLAN was
+            # created. Resolve the UUID form back to a device so the caller
+            # always gets a name.
+            parent = device_by_uuid.get(raw_parent, raw_parent)
+            if not parent or not device:
+                continue
+            vlans.append(VlanInterface(name=device, parent=parent, vlan_id=vlan_id))
+        return vlans
+
+    def create_vlan(self, parent: str, vlan_id: int) -> ApplyResult:
+        name = vlan_interface_name(parent, vlan_id)
+        ok, detail, _ = self._run_privileged(
+            NETWORK_NM_CON_ADD,
+            [
+                "/usr/bin/nmcli",
+                "con",
+                "add",
+                "type",
+                "vlan",
+                "con-name",
+                name,
+                "ifname",
+                name,
+                "dev",
+                parent,
+                "id",
+                str(vlan_id),
+            ],
+            reason=f"Create VLAN {vlan_id} on {parent}",
+        )
+        if not ok:
+            return ApplyResult(ok=False, message=detail or f"Could not create VLAN {vlan_id} on {parent}.")
+        return ApplyResult(ok=True, message=f"Created {name}. Give it an address with Edit.")
+
+    def delete_vlan(self, name: str) -> ApplyResult:
+        profile = self._vlan_profile_name(name)
+        if profile is None:
+            return ApplyResult(ok=False, message=f"{name} is not a VLAN interface.")
+        ok, detail, _ = self._run_privileged(
+            NETWORK_NM_CON_DELETE,
+            ["/usr/bin/nmcli", "con", "delete", "id", profile],
+            reason=f"Delete VLAN profile {profile}",
+        )
+        if not ok:
+            return ApplyResult(ok=False, message=detail or f"Could not remove VLAN interface {name}.")
+        return ApplyResult(ok=True, message=f"Removed VLAN interface {name}.")
+
+    def _vlan_profile_name(self, iface: str) -> str | None:
+        """Return the VLAN profile bound to ``iface``, or None when ``iface``
+        is not a VLAN. This is the check that keeps ``con delete`` – a
+        wildcarded grant – off an operator's physical-NIC profile."""
+        profiles, _ = self._vlan_profiles()
+        for name, device in profiles:
+            if device == iface:
+                return name
+        return None

@@ -314,19 +314,6 @@ def build_help_sections(
                 f"{_btn('menu_confirm', 'A')}: Confirm source type",
                 f"{_btn('menu_cancel', 'B')}: Cancel source type menu",
             ]
-    elif mode == "iface-selection":
-        if keyboard_connected:
-            keyboard = [
-                "Arrow Up/Down: Select interface",
-                "Enter: Apply interface (live)",
-                "Esc: Cancel interface menu",
-            ]
-        if controller_connected:
-            controller = [
-                "D-Pad Up/Down: Select interface",
-                f"{_btn('menu_confirm', 'A')}: Apply interface (live)",
-                f"{_btn('menu_cancel', 'B')}: Cancel interface menu",
-            ]
     elif mode == "button-detection":
         if keyboard_connected:
             keyboard = [
@@ -354,18 +341,28 @@ def build_help_sections(
             confirm = f"{_btn('menu_confirm', 'A')}: Pick a USB storage device"
             controller = [*([confirm] if ended else []), f"{_btn('menu_cancel', 'B')}: Back to Settings"]
     elif mode == "settings":
+        # Two ways out, and they differ: cancel steps back one screen, the
+        # button that opened the menus leaves them entirely. An operator three
+        # screens down has no way to know the second one exists unless it is
+        # listed here.
+        settings_key = kl.get("settings", "m")
+        settings_btn = _btn("settings", "Back")
         if keyboard_connected:
             keyboard = [
                 "Arrow Up/Down: Navigate",
                 "Enter: Confirm",
-                "Esc: Cancel menu",
+                "Esc: Back one screen",
             ]
+            if settings_key:
+                keyboard.append(f"{_key_label(settings_key)}: Close Menu")
         if controller_connected:
             controller = [
                 "D-Pad Up/Down: Navigate",
                 f"{_btn('menu_confirm', 'A')}: Confirm",
-                f"{_btn('menu_cancel', 'B')}: Cancel menu",
+                f"{_btn('menu_cancel', 'B')}: Back one screen",
             ]
+            if settings_btn:
+                controller.append(f"{settings_btn}: Close Menu")
     sections: HelpSections = []
     if keyboard:
         sections.append(("Keyboard", keyboard))
@@ -482,24 +479,48 @@ def marker_card_y(
     return frame_height - bottom_padding - card_h - index * (card_h + card_margin)
 
 
+INFO_PANEL_ROW_H = 20.0
+INFO_PANEL_PADDING = 14.0
+# Gap between the info panel's top edge and the lowest fader card, plus the
+# panel's own 10 px bottom margin.
+_FADER_STACK_GAP = 14.0
+_INFO_PANEL_BOTTOM_MARGIN = 10.0
+
+
+def info_panel_height(row_count: int) -> float:
+    """Height of the bottom-left info panel for *row_count* rows."""
+    return INFO_PANEL_ROW_H * row_count + INFO_PANEL_PADDING
+
+
+def fader_stack_bottom_padding(info_row_count: int) -> float:
+    """Vertical space the fader stack must leave for the info panel below it.
+
+    Derived from the panel's real row count rather than fixed: the panel grows
+    when it carries the ``Web address`` row, and a hardcoded value silently put
+    the lowest fader card on top of it.
+    """
+    return info_panel_height(info_row_count) + _FADER_STACK_GAP + _INFO_PANEL_BOTTOM_MARGIN
+
+
 def virtual_fader_card_y(
     index: int,
     frame_height: int,
     card_h: float = 28.0,
     card_margin: float = 6.0,
-    bottom_padding: float = 98.0,
+    bottom_padding: float | None = None,
 ) -> float:
     """Y position for the bottom-left virtual fader stack;
     mirrors :func:`marker_card_y` stacking bottom-up.
 
-    Default ``bottom_padding`` of 98 px clears the bottom-left info
-    panel (74 px tall – three rows: IP / Video Source / Station – +
-    14 px gap + 10 px bottom margin) so the lowest fader card sits
-    just above the info box without overlap. The ``index`` is the position within the
-    visible stack (0 = bottom-most), not the fader's runtime
-    index – the renderer enumerates only faders with
-    ``show_on_display`` set, in fader-number order, so the
-    lowest stack position naturally maps to the lowest enabled
-    fader number.
+    ``bottom_padding`` defaults to the space a three-row info panel needs;
+    callers that know the real row count pass
+    :func:`fader_stack_bottom_padding` so a taller panel pushes the stack up
+    instead of being drawn over. The ``index`` is the position within the
+    visible stack (0 = bottom-most), not the fader's runtime index – the
+    renderer enumerates only faders with ``show_on_display`` set, in
+    fader-number order, so the lowest stack position naturally maps to the
+    lowest enabled fader number.
     """
+    if bottom_padding is None:
+        bottom_padding = fader_stack_bottom_padding(3)
     return frame_height - bottom_padding - card_h - index * (card_h + card_margin)

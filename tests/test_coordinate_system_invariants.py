@@ -368,6 +368,7 @@ class _StubOsc:
         port: int | None = None,
         protocol: str = "udp",
         framing: str = "slip",
+        egress: object = None,
     ) -> None:
         # ``args``/``protocol``/``framing`` are accepted to keep the stub
         # aligned with OscService.send. The invariants tests don't assert on

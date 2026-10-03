@@ -7,10 +7,16 @@ from __future__ import annotations
 import ipaddress
 import re
 
-from openfollow.network.adapter import Ipv4Method
+from openfollow.network.adapter import LOOPBACK_NAMES, Ipv4Config, Ipv4Method
 
 _DNS_SEP_RE = re.compile(r"[\s,;]+")
 _MAX_DNS = 3
+# 0 and 4095 are reserved by 802.1Q; IFNAMSIZ caps a Linux interface name at
+# 15 usable characters, which the derived ``<parent>.<id>`` has to fit inside.
+_VLAN_ID_MIN = 1
+_VLAN_ID_MAX = 4094
+_IFNAMSIZ = 15
+VLAN_ID_RANGE_MESSAGE = f"VLAN ID must be a whole number between {_VLAN_ID_MIN} and {_VLAN_ID_MAX}."
 
 
 def parse_ipv4(value: str | None) -> str | None:
@@ -56,6 +62,19 @@ def parse_prefix(value: str | int | None) -> int | None:
     return n if 0 <= n <= 32 else None
 
 
+def is_link_local(value: str | None) -> bool:
+    """Return True for an RFC 3927 (169.254/16) self-assigned address.
+
+    A link-local address means DHCP never answered, so the station is only
+    reachable from the same segment – callers surface it as a degraded state
+    rather than a normal address.
+    """
+    parsed = parse_ipv4(value)
+    if parsed is None:
+        return False
+    return ipaddress.IPv4Address(parsed).is_link_local
+
+
 def prefix_to_mask(prefix: int | None) -> str | None:
     """Render CIDR prefix length as dotted IPv4 mask (e.g. 24 → "255.255.255.0")."""
     if not isinstance(prefix, int) or not 0 <= prefix <= 32:
@@ -64,6 +83,23 @@ def prefix_to_mask(prefix: int | None) -> str | None:
         return "0.0.0.0"
     mask_int = (0xFFFFFFFF << (32 - prefix)) & 0xFFFFFFFF
     return str(ipaddress.IPv4Address(mask_int))
+
+
+def describe_applied(iface: str, config: Ipv4Config) -> str:
+    """What an apply set, in one sentence for the web card and the on-screen Network screen."""
+    if config.method == Ipv4Method.STATIC:
+        where = config.address or ""
+        if config.prefix is not None:
+            where += f"/{config.prefix}"
+        router = f", router {config.router}" if config.router else ""
+        return f"{iface} is now static at {where}{router}."
+    if config.method == Ipv4Method.DHCP_WITH_MANUAL_ADDRESS:
+        return f"{iface} now uses DHCP with the address {config.address}."
+    return f"{iface} now uses DHCP."
+
+
+def describe_renewed(iface: str) -> str:
+    return f"{iface} renewed its DHCP lease."
 
 
 def router_in_subnet(address: str, prefix: int, router: str) -> bool:
@@ -92,6 +128,80 @@ def parse_dns_list(value: str | None) -> list[str]:
         if len(out) >= _MAX_DNS:
             break
     return out
+
+
+def parse_vlan_id(value: str | int | None) -> int | None:
+    """Return the 802.1Q VLAN ID, or ``None`` when it is not one.
+
+    ``bool`` is an ``int`` subclass and ``int(12.5)`` truncates, so both are
+    rejected outright rather than coerced – a VLAN ID that quietly became a
+    different VLAN ID would put stage traffic on the wrong tag. Digit strings
+    are screened the same way ``parse_prefix`` screens a prefix, because
+    ``str.isdigit`` is True for Unicode digits that ``int()`` handles
+    differently.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        vlan_id = value
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text.isascii() or not text.isdigit():
+            return None
+        vlan_id = int(text)
+    else:
+        return None
+    return vlan_id if _VLAN_ID_MIN <= vlan_id <= _VLAN_ID_MAX else None
+
+
+def vlan_interface_name(parent: str, vlan_id: int) -> str:
+    """Return the interface name a VLAN on ``parent`` gets.
+
+    ``<parent>.<id>``, with the parent truncated to whatever room the tag
+    leaves. A NIC whose own name already fills the 15 characters Linux allows
+    - a MAC-derived ``enx9c69d3ac16ab``, say - would otherwise have no name
+    available and could carry no VLAN at all. The tag is the part that has to
+    survive; the parent is recorded on the profile itself, which is where the
+    interface list reads it from, so nothing depends on the name spelling it.
+    """
+    suffix = f".{vlan_id}"
+    return f"{parent.strip()[: _IFNAMSIZ - len(suffix)]}{suffix}"
+
+
+def validate_vlan_create(
+    parent: str,
+    vlan_id: str | int | None,
+    *,
+    interfaces: list[str] | tuple[str, ...],
+    vlan_names: list[str] | tuple[str, ...] = (),
+) -> list[str]:
+    """Return human-readable errors for a VLAN create request; empty when valid.
+
+    ``interfaces`` is every device the backend reports and ``vlan_names`` the
+    subset that are themselves VLANs – the parent has to be in the first and
+    out of the second, because a VLAN on a VLAN is QinQ and is out of scope.
+    """
+    errors: list[str] = []
+    name = (parent or "").strip()
+    if not name:
+        errors.append("Choose a parent interface.")
+    elif name not in interfaces:
+        errors.append(f"{name} is not a network interface on this station.")
+    elif name in vlan_names:
+        errors.append(f"{name} is already a VLAN. A VLAN cannot be stacked on another VLAN.")
+    elif name in LOOPBACK_NAMES:
+        errors.append("The loopback interface cannot carry a VLAN.")
+
+    parsed = parse_vlan_id(vlan_id)
+    if parsed is None:
+        errors.append(VLAN_ID_RANGE_MESSAGE)
+    elif name:
+        # The name always fits; truncating the parent is what can make two
+        # long-named NICs collide on one, and that has to be refused.
+        derived = vlan_interface_name(name, parsed)
+        if derived in interfaces:
+            errors.append(f"{derived} already exists.")
+    return errors
 
 
 def validate_apply(

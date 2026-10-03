@@ -11,6 +11,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from openfollow.net_egress import Egress
+from openfollow.net_utils import InterfaceUnavailable
 from openfollow.psn.marker import Marker
 from openfollow.rttrpm.server import (
     _CENTROID_SIZE,
@@ -507,7 +509,7 @@ class TestRttrpmServerLifecycle:
             assert first_call_count == 1
             first_thread = srv._send_thread
 
-            srv.restart(host="10.0.0.2", port=9001, fps=60.0, context=42)
+            srv.restart(host="10.0.0.2", port=9001, fps=60.0, context=42, egress=None)
 
             # New socket constructed; new send thread spawned.
             assert mock_socket_cls.call_count == first_call_count + 1
@@ -532,7 +534,7 @@ class TestRttrpmServerLifecycle:
             srv.register_marker(Marker(1, "T1"))
             srv.register_marker(Marker(2, "T2"))
 
-            srv.restart(host="127.0.0.2", port=9999, fps=60.0, context=0)
+            srv.restart(host="127.0.0.2", port=9999, fps=60.0, context=0, egress=None)
 
             assert srv.get_marker(1) is not None
             assert srv.get_marker(2) is not None
@@ -615,6 +617,104 @@ class TestRttrpmSocketRecovery:
             srv._send(b"x")
 
         assert rebuild.call_count == 2
+
+
+class TestRttrpmEgressPin:
+    """A pinned RTTrPM output leaves on its interface or not at all."""
+
+    _EGRESS = Egress("eth1", "198.51.100.10")
+
+    @staticmethod
+    def _pins(fail: bool = False) -> tuple[list[tuple[object, Egress, bool]], object]:
+        calls: list[tuple[object, Egress, bool]] = []
+
+        def _pin(sock: object, egress: Egress, *, multicast: bool = False) -> None:
+            calls.append((sock, egress, multicast))
+            if fail:
+                raise InterfaceUnavailable(f"cannot send via {egress.iface}")
+
+        return calls, _pin
+
+    def test_a_pinned_start_pins_its_socket(self) -> None:
+        calls, pin = self._pins()
+        with (
+            patch("openfollow.rttrpm.server.socket.socket") as sock_cls,
+            patch("openfollow.rttrpm.server.pin_socket_egress", pin),
+        ):
+            srv = RttrpmServer(host="198.51.100.20", egress=self._EGRESS)
+            srv.start()
+            assert calls == [(sock_cls.return_value, self._EGRESS, False)]
+            assert srv.bound_source_ip() == "198.51.100.10"
+            srv.stop()
+
+    def test_a_multicast_host_is_pinned_as_multicast(self) -> None:
+        calls, pin = self._pins()
+        with patch("openfollow.rttrpm.server.socket.socket"), patch("openfollow.rttrpm.server.pin_socket_egress", pin):
+            srv = RttrpmServer(host="239.1.2.3", egress=self._EGRESS)
+            srv.start()
+            assert calls[0][2] is True
+            srv.stop()
+
+    def test_an_unpinned_start_is_left_to_the_os(self) -> None:
+        calls, pin = self._pins()
+        with patch("openfollow.rttrpm.server.socket.socket"), patch("openfollow.rttrpm.server.pin_socket_egress", pin):
+            srv = RttrpmServer(host="198.51.100.20")
+            srv.start()
+            assert calls == []
+            assert srv.bound_source_ip() == ""
+            srv.stop()
+
+    def test_a_refused_pin_at_start_leaves_no_socket(self) -> None:
+        """Nothing is sent until the pin holds; the send loop retries it."""
+        _calls, pin = self._pins(fail=True)
+        with (
+            patch("openfollow.rttrpm.server.socket.socket") as sock_cls,
+            patch("openfollow.rttrpm.server.pin_socket_egress", pin),
+        ):
+            srv = RttrpmServer(host="198.51.100.20", egress=self._EGRESS)
+            srv.start()
+            assert srv._socket is None
+            sock_cls.return_value.close.assert_called_once()
+            assert srv.bound_source_ip() is None
+            srv.stop()
+
+    def test_a_rebuild_after_an_error_pins_again(self) -> None:
+        """The rebuild used to open a plain socket, which the routing table
+        would then send from - the fault the pin exists to prevent."""
+        calls, pin = self._pins()
+        with patch("openfollow.rttrpm.server.socket.socket"), patch("openfollow.rttrpm.server.pin_socket_egress", pin):
+            srv = RttrpmServer(host="198.51.100.20", egress=self._EGRESS)
+            srv._rebuild_socket_after_error()
+            assert [egress for _sock, egress, _mc in calls] == [self._EGRESS]
+            assert srv._socket is not None
+
+    def test_restart_raises_and_stays_stopped_when_the_pin_is_refused(self) -> None:
+        _calls, pin = self._pins(fail=True)
+        with patch("openfollow.rttrpm.server.socket.socket"), patch("openfollow.rttrpm.server.pin_socket_egress", pin):
+            srv = RttrpmServer(host="198.51.100.20")
+            srv.start()
+            with pytest.raises(OSError, match="pinned to eth1"):
+                srv.restart(host="198.51.100.20", port=36700, fps=60.0, context=0, egress=self._EGRESS)
+            assert srv._send_thread is None
+            assert srv.bound_source_ip() is None
+
+    def test_bound_source_ip_is_none_until_started_and_after_stop(self) -> None:
+        with patch("openfollow.rttrpm.server.socket.socket"):
+            srv = RttrpmServer(host="198.51.100.20")
+            assert srv.bound_source_ip() is None
+            srv.start()
+            srv.stop()
+            assert srv.bound_source_ip() is None
+
+    def test_a_vanished_device_rebuilds_the_socket(self) -> None:
+        import errno as _e
+
+        srv = RttrpmServer(host="127.0.0.1")
+        sock = MagicMock()
+        sock.sendto.side_effect = OSError(_e.ENODEV, "No such device")
+        srv._socket = sock
+        srv._send(b"x")
+        assert srv._socket is not sock
 
 
 # ---------------------------------------------------------------------------

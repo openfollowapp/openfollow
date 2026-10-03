@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import select
 import socket
+import sys
 import threading
 import time
 from typing import Any
@@ -18,6 +19,8 @@ from typing import Any
 import pytest
 
 import openfollow.osc.transport as transport_module
+from openfollow.net_egress import Egress
+from openfollow.net_utils import InterfaceUnavailable
 from openfollow.osc.transport import TcpOscSender
 
 pytestmark = pytest.mark.unit
@@ -879,3 +882,93 @@ class TestSlipWireFormat:
                 sender.close()
         finally:
             server.stop()
+
+
+# ---------------------------------------------------------------------------
+# Egress pinning
+# ---------------------------------------------------------------------------
+
+_LOOPBACK_IFACE = {"linux": "lo", "darwin": "lo0"}.get("linux" if sys.platform.startswith("linux") else sys.platform)
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(_LOOPBACK_IFACE is None, reason="egress pinning is implemented for Linux and macOS")
+def test_a_pinned_sender_is_pinned_before_it_connects(server: _LocalTcpServer, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The route is chosen at connect(), so a pin applied afterwards would
+    leave the connection on whatever interface the routing table picked."""
+    assert _LOOPBACK_IFACE is not None
+    states: list[str] = []
+    real_pin = transport_module.pin_socket_egress
+
+    def _pin(sock: socket.socket, egress: Egress, **kwargs: Any) -> None:
+        try:
+            sock.getpeername()
+            states.append("connected")
+        except OSError:
+            states.append("not connected")
+        real_pin(sock, egress, **kwargs)
+
+    monkeypatch.setattr(transport_module, "pin_socket_egress", _pin)
+    sender = TcpOscSender("127.0.0.1", server.port, egress=Egress(_LOOPBACK_IFACE, "127.0.0.1"))
+    try:
+        sender.send_message("/cue/1", [])
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline and not server.frames:
+            time.sleep(0.01)
+    finally:
+        sender.close()
+    assert states == ["not connected"]
+    assert len(server.frames) == 1
+
+
+def _addresses(monkeypatch: pytest.MonkeyPatch, *ports: int) -> None:
+    """``getaddrinfo`` answering with one loopback entry per port, in order."""
+    entries = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port)) for port in ports]
+    monkeypatch.setattr(transport_module.socket, "getaddrinfo", lambda *args, **kwargs: entries)
+
+
+def test_a_pinned_sender_tries_each_address_of_its_host(
+    server: _LocalTcpServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One unreachable address is not an unreachable host, pinned or not."""
+    pinned: list[socket.socket] = []
+    monkeypatch.setattr(transport_module, "pin_socket_egress", lambda sock, egress, **kwargs: pinned.append(sock))
+    _addresses(monkeypatch, _free_port(), server.port)
+    sender = TcpOscSender("stage.example", server.port, egress=Egress("eth1", "198.51.100.10"))
+    try:
+        sender.send_message("/cue/1", [])
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline and not server.frames:
+            time.sleep(0.01)
+    finally:
+        sender.close()
+    assert len(server.frames) == 1
+    assert len(pinned) == 2
+    assert pinned[0].fileno() == -1
+
+
+def test_a_pinned_sender_that_reaches_no_address_closes_every_socket(monkeypatch: pytest.MonkeyPatch) -> None:
+    pinned: list[socket.socket] = []
+    monkeypatch.setattr(transport_module, "pin_socket_egress", lambda sock, egress, **kwargs: pinned.append(sock))
+    _addresses(monkeypatch, _free_port(), _free_port())
+    sender = TcpOscSender("stage.example", 9000, egress=Egress("eth1", "198.51.100.10"))
+    with pytest.raises(ConnectionRefusedError):
+        sender.send_message("/x", [])
+    assert [sock.fileno() for sock in pinned] == [-1, -1]
+
+
+def test_a_refused_pin_closes_the_socket_and_backs_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    sockets: list[socket.socket] = []
+
+    def _refuse(sock: socket.socket, egress: Egress, **kwargs: Any) -> None:
+        sockets.append(sock)
+        raise InterfaceUnavailable(f"cannot send via {egress.iface}")
+
+    monkeypatch.setattr(transport_module, "pin_socket_egress", _refuse)
+    sender = TcpOscSender("127.0.0.1", _free_port(), egress=Egress("eth1", "198.51.100.10"))
+    with pytest.raises(OSError, match="cannot send via eth1"):
+        sender.send_message("/x", [])
+    assert sockets[0].fileno() == -1
+    with pytest.raises(OSError, match="backoff window"):
+        sender.send_message("/x", [])
+    assert len(sockets) == 1

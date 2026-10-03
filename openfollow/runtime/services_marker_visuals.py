@@ -12,7 +12,7 @@ from typing import Any
 import numpy.typing as npt
 
 from openfollow.configuration import MOUSE3D_AXES, MOUSE3D_BUTTON_FIELDS, GridConfig
-from openfollow.net_utils import list_iface_ipv4
+from openfollow.network.validate import is_link_local
 from openfollow.palette import AUTO_PICK_ORDER as _PALETTE_AUTO_PICK_ORDER
 from openfollow.runtime.marker_velocity import MarkerVelocityState, estimate_marker_velocity
 from openfollow.runtime.overlay_state import (
@@ -32,6 +32,31 @@ def _receiver_kind(video_receiver: Any) -> SourceKind:
     """The active input's source kind, tolerant of a boot-window receiver."""
     kind = getattr(video_receiver, "source_kind", None)
     return kind if isinstance(kind, SourceKind) else SourceKind.REMOTE
+
+
+def _port_suffix(port: int) -> str:
+    """``":8080"``, or ``""`` for port 80.
+
+    80 is the HTTP default and implicit in a typed URL, so showing it is noise
+    - but on a fallback bind the port is load-bearing and must be displayed.
+    """
+    return "" if port == 80 else f":{port}"
+
+
+def _local_hostname() -> str:
+    """Return ``<hostname>.local``, or ``""`` when the host has no usable name.
+
+    Always the running system's actual hostname, never the station slug the
+    config asks for: when the rename was skipped (no passwordless grant, no
+    ``hostnamectl``) advertising the desired name would send the operator to
+    an address avahi never answers on.
+    """
+    from openfollow.privilege.device_repair import current_hostname
+
+    name = current_hostname()
+    if not name or name == "localhost":
+        return ""
+    return f"{name}.local"
 
 
 # Same pattern ``GridConfig.__post_init__`` enforces. Duplicated here rather
@@ -297,21 +322,31 @@ def _populate_pi_network_overlay(app: Any, state: OverlayState) -> None:
         target.rows = build_pi_network_rows(app)
         target.selected_index = int(getattr(app, "_pi_network_index", 0))
         target.active_iface = str(getattr(app, "_pi_network_active_iface", ""))
+        target.open_iface = str(getattr(app, "_pi_network_open_iface", ""))
         target.banner = str(getattr(app, "_pi_network_banner", ""))
-    target.iface_picker_active = bool(getattr(app, "_pi_network_iface_picker_active", False))
-    if target.iface_picker_active:
-        target.iface_picker_items = [i.name for i in getattr(app, "_pi_network_interfaces", [])]
-        target.iface_picker_selected_index = int(getattr(app, "_pi_network_iface_picker_index", 0))
-    target.method_picker_active = bool(getattr(app, "_pi_network_method_picker_active", False))
-    if target.method_picker_active:
-        from openfollow.runtime.app_modes_network import method_picker_items
-
-        target.method_picker_items = [label for _, label in method_picker_items()]
-        target.method_picker_selected_index = int(getattr(app, "_pi_network_method_picker_index", 0))
+        target.banner_level = str(getattr(app, "_pi_network_banner_level", "") or "")
+        target.busy = bool(getattr(app, "_pi_network_busy", False))
     target.field_edit_active = bool(getattr(app, "_pi_network_field_edit_active", False))
     if target.field_edit_active:
-        target.field_label = str(getattr(app, "_pi_network_field_name", "")).replace("_", " ").title()
+        from openfollow.runtime import ipv4_digit_grid
+
+        # The row already names the field the way the operator reads it ("IP
+        # Address"); the key behind it ("address") is an internal name and
+        # titles badly.
+        field_key = str(getattr(app, "_pi_network_field_name", ""))
+        target.field_label = next(
+            (str(row.get("label") or "") for row in target.rows if row.get("key") == field_key and row.get("label")),
+            field_key.replace("_", " ").title(),
+        )
         target.field_value = str(getattr(app, "_pi_network_field_value", ""))
+        # The caret only tracks a digit slot once the d-pad has padded the
+        # buffer; a freely typed value has no fixed slot-to-character mapping,
+        # so it keeps the end-of-string caret a typist expects.
+        target.field_caret_offset = (
+            ipv4_digit_grid.caret_offset(int(getattr(app, "_pi_network_field_digit_index", 0)))
+            if ipv4_digit_grid.is_grid_form(target.field_value)
+            else -1
+        )
 
 
 def _populate_zone_overlay(state: OverlayState, cfg: Any, app: Any) -> None:
@@ -364,9 +399,6 @@ def build_initial_overlay_state(cfg: Any) -> OverlayState:
     state.source_selection_title = "SELECT SOURCE"
     state.discovered_sources = []
     state.selected_source_index = 0
-    state.iface_selection_active = False
-    state.available_interfaces = []
-    state.selected_iface_index = 0
     state.settings_menu_active = False
     state.settings_items = []
     state.settings_items_enabled = []
@@ -384,6 +416,7 @@ def build_marker_visual_state(
     person_detector: Any,
     cam_params_buffer: npt.NDArray[Any],
     dt: float,
+    network_alerts: list[str] | None = None,
 ) -> OverlayState:
     """Build a complete OverlayState snapshot for atomic renderer swap.
 
@@ -430,6 +463,12 @@ def build_marker_visual_state(
 
     state = overlay_state_pool.acquire()
 
+    # The actually-bound port from the running web server so the HUD reflects
+    # reachability, not just configuration. Falls back to the configured port
+    # when the server is not yet wired (early-startup snapshots, stubbed apps).
+    web_server = getattr(app, "_web_server", None)
+    web_port = web_server.display_port if web_server is not None else app._config.web_port
+
     if system_stats is not None:
         stats = system_stats.update()
         state.cpu_percent = stats.cpu_percent
@@ -437,15 +476,7 @@ def build_marker_visual_state(
         state.temperature = stats.temperature
         ip = stats.ip_address
         if ip and ip != "N/A":
-            # Prefer the actually-bound port from the running web server so
-            # the HUD reflects reachability, not just configuration. Fall
-            # back to the configured port when the server is not yet wired
-            # (e.g. early-startup snapshots, unit tests with a stubbed app).
-            web_server = getattr(app, "_web_server", None)
-            port = web_server.display_port if web_server is not None else app._config.web_port
-            # Port 80 is the HTTP default and is implicit in URLs typed
-            # into a browser, so omit it for a cleaner display.
-            base = ip if port == 80 else f"{ip}:{port}"
+            base = ip + _port_suffix(web_port)
             # Append the iface name in parens so the operator on a
             # multi-homed host can tell at a glance which NIC the IP belongs
             # to (``"192.168.178.61 (eth0)"``). Empty iface (offline /
@@ -453,6 +484,15 @@ def build_marker_visual_state(
             state.ip_text = f"{base} ({stats.iface_name})" if stats.iface_name else base
         else:
             state.ip_text = ip
+        state.ip_is_fallback = is_link_local(ip)
+
+    state.network_alerts = list(network_alerts or ())
+
+    # Carries the port for the same reason the IP row does: on a fallback bind
+    # the UI is not on 80, and a name pointing at a dead port is worse than no
+    # name at all.
+    hostname = _local_hostname()
+    state.hostname_text = hostname + _port_suffix(web_port) if hostname else ""
 
     # The station name is the operator-set ``psn_system_name`` (the
     # same value the discovery beacon and PSN info packets advertise).
@@ -494,26 +534,6 @@ def build_marker_visual_state(
     state.discovered_sources = video_receiver.discovered_sources
     state.selected_source_index = video_receiver.selected_source_index
     state.source_selection_title = video_receiver.source_selection_title
-    state.iface_selection_active = app._iface_selection_active
-    # Render each picker row as ``"eth0 (192.168.178.61)"`` so on a
-    # multi-homed host the operator can tell which network each interface
-    # is on without leaving the menu. ``app._available_interfaces`` stays
-    # as the iface-name list (the value used by the picker / dispatcher);
-    # the parallel labels here are display-only. ``""`` (auto-detect)
-    # passes through unformatted so the renderer can label it itself.
-    #
-    # Only the iface picker overlay reads ``state.available_interfaces``,
-    # so gate the ``psutil.net_if_addrs()`` snapshot behind the picker
-    # being open – otherwise every overlay frame (~60 Hz) would walk
-    # every NIC for labels nothing reads.
-    if app._iface_selection_active:
-        iface_ips = dict(list_iface_ipv4())
-        state.available_interfaces = [
-            f"{name} ({iface_ips[name]})" if name and name in iface_ips else name for name in app._available_interfaces
-        ]
-    else:
-        state.available_interfaces = list(app._available_interfaces)
-    state.selected_iface_index = app._selected_iface_index
     state.source_type_selection_active = app._source_type_selection_active
     state.available_source_types = list(app._available_source_types)
     state.selected_source_type_index = app._selected_source_type_index
@@ -539,16 +559,18 @@ def build_marker_visual_state(
     if app._settings_menu_active:
         from openfollow.runtime.app_modes import build_settings_menu_items
 
-        labels, enabled, reasons = build_settings_menu_items(app)
+        labels, enabled, reasons, submenu = build_settings_menu_items(app)
         state.settings_items = labels
         state.settings_items_enabled = enabled
         state.settings_items_disabled_reasons = reasons
+        state.settings_items_submenu = submenu
         state.settings_selected_index = app._settings_menu_index
         state.settings_menu_banner = app._settings_menu_banner
     else:
         state.settings_items = []
         state.settings_items_enabled = []
         state.settings_items_disabled_reasons = []
+        state.settings_items_submenu = []
         state.settings_selected_index = 0
         state.settings_menu_banner = ""
 
@@ -845,21 +867,27 @@ def build_marker_visual_state(
                 continue
             # A subsystem writes either a plain message string (the
             # back-compat form, styled as an "error") or a
-            # ``(severity, message)`` tuple to choose "error" (red) vs
-            # "info" (blue) badge styling. Be defensive about the tuple's
+            # ``(level, message)`` tuple naming one of the status levels
+            # (error, caution, info, success). Be defensive about the tuple's
             # arity – this runs on the per-frame overlay-build path, so a
             # malformed writer (wrong-length tuple) must degrade rather than
             # raise ValueError and abort the frame. An empty tuple was
             # already dropped by the ``if not raw`` guard above, so the
             # first element is always present; a missing message coerces to
-            # "" and is filtered out below like a cleared condition.
+            # "" and is filtered out below like a cleared condition, and any
+            # other value is drawn as its text.
             if isinstance(raw, tuple):
                 severity = raw[0]
                 message = raw[1] if len(raw) > 1 else ""
             else:
                 severity, message = "error", raw
             if message:
-                state.status_flags.append((key, message, severity))
+                state.status_flags.append((key, str(message), severity))
+
+    # Ahead of missing controllers: an output without its interface loses stage
+    # data, and the rows past the badge's visible few collapse into "+N more".
+    for i, alert in enumerate(state.network_alerts):
+        state.status_flags.append((f"network_down_{i}", alert, "error"))
 
     # One row per missing controller, so it is seen even for a marker with no card.
     for info in controller_info:

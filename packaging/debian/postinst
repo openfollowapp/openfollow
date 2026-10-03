@@ -49,6 +49,11 @@ case "$1" in
     systemctl enable openfollow.service openfollow-splash.service || true
     if systemctl is-system-running >/dev/null 2>&1 || \
        [ -d /run/systemd/system ]; then
+      # NetworkManager reads conf.d only at startup or reload, so the DHCP
+      # fallback drop-in is inert on a running station until this.
+      if command -v nmcli >/dev/null 2>&1; then
+        nmcli general reload conf >/dev/null 2>&1 || true
+      fi
       # Restart the service if it's already running (upgrade path), otherwise
       # start it for the first time (fresh install).
       if systemctl is-active --quiet openfollow.service; then

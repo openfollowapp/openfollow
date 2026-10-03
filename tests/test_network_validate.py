@@ -1,22 +1,50 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""Tests for the IPv4 validation helpers: parse_ipv4/prefix, prefix<->mask, DNS list, router-subnet, validate_apply."""
+"""Tests for the IPv4 helpers: parsing, masks, DNS list, router-subnet, validate_apply, VLAN create, wording."""
 
 from __future__ import annotations
 
 import pytest
 
-from openfollow.network.adapter import Ipv4Method
+from openfollow.network.adapter import Ipv4Config, Ipv4Method
 from openfollow.network.validate import (
+    describe_applied,
+    describe_renewed,
+    is_link_local,
     parse_dns_list,
     parse_ipv4,
     parse_prefix,
+    parse_vlan_id,
     prefix_to_mask,
     router_in_subnet,
     validate_apply,
+    validate_vlan_create,
+    vlan_interface_name,
 )
 
 pytestmark = pytest.mark.unit
+
+
+class TestIsLinkLocal:
+    @pytest.mark.parametrize(
+        "value",
+        ["169.254.0.1", "169.254.255.254", "  169.254.8.31  ", "169.254.0.0"],
+    )
+    def test_link_local(self, value: str) -> None:
+        assert is_link_local(value) is True
+
+    @pytest.mark.parametrize(
+        "value",
+        # 169.253/169.255 bracket the block: an off-by-one on the second octet
+        # would classify a routable address as a DHCP failure.
+        ["192.168.1.5", "10.0.0.1", "169.253.1.1", "169.255.1.1", "127.0.0.1"],
+    )
+    def test_routable(self, value: str) -> None:
+        assert is_link_local(value) is False
+
+    @pytest.mark.parametrize("value", ["", "   ", None, "not-an-ip", "fe80::1"])
+    def test_unparseable_is_not_link_local(self, value) -> None:
+        assert is_link_local(value) is False
 
 
 class TestParseIpv4:
@@ -224,3 +252,148 @@ class TestValidateApply:
         # because prefix is out of range.
         assert any("Subnet prefix" in e for e in errors)
         assert not any("not inside the subnet" in e for e in errors)
+
+
+class TestVlanValidation:
+    """VLAN create is the one path that can name a link into existence, so
+    every rejection here is what stops a bad name reaching ``nmcli con add``."""
+
+    _IFACES = ("lo", "eth0", "eth0.10", "wlan0")
+    _VLANS = ("eth0.10",)
+
+    def _errors(self, parent: str, vlan_id: object) -> list[str]:
+        return validate_vlan_create(
+            parent,
+            vlan_id,  # type: ignore[arg-type]
+            interfaces=self._IFACES,
+            vlan_names=self._VLANS,
+        )
+
+    def test_accepts_a_new_vlan_on_a_physical_parent(self) -> None:
+        assert self._errors("eth0", 20) == []
+
+    @pytest.mark.parametrize("vlan_id", [0, 4095, -1, 4096, 100000])
+    def test_rejects_reserved_and_out_of_range_ids(self, vlan_id: int) -> None:
+        assert any("VLAN ID" in e for e in self._errors("eth0", vlan_id))
+
+    @pytest.mark.parametrize("vlan_id", [1, 4094])
+    def test_accepts_the_boundary_ids(self, vlan_id: int) -> None:
+        assert self._errors("eth0", vlan_id) == []
+
+    @pytest.mark.parametrize("vlan_id", ["abc", None, "", True, 12.5, "1e3"])
+    def test_rejects_non_integer_ids(self, vlan_id: object) -> None:
+        assert any("VLAN ID" in e for e in self._errors("eth0", vlan_id))
+
+    def test_accepts_a_digit_string_id(self) -> None:
+        assert self._errors("eth0", "20") == []
+
+    def test_rejects_a_vlan_parent(self) -> None:
+        assert any("stacked" in e for e in self._errors("eth0.10", 20))
+
+    def test_rejects_loopback_parent(self) -> None:
+        assert any("loopback" in e for e in self._errors("lo", 20))
+
+    def test_rejects_unknown_parent(self) -> None:
+        assert any("not a network interface" in e for e in self._errors("eth9", 20))
+
+    def test_rejects_blank_parent(self) -> None:
+        assert any("Choose a parent" in e for e in self._errors("   ", 20))
+
+    def test_rejects_a_duplicate_derived_name(self) -> None:
+        assert any("already exists" in e for e in self._errors("eth0", 10))
+
+    def test_accepts_a_parent_whose_name_leaves_no_room_for_the_tag(self) -> None:
+        """A MAC-derived NIC name fills all 15 characters Linux allows, so
+        ``<parent>.<id>`` cannot fit. Refusing meant that adapter could carry
+        no VLAN at all; the parent is truncated to make room instead."""
+        errors = validate_vlan_create(
+            "enx9c69d3ac16ab",
+            2,
+            interfaces=("enx9c69d3ac16ab",),
+        )
+        assert errors == []
+
+    def test_rejects_a_truncated_name_that_collides(self) -> None:
+        """Truncation is what makes two long-named NICs able to derive the
+        same interface name; the second one has to be refused rather than
+        silently retargeting the first."""
+        errors = validate_vlan_create(
+            "enx9c69d3ac16ab",
+            2,
+            interfaces=("enx9c69d3ac16ab", "enx9c69d3ac16.2"),
+        )
+        assert errors == ["enx9c69d3ac16.2 already exists."]
+
+    def test_blank_parent_does_not_also_report_a_name_error(self) -> None:
+        """The derived-name check needs a parent to derive from; reporting
+        '.20 already exists' on top of 'choose a parent' would be noise."""
+        errors = self._errors("", 20)
+        assert errors == ["Choose a parent interface."]
+
+
+class TestVlanInterfaceName:
+    def test_derives_dot_notation(self) -> None:
+        assert vlan_interface_name("eth0", 10) == "eth0.10"
+
+    def test_strips_surrounding_whitespace(self) -> None:
+        assert vlan_interface_name("  eth0  ", 10) == "eth0.10"
+
+    @pytest.mark.parametrize(
+        ("parent", "vlan_id", "expected"),
+        [
+            # 15 characters already: every character of the tag has to come
+            # out of the parent.
+            ("enx9c69d3ac16ab", 2, "enx9c69d3ac16.2"),
+            ("enx9c69d3ac16ab", 4094, "enx9c69d3a.4094"),
+            # One over, at the widest tag.
+            ("abcdefghijk", 4094, "abcdefghij.4094"),
+        ],
+    )
+    def test_truncates_the_parent_to_make_room_for_the_tag(self, parent: str, vlan_id: int, expected: str) -> None:
+        assert vlan_interface_name(parent, vlan_id) == expected
+
+    @pytest.mark.parametrize("vlan_id", [1, 42, 999, 4094])
+    @pytest.mark.parametrize("parent", ["eth0", "enx9c69d3ac16ab", "wlp0s20f3"])
+    def test_never_exceeds_what_the_kernel_accepts(self, parent: str, vlan_id: int) -> None:
+        """The length check that used to reject these was removed, so this is
+        what now holds the bound: every name the UI can ask for must fit."""
+        assert len(vlan_interface_name(parent, vlan_id)) <= 15
+
+    def test_keeps_the_tag_when_the_parent_is_sacrificed(self) -> None:
+        """The tag is the part that identifies the VLAN; the parent is read
+        off the profile, so it is the half that can be lost."""
+        assert vlan_interface_name("enx9c69d3ac16ab", 13).endswith(".13")
+
+
+class TestParseVlanId:
+    @pytest.mark.parametrize(("value", "expected"), [("10", 10), (10, 10), (" 10 ", 10)])
+    def test_accepts_valid(self, value: object, expected: int) -> None:
+        assert parse_vlan_id(value) == expected  # type: ignore[arg-type]
+
+    def test_rejects_bool_which_is_an_int_subclass(self) -> None:
+        assert parse_vlan_id(True) is None
+
+
+@pytest.mark.parametrize(
+    ("config", "sentence"),
+    [
+        (Ipv4Config(method=Ipv4Method.DHCP), "eth1 now uses DHCP."),
+        (
+            Ipv4Config(method=Ipv4Method.STATIC, address="192.0.2.50", prefix=24, router="192.0.2.1"),
+            "eth1 is now static at 192.0.2.50/24, router 192.0.2.1.",
+        ),
+        (Ipv4Config(method=Ipv4Method.STATIC, address="192.0.2.50", prefix=24), "eth1 is now static at 192.0.2.50/24."),
+        (Ipv4Config(method=Ipv4Method.STATIC, address="192.0.2.50"), "eth1 is now static at 192.0.2.50."),
+        (
+            Ipv4Config(method=Ipv4Method.DHCP_WITH_MANUAL_ADDRESS, address="192.0.2.50"),
+            "eth1 now uses DHCP with the address 192.0.2.50.",
+        ),
+    ],
+    ids=["dhcp", "static-with-router", "static-without-router", "static-without-prefix", "dhcp-manual"],
+)
+def test_an_apply_is_described_by_its_interface_and_what_it_set(config: Ipv4Config, sentence: str) -> None:
+    assert describe_applied("eth1", config) == sentence
+
+
+def test_a_renew_names_its_interface() -> None:
+    assert describe_renewed("eth1") == "eth1 renewed its DHCP lease."

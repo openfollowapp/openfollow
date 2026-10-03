@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -16,6 +16,7 @@ from openfollow.zones.geometry import point_in_polygon, shrink_polygon
 
 if TYPE_CHECKING:
     from openfollow.configuration import TriggerZoneConfig, TriggerZonesConfig
+    from openfollow.net_egress import Egress
     from openfollow.osc.service import OscService
 
 logger = logging.getLogger(__name__)
@@ -54,8 +55,11 @@ class ZoneEngine:
         config: TriggerZonesConfig,
         osc_service: OscService,
         destinations: OscDestinationsConfig | None = None,
+        egress_provider: Callable[[OscDestinationConfig], Egress | None] | None = None,
     ) -> None:
         self._osc = osc_service
+        # The interface a destination is pinned to; unwired, the OS routes.
+        self._egress_provider = egress_provider
         self._occupancy: list[ZoneOccupancy] = []
         self._config: TriggerZonesConfig = config
         # Shared OSC destination profiles a zone's ``destination_id`` resolves
@@ -224,6 +228,11 @@ class ZoneEngine:
         dest = self._dest_index.get(zone.destination_id)
         if dest is None:
             return True
+        # Its interface has no address: track membership, send nothing, and
+        # never fire late once it returns.
+        egress = self._egress_provider(dest) if self._egress_provider is not None else None
+        if egress is not None and egress.down:
+            return True
 
         debounce_s = max(0.0, self._config.debounce_ms / 1000.0)
         if debounce_s > 0.0 and (now - occ.last_event_time) < debounce_s:
@@ -245,9 +254,9 @@ class ZoneEngine:
         # upstream set-difference, which is not stable across runs).
         for _ in sorted(entered):
             if count == 0:
-                addr = self._send_zone_osc(zone.osc_address_first_entry, host, port, protocol, framing)
+                addr = self._send_zone_osc(zone.osc_address_first_entry, host, port, protocol, framing, egress)
             else:
-                addr = self._send_zone_osc(zone.osc_address_additional_entry, host, port, protocol, framing)
+                addr = self._send_zone_osc(zone.osc_address_additional_entry, host, port, protocol, framing, egress)
             if addr:
                 last_address = addr
             count += 1
@@ -255,9 +264,9 @@ class ZoneEngine:
         for _ in sorted(exited):
             count -= 1
             if count == 0:
-                addr = self._send_zone_osc(zone.osc_address_final_exit, host, port, protocol, framing)
+                addr = self._send_zone_osc(zone.osc_address_final_exit, host, port, protocol, framing, egress)
             else:
-                addr = self._send_zone_osc(zone.osc_address_partial_exit, host, port, protocol, framing)
+                addr = self._send_zone_osc(zone.osc_address_partial_exit, host, port, protocol, framing, egress)
             if addr:
                 last_address = addr
 
@@ -266,7 +275,9 @@ class ZoneEngine:
             occ.last_event_address = last_address
         return True
 
-    def _send_zone_osc(self, raw: str, host: str, port: int, protocol: str, framing: str) -> str:
+    def _send_zone_osc(
+        self, raw: str, host: str, port: int, protocol: str, framing: str, egress: Egress | None = None
+    ) -> str:
         """Tokenise a zone OSC field and forward to the service.
 
         Each ``osc_address_*_entry`` is one freeform string the operator
@@ -312,6 +323,7 @@ class ZoneEngine:
             port=port,
             protocol=protocol,
             framing=framing,
+            egress=egress,
         )
         return address
 

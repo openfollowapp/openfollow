@@ -607,6 +607,31 @@ def test_configwebserver_display_port_falls_back_to_primary_when_nothing_live(
     assert srv.display_port == 80
 
 
+@pytest.mark.parametrize(
+    ("primary", "fallback", "expected"),
+    [
+        (True, True, ("192.0.2.10:9000", "listening")),
+        (False, True, ("192.0.2.10:8080", "listening on the fallback port, not 9000")),
+        (False, False, ("192.0.2.10:9000", "not listening")),
+    ],
+    ids=["primary", "fallback", "down"],
+)
+def test_configwebserver_listener_says_whether_and_where_it_serves(
+    tmp_path, monkeypatch, primary: bool, fallback: bool, expected: tuple[str, str]
+) -> None:
+    srv = _make_quiet_server(tmp_path, monkeypatch, port=9000, host="192.0.2.10")
+    srv._http_server = object() if primary else None
+    srv._fallback_http_server = object() if fallback else None
+    srv._fallback_port = 8080 if fallback else None
+    assert srv.listener == expected
+
+
+def test_configwebserver_listener_names_the_wildcard(tmp_path, monkeypatch) -> None:
+    srv = _make_quiet_server(tmp_path, monkeypatch, port=9000, host="")
+    srv._http_server = object()
+    assert srv.listener == ("0.0.0.0:9000", "listening")
+
+
 def test_configwebserver_display_port_ignores_stale_primary_bound_flag(
     tmp_path,
     monkeypatch,
@@ -1102,6 +1127,7 @@ def test_get_local_peer_info_adopts_live_ip_change(tmp_path, monkeypatch) -> Non
         tmp_path,
         monkeypatch,
         local_ip="10.0.0.1",
+        station_ip="10.0.0.1",
         local_ip_provider=lambda: current["ip"],
     )
 
@@ -1130,10 +1156,13 @@ def test_get_local_peer_info_keeps_ip_when_provider_unresolved(
         tmp_path,
         monkeypatch,
         local_ip="10.0.0.1",
+        station_ip="10.0.0.1",
         local_ip_provider=lambda: unresolved,
     )
 
     assert srv.get_local_peer_info().ip == "10.0.0.1"
+    # "Could not resolve" is not "unpin": an unpinned beacon follows the
+    # routing table onto a NIC nobody chose, so a working pin has to survive.
     assert srv._beacon_sender._iface_ip == "10.0.0.1"
 
 
@@ -1196,3 +1225,501 @@ def test_get_local_peer_info_throttles_ip_refresh(tmp_path, monkeypatch) -> None
     srv._local_ip_refresh_ts -= 1000.0
     srv.get_local_peer_info()
     assert calls["n"] == 2
+
+
+class TestGetNetworkInterfaces:
+    """The Network Settings interface list costs one backend call per adapter,
+    so it is TTL-cached; ``Scan`` bypasses the cache."""
+
+    def test_no_provider_returns_empty(self, tmp_path, monkeypatch) -> None:
+        """Stations wiring only the single-interface provider must degrade to
+        an empty list, not raise – the card falls back to synthesising rows."""
+        srv = _make_quiet_server(tmp_path, monkeypatch)
+        assert srv.get_network_interfaces() == []
+
+    def test_second_call_inside_ttl_reuses_the_snapshot(self, tmp_path, monkeypatch) -> None:
+        calls: list[int] = []
+
+        def _provider() -> list[dict]:
+            calls.append(1)
+            return [{"name": "eth0", "address": "10.0.0.5"}]
+
+        srv = _make_quiet_server(tmp_path, monkeypatch, network_interfaces_provider=_provider)
+        assert srv.get_network_interfaces()[0]["name"] == "eth0"
+        assert srv.get_network_interfaces()[0]["name"] == "eth0"
+        assert len(calls) == 1
+
+    def test_force_bypasses_the_cache(self, tmp_path, monkeypatch) -> None:
+        """Scan has to show a just-plugged adapter without waiting out the TTL."""
+        calls: list[int] = []
+
+        def _provider() -> list[dict]:
+            calls.append(1)
+            return [{"name": "eth0"}]
+
+        srv = _make_quiet_server(tmp_path, monkeypatch, network_interfaces_provider=_provider)
+        srv.get_network_interfaces()
+        srv.get_network_interfaces(force=True)
+        assert len(calls) == 2
+
+    def test_a_cached_rows_list_value_is_not_shared_with_the_caller(self, tmp_path, monkeypatch) -> None:
+        """Rows carry a ``dns`` list, so a per-row ``dict()`` would still hand
+        every render inside the TTL window the same list object the cache
+        holds - one in-place edit downstream rewrites what the next render
+        reads, for the rest of the window."""
+
+        def _provider() -> list[dict]:
+            return [{"name": "eth0", "dns": ["1.1.1.1"]}]
+
+        srv = _make_quiet_server(tmp_path, monkeypatch, network_interfaces_provider=_provider)
+        first = srv.get_network_interfaces()
+        first[0]["dns"].append("8.8.8.8")
+        assert srv.get_network_interfaces()[0]["dns"] == ["1.1.1.1"]
+
+    def test_provider_failure_serves_the_last_good_snapshot(self, tmp_path, monkeypatch) -> None:
+        """A transient backend failure must not blank the interface list -
+        stale rows are far more useful than an empty card."""
+        state = {"fail": False}
+
+        def _provider() -> list[dict]:
+            if state["fail"]:
+                raise RuntimeError("nmcli exploded")
+            return [{"name": "eth0", "address": "10.0.0.5"}]
+
+        srv = _make_quiet_server(tmp_path, monkeypatch, network_interfaces_provider=_provider)
+        assert srv.get_network_interfaces()[0]["address"] == "10.0.0.5"
+        state["fail"] = True
+        assert srv.get_network_interfaces(force=True)[0]["address"] == "10.0.0.5"
+
+    def test_provider_failure_with_no_snapshot_yet_returns_empty(self, tmp_path, monkeypatch) -> None:
+        def _provider() -> list[dict]:
+            raise RuntimeError("nmcli exploded")
+
+        srv = _make_quiet_server(tmp_path, monkeypatch, network_interfaces_provider=_provider)
+        assert srv.get_network_interfaces() == []
+
+    def test_the_diagnostics_read_reports_a_failure_instead_of_the_last_rows(self, tmp_path, monkeypatch) -> None:
+        """The bundle says the backend failed; stale rows would read as current DHCP / static data."""
+        state = {"fail": False}
+
+        def _provider() -> list[dict]:
+            if state["fail"]:
+                raise RuntimeError("nmcli exploded")
+            return [{"name": "eth0", "address": "10.0.0.5"}]
+
+        srv = _make_quiet_server(tmp_path, monkeypatch, network_interfaces_provider=_provider)
+        assert srv.get_network_interfaces()[0]["address"] == "10.0.0.5"
+        state["fail"] = True
+        with pytest.raises(RuntimeError, match="nmcli exploded"):
+            srv.read_network_interfaces()
+
+    def test_the_diagnostics_read_with_no_backend_is_empty(self, tmp_path, monkeypatch) -> None:
+        assert _make_quiet_server(tmp_path, monkeypatch).read_network_interfaces() == []
+
+    def test_caller_cannot_mutate_the_cache(self, tmp_path, monkeypatch) -> None:
+        """Rows are handed out as a copy, so a template helper decorating them
+        can't corrupt what the next render reads."""
+        srv = _make_quiet_server(
+            tmp_path,
+            monkeypatch,
+            network_interfaces_provider=lambda: [{"name": "eth0"}],
+        )
+        srv.get_network_interfaces().append({"name": "bogus"})
+        assert [r["name"] for r in srv.get_network_interfaces()] == ["eth0"]
+
+    def test_caller_cannot_mutate_a_cached_row(self, tmp_path, monkeypatch) -> None:
+        """Copying only the list leaves every caller holding the cached dicts,
+        so a helper decorating a row corrupts the next render."""
+        srv = _make_quiet_server(
+            tmp_path,
+            monkeypatch,
+            network_interfaces_provider=lambda: [{"name": "eth0"}],
+        )
+        srv.get_network_interfaces()[0]["name"] = "corrupted"
+        assert [r["name"] for r in srv.get_network_interfaces()] == ["eth0"]
+
+    def test_the_provider_cannot_mutate_the_cache_afterwards(self, tmp_path, monkeypatch) -> None:
+        """The services provider rebuilds its rows each call, but a future one
+        reusing dicts must not reach into what is already cached."""
+        rows = [{"name": "eth0"}]
+        srv = _make_quiet_server(
+            tmp_path,
+            monkeypatch,
+            network_interfaces_provider=lambda: rows,
+        )
+        srv.get_network_interfaces()
+        rows[0]["name"] = "corrupted"
+        assert [r["name"] for r in srv.get_network_interfaces()] == ["eth0"]
+
+
+# ---------------------------------------------------------------------------
+# Always-reachable web UI: the wildcard bind is what makes the link-local
+# fallback usable, so it has to survive a station that boots with no address.
+# ---------------------------------------------------------------------------
+
+
+def test_wildcard_bind_accepts_on_every_interface(monkeypatch) -> None:
+    """The bind must reach the socket layer as INADDR_ANY. A station whose
+    address only appears after the DHCP fallback kicks in is reachable the
+    moment it does, with no restart - but only if the listener took the
+    wildcard rather than an address resolved at startup."""
+    from openfollow.web import server as server_mod
+
+    created: list[_FakeSocket] = []
+
+    def _factory(*_a, **_kw) -> _FakeSocket:
+        sock = _FakeSocket()
+        created.append(sock)
+        return sock
+
+    monkeypatch.setattr(server_mod.socket, "socket", _factory)
+    assert ConfigWebServer._can_bind("0.0.0.0", 12345) is True
+    assert created[-1].binds == [("", 12345)]
+
+
+def test_default_host_is_the_wildcard(tmp_path, monkeypatch) -> None:
+    """Restricting the web UI is opt-in. Asserted on a constructed server so
+    a change to how the default is applied is caught, not just its literal."""
+    srv = _make_quiet_server(tmp_path, monkeypatch, host="0.0.0.0")
+    assert srv._needs_loopback_listener() is False
+    bare = ConfigWebServer(config_path=str(tmp_path / "c.toml"), port=1, system_name="x")
+    assert bare._host == "0.0.0.0"
+
+
+def test_pinned_bind_gets_a_loopback_listener(tmp_path, monkeypatch) -> None:
+    """A pinned non-loopback bind still has to serve the on-screen browser,
+    so the loopback slot is what keeps the device usable while the UI is
+    restricted to one interface."""
+    srv = _make_quiet_server(tmp_path, monkeypatch, host="192.168.1.5")
+    assert srv._needs_loopback_listener() is True
+    for host in ("127.0.0.1", "::1", "0.0.0.0", ""):
+        assert _make_quiet_server(tmp_path, monkeypatch, host=host)._needs_loopback_listener() is False
+
+
+def test_a_web_bind_iface_pin_still_serves_the_on_screen_browser(tmp_path, monkeypatch) -> None:
+    """Carried end to end from the config field the operator sets: pinning
+    the web UI to one interface must not take the on-screen browser (always
+    loopback) with it, or the station's own recovery screen goes dark."""
+    import socket as _socket
+    from types import SimpleNamespace
+
+    from openfollow import net_utils as net_utils_mod
+    from openfollow.configuration import AppConfig
+    from openfollow.net_utils import resolve_web_bind
+
+    monkeypatch.setattr(
+        net_utils_mod.psutil,
+        "net_if_addrs",
+        lambda: {"eth1": [SimpleNamespace(family=_socket.AF_INET, address="172.16.4.20")]},
+    )
+    cfg = AppConfig(web_bind_iface="eth1")
+    host, _status = resolve_web_bind(cfg.web_bind, cfg.web_bind_iface)
+    assert host == "172.16.4.20"
+    assert _make_quiet_server(tmp_path, monkeypatch, host=host)._needs_loopback_listener() is True
+
+
+def test_bind_host_reports_the_listening_address(tmp_path, monkeypatch) -> None:
+    """The panel compares the configured pin against this to tell whether a
+    restart is still owed, so it has to be the address actually bound."""
+    assert _make_quiet_server(tmp_path, monkeypatch, host="10.0.0.9").bind_host == "10.0.0.9"
+
+
+def test_web_bind_advisory_without_a_provider_is_empty(tmp_path, monkeypatch) -> None:
+    """A server built without the runtime behind it (boot, unit contexts)
+    reports no advisory rather than raising into the panel render."""
+    srv = _make_quiet_server(tmp_path, monkeypatch)
+    assert srv.get_web_bind_advisory() == {"status": "", "banner": "", "resolved_ip": ""}
+
+
+def test_web_bind_advisory_survives_a_raising_provider(tmp_path, monkeypatch) -> None:
+    """The advisory is decoration on a panel whose job is fixing
+    reachability; a provider fault must not 500 the page that fixes it."""
+
+    def _boom() -> dict[str, str]:
+        raise RuntimeError("no runtime")
+
+    srv = _make_quiet_server(tmp_path, monkeypatch, web_bind_advisory_provider=_boom)
+    assert srv.get_web_bind_advisory() == {"status": "", "banner": "", "resolved_ip": ""}
+
+
+def test_web_bind_advisory_passes_the_provider_through(tmp_path, monkeypatch) -> None:
+    srv = _make_quiet_server(
+        tmp_path,
+        monkeypatch,
+        web_bind_advisory_provider=lambda: {"status": "down", "banner": "b", "resolved_ip": ""},
+    )
+    assert srv.get_web_bind_advisory()["status"] == "down"
+
+
+def test_suspending_beacons_marks_the_station_down(tmp_path, monkeypatch) -> None:
+    """The observer's down edge is authoritative. The request-driven refresh
+    is not, so a diagnostics bundle collected without a preceding page load
+    would otherwise record the address as if it still reached the station."""
+    srv = _make_quiet_server(tmp_path, monkeypatch)
+    assert srv.station_interface_down is False
+
+    srv.suspend_beacons()
+
+    assert srv.station_interface_down is True
+
+
+def test_reopening_beacons_clears_the_station_down_mark(tmp_path, monkeypatch) -> None:
+    """Recovery is an observer decision too, not something to be discovered
+    by whoever next loads a page."""
+    srv = _make_quiet_server(tmp_path, monkeypatch)
+    srv.suspend_beacons()
+
+    srv.reopen_beacons()
+
+    assert srv.station_interface_down is False
+
+
+def test_refresh_local_ip_is_publicly_callable(tmp_path, monkeypatch) -> None:
+    """The runtime observer drives the refresh on a timer. It used to happen
+    only on a request path, so a station whose address changed healed its
+    self-row and beacon interface only while a browser tab was open."""
+    monkeypatch.setattr(
+        "openfollow.web.server.get_local_ipv4_addresses",
+        lambda: {"10.0.0.55"},
+    )
+    srv = _make_quiet_server(tmp_path, monkeypatch, local_ip="10.0.0.55")
+    srv._local_ip_provider = lambda: "10.0.0.77"
+    srv.refresh_local_ip()
+    assert srv.local_ip == "10.0.0.77"
+
+
+def test_reopen_beacons_rebuilds_both_sockets(tmp_path, monkeypatch) -> None:
+    """Recovery from an interface outage: the unchanged-IP guard in
+    update_iface_ip is not enough, because the kernel already dropped the
+    membership and the route while the address string stayed put."""
+    srv = _make_quiet_server(tmp_path, monkeypatch)
+    srv._beacon_sender._reopen.clear()
+    srv._beacon_receiver._reopen.clear()
+    srv.reopen_beacons()
+    assert srv._beacon_sender._reopen.is_set()
+    assert srv._beacon_receiver._reopen.is_set()
+
+
+# ---------------------------------------------------------------------------
+# Beacon interface: pinned-but-down must stop it, never move it
+# ---------------------------------------------------------------------------
+
+
+def test_beacons_start_unpinned_when_the_station_pin_is_down(tmp_path, monkeypatch) -> None:
+    """A station booted with its pinned interface dark must not advertise.
+
+    ``station_ip=None`` is what the strict station resolver returns then. The
+    displayed address still collapses to a string, so seeding the beacon from
+    the display value is what let a misconfigured station advertise its name,
+    version and web port on an unchosen NIC from its very first packet.
+    """
+    monkeypatch.setattr("openfollow.web.server.get_local_ipv4_addresses", lambda: {"10.0.0.1"})
+    srv = _make_quiet_server(tmp_path, monkeypatch, local_ip="10.0.0.1", station_ip=None)
+
+    assert srv._beacon_sender._iface_ip is None
+    assert srv._beacon_receiver._iface_ip is None
+
+
+def test_a_down_station_pin_is_reported_rather_than_left_implicit(tmp_path, monkeypatch) -> None:
+    """The displayed address stays, and the state is published alongside it.
+
+    Blanking it would take information away from an operator who is
+    demonstrably connected - the web UI binds every interface, so it is usually
+    still reachable at that address while the pinned one is dark. Leaving the
+    number alone and saying nothing is the other half of the problem: the value
+    silently stops meaning "where peers reach this station". This is what lets
+    the self-row and the diagnostics bundle say which of the two it is.
+    """
+    monkeypatch.setattr("openfollow.web.server.get_local_ipv4_addresses", lambda: {"10.0.0.1"})
+    resolved: list[str | None] = ["10.0.0.1"]
+    srv = _make_quiet_server(
+        tmp_path,
+        monkeypatch,
+        local_ip="10.0.0.1",
+        station_ip="10.0.0.1",
+        local_ip_provider=lambda: resolved[0],
+    )
+    assert srv.station_interface_down is False
+
+    resolved[0] = None
+    srv._local_ip_refresh_ts -= 1000.0
+    srv.refresh_local_ip()
+    assert srv.station_interface_down is True
+    assert srv.local_ip == "10.0.0.1", "the displayed address should still not be downgraded"
+
+    # And it clears when the interface returns, so the row stops warning.
+    resolved[0] = "10.0.0.1"
+    srv._local_ip_refresh_ts -= 1000.0
+    srv.refresh_local_ip()
+    assert srv.station_interface_down is False, "the warning outlived the outage"
+
+
+def test_a_station_pin_going_down_stops_the_beacons(tmp_path, monkeypatch) -> None:
+    """The interface goes dark at runtime: both beacons take ``None`` and stop,
+    while the displayed address keeps its last known good value.
+    """
+    monkeypatch.setattr("openfollow.web.server.get_local_ipv4_addresses", lambda: {"10.0.0.1"})
+    resolved: list[str | None] = ["10.0.0.1"]
+    srv = _make_quiet_server(
+        tmp_path,
+        monkeypatch,
+        local_ip="10.0.0.1",
+        station_ip="10.0.0.1",
+        local_ip_provider=lambda: resolved[0],
+    )
+
+    resolved[0] = None
+    srv._local_ip_refresh_ts -= 1000.0  # elapse the refresh throttle window
+    srv.refresh_local_ip()
+
+    assert srv._beacon_sender._iface_ip is None
+    assert srv._beacon_receiver._iface_ip is None
+    assert srv.local_ip == "10.0.0.1", "the displayed address should not be downgraded"
+
+
+class TestTheRefreshReportsWhetherItRepointed:
+    """The observer's recovery path forces a rebuild only when the refresh did
+    not already do one. Getting this backwards costs a rebuild in one
+    direction and doubles it in the other, and neither shows up in a test that
+    only checks where the beacons ended up."""
+
+    def _server(self, tmp_path, monkeypatch, resolved, **kwargs):
+        monkeypatch.setattr(
+            "openfollow.web.server.get_local_ipv4_addresses",
+            lambda: {"10.0.0.1", "10.0.0.2"},
+        )
+        return _make_quiet_server(
+            tmp_path,
+            monkeypatch,
+            local_ip_provider=lambda: resolved[0],
+            **kwargs,
+        )
+
+    def test_an_unchanged_address_reports_no_repoint(self, tmp_path, monkeypatch) -> None:
+        """The case the forced rebuild exists for: nothing moved, so nothing
+        was rebuilt, and the caller still has to rebuild the membership the
+        kernel dropped."""
+        resolved: list[str | None] = ["10.0.0.1"]
+        srv = self._server(tmp_path, monkeypatch, resolved, local_ip="10.0.0.1", station_ip="10.0.0.1")
+        srv._local_ip_refresh_ts -= 1000.0
+
+        assert srv.refresh_local_ip() is False
+
+    def test_a_new_address_reports_the_repoint(self, tmp_path, monkeypatch) -> None:
+        resolved: list[str | None] = ["10.0.0.2"]
+        srv = self._server(tmp_path, monkeypatch, resolved, local_ip="10.0.0.1", station_ip="10.0.0.1")
+        srv._local_ip_refresh_ts -= 1000.0
+
+        assert srv.refresh_local_ip() is True
+
+    def test_going_dark_reports_the_repoint(self, tmp_path, monkeypatch) -> None:
+        """Stopping the beacons is a rebuild too - the caller must not stack a
+        forced reopen on top of sockets that were just torn down."""
+        resolved: list[str | None] = [None]
+        srv = self._server(tmp_path, monkeypatch, resolved, local_ip="10.0.0.1", station_ip="10.0.0.1")
+        srv._local_ip_refresh_ts -= 1000.0
+
+        assert srv.refresh_local_ip() is True
+
+    def test_a_throttled_call_reports_no_repoint(self, tmp_path, monkeypatch) -> None:
+        """A call that never read the provider cannot have repointed anything,
+        so reporting a repoint would suppress the rebuild recovery owes."""
+        resolved: list[str | None] = ["10.0.0.1"]
+        srv = self._server(tmp_path, monkeypatch, resolved, local_ip="10.0.0.1", station_ip="10.0.0.1")
+        srv._local_ip_refresh_ts -= 1000.0
+        assert srv.refresh_local_ip() is False  # opens the throttle window
+
+        # A value that WOULD repoint, so False can only mean "did not run".
+        resolved[0] = "10.0.0.2"
+        assert srv.refresh_local_ip() is False
+        assert srv._beacon_sender.iface_ip != "10.0.0.2", "the throttled call ran after all"
+
+    def test_an_unresolved_address_reports_no_repoint(self, tmp_path, monkeypatch) -> None:
+        resolved: list[str | None] = [""]
+        srv = self._server(tmp_path, monkeypatch, resolved, local_ip="10.0.0.1", station_ip="10.0.0.1")
+        srv._local_ip_refresh_ts -= 1000.0
+
+        assert srv.refresh_local_ip() is False
+
+    def test_a_raising_provider_reports_no_repoint(self, tmp_path, monkeypatch) -> None:
+        def _boom() -> str:
+            raise OSError("no interfaces")
+
+        srv = _make_quiet_server(tmp_path, monkeypatch, local_ip="10.0.0.1", local_ip_provider=_boom)
+        srv._local_ip_refresh_ts -= 1000.0
+
+        assert srv.refresh_local_ip() is False
+
+    def test_a_server_with_no_provider_reports_no_repoint(self, tmp_path, monkeypatch) -> None:
+        srv = _make_quiet_server(tmp_path, monkeypatch, local_ip="10.0.0.1")
+        srv._local_ip_refresh_ts -= 1000.0
+
+        assert srv.refresh_local_ip() is False
+
+
+def test_the_beacons_come_back_when_the_interface_returns(tmp_path, monkeypatch) -> None:
+    """Recovery needs no restart - the observer's next poll repins both."""
+    monkeypatch.setattr(
+        "openfollow.web.server.get_local_ipv4_addresses",
+        lambda: {"10.0.0.1", "10.0.0.2"},
+    )
+    resolved: list[str | None] = [None]
+    srv = _make_quiet_server(
+        tmp_path,
+        monkeypatch,
+        local_ip="10.0.0.1",
+        station_ip=None,
+        local_ip_provider=lambda: resolved[0],
+    )
+    assert srv._beacon_sender._iface_ip is None
+
+    resolved[0] = "10.0.0.2"
+    srv._local_ip_refresh_ts -= 1000.0
+    srv.refresh_local_ip()
+
+    assert srv._beacon_sender._iface_ip == "10.0.0.2"
+    assert srv._beacon_receiver._iface_ip == "10.0.0.2"
+
+
+def test_the_beacons_come_back_at_the_very_same_address(tmp_path, monkeypatch) -> None:
+    """A replug that returns the identical DHCP lease must still repin.
+
+    The displayed address never downgrades, so on recovery the candidate can
+    equal the address already on record. Comparing against that alone would
+    short-circuit and leave the beacons stopped with nothing to say so.
+    """
+    monkeypatch.setattr("openfollow.web.server.get_local_ipv4_addresses", lambda: {"10.0.0.1"})
+    resolved: list[str | None] = ["10.0.0.1"]
+    srv = _make_quiet_server(
+        tmp_path,
+        monkeypatch,
+        local_ip="10.0.0.1",
+        station_ip="10.0.0.1",
+        local_ip_provider=lambda: resolved[0],
+    )
+
+    resolved[0] = None
+    srv._local_ip_refresh_ts -= 1000.0
+    srv.refresh_local_ip()
+    assert srv._beacon_sender.iface_ip is None
+
+    resolved[0] = "10.0.0.1"  # same lease back
+    srv._local_ip_refresh_ts -= 1000.0
+    srv.refresh_local_ip()
+
+    assert srv._beacon_sender.iface_ip == "10.0.0.1"
+    assert srv._beacon_receiver.iface_ip == "10.0.0.1"
+
+
+def test_suspend_beacons_stops_both(tmp_path, monkeypatch) -> None:
+    """The observer's down edge stops the beacons by decision, not by waiting
+    for a send to fail - a socket pinned to a removed address does not
+    reliably error.
+    """
+    monkeypatch.setattr("openfollow.web.server.get_local_ipv4_addresses", lambda: {"10.0.0.1"})
+    srv = _make_quiet_server(tmp_path, monkeypatch, local_ip="10.0.0.1", station_ip="10.0.0.1")
+
+    srv.suspend_beacons()
+
+    assert srv._beacon_sender.iface_ip is None
+    assert srv._beacon_receiver.iface_ip is None

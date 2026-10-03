@@ -10,6 +10,7 @@ from pathlib import Path
 
 import psutil
 
+from openfollow.net_utils import read_ipv4_routes
 from openfollow.network.adapter import (
     ApplyResult,
     Ipv4Config,
@@ -21,7 +22,6 @@ from openfollow.network.adapter import (
 
 logger = logging.getLogger(__name__)
 _RESOLV_CONF = Path("/etc/resolv.conf")
-_PROC_ROUTE = Path("/proc/net/route")
 
 
 def _netmask_to_prefix(netmask: str | None) -> int | None:
@@ -55,31 +55,12 @@ def _read_dns() -> tuple[str, ...]:
 
 
 def _read_gateway(iface: str) -> str | None:
-    if not _PROC_ROUTE.exists():
+    routes = read_ipv4_routes()
+    if routes is None:
         return None
-    try:
-        for line in _PROC_ROUTE.read_text().splitlines()[1:]:
-            fields = line.split()
-            if len(fields) < 4:
-                continue
-            name, dest_hex, gw_hex, flags_hex = fields[0], fields[1], fields[2], fields[3]
-            if name != iface or dest_hex != "00000000":
-                continue
-            try:
-                flags = int(flags_hex, 16)
-            except ValueError:
-                continue
-            if not (flags & 0x2):  # Platform-specific RTF_GATEWAY flag
-                continue
-            try:
-                gw_int = int(gw_hex, 16)
-            except ValueError:
-                continue
-            packed = gw_int.to_bytes(4, "little")
-            return socket.inet_ntoa(packed)
-    except OSError:
-        return None
-    return None
+    # A default route through a gateway, the one the kernel prefers first.
+    defaults = [r for r in routes if r.iface == iface and r.network.prefixlen == 0 and r.gateway != "0.0.0.0"]
+    return min(defaults, key=lambda r: r.metric).gateway if defaults else None
 
 
 class PsutilReadOnlyAdapter(NetworkAdapter):

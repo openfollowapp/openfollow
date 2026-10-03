@@ -21,6 +21,7 @@ point, ``build_marker_visual_state``, which:
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
@@ -34,6 +35,7 @@ from openfollow.psn.receiver import PsnReceiver
 from openfollow.runtime.marker_velocity import _MAX_REPORTED_SPEED_MPS
 from openfollow.runtime.overlay_draw_hud import draw_marker_card
 from openfollow.runtime.overlay_state import MarkerOverlayData, OverlayState
+from openfollow.runtime.overlay_status_badge import draw_status_badge
 from openfollow.runtime.services_detection_pin import get_or_create_manual_marker
 from openfollow.runtime.services_marker_visuals import build_marker_visual_state
 from openfollow.runtime_metrics import OverlayStatePool
@@ -200,9 +202,6 @@ def _build_app(
         _video_receiver=_FakeVideoReceiver(),
         _camera=_FakeCamera(),
         _button_detection=button_detection,
-        _iface_selection_active=False,
-        _available_interfaces=[],
-        _selected_iface_index=0,
         _settings_menu_active=settings_menu_active,
         _settings_menu_index=0,
         _settings_menu_banner="",
@@ -236,6 +235,7 @@ def _build(
     system_stats: Any = None,
     person_detector: Any = None,
     dt: float = _FRAME_DT,
+    network_alerts: list[str] | None = None,
 ) -> OverlayState:
     # Controller badge is stamped from InputManager.get_controller_info.
     return build_marker_visual_state(
@@ -245,6 +245,7 @@ def _build(
         person_detector=person_detector,
         cam_params_buffer=np.zeros(7, dtype=np.float64),
         dt=dt,
+        network_alerts=network_alerts,
     )
 
 
@@ -353,6 +354,111 @@ class TestSystemStatsFlow:
         state = _build(app, pool, system_stats=collector)
         assert state.ip_text == "10.0.0.7:9000 (wlan0)"
 
+    @pytest.mark.parametrize(
+        "ip,expected",
+        [("169.254.8.31", True), ("192.168.1.5", False), ("N/A", False)],
+    )
+    def test_link_local_address_is_flagged_as_a_fallback(
+        self,
+        pool: OverlayStatePool,
+        ip: str,
+        expected: bool,
+    ) -> None:
+        """The HUD qualifier hangs off this flag – a 169.254 address means
+        DHCP never answered, not that the station is on the show LAN."""
+        app = _build_app()
+        stats = SimpleNamespace(
+            cpu_percent=0.0,
+            ram_percent=0.0,
+            temperature=None,
+            ip_address=ip,
+            iface_name="eth0",
+        )
+        collector = SimpleNamespace(update=lambda: stats)
+        state = _build(app, pool, system_stats=collector)
+        assert state.ip_is_fallback is expected
+
+
+class TestNetworkAlerts:
+    """The observer-to-HUD seam. Nothing asserted this end to end, so blanking
+    the field left the whole suite green while the one surface an operator has
+    during an outage silently went empty."""
+
+    def test_alerts_reach_the_overlay_state(self, pool: OverlayStatePool) -> None:
+        app = _build_app()
+        state = _build(app, pool, network_alerts=["PSN: eth0.10 is down"])
+        assert state.network_alerts == ["PSN: eth0.10 is down"]
+
+    def test_no_alerts_leaves_the_field_empty(self, pool: OverlayStatePool) -> None:
+        app = _build_app()
+        assert _build(app, pool).network_alerts == []
+
+    def test_each_outage_is_an_error_row_top_right(self, pool: OverlayStatePool) -> None:
+        app = _build_app()
+        state = _build(app, pool, network_alerts=["PSN: eth0.10 is down", "OSC output: eth1 is down"])
+        assert state.status_flags == [
+            ("network_down_0", "PSN: eth0.10 is down", "error"),
+            ("network_down_1", "OSC output: eth1 is down", "error"),
+        ]
+
+    def test_no_outage_adds_no_row(self, pool: OverlayStatePool) -> None:
+        assert _build(_build_app(), pool).status_flags == []
+
+    def test_the_state_owns_its_copy(self, pool: OverlayStatePool) -> None:
+        """The observer rebuilds its list each poll; the overlay must not hold
+        a reference that mutates under the renderer mid-frame."""
+        app = _build_app()
+        alerts = ["PSN: eth0 is down"]
+        state = _build(app, pool, network_alerts=alerts)
+        alerts.append("OTP output: eth1 is down")
+        assert state.network_alerts == ["PSN: eth0 is down"]
+
+
+class TestHostnameRow:
+    def test_hostname_is_the_running_name_not_the_station_slug(
+        self,
+        pool: OverlayStatePool,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """When the rename was skipped, advertising the desired slug would
+        send the operator to a name avahi never answers on."""
+        import openfollow.privilege.device_repair as device_repair
+
+        monkeypatch.setattr(device_repair, "current_hostname", lambda: "raspberrypi")
+        app = _build_app()
+        app._config = replace(app._config, psn_system_name="Noble Bear")
+        state = _build(app, pool)
+        assert state.hostname_text == "raspberrypi.local"
+
+    def test_hostname_carries_a_non_default_port(
+        self,
+        pool: OverlayStatePool,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """On a fallback bind the UI is not on port 80, so a bare name would
+        send the operator to a port with nothing listening."""
+        import openfollow.privilege.device_repair as device_repair
+
+        monkeypatch.setattr(device_repair, "current_hostname", lambda: "raspberrypi")
+        app = _build_app()
+        app._config = replace(app._config, web_port=8080)
+        state = _build(app, pool)
+        assert state.hostname_text == "raspberrypi.local:8080"
+
+    @pytest.mark.parametrize("name", ["", "localhost"])
+    def test_unusable_hostname_yields_no_row(
+        self,
+        pool: OverlayStatePool,
+        monkeypatch: pytest.MonkeyPatch,
+        name: str,
+    ) -> None:
+        import openfollow.privilege.device_repair as device_repair
+
+        monkeypatch.setattr(device_repair, "current_hostname", lambda: name)
+        app = _build_app()
+        state = _build(app, pool)
+        assert state.hostname_text == ""
+
 
 # --------------------------------------------------------------------------- #
 # Video + iface + settings menu pass-through
@@ -440,6 +546,7 @@ class TestVideoAndMenuState:
                 ["Option A", "Option B", "Option C"],
                 [True, False, True],
                 ["", "Linux only", ""],
+                [True, False, True],
             ),
         )
         state = _build(app, pool)
@@ -459,7 +566,7 @@ class TestVideoAndMenuState:
         monkeypatch.setattr(
             app_modes,
             "build_settings_menu_items",
-            lambda a: (["X"], [True], [""]),
+            lambda a: (["X"], [True], [""], [False]),
         )
         state = _build(app, pool)
         assert state.settings_menu_banner == "Configured IP unavailable."
@@ -852,66 +959,6 @@ class TestSpeedRoundTrip:
 # --------------------------------------------------------------------------- #
 # Camera, detection, button-detection
 # --------------------------------------------------------------------------- #
-
-
-class TestIfaceSelectionLabels:
-    """Iface picker labels show interface name with IP for multi-homed hosts."""
-
-    def test_iface_names_resolve_to_label_with_ip_suffix(self, pool: OverlayStatePool, monkeypatch) -> None:
-        from openfollow.runtime import services_marker_visuals
-
-        monkeypatch.setattr(
-            services_marker_visuals,
-            "list_iface_ipv4",
-            lambda: [("eth0", "192.168.178.61"), ("wlan0", "10.0.0.5")],
-        )
-        app = _build_app()
-        app._available_interfaces = ["", "eth0", "wlan0"]
-        app._selected_iface_index = 1
-        app._iface_selection_active = True
-        state = _build(app, pool)
-        assert state.available_interfaces == [
-            "",  # auto-detect – labelled by the renderer, not here
-            "eth0 (192.168.178.61)",
-            "wlan0 (10.0.0.5)",
-        ]
-        assert state.selected_iface_index == 1
-
-    def test_down_iface_left_unformatted_when_no_ip(self, pool: OverlayStatePool, monkeypatch) -> None:
-        """A persisted iface that's no longer in ``list_iface_ipv4()`` –
-        cable unplugged, modem suspended – has no current IP to render,
-        so the row stays as the bare name. The on-screen UI still shows
-        the operator's pick instead of silently dropping it."""
-        from openfollow.runtime import services_marker_visuals
-
-        monkeypatch.setattr(
-            services_marker_visuals,
-            "list_iface_ipv4",
-            lambda: [("eth0", "192.168.178.61")],
-        )
-        app = _build_app()
-        app._available_interfaces = ["", "ghost0"]
-        app._iface_selection_active = True
-        state = _build(app, pool)
-        assert state.available_interfaces == ["", "ghost0"]
-
-    def test_closed_picker_skips_psutil_snapshot(self, pool: OverlayStatePool, monkeypatch) -> None:
-        from openfollow.runtime import services_marker_visuals
-
-        calls = 0
-
-        def _spy() -> list[tuple[str, str]]:
-            nonlocal calls
-            calls += 1
-            return [("eth0", "192.168.178.61")]
-
-        monkeypatch.setattr(services_marker_visuals, "list_iface_ipv4", _spy)
-        app = _build_app()
-        app._available_interfaces = ["", "eth0", "wlan0"]
-        app._iface_selection_active = False
-        state = _build(app, pool)
-        assert calls == 0
-        assert state.available_interfaces == ["", "eth0", "wlan0"]
 
 
 class TestExternalStateSnapshots:
@@ -1465,6 +1512,29 @@ class TestStatusFlagsSnapshot:
             ("long", "Three parts", "info"),
         ]
 
+    def test_a_message_that_is_not_text_is_drawn_as_its_text(
+        self,
+        pool: OverlayStatePool,
+    ) -> None:
+        """Cairo measures and draws only text; any other value raised inside
+        the draw callback and took the whole HUD down to "Overlay Error"."""
+        app = _build_app()
+        flags: dict[str, object] = {
+            "count": ("info", 5),
+            "listed": ("info", ["oops"]),
+            "bare": 7,
+        }
+        app._runtime_services = SimpleNamespace(_status_flags=flags)
+        state = _build(app, pool)
+        assert state.status_flags == [
+            ("count", "5", "info"),
+            ("listed", "['oops']", "info"),
+            ("bare", "7", "error"),
+        ]
+        cr = FakeCairo()
+        draw_status_badge(FakeRenderer(state=state), cr, state, 1920, 1080)
+        assert {"5", "['oops']", "7"} <= set(cr.show_text_strings())
+
     def test_pool_reuse_clears_stale_flags(
         self,
         pool: OverlayStatePool,
@@ -1833,6 +1903,21 @@ class TestMissingControllerSurfaces:
         )
         state = _build(app, pool)
         assert ("controller_missing_0", "C1 missing · marker 5 · GameSir-G7 SE", "error") in state.status_flags
+
+    def test_a_network_outage_row_comes_before_missing_controllers(self, pool: OverlayStatePool) -> None:
+        """Rows past the badge's visible few collapse into "+N more"; lost stage
+        data must not be the one hidden there."""
+        app = _build_app(
+            controlled=[5],
+            server_markers={5: _FakeMarker(5)},
+            input_manager=_FakeInputManager(controller_info=[self._slot(state="missing", connected=False)]),
+        )
+        state = _build(app, pool, network_alerts=["PSN: eth0.10 is down", "OTP output: eth0.20 is down"])
+        assert [key for key, _message, _level in state.status_flags] == [
+            "network_down_0",
+            "network_down_1",
+            "controller_missing_0",
+        ]
 
     def test_a_missing_row_leaves_out_what_it_does_not_know(self, pool: OverlayStatePool) -> None:
         missing = self._slot(controller_index=2, state="missing", connected=False, marker_id=None, name="")

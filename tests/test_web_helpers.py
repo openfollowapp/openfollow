@@ -47,14 +47,21 @@ def test_config_dict_redacted_drops_device_local_fields() -> None:
     cfg = AppConfig(web_pin="1234", web_port=8080)
     cfg.detection.storage_path = "/mnt/nvme/openfollow/yolo"
     cfg.testpattern_selected_media = "0123456789abcdef"
+    cfg.otp_output.source_iface = "eth1"
     d = _config_dict_redacted(cfg)
     assert "web_pin" not in d  # login credential never exported
+    # a NIC name on this box; on a peer it would repin OTP to its own "eth1".
+    assert "source_iface" not in d["otp_output"]
     # storage_path is an absolute path on the exporting host – stripped so it
     # can't land on (and break) another machine.
     assert "storage_path" not in d["detection"]
     # the selected media id references device-local gallery files that never
     # travel, so a foreign id would just dangle on another host.
     assert "testpattern_selected_media" not in d
+    # the OSC multicast pin names a NIC on this box; carried to a station with
+    # no such adapter it reads as a down pin and drops that station's
+    # subscription until somebody finds the setting.
+    assert "listen_iface" not in d["osc"]
     assert d["web_port"] == 8080  # non-secret fields preserved
 
 
@@ -101,6 +108,41 @@ def test_strip_device_local_fields_drops_detection_storage_path() -> None:
     )
     assert "storage_path" not in scrubbed
     assert scrubbed["model"] == "yolov8n.onnx"  # non-local fields kept
+
+
+def test_interface_assignment_is_device_local_in_full() -> None:
+    """Every row names a NIC on this box. A pin copied to a peer would repin
+    that peer's PSN and OTP to an interface it may not even have."""
+    from openfollow.web.routes import _INTERFACE_ASSIGNMENT_TARGETS
+
+    payload = dict.fromkeys(_INTERFACE_ASSIGNMENT_TARGETS, "eth1")
+    assert strip_device_local_fields("interface_assignment", payload) == {}
+
+
+def test_interface_assignment_is_not_broadcastable() -> None:
+    from openfollow.web.routes import _BROADCAST_EXCLUDED_SECTIONS
+
+    assert "interface_assignment" in _BROADCAST_EXCLUDED_SECTIONS
+
+
+def test_interface_assignment_get_matches_what_post_accepts() -> None:
+    """GET used to 404 while POST silently wrote – the two must agree."""
+    from openfollow.web.routes import _INTERFACE_ASSIGNMENT_TARGETS, get_section_data
+
+    cfg = AppConfig(psn_source_iface="eth0")
+    cfg.otp_output.source_iface = "eth1"
+    cfg.osc_destinations.destinations[0].source_iface = "eth2"
+    data = get_section_data(cfg, "interface_assignment")
+    assert data is not None
+    assert set(data) == set(_INTERFACE_ASSIGNMENT_TARGETS) | {"osc_destinations.default.source_iface"}
+    assert data["psn_source_iface"] == "eth0"
+    assert data["otp_output.source_iface"] == "eth1"
+    assert data["osc_destinations.default.source_iface"] == "eth2"
+
+    # Everything GET returns, POST writes back to the same place.
+    fresh = AppConfig()
+    assert apply_section_data(fresh, "interface_assignment", data) is True
+    assert get_section_data(fresh, "interface_assignment") == data
 
 
 def test_general_section_rejects_invalid_web_pin_and_port() -> None:
@@ -1006,6 +1048,33 @@ def test_apply_import_data_preserves_psn_source_iface() -> None:
     assert new.psn_system_name == "Imported"
 
 
+def test_import_cannot_move_this_stations_web_ui() -> None:
+    """An imported pin names a NIC on the exporting box. Adopting it would
+    either dangle or move this station's config UI off the network the
+    operator is on - and the import itself is how they would undo it, so the
+    lockout would be self-sealing.
+
+    No import path writes the field today; this pins that, so wiring it into
+    an importable section has to come with a restore.
+    """
+    from openfollow.web.routes import _apply_import_data
+
+    current = AppConfig()
+    current.web_bind_iface = "eth1"
+
+    new = _apply_import_data(current, {"web_bind_iface": "wlan0", "psn_system_name": "Imported"})
+
+    assert new.web_bind_iface == "eth1"
+    assert new.psn_system_name == "Imported"
+
+
+def test_interface_assignment_web_ui_pin_is_device_local() -> None:
+    """The whole panel is device-local; the new row has to be covered by that
+    same strip or a peer push could repoint this station's own web UI."""
+    scrubbed = strip_device_local_fields("interface_assignment", {"web_bind_iface": "eth1"})
+    assert scrubbed == {}
+
+
 def test_apply_import_data_preserves_detection_storage_path() -> None:
     from openfollow.web.routes import _apply_import_data
 
@@ -1020,6 +1089,133 @@ def test_apply_import_data_preserves_detection_storage_path() -> None:
 
     assert new.detection.storage_path == "/mnt/nvme/openfollow/yolo"  # device path kept
     assert new.detection.confidence == 0.5  # other detection fields still import
+
+
+@pytest.mark.parametrize("local_pin", ["", "eth_local"])
+def test_apply_import_data_preserves_otp_source_iface(local_pin: str) -> None:
+    """A blank pin follows the station interface; a foreign one would move this
+    station's OTP output onto whatever adapter here shares the other box's name."""
+    from openfollow.web.routes import _apply_import_data
+
+    current = AppConfig()
+    current.otp_output.source_iface = local_pin
+
+    imported = {"otp_output": {"source_iface": "eth_foreign", "port": 5569}}
+    new = _apply_import_data(current, imported)
+
+    assert new.otp_output.source_iface == local_pin
+    assert new.otp_output.port == 5569  # other OTP fields still import
+
+
+def test_export_leaves_out_the_sender_pins() -> None:
+    cfg = AppConfig()
+    cfg.rttrpm_output.source_iface = "eth1"
+    cfg.osc_destinations.destinations[0].source_iface = "eth2"
+    d = _config_dict_redacted(cfg)
+    assert "source_iface" not in d["rttrpm_output"]
+    assert all("source_iface" not in dest for dest in d["osc_destinations"]["destinations"])
+    # The rest of each destination still travels.
+    assert d["osc_destinations"]["destinations"][0]["host"] == "127.0.0.1"
+
+
+def test_import_keeps_this_stations_destination_pins_by_id() -> None:
+    """Destinations are rebuilt wholesale from the file, so each pin is carried
+    over by id: a foreign pin never lands, and a new destination starts blank."""
+    from openfollow.configuration import OscDestinationConfig, OscDestinationsConfig
+    from openfollow.web.routes import _apply_import_data
+
+    current = AppConfig()
+    current.osc_destinations = OscDestinationsConfig(
+        destinations=[
+            OscDestinationConfig(id="foh", host="198.51.100.20", source_iface="eth1"),
+            OscDestinationConfig(id="gone", host="198.51.100.30", source_iface="eth2"),
+        ]
+    )
+    imported = {
+        "osc_destinations": {
+            "destinations": [
+                {"id": "foh", "host": "198.51.100.21", "source_iface": "eth_foreign"},
+                {"id": "new", "host": "198.51.100.40", "source_iface": "eth_foreign"},
+            ]
+        }
+    }
+    new = _apply_import_data(current, imported)
+    assert [(d.id, d.host, d.source_iface) for d in new.osc_destinations.destinations] == [
+        ("foh", "198.51.100.21", "eth1"),
+        ("new", "198.51.100.40", ""),
+    ]
+
+
+def test_import_keeps_this_stations_rttrpm_pin() -> None:
+    from openfollow.web.routes import _apply_import_data
+
+    current = AppConfig()
+    current.rttrpm_output.source_iface = "eth1"
+    new = _apply_import_data(current, {"rttrpm_output": {"source_iface": "eth_foreign", "port": 36701}})
+    assert new.rttrpm_output.source_iface == "eth1"
+    assert new.rttrpm_output.port == 36701
+
+
+def test_restore_defaults_clears_the_sender_pins() -> None:
+    """Blank follows the station, whose own pin a reset keeps, so nothing drops
+    off the network."""
+    from openfollow.web.routes import reset_config_to_defaults
+
+    current = AppConfig(psn_source_iface="eth0")
+    current.rttrpm_output.source_iface = "eth1"
+    current.osc_destinations.destinations[0].source_iface = "eth2"
+    fresh = reset_config_to_defaults(current)
+    assert fresh.psn_source_iface == "eth0"
+    assert fresh.rttrpm_output.source_iface == ""
+    assert fresh.osc_destinations.destinations[0].source_iface == ""
+
+
+def test_full_config_round_trip_leaves_the_receivers_otp_pin_alone() -> None:
+    """What broadcast-all sends a peer: one station's redacted dict, imported by
+    another."""
+    from openfollow.web.routes import _apply_import_data
+
+    sender = AppConfig()
+    sender.otp_output.source_iface = "eth1"
+    sender.otp_output.enabled = True
+    receiver = AppConfig()
+
+    new = _apply_import_data(receiver, _config_dict_redacted(sender))
+
+    assert new.otp_output.source_iface == ""
+    assert new.otp_output.enabled is True
+
+
+def test_apply_import_data_preserves_osc_listen_iface() -> None:
+    """Device-local like ``psn_source_iface``. An imported pin naming an
+    adapter this station does not have would silently drop its OSC multicast
+    subscription."""
+    from openfollow.web.routes import _apply_import_data
+
+    current = AppConfig()
+    current.osc.listen_iface = "eth_local"
+
+    imported = {"osc": {"listen_iface": "eth_foreign", "port": 9001}}
+    new = _apply_import_data(current, imported)
+
+    assert new.osc.listen_iface == "eth_local"  # device pin kept
+    assert new.osc.port == 9001  # other OSC fields still import
+
+
+def test_the_video_input_pin_never_leaves_this_station() -> None:
+    """It names a NIC on this box: exported, broadcast or imported it would
+    move another station's camera onto whatever adapter shares the name."""
+    from openfollow.web.routes import _apply_import_data
+
+    cfg = AppConfig(video_source_type="srt", video_input_iface="eth1")
+    assert "video_input_iface" not in _config_dict_redacted(cfg)
+    scrubbed = strip_device_local_fields(
+        "video_source", {"srt_host": "srt://192.0.2.20:5000", "video_input_iface": "eth1"}
+    )
+    assert scrubbed == {"srt_host": "srt://192.0.2.20:5000"}
+
+    new = _apply_import_data(cfg, {"video_source_type": "srt", "video_input_iface": "eth9"})
+    assert new.video_input_iface == "eth1"
 
 
 def test_apply_import_data_preserves_testpattern_selected_media() -> None:
@@ -1331,6 +1527,7 @@ _DEVICE_IDENTITY_SAMPLES = [
     ("web_pin", "4821"),
     ("web_port", 8080),
     ("web_bind", "0.0.0.0"),
+    ("web_bind_iface", "eth1"),
     ("station_id", "f0e1d2c3b4a59687f0e1d2c3b4a59687"),
     ("markers_catalog_path", "/mnt/nvme/openfollow/markers.toml"),
     ("testpattern_selected_media", "0123456789abcdef"),

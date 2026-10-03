@@ -16,6 +16,7 @@ from typing import Any, cast
 import cairo
 
 from openfollow.runtime.overlay_draw_style import (
+    CHEVRON_SIZE,
     COLOR_ACCENT,
     COLOR_ACCENT_SOFT,
     COLOR_BG_BASE,
@@ -23,27 +24,34 @@ from openfollow.runtime.overlay_draw_style import (
     COLOR_OK,
     COLOR_TEXT,
     COLOR_TEXT_MUTED,
-    COLOR_WARNING_BORDER,
     COLOR_WARNING_FILL,
     MODAL_RADIUS,
     PANEL_RADIUS,
     ROW_RADIUS,
+    STATUS_LEVEL_COLORS,
     draw_card_background,
+    draw_chevron,
+    draw_level_box,
+    draw_level_sign,
     draw_rounded_rect,
     draw_success_sign,
     draw_warning_sign,
     parse_hex,
     speed_color,
+    status_level,
 )
 from openfollow.runtime.overlay_layout import (
+    INFO_PANEL_ROW_H,
     HelpSections,
     bottom_left_info_panel_layout,
     build_help_sections,
     build_system_stats_text,
     centered_panel_layout,
+    fader_stack_bottom_padding,
     format_source_text,
     friendly_button_label,
     help_sections_height,
+    info_panel_height,
     key_label,
     marker_card_y,
     selectable_list_layout,
@@ -195,6 +203,34 @@ _DOCS_COL_GAP = 20.0
 _DOCS_QR_MAX = 190.0
 # Below this the code is too small to read off a screen, so draw nothing.
 _DOCS_QR_MIN = 70.0
+# Every on-screen panel is the same width. An operator moving between
+# Settings, Network and the pickers should see the frame stay put rather than
+# resize under them, and a dialog that matches the screen it covers reads as
+# part of the same surface. Heights still follow content: a one-field editor
+# has no business being as tall as a list of interfaces.
+PANEL_W_FRACTION = 0.62
+PANEL_W_MAX = 880.0
+SCREEN_H_FRACTION = 0.90
+SCREEN_H_MAX = 760.0
+
+
+def panel_width(w: int) -> float:
+    """Shared width for every on-screen panel."""
+    return min(w * PANEL_W_FRACTION, PANEL_W_MAX)
+
+
+def screen_height(h: int) -> float:
+    """Shared height for the navigable screens (not the entry dialogs)."""
+    return min(h * SCREEN_H_FRACTION, SCREEN_H_MAX)
+
+
+# Room a chevron needs, so a label is truncated before it runs underneath.
+CHEVRON_GUTTER = CHEVRON_SIZE + 8.0
+
+
+def draw_submenu_chevron(cr: Any, x: float, cy: float) -> None:
+    """Mark a row that opens another screen. Right-aligned at ``x``, centred on ``cy``."""
+    draw_chevron(cr, x - CHEVRON_SIZE * 0.31, cy)
 
 
 def draw_selectable_list(
@@ -209,8 +245,16 @@ def draw_selectable_list(
     h: float,
     empty_message: str,
     disabled: Sequence[bool] = (),
+    submenu: list[bool] | None = None,
 ) -> None:
-    """A scrolling list; a row flagged in *disabled* is led by the crossed disc (it can't be picked)."""
+    """A scrolling list of selectable rows.
+
+    A row flagged in *disabled* is led by the crossed disc (it can't be picked).
+    ``submenu`` marks the rows that open another screen rather than doing
+    something. Those get a chevron, so an operator can tell before pressing
+    which rows take them somewhere - the distinction a d-pad menu otherwise
+    hides until it is too late.
+    """
     draw_rounded_rect(cr, x, y, w, h, PANEL_RADIUS)
     cr.set_source_rgba(0.0, 0.0, 0.0, 0.26)
     cr.fill()
@@ -262,20 +306,22 @@ def draw_selectable_list(
         if item_idx < len(disabled) and disabled[item_idx]:
             _draw_offline_mark(cr, text_x + _ROW_MARK_R, row_y + row_h / 2.0, _ROW_MARK_R)
             text_x += 2 * _ROW_MARK_R + 8.0
-        text = renderer._truncate_text_to_width(cr, items[item_idx], text_max_w - (text_x - row_x - 10.0))
+        leads_somewhere = bool(submenu[item_idx]) if submenu and item_idx < len(submenu) else False
+        text = renderer._truncate_text_to_width(
+            cr,
+            items[item_idx],
+            text_max_w - (text_x - row_x - 10.0) - (CHEVRON_GUTTER if leads_somewhere else 0.0),
+        )
         cr.move_to(text_x, row_y + row_h / 2.0 + 4.0)
         cr.show_text(text)
+        if leads_somewhere:
+            draw_submenu_chevron(cr, row_x + row_w - 10.0, row_y + row_h / 2.0)
 
+    # Turned and centred, so a scroll hint is never read as a row's chevron.
     if scroll_offset > 0:
-        renderer._set_ui_font(cr, 11)
-        cr.set_source_rgba(*COLOR_TEXT_MUTED)
-        cr.move_to(x + w - 18.0, y + 16.0)
-        cr.show_text("^")
+        draw_chevron(cr, x + w / 2.0, y + 3.5, "up", size=10.0, alpha=0.6)
     if scroll_offset + max_visible < len(items):
-        renderer._set_ui_font(cr, 11)
-        cr.set_source_rgba(*COLOR_TEXT_MUTED)
-        cr.move_to(x + w - 18.0, y + h - 10.0)
-        cr.show_text("v")
+        draw_chevron(cr, x + w / 2.0, y + h - 3.5, "down", size=10.0, alpha=0.6)
 
 
 def draw_selection_menu(
@@ -293,8 +339,8 @@ def draw_selection_menu(
     empty_message: str,
     disabled: Sequence[bool] = (),
 ) -> None:
-    panel_w = min(w * 0.52, 760.0)
-    panel_h = min(h * 0.84, 720.0)
+    panel_w = panel_width(w)
+    panel_h = screen_height(h)
     panel_x, panel_y, panel_w, panel_h = draw_modal_shell(
         renderer,
         cr,
@@ -441,28 +487,6 @@ def draw_source_selection_overlay(renderer: Any, cr: Any, state: OverlayState, w
     draw_source_selection(renderer, cr, state, w, h)
 
 
-def draw_iface_selection(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
-    formatted_ifaces = [iface if iface else "Auto-detect" for iface in state.available_interfaces]
-    draw_selection_menu(
-        renderer,
-        cr,
-        state,
-        w,
-        h,
-        title="SELECT NETWORK INTERFACE",
-        subtitle="Choose the interface used for PSN, mDNS, and receiver binding.",
-        mode="iface-selection",
-        items=formatted_ifaces,
-        selected_idx=state.selected_iface_index,
-        empty_message="No interfaces detected.",
-    )
-
-
-def draw_iface_selection_overlay(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
-    draw_modal_scrim(cr, w, h, alpha=0.56)
-    draw_iface_selection(renderer, cr, state, w, h)
-
-
 def draw_source_type_selection(
     renderer: Any,
     cr: Any,
@@ -543,7 +567,7 @@ def draw_url_editor(
     """Render on-device single-line text editor with caret."""
     title = (state.url_editor_field_label or "URL").upper()
     subtitle = state.url_editor_banner or ("Type the value, Backspace to delete, Enter to save, Esc to cancel.")
-    panel_w = min(w * 0.72, 980.0)
+    panel_w = panel_width(w)
     panel_h = min(h * 0.32, 280.0)
     panel_x, panel_y, panel_w, panel_h = draw_modal_shell(
         renderer,
@@ -609,8 +633,8 @@ def draw_settings_menu(renderer: Any, cr: Any, state: OverlayState, w: int, h: i
             items.append(f"{label} ({reason or 'unavailable'})")
 
     # Modal shell; recovery context (banner/error_message) in red-bordered box below for prominence.
-    panel_w = min(w * 0.56, 820.0)
-    panel_h = min(h * 0.88, 760.0)
+    panel_w = panel_width(w)
+    panel_h = screen_height(h)
     panel_x, panel_y, panel_w, panel_h = draw_modal_shell(
         renderer,
         cr,
@@ -689,6 +713,7 @@ def draw_settings_menu(renderer: Any, cr: Any, state: OverlayState, w: int, h: i
         renderer,
         cr,
         items=items,
+        submenu=list(state.settings_items_submenu),
         selected_idx=state.settings_selected_index,
         x=content_x,
         y=cursor_y,
@@ -747,18 +772,9 @@ def _draw_settings_info_card(
     w: float,
 ) -> float:
     """Render IP/Source info card matching bottom-left panel; return y-cursor."""
-    ip_value = state.ip_text or "Unavailable"
-    src_value = format_source_text(
-        state.video_source_type,
-        state.source_label,
-        max_len=64,
-    )
-    station_value = state.station_name or "OpenFollow"
-    rows = [
-        ("IP Address:", ip_value),
-        ("Video Source:", src_value),
-        ("Station:", station_value),
-    ]
+    # The card is wider than the bottom-left panel, so the source string gets
+    # a longer budget here.
+    rows = build_info_panel_rows(state, source_max_len=64)
     # Surface unbound controller pads so operators can spot stray input.
     # 1-based to match the marker-card badge + OSC ``:cN``.
     if state.unbound_controller_indices:
@@ -820,13 +836,7 @@ def _draw_settings_error_box(
         body_h += 4.0
     card_h = pad * 2 + title_size + 6.0 + body_h
 
-    draw_rounded_rect(cr, x, y, w, card_h, PANEL_RADIUS)
-    cr.set_source_rgba(*COLOR_WARNING_FILL)
-    cr.fill()
-    cr.set_source_rgb(*COLOR_WARNING_BORDER)
-    draw_rounded_rect(cr, x, y, w, card_h, PANEL_RADIUS)
-    cr.set_line_width(2.0)
-    cr.stroke()
+    draw_level_box(cr, "error", x, y, w, card_h, radius=PANEL_RADIUS, line_width=2.0)
 
     draw_warning_sign(cr, x + pad + sign_size / 2, y + pad + sign_size / 2, size=sign_size)
 
@@ -925,8 +935,8 @@ def draw_about_screen(renderer: Any, cr: Any, state: OverlayState, w: int, h: in
     """
     from openfollow import __version__
 
-    panel_w = min(w * 0.62, 720.0)
-    panel_h = min(h * 0.86, 640.0)
+    panel_w = panel_width(w)
+    panel_h = screen_height(h)
     panel_x, panel_y, panel_w, panel_h = draw_modal_shell(
         renderer,
         cr,
@@ -1120,38 +1130,55 @@ def draw_hud(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> Non
     draw_status_badge(renderer, cr, state, w, h)
 
 
-def draw_bottom_left_info_panel(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
-    ip_label = "IP Address:"
-    src_label = "Video Source:"
-    station_label = "Station:"
+def build_info_panel_rows(state: OverlayState, *, source_max_len: int = 38) -> list[tuple[str, str]]:
+    """Label/value rows shared by the bottom-left panel and the Settings card.
+
+    The two recovery routes an operator has when the web UI is unreachable are
+    reading the address off this panel and browsing ``<hostname>.local`` – the
+    running system's hostname, not the station name the config asks for, since
+    a rename that was skipped would otherwise send them to a name avahi never
+    answers on. Both rows show in normal operation rather than only in the
+    broken state, because a row that appears only when things break is a row
+    nobody has learned to look for. The hostname row is the one exception: it
+    is omitted when the host has no usable name, where naming nothing beats
+    naming something wrong.
+    """
     ip_value = state.ip_text or "Unavailable"
-    src_value = format_source_text(state.video_source_type, state.source_label)
-    station_value = state.station_name or "OpenFollow"
+    if state.ip_is_fallback:
+        # Without this an operator reads a 169.254 address as a working lease
+        # and waits for a station that will never appear on the show LAN.
+        ip_value = f"{ip_value} - DHCP unavailable"
+    rows = [("IP Address:", ip_value)]
+    if state.hostname_text:
+        rows.append(("Web address:", state.hostname_text))
+    rows.append(
+        ("Video Source:", format_source_text(state.video_source_type, state.source_label, max_len=source_max_len))
+    )
+    rows.append(("Station:", state.station_name or "OpenFollow"))
+    return rows
+
+
+def draw_bottom_left_info_panel(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
+    rows = build_info_panel_rows(state)
 
     label_size = 9.5
     value_size = 10.8
     side_padding = 12.0
-    # Three rows of 20 px + 14 px top/bottom padding.
-    panel_h = 74.0
+    row_h = INFO_PANEL_ROW_H
+    # Derived, not fixed: the hostname row is absent on a host with no usable
+    # name, and the fader stack above reserves this same height.
+    panel_h = info_panel_height(len(rows))
 
     # Memoize layout + truncated values so unchanged panel skips measurement.
-    cache_key = (ip_value, src_value, station_value, w, h)
+    cache_key = (tuple(rows), w, h)
     cached = renderer._info_panel_cache
     if cached is not None and cached[0] == cache_key:
-        layout, ip_value, src_value, station_value = cached[1]
+        layout, rows = cached[1]
     else:
         renderer._set_ui_font(cr, label_size, bold=True)
-        label_w = max(
-            cr.text_extents(ip_label).width,
-            cr.text_extents(src_label).width,
-            cr.text_extents(station_label).width,
-        )
+        label_w = max(cr.text_extents(label).width for label, _ in rows)
         renderer._set_ui_font(cr, value_size)
-        value_w = max(
-            cr.text_extents(ip_value).width,
-            cr.text_extents(src_value).width,
-            cr.text_extents(station_value).width,
-        )
+        value_w = max(cr.text_extents(value).width for _, value in rows)
         layout = bottom_left_info_panel_layout(
             frame_width=w,
             frame_height=h,
@@ -1160,25 +1187,8 @@ def draw_bottom_left_info_panel(renderer: Any, cr: Any, state: OverlayState, w: 
             side_padding=side_padding,
             panel_h=panel_h,
         )
-        ip_value = renderer._truncate_text_to_width(
-            cr,
-            ip_value,
-            layout.value_max_w,
-        )
-        src_value = renderer._truncate_text_to_width(
-            cr,
-            src_value,
-            layout.value_max_w,
-        )
-        station_value = renderer._truncate_text_to_width(
-            cr,
-            station_value,
-            layout.value_max_w,
-        )
-        renderer._info_panel_cache = (
-            cache_key,
-            (layout, ip_value, src_value, station_value),
-        )
+        rows = [(label, renderer._truncate_text_to_width(cr, value, layout.value_max_w)) for label, value in rows]
+        renderer._info_panel_cache = (cache_key, (layout, rows))
 
     panel_x = layout.panel_x
     panel_y = layout.panel_y
@@ -1190,39 +1200,28 @@ def draw_bottom_left_info_panel(renderer: Any, cr: Any, state: OverlayState, w: 
     # surfaces an error_message, the bottom-left info panel turns red
     # so operators glancing at the HUD spot the failure even when
     # they don't have the Settings menu open. Matches the trigger
-    # condition for the Settings menu's red-bordered error box.
-    in_error = bool(state.settings_menu_banner or state.error_message or state.video_failure_text)
+    # condition for the Settings menu's red-bordered error box. An output
+    # that is down or failing turns it red too; the sentence is a top-right
+    # status row.
+    in_error = bool(
+        state.settings_menu_banner or state.error_message or state.video_failure_text or state.network_alerts
+    )
     if in_error:
-        draw_rounded_rect(cr, panel_x, panel_y, panel_w, panel_h, PANEL_RADIUS)
-        cr.set_source_rgba(*COLOR_WARNING_FILL)
-        cr.fill()
-        cr.set_source_rgb(*COLOR_WARNING_BORDER)
-        draw_rounded_rect(cr, panel_x, panel_y, panel_w, panel_h, PANEL_RADIUS)
-        cr.set_line_width(1.6)
-        cr.stroke()
+        draw_level_box(cr, "error", panel_x, panel_y, panel_w, panel_h, radius=PANEL_RADIUS, line_width=1.6)
     else:
         draw_panel_background(renderer, cr, panel_x, panel_y, panel_w, panel_h, radius=PANEL_RADIUS)
 
-    row1_y = panel_y + 20
-    row2_y = panel_y + 40
-    row3_y = panel_y + 60
     renderer._set_ui_font(cr, label_size, bold=True)
     cr.set_source_rgba(*COLOR_TEXT_MUTED)
-    cr.move_to(label_x, row1_y)
-    cr.show_text(ip_label)
-    cr.move_to(label_x, row2_y)
-    cr.show_text(src_label)
-    cr.move_to(label_x, row3_y)
-    cr.show_text(station_label)
+    for i, (label, _value) in enumerate(rows):
+        cr.move_to(label_x, panel_y + row_h * (i + 1))
+        cr.show_text(label)
 
     renderer._set_ui_font(cr, value_size)
     cr.set_source_rgb(*COLOR_TEXT)
-    cr.move_to(value_x, row1_y)
-    cr.show_text(ip_value)
-    cr.move_to(value_x, row2_y)
-    cr.show_text(src_value)
-    cr.move_to(value_x, row3_y)
-    cr.show_text(station_value)
+    for i, (_label, value) in enumerate(rows):
+        cr.move_to(value_x, panel_y + row_h * (i + 1))
+        cr.show_text(value)
 
 
 def draw_system_stats(renderer: Any, cr: Any, state: OverlayState, w: int) -> None:
@@ -1462,12 +1461,16 @@ def draw_virtual_faders(
     card_m = 6.0
     # Left edge aligned with info panel for shared left margin.
     card_x = 10.0
+    # The info panel below grows with its row count, so reserve its real
+    # height rather than a fixed one.
+    bottom_padding = fader_stack_bottom_padding(len(build_info_panel_rows(state)))
     for i, vf in enumerate(state.virtual_faders_display):
         card_y = virtual_fader_card_y(
             i,
             h,
             card_h=card_h,
             card_margin=card_m,
+            bottom_padding=bottom_padding,
         )
         draw_virtual_fader_card(
             renderer,
@@ -1589,8 +1592,8 @@ def draw_button_detection_overlay(renderer: Any, cr: Any, state: OverlayState, w
         subtitle = f"All {bd.total_steps} steps done  \u2013  Press Esc to close"
     else:
         subtitle = f"Step {bd.step + 1} of {bd.total_steps}  \u2013  Press Esc to cancel"
-    panel_w = min(w * 0.52, 520.0)
-    panel_h = min(h * 0.78, 520.0)
+    panel_w = panel_width(w)
+    panel_h = screen_height(h)
     panel_x, panel_y, panel_w, panel_h = draw_modal_shell(
         renderer,
         cr,
@@ -1691,6 +1694,65 @@ def draw_button_detection_overlay(renderer: Any, cr: Any, state: OverlayState, w
 # ---------------------------------------------------------------------------
 
 
+def _menu_button_hint(state: OverlayState, action: str, default: str) -> str:
+    """Friendly label for a menu button, or "" when the operator unbound it.
+
+    These screens are reachable on a station with no keyboard, so every modal
+    that can be driven from a pad has to name the pad buttons. Read from the
+    operator's own bindings rather than hardcoded, because a rebound control
+    named by its default sends them to a button that does nothing.
+    """
+    raw = state.button_labels.get(action, default)
+    return friendly_button_label(raw) if raw else ""
+
+
+def _confirm_cancel_hint(state: OverlayState, confirm_verb: str, cancel_verb: str) -> str:
+    """``"A saves, B cancels"`` from live bindings; "" when neither is bound."""
+    confirm = _menu_button_hint(state, "menu_confirm", "A")
+    cancel = _menu_button_hint(state, "menu_cancel", "B")
+    parts = []
+    if confirm:
+        parts.append(f"{confirm} {confirm_verb}")
+    if cancel:
+        parts.append(f"{cancel} {cancel_verb}")
+    return ", ".join(parts)
+
+
+_NOTICE_FONT = 11.5
+_NOTICE_LINE_H = 16.0
+_NOTICE_PAD = 7.0
+_NOTICE_SIGN = 14.0
+_NOTICE_MAX_LINES = 3
+_NOTICE_GAP = 8.0
+
+
+def _draw_network_status_row(
+    renderer: Any, cr: Any, x: float, y: float, w: float, level: str, text: str, *, busy: bool = False
+) -> float:
+    """A row in its level's fill and border, led by its sign (the spinner while
+    *busy*); returns the height drawn."""
+    text_x = x + _NOTICE_PAD + _NOTICE_SIGN + 8.0
+    text_w = x + w - _NOTICE_PAD - text_x
+    lines = _wrap_error_message(renderer, cr, text, text_w, _NOTICE_FONT, bold=False)
+    if len(lines) > _NOTICE_MAX_LINES:
+        rest = " ".join(lines[_NOTICE_MAX_LINES - 1 :])
+        lines = [*lines[: _NOTICE_MAX_LINES - 1], renderer._truncate_text_to_width(cr, rest, text_w)]
+    row_h = len(lines) * _NOTICE_LINE_H + 2 * _NOTICE_PAD
+    draw_level_box(cr, level, x, y, w, row_h, radius=ROW_RADIUS, line_width=1.2)
+    sign_cx = x + _NOTICE_PAD + _NOTICE_SIGN / 2.0
+    sign_cy = y + _NOTICE_PAD + _NOTICE_LINE_H / 2.0
+    if busy:
+        draw_spinner(cr, sign_cx, sign_cy, _NOTICE_SIGN / 2.0 - 1.0, time.monotonic())
+    else:
+        draw_level_sign(cr, level, sign_cx, sign_cy, _NOTICE_SIGN)
+    renderer._set_ui_font(cr, _NOTICE_FONT)
+    cr.set_source_rgb(*COLOR_TEXT)
+    for i, line in enumerate(lines):
+        cr.move_to(text_x, y + _NOTICE_PAD + _NOTICE_LINE_H * i + 12.0)
+        cr.show_text(line)
+    return row_h
+
+
 def draw_pi_network_screen(
     renderer: Any,
     cr: Any,
@@ -1706,15 +1768,18 @@ def draw_pi_network_screen(
     while data rows sit indented below them.
     """
     net = state.pi_network
-    subtitle = "Use \u2191\u2193 to move, Enter to edit, Esc / Back to leave."
-    panel_w = min(w * 0.62, 880.0)
-    panel_h = min(h * 0.92, 760.0)
+    # Confirm opens an interface on the list and runs an action inside one, so
+    # the hint has to follow the level rather than describe one of them wrongly.
+    pad = _confirm_cancel_hint(state, "selects" if net.open_iface else "opens", "goes back")
+    subtitle = f"D-pad or arrows to move. {pad}." if pad else "Arrows to move, Enter to select, Esc to go back."
+    panel_w = panel_width(w)
+    panel_h = screen_height(h)
     panel_x, panel_y, panel_w, panel_h = draw_modal_shell(
         renderer,
         cr,
         w,
         h,
-        title="NETWORK",
+        title=net.open_iface.upper() if net.open_iface else "NETWORK INTERFACES",
         subtitle=subtitle,
         panel_w=panel_w,
         panel_h=panel_h,
@@ -1725,16 +1790,11 @@ def draw_pi_network_screen(
     cursor_y = panel_y + 74.0
 
     if net.banner:
-        bar_h = 36.0
-        cr.set_source_rgba(0.13, 0.13, 0.17, 0.95)
-        draw_rounded_rect(cr, content_x, cursor_y, content_w, bar_h, ROW_RADIUS)
-        cr.fill()
-        renderer._set_ui_font(cr, 12, bold=True)
-        cr.set_source_rgba(*COLOR_TEXT)
-        text = renderer._truncate_text_to_width(cr, net.banner, content_w - 24.0)
-        cr.move_to(content_x + 12.0, cursor_y + bar_h / 2.0 + 5.0)
-        cr.show_text(text)
-        cursor_y += bar_h + 10.0
+        level = status_level(net.banner_level)
+        cursor_y += (
+            _draw_network_status_row(renderer, cr, content_x, cursor_y, content_w, level, net.banner, busy=net.busy)
+            + 10.0
+        )
 
     # Container panel for the row list.
     list_y = cursor_y
@@ -1763,12 +1823,24 @@ def draw_pi_network_screen(
         value = str(row.get("value", ""))
 
         if kind == "header":
-            # Bold section heading; no chrome.
+            # Bold section heading; no chrome, and muted: a heading in a status
+            # colour raises a false alarm on a screen reached when something is
+            # already wrong.
             renderer._set_ui_font(cr, 12, bold=True)
-            cr.set_source_rgba(*COLOR_ACCENT)
+            cr.set_source_rgba(*COLOR_TEXT_MUTED)
             cr.move_to(inner_x, row_y + header_h * 0.75)
             cr.show_text(label.upper())
             row_y += header_h + spacing_after_header
+            continue
+
+        if kind == "notice":
+            # Clear of the rows above it, which would otherwise touch its border.
+            if idx > 0 and net.rows[idx - 1].get("kind") not in ("notice", "header"):
+                row_y += _NOTICE_GAP
+            level = status_level(row.get("level"))
+            row_y += _draw_network_status_row(renderer, cr, inner_x, row_y, inner_w, level, label) + 6.0
+            if idx + 1 < len(net.rows) and net.rows[idx + 1].get("kind") == "header":
+                row_y += spacing_after_section
             continue
 
         if kind == "action":
@@ -1807,15 +1879,50 @@ def draw_pi_network_screen(
             draw_rounded_rect(cr, inner_x, row_y - 2.0, inner_w, data_row_h, ROW_RADIUS)
             cr.fill()
         label_x = inner_x + 14.0
-        value_x = inner_x + 180.0
+        # The label column carries URLs on this screen, not just field names.
+        # At 180 a station's own ``<slug>.local`` - the headline row, and the
+        # line an operator reads out over comms - ellipsised; the values here
+        # are short interface names, so the space belongs on the left.
+        value_x = inner_x + 300.0
         renderer._set_ui_font(cr, 11.5, bold=is_selected)
         cr.set_source_rgba(*COLOR_TEXT_MUTED if kind == "display" else COLOR_TEXT)
         cr.move_to(label_x, row_y + data_row_h * 0.65)
         cr.show_text(renderer._truncate_text_to_width(cr, label, value_x - label_x - 8.0))
+        # A pill sits at the right edge, so the value column has to stop short
+        # of it rather than run underneath.
+        chevron_w = CHEVRON_GUTTER if row.get("opens") else 0.0
+        pill = str(row.get("pill", ""))
+        pill_w = 0.0
+        if pill:
+            renderer._set_ui_font(cr, 10)
+            pill_w = cr.text_extents(pill).width + 16.0
         renderer._set_ui_font(cr, 11.5, bold=is_selected)
         cr.set_source_rgba(*COLOR_TEXT_MUTED if kind == "display" else COLOR_TEXT)
         cr.move_to(value_x, row_y + data_row_h * 0.65)
-        cr.show_text(renderer._truncate_text_to_width(cr, value, inner_w - (value_x - inner_x) - 14.0))
+        cr.show_text(renderer._truncate_text_to_width(cr, value, inner_w - (value_x - inner_x) - 14.0 - pill_w))
+        if bool(row.get("opens")):
+            draw_submenu_chevron(cr, inner_x + inner_w - 6.0, row_y + data_row_h / 2.0 - 2.0)
+        if pill:
+            # A state takes its level's chip colours; how the address was come by is neutral.
+            pill_level = row.get("pill_level")
+            level_colors = STATUS_LEVEL_COLORS[status_level(pill_level)] if pill_level else None
+            pill_x = inner_x + inner_w - pill_w - 8.0 - chevron_w
+            pill_y = row_y + 1.0
+            pill_h = data_row_h - 6.0
+            cr.set_source_rgba(*(level_colors[0] if level_colors else (1.0, 1.0, 1.0, 0.07)))
+            # A pill sits in a row, and an inner corner is never rounder than its container.
+            draw_rounded_rect(cr, pill_x, pill_y, pill_w, pill_h, ROW_RADIUS)
+            cr.fill()
+            if level_colors:
+                cr.set_source_rgb(*level_colors[1])
+                draw_rounded_rect(cr, pill_x, pill_y, pill_w, pill_h, ROW_RADIUS)
+                cr.set_line_width(1.0)
+                cr.stroke()
+            renderer._set_ui_font(cr, 10)
+            cr.set_source_rgba(*((*COLOR_TEXT, 1.0) if level_colors else COLOR_TEXT_MUTED))
+            ext = cr.text_extents(pill)
+            cr.move_to(pill_x + (pill_w - ext.width) / 2.0, pill_y + pill_h * 0.72)
+            cr.show_text(pill)
         row_y += data_row_h
 
         # Slight extra gap after the last DNS / lease / router row before
@@ -1836,74 +1943,6 @@ def draw_pi_network_screen_overlay(
     draw_pi_network_screen(renderer, cr, state, w, h)
 
 
-def draw_pi_network_iface_picker(
-    renderer: Any,
-    cr: Any,
-    state: OverlayState,
-    w: int,
-    h: int,
-) -> None:
-    net = state.pi_network
-    draw_selection_menu(
-        renderer,
-        cr,
-        state,
-        w,
-        h,
-        title="SELECT INTERFACE",
-        subtitle="Pick an interface, Enter to confirm, Esc to cancel.",
-        mode="pi-network-iface",
-        items=list(net.iface_picker_items),
-        selected_idx=net.iface_picker_selected_index,
-        empty_message="No interfaces detected.",
-    )
-
-
-def draw_pi_network_iface_picker_overlay(
-    renderer: Any,
-    cr: Any,
-    state: OverlayState,
-    w: int,
-    h: int,
-) -> None:
-    draw_modal_scrim(cr, w, h, alpha=0.56)
-    draw_pi_network_iface_picker(renderer, cr, state, w, h)
-
-
-def draw_pi_network_method_picker(
-    renderer: Any,
-    cr: Any,
-    state: OverlayState,
-    w: int,
-    h: int,
-) -> None:
-    net = state.pi_network
-    draw_selection_menu(
-        renderer,
-        cr,
-        state,
-        w,
-        h,
-        title="CONFIGURE IPv4",
-        subtitle="Pick a method, Enter to confirm, Esc to cancel.",
-        mode="pi-network-method",
-        items=list(net.method_picker_items),
-        selected_idx=net.method_picker_selected_index,
-        empty_message="No methods available.",
-    )
-
-
-def draw_pi_network_method_picker_overlay(
-    renderer: Any,
-    cr: Any,
-    state: OverlayState,
-    w: int,
-    h: int,
-) -> None:
-    draw_modal_scrim(cr, w, h, alpha=0.56)
-    draw_pi_network_method_picker(renderer, cr, state, w, h)
-
-
 def draw_pi_network_field_edit(
     renderer: Any,
     cr: Any,
@@ -1912,9 +1951,19 @@ def draw_pi_network_field_edit(
     h: int,
 ) -> None:
     net = state.pi_network
-    title = (net.field_label or "VALUE").upper()
-    subtitle = "Type digits and dots only, Enter to save, Esc to cancel."
-    panel_w = min(w * 0.62, 720.0)
+    # Naming the field alone leaves an operator on a multi-NIC station to
+    # remember which row they opened, and the cost of getting it wrong is
+    # reconfiguring the interface they are reachable on.
+    title = f"Change {net.field_label or 'Value'}".upper()
+    pad = _confirm_cancel_hint(state, "saves", "cancels")
+    detail = (
+        f"Left/Right move, Up/Down change the digit. {pad}."
+        if pad
+        else "Type digits and dots only, Enter to save, Esc to cancel."
+    )
+    # Interface first: the subtitle is truncated from the end.
+    subtitle = f"{net.active_iface} - {detail}" if net.active_iface else detail
+    panel_w = panel_width(w)
     panel_h = min(h * 0.30, 240.0)
     panel_x, panel_y, panel_w, panel_h = draw_modal_shell(
         renderer,
@@ -1943,13 +1992,26 @@ def draw_pi_network_field_edit(
     cr.move_to(text_x, text_y)
     cr.show_text(rendered)
 
-    rendered_ext = cr.text_extents(rendered)
-    cursor_x = text_x + rendered_ext.x_advance + 1.0
+    # A d-pad cursor names one digit, so it is underlined in place. Without
+    # this the operator presses left/right and nothing moves, then presses up
+    # and a digit changes somewhere they cannot see. A typed value keeps the
+    # end-of-string caret instead.
+    caret = net.field_caret_offset
     cr.set_source_rgba(*COLOR_ACCENT)
-    cr.set_line_width(1.6)
-    cr.move_to(cursor_x, box_y + 14.0)
-    cr.line_to(cursor_x, box_y + box_h - 14.0)
-    cr.stroke()
+    if 0 <= caret < len(rendered):
+        before = cr.text_extents(rendered[:caret]).x_advance
+        width = cr.text_extents(rendered[caret]).x_advance
+        underline_y = box_y + box_h - 12.0
+        cr.set_line_width(2.2)
+        cr.move_to(text_x + before, underline_y)
+        cr.line_to(text_x + before + width, underline_y)
+        cr.stroke()
+    else:
+        cursor_x = text_x + cr.text_extents(rendered).x_advance + 1.0
+        cr.set_line_width(1.6)
+        cr.move_to(cursor_x, box_y + 14.0)
+        cr.line_to(cursor_x, box_y + box_h - 14.0)
+        cr.stroke()
 
 
 def draw_pi_network_field_edit_overlay(

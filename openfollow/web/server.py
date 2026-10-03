@@ -56,6 +56,11 @@ _FALLBACK_PORTS: tuple[int, ...] = (8080, 2010)
 # paths and the resolver enumerates interfaces, so an IP change is picked up
 # within this window rather than re-resolving on every request.
 _LOCAL_IP_REFRESH_TTL = 5.0
+# How long the Network Settings interface list is reused before re-reading.
+# Enumerating every adapter costs one backend call each (an ``nmcli``
+# subprocess on the NetworkManager backend), and addresses don't change on a
+# sub-second cadence. ``Scan`` bypasses this.
+_NETWORK_IFACES_TTL = 5.0
 
 _AUTOSTART_UNREADABLE = "Could not read whether this service starts at boot."
 _CAMERA_SETUP_UNAVAILABLE = "Camera setup is not available on this build."
@@ -133,6 +138,18 @@ class _ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
             sem.release()
 
 
+def _copy_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Copy the list, each row, *and* any list a row holds.
+
+    Copying only the list leaves every caller holding the cached dicts, so a
+    template helper decorating a row corrupts what the next render reads. Rows
+    carry a ``dns`` list, which a per-row ``dict()`` would still share with the
+    cache - one in-place edit anywhere downstream would rewrite what every
+    render inside the TTL window reads.
+    """
+    return [{k: list(v) if isinstance(v, list) else v for k, v in row.items()} for row in rows]
+
+
 class ConfigWebServer:
     """Threaded web server for configuration UI with peer discovery."""
 
@@ -144,7 +161,11 @@ class ConfigWebServer:
         system_name: str = "OpenFollow",
         command_queue: WebCommandQueue | None = None,
         local_ip: str = "",
-        local_ip_provider: Callable[[], str] | None = None,
+        # Fail-closed station address for the beacons: an address pins them,
+        # "" leaves the interface to the OS, and None means the configured
+        # interface has no address, which stops them until it returns.
+        station_ip: str | None = "",
+        local_ip_provider: Callable[[], str | None] | None = None,
         runtime_stats_provider: Callable[[], dict[str, Any]] | None = None,
         crash_restarts_provider: Callable[[], int] | None = None,
         online_sync_status_provider: (Callable[[], dict[str, Any]] | None) = None,
@@ -184,8 +205,14 @@ class ConfigWebServer:
         network_state_provider: Callable[[], dict[str, Any] | None] | None = None,
         # Web write path: config snapshot + apply/renew handlers; optional for tests.
         network_config_provider: (Callable[[str | None], dict[str, Any] | None] | None) = None,
+        # Every interface at once, for the Network Settings list. Costs one
+        # backend call per interface, so the result is TTL-cached here.
+        network_interfaces_provider: (Callable[[], list[dict[str, Any]]] | None) = None,
         network_apply_handler: Callable[[str, Any], ApplyResult] | None = None,
         network_renew_handler: Callable[[str], ApplyResult] | None = None,
+        network_vlan_provider: Callable[[], dict[str, Any]] | None = None,
+        network_vlan_create_handler: Callable[[str, int], ApplyResult] | None = None,
+        network_vlan_delete_handler: Callable[[str], ApplyResult] | None = None,
         # Privilege capability snapshot for the diagnostics bundle; optional for tests.
         privilege_states_provider: Callable[[], dict[str, str]] | None = None,
         # Boot-autostart switch: host state on read, broker-elevated write.
@@ -211,6 +238,7 @@ class ConfigWebServer:
         # Diagnostics I/O providers: recent OSC/MIDI events + USB-visibility cross-reference.
         recent_osc_sends_provider: (Callable[[], list[dict[str, Any]]] | None) = None,
         osc_listener_status_provider: (Callable[[], dict[str, Any]] | None) = None,
+        network_planes_provider: (Callable[[], list[dict[str, Any]]] | None) = None,
         recent_midi_events_provider: (Callable[[], list[dict[str, Any]]] | None) = None,
         midi_port_names_provider: Callable[[], list[str]] | None = None,
         camera_names_provider: Callable[[], list[str]] | None = None,
@@ -221,6 +249,7 @@ class ConfigWebServer:
         # The same listing for diagnostics, raising where the picker's lists nothing.
         media_scan_provider: Callable[[], list[Media]] | None = None,
         diagnostics_export: DiagnosticsExport | None = None,
+        web_bind_advisory_provider: (Callable[[], dict[str, str]] | None) = None,
     ) -> None:
         self._config_path = os.path.abspath(config_path)
         self._host = host
@@ -239,6 +268,11 @@ class ConfigWebServer:
         self._local_ip_provider = local_ip_provider
         self._local_ip_lock = threading.Lock()
         self._local_ip_refresh_ts = 0.0  # monotonic; throttles _refresh_local_ip
+        # Whether the pinned station interface currently has no address. The
+        # displayed IP deliberately keeps its last known good value, so this is
+        # what lets a surface say the address no longer reaches the station
+        # rather than showing a number whose meaning changed silently.
+        self._station_interface_down = False
         self._command_queue = command_queue or WebCommandQueue()
         self._runtime_stats_provider = runtime_stats_provider
         self.crash_restarts_provider = crash_restarts_provider
@@ -265,9 +299,20 @@ class ConfigWebServer:
         self._log_ring = log_ring
         self._network_state_provider = network_state_provider
         self._network_config_provider = network_config_provider
+        self._network_interfaces_provider = network_interfaces_provider
+        # TTL cache for the interface list: enumerating every adapter's method
+        # costs one backend call each, and the General tab re-renders often.
+        # ``Scan`` bypasses it, so a freshly plugged NIC never needs a wait.
+        self._network_ifaces_cache: list[dict[str, Any]] = []
+        self._network_ifaces_ts = 0.0  # monotonic; 0 = never populated
+        self._network_ifaces_lock = threading.Lock()
         self._network_apply_handler = network_apply_handler
         self._network_renew_handler = network_renew_handler
+        self._network_vlan_provider = network_vlan_provider
+        self._network_vlan_create_handler = network_vlan_create_handler
+        self._network_vlan_delete_handler = network_vlan_delete_handler
         self._psn_source_advisory_provider = psn_source_advisory_provider
+        self._web_bind_advisory_provider = web_bind_advisory_provider
         self._privilege_states_provider = privilege_states_provider
         self._autostart_state_provider = autostart_state_provider
         self._autostart_apply_handler = autostart_apply_handler
@@ -283,6 +328,7 @@ class ConfigWebServer:
         # Public so diagnostics builders pass directly to DiagnosticsProviders.
         self.recent_osc_sends_provider = recent_osc_sends_provider
         self.osc_listener_status_provider = osc_listener_status_provider
+        self.network_planes_provider = network_planes_provider
         self.recent_midi_events_provider = recent_midi_events_provider
         self.midi_port_names_provider = midi_port_names_provider
         self.camera_names_provider = camera_names_provider
@@ -316,15 +362,16 @@ class ConfigWebServer:
         self._loopback_http_server: Any = None
 
         # Peer discovery
+        beacon_iface_ip = station_ip if station_ip != "127.0.0.1" else ""
         self._beacon_sender = BeaconSender(
             name=system_name,
             web_port=port,
             version=openfollow.__version__,
-            iface_ip=self._local_ip if self._local_ip != "127.0.0.1" else "",
+            iface_ip=beacon_iface_ip,
         )
         self._beacon_receiver = BeaconReceiver(
             on_peer_discovered=self._on_peer_discovered,
-            iface_ip=self._local_ip if self._local_ip != "127.0.0.1" else "",
+            iface_ip=beacon_iface_ip,
         )
         self._beacon_receiver.set_local_port(port)
 
@@ -352,6 +399,18 @@ class ConfigWebServer:
     @property
     def local_ip(self) -> str:
         return self._local_ip
+
+    @property
+    def station_interface_down(self) -> bool:
+        """Whether the pinned station interface currently has no address.
+
+        ``local_ip`` keeps its last known good value through an outage, because
+        the web UI is usually still reachable there - it binds every interface -
+        and blanking it would take information away from an operator who is
+        demonstrably connected. This says the identity behind that address is
+        down, so a surface can report the state instead of a stale number.
+        """
+        return self._station_interface_down
 
     @property
     def port(self) -> int:
@@ -404,6 +463,45 @@ class ConfigWebServer:
         except Exception:  # noqa: BLE001
             logger.exception("Network config provider raised")
             return None
+
+    def get_network_interfaces(self, *, force: bool = False) -> list[dict[str, Any]]:
+        """Every interface with address / method / up-state, TTL-cached.
+
+        ``force=True`` is the ``Scan`` path: it re-reads immediately so a
+        just-plugged adapter (or a just-created VLAN) shows up without waiting
+        out the TTL.
+
+        The provider is called outside the lock: it shells out per interface,
+        and holding the lock across that would serialise every render behind
+        one slow backend read. A concurrent caller may duplicate the work, but
+        both write the same snapshot, which is cheaper than the contention.
+        """
+        if self._network_interfaces_provider is None:
+            return []
+        now = time.monotonic()
+        if not force:
+            with self._network_ifaces_lock:
+                if self._network_ifaces_ts and now - self._network_ifaces_ts < _NETWORK_IFACES_TTL:
+                    return _copy_rows(self._network_ifaces_cache)
+        try:
+            rows = self._network_interfaces_provider()
+        except Exception:  # noqa: BLE001
+            logger.exception("Network interfaces provider raised")
+            # Serve the last good snapshot rather than blanking the list on a
+            # transient backend failure.
+            with self._network_ifaces_lock:
+                return _copy_rows(self._network_ifaces_cache)
+        with self._network_ifaces_lock:
+            self._network_ifaces_cache = _copy_rows(rows)
+            self._network_ifaces_ts = time.monotonic()
+        return _copy_rows(rows)
+
+    def read_network_interfaces(self) -> list[dict[str, Any]]:
+        """The backend's rows read now, uncached; a failure raises rather than
+        serving the last good rows, so the diagnostics bundle can report it."""
+        if self._network_interfaces_provider is None:
+            return []
+        return self._network_interfaces_provider()
 
     def apply_network(self, iface: str, config: Any) -> ApplyResult:
         """Apply IPv4 config to iface; always returns ApplyResult."""
@@ -484,6 +582,46 @@ class ConfigWebServer:
             logger.exception("Camera setup restart handler raised")
             return {"ok": False, "error": _CAMERA_SETUP_FAILED}
 
+    def get_network_vlans(self) -> dict[str, Any]:
+        """Return ``{"supported": bool, "vlans": [{name, parent, vlan_id}]}``.
+
+        Reported unsupported when unwired or when the provider fails, so the
+        card omits the VLAN controls rather than offering a button that cannot
+        work.
+        """
+        empty: dict[str, Any] = {"supported": False, "vlans": []}
+        if self._network_vlan_provider is None:
+            return empty
+        try:
+            return self._network_vlan_provider()
+        except Exception:  # noqa: BLE001
+            logger.exception("Network VLAN provider raised")
+            return empty
+
+    def create_network_vlan(self, parent: str, vlan_id: int) -> ApplyResult:
+        """Create a VLAN sub-interface on ``parent``; always returns ApplyResult."""
+        from openfollow.network.adapter import ApplyResult
+
+        if self._network_vlan_create_handler is None:
+            return ApplyResult(ok=False, message="Network writes are not available on this build.")
+        try:
+            return self._network_vlan_create_handler(parent, vlan_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("network_vlan_create handler raised")
+            return ApplyResult(ok=False, message=str(exc))
+
+    def delete_network_vlan(self, name: str) -> ApplyResult:
+        """Delete the VLAN sub-interface ``name``; always returns ApplyResult."""
+        from openfollow.network.adapter import ApplyResult
+
+        if self._network_vlan_delete_handler is None:
+            return ApplyResult(ok=False, message="Network writes are not available on this build.")
+        try:
+            return self._network_vlan_delete_handler(name)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("network_vlan_delete handler raised")
+            return ApplyResult(ok=False, message=str(exc))
+
     def get_psn_source_advisory(self) -> dict[str, str]:
         """Startup advisory when pinned PSN source iface unavailable; returns status/banner/resolved_ip."""
         empty = {"status": "", "banner": "", "resolved_ip": ""}
@@ -495,8 +633,25 @@ class ConfigWebServer:
             logger.exception("PSN source advisory provider raised")
             return empty
 
-    def _refresh_local_ip(self) -> None:
+    def get_web_bind_advisory(self) -> dict[str, str]:
+        """How the web UI's own interface pin resolved at bind time; returns
+        status/banner/resolved_ip. ``status`` is ``"down"`` when the pin was
+        unresolvable and the wildcard bind was substituted."""
+        empty = {"status": "", "banner": "", "resolved_ip": ""}
+        if self._web_bind_advisory_provider is None:
+            return empty
+        try:
+            return self._web_bind_advisory_provider()
+        except Exception:  # noqa: BLE001
+            logger.exception("web bind advisory provider raised")
+            return empty
+
+    def _refresh_local_ip(self) -> bool:
         """Re-resolve this host's primary IP and adopt it if it changed.
+
+        Returns True only when the beacons were actually repointed, so a
+        caller that would otherwise force a rebuild afterwards can tell it has
+        already happened.
 
         The IP captured at startup goes stale when the operator switches the
         interface from static to DHCP (or a lease hands back a new address)
@@ -510,28 +665,85 @@ class ConfigWebServer:
         enumeration, so it must not re-resolve on every hit.
         """
         if self._local_ip_provider is None:
-            return
+            return False
         now = time.monotonic()
         with self._local_ip_lock:
             if now - self._local_ip_refresh_ts < _LOCAL_IP_REFRESH_TTL:
-                return
+                return False
             self._local_ip_refresh_ts = now
         try:
             candidate = self._local_ip_provider()
         except Exception:  # noqa: BLE001
             logger.exception("local_ip provider raised")
-            return
+            return False
+        # ``None`` is the one state that means *stop*: an interface is pinned
+        # and has no address. Blank or loopback only mean "could not resolve",
+        # which is no reason to unpin a beacon that is working - unpinned
+        # multicast follows the routing table onto an unchosen NIC.
+        if candidate is None:
+            with self._local_ip_lock:
+                self._station_interface_down = True
+                self._beacon_sender.update_iface_ip(None)
+                self._beacon_receiver.update_iface_ip(None)
+            return True
         if not candidate or candidate.startswith("127."):
-            return
+            return False
         with self._local_ip_lock:
-            if candidate == self._local_ip:
-                return
+            self._station_interface_down = False
+            if candidate == self._local_ip and self._beacon_sender.iface_ip == candidate:
+                return False
             self._local_ip = candidate
             # Repoint beacons under the lock so IP + interface stay consistent
             # under concurrent refreshes (update_iface_ip never blocks).
             self._beacon_sender.update_iface_ip(candidate)
             self._beacon_receiver.update_iface_ip(candidate)
         logger.info("Local IP changed to %s; beacon interface repointed.", candidate)
+        return True
+
+    def refresh_local_ip(self) -> bool:
+        """Re-resolve this station's address; True when the beacons repointed.
+
+        Called by the runtime network observer on a timer and by the request
+        paths; the internal throttle makes the extra calls free. The return
+        value lets the observer's recovery path tell whether the beacons have
+        already been rebuilt, so it does not rebuild them a second time.
+        """
+        return self._refresh_local_ip()
+
+    def suspend_beacons(self) -> None:
+        """Stop both beacons because the station interface has no address.
+
+        Called on the observer's down edge so the beacon goes quiet by
+        decision rather than by waiting for its next send to fail: a socket
+        pinned to a removed address does not reliably error, and the whole
+        point is that nothing leaves on an interface nobody chose.
+
+        Also flips the station-down flag. This is the authoritative edge; the
+        request-driven refresh is not, so a diagnostics bundle collected
+        without a preceding page load would otherwise record the address as if
+        it still reached the station.
+        """
+        with self._local_ip_lock:
+            self._station_interface_down = True
+            self._beacon_sender.update_iface_ip(None)
+            self._beacon_receiver.update_iface_ip(None)
+
+    def reopen_beacons(self) -> None:
+        """Rebuild both beacon sockets regardless of whether the IP changed.
+
+        Called on recovery from an interface outage: the kernel drops the
+        group membership and the egress route when an address is removed, and
+        the same address coming back does not restore either - so the
+        unchanged-IP guard in ``update_iface_ip`` is not enough on its own.
+
+        Clears the station-down flag for the same reason ``suspend_beacons``
+        sets it: recovery is an observer decision, not something to be
+        discovered by the next HTTP request.
+        """
+        with self._local_ip_lock:
+            self._station_interface_down = False
+        self._beacon_sender.reopen()
+        self._beacon_receiver.reopen()
 
     def get_local_peer_info(self) -> PeerInfo:
         """Get info about this server as a PeerInfo object."""
@@ -547,6 +759,10 @@ class ConfigWebServer:
     def request_restart(self) -> None:
         """Signal that app restart was requested."""
         self._command_queue.request_restart()
+
+    def request_restart_unless_updating(self) -> bool:
+        """Request a restart unless an update is queued or running; False when refused."""
+        return self._command_queue.request_restart_unless_updating()
 
     def request_button_detection(self) -> None:
         """Signal that button detection wizard was requested."""
@@ -950,6 +1166,26 @@ class ConfigWebServer:
         ``0.0.0.0`` and any 127.x / ::1 address already cover loopback."""
         host = self._host
         return bool(host) and host != "0.0.0.0" and not host.startswith("127.") and host != "::1"
+
+    @property
+    def bind_host(self) -> str:
+        """Address the external listener was started on.
+
+        The listening socket is fixed for the life of the server, so this is
+        what a configured pin has to be compared against to tell whether a
+        restart is still pending.
+        """
+        return self._host
+
+    @property
+    def listener(self) -> tuple[str, str]:
+        """The external listener's ``host:port`` and whether it is serving there."""
+        host = self._host or "0.0.0.0"  # noqa: S104 - a label, not a bind
+        if self._http_server is not None:
+            return f"{host}:{self._port}", "listening"
+        if self._fallback_http_server is not None and self._fallback_port is not None:
+            return f"{host}:{self._fallback_port}", f"listening on the fallback port, not {self._port}"
+        return f"{host}:{self._port}", "not listening"
 
     @property
     def display_port(self) -> int:

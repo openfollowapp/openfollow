@@ -18,7 +18,9 @@ from openfollow.video.inputs._base import (
     ReconnectPolicy,
     SourceEndpoint,
     VideoInputBase,
+    video_input_pin_field,
 )
+from openfollow.video.inputs._pin import PinRefusal, check_video_pin, config_pin
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +68,7 @@ class RtspInput(VideoInputBase):
     display_name = "RTSP"
     source_element_name = "rtspsrc"
     source_kind = SourceKind.REMOTE
+    pins_interface = True
 
     # -- Declarations ---------------------------------------------------------
 
@@ -78,6 +81,7 @@ class RtspInput(VideoInputBase):
             # in plain text on a stage projector.
             ConfigField("rtsp_user", str, "", "Username", device_editable=False),
             ConfigField("rtsp_password", str, "", "Password", device_editable=False, strip=False),
+            video_input_pin_field(),
         ]
 
     @classmethod
@@ -175,6 +179,11 @@ class RtspInput(VideoInputBase):
         # Allow TCP + UDP + UDP-multicast so RTSP can negotiate the best working
         # transport for the current network (Pi/macOS/firewall differences).
         rtspsrc.set_property("protocols", 0x00000007)
+        pin = config_pin(config)
+        if pin:
+            # Only the multicast membership can be pinned; the preflight checks
+            # that the routing table already sends everything else there.
+            rtspsrc.set_property("multicast-iface", pin)
         logger.info(
             "RTSP source: %s (latency=0, tcp+udp+multicast, login=%s)",
             redact_uri(location),
@@ -310,6 +319,15 @@ class RtspInput(VideoInputBase):
         )
 
     # -- Config ---------------------------------------------------------------
+
+    @classmethod
+    def preflight(cls, config: dict[str, Any]) -> PinRefusal | None:
+        endpoint = cls.source_endpoint(config)
+        if endpoint is None:
+            return check_video_pin(config_pin(config))
+        # rtspsrc's own sockets cannot be bound to a device, so the routing
+        # table's choice is the one that has to match.
+        return check_video_pin(config_pin(config), endpoint.host, endpoint.port, forced_device=False)
 
     @classmethod
     def source_endpoint(cls, config: dict[str, Any]) -> SourceEndpoint | None:

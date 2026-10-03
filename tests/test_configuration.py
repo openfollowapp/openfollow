@@ -61,6 +61,8 @@ class _DummyRuntimeServices:
         self.psn_source_ip_changes: list[str] = []
         self.psn_mcast_ip_changes: list[str] = []
         self.psn_combined_changes: list[tuple[str, str]] = []
+        self.psn_suspends = 0
+        self.station_iface_follow_calls = 0
         self.psn_system_name_changes: list[str] = []
         self.detection_changes: list[DetectionConfig] = []
         self.detection_swaps: list[DetectionConfig] = []
@@ -89,6 +91,12 @@ class _DummyRuntimeServices:
             self.psn_combined_changes.append(
                 (new_source_ip, str(new_mcast_ip)),
             )
+
+    def suspend_psn_planes(self) -> None:
+        self.psn_suspends += 1
+
+    def apply_station_iface_change(self) -> None:
+        self.station_iface_follow_calls += 1
 
     def apply_psn_mcast_ip_change(self, new_mcast_ip: str) -> None:
         self.psn_mcast_ip_changes.append(new_mcast_ip)
@@ -181,6 +189,7 @@ class _DummyInputManager:
         self.mouse_handler = _DummyMouseHandler()
         self.osc_restarts: list[tuple[bool, int]] = []
         self.osc_multicast_groups: list[str] = []
+        self.osc_listen_ifaces: list[str] = []
         self.operator_message_restarts = 0
         self.mouse3d_restarts: list[Mouse3DConfig] = []
 
@@ -194,9 +203,11 @@ class _DummyInputManager:
         allowed_sender_ips: list[str] | None = None,
         *,
         multicast_group: str = "",
+        listen_iface: str = "",
     ) -> None:
         self.osc_restarts.append((enabled, port))
         self.osc_multicast_groups.append(multicast_group)
+        self.osc_listen_ifaces.append(listen_iface)
 
     def restart_operator_messages(self) -> None:
         self.operator_message_restarts += 1
@@ -1070,23 +1081,19 @@ def test_deprecated_confirm_cancel_fields_warn_on_custom_value(
     assert any("src_btn_confirm" in msg for msg in deprecation_warnings)
 
 
-def test_deprecated_direct_entry_fields_warn_on_custom_value(
+def test_a_config_carrying_the_removed_source_select_binding_still_loads(
     temp_config_path,
-    caplog,
-    monkeypatch,
 ) -> None:
-    # Same ordering-safety reset as the confirm/cancel test above.
-    import openfollow.configuration as cfg_mod
-
-    monkeypatch.setattr(cfg_mod, "_DEPRECATED_WARNED", set())
-    controller = ControllerConfig(
-        btn_source_select="X",
+    """``btn_source_select`` is gone, and stations in the field have it in
+    their ``config.toml``. The loader strips keys that match no field, so such
+    a config must load unchanged rather than raise on an unexpected key."""
+    temp_config_path.write_text(
+        '[controller]\nbtn_source_select = "X"\nbtn_settings = "START"\n',
+        encoding="utf-8",
     )
-    save_config(AppConfig(controller=controller), str(temp_config_path))
-    with caplog.at_level("WARNING", logger="openfollow.configuration"):
-        load_config(str(temp_config_path))
-    messages = [r.message for r in caplog.records]
-    assert any("btn_source_select" in msg and "Settings menu" in msg for msg in messages)
+    cfg = load_config(str(temp_config_path))
+    assert not hasattr(cfg.controller, "btn_source_select")
+    assert cfg.controller.btn_settings == "START"
 
 
 def test_loading_default_config_does_not_emit_deprecation_warnings(
@@ -1130,7 +1137,6 @@ def test_gamepad_trigger_shared_by_z_and_an_action_stays_on_the_upper_one() -> N
     [
         {"btn_toggle_zones": "B", "btn_menu_cancel": "B"},
         {"btn_reset": "A", "btn_menu_confirm": "A"},
-        {"btn_settings": "BACK", "btn_source_select": "BACK"},
     ],
 )
 def test_gamepad_button_shared_across_groups_is_kept(shared: dict[str, str]) -> None:
@@ -1352,6 +1358,24 @@ def test_apply_runtime_osc_multicast_group_threads_into_restart() -> None:
     assert app._input_manager.osc_multicast_groups == ["239.1.2.3"]
 
 
+def test_apply_runtime_osc_listen_iface_threads_into_restart() -> None:
+    """An ``[osc] listen_iface`` change reaches ``InputManager.restart_osc``.
+
+    Live-applied like the rest of the section: the listener is rebound between
+    frames, so repinning it needs no restart. Dropped here, a saved pin would
+    sit in config while the socket stayed on the old interface.
+    """
+    app = _DummyApp(AppConfig())
+    new_config = AppConfig()
+    new_config.osc.listen_iface = "eth1"
+
+    apply_runtime_config_changes(app, new_config)
+
+    assert app._config.osc.listen_iface == "eth1"
+    assert app._input_manager.osc_listen_ifaces == ["eth1"]
+    assert app._web_commands.restart_requested is False
+
+
 def test_apply_runtime_mouse3d_enabled_toggle_reaches_input_manager() -> None:
     """Enabling 3D Mouse applies live: stored config updates and the handler is
     reloaded, with no process restart."""
@@ -1500,11 +1524,23 @@ def test_apply_runtime_combines_psn_mcast_and_iface_change(monkeypatch) -> None:
     assert app._config.psn_source_iface == "eth0"
 
 
-def test_apply_runtime_combined_psn_failure_reverts_both_fields() -> None:
+def test_apply_runtime_combined_psn_failure_reverts_both_fields(monkeypatch) -> None:
     """When the combined orchestrator raises, both stored fields
     revert so the next hot-reload pass re-attempts. Without
     reverting both, a stuck ``stored == new`` for either field
-    would silently no-op the next pass."""
+    would silently no-op the next pass.
+
+    ``eth0`` is made live so this exercises the rebind path; a down interface
+    suspends instead and is covered separately."""
+    import socket as _socket
+
+    import openfollow.net_utils as net_utils_module
+
+    monkeypatch.setattr(
+        net_utils_module.psutil,
+        "net_if_addrs",
+        lambda: {"eth0": [SimpleNamespace(family=_socket.AF_INET, address="192.168.1.5")]},
+    )
 
     class _FailingRuntimeServices(_DummyRuntimeServices):
         def apply_psn_source_ip_change(
@@ -1529,6 +1565,8 @@ def test_apply_runtime_combined_psn_failure_reverts_both_fields() -> None:
     assert app._config.psn_mcast_ip == "236.10.10.10"
     assert app._config.psn_source_iface == "wlan0"
     assert app._web_commands.restart_requested is False
+    # A live interface takes the rebind path, never the fail-closed suspend.
+    assert app._runtime_services.psn_suspends == 0
 
 
 def test_apply_runtime_psn_mcast_ip_failure_reverts_config() -> None:
@@ -1646,6 +1684,59 @@ def test_apply_runtime_rebinds_on_psn_source_iface_change(monkeypatch) -> None:
     assert app._web_commands.restart_requested is False
 
 
+def test_station_iface_change_repoints_the_planes_that_follow_it(monkeypatch) -> None:
+    """A plane with a blank pin follows the station interface, but its own
+    dataclass is unchanged – so nothing else in the dispatcher re-applies it.
+    Without this the panel renders the new address for a plane still sending
+    from the old interface until a restart."""
+    import socket as _socket
+    from types import SimpleNamespace
+
+    import openfollow.net_utils as net_utils_module
+
+    monkeypatch.setattr(
+        net_utils_module.psutil,
+        "net_if_addrs",
+        lambda: {
+            "eth0": [SimpleNamespace(family=_socket.AF_INET, address="192.168.1.5")],
+            "eth1": [SimpleNamespace(family=_socket.AF_INET, address="10.0.0.9")],
+        },
+    )
+    app = _DummyApp(AppConfig(psn_source_iface="eth0"))
+    apply_runtime_config_changes(app, AppConfig(psn_source_iface="eth1"))
+
+    assert app._runtime_services.station_iface_follow_calls == 1
+
+
+def test_station_iface_rollback_does_not_repoint_followers(monkeypatch) -> None:
+    """The PSN rebind failed and the iface reverted, so the followers are
+    still correctly on the old interface – repointing them would move them
+    to an interface the station isn't actually using."""
+    import socket as _socket
+    from types import SimpleNamespace
+
+    import openfollow.net_utils as net_utils_module
+
+    monkeypatch.setattr(
+        net_utils_module.psutil,
+        "net_if_addrs",
+        lambda: {
+            "eth0": [SimpleNamespace(family=_socket.AF_INET, address="192.168.1.5")],
+            "eth1": [SimpleNamespace(family=_socket.AF_INET, address="10.0.0.9")],
+        },
+    )
+    app = _DummyApp(AppConfig(psn_source_iface="eth0"))
+
+    def _boom(*_a: object, **_kw: object) -> None:
+        raise OSError("bind failed")
+
+    app._runtime_services.apply_psn_source_ip_change = _boom  # type: ignore[method-assign]
+    apply_runtime_config_changes(app, AppConfig(psn_source_iface="eth1"))
+
+    assert app._config.psn_source_iface == "eth0"
+    assert app._runtime_services.station_iface_follow_calls == 0
+
+
 def test_apply_runtime_strips_whitespace_from_psn_source_iface() -> None:
     """``AppConfig.psn_source_iface`` is stripped at __post_init__,
     but the web-save path bypasses that for in-place field updates,
@@ -1714,6 +1805,17 @@ def test_app_config_coerces_non_str_psn_source_iface() -> None:
     assert cfg.psn_source_iface == ""
 
 
+@pytest.mark.parametrize(("raw", "expected"), [(None, ""), (5, ""), (True, ""), ([], ""), ("  eth1  ", "eth1")])
+def test_app_config_normalises_video_input_iface(raw: object, expected: str) -> None:
+    assert AppConfig(video_input_iface=raw).video_input_iface == expected  # type: ignore[arg-type]
+
+
+def test_video_input_iface_survives_a_toml_round_trip(tmp_path) -> None:
+    path = tmp_path / "config.toml"
+    save_config(AppConfig(video_input_iface="eth0.13"), path)
+    assert load_config(path).video_input_iface == "eth0.13"
+
+
 def test_app_config_strips_web_pin_at_construction() -> None:
     """``web_pin`` is normalised on load so a hand-edited TOML matches the
     web-save path (which strips before persisting)."""
@@ -1735,6 +1837,21 @@ def test_app_config_coerces_non_str_web_bind() -> None:
     assert cfg.web_bind == ""
 
 
+def test_app_config_strips_web_bind_iface_at_construction() -> None:
+    """Stripped on load so a hand-edited TOML matches the panel's save path -
+    an unstripped ``" eth0 "`` would resolve to no address and read as a
+    down interface."""
+    assert AppConfig(web_bind_iface="  eth0  ").web_bind_iface == "eth0"
+
+
+@pytest.mark.parametrize("bad", [0, None, True, 1.5, ["eth0"], {"iface": "eth0"}])
+def test_app_config_coerces_non_str_web_bind_iface(bad) -> None:
+    """A non-string pin becomes "" (serve everywhere) rather than reaching
+    ``resolve_web_bind``, where it would raise inside the web server's bind."""
+    cfg = AppConfig(web_bind_iface=bad)  # type: ignore[arg-type]
+    assert cfg.web_bind_iface == ""
+
+
 def test_osc_transmitter_config_normalises_leading_slash() -> None:
     from openfollow.configuration import OscTransmitterConfig
 
@@ -1753,6 +1870,137 @@ def test_apply_runtime_swaps_video_on_plugin_field_change() -> None:
     assert app._config.srt_host == "srt://192.168.0.10:1600"
     assert app._web_commands.restart_requested is False
     assert app._runtime_services.video_swaps == [new_config]
+
+
+@pytest.mark.parametrize("station", ["eth1", ""], ids=["moved", "auto-detect"])
+def test_a_station_change_rebuilds_a_video_input_that_follows_it(monkeypatch, station: str) -> None:
+    """The station row is committed before the video block runs; compared
+    afterwards, both sides would resolve the new station and nothing would move."""
+    import socket as _socket
+    from types import SimpleNamespace
+
+    import openfollow.net_utils as net_utils_module
+
+    monkeypatch.setattr(
+        net_utils_module.psutil,
+        "net_if_addrs",
+        lambda: {
+            "eth0": [SimpleNamespace(family=_socket.AF_INET, address="192.168.1.5")],
+            "eth1": [SimpleNamespace(family=_socket.AF_INET, address="10.0.0.9")],
+        },
+    )
+    app = _DummyApp(AppConfig(video_source_type="srt", srt_host="srt://203.0.113.20:5000", psn_source_iface="eth0"))
+    new_config = AppConfig(video_source_type="srt", srt_host="srt://203.0.113.20:5000", psn_source_iface=station)
+
+    apply_runtime_config_changes(app, new_config)
+
+    assert app._runtime_services.video_swaps == [new_config]
+
+
+class _RejectingStationServices(_DummyRuntimeServices):
+    def apply_psn_source_ip_change(self, new_source_ip: str, *, new_mcast_ip: object = None) -> None:
+        raise OSError("simulated rebind failure")
+
+
+def _two_interfaces(monkeypatch) -> None:  # noqa: ANN001
+    import socket as _socket
+    from types import SimpleNamespace
+
+    import openfollow.net_utils as net_utils_module
+
+    monkeypatch.setattr(
+        net_utils_module.psutil,
+        "net_if_addrs",
+        lambda: {
+            "eth0": [SimpleNamespace(family=_socket.AF_INET, address="192.168.1.5")],
+            "eth1": [SimpleNamespace(family=_socket.AF_INET, address="10.0.0.9")],
+        },
+    )
+
+
+def test_a_rejected_station_change_leaves_the_video_input_where_it_is(monkeypatch) -> None:
+    """Rolled back, the station is still eth0: pinning the video to eth1 would
+    disagree with the config, and every retry would rebuild it again."""
+    _two_interfaces(monkeypatch)
+    fields = {"video_source_type": "srt", "srt_host": "srt://203.0.113.20:5000"}
+    app = _DummyApp(AppConfig(psn_source_iface="eth0", **fields))
+    app._runtime_services = _RejectingStationServices()
+    new_config = AppConfig(psn_source_iface="eth1", **fields)
+
+    apply_runtime_config_changes(app, new_config)
+    apply_runtime_config_changes(app, new_config)
+
+    assert app._config.psn_source_iface == "eth0"
+    assert app._runtime_services.video_swaps == []
+
+
+def test_a_video_change_saved_with_a_rejected_station_change_keeps_the_station(monkeypatch) -> None:
+    _two_interfaces(monkeypatch)
+    app = _DummyApp(AppConfig(psn_source_iface="eth0", video_source_type="srt", srt_host="srt://203.0.113.20:5000"))
+    app._runtime_services = _RejectingStationServices()
+
+    apply_runtime_config_changes(
+        app, AppConfig(psn_source_iface="eth1", video_source_type="srt", srt_host="srt://203.0.113.21:5000")
+    )
+
+    [swapped] = app._runtime_services.video_swaps
+    assert swapped.srt_host == "srt://203.0.113.21:5000"
+    assert swapped.psn_source_iface == "eth0"
+
+
+def test_a_failed_video_swap_after_a_station_change_is_retried(monkeypatch) -> None:
+    """The station change is committed, so the configs alone no longer differ on
+    the next pass; the swap is retried until it succeeds, then no more."""
+    _two_interfaces(monkeypatch)
+
+    class _FailingOnce(_DummyRuntimeServices):
+        def __init__(self) -> None:
+            super().__init__()
+            self.attempts = 0
+
+        def swap_video(self, new_cfg: AppConfig) -> None:
+            self.attempts += 1
+            if self.attempts == 1:
+                raise RuntimeError("pipeline would not stop")
+            super().swap_video(new_cfg)
+
+    fields = {"video_source_type": "srt", "srt_host": "srt://203.0.113.20:5000"}
+    app = _DummyApp(AppConfig(psn_source_iface="eth0", **fields))
+    app._runtime_services = _FailingOnce()
+    new_config = AppConfig(psn_source_iface="eth1", **fields)
+
+    apply_runtime_config_changes(app, new_config)
+    assert app._config.psn_source_iface == "eth1"
+    assert app._runtime_services.video_swaps == []
+
+    apply_runtime_config_changes(app, new_config)
+    [swapped] = app._runtime_services.video_swaps
+    assert swapped.psn_source_iface == "eth1"
+
+    apply_runtime_config_changes(app, new_config)
+    assert app._runtime_services.attempts == 2
+
+
+def test_a_station_change_leaves_a_video_input_with_its_own_pin(monkeypatch) -> None:
+    import socket as _socket
+    from types import SimpleNamespace
+
+    import openfollow.net_utils as net_utils_module
+
+    monkeypatch.setattr(
+        net_utils_module.psutil,
+        "net_if_addrs",
+        lambda: {
+            "eth0": [SimpleNamespace(family=_socket.AF_INET, address="192.168.1.5")],
+            "eth1": [SimpleNamespace(family=_socket.AF_INET, address="10.0.0.9")],
+        },
+    )
+    fields = {"video_source_type": "srt", "srt_host": "srt://203.0.113.20:5000", "video_input_iface": "eth1"}
+    app = _DummyApp(AppConfig(psn_source_iface="eth0", **fields))
+
+    apply_runtime_config_changes(app, AppConfig(psn_source_iface="eth1", **fields))
+
+    assert app._runtime_services.video_swaps == []
 
 
 def test_apply_runtime_swaps_video_on_source_type_change() -> None:
@@ -1944,6 +2192,31 @@ def test_osc_config_clamps_port_to_blur_bounds() -> None:
     assert OscConfig(port=0).port == 1
     assert OscConfig(port=70000).port == 65535
     assert OscConfig(port="not-a-port").port == 8765  # type: ignore[arg-type]
+
+
+def test_osc_config_listen_iface_defaults_to_blank() -> None:
+    assert OscConfig().listen_iface == ""
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("  eth0  ", "eth0"),
+        ("\teth0.10 ", "eth0.10"),
+        ("   ", ""),
+    ],
+)
+def test_osc_config_listen_iface_strips_whitespace(raw: str, expected: str) -> None:
+    """Whitespace around a pin must not read as a configured interface: a
+    " " would otherwise resolve as down and silence the listener."""
+    assert OscConfig(listen_iface=raw).listen_iface == expected
+
+
+@pytest.mark.parametrize("raw", [None, 42, True, ["eth0"]])
+def test_osc_config_listen_iface_rejects_non_strings(raw: object) -> None:
+    """A hand-edited TOML can put anything here; the resolver indexes it by
+    name, so a non-string must fall back to "follow the station"."""
+    assert OscConfig(listen_iface=raw).listen_iface == ""  # type: ignore[arg-type]
 
 
 # Mouse3DConfig.__post_init__ – 3D Mouse (6DOF) coercion
@@ -2256,6 +2529,49 @@ def test_rttrpm_output_config_strips_host_whitespace(
     """Host whitespace must be stripped to avoid spurious restarts."""
     cfg = RttrpmOutputConfig(host=raw)
     assert cfg.host == expected
+
+
+@pytest.mark.parametrize(("raw", "expected"), [("  eth1  ", "eth1"), ("\teth0.10 ", "eth0.10"), ("   ", "")])
+def test_rttrpm_output_config_source_iface_strips_whitespace(raw: str, expected: str) -> None:
+    """A " " pin would otherwise read as a configured interface that is down."""
+    assert RttrpmOutputConfig(source_iface=raw).source_iface == expected
+
+
+@pytest.mark.parametrize("raw", [None, 5, True, ["eth1"]])
+def test_rttrpm_output_config_source_iface_rejects_non_strings(raw: object) -> None:
+    """Falls back to following the station rather than crashing the resolver."""
+    assert RttrpmOutputConfig(source_iface=raw).source_iface == ""  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(("raw", "expected"), [(" eth1 ", "eth1"), (None, ""), (5, ""), (True, ""), (["eth1"], "")])
+def test_osc_destination_source_iface_is_normalised(raw: object, expected: str) -> None:
+    from openfollow.configuration import OscDestinationConfig
+
+    assert OscDestinationConfig(source_iface=raw).source_iface == expected  # type: ignore[arg-type]
+
+
+def test_osc_destination_source_iface_loads_from_toml(tmp_path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        '[[osc_destinations.destinations]]\nid = "foh"\nhost = "198.51.100.20"\nsource_iface = "eth1 "\n',
+        encoding="utf-8",
+    )
+    (dest,) = load_config(str(path)).osc_destinations.destinations
+    assert dest.source_iface == "eth1"
+
+
+def test_rttrpm_output_source_iface_loads_from_toml(tmp_path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text('[rttrpm_output]\nenabled = true\nsource_iface = " eth1 "\n', encoding="utf-8")
+    assert load_config(str(path)).rttrpm_output.source_iface == "eth1"
+
+
+def test_apply_runtime_routes_an_rttrpm_pin_change_to_the_live_apply() -> None:
+    app = _DummyApp(AppConfig())
+    new_config = AppConfig()
+    new_config.rttrpm_output.source_iface = "eth1"
+    apply_runtime_config_changes(app, new_config)
+    assert [cfg.source_iface for cfg in app._runtime_services.rttrpm_changes] == ["eth1"]
 
 
 def test_rttrpm_output_config_rejects_non_string_host_and_falls_back() -> None:
@@ -3997,7 +4313,17 @@ def test_apply_runtime_rttrpm_failure_reverts_config_and_preserves_reference() -
     assert app._config.viewer_marker_ids == [7]
 
 
-def test_apply_runtime_psn_source_iface_failure_reverts_config() -> None:
+def test_apply_runtime_psn_source_iface_failure_reverts_config(monkeypatch) -> None:
+    """``eth0`` is live here, so the rebind path runs and its failure reverts."""
+    import socket as _socket
+
+    import openfollow.net_utils as net_utils_module
+
+    monkeypatch.setattr(
+        net_utils_module.psutil,
+        "net_if_addrs",
+        lambda: {"eth0": [SimpleNamespace(family=_socket.AF_INET, address="192.168.1.5")]},
+    )
 
     class _FailingRuntimeServices(_DummyRuntimeServices):
         def apply_psn_source_ip_change(self, new_source_ip: str) -> None:
@@ -4005,11 +4331,54 @@ def test_apply_runtime_psn_source_iface_failure_reverts_config() -> None:
 
     app = _DummyApp(AppConfig(psn_source_iface=""))
     app._runtime_services = _FailingRuntimeServices()
-    new_config = AppConfig(psn_source_iface="ghost0")
+    new_config = AppConfig(psn_source_iface="eth0")
 
     apply_runtime_config_changes(app, new_config)
 
     # Stored config reverted so a subsequent reload retries.
+    assert app._config.psn_source_iface == ""
+    assert app._web_commands.restart_requested is False
+    assert app._runtime_services.psn_suspends == 0
+
+
+def test_apply_runtime_down_iface_suspends_and_never_rebinds(monkeypatch) -> None:
+    """A pin to an interface with no address must stop PSN, not move it.
+
+    The hot-reload path used to resolve through the fail-open chain, so this
+    same edit rebound PSN to the OS-primary interface - stage data on the
+    network the operator had just deselected, while the panel showed the
+    interface as down.
+    """
+    import openfollow.net_utils as net_utils_module
+
+    monkeypatch.setattr(net_utils_module.psutil, "net_if_addrs", dict)
+    monkeypatch.setattr(net_utils_module, "get_primary_local_ipv4", lambda default="": "10.0.0.1")
+
+    app = _DummyApp(AppConfig(psn_source_iface=""))
+    apply_runtime_config_changes(app, AppConfig(psn_source_iface="ghost0"))
+
+    assert app._runtime_services.psn_suspends == 1
+    assert app._runtime_services.psn_source_ip_changes == []
+    assert app._runtime_services.psn_combined_changes == []
+    # The operator's choice is honoured and kept - the plane stops, the pin stays.
+    assert app._config.psn_source_iface == "ghost0"
+
+
+def test_apply_runtime_suspend_failure_reverts_config(monkeypatch) -> None:
+    """A failing suspend reverts like a failing rebind, so the next pass retries."""
+    import openfollow.net_utils as net_utils_module
+
+    monkeypatch.setattr(net_utils_module.psutil, "net_if_addrs", dict)
+    monkeypatch.setattr(net_utils_module, "get_primary_local_ipv4", lambda default="": "10.0.0.1")
+
+    class _FailingRuntimeServices(_DummyRuntimeServices):
+        def suspend_psn_planes(self) -> None:
+            raise OSError("simulated suspend failure")
+
+    app = _DummyApp(AppConfig(psn_source_iface=""))
+    app._runtime_services = _FailingRuntimeServices()
+    apply_runtime_config_changes(app, AppConfig(psn_source_iface="ghost0"))
+
     assert app._config.psn_source_iface == ""
     assert app._web_commands.restart_requested is False
 
@@ -4715,10 +5084,9 @@ def test_warn_deprecated_only_fires_once_across_multiple_reloads(
     # suppression.
     monkeypatch.setattr(cfg_mod, "_DEPRECATED_WARNED", set())
 
-    # Write a config that trips BOTH deprecation categories so we observe
-    # the "warn once per field" guard on both.
+    # Write a config that trips the deprecation so we observe the
+    # "warn once per field" guard.
     bad_ctrl = ControllerConfig(
-        btn_source_select="LB",  # direct-entry deprecation
         btn_settings_confirm="X",  # confirm/cancel deprecation
     )
     save_config(AppConfig(controller=bad_ctrl), str(temp_config_path))
@@ -4730,11 +5098,10 @@ def test_warn_deprecated_only_fires_once_across_multiple_reloads(
         load_config(str(temp_config_path))
         second_pass = [r.message for r in caplog.records]
 
-    # First load emits deprecation warnings for both fields.
-    assert any("btn_source_select" in m for m in first_pass)
+    # First load emits the deprecation warning.
     assert any("btn_settings_confirm" in m for m in first_pass)
     # Second load must not re-emit – the module-level set suppresses repeats.
-    assert not any("btn_source_select" in m or "btn_settings_confirm" in m for m in second_pass)
+    assert not any("btn_settings_confirm" in m for m in second_pass)
 
 
 # ---------------------------------------------------------------------------
@@ -5358,6 +5725,23 @@ class TestControllerButtonTrigger:
 
     def test_kind_is_controller_button(self) -> None:
         assert ControllerButtonTrigger().kind == "controller_button"
+
+
+class TestCoerceOptionalMarkerIdBlankString:
+    """Pins the blank-string arm deterministically.
+
+    Its only caller strips and returns before reaching the helper, so the
+    public boundary cannot drive this arm and no ordinary test covers it. What
+    did cover it was a Hypothesis property test happening to draw a
+    whitespace-only string, which made the 100% gate depend on a random draw -
+    green on one machine and red on the next with no code change between them.
+    """
+
+    @pytest.mark.parametrize("value", ["", " ", "\t", "   \n "])
+    def test_a_blank_string_collapses_to_none(self, value: str) -> None:
+        from openfollow.configuration import _coerce_optional_marker_id
+
+        assert _coerce_optional_marker_id(value) is None
 
 
 class TestCoerceOptionalInt:

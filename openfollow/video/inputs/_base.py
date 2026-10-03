@@ -18,7 +18,10 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from openfollow.net_egress import is_loopback_host
+from openfollow.net_utils import plane_source_iface
 from openfollow.video.failure import ConnectionPhase, SourceKind
+from openfollow.video.inputs._pin import PinRefusal
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +139,10 @@ class VideoInputBase(ABC):
     # names no address, port or sender, so a plugin that forgets to declare
     # cannot point at a setting that does not exist.
     source_kind: SourceKind = SourceKind.LOCAL
+
+    # Honours ``video_input_iface`` (blank follows the station interface); the
+    # Interface Assignment panel offers the Video input row only for an input that does.
+    pins_interface: bool = False
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
@@ -259,6 +266,15 @@ class VideoInputBase(ABC):
         return getattr(self, name, None)
 
     @classmethod
+    def preflight(cls, config: dict[str, Any]) -> PinRefusal | None:
+        """Why this connection may not be made under the interface pin, or None.
+
+        Runs before every build, on the main loop; keep it to a routing-table
+        lookup.
+        """
+        return None
+
+    @classmethod
     def source_endpoint(cls, config: dict[str, Any]) -> SourceEndpoint | None:
         """The remote host this input dials, or ``None`` if it dials nothing.
 
@@ -313,12 +329,45 @@ class VideoInputBase(ABC):
         return result
 
     @classmethod
-    def config_changed(cls, old_cfg: Any, new_cfg: Any) -> bool:
-        """Return ``True`` if config fields relevant to this input changed."""
-        for f in cls.config_fields():
-            if getattr(old_cfg, f.name, f.default) != getattr(new_cfg, f.name, f.default):
-                return True
+    def runtime_config(cls, cfg: Any) -> dict[str, Any]:
+        """The config the running input is built from: its fields, with a blank
+        interface pin resolved to the station interface it follows, and no pin
+        at all where none governs the connection."""
+        values = cls.get_config_field_values(cfg)
+        if cls.pins_interface:
+            own = str(values.get("video_input_iface", "") or "")
+            pin = plane_source_iface(own, str(getattr(cfg, "psn_source_iface", "") or ""))
+            values["video_input_iface"] = pin if pin and cls.uses_interface(values, followed=not own) else ""
+        return values
+
+    @classmethod
+    def uses_interface(cls, config: dict[str, Any], *, followed: bool) -> bool:
+        """Whether a pin governs this connection; *followed* when it is the station's, not the input's own.
+
+        Decided from config alone, so the running input does not change with
+        the interfaces' addresses. A source on this station is exempted where
+        the pin is checked and where the input is stopped.
+        """
+        return not is_loopback_host(cls.route_target(config))
+
+    @classmethod
+    def receives_on_every_interface(cls, config: dict[str, Any]) -> bool:
+        """Whether this input listens on every interface (an RTP wildcard), not one."""
         return False
+
+    @classmethod
+    def config_changed(cls, old_cfg: Any, new_cfg: Any) -> bool:
+        """Whether config relevant to this input changed, including the station interface a blank pin follows."""
+        return cls.runtime_config(old_cfg) != cls.runtime_config(new_cfg)
+
+    @classmethod
+    def route_target(cls, config: dict[str, Any]) -> str:
+        """The address whose route picks the interface when nothing pins it; "" for none or an unreadable URL."""
+        try:
+            endpoint = cls.source_endpoint(config)
+        except ValueError:
+            return ""
+        return endpoint.host if endpoint is not None else ""
 
     def cleanup(self) -> None:  # noqa: B027 – intentional optional hook
         """Called when the input is being destroyed. Clean up threads etc."""
@@ -334,3 +383,12 @@ class VideoInputBase(ABC):
         numeric field rendered through this helper isn't silently dropped.
         """
         return "" if value is None else html.escape(str(value))
+
+
+def video_input_pin_field() -> ConfigField:
+    """The interface pin, shared by every network input; edited only in the panel.
+
+    Holds the operator's own pin. ``runtime_config`` resolves a blank one to the
+    station interface, so build the running input from that, never from this.
+    """
+    return ConfigField("video_input_iface", str, "", "Video input interface", device_editable=False)

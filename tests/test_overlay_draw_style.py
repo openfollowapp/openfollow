@@ -8,6 +8,9 @@ Covers the pure helpers exported for other draw passes:
   ``radius <= 0`` short-circuit plus the four-arc normal path).
 * :func:`draw_card_background` – the shared overlay-card chrome (translucent
   fill + soft white border) used by the message cards and every HUD panel.
+* :func:`status_level` – any writer's value mapped to a level the HUD draws.
+* :func:`draw_level_box` / :func:`draw_level_sign` – a status level's chip
+  fill and border, and its sign.
 * :func:`parse_hex` – tolerant ``#rrggbb`` → (r, g, b) converter with
   defined fallbacks for malformed input.
 * :func:`speed_color` – green→yellow→red gradient used by the marker
@@ -17,6 +20,7 @@ Covers the pure helpers exported for other draw passes:
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import pytest
 
@@ -24,10 +28,24 @@ from openfollow.runtime.overlay_draw_style import (
     CARD_BG_ALPHA,
     COLOR_BG_BASE,
     COLOR_BORDER,
+    COLOR_CAUTION_BORDER,
+    COLOR_CAUTION_FILL,
+    COLOR_DANGER_BG,
+    COLOR_INFO_BORDER,
+    COLOR_INFO_FILL,
+    COLOR_SUCCESS_BORDER,
+    COLOR_SUCCESS_FILL,
+    COLOR_WARNING_BORDER,
+    COLOR_WARNING_FILL,
+    STATUS_LEVEL_COLORS,
+    STATUS_LEVELS,
     draw_card_background,
+    draw_level_box,
+    draw_level_sign,
     draw_rounded_rect,
     parse_hex,
     speed_color,
+    status_level,
 )
 from tests._fake_cairo import FakeCairo
 
@@ -70,6 +88,120 @@ class TestDrawCardBackground:
         # radius <= 0 short-circuits to plain rectangles (fill + border paths).
         assert cr.arcs == []
         assert len(cr.rects) == 2
+
+
+# --------------------------------------------------------------------------- #
+# status_level / draw_level_box
+# --------------------------------------------------------------------------- #
+
+
+class TestStatusLevel:
+    """A status row's level comes from whatever a subsystem wrote."""
+
+    @pytest.mark.parametrize("level", ["error", "caution", "info", "success"])
+    def test_a_known_level_is_kept(self, level: str) -> None:
+        assert status_level(level) == level
+
+    @pytest.mark.parametrize(
+        "value",
+        ["", "warning", "ERROR", None, 3, ["info"], {"level": "info"}],
+        ids=["empty", "unknown", "wrong-case", "none", "int", "unhashable-list", "unhashable-dict"],
+    )
+    def test_anything_else_reads_as_an_error(self, value: object) -> None:
+        """A malformed writer shows as a fault rather than as news, or not at all."""
+        assert status_level(value) == "error"
+
+    def test_the_gravity_order_names_every_level_once(self) -> None:
+        assert len(STATUS_LEVELS) == len(set(STATUS_LEVELS))
+        assert set(STATUS_LEVELS) == set(STATUS_LEVEL_COLORS)
+
+
+class _PaintRecorder(FakeCairo):
+    """Models Cairo's current path, so each paint records the outline, source and line width it used."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._path: list[tuple[Any, ...]] = []
+        self.painted: list[tuple[str, tuple[float, ...], float, tuple[tuple[Any, ...], ...]]] = []
+
+    def move_to(self, x: float, y: float) -> None:
+        super().move_to(x, y)
+        self._path.append(("move_to", x, y))
+
+    def line_to(self, x: float, y: float) -> None:
+        super().line_to(x, y)
+        self._path.append(("line_to", x, y))
+
+    def arc(self, cx: float, cy: float, r: float, a0: float, a1: float) -> None:
+        super().arc(cx, cy, r, a0, a1)
+        self._path.append(("arc", cx, cy, r, a0, a1))
+
+    def rectangle(self, x: float, y: float, w: float, h: float) -> None:
+        super().rectangle(x, y, w, h)
+        self._path.append(("rectangle", x, y, w, h))
+
+    def close_path(self) -> None:
+        super().close_path()
+        self._path.append(("close_path",))
+
+    def _paint(self, kind: str, *, keep_path: bool) -> None:
+        self.painted.append((kind, self._cur_rgba, self._cur_line_width, tuple(self._path)))
+        if not keep_path:
+            self._path = []
+
+    def fill(self) -> None:
+        super().fill()
+        self._paint("fill", keep_path=False)
+
+    def fill_preserve(self) -> None:
+        super().fill_preserve()
+        self._paint("fill", keep_path=True)
+
+    def stroke(self) -> None:
+        super().stroke()
+        self._paint("stroke", keep_path=False)
+
+
+class TestDrawLevelBox:
+    @pytest.mark.parametrize(
+        ("level", "fill", "border"),
+        [
+            ("error", COLOR_WARNING_FILL, COLOR_WARNING_BORDER),
+            ("caution", COLOR_CAUTION_FILL, COLOR_CAUTION_BORDER),
+            ("info", COLOR_INFO_FILL, COLOR_INFO_BORDER),
+            ("success", COLOR_SUCCESS_FILL, COLOR_SUCCESS_BORDER),
+        ],
+    )
+    def test_a_box_in_the_levels_chip_fill_outlined_in_its_border(
+        self, level: str, fill: tuple[float, ...], border: tuple[float, ...]
+    ) -> None:
+        cr = _PaintRecorder()
+        draw_level_box(cr, level, 0.0, 0.0, 120.0, 24.0, radius=4.0, line_width=1.2)
+        (filled,) = [p for p in cr.painted if p[0] == "fill"]
+        (stroked,) = [p for p in cr.painted if p[0] == "stroke"]
+        assert filled[1] == fill
+        assert stroked[1] == (*border, 1.0)
+        assert stroked[2] == 1.2
+        assert filled[3], "nothing was filled"
+        assert stroked[3] == filled[3], "the border does not outline the filled box"
+        assert {r for _cx, _cy, r in cr.arcs} == {4.0}
+
+    @pytest.mark.parametrize("level", ["warning", ["info"]], ids=["unknown", "unhashable"])
+    def test_a_level_nobody_defined_draws_as_an_error(self, level: object) -> None:
+        bad, error = FakeCairo(), FakeCairo()
+        draw_level_box(bad, level, 0.0, 0.0, 120.0, 24.0, radius=4.0, line_width=1.2)  # type: ignore[arg-type]
+        draw_level_box(error, "error", 0.0, 0.0, 120.0, 24.0, radius=4.0, line_width=1.2)
+        assert bad.calls == error.calls
+
+
+class TestDrawLevelSign:
+    @pytest.mark.parametrize("level", ["warning", ["info"]], ids=["unknown", "unhashable"])
+    def test_a_level_nobody_defined_draws_the_warning_sign(self, level: object) -> None:
+        bad, error = FakeCairo(), FakeCairo()
+        draw_level_sign(bad, level, 10.0, 10.0)  # type: ignore[arg-type]
+        draw_level_sign(error, "error", 10.0, 10.0)
+        assert bad.calls == error.calls
+        assert ("rgb", *COLOR_DANGER_BG) in error.calls, "the '!' is cut in the warning red"
 
 
 # --------------------------------------------------------------------------- #

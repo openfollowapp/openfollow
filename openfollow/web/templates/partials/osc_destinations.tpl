@@ -94,6 +94,15 @@
  % end
  </select>
  </div>
+ % # Read-only pointer; the pin is edited in General > Network Interface Assignment.
+ <div class="field">
+ <label>Source Interface</label>
+ <div class="ia-pointer">
+ <span class="ia-pointer-value">{{dest.source_iface or 'Follows station default interface'}}</span>
+ <a class="ia-link" href="#interface-assignment"
+ onclick="goToSection('general', 'interface-assignment'); return false;">Change in General &rsaquo; Network Interface Assignment</a>
+ </div>
+ </div>
  </div>
  <div class="actions osc-destination-actions">
  <button type="submit" class="save-btn">Save</button>

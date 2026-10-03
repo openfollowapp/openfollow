@@ -36,6 +36,8 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 import openfollow
 from openfollow.logging_setup import RingBufferLogHandler
+from openfollow.net_utils import HOST_RESOLVER, read_ipv4_routes
+from openfollow.network.validate import is_link_local
 from openfollow.privilege import settings_backup
 from openfollow.uri_redaction import redact_uri, redact_uris_in_text
 
@@ -43,12 +45,6 @@ if TYPE_CHECKING:
     from openfollow.runtime.removable_media import Media
 
 logger = logging.getLogger(__name__)
-
-# The kernel's IPv4 route table. Read directly rather than asked of the
-# network backend: the backend reports what is *configured*, and "can this
-# station reach that address" is a question about what the kernel will do
-# with the packet.
-_PROC_NET_ROUTE = Path("/proc/net/route")
 
 _T = TypeVar("_T")
 
@@ -64,7 +60,14 @@ _STAT_PROBE_MAX_INFLIGHT = 16
 _stat_probe_sem = threading.BoundedSemaphore(_STAT_PROBE_MAX_INFLIGHT)
 
 
-def _bounded_probe(fn: Callable[[], _T], timeout_s: float, timeout_value: _T) -> _T:
+def _bounded_probe(
+    fn: Callable[[], _T],
+    timeout_s: float,
+    timeout_value: _T,
+    *,
+    pool: threading.BoundedSemaphore | None = None,
+    busy_value: _T | None = None,
+) -> _T:
     """Run ``fn()`` on a daemon thread; return its result, or ``timeout_value``
     if it hasn't returned within ``timeout_s``.
 
@@ -74,10 +77,11 @@ def _bounded_probe(fn: Callable[[], _T], timeout_s: float, timeout_value: _T) ->
     request thread abandons the orphaned probe (a daemon thread that unblocks if
     the mount ever recovers) instead of blocking. ``fn`` handles its own
     exceptions and returns a value; an unexpected raise folds into ``timeout_value``."""
-    if not _stat_probe_sem.acquire(blocking=False):
+    pool = pool or _stat_probe_sem
+    if not pool.acquire(blocking=False):
         # Too many probes already orphaned on a hung mount – fail fast instead
         # of leaking yet another thread.
-        return timeout_value
+        return timeout_value if busy_value is None else busy_value
     box: list[_T] = [timeout_value]
     done = threading.Event()
 
@@ -87,7 +91,7 @@ def _bounded_probe(fn: Callable[[], _T], timeout_s: float, timeout_value: _T) ->
         except Exception:  # noqa: BLE001 - fn already formats its own errors
             box[0] = timeout_value
         finally:
-            _stat_probe_sem.release()
+            pool.release()
             done.set()
 
     try:
@@ -95,7 +99,7 @@ def _bounded_probe(fn: Callable[[], _T], timeout_s: float, timeout_value: _T) ->
     except RuntimeError:
         # Couldn't spawn the probe thread – release the permit we took so the
         # cap isn't permanently reduced, and degrade to the timeout value.
-        _stat_probe_sem.release()
+        pool.release()
         return timeout_value
     done.wait(timeout_s)
     return box[0]
@@ -212,6 +216,14 @@ class DiagnosticsProviders:
     camera_names: Callable[[], list[str]] | None = None
     # What the USB storage device picker lists; matched to USB devices by disk.
     removable_media: Callable[[], list[Media]] | None = None
+    # The network bind map: the Interface Assignment panel's rows, and every
+    # network plane as the observer last left it.
+    interface_assignment_rows: Callable[[], list[dict[str, Any]]] | None = None
+    network_planes: Callable[[], list[dict[str, Any]]] | None = None
+    # The network backend's interface rows; E7 reads each address's source.
+    network_interfaces: Callable[[], list[dict[str, Any]]] | None = None
+    # The address the web UI's listener was started on.
+    web_listener: Callable[[], tuple[str, str]] | None = None
 
     # Live per-controller snapshot for the dedicated gamepad section and the
     # USB visibility column.
@@ -389,8 +401,17 @@ def collect_osc_multicast(p: DiagnosticsProviders) -> list[str]:
     rows.append(f"  Listener port:              {port if port is not None else '[not bound]'}")
     group = str(status.get("multicast_group") or "")
     if group:
-        joined = "joined" if status.get("multicast_joined") else "JOIN FAILED"
+        joined = "joined" if status.get("multicast_joined") else "NOT SUBSCRIBED"
         rows.append(f"  Multicast group:            {group} ({joined})")
+        # Which interface holds the membership is the whole question when OSC
+        # arrives on one adapter and not another, and it is not derivable from
+        # the requested config: a blank pin follows the station interface.
+        iface = status.get("multicast_iface")
+        if iface is None:
+            shown = "[pinned interface has no address]"
+        else:
+            shown = str(iface) or "[routing table's choice]"
+        rows.append(f"  Multicast interface:        {shown}")
     else:
         rows.append("  Multicast group:            [none – unicast/broadcast only]")
     allow = status.get("allowed_sender_ips") or []
@@ -621,52 +642,24 @@ def collect_uplink(p: DiagnosticsProviders) -> list[str]:
 # a daemon thread we stop waiting for. Together they cap the section at ~2.5 s.
 _DNS_TIMEOUT_S = 1.0
 _CONNECT_TIMEOUT_S = 1.5
-# Resolver workers that may still be running after we stopped waiting. Two is
-# enough that a bundle download never queues behind itself, and small enough
-# that a resolver-less LAN cannot accumulate threads across downloads.
-_MAX_INFLIGHT_DNS = 2
-_dns_slots = threading.BoundedSemaphore(_MAX_INFLIGHT_DNS)
 
 
 def resolve_host_bounded(host: str, timeout_s: float = _DNS_TIMEOUT_S) -> tuple[str | None, str]:
-    """``(address, note)`` for a host, without ever blocking indefinitely."""
-    try:
-        ipaddress.ip_address(host)
-    except ValueError:
-        pass
-    else:
-        return host, ""
+    """``(address, note)`` for a host, without ever blocking indefinitely.
 
-    # Giving up on a lookup does not stop it: the thread runs on until the
-    # resolver answers or the process exits. On the very LAN this bounding
-    # exists for - one with no reachable resolver - repeated bundle downloads
-    # would otherwise pile up a thread apiece. A slot is held by the worker,
-    # not by us, and released when it finally returns.
-    if not _dns_slots.acquire(blocking=False):
-        return None, "DNS lookup skipped (an earlier lookup has not returned)"
-
-    resolved: list[str] = []
-
-    def _lookup() -> None:
-        try:
-            # Both families: a camera on an AAAA-only name resolves, and the
-            # analysis below answers for either.
-            infos = socket.getaddrinfo(host, None)
-            if infos:
-                resolved.append(str(infos[0][4][0]))
-        except OSError:
-            pass
-        finally:
-            _dns_slots.release()
-
-    worker = threading.Thread(target=_lookup, daemon=True, name="diag-dns")
-    worker.start()
-    worker.join(timeout_s)
-    if worker.is_alive():
-        return None, f"DNS lookup timed out after {timeout_s:.1f} s"
-    if not resolved:
-        return None, "DNS lookup failed (name does not resolve here)"
-    return resolved[0], f"resolves to {resolved[0]}"
+    Through the resolver the video pin and the bind map use, so one bundle
+    reads one answer for the camera, and a late one serves the next bundle.
+    """
+    found = HOST_RESOLVER.lookup(host, timeout_s)
+    if found.outcome == "literal":
+        return found.addresses[0], ""
+    if found.addresses:
+        return found.addresses[0], f"resolves to {found.addresses[0]}"
+    if found.outcome == "pending":
+        return None, f"DNS lookup has not answered within {timeout_s:.1f} s"
+    if found.outcome == "skipped":
+        return None, f"DNS lookup could not start ({found.error})"
+    return None, "DNS lookup failed (name does not resolve here)"
 
 
 def _on_link_interfaces(target: ipaddress.IPv4Address | ipaddress.IPv6Address) -> list[str] | None:
@@ -728,22 +721,107 @@ def describe_address_reachability(address: str, route_path: Path | None = None) 
         # would print a verdict about an unrelated table.
         return [f"{indent}not on any local IPv6 subnet; IPv6 routing is not analysed"]
 
-    routes = read_routes(route_path)
+    routes = read_ipv4_routes(route_path)
     if routes is None:
         return [f"{indent}not on any local subnet; routing unknown (kernel route table unreadable)"]
     # Longest prefix wins, exactly as the kernel picks: a station can hold a
     # route to the camera's network and no default route at all, and reporting
     # only the default would call that unreachable.
-    matches = [route for route in routes if target in route[1]]
+    matches = [route for route in routes if target in route.network]
     if not matches:
         return [f"{indent}NOT on any local subnet, and no route covers it"]
     # The kernel picks the longest prefix, then the lowest metric. Ignoring
     # the metric names whichever route the table happened to list first, which
     # on a multi-homed station is the wrong interface as often as not.
-    iface, network, gateway, metric = min(matches, key=lambda route: (-route[1].prefixlen, route[3]))
+    best = min(matches, key=lambda route: (-route.network.prefixlen, route.metric))
+    iface, network, gateway, metric = best.iface, best.network, best.gateway, best.metric
     if gateway == "0.0.0.0":  # noqa: S104 - comparison, not a bind
         return [f"{indent}not on this station's own subnet, but {network} is directly connected on {iface}"]
     return [f"{indent}not on any local subnet; routed via {gateway} on {iface} (route {network}, metric {metric})"]
+
+
+# What a blank pin means, by the panel row's ``blank`` kind, as the panel's picker offers it.
+BLANK_PIN_LABELS = {"auto": "Auto-detect", "station": "Follow station default interface", "all": "All interfaces"}
+# A row following Station default, where it is shown rather than chosen.
+FOLLOWS_STATION_DEFAULT = "Follows station default interface"
+
+
+def _columns(rows: list[tuple[str, ...]], indent: str = "    ") -> list[str]:
+    """Rows padded to their widest cell per column; names are never truncated."""
+    widths = [max(len(row[i]) for row in rows) for i in range(len(rows[0]) - 1)]
+    return [
+        indent + "".join(cell.ljust(width + 2) for cell, width in zip(row[:-1], widths, strict=True)) + row[-1]
+        for row in rows
+    ]
+
+
+def _bind_map_configured(p: DiagnosticsProviders) -> list[str]:
+    if p.interface_assignment_rows is None:
+        return ["    [not applicable: Interface Assignment rows not wired]"]
+    rows, err = _safely_value(p.interface_assignment_rows, "interface_assignment_rows", [])
+    if err is not None:
+        return [f"    {err}"]
+    table: list[tuple[str, ...]] = [("Function", "Pin", "Address")]
+    for row in rows or []:
+        if row.get("editable"):
+            blank = str(row.get("blank") or "")
+            reads = FOLLOWS_STATION_DEFAULT if blank == "station" else BLANK_PIN_LABELS.get(blank, "(blank)")
+            pin = str(row.get("value") or "") or reads
+        else:
+            pin = str(row.get("note") or "(read-only)")
+        table.append((str(row.get("label") or "?"), pin, str(row.get("address") or "-")))
+    return _columns(table)
+
+
+def _bind_map_runtime(p: DiagnosticsProviders) -> list[str]:
+    table: list[tuple[str, ...]] = [("Plane", "Interface", "Resolves to", "Bound now", "State")]
+    notes: list[str] = []
+    planes: list[dict[str, Any]] = []
+    if p.network_planes is None:
+        notes.append("    [not applicable: network observer not wired]")
+    else:
+        planes, err = _safely_value(p.network_planes, "network_planes", [])
+        if err is not None:
+            notes.append(f"    {err}")
+        elif not planes:
+            notes.append("    [no planes polled yet]")
+    for plane in planes or []:
+        state = str(plane.get("state") or "?")
+        # A rebind's exception text, which can quote a stream URL.
+        detail = redact_uris_in_text(str(plane.get("detail") or ""))
+        bound = plane.get("bound")
+        table.append(
+            (
+                str(plane.get("label") or "?"),
+                # A plane never resolved has no interface to show; one resolved by auto-detect does.
+                str(plane.get("iface") or ("auto" if plane.get("resolved", True) else "-")),
+                str(plane.get("address") or "-"),
+                # None is stopped; "" is running on a socket bound to no one address.
+                "-" if bound is None else str(bound) or "(unbound)",
+                f"{state}: {detail}" if detail else state,
+            )
+        )
+    if p.web_listener is not None:
+        # Fixed until a restart, so a pin saved since shows here as a difference.
+        listener, listener_err = _safely_value(p.web_listener, "web_listener", ("", ""))
+        address, state = listener or ("", "")
+        table.append(("Web UI", "-", "-", address or "-", listener_err or state))
+    return (_columns(table) if len(table) > 1 else []) + notes
+
+
+def collect_network_bind_map(p: DiagnosticsProviders) -> list[str]:
+    """Which interface each network function is pinned to, and what it holds now.
+
+    Two straight dumps rather than one joined table: the panel's rows are what
+    the operator configured, the planes are what the runtime is doing, and a
+    disagreement between them is the finding.
+    """
+    return [
+        "  Configured (as the Network Interface Assignment panel shows it):",
+        *_bind_map_configured(p),
+        "  Runtime (what each network plane holds now):",
+        *_bind_map_runtime(p),
+    ]
 
 
 def probe_tcp_connect(address: str, port: int, timeout_s: float = _CONNECT_TIMEOUT_S) -> str:
@@ -2162,54 +2240,58 @@ def netmask_prefix_len(netmask: str) -> int | None:
     return prefix
 
 
-def read_routes(route_path: Path | None = None) -> list[tuple[str, ipaddress.IPv4Network, str, int]] | None:
-    """Every IPv4 route as ``(interface, destination network, gateway, metric)``.
-
-    ``None`` means the table could not be read (no ``/proc`` on macOS), which
-    the caller reports as unknown - distinct from ``[]``, a host that really
-    has nowhere to send a packet. A gateway of ``0.0.0.0`` marks a directly
-    connected route.
-
-    Resolved here rather than as a default argument: a default binds the
-    module attribute at import, which silently ignores a test (or a future
-    caller) that points the module at another table.
-    """
-    try:
-        text = (route_path or _PROC_NET_ROUTE).read_text()
-    except OSError:
-        return None
-    routes: list[tuple[str, ipaddress.IPv4Network, str, int]] = []
-    for line in text.splitlines()[1:]:
-        fields = line.split()
-        if len(fields) < 8:
-            continue
-        iface, dest_hex, gw_hex, metric_raw, mask_hex = fields[0], fields[1], fields[2], fields[6], fields[7]
-        try:
-            destination = socket.inet_ntoa(int(dest_hex, 16).to_bytes(4, "little"))
-            gateway = socket.inet_ntoa(int(gw_hex, 16).to_bytes(4, "little"))
-            mask = socket.inet_ntoa(int(mask_hex, 16).to_bytes(4, "little"))
-            network = ipaddress.IPv4Network(f"{destination}/{mask}", strict=False)
-            metric = int(metric_raw)
-        except (ValueError, OverflowError):
-            continue
-        routes.append((iface, network, gateway, metric))
-    return routes
-
-
 def read_default_routes(route_path: Path | None = None) -> list[tuple[str, str, int]] | None:
     """``(interface, gateway, metric)`` per IPv4 default route, best first.
 
     Sorted by metric, the order the kernel would try them: a multi-homed
     station has several and they are not a set of equals.
     """
-    routes = read_routes(route_path)
+    routes = read_ipv4_routes(route_path)
     if routes is None:
         return None
-    defaults = [r for r in routes if r[1].prefixlen == 0 and r[2] != "0.0.0.0"]
-    return [(iface, gateway, metric) for iface, _net, gateway, metric in sorted(defaults, key=lambda r: r[3])]
+    defaults = [r for r in routes if r.network.prefixlen == 0 and r.gateway != "0.0.0.0"]
+    return [(r.iface, r.gateway, r.metric) for r in sorted(defaults, key=lambda r: r.metric)]
 
 
-def collect_network_interfaces(route_path: Path | None = None) -> list[str]:
+# What E7 waits for the network backend's interface rows, one query at a time.
+_ADDRESS_SOURCE_TIMEOUT_S = 5.0
+_address_source_pool = threading.BoundedSemaphore(1)
+
+
+def _address_sources(
+    provider: Callable[[], list[dict[str, Any]]] | None, timeout_s: float
+) -> tuple[dict[str, tuple[str, str]], str]:
+    """``{iface: (address, source)}`` from the network backend, and a note when there are none."""
+    if provider is None:
+        return {}, "[not applicable: network backend not wired]"
+    # One backend call per interface (an nmcli subprocess each on NetworkManager).
+    timed_out: tuple[Any, str | None] = (
+        [],
+        f"[unavailable: network backend did not answer within {timeout_s:g}s]",
+    )
+    rows, err = _bounded_probe(
+        partial(_safely_value, provider, "network_interfaces", []),
+        timeout_s,
+        timed_out,
+        pool=_address_source_pool,
+        busy_value=([], "[unavailable: an earlier bundle's network backend query has not finished]"),
+    )
+    if err is not None:
+        return {}, err
+    sources = {
+        str(row.get("name")): (str(row.get("address") or ""), str(row.get("address_source") or ""))
+        for row in rows or []
+        if row.get("address_source")
+    }
+    return sources, "" if sources else "[not reported by this network backend]"
+
+
+def collect_network_interfaces(
+    route_path: Path | None = None,
+    *,
+    address_sources: Callable[[], list[dict[str, Any]]] | None = None,
+    timeout_s: float | None = None,
+) -> list[str]:
     """Interface table plus the addressing a reachability question needs.
 
     The link fields alone ("eth0 is up at 1000Mb") cannot answer the most
@@ -2227,6 +2309,9 @@ def collect_network_interfaces(route_path: Path | None = None) -> list[str]:
         stats = psutil.net_if_stats()
     except Exception as exc:  # noqa: BLE001
         return [f"  [unavailable: net_if_stats: {exc!r}]"]
+    sources, sources_note = _address_sources(
+        address_sources, _ADDRESS_SOURCE_TIMEOUT_S if timeout_s is None else timeout_s
+    )
     try:
         addrs = psutil.net_if_addrs()
     except Exception as exc:  # noqa: BLE001
@@ -2239,12 +2324,19 @@ def collect_network_interfaces(route_path: Path | None = None) -> list[str]:
             f"  {nic:<14} isup={st.isup} speed={st.speed}Mb mtu={st.mtu} "
             f"duplex={duplex_label.get(int(st.duplex), str(st.duplex))}"
         )
+        backend_address, source = sources.get(nic, ("", ""))
         for addr in addrs.get(nic, ()):
             if addr.family != socket.AF_INET:
                 continue
             prefix = netmask_prefix_len(addr.netmask) if addr.netmask else None
             suffix = f"/{prefix}" if prefix is not None else f" netmask={addr.netmask}"
-            rows.append(f"  {'':<14}ipv4 {addr.address}{suffix}")
+            # Link-local is read off the address itself; otherwise the backend
+            # describes one address per interface, and a second one is not what it means.
+            if is_link_local(addr.address):
+                origin = " (link-local)"
+            else:
+                origin = f" ({source})" if source and addr.address == backend_address else ""
+            rows.append(f"  {'':<14}ipv4 {addr.address}{suffix}{origin}")
     routes = read_default_routes(route_path)
     if routes is None:
         rows.append("  Default route:  [unavailable: kernel route table not readable]")
@@ -2253,6 +2345,8 @@ def collect_network_interfaces(route_path: Path | None = None) -> list[str]:
     else:
         for iface, gateway, metric in routes:
             rows.append(f"  Default route:  via {gateway} on {iface} (metric {metric})")
+    if sources_note:
+        rows.append(f"  Address source: {sources_note}")
     return rows
 
 
@@ -2903,6 +2997,7 @@ class DiagnosticsBundle:
     a3_runtime_state: list[str] = field(default_factory=list)
     a4_uplink: list[str] = field(default_factory=list)
     a5_source_reach: list[str] = field(default_factory=list)
+    a6_bind_map: list[str] = field(default_factory=list)
     b_discovery: list[str] = field(default_factory=list)
     c_config: list[str] = field(default_factory=list)
     d_failures: list[str] = field(default_factory=list)
@@ -2932,6 +3027,7 @@ _BUNDLE_SECTIONS: tuple[tuple[str, str], ...] = (
     ("A3. Runtime state", "a3_runtime_state"),
     ("A4. Uplink status", "a4_uplink"),
     ("A5. Video source reachability", "a5_source_reach"),
+    ("A6. Network bind map", "a6_bind_map"),
     ("B. Discovery / peers", "b_discovery"),
     ("C. Effective config", "c_config"),
     ("D. Recent failures", "d_failures"),
@@ -3038,6 +3134,7 @@ def collect_bundle(
         "a3_runtime_state": lambda: collect_runtime_state(p),
         "a4_uplink": lambda: collect_uplink(p),
         "a5_source_reach": lambda: collect_source_reachability(p),
+        "a6_bind_map": lambda: collect_network_bind_map(p),
         "b_discovery": lambda: collect_discovery(p),
         "c_config": lambda: collect_config(p),
         "d_failures": lambda: collect_recent_failures(
@@ -3059,7 +3156,9 @@ def collect_bundle(
         ),
         "e5c_backups": collect_settings_backups,
         "e6_health": collect_system_health,
-        "e7_net": collect_network_interfaces,
+        "e7_net": lambda: collect_network_interfaces(
+            address_sources=p.network_interfaces, timeout_s=remaining(_ADDRESS_SOURCE_TIMEOUT_S)
+        ),
         "e8_usb": lambda: collect_usb(p),
         "e9_gamepad": lambda: collect_gamepad_runtime(p),
         "e10_mouse3d": lambda: collect_mouse3d(p),

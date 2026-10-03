@@ -20,12 +20,12 @@ _LEVELS = ("error", "caution", "info", "success")
 # Every class that shows a state; a rule for any of them must take its colours from the tokens.
 _STATUS_CLASS = re.compile(
     r"\.(notice|update-notice|restart-notice|modal-error|diag-error|gallery-error|wizard-action-required|"
-    r"network-banner(?:-error|-ok)?|stat-chip|diag-status-pill|diag-event-status|badge-experimental|"
+    r"network-banner(?:-error|-ok|-info)?|net-iface-method-badge|stat-chip|diag-status-pill|diag-event-status|badge-experimental|"
     r"modal-list-item-badge|slot-row|slot-missing|slot-state|slot-note|slot-activity|osc-binding-fault|"
     r"osc-binding-row|osc-binding-enabled-dot|osc-binding-nested-row|osc-pill|peer-item|peer-status|toast|"
     r"save-error|save-failed|field-error-msg|field-warn-msg|field-note-msg|conflict-flag|not-controlled|"
     r"add-feedback|saved-flash|wizard-status|wizard-preview-container|awaiting-password|wizard-field-error|"
-    r"update-flag|danger|btn-danger|modal-list-item-delete|gallery-del|dme-row)(?![\w-])"
+    r"update-flag|danger|btn-danger|modal-list-item-delete|gallery-del|dme-row|ia-dot)(?![\w-])"
 )
 _COLOUR = re.compile(r"#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)|hsla?\([^)]*\)")
 # Greys, whites and the off-white text: neutral, so a literal is fine.
@@ -122,6 +122,17 @@ def _status_rules() -> list[tuple[str, str, str]]:
     return rules
 
 
+@pytest.mark.parametrize("path", sorted(_TEMPLATES.rglob("*.tpl")), ids=lambda p: p.name)
+def test_every_style_block_closes_each_brace_it_opens(path: Path) -> None:
+    """A stray ``}`` turns the next selector invalid, and the browser drops that whole rule unseen."""
+    for css in re.findall(r"<style[^>]*>(.*?)</style>", path.read_text(encoding="utf-8"), re.S):
+        depth = 0
+        for ch in re.sub(r"/\*.*?\*/", "", css, flags=re.S):
+            depth += {"{": 1, "}": -1}.get(ch, 0)
+            assert depth >= 0, f"{path.name}: a '}}' closes nothing"
+        assert depth == 0, f"{path.name}: a '{{' is never closed"
+
+
 def test_the_status_rule_scan_finds_the_components() -> None:
     selectors = " ".join(selector for _, selector, _ in _status_rules())
     for component in (".notice.error", ".stat-chip.ok", ".osc-pill", ".peer-item.offline", ".conflict-flag"):
@@ -207,3 +218,15 @@ def _hover_backgrounds() -> dict[str, str]:
 )
 def test_every_destructive_control_darkens_to_the_fault_row_tint(control: str) -> None:
     assert _hover_backgrounds().get(control) == "var(--error-row)"
+
+
+@pytest.mark.parametrize("level", ["error", "caution", "info", "success"])
+def test_each_hud_level_is_the_web_chip_of_that_level(level: str) -> None:
+    """One language on both surfaces: a HUD status row is the web chip's fill and line."""
+    from openfollow.runtime.overlay_draw_style import STATUS_LEVEL_COLORS
+
+    fill, border, _cut = STATUS_LEVEL_COLORS[level]
+    chip = _doc_rgba(_doc_table()[f"--{level}-chip"])
+    line = _doc_rgba(_doc_table()[f"--{level}-line"])
+    assert (*(round(c * 255) for c in fill[:3]), fill[3]) == chip
+    assert tuple(round(c * 255) for c in border) == line[:3]

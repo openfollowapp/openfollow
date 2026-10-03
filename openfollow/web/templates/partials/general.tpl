@@ -251,13 +251,23 @@ window.loadAutostart();
 %# ------------------------------------------------------------------
 <div class="section" data-fold-key="general-network-interface" data-help="general-network-interface" data-fold-default="expanded">
     <div class="section-head">
-        <h2>Network Settings</h2>
-        <span class="section-note">Device IP address configuration</span>
+        <h2>Network Interface Settings</h2>
     </div>
     <div id="network-interface" hx-get="/section/network/status" hx-trigger="load"
          hx-target="this" hx-swap="innerHTML">
         <p class="muted">Loading network configuration…</p>
     </div>
+</div>
+
+%# ------------------------------------------------------------------
+%# 2b. Network Interface Assignment – which network each function uses. Sits
+%# below Network Interface Settings ("what address does this NIC have") and reads
+%# the same interface list. Lazy-loaded like the network region so the
+%# General render doesn't pay for the address resolution.
+%# ------------------------------------------------------------------
+<div id="interface-assignment" hx-get="/section/interface_assignment" hx-trigger="load"
+     hx-target="this" hx-swap="innerHTML">
+    <p class="muted">Loading interface assignment…</p>
 </div>
 
 %# ------------------------------------------------------------------

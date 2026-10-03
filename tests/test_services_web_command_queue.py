@@ -209,3 +209,36 @@ def test_set_update_status_overwrites_and_copies() -> None:
     first["state"] = "mutated"
     # The internal status is returned by copy each time.
     assert q.get_update_status()["state"] == "running"
+
+
+def test_a_restart_is_requested_when_no_update_is_busy() -> None:
+    q = WebCommandQueue()
+    assert q.request_restart_unless_updating() is True
+    assert q.consume_restart_requested() is True
+
+
+@pytest.mark.parametrize("state", ["queued", "running", "restarting"])
+def test_a_restart_is_refused_while_an_update_is_busy(state: str) -> None:
+    q = WebCommandQueue()
+    q.set_update_status(state)
+    assert q.request_restart_unless_updating() is False
+    assert q.consume_restart_requested() is False
+
+
+def test_a_restart_and_an_update_cannot_both_go_ahead() -> None:
+    """The check and the request happen under the lock update queueing takes,
+    so an update queued at the same moment is either seen or not started."""
+    import threading
+
+    q = WebCommandQueue()
+    result: list[bool] = []
+    with q._update_lock:
+        worker = threading.Thread(target=lambda: result.append(q.request_restart_unless_updating()))
+        worker.start()
+        worker.join(timeout=0.2)
+        assert worker.is_alive(), "decided without the update lock"
+        # An update queued while the restart waits for the lock wins.
+        q._update_status = {"state": "queued", "message": "", "error": ""}
+    worker.join(timeout=5)
+    assert result == [False]
+    assert q.consume_restart_requested() is False

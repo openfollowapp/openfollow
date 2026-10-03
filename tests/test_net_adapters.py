@@ -103,6 +103,14 @@ def test_a_label_on_another_interface_is_taken_whatever_its_case() -> None:
     assert label_conflict(labels, "eth1", "  ") is None
 
 
+def test_labels_are_compared_as_they_would_be_stored() -> None:
+    """A tab or a direction mark vanishes on save, so a label carrying one would
+    otherwise pass as new and land on top of the one it copies."""
+    labels = {"eth1": "Lighting"}
+    assert label_conflict(labels, "eth0", "Light\x09ing") == "'Lighting' is already the label of eth1."
+    assert label_conflict(labels, "eth0", "Lighting\u200e") == "'Lighting' is already the label of eth1."
+
+
 @pytest.mark.parametrize(
     ("raw", "stored"),
     [

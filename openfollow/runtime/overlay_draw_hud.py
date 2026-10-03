@@ -166,6 +166,8 @@ def draw_modal_shell(
 
     renderer._set_ui_font(cr, 23 if h >= 720 else 20, bold=True)
     cr.set_source_rgb(*title_color)
+    # A title can carry an operator's label, so it is cut to the panel like the subtitle.
+    title = renderer._truncate_text_to_width(cr, title, panel_w - 48.0)
     title_ext = cr.text_extents(title)
     title_x = panel_x + (panel_w - title_ext.width) / 2.0 - title_ext.x_bearing
     title_y = panel_y + 34.0

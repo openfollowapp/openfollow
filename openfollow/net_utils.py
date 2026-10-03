@@ -98,6 +98,11 @@ def interface_present(iface_name: str) -> bool:
     return bool(iface_name) and iface_name in psutil.net_if_addrs()
 
 
+def present_interfaces() -> frozenset[str]:
+    """Every interface the system has, with or without an address."""
+    return frozenset(psutil.net_if_addrs())
+
+
 def get_iface_for_ip(ip: str) -> str:
     """Return the interface holding IP (either family), or empty string."""
     if not ip or ip.startswith("127.") or ip == "::1":

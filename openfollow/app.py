@@ -198,6 +198,7 @@ if TYPE_CHECKING:
     from openfollow.input import InputManager
     from openfollow.input.button_detection import ButtonDetectionWizard
     from openfollow.logging_setup import RingBufferLogHandler
+    from openfollow.net_adapters import Adapter
     from openfollow.otp import OtpServer
     from openfollow.psn import Marker, PsnReceiver, PsnServer
     from openfollow.rttrpm import RttrpmServer
@@ -353,6 +354,8 @@ class OpenFollowApp:
         # Interface name -> "DHCP" / "Static", read on refresh because the
         # rows are rebuilt every frame and this costs an adapter call each.
         self._pi_network_methods: dict[str, str] = {}
+        # Interface name -> which adapter it is, read with the methods.
+        self._pi_network_adapters: dict[str, Adapter] = {}
         # Which interface's own screen is open; "" is the interface list.
         # Separate from ``_pi_network_active_iface``, which says whose state is
         # loaded from the adapter and has to stay set for the static editor.

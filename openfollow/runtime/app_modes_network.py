@@ -18,7 +18,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from openfollow.net_adapters import adapter_fields, display_name
+from openfollow.net_adapters import Adapter, describe, display_name
 from openfollow.net_utils import WEB_BIND_ALL
 from openfollow.network.adapter import (
     ApplyResult,
@@ -119,6 +119,9 @@ class _NetworkSnapshot:
     # call per interface, which the render loop cannot afford. This read is
     # already off-thread and budgeted.
     methods: dict[str, str] = field(default_factory=dict)
+    # Interface name -> which adapter it is. Off-thread for the same reason:
+    # describing one can read sysfs or run ``ip`` / ``networksetup``.
+    adapters: dict[str, Adapter] = field(default_factory=dict)
 
 
 def _read_pi_network(app: OpenFollowApp) -> _NetworkSnapshot:
@@ -140,7 +143,8 @@ def _read_pi_network(app: OpenFollowApp) -> _NetworkSnapshot:
         iface_state = state if iface.name == active else adapter.get_state(iface.name)
         if iface_state is not None:
             methods[iface.name] = _METHOD_LABELS.get(iface_state.ipv4.method, "")
-    return _NetworkSnapshot(True, interfaces, active, state, pending, methods)
+    adapters = {iface.name: describe(iface.name) for iface in interfaces}
+    return _NetworkSnapshot(True, interfaces, active, state, pending, methods, adapters)
 
 
 def _apply_pi_network_snapshot(app: OpenFollowApp, snap: _NetworkSnapshot) -> None:
@@ -160,6 +164,7 @@ def _apply_pi_network_snapshot(app: OpenFollowApp, snap: _NetworkSnapshot) -> No
         return
     app._pi_network_active_iface = snap.active_iface
     app._pi_network_methods = snap.methods
+    app._pi_network_adapters = snap.adapters
     app._pi_network_state_cache = snap.state
     app._pi_network_pending_config = snap.pending
 
@@ -317,9 +322,9 @@ def _absent_rows(app: OpenFollowApp, ifaces: list[tuple[str, str]]) -> list[dict
     ]
 
 
-def _adapter_rows(name: str, labels: dict[str, str]) -> list[dict[str, object]]:
-    """Which physical adapter *name* is: the same rows the web card shows."""
-    fields = adapter_fields(name, labels)
+def _adapter_rows(adapter: Adapter, labels: dict[str, str]) -> list[dict[str, object]]:
+    """Which physical adapter an interface is: the same rows the web card shows."""
+    fields = adapter.fields(labels)
     shown = [
         ("vlan", "VLAN", fields["vlan_on"]),
         ("port", "Port", fields["port"]),
@@ -565,7 +570,8 @@ def _iface_detail_rows(
             }
         )
 
-    rows.extend(_adapter_rows(name, _labels(app)))
+    adapters = getattr(app, "_pi_network_adapters", None) or {}
+    rows.extend(_adapter_rows(adapters.get(name, Adapter(name)), _labels(app)))
     rows.append({"kind": "header", "label": "Change this interface"})
     if not writable:
         rows.append(

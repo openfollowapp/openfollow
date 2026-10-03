@@ -2435,6 +2435,17 @@ def test_a_blank_video_pin_is_followed_through_the_station(monkeypatch) -> None:
     assert receiver.released == ["eth0 has no address"]
 
 
+def test_a_video_pin_outage_names_the_interface_by_label(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    cfg = services._app._config
+    cfg.video_source_type = "srt"
+    cfg.video_input_iface = "eth1"
+    cfg.interface_labels = {"eth1": "Video"}
+    receiver = _RecordingVideoReceiver(pinned_to="10.0.0.9")
+    _video_plane(services, receiver).suspend()
+    assert receiver.released == ["Video (eth1) has no address"]
+
+
 @pytest.mark.parametrize(
     ("source", "field", "url"),
     [

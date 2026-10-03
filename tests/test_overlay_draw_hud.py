@@ -3243,6 +3243,16 @@ class TestNetworkScreenTitle:
         draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
         assert "NETWORK INTERFACE: LIGHTING (ENX9C69D3AC16AB)" in cr.show_text_strings()
 
+    def test_a_headline_wider_than_the_panel_is_cut_to_it(self) -> None:
+        net = _network_state(rows=[])
+        net.open_iface = "enx9c69d3ac16ab"
+        net.title = "Network Interface: WWWWWWWWWWWWWWWWWWWW (enx9c69d3ac16ab)"
+        state = _base_state(pi_network=net)
+        cr = FakeCairo()
+        draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1280, 720)
+        title = next(t for t in cr.texts if t.text.startswith("NETWORK INTERFACE"))
+        assert title.text.endswith("...")
+
     def test_without_a_headline_the_interface_name_titles_it(self) -> None:
         net = _network_state(rows=[])
         net.open_iface = "eth0"

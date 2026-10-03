@@ -970,6 +970,20 @@ class TestNamesTheAdapter:
         _poll_n(obs, clk, 1)
         assert obs.alerts() == ["PSN: Lighting (enx9c69d3ac16ab) – bind refused"]
 
+    def test_a_presence_check_that_fails_still_stops_the_plane(self) -> None:
+        rec = _Recorder(iface="eth1")
+        clk = _Clock()
+
+        def broken(_iface: str) -> bool:
+            raise OSError("enumeration failed mid-hotplug")
+
+        obs = NetworkPlaneObserver(planes=[rec.plane("PSN")], clock=clk, iface_present=broken)
+        rec.go_down()
+        _poll_n(obs, clk, DOWN_POLLS_BEFORE_SUSPEND)
+        assert obs.alerts() == ["PSN: eth1 is down"]
+        assert rec.suspends == 1
+        assert obs.snapshot()[0].state == "stopped"
+
     def test_naming_that_fails_falls_back_to_the_bare_name(self) -> None:
         rec = _Recorder(iface="eth1")
         clk = _Clock()

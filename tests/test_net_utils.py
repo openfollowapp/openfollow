@@ -1569,6 +1569,10 @@ class TestInterfacePresent:
         monkeypatch.setattr(net_utils_module.psutil, "net_if_addrs", lambda: {"eth0": []})
         assert net_utils_module.interface_present("eth1") is False
 
+    def test_every_interface_is_listed_with_or_without_an_address(self, monkeypatch) -> None:
+        monkeypatch.setattr(net_utils_module.psutil, "net_if_addrs", lambda: {"eth0": [], "eth1": []})
+        assert net_utils_module.present_interfaces() == frozenset({"eth0", "eth1"})
+
     def test_no_name_is_never_present(self, monkeypatch) -> None:
         monkeypatch.setattr(net_utils_module.psutil, "net_if_addrs", lambda: {"": []})
         assert net_utils_module.interface_present("") is False

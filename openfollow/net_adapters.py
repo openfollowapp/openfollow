@@ -21,6 +21,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from openfollow.text_hygiene import CONTROL_CHARS_RE
+
 # A label shares one Operator Screen row with the kernel name.
 LABEL_MAX_LEN = 20
 _IFNAME_MAX = 15
@@ -29,7 +31,6 @@ _SYSFS = Path("/sys")
 _ZERO_MAC = "00:00:00:00:00:00"
 # Strings a USB device reports about itself are untrusted and unbounded.
 _DESCRIPTOR_MAX_LEN = 48
-_CONTROL_RE = re.compile("[\x00-\x1f\x7f\u200e-\u200f\u202a-\u202e]")
 _CACHE_MAX = 64
 _IP_TIMEOUT_S = 1.0
 _NETWORKSETUP_TIMEOUT_S = 2.0
@@ -47,8 +48,9 @@ def display_name(name: str, labels: Mapping[str, str]) -> str:
 
 
 def label_conflict(labels: Mapping[str, str], iface: str, label: str) -> str | None:
-    """Why *label* cannot go on *iface*, or None. Labels are unique, ignoring case."""
-    wanted = label.strip().casefold()
+    """Why *label* cannot go on *iface*, or None. Labels are unique, ignoring case,
+    compared as they would be stored."""
+    wanted = clean_label(label).casefold()
     if not wanted:
         return None
     for other, taken in sorted(labels.items()):
@@ -61,7 +63,7 @@ def clean_label(raw: object) -> str:
     """A stored label: text only, no control or direction characters, at most LABEL_MAX_LEN."""
     if not isinstance(raw, str):
         return ""
-    return _CONTROL_RE.sub("", raw).strip()[:LABEL_MAX_LEN].strip()
+    return CONTROL_CHARS_RE.sub("", raw).strip()[:LABEL_MAX_LEN].strip()
 
 
 def normalize_labels(raw: object) -> dict[str, str]:
@@ -119,6 +121,17 @@ class Adapter:
         if self.vlan_parent:
             return self.where(labels)
         return " · ".join(part for part in (self.port, self.model) if part)
+
+    def fields(self, labels: Mapping[str, str]) -> dict[str, Any]:
+        """The per-interface fields a web row or the Operator Screen shows."""
+        return {
+            "label": labels.get(self.name, ""),
+            "description": self.summary(labels),
+            "port": self.port,
+            "model": self.model,
+            "mac": self.mac,
+            "vlan_on": self.vlan_text(labels),
+        }
 
 
 class AdapterReader:
@@ -184,9 +197,9 @@ class AdapterReader:
         if not device.exists():
             return Adapter(name, mac=mac)
         # Deferred: the input package's own imports reach back into configuration, which imports this.
-        from openfollow.input.controller_identity import port_label, resolve_net_key, usb_host_paths
+        from openfollow.input.controller_identity import port_label, resolve_key, usb_host_paths
 
-        usb_key = resolve_net_key(name, sysfs_root=self._root)
+        usb_key = resolve_key(name, sysfs_root=self._root)
         if usb_key is not None:
             port = port_label(usb_key, usb_host_paths(self._hosts_root))
             return Adapter(name, port=port, model=_usb_model(device, self._root), mac=mac)
@@ -267,7 +280,7 @@ def _uevent(base: Path) -> dict[str, str]:
 
 
 def _clean(text: str) -> str:
-    return _CONTROL_RE.sub("", text).strip()[:_DESCRIPTOR_MAX_LEN].strip()
+    return CONTROL_CHARS_RE.sub("", text).strip()[:_DESCRIPTOR_MAX_LEN].strip()
 
 
 def _usb_model(device: Path, sysfs_root: Path) -> str:
@@ -309,13 +322,5 @@ def describe(name: str) -> Adapter:
 
 
 def adapter_fields(name: str, labels: Mapping[str, str]) -> dict[str, Any]:
-    """The per-interface fields a web row or the Operator Screen shows."""
-    adapter = describe(name)
-    return {
-        "label": labels.get(name, ""),
-        "description": adapter.summary(labels),
-        "port": adapter.port,
-        "model": adapter.model,
-        "mac": adapter.mac,
-        "vlan_on": adapter.vlan_text(labels),
-    }
+    """The per-interface fields a web row shows, read now."""
+    return describe(name).fields(labels)

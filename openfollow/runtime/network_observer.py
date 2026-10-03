@@ -243,6 +243,13 @@ class NetworkPlaneObserver:
     def _state(self, key: str) -> _PlaneState:
         return self._states.setdefault(key, _PlaneState())
 
+    def _present(self, iface: str) -> bool:
+        """Whether *iface* exists; a failed check reads as present, so the outage is still handled."""
+        try:
+            return self.iface_present(iface)
+        except Exception:  # noqa: BLE001 - the wording must never cost the stop
+            return True
+
     def _name(self, iface: str) -> str:
         """*iface* as an operator reads it; the bare name when the lookup fails."""
         if not iface:
@@ -290,7 +297,7 @@ class NetworkPlaneObserver:
         # has no address at all. Binding "" would hand the plane INADDR_ANY,
         # which is the wrong network by definition.
         if status in ("down", "none"):
-            state.present = not iface or self.iface_present(iface)
+            state.present = not iface or self._present(iface)
             self._handle_down(plane, state, iface, backing_off=backing_off)
             return
 

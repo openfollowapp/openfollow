@@ -1301,13 +1301,21 @@ ADDRESS_INTERFACE_DOWN = "Interface down"
 _OUTAGE_ADDRESSES = frozenset({ADDRESS_NOT_CONNECTED, ADDRESS_INTERFACE_DOWN})
 
 
-def _plane_address(pin: str, station_iface: str) -> str:
+@dataclass(frozen=True)
+class _PanelNames:
+    """Read once per panel render: the operator's labels and the interfaces that exist."""
+
+    labels: Mapping[str, str]
+    present: frozenset[str]
+
+
+def _plane_address(pin: str, station_iface: str, names: _PanelNames) -> str:
     """Where a plane binds: the resolved address, or why its interface has none."""
-    from openfollow.net_utils import interface_present, plane_source_iface, resolve_plane_source_ip
+    from openfollow.net_utils import plane_source_iface, resolve_plane_source_ip
 
     resolved, status = resolve_plane_source_ip(pin, station_iface)
     if status == "down":
-        present = interface_present(plane_source_iface(pin, station_iface))
+        present = plane_source_iface(pin, station_iface) in names.present
         return ADDRESS_INTERFACE_DOWN if present else ADDRESS_NOT_CONNECTED
     return resolved
 
@@ -1316,9 +1324,10 @@ def _plane_address(pin: str, station_iface: str) -> str:
 _ROUTE_PICK_WAIT_S = 0.2
 
 
-def _route_pick(host: str, resolver: BoundedResolver, wait_s: float | None) -> str:
+def _route_pick(host: str, resolver: BoundedResolver, wait_s: float | None, labels: Mapping[str, str]) -> str:
     """The interface and address the Pi would use for *host* right now; with no
     *wait_s*, only start its lookup."""
+    from openfollow.net_adapters import display_name
     from openfollow.net_utils import get_iface_for_ip, route_source
 
     if wait_s is None:
@@ -1335,7 +1344,7 @@ def _route_pick(host: str, resolver: BoundedResolver, wait_s: float | None) -> s
     if source is None:
         return "No route"
     iface = get_iface_for_ip(source)
-    return f"{iface} – {source}" if iface else source
+    return f"{display_name(iface, labels)} – {source}" if iface else source
 
 
 def _egress_address(
@@ -1345,6 +1354,7 @@ def _egress_address(
     *,
     resolver: BoundedResolver,
     wait_s: float | None,
+    names: _PanelNames,
     unrouted: str = "Per routing table",
 ) -> str:
     """The address cell for a row that sends to *host*, looked up by the resolver its output uses;
@@ -1355,12 +1365,12 @@ def _egress_address(
     if host and is_loopback_host(host):
         return "Loopback"
     if plane_source_iface(pin, station_iface):
-        return _plane_address(pin, station_iface)
+        return _plane_address(pin, station_iface, names)
     # Nothing pinned anywhere: show where the Pi sends it now, not that it chooses.
-    return _route_pick(host, resolver, wait_s) if host else unrouted
+    return _route_pick(host, resolver, wait_s, names.labels) if host else unrouted
 
 
-def _video_input_row(cfg: AppConfig, wait_s: float | None) -> dict[str, Any]:
+def _video_input_row(cfg: AppConfig, wait_s: float | None, names: _PanelNames) -> dict[str, Any]:
     """The active video input's row; read-only with a reason when it cannot be pinned."""
     from openfollow.video.failure import SourceKind
     from openfollow.video.inputs import get_input_class
@@ -1388,9 +1398,11 @@ def _video_input_row(cfg: AppConfig, wait_s: float | None) -> dict[str, Any]:
     pin = config_pin(config)
     if input_cls.receives_on_every_interface(config):
         # A wildcard listener receives on every interface unless pinned itself.
-        address = _egress_address(pin, "", "", resolver=HOST_RESOLVER, wait_s=wait_s, unrouted="All interfaces")
+        address = _egress_address(
+            pin, "", "", resolver=HOST_RESOLVER, wait_s=wait_s, names=names, unrouted="All interfaces"
+        )
         return {**row, "key": "video_input_iface", "address": address, "editable": True, "blank": "all"}
-    address = _egress_address(pin, target, "", resolver=HOST_RESOLVER, wait_s=wait_s)
+    address = _egress_address(pin, target, "", resolver=HOST_RESOLVER, wait_s=wait_s, names=names)
     return {**row, "key": "video_input_iface", "address": address, "editable": True}
 
 
@@ -1410,26 +1422,34 @@ def build_interface_assignment_rows(cfg: AppConfig, web_bind: tuple[str, str] | 
     owns, so giving them their own dropdown would imply an independence they
     don't have.
     """
+    from openfollow.net_adapters import display_name
+    from openfollow.net_utils import present_interfaces
+
+    names = _PanelNames(cfg.interface_labels, present_interfaces())
     # Built once to start every lookup, then for real: each lookup waits from
     # when it started, so the render waits once for all of them.
-    _interface_assignment_rows(cfg, web_bind, None)
-    return _interface_assignment_rows(cfg, web_bind, _ROUTE_PICK_WAIT_S)
+    _interface_assignment_rows(cfg, web_bind, None, names)
+    rows = _interface_assignment_rows(cfg, web_bind, _ROUTE_PICK_WAIT_S, names)
+    for row in rows:
+        row["outage"] = row["address"] in _OUTAGE_ADDRESSES
+        row["value_display"] = display_name(str(row.get("value") or ""), cfg.interface_labels)
+    return rows
 
 
 def _interface_assignment_rows(
-    cfg: AppConfig, web_bind: tuple[str, str] | None, wait_s: float | None
+    cfg: AppConfig, web_bind: tuple[str, str] | None, wait_s: float | None, names: _PanelNames
 ) -> list[dict[str, Any]]:
     resolved = web_bind if web_bind is not None else resolve_web_bind_for(cfg)
     station = cfg.psn_source_iface
-    station_ip = _plane_address(station, "")
+    station_ip = _plane_address(station, "", names)
 
     def _addr(pin: str) -> str:
-        return _plane_address(pin, station)
+        return _plane_address(pin, station, names)
 
     def _sender(pin: str, host: str, *, tcp: bool = False) -> str:
         # Each looked up the way its socket is: UDP from IPv4 sockets, TCP over both families.
         resolver = HOST_RESOLVER if tcp else IPV4_RESOLVER
-        return _egress_address(pin, host, station, resolver=resolver, wait_s=wait_s)
+        return _egress_address(pin, host, station, resolver=resolver, wait_s=wait_s, names=names)
 
     rows: list[dict[str, Any]] = [
         {
@@ -1500,7 +1520,7 @@ def _interface_assignment_rows(
             }
             for dest in cfg.osc_destinations.destinations
         ),
-        _video_input_row(cfg, wait_s),
+        _video_input_row(cfg, wait_s, names),
         {
             # The web UI does not inherit the station pin: a station pinned to
             # a lighting VLAN would take its own config UI off the office LAN
@@ -1519,11 +1539,6 @@ def _interface_assignment_rows(
             "note": f"Fixed to {cfg.web_bind} by web_bind in config.toml" if cfg.web_bind else "",
         },
     ]
-    from openfollow.net_adapters import display_name
-
-    for row in rows:
-        row["outage"] = row["address"] in _OUTAGE_ADDRESSES
-        row["value_display"] = display_name(str(row.get("value") or ""), cfg.interface_labels)
     return rows
 
 

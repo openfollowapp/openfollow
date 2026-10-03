@@ -153,6 +153,17 @@ def test_a_refused_label_is_shown_on_its_row_and_not_saved(
     assert _saved(tmp_path) == {"eth0": "Production"}
 
 
+def test_a_label_that_only_differs_by_a_stripped_character_is_refused(net_server, tmp_path) -> None:  # noqa: F811
+    """A tab is cleaned away on save, so "Produc<tab>tion" would otherwise be
+    stored as a second "Production" and one of them silently dropped."""
+    _labels(tmp_path, {"eth0": "Production"})
+    _fake, base = net_server
+    status, body = _post(base, "/section/network/label", {"iface": "wlan0", "label": "Produc\x09tion"})
+    assert status == 200
+    assert "is already the label of eth0." in _row(body, "wlan0")
+    assert _saved(tmp_path) == {"eth0": "Production"}
+
+
 def test_relabelling_an_interface_with_its_own_label_is_fine(net_server, tmp_path) -> None:  # noqa: F811
     _labels(tmp_path, {"eth0": "Production"})
     _fake, base = net_server

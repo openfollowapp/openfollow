@@ -1590,6 +1590,28 @@ class TestInterfaceAssignmentRows:
         assert self._row(cfg, "OSC to Default")["address"] == "eth1 – 10.0.0.9"
         assert "198.51.100.20" in asked and "198.51.100.21" in asked
 
+    def test_the_pis_pick_names_its_interface_by_label(self, monkeypatch) -> None:
+        self._ifaces(monkeypatch, {"eth0": "192.168.1.5", "eth1": "10.0.0.9"})
+        TestInterfaceAssignmentRows._pick(monkeypatch, "10.0.0.9")
+        cfg = AppConfig(interface_labels={"eth1": "Lighting"})
+        cfg.rttrpm_output.host = "198.51.100.20"
+        assert self._row(cfg, "RTTrPM output")["address"] == "Lighting (eth1) – 10.0.0.9"
+
+    def test_a_render_reads_which_interfaces_exist_once(self, monkeypatch) -> None:
+        """Both passes of a render share one read, however many rows are down."""
+        import openfollow.net_utils as net_utils_module
+
+        self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        reads: list[int] = []
+        real = net_utils_module.present_interfaces
+        monkeypatch.setattr(net_utils_module, "present_interfaces", lambda: reads.append(1) or real())
+        cfg = AppConfig(psn_source_iface="eth0")
+        cfg.otp_output.source_iface = "eth8"
+        cfg.osc.listen_iface = "eth9"
+        rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
+        assert (rows["OTP output"]["address"], rows["OSC input"]["address"]) == ("Not connected", "Not connected")
+        assert reads == [1]
+
     def test_a_loopback_destination_reads_loopback(self, monkeypatch) -> None:
         self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})
         cfg = AppConfig(psn_source_iface="eth0")

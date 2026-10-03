@@ -2727,6 +2727,27 @@ class TestAdaptersByLabel:
         # Before the actions, so it is read with the address, not after them.
         assert start < keys.index("Change this interface")
 
+    def test_rows_built_every_frame_never_read_an_adapter(self) -> None:
+        """Describing one can run ``ip`` or ``networksetup``; the rows are rebuilt
+        on the frame clock, so it happens with the snapshot read, off-thread."""
+        from openfollow import net_adapters
+
+        reads: list[str] = []
+
+        class _Counting(net_adapters.AdapterReader):
+            def read(self, name: str) -> net_adapters.Adapter:
+                reads.append(name)
+                return net_adapters.Adapter(name, port="Built-in Ethernet")
+
+        net_adapters.set_reader(_Counting())
+        app = self._labelled({})
+        _open_iface(app, "eth0")
+        read_at_entry = len(reads)
+        assert read_at_entry >= 1
+        for _ in range(5):
+            assert "Built-in Ethernet" in [r.get("value") for r in anm.build_pi_network_rows(app)]
+        assert len(reads) == read_at_entry
+
     def test_an_adapter_nothing_is_known_about_adds_no_section(self) -> None:
         app = self._labelled({})
         _open_iface(app, "wlan0")

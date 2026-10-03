@@ -7683,6 +7683,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 "matches": notes.matches,
                 "html": notes.html,
                 "backup": None if backup is None else {"level": backup.level, "text": backup.text, "step": backup.step},
+                "support_html": template("partials/support_card", compact=True),
             }
         )
 

@@ -49,6 +49,10 @@
         </div>
 
         <div class="group">
+            % include('partials/support_card.tpl', compact=False)
+        </div>
+
+        <div class="group">
             <p style="margin:0 0 0.8rem;">
                 Copyright (C) 2026 The OpenFollow Project – Paul Hermann, Michel Honold, Vinzenz Schultz
             </p>

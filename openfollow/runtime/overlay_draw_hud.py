@@ -21,6 +21,7 @@ from openfollow.runtime.overlay_draw_style import (
     COLOR_BG_BASE,
     COLOR_BORDER_SOFT,
     COLOR_OK,
+    COLOR_SUPPORT_BORDER,
     COLOR_TEXT,
     COLOR_TEXT_MUTED,
     COLOR_WARNING_BORDER,
@@ -28,7 +29,9 @@ from openfollow.runtime.overlay_draw_style import (
     MODAL_RADIUS,
     PANEL_RADIUS,
     ROW_RADIUS,
+    SUPPORT_DASH,
     draw_card_background,
+    draw_heart,
     draw_rounded_rect,
     draw_success_sign,
     draw_warning_sign,
@@ -195,6 +198,9 @@ _DOCS_COL_GAP = 20.0
 _DOCS_QR_MAX = 190.0
 # Below this the code is too small to read off a screen, so draw nothing.
 _DOCS_QR_MIN = 70.0
+_HEART_GAP = 5.0
+# Inside the gaps above and below the block, so the dashed frame never touches the list.
+_FRAME_PAD = 8.0
 
 
 def draw_selectable_list(
@@ -728,14 +734,35 @@ def _draw_link_column(
     screen, so the code is the usable half; the caption is what tells someone
     reading over their shoulder where it leads.
     """
+    if code.contribution:
+        _draw_contribution_frame(cr, x, y, w, text_h + _DOCS_GAP + qr_size)
     renderer._set_ui_font(cr, _DOCS_FONT)
-    cr.set_source_rgba(*COLOR_TEXT_MUTED)
     for row, authored in enumerate(code.lines):
-        line = renderer._truncate_text_to_width(cr, authored, w)
+        lead = code.contribution and row == 0
+        heart = _DOCS_FONT + _HEART_GAP if lead else 0.0
+        line = renderer._truncate_text_to_width(cr, authored, w - heart)
         ext = cr.text_extents(line)
-        cr.move_to(x + (w - ext.width) / 2.0, y + (row + 1) * _DOCS_LINE_H)
+        left = x + (w - ext.width - heart) / 2.0
+        baseline = y + (row + 1) * _DOCS_LINE_H
+        if lead:
+            draw_heart(cr, left + _DOCS_FONT / 2.0, baseline - _DOCS_FONT * 0.35, _DOCS_FONT)
+            cr.set_source_rgb(*COLOR_ACCENT)
+        else:
+            cr.set_source_rgba(*COLOR_TEXT_MUTED)
+        cr.move_to(left + heart, baseline)
         cr.show_text(line)
     draw_link_qr(cr, code, x + (w - qr_size) / 2.0, y + text_h + _DOCS_GAP, qr_size)
+
+
+def _draw_contribution_frame(cr: Any, x: float, y: float, w: float, h: float) -> None:
+    """The dashed edge that marks the Support OpenFollow column as a request."""
+    cr.save()
+    draw_rounded_rect(cr, x, y - _FRAME_PAD, w, h + 2 * _FRAME_PAD, PANEL_RADIUS)
+    cr.set_source_rgba(*COLOR_SUPPORT_BORDER)
+    cr.set_line_width(1.5)
+    cr.set_dash(SUPPORT_DASH)
+    cr.stroke()
+    cr.restore()
 
 
 def _draw_settings_info_card(

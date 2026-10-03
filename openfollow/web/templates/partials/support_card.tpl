@@ -1,14 +1,4 @@
-%# Support OpenFollow: the request for contributions. One card for the What's
-%# new dialog (``compact``, docked beside Continue) and the About page.
-%#
-%# The QR is the usable half: a show LAN has no uplink and the Operator Screen's
-%# browser opens no new tabs, but a phone on mobile data can scan the code. The
-%# address is printed as text for anyone who would rather type it.
-%#
-%# The website's dashed gold edge on a neutral fill, led by a heart, so it
-%# never passes for a caution box (docs/STATUS_LANGUAGE.md).
-%# The text makes no claim that could go stale on a station that never updates.
-%#
+%# Support OpenFollow card: docked beside Continue in What's new (``compact``), in full on About.
 %# Params: compact.
 % from openfollow.runtime.overlay_links import SUPPORT, link_qr_svg
 <aside class="support-card{{' support-card--compact' if compact else ''}}" aria-label="Support OpenFollow">

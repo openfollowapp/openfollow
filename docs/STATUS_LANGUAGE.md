@@ -289,6 +289,7 @@ the neutral `--surface` fill and leads with a heart. Never give it a level's
 fill, a solid border or a status sign. Its text makes no claim that could go
 stale on a station that never updates.
 
+## Corner radius
 
 - **Web boxes:** 6px, every level and every box.
 - **Chips and pills:** fully rounded. Small row pills: 0.4rem.

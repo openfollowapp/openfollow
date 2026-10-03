@@ -1,4 +1,4 @@
-# Name every USB Ethernet adapter after its MAC so the name cannot move.
+# Name USB Ethernet adapters after their MAC so the name cannot move.
 #
 # Kernel ethN names are handed out in probe order, not by device identity, so a
 # station with two adapters fitted can swap eth1 and eth2 across a reboot. Every
@@ -8,12 +8,12 @@
 # an adapter keeps its name in any socket, and a replacement gets a new name, so
 # a pin on the old one stops visibly instead.
 #
-# Matched by USB path, so an Ethernet adapter of any make is covered. Wi-Fi
-# dongles and mobile modems keep their names (Type=ether). The two drivers kept
-# out are the Pi 3 and Zero ONBOARD NICs, which hang off USB: renaming them would
-# dangle every eth0 pin an operator already has (a USB adapter on either driver
-# keeps its kernel name too). An adapter without a hardware MAC has no MAC name
-# and is left to the other rules.
+# Matched by USB path, so an Ethernet adapter of any make is covered, with one
+# exception: the two drivers of the ONBOARD NIC on the Pi 3 and earlier models,
+# which hangs off USB. Renaming it would dangle every eth0 pin an operator already
+# has, so a USB adapter on either driver keeps its kernel name too. Wi-Fi dongles
+# and mobile modems keep theirs (Type=ether). An adapter without a hardware MAC
+# has no MAC name and is left to the other rules.
 #
 # Naming applies when the device appears, so an adapter already plugged in keeps
 # its old name until the next replug or reboot.

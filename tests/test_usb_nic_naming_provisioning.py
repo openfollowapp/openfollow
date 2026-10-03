@@ -103,6 +103,8 @@ _DEVICES = {
     "pi 3b+ onboard on usb": (("ether", "platform-3f980000.usb-usb-0:1.1.1:1.0", "lan78xx", True), False),
     "pcie nic": (("ether", "pci-0000:01:00.0", "r8169", True), False),
     "usb adapter without a hardware mac": (("ether", _USB, "r8152", False), False),
+    # The onboard NIC's drivers are kept out wherever they appear, so an adapter on one keeps ethN.
+    "usb adapter on an onboard nic's driver": (("ether", _USB, "lan78xx", True), False),
     # Never covered by the driver list either: their names, and the profiles bound to them, stay.
     "usb wi-fi dongle": (("wlan", _USB, "mt7601u", True), False),
     "usb mobile modem": (("wwan", _USB, "qmi_wwan", True), False),
@@ -111,10 +113,11 @@ _DEVICES = {
 
 @pytest.mark.parametrize("name", sorted(_BLOCK_SOURCES))
 @pytest.mark.parametrize("device", sorted(_DEVICES))
-def test_every_usb_ethernet_adapter_and_no_onboard_nic_is_named_by_mac(name: str, device: str) -> None:
-    """Every USB Ethernet adapter gets its MAC name, whatever its make, so two can
-    never trade names. The Pi 3 / Zero onboard NIC hangs off USB too; renaming it
-    would dangle every eth0 pin an operator already has."""
+def test_usb_ethernet_adapters_and_no_onboard_nic_are_named_by_mac(name: str, device: str) -> None:
+    """A USB Ethernet adapter gets its MAC name, whatever its make, so two can
+    never trade names. The onboard NIC of the Pi 3 and earlier hangs off USB too;
+    renaming it would dangle every eth0 pin an operator already has, so its two
+    drivers are kept out."""
     (kind, id_path, driver, mac_name), renamed = _DEVICES[device]
     found = _renamed(_match_section(name), kind=kind, id_path=id_path, driver=driver, mac_name=mac_name)
     assert found is renamed

@@ -29,8 +29,9 @@ from openfollow.configuration import (
 )
 from openfollow.input import InputManager
 from openfollow.input.mouse3d import idle_mouse3d_status
+from openfollow.net_adapters import display_name
 from openfollow.net_egress import Egress, is_loopback_host, resolve_egress
-from openfollow.net_utils import ResolveStatus
+from openfollow.net_utils import ResolveStatus, interface_present
 from openfollow.osc.egress import OscEgressTable
 from openfollow.otp import OtpServer
 from openfollow.psn import MARKER_STALE_AFTER_S, PsnReceiver, PsnServer
@@ -1273,6 +1274,9 @@ class AppRuntimeServices:
             *self._osc_output_planes(),
         ]
 
+    def _iface_display_name(self, iface: str) -> str:
+        return display_name(iface, self._app._config.interface_labels)
+
     def observe_network_planes(self) -> None:
         """Follow every plane's configured interface. Called from housekeeping.
 
@@ -1284,7 +1288,12 @@ class AppRuntimeServices:
         observer = self._network_observer
         if observer is None:
             # A provider: OSC destinations and their pins change at runtime.
-            observer = NetworkPlaneObserver(planes=self._build_network_planes, clock=time.monotonic)
+            observer = NetworkPlaneObserver(
+                planes=self._build_network_planes,
+                clock=time.monotonic,
+                describe_iface=self._iface_display_name,
+                iface_present=interface_present,
+            )
             self._network_observer = observer
         # Inside the same throttle: resolving the station address enumerates
         # every adapter, and housekeeping runs at 100 ms.

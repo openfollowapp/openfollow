@@ -65,6 +65,14 @@ def _always_enabled() -> bool:
     return True
 
 
+def _bare_name(iface: str) -> str:
+    return iface
+
+
+def _always_present(_iface: str) -> bool:
+    return True
+
+
 @dataclass(frozen=True)
 class Plane:
     """One network function and how to point it at an interface."""
@@ -114,6 +122,8 @@ class _PlaneState:
     unfollowed: bool = False
     # Set once a resolve has returned, so a failure before any reads as never resolved.
     resolved: bool = False
+    # False while an addressless interface does not exist at all: an adapter unplugged.
+    present: bool = True
 
 
 # A plane with nothing to follow (see ``Plane.enabled``).
@@ -150,6 +160,10 @@ class NetworkPlaneObserver:
 
     planes: Sequence[Plane] | Callable[[], Sequence[Plane]]
     clock: Callable[[], float]
+    # How alerts, logs and the bundle name an interface: "Lighting (enx…)" when labelled.
+    describe_iface: Callable[[str], str] = _bare_name
+    # Tells an unplugged adapter ("not connected") from one without an address ("down").
+    iface_present: Callable[[str], bool] = _always_present
     _states: dict[str, _PlaneState] = field(default_factory=dict)
     _next_poll: float = 0.0
     _polled: tuple[Plane, ...] = ()
@@ -202,11 +216,13 @@ class NetworkPlaneObserver:
             return PlaneStatus(
                 plane.label, state.iface, state.address, bound, "failing", state.failure, resolved=state.resolved
             )
-        where = state.iface or "the interface"
+        where = self._name(state.iface) or "the interface"
         if state.suspended:
-            return PlaneStatus(plane.label, state.iface, "", bound, "stopped", f"{where} has no address")
+            outage = "is not connected" if not state.present else "has no address"
+            return PlaneStatus(plane.label, state.iface, "", bound, "stopped", f"{where} {outage}")
         if state.down_polls:
-            detail = f"no address for {state.down_polls} of {DOWN_POLLS_BEFORE_SUSPEND} polls"
+            outage = "not connected" if not state.present else "no address"
+            detail = f"{outage} for {state.down_polls} of {DOWN_POLLS_BEFORE_SUSPEND} polls"
             return PlaneStatus(plane.label, state.iface, "", bound, "down", detail)
         return PlaneStatus(plane.label, state.iface, state.address, bound, "ok")
 
@@ -226,6 +242,15 @@ class NetworkPlaneObserver:
 
     def _state(self, key: str) -> _PlaneState:
         return self._states.setdefault(key, _PlaneState())
+
+    def _name(self, iface: str) -> str:
+        """*iface* as an operator reads it; the bare name when the lookup fails."""
+        if not iface:
+            return ""
+        try:
+            return self.describe_iface(iface) or iface
+        except Exception:  # noqa: BLE001 - naming must never cost an alert
+            return iface
 
     def _record_failure(self, plane: Plane, now: float, exc: Exception) -> None:
         state = self._state(plane.state_key)
@@ -265,6 +290,7 @@ class NetworkPlaneObserver:
         # has no address at all. Binding "" would hand the plane INADDR_ANY,
         # which is the wrong network by definition.
         if status in ("down", "none"):
+            state.present = not iface or self.iface_present(iface)
             self._handle_down(plane, state, iface, backing_off=backing_off)
             return
 
@@ -286,7 +312,7 @@ class NetworkPlaneObserver:
             logger.info(
                 "%s: interface %s is back at %s; output resumed.",
                 plane.label,
-                iface or "auto-detect",
+                self._name(iface) or "auto-detect",
                 address,
             )
         state.suspended = False
@@ -312,10 +338,11 @@ class NetworkPlaneObserver:
         state.suspended = True
         self._clear_failure(state)
         logger.error(
-            "%s: configured interface %s has no address; output stopped until it returns "
+            "%s: configured interface %s %s; output stopped until it returns "
             "(it will not be sent on another interface).",
             plane.label,
-            iface or "auto-detect",
+            self._name(iface) or "auto-detect",
+            "has no address" if state.present else "is not connected",
         )
 
     def alerts(self) -> list[str]:
@@ -338,10 +365,11 @@ class NetworkPlaneObserver:
             if state.failure and not state.superseded:
                 # A failed rebind or suspend leads: it says why the plane is
                 # dead, also while its retry waits out the backoff.
-                where = f"{state.iface} – " if state.iface else ""
+                where = f"{self._name(state.iface)} – " if state.iface else ""
                 out.append(f"{plane.label}: {where}{state.failure}")
             elif state.suspended or state.down_polls:
                 # Off the show from the first addressless poll; the suspend is
                 # debounced only so Apply and Renew don't tear the plane down.
-                out.append(f"{plane.label}: {state.iface or 'interface'} is down")
+                outage = "is down" if state.present else "is not connected"
+                out.append(f"{plane.label}: {self._name(state.iface) or 'interface'} {outage}")
         return out

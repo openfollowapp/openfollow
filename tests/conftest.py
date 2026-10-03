@@ -98,6 +98,29 @@ def _forget_shared_dns_answers() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _no_host_adapters(tmp_path: Path) -> Iterator[None]:
+    """No test may describe the host's own network adapters.
+
+    The card, the pickers, the Operator Screen and the bundle say which
+    physical adapter each interface is, read from sysfs or macOS's
+    ``networksetup``. On a test host that reads whatever hardware the runner
+    has, so the default reader knows of no adapter at all; a test that cares
+    installs its own with a fake sysfs tree.
+    """
+    from openfollow import net_adapters
+
+    def _no_subprocess(*_args: object, **_kwargs: object) -> object:
+        raise OSError("no subprocess in tests")
+
+    empty = tmp_path / "no-sysfs"
+    previous = net_adapters.set_reader(
+        net_adapters.AdapterReader(sysfs_root=empty, platform="linux", run=_no_subprocess)  # type: ignore[arg-type]
+    )
+    yield
+    net_adapters.set_reader(previous)
+
+
+@pytest.fixture(autouse=True)
 def _no_host_cgroup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """No test may resolve the unit the test process itself runs under.
 

@@ -871,6 +871,16 @@
  .net-iface-row[data-mode="edit"] { border-color: var(--accent); }
  /* A name, read like the station names: the UI font, not monospace. */
  .net-iface-name { font-weight: 600; }
+ /* Label (or name) over the name and which adapter it is. */
+ .net-iface-ident { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
+ .net-iface-sub { color: var(--muted); font-size: 0.76rem; overflow-wrap: anywhere; }
+ .net-iface-row[open] > .net-label-form { margin-top: 0.9rem; }
+ .net-iface-row[open] > .net-label-form + .net-iface-form { margin-top: 0; }
+ .net-label-input { max-width: 18rem; }
+ .net-label-input input { margin: 0; }
+ .net-iface-absent .net-iface-summary { cursor: default; padding-bottom: 0; }
+ .net-iface-absent .net-iface-name { color: var(--muted); }
+ .net-forget { margin: 0 0 0 auto; }
  .net-iface-addr { color: var(--muted); font-size: 0.8rem; font-variant-numeric: tabular-nums; margin-left: auto; white-space: nowrap; }
  /* How the address was come by: a neutral row pill, in the Controller Slots state's grey. */
  .net-iface-method-badge {
@@ -2285,6 +2295,13 @@
  <div class="help-drawer-body" id="help-drawer-body" tabindex="-1"></div>
  </aside>
  <script>
+ // The Network Interface card's poll re-renders every row, label fields included,
+ // so it waits while a label is edited but not saved, or a refused one is shown.
+ function netLabelsIdle() {
+ const edited = Array.from(document.querySelectorAll('.net-label-form input[name="label"]'))
+ .some((input) => input.value !== input.defaultValue);
+ return !edited && !document.querySelector('.net-label-form .field-error-msg');
+ }
  // Schedule client-side reload for static/manual address apply (single-NIC only).
  // On multi-NIC, HX-Redirect returns and unloads this page first, cancelling the timer.
  function netScheduleReload(el) {
@@ -3638,6 +3655,18 @@
  input.setAttribute('aria-invalid', hasError ? 'true' : 'false');
  refreshFormGate(input.closest('form'));
  }
+ }
+ // A re-render carrying a value the server refused marks its input the
+ // way a failed blur check does.
+ if (target && target.querySelectorAll) {
+ target.querySelectorAll('.field-error').forEach((span) => {
+ const input = span.id && span.querySelector('.field-error-msg')
+ ? document.querySelector('[aria-describedby="' + span.id + '"]') : null;
+ if (input) {
+ input.setAttribute('aria-invalid', 'true');
+ refreshFormGate(input.closest('form'));
+ }
+ });
  }
  // Section re-renders (after a successful save) reset every input to
  // ``aria-invalid="false"`` already; just re-run the gate to clear

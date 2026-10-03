@@ -36,6 +36,7 @@ from openfollow.configuration import (
     AppConfig,
     _canonical_marker_token,
 )
+from openfollow.net_adapters import LABEL_MAX_LEN
 from openfollow.web.routes import (
     _as_bool,
     _as_button_index,
@@ -793,6 +794,12 @@ for _btn in MOUSE3D_BUTTON_FIELDS:
         _as_button_index, lo=-1, human_error="Button number (0 or higher), or blank for none."
     )
 FIELD_RULES["mouse3d"] = _mouse3d_rules
+
+# An interface's label, edited on its Network Interface row. Uniqueness needs the
+# other labels and the row's interface, so the validate route checks it.
+FIELD_RULES["network"] = {
+    "label": FieldRule(_as_str, max_len=LABEL_MAX_LEN, human_error=f"A label is at most {LABEL_MAX_LEN} characters."),
+}
 
 
 # --- Public API -------------------------------------------------------------

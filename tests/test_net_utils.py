@@ -1556,3 +1556,19 @@ def test_the_shared_resolvers_cap_how_many_names_resolve_at_once(
         dns.gate.set()
         for worker in [t for t in threading.enumerate() if t.name == thread_name]:
             worker.join(5)
+
+
+class TestInterfacePresent:
+    """Tells an unplugged adapter from one that is there without an address."""
+
+    def test_an_interface_without_an_address_is_present(self, monkeypatch) -> None:
+        monkeypatch.setattr(net_utils_module.psutil, "net_if_addrs", lambda: {"eth1": [], "eth0": []})
+        assert net_utils_module.interface_present("eth1") is True
+
+    def test_an_unplugged_adapter_is_not(self, monkeypatch) -> None:
+        monkeypatch.setattr(net_utils_module.psutil, "net_if_addrs", lambda: {"eth0": []})
+        assert net_utils_module.interface_present("eth1") is False
+
+    def test_no_name_is_never_present(self, monkeypatch) -> None:
+        monkeypatch.setattr(net_utils_module.psutil, "net_if_addrs", lambda: {"": []})
+        assert net_utils_module.interface_present("") is False

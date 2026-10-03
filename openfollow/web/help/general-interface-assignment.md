@@ -6,7 +6,7 @@ Useful when lighting, video, and management traffic live on separate networks �
 
 ## How a row is resolved
 
-Interfaces are pinned **by name** (`eth0`, `wlan0`, `eth0.10`), not by IP address, so a pin survives a DHCP renewal or a venue change. The **Address** column shows the address that name currently resolves to, so you can see where a function will actually send before you save.
+Interfaces are pinned **by name** (`eth0`, `wlan0`, `eth0.10`), not by IP address, so a pin survives a DHCP renewal or a venue change. An adapter labelled under **Network Interface Settings** reads as `Lighting (enx9c69d3ac16ab)` in every picker; one without a label shows which adapter it is, as in `enx00e04c680001 · USB 1, port 1`. The **Address** column shows the address that name currently resolves to, so you can see where a function will actually send before you save.
 
 - **Station default** – the interface everything else falls back to. Leave it on `Auto-detect` and the system picks the primary outbound adapter.
 - **Follow station default interface** – what a blank row means on the outputs, OSC input and a network video input. With Station default set to an interface the row uses it, so on a single-adapter station you never have to touch this panel. With Station default on `Auto-detect` nothing is pinned, and the Address column shows the adapter the Pi picks for each destination. A blank **Web UI** row reads `All interfaces` instead, and so does an RTP stream on `0.0.0.0`.
@@ -14,7 +14,7 @@ Interfaces are pinned **by name** (`eth0`, `wlan0`, `eth0.10`), not by IP addres
 
 ## When a configured interface is unavailable
 
-A function stays on the interface you gave it, always. If that interface has no address – cable out, switch port down, VLAN gone – the function **stops** and the Address column says so. It does not move to another interface.
+A function stays on the interface you gave it, always. If that interface has no address – cable out, switch port down, VLAN gone – the function **stops** and the Address column shows a red **Interface down**, or **Not connected** when the adapter itself is unplugged. It does not move to another interface.
 
 That is deliberate. During a show, output that has stopped is something you can see and diagnose; output that quietly reappeared on the office LAN is not. It also means nothing this station sends can end up on a network you didn't choose.
 
@@ -88,7 +88,7 @@ A USB adapter is named after its own hardware address, so it appears as somethin
 
 That matters because a plain `eth1` is handed out in the order adapters are found at boot, not by which adapter it is. With two fitted, `eth1` and `eth2` can trade places after a restart, and since a pin stores the name, the function would carry on sending to a name that now means the other adapter. Nothing looks wrong in that state, which is why the naming is worth the ugliness.
 
-Replacing a failed adapter gives you a new name, so re-pick the affected rows. A row pinned to an adapter that is no longer present stops and says so rather than moving to another one.
+Replacing a failed adapter gives you a new name, so re-pick the affected rows. A row pinned to an adapter that is no longer present stops and shows **Not connected** rather than moving to another one. A label tells long names apart: give each adapter one under **Network Interface Settings**.
 
 A newly plugged adapter keeps whatever name it already had until it is unplugged and back in, or the station restarts.
 

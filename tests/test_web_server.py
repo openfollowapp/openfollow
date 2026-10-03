@@ -917,8 +917,7 @@ def test_network_interfaces_by_name_marks_pinned_iface_not_available(
 
     status, body = _get(base, "/network/interfaces/by_name")
     assert status == 200
-    assert "wlan0_gone" in body
-    assert "not available" in body
+    assert '<option value="wlan0_gone" selected>wlan0_gone – not connected</option>' in body
 
 
 def test_network_interfaces_by_name_current_param_overrides_psn_default(
@@ -1083,7 +1082,7 @@ def test_interface_assignment_shows_a_down_interface_as_an_error(
     # Scope to the OTP row: the station-following rows legitimately carry the
     # station address, and it must not leak into OTP's cell.
     otp_row = body[body.index("OTP output") :].split("</tr>", 1)[0]
-    assert "eth_gone is down" in otp_row
+    assert '<span class="stat-chip off">Not connected</span>' in otp_row
     assert "192.168.178.59" not in otp_row
 
 

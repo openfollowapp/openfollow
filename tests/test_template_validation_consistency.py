@@ -116,6 +116,12 @@ def test_osc_destinations_partial_inputs_are_audited() -> None:
     assert ("osc_destinations.tpl", "name") in audited
 
 
+def test_the_network_label_input_is_audited() -> None:
+    """Its error span id carries the row index, so a VLAN name's dot never reaches a CSS selector."""
+    audited = {(path.name, attrs["name"]) for path, _section, attrs in _registered_inputs()}
+    assert ("network.tpl", "label") in audited
+
+
 def test_every_registered_input_has_validation_markup() -> None:
     missing: list[str] = []
     for path, section, attrs in _registered_inputs():

@@ -41,7 +41,7 @@
 % _vopen = bool(_vform)
 <div id="network-config-section" class="network-config"
 % if _polls:
-     hx-get="/section/network/status" hx-trigger="every 5s"
+     hx-get="/section/network/status" hx-trigger="every 5s [netLabelsIdle()]"
      hx-select="#net-iface-list" hx-target="#net-iface-list" hx-swap="outerHTML"
      %# Kept to the poll: inherited, ``hx-select`` cut every control's response
      %# down to the list, which then replaced the whole card.
@@ -88,7 +88,7 @@
             % if not _rows:
             <p class="muted">No network interfaces detected.</p>
             % else:
-            % for row in _rows:
+            % for _i, row in enumerate(_rows):
             % _name = row.get("name", "")
             % _addr = row.get("address", "")
             % _prefix = row.get("prefix")
@@ -101,12 +101,21 @@
             % _dis = '' if _row_edit else 'disabled'
             %# The row being edited – and the row an apply reported on – opens
             %# itself and outranks the remembered state.
-            % _force = 'open data-adv-force-open="1"' if _name and _name == _editing else ''
+            % _force = 'open data-adv-force-open="1"' if _name and _name in (_editing, _net.get("label_iface")) else ''
             <details class="net-iface-row" data-adv-key="net-iface-{{_name}}"
                      data-mode="{{'edit' if _row_edit else 'view'}}" data-method="{{_rmethod}}" {{!_force}}>
                 <summary class="net-iface-summary">
                     <span class="ia-dot {{'up' if _addr else 'down'}}" aria-hidden="true"></span>
-                    <span class="net-iface-name">{{_name}}</span>
+                    %# The label leads when there is one; the kernel name and which
+                    %# adapter it is sit underneath, so two USB adapters can be told apart.
+                    % _label = row.get("label", "")
+                    % _sub = " · ".join(part for part in ((_name if _label else ""), row.get("description", "")) if part)
+                    <span class="net-iface-ident">
+                        <span class="net-iface-name">{{_label or _name}}</span>
+                        % if _sub:
+                        <span class="net-iface-sub">{{_sub}}</span>
+                        % end
+                    </span>
                     % if _name and _name == _session:
                     %# Guards the operator against editing the adapter whose
                     %# address is answering their own session.
@@ -120,6 +129,50 @@
                     <span class="net-iface-method-badge">{{row['method_label']}}</span>
                     % end
                 </summary>
+
+                %# Its own form: a label is OpenFollow's setting, saved without touching
+                %# the network, so it is editable on a stack this card cannot write.
+                <form class="net-label-form {{'save-flash saved' if row.get('label_saved') else ''}}"
+                      hx-post="/section/network/label" hx-target="#network-interface"
+                      hx-swap="innerHTML" hx-trigger="submit">
+                    <input type="hidden" name="iface" value="{{_name}}">
+                    <div class="group group--divider">
+                        <h4 class="group-title">Adapter</h4>
+                        <div class="network-grid">
+                            <label for="net-label-{{_i}}">Label</label>
+                            <div class="input-with-button net-label-input">
+                                <input id="net-label-{{_i}}" type="text" name="label" maxlength="20"
+                                       value="{{row.get('label_entered', row.get('label', ''))}}"
+                                       hx-get="/api/validate/network/label" hx-trigger="blur changed delay:200ms"
+                                       hx-target="#net-label-{{_i}}-error" hx-swap="innerHTML" hx-include="closest form"
+                                       aria-describedby="net-label-{{_i}}-error" aria-invalid="false">
+                                <button type="submit" class="save-btn small">Save</button>
+                            </div>
+                            <span></span>
+                            <span id="net-label-{{_i}}-error" class="field-error">
+                                % if row.get("label_error"):
+                                <span class="field-error-msg" role="alert">{{row["label_error"]}}</span>
+                                % end
+                            </span>
+                            % if row.get("vlan_on"):
+                            <label>VLAN</label>
+                            <span class="network-grid-value">{{row["vlan_on"]}}</span>
+                            % end
+                            % if row.get("port"):
+                            <label>Port</label>
+                            <span class="network-grid-value">{{row["port"]}}</span>
+                            % end
+                            % if row.get("model"):
+                            <label>Model</label>
+                            <span class="network-grid-value">{{row["model"]}}</span>
+                            % end
+                            % if row.get("mac"):
+                            <label>MAC address</label>
+                            <span class="network-grid-value">{{row["mac"]}}</span>
+                            % end
+                        </div>
+                    </div>
+                </form>
 
                 <form class="net-iface-form"
                 % if _row_edit:
@@ -254,6 +307,25 @@
             </details>
             % end
             % end
+            %# A labelled adapter that is not plugged in keeps its row, so its label
+            %# stays taken until Forget frees it for a replacement.
+            % for gone in _net.get("absent_rows", []):
+            <div class="net-iface-row net-iface-absent">
+                <div class="net-iface-summary">
+                    <span class="ia-dot down" aria-hidden="true"></span>
+                    <span class="net-iface-ident">
+                        <span class="net-iface-name">{{gone["label"]}}</span>
+                        <span class="net-iface-sub">{{gone["name"]}}</span>
+                    </span>
+                    <span class="stat-chip">Not connected</span>
+                    <form class="net-forget" hx-post="/section/network/label/forget"
+                          hx-target="#network-interface" hx-swap="innerHTML">
+                        <input type="hidden" name="iface" value="{{gone["name"]}}">
+                        <button type="submit" class="danger small">Forget</button>
+                    </form>
+                </div>
+            </div>
+            % end
         </div>
 
         <div class="ia-list-actions">
@@ -281,7 +353,7 @@
                 <label for="net-vlan-parent">Parent interface</label>
                 <select id="net-vlan-parent" name="vlan_parent">
                     % for _parent in _vlan_parents:
-                    <option value="{{_parent}}" {{'selected' if _parent == _vform.get('parent') else ''}}>{{_parent}}</option>
+                    <option value="{{_parent}}" {{'selected' if _parent == _vform.get('parent') else ''}}>{{_net.get("display_names", {}).get(_parent, _parent)}}</option>
                     % end
                 </select>
 

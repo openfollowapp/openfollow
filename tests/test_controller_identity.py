@@ -242,3 +242,57 @@ def test_ports_sort_numerically() -> None:
         f"usb:{_HOST0}:2",
         f"usb:{_HOST1}:1",
     ]
+
+
+def test_a_usb_network_adapter_has_the_key_of_its_socket(tmp_path: Path) -> None:
+    from openfollow.input.controller_identity import resolve_net_key
+
+    device = _usb_device(tmp_path, _HOST1, "usb3", "3-2", "2")
+    _node(tmp_path, "net", "enx9c69d3ac16ab", device / "3-2:2.0")
+    assert resolve_net_key("enx9c69d3ac16ab", sysfs_root=tmp_path) == f"usb:{_HOST1}:2"
+
+
+def test_a_network_adapter_off_usb_has_no_socket_key(tmp_path: Path) -> None:
+    from openfollow.input.controller_identity import resolve_net_key
+
+    _node(tmp_path, "net", "eth0", tmp_path / "devices" / "platform" / "1f00100000.ethernet")
+    (tmp_path / "class" / "net" / "wg0").mkdir(parents=True)
+    assert resolve_net_key("eth0", sysfs_root=tmp_path) is None
+    assert resolve_net_key("wg0", sysfs_root=tmp_path) is None
+
+
+@pytest.mark.parametrize("name", ["", "../usb3", ".hidden", "a/b"])
+def test_a_name_that_could_leave_the_net_class_is_refused(tmp_path: Path, name: str) -> None:
+    from openfollow.input.controller_identity import resolve_net_key
+
+    assert resolve_net_key(name, sysfs_root=tmp_path) is None
+
+
+def test_a_network_adapter_key_never_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from openfollow.input.controller_identity import resolve_net_key
+
+    device = _usb_device(tmp_path, _HOST1, "usb3", "3-2", "2")
+    _node(tmp_path, "net", "eth1", device / "3-2:2.0")
+
+    def unreadable(*_args: object) -> str:
+        raise PermissionError("devpath")
+
+    monkeypatch.setattr(ci, "_usb_key", unreadable)
+    assert resolve_net_key("eth1", sysfs_root=tmp_path) is None
+
+
+def test_off_linux_no_network_adapter_has_a_socket_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openfollow.input.controller_identity import resolve_net_key
+
+    monkeypatch.setattr(ci.sys, "platform", "darwin")
+    assert resolve_net_key("en7") is None
+
+
+def test_on_linux_a_network_adapter_is_read_from_sys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from openfollow.input.controller_identity import resolve_net_key
+
+    device = _usb_device(tmp_path, _HOST0, "usb1", "1-1", "1")
+    _node(tmp_path, "net", "eth1", device / "1-1:1.0")
+    monkeypatch.setattr(ci.sys, "platform", "linux")
+    monkeypatch.setattr(ci, "_SYSFS", tmp_path)
+    assert resolve_net_key("eth1") == f"usb:{_HOST0}:1"

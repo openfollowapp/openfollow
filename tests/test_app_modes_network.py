@@ -2665,3 +2665,69 @@ class TestEmptyFieldsOpenWithDigits:
         app._pi_network_pending_config = Ipv4Config(method=Ipv4Method.STATIC)
         anm.enter_pi_network_field_edit(app, "address")
         assert app._pi_network_field_value == ""
+
+
+class TestAdaptersByLabel:
+    """The station screen says which adapter each name is: label first, the
+    unplugged labelled ones listed, and an interface's own screen names the
+    hardware behind it."""
+
+    @staticmethod
+    def _labelled(labels: dict[str, str]) -> SimpleNamespace:
+        app = _make_app()
+        app._config.interface_labels = labels
+        anm.enter_pi_network(app)
+        return app
+
+    def test_a_labelled_interface_reads_label_then_name(self) -> None:
+        app = self._labelled({"eth0": "Production"})
+        rows = {r["key"]: r for r in anm.build_pi_network_rows(app) if r.get("key")}
+        assert rows["iface:eth0"]["label"] == "Production (eth0)"
+        assert rows["iface:wlan0"]["label"] == "wlan0"
+
+    def test_an_unplugged_labelled_adapter_is_listed_with_nothing_to_open(self) -> None:
+        app = self._labelled({"enx00e04c68a1f2": "Lighting backup", "eth0": "Production"})
+        rows = anm.build_pi_network_rows(app)
+        absent = next(r for r in rows if r.get("key") == "absent:enx00e04c68a1f2")
+        assert absent == {
+            "kind": "display",
+            "key": "absent:enx00e04c68a1f2",
+            "label": "Lighting backup (enx00e04c68a1f2)",
+            "value": "",
+            "pill": "not connected",
+            "pill_level": "",
+        }
+        # Listed under the present ones, and the cursor never lands on it.
+        keys = [r.get("key") for r in rows]
+        assert keys.index("absent:enx00e04c68a1f2") == keys.index("iface:wlan0") + 1
+        assert "absent:eth0" not in keys
+        for _ in range(len(rows) * 2):
+            anm._pi_network_move(app, 1)
+            assert rows[app._pi_network_index].get("key") != "absent:enx00e04c68a1f2"
+
+    def test_an_interface_screen_names_its_adapter(self, tmp_path) -> None:
+        from openfollow import net_adapters
+
+        base = tmp_path / "class" / "net" / "eth0"
+        base.mkdir(parents=True)
+        (base / "ifindex").write_text("2\n")
+        (base / "address").write_text("88:a2:9e:df:04:e3\n")
+        (tmp_path / "devices" / "platform" / "1f00100000.ethernet").mkdir(parents=True)
+        (base / "device").symlink_to(tmp_path / "devices" / "platform" / "1f00100000.ethernet")
+        net_adapters.set_reader(net_adapters.AdapterReader(sysfs_root=tmp_path, platform="linux"))
+        app = self._labelled({})
+        _open_iface(app, "eth0")
+        rows = anm.build_pi_network_rows(app)
+        keys = [r.get("key") or r["label"] for r in rows]
+        start = keys.index("Adapter")
+        assert rows[start + 1 : start + 3] == [
+            {"kind": "display", "key": "adapter_port", "label": "Port", "value": "Built-in Ethernet"},
+            {"kind": "display", "key": "adapter_mac", "label": "MAC address", "value": "88:a2:9e:df:04:e3"},
+        ]
+        # Before the actions, so it is read with the address, not after them.
+        assert start < keys.index("Change this interface")
+
+    def test_an_adapter_nothing_is_known_about_adds_no_section(self) -> None:
+        app = self._labelled({})
+        _open_iface(app, "wlan0")
+        assert "Adapter" not in [r["label"] for r in anm.build_pi_network_rows(app)]

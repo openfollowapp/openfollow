@@ -50,6 +50,23 @@ def resolve_key(node: str | None, *, sysfs_root: Path | None = None) -> str | No
         return None
 
 
+def resolve_net_key(iface: str, *, sysfs_root: Path | None = None) -> str | None:
+    """Key of the USB socket network adapter *iface* sits in; ``None`` when it is not on USB. Never raises."""
+    if sysfs_root is None:
+        if not sys.platform.startswith("linux"):
+            return None
+        sysfs_root = _SYSFS
+    if not iface or "/" in iface or iface.startswith("."):
+        return None
+    try:
+        link = sysfs_root / "class" / "net" / iface / "device"
+        if not link.exists():
+            return None
+        return _usb_key(link.resolve(strict=True), sysfs_root)
+    except OSError:
+        return None
+
+
 def _class_device(name: str, sysfs_root: Path) -> Path | None:
     for cls in ("input", "hidraw"):
         link = sysfs_root / "class" / cls / name / "device"

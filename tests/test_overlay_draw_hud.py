@@ -3231,3 +3231,22 @@ class TestDriveScreens:
         hud.draw_media_export_overlay(FakeRenderer(), FakeCairo(), state, 1920, 1080)
         hud.draw_media_export_overlay(FakeRenderer(), FakeCairo(), state, 1920, 1080, now=3.0)
         assert times == [12.5, 3.0]
+
+
+class TestNetworkScreenTitle:
+    def test_an_interface_screen_draws_its_headline_in_capitals(self) -> None:
+        net = _network_state(rows=[])
+        net.open_iface = "enx9c69d3ac16ab"
+        net.title = "Network Interface: Lighting (enx9c69d3ac16ab)"
+        state = _base_state(pi_network=net)
+        cr = FakeCairo()
+        draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
+        assert "NETWORK INTERFACE: LIGHTING (ENX9C69D3AC16AB)" in cr.show_text_strings()
+
+    def test_without_a_headline_the_interface_name_titles_it(self) -> None:
+        net = _network_state(rows=[])
+        net.open_iface = "eth0"
+        state = _base_state(pi_network=net)
+        cr = FakeCairo()
+        draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
+        assert "ETH0" in cr.show_text_strings()

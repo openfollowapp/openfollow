@@ -1089,10 +1089,14 @@ class TestInterfaceAssignmentRows:
 
         import openfollow.net_utils as net_utils_module
 
+        # An empty address is an interface that exists without one.
         monkeypatch.setattr(
             net_utils_module.psutil,
             "net_if_addrs",
-            lambda: {name: [SimpleNamespace(family=socket.AF_INET, address=addr)] for name, addr in spec.items()},
+            lambda: {
+                name: [SimpleNamespace(family=socket.AF_INET, address=addr)] if addr else []
+                for name, addr in spec.items()
+            },
         )
 
     def test_the_rows_that_always_ride_the_station_sit_directly_under_it(self, monkeypatch) -> None:
@@ -1181,14 +1185,38 @@ class TestInterfaceAssignmentRows:
         rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
         assert rows["OSC input"]["address"] == "No multicast group"
 
-    def test_osc_input_row_reports_a_down_pin(self, monkeypatch) -> None:
+    @pytest.mark.parametrize(
+        ("eth9", "state"),
+        [(None, "Not connected"), ("", "Interface down")],
+        ids=["adapter-gone", "no-address"],
+    )
+    def test_osc_input_row_reports_a_down_pin(self, monkeypatch, eth9: str | None, state: str) -> None:
         """Fails closed on the group: no membership is held, so an address here
-        would claim a subscription that does not exist."""
-        self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        would claim a subscription that does not exist. An unplugged adapter
+        and one without an address are told apart."""
+        self._ifaces(monkeypatch, {"eth0": "192.168.1.5", **({} if eth9 is None else {"eth9": eth9})})
         cfg = AppConfig(psn_source_iface="eth0")
         cfg.osc.listen_iface = "eth9"
         rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
-        assert rows["OSC input"]["address"] == "eth9 is down"
+        assert rows["OSC input"]["address"] == state
+        assert rows["OSC input"]["outage"] is True
+        assert rows["Station default"]["outage"] is False
+
+    def test_a_down_station_puts_its_followers_down_too(self, monkeypatch) -> None:
+        self._ifaces(monkeypatch, {"eth0": ""})
+        rows = {r["label"]: r for r in build_interface_assignment_rows(AppConfig(psn_source_iface="eth0"))}
+        assert {label: rows[label]["address"] for label in ("Station default", "PSN in / out")} == {
+            "Station default": "Interface down",
+            "PSN in / out": "Interface down",
+        }
+        assert rows["PSN in / out"]["outage"] is True
+
+    def test_a_row_names_its_pin_by_label_for_the_bundle(self, monkeypatch) -> None:
+        self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        cfg = AppConfig(psn_source_iface="eth0", interface_labels={"eth0": "Lighting"})
+        rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
+        assert rows["Station default"]["value_display"] == "Lighting (eth0)"
+        assert rows["OTP output"]["value_display"] == ""
 
     def test_an_inheriting_osc_row_agrees_with_the_station_row(self, monkeypatch) -> None:
         """Both read one resolution. A second NIC walk could disagree with the
@@ -1456,7 +1484,8 @@ class TestInterfaceAssignmentRows:
 
     def test_a_pinned_video_input_with_no_address_says_so(self, monkeypatch) -> None:
         row = self._video_row(monkeypatch, video_source_type="rtsp", video_input_iface="eth9")
-        assert row["address"] == "eth9 is down"
+        assert row["address"] == "Not connected"
+        assert row["outage"] is True
 
     def test_a_sender_with_no_destination_is_left_to_the_routing_table(self, monkeypatch) -> None:
         """Not "All interfaces": an output sends from one interface, not all of them."""
@@ -1547,7 +1576,7 @@ class TestInterfaceAssignmentRows:
         cfg.rttrpm_output.source_iface = "eth1"
         assert self._row(cfg, "RTTrPM output")["address"] == "10.0.0.9"
         cfg.rttrpm_output.source_iface = "eth9"
-        assert self._row(cfg, "RTTrPM output")["address"] == "eth9 is down"
+        assert self._row(cfg, "RTTrPM output")["address"] == "Not connected"
 
     def test_a_sender_with_nothing_configured_shows_the_pis_pick(self, monkeypatch) -> None:
         """No pin anywhere means the Pi routes each destination; the row shows
@@ -1716,6 +1745,14 @@ class TestWebBindNotice:
         assert "serves the web UI on every interface" in notice
         # ... and says what would restore the pin, rather than how to undo it.
         assert "once that interface has an address at startup" in notice
+
+    def test_a_down_interface_is_named_by_its_label(self) -> None:
+        cfg = self._cfg(web_bind="", web_bind_iface="eth1")
+        cfg.interface_labels = {"eth1": "Office"}
+        notice = routes_module.build_web_bind_notice(cfg, ("0.0.0.0", "down"), 80)
+        assert notice.startswith("Office (eth1) has no address")
+        assert "It answers only on Office (eth1) once" in notice
+        assert routes_module._web_bind_address(cfg, ("0.0.0.0", "down")) == "Office (eth1) is down - all interfaces"
 
 
 class TestRequestLocalAddr:

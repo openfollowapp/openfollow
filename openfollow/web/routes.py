@@ -1512,7 +1512,7 @@ def _interface_assignment_rows(
         *(
             {
                 "key": _dest_pin_key(dest.id),
-                "label": f"OSC to {dest.name or f'{dest.host}:{dest.port}'}",
+                "label": f"OSC Destination {dest.name or f'{dest.host}:{dest.port}'}",
                 "value": dest.source_iface,
                 "address": _sender(dest.source_iface, dest.host, tcp=dest.protocol == "tcp"),
                 "editable": True,

@@ -42,7 +42,7 @@ This row does **not** change which addresses OSC is accepted at. Ordinary OSC se
 
 ## RTTrPM and OSC outputs
 
-**RTTrPM output**, and one **OSC to** row per OSC destination, choose the interface those messages leave from. Left blank they follow Station default, like OTP. With Station default on `Auto-detect` too, nothing is pinned: the Pi picks the adapter for each destination from its address, and the Address column shows the adapter and address it picks right now.
+**RTTrPM output**, and one **OSC Destination** row per destination, choose the interface those messages leave from. Left blank they follow Station default, like OTP. With Station default on `Auto-detect` too, nothing is pinned: the Pi picks the adapter for each destination from its address, and the Address column shows the adapter and address it picks right now.
 
 A pinned row sends only on that interface. A destination the interface cannot reach gets nothing rather than being sent over another adapter. Multicast and broadcast destinations go out on the pinned interface, and TCP destinations connect and reconnect over it.
 

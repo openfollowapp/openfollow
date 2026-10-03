@@ -1349,7 +1349,7 @@ def test_interface_assignment_renders_and_saves_the_sender_rows(live_server, mon
     assert status == 200
     assert 'name="rttrpm_output.source_iface"' in body
     assert 'name="osc_destinations.default.source_iface"' in body
-    assert "OSC to Default" in body
+    assert "OSC Destination Default" in body
     assert "experimental-feature" in body
 
     status, _ = _post_form(

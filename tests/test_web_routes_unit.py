@@ -1414,7 +1414,7 @@ class TestInterfaceAssignmentRows:
             OscDestinationConfig(id=f"d{i}", name=f"d{i}", host=host, port=8000) for i, host in enumerate(names)
         ]
         rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
-        assert [rows[f"OSC to d{i}"]["address"] for i in range(3)] == ["eth1 – 198.51.100.10"] * 3
+        assert [rows[f"OSC Destination d{i}"]["address"] for i in range(3)] == ["eth1 – 198.51.100.10"] * 3
 
     def test_a_sender_row_reads_the_address_its_ipv4_output_uses(self, monkeypatch) -> None:
         """A dual-stack name sorted IPv6 first: OSC and RTTrPM send to its A record."""
@@ -1455,8 +1455,8 @@ class TestInterfaceAssignmentRows:
             OscDestinationConfig(id="udp", name="udp", host="v6.example", port=8000),
         ]
         rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
-        assert rows["OSC to tcp"]["address"] == "2001:db8::10"
-        assert rows["OSC to udp"]["address"] == "Name not resolved"
+        assert rows["OSC Destination tcp"]["address"] == "2001:db8::10"
+        assert rows["OSC Destination udp"]["address"] == "Name not resolved"
         assert asked == ["2001:db8::20"]
 
     def test_a_name_that_could_not_be_looked_up_says_so(self, monkeypatch) -> None:
@@ -1587,7 +1587,7 @@ class TestInterfaceAssignmentRows:
         cfg.rttrpm_output.host = "198.51.100.20"
         cfg.osc_destinations.destinations[0].host = "198.51.100.21"
         assert self._row(cfg, "RTTrPM output")["address"] == "eth1 – 10.0.0.9"
-        assert self._row(cfg, "OSC to Default")["address"] == "eth1 – 10.0.0.9"
+        assert self._row(cfg, "OSC Destination Default")["address"] == "eth1 – 10.0.0.9"
         assert "198.51.100.20" in asked and "198.51.100.21" in asked
 
     def test_the_pis_pick_names_its_interface_by_label(self, monkeypatch) -> None:
@@ -1617,7 +1617,7 @@ class TestInterfaceAssignmentRows:
         cfg = AppConfig(psn_source_iface="eth0")
         assert cfg.rttrpm_output.host == "127.0.0.1"
         assert self._row(cfg, "RTTrPM output")["address"] == "Loopback"
-        assert self._row(cfg, "OSC to Default")["address"] == "Loopback"
+        assert self._row(cfg, "OSC Destination Default")["address"] == "Loopback"
 
     def test_each_osc_destination_gets_a_row(self, monkeypatch) -> None:
         from openfollow.configuration import OscDestinationConfig, OscDestinationsConfig
@@ -1633,12 +1633,12 @@ class TestInterfaceAssignmentRows:
         rows = {r["key"]: r for r in build_interface_assignment_rows(cfg)}
         foh = rows["osc_destinations.foh.source_iface"]
         assert (foh["label"], foh["value"], foh["address"], foh["blank"]) == (
-            "OSC to FOH console",
+            "OSC Destination FOH console",
             "eth1",
             "10.0.0.9",
             "station",
         )
-        assert rows["osc_destinations.media.source_iface"]["label"] == "OSC to 198.51.100.30:7000"
+        assert rows["osc_destinations.media.source_iface"]["label"] == "OSC Destination 198.51.100.30:7000"
 
 
 class TestApplyInterfaceAssignment:

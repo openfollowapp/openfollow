@@ -222,8 +222,9 @@ class DiagnosticsProviders:
     # network plane as the observer last left it.
     interface_assignment_rows: Callable[[], list[dict[str, Any]]] | None = None
     network_planes: Callable[[], list[dict[str, Any]]] | None = None
-    # The network backend's interface rows; E7 reads each address's source.
-    network_interfaces: Callable[[], list[dict[str, Any]]] | None = None
+    # Where each interface's address came from, read now; raises when the
+    # network backend cannot be read, ``None`` when it cannot say.
+    address_sources: Callable[[], list[dict[str, Any]] | None] | None = None
     # The address the web UI's listener was started on.
     web_listener: Callable[[], tuple[str, str]] | None = None
 
@@ -2261,18 +2262,18 @@ _address_source_pool = threading.BoundedSemaphore(1)
 
 
 def _address_sources(
-    provider: Callable[[], list[dict[str, Any]]] | None, timeout_s: float
-) -> tuple[dict[str, tuple[str, str]], str]:
-    """``{iface: (address, source)}`` from the network backend, and a note when there are none."""
+    provider: Callable[[], list[dict[str, Any]] | None] | None, timeout_s: float
+) -> tuple[dict[str, dict[str, Any]], str]:
+    """``{iface: reading}`` from the network backend, and a note when there are none."""
     if provider is None:
         return {}, "[not applicable: network backend not wired]"
-    # One backend call per interface (an nmcli subprocess each on NetworkManager).
+    # Up to one backend call per interface (an nmcli subprocess each on NetworkManager).
     timed_out: tuple[Any, str | None] = (
         [],
         f"[unavailable: network backend did not answer within {timeout_s:g}s]",
     )
     rows, err = _bounded_probe(
-        partial(_safely_value, provider, "network_interfaces", []),
+        partial(_safely_value, provider, "network backend", []),
         timeout_s,
         timed_out,
         pool=_address_source_pool,
@@ -2280,12 +2281,26 @@ def _address_sources(
     )
     if err is not None:
         return {}, err
-    sources = {
-        str(row.get("name")): (str(row.get("address") or ""), str(row.get("address_source") or ""))
-        for row in rows or []
-        if row.get("address_source")
-    }
-    return sources, "" if sources else "[not reported by this network backend]"
+    if rows is None:
+        return {}, "[not reported by this network backend]"
+    sources = {str(row.get("name")): row for row in rows}
+    return sources, "" if sources else "[the network backend listed no interfaces]"
+
+
+def _address_origin(address: str, reading: Mapping[str, Any]) -> str:
+    """The mark after one address: where the backend says it came from, or why it cannot say."""
+    if is_link_local(address):
+        return " (link-local)"
+    # The backend describes one address per interface, and a second one is not
+    # what it means; a reading with no address covers every address there.
+    if reading.get("address") and address != reading["address"]:
+        return ""
+    source, reason = reading.get("source"), reading.get("reason")
+    if source == "unreadable":
+        return f" [source unavailable: {reason}]"
+    if source == "unknown":
+        return f" (source unknown: {reason})"
+    return f" ({source})" if source in ("dhcp", "static") else ""
 
 
 def _adapter_line(nic: str, labels: Mapping[str, str]) -> str:
@@ -2305,7 +2320,7 @@ def _adapter_line(nic: str, labels: Mapping[str, str]) -> str:
 def collect_network_interfaces(
     route_path: Path | None = None,
     *,
-    address_sources: Callable[[], list[dict[str, Any]]] | None = None,
+    address_sources: Callable[[], list[dict[str, Any]] | None] | None = None,
     timeout_s: float | None = None,
     labels: Mapping[str, str] | None = None,
 ) -> list[str]:
@@ -2344,19 +2359,13 @@ def collect_network_interfaces(
         adapter = _adapter_line(nic, labels or {})
         if adapter:
             rows.append(f"  {'':<14}{adapter}")
-        backend_address, source = sources.get(nic, ("", ""))
+        reading = sources.get(nic, {})
         for addr in addrs.get(nic, ()):
             if addr.family != socket.AF_INET:
                 continue
             prefix = netmask_prefix_len(addr.netmask) if addr.netmask else None
             suffix = f"/{prefix}" if prefix is not None else f" netmask={addr.netmask}"
-            # Link-local is read off the address itself; otherwise the backend
-            # describes one address per interface, and a second one is not what it means.
-            if is_link_local(addr.address):
-                origin = " (link-local)"
-            else:
-                origin = f" ({source})" if source and addr.address == backend_address else ""
-            rows.append(f"  {'':<14}ipv4 {addr.address}{suffix}{origin}")
+            rows.append(f"  {'':<14}ipv4 {addr.address}{suffix}{_address_origin(addr.address, reading)}")
     missing = [f'"{label}" ({name})' for name, label in sorted((labels or {}).items()) if name not in stats]
     if missing:
         rows.append(f"  Labelled, not connected: {', '.join(missing)}")
@@ -3180,7 +3189,7 @@ def collect_bundle(
         "e5c_backups": collect_settings_backups,
         "e6_health": collect_system_health,
         "e7_net": lambda: collect_network_interfaces(
-            address_sources=p.network_interfaces,
+            address_sources=p.address_sources,
             timeout_s=remaining(_ADDRESS_SOURCE_TIMEOUT_S),
             labels=_safely_value(p.interface_labels, "interface_labels", {})[0] if p.interface_labels else None,
         ),

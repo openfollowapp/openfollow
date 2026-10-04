@@ -208,6 +208,8 @@ class ConfigWebServer:
         # Every interface at once, for the Network Settings list. Costs one
         # backend call per interface, so the result is TTL-cached here.
         network_interfaces_provider: (Callable[[], list[dict[str, Any]]] | None) = None,
+        # Each interface's address source for the diagnostics bundle; raises on a backend failure.
+        network_address_sources_provider: (Callable[[], list[dict[str, Any]] | None] | None) = None,
         network_apply_handler: Callable[[str, Any], ApplyResult] | None = None,
         network_renew_handler: Callable[[str], ApplyResult] | None = None,
         network_vlan_provider: Callable[[], dict[str, Any]] | None = None,
@@ -300,6 +302,7 @@ class ConfigWebServer:
         self._network_state_provider = network_state_provider
         self._network_config_provider = network_config_provider
         self._network_interfaces_provider = network_interfaces_provider
+        self._network_address_sources_provider = network_address_sources_provider
         # TTL cache for the interface list: enumerating every adapter's method
         # costs one backend call each, and the General tab re-renders often.
         # ``Scan`` bypasses it, so a freshly plugged NIC never needs a wait.
@@ -496,12 +499,12 @@ class ConfigWebServer:
             self._network_ifaces_ts = time.monotonic()
         return _copy_rows(rows)
 
-    def read_network_interfaces(self) -> list[dict[str, Any]]:
-        """The backend's rows read now, uncached; a failure raises rather than
-        serving the last good rows, so the diagnostics bundle can report it."""
-        if self._network_interfaces_provider is None:
-            return []
-        return self._network_interfaces_provider()
+    def read_address_sources(self) -> list[dict[str, Any]] | None:
+        """Each interface's address source read now, uncached; a backend failure
+        raises, so the diagnostics bundle can report it. ``None``: not reported."""
+        if self._network_address_sources_provider is None:
+            return None
+        return self._network_address_sources_provider()
 
     def apply_network(self, iface: str, config: Any) -> ApplyResult:
         """Apply IPv4 config to iface; always returns ApplyResult."""

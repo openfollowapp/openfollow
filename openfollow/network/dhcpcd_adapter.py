@@ -13,13 +13,17 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from openfollow.network.adapter import (
+    AddressSourceReading,
     ApplyResult,
+    BackendReadError,
     Ipv4Config,
     Ipv4Method,
     LeaseInfo,
     NetworkAdapter,
     NetworkInterface,
     NetworkState,
+    address_source_of,
+    is_loopback,
 )
 from openfollow.network.validate import validate_apply
 from openfollow.privilege.broker import PrivilegeBroker, PrivilegeError
@@ -240,8 +244,8 @@ class DhcpcdAdapter(NetworkAdapter):
         )
         return NetworkState(interface=ifaces[iface], ipv4=ipv4, lease=lease)
 
-    def _detect_method(self, iface: str) -> Ipv4Method:
-        block = self._extract_block_text(iface)
+    def _detect_method(self, iface: str, conf: str | None = None) -> Ipv4Method:
+        block = self._extract_block_text(iface, conf)
         if block is None:
             return Ipv4Method.DHCP
         if "static ip_address=" in block:
@@ -250,8 +254,9 @@ class DhcpcdAdapter(NetworkAdapter):
             return Ipv4Method.DHCP_WITH_MANUAL_ADDRESS
         return Ipv4Method.DHCP
 
-    def _extract_block_text(self, iface: str) -> str | None:
-        text = self._read_conf()
+    def _extract_block_text(self, iface: str, conf: str | None = None) -> str | None:
+        """The managed block for *iface* in *conf*, or in the conf on disk when not given."""
+        text = self._read_conf() if conf is None else conf
         pattern = re.compile(
             rf"# >>> openfollow managed: {re.escape(iface)} >>>(.*?)"
             rf"# <<< openfollow managed: {re.escape(iface)} <<<",
@@ -260,8 +265,8 @@ class DhcpcdAdapter(NetworkAdapter):
         match = pattern.search(text)
         return match.group(1) if match else None
 
-    def _read_managed_overrides(self, iface: str) -> dict[str, object] | None:
-        block = self._extract_block_text(iface)
+    def _read_managed_overrides(self, iface: str, conf: str | None = None) -> dict[str, object] | None:
+        block = self._extract_block_text(iface, conf)
         if block is None:
             return None
         out: dict[str, object] = {}
@@ -288,17 +293,27 @@ class DhcpcdAdapter(NetworkAdapter):
 
     def _read_lease(self, iface: str) -> LeaseInfo | None:
         try:
+            return self._parse_lease(self._lease_text(iface))
+        except BackendReadError:
+            return None
+
+    def _lease_text(self, iface: str) -> str:
+        """``dhcpcd -U`` output, ``""`` when dhcpcd holds no lease; raises when it cannot be asked."""
+        try:
             res = self._run(["dhcpcd", "-U", iface], check=False)
-        except (FileNotFoundError, subprocess.SubprocessError):
-            return None
-        if res.returncode != 0 or not res.stdout.strip():
-            return None
+        except (FileNotFoundError, subprocess.SubprocessError) as exc:
+            raise BackendReadError(str(exc)) from exc
+        return res.stdout if res.returncode == 0 else ""
+
+    @staticmethod
+    def _parse_lease(text: str) -> LeaseInfo | None:
+        """The lease in ``dhcpcd -U`` output; None when it names no address, router or DNS."""
         addr: str | None = None
         prefix: int | None = None
         router: str | None = None
         dns: list[str] = []
         lease_seconds: int | None = None
-        for line in res.stdout.splitlines():
+        for line in text.splitlines():
             line = line.strip()
             if "=" not in line:
                 continue
@@ -333,6 +348,32 @@ class DhcpcdAdapter(NetworkAdapter):
             dns=tuple(dns),
             lease_seconds_remaining=lease_seconds,
         )
+
+    # ---- diagnostics ----------------------------------------------------
+
+    def read_address_sources(self) -> list[AddressSourceReading]:
+        from openfollow.network.psutil_adapter import read_interfaces
+
+        names = [i.name for i in read_interfaces() if not is_loopback(i)]
+        try:
+            conf = self.conf_path.read_text()
+        except OSError as exc:
+            reason = f"could not read {self.conf_path}: {exc.strerror or exc}"
+            return [AddressSourceReading(name, "", "unreadable", reason) for name in names]
+        return [self._address_source(name, conf) for name in names]
+
+    def _address_source(self, iface: str, conf: str) -> AddressSourceReading:
+        method = self._detect_method(iface, conf)
+        if method is Ipv4Method.DHCP:
+            try:
+                lease = self._parse_lease(self._lease_text(iface))
+            except BackendReadError as exc:
+                return AddressSourceReading(iface, "", "unreadable", str(exc))
+            address = lease.address if lease else None
+        else:
+            override = (self._read_managed_overrides(iface, conf) or {}).get("address")
+            address = override if isinstance(override, str) else None
+        return AddressSourceReading(iface, address or "", address_source_of(address, method))
 
     # ---- mutation -------------------------------------------------------
 

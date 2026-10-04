@@ -3789,7 +3789,7 @@ def _io_server(**overrides: Any) -> Any:
         "get_runtime_stats": lambda: {},
         "get_detection_install_status": lambda: {},
         "network_planes_provider": lambda: [],
-        "read_network_interfaces": lambda: [],
+        "read_address_sources": lambda: [],
     }
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -3846,7 +3846,7 @@ def test_build_diagnostics_providers_wires_io_fields() -> None:
     assert providers.removable_media is server.media_scan_provider
     assert providers.gamepad_runtime is server.gamepad_runtime_provider
     assert providers.network_planes is server.network_planes_provider
-    assert providers.network_interfaces is server.read_network_interfaces
+    assert providers.address_sources is server.read_address_sources
 
 
 # ---------------------------------------------------------------------------
@@ -3970,12 +3970,78 @@ def test_collect_network_interfaces_names_where_the_address_came_from(
     _one_nic(monkeypatch, "192.0.2.5", "169.254.7.7", "10.0.0.5")
     rows = diag.collect_network_interfaces(
         _route_file(tmp_path, ""),
-        address_sources=lambda: [{"name": "eth0", "address": "192.0.2.5", "address_source": "static"}],
+        address_sources=lambda: [{"name": "eth0", "address": "192.0.2.5", "source": "static", "reason": ""}],
     )
     assert any(row.strip() == "ipv4 192.0.2.5/24 (static)" for row in rows)
     assert any(row.strip() == "ipv4 169.254.7.7/24 (link-local)" for row in rows)
     assert any(row.strip() == "ipv4 10.0.0.5/24" for row in rows)
     assert not any("Address source:" in row for row in rows)
+
+
+@pytest.mark.parametrize(
+    ("reading", "marks"),
+    [
+        (
+            {"address": "192.0.2.5", "source": "unreadable", "reason": "nmcli failed (rc=10)"},
+            ["192.0.2.5/24 [source unavailable: nmcli failed (rc=10)]", "10.0.0.5/24", "169.254.7.7/24 (link-local)"],
+        ),
+        (
+            {"address": "192.0.2.5", "source": "unknown", "reason": "no active NetworkManager profile"},
+            ["192.0.2.5/24 (source unknown: no active NetworkManager profile)", "10.0.0.5/24"],
+        ),
+        (
+            {"address": "", "source": "unreadable", "reason": "could not read /etc/dhcpcd.conf"},
+            [
+                "192.0.2.5/24 [source unavailable: could not read /etc/dhcpcd.conf]",
+                "10.0.0.5/24 [source unavailable: could not read /etc/dhcpcd.conf]",
+                "169.254.7.7/24 (link-local)",
+            ],
+        ),
+        (
+            {"address": "", "source": "unknown", "reason": "not managed by NetworkManager"},
+            [
+                "192.0.2.5/24 (source unknown: not managed by NetworkManager)",
+                "10.0.0.5/24 (source unknown: not managed by NetworkManager)",
+            ],
+        ),
+        ({"address": "", "source": "none", "reason": ""}, ["192.0.2.5/24", "10.0.0.5/24"]),
+    ],
+    ids=["unreadable", "unknown", "unreadable-interface", "unknown-interface", "none"],
+)
+def test_collect_network_interfaces_says_why_the_backend_cannot_name_a_source(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, reading: dict[str, str], marks: list[str]
+) -> None:
+    """A reading with no address speaks for every address on the interface; one with an address for that one."""
+    _one_nic(monkeypatch, "192.0.2.5", "10.0.0.5", "169.254.7.7")
+    rows = diag.collect_network_interfaces(
+        _route_file(tmp_path, ""), address_sources=lambda: [{"name": "eth0", **reading}]
+    )
+    printed = [row.strip().removeprefix("ipv4 ") for row in rows if row.strip().startswith("ipv4 ")]
+    assert all(mark in printed for mark in marks)
+    assert not any("Address source:" in row for row in rows)
+
+
+def test_collect_network_interfaces_on_a_failing_networkmanager_says_so(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The station's backend fails outright; E7 must say that, not that it reports nothing."""
+    from dataclasses import asdict
+
+    from openfollow.network.nm_adapter import NetworkManagerAdapter
+
+    def _run(argv, *, check=True):  # noqa: ARG001
+        raise RuntimeError(f"{' '.join(argv)} failed (rc=8): Error: NetworkManager is not running.")
+
+    adapter = NetworkManagerAdapter()
+    monkeypatch.setattr(adapter, "_run", _run)
+    _one_nic(monkeypatch, "192.0.2.5")
+    rows = diag.collect_network_interfaces(
+        _route_file(tmp_path, ""),
+        address_sources=lambda: [asdict(r) for r in adapter.read_address_sources()],
+    )
+    assert any(row.strip() == "ipv4 192.0.2.5/24" for row in rows)
+    assert rows[-1].startswith("  Address source: [unavailable: network backend: BackendReadError(")
+    assert rows[-1].endswith("Error: NetworkManager is not running.')]")
 
 
 def test_collect_network_interfaces_marks_link_local_without_a_backend(
@@ -4037,13 +4103,11 @@ def test_collect_network_interfaces_does_not_ask_the_backend_without_an_interfac
     ("provider", "note"),
     [
         (None, "[not applicable: network backend not wired]"),
-        (lambda: 1 / 0, "[unavailable: network_interfaces:"),
-        (
-            lambda: [{"name": "eth0", "address": "192.0.2.5", "address_source": ""}],
-            "[not reported by this network backend]",
-        ),
+        (lambda: 1 / 0, "[unavailable: network backend: ZeroDivisionError("),
+        (lambda: None, "[not reported by this network backend]"),
+        (lambda: [], "[the network backend listed no interfaces]"),
     ],
-    ids=["missing", "raising", "read-only-backend"],
+    ids=["missing", "raising", "read-only-backend", "no-interfaces"],
 )
 def test_collect_network_interfaces_says_when_the_source_is_unknown(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, provider: Any, note: str

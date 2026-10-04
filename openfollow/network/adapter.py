@@ -55,6 +55,45 @@ class LeaseInfo:
 AddressSource = Literal["dhcp", "static", "link-local", "none"]
 
 
+def address_source_of(address: str | None, method: Ipv4Method) -> AddressSource:
+    """Where an address configured with *method* came from.
+
+    Derived rather than stored so the backends can't disagree about it.
+    ``link-local`` outranks the configured method: NM's DHCP fallback hands out
+    a 169.254 address while the profile still reads ``auto``, and that address
+    is the thing an operator needs told about.
+    """
+    from openfollow.network.validate import is_link_local
+
+    if not address:
+        return "none"
+    if is_link_local(address):
+        return "link-local"
+    # DHCP-with-manual-address counts as static: the address the operator
+    # sees is the one they typed, not one a server handed out.
+    if method in (Ipv4Method.STATIC, Ipv4Method.DHCP_WITH_MANUAL_ADDRESS):
+        return "static"
+    return "dhcp"
+
+
+class BackendReadError(RuntimeError):
+    """A read of the network backend failed; the message names the read and why."""
+
+
+@dataclass(frozen=True)
+class AddressSourceReading:
+    """One interface's IPv4 address and where it came from, as the backend reports it now.
+
+    ``unknown``: the backend read fine but did not set this address, so it
+    cannot say. ``unreadable``: a backend read failed. Both carry ``reason``.
+    """
+
+    name: str
+    address: str = ""
+    source: AddressSource | Literal["unknown", "unreadable"] = "none"
+    reason: str = ""
+
+
 @dataclass(frozen=True)
 class NetworkState:
     interface: NetworkInterface
@@ -63,24 +102,8 @@ class NetworkState:
 
     @property
     def address_source(self) -> AddressSource:
-        """Where this interface's address came from, for operator display.
-
-        Derived rather than stored so the three backends can't disagree about
-        it. ``link-local`` outranks the configured method: NM's DHCP fallback
-        hands out a 169.254 address while the profile still reads ``auto``, and
-        that address is the thing an operator needs told about.
-        """
-        from openfollow.network.validate import is_link_local
-
-        if not self.ipv4.address:
-            return "none"
-        if is_link_local(self.ipv4.address):
-            return "link-local"
-        # DHCP-with-manual-address counts as static: the address the operator
-        # sees is the one they typed, not one a server handed out.
-        if self.ipv4.method in (Ipv4Method.STATIC, Ipv4Method.DHCP_WITH_MANUAL_ADDRESS):
-            return "static"
-        return "dhcp"
+        """Where this interface's address came from, for operator display."""
+        return address_source_of(self.ipv4.address, self.ipv4.method)
 
 
 @dataclass(frozen=True)
@@ -133,6 +156,17 @@ class NetworkAdapter(ABC):
     def is_writable(self) -> bool:
         """Return True if this adapter can mutate host state."""
         return True
+
+    def read_address_sources(self) -> list[AddressSourceReading] | None:
+        """Every non-loopback interface's address and its source, for diagnostics.
+
+        Unlike ``list_interfaces`` / ``get_state``, which fall back to a quiet
+        default so the network card keeps working, this keeps what failed:
+        raises :class:`BackendReadError` when the interface list cannot be
+        read, and reports an interface it could not read as ``unreadable``.
+        ``None``: this backend cannot say where an address came from.
+        """
+        return None
 
     # ---- VLAN sub-interfaces --------------------------------------------
     #

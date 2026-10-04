@@ -12,7 +12,10 @@ from pathlib import Path
 from typing import NamedTuple
 
 from openfollow.network.adapter import (
+    LOOPBACK_NAMES,
+    AddressSourceReading,
     ApplyResult,
+    BackendReadError,
     Ipv4Config,
     Ipv4Method,
     LeaseInfo,
@@ -20,8 +23,9 @@ from openfollow.network.adapter import (
     NetworkInterface,
     NetworkState,
     VlanInterface,
+    address_source_of,
 )
-from openfollow.network.validate import validate_apply, vlan_interface_name
+from openfollow.network.validate import is_link_local, validate_apply, vlan_interface_name
 from openfollow.privilege.broker import PrivilegeBroker, PrivilegeError
 from openfollow.privilege.capabilities import (
     NETWORK_NM_CON_ADD,
@@ -37,6 +41,8 @@ logger = logging.getLogger(__name__)
 _NMCLI_TIMEOUT = 8
 
 _PROFILE_LIST_FIELDS = "NAME,UUID,AUTOCONNECT,AUTOCONNECT-PRIORITY,TIMESTAMP"
+# Every device's state, active profile and address in one call.
+_SOURCE_FIELDS = "GENERAL.DEVICE,GENERAL.TYPE,GENERAL.STATE,GENERAL.CON-UUID,IP4.ADDRESS"
 
 # nmcli(1) EXIT STATUS
 _NMCLI_NOT_FOUND = 10
@@ -109,6 +115,38 @@ def _show_records(text: str) -> list[tuple[str, str]]:
     return out
 
 
+def _device_records(text: str) -> list[dict[str, str]]:
+    """One ``{field: value}`` per device of a terse ``device show`` over every device."""
+    records: list[dict[str, str]] = [{}]  # collects anything before the first device, then dropped
+    for key, value in _show_records(text):
+        if key == "GENERAL.DEVICE":
+            records.append({})
+        records[-1].setdefault(key, value)
+    return records[1:]
+
+
+def _split_ipv4(value: str) -> tuple[str | None, int | None]:
+    """``(address, prefix)`` from nmcli's ``a.b.c.d/nn``; either is None when absent or unparsable."""
+    if "/" not in value:
+        return (value or None, None)
+    address, _, prefix = value.partition("/")
+    try:
+        return (address or None, int(prefix))
+    except ValueError:
+        return (address or None, None)
+
+
+def _profile_method(parsed: dict[str, list[str]]) -> Ipv4Method | None:
+    """A profile's IPv4 method from its ``ipv4.method`` / ``ipv4.addresses``; None for any other method."""
+    method = (parsed.get("ipv4.method", [""])[0] or "").lower()
+    addresses = parsed.get("ipv4.addresses", [""])[0] or ""
+    if method == "manual":
+        return Ipv4Method.STATIC if not addresses.startswith("dhcp") else Ipv4Method.DHCP_WITH_MANUAL_ADDRESS
+    if method == "auto":
+        return Ipv4Method.DHCP
+    return None
+
+
 def _unescape_terse(value: str) -> str:
     """Reverse nmcli ``-t`` (terse) escaping in a field value: a literal
     ``:`` is emitted as ``\\:`` and a literal ``\\`` as ``\\\\``. Without
@@ -154,6 +192,13 @@ class NetworkManagerAdapter(NetworkAdapter):
         if check and result.returncode != 0:
             raise RuntimeError(f"{' '.join(argv)} failed (rc={result.returncode}): {result.stderr.strip()}")
         return result
+
+    def _read(self, argv: list[str]) -> str:
+        """stdout of a read-only nmcli call; any failure raises :class:`BackendReadError`."""
+        try:
+            return self._run(argv).stdout
+        except (RuntimeError, FileNotFoundError, subprocess.SubprocessError) as exc:
+            raise BackendReadError(str(exc)) from exc
 
     def _run_privileged(
         self,
@@ -337,20 +382,8 @@ class NetworkManagerAdapter(NetworkAdapter):
             return None
         parsed = self._parse_show(dev.stdout)
 
-        addr: str | None = None
-        prefix: int | None = None
         ip4_addresses = parsed.get("IP4.ADDRESS[1]") or []
-        if ip4_addresses:
-            first = ip4_addresses[0]
-            if "/" in first:
-                addr_part, _, prefix_part = first.partition("/")
-                addr = addr_part or None
-                try:
-                    prefix = int(prefix_part)
-                except ValueError:
-                    prefix = None
-            else:
-                addr = first or None
+        addr, prefix = _split_ipv4(ip4_addresses[0]) if ip4_addresses else (None, None)
 
         gw_list = parsed.get("IP4.GATEWAY") or []
         router = gw_list[0] if gw_list and gw_list[0] else None
@@ -395,14 +428,46 @@ class NetworkManagerAdapter(NetworkAdapter):
             )
         except (RuntimeError, FileNotFoundError, subprocess.SubprocessError):
             return Ipv4Method.DHCP
-        parsed = self._parse_show(res.stdout)
-        method = (parsed.get("ipv4.method", [""])[0] or "").lower()
-        addresses = parsed.get("ipv4.addresses", [""])[0] or ""
-        if method == "manual":
-            return Ipv4Method.STATIC if not addresses.startswith("dhcp") else Ipv4Method.DHCP_WITH_MANUAL_ADDRESS
-        if method == "auto":
-            return Ipv4Method.DHCP
-        return Ipv4Method.DHCP
+        return _profile_method(self._parse_show(res.stdout)) or Ipv4Method.DHCP
+
+    # ---- diagnostics ----------------------------------------------------
+
+    def read_address_sources(self) -> list[AddressSourceReading]:
+        devices = _device_records(self._read(["nmcli", "-t", "-f", _SOURCE_FIELDS, "device", "show"]))
+        return [
+            self._address_source(device)
+            for device in devices
+            if device.get("GENERAL.TYPE") != "loopback" and device.get("GENERAL.DEVICE") not in LOOPBACK_NAMES
+        ]
+
+    def _address_source(self, device: dict[str, str]) -> AddressSourceReading:
+        """Only the active profile describes the address on a device now; a saved one is a guess."""
+        name = device.get("GENERAL.DEVICE", "")
+        address, _ = _split_ipv4(device.get("IP4.ADDRESS[1]", ""))
+        state = device.get("GENERAL.STATE", "")
+        if "unmanaged" in state:
+            # Checked before the address: NetworkManager may not list one it does not manage.
+            return AddressSourceReading(name, address or "", "unknown", "not managed by NetworkManager")
+        if not address:
+            return AddressSourceReading(name, "", "none")
+        if is_link_local(address):
+            return AddressSourceReading(name, address, "link-local")
+        if "externally" in state:
+            # NetworkManager wraps the device in a generated profile reading ``manual``.
+            return AddressSourceReading(name, address, "unknown", "configured outside NetworkManager")
+        uuid = device.get("GENERAL.CON-UUID", "")
+        if not uuid:
+            return AddressSourceReading(name, address, "unknown", "no active NetworkManager profile")
+        try:
+            show = self._read(["nmcli", "-t", "-f", "ipv4.method,ipv4.addresses", "connection", "show", "uuid", uuid])
+        except BackendReadError as exc:
+            return AddressSourceReading(name, address, "unreadable", str(exc))
+        parsed = self._parse_show(show)
+        method = _profile_method(parsed)
+        if method is None:
+            word = (parsed.get("ipv4.method") or [""])[0] or "unset"
+            return AddressSourceReading(name, address, "unknown", f"profile ipv4.method is {word}")
+        return AddressSourceReading(name, address, address_source_of(address, method))
 
     def _read_lease(self, iface: str) -> LeaseInfo | None:
         try:

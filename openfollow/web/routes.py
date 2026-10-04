@@ -3612,7 +3612,7 @@ def _build_diagnostics_providers(
         osc_multicast_status=server.osc_listener_status_provider,
         interface_assignment_rows=lambda: build_interface_assignment_rows(cfg, resolve_web_bind_for(cfg)),
         network_planes=server.network_planes_provider,
-        network_interfaces=server.read_network_interfaces,
+        address_sources=server.read_address_sources,
         web_listener=lambda: server.listener,
         recent_midi_events=server.recent_midi_events_provider,
         # USB-visibility cross-reference indices.

@@ -2688,6 +2688,7 @@ class AppRuntimeServices:
             # apply / renew handlers (broker-elevated, serialised).
             network_config_provider=self._network_config_provider,
             network_interfaces_provider=self._network_interfaces_provider,
+            network_address_sources_provider=self._network_address_sources_provider,
             network_apply_handler=self._handle_network_apply,
             network_renew_handler=self._handle_network_renew,
             network_vlan_provider=self._network_vlan_provider,
@@ -2991,8 +2992,6 @@ class AppRuntimeServices:
                 "router": "",
                 "dns": [],
                 "lease_display": None,
-                # A read-only backend reports every address as DHCP, so it cannot say.
-                "address_source": "",
             }
             # A per-interface read can fail (interface disappearing mid-scan,
             # backend hiccup) without invalidating the rest of the list, so
@@ -3013,10 +3012,21 @@ class AppRuntimeServices:
                     router=state.ipv4.router or "",
                     dns=list(state.ipv4.dns),
                     lease_display=_format_lease_remaining(seconds),
-                    address_source=state.address_source if adapter.is_writable() else "",
                 )
             rows.append(row)
         return rows
+
+    def _network_address_sources_provider(self) -> list[dict[str, Any]] | None:
+        """Every interface's address and its source, read now for the diagnostics bundle.
+
+        The backend's strict read, not the panel's: a failure raises rather than
+        reading as DHCP or as no interfaces. ``None`` when the backend cannot say.
+        """
+        adapter = getattr(self, "_network_adapter", None)
+        if adapter is None:
+            return None
+        readings = adapter.read_address_sources()
+        return None if readings is None else [asdict(r) for r in readings]
 
     def _handle_network_apply(
         self,

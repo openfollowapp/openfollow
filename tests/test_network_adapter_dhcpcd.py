@@ -1319,3 +1319,88 @@ class TestVlansUnsupported:
         assert result.ok is False
         assert result.message == VLAN_UNSUPPORTED_MESSAGE
         assert broker.calls == []
+
+
+_STATIC_BLOCK = (
+    "# >>> openfollow managed: eth0 >>>\ninterface eth0\nstatic ip_address=198.51.100.5/24\n"
+    "# <<< openfollow managed: eth0 <<<\n"
+    "# >>> openfollow managed: eth2 >>>\ninterface eth2\ninform 203.0.113.9\n# <<< openfollow managed: eth2 <<<\n"
+)
+
+
+class TestReadAddressSources:
+    """The diagnostics read: where each address came from, or why it cannot say."""
+
+    @pytest.fixture
+    def station(self, tmp_path, monkeypatch):
+        from openfollow.network import psutil_adapter
+
+        names = ["lo", "eth0", "eth1", "eth2", "eth3"]
+        monkeypatch.setattr(psutil_adapter.psutil, "net_if_addrs", lambda: {n: [] for n in names})
+        monkeypatch.setattr(psutil_adapter.psutil, "net_if_stats", lambda: {})
+        conf = tmp_path / "dhcpcd.conf"
+        conf.write_text(_STATIC_BLOCK)
+        a = DhcpcdAdapter(conf_path=conf)
+        leases = {"eth1": "ip_address=192.0.2.10\nsubnet_cidr=24\n", "eth3": ""}
+        dumped: list[str] = []
+
+        def _run(argv, *, check=True):
+            dumped.append(argv[-1])
+            out = leases.get(argv[-1], "")
+            return subprocess.CompletedProcess(argv, 0 if out else 1, out, "")
+
+        a._run = _run  # type: ignore[method-assign]
+        return a, conf, dumped
+
+    def test_reads_the_method_from_the_conf_and_a_dhcp_address_from_the_lease(self, station) -> None:
+        from openfollow.network.adapter import AddressSourceReading
+
+        a, _conf, dumped = station
+        assert a.read_address_sources() == [
+            AddressSourceReading("eth0", "198.51.100.5", "static"),
+            AddressSourceReading("eth1", "192.0.2.10", "dhcp"),
+            AddressSourceReading("eth2", "203.0.113.9", "static"),
+            AddressSourceReading("eth3", "", "none"),
+        ]
+        # A configured address needs no lease to name it.
+        assert dumped == ["eth1", "eth3"]
+
+    def test_an_unreadable_conf_is_reported_where_the_panel_says_dhcp(self, station) -> None:
+        a, conf, _dumped = station
+        conf.unlink()
+        conf.mkdir()
+        readings = a.read_address_sources()
+        assert [(r.name, r.source) for r in readings] == [(n, "unreadable") for n in ("eth0", "eth1", "eth2", "eth3")]
+        assert all(r.reason == f"could not read {conf}: Is a directory" for r in readings)
+        state = a.get_state("eth0")
+        assert state is not None
+        assert state.ipv4.method == Ipv4Method.DHCP
+
+    @pytest.mark.parametrize("error", [FileNotFoundError("dhcpcd"), subprocess.TimeoutExpired(["dhcpcd"], 8)])
+    def test_a_lease_that_cannot_be_asked_for_is_reported_where_the_panel_shows_no_address(
+        self, station, error
+    ) -> None:
+        a, _conf, _dumped = station
+
+        def _run(argv, *, check=True):
+            raise error
+
+        a._run = _run  # type: ignore[method-assign]
+        sources = {r.name: (r.source, r.reason) for r in a.read_address_sources()}
+        assert sources["eth0"] == ("static", "")
+        assert sources["eth1"] == ("unreadable", str(error))
+        state = a.get_state("eth1")
+        assert state is not None
+        assert state.address_source == "none"
+
+    def test_an_interface_list_that_cannot_be_read_raises_where_the_panel_lists_nothing(
+        self, station, monkeypatch
+    ) -> None:
+        from openfollow.network import psutil_adapter
+        from openfollow.network.adapter import BackendReadError
+
+        a, _conf, _dumped = station
+        monkeypatch.setattr(psutil_adapter.psutil, "net_if_stats", lambda: 1 / 0)
+        with pytest.raises(BackendReadError, match="ZeroDivisionError"):
+            a.read_address_sources()
+        assert a.list_interfaces() == []

@@ -12,7 +12,7 @@ import pytest
 
 import openfollow.network.psutil_adapter as psutil_adapter
 from openfollow import net_utils
-from openfollow.network.adapter import VLAN_UNSUPPORTED_MESSAGE, Ipv4Config, Ipv4Method
+from openfollow.network.adapter import VLAN_UNSUPPORTED_MESSAGE, BackendReadError, Ipv4Config, Ipv4Method
 from openfollow.network.psutil_adapter import PsutilReadOnlyAdapter
 
 pytestmark = pytest.mark.unit
@@ -164,6 +164,11 @@ class TestPsutilAdapter:
 
         monkeypatch.setattr(psutil_adapter.psutil, "net_if_stats", _boom)
         assert PsutilReadOnlyAdapter().list_interfaces() == []
+        with pytest.raises(BackendReadError, match="psutil unavailable"):
+            psutil_adapter.read_interfaces()
+
+    def test_cannot_say_where_an_address_came_from(self, fake_psutil) -> None:
+        assert PsutilReadOnlyAdapter().read_address_sources() is None
 
     def test_get_state_handles_psutil_error_inside_addrs(
         self,

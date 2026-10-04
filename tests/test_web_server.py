@@ -502,6 +502,26 @@ def after_in_app_update(tmp_path, monkeypatch):
 _WHATS_NEW_TRIGGER = "document.addEventListener('DOMContentLoaded', openfollowShowWhatsNew)"
 
 
+@pytest.fixture()
+def after_a_failed_install(tmp_path, monkeypatch):
+    """The installer's state as the start it makes after a failed install finds it."""
+    state_file = tmp_path / "update-state.json"
+    state_file.write_text('{"state":"failed","message":"Update failed.","error":"E: dpkg error","ts":1}')
+    monkeypatch.setattr(services_module, "_DETACHED_UPDATE_STATE_FILE", str(state_file))
+    monkeypatch.setattr(services_module, "_WHATS_NEW_SEEN_FILE", str(tmp_path / "whats-new-seen"))
+    # The Software Update section renders only where the .deb updater can run.
+    monkeypatch.setattr("openfollow.web.routes._deb_update_supported", lambda: True)
+
+
+def test_a_failed_install_is_reported_by_the_station_it_restarted(after_a_failed_install, live_server) -> None:
+    _, base = live_server
+    status, data = _get_json(base, "/api/update-status")
+    assert (status, data) == (200, {"state": "failed", "message": "Update failed.", "error": "E: dpkg error"})
+    _, body = _get(base, "/")
+    assert '<div class="update-notice error">Update failed. E: dpkg error</div>' in body
+    assert _WHATS_NEW_TRIGGER not in body
+
+
 def test_whats_new_does_not_open_on_an_ordinary_start(live_server) -> None:
     _, base = live_server
     for path in ("/", "/wizard"):

@@ -44,7 +44,7 @@ def test_is_valid_web_pin_rejects_nondigit_overlong_nonascii() -> None:
 
 
 def test_config_dict_redacted_drops_device_local_fields() -> None:
-    cfg = AppConfig(web_pin="1234", web_port=8080, station_fqdn="tracker-1.stage.example.com")
+    cfg = AppConfig(web_pin="1234", web_port=8080, station_fqdn="of-1.stage.example.com")
     cfg.detection.storage_path = "/mnt/nvme/openfollow/yolo"
     cfg.testpattern_selected_media = "0123456789abcdef"
     cfg.otp_output.source_iface = "eth1"
@@ -164,7 +164,7 @@ def test_general_section_accepts_valid_web_pin_and_port() -> None:
 def test_general_strip_covers_pin_and_port() -> None:
     scrubbed = strip_device_local_fields(
         "general",
-        {"web_pin": "1", "web_port": 80, "station_fqdn": "tracker-1.stage.example.com", "psn_system_name": "x"},
+        {"web_pin": "1", "web_port": 80, "station_fqdn": "of-1.stage.example.com", "psn_system_name": "x"},
     )
     assert "web_pin" not in scrubbed
     assert "web_port" not in scrubbed
@@ -1534,7 +1534,7 @@ _DEVICE_IDENTITY_SAMPLES = [
     ("web_port", 8080),
     ("web_bind", "0.0.0.0"),
     ("web_bind_iface", "eth1"),
-    ("station_fqdn", "tracker-1.stage.example.com"),
+    ("station_fqdn", "of-1.stage.example.com"),
     ("station_id", "f0e1d2c3b4a59687f0e1d2c3b4a59687"),
     ("markers_catalog_path", "/mnt/nvme/openfollow/markers.toml"),
     ("testpattern_selected_media", "0123456789abcdef"),
@@ -3622,17 +3622,17 @@ def test_restoring_defaults_clears_the_interface_labels() -> None:
 # Station FQDN: saved from the General form, accepted as a host, never carried off the box.
 # ---------------------------------------------------------------------------
 
-_FQDN = "tracker-1.stage.example.com"
+_FQDN = "of-1.stage.example.com"
 
 
 @pytest.mark.parametrize(
     ("posted", "stored"),
     [
-        ("Tracker-1.Stage.Example.COM.", _FQDN),
+        ("Of-1.Stage.Example.COM.", _FQDN),
         ("", ""),
-        ("tracker.local", "other.example.com"),
+        ("of-1.local", "other.example.com"),
         ("192.0.2.10", "other.example.com"),
-        ("tracker", "other.example.com"),
+        ("of-1", "other.example.com"),
     ],
     ids=["canonicalised", "blank-clears", "mdns-kept-out", "ip-kept-out", "one-label-kept-out"],
 )
@@ -3656,7 +3656,7 @@ def test_the_configured_fqdn_is_an_accepted_host() -> None:
     assert _FQDN not in _allowed_request_hosts()
 
 
-@pytest.mark.parametrize("host", [_FQDN, "TRACKER-1.Stage.Example.COM", _FQDN + "."])
+@pytest.mark.parametrize("host", [_FQDN, "OF-1.Stage.Example.COM", _FQDN + "."])
 def test_a_change_through_the_configured_fqdn_is_accepted(bound_request, host: str) -> None:
     """Compared the way DNS compares names: case-insensitive, root dot ignored."""
     from openfollow.web.routes import _host_refusal
@@ -3675,7 +3675,7 @@ def test_a_change_through_another_name_is_still_refused_with_an_fqdn_set(bound_r
     assert refusal.message == "This station does not accept changes made through station.example.com."
 
 
-@pytest.mark.parametrize("host_header", [f"{_FQDN}:8080", "Tracker-1.Stage.Example.COM", f"{_FQDN}."])
+@pytest.mark.parametrize("host_header", [f"{_FQDN}:8080", "Of-1.Stage.Example.COM", f"{_FQDN}."])
 def test_a_page_opened_by_the_configured_fqdn_warns_of_nothing(bound_request, host_header: str) -> None:
     from openfollow.web.routes import _page_host_context
 

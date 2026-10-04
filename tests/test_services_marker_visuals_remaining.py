@@ -459,9 +459,9 @@ class TestHostnameRow:
 
         monkeypatch.setattr(device_repair, "current_hostname", lambda: "localhost")
         app = _build_app()
-        app._config = replace(app._config, web_port=port, station_fqdn="tracker-1.stage.example.com")
+        app._config = replace(app._config, web_port=port, station_fqdn="of-1.stage.example.com")
         state = _build(app, pool)
-        assert state.hostname_text == "tracker-1.stage.example.com" + shown
+        assert state.hostname_text == "of-1.stage.example.com" + shown
 
     @pytest.mark.parametrize("name", ["", "localhost"])
     def test_unusable_hostname_yields_no_row(

@@ -667,6 +667,8 @@
  }
  .row { display: flex; flex-wrap: wrap; gap: 0.72rem; margin-bottom: 0.72rem; }
  .row:last-child { margin-bottom: 0; }
+ /* Station Settings stacks two forms: the second's first row keeps the row gap the first's last one drops. */
+ #general-display-section { margin-top: 0.72rem; }
  /* The per-source fragment wrapper isn't the section's visual end – more rows
  (Stall Timeout, …) follow in the same group – so keep its last row's normal
  inter-row gap that .row:last-child would otherwise zero. */
@@ -3649,11 +3651,20 @@
  ).forEach((b) => { b.disabled = hasError; });
  }
  }
- document.body.addEventListener('htmx:afterSwap', (e) => {
- if (e.detail.target && e.detail.target.classList && e.detail.target.classList.contains('saved')) {
+ // After settling, not swapping: htmx swaps an element in wearing its predecessor's classes
+ // and only settles the response's own, so ``saved`` is not there yet at afterSwap.
+ document.body.addEventListener('htmx:afterSettle', (e) => {
+ // ``e.target`` is what was swapped in; after an outerHTML swap ``detail.target`` is the detached original.
+ const savedForm = [e.target, e.detail.target].find(
+ (el) => el && el.isConnected && el.classList && el.classList.contains('saved'));
+ if (!savedForm) return;
  showToast('Saved');
- setTimeout(() => e.detail.target.classList.remove('saved'), 500);
- }
+ // A form inside a shared box rings the box, the same box a failed save rings.
+ const ring = savedForm.closest('.save-flash, .section') || savedForm;
+ ring.classList.add('saved');
+ setTimeout(() => { savedForm.classList.remove('saved'); ring.classList.remove('saved'); }, 500);
+ });
+ document.body.addEventListener('htmx:afterSwap', (e) => {
  // Validation swap: the target is a sibling ``<span class="field-error">``
  // whose inner content is either empty (valid), an error span (invalid),
  // or a note span (advisory). Flip ``aria-invalid`` on the input and

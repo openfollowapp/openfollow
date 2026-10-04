@@ -31,7 +31,7 @@ def fqdn_problem(raw: str) -> str | None:
         return f"A name is at most {FQDN_MAX_LEN} characters."
     labels = name.split(".")
     if len(labels) < 2:
-        return "Enter the full name with its domain, such as tracker-1.stage.example.com."
+        return "Enter the full name with its domain, such as of-1.stage.example.com."
     for label in labels:
         if len(label) > _LABEL_MAX_LEN:
             return f"Each part between dots is at most {_LABEL_MAX_LEN} characters."
@@ -51,16 +51,18 @@ def normalize_fqdn(raw: object) -> str:
     return canonical_host(raw)
 
 
-def web_ui_host(fqdn: str) -> str:
-    """The name an operator opens the web UI by: *fqdn* when set, else ``<hostname>.local``,
-    or "" when the host has no usable name.
+def mdns_name() -> str:
+    """``<hostname>.local``, or "" when the host has no usable name.
 
     The running hostname, never the station slug the config asks for: when the rename was
     skipped, the desired name is an address avahi never answers on.
     """
-    if fqdn:
-        return fqdn
     from openfollow.privilege.device_repair import current_hostname
 
     name = current_hostname()
     return f"{name}.local" if name and name != "localhost" else ""
+
+
+def web_ui_host(fqdn: str) -> str:
+    """The name an operator opens the web UI by: *fqdn* when set, else the mDNS name."""
+    return fqdn or mdns_name()

@@ -7127,13 +7127,13 @@ def test_saves_through_the_configured_fqdn_work_from_the_next_request(live_serve
     server, base = live_server
     form = {"HX-Request": "true", "Content-Type": "application/x-www-form-urlencoded"}
     rename = urllib.parse.urlencode({"psn_system_name": "Stage Left"}).encode()
-    via_fqdn = {**form, "Origin": "http://tracker-1.stage.example.com"}
+    via_fqdn = {**form, "Origin": "http://of-1.stage.example.com"}
 
     assert _raw_request(base, "/section/general", headers=via_fqdn, data=rename)[0] == 403
 
-    name_it = urllib.parse.urlencode({"station_fqdn": "Tracker-1.Stage.Example.COM."}).encode()
+    name_it = urllib.parse.urlencode({"station_fqdn": "Of-1.Stage.Example.COM."}).encode()
     assert _raw_request(base, "/section/general", headers={**form, "Origin": base}, data=name_it)[0] == 200
-    assert load_config(server.config_path).station_fqdn == "tracker-1.stage.example.com"
+    assert load_config(server.config_path).station_fqdn == "of-1.stage.example.com"
 
     assert _raw_request(base, "/section/general", headers=via_fqdn, data=rename)[0] == 200
     assert load_config(server.config_path).psn_system_name == "Stage Left"
@@ -7145,19 +7145,100 @@ def test_the_fqdn_field_is_saved_and_redrawn_with_the_station_settings_form(live
     """It sits in Advanced Settings, outside the name and PIN form: ``form=`` puts it in
     that form's POST, and the form re-renders the field's group out of band."""
     server, base = live_server
-    save_config(AppConfig(station_fqdn="tracker-1.stage.example.com"), server.config_path)
+    save_config(AppConfig(station_fqdn="of-1.stage.example.com"), server.config_path)
     status, body = _get(base, "/")
     assert status == 200
     form = re.search(r'<form id="general-network-section"[^>]*>', body)
     assert form is not None
-    assert 'hx-select-oob="#general-station-fqdn-group"' in form.group(0)
-    group = body[body.index('id="general-station-fqdn-group"') :]
+    assert 'hx-select-oob="#general-station-fqdn-row"' in form.group(0)
+    group = body[body.index('id="general-station-fqdn-row"') :]
     field = re.search(r'<input id="general-station-fqdn"[^>]*>', group)
     assert field is not None
     assert 'form="general-network-section"' in field.group(0)
-    assert 'value="tracker-1.stage.example.com"' in field.group(0)
-    assert body.index('id="general-station-fqdn-group"') > body.index("<summary>Advanced Settings</summary>")
+    assert 'value="of-1.stage.example.com"' in field.group(0)
+    assert body.index('id="general-station-fqdn-row"') > body.index("<summary>Advanced Settings</summary>")
     assert '<button type="submit" form="general-network-section" class="save-btn">Save</button>' in body
+
+
+@pytest.mark.parametrize(
+    ("posted", "reason"),
+    [
+        ("of-1", "Enter the full name with its domain, such as of-1.stage.example.com."),
+        ("of-1.local", "Names under .local are mDNS names, and the station already answers to its own."),
+    ],
+    ids=["one-label", "mdns"],
+)
+def test_a_refused_fqdn_fails_the_whole_save_and_says_why(live_server, posted: str, reason: str) -> None:
+    """Quietly keeping the stored name re-rendered the field with it and wiped the error, so
+    a Save clicked before the blur check answered read as the station rewriting the name."""
+    server, base = live_server
+    save_config(AppConfig(station_fqdn="of-1.stage.example.com"), server.config_path)
+    form = {"HX-Request": "true", "Content-Type": "application/x-www-form-urlencoded", "Origin": base}
+    body = urllib.parse.urlencode({"psn_system_name": "Stage Left", "station_fqdn": posted}).encode()
+    status, text, headers = _raw_request(base, "/section/general", headers=form, data=body)
+    assert status == 422
+    assert headers["Content-Type"].startswith("application/json")
+    assert json.loads(text) == {"error": f"Custom domain name: {reason}", "action": ""}
+    stored = load_config(server.config_path)
+    assert (stored.station_fqdn, stored.psn_system_name) == ("of-1.stage.example.com", AppConfig().psn_system_name)
+
+
+def test_the_station_settings_box_rings_on_save_not_just_its_name_form(live_server) -> None:
+    """Save writes the FQDN from Advanced Settings too, so the green or red ring has to go
+    around the box that holds it: the name and PIN form must not be a ring box of its own."""
+    _, base = live_server
+    _, body = _get(base, "/")
+    form = re.search(r'<form id="general-network-section"[^>]*>', body)
+    assert form is not None
+    assert "save-flash" not in form.group(0)
+    box_start = body.rindex('<div class="section"', 0, form.start())
+    box_end = body.find('<div class="section"', form.end())
+    box = body[box_start : box_end if box_end != -1 else len(body)]
+    assert 'data-help="general-station"' in box[:300]
+    assert 'id="general-station-fqdn"' in box
+    assert '<button type="submit" form="general-network-section" class="save-btn">Save</button>' in box
+
+
+def test_station_settings_never_wait_on_interface_state(live_server, monkeypatch) -> None:
+    """Reading every interface's state cost each Save a few hundred milliseconds on a station,
+    and the General tab renders nothing from it: the Network block fetches its own."""
+    server, base = live_server
+    reads: list[str] = []
+    monkeypatch.setattr(server, "get_network_state", lambda: reads.append("read"))
+    form = {"HX-Request": "true", "Content-Type": "application/x-www-form-urlencoded", "Origin": base}
+    rename = urllib.parse.urlencode({"psn_system_name": "Stage Left"}).encode()
+    assert _raw_request(base, "/section/general", headers=form, data=rename)[0] == 200
+    assert _get(base, "/section/general")[0] == 200
+    assert _get(base, "/")[0] == 200
+    assert reads == []
+
+
+@pytest.mark.parametrize(
+    ("hostname", "shown"), [("openfollow-noble-bear", 'value="openfollow-noble-bear.local"'), ("localhost", 'value=""')]
+)
+def test_the_mdns_address_is_shown_beside_the_custom_domain_name(
+    live_server, monkeypatch, hostname: str, shown: str
+) -> None:
+    """Read-only, and the running hostname's: the name avahi answers on, not the slug the config asks for."""
+    monkeypatch.setattr("openfollow.privilege.device_repair.current_hostname", lambda: hostname)
+    _, base = live_server
+    _, body = _get(base, "/")
+    row = body[body.index('id="general-station-fqdn-row"') : body.index('id="general-station-fqdn"')]
+    field = re.search(r'<input id="general-mdns-address"[^>]*>', row)
+    assert field is not None
+    assert shown in field.group(0)
+    assert "disabled" in field.group(0) and "name=" not in field.group(0)
+
+
+def test_the_station_settings_box_draws_no_rules_inside(live_server) -> None:
+    """A ``.group`` draws a rule under itself unless it is the last in its container, so each
+    of the box's three containers (name and PIN, display units, Advanced Settings) holds one."""
+    _, base = live_server
+    _, body = _get(base, "/")
+    start = body.index('data-fold-key="general-station"')
+    box = body[start : body.find('<div class="section"', start)]
+    assert box.count('class="group"') == 3
+    assert "group--divider" not in box
 
 
 def test_a_refused_unlock_says_why_on_the_login_page(pin_protected_server) -> None:

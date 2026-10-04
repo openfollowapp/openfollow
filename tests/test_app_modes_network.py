@@ -1845,7 +1845,7 @@ class TestTheStationFqdn:
     """A name the venue's DNS gives the station replaces its ``.local`` name here,
     and this screen is where a wrong one is taken back off."""
 
-    _FQDN = "tracker-1.stage.example.com"
+    _FQDN = "of-1.stage.example.com"
 
     def _app(self, monkeypatch, *, fqdn: str = _FQDN, adapter: _FakeAdapter | None = None) -> SimpleNamespace:
         _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
@@ -1865,7 +1865,7 @@ class TestTheStationFqdn:
         app = self._app(monkeypatch)
         rows = anm.build_pi_network_rows(app)
         host = next(r for r in rows if r.get("key") == "web_host")
-        assert (host["label"], host["value"]) == ("http://tracker-1.stage.example.com", "")
+        assert (host["label"], host["value"]) == ("http://of-1.stage.example.com", "")
         assert "http://openfollow-noble-bear.local" not in [r.get("label") for r in rows]
         assert "http://192.168.1.5" in _detail_labels(app, "eth0")
 
@@ -1873,7 +1873,7 @@ class TestTheStationFqdn:
         app = self._app(monkeypatch)
         app._web_server = _FakeWebServer(display_port=8080)
         host = next(r for r in anm.build_pi_network_rows(app) if r.get("key") == "web_host")
-        assert host["label"] == "http://tracker-1.stage.example.com:8080"
+        assert host["label"] == "http://of-1.stage.example.com:8080"
 
     def test_remove_fqdn_is_offered_only_while_one_is_set(self, monkeypatch) -> None:
         assert "fqdn_remove" not in self._keys(self._app(monkeypatch, fqdn=""))

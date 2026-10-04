@@ -2764,7 +2764,7 @@ class TestARowWithNoValueLendsItsColumnToTheLabel:
     """An FQDN's URL runs past the column a ``.local`` one fits in, and the station's
     name is the line an operator reads out, so an ellipsis there is a wrong address."""
 
-    _URL = "http://openfollow-tracker-1.production.venue-name.example.org"
+    _URL = "http://of-1.production.venue-name.example.org"
 
     @staticmethod
     def _draw(row: dict[str, object]) -> FakeCairo:

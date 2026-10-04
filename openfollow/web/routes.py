@@ -984,9 +984,8 @@ def _build_general_template_data(
 ) -> dict[str, Any]:
     """Build shared template context for the General/Network section.
 
-    ``network_state`` feeds the Network read-only interface block, which
-    has its own 5s HTMX poll against ``/section/general/network_state`` so
-    the surrounding form fields aren't clobbered while the operator types.
+    No interface state: reading it costs every Save a pass over each interface,
+    and the Network block fetches its own.
     """
     data: dict[str, Any] = {
         "config": cfg,
@@ -994,7 +993,6 @@ def _build_general_template_data(
         "restarting": restarting,
         "local_ips": _get_local_ips(),
         "update_status": server.get_update_status(),
-        "network_state": server.get_network_state(),
         "current_version": openfollow.__version__,
         "update_supported": _deb_update_supported(),
         "startup_supported": _startup_settings_supported(),
@@ -5087,7 +5085,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             peers=peers,
             local=local,
             station_down=server.station_interface_down,
-            network_state=server.get_network_state(),
             stats=server.get_runtime_stats(),
             controller_slots=_controller_slots_view(server),
             local_ips=_get_local_ips(),
@@ -6087,6 +6084,15 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     def update_general() -> Any:
         """Update general settings."""
         form_data = dict(request.forms)
+        # A name the form would refuse fails the whole save rather than quietly keeping
+        # the stored one: the operator sees why, and the field keeps what they typed.
+        fqdn_refusal = fqdn_problem(_as_str(form_data["station_fqdn"], "")) if "station_fqdn" in form_data else None
+        if fqdn_refusal is not None:
+            return HTTPResponse(
+                status=422,
+                body=json.dumps({"error": f"Custom domain name: {fqdn_refusal}", "action": ""}),
+                headers={"Content-Type": "application/json"},
+            )
         with _config_write_lock:
             cfg = _load_config_for_edit()
             apply_section_data(cfg, "general", form_data)

@@ -125,7 +125,7 @@ A station answers saves through its IP addresses, its hostname and
 `<hostname>.local`. Opened by any other name, every page loads and every save
 is refused, because the station cannot tell that name from a forged one. On a
 venue network whose DNS gives the station its own name, enter that name as
-**Station FQDN** under General → Station Settings → Advanced Settings; saves
+**Custom domain name (FQDN)** under General → Station Settings → Advanced Settings; saves
 through it then work, and the station's screen shows it in place of the
 `.local` name. The station never looks the name up. If the name was mistyped
 or the venue's DNS never pointed it here, Settings → Network on the station's

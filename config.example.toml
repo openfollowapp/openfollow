@@ -36,7 +36,7 @@ web_pin = ""
 # the station unreachable; the on-screen Network screen clears it.
 web_bind_iface = ""
 # This station's name on a venue network that runs its own DNS, e.g.
-# "tracker-1.stage.example.com". Blank = only its <hostname>.local name.
+# "of-1.stage.example.com". Blank = only its <hostname>.local name.
 station_fqdn = ""
 controlled_marker_ids = [
     1,

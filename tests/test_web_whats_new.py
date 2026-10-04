@@ -117,7 +117,7 @@ def test_the_shipped_notes_render_for_their_release() -> None:
     first_line = whats_new_module.WHATS_NEW_FILE.read_text(encoding="utf-8").partition("\n")[0].strip()
     notes = load_whats_new(first_line.lstrip("v"))
     assert notes.matches
-    assert "This Station" in notes.html
+    assert notes.html.startswith("<h2>")
 
 
 # --- the settings backup the update left behind -------------------------------

@@ -6844,3 +6844,21 @@ def test_apply_runtime_hands_a_new_station_fqdn_to_the_running_station() -> None
     apply_runtime_config_changes(app, AppConfig())
     assert app._config.station_fqdn == ""
     assert app._web_commands.restart_requested is False
+
+
+def test_a_refused_station_fqdn_is_reported_once_not_on_every_load(caplog, monkeypatch) -> None:
+    """A hand edit that loads blank must say why; the web layer loads the config on every
+    request, so once per value, not once per load."""
+    import openfollow.station_fqdn as station_fqdn
+
+    monkeypatch.setattr(station_fqdn, "_reported", set())
+    with caplog.at_level("WARNING", logger="openfollow.station_fqdn"):
+        for _ in range(3):
+            AppConfig(station_fqdn="of_1.stage.example.com")
+        AppConfig(station_fqdn="")
+        AppConfig(station_fqdn="of-1.stage.example.com")
+    warnings = [r.getMessage() for r in caplog.records]
+    assert warnings == [
+        "Ignoring station_fqdn 'of_1.stage.example.com': Use only letters, digits and hyphens between the dots,"
+        " and no hyphen at the start or end of a part."
+    ]

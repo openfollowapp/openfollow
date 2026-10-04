@@ -7241,6 +7241,16 @@ def test_the_station_settings_box_draws_no_rules_inside(live_server) -> None:
     assert "group--divider" not in box
 
 
+def test_the_save_ring_outlives_its_animation(live_server) -> None:
+    """Removing ``saved`` before ``flash-green`` ends makes the ring jump to its end state."""
+    _, base = live_server
+    _, body = _get(base, "/")
+    animation_s = float(re.search(r"\.save-flash\.saved \{ animation: flash-green ([0-9.]+)s; \}", body).group(1))
+    settle = body[body.index("htmx:afterSettle', (e) =>") :]
+    delay_ms = int(re.search(r"ring\.classList\.remove\('saved'\); \}, (\d+)\);", settle).group(1))
+    assert delay_ms > animation_s * 1000
+
+
 def test_a_refused_unlock_says_why_on_the_login_page(pin_protected_server) -> None:
     _, base, pin = pin_protected_server
     status, body, response_headers = _raw_request(

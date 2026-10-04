@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 import openfollow.runtime.app_modes_network as anm
+from openfollow.configuration import AppConfig, load_config, save_config
 from openfollow.network.adapter import (
     ApplyResult,
     Ipv4Config,
@@ -1847,11 +1848,16 @@ class TestTheStationFqdn:
 
     _FQDN = "of-1.stage.example.com"
 
-    def _app(self, monkeypatch, *, fqdn: str = _FQDN, adapter: _FakeAdapter | None = None) -> SimpleNamespace:
+    def _app(
+        self, monkeypatch, *, fqdn: str = _FQDN, adapter: _FakeAdapter | None = None, config_path=None
+    ) -> SimpleNamespace:
         _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
         monkeypatch.setattr("openfollow.privilege.device_repair.current_hostname", lambda: "openfollow-noble-bear")
         app = _make_app(adapter)
         app._config.station_fqdn = fqdn
+        if config_path is not None:
+            save_config(AppConfig(station_fqdn=fqdn), config_path)
+            app._config_path = str(config_path)
         anm.enter_pi_network(app)
         return app
 
@@ -1882,15 +1888,13 @@ class TestTheStationFqdn:
         heading = next(i for i, r in enumerate(rows) if r.get("label") == "If you still can't reach it")
         assert keys.index("fqdn_remove") == heading + 1
 
-    def test_remove_fqdn_clears_it_and_names_the_local_address_again(self, monkeypatch) -> None:
-        saved: list[object] = []
-        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda app: saved.append(app) or True)
-        app = self._app(monkeypatch)
+    def test_remove_fqdn_clears_it_and_names_the_local_address_again(self, monkeypatch, tmp_path) -> None:
+        app = self._app(monkeypatch, config_path=tmp_path / "config.toml")
 
         _confirm_key(app, "fqdn_remove")
 
         assert app._config.station_fqdn == ""
-        assert saved, "the cleared name was never written to disk"
+        assert load_config(str(tmp_path / "config.toml")).station_fqdn == ""
         assert (app._pi_network_banner, app._pi_network_banner_level) == ("FQDN removed.", "success")
         assert app._restart_requests == 0
         rows = anm.build_pi_network_rows(app)
@@ -1900,9 +1904,9 @@ class TestTheStationFqdn:
         assert "If you still can't reach it" not in [r.get("label") for r in rows]
         assert rows[app._pi_network_index].get("kind") in {"choice", "text", "action"}
 
-    def test_a_failed_save_keeps_the_fqdn(self, monkeypatch) -> None:
-        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda app: False)
+    def test_a_failed_save_keeps_the_fqdn(self, monkeypatch, tmp_path) -> None:
         app = self._app(monkeypatch)
+        app._config_path = str(tmp_path / "missing" / "config.toml")
 
         _confirm_key(app, "fqdn_remove")
 
@@ -1912,12 +1916,23 @@ class TestTheStationFqdn:
             "error",
         )
 
-    def test_it_survives_a_read_only_network_backend(self, monkeypatch) -> None:
+    def test_it_survives_a_read_only_network_backend(self, monkeypatch, tmp_path) -> None:
         """It writes config, not the network stack, like the unpin escape beside it."""
-        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda app: True)
-        app = self._app(monkeypatch, adapter=_FakeAdapter(writable=False))
+        app = self._app(monkeypatch, adapter=_FakeAdapter(writable=False), config_path=tmp_path / "config.toml")
         _confirm_key(app, "fqdn_remove")
         assert app._config.station_fqdn == ""
+
+    def test_a_web_save_not_yet_reloaded_is_kept(self, monkeypatch, tmp_path) -> None:
+        """Only the one field is written, into the file as it is on disk: saving the whole
+        running config would put back what a web save changed a moment earlier."""
+        path = tmp_path / "config.toml"
+        app = self._app(monkeypatch, config_path=path)
+        save_config(AppConfig(station_fqdn=self._FQDN, psn_system_name="Renamed on the web"), path)
+
+        _confirm_key(app, "fqdn_remove")
+
+        on_disk = load_config(str(path))
+        assert (on_disk.station_fqdn, on_disk.psn_system_name) == ("", "Renamed on the web")
 
     def test_both_escapes_share_one_heading(self, monkeypatch) -> None:
         app = self._app(monkeypatch)
@@ -2072,17 +2087,16 @@ class TestDefensivePathsOnTheReachabilityScreen:
         assert saved == []
         assert app._restart_requests == 0
 
-    def test_removing_an_fqdn_already_gone_writes_nothing(self, monkeypatch) -> None:
+    def test_removing_an_fqdn_already_gone_writes_nothing(self, tmp_path) -> None:
         """The row is only offered while a name is set, so reaching this means it
         was cleared since the row was rendered - by a web save, say."""
-        saved: list[object] = []
-        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda app: saved.append(app) or True)
         app = _make_app()
+        app._config_path = str(tmp_path / "config.toml")
         anm.enter_pi_network(app)
 
         anm._remove_fqdn(app)
 
-        assert saved == []
+        assert not (tmp_path / "config.toml").exists()
         assert app._pi_network_banner == ""
 
     def test_dhcp_without_an_adapter_says_so_instead_of_raising(self) -> None:

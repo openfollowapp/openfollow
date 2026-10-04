@@ -982,11 +982,7 @@ def _build_general_template_data(
     restarting: bool = False,
     update_feedback: str = "",
 ) -> dict[str, Any]:
-    """Build shared template context for the General/Network section.
-
-    No interface state: reading it costs every Save a pass over each interface,
-    and the Network block fetches its own.
-    """
+    """Build shared template context for the General/Network section."""
     data: dict[str, Any] = {
         "config": cfg,
         "saved": saved,
@@ -5954,9 +5950,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         config = _request_scoped_config()
         extra: dict[str, Any] = {}
         if name == "general":
-            # Delegate to ``_render_general`` so network_state,
-            # update_status and local_ips are populated consistently
-            # with the form-POST render path.
+            # Same context as the form-POST render path.
             return _render_general(config)
         elif name == "psn":
             extra["local_ips"] = _get_local_ips()
@@ -6088,11 +6082,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # the stored one: the operator sees why, and the field keeps what they typed.
         fqdn_refusal = fqdn_problem(_as_str(form_data["station_fqdn"], "")) if "station_fqdn" in form_data else None
         if fqdn_refusal is not None:
-            return HTTPResponse(
-                status=422,
-                body=json.dumps({"error": f"Custom domain name: {fqdn_refusal}", "action": ""}),
-                headers={"Content-Type": "application/json"},
-            )
+            return _save_failed(422, f"Custom domain name: {fqdn_refusal}")
         with _config_write_lock:
             cfg = _load_config_for_edit()
             apply_section_data(cfg, "general", form_data)

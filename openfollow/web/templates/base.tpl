@@ -3662,7 +3662,8 @@
  // A form inside a shared box rings the box, the same box a failed save rings.
  const ring = savedForm.closest('.save-flash, .section') || savedForm;
  ring.classList.add('saved');
- setTimeout(() => { savedForm.classList.remove('saved'); ring.classList.remove('saved'); }, 500);
+ // Outlives the 0.55 s flash-green animation, or the ring jumps to its end.
+ setTimeout(() => { savedForm.classList.remove('saved'); ring.classList.remove('saved'); }, 600);
  });
  document.body.addEventListener('htmx:afterSwap', (e) => {
  // Validation swap: the target is a sibling ``<span class="field-error">``

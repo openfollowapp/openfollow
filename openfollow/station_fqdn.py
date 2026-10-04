@@ -6,7 +6,10 @@ web server's accepted hosts and the HUD. Never resolved: the station only compar
 
 from __future__ import annotations
 
+import logging
 import re
+
+logger = logging.getLogger(__name__)
 
 FQDN_MAX_LEN = 253
 # What an operator may type: the name plus the root's trailing dot.
@@ -44,11 +47,19 @@ def fqdn_problem(raw: str) -> str | None:
     return None
 
 
+# Every web request loads the config, so a refused value is reported once, not per load.
+_reported: set[str] = set()
+
+
 def normalize_fqdn(raw: object) -> str:
     """*raw* as stored: the canonical name, or blank for anything that is not a valid FQDN."""
-    if not isinstance(raw, str) or fqdn_problem(raw) is not None:
-        return ""
-    return canonical_host(raw)
+    problem = fqdn_problem(raw) if isinstance(raw, str) else "not text"
+    if problem is None:
+        return canonical_host(str(raw))
+    if raw not in (None, "") and repr(raw) not in _reported:
+        _reported.add(repr(raw))
+        logger.warning("Ignoring station_fqdn %r: %s", raw, problem)
+    return ""
 
 
 def mdns_name() -> str:

@@ -762,17 +762,25 @@ def _unpin_web_ui(app: OpenFollowApp) -> None:
 
 def _remove_fqdn(app: OpenFollowApp) -> None:
     """Clear the station FQDN: the way out of a mistyped name, or one the venue's
-    DNS never pointed here. The screen names the ``.local`` address again at once."""
-    from openfollow.runtime.app_modes import _persist_config
+    DNS never pointed here. The screen names the ``.local`` address again at once.
 
-    previous = _station_fqdn(app)
-    if not previous:
+    Only this field is written, into the file as it is on disk, so a web save the
+    hot reload has not picked up yet is kept rather than overwritten.
+    """
+    from openfollow.configuration import config_write_lock, load_config, save_config
+
+    if not _station_fqdn(app):
         return
-    app._config.station_fqdn = ""
-    if not _persist_config(app):
-        app._config.station_fqdn = previous
+    try:
+        with config_write_lock:
+            cfg = load_config(app._config_path, strict=True)
+            cfg.station_fqdn = ""
+            save_config(cfg, app._config_path)
+    except Exception:  # noqa: BLE001 - a failed save is reported on the screen
+        logger.exception("Could not remove the station FQDN")
         _set_banner(app, "Could not save - the FQDN is still set.")
         return
+    app._config.station_fqdn = ""
     _set_banner(app, "FQDN removed.", "success")
     _focus_row(app, "")
 

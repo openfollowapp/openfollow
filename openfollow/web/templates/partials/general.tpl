@@ -55,9 +55,9 @@
     </div>
 
     %# Station name + Web Access PIN – one form, saved together via
-    %# /section/general with the FQDN joined from Advanced Settings. It has no
-    %# ``save-flash`` of its own, so a save's green or red ring goes around the
-    %# whole Station Settings box, which holds every field the Save writes.
+    %# /section/general with the FQDN joined from Advanced Settings. A save's
+    %# green or red ring goes around the Station Settings box, which holds every
+    %# field the Save writes.
     <form id="general-network-section" class="{{'saved' if defined('saved') and saved else ''}} {{'restarting' if defined('restarting') and restarting else ''}}"
           hx-post="/section/general" hx-target="#general-network-section" hx-swap="outerHTML"
           hx-select="#general-network-section" hx-select-oob="#general-station-fqdn-row" hx-trigger="submit">

@@ -38,6 +38,7 @@ from openfollow.network.validate import (
     validate_apply,
 )
 from openfollow.runtime import ipv4_digit_grid
+from openfollow.station_fqdn import web_ui_host
 
 if TYPE_CHECKING:
     from openfollow.app import OpenFollowApp
@@ -254,22 +255,16 @@ def _serves_every_interface(app: OpenFollowApp) -> bool:
     return not host or host == WEB_BIND_ALL
 
 
-def _mdns_host(app: OpenFollowApp) -> str:
-    """``<hostname>.local``, or "" when the host has no usable name.
+def _station_fqdn(app: OpenFollowApp) -> str:
+    return str(getattr(app._config, "station_fqdn", "") or "")
 
-    Always the running system's hostname, never the station slug the config
-    asks for: when the rename was skipped, the desired name sends the operator
-    to an address avahi never answers on.
-    """
-    from openfollow.privilege.device_repair import current_hostname
 
+def _web_ui_host(app: OpenFollowApp) -> str:
+    """The station's FQDN, else ``<hostname>.local``, or "" when the host has no usable name."""
     try:
-        name = current_hostname()
+        return web_ui_host(_station_fqdn(app))
     except Exception:  # noqa: BLE001 - a hostname lookup must not blank the screen
         return ""
-    if not name or name == "localhost":
-        return ""
-    return f"{name}.local"
 
 
 def _iface_addresses(app: OpenFollowApp) -> list[tuple[str, str]]:
@@ -503,28 +498,34 @@ def _iface_list_rows(app: OpenFollowApp, ifaces: list[tuple[str, str]]) -> list[
     interface nobody had picked.
     """
     rows: list[dict[str, object]] = [{"kind": "header", "label": "Open on a computer on the same network"}]
-    mdns = _mdns_host(app)
-    if mdns:
-        # First, and not selectable: it reaches the station on any interface,
-        # so there is no per-interface screen it could open. It is also the one
-        # line an operator can read out over comms.
-        rows.append({"kind": "display", "key": "mdns", "label": _web_url_for(app, mdns), "value": "any interface"})
+    fqdn = _station_fqdn(app)
+    host = _web_ui_host(app)
+    if host:
+        # First, and not selectable: there is no per-interface screen it could
+        # open. It is also the one line an operator can read out over comms. The
+        # ``.local`` name answers on any interface; an FQDN points wherever the
+        # venue's DNS does, so it claims none.
+        value = "" if fqdn else "any interface"
+        rows.append({"kind": "display", "key": "web_host", "label": _web_url_for(app, host), "value": value})
 
     rows.append({"kind": "header", "label": "Interfaces"})
     rows.extend(_iface_rows(app, ifaces))
     rows.extend(_absent_rows(app, ifaces))
     rows.extend(_reachability_notices(app, ifaces))
 
-    if _web_ui_is_restricted(app):
+    restricted = _web_ui_is_restricted(app)
+    if restricted or fqdn:
         # The heading comes with the action, not before it: a section whose
         # only content was a Back button announced a remedy that was not there.
         rows.append({"kind": "header", "label": "If you still can't reach it"})
-        # Belongs to no single interface, so it stays on this screen.
-        # Deliberately not gated on ``writable``: this writes config, not the
-        # network stack, so it stays available on a host whose addressing this
-        # build cannot manage - which is exactly where a lockout would strand
-        # the operator otherwise.
+    # Both belong to no single interface, so they stay on this screen, and are
+    # deliberately not gated on ``writable``: they write config, not the network
+    # stack, so they stay available on a host whose addressing this build cannot
+    # manage - which is exactly where a lockout would strand the operator otherwise.
+    if restricted:
         rows.append({"kind": "action", "key": "web_unpin", "label": "Serve web UI on all interfaces", "value": ""})
+    if fqdn:
+        rows.append({"kind": "action", "key": "fqdn_remove", "label": "Remove FQDN", "value": ""})
     return rows
 
 
@@ -664,6 +665,8 @@ def _pi_network_confirm(app: OpenFollowApp) -> None:
         enter_pi_network_field_edit(app, key)
     elif key == "web_unpin":
         _unpin_web_ui(app)
+    elif key == "fqdn_remove":
+        _remove_fqdn(app)
     elif key == "dhcp":
         _set_pi_network_dhcp(app)
     elif key == "static":
@@ -754,6 +757,31 @@ def _unpin_web_ui(app: OpenFollowApp) -> None:
     # The row just removed itself, and took its heading with it; without this
     # the same index is now a different row, and a second tap would run it.
     # No key to name - the nearest selectable row above is an interface.
+    _focus_row(app, "")
+
+
+def _remove_fqdn(app: OpenFollowApp) -> None:
+    """Clear the station FQDN: the way out of a mistyped name, or one the venue's
+    DNS never pointed here. The screen names the ``.local`` address again at once.
+
+    Only this field is written, into the file as it is on disk, so a web save the
+    hot reload has not picked up yet is kept rather than overwritten.
+    """
+    from openfollow.configuration import config_write_lock, load_config, save_config
+
+    if not _station_fqdn(app):
+        return
+    try:
+        with config_write_lock:
+            cfg = load_config(app._config_path, strict=True)
+            cfg.station_fqdn = ""
+            save_config(cfg, app._config_path)
+    except Exception:  # noqa: BLE001 - a failed save is reported on the screen
+        logger.exception("Could not remove the station FQDN")
+        _set_banner(app, "Could not save - the FQDN is still set.")
+        return
+    app._config.station_fqdn = ""
+    _set_banner(app, "FQDN removed.", "success")
     _focus_row(app, "")
 
 

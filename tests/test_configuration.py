@@ -6734,3 +6734,138 @@ def test_a_hand_edited_label_table_is_normalised_on_load(tmp_path) -> None:
     path = tmp_path / "config.toml"
     path.write_text('[interface_labels]\neth0 = " Production "\n"eth0.13" = 5\n"bad/name" = "X"\n', encoding="utf-8")
     assert load_config(str(path)).interface_labels == {"eth0": "Production"}
+
+
+# ---------------------------------------------------------------------------
+# AppConfig.station_fqdn: this station's name on a venue's own DNS
+# ---------------------------------------------------------------------------
+
+# 63 + 63 + 63 + 61 characters and three dots: the longest name DNS carries.
+_LONGEST_FQDN = ".".join(["a" * 63, "b" * 63, "c" * 63, "d" * 61])
+
+
+@pytest.mark.parametrize(
+    ("raw", "stored"),
+    [
+        ("of-1.stage.example.com", "of-1.stage.example.com"),
+        ("  Of-1.Stage.Example.COM  ", "of-1.stage.example.com"),
+        ("of-1.stage.example.com.", "of-1.stage.example.com"),
+        ("a.b", "a.b"),
+        ("1of.2.example.com", "1of.2.example.com"),
+        (_LONGEST_FQDN, _LONGEST_FQDN),
+        ("", ""),
+    ],
+    ids=["plain", "case-and-whitespace", "root-dot", "two-labels", "digit-labels", "253-chars", "blank"],
+)
+def test_a_station_fqdn_is_stored_canonical(raw: str, stored: str) -> None:
+    assert AppConfig(station_fqdn=raw).station_fqdn == stored
+
+
+@pytest.mark.parametrize("raw", [None, 7, True, ["of-1.example.com"], {"of-1": "example.com"}])
+def test_a_station_fqdn_that_is_not_text_loads_blank(raw: object) -> None:
+    assert AppConfig(station_fqdn=raw).station_fqdn == ""  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "of-1",
+        "of-1.",
+        ".",
+        " . ",
+        "192.0.2.10",
+        "1.2.3.4.5",
+        "2001:db8::1",
+        "of-1.local",
+        "Of-1.LOCAL.",
+        "-of-1.example.com",
+        "of-1-.example.com",
+        "of-1..example.com",
+        ".of-1.example.com",
+        "of-1.example.com..",
+        "of_1.example.com",
+        "of 1.example.com",
+        "öf-1.example.com",
+        "http://of-1.example.com",
+        "of-1.example.com:80",
+        "a" * 64 + ".example.com",
+        _LONGEST_FQDN + "d",
+    ],
+    ids=[
+        "one-label",
+        "one-label-root-dot",
+        "root-only",
+        "padded-root-only",
+        "ipv4",
+        "numeric-tld",
+        "ipv6",
+        "mdns",
+        "mdns-any-case",
+        "leading-hyphen",
+        "trailing-hyphen",
+        "empty-label",
+        "leading-dot",
+        "two-root-dots",
+        "underscore",
+        "space",
+        "non-ascii",
+        "url",
+        "port",
+        "label-over-63",
+        "name-over-253",
+    ],
+)
+def test_a_station_fqdn_that_breaks_the_rules_loads_blank(raw: str) -> None:
+    assert AppConfig(station_fqdn=raw).station_fqdn == ""
+
+
+def test_a_station_fqdn_round_trips_through_toml(temp_config_path) -> None:
+    save_config(AppConfig(station_fqdn="of-1.stage.example.com"), temp_config_path)
+    assert load_config(temp_config_path).station_fqdn == "of-1.stage.example.com"
+
+
+@pytest.mark.parametrize(
+    ("line", "stored"),
+    [
+        ('station_fqdn = "Of-1.Stage.Example.COM."', "of-1.stage.example.com"),
+        ('station_fqdn = "of-1.local"', ""),
+        ('station_fqdn = "."', ""),
+        ("station_fqdn = 42", ""),
+    ],
+    ids=["canonicalised", "refused-name", "root-only", "wrong-type"],
+)
+def test_a_hand_edited_station_fqdn_is_normalised_on_load(tmp_path, line: str, stored: str) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(line + "\n", encoding="utf-8")
+    assert load_config(str(path)).station_fqdn == stored
+
+
+def test_apply_runtime_hands_a_new_station_fqdn_to_the_running_station() -> None:
+    """The HUD's web address rows read the running config, so a name saved on the
+    web shows on the station's screen without a restart."""
+    app = _DummyApp(AppConfig())
+    apply_runtime_config_changes(app, AppConfig(station_fqdn="of-1.stage.example.com"))
+    assert app._config.station_fqdn == "of-1.stage.example.com"
+    apply_runtime_config_changes(app, AppConfig())
+    assert app._config.station_fqdn == ""
+    assert app._web_commands.restart_requested is False
+
+
+def test_a_refused_station_fqdn_is_reported_once_not_on_every_load(caplog, monkeypatch) -> None:
+    """A hand edit that loads blank must say why; the web layer loads the config on every
+    request, so once per value, not once per load."""
+    import openfollow.station_fqdn as station_fqdn
+
+    monkeypatch.setattr(station_fqdn, "_reported", set())
+    with caplog.at_level("WARNING", logger="openfollow.station_fqdn"):
+        for _ in range(3):
+            AppConfig(station_fqdn="of_1.stage.example.com")
+        AppConfig(station_fqdn="")
+        AppConfig(station_fqdn="of-1.stage.example.com")
+        AppConfig(station_fqdn=".")
+    warnings = [r.getMessage() for r in caplog.records]
+    assert warnings == [
+        "Ignoring station_fqdn 'of_1.stage.example.com': Use only letters, digits and hyphens between the dots,"
+        " and no hyphen at the start or end of a part.",
+        "Ignoring station_fqdn '.': Enter the full name with its domain, such as of-1.stage.example.com.",
+    ]

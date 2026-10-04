@@ -445,6 +445,24 @@ class TestHostnameRow:
         state = _build(app, pool)
         assert state.hostname_text == "raspberrypi.local:8080"
 
+    @pytest.mark.parametrize(("port", "shown"), [(80, ""), (8080, ":8080")])
+    def test_the_station_fqdn_replaces_the_local_name(
+        self,
+        pool: OverlayStatePool,
+        monkeypatch: pytest.MonkeyPatch,
+        port: int,
+        shown: str,
+    ) -> None:
+        """The bottom-left panel and the Settings card name the station the way the
+        venue's DNS does, once it has a name there; even with no usable hostname."""
+        import openfollow.privilege.device_repair as device_repair
+
+        monkeypatch.setattr(device_repair, "current_hostname", lambda: "localhost")
+        app = _build_app()
+        app._config = replace(app._config, web_port=port, station_fqdn="of-1.stage.example.com")
+        state = _build(app, pool)
+        assert state.hostname_text == "of-1.stage.example.com" + shown
+
     @pytest.mark.parametrize("name", ["", "localhost"])
     def test_unusable_hostname_yields_no_row(
         self,

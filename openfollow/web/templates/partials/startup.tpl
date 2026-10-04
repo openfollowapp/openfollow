@@ -1,5 +1,5 @@
-%# Start-at-boot switch. Rendered into the #startup-settings region (heading
-%# and fold live in general.tpl), swapped in place after every change so the
+%# Start-at-boot switch. Rendered into the #startup-settings field of
+%# general.tpl's Advanced Settings, swapped in place after every change so the
 %# switch shows what systemd reports rather than a stored flag.
 %#
 %# Tolerant of missing context: callers without ``startup`` get the
@@ -16,14 +16,11 @@
 % if not _s.get("available"):
 <p class="muted">{{_s.get('reason') or 'Starting at boot cannot be changed on this host.'}}</p>
 % else:
-<div class="row">
-    <div class="field checkbox-field wide">
-        <label for="general-autostart">Start OpenFollow at boot</label>
-        <div class="checkbox-wrap">
-            <input type="checkbox" id="general-autostart" name="autostart"
-                   {{'checked' if _s.get('enabled') else ''}}
-                   onchange="onAutostartToggle(this)">
-        </div>
-    </div>
+<label for="general-autostart">Autostart</label>
+<div class="checkbox-wrap checkbox-field inline">
+    <input type="checkbox" id="general-autostart" name="autostart"
+           {{'checked' if _s.get('enabled') else ''}}
+           onchange="onAutostartToggle(this)">
+    <label for="general-autostart">Start OpenFollow at boot</label>
 </div>
 % end

@@ -2276,7 +2276,7 @@ class TestDrawPiNetworkScreen:
         you have already pressed one."""
         rows = [
             {"kind": "choice", "key": "iface:eth0", "label": "eth0", "value": "10.0.0.2", "opens": True},
-            {"kind": "display", "key": "mdns", "label": "http://x.local", "value": "any interface"},
+            {"kind": "display", "key": "web_host", "label": "http://x.local", "value": "any interface"},
         ]
         state = _base_state(pi_network=_network_state(rows=rows))
         cr = FakeCairo()
@@ -2752,12 +2752,45 @@ class TestTheScreenDoesNotTruncateAUrl:
         url = "http://openfollow-eager-moose.local"
         rows = [
             {"kind": "header", "label": "Open on a computer on the same network"},
-            {"kind": "display", "key": "mdns", "label": url, "value": "any interface"},
+            {"kind": "display", "key": "web_host", "label": url, "value": "any interface"},
         ]
         state = _base_state(pi_network=_network_state(rows=rows, selected_index=1))
         cr = FakeCairo()
         draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1280, 720)
         assert url in cr.show_text_strings()
+
+
+class TestARowWithNoValueLendsItsColumnToTheLabel:
+    """An FQDN's URL runs past the column a ``.local`` one fits in, and the station's
+    name is the line an operator reads out, so an ellipsis there is a wrong address.
+    A name wider than the panel itself still ellipsises at its edge."""
+
+    _URL = "http://of-1.production.venue-name.example.org"
+
+    @staticmethod
+    def _draw(row: dict[str, object]) -> FakeCairo:
+        rows = [{"kind": "header", "label": "Open on a computer on the same network"}, row]
+        state = _base_state(pi_network=_network_state(rows=rows, selected_index=1))
+        cr = FakeCairo()
+        draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1280, 720)
+        return cr
+
+    def test_a_long_url_with_no_value_is_drawn_across_the_panel(self) -> None:
+        cr = self._draw({"kind": "display", "key": "web_host", "label": self._URL, "value": ""})
+        assert self._URL in cr.show_text_strings()
+
+    def test_a_row_with_a_value_keeps_its_label_to_the_column(self) -> None:
+        cr = self._draw({"kind": "display", "key": "web_host", "label": self._URL, "value": "any interface"})
+        assert self._URL not in cr.show_text_strings()
+        assert "any interface" in cr.show_text_strings()
+
+    def test_the_label_stops_short_of_a_pill(self) -> None:
+        """Lent the value column, the label still must not run under the pill."""
+        label = "x" * 400
+        cr = self._draw({"kind": "display", "key": "web_host", "label": label, "value": "", "pill": "Down"})
+        drawn = next(t for t in cr.texts if t.text.startswith("xxx"))
+        pill = next(t for t in cr.texts if t.text == "Down")
+        assert drawn.x + len(drawn.text) * drawn.font_size * 0.6 < pill.x
 
 
 class TestDrawPiNetworkFieldEdit:

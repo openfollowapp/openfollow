@@ -260,6 +260,54 @@ def test_validate_service_name() -> None:
     assert err is not None
 
 
+@pytest.mark.parametrize(
+    "raw",
+    ["of-1.stage.example.com", "Of-1.Stage.Example.COM.", "  of-1.example.com  ", ""],
+    ids=["plain", "any-case-root-dot", "padded", "blank-clears"],
+)
+def test_a_station_fqdn_the_station_will_store_passes(raw: str) -> None:
+    assert validate("general", "station_fqdn", raw) is None
+
+
+@pytest.mark.parametrize(
+    ("raw", "message"),
+    [
+        ("of-1", "Enter the full name with its domain, such as of-1.stage.example.com."),
+        (".", "Enter the full name with its domain, such as of-1.stage.example.com."),
+        (" . ", "Enter the full name with its domain, such as of-1.stage.example.com."),
+        ("192.0.2.10", "Enter a name, not an IP address."),
+        ("of-1.local", "Names under .local are mDNS names, and the station already answers to its own."),
+        (
+            "of_1.example.com",
+            "Use only letters, digits and hyphens between the dots, and no hyphen at the start or end of a part.",
+        ),
+        (
+            "-of-1.example.com",
+            "Use only letters, digits and hyphens between the dots, and no hyphen at the start or end of a part.",
+        ),
+        ("a" * 64 + ".example.com", "Each part between dots is at most 63 characters."),
+        (".".join(["a" * 63, "b" * 63, "c" * 63, "d" * 62]), "A name is at most 253 characters."),
+        ("a" * 255, "Must be at most 254 characters."),
+        ("of-1\u202e.example.com", "Remove control or text-direction characters."),
+    ],
+    ids=[
+        "one-label",
+        "root-only",
+        "padded-root-only",
+        "ip",
+        "mdns",
+        "underscore",
+        "edge-hyphen",
+        "label-over-63",
+        "name-over-253",
+        "input-over-254",
+        "bidi",
+    ],
+)
+def test_a_station_fqdn_the_station_would_refuse_says_why(raw: str, message: str) -> None:
+    assert validate("general", "station_fqdn", raw) == message
+
+
 def test_validate_model_traversal_rejected() -> None:
     err = validate("detection", "model", "../../yolov8n.onnx")
     assert err is not None

@@ -1,21 +1,25 @@
 # Station Settings
 
-Identity, display preferences, and web access for this station. Changes here apply immediately – no restart is required.
+This station's name, web access and display units, plus the settings you set once and leave alone.
 
-**Unit system** – choose **Metric (m, m/s)** or **Imperial (ft / in, ft/s)**. This controls what the web UI and the Operator Screen show and parse across Camera, Grid, Markers, Movement, Trigger Zones, and the Setup Wizard. Stored configuration and every wire protocol – OSC, PSN, RTTrPM, OTP – always stay metric regardless of this setting. The selection takes effect as soon as you change it; no Save is needed.
+**Station name displayed on the network** – up to 64 characters, shown in the web UI header and the Station Network list, and sent as the PSN system name. A cleared field reverts to `OpenFollow`.
 
-**Advanced Settings** – a collapsed group holding the two controls you set once and then leave alone. It opens closed every time you load the page.
-
-**Start OpenFollow at boot** – whether this station launches OpenFollow by itself when it is powered on. On for every station installed from a release package or image. The switch reads the station's own service state whenever the General tab loads, so it shows what will actually happen at the next boot – not a saved preference that could have drifted from it. It is a snapshot of that moment: if you change the service from a shell while this page is open, reload the page to see it. Switching it off leaves the running station untouched: video, tracking and output all keep going until it is restarted or powered down.
-
-> This web interface is served by OpenFollow itself. A station that no longer starts it at boot also serves no page to switch it back on – that takes an SSH session, or a keyboard and screen attached to the station. Leave it on unless you have a specific reason not to; the usual one is a bench machine where OpenFollow is started by hand. The switch is absent where there is nothing to change: on a workstation not running OpenFollow as a system service, and on macOS.
-
-**Show experimental features** – off by default. When enabled it reveals early / rough features still in development: **Person Detection** (its own tab), **RTTrPM Output** (Output tab), and **Lens Distortion** (the Camera tab and the Setup Wizard's corner-pinning step), each marked with an *Experimental* badge. Toggling it applies instantly – no reload. Turning it **off** also disables person detection so a hidden feature can't keep running unseen; turning it back **on** does not re-enable it – you switch it back on deliberately in its own section. Lens distortion is a visual gate only: hiding the sliders does not change a coefficient you already saved, so an existing correction keeps bowing the overlay until you set it back to `0` / `0`.
-
-**Station name** – a human-readable name for this device, up to 64 characters. It appears in the web UI header, in the Station Network list on the Overview tab, and is broadcast as the PSN system name that other show-control tools see on the network. Defaults to `OpenFollow`; on first boot a memorable two-word suffix is appended automatically so a fleet of stations stays distinguishable. If you clear the field it reverts to the default.
-
-**PIN (leave empty to disable)** – a numeric PIN (1–32 digits) that protects every configuration route in the web UI. While unset, the interface is open to anyone on the network. Once set, browsers must supply the PIN to reach any non-asset page, and peer-to-peer configuration exchanges between OpenFollow stations are authenticated with it (the PIN itself never travels on the wire).
+**Web access PIN (leave empty to disable)** – a numeric PIN (1–32 digits) that protects every configuration route in the web UI. While unset, the interface is open to anyone on the network. Once set, browsers must supply the PIN to reach any non-asset page, and peer-to-peer configuration exchanges between OpenFollow stations are authenticated with it (the PIN itself never travels on the wire).
 
 > Set a PIN on any station that is connected to a shared production network. Leaving it unset is acceptable only on isolated bench or point-to-point networks.
 
-**Save** – writes the Station name and PIN to disk. Both fields apply live as soon as you save; no app restart is needed.
+**Displayed unit system** – choose **Metric (m, m/s)** or **Imperial (ft / in, ft/s)**. This controls what the web UI and the Operator Screen show and parse across Camera, Grid, Markers, Movement, Trigger Zones, and the Setup Wizard. Stored configuration and every wire protocol – OSC, PSN, RTTrPM, OTP – always stay metric regardless of this setting. The selection takes effect as soon as you change it; no Save is needed.
+
+**Advanced Settings** – opens closed on every page load.
+
+**mDNS address** – the station's `.local` name, which computers on the same network open it by. Read only; it follows the station name.
+
+**Custom domain name (FQDN)** – this station's name on a venue network with its own DNS, such as `of-1.stage.example.com`. The name has to resolve to this station in the venue's DNS; OpenFollow does not register it. The web UI then accepts changes made through it, and the Operator Screen shows it in place of the `.local` name, which keeps working. **Remove FQDN** on the Operator Screen's Network screen clears it.
+
+**Autostart** – whether OpenFollow starts when the station powers on. Switching it off leaves the running station untouched.
+
+> Off, this web UI is gone after the next reboot too, and switching it back on takes SSH or a keyboard on the station. Absent on macOS and where OpenFollow is not a system service.
+
+**Experimental features** – shows Person Detection, RTTrPM Output and Lens Distortion, each marked *Experimental*. Turning it off also switches person detection off; turning it back on does not.
+
+**Save** – saves the station name, PIN and custom domain name. No restart is needed.

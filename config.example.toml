@@ -35,6 +35,9 @@ web_pin = ""
 # interface has no address serves everywhere anyway rather than leaving
 # the station unreachable; the on-screen Network screen clears it.
 web_bind_iface = ""
+# This station's name on a venue network that runs its own DNS, e.g.
+# "of-1.stage.example.com". Blank = only its <hostname>.local name.
+station_fqdn = ""
 controlled_marker_ids = [
     1,
 ]

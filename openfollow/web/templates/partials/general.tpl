@@ -55,32 +55,27 @@
     </div>
 
     %# Station name + Web Access PIN – one form, saved together via
-    %# /section/general. ``save-flash`` reproduces the green save
-    %# confirmation the old standalone ``.section`` form had now that
-    %# this form is nested inside the shared Station Settings box.
-    <form id="general-network-section" class="save-flash {{'saved' if defined('saved') and saved else ''}} {{'restarting' if defined('restarting') and restarting else ''}}"
+    %# /section/general with the FQDN joined from Advanced Settings. A save's
+    %# green or red ring goes around the Station Settings box, which holds every
+    %# field the Save writes.
+    <form id="general-network-section" class="{{'saved' if defined('saved') and saved else ''}} {{'restarting' if defined('restarting') and restarting else ''}}"
           hx-post="/section/general" hx-target="#general-network-section" hx-swap="outerHTML"
-          hx-select="#general-network-section" hx-trigger="submit">
+          hx-select="#general-network-section" hx-select-oob="#general-station-fqdn-row" hx-trigger="submit">
         <div class="group">
-            <h3 class="group-title">Station name</h3>
             <div class="row">
                 <div class="field wide">
-                    <label>Station name</label>
+                    <label for="general-psn-system-name">Station name displayed on the network</label>
                     <input id="general-psn-system-name" type="text" name="psn_system_name" value="{{config.psn_system_name}}"
                            placeholder="OpenFollow"
                            hx-get="/api/validate/general/psn_system_name" hx-trigger="blur changed delay:200ms"
                            hx-target="#general-psn-system-name-error" hx-swap="innerHTML" hx-include="closest form"
                            aria-describedby="general-psn-system-name-error" aria-invalid="false">
                     <span id="general-psn-system-name-error" class="field-error"></span>
-                    <span class="field-note">Identifies this station in PSN output and on the network.</span>
                 </div>
             </div>
-        </div>
-        <div class="group group--divider">
-            <h3 class="group-title">Web access</h3>
             <div class="row">
                 <div class="field wide">
-                    <label>PIN (leave empty to disable)</label>
+                    <label for="general-web-pin">Web access PIN (leave empty to disable)</label>
                     <input id="general-web-pin" type="password" name="web_pin" value="{{config.web_pin}}"
                            placeholder="No PIN set" autocomplete="off"
                            hx-get="/api/validate/general/web_pin" hx-trigger="blur changed delay:200ms"
@@ -96,66 +91,76 @@
     <form id="general-display-section"
           hx-post="/settings/unit-system" hx-target="#general-display-section" hx-swap="outerHTML"
           hx-select="#general-display-section" hx-trigger="change">
-        %# No ``group--divider``: the Advanced Settings disclosure below carries
-        %# its own top border, and both would draw two rules a few pixels apart.
         <div class="group">
-            <h3 class="group-title">Display units</h3>
             <div class="row">
                 <div class="field wide">
-                    <label for="general-unit-system">Unit system</label>
+                    <label for="general-unit-system">Displayed unit system</label>
                     <select id="general-unit-system" name="unit_system">
                         <option value="metric" {{'selected' if _unit_system == 'metric' else ''}}>Metric (m, m/s)</option>
                         <option value="imperial" {{'selected' if _unit_system == 'imperial' else ''}}>Imperial (ft / in, ft/s)</option>
                     </select>
-                    <span class="field-note">Units shown in the web UI and on-device overlay. Storage, OSC, and PSN/RTTrPM/OTP stay metric regardless.</span>
                 </div>
             </div>
         </div>
     </form>
 
-    %# Advanced Settings: the two controls an operator sets once and then
-    %# leaves alone. Deliberately carries no ``data-adv-key`` - that attribute
-    %# is what persists a disclosure's open state, and this one opens closed on
-    %# every load.
+    %# Advanced Settings: the controls an operator sets once and then leaves
+    %# alone. Deliberately carries no ``data-adv-key`` - that attribute is what
+    %# persists a disclosure's open state, and this one opens closed on every load.
     % _startup_here = defined('startup_supported') and startup_supported
     <details class="inline-advanced">
         <summary>Advanced Settings</summary>
         <div class="inline-advanced-content">
-            % if _startup_here:
-            %# Fetched on its own so the ``systemctl`` read stays off the
-            %# General render path, and so the switch reports the host's state
-            %# rather than a stored flag.
+            %# One group, so no rule inside the disclosure. The FQDN is saved with the
+            %# station name: ``form=`` joins that form from here, and its
+            %# ``hx-select-oob`` re-renders this row with the stored name.
+            % from openfollow.station_fqdn import mdns_name
             <div class="group">
-                <h3 class="group-title">Startup</h3>
-                <div id="startup-settings">
-                    <p class="muted">Loading startup settings…</p>
-                </div>
-            </div>
-            % end
-
-            %# "Show experimental features" opt-in; a separate form so its change
-            %# does not also trigger the units form.
-            <form id="general-experimental-section"
-                  hx-post="/settings/experimental" hx-swap="none" hx-trigger="change">
-                <div class="group {{'group--divider' if _startup_here else ''}}">
-                    <h3 class="group-title">Experimental features</h3>
-                    <div class="row">
-                        <div class="field checkbox-field wide">
-                            <label for="general-show-experimental">Show experimental features</label>
-                            <div class="checkbox-wrap">
-                                <input type="checkbox" id="general-show-experimental" name="show_experimental_features"
-                                       {{'checked' if config.ui.show_experimental_features else ''}}
-                                       onchange="onExperimentalToggle(this)">
-                            </div>
-                        </div>
+                <div class="row" id="general-station-fqdn-row">
+                    <div class="field">
+                        <label for="general-mdns-address">mDNS address</label>
+                        <input id="general-mdns-address" type="text" value="{{mdns_name()}}" placeholder="No mDNS name"
+                               disabled aria-readonly="true">
+                    </div>
+                    <div class="field">
+                        <label for="general-station-fqdn">Custom domain name (FQDN)</label>
+                        <input id="general-station-fqdn" type="text" name="station_fqdn" value="{{config.station_fqdn}}"
+                               form="general-network-section" placeholder="of-1.stage.example.com"
+                               autocomplete="off" autocapitalize="off" spellcheck="false"
+                               hx-get="/api/validate/general/station_fqdn" hx-trigger="blur changed delay:200ms"
+                               hx-target="#general-station-fqdn-error" hx-swap="innerHTML" hx-include="#general-network-section"
+                               aria-describedby="general-station-fqdn-error" aria-invalid="false">
+                        <span id="general-station-fqdn-error" class="field-error"></span>
                     </div>
                 </div>
-            </form>
+                %# Autostart and the experimental opt-in share a row; each applies on change.
+                <div class="row">
+                    % if _startup_here:
+                    %# Fetched on its own so the ``systemctl`` read stays off the
+                    %# General render path, and so the switch reports the host's state
+                    %# rather than a stored flag.
+                    <div id="startup-settings" class="field checkbox-field">
+                        <p class="muted">Loading startup settings…</p>
+                    </div>
+                    % end
+                    %# A separate form so its change does not also trigger the units form.
+                    <form id="general-experimental-section" class="field checkbox-field"
+                          hx-post="/settings/experimental" hx-swap="none" hx-trigger="change">
+                        <label for="general-show-experimental">Experimental features</label>
+                        <div class="checkbox-wrap checkbox-field inline">
+                            <input type="checkbox" id="general-show-experimental" name="show_experimental_features"
+                                   {{'checked' if config.ui.show_experimental_features else ''}}
+                                   onchange="onExperimentalToggle(this)">
+                            <label for="general-show-experimental">Show experimental features</label>
+                        </div>
+                    </form>
+                </div>
+            </div>
         </div>
     </details>
 
     %# Save sits at the box bottom (the display-units and experimental toggles
-    %# above live-apply on change, so only Station name + Web Access PIN need it).
+    %# above live-apply on change, so only the station name, PIN and FQDN need it).
     %# ``form=`` keeps it submitting the network form from outside it.
     <div class="actions">
         <button type="submit" form="general-network-section" class="save-btn">Save</button>

@@ -667,6 +667,8 @@
  }
  .row { display: flex; flex-wrap: wrap; gap: 0.72rem; margin-bottom: 0.72rem; }
  .row:last-child { margin-bottom: 0; }
+ /* Station Settings stacks two forms: the second's first row keeps the row gap the first's last one drops. */
+ #general-display-section { margin-top: 0.72rem; }
  /* The per-source fragment wrapper isn't the section's visual end – more rows
  (Stall Timeout, …) follow in the same group – so keep its last row's normal
  inter-row gap that .row:last-child would otherwise zero. */
@@ -3633,7 +3635,9 @@
  // Scoped to actual form-submit / broadcast controls only.
  function refreshFormGate(form) {
  if (!form) return;
- const hasError = form.querySelector('[aria-invalid="true"]') !== null;
+ // ``form.elements`` also holds inputs joined to the form from outside it by ``form=``.
+ const hasError = form.querySelector('[aria-invalid="true"]') !== null
+ || Array.from(form.elements).some((el) => el.getAttribute('aria-invalid') === 'true');
  form.querySelectorAll(
  'button[type="submit"].save-btn,'
  + ' button.broadcast-btn[onclick*="broadcastSection"]'
@@ -3647,11 +3651,21 @@
  ).forEach((b) => { b.disabled = hasError; });
  }
  }
- document.body.addEventListener('htmx:afterSwap', (e) => {
- if (e.detail.target && e.detail.target.classList && e.detail.target.classList.contains('saved')) {
+ // After settling, not swapping: htmx swaps an element in wearing its predecessor's classes
+ // and only settles the response's own, so ``saved`` is not there yet at afterSwap.
+ document.body.addEventListener('htmx:afterSettle', (e) => {
+ // ``e.target`` is what was swapped in; after an outerHTML swap ``detail.target`` is the detached original.
+ const savedForm = [e.target, e.detail.target].find(
+ (el) => el && el.isConnected && el.classList && el.classList.contains('saved'));
+ if (!savedForm) return;
  showToast('Saved');
- setTimeout(() => e.detail.target.classList.remove('saved'), 500);
- }
+ // A form inside a shared box rings the box, the same box a failed save rings.
+ const ring = savedForm.closest('.save-flash, .section') || savedForm;
+ ring.classList.add('saved');
+ // Outlives the 0.55 s flash-green animation, or the ring jumps to its end.
+ setTimeout(() => { savedForm.classList.remove('saved'); ring.classList.remove('saved'); }, 600);
+ });
+ document.body.addEventListener('htmx:afterSwap', (e) => {
  // Validation swap: the target is a sibling ``<span class="field-error">``
  // whose inner content is either empty (valid), an error span (invalid),
  // or a note span (advisory). Flip ``aria-invalid`` on the input and
@@ -3662,7 +3676,7 @@
  if (input) {
  const hasError = target.querySelector('.field-error-msg') !== null;
  input.setAttribute('aria-invalid', hasError ? 'true' : 'false');
- refreshFormGate(input.closest('form'));
+ refreshFormGate(input.form || input.closest('form'));
  }
  }
  // A re-render carrying a value the server refused marks its input the
@@ -3673,7 +3687,7 @@
  ? document.querySelector('[aria-describedby="' + span.id + '"]') : null;
  if (input) {
  input.setAttribute('aria-invalid', 'true');
- refreshFormGate(input.closest('form'));
+ refreshFormGate(input.form || input.closest('form'));
  }
  });
  }

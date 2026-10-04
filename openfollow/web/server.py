@@ -166,6 +166,8 @@ class ConfigWebServer:
         # interface has no address, which stops them until it returns.
         station_ip: str | None = "",
         local_ip_provider: Callable[[], str | None] | None = None,
+        # The station interface's name, which the beacons select by index.
+        station_iface_provider: Callable[[], str] | None = None,
         runtime_stats_provider: Callable[[], dict[str, Any]] | None = None,
         crash_restarts_provider: Callable[[], int] | None = None,
         online_sync_status_provider: (Callable[[], dict[str, Any]] | None) = None,
@@ -269,6 +271,7 @@ class ConfigWebServer:
         # ``_local_ip`` + beacon-interface repoint against concurrent overview
         # requests; the throttle timestamp keeps request-path refreshes cheap.
         self._local_ip_provider = local_ip_provider
+        self._station_iface_provider = station_iface_provider
         self._local_ip_lock = threading.Lock()
         self._local_ip_refresh_ts = 0.0  # monotonic; throttles _refresh_local_ip
         # Whether the pinned station interface currently has no address. The
@@ -368,15 +371,18 @@ class ConfigWebServer:
 
         # Peer discovery
         beacon_iface_ip = station_ip if station_ip != "127.0.0.1" else ""
+        beacon_iface = self._station_iface()
         self._beacon_sender = BeaconSender(
             name=system_name,
             web_port=port,
             version=openfollow.__version__,
             iface_ip=beacon_iface_ip,
+            iface=beacon_iface,
         )
         self._beacon_receiver = BeaconReceiver(
             on_peer_discovered=self._on_peer_discovered,
             iface_ip=beacon_iface_ip,
+            iface=beacon_iface,
         )
         self._beacon_receiver.set_local_port(port)
 
@@ -703,17 +709,25 @@ class ConfigWebServer:
             return True
         if not candidate or candidate.startswith("127."):
             return False
+        iface = self._station_iface()
         with self._local_ip_lock:
             self._station_interface_down = False
-            if candidate == self._local_ip and self._beacon_sender.iface_ip == candidate:
+            if (
+                candidate == self._local_ip
+                and self._beacon_sender.iface_ip == candidate
+                and self._beacon_sender.iface == iface
+            ):
                 return False
             self._local_ip = candidate
             # Repoint beacons under the lock so IP + interface stay consistent
             # under concurrent refreshes (update_iface_ip never blocks).
-            self._beacon_sender.update_iface_ip(candidate)
-            self._beacon_receiver.update_iface_ip(candidate)
+            self._beacon_sender.update_iface_ip(candidate, iface)
+            self._beacon_receiver.update_iface_ip(candidate, iface)
         logger.info("Local IP changed to %s; beacon interface repointed.", candidate)
         return True
+
+    def _station_iface(self) -> str:
+        return self._station_iface_provider() if self._station_iface_provider is not None else ""
 
     def refresh_local_ip(self) -> bool:
         """Re-resolve this station's address; True when the beacons repointed.

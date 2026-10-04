@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import ipaddress
 import socket
+import struct
 import sys
 import threading
 from types import SimpleNamespace
@@ -950,6 +951,44 @@ class TestMulticastIfacePinning:
         sock = self._Sock(fail_on=socket.IP_MULTICAST_IF)
         with pytest.raises(net_utils_module.InterfaceUnavailable):
             net_utils_module.bind_multicast_send_iface(sock, "10.0.0.5")
+
+    @staticmethod
+    def _indexes(monkeypatch: pytest.MonkeyPatch, table: dict[str, int]) -> None:
+        def _index(name: str) -> int:
+            if name not in table:
+                raise OSError(19, "No such device")
+            return table[name]
+
+        monkeypatch.setattr(socket, "if_nametoindex", _index)
+
+    @staticmethod
+    def _mreqn(group: str, address: str, index: int) -> bytes:
+        return struct.pack("@4s4si", socket.inet_aton(group), socket.inet_aton(address), index)
+
+    def test_a_named_interface_is_selected_by_index_for_sending(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A VLAN child shares its parent's link-local address, so the address
+        alone can name the wrong interface: the index cannot."""
+        self._indexes(monkeypatch, {"eth1": 7})
+        sock = self._Sock()
+        net_utils_module.bind_multicast_send_iface(sock, "169.254.7.7", "eth1")
+        assert sock.calls == [(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, self._mreqn("0.0.0.0", "169.254.7.7", 7))]
+
+    def test_a_named_interface_is_joined_by_index(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._indexes(monkeypatch, {"eth1": 7})
+        sock = self._Sock()
+        net_utils_module.join_multicast_group_on_iface(sock, "239.1.2.3", "169.254.7.7", "eth1")
+        assert sock.calls == [(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, self._mreqn("239.1.2.3", "169.254.7.7", 7))]
+
+    @pytest.mark.parametrize("direction", ["send", "join"])
+    def test_a_named_interface_that_is_gone_is_refused(self, monkeypatch: pytest.MonkeyPatch, direction: str) -> None:
+        self._indexes(monkeypatch, {})
+        sock = self._Sock()
+        with pytest.raises(net_utils_module.InterfaceUnavailable, match="eth1 is not present"):
+            if direction == "send":
+                net_utils_module.bind_multicast_send_iface(sock, "10.0.0.5", "eth1")
+            else:
+                net_utils_module.join_multicast_group_on_iface(sock, "239.1.2.3", "10.0.0.5", "eth1")
+        assert sock.calls == []
 
     def test_an_address_joins_only_that_iface(self) -> None:
         sock = self._Sock()

@@ -24,6 +24,7 @@ from openfollow.input.keyboard import KeyboardHandler
 from openfollow.input.mouse import MouseHandler
 from openfollow.input.mouse3d import MOUSE3D_NAME, Mouse3DManager, Mouse3DUpdate
 from openfollow.logging_setup import ThrottledExceptionLogger
+from openfollow.net_utils import plane_source_iface
 from openfollow.osc.input import OscMarkerAdapter
 from openfollow.osc.operator_message import OperatorMessageOscAdapter
 from openfollow.runtime.services_detection_pin import (
@@ -153,6 +154,7 @@ class InputManager:
                     osc_cfg.listen_iface,
                     app._config.psn_source_iface,
                 ),
+                multicast_iface_name=plane_source_iface(osc_cfg.listen_iface, app._config.psn_source_iface),
             )
             if osc_cfg.enabled
             else None
@@ -652,6 +654,7 @@ class InputManager:
                     listen_iface,
                     self.app._config.psn_source_iface,
                 ),
+                multicast_iface_name=plane_source_iface(listen_iface, self.app._config.psn_source_iface),
             )
             try:
                 self.osc_handler.start()

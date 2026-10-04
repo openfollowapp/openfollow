@@ -843,6 +843,7 @@ class OpenFollowApp:
             selection_provider=_selection_provider,
             on_change=_on_change,
             iface_ip=iface_ip,
+            iface=self._config.psn_source_iface,
         )
         # Track before start so a mid-``start`` thread-launch failure still
         # leaves the partially-started sync visible to shutdown().

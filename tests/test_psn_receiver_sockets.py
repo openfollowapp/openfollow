@@ -310,12 +310,13 @@ class _FakeRecvThread:
     construct_raises: OSError | None = None
     instances: list[_FakeRecvThread] = []
 
-    def __init__(self, *, callback: Any, ip_addr: str, mcast_port: int) -> None:
+    def __init__(self, *, callback: Any, ip_addr: str, mcast_port: int, iface: str = "") -> None:
         if _FakeRecvThread.construct_raises is not None:
             raise _FakeRecvThread.construct_raises
         self.callback = callback
         self.ip_addr = ip_addr
         self.mcast_port = mcast_port
+        self.iface = iface
         self.daemon = False
         self.started = False
         self.stopped = False
@@ -372,6 +373,100 @@ class TestPsnReceiverStart:
 
         assert recv._receiver is None
         assert any("PSN receiver socket failed" in rec.message for rec in caplog.records if rec.levelname == "ERROR")
+
+
+class _RecordingRecvSocket:
+    """A receive socket that records what a pinned ``_RobustReceiver`` does to it."""
+
+    def __init__(self, *_args: Any) -> None:
+        self.options: list[tuple[int, int, int]] = []
+        self.bound: tuple[str, int] | None = None
+        self.timeout: float | None = None
+        self.closed = False
+
+    def setsockopt(self, level: int, option: int, value: int) -> None:
+        self.options.append((level, option, value))
+
+    def bind(self, address: tuple[str, int]) -> None:
+        self.bound = address
+
+    def settimeout(self, timeout: float) -> None:
+        self.timeout = timeout
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class TestPinnedReceiveSocket:
+    """pypsn joins its group by address; a pinned receiver joins it by name, so a
+    VLAN child holding the same link-local address cannot take the membership."""
+
+    @pytest.fixture
+    def sockets(self, monkeypatch: pytest.MonkeyPatch) -> list[_RecordingRecvSocket]:
+        import socket as real_socket
+        import types
+
+        made: list[_RecordingRecvSocket] = []
+
+        def _make(*args: Any) -> _RecordingRecvSocket:
+            made.append(_RecordingRecvSocket(*args))
+            return made[-1]
+
+        fake = types.SimpleNamespace(**{k: getattr(real_socket, k) for k in dir(real_socket) if k.isupper()})
+        fake.socket = _make
+        monkeypatch.setattr(receiver_module, "socket", fake)
+        return made
+
+    def test_a_pinned_receiver_joins_the_group_by_name(
+        self, monkeypatch: pytest.MonkeyPatch, sockets: list[_RecordingRecvSocket]
+    ) -> None:
+        joins: list[tuple[Any, str, str, str]] = []
+        monkeypatch.setattr(receiver_module, "join_multicast_group_on_iface", lambda *args: joins.append(args))
+        receiver = _RobustReceiver(callback=lambda *_: None, ip_addr="169.254.7.7", mcast_port=56565, iface="eth1")
+        (sock,) = sockets
+        assert receiver.socket is sock
+        assert sock.bound == ("236.10.10.10", 56565)
+        assert joins == [(sock, "236.10.10.10", "169.254.7.7", "eth1")]
+        assert sock.timeout == 2
+
+    def test_a_refused_join_closes_the_socket_and_raises(
+        self, monkeypatch: pytest.MonkeyPatch, sockets: list[_RecordingRecvSocket]
+    ) -> None:
+        from openfollow.net_utils import InterfaceUnavailable
+
+        def _refuse(*_args: Any) -> None:
+            raise InterfaceUnavailable("eth1 is not present")
+
+        monkeypatch.setattr(receiver_module, "join_multicast_group_on_iface", _refuse)
+        with pytest.raises(InterfaceUnavailable):
+            _RobustReceiver(callback=lambda *_: None, ip_addr="169.254.7.7", mcast_port=56565, iface="eth1")
+        assert sockets[0].closed is True
+
+    def test_an_unpinned_receiver_keeps_pypsns_socket(
+        self, monkeypatch: pytest.MonkeyPatch, sockets: list[_RecordingRecvSocket]
+    ) -> None:
+        import pypsn
+
+        opened: list[tuple[str, int]] = []
+        theirs = _RecordingRecvSocket()
+
+        def _get_socket(ip_addr: str, mcast_port: int) -> _RecordingRecvSocket:
+            opened.append((ip_addr, mcast_port))
+            return theirs
+
+        monkeypatch.setattr(pypsn, "get_socket", _get_socket)
+        receiver = _RobustReceiver(callback=lambda *_: None, ip_addr="10.0.0.5", mcast_port=56565)
+        assert opened == [("10.0.0.5", 56565)]
+        assert receiver.socket is theirs
+        assert sockets == []
+
+    def test_the_receiver_hands_its_interface_to_the_receive_thread(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(receiver_module, "_RobustReceiver", _FakeRecvThread)
+        recv = PsnReceiver(source_ip="10.0.0.5", source_iface="eth1")
+        recv.start()
+        recv.rebind("10.0.1.5", source_iface="eth2")
+        recv.rebind("10.0.1.6")
+        assert [fake.iface for fake in _FakeRecvThread.instances] == ["eth1", "eth2", "eth2"]
 
 
 class TestPsnReceiverStop:

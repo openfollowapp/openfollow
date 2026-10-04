@@ -31,7 +31,7 @@ from openfollow.input import InputManager
 from openfollow.input.mouse3d import idle_mouse3d_status
 from openfollow.net_adapters import display_name
 from openfollow.net_egress import Egress, is_loopback_host, resolve_egress
-from openfollow.net_utils import ResolveStatus, interface_present
+from openfollow.net_utils import ResolveStatus, interface_present, plane_source_iface
 from openfollow.osc.egress import OscEgressTable
 from openfollow.otp import OtpServer
 from openfollow.psn import MARKER_STALE_AFTER_S, PsnReceiver, PsnServer
@@ -1095,7 +1095,7 @@ class AppRuntimeServices:
         Later PRs add a row each (web UI, RTTrPM, OSC destinations, video
         input); each is one entry here and needs no observer changes.
         """
-        from openfollow.net_utils import plane_source_iface, resolve_plane_source_ip
+        from openfollow.net_utils import resolve_plane_source_ip
 
         def _resolver(
             pin_getter: Callable[[], str],
@@ -1216,7 +1216,10 @@ class AppRuntimeServices:
             # as success - it clears the outage, logs that the output resumed
             # and starts the poll again with no backoff - so swallowing the
             # False would retry once a second forever while reporting health.
-            if not self._osc_service.set_multicast_iface(address):
+            cfg = self._app._config
+            if not self._osc_service.set_multicast_iface(
+                address, plane_source_iface(cfg.osc.listen_iface, cfg.psn_source_iface)
+            ):
                 raise OSError(f"could not join the OSC multicast group via {address}")
 
         def _current_osc_input() -> str | None:
@@ -1374,7 +1377,7 @@ class AppRuntimeServices:
                 server.reopen_beacons()
         sync = getattr(self._app, "_marker_catalog_sync", None)
         if sync is not None:
-            sync.update_iface_ip(address, force=recovered)
+            sync.update_iface_ip(address, iface=self._app._config.psn_source_iface, force=recovered)
 
     def network_alerts(self) -> list[str]:
         """Planes not sending: an interface without an address, or a rebind or suspend that failed."""
@@ -1478,6 +1481,7 @@ class AppRuntimeServices:
             system_name=self._app._config.psn_system_name,
             mcast_ip=self._app._config.psn_mcast_ip,
             source_ip=source_ip or "",
+            source_iface=self._app._config.psn_source_iface,
         )
         if source_ip is None:
             # Down means silent, not absent. The server is built but never
@@ -1565,7 +1569,7 @@ class AppRuntimeServices:
         whatever interface the OS picks. *label* names the config field in the
         error.
         """
-        from openfollow.net_utils import plane_source_iface, resolve_plane_source_ip
+        from openfollow.net_utils import resolve_plane_source_ip
 
         resolved, status = resolve_plane_source_ip(
             pin,
@@ -1599,6 +1603,7 @@ class AppRuntimeServices:
             port=cfg.port,
             source_ip=source_ip,
             priority=cfg.priority,
+            source_iface=plane_source_iface(cfg.source_iface, self._app._config.psn_source_iface),
         )
         server = self._app._server
         # Share Marker objects with PsnServer – no duplicated state.
@@ -1658,6 +1663,7 @@ class AppRuntimeServices:
         receiver = PsnReceiver(
             ignore_ids=self._app._controlled_ids,
             source_ip=source_ip or "",
+            source_iface=self._app._config.psn_source_iface,
         )
         # Built either way, started only with an address, for the same reason
         # as the server: the recovery path can only rebind one that exists.
@@ -1961,6 +1967,7 @@ class AppRuntimeServices:
             old_system_number = server._system_number
             old_port = server._port
             old_source_ip = server._source_ip
+            old_source_iface = server._source_iface
             old_priority = server._priority
             new_source_ip = self._resolved_plane_source_ip(new_cfg.source_iface, label="otp_output.source_iface")
             if new_source_ip is None:
@@ -1975,6 +1982,7 @@ class AppRuntimeServices:
                     port=new_cfg.port,
                     source_ip=new_source_ip,
                     priority=new_cfg.priority,
+                    source_iface=plane_source_iface(new_cfg.source_iface, self._app._config.psn_source_iface),
                 )
             except Exception:
                 # Best-effort rollback to the prior cfg so output stays
@@ -1990,6 +1998,7 @@ class AppRuntimeServices:
                         port=old_port,
                         source_ip=old_source_ip,
                         priority=old_priority,
+                        source_iface=old_source_iface,
                     )
                 except Exception:
                     logger.exception(
@@ -2175,7 +2184,7 @@ class AppRuntimeServices:
         Per interface, not per destination: two destinations on one NIC can't
         disagree about its address, and the HUD lists each outage once.
         """
-        from openfollow.net_utils import plane_source_iface, resolve_plane_source_ip
+        from openfollow.net_utils import resolve_plane_source_ip
 
         cfg = self._app._config
         ids = {row.destination_id for row in cfg.osc_transmitters.transmitters if row.enabled}
@@ -2218,7 +2227,8 @@ class AppRuntimeServices:
         if osc_cfg.enabled and osc_cfg.multicast_group and not osc_cfg.listen_iface:
             from openfollow.input.input_manager import resolve_osc_multicast_iface
 
-            self._osc_service.set_multicast_iface(resolve_osc_multicast_iface("", self._app._config.psn_source_iface))
+            station = self._app._config.psn_source_iface
+            self._osc_service.set_multicast_iface(resolve_osc_multicast_iface("", station), station)
 
     def suspend_psn_planes(self) -> None:
         """Stop PSN output and input because the station interface has no address.
@@ -2290,24 +2300,27 @@ class AppRuntimeServices:
         receiver = self._app._psn_receiver
         server = self._app._server
         old_recv_ip = receiver._source_ip if receiver is not None else None
+        old_recv_iface = receiver._source_iface if receiver is not None else ""
         old_srv_ip = server._source_ip if server is not None else None
+        old_srv_iface = server._source_iface if server is not None else ""
         old_srv_mcast = server._mcast_ip if server is not None else None
+        new_iface = self._app._config.psn_source_iface
         receiver_attempted = False
         server_attempted = False
         try:
             if receiver is not None:
                 receiver_attempted = True
-                receiver.rebind(new_source_ip)
+                receiver.rebind(new_source_ip, source_iface=new_iface)
             if server is not None:
                 server_attempted = True
                 if isinstance(new_mcast_ip, _Unchanged):
-                    server.rebind(new_source_ip)
+                    server.rebind(new_source_ip, source_iface=new_iface)
                 else:
-                    server.rebind(new_source_ip, mcast_ip=new_mcast_ip)
+                    server.rebind(new_source_ip, source_iface=new_iface, mcast_ip=new_mcast_ip)
         except Exception:
             if receiver_attempted and receiver is not None and old_recv_ip is not None:
                 try:
-                    receiver.rebind(old_recv_ip)
+                    receiver.rebind(old_recv_ip, source_iface=old_recv_iface)
                 except Exception:
                     logger.exception(
                         "PSN receiver rollback to source_ip=%r failed",
@@ -2316,9 +2329,9 @@ class AppRuntimeServices:
             if server_attempted and server is not None and old_srv_ip is not None:
                 try:
                     if isinstance(new_mcast_ip, _Unchanged):
-                        server.rebind(old_srv_ip)
+                        server.rebind(old_srv_ip, source_iface=old_srv_iface)
                     else:
-                        server.rebind(old_srv_ip, mcast_ip=old_srv_mcast)
+                        server.rebind(old_srv_ip, source_iface=old_srv_iface, mcast_ip=old_srv_mcast)
                 except Exception:
                     logger.exception(
                         "PSN server rollback to source_ip=%r failed",
@@ -2739,6 +2752,7 @@ class AppRuntimeServices:
             local_ip=self._resolved_source_ip(),
             station_ip=self.station_source_ip_or_none(),
             local_ip_provider=self.station_source_ip_or_none,
+            station_iface_provider=lambda: self._app._config.psn_source_iface,
             runtime_stats_provider=self.get_runtime_stats_snapshot,
             crash_restarts_provider=lambda: int(getattr(self._app, "_crash_restarts", 0)),
             online_sync_status_provider=self._online_sync_status_provider,

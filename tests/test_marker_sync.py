@@ -1746,6 +1746,36 @@ class TestUpdateIfaceIp:
         assert not sync._tx_reopen.is_set()
         assert not sync._rx_reopen.is_set()
 
+    def test_a_new_interface_at_the_same_address_arms_both_loops(self) -> None:
+        """A VLAN child can hold its parent's link-local address, so the
+        interface is compared by name as well."""
+        sync = self._sync()
+        sync.update_iface_ip("192.168.1.5", iface="eth1")
+        assert sync._tx_reopen.is_set()
+        assert sync._rx_reopen.is_set()
+        assert sync._iface == "eth1"
+
+    def test_both_sockets_select_the_named_interface(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from openfollow.marker_catalog import sync as sync_module
+
+        sync = MarkerCatalogSync(
+            MarkerCatalog(),
+            station_id="station-A",
+            station_name_provider=lambda: "X",
+            selection_provider=lambda: ([], []),
+            iface_ip="169.254.7.7",
+            iface="eth1",
+        )
+        sends: list[tuple] = []
+        joins: list[tuple] = []
+        monkeypatch.setattr(sync_module, "bind_multicast_send_iface", lambda *a: sends.append(a[1:]))
+        monkeypatch.setattr(sync_module, "join_multicast_group_on_iface", lambda *a: joins.append(a[1:]))
+        with patch.object(_socket, "socket", return_value=MagicMock()):
+            sync._open_tx_socket()
+            sync._open_rx_socket()
+        assert sends == [("169.254.7.7", "eth1")]
+        assert joins == [(sync_module.CATALOG_MCAST_GROUP, "169.254.7.7", "eth1")]
+
     def test_reopen_forces_a_rebuild_at_the_same_address(self) -> None:
         """A link that dropped and came back with the same lease has had its
         memberships torn down by the kernel; the address string cannot show

@@ -71,6 +71,8 @@ class _FakePsnServer:
         # Mirror ``PsnServer._source_ip`` so the orchestrator's
         # transactional-rebind capture has something to read.
         self._source_ip = source_ip
+        self._source_iface = ""
+        self.rebind_ifaces: list[str] = []
         # Mirror ``PsnServer._mcast_ip`` for the ``psn_mcast_ip``
         # transactional-rollback capture.
         self._mcast_ip: str | None = None
@@ -93,6 +95,7 @@ class _FakePsnServer:
         self,
         source_ip: str,
         *,
+        source_iface: str = "",
         mcast_ip: object = _UNCHANGED_SENTINEL,
     ) -> None:
         if mcast_ip is _UNCHANGED_SENTINEL:
@@ -101,6 +104,8 @@ class _FakePsnServer:
             self.rebind_calls.append((source_ip, str(mcast_ip)))
             self._mcast_ip = mcast_ip  # type: ignore[assignment]
         self._source_ip = source_ip
+        self._source_iface = source_iface
+        self.rebind_ifaces.append(source_iface)
 
     def rebind_mcast_ip(self, mcast_ip: str | None) -> None:
         self.rebind_mcast_ip_calls.append(mcast_ip)
@@ -140,6 +145,7 @@ class _FakeOtpServer:
         # populated from kwargs so the prior cfg the orchestrator
         # captures matches the cfg the test constructed with.
         self._source_ip = kwargs.get("source_ip", "")
+        self._source_iface = kwargs.get("source_iface", "")
         self._system_name = kwargs.get("system_name", "OpenFollow")
         self._system_number = kwargs.get("system_number", 1)
         self._port = kwargs.get("port", 5568)
@@ -173,6 +179,7 @@ class _FakeOtpServer:
             "system_number",
             "port",
             "source_ip",
+            "source_iface",
             "priority",
         ):
             if name in kwargs:
@@ -228,6 +235,8 @@ class _FakePsnReceiver:
         # transactional-rebind orchestrator can read the prior IP for
         # rollback on partial failure.
         self._source_ip: str = kwargs.get("source_ip", "")
+        self._source_iface: str = kwargs.get("source_iface", "")
+        self.rebind_ifaces: list[str | None] = []
 
     def start(self) -> None:
         self.started = True
@@ -235,9 +244,12 @@ class _FakePsnReceiver:
     def stop(self) -> None:
         self.stopped = True
 
-    def rebind(self, source_ip: str) -> None:
+    def rebind(self, source_ip: str, *, source_iface: str | None = None) -> None:
         self.rebind_calls.append(source_ip)
+        self.rebind_ifaces.append(source_iface)
         self._source_ip = source_ip
+        if source_iface is not None:
+            self._source_iface = source_iface
 
 
 class _FakeInputManager:
@@ -534,6 +546,7 @@ class TestInitPsn:
         services.init_psn()
         assert factory.instances[0].start_called is True
         assert factory.last_kwargs["source_ip"] == "10.0.0.1"
+        assert factory.last_kwargs["source_iface"] == "eth0"
 
     def test_stale_iface_stops_psn_rather_than_moving_it(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
@@ -686,6 +699,7 @@ class TestInitOtp:
             services.init_otp()
 
         assert services._app._otp_server._source_ip == "192.168.1.5"
+        assert services._app._otp_server._source_iface == "eth0"
         # Following the station is the documented default, not a degraded
         # state – it must not warn.
         assert not [r for r in caplog.records if "source_iface" in r.message]
@@ -919,6 +933,7 @@ class TestInitPsnReceiver:
         assert recv.started is True
         assert recv.kwargs["ignore_ids"] == [1, 2, 7]
         assert recv.kwargs["source_ip"] == "10.0.0.1"
+        assert recv.kwargs["source_iface"] == "eth0"
 
 
 def _fake_ifaces(monkeypatch, ifaces: dict[str, str]) -> None:
@@ -1070,6 +1085,9 @@ class TestInitWebServer:
         # Snapshot provider hooks wired through.  Bound-method identity
         # isn't stable across attribute lookups, so compare by __func__.
         assert srv.kwargs["runtime_stats_provider"].__func__ is AppRuntimeServices.get_runtime_stats_snapshot
+        # The beacons select the station interface by name.
+        services._app._config = replace(services._app._config, psn_source_iface="eth3")
+        assert srv.kwargs["station_iface_provider"]() == "eth3"
 
     def test_wires_marker_move_speeds_provider_returning_a_copy(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
@@ -2042,6 +2060,25 @@ class TestApplyOtpOutputChange:
         # Restart kwargs must NOT include mcast_ip.
         assert "mcast_ip" not in kwargs
 
+    @pytest.mark.parametrize(("pin", "station", "expected"), [("eth1", "eth0", "eth1"), ("", "eth0", "eth0")])
+    def test_restart_names_the_interface_it_selects(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch, pin: str, station: str, expected: str
+    ) -> None:
+        """A blank pin follows the station interface, and the name goes with the address."""
+        import openfollow.net_utils as net_utils_module
+
+        monkeypatch.setattr(net_utils_module, "resolve_plane_source_ip", _REAL_RESOLVE_PLANE_SOURCE_IP)
+        monkeypatch.setattr(net_utils_module, "get_iface_ipv4", {"eth0": "10.0.0.5", "eth1": "10.0.1.5"}.get)
+        services._app._config.psn_source_iface = station
+        services._app._otp_server = _FakeOtpServer()
+
+        services.apply_otp_output_change(self._enabled_cfg(source_iface=pin, port=5570))
+
+        srv = services._app._otp_server
+        assert isinstance(srv, _FakeOtpServer)
+        assert srv.restart_calls[0]["source_iface"] == expected
+        assert srv.restart_calls[0]["source_ip"] == {"eth0": "10.0.0.5", "eth1": "10.0.1.5"}[expected]
+
     def test_on_to_off_stops_and_drops_reference(self, services: AppRuntimeServices) -> None:
         old = _FakeOtpServer()
         services._app._otp_server = old
@@ -2956,10 +2993,37 @@ class TestApplyPsnSourceIpChange:
         services._app._psn_receiver = recv
         services._app._server = server
 
+        services._app._config.psn_source_iface = "eth1"
         services.apply_psn_source_ip_change("192.168.1.5")
 
         assert recv.rebind_calls == ["192.168.1.5"]
         assert server.rebind_calls == ["192.168.1.5"]
+        # The interface goes with the address, so both select it by index.
+        assert recv.rebind_ifaces == ["eth1"]
+        assert server.rebind_ifaces == ["eth1"]
+
+    def test_a_failed_change_restores_the_old_interface_with_the_old_address(
+        self, services: AppRuntimeServices
+    ) -> None:
+        class _RaisingServer(_FakePsnServer):
+            def rebind(self, source_ip: str, **kwargs: Any) -> None:
+                self.rebind_calls.append(source_ip)
+                if len(self.rebind_calls) == 1:
+                    raise OSError("bind failed")
+                super().rebind(source_ip, **kwargs)
+
+        recv = _FakePsnReceiver(source_ip="10.0.0.1", source_iface="eth0")
+        server = _RaisingServer(source_ip="10.0.0.1")
+        server._source_iface = "eth0"
+        services._app._psn_receiver = recv
+        services._app._server = server
+        services._app._config.psn_source_iface = "eth1"
+
+        with pytest.raises(OSError):
+            services.apply_psn_source_ip_change("192.168.1.5")
+
+        assert (recv._source_ip, recv._source_iface) == ("10.0.0.1", "eth0")
+        assert (server._source_ip, server._source_iface) == ("10.0.0.1", "eth0")
 
     def test_no_op_when_neither_receiver_nor_server_present(self, services: AppRuntimeServices) -> None:
         services._app._psn_receiver = None
@@ -2981,8 +3045,9 @@ class TestApplyPsnSourceIpChange:
             def __init__(self) -> None:
                 self.rebind_calls: list[str] = []
                 self._source_ip = "10.0.0.1"
+                self._source_iface = ""
 
-            def rebind(self, source_ip: str) -> None:
+            def rebind(self, source_ip: str, **_kwargs: Any) -> None:
                 self.rebind_calls.append(source_ip)
                 raise OSError(f"failed to bind to {source_ip!r}")
 
@@ -3003,7 +3068,7 @@ class TestApplyPsnSourceIpChange:
     def test_server_rebind_failure_rolls_receiver_back_to_old_source_ip(self, services: AppRuntimeServices) -> None:
 
         class _RaisingServer(_FakePsnServer):
-            def rebind(self, source_ip: str) -> None:
+            def rebind(self, source_ip: str, **_kwargs: Any) -> None:
                 self.rebind_calls.append(source_ip)
                 raise OSError(f"failed to bind to {source_ip!r}")
 
@@ -3027,7 +3092,7 @@ class TestApplyPsnSourceIpChange:
     def test_server_rebind_failure_with_no_receiver_still_rolls_server_back(self, services: AppRuntimeServices) -> None:
 
         class _RaisingServer(_FakePsnServer):
-            def rebind(self, source_ip: str) -> None:
+            def rebind(self, source_ip: str, **_kwargs: Any) -> None:
                 self.rebind_calls.append(source_ip)
                 raise OSError(f"failed to bind to {source_ip!r}")
 
@@ -3056,7 +3121,7 @@ class TestApplyPsnSourceIpChange:
         rollback_call_count: list[int] = []
 
         class _RecvFailsOnRollback(_FakePsnReceiver):
-            def rebind(self, source_ip: str) -> None:
+            def rebind(self, source_ip: str, **_kwargs: Any) -> None:
                 self.rebind_calls.append(source_ip)
                 self._source_ip = source_ip
                 rollback_call_count.append(len(self.rebind_calls))
@@ -3064,7 +3129,7 @@ class TestApplyPsnSourceIpChange:
                     raise OSError(f"rollback to {source_ip!r} failed too")
 
         class _RaisingServer(_FakePsnServer):
-            def rebind(self, source_ip: str) -> None:
+            def rebind(self, source_ip: str, **_kwargs: Any) -> None:
                 self.rebind_calls.append(source_ip)
                 raise OSError(f"primary failure on {source_ip!r}")
 
@@ -3116,6 +3181,7 @@ class TestApplyPsnSourceIpChange:
                 self,
                 source_ip: str,
                 *,
+                source_iface: str = "",
                 mcast_ip: object = _UNCHANGED_SENTINEL,
             ) -> None:
                 self.rebind_calls.append((source_ip, str(mcast_ip)))
@@ -4380,6 +4446,7 @@ class TestOtpLiveRestartOnADownInterface:
                 self._system_number = 1
                 self._port = 5568
                 self._source_ip = "192.168.1.5"
+                self._source_iface = "eth0"
                 self._priority = 100
 
             def stop(self) -> None:

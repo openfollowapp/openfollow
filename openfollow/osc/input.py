@@ -47,6 +47,7 @@ class OscMarkerAdapter:
         allowed_sender_ips: list[str] | None = None,
         multicast_group: str = "",
         multicast_iface: str | None = "",
+        multicast_iface_name: str = "",
     ) -> None:
         self._service = service
         self._port = port
@@ -57,6 +58,7 @@ class OscMarkerAdapter:
         # "" = routing table's choice, an address = that interface, None =
         # pinned but currently down, so no membership at all.
         self._multicast_iface = multicast_iface
+        self._multicast_iface_name = multicast_iface_name
         self._lock = threading.Lock()
         self._pending: dict[int, dict[str, float]] = {}
         self._started = False
@@ -86,6 +88,7 @@ class OscMarkerAdapter:
                 allowed_ips=self._allowed_ips,
                 multicast_group=self._multicast_group,
                 multicast_iface=self._multicast_iface,
+                multicast_iface_name=self._multicast_iface_name,
             )
         except OSError:
             # Bind failed; unsubscribe and allow retry on restart.

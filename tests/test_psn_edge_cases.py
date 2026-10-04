@@ -378,7 +378,7 @@ def test_receiver_rebind_strips_whitespace_from_source_ip(monkeypatch) -> None:
     captured: list[str] = []
 
     class _StubRecvThread:
-        def __init__(self, *, callback, ip_addr: str, mcast_port: int) -> None:
+        def __init__(self, *, callback, ip_addr: str, mcast_port: int, iface: str = "") -> None:
             captured.append(ip_addr)
             self.daemon = False
 

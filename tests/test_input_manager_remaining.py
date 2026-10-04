@@ -140,12 +140,14 @@ class _FakeOscHandler:
         allowed_sender_ips: list[str] | None = None,
         multicast_group: str = "",
         multicast_iface: str | None = "",
+        multicast_iface_name: str = "",
     ) -> None:
         self.service = service
         self.port = port
         self.allowed_sender_ips = list(allowed_sender_ips or [])
         self.multicast_group = multicast_group
         self.multicast_iface = multicast_iface
+        self.multicast_iface_name = multicast_iface_name
         self.started = False
         self.stopped = False
         _FakeOscHandler.instances.append(self)
@@ -567,6 +569,7 @@ class TestListenIface:
         app = _DummyApp(osc_enabled=True)
         InputManager(app)
         assert _FakeOscHandler.instances[0].multicast_iface == ""
+        assert _FakeOscHandler.instances[0].multicast_iface_name == ""
 
     def test_pin_resolves_to_its_address(self, monkeypatch) -> None:
         self._ifaces(monkeypatch, {"eth1": "10.0.0.9"})
@@ -574,6 +577,7 @@ class TestListenIface:
         app._config.osc.listen_iface = "eth1"
         InputManager(app)
         assert _FakeOscHandler.instances[0].multicast_iface == "10.0.0.9"
+        assert _FakeOscHandler.instances[0].multicast_iface_name == "eth1"
 
     def test_blank_pin_follows_the_station_interface(self, monkeypatch) -> None:
         self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})
@@ -581,6 +585,7 @@ class TestListenIface:
         app._config.psn_source_iface = "eth0"
         InputManager(app)
         assert _FakeOscHandler.instances[0].multicast_iface == "192.168.1.5"
+        assert _FakeOscHandler.instances[0].multicast_iface_name == "eth0"
 
     def test_a_down_pin_holds_no_membership_but_keeps_listening(self, monkeypatch) -> None:
         """Fails closed on the group only. ``None`` is "take no membership";
@@ -599,6 +604,7 @@ class TestListenIface:
         manager = InputManager(app)
         manager.restart_osc(enabled=True, port=9001, listen_iface="eth1")
         assert _FakeOscHandler.instances[0].multicast_iface == "10.0.0.9"
+        assert _FakeOscHandler.instances[0].multicast_iface_name == "eth1"
 
     def test_disabling_osc_does_not_resolve_the_pin(self, monkeypatch, caplog) -> None:
         """A stale pin on a switched-off receiver must not log a fault. The

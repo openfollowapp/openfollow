@@ -83,6 +83,12 @@ def test_start_hands_the_multicast_interface_to_the_service(iface: str | None) -
     assert service.kwargs["multicast_group"] == "239.1.2.3"
 
 
+def test_start_hands_the_interface_name_to_the_service() -> None:
+    service = _RecordingService()
+    OscMarkerAdapter(service, port=9001, multicast_iface="10.0.0.9", multicast_iface_name="eth1").start()
+    assert service.kwargs["multicast_iface_name"] == "eth1"
+
+
 def test_handle_routes_three_floats_into_pending() -> None:
     a = _adapter()
     a._handle_triple("/marker/0", 1.0, 2.0, 3.0)

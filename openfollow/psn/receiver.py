@@ -11,11 +11,14 @@ is derived from position deltas.
 from __future__ import annotations
 
 import logging
+import socket
 import threading
 import time
+from collections.abc import Callable
 
 import pypsn
 
+from openfollow.net_utils import join_multicast_group_on_iface
 from openfollow.psn.marker import Marker
 
 logger = logging.getLogger(__name__)
@@ -28,6 +31,19 @@ class _RobustReceiver(pypsn.Receiver):  # type: ignore[misc]
     parse_psn_packet/callback outside the try/except, so a bad packet or
     callback error crashes the thread.  This subclass fixes both issues.
     """
+
+    def __init__(
+        self, callback: Callable[..., None], ip_addr: str = "0.0.0.0", mcast_port: int = 56565, iface: str = ""
+    ) -> None:
+        if not iface:
+            super().__init__(callback=callback, ip_addr=ip_addr, mcast_port=mcast_port)
+            return
+        # pypsn joins its group by address; a pinned interface is joined by index.
+        threading.Thread.__init__(self)
+        self.callback = callback
+        self.running = True
+        self.socket = _pinned_socket(ip_addr, mcast_port, iface)
+        self.socket.settimeout(2)
 
     # Bound so a caller on the GTK thread can't stall the render loop. pypsn's
     # own ``stop()`` does a plain ``self.join()`` with no timeout while ``run``
@@ -77,6 +93,22 @@ class _RobustReceiver(pypsn.Receiver):  # type: ignore[misc]
 
 
 DEFAULT_PORT = 56565
+# The group pypsn's own receiver joins.
+_PSN_GROUP = "236.10.10.10"
+
+
+def _pinned_socket(ip_addr: str, port: int, iface: str) -> socket.socket:
+    """pypsn's POSIX receive socket, with the group joined on *iface* by index."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind((_PSN_GROUP, port))
+        join_multicast_group_on_iface(sock, _PSN_GROUP, ip_addr, iface)
+    except OSError:
+        sock.close()
+        raise
+    return sock
+
 
 # Evict markers whose last packet aged well past the 2 s online window so an
 # enumerated / abandoned tracker_id (1–65535, untrusted wire data) can't keep a
@@ -95,7 +127,8 @@ class PsnReceiver:
     do not overwrite their positions.
 
     *source_ip* binds the multicast socket to a specific network interface.
-    Leave empty to listen on all interfaces (default behaviour).
+    Leave empty to listen on all interfaces (default behaviour). *source_iface*
+    names that interface, so the membership is taken on it by index.
     """
 
     def __init__(
@@ -103,10 +136,12 @@ class PsnReceiver:
         port: int = DEFAULT_PORT,
         ignore_ids: list[int] | None = None,
         source_ip: str = "",
+        source_iface: str = "",
     ) -> None:
         self._port = port
         # Strip whitespace; empty/whitespace-only → listen on all interfaces.
         self._source_ip = source_ip.strip()
+        self._source_iface = source_iface.strip()
         self._lock = threading.Lock()
         self._ignore_ids: set[int] = set(ignore_ids or [])
         self._markers: dict[int, Marker] = {}
@@ -125,6 +160,7 @@ class PsnReceiver:
                 callback=self._on_packet,
                 ip_addr=self._source_ip or "0.0.0.0",
                 mcast_port=self._port,
+                iface=self._source_iface,
             )
         except OSError as exc:
             logger.error(
@@ -147,11 +183,13 @@ class PsnReceiver:
             return None
         return self._source_ip
 
-    def rebind(self, source_ip: str) -> None:
-        """Recreate socket bound to new interface; raises on failure."""
+    def rebind(self, source_ip: str, *, source_iface: str | None = None) -> None:
+        """Recreate socket bound to new interface; raises on failure. ``source_iface=None`` keeps the name."""
         self.stop()
         # Strip whitespace same as __init__.
         self._source_ip = source_ip.strip()
+        if source_iface is not None:
+            self._source_iface = source_iface.strip()
         self.start()
         if self._receiver is None:
             raise OSError(

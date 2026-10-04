@@ -997,7 +997,7 @@ def test_restart_listener_joins_multicast_group(
     monkeypatch.setattr(
         service_module,
         "_join_multicast_group",
-        lambda sock, group, port, *, iface_ip="": calls.append((group, port, iface_ip)) or True,
+        lambda sock, group, port, *, iface_ip="", iface="": calls.append((group, port, iface_ip)) or True,
     )
     with caplog.at_level(logging.WARNING):
         port = bind_free_udp_port(lambda p: svc.restart_listener(port=p, allowed_ips=(), multicast_group="239.1.2.3"))
@@ -1139,11 +1139,11 @@ def test_listener_always_binds_every_interface(monkeypatch: pytest.MonkeyPatch) 
 @pytest.mark.skipif(not _PYTHONOSC_AVAILABLE, reason="python-osc not installed")
 def test_restart_listener_joins_the_group_on_the_pinned_interface(monkeypatch: pytest.MonkeyPatch) -> None:
     svc = OscService()
-    joins: list[str | None] = []
+    joins: list[tuple[str | None, str]] = []
     monkeypatch.setattr(
         service_module,
         "_join_multicast_group",
-        lambda sock, group, port, *, iface_ip="": joins.append(iface_ip) or True,
+        lambda sock, group, port, *, iface_ip="", iface="": joins.append((iface_ip, iface)) or True,
     )
     bind_free_udp_port(
         lambda p: svc.restart_listener(
@@ -1151,10 +1151,11 @@ def test_restart_listener_joins_the_group_on_the_pinned_interface(monkeypatch: p
             allowed_ips=(),
             multicast_group="239.1.2.3",
             multicast_iface="10.0.0.9",
+            multicast_iface_name="eth1",
         )
     )
     try:
-        assert joins == ["10.0.0.9"]
+        assert joins == [("10.0.0.9", "eth1")]
         status = svc.listener_status()
         assert status["multicast_iface"] == "10.0.0.9"
         assert status["multicast_joined"] is True
@@ -1179,7 +1180,7 @@ def test_moving_the_membership_rebuilds_the_socket_that_held_it(monkeypatch: pyt
     monkeypatch.setattr(
         service_module,
         "_join_multicast_group",
-        lambda sock, group, port, *, iface_ip="": iface_ip is not None,
+        lambda sock, group, port, *, iface_ip="", iface="": iface_ip is not None,
     )
     bind_free_udp_port(
         lambda p: svc.restart_listener(
@@ -1208,7 +1209,7 @@ def test_moving_the_membership_keeps_the_subscriptions(monkeypatch: pytest.Monke
     monkeypatch.setattr(
         service_module,
         "_join_multicast_group",
-        lambda sock, group, port, *, iface_ip="": iface_ip is not None,
+        lambda sock, group, port, *, iface_ip="", iface="": iface_ip is not None,
     )
     svc.subscribe("/marker/*", lambda *a: None)
     bind_free_udp_port(
@@ -1237,7 +1238,7 @@ def test_set_multicast_iface_moves_the_membership(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(
         service_module,
         "_join_multicast_group",
-        lambda sock, group, port, *, iface_ip="": joins.append(iface_ip) or (iface_ip is not None),
+        lambda sock, group, port, *, iface_ip="", iface="": joins.append(iface_ip) or (iface_ip is not None),
     )
     port = bind_free_udp_port(
         lambda p: svc.restart_listener(
@@ -1268,7 +1269,7 @@ def test_set_multicast_iface_none_leaves_the_group(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(
         service_module,
         "_join_multicast_group",
-        lambda sock, group, port, *, iface_ip="": joins.append(iface_ip) or (iface_ip is not None),
+        lambda sock, group, port, *, iface_ip="", iface="": joins.append(iface_ip) or (iface_ip is not None),
     )
     port = bind_free_udp_port(
         lambda p: svc.restart_listener(
@@ -1299,7 +1300,7 @@ def test_set_multicast_iface_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(
         service_module,
         "_join_multicast_group",
-        lambda sock, group, port, *, iface_ip="": joins.append("join") or True,
+        lambda sock, group, port, *, iface_ip="", iface="": joins.append("join") or True,
     )
     bind_free_udp_port(
         lambda p: svc.restart_listener(
@@ -1321,6 +1322,63 @@ def test_set_multicast_iface_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> N
 
 @pytest.mark.integration
 @pytest.mark.skipif(not _PYTHONOSC_AVAILABLE, reason="python-osc not installed")
+def test_a_new_interface_at_the_same_address_takes_the_membership_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A VLAN child shares its parent's link-local address, so an unchanged
+    address does not mean an unchanged interface: the join is selected by name."""
+    svc = OscService()
+    joins: list[tuple[str | None, str]] = []
+    monkeypatch.setattr(
+        service_module,
+        "_join_multicast_group",
+        lambda sock, group, port, *, iface_ip="", iface="": joins.append((iface_ip, iface)) or True,
+    )
+    bind_free_udp_port(
+        lambda p: svc.restart_listener(
+            port=p,
+            allowed_ips=(),
+            multicast_group="239.1.2.3",
+            multicast_iface="169.254.7.7",
+            multicast_iface_name="eth1",
+        )
+    )
+    try:
+        joins.clear()
+        assert svc.set_multicast_iface("169.254.7.7", "eth1.2") is True
+        assert joins == [("169.254.7.7", "eth1.2")]
+        joins.clear()
+        assert svc.set_multicast_iface("169.254.7.7", "eth1.2") is True
+        assert joins == []
+    finally:
+        svc.shutdown()
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not _PYTHONOSC_AVAILABLE, reason="python-osc not installed")
+def test_start_listener_restarts_for_a_new_interface_at_the_same_address(monkeypatch: pytest.MonkeyPatch) -> None:
+    svc = OscService()
+    joins: list[str] = []
+    monkeypatch.setattr(
+        service_module,
+        "_join_multicast_group",
+        lambda sock, group, port, *, iface_ip="", iface="": joins.append(iface) or True,
+    )
+    port = bind_free_udp_port(
+        lambda p: svc.start_listener(
+            p, multicast_group="239.1.2.3", multicast_iface="169.254.7.7", multicast_iface_name="eth1"
+        )
+    )
+    same = {"multicast_group": "239.1.2.3", "multicast_iface": "169.254.7.7"}
+    try:
+        svc.start_listener(port, **same, multicast_iface_name="eth1")
+        assert joins == ["eth1"]
+        svc.start_listener(port, **same, multicast_iface_name="eth1.2")
+        assert joins == ["eth1", "eth1.2"]
+    finally:
+        svc.shutdown()
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not _PYTHONOSC_AVAILABLE, reason="python-osc not installed")
 def test_set_multicast_iface_rejoins_from_holding_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     """The recovery path. Coming back from a down pin there is no membership to
     leave, and attempting one would log a spurious failure every time an
@@ -1330,7 +1388,7 @@ def test_set_multicast_iface_rejoins_from_holding_nothing(monkeypatch: pytest.Mo
     monkeypatch.setattr(
         service_module,
         "_join_multicast_group",
-        lambda sock, group, port, *, iface_ip="": joins.append(iface_ip) or (iface_ip is not None),
+        lambda sock, group, port, *, iface_ip="", iface="": joins.append(iface_ip) or (iface_ip is not None),
     )
     bind_free_udp_port(
         lambda p: svc.restart_listener(

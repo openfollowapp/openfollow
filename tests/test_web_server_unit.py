@@ -1141,6 +1141,28 @@ def test_get_local_peer_info_adopts_live_ip_change(tmp_path, monkeypatch) -> Non
     assert srv._beacon_receiver._iface_ip == "10.0.0.2"
 
 
+def test_the_beacons_follow_the_station_interface_by_name(tmp_path, monkeypatch) -> None:
+    """A new station interface at the same address still repoints them: a VLAN
+    child can hold its parent's link-local address."""
+    monkeypatch.setattr("openfollow.web.server.get_local_ipv4_addresses", lambda: {"169.254.7.7"})
+    station = {"iface": "eth1"}
+    srv = _make_quiet_server(
+        tmp_path,
+        monkeypatch,
+        local_ip="169.254.7.7",
+        station_ip="169.254.7.7",
+        local_ip_provider=lambda: "169.254.7.7",
+        station_iface_provider=lambda: station["iface"],
+    )
+    assert (srv._beacon_sender.iface, srv._beacon_receiver._iface) == ("eth1", "eth1")
+
+    station["iface"] = "eth1.2"
+    assert srv.refresh_local_ip() is True
+    assert (srv._beacon_sender.iface, srv._beacon_receiver._iface) == ("eth1.2", "eth1.2")
+    srv._local_ip_refresh_ts -= 1000.0
+    assert srv.refresh_local_ip() is False
+
+
 @pytest.mark.parametrize("unresolved", ["", "127.0.0.1"])
 def test_get_local_peer_info_keeps_ip_when_provider_unresolved(
     tmp_path,

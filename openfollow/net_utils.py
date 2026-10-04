@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ipaddress
 import socket
+import struct
 import sys
 import threading
 import time
@@ -315,7 +316,24 @@ class InterfaceUnavailable(OSError):
     """
 
 
-def bind_multicast_send_iface(sock: socket.socket, iface_ip: str | None) -> None:
+def iface_mreqn(group: str, iface: str, iface_ip: str) -> bytes:
+    """``struct ip_mreqn`` naming *iface* by its kernel index as well as its address.
+
+    Selecting by address lets the kernel pick whichever interface holds that
+    address when the option is set, and a VLAN child shares its parent's MAC and
+    so its link-local address. Linux honours the index; macOS reads only the
+    group and address of an ``IP_ADD_MEMBERSHIP``, so the address stays real.
+    """
+    try:
+        index = socket.if_nametoindex(iface)
+    except OSError as exc:
+        raise InterfaceUnavailable(
+            f"{iface} is not present ({exc}); staying silent until it returns rather than using another interface"
+        ) from exc
+    return struct.pack("@4s4si", socket.inet_aton(group), socket.inet_aton(iface_ip), index)
+
+
+def bind_multicast_send_iface(sock: socket.socket, iface_ip: str | None, iface: str = "") -> None:
     """Pin a multicast TX socket to *iface_ip*, raising rather than roaming.
 
     An unbound multicast socket does not send "on all interfaces" - it sends on
@@ -327,7 +345,8 @@ def bind_multicast_send_iface(sock: socket.socket, iface_ip: str | None) -> None
     Three states, matching :func:`resolve_plane_source_ip`: an address pins the
     socket, ``""`` means nothing is configured and is left to the OS, and
     ``None`` means an interface *is* configured but currently has no address -
-    which must stop the plane rather than move it.
+    which must stop the plane rather than move it. *iface*, the pinned interface's
+    name, selects it by index (:func:`iface_mreqn`).
     """
     if iface_ip is None:
         raise InterfaceUnavailable(
@@ -336,8 +355,9 @@ def bind_multicast_send_iface(sock: socket.socket, iface_ip: str | None) -> None
         )
     if not iface_ip:
         return
+    request = iface_mreqn("0.0.0.0", iface, iface_ip) if iface else socket.inet_aton(iface_ip)
     try:
-        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(iface_ip))
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, request)
     except OSError as exc:
         raise InterfaceUnavailable(
             f"interface address {iface_ip} is unavailable ({exc}); staying silent until it "
@@ -345,19 +365,23 @@ def bind_multicast_send_iface(sock: socket.socket, iface_ip: str | None) -> None
         ) from exc
 
 
-def join_multicast_group_on_iface(sock: socket.socket, group: str, iface_ip: str | None) -> None:
+def join_multicast_group_on_iface(sock: socket.socket, group: str, iface_ip: str | None, iface: str = "") -> None:
     """Join *group* on *iface_ip* only, raising rather than joining everywhere.
 
     The receive side of :func:`bind_multicast_send_iface`, with the same three
-    states: joining on ``0.0.0.0`` subscribes on an interface the operator
-    excluded, so peers from that network reach the station's own peer list.
+    states and the same *iface*: joining on ``0.0.0.0`` subscribes on an
+    interface the operator excluded, so peers from that network reach the
+    station's own peer list.
     """
     if iface_ip is None:
         raise InterfaceUnavailable(
             "the configured interface has no address; staying unsubscribed until it returns "
             "rather than joining on every interface"
         )
-    mreq = socket.inet_aton(group) + socket.inet_aton(iface_ip or "0.0.0.0")
+    if iface and iface_ip:
+        mreq = iface_mreqn(group, iface, iface_ip)
+    else:
+        mreq = socket.inet_aton(group) + socket.inet_aton(iface_ip or "0.0.0.0")
     try:
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
     except OSError as exc:

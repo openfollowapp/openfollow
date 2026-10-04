@@ -113,6 +113,28 @@ class TestTryOpenMulticastSocketOnce:
         assert srv._socket.kwargs["mcast_ips"] == ["236.10.10.10"]
         assert srv._socket.kwargs["enable_external_loopback"] is True
 
+    def test_a_named_interface_is_selected_by_name_not_address(self) -> None:
+        """By name, ``multicast_expert`` selects the interface by index. Given
+        the address alone it looks up whichever interface holds it at open
+        time, which after a replug can be a VLAN child holding the same
+        link-local address."""
+        srv = PsnServer(source_ip="169.254.7.7", source_iface="eth1", mcast_ip="236.10.10.10")
+        srv._exit_stack = contextlib.ExitStack()
+        assert srv._try_open_multicast_socket_once(attempt=1) is True
+        assert isinstance(srv._socket, _FakeMcastSocket)
+        assert srv._socket.kwargs["iface"] == "eth1"
+        assert "iface_ip" not in srv._socket.kwargs
+
+    def test_rebind_takes_the_new_interface_and_keeps_it_when_not_given(self) -> None:
+        srv = PsnServer(source_ip="10.0.0.5", source_iface="eth0", mcast_ip="236.10.10.10")
+        srv.rebind("10.0.1.5", source_iface="eth1")
+        try:
+            assert _FakeMcastSocket.instances[-1].kwargs["iface"] == "eth1"
+            srv.rebind_mcast_ip("236.10.10.11")
+            assert _FakeMcastSocket.instances[-1].kwargs["iface"] == "eth1"
+        finally:
+            srv.stop()
+
     def test_empty_source_ip_resolves_to_primary_interface(
         self,
         monkeypatch: pytest.MonkeyPatch,

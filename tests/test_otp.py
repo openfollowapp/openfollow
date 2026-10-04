@@ -980,6 +980,26 @@ class TestOtpTryOpenSocketWithSourceIp:
             assert "239.159.1.1" in kwargs["mcast_ips"]
             assert "239.159.2.1" in kwargs["mcast_ips"]
 
+    def test_a_named_interface_is_selected_by_name_not_address(self) -> None:
+        with patch("openfollow.otp.server.multicast_expert.McastTxSocket") as mcls:
+            mcls.return_value = MagicMock()
+            srv = OtpServer(system_number=1, source_ip="169.254.7.7", source_iface="eth1")
+            assert srv._try_open_multicast_socket_once(attempt=1) is True
+            assert mcls.call_args.kwargs["iface"] == "eth1"
+            assert "iface_ip" not in mcls.call_args.kwargs
+
+    def test_restart_takes_the_new_interface(self) -> None:
+        with patch("openfollow.otp.server.multicast_expert.McastTxSocket") as mcls:
+            mcls.return_value = MagicMock()
+            srv = OtpServer(system_number=1, source_ip="10.0.0.5", source_iface="eth0")
+            srv.restart(
+                system_name="x", system_number=1, port=5568, source_ip="10.0.1.5", priority=100, source_iface="eth1"
+            )
+            try:
+                assert mcls.call_args.kwargs["iface"] == "eth1"
+            finally:
+                srv.stop()
+
     def test_no_source_ip_omits_iface_ip(self) -> None:
         with patch("openfollow.otp.server.multicast_expert.McastTxSocket") as mcls:
             mcls.return_value = MagicMock()

@@ -301,6 +301,7 @@ class MarkerCatalogSync:
         selection_provider: Callable[[], tuple[list[int], list[int]]],
         on_change: Callable[[list[int]], None] | None = None,
         iface_ip: str | None = "",
+        iface: str = "",
     ) -> None:
         self._catalog = catalog
         self._station_id = station_id
@@ -308,6 +309,7 @@ class MarkerCatalogSync:
         self._selection_provider = selection_provider
         self._on_change = on_change
         self._iface_ip = iface_ip
+        self._iface = iface
 
         self._stop_event = threading.Event()
         # One event per loop. A shared event is a trap: whichever loop wakes
@@ -343,7 +345,7 @@ class MarkerCatalogSync:
 
     # -- Public API ----------------------------------------------------------
 
-    def update_iface_ip(self, iface_ip: str | None, *, force: bool = False) -> None:
+    def update_iface_ip(self, iface_ip: str | None, *, iface: str = "", force: bool = False) -> None:
         """Repoint both sockets after the station's address changed.
 
         ``None`` means the station interface currently has no address, which
@@ -357,7 +359,7 @@ class MarkerCatalogSync:
         than raising, so nothing triggers a rebuild. Without this, sync stops
         converging after an interface switch until the app restarts.
 
-        A no-op when the address is unchanged, unless *force* is set. An
+        A no-op when the address and *iface* are unchanged, unless *force* is set. An
         interface that drops and returns with the same lease has had its
         memberships torn down by the kernel while the address string stayed
         put, so recovery passes ``force=True``. It is a flag here rather than a
@@ -365,9 +367,10 @@ class MarkerCatalogSync:
         rebuild twice whenever the address *did* move, and a worker that
         rebuilds between them tears down sockets it has just opened.
         """
-        if iface_ip == self._iface_ip and not force:
+        if iface_ip == self._iface_ip and iface == self._iface and not force:
             return
         self._iface_ip = iface_ip
+        self._iface = iface
         self.reopen()
 
     def reopen(self) -> None:
@@ -482,7 +485,7 @@ class MarkerCatalogSync:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
         try:
-            bind_multicast_send_iface(sock, self._iface_ip)
+            bind_multicast_send_iface(sock, self._iface_ip, self._iface)
         except OSError:
             sock.close()
             raise
@@ -717,7 +720,7 @@ class MarkerCatalogSync:
             return None
 
         try:
-            join_multicast_group_on_iface(sock, CATALOG_MCAST_GROUP, self._iface_ip)
+            join_multicast_group_on_iface(sock, CATALOG_MCAST_GROUP, self._iface_ip, self._iface)
         except InterfaceUnavailable:
             # Propagated, not folded into the ``None`` that means "open
             # failed": a pinned interface with no address is a state the

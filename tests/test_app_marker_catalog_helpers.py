@@ -696,5 +696,7 @@ class TestMarkerCatalogSyncFollowsTheStationInterface:
 
     def test_starts_bound_to_the_station_address(self, tmp_path, monkeypatch) -> None:
         fake = self._fake(tmp_path, "10.20.0.5")
+        fake._config.psn_source_iface = "eth1"
         built = self._run(fake, monkeypatch)
         assert [k["iface_ip"] for k in built] == ["10.20.0.5"]
+        assert [k["iface"] for k in built] == ["eth1"]

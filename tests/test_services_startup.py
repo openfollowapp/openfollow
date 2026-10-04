@@ -1573,6 +1573,7 @@ class _RecordingOscService:
         # failed join from a healthy one.
         self.join_ok = True
         self.calls: list[str | None] = []
+        self.names: list[str] = []
         self.retained: list[object] = []
         self.evicted: list[str] = []
 
@@ -1592,8 +1593,9 @@ class _RecordingOscService:
             "allowed_sender_ips": [],
         }
 
-    def set_multicast_iface(self, iface: str | None) -> bool:
+    def set_multicast_iface(self, iface: str | None, name: str = "") -> bool:
         self.calls.append(iface)
+        self.names.append(name)
         self.iface = iface
         return iface is not None and self.join_ok
 
@@ -1687,6 +1689,7 @@ def test_osc_input_plane_resubscribes_and_unsubscribes(monkeypatch) -> None:
 
     plane.apply("10.0.0.9")
     assert service.calls[-1] == "10.0.0.9"
+    assert service.names[-1] == "eth1"
     assert service.listener_status()["multicast_joined"] is True
 
 
@@ -1734,6 +1737,19 @@ def test_clearing_the_station_pin_repoints_an_inheriting_membership(monkeypatch)
     services.apply_station_iface_change()
 
     assert service.calls[-1] == ""
+
+
+def test_an_inheriting_membership_follows_the_station_by_name(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+    service = _RecordingOscService()
+    services._osc_service = service
+    services._app._otp_server = None
+
+    services._app._config.psn_source_iface = "eth0"
+    services.apply_station_iface_change()
+
+    assert (service.calls[-1], service.names[-1]) == ("192.168.1.5", "eth0")
 
 
 @pytest.mark.parametrize(
@@ -1803,9 +1819,11 @@ def test_station_followers_are_repointed_without_a_web_request(monkeypatch) -> N
     class _Sync:
         def __init__(self) -> None:
             self.ips: list[str] = []
+            self.ifaces: list[str] = []
 
-        def update_iface_ip(self, ip: str, *, force: bool = False) -> None:
+        def update_iface_ip(self, ip: str, *, iface: str = "", force: bool = False) -> None:
             self.ips.append(ip)
+            self.ifaces.append(iface)
 
     server, sync = _Server(), _Sync()
     services._app._web_server = server
@@ -1813,6 +1831,7 @@ def test_station_followers_are_repointed_without_a_web_request(monkeypatch) -> N
     services._follow_station_ip()
     assert server.refreshes == 1
     assert sync.ips == ["192.168.1.5"]
+    assert sync.ifaces == ["eth0"]
 
 
 def test_a_dark_station_interface_suspends_the_beacons(monkeypatch) -> None:
@@ -2040,7 +2059,7 @@ def test_station_followers_do_not_move_to_another_interface(monkeypatch) -> None
         def __init__(self) -> None:
             self.ips: list[str] = []
 
-        def update_iface_ip(self, ip: str) -> None:
+        def update_iface_ip(self, ip: str, *, iface: str = "", force: bool = False) -> None:
             self.ips.append(ip)
 
     class _Server:
@@ -2138,7 +2157,7 @@ class _FollowerSync:
         self.rebuilds = 0
         self._iface_ip = iface_ip
 
-    def update_iface_ip(self, ip: str | None, *, force: bool = False) -> None:
+    def update_iface_ip(self, ip: str | None, *, iface: str = "", force: bool = False) -> None:
         self.ips.append(ip)
         if ip == self._iface_ip and not force:
             return

@@ -657,3 +657,40 @@ class TestModuleImportRsvgBranches:
 
         observed = self._reload_with_gi(fake_gi, fake_repo)
         assert observed is True
+
+
+@pytest.mark.filterwarnings("ignore:Rsvg.Handle.render_cairo is deprecated:DeprecationWarning")
+def test_the_screen_reuses_a_still_cone_and_forgets_a_removed_one(monkeypatch) -> None:
+    """Drawn on every display refresh, a cone that did not change is painted from its picture."""
+    import cairo
+
+    from openfollow.runtime import overlay_draw_scene as scene
+    from openfollow.runtime.overlay_state import MarkerOverlayData
+
+    worked_out: list[int] = []
+    real = scene._cone_geometry
+
+    def _counting(state, t, w, h):
+        worked_out.append(t.marker_id)
+        return real(state, t, w, h)
+
+    monkeypatch.setattr(scene, "_cone_geometry", _counting)
+    renderer = CairoOverlayRenderer()
+    state = renderer.state
+    state.camera_params = np.array([0.0, -11.0, 6.0, -22.0, 0.0, 0.0, 60.0])
+    state.grid_config = (10.0, 6.0, 1.0, 0.0, 3.0, 0.0)
+    state.marker_style = "cone"
+    a = MarkerOverlayData(marker_id=1, x=-1.0, y=2.0, z=1.6, color="#ff3333")
+    b = MarkerOverlayData(marker_id=2, x=1.0, y=2.0, z=1.6, color="#33aaff")
+    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 1280, 720)
+
+    def frame(*markers: MarkerOverlayData) -> None:
+        state.markers = list(markers)
+        renderer.draw(cairo.Context(surface), 1280, 720)
+
+    frame(a, b)
+    frame(a, b)
+    assert sorted(worked_out) == [1, 2]
+    frame(a)
+    frame(a, b)
+    assert sorted(worked_out) == [1, 2, 2]

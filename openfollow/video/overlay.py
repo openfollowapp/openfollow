@@ -64,6 +64,9 @@ from openfollow.runtime.overlay_draw_messages import (
     draw_operator_messages as draw_operator_messages_pass,
 )
 from openfollow.runtime.overlay_draw_scene import (
+    ConeCache,
+)
+from openfollow.runtime.overlay_draw_scene import (
     draw_detections as draw_detections_pass,
 )
 from openfollow.runtime.overlay_draw_scene import (
@@ -163,6 +166,7 @@ class CairoOverlayRenderer:
         # Pre-allocated buffer for grid points (reduces per-frame tuple allocation).
         # Max 200 lines = 400 endpoints. Resized if needed.
         self._grid_pts_buf = np.zeros((400, 3), dtype=np.float64)
+        self._cone_cache = ConeCache()
 
         # Rolling timestamps of recent draw callbacks for FPS measurement.
         # Appended on the GTK main thread (per-frame ``draw``); read on the
@@ -373,6 +377,7 @@ class CairoOverlayRenderer:
                 self._draw_zones(cr, state, width, height)
                 for t in state.markers:
                     self._draw_marker(cr, state, t, width, height)
+                self._cone_cache.retain(t.marker_id for t in state.markers)
                 if state.detections and state.detection_show_boxes:
                     self._draw_detections(cr, state, width, height)
                 self._draw_hud(cr, state, width, height)
@@ -452,7 +457,7 @@ class CairoOverlayRenderer:
     # ------------------------------------------------------------------
 
     def _draw_marker(self, cr: Any, state: OverlayState, t: MarkerOverlayData, w: int, h: int) -> None:
-        draw_marker_pass(cr, state, t, w, h)
+        draw_marker_pass(cr, state, t, w, h, self._cone_cache)
 
     # ------------------------------------------------------------------
     # Source-selection / iface / settings / browser / URL-editor overlays

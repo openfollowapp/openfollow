@@ -160,11 +160,10 @@ def project_points(
     return np.column_stack([sx, sy])
 
 
-# Ring sample counts. The ground circle is a plain outline; the cone's rings
-# also carry its silhouette tangents, which can only land on a sample, so a
-# coarse ring makes the edges hop as a marker moves.
+# Ring sample counts. The cone's rings also carry the two exact silhouette
+# points (:func:`cone_ring_angles`), so its edges stay smooth however coarse.
 GROUND_RING_SEGMENTS = 24
-CONE_RING_SEGMENTS = 72
+CONE_RING_SEGMENTS = 36
 
 
 def ground_circle_world_ring(
@@ -188,6 +187,47 @@ def ground_circle_world_ring(
         )
         for i in range(segments)
     ]
+
+
+def cone_silhouette_angles(
+    camera: npt.NDArray[Any] | tuple[float, float, float] | None,
+    centre: tuple[float, float],
+    z_base: float,
+    z_top: float,
+    r_base: float,
+    r_top: float,
+) -> tuple[float, float] | None:
+    """Ring angles of a vertical frustum's two silhouette edges seen from ``camera``.
+
+    An edge is on the silhouette where the surface normal is perpendicular to
+    the ray from the camera, which for a circular frustum has a closed form.
+    None when the camera looks into the frustum, so the rings nest on screen
+    with no edge between them, when it has no height or sits on the axis, or
+    when there is no camera. ``camera`` is its position first: ``(x, y, z, ...)``.
+    """
+    if camera is None:
+        return None
+    height = z_top - z_base
+    dx, dy = centre[0] - float(camera[0]), centre[1] - float(camera[1])
+    reach = math.hypot(dx, dy)
+    if abs(height) < 1e-9 or reach < 1e-9:
+        return None
+    c = -(r_base + (r_base - r_top) * (z_base - float(camera[2])) / height) / reach
+    if abs(c) >= 1.0:
+        return None
+    heading, spread = math.atan2(dy, dx), math.acos(c)
+    return ((heading - spread) % math.tau, (heading + spread) % math.tau)
+
+
+def cone_ring_angles(
+    silhouette: tuple[float, float] | None,
+) -> tuple[npt.NDArray[Any], list[int]]:
+    """The cone rings' sample angles, the silhouette angles among them, and where those landed."""
+    angles = np.linspace(0.0, math.tau, CONE_RING_SEGMENTS, endpoint=False)
+    if silhouette is None:
+        return angles, []
+    angles = np.sort(np.concatenate([angles, silhouette]))
+    return angles, [int(np.searchsorted(angles, a)) for a in silhouette]
 
 
 def _convex_hull(pts: npt.NDArray[Any]) -> list[int]:

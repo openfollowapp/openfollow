@@ -56,6 +56,21 @@ fail() {
     exit 1
 }
 
+# prerm stops and disables both units and only postinst brings them back, so a
+# failed install would leave the station down with no web UI to retry from. The
+# failure is recorded first: the starting app must not read "running" and take
+# itself for the update. Then whatever dpkg left half-done is finished.
+fail_install() {
+    write_state failed "Update failed." "$1"
+    cleanup_spec
+    dpkg --force-confdef --force-confold --configure -a >/dev/null 2>&1 || true
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    systemctl enable openfollow.service openfollow-splash.service >/dev/null 2>&1 || true
+    systemctl start openfollow.service >/dev/null 2>&1 \
+        || write_state failed "Update failed, and OpenFollow could not be started again." "$1"
+    exit 1
+}
+
 export DEBIAN_FRONTEND=noninteractive
 
 [ -f "$SPEC" ] || fail "Staged update not found."
@@ -71,7 +86,7 @@ if ! out=$(apt-get install -y --reinstall --allow-downgrades \
     # summaries, …) so the operator still gets an actionable reason.
     detail=$(printf '%s' "$out" | grep -E '^(E:|dpkg:)' | head -3 | tr '\n' ' ')
     [ -n "$detail" ] || detail=$(printf '%s' "$out" | grep -v '^[[:space:]]*$' | tail -3 | tr '\n' ' ')
-    fail "$detail"
+    fail_install "$detail"
 fi
 
 # Success: prerm stopped the unit and postinst started the new version, so

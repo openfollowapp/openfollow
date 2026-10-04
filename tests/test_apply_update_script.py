@@ -35,10 +35,14 @@ def _run(tmp_path: Path, *, apt_exit: int = 0, apt_output: str = "", systemctl_e
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     calls = tmp_path / "calls"
-    for name, code, output in (("apt-get", apt_exit, apt_output), ("systemctl", systemctl_exit, "")):
+    for name, code, output in (("apt-get", apt_exit, apt_output), ("systemctl", systemctl_exit, ""), ("dpkg", 0, "")):
+        # ``systemctl start`` also logs the recorded state, so the order of the two can be checked.
+        seen_at_start = f'[ "$1" = start ] && echo "state at start: $(cat "{state}")" >> "{calls}"\n'
         stub = bin_dir / name
         stub.write_text(
-            f'#!/bin/sh\necho "{name} $*" >> "{calls}"\nprintf "%s\\n" "{output}"\nexit {code}\n',
+            f'#!/bin/sh\necho "{name} $*" >> "{calls}"\n'
+            + (seen_at_start if name == "systemctl" else "")
+            + f'printf "%s\\n" "{output}"\nexit {code}\n',
             encoding="utf-8",
         )
         stub.chmod(0o755)
@@ -47,7 +51,7 @@ def _run(tmp_path: Path, *, apt_exit: int = 0, apt_output: str = "", systemctl_e
     fd, spec = tempfile.mkstemp(prefix="openfollow-update-", suffix=".deb", dir="/tmp")
     os.close(fd)
     try:
-        subprocess.run(
+        result = subprocess.run(
             ["/bin/sh", str(script), spec],
             env={**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"},
             check=False,
@@ -57,7 +61,10 @@ def _run(tmp_path: Path, *, apt_exit: int = 0, apt_output: str = "", systemctl_e
         spec_left = Path(spec).exists()
         Path(spec).unlink(missing_ok=True)
     assert not spec_left, "the staged package must be removed whatever the outcome"
-    return calls.read_text(encoding="utf-8").splitlines(), json.loads(state.read_text(encoding="utf-8"))
+    recorded = json.loads(state.read_text(encoding="utf-8"))
+    # The transient unit's exit status is what the journal shows support.
+    assert (result.returncode != 0) == (recorded["state"] == "failed")
+    return calls.read_text(encoding="utf-8").splitlines(), recorded
 
 
 def test_installs_even_when_that_version_is_already_installed(tmp_path: Path) -> None:
@@ -95,8 +102,33 @@ def test_a_failed_start_is_reported(tmp_path: Path) -> None:
     assert state["message"] == "Start failed. Service may need manual attention."
 
 
-def test_a_failed_install_reports_apts_error_and_skips_the_restart(tmp_path: Path) -> None:
-    calls, state = _run(tmp_path, apt_exit=100, apt_output="E: Sub-process /usr/bin/dpkg returned an error code (1)")
+_DPKG_ERROR = "E: Sub-process /usr/bin/dpkg returned an error code (1)"
+
+
+def test_a_failed_install_brings_the_station_back(tmp_path: Path) -> None:
+    """prerm disabled the units and postinst never ran, so nothing else would start them."""
+    calls, state = _run(tmp_path, apt_exit=100, apt_output=_DPKG_ERROR)
     assert state["state"] == "failed"
-    assert "E: Sub-process /usr/bin/dpkg returned an error code (1)" in state["error"]
-    assert not any(line.startswith("systemctl") for line in calls)
+    assert state["message"] == "Update failed."
+    assert _DPKG_ERROR in state["error"]
+    recovery = [line for line in calls if not line.startswith(("apt-get ", "state at start"))]
+    assert recovery == [
+        "dpkg --force-confdef --force-confold --configure -a",
+        "systemctl daemon-reload",
+        "systemctl enable openfollow.service openfollow-splash.service",
+        "systemctl start openfollow.service",
+    ]
+
+
+def test_the_failure_is_recorded_before_the_station_starts(tmp_path: Path) -> None:
+    """A starting app that read ``running`` would take itself for the update and open What's new."""
+    calls, _state = _run(tmp_path, apt_exit=100, apt_output=_DPKG_ERROR)
+    (seen,) = [line for line in calls if line.startswith("state at start: ")]
+    assert json.loads(seen.removeprefix("state at start: "))["state"] == "failed"
+
+
+def test_a_station_that_cannot_start_again_says_so(tmp_path: Path) -> None:
+    _calls, state = _run(tmp_path, apt_exit=100, apt_output=_DPKG_ERROR, systemctl_exit=1)
+    assert state["state"] == "failed"
+    assert state["message"] == "Update failed, and OpenFollow could not be started again."
+    assert _DPKG_ERROR in state["error"]

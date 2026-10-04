@@ -101,13 +101,30 @@ class TestMarkerStyleForm:
         import openfollow.web as web
 
         base = (Path(web.__file__).parent / "templates" / "base.tpl").read_text(encoding="utf-8")
+        restore = base.split("function restoreHiddenInvalid(group) {", 1)[1].split("\n }\n", 1)[0]
+        assert "group.querySelectorAll('[aria-invalid=\"true\"]')" in restore
+        assert "input.value = input.defaultValue;" in restore
+        assert "input.setAttribute('aria-invalid', 'false');" in restore
         start = base.index("closest('input[name=\"marker_style\"]')")
         body = base[start : base.index("document.addEventListener", start)]
         hide = body.split("el.setAttribute('hidden', '');", 1)[1]
-        assert "querySelectorAll('[aria-invalid=\"true\"]')" in hide
-        assert "input.value = input.defaultValue;" in hide
-        assert "input.setAttribute('aria-invalid', 'false');" in hide
+        assert hide.lstrip().startswith("restoreHiddenInvalid(el);")
         assert "refreshFormGate(form);" in body
+
+    def test_a_validation_answer_landing_after_the_switch_is_undone_too(self) -> None:
+        """The answer waits out the blur delay, so switching style straight after an invalid
+        edit hid the field first and the late answer disabled Save. Registered on ``document``,
+        the handler runs after the body-level one that marks the field."""
+        from pathlib import Path
+
+        import openfollow.web as web
+
+        base = (Path(web.__file__).parent / "templates" / "base.tpl").read_text(encoding="utf-8")
+        start = base.index("closest('[data-style-only][hidden]')")
+        handler = base[base.rindex("document.addEventListener(", 0, start) : base.index("});", start)]
+        assert handler.startswith("document.addEventListener('htmx:afterSwap',")
+        assert "restoreHiddenInvalid(group);" in handler
+        assert "refreshFormGate(group.closest('form'));" in handler
 
     def test_z_display_is_not_tied_to_a_style(self) -> None:
         """The Z readout applies to both styles, so its group never hides."""

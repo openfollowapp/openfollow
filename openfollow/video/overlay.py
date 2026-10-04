@@ -377,7 +377,7 @@ class CairoOverlayRenderer:
                 self._draw_zones(cr, state, width, height)
                 for t in state.markers:
                     self._draw_marker(cr, state, t, width, height)
-                self._cone_cache.retain(t.marker_id for t in state.markers)
+                self._cone_cache.retain(state.markers)
                 if state.detections and state.detection_show_boxes:
                     self._draw_detections(cr, state, width, height)
                 self._draw_hud(cr, state, width, height)

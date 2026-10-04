@@ -288,14 +288,16 @@ def _wound_same_way(poly: npt.NDArray[Any]) -> npt.NDArray[Any]:
 
 
 class _ConeScreen(NamedTuple):
-    """A marker's cone on screen: finite ring points, projected centres and
-    the silhouette edges as ``(base index, top index)`` pairs."""
+    """A marker's cone on screen: finite ring points, projected centres, the
+    silhouette edges as ``(base index, top index)`` pairs, and each edge as a
+    polyline from its base point to its top point, bowed to match the lens."""
 
     base_ring: npt.NDArray[Any]
     top_ring: npt.NDArray[Any]
     base_center: npt.NDArray[Any]
     top_center: npt.NDArray[Any]
     edges: list[tuple[int, int]]
+    edge_lines: list[npt.NDArray[Any]]
 
 
 def _cone_geometry(state: OverlayState, t: MarkerOverlayData, w: int, h: int) -> _ConeScreen:
@@ -322,22 +324,32 @@ def _cone_geometry(state: OverlayState, t: MarkerOverlayData, w: int, h: int) ->
     scr = project(state.camera_params, world, w, h, state.lens_k1, state.lens_k2)
     base_center, base_ring = scr[0], scr[1 : n + 1]
     top_center, top_ring = scr[n + 1], scr[n + 2 :]
+    base_world, top_world = world[1 : n + 1], world[n + 2 :]
+    edges: list[tuple[int, int]] = []
     if at and np.all(np.isfinite(scr)):
         # The rings share their angles, so each silhouette edge joins equal indices.
-        return _ConeScreen(base_ring, top_ring, base_center, top_center, [(i, i) for i in at])
-
-    # No silhouette (seen from inside its view) or part of the cone behind the camera.
-    base_ring = base_ring[np.all(np.isfinite(base_ring), axis=1)]
-    top_ring = top_ring[np.all(np.isfinite(top_ring), axis=1)]
-    edges: list[tuple[int, int]] = []
-    if np.all(np.isfinite(base_center)) and np.all(np.isfinite(top_center)):
-        edges = ring_silhouette_indices(
-            base_ring,
-            top_ring,
-            (float(base_center[0]), float(base_center[1])),
-            (float(top_center[0]), float(top_center[1])),
+        edges = [(i, i) for i in at]
+    else:
+        # No silhouette (seen from inside its view) or part of the cone behind the camera.
+        base_ok = np.all(np.isfinite(base_ring), axis=1)
+        top_ok = np.all(np.isfinite(top_ring), axis=1)
+        base_ring, base_world = base_ring[base_ok], base_world[base_ok]
+        top_ring, top_world = top_ring[top_ok], top_world[top_ok]
+        if np.all(np.isfinite(base_center)) and np.all(np.isfinite(top_center)):
+            edges = ring_silhouette_indices(
+                base_ring,
+                top_ring,
+                (float(base_center[0]), float(base_center[1])),
+                (float(top_center[0]), float(top_center[1])),
+            )
+    lines = [np.vstack([base_ring[i], top_ring[j]]) for i, j in edges]
+    if edges and (state.lens_k1 or state.lens_k2):
+        segments = [(base_world[i], top_world[j]) for i, j in edges]
+        bowed = _project_segments(
+            state.camera_params, segments, w, h, state.lens_k1, state.lens_k2, _DISTORTION_SUBDIVISIONS
         )
-    return _ConeScreen(base_ring, top_ring, base_center, top_center, edges)
+        lines = [line[np.all(np.isfinite(line), axis=1)] for line in bowed]
+    return _ConeScreen(base_ring, top_ring, base_center, top_center, edges, lines)
 
 
 def _ring_arc(ring: npt.NDArray[Any], start: int, end: int, toward: npt.NDArray[Any]) -> npt.NDArray[Any]:
@@ -369,9 +381,10 @@ def _cone_side(g: _ConeScreen) -> npt.NDArray[Any] | None:
     if len(g.edges) != 2:
         return None
     (ia, ja), (ib, jb) = g.edges
+    up, down = g.edge_lines[1][1:-1], g.edge_lines[0][-2:0:-1]
     base_arc = _ring_arc(g.base_ring, ia, ib, g.top_center)
     top_arc = _ring_arc(g.top_ring, jb, ja, g.base_center)
-    return np.vstack([base_arc, top_arc])
+    return np.vstack([base_arc, up, top_arc, down])
 
 
 def _draw_cone(
@@ -398,10 +411,7 @@ def _draw_cone(
     if not state.grid_config:
         return
     g = geometry if geometry is not None else _cone_geometry(state, t, w, h)
-    edges = [
-        ((float(g.base_ring[i, 0]), float(g.base_ring[i, 1])), (float(g.top_ring[j, 0]), float(g.top_ring[j, 1])))
-        for i, j in g.edges
-    ]
+    edges = [((float(ln[0, 0]), float(ln[0, 1])), (float(ln[-1, 0]), float(ln[-1, 1]))) for ln in g.edge_lines]
     side = _cone_side(g)
     r, g_, b = rgb
 
@@ -427,17 +437,22 @@ def _draw_cone(
                 cr.set_source_rgba(r, g_, b, fill_alpha)
                 cr.fill()
 
+    cr.save()
     cr.set_source_rgba(r, g_, b, alpha)
     cr.set_line_width(line_width)
+    # A miter where a ring seen almost edge-on turns sharply spikes past the ring.
+    cr.set_line_join(cairo.LINE_JOIN_ROUND)
     drew = _path_ring(cr, g.base_ring)
     if _path_ring(cr, g.top_ring):
         drew = True
-    for (x0, y0), (x1, y1) in edges:
-        cr.move_to(x0, y0)
-        cr.line_to(x1, y1)
+    for line in g.edge_lines:
+        cr.move_to(line[0, 0], line[0, 1])
+        for x, y in line[1:]:
+            cr.line_to(x, y)
         drew = True
     if drew:
         cr.stroke()
+    cr.restore()
 
 
 def _draw_assist_ghost(
@@ -483,13 +498,18 @@ class ConeCache:
     """
 
     def __init__(self) -> None:
-        self._entries: dict[int, tuple[tuple[Any, ...], cairo.ImageSurface, int, int]] = {}
+        self._entries: dict[tuple[int, bool], tuple[tuple[Any, ...], cairo.ImageSurface, int, int]] = {}
 
-    def retain(self, marker_ids: Iterable[int]) -> None:
+    @staticmethod
+    def _slot(t: MarkerOverlayData) -> tuple[int, bool]:
+        # An assist marker draws its anchor and its ghost under one marker id.
+        return t.marker_id, t.is_assist_ghost
+
+    def retain(self, markers: Iterable[MarkerOverlayData]) -> None:
         """Forget the cones of markers no longer drawn."""
-        keep = set(marker_ids)
-        for marker_id in [m for m in self._entries if m not in keep]:
-            del self._entries[marker_id]
+        keep = {self._slot(t) for t in markers}
+        for slot in [s for s in self._entries if s not in keep]:
+            del self._entries[slot]
 
     def draw(
         self,
@@ -527,13 +547,14 @@ class ConeCache:
             h,
             scale,
         )
-        entry = self._entries.get(t.marker_id)
+        slot = self._slot(t)
+        entry = self._entries.get(slot)
         if entry is None or entry[0] != key:
             entry = self._render(key, state, t, w, h, rgb, alpha, line_width, fill_alpha, shaded, scale)
             if entry is None:
-                self._entries.pop(t.marker_id, None)
+                self._entries.pop(slot, None)
                 return
-            self._entries[t.marker_id] = entry
+            self._entries[slot] = entry
         _, picture, x0, y0 = entry
         cr.set_source_surface(picture, x0, y0)
         cr.paint()
@@ -553,11 +574,11 @@ class ConeCache:
         scale: tuple[float, float],
     ) -> tuple[tuple[Any, ...], cairo.ImageSurface, int, int] | None:
         g = _cone_geometry(state, t, w, h)
-        points = np.vstack([g.base_ring, g.top_ring])
+        points = np.vstack([g.base_ring, g.top_ring, *g.edge_lines])
         if len(points) == 0:
             return None
-        # The stroke reaches half its width past the rings, anti-aliasing one pixel more;
-        # nothing beyond the frame is ever shown.
+        # With round joins the stroke reaches half its width past the rings and edges,
+        # anti-aliasing one pixel more; nothing beyond the frame is ever shown.
         pad = int(math.ceil(line_width / 2.0)) + 2
         x0 = max(0, int(math.floor(points[:, 0].min())) - pad)
         y0 = max(0, int(math.floor(points[:, 1].min())) - pad)

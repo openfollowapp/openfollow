@@ -1307,14 +1307,26 @@ class TestGetNetworkInterfaces:
                 raise RuntimeError("nmcli exploded")
             return [{"name": "eth0", "address": "10.0.0.5"}]
 
-        srv = _make_quiet_server(tmp_path, monkeypatch, network_interfaces_provider=_provider)
-        assert srv.get_network_interfaces()[0]["address"] == "10.0.0.5"
-        state["fail"] = True
-        with pytest.raises(RuntimeError, match="nmcli exploded"):
-            srv.read_network_interfaces()
+        def _sources() -> list[dict]:
+            if state["fail"]:
+                raise RuntimeError("nmcli exploded")
+            return [{"name": "eth0", "address": "10.0.0.5", "source": "dhcp", "reason": ""}]
 
-    def test_the_diagnostics_read_with_no_backend_is_empty(self, tmp_path, monkeypatch) -> None:
-        assert _make_quiet_server(tmp_path, monkeypatch).read_network_interfaces() == []
+        srv = _make_quiet_server(
+            tmp_path,
+            monkeypatch,
+            network_interfaces_provider=_provider,
+            network_address_sources_provider=_sources,
+        )
+        assert srv.get_network_interfaces()[0]["address"] == "10.0.0.5"
+        assert srv.read_address_sources() == [{"name": "eth0", "address": "10.0.0.5", "source": "dhcp", "reason": ""}]
+        state["fail"] = True
+        assert srv.get_network_interfaces()[0]["address"] == "10.0.0.5"
+        with pytest.raises(RuntimeError, match="nmcli exploded"):
+            srv.read_address_sources()
+
+    def test_the_diagnostics_read_with_no_backend_reports_nothing(self, tmp_path, monkeypatch) -> None:
+        assert _make_quiet_server(tmp_path, monkeypatch).read_address_sources() is None
 
     def test_caller_cannot_mutate_the_cache(self, tmp_path, monkeypatch) -> None:
         """Rows are handed out as a copy, so a template helper decorating them

@@ -5,11 +5,18 @@
 from __future__ import annotations
 
 import subprocess
+from dataclasses import dataclass
 
 import pytest
 
 from openfollow.network import nm_adapter
-from openfollow.network.adapter import Ipv4Config, Ipv4Method, VlanInterface
+from openfollow.network.adapter import (
+    AddressSourceReading,
+    BackendReadError,
+    Ipv4Config,
+    Ipv4Method,
+    VlanInterface,
+)
 from openfollow.network.nm_adapter import NetworkManagerAdapter
 from openfollow.privilege.capabilities import NETWORK_NM_CON_ADD, NETWORK_NM_CON_DELETE
 from tests._fake_broker import FakeBroker, make_failure
@@ -1560,3 +1567,170 @@ class TestVlans:
             stdout="vlan.parent:\nvlan.id:10\n",
         )
         assert a.list_vlans() == []
+
+
+@dataclass(frozen=True)
+class _Device:
+    """One device as nmcli 1.52 reports it on a station."""
+
+    name: str
+    address: str = ""  # ``a.b.c.d/nn``
+    profile: str = ""  # the active profile, empty when none is
+    method: str = "auto"
+    addresses: str = ""
+    state: str = "100 (connected)"
+    kind: str = "ethernet"
+
+    @property
+    def uuid(self) -> str:
+        return f"uuid-{self.profile}" if self.profile else ""
+
+
+class _Station:
+    """A fake ``nmcli`` answering the panel's reads and the diagnostics read from one set of devices.
+
+    ``fail`` maps an argv predicate to the stderr a failing call prints; the call
+    then raises as ``_run`` does for a non-zero exit.
+    """
+
+    def __init__(self, *devices: _Device, fail: dict | None = None) -> None:
+        self.devices = devices
+        self.fail = fail or {}
+        self.calls: list[list[str]] = []
+
+    def _device(self, name: str) -> _Device | None:
+        return next((d for d in self.devices if d.name == name), None)
+
+    def __call__(self, argv, *, check=True) -> subprocess.CompletedProcess:
+        argv = list(argv)
+        self.calls.append(argv)
+        for matches, stderr in self.fail.items():
+            if matches(argv):
+                raise RuntimeError(f"{' '.join(argv)} failed (rc=8): {stderr}")
+        return subprocess.CompletedProcess(argv, 0, stdout=self._answer(argv), stderr="")
+
+    def _answer(self, argv: list[str]) -> str:
+        fields, verb = argv[3], argv[4:]
+        if fields == "DEVICE,TYPE,STATE":
+            return "".join(f"{d.name}:{d.kind}:{d.state.split(' ', 1)[1][1:-1]}\n" for d in self.devices)
+        if fields == nm_adapter._SOURCE_FIELDS:
+            return "\n".join(
+                f"GENERAL.DEVICE:{d.name}\nGENERAL.TYPE:{d.kind}\nGENERAL.STATE:{d.state}\n"
+                f"GENERAL.CON-UUID:{d.uuid}\n" + (f"IP4.ADDRESS[1]:{d.address}\n" if d.address else "")
+                for d in self.devices
+            )
+        if fields.startswith("IP4.ADDRESS"):
+            device = self._device(verb[-1])
+            return f"IP4.ADDRESS[1]:{device.address}\n" if device and device.address else ""
+        if fields == "NAME,DEVICE":
+            return "".join(f"{d.profile}:{d.name}\n" for d in self.devices if d.profile)
+        if fields == "ipv4.method,ipv4.addresses":
+            key = verb[-1]
+            device = next((d for d in self.devices if key in (d.profile, d.uuid)), None)
+            return f"ipv4.method:{device.method}\nipv4.addresses:{device.addresses}\n" if device else ""
+        return ""  # saved profiles, DHCP options
+
+
+def _method_read(argv: list[str]) -> bool:
+    return argv[3] == "ipv4.method,ipv4.addresses"
+
+
+def _device_show(argv: list[str]) -> bool:
+    return argv[4:6] == ["device", "show"]
+
+
+_NOT_RUNNING = "Error: NetworkManager is not running."
+
+
+@pytest.fixture
+def station(monkeypatch, tmp_path):
+    """An adapter wired to a :class:`_Station`; call it with the station's devices."""
+    monkeypatch.setattr(nm_adapter, "_SYS_CLASS_NET", tmp_path)
+
+    def _make(*devices: _Device, fail: dict | None = None) -> tuple[NetworkManagerAdapter, _Station]:
+        nmcli = _Station(*devices, fail=fail)
+        a = NetworkManagerAdapter(broker=FakeBroker())
+        monkeypatch.setattr(a, "_run", nmcli)
+        return a, nmcli
+
+    return _make
+
+
+class TestReadAddressSources:
+    """The diagnostics read: where each address came from, or why it cannot say."""
+
+    def test_reads_each_address_from_its_active_profile(self, station) -> None:
+        a, nmcli = station(
+            _Device("eth0", "192.0.2.10/24", "Wired connection 1"),
+            _Device("eth1", "198.51.100.5/24", "Stage", method="manual", addresses="198.51.100.5/24"),
+            _Device("eth2", "203.0.113.9/24", "Desk", method="manual", addresses="dhcp-managed/24"),
+            _Device("eth0.13", "169.254.32.55/16", "eth0.13", kind="vlan"),
+            _Device("eth3", state="20 (unavailable)"),
+            _Device("lo", "127.0.0.1/8", "lo", method="manual", state="100 (connected (externally))", kind="loopback"),
+        )
+        assert a.read_address_sources() == [
+            AddressSourceReading("eth0", "192.0.2.10", "dhcp"),
+            AddressSourceReading("eth1", "198.51.100.5", "static"),
+            AddressSourceReading("eth2", "203.0.113.9", "static"),
+            AddressSourceReading("eth0.13", "169.254.32.55", "link-local"),
+            AddressSourceReading("eth3", "", "none"),
+        ]
+        # A link-local address says what it is by itself; its profile is not read.
+        assert [c[-1] for c in nmcli.calls if _method_read(c)] == ["uuid-Wired connection 1", "uuid-Stage", "uuid-Desk"]
+
+    def test_a_backend_that_cannot_be_read_raises_where_the_panel_lists_nothing(self, station) -> None:
+        a, _ = station(_Device("eth0", "192.0.2.10/24", "Wired"), fail={lambda argv: True: _NOT_RUNNING})
+        with pytest.raises(BackendReadError, match="NetworkManager is not running"):
+            a.read_address_sources()
+        assert a.list_interfaces() == []
+
+    def test_a_failing_device_read_raises_where_the_panel_drops_the_row(self, station) -> None:
+        a, _ = station(_Device("eth0", "192.0.2.10/24", "Wired"), fail={_device_show: "Error: timeout."})
+        with pytest.raises(BackendReadError, match="device show failed .*timeout"):
+            a.read_address_sources()
+        assert [i.name for i in a.list_interfaces()] == ["eth0"]
+        assert a.get_state("eth0") is None
+
+    def test_a_failing_profile_read_is_unreadable_where_the_panel_says_dhcp(self, station) -> None:
+        a, _ = station(
+            _Device("eth0", "198.51.100.5/24", "Stage", method="manual", addresses="198.51.100.5/24"),
+            fail={_method_read: "Error: uuid-Stage - no such connection profile."},
+        )
+        (reading,) = a.read_address_sources()
+        assert (reading.name, reading.address, reading.source) == ("eth0", "198.51.100.5", "unreadable")
+        assert "uuid uuid-Stage failed (rc=8): Error: uuid-Stage - no such connection profile." in reading.reason
+        state = a.get_state("eth0")
+        assert state is not None
+        assert state.address_source == "dhcp"
+
+    def test_an_address_without_an_active_profile_is_unknown_where_the_panel_says_dhcp(self, station) -> None:
+        a, _ = station(_Device("eth0", "198.51.100.5/24"))
+        assert a.read_address_sources() == [
+            AddressSourceReading("eth0", "198.51.100.5", "unknown", "no active NetworkManager profile")
+        ]
+        state = a.get_state("eth0")
+        assert state is not None
+        assert state.address_source == "dhcp"
+
+    @pytest.mark.parametrize("address", ["192.0.2.10/24", ""])
+    def test_an_unmanaged_device_is_unknown_whatever_it_lists(self, station, address: str) -> None:
+        """NetworkManager may list no address on a device it does not manage; the kernel can still hold one."""
+        a, _ = station(_Device("eth1", address, state="10 (unmanaged)"))
+        (reading,) = a.read_address_sources()
+        assert (reading.source, reading.reason) == ("unknown", "not managed by NetworkManager")
+        assert reading.address == address.partition("/")[0]
+
+    def test_an_externally_configured_device_is_not_read_from_its_generated_profile(self, station) -> None:
+        a, nmcli = station(
+            _Device("eth1", "192.0.2.10/24", "eth1", method="manual", state="100 (connected (externally))")
+        )
+        assert a.read_address_sources() == [
+            AddressSourceReading("eth1", "192.0.2.10", "unknown", "configured outside NetworkManager")
+        ]
+        assert not any(_method_read(c) for c in nmcli.calls)
+
+    def test_a_profile_method_that_is_neither_auto_nor_manual_is_unknown(self, station) -> None:
+        a, _ = station(_Device("eth0", "10.42.0.1/24", "Hotspot", method="shared"))
+        assert a.read_address_sources() == [
+            AddressSourceReading("eth0", "10.42.0.1", "unknown", "profile ipv4.method is shared")
+        ]

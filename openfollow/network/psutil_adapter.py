@@ -13,6 +13,7 @@ import psutil
 from openfollow.net_utils import read_ipv4_routes
 from openfollow.network.adapter import (
     ApplyResult,
+    BackendReadError,
     Ipv4Config,
     Ipv4Method,
     NetworkAdapter,
@@ -63,36 +64,44 @@ def _read_gateway(iface: str) -> str | None:
     return min(defaults, key=lambda r: r.metric).gateway if defaults else None
 
 
+def read_interfaces() -> list[NetworkInterface]:
+    """Every interface psutil reports; raises :class:`BackendReadError` when it cannot."""
+    try:
+        stats = psutil.net_if_stats()
+        addrs = psutil.net_if_addrs()
+    except Exception as exc:  # noqa: BLE001 - psutil raises bare Exception on some hosts
+        raise BackendReadError(f"psutil: {exc!r}") from exc
+    out: list[NetworkInterface] = []
+    for name, addr_list in addrs.items():
+        mac: str | None = None
+        for addr in addr_list:
+            family = getattr(addr, "family", None)
+            if family is not None and getattr(family, "name", "") in (
+                "AF_LINK",
+                "AF_PACKET",
+            ):
+                mac = addr.address
+                break
+        stat = stats.get(name)
+        out.append(
+            NetworkInterface(
+                name=name,
+                mac=mac,
+                kind=None,
+                is_up=bool(stat and stat.isup),
+            )
+        )
+    return out
+
+
 class PsutilReadOnlyAdapter(NetworkAdapter):
     backend_name = "psutil"
 
     def list_interfaces(self) -> list[NetworkInterface]:
         try:
-            stats = psutil.net_if_stats()
-            addrs = psutil.net_if_addrs()
-        except Exception:  # noqa: BLE001 - psutil raises bare Exception on some hosts
+            return read_interfaces()
+        except BackendReadError:
             return []
-        out: list[NetworkInterface] = []
-        for name, addr_list in addrs.items():
-            mac: str | None = None
-            for addr in addr_list:
-                family = getattr(addr, "family", None)
-                if family is not None and getattr(family, "name", "") in (
-                    "AF_LINK",
-                    "AF_PACKET",
-                ):
-                    mac = addr.address
-                    break
-            stat = stats.get(name)
-            out.append(
-                NetworkInterface(
-                    name=name,
-                    mac=mac,
-                    kind=None,
-                    is_up=bool(stat and stat.isup),
-                )
-            )
-        return out
 
     def get_state(self, iface: str) -> NetworkState | None:
         ifaces = {i.name: i for i in self.list_interfaces()}

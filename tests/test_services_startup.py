@@ -1282,7 +1282,6 @@ def test_network_interfaces_provider_reports_an_addressless_interface(monkeypatc
         "router": "",
         "dns": [],
         "lease_display": None,
-        "address_source": "",
     }
 
 
@@ -2553,31 +2552,41 @@ def test_video_input_plane_stops_and_rebuilds_the_input(monkeypatch) -> None:
     assert receiver.released == ["eth1 has no address"]
 
 
-@pytest.mark.parametrize(
-    ("writable", "expected"), [(True, {"eth0": "dhcp", "eth1": "link-local"}), (False, {"eth0": "", "eth1": ""})]
-)
-def test_network_interfaces_provider_says_where_each_address_came_from(
-    monkeypatch, writable: bool, expected: dict[str, str]
-) -> None:
-    """A read-only backend reports every address as DHCP, so it is not asked."""
+def test_address_sources_provider_hands_the_backends_readings_on(monkeypatch) -> None:
+    from openfollow.network.adapter import AddressSourceReading, BackendReadError
+
     services = _build_services_with_psutil_backend(monkeypatch)
+    provider = services._network_address_sources_provider
 
-    class _FakeAdapter:
-        backend_name = "fake"
+    class _Backend:
+        readings: list[AddressSourceReading] | None = [
+            AddressSourceReading("eth0", "192.0.2.5", "static"),
+            AddressSourceReading("eth1", "198.51.100.7", "unreadable", "nmcli failed (rc=8)"),
+        ]
 
-        def list_interfaces(self):
-            return [_ifrow("eth0"), _ifrow("eth1")]
+        def read_address_sources(self):
+            if isinstance(self.readings, Exception):
+                raise self.readings
+            return self.readings
 
-        def is_writable(self):
-            return writable
+    backend = _Backend()
+    services._network_adapter = backend
+    assert provider() == [
+        {"name": "eth0", "address": "192.0.2.5", "source": "static", "reason": ""},
+        {"name": "eth1", "address": "198.51.100.7", "source": "unreadable", "reason": "nmcli failed (rc=8)"},
+    ]
+    backend.readings = None
+    assert provider() is None
+    backend.readings = BackendReadError("Error: NetworkManager is not running.")  # type: ignore[assignment]
+    with pytest.raises(BackendReadError, match="not running"):
+        provider()
+    services._network_adapter = None
+    assert provider() is None
 
-        def get_state(self, iface):
-            if iface == "eth0":
-                return _ifrow_state(iface, address="192.0.2.5", prefix=24, method_value="dhcp")
-            return _ifrow_state(iface, address="169.254.7.7", prefix=16, method_value="dhcp")
 
-    services._network_adapter = _FakeAdapter()
-    assert {r["name"]: r["address_source"] for r in services._network_interfaces_provider()} == expected
+def test_address_sources_provider_on_a_read_only_backend_says_it_cannot_tell(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    assert services._network_address_sources_provider() is None
 
 
 def test_network_plane_status_reports_the_observer_snapshot(monkeypatch) -> None:

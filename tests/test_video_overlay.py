@@ -13,6 +13,8 @@ verify the dispatch contract without rendering real pixels.
 
 from __future__ import annotations
 
+import re
+
 import numpy as np
 import pytest
 
@@ -22,6 +24,7 @@ from openfollow.runtime.overlay_state import (
 )
 from openfollow.video import overlay as overlay_module
 from openfollow.video.overlay import CairoOverlayRenderer
+from tests._fake_cairo import FakeCairo as RecordingCairo
 
 pytestmark = pytest.mark.unit
 
@@ -88,6 +91,7 @@ def patched_passes(monkeypatch):
         "draw_about_overlay_pass",
         "draw_media_picker_overlay_pass",
         "draw_media_export_overlay_pass",
+        "draw_menu_help_pass",
         "draw_button_detection_overlay_pass",
         "draw_hud_pass",
         "draw_settings_overlay_pass",
@@ -123,14 +127,14 @@ class TestDrawDispatch:
         renderer = CairoOverlayRenderer()
         renderer.state.settings_menu_active = True
         renderer.draw(FakeCairo(), 1280, 720)
-        assert patched_passes == ["draw_settings_overlay_pass"]
+        assert patched_passes == ["draw_settings_overlay_pass", "draw_menu_help_pass"]
 
     def test_about_active_dispatches_about_overlay(self, patched_passes) -> None:
         """About screen renders via its own pass in the modal-priority slot."""
         renderer = CairoOverlayRenderer()
         renderer.state.about_active = True
         renderer.draw(FakeCairo(), 1280, 720)
-        assert patched_passes == ["draw_about_overlay_pass"]
+        assert patched_passes == ["draw_about_overlay_pass", "draw_menu_help_pass"]
 
     @pytest.mark.parametrize(
         ("flag", "draw_pass"),
@@ -143,7 +147,7 @@ class TestDrawDispatch:
         renderer = CairoOverlayRenderer()
         setattr(renderer.state, flag, True)
         renderer.draw(FakeCairo(), 1280, 720)
-        assert patched_passes == [draw_pass]
+        assert patched_passes == [draw_pass, "draw_menu_help_pass"]
 
     def test_source_type_selection_dispatches_source_type_overlay(self, patched_passes) -> None:
         """Source-type picker renders when source_type_selection_active is set."""
@@ -151,7 +155,7 @@ class TestDrawDispatch:
         renderer.state.source_type_selection_active = True
         renderer.state.video_connected = False  # simulate prior plugin death
         renderer.draw(FakeCairo(), 1280, 720)
-        assert patched_passes == ["draw_source_type_selection_overlay_pass"]
+        assert patched_passes == ["draw_source_type_selection_overlay_pass", "draw_menu_help_pass"]
 
     def test_url_editor_dispatches_url_editor_overlay(self, patched_passes) -> None:
         """URL editor renders above No-Signal when url_editor_active is set."""
@@ -159,7 +163,7 @@ class TestDrawDispatch:
         renderer.state.url_editor_active = True
         renderer.state.video_connected = False
         renderer.draw(FakeCairo(), 1280, 720)
-        assert patched_passes == ["draw_url_editor_overlay_pass"]
+        assert patched_passes == ["draw_url_editor_overlay_pass", "draw_menu_help_pass"]
 
     def test_field_choice_picker_dispatches_field_choice_overlay(self, patched_passes) -> None:
         """Enum-style picker is sibling to the URL editor in the modal
@@ -170,20 +174,20 @@ class TestDrawDispatch:
         renderer.state.field_choice_active = True
         renderer.state.video_connected = False
         renderer.draw(FakeCairo(), 1280, 720)
-        assert patched_passes == ["draw_field_choice_picker_overlay_pass"]
+        assert patched_passes == ["draw_field_choice_picker_overlay_pass", "draw_menu_help_pass"]
 
     def test_pi_network_field_edit_dispatches_field_edit_overlay(self, patched_passes) -> None:
         """Field editor takes deepest priority in Network sub-states."""
         renderer = CairoOverlayRenderer()
         renderer.state.pi_network.field_edit_active = True
         renderer.draw(FakeCairo(), 1280, 720)
-        assert patched_passes == ["draw_pi_network_field_edit_overlay_pass"]
+        assert patched_passes == ["draw_pi_network_field_edit_overlay_pass", "draw_menu_help_pass"]
 
     def test_pi_network_screen_dispatches_screen_overlay(self, patched_passes) -> None:
         renderer = CairoOverlayRenderer()
         renderer.state.pi_network.screen_active = True
         renderer.draw(FakeCairo(), 1280, 720)
-        assert patched_passes == ["draw_pi_network_screen_overlay_pass"]
+        assert patched_passes == ["draw_pi_network_screen_overlay_pass", "draw_menu_help_pass"]
 
     def test_disconnected_video_does_not_draw_no_signal_overlay(
         self,
@@ -200,7 +204,7 @@ class TestDrawDispatch:
         renderer = CairoOverlayRenderer()
         renderer.state.source_selection_active = True
         renderer.draw(FakeCairo(), 1280, 720)
-        assert patched_passes == ["draw_source_selection_overlay_pass"]
+        assert patched_passes == ["draw_source_selection_overlay_pass", "draw_menu_help_pass"]
 
     def test_no_camera_params_draws_hud_only(self, patched_passes) -> None:
         renderer = CairoOverlayRenderer()
@@ -223,6 +227,8 @@ class TestDrawDispatch:
         assert "draw_marker_pass" in patched_passes
         assert "draw_hud_pass" in patched_passes
         assert "draw_detections_pass" not in patched_passes
+        # The menus' key list belongs to the menus; the HUD has its own help.
+        assert "draw_menu_help_pass" not in patched_passes
 
     def test_full_scene_with_detections_shown(self, patched_passes) -> None:
         renderer = CairoOverlayRenderer()
@@ -286,6 +292,65 @@ class TestDrawDispatch:
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
+
+
+# What a screen's own key help said: a key, a pad control, or a help block's heading.
+_KEY_HELP = re.compile(r"\b(Enter|Esc|Escape|Backspace|Arrows?|D-?pad|Press)\b|^(KEYBOARD|CONTROLLER)$", re.IGNORECASE)
+
+# Each menu screen, by the state that opens it and the title it draws.
+_MENU_SCREENS = {
+    "settings": (
+        {"settings_menu_active": True, "settings_items": ["Network"], "settings_items_enabled": [True]},
+        "SETTINGS",
+    ),
+    "about": ({"about_active": True}, "ABOUT"),
+    "drive-picker": (
+        {"media_picker_active": True, "media_picker_title": "SAVE DIAGNOSTICS", "media_picker_items": ["SanDisk"]},
+        "SAVE DIAGNOSTICS",
+    ),
+    "export": (
+        {
+            "media_export_active": True,
+            "media_export_lines": ("Saved a.txt to SanDisk.", "It can be removed now.", True),
+        },
+        "SAVE DIAGNOSTICS",
+    ),
+    "network": ({}, "NETWORK INTERFACES"),
+    "network-field": ({}, "CHANGE IP ADDRESS"),
+    "source-type": (
+        {"source_type_selection_active": True, "available_source_types": [("rtsp", "RTSP")]},
+        "VIDEO SOURCE TYPE",
+    ),
+    "url-editor": ({"url_editor_active": True, "url_editor_field_label": "RTSP URL"}, "RTSP URL"),
+    "field-choice": ({"field_choice_active": True, "field_choice_items": ["Stage", "Grey"]}, "SELECT VALUE"),
+    "source-selection": ({"source_selection_active": True, "discovered_sources": ["CAM 1"]}, "SELECT SOURCE"),
+}
+
+
+class TestMenuScreensNameNoKeys:
+    @pytest.mark.parametrize("screen", list(_MENU_SCREENS))
+    def test_no_menu_screen_names_its_own_keys(self, monkeypatch, screen: str) -> None:  # noqa: ANN001
+        """Every key is in the one list beside the menus; a screen's own key
+        help is a second, drifting copy of it."""
+        monkeypatch.setattr(overlay_module, "draw_menu_help_pass", lambda *args, **kwargs: None)
+        renderer = CairoOverlayRenderer()
+        renderer._logo_handle = None  # the About screen's text fallback, not an SVG render
+        state = renderer.state
+        state.keyboard_connected = state.controller_connected = True
+        state.button_labels = {"menu_confirm": "A", "menu_cancel": "B", "settings": "BACK"}
+        fields, title = _MENU_SCREENS[screen]
+        for name, value in fields.items():
+            setattr(state, name, value)
+        state.pi_network.screen_active = screen == "network"
+        if screen == "network-field":
+            state.pi_network.field_edit_active = True
+            state.pi_network.field_label = "IP Address"
+            state.pi_network.active_iface = "eth0"
+        cr = RecordingCairo()
+        renderer.draw(cr, 1920, 1080)
+        texts = cr.show_text_strings()
+        assert title in texts
+        assert [t for t in texts if _KEY_HELP.search(t)] == []
 
 
 class TestVisibleHelper:

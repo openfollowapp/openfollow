@@ -343,7 +343,6 @@ def draw_selection_menu(
     *,
     title: str,
     subtitle: str,
-    mode: str,
     items: list[str],
     selected_idx: int,
     empty_message: str,
@@ -365,21 +364,6 @@ def draw_selection_menu(
     content_x = panel_x + 16.0
     content_w = panel_w - 32.0
     cursor_y = panel_y + 74.0
-
-    help_secs = _help_sections_for(renderer, mode, state)
-    help_h = help_sections_height(help_secs)
-    if help_h > 0:
-        block_h = help_h + 14.0
-        draw_panel_background(renderer, cr, content_x, cursor_y, content_w, block_h, radius=PANEL_RADIUS)
-        draw_help_block(
-            renderer,
-            cr,
-            content_x + 10.0,
-            cursor_y + 13.0,
-            content_w - 20.0,
-            help_secs,
-        )
-        cursor_y += block_h + 12.0
 
     list_h = max(80.0, panel_y + panel_h - cursor_y - 14.0)
     draw_selectable_list(
@@ -409,7 +393,6 @@ def draw_media_picker_overlay(renderer: Any, cr: Any, state: OverlayState, w: in
         h,
         title=state.media_picker_title,
         subtitle=PICKER_SUBTITLE,
-        mode="media-picker",
         items=state.media_picker_items,
         selected_idx=state.media_picker_index,
         empty_message=state.media_picker_empty,
@@ -440,9 +423,6 @@ def draw_media_export_overlay(
     from openfollow.runtime.app_modes_media import EXPORT_SUBTITLE, EXPORT_TITLE
 
     headline, next_step, ok = state.media_export_lines
-    help_secs = _help_sections_for(renderer, "media-export" if ok is None else "media-export-done", state)
-    help_h = help_sections_height(help_secs)
-    block_h = help_h + 14.0 if help_h > 0 else 0.0
     draw_modal_scrim(cr, w, h)
     panel_x, panel_y, panel_w, _ = draw_modal_shell(
         renderer,
@@ -452,12 +432,8 @@ def draw_media_export_overlay(
         title=EXPORT_TITLE,
         subtitle=EXPORT_SUBTITLE,
         panel_w=min(w * 0.52, 760.0),
-        panel_h=190.0 + (block_h + 12.0 if block_h else 0.0),
+        panel_h=170.0,
     )
-    if block_h:
-        block_x, block_y, block_w = panel_x + 16.0, panel_y + 172.0, panel_w - 32.0
-        draw_panel_background(renderer, cr, block_x, block_y, block_w, block_h, radius=PANEL_RADIUS)
-        draw_help_block(renderer, cr, block_x + 10.0, block_y + 13.0, block_w - 20.0, help_secs)
     text_x = panel_x + 28.0
     line_y = panel_y + 108.0
     if ok is None:
@@ -485,7 +461,6 @@ def draw_source_selection(renderer: Any, cr: Any, state: OverlayState, w: int, h
         h,
         title=state.source_selection_title,
         subtitle="Choose a source and confirm to reconnect video.",
-        mode="source-selection",
         items=list(state.discovered_sources),
         selected_idx=state.selected_source_index,
         empty_message="Scanning for available sources...",
@@ -513,7 +488,6 @@ def draw_source_type_selection(
         h,
         title="VIDEO SOURCE TYPE",
         subtitle="Switch the active video plugin (RTSP, NDI, Test Pattern, …).",
-        mode="source-type-selection",
         items=items,
         selected_idx=state.selected_source_type_index,
         empty_message="No video source plugins available on this device.",
@@ -548,8 +522,7 @@ def draw_field_choice_picker(
         w,
         h,
         title=title,
-        subtitle="Pick a value, Enter to confirm, Esc to cancel.",
-        mode="field-choice",
+        subtitle="Choose a value.",
         items=list(state.field_choice_items),
         selected_idx=state.field_choice_selected_index,
         empty_message="No options available.",
@@ -576,7 +549,7 @@ def draw_url_editor(
 ) -> None:
     """Render on-device single-line text editor with caret."""
     title = (state.url_editor_field_label or "URL").upper()
-    subtitle = state.url_editor_banner or ("Type the value, Backspace to delete, Enter to save, Esc to cancel.")
+    subtitle = state.url_editor_banner or "Edit the value."
     panel_w = panel_width(w)
     panel_h = min(h * 0.32, 280.0)
     panel_x, panel_y, panel_w, panel_h = draw_modal_shell(
@@ -684,29 +657,6 @@ def draw_settings_menu(renderer: Any, cr: Any, state: OverlayState, w: int, h: i
             cursor_y,
             content_w,
         )
-
-    help_secs = _help_sections_for(renderer, "settings", state)
-    help_h = help_sections_height(help_secs)
-    if help_h > 0:
-        block_h = help_h + 14.0
-        draw_panel_background(
-            renderer,
-            cr,
-            content_x,
-            cursor_y,
-            content_w,
-            block_h,
-            radius=PANEL_RADIUS,
-        )
-        draw_help_block(
-            renderer,
-            cr,
-            content_x + 10.0,
-            cursor_y + 13.0,
-            content_w - 20.0,
-            help_secs,
-        )
-        cursor_y += block_h + 12.0
 
     # The list takes the height its rows need, not everything left over, so the
     # documentation pointer below it is on screen rather than under the panel.
@@ -980,7 +930,7 @@ def draw_about_screen(renderer: Any, cr: Any, state: OverlayState, w: int, h: in
         w,
         h,
         title="ABOUT",
-        subtitle="Press OK / Back (Enter / Esc) to return",
+        subtitle="Version, license and project links.",
         panel_w=panel_w,
         panel_h=panel_h,
     )
@@ -1111,31 +1061,39 @@ def draw_about_overlay(renderer: Any, cr: Any, state: OverlayState, w: int, h: i
     draw_about_screen(renderer, cr, state, w, h)
 
 
+_CORNER_ICON_X = _CORNER_ICON_Y = 10.0
+_CORNER_ICON_SIZE = 24.0
+# The menu list's lines run longer than the HUD's.
+_MENU_HELP_W = 260.0
+
+
+def _draw_corner_help(renderer: Any, cr: Any, sections: HelpSections, panel_w: float) -> None:
+    """A help panel under the icon in the top-left corner; nothing when *sections* is empty."""
+    help_h = help_sections_height(sections)
+    if help_h <= 0:
+        return
+    panel_x = 10.0
+    panel_y = _CORNER_ICON_Y + _CORNER_ICON_SIZE + 4.0
+    draw_panel_background(renderer, cr, panel_x, panel_y, panel_w, help_h + 20.0, radius=PANEL_RADIUS)
+    draw_help_block(renderer, cr, panel_x + 12.0, panel_y + 18.0, panel_w - 24.0, sections)
+
+
+def draw_menu_help(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
+    """The menus' one key list, in the HUD help's corner, while any menu screen is open."""
+    renderer._draw_icon(cr, _CORNER_ICON_X, _CORNER_ICON_Y, _CORNER_ICON_SIZE)
+    _draw_corner_help(renderer, cr, _help_sections_for(renderer, "menus", state), min(_MENU_HELP_W, w - 20.0))
+
+
 def draw_hud(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
     # Controller badges render per-marker card; unbound pads in Settings menu.
     draw_bottom_left_info_panel(renderer, cr, state, w, h)
 
-    icon_size = 24.0
-    icon_x, icon_y = 10.0, 10.0
+    icon_size = _CORNER_ICON_SIZE
+    icon_x, icon_y = _CORNER_ICON_X, _CORNER_ICON_Y
     renderer._draw_icon(cr, icon_x, icon_y, icon_size)
 
     if state.show_hud_help:
-        help_secs = _help_sections_for(renderer, "normal", state)
-        help_h = help_sections_height(help_secs)
-        if help_h > 0:
-            panel_x = 10.0
-            panel_y = icon_y + icon_size + 4.0
-            panel_w = max(160.0, min(220.0, w - 20.0))
-            panel_h = help_h + 20.0
-            draw_panel_background(renderer, cr, panel_x, panel_y, panel_w, panel_h, radius=PANEL_RADIUS)
-            draw_help_block(
-                renderer,
-                cr,
-                panel_x + 12.0,
-                panel_y + 18.0,
-                panel_w - 24.0,
-                help_secs,
-            )
+        _draw_corner_help(renderer, cr, _help_sections_for(renderer, "normal", state), max(160.0, min(220.0, w - 20.0)))
     else:
         renderer._set_ui_font(cr, 9)
         cr.set_source_rgba(*COLOR_TEXT_MUTED)
@@ -1625,10 +1583,8 @@ def draw_button_detection_overlay(renderer: Any, cr: Any, state: OverlayState, w
 
     draw_modal_scrim(cr, w, h, alpha=0.72)
 
-    if bd.step >= bd.total_steps:
-        subtitle = f"All {bd.total_steps} steps done  \u2013  Press Esc to close"
-    else:
-        subtitle = f"Step {bd.step + 1} of {bd.total_steps}  \u2013  Press Esc to cancel"
+    done = bd.step >= bd.total_steps
+    subtitle = f"All {bd.total_steps} steps done" if done else f"Step {bd.step + 1} of {bd.total_steps}"
     panel_w = panel_width(w)
     panel_h = screen_height(h)
     panel_x, panel_y, panel_w, panel_h = draw_modal_shell(
@@ -1645,6 +1601,15 @@ def draw_button_detection_overlay(renderer: Any, cr: Any, state: OverlayState, w
     content_x = panel_x + 24.0
     content_w = panel_w - 48.0
     cursor_y = panel_y + 76.0
+
+    # Not the menus' key list: every pad button here is recorded as the prompted one.
+    if state.keyboard_connected:
+        renderer._set_ui_font(cr, 11)
+        cr.set_source_rgba(*COLOR_TEXT_MUTED)
+        esc = "Esc: Close" if done else "Esc: Cancel"
+        ext = cr.text_extents(esc)
+        cr.move_to(panel_x + (panel_w - ext.width) / 2.0 - ext.x_bearing, panel_y + panel_h - 18.0)
+        cr.show_text(esc)
 
     # Prompt: "Press: <LABEL>"
     if bd.current_label:
@@ -1731,30 +1696,6 @@ def draw_button_detection_overlay(renderer: Any, cr: Any, state: OverlayState, w
 # ---------------------------------------------------------------------------
 
 
-def _menu_button_hint(state: OverlayState, action: str, default: str) -> str:
-    """Friendly label for a menu button, or "" when the operator unbound it.
-
-    These screens are reachable on a station with no keyboard, so every modal
-    that can be driven from a pad has to name the pad buttons. Read from the
-    operator's own bindings rather than hardcoded, because a rebound control
-    named by its default sends them to a button that does nothing.
-    """
-    raw = state.button_labels.get(action, default)
-    return friendly_button_label(raw) if raw else ""
-
-
-def _confirm_cancel_hint(state: OverlayState, confirm_verb: str, cancel_verb: str) -> str:
-    """``"A saves, B cancels"`` from live bindings; "" when neither is bound."""
-    confirm = _menu_button_hint(state, "menu_confirm", "A")
-    cancel = _menu_button_hint(state, "menu_cancel", "B")
-    parts = []
-    if confirm:
-        parts.append(f"{confirm} {confirm_verb}")
-    if cancel:
-        parts.append(f"{cancel} {cancel_verb}")
-    return ", ".join(parts)
-
-
 _NOTICE_FONT = 11.5
 _NOTICE_LINE_H = 16.0
 _NOTICE_PAD = 7.0
@@ -1805,10 +1746,7 @@ def draw_pi_network_screen(
     while data rows sit indented below them.
     """
     net = state.pi_network
-    # Confirm opens an interface on the list and runs an action inside one, so
-    # the hint has to follow the level rather than describe one of them wrongly.
-    pad = _confirm_cancel_hint(state, "selects" if net.open_iface else "opens", "goes back")
-    subtitle = f"D-pad or arrows to move. {pad}." if pad else "Arrows to move, Enter to select, Esc to go back."
+    subtitle = "Address settings for this interface." if net.open_iface else "Interfaces on this station."
     panel_w = panel_width(w)
     panel_h = screen_height(h)
     panel_x, panel_y, panel_w, panel_h = draw_modal_shell(
@@ -1995,14 +1933,7 @@ def draw_pi_network_field_edit(
     # remember which row they opened, and the cost of getting it wrong is
     # reconfiguring the interface they are reachable on.
     title = f"Change {net.field_label or 'Value'}".upper()
-    pad = _confirm_cancel_hint(state, "saves", "cancels")
-    detail = (
-        f"Left/Right move, Up/Down change the digit. {pad}."
-        if pad
-        else "Type digits and dots only, Enter to save, Esc to cancel."
-    )
-    # Interface first: the subtitle is truncated from the end.
-    subtitle = f"{net.active_iface} - {detail}" if net.active_iface else detail
+    subtitle = net.active_iface
     panel_w = panel_width(w)
     panel_h = min(h * 0.30, 240.0)
     panel_x, panel_y, panel_w, panel_h = draw_modal_shell(

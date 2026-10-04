@@ -677,7 +677,7 @@ marker_fader: float | None    # per-marker fader value, or None
 ```
 
 ### HUD layout
-- **Top-left:** key hints – the active source plugin's `hotkey_label` (e.g. `N=NDI`) plus interface / settings / exit hints (no calibration hint; calibration is web-only)
+- **Top-left:** the help panel (`key_toggle_help`), or its key hint while closed. While any menu screen is open, the menus' one key list instead (`build_help_sections(mode="menus")`), the same on every screen: `CairoOverlayRenderer.draw` draws it after `_draw_menu_screen`, never a screen itself, and no screen names its own keys. The Button Detection Wizard is not a menu here (every pad button is the input it records) and names only `Esc` itself
 - **Top-right:** system stats (CPU, mem, temp, FPS)
 - **Bottom-left:** combined info panel (`IP Address:` + `Video Source:`)
 - **Bottom-center:** controller connection status

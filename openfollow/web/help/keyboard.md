@@ -31,7 +31,7 @@ Arrow keys are reserved for navigating the on-screen menu and cannot be used for
 - **Toggle Help** – show or hide the help overlay on the Operator Screen. Default: `h`.
 - **Toggle Zone Overlay** – show or hide the zone overlay on the Operator Screen. Default: `z`.
 - **Speed -** / **Speed +** – step movement speed down or up through the configured range. Defaults: `r` / `t`.
-- **Settings Menu** – open the Settings menu on the Operator Screen. Default: `m`.
+- **Settings Menu** – open the Settings menu on the Operator Screen; pressed in any menu, it closes them all. While a menu is open, the Operator Screen lists the menu keys in its top-left corner. Default: `m`.
 - **Clear Messages** – clear every operator-message card. Default: *(unset)*.
 - **Next Marker** / **Prev Marker** – cycle which marker your inputs drive, when more than one controlled marker is configured. Defaults: `Tab` / *(unset)*.
 

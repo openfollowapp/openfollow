@@ -307,53 +307,79 @@ def test_build_help_sections_cycle_line_omitted_when_both_unbound() -> None:
     assert not any("Marker next" in line or "Marker prev" in line for line in keyboard)
 
 
-def test_build_help_sections_settings_mode_lists_navigation() -> None:
+_MENU_KEYBOARD = [
+    "Enter: Confirm",
+    "Esc: Back",
+    "Arrow Up/Down: Move",
+    "Backspace: Delete in a text field",
+    "M: Close all menus",
+]
+_MENU_CONTROLLER = [
+    "A: Confirm",
+    "B: Back",
+    "D-Pad Up/Down: Move, or change a digit",
+    "D-Pad Left/Right: Move between digits",
+    "Back: Close all menus",
+]
+
+
+def test_the_menus_list_every_key_any_menu_screen_uses() -> None:
+    """One list for every menu screen, so an operator learns it once."""
+    sections = build_help_sections(mode="menus", keyboard_connected=True, controller_connected=True)
+    assert sections == [("Keyboard", _MENU_KEYBOARD), ("Controller", _MENU_CONTROLLER)]
+
+
+def test_the_menus_list_names_the_operators_own_bindings() -> None:
     sections = build_help_sections(
-        mode="settings",
+        mode="menus",
         keyboard_connected=True,
         controller_connected=True,
-        button_labels={"menu_confirm": "A", "menu_cancel": "B"},
+        button_labels={"menu_confirm": "X", "menu_cancel": "Y", "settings": "START"},
+        keyboard_labels={"settings": "p"},
     )
-    section_dict = dict(sections)
-    keyboard = section_dict["Keyboard"]
-    controller = section_dict["Controller"]
-    assert any("Navigate" in line for line in keyboard)
-    assert any(line.startswith("Enter: Confirm") for line in keyboard)
-    assert any("Esc: Back one screen" in line for line in keyboard)
-    assert any("Navigate" in line for line in controller)
-    assert any(line.startswith("A: Confirm") for line in controller)
-    assert any(line.startswith("B: Back one screen") for line in controller)
+    keyboard, controller = dict(sections)["Keyboard"], dict(sections)["Controller"]
+    assert keyboard[-1] == "P: Close all menus"
+    assert controller[:2] == ["X: Confirm", "Y: Back"]
+    assert controller[-1] == "Start: Close all menus"
 
 
-def test_the_settings_help_lists_both_ways_out() -> None:
-    """Cancel steps back one screen; the button that opened the menus leaves
-    them entirely. An operator several screens down cannot discover the second
-    one unless it is listed."""
-    sections = build_help_sections(
-        mode="settings",
-        keyboard_connected=True,
-        controller_connected=True,
-        button_labels={"menu_confirm": "A", "menu_cancel": "B", "settings": "BACK"},
-        keyboard_labels={"settings": "m"},
-    )
-    section_dict = dict(sections)
-    assert any(line == "M: Close Menu" for line in section_dict["Keyboard"])
-    assert any(line == "Back: Close Menu" for line in section_dict["Controller"])
-
-
-def test_an_unbound_close_button_is_not_promised() -> None:
+@pytest.mark.parametrize(
+    ("action", "line"),
+    [("menu_confirm", "A: Confirm"), ("menu_cancel", "B: Back"), ("settings", "Back: Close all menus")],
+)
+def test_an_unbound_menu_button_is_not_promised(action: str, line: str) -> None:
     """Naming a button that does nothing is worse than leaving it out, on the
     screen an operator reaches when they need a way back."""
     sections = build_help_sections(
-        mode="settings",
-        keyboard_connected=True,
-        controller_connected=True,
-        button_labels={"menu_confirm": "A", "menu_cancel": "B", "settings": ""},
-        keyboard_labels={"settings": ""},
+        mode="menus", keyboard_connected=False, controller_connected=True, button_labels={action: ""}
     )
-    section_dict = dict(sections)
-    assert not any("Close" in line for line in section_dict["Keyboard"])
-    assert not any("Close" in line for line in section_dict["Controller"])
+    assert sections == [("Controller", [entry for entry in _MENU_CONTROLLER if entry != line])]
+
+
+def test_an_unbound_settings_key_is_not_promised() -> None:
+    sections = build_help_sections(
+        mode="menus", keyboard_connected=True, controller_connected=False, keyboard_labels={"settings": ""}
+    )
+    assert sections == [("Keyboard", _MENU_KEYBOARD[:-1])]
+
+
+@pytest.mark.parametrize(
+    ("keyboard", "controller", "titles"),
+    [(True, False, ["Keyboard"]), (False, True, ["Controller"]), (False, False, [])],
+)
+def test_the_menus_list_only_the_keyboard_and_controller_this_station_has(
+    keyboard: bool, controller: bool, titles: list[str]
+) -> None:
+    """The mouse and the 3D mouse drive no menu, so they are never listed."""
+    sections = build_help_sections(
+        mode="menus",
+        keyboard_connected=keyboard,
+        controller_connected=controller,
+        mouse_enabled=True,
+        mouse3d_connected=True,
+        mouse3d_buttons={"reset": 0},
+    )
+    assert [title for title, _ in sections] == titles
 
 
 def test_help_sections_height_matches_section_math() -> None:
@@ -608,68 +634,6 @@ def test_build_help_sections_normal_controller_renders_zone_overlay_line_only_wh
     assert any("Toggle zone overlay" in line for line in controller)
 
 
-def test_build_help_sections_source_selection_controller_lists_dpad_navigation() -> None:
-    """Source-selection mode controller branch. Without this, controllers
-    with no keyboard wouldn't see the menu instructions."""
-    sections = build_help_sections(
-        mode="source-selection",
-        keyboard_connected=False,
-        controller_connected=True,
-    )
-    controller = next(lines for title, lines in sections if title == "Controller")
-    assert any("D-Pad Up/Down" in line for line in controller)
-    assert any("Confirm source" in line for line in controller)
-
-
-def test_build_help_sections_source_type_selection_keyboard_lists_navigation() -> None:
-    """Source-type picker keyboard arm covers the new
-    ``source-type-selection`` mode in draw_selection_menu."""
-    sections = build_help_sections(
-        mode="source-type-selection",
-        keyboard_connected=True,
-        controller_connected=False,
-    )
-    keyboard = next(lines for title, lines in sections if title == "Keyboard")
-    assert any("Select source type" in line for line in keyboard)
-    assert any("Confirm source type" in line for line in keyboard)
-    assert any("Cancel source type menu" in line for line in keyboard)
-
-
-def test_build_help_sections_source_type_selection_controller_lists_dpad() -> None:
-    """Source-type picker controller arm."""
-    sections = build_help_sections(
-        mode="source-type-selection",
-        keyboard_connected=False,
-        controller_connected=True,
-    )
-    controller = next(lines for title, lines in sections if title == "Controller")
-    assert any("D-Pad Up/Down" in line for line in controller)
-    assert any("Confirm source type" in line for line in controller)
-    assert any("Cancel source type menu" in line for line in controller)
-
-
-def test_build_help_sections_button_detection_keyboard_only_lists_escape() -> None:
-    """Button-detection mode keyboard branch."""
-    sections = build_help_sections(
-        mode="button-detection",
-        keyboard_connected=True,
-        controller_connected=False,
-    )
-    keyboard = next(lines for title, lines in sections if title == "Keyboard")
-    assert any("Cancel detection" in line for line in keyboard)
-
-
-def test_build_help_sections_button_detection_controller_prompts_user() -> None:
-    """Button-detection mode controller branch."""
-    sections = build_help_sections(
-        mode="button-detection",
-        keyboard_connected=False,
-        controller_connected=True,
-    )
-    controller = next(lines for title, lines in sections if title == "Controller")
-    assert any("Press the prompted button" in line for line in controller)
-
-
 def test_build_help_sections_unknown_mode_returns_empty() -> None:
     """An unknown mode falls through every elif and returns an empty
     section list – closes the elif-chain → exit branch."""
@@ -679,32 +643,6 @@ def test_build_help_sections_unknown_mode_returns_empty() -> None:
         controller_connected=True,
     )
     assert sections == []
-
-
-@pytest.mark.parametrize(
-    "mode,expected_substring",
-    [
-        ("source-selection", "Confirm source"),
-        ("settings", "Confirm"),
-    ],
-)
-def test_build_help_sections_keyboard_only_renders_keyboard_section(
-    mode: str,
-    expected_substring: str,
-) -> None:
-    """Each modal mode renders a keyboard-only section when no controller
-    is connected. Without these tests the keyboard-only arms (and the
-    branches that skip the controller arm) stay unexercised."""
-    sections = build_help_sections(
-        mode=mode,
-        keyboard_connected=True,
-        controller_connected=False,
-    )
-    titles = [title for title, _ in sections]
-    assert "Keyboard" in titles
-    assert "Controller" not in titles
-    keyboard = next(lines for title, lines in sections if title == "Keyboard")
-    assert any(expected_substring in line for line in keyboard)
 
 
 def test_build_system_stats_text_includes_temperature_when_provided() -> None:
@@ -729,18 +667,6 @@ def test_build_system_stats_text_omits_temperature_when_none() -> None:
     assert "CPU" in text and "RAM" in text
 
 
-def test_build_help_sections_settings_mode_no_devices_returns_empty() -> None:
-    """Settings mode with neither keyboard nor controller connected
-    returns empty sections – covers the partial branches that skip
-    both per-device blocks."""
-    sections = build_help_sections(
-        mode="settings",
-        keyboard_connected=False,
-        controller_connected=False,
-    )
-    assert sections == []
-
-
 def test_selectable_list_layout_no_scroll_when_selected_within_visible() -> None:
     from openfollow.runtime.overlay_layout import selectable_list_layout
 
@@ -752,30 +678,3 @@ def test_selectable_list_layout_no_scroll_when_selected_within_visible() -> None
     # `max_visible` will be ≥ 2 with this height, so selected_idx=1 fits.
     assert layout.scroll_offset == 0
     assert layout.max_visible >= 2
-
-
-@pytest.mark.parametrize(
-    ("mode", "keyboard", "controller"),
-    [
-        (
-            "media-picker",
-            ["Arrow Up/Down: Select USB storage device", "Enter: Save to it", "Esc: Cancel"],
-            ["D-Pad Up/Down: Select USB storage device", "X: Save to it", "Y: Cancel"],
-        ),
-        ("media-export", ["Esc: Back to Settings"], ["Y: Back to Settings"]),
-        (
-            "media-export-done",
-            ["Enter: Pick a USB storage device", "Esc: Back to Settings"],
-            ["X: Pick a USB storage device", "Y: Back to Settings"],
-        ),
-    ],
-    ids=["picker", "export-running", "export-ended"],
-)
-def test_build_help_sections_drive_screens_name_the_bound_buttons(mode: str, keyboard: list, controller: list) -> None:
-    sections = build_help_sections(
-        mode=mode,
-        keyboard_connected=True,
-        controller_connected=True,
-        button_labels={"menu_confirm": "X", "menu_cancel": "Y"},
-    )
-    assert sections == [("Keyboard", keyboard), ("Controller", controller)]

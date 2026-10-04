@@ -7165,8 +7165,9 @@ def test_the_fqdn_field_is_saved_and_redrawn_with_the_station_settings_form(live
     [
         ("of-1", "Enter the full name with its domain, such as of-1.stage.example.com."),
         ("of-1.local", "Names under .local are mDNS names, and the station already answers to its own."),
+        (".", "Enter the full name with its domain, such as of-1.stage.example.com."),
     ],
-    ids=["one-label", "mdns"],
+    ids=["one-label", "mdns", "root-only"],
 )
 def test_a_refused_fqdn_fails_the_whole_save_and_says_why(live_server, posted: str, reason: str) -> None:
     """Quietly keeping the stored name re-rendered the field with it and wiped the error, so

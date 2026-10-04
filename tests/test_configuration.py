@@ -6771,6 +6771,8 @@ def test_a_station_fqdn_that_is_not_text_loads_blank(raw: object) -> None:
     [
         "of-1",
         "of-1.",
+        ".",
+        " . ",
         "192.0.2.10",
         "1.2.3.4.5",
         "2001:db8::1",
@@ -6792,6 +6794,8 @@ def test_a_station_fqdn_that_is_not_text_loads_blank(raw: object) -> None:
     ids=[
         "one-label",
         "one-label-root-dot",
+        "root-only",
+        "padded-root-only",
         "ipv4",
         "numeric-tld",
         "ipv6",
@@ -6825,9 +6829,10 @@ def test_a_station_fqdn_round_trips_through_toml(temp_config_path) -> None:
     [
         ('station_fqdn = "Of-1.Stage.Example.COM."', "of-1.stage.example.com"),
         ('station_fqdn = "of-1.local"', ""),
+        ('station_fqdn = "."', ""),
         ("station_fqdn = 42", ""),
     ],
-    ids=["canonicalised", "refused-name", "wrong-type"],
+    ids=["canonicalised", "refused-name", "root-only", "wrong-type"],
 )
 def test_a_hand_edited_station_fqdn_is_normalised_on_load(tmp_path, line: str, stored: str) -> None:
     path = tmp_path / "config.toml"
@@ -6857,8 +6862,10 @@ def test_a_refused_station_fqdn_is_reported_once_not_on_every_load(caplog, monke
             AppConfig(station_fqdn="of_1.stage.example.com")
         AppConfig(station_fqdn="")
         AppConfig(station_fqdn="of-1.stage.example.com")
+        AppConfig(station_fqdn=".")
     warnings = [r.getMessage() for r in caplog.records]
     assert warnings == [
         "Ignoring station_fqdn 'of_1.stage.example.com': Use only letters, digits and hyphens between the dots,"
-        " and no hyphen at the start or end of a part."
+        " and no hyphen at the start or end of a part.",
+        "Ignoring station_fqdn '.': Enter the full name with its domain, such as of-1.stage.example.com.",
     ]

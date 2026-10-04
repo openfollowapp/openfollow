@@ -14,7 +14,7 @@ This station's name, web access and display units, plus the settings you set onc
 
 **mDNS address** – the station's `.local` name, which computers on the same network open it by. Read only; it follows the station name.
 
-**Custom domain name (FQDN)** – this station's name on a venue network with its own DNS, such as `of-1.stage.example.com`. The web UI then accepts changes made through it, and the Operator Screen shows it in place of the `.local` name, which keeps working. **Remove FQDN** on the Operator Screen's Network screen clears it.
+**Custom domain name (FQDN)** – this station's name on a venue network with its own DNS, such as `of-1.stage.example.com`. The name has to resolve to this station in the venue's DNS; OpenFollow does not register it. The web UI then accepts changes made through it, and the Operator Screen shows it in place of the `.local` name, which keeps working. **Remove FQDN** on the Operator Screen's Network screen clears it.
 
 **Autostart** – whether OpenFollow starts when the station powers on. Switching it off leaves the running station untouched.
 

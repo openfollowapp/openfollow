@@ -273,6 +273,8 @@ def test_a_station_fqdn_the_station_will_store_passes(raw: str) -> None:
     ("raw", "message"),
     [
         ("of-1", "Enter the full name with its domain, such as of-1.stage.example.com."),
+        (".", "Enter the full name with its domain, such as of-1.stage.example.com."),
+        (" . ", "Enter the full name with its domain, such as of-1.stage.example.com."),
         ("192.0.2.10", "Enter a name, not an IP address."),
         ("of-1.local", "Names under .local are mDNS names, and the station already answers to its own."),
         (
@@ -290,6 +292,8 @@ def test_a_station_fqdn_the_station_will_store_passes(raw: str) -> None:
     ],
     ids=[
         "one-label",
+        "root-only",
+        "padded-root-only",
         "ip",
         "mdns",
         "underscore",

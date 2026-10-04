@@ -2762,7 +2762,8 @@ class TestTheScreenDoesNotTruncateAUrl:
 
 class TestARowWithNoValueLendsItsColumnToTheLabel:
     """An FQDN's URL runs past the column a ``.local`` one fits in, and the station's
-    name is the line an operator reads out, so an ellipsis there is a wrong address."""
+    name is the line an operator reads out, so an ellipsis there is a wrong address.
+    A name wider than the panel itself still ellipsises at its edge."""
 
     _URL = "http://of-1.production.venue-name.example.org"
 
@@ -2774,7 +2775,7 @@ class TestARowWithNoValueLendsItsColumnToTheLabel:
         draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1280, 720)
         return cr
 
-    def test_a_long_url_with_no_value_is_drawn_whole(self) -> None:
+    def test_a_long_url_with_no_value_is_drawn_across_the_panel(self) -> None:
         cr = self._draw({"kind": "display", "key": "web_host", "label": self._URL, "value": ""})
         assert self._URL in cr.show_text_strings()
 

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 OpenFollow Project
 """The fully qualified domain name an operator gives a station on a venue network.
 
 One rule for every surface that reads or writes it: the config load, the web form, the
@@ -27,9 +29,10 @@ def canonical_host(raw: str) -> str:
 
 def fqdn_problem(raw: str) -> str | None:
     """Why *raw* cannot be a station FQDN, or None when it can. A blank name is allowed."""
-    name = canonical_host(raw)
-    if not name:
+    if not raw.strip():
         return None
+    # A bare root (``.``) canonicalises to blank, but it was typed: refuse it, never clear.
+    name = canonical_host(raw)
     if len(name) > FQDN_MAX_LEN:
         return f"A name is at most {FQDN_MAX_LEN} characters."
     labels = name.split(".")

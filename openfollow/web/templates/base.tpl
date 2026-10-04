@@ -4717,8 +4717,18 @@
  const checked = form.querySelector('input[name="marker_style"]:checked');
  const style = checked !== null ? checked.value : 'crosshair';
  form.querySelectorAll('[data-style-only]').forEach((el) => {
- if (el.dataset.styleOnly === style) { el.removeAttribute('hidden'); } else { el.setAttribute('hidden', ''); }
+ if (el.dataset.styleOnly === style) { el.removeAttribute('hidden'); return; }
+ el.setAttribute('hidden', '');
+ // A hidden field cannot show its error, so an invalid edit there goes back
+ // to the stored value rather than keep Save disabled with no reason shown.
+ el.querySelectorAll('[aria-invalid="true"]').forEach((input) => {
+ input.value = input.defaultValue;
+ input.setAttribute('aria-invalid', 'false');
+ const box = document.getElementById(input.getAttribute('aria-describedby'));
+ if (box) box.innerHTML = '';
  });
+ });
+ refreshFormGate(form);
  });
  // Generic drag-reorder shared by the OSC Transmitters + OSC Destinations
  // row lists: same ⋮⋮ handle on both. Each row carries the bulk-reorder

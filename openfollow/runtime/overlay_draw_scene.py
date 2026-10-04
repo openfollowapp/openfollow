@@ -399,18 +399,35 @@ def _draw_cone(
 
     if fill_alpha > 0.0:
         if shaded and side is not None:
-            # Base disc, lit side, lid: three passes so the side can carry
-            # its own gradient while the discs stay flat. A ring too
-            # degenerate to path leaves an empty path, and the fill is a no-op.
-            _path_ring(cr, g.base_ring)
-            cr.set_source_rgba(r, g_, b, fill_alpha)
-            cr.fill()
-            _path_ring(cr, side)
-            cr.set_source(_side_gradient(edges, rgb, fill_alpha))
-            cr.fill()
-            _path_ring(cr, g.top_ring)
-            cr.set_source_rgba(r, g_, b, fill_alpha)
-            cr.fill()
+            # Base disc, lid, lit side: three passes so the side can carry
+            # its own gradient while the discs stay flat. They are filled
+            # opaque in a group painted once, so where the discs overlap the
+            # cone is no more opaque than elsewhere; the side goes last so its
+            # shading stays visible there, as from a camera looking down.
+            # Clipped to the cone, the group costs the cone's size, not the
+            # frame's. A ring too degenerate to path leaves an empty path, and
+            # the fill is a no-op.
+            corners = np.vstack([g.base_ring, g.top_ring])
+            (x0, y0), (x1, y1) = corners.min(axis=0), corners.max(axis=0)
+            cr.save()
+            cr.rectangle(x0 - 1.0, y0 - 1.0, x1 - x0 + 2.0, y1 - y0 + 2.0)
+            cr.clip()
+            cr.push_group()
+            try:
+                _path_ring(cr, g.base_ring)
+                cr.set_source_rgb(r, g_, b)
+                cr.fill()
+                _path_ring(cr, g.top_ring)
+                cr.set_source_rgb(r, g_, b)
+                cr.fill()
+                _path_ring(cr, side)
+                cr.set_source(_side_gradient(edges, rgb, 1.0))
+                cr.fill()
+            finally:
+                # Balanced even if a fill raised, or the caller's drawing lands in the group.
+                cr.pop_group_to_source()
+                cr.paint_with_alpha(fill_alpha)
+                cr.restore()
         else:
             regions = [g.base_ring, g.top_ring] + ([side] if side is not None else [])
             filled = [_path_ring(cr, _wound_same_way(region)) for region in regions]

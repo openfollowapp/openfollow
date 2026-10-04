@@ -93,6 +93,22 @@ class TestMarkerStyleForm:
         ):
             assert f'name="{name}"' in group
 
+    def test_switching_style_returns_a_hidden_invalid_field_to_its_stored_value(self) -> None:
+        """A hidden field cannot show its error; left ``aria-invalid`` it kept Save disabled
+        with no reason on screen. The suite cannot run page JS, so this pins the handler."""
+        from pathlib import Path
+
+        import openfollow.web as web
+
+        base = (Path(web.__file__).parent / "templates" / "base.tpl").read_text(encoding="utf-8")
+        start = base.index("closest('input[name=\"marker_style\"]')")
+        body = base[start : base.index("document.addEventListener", start)]
+        hide = body.split("el.setAttribute('hidden', '');", 1)[1]
+        assert "querySelectorAll('[aria-invalid=\"true\"]')" in hide
+        assert "input.value = input.defaultValue;" in hide
+        assert "input.setAttribute('aria-invalid', 'false');" in hide
+        assert "refreshFormGate(form);" in body
+
     def test_z_display_is_not_tied_to_a_style(self) -> None:
         """The Z readout applies to both styles, so its group never hides."""
         body = _render_marker()

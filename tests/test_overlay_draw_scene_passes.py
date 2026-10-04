@@ -808,26 +808,84 @@ class TestDrawMarkerConeStyle:
         draw_marker(cr, state, self._marker(), 1920, 1080)
         assert cr.fills == 3  # base disc, shaded side, lid
         assert ("source_pattern",) in cr.calls
-        rgba = [c for c in cr.calls if c[0] == "rgba"]
-        assert rgba[0][4] == 0.4
+        assert ("paint_with_alpha", 0.4) in cr.calls
 
     def test_shaded_fill_lights_the_side_from_the_left(self) -> None:
         state = self._state(cone_filled=True, cone_opacity=0.5, cone_shaded=True)
         cr = FakeCairo()
         draw_marker(cr, state, self._marker(color="#ff3333"), 1920, 1080)
-        # Flat base disc, gradient side, flat lid, then the wireframe stroke.
+        # Flat base disc, flat lid, gradient side, then the wireframe stroke.
         kinds = [c[0] for c in cr.calls if c[0] in ("fill", "source_pattern", "stroke")]
-        assert kinds == ["fill", "source_pattern", "fill", "fill", "stroke"]
+        assert kinds == ["fill", "fill", "source_pattern", "fill", "stroke"]
         (grad,) = cr.patterns
         x0, _, x1, _ = grad.get_linear_points()
         assert x0 < x1  # runs from the left edge's midpoint to the right one
         stops = grad.get_color_stops_rgba()
         assert [s[0] for s in stops] == [0.0, 0.5, 1.0]
         lit, base, shadow = (s[1:] for s in stops)
-        assert base == pytest.approx((1.0, 0.2, 0.2, 0.5))
+        assert base == pytest.approx((1.0, 0.2, 0.2, 1.0))
         assert all(c >= b for c, b in zip(lit[:3], base[:3], strict=True)) and lit[1] > base[1]
         assert all(c <= b for c, b in zip(shadow[:3], base[:3], strict=True)) and shadow[0] < base[0]
-        assert lit[3] == shadow[3] == 0.5
+        # Filled opaque, then painted once at the cone's opacity.
+        assert lit[3] == shadow[3] == 1.0
+        assert [c for c in cr.calls if c[0] == "paint_with_alpha"] == [("paint_with_alpha", 0.5)]
+
+    def test_overlapping_discs_keep_the_cones_opacity_and_its_shading(self, monkeypatch) -> None:
+        """Seen from above, the lid lands on the base disc and the side covers both. Filled one
+        after another, their translucency compounded into a near-opaque patch there; filled with
+        the lid last, the lid hid the side's shading. Either way the cone stopped reading as one."""
+        import sys
+
+        import cairo
+
+        from openfollow.runtime import overlay_draw_scene as mod
+        from openfollow.scene.solver import ring_silhouette_indices
+        from openfollow.zones.geometry import point_in_polygon
+
+        def circle(cx: float, cy: float, r: float) -> np.ndarray:
+            a = np.linspace(0.0, 2.0 * np.pi, 72, endpoint=False)
+            return np.column_stack([cx + r * np.cos(a), cy + r * np.sin(a)])
+
+        # A near-overhead camera: the lid sits above the base disc and overlaps it.
+        base_c, top_c = (100.0, 130.0), (100.0, 95.0)
+        base, top = circle(*base_c, 40.0), circle(*top_c, 25.0)
+        edges = ring_silhouette_indices(base, top, base_c, top_c)
+        assert len(edges) == 2
+        geometry = mod._ConeScreen(base, top, np.array(base_c), np.array(top_c), edges)
+        monkeypatch.setattr(mod, "_cone_geometry", lambda *_args: geometry)
+        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 200, 200)
+        state = self._state(cone_filled=True, cone_opacity=0.4, cone_shaded=True)
+        draw_marker(cairo.Context(surface), state, self._marker(), 200, 200)
+        surface.flush()
+        pixels = np.ndarray((200, surface.get_stride() // 4, 4), np.uint8, surface.get_data()).astype(int)
+        # ARGB32 is a native-endian word: B, G, R, A in memory on a little-endian host.
+        b_, g_, r_, a_ = (0, 1, 2, 3) if sys.byteorder == "little" else (3, 2, 1, 0)
+
+        def clear_inside(x: int, y: int, centre: tuple[float, float], r: float) -> bool:
+            """Inside the disc and 4 px clear of its outline, where the wireframe and anti-aliasing land."""
+            return float(np.hypot(x - centre[0], y - centre[1])) < r - 4.0
+
+        side = mod._cone_side(geometry)
+        assert side is not None
+        lens = [
+            (x, y)
+            for y in range(95, 125)
+            for x in range(80, 121)
+            if clear_inside(x, y, base_c, 40.0)
+            and clear_inside(x, y, top_c, 25.0)
+            and point_in_polygon(float(x), float(y), [tuple(p) for p in side])
+        ]
+        assert len(lens) > 200  # the region every pass covers
+        assert pixels[150, 100, a_] == pytest.approx(round(0.4 * 255), abs=1)  # the base disc alone
+        assert {int(pixels[y, x, a_]) for x, y in lens} == {int(pixels[150, 100, a_])}
+
+        # The side's light-to-shadow gradient shows over the lid, left lighter than right.
+        def brightness(points: list[tuple[int, int]]) -> float:
+            return float(np.mean([pixels[y, x, r_] + pixels[y, x, g_] + pixels[y, x, b_] for x, y in points]))
+
+        left = [(x, y) for x, y in lens if x < 95]
+        right = [(x, y) for x, y in lens if x > 105]
+        assert brightness(left) > brightness(right) + 10
 
     def test_shaded_side_shares_no_area_with_the_discs(self) -> None:
         """The side stops at the ring arcs, not at a chord across the discs:
@@ -838,7 +896,7 @@ class TestDrawMarkerConeStyle:
         state = self._state(cone_filled=True, cone_opacity=0.5, cone_shaded=True)
         cr = FakeCairo()
         draw_marker(cr, state, self._marker(), 1920, 1080)
-        base, side, lid = _ring_paths(cr, before_fill=True)
+        base, lid, side = _ring_paths(cr, before_fill=True)
         base_c = np.mean(base, axis=0)
         lid_c = np.mean(lid, axis=0)
         # Every side vertex is a ring vertex: the region is bounded by arcs.

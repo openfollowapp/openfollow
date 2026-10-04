@@ -129,6 +129,9 @@ def _format_lease_remaining(seconds: int | None) -> str | None:
 # Web Command Queue
 # ---------------------------------------------------------------------------
 
+# Set by the .deb's openfollow.service: the app is the Cage kiosk session.
+KIOSK_ENV = "OPENFOLLOW_KIOSK"
+
 # Progress of the detached installer (apply-update.sh), polled by the web UI.
 # In the openfollow-owned state dir so this (openfollow-user) process can clear
 # it. Keep this path in sync with apply-update.sh's STATE_FILE.
@@ -890,7 +893,9 @@ class AppRuntimeServices:
             max(1, int(cfg.window_width)),
             max(1, int(cfg.window_height)),
         )
-        if self._is_pi:
+        # Under the kiosk session the window is the whole screen; decorated, its
+        # close button ends the session and its title bar takes height from the video.
+        if self._is_pi or os.environ.get(KIOSK_ENV) == "1":
             win.fullscreen()
         self._app._canvas = win
 

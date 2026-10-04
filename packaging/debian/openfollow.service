@@ -36,6 +36,8 @@ TimeoutStopSec=15
 Environment=WLR_BACKENDS=drm,libinput
 Environment=WLR_RENDERER=gles2
 Environment=GDK_BACKEND=wayland
+# The app is the kiosk session, so it goes fullscreen on any host, not only a Pi.
+Environment=OPENFOLLOW_KIOSK=1
 Environment=GST_PLUGIN_FEATURE_RANK=v4l2slh264dec:257,v4l2slh265dec:257,v4l2h264dec:257,v4l2h265dec:257,openh264dec:1
 StandardOutput=journal
 StandardError=journal

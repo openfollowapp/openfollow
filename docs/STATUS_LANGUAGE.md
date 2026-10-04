@@ -302,12 +302,18 @@ attributes, so it spells the token's value.
   not plugged in (`not connected`) are the neutral grey. An
   action's result line takes its level; a confirmation is a success row, led by
   the off-white check, as the web's success box.
+- The export screen (Export Diagnostics File for Support): while the export
+  runs, the spinner leads what it is doing, straight on the panel as the web's
+  progress dialog. Its result is a box in its level's fill and border, a saved
+  file success and a failure error, led by its sign: what happened on the main
+  line (off-white, bold) and the one next step under it (muted), as the web's
+  result box. Both wrap at a space and are cut only past two lines.
 - An offline marker shows an off-white disc with a cut-out cross.
 - The online dot uses the success mark (`COLOR_OK`, `#5cc98c`). A
-  confirmation drawn straight on a panel, such as "Detection Complete!" or
-  the export screen's result, leads with the green success sign
-  (`draw_success_sign`); one in a row of its level's fill (a status row, the
-  Network screen's result line) leads with the off-white check instead.
+  confirmation drawn straight on a panel, such as "Detection Complete!",
+  leads with the green success sign (`draw_success_sign`); one in a row of its
+  level's fill (a status row, the Network screen's result line, the export
+  screen's result) leads with the off-white check instead.
 - Text uses the HUD's normal colours, never a red or pink text. A notice that
   is neither a fault nor a state, like the About screen's safety line, is
   plain bold off-white.

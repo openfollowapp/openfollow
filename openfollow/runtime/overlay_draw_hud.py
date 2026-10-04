@@ -439,13 +439,35 @@ def draw_spinner(cr: Any, cx: float, cy: float, r: float, now: float) -> None:
     cr.restore()
 
 
+_EXPORT_PAD = 12.0
+_EXPORT_SIGN = 16.0
+_EXPORT_HEAD_FONT = 16.0
+_EXPORT_HEAD_LINE_H = 22.0
+_EXPORT_NEXT_FONT = 13.0
+_EXPORT_NEXT_LINE_H = 18.0
+_EXPORT_MAX_LINES = 2
+# The progress lines under the spinner take as much room as a result of one line each.
+_EXPORT_PROGRESS_H = 70.0
+
+
 def draw_media_export_overlay(
     renderer: Any, cr: Any, state: OverlayState, w: int, h: int, now: float | None = None
 ) -> None:
-    """The export's progress under a spinner, then what happened and the one next step."""
+    """The export's progress under a spinner, then a box in its result's level:
+    what happened and the one next step, as the web's result box."""
     from openfollow.runtime.app_modes_media import EXPORT_SUBTITLE, EXPORT_TITLE
 
     headline, next_step, ok = state.media_export_lines
+    panel_w = min(w * 0.52, 760.0)
+    box_w = panel_w - 32.0
+    text_w = box_w - 2 * _EXPORT_PAD - _EXPORT_SIGN - 10.0
+    head: list[str] = []
+    rest: list[str] = []
+    content_h = _EXPORT_PROGRESS_H
+    if ok is not None:
+        head = _wrap_lines(renderer, cr, headline, text_w, _EXPORT_HEAD_FONT, bold=True, max_lines=_EXPORT_MAX_LINES)
+        rest = _wrap_lines(renderer, cr, next_step, text_w, _EXPORT_NEXT_FONT, bold=False, max_lines=_EXPORT_MAX_LINES)
+        content_h = 2 * _EXPORT_PAD + len(head) * _EXPORT_HEAD_LINE_H + 6.0 + len(rest) * _EXPORT_NEXT_LINE_H
     draw_modal_scrim(cr, w, h)
     panel_x, panel_y, panel_w, _ = draw_modal_shell(
         renderer,
@@ -454,25 +476,46 @@ def draw_media_export_overlay(
         h,
         title=EXPORT_TITLE,
         subtitle=EXPORT_SUBTITLE,
-        panel_w=min(w * 0.52, 760.0),
-        panel_h=170.0,
+        panel_w=panel_w,
+        panel_h=102.0 + content_h,
     )
-    text_x = panel_x + 28.0
-    line_y = panel_y + 108.0
+    top = panel_y + 80.0
     if ok is None:
+        text_x = panel_x + 28.0
+        line_y = panel_y + 108.0
         draw_spinner(cr, text_x + 8.0, line_y - 6.0, 8.0, time.monotonic() if now is None else now)
-    else:
-        (draw_success_sign if ok else draw_warning_sign)(cr, text_x + 8.0, line_y - 6.0, 16.0)
-    text_x += 28.0
-    width = panel_x + panel_w - 28.0 - text_x
-    renderer._set_ui_font(cr, 16, bold=True)
+        text_x += 28.0
+        width = panel_x + panel_w - 28.0 - text_x
+        renderer._set_ui_font(cr, 16, bold=True)
+        cr.set_source_rgb(*COLOR_TEXT)
+        cr.move_to(text_x, line_y)
+        cr.show_text(renderer._truncate_text_to_width(cr, headline, width))
+        renderer._set_ui_font(cr, 13)
+        cr.set_source_rgba(*COLOR_TEXT_MUTED)
+        cr.move_to(text_x, line_y + 28.0)
+        cr.show_text(renderer._truncate_text_to_width(cr, next_step, width))
+        return
+    level = "success" if ok else "error"
+    box_x = panel_x + 16.0
+    draw_level_box(cr, level, box_x, top, box_w, content_h, radius=ROW_RADIUS, line_width=1.2)
+    draw_level_sign(
+        cr, level, box_x + _EXPORT_PAD + _EXPORT_SIGN / 2.0, top + _EXPORT_PAD + _EXPORT_HEAD_LINE_H / 2.0, _EXPORT_SIGN
+    )
+    text_x = box_x + _EXPORT_PAD + _EXPORT_SIGN + 10.0
+    y = top + _EXPORT_PAD
+    renderer._set_ui_font(cr, _EXPORT_HEAD_FONT, bold=True)
     cr.set_source_rgb(*COLOR_TEXT)
-    cr.move_to(text_x, line_y)
-    cr.show_text(renderer._truncate_text_to_width(cr, headline, width))
-    renderer._set_ui_font(cr, 13)
+    for line in head:
+        cr.move_to(text_x, y + 16.0)
+        cr.show_text(line)
+        y += _EXPORT_HEAD_LINE_H
+    renderer._set_ui_font(cr, _EXPORT_NEXT_FONT)
     cr.set_source_rgba(*COLOR_TEXT_MUTED)
-    cr.move_to(text_x, line_y + 28.0)
-    cr.show_text(renderer._truncate_text_to_width(cr, next_step, width))
+    y += 6.0
+    for line in rest:
+        cr.move_to(text_x, y + 13.0)
+        cr.show_text(line)
+        y += _EXPORT_NEXT_LINE_H
 
 
 def draw_source_selection(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
@@ -927,6 +970,17 @@ def _wrap_error_message(
                 lines.append(current)
                 current = piece
     lines.append(current)
+    return lines
+
+
+def _wrap_lines(
+    renderer: Any, cr: Any, text: str, max_w: float, font_size: float, *, bold: bool, max_lines: int
+) -> list[str]:
+    """*text* wrapped at a space to *max_w*, the last of *max_lines* cut with an ellipsis."""
+    lines = _wrap_error_message(renderer, cr, text, max_w, font_size, bold=bold)
+    if len(lines) > max_lines:
+        rest = " ".join(lines[max_lines - 1 :])
+        lines = [*lines[: max_lines - 1], renderer._truncate_text_to_width(cr, rest, max_w)]
     return lines
 
 
@@ -1738,10 +1792,7 @@ def _draw_network_status_row(
     *busy*); returns the height drawn."""
     text_x = x + _NOTICE_PAD + _NOTICE_SIGN + 8.0
     text_w = x + w - _NOTICE_PAD - text_x
-    lines = _wrap_error_message(renderer, cr, text, text_w, _NOTICE_FONT, bold=False)
-    if len(lines) > _NOTICE_MAX_LINES:
-        rest = " ".join(lines[_NOTICE_MAX_LINES - 1 :])
-        lines = [*lines[: _NOTICE_MAX_LINES - 1], renderer._truncate_text_to_width(cr, rest, text_w)]
+    lines = _wrap_lines(renderer, cr, text, text_w, _NOTICE_FONT, bold=False, max_lines=_NOTICE_MAX_LINES)
     row_h = len(lines) * _NOTICE_LINE_H + 2 * _NOTICE_PAD
     draw_level_box(cr, level, x, y, w, row_h, radius=ROW_RADIUS, line_width=1.2)
     sign_cx = x + _NOTICE_PAD + _NOTICE_SIGN / 2.0

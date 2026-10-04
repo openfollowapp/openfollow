@@ -3276,7 +3276,7 @@ class TestDriveScreens:
             (
                 ("The USB storage device is full.", "Pick a USB storage device to try again.", False),
                 "The diagnostics file for support, to a USB storage device.",
-                "warning",
+                "error",
             ),
         ],
         ids=["running", "saved", "failed"],
@@ -3285,8 +3285,7 @@ class TestDriveScreens:
         import openfollow.runtime.overlay_draw_hud as hud
 
         signs: list[str] = []
-        monkeypatch.setattr(hud, "draw_success_sign", lambda *a, **k: signs.append("success"))
-        monkeypatch.setattr(hud, "draw_warning_sign", lambda *a, **k: signs.append("warning"))
+        monkeypatch.setattr(hud, "draw_level_sign", lambda cr, level, *a, **k: signs.append(level))
         state = OverlayState()
         state.media_export_lines = lines
         cr = FakeCairo()
@@ -3333,14 +3332,13 @@ class TestDriveScreens:
         start = now / 0.7 * 2 * math.pi
         assert arc[4:] == pytest.approx((start, start + math.pi / 2))
 
-    @pytest.mark.parametrize(("ok", "drawn"), [(None, "spinner"), (True, "success"), (False, "warning")])
+    @pytest.mark.parametrize(("ok", "drawn"), [(None, "spinner"), (True, "success"), (False, "error")])
     def test_the_spinner_shows_only_while_the_export_runs(self, monkeypatch, ok, drawn) -> None:  # noqa: ANN001
         import openfollow.runtime.overlay_draw_hud as hud
 
         seen: list[str] = []
         monkeypatch.setattr(hud, "draw_spinner", lambda *a, **k: seen.append("spinner"))
-        monkeypatch.setattr(hud, "draw_success_sign", lambda *a, **k: seen.append("success"))
-        monkeypatch.setattr(hud, "draw_warning_sign", lambda *a, **k: seen.append("warning"))
+        monkeypatch.setattr(hud, "draw_level_sign", lambda cr, level, *a, **k: seen.append(level))
         state = OverlayState()
         state.media_export_lines = ("Collecting diagnostics", "The export continues in the background.", ok)
         hud.draw_media_export_overlay(FakeRenderer(), FakeCairo(), state, 1920, 1080)
@@ -3357,6 +3355,83 @@ class TestDriveScreens:
         hud.draw_media_export_overlay(FakeRenderer(), FakeCairo(), state, 1920, 1080)
         hud.draw_media_export_overlay(FakeRenderer(), FakeCairo(), state, 1920, 1080, now=3.0)
         assert times == [12.5, 3.0]
+
+    @pytest.mark.parametrize(
+        ("ok", "fill", "border"),
+        [(True, COLOR_SUCCESS_FILL, COLOR_SUCCESS_BORDER), (False, COLOR_WARNING_FILL, COLOR_WARNING_BORDER)],
+        ids=["saved", "failed"],
+    )
+    def test_the_export_result_is_a_box_of_its_level(self, ok, fill, border) -> None:  # noqa: ANN001
+        """As the web's result box: off-white on the level's fill, the next step muted under it."""
+        from openfollow.runtime.overlay_draw_hud import draw_media_export_overlay
+
+        state = OverlayState()
+        state.media_export_lines = ("Saved ofdiag-rig.txt to SanDisk Ultra.", "It can be removed now.", ok)
+        cr = FakeCairo()
+        draw_media_export_overlay(FakeRenderer(), cr, state, 1920, 1080)
+        assert ("rgba", *fill) in cr.calls
+        assert ("rgb", *border) in cr.calls
+        (head,) = cr.find_texts("Saved ofdiag-rig.txt")
+        (step,) = cr.find_texts("It can be removed now.")
+        assert (head.rgba, head.bold) == ((*COLOR_TEXT, 1.0), True)
+        assert (step.rgba, step.bold) == (tuple(COLOR_TEXT_MUTED), False)
+
+    def test_an_export_in_progress_is_not_a_box(self) -> None:
+        from openfollow.runtime.overlay_draw_hud import draw_media_export_overlay
+
+        state = OverlayState()
+        state.media_export_lines = ("Collecting diagnostics", "The export continues in the background.", None)
+        cr = FakeCairo()
+        draw_media_export_overlay(FakeRenderer(), cr, state, 1920, 1080, now=0.0)
+        fills = {c[1:] for c in cr.calls if c[0] == "rgba"}
+        assert not fills & {COLOR_SUCCESS_FILL, COLOR_WARNING_FILL, COLOR_INFO_FILL, COLOR_CAUTION_FILL}
+
+    def test_a_saved_export_is_led_by_the_off_white_check(self) -> None:
+        """A sign in a row of its level's fill is off-white, as every status row's."""
+        from openfollow.runtime.overlay_draw_hud import draw_media_export_overlay
+
+        state = OverlayState()
+        state.media_export_lines = ("Saved ofdiag-rig.txt to SanDisk Ultra.", "It can be removed now.", True)
+        cr = FakeCairo()
+        draw_media_export_overlay(FakeRenderer(), cr, state, 1920, 1080)
+        assert ("rgb", *COLOR_SUCCESS_BG) in cr.calls  # the check, cut out of the off-white disc
+        assert ("rgb", *COLOR_OK) not in cr.calls
+
+    def test_a_long_result_wraps_and_the_panel_grows_to_hold_it(self) -> None:
+        """Cut to one line, a long station name left out the drive the file went to."""
+        from openfollow.runtime.overlay_draw_hud import draw_media_export_overlay
+
+        def drawn(headline: str) -> tuple[list[str], list[float]]:
+            state = OverlayState()
+            state.media_export_lines = (headline, "It can be removed now.", True)
+            cr = FakeCairo()
+            draw_media_export_overlay(FakeRenderer(), cr, state, 1920, 1080)
+            heads = [t.text for t in cr.texts if t.bold and t.font_size == 16 and t.text]
+            (title,) = cr.find_texts("SAVE DIAGNOSTICS")
+            (step,) = cr.find_texts("It can be removed now.")
+            # The panel's rounded corners are its outermost arcs.
+            panel_h = max(cy + r for _cx, cy, r in cr.arcs) - min(cy - r for _cx, cy, r in cr.arcs)
+            return heads, [step.y - title.y, panel_h]
+
+        headline = "Saved ofdiag-front-of-house-stage-left-20261004T221500Z.txt to SanDisk Ultra Fit (sda1)."
+        short_heads, short_below = drawn("Saved ofdiag-rig.txt to SanDisk Ultra.")
+        long_heads, long_below = drawn(headline)
+        assert (len(short_heads), " ".join(long_heads)) == (1, headline)
+        assert len(long_heads) == 2
+        # The next step moves down by the headline's second line, and the panel grows by it.
+        assert [b - a for a, b in zip(short_below, long_below, strict=True)] == pytest.approx([22.0, 22.0])
+
+    def test_a_result_stops_at_two_lines(self) -> None:
+        from openfollow.runtime.overlay_draw_hud import draw_media_export_overlay
+
+        state = OverlayState()
+        state.media_export_lines = ("word " * 200, "step " * 200, False)
+        cr = FakeCairo()
+        draw_media_export_overlay(FakeRenderer(), cr, state, 1920, 1080)
+        heads = cr.find_texts("word")
+        steps = cr.find_texts("step")
+        assert (len(heads), len(steps)) == (2, 2)
+        assert heads[-1].text.endswith("...") and steps[-1].text.endswith("...")
 
 
 class TestNetworkScreenTitle:

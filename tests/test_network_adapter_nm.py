@@ -72,7 +72,7 @@ def adapter(monkeypatch, tmp_path):
     # them in the same shape as the legacy ``_run`` records.
     original_broker_run = broker.run
 
-    def _spy(capability, argv, *, cwd=None, timeout=30.0, reason="", stdin=None):
+    def _spy(capability, argv, *, cwd=None, timeout=30.0, reason="", stdin=None, allow_prompt=True):
         captured.append(_normalise(list(argv)))
         return original_broker_run(
             capability,
@@ -81,6 +81,7 @@ def adapter(monkeypatch, tmp_path):
             timeout=timeout,
             reason=reason,
             stdin=stdin,
+            allow_prompt=allow_prompt,
         )
 
     broker.run = _spy  # type: ignore[method-assign]
@@ -1567,6 +1568,226 @@ class TestVlans:
             stdout="vlan.parent:\nvlan.id:10\n",
         )
         assert a.list_vlans() == []
+
+
+_DEVICES = ["nmcli", "-t", "-f", "DEVICE,TYPE,STATE", "device"]
+_DEVICE_STATES = ["nmcli", "-t", "-f", "DEVICE,STATE", "device"]
+_FQDN = "of-1.stage.example.com"
+# What nmcli 1.52 printed on the bench for a profile that names its own DHCP hostname.
+_HOSTNAME_ALSO_SET = subprocess.CompletedProcess(
+    ["sudo"],
+    1,
+    "",
+    "Error: Failed to modify connection 'Wired connection 1': ipv4.dhcp-fqdn: "
+    "property cannot be set when dhcp-hostname is also set",
+)
+
+
+class TestSetDhcpFqdn:
+    """Every interface's profile carries the name as ``ipv4.dhcp-fqdn``, which NetworkManager
+    sends as option 81 in place of option 12, and every interface with a link reconnects so
+    its DHCP server sees it now."""
+
+    @staticmethod
+    def _station(adapter, *, devices: str, active: str):
+        a, _captured, responses = adapter
+        responses[tuple(_DEVICES)] = subprocess.CompletedProcess(_DEVICES, 0, stdout=devices, stderr="")
+        responses[tuple(_ACTIVE_PROFILES)] = subprocess.CompletedProcess(_ACTIVE_PROFILES, 0, stdout=active, stderr="")
+        return a, responses
+
+    def _eth0_and_vlan(self, adapter):
+        a, responses = self._station(
+            adapter,
+            devices="eth0:ethernet:connected\nlo:loopback:connected (externally)\n"
+            "eth0.13:vlan:connected\nwlan0:wifi:disconnected\n",
+            active="Wired connection 1:eth0\nlo:lo\neth0.13:eth0.13\n",
+        )
+        _carrier("eth0", "1")
+        _carrier("eth0.13", "1")
+        return a, responses
+
+    @staticmethod
+    def _argv(a) -> list[list[str]]:
+        return [call.argv for call in a._broker.calls]
+
+    def test_every_profile_carries_the_name_and_every_linked_interface_reconnects(self, adapter) -> None:
+        """The loopback profile and an interface with no profile are left alone."""
+        a, _ = self._eth0_and_vlan(adapter)
+        result = a.set_dhcp_fqdn(_FQDN)
+        assert (result.ok, result.partial_failures) == (True, ())
+        assert self._argv(a) == [
+            ["/usr/bin/nmcli", "con", "mod", "id", "Wired connection 1", "ipv4.dhcp-fqdn", _FQDN],
+            ["/usr/bin/nmcli", "con", "mod", "id", "eth0.13", "ipv4.dhcp-fqdn", _FQDN],
+            ["/usr/bin/nmcli", "con", "up", "id", "Wired connection 1"],
+            ["/usr/bin/nmcli", "con", "up", "id", "eth0.13"],
+        ]
+
+    def test_a_blank_name_clears_it_so_the_hostname_goes_out_again(self, adapter) -> None:
+        a, _ = self._eth0_and_vlan(adapter)
+        assert a.set_dhcp_fqdn("").ok
+        mods = [argv for argv in self._argv(a) if argv[2] == "mod"]
+        assert [argv[-2:] for argv in mods] == [["ipv4.dhcp-fqdn", ""]] * 2
+
+    def test_an_interface_without_a_link_keeps_the_name_for_when_it_connects(self, adapter) -> None:
+        a, responses = self._station(adapter, devices="eth1:ethernet:unavailable\n", active="")
+        responses[tuple(_SAVED_PROFILES)] = subprocess.CompletedProcess(
+            _SAVED_PROFILES, 0, stdout="Wired connection 2:u2:yes:0:1\n", stderr=""
+        )
+        responses[tuple(_bound_to("u2"))] = subprocess.CompletedProcess(
+            [], 0, stdout="connection.uuid:u2\nconnection.interface-name:eth1\n", stderr=""
+        )
+        _carrier("eth1", "0")
+        result = a.set_dhcp_fqdn(_FQDN)
+        assert (result.ok, result.partial_failures) == (True, ())
+        assert self._argv(a) == [["/usr/bin/nmcli", "con", "mod", "id", "Wired connection 2", "ipv4.dhcp-fqdn", _FQDN]]
+
+    def test_a_profile_naming_its_own_dhcp_hostname_is_reported_and_left_alone(self, adapter) -> None:
+        """NetworkManager refuses the two together; the operator's hostname is not cleared to make room."""
+        a, _ = self._eth0_and_vlan(adapter)
+        a._broker.responses = [_HOSTNAME_ALSO_SET]
+        result = a.set_dhcp_fqdn(_FQDN)
+        assert result.ok
+        assert len(result.partial_failures) == 1
+        assert result.partial_failures[0].startswith("Profile 'Wired connection 1' was not updated (")
+        assert "dhcp-hostname is also set" in result.partial_failures[0]
+        ups = [argv[-1] for argv in self._argv(a) if argv[2] == "up"]
+        assert ups == ["eth0.13"]
+
+    def test_a_profile_still_waiting_for_a_lease_is_not_a_failure(self, adapter) -> None:
+        """With no DHCP server answering, ``con up`` outlasts the broker's timeout though the
+        profile is applied, as on a VLAN with nothing serving it."""
+        a, responses = self._eth0_and_vlan(adapter)
+        responses[tuple(_DEVICE_STATES)] = subprocess.CompletedProcess(
+            _DEVICE_STATES, 0, stdout="eth0:connected\neth0.13:connecting (getting IP configuration)\n", stderr=""
+        )
+        a._broker.responses = [_OK, _OK, _OK, _NO_SUITABLE_DEVICE]
+        result = a.set_dhcp_fqdn(_FQDN)
+        assert (result.ok, result.partial_failures) == (True, ())
+
+    def test_an_interface_that_fails_to_reconnect_is_reported(self, adapter) -> None:
+        a, responses = self._eth0_and_vlan(adapter)
+        responses[tuple(_DEVICE_STATES)] = subprocess.CompletedProcess(
+            _DEVICE_STATES, 0, stdout="eth0:disconnected\neth0.13:connected\n", stderr=""
+        )
+        a._broker.responses = [_OK, _OK, _NO_SUITABLE_DEVICE]
+        result = a.set_dhcp_fqdn(_FQDN)
+        assert result.ok
+        assert len(result.partial_failures) == 1
+        assert result.partial_failures[0].startswith("eth0 could not be reconnected (")
+
+    def test_a_station_with_no_profile_says_so(self, adapter) -> None:
+        a, _ = self._station(adapter, devices="lo:loopback:connected (externally)\n", active="lo:lo\n")
+        result = a.set_dhcp_fqdn(_FQDN)
+        assert (result.ok, result.message) == (False, "No interface has a NetworkManager profile to carry the name.")
+        assert self._argv(a) == []
+
+    def test_no_profile_updated_is_a_failure(self, adapter) -> None:
+        a, _ = self._eth0_and_vlan(adapter)
+        a._broker.responses = [_HOSTNAME_ALSO_SET, _HOSTNAME_ALSO_SET]
+        result = a.set_dhcp_fqdn(_FQDN)
+        assert (result.ok, result.message) == (False, "No profile could be updated.")
+        assert len(result.partial_failures) == 2
+        assert not any(argv[2] == "up" for argv in self._argv(a))
+
+
+class TestSetDhcpFqdnSafeguards:
+    """The DHCP name runs in the background and touches only what the station manages."""
+
+    _FQDN = "of-1.stage.example.com"
+
+    @staticmethod
+    def _station(adapter, *, devices: str, active: str, states: str = ""):
+        a, _captured, responses = adapter
+        responses[tuple(_DEVICES)] = subprocess.CompletedProcess(_DEVICES, 0, stdout=devices, stderr="")
+        responses[tuple(_ACTIVE_PROFILES)] = subprocess.CompletedProcess(_ACTIVE_PROFILES, 0, stdout=active, stderr="")
+        responses[tuple(_DEVICE_STATES)] = subprocess.CompletedProcess(_DEVICE_STATES, 0, stdout=states, stderr="")
+        return a, responses
+
+    def test_it_never_asks_for_a_password(self, adapter) -> None:
+        """Nobody is at a prompt: the worker runs after the save was answered, holding the network lock."""
+        a, _ = self._station(adapter, devices="eth0:ethernet:connected\n", active="Wired connection 1:eth0\n")
+        _carrier("eth0", "1")
+        a.set_dhcp_fqdn(self._FQDN)
+        assert [call.allow_prompt for call in a._broker.calls] == [False, False]
+
+    def test_bridges_tunnels_and_external_connections_are_left_alone(self, adapter) -> None:
+        """docker0 or a VPN belong to whatever made them; NM would take a device over on con up."""
+        a, _ = self._station(
+            adapter,
+            devices="eth0:ethernet:connected\ndocker0:bridge:connected (externally)\n"
+            "tailscale0:tun:connected (externally)\neth1:ethernet:connected (externally)\n",
+            active="Wired connection 1:eth0\ndocker0:docker0\ntailscale0:tailscale0\neth1:eth1\n",
+            states="eth0:connected\ndocker0:connected (externally)\ntailscale0:connected (externally)\n"
+            "eth1:connected (externally)\n",
+        )
+        _carrier("eth0", "1")
+        a.set_dhcp_fqdn(self._FQDN)
+        assert {call.argv[4] for call in a._broker.calls} == {"Wired connection 1"}
+
+    def _two_profiles(self, adapter, *, current: dict[str, str]):
+        a, responses = self._station(
+            adapter,
+            devices="eth0:ethernet:connected\neth1:ethernet:connected\n",
+            active="Wired connection 1:eth0\nWired connection 2:eth1\n",
+        )
+        for name, value in current.items():
+            argv = ["nmcli", "-g", "ipv4.dhcp-fqdn", "connection", "show", "id", name]
+            responses[tuple(argv)] = subprocess.CompletedProcess(argv, 0, stdout=value + "\n", stderr="")
+        _carrier("eth0", "1")
+        _carrier("eth1", "1")
+        return a
+
+    @pytest.mark.parametrize("failing", ["once", "always"])
+    def test_a_device_whose_state_cannot_be_read_is_left_alone_and_named(self, adapter, failing: str) -> None:
+        """Unknown could be external, which is not the station's to change."""
+        a = self._two_profiles(adapter, current={})
+        reads = a._run
+        failed: list[list[str]] = []
+
+        def _run(argv, *, check=True):
+            if list(argv) == _DEVICE_STATES and (failing == "always" or not failed):
+                failed.append(list(argv))
+                raise RuntimeError("nmcli timed out")
+            return reads(argv, check=check)
+
+        a._run = _run  # type: ignore[method-assign]
+        result = a.set_dhcp_fqdn(self._FQDN)
+        unread = "NetworkManager did not report its state, so it was left alone."
+        if failing == "once":
+            assert {call.argv[4] for call in a._broker.calls} == {"Wired connection 2"}
+            assert (result.ok, result.partial_failures) == (True, (f"eth0: {unread}",))
+        else:
+            assert a._broker.calls == []
+            assert (result.ok, result.partial_failures) == (False, (f"eth0: {unread}", f"eth1: {unread}"))
+
+    def test_reconciling_writes_only_what_differs_and_reconnects_nothing(self, adapter) -> None:
+        a = self._two_profiles(
+            adapter, current={"Wired connection 1": self._FQDN, "Wired connection 2": "old.example.com"}
+        )
+        result = a.set_dhcp_fqdn(self._FQDN, reconnect=False)
+        assert (result.ok, result.message) == (True, "Applied.")
+        assert [call.argv for call in a._broker.calls] == [
+            ["/usr/bin/nmcli", "con", "mod", "id", "Wired connection 2", "ipv4.dhcp-fqdn", self._FQDN]
+        ]
+
+    def test_reconciling_a_station_already_in_line_touches_nothing(self, adapter) -> None:
+        a = self._two_profiles(adapter, current={"Wired connection 1": "", "Wired connection 2": ""})
+        result = a.set_dhcp_fqdn("", reconnect=False)
+        assert (result.ok, result.message) == (True, "Unchanged.")
+        assert a._broker.calls == []
+
+    def test_an_unreadable_profile_is_written_rather_than_trusted(self, adapter) -> None:
+        a = self._two_profiles(adapter, current={})
+        reads = a._run
+
+        def _run(argv, *, check=True):
+            if argv[:3] == ["nmcli", "-g", "ipv4.dhcp-fqdn"]:
+                raise RuntimeError("nmcli failed")
+            return reads(argv, check=check)
+
+        a._run = _run  # type: ignore[method-assign]
+        a.set_dhcp_fqdn(self._FQDN, reconnect=False)
+        assert [call.argv[4] for call in a._broker.calls] == ["Wired connection 1", "Wired connection 2"]
 
 
 @dataclass(frozen=True)

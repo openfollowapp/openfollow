@@ -849,19 +849,19 @@ class TestDelegators:
 
 
 def test_sync_system_hostname_delegates(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``_sync_system_hostname`` forwards the broker + station name to
-    ``device_repair.sync_station_hostname``."""
-    calls: list[tuple[Any, str]] = []
+    """``_sync_system_hostname`` forwards the broker, station name and FQDN to
+    ``device_repair.sync_station_hostname``, so /etc/hosts carries the FQDN from boot."""
+    calls: list[tuple[Any, str, str]] = []
     monkeypatch.setattr(
         "openfollow.privilege.device_repair.sync_station_hostname",
-        lambda broker, name: calls.append((broker, name)),
+        lambda broker, name, fqdn: calls.append((broker, name, fqdn)),
     )
     fake = SimpleNamespace(
         _runtime_services=SimpleNamespace(privilege_broker="BROKER"),
-        _config=SimpleNamespace(psn_system_name="Station X"),
+        _config=SimpleNamespace(psn_system_name="Station X", station_fqdn="of-1.stage.example.com"),
     )
     OpenFollowApp._sync_system_hostname(fake)
-    assert calls == [("BROKER", "Station X")]
+    assert calls == [("BROKER", "Station X", "of-1.stage.example.com")]
 
 
 class TestBlurHandler:
@@ -880,3 +880,14 @@ class TestBlurHandler:
         app = OpenFollowApp(config_path=patched_ctor.cfg_path)
         assert app._input_manager is None
         app._on_blur({})  # must not raise
+
+
+def test_startup_reconciles_the_station_fqdn() -> None:
+    """The DHCP side is brought in line with the config at every start, by the runtime services."""
+    asked: list[str] = []
+    fake = SimpleNamespace(
+        _runtime_services=SimpleNamespace(reconcile_station_fqdn=asked.append),
+        _config=SimpleNamespace(station_fqdn="of-1.stage.example.com"),
+    )
+    OpenFollowApp._reconcile_station_fqdn(fake)
+    assert asked == ["of-1.stage.example.com"]

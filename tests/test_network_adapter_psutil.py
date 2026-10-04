@@ -312,3 +312,11 @@ class TestVlansUnsupported:
         result = PsutilReadOnlyAdapter().delete_vlan("eth0.10")
         assert result.ok is False
         assert result.message == VLAN_UNSUPPORTED_MESSAGE
+
+
+def test_a_read_only_host_cannot_register_a_name_by_dhcp() -> None:
+    from openfollow.network.adapter import DHCP_FQDN_UNSUPPORTED_MESSAGE
+    from openfollow.network.psutil_adapter import PsutilReadOnlyAdapter
+
+    result = PsutilReadOnlyAdapter().set_dhcp_fqdn("of-1.stage.example.com")
+    assert (result.ok, result.message) == (False, DHCP_FQDN_UNSUPPORTED_MESSAGE)

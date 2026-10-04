@@ -7,6 +7,7 @@ and state providers, privilege-broker wiring, and the network apply/renew handle
 
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -2632,3 +2633,307 @@ def test_an_outage_alert_names_the_adapter_by_its_label(monkeypatch) -> None:
 
     services.observe_network_planes()
     assert "OTP output: Lighting backup (enx00e04c68a1f2) is not connected" in services.network_alerts()
+
+
+class _FqdnAdapter:
+    """Records what the station asked its network backend to send by DHCP."""
+
+    backend_name = "fake"
+
+    def __init__(self, *, writable: bool = True, result=None) -> None:
+        from openfollow.network.adapter import ApplyResult
+
+        self.writable = writable
+        self.sent: list[str] = []
+        self.result = result or ApplyResult(ok=True, message="Applied.")
+
+    def is_writable(self) -> bool:
+        return self.writable
+
+    def set_dhcp_fqdn(self, fqdn: str):
+        self.sent.append(fqdn)
+        return self.result
+
+
+@pytest.fixture
+def fqdn_services(monkeypatch):
+    """Services with no reconnect delay, and /etc/hosts writes recorded instead of made."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._fqdn_reconnect_delay_s = 0.0
+    monkeypatch.setattr(services_module.sys, "platform", "linux")
+    hosts: list[tuple[object, str, str]] = []
+    monkeypatch.setattr("openfollow.privilege.device_repair.current_hostname", lambda: "openfollow-noble-bear")
+    monkeypatch.setattr(
+        "openfollow.privilege.device_repair.sync_etc_hosts",
+        lambda broker, hostname, fqdn="": hosts.append((broker, hostname, fqdn)),
+    )
+    return services, hosts
+
+
+def test_a_new_station_fqdn_reaches_etc_hosts_and_dhcp(fqdn_services) -> None:
+    services, hosts = fqdn_services
+    adapter = services._network_adapter = _FqdnAdapter()
+    services.apply_station_fqdn_change("of-1.stage.example.com").join(timeout=5)
+    assert hosts == [(services.privilege_broker, "openfollow-noble-bear", "of-1.stage.example.com")]
+    assert adapter.sent == ["of-1.stage.example.com"]
+
+
+def test_a_read_only_backend_still_gets_the_hosts_line(fqdn_services) -> None:
+    services, hosts = fqdn_services
+    adapter = services._network_adapter = _FqdnAdapter(writable=False)
+    services.apply_station_fqdn_change("of-1.stage.example.com").join(timeout=5)
+    assert [h[2] for h in hosts] == ["of-1.stage.example.com"]
+    assert adapter.sent == []
+
+
+def test_no_backend_still_gets_the_hosts_line(fqdn_services) -> None:
+    services, hosts = fqdn_services
+    services._network_adapter = None
+    services.apply_station_fqdn_change("").join(timeout=5)
+    assert [h[2] for h in hosts] == [""]
+
+
+def test_of_two_quick_changes_only_the_last_is_sent(fqdn_services) -> None:
+    """Two saves inside the reconnect delay reconnect every interface once, with the newer name."""
+    services, hosts = fqdn_services
+    adapter = services._network_adapter = _FqdnAdapter()
+    with services._network_op_lock:  # an apply in flight holds both workers back
+        first = services.apply_station_fqdn_change("old.example.com")
+        second = services.apply_station_fqdn_change("of-1.stage.example.com")
+    first.join(timeout=5)
+    second.join(timeout=5)
+    assert adapter.sent == ["of-1.stage.example.com"]
+    assert [h[2] for h in hosts] == ["of-1.stage.example.com"]
+
+
+def test_an_older_change_never_reports_over_a_newer_one(fqdn_services) -> None:
+    """The older change finishes first; the newer one, run to the end in the gap after the older
+    lets go of the lock, must be the one the field and the Network screen report on."""
+    from openfollow.network.adapter import ApplyResult
+
+    services, _ = fqdn_services
+    inside, finish = threading.Event(), threading.Event()
+
+    class _Adapter(_FqdnAdapter):
+        def set_dhcp_fqdn(self, fqdn: str):
+            if fqdn == "old.example.com":
+                inside.set()
+                finish.wait(5)
+                return ApplyResult(ok=True, message="Applied.")
+            return ApplyResult(ok=False, message="No profile could be updated.")
+
+    lock, exits = threading.Lock(), []
+
+    class _GapAfterRelease:
+        def __enter__(self):
+            lock.acquire()
+
+        def __exit__(self, *_exc):
+            lock.release()
+            exits.append(1)
+            pause = threading.Event()
+            for _ in range(500):
+                if len(exits) > 1 or (services._fqdn_last or ("",))[0] == "of-1.stage.example.com":
+                    break
+                pause.wait(0.01)
+
+    services._network_adapter = _Adapter()
+    services._network_op_lock = _GapAfterRelease()
+    services._app._config.station_fqdn = "of-1.stage.example.com"
+    older = services.apply_station_fqdn_change("old.example.com")
+    assert inside.wait(5)
+    newer = services.apply_station_fqdn_change("of-1.stage.example.com")
+    finish.set()
+    older.join(timeout=5)
+    newer.join(timeout=5)
+    assert services.station_fqdn_problems() == ("No profile could be updated.",)
+
+
+def test_what_the_backend_could_not_do_is_logged(fqdn_services, caplog) -> None:
+    from openfollow.network.adapter import ApplyResult
+
+    services, _ = fqdn_services
+    services._network_adapter = _FqdnAdapter(
+        result=ApplyResult(ok=True, message="Applied.", partial_failures=("eth1 could not be reconnected.",))
+    )
+    with caplog.at_level("WARNING", logger="openfollow.services"):
+        services.apply_station_fqdn_change("of-1.stage.example.com").join(timeout=5)
+    assert "Station FQDN: eth1 could not be reconnected." in caplog.text
+
+    services._network_adapter = _FqdnAdapter(result=ApplyResult(ok=False, message="No profile could be updated."))
+    with caplog.at_level("WARNING", logger="openfollow.services"):
+        services.apply_station_fqdn_change("of-1.stage.example.com").join(timeout=5)
+    assert "Station FQDN 'of-1.stage.example.com' not applied to DHCP: No profile could be updated." in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("fqdn", "line"),
+    [
+        (
+            "of-1.stage.example.com",
+            "Station FQDN 'of-1.stage.example.com' applied to DHCP; every interface with a link reconnected",
+        ),
+        ("", "Station FQDN removal applied to DHCP; every interface with a link reconnected"),
+    ],
+    ids=["named", "removed"],
+)
+def test_a_clean_change_says_so_once(fqdn_services, caplog, fqdn: str, line: str) -> None:
+    services, _ = fqdn_services
+    services._network_adapter = _FqdnAdapter()
+    with caplog.at_level("INFO", logger="openfollow.services"):
+        services.apply_station_fqdn_change(fqdn).join(timeout=5)
+    assert line in caplog.text
+
+
+def test_a_change_with_an_interface_left_behind_never_claims_every_interface(fqdn_services, caplog) -> None:
+    from openfollow.network.adapter import ApplyResult
+
+    services, _ = fqdn_services
+    services._network_adapter = _FqdnAdapter(
+        result=ApplyResult(ok=True, message="Applied.", partial_failures=("eth1 could not be reconnected.",))
+    )
+    with caplog.at_level("INFO", logger="openfollow.services"):
+        services.apply_station_fqdn_change("of-1.stage.example.com").join(timeout=5)
+    assert "every interface with a link reconnected" not in caplog.text
+
+
+def test_off_linux_the_hosts_file_is_left_alone(fqdn_services, monkeypatch) -> None:
+    """127.0.1.1 is not configured on a Mac's loopback; a line there maps the hostname to nothing."""
+    services, hosts = fqdn_services
+    monkeypatch.setattr(services_module.sys, "platform", "darwin")
+    adapter = services._network_adapter = _FqdnAdapter()
+    services.apply_station_fqdn_change("of-1.stage.example.com").join(timeout=5)
+    assert hosts == []
+    assert adapter.sent == ["of-1.stage.example.com"]
+
+
+class _ReconcilingAdapter(_FqdnAdapter):
+    def __init__(self, **kw) -> None:
+        super().__init__(**kw)
+        self.reconnects: list[bool] = []
+
+    def set_dhcp_fqdn(self, fqdn: str, *, reconnect: bool = True):
+        self.reconnects.append(reconnect)
+        return super().set_dhcp_fqdn(fqdn)
+
+
+def test_startup_brings_the_dhcp_side_in_line_without_reconnecting(fqdn_services) -> None:
+    services, hosts = fqdn_services
+    adapter = services._network_adapter = _ReconcilingAdapter()
+    services.reconcile_station_fqdn("of-1.stage.example.com").join(timeout=5)
+    assert (adapter.sent, adapter.reconnects) == (["of-1.stage.example.com"], [False])
+    assert hosts == []
+
+
+def test_a_save_during_startup_is_not_undone_by_the_startup_reconcile(fqdn_services) -> None:
+    """The web server is up before the reconcile runs; whichever worker gets the lock first,
+    the name saved since startup is the one the profiles end up with."""
+    services, _ = fqdn_services
+    adapter = services._network_adapter = _ReconcilingAdapter()
+    with services._network_op_lock:  # an apply in flight holds both workers back
+        startup = services.reconcile_station_fqdn("old.example.com")
+        saved = services.apply_station_fqdn_change("of-1.stage.example.com")
+    startup.join(timeout=5)
+    saved.join(timeout=5)
+    assert (adapter.sent, adapter.reconnects) == (["of-1.stage.example.com"], [True])
+
+
+def test_startup_leaves_a_read_only_backend_alone(fqdn_services) -> None:
+    services, _ = fqdn_services
+    adapter = services._network_adapter = _ReconcilingAdapter(writable=False)
+    services.reconcile_station_fqdn("of-1.stage.example.com").join(timeout=5)
+    assert adapter.sent == []
+
+
+def test_what_dhcp_could_not_do_is_reported_for_the_configured_name_only(fqdn_services) -> None:
+    from openfollow.network.adapter import ApplyResult
+
+    services, _ = fqdn_services
+    assert services.station_fqdn_problems() == ()
+    services._network_adapter = _FqdnAdapter(
+        result=ApplyResult(
+            ok=False, message="No profile could be updated.", partial_failures=("Profile 'X' was not updated.",)
+        )
+    )
+    services._app._config.station_fqdn = "of-1.stage.example.com"
+    services.apply_station_fqdn_change("of-1.stage.example.com").join(timeout=5)
+    assert services.station_fqdn_problems() == ("No profile could be updated.", "Profile 'X' was not updated.")
+    services._app._config.station_fqdn = "other.example.com"
+    assert services.station_fqdn_problems() == ()
+
+
+def test_the_screens_lock_is_the_one_the_web_apply_holds(monkeypatch) -> None:
+    """The Operator Screen takes ``network_op_lock``; it only serialises anything if the web's
+    apply holds that same lock while it changes the host."""
+    from openfollow.network.adapter import ApplyResult, Ipv4Config, Ipv4Method
+
+    services = _build_services_with_psutil_backend(monkeypatch)
+    held: list[bool] = []
+
+    class _Adapter:
+        def is_writable(self) -> bool:
+            return True
+
+        def apply_ipv4(self, iface, config):
+            held.append(services.network_op_lock.locked())
+            return ApplyResult(ok=True)
+
+    services._network_adapter = _Adapter()
+    services._handle_network_apply("eth0", Ipv4Config(method=Ipv4Method.DHCP))
+    assert held == [True]
+
+
+@pytest.mark.parametrize(
+    ("result", "level", "line"),
+    [
+        (("ok", "Applied."), "INFO", "brought in line with DHCP; it goes out at each interface's next connect"),
+        (
+            ("fail", "No profile could be updated."),
+            "WARNING",
+            "not brought in line with DHCP: No profile could be updated.",
+        ),
+    ],
+    ids=["written", "refused"],
+)
+def test_the_startup_reconcile_says_what_it_changed(fqdn_services, caplog, result, level: str, line: str) -> None:
+    from openfollow.network.adapter import ApplyResult
+
+    services, _ = fqdn_services
+    services._network_adapter = _ReconcilingAdapter(result=ApplyResult(ok=result[0] == "ok", message=result[1]))
+    with caplog.at_level("INFO", logger="openfollow.services"):
+        services.reconcile_station_fqdn("of-1.stage.example.com").join(timeout=5)
+    assert [(r.levelname, line in r.getMessage()) for r in caplog.records if "Station FQDN" in r.getMessage()] == [
+        (level, True)
+    ]
+
+
+def test_a_startup_with_nothing_to_change_logs_nothing(fqdn_services, caplog) -> None:
+    from openfollow.network.adapter import ApplyResult
+
+    services, _ = fqdn_services
+    services._network_adapter = _ReconcilingAdapter(result=ApplyResult(ok=True, message="Unchanged."))
+    with caplog.at_level("INFO", logger="openfollow.services"):
+        services.reconcile_station_fqdn("of-1.stage.example.com").join(timeout=5)
+    assert not [r for r in caplog.records if "Station FQDN" in r.getMessage()]
+
+
+def test_a_profile_the_startup_reconcile_could_not_write_is_named(fqdn_services, caplog) -> None:
+    from openfollow.network.adapter import ApplyResult
+
+    services, _ = fqdn_services
+    services._network_adapter = _ReconcilingAdapter(
+        result=ApplyResult(ok=True, message="Applied.", partial_failures=("Profile 'X' was not updated.",))
+    )
+    with caplog.at_level("WARNING", logger="openfollow.services"):
+        services.reconcile_station_fqdn("of-1.stage.example.com").join(timeout=5)
+    assert "Station FQDN: Profile 'X' was not updated." in caplog.text
+
+
+def test_a_removal_brought_in_line_at_startup_is_named_as_one(fqdn_services, caplog) -> None:
+    from openfollow.network.adapter import ApplyResult
+
+    services, _ = fqdn_services
+    services._network_adapter = _ReconcilingAdapter(result=ApplyResult(ok=True, message="Applied."))
+    with caplog.at_level("INFO", logger="openfollow.services"):
+        services.reconcile_station_fqdn("").join(timeout=5)
+    assert "Station FQDN removal brought in line with DHCP" in caplog.text

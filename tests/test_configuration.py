@@ -68,6 +68,10 @@ class _DummyRuntimeServices:
         self.detection_swaps: list[DetectionConfig] = []
         self.window_size_changes: list[tuple[int, int]] = []
         self.video_swaps: list[AppConfig] = []
+        self.station_fqdn_changes: list[str] = []
+
+    def apply_station_fqdn_change(self, fqdn: str) -> None:
+        self.station_fqdn_changes.append(fqdn)
 
     def update_window_title(self, title: str) -> None:
         self.updated_titles.append(title)
@@ -6846,9 +6850,25 @@ def test_apply_runtime_hands_a_new_station_fqdn_to_the_running_station() -> None
     app = _DummyApp(AppConfig())
     apply_runtime_config_changes(app, AppConfig(station_fqdn="of-1.stage.example.com"))
     assert app._config.station_fqdn == "of-1.stage.example.com"
+    apply_runtime_config_changes(app, AppConfig(station_fqdn="of-1.stage.example.com"))
     apply_runtime_config_changes(app, AppConfig())
     assert app._config.station_fqdn == ""
     assert app._web_commands.restart_requested is False
+    # /etc/hosts and DHCP follow each change, once.
+    assert app._runtime_services.station_fqdn_changes == ["of-1.stage.example.com", ""]
+
+
+def test_a_station_fqdn_that_could_not_be_handed_on_is_retried() -> None:
+    """Keeping the new name while nothing applied it would accept the file and never try again."""
+
+    class _FailingRuntimeServices(_DummyRuntimeServices):
+        def apply_station_fqdn_change(self, fqdn: str) -> None:
+            raise RuntimeError("can't start new thread")
+
+    app = _DummyApp(AppConfig(station_fqdn="old.example.com"))
+    app._runtime_services = _FailingRuntimeServices()
+    assert apply_runtime_config_changes(app, AppConfig(station_fqdn="of-1.stage.example.com")) is False
+    assert app._config.station_fqdn == "old.example.com"
 
 
 def test_a_refused_station_fqdn_is_reported_once_not_on_every_load(caplog, monkeypatch) -> None:

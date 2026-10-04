@@ -244,7 +244,7 @@ class TestUpdateSupportedFlag:
         monkeypatch.setattr(routes, "_get_local_ips", lambda: ["127.0.0.1"])
         server = SimpleNamespace(
             get_update_status=lambda: {"state": "idle", "message": "", "error": ""},
-            get_network_state=lambda: None,
+            get_station_fqdn_problems=lambda: (),
             get_update_available=lambda: "",
         )
         return routes._build_general_template_data(server, AppConfig())

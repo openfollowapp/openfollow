@@ -443,6 +443,7 @@ class OpenFollowApp:
             (svc.init_virtual_faders, "virtual fader bus"),
             (self._init_marker_catalog_sync, "marker catalog sync"),
             (self._sync_system_hostname, "hostname sync"),
+            (self._reconcile_station_fqdn, "station FQDN reconcile"),
             (svc.init_online_sync, "online sync"),
         ):
             if name in server_dependent and self._server is None:
@@ -783,7 +784,11 @@ class OpenFollowApp:
         from openfollow.privilege.device_repair import sync_station_hostname
 
         broker = self._runtime_services.privilege_broker
-        sync_station_hostname(broker, self._config.psn_system_name)
+        sync_station_hostname(broker, self._config.psn_system_name, self._config.station_fqdn)
+
+    def _reconcile_station_fqdn(self) -> None:
+        """Bring the DHCP side in line with the configured FQDN, off-thread, reconnecting nothing."""
+        self._runtime_services.reconcile_station_fqdn(self._config.station_fqdn)
 
     def _init_marker_catalog_sync(self) -> None:
         """Start the multicast catalog sync (mirrors the discovery beacon)."""

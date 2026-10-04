@@ -47,6 +47,10 @@ _SOURCE_FIELDS = "GENERAL.DEVICE,GENERAL.TYPE,GENERAL.STATE,GENERAL.CON-UUID,IP4
 # nmcli(1) EXIT STATUS
 _NMCLI_NOT_FOUND = 10
 
+# The devices whose profiles carry the station's DHCP name. Bridges and tunnels
+# (docker0, a VPN) belong to whatever made them.
+_FQDN_DEVICE_KINDS = frozenset({"ethernet", "wifi", "vlan"})
+
 _SYS_CLASS_NET = Path("/sys/class/net")
 
 # Shown when the privilege broker is absent, which on a real device means the
@@ -206,6 +210,7 @@ class NetworkManagerAdapter(NetworkAdapter):
         argv: list[str],
         *,
         reason: str,
+        allow_prompt: bool = True,
     ) -> _Privileged:
         """Invoke capability via broker."""
         if self._broker is None:
@@ -216,6 +221,7 @@ class NetworkManagerAdapter(NetworkAdapter):
                 argv,
                 reason=reason,
                 timeout=_NMCLI_TIMEOUT,
+                allow_prompt=allow_prompt,
             )
         except PrivilegeError as exc:
             return _Privileged(False, str(exc), exc.returncode)
@@ -688,6 +694,73 @@ class NetworkManagerAdapter(NetworkAdapter):
         return ApplyResult(ok=True, message="Lease renewed.")
 
     # ---- VLAN sub-interfaces --------------------------------------------
+
+    def set_dhcp_fqdn(self, fqdn: str, *, reconnect: bool = True) -> ApplyResult:
+        profiles: list[tuple[str, str]] = []
+        # An external connection belongs to whatever made it, and one whose state is unknown may be one.
+        skipped: list[str] = []
+        for device in self.list_interfaces():
+            if device.kind not in _FQDN_DEVICE_KINDS:
+                continue
+            state = self._device_state(device.name)
+            if state is None:
+                skipped.append(f"{device.name}: NetworkManager did not report its state, so it was left alone.")
+            elif "externally" not in state and (name := self._connection_for(device.name)) is not None:
+                profiles.append((device.name, name))
+        if not profiles:
+            return ApplyResult(
+                ok=False,
+                message="No interface has a NetworkManager profile to carry the name.",
+                partial_failures=tuple(skipped),
+            )
+        failures: list[str] = []
+        written: list[tuple[str, str]] = []
+        for iface, name in profiles:
+            if not reconnect and self._profile_dhcp_fqdn(name) == fqdn:
+                continue
+            # Refused while the profile names its own ``ipv4.dhcp-hostname``: the two
+            # are exclusive, and the operator's own setting is left as it is.
+            mod = self._run_privileged(
+                NETWORK_NM_CON_MOD,
+                ["/usr/bin/nmcli", "con", "mod", "id", name, "ipv4.dhcp-fqdn", fqdn],
+                reason=f"Set the DHCP name of NetworkManager profile {name}",
+                allow_prompt=False,
+            )
+            if mod.ok:
+                written.append((iface, name))
+            else:
+                failures.append(
+                    f"Profile '{name}' was not updated ({mod.detail})."
+                    if mod.detail
+                    else f"Profile '{name}' was not updated."
+                )
+        for iface, name in written if reconnect else []:
+            if not self._has_carrier(iface):
+                continue  # the profile carries the name; it goes out when the link comes up
+            up = self._run_privileged(
+                NETWORK_NM_CON_UP,
+                ["/usr/bin/nmcli", "con", "up", "id", name],
+                reason=f"Reconnect {iface} so its DHCP server sees the name",
+                allow_prompt=False,
+            )
+            if not up.ok and not self._awaiting_dhcp(iface):
+                failures.append(
+                    f"{iface} could not be reconnected ({up.detail})."
+                    if up.detail
+                    else f"{iface} could not be reconnected."
+                )
+        problems = (*skipped, *failures)
+        if failures and not written:
+            return ApplyResult(ok=False, message="No profile could be updated.", partial_failures=problems)
+        return ApplyResult(ok=True, message="Applied." if written else "Unchanged.", partial_failures=problems)
+
+    def _profile_dhcp_fqdn(self, name: str) -> str | None:
+        """The profile's ``ipv4.dhcp-fqdn``, or None when it cannot be read."""
+        try:
+            res = self._run(["nmcli", "-g", "ipv4.dhcp-fqdn", "connection", "show", "id", name])
+        except (RuntimeError, FileNotFoundError, subprocess.SubprocessError):
+            return None
+        return res.stdout.strip()
 
     def supports_vlans(self) -> bool:
         return True

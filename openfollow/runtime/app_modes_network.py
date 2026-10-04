@@ -11,6 +11,7 @@ drives the privileged NetworkAdapter off the main thread."""
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import threading
 import time
@@ -257,6 +258,12 @@ def _serves_every_interface(app: OpenFollowApp) -> bool:
 
 def _station_fqdn(app: OpenFollowApp) -> str:
     return str(getattr(app._config, "station_fqdn", "") or "")
+
+
+def _fqdn_problems(app: OpenFollowApp) -> tuple[str, ...]:
+    """What the last DHCP change for the configured name could not do."""
+    problems = getattr(getattr(app, "_runtime_services", None), "station_fqdn_problems", None)
+    return tuple(problems()) if problems is not None else ()
 
 
 def _web_ui_host(app: OpenFollowApp) -> str:
@@ -507,6 +514,8 @@ def _iface_list_rows(app: OpenFollowApp, ifaces: list[tuple[str, str]]) -> list[
         # venue's DNS does, so it claims none.
         value = "" if fqdn else "any interface"
         rows.append({"kind": "display", "key": "web_host", "label": _web_url_for(app, host), "value": value})
+    for problem in _fqdn_problems(app):
+        rows.append({"kind": "notice", "level": "caution", "label": f"DHCP: {problem}", "value": ""})
 
     rows.append({"kind": "header", "label": "Interfaces"})
     rows.extend(_iface_rows(app, ifaces))
@@ -525,7 +534,10 @@ def _iface_list_rows(app: OpenFollowApp, ifaces: list[tuple[str, str]]) -> list[
     if restricted:
         rows.append({"kind": "action", "key": "web_unpin", "label": "Serve web UI on all interfaces", "value": ""})
     if fqdn:
-        rows.append({"kind": "action", "key": "fqdn_remove", "label": "Remove FQDN", "value": ""})
+        # Where this build manages the network, removing it reconnects every interface.
+        adapter = _network_adapter(app)
+        label = "Remove FQDN (interrupts network traffic)" if adapter and adapter.is_writable() else "Remove FQDN"
+        rows.append({"kind": "action", "key": "fqdn_remove", "label": label, "value": ""})
     return rows
 
 
@@ -781,6 +793,7 @@ def _remove_fqdn(app: OpenFollowApp) -> None:
         _set_banner(app, "Could not save - the FQDN is still set.")
         return
     app._config.station_fqdn = ""
+    app._runtime_services.apply_station_fqdn_change("")
     _set_banner(app, "FQDN removed.", "success")
     _focus_row(app, "")
 
@@ -1140,10 +1153,15 @@ def _start_worker(
     generation = getattr(app, "_pi_network_worker_generation", 0) + 1
     app._pi_network_worker_generation = generation
 
+    # The web's apply and renew and the station FQDN's DHCP change hold the same lock:
+    # dhcpcd.conf and the NM profiles are read, changed and written back.
+    lock = getattr(getattr(app, "_runtime_services", None), "network_op_lock", None) or contextlib.nullcontext()
+
     def _run() -> None:
         result: ApplyResult
         try:
-            result = fn()
+            with lock:
+                result = fn()
         except Exception as exc:  # noqa: BLE001
             logger.exception("Network %s failed", action_label)
             result = ApplyResult(ok=False, message=str(exc))

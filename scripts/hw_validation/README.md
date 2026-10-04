@@ -24,6 +24,7 @@ to grow into a fuller two-Pi validation suite (see the tracking issue).
 | `multi_interface_two_station.py` | workstation | Drives the multi-interface feature end-to-end: creates a tagged VLAN from the web UI, asserts it becomes a pinnable netdev, exercises the delete guards, then proves PSN leaves tagged on the pinned NIC and **stops** when its interface is unavailable. Exits `0` (PASS) / `1` (FAIL). |
 | `discovery_containment_probe.py` | DUT | Tallies discovery-beacon and marker-catalog-sync datagrams **per interface, by source IP**, over one window, and asserts either silence everywhere or traffic on one interface and nowhere else. Watches every interface at once, because a leak that moved to a second adapter reads as containment on the one interface you thought to watch. Exits `0` (PASS) / `1` (FAIL). |
 | `vlan_tag_probe.py` | DUT | Dependency-free raw-socket capture reporting the 802.1Q tag on each frame. A station ships no `tcpdump` and no uplink to install one. |
+| `dhcp_fqdn_probe.py` | companion | Watches the station's DHCP requests by MAC and asserts the Station FQDN went out as option 81 (S and E flags set, no option 12), or after Remove FQDN, the hostname as option 12 and no option 81. Exits `0` (PASS) / `1` (FAIL) / `2` (no request seen). |
 
 ## DUT-local probes (no companion)
 
@@ -112,6 +113,25 @@ poetry run python scripts/hw_validation/osc_socket_options_probe.py
   that never reaches another interface fails too: the capture could not have
   seen a leak. It also reports what a pinned socket does with 127.0.0.1, which
   is why loopback destinations are never pinned.
+
+## Station FQDN on the wire (companion)
+
+`dhcp_fqdn_probe.py` runs as root on the companion, on an interface that shares a
+network with the station, and checks what the station sends its DHCP server.
+Start it, then save the Station FQDN on the station (or press Remove FQDN): the
+save reconnects every interface, and a reconnecting client broadcasts its
+request, so it reaches the companion.
+
+```sh
+sudo python3 scripts/hw_validation/dhcp_fqdn_probe.py --iface eth0 \
+    --mac 02:00:5e:00:53:01 --expect-fqdn of-1.stage.example.com
+sudo python3 scripts/hw_validation/dhcp_fqdn_probe.py --iface eth0 \
+    --mac 02:00:5e:00:53:01 --expect-hostname openfollow-noble-bear
+```
+
+Capture at the companion, not on the station: a capture on the sender shows
+what left it, not what arrived. A renewal is unicast to the server and never
+reaches the companion, so a quiet window is inconclusive (`2`), never a pass.
 
 ## Eos console / ETCnomad axis convention
 

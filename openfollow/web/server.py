@@ -203,6 +203,7 @@ class ConfigWebServer:
         log_ring: RingBufferLogHandler | None = None,
         # Read-only host-network snapshot for Overview; optional for tests.
         network_state_provider: Callable[[], dict[str, Any] | None] | None = None,
+        station_fqdn_problems_provider: Callable[[], tuple[str, ...]] | None = None,
         # Web write path: config snapshot + apply/renew handlers; optional for tests.
         network_config_provider: (Callable[[str | None], dict[str, Any] | None] | None) = None,
         # Every interface at once, for the Network Settings list. Costs one
@@ -300,6 +301,7 @@ class ConfigWebServer:
         # log_ring used by diagnostics when journalctl unavailable.
         self._log_ring = log_ring
         self._network_state_provider = network_state_provider
+        self._station_fqdn_problems_provider = station_fqdn_problems_provider
         self._network_config_provider = network_config_provider
         self._network_interfaces_provider = network_interfaces_provider
         self._network_address_sources_provider = network_address_sources_provider
@@ -456,6 +458,16 @@ class ConfigWebServer:
         except Exception:  # noqa: BLE001
             logger.exception("Network state provider raised")
             return None
+
+    def get_station_fqdn_problems(self) -> tuple[str, ...]:
+        """What the last DHCP change for the configured station FQDN could not do."""
+        if self._station_fqdn_problems_provider is None:
+            return ()
+        try:
+            return tuple(self._station_fqdn_problems_provider())
+        except Exception:  # noqa: BLE001
+            logger.exception("Station FQDN problems provider raised")
+            return ()
 
     def get_network_config(self, iface: str | None = None) -> dict[str, Any] | None:
         """Raw editable network-config snapshot; iface=None picks active."""

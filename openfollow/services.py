@@ -816,6 +816,12 @@ class AppRuntimeServices:
         # Serialise web-driven apply / renew so two concurrent requests
         # can't race the host's network state.
         self._network_op_lock = threading.Lock()
+        self._fqdn_lock = threading.Lock()
+        self._fqdn_generation = 0
+        # The name the DHCP side was last set to and what came of it, replaced whole.
+        self._fqdn_last: tuple[str, ApplyResult] | None = None
+        # Lets the save's response leave before the links it travels on drop.
+        self._fqdn_reconnect_delay_s = 1.0
 
         if not gst_runtime_available():
             logger.critical("GStreamer not available. Native sink mode requires GStreamer.")
@@ -825,6 +831,11 @@ class AppRuntimeServices:
     def network_adapter(self) -> NetworkAdapter:
         """Host-network adapter (NM / dhcpcd / psutil)."""
         return self._network_adapter
+
+    @property
+    def network_op_lock(self) -> threading.Lock:
+        """Held around every change to the host's network configuration."""
+        return self._network_op_lock
 
     @property
     def privilege_broker(self) -> PrivilegeBroker:
@@ -2387,7 +2398,92 @@ class AppRuntimeServices:
         # off-appliance or when the name already matches; never raises.
         from openfollow.privilege.device_repair import sync_station_hostname
 
-        sync_station_hostname(self._privilege_broker, canonical)
+        sync_station_hostname(self._privilege_broker, canonical, self._app._config.station_fqdn)
+
+    def apply_station_fqdn_change(self, fqdn: str) -> threading.Thread:
+        """List ``fqdn`` in /etc/hosts and send it by DHCP on every interface, reconnecting each.
+
+        Off the calling thread: a reconnect waits on every interface, and the save
+        that asked for it is answered over one of them. The latest name wins.
+        """
+        with self._fqdn_lock:
+            self._fqdn_generation += 1
+            generation = self._fqdn_generation
+        worker = threading.Thread(
+            target=self._apply_station_fqdn,
+            args=(fqdn, generation),
+            name="station-fqdn",
+            daemon=True,
+        )
+        worker.start()
+        return worker
+
+    def _apply_station_fqdn(self, fqdn: str, generation: int) -> None:
+        from openfollow.privilege.device_repair import sync_running_hostname_hosts
+
+        time.sleep(self._fqdn_reconnect_delay_s)
+        with self._network_op_lock:
+            if generation != self._fqdn_generation:
+                return
+            # The 127.0.1.1 line is a Debian convention; elsewhere it maps a name to nothing.
+            if sys.platform.startswith("linux"):
+                sync_running_hostname_hosts(self._privilege_broker, fqdn)
+            adapter = getattr(self, "_network_adapter", None)
+            if adapter is None or not adapter.is_writable():
+                return
+            result = adapter.set_dhcp_fqdn(fqdn)
+            # Published under the lock, so an older change cannot land after a newer one.
+            self._fqdn_last = (fqdn, result)
+        change = f"Station FQDN {fqdn!r}" if fqdn else "Station FQDN removal"
+        if not result.ok:
+            logger.warning("%s not applied to DHCP: %s", change, result.message)
+        elif not result.partial_failures:
+            logger.info("%s applied to DHCP; every interface with a link reconnected", change)
+        for failure in result.partial_failures:
+            logger.warning("Station FQDN: %s", failure)
+
+    def reconcile_station_fqdn(self, fqdn: str) -> threading.Thread:
+        """At startup, bring every interface's DHCP name in line with ``fqdn``, reconnecting nothing.
+
+        A profile changed while the station was stopped, an adapter added since, or a change a
+        restart cut short would otherwise keep sending a name the config no longer has.
+        """
+        with self._fqdn_lock:
+            generation = self._fqdn_generation
+        worker = threading.Thread(
+            target=self._reconcile_station_fqdn,
+            args=(fqdn, generation),
+            name="station-fqdn-reconcile",
+            daemon=True,
+        )
+        worker.start()
+        return worker
+
+    def _reconcile_station_fqdn(self, fqdn: str, generation: int) -> None:
+        with self._network_op_lock:
+            # A save since startup has its own worker with the newer name; writing ours after it would undo it.
+            if generation != self._fqdn_generation:
+                return
+            adapter = getattr(self, "_network_adapter", None)
+            if adapter is None or not adapter.is_writable():
+                return
+            result = adapter.set_dhcp_fqdn(fqdn, reconnect=False)
+            self._fqdn_last = (fqdn, result)
+        change = f"Station FQDN {fqdn!r}" if fqdn else "Station FQDN removal"
+        if not result.ok:
+            logger.warning("%s not brought in line with DHCP: %s", change, result.message)
+        elif result.message == "Applied.":
+            logger.info("%s brought in line with DHCP; it goes out at each interface's next connect", change)
+        for failure in result.partial_failures:
+            logger.warning("Station FQDN: %s", failure)
+
+    def station_fqdn_problems(self) -> tuple[str, ...]:
+        """What the last DHCP change for the configured name could not do; empty when it did it all."""
+        last = self._fqdn_last
+        if last is None or last[0] != self._app._config.station_fqdn:
+            return ()
+        result = last[1]
+        return ((result.message,) if not result.ok else ()) + result.partial_failures
 
     def apply_detection_change(self, new_cfg: DetectionConfig) -> None:
         """Apply a ``detection`` config change live for the three
@@ -2684,6 +2780,7 @@ class AppRuntimeServices:
             # Read-only host-network snapshot for the Overview block.
             # Lazy-deferred so the adapter is queried only on Overview open.
             network_state_provider=self._network_state_provider,
+            station_fqdn_problems_provider=self.station_fqdn_problems,
             # Web write path: raw editable config snapshot for the form +
             # apply / renew handlers (broker-elevated, serialised).
             network_config_provider=self._network_config_provider,

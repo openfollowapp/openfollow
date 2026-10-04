@@ -3218,7 +3218,7 @@ class TestApplyPsnSystemNameChange:
         the canonical names passed through to the OS-hostname updater."""
         calls: list[str] = []
 
-        def _fake(broker: object, name: str) -> bool:
+        def _fake(broker: object, name: str, fqdn: str = "") -> bool:
             calls.append(name)
             return False
 
@@ -3227,6 +3227,27 @@ class TestApplyPsnSystemNameChange:
             _fake,
         )
         return calls
+
+    def test_renaming_keeps_the_station_fqdn_in_the_hosts_line(
+        self,
+        services: AppRuntimeServices,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A rename rewrites /etc/hosts' 127.0.1.1 line, which must keep the FQDN ahead of the new name."""
+        forwarded: list[str] = []
+        monkeypatch.setattr(
+            "openfollow.privilege.device_repair.sync_station_hostname",
+            lambda broker, name, fqdn="": forwarded.append(fqdn),
+        )
+        services._app._canvas = SimpleNamespace(set_title=lambda title: None)
+        services._app._server = None
+        services._app._otp_server = None
+        services._app._web_server = None
+        services._app._config.station_fqdn = "of-1.stage.example.com"
+
+        services.apply_psn_system_name_change("My Show")
+
+        assert forwarded == ["of-1.stage.example.com"]
 
     def test_renaming_propagates_to_system_hostname(
         self,

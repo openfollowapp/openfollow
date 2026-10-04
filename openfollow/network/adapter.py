@@ -130,6 +130,7 @@ class ApplyResult:
 
 
 VLAN_UNSUPPORTED_MESSAGE = "This network backend cannot create VLAN interfaces."
+DHCP_FQDN_UNSUPPORTED_MESSAGE = "This network backend cannot register a name by DHCP."
 
 
 class NetworkAdapter(ABC):
@@ -156,6 +157,15 @@ class NetworkAdapter(ABC):
     def is_writable(self) -> bool:
         """Return True if this adapter can mutate host state."""
         return True
+
+    def set_dhcp_fqdn(self, fqdn: str, *, reconnect: bool = True) -> ApplyResult:
+        """Send ``fqdn`` as the DHCP client FQDN (option 81) on every interface, or the
+        hostname again when blank, and reconnect each one so its DHCP server sees it now.
+
+        Without ``reconnect`` only what differs is written, and each interface picks it
+        up at its next connect. Never prompts for a password: it runs in the background.
+        """
+        return ApplyResult(ok=False, message=DHCP_FQDN_UNSUPPORTED_MESSAGE)
 
     def read_address_sources(self) -> list[AddressSourceReading] | None:
         """Every non-loopback interface's address and its source, for diagnostics.

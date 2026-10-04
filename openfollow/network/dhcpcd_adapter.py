@@ -61,6 +61,21 @@ _NO_BROKER_MESSAGE = "Cannot change network settings - the privileged helper is 
 
 _BLOCK_START = "# >>> openfollow managed: {iface} >>>"
 _BLOCK_END = "# <<< openfollow managed: {iface} <<<"
+# The station FQDN's block: global options, so it names no interface, and the
+# space keeps it from ever sharing markers with an interface's block.
+_FQDN_BLOCK = "station fqdn"
+_FQDN_BLOCK_RE = re.compile(
+    rf"^# >>> openfollow managed: {_FQDN_BLOCK} >>>\n.*?^# <<< openfollow managed: {_FQDN_BLOCK} <<<\n\n?",
+    re.DOTALL | re.MULTILINE,
+)
+# Its start marker with the end gone: only the marker and the directives it manages go,
+# never the global options an operator wrote after it.
+_FQDN_ORPHAN_RE = re.compile(
+    rf"^# >>> openfollow managed: {_FQDN_BLOCK} >>>[ \t]*(?:\n|\Z)(?:(?:hostname|fqdn)\b[^\n]*(?:\n|\Z))*",
+    re.MULTILINE,
+)
+# Where the global part ends: the first section, or a managed block's marker above one.
+_GLOBAL_END_RE = re.compile(r"^(?:[ \t]*(?:interface|ssid|profile)\s|# >>> openfollow managed: )", re.MULTILINE)
 _DHCPCD_TIMEOUT = 8
 # ``dhcpcd -n`` rebinds asynchronously, so the address read-back can still
 # report the old lease for a moment. Poll a few times with a short settle so
@@ -108,7 +123,17 @@ class DhcpcdAdapter(NetworkAdapter):
         except OSError:
             return ""
 
-    def _write_conf_privileged(self, text: str) -> None:
+    def _read_conf_for_write(self) -> str:
+        """The conf a rewrite starts from: a missing file is empty, an unreadable one raises.
+
+        Read as empty, an unreadable conf would be replaced by the managed blocks alone.
+        """
+        try:
+            return self.conf_path.read_text()
+        except FileNotFoundError:
+            return ""
+
+    def _write_conf_privileged(self, text: str, *, allow_prompt: bool = True) -> None:
         """Rewrite the conf atomically, or write directly in tests.
 
         Production path (broker + real ``/etc/dhcpcd.conf``): stage the
@@ -129,12 +154,14 @@ class DhcpcdAdapter(NetworkAdapter):
             stdin=text,
             reason="Apply IPv4 network changes (stage dhcpcd.conf)",
             timeout=10,
+            allow_prompt=allow_prompt,
         )
         self._broker.run(
             NETWORK_DHCPCD_CONF_COMMIT,
             ["/usr/bin/mv", str(DHCPCD_CONF_TMP), str(DHCPCD_CONF)],
             reason="Apply IPv4 network changes (commit dhcpcd.conf)",
             timeout=10,
+            allow_prompt=allow_prompt,
         )
 
     @staticmethod
@@ -201,6 +228,33 @@ class DhcpcdAdapter(NetworkAdapter):
             # else: no overrides; pure DHCP
         lines.append(_BLOCK_END.format(iface=iface))
         return "\n".join(lines) + "\n"
+
+    @classmethod
+    def _with_fqdn_block(cls, text: str, fqdn: str) -> str:
+        """``text`` carrying the station FQDN as the last of its global options, or without it when blank.
+
+        ``hostname`` alone sends the whole name as option 12; ``fqdn both`` makes it option 81.
+        The block brings its own trailing blank line and takes it away again, so removing it
+        gives back the file as it was, ending in a newline if it did not.
+        """
+        text = _FQDN_ORPHAN_RE.sub("", _FQDN_BLOCK_RE.sub("", text))
+        if not fqdn:
+            return text
+        block = (
+            "\n".join(
+                [
+                    _BLOCK_START.format(iface=_FQDN_BLOCK),
+                    f"hostname {fqdn}",
+                    "fqdn both",
+                    _BLOCK_END.format(iface=_FQDN_BLOCK),
+                ]
+            )
+            + "\n"
+        )
+        end = _GLOBAL_END_RE.search(text)
+        if end is None:
+            return text + ("\n" if text and not text.endswith("\n") else "") + block
+        return text[: end.start()] + block + "\n" + text[end.start() :]
 
     # ---- list / get -----------------------------------------------------
 
@@ -392,7 +446,7 @@ class DhcpcdAdapter(NetworkAdapter):
             return ApplyResult(ok=False, message="; ".join(errors))
 
         try:
-            current = self._read_conf()
+            current = self._read_conf_for_write()
             stripped = self._strip_block(current, iface)
             block = self._build_block(iface, config)
             new_text = stripped.rstrip() + "\n\n" + block if stripped.strip() else block
@@ -478,6 +532,41 @@ class DhcpcdAdapter(NetworkAdapter):
             )
         return ApplyResult(ok=True, message="Applied.", partial_failures=tuple(partial))
 
+    def set_dhcp_fqdn(self, fqdn: str, *, reconnect: bool = True) -> ApplyResult:
+        try:
+            current = self._read_conf_for_write()
+        except (OSError, UnicodeDecodeError) as exc:
+            return ApplyResult(ok=False, message=f"Could not read {self.conf_path}, so nothing was changed ({exc}).")
+        updated = self._with_fqdn_block(current, fqdn)
+        if updated != current:
+            try:
+                self._write_conf_privileged(updated, allow_prompt=False)
+            except PrivilegeError as exc:
+                return ApplyResult(ok=False, message=str(exc))
+            except OSError as exc:
+                return ApplyResult(
+                    ok=False,
+                    message=f"Could not write {self.conf_path}; check it exists and is not mounted read-only ({exc}).",
+                )
+        if not reconnect:
+            return ApplyResult(ok=True, message="Applied." if updated != current else "Unchanged.")
+        failures: list[str] = []
+        for iface in self.list_interfaces():
+            if is_loopback(iface) or not _IFACE_RE.fullmatch(iface.name):
+                continue
+            # ``-n`` rereads the conf and rebinds, so the next request carries the name.
+            rebind = self._broker_run(
+                NETWORK_DHCPCD_RENEW,
+                ["/usr/sbin/dhcpcd", "-n", iface.name],
+                reason=f"Reconnect {iface.name} so its DHCP server sees the name",
+                allow_prompt=False,
+            )
+            if rebind is None:
+                return ApplyResult(ok=False, message=_NO_BROKER_MESSAGE)
+            if not rebind.ok:
+                failures.append(f"{iface.name} could not be reconnected ({rebind.detail}).")
+        return ApplyResult(ok=True, message="Applied.", partial_failures=tuple(failures))
+
     def _has_carrier(self, iface: str) -> bool:
         """False only when the kernel explicitly reports the link is down.
 
@@ -553,6 +642,7 @@ class DhcpcdAdapter(NetworkAdapter):
         argv: list[str],
         *,
         reason: str,
+        allow_prompt: bool = True,
     ) -> _BrokerCallResult | None:
         """Invoke the broker, return a small (ok, detail) value, never raise.
 
@@ -569,6 +659,7 @@ class DhcpcdAdapter(NetworkAdapter):
                 argv,
                 reason=reason,
                 timeout=_DHCPCD_TIMEOUT,
+                allow_prompt=allow_prompt,
             )
         except PrivilegeError as exc:
             return _BrokerCallResult(ok=False, detail=str(exc))

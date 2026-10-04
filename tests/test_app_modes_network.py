@@ -96,9 +96,12 @@ def _make_app(adapter: _FakeAdapter | None = None) -> SimpleNamespace:
     if adapter is None:
         adapter = _FakeAdapter()
     apply_calls: list[str] = []
+    fqdn_changes: list[str] = []
     services = SimpleNamespace(
         network_adapter=adapter,
         apply_psn_source_ip_change=lambda ip: apply_calls.append(ip),
+        apply_station_fqdn_change=fqdn_changes.append,
+        fqdn_changes=fqdn_changes,
     )
     # The screen reads ``psn_source_iface`` only to prove it never writes it;
     # ``web_bind_iface`` is the one config field it does own.
@@ -1888,6 +1891,16 @@ class TestTheStationFqdn:
         heading = next(i for i, r in enumerate(rows) if r.get("label") == "If you still can't reach it")
         assert keys.index("fqdn_remove") == heading + 1
 
+    @pytest.mark.parametrize(
+        ("writable", "label"),
+        [(True, "Remove FQDN (interrupts network traffic)"), (False, "Remove FQDN")],
+        ids=["managed-network", "read-only-backend"],
+    )
+    def test_the_button_warns_where_it_reconnects_the_interfaces(self, monkeypatch, writable: bool, label: str) -> None:
+        app = self._app(monkeypatch, adapter=_FakeAdapter(writable=writable))
+        row = next(r for r in anm.build_pi_network_rows(app) if r.get("key") == "fqdn_remove")
+        assert row["label"] == label
+
     def test_remove_fqdn_clears_it_and_names_the_local_address_again(self, monkeypatch, tmp_path) -> None:
         app = self._app(monkeypatch, config_path=tmp_path / "config.toml")
 
@@ -1895,6 +1908,7 @@ class TestTheStationFqdn:
 
         assert app._config.station_fqdn == ""
         assert load_config(str(tmp_path / "config.toml")).station_fqdn == ""
+        assert app._runtime_services.fqdn_changes == [""], "the hostname is never sent by DHCP again"
         assert (app._pi_network_banner, app._pi_network_banner_level) == ("FQDN removed.", "success")
         assert app._restart_requests == 0
         rows = anm.build_pi_network_rows(app)
@@ -1911,6 +1925,7 @@ class TestTheStationFqdn:
         _confirm_key(app, "fqdn_remove")
 
         assert app._config.station_fqdn == self._FQDN
+        assert app._runtime_services.fqdn_changes == []
         assert (app._pi_network_banner, app._pi_network_banner_level) == (
             "Could not save - the FQDN is still set.",
             "error",
@@ -1941,6 +1956,56 @@ class TestTheStationFqdn:
         keys = [r.get("key") for r in rows]
         assert [r.get("label") for r in rows].count("If you still can't reach it") == 1
         assert keys[-2:] == ["web_unpin", "fqdn_remove"]
+
+
+class TestNetworkActionsShareTheStationsLock:
+    def test_an_apply_holds_the_lock_the_web_and_the_fqdn_change_hold(self, monkeypatch) -> None:
+        """dhcpcd.conf and the NM profiles are read, changed and written back; two writers interleaving
+        lose one change with nothing to say so."""
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        lock = threading.Lock()
+        held: list[bool] = []
+        adapter = _FakeAdapter()
+        apply = adapter.apply_ipv4
+
+        def _apply(iface, config):
+            held.append(lock.locked())
+            return apply(iface, config)
+
+        adapter.apply_ipv4 = _apply  # type: ignore[method-assign]
+        app = _make_app(adapter)
+        app._runtime_services.network_op_lock = lock
+        anm.enter_pi_network(app)
+
+        _confirm_key(app, "dhcp")
+        app._pi_network_worker.join(timeout=2.0)
+
+        assert held == [True]
+        assert not lock.locked()
+
+
+class TestDhcpProblemsOnTheNetworkScreen:
+    def test_what_dhcp_could_not_do_is_a_caution_under_the_name(self, monkeypatch) -> None:
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        app = _make_app()
+        app._config.station_fqdn = "of-1.stage.example.com"
+        app._runtime_services.station_fqdn_problems = lambda: ("Profile 'Wired connection 1' was not updated.",)
+        anm.enter_pi_network(app)
+        rows = anm.build_pi_network_rows(app)
+        at = next(i for i, r in enumerate(rows) if r.get("key") == "web_host")
+        assert rows[at + 1] == {
+            "kind": "notice",
+            "level": "caution",
+            "label": "DHCP: Profile 'Wired connection 1' was not updated.",
+            "value": "",
+        }
+
+    def test_nothing_to_report_adds_no_row(self, monkeypatch) -> None:
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        app = _make_app()
+        app._runtime_services.station_fqdn_problems = lambda: ()
+        anm.enter_pi_network(app)
+        assert not [r for r in anm.build_pi_network_rows(app) if str(r.get("label", "")).startswith("DHCP:")]
 
 
 class TestFixReachabilityActions:

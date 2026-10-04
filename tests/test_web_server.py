@@ -7252,6 +7252,32 @@ def test_the_save_ring_outlives_its_animation(live_server) -> None:
     assert delay_ms > animation_s * 1000
 
 
+@pytest.mark.parametrize(("fqdn", "shown"), [("of-1.stage.example.com", True), ("", False)])
+def test_what_dhcp_could_not_do_is_shown_under_the_custom_domain_name(live_server, fqdn: str, shown: bool) -> None:
+    server, base = live_server
+    save_config(AppConfig(station_fqdn=fqdn), server.config_path)
+    server._station_fqdn_problems_provider = lambda: ("Profile 'Wired connection 1' was not updated.",)
+    _, body = _get(base, "/")
+    row = body[
+        body.index('id="general-station-fqdn-row"') : body.index(
+            '<div class="row">', body.index('id="general-station-fqdn-row"')
+        )
+    ]
+    assert ("Not every interface sends this name by DHCP." in row) is shown
+    assert ("Profile &#039;Wired connection 1&#039; was not updated." in row) is shown
+
+
+def test_a_failing_dhcp_problems_provider_costs_nothing(live_server) -> None:
+    server, base = live_server
+
+    def _boom() -> tuple[str, ...]:
+        raise RuntimeError("services gone")
+
+    server._station_fqdn_problems_provider = _boom
+    assert server.get_station_fqdn_problems() == ()
+    assert _get(base, "/")[0] == 200
+
+
 def test_a_refused_unlock_says_why_on_the_login_page(pin_protected_server) -> None:
     _, base, pin = pin_protected_server
     status, body, response_headers = _raw_request(

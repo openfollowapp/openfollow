@@ -989,6 +989,7 @@ def _build_general_template_data(
         "restarting": restarting,
         "local_ips": _get_local_ips(),
         "update_status": server.get_update_status(),
+        "fqdn_problems": server.get_station_fqdn_problems(),
         "current_version": openfollow.__version__,
         "update_supported": _deb_update_supported(),
         "startup_supported": _startup_settings_supported(),
@@ -5085,6 +5086,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             controller_slots=_controller_slots_view(server),
             local_ips=_get_local_ips(),
             update_status=server.get_update_status(),
+            fqdn_problems=server.get_station_fqdn_problems(),
             # index.tpl includes the General partial directly, so the initial
             # render must supply the Software Update section's version label.
             current_version=openfollow.__version__,

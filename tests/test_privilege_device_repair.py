@@ -972,6 +972,8 @@ class TestSyncStationHostname:
         call = broker.calls[0]
         assert call.capability is DEVICE_SET_HOSTNAME
         assert call.argv == ["/usr/bin/hostnamectl", "set-hostname", "openfollow-noble-bear"]
+        # A passwordless verdict can go stale; the rename then fails rather than waits on a prompt.
+        assert call.allow_prompt is False
 
     def test_noop_when_hostname_already_matches(self, monkeypatch) -> None:
         self._arrange(monkeypatch, current="openfollow-noble-bear")
@@ -1032,6 +1034,17 @@ class TestSyncStationHostname:
         assert [c.capability for c in broker.calls] == [DEVICE_HOSTS_WRITE]
         assert "127.0.1.1\topenfollow-noble-bear" in broker.calls[0].stdin
 
+    @pytest.mark.parametrize("current", ["openfollow", "openfollow-noble-bear"], ids=["renamed", "already-named"])
+    def test_the_hosts_line_carries_the_station_fqdn(self, monkeypatch, tmp_path, current: str) -> None:
+        self._arrange(monkeypatch, current=current)
+        hosts = tmp_path / "hosts"
+        hosts.write_text("127.0.0.1\tlocalhost\n")
+        monkeypatch.setattr("openfollow.privilege.device_repair._ETC_HOSTS", hosts)
+        broker = FakeBroker()
+        sync_station_hostname(broker, "OpenFollow noble-bear", "of-1.stage.example.com")
+        hosts_call = next(c for c in broker.calls if c.capability is DEVICE_HOSTS_WRITE)
+        assert "127.0.1.1\tof-1.stage.example.com openfollow-noble-bear\n" in hosts_call.stdin
+
 
 class TestEnsureLoopbackHostsLine:
     """``ensure_loopback_hosts_line`` keeps exactly one 127.0.1.1 mapping."""
@@ -1063,6 +1076,32 @@ class TestEnsureLoopbackHostsLine:
         assert ensure_loopback_hosts_line("127.0.0.1 localhost", "host").endswith("\n")
 
 
+class TestTheLoopbackLineCarriesTheStationFqdn:
+    """The FQDN comes first, as the canonical name, with the short hostname as its alias."""
+
+    def test_the_fqdn_leads_the_line(self) -> None:
+        text = "127.0.0.1\tlocalhost\n127.0.1.1\topenfollow-noble-bear\n"
+        assert ensure_loopback_hosts_line(text, "openfollow-noble-bear", "of-1.stage.example.com") == (
+            "127.0.0.1\tlocalhost\n127.0.1.1\tof-1.stage.example.com openfollow-noble-bear\n"
+        )
+
+    def test_a_cleared_fqdn_leaves_the_hostname_alone(self) -> None:
+        text = "127.0.1.1\tof-1.stage.example.com openfollow-noble-bear\n"
+        assert ensure_loopback_hosts_line(text, "openfollow-noble-bear", "") == "127.0.1.1\topenfollow-noble-bear\n"
+
+    def test_sync_writes_the_fqdn_and_is_then_settled(self, monkeypatch, tmp_path) -> None:
+        hosts = tmp_path / "hosts"
+        hosts.write_text("127.0.0.1\tlocalhost\n127.0.1.1\topenfollow-noble-bear\n")
+        monkeypatch.setattr("openfollow.privilege.device_repair._ETC_HOSTS", hosts)
+        broker = FakeBroker()
+        assert sync_etc_hosts(broker, "openfollow-noble-bear", "of-1.stage.example.com") is True
+        assert (
+            broker.calls[0].stdin == "127.0.0.1\tlocalhost\n127.0.1.1\tof-1.stage.example.com openfollow-noble-bear\n"
+        )
+        hosts.write_text(broker.calls[0].stdin)
+        assert sync_etc_hosts(broker, "openfollow-noble-bear", "of-1.stage.example.com") is False
+
+
 class TestSyncEtcHosts:
     """``sync_etc_hosts`` rewrites the 127.0.1.1 line via the privileged tee."""
 
@@ -1077,6 +1116,8 @@ class TestSyncEtcHosts:
         assert call.capability is DEVICE_HOSTS_WRITE
         assert call.argv == ["/usr/bin/tee", str(hosts)]
         assert call.stdin == "127.0.0.1\tlocalhost\n127.0.1.1\topenfollow-noble-bear\n"
+        # Startup and the FQDN worker both write here; the worker holds the network lock meanwhile.
+        assert call.allow_prompt is False
 
     def test_noop_when_already_correct(self, monkeypatch, tmp_path) -> None:
         hosts = tmp_path / "hosts"
@@ -1127,3 +1168,51 @@ def test_current_hostname_returns_short_form() -> None:
     result = current_hostname()
     assert isinstance(result, str)
     assert "." not in result
+
+
+class TestSyncRunningHostnameHosts:
+    """The FQDN worker maps the hostname the system has now, read under the same lock a rename takes."""
+
+    def test_the_running_hostname_follows_the_fqdn(self, monkeypatch, tmp_path) -> None:
+        from openfollow.privilege.device_repair import sync_running_hostname_hosts
+
+        hosts = tmp_path / "hosts"
+        hosts.write_text("127.0.0.1\tlocalhost\n127.0.1.1\topenfollow-noble-bear\n")
+        monkeypatch.setattr("openfollow.privilege.device_repair._ETC_HOSTS", hosts)
+        monkeypatch.setattr("openfollow.privilege.device_repair.current_hostname", lambda: "openfollow-noble-bear")
+        broker = FakeBroker()
+        assert sync_running_hostname_hosts(broker, "of-1.stage.example.com") is True
+        assert "127.0.1.1\tof-1.stage.example.com openfollow-noble-bear\n" in broker.calls[0].stdin
+
+    def test_a_host_with_no_name_writes_nothing(self, monkeypatch, tmp_path) -> None:
+        from openfollow.privilege.device_repair import sync_running_hostname_hosts
+
+        hosts = tmp_path / "hosts"
+        hosts.write_text("127.0.0.1\tlocalhost\n")
+        monkeypatch.setattr("openfollow.privilege.device_repair._ETC_HOSTS", hosts)
+        monkeypatch.setattr("openfollow.privilege.device_repair.current_hostname", lambda: "")
+        broker = FakeBroker()
+        assert sync_running_hostname_hosts(broker, "of-1.stage.example.com") is False
+        assert broker.calls == []
+
+
+@pytest.mark.parametrize("entry", ["rename", "fqdn"])
+def test_both_hosts_writers_read_the_hostname_under_one_lock(monkeypatch, tmp_path, entry: str) -> None:
+    """A rename and an FQDN change each read the running hostname and rewrite /etc/hosts; reading
+    it outside the shared lock let the slower one write back a name already gone."""
+    import openfollow.privilege.device_repair as device_repair
+
+    held: list[bool] = []
+
+    def _hostname() -> str:
+        held.append(device_repair._HOSTS_LOCK.locked())
+        return "openfollow-noble-bear"
+
+    monkeypatch.setattr(device_repair, "current_hostname", _hostname)
+    monkeypatch.setattr(device_repair, "_ETC_HOSTS", tmp_path / "missing-hosts")
+    if entry == "rename":
+        device_repair.sync_station_hostname(FakeBroker(), "OpenFollow noble-bear", "of-1.stage.example.com")
+    else:
+        device_repair.sync_running_hostname_hosts(FakeBroker(), "of-1.stage.example.com")
+    assert held == [True]
+    assert not device_repair._HOSTS_LOCK.locked()

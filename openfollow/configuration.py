@@ -2970,7 +2970,7 @@ def save_config(config: AppConfig, path: str = "config.toml") -> None:
 
 def _apply_with_fallback(
     name: str,
-    apply_fn: Callable[[], None],
+    apply_fn: Callable[[], object],
     *,
     on_failure: Callable[[], None] | None = None,
 ) -> bool:
@@ -3047,7 +3047,7 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
 
     def _apply(
         name: str,
-        apply_fn: Callable[[], None],
+        apply_fn: Callable[[], object],
         *,
         on_failure: Callable[[], None] | None = None,
     ) -> bool:
@@ -3180,7 +3180,13 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
         app._config.interface_labels = dict(new_config.interface_labels)
     # Read live by the HUD's web address rows; the web server reads it from disk.
     if new_config.station_fqdn != app._config.station_fqdn:
+        old_station_fqdn = app._config.station_fqdn
         app._config.station_fqdn = new_config.station_fqdn
+        if not _apply(
+            "station_fqdn",
+            lambda: app._runtime_services.apply_station_fqdn_change(new_config.station_fqdn),
+        ):
+            app._config.station_fqdn = old_station_fqdn
 
     # PSN iface single-field path: only fires when iface changed alone (the
     # combined block above handles the iface+mcast case). The bind IP comes

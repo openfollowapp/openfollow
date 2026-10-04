@@ -131,6 +131,15 @@
                                hx-target="#general-station-fqdn-error" hx-swap="innerHTML" hx-include="#general-network-section"
                                aria-describedby="general-station-fqdn-error" aria-invalid="false">
                         <span id="general-station-fqdn-error" class="field-error"></span>
+                        % _fqdn_problems = fqdn_problems if defined('fqdn_problems') else ()
+                        % if config.station_fqdn and _fqdn_problems:
+                        <div class="notice warning" role="status">
+                            <div>Not every interface sends this name by DHCP.</div>
+                            % for _problem in _fqdn_problems:
+                            <div class="notice-sub">{{_problem}}</div>
+                            % end
+                        </div>
+                        % end
                     </div>
                 </div>
                 %# Autostart and the experimental opt-in share a row; each applies on change.

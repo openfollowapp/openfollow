@@ -12,6 +12,7 @@ import re
 import shutil
 import socket
 import subprocess
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -392,7 +393,25 @@ def current_hostname() -> str:
         return ""
 
 
-def sync_station_hostname(broker: PrivilegeBroker, station_name: str) -> bool:
+# A rename (main loop) and an FQDN change (its worker) both rewrite /etc/hosts from
+# the running hostname; one at a time, or the slower one maps a name already gone.
+_HOSTS_LOCK = threading.Lock()
+
+
+def sync_station_hostname(broker: PrivilegeBroker, station_name: str, fqdn: str = "") -> bool:
+    """Set the system hostname to the slug of ``station_name``; see ``_sync_station_hostname``."""
+    with _HOSTS_LOCK:
+        return _sync_station_hostname(broker, station_name, fqdn)
+
+
+def sync_running_hostname_hosts(broker: PrivilegeBroker, fqdn: str) -> bool:
+    """Map the running hostname, with ``fqdn`` before it, on /etc/hosts' loopback line."""
+    with _HOSTS_LOCK:
+        name = current_hostname()
+        return bool(name) and sync_etc_hosts(broker, name, fqdn)
+
+
+def _sync_station_hostname(broker: PrivilegeBroker, station_name: str, fqdn: str = "") -> bool:
     """Set the system hostname to the slug of ``station_name`` at boot.
 
     Self-names the appliance after its OpenFollow identity (e.g.
@@ -418,7 +437,7 @@ def sync_station_hostname(broker: PrivilegeBroker, station_name: str) -> bool:
     if desired == current_hostname():
         # Hostname already correct – still repair a stale /etc/hosts loopback
         # line so sudo resolves the name offline (no rename, returns False).
-        sync_etc_hosts(broker, desired)
+        sync_etc_hosts(broker, desired, fqdn)
         return False
     if shutil.which("hostnamectl") is None:
         return False
@@ -432,6 +451,8 @@ def sync_station_hostname(broker: PrivilegeBroker, station_name: str) -> bool:
             ["/usr/bin/hostnamectl", "set-hostname", desired],
             reason="Set device hostname",
             timeout=10,
+            # The state check above can be stale; a prompt here would wait unseen.
+            allow_prompt=False,
         )
     except PrivilegeError:
         logger.warning("Could not set system hostname to %r", desired)
@@ -439,7 +460,7 @@ def sync_station_hostname(broker: PrivilegeBroker, station_name: str) -> bool:
     logger.info("Set system hostname to %s (from station name %r)", desired, station_name)
     # hostnamectl doesn't touch /etc/hosts; keep the 127.0.1.1 loopback line in
     # sync so sudo can resolve the new name (best-effort, never fatal).
-    sync_etc_hosts(broker, desired)
+    sync_etc_hosts(broker, desired, fqdn)
     return True
 
 
@@ -448,14 +469,15 @@ _LOOPBACK_RE = re.compile(r"^\s*127\.0\.1\.1\b")
 _LOCALHOST_RE = re.compile(r"^\s*127\.0\.0\.1\b")
 
 
-def ensure_loopback_hosts_line(text: str, hostname: str) -> str:
-    """Return ``text`` with exactly one ``127.0.1.1 <hostname>`` line.
+def ensure_loopback_hosts_line(text: str, hostname: str, fqdn: str = "") -> str:
+    """Return ``text`` with exactly one ``127.0.1.1 [<fqdn>] <hostname>`` line.
 
-    Replaces any existing 127.0.1.1 entries (dropping duplicates); when none
-    exists it's inserted right after the 127.0.0.1 line, or appended if that's
-    absent too. The result always ends with a trailing newline.
+    The FQDN goes first, as the canonical name. Replaces any existing 127.0.1.1
+    entries (dropping duplicates); when none exists it's inserted right after
+    the 127.0.0.1 line, or appended if that's absent too. The result always ends
+    with a trailing newline.
     """
-    new_line = f"127.0.1.1\t{hostname}"
+    new_line = f"127.0.1.1\t{fqdn} {hostname}" if fqdn else f"127.0.1.1\t{hostname}"
     out: list[str] = []
     replaced = False
     for line in text.splitlines():
@@ -471,8 +493,8 @@ def ensure_loopback_hosts_line(text: str, hostname: str) -> str:
     return "\n".join(out) + "\n"
 
 
-def sync_etc_hosts(broker: PrivilegeBroker, hostname: str) -> bool:
-    """Best-effort: keep /etc/hosts' 127.0.1.1 line mapped to ``hostname``.
+def sync_etc_hosts(broker: PrivilegeBroker, hostname: str, fqdn: str = "") -> bool:
+    """Best-effort: keep /etc/hosts' 127.0.1.1 line mapped to ``hostname`` (and ``fqdn``).
 
     A no-op when it's already correct, when /etc/hosts can't be read (missing,
     unreadable, or not valid UTF-8), or when the grant isn't passwordless (no
@@ -485,7 +507,7 @@ def sync_etc_hosts(broker: PrivilegeBroker, hostname: str) -> bool:
         current = _ETC_HOSTS.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return False
-    updated = ensure_loopback_hosts_line(current, hostname)
+    updated = ensure_loopback_hosts_line(current, hostname, fqdn)
     if updated == current:
         return False
     if broker.state(DEVICE_HOSTS_WRITE) != CapabilityState.PASSWORDLESS:
@@ -497,11 +519,12 @@ def sync_etc_hosts(broker: PrivilegeBroker, hostname: str) -> bool:
             stdin=updated,
             reason="Sync /etc/hosts loopback hostname",
             timeout=10,
+            allow_prompt=False,
         )
     except PrivilegeError:
         logger.warning("Could not update /etc/hosts hostname mapping for %r", hostname)
         return False
-    logger.info("Synced /etc/hosts 127.0.1.1 -> %s", hostname)
+    logger.info("Synced /etc/hosts 127.0.1.1 -> %s", f"{fqdn} {hostname}" if fqdn else hostname)
     return True
 
 

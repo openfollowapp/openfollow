@@ -127,10 +127,15 @@ is refused, because the station cannot tell that name from a forged one. On a
 venue network whose DNS gives the station its own name, enter that name as
 **Custom domain name (FQDN)** under General → Station Settings → Advanced Settings; saves
 through it then work, and the station's screen shows it in place of the
-`.local` name. The station never looks the name up. If the name was mistyped
+`.local` name. On Linux it also goes into `/etc/hosts` and to the venue's DHCP
+server as the client FQDN, and saving a changed name reconnects every
+interface so the server sees it at once. The station never looks the name up.
+If the name was mistyped
 or the venue's DNS never pointed it here, Settings → Network on the station's
 own screen offers **Remove FQDN**, or delete the `station_fqdn` line from
-`/var/lib/openfollow/config.toml`.
+`/var/lib/openfollow/config.toml`. Where OpenFollow manages the network settings
+the button reads **Remove FQDN (interrupts network traffic)**, because clearing
+the name reconnects every interface.
 
 ## NVMe for YOLO models (recommended on Pi)
 

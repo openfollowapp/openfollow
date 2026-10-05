@@ -15,6 +15,7 @@ from openfollow.configuration import MOUSE3D_AXES, MOUSE3D_BUTTON_FIELDS, GridCo
 from openfollow.network.validate import is_link_local
 from openfollow.palette import AUTO_PICK_ORDER as _PALETTE_AUTO_PICK_ORDER
 from openfollow.runtime.marker_velocity import MarkerVelocityState, estimate_marker_velocity
+from openfollow.runtime.overlay_draw_style import STATUS_LEVELS, status_level
 from openfollow.runtime.overlay_state import (
     MarkerOverlayData,
     OperatorMessageView,
@@ -896,6 +897,10 @@ def build_marker_visual_state(
         if info.get("name"):
             parts.append(str(info["name"]))
         state.status_flags.append((f"controller_missing_{info['controller_index']}", " · ".join(parts), "error"))
+
+    # Gravest first, each level in the order above: the badge shows a few rows
+    # and folds the rest into "+N more", which must never hide a fault behind a notice.
+    state.status_flags.sort(key=lambda row: STATUS_LEVELS.index(status_level(row[2])))
 
     # Snapshot the store (newest-first), resolve marker name/color for keyed
     # cards, compute each countdown against one frame clock, and cap to

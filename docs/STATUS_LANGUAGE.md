@@ -290,8 +290,10 @@ attributes, so it spells the token's value.
   led by its level's off-white sign (`draw_level_sign`): the warning sign for
   an error, the "i" for caution and info, the off-white check for a success
   ("Diagnostics saved to …"). A level the HUD does not know draws as an
-  error. The "+N more" row takes the gravest level among the rows it hides,
-  in the order error, caution, info, success.
+  error. Rows are listed gravest first, each level in the order raised, so a
+  notice held until someone acts never pushes a fault out of sight. The "+N
+  more" row takes the gravest level among the rows it hides, in the order
+  error, caution, info, success.
 - Every status row wraps at a space onto a second line and is cut with an
   ellipsis only past it, whatever wrote it; the sign sits centred on a
   two-line row. A row naming an interface by label and name ("OTP output:
@@ -305,6 +307,10 @@ attributes, so it spells the token's value.
   status row is caution today: the HUD shows faults, progress and results, and
   a limitation worth knowing lives on the web UI and the on-screen Network
   screen.
+- Settings another station pushed here are an info row naming the newest push
+  ("Settings pushed from Stage Left (+1 more)"), held until the warning is
+  removed, on the web UI or from the Settings menu, whose first entry is
+  Remove Pushed Settings Warning while one was pending when it opened.
 - The on-screen Network screen: a notice is a row in its level's fill and border,
   led by its sign (`draw_level_sign`), its text wrapped rather than cut. An
   interface pill that names a state takes its level's chip colours (a link-local

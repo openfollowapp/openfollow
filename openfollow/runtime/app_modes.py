@@ -379,6 +379,17 @@ def _web_ui_disabled_reason() -> str:
     return "install gir1.2-webkit2-4.1 (or -4.0 on Bullseye)"
 
 
+# Leads the menu while a pushed-settings warning was pending when it opened.
+_REMOVE_PUSHED_WARNING: tuple[str, str, bool] = ("Remove Pushed Settings Warning", "remove_pushed_warning", False)
+
+
+def _settings_menu_entries(app: OpenFollowApp) -> tuple[tuple[str, str, bool], ...]:
+    """The menu's rows, fixed while it is open so a push cannot shift the highlight."""
+    if getattr(app, "_settings_pushed_upto", None) is not None:
+        return (_REMOVE_PUSHED_WARNING, *_SETTINGS_MENU_ITEMS)
+    return _SETTINGS_MENU_ITEMS
+
+
 def build_settings_menu_items(
     app: OpenFollowApp,
 ) -> tuple[list[str], list[bool], list[str], list[bool]]:
@@ -400,7 +411,7 @@ def build_settings_menu_items(
     from openfollow.runtime import webkit_browser
 
     has_browser = webkit_browser.AVAILABLE
-    for label, action, opens in _SETTINGS_MENU_ITEMS:
+    for label, action, opens in _settings_menu_entries(app):
         labels.append(label)
         submenu.append(opens)
         reason = ""
@@ -434,9 +445,10 @@ def build_settings_menu_items(
 
 
 def _settings_menu_action(app: OpenFollowApp, index: int) -> str | None:
-    if not 0 <= index < len(_SETTINGS_MENU_ITEMS):
+    entries = _settings_menu_entries(app)
+    if not 0 <= index < len(entries):
         return None
-    _, action, _opens = _SETTINGS_MENU_ITEMS[index]
+    _, action, _opens = entries[index]
     return action
 
 
@@ -451,9 +463,14 @@ def enter_settings_menu(app: OpenFollowApp, *, banner: str = "") -> None:
     """
     if app._settings_menu_active:
         return
+    from openfollow.runtime.pushed_settings_hud import newest_pending
+
     app._settings_menu_active = True
-    app._settings_menu_index = 0
     app._settings_menu_banner = banner
+    app._settings_pushed_upto = newest_pending(app)
+    # Below the removal, where the highlight always starts: a reflexive press
+    # (the menu also opens itself on a video failure) must not acknowledge a push.
+    app._settings_menu_index = 0 if app._settings_pushed_upto is None else 1
 
 
 def exit_settings_menu(app: OpenFollowApp) -> None:
@@ -534,8 +551,13 @@ def _settings_menu_confirm(app: OpenFollowApp) -> None:
     if not 0 <= idx < len(enabled) or not enabled[idx]:
         return
     action = _settings_menu_action(app, idx)
+    upto = getattr(app, "_settings_pushed_upto", None)
     exit_settings_menu(app)
-    if action == "network":
+    if action == "remove_pushed_warning":
+        from openfollow.runtime.pushed_settings_hud import remove_pushed_warning
+
+        remove_pushed_warning(app, upto)
+    elif action == "network":
         from openfollow.runtime.app_modes_network import enter_pi_network
 
         enter_pi_network(app)
@@ -556,10 +578,10 @@ def _settings_menu_confirm(app: OpenFollowApp) -> None:
         enter_diagnostics_export(app)
     elif action == "restart":
         app._restart_app()
-    # pragma: no branch – exhaustive elif chain over the static action set
-    # (network / change_video_source / button_detection / web_ui /
-    # export_diagnostics / restart / about); the final arm always matches,
-    # so there's no fall-through.
+    # pragma: no branch – exhaustive elif chain over the action set
+    # (remove_pushed_warning / network / change_video_source /
+    # button_detection / web_ui / export_diagnostics / restart / about); the
+    # final arm always matches, so there's no fall-through.
     elif action == "about":  # pragma: no branch
         enter_about(app)
 

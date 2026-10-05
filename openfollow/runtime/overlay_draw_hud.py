@@ -111,6 +111,26 @@ def _help_sections_for(
     return result
 
 
+_HELP_FONT = 10.0
+_HELP_BULLET = "• "
+
+
+def _wrapped_help(renderer: Any, cr: Any, width: float, sections: HelpSections) -> list[tuple[str, list[list[str]]]]:
+    """Each line wrapped after its bullet to *width*: a help line is never cut."""
+    renderer._set_ui_font(cr, _HELP_FONT)
+    text_w = width - cr.text_extents(_HELP_BULLET).x_advance
+    return [
+        (title, [_wrap_error_message(renderer, cr, line, text_w, _HELP_FONT, bold=False) for line in lines])
+        for title, lines in sections
+    ]
+
+
+def help_block_height(renderer: Any, cr: Any, width: float, sections: HelpSections) -> float:
+    """The height :func:`draw_help_block` takes for *sections* at *width*."""
+    wrapped = _wrapped_help(renderer, cr, width, sections)
+    return help_sections_height([(title, [part for parts in lines for part in parts]) for title, lines in wrapped])
+
+
 def draw_help_block(
     renderer: Any,
     cr: Any,
@@ -119,23 +139,26 @@ def draw_help_block(
     width: float,
     sections: HelpSections,
 ) -> None:
+    wrapped = _wrapped_help(renderer, cr, width, sections)
+    indent = cr.text_extents(_HELP_BULLET).x_advance
     y_cursor = y
-    for idx, (title, lines) in enumerate(sections):
+    for idx, (title, lines) in enumerate(wrapped):
         renderer._set_ui_font(cr, 10.5, bold=True)
         cr.set_source_rgb(*COLOR_ACCENT)
         cr.move_to(x, y_cursor)
         cr.show_text(title.upper())
         y_cursor += 13.0
 
-        renderer._set_ui_font(cr, 10)
+        renderer._set_ui_font(cr, _HELP_FONT)
         cr.set_source_rgb(*COLOR_TEXT)
-        for line in lines:
-            line_text = renderer._truncate_text_to_width(cr, f"• {line}", width)
-            cr.move_to(x, y_cursor)
-            cr.show_text(line_text)
-            y_cursor += 14.0
+        for parts in lines:
+            # A wrapped line continues under its own text, not under the bullet.
+            for i, part in enumerate(parts):
+                cr.move_to(x + indent if i else x, y_cursor)
+                cr.show_text(part if i else f"{_HELP_BULLET}{part}")
+                y_cursor += 14.0
 
-        if idx < len(sections) - 1:
+        if idx < len(wrapped) - 1:
             y_cursor += 8.0
 
 
@@ -1065,11 +1088,12 @@ _CORNER_ICON_X = _CORNER_ICON_Y = 10.0
 _CORNER_ICON_SIZE = 24.0
 # The menu list's lines run longer than the HUD's.
 _MENU_HELP_W = 260.0
+_MENU_HELP_GAP = 8.0
 
 
 def _draw_corner_help(renderer: Any, cr: Any, sections: HelpSections, panel_w: float) -> None:
     """A help panel under the icon in the top-left corner; nothing when *sections* is empty."""
-    help_h = help_sections_height(sections)
+    help_h = help_block_height(renderer, cr, panel_w - 24.0, sections)
     if help_h <= 0:
         return
     panel_x = 10.0
@@ -1081,7 +1105,10 @@ def _draw_corner_help(renderer: Any, cr: Any, sections: HelpSections, panel_w: f
 def draw_menu_help(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
     """The menus' one key list, in the HUD help's corner, while any menu screen is open."""
     renderer._draw_icon(cr, _CORNER_ICON_X, _CORNER_ICON_Y, _CORNER_ICON_SIZE)
-    _draw_corner_help(renderer, cr, _help_sections_for(renderer, "menus", state), min(_MENU_HELP_W, w - 20.0))
+    # Clear of the centred menu, which starts nearer the edge on a narrower window.
+    menu_x = (w - panel_width(w)) / 2.0
+    panel_w = min(_MENU_HELP_W, menu_x - 10.0 - _MENU_HELP_GAP)
+    _draw_corner_help(renderer, cr, _help_sections_for(renderer, "menus", state), panel_w)
 
 
 def draw_hud(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:

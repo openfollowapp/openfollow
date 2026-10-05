@@ -892,6 +892,10 @@ class TestSelectionMenus:
 # --------------------------------------------------------------------------- #
 
 
+# The menus' list with both devices connected: two headings and ten lines.
+_MENU_LIST_TEXTS = 12
+
+
 class TestMenuHelp:
     def test_the_menus_list_sits_where_the_hud_help_does(self) -> None:
         from openfollow.runtime.overlay_draw_hud import draw_menu_help
@@ -906,6 +910,28 @@ class TestMenuHelp:
         assert (menus_title.x, menus_title.y) == (hud_title.x, hud_title.y)
         assert menus_renderer.draw_icon_calls == hud_renderer.draw_icon_calls
         assert "• Enter: Confirm" in menus.show_text_strings()
+
+    @pytest.mark.parametrize("w", [1280, 1920])
+    def test_the_list_stays_clear_of_the_centred_menu(self, w: int) -> None:
+        """The default window is 1280 wide, where a centred menu starts at x=243."""
+        from openfollow.runtime.overlay_draw_hud import draw_menu_help, panel_width
+
+        state = _base_state(keyboard_connected=True, controller_connected=True)
+        cr = FakeCairo()
+        draw_menu_help(FakeRenderer(state=state), cr, state, w, 720)
+        panel_right = max(cx + r for cx, _cy, r in cr.arcs)
+        assert panel_right < (w - panel_width(w)) / 2.0
+
+    def test_a_list_narrowed_to_fit_wraps_and_holds_every_line(self) -> None:
+        from openfollow.runtime.overlay_draw_hud import draw_menu_help
+
+        state = _base_state(keyboard_connected=True, controller_connected=True)
+        cr = FakeCairo()
+        draw_menu_help(FakeRenderer(state=state), cr, state, 1280, 720)
+        assert not any(t.text.endswith("...") for t in cr.texts)
+        panel_bottom = max(cy + r for _cx, cy, r in cr.arcs)
+        assert max(t.y for t in cr.texts) < panel_bottom
+        assert len(cr.texts) > _MENU_LIST_TEXTS, "nothing wrapped at the narrowed width"
 
     def test_without_a_keyboard_or_controller_there_is_no_list(self) -> None:
         from openfollow.runtime.overlay_draw_hud import draw_menu_help
@@ -1841,14 +1867,15 @@ class TestHelpBlock:
         assert any(t.startswith("• W/A/S/D") for t in texts)
         assert any(t.startswith("• R/T") for t in texts)
 
-    def test_long_lines_are_truncated(self) -> None:
+    def test_a_long_line_wraps_under_its_own_text_and_is_never_cut(self) -> None:
         cr = FakeCairo()
-        sections = [("K", ["x" * 400])]
-        draw_help_block(FakeRenderer(), cr, 10, 20, 60, sections)
-        # "K" title plus truncated bullet line.
-        lines = [t for t in cr.show_text_strings() if t.startswith("•")]
-        assert lines
-        assert lines[0].endswith("...")
+        line = "D-Pad Up/Down: Move, or change a digit"
+        draw_help_block(FakeRenderer(), cr, 10, 20, 120, [("K", [line])])
+        first, *rest = [t for t in cr.texts if t.text != "K"]
+        assert rest, "the line did not wrap"
+        assert " ".join([first.text.removeprefix("• "), *(t.text for t in rest)]) == line
+        assert all(t.x > first.x for t in rest)
+        assert [t.y for t in rest] == sorted({t.y for t in rest}) and rest[0].y > first.y
 
     def test_gap_between_sections_does_not_break_rendering(self) -> None:
         cr = FakeCairo()

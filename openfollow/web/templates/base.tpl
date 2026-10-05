@@ -2582,6 +2582,29 @@
  toast.classList.add('show');
  setTimeout(() => toast.classList.remove('show'), 2000);
  }
+ // A confirmation for a change the page reloads to show: the reloaded page
+ // toasts it. Without storage (a private window) it toasts before reloading.
+ const _TOAST_AFTER_RELOAD_KEY = 'openfollow.toastAfterReload';
+ function toastAfterReload(message) {
+ try {
+ sessionStorage.setItem(_TOAST_AFTER_RELOAD_KEY, message);
+ } catch (err) {
+ showToast(message);
+ setTimeout(() => window.location.reload(), 600);
+ return;
+ }
+ window.location.reload();
+ }
+ document.addEventListener('DOMContentLoaded', () => {
+ let message = null;
+ try {
+ message = sessionStorage.getItem(_TOAST_AFTER_RELOAD_KEY);
+ sessionStorage.removeItem(_TOAST_AFTER_RELOAD_KEY);
+ } catch (err) {
+ return;
+ }
+ if (message) showToast(message);
+ });
  // ---- Help drawer () --------------------------------------
  //
  // Non-modal side panel showing the server-rendered help doc for a

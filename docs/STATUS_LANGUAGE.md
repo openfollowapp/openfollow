@@ -220,9 +220,9 @@ off-white text, led by the success sign. A failure never uses the toast.
 
 ### Destructive actions
 
-Delete, Discard, Forget, Restore Defaults and Restart are not states, but red
-already means "stop or lose something", so they take the error red rather than a
-second, paler one:
+Delete, Discard, Forget, Import, Restore Defaults and Restart are not states, but
+red already means "stop or lose something", so they take the error red rather than
+a second, paler one:
 
 | Control | Look |
 |---|---|

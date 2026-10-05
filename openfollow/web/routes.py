@@ -3156,16 +3156,8 @@ def reset_config_to_defaults(current_cfg: AppConfig) -> AppConfig:
     return fresh
 
 
-def _apply_import_data(
-    current_cfg: AppConfig,
-    data: dict[str, Any],
-    *,
-    skip_restart_sections: bool = False,
-) -> AppConfig:
+def _apply_import_data(current_cfg: AppConfig, data: dict[str, Any]) -> AppConfig:
     """Build a new config from import data, preserving this device's identity.
-
-    *skip_restart_sections* survives in the API for backwards compatibility
-    but no longer gates anything: every section is live-reloadable.
 
     Each section is applied without its ``_DEVICE_LOCAL_FIELDS_BY_SECTION``,
     and the ``_DEVICE_IDENTITY_FIELDS`` are snapshotted before the section
@@ -3260,17 +3252,6 @@ def _apply_import_data(
 
     restore_device_identity(cfg, device_identity)
     return cfg
-
-
-def _import_needs_restart(old: AppConfig, new: AppConfig) -> list[str]:
-    """Return human-readable reasons the imported config requires a restart.
-
-    No config-detectable diff triggers a restart today (every section
-    applies live). Kept as a placeholder: if a section regains a
-    restart-only path, add the diff check here and have
-    ``api_import_config`` consult this helper again.
-    """
-    return []
 
 
 def _load_json_body() -> Any:
@@ -3909,7 +3890,7 @@ def _send_config_import_to_peer(ip: str, port: int, data: dict[str, Any], pin: s
     if not _is_allowed_peer_port(port, expected_port):
         logger.warning("Refusing peer broadcast to unexpected port: %s:%d", ip, port)
         return False
-    path = "/api/config/import?skip_restart=1"
+    path = "/api/config/import"
     body = json.dumps(data).encode("utf-8")
     url = f"http://{ip}:{port}{path}"
     try:
@@ -8801,14 +8782,10 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     @app.post("/api/config/import")
     def api_import_config() -> Any:
-        """Import a config from JSON, preserving the device IP address.
+        """Import a config from JSON, preserving this station's identity.
 
         Every section in the imported payload applies live via the
-        hot-reload path. The ``confirm_restart`` / ``skip_restart`` query
-        params are still accepted (older peers send them) but no longer
-        change the outcome. If a future section regains a restart-only path,
-        this endpoint must consult ``_import_needs_restart`` before reporting
-        ``needs_restart`` again.
+        hot-reload path.
         """
         response.content_type = "application/json"
 
@@ -8832,7 +8809,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 current.marker_move_speeds = dict(speeds)
             full_cfg = _apply_import_data(current, data)
             save_config(full_cfg, server.config_path)
-            return json.dumps({"success": True, "needs_restart": False})
+            return json.dumps({"success": True})
 
     @app.post("/api/config/reset")
     def api_reset_config() -> Any:

@@ -3749,7 +3749,7 @@ def test_api_config_import_rejects_malformed_json(live_server) -> None:
     assert status == 400
 
 
-def test_api_config_import_saves_non_restart_changes_immediately(live_server) -> None:
+def test_api_config_import_saves_changes_immediately(live_server) -> None:
     server, base = live_server
     status, body = _post_json(
         base,
@@ -3758,14 +3758,13 @@ def test_api_config_import_saves_non_restart_changes_immediately(live_server) ->
     )
     assert status == 200
     assert body.get("success") is True
-    assert body.get("needs_restart") is False
 
     saved = load_config(server.config_path)
     assert saved.camera.pos_x == pytest.approx(7.25)
     assert saved.psn_system_name == "Imported"
 
 
-def test_api_config_import_detection_off_to_on_saves_live_without_restart_gate(
+def test_api_config_import_detection_off_to_on_saves_live(
     live_server,
 ) -> None:
     server, base = live_server
@@ -3779,13 +3778,12 @@ def test_api_config_import_detection_off_to_on_saves_live_without_restart_gate(
     )
     assert status == 200
     assert body.get("success") is True
-    assert body.get("needs_restart") is False
 
     saved = load_config(server.config_path)
     assert saved.detection.enabled == (not original_detection)
 
 
-def test_api_config_import_otp_change_saves_live_without_restart_gate(
+def test_api_config_import_otp_change_saves_live(
     live_server,
 ) -> None:
     server, base = live_server
@@ -3799,63 +3797,30 @@ def test_api_config_import_otp_change_saves_live_without_restart_gate(
     )
     assert status == 200
     assert body.get("success") is True
-    assert body.get("needs_restart") is False
 
     saved = load_config(server.config_path)
     assert saved.otp_output.enabled == (not original_enabled)
     assert saved.otp_output.priority == 42
 
 
-def test_api_config_import_with_confirm_restart_saves_everything(live_server) -> None:
+def test_api_config_import_applies_a_push_from_an_older_station(live_server) -> None:
+    """Stations on 0.5.0-rc1 and earlier push Broadcast All to ``?skip_restart=1``."""
     server, base = live_server
     before = load_config(server.config_path)
-
-    status, body = _post_json(
-        base,
-        "/api/config/import?confirm_restart=1",
-        {
-            "detection": {"enabled": not before.detection.enabled},
-            "otp_output": {"enabled": True, "priority": 42, "system_number": 7},
-        },
-    )
-    assert status == 200
-    assert body.get("success") is True
-    assert body.get("needs_restart") is False
-
-    saved = load_config(server.config_path)
-    assert saved.otp_output.enabled is True
-    assert saved.otp_output.priority == 42
-    assert saved.otp_output.system_number == 7
-
-
-def test_api_config_import_with_skip_restart_saves_everything_live(
-    live_server,
-) -> None:
-    """All sections apply live; skip_restart flag is preserved for backwards compatibility."""
-    server, base = live_server
-    before = load_config(server.config_path)
-    before_otp = before.otp_output.enabled
-    before_detection = before.detection.enabled
 
     status, body = _post_json(
         base,
         "/api/config/import?skip_restart=1",
         {
-            "otp_output": {"enabled": not before_otp},
-            "detection": {"enabled": not before_detection},
+            "detection": {"enabled": not before.detection.enabled},
             "camera": {"pos_x": 99.0},
         },
     )
     assert status == 200
     assert body.get("success") is True
-    # No diff is restart-gated, so the request is satisfied via the
-    # default save-everything path; the skip_restart=1 query param
-    # has no remaining gate to honour.
-    assert body.get("needs_restart") is False
 
     saved = load_config(server.config_path)
-    assert saved.detection.enabled == (not before_detection)
-    assert saved.otp_output.enabled == (not before_otp)
+    assert saved.detection.enabled == (not before.detection.enabled)
     assert saved.camera.pos_x == pytest.approx(99.0)
 
 

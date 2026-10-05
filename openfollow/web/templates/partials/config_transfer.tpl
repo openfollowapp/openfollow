@@ -4,7 +4,7 @@
         <span class="section-note">Export, import and restore device settings</span>
     </div>
 
-    <div id="import-restart-notice" class="restart-notice" style="display:none">
+    <div id="config-restart-notice" class="restart-notice" style="display:none">
         App is restarting&hellip; Please wait.
     </div>
 
@@ -48,30 +48,9 @@
             </div>
         </div>
     </div>
-
-    <!-- Restart confirmation overlay -->
-    <div id="import-restart-overlay" style="display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,0.7);backdrop-filter:blur(4px);align-items:center;justify-content:center;">
-        <div style="background:var(--bg-soft);border:1px solid var(--border);border-radius:1.1rem;padding:1.5rem;max-width:480px;width:calc(100% - 2rem);">
-            <div class="section-head">
-                <h2>Restart Required</h2>
-            </div>
-            <p style="color:var(--muted);font-size:0.9rem;margin:0 0 0.6rem;">
-                The imported configuration has been validated.
-                Some changes require an app restart to take effect:
-            </p>
-            <ul id="import-restart-reasons" style="color:var(--accent);font-size:0.9rem;margin:0 0 1rem;padding-left:1.2rem;"></ul>
-            <div class="actions" style="flex-wrap:wrap;">
-                <button type="button" class="restart-btn" onclick="confirmImportRestart()">Restart Now</button>
-                <button type="button" class="secondary" onclick="skipImportRestart()">Apply Without Restart</button>
-                <button type="button" class="secondary" onclick="cancelImportRestart()">Cancel</button>
-            </div>
-        </div>
-    </div>
 </div>
 
 <script>
-var _pendingImportData = null;
-
 function _transferFailed(info, lead, actionsId) {
     window.OpenFollow.saveError.show(
         document.getElementById('config-transfer-section'), info, lead, document.getElementById(actionsId));
@@ -111,14 +90,14 @@ function importConfig() {
             _importFailed({error: 'The selected file is not valid JSON.'});
             return;
         }
-        _sendImport(raw, '');
+        _sendImport(raw);
     };
     reader.readAsText(fileInput.files[0]);
 }
 
-function _sendImport(body, queryParams) {
+function _sendImport(body) {
     var btn = document.getElementById('import-btn');
-    fetch('/api/config/import' + queryParams, {
+    fetch('/api/config/import', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: body
@@ -133,23 +112,7 @@ function _sendImport(body, queryParams) {
             _importFailed(window.OpenFollow.saveError.fromText(res.status, text));
             return;
         }
-        if (result.restarting) {
-            _showRestartingState();
-            return;
-        }
-        if (result.needs_restart) {
-            _pendingImportData = body;
-            var list = document.getElementById('import-restart-reasons');
-            list.innerHTML = result.restart_reasons.map(function(r) {
-                return '<li>' + r + '</li>';
-            }).join('');
-            document.getElementById('import-restart-overlay').style.display = 'flex';
-            return;
-        }
-        /* success, no restart */
-        showToast(result.skipped_restart_sections
-            ? 'Configuration imported (some changes need a restart)'
-            : 'Configuration imported successfully');
+        showToast('Configuration imported successfully');
         setTimeout(function() { window.location.reload(); }, 600);
     })
     .catch(function() {
@@ -157,26 +120,6 @@ function _sendImport(body, queryParams) {
         btn.textContent = 'Import Configuration';
         _importFailed(window.OpenFollow.saveError.UNREACHABLE);
     });
-}
-
-function confirmImportRestart() {
-    document.getElementById('import-restart-overlay').style.display = 'none';
-    if (!_pendingImportData) return;
-    var btn = document.getElementById('import-btn');
-    btn.disabled = true;
-    btn.textContent = 'Importing\u2026';
-    _sendImport(_pendingImportData, '?confirm_restart=1');
-    _pendingImportData = null;
-}
-
-function skipImportRestart() {
-    document.getElementById('import-restart-overlay').style.display = 'none';
-    if (!_pendingImportData) return;
-    var btn = document.getElementById('import-btn');
-    btn.disabled = true;
-    btn.textContent = 'Importing\u2026';
-    _sendImport(_pendingImportData, '?skip_restart=1');
-    _pendingImportData = null;
 }
 
 function _restoreFailed(info) {
@@ -220,14 +163,9 @@ async function restoreDefaults() {
     });
 }
 
-function cancelImportRestart() {
-    document.getElementById('import-restart-overlay').style.display = 'none';
-    _pendingImportData = null;
-}
-
 function _showRestartingState() {
     document.getElementById('config-transfer-content').style.display = 'none';
-    var notice = document.getElementById('import-restart-notice');
+    var notice = document.getElementById('config-restart-notice');
     notice.style.display = 'block';
     /* Poll until the server comes back up, then reload */
     var poll = setInterval(function() {

@@ -111,12 +111,14 @@ def _post_raw_json(base: str, path: str, payload: object, method: str = "POST") 
         return e.code, json.loads(e.read().decode() or "{}")
 
 
-def _post_form_full(base: str, path: str, data: dict) -> tuple[int, str, dict]:
+def _post_form_full(
+    base: str, path: str, data: dict, *, headers: dict[str, str] | None = None
+) -> tuple[int, str, dict]:
     """Form POST returning ``(status, body, headers_dict)``."""
     req = urllib.request.Request(
         f"{base}{path}",
         data=urllib.parse.urlencode(data).encode(),
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        headers={"Content-Type": "application/x-www-form-urlencoded", **(headers or {})},
         method="POST",
     )
     try:
@@ -4569,6 +4571,7 @@ def _signed_post_full(
     *,
     signature: str,
     timestamp: str,
+    headers: dict[str, str] | None = None,
 ) -> tuple[int, dict]:
     """Send a signed POST with a caller-supplied signature/timestamp pair.
 
@@ -4582,6 +4585,7 @@ def _signed_post_full(
             "Content-Type": "application/json",
             peer_auth.TIMESTAMP_HEADER: timestamp,
             peer_auth.SIGNATURE_HEADER: signature,
+            **(headers or {}),
         },
         method="POST",
     )
@@ -4621,6 +4625,40 @@ def test_peer_auth_signature_failure_locks_out(pin_protected_server) -> None:
     )
     assert status2 == 429
     assert "Retry-After" in headers2
+
+
+def test_a_forwarded_for_header_does_not_escape_the_login_lockout(pin_protected_server) -> None:
+    """The lockout follows the connection: any client can set X-Forwarded-For."""
+    _, base, _ = pin_protected_server
+
+    status1, _, _ = _post_form_full(base, "/login", {"pin": "wrong-1"}, headers={"X-Forwarded-For": "203.0.113.1"})
+    assert status1 == 200
+    status2, _, _ = _post_form_full(base, "/login", {"pin": "wrong-2"}, headers={"X-Forwarded-For": "203.0.113.2"})
+    assert status2 == 429
+
+
+def test_a_forwarded_for_header_does_not_escape_the_peer_lockout(pin_protected_server) -> None:
+    _, base, _ = pin_protected_server
+    body = b'{"pos_x": 1.0}'
+    ts = str(int(time.time()))
+
+    status1, _ = _signed_post_full(
+        base, "/api/config/camera", body, signature="0" * 64, timestamp=ts, headers={"X-Forwarded-For": "203.0.113.1"}
+    )
+    assert status1 == 401
+    status2, _ = _signed_post_full(
+        base, "/api/config/camera", body, signature="0" * 64, timestamp=ts, headers={"X-Forwarded-For": "203.0.113.2"}
+    )
+    assert status2 == 429
+
+
+def test_a_forwarded_for_header_does_not_decide_the_on_device_footer(live_server) -> None:
+    """The embedded browser is recognised by its loopback connection, whatever a header says."""
+    _, base = live_server
+    req = urllib.request.Request(f"{base}/", headers={"X-Forwarded-For": "198.51.100.7"})
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        body = resp.read().decode()
+    assert '<footer class="on-device-footer">' in body
 
 
 def test_logout_clears_cookie_and_redirects_to_login(live_server) -> None:

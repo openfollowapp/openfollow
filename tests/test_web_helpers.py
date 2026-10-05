@@ -3077,13 +3077,13 @@ def test_apply_import_data_ignores_zones_key_when_value_is_not_a_list() -> None:
 )
 def test_is_on_device_request_true_for_loopback(monkeypatch, remote) -> None:
     """The embedded WebKit overlay loads ``http://127.0.0.1:<port>/``;
-    a loopback ``remote_addr`` is the signal to render gamepad-only
+    a loopback connection is the signal to render gamepad-only
     affordances. Cover IPv4, IPv6, and the hostname-resolved form."""
     from openfollow.web import routes as routes_mod
 
     class _FakeReq:
         def __init__(self, addr: str) -> None:
-            self.remote_addr = addr
+            self.environ = {"REMOTE_ADDR": addr}
 
     monkeypatch.setattr(routes_mod, "request", _FakeReq(remote))
     assert routes_mod._is_on_device_request() is True
@@ -3095,37 +3095,37 @@ def test_is_on_device_request_true_for_loopback(monkeypatch, remote) -> None:
 )
 def test_is_on_device_request_false_for_lan_and_empty(monkeypatch, remote) -> None:
     """LAN clients hit the server's external IP – never appear as
-    loopback. An empty ``remote_addr`` (no source available) is
+    loopback. An empty ``REMOTE_ADDR`` (no source available) is
     treated as off-device so the footer hint doesn't leak to remote
     operators who can't act on the B-button instruction."""
     from openfollow.web import routes as routes_mod
 
     class _FakeReq:
         def __init__(self, addr: str) -> None:
-            self.remote_addr = addr
+            self.environ = {"REMOTE_ADDR": addr}
 
     monkeypatch.setattr(routes_mod, "request", _FakeReq(remote))
     assert routes_mod._is_on_device_request() is False
 
 
 def test_is_on_device_request_strips_surrounding_whitespace(monkeypatch) -> None:
-    """Be lenient about whitespace in ``remote_addr`` since some WSGI
+    """Be lenient about whitespace in ``REMOTE_ADDR`` since some WSGI
     layers normalise inconsistently; the loopback check must still
     fire on ``" 127.0.0.1 "`` and similar."""
     from openfollow.web import routes as routes_mod
 
     class _FakeReq:
-        remote_addr = "  127.0.0.1  "
+        environ = {"REMOTE_ADDR": "  127.0.0.1  "}
 
     monkeypatch.setattr(routes_mod, "request", _FakeReq())
     assert routes_mod._is_on_device_request() is True
 
 
-def test_is_on_device_request_handles_none_remote_addr(monkeypatch) -> None:
+def test_is_on_device_request_handles_a_missing_connection_address(monkeypatch) -> None:
     from openfollow.web import routes as routes_mod
 
     class _FakeReq:
-        remote_addr = None
+        environ: dict[str, str] = {}
 
     monkeypatch.setattr(routes_mod, "request", _FakeReq())
     assert routes_mod._is_on_device_request() is False

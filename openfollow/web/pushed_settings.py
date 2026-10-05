@@ -29,7 +29,7 @@ class Push:
 
 
 class PushedSettings:
-    """Thread-safe: every web request thread records, reads and removes."""
+    """Thread-safe: web request threads and the main loop's housekeeping share it."""
 
     def __init__(self, clock: Callable[[], float] = time.time) -> None:
         self._clock = clock

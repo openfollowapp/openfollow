@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import time
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -523,6 +524,74 @@ class TestSettingsMenu:
         assert app._button_detection_entered is False
         # Menu stays open so the user can pick something else.
         assert app._settings_menu_active is True
+
+    def _with_pushes(self, *stations: str) -> tuple[Any, Any]:
+        from openfollow.web.pushed_settings import PushedSettings
+
+        app = self._make_app()
+        register = PushedSettings()
+        for station in stations:
+            register.record(station, "198.51.100.7", "Grid")
+        app._web_server = SimpleNamespace(pushed_settings=register)
+        app._runtime_services = SimpleNamespace(_status_flags={})
+        return app, register
+
+    def test_a_pending_push_leads_the_menu_with_its_removal(self) -> None:
+        app, _register = self._with_pushes("Stage Left")
+        enter_settings_menu(app)
+        labels, enabled, _reasons, opens = build_settings_menu_items(app)
+        plain, *_rest = build_settings_menu_items(self._make_app())
+        assert labels == ["Remove Pushed Settings Warning", *plain]
+        assert (enabled[0], opens[0]) == (True, False)
+
+    def test_the_highlight_starts_below_the_removal(self) -> None:
+        # The menu also opens itself on a video failure: one reflexive press
+        # must not acknowledge a push nobody read.
+        app, register = self._with_pushes("Stage Left")
+        enter_settings_menu(app)
+        assert app._settings_menu_index == 1
+        handle_key_press(app, "Enter")
+        assert app._pi_network_active is True
+        assert len(register.snapshot()[0]) == 1
+
+    def test_without_a_pending_push_the_menu_is_unchanged(self) -> None:
+        app, _register = self._with_pushes()
+        enter_settings_menu(app)
+        labels, *_rest = build_settings_menu_items(app)
+        assert labels == build_settings_menu_items(self._make_app())[0]
+
+    def test_removing_from_the_menu_clears_the_warning_and_its_row(self) -> None:
+        app, register = self._with_pushes("Stage Left", "FOH")
+        enter_settings_menu(app)
+        app._settings_menu_index = 0  # the removal
+        handle_key_press(app, "Enter")
+        assert register.snapshot() == ((), 0)
+        assert app._runtime_services._status_flags["pushed_settings"] is None
+        assert app._settings_menu_active is False
+
+    def test_a_push_arriving_while_the_menu_is_open_is_not_removed_unseen(self) -> None:
+        app, register = self._with_pushes("Stage Left")
+        enter_settings_menu(app)
+        register.record("FOH", "198.51.100.8", "Camera")
+        app._settings_menu_index = 0  # the removal
+        handle_key_press(app, "Enter")
+        assert [push.station for push in register.snapshot()[0]] == ["FOH"]
+        assert app._runtime_services._status_flags["pushed_settings"] == ("info", "Settings pushed from FOH")
+
+    def test_a_push_arriving_while_the_menu_is_open_does_not_shift_it(self) -> None:
+        app, register = self._with_pushes()
+        enter_settings_menu(app)
+        register.record("FOH", "198.51.100.8", "Camera")
+        labels, *_rest = build_settings_menu_items(app)
+        assert labels[0] == "Network Interfaces"
+
+    def test_the_rows_below_the_removal_keep_their_actions(self) -> None:
+        app, register = self._with_pushes("Stage Left")
+        enter_settings_menu(app)
+        app._settings_menu_index = 1  # Network Interfaces, below the removal
+        handle_key_press(app, "Enter")
+        assert app._pi_network_active is True
+        assert len(register.snapshot()[0]) == 1
 
 
 class TestSourceTypeSelection:

@@ -1096,7 +1096,7 @@ def test_wizard_camera_params_raises_valueerror_on_non_numeric() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _apply_import_data / _import_needs_restart
+# _apply_import_data
 # ---------------------------------------------------------------------------
 
 
@@ -1302,10 +1302,8 @@ def test_apply_import_data_preserves_testpattern_selected_media() -> None:
     assert new.testpattern_selected_media == "0123456789abcdef"  # device selection kept
 
 
-def test_apply_import_data_skip_restart_sections_applies_every_section(
-    monkeypatch,
-) -> None:
-    """All sections apply live; skip_restart flag is preserved for backwards compatibility."""
+def test_apply_import_data_applies_every_section(monkeypatch) -> None:
+    """Video source, outputs and detection off->on all apply from one import."""
     from openfollow.web.routes import _apply_import_data
 
     monkeypatch.setattr(inputs_module, "get_available_input_ids", lambda: ["rtsp", "srt"])
@@ -1321,7 +1319,7 @@ def test_apply_import_data_skip_restart_sections_applies_every_section(
         "detection": {"enabled": True},  # – off→on now live
         "camera": {"pos_x": 42.0},
     }
-    new = _apply_import_data(current, imported, skip_restart_sections=True)
+    new = _apply_import_data(current, imported)
 
     assert new.video_source_type == "srt"  # applied
     assert new.detection.enabled is True  # applied
@@ -1551,37 +1549,6 @@ def test_apply_import_data_non_dict_ui_section_preserves_current() -> None:
 
     assert new.ui.unit_system == "imperial"
     assert new.ui.show_experimental_features is True
-
-
-def test_import_needs_restart_detects_each_restart_reason() -> None:
-    """All config changes apply live; nothing is flagged as requiring restart."""
-    from openfollow.web.routes import _import_needs_restart
-
-    base = AppConfig()
-
-    video_changed = AppConfig()
-    video_changed.video_source_type = "different-source"
-    assert _import_needs_restart(base, video_changed) == []
-
-    otp_changed = AppConfig()
-    otp_changed.otp_output.enabled = not base.otp_output.enabled
-    assert _import_needs_restart(base, otp_changed) == []
-
-    rttrpm_changed = AppConfig()
-    rttrpm_changed.rttrpm_output.enabled = not base.rttrpm_output.enabled
-    assert _import_needs_restart(base, rttrpm_changed) == []
-
-    detection_off_to_on = AppConfig()
-    detection_off_to_on.detection.enabled = True
-    assert _import_needs_restart(base, detection_off_to_on) == []
-
-
-def test_import_needs_restart_returns_empty_when_identical() -> None:
-    from openfollow.web.routes import _import_needs_restart
-
-    base = AppConfig()
-    twin = AppConfig()
-    assert _import_needs_restart(base, twin) == []
 
 
 # ---------------------------------------------------------------------------
@@ -2894,8 +2861,8 @@ def test_apply_import_data_preserves_psn_source_ip_across_import() -> None:
     assert new.psn_source_ip == "10.10.10.10"
 
 
-def test_apply_import_data_skip_restart_applies_every_section() -> None:
-    """All sections apply live; skip_restart_sections flag is preserved for backwards compatibility."""
+def test_apply_import_data_applies_detection_and_output_tuning() -> None:
+    """Detection, OTP and RTTrPM tuning apply alongside the always-live camera."""
     from openfollow.web.routes import _apply_import_data
 
     base = AppConfig()
@@ -2911,7 +2878,6 @@ def test_apply_import_data_skip_restart_applies_every_section() -> None:
             "rttrpm_output": {"fps": 60},
             "camera": {"pos_x": 7.5},  # always live
         },
-        skip_restart_sections=True,
     )
 
     # All sections applied – made detection live too.
@@ -2971,7 +2937,7 @@ def test_send_config_import_to_peer_returns_true_on_http_200(monkeypatch) -> Non
     # Exact path the peer's bottle dispatcher expects – drift here would
     # break peer broadcasts silently (the receiver would 404 and the
     # import would never apply).
-    assert captured["url"] == "http://198.51.100.5:8000/api/config/import?skip_restart=1"
+    assert captured["url"] == "http://198.51.100.5:8000/api/config/import"
     assert captured["timeout"] == 10
     assert b'"camera"' in captured["body"]
 

@@ -24,10 +24,7 @@ Targeted helpers:
 * ``_wizard_camera_params`` error surface (non-dict, missing key,
   non-numeric value) – each raises a distinct exception that the
   ``/api/wizard/*`` routes translate to HTTP 400.
-* ``_import_needs_restart`` section-change detection matrix.
-* ``_apply_import_data`` skip-restart-sections branch (detection /
-  video_source / OTP / RTTrPM preserved when a non-restart import is
-  applied).
+* ``_apply_import_data`` applying every section from one import.
 
 ``_is_private_peer_ip`` and ``_load_json_body`` already have parametrised
 coverage in :mod:`tests.test_web_helpers`; we rely on those rather than
@@ -48,7 +45,7 @@ import numpy as np
 import pytest
 
 import openfollow.web.routes as routes_module
-from openfollow.configuration import AppConfig, DetectionConfig, DetectionMaskConfig, TriggerZoneConfig
+from openfollow.configuration import AppConfig, DetectionMaskConfig, TriggerZoneConfig
 from openfollow.web.routes import (
     _apply_import_data,
     _apply_mask_fields,
@@ -61,7 +58,6 @@ from openfollow.web.routes import (
     _as_positive_int,
     _config_to_toml,
     _find_by_id,
-    _import_needs_restart,
     _parse_vertices,
     _swap_for_direction,
     _wizard_camera_params,
@@ -497,109 +493,13 @@ class TestWizardCameraParams:
 
 
 # --------------------------------------------------------------------------- #
-# _import_needs_restart – section-change matrix
+# _apply_import_data
 # --------------------------------------------------------------------------- #
 
 
-class TestImportNeedsRestart:
-    def test_no_changes_returns_empty(self) -> None:
-        cfg = AppConfig()
-        assert _import_needs_restart(cfg, cfg) == []
-
-    def test_video_source_change_not_flagged(self) -> None:
-        """Video source / per-plugin field changes apply live via the
-        ``swap_video`` orchestrator. The import flow must not flag a
-        restart for video-only changes – the user gets a live-applied
-        pipeline rebuild."""
-        old = AppConfig()
-        new = replace(old, video_source_type="ndi")
-        assert _import_needs_restart(old, new) == []
-
-    def test_plugin_field_change_not_flagged(self) -> None:
-        """Per-plugin fields (e.g. ``rtsp_url``) also live-swap;
-        ``Plugin.config_changed(old, new)`` drives the dispatcher
-        but no restart is needed."""
-        old = AppConfig(video_source_type="rtsp", rtsp_url="rtsp://a:554/x")
-        new = AppConfig(video_source_type="rtsp", rtsp_url="rtsp://b:554/y")
-        assert _import_needs_restart(old, new) == []
-
-    def test_detection_off_to_on_not_flagged(self) -> None:
-        """Enabling detection applies live via ``swap_detector``, which
-        rebuilds the receiver pipeline with a fresh detection branch.
-        The import flow must NOT flag a restart for this case."""
-        old = AppConfig()
-        new = replace(old, detection=replace(old.detection, enabled=True))
-        assert _import_needs_restart(old, new) == []
-
-    def test_detection_inference_size_change_not_flagged_when_enabled(self) -> None:
-        """``inference_size`` change while detection is enabled applies
-        live via ``swap_detector`` – the orchestrator constructs a fresh
-        detector and rebuilds the pipeline so the appsink caps match the
-        new ``input_resolution``."""
-        old = AppConfig(detection=DetectionConfig(enabled=True, inference_size=320))
-        new = AppConfig(detection=DetectionConfig(enabled=True, inference_size=640))
-        assert _import_needs_restart(old, new) == []
-
-    def test_detection_inference_size_change_not_flagged_when_disabled(self) -> None:
-        """An ``inference_size`` change while detection is disabled
-        has no runtime effect (the appsink pipeline isn't running),
-        so the dispatcher doesn't even take any action – and
-        ``_import_needs_restart`` must not over-report."""
-        old = AppConfig(detection=DetectionConfig(enabled=False, inference_size=320))
-        new = AppConfig(detection=DetectionConfig(enabled=False, inference_size=640))
-        assert _import_needs_restart(old, new) == []
-
-    def test_detection_running_change_not_flagged(self) -> None:
-        """An on→on detection edit (e.g. ``confidence`` change) routes
-        through the orchestrator and does NOT need a restart, so the
-        import flow must not flag it.
-        """
-        old = AppConfig(detection=DetectionConfig(enabled=True, confidence=0.5))
-        new = AppConfig(detection=DetectionConfig(enabled=True, confidence=0.8))
-        assert _import_needs_restart(old, new) == []
-
-    def test_detection_on_to_off_not_flagged(self) -> None:
-        """Disabling detection is a live transition."""
-        old = AppConfig(detection=DetectionConfig(enabled=True))
-        new = AppConfig(detection=DetectionConfig(enabled=False))
-        assert _import_needs_restart(old, new) == []
-
-    def test_otp_output_change_not_flagged(self) -> None:
-        """OTP output applies live via the orchestrator. The import
-        flow must NOT flag a restart for OTP-only changes – the user
-        gets a live-applied import."""
-        old = AppConfig()
-        new = replace(old, otp_output=replace(old.otp_output, enabled=True))
-        assert _import_needs_restart(old, new) == []
-
-    def test_rttrpm_output_change_not_flagged(self) -> None:
-        """Same as OTP."""
-        old = AppConfig()
-        new = replace(old, rttrpm_output=replace(old.rttrpm_output, enabled=True))
-        assert _import_needs_restart(old, new) == []
-
-    def test_camera_change_is_not_flagged(self) -> None:
-        """Camera edits are live-reloadable – must NOT surface as a
-        restart reason.
-        """
-        old = AppConfig()
-        new = replace(old, camera=replace(old.camera, fov=75.0))
-        assert _import_needs_restart(old, new) == []
-
-
-# --------------------------------------------------------------------------- #
-# _apply_import_data – skip-restart-sections branch
-# --------------------------------------------------------------------------- #
-
-
-class TestApplyImportDataSkipRestart:
-    def test_skip_restart_still_applies_every_section(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Every section (incl. detection) applies live now, so
-        ``skip_restart_sections=True`` no longer gates any section. The
-        flag is preserved on the API for backwards compatibility with
-        callers but doesn't change the outcome – a ``skip_restart=1``
-        import lands the full payload.
-        """
+class TestApplyImportData:
+    def test_every_section_applies_from_one_import(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Video source, camera, detection and both outputs land together."""
         # ``apply_section_data("video_source", ...)`` imports
         # ``get_available_input_ids`` lazily from ``openfollow.video.inputs``
         # – the real helper triggers plugin auto-discovery (NDI probes
@@ -624,26 +524,12 @@ class TestApplyImportDataSkipRestart:
             "otp_output": {"enabled": True},
             "rttrpm_output": {"enabled": True},
         }
-        out = _apply_import_data(current, payload, skip_restart_sections=True)
+        out = _apply_import_data(current, payload)
 
         assert out.camera.fov == 75.0
         assert out.otp_output.enabled is True
         assert out.rttrpm_output.enabled is True
         assert out.video_source_type == "ndi"
-        # Detection now applies even with skip_restart_sections=True
-        # (every detection edit is live).
-        assert out.detection.enabled is True
-
-    def test_non_skip_applies_every_section(self) -> None:
-        """Without ``skip_restart_sections`` every section applies –
-        symmetric to the skip path now that no section is gated.
-        """
-        current = AppConfig()
-        out = _apply_import_data(
-            current,
-            {"detection": {"enabled": True}},
-            skip_restart_sections=False,
-        )
         assert out.detection.enabled is True
 
     def test_preserves_psn_source_iface_regardless_of_payload(self) -> None:

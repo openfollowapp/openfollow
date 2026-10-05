@@ -944,7 +944,7 @@ table and fails a status rule that carries a literal colour.
 | `/api/info` | GET | JSON: system_name, ip, port |
 | `/api/peers` | GET | JSON: discovered peers |
 | `/api/config/export` | GET | Download full config as JSON file |
-| `/api/config/import` | POST | Import config JSON (preserves device IP); supports `?confirm_restart=1` and `?skip_restart=1` |
+| `/api/config/import` | POST | Import config JSON (preserves device identity); every section applies live |
 | `/api/config/reset` | POST | Restore every setting to `AppConfig()` defaults, keeping the device-identity fields; restarts |
 | `/api/config/<section>` | GET/POST | JSON config API |
 | `/api/config/<section>/broadcast` | POST | Push config to all peers |
@@ -959,10 +959,7 @@ table and fails a status rule that carries a literal colour.
 - **Import:** `POST /api/config/import` applies imported JSON, then writes the device-identity snapshot back (captured before the section apply, restored after, in `_apply_import_data`). Section-level peer broadcast / `/api/config/<section>` go through `strip_device_local_fields`, which drops the same per-section set (`_DEVICE_LOCAL_FIELDS_BY_SECTION`), and so does every section the import applies. `interface_assignment` is dropped whole (`_DEVICE_LOCAL_SECTIONS`): its per-destination keys are not known in advance. OSC destinations are rebuilt wholesale from the file, so their pins are carried over by destination id; a destination new to this station starts blank. A storage path from another machine must never land here – it would be unwritable and break model storage / export.
 - **Restore defaults:** `POST /api/config/reset` writes `reset_config_to_defaults(current)` – a fresh `AppConfig()` carrying the same device-identity snapshot – through `save_config`, then calls `request_restart()`. **The restart is part of the operation.** A section save only writes fields `apply_runtime_config_changes` applies, so it finishes live; a whole-config reset also touches fields it does not – `network.backend` is startup-only by design, the update / time-sync group is read off `app._config` and never reassigned, and `marker_move_speeds` is deliberately runtime-authoritative. Left running, those keep their pre-reset values in memory and the next wholesale `save_config(app._config)` (the zone-overlay hotkey is one) writes them back over the reset, so it would silently, partially undo itself. `psn_system_name` follows the preserved `station_id` via `derive_station_name`, the way a first run seeds it: resetting it to the bare `"OpenFollow"` default would let the next restart's `_bootstrap_station_identity` silently rename the station. The marker catalog (`markers.toml`), the media gallery and the model store are separate files and are untouched.
 - **The device-identity set is one list, `_DEVICE_IDENTITY_FIELDS`**, shared by import and restore-defaults via `capture_device_identity` / `restore_device_identity` (one dot addresses a sub-config). It holds what identifies or connects *this box* rather than describes the show: `psn_source_iface`, `web_pin`, `web_port`, `web_bind`, `web_bind_iface`, `station_fqdn`, `station_id`, `markers_catalog_path`, `testpattern_selected_media`, `detection.storage_path`. A default or foreign value in any of them locks the operator out of the only interface an offline show LAN has, moves the station off its interface, makes two stations claim one name, re-mints its identity, or points a path at a directory that does not exist here. `otp_output.source_iface`, `rttrpm_output.source_iface`, `osc.listen_iface`, `video_input_iface` and the OSC destination pins are deliberately **not** in the set: blank means "follow `psn_source_iface`", which is preserved, so resetting them drops nothing off the network. `web_bind_iface` is the opposite case: blank means every interface, so a reset would unpin the web UI.
-- Import uses a two-phase flow when restart-requiring changes are detected: the first request analyses without saving, then the user confirms one of three actions:
-  - **Restart Now** (`?confirm_restart=1`): saves full config, hot-reload triggers restart
-  - **Apply Without Restart** (`?skip_restart=1`): saves only live-reloadable changes (skips video source, OTP, RTTrPM, detection)
-  - **Cancel**: nothing is saved
+- Import saves in one request and every section applies live through the hot-reload path, so it never asks for a restart. Stations on 0.5.0-rc1 and earlier push Broadcast All to `?skip_restart=1`; the route ignores the query.
 - Routes are registered before the wildcard `/api/config/<section>` routes to avoid interception
 
 ### HTMX notes
@@ -1003,7 +1000,7 @@ Key implementation details:
 Peer-to-peer config broadcast is HMAC-signed. The web PIN is the HMAC key; the PIN itself never leaves the host.
 
 - **Signature headers:** `X-Auth-Signature` (hex HMAC-SHA256) + `X-Auth-Timestamp` (unix seconds).
-- **Signed payload:** `method\npath\nSHA256(body)\ntimestamp` – path includes the query string when present, so `?skip_restart=1` is semantically bound to the signed operation.
+- **Signed payload:** `method\npath\nSHA256(body)\ntimestamp` – path includes the query string when present, so a query is semantically bound to the signed operation.
 - **Timestamp window:** `TIMESTAMP_WINDOW_SECONDS = 30` – tolerant of typical NTP-free LAN skew, too narrow for offline replay to be practical.
 - **Pre-auth body cap:** `_check_auth` requires `Content-Length` and rejects requests over `peer_auth.MAX_SIGNED_BODY_SIZE` (1 MiB) with 413 before reading – the verifier has to hash the full body before the HMAC proves the sender, so an unauthenticated client could otherwise force an unbounded spool.
 - **Hard cutover:** the legacy `X-Auth-Pin` header is no longer accepted. Third-party scripts must either authenticate via cookie (browser flow) or sign with `peer_auth.sign()`.

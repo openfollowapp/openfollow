@@ -106,10 +106,15 @@ class BeaconPacket:
         if not (1 <= web_port <= 65535):
             return None
 
-        name = _sanitize_beacon_text(d.get("name", ""), BEACON_NAME_MAX_LEN)
+        name = clean_peer_name(d.get("name", ""))
         version = _sanitize_beacon_text(d.get("version", "0.1.0"), BEACON_VERSION_MAX_LEN)
 
         return cls(name=name, web_port=web_port, version=version)
+
+
+def clean_peer_name(value: object) -> str:
+    """A station name another station sent, cleaned the way a beacon's is."""
+    return _sanitize_beacon_text(value, BEACON_NAME_MAX_LEN)
 
 
 def _sanitize_beacon_text(value: object, max_len: int) -> str:

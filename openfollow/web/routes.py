@@ -31,7 +31,7 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from bottle import Bottle, HTTPResponse, abort, redirect, request, response, static_file, template
 
@@ -121,6 +121,7 @@ from openfollow.units import UnitSystem, parse_length, parse_speed
 from openfollow.web import diagnostics, peer_auth
 from openfollow.web._md import render_help_markdown
 from openfollow.web.bindings import check_binding, osc_row_overlap, osc_trigger_overlap
+from openfollow.web.discovery import clean_peer_name
 from openfollow.web.labels import video_error_token
 from openfollow.web.live_alerts import statistics_alerts
 from openfollow.web.login_throttle import LoginThrottle
@@ -3157,6 +3158,21 @@ def reset_config_to_defaults(current_cfg: AppConfig) -> AppConfig:
     return fresh
 
 
+# The query parameter marking a request as settings another station pushed.
+PUSHED_FROM_PARAM = "from"
+
+
+def _pushed_by() -> str | None:
+    """The pushing station's name, cleaned like a beacon's; ``None`` when this is no push."""
+    if PUSHED_FROM_PARAM not in request.query:
+        return None
+    return clean_peer_name(request.query.get(PUSHED_FROM_PARAM, "")).strip()
+
+
+def _section_label(section: str) -> str:
+    return section.replace("_", " ").capitalize()
+
+
 def _backup_before(config_path: str, kind: str) -> dict[str, str]:
     """Archive the settings ``kind`` is about to replace; the response fields reporting it.
 
@@ -3875,17 +3891,22 @@ def _peer_auth_headers(
     }
 
 
+def _push_path(path: str, sender: str) -> str:
+    """``path`` marked as a push from ``sender``; the mark is signed with the rest of the path."""
+    return f"{path}?{PUSHED_FROM_PARAM}={quote(sender, safe='')}"
+
+
 def _send_config_to_peer(
-    ip: str, port: int, section: str, data: dict[str, Any], pin: str = "", *, expected_port: int
+    ip: str, port: int, section: str, data: dict[str, Any], pin: str = "", *, expected_port: int, sender: str
 ) -> bool:
-    """Send config update to a remote peer."""
+    """Send config update to a remote peer, marked as a push from ``sender``."""
     if not _is_private_peer_ip(ip):
         logger.warning("Refusing peer broadcast to non-private IP: %s", ip)
         return False
     if not _is_allowed_peer_port(port, expected_port):
         logger.warning("Refusing peer broadcast to unexpected port: %s:%d", ip, port)
         return False
-    path = f"/api/config/{section}"
+    path = _push_path(f"/api/config/{section}", sender)
     body = json.dumps(data).encode("utf-8")
     url = f"http://{ip}:{port}{path}"
     try:
@@ -3898,15 +3919,17 @@ def _send_config_to_peer(
         return False
 
 
-def _send_config_import_to_peer(ip: str, port: int, data: dict[str, Any], pin: str = "", *, expected_port: int) -> bool:
-    """Send full config to a remote peer via the import endpoint."""
+def _send_config_import_to_peer(
+    ip: str, port: int, data: dict[str, Any], pin: str = "", *, expected_port: int, sender: str
+) -> bool:
+    """Send full config to a remote peer via the import endpoint, marked as a push from ``sender``."""
     if not _is_private_peer_ip(ip):
         logger.warning("Refusing peer broadcast to non-private IP: %s", ip)
         return False
     if not _is_allowed_peer_port(port, expected_port):
         logger.warning("Refusing peer broadcast to unexpected port: %s:%d", ip, port)
         return False
-    path = "/api/config/import"
+    path = _push_path("/api/config/import", sender)
     body = json.dumps(data).encode("utf-8")
     url = f"http://{ip}:{port}{path}"
     try:
@@ -8796,6 +8819,45 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         )
         return json.dumps(_config_dict_redacted(cfg), indent=2)
 
+    def _record_push(station: str, what: str, backup: dict[str, str]) -> None:
+        # The socket's peer, not ``remote_addr``: Bottle takes that from a client-set X-Forwarded-For.
+        address = request.environ.get("REMOTE_ADDR", "")
+        server.pushed_settings.record(station, address, what, backup.get("backup_error", ""))
+
+    @app.get("/api/pushed-settings")
+    def api_pushed_settings() -> Any:
+        """Settings other stations pushed here since the warning was last removed, newest first."""
+        response.content_type = "application/json"
+        pushes, earlier = server.pushed_settings.snapshot()
+        return json.dumps(
+            {
+                "pushes": [
+                    {
+                        "id": push.id,
+                        "time": time.strftime("%H:%M", time.localtime(push.at)),
+                        "station": push.station,
+                        "address": push.address,
+                        "what": push.what,
+                        "backup_error": push.backup_error,
+                    }
+                    for push in pushes
+                ],
+                "earlier": earlier,
+            }
+        )
+
+    @app.post("/api/pushed-settings/remove")
+    def api_pushed_settings_remove() -> Any:
+        """Remove the warning for every push up to ``upto``, the newest one the page showed."""
+        response.content_type = "application/json"
+        data = _load_json_body()
+        upto = data.get("upto") if isinstance(data, dict) else None
+        if isinstance(upto, bool) or not isinstance(upto, int):
+            response.status = 400
+            return json.dumps({"error": "The request named no push."})
+        server.pushed_settings.remove(upto)
+        return json.dumps({"success": True})
+
     @app.post("/api/config/import")
     def api_import_config() -> Any:
         """Import a config from JSON, preserving this station's identity.
@@ -8812,7 +8874,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             response.status = 400
             return json.dumps({"error": "Expected a JSON object"})
 
-        backup = _backup_before(server.config_path, "import")
+        pushed_by = _pushed_by()
+        backup = _backup_before(server.config_path, "import" if pushed_by is None else "push")
         with _config_write_lock:
             current = load_config(server.config_path)
             # Per-marker move speeds are device-local + runtime-authoritative:
@@ -8826,6 +8889,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 current.marker_move_speeds = dict(speeds)
             full_cfg = _apply_import_data(current, data)
             save_config(full_cfg, server.config_path)
+        if pushed_by is not None:
+            _record_push(pushed_by, "every shared setting", backup)
         return json.dumps({"success": True, **backup})
 
     @app.post("/api/config/reset")
@@ -8876,6 +8941,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 cfg_data,
                 pin=pin,
                 expected_port=server.display_port,
+                sender=cfg.psn_system_name,
             ),
             overall_timeout=_BROADCAST_IMPORT_TIMEOUT_S,
         )
@@ -8914,19 +8980,29 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         if data is None:
             return json.dumps({"error": "Invalid JSON"})
 
+        pushed_by = _pushed_by()
+        scrubbed = strip_device_local_fields(section, data)
+        backup: dict[str, str] = {}
+        if pushed_by is not None:
+            # A known section before archiving, and the archive before the lock.
+            if not apply_section_data(load_config(server.config_path), section, scrubbed):
+                response.status = 404
+                return json.dumps({"error": "Unknown section"})
+            backup = _backup_before(server.config_path, "push")
+
         with _config_write_lock:
             # A peer-broadcast / external-API receive: no live-speed overlay. Section
             # applies never touch top-level ``marker_move_speeds`` (device-local,
             # runtime-authoritative), and Part 0 keeps the ensuing reload from
             # clobbering the live dict, so a plain disk load is correct here.
             cfg = load_config(server.config_path)
-            scrubbed = strip_device_local_fields(section, data)
             if not apply_section_data(cfg, section, scrubbed):
                 response.status = 404
                 return json.dumps({"error": "Unknown section"})
-
             save_config(cfg, server.config_path)
-        return json.dumps({"success": True})
+        if pushed_by is not None:
+            _record_push(pushed_by, _section_label(section), backup)
+        return json.dumps({"success": True, **backup})
 
     @app.post("/api/config/<section>/broadcast")
     def api_broadcast_section(section: str) -> Any:
@@ -8971,6 +9047,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 peer_data,
                 pin=pin,
                 expected_port=server.display_port,
+                sender=cfg.psn_system_name,
             ),
             overall_timeout=_BROADCAST_SECTION_TIMEOUT_S,
         )

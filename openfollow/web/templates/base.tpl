@@ -224,6 +224,10 @@
  font-size: 0.82rem;
  line-height: 1.35;
  }
+ .pushed-settings-list { margin: 0; padding: 0; list-style: none; }
+ .pushed-settings-list li { margin: 0 0 0.4rem; }
+ .pushed-settings-list time { margin-right: 0.6rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+ .pushed-settings-earlier { color: var(--muted); }
  .section-head {
  display: flex;
  align-items: center;
@@ -5151,6 +5155,114 @@
  </script>
  % if defined('whats_new_pending') and whats_new_pending:
  <script>document.addEventListener('DOMContentLoaded', openfollowShowWhatsNew);</script>
+ % end
+ % if defined('config') and config:
+ <script>
+ // Settings another station pushed here: a locked modal on every page until
+ // someone removes the warning, which clears it everywhere. It waits while
+ // another modal is open rather than replacing it.
+ (function () {
+ const POLL_MS = 3000;
+ let shownLatest = 0;
+ function pushedSettingsBody(state) {
+ const body = document.createDocumentFragment();
+ const box = document.createElement('div');
+ box.className = 'notice';
+ const lead = document.createElement('div');
+ lead.textContent = 'The pushed settings are already applied.';
+ box.appendChild(lead);
+ body.appendChild(box);
+ const list = document.createElement('ul');
+ list.className = 'pushed-settings-list';
+ state.pushes.forEach((push) => {
+ const item = document.createElement('li');
+ const at = document.createElement('time');
+ at.textContent = push.time;
+ const sender = push.station ? push.station + ' (' + push.address + ')' : push.address;
+ item.append(at, sender + ' pushed ' + push.what);
+ if (push.backup_error) {
+ const caution = document.createElement('div');
+ caution.className = 'field-caution-msg';
+ caution.textContent = 'No backup was made: ' + push.backup_error + '.';
+ item.appendChild(caution);
+ }
+ list.appendChild(item);
+ });
+ if (state.earlier) {
+ const item = document.createElement('li');
+ item.className = 'pushed-settings-earlier';
+ item.textContent = '+' + state.earlier + ' earlier';
+ list.appendChild(item);
+ }
+ body.appendChild(list);
+ return body;
+ }
+ async function removePushedSettingsWarning(upto, btn) {
+ const saveError = window.OpenFollow.saveError;
+ const card = document.querySelector('#modal-root .modal-card');
+ btn.disabled = true;
+ try {
+ const res = await fetch('/api/pushed-settings/remove', {
+ method: 'POST',
+ headers: { 'Content-Type': 'application/json' },
+ body: JSON.stringify({ upto }),
+ });
+ if (!res.ok) {
+ btn.disabled = false;
+ saveError.show(card, await saveError.fromResponse(res), 'Not removed.', btn.parentElement);
+ return;
+ }
+ } catch (err) {
+ btn.disabled = false;
+ saveError.show(card, saveError.UNREACHABLE, 'Not removed.', btn.parentElement);
+ return;
+ }
+ // A newer push may have replaced the modal meanwhile; that one stays.
+ const root = document.getElementById('modal-root');
+ if (root && root.dataset.pushedSettings === '1' && shownLatest === upto) closeModal();
+ }
+ async function pollPushedSettings() {
+ let state;
+ try {
+ const res = await fetch('/api/pushed-settings', { headers: { Accept: 'application/json' } });
+ if (!res.ok) return;
+ state = await res.json();
+ } catch (err) {
+ return;
+ }
+ const root = document.getElementById('modal-root');
+ if (!root || !state || !Array.isArray(state.pushes)) return;
+ const ours = !root.hidden && root.dataset.pushedSettings === '1';
+ // A device-password prompt must stay answerable; the locked modal would make it inert.
+ if (document.querySelector('#privilege-password-modal [role="dialog"]')) {
+ if (ours) closeModal();
+ return;
+ }
+ if (!state.pushes.length) {
+ if (ours) closeModal();
+ return;
+ }
+ const latest = state.pushes[0].id;
+ if (ours && latest === shownLatest) return;
+ if (!ours && !root.hidden) return;
+ shownLatest = latest;
+ openModal({
+ title: 'Settings were pushed to this station',
+ bodyHTML: pushedSettingsBody(state),
+ dismissable: false,
+ footerButtons: [
+ { label: 'Remove Warning', kind: 'primary', onClick: (btn) => removePushedSettingsWarning(latest, btn) },
+ ],
+ onClose: () => { delete root.dataset.pushedSettings; },
+ });
+ root.dataset.pushedSettings = '1';
+ }
+ document.addEventListener('DOMContentLoaded', () => {
+ pollPushedSettings();
+ setInterval(pollPushedSettings, POLL_MS);
+ });
+ })();
+ </script>
  % end
  %# Privilege-password modal. Surfaces whenever a privileged subsystem
  %# (e.g. a network apply) parks a password prompt on the broker. Global so

@@ -388,15 +388,23 @@ def _get_local_ips() -> list[str]:
     return sorted(ip for ip in get_local_ipv4_addresses() if ip and not ip.startswith("127.") and ip != "localhost")
 
 
+def _client_address() -> str:
+    """The address the request's connection came from.
+
+    Never ``request.remote_addr``: Bottle takes that from ``X-Forwarded-For``,
+    which any client can set, so a client could name its own address.
+    """
+    return str(request.environ.get("REMOTE_ADDR") or "").strip()
+
+
 def _is_on_device_request() -> bool:
     """True when the request originated from the embedded WebView.
 
     The on-device WebKit overlay loads ``http://127.0.0.1:<port>/``, so a
-    loopback ``remote_addr`` distinguishes it from LAN clients (which hit
-    the external IP). Covers IPv4/IPv6 loopback and the ``localhost`` literal.
+    loopback connection distinguishes it from LAN clients (which hit the
+    external IP). Covers IPv4/IPv6 loopback and the ``localhost`` literal.
     """
-    remote = (request.remote_addr or "").strip()
-    return remote in ("127.0.0.1", "::1", "localhost")
+    return _client_address() in ("127.0.0.1", "::1", "localhost")
 
 
 # CSRF / DNS-rebind defence. State-changing methods only –
@@ -4739,7 +4747,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         signature = request.headers.get(peer_auth.SIGNATURE_HEADER, "")
         timestamp = request.headers.get(peer_auth.TIMESTAMP_HEADER, "")
         if signature and timestamp:
-            remote = request.remote_addr or ""
+            remote = _client_address()
             # Reject locked-out IPs *before* the body read + HMAC compute,
             # so a flood of bogus signatures can't keep us hashing.
             _abort_if_locked(remote)
@@ -4829,7 +4837,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         if not pin:
             redirect("/")
 
-        remote = request.remote_addr or ""
+        remote = _client_address()
         # Reserve a single guess atomically: refuse while locked out (short-
         # circuits any timing leak from compare_digest) AND serialize
         # concurrent submissions for this IP to one guess per window.

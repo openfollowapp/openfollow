@@ -3169,6 +3169,15 @@ def _pushed_by() -> str | None:
     return clean_peer_name(request.query.get(PUSHED_FROM_PARAM, "")).strip()
 
 
+# A push never names the station it lands on: each station keeps its own.
+_PUSH_EXCLUDED_FIELDS = frozenset({"psn_system_name"})
+
+
+def _without_station_name(data: dict[str, Any]) -> dict[str, Any]:
+    """``data`` without the fields that name a station, for a push."""
+    return {key: value for key, value in data.items() if key not in _PUSH_EXCLUDED_FIELDS}
+
+
 def _section_label(section: str) -> str:
     return section.replace("_", " ").capitalize()
 
@@ -8887,7 +8896,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             speeds = server.get_marker_move_speeds()
             if speeds:
                 current.marker_move_speeds = dict(speeds)
-            full_cfg = _apply_import_data(current, data)
+            full_cfg = _apply_import_data(current, data if pushed_by is None else _without_station_name(data))
             save_config(full_cfg, server.config_path)
         if pushed_by is not None:
             _record_push(pushed_by, "every shared setting", backup)
@@ -8929,8 +8938,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # the PIN here so the credential never travels in the broadcast body
         # (peer auth still carries it in the signed header via ``pin=``).
         # OSC destinations / transmitters / zones export via file but are never
-        # real-time shared – strip them from the broadcast body.
-        cfg_data = _strip_broadcast_excluded(_config_dict_redacted(cfg))
+        # real-time shared – strip them from the broadcast body. Each peer keeps
+        # its own station name.
+        cfg_data = _without_station_name(_strip_broadcast_excluded(_config_dict_redacted(cfg)))
         peers = server.get_peers()
         pin = cfg.web_pin
         results = _broadcast_to_peers(
@@ -8984,6 +8994,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         scrubbed = strip_device_local_fields(section, data)
         backup: dict[str, str] = {}
         if pushed_by is not None:
+            scrubbed = _without_station_name(scrubbed)
             # A known section before archiving, and the archive before the lock.
             if not apply_section_data(load_config(server.config_path), section, scrubbed):
                 response.status = 404
@@ -9037,7 +9048,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
         peers = server.get_peers()
         pin = cfg.web_pin
-        peer_data = strip_device_local_fields(section, data)
+        peer_data = _without_station_name(strip_device_local_fields(section, data))
         results = _broadcast_to_peers(
             peers,
             lambda peer: _send_config_to_peer(

@@ -11,9 +11,6 @@
     <div id="config-transfer-content">
         <div class="group">
             <h3 class="group-title">Export</h3>
-            <p style="color:var(--muted);font-size:0.88rem;margin:0 0 0.6rem;">
-                Download the current configuration as a JSON file.
-            </p>
             <div class="actions">
                 <button type="button" class="save-btn" onclick="exportConfig()">Export Configuration</button>
             </div>
@@ -21,22 +18,11 @@
 
         <div class="group">
             <h3 class="group-title">Import</h3>
-            <p style="color:var(--muted);font-size:0.88rem;margin:0 0 0.6rem;">
-                Load a previously exported configuration file.
-                The device's network IP address will be preserved.
-            </p>
-            <label for="config-import-file">Configuration File (.ofsettings)</label>
             <input type="file" id="config-import-file" accept=".ofsettings,.openfollowsettings" style="display:none"
-                   onchange="document.getElementById('config-import-filename').textContent = this.files[0] ? this.files[0].name : ''">
-            <div class="actions">
-                <button type="button" class="btn-secondary"
-                        onclick="document.getElementById('config-import-file').click()">
-                    Choose file
-                </button>
-                <span id="config-import-filename" class="field-note" style="margin:0;align-self:center"></span>
-            </div>
-            <div class="actions" id="import-actions" style="margin-top:0.72rem;">
-                <button type="button" class="save-btn" id="import-btn" onclick="importConfig()">Import Configuration</button>
+                   onchange="importConfig(this)">
+            <div class="actions" id="import-actions">
+                <button type="button" class="save-btn" id="import-btn"
+                        onclick="document.getElementById('config-import-file').click()">Import Configuration&hellip;</button>
             </div>
         </div>
 
@@ -64,60 +50,65 @@ function exportConfig() {
     window.location.href = '/api/config/export';
 }
 
-function importConfig() {
+var _IMPORT_LABEL = 'Import Configuration\u2026';
+
+/* Choosing the file starts the import; the modal is the one step before it applies. */
+function importConfig(input) {
+    var file = input.files && input.files[0];
+    if (!file) return;
+    /* Cleared so picking the same file again after a failure fires change again. */
+    input.value = '';
     window.OpenFollow.saveError.clear(document.getElementById('config-transfer-section'));
-    var fileInput = document.getElementById('config-import-file');
-    if (!fileInput.files.length) {
-        _importFailed({error: 'No file is selected.', action: 'Choose a configuration file first.'});
-        return;
-    }
-    var btn = document.getElementById('import-btn');
-    btn.disabled = true;
-    btn.textContent = 'Importing\u2026';
 
     var reader = new FileReader();
     reader.onerror = function() {
-        btn.disabled = false;
-        btn.textContent = 'Import Configuration';
         _importFailed({error: 'The selected file could not be read.'});
     };
-    reader.onload = function(e) {
+    reader.onload = async function(e) {
         var raw = e.target.result;
         try { JSON.parse(raw); }
         catch (err) {
-            btn.disabled = false;
-            btn.textContent = 'Import Configuration';
             _importFailed({error: 'The selected file is not valid JSON.'});
             return;
         }
-        _sendImport(raw);
+        var ok = await modalConfirm({
+            title: 'Import configuration?',
+            message: 'Every show setting is replaced by ' + file.name + ', including the station '
+                + 'name. The web login, port and interface stay as they are, and so do local file '
+                + 'paths. Export first if you want a copy; this cannot be undone.',
+            confirmLabel: 'Import',
+            danger: true,
+        });
+        if (!ok) return;
+        _sendImport(raw, file.name);
     };
-    reader.readAsText(fileInput.files[0]);
+    reader.readAsText(file);
 }
 
-function _sendImport(body) {
+function _sendImport(body, name) {
     var btn = document.getElementById('import-btn');
+    btn.disabled = true;
+    btn.textContent = 'Importing ' + name + '\u2026';
     fetch('/api/config/import', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: body
     })
     .then(async function(res) {
-        btn.disabled = false;
-        btn.textContent = 'Import Configuration';
         var text = await res.text();
         var result = {};
         try { result = JSON.parse(text); } catch (e) { /* not JSON: reported below */ }
         if (!res.ok || result.error) {
+            btn.disabled = false;
+            btn.textContent = _IMPORT_LABEL;
             _importFailed(window.OpenFollow.saveError.fromText(res.status, text));
             return;
         }
-        showToast('Configuration imported successfully');
-        setTimeout(function() { window.location.reload(); }, 600);
+        toastAfterReload('Imported ' + name);
     })
     .catch(function() {
         btn.disabled = false;
-        btn.textContent = 'Import Configuration';
+        btn.textContent = _IMPORT_LABEL;
         _importFailed(window.OpenFollow.saveError.UNREACHABLE);
     });
 }

@@ -22,7 +22,16 @@ _SCRIPT = Path(openfollow.__file__).resolve().parent.parent / "packaging" / "deb
 _STATE_LINE = "STATE_FILE=/var/lib/openfollow/update-state.json"
 
 
-def _run(tmp_path: Path, *, apt_exit: int = 0, apt_output: str = "", systemctl_exit: int = 0) -> tuple[list[str], dict]:
+def _run(
+    tmp_path: Path,
+    *,
+    apt_exit: int = 0,
+    apt_output: str = "",
+    systemctl_exit: int = 0,
+    systemctl_exits: dict[str, int] | None = None,
+    dpkg_exit: int = 0,
+) -> tuple[list[str], dict]:
+    """Run the script against stubs; ``systemctl_exits`` overrides ``systemctl_exit`` per subcommand."""
     if not _SCRIPT.is_file():
         pytest.skip("no packaging/debian/apply-update.sh in this tree")
     source = _SCRIPT.read_text(encoding="utf-8")
@@ -35,13 +44,15 @@ def _run(tmp_path: Path, *, apt_exit: int = 0, apt_output: str = "", systemctl_e
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     calls = tmp_path / "calls"
-    for name, code, output in (("apt-get", apt_exit, apt_output), ("systemctl", systemctl_exit, ""), ("dpkg", 0, "")):
-        # ``systemctl start`` also logs the recorded state, so the order of the two can be checked.
-        seen_at_start = f'[ "$1" = start ] && echo "state at start: $(cat "{state}")" >> "{calls}"\n'
+    # ``systemctl start`` also logs the recorded state, so the order of the two can be checked.
+    seen_at_start = f'[ "$1" = start ] && echo "state at start: $(cat "{state}")" >> "{calls}"\n'
+    per_verb = "".join(f'[ "$1" = {verb} ] && exit {code}\n' for verb, code in (systemctl_exits or {}).items())
+    stubs = (("apt-get", apt_exit, apt_output), ("systemctl", systemctl_exit, ""), ("dpkg", dpkg_exit, ""))
+    for name, code, output in stubs:
         stub = bin_dir / name
         stub.write_text(
             f'#!/bin/sh\necho "{name} $*" >> "{calls}"\n'
-            + (seen_at_start if name == "systemctl" else "")
+            + (seen_at_start + per_verb if name == "systemctl" else "")
             + f'printf "%s\\n" "{output}"\nexit {code}\n',
             encoding="utf-8",
         )
@@ -118,6 +129,25 @@ def test_a_failed_install_brings_the_station_back(tmp_path: Path) -> None:
         "systemctl enable openfollow.service openfollow-splash.service",
         "systemctl start openfollow.service",
     ]
+
+
+@pytest.mark.parametrize(
+    ("failing", "kwargs"),
+    [
+        ("dpkg --force-confdef --force-confold --configure -a", {"dpkg_exit": 1}),
+        ("systemctl daemon-reload", {"systemctl_exits": {"daemon-reload": 1}}),
+        ("systemctl enable openfollow.service openfollow-splash.service", {"systemctl_exits": {"enable": 1}}),
+    ],
+    ids=["configure", "daemon-reload", "enable"],
+)
+def test_a_failed_recovery_step_still_starts_the_station(tmp_path: Path, failing: str, kwargs: dict) -> None:
+    """A package that cannot be configured is the likeliest reason the install failed at all."""
+    calls, state = _run(tmp_path, apt_exit=100, apt_output=_DPKG_ERROR, **kwargs)
+    assert failing in calls
+    assert calls[-2:] == ["systemctl start openfollow.service", calls[-1]]
+    assert calls[-1].startswith("state at start: ")
+    assert (state["state"], state["message"]) == ("failed", "Update failed.")
+    assert _DPKG_ERROR in state["error"]
 
 
 def test_the_failure_is_recorded_before_the_station_starts(tmp_path: Path) -> None:

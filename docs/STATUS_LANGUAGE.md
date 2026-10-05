@@ -217,6 +217,14 @@ A change that went through with something worth knowing about it (an import
 for which no backup could be made) is a caution line in the same place
 (`.save-caution`), on the page the change reloaded to, beside its toast.
 
+### Pushed settings
+
+Settings another station pushed here are an info box in a locked dialog on
+every page (`base.tpl`'s pushed-settings poll): the box says they are already
+applied, a list below names each push, and a push for which no backup could be
+made carries a caution line (`.field-caution-msg`). Its one button removes the
+warning; it is not a confirmation, because nothing waits on it.
+
 ### Toast
 
 The toast only confirms: success fill and border over the opaque dark base,

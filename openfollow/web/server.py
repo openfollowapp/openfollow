@@ -26,6 +26,7 @@ import openfollow
 from openfollow.net_utils import get_local_ipv4_addresses, get_primary_local_ipv4
 from openfollow.services import WebCommandQueue
 from openfollow.web.discovery import BeaconReceiver, BeaconSender, PeerInfo
+from openfollow.web.pushed_settings import PushedSettings
 
 logger = logging.getLogger(__name__)
 
@@ -280,6 +281,7 @@ class ConfigWebServer:
         # rather than showing a number whose meaning changed silently.
         self._station_interface_down = False
         self._command_queue = command_queue or WebCommandQueue()
+        self.pushed_settings = PushedSettings()
         self._runtime_stats_provider = runtime_stats_provider
         self.crash_restarts_provider = crash_restarts_provider
         self.online_sync_status_provider = online_sync_status_provider

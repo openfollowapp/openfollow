@@ -3891,6 +3891,194 @@ def test_api_config_import_goes_ahead_when_no_backup_can_be_made(live_server) ->
 
 
 # ---------------------------------------------------------------------------
+# Settings another station pushed here
+# ---------------------------------------------------------------------------
+
+
+def _push(base: str, path: str, data: dict, sender: str = "Stage Left") -> tuple[int, dict]:
+    return _post_json(base, f"{path}?from={urllib.parse.quote(sender, safe='')}", data)
+
+
+def _pushes(server: ConfigWebServer) -> list[tuple[str, str, str, str]]:
+    return [(p.station, p.address, p.what, p.backup_error) for p in server.pushed_settings.snapshot()[0]]
+
+
+def test_a_pushed_import_is_recorded_and_backed_up_as_a_push(live_server) -> None:
+    server, base = live_server
+    status, body = _push(base, "/api/config/import", {"camera": {"pos_x": 7.25}})
+    assert status == 200
+    assert "-push-" in body["backup"]
+    assert _pushes(server) == [("Stage Left", "127.0.0.1", "every shared setting", "")]
+    assert load_config(server.config_path).camera.pos_x == pytest.approx(7.25)
+
+
+def test_a_push_names_the_address_it_came_from_not_a_forwarded_one(live_server) -> None:
+    server, base = live_server
+    req = urllib.request.Request(
+        f"{base}/api/config/grid?from=Stage%20Left",
+        data=json.dumps({"width": 12.0}).encode(),
+        headers={"Content-Type": "application/json", "X-Forwarded-For": "203.0.113.9"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        assert resp.status == 200
+    assert _pushes(server)[0][1] == "127.0.0.1"
+
+
+@pytest.mark.parametrize("path", ["/api/config/grid", "/api/config/no_such_section"])
+def test_a_pushed_section_backup_does_not_wait_for_the_write_lock(live_server, path: str) -> None:
+    """A known section is archived before the lock; an unknown one is refused before any archive."""
+    import threading
+
+    from openfollow.configuration import config_write_lock
+
+    server, base = live_server
+    web = Path(server.config_path).parent / "backups" / "web"
+    answers: list[tuple[int, dict]] = []
+    known = path.endswith("grid")
+    with config_write_lock:
+        sender = threading.Thread(target=lambda: answers.append(_push(base, path, {"width": 12.0})))
+        sender.start()
+        if known:
+            deadline = time.monotonic() + 5
+            while not (web.is_dir() and any(web.iterdir())) and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert web.is_dir() and any(web.iterdir())
+        else:
+            sender.join(5)
+            assert answers and answers[0][0] == 404
+            assert not web.exists()
+    sender.join(5)
+    assert answers[0][0] == (200 if known else 404)
+
+
+def test_an_import_from_this_page_is_no_push(live_server) -> None:
+    server, base = live_server
+    status, body = _post_json(base, "/api/config/import", {"camera": {"pos_x": 7.25}})
+    assert status == 200
+    assert "-import-" in body["backup"]
+    assert _pushes(server) == []
+
+
+def test_a_pushed_section_is_recorded_and_backed_up_as_a_push(live_server) -> None:
+    server, base = live_server
+    status, body = _push(base, "/api/config/grid", {"width": 12.0})
+    assert status == 200
+    assert "-push-" in body["backup"]
+    assert _pushes(server) == [("Stage Left", "127.0.0.1", "Grid", "")]
+    assert load_config(server.config_path).grid.width == pytest.approx(12.0)
+
+
+def test_a_section_write_that_is_no_push_records_and_backs_up_nothing(live_server) -> None:
+    server, base = live_server
+    status, body = _post_json(base, "/api/config/camera", {"pos_x": 2.0})
+    assert status == 200
+    assert body == {"success": True}
+    assert _pushes(server) == []
+    assert not (Path(server.config_path).parent / "backups").exists()
+
+
+def test_a_push_to_an_unknown_section_records_nothing(live_server) -> None:
+    server, base = live_server
+    status, _body = _push(base, "/api/config/no_such_section", {"x": 1})
+    assert status == 404
+    assert _pushes(server) == []
+
+
+def test_a_push_whose_backup_failed_carries_the_reason(live_server) -> None:
+    server, base = live_server
+    _block_backups(server)
+    status, body = _push(base, "/api/config/import", {"camera": {"pos_x": 7.25}})
+    assert status == 200
+    assert _pushes(server)[0][3] == body["backup_error"] != ""
+
+
+@pytest.mark.parametrize(
+    ("sent", "shown"),
+    [
+        ("Bühne Links", "Bühne Links"),
+        ("Stage\nLeft\x1b[31m", "StageLeft[31m"),
+        ("x" * 200, "x" * 128),
+        ("  ", ""),
+    ],
+)
+def test_the_pushing_station_name_is_cleaned(live_server, sent: str, shown: str) -> None:
+    server, base = live_server
+    status, _body = _push(base, "/api/config/import", {}, sender=sent)
+    assert status == 200
+    assert _pushes(server)[0][0] == shown
+
+
+@pytest.mark.parametrize("sender", ["send_config_import", "send_config_section"])
+def test_a_signed_push_from_the_real_sender_is_verified_and_recorded(pin_protected_server, sender: str) -> None:
+    from openfollow.web import routes as routes_mod
+
+    server, base, _pin = pin_protected_server
+    port = int(base.rsplit(":", 1)[1])
+    if sender == "send_config_import":
+        ok = routes_mod._send_config_import_to_peer(
+            "127.0.0.1", port, {"camera": {"pos_x": 3.0}}, pin="sekret", expected_port=port, sender="Bühne Links"
+        )
+        what = "every shared setting"
+    else:
+        ok = routes_mod._send_config_to_peer(
+            "127.0.0.1", port, "grid", {"width": 9.0}, pin="sekret", expected_port=port, sender="Bühne Links"
+        )
+        what = "Grid"
+    assert ok is True
+    assert _pushes(server) == [("Bühne Links", "127.0.0.1", what, "")]
+
+
+def test_a_push_signed_with_the_wrong_pin_is_refused_and_not_recorded(pin_protected_server) -> None:
+    from openfollow.web import routes as routes_mod
+
+    server, base, _pin = pin_protected_server
+    port = int(base.rsplit(":", 1)[1])
+    ok = routes_mod._send_config_import_to_peer("127.0.0.1", port, {}, pin="wrong", expected_port=port, sender="X")
+    assert ok is False
+    assert _pushes(server) == []
+
+
+def test_the_pushed_settings_api_lists_newest_first(live_server) -> None:
+    server, base = live_server
+    server.pushed_settings.record("A", "198.51.100.1", "Grid")
+    second = server.pushed_settings.record("B", "198.51.100.2", "every setting", "No space left on device")
+    status, body = _get_json(base, "/api/pushed-settings")
+    assert status == 200
+    assert body["earlier"] == 0
+    newest = body["pushes"][0]
+    assert re.fullmatch(r"\d\d:\d\d", newest.pop("time"))
+    assert newest == {
+        "id": second.id,
+        "station": "B",
+        "address": "198.51.100.2",
+        "what": "every setting",
+        "backup_error": "No space left on device",
+    }
+    assert [p["station"] for p in body["pushes"]] == ["B", "A"]
+
+
+def test_removing_the_warning_keeps_a_push_that_arrived_since(live_server) -> None:
+    server, base = live_server
+    server.pushed_settings.record("A", "198.51.100.1", "Grid")
+    seen = server.pushed_settings.record("B", "198.51.100.2", "Grid")
+    server.pushed_settings.record("C", "198.51.100.3", "Camera")
+    status, body = _post_json(base, "/api/pushed-settings/remove", {"upto": seen.id})
+    assert (status, body) == (200, {"success": True})
+    assert [p[0] for p in _pushes(server)] == ["C"]
+
+
+@pytest.mark.parametrize("payload", [{}, {"upto": "3"}, {"upto": True}, {"upto": None}, [1]])
+def test_removing_the_warning_needs_a_push_id(live_server, payload) -> None:
+    server, base = live_server
+    server.pushed_settings.record("A", "198.51.100.1", "Grid")
+    status, body = _post_json(base, "/api/pushed-settings/remove", payload)
+    assert status == 400
+    assert body["error"]
+    assert [p[0] for p in _pushes(server)] == ["A"]
+
+
+# ---------------------------------------------------------------------------
 # Restore defaults
 # ---------------------------------------------------------------------------
 
@@ -6277,6 +6465,29 @@ def test_api_create_detection_mask_drops_garbage_vertices(live_server) -> None:
     assert saved.detection.masks[body["index"]].vertices == [[0.0, 0.0], [1.0, 1.0]]
 
 
+def test_api_broadcast_all_marks_the_push_with_this_station_name(live_server, monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from openfollow.web import routes as routes_mod
+
+    senders: list[str] = []
+
+    def _fake_send(ip: str, port: int, data: dict, pin: str = "", *, expected_port: int, sender: str) -> bool:
+        senders.append(sender)
+        return True
+
+    monkeypatch.setattr(routes_mod, "_send_config_import_to_peer", _fake_send)
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.psn_system_name = "Front of House"
+    save_config(cfg, server.config_path)
+    monkeypatch.setattr(server, "get_peers", lambda: [SimpleNamespace(name="peer", ip="10.0.0.99", web_port=80)])
+
+    status, _body = _post_json(base, "/api/config/broadcast-all", {})
+    assert status == 200
+    assert senders == ["Front of House"]
+
+
 def test_api_broadcast_all_returns_empty_results_when_no_peers(live_server) -> None:
     _, base = live_server
     status, body = _post_json(base, "/api/config/broadcast-all", {})
@@ -6335,8 +6546,10 @@ def test_api_broadcast_section_psn_strips_iface_from_peer_payload(
 
     captured_payloads: list[dict] = []
 
-    def _fake_send(ip: str, port: int, section: str, data: dict, pin: str = "", *, expected_port: int) -> bool:
-        captured_payloads.append({"section": section, "data": dict(data)})
+    def _fake_send(
+        ip: str, port: int, section: str, data: dict, pin: str = "", *, expected_port: int, sender: str
+    ) -> bool:
+        captured_payloads.append({"section": section, "data": dict(data), "sender": sender})
         return True
 
     monkeypatch.setattr(routes_mod, "_send_config_to_peer", _fake_send)
@@ -6375,6 +6588,8 @@ def test_api_broadcast_section_psn_strips_iface_from_peer_payload(
     assert "psn_source_iface" not in sent["data"]
     assert sent["data"]["psn_system_name"] == "Broadcasted"
     assert sent["data"]["psn_mcast_ip"] == "236.10.10.10"
+    # Marked as a push from this station, under the name it now has.
+    assert sent["sender"] == "Broadcasted"
 
 
 def test_api_broadcast_section_returns_404_for_unknown_section(live_server) -> None:

@@ -1803,7 +1803,7 @@ def test_send_config_to_peer_refuses_public_ip(caplog) -> None:
     from openfollow.web.routes import _send_config_to_peer
 
     with caplog.at_level("WARNING", logger="openfollow.web.routes"):
-        assert _send_config_to_peer("8.8.8.8", 80, "camera", {}, pin="", expected_port=80) is False
+        assert _send_config_to_peer("8.8.8.8", 80, "camera", {}, pin="", expected_port=80, sender="Stage Left") is False
     assert any("non-private" in r.message for r in caplog.records)
 
 
@@ -1811,7 +1811,7 @@ def test_send_config_import_to_peer_refuses_public_ip(caplog) -> None:
     from openfollow.web.routes import _send_config_import_to_peer
 
     with caplog.at_level("WARNING", logger="openfollow.web.routes"):
-        assert _send_config_import_to_peer("1.1.1.1", 80, {}, pin="", expected_port=80) is False
+        assert _send_config_import_to_peer("1.1.1.1", 80, {}, pin="", expected_port=80, sender="Stage Left") is False
     assert any("non-private" in r.message for r in caplog.records)
 
 
@@ -1838,9 +1838,11 @@ def test_send_config_to_peer_posts_on_private_ip(monkeypatch) -> None:
 
     monkeypatch.setattr(routes_mod.urllib.request, "urlopen", _fake_urlopen)
 
-    ok = _send_config_to_peer("10.0.0.5", 8080, "camera", {"pos_x": 1.5}, pin="", expected_port=8080)
+    ok = _send_config_to_peer(
+        "10.0.0.5", 8080, "camera", {"pos_x": 1.5}, pin="", expected_port=8080, sender="Stage Left"
+    )
     assert ok is True
-    assert captured["url"] == "http://10.0.0.5:8080/api/config/camera"
+    assert captured["url"] == "http://10.0.0.5:8080/api/config/camera?from=Stage%20Left"
     assert captured["method"] == "POST"
     assert b'"pos_x": 1.5' in captured["body"]  # type: ignore[operator]
 
@@ -1856,7 +1858,7 @@ def test_send_config_to_peer_returns_false_on_urlerror(monkeypatch) -> None:
 
     monkeypatch.setattr(routes_mod.urllib.request, "urlopen", _fail)
 
-    assert _send_config_to_peer("10.0.0.5", 80, "camera", {}, pin="", expected_port=80) is False
+    assert _send_config_to_peer("10.0.0.5", 80, "camera", {}, pin="", expected_port=80, sender="Stage Left") is False
 
 
 def test_send_config_import_to_peer_returns_false_on_timeout(monkeypatch) -> None:
@@ -1868,7 +1870,7 @@ def test_send_config_import_to_peer_returns_false_on_timeout(monkeypatch) -> Non
 
     monkeypatch.setattr(routes_mod.urllib.request, "urlopen", _timeout)
 
-    assert _send_config_import_to_peer("10.0.0.5", 80, {}, pin="", expected_port=80) is False
+    assert _send_config_import_to_peer("10.0.0.5", 80, {}, pin="", expected_port=80, sender="Stage Left") is False
 
 
 # ---------------------------------------------------------------------------
@@ -2898,7 +2900,7 @@ def test_send_config_import_to_peer_refuses_non_private_ip(caplog) -> None:
     from openfollow.web.routes import _send_config_import_to_peer
 
     with caplog.at_level(_logging.WARNING, logger="openfollow.web.routes"):
-        ok = _send_config_import_to_peer("8.8.8.8", 8000, {"x": 1}, expected_port=8000)
+        ok = _send_config_import_to_peer("8.8.8.8", 8000, {"x": 1}, expected_port=8000, sender="Stage Left")
     assert ok is False
     assert any("non-private" in rec.message.lower() for rec in caplog.records)
 
@@ -2932,12 +2934,13 @@ def test_send_config_import_to_peer_returns_true_on_http_200(monkeypatch) -> Non
         8000,
         {"camera": {"pos_x": 1.0}},
         expected_port=8000,
+        sender="Stage Left",
     )
     assert ok is True
     # Exact path the peer's bottle dispatcher expects – drift here would
     # break peer broadcasts silently (the receiver would 404 and the
-    # import would never apply).
-    assert captured["url"] == "http://198.51.100.5:8000/api/config/import"
+    # import would never apply). The query marks it as a push.
+    assert captured["url"] == "http://198.51.100.5:8000/api/config/import?from=Stage%20Left"
     assert captured["timeout"] == 10
     assert b'"camera"' in captured["body"]
 
@@ -2950,7 +2953,9 @@ def test_send_config_import_to_peer_returns_false_on_url_error(monkeypatch) -> N
 
     monkeypatch.setattr(routes_mod.urllib.request, "urlopen", _boom)
 
-    assert routes_mod._send_config_import_to_peer("10.0.0.1", 8000, {}, expected_port=8000) is False
+    assert (
+        routes_mod._send_config_import_to_peer("10.0.0.1", 8000, {}, expected_port=8000, sender="Stage Left") is False
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -3165,7 +3170,7 @@ class TestPeerPortAllowlist:
         from openfollow.web.routes import _send_config_to_peer
 
         with caplog.at_level("WARNING", logger="openfollow.web.routes"):
-            ok = _send_config_to_peer("10.0.0.5", 31337, "camera", {}, pin="", expected_port=8080)
+            ok = _send_config_to_peer("10.0.0.5", 31337, "camera", {}, pin="", expected_port=8080, sender="Stage Left")
         assert ok is False
         assert any("unexpected port" in r.message for r in caplog.records)
 
@@ -3173,7 +3178,7 @@ class TestPeerPortAllowlist:
         from openfollow.web.routes import _send_config_import_to_peer
 
         with caplog.at_level("WARNING", logger="openfollow.web.routes"):
-            ok = _send_config_import_to_peer("10.0.0.5", 31337, {}, pin="", expected_port=8080)
+            ok = _send_config_import_to_peer("10.0.0.5", 31337, {}, pin="", expected_port=8080, sender="Stage Left")
         assert ok is False
         assert any("unexpected port" in r.message for r in caplog.records)
 

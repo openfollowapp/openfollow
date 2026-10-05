@@ -39,6 +39,7 @@ from openfollow.logging_setup import RingBufferLogHandler
 from openfollow.net_utils import HOST_RESOLVER, read_ipv4_routes
 from openfollow.network.validate import is_link_local
 from openfollow.privilege import settings_backup
+from openfollow.privilege.device_repair import full_hostname
 from openfollow.uri_redaction import redact_uri, redact_uris_in_text
 
 if TYPE_CHECKING:
@@ -3205,7 +3206,7 @@ def collect_bundle(
         log_times=station_zone(now.astimezone()),
         app_version=openfollow.__version__,
         platform_label=_platform_label(),
-        host_label=f"{platform.node()} ({platform.platform()})",
+        host_label=f"{full_hostname()} ({platform.platform()})",
         service_status=("running" if p.web_port_configured is not None else "NOT RUNNING (sample)"),
         redactions_applied="web_pin=***, X-Auth-Signature stripped",
     )

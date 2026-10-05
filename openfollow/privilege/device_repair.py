@@ -385,12 +385,17 @@ def apply_mask_getty(broker: PrivilegeBroker) -> None:
     )
 
 
+def full_hostname() -> str:
+    """Return the host's full hostname as the OS reports it now, or ``""`` on error."""
+    try:
+        return socket.gethostname()
+    except OSError:
+        return ""
+
+
 def current_hostname() -> str:
     """Return the host's short (un-qualified) hostname, or ``""`` on error."""
-    try:
-        return socket.gethostname().split(".", 1)[0]
-    except OSError:  # pragma: no cover - gethostname failing is not reproducible
-        return ""
+    return full_hostname().split(".", 1)[0]
 
 
 # A rename (main loop) and an FQDN change (its worker) both rewrite /etc/hosts from

@@ -288,81 +288,27 @@ def build_help_sections(
                 idx = buttons.get(action, -1)
                 if idx >= 0:
                     mouse3d.append(f"Btn {idx}: {label}")
-    elif mode == "source-selection":
-        if keyboard_connected:
-            keyboard = [
-                "Arrow Up/Down: Select source",
-                "Enter: Confirm source",
-                "Esc: Cancel source menu",
-            ]
-        if controller_connected:
-            controller = [
-                "D-Pad Up/Down: Select source",
-                f"{_btn('menu_confirm', 'A')}: Confirm source",
-                f"{_btn('menu_cancel', 'B')}: Cancel source menu",
-            ]
-    elif mode == "source-type-selection":
-        if keyboard_connected:
-            keyboard = [
-                "Arrow Up/Down: Select source type",
-                "Enter: Confirm source type",
-                "Esc: Cancel source type menu",
-            ]
-        if controller_connected:
-            controller = [
-                "D-Pad Up/Down: Select source type",
-                f"{_btn('menu_confirm', 'A')}: Confirm source type",
-                f"{_btn('menu_cancel', 'B')}: Cancel source type menu",
-            ]
-    elif mode == "button-detection":
-        if keyboard_connected:
-            keyboard = [
-                "Esc: Cancel detection",
-            ]
-        if controller_connected:
-            controller = [
-                "Press the prompted button",
-            ]
-    elif mode == "media-picker":
-        if keyboard_connected:
-            keyboard = ["Arrow Up/Down: Select USB storage device", "Enter: Save to it", "Esc: Cancel"]
-        if controller_connected:
-            controller = [
-                "D-Pad Up/Down: Select USB storage device",
-                f"{_btn('menu_confirm', 'A')}: Save to it",
-                f"{_btn('menu_cancel', 'B')}: Cancel",
-            ]
-    elif mode in ("media-export", "media-export-done"):
-        # Once the export has ended, confirm picks a device for the next one.
-        ended = mode == "media-export-done"
-        if keyboard_connected:
-            keyboard = [*(["Enter: Pick a USB storage device"] if ended else []), "Esc: Back to Settings"]
-        if controller_connected:
-            confirm = f"{_btn('menu_confirm', 'A')}: Pick a USB storage device"
-            controller = [*([confirm] if ended else []), f"{_btn('menu_cancel', 'B')}: Back to Settings"]
-    elif mode == "settings":
-        # Two ways out, and they differ: cancel steps back one screen, the
-        # button that opened the menus leaves them entirely. An operator three
-        # screens down has no way to know the second one exists unless it is
-        # listed here.
+    elif mode == "menus":
+        # One list for every menu screen, so an operator learns it once. Cancel
+        # steps back one screen; the button that opened the menus leaves them
+        # all, which an operator three screens down has no other way to know.
         settings_key = kl.get("settings", "m")
         settings_btn = _btn("settings", "Back")
         if keyboard_connected:
-            keyboard = [
-                "Arrow Up/Down: Navigate",
-                "Enter: Confirm",
-                "Esc: Back one screen",
-            ]
+            keyboard = ["Enter: Confirm", "Esc: Back", "Arrow Up/Down: Move", "Backspace: Delete in a text field"]
             if settings_key:
-                keyboard.append(f"{_key_label(settings_key)}: Close Menu")
+                keyboard.append(f"{_key_label(settings_key)}: Close all menus")
         if controller_connected:
+            confirm = _btn("menu_confirm", "A")
+            cancel = _btn("menu_cancel", "B")
             controller = [
-                "D-Pad Up/Down: Navigate",
-                f"{_btn('menu_confirm', 'A')}: Confirm",
-                f"{_btn('menu_cancel', 'B')}: Back one screen",
+                *([f"{confirm}: Confirm"] if confirm else []),
+                *([f"{cancel}: Back"] if cancel else []),
+                "D-Pad Up/Down: Move, or change a digit",
+                "D-Pad Left/Right: Move between digits",
             ]
             if settings_btn:
-                controller.append(f"{settings_btn}: Close Menu")
+                controller.append(f"{settings_btn}: Close all menus")
     sections: HelpSections = []
     if keyboard:
         sections.append(("Keyboard", keyboard))

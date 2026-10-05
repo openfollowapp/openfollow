@@ -41,7 +41,7 @@ Controls active during show operation.
 - **Reset Marker** – snaps the active marker to its configured default position. Default: `X`.
 - **Toggle Help** – shows or hides the help overlay on the Operator Screen. Default: `Y`.
 - **Toggle Zone Overlay** – shows or hides the zone overlay on the Operator Screen. Default: `B`.
-- **Settings Menu** – opens the on-screen Settings menu. Default: `Back`.
+- **Settings Menu** – opens the on-screen Settings menu; pressed in any menu, it closes them all. Default: `Back`.
 - **Move X/Y** – which stick drives the marker's horizontal position: `Left Stick` or `Right Stick`. Default: `Left Stick`. The deadzone and response curve above apply to the chosen stick.
 - **Marker fader stick** – which stick Y axis continuously drives the fader value of the marker this controller currently controls: `Left Stick Y`, `Right Stick Y`, or `– (unused)`. The same deadzone and response curve apply. See Hardware Inputs → Marker Faders to send this value via OSC.
 - **Marker fader speed (s)** – seconds a full stick deflection takes to sweep the fader end to end. Range 0.05–60 s. Default: `1.0`. Lower values give faster response; higher values give finer resolution over slow sweeps.
@@ -52,7 +52,7 @@ Controls active during show operation.
 
 ### Menu Navigation
 
-Button assignments shared by the on-screen Settings menu and source / interface selection. They are only read while a menu is open, so they may share a button with a Normal Mode action. D-Pad Up and Down always move the menu highlight, so Confirm and Cancel don't offer them.
+Button assignments shared by the on-screen Settings menu and source / interface selection. They are only read while a menu is open, so they may share a button with a Normal Mode action. D-Pad Up and Down always move the menu highlight, so Confirm and Cancel don't offer them. While a menu is open, the Operator Screen lists every menu key and button in its top-left corner, with this station's assignments.
 
 - **Confirm** – accepts the highlighted option. Default: `A`.
 - **Cancel** – dismisses the menu without applying changes. Default: `B`.

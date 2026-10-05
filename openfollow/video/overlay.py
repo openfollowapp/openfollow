@@ -34,6 +34,9 @@ from openfollow.runtime.overlay_draw_hud import (
     draw_media_picker_overlay as draw_media_picker_overlay_pass,
 )
 from openfollow.runtime.overlay_draw_hud import (
+    draw_menu_help as draw_menu_help_pass,
+)
+from openfollow.runtime.overlay_draw_hud import (
     draw_pi_network_field_edit_overlay as draw_pi_network_field_edit_overlay_pass,
 )
 from openfollow.runtime.overlay_draw_hud import (
@@ -273,77 +276,14 @@ class CairoOverlayRenderer:
         try:
             self._frame_timestamps.append(time.monotonic())
             state = self.state
-            source_selection_active = state.source_selection_active
 
             # Button detection wizard takes exclusive visual control
             if state.button_detection is not None and state.button_detection.active:
                 self._draw_button_detection_overlay(cr, state, width, height)
                 return
 
-            # Settings menu takes priority over other selection overlays.
-            if state.settings_menu_active:
-                self._draw_settings_overlay(cr, state, width, height)
-                return
-
-            # About / license screen: opened from the Settings menu,
-            # same modal-priority slot.
-            if state.about_active:
-                self._draw_about_overlay(cr, state, width, height)
-                return
-
-            # Drive picker + diagnostics export screen, opened from Settings.
-            if state.media_picker_active:
-                draw_media_picker_overlay_pass(self, cr, state, width, height)
-                return
-            if state.media_export_active:
-                draw_media_export_overlay_pass(self, cr, state, width, height)
-                return
-
-            # Network screens: same modal-priority slot as iface / source-type.
-            # Deeper sub-states first.
-            net = state.pi_network
-            if net.field_edit_active:
-                self._draw_pi_network_field_edit_overlay(cr, state, width, height)
-                return
-            if net.screen_active:
-                self._draw_pi_network_screen_overlay(cr, state, width, height)
-                return
-
-            # Source-type selection – same modal-priority slot as iface
-            # selection so it isn't masked by a "No Signal" frame when
-            # the prior plugin failed to start.
-            if state.source_type_selection_active:
-                self._draw_source_type_selection_overlay(cr, state, width, height)
-                return
-
-            # URL editor – auto-chained from the source-type picker on
-            # empty-URL failure or opened from the Settings menu's
-            # "Edit Video URL" item. Shares the same priority slot so the
-            # editor remains visible while the operator types over a
-            # "No Signal" backdrop.
-            if state.url_editor_active:
-                self._draw_url_editor_overlay(cr, state, width, height)
-                return
-
-            # Field-choice picker – enum-style sibling to the URL
-            # editor, opened for plugin fields whose valid values are
-            # a small fixed set (testpattern grey/stage). Same modal
-            # priority so it stays visible over any backdrop.
-            if state.field_choice_active:
-                self._draw_field_choice_picker_overlay(cr, state, width, height)
-                return
-
-            # Video disconnects no longer render as their own overlay
-            # – ``check_video_disconnect_banner`` routes operators into
-            # the Settings menu with a banner carrying every field the
-            # old "No Signal" overlay shows. The HUD keeps drawing under
-            # the (potentially frozen) last video frame; web-UI / log
-            # surfaces still expose ``video_connected = False`` for ops
-            # dashboards.
-
-            # Draw source selection overlay on top of video if active
-            if source_selection_active:
-                self._draw_source_selection_overlay(cr, state, width, height)
+            if self._draw_menu_screen(cr, state, width, height):
+                draw_menu_help_pass(self, cr, state, width, height)
                 return
 
             if state.camera_params is None:
@@ -377,6 +317,67 @@ class CairoOverlayRenderer:
                 cr.show_text("Overlay Error - See Logs")
             except Exception:
                 pass  # If even basic drawing fails, just give up
+
+    def _draw_menu_screen(self, cr: Any, state: OverlayState, width: int, height: int) -> bool:
+        """Draw the open menu screen, if any; True when one was drawn."""
+        # Settings menu takes priority over other selection overlays.
+        if state.settings_menu_active:
+            self._draw_settings_overlay(cr, state, width, height)
+            return True
+
+        # About / license screen: opened from the Settings menu,
+        # same modal-priority slot.
+        if state.about_active:
+            self._draw_about_overlay(cr, state, width, height)
+            return True
+
+        # Drive picker + diagnostics export screen, opened from Settings.
+        if state.media_picker_active:
+            draw_media_picker_overlay_pass(self, cr, state, width, height)
+            return True
+        if state.media_export_active:
+            draw_media_export_overlay_pass(self, cr, state, width, height)
+            return True
+
+        # Network screens: same modal-priority slot as iface / source-type.
+        # Deeper sub-states first.
+        net = state.pi_network
+        if net.field_edit_active:
+            self._draw_pi_network_field_edit_overlay(cr, state, width, height)
+            return True
+        if net.screen_active:
+            self._draw_pi_network_screen_overlay(cr, state, width, height)
+            return True
+
+        # Source-type selection – same modal-priority slot as iface
+        # selection so it isn't masked by a "No Signal" frame when
+        # the prior plugin failed to start.
+        if state.source_type_selection_active:
+            self._draw_source_type_selection_overlay(cr, state, width, height)
+            return True
+
+        # URL editor – auto-chained from the source-type picker on
+        # empty-URL failure or opened from the Settings menu's
+        # "Edit Video URL" item. Shares the same priority slot so the
+        # editor remains visible while the operator types over a
+        # "No Signal" backdrop.
+        if state.url_editor_active:
+            self._draw_url_editor_overlay(cr, state, width, height)
+            return True
+
+        # Field-choice picker – enum-style sibling to the URL
+        # editor, opened for plugin fields whose valid values are
+        # a small fixed set (testpattern grey/stage). Same modal
+        # priority so it stays visible over any backdrop.
+        if state.field_choice_active:
+            self._draw_field_choice_picker_overlay(cr, state, width, height)
+            return True
+
+        # Draw source selection overlay on top of video if active
+        if state.source_selection_active:
+            self._draw_source_selection_overlay(cr, state, width, height)
+            return True
+        return False
 
     # ------------------------------------------------------------------
     # 3D projection helper

@@ -534,20 +534,17 @@ class TestSelectionMenus:
         draw_url_editor(FakeRenderer(state=state), cr, state, 1600, 900)
         texts = cr.show_text_strings()
         assert any("RTSP needs a URL" in t for t in texts)
-        # When banner is set, the static help text must NOT also render.
-        assert not any("Type the value" in t for t in texts)
+        # The banner takes the subtitle's place.
+        assert "Edit the value." not in texts
 
     def test_url_editor_falls_back_to_default_subtitle(self) -> None:
-        """No banner → static help text appears so the operator knows
-        the keystrokes."""
         state = _base_state()
         state.url_editor_field_label = "RTSP URL"
         state.url_editor_value = ""
         state.url_editor_banner = ""
         cr = FakeCairo()
         draw_url_editor(FakeRenderer(state=state), cr, state, 1600, 900)
-        texts = cr.show_text_strings()
-        assert any("Type the value" in t for t in texts)
+        assert "Edit the value." in cr.show_text_strings()
 
     def test_url_editor_default_title_when_label_empty(self) -> None:
         state = _base_state()
@@ -871,11 +868,9 @@ class TestSelectionMenus:
         assert any("Open a sub-screen." in t for t in texts)
         assert "ERROR" in texts
 
-    def test_selection_menu_without_help_skips_help_block(self) -> None:
-        """If neither keyboard nor controller is connected, the help block
-        inside the menu is omitted (help_sections_height == 0).
-        """
-        state = _base_state(keyboard_connected=False, controller_connected=False)
+    def test_a_selection_menu_draws_no_key_help_of_its_own(self) -> None:
+        """The menus' one key list is drawn beside every menu instead."""
+        state = _base_state(keyboard_connected=True, controller_connected=True)
         cr = FakeCairo()
         draw_selection_menu(
             FakeRenderer(state=state),
@@ -885,18 +880,66 @@ class TestSelectionMenus:
             900,
             title="T",
             subtitle="s",
-            mode="source-selection",
             items=["x"],
             selected_idx=0,
             empty_message="n",
         )
-        # Still renders the list.
-        assert "x" in cr.show_text_strings()
+        assert cr.show_text_strings() == ["T", "s", "x"]
 
 
 # --------------------------------------------------------------------------- #
 # draw_hud (main overlay)
 # --------------------------------------------------------------------------- #
+
+
+# The menus' list with both devices connected: two headings and ten lines.
+_MENU_LIST_TEXTS = 12
+
+
+class TestMenuHelp:
+    def test_the_menus_list_sits_where_the_hud_help_does(self) -> None:
+        from openfollow.runtime.overlay_draw_hud import draw_menu_help
+
+        state = _base_state(keyboard_connected=True, controller_connected=True, show_hud_help=True)
+        hud, menus = FakeCairo(), FakeCairo()
+        hud_renderer, menus_renderer = FakeRenderer(state=state), FakeRenderer(state=state)
+        draw_hud(hud_renderer, hud, state, 1920, 1080)
+        draw_menu_help(menus_renderer, menus, state, 1920, 1080)
+        (hud_title,) = [t for t in hud.texts if t.text == "KEYBOARD"]
+        (menus_title,) = [t for t in menus.texts if t.text == "KEYBOARD"]
+        assert (menus_title.x, menus_title.y) == (hud_title.x, hud_title.y)
+        assert menus_renderer.draw_icon_calls == hud_renderer.draw_icon_calls
+        assert "• Enter: Confirm" in menus.show_text_strings()
+
+    @pytest.mark.parametrize("w", [1280, 1920])
+    def test_the_list_stays_clear_of_the_centred_menu(self, w: int) -> None:
+        """The default window is 1280 wide, where a centred menu starts at x=243."""
+        from openfollow.runtime.overlay_draw_hud import draw_menu_help, panel_width
+
+        state = _base_state(keyboard_connected=True, controller_connected=True)
+        cr = FakeCairo()
+        draw_menu_help(FakeRenderer(state=state), cr, state, w, 720)
+        panel_right = max(cx + r for cx, _cy, r in cr.arcs)
+        assert panel_right < (w - panel_width(w)) / 2.0
+
+    def test_a_list_narrowed_to_fit_wraps_and_holds_every_line(self) -> None:
+        from openfollow.runtime.overlay_draw_hud import draw_menu_help
+
+        state = _base_state(keyboard_connected=True, controller_connected=True)
+        cr = FakeCairo()
+        draw_menu_help(FakeRenderer(state=state), cr, state, 1280, 720)
+        assert not any(t.text.endswith("...") for t in cr.texts)
+        panel_bottom = max(cy + r for _cx, cy, r in cr.arcs)
+        assert max(t.y for t in cr.texts) < panel_bottom
+        assert len(cr.texts) > _MENU_LIST_TEXTS, "nothing wrapped at the narrowed width"
+
+    def test_without_a_keyboard_or_controller_there_is_no_list(self) -> None:
+        from openfollow.runtime.overlay_draw_hud import draw_menu_help
+
+        state = _base_state(keyboard_connected=False, controller_connected=False)
+        cr = FakeCairo()
+        draw_menu_help(FakeRenderer(state=state), cr, state, 1920, 1080)
+        assert cr.texts == []
 
 
 class TestDrawHud:
@@ -1824,14 +1867,15 @@ class TestHelpBlock:
         assert any(t.startswith("• W/A/S/D") for t in texts)
         assert any(t.startswith("• R/T") for t in texts)
 
-    def test_long_lines_are_truncated(self) -> None:
+    def test_a_long_line_wraps_under_its_own_text_and_is_never_cut(self) -> None:
         cr = FakeCairo()
-        sections = [("K", ["x" * 400])]
-        draw_help_block(FakeRenderer(), cr, 10, 20, 60, sections)
-        # "K" title plus truncated bullet line.
-        lines = [t for t in cr.show_text_strings() if t.startswith("•")]
-        assert lines
-        assert lines[0].endswith("...")
+        line = "D-Pad Up/Down: Move, or change a digit"
+        draw_help_block(FakeRenderer(), cr, 10, 20, 120, [("K", [line])])
+        first, *rest = [t for t in cr.texts if t.text != "K"]
+        assert rest, "the line did not wrap"
+        assert " ".join([first.text.removeprefix("• "), *(t.text for t in rest)]) == line
+        assert all(t.x > first.x for t in rest)
+        assert [t.y for t in rest] == sorted({t.y for t in rest}) and rest[0].y > first.y
 
     def test_gap_between_sections_does_not_break_rendering(self) -> None:
         cr = FakeCairo()
@@ -1913,7 +1957,7 @@ class TestButtonDetectionOverlay:
         state = _base_state(button_detection=bd)
         cr = FakeCairo()
         draw_button_detection_overlay(FakeRenderer(state=state), cr, state, 1600, 900)
-        assert "Step 2 of 4  \u2013  Press Esc to cancel" in cr.show_text_strings()
+        assert "Step 2 of 4" in cr.show_text_strings()
 
     def test_a_finished_run_says_so_instead_of_a_step_past_the_end(self) -> None:
         bd = ButtonDetectionState(active=True, current_label="", step=4, total_steps=4)
@@ -1921,8 +1965,26 @@ class TestButtonDetectionOverlay:
         cr = FakeCairo()
         draw_button_detection_overlay(FakeRenderer(state=state), cr, state, 1600, 900)
         texts = cr.show_text_strings()
-        assert "All 4 steps done  \u2013  Press Esc to close" in texts
+        assert "All 4 steps done" in texts
         assert not any(t.startswith("Step 5") for t in texts)
+
+    @pytest.mark.parametrize(("step", "line"), [(1, "Esc: Cancel"), (4, "Esc: Close")], ids=["running", "done"])
+    def test_the_wizard_names_its_one_key(self, step: int, line: str) -> None:
+        """Not the menus' list: every pad button here is recorded as the prompted one."""
+        bd = ButtonDetectionState(active=True, current_label="B" if step < 4 else "", step=step, total_steps=4)
+        state = _base_state(button_detection=bd, keyboard_connected=True, controller_connected=True)
+        cr = FakeCairo()
+        draw_button_detection_overlay(FakeRenderer(state=state), cr, state, 1600, 900)
+        texts = cr.show_text_strings()
+        assert line in texts
+        assert not any(t.endswith((": Confirm", ": Back")) for t in texts)
+
+    def test_without_a_keyboard_the_wizard_names_no_key(self) -> None:
+        bd = ButtonDetectionState(active=True, current_label="B", step=1, total_steps=4)
+        state = _base_state(button_detection=bd, keyboard_connected=False, controller_connected=True)
+        cr = FakeCairo()
+        draw_button_detection_overlay(FakeRenderer(state=state), cr, state, 1600, 900)
+        assert not any(t.startswith("Esc") for t in cr.show_text_strings())
 
     def test_low_height_shrinks_prompt_font(self) -> None:
         """`h < 720` switches the big prompt from font 42 to 32."""
@@ -2684,22 +2746,6 @@ class TestTheFieldEditorShowsTheDpadCursor:
         verticals = [seg for seg in _stroked_segments(cr) if abs(seg[0] - seg[2]) < 0.5]
         assert verticals, "no caret drawn for a typed value"
 
-    def _subtitle(self, buttons: dict[str, str] | None = None) -> str:
-        state = _base_state(pi_network=_network_state(field_label="IP Address", field_edit_active=True))
-        state.button_labels = {"menu_confirm": "A", "menu_cancel": "B"} if buttons is None else buttons
-        cr = FakeCairo()
-        draw_pi_network_field_edit(FakeRenderer(state=state), cr, state, 1280, 720)
-        return next(t for t in cr.show_text_strings() if "digit" in t or "Type digits" in t)
-
-    def test_the_subtitle_names_the_pad_buttons_that_save_and_cancel(self) -> None:
-        """A station with no keyboard is the case this editor exists for. The
-        gamepad has always been able to save and cancel; the dialog named only
-        Enter and Esc, so from the operator's side it needed a keyboard.
-        """
-        subtitle = self._subtitle()
-        assert "A saves" in subtitle
-        assert "B cancels" in subtitle
-
     def test_the_title_says_what_is_being_changed(self) -> None:
         """ "Address" is the internal key for the row; the operator-facing name
         is the one the row itself carries."""
@@ -2710,40 +2756,16 @@ class TestTheFieldEditorShowsTheDpadCursor:
         draw_pi_network_field_edit(FakeRenderer(state=state), cr, state, 1280, 720)
         assert any("CHANGE IP ADDRESS" in t for t in cr.show_text_strings())
 
-    def test_the_subtitle_names_the_interface_first(self) -> None:
+    def test_the_subtitle_names_the_interface(self) -> None:
         """On a multi-NIC station the field alone does not say which interface
-        is about to change, and the subtitle is truncated from the end - so an
-        interface appended to it is the part that disappears."""
+        is about to change."""
         state = _base_state(
             pi_network=_network_state(field_label="IP Address", field_edit_active=True, active_iface="eth0.13")
         )
-        state.button_labels = {"menu_confirm": "A", "menu_cancel": "B"}
         cr = FakeCairo()
         draw_pi_network_field_edit(FakeRenderer(state=state), cr, state, 1280, 720)
-        subtitle = next(t for t in cr.show_text_strings() if "digit" in t)
-        assert subtitle.startswith("eth0.13")
-
-    def test_the_subtitle_says_which_way_each_axis_goes(self) -> None:
-        """Naming the d-pad without naming its axes leaves the operator to
-        guess which one picks the digit and which one changes it - on the
-        screen they are using precisely because the web UI is out of reach."""
-        subtitle = self._subtitle()
-        assert "Left/Right" in subtitle
-        assert "Up/Down" in subtitle
-
-    def test_it_names_the_operator_s_own_bindings(self) -> None:
-        """Naming the defaults would send an operator who rebound these to a
-        button that does nothing."""
-        subtitle = self._subtitle({"menu_confirm": "START", "menu_cancel": "BACK"})
-        assert "Start saves" in subtitle
-        assert "Back cancels" in subtitle
-
-    def test_unbound_buttons_fall_back_to_the_keyboard_wording(self) -> None:
-        """Promising a pad button that is not bound is worse than naming the
-        keys, which always work."""
-        subtitle = self._subtitle({"menu_confirm": "", "menu_cancel": ""})
-        assert "Enter to save" in subtitle
-        assert "Esc to cancel" in subtitle
+        texts = cr.show_text_strings()
+        assert texts[texts.index("CHANGE IP ADDRESS") + 1] == "eth0.13"
 
 
 class TestTheScreenDoesNotTruncateAUrl:
@@ -3274,36 +3296,6 @@ class TestDriveScreens:
             t for t in texts if t in {"SAVE DIAGNOSTICS", subtitle, lines[0], lines[1]}
         ]
         assert signs == ([] if sign is None else [sign])
-
-    def test_the_picker_names_the_keys_and_the_bound_buttons(self) -> None:
-        from openfollow.runtime.overlay_draw_hud import draw_media_picker_overlay
-
-        state = OverlayState()
-        state.media_picker_title = "SAVE DIAGNOSTICS"
-        state.keyboard_connected = state.controller_connected = True
-        state.button_labels = {"menu_confirm": "A", "menu_cancel": "B"}
-        cr = FakeCairo()
-        draw_media_picker_overlay(FakeRenderer(), cr, state, 1920, 1080)
-        texts = " | ".join(cr.show_text_strings())
-        assert "Enter: Save to it" in texts and "A: Save to it" in texts and "B: Cancel" in texts
-
-    @pytest.mark.parametrize(
-        ("ok", "enter"),
-        [(None, False), (True, True), (False, True)],
-        ids=["running", "saved", "failed"],
-    )
-    def test_the_export_screen_names_the_keys_and_the_bound_buttons(self, ok, enter: bool) -> None:  # noqa: ANN001
-        from openfollow.runtime.overlay_draw_hud import draw_media_export_overlay
-
-        state = OverlayState()
-        state.media_export_lines = ("x", "y", ok)
-        state.keyboard_connected = state.controller_connected = True
-        state.button_labels = {"menu_confirm": "A", "menu_cancel": "B"}
-        cr = FakeCairo()
-        draw_media_export_overlay(FakeRenderer(), cr, state, 1920, 1080, now=0.0)
-        texts = " | ".join(cr.show_text_strings())
-        assert "B: Back to Settings" in texts and "Esc: Back to Settings" in texts
-        assert ("A: Pick a USB storage device" in texts) is enter
 
     def test_a_drive_that_cannot_be_written_is_led_by_the_crossed_disc(self, monkeypatch) -> None:  # noqa: ANN001
         import openfollow.runtime.overlay_draw_hud as hud

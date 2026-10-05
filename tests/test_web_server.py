@@ -16,14 +16,17 @@ import json
 import os
 import re
 import sys
+import tarfile
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import wsgiref.util
+from pathlib import Path
 from typing import Any
 
 import pytest
+import tomllib
 
 import openfollow
 import openfollow.services as services_module
@@ -3824,6 +3827,69 @@ def test_api_config_import_applies_a_push_from_an_older_station(live_server) -> 
     assert saved.camera.pos_x == pytest.approx(99.0)
 
 
+def _archived_config(server: ConfigWebServer, archive: str) -> dict[str, Any]:
+    """The ``config.toml`` inside one of the web UI's settings backups."""
+    path = Path(server.config_path).parent / "backups" / "web" / archive
+    with tarfile.open(path, "r:gz") as tar:
+        member = tar.extractfile("config.toml")
+        assert member is not None
+        return tomllib.loads(member.read().decode())
+
+
+def _block_backups(server: ConfigWebServer) -> None:
+    """A file where the backups folder goes, so no backup can be written."""
+    (Path(server.config_path).parent / "backups").write_text("not a folder")
+
+
+def test_api_config_import_backs_up_the_settings_it_replaces(live_server) -> None:
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.camera.pos_x = 1.5
+    save_config(cfg, server.config_path)
+
+    status, body = _post_json(base, "/api/config/import", {"camera": {"pos_x": 7.25}})
+    assert status == 200
+    assert body.get("success") is True
+    assert "-import-" in body["backup"]
+    assert "backup_error" not in body
+    assert _archived_config(server, body["backup"])["camera"]["pos_x"] == pytest.approx(1.5)
+    assert load_config(server.config_path).camera.pos_x == pytest.approx(7.25)
+
+
+@pytest.mark.parametrize("path", ["/api/config/import", "/api/config/reset"])
+def test_the_backup_does_not_wait_for_the_write_lock(live_server, path: str) -> None:
+    """The main loop takes the lock too, so a slow archive must not be written under it."""
+    import threading
+
+    from openfollow.configuration import config_write_lock
+
+    server, base = live_server
+    web = Path(server.config_path).parent / "backups" / "web"
+    answers: list[tuple[int, dict]] = []
+    with config_write_lock:
+        sender = threading.Thread(target=lambda: answers.append(_post_json(base, path, {})))
+        sender.start()
+        deadline = time.monotonic() + 5
+        while not (web.is_dir() and any(web.iterdir())) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert web.is_dir() and any(web.iterdir())
+        assert answers == []
+    sender.join(5)
+    assert answers[0][0] == 200
+
+
+def test_api_config_import_goes_ahead_when_no_backup_can_be_made(live_server) -> None:
+    server, base = live_server
+    _block_backups(server)
+
+    status, body = _post_json(base, "/api/config/import", {"camera": {"pos_x": 7.25}})
+    assert status == 200
+    assert body.get("success") is True
+    assert body["backup_error"]
+    assert "backup" not in body
+    assert load_config(server.config_path).camera.pos_x == pytest.approx(7.25)
+
+
 # ---------------------------------------------------------------------------
 # Restore defaults
 # ---------------------------------------------------------------------------
@@ -3860,6 +3926,31 @@ def test_api_config_reset_restores_defaults_and_keeps_device_fields(live_server)
     assert saved.web_port == 8123
     assert saved.psn_source_iface == "eth0"
     assert saved.detection.storage_path == "/mnt/nvme/openfollow/yolo"
+
+
+def test_api_config_reset_backs_up_the_settings_it_replaces(live_server) -> None:
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.grid.width = 42.0
+    save_config(cfg, server.config_path)
+
+    status, body = _post_json(base, "/api/config/reset", {})
+    assert status == 200
+    assert body.get("success") is True
+    assert "-defaults-" in body["backup"]
+    assert _archived_config(server, body["backup"])["grid"]["width"] == pytest.approx(42.0)
+    assert load_config(server.config_path).grid.width == pytest.approx(AppConfig().grid.width)
+
+
+def test_api_config_reset_goes_ahead_when_no_backup_can_be_made(live_server) -> None:
+    server, base = live_server
+    _block_backups(server)
+
+    status, body = _post_json(base, "/api/config/reset", {})
+    assert status == 200
+    assert body.get("success") is True
+    assert body["backup_error"]
+    assert server.check_restart_requested() is True
 
 
 def test_api_config_reset_keeps_the_web_pin_authenticating(pin_protected_server) -> None:

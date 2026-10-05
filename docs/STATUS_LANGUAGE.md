@@ -213,6 +213,10 @@ A failed save is a red line under the form's actions, what the station
 observed plus one next step, next to the red ring. It is not a box and never a
 toast.
 
+A change that went through with something worth knowing about it (an import
+for which no backup could be made) is a caution line in the same place
+(`.save-caution`), on the page the change reloaded to, beside its toast.
+
 ### Toast
 
 The toast only confirms: success fill and border over the opaque dark base,

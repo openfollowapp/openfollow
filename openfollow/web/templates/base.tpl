@@ -217,6 +217,13 @@
  line-height: 1.35;
  }
  .save-error a, .notice.error a { color: inherit; }
+ /* A change that went through, with something worth knowing about it. */
+ .save-caution {
+ margin: 0.6rem 0 0;
+ color: var(--caution-text);
+ font-size: 0.82rem;
+ line-height: 1.35;
+ }
  .section-head {
  display: flex;
  align-items: center;
@@ -2604,6 +2611,39 @@
  return;
  }
  if (message) showToast(message);
+ });
+ // A caution line under the element ``nearId`` once the page has reloaded,
+ // for a change that went through with something worth knowing about it.
+ const _CAUTION_AFTER_RELOAD_KEY = 'openfollow.cautionAfterReload';
+ function _showCautionLine(nearId, text) {
+ const near = document.getElementById(nearId);
+ if (!near) return;
+ const line = document.createElement('p');
+ line.className = 'save-caution';
+ line.setAttribute('role', 'status');
+ line.textContent = text;
+ near.after(line);
+ }
+ // False when nothing can carry it across the reload (a private window): it
+ // is shown now instead, and the caller should not reload it away.
+ function cautionAfterReload(nearId, text) {
+ try {
+ sessionStorage.setItem(_CAUTION_AFTER_RELOAD_KEY, JSON.stringify({ nearId, text }));
+ return true;
+ } catch (err) {
+ _showCautionLine(nearId, text);
+ return false;
+ }
+ }
+ document.addEventListener('DOMContentLoaded', () => {
+ let note = null;
+ try {
+ note = JSON.parse(sessionStorage.getItem(_CAUTION_AFTER_RELOAD_KEY) || 'null');
+ sessionStorage.removeItem(_CAUTION_AFTER_RELOAD_KEY);
+ } catch (err) {
+ return;
+ }
+ if (note) _showCautionLine(note.nearId, note.text);
  });
  // ---- Help drawer () --------------------------------------
  //

@@ -91,6 +91,7 @@ from openfollow.network.validate import (
     vlan_interface_name,
 )
 from openfollow.palette import AUTO_PICK_ORDER
+from openfollow.privilege import settings_backup
 from openfollow.privilege.camera_config import AUTOMATIC
 from openfollow.runtime.diagnostics_export import WEB, ExportStatus, status_lines
 from openfollow.station_fqdn import canonical_host, fqdn_problem
@@ -3156,6 +3157,20 @@ def reset_config_to_defaults(current_cfg: AppConfig) -> AppConfig:
     return fresh
 
 
+def _backup_before(config_path: str, kind: str) -> dict[str, str]:
+    """Archive the settings ``kind`` is about to replace; the response fields reporting it.
+
+    A failed backup never blocks the change: the operator is told, and it is logged.
+    Call it before taking ``_config_write_lock``: the main loop takes that lock too,
+    and writing an archive to an SD card can take a while.
+    """
+    result = settings_backup.run_web_backup(Path(config_path), openfollow.__version__, kind)
+    if result.error:
+        logger.warning("Settings backup before %s failed, continuing: %s", kind, result.error)
+        return {"backup_error": result.error}
+    return {"backup": result.archive}
+
+
 def _apply_import_data(current_cfg: AppConfig, data: dict[str, Any]) -> AppConfig:
     """Build a new config from import data, preserving this device's identity.
 
@@ -3515,6 +3530,7 @@ def build_diagnostics_bundle(server: ConfigWebServer, cfg: AppConfig | None = No
         update_service_name=cfg.update_service_name or None,
         repo_root=_repo_root_for_diagnostics(),
         extra_storage_paths=extra_storage or None,
+        config_path=Path(server.config_path),
     )
     text = diagnostics.format_bundle(bundle)
     # Best-effort on-disk copy. Failure (read-only fs, no perms)
@@ -8796,6 +8812,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             response.status = 400
             return json.dumps({"error": "Expected a JSON object"})
 
+        backup = _backup_before(server.config_path, "import")
         with _config_write_lock:
             current = load_config(server.config_path)
             # Per-marker move speeds are device-local + runtime-authoritative:
@@ -8809,7 +8826,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 current.marker_move_speeds = dict(speeds)
             full_cfg = _apply_import_data(current, data)
             save_config(full_cfg, server.config_path)
-            return json.dumps({"success": True})
+        return json.dumps({"success": True, **backup})
 
     @app.post("/api/config/reset")
     def api_reset_config() -> Any:
@@ -8831,11 +8848,12 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         reset would silently, partially undo itself.
         """
         response.content_type = "application/json"
+        backup = _backup_before(server.config_path, "defaults")
         with _config_write_lock:
             current = load_config(server.config_path)
             save_config(reset_config_to_defaults(current), server.config_path)
         server.request_restart()
-        return json.dumps({"success": True, "needs_restart": True, "restarting": True})
+        return json.dumps({"success": True, "needs_restart": True, "restarting": True, **backup})
 
     @app.post("/api/config/broadcast-all")
     def api_broadcast_all() -> Any:

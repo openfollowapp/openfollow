@@ -75,7 +75,7 @@ function importConfig(input) {
             title: 'Import configuration?',
             message: 'Every show setting is replaced by ' + file.name + ', including the station '
                 + 'name. The web login, port and interface stay as they are, and so do local file '
-                + 'paths. Export first if you want a copy; this cannot be undone.',
+                + 'paths. A backup of the current settings is saved on the station first.',
             confirmLabel: 'Import',
             danger: true,
         });
@@ -104,6 +104,14 @@ function _sendImport(body, name) {
             _importFailed(window.OpenFollow.saveError.fromText(res.status, text));
             return;
         }
+        if (result.backup_error
+            && !cautionAfterReload('import-actions', 'No backup was made: ' + result.backup_error + '.')) {
+            /* Nothing carries the caution across a reload: stay, so it can be read. */
+            btn.disabled = false;
+            btn.textContent = _IMPORT_LABEL;
+            showToast('Imported ' + name);
+            return;
+        }
         toastAfterReload('Imported ' + name);
     })
     .catch(function() {
@@ -123,8 +131,8 @@ async function restoreDefaults() {
         title: 'Restore defaults?',
         message: 'Every setting goes back to its default and the station restarts. Network '
             + 'access is not reset: the web login, port and interface stay as they are, so this '
-            + 'page comes back on its own \u2013 and local file paths are kept too. Export first '
-            + 'if you want a copy; this cannot be undone.',
+            + 'page comes back on its own \u2013 and local file paths are kept too. A backup of '
+            + 'the current settings is saved on the station first.',
         confirmLabel: 'Restore Defaults',
         danger: true,
     });
@@ -143,6 +151,10 @@ async function restoreDefaults() {
         if (!res.ok || !result.success) {
             _restoreFailed(window.OpenFollow.saveError.fromText(res.status, text));
             return;
+        }
+        if (result.backup_error) {
+            /* Beside the restarting notice: the rest of the section is hidden until the station is back. */
+            cautionAfterReload('config-restart-notice', 'No backup was made: ' + result.backup_error + '.');
         }
         /* The reset restarts the station; wait for it to answer again. */
         _showRestartingState();

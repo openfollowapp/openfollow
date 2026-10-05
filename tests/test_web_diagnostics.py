@@ -5949,6 +5949,35 @@ def test_the_bundle_carries_the_settings_backups_section() -> None:
     assert ("E5c. Settings backups", "e5c_backups") in diag._BUNDLE_SECTIONS
 
 
+def test_collect_settings_backups_lists_the_web_ui_backups_newest_first(tmp_path: Path) -> None:
+    web = tmp_path / "config" / "backups" / "web"
+    web.mkdir(parents=True)
+    (web / "x-v0.5.0-import-20261001T000000Z.ofbackup").write_bytes(b"web_pin = a")
+    (web / "x-v0.5.0-defaults-20261002T000000Z.ofbackup").write_bytes(b"web_pin = bb")
+    rows = diag.collect_settings_backups(tmp_path, web_dir=web)
+    start = rows.index(f"  Web UI folder: {web}")
+    assert rows[start + 1 :] == [
+        "    x-v0.5.0-defaults-20261002T000000Z.ofbackup  12 B",
+        "    x-v0.5.0-import-20261001T000000Z.ofbackup  11 B",
+    ]
+
+
+def test_collect_settings_backups_before_any_web_ui_backup(tmp_path: Path) -> None:
+    web = tmp_path / "backups" / "web"
+    assert diag.collect_settings_backups(tmp_path, web_dir=web)[-1] == f"  Web UI folder: {web} (none yet)"
+
+
+def test_collect_settings_backups_an_empty_web_ui_folder(tmp_path: Path) -> None:
+    web = tmp_path / "backups" / "web"
+    web.mkdir(parents=True)
+    assert diag.collect_settings_backups(tmp_path, web_dir=web)[-2:] == [f"  Web UI folder: {web}", "  Archives: none"]
+
+
+def test_the_bundle_lists_the_web_ui_backups_beside_its_config(tmp_path: Path) -> None:
+    bundle = diag.collect_bundle(config_path=tmp_path / "config.toml")
+    assert f"  Web UI folder: {tmp_path / 'backups' / 'web'} (none yet)" in bundle.e5c_backups
+
+
 # ---------------------------------------------------------------------------
 # Which physical adapter each interface is, and its label
 # ---------------------------------------------------------------------------

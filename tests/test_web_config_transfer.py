@@ -87,15 +87,17 @@ class TestImportProgress:
         page = _page()
         assert "var _IMPORT_LABEL = 'Import Configuration\\u2026';" in page
         body = function_body(page, "_sendImport")
-        # The refused answer and the unreachable station.
-        assert body.count("btn.disabled = false;\n            btn.textContent = _IMPORT_LABEL;") == 1
-        assert body.count("btn.disabled = false;\n        btn.textContent = _IMPORT_LABEL;") == 1
+        refused = body[body.index("if (!res.ok || result.error) {") :]
+        refused = refused[: refused.index("return;")]
+        unreachable = body[body.index(".catch(function() {") :]
+        for branch in (refused, unreachable):
+            assert "btn.disabled = false;" in branch
+            assert "btn.textContent = _IMPORT_LABEL;" in branch
 
     def test_success_is_confirmed_on_the_reloaded_page(self) -> None:
         body = function_body(_page(), "_sendImport")
         assert "toastAfterReload('Imported ' + name);" in body
         assert "location.reload" not in body
-        assert "showToast(" not in body
 
 
 class TestToastAfterReload:
@@ -119,3 +121,65 @@ class TestToastAfterReload:
         assert "sessionStorage.removeItem(_TOAST_AFTER_RELOAD_KEY);" in listener
         # Storage that throws on read must not take the page's scripts down.
         assert "} catch (err) {\n return;\n }" in listener
+
+
+class TestBackupOutcome:
+    _SAVED_FIRST = "A backup of '\n            + 'the current settings is saved on the station first."
+
+    def test_the_import_question_says_a_backup_is_saved_first(self) -> None:
+        body = function_body(_page(), "importConfig")
+        assert "paths. A backup of the current settings is saved on the station first.'," in body
+
+    def test_the_restore_question_says_a_backup_is_saved_first(self) -> None:
+        body = function_body(_page(), "restoreDefaults")
+        assert self._SAVED_FIRST in body
+
+    def test_an_import_without_a_backup_says_so_on_the_reloaded_page(self) -> None:
+        body = function_body(_page(), "_sendImport")
+        noted = body.index("!cautionAfterReload('import-actions', 'No backup was made: ' + result.backup_error + '.')")
+        assert body.index("if (result.backup_error") < noted < body.index("toastAfterReload(")
+
+    def test_an_import_whose_caution_cannot_outlive_a_reload_stays_on_the_page(self) -> None:
+        body = function_body(_page(), "_sendImport")
+        stay = body[body.index("!cautionAfterReload('import-actions'") : body.index("toastAfterReload(")]
+        assert "showToast('Imported ' + name);" in stay
+        assert stay.index("showToast('Imported ' + name);") < stay.index("return;")
+
+    def test_a_restore_without_a_backup_says_so_beside_the_restart_notice(self) -> None:
+        # The rest of the section is hidden while the station restarts.
+        body = function_body(_page(), "restoreDefaults")
+        checked = body.index("if (result.backup_error) {")
+        noted = body.index(
+            "cautionAfterReload('config-restart-notice', 'No backup was made: ' + result.backup_error + '.');"
+        )
+        assert checked < noted < body.index("_showRestartingState();")
+
+
+class TestCautionAfterReload:
+    def test_the_caution_is_stored_with_where_it_goes(self) -> None:
+        body = function_body(_BASE.read_text(encoding="utf-8"), "cautionAfterReload")
+        stored = body.index("sessionStorage.setItem(_CAUTION_AFTER_RELOAD_KEY, JSON.stringify({ nearId, text }));")
+        assert stored < body.index("return true;")
+
+    def test_without_storage_the_caution_is_shown_now(self) -> None:
+        body = function_body(_BASE.read_text(encoding="utf-8"), "cautionAfterReload")
+        fallback = body[body.index("} catch (err) {") :]
+        assert fallback.index("_showCautionLine(nearId, text);") < fallback.index("return false;")
+
+    def test_the_reloaded_page_shows_it_once(self) -> None:
+        base = _BASE.read_text(encoding="utf-8")
+        start = base.index("note = JSON.parse(sessionStorage.getItem(_CAUTION_AFTER_RELOAD_KEY) || 'null');")
+        listener = base[start : base.index("if (note) _showCautionLine(note.nearId, note.text);", start)]
+        assert "sessionStorage.removeItem(_CAUTION_AFTER_RELOAD_KEY);" in listener
+
+    def test_the_line_is_text_under_its_element(self) -> None:
+        body = function_body(_BASE.read_text(encoding="utf-8"), "_showCautionLine")
+        assert "line.className = 'save-caution';" in body
+        assert "line.textContent = text;" in body
+        assert body.index("line.textContent = text;") < body.index("near.after(line);")
+        assert "innerHTML" not in body
+
+    def test_the_caution_line_takes_the_caution_text_colour(self) -> None:
+        base = _BASE.read_text(encoding="utf-8")
+        rule = base[base.index(" .save-caution {") : base.index("}", base.index(" .save-caution {"))]
+        assert "color: var(--caution-text);" in rule

@@ -69,6 +69,10 @@ markers.toml.*
 # must NOT track operator-saved files.
 /templates/
 
+# Settings archives the dev server writes beside ``config.toml`` before an
+# import or a restore to defaults; they hold the web PIN.
+/backups/
+
 # mutmut's generated copy of the tree, rebuilt by every run
 mutants/
 .mutmut-cache

@@ -1,7 +1,8 @@
 #!/usr/bin/python3 -I
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""Archive the station's settings before a package upgrade unpacks.
+"""Archive the station's settings before a package upgrade unpacks, or before
+the web UI replaces them (an import, a restore to defaults).
 
 The ``.deb`` embeds this file in its ``preinst``, which dpkg runs as root for
 every install route before the new files land. Keep it standard-library only:
@@ -29,9 +30,10 @@ import stat
 import sys
 import tarfile
 import tempfile
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import tomllib
@@ -42,19 +44,25 @@ __all__ = [
     "KEEP",
     "RECORD_NAME",
     "STATE_DIR",
+    "WEB_BACKUP_DIR_NAME",
     "BackupRecord",
+    "WebBackup",
     "archive_name",
     "list_archives",
     "main",
     "read_record",
     "run_backup",
+    "run_web_backup",
     "safe_component",
     "station_label",
+    "web_backup_dir",
 ]
 
 STATE_DIR = Path("/var/lib/openfollow")
 SERVICE_USER = "openfollow"
 BACKUP_DIR_NAME = "backups"
+# Under BACKUP_DIR_NAME, so web backups keep their own retention and never evict an update's.
+WEB_BACKUP_DIR_NAME = "web"
 RECORD_NAME = "last-backup.json"
 ARCHIVE_SUFFIX = ".ofbackup"
 KEEP = 10
@@ -65,7 +73,8 @@ _DEFAULT_STATION = "OpenFollow"
 _STATION_PREFIX = "OpenFollow "
 _TIMESTAMP_FORMAT = "%Y%m%dT%H%M%SZ"
 # The timestamp is the last field, so a dash in the station or version never shifts it.
-_ARCHIVE_RE = re.compile(r".+-(\d{8}T\d{6}Z)" + re.escape(ARCHIVE_SUFFIX))
+# Web backups carry milliseconds: several can land within one second.
+_ARCHIVE_RE = re.compile(r".+-(\d{8}T\d{6}(?:\.\d{3})?Z)" + re.escape(ARCHIVE_SUFFIX))
 _NO_SPACE = frozenset({errno.ENOSPC, errno.EDQUOT})
 
 
@@ -78,6 +87,18 @@ class BackupRecord:
     archive: str
     error: str
     ts: str
+
+
+# Serialises web backups, so two at the same instant cannot pick one name.
+_WEB_BACKUP_LOCK = threading.Lock()
+
+
+@dataclass(frozen=True)
+class WebBackup:
+    """A backup before a web UI change: ``archive`` on success, ``error`` otherwise."""
+
+    archive: str
+    error: str
 
 
 def safe_component(value: str) -> str:
@@ -93,11 +114,15 @@ def station_label(system_name: object) -> str:
     return safe_component(name) or _DEFAULT_STATION
 
 
-def archive_name(system_name: object, old_version: str, now: datetime) -> str:
-    """``<station>-v<old>-<UTC timestamp>.ofbackup``."""
+def archive_name(system_name: object, old_version: str, now: datetime, kind: str = "") -> str:
+    """``<station>-v<old>[-<kind>]-<UTC timestamp>.ofbackup``, to the millisecond with a ``kind``."""
     version = safe_component(old_version) or "unknown"
-    stamp = now.astimezone(timezone.utc).strftime(_TIMESTAMP_FORMAT)
-    return f"{station_label(system_name)}-v{version}-{stamp}{ARCHIVE_SUFFIX}"
+    utc = now.astimezone(timezone.utc)
+    stamp = utc.strftime(_TIMESTAMP_FORMAT)
+    if kind:
+        stamp = f"{stamp[:-1]}.{utc.microsecond // 1000:03d}Z"
+    label = f"-{safe_component(kind)}" if safe_component(kind) else ""
+    return f"{station_label(system_name)}-v{version}{label}-{stamp}{ARCHIVE_SUFFIX}"
 
 
 def list_archives(backup_dir: Path) -> list[Path]:
@@ -122,14 +147,15 @@ def _load_config(config_path: Path) -> dict[str, object]:
         return {}
 
 
-def _sources(state_dir: Path, config: dict[str, object]) -> list[tuple[str, Path]]:
-    """``(arcname, path)`` for each source; ``config.toml`` sits in ``state_dir``."""
+def _sources(config_path: Path, config: dict[str, object]) -> list[tuple[str, Path]]:
+    """``(arcname, path)`` for each source; the catalog and templates sit beside ``config_path``."""
+    state_dir = config_path.parent
     raw = config.get("markers_catalog_path")
     catalog = Path(raw) if isinstance(raw, str) and raw else Path("markers.toml")
     if not catalog.is_absolute():
         catalog = state_dir / catalog
     return [
-        ("config.toml", state_dir / "config.toml"),
+        ("config.toml", config_path),
         ("markers.toml", catalog),
         ("templates/user", state_dir / "templates" / "user"),
     ]
@@ -229,6 +255,47 @@ def read_record(state_dir: Path = STATE_DIR) -> BackupRecord | None:
     return BackupRecord(*strings)
 
 
+def _archive(
+    backup_dir: Path,
+    name: str,
+    sources: list[tuple[str, Path]],
+    manifest: dict[str, object],
+    *,
+    keep: int,
+    write: Callable[[Path, list[tuple[str, Path]], dict[str, object]], None],
+) -> str:
+    """Write ``name`` into ``backup_dir`` and prune to ``keep``; the failure, or ``""``.
+
+    Out of space, it deletes the oldest archives one at a time and retries, but
+    never the newest one that already existed. Any other failure deletes nothing.
+    """
+    try:
+        backup_dir.mkdir(mode=0o700, exist_ok=True)
+        os.chmod(backup_dir, 0o700)
+    except OSError as exc:
+        return _describe(exc)
+
+    evictable = list_archives(backup_dir)[:-1]
+    while True:
+        try:
+            _write_once(backup_dir, name, sources, manifest, write)
+            break
+        except OSError as exc:
+            if exc.errno not in _NO_SPACE or not evictable:
+                return _describe(exc)
+            try:
+                evictable.pop(0).unlink(missing_ok=True)
+            except OSError as unlink_exc:
+                return _describe(unlink_exc)
+        except (tarfile.TarError, ValueError) as exc:
+            return _describe(exc)
+
+    for stale in list_archives(backup_dir)[:-keep]:
+        with contextlib.suppress(OSError):
+            stale.unlink()
+    return ""
+
+
 def run_backup(
     state_dir: Path,
     old_version: str,
@@ -238,50 +305,58 @@ def run_backup(
     keep: int = KEEP,
     write: Callable[[Path, list[tuple[str, Path]], dict[str, object]], None] = _write_archive,
 ) -> BackupRecord:
-    """Archive the settings under ``state_dir/backups`` and record the outcome.
-
-    Out of space, it deletes the oldest archives one at a time and retries, but
-    never the newest one that already existed. Any other failure deletes nothing.
-    """
+    """Archive the settings under ``state_dir/backups`` and record the outcome."""
     moment = now or datetime.now(timezone.utc)
     ts = moment.astimezone(timezone.utc).isoformat(timespec="seconds")
     backup_dir = state_dir / BACKUP_DIR_NAME
-    config = _load_config(state_dir / "config.toml")
+    config_path = state_dir / "config.toml"
+    config = _load_config(config_path)
     name = archive_name(config.get("psn_system_name"), old_version, moment)
     manifest: dict[str, object] = {"from": old_version, "to": new_version, "created": ts}
 
-    def finish(archive: str, error: str) -> BackupRecord:
-        record = BackupRecord(old_version, new_version, archive, error, ts)
-        if error:
-            print(f"openfollow: settings backup failed, continuing the install: {error}", file=sys.stderr)
-        _write_record(backup_dir, record)
-        return record
+    error = _archive(backup_dir, name, _sources(config_path, config), manifest, keep=keep, write=write)
+    record = BackupRecord(old_version, new_version, "" if error else name, error, ts)
+    if error:
+        print(f"openfollow: settings backup failed, continuing the install: {error}", file=sys.stderr)
+    _write_record(backup_dir, record)
+    return record
 
-    try:
-        backup_dir.mkdir(mode=0o700, exist_ok=True)
-        os.chmod(backup_dir, 0o700)
-    except OSError as exc:
-        return finish("", _describe(exc))
 
-    evictable = list_archives(backup_dir)[:-1]
-    while True:
+def web_backup_dir(config_path: Path) -> Path:
+    """Where the web UI's backups of ``config_path`` live."""
+    return config_path.parent / BACKUP_DIR_NAME / WEB_BACKUP_DIR_NAME
+
+
+def run_web_backup(
+    config_path: Path,
+    version: str,
+    kind: str,
+    *,
+    now: datetime | None = None,
+    keep: int = KEEP,
+    write: Callable[[Path, list[tuple[str, Path]], dict[str, object]], None] = _write_archive,
+) -> WebBackup:
+    """Archive the settings before the web UI's ``kind`` of change replaces them.
+
+    Leaves :data:`RECORD_NAME` alone: it describes the last update's backup.
+    """
+    moment = now or datetime.now(timezone.utc)
+    ts = moment.astimezone(timezone.utc).isoformat(timespec="seconds")
+    backup_dir = web_backup_dir(config_path)
+    config = _load_config(config_path)
+    manifest: dict[str, object] = {"kind": kind, "version": version, "created": ts}
+    with _WEB_BACKUP_LOCK:
+        name = archive_name(config.get("psn_system_name"), version, moment, kind)
+        # Never replace an archive: a later one in the same millisecond moves on by one.
+        while (backup_dir / name).exists():
+            moment += timedelta(milliseconds=1)
+            name = archive_name(config.get("psn_system_name"), version, moment, kind)
         try:
-            _write_once(backup_dir, name, _sources(state_dir, config), manifest, write)
-            break
+            backup_dir.parent.mkdir(mode=0o700, exist_ok=True)
         except OSError as exc:
-            if exc.errno not in _NO_SPACE or not evictable:
-                return finish("", _describe(exc))
-            try:
-                evictable.pop(0).unlink(missing_ok=True)
-            except OSError as unlink_exc:
-                return finish("", _describe(unlink_exc))
-        except (tarfile.TarError, ValueError) as exc:
-            return finish("", _describe(exc))
-
-    for stale in list_archives(backup_dir)[:-keep]:
-        with contextlib.suppress(OSError):
-            stale.unlink()
-    return finish(name, "")
+            return WebBackup("", _describe(exc))
+        error = _archive(backup_dir, name, _sources(config_path, config), manifest, keep=keep, write=write)
+    return WebBackup("" if error else name, error)
 
 
 def _drop_to_service_user() -> bool:

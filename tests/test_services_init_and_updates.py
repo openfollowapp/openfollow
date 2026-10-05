@@ -1780,6 +1780,24 @@ class TestDetachedUpdateState:
             "error": "",
         }
 
+    def test_a_failed_install_is_still_reported_after_the_restart(self, monkeypatch, tmp_path) -> None:
+        # The installer restarts the station after a failed install; reading
+        # ``idle`` there, the updater dialog announced the update as complete.
+        p = tmp_path / "u.json"
+        self._point_at(monkeypatch, p)
+        p.write_text('{"state":"failed","message":"Update failed.","error":"E: dpkg error","ts":1}')
+        q = services_module.WebCommandQueue()
+        assert q.get_update_status() == {"state": "failed", "message": "Update failed.", "error": "E: dpkg error"}
+        assert not p.exists()
+        assert q.request_local_update("openfollow", deb_path="/tmp/openfollow-update-x.deb") is True
+
+    @pytest.mark.parametrize("state", ["running", "restarting", "queued", "idle"])
+    def test_any_other_state_found_at_startup_reads_idle(self, monkeypatch, tmp_path, state: str) -> None:
+        p = tmp_path / "u.json"
+        self._point_at(monkeypatch, p)
+        p.write_text(json.dumps({"state": state, "message": "m", "error": "e"}))
+        assert services_module.WebCommandQueue().get_update_status() == {"state": "idle", "message": "", "error": ""}
+
 
 class TestWhatsNewPending:
     """The first start after an in-app update opens What's new; no other start does."""

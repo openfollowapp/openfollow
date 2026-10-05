@@ -255,7 +255,7 @@ class WebCommandQueue:
         import openfollow
 
         # Fresh boot: clear a completed/failed detached update, noting first
-        # whether that install is what started this process.
+        # whether that install is what started this process, or failed.
         detached = _read_detached_update_state()
         self._whats_new_pending = threading.Event()
         if (
@@ -264,6 +264,10 @@ class WebCommandQueue:
             and _read_whats_new_seen() != openfollow.__version__
         ):
             self._whats_new_pending.set()
+        # The installer restarts the station after a failed install too; left
+        # ``idle``, the updater dialog would take the restart for success.
+        if detached is not None and detached["state"] == "failed":
+            self._update_status = detached
         clear_detached_update_state()
         # Generic privilege-password prompt. The PrivilegeBroker uses this
         # any time a sudoers grant is missing and a password is needed to

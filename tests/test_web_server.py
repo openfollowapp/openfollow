@@ -3969,6 +3969,27 @@ def test_a_pushed_section_is_recorded_and_backed_up_as_a_push(live_server) -> No
     assert load_config(server.config_path).grid.width == pytest.approx(12.0)
 
 
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        ("/api/config/import", {"psn_system_name": "Stage Left", "camera": {"pos_x": 7.25}}),
+        ("/api/config/psn", {"psn_system_name": "Stage Left", "psn_mcast_ip": "236.10.10.11"}),
+    ],
+)
+def test_a_push_never_renames_the_station_it_lands_on(live_server, path: str, payload: dict) -> None:
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.psn_system_name = "Front of House"
+    save_config(cfg, server.config_path)
+
+    status, _body = _push(base, path, payload)
+    assert status == 200
+    saved = load_config(server.config_path)
+    assert saved.psn_system_name == "Front of House"
+    # The rest of the push still applies.
+    assert (saved.camera.pos_x, saved.psn_mcast_ip) != (AppConfig().camera.pos_x, AppConfig().psn_mcast_ip)
+
+
 def test_a_section_write_that_is_no_push_records_and_backs_up_nothing(live_server) -> None:
     server, base = live_server
     status, body = _post_json(base, "/api/config/camera", {"pos_x": 2.0})
@@ -6471,9 +6492,11 @@ def test_api_broadcast_all_marks_the_push_with_this_station_name(live_server, mo
     from openfollow.web import routes as routes_mod
 
     senders: list[str] = []
+    payloads: list[dict] = []
 
     def _fake_send(ip: str, port: int, data: dict, pin: str = "", *, expected_port: int, sender: str) -> bool:
         senders.append(sender)
+        payloads.append(data)
         return True
 
     monkeypatch.setattr(routes_mod, "_send_config_import_to_peer", _fake_send)
@@ -6486,6 +6509,9 @@ def test_api_broadcast_all_marks_the_push_with_this_station_name(live_server, mo
     status, _body = _post_json(base, "/api/config/broadcast-all", {})
     assert status == 200
     assert senders == ["Front of House"]
+    # Each peer keeps its own station name.
+    assert "psn_system_name" not in payloads[0]
+    assert "camera" in payloads[0]
 
 
 def test_api_broadcast_all_returns_empty_results_when_no_peers(live_server) -> None:
@@ -6586,7 +6612,8 @@ def test_api_broadcast_section_psn_strips_iface_from_peer_payload(
     sent = captured_payloads[0]
     assert sent["section"] == "psn"
     assert "psn_source_iface" not in sent["data"]
-    assert sent["data"]["psn_system_name"] == "Broadcasted"
+    # Each peer keeps its own station name.
+    assert "psn_system_name" not in sent["data"]
     assert sent["data"]["psn_mcast_ip"] == "236.10.10.10"
     # Marked as a push from this station, under the name it now has.
     assert sent["sender"] == "Broadcasted"

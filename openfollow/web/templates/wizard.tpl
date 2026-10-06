@@ -3944,6 +3944,8 @@
   function renderLens() {
     if (!lensEnabled()) return;
     var g = document.getElementById('lens-lines');
+    // Rebuilding the handles drops a focused one, which would leave the keys dead after a click.
+    var hadFocus = g.contains(document.activeElement);
     g.innerHTML = '';
     lensLines.forEach(function(line, i) {
       var group = svgEl('g');
@@ -3980,6 +3982,12 @@
     }
     renderLensToolbar();
     renderLensMisfit();
+    if (hadFocus) lensFocusSelected();
+  }
+  function lensFocusSelected() {
+    if (!lensSelected) return;
+    var h = document.querySelector('.lens-point[data-line="' + lensSelected.line + '"][data-point="' + lensSelected.point + '"]');
+    if (h) h.focus({ preventScroll: true });
   }
   // Move the handles and chord of one line without rebuilding the DOM, so a
   // drag keeps its focus and pointer capture.
@@ -4239,8 +4247,7 @@
         lensDrag = { line: lensLines[lensSelected.line], point: lensSelected.point, start: pt, moved: false };
         overlay.setPointerCapture(e.pointerId);
         renderLens();
-        var again = document.querySelector('.lens-point[data-line="' + lensSelected.line + '"][data-point="' + lensSelected.point + '"]');
-        if (again) again.focus({ preventScroll: true });
+        lensFocusSelected();
         lensShowLoupe(lensPointPos(lensDrag.line, lensDrag.point));
       } else if (e.target.id === 'lens-hit') {
         e.preventDefault();

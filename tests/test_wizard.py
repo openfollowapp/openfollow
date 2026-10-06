@@ -1873,6 +1873,22 @@ class TestWizardLensTemplate:
         assert "lensImageSize[0] !== imageWidth || lensImageSize[1] !== imageHeight" in src
         assert "resolution changed" in src
 
+    def test_a_click_on_a_point_keeps_the_keys_on_it(self) -> None:
+        """Rebuilding the handles on pointer-up must not drop the focus the keys need."""
+        import re
+
+        src = self._src()
+        render = re.search(r"function renderLens\(\) \{(.*?)\n  \}\n", src, re.S)
+        assert render is not None
+        body = render.group(1)
+        assert body.index("g.contains(document.activeElement)") < body.index("g.innerHTML = ''")
+        assert body.rstrip().endswith("if (hadFocus) lensFocusSelected();")
+        focus = re.search(r"function lensFocusSelected\(\) \{(.*?)\n  \}\n", src, re.S)
+        assert focus is not None and "focus({ preventScroll: true })" in focus.group(1)
+        # The handler that selects a point by pointer relies on the same helper.
+        down = re.search(r"overlay\.addEventListener\('pointerdown', function\(e\) \{(.*?)\n    \}\);", src, re.S)
+        assert down is not None and "lensFocusSelected();" in down.group(1)
+
     def test_a_lens_change_solves_again_from_the_pins(self) -> None:
         import re
 

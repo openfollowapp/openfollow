@@ -324,16 +324,67 @@ def ring_silhouette_edges(
     ]
 
 
-# Fixed-point iterations to invert the radial warp. The forward map is gentle
-# across the clamped coefficient range, so the fixed point converges to well
-# under a pixel within a handful of steps.
-_DISTORTION_INVERT_ITERS = 10
-# Floor on the radial factor during inversion. Barrel distortion shrinks radius,
-# so the forward map can't reach the frame corner; a click out there has no
-# preimage and the unfloored iteration would diverge. The floor keeps the result
-# bounded (a sensible clamped point) while sitting well below any in-domain
-# solution's factor, so valid points still invert exactly.
-_DISTORTION_INVERT_F_FLOOR = 0.2
+# Newton iterations to invert the radial warp. ``r*f(r)`` is monotone up to the
+# fold radius, so a bracketed Newton step converges to machine precision from
+# any start inside the bracket within a handful of steps.
+_DISTORTION_INVERT_ITERS = 12
+# A preimage past this many half-diagonals is no longer a screen point; it caps
+# the bracket for a warp that never folds (pincushion).
+_DISTORTION_INVERT_R_CAP = 4.0
+
+
+def _fold_radius(k1: npt.ArrayLike, k2: npt.ArrayLike) -> npt.NDArray[np.float64]:
+    """Vectorised :func:`openfollow.lens_model.lens_fold_radius`, broadcasting ``k1`` against ``k2``."""
+    a = np.asarray(k1, dtype=np.float64)
+    b = np.asarray(k2, dtype=np.float64)
+    a, b = np.broadcast_arrays(a, b)
+    out = np.full(a.shape, np.inf)
+    linear = (b == 0.0) & (a < 0.0)
+    safe_a = np.where(linear, a, -1.0)
+    out = np.where(linear, np.sqrt(-1.0 / (3.0 * safe_a)), out)
+    disc = 9.0 * a * a - 20.0 * b
+    quadratic = (b != 0.0) & (disc >= 0.0)
+    sq = np.sqrt(np.where(quadratic, disc, 0.0))
+    # The q form keeps both roots exact when k2 is tiny against k1.
+    q = -0.5 * (3.0 * a + np.where(a < 0.0, -sq, sq))
+    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+        s_one = q / np.where(quadratic, 5.0 * b, 1.0)
+        s_two = np.where(q != 0.0, 1.0 / np.where(q != 0.0, q, 1.0), np.inf)
+    smallest = np.minimum(np.where(s_one > 0.0, s_one, np.inf), np.where(s_two > 0.0, s_two, np.inf))
+    return np.where(quadratic, np.sqrt(smallest), out)
+
+
+def invert_normalised_radius(
+    r_d: npt.ArrayLike,
+    k1: npt.ArrayLike,
+    k2: npt.ArrayLike,
+) -> npt.NDArray[np.float64]:
+    """Solve ``r_u * f(r_u) == r_d`` for the pinhole radius, broadcasting all three.
+
+    Radii are normalised to the half-diagonal. A distorted radius the warp can
+    never reach (past the fold under barrel distortion) returns the fold radius,
+    so a corner click stays a bounded, sensible point. NaN passes through.
+    """
+    rd = np.asarray(r_d, dtype=np.float64)
+    a = np.asarray(k1, dtype=np.float64)
+    b = np.asarray(k2, dtype=np.float64)
+    r_max = np.minimum(_fold_radius(a, b), _DISTORTION_INVERT_R_CAP)
+    rd, a, b, r_max = np.broadcast_arrays(rd, a, b, r_max)
+    lo = np.zeros(rd.shape)
+    hi = np.array(r_max, dtype=np.float64)
+    r = np.minimum(rd, r_max)
+    tiny = 1e-12
+    for _ in range(_DISTORTION_INVERT_ITERS):
+        r2 = r * r
+        h = r * (1.0 + a * r2 + b * r2 * r2) - rd
+        slope = 1.0 + 3.0 * a * r2 + 5.0 * b * r2 * r2
+        lo = np.where(h < 0.0, r, lo)
+        hi = np.where(h > 0.0, r, hi)
+        step = np.where(slope > tiny, h / np.maximum(slope, tiny), 0.0)
+        cand = r - step
+        bisect = (cand < lo) | (cand > hi) | (slope <= tiny)
+        r = np.where(bisect, 0.5 * (lo + hi), cand)
+    return np.asarray(r, dtype=np.float64)
 
 
 def apply_overlay_distortion(
@@ -381,9 +432,9 @@ def invert_overlay_distortion(
 
     Inverse of :func:`apply_overlay_distortion`. Used on the input path: a mouse
     click / detection point lands on the distorted video, so it is undistorted
-    here before :func:`unproject_to_plane` (which stays pinhole). Solves
-    ``r_d = r_u * f(r_u)`` by fixed-point iteration on ``r_u`` (the radial vector
-    keeps its direction, so only its length changes).
+    here before :func:`unproject_to_plane` (which stays pinhole). The radial
+    vector keeps its direction, so only its length is solved, by
+    :func:`invert_normalised_radius`.
 
     Returns the input unchanged when ``k1 == 0.0 and k2 == 0.0``. NaN rows pass
     through.
@@ -396,17 +447,11 @@ def invert_overlay_distortion(
     half_diag = 0.5 * math.hypot(canvas_w, canvas_h)
     dx = (pts[:, 0] - cx) / half_diag
     dy = (pts[:, 1] - cy) / half_diag
-    r2_d = dx * dx + dy * dy
-    # r_u = r_d / f(r_u)  =>  r2_u = r2_d / f(r_u)^2. Iterate to the fixed point,
-    # flooring f so an out-of-domain (corner) point stays bounded instead of
-    # diverging.
-    r2_u = r2_d.copy()
-    for _ in range(_DISTORTION_INVERT_ITERS):
-        f = np.maximum(1.0 + k1 * r2_u + k2 * r2_u * r2_u, _DISTORTION_INVERT_F_FLOOR)
-        r2_u = r2_d / (f * f)
-    f = np.maximum(1.0 + k1 * r2_u + k2 * r2_u * r2_u, _DISTORTION_INVERT_F_FLOOR)
-    out_x = cx + dx / f * half_diag
-    out_y = cy + dy / f * half_diag
+    r_d = np.hypot(dx, dy)
+    r_u = invert_normalised_radius(r_d, k1, k2)
+    scale = np.where(r_d > 0.0, r_u / np.where(r_d > 0.0, r_d, 1.0), 1.0)
+    out_x = cx + dx * scale * half_diag
+    out_y = cy + dy * scale * half_diag
     return np.column_stack([out_x, out_y])
 
 

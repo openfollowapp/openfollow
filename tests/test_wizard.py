@@ -9,6 +9,7 @@ the /wizard page rendering, and the updated camera/grid default values.
 from __future__ import annotations
 
 import json
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -342,8 +343,8 @@ class TestWizardPage:
         _, base = live_server
         status, body = _get(base, "/wizard")
         assert status == 200
-        assert "saveWizardVideoSource().then(function(){ wizardGo(3); })" in body
-        assert "saveWizardVideoSource(); wizardGo(3)" not in body  # fire-and-forget pattern gone
+        assert "saveWizardVideoSource().then(function(){ wizardNext(); })" in body
+        assert "saveWizardVideoSource(); wizardNext()" not in body  # fire-and-forget pattern gone
         assert "return fetch('/section/video_source'" in body
 
     def test_wizard_page_contains_all_steps(self, live_server) -> None:
@@ -1458,8 +1459,469 @@ class TestWizardLensCoeffs:
         assert _wizard_lens_coeffs({"lens_k1": "abc"}) == (0.0, 0.0)
         assert _wizard_lens_coeffs({"lens_k1": float("inf"), "lens_k2": float("nan")}) == (0.0, 0.0)
 
-    def test_values_are_clamped(self) -> None:
+    def test_a_folding_pair_falls_back_to_pinhole(self) -> None:
         from openfollow.web.routes import _wizard_lens_coeffs
 
-        assert _wizard_lens_coeffs({"lens_k1": 5.0, "lens_k2": -5.0}) == (0.4, -0.2)
+        assert _wizard_lens_coeffs({"lens_k1": 5.0, "lens_k2": -5.0}) == (0.0, 0.0)
+        assert _wizard_lens_coeffs({"lens_k1": -0.4, "lens_k2": -0.2}) == (0.0, 0.0)
         assert _wizard_lens_coeffs({"lens_k1": -0.1, "lens_k2": 0.02}) == pytest.approx((-0.1, 0.02))
+        # A wide lens outside the old +-0.4 / +-0.2 box passes through unclamped.
+        assert _wizard_lens_coeffs({"lens_k1": -0.47, "lens_k2": 0.25}) == pytest.approx((-0.47, 0.25))
+
+
+# ---------------------------------------------------------------------------
+# Lens step: lines that are straight in reality -> k1 / k2
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def live_server_lens(tmp_path, monkeypatch):
+    """A station with experimental features on, so the wizard renders the Lens step."""
+    from openfollow.configuration import AppConfig, save_config
+
+    monkeypatch.setattr(discovery_module.BeaconSender, "start", lambda self: None)
+    monkeypatch.setattr(discovery_module.BeaconSender, "stop", lambda self: None)
+    monkeypatch.setattr(discovery_module.BeaconReceiver, "start", lambda self: None)
+    monkeypatch.setattr(discovery_module.BeaconReceiver, "stop", lambda self: None)
+
+    # Its own file, so a test holding both fixtures keeps the plain station plain.
+    config_path = tmp_path / "config_lens.toml"
+    cfg = AppConfig()
+    cfg.ui.show_experimental_features = True
+    cfg.camera.lens_k1 = -0.21
+    cfg.camera.lens_k2 = 0.03
+    save_config(cfg, str(config_path))
+    with live_on_free_port(
+        lambda port: ConfigWebServer(
+            config_path=str(config_path),
+            host="127.0.0.1",
+            port=port,
+            system_name="WizardLensTest",
+        )
+    ) as (server, base):
+        yield server, base
+
+
+def _stripe_image(w: int = 1920, h: int = 1080) -> np.ndarray:
+    rng = np.random.default_rng(0)
+    img = np.full((h, w), 40.0)
+    yy, xx = np.mgrid[0:h, 0:w]
+    img[np.abs(yy - (600.0 + 0.02 * xx)) <= 7] = 200.0
+    return np.clip(img + rng.normal(0.0, 4.0, img.shape), 0, 255)
+
+
+def _snap_patches(img: np.ndarray, p0, p1) -> list[dict]:
+    """Cut the patches the wizard sends: axis-aligned luma crops around the five sample points."""
+    import base64
+
+    from openfollow.scene.edge_snap import line_sample_points, patch_half_size
+
+    half = patch_half_size(img.shape[1])
+    out = []
+    for q in line_sample_points(p0, p1):
+        x0 = max(int(round(q[0])) - half, 0)
+        y0 = max(int(round(q[1])) - half, 0)
+        x1 = min(int(round(q[0])) + half + 1, img.shape[1])
+        y1 = min(int(round(q[1])) + half + 1, img.shape[0])
+        crop = img[y0:y1, x0:x1].astype(np.uint8)
+        out.append({"x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0, "data": base64.b64encode(crop.tobytes()).decode()})
+    return out
+
+
+def _warped_line(p0, p1, k1: float, k2: float, n: int = 5) -> list[list[float]]:
+    from openfollow.scene.solver import invert_overlay_distortion
+
+    ends = invert_overlay_distortion(np.array([p0, p1], dtype=np.float64), IMG_W, IMG_H, k1, k2)
+    t = np.linspace(0.0, 1.0, n)[:, None]
+    seen = apply_overlay_distortion(ends[0] + t * (ends[1] - ends[0]), IMG_W, IMG_H, k1, k2)
+    return seen.tolist()
+
+
+_LENS_EDGE_LINES = [
+    ((52.0, 12.0), (1868.0, 20.0)),
+    ((52.0, 1068.0), (1868.0, 1062.0)),
+    ((12.0, 52.0), (18.0, 1028.0)),
+    ((1908.0, 52.0), (1900.0, 1028.0)),
+    ((120.0, 100.0), (1800.0, 1000.0)),
+]
+
+
+@integration
+class TestWizardLensSnapEndpoint:
+    def test_snaps_the_five_points_onto_the_edge(self, live_server) -> None:
+        _, base = live_server
+        img = _stripe_image()
+        top = -7.0
+        p0 = (200.0, 600.0 + 0.02 * 200.0 + top + 5.0)
+        p1 = (1700.0, 600.0 + 0.02 * 1700.0 + top - 4.0)
+        status, data = _post_json(
+            base,
+            "/api/wizard/lens/snap",
+            {"image_width": 1920, "image_height": 1080, "p0": p0, "p1": p1, "patches": _snap_patches(img, p0, p1)},
+        )
+        assert status == 200
+        assert len(data["points"]) == 5
+        for p in data["points"]:
+            assert p["snapped"] is True
+            assert abs(p["y"] - (600.0 + 0.02 * p["x"] + top)) < 0.5
+
+    def test_a_covered_point_is_reported_unsnapped(self, live_server) -> None:
+        _, base = live_server
+        img = _stripe_image()
+        img[:, 900:1000] = 40.0
+        p0 = (200.0, 600.0 + 0.02 * 200.0 - 7.0)
+        p1 = (1700.0, 600.0 + 0.02 * 1700.0 - 7.0)
+        _, data = _post_json(
+            base,
+            "/api/wizard/lens/snap",
+            {"image_width": 1920, "image_height": 1080, "p0": p0, "p1": p1, "patches": _snap_patches(img, p0, p1)},
+        )
+        assert [p["snapped"] for p in data["points"]] == [True, True, False, True, True]
+
+    def _good_body(self) -> dict:
+        img = _stripe_image()
+        p0, p1 = (200.0, 596.0), (1700.0, 627.0)
+        return {"image_width": 1920, "image_height": 1080, "p0": p0, "p1": p1, "patches": _snap_patches(img, p0, p1)}
+
+    @pytest.mark.parametrize(
+        "mutate",
+        [
+            lambda b: b.pop("patches"),
+            lambda b: b["patches"].pop(),
+            lambda b: b["patches"].append(b["patches"][0]),
+            lambda b: b["patches"][0].update(data="not base64!"),
+            lambda b: b["patches"][0].update(w=b["patches"][0]["w"] + 1),
+            lambda b: b["patches"][0].update(x=1919),
+            lambda b: b["patches"][0].update(w=0),
+            lambda b: b["patches"][0].update(w=10_000, h=1),
+            lambda b: b["patches"][0].update(data=12345),
+            lambda b: b.update(p0=[1.0]),
+            lambda b: b.update(p0=["a", "b"]),
+            lambda b: b.update(p0=[float("nan"), 1.0]),
+            lambda b: b.update(p1=b["p0"]),
+            lambda b: b.update(image_width=0),
+            lambda b: b.update(image_height="tall"),
+            lambda b: b.__setitem__("patches", "five"),
+            lambda b: b["patches"].__setitem__(0, "patch"),
+        ],
+        ids=[
+            "no-patches",
+            "four-patches",
+            "six-patches",
+            "bad-base64",
+            "size-mismatch",
+            "patch-outside",
+            "zero-width",
+            "oversized",
+            "data-not-a-string",
+            "p0-not-a-pair",
+            "p0-non-numeric",
+            "p0-nan",
+            "zero-length-line",
+            "zero-canvas",
+            "string-canvas",
+            "patches-not-a-list",
+            "patch-not-an-object",
+        ],
+    )
+    def test_malformed_body_returns_400(self, live_server, mutate) -> None:
+        _, base = live_server
+        body = self._good_body()
+        mutate(body)
+        status, data = _post_json(base, "/api/wizard/lens/snap", body)
+        assert status == 400, data
+        assert "error" in data
+
+    def test_non_object_body_returns_400(self, live_server) -> None:
+        _, base = live_server
+        status, _ = _post_json(base, "/api/wizard/lens/snap", [1, 2, 3])  # type: ignore[arg-type]
+        assert status == 400
+
+    def test_invalid_json_returns_400(self, live_server) -> None:
+        _, base = live_server
+        req = urllib.request.Request(
+            f"{base}/api/wizard/lens/snap",
+            data=b"{not json",
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(req, timeout=5)
+        assert exc.value.code == 400
+
+
+@integration
+class TestWizardLensFitEndpoint:
+    def test_fit_recovers_the_pair_and_describes_each_line(self, live_server) -> None:
+        _, base = live_server
+        k1, k2 = -0.3, 0.05
+        lines = [{"points": _warped_line(a, b, k1, k2)} for a, b in _LENS_EDGE_LINES]
+        status, data = _post_json(
+            base, "/api/wizard/lens/fit", {"image_width": IMG_W, "image_height": IMG_H, "lines": lines}
+        )
+        assert status == 200
+        assert data["k1"] == pytest.approx(k1, abs=5e-3)
+        assert data["k2"] == pytest.approx(k2, abs=5e-3)
+        assert data["k2_fitted"] is True
+        assert data["rating"] in ("low", "medium", "okay", "good", "excellent")
+        assert isinstance(data["hint"], str)
+        assert data["uncertainty_px"] is not None
+        assert len(data["lines"]) == len(lines)
+        for line in data["lines"]:
+            assert line["misfit"] is False
+            assert line["rms_px"] < 0.1
+            assert len(line["curve"]) == 24
+
+    def test_bare_point_lists_are_accepted(self, live_server) -> None:
+        _, base = live_server
+        lines = [_warped_line(a, b, -0.2, 0.0) for a, b in _LENS_EDGE_LINES[:3]]
+        status, data = _post_json(
+            base, "/api/wizard/lens/fit", {"image_width": IMG_W, "image_height": IMG_H, "lines": lines}
+        )
+        assert status == 200
+        assert data["k1"] == pytest.approx(-0.2, abs=0.02)
+
+    def test_zero_coefficients_fit_straight_lines_as_pinhole(self, live_server) -> None:
+        _, base = live_server
+        lines = [_warped_line(a, b, 0.0, 0.0) for a, b in _LENS_EDGE_LINES]
+        _, data = _post_json(
+            base, "/api/wizard/lens/fit", {"image_width": IMG_W, "image_height": IMG_H, "lines": lines}
+        )
+        assert data["k1"] == pytest.approx(0.0, abs=2e-3)
+        assert data["k2"] == pytest.approx(0.0, abs=2e-3)
+        # The predicted curves of a pinhole fit are the straight lines themselves.
+        for line, (a, b) in zip(data["lines"], _LENS_EDGE_LINES, strict=True):
+            first, last = line["curve"][0], line["curve"][-1]
+            assert first == pytest.approx(list(a), abs=0.05)
+            assert last == pytest.approx(list(b), abs=0.05)
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"image_width": IMG_W, "image_height": IMG_H, "lines": []},
+            {"image_width": IMG_W, "image_height": IMG_H, "lines": "none"},
+            {"image_width": IMG_W, "image_height": IMG_H},
+            {"image_width": IMG_W, "image_height": IMG_H, "lines": [{"points": [[0, 0], [100, 0]]}]},
+            {"image_width": IMG_W, "image_height": IMG_H, "lines": [{"points": [[0, 0], ["a", 0], [100, 0]]}]},
+            {"image_width": IMG_W, "image_height": IMG_H, "lines": [{"points": [[0, 0], [1], [100, 0]]}]},
+            {"image_width": IMG_W, "image_height": IMG_H, "lines": [{"points": "abc"}]},
+            {"image_width": IMG_W, "image_height": IMG_H, "lines": [{"points": [[0, 0], [1, 1], [2, 2]]}]},
+            {"image_width": 0, "image_height": IMG_H, "lines": [{"points": [[0, 0], [50, 0], [100, 0]]}]},
+            {"image_width": IMG_W, "image_height": float("nan"), "lines": [{"points": [[0, 0], [50, 0], [100, 0]]}]},
+            {
+                "image_width": IMG_W,
+                "image_height": IMG_H,
+                "lines": [{"points": [[0, 0], [50, float("inf")], [100, 0]]}],
+            },
+        ],
+        ids=[
+            "no-lines",
+            "lines-not-a-list",
+            "lines-missing",
+            "two-points",
+            "non-numeric-point",
+            "short-point",
+            "points-not-a-list",
+            "degenerate-line",
+            "zero-canvas",
+            "nan-canvas",
+            "non-finite-point",
+        ],
+    )
+    def test_malformed_body_returns_400(self, live_server, body: dict) -> None:
+        _, base = live_server
+        status, data = _post_json(base, "/api/wizard/lens/fit", body)
+        assert status == 400, data
+        assert "error" in data
+
+    def test_non_object_body_returns_400(self, live_server) -> None:
+        _, base = live_server
+        status, _ = _post_json(base, "/api/wizard/lens/fit", [[0, 0]])  # type: ignore[arg-type]
+        assert status == 400
+
+    def test_invalid_json_returns_400(self, live_server) -> None:
+        _, base = live_server
+        req = urllib.request.Request(
+            f"{base}/api/wizard/lens/fit",
+            data=b"[not json",
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(req, timeout=5)
+        assert exc.value.code == 400
+
+
+@integration
+class TestLensChangeAfterPinning:
+    """The pins are undistorted with whatever pair is current, so a new pair solves again from them."""
+
+    def test_solving_again_with_the_measured_pair_recovers_the_camera(self, live_server) -> None:
+        _, base = live_server
+        k1, k2 = -0.3, 0.05
+        world = _world_corners()
+        pins = apply_overlay_distortion(project_points(_cam_params(), world, IMG_W, IMG_H), IMG_W, IMG_H, k1, k2)
+        body = {
+            "world_corners": world.tolist(),
+            "screen_corners": pins.tolist(),
+            "image_width": IMG_W,
+            "image_height": IMG_H,
+        }
+        _, before = _post_json(base, "/api/wizard/solve", {**body, "camera": {"lens_k1": 0.0, "lens_k2": 0.0}})
+        _, after = _post_json(base, "/api/wizard/solve", {**body, "camera": {"lens_k1": k1, "lens_k2": k2}})
+        # Without the lens the pins solve to the wrong pose; with it they come back to the truth.
+        assert after["camera"]["fov"] == pytest.approx(_CAM["fov"], abs=1.0)
+        assert after["camera"]["pos_z"] == pytest.approx(_CAM["pos_z"], abs=0.3)
+        assert abs(before["camera"]["fov"] - after["camera"]["fov"]) > 1.0
+
+    def test_a_wide_lens_pair_outside_the_old_box_is_honoured(self, live_server) -> None:
+        _, base = live_server
+        k1, k2 = -0.47, 0.25
+        world = _world_corners()
+        pins = apply_overlay_distortion(project_points(_cam_params(), world, IMG_W, IMG_H), IMG_W, IMG_H, k1, k2)
+        body = {
+            "world_corners": world.tolist(),
+            "screen_corners": pins.tolist(),
+            "image_width": IMG_W,
+            "image_height": IMG_H,
+        }
+        status, data = _post_json(base, "/api/wizard/solve", {**body, "camera": {"lens_k1": k1, "lens_k2": k2}})
+        assert status == 200
+        assert data["camera"]["fov"] == pytest.approx(_CAM["fov"], abs=1.0)
+
+
+@integration
+class TestWizardLensStepPage:
+    def test_without_the_toggle_the_wizard_keeps_seven_steps(self, live_server) -> None:
+        _, base = live_server
+        _, body = live_server and _get(base, "/wizard")
+        assert body.count('class="wizard-step-btn') == 7
+        assert 'id="wizard-step-lens"' not in body
+        assert "4. Camera Position" in body
+        # The stored pair rides along in hidden inputs so Apply keeps it.
+        assert '<input type="hidden" id="wiz_lens_k1"' in body
+        assert '<input type="hidden" id="wiz_lens_k2"' in body
+        assert "lens: " not in body.split("window.WIZ = {")[1].split("};")[0]
+
+    def test_with_the_toggle_the_lens_step_sits_after_video_source(self, live_server_lens) -> None:
+        _, base = live_server_lens
+        status, body = _get(base, "/wizard")
+        assert status == 200
+        assert body.count('class="wizard-step-btn') == 8
+        assert "3. Video Source" in body and "4. Lens" in body and "5. Camera Position" in body
+        assert "8. Review" in body
+        step_map = body.split("window.WIZ = {")[1].split("};")[0]
+        assert "lens: 3" in step_map and "camera: 4" in step_map and "review: 7" in step_map
+        assert 'id="wizard-step-lens"' in body
+        assert 'id="wiz_lens_k1"' in body and 'type="hidden" id="wiz_lens_k1"' not in body
+        # The sliders carry the stored pair and sit under the result as Fine-tune.
+        assert 'id="wiz_lens_k1" step="0.005"' in body
+        assert 'value="-0.21"' in body and 'value="0.03"' in body
+        assert "Fine-tune" in body
+        # No step is referred to by number anywhere, since the Lens step shifts the numbering.
+        assert re.search(r"Step \d", body) is None
+
+    def test_review_repeats_the_rating_and_the_values_only_with_the_step(self, live_server, live_server_lens) -> None:
+        _, plain = _get(live_server[1], "/wizard")
+        _, lens = _get(live_server_lens[1], "/wizard")
+        assert 'id="review-lens-rating"' in lens and 'id="review-lens-caution"' in lens
+        assert 'id="review-lens-rating"' not in plain and 'id="review-lens-caution"' not in plain
+
+
+@unit
+class TestWizardLensTemplate:
+    def _src(self) -> str:
+        from pathlib import Path
+
+        return (Path(__file__).resolve().parent.parent / "openfollow" / "web" / "templates" / "wizard.tpl").read_text(
+            encoding="utf-8"
+        )
+
+    def test_no_script_or_button_carries_a_step_number(self) -> None:
+        import re
+
+        src = self._src()
+        assert "window.WIZ = {" in src and "window.WIZ_STEPS" in src
+        assert not re.search(r"wizard-step-\d", src)
+        # Only the generated nav buttons call wizardGo with an index; every other button steps relatively.
+        assert re.findall(r'onclick="wizardGo\((\d+|\{\{_i\}\})\)"', src) == ["{{_i}}"]
+        assert "wizardNext()" in src and "wizardPrev()" in src
+        assert "_stepKey" in src
+
+    def test_inverse_is_the_bracketed_newton_solve(self) -> None:
+        src = self._src()
+        assert "function wizInvertRadius(rd, k1, k2)" in src
+        assert "function wizLensFoldRadius(k1, k2)" in src
+        assert "DISTORTION_INVERT_F_FLOOR" not in src
+        assert "DISTORTION_INVERT_R_CAP = 4" in src
+
+    def test_patch_size_mirrors_the_server(self) -> None:
+        import re
+
+        from openfollow.scene.edge_snap import patch_half_size
+
+        m = re.search(r"Math\.max\((\d+), Math\.min\((\d+), Math\.round\(imageWidth / (\d+)\)\)\)", self._src())
+        assert m is not None, "lensPatchHalf() must mirror edge_snap.patch_half_size"
+        lo, hi, div = (int(g) for g in m.groups())
+        for width in (320, 640, 1280, 1920, 2560, 3840, 7680):
+            assert max(lo, min(hi, round(width / div))) == patch_half_size(width)
+
+    def test_lines_persist_in_the_session_and_clear_on_a_resolution_change(self) -> None:
+        src = self._src()
+        assert "state._lensLines = lensLines;" in src
+        assert "Array.isArray(state._lensLines)" in src
+        assert "lensImageSize[0] !== imageWidth || lensImageSize[1] !== imageHeight" in src
+        assert "resolution changed" in src
+
+    def test_a_lens_change_solves_again_from_the_pins(self) -> None:
+        import re
+
+        src = self._src()
+        solve = re.search(r"function solveFromCorners\(\) \{(.*?)\n  \}\n", src, re.S)
+        coarse = re.search(r"function applyCoarseOffset\(.*?\) \{(.*?)\n  \}\n", src, re.S)
+        assert solve and "notePinnedCorners(screenCorners)" in solve.group(1)
+        assert coarse and "notePinnedCorners(screenCorners)" in coarse.group(1)
+        changed = re.search(r"function onLensCoeffChanged\(\) \{(.*?)\n  \}\n", src, re.S)
+        assert changed and "solveFromPinnedCorners" in changed.group(1)
+        assert "if (!pinnedCorners" in changed.group(1)
+        # Both the fit and the sliders go through it.
+        fit = re.search(r"function runLensFit\(\) \{(.*?)\n  \}\n", src, re.S)
+        assert fit and "onLensCoeffChanged()" in fit.group(1)
+        slider = re.search(r"window\.onWizardLensInput = function\(.*?\) \{(.*?)\n  \};\n", src, re.S)
+        assert slider and "onLensCoeffChanged()" in slider.group(1)
+        # Reset drops the pins, and Review's caution follows the pins.
+        reset = re.search(r"window\.resetCornerPinning = function\(\) \{(.*?)\n  \};\n", src, re.S)
+        assert reset and "pinnedCorners = null" in reset.group(1)
+        assert "return !pinnedCorners && (" in src
+        assert "'review-lens-caution').style.display = lensChangedSinceSolve()" in src
+
+    def test_middle_points_move_across_the_line_only(self) -> None:
+        src = self._src()
+        # Dragging a middle point sets its perpendicular offset; the keyboard keeps only the nudge's perpendicular part.
+        assert "function lensSetMidFromPos(line, j, pos)" in src
+        assert "line.mids[j - 1].off += dx * f.nx + dy * f.ny;" in src
+        for key in ("ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Delete", "Escape"):
+            assert f"'{key}'" in src
+        assert "e.key === ' '" in src
+
+    def test_fit_runs_debounced_after_a_release_and_writes_the_sliders(self) -> None:
+        src = self._src()
+        assert "setTimeout(runLensFit, LENS_FIT_DEBOUNCE_MS)" in src
+        assert "'/api/wizard/lens/fit'" in src and "'/api/wizard/lens/snap'" in src
+        assert "wizWriteLensCoeff('wiz_lens_k1', Number(res.data.k1).toFixed(4))" in src
+        assert "Point off" in src and "Delete line" in src and "Clear lines" in src
+
+    def test_a_folding_pair_blocks_apply_with_a_reason(self) -> None:
+        import re
+
+        src = self._src()
+        body = re.search(r"window\.applyAndFinish\s*=\s*function\s*\([^)]*\)\s*\{(.*?)\n  \};", src, re.S)
+        assert body and "if (!wizLensPairValid())" in body.group(1)
+        assert "folds the overlay" in body.group(1)
+
+    def test_rating_levels_follow_the_status_language(self) -> None:
+        src = self._src()
+        levels = "{ low: 'caution', medium: 'caution', okay: 'info', good: 'success', excellent: 'success' }"
+        assert "LENS_RATING_LEVEL = " + levels in src
+        assert "LENS_RATING_SEGMENTS = { low: 1, medium: 2, okay: 3, good: 4, excellent: 5 }" in src
+        assert "This line doesn't fit the others – is it really straight?" in src

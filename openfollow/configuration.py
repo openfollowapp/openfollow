@@ -28,6 +28,7 @@ except ImportError:
 import tomli_w
 
 from openfollow.binding_conflicts import BindingMove, settle_duplicates
+from openfollow.lens_model import lens_warp_is_valid
 from openfollow.net_adapters import normalize_labels
 from openfollow.station_fqdn import normalize_fqdn
 from openfollow.units import UnitSystem
@@ -425,13 +426,18 @@ class CameraConfig:
         self.fov = _coerce_float(self.fov, 60.0, lo=1.0, hi=179.0)
         self.sensor_width_mm = _coerce_optional_float(self.sensor_width_mm, None, lo=0.0)
         self.focal_length_mm = _coerce_optional_float(self.focal_length_mm, None, lo=0.0)
-        # Bounds cover strong wide-angle / fisheye lenses. The radial map
-        # f = 1 + k1*r^2 + k2*r^4 stays positive and monotonic across the bulk
-        # of the frame; near the extreme corner a strong barrel setting can
-        # compress past monotonic, but the floored inverse (input path) stays
-        # bounded there, so control never diverges.
-        self.lens_k1 = _coerce_float(self.lens_k1, 0.0, lo=-0.4, hi=0.4)
-        self.lens_k2 = _coerce_float(self.lens_k2, 0.0, lo=-0.2, hi=0.2)
+        # The one bound on the pair is that the warp must not fold before the
+        # frame corner; a folding pair falls back to the pinhole default.
+        self.lens_k1 = _coerce_float(self.lens_k1, 0.0)
+        self.lens_k2 = _coerce_float(self.lens_k2, 0.0)
+        if not lens_warp_is_valid(self.lens_k1, self.lens_k2):
+            logger.warning(
+                "camera.lens_k1=%s / lens_k2=%s folds the overlay warp inside the frame; using 0 / 0",
+                self.lens_k1,
+                self.lens_k2,
+            )
+            self.lens_k1 = 0.0
+            self.lens_k2 = 0.0
 
 
 _GRID_COLOR_DEFAULT = "#545454"

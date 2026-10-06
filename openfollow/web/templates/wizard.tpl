@@ -223,6 +223,30 @@
     background: var(--success-sign-green) no-repeat center / contain;
   }
   .wizard-status.error { color: var(--error-text); }
+  /* Lens step: traced lines, their points and the curve the fitted lens predicts. */
+  .lens-hit { pointer-events: all; cursor: crosshair; }
+  .lens-chord { fill: none; stroke: var(--accent); stroke-width: 1.5; stroke-opacity: 0.7; }
+  .lens-curve { fill: none; stroke: var(--success-line); stroke-width: 2; stroke-dasharray: 6 4; }
+  .lens-line.misfit .lens-curve, .lens-line.misfit .lens-chord { stroke: var(--caution-line); }
+  .lens-line.selected .lens-chord { stroke-opacity: 1; stroke-width: 2.5; }
+  .lens-point .dot { fill: var(--accent); stroke: var(--accent); stroke-width: 1.5; }
+  .lens-point.off .dot { fill: none; }
+  .lens-point.unsnapped .dot { stroke-dasharray: 2 2; }
+  .lens-point.selected .dot { stroke-width: 3; }
+  .lens-pending { fill: none; stroke: var(--accent); stroke-width: 2; stroke-dasharray: 3 3; }
+  .lens-label { fill: var(--text); font-size: 11px; font-weight: 600; pointer-events: none; }
+  .lens-loupe {
+    position: absolute; width: 120px; height: 120px; border-radius: 50%; overflow: hidden;
+    border: 2px solid var(--accent); background: var(--bg-deep); pointer-events: none; display: none;
+  }
+  .lens-loupe canvas { width: 100%; height: 100%; display: block; }
+  .lens-result-main { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+  /* Graded meter (docs/STATUS_LANGUAGE.md): five segments, filled in the level's line colour. */
+  .wizard-meter { display: inline-flex; gap: 3px; vertical-align: middle; }
+  .wizard-meter-seg { width: 14px; height: 8px; border-radius: 2px; background: var(--border-soft); }
+  .wizard-meter[data-level="caution"] .wizard-meter-seg.filled { background: var(--caution-line); }
+  .wizard-meter[data-level="info"] .wizard-meter-seg.filled { background: var(--info-line); }
+  .wizard-meter[data-level="success"] .wizard-meter-seg.filled { background: var(--success-line); }
   @media (max-width: 680px) {
     .wizard-step-btn { padding: 0.35rem 0.5rem; font-size: 0.72rem; }
   }
@@ -233,18 +257,33 @@
   <h2>Setup Wizard</h2>
 </div>
 
+% # The Lens step ships behind the experimental-features toggle: without it the
+% # wizard leaves the step out and keeps seven steps. The order is published to
+% # the page script as WIZ (key -> index), so no button or script carries a
+% # step number.
+% _show_lens = bool(config.ui.show_experimental_features)
+% _steps = [('prep', 'Preparation'), ('grid', 'Grid Setup'), ('video', 'Video Source')]
+% if _show_lens:
+%   _steps.append(('lens', 'Lens'))
+% end
+% _steps += [('camera', 'Camera Position'), ('ref', 'Reference Mapping'), ('corners', 'Corner Pinning'), ('review', 'Review')]
+% _keys_js = ', '.join("'" + k + "'" for k, _ in _steps)
+<script>
+  window.WIZ = {
+% for _i, (_key, _label) in enumerate(_steps):
+    {{_key}}: {{_i}},
+% end
+  };
+  window.WIZ_STEPS = [{{!_keys_js}}];
+</script>
 <nav class="wizard-steps" aria-label="Setup wizard steps">
-  <button type="button" class="wizard-step-btn" data-step="0" onclick="wizardGo(0)">1. Preparation</button>
-  <button type="button" class="wizard-step-btn" data-step="1" onclick="wizardGo(1)">2. Grid Setup</button>
-  <button type="button" class="wizard-step-btn" data-step="2" onclick="wizardGo(2)">3. Video Source</button>
-  <button type="button" class="wizard-step-btn" data-step="3" onclick="wizardGo(3)">4. Camera Position</button>
-  <button type="button" class="wizard-step-btn" data-step="4" onclick="wizardGo(4)">5. Reference Mapping</button>
-  <button type="button" class="wizard-step-btn" data-step="5" onclick="wizardGo(5)">6. Corner Pinning</button>
-  <button type="button" class="wizard-step-btn" data-step="6" onclick="wizardGo(6)">7. Review</button>
+% for _i, (_key, _label) in enumerate(_steps):
+  <button type="button" class="wizard-step-btn{{' experimental-feature' if _key == 'lens' else ''}}" data-step="{{_i}}" onclick="wizardGo({{_i}})">{{_i + 1}}. {{_label}}</button>
+% end
 </nav>
 
-<!-- Step 1: Preparation -->
-<div class="wizard-content" id="wizard-step-0">
+<!-- Preparation -->
+<div class="wizard-content" id="wizard-step-prep">
   <div class="section">
     <div class="section-head">
       <h2>Preparation</h2>
@@ -327,13 +366,13 @@
 
     <div class="wizard-nav">
       <span class="spacer"></span>
-      <button type="button" class="save-btn" onclick="wizardGo(1)">Next</button>
+      <button type="button" class="save-btn" onclick="wizardNext()">Next</button>
     </div>
   </div>
 </div>
 
-<!-- Step 2: Grid Setup -->
-<div class="wizard-content" id="wizard-step-1">
+<!-- Grid Setup -->
+<div class="wizard-content" id="wizard-step-grid">
   <div class="section">
     <div class="section-head">
       <h2>Grid Setup</h2>
@@ -460,14 +499,14 @@
     </div>
 
     <div class="wizard-nav">
-      <button type="button" class="secondary" onclick="wizardGo(0)">Back</button>
-      <button type="button" class="save-btn" onclick="wizardGo(2)">Next</button>
+      <button type="button" class="secondary" onclick="wizardPrev()">Back</button>
+      <button type="button" class="save-btn" onclick="wizardNext()">Next</button>
     </div>
   </div>
 </div>
 
-<!-- Step 3: Video Source -->
-<div class="wizard-content" id="wizard-step-2">
+<!-- Video Source -->
+<div class="wizard-content" id="wizard-step-video">
   <div class="section">
     <div class="section-head">
       <h2>Video Source</h2>
@@ -500,16 +539,99 @@
     <div id="wizard-video-saved" class="notice success" role="status" style="display:none"></div>
 
     <div class="wizard-nav">
-      <button type="button" class="secondary" onclick="wizardGo(1)">Back</button>
+      <button type="button" class="secondary" onclick="wizardPrev()">Back</button>
       <span class="spacer"></span>
       <button type="button" class="secondary" onclick="saveWizardVideoSource().catch(wizardVideoSaveFailed)">Save</button>
-      <button type="button" class="save-btn" onclick="saveWizardVideoSource().then(function(){ wizardGo(3); }).catch(wizardVideoSaveFailed)">Save &amp; Next</button>
+      <button type="button" class="save-btn" onclick="saveWizardVideoSource().then(function(){ wizardNext(); }).catch(wizardVideoSaveFailed)">Save &amp; Next</button>
     </div>
   </div>
 </div>
 
-<!-- Step 4: Camera Extrinsics -->
-<div class="wizard-content" id="wizard-step-3">
+% if _show_lens:
+<!-- Lens: k1 / k2 from lines that are straight in reality (experimental) -->
+<div class="wizard-content experimental-feature" id="wizard-step-lens">
+  <div class="section">
+    <div class="section-head">
+      <h2>Lens <span class="badge-experimental">Experimental</span></h2>
+      <span class="section-note">Measure the lens from edges that are straight in reality</span>
+    </div>
+
+    <div id="lens-container" class="wizard-preview-container" style="display:none;">
+      <img id="lens-image" alt="Camera snapshot">
+      <svg id="lens-overlay" class="wizard-overlay" xmlns="http://www.w3.org/2000/svg">
+        <rect id="lens-hit" class="lens-hit" x="0" y="0" width="100%" height="100%" fill="transparent"/>
+        <g id="lens-lines"></g>
+        <g id="lens-pending"></g>
+      </svg>
+      <div id="lens-loupe" class="lens-loupe" aria-hidden="true"><canvas width="240" height="240"></canvas></div>
+    </div>
+    <div id="lens-no-feed" class="wizard-no-feed" style="display:none;">No video feed available. Configure a video source in the Video Source step, then return here and press <strong>Refresh Image</strong>.</div>
+
+    <div id="lens-notice" class="notice" role="status" style="display:none;"></div>
+    <div id="lens-status" class="wizard-status" style="display:none;"></div>
+    <div id="lens-misfit" class="notice warning" style="display:none;"></div>
+
+    <div style="margin-top:0.72rem;display:flex;gap:0.5rem;flex-wrap:wrap;">
+      <button type="button" class="secondary" onclick="loadSnapshot()">Refresh Image</button>
+      <button type="button" class="secondary" id="lens-toggle-point" onclick="lensToggleSelectedPoint()" disabled>Point off</button>
+      <button type="button" class="secondary" id="lens-delete-line" onclick="lensDeleteSelectedLine()" disabled>Delete line</button>
+      <button type="button" class="secondary" id="lens-clear" onclick="lensClearLines()" disabled>Clear lines</button>
+    </div>
+
+    <div id="lens-result" class="notice" style="display:none;margin-top:0.72rem;">
+      <div class="lens-result-main">
+        <span class="wizard-meter" aria-hidden="true"><span class="wizard-meter-seg"></span><span class="wizard-meter-seg"></span><span class="wizard-meter-seg"></span><span class="wizard-meter-seg"></span><span class="wizard-meter-seg"></span></span>
+        <span id="lens-result-text"></span>
+      </div>
+      <div class="notice-sub" id="lens-result-hint"></div>
+    </div>
+
+    <div class="group" style="margin-top:0.72rem;">
+      <div class="group-title">Fine-tune</div>
+      <div class="row">
+        <div class="field" style="flex:1;min-width:200px;">
+          <label for="wiz_lens_k1">Barrel / fisheye (k1)</label>
+          <div style="display:flex;gap:0.5rem;align-items:center;">
+            <input type="range" id="wiz_lens_k1_range" min="-0.6" max="0.6" step="0.005"
+                   value="{{config.camera.lens_k1}}" style="flex:1;" oninput="onWizardLensInput('k1', 'range')"
+                   aria-label="Barrel / fisheye (k1) slider">
+            <input type="number" id="wiz_lens_k1" step="0.005"
+                   value="{{config.camera.lens_k1}}" style="width:6rem;" oninput="onWizardLensInput('k1', 'number')">
+          </div>
+        </div>
+        <div class="field" style="flex:1;min-width:200px;">
+          <label for="wiz_lens_k2">Edge fit (k2)</label>
+          <div style="display:flex;gap:0.5rem;align-items:center;">
+            <input type="range" id="wiz_lens_k2_range" min="-0.4" max="0.4" step="0.005"
+                   value="{{config.camera.lens_k2}}" style="flex:1;" oninput="onWizardLensInput('k2', 'range')"
+                   aria-label="Edge fit (k2) slider">
+            <input type="number" id="wiz_lens_k2" step="0.005"
+                   value="{{config.camera.lens_k2}}" style="width:6rem;" oninput="onWizardLensInput('k2', 'number')">
+          </div>
+        </div>
+      </div>
+      <div id="wiz-lens-error" class="wizard-field-error" style="display:none;">This pair folds the overlay inside the frame. Bring k1 or k2 closer to 0.</div>
+    </div>
+
+    <p class="wizard-help" style="margin-top:0.72rem;">
+      <strong>Click the start and the end</strong> of something that is straight in reality: a stage edge, a gaffa line, a truss, the edge of an LED wall. The five points snap to the nearest brightness edge. Drag a point to correct it; the middle points move across the line only. Switch a point off when its spot on the edge is hidden. Lines near the edges and corners of the image tell the most, and the fit runs after every change.
+    </p>
+    <p class="wizard-tip">Click a point and use <strong>arrow keys</strong> to nudge it (hold <strong>Shift</strong> for larger steps), <strong>Space</strong> to switch a middle point off or on, <strong>Delete</strong> to remove its line and <strong>Esc</strong> to cancel a started line. You can skip this step; the current values stay.</p>
+
+    <div class="wizard-nav">
+      <button type="button" class="secondary" onclick="wizardPrev()">Back</button>
+      <button type="button" class="save-btn" onclick="wizardNext()">Next</button>
+    </div>
+  </div>
+</div>
+% else:
+% # Without the Lens step the stored pair rides along so Apply keeps it.
+<input type="hidden" id="wiz_lens_k1" value="{{config.camera.lens_k1}}">
+<input type="hidden" id="wiz_lens_k2" value="{{config.camera.lens_k2}}">
+% end
+
+<!-- Camera Position -->
+<div class="wizard-content" id="wizard-step-camera">
   <div class="section">
     <div class="section-head">
       <h2>Camera Position</h2>
@@ -645,14 +767,14 @@
     </div>
 
     <div class="wizard-nav">
-      <button type="button" class="secondary" onclick="wizardGo(2)">Back</button>
-      <button type="button" class="save-btn" onclick="wizardGo(4)">Next</button>
+      <button type="button" class="secondary" onclick="wizardPrev()">Back</button>
+      <button type="button" class="save-btn" onclick="wizardNext()">Next</button>
     </div>
   </div>
 </div>
 
-<!-- Step 5: Coarse Calibration (Reference Mapping) -->
-<div class="wizard-content" id="wizard-step-4">
+<!-- Reference Mapping (coarse calibration) -->
+<div class="wizard-content" id="wizard-step-ref">
   <div class="section">
     <div class="section-head">
       <h2>Reference Mapping</h2>
@@ -668,7 +790,7 @@
         <g id="coarse-ref"></g>
       </svg>
     </div>
-    <div id="coarse-no-feed" class="wizard-no-feed" style="display:none;">No video feed available. Configure a video source in Step 3, then return here and press <strong>Refresh Image</strong>.</div>
+    <div id="coarse-no-feed" class="wizard-no-feed" style="display:none;">No video feed available. Configure a video source in the Video Source step, then return here and press <strong>Refresh Image</strong>.</div>
 
     <div id="coarse-status" class="wizard-status" style="display:none;"></div>
 
@@ -683,14 +805,14 @@
     <p class="wizard-tip">Zoom in on your browser (Ctrl/Cmd + scroll) for more precision. You can also click the crosshair and use <strong>arrow keys</strong> to nudge it precisely (hold <strong>Shift</strong> for larger steps).</p>
 
     <div class="wizard-nav">
-      <button type="button" class="secondary" onclick="wizardGo(3)">Back</button>
-      <button type="button" class="save-btn" onclick="wizardGo(5)">Next</button>
+      <button type="button" class="secondary" onclick="wizardPrev()">Back</button>
+      <button type="button" class="save-btn" onclick="wizardNext()">Next</button>
     </div>
   </div>
 </div>
 
-<!-- Step 6: Fine Calibration (Corner Pinning) -->
-<div class="wizard-content" id="wizard-step-5">
+<!-- Corner Pinning (fine calibration) -->
+<div class="wizard-content" id="wizard-step-corners">
   <div class="section">
     <div class="section-head">
       <h2>Corner Pinning</h2>
@@ -750,7 +872,7 @@
         </div>
       </div>
     </div>
-    <div id="fine-no-feed" class="wizard-no-feed" style="display:none;">No video feed available. Configure a video source in Step 3, then return here and press <strong>Refresh Image</strong>.</div>
+    <div id="fine-no-feed" class="wizard-no-feed" style="display:none;">No video feed available. Configure a video source in the Video Source step, then return here and press <strong>Refresh Image</strong>.</div>
 
     <div id="fine-status" class="wizard-status" style="display:none;"></div>
 
@@ -774,30 +896,6 @@
               title="Load a snapshot first">Fine adjust</button>
     </div>
 
-    <div id="cp-lens-controls" class="experimental-feature" style="margin-top:0.72rem;display:flex;gap:1rem;flex-wrap:wrap;align-items:flex-end;">
-      <div class="field" style="flex:1;min-width:200px;">
-        <label for="cp_lens_k1">Lens distortion <span class="badge-experimental">Experimental</span> &ndash; barrel / fisheye (k1)</label>
-        <div style="display:flex;gap:0.5rem;align-items:center;">
-          <input type="range" id="cp_lens_k1_range" min="-0.4" max="0.4" step="0.005"
-                 value="{{config.camera.lens_k1}}" style="flex:1;" oninput="onWizardLensRange('k1')"
-                 aria-label="Lens distortion barrel / fisheye (k1) slider">
-          <input type="number" id="cp_lens_k1" min="-0.4" max="0.4" step="0.005"
-                 value="{{config.camera.lens_k1}}" style="width:6rem;" oninput="onWizardLensNumber('k1')">
-        </div>
-      </div>
-      <div class="field" style="flex:1;min-width:200px;">
-        <label for="cp_lens_k2">Edge fit (k2)</label>
-        <div style="display:flex;gap:0.5rem;align-items:center;">
-          <input type="range" id="cp_lens_k2_range" min="-0.2" max="0.2" step="0.005"
-                 value="{{config.camera.lens_k2}}" style="flex:1;" oninput="onWizardLensRange('k2')"
-                 aria-label="Lens distortion edge fit (k2) slider">
-          <input type="number" id="cp_lens_k2" min="-0.2" max="0.2" step="0.005"
-                 value="{{config.camera.lens_k2}}" style="width:6rem;" oninput="onWizardLensNumber('k2')">
-        </div>
-      </div>
-    </div>
-    <p class="wizard-tip experimental-feature" style="margin-top:0.4rem;">Bow the projected grid to match a fisheye / wide-angle lens before pinning the corners. Only the overlay is bent; the video is unchanged.</p>
-
     <p class="wizard-help" style="margin-top:0.72rem;">
       <strong>Drag each corner marker</strong> to its physical mark on the stage. The labels are stage positions: <strong>DSL</strong>/<strong>USL</strong> are stage left, <strong>DSR</strong>/<strong>USR</strong> are stage right (D = downstage/front, U = upstage/back). With a front-of-house camera you see the audience's view, so stage left is on the right of the image (audience right) and stage right is on the left (audience left).
     </p>
@@ -806,14 +904,14 @@
     <p>Click a corner or use <strong>Tab</strong> to select it, then use <strong>arrow keys</strong> to nudge (hold <strong>Shift</strong> for larger steps).</p>
 
     <div class="wizard-nav">
-      <button type="button" class="secondary" onclick="wizardGo(4)">Back</button>
-      <button type="button" class="save-btn" onclick="wizardGo(6)">Next</button>
+      <button type="button" class="secondary" onclick="wizardPrev()">Back</button>
+      <button type="button" class="save-btn" onclick="wizardNext()">Next</button>
     </div>
   </div>
 </div>
 
-<!-- Step 7: Review & Apply -->
-<div class="wizard-content" id="wizard-step-6">
+<!-- Review & Apply -->
+<div class="wizard-content" id="wizard-step-review">
   <div class="section">
     <div class="section-head">
       <h2>Review</h2>
@@ -832,6 +930,9 @@
     <div id="review-no-feed" class="wizard-no-feed" style="display:none;">No video feed available. Values below are still valid, but the visual review is unavailable.</div>
 
     <div id="review-status" class="wizard-status" style="display:none;"></div>
+% if _show_lens:
+    <div id="review-lens-caution" class="notice warning" style="display:none;">Lens changed &ndash; redo Corner Pinning so the position matches.</div>
+% end
 
     <div class="group">
       <div class="group-title">Camera</div>
@@ -843,6 +944,11 @@
         <div class="wizard-solved-param"><span class="param-label">Yaw</span><span class="param-value" id="review-cam-yaw">-</span></div>
         <div class="wizard-solved-param"><span class="param-label">Roll</span><span class="param-value" id="review-cam-roll">-</span></div>
         <div class="wizard-solved-param"><span class="param-label">FOV</span><span class="param-value" id="review-cam-fov">-</span></div>
+% if _show_lens:
+        <div class="wizard-solved-param"><span class="param-label">Lens k1</span><span class="param-value" id="review-lens-k1">-</span></div>
+        <div class="wizard-solved-param"><span class="param-label">Lens k2</span><span class="param-value" id="review-lens-k2">-</span></div>
+        <div class="wizard-solved-param"><span class="param-label">Lens coverage</span><span class="param-value" id="review-lens-rating"><span class="wizard-meter" aria-hidden="true"><span class="wizard-meter-seg"></span><span class="wizard-meter-seg"></span><span class="wizard-meter-seg"></span><span class="wizard-meter-seg"></span><span class="wizard-meter-seg"></span></span> <span id="review-lens-rating-text">-</span></span></div>
+% end
       </div>
     </div>
 
@@ -859,7 +965,7 @@
     </div>
 
     <div class="wizard-nav">
-      <button type="button" class="secondary" onclick="wizardGo(5)">Back</button>
+      <button type="button" class="secondary" onclick="wizardPrev()">Back</button>
       <span class="spacer"></span>
       <button type="button" class="btn-danger" onclick="discardAndLeave()">Discard &amp; Leave</button>
       <button type="button" class="save-btn" onclick="applyAndFinish()" id="btn-apply-finish">Apply &amp; Finish</button>
@@ -1000,8 +1106,8 @@
         yaw: parseFloat(document.getElementById('cam_yaw').value),
         roll: parseFloat(document.getElementById('cam_roll').value),
         fov: parseFloat(document.getElementById('cam_fov').value),
-        lens_k1: wizReadLensCoeff('cp_lens_k1'),
-        lens_k2: wizReadLensCoeff('cp_lens_k2'),
+        lens_k1: wizReadLensCoeff('wiz_lens_k1'),
+        lens_k2: wizReadLensCoeff('wiz_lens_k2'),
       },
       lens: {
         sensor_id: (document.getElementById('cam_sensor') || {}).value || '',
@@ -1019,16 +1125,31 @@
     };
   }
 
-  // Lens-distortion coefficient bounds (mirror CameraConfig + the server clamp).
-  var LENS_BOUNDS = { cp_lens_k1: [-0.4, 0.4], cp_lens_k2: [-0.2, 0.2] };
+  // Lens coefficients: the one bound on the pair is that the warp must not fold
+  // inside the frame (mirrors openfollow.lens_model.lens_warp_is_valid).
+  function wizLensFoldRadius(k1, k2) {
+    if (k2 === 0) return k1 < 0 ? Math.sqrt(-1 / (3 * k1)) : Infinity;
+    var disc = 9 * k1 * k1 - 20 * k2;
+    if (disc < 0) return Infinity;
+    var sq = Math.sqrt(disc);
+    var sLo = (-3 * k1 - sq) / (10 * k2), sHi = (-3 * k1 + sq) / (10 * k2);
+    var s = Infinity;
+    if (sLo > 0) s = sLo;
+    if (sHi > 0 && sHi < s) s = sHi;
+    return Math.sqrt(s);
+  }
+  function wizLensIsValid(k1, k2) {
+    return isFinite(k1) && isFinite(k2) && wizLensFoldRadius(k1, k2) > 1;
+  }
+  function wizLensPairValid() {
+    return wizLensIsValid(wizReadLensCoeff('wiz_lens_k1'), wizReadLensCoeff('wiz_lens_k2'));
+  }
 
   function wizReadLensCoeff(id) {
     var el = document.getElementById(id);
     if (!el) return 0;
     var v = parseFloat(el.value);
-    if (!isFinite(v)) return 0;
-    var b = LENS_BOUNDS[id];
-    return Math.max(b[0], Math.min(b[1], v));
+    return isFinite(v) ? v : 0;
   }
 
   function wizWriteLensCoeff(id, value) {
@@ -1038,30 +1159,33 @@
     if (range) range.value = value;
   }
 
-  // Mirror the slider into the number box, redraw the projected overlay so the
-  // grid bows to match the lens, and persist.
-  window.onWizardLensRange = function(which) {
-    var num = document.getElementById('cp_lens_' + which);
-    var range = document.getElementById('cp_lens_' + which + '_range');
-    if (num && range) num.value = range.value;
+  // A slider or number edit on the Lens step: mirror the pair, flag a folding
+  // pair, redraw the predicted curves and the projected grid, and persist.
+  window.onWizardLensInput = function(which, source) {
+    var num = document.getElementById('wiz_lens_' + which);
+    var range = document.getElementById('wiz_lens_' + which + '_range');
+    if (num && range) {
+      if (source === 'range') num.value = range.value; else range.value = num.value;
+    }
+    var err = document.getElementById('wiz-lens-error');
+    if (err) err.style.display = wizLensPairValid() ? 'none' : 'block';
+    lensRecomputeCurves();
+    renderLens();
+    onLensCoeffChanged();
     projectAndOverlay();
-    saveToSession();
-  };
-
-  window.onWizardLensNumber = function(which) {
-    var num = document.getElementById('cp_lens_' + which);
-    var range = document.getElementById('cp_lens_' + which + '_range');
-    if (num && range) range.value = num.value;
-    projectAndOverlay();
-    saveToSession();
   };
 
   function saveToSession() {
     try {
       var state = getState();
-      state._step = currentStep;
+      state._stepKey = WIZ_STEPS[currentStep];
       state._solvedCamera = solvedCamera;
       state._originalFov = originalFov;
+      state._lensLines = lensLines;
+      state._lensImage = lensImageSize;
+      state._lensFit = lensFit;
+      state._pinnedCorners = pinnedCorners;
+      state._lensSolvedWith = lensSolvedWith;
       sessionStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     } catch(e) {}
   }
@@ -1079,8 +1203,8 @@
         document.getElementById('cam_yaw').value = state.camera.yaw;
         document.getElementById('cam_roll').value = state.camera.roll;
         document.getElementById('cam_fov').value = state.camera.fov;
-        if (state.camera.lens_k1 !== undefined) wizWriteLensCoeff('cp_lens_k1', state.camera.lens_k1);
-        if (state.camera.lens_k2 !== undefined) wizWriteLensCoeff('cp_lens_k2', state.camera.lens_k2);
+        if (state.camera.lens_k1 !== undefined) wizWriteLensCoeff('wiz_lens_k1', state.camera.lens_k1);
+        if (state.camera.lens_k2 !== undefined) wizWriteLensCoeff('wiz_lens_k2', state.camera.lens_k2);
       }
       if (state.grid) {
         wizWriteLen('grid_width', state.grid.width);
@@ -1105,8 +1229,13 @@
       }
       if (state._solvedCamera) solvedCamera = state._solvedCamera;
       if (state._originalFov) originalFov = state._originalFov;
-      if (typeof state._step === 'number') {
-        currentStep = state._step;
+      if (Array.isArray(state._lensLines)) lensLines = state._lensLines;
+      if (state._lensImage) lensImageSize = state._lensImage;
+      if (state._lensFit) lensFit = state._lensFit;
+      if (state._pinnedCorners) pinnedCorners = state._pinnedCorners;
+      if (state._lensSolvedWith) lensSolvedWith = state._lensSolvedWith;
+      if (typeof state._stepKey === 'string' && WIZ[state._stepKey] !== undefined) {
+        currentStep = WIZ[state._stepKey];
         return true;
       }
       return false;
@@ -1116,11 +1245,16 @@
   // ---------------------------------------------------------------
   // Step Navigation
   // ---------------------------------------------------------------
+  // The first step that needs the snapshot: the Lens step when it is shown.
+  var WIZ_FIRST_SNAPSHOT = WIZ.lens !== undefined ? WIZ.lens : WIZ.ref;
+
   window.wizardGo = function(step) {
     saveToSession();
+    if (!(step >= 0 && step < WIZ_STEPS.length)) step = 0;
     currentStep = step;
-    document.querySelectorAll('.wizard-content').forEach(function(el, i) {
-      el.classList.toggle('active', i === step);
+    var key = WIZ_STEPS[step];
+    document.querySelectorAll('.wizard-content').forEach(function(el) {
+      el.classList.toggle('active', el.id === 'wizard-step-' + key);
     });
     document.querySelectorAll('.wizard-step-btn').forEach(function(btn) {
       var s = parseInt(btn.dataset.step);
@@ -1128,39 +1262,36 @@
       btn.setAttribute('aria-current', s === step ? 'step' : 'false');
       if (s < step) btn.classList.add('completed');
     });
-    // On entering step 4+ load the snapshot and project
-    if (step >= 4) {
+    if (step >= WIZ_FIRST_SNAPSHOT) {
       loadSnapshot();
     }
-    // On entering preparation step, redraw the illustration
-    if (step === 0) {
+    if (key === 'prep') {
       updatePrepIllustration();
     }
-    // On entering grid setup step, redraw the illustration
-    if (step === 1) {
+    if (key === 'grid') {
       updateGridIllustration();
     }
-    // On entering camera position step, redraw the illustration
-    if (step === 3) {
+    if (key === 'camera') {
       updateCamIllustration();
     }
-    // On entering coarse calibration step, save camera state for reset
-    if (step === 4) {
+    // Entering Reference Mapping saves the camera state for its Reset.
+    if (key === 'ref') {
       preCoarseCamera = getState().camera;
     }
-    // On entering review step, populate summary
-    if (step === 6) {
+    if (key === 'review') {
       populateReview();
     }
     saveToSession();
   };
+  window.wizardNext = function() { wizardGo(Math.min(currentStep + 1, WIZ_STEPS.length - 1)); };
+  window.wizardPrev = function() { wizardGo(Math.max(currentStep - 1, 0)); };
 
   window.updateWizardState = function() {
     saveToSession();
   };
 
   // ---------------------------------------------------------------
-  // Preparation Illustration (Step 1 – isometric overview)
+  // Preparation illustration (isometric overview)
   // ---------------------------------------------------------------
   function updatePrepIllustration() {
     // Use default values from steps 2 and 4
@@ -1410,7 +1541,7 @@
   }
 
   // ---------------------------------------------------------------
-  // Grid Illustration (Step 4 – dynamic SVG)
+  // Grid illustration (dynamic SVG)
   // ---------------------------------------------------------------
   window.onGridInputChanged = function() {
     saveToSession();
@@ -1721,7 +1852,7 @@
   };
 
   // ---------------------------------------------------------------
-  // Camera Position Illustration (Step 4 – isometric dynamic SVG)
+  // Camera Position illustration (isometric dynamic SVG)
   // ---------------------------------------------------------------
   window.onCamInputChanged = function() {
     var pitch = parseFloat(document.getElementById('cam_pitch').value);
@@ -2124,7 +2255,7 @@
         imageWidth = img.naturalWidth;
         imageHeight = img.naturalHeight;
         snapshotUrl = nextUrl;
-        showSnapshotOnCurrentStep(nextUrl);
+        showSnapshotOnCurrentStep(nextUrl, img);
         projectAndOverlay();
         revokeSnapshotUrl(previousUrl);
       };
@@ -2146,6 +2277,7 @@
 
   function setPreviewVisibility(visible) {
     var pairs = [
+      ['lens-container', 'lens-no-feed'],
       ['coarse-container', 'coarse-no-feed'],
       ['fine-container', 'fine-no-feed'],
       ['review-container', 'review-no-feed'],
@@ -2187,10 +2319,15 @@
     setPreviewVisibility(false);
   }
 
-  function showSnapshotOnCurrentStep(url) {
+  function showSnapshotOnCurrentStep(url, img) {
     document.getElementById('coarse-image').src = url;
     document.getElementById('fine-image').src = url;
     document.getElementById('review-image').src = url;
+    var lensImage = document.getElementById('lens-image');
+    if (lensImage) {
+      lensImage.src = url;
+      lensOnSnapshot(img);
+    }
     // Each fine-zoom box renders snapshot through own viewBox crop.
     // Update all <image> elements so Refresh Image lands in zoom too.
     var zoomImages = document.querySelectorAll('[data-fine-zoom-image]');
@@ -2255,14 +2392,13 @@
   // and Review. A failed projection must surface on whichever of those the
   // operator is looking at – not only Corner Pinning – otherwise the overlay
   // silently vanishes on the other two with no explanation.
-  var PROJECTION_STATUS_STEPS = {
-    4: { status: 'coarse-status', container: 'coarse-container' },
-    5: { status: 'fine-status', container: 'fine-container' },
-    6: { status: 'review-status', container: 'review-container' },
-  };
+  var PROJECTION_STATUS_STEPS = {};
+  PROJECTION_STATUS_STEPS[WIZ.ref] = { status: 'coarse-status', container: 'coarse-container' };
+  PROJECTION_STATUS_STEPS[WIZ.corners] = { status: 'fine-status', container: 'fine-container' };
+  PROJECTION_STATUS_STEPS[WIZ.review] = { status: 'review-status', container: 'review-container' };
 
   function currentProjectionEls() {
-    return PROJECTION_STATUS_STEPS[currentStep] || PROJECTION_STATUS_STEPS[5];
+    return PROJECTION_STATUS_STEPS[currentStep] || PROJECTION_STATUS_STEPS[WIZ.corners];
   }
 
   function showProjectionError(msg) {
@@ -2494,7 +2630,7 @@
   }
 
   // ---------------------------------------------------------------
-  // Reference Point Dragging (Step 6 - Coarse Calibration)
+  // Reference Point dragging (Reference Mapping)
   // ---------------------------------------------------------------
   function setupRefDragging(handle) {
     var svg = document.getElementById('coarse-overlay');
@@ -2642,18 +2778,6 @@
       return;
     }
 
-    var state = getState();
-    var g = state.grid;
-    var hw = g.width / 2, hd = g.depth / 2;
-    var ox = g.x_offset, oy = g.y_offset, oz = g.z_offset;
-    // Stage convention: +X is stage left, so DSL/USL are at +hw and DSR/USR
-    // at -hw. Each row pairs with the same-named screen corner below.
-    var worldCorners = [
-      [ox + hw, oy - hd, oz],
-      [ox - hw, oy - hd, oz],
-      [ox - hw, oy + hd, oz],
-      [ox + hw, oy + hd, oz],
-    ];
     var screenCorners = [
       cornerPositions.DSL,
       cornerPositions.DSR,
@@ -2664,27 +2788,58 @@
     fetch('/api/wizard/solve', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        world_corners: worldCorners,
-        screen_corners: screenCorners,
-        image_width: imageWidth,
-        image_height: imageHeight,
-        camera: { lens_k1: wizReadLensCoeff('cp_lens_k1'), lens_k2: wizReadLensCoeff('cp_lens_k2') },
-      }),
+      body: JSON.stringify(wizardSolveBody(screenCorners)),
     }).then(function(r) { return r.json(); })
     .then(function(data) {
       if (data.error) return;
-      // Back-propagate solved camera to form fields
-      wizWriteLen('cam_pos_x', data.camera.pos_x);
-      wizWriteLen('cam_pos_y', data.camera.pos_y);
-      wizWriteLen('cam_pos_z', data.camera.pos_z);
-      document.getElementById('cam_pitch').value = data.camera.pitch;
-      document.getElementById('cam_yaw').value = data.camera.yaw;
-      document.getElementById('cam_roll').value = data.camera.roll;
-      document.getElementById('cam_fov').value = data.camera.fov;
+      wizardApplySolvedCamera(data.camera);
+      notePinnedCorners(screenCorners);
       saveToSession();
       projectAndOverlay();
     });
+  }
+
+  // The grid's four corners in world space. Stage convention: +X is stage
+  // left, so DSL/USL are at +hw and DSR/USR at -hw, in the order DSL, DSR,
+  // USR, USL that every screen-corner list follows.
+  function wizardWorldCorners() {
+    var g = getState().grid;
+    var hw = g.width / 2, hd = g.depth / 2;
+    var ox = g.x_offset, oy = g.y_offset, oz = g.z_offset;
+    return [
+      [ox + hw, oy - hd, oz],
+      [ox - hw, oy - hd, oz],
+      [ox - hw, oy + hd, oz],
+      [ox + hw, oy + hd, oz],
+    ];
+  }
+
+  function wizardSolveBody(screenCorners) {
+    return {
+      world_corners: wizardWorldCorners(),
+      screen_corners: screenCorners,
+      image_width: imageWidth,
+      image_height: imageHeight,
+      camera: { lens_k1: wizReadLensCoeff('wiz_lens_k1'), lens_k2: wizReadLensCoeff('wiz_lens_k2') },
+    };
+  }
+
+  // Back-propagate a solved camera into the form fields.
+  function wizardApplySolvedCamera(cam) {
+    wizWriteLen('cam_pos_x', cam.pos_x);
+    wizWriteLen('cam_pos_y', cam.pos_y);
+    wizWriteLen('cam_pos_z', cam.pos_z);
+    document.getElementById('cam_pitch').value = cam.pitch;
+    document.getElementById('cam_yaw').value = cam.yaw;
+    document.getElementById('cam_roll').value = cam.roll;
+    document.getElementById('cam_fov').value = cam.fov;
+  }
+
+  // The solve undistorted these pins with the lens of that moment. Keep them
+  // so a later lens change can solve again from the same pins.
+  function notePinnedCorners(screenCorners) {
+    pinnedCorners = screenCorners.map(function(p) { return [p[0], p[1]]; });
+    lensSolvedWith = { k1: wizReadLensCoeff('wiz_lens_k1'), k2: wizReadLensCoeff('wiz_lens_k2') };
   }
 
   window.resetCoarseCalibration = function() {
@@ -2702,7 +2857,7 @@
   };
 
   // ---------------------------------------------------------------
-  // Corner Dragging (Step 7 - Fine Calibration)
+  // Corner dragging (Corner Pinning)
   // ---------------------------------------------------------------
   function setupCornerDragging(container) {
     var svg = document.getElementById('fine-overlay');
@@ -2853,8 +3008,8 @@
   // exactly like the rendered HUD and stays correct live while a corner is
   // dragged (no server round-trip needed).
   var DISTORTION_SUBDIVISIONS = 12;
-  var DISTORTION_INVERT_ITERS = 10;
-  var DISTORTION_INVERT_F_FLOOR = 0.2;
+  var DISTORTION_INVERT_ITERS = 12;
+  var DISTORTION_INVERT_R_CAP = 4;
 
   function wizApplyDistortion(pt, k1, k2) {
     if (k1 === 0 && k2 === 0) return [pt[0], pt[1]];
@@ -2867,22 +3022,32 @@
     return [cx + dx * f * halfDiag, cy + dy * f * halfDiag];
   }
 
+  // Solve r_u * f(r_u) = r_d by bracketed Newton steps, as the server does
+  // (scene.solver.invert_normalised_radius); a radius the warp never reaches
+  // lands on the fold radius.
+  function wizInvertRadius(rd, k1, k2) {
+    var rMax = Math.min(wizLensFoldRadius(k1, k2), DISTORTION_INVERT_R_CAP);
+    var lo = 0, hi = rMax, r = Math.min(rd, rMax);
+    for (var i = 0; i < DISTORTION_INVERT_ITERS; i++) {
+      var r2 = r * r;
+      var h = r * (1 + k1 * r2 + k2 * r2 * r2) - rd;
+      var slope = 1 + 3 * k1 * r2 + 5 * k2 * r2 * r2;
+      if (h < 0) lo = r; else if (h > 0) hi = r;
+      var cand = slope > 1e-12 ? r - h / slope : r;
+      r = (cand < lo || cand > hi || slope <= 1e-12) ? 0.5 * (lo + hi) : cand;
+    }
+    return r;
+  }
+
   function wizInvertDistortion(pt, k1, k2) {
     if (k1 === 0 && k2 === 0) return [pt[0], pt[1]];
     var cx = imageWidth / 2, cy = imageHeight / 2;
     var halfDiag = 0.5 * Math.sqrt(imageWidth * imageWidth + imageHeight * imageHeight);
     var dx = (pt[0] - cx) / halfDiag;
     var dy = (pt[1] - cy) / halfDiag;
-    var r2d = dx * dx + dy * dy;
-    var r2u = r2d;
-    for (var i = 0; i < DISTORTION_INVERT_ITERS; i++) {
-      var fi = 1 + k1 * r2u + k2 * r2u * r2u;
-      if (fi < DISTORTION_INVERT_F_FLOOR) fi = DISTORTION_INVERT_F_FLOOR;
-      r2u = r2d / (fi * fi);
-    }
-    var f = 1 + k1 * r2u + k2 * r2u * r2u;
-    if (f < DISTORTION_INVERT_F_FLOOR) f = DISTORTION_INVERT_F_FLOOR;
-    return [cx + (dx / f) * halfDiag, cy + (dy / f) * halfDiag];
+    var rd = Math.sqrt(dx * dx + dy * dy);
+    var scale = rd > 0 ? wizInvertRadius(rd, k1, k2) / rd : 1;
+    return [cx + dx * scale * halfDiag, cy + dy * scale * halfDiag];
   }
 
   // Bowed boundary edge between two corner pins, in screen space. A grid edge is
@@ -2911,9 +3076,9 @@
   // ready, so callers fall back to straight edges.
   function buildBowedEdges() {
     if (!fineZoomReady()) return null;
-    var k1 = wizReadLensCoeff('cp_lens_k1');
-    var k2 = wizReadLensCoeff('cp_lens_k2');
-    if (k1 === 0 && k2 === 0) return null;
+    var k1 = wizReadLensCoeff('wiz_lens_k1');
+    var k2 = wizReadLensCoeff('wiz_lens_k2');
+    if ((k1 === 0 && k2 === 0) || !wizLensIsValid(k1, k2)) return null;
     var edges = {};
     for (var k = 0; k < 4; k++) {
       var a = CORNER_NAMES[k];
@@ -3286,19 +3451,6 @@
       preCornerPinningCamera = getState().camera;
     }
 
-    var state = getState();
-    var g = state.grid;
-    var hw = g.width / 2, hd = g.depth / 2;
-    var ox = g.x_offset, oy = g.y_offset, oz = g.z_offset;
-    // Stage convention: +X is stage left, so DSL/USL are at +hw and DSR/USR
-    // at -hw. Each row pairs with the same-named screen corner below.
-    var worldCorners = [
-      [ox + hw, oy - hd, oz],
-      [ox - hw, oy - hd, oz],
-      [ox - hw, oy + hd, oz],
-      [ox + hw, oy + hd, oz],
-    ];
-
     var screenCorners = [
       cornerPositions.DSL,
       cornerPositions.DSR,
@@ -3309,13 +3461,7 @@
     fetch('/api/wizard/solve', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        world_corners: worldCorners,
-        screen_corners: screenCorners,
-        image_width: imageWidth,
-        image_height: imageHeight,
-        camera: { lens_k1: wizReadLensCoeff('cp_lens_k1'), lens_k2: wizReadLensCoeff('cp_lens_k2') },
-      }),
+      body: JSON.stringify(wizardSolveBody(screenCorners)),
     }).then(function(r) { return r.json(); })
     .then(function(data) {
       if (data.error) {
@@ -3326,6 +3472,7 @@
       solvedCamera = data.camera;
       showSolveStatus('Calibration valid', true);
       showSolvedParams(data.camera);
+      notePinnedCorners(screenCorners);
 
       // Snap corners to reprojected positions
       var rp = data.reprojected_corners;
@@ -3350,14 +3497,7 @@
         if (typeof console !== 'undefined' && console.warn) console.warn('fine-zoom render failed:', err);
       }
 
-      // Back-propagate to camera form fields
-      wizWriteLen('cam_pos_x', data.camera.pos_x);
-      wizWriteLen('cam_pos_y', data.camera.pos_y);
-      wizWriteLen('cam_pos_z', data.camera.pos_z);
-      document.getElementById('cam_pitch').value = data.camera.pitch;
-      document.getElementById('cam_yaw').value = data.camera.yaw;
-      document.getElementById('cam_roll').value = data.camera.roll;
-      document.getElementById('cam_fov').value = data.camera.fov;
+      wizardApplySolvedCamera(data.camera);
       saveToSession();
     });
   }
@@ -3389,6 +3529,7 @@
 
   window.resetCornerPinning = function() {
     solvedCamera = null;
+    pinnedCorners = null;
     document.getElementById('fine-status').style.display = 'none';
     document.getElementById('fine-solved-params').style.display = 'none';
     document.getElementById('fine-container').classList.remove('valid', 'invalid');
@@ -3451,6 +3592,7 @@
     document.getElementById('review-grid-x-offset').textContent = WUNIT.formatLength(Number(g.x_offset));
     document.getElementById('review-grid-y-offset').textContent = WUNIT.formatLength(Number(g.y_offset));
     document.getElementById('review-grid-z-offset').textContent = WUNIT.formatLength(Number(g.z_offset));
+    populateReviewLens(state.camera);
 
     // The review overlay (viewBox, bowed quad, corners, ref, z-offset) is drawn
     // by ``loadSnapshot`` -> ``projectAndOverlay`` -> ``updateAllOverlays`` on
@@ -3462,12 +3604,19 @@
 
   window.applyAndFinish = function() {
     var saveError = window.OpenFollow.saveError;
-    var reviewBox = document.querySelector('#wizard-step-6 .section');
+    var reviewBox = document.querySelector('#wizard-step-review .section');
     var badLen = invalidLengthFields();
     if (badLen.length) {
       saveError.show(reviewBox, {
         error: 'These fields are not valid lengths: ' + badLen.join(', ') + '.',
         action: 'Fix them before finishing.',
+      }, 'Not applied.');
+      return;
+    }
+    if (!wizLensPairValid()) {
+      saveError.show(reviewBox, {
+        error: 'The lens pair folds the overlay inside the frame.',
+        action: 'Bring k1 or k2 closer to 0 on the Lens step before finishing.',
       }, 'Not applied.');
       return;
     }
@@ -3498,7 +3647,7 @@
       sensor_width_mm: sensorWidth,
       focal_length_mm: focalLength,
       // The DLT solve is pinhole and doesn't return distortion; carry the
-      // operator's lens sliders through from the wizard state.
+      // Lens step's pair through from the wizard state.
       lens_k1: state.camera.lens_k1,
       lens_k2: state.camera.lens_k2,
     };
@@ -3541,7 +3690,7 @@
   };
 
   // ---------------------------------------------------------------
-  // Video Source (Step 2)
+  // Video Source
   // ---------------------------------------------------------------
   window.saveWizardVideoSource = function() {
     var formData = new FormData();
@@ -3566,7 +3715,7 @@
     // active). Rejects on a failed save so the caller's .catch can surface it
     // without advancing.
     var saveError = window.OpenFollow.saveError;
-    var videoBox = document.querySelector('#wizard-step-2 .section');
+    var videoBox = document.querySelector('#wizard-step-video .section');
     return fetch('/section/video_source', { method: 'POST', body: formData })
     .then(async function(r) {
       if (!r.ok) {
@@ -3585,8 +3734,582 @@
   window.wizardVideoSaveFailed = function(err) {
     if (err && err.message === 'Save failed') return;
     window.OpenFollow.saveError.show(
-      document.querySelector('#wizard-step-2 .section'), window.OpenFollow.saveError.UNREACHABLE);
+      document.querySelector('#wizard-step-video .section'), window.OpenFollow.saveError.UNREACHABLE);
   };
+
+
+  // ---------------------------------------------------------------
+  // Lens (experimental): k1 / k2 from lines that are straight in reality
+  // ---------------------------------------------------------------
+  // A line keeps its endpoints p0 / p1 (image px) and its three middle points
+  // in the line's own frame as (t, off): t along the chord, off along its
+  // perpendicular. Moving an endpoint keeps every middle point's offset; a
+  // middle point only ever moves along the perpendicular.
+  var LENS_T = [0.25, 0.5, 0.75];
+  var LENS_FIT_DEBOUNCE_MS = 300;
+  var LENS_LOUPE_ZOOM = 4;
+  var LENS_MIN_LINE_PX = 20;
+  var LENS_RATING_LEVEL = { low: 'caution', medium: 'caution', okay: 'info', good: 'success', excellent: 'success' };
+  var LENS_RATING_SEGMENTS = { low: 1, medium: 2, okay: 3, good: 4, excellent: 5 };
+  var LENS_RATING_LABEL = { low: 'Low', medium: 'Medium', okay: 'Okay', good: 'Good', excellent: 'Excellent' };
+  var LENS_MISFIT_TEXT = "This line doesn't fit the others – is it really straight?";
+  var lensLines = [];        // [{p0, p1, mids: [{t, off, on}], snapped: [bool x5], curve, rms, misfit}]
+  var lensImageSize = null;  // [w, h] the lines were traced on
+  var lensPending = null;    // first click of a line being traced
+  var lensSelected = null;   // {line, point} with point 0..4
+  var lensFit = null;        // the last fit response
+  var lensCanvas = null;     // the snapshot at full resolution, for the patches
+  var lensFitTimer = null;
+  var lensReSolveTimer = null;
+  var lensDrag = null;
+  var pinnedCorners = null;  // the screen corners of the last solve
+  var lensSolvedWith = { k1: wizReadLensCoeff('wiz_lens_k1'), k2: wizReadLensCoeff('wiz_lens_k2') };
+
+  function lensEnabled() { return !!document.getElementById('lens-container'); }
+  function svgEl(name) { return document.createElementNS('http://www.w3.org/2000/svg', name); }
+
+  function lensFrame(line) {
+    var dx = line.p1[0] - line.p0[0], dy = line.p1[1] - line.p0[1];
+    var len = Math.sqrt(dx * dx + dy * dy) || 1;
+    return { dx: dx, dy: dy, len: len, nx: -dy / len, ny: dx / len };
+  }
+  function lensPointPos(line, j) {
+    if (j === 0) return [line.p0[0], line.p0[1]];
+    if (j === 4) return [line.p1[0], line.p1[1]];
+    var m = line.mids[j - 1], f = lensFrame(line);
+    return [line.p0[0] + m.t * f.dx + m.off * f.nx, line.p0[1] + m.t * f.dy + m.off * f.ny];
+  }
+  function lensPointIsOn(line, j) { return j === 0 || j === 4 || line.mids[j - 1].on; }
+  function lensActivePoints(line) {
+    var pts = [];
+    for (var j = 0; j < 5; j++) if (lensPointIsOn(line, j)) pts.push(lensPointPos(line, j));
+    return pts;
+  }
+  // A line counts while its ends and at least one middle point remain.
+  function lensLineCounts(line) { return lensActivePoints(line).length >= 3; }
+  function lensSetMidFromPos(line, j, pos) {
+    var f = lensFrame(line), m = line.mids[j - 1];
+    var bx = line.p0[0] + m.t * f.dx, by = line.p0[1] + m.t * f.dy;
+    m.off = (pos[0] - bx) * f.nx + (pos[1] - by) * f.ny;
+  }
+  function lensSetMidsFromPositions(line, positions) {
+    var f = lensFrame(line);
+    for (var j = 1; j <= 3; j++) {
+      var m = line.mids[j - 1], rx = positions[j][0] - line.p0[0], ry = positions[j][1] - line.p0[1];
+      m.t = (rx * f.dx + ry * f.dy) / (f.len * f.len);
+      m.off = rx * f.nx + ry * f.ny;
+    }
+  }
+  function lensClamp(pt) {
+    return [Math.max(0, Math.min(imageWidth - 1, pt[0])), Math.max(0, Math.min(imageHeight - 1, pt[1]))];
+  }
+  function lensSvgPoint(clientX, clientY) {
+    var svg = document.getElementById('lens-overlay');
+    var pt = svg.createSVGPoint();
+    pt.x = clientX; pt.y = clientY;
+    var p = pt.matrixTransform(svg.getScreenCTM().inverse());
+    return [p.x, p.y];
+  }
+
+  // ---- snapshot ----
+  function lensOnSnapshot(img) {
+    if (!lensEnabled()) return;
+    document.getElementById('lens-overlay').setAttribute('viewBox', '0 0 ' + imageWidth + ' ' + imageHeight);
+    lensCanvas = document.createElement('canvas');
+    lensCanvas.width = imageWidth;
+    lensCanvas.height = imageHeight;
+    lensCanvas.getContext('2d').drawImage(img, 0, 0);
+    if (lensImageSize && (lensImageSize[0] !== imageWidth || lensImageSize[1] !== imageHeight) && lensLines.length) {
+      lensLines = [];
+      lensFit = null;
+      lensSelected = null;
+      lensPending = null;
+      lensShowNotice('The snapshot resolution changed, so the traced lines were cleared.');
+    }
+    lensImageSize = [imageWidth, imageHeight];
+    renderLens();
+    renderLensResult();
+    saveToSession();
+  }
+  function lensShowNotice(text) {
+    var el = document.getElementById('lens-notice');
+    if (!el) return;
+    el.textContent = text || '';
+    el.style.display = text ? '' : 'none';
+  }
+  function lensShowStatus(msg, ok) {
+    var el = document.getElementById('lens-status');
+    if (!el) return;
+    el.style.display = msg ? 'block' : 'none';
+    el.textContent = msg || '';
+    el.className = 'wizard-status ' + (ok ? 'ok' : 'error');
+  }
+
+  // ---- tracing ----
+  function lensTraceClick(pt) {
+    pt = lensClamp(pt);
+    if (!lensPending) {
+      lensPending = pt;
+      lensSelected = null;
+      renderLens();
+      return;
+    }
+    var dx = pt[0] - lensPending[0], dy = pt[1] - lensPending[1];
+    if (Math.sqrt(dx * dx + dy * dy) < LENS_MIN_LINE_PX) return;
+    var line = {
+      p0: lensPending, p1: pt,
+      mids: LENS_T.map(function(t) { return { t: t, off: 0, on: true }; }),
+      snapped: [false, false, false, false, false],
+      curve: null, rms: null, misfit: false,
+    };
+    lensPending = null;
+    lensLines.push(line);
+    lensSelected = { line: lensLines.length - 1, point: 4 };
+    renderLens();
+    lensSnapLine(line);
+  }
+
+  // Mirrors edge_snap.patch_half_size: the patch grows with the snapshot.
+  function lensPatchHalf() { return Math.max(16, Math.min(64, Math.round(imageWidth / 60))); }
+  function lensPatch(cx, cy, half) {
+    var x0 = Math.max(0, Math.round(cx) - half), y0 = Math.max(0, Math.round(cy) - half);
+    var x1 = Math.min(imageWidth, Math.round(cx) + half + 1), y1 = Math.min(imageHeight, Math.round(cy) + half + 1);
+    var w = x1 - x0, h = y1 - y0;
+    if (w < 1 || h < 1) return null;
+    var rgba = lensCanvas.getContext('2d').getImageData(x0, y0, w, h).data;
+    var luma = new Uint8Array(w * h);
+    for (var i = 0, k = 0; i < luma.length; i++, k += 4) {
+      luma[i] = (rgba[k] * 299 + rgba[k + 1] * 587 + rgba[k + 2] * 114) / 1000;
+    }
+    var bin = '';
+    for (var j = 0; j < luma.length; j += 8192) bin += String.fromCharCode.apply(null, luma.subarray(j, j + 8192));
+    return { x: x0, y: y0, w: w, h: h, data: btoa(bin) };
+  }
+  function lensSnapLine(line) {
+    if (!lensCanvas) { lensChanged(); return; }
+    var half = lensPatchHalf(), patches = [];
+    for (var j = 0; j < 5; j++) {
+      var q = lensPointPos(line, j), patch = lensPatch(q[0], q[1], half);
+      if (!patch) { lensChanged(); return; }
+      patches.push(patch);
+    }
+    fetch('/api/wizard/lens/snap', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image_width: imageWidth, image_height: imageHeight, p0: line.p0, p1: line.p1, patches: patches }),
+    }).then(function(r) {
+      return r.json().then(function(data) { return { ok: r.ok, data: data }; });
+    }).then(function(res) {
+      if (lensLines.indexOf(line) === -1) return;
+      if (res.ok && res.data.points && res.data.points.length === 5) {
+        var pts = res.data.points.map(function(p) { return [p.x, p.y]; });
+        line.p0 = pts[0];
+        line.p1 = pts[4];
+        lensSetMidsFromPositions(line, pts);
+        line.snapped = res.data.points.map(function(p) { return !!p.snapped; });
+      }
+      lensChanged();
+    }).catch(function() { lensChanged(); });
+  }
+
+  // ---- rendering ----
+  function lensHandle(line, i, j) {
+    var pos = lensPointPos(line, j);
+    var g = svgEl('g');
+    var cls = 'handle lens-point';
+    if (!lensPointIsOn(line, j)) cls += ' off';
+    if (!line.snapped[j]) cls += ' unsnapped';
+    if (lensSelected && lensSelected.line === i && lensSelected.point === j) cls += ' selected';
+    g.setAttribute('class', cls);
+    g.setAttribute('transform', 'translate(' + pos[0] + ',' + pos[1] + ')');
+    g.setAttribute('tabindex', '0');
+    g.dataset.line = i;
+    g.dataset.point = j;
+    var hit = svgEl('rect');
+    hit.setAttribute('x', '-22'); hit.setAttribute('y', '-22');
+    hit.setAttribute('width', '44'); hit.setAttribute('height', '44');
+    hit.setAttribute('fill', 'transparent');
+    g.appendChild(hit);
+    var ring = svgEl('circle');
+    ring.setAttribute('r', '14');
+    ring.classList.add('handle-ring');
+    g.appendChild(ring);
+    var dot = svgEl('circle');
+    dot.setAttribute('r', j === 0 || j === 4 ? '7' : '6');
+    dot.setAttribute('class', 'dot');
+    g.appendChild(dot);
+    return g;
+  }
+  function lensPointsAttr(pts) { return pts.map(function(p) { return p[0] + ',' + p[1]; }).join(' '); }
+  function renderLens() {
+    if (!lensEnabled()) return;
+    var g = document.getElementById('lens-lines');
+    g.innerHTML = '';
+    lensLines.forEach(function(line, i) {
+      var group = svgEl('g');
+      group.setAttribute('class', 'lens-line' + (line.misfit ? ' misfit' : '') + (lensSelected && lensSelected.line === i ? ' selected' : ''));
+      group.dataset.line = i;
+      if (line.curve && line.curve.length) {
+        var curve = svgEl('polyline');
+        curve.setAttribute('class', 'lens-curve');
+        curve.setAttribute('points', lensPointsAttr(line.curve));
+        group.appendChild(curve);
+      }
+      var chord = svgEl('polyline');
+      chord.setAttribute('class', 'lens-chord');
+      chord.setAttribute('points', lensPointsAttr(lensActivePoints(line)));
+      group.appendChild(chord);
+      var label = svgEl('text');
+      label.setAttribute('class', 'lens-label');
+      label.setAttribute('x', line.p0[0] + 10);
+      label.setAttribute('y', line.p0[1] - 10);
+      label.textContent = String(i + 1);
+      group.appendChild(label);
+      for (var j = 0; j < 5; j++) group.appendChild(lensHandle(line, i, j));
+      g.appendChild(group);
+    });
+    var pending = document.getElementById('lens-pending');
+    pending.innerHTML = '';
+    if (lensPending) {
+      var c = svgEl('circle');
+      c.setAttribute('class', 'lens-pending');
+      c.setAttribute('cx', lensPending[0]);
+      c.setAttribute('cy', lensPending[1]);
+      c.setAttribute('r', '7');
+      pending.appendChild(c);
+    }
+    renderLensToolbar();
+    renderLensMisfit();
+  }
+  // Move the handles and chord of one line without rebuilding the DOM, so a
+  // drag keeps its focus and pointer capture.
+  function lensUpdateLineGeometry(i) {
+    var line = lensLines[i];
+    var group = document.querySelector('#lens-lines .lens-line[data-line="' + i + '"]');
+    if (!group) return;
+    group.querySelectorAll('.lens-point').forEach(function(h) {
+      var pos = lensPointPos(line, +h.dataset.point);
+      h.setAttribute('transform', 'translate(' + pos[0] + ',' + pos[1] + ')');
+    });
+    group.querySelector('.lens-chord').setAttribute('points', lensPointsAttr(lensActivePoints(line)));
+    var label = group.querySelector('.lens-label');
+    label.setAttribute('x', line.p0[0] + 10);
+    label.setAttribute('y', line.p0[1] - 10);
+  }
+  function renderLensToolbar() {
+    var toggle = document.getElementById('lens-toggle-point');
+    var del = document.getElementById('lens-delete-line');
+    var clear = document.getElementById('lens-clear');
+    if (!toggle) return;
+    var mid = lensSelected && lensSelected.point > 0 && lensSelected.point < 4 ? lensLines[lensSelected.line] : null;
+    toggle.disabled = !mid;
+    toggle.textContent = mid && !mid.mids[lensSelected.point - 1].on ? 'Point on' : 'Point off';
+    del.disabled = !lensSelected;
+    clear.disabled = !lensLines.length;
+  }
+  function renderLensMisfit() {
+    var el = document.getElementById('lens-misfit');
+    if (!el) return;
+    var bad = [];
+    lensLines.forEach(function(line, i) { if (line.misfit) bad.push(i + 1); });
+    el.style.display = bad.length ? '' : 'none';
+    el.textContent = bad.length ? 'Line ' + bad.join(', ') + ': ' + LENS_MISFIT_TEXT : '';
+  }
+  function renderLensMeter(meter, rating) {
+    if (!meter) return;
+    meter.dataset.level = LENS_RATING_LEVEL[rating] || 'caution';
+    var n = LENS_RATING_SEGMENTS[rating] || 0;
+    meter.querySelectorAll('.wizard-meter-seg').forEach(function(seg, i) { seg.classList.toggle('filled', i < n); });
+  }
+  function renderLensResult() {
+    var box = document.getElementById('lens-result');
+    if (!box) return;
+    if (!lensFit) { box.style.display = 'none'; return; }
+    var level = LENS_RATING_LEVEL[lensFit.rating] || 'caution';
+    box.style.display = '';
+    box.className = 'notice' + (level === 'caution' ? ' warning' : level === 'success' ? ' success' : '');
+    renderLensMeter(box.querySelector('.wizard-meter'), lensFit.rating);
+    var text = 'Coverage ' + (LENS_RATING_LABEL[lensFit.rating] || lensFit.rating).toLowerCase()
+      + ' · k1 ' + Number(lensFit.k1).toFixed(3) + ' · k2 ' + Number(lensFit.k2).toFixed(3);
+    if (!lensFit.k2_fitted) text += ' (k2 not determined by these lines)';
+    document.getElementById('lens-result-text').textContent = text;
+    document.getElementById('lens-result-hint').textContent = lensFit.hint || '';
+  }
+
+  // ---- loupe ----
+  function lensShowLoupe(pos) {
+    var loupe = document.getElementById('lens-loupe');
+    if (!loupe || !lensCanvas) return;
+    var canvas = loupe.querySelector('canvas'), ctx = canvas.getContext('2d');
+    var src = canvas.width / LENS_LOUPE_ZOOM / 2;
+    ctx.imageSmoothingEnabled = false;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(lensCanvas, pos[0] - src / 2, pos[1] - src / 2, src, src, 0, 0, canvas.width, canvas.height);
+    ctx.strokeStyle = '#ffbc00';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(canvas.width / 2, 0); ctx.lineTo(canvas.width / 2, canvas.height);
+    ctx.moveTo(0, canvas.height / 2); ctx.lineTo(canvas.width, canvas.height / 2);
+    ctx.stroke();
+    var container = document.getElementById('lens-container');
+    var overlay = document.getElementById('lens-overlay');
+    var box = overlay.getBoundingClientRect(), cont = container.getBoundingClientRect();
+    var sx = box.left - cont.left + pos[0] / imageWidth * box.width;
+    var sy = box.top - cont.top + pos[1] / imageHeight * box.height;
+    var size = loupe.offsetWidth || 120;
+    // Offset from the finger: above and to the right, flipped when it would leave the image.
+    var lx = sx + 30, ly = sy - size - 30;
+    if (lx + size > cont.width) lx = sx - size - 30;
+    if (ly < 0) ly = sy + 30;
+    loupe.style.left = Math.max(0, lx) + 'px';
+    loupe.style.top = Math.max(0, ly) + 'px';
+    loupe.style.display = 'block';
+  }
+  function lensHideLoupe() {
+    var loupe = document.getElementById('lens-loupe');
+    if (loupe) loupe.style.display = 'none';
+  }
+
+  // ---- edits ----
+  function lensMovePoint(line, j, pos) {
+    if (j === 0) line.p0 = pos;
+    else if (j === 4) line.p1 = pos;
+    else lensSetMidFromPos(line, j, pos);
+  }
+  function lensChanged() {
+    renderLens();
+    saveToSession();
+    scheduleLensFit();
+  }
+  window.lensToggleSelectedPoint = function() {
+    if (!lensSelected || lensSelected.point === 0 || lensSelected.point === 4) return;
+    var m = lensLines[lensSelected.line].mids[lensSelected.point - 1];
+    m.on = !m.on;
+    lensChanged();
+  };
+  window.lensDeleteSelectedLine = function() {
+    if (!lensSelected) return;
+    lensLines.splice(lensSelected.line, 1);
+    lensSelected = null;
+    lensChanged();
+  };
+  window.lensClearLines = function() {
+    lensLines = [];
+    lensSelected = null;
+    lensPending = null;
+    lensChanged();
+  };
+
+  // ---- fit ----
+  function scheduleLensFit() {
+    clearTimeout(lensFitTimer);
+    lensFitTimer = setTimeout(runLensFit, LENS_FIT_DEBOUNCE_MS);
+  }
+  function runLensFit() {
+    var lines = lensLines.filter(lensLineCounts);
+    lensLines.forEach(function(l) { l.curve = null; l.rms = null; l.misfit = false; });
+    if (!lines.length) {
+      lensFit = null;
+      lensShowStatus('', true);
+      renderLensResult();
+      renderLens();
+      saveToSession();
+      return;
+    }
+    fetch('/api/wizard/lens/fit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        image_width: imageWidth,
+        image_height: imageHeight,
+        lines: lines.map(function(l) { return { points: lensActivePoints(l) }; }),
+      }),
+    }).then(function(r) {
+      return r.json().then(function(data) { return { ok: r.ok, data: data }; });
+    }).then(function(res) {
+      if (!res.ok || !res.data || res.data.error) {
+        lensShowStatus((res.data && res.data.error) || 'Could not fit the lens.', false);
+        return;
+      }
+      lensShowStatus('', true);
+      lensFit = res.data;
+      lines.forEach(function(l, i) {
+        var r = res.data.lines[i];
+        l.curve = r.curve;
+        l.rms = r.rms_px;
+        l.misfit = !!r.misfit;
+      });
+      wizWriteLensCoeff('wiz_lens_k1', Number(res.data.k1).toFixed(4));
+      wizWriteLensCoeff('wiz_lens_k2', Number(res.data.k2).toFixed(4));
+      var err = document.getElementById('wiz-lens-error');
+      if (err) err.style.display = 'none';
+      renderLensResult();
+      renderLens();
+      onLensCoeffChanged();
+    }).catch(function() {
+      lensShowStatus('Could not fit the lens.', false);
+    });
+  }
+
+  // The curve a lens pair predicts for a line: the straight line through the
+  // undistorted active points, bowed again. Drawn live while a slider moves.
+  function lensPredictCurve(line, k1, k2) {
+    var pts = lensActivePoints(line);
+    if (pts.length < 2 || !wizLensIsValid(k1, k2)) return null;
+    var u = pts.map(function(p) { return wizInvertDistortion(p, k1, k2); });
+    var cx = 0, cy = 0;
+    u.forEach(function(p) { cx += p[0]; cy += p[1]; });
+    cx /= u.length; cy /= u.length;
+    var sxx = 0, sxy = 0, syy = 0;
+    u.forEach(function(p) { var x = p[0] - cx, y = p[1] - cy; sxx += x * x; sxy += x * y; syy += y * y; });
+    var theta = 0.5 * Math.atan2(2 * sxy, sxx - syy);
+    var dx = Math.cos(theta), dy = Math.sin(theta);
+    var tMin = Infinity, tMax = -Infinity;
+    u.forEach(function(p) { var t = (p[0] - cx) * dx + (p[1] - cy) * dy; tMin = Math.min(tMin, t); tMax = Math.max(tMax, t); });
+    var out = [];
+    for (var i = 0; i < 24; i++) {
+      var t = tMin + (tMax - tMin) * i / 23;
+      out.push(wizApplyDistortion([cx + t * dx, cy + t * dy], k1, k2));
+    }
+    return out;
+  }
+  function lensRecomputeCurves() {
+    if (!lensEnabled()) return;
+    var k1 = wizReadLensCoeff('wiz_lens_k1'), k2 = wizReadLensCoeff('wiz_lens_k2');
+    lensLines.forEach(function(line) { line.curve = lensLineCounts(line) ? lensPredictCurve(line, k1, k2) : null; });
+  }
+
+  // A new lens pair, from the fit or a slider: solve the pose again from the
+  // pins when the session still has them; otherwise Review says to re-pin.
+  function onLensCoeffChanged() {
+    saveToSession();
+    if (!pinnedCorners || !wizLensPairValid()) return;
+    clearTimeout(lensReSolveTimer);
+    lensReSolveTimer = setTimeout(solveFromPinnedCorners, LENS_FIT_DEBOUNCE_MS);
+  }
+  function solveFromPinnedCorners() {
+    if (!pinnedCorners || !imageWidth || !imageHeight) return;
+    var pins = pinnedCorners;
+    fetch('/api/wizard/solve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(wizardSolveBody(pins)),
+    }).then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.error) return;
+      solvedCamera = data.camera;
+      wizardApplySolvedCamera(data.camera);
+      lensSolvedWith = { k1: wizReadLensCoeff('wiz_lens_k1'), k2: wizReadLensCoeff('wiz_lens_k2') };
+      saveToSession();
+      if (currentStep !== WIZ.lens) projectAndOverlay();
+    }).catch(function() {});
+  }
+  function lensChangedSinceSolve() {
+    var k1 = wizReadLensCoeff('wiz_lens_k1'), k2 = wizReadLensCoeff('wiz_lens_k2');
+    return !pinnedCorners && (Math.abs(k1 - lensSolvedWith.k1) > 1e-9 || Math.abs(k2 - lensSolvedWith.k2) > 1e-9);
+  }
+  function populateReviewLens(cam) {
+    var k1El = document.getElementById('review-lens-k1');
+    if (!k1El) return;
+    k1El.textContent = Number(cam.lens_k1).toFixed(3);
+    document.getElementById('review-lens-k2').textContent = Number(cam.lens_k2).toFixed(3);
+    var meter = document.querySelector('#review-lens-rating .wizard-meter');
+    var text = document.getElementById('review-lens-rating-text');
+    if (lensFit) {
+      renderLensMeter(meter, lensFit.rating);
+      meter.style.display = '';
+      text.textContent = LENS_RATING_LABEL[lensFit.rating] || lensFit.rating;
+    } else {
+      meter.style.display = 'none';
+      text.textContent = 'Not measured';
+    }
+    document.getElementById('review-lens-caution').style.display = lensChangedSinceSolve() ? '' : 'none';
+  }
+
+  // ---- pointer + keyboard ----
+  function lensInit() {
+    if (!lensEnabled()) return;
+    var overlay = document.getElementById('lens-overlay');
+    overlay.addEventListener('pointerdown', function(e) {
+      var handle = e.target.closest ? e.target.closest('.lens-point') : null;
+      var pt = lensSvgPoint(e.clientX, e.clientY);
+      if (handle) {
+        e.preventDefault();
+        lensSelected = { line: +handle.dataset.line, point: +handle.dataset.point };
+        lensDrag = { line: lensLines[lensSelected.line], point: lensSelected.point, start: pt, moved: false };
+        overlay.setPointerCapture(e.pointerId);
+        renderLens();
+        var again = document.querySelector('.lens-point[data-line="' + lensSelected.line + '"][data-point="' + lensSelected.point + '"]');
+        if (again) again.focus({ preventScroll: true });
+        lensShowLoupe(lensPointPos(lensDrag.line, lensDrag.point));
+      } else if (e.target.id === 'lens-hit') {
+        e.preventDefault();
+        lensDrag = { trace: true, start: pt, moved: false };
+        overlay.setPointerCapture(e.pointerId);
+      }
+    });
+    overlay.addEventListener('pointermove', function(e) {
+      if (!lensDrag) return;
+      var pt = lensSvgPoint(e.clientX, e.clientY);
+      if (Math.abs(pt[0] - lensDrag.start[0]) > 1 || Math.abs(pt[1] - lensDrag.start[1]) > 1) lensDrag.moved = true;
+      if (lensDrag.trace) return;
+      e.preventDefault();
+      lensMovePoint(lensDrag.line, lensDrag.point, lensClamp(pt));
+      lensUpdateLineGeometry(lensLines.indexOf(lensDrag.line));
+      lensShowLoupe(lensPointPos(lensDrag.line, lensDrag.point));
+    });
+    function endDrag(e) {
+      if (!lensDrag) return;
+      var drag = lensDrag;
+      lensDrag = null;
+      lensHideLoupe();
+      try { overlay.releasePointerCapture(e.pointerId); } catch (err) {}
+      if (drag.trace) {
+        if (!drag.moved) lensTraceClick(lensSvgPoint(e.clientX, e.clientY));
+        return;
+      }
+      if (drag.moved) lensChanged(); else renderLens();
+    }
+    overlay.addEventListener('pointerup', endDrag);
+    overlay.addEventListener('pointercancel', endDrag);
+    overlay.addEventListener('keydown', function(e) {
+      var handle = e.target.closest ? e.target.closest('.lens-point') : null;
+      if (!handle) return;
+      var i = +handle.dataset.line, j = +handle.dataset.point, line = lensLines[i];
+      if (!line) return;
+      lensSelected = { line: i, point: j };
+      var step = e.shiftKey ? 10 : 1, dx = 0, dy = 0;
+      if (e.key === 'ArrowLeft') dx = -step;
+      else if (e.key === 'ArrowRight') dx = step;
+      else if (e.key === 'ArrowUp') dy = -step;
+      else if (e.key === 'ArrowDown') dy = step;
+      else if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); lensDeleteSelectedLine(); return; }
+      else if (e.key === ' ') { e.preventDefault(); lensToggleSelectedPoint(); return; }
+      else return;
+      e.preventDefault();
+      var pos = lensPointPos(line, j);
+      if (j === 0 || j === 4) {
+        lensMovePoint(line, j, lensClamp([pos[0] + dx, pos[1] + dy]));
+      } else {
+        // A middle point only moves across the line: keep the nudge's perpendicular part.
+        var f = lensFrame(line);
+        line.mids[j - 1].off += dx * f.nx + dy * f.ny;
+      }
+      lensUpdateLineGeometry(i);
+      saveToSession();
+      scheduleLensFit();
+    });
+    document.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape' && lensPending && currentStep === WIZ.lens) {
+        lensPending = null;
+        renderLens();
+      }
+    });
+    var err = document.getElementById('wiz-lens-error');
+    if (err) err.style.display = wizLensPairValid() ? 'none' : 'block';
+    renderLens();
+    renderLensResult();
+  }
 
   // ---------------------------------------------------------------
   // Init
@@ -3631,6 +4354,7 @@
   // mutate their inner <g> children), so a one-time wiring is enough
   // and cheaper than re-attaching per render.
   setupFineZoomDragging();
+  lensInit();
   wizardGo(restored ? currentStep : 0);
 })();
 </script>

@@ -31,14 +31,16 @@ OpenFollow only needs the **horizontal** field of view; the sensor and focal-len
 
 ## Lens distortion (experimental)
 
-Wide-angle and fisheye lenses bow straight lines, so the pinhole overlay (grid, markers, zones) no longer sits on top of the curved video. These two sliders bow the **overlay** to match the lens. The video frame itself is never warped (warping every pixel would be too slow on a Pi), so there is no performance cost when the sliders are at `0`.
+Wide-angle and fisheye lenses bow straight lines, so the pinhole overlay (grid, markers, zones) no longer sits on top of the curved video. Two coefficients bow the **overlay** to match the lens. The video frame itself is never warped (warping every pixel would be too slow on a Pi), so there is no performance cost when both are `0`.
 
-- **Barrel / fisheye (k1)** – the main correction. Drag it negative until the overlay grid hugs a wide-angle / fisheye image (lines curve inward); positive corrects a pincushion lens (lines curve outward).
-- **Edge fit (k2)** – a finer, higher-order adjustment for the frame edges, where strong fisheye lenses bend the most. Set k1 first, then nudge k2.
+- **Barrel / fisheye (k1)** – the main correction. Negative hugs a wide-angle / fisheye image (lines curve inward); positive corrects a pincushion lens (lines curve outward).
+- **Edge fit (k2)** – a finer, higher-order adjustment for the frame edges, where strong fisheye lenses bend the most.
 
-The correction is centred on the middle of the image. Tune by eye: enable experimental features, open this page next to the live display, and adjust until the overlay lines follow the video. Mouse placement and AI tracking are corrected to match, so clicking a point in the video still lands the marker there. `0` / `0` disables the correction (plain pinhole).
+**Measure them instead of guessing.** With experimental features on, the **Setup Wizard** gains a **Lens** step between Video Source and Camera Position. Click the start and the end of something that is straight in reality – a stage edge, a gaffa line, a truss, the edge of an LED wall – and the wizard places five points on that edge and fits k1 and k2 so the lines come out straight. Nothing is printed or carried, and the lens is measured as rigged, at show zoom and focus. A five-step coverage rating says how well the lines pin the lens down: lines near the edges and corners of the image tell the most, and k2 is only measured once a line reaches a corner. Apply is never blocked by the rating; some venues simply have no straight edges in the corners. The sliders under the result fine-tune the pair, and Review repeats the rating and the values. Skipping the step keeps the current pair.
 
-The **Setup Wizard** also carries these sliders in its Corner Pinning step (behind the same experimental-features toggle): bow the projected grid to match the lens, then pin the corners. The solve undistorts the pinned corners before fitting the pinhole pose, so a fisheye lens no longer skews the calibration. Sliders set in the wizard are saved back here on Apply, and vice versa.
+The correction is centred on the middle of the image. Mouse placement and AI tracking are corrected to match, so clicking a point in the video still lands the marker there. `0` / `0` disables the correction (plain pinhole).
+
+The one limit on the pair is that the overlay must not fold anywhere out to the frame corner, which a save refuses and a hand-edited file falls back from to `0` / `0`. There is no fixed range: a lens with about 100° horizontal field of view on 16:9 lands around k1 `-0.47` / k2 `0.25`, and the sliders cover the common span while the number fields accept any pair that does not fold. The Corner Pinning solve undistorts the pinned corners with the current pair, so a lens changed after pinning is solved again from the same pins, and Review says so when there are no pins to solve from.
 
 ## Saving & sharing
 

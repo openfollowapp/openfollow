@@ -11,6 +11,7 @@ openfollow/              # Single unified package
 ├── runtime_metrics.py   # Frame metrics + overlay-state pooling helpers
 ├── net_utils.py         # Local IP/network helpers
 ├── packet_chunking.py   # MTU-budgeted datagram split shared by every output
+├── lens_model.py        # The lens pair's fold check (stdlib-only; config, web and solver read it)
 ├── window.py            # GTK native sink window wrapper
 ├── psn/                 # PSN protocol subpackage
 │   ├── clock.py         # Shared microsecond time base (headers + trackers)
@@ -19,7 +20,9 @@ openfollow/              # Single unified package
 │   └── receiver.py      # PSN listener
 ├── scene/               # Camera model + calibration math
 │   ├── camera.py
-│   └── solver.py        # DLT camera solve (used by the web wizard)
+│   ├── solver.py        # DLT camera solve + the radial overlay warp and its inverse
+│   ├── lens_fit.py      # k1 / k2 from traced straight lines (the wizard's Lens step)
+│   └── edge_snap.py     # Snap a traced line's points onto a brightness edge
 ├── video/               # Video pipeline + overlay
 │   ├── receiver.py      # Generic GStreamer orchestrator
 │   ├── overlay.py       # Cairo HUD renderer

@@ -971,16 +971,18 @@ table and fails a status rule that carries a literal colour.
 - Restart detection: polls `/section/general` every 2s; on success → `window.location.reload()`
 
 ### Setup wizard (`/wizard`)
-7-step guided workflow for camera positioning and grid calibration:
+Guided workflow for camera positioning and grid calibration, seven steps, eight with the experimental **Lens** step:
 1. **Preparation** – info + SVG stage layout illustration
 2. **Grid Setup** – width, depth, z_offset, spacing, x_offset, y_offset; dynamic SVG illustration updates from input
 3. **Video Source** – select and configure camera input (reuses video source UI); save & restart to activate
-4. **Camera Position** – pos_x/y/z, pitch/yaw/roll, fov; dynamic isometric illustration
-5. **Reference Mapping** – draggable crosshair for coarse calibration (single known point); rigid-body shift of all corners
-6. **Corner Pinning** – 4 draggable corners, DLT solve, solved camera params displayed
-7. **Review & Apply** – read-only summary of all values + green overlay; Apply or Discard
+4. **Lens** (only with `ui.show_experimental_features`) – measure `lens_k1` / `lens_k2` from lines that are straight in reality (see "Lens distortion from straight lines" below); skipping keeps the current pair
+5. **Camera Position** – pos_x/y/z, pitch/yaw/roll, fov; dynamic isometric illustration
+6. **Reference Mapping** – draggable crosshair for coarse calibration (single known point); rigid-body shift of all corners
+7. **Corner Pinning** – 4 draggable corners, DLT solve, solved camera params displayed
+8. **Review & Apply** – read-only summary of all values + green overlay; Apply or Discard
 
 Key implementation details:
+- **Steps are keyed, never numbered, in script.** The template builds the step list (`_steps`, the Lens step only with the toggle) and publishes it as `window.WIZ` (key → index) and `WIZ_STEPS`; step content divs are `#wizard-step-<key>`, nav buttons call `wizardNext()` / `wizardPrev()`, and the session stores `_stepKey`. A step inserted or left out shifts nothing
 - Server-side projection/unprojection via `/api/wizard/project` and `/api/wizard/unproject` to avoid JS↔Python coordinate math mismatches
 - SVG viewBox matches native image resolution so coordinates map 1:1 regardless of CSS scaling
 - `sessionStorage` persists wizard state across accidental navigation/refresh
@@ -991,7 +993,17 @@ Key implementation details:
 - **Input validation:** `/api/wizard/{project,unproject,solve}` must return 400 – not 500 – on malformed bodies. All float coercion and shape checks (including numpy array construction from caller-supplied coords) belong *inside* the try/except. Shared `_wizard_camera_params()` helper validates the 7-field camera vector
 - **Step nav semantics:** `<nav aria-label="Setup wizard steps">` landmark with `aria-current="step"`, **not** `role=tablist`/`role=tab`. The earlier tablist markup was an incomplete ARIA tab pattern (missing `aria-selected`/`aria-controls`/`role=tabpanel`); for a linear wizard, nav + aria-current is the correct lighter-weight semantics
 - Snapshot blob URLs: `loadSnapshot()` must revoke the previous `URL.createObjectURL` after the new image loads to avoid a per-refresh memory leak
-- "No feed" UX: each preview container has a sibling `.wizard-no-feed` placeholder div; `setPreviewVisibility()` toggles both so steps 5–7 never render blank when `/api/video/snapshot/full` fails
+- "No feed" UX: each preview container has a sibling `.wizard-no-feed` placeholder div; `setPreviewVisibility()` toggles both so the snapshot steps never render blank when `/api/video/snapshot/full` fails
+
+### Lens distortion from straight lines (`scene/lens_fit.py`, `scene/edge_snap.py`, `lens_model.py`)
+
+The overlay correction is `f = 1 + k1·r² + k2·r⁴` about the image centre, `r` normalised to the half-diagonal (`r = 1` at a corner); `project_points` / `unproject_to_plane` stay pinhole, `apply_overlay_distortion` bows what the HUD draws and `invert_overlay_distortion` undistorts clicks, detection pins and zone feet. **The one validity rule is the fold check**, `lens_model.lens_warp_is_valid` (stdlib-only, because `configuration.py` reads it): `r·f(r)` must keep growing on `[0, 1]`, i.e. `1 + 3·k1·s + 5·k2·s² > 0` for `s ∈ [0, 1]`, closed form in `lens_fold_radius`. There is no box: a 100° lens on 16:9 sits near `(-0.47, 0.25)`. `CameraConfig.__post_init__` falls a folding pair back to `0 / 0` with a WARNING, the Camera form's blur check reads the sibling field through `validate(..., context=)` and refuses the pair, `_wizard_lens_coeffs` falls back to pinhole, and the fit never leaves the valid region. The inverse is a **bracketed Newton solve** (`invert_normalised_radius`, broadcasting radii against a grid of pairs) exact over the whole valid range; a distorted radius the warp never reaches lands on the fold radius. The fixed-point iteration it replaced was tens of pixels off at a corner for pairs inside the old box. `wizard.tpl` mirrors the fold check and the inverse (`wizLensFoldRadius`, `wizInvertRadius`) for its bowed edges and live curves.
+
+**The fit** (`fit_lens_from_lines`) is the plumb-line method: each traced line's active points are undistorted and measured against their own total-least-squares line; the cost is the sum of squared perpendicular residuals. A coarse grid over both coefficients (vectorised through `_Lines.grid_cost`, closed-form smallest eigenvalue of each line's scatter) seeds a damped Gauss-Newton refinement, because a start at zero diverges on strong barrel distortion. **k2 is only fitted when its predicted sigma is below `K2_SIGMA_GATE`** (0.05, needs lines near the corners), else it stays `0` and the k1-only solution is reported. The rating is the predicted uncertainty of the warp at the frame corner in px, from the full 2×2 covariance with the residual sigma floored at 1 px: `RATING_THRESHOLDS_PX` (2.5 / 5 / 10 / 20 → excellent / good / okay / medium, else low) are fixed from simulation and pinned in `tests/test_lens_fit.py`; the hint names the emptiest edge band, or the missing corner line. A line **does not fit the others** when, with k1 refitted without it (k2 held, so two remaining lines cannot be overfitted), its RMS exceeds both 3 px and three times the others'; needs three lines. Zero coefficients reproduce the pinhole path exactly.
+
+**Edge snap** (`snap_line_to_edges`) runs on luma patches the browser cuts around the five sample positions (`LINE_SAMPLE_FRACTIONS`) of a traced line, so the server never needs the JPEG decoded and the snapshot the operator sees is the one measured. Along each point's perpendicular the luma is averaged over `_TANGENT_HALF_WIDTH` pixels of the line direction and differentiated; the strongest gradient within `search_radius` wins, with a mild preference for nearer edges and a parabolic sub-pixel refinement. **All five points take one polarity** (the one with the higher total score), otherwise gaffa tape's width reads as curvature; a point without a gradient above `_MIN_EDGE_STRENGTH` stays on the straight line and is reported `snapped=False`. `patch_half_size` scales with the snapshot width and is mirrored by `lensPatchHalf()` in the wizard.
+
+**Routes** `POST /api/wizard/lens/snap` (endpoints + five base64 luma patches → five points with their marks) and `POST /api/wizard/lens/fit` (lines of active points → k1, k2, `k2_fitted`, per-line RMS / misfit / predicted curve, rating, hint) both answer 400 on malformed bodies like the other wizard routes. **In the wizard**, lines live in the session (`_lensLines`) as endpoints plus middle points in the line's frame `(t, off)`, so an endpoint move keeps every middle point's perpendicular offset and a middle point only moves across the line; the fit runs debounced after every release; refreshing the snapshot keeps the lines unless the resolution changed. The sliders under the result are **Fine-tune** (they moved there from Corner Pinning). A solve records its pins (`notePinnedCorners`); a lens change solves again from them (`solveFromPinnedCorners`), and Review shows the caution "Lens changed – redo Corner Pinning" only when there are no pins to solve from. The five-segment coverage meter is the status language's graded meter (`docs/STATUS_LANGUAGE.md`).
 
 ### Discovery (`web/discovery.py`)
 - UDP multicast `239.255.50.50:50505` (`BEACON_MCAST_GROUP` / `BEACON_PORT`), JSON beacon every `BEACON_INTERVAL` = 2s

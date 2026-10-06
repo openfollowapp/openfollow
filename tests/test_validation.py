@@ -169,18 +169,38 @@ def test_validate_range_high() -> None:
 
 
 @pytest.mark.parametrize(
-    "field,raw",
-    [("lens_k1", "0.5"), ("lens_k1", "-0.5"), ("lens_k2", "0.5"), ("lens_k2", "-0.5")],
+    "field,raw,context",
+    [
+        ("lens_k1", "-0.5", None),  # folds against the implied k2 = 0
+        ("lens_k1", "-0.5", {"lens_k2": "0"}),
+        ("lens_k2", "-0.3", {"lens_k1": "-0.2"}),
+        ("lens_k1", "-0.4", {"lens_k2": "-0.2"}),  # the old box's far corner folds
+    ],
 )
-def test_validate_lens_distortion_out_of_range(field: str, raw: str) -> None:
-    err = validate("camera", field, raw)
+def test_validate_lens_distortion_folding_pair(field: str, raw: str, context: dict[str, str] | None) -> None:
+    err = validate("camera", field, raw, context=context)
     assert err is not None
-    assert "between" in err.lower()
+    assert "folds" in err
 
 
-@pytest.mark.parametrize("field,raw", [("lens_k1", "0.1"), ("lens_k2", "-0.03")])
-def test_validate_lens_distortion_in_range_ok(field: str, raw: str) -> None:
-    assert validate("camera", field, raw) is None
+@pytest.mark.parametrize(
+    "field,raw,context",
+    [
+        ("lens_k1", "0.1", None),
+        ("lens_k2", "-0.03", None),
+        ("lens_k1", "5", None),  # pincushion never folds: no box
+        ("lens_k1", "-0.5", {"lens_k2": "0.25"}),  # the sibling keeps the pair valid
+        ("lens_k2", "0.25", {"lens_k1": "-0.47"}),
+        ("lens_k1", "-0.3", {"lens_k2": "abc"}),  # an unparseable sibling reads as 0; its own blur flags it
+    ],
+)
+def test_validate_lens_distortion_valid_pair_ok(field: str, raw: str, context: dict[str, str] | None) -> None:
+    assert validate("camera", field, raw, context=context) is None
+
+
+@pytest.mark.parametrize("field,raw", [("lens_k1", "abc"), ("lens_k2", "nan"), ("lens_k1", "inf")])
+def test_validate_lens_distortion_wrong_type(field: str, raw: str) -> None:
+    assert validate("camera", field, raw) == "Must be a number."
 
 
 @pytest.mark.parametrize("section", ["grid", "marker"])

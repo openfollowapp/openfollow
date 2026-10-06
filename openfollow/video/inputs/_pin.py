@@ -80,6 +80,24 @@ def is_local_destination(host: str) -> bool:
     return bool(addresses) and all(_is_local(address, owners) for address in addresses)
 
 
+def resolves_to_ipv6(host: str) -> bool:
+    """Whether *host* is a name with an IPv6 address, as far as a bounded lookup tells.
+
+    An IP literal is never one: the element reads a literal's family itself. A
+    name whose lookup is still running reads as having none this attempt; the
+    answer serves the next one.
+    """
+    if not host:
+        return False
+    try:
+        ipaddress.ip_address(host.split("%")[0])
+    except ValueError:
+        pass
+    else:
+        return False
+    return any(":" in address for address in _resolver.lookup(host, _RESOLVE_WAIT_S).addresses)
+
+
 def binds_device(host: str) -> bool:
     """Whether a pinned SRT connection to *host* is bound to the device.
 

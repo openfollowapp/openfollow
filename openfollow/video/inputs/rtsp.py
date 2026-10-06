@@ -20,13 +20,17 @@ from openfollow.video.inputs._base import (
     VideoInputBase,
     video_input_pin_field,
 )
-from openfollow.video.inputs._pin import PinRefusal, check_video_pin, config_pin
+from openfollow.video.inputs._pin import PinRefusal, check_video_pin, config_pin, resolves_to_ipv6
 
 logger = logging.getLogger(__name__)
 
 # Microseconds. Bounds the wait for each RTSP response, not the TCP connect, so
 # it stays generous enough for a busy NVR to answer DESCRIBE.
 _TCP_TIMEOUT_US = 10_000_000
+
+# rtspsrc "protocols" flags: UDP unicast | UDP multicast | TCP interleaved.
+_TRANSPORTS_ALL = 0x7
+_TRANSPORTS_TCP = 0x4
 
 
 def _endpoint_from_url(
@@ -176,17 +180,22 @@ class RtspInput(VideoInputBase):
         rtspsrc.set_property("latency", 0)
         rtspsrc.set_property("drop-on-latency", True)
         rtspsrc.set_property("buffer-mode", 0)  # none – lowest latency
-        # Allow TCP + UDP + UDP-multicast so RTSP can negotiate the best working
-        # transport for the current network (Pi/macOS/firewall differences).
-        rtspsrc.set_property("protocols", 0x00000007)
+        # rtspsrc opens its UDP ports for the family of the literal in the URL, so a
+        # name reads as IPv4 even when the connection lands on IPv6 and udpsink then
+        # refuses the server's address. Such a name takes the interleaved transport;
+        # everything else may negotiate TCP, UDP or multicast.
+        endpoint = self.source_endpoint(config)
+        tcp_only = endpoint is not None and resolves_to_ipv6(endpoint.host)
+        rtspsrc.set_property("protocols", _TRANSPORTS_TCP if tcp_only else _TRANSPORTS_ALL)
         pin = config_pin(config)
         if pin:
             # Only the multicast membership can be pinned; the preflight checks
             # that the routing table already sends everything else there.
             rtspsrc.set_property("multicast-iface", pin)
         logger.info(
-            "RTSP source: %s (latency=0, tcp+udp+multicast, login=%s)",
+            "RTSP source: %s (latency=0, %s, login=%s)",
             redact_uri(location),
+            "tcp interleaved: the name has an IPv6 address" if tcp_only else "tcp+udp+multicast",
             "set" if (user or password) else "none",
         )
 

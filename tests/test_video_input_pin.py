@@ -407,6 +407,30 @@ def test_a_slow_lookup_holds_one_attempt_and_serves_a_later_one(
     assert calls == ["slow.example"]
 
 
+@pytest.mark.parametrize(
+    ("host", "answers", "expected", "looked_up"),
+    [
+        ("", None, False, False),
+        ("192.0.2.10", None, False, False),
+        ("2001:db8::10", None, False, False),
+        ("fe80::1%eth0", None, False, False),
+        ("camera.example", ["192.0.2.10"], False, True),
+        ("camera.example", ["2001:db8::10"], True, True),
+        ("camera.example", ["192.0.2.10", "2001:db8::10"], True, True),
+        ("localhost", ["::1", "127.0.0.1"], True, True),
+        ("nowhere.example", None, False, True),
+    ],
+)
+def test_resolves_to_ipv6_reads_a_name_and_never_a_literal(
+    net: SimpleNamespace, host: str, answers: list[str] | None, expected: bool, looked_up: bool
+) -> None:
+    if answers is not None:
+        net.answers[host] = answers
+    assert _pin.resolves_to_ipv6(host) is expected
+    # A literal's family is the element's to read: no lookup is spent on it.
+    assert net.lookups == ([host] if looked_up else [])
+
+
 def test_a_lookup_that_cannot_start_a_thread_says_so_and_is_tried_again(
     net: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:

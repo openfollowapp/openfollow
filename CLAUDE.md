@@ -356,6 +356,13 @@ srtsrc → pre_queue → decodebin → post_queue → videoconvert → shared_vi
 - `pad-added` on decodebin: **do NOT filter by pad name** (uses `src_0`, not `video_0`)
 - Reconnect: 3 retries with 8s first-frame timeout, then no-signal placeholder fallback
 
+### RTSP plugin (`video/inputs/rtsp.py`)
+```
+rtspsrc → decodebin → post_queue (leaky) → videoconvert → shared_videosink
+```
+- `protocols` allows TCP + UDP + multicast, **except for a name that resolves to an IPv6 address, which gets TCP interleaved only**. `rtspsrc` opens its UDP ports for the family of the literal in the URL, so a name reads as IPv4 even when the control connection lands on IPv6 (a dual-stack server, `localhost`), and `udpsink` then refuses the server's address with `Invalid address family`. `_pin.resolves_to_ipv6` asks the bounded resolver (`_RESOLVE_WAIT_S`); a name still resolving keeps every transport this attempt and the next attempt reads the answer. An IPv6 literal is left to the element, which reads its family itself
+- `tcp-timeout` 10 s so the element gives up before the connection timeout, `latency` 0, `drop-on-latency`, `buffer-mode` none; only the video track is linked into `decodebin`, since an NVR may list its audio track first
+
 ### Stream credentials (RTSP / SRT)
 `rtsp_user` / `rtsp_password` / `srt_passphrase` are rendered as a login block under each plugin's URL (password inputs) and drive the element properties directly. The URL's own credential is **stripped before** `location` / `uri` is handed over – `rtspsrc` tries URL userinfo first and only then falls back to `user-id` / `user-pw`, so leaving it in would let a stale URL credential outrank the form. Blank fields leave the existing URL-userinfo path working untouched.
 

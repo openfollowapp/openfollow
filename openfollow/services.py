@@ -1031,7 +1031,6 @@ class AppRuntimeServices:
         try:
             receiver.start()
             self._app._video_logged = False
-            self._app._video_aspect = None
 
             # Adopt the detector only once the receiver is up; the receiver
             # holds its own ``detector`` ref and tears it down on ``stop()``.

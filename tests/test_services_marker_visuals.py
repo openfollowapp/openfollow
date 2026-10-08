@@ -456,6 +456,7 @@ class TestBuildInitialOverlayState:
         state = build_initial_overlay_state(cfg)
 
         assert state.video_connected is False
+        assert state.source_resolution == (0, 0)
         assert state.source_label == ""
         assert state.reconnect_attempt == 0
         assert state.error_message == ""
@@ -938,6 +939,7 @@ def _make_visual_app(marker: object, *, controlled: bool) -> SimpleNamespace:
             )
         ),
         source_name="",
+        resolution=(1920, 1080),
         source_selection_active=False,
         discovered_sources=[],
         selected_source_index=0,

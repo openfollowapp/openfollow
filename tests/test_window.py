@@ -68,14 +68,11 @@ class FakeGdkModifierType:
     BUTTON3_MASK = 1024  # GDK_BUTTON3_MASK
 
 
-class FakeGdkWindowHints:
-    ASPECT = 1
+class FakeGdkWindowState:
+    """``Gdk.WindowState`` bits the window reads, with GDK's values."""
 
-
-class FakeGdkGeometry:
-    def __init__(self) -> None:
-        self.min_aspect = 0.0
-        self.max_aspect = 0.0
+    MAXIMIZED = 1 << 2
+    FULLSCREEN = 1 << 4
 
 
 # Lookup table consulted by the fake ``Gdk.keyval_name``. Tests can
@@ -150,8 +147,7 @@ class FakeGdk:
     EventMask = FakeGdkEventMask
     ScrollDirection = FakeGdkScrollDirection
     ModifierType = FakeGdkModifierType
-    WindowHints = FakeGdkWindowHints
-    Geometry = FakeGdkGeometry
+    WindowState = FakeGdkWindowState
     Cursor = FakeGdkCursor
     CursorType = FakeGdkCursorType
     ModifierType = FakeGdkModifierType
@@ -483,6 +479,7 @@ class TestConstructor:
             "button-release-event",
             "motion-notify-event",
             "configure-event",
+            "window-state-event",
             "delete-event",
         }
         assert expected.issubset(signal_names)
@@ -545,19 +542,95 @@ class TestPublicApi:
         window.fullscreen()
         assert window._window.fullscreen_calls == 1
 
-    def test_set_aspect_ratio_writes_geometry_hint(self, window) -> None:
-        window.set_aspect_ratio(16, 9)
-        assert len(window._window.set_geometry_hints_calls) == 1
-        _widget, geom, mask = window._window.set_geometry_hints_calls[0]
-        assert geom.min_aspect == pytest.approx(16 / 9)
-        assert geom.max_aspect == pytest.approx(16 / 9)
-        assert mask == FakeGdkWindowHints.ASPECT
-
     def test_apply_window_size_updates_default_and_resizes(self, window) -> None:
         """Live-resize updates default size and realised window geometry."""
         window.apply_window_size(1920, 1080)
         assert window._window.default_size == (1920, 1080)
         assert window._window.resize_calls == [(1920, 1080)]
+
+
+def _window_state(new_state: int, changed: int = FakeGdkWindowState.FULLSCREEN) -> SimpleNamespace:
+    return SimpleNamespace(new_window_state=new_state, changed_mask=changed)
+
+
+class TestFullscreenResize:
+    """Fullscreen belongs to the OS, and the window never asks for a size there.
+
+    On Quartz a resize is refused while the window is fullscreen and no
+    configure event comes back; GTK then freezes the frame clock waiting for
+    one, which stops the HUD redraw and the pointer poll.
+    """
+
+    def test_window_state_handler_returns_false(self, window) -> None:
+        # GTK's own handler records the state; stopping emission would desync it.
+        assert window._window.fire("window-state-event", _window_state(FakeGdkWindowState.FULLSCREEN)) is False
+
+    def test_apply_window_size_while_fullscreen_defers_the_resize(self, window) -> None:
+        window._window.fire("window-state-event", _window_state(FakeGdkWindowState.FULLSCREEN))
+        window.apply_window_size(1920, 1080)
+        assert window._window.resize_calls == []
+        assert window._window.default_size == (1920, 1080)
+
+    def test_deferred_size_is_applied_once_when_fullscreen_ends(self, window) -> None:
+        window._window.fire("window-state-event", _window_state(FakeGdkWindowState.FULLSCREEN))
+        window.apply_window_size(1920, 1080)
+        window._window.fire("window-state-event", _window_state(0))
+        assert window._window.resize_calls == [(1920, 1080)]
+        window._window.fire("window-state-event", _window_state(0))
+        assert window._window.resize_calls == [(1920, 1080)]
+
+    def test_latest_pending_size_wins(self, window) -> None:
+        window._window.fire("window-state-event", _window_state(FakeGdkWindowState.FULLSCREEN))
+        window.apply_window_size(1920, 1080)
+        window.apply_window_size(1280, 720)
+        window._window.fire("window-state-event", _window_state(0))
+        assert window._window.resize_calls == [(1280, 720)]
+
+    def test_leaving_fullscreen_with_nothing_pending_does_not_resize(self, window) -> None:
+        window._window.fire("window-state-event", _window_state(FakeGdkWindowState.FULLSCREEN))
+        window._window.fire("window-state-event", _window_state(0))
+        assert window._window.resize_calls == []
+
+    def test_os_driven_fullscreen_is_tracked_without_a_fullscreen_call(self, window) -> None:
+        # The green button never goes through fullscreen(); the state event alone counts.
+        assert window._window.fullscreen_calls == 0
+        window._window.fire("window-state-event", _window_state(FakeGdkWindowState.FULLSCREEN))
+        window.apply_window_size(1920, 1080)
+        assert window._window.resize_calls == []
+
+    def test_a_resize_after_fullscreen_ended_is_immediate_again(self, window) -> None:
+        window._window.fire("window-state-event", _window_state(FakeGdkWindowState.FULLSCREEN))
+        window._window.fire("window-state-event", _window_state(0))
+        window.apply_window_size(1920, 1080)
+        assert window._window.resize_calls == [(1920, 1080)]
+
+    def test_other_state_bits_do_not_defer(self, window) -> None:
+        window._window.fire(
+            "window-state-event",
+            _window_state(FakeGdkWindowState.MAXIMIZED, changed=FakeGdkWindowState.MAXIMIZED),
+        )
+        window.apply_window_size(1920, 1080)
+        assert window._window.resize_calls == [(1920, 1080)]
+
+    def test_a_fullscreen_window_is_never_hinted_or_resized(self, window) -> None:
+        """Regression for the macOS fullscreen freeze.
+
+        Fullscreen on the built-in display hands the window the screen's
+        shape; a geometry hint or a resize in answer to it is what Quartz
+        refuses and GTK then waits on forever. Neither may happen, and the
+        display tick must keep running.
+        """
+        window.attach_hud(lambda cr, w, h: None)
+        window.start_hud_tick()
+        assert window._window.tick() is True
+        window._window.fire("window-state-event", _window_state(FakeGdkWindowState.FULLSCREEN))
+        window._window.fire("configure-event", SimpleNamespace(width=1512, height=982))
+        window.apply_window_size(1920, 1080)
+        window._window.fire("configure-event", SimpleNamespace(width=1512, height=982))
+        assert window._window.tick() is True
+        assert window._window.set_geometry_hints_calls == []
+        assert window._window.resize_calls == []
+        assert not hasattr(window, "set_aspect_ratio")
 
 
 # --------------------------------------------------------------------------- #

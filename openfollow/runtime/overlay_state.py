@@ -146,6 +146,9 @@ class OverlayState:
     selected_id: int | None = None
     # Camera: [pos_x, pos_y, pos_z, pitch, yaw, roll, fov]
     camera_params: npt.NDArray[Any] | None = None
+    # The source's caps size, (0, 0) while unknown (placeholder): the scene is
+    # drawn into the rectangle gtksink letterboxes that frame into.
+    source_resolution: tuple[int, int] = (0, 0)
     # Radial lens-distortion coefficients bowing the overlay to match the lens.
     # 0/0 = pinhole (no curvature) – the renderer fast-paths to straight lines.
     lens_k1: float = 0.0
@@ -325,6 +328,7 @@ class OverlayState:
         self.markers.clear()
         self.selected_id = None
         self.camera_params = None
+        self.source_resolution = (0, 0)
         self.lens_k1 = 0.0
         self.lens_k2 = 0.0
         self.grid_config = None

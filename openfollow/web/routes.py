@@ -3382,7 +3382,7 @@ def _parse_lens_snap_body(data: Any) -> tuple[float, float, list[float], list[fl
 
 
 # The scaled luma the edge suggestions are found in, at most (a snapshot scaled to the map width).
-_LENS_EDGE_MAX_PIXELS = 1024 * 1024
+_LENS_EDGE_MAX_PIXELS = 2 * 1024 * 1024
 
 
 def _parse_lens_edges_body(data: Any) -> tuple[float, float, int, Any, bool]:

@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from openfollow.scene.solver import apply_overlay_distortion, invert_overlay_distortion
-from tests._lens_scene import FLOOR, H, Scene, Strip, W, calibrate, render, stage_scene
+from tests._lens_scene import FLOOR, H, Scene, Strip, W, calibrate, deck_scene, render, stage_scene
 
 pytestmark = pytest.mark.unit
 
@@ -123,6 +123,22 @@ def test_every_line_used_is_a_straight_strip_of_the_scene(lens: tuple[float, flo
     cal = calibrate(picture(lens))
     assert cal.lines
     assert all(on_a_strip(line, scene, lens) for line in cal.lines)
+
+
+@pytest.mark.parametrize("lens", [LENSES["stage-camera"], LENSES["wide-lens"]], ids=["stage-camera", "wide-lens"])
+def test_one_pixel_deck_seams_at_720p_pin_the_pair(lens: tuple[float, float]) -> None:
+    """A soft 720p camera shows the seams between stage decks as one-pixel lines; they are offered and used."""
+    img = render(deck_scene(), lens, size=(1280, 720), floor=120.0, noise=2.0)
+    cal = calibrate(img)
+    assert len(cal.lines) >= 8
+    assert_recovered(cal.fit, lens)
+    # At least two of the lines used are seams across the stage, flat in the pinhole frame.
+    seams = 0
+    for line in cal.lines:
+        pts = invert_overlay_distortion(np.asarray(line, dtype=np.float64), 1280, 720, *lens)
+        if np.ptp(pts[:, 1]) < 6.0 and min(abs(float(np.mean(pts[:, 1])) - y) for y in (280.0, 410.0, 540.0)) < 6.0:
+            seams += 1
+    assert seams >= 2
 
 
 def test_a_single_bowed_edge_already_tells_the_pair() -> None:

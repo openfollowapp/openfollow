@@ -55,7 +55,7 @@ def ends_of(candidate) -> tuple[np.ndarray, np.ndarray]:
 
 
 @pytest.mark.parametrize(
-    ("width", "scale"), [(320, 1), (960, 1), (961, 2), (1920, 2), (2560, 3), (3840, 4), (99999, MAX_EDGE_SCALE)]
+    ("width", "scale"), [(320, 1), (1280, 1), (1281, 2), (1920, 2), (2560, 2), (3840, 3), (99999, MAX_EDGE_SCALE)]
 )
 def test_the_scale_brings_the_snapshot_under_the_map_width(width: int, scale: int) -> None:
     assert edge_map_scale(width) == scale
@@ -110,6 +110,15 @@ def test_an_offered_edge_snaps_at_full_resolution() -> None:
 
 def test_the_two_edges_of_a_strip_are_one_suggestion() -> None:
     assert len(find(straight_strip((200.0, 300.0), (1700.0, 330.0)))) == 1
+
+
+def test_a_long_faint_line_is_offered_before_a_short_bright_one() -> None:
+    """A line's worth to the fit grows with its length; brightness beyond clear adds nothing."""
+    img = straight_strip((300.0, 300.0), (1500.0, 300.0), bright=DARK + 40.0)
+    img = straight_strip((800.0, 780.0), (1100.0, 780.0), base=img, bright=BRIGHT)
+    found = find(img)
+    assert len(found) == 2
+    assert found[0].length > 1000.0
 
 
 def test_a_line_far_from_the_centre_is_offered_first() -> None:
@@ -203,6 +212,53 @@ def test_the_limit_caps_the_suggestions() -> None:
         img = straight_strip((300.0, y), (1600.0, y), base=img)
     assert len(find(img, limit=2)) == 2
     assert MAX_CANDIDATES >= 3
+
+
+# --------------------------------------------------------------------------- #
+# Thin lines, at the size a soft 720p camera is analysed at
+# --------------------------------------------------------------------------- #
+
+W720, H720 = 1280, 720
+
+
+def one_pixel_lines(contrast: float, *, floor: float = 120.0) -> np.ndarray:
+    """A 720p floor with a one-pixel seam across and one down, ``contrast`` above or below the floor."""
+    yy, xx = np.mgrid[0:H720, 0:W720]
+    img = np.full((H720, W720), floor)
+    img[np.abs(yy - (400.0 + 0.03 * xx)) < 0.5] += contrast
+    img[(np.abs(xx - (700.0 + 0.02 * yy)) < 0.5) & (yy > 100) & (yy < 650)] += contrast
+    rng = np.random.default_rng(2)
+    return np.clip(img + rng.normal(0.0, 1.5, img.shape), 0, 255)
+
+
+def find_720(img: np.ndarray):
+    assert edge_map_scale(W720) == 1
+    return find_edge_candidates(img, 1, W720, H720).candidates
+
+
+@pytest.mark.parametrize("contrast", [40.0, -40.0], ids=["bright-seam", "dark-seam"])
+def test_a_one_pixel_seam_is_offered_whole(contrast: float) -> None:
+    found = find_720(one_pixel_lines(contrast))
+    assert len(found) == 2
+    spans = sorted(
+        (abs(float(ends_of(c)[1][0] - ends_of(c)[0][0])), abs(float(ends_of(c)[1][1] - ends_of(c)[0][1])))
+        for c in found
+    )
+    assert spans[0][1] > 500.0 and spans[1][0] > 1200.0
+
+
+def test_a_seam_under_the_weak_level_is_not_offered() -> None:
+    assert find_720(one_pixel_lines(10.0)) == []
+
+
+def test_a_step_edge_has_no_line_beside_it() -> None:
+    """The flanks of a step curve too, but carry the gradient: only the step itself is offered."""
+    yy, xx = np.mgrid[0:H720, 0:W720]
+    halves = np.where(yy < 360 + 0.05 * xx, 60.0, 180.0)
+    result = find_edge_candidates(halves, 1, W720, H720)
+    assert len(result.candidates) == 1
+    ys, xs = np.nonzero(result.edge_map)
+    assert np.all(np.abs(ys - (360.0 + 0.05 * xs)) <= 2.0)
 
 
 # --------------------------------------------------------------------------- #

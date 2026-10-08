@@ -3887,7 +3887,7 @@
 
   // ---- suggested edges ----
   // Mirror edge_chains.edge_map_scale: the snapshot is scaled under the map width.
-  function lensEdgeScale() { return Math.max(1, Math.min(16, Math.ceil(imageWidth / 960))); }
+  function lensEdgeScale() { return Math.max(1, Math.min(16, Math.ceil(imageWidth / 1280))); }
   function lensEdgeSize() {
     var scale = lensEdgeScale();
     return { scale: scale, width: Math.ceil(imageWidth / scale), height: Math.ceil(imageHeight / scale) };

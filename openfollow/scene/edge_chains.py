@@ -3,10 +3,12 @@
 """Suggest the edges of a snapshot a Lens line could be traced along.
 
 The wizard sends the snapshot's luma scaled down by ``edge_map_scale``. Thin
-edges are found in it (blurred gradient, non-maximum suppression), followed
-into chains pixel by pixel along the local edge direction, split where a chain
-turns a corner, and kept where a chain is long, bows no more than a straight
-line can through a lens, and reaches a clear edge somewhere. A chain that runs
+edges are found in it (blurred gradient, non-maximum suppression) and so are
+thin lines (the ridges of a lightly blurred image, which a step edge's own
+flanks never are), both followed into chains pixel by pixel along the local
+direction, split where a chain turns a corner, and kept where a chain is long,
+bows no more than a straight line can through a lens, and reaches a clear edge
+somewhere. A chain that runs
 along a stronger one (the two edges of a strip of tape, the top and the bottom
 of a stage front) is dropped. The best few are returned as polylines in
 snapshot pixels; whether such an edge is straight in reality is for the
@@ -22,12 +24,15 @@ from dataclasses import dataclass
 import numpy as np
 import numpy.typing as npt
 
-# The scaled luma is at most this wide; the scale is what brings the snapshot under it.
-EDGE_MAP_WIDTH = 960
+# The scaled luma is at most this wide; the scale is what brings the snapshot under it. A
+# soft 720p camera keeps its one-pixel deck seams only at full size.
+EDGE_MAP_WIDTH = 1280
 MAX_EDGE_SCALE = 16
-MAX_CANDIDATES = 10
+MAX_CANDIDATES = 12
 # Luma per scaled pixel: a chain must reach the strong level somewhere and keep the weak one everywhere.
 _STRONG_EDGE = 8.0
+# A line stronger than this is not a better line, only a brighter one.
+_CLEAR_EDGE = 20.0
 _WEAK_EDGE = 4.0
 # A step along the chain must point this far along the local edge direction (cosine).
 _FOLLOW_COSINE = 0.3
@@ -58,6 +63,12 @@ _CROWD_DISTANCE_FRACTION = 0.1
 _CROWD_COSINE = math.cos(math.radians(15.0))
 _OUTPUT_SPACING = 8
 _BLUR = np.array([1.0, 4.0, 6.0, 4.0, 1.0]) / 16.0
+# The lighter blur the ridges are found in: the edge blur flattens a one-pixel line away.
+_RIDGE_BLUR = np.array([1.0, 2.0, 1.0]) / 4.0
+# Puts a thin line's ridge strength beside a step edge's gradient: a line and an edge of
+# the same contrast then score alike.
+_RIDGE_TO_EDGE = 0.6
+_SECTORS = ((1, 0), (1, 1), (0, 1), (-1, 1))
 _NEIGHBOURS = tuple((dx, dy) for dy in (-1, 0, 1) for dx in (-1, 0, 1) if dx or dy)
 
 
@@ -87,54 +98,90 @@ def edge_map_size(canvas_w: float, canvas_h: float, scale: int) -> tuple[int, in
     return int(math.ceil(canvas_w / scale)), int(math.ceil(canvas_h / scale))
 
 
-def _blur(img: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+def _blur(img: npt.NDArray[np.float64], kernel: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
     h, w = img.shape
-    padded = np.pad(img, 2, mode="edge")
-    rows = np.zeros((h + 4, w))
+    n = len(kernel)
+    pad = n // 2
+    padded = np.pad(img, pad, mode="edge")
+    rows = np.zeros((h + 2 * pad, w))
     out = np.zeros((h, w))
-    for k in range(5):
-        rows += _BLUR[k] * padded[:, k : k + w]
-    for k in range(5):
-        out += _BLUR[k] * rows[k : k + h, :]
+    for k in range(n):
+        rows += kernel[k] * padded[:, k : k + w]
+    for k in range(n):
+        out += kernel[k] * rows[k : k + h, :]
     return out
 
 
-def _thin_edges(
-    luma: npt.NDArray[np.float64],
-) -> tuple[npt.NDArray[np.bool_], npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-    """Edge pixels at a gradient maximum across the edge, with the magnitude and the gradient."""
-    smooth = _blur(luma)
+def _suppress_across(
+    strength: npt.NDArray[np.float64], nx: npt.NDArray[np.float64], ny: npt.NDArray[np.float64]
+) -> npt.NDArray[np.bool_]:
+    """Pixels whose strength is a maximum along their normal ``(nx, ny)``, quantised to a neighbour pair."""
+    angle = np.mod(np.arctan2(ny, nx), np.pi)
+    sector = np.floor((angle + np.pi / 8.0) / (np.pi / 4.0)).astype(int) % 4
+    padded = np.pad(strength, 1)
+    h, w = strength.shape
+    before = np.zeros_like(strength)
+    after = np.zeros_like(strength)
+    for k, (dx, dy) in enumerate(_SECTORS):
+        mask = sector == k
+        before[mask] = padded[1 + dy : 1 + dy + h, 1 + dx : 1 + dx + w][mask]
+        after[mask] = padded[1 - dy : 1 - dy + h, 1 - dx : 1 - dx + w][mask]
+    kept = (strength >= _WEAK_EDGE) & (strength >= before) & (strength > after)
+    kept[0, :] = kept[-1, :] = kept[:, 0] = kept[:, -1] = False
+    return kept
+
+
+Channel = tuple[npt.NDArray[np.bool_], npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]
+
+
+def _thin_edges(luma: npt.NDArray[np.float64]) -> Channel:
+    """Edge pixels at a gradient maximum across the edge: mask, gradient magnitude, unit tangent."""
+    smooth = _blur(luma, _BLUR)
     gx = np.zeros_like(smooth)
     gy = np.zeros_like(smooth)
     gx[:, 1:-1] = (smooth[:, 2:] - smooth[:, :-2]) / 2.0
     gy[1:-1, :] = (smooth[2:, :] - smooth[:-2, :]) / 2.0
     mag = np.hypot(gx, gy)
-    # The gradient direction, quantised to the neighbour pair it runs through.
-    angle = np.mod(np.arctan2(gy, gx), np.pi)
-    sector = np.floor((angle + np.pi / 8.0) / (np.pi / 4.0)).astype(int) % 4
-    padded = np.pad(mag, 1)
-    h, w = mag.shape
-    shifted = {
-        (dx, dy): padded[1 + dy : 1 + dy + h, 1 + dx : 1 + dx + w] for dx, dy in ((1, 0), (1, 1), (0, 1), (-1, 1))
-    }
-    before = np.zeros_like(mag)
-    after = np.zeros_like(mag)
-    for k, (dx, dy) in enumerate(((1, 0), (1, 1), (0, 1), (-1, 1))):
-        mask = sector == k
-        before[mask] = shifted[(dx, dy)][mask]
-        after[mask] = padded[1 - dy : 1 - dy + h, 1 - dx : 1 - dx + w][mask]
-    edges = (mag >= _WEAK_EDGE) & (mag >= before) & (mag > after)
-    edges[0, :] = edges[-1, :] = edges[:, 0] = edges[:, -1] = False
-    return edges, mag, gx, gy
+    safe = np.where(mag > 0.0, mag, 1.0)
+    return _suppress_across(mag, gx, gy), mag, -gy / safe, gx / safe
+
+
+def _thin_ridges(luma: npt.NDArray[np.float64], gradient: npt.NDArray[np.float64]) -> Channel:
+    """Thin line pixels, bright or dark, at a ridge maximum across the line: mask, strength, unit tangent.
+
+    The ridge is the stronger principal curvature less the weaker, so a blob scores
+    nothing, and it must beat the gradient there, which the flanks of a step edge
+    never do while a line's own crest carries no gradient at all.
+    """
+    smooth = _blur(luma, _RIDGE_BLUR)
+    fxx = np.zeros_like(smooth)
+    fyy = np.zeros_like(smooth)
+    fxy = np.zeros_like(smooth)
+    fxx[:, 1:-1] = smooth[:, 2:] - 2.0 * smooth[:, 1:-1] + smooth[:, :-2]
+    fyy[1:-1, :] = smooth[2:, :] - 2.0 * smooth[1:-1, :] + smooth[:-2, :]
+    fxy[1:-1, 1:-1] = (smooth[2:, 2:] - smooth[2:, :-2] - smooth[:-2, 2:] + smooth[:-2, :-2]) / 4.0
+    mean = (fxx + fyy) / 2.0
+    spread = np.hypot((fxx - fyy) / 2.0, fxy)
+    low, high = mean - spread, mean + spread
+    bright = -low - np.abs(high)
+    dark = high - np.abs(low)
+    strength = np.maximum(np.maximum(bright, dark), 0.0) * _RIDGE_TO_EDGE
+    # The normal is the eigenvector of the curvature that carries the line: the larger one
+    # for a dark line, the other (at a right angle) for a bright one.
+    theta = 0.5 * np.arctan2(2.0 * fxy, fxx - fyy) + np.where(bright >= dark, np.pi / 2.0, 0.0)
+    nx, ny = np.cos(theta), np.sin(theta)
+    ridges = _suppress_across(np.where(strength > gradient, strength, 0.0), nx, ny)
+    return ridges, strength, -ny, nx
 
 
 def _trace_chains(
-    edges: npt.NDArray[np.bool_], mag: npt.NDArray[np.float64], gx: npt.NDArray[np.float64], gy: npt.NDArray[np.float64]
+    mask: npt.NDArray[np.bool_],
+    strength: npt.NDArray[np.float64],
+    tx: npt.NDArray[np.float64],
+    ty: npt.NDArray[np.float64],
 ) -> list[npt.NDArray[np.float64]]:
-    """Follow every edge pixel into a chain, strongest first, each pixel once."""
-    visited = ~edges
-    safe = np.where(mag > 0.0, mag, 1.0)
-    tx, ty = -gy / safe, gx / safe
+    """Follow every marked pixel into a chain along the tangent ``(tx, ty)``, strongest first, each pixel once."""
+    visited = ~mask
 
     def walk(x: int, y: int, sign: float) -> list[tuple[int, int]]:
         dx_dir, dy_dir = sign * tx[y, x], sign * ty[y, x]
@@ -163,9 +210,9 @@ def _trace_chains(
             norm = math.hypot(dx_dir, dy_dir)
             dx_dir, dy_dir = dx_dir / norm, dy_dir / norm
 
-    ys, xs = np.nonzero(edges)
+    ys, xs = np.nonzero(mask)
     chains = []
-    for i in np.argsort(-mag[ys, xs], kind="stable"):
+    for i in np.argsort(-strength[ys, xs], kind="stable"):
         x0, y0 = int(xs[i]), int(ys[i])
         if visited[y0, x0]:
             continue
@@ -330,8 +377,10 @@ def find_edge_candidates(
     if luma.ndim != 2 or luma.shape[::-1] != edge_map_size(canvas_w, canvas_h, scale):
         raise ValueError("luma does not match the snapshot scaled by scale")
     h, w = luma.shape
-    edges, mag, gx, gy = _thin_edges(luma)
-    edge_map = np.where(edges, np.minimum(mag * 4.0, 255.0), 0.0).astype(np.uint8)
+    edges, mag, etx, ety = _thin_edges(luma)
+    ridges, ridge, rtx, rty = _thin_ridges(luma, mag)
+    strength = np.maximum(np.where(edges, mag, 0.0), np.where(ridges, ridge, 0.0))
+    edge_map = np.minimum(strength * 4.0, 255.0).astype(np.uint8)
     min_length = _MIN_LENGTH_FRACTION * w
     max_curvature = _MAX_CURVATURE_WIDTH / w
     duplicate = _DUPLICATE_DISTANCE / scale
@@ -340,23 +389,26 @@ def find_edge_candidates(
     half_diagonal = float(np.hypot(*centre))
 
     pieces = []
-    for chain in _trace_chains(edges, mag, gx, gy):
-        for piece in _split_at_corners(chain):
-            piece = piece[_END_TRIM : len(piece) - _END_TRIM]
-            if len(piece) >= _JOIN_MIN_POINTS and _bows_like_a_line(piece, max_curvature):
-                pieces.append(piece)
+    for channel in ((edges, mag, etx, ety), (ridges, ridge, rtx, rty)):
+        for chain in _trace_chains(*channel):
+            for piece in _split_at_corners(chain):
+                piece = piece[_END_TRIM : len(piece) - _END_TRIM]
+                if len(piece) >= _JOIN_MIN_POINTS and _bows_like_a_line(piece, max_curvature):
+                    pieces.append(piece)
     scored: list[tuple[float, npt.NDArray[np.float64], float, float]] = []
     for piece in _join_across_gaps(pieces, _JOIN_GAP_FRACTION * w, max_curvature):
         length = _arc_length(piece)
         if length < min_length:
             continue
-        strength = mag[piece[:, 1].astype(int), piece[:, 0].astype(int)]
-        if float(strength.max()) < _STRONG_EDGE:
+        along = strength[piece[:, 1].astype(int), piece[:, 0].astype(int)]
+        if float(along.max()) < _STRONG_EDGE:
             continue
-        mean = float(strength.mean())
-        # A line far from the centre shows the lens most, so it is offered first.
+        mean = float(along.mean())
+        # A long line far from the centre shows the lens most, so it is offered first: its bow
+        # grows with the square of its length, while brightness beyond clear counts for nothing.
         radius = float(np.linalg.norm(piece.mean(axis=0) - centre)) / half_diagonal
-        scored.append((length * (1.0 + 2.0 * radius * radius) * math.sqrt(mean), piece, length, mean))
+        score = length * length * (1.0 + 2.0 * radius * radius) * math.sqrt(min(mean, _CLEAR_EDGE))
+        scored.append((score, piece, length, mean))
     scored.sort(key=lambda item: -item[0])
 
     kept: list[npt.NDArray[np.float64]] = []

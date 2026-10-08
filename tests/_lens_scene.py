@@ -80,13 +80,41 @@ def stage_scene(*, grid: bool = True, distractors: bool = True) -> Scene:
     return Scene(strips, discs)
 
 
-def render(scene: Scene, lens: tuple[float, float], *, noise: float = 3.0, seed: int = 0) -> np.ndarray:
-    """The scene as seen through ``lens``: luma ``(H, W)``, floor-dark with the strips and discs on it."""
+def deck_scene() -> Scene:
+    """A 720p stage of decks: its edges and the one-pixel seams between the decks, under a soft wash."""
+    front = ((60.0, 660.0), (1220.0, 660.0))
+    back = ((300.0, 150.0), (980.0, 150.0))
+    strips = [
+        Strip(front[0], front[1], 3.0, 200.0),
+        Strip(back[0], back[1], 2.0, 170.0),
+        Strip(front[0], back[0], 2.0, 160.0),
+        Strip(front[1], back[1], 2.0, 160.0),
+    ]
+    seam = FLOOR + 40.0
+    for y in (280.0, 410.0, 540.0):
+        t = (y - 150.0) / (660.0 - 150.0)
+        strips.append(Strip((300.0 + t * (60.0 - 300.0), y), (980.0 + t * (1220.0 - 980.0), y), 0.5, seam))
+    for f in np.linspace(0.1, 0.9, 9):
+        strips.append(Strip((60.0 + f * 1160.0, 660.0), (300.0 + f * 680.0, 150.0), 0.5, seam))
+    return Scene(strips, [Disc((640.0, 400.0), 300.0, FLOOR + 30.0, soft=1.0)])
+
+
+def render(
+    scene: Scene,
+    lens: tuple[float, float],
+    *,
+    size: tuple[int, int] = (W, H),
+    floor: float = FLOOR,
+    noise: float = 3.0,
+    seed: int = 0,
+) -> np.ndarray:
+    """The scene as seen through ``lens``: luma ``(height, width)``, the strips and discs on a floor."""
     k1, k2 = lens
-    yy, xx = np.mgrid[0:H, 0:W]
+    width, height = size
+    yy, xx = np.mgrid[0:height, 0:width]
     pixels = np.column_stack([xx.ravel(), yy.ravel()]).astype(np.float64)
-    u = invert_overlay_distortion(pixels, W, H, k1, k2)
-    img = np.full(u.shape[0], FLOOR)
+    u = invert_overlay_distortion(pixels, width, height, k1, k2)
+    img = np.full(u.shape[0], floor)
     for disc in scene.discs:
         d = np.hypot(u[:, 0] - disc.centre[0], u[:, 1] - disc.centre[1])
         if disc.soft > 0.0:
@@ -94,15 +122,16 @@ def render(scene: Scene, lens: tuple[float, float], *, noise: float = 3.0, seed:
         else:
             weight = np.clip(disc.radius - d + 0.5, 0.0, 1.0)
         img = img + weight * (disc.bright - FLOOR)
+    # A strip stands its brightness above whatever lies under it, a spotlight included.
     for strip in scene.strips:
         a = np.asarray(strip.p0)
         d = np.asarray(strip.p1) - a
         t = np.clip(((u - a) @ d) / float(d @ d), 0.0, 1.0)
         distance = np.linalg.norm(u - a - t[:, None] * d[None, :], axis=1)
         weight = np.clip(strip.half_width - distance + 0.5, 0.0, 1.0)
-        img = np.maximum(img, FLOOR + weight * (strip.bright - FLOOR))
+        img = img + weight * (strip.bright - FLOOR)
     rng = np.random.default_rng(seed)
-    return np.clip(img.reshape(H, W) + rng.normal(0.0, noise, (H, W)), 0.0, 255.0)
+    return np.clip(img.reshape(height, width) + rng.normal(0.0, noise, (height, width)), 0.0, 255.0)
 
 
 @dataclass(frozen=True)

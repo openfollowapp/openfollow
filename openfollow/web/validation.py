@@ -820,7 +820,7 @@ FIELD_RULES["network"] = {
 
 # --- Public API -------------------------------------------------------------
 _LENS_FIELDS = ("lens_k1", "lens_k2")
-_LENS_FOLD_ERROR = "This pair folds the overlay inside the frame. Bring k1 or k2 closer to 0."
+_LENS_FOLD_ERROR = "This pair folds the overlay inside the frame. Bring either value closer to 0."
 
 
 def _lens_fold_error(field: str, value: float, context: Mapping[str, Any] | None) -> str | None:

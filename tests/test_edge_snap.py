@@ -106,11 +106,11 @@ def test_sample_points_sit_at_the_five_fractions() -> None:
 @pytest.mark.parametrize(
     ("width", "half", "step", "reach"),
     [
-        (320, MIN_BAND_HALF, 1, 8),
-        (960, 96, 2, 14),
-        (1920, 192, 4, 27),
-        (3840, MAX_BAND_HALF, MAX_BAND_STEP, 55),
-        (9999, MAX_BAND_HALF, MAX_BAND_STEP, 143),
+        (320, MIN_BAND_HALF, 1, 4),
+        (960, 96, 2, 8),
+        (1920, 192, 4, 16),
+        (3840, MAX_BAND_HALF, MAX_BAND_STEP, 32),
+        (9999, MAX_BAND_HALF, MAX_BAND_STEP, 83),
     ],
 )
 def test_band_geometry_scales_with_the_snapshot(width: int, half: int, step: int, reach: int) -> None:
@@ -169,9 +169,10 @@ def test_a_thin_tape_line_is_followed() -> None:
 
 
 def test_the_clicked_ends_are_moved_onto_the_edge() -> None:
+    """Clicks a few pixels off the lower edge settle onto it, with the rest of the line."""
     p0, p1 = (90.0, 1010.0), (1830.0, 990.0)
     img = strip_frame(p0, p1, BARREL)
-    pts = snap(img, (p0[0], p0[1] + 12.0), (p1[0], p1[1] - 9.0))
+    pts = snap(img, (p0[0], p0[1] + 12.0), (p1[0], p1[1] + 3.0))
     assert all(p.snapped for p in pts)
     np.testing.assert_allclose(np.abs(edge_distances(pts, p0, p1, BARREL)), 7.0, atol=1.0)
 
@@ -180,7 +181,7 @@ def test_a_chord_tilted_against_its_edge_is_straightened() -> None:
     """Both ends off to opposite sides: only moving them together finds the edge."""
     p0, p1 = (200.0, 600.0), (1700.0, 630.0)
     img = strip_frame(p0, p1, STRAIGHT)
-    pts = snap(img, (p0[0], p0[1] - 2.0), (p1[0], p1[1] - 16.0))
+    pts = snap(img, (p0[0], p0[1] - 2.0), (p1[0], p1[1] - 12.0))
     assert all(p.snapped for p in pts)
     np.testing.assert_allclose(np.abs(edge_distances(pts, p0, p1, STRAIGHT)), 7.0, atol=1.0)
 
@@ -190,8 +191,26 @@ def test_an_edge_beyond_the_ends_reach_is_not_taken_at_the_ends() -> None:
     p0, p1 = (200.0, 600.0), (1700.0, 630.0)
     img = strip_frame(p0, p1, STRAIGHT)
     shift = end_search_radius(W) + 30.0
-    pts = snap(img, (p0[0], p0[1] + shift), (p1[0], p1[1] + shift))
+    clicks = (p0[0], p0[1] + shift), (p1[0], p1[1] + shift)
+    pts = snap(img, *clicks)
     assert not pts[0].snapped and not pts[4].snapped
+    for p, click in ((pts[0], clicks[0]), (pts[4], clicks[1])):
+        assert np.hypot(p.x - click[0], p.y - click[1]) <= end_search_radius(W) + 0.5
+
+
+def test_an_end_stays_within_its_reach_of_the_click_beside_a_stronger_edge() -> None:
+    """A brighter strip a little further off must not pull the clicked ends over to it."""
+    p0, p1 = (200.0, 500.0), (1700.0, 540.0)
+    img = strip_frame(p0, p1, STRAIGHT, bright=110.0)
+    img = np.maximum(img, strip_frame((p0[0], p0[1] + 30.0), (p1[0], p1[1] + 30.0), STRAIGHT, bright=240.0))
+    clicks = (p0[0], p0[1] - 7.0 + 2.0), (p1[0], p1[1] - 7.0 - 2.0)
+    pts = snap(img, *clicks)
+    reach = end_search_radius(W)
+    for p, click in ((pts[0], clicks[0]), (pts[4], clicks[1])):
+        assert np.hypot(p.x - click[0], p.y - click[1]) <= reach + 0.5
+    # The whole line stays on the strip the clicks named, its upper edge.
+    assert all(p.snapped for p in pts)
+    np.testing.assert_allclose(edge_distances(pts, p0, p1, STRAIGHT), 7.0, atol=1.0)
 
 
 # --------------------------------------------------------------------------- #

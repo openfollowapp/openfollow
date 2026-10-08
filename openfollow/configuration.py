@@ -2279,6 +2279,8 @@ class UiConfig:
     # UI-visibility gate for experimental sections; does not start/stop any
     # subsystem (the save route handles the mouse + detection cascade).
     show_experimental_features: bool = False
+    # Config-only: shows the developer's views in the web UI (the Lens step's edge view).
+    developer_mode: bool = False
 
     def __post_init__(self) -> None:
         valid = {m.value for m in UnitSystem}
@@ -2287,6 +2289,7 @@ class UiConfig:
         choice = self.unit_system.strip().lower()
         self.unit_system = choice if choice in valid else "metric"
         self.show_experimental_features = _coerce_bool(self.show_experimental_features, False)
+        self.developer_mode = _coerce_bool(self.developer_mode, False)
 
 
 @dataclass

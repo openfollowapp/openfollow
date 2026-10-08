@@ -186,7 +186,7 @@ class TestHint:
 
     def test_unfitted_k2_asks_for_a_corner(self) -> None:
         assert coverage_hint(lines_for(0.0, 0.0, (MID_H, MID_V)), W, H, rating="low", k2_fitted=False) == (
-            "k2 needs a line near a corner."
+            "The edge fit needs a line near a corner."
         )
 
     def test_names_the_empty_edge_band(self) -> None:

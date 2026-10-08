@@ -1474,8 +1474,7 @@ class TestWizardLensCoeffs:
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture()
-def live_server_lens(tmp_path, monkeypatch):
+def _lens_station(tmp_path, monkeypatch, *, developer_mode: bool = False):
     """A station with experimental features on, so the wizard renders the Lens step."""
     from openfollow.configuration import AppConfig, save_config
 
@@ -1484,21 +1483,34 @@ def live_server_lens(tmp_path, monkeypatch):
     monkeypatch.setattr(discovery_module.BeaconReceiver, "start", lambda self: None)
     monkeypatch.setattr(discovery_module.BeaconReceiver, "stop", lambda self: None)
 
-    # Its own file, so a test holding both fixtures keeps the plain station plain.
-    config_path = tmp_path / "config_lens.toml"
+    # Its own file, so a test holding several fixtures keeps the plain station plain.
+    config_path = tmp_path / ("config_lens_dev.toml" if developer_mode else "config_lens.toml")
     cfg = AppConfig()
     cfg.ui.show_experimental_features = True
+    cfg.ui.developer_mode = developer_mode
     cfg.camera.lens_k1 = -0.21
     cfg.camera.lens_k2 = 0.03
     save_config(cfg, str(config_path))
-    with live_on_free_port(
+    return live_on_free_port(
         lambda port: ConfigWebServer(
             config_path=str(config_path),
             host="127.0.0.1",
             port=port,
             system_name="WizardLensTest",
         )
-    ) as (server, base):
+    )
+
+
+@pytest.fixture()
+def live_server_lens(tmp_path, monkeypatch):
+    with _lens_station(tmp_path, monkeypatch) as (server, base):
+        yield server, base
+
+
+@pytest.fixture()
+def live_server_lens_dev(tmp_path, monkeypatch):
+    """The Lens station in developer mode, which adds the edge view."""
+    with _lens_station(tmp_path, monkeypatch, developer_mode=True) as (server, base):
         yield server, base
 
 
@@ -1638,6 +1650,96 @@ class TestWizardLensSnapEndpoint:
         _, base = live_server
         req = urllib.request.Request(
             f"{base}/api/wizard/lens/snap",
+            data=b"{not json",
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(req, timeout=5)
+        assert exc.value.code == 400
+
+
+@integration
+class TestWizardLensEdgesEndpoint:
+    def _body(self, with_map: bool = False) -> dict:
+        from openfollow.scene.edge_chains import edge_map_scale
+        from tests._lens_band import edges_payload, scaled_luma
+
+        scale = edge_map_scale(1920)
+        return edges_payload(scaled_luma(_stripe_image(), scale), scale, 1920, 1080, with_map=with_map)
+
+    def test_suggests_the_stripe_with_five_sample_points(self, live_server) -> None:
+        _, base = live_server
+        status, data = _post_json(base, "/api/wizard/lens/edges", self._body())
+        assert status == 200
+        assert data["edges"] is None
+        assert len(data["candidates"]) >= 1
+        best = data["candidates"][0]
+        assert len(best["samples"]) == 5 and len(best["points"]) >= 2
+        for x, y in best["samples"]:
+            assert abs(abs(y - (600.0 + 0.02 * x)) - 7.0) < 3.0
+        assert best["length"] > 1500.0 and best["strength"] > 8.0
+
+    def test_the_developer_map_is_returned_on_request(self, live_server) -> None:
+        import base64
+
+        _, base = live_server
+        status, data = _post_json(base, "/api/wizard/lens/edges", self._body(with_map=True))
+        assert status == 200
+        edges = data["edges"]
+        assert (edges["width"], edges["height"]) == (960, 540)
+        assert len(base64.b64decode(edges["data"])) == 960 * 540
+
+    @pytest.mark.parametrize(
+        "mutate",
+        [
+            lambda b: b.pop("data"),
+            lambda b: b.update(data=123),
+            lambda b: b.update(data="not base64!"),
+            lambda b: b.update(data=b["data"][:-8]),
+            lambda b: b.update(scale=0),
+            lambda b: b.update(scale=99),
+            lambda b: b.update(scale=1),
+            lambda b: b.update(width=b["width"] + 1),
+            lambda b: b.update(height=b["height"] - 1),
+            lambda b: b.update(scale=1, width=2000, height=2000, image_width=2000, image_height=2000),
+            lambda b: b.update(image_width=0),
+            lambda b: b.update(image_height="tall"),
+            lambda b: b.pop("scale"),
+        ],
+        ids=[
+            "no-data",
+            "data-not-a-string",
+            "bad-base64",
+            "data-too-short",
+            "zero-scale",
+            "huge-scale",
+            "scale-does-not-match-size",
+            "width-off-by-one",
+            "height-off-by-one",
+            "too-large",
+            "zero-canvas",
+            "string-canvas",
+            "missing-scale",
+        ],
+    )
+    def test_malformed_body_returns_400(self, live_server, mutate) -> None:
+        _, base = live_server
+        body = self._body()
+        mutate(body)
+        status, data = _post_json(base, "/api/wizard/lens/edges", body)
+        assert status == 400, data
+        assert "error" in data
+
+    def test_non_object_body_returns_400(self, live_server) -> None:
+        _, base = live_server
+        status, _ = _post_json(base, "/api/wizard/lens/edges", [1, 2, 3])  # type: ignore[arg-type]
+        assert status == 400
+
+    def test_invalid_json_returns_400(self, live_server) -> None:
+        _, base = live_server
+        req = urllib.request.Request(
+            f"{base}/api/wizard/lens/edges",
             data=b"{not json",
             headers={"Content-Type": "application/json"},
             method="POST",
@@ -1824,6 +1926,35 @@ class TestWizardLensStepPage:
         assert 'id="review-lens-rating"' in lens and 'id="review-lens-caution"' in lens
         assert 'id="review-lens-rating"' not in plain and 'id="review-lens-caution"' not in plain
 
+    def test_the_operator_never_sees_a_coefficient_name(self, live_server_lens) -> None:
+        """The pair is Barrel / fisheye and Edge fit everywhere an operator reads: never k1 or k2."""
+        import re
+
+        _, base = live_server_lens
+        _, page = _get(base, "/wizard")
+        # The script keeps the coefficient names; what the page shows and says must not.
+        wizard = re.sub(r"<script.*?</script>", "", page, flags=re.S)
+        assert "Barrel / fisheye" in wizard and "Edge fit" in wizard
+        for leak in ("(k1)", "(k2)", "Lens k1", "Lens k2", "k1 or k2", "k2 not"):
+            assert leak not in wizard, leak
+        for text in (
+            "' · Barrel / fisheye '",
+            "' · Edge fit '",
+            "'not measured'",
+            "Bring either lens value closer to 0",
+        ):
+            assert text in page, text
+        _, camera = _get(base, "/section/camera")
+        assert "<label>Barrel / fisheye</label>" in camera and "<label>Edge fit</label>" in camera
+        assert "(k1)" not in camera and "(k2)" not in camera
+
+    def test_the_edge_view_is_a_developer_control(self, live_server_lens, live_server_lens_dev) -> None:
+        _, plain = _get(live_server_lens[1], "/wizard")
+        _, dev = _get(live_server_lens_dev[1], "/wizard")
+        assert 'id="lens-show-edges"' in dev and "Show edges" in dev and "var LENS_DEV = true;" in dev
+        assert 'id="lens-edges"' in dev
+        assert 'id="lens-show-edges"' not in plain and "var LENS_DEV = false;" in plain
+
 
 @unit
 class TestWizardLensTemplate:
@@ -1864,6 +1995,32 @@ class TestWizardLensTemplate:
             assert max(h_lo, min(h_hi, round(width / h_div))) == band_half_size(width)
             assert max(s_lo, min(s_hi, round(width / s_div))) == band_step(width)
         assert "Math.ceil(len / step) + 1" in self._src()
+
+    def test_suggestions_are_requested_for_the_lens_step_and_tapped_into_lines(self) -> None:
+        import re
+
+        src = self._src()
+        assert "'/api/wizard/lens/edges'" in src
+        assert "if (currentStep === WIZ.lens) lensRequestEdges();" in src
+        assert 'id="lens-candidates"' in src
+        down = re.search(r"overlay\.addEventListener\('pointerdown', function\(e\) \{(.*?)\n    \}\);", src, re.S)
+        assert down is not None and "lensAddCandidate(+candidate.dataset.candidate)" in down.group(1)
+        # A deleted or cleared line gives its suggestion back.
+        for name in ("lensDeleteSelectedLine", "lensClearLines"):
+            body = re.search(r"window\." + name + r" = function\(\) \{(.*?)\n  \};\n", src, re.S)
+            assert body is not None and "lensReleaseCandidate" in body.group(1), name
+
+    def test_edge_map_scale_mirrors_the_server(self) -> None:
+        import math
+        import re
+
+        from openfollow.scene.edge_chains import edge_map_scale
+
+        found = re.findall(r"Math\.max\(1, Math\.min\((\d+), Math\.ceil\(imageWidth / (\d+)\)\)\)", self._src())
+        assert len(found) == 1, "lensEdgeScale() must mirror edge_chains.edge_map_scale"
+        cap, div = (int(g) for g in found[0])
+        for width in (320, 640, 960, 961, 1280, 1920, 2560, 3840, 7680, 99999):
+            assert max(1, min(cap, math.ceil(width / div))) == edge_map_scale(width)
 
     def test_a_middle_point_without_an_edge_starts_switched_off(self) -> None:
         src = self._src()

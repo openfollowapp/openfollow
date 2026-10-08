@@ -52,3 +52,27 @@ def band_payload(band: LumaBand) -> dict:
         "rows": rows,
         "data": base64.b64encode(band.luma.astype(np.uint8).tobytes()).decode(),
     }
+
+
+def scaled_luma(img: np.ndarray, scale: int) -> np.ndarray:
+    """The snapshot scaled down by ``scale`` the way the wizard's canvas does it: block means."""
+    from openfollow.scene.edge_chains import edge_map_size
+
+    h, w = img.shape
+    sw, sh = edge_map_size(w, h, scale)
+    padded = np.pad(img, ((0, sh * scale - h), (0, sw * scale - w)), mode="edge")
+    return np.clip(np.round(padded.reshape(sh, scale, sw, scale).mean(axis=(1, 3))), 0, 255).astype(np.float64)
+
+
+def edges_payload(luma: np.ndarray, scale: int, canvas_w: int, canvas_h: int, *, with_map: bool = False) -> dict:
+    """A ``/api/wizard/lens/edges`` body for the scaled luma."""
+    h, w = luma.shape
+    return {
+        "image_width": canvas_w,
+        "image_height": canvas_h,
+        "scale": scale,
+        "width": w,
+        "height": h,
+        "data": base64.b64encode(luma.astype(np.uint8).tobytes()).decode(),
+        "with_map": with_map,
+    }

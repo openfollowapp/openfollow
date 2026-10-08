@@ -241,6 +241,12 @@
   }
   .lens-loupe canvas { width: 100%; height: 100%; display: block; }
   .lens-result-main { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+  /* Suggested edges: faint and dashed until tapped, with a wide invisible stroke to tap. */
+  .lens-candidate-line { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-opacity: 0.6; stroke-dasharray: 8 6; pointer-events: none; }
+  .lens-candidate-hit { fill: none; stroke: transparent; stroke-width: 24; pointer-events: stroke; cursor: pointer; }
+  .lens-candidate:hover .lens-candidate-line { stroke-opacity: 1; }
+  .lens-edges { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: none; pointer-events: none; }
+  .lens-dev { display: inline-flex; align-items: center; gap: 0.35rem; color: var(--muted); font-size: 0.85rem; }
   /* Graded meter (docs/STATUS_LANGUAGE.md): five segments, filled in the level's line colour. */
   .wizard-meter { display: inline-flex; gap: 3px; vertical-align: middle; }
   .wizard-meter-seg { width: 14px; height: 8px; border-radius: 2px; background: var(--border-soft); }
@@ -548,7 +554,7 @@
 </div>
 
 % if _show_lens:
-<!-- Lens: k1 / k2 from lines that are straight in reality (experimental) -->
+<!-- Lens: the distortion from lines that are straight in reality (experimental) -->
 <div class="wizard-content experimental-feature" id="wizard-step-lens">
   <div class="section">
     <div class="section-head">
@@ -558,8 +564,10 @@
 
     <div id="lens-container" class="wizard-preview-container" style="display:none;">
       <img id="lens-image" alt="Camera snapshot">
+      <canvas id="lens-edges" class="lens-edges" aria-hidden="true"></canvas>
       <svg id="lens-overlay" class="wizard-overlay" xmlns="http://www.w3.org/2000/svg">
         <rect id="lens-hit" class="lens-hit" x="0" y="0" width="100%" height="100%" fill="transparent"/>
+        <g id="lens-candidates"></g>
         <g id="lens-lines"></g>
         <g id="lens-pending"></g>
       </svg>
@@ -576,6 +584,9 @@
       <button type="button" class="secondary" id="lens-toggle-point" onclick="lensToggleSelectedPoint()" disabled>Point off</button>
       <button type="button" class="secondary" id="lens-delete-line" onclick="lensDeleteSelectedLine()" disabled>Delete line</button>
       <button type="button" class="secondary" id="lens-clear" onclick="lensClearLines()" disabled>Clear lines</button>
+% if config.ui.developer_mode:
+      <label class="lens-dev"><input type="checkbox" id="lens-show-edges" onchange="lensToggleEdgeView(this.checked)"> Show edges</label>
+% end
     </div>
 
     <div id="lens-result" class="notice" style="display:none;margin-top:0.72rem;">
@@ -590,33 +601,33 @@
       <div class="group-title">Fine-tune</div>
       <div class="row">
         <div class="field" style="flex:1;min-width:200px;">
-          <label for="wiz_lens_k1">Barrel / fisheye (k1)</label>
+          <label for="wiz_lens_k1">Barrel / fisheye</label>
           <div style="display:flex;gap:0.5rem;align-items:center;">
             <input type="range" id="wiz_lens_k1_range" min="-0.6" max="0.6" step="0.005"
                    value="{{config.camera.lens_k1}}" style="flex:1;" oninput="onWizardLensInput('k1', 'range')"
-                   aria-label="Barrel / fisheye (k1) slider">
+                   aria-label="Barrel / fisheye slider">
             <input type="number" id="wiz_lens_k1" step="0.005"
                    value="{{config.camera.lens_k1}}" style="width:6rem;" oninput="onWizardLensInput('k1', 'number')">
           </div>
         </div>
         <div class="field" style="flex:1;min-width:200px;">
-          <label for="wiz_lens_k2">Edge fit (k2)</label>
+          <label for="wiz_lens_k2">Edge fit</label>
           <div style="display:flex;gap:0.5rem;align-items:center;">
             <input type="range" id="wiz_lens_k2_range" min="-0.4" max="0.4" step="0.005"
                    value="{{config.camera.lens_k2}}" style="flex:1;" oninput="onWizardLensInput('k2', 'range')"
-                   aria-label="Edge fit (k2) slider">
+                   aria-label="Edge fit slider">
             <input type="number" id="wiz_lens_k2" step="0.005"
                    value="{{config.camera.lens_k2}}" style="width:6rem;" oninput="onWizardLensInput('k2', 'number')">
           </div>
         </div>
       </div>
-      <div id="wiz-lens-error" class="wizard-field-error" style="display:none;">This pair folds the overlay inside the frame. Bring k1 or k2 closer to 0.</div>
+      <div id="wiz-lens-error" class="wizard-field-error" style="display:none;">This pair folds the overlay inside the frame. Bring either value closer to 0.</div>
     </div>
 
     <p class="wizard-help" style="margin-top:0.72rem;">
-      <strong>Click the start and the end</strong> of something that is straight in reality: a stage edge, a gaffa line, a truss, the edge of an LED wall. The line is fitted to the brightness edge along its whole length, bowed the way the lens bows it. Drag a point to correct it; the middle points move across the line only. A point that found no edge is drawn dashed and starts switched off; switch it on once it sits on the edge, or leave it off where the edge is hidden. Lines near the edges and corners of the image tell the most, and the fit runs after every change.
+      <strong>Tap a dashed suggestion</strong> that is straight in reality, or click the start and the end of a straight edge yourself: a stage edge, a tape line, a truss. Drag a point to correct it. Lines near the picture's edges and corners tell the most.
     </p>
-    <p class="wizard-tip">Click a point and use <strong>arrow keys</strong> to nudge it (hold <strong>Shift</strong> for larger steps), <strong>Space</strong> to switch a middle point off or on, <strong>Delete</strong> to remove its line and <strong>Esc</strong> to cancel a started line. You can skip this step; the current values stay.</p>
+    <p class="wizard-tip"><strong>Arrow keys</strong> nudge the selected point (<strong>Shift</strong> for bigger steps), <strong>Space</strong> switches a middle point off or on, <strong>Delete</strong> removes its line, <strong>Esc</strong> cancels a started line. Skipping this step keeps the current values.</p>
 
     <div class="wizard-nav">
       <button type="button" class="secondary" onclick="wizardPrev()">Back</button>
@@ -945,8 +956,8 @@
         <div class="wizard-solved-param"><span class="param-label">Roll</span><span class="param-value" id="review-cam-roll">-</span></div>
         <div class="wizard-solved-param"><span class="param-label">FOV</span><span class="param-value" id="review-cam-fov">-</span></div>
 % if _show_lens:
-        <div class="wizard-solved-param"><span class="param-label">Lens k1</span><span class="param-value" id="review-lens-k1">-</span></div>
-        <div class="wizard-solved-param"><span class="param-label">Lens k2</span><span class="param-value" id="review-lens-k2">-</span></div>
+        <div class="wizard-solved-param"><span class="param-label">Barrel / fisheye</span><span class="param-value" id="review-lens-k1">-</span></div>
+        <div class="wizard-solved-param"><span class="param-label">Edge fit</span><span class="param-value" id="review-lens-k2">-</span></div>
         <div class="wizard-solved-param"><span class="param-label">Lens coverage</span><span class="param-value" id="review-lens-rating"><span class="wizard-meter" aria-hidden="true"><span class="wizard-meter-seg"></span><span class="wizard-meter-seg"></span><span class="wizard-meter-seg"></span><span class="wizard-meter-seg"></span><span class="wizard-meter-seg"></span></span> <span id="review-lens-rating-text">-</span></span></div>
 % end
       </div>
@@ -3616,7 +3627,7 @@
     if (!wizLensPairValid()) {
       saveError.show(reviewBox, {
         error: 'The lens pair folds the overlay inside the frame.',
-        action: 'Bring k1 or k2 closer to 0 on the Lens step before finishing.',
+        action: 'Bring either lens value closer to 0 on the Lens step before finishing.',
       }, 'Not applied.');
       return;
     }
@@ -3739,7 +3750,7 @@
 
 
   // ---------------------------------------------------------------
-  // Lens (experimental): k1 / k2 from lines that are straight in reality
+  // Lens (experimental): the distortion from lines that are straight in reality
   // ---------------------------------------------------------------
   // A line keeps its endpoints p0 / p1 (image px) and its three middle points
   // in the line's own frame as (t, off): t along the chord, off along its
@@ -3753,7 +3764,9 @@
   var LENS_RATING_SEGMENTS = { low: 1, medium: 2, okay: 3, good: 4, excellent: 5 };
   var LENS_RATING_LABEL = { low: 'Low', medium: 'Medium', okay: 'Okay', good: 'Good', excellent: 'Excellent' };
   var LENS_MISFIT_TEXT = "This line doesn't fit the others – is it really straight?";
-  var lensLines = [];        // [{p0, p1, mids: [{t, off, on}], snapped: [bool x5], curve, rms, misfit}]
+  var LENS_DEV = {{'true' if config.ui.developer_mode else 'false'}};
+  var lensLines = [];        // [{p0, p1, mids: [{t, off, on}], snapped: [bool x5], curve, rms, misfit, candidate}]
+  var lensCandidates = [];   // suggested edges of the current snapshot: [{points, samples, used}]
   var lensImageSize = null;  // [w, h] the lines were traced on
   var lensPending = null;    // first click of a line being traced
   var lensSelected = null;   // {line, point} with point 0..4
@@ -3827,9 +3840,12 @@
       lensShowNotice('The snapshot resolution changed, so the traced lines were cleared.');
     }
     lensImageSize = [imageWidth, imageHeight];
+    lensCandidates = [];
     renderLens();
     renderLensResult();
     saveToSession();
+    // The suggestions are for this step: a snapshot loaded for another step is not sent.
+    if (currentStep === WIZ.lens) lensRequestEdges();
   }
   function lensShowNotice(text) {
     var el = document.getElementById('lens-notice');
@@ -3868,6 +3884,99 @@
     renderLens();
     lensSnapLine(line);
   }
+
+  // ---- suggested edges ----
+  // Mirror edge_chains.edge_map_scale: the snapshot is scaled under the map width.
+  function lensEdgeScale() { return Math.max(1, Math.min(16, Math.ceil(imageWidth / 960))); }
+  function lensEdgeSize() {
+    var scale = lensEdgeScale();
+    return { scale: scale, width: Math.ceil(imageWidth / scale), height: Math.ceil(imageHeight / scale) };
+  }
+  function lensLumaBase64(canvas, w, h) {
+    var rgba = canvas.getContext('2d').getImageData(0, 0, w, h).data;
+    var luma = new Uint8Array(w * h);
+    for (var i = 0, k = 0; i < luma.length; i++, k += 4) {
+      luma[i] = (rgba[k] * 299 + rgba[k + 1] * 587 + rgba[k + 2] * 114) / 1000;
+    }
+    var bin = '';
+    for (var j = 0; j < luma.length; j += 8192) bin += String.fromCharCode.apply(null, luma.subarray(j, j + 8192));
+    return btoa(bin);
+  }
+  function lensRequestEdges() {
+    if (!lensCanvas) return;
+    var size = lensEdgeSize();
+    var c = document.createElement('canvas');
+    c.width = size.width; c.height = size.height;
+    var ctx = c.getContext('2d');
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(lensCanvas, 0, 0, size.width, size.height);
+    var snapshot = lensCanvas;
+    fetch('/api/wizard/lens/edges', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        image_width: imageWidth, image_height: imageHeight, scale: size.scale,
+        width: size.width, height: size.height, data: lensLumaBase64(c, size.width, size.height), with_map: LENS_DEV,
+      }),
+    }).then(function(r) {
+      return r.json().then(function(data) { return { ok: r.ok, data: data }; });
+    }).then(function(res) {
+      if (snapshot !== lensCanvas || !res.ok || !Array.isArray(res.data.candidates)) return;
+      lensCandidates = res.data.candidates.map(function(c) { return { points: c.points, samples: c.samples, used: false }; });
+      lensLines.forEach(function(line) { line.candidate = lensCandidateOf(line); });
+      if (res.data.edges) lensPaintEdges(res.data.edges);
+      renderLens();
+    }).catch(function() {});
+  }
+  // The suggestion a line was taken from, by its ends, so it is offered again when the line goes.
+  function lensCandidateOf(line) {
+    for (var i = 0; i < lensCandidates.length; i++) {
+      var s = lensCandidates[i].samples;
+      var same = (Math.hypot(s[0][0] - line.p0[0], s[0][1] - line.p0[1]) < 20 && Math.hypot(s[4][0] - line.p1[0], s[4][1] - line.p1[1]) < 20)
+        || (Math.hypot(s[4][0] - line.p0[0], s[4][1] - line.p0[1]) < 20 && Math.hypot(s[0][0] - line.p1[0], s[0][1] - line.p1[1]) < 20);
+      if (same) { lensCandidates[i].used = true; return i; }
+    }
+    return undefined;
+  }
+  function lensAddCandidate(i) {
+    var cand = lensCandidates[i];
+    if (!cand || cand.used) return;
+    var pts = cand.samples;
+    var line = {
+      p0: pts[0], p1: pts[4],
+      mids: LENS_T.map(function(t) { return { t: t, off: 0, on: true }; }),
+      snapped: [false, false, false, false, false],
+      curve: null, rms: null, misfit: false, candidate: i,
+    };
+    lensSetMidsFromPositions(line, pts);
+    cand.used = true;
+    lensPending = null;
+    lensLines.push(line);
+    lensSelected = { line: lensLines.length - 1, point: 4 };
+    renderLens();
+    lensSnapLine(line);
+  }
+  function lensReleaseCandidate(line) {
+    if (line.candidate !== undefined && lensCandidates[line.candidate]) lensCandidates[line.candidate].used = false;
+  }
+  // The developer's view: every thin edge the suggestions were picked from, over the snapshot.
+  function lensPaintEdges(edges) {
+    var canvas = document.getElementById('lens-edges');
+    if (!canvas) return;
+    var bin = atob(edges.data), n = edges.width * edges.height;
+    if (bin.length !== n) return;
+    canvas.width = edges.width; canvas.height = edges.height;
+    var ctx = canvas.getContext('2d'), image = ctx.createImageData(edges.width, edges.height), px = image.data;
+    for (var i = 0, k = 0; i < n; i++, k += 4) {
+      var v = bin.charCodeAt(i);
+      px[k] = px[k + 1] = px[k + 2] = v; px[k + 3] = 255;
+    }
+    ctx.putImageData(image, 0, 0);
+  }
+  window.lensToggleEdgeView = function(show) {
+    var canvas = document.getElementById('lens-edges');
+    if (canvas) canvas.style.display = show ? 'block' : 'none';
+  };
 
   // Mirror edge_snap.band_half_size / band_step: the band grows with the snapshot.
   function lensBandHalf() { return Math.max(48, Math.min(256, Math.round(imageWidth / 10))); }
@@ -3950,8 +4059,28 @@
     return g;
   }
   function lensPointsAttr(pts) { return pts.map(function(p) { return p[0] + ',' + p[1]; }).join(' '); }
+  function renderLensCandidates() {
+    var g = document.getElementById('lens-candidates');
+    g.innerHTML = '';
+    lensCandidates.forEach(function(cand, i) {
+      if (cand.used) return;
+      var group = svgEl('g');
+      group.setAttribute('class', 'lens-candidate');
+      group.dataset.candidate = i;
+      var hit = svgEl('polyline');
+      hit.setAttribute('class', 'lens-candidate-hit');
+      hit.setAttribute('points', lensPointsAttr(cand.points));
+      group.appendChild(hit);
+      var line = svgEl('polyline');
+      line.setAttribute('class', 'lens-candidate-line');
+      line.setAttribute('points', lensPointsAttr(cand.points));
+      group.appendChild(line);
+      g.appendChild(group);
+    });
+  }
   function renderLens() {
     if (!lensEnabled()) return;
+    renderLensCandidates();
     var g = document.getElementById('lens-lines');
     // Rebuilding the handles drops a focused one, which would leave the keys dead after a click.
     var hadFocus = g.contains(document.activeElement);
@@ -4047,8 +4176,8 @@
     box.className = 'notice' + (level === 'caution' ? ' warning' : level === 'success' ? ' success' : '');
     renderLensMeter(box.querySelector('.wizard-meter'), lensFit.rating);
     var text = 'Coverage ' + (LENS_RATING_LABEL[lensFit.rating] || lensFit.rating).toLowerCase()
-      + ' · k1 ' + Number(lensFit.k1).toFixed(3) + ' · k2 ' + Number(lensFit.k2).toFixed(3);
-    if (!lensFit.k2_fitted) text += ' (k2 not determined by these lines)';
+      + ' · Barrel / fisheye ' + Number(lensFit.k1).toFixed(3)
+      + ' · Edge fit ' + (lensFit.k2_fitted ? Number(lensFit.k2).toFixed(3) : 'not measured');
     document.getElementById('lens-result-text').textContent = text;
     document.getElementById('lens-result-hint').textContent = lensFit.hint || '';
   }
@@ -4106,11 +4235,13 @@
   };
   window.lensDeleteSelectedLine = function() {
     if (!lensSelected) return;
+    lensReleaseCandidate(lensLines[lensSelected.line]);
     lensLines.splice(lensSelected.line, 1);
     lensSelected = null;
     lensChanged();
   };
   window.lensClearLines = function() {
+    lensLines.forEach(lensReleaseCandidate);
     lensLines = [];
     lensSelected = null;
     lensPending = null;
@@ -4249,8 +4380,12 @@
     var overlay = document.getElementById('lens-overlay');
     overlay.addEventListener('pointerdown', function(e) {
       var handle = e.target.closest ? e.target.closest('.lens-point') : null;
+      var candidate = e.target.closest ? e.target.closest('.lens-candidate') : null;
       var pt = lensSvgPoint(e.clientX, e.clientY);
-      if (handle) {
+      if (candidate) {
+        e.preventDefault();
+        lensAddCandidate(+candidate.dataset.candidate);
+      } else if (handle) {
         e.preventDefault();
         lensSelected = { line: +handle.dataset.line, point: +handle.dataset.point };
         lensDrag = { line: lensLines[lensSelected.line], point: lensSelected.point, start: pt, moved: false };

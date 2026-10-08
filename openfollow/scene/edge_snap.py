@@ -16,8 +16,9 @@ least squares), and each point then takes the edge peak nearest that curve.
 Every point of a line snaps to one edge polarity (the same dark-to-light
 direction), otherwise a strip of gaffa tape would put one point on its top edge
 and the next on its bottom edge and the tape's width would read as curvature.
-A point with no clear edge where the curve runs stays on the curve and is
-reported as not snapped.
+The ends stay within a few pixels of the clicks: the operator placed them, and
+of two parallel edges the click says which one is meant. A point with no clear
+edge where the curve runs stays on the curve and is reported as not snapped.
 """
 
 from __future__ import annotations
@@ -36,8 +37,10 @@ LINE_SAMPLE_FRACTIONS: tuple[float, ...] = (0.0, 0.25, 0.5, 0.75, 1.0)
 MIN_BAND_HALF = 48
 MAX_BAND_HALF = 256
 MAX_BAND_STEP = 8
-# Luma levels per pixel below which a gradient is not an edge.
+# Luma levels per pixel below which a gradient is not an edge, and the band's own
+# noise times this factor, whichever is higher.
 _MIN_EDGE_STRENGTH = 6.0
+_NOISE_FACTOR = 3.5
 # One column's contribution is capped here, so a single bright crossing cannot carry a path.
 _GRADIENT_CLIP = 60.0
 # The path may climb this many rows per chord pixel.
@@ -53,8 +56,15 @@ _REFERENCE_K1 = 0.2
 _REFERENCE_K2 = 0.2
 # Keeps the bow factors at zero for a line the lens barely bends.
 _BOW_RIDGE = 1e-3
-# How far a clicked end may move, as a fraction of the snapshot width.
-_END_RADIUS_DIVISOR = 70
+# The path may leave the chord by the clicks' reach plus this many reference bows: the
+# bow of any lens the fit accepts, so a parallel edge further off is never taken.
+_CORRIDOR_K1 = 3.0
+_CORRIDOR_K2 = 2.0
+_CORRIDOR_MARGIN = 2.0
+# How far a clicked end may move, as a fraction of the snapshot width: the click
+# says which of two parallel edges is meant, so an end only settles onto the nearest.
+_END_RADIUS_DIVISOR = 120
+_MIN_END_RADIUS = 4
 # Pixels around the fitted curve where a point's own edge peak is looked for.
 _POINT_WINDOW = 6
 
@@ -92,7 +102,7 @@ def band_columns(length: float, step: int) -> int:
 
 def end_search_radius(canvas_w: float) -> int:
     """How far from the click a line's end may be moved onto the edge."""
-    return max(8, round(canvas_w / _END_RADIUS_DIVISOR))
+    return max(_MIN_END_RADIUS, round(canvas_w / _END_RADIUS_DIVISOR))
 
 
 def line_sample_points(p0: npt.ArrayLike, p1: npt.ArrayLike) -> npt.NDArray[np.float64]:
@@ -227,24 +237,32 @@ def snap_line_to_edges(
     grad[1:-1] = (luma[2:] - luma[:-2]) / 2.0
     known = np.nan_to_num(grad, nan=0.0)
     half = float(band.half)
+    # A peak counts as an edge where it stands out from the band's own grain.
+    finite = grad[np.isfinite(grad)]
+    noise = 1.4826 * float(np.median(np.abs(finite))) if finite.size else 0.0
+    min_strength = max(_MIN_EDGE_STRENGTH, _NOISE_FACTOR * noise)
 
-    reach = end_search_radius(canvas_w)
-    allowed_end = np.abs(np.arange(rows) - half) <= reach
-    max_step = max(1, int(np.ceil(_PATH_SLOPE * band.step)))
-    best_score, polarity = -np.inf, 1.0
-    path: npt.NDArray[np.int64] = np.full(cols, band.half, dtype=np.int64)
-    for sign in (1.0, -1.0):
-        total, found = _best_path(np.clip(sign * known, -_GRADIENT_CLIP, _GRADIENT_CLIP), allowed_end, max_step)
-        if total > best_score:
-            best_score, polarity, path = total, sign, found
-
-    # The shape a straight line can take through a radial lens, fitted to the path
-    # where the path has evidence.
+    # The shape a straight line can take through a radial lens: the two reference
+    # bows, which bound the search and are fitted to the path afterwards.
     t = np.minimum(np.arange(cols, dtype=np.float64) * band.step / length, 1.0)
     bows = []
     for k1, k2 in ((_REFERENCE_K1, 0.0), (0.0, _REFERENCE_K2)):
         fractions, bow = _reference_bow(a, b, tangent, normal, length, canvas_w, canvas_h, max(cols, 64), k1, k2)
         bows.append(np.interp(t, fractions, bow))
+    reach = end_search_radius(canvas_w)
+    distance = np.abs(np.arange(rows, dtype=np.float64)[:, None] - half)
+    corridor = reach + _CORRIDOR_MARGIN + _CORRIDOR_K1 * np.abs(bows[0]) + _CORRIDOR_K2 * np.abs(bows[1])
+    inside_corridor = distance <= corridor[None, :]
+    allowed_end = distance[:, 0] <= reach
+    clipped = np.clip(known, -_GRADIENT_CLIP, _GRADIENT_CLIP)
+    max_step = max(1, int(np.ceil(_PATH_SLOPE * band.step)))
+    best_score, polarity = -np.inf, 1.0
+    path: npt.NDArray[np.int64] = np.full(cols, band.half, dtype=np.int64)
+    for sign in (1.0, -1.0):
+        total, found = _best_path(np.where(inside_corridor, sign * clipped, -np.inf), allowed_end, max_step)
+        if total > best_score:
+            best_score, polarity, path = total, sign, found
+
     design = np.column_stack([bows[0], bows[1], 1.0 - t, t])
     evidence = np.clip(polarity * known[path, np.arange(cols)], 0.0, _GRADIENT_CLIP) + 1e-3
     ridge = np.diag([_BOW_RIDGE, _BOW_RIDGE, 0.0, 0.0]) * float(evidence.sum())
@@ -264,9 +282,12 @@ def snap_line_to_edges(
         profile = polarity * grad[:, col]
         centre = int(round(offset + half))
         lo, hi = max(1, centre - _POINT_WINDOW), min(rows - 2, centre + _POINT_WINDOW)
+        if fraction in (0.0, 1.0):
+            # An end stays within its reach of the click, whatever edge the curve found beside it.
+            lo, hi = max(lo, band.half - reach), min(hi, band.half + reach)
         window = profile[lo : hi + 1]
         peak = float(np.nanmax(window)) if np.isfinite(window).any() else -np.inf
-        snapped = best_score > 0.0 and peak >= _MIN_EDGE_STRENGTH
+        snapped = best_score > 0.0 and peak >= min_strength
         if snapped:
             j = lo + int(np.nanargmax(window))
             offset = j - half + _subpixel_peak(np.where(np.isfinite(profile), profile, -np.inf), j)

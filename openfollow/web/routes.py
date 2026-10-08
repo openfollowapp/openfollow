@@ -3381,6 +3381,41 @@ def _parse_lens_snap_body(data: Any) -> tuple[float, float, list[float], list[fl
     return img_w, img_h, ends[0], ends[1], LumaBand(step, half, luma)
 
 
+# The scaled luma the edge suggestions are found in, at most (a snapshot scaled to the map width).
+_LENS_EDGE_MAX_PIXELS = 1024 * 1024
+
+
+def _parse_lens_edges_body(data: Any) -> tuple[float, float, int, Any, bool]:
+    """Validate a ``/api/wizard/lens/edges`` body; raises for the endpoint's 400."""
+    import numpy as np
+
+    from openfollow.scene.edge_chains import MAX_EDGE_SCALE, edge_map_size
+
+    if not isinstance(data, dict):
+        raise TypeError("body must be an object")
+    img_w = float(data["image_width"])
+    img_h = float(data["image_height"])
+    _require_wizard_canvas(img_w, img_h)
+    scale, width, height = (int(data[k]) for k in ("scale", "width", "height"))
+    if not 1 <= scale <= MAX_EDGE_SCALE:
+        raise ValueError(f"scale must be within 1..{MAX_EDGE_SCALE}")
+    if (width, height) != edge_map_size(img_w, img_h, scale):
+        raise ValueError("width and height must be the snapshot scaled by scale")
+    if width * height > _LENS_EDGE_MAX_PIXELS:
+        raise ValueError("the scaled luma is too large")
+    pixels = data["data"]
+    if not isinstance(pixels, str):
+        raise TypeError("data must be a base64 string")
+    try:
+        buf = base64.b64decode(pixels, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("data is not valid base64") from exc
+    if len(buf) != width * height:
+        raise ValueError("data does not match its size")
+    luma = np.frombuffer(buf, dtype=np.uint8).reshape(height, width).astype(np.float64)
+    return img_w, img_h, scale, luma, bool(data.get("with_map", False))
+
+
 def _wizard_camera_params(cam: Any) -> Any:
     """Coerce a wizard camera dict into the np.float64 parameter vector.
 
@@ -9624,6 +9659,38 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             response.status = 400
             return json.dumps({"error": str(exc)})
         return json.dumps({"points": [{"x": p.x, "y": p.y, "snapped": p.snapped} for p in points]})
+
+    @app.post("/api/wizard/lens/edges")
+    def api_wizard_lens_edges() -> Any:
+        """Suggest the snapshot's edges a Lens line could be traced along, from its scaled luma."""
+        response.content_type = "application/json"
+        data = _load_json_body()
+        if data is None:
+            return json.dumps({"error": "Invalid JSON"})
+        try:
+            img_w, img_h, scale, luma, with_map = _parse_lens_edges_body(data)
+        except (KeyError, TypeError, ValueError) as exc:
+            response.status = 400
+            return json.dumps({"error": str(exc)})
+
+        from openfollow.scene.edge_chains import candidate_sample_points, find_edge_candidates
+        from openfollow.scene.edge_snap import LINE_SAMPLE_FRACTIONS
+
+        found = find_edge_candidates(luma, scale, img_w, img_h)
+        candidates = [
+            {
+                "points": [[x, y] for x, y in c.points],
+                "samples": [[x, y] for x, y in candidate_sample_points(c.points, LINE_SAMPLE_FRACTIONS)],
+                "length": c.length,
+                "strength": c.strength,
+            }
+            for c in found.candidates
+        ]
+        edges = None
+        if with_map:
+            height, width = found.edge_map.shape
+            edges = {"width": width, "height": height, "data": base64.b64encode(found.edge_map.tobytes()).decode()}
+        return json.dumps({"candidates": candidates, "edges": edges})
 
     @app.post("/api/wizard/lens/fit")
     def api_wizard_lens_fit() -> Any:

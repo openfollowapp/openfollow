@@ -6737,6 +6737,38 @@ class TestUiConfig:
         )
         assert load_config(str(temp_config_path)).ui.show_experimental_features is True
 
+    # developer_mode: config-only, shows the developer's views in the web UI.
+    def test_developer_mode_default_is_false(self) -> None:
+        from openfollow.configuration import UiConfig
+
+        assert UiConfig().developer_mode is False
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            (True, True),
+            ("true", True),
+            ("on", True),
+            (False, False),
+            ("off", False),
+            ("maybe", False),
+            (42, False),
+            (None, False),
+        ],
+    )
+    def test_developer_mode_coercion(self, value, expected) -> None:  # noqa: ANN001
+        from openfollow.configuration import UiConfig
+
+        assert UiConfig(developer_mode=value).developer_mode is expected  # type: ignore[arg-type]
+
+    def test_developer_mode_toml_round_trip(self, temp_config_path) -> None:  # noqa: ANN001
+        from openfollow.configuration import AppConfig, UiConfig, load_config, save_config
+
+        save_config(AppConfig(ui=UiConfig(developer_mode=True)), str(temp_config_path))
+        loaded = load_config(str(temp_config_path))
+        assert loaded.ui.developer_mode is True
+        assert loaded.ui.show_experimental_features is False
+
 
 class TestTriggerZonesConfigDropsNonObjectZones:
     """Defence-in-depth: TriggerZonesConfig.__post_init__ drops a

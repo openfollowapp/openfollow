@@ -372,7 +372,7 @@ def coverage_hint(
     if len(lines) < 2:
         return "Add a second line in another part of the image."
     if not k2_fitted:
-        return "k2 needs a line near a corner."
+        return "The edge fit needs a line near a corner."
     pts = np.asarray([p for line in lines for p in line], dtype=np.float64)
     cx, cy = canvas_w / 2.0, canvas_h / 2.0
     bands = {

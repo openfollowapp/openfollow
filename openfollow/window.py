@@ -157,6 +157,11 @@ class GtkNativeSinkWindow:
         # The pointer poll runs every frame; throttle its failure log so a
         # persistent error can't flood the journal at the display tick rate.
         self._poll_err_log = ThrottledExceptionLogger(logger, "Pointer poll failed")
+        # Fullscreen belongs to the OS (the green button on macOS, Cage on a
+        # Pi), so it is read from the window-state event, never assumed from
+        # fullscreen(); a resize asked for while fullscreen waits here.
+        self._fullscreen = False
+        self._pending_size: tuple[int, int] | None = None
         self._setup_events()
         self._window.show_all()
 
@@ -351,18 +356,22 @@ class GtkNativeSinkWindow:
     def set_title(self, title: str) -> None:
         self._window.set_title(title)
 
-    def set_aspect_ratio(self, w: int, h: int) -> None:
-        geometry = self._Gdk.Geometry()
-        geometry.min_aspect = w / h
-        geometry.max_aspect = w / h
-        self._window.set_geometry_hints(None, geometry, self._Gdk.WindowHints.ASPECT)
-
     def fullscreen(self) -> None:
         self._window.fullscreen()
 
     def apply_window_size(self, width: int, height: int) -> None:
-        """Resize live window to (width, height) pixels."""
+        """Resize the live window to (width, height) pixels.
+
+        Deferred while the window is fullscreen: Quartz refuses a resize there
+        and sends no configure event back, and GTK then freezes the frame clock
+        waiting for one, which stops the HUD redraw and the pointer poll. The
+        size lands when the window leaves fullscreen.
+        """
         self._window.set_default_size(width, height)
+        if self._fullscreen:
+            self._pending_size = (width, height)
+            return
+        self._pending_size = None
         self._window.resize(width, height)
 
     def get_canvas_size(self) -> tuple[int, int]:
@@ -500,6 +509,7 @@ class GtkNativeSinkWindow:
         self._window.connect("button-release-event", self._on_button_release)
         self._window.connect("motion-notify-event", self._on_motion)
         self._window.connect("configure-event", self._on_configure)
+        self._window.connect("window-state-event", self._on_window_state)
         self._window.connect("delete-event", self._on_delete)
         self._window.connect("focus-out-event", self._on_focus_out)
 
@@ -631,6 +641,17 @@ class GtkNativeSinkWindow:
 
     def _on_configure(self, widget: Any, event: Any) -> bool:
         self._emit("resize", width=event.width, height=event.height)
+        return False
+
+    def _on_window_state(self, widget: Any, event: Any) -> bool:
+        fullscreen = bool(event.new_window_state & self._Gdk.WindowState.FULLSCREEN)
+        left_fullscreen = self._fullscreen and not fullscreen
+        self._fullscreen = fullscreen
+        if left_fullscreen and self._pending_size is not None:
+            width, height = self._pending_size
+            self._pending_size = None
+            self._window.resize(width, height)
+        # GTK's own handler records the state too; stopping emission would desync it.
         return False
 
     def _on_delete(self, widget: Any, event: Any) -> bool:

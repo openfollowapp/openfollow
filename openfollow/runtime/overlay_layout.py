@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import NamedTuple
 
 
 @dataclass(frozen=True)
@@ -13,6 +14,15 @@ class CenteredPanelLayout:
     y: float
     width: float
     height: float
+
+
+class VideoRect(NamedTuple):
+    """Where the video sits inside the canvas, in canvas pixels."""
+
+    x: int
+    y: int
+    width: int
+    height: int
 
 
 @dataclass(frozen=True)
@@ -365,6 +375,30 @@ def centered_panel_layout(
     x = (frame_width - width) / 2.0
     y = (frame_height - height) / 2.0
     return CenteredPanelLayout(x=x, y=y, width=width, height=height)
+
+
+def video_rect(canvas_w: int, canvas_h: int, source_w: int, source_h: int) -> VideoRect:
+    """The rectangle gtksink letterboxes a ``source_w`` x ``source_h`` frame into.
+
+    Same arithmetic as GStreamer's ``gst_video_sink_center_rect`` with scaling,
+    which ``force-aspect-ratio`` uses: the ratios are compared as floats, the
+    fitted side is truncated like a C ``gint`` and the remainder is centred by
+    integer division. An integer cross-multiplication lands a pixel off the
+    sink in some shapes. The whole canvas when the source is unknown or the
+    shapes match. The source is the caps size: a source with non-square pixels
+    is fitted by its display size instead, which nothing here models.
+    """
+    if source_w <= 0 or source_h <= 0 or canvas_w <= 0 or canvas_h <= 0:
+        return VideoRect(0, 0, canvas_w, canvas_h)
+    src_ratio = source_w / source_h
+    dst_ratio = canvas_w / canvas_h
+    if src_ratio > dst_ratio:
+        height = int(canvas_w / src_ratio)
+        return VideoRect(0, (canvas_h - height) // 2, canvas_w, height)
+    if src_ratio < dst_ratio:
+        width = int(canvas_h * src_ratio)
+        return VideoRect((canvas_w - width) // 2, 0, width, canvas_h)
+    return VideoRect(0, 0, canvas_w, canvas_h)
 
 
 def selectable_list_layout(

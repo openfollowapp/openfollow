@@ -15,6 +15,7 @@ from openfollow.runtime.overlay_layout import (
     help_sections_height,
     marker_card_y,
     selectable_list_layout,
+    video_rect,
     virtual_fader_card_y,
 )
 
@@ -678,3 +679,63 @@ def test_selectable_list_layout_no_scroll_when_selected_within_visible() -> None
     # `max_visible` will be ≥ 2 with this height, so selected_idx=1 fits.
     assert layout.scroll_offset == 0
     assert layout.max_visible >= 2
+
+
+# --------------------------------------------------------------------------- #
+# video_rect – where gtksink letterboxes the frame
+# --------------------------------------------------------------------------- #
+
+# Expected values are gtksink's own (gst_video_sink_center_rect with scaling),
+# worked by hand, never computed with the function under test.
+
+
+@pytest.mark.parametrize("source", [(0, 0), (1920, 0), (0, 1080), (-1, 1080)])
+def test_video_rect_is_the_whole_canvas_without_a_source(source: tuple[int, int]) -> None:
+    assert tuple(video_rect(1512, 982, *source)) == (0, 0, 1512, 982)
+
+
+@pytest.mark.parametrize("canvas", [(1920, 1080), (1280, 720)])
+def test_video_rect_is_the_whole_canvas_when_the_shapes_match(canvas: tuple[int, int]) -> None:
+    assert tuple(video_rect(*canvas, 1920, 1080)) == (0, 0, *canvas)
+
+
+@pytest.mark.parametrize(
+    ("canvas", "expected"),
+    [
+        # The MacBook's built-in display, 1512x982 logical, with a 16:9 feed.
+        ((1512, 982), (0, 66, 1512, 850)),
+        ((1000, 1000), (0, 219, 1000, 562)),
+        ((1920, 1200), (0, 60, 1920, 1080)),
+    ],
+)
+def test_video_rect_letterboxes_a_wider_source(canvas: tuple[int, int], expected: tuple[int, int, int, int]) -> None:
+    assert tuple(video_rect(*canvas, 1920, 1080)) == expected
+
+
+@pytest.mark.parametrize(
+    ("source", "canvas", "expected"),
+    [
+        # A 4:3 camera on a 16:9 screen.
+        ((1024, 768), (1920, 1080), (240, 0, 1440, 1080)),
+        ((1920, 1080), (2560, 1080), (320, 0, 1920, 1080)),
+        # A portrait phone stream.
+        ((1080, 1920), (1280, 720), (437, 0, 405, 720)),
+    ],
+)
+def test_video_rect_pillarboxes_a_narrower_source(
+    source: tuple[int, int], canvas: tuple[int, int], expected: tuple[int, int, int, int]
+) -> None:
+    assert tuple(video_rect(*canvas, *source)) == expected
+
+
+def test_video_rect_truncates_and_centres_like_the_sink() -> None:
+    # 1000 / (16/9) = 562.5: the sink truncates to 562 and centres the odd
+    # remainder of 438 at 219, so the overlay lands on the sink's pixels.
+    assert tuple(video_rect(1000, 1000, 1920, 1080)) == (0, 219, 1000, 562)
+    # One pixel off 16:9 is still a one-pixel bar, not a snap to the canvas.
+    assert tuple(video_rect(1919, 1080, 1920, 1080)) == (0, 0, 1919, 1079)
+
+
+def test_video_rect_is_degenerate_on_a_one_pixel_canvas() -> None:
+    # Consumers must guard a zero side rather than divide by it.
+    assert video_rect(1, 1, 1920, 1080).height == 0

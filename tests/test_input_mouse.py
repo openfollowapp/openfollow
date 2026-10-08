@@ -10,6 +10,7 @@ test pattern is: grab → move → ``update()`` → assert.
 from __future__ import annotations
 
 import math
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -81,6 +82,8 @@ class _DummyApp:
         self._config.controller.mouse_enabled = True
         self._camera = _DummyCamera(self._config.camera)
         self._canvas = None
+        # No source shape: the video fills the canvas, as on the placeholder.
+        self._video_receiver = SimpleNamespace(resolution=(0, 0))
 
         self._server = _DummyServer()
         self._server.add_marker(1).set_pos(0.0, 0.0, 0.0)
@@ -1127,3 +1130,190 @@ class TestHitTestLensDistortion:
         assert MouseHandler(app).on_pointer_down(float(bowed[0]), float(bowed[1]), 1) is True
         # Clicking the raw pinhole centre (where the circle is NOT drawn) misses.
         assert MouseHandler(app).on_pointer_down(float(pinhole[0]), float(pinhole[1]), 1) is False
+
+
+# ---------------------------------------------------------------------------
+
+
+# Where gtksink puts the frame: worked by hand from its own arithmetic.
+_LETTERBOX_1000 = (0, 219, 1000, 562)  # 16:9 feed on a square canvas
+_PILLARBOX_4_3 = (240, 0, 1440, 1080)  # 4:3 feed on a 16:9 canvas
+_PILLARBOX_PORTRAIT = (437, 0, 405, 720)  # 9:16 feed on a 16:9 canvas
+
+
+def _letterboxed_app(canvas: tuple[int, int], source: tuple[int, int]) -> _DummyApp:
+    app = _DummyApp()
+    app._canvas = _DummyCanvas(*canvas)
+    app._video_receiver.resolution = source
+    return app
+
+
+def _ground_center_in(app: _DummyApp, rect: tuple[int, int, int, int], marker_id: int = 1) -> tuple[float, float]:
+    """Window pixel of a marker's ground centre when the video sits in ``rect``."""
+    m = app._server.get_marker(marker_id)
+    x, y, w, h = rect
+    scr = project_points(
+        _cam_buffer(app),
+        np.array([[m.pos[0], m.pos[1], app._config.grid.z_offset]], dtype=np.float64),
+        float(w),
+        float(h),
+    )
+    return float(scr[0, 0]) + x, float(scr[0, 1]) + y
+
+
+class TestLetterboxedVideo:
+    """The pointer is read through the rectangle gtksink letterboxes the
+    frame into, the same one the overlay draws the scene in, so a click
+    lands where the operator sees the ring."""
+
+    def test_grab_hits_the_marker_inside_the_letterboxed_video(self) -> None:
+        app = _letterboxed_app((1000, 1000), (1920, 1080))
+        handler = MouseHandler(app)
+        cx, cy = _ground_center_in(app, _LETTERBOX_1000)
+        assert handler.on_pointer_down(cx, cy, 1) is True
+        assert handler.active is True
+
+    def test_grab_at_the_full_canvas_position_misses(self) -> None:
+        # Where the ring would have been drawn with the overlay projected over
+        # the whole 16:9 canvas: the focal length follows the width, so on a
+        # pillarboxed 4:3 frame that lands well off the ring that is drawn.
+        app = _letterboxed_app((1920, 1080), (1024, 768))
+        handler = MouseHandler(app)
+        boxed = _ground_center_in(app, _PILLARBOX_4_3)
+        stretched = _ground_center_in(app, (0, 0, 1920, 1080))
+        assert math.hypot(stretched[0] - boxed[0], stretched[1] - boxed[1]) > 30
+        assert handler.on_pointer_down(stretched[0], stretched[1], 1) is False
+
+    def test_move_unprojects_through_the_video_rect(self) -> None:
+        app = _letterboxed_app((1000, 1000), (1920, 1080))
+        handler = MouseHandler(app)
+        x0, y0, w, h = _LETTERBOX_1000
+        cx, cy = _ground_center_in(app, _LETTERBOX_1000)
+        handler.on_pointer_down(cx, cy, 1)
+        px, py = 700.0, 420.0  # a point inside the letterboxed frame
+        handler.on_pointer_move(px + x0, py + y0)
+        handler.update()
+        expected = unproject_to_plane(
+            _cam_buffer(app),
+            np.array([[px, py]], dtype=np.float64),
+            float(w),
+            float(h),
+            app._config.grid.z_offset,
+        )
+        mx, my, _ = app._server.get_marker(1).pos
+        assert mx == pytest.approx(float(expected[0, 0]))
+        assert my == pytest.approx(float(expected[0, 1]))
+
+    @pytest.mark.parametrize(
+        ("canvas", "source", "rect"),
+        [
+            ((1920, 1080), (1024, 768), _PILLARBOX_4_3),
+            ((1280, 720), (1080, 1920), _PILLARBOX_PORTRAIT),
+        ],
+        ids=["4:3", "portrait"],
+    )
+    def test_a_narrower_source_offsets_the_pointer_horizontally(
+        self, canvas: tuple[int, int], source: tuple[int, int], rect: tuple[int, int, int, int]
+    ) -> None:
+        app = _letterboxed_app(canvas, source)
+        handler = MouseHandler(app)
+        cx, cy = _ground_center_in(app, rect)
+        assert handler.on_pointer_down(cx, cy, 1) is True
+        # The same ring read without the bar's offset is empty stage.
+        handler.on_pointer_down(cx, cy, 3)
+        assert handler.on_pointer_down(cx - rect[0], cy, 1) is False
+
+    def test_a_click_in_the_bar_grabs_nothing(self) -> None:
+        app = _letterboxed_app((1000, 1000), (1920, 1080))
+        handler = MouseHandler(app)
+        assert handler.on_pointer_down(500, 100, 1) is False  # above the frame
+        assert handler.active is False
+
+    def test_no_receiver_means_the_whole_canvas(self) -> None:
+        app = _letterboxed_app((1000, 1000), (1920, 1080))
+        app._video_receiver = None
+        handler = MouseHandler(app)
+        cx, cy = _ground_center_in(app, (0, 0, 1000, 1000))
+        assert handler.on_pointer_down(cx, cy, 1) is True
+
+    def test_unknown_source_shape_means_the_whole_canvas(self) -> None:
+        app = _letterboxed_app((1000, 1000), (0, 0))
+        handler = MouseHandler(app)
+        cx, cy = _ground_center_in(app, (0, 0, 1000, 1000))
+        assert handler.on_pointer_down(cx, cy, 1) is True
+
+    def test_a_degenerate_video_rect_blocks_a_grab_and_holds_moves(self) -> None:
+        app = _letterboxed_app((1000, 1000), (1920, 1080))
+        handler = MouseHandler(app)
+        cx, cy = _ground_center_in(app, _LETTERBOX_1000)
+        handler.on_pointer_down(cx, cy, 1)
+        before = app._server.get_marker(1).pos
+        app._canvas = _DummyCanvas(1, 1)  # a frame fitted into one pixel has no height
+        assert handler.on_pointer_move(cx + 50, cy + 50) is True
+        handler.update()
+        assert app._server.get_marker(1).pos == before
+        assert handler.on_pointer_down(cx, cy, 1) is False
+
+    def test_hysteresis_is_measured_in_window_pixels(self) -> None:
+        app = _letterboxed_app((1000, 1000), (1920, 1080))
+        app._config.controller.mouse_hysteresis_px = 10
+        handler = MouseHandler(app)
+        cx, cy = _ground_center_in(app, _LETTERBOX_1000)
+        handler.on_pointer_down(cx, cy, 1)
+        before = app._server.get_marker(1).pos
+        assert handler.on_pointer_move(cx + 4, cy) is True
+        handler.update()
+        assert app._server.get_marker(1).pos == before
+        handler.on_pointer_move(cx + 40, cy)
+        handler.update()
+        assert app._server.get_marker(1).pos != before
+
+    def test_double_right_click_distance_ignores_the_letterbox(self) -> None:
+        app = _letterboxed_app((1000, 1000), (1920, 1080))
+        handler = MouseHandler(app)
+        clock = _FakeClock()
+        handler._clock = clock
+        cx, cy = _ground_center_in(app, _LETTERBOX_1000)
+        handler.on_pointer_down(cx, cy, 1)
+        clock.t = 0.1
+        handler.on_pointer_down(500, 100, 3)  # release, in the bar
+        clock.t = 0.2
+        handler.on_pointer_down(502, 101, 3)  # 2 px on, still a double click
+        assert app._server.get_marker(1).pos == _DEFAULT_POS
+
+    @pytest.mark.parametrize(
+        ("canvas", "source", "rect"),
+        [
+            ((1000, 1000), (1920, 1080), _LETTERBOX_1000),
+            ((1920, 1080), (1024, 768), _PILLARBOX_4_3),
+            ((1280, 720), (1080, 1920), _PILLARBOX_PORTRAIT),
+        ],
+        ids=["16:9", "4:3", "portrait"],
+    )
+    def test_the_mouse_and_the_detection_pin_agree_on_every_shape(
+        self, canvas: tuple[int, int], source: tuple[int, int], rect: tuple[int, int, int, int]
+    ) -> None:
+        """One stage point, three readers, one answer.
+
+        The overlay projects a point with the rect's size and the pointer is
+        read back through the same rect; the detection pin unprojects frame
+        pixels with the source size. All of them must land on the same stage
+        point, whatever the shape of the window.
+        """
+        app = _letterboxed_app(canvas, source)
+        handler = MouseHandler(app)
+        x0, y0, w, h = rect
+        world = np.array([[2.0, 3.0, app._config.grid.z_offset]], dtype=np.float64)
+        on_overlay = project_points(_cam_buffer(app), world, float(w), float(h))[0]
+        # The pointer lands on the overlay's pixel, offset by the bars.
+        via_mouse = handler._unproject(float(on_overlay[0]) + x0, float(on_overlay[1]) + y0)
+        assert via_mouse is not None
+        assert via_mouse[0] == pytest.approx(2.0, abs=1e-6)
+        assert via_mouse[1] == pytest.approx(3.0, abs=1e-6)
+        # The same pixel in the frame's own resolution, as the detection pin
+        # reads it. The rect is the sink's truncated fit (562 for 562.5), so
+        # the two paths agree to a fraction of a pixel, millimetres on stage.
+        frame_px = np.array([[on_overlay[0] * source[0] / w, on_overlay[1] * source[1] / h]], dtype=np.float64)
+        via_pin = unproject_to_plane(_cam_buffer(app), frame_px, float(source[0]), float(source[1]), 0.0)[0]
+        assert via_pin[0] == pytest.approx(2.0, abs=1e-3)
+        assert via_pin[1] == pytest.approx(3.0, abs=1e-3)

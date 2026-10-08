@@ -246,7 +246,6 @@ class OpenFollowApp:
         # A live video swap failed and is retried on the next config pass.
         self._video_swap_owed = False
         self._video_logged: bool = False
-        self._video_aspect: tuple[int, int] | None = None
         self._server: PsnServer | None = None
         self._otp_server: OtpServer | None = None
         self._rttrpm_server: RttrpmServer | None = None

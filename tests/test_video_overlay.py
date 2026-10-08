@@ -50,12 +50,26 @@ class FakeCairo:
         self.move_tos: list[tuple[float, float]] = []
         self.rgba_calls: list[tuple[float, ...]] = []
         self.font_size_calls: list[float] = []
+        self.translates: list[tuple[float, float]] = []
+        self.clip_rects: list[tuple[float, float, float, float]] = []
+        self._path_rect: tuple[float, float, float, float] | None = None
 
     def save(self) -> None:
         self.saves += 1
 
     def restore(self) -> None:
         self.restores += 1
+
+    def translate(self, x: float, y: float) -> None:
+        self.translates.append((x, y))
+
+    def rectangle(self, x: float, y: float, w: float, h: float) -> None:
+        self._path_rect = (x, y, w, h)
+
+    def clip(self) -> None:
+        assert self._path_rect is not None, "clip() without a path"
+        self.clip_rects.append(self._path_rect)
+        self._path_rect = None
 
     def set_source_rgba(self, *args: float) -> None:
         self.rgba_calls.append(args)
@@ -109,6 +123,34 @@ def patched_passes(monkeypatch):
     ):
         monkeypatch.setattr(overlay_module, name, _record(name))
     return calls
+
+
+@pytest.fixture
+def pass_sizes(monkeypatch):
+    """Record the ``(w, h)`` each scene / HUD pass is handed, keyed by name."""
+    sizes: dict[str, list[tuple[int, int]]] = {}
+
+    def _record(name: str):
+        def _stub(*args, **kwargs) -> None:
+            # Every pass takes its canvas as the two ints among its arguments.
+            ints = tuple(a for a in args if type(a) is int)
+            sizes.setdefault(name, []).append((ints[0], ints[1]))
+
+        return _stub
+
+    for name in (
+        "draw_hud_pass",
+        "draw_detections_pass",
+        "draw_grid_pass",
+        "draw_origin_pass",
+        "draw_marker_pass",
+        "draw_zones_pass",
+        "draw_settings_overlay_pass",
+        "draw_menu_help_pass",
+        "draw_button_detection_overlay_pass",
+    ):
+        monkeypatch.setattr(overlay_module, name, _record(name))
+    return sizes
 
 
 # --------------------------------------------------------------------------- #
@@ -738,3 +780,108 @@ def test_the_screen_reuses_a_still_cone_and_forgets_a_removed_one(monkeypatch) -
     frame(a)
     frame(a, b)
     assert sorted(worked_out) == [1, 2, 2]
+
+
+# --------------------------------------------------------------------------- #
+# The scene sits on the video; the HUD sits on the screen
+# --------------------------------------------------------------------------- #
+
+
+_SCENE = ("draw_grid_pass", "draw_origin_pass", "draw_zones_pass", "draw_marker_pass")
+
+
+def _scene_renderer(source: tuple[int, int]) -> CairoOverlayRenderer:
+    renderer = CairoOverlayRenderer()
+    renderer.state.camera_params = np.zeros(7, dtype=np.float64)
+    renderer.state.source_resolution = source
+    renderer.state.markers = [MarkerOverlayData(marker_id=0, x=0, y=0, z=0, color="#fff")]
+    return renderer
+
+
+class TestLetterboxedScene:
+    """gtksink letterboxes the frame into a rectangle of the source's shape;
+    the scene passes are translated and clipped into that same rectangle so
+    the overlay stays on the video whatever the window's shape, while the
+    HUD keeps the whole canvas. The rect values are gtksink's own, worked by
+    hand."""
+
+    def test_scene_passes_get_the_video_rect_and_the_hud_keeps_the_canvas(self, pass_sizes) -> None:
+        fake = FakeCairo()
+        _scene_renderer((1920, 1080)).draw(fake, 1000, 1000)
+        for name in _SCENE:
+            assert pass_sizes[name] == [(1000, 562)], name
+        assert pass_sizes["draw_hud_pass"] == [(1000, 1000)]
+        assert fake.translates == [(0, 219)]
+        assert fake.clip_rects == [(0, 0, 1000, 562)]
+
+    @pytest.mark.parametrize(
+        ("source", "canvas", "rect"),
+        [
+            ((1024, 768), (1920, 1080), (240, 0, 1440, 1080)),
+            ((1080, 1920), (1280, 720), (437, 0, 405, 720)),
+        ],
+        ids=["4:3", "portrait"],
+    )
+    def test_a_narrower_source_is_pillarboxed(self, pass_sizes, source, canvas, rect) -> None:
+        fake = FakeCairo()
+        _scene_renderer(source).draw(fake, *canvas)
+        x, y, w, h = rect
+        assert pass_sizes["draw_grid_pass"] == [(w, h)]
+        assert pass_sizes["draw_hud_pass"] == [canvas]
+        assert fake.translates == [(x, y)]
+        assert fake.clip_rects == [(0, 0, w, h)]
+
+    def test_detection_boxes_scale_with_the_video_rect(self, pass_sizes) -> None:
+        renderer = _scene_renderer((1920, 1080))
+        renderer.state.detections = [object()]
+        renderer.state.detection_show_boxes = True
+        renderer.draw(FakeCairo(), 1000, 1000)
+        assert pass_sizes["draw_detections_pass"] == [(1000, 562)]
+
+    @pytest.mark.parametrize("source", [(0, 0), (1920, 1080)], ids=["unknown", "matching"])
+    def test_the_whole_canvas_when_there_is_nothing_to_box(self, pass_sizes, source) -> None:
+        fake = FakeCairo()
+        _scene_renderer(source).draw(fake, 1280, 720)
+        for name in (*_SCENE, "draw_hud_pass"):
+            assert pass_sizes[name] == [(1280, 720)], name
+        assert fake.translates == [(0, 0)]
+
+    def test_menus_and_the_wizard_ignore_the_video_rect(self, pass_sizes) -> None:
+        renderer = _scene_renderer((1920, 1080))
+        renderer.state.settings_menu_active = True
+        fake = FakeCairo()
+        renderer.draw(fake, 1000, 1000)
+        assert pass_sizes["draw_settings_overlay_pass"] == [(1000, 1000)]
+        assert pass_sizes["draw_menu_help_pass"] == [(1000, 1000)]
+        assert fake.translates == []
+
+        renderer.state.settings_menu_active = False
+        renderer.state.button_detection = ButtonDetectionState(active=True)
+        fake = FakeCairo()
+        renderer.draw(fake, 1000, 1000)
+        assert pass_sizes["draw_button_detection_overlay_pass"] == [(1000, 1000)]
+        assert fake.translates == []
+
+    def test_a_degenerate_rect_skips_the_scene_but_draws_the_hud(self, pass_sizes, caplog) -> None:  # noqa: ANN001
+        # A 16:9 frame fitted into one pixel has no height: nothing to draw it in.
+        fake = FakeCairo()
+        _scene_renderer((1920, 1080)).draw(fake, 1, 1)
+        assert all(name not in pass_sizes for name in _SCENE)
+        assert pass_sizes["draw_hud_pass"] == [(1, 1)]
+        assert fake.translates == []
+        assert not any("overlay draw error" in r.message.lower() for r in caplog.records)
+
+    def test_the_translate_is_undone_before_the_hud(self, monkeypatch, pass_sizes) -> None:
+        fake = FakeCairo()
+        _scene_renderer((1920, 1080)).draw(fake, 1000, 1000)
+        assert fake.saves == fake.restores == 2
+
+        def _boom(*args, **kwargs) -> None:
+            raise RuntimeError("pass failure")
+
+        # A raising scene pass still leaves a balanced context for the fallback text.
+        monkeypatch.setattr(overlay_module, "draw_zones_pass", _boom)
+        fake = FakeCairo()
+        _scene_renderer((1920, 1080)).draw(fake, 1000, 1000)
+        assert fake.saves == fake.restores
+        assert any("Overlay Error" in t for t in fake.text_calls)

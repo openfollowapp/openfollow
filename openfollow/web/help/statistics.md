@@ -37,7 +37,7 @@ System health for the station hardware.
 - **CPU** – processor load as a percentage. Sustained values above roughly 80–90 % can cause frame drops or tracking lag.
 - **RAM** – memory usage as a percentage. Approaching 100 % on a Raspberry Pi typically causes slowdowns.
 - **Temperature** – processor temperature in degrees Celsius; `N/A` on platforms without a thermal sensor. On a Raspberry Pi, sustained values above 80 °C may trigger thermal throttling, visible as CPU spikes paired with frame-rate drops.
-- **Output resolution** – the canvas the overlay is drawn on: the real window or full screen, not the size requested under Display. If its aspect ratio differs from **Input resolution**, the overlay sits off the video – that mismatch is the only on-screen explanation for it. `N/A (no display)` with no screen attached.
+- **Output resolution** – the canvas the overlay is drawn on: the real window or full screen, not the size requested under Display. When its shape differs from **Input resolution**, the video and the overlay share a boxed area of the video's shape, centred between black bars. `N/A (no display)` with no screen attached.
 - **Overlay redraw rate** – how fast this station redraws its overlay. It follows the screen, not the feed: `0.0 fps` with no screen attached is normal and says nothing about the video. Check **Signal** for that.
 - **Frame clock** – the loop that reads your input and updates marker positions. `Running` is normal, and it stays running with no display attached. `Stalled` means the loop has not run for over a second: marker positions, input, and detection are frozen, while PSN, OTP, RTTrPM, and OSC keep transmitting the last known position at full rate.
 

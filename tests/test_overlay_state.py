@@ -38,6 +38,11 @@ def test_overlay_state_reset_grid_defaults_match_grid_config() -> None:
     assert state.grid_transparency == grid_defaults.transparency
 
 
+def test_overlay_state_source_resolution_defaults_to_unknown() -> None:
+    """A fresh state has no source shape, so the scene fills the canvas."""
+    assert OverlayState().source_resolution == (0, 0)
+
+
 def test_overlay_state_reset_restores_defaults() -> None:
     from openfollow.runtime.overlay_state import VirtualFaderDisplayData
 
@@ -45,6 +50,7 @@ def test_overlay_state_reset_restores_defaults() -> None:
     state.markers.append(MarkerOverlayData(marker_id=1, x=1.0, y=2.0, z=3.0, color="#ffffff"))
     state.selected_id = 1
     state.camera_params = np.array([1.0, 2.0, 3.0], dtype=np.float64)
+    state.source_resolution = (1920, 1080)
     state.lens_k1 = -0.15
     state.lens_k2 = 0.04
     state.grid_config = (1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
@@ -80,6 +86,7 @@ def test_overlay_state_reset_restores_defaults() -> None:
     assert state.markers == []
     assert state.selected_id is None
     assert state.camera_params is None
+    assert state.source_resolution == (0, 0)
     assert state.lens_k1 == 0.0
     assert state.lens_k2 == 0.0
     assert state.grid_config is None

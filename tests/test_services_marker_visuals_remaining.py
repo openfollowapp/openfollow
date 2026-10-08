@@ -135,6 +135,7 @@ class _FakeVideoReceiver:
             ),
         )
         self.source_name = "NDI://CAM"
+        self.resolution = (1920, 1080)
         self.source_selection_active = False
         self.discovered_sources = ["CAM1", "CAM2"]
         self.selected_source_index = 1
@@ -1969,3 +1970,36 @@ class TestMissingControllerSurfaces:
         )
         state = _build(app, pool)
         assert state.markers[0].identify_flash is False
+
+
+# --------------------------------------------------------------------------- #
+# Source shape → state flow
+# --------------------------------------------------------------------------- #
+
+
+class TestSourceResolutionFlow:
+    """The HUD letterboxes the scene by the frame's caps size, read off the
+    receiver every frame."""
+
+    def test_overlay_state_carries_the_source_resolution(self, pool: OverlayStatePool) -> None:
+        app = _build_app()
+        app._video_receiver.resolution = (1024, 768)
+        assert _build(app, pool).source_resolution == (1024, 768)
+
+    def test_a_placeholder_publishes_no_source_resolution(self, pool: OverlayStatePool) -> None:
+        # The placeholder clears the caps, so the scene fills the canvas
+        # rather than keeping the last feed's shape.
+        app = _build_app()
+        app._video_receiver.resolution = (0, 0)
+        assert _build(app, pool).source_resolution == (0, 0)
+
+    def test_a_changed_shape_replaces_the_pooled_value(self) -> None:
+        pool = OverlayStatePool(pool_size=1)
+        app = _build_app()
+        app._video_receiver.resolution = (1920, 1080)
+        first = _build(app, pool)
+        pool.release(first)
+        app._video_receiver.resolution = (1024, 768)
+        second = _build(app, pool)
+        assert second is first
+        assert second.source_resolution == (1024, 768)

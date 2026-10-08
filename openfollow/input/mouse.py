@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from openfollow.runtime.overlay_layout import video_rect
 from openfollow.runtime.services_detection_pin import (
     get_or_create_manual_marker,
     is_assist_controlled,
@@ -334,21 +335,29 @@ class MouseHandler:
             return None
         return app._server.get_marker(app._selected_id)
 
-    def _view_inputs(self) -> tuple[npt.NDArray[np.float64], int, int] | None:
-        """Build the 7-float camera buffer + canvas size, or None if unusable."""
+    def _view_inputs(self, x: float, y: float) -> tuple[npt.NDArray[np.float64], float, float, int, int] | None:
+        """Camera buffer, the pointer in video pixels and the video size, or None.
+
+        Pointer events arrive in window pixels. The scene is drawn into the
+        rectangle gtksink letterboxes the frame into (``video_rect``, the one
+        the renderer uses), so the pointer is moved into it here, once.
+        """
         app = self._app
         if app._camera is None:  # pragma: no cover
             # Mouse events only flow once the canvas (and camera) are wired up;
             # the None arm is unreachable at runtime but keeps the type checker
             # honest – treat it as a defensive no-op rather than ``assert``.
             return None
-        # Canvas size must match the coordinate space of pointer events
-        # (window client pixels), not the video's native resolution.
         if app._canvas is not None:
-            w, h = app._canvas.get_canvas_size()
+            canvas_w, canvas_h = app._canvas.get_canvas_size()
         else:
-            w, h = app._config.window_width, app._config.window_height
-        if w <= 0 or h <= 0:
+            canvas_w, canvas_h = app._config.window_width, app._config.window_height
+        if canvas_w <= 0 or canvas_h <= 0:
+            return None
+        receiver = app._video_receiver
+        source_w, source_h = receiver.resolution if receiver is not None else (0, 0)
+        rect = video_rect(canvas_w, canvas_h, source_w, source_h)
+        if rect.width <= 0 or rect.height <= 0:
             return None
         cam_cfg = app._camera.to_config()
         buf = self._cam_buffer
@@ -359,16 +368,16 @@ class MouseHandler:
         buf[4] = cam_cfg.yaw
         buf[5] = cam_cfg.roll
         buf[6] = cam_cfg.fov
-        return buf, w, h
+        return buf, x - rect.x, y - rect.y, rect.width, rect.height
 
     def _unproject(self, x: float, y: float) -> tuple[float, float] | None:
-        """Unproject a screen point onto the stage plane; None if off-plane."""
-        view = self._view_inputs()
+        """Unproject a window point onto the stage plane; None if off-plane."""
+        view = self._view_inputs(x, y)
         if view is None:
             return None
-        buf, w, h = view
-        self._screen_buffer[0, 0] = x
-        self._screen_buffer[0, 1] = y
+        buf, px, py, w, h = view
+        self._screen_buffer[0, 0] = px
+        self._screen_buffer[0, 1] = py
         # The cursor lands on the (lens-distorted) video, so undistort it back to
         # the pinhole frame before unprojecting. Identity when no lens distortion
         # is configured. k1/k2 live on the config (the Camera object is pinhole).
@@ -390,10 +399,10 @@ class MouseHandler:
         app = self._app
         if app._server is None:
             return None
-        view = self._view_inputs()
+        view = self._view_inputs(x, y)
         if view is None:
             return None
-        buf, w, h = view
+        buf, px, py, w, h = view
         cfg = app._config
         z_off = cfg.grid.z_offset
         # The grab area is the ring that is drawn: the cone's base ring
@@ -428,7 +437,7 @@ class MouseHandler:
             if not np.all(np.isfinite(center)):
                 continue
             cx, cy = float(center[0]), float(center[1])
-            dist = math.hypot(x - cx, y - cy)
+            dist = math.hypot(px - cx, py - cy)
             hit = False
             if gc_on and gc_size > 0.0:
                 ring = ground_circle_world_ring(mx, my, z_off, gc_size, segments=ring_segments)
@@ -441,8 +450,8 @@ class MouseHandler:
                 )
                 finite = ring_scr[np.all(np.isfinite(ring_scr), axis=1)]
                 if len(finite) >= 3:
-                    polygon = [(float(px), float(py)) for px, py in finite]
-                    hit = point_in_polygon(x, y, polygon)
+                    polygon = [(float(rx), float(ry)) for rx, ry in finite]
+                    hit = point_in_polygon(px, py, polygon)
             if not hit and dist <= _MIN_GRAB_PX:
                 hit = True
             if hit and dist < best_dist:

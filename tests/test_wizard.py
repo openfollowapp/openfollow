@@ -1510,22 +1510,11 @@ def _stripe_image(w: int = 1920, h: int = 1080) -> np.ndarray:
     return np.clip(img + rng.normal(0.0, 4.0, img.shape), 0, 255)
 
 
-def _snap_patches(img: np.ndarray, p0, p1) -> list[dict]:
-    """Cut the patches the wizard sends: axis-aligned luma crops around the five sample points."""
-    import base64
+def _snap_band(img: np.ndarray, p0, p1) -> dict:
+    """The band the wizard sends: the luma along the chord, rectified."""
+    from tests._lens_band import band_payload, cut_band
 
-    from openfollow.scene.edge_snap import line_sample_points, patch_half_size
-
-    half = patch_half_size(img.shape[1])
-    out = []
-    for q in line_sample_points(p0, p1):
-        x0 = max(int(round(q[0])) - half, 0)
-        y0 = max(int(round(q[1])) - half, 0)
-        x1 = min(int(round(q[0])) + half + 1, img.shape[1])
-        y1 = min(int(round(q[1])) + half + 1, img.shape[0])
-        crop = img[y0:y1, x0:x1].astype(np.uint8)
-        out.append({"x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0, "data": base64.b64encode(crop.tobytes()).decode()})
-    return out
+    return band_payload(cut_band(img, p0, p1))
 
 
 def _warped_line(p0, p1, k1: float, k2: float, n: int = 5) -> list[list[float]]:
@@ -1557,13 +1546,13 @@ class TestWizardLensSnapEndpoint:
         status, data = _post_json(
             base,
             "/api/wizard/lens/snap",
-            {"image_width": 1920, "image_height": 1080, "p0": p0, "p1": p1, "patches": _snap_patches(img, p0, p1)},
+            {"image_width": 1920, "image_height": 1080, "p0": p0, "p1": p1, "band": _snap_band(img, p0, p1)},
         )
         assert status == 200
         assert len(data["points"]) == 5
         for p in data["points"]:
             assert p["snapped"] is True
-            assert abs(p["y"] - (600.0 + 0.02 * p["x"] + top)) < 0.5
+            assert abs(p["y"] - (600.0 + 0.02 * p["x"] + top)) < 0.75
 
     def test_a_covered_point_is_reported_unsnapped(self, live_server) -> None:
         _, base = live_server
@@ -1574,54 +1563,62 @@ class TestWizardLensSnapEndpoint:
         _, data = _post_json(
             base,
             "/api/wizard/lens/snap",
-            {"image_width": 1920, "image_height": 1080, "p0": p0, "p1": p1, "patches": _snap_patches(img, p0, p1)},
+            {"image_width": 1920, "image_height": 1080, "p0": p0, "p1": p1, "band": _snap_band(img, p0, p1)},
         )
         assert [p["snapped"] for p in data["points"]] == [True, True, False, True, True]
 
     def _good_body(self) -> dict:
         img = _stripe_image()
         p0, p1 = (200.0, 596.0), (1700.0, 627.0)
-        return {"image_width": 1920, "image_height": 1080, "p0": p0, "p1": p1, "patches": _snap_patches(img, p0, p1)}
+        return {"image_width": 1920, "image_height": 1080, "p0": p0, "p1": p1, "band": _snap_band(img, p0, p1)}
 
     @pytest.mark.parametrize(
         "mutate",
         [
-            lambda b: b.pop("patches"),
-            lambda b: b["patches"].pop(),
-            lambda b: b["patches"].append(b["patches"][0]),
-            lambda b: b["patches"][0].update(data="not base64!"),
-            lambda b: b["patches"][0].update(w=b["patches"][0]["w"] + 1),
-            lambda b: b["patches"][0].update(x=1919),
-            lambda b: b["patches"][0].update(w=0),
-            lambda b: b["patches"][0].update(w=10_000, h=1),
-            lambda b: b["patches"][0].update(data=12345),
+            lambda b: b.pop("band"),
+            lambda b: b.__setitem__("band", "wide"),
+            lambda b: b["band"].update(data="not base64!"),
+            lambda b: b["band"].update(rows=b["band"]["rows"] + 2, half=b["band"]["half"] + 1),
+            lambda b: b["band"].update(rows=b["band"]["rows"] + 1),
+            lambda b: b["band"].update(step=0),
+            lambda b: b["band"].update(step=99),
+            lambda b: b["band"].update(half=8, rows=17),
+            lambda b: b["band"].update(half=10_000, rows=20_001),
+            lambda b: b["band"].update(cols=1),
+            lambda b: b["band"].update(cols=100_000),
+            lambda b: b["band"].update(cols=b["band"]["cols"] + 1),
+            lambda b: b["band"].update(data=12345),
+            lambda b: b["band"].pop("step"),
+            lambda b: b.update(p1=[b["p1"][0] - 400.0, b["p1"][1]]),
             lambda b: b.update(p0=[1.0]),
             lambda b: b.update(p0=["a", "b"]),
             lambda b: b.update(p0=[float("nan"), 1.0]),
             lambda b: b.update(p1=b["p0"]),
             lambda b: b.update(image_width=0),
             lambda b: b.update(image_height="tall"),
-            lambda b: b.__setitem__("patches", "five"),
-            lambda b: b["patches"].__setitem__(0, "patch"),
         ],
         ids=[
-            "no-patches",
-            "four-patches",
-            "six-patches",
+            "no-band",
+            "band-not-an-object",
             "bad-base64",
             "size-mismatch",
-            "patch-outside",
-            "zero-width",
-            "oversized",
+            "rows-not-two-half-plus-one",
+            "zero-step",
+            "huge-step",
+            "half-too-small",
+            "half-too-large",
+            "one-column",
+            "too-many-columns",
+            "columns-do-not-match-data",
             "data-not-a-string",
+            "missing-step",
+            "band-cut-for-another-line",
             "p0-not-a-pair",
             "p0-non-numeric",
             "p0-nan",
             "zero-length-line",
             "zero-canvas",
             "string-canvas",
-            "patches-not-a-list",
-            "patch-not-an-object",
         ],
     )
     def test_malformed_body_returns_400(self, live_server, mutate) -> None:
@@ -1855,16 +1852,23 @@ class TestWizardLensTemplate:
         assert "DISTORTION_INVERT_F_FLOOR" not in src
         assert "DISTORTION_INVERT_R_CAP = 4" in src
 
-    def test_patch_size_mirrors_the_server(self) -> None:
+    def test_band_geometry_mirrors_the_server(self) -> None:
         import re
 
-        from openfollow.scene.edge_snap import patch_half_size
+        from openfollow.scene.edge_snap import band_half_size, band_step
 
-        m = re.search(r"Math\.max\((\d+), Math\.min\((\d+), Math\.round\(imageWidth / (\d+)\)\)\)", self._src())
-        assert m is not None, "lensPatchHalf() must mirror edge_snap.patch_half_size"
-        lo, hi, div = (int(g) for g in m.groups())
+        found = re.findall(r"Math\.max\((\d+), Math\.min\((\d+), Math\.round\(imageWidth / (\d+)\)\)\)", self._src())
+        assert len(found) == 2, "lensBandHalf() and lensBandStep() must mirror edge_snap.band_half_size / band_step"
+        (h_lo, h_hi, h_div), (s_lo, s_hi, s_div) = ((int(g) for g in m) for m in found)
         for width in (320, 640, 1280, 1920, 2560, 3840, 7680):
-            assert max(lo, min(hi, round(width / div))) == patch_half_size(width)
+            assert max(h_lo, min(h_hi, round(width / h_div))) == band_half_size(width)
+            assert max(s_lo, min(s_hi, round(width / s_div))) == band_step(width)
+        assert "Math.ceil(len / step) + 1" in self._src()
+
+    def test_a_middle_point_without_an_edge_starts_switched_off(self) -> None:
+        src = self._src()
+        assert "for (var j = 1; j <= 3; j++) line.mids[j - 1].on = line.snapped[j];" in src
+        assert "starts switched off" in src
 
     def test_lines_persist_in_the_session_and_clear_on_a_resolution_change(self) -> None:
         src = self._src()

@@ -614,7 +614,7 @@
     </div>
 
     <p class="wizard-help" style="margin-top:0.72rem;">
-      <strong>Click the start and the end</strong> of something that is straight in reality: a stage edge, a gaffa line, a truss, the edge of an LED wall. The five points snap to the nearest brightness edge. Drag a point to correct it; the middle points move across the line only. Switch a point off when its spot on the edge is hidden. Lines near the edges and corners of the image tell the most, and the fit runs after every change.
+      <strong>Click the start and the end</strong> of something that is straight in reality: a stage edge, a gaffa line, a truss, the edge of an LED wall. The line is fitted to the brightness edge along its whole length, bowed the way the lens bows it. Drag a point to correct it; the middle points move across the line only. A point that found no edge is drawn dashed and starts switched off; switch it on once it sits on the edge, or leave it off where the edge is hidden. Lines near the edges and corners of the image tell the most, and the fit runs after every change.
     </p>
     <p class="wizard-tip">Click a point and use <strong>arrow keys</strong> to nudge it (hold <strong>Shift</strong> for larger steps), <strong>Space</strong> to switch a middle point off or on, <strong>Delete</strong> to remove its line and <strong>Esc</strong> to cancel a started line. You can skip this step; the current values stay.</p>
 
@@ -3758,7 +3758,7 @@
   var lensPending = null;    // first click of a line being traced
   var lensSelected = null;   // {line, point} with point 0..4
   var lensFit = null;        // the last fit response
-  var lensCanvas = null;     // the snapshot at full resolution, for the patches
+  var lensCanvas = null;     // the snapshot at full resolution, for the luma band
   var lensFitTimer = null;
   var lensReSolveTimer = null;
   var lensDrag = null;
@@ -3869,34 +3869,41 @@
     lensSnapLine(line);
   }
 
-  // Mirrors edge_snap.patch_half_size: the patch grows with the snapshot.
-  function lensPatchHalf() { return Math.max(16, Math.min(64, Math.round(imageWidth / 60))); }
-  function lensPatch(cx, cy, half) {
-    var x0 = Math.max(0, Math.round(cx) - half), y0 = Math.max(0, Math.round(cy) - half);
-    var x1 = Math.min(imageWidth, Math.round(cx) + half + 1), y1 = Math.min(imageHeight, Math.round(cy) + half + 1);
-    var w = x1 - x0, h = y1 - y0;
-    if (w < 1 || h < 1) return null;
-    var rgba = lensCanvas.getContext('2d').getImageData(x0, y0, w, h).data;
-    var luma = new Uint8Array(w * h);
+  // Mirror edge_snap.band_half_size / band_step: the band grows with the snapshot.
+  function lensBandHalf() { return Math.max(48, Math.min(256, Math.round(imageWidth / 10))); }
+  function lensBandStep() { return Math.max(1, Math.min(8, Math.round(imageWidth / 480))); }
+  // The luma along the chord p0 -> p1, rectified so the chord runs along the middle
+  // row: one column per step pixels of the chord, one row per pixel across it.
+  function lensBand(p0, p1) {
+    var dx = p1[0] - p0[0], dy = p1[1] - p0[1], len = Math.hypot(dx, dy);
+    if (!(len >= 1)) return null;
+    var step = lensBandStep(), half = lensBandHalf();
+    var tx = dx / len, ty = dy / len, nx = -ty, ny = tx;
+    var cols = Math.ceil(len / step) + 1, rows = 2 * half + 1;
+    var c = document.createElement('canvas');
+    c.width = cols; c.height = rows;
+    var ctx = c.getContext('2d');
+    ctx.imageSmoothingEnabled = true;
+    // image (x, y) -> band (u, v): u along the chord in columns, v across it in rows.
+    ctx.setTransform(tx / step, nx, ty / step, ny, -(p0[0] * tx + p0[1] * ty) / step, -(p0[0] * nx + p0[1] * ny) + half);
+    ctx.drawImage(lensCanvas, 0, 0);
+    var rgba = ctx.getImageData(0, 0, cols, rows).data;
+    var luma = new Uint8Array(cols * rows);
     for (var i = 0, k = 0; i < luma.length; i++, k += 4) {
       luma[i] = (rgba[k] * 299 + rgba[k + 1] * 587 + rgba[k + 2] * 114) / 1000;
     }
     var bin = '';
     for (var j = 0; j < luma.length; j += 8192) bin += String.fromCharCode.apply(null, luma.subarray(j, j + 8192));
-    return { x: x0, y: y0, w: w, h: h, data: btoa(bin) };
+    return { step: step, half: half, cols: cols, rows: rows, data: btoa(bin) };
   }
   function lensSnapLine(line) {
     if (!lensCanvas) { lensChanged(); return; }
-    var half = lensPatchHalf(), patches = [];
-    for (var j = 0; j < 5; j++) {
-      var q = lensPointPos(line, j), patch = lensPatch(q[0], q[1], half);
-      if (!patch) { lensChanged(); return; }
-      patches.push(patch);
-    }
+    var band = lensBand(line.p0, line.p1);
+    if (!band) { lensChanged(); return; }
     fetch('/api/wizard/lens/snap', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image_width: imageWidth, image_height: imageHeight, p0: line.p0, p1: line.p1, patches: patches }),
+      body: JSON.stringify({ image_width: imageWidth, image_height: imageHeight, p0: line.p0, p1: line.p1, band: band }),
     }).then(function(r) {
       return r.json().then(function(data) { return { ok: r.ok, data: data }; });
     }).then(function(res) {
@@ -3907,6 +3914,8 @@
         line.p1 = pts[4];
         lensSetMidsFromPositions(line, pts);
         line.snapped = res.data.points.map(function(p) { return !!p.snapped; });
+        // A middle point that found no edge sits on the fitted curve only: it starts switched off.
+        for (var j = 1; j <= 3; j++) line.mids[j - 1].on = line.snapped[j];
       }
       lensChanged();
     }).catch(function() { lensChanged(); });

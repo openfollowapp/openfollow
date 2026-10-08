@@ -2,15 +2,22 @@
 # Copyright (C) 2026 OpenFollow Project
 """Place a traced line's points on the brightness edge the operator meant.
 
-The wizard sends a small luma patch around each of the five sample positions
-of a line (its ends and 25 / 50 / 75 %), cut straight from the full-resolution
-snapshot. Along each point's perpendicular the luma is averaged over a few
-pixels of the line's direction and differentiated; the strongest gradient
-within the search radius is the edge. Every point of one line snaps to an edge
-of the same polarity (the same dark-to-light direction), otherwise a strip of
-gaffa tape would put one point on its top edge and the next on its bottom
-edge, and the tape's width would read as curvature. A point with no clear edge
-stays on the straight line and is reported as not snapped.
+The wizard sends a luma band along the traced chord, cut from the
+full-resolution snapshot and rectified so the chord runs along its middle row:
+one column every ``step`` pixels of the chord, one row per pixel across it,
+``half`` rows to either side. A straight edge seen through a lens is bowed, by
+far more than any search around the chord's own points could cover, and with a
+strong lens the bow is not even one arc (the r^4 term pushes the ends of a
+line near the frame edge out while the r^2 term pulls its middle in). So the
+band is searched for the highest-scoring smooth path through all its columns,
+the path is smoothed by the shape a straight line can take through a radial
+lens (the bows of the r^2 and r^4 terms plus a shift of either end, fitted by
+least squares), and each point then takes the edge peak nearest that curve.
+Every point of a line snaps to one edge polarity (the same dark-to-light
+direction), otherwise a strip of gaffa tape would put one point on its top edge
+and the next on its bottom edge and the tape's width would read as curvature.
+A point with no clear edge where the curve runs stays on the curve and is
+reported as not snapped.
 """
 
 from __future__ import annotations
@@ -21,25 +28,43 @@ from dataclasses import dataclass
 import numpy as np
 import numpy.typing as npt
 
+from openfollow.scene.solver import apply_overlay_distortion, invert_overlay_distortion
+
 # Where along a line its five points sit.
 LINE_SAMPLE_FRACTIONS: tuple[float, ...] = (0.0, 0.25, 0.5, 0.75, 1.0)
-# Pixels averaged along the line's direction at every perpendicular offset.
-_TANGENT_HALF_WIDTH = 3
+# Band limits: rows to either side of the chord, and chord pixels per column.
+MIN_BAND_HALF = 48
+MAX_BAND_HALF = 256
+MAX_BAND_STEP = 8
 # Luma levels per pixel below which a gradient is not an edge.
 _MIN_EDGE_STRENGTH = 6.0
-# A candidate at the search radius counts this much of one at the click.
-_NEAR_WEIGHT_AT_RADIUS = 0.5
-# Patch side limits: a half size under this finds nothing, over it costs bandwidth.
-MIN_PATCH_HALF = 16
-MAX_PATCH_HALF = 64
+# One column's contribution is capped here, so a single bright crossing cannot carry a path.
+_GRADIENT_CLIP = 60.0
+# The path may climb this many rows per chord pixel.
+_PATH_SLOPE = 0.5
+# Luma per row of climb, so the path runs straight where there is nothing to follow.
+_PATH_BEND_PENALTY = 1.0
+# Luma per row an end sits from its click: of two edges alike, the one the operator clicked nearer wins.
+_END_PULL = 1.0
+# The lenses the two reference bows are drawn with. Pincushion, because a barrel
+# reference folds before it reaches the corners and a line ending there could not
+# be undistorted; the fitted factors carry the sign.
+_REFERENCE_K1 = 0.2
+_REFERENCE_K2 = 0.2
+# Keeps the bow factors at zero for a line the lens barely bends.
+_BOW_RIDGE = 1e-3
+# How far a clicked end may move, as a fraction of the snapshot width.
+_END_RADIUS_DIVISOR = 70
+# Pixels around the fitted curve where a point's own edge peak is looked for.
+_POINT_WINDOW = 6
 
 
 @dataclass(frozen=True)
-class SnapPatch:
-    """A luma crop whose top-left pixel sits at ``(x, y)`` of the snapshot."""
+class LumaBand:
+    """Luma along a chord: ``luma[half, i]`` is the chord at ``i * step`` pixels from ``p0``."""
 
-    x: int
-    y: int
+    step: int
+    half: int
     luma: npt.NDArray[np.float64]
 
 
@@ -50,14 +75,24 @@ class SnappedPoint:
     snapped: bool
 
 
-def patch_half_size(canvas_w: float) -> int:
-    """Half side of the patch the wizard cuts, scaled with the snapshot width."""
-    return max(MIN_PATCH_HALF, min(MAX_PATCH_HALF, round(canvas_w / 60.0)))
+def band_half_size(canvas_w: float) -> int:
+    """Rows to either side of the chord the wizard cuts, scaled with the snapshot width."""
+    return max(MIN_BAND_HALF, min(MAX_BAND_HALF, round(canvas_w / 10.0)))
 
 
-def search_radius(half: int) -> int:
-    """How far along the perpendicular the edge may lie, for a patch of ``half``."""
-    return max(4, half - _TANGENT_HALF_WIDTH - 2)
+def band_step(canvas_w: float) -> int:
+    """Chord pixels per band column, scaled with the snapshot width."""
+    return max(1, min(MAX_BAND_STEP, round(canvas_w / 480.0)))
+
+
+def band_columns(length: float, step: int) -> int:
+    """Columns a band of ``step`` needs to cover a chord of ``length`` pixels."""
+    return int(np.ceil(length / step)) + 1
+
+
+def end_search_radius(canvas_w: float) -> int:
+    """How far from the click a line's end may be moved onto the edge."""
+    return max(8, round(canvas_w / _END_RADIUS_DIVISOR))
 
 
 def line_sample_points(p0: npt.ArrayLike, p1: npt.ArrayLike) -> npt.NDArray[np.float64]:
@@ -68,53 +103,28 @@ def line_sample_points(p0: npt.ArrayLike, p1: npt.ArrayLike) -> npt.NDArray[np.f
     return a[None, :] + t * (b - a)[None, :]
 
 
-def _bilinear(patch: SnapPatch, x: npt.NDArray[np.float64], y: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
-    """Luma at snapshot coordinates, NaN outside the patch."""
-    img = patch.luma
-    rows, cols = img.shape
-    px = x - patch.x
-    py = y - patch.y
-    out = np.full(px.shape, np.nan)
-    inside = (px >= 0.0) & (px <= cols - 1) & (py >= 0.0) & (py <= rows - 1)
-    if not inside.any():
-        return out
-    sx = px[inside]
-    sy = py[inside]
-    x0 = np.floor(sx).astype(int)
-    y0 = np.floor(sy).astype(int)
-    x1 = np.minimum(x0 + 1, cols - 1)
-    y1 = np.minimum(y0 + 1, rows - 1)
-    fx = sx - x0
-    fy = sy - y0
-    out[inside] = (
-        img[y0, x0] * (1.0 - fx) * (1.0 - fy)
-        + img[y0, x1] * fx * (1.0 - fy)
-        + img[y1, x0] * (1.0 - fx) * fy
-        + img[y1, x1] * fx * fy
-    )
-    return out
-
-
-def _gradient_profile(
-    patch: SnapPatch,
-    centre: npt.NDArray[np.float64],
-    normal: npt.NDArray[np.float64],
-    tangent: npt.NDArray[np.float64],
-    radius: int,
+def band_cell_positions(
+    p0: Sequence[float], p1: Sequence[float], step: int, half: int, cols: int
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-    """Luma gradient across the line at integer offsets ``-radius..radius``."""
-    offsets = np.arange(-radius - 1, radius + 2, dtype=np.float64)
-    along = np.arange(-_TANGENT_HALF_WIDTH, _TANGENT_HALF_WIDTH + 1, dtype=np.float64)
-    xs = centre[0] + offsets[:, None] * normal[0] + along[None, :] * tangent[0]
-    ys = centre[1] + offsets[:, None] * normal[1] + along[None, :] * tangent[1]
-    luma = _bilinear(patch, xs, ys)
-    # Mean over the samples inside the patch; an offset with none is NaN.
-    valid = np.isfinite(luma)
-    counts = valid.sum(axis=1)
-    sums = np.where(valid, luma, 0.0).sum(axis=1)
-    profile = np.where(counts > 0, sums / np.maximum(counts, 1), np.nan)
-    gradient = (profile[2:] - profile[:-2]) / 2.0
-    return offsets[1:-1], gradient
+    """Snapshot coordinates of every band cell, as ``(xs, ys)`` of shape ``(2 * half + 1, cols)``."""
+    a = np.asarray(p0, dtype=np.float64)
+    tangent, normal, _length = _frame(a, np.asarray(p1, dtype=np.float64))
+    u = np.arange(cols, dtype=np.float64) * step
+    v = np.arange(2 * half + 1, dtype=np.float64) - half
+    xs = a[0] + u[None, :] * tangent[0] + v[:, None] * normal[0]
+    ys = a[1] + u[None, :] * tangent[1] + v[:, None] * normal[1]
+    return xs, ys
+
+
+def _frame(
+    a: npt.NDArray[np.float64], b: npt.NDArray[np.float64]
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], float]:
+    tangent = b - a
+    length = float(np.hypot(*tangent))
+    if not np.isfinite(length) or length < 1.0:
+        raise ValueError("line is too short")
+    tangent = tangent / length
+    return tangent, np.array([-tangent[1], tangent[0]]), length
 
 
 def _subpixel_peak(signed: npt.NDArray[np.float64], i: int) -> float:
@@ -130,54 +140,136 @@ def _subpixel_peak(signed: npt.NDArray[np.float64], i: int) -> float:
     return float(np.clip(0.5 * (left - right) / denom, -0.5, 0.5))
 
 
+def _reference_bow(
+    a: npt.NDArray[np.float64],
+    b: npt.NDArray[np.float64],
+    tangent: npt.NDArray[np.float64],
+    normal: npt.NDArray[np.float64],
+    length: float,
+    canvas_w: float,
+    canvas_h: float,
+    samples: int,
+    k1: float,
+    k2: float,
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """``(fractions, offsets)`` of the straight line through the ends, seen through the lens ``(k1, k2)``."""
+    ends = invert_overlay_distortion(np.array([a, b]), canvas_w, canvas_h, k1, k2)
+    s = np.linspace(0.0, 1.0, samples)[:, None]
+    straight = ends[0][None, :] * (1.0 - s) + ends[1][None, :] * s
+    rel = apply_overlay_distortion(straight, canvas_w, canvas_h, k1, k2) - a[None, :]
+    fractions = rel @ tangent / length
+    offsets = rel @ normal
+    order = np.argsort(fractions)
+    return fractions[order], offsets[order]
+
+
+def _best_path(
+    score: npt.NDArray[np.float64], allowed_end: npt.NDArray[np.bool_], max_step: int
+) -> tuple[float, npt.NDArray[np.int64]]:
+    """The path through every column with the highest score, climbing at most ``max_step`` rows per column.
+
+    Both ends must lie on an ``allowed_end`` row. Returns the score and the row per column.
+    """
+    rows, cols = score.shape
+    steps = np.arange(-max_step, max_step + 1)
+    back = np.zeros((cols, rows), dtype=np.int64)
+    pull = _END_PULL * np.abs(np.arange(rows) - (rows - 1) / 2.0)
+    value = np.where(allowed_end, score[:, 0] - pull, -np.inf)
+    for i in range(1, cols):
+        # reached[k, r] is the value of arriving at row r from row r - steps[k].
+        reached = np.full((len(steps), rows), -np.inf)
+        for k, d in enumerate(steps):
+            if d >= 0:
+                reached[k, d:] = value[: rows - d] - _PATH_BEND_PENALTY * d
+            else:
+                reached[k, : rows + d] = value[-d:] + _PATH_BEND_PENALTY * d
+        best = np.argmax(reached, axis=0)
+        value = reached[best, np.arange(rows)] + score[:, i]
+        back[i] = steps[best]
+    value = np.where(allowed_end, value - pull, -np.inf)
+    r = int(np.argmax(value))
+    total = float(value[r])
+    path = np.empty(cols, dtype=np.int64)
+    path[-1] = r
+    for i in range(cols - 1, 0, -1):
+        r -= int(back[i, r])
+        path[i - 1] = r
+    return total, path
+
+
 def snap_line_to_edges(
     p0: Sequence[float],
     p1: Sequence[float],
-    patches: Sequence[SnapPatch],
-    *,
-    radius: int,
+    band: LumaBand,
+    canvas_w: float,
+    canvas_h: float,
 ) -> list[SnappedPoint]:
-    """Snap the five points of the line ``p0`` to ``p1`` to one edge polarity.
+    """Snap the five points of the line ``p0`` to ``p1`` onto one bowed edge found in ``band``.
 
-    ``patches`` holds one patch per sample position, in :data:`LINE_SAMPLE_FRACTIONS`
-    order. Raises ``ValueError`` on a degenerate line or patch count.
+    Raises ``ValueError`` on a degenerate line or a band that does not fit it.
     """
-    if len(patches) != len(LINE_SAMPLE_FRACTIONS):
-        raise ValueError(f"expected {len(LINE_SAMPLE_FRACTIONS)} patches, got {len(patches)}")
-    if radius < 1:
-        raise ValueError("radius must be at least 1")
     a = np.asarray(p0, dtype=np.float64)
     b = np.asarray(p1, dtype=np.float64)
-    tangent = b - a
-    length = float(np.hypot(*tangent))
-    if not np.isfinite(length) or length < 1.0:
-        raise ValueError("line is too short")
-    tangent = tangent / length
-    normal = np.array([-tangent[1], tangent[0]])
-    samples = line_sample_points(a, b)
-    profiles = [_gradient_profile(patch, samples[i], normal, tangent, radius) for i, patch in enumerate(patches)]
+    tangent, normal, length = _frame(a, b)
+    if band.step < 1 or band.half < 1:
+        raise ValueError("band step and half must be positive")
+    rows, cols = band.luma.shape
+    if rows != 2 * band.half + 1:
+        raise ValueError("band rows must be 2 * half + 1")
+    if cols < 2 or abs(cols - band_columns(length, band.step)) > 1:
+        raise ValueError("band columns do not match the line")
 
-    best_score = -np.inf
-    best_picks: list[tuple[float, bool]] = []
-    for polarity in (1.0, -1.0):
-        picks: list[tuple[float, bool]] = []
-        score = 0.0
-        for offsets, gradient in profiles:
-            signed = polarity * gradient
-            weight = 1.0 - (1.0 - _NEAR_WEIGHT_AT_RADIUS) * np.abs(offsets) / radius
-            weighted = np.where(np.isfinite(signed), signed * weight, -np.inf)
-            i = int(np.argmax(weighted))
-            strength = float(signed[i]) if np.isfinite(signed[i]) else 0.0
-            if strength >= _MIN_EDGE_STRENGTH:
-                picks.append((float(offsets[i]) + _subpixel_peak(signed, i), True))
-                score += float(weighted[i])
-            else:
-                picks.append((0.0, False))
-        if score > best_score:
-            best_score = score
-            best_picks = picks
+    # Cells outside the snapshot carry no evidence.
+    xs, ys = band_cell_positions(p0, p1, band.step, band.half, cols)
+    inside = (xs >= 0.0) & (xs <= canvas_w - 1.0) & (ys >= 0.0) & (ys <= canvas_h - 1.0)
+    luma = np.where(inside, band.luma, np.nan)
+    grad = np.full_like(luma, np.nan)
+    grad[1:-1] = (luma[2:] - luma[:-2]) / 2.0
+    known = np.nan_to_num(grad, nan=0.0)
+    half = float(band.half)
 
-    return [
-        SnappedPoint(float(samples[i, 0] + off * normal[0]), float(samples[i, 1] + off * normal[1]), ok)
-        for i, (off, ok) in enumerate(best_picks)
-    ]
+    reach = end_search_radius(canvas_w)
+    allowed_end = np.abs(np.arange(rows) - half) <= reach
+    max_step = max(1, int(np.ceil(_PATH_SLOPE * band.step)))
+    best_score, polarity = -np.inf, 1.0
+    path: npt.NDArray[np.int64] = np.full(cols, band.half, dtype=np.int64)
+    for sign in (1.0, -1.0):
+        total, found = _best_path(np.clip(sign * known, -_GRADIENT_CLIP, _GRADIENT_CLIP), allowed_end, max_step)
+        if total > best_score:
+            best_score, polarity, path = total, sign, found
+
+    # The shape a straight line can take through a radial lens, fitted to the path
+    # where the path has evidence.
+    t = np.minimum(np.arange(cols, dtype=np.float64) * band.step / length, 1.0)
+    bows = []
+    for k1, k2 in ((_REFERENCE_K1, 0.0), (0.0, _REFERENCE_K2)):
+        fractions, bow = _reference_bow(a, b, tangent, normal, length, canvas_w, canvas_h, max(cols, 64), k1, k2)
+        bows.append(np.interp(t, fractions, bow))
+    design = np.column_stack([bows[0], bows[1], 1.0 - t, t])
+    evidence = np.clip(polarity * known[path, np.arange(cols)], 0.0, _GRADIENT_CLIP) + 1e-3
+    ridge = np.diag([_BOW_RIDGE, _BOW_RIDGE, 0.0, 0.0]) * float(evidence.sum())
+    lhs = design.T @ (design * evidence[:, None]) + ridge
+    rhs = design.T @ (evidence * (path - half))
+    coefficients = np.linalg.lstsq(lhs, rhs, rcond=None)[0]
+    # The clicks say where the line ends: the fitted ends stay within their reach.
+    coefficients[2:] = np.clip(coefficients[2:], -reach, reach)
+    curve = design @ coefficients
+    if best_score <= 0.0:
+        curve = np.zeros(cols)
+
+    points = []
+    for fraction in LINE_SAMPLE_FRACTIONS:
+        offset = float(np.interp(fraction, t, curve))
+        col = min(max(int(round(fraction * length / band.step)), 0), cols - 1)
+        profile = polarity * grad[:, col]
+        centre = int(round(offset + half))
+        lo, hi = max(1, centre - _POINT_WINDOW), min(rows - 2, centre + _POINT_WINDOW)
+        window = profile[lo : hi + 1]
+        peak = float(np.nanmax(window)) if np.isfinite(window).any() else -np.inf
+        snapped = best_score > 0.0 and peak >= _MIN_EDGE_STRENGTH
+        if snapped:
+            j = lo + int(np.nanargmax(window))
+            offset = j - half + _subpixel_peak(np.where(np.isfinite(profile), profile, -np.inf), j)
+        position = a + fraction * (b - a) + offset * normal
+        points.append(SnappedPoint(float(position[0]), float(position[1]), snapped))
+    return points

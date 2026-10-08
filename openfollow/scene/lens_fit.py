@@ -324,11 +324,26 @@ def _solve(lines: _Lines) -> tuple[FloatArray, bool, FloatArray]:
     return k, False, _covariance(lines, k, 1)
 
 
+def _k1_variance(lines: _Lines, k: FloatArray) -> float:
+    """Variance of ``k1`` fitted alone at ``k``, from the residual scatter floored at one pixel."""
+    res = lines.residuals(k)
+    dof = max(lines.n - 1 - 2 * lines.count, 1)
+    sigma2 = max(float(res @ res) / dof, _SIGMA_FLOOR_PX**2)
+    column = _jacobian(lines, k)[:, 0]
+    information = float(column @ column)
+    if information <= _SINGULAR_INFORMATION:
+        return math.inf
+    return sigma2 / information
+
+
 def _misfits(lines: _Lines, k: FloatArray) -> list[bool]:
     """Leave-one-out: a line that only fits while it is pulling the fit its way.
 
     ``k1`` is refitted without the line from the full solution, ``k2`` held, so
-    two remaining lines cannot be overfitted into agreeing with anything.
+    two remaining lines cannot be overfitted into agreeing with anything. The
+    line's residual is judged against what the refit's own uncertainty predicts
+    at that line: the longest, most curved line moves the most when it is left
+    out, and that is the rest's ignorance, not the line's fault.
     """
     if lines.count < _MIN_LINES_FOR_MISFIT:
         return [False] * lines.count
@@ -336,9 +351,15 @@ def _misfits(lines: _Lines, k: FloatArray) -> list[bool]:
     for i in range(lines.count):
         rest = lines.without(i)
         k_rest = _refine(rest, k, fit_k2=False)
+        variance = _k1_variance(rest, k_rest)
+        if not math.isfinite(variance):
+            flags.append(False)
+            continue
         rms_rest = float(np.sqrt(np.mean(rest.residuals(k_rest) ** 2)))
         rms_line = lines.line_rms(k_rest)[i]
-        flags.append(rms_line > max(_MISFIT_MIN_PX, _MISFIT_RATIO * rms_rest))
+        sensitivity = _jacobian(lines, k_rest)[lines.idx == i, 0]
+        predicted = float(np.sqrt(variance * np.mean(sensitivity**2)))
+        flags.append(rms_line > max(_MISFIT_MIN_PX, _MISFIT_RATIO * rms_rest, _MISFIT_RATIO * predicted))
     return flags
 
 

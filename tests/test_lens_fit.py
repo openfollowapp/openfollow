@@ -209,6 +209,30 @@ class TestMisfit:
         assert flags[-1] is True
         assert not any(flags[:-1])
 
+    def test_the_only_line_with_curvature_is_not_flagged(self) -> None:
+        """Without it the rest pin k1 down on nothing, so its misfit under their fit means nothing."""
+        truth = (-0.3, 0.05)
+        rng = np.random.default_rng(11)
+        lines = [
+            make_line(*BOTTOM, *truth, noise=1.0, rng=rng),
+            make_line((860.0, 500.0), (1060.0, 520.0), *truth, noise=1.0, rng=rng),
+            make_line((900.0, 600.0), (1000.0, 560.0), *truth, noise=1.0, rng=rng),
+        ]
+        result = fit_lens_from_lines(lines, W, H)
+        assert not any(line.misfit for line in result.lines)
+
+    def test_lines_through_the_centre_cannot_convict_the_rest(self) -> None:
+        """A line through the centre moves along itself under the warp: it says nothing about k1."""
+        truth = (-0.3, 0.05)
+        rng = np.random.default_rng(12)
+        lines = [
+            make_line(*BOTTOM, *truth, noise=1.0, rng=rng),
+            make_line((760.0, 540.0), (1160.0, 540.0), *truth),
+            make_line((960.0, 340.0), (960.0, 740.0), *truth),
+        ]
+        result = fit_lens_from_lines(lines, W, H)
+        assert not any(line.misfit for line in result.lines)
+
     def test_two_lines_are_never_flagged(self) -> None:
         # With two lines there is no telling which one is wrong.
         rng = np.random.default_rng(10)

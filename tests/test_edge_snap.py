@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""Edge snap on synthetic images: one polarity per line, no-edge points marked."""
+"""Edge snap on synthetic frames: a bowed edge is followed as a whole, one polarity per line."""
 
 from __future__ import annotations
 
@@ -9,203 +9,301 @@ import pytest
 
 from openfollow.scene.edge_snap import (
     LINE_SAMPLE_FRACTIONS,
-    MAX_PATCH_HALF,
-    MIN_PATCH_HALF,
-    SnapPatch,
+    MAX_BAND_HALF,
+    MAX_BAND_STEP,
+    MIN_BAND_HALF,
+    LumaBand,
+    _subpixel_peak,
+    band_columns,
+    band_half_size,
+    band_step,
+    end_search_radius,
     line_sample_points,
-    patch_half_size,
-    search_radius,
     snap_line_to_edges,
 )
+from openfollow.scene.solver import apply_overlay_distortion, invert_overlay_distortion
+from tests._lens_band import cut_band
 
 pytestmark = pytest.mark.unit
 
 W, H = 1920, 1080
-HALF = patch_half_size(W)
-RADIUS = search_radius(HALF)
-STRIPE_HALF_WIDTH = 7
-STRIPE_SLOPE = 0.02
+DARK, BRIGHT = 40.0, 200.0
+# A wide lens whose warp reaches the frame corners (k1 alone at -0.3 folds inside the picture).
+BARREL = (-0.47, 0.25)
+PINCUSHION = (0.3, 0.0)
+STRAIGHT = (0.0, 0.0)
 
 
-def stripe_centre(x: float) -> float:
-    return 600.0 + STRIPE_SLOPE * x
+def strip_frame(
+    p0,
+    p1,
+    lens,
+    *,
+    half_width: float = 7.0,
+    noise: float = 4.0,
+    seed: int = 0,
+    dark: float = DARK,
+    bright: float = BRIGHT,
+):
+    """A dark floor with a bright strip that is straight in reality, seen through ``lens``.
 
-
-@pytest.fixture(scope="module")
-def stripe() -> np.ndarray:
-    """A dark floor with a bright strip of tape across it, slightly tilted, with sensor noise."""
-    rng = np.random.default_rng(0)
-    img = np.full((H, W), 40.0)
+    ``p0`` and ``p1`` are where the strip's centre line passes in the picture.
+    """
+    k1, k2 = lens
+    rng = np.random.default_rng(seed)
     yy, xx = np.mgrid[0:H, 0:W]
-    img[np.abs(yy - stripe_centre(xx)) <= STRIPE_HALF_WIDTH] = 200.0
-    return img + rng.normal(0.0, 4.0, img.shape)
+    pixels = np.column_stack([xx.ravel(), yy.ravel()]).astype(np.float64)
+    undistorted = invert_overlay_distortion(pixels, W, H, k1, k2)
+    ends = invert_overlay_distortion(np.array([p0, p1], dtype=np.float64), W, H, k1, k2)
+    d = ends[1] - ends[0]
+    d /= np.hypot(*d)
+    rel = undistorted - ends[0]
+    distance = np.abs(rel[:, 0] * d[1] - rel[:, 1] * d[0]).reshape(H, W)
+    img = np.where(distance <= half_width, bright, dark)
+    return np.clip(img + rng.normal(0.0, noise, img.shape), 0, 255)
 
 
-def patches_for(img: np.ndarray, p0, p1, half: int = HALF) -> list[SnapPatch]:
-    """Cut the patches the wizard would send: axis-aligned crops around the sample points."""
-    out = []
-    for q in line_sample_points(p0, p1):
-        x0 = int(round(q[0])) - half
-        y0 = int(round(q[1])) - half
-        xa, ya = max(x0, 0), max(y0, 0)
-        xb, yb = min(x0 + 2 * half + 1, img.shape[1]), min(y0 + 2 * half + 1, img.shape[0])
-        out.append(SnapPatch(xa, ya, img[ya:yb, xa:xb].astype(np.float64)))
-    return out
+def distance_to_strip_centre(points, p0, p1, lens) -> np.ndarray:
+    """Signed distance of picture points from the strip's centre line, measured where the strip is straight."""
+    k1, k2 = lens
+    ends = invert_overlay_distortion(np.array([p0, p1], dtype=np.float64), W, H, k1, k2)
+    d = ends[1] - ends[0]
+    d /= np.hypot(*d)
+    rel = invert_overlay_distortion(np.asarray(points, dtype=np.float64), W, H, k1, k2) - ends[0]
+    return rel[:, 0] * d[1] - rel[:, 1] * d[0]
+
+
+def chord_sag(p0, p1, lens) -> float:
+    """How far the strip's centre bows away from the straight chord, at most."""
+    k1, k2 = lens
+    ends = invert_overlay_distortion(np.array([p0, p1], dtype=np.float64), W, H, k1, k2)
+    s = np.linspace(0.0, 1.0, 400)[:, None]
+    seen = apply_overlay_distortion(ends[0] + s * (ends[1] - ends[0]), W, H, k1, k2)
+    a, b = np.asarray(p0, float), np.asarray(p1, float)
+    t = (b - a) / np.hypot(*(b - a))
+    return float(np.max(np.abs((seen - a) @ np.array([-t[1], t[0]]))))
+
+
+def snap(img, p0, p1):
+    return snap_line_to_edges(p0, p1, cut_band(img, p0, p1), W, H)
+
+
+def edge_distances(pts, p0, p1, lens) -> np.ndarray:
+    return distance_to_strip_centre([[p.x, p.y] for p in pts], p0, p1, lens)
+
+
+# --------------------------------------------------------------------------- #
+# Geometry
+# --------------------------------------------------------------------------- #
 
 
 def test_sample_points_sit_at_the_five_fractions() -> None:
     pts = line_sample_points((100.0, 200.0), (500.0, 600.0))
-    assert pts.shape == (5, 2)
-    assert LINE_SAMPLE_FRACTIONS == (0.0, 0.25, 0.5, 0.75, 1.0)
-    np.testing.assert_allclose(pts[2], [300.0, 400.0])
+    np.testing.assert_allclose(pts[:, 0], [100.0 + 400.0 * f for f in LINE_SAMPLE_FRACTIONS])
+    np.testing.assert_allclose(pts[:, 1], [200.0 + 400.0 * f for f in LINE_SAMPLE_FRACTIONS])
 
 
 @pytest.mark.parametrize(
-    "width,half", [(640, MIN_PATCH_HALF), (1920, 32), (3840, MAX_PATCH_HALF), (9999, MAX_PATCH_HALF)]
+    ("width", "half", "step", "reach"),
+    [
+        (320, MIN_BAND_HALF, 1, 8),
+        (960, 96, 2, 14),
+        (1920, 192, 4, 27),
+        (3840, MAX_BAND_HALF, MAX_BAND_STEP, 55),
+        (9999, MAX_BAND_HALF, MAX_BAND_STEP, 143),
+    ],
 )
-def test_patch_size_scales_with_the_snapshot(width: float, half: int) -> None:
-    assert patch_half_size(width) == half
-    assert 4 <= search_radius(patch_half_size(width)) < patch_half_size(width)
+def test_band_geometry_scales_with_the_snapshot(width: int, half: int, step: int, reach: int) -> None:
+    assert band_half_size(width) == half
+    assert band_step(width) == step
+    assert end_search_radius(width) == reach
 
 
-def test_points_land_on_the_edge_the_clicks_were_near(stripe: np.ndarray) -> None:
-    top = -STRIPE_HALF_WIDTH
-    p0 = (200.0, stripe_centre(200.0) + top + 5.0)
-    p1 = (1700.0, stripe_centre(1700.0) + top - 4.0)
-    pts = snap_line_to_edges(p0, p1, patches_for(stripe, p0, p1), radius=RADIUS)
-    assert len(pts) == 5
-    for p in pts:
-        assert p.snapped
-        assert abs(p.y - (stripe_centre(p.x) + top)) < 0.5
+@pytest.mark.parametrize(
+    ("length", "step", "cols"), [(1.0, 4, 2), (4.0, 4, 2), (5.0, 4, 3), (1900.0, 4, 476), (10.0, 1, 11)]
+)
+def test_band_columns_cover_the_chord(length: float, step: int, cols: int) -> None:
+    assert band_columns(length, step) == cols
 
 
-def test_one_polarity_per_line_even_when_the_clicks_straddle_the_tape(stripe: np.ndarray) -> None:
-    # Start nearer the top edge, end nearer the bottom edge: the tape's width must not read as curvature.
-    p0 = (200.0, stripe_centre(200.0) - 5.0)
-    p1 = (1700.0, stripe_centre(1700.0) + 5.0)
-    pts = snap_line_to_edges(p0, p1, patches_for(stripe, p0, p1), radius=RADIUS)
-    offsets = [p.y - stripe_centre(p.x) for p in pts]
-    on_top = [abs(o + STRIPE_HALF_WIDTH) < 0.5 for o in offsets]
-    on_bottom = [abs(o - STRIPE_HALF_WIDTH) < 0.5 for o in offsets]
-    assert all(on_top) or all(on_bottom)
+# --------------------------------------------------------------------------- #
+# Following a bowed edge
+# --------------------------------------------------------------------------- #
 
 
-def test_a_point_without_a_clear_edge_stays_on_the_line_and_is_marked(stripe: np.ndarray) -> None:
-    rng = np.random.default_rng(1)
-    img = stripe.copy()
-    img[:, 900:1000] = 40.0 + rng.normal(0.0, 4.0, (H, 100))  # the tape is covered at the middle point
-    p0 = (200.0, stripe_centre(200.0) - STRIPE_HALF_WIDTH)
-    p1 = (1700.0, stripe_centre(1700.0) - STRIPE_HALF_WIDTH)
-    pts = snap_line_to_edges(p0, p1, patches_for(img, p0, p1), radius=RADIUS)
+@pytest.mark.parametrize("lens", [BARREL, PINCUSHION], ids=["barrel", "pincushion"])
+def test_a_strongly_bowed_edge_is_followed_along_its_length(lens) -> None:
+    """The chord misses the edge by far more than a search around the chord's points covers."""
+    p0, p1 = (90.0, 1010.0), (1830.0, 990.0)
+    sag = chord_sag(p0, p1, lens)
+    assert sag > 40.0
+    pts = snap(strip_frame(p0, p1, lens), p0, p1)
+    assert all(p.snapped for p in pts)
+    distance = edge_distances(pts, p0, p1, lens)
+    # Every point on the same edge of the strip, each within a pixel of it.
+    assert np.all(np.sign(distance) == np.sign(distance[0]))
+    np.testing.assert_allclose(np.abs(distance), 7.0, atol=1.0)
+
+
+def test_a_line_off_the_image_centre_keeps_the_bow_asymmetry() -> None:
+    p0, p1 = (150.0, 200.0), (260.0, 1000.0)
+    pts = snap(strip_frame(p0, p1, BARREL), p0, p1)
+    assert all(p.snapped for p in pts)
+    np.testing.assert_allclose(np.abs(edge_distances(pts, p0, p1, BARREL)), 7.0, atol=1.0)
+
+
+def test_a_straight_edge_stays_straight_to_the_sub_pixel() -> None:
+    p0, p1 = (200.0, 300.3), (1700.0, 330.3)
+    pts = snap(strip_frame(p0, p1, STRAIGHT, noise=1.0), p0, p1)
+    assert all(p.snapped for p in pts)
+    distance = np.abs(edge_distances(pts, p0, p1, STRAIGHT))
+    spread = float(np.max(np.abs(distance - np.mean(distance))))
+    assert spread < 0.6
+
+
+def test_a_thin_tape_line_is_followed() -> None:
+    p0, p1 = (90.0, 1010.0), (1830.0, 990.0)
+    pts = snap(strip_frame(p0, p1, BARREL, half_width=2.0), p0, p1)
+    assert all(p.snapped for p in pts)
+    np.testing.assert_allclose(np.abs(edge_distances(pts, p0, p1, BARREL)), 2.0, atol=1.5)
+
+
+def test_the_clicked_ends_are_moved_onto_the_edge() -> None:
+    p0, p1 = (90.0, 1010.0), (1830.0, 990.0)
+    img = strip_frame(p0, p1, BARREL)
+    pts = snap(img, (p0[0], p0[1] + 12.0), (p1[0], p1[1] - 9.0))
+    assert all(p.snapped for p in pts)
+    np.testing.assert_allclose(np.abs(edge_distances(pts, p0, p1, BARREL)), 7.0, atol=1.0)
+
+
+def test_a_chord_tilted_against_its_edge_is_straightened() -> None:
+    """Both ends off to opposite sides: only moving them together finds the edge."""
+    p0, p1 = (200.0, 600.0), (1700.0, 630.0)
+    img = strip_frame(p0, p1, STRAIGHT)
+    pts = snap(img, (p0[0], p0[1] - 2.0), (p1[0], p1[1] - 16.0))
+    assert all(p.snapped for p in pts)
+    np.testing.assert_allclose(np.abs(edge_distances(pts, p0, p1, STRAIGHT)), 7.0, atol=1.0)
+
+
+def test_an_edge_beyond_the_ends_reach_is_not_taken_at_the_ends() -> None:
+    """The clicks say where the line starts and ends; an edge too far from them stays unclaimed there."""
+    p0, p1 = (200.0, 600.0), (1700.0, 630.0)
+    img = strip_frame(p0, p1, STRAIGHT)
+    shift = end_search_radius(W) + 30.0
+    pts = snap(img, (p0[0], p0[1] + shift), (p1[0], p1[1] + shift))
+    assert not pts[0].snapped and not pts[4].snapped
+
+
+# --------------------------------------------------------------------------- #
+# What is not an edge
+# --------------------------------------------------------------------------- #
+
+
+def test_a_covered_stretch_leaves_its_point_on_the_curve_unsnapped() -> None:
+    p0, p1 = (90.0, 1010.0), (1830.0, 990.0)
+    img = strip_frame(p0, p1, BARREL)
+    img[:, 860:1060] = DARK
+    pts = snap(img, p0, p1)
     assert [p.snapped for p in pts] == [True, True, False, True, True]
-    nominal = line_sample_points(p0, p1)[2]
-    assert (pts[2].x, pts[2].y) == pytest.approx(tuple(nominal))
+    # The hidden point still sits about where the edge runs, not on the straight chord.
+    assert abs(edge_distances(pts[2:3], p0, p1, BARREL)[0]) < 12.0
+    chord_mid = line_sample_points(p0, p1)[2]
+    assert np.hypot(pts[2].x - chord_mid[0], pts[2].y - chord_mid[1]) > 30.0
 
 
-def test_noise_alone_snaps_nothing() -> None:
-    rng = np.random.default_rng(2)
-    img = 100.0 + rng.normal(0.0, 4.0, (H, W))
-    p0, p1 = (200.0, 600.0), (1700.0, 640.0)
-    pts = snap_line_to_edges(p0, p1, patches_for(img, p0, p1), radius=RADIUS)
+def test_noise_alone_snaps_nothing_and_leaves_the_line_where_it_was() -> None:
+    rng = np.random.default_rng(1)
+    img = np.clip(DARK + rng.normal(0.0, 1.5, (H, W)), 0, 255)
+    p0, p1 = (200.0, 600.0), (1700.0, 630.0)
+    pts = snap(img, p0, p1)
+    assert not any(p.snapped for p in pts)
+    np.testing.assert_allclose([[p.x, p.y] for p in pts], line_sample_points(p0, p1), atol=end_search_radius(W) + 30.0)
+
+
+def test_a_flat_frame_keeps_the_chord_exactly() -> None:
+    img = np.full((H, W), DARK)
+    p0, p1 = (200.0, 600.0), (1700.0, 630.0)
+    pts = snap(img, p0, p1)
     assert not any(p.snapped for p in pts)
     np.testing.assert_allclose([[p.x, p.y] for p in pts], line_sample_points(p0, p1))
 
 
-def test_a_vertical_edge_is_found_to_subpixel_precision() -> None:
-    rng = np.random.default_rng(3)
-    img = np.full((H, W), 60.0)
-    img[:, 700:] = 180.0
-    img += rng.normal(0.0, 3.0, img.shape)
-    p0, p1 = (704.0, 100.0), (697.0, 900.0)
-    pts = snap_line_to_edges(p0, p1, patches_for(img, p0, p1), radius=RADIUS)
+def test_all_points_take_one_edge_of_a_strip_even_when_the_other_is_stronger_locally() -> None:
+    p0, p1 = (200.0, 600.0), (1700.0, 630.0)
+    img = strip_frame(p0, p1, STRAIGHT)
+    # Darken the floor below the strip's middle, so its bottom edge is the stronger one there.
+    yy, xx = np.mgrid[0:H, 0:W]
+    below = (yy > 600.0 + 0.02 * xx + 7.0) & (xx > 800) & (xx < 1100)
+    img[below] = 5.0
+    pts = snap(img, p0, p1)
     assert all(p.snapped for p in pts)
-    assert all(abs(p.x - 699.5) < 0.3 for p in pts)
+    distance = edge_distances(pts, p0, p1, STRAIGHT)
+    assert np.all(np.sign(distance) == np.sign(distance[0]))
 
 
-def test_a_patch_cut_short_by_the_image_border_still_snaps(stripe: np.ndarray) -> None:
-    p0, p1 = (3.0, stripe_centre(3.0) - STRIPE_HALF_WIDTH + 4.0), (1500.0, stripe_centre(1500.0) - STRIPE_HALF_WIDTH)
-    pts = snap_line_to_edges(p0, p1, patches_for(stripe, p0, p1), radius=RADIUS)
-    assert pts[0].snapped
-    assert abs(pts[0].y - (stripe_centre(pts[0].x) - STRIPE_HALF_WIDTH)) < 0.5
+def test_the_image_border_is_no_edge() -> None:
+    """A band leaving the snapshot sees nothing there, not a step from the picture to black.
+
+    The faint strip runs 28 px from the left border; the picture's own step down to the
+    nothing beyond it would be the stronger edge if the band were read as painted.
+    """
+    p0, p1 = (28.0, 200.0), (28.0, 900.0)
+    pts = snap(strip_frame(p0, p1, STRAIGHT, bright=70.0, noise=1.0), p0, p1)
+    assert all(p.snapped for p in pts)
+    np.testing.assert_allclose(np.abs(edge_distances(pts, p0, p1, STRAIGHT)), 7.0, atol=1.0)
 
 
-def test_an_edge_outside_the_search_radius_is_not_taken(stripe: np.ndarray) -> None:
-    far = RADIUS + 8
-    p0 = (200.0, stripe_centre(200.0) - STRIPE_HALF_WIDTH - far)
-    p1 = (1700.0, stripe_centre(1700.0) - STRIPE_HALF_WIDTH - far)
-    pts = snap_line_to_edges(p0, p1, patches_for(stripe, p0, p1, half=HALF + 8), radius=RADIUS)
-    assert not any(p.snapped for p in pts)
-
-
-@pytest.mark.parametrize("count", [0, 4, 6])
-def test_wrong_patch_count_is_an_error(stripe: np.ndarray, count: int) -> None:
-    p0, p1 = (200.0, 600.0), (1700.0, 640.0)
-    patches = (
-        patches_for(stripe, p0, p1)[:count]
-        if count < 5
-        else patches_for(stripe, p0, p1) + [SnapPatch(0, 0, stripe[:5, :5])]
-    )
-    with pytest.raises(ValueError, match="patches"):
-        snap_line_to_edges(p0, p1, patches, radius=RADIUS)
-
-
-def test_a_zero_length_line_is_an_error(stripe: np.ndarray) -> None:
-    patches = patches_for(stripe, (200.0, 600.0), (200.0, 600.0))
-    with pytest.raises(ValueError, match="too short"):
-        snap_line_to_edges((200.0, 600.0), (200.0, 600.0), patches, radius=RADIUS)
-
-
-def test_a_zero_radius_is_an_error(stripe: np.ndarray) -> None:
-    p0, p1 = (200.0, 600.0), (1700.0, 640.0)
-    with pytest.raises(ValueError, match="radius"):
-        snap_line_to_edges(p0, p1, patches_for(stripe, p0, p1), radius=0)
-
-
-def test_a_patch_that_misses_its_point_finds_no_edge(stripe: np.ndarray) -> None:
-    # The wizard cuts each patch around its own sample point; one cut elsewhere holds nothing to read.
-    p0, p1 = (200.0, stripe_centre(200.0) - STRIPE_HALF_WIDTH), (1700.0, stripe_centre(1700.0) - STRIPE_HALF_WIDTH)
-    patches = patches_for(stripe, p0, p1)
-    patches[2] = SnapPatch(0, 0, stripe[:40, :40].astype(np.float64))
-    pts = snap_line_to_edges(p0, p1, patches, radius=RADIUS)
+def test_an_edge_that_bows_out_of_the_picture_is_unsnapped_there() -> None:
+    p0, p1 = (90.0, 1060.0), (1830.0, 1040.0)
+    pts = snap(strip_frame(p0, p1, BARREL), p0, p1)
     assert [p.snapped for p in pts] == [True, True, False, True, True]
+    assert pts[2].y > H - 1
 
 
-def test_an_edge_at_the_search_radius_is_taken_without_refinement() -> None:
-    # The strongest gradient sits on the last offset, where no neighbour exists for the parabola.
-    img = np.full((H, W), 60.0)
-    edge_x = 800
-    img[:, edge_x:] = 180.0
-    p0, p1 = (edge_x - 0.5 - RADIUS, 100.0), (edge_x - 0.5 - RADIUS, 900.0)
-    pts = snap_line_to_edges(p0, p1, patches_for(img, p0, p1, half=HALF + 4), radius=RADIUS)
-    assert all(p.snapped for p in pts)
-    assert all(abs(abs(p.x - p0[0]) - RADIUS) < 1e-9 for p in pts)
+# --------------------------------------------------------------------------- #
+# Input rules
+# --------------------------------------------------------------------------- #
 
 
-def test_a_patch_cut_short_beside_the_edge_snaps_without_refinement() -> None:
-    # The gradient next to the peak falls outside the patch, so the parabola has no left neighbour.
-    img = np.full((H, W), 60.0)
-    edge_x = 800
-    img[:, edge_x:] = 180.0
-    p0, p1 = (edge_x - 0.5, 100.0), (edge_x - 0.5, 900.0)
-    patches = [
-        SnapPatch(
-            edge_x - 2, int(round(q[1])) - 4, img[int(round(q[1])) - 4 : int(round(q[1])) + 5, edge_x - 2 : edge_x + 12]
-        )
-        for q in line_sample_points(p0, p1)
-    ]
-    pts = snap_line_to_edges(p0, p1, patches, radius=RADIUS)
-    assert all(p.snapped for p in pts)
-    assert all(abs(p.x - (edge_x - 0.5)) < 1.0 for p in pts)
+def test_a_band_with_the_wrong_row_count_is_refused() -> None:
+    img = np.full((H, W), DARK)
+    p0, p1 = (200.0, 600.0), (1700.0, 630.0)
+    band = cut_band(img, p0, p1)
+    with pytest.raises(ValueError, match="rows"):
+        snap_line_to_edges(p0, p1, LumaBand(band.step, band.half, band.luma[1:]), W, H)
 
 
-def test_a_soft_ramp_edge_snaps_onto_the_ramp() -> None:
-    # A linear ramp has a flat gradient: the parabola through three equal values is no peak to refine.
-    img = np.full((H, W), 60.0)
-    ramp_x = 800
-    for i in range(8):
-        img[:, ramp_x + i] = 60.0 + 15.0 * i
-    img[:, ramp_x + 8 :] = 180.0
-    p0, p1 = (ramp_x + 3.0, 100.0), (ramp_x + 3.0, 900.0)
-    pts = snap_line_to_edges(p0, p1, patches_for(img, p0, p1), radius=RADIUS)
-    assert all(p.snapped for p in pts)
-    assert all(ramp_x <= p.x <= ramp_x + 8 for p in pts)
+def test_a_band_cut_for_another_line_is_refused() -> None:
+    img = np.full((H, W), DARK)
+    band = cut_band(img, (200.0, 600.0), (1700.0, 630.0))
+    with pytest.raises(ValueError, match="columns"):
+        snap_line_to_edges((200.0, 600.0), (900.0, 630.0), band, W, H)
+
+
+@pytest.mark.parametrize(("step", "half"), [(0, 192), (4, 0)])
+def test_a_band_without_a_size_is_refused(step: int, half: int) -> None:
+    band = LumaBand(step, half, np.zeros((2 * max(half, 1) + 1, 10)))
+    with pytest.raises(ValueError, match="positive"):
+        snap_line_to_edges((0.0, 0.0), (36.0, 0.0), band, W, H)
+
+
+def test_a_degenerate_line_is_refused() -> None:
+    band = LumaBand(4, 192, np.zeros((385, 2)))
+    with pytest.raises(ValueError, match="short"):
+        snap_line_to_edges((200.0, 600.0), (200.0, 600.0), band, W, H)
+
+
+@pytest.mark.parametrize(
+    ("signed", "i", "expected"),
+    [
+        (np.array([1.0, 5.0, 1.0]), 1, 0.0),
+        (np.array([1.0, 5.0, 3.0]), 1, 1.0 / 6.0),
+        (np.array([1.0, 5.0, 1.0]), 0, 0.0),
+        (np.array([1.0, 5.0, 1.0]), 2, 0.0),
+        (np.array([np.nan, 5.0, 1.0]), 1, 0.0),
+        (np.array([5.0, 5.0, 5.0]), 1, 0.0),
+    ],
+    ids=["symmetric", "leaning", "first", "last", "masked-neighbour", "flat"],
+)
+def test_sub_pixel_refinement_stays_within_half_a_pixel_and_declines_without_a_peak(signed, i, expected) -> None:
+    assert _subpixel_peak(signed, i) == pytest.approx(expected)

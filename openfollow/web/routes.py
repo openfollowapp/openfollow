@@ -96,7 +96,7 @@ from openfollow.network.validate import (
 from openfollow.palette import AUTO_PICK_ORDER
 from openfollow.privilege.camera_config import AUTOMATIC
 from openfollow.runtime.diagnostics_export import WEB, ExportStatus, status_lines
-from openfollow.scene.edge_snap import SnapPatch
+from openfollow.scene.edge_snap import LumaBand
 from openfollow.station_fqdn import canonical_host, fqdn_problem
 from openfollow.templates import (
     TEMPLATE_FILE_SUFFIX,
@@ -3332,11 +3332,15 @@ def _wizard_lens_coeffs(cam: Any) -> tuple[float, float]:
     return k1, k2
 
 
-def _parse_lens_snap_body(data: Any) -> tuple[float, float, list[float], list[float], list[SnapPatch]]:
+# A band column per chord pixel at most, on a snapshot no wider than the wizard accepts.
+_LENS_BAND_MAX_COLUMNS = 8192
+
+
+def _parse_lens_snap_body(data: Any) -> tuple[float, float, list[float], list[float], LumaBand]:
     """Validate a ``/api/wizard/lens/snap`` body; raises for the endpoint's 400."""
     import numpy as np
 
-    from openfollow.scene.edge_snap import LINE_SAMPLE_FRACTIONS, MAX_PATCH_HALF
+    from openfollow.scene.edge_snap import MAX_BAND_HALF, MAX_BAND_STEP, MIN_BAND_HALF
 
     if not isinstance(data, dict):
         raise TypeError("body must be an object")
@@ -3352,31 +3356,29 @@ def _parse_lens_snap_body(data: Any) -> tuple[float, float, list[float], list[fl
         if not all(math.isfinite(c) for c in pt):
             raise ValueError(f"{key} must be finite")
         ends.append(pt)
-    raw_patches = data["patches"]
-    if not isinstance(raw_patches, list) or len(raw_patches) != len(LINE_SAMPLE_FRACTIONS):
-        raise ValueError(f"patches must be a list of {len(LINE_SAMPLE_FRACTIONS)}")
-    max_side = 2 * MAX_PATCH_HALF + 1
-    patches = []
-    for patch in raw_patches:
-        if not isinstance(patch, dict):
-            raise TypeError("each patch must be an object")
-        x, y, w, h = (int(patch[k]) for k in ("x", "y", "w", "h"))
-        if not (1 <= w <= max_side and 1 <= h <= max_side):
-            raise ValueError(f"patch size must be within 1..{max_side}")
-        if x < 0 or y < 0 or x + w > img_w or y + h > img_h:
-            raise ValueError("patch must lie inside the image")
-        pixels = patch["data"]
-        if not isinstance(pixels, str):
-            raise TypeError("patch data must be a base64 string")
-        try:
-            buf = base64.b64decode(pixels, validate=True)
-        except (binascii.Error, ValueError) as exc:
-            raise ValueError("patch data is not valid base64") from exc
-        if len(buf) != w * h:
-            raise ValueError("patch data does not match its size")
-        luma = np.frombuffer(buf, dtype=np.uint8).reshape(h, w).astype(np.float64)
-        patches.append(SnapPatch(x, y, luma))
-    return img_w, img_h, ends[0], ends[1], patches
+    band = data["band"]
+    if not isinstance(band, dict):
+        raise TypeError("band must be an object")
+    step, half, cols, rows = (int(band[k]) for k in ("step", "half", "cols", "rows"))
+    if not 1 <= step <= MAX_BAND_STEP:
+        raise ValueError(f"band step must be within 1..{MAX_BAND_STEP}")
+    if not MIN_BAND_HALF <= half <= MAX_BAND_HALF:
+        raise ValueError(f"band half must be within {MIN_BAND_HALF}..{MAX_BAND_HALF}")
+    if rows != 2 * half + 1:
+        raise ValueError("band rows must be 2 * half + 1")
+    if not 2 <= cols <= _LENS_BAND_MAX_COLUMNS:
+        raise ValueError(f"band columns must be within 2..{_LENS_BAND_MAX_COLUMNS}")
+    pixels = band["data"]
+    if not isinstance(pixels, str):
+        raise TypeError("band data must be a base64 string")
+    try:
+        buf = base64.b64decode(pixels, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("band data is not valid base64") from exc
+    if len(buf) != rows * cols:
+        raise ValueError("band data does not match its size")
+    luma = np.frombuffer(buf, dtype=np.uint8).reshape(rows, cols).astype(np.float64)
+    return img_w, img_h, ends[0], ends[1], LumaBand(step, half, luma)
 
 
 def _wizard_camera_params(cam: Any) -> Any:
@@ -9609,15 +9611,15 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         if data is None:
             return json.dumps({"error": "Invalid JSON"})
         try:
-            img_w, _img_h, p0, p1, patches = _parse_lens_snap_body(data)
+            img_w, img_h, p0, p1, band = _parse_lens_snap_body(data)
         except (KeyError, TypeError, ValueError) as exc:
             response.status = 400
             return json.dumps({"error": str(exc)})
 
-        from openfollow.scene.edge_snap import patch_half_size, search_radius, snap_line_to_edges
+        from openfollow.scene.edge_snap import snap_line_to_edges
 
         try:
-            points = snap_line_to_edges(p0, p1, patches, radius=search_radius(patch_half_size(img_w)))
+            points = snap_line_to_edges(p0, p1, band, img_w, img_h)
         except ValueError as exc:
             response.status = 400
             return json.dumps({"error": str(exc)})

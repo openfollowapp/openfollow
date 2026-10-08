@@ -114,13 +114,15 @@ class TestUpdateVideo:
         """
         app = _fake_app(resolution=(1920, 1080))
         logger = logging.getLogger("test-update-video")
-        with caplog.at_level(logging.INFO, logger="test-update-video"):
+        # A canvas reach raises inside update_video's own guard, which only
+        # reports it at DEBUG: capture that level, or the reach goes unseen.
+        with caplog.at_level(logging.DEBUG, logger="test-update-video"):
             for shape in ((1920, 1080), (0, 0), (1024, 768), (1280, 720)):
                 app._video_receiver.current = shape
                 update_video(app, logger)
         assert app._video_logged is True
         assert len([r for r in caplog.records if "Native sink" in r.message]) == 1
-        assert not hasattr(app, "_video_aspect")
+        assert [r.message for r in caplog.records if "Video update error" in r.message] == []
 
     def test_zero_resolution_skips_logging(self) -> None:
         app = _fake_app(resolution=(0, 0))

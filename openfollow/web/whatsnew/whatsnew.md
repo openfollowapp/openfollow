@@ -1,7 +1,7 @@
 v0.5.0
 ## The Operator Screen fits any window
 
-The video and the overlay now share a boxed area of the video's shape whatever the window or screen looks like, so a 4:3 camera or a portrait stream keeps its overlay in place. On macOS, fullscreen no longer freezes the app.
+The video and the overlay now share a boxed area of the video's shape whatever the window or screen looks like, so a 4:3 camera or a portrait stream keeps its overlay in place, and the macOS app keeps running in fullscreen.
 
 ## Check your network pins
 

@@ -229,17 +229,17 @@
   .lens-curve { fill: none; stroke: var(--success-line); stroke-width: 2; stroke-dasharray: 6 4; }
   .lens-line.misfit .lens-curve, .lens-line.misfit .lens-chord { stroke: var(--caution-line); }
   .lens-line.selected .lens-chord { stroke-opacity: 1; stroke-width: 2.5; }
-  .lens-point .dot { fill: var(--accent); stroke: var(--accent); stroke-width: 1.5; }
+  .lens-point .dot, .wizard-point .dot { fill: var(--accent); stroke: var(--accent); stroke-width: 1.5; }
   .lens-point.off .dot { fill: none; }
   .lens-point.unsnapped .dot { stroke-dasharray: 2 2; }
   .lens-point.selected .dot { stroke-width: 3; }
   .lens-pending { fill: none; stroke: var(--accent); stroke-width: 2; stroke-dasharray: 3 3; }
   .lens-label { fill: var(--text); font-size: 11px; font-weight: 600; pointer-events: none; }
-  .lens-loupe {
+  .wizard-loupe {
     position: absolute; width: 120px; height: 120px; border-radius: 50%; overflow: hidden;
     border: 2px solid var(--accent); background: var(--bg-deep); pointer-events: none; display: none;
   }
-  .lens-loupe canvas { width: 100%; height: 100%; display: block; }
+  .wizard-loupe canvas { width: 100%; height: 100%; display: block; }
   .lens-result-main { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
   /* Suggested edges: faint and dashed until tapped, with a wide invisible stroke to tap. */
   .lens-candidate-line { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-opacity: 0.6; stroke-dasharray: 8 6; pointer-events: none; }
@@ -581,7 +581,7 @@
         <g id="lens-lines"></g>
         <g id="lens-pending"></g>
       </svg>
-      <div id="lens-loupe" class="lens-loupe" aria-hidden="true"><canvas width="240" height="240"></canvas></div>
+      <div class="wizard-loupe" aria-hidden="true"><canvas width="240" height="240"></canvas></div>
     </div>
     <div id="lens-no-feed" class="wizard-no-feed" style="display:none;">No video feed available. Configure a video source in the Video Source step, then return here and press <strong>Refresh Image</strong>.</div>
 
@@ -799,7 +799,7 @@
   <div class="section">
     <div class="section-head">
       <h2>Reference Mapping</h2>
-      <span class="section-note">Drag the crosshair to the physical Reference Point mark</span>
+      <span class="section-note">Drag the marker to the physical Reference Point mark</span>
     </div>
 
     <div id="coarse-container" class="wizard-preview-container" style="display:none;">
@@ -821,6 +821,7 @@
           <g id="coarse-zoom-ref"></g>
         </svg>
       </div>
+      <div class="wizard-loupe" aria-hidden="true"><canvas width="240" height="240"></canvas></div>
     </div>
     <div id="coarse-no-feed" class="wizard-no-feed" style="display:none;">No video feed available. Configure a video source in the Video Source step, then return here and press <strong>Refresh Image</strong>.</div>
 
@@ -833,9 +834,9 @@
     </div>
 
     <p class="wizard-help" style="margin-top:0.72rem;">
-      <strong>Drag the crosshair marker</strong> to the physical Reference Point mark visible on the stage. All corners move together with the reference point to roughly align the overlay with your stage.
+      <strong>Drag the marker</strong> to the physical Reference Point mark visible on the stage. All corners move together with the reference point to roughly align the overlay with your stage.
     </p>
-    <p class="wizard-tip">For pixel-precise placement, click <strong>Fine adjust</strong> to switch to a 4×-zoomed view of the crosshair. You can also click the crosshair and use <strong>arrow keys</strong> to nudge it precisely (hold <strong>Shift</strong> for larger steps).</p>
+    <p class="wizard-tip">For pixel-precise placement, click <strong>Fine adjust</strong> to switch to a 4×-zoomed view of the marker. You can also click the marker and use <strong>arrow keys</strong> to nudge it precisely (hold <strong>Shift</strong> for larger steps).</p>
 
     <div class="wizard-nav">
       <button type="button" class="secondary" onclick="wizardPrev()">Back</button>
@@ -860,6 +861,7 @@
           <polygon id="fine-quad" fill="rgba(255,188,0,0.06)" stroke="rgba(255,188,0,0.5)" stroke-width="2" points="0,0"/>
           <g id="fine-corners"></g>
         </svg>
+        <div class="wizard-loupe" aria-hidden="true"><canvas width="240" height="240"></canvas></div>
       </div>
       % # Fine-adjust 4-box view (hidden until toggled). Each box:
       % # 4×-zoomed crop of snapshot, centred on corner. data-corner
@@ -2395,10 +2397,14 @@
     document.getElementById('coarse-image').src = url;
     document.getElementById('fine-image').src = url;
     document.getElementById('review-image').src = url;
+    snapshotCanvas = document.createElement('canvas');
+    snapshotCanvas.width = imageWidth;
+    snapshotCanvas.height = imageHeight;
+    snapshotCanvas.getContext('2d').drawImage(img, 0, 0);
     var lensImage = document.getElementById('lens-image');
     if (lensImage) {
       lensImage.src = url;
-      lensOnSnapshot(img);
+      lensOnSnapshot();
     }
     // Each fine-zoom box renders snapshot through own viewBox crop.
     // Update all <image> elements so Refresh Image lands in zoom too.
@@ -2612,21 +2618,14 @@
     });
     CORNER_NAMES.forEach(function(name, i) {
       var pos = corners[name];
-      var group = svgEl('g', { transform: 'translate('+pos[0]+','+pos[1]+')' });
-
-      // The corners Corner Pinning drags take the Reference Mapping crosshair.
+      var group;
+      // Only Corner Pinning drags a corner; elsewhere the grid's own corner is the mark.
       if (draggable) {
-        group.classList.add('handle');
-        group.setAttribute('tabindex', '0');
+        group = pointHandle(pos, 7);
         group.dataset.corner = name;
         group.dataset.idx = i;
-        group.appendChild(svgEl('rect', { x: -3*u, y: -3*u, width: 6*u, height: 6*u, fill: 'transparent' }));
-        var ring = svgEl('circle', { r: 1.5*u, 'vector-effect': 'non-scaling-stroke' });
-        ring.classList.add('handle-ring');
-        group.appendChild(ring);
-        appendCrosshair(group, u);
       } else {
-        group.appendChild(svgEl('circle', { r: 7, fill: 'rgba(255,188,0,0.8)', stroke: '#ffbc00', 'stroke-width': 1.5 }));
+        group = svgEl('g', { transform: 'translate('+pos[0]+','+pos[1]+')' });
       }
 
       // Diagonally outward from the grid's centre, so the name never sits on
@@ -2665,39 +2664,72 @@
   function renderRefMarker(containerId, pos, draggable) {
     var g = document.getElementById(containerId);
     g.innerHTML = '';
-    var u = overlayUnit();
-    var group = svgEl('g', { transform: 'translate('+pos[0]+','+pos[1]+')' });
-
     if (draggable) {
-      group.classList.add('handle');
-      group.setAttribute('tabindex', '0');
-      group.dataset.refHandle = '1';
-      group.appendChild(svgEl('rect', { x: -3*u, y: -3*u, width: 6*u, height: 6*u, fill: 'transparent' }));
-      var ring = svgEl('circle', { r: 1.5*u, 'vector-effect': 'non-scaling-stroke' });
-      ring.classList.add('handle-ring');
-      group.appendChild(ring);
-    }
-
-    appendCrosshair(group, u);
-    g.appendChild(group);
-
-    if (draggable) {
-      setupRefDragging(group);
+      var handle = pointHandle(pos, 7);
+      handle.dataset.refHandle = '1';
+      g.appendChild(handle);
+      setupRefDragging(handle);
+    } else {
+      g.appendChild(pointMarker(pos));
     }
   }
 
-  // Yellow over black, so it reads on a dark stage and a lit one alike; the
-  // gap keeps the stage mark under its centre visible. ``u`` sets its size.
-  function appendCrosshair(group, u) {
-    var inner = 0.5*u, outer = 1.25*u;
-    var arms = [[-outer, 0, -inner, 0], [inner, 0, outer, 0], [0, -outer, 0, -inner], [0, inner, 0, outer]];
-    [['#000', 6], ['#ffbc00', 2]].forEach(function(pass) {
-      var paint = { stroke: pass[0], 'stroke-width': pass[1], 'vector-effect': 'non-scaling-stroke' };
-      arms.forEach(function(a) {
-        group.appendChild(svgEl('line', Object.assign({ x1: a[0], y1: a[1], x2: a[2], y2: a[3], 'stroke-linecap': 'round' }, paint)));
-      });
-      group.appendChild(svgEl('circle', Object.assign({ r: 0.7*u, fill: 'none' }, paint)));
-    });
+  // The Lens step's point, used for every point the wizard drags: the dot, a
+  // focus ring and the grab area around it.
+  function pointHandle(pos, r) {
+    var g = svgEl('g', { class: 'handle wizard-point', tabindex: '0', transform: 'translate(' + pos[0] + ',' + pos[1] + ')' });
+    g.appendChild(svgEl('rect', { x: -22, y: -22, width: 44, height: 44, fill: 'transparent' }));
+    g.appendChild(svgEl('circle', { r: 14, class: 'handle-ring' }));
+    g.appendChild(svgEl('circle', { r: r, class: 'dot' }));
+    return g;
+  }
+
+  // The same dot where nothing drags it: the Review step, the Fine adjust views.
+  function pointMarker(pos, attrs) {
+    var g = svgEl('g', { class: 'wizard-point', transform: 'translate(' + pos[0] + ',' + pos[1] + ')' });
+    g.appendChild(svgEl('circle', Object.assign({ r: 7, class: 'dot' }, attrs)));
+    return g;
+  }
+
+  // ---- loupe ----
+  // The snapshot at full resolution, for the loupe and the Lens step.
+  var snapshotCanvas = null;
+  var LOUPE_ZOOM = 4;
+
+  // A 4x look at the snapshot under a point being dragged, beside the finger so
+  // it never hides what it shows.
+  function showLoupe(containerId, overlayId, pos) {
+    var container = document.getElementById(containerId);
+    var loupe = container && container.querySelector('.wizard-loupe');
+    if (!loupe || !snapshotCanvas) return;
+    var canvas = loupe.querySelector('canvas'), ctx = canvas.getContext('2d');
+    var src = canvas.width / LOUPE_ZOOM / 2;
+    ctx.imageSmoothingEnabled = false;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(snapshotCanvas, pos[0] - src / 2, pos[1] - src / 2, src, src, 0, 0, canvas.width, canvas.height);
+    ctx.strokeStyle = '#ffbc00';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(canvas.width / 2, 0); ctx.lineTo(canvas.width / 2, canvas.height);
+    ctx.moveTo(0, canvas.height / 2); ctx.lineTo(canvas.width, canvas.height / 2);
+    ctx.stroke();
+    var overlay = document.getElementById(overlayId);
+    var box = overlay.getBoundingClientRect(), cont = container.getBoundingClientRect();
+    var sx = box.left - cont.left + pos[0] / imageWidth * box.width;
+    var sy = box.top - cont.top + pos[1] / imageHeight * box.height;
+    var size = loupe.offsetWidth || 120;
+    // Offset from the finger: above and to the right, flipped when it would leave the image.
+    var lx = sx + 30, ly = sy - size - 30;
+    if (lx + size > cont.width) lx = sx - size - 30;
+    if (ly < 0) ly = sy + 30;
+    loupe.style.left = Math.max(0, lx) + 'px';
+    loupe.style.top = Math.max(0, ly) + 'px';
+    loupe.style.display = 'block';
+  }
+
+  function hideLoupe(containerId) {
+    var loupe = document.querySelector('#' + containerId + ' .wizard-loupe');
+    if (loupe) loupe.style.display = 'none';
   }
 
   // ---------------------------------------------------------------
@@ -2732,6 +2764,7 @@
       var cy = e.touches ? e.touches[0].clientY : e.clientY;
       startScreen = svgPoint(cx, cy);
       startPos = getPos();
+      showLoupe('coarse-container', 'coarse-overlay', startPos);
       startCornerPositions = {};
       CORNER_NAMES.forEach(function(k) {
         startCornerPositions[k] = cornerPositions[k].slice();
@@ -2750,6 +2783,7 @@
       var nx = startPos[0] + dx;
       var ny = startPos[1] + dy;
       handle.setAttribute('transform', 'translate('+nx+','+ny+')');
+      showLoupe('coarse-container', 'coarse-overlay', [nx, ny]);
       shiftCoarseCorners(dx, dy, startCornerPositions);
       // Move z-offset group along with everything else
       document.getElementById('coarse-zoff').setAttribute('transform', 'translate('+dx+','+dy+')');
@@ -2758,6 +2792,7 @@
     function onUp() {
       if (!dragging) return;
       dragging = false;
+      hideLoupe('coarse-container');
       handle.style.cursor = '';
       document.getElementById('coarse-zoff').removeAttribute('transform');
       applyCoarseOffset(startPos, getPos(), startCornerPositions);
@@ -2869,9 +2904,7 @@
     document.getElementById('coarse-zoom-quad').setAttribute('points', document.getElementById('coarse-quad').getAttribute('points'));
     var g = document.getElementById('coarse-zoom-ref');
     g.innerHTML = '';
-    var group = svgEl('g', { transform: 'translate(' + pos[0] + ',' + pos[1] + ')' });
-    appendCrosshair(group, overlayUnit() / FINE_ZOOM_FACTOR);  // same size on screen as the full view
-    g.appendChild(group);
+    g.appendChild(pointMarker(pos, { 'vector-effect': 'non-scaling-stroke' }));
   }
 
   function setCoarseZoomMode(on) {
@@ -3107,6 +3140,7 @@
       var startPos = cornerPositions[cornerName].slice();
       dragging = { handle: handle, corner: cornerName, startSvg: startSvg, startPos: startPos };
       handle.style.cursor = 'grabbing';
+      showLoupe('fine-container', 'fine-overlay', startPos);
     }
 
     window.addEventListener('mousemove', function(e) {
@@ -3130,6 +3164,7 @@
       var ny = dragging.startPos[1] + dy;
       cornerPositions[dragging.corner] = [nx, ny];
       dragging.handle.setAttribute('transform', 'translate('+nx+','+ny+')');
+      showLoupe('fine-container', 'fine-overlay', [nx, ny]);
       updateFineQuad();
       // Update fine-zoom boxes as operator drags in full view.
       // Moved corner's box + neighbours' edges stay consistent.
@@ -3138,12 +3173,14 @@
 
     window.addEventListener('mouseup', function() {
       if (!dragging) return;
+      hideLoupe('fine-container');
       dragging.handle.style.cursor = '';
       dragging = null;
       solveFromCorners();
     });
     window.addEventListener('touchend', function() {
       if (!dragging) return;
+      hideLoupe('fine-container');
       dragging.handle.style.cursor = '';
       dragging = null;
       solveFromCorners();
@@ -3386,12 +3423,9 @@
       edgesG.appendChild(el);
     });
 
-    // Centre marker: the full-view crosshair, at the same size on screen.
     var markerG = svg.querySelector('[data-fine-zoom-marker]');
     markerG.innerHTML = '';
-    var marker = svgEl('g', { transform: 'translate(' + here[0] + ',' + here[1] + ')' });
-    appendCrosshair(marker, overlayUnit() / FINE_ZOOM_FACTOR);
-    markerG.appendChild(marker);
+    markerG.appendChild(pointMarker(here, { 'vector-effect': 'non-scaling-stroke' }));
   }
 
   function renderAllFineZoomBoxes() {
@@ -3955,7 +3989,6 @@
   // middle point only ever moves along the perpendicular.
   var LENS_T = [0.25, 0.5, 0.75];
   var LENS_FIT_DEBOUNCE_MS = 300;
-  var LENS_LOUPE_ZOOM = 4;
   var LENS_MIN_LINE_PX = 20;
   var LENS_RATING_LEVEL = { low: 'caution', medium: 'caution', okay: 'info', good: 'success', excellent: 'success' };
   var LENS_RATING_SEGMENTS = { low: 1, medium: 2, okay: 3, good: 4, excellent: 5 };
@@ -4021,13 +4054,10 @@
   }
 
   // ---- snapshot ----
-  function lensOnSnapshot(img) {
+  function lensOnSnapshot() {
     if (!lensEnabled()) return;
     document.getElementById('lens-overlay').setAttribute('viewBox', '0 0 ' + imageWidth + ' ' + imageHeight);
-    lensCanvas = document.createElement('canvas');
-    lensCanvas.width = imageWidth;
-    lensCanvas.height = imageHeight;
-    lensCanvas.getContext('2d').drawImage(img, 0, 0);
+    lensCanvas = snapshotCanvas;
     if (lensImageSize && (lensImageSize[0] !== imageWidth || lensImageSize[1] !== imageHeight) && lensLines.length) {
       lensLines = [];
       lensFit = null;
@@ -4228,30 +4258,14 @@
 
   // ---- rendering ----
   function lensHandle(line, i, j) {
-    var pos = lensPointPos(line, j);
-    var g = svgEl('g');
+    var g = pointHandle(lensPointPos(line, j), j === 0 || j === 4 ? 7 : 6);
     var cls = 'handle lens-point';
     if (!lensPointIsOn(line, j)) cls += ' off';
     if (!line.snapped[j]) cls += ' unsnapped';
     if (lensSelected && lensSelected.line === i && lensSelected.point === j) cls += ' selected';
     g.setAttribute('class', cls);
-    g.setAttribute('transform', 'translate(' + pos[0] + ',' + pos[1] + ')');
-    g.setAttribute('tabindex', '0');
     g.dataset.line = i;
     g.dataset.point = j;
-    var hit = svgEl('rect');
-    hit.setAttribute('x', '-22'); hit.setAttribute('y', '-22');
-    hit.setAttribute('width', '44'); hit.setAttribute('height', '44');
-    hit.setAttribute('fill', 'transparent');
-    g.appendChild(hit);
-    var ring = svgEl('circle');
-    ring.setAttribute('r', '14');
-    ring.classList.add('handle-ring');
-    g.appendChild(ring);
-    var dot = svgEl('circle');
-    dot.setAttribute('r', j === 0 || j === 4 ? '7' : '6');
-    dot.setAttribute('class', 'dot');
-    g.appendChild(dot);
     return g;
   }
   function lensPointsAttr(pts) { return pts.map(function(p) { return p[0] + ',' + p[1]; }).join(' '); }
@@ -4376,40 +4390,6 @@
       + ' · Edge fit ' + (lensFit.k2_fitted ? Number(lensFit.k2).toFixed(3) : 'not measured');
     document.getElementById('lens-result-text').textContent = text;
     document.getElementById('lens-result-hint').textContent = lensFit.hint || '';
-  }
-
-  // ---- loupe ----
-  function lensShowLoupe(pos) {
-    var loupe = document.getElementById('lens-loupe');
-    if (!loupe || !lensCanvas) return;
-    var canvas = loupe.querySelector('canvas'), ctx = canvas.getContext('2d');
-    var src = canvas.width / LENS_LOUPE_ZOOM / 2;
-    ctx.imageSmoothingEnabled = false;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(lensCanvas, pos[0] - src / 2, pos[1] - src / 2, src, src, 0, 0, canvas.width, canvas.height);
-    ctx.strokeStyle = '#ffbc00';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(canvas.width / 2, 0); ctx.lineTo(canvas.width / 2, canvas.height);
-    ctx.moveTo(0, canvas.height / 2); ctx.lineTo(canvas.width, canvas.height / 2);
-    ctx.stroke();
-    var container = document.getElementById('lens-container');
-    var overlay = document.getElementById('lens-overlay');
-    var box = overlay.getBoundingClientRect(), cont = container.getBoundingClientRect();
-    var sx = box.left - cont.left + pos[0] / imageWidth * box.width;
-    var sy = box.top - cont.top + pos[1] / imageHeight * box.height;
-    var size = loupe.offsetWidth || 120;
-    // Offset from the finger: above and to the right, flipped when it would leave the image.
-    var lx = sx + 30, ly = sy - size - 30;
-    if (lx + size > cont.width) lx = sx - size - 30;
-    if (ly < 0) ly = sy + 30;
-    loupe.style.left = Math.max(0, lx) + 'px';
-    loupe.style.top = Math.max(0, ly) + 'px';
-    loupe.style.display = 'block';
-  }
-  function lensHideLoupe() {
-    var loupe = document.getElementById('lens-loupe');
-    if (loupe) loupe.style.display = 'none';
   }
 
   // ---- edits ----
@@ -4588,7 +4568,7 @@
         overlay.setPointerCapture(e.pointerId);
         renderLens();
         lensFocusSelected();
-        lensShowLoupe(lensPointPos(lensDrag.line, lensDrag.point));
+        showLoupe('lens-container', 'lens-overlay', lensPointPos(lensDrag.line, lensDrag.point));
       } else if (e.target.id === 'lens-hit') {
         e.preventDefault();
         lensDrag = { trace: true, start: pt, moved: false };
@@ -4603,13 +4583,13 @@
       e.preventDefault();
       lensMovePoint(lensDrag.line, lensDrag.point, lensClamp(pt));
       lensUpdateLineGeometry(lensLines.indexOf(lensDrag.line));
-      lensShowLoupe(lensPointPos(lensDrag.line, lensDrag.point));
+      showLoupe('lens-container', 'lens-overlay', lensPointPos(lensDrag.line, lensDrag.point));
     });
     function endDrag(e) {
       if (!lensDrag) return;
       var drag = lensDrag;
       lensDrag = null;
-      lensHideLoupe();
+      hideLoupe('lens-container');
       try { overlay.releasePointerCapture(e.pointerId); } catch (err) {}
       if (drag.trace) {
         if (!drag.moved) lensTraceClick(lensSvgPoint(e.clientX, e.clientY));

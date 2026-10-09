@@ -986,8 +986,8 @@ Guided workflow for camera positioning and grid calibration, seven steps, eight 
 3. **Video Source** – select and configure camera input (reuses video source UI); save & restart to activate. Carries the Video Source panel's polled failure box
 4. **Lens** (only with `ui.show_experimental_features`) – measure `lens_k1` / `lens_k2` from lines that are straight in reality (see "Lens distortion from straight lines" below); skipping keeps the current pair. `ui.developer_mode` (config-only, no form control) adds a **Show edges** checkbox that lays the edge map the suggestions were picked from over the snapshot
 5. **Camera Position** – pos_x/y/z, pitch/yaw/roll, fov; dynamic isometric illustration
-6. **Reference Mapping** – draggable crosshair for coarse calibration (single known point); rigid-body shift of all corners. **Fine adjust** swaps in one 4× crop around the crosshair, dragged and nudged like a Corner Pinning box
-7. **Corner Pinning** – 4 draggable corners, DLT solve, solved camera params displayed. The draggable markers here and on Reference Mapping are one yellow-on-black crosshair with a clear centre, sized as a share of the frame (the overlay's viewBox is the snapshot's resolution); corner labels sit diagonally outward from the grid's centre
+6. **Reference Mapping** – draggable marker for coarse calibration (single known point); rigid-body shift of all corners. **Fine adjust** swaps in one 4× crop around the Reference Point, dragged and nudged like a Corner Pinning box
+7. **Corner Pinning** – 4 draggable corners, DLT solve, solved camera params displayed. Every point the wizard drags (Lens, Reference Mapping, Corner Pinning) is the Lens step's dot (`pointHandle`), and dragging one in a full view shows the shared loupe (`showLoupe`: a 4× look at the full-resolution snapshot beside the finger). A corner nothing drags (Reference Mapping, Review) carries no marker, and corner labels sit diagonally outward from the grid's centre
 8. **Review & Apply** – read-only summary of all values + green overlay; Apply or Discard
 
 Key implementation details:

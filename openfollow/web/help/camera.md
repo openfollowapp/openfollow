@@ -2,7 +2,7 @@
 
 Where the real camera sits in the venue and which lens it uses. OpenFollow uses these to project tracked points into stage coordinates, so they must match the physical rig.
 
-The easiest way to set them is the **Setup Wizard** (the Open Setup Wizard button on the Camera & Grid tab), which solves position, orientation, and field of view from four marked grid corners. The fields here are for direct edits and fine-tuning.
+The easiest way to set them is the **Setup Wizard** (the Open Setup Wizard button on the General or Camera & Grid tab), which solves position, orientation, and field of view from four marked grid corners. The fields here are for direct edits and fine-tuning.
 
 Positions are in **metres**, relative to the **Reference Point** – the single physical point on stage that is the (0, 0, 0) of your show (see Core Concepts). Orientation is in **degrees**.
 

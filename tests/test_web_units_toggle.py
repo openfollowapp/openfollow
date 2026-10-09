@@ -9,6 +9,7 @@ POST parsing, and blur validation.
 
 from __future__ import annotations
 
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -283,6 +284,40 @@ class TestWizardUnitInjection:
         # "Stored:" string itself lives in the always-present JS helper, so
         # assert on the server-rendered element id instead.)
         assert 'id="grid_width-echo"' not in body
+
+    @pytest.mark.parametrize("system", ["metric", "imperial"])
+    def test_grid_setup_opens_on_the_unit_choice(self, live_server, system) -> None:
+        server, base = live_server
+        _set_unit_system(base, system)
+        status, body = _get(base, "/wizard")
+        assert status == 200
+
+        step = body[body.index('id="wizard-step-grid"') : body.index('id="wizard-step-video"')]
+        first_control = re.search(r"<(?:select|input)\b[^>]*>", step)
+        assert first_control
+        assert 'id="wizard-unit-system"' in first_control.group(0)
+        assert f'<option value="{system}" selected>' in step
+
+    def test_the_wizard_unit_choice_saves_through_the_settings_route(self, live_server) -> None:
+        server, base = live_server
+        _status, body = _get(base, "/wizard")
+        assert "fetch('/settings/unit-system'" in body
+        assert "body.append('unit_system', select.value)" in body
+        # The route the wizard posts to persists the choice.
+        _set_unit_system(base, "imperial")
+        assert load_config(server.config_path).ui.unit_system == "imperial"
+
+
+@pytest.mark.parametrize("system", ["metric", "imperial"])
+def test_general_shows_the_active_unit_system(live_server, system) -> None:
+    server, base = live_server
+    _set_unit_system(base, system)
+    status, body = _get(base, "/")
+    assert status == 200
+    select = body[
+        body.index('id="general-unit-system"') : body.index("</select>", body.index('id="general-unit-system"'))
+    ]
+    assert f'<option value="{system}" selected>' in select
 
 
 class TestDetectInputWidget:

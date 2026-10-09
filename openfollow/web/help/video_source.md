@@ -2,7 +2,7 @@
 
 Where OpenFollow receives its video feed – every detection, overlay, and position output depends on it. Saving rebuilds the pipeline within about a second; markers and PSN output keep running during the rebuild.
 
-When the last attempt failed, a red box at the top of the section names what went wrong – nothing answered, the login was rejected, no video reached this station, and so on – and below it the one thing to try. It is the same box **Live Statistics → Video** shows, and it refreshes on its own, so a failure that starts while this page is open appears without reloading. **Live Statistics → Video** lists what each reading means.
+When the last attempt failed, a red box at the top of the section names what went wrong – nothing answered, the login was rejected, no video reached this station, and so on – and below it the one thing to try. It is the same box **Live Statistics → Video** and the Setup Wizard's Video Source step show, and it refreshes on its own, so a failure that starts while this page is open appears without reloading. **Live Statistics → Video** lists what each reading means.
 
 ## Source Type
 

@@ -5279,7 +5279,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     @app.get("/section/video_source/failure")
     def get_video_source_failure() -> Any:
-        """Just the video failure box, for the Camera & Grid tab to poll.
+        """Just the video failure box, for the Camera & Grid tab and the Setup Wizard to poll.
 
         Only the box: re-swapping the Video Source form would discard whatever
         the operator is part-way through typing into the URL or password
@@ -9366,7 +9366,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     def wizard_page() -> Any:
         """Setup wizard page."""
         config = _request_scoped_config()
-        input_data = _build_input_template_data(config)
+        input_data = _build_input_template_data(config, server.get_runtime_stats().get("video"))
         # Footer "Update available" flag: an update is most often discovered
         # while the operator is still in the Setup Wizard.
         return template(

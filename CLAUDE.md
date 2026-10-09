@@ -449,7 +449,9 @@ generation's phase with another's verdict.
 
 **Surfaces:** the top-right status badge carries the *chip* only
 (`_status_flags["video_failure"]`, ~40 characters per row). The Settings error
-box and both web boxes carry the **sentence plus the action**, and never the
+box and the web boxes (Live Statistics, the Video Source panel and the Setup
+Wizard's Video Source step, the last two one partial) carry the **sentence plus
+the action**, and never the
 element's own wording - every renderer uses `failure_text or error_message`, so
 the raw text appears only when there is no classification to replace it. It
 stays in `/api/stats` and the diagnostics bundle, which is what support reads
@@ -980,12 +982,12 @@ table and fails a status rule that carries a literal colour.
 ### Setup wizard (`/wizard`)
 Guided workflow for camera positioning and grid calibration, seven steps, eight with the experimental **Lens** step:
 1. **Preparation** – info + SVG stage layout illustration
-2. **Grid Setup** – width, depth, z_offset, spacing, x_offset, y_offset; dynamic SVG illustration updates from input
-3. **Video Source** – select and configure camera input (reuses video source UI); save & restart to activate
+2. **Grid Setup** – the displayed unit system first (shared with General; a change reloads into the step, lengths kept in metres), then width, depth, z_offset, spacing, x_offset, y_offset; dynamic SVG illustration updates from input
+3. **Video Source** – select and configure camera input (reuses video source UI); save & restart to activate. Carries the Video Source panel's polled failure box
 4. **Lens** (only with `ui.show_experimental_features`) – measure `lens_k1` / `lens_k2` from lines that are straight in reality (see "Lens distortion from straight lines" below); skipping keeps the current pair. `ui.developer_mode` (config-only, no form control) adds a **Show edges** checkbox that lays the edge map the suggestions were picked from over the snapshot
 5. **Camera Position** – pos_x/y/z, pitch/yaw/roll, fov; dynamic isometric illustration
-6. **Reference Mapping** – draggable crosshair for coarse calibration (single known point); rigid-body shift of all corners
-7. **Corner Pinning** – 4 draggable corners, DLT solve, solved camera params displayed
+6. **Reference Mapping** – draggable crosshair for coarse calibration (single known point); rigid-body shift of all corners. **Fine adjust** swaps in one 4× crop around the crosshair, dragged and nudged like a Corner Pinning box
+7. **Corner Pinning** – 4 draggable corners, DLT solve, solved camera params displayed. The draggable markers here and on Reference Mapping are one yellow-on-black crosshair with a clear centre, sized as a share of the frame (the overlay's viewBox is the snapshot's resolution); corner labels sit diagonally outward from the grid's centre
 8. **Review & Apply** – read-only summary of all values + green overlay; Apply or Discard
 
 Key implementation details:

@@ -125,6 +125,13 @@ def _post_raw(base: str, path: str, data: dict) -> tuple[int, str]:
         return e.code, e.read().decode()
 
 
+def _wizard_step(body: str, key: str) -> str:
+    """One step's markup, up to whichever step follows it (Lens is optional)."""
+    start = body.index(f'id="wizard-step-{key}"')
+    end = body.find('<div class="wizard-content', start)
+    return body[start : end if end != -1 else len(body)]
+
+
 def _reject_non_finite(_token: str) -> float:
     raise ValueError("non-finite JSON token (NaN/Infinity) – browsers reject this")
 
@@ -346,6 +353,51 @@ class TestWizardPage:
         assert "saveWizardVideoSource().then(function(){ wizardNext(); })" in body
         assert "saveWizardVideoSource(); wizardNext()" not in body  # fire-and-forget pattern gone
         assert "return fetch('/section/video_source'" in body
+
+    def test_video_source_step_reports_the_last_failure(self, live_server, monkeypatch) -> None:
+        server, base = live_server
+        video = {
+            "failure": "unreachable",
+            "failure_text": "Nothing answered at 192.0.2.10:554.",
+            "failure_action": "Check the camera is powered.",
+            "error_message": "Could not open resource.",
+        }
+        monkeypatch.setattr(server, "get_runtime_stats", lambda: {"video": video})
+        status, body = _get(base, "/wizard")
+        assert status == 200
+
+        step = _wizard_step(body, "video")
+        assert "Nothing answered at 192.0.2.10:554." in step
+        assert "Check the camera is powered." in step
+        assert "Could not open resource." not in step
+        assert step.index('<div class="notice error"') < step.index('id="wizard-video-source-type"')
+
+    def test_video_source_step_polls_for_a_failure_while_healthy(self, live_server) -> None:
+        _, base = live_server
+        status, body = _get(base, "/wizard")
+        assert status == 200
+
+        step = _wizard_step(body, "video")
+        assert '<div class="notice error"' not in step
+        poll = re.search(r'<div id="video-source-failure"[^>]*>', step)
+        assert poll
+        assert 'hx-get="/section/video_source/failure"' in poll.group(0)
+
+    def test_reference_mapping_offers_fine_adjust_once_there_is_a_snapshot(self, live_server) -> None:
+        """Like Corner Pinning: off until the snapshot and the projection are in,
+        and the page opens on the full image."""
+        _, base = live_server
+        status, body = _get(base, "/wizard")
+        assert status == 200
+
+        step = _wizard_step(body, "ref")
+        toggle = re.search(r'<button[^>]*id="coarse-zoom-toggle"[^>]*>([^<]*)</button>', step)
+        assert toggle
+        assert toggle.group(1) == "Fine adjust"
+        assert "disabled" in toggle.group(0)
+        assert 'onclick="toggleCoarseZoomMode()"' in toggle.group(0)
+        assert re.search(r'<div id="coarse-zoom-view"[^>]*style="display:none;"', step)
+        assert re.search(r'<svg id="coarse-zoom-svg"[^>]*tabindex="0"', step)
 
     def test_wizard_page_contains_all_steps(self, live_server) -> None:
         _, base = live_server

@@ -8,6 +8,7 @@ the /wizard page rendering, and the updated camera/grid default values.
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 import urllib.error
@@ -1149,7 +1150,7 @@ class TestWizardProjectBadInput:
         assert status == 400
         assert "error" in data
 
-    @pytest.mark.parametrize("bad", [float("nan"), float("inf")])
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), 1e170, 20_000.0])
     def test_project_non_finite_canvas_returns_400_not_500(self, live_server, bad: float) -> None:
         # json.dumps emits NaN/Infinity and the server's json parser accepts
         # them; a bare ``<= 0`` guard lets them through (``NaN <= 0`` is False),
@@ -1683,6 +1684,14 @@ class TestWizardLensSnapEndpoint:
             lambda b: b.update(p1=b["p0"]),
             lambda b: b.update(image_width=0),
             lambda b: b.update(image_height="tall"),
+            lambda b: b.update(image_width=1e170, image_height=1e170),
+            lambda b: b.update(image_width=20_000),
+            lambda b: b.update(image_width=True),
+            lambda b: b["band"].update(step=float("inf")),
+            lambda b: b["band"].update(half=float("-inf")),
+            lambda b: b["band"].update(step=True),
+            lambda b: b["band"].update(step=1.5),
+            lambda b: b.update(p0=["200", "596"]),
         ],
         ids=[
             "no-band",
@@ -1706,6 +1715,14 @@ class TestWizardLensSnapEndpoint:
             "zero-length-line",
             "zero-canvas",
             "string-canvas",
+            "astronomical-canvas",
+            "canvas-too-wide",
+            "boolean-canvas",
+            "infinite-step",
+            "negative-infinite-half",
+            "boolean-step",
+            "fractional-step",
+            "string-coordinates",
         ],
     )
     def test_malformed_body_returns_400(self, live_server, mutate) -> None:
@@ -1756,14 +1773,19 @@ class TestWizardLensEdgesEndpoint:
         assert best["length"] > 1500.0 and best["strength"] > 8.0
 
     def test_the_developer_map_is_returned_on_request(self, live_server) -> None:
-        import base64
-
         _, base = live_server
         status, data = _post_json(base, "/api/wizard/lens/edges", self._body(with_map=True))
         assert status == 200
         edges = data["edges"]
         assert (edges["width"], edges["height"]) == (960, 540)
         assert len(base64.b64decode(edges["data"])) == 960 * 540
+
+    @pytest.mark.parametrize("with_map", ["false", 1, "yes"])
+    def test_only_true_asks_for_the_developer_map(self, live_server, with_map) -> None:
+        _, base = live_server
+        status, data = _post_json(base, "/api/wizard/lens/edges", {**self._body(), "with_map": with_map})
+        assert status == 200
+        assert data["edges"] is None
 
     @pytest.mark.parametrize(
         "mutate",
@@ -1781,6 +1803,9 @@ class TestWizardLensEdgesEndpoint:
             lambda b: b.update(image_width=0),
             lambda b: b.update(image_height="tall"),
             lambda b: b.pop("scale"),
+            lambda b: b.update(scale=float("inf")),
+            lambda b: b.update(scale=2.5),
+            lambda b: b.update(scale=1, width=1920, height=1080, data=base64.b64encode(bytes(1920 * 1080)).decode()),
         ],
         ids=[
             "no-data",
@@ -1796,6 +1821,9 @@ class TestWizardLensEdgesEndpoint:
             "zero-canvas",
             "string-canvas",
             "missing-scale",
+            "infinite-scale",
+            "fractional-scale",
+            "unscaled-snapshot",
         ],
     )
     def test_malformed_body_returns_400(self, live_server, mutate) -> None:
@@ -1887,6 +1915,13 @@ class TestWizardLensFitEndpoint:
                 "image_height": IMG_H,
                 "lines": [{"points": [[0, 0], [50, float("inf")], [100, 0]]}],
             },
+            {"image_width": IMG_W, "image_height": IMG_H, "lines": [{"points": [[0, 2], [50, 0], [100, 0]]}] * 33},
+            {"image_width": IMG_W, "image_height": IMG_H, "lines": [{"points": [[x, 0] for x in range(0, 170, 10)]}]},
+            {"image_width": IMG_W, "image_height": IMG_H, "lines": [{"points": ["12", [50, 0], [100, 0]]}]},
+            {"image_width": IMG_W, "image_height": IMG_H, "lines": [{"points": [[0, 0, 0], [50, 0, 0], [100, 0, 0]]}]},
+            {"image_width": IMG_W, "image_height": IMG_H, "lines": [{"points": [[True, 0], [50, 0], [100, 0]]}]},
+            {"image_width": 1e170, "image_height": 1e170, "lines": [{"points": [[0, 0], [50, 0], [100, 0]]}]},
+            {"image_width": IMG_W, "image_height": IMG_H, "lines": [{"points": [[10**400, 0], [50, 0], [100, 0]]}]},
         ],
         ids=[
             "no-lines",
@@ -1900,6 +1935,13 @@ class TestWizardLensFitEndpoint:
             "zero-canvas",
             "nan-canvas",
             "non-finite-point",
+            "too-many-lines",
+            "too-many-points",
+            "string-point",
+            "three-coordinates",
+            "boolean-coordinate",
+            "astronomical-canvas",
+            "integer-past-float-range",
         ],
     )
     def test_malformed_body_returns_400(self, live_server, body: dict) -> None:
@@ -1913,11 +1955,16 @@ class TestWizardLensFitEndpoint:
         status, _ = _post_json(base, "/api/wizard/lens/fit", [[0, 0]])  # type: ignore[arg-type]
         assert status == 400
 
-    def test_invalid_json_returns_400(self, live_server) -> None:
+    @pytest.mark.parametrize(
+        "raw",
+        [b"[not json", b'{"image_width": 1' + b"0" * 5000 + b"}", b"[" * 100_000 + b"]" * 100_000],
+        ids=["not-json", "integer-past-the-digit-limit", "nested-past-the-recursion-limit"],
+    )
+    def test_invalid_json_returns_400(self, live_server, raw: bytes) -> None:
         _, base = live_server
         req = urllib.request.Request(
             f"{base}/api/wizard/lens/fit",
-            data=b"[not json",
+            data=raw,
             headers={"Content-Type": "application/json"},
             method="POST",
         )

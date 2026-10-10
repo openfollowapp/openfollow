@@ -9,6 +9,8 @@ import pytest
 
 from openfollow.scene.lens_fit import (
     K2_SIGMA_GATE,
+    MAX_LINES,
+    MAX_POINTS_PER_LINE,
     RATING_LOW,
     RATING_THRESHOLDS_PX,
     RATINGS,
@@ -281,6 +283,16 @@ class TestInputRules:
     def test_a_degenerate_line_is_an_error(self) -> None:
         with pytest.raises(ValueError, match="shorter"):
             fit_lens_from_lines([[[0.0, 0.0], [1.0, 1.0], [2.0, 2.0]]], W, H)
+
+    def test_more_lines_than_the_cap_is_an_error(self) -> None:
+        line = [[0.0, 2.0], [50.0, 0.0], [100.0, 0.0]]
+        with pytest.raises(ValueError, match=f"At most {MAX_LINES} lines"):
+            fit_lens_from_lines([line] * (MAX_LINES + 1), W, H)
+
+    def test_a_line_with_more_points_than_the_cap_is_an_error(self) -> None:
+        line = [[10.0 * i, 0.0] for i in range(MAX_POINTS_PER_LINE + 1)]
+        with pytest.raises(ValueError, match="more than"):
+            fit_lens_from_lines([line], W, H)
 
     @pytest.mark.parametrize("w,h", [(0.0, H), (W, -1.0), (float("nan"), H), (W, float("inf"))])
     def test_a_bad_canvas_is_an_error(self, w: float, h: float) -> None:

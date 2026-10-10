@@ -54,6 +54,9 @@ _MISFIT_RATIO = 3.0
 # the lines constrain nothing; a real line sits many orders above it.
 _SINGULAR_INFORMATION = 1e-9
 _MIN_POINTS_PER_LINE = 3
+# The wizard sends at most five points a line; the seeding grid costs memory per point.
+MAX_LINES = 32
+MAX_POINTS_PER_LINE = 16
 _MIN_LINES_FOR_MISFIT = 3
 _MIN_LINE_SPAN_PX = 10.0
 _CURVE_SAMPLES = 24
@@ -124,12 +127,16 @@ class _Lines:
     def from_lines(cls, lines: Sequence[Sequence[Sequence[float]]], canvas_w: float, canvas_h: float) -> _Lines:
         if not lines:
             raise ValueError("at least one line is needed")
+        if len(lines) > MAX_LINES:
+            raise ValueError(f"At most {MAX_LINES} lines can be fitted.")
         rows: list[FloatArray] = []
         idx: list[int] = []
         for i, line in enumerate(lines):
             arr = np.asarray(line, dtype=np.float64)
             if arr.ndim != 2 or arr.shape[1] != 2 or arr.shape[0] < _MIN_POINTS_PER_LINE:
                 raise ValueError(f"line {i + 1} needs at least {_MIN_POINTS_PER_LINE} points of [x, y]")
+            if arr.shape[0] > MAX_POINTS_PER_LINE:
+                raise ValueError(f"line {i + 1} has more than {MAX_POINTS_PER_LINE} points")
             if not np.isfinite(arr).all():
                 raise ValueError(f"line {i + 1} has a non-finite point")
             if float(np.max(np.ptp(arr, axis=0))) < _MIN_LINE_SPAN_PX:
@@ -390,8 +397,9 @@ def coverage_hint(
 def fit_lens_from_lines(lines: Sequence[Sequence[Sequence[float]]], canvas_w: float, canvas_h: float) -> LensFitResult:
     """Fit ``k1`` / ``k2`` to the traced lines (active points only, image pixels).
 
-    Raises ``ValueError`` when the input cannot be fitted: no line, a line with
-    fewer than three points, a non-finite point, or a line too short to carry
+    Raises ``ValueError`` when the input cannot be fitted: no line, more than
+    ``MAX_LINES``, a line with fewer than three points or more than
+    ``MAX_POINTS_PER_LINE``, a non-finite point, or a line too short to carry
     a direction.
     """
     if not (math.isfinite(canvas_w) and math.isfinite(canvas_h) and canvas_w > 0.0 and canvas_h > 0.0):

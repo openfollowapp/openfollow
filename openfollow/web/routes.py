@@ -3287,9 +3287,9 @@ def _load_json_body() -> Any:
     """
     try:
         data = json.loads(request.body.read().decode("utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        # Non-UTF-8 bytes raise UnicodeDecodeError before json.loads runs;
-        # treat it as a malformed body (400) rather than an uncaught 500.
+    except (ValueError, RecursionError):
+        # Non-UTF-8 bytes, an integer literal past Python's digit limit and nesting
+        # past the recursion limit are malformed bodies (400), not an uncaught 500.
         response.status = 400
         return None
     # JSON literal `null` parses to Python None without raising; treat it as
@@ -3344,22 +3344,12 @@ def _parse_lens_snap_body(data: Any) -> tuple[float, float, list[float], list[fl
 
     if not isinstance(data, dict):
         raise TypeError("body must be an object")
-    img_w = float(data["image_width"])
-    img_h = float(data["image_height"])
-    _require_wizard_canvas(img_w, img_h)
-    ends = []
-    for key in ("p0", "p1"):
-        p = data[key]
-        if not isinstance(p, (list, tuple)) or len(p) != 2:
-            raise ValueError(f"{key} must be [x, y]")
-        pt = [float(p[0]), float(p[1])]
-        if not all(math.isfinite(c) for c in pt):
-            raise ValueError(f"{key} must be finite")
-        ends.append(pt)
+    img_w, img_h = _json_canvas(data)
+    ends = [_json_point(data[key], key) for key in ("p0", "p1")]
     band = data["band"]
     if not isinstance(band, dict):
         raise TypeError("band must be an object")
-    step, half, cols, rows = (int(band[k]) for k in ("step", "half", "cols", "rows"))
+    step, half, cols, rows = (_json_int(band[k], f"band {k}") for k in ("step", "half", "cols", "rows"))
     if not 1 <= step <= MAX_BAND_STEP:
         raise ValueError(f"band step must be within 1..{MAX_BAND_STEP}")
     if not MIN_BAND_HALF <= half <= MAX_BAND_HALF:
@@ -3389,16 +3379,14 @@ def _parse_lens_edges_body(data: Any) -> tuple[float, float, int, Any, bool]:
     """Validate a ``/api/wizard/lens/edges`` body; raises for the endpoint's 400."""
     import numpy as np
 
-    from openfollow.scene.edge_chains import MAX_EDGE_SCALE, edge_map_size
+    from openfollow.scene.edge_chains import edge_map_scale, edge_map_size
 
     if not isinstance(data, dict):
         raise TypeError("body must be an object")
-    img_w = float(data["image_width"])
-    img_h = float(data["image_height"])
-    _require_wizard_canvas(img_w, img_h)
-    scale, width, height = (int(data[k]) for k in ("scale", "width", "height"))
-    if not 1 <= scale <= MAX_EDGE_SCALE:
-        raise ValueError(f"scale must be within 1..{MAX_EDGE_SCALE}")
+    img_w, img_h = _json_canvas(data)
+    scale, width, height = (_json_int(data[k], k) for k in ("scale", "width", "height"))
+    if scale != edge_map_scale(img_w):
+        raise ValueError(f"scale must be {edge_map_scale(img_w)} for this snapshot")
     if (width, height) != edge_map_size(img_w, img_h, scale):
         raise ValueError("width and height must be the snapshot scaled by scale")
     if width * height > _LENS_EDGE_MAX_PIXELS:
@@ -3413,7 +3401,7 @@ def _parse_lens_edges_body(data: Any) -> tuple[float, float, int, Any, bool]:
     if len(buf) != width * height:
         raise ValueError("data does not match its size")
     luma = np.frombuffer(buf, dtype=np.uint8).reshape(height, width).astype(np.float64)
-    return img_w, img_h, scale, luma, bool(data.get("with_map", False))
+    return img_w, img_h, scale, luma, data.get("with_map") is True
 
 
 def _wizard_camera_params(cam: Any) -> Any:
@@ -3440,18 +3428,59 @@ def _wizard_camera_params(cam: Any) -> Any:
     return params
 
 
+# The widest snapshot side the wizard takes: an 8K frame, twice over.
+_WIZARD_MAX_CANVAS = 16384.0
+
+
 def _require_wizard_canvas(img_w: float, img_h: float) -> None:
-    """Reject a degenerate canvas before the solver divides by it.
+    """Reject a degenerate or absurd canvas before the solver divides by it.
 
     Raises ``ValueError`` so the wizard endpoints surface a 400 instead of a
-    500 from ``canvas_w / canvas_h`` (or the focal-length divide).
+    500 from ``canvas_w / canvas_h`` (or the focal-length divide), and before
+    a canvas of 1e170 overflows the Lens step's maths into a solve that never
+    returns.
     """
     # math.isfinite rejects NaN/Inf, which a bare ``<= 0`` lets through
     # (``NaN <= 0`` is False) – json.loads accepts NaN/Infinity, so a crafted
     # body could otherwise feed non-finite dims into the solver and emit a
     # non-standard-JSON "NaN" response instead of a clean 400.
-    if not math.isfinite(img_w) or not math.isfinite(img_h) or img_w <= 0.0 or img_h <= 0.0:
-        raise ValueError(f"image_width and image_height must be finite values > 0, got {img_w}x{img_h}")
+    if not all(math.isfinite(v) and 0.0 < v <= _WIZARD_MAX_CANVAS for v in (img_w, img_h)):
+        raise ValueError(
+            f"image_width and image_height must be within (0, {_WIZARD_MAX_CANVAS:g}], got {img_w}x{img_h}"
+        )
+
+
+def _json_number(value: Any, name: str) -> float:
+    """A finite JSON number; a boolean, a string or an out-of-range integer raises."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"{name} must be a number")
+    try:
+        number = float(value)
+    except OverflowError as exc:
+        raise ValueError(f"{name} is out of range") from exc
+    if not math.isfinite(number):
+        raise ValueError(f"{name} must be finite")
+    return number
+
+
+def _json_int(value: Any, name: str) -> int:
+    number = _json_number(value, name)
+    if not number.is_integer():
+        raise ValueError(f"{name} must be a whole number")
+    return int(number)
+
+
+def _json_point(value: Any, name: str) -> list[float]:
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        raise ValueError(f"{name} must be [x, y]")
+    return [_json_number(value[0], name), _json_number(value[1], name)]
+
+
+def _json_canvas(data: dict[str, Any]) -> tuple[float, float]:
+    img_w = _json_number(data["image_width"], "image_width")
+    img_h = _json_number(data["image_height"], "image_height")
+    _require_wizard_canvas(img_w, img_h)
+    return img_w, img_h
 
 
 def _repo_root_for_diagnostics() -> Path | None:
@@ -9702,9 +9731,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         try:
             if not isinstance(data, dict):
                 raise TypeError("body must be an object")
-            img_w = float(data["image_width"])
-            img_h = float(data["image_height"])
-            _require_wizard_canvas(img_w, img_h)
+            img_w, img_h = _json_canvas(data)
             raw_lines = data["lines"]
             if not isinstance(raw_lines, list) or not raw_lines:
                 raise ValueError("lines must be a non-empty list")
@@ -9713,9 +9740,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 pts = line.get("points") if isinstance(line, dict) else line
                 if not isinstance(pts, list):
                     raise ValueError("each line needs a points list")
-                # Coerce inside the try so a malformed point is a 400, not a 500.
-                lines.append([[float(p[0]), float(p[1])] for p in pts])
-        except (KeyError, IndexError, TypeError, ValueError) as exc:
+                lines.append([_json_point(p, "point") for p in pts])
+        except (KeyError, TypeError, ValueError) as exc:
             response.status = 400
             return json.dumps({"error": str(exc)})
 

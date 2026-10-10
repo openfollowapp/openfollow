@@ -42,7 +42,9 @@ class SourceKind(Enum):
 
     Picks the wording for the failures whose advice would otherwise name
     something the operator cannot find: an NDI source has no address or port, a
-    USB camera has no sender, and a listener has no camera to power on.
+    USB camera has no sender, and a listener has no camera to power on. It also
+    decides the classification of "not authorised": a local source has no
+    login, so from one it is the system refusing the device.
     """
 
     REMOTE = "remote"  # dials a host: rtsp, srt

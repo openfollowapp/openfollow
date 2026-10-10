@@ -9,6 +9,7 @@ dispatcher that subscribers attach patterns to.
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import socket
 import threading
@@ -238,10 +239,14 @@ if _PYTHONOSC_AVAILABLE:  # pragma: no branch
             return iter(handlers)
 
     class _FilteredOSCUDPServer(BlockingOSCUDPServer):
-        """OSC UDP server with an optional source-IP allowlist.
+        """IPv4 OSC UDP server with an optional source-IP allowlist.
 
         ``verify_request`` runs before dispatch; returning False drops the
         packet with no handler invoked. An empty allowlist accepts everything.
+
+        The family is fixed because the multicast membership is an IPv4 one:
+        left to infer it from ``""``, python-osc opens a dual-stack IPv6 socket
+        on macOS, which refuses ``IP_ADD_MEMBERSHIP`` with EINVAL.
         """
 
         def __init__(
@@ -250,7 +255,7 @@ if _PYTHONOSC_AVAILABLE:  # pragma: no branch
             dispatcher: Dispatcher,
             allowed_ips: frozenset[str],
         ) -> None:
-            super().__init__(server_address, dispatcher)
+            super().__init__(server_address, dispatcher, family=socket.AF_INET)
             self._allowed_ips = allowed_ips
 
         def verify_request(
@@ -263,7 +268,7 @@ if _PYTHONOSC_AVAILABLE:  # pragma: no branch
             # UDP always yields a (host, port) tuple; the supertype allows a
             # ``str`` (unix-socket) address – treat that as not-in-allowlist
             # so verification fails closed.
-            if isinstance(client_address, tuple) and client_address[0] in self._allowed_ips:
+            if isinstance(client_address, tuple) and _unmapped_host(client_address[0]) in self._allowed_ips:
                 return True
             host = client_address[0] if isinstance(client_address, tuple) else client_address
             logger.debug(
@@ -781,6 +786,17 @@ class OscService:
 # ---------------------------------------------------------------------------
 # Free helpers
 # ---------------------------------------------------------------------------
+
+
+def _unmapped_host(host: str) -> str:
+    """*host* with an IPv4-mapped IPv6 address (``::ffff:a.b.c.d``) written as IPv4."""
+    if ":" not in host:
+        return host
+    try:
+        mapped = ipaddress.IPv6Address(host).ipv4_mapped
+    except ValueError:
+        return host
+    return host if mapped is None else str(mapped)
 
 
 def _join_multicast_group(sock: Any, group: str, port: int, *, iface_ip: str | None = "", iface: str = "") -> bool:

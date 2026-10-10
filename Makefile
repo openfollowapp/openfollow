@@ -4,7 +4,7 @@
 # lint / typecheck / security / test / build steps plus coverage and mutation.
 
 .PHONY: ci ci-remote lint format typecheck security audit test test-unit test-integration test-smoke-e2e build dmg coverage coverage-html coverage-xml install-hooks \
-        mutation mutation-module mutation-results mutation-show mutation-clean
+        mutation mutation-deps mutation-module mutation-results mutation-show mutation-clean
 
 # Combined line + branch coverage floor – ratchet up with every PR.
 # Path to 100% is the gate; CI invokes test-integration so the
@@ -52,6 +52,10 @@ PYTEST_PARALLEL ?= -n $(PYTEST_WORKERS) --dist load
 # onto every pytest invocation so the xdist workers inherit it from the shell.
 PYTEST_THREAD_CAPS ?= OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
                       NUMEXPR_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
+
+# The parallel runs go below normal priority, so a workstation running several
+# suites at once keeps its desktop responsive. No effect on an idle CI runner.
+PYTEST_NICE ?= nice -n 10
 
 # The e2e smoke test is part of the gate: it is the only step that wires the
 # real receivers to the real outputs, and a regression there passed twice
@@ -105,10 +109,10 @@ typecheck:
 test: test-unit test-integration
 
 test-unit:
-	$(PYTEST_THREAD_CAPS) poetry run pytest -m unit -q $(PYTEST_PARALLEL) --cov=openfollow --cov-report=term-missing
+	$(PYTEST_THREAD_CAPS) $(PYTEST_NICE) poetry run pytest -m unit -q $(PYTEST_PARALLEL) --cov=openfollow --cov-report=term-missing
 
 test-integration:
-	$(PYTEST_THREAD_CAPS) poetry run pytest -m "integration or smoke" -q $(PYTEST_PARALLEL) --cov=openfollow --cov-append --cov-report=term-missing --cov-fail-under=$(COVERAGE_MIN)
+	$(PYTEST_THREAD_CAPS) $(PYTEST_NICE) poetry run pytest -m "integration or smoke" -q $(PYTEST_PARALLEL) --cov=openfollow --cov-append --cov-report=term-missing --cov-fail-under=$(COVERAGE_MIN)
 
 # End-to-end smoke test. Spins a real GStreamer pipeline and PSN packet
 # through OTP/RTTrPM output sockets, and skips itself if GStreamer isn't
@@ -119,13 +123,13 @@ test-smoke-e2e:
 	$(PYTEST_THREAD_CAPS) poetry run pytest -m smoke_e2e -q
 
 coverage:
-	$(PYTEST_THREAD_CAPS) poetry run pytest -q $(PYTEST_PARALLEL) --cov=openfollow --cov-report=term-missing
+	$(PYTEST_THREAD_CAPS) $(PYTEST_NICE) poetry run pytest -q $(PYTEST_PARALLEL) --cov=openfollow --cov-report=term-missing
 
 coverage-html:
-	$(PYTEST_THREAD_CAPS) poetry run pytest -q $(PYTEST_PARALLEL) --cov=openfollow --cov-report=html:htmlcov --cov-report=term
+	$(PYTEST_THREAD_CAPS) $(PYTEST_NICE) poetry run pytest -q $(PYTEST_PARALLEL) --cov=openfollow --cov-report=html:htmlcov --cov-report=term
 
 coverage-xml:
-	$(PYTEST_THREAD_CAPS) poetry run pytest -q $(PYTEST_PARALLEL) --cov=openfollow --cov-report=xml:coverage.xml --cov-report=term
+	$(PYTEST_THREAD_CAPS) $(PYTEST_NICE) poetry run pytest -q $(PYTEST_PARALLEL) --cov=openfollow --cov-report=xml:coverage.xml --cov-report=term
 
 build:
 	poetry build --no-interaction
@@ -157,10 +161,15 @@ install-hooks:
 # See docs/COVERAGE.md for the policy and how to interpret survivors.
 # ---------------------------------------------------------------------------
 
+# mutmut is in the optional ``mutation`` Poetry group. ``poetry install`` removes
+# every extra it is not given, so the detection extra the suite needs is named.
+mutation-deps:
+	poetry install --no-interaction --with mutation -E detection
+
 mutation-clean:
 	rm -rf mutants .mutmut-cache
 
-mutation: mutation-clean
+mutation: mutation-deps mutation-clean
 	poetry run mutmut run
 
 # Mutate one module by mutant-name pattern, which mutmut derives from the dotted
@@ -174,15 +183,15 @@ mutation: mutation-clean
 # no command-line override for that, so a different module still needs both it
 # and ``do_not_mutate`` edited in pyproject.toml first. The default example is
 # the one the committed config already covers.
-mutation-module:
+mutation-module: mutation-deps
 	@test -n "$(MODULE)" || { echo "usage: make mutation-module MODULE=openfollow.<module>"; exit 2; }
 	@echo "note: mutants run against $(MUTATION_TESTS) - a module outside that reports every mutant survived"
 	poetry run mutmut run "$(MODULE).*"
 
-mutation-results:
+mutation-results: mutation-deps
 	poetry run mutmut results
 
-mutation-show:
+mutation-show: mutation-deps
 	@# Pass MUTANT=<full-name> e.g. `make mutation-show MUTANT=openfollow.zones.engine.xǁZoneEngineǁupdate__mutmut_13`
 	@test -n "$(MUTANT)" || { echo "usage: make mutation-show MUTANT=<mutant-name>"; exit 2; }
 	poetry run mutmut show "$(MUTANT)"

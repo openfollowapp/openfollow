@@ -166,6 +166,27 @@ def temp_config_path(tmp_path: Path) -> Path:
     return tmp_path / "config.toml"
 
 
+def pytest_configure(config: pytest.Config) -> None:
+    """Stop pytest-xdist retitling each worker twice per test.
+
+    With setproctitle installed, every retitle on macOS is a synchronous
+    LaunchServices update broadcast to each GUI process, and a parallel run
+    stalls the whole desktop. The worker runs ``xdist.remote`` as exec'd source,
+    so the name is replaced in that namespace, reached through the worker's
+    registered plugin. See test_xdist_worker_title.
+    """
+    if not hasattr(config, "workerinput"):
+        return
+    for plugin in config.pluginmanager.get_plugins():
+        run_one_test = getattr(type(plugin), "run_one_test", None)
+        if type(plugin).__name__ == "WorkerInteractor" and run_one_test is not None:
+            run_one_test.__globals__["setproctitle"] = _no_title
+
+
+def _no_title(_title: str) -> None:
+    pass
+
+
 @pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(
     config: pytest.Config,

@@ -14,7 +14,7 @@ import sys
 from collections.abc import Callable
 from typing import Any
 
-from openfollow.video.failure import SourceKind
+from openfollow.video.failure import SourceKind, VideoFailure
 from openfollow.video.inputs._base import (
     ConfigField,
     InputCapabilities,
@@ -23,8 +23,18 @@ from openfollow.video.inputs._base import (
     WebRoute,
     coerce_positive_int,
 )
+from openfollow.video.inputs._pin import PinRefusal
 
 logger = logging.getLogger(__name__)
+
+# Every camera listed this run, by unique ID, kept after an unplug. Labels read
+# it because a listing stalls and can prompt for camera access.
+_camera_names: dict[str, str] = {}
+
+
+def _camera_name(unique_id: str) -> str:
+    """The camera's name if it has been listed this run, else its unique ID."""
+    return _camera_names.get(unique_id) or unique_id
 
 
 def _discover_avf_devices() -> list[dict[str, str]]:
@@ -78,6 +88,7 @@ def _discover_avf_devices() -> list[dict[str, str]]:
                 }
             )
             avf_index += 1
+        _camera_names.update({dev["unique_id"]: dev["name"] for dev in result if dev["unique_id"]})
         return result
     except Exception as exc:
         logger.debug("AVFoundation device discovery failed: %s", exc)
@@ -87,29 +98,22 @@ def _discover_avf_devices() -> list[dict[str, str]]:
 def _resolve_device_index(
     unique_id: str,
     fallback_index: int,
-) -> int:
+) -> int | None:
     """Map a stored ``unique_id`` to a live ``avfvideosrc`` device-index.
 
     Indices shift when devices are plugged or unplugged, so we persist
     ``avf.unique_id`` and resolve to an index at pipeline-build time.
 
-    If ``unique_id`` is empty, returns ``fallback_index``.  If the
-    ``unique_id`` is not currently connected, returns ``fallback_index``
-    (or 0 when ``fallback_index`` is negative) and logs a warning so the
-    user notices their camera is missing.
+    An empty ``unique_id`` returns ``fallback_index`` (``-1`` opens the system
+    default camera). A ``unique_id`` that is not connected returns ``None``:
+    another camera's index would open the wrong device and report it connected.
     """
     if not unique_id:
         return fallback_index
-    devices = _discover_avf_devices()
-    for dev in devices:
+    for dev in _discover_avf_devices():
         if dev["unique_id"] == unique_id:
             return int(dev["index"])
-    logger.warning(
-        "AVF device with unique_id=%s not found; falling back to device-index=%d",
-        unique_id,
-        max(fallback_index, 0),
-    )
-    return fallback_index if fallback_index >= 0 else 0
+    return None
 
 
 class AvfInput(VideoInputBase):
@@ -174,6 +178,14 @@ class AvfInput(VideoInputBase):
             fallback_to_selection=True,
         )
 
+    @classmethod
+    def preflight(cls, config: dict[str, Any]) -> PinRefusal | None:
+        """Refuse to build for a remembered camera that is not connected."""
+        unique_id = str(config.get("avf_unique_id", "") or "")
+        if not unique_id or any(dev["unique_id"] == unique_id for dev in _discover_avf_devices()):
+            return None
+        return PinRefusal(VideoFailure.STREAM_NOT_FOUND, f"no camera with unique ID {unique_id} is connected")
+
     # -- Pipeline -------------------------------------------------------
 
     def create_pipeline(
@@ -206,6 +218,8 @@ class AvfInput(VideoInputBase):
         framerate = coerce_positive_int(config.get("avf_framerate", 30), 30)
 
         device_index = _resolve_device_index(unique_id, fallback_index)
+        if device_index is None:
+            raise RuntimeError(f"No camera with unique ID {unique_id} is connected")
 
         def make(kind: str, name: str) -> Any:
             elem = Gst.ElementFactory.make(kind, name)
@@ -272,15 +286,28 @@ class AvfInput(VideoInputBase):
         """Return AVF camera ``unique_id``s (stable across reboots)."""
         return [d["unique_id"] for d in _discover_avf_devices()]
 
+    @classmethod
+    def source_labels(cls, sources: list[str]) -> list[str]:
+        """Each camera's name, numbered where two cameras share one."""
+        names = [_camera_name(uid) for uid in sources]
+        seen: dict[str, int] = {}
+        labels: list[str] = []
+        for name in names:
+            if names.count(name) > 1:
+                seen[name] = seen.get(name, 0) + 1
+                labels.append(f"{name} ({seen[name]})")
+            else:
+                labels.append(name)
+        return labels
+
     # -- Web UI ---------------------------------------------------------
 
     @classmethod
     def web_ui_html(cls, config: dict[str, Any]) -> str:
-        unique_id = cls._esc(config.get("avf_unique_id", ""))
-        # ``avf_device_index`` is an internal fallback (used when the
-        # stored ``unique_id`` no longer matches a connected device);
-        # surface it as a hidden input so the form roundtrips its value
-        # without exposing it as a user-facing control.
+        stored = str(config.get("avf_unique_id", "") or "")
+        unique_id = cls._esc(stored)
+        # ``avf_device_index`` is an internal fallback, used only while no
+        # camera is stored; a hidden input roundtrips it without exposing it.
         device_index = int(config.get("avf_device_index", -1))
         width = config.get("avf_width", 1920)
         height = config.get("avf_height", 1080)
@@ -296,7 +323,7 @@ class AvfInput(VideoInputBase):
             '                hx-target="this"'
             '                hx-swap="innerHTML">'
             f'            <option value="{unique_id}">'
-            f"              {unique_id or '-- Loading... --'}"
+            f"              {cls._esc(_camera_name(stored)) or '-- Loading... --'}"
             "            </option>"
             "        </select>"
             "    </div>"
@@ -350,14 +377,19 @@ class AvfInput(VideoInputBase):
         current = config.get("avf_unique_id", "")
 
         options: list[str] = []
-        if not devices:
-            options.append('<option value="">-- No devices found --</option>')
+        # A remembered camera that is not connected stays selected, so saving
+        # the section never silently replaces it with the first one listed.
+        if current and current not in {dev["unique_id"] for dev in devices}:
+            cur = self._esc(current)
+            options.append(f'<option value="{cur}" selected>{self._esc(_camera_name(current))} (unavailable)</option>')
         for dev in devices:
             uid = self._esc(dev["unique_id"])
             name = self._esc(dev["name"])
             sel = " selected" if dev["unique_id"] == current else ""
             label = f"{name} ({dev['index']})"
             options.append(f'<option value="{uid}"{sel}>{label}</option>')
+        if not options:
+            options.append('<option value="">-- No devices found --</option>')
         return "\n".join(options)
 
     # -- Config ---------------------------------------------------------
@@ -368,9 +400,12 @@ class AvfInput(VideoInputBase):
         config: dict[str, Any],
     ) -> str:
         # Keep side-effect free: no Gst.DeviceMonitor scan here (stalls + re-prompts for permission on macOS).
-        unique_id = config.get("avf_unique_id", "")
+        unique_id = str(config.get("avf_unique_id", "") or "")
+        # No camera chosen reads as no source, so the receiver asks for one
+        # rather than opening whichever camera the system offers.
+        if not unique_id:
+            return ""
         width = config.get("avf_width", 1920)
         height = config.get("avf_height", 1080)
         framerate = config.get("avf_framerate", 30)
-        name = unique_id or "default"
-        return f"{name} ({width}x{height}@{framerate})"
+        return f"{_camera_name(unique_id)} ({width}x{height}@{framerate})"

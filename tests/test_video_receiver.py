@@ -354,6 +354,10 @@ class FakeInput:
         return str(config.get("fake_source", "") or "")
 
     @classmethod
+    def source_labels(cls, sources: list[str]) -> list[str]:
+        return list(sources)
+
+    @classmethod
     def web_ui_html(cls, config: dict[str, Any]) -> str:  # pragma: no cover
         return ""
 
@@ -2163,6 +2167,90 @@ class TestDiscovery:
         # selection wins; it must not snap back to index 0.
         assert discovery_receiver.selected_source_index == 1
         assert discovery_receiver.discovered_sources == ["cam-a", "cam-b"]
+
+
+class TestThePickerNamesWhatItLists:
+    """A source stored by an opaque key (a camera's unique ID) is listed by name;
+    confirming still selects the key."""
+
+    @pytest.fixture
+    def picker(self, fake_gst, fake_glib, fake_input_cls, monkeypatch):
+        monkeypatch.setattr(
+            FakeInput,
+            "_capabilities",
+            InputCapabilities(has_source_selection=True, has_source_discovery=True, discovery_interval=1.0),
+        )
+        monkeypatch.setattr(threading, "Thread", _SyncSwapThread)
+        r = _make_receiver()
+        r._state.activate_source_selection()
+        r._input.discover_results = [["0x14100000", "47B4B64B"]]
+        return r
+
+    def _names(self, monkeypatch, names) -> None:  # noqa: ANN001
+        monkeypatch.setattr(FakeInput, "source_labels", classmethod(names))
+
+    def test_the_picker_lists_names_and_confirms_the_key(self, picker, monkeypatch) -> None:
+        names = {"0x14100000": "Capture Card", "47B4B64B": "FaceTime HD Camera"}
+        self._names(monkeypatch, lambda _cls, sources: [names[s] for s in sources])
+        monkeypatch.setattr(picker, "_save_source_to_config", lambda _source: None)
+
+        picker._do_discovery()
+
+        assert picker.discovered_source_labels == ["Capture Card", "FaceTime HD Camera"]
+        assert picker.discovered_sources == ["0x14100000", "47B4B64B"]
+        picker.select_source_down()
+        assert picker.confirm_source_selection() is True
+        assert picker._input_config["fake_source"] == "47B4B64B"
+
+    def test_an_input_that_names_nothing_lists_its_sources(self, picker) -> None:
+        picker._do_discovery()
+
+        assert picker.discovered_source_labels == ["0x14100000", "47B4B64B"]
+
+    def test_a_naming_that_fails_lists_the_sources(self, picker, monkeypatch, caplog) -> None:
+        def _boom(_cls, _sources):  # noqa: ANN001, ANN202
+            raise RuntimeError("no names")
+
+        self._names(monkeypatch, _boom)
+        with caplog.at_level(logging.WARNING):
+            picker._do_discovery()
+
+        assert picker.discovered_source_labels == ["0x14100000", "47B4B64B"]
+        assert "Naming Fake sources failed" in caplog.text
+
+    def test_names_that_do_not_line_up_are_not_shown(self, picker, monkeypatch) -> None:
+        """One name short would put every later name beside the wrong source."""
+        self._names(monkeypatch, lambda _cls, _sources: ["FaceTime HD Camera"])
+
+        picker._do_discovery()
+
+        assert picker.discovered_source_labels == ["0x14100000", "47B4B64B"]
+
+    def test_a_new_scan_starts_without_the_old_names(self, picker) -> None:
+        picker._do_discovery()
+        # Hold the next scan back, so only the reopened picker can have cleared them.
+        picker._discovery_running = True
+
+        picker.enter_source_selection()
+
+        assert picker.discovered_source_labels == []
+
+    def test_another_input_forgets_the_old_names(self, picker, fake_input_pair) -> None:
+        picker._do_discovery()
+        FakeInputAlt.create_pipeline_result = FakePipeline()
+
+        picker.swap_input("fake_alt", {"alt_url": "test://x"})
+
+        assert picker.discovered_source_labels == []
+
+    def test_a_source_chosen_elsewhere_closes_the_picker(self, picker) -> None:
+        """The web UI choosing a camera must not leave a stale picker over the Operator Screen."""
+        FakeInput.create_pipeline_result = FakePipeline()
+
+        picker.swap_input("fake", {"fake_source": "47B4B64B"})
+
+        assert picker.source_selection_active is False
+        assert picker._pipeline is FakeInput.create_pipeline_result
 
 
 # ---------------------------------------------------------------------------
@@ -5250,3 +5338,93 @@ class TestTheInterfacePinRefusesABuild:
         r.create_pipeline()
 
         assert FakeInput.create_pipeline_call_count == 1
+
+
+class TestARememberedDeviceThatIsAbsent:
+    """An input with a picker whose remembered device is absent builds nothing
+    and retries, like a refused pin, rather than standing still or opening another."""
+
+    _ABSENT = PinRefusal(VideoFailure.STREAM_NOT_FOUND, "no camera with unique ID 0x14100000 is connected")
+
+    @pytest.fixture
+    def absent(self, fake_gst, fake_glib, fake_input_cls, monkeypatch) -> receiver_mod.GstNativeSinkReceiver:
+        monkeypatch.setattr(
+            FakeInput,
+            "_capabilities",
+            InputCapabilities(has_source_selection=True, has_source_discovery=True, discovery_interval=5.0),
+        )
+        monkeypatch.setattr(FakeInput, "_refusal", self._ABSENT)
+        monkeypatch.setattr(threading, "Thread", _SyncSwapThread)
+        r = _make_receiver(input_config={"fake_source": "Capture Card (1920x1080@30)"})
+        r._pipeline_assembler.create_placeholder_pipeline = FakePipeline
+        return r
+
+    def test_play_builds_nothing_and_retries(self, absent, fake_glib) -> None:
+        absent.play()
+
+        assert FakeInput.create_pipeline_call_count == 0
+        assert absent._pipeline is None
+        assert [cb.__name__ for _delay, cb in fake_glib.timers.values()] == ["_do_reconnect"]
+        assert absent.status_marker.failure is VideoFailure.STREAM_NOT_FOUND
+        assert absent.status_marker.source_name == "Capture Card (1920x1080@30)"
+        assert absent.source_selection_active is False
+
+    def test_a_start_checks_once(self, absent, fake_glib, monkeypatch) -> None:
+        monkeypatch.setattr(FakeInput, "preflight_calls", 0)
+
+        absent.create_pipeline()
+        absent.start()
+
+        assert FakeInput.preflight_calls == 1
+        assert [cb.__name__ for _delay, cb in fake_glib.timers.values()] == ["_do_reconnect"]
+
+    def test_the_device_returning_is_picked_up(self, absent, monkeypatch) -> None:
+        absent.play()
+        built = FakePipeline()
+        FakeInput.create_pipeline_result = built
+        monkeypatch.setattr(FakeInput, "_refusal", None)
+
+        absent._do_reconnect()
+
+        assert absent._pipeline is built
+        assert FakeState.PLAYING in built.state_changes
+
+    def test_retries_that_run_out_hand_over_to_the_picker(self, absent, fake_glib) -> None:
+        absent.play()
+        for _ in range(FakeInput._reconnect_policy.max_attempts):
+            fake_glib.timers.clear()
+            absent._do_reconnect()
+
+        assert absent.source_selection_active is True
+        assert absent.status_marker.failure is VideoFailure.STREAM_NOT_FOUND
+        assert FakeInput.create_pipeline_call_count == 0
+
+    def test_a_usb_camera_that_is_missing_is_reported_not_replaced(self, fake_gst, fake_glib, monkeypatch) -> None:
+        """The capture card is named as not found; the laptop camera is never opened in its place."""
+        from openfollow.video.failure import SourceKind, failure_sentence
+        from openfollow.video.inputs import avf
+
+        monkeypatch.setattr(avf.AvfInput, "is_available", classmethod(lambda _cls: (True, "")))
+        monkeypatch.setattr(
+            avf,
+            "_discover_avf_devices",
+            lambda: [{"unique_id": "47B4B64B", "name": "FaceTime HD Camera", "index": "0"}],
+        )
+        monkeypatch.setattr(avf, "_camera_names", {})
+        monkeypatch.setattr(receiver_mod, "get_input_class", lambda _input_id: avf.AvfInput)
+        built: list[Any] = []
+        monkeypatch.setattr(avf.AvfInput, "create_pipeline", lambda *args, **kwargs: built.append(args))
+        r = receiver_mod.GstNativeSinkReceiver(
+            source_type="avf",
+            input_config={"avf_unique_id": "0x14100000", "avf_width": 1920, "avf_height": 1080, "avf_framerate": 30},
+        )
+
+        r.create_pipeline()
+        r.start()
+
+        assert built == []
+        status = r.status_marker.snapshot()
+        assert status.failure is VideoFailure.STREAM_NOT_FOUND
+        assert failure_sentence(status.failure, where=status.source_name, kind=SourceKind.LOCAL) == (
+            "0x14100000 (1920x1080@30) was not found."
+        )

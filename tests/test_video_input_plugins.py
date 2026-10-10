@@ -329,6 +329,15 @@ class TestOptionalHooks:
             )
         assert isinstance(plugin.discover_sources(timeout=0.0), list)
 
+    def test_the_picker_shows_one_label_per_source(self, plugin: type[VideoInputBase]) -> None:
+        """One short and every later label sits beside the wrong source; an
+        input that names nothing shows each source as stored."""
+        sources = ["source-a", "source-b"]
+        labels = plugin.source_labels(sources)
+        assert len(labels) == len(sources)
+        if "source_labels" not in plugin.__dict__:
+            assert labels == sources
+
     def test_cleanup_and_lifecycle_hooks_are_no_op_by_default(self, plugin: type[VideoInputBase]) -> None:
         instance = plugin()
         # None of the optional hooks should raise for a plain dummy value.

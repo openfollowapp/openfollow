@@ -128,6 +128,7 @@ class GstNativeSinkReceiver:
 
         # Source discovery and selection
         self._discovered_sources: list[str] = []
+        self._discovered_labels: list[str] = []
         self._selected_source_index: int = 0
         self._discovery_thread: threading.Thread | None = None
         self._discovery_lock = threading.Lock()
@@ -308,6 +309,12 @@ class GstNativeSinkReceiver:
     def discovered_sources(self) -> list[str]:
         with self._discovery_lock:
             return list(self._discovered_sources)
+
+    @property
+    def discovered_source_labels(self) -> list[str]:
+        """What the picker shows for each of :attr:`discovered_sources`, in the same order."""
+        with self._discovery_lock:
+            return list(self._discovered_labels)
 
     @property
     def selected_source_index(self) -> int:
@@ -512,6 +519,7 @@ class GstNativeSinkReceiver:
         # re-set by ``play()`` if the new plugin needs a placeholder).
         with self._discovery_lock:
             self._discovered_sources = []
+            self._discovered_labels = []
             self._selected_source_index = 0
         self._state.set_placeholder_pipeline(False)
 
@@ -816,8 +824,11 @@ class GstNativeSinkReceiver:
         self._cancel_discovery()
         self._status_marker.set_connecting(source_label)
 
-        if self._pipeline is None:
+        if self._pipeline is None and self._pin_refusal is None:
             self.create_pipeline()
+        if self._pin_refusal is not None:
+            self._schedule_reconnect(self._refusal_text(self._pin_refusal), failure=self._pin_refusal.failure)
+            return
         if self._pipeline is not None:
             result = self._pipeline.set_state(Gst.State.PLAYING)
             if result == Gst.StateChangeReturn.FAILURE:
@@ -938,6 +949,7 @@ class GstNativeSinkReceiver:
         with self._discovery_lock:
             self._selected_source_index = 0
             self._discovered_sources = []
+            self._discovered_labels = []
         self._schedule_discovery()
 
     def exit_source_selection(self) -> None:
@@ -1420,6 +1432,14 @@ class GstNativeSinkReceiver:
             except Exception as e:
                 logger.warning("Source discovery failed: %s", e)
                 return
+            try:
+                labels = list(self._input.source_labels(sources))
+            except Exception:
+                logger.warning("Naming %s sources failed", self._input.display_name, exc_info=True)
+                labels = []
+            # A label list that does not line up would name the wrong source.
+            if len(labels) != len(sources):
+                labels = list(sources)
 
             with self._discovery_lock:
                 old_sources = self._discovered_sources
@@ -1434,6 +1454,7 @@ class GstNativeSinkReceiver:
                         new_idx = min(old_idx, len(sources) - 1)
 
                 self._discovered_sources = sources
+                self._discovered_labels = labels
                 self._selected_source_index = new_idx
 
             if sources:

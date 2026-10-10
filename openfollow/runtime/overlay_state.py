@@ -230,7 +230,7 @@ class OverlayState:
     # Source selection (generic – driven by plugin capabilities)
     source_selection_active: bool = False
     source_selection_title: str = "SELECT SOURCE"
-    discovered_sources: list[str] = field(default_factory=list)
+    discovered_sources: list[str] = field(default_factory=list)  # as the picker shows them
     selected_source_index: int = 0
     # Video source-type selection
     source_type_selection_active: bool = False

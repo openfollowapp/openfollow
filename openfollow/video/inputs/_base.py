@@ -257,6 +257,15 @@ class VideoInputBase(ABC):
         return []
 
     @classmethod
+    def source_labels(cls, sources: list[str]) -> list[str]:
+        """What the on-screen picker shows for each of *sources*, in order.
+
+        Side-effect free: it runs on every discovery pass. The default shows
+        each source as stored.
+        """
+        return list(sources)
+
+    @classmethod
     def web_routes(cls) -> list[WebRoute]:
         """Declare additional HTTP endpoints this input needs."""
         return []
@@ -267,10 +276,11 @@ class VideoInputBase(ABC):
 
     @classmethod
     def preflight(cls, config: dict[str, Any]) -> PinRefusal | None:
-        """Why this connection may not be made under the interface pin, or None.
+        """Why this input may not be built now, or None: a connection the
+        interface pin forbids, or a remembered device that is absent.
 
         Runs before every build, on the main loop; keep it to a routing-table
-        lookup.
+        lookup or a device listing.
         """
         return None
 

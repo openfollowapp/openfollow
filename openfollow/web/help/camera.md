@@ -40,7 +40,7 @@ Wide-angle and fisheye lenses bow straight lines, so the pinhole overlay (grid, 
 
 The correction is centred on the middle of the image. Mouse placement and AI tracking are corrected to match, so clicking a point in the video still lands the marker there. `0` / `0` disables the correction (plain pinhole).
 
-The one limit on the pair is that the overlay must not fold anywhere out to the frame corner, which a save refuses and a hand-edited file falls back from to `0` / `0`. There is no fixed range: a lens with about 100° horizontal field of view on 16:9 lands around `-0.47` barrel / fisheye and `0.25` edge fit, and the sliders cover the common span while the number fields accept any pair that does not fold. The Corner Pinning solve undistorts the pinned corners with the current pair, so a lens changed after pinning is solved again from the same pins, and Review says so when there are no pins to solve from.
+The one limit on the pair is that the overlay must not fold anywhere out to the frame corner. The form checks the pair whenever either value or its slider changes and keeps **Save** disabled while it folds; a hand-edited file, or a request that skips the form, falls back to `0` / `0`. There is no fixed range: a lens with about 100° horizontal field of view on 16:9 lands around `-0.47` barrel / fisheye and `0.25` edge fit, and the sliders cover the common span while the number fields accept any pair that does not fold. The Corner Pinning solve undistorts the pinned corners with the current pair, so a lens changed after pinning is solved again from the same pins, and Review says so when there are no pins to solve from.
 
 ## Saving & sharing
 

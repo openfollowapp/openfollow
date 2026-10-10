@@ -8568,12 +8568,12 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                     f'aria-live="assertive">'
                     f"{html_mod.escape(unit_err, quote=True)}</span>"
                 )
-        # Only the URL-allowlist check reads the TOML config; skip the
-        # per-keystroke parse for every other rule (see
-        # ``validation.needs_cfg``). The request-scoped cache reuses the
+        # Only the lens pair's fold check reads the TOML config (a sibling left
+        # empty keeps its saved value); skip the per-keystroke parse for every
+        # other rule (see ``validation.needs_cfg``). The request-scoped cache reuses the
         # parse from ``_check_auth``'s PIN read so blur validation doesn't
         # duplicate disk I/O.
-        cfg = _request_scoped_config() if needs_cfg(rules[field_name]) else None
+        cfg = _request_scoped_config() if needs_cfg(section, field_name) else None
         # ``request.query`` is a MultiDict; flatten siblings into a plain
         # dict so the cross-field rules (the lens fold check, the ``max_speed``
         # advisory) can read the rest of the form without seeing the field

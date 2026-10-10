@@ -6739,6 +6739,16 @@ def test_validate_endpoint_type_error(live_server) -> None:
     assert 'class="field-error-msg"' in body
 
 
+@pytest.mark.parametrize(("saved_k2", "folds"), [(0.0, True), (0.1, False)])
+def test_validate_endpoint_reads_an_empty_lens_sibling_as_its_saved_value(live_server, saved_k2, folds) -> None:
+    # The save keeps the saved value of a field left empty, so the blur check judges that pair.
+    _, base = live_server
+    assert _post_json(base, "/api/config/camera", {"lens_k1": 0.0, "lens_k2": saved_k2})[0] == 200
+    status, body = _get(base, "/api/validate/camera/lens_k1?lens_k1=-0.4&lens_k2=")
+    assert status == 200
+    assert ("folds" in body) is folds
+
+
 def test_validate_endpoint_advisory_note(live_server) -> None:
     """Cross-field auto-correct surfaces as a ``field-note-msg`` span."""
     _, base = live_server

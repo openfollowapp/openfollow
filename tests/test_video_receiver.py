@@ -288,6 +288,7 @@ class FakeInput:
     input_id = "fake"
     display_name = "Fake"
     source_element_name: str | None = None
+    source_kind = SourceKind.REMOTE
 
     # Defaults – override per-test via subclass.
     _available: tuple[bool, str] = (True, "")
@@ -418,6 +419,7 @@ class FakeInputAlt:
     input_id = "fake_alt"
     display_name = "FakeAlt"
     source_element_name: str | None = None
+    source_kind = SourceKind.REMOTE
 
     _available: tuple[bool, str] = (True, "")
     _capabilities = InputCapabilities(
@@ -1045,6 +1047,33 @@ class TestARefusedStartIsClassified:
         r = _make_receiver(input_config={"fake_source": "cam-1"})
         r.play()
         assert r.status_marker.failure == VideoFailure.UNKNOWN
+        assert fake_glib.timers
+
+    @pytest.mark.parametrize(
+        ("kind", "expected"),
+        [(SourceKind.LOCAL, VideoFailure.ACCESS_DENIED), (SourceKind.REMOTE, VideoFailure.UNAUTHORIZED)],
+    )
+    def test_not_authorised_is_read_by_what_the_input_opens(
+        self, fake_gst, fake_glib, picker, monkeypatch, kind: SourceKind, expected: VideoFailure
+    ) -> None:
+        """A camera the operating system will not open is not a rejected login."""
+
+        class _Err:
+            message = "Device video access permission has been explicitly denied before"
+            domain = RESOURCE_DOMAIN
+            code = RESOURCE_NOT_AUTHORIZED
+
+        class _Msg:
+            def parse_error(self) -> tuple[_Err, str]:
+                return _Err(), "Authorization status: 2"
+
+        monkeypatch.setattr(FakeInput, "source_kind", kind)
+        FakeInput.create_pipeline_result = self._refusing(_Msg())
+        r = _make_receiver(input_config={"fake_source": "FaceTime HD Camera (1920x1080@30)"})
+
+        r.play()
+
+        assert r.status_marker.failure is expected
         assert fake_glib.timers
 
 

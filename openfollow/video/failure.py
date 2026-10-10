@@ -59,6 +59,8 @@ class VideoFailure(Enum):
     UNREACHABLE = "unreachable"
     REFUSED = "refused"
     UNAUTHORIZED = "unauthorized"
+    # A local device the operating system will not let this station open.
+    ACCESS_DENIED = "access_denied"
     STREAM_NOT_FOUND = "stream_not_found"
     NO_DATA = "no_data"
     UNSUPPORTED_FORMAT = "unsupported_format"
@@ -117,6 +119,7 @@ _CHIPS: dict[VideoFailure, str] = {
     VideoFailure.UNREACHABLE: "Unreachable",
     VideoFailure.REFUSED: "Refused",
     VideoFailure.UNAUTHORIZED: "Login rejected",
+    VideoFailure.ACCESS_DENIED: "Access denied",
     VideoFailure.STREAM_NOT_FOUND: "Not found",
     VideoFailure.NO_DATA: "No video",
     VideoFailure.UNSUPPORTED_FORMAT: "Unsupported",
@@ -137,6 +140,7 @@ _SENTENCES: dict[VideoFailure, str] = {
     VideoFailure.UNREACHABLE: "Nothing answered at {where}.",
     VideoFailure.REFUSED: "{where} refused the connection.",
     VideoFailure.UNAUTHORIZED: "{where} rejected the login.",
+    VideoFailure.ACCESS_DENIED: "This station was denied access to {where}.",
     # Not "answered, but ...": the same code comes from a v4l2 / libcamera /
     # AVFoundation device that is absent and from a Media Gallery file that was
     # deleted, neither of which answered anything.
@@ -176,6 +180,11 @@ _ACTIONS: dict[VideoFailure, str] = {
     ),
     VideoFailure.REFUSED: "Check the port, and that the camera's stream is switched on.",
     VideoFailure.UNAUTHORIZED: "Check the username and password under Video Source.",
+    # Only macOS's capture element reports a local device as not authorised, and
+    # it reads the permission once per process, so a changed setting needs a restart.
+    VideoFailure.ACCESS_DENIED: (
+        "Allow OpenFollow under System Settings → Privacy & Security → Camera, then restart OpenFollow."
+    ),
     VideoFailure.STREAM_NOT_FOUND: "Check the stream path matches the camera's settings.",
     VideoFailure.NO_DATA: "Check the camera is sending, and that nothing blocks its media path.",
     VideoFailure.UNSUPPORTED_FORMAT: "Set the camera to a codec this station can decode, such as H.264.",
@@ -267,8 +276,13 @@ def classify_failure(
     code: int = 0,
     message: str = "",
     debug: str = "",
+    kind: SourceKind = SourceKind.REMOTE,
 ) -> VideoFailure:
     """Name the failure from how far we got and what GStreamer said.
+
+    *kind* separates a rejected login from a refused device: a local source
+    has no login, so "not authorised" from one is the operating system
+    refusing access to it.
 
     *phase* is how far this **feed** has ever reached, not the attempt that
     just failed: the attempt is torn down and retried, and a retry knows
@@ -287,7 +301,7 @@ def classify_failure(
 
     if domain == RESOURCE_DOMAIN:
         if code == RESOURCE_NOT_AUTHORIZED:
-            return VideoFailure.UNAUTHORIZED
+            return VideoFailure.ACCESS_DENIED if kind is SourceKind.LOCAL else VideoFailure.UNAUTHORIZED
         if code == RESOURCE_NOT_FOUND:
             return VideoFailure.STREAM_NOT_FOUND
         if code == RESOURCE_BUSY:

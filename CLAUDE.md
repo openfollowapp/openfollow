@@ -469,6 +469,13 @@ reports every cause identically. The remaining inputs are a listener, a
 discovery-by-name protocol and local devices, none of which can be refused. The
 member ships unreachable and its text match is dead.
 
+**`NOT_AUTHORIZED` is read by the input's `SourceKind`.** From a `LOCAL` input it
+is `ACCESS_DENIED`, the operating system refusing the device: a local source has
+no login, so "Login rejected" left nothing to act on. Only macOS's
+`avfvideosrc` posts it (the camera permission, read once per process), so the
+action names that setting and a restart; every network kind stays `UNAUTHORIZED`.
+`classify_failure` takes the kind, and the receiver passes its input's.
+
 **The element must give up before our watchdog does**, or the pipeline is torn
 down before it can say why and the failure is classified from the phase alone.
 The defaults do not: `rtspsrc.tcp-timeout` is 20 s and `srtsrc.auto-reconnect`

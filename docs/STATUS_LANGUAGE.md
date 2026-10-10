@@ -214,21 +214,25 @@ observed plus one next step, next to the red ring. It is not a box and never a
 toast.
 
 A change that went through with something worth knowing about it (an import
-for which no backup could be made) is a caution line in the same place
-(`.save-caution`), on the page the change reloaded to, beside its toast.
+or a restore to defaults for which no backup could be made) is a caution toast
+on the page the change reloaded to, in place of its confirmation.
 
 ### Pushed settings
 
 Settings another station pushed here are an info box in a locked dialog on
 every page (`base.tpl`'s pushed-settings poll): the box says they are already
 applied, a list below names each push, and a push for which no backup could be
-made carries a caution line (`.field-caution-msg`). Its one button removes the
+made carries a caution line (`.field-caution-msg`), the same sentence as the
+toast: "No backup was made. Details in Logs." Its one button removes the
 warning; it is not a confirmation, because nothing waits on it.
 
 ### Toast
 
-The toast only confirms: success fill and border over the opaque dark base,
-off-white text, led by the success sign. A failure never uses the toast.
+The toast confirms: success fill and border over the opaque dark base,
+off-white text, led by the success sign. A change that went through with
+something worth knowing about it takes the caution fill and border instead, led
+by the "i" sign (`.toast-caution`). It stays 10 seconds, a new toast restarts
+the time, and a click closes it. A failure never uses the toast.
 
 ### Destructive actions
 

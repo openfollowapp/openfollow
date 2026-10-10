@@ -217,13 +217,6 @@
  line-height: 1.35;
  }
  .save-error a, .notice.error a { color: inherit; }
- /* A change that went through, with something worth knowing about it. */
- .save-caution {
- margin: 0.6rem 0 0;
- color: var(--caution-text);
- font-size: 0.82rem;
- line-height: 1.35;
- }
  .pushed-settings-list { margin: 0; padding: 0; list-style: none; }
  .pushed-settings-list li { margin: 0 0 0.4rem; }
  .pushed-settings-list time { margin-right: 0.6rem; color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -1479,9 +1472,16 @@
  opacity: 0;
  transition: opacity 0.3s;
  font-weight: 600;
+ cursor: pointer;
+ pointer-events: none;
  }
  .toast::before { content: ""; flex: none; width: 16px; height: 16px; background: var(--success-sign) no-repeat center / contain; }
- .toast.show { opacity: 1; }
+ .toast.show { opacity: 1; pointer-events: auto; }
+ .toast.toast-caution {
+ border-color: var(--caution-border);
+ background: linear-gradient(var(--caution-fill), var(--caution-fill)), rgba(7, 19, 13, 0.95);
+ }
+ .toast.toast-caution::before { background-image: var(--info-sign); }
  /* Tab navigation */
  .tab-bar {
  display: flex;
@@ -2056,6 +2056,7 @@
  cursor: pointer;
  }
  .modal-close:hover { background: rgba(255, 255, 255, 0.06); color: var(--text); }
+ .modal-close[hidden] { display: none; }
  .modal-body {
  padding: 1rem 1.2rem;
  color: var(--text);
@@ -2338,7 +2339,7 @@
  <a href="/about">About &amp; license</a>
  </footer>
  </div>
- <div id="toast" class="toast"></div>
+ <div id="toast" class="toast" onclick="hideToast()"></div>
  <!-- Single ``#modal-root`` shared by all modals via helper functions.
  Helpers populate ``.modal-card`` and toggle ``hidden`` on backdrop. -->
  <div id="modal-root" class="modal-backdrop" hidden role="dialog" aria-modal="true" aria-labelledby="modal-title">
@@ -2586,68 +2587,56 @@
  });
  });
  }
- function showToast(message) {
+ const TOAST_MS = 10000;
+ let _toastTimer = null;
+ // ``level`` 'caution' is a change that went through with something worth knowing about it.
+ function showToast(message, level) {
  const toast = document.getElementById('toast');
  if (!toast) return;
  toast.textContent = message;
+ toast.classList.toggle('toast-caution', level === 'caution');
  toast.classList.add('show');
- setTimeout(() => toast.classList.remove('show'), 2000);
+ // A new toast gets the whole time, not what is left of the one it replaces.
+ clearTimeout(_toastTimer);
+ _toastTimer = setTimeout(hideToast, TOAST_MS);
  }
- // A confirmation for a change the page reloads to show: the reloaded page
- // toasts it. Without storage (a private window) it toasts before reloading.
+ function hideToast() {
+ clearTimeout(_toastTimer);
+ const toast = document.getElementById('toast');
+ if (toast) toast.classList.remove('show');
+ }
+ const NO_BACKUP_MADE = 'No backup was made. Details in Logs.';
+ // A toast for the page the next load brings up; false when nothing can carry
+ // it there (a private window), and it is shown now instead.
  const _TOAST_AFTER_RELOAD_KEY = 'openfollow.toastAfterReload';
- function toastAfterReload(message) {
+ function toastOnNextLoad(message, level) {
  try {
- sessionStorage.setItem(_TOAST_AFTER_RELOAD_KEY, message);
- } catch (err) {
- showToast(message);
- setTimeout(() => window.location.reload(), 600);
- return;
- }
- window.location.reload();
- }
- document.addEventListener('DOMContentLoaded', () => {
- let message = null;
- try {
- message = sessionStorage.getItem(_TOAST_AFTER_RELOAD_KEY);
- sessionStorage.removeItem(_TOAST_AFTER_RELOAD_KEY);
- } catch (err) {
- return;
- }
- if (message) showToast(message);
- });
- // A caution line under the element ``nearId`` once the page has reloaded,
- // for a change that went through with something worth knowing about it.
- const _CAUTION_AFTER_RELOAD_KEY = 'openfollow.cautionAfterReload';
- function _showCautionLine(nearId, text) {
- const near = document.getElementById(nearId);
- if (!near) return;
- const line = document.createElement('p');
- line.className = 'save-caution';
- line.setAttribute('role', 'status');
- line.textContent = text;
- near.after(line);
- }
- // False when nothing can carry it across the reload (a private window): it
- // is shown now instead, and the caller should not reload it away.
- function cautionAfterReload(nearId, text) {
- try {
- sessionStorage.setItem(_CAUTION_AFTER_RELOAD_KEY, JSON.stringify({ nearId, text }));
+ sessionStorage.setItem(_TOAST_AFTER_RELOAD_KEY, JSON.stringify({ message, level }));
  return true;
  } catch (err) {
- _showCautionLine(nearId, text);
+ showToast(message, level);
  return false;
  }
  }
+ // A confirmation for a change the page reloads to show. Shown now instead, a
+ // confirmation still reloads; a caution keeps the page, so it can be read.
+ function toastAfterReload(message, level) {
+ if (toastOnNextLoad(message, level)) {
+ window.location.reload();
+ } else if (level !== 'caution') {
+ setTimeout(() => window.location.reload(), 600);
+ }
+ }
  document.addEventListener('DOMContentLoaded', () => {
- let note = null;
+ let pending = null;
  try {
- note = JSON.parse(sessionStorage.getItem(_CAUTION_AFTER_RELOAD_KEY) || 'null');
- sessionStorage.removeItem(_CAUTION_AFTER_RELOAD_KEY);
+ const stored = sessionStorage.getItem(_TOAST_AFTER_RELOAD_KEY);
+ sessionStorage.removeItem(_TOAST_AFTER_RELOAD_KEY);
+ pending = JSON.parse(stored || 'null');
  } catch (err) {
  return;
  }
- if (note) _showCautionLine(note.nearId, note.text);
+ if (pending) showToast(pending.message, pending.level);
  });
  // ---- Help drawer () --------------------------------------
  //
@@ -5183,7 +5172,7 @@
  if (push.backup_error) {
  const caution = document.createElement('div');
  caution.className = 'field-caution-msg';
- caution.textContent = 'No backup was made: ' + push.backup_error + '.';
+ caution.textContent = NO_BACKUP_MADE;
  item.appendChild(caution);
  }
  list.appendChild(item);

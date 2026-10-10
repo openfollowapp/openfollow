@@ -104,12 +104,11 @@ function _sendImport(body, name) {
             _importFailed(window.OpenFollow.saveError.fromText(res.status, text));
             return;
         }
-        if (result.backup_error
-            && !cautionAfterReload('import-actions', 'No backup was made: ' + result.backup_error + '.')) {
-            /* Nothing carries the caution across a reload: stay, so it can be read. */
+        if (result.backup_error) {
+            /* Ready again in case the page stays, which it does when the toast can't outlive a reload. */
             btn.disabled = false;
             btn.textContent = _IMPORT_LABEL;
-            showToast('Imported ' + name);
+            toastAfterReload('Imported ' + name + '. ' + NO_BACKUP_MADE, 'caution');
             return;
         }
         toastAfterReload('Imported ' + name);
@@ -153,8 +152,7 @@ async function restoreDefaults() {
             return;
         }
         if (result.backup_error) {
-            /* Beside the restarting notice: the rest of the section is hidden until the station is back. */
-            cautionAfterReload('config-restart-notice', 'No backup was made: ' + result.backup_error + '.');
+            toastOnNextLoad('Restored defaults. ' + NO_BACKUP_MADE, 'caution');
         }
         /* The reset restarts the station; wait for it to answer again. */
         _showRestartingState();

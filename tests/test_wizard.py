@@ -347,7 +347,7 @@ class TestWizardPage:
 
     def test_save_and_next_advances_only_after_save_resolves(self, live_server) -> None:
         # Save & Next must not advance while the old source is still active: the
-        # onclick chains wizardGo(3) onto the save promise's .then, and
+        # onclick chains wizardNext() onto the save promise's .then, and
         # saveWizardVideoSource returns the fetch so the chain awaits it.
         _, base = live_server
         status, body = _get(base, "/wizard")
@@ -2032,7 +2032,7 @@ class TestLensChangeAfterPinning:
 class TestWizardLensStepPage:
     def test_without_the_toggle_the_wizard_keeps_seven_steps(self, live_server) -> None:
         _, base = live_server
-        _, body = live_server and _get(base, "/wizard")
+        _, body = _get(base, "/wizard")
         assert body.count('class="wizard-step-btn') == 7
         assert 'id="wizard-step-lens"' not in body
         assert "4. Camera Position" in body

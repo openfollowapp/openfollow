@@ -4558,7 +4558,7 @@ def _register_gallery_routes(app: Bottle, server: ConfigWebServer) -> None:
             _stream_to_file(request.environ["wsgi.input"], staged, total)
             media_store.save_upload(Path(staged))
         except MediaStoreError as exc:
-            return _render_gallery_grid(server, error=exc.message)
+            return _render_gallery_grid(server, error=" ".join(filter(None, (exc.message, exc.action))))
         except Exception:
             logger.exception("Media upload failed")
             return _render_gallery_grid(server, error="Upload failed.")
@@ -4573,10 +4573,14 @@ def _register_gallery_routes(app: Bottle, server: ConfigWebServer) -> None:
         if jpeg is None:
             response.status = 503
             return json.dumps({"ok": False, "error": "No video frame available to capture."})
+        # A refusal answers 200 so the page reports it beside the Capture button, not under Save.
         try:
             item = media_store.save_captured_frame(jpeg)
         except MediaStoreError as exc:
-            return json.dumps({"ok": False, "error": exc.message})
+            return json.dumps({"ok": False, "error": exc.message, "action": exc.action})
+        except Exception:
+            logger.exception("Frame capture failed")
+            return json.dumps({"ok": False, "error": "Capture failed.", "action": ""})
         return json.dumps({"ok": True, "media_id": item.media_id})
 
     @app.get(_GALLERY_PREFIX + "/download/<media_id>")

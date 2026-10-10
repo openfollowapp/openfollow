@@ -9,6 +9,7 @@ checks are all exercised without a live pipeline.
 
 from __future__ import annotations
 
+import errno
 import os
 import threading
 from pathlib import Path
@@ -105,7 +106,7 @@ def test_capture_into_an_unwritable_store_names_the_failure(tmp_path: Path, monk
     _unwritable_storage(tmp_path, monkeypatch)
     with pytest.raises(ms.MediaStoreError) as exc:
         ms.save_captured_frame(_JPEG + b"frame")
-    assert exc.value.message == ms.STORE_WRITE_FAILED
+    assert (exc.value.message, exc.value.action) == (ms.STORE_WRITE_FAILED, ms.STORE_WRITE_ACTION)
     assert str(tmp_path) not in exc.value.message
 
 
@@ -114,7 +115,7 @@ def test_upload_into_an_unwritable_store_names_the_failure(tmp_path: Path, monke
     monkeypatch.setattr(ms, "_render_jpeg", _fake_render)
     with pytest.raises(ms.MediaStoreError) as exc:
         ms.save_upload(_staged(tmp_path, "in.png", _PNG))
-    assert exc.value.message == ms.STORE_WRITE_FAILED
+    assert (exc.value.message, exc.value.action) == (ms.STORE_WRITE_FAILED, ms.STORE_WRITE_ACTION)
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root writes regardless of mode")
@@ -128,6 +129,46 @@ def test_a_failed_write_into_an_existing_store_names_the_failure(storage: Path) 
         storage.chmod(0o700)
     assert exc.value.message == ms.STORE_WRITE_FAILED
     assert list(storage.iterdir()) == []
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root lists regardless of mode")
+def test_an_unreadable_store_names_the_failure(storage: Path) -> None:
+    storage.mkdir()
+    storage.chmod(0o300)
+    try:
+        with pytest.raises(ms.MediaStoreError) as exc:
+            ms.save_captured_frame(_JPEG + b"frame")
+    finally:
+        storage.chmod(0o700)
+    assert exc.value.message == ms.STORE_WRITE_FAILED
+
+
+def test_an_image_write_that_fails_part_way_leaves_nothing(storage: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _no_space(src: object, dst: object) -> None:
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    storage.mkdir()
+    monkeypatch.setattr(ms.os, "replace", _no_space)
+    with pytest.raises(ms.MediaStoreError) as exc:
+        ms.save_captured_frame(_JPEG + b"frame")
+    assert exc.value.message == ms.STORE_WRITE_FAILED
+    assert list(storage.iterdir()) == []
+
+
+def test_a_clip_move_that_fails_part_way_lists_no_half_clip(
+    storage: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Across filesystems a move copies, so a full disk can leave part of the clip behind.
+    def _partial_copy(src: str, dst: str) -> None:
+        Path(dst).write_bytes(_WEBM)
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(ms, "_probe_video", lambda src: _valid_probe())
+    monkeypatch.setattr(ms.shutil, "move", _partial_copy)
+    with pytest.raises(ms.MediaStoreError) as exc:
+        ms.save_uploaded_video(_staged(tmp_path, "clip.webm", _WEBM + b"vp8-payload"))
+    assert exc.value.message == ms.STORE_WRITE_FAILED
+    assert [item.media_id for item in ms.list_media()] == list(ms.DEFAULT_IDS)
 
 
 # -- id rules -----------------------------------------------------------------
@@ -505,6 +546,23 @@ def test_thumbnail_failure_does_not_orphan_main_file(storage: Path, monkeypatch:
 
     assert (storage / f"{item.media_id}.jpg").exists()  # main survives
     assert not (storage / f"{item.media_id}.thumb.jpg").exists()  # thumb skipped, not orphaned
+
+
+def test_a_thumbnail_that_cannot_be_written_keeps_the_saved_frame(
+    storage: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    media_id = "cccccccccccccccc"
+    monkeypatch.setattr(ms.secrets, "token_hex", lambda n: media_id)
+    monkeypatch.setattr(ms, "_render_jpeg", _fake_render)
+    # A directory where the thumbnail goes: replacing it fails like a full disk would.
+    (storage / f"{media_id}.thumb.jpg" / "blocker").mkdir(parents=True)
+
+    item = ms.save_captured_frame(_JPEG + b"frame")
+
+    assert item.media_id == media_id
+    assert (storage / f"{media_id}.jpg").read_bytes() == _JPEG + b"frame"
+    assert ms.thumb_path(media_id) is None
+    assert not list(storage.glob("*.part"))
 
 
 # -- format sniffer -----------------------------------------------------------

@@ -64,10 +64,14 @@
         window.openfollowCaptureFeedback = function(evt){
             var fb = document.getElementById('capture-feedback');
             if(!fb) return;
-            var msg = 'Capture failed.';
-            try { var d = JSON.parse(evt.detail.xhr.responseText || '{}');
-                  msg = d.ok ? 'Captured frame saved to the gallery.' : (d.error || msg); } catch(e){}
-            fb.textContent = msg;
+            fb.textContent = '';
+            // An error status, or no answer, is reported by the shared save-error handler.
+            if(!evt.detail.successful) return;
+            var d = {};
+            try { d = JSON.parse(evt.detail.xhr.responseText || '{}') || {}; } catch(e){}
+            if(d.ok){ fb.textContent = 'Captured frame saved to the gallery.'; return; }
+            var saveError = window.OpenFollow.saveError;
+            saveError.show(saveError.boxFor(fb), {error: d.error || 'Capture failed.', action: d.action || '', href: ''}, 'Not captured.', fb);
         };
         // Source Type drives which controls apply: capture (live sources only),
         // connection recovery (network sources only), preview (not the gallery).

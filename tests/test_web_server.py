@@ -7694,7 +7694,11 @@ def test_gallery_capture_into_an_unwritable_store_answers_json_with_the_reason(g
     monkeypatch.setattr(server, "get_full_snapshot", lambda: _JPEG + b"clean-frame")
     status, body = _post_bytes(base, f"{_GP}/capture", b"")
     assert status == 200
-    assert json.loads(body) == {"ok": False, "error": media_store.STORE_WRITE_FAILED}
+    assert json.loads(body) == {
+        "ok": False,
+        "error": media_store.STORE_WRITE_FAILED,
+        "action": media_store.STORE_WRITE_ACTION,
+    }
 
 
 def test_gallery_upload_into_an_unwritable_store_shows_the_reason(gallery_server, monkeypatch) -> None:
@@ -7704,7 +7708,7 @@ def test_gallery_upload_into_an_unwritable_store_shows_the_reason(gallery_server
     _block_gallery_store(media_dir, monkeypatch)
     status, body = _post_bytes(base, f"{_GP}/upload", _PNG)
     assert status == 200
-    assert html.escape(media_store.STORE_WRITE_FAILED) in body
+    assert html.escape(f"{media_store.STORE_WRITE_FAILED} {media_store.STORE_WRITE_ACTION}") in body
 
 
 def test_gallery_delete_default_refused(gallery_server) -> None:
@@ -7823,7 +7827,22 @@ def test_gallery_capture_store_error(gallery_server, monkeypatch) -> None:
     monkeypatch.setattr(media_store, "save_captured_frame", boom)
     status, body = _post_bytes(base, f"{_GP}/capture", b"")
     assert status == 200
-    assert json.loads(body) == {"ok": False, "error": "gallery full"}
+    assert json.loads(body) == {"ok": False, "error": "gallery full", "action": ""}
+
+
+def test_gallery_capture_unexpected_error_answers_json(gallery_server, monkeypatch) -> None:
+    from openfollow.video import media_store
+
+    server, base, _ = gallery_server
+    monkeypatch.setattr(server, "get_full_snapshot", lambda: _JPEG + b"frame")
+
+    def boom(jpeg):
+        raise RuntimeError("disk exploded")
+
+    monkeypatch.setattr(media_store, "save_captured_frame", boom)
+    status, body = _post_bytes(base, f"{_GP}/capture", b"")
+    assert status == 200
+    assert json.loads(body) == {"ok": False, "error": "Capture failed.", "action": ""}
 
 
 def test_gallery_download_user_media(gallery_server) -> None:

@@ -30,6 +30,7 @@ hardening step (server-side transcode / stricter demux) would go here.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import re
@@ -120,6 +121,7 @@ _USER_FILE_RE = re.compile(r"\A(?P<id>[0-9a-f]{16})\.(?P<ext>jpg|webm)\Z")
 
 # What the operator sees when the store cannot be written; the log names the path.
 STORE_WRITE_FAILED = "Could not write to the gallery's storage folder."
+STORE_WRITE_ACTION = "Download a diagnostics bundle."
 
 
 class MediaStoreError(Exception):
@@ -127,11 +129,13 @@ class MediaStoreError(Exception):
 
     ``message`` is safe to surface verbatim in the web UI – it names the
     specific limit or format problem and never leaks a filesystem path.
+    ``action`` is one short next step, kept apart from it, or "".
     """
 
-    def __init__(self, message: str) -> None:
+    def __init__(self, message: str, action: str = "") -> None:
         super().__init__(message)
         self.message = message
+        self.action = action
 
 
 @dataclass(frozen=True)
@@ -171,13 +175,17 @@ def resolve_media_storage_path() -> Path:
     return station_dir() / _LOCAL_STORAGE_DIRNAME
 
 
+def _store_failed(storage: Path, exc: OSError) -> MediaStoreError:
+    logger.error("Media store %s cannot be written: %s", storage, exc)
+    return MediaStoreError(STORE_WRITE_FAILED, STORE_WRITE_ACTION)
+
+
 def _ensure_storage_dir() -> Path:
     path = resolve_media_storage_path()
     try:
         path.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        logger.error("Media store %s cannot be created: %s", path, exc)
-        raise MediaStoreError(STORE_WRITE_FAILED) from exc
+        raise _store_failed(path, exc) from exc
     return path
 
 
@@ -382,10 +390,21 @@ def validate_video_probe(probe: VideoProbe) -> None:
 # -- Save paths ---------------------------------------------------------------
 
 
+def _part_path(dest: Path) -> Path:
+    return dest.with_name(dest.name + ".part")
+
+
 def _write_atomic(dest: Path, data: bytes) -> None:
-    tmp = dest.with_name(dest.name + ".part")
+    tmp = _part_path(dest)
     tmp.write_bytes(data)
     os.replace(tmp, dest)
+
+
+def _discard_partial(dest: Path) -> None:
+    """Remove what a failed write left behind, so no half-written file lists as media."""
+    for path in (dest, _part_path(dest)):
+        with contextlib.suppress(OSError):
+            path.unlink(missing_ok=True)
 
 
 def _write_thumb(storage: Path, media_id: str, source: Path) -> None:
@@ -399,7 +418,12 @@ def _write_thumb(storage: Path, media_id: str, source: Path) -> None:
     except MediaStoreError:
         logger.warning("Thumbnail render failed for %s", media_id)
         return
-    _write_atomic(storage / f"{media_id}{_THUMB_SUFFIX}", data)
+    thumb = storage / f"{media_id}{_THUMB_SUFFIX}"
+    try:
+        _write_atomic(thumb, data)
+    except OSError as exc:
+        _discard_partial(thumb)
+        logger.warning("Thumbnail for %s cannot be written: %s", media_id, exc)
 
 
 def _commit_media(storage: Path, ext: str, incoming_bytes: int, writer: Callable[[Path], object]) -> MediaItem:
@@ -411,14 +435,17 @@ def _commit_media(storage: Path, ext: str, incoming_bytes: int, writer: Callable
     JPEG, or a clip move) into the ``dest`` path it is handed.
     """
     with _store_lock:
-        _enforce_capacity(storage, incoming_bytes)
-        media_id = _new_user_id(storage)
+        try:
+            _enforce_capacity(storage, incoming_bytes)
+            media_id = _new_user_id(storage)
+        except OSError as exc:
+            raise _store_failed(storage, exc) from exc
         dest = storage / f"{media_id}.{ext}"
         try:
             writer(dest)
         except OSError as exc:
-            logger.error("Media store %s cannot be written: %s", storage, exc)
-            raise MediaStoreError(STORE_WRITE_FAILED) from exc
+            _discard_partial(dest)
+            raise _store_failed(storage, exc) from exc
     _write_thumb(storage, media_id, dest)
     return _user_item(dest)
 

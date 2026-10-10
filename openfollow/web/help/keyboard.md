@@ -2,6 +2,8 @@
 
 Configure how a keyboard drives markers on the Operator Screen. Keyboard input uses direct hardware polling, so it stays responsive under heavy pipeline load. All four input methods (keyboard, gamepad, mouse, OSC) can be active at once – within a frame, last-write-wins per axis.
 
+On a Mac, keys act on the Operator Screen only while its window is the active one, and a key pressed with Command, Control or Option held does nothing there: typing into Spotlight and macOS shortcuts such as Cmd+H leave the markers and menus alone.
+
 **Enabled** – master toggle. When off, all keyboard movement and action keys are ignored. Leave on unless an operator is using a gamepad exclusively on this station.
 
 ## Button Mapping

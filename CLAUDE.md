@@ -698,6 +698,8 @@ marker_fader: float | None    # per-marker fader value, or None
 **macOS:** Quartz `CGEventSourceKeyState` – hardware polling, reliable under GStreamer load.
 **Linux/fallback:** GTK event-based tracking.
 
+**On macOS one press reaches both the poll and GTK, and must act once.** Quartz reads the whole system's keyboard: keys typed into Spotlight (a panel that leaves OpenFollow active) and into the on-screen text fields, which read GTK key events. So `animate` passes `poll_discrete_keys(owned=keyboard_owned(app))` (the window is the key window, `has_keyboard_focus`, and no URL editor, network field editor or browser is open), and each press keeps the owner it started under until released: one that starts unowned, on the frame ownership returns, or with Command / Control / Option held drives nothing on the Operator Screen (a shortcut press still reaches the OSC hotkey bus with its modifiers). The text fields hand every GTK key-down to `take_text_key`, which drops the GTK copy of a press the poll already acted on (the Enter that opened the URL editor) and keeps a press GTK delivered first away from the poll (the Escape that closed it). The fallback poller sees only this window's GTK events and ignores all of it.
+
 #### macOS key codes (`_MAC_KEY_CODES`)
 | Key | Hex |
 |---|---|

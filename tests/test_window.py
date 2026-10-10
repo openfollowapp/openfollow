@@ -1219,6 +1219,11 @@ class TestHudTick:
         window.close()
         assert window.is_closing is True
 
+    def test_has_keyboard_focus_follows_the_key_window(self, window) -> None:
+        assert window.has_keyboard_focus is True
+        window._window.toplevel_focus = False
+        assert window.has_keyboard_focus is False
+
 
 # --------------------------------------------------------------------------- #
 # Key translation

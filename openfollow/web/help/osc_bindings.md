@@ -31,7 +31,7 @@ When the transmitter sends. Pick one **Trigger type** from the dropdown; the fie
 
 - **Controller button** – fires on a gamepad button edge. Set the **Button** (A, B, X, Y, bumpers, D-Pad, Start, Back, etc.) and the **Edge** (Press or Release). Multiple transmitters can share a button and fire independently.
 
-A key or button that a keyboard or gamepad action also uses gets an amber outline and names that action: one press does both, whatever modifiers are held. That can be deliberate, so it never holds **Save**. Menu buttons are left out, since triggers don't fire while a menu is open, and so is a device switched off under Input.
+A key or button that a keyboard or gamepad action also uses gets an amber outline and names that action: one press does both, whatever modifiers are held, except on a Mac, where a press with Command, Control or Option held fires only the trigger. That can be deliberate, so it never holds **Save**. Menu buttons are left out, since triggers don't fire while a menu is open, and so is a device switched off under Input.
 
 - **MIDI message** – fires when an incoming MIDI event matches the pattern. All match fields default to "any" – leave one blank to match anything.
   - **Type** – Note On, Note Off, Control Change, Program Change, Key Pressure, or Channel Pressure.

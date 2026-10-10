@@ -94,6 +94,11 @@ POLLED_KEYS: list[str] = [
     "Numpad8",
     "Numpad9",
 ]
+_POLLED_KEY_SET = frozenset(POLLED_KEYS)
+
+# Command, Control and Option: macOS reads a key pressed with one of them held
+# as a shortcut, never as input for the window under it.
+_SHORTCUT_MODIFIERS: tuple[str, ...] = ("Meta", "Control", "Alt")
 
 # Virtual key codes for macOS (Carbon/HIToolbox KeyCodes)
 _MAC_KEY_CODES: dict[str, int] = {
@@ -495,6 +500,14 @@ class KeyboardHandler:
         # an identity check is a correct, allocation-free invalidation signal.
         self._discrete_keys_cc: ControllerConfig | None = None
         self._discrete_keys_cache: frozenset[str] = frozenset()
+        # Quartz reads the whole system's keyboard, so each press keeps the
+        # owner it started under (see ``poll_discrete_keys``) until released.
+        # GTK feeds the fallback poller with this window's own events only.
+        self._owned = True
+        self._shortcut_held = False
+        self._elsewhere: set[str] = set()  # pressed for another window or a text field
+        self._shortcuts: set[str] = set()  # pressed with a shortcut modifier held
+        self._polled: set[str] = set()  # pressed while the poll owned the keyboard
         if self._is_fallback:
             logger.warning("Using fallback keyboard tracking – key events may be lost")
 
@@ -514,7 +527,16 @@ class KeyboardHandler:
     @property
     def keys(self) -> set[str]:
         """Return set of currently pressed keys (for compatibility)."""
-        return self._poller.get_pressed_keys(POLLED_KEYS)
+        pressed = self._poller.get_pressed_keys(POLLED_KEYS)
+        if self._is_fallback:
+            return pressed
+        return {key for key in pressed if self._drives_screen(key)}
+
+    def _drives_screen(self, key: str) -> bool:
+        """Whether a key the poll reads as held is the Operator Screen's (macOS)."""
+        if not self._owned or key in self._elsewhere or key in self._shortcuts:
+            return False
+        return key in self._MODIFIER_KEY_TO_NAME or not self._shortcut_held
 
     def is_connected(self) -> bool:
         """Return whether a keyboard appears to be connected and usable."""
@@ -584,8 +606,17 @@ class KeyboardHandler:
             canonical for key, canonical in self._MODIFIER_KEY_TO_NAME.items() if self._poller.is_key_pressed(key)
         )
 
-    def poll_discrete_keys(self) -> None:
+    def poll_discrete_keys(self, *, owned: bool = True) -> None:
         """Poll keyboard state and detect press / release edges.
+
+        ``owned`` says whether the Operator Screen owns the keyboard right now:
+        its window is the key window and no on-screen text field reads GTK key
+        events. Quartz reports keys typed into another window (Spotlight) and
+        into those text fields as well, so on macOS a press that starts while
+        the screen does not own the keyboard, or with Command / Control /
+        Option held, drives nothing here until it is released; a shortcut
+        press still reaches the bus with its modifiers. The fallback poller
+        sees only this window's GTK events and ignores ``owned``.
 
         Two paths share the same poll loop:
 
@@ -614,6 +645,7 @@ class KeyboardHandler:
         later re-add re-sees the press edge instead of a phantom held state.
         """
         discrete = self._discrete_polled_keys()
+        regained = self._read_owner(owned)
         if self._event_bus is not None:
             modifiers = self._current_modifiers()
             keys_to_poll: list[str] | frozenset[str] = POLLED_KEYS
@@ -625,12 +657,13 @@ class KeyboardHandler:
             is_pressed = self._poller.is_key_pressed(key)
             was_pressed = self._prev_key_state.get(key, False)
             if is_pressed and not was_pressed:
-                if key in discrete:
-                    self._pending_presses.append(key)
-                if self._event_bus is not None:
-                    self._emit_key_event(key, modifiers, "press")
+                if self._claim_press(key, regained):
+                    if key in discrete and key not in self._shortcuts:
+                        self._pending_presses.append(key)
+                    if self._event_bus is not None:
+                        self._emit_key_event(key, modifiers, "press")
             elif not is_pressed and was_pressed:
-                if self._event_bus is not None:
+                if self._event_bus is not None and key not in self._elsewhere:
                     self._emit_key_event(key, modifiers, "release")
             self._prev_key_state[key] = is_pressed
         # Drop edge state for keys no longer polled (discrete-set shrink on a
@@ -639,6 +672,51 @@ class KeyboardHandler:
         stale = [k for k in self._prev_key_state if k not in keys_to_poll]
         for k in stale:
             del self._prev_key_state[k]
+        if not self._is_fallback:
+            held = {k for k, down in self._prev_key_state.items() if down}
+            self._elsewhere &= held
+            self._shortcuts &= held
+            self._polled &= held
+
+    def _read_owner(self, owned: bool) -> bool:
+        """Record this frame's owner; True when the screen just got the keyboard back."""
+        if self._is_fallback:
+            return False
+        regained = owned and not self._owned
+        self._owned = owned
+        self._shortcut_held = owned and any(self._poller.is_key_pressed(m) for m in _SHORTCUT_MODIFIERS)
+        return regained
+
+    def _claim_press(self, key: str, regained: bool) -> bool:
+        """Whether a new press is the Operator Screen's, recording whose it is.
+
+        On the frame the keyboard comes back, a new press may be the one that
+        handed it back (the Escape that closed Spotlight), so it is not ours.
+        """
+        if self._is_fallback:
+            return True
+        if not self._owned or regained or key in self._elsewhere:
+            self._elsewhere.add(key)
+            return False
+        self._polled.add(key)
+        if self._shortcut_held and key not in self._MODIFIER_KEY_TO_NAME:
+            self._shortcuts.add(key)
+        return True
+
+    def take_text_key(self, key: str) -> bool:
+        """Hand a GTK key-down to an on-screen text field.
+
+        False when the poll already acted on this press, such as the Enter that
+        opened the field, or on one of its auto-repeats. Otherwise the poll
+        leaves the press alone, even if the field closes before it sees it.
+        """
+        if self._is_fallback:
+            return True
+        if key in self._polled:
+            return False
+        if key in _POLLED_KEY_SET:
+            self._elsewhere.add(key)
+        return True
 
     def _emit_key_event(
         self,
@@ -704,7 +782,8 @@ class KeyboardHandler:
         the fallback poller's pressed set and the handler's edge state together
         so the next poll sees no stale ``was_pressed`` (no spurious release
         edge). The macOS poller reads hardware directly and has no ``clear``;
-        only its edge state is reset.
+        only its edge state is reset. A press that started for another owner
+        stays ignored until it is released.
 
         Note: this recovers on a context switch, not mid-gameplay – a dropped
         key-up during continuous control still relies on the operator tapping
@@ -733,7 +812,9 @@ class KeyboardHandler:
         move_speed = self.app.get_marker_move_speed(self.app._selected_id)
 
         def pressed(key: str) -> bool:
-            return bool(key) and self._poller.is_key_pressed(key)
+            if not key or not (self._is_fallback or self._drives_screen(key)):
+                return False
+            return self._poller.is_key_pressed(key)
 
         layout = MOVEMENT_LAYOUTS.get(cc.key_move_layout, MOVEMENT_LAYOUTS["wasd"])
         vx = vy = vz = 0.0

@@ -13,7 +13,9 @@ at zero unless the lines determine it: its predicted uncertainty has to fall
 under :data:`K2_SIGMA_GATE`, which in practice needs lines in the outer
 corners. The rating is the predicted uncertainty of the warp at the frame
 corner in pixels, one number that captures how many lines there are, how much
-of the frame they cover and how precisely their points were placed.
+of the frame they cover and how precisely their points were placed. A second
+pair that fits the lines about as well widens it to how far the two warps
+disagree, since the local uncertainty sees only the minimum it sits in.
 """
 
 from __future__ import annotations
@@ -46,6 +48,10 @@ _JACOBIAN_EPS = 1e-4
 _SIGMA_FLOOR_PX = 1.0
 # k2 is fitted only when its predicted uncertainty is below this.
 K2_SIGMA_GATE = 0.05
+# Another minimum the lines cannot rule out: its cost within this many residual
+# variances of the best, the 95 % region of a two-parameter fit.
+_RIVAL_MARGIN = 6.0
+_RIVAL_RADII = np.linspace(0.0, 1.0, 65)
 # A line does not fit the others when, with k1 refitted without it, its RMS is
 # above both an absolute floor and a multiple of the other lines' RMS.
 _MISFIT_MIN_PX = 3.0
@@ -274,11 +280,16 @@ def _refine(lines: _Lines, k0: FloatArray, fit_k2: bool) -> FloatArray:
     return k
 
 
-def _covariance(lines: _Lines, k: FloatArray, n_params: int) -> FloatArray:
-    """Covariance of ``(k1, k2)`` at ``k`` from the residual scatter, floored at one pixel."""
+def _residual_variance(lines: _Lines, k: FloatArray, n_params: int) -> float:
+    """Variance of one point's residual at ``k``, floored at one pixel."""
     res = lines.residuals(k)
     dof = max(lines.n - n_params - 2 * lines.count, 1)
-    sigma2 = max(float(res @ res) / dof, _SIGMA_FLOOR_PX**2)
+    return max(float(res @ res) / dof, _SIGMA_FLOOR_PX**2)
+
+
+def _covariance(lines: _Lines, k: FloatArray, n_params: int) -> FloatArray:
+    """Covariance of ``(k1, k2)`` at ``k`` from the residual scatter, floored at one pixel."""
+    sigma2 = _residual_variance(lines, k, n_params)
     jac = _jacobian(lines, k)
     normal = jac.T @ jac
     # A line through the centre moves along itself under the warp, so no
@@ -314,35 +325,57 @@ def _seeds(lines: _Lines, k2_zero: bool) -> list[FloatArray]:
     return [np.array([k1[i], k2[i]]) for i in list(best_per_column.values())[:_SEEDS]]
 
 
-def _fit(lines: _Lines, fit_k2: bool) -> FloatArray:
-    """Refine from every seed and keep the lowest cost."""
-    best: FloatArray | None = None
-    best_cost = math.inf
+@dataclass(frozen=True)
+class _Solution:
+    k: FloatArray
+    k2_fitted: bool
+    cov: FloatArray
+    # Every minimum the seeds reached, the best included, with its cost.
+    minima: tuple[tuple[FloatArray, float], ...]
+
+
+def _fit(lines: _Lines, fit_k2: bool) -> tuple[FloatArray, tuple[tuple[FloatArray, float], ...]]:
+    """Refine from every seed; the lowest-cost pair and every minimum reached."""
+    minima = []
     for seed in _seeds(lines, k2_zero=not fit_k2):
         k = _refine(lines, seed, fit_k2=fit_k2)
         res = lines.residuals(k)
-        cost = float(res @ res)
-        if cost < best_cost:
-            best, best_cost = k, cost
-    assert best is not None
-    return best
+        minima.append((k, float(res @ res)))
+    return min(minima, key=lambda m: m[1])[0], tuple(minima)
 
 
-def _solve(lines: _Lines) -> tuple[FloatArray, bool, FloatArray]:
-    """Fit, deciding whether the lines determine ``k2``; returns ``(k, k2_fitted, cov)``."""
-    k = _fit(lines, fit_k2=True)
+def _solve(lines: _Lines) -> _Solution:
+    """Fit, deciding whether the lines determine ``k2``."""
+    k, minima = _fit(lines, fit_k2=True)
     cov = _covariance(lines, k, 2)
     if math.sqrt(max(float(cov[1, 1]), 0.0)) < K2_SIGMA_GATE:
-        return k, True, cov
-    k = _fit(lines, fit_k2=False)
-    return k, False, _covariance(lines, k, 1)
+        return _Solution(k, True, cov, minima)
+    k, minima = _fit(lines, fit_k2=False)
+    return _Solution(k, False, _covariance(lines, k, 1), minima)
+
+
+def _rival_spread_px(lines: _Lines, solution: _Solution) -> float:
+    """How far apart the fit and a pair fitting the lines about as well put a point, out to the corner.
+
+    With a strong lens traced only along the top and bottom edges, the cost
+    valley has two minima a pixel of placement noise cannot tell apart, about
+    25 px apart at the frame's edge, and each is sharp enough to rate excellent.
+    """
+    n_params = 2 if solution.k2_fitted else 1
+    margin = _RIVAL_MARGIN * _residual_variance(lines, solution.k, n_params)
+    best = min(cost for _, cost in solution.minima)
+    r = _RIVAL_RADII
+    spread = 0.0
+    for other, cost in solution.minima:
+        if cost - best <= margin:
+            d = other - solution.k
+            spread = max(spread, float(np.max(np.abs(d[0] * r**3 + d[1] * r**5))))
+    return lines.half_diag * spread
 
 
 def _k1_variance(lines: _Lines, k: FloatArray) -> float:
     """Variance of ``k1`` fitted alone at ``k``, from the residual scatter floored at one pixel."""
-    res = lines.residuals(k)
-    dof = max(lines.n - 1 - 2 * lines.count, 1)
-    sigma2 = max(float(res @ res) / dof, _SIGMA_FLOOR_PX**2)
+    sigma2 = _residual_variance(lines, k, 1)
     column = _jacobian(lines, k)[:, 0]
     information = float(column @ column)
     if information <= _SINGULAR_INFORMATION:
@@ -412,10 +445,11 @@ def fit_lens_from_lines(lines: Sequence[Sequence[Sequence[float]]], canvas_w: fl
     if not (math.isfinite(canvas_w) and math.isfinite(canvas_h) and canvas_w > 0.0 and canvas_h > 0.0):
         raise ValueError("canvas must be finite and positive")
     data = _Lines.from_lines(lines, canvas_w, canvas_h)
-    k, k2_fitted, cov = _solve(data)
+    solution = _solve(data)
+    k, k2_fitted = solution.k, solution.k2_fitted
     rms = data.line_rms(k)
     res = data.residuals(k)
-    uncertainty = _corner_uncertainty_px(cov, data.half_diag)
+    uncertainty = max(_corner_uncertainty_px(solution.cov, data.half_diag), _rival_spread_px(data, solution))
     rating = rate_uncertainty(uncertainty)
     flags = _misfits(data, k)
     return LensFitResult(

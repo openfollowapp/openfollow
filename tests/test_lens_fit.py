@@ -25,6 +25,7 @@ from openfollow.scene.solver import apply_overlay_distortion, invert_overlay_dis
 pytestmark = pytest.mark.unit
 
 W, H = 1920.0, 1080.0
+HALF_DIAG = 0.5 * float(np.hypot(W, H))
 _M = 12.0
 # Lines where an operator clicks them: on the distorted image, along its edges.
 TOP = ((_M + 40, _M), (W - _M - 40, _M + 8))
@@ -182,6 +183,22 @@ class TestRating:
             vertical += np.random.default_rng(5000 + seed).normal(0.0, 0.7, vertical.shape)
             ratings.add(fit_lens_from_lines([mid, vertical.tolist()], W, H).rating)
         assert "excellent" not in ratings
+
+    @pytest.mark.parametrize("truth", [(-0.45, 0.20), (-0.47, 0.25)])
+    def test_lines_that_fit_two_lenses_alike_rate_low(self, truth: tuple[float, float]) -> None:
+        # Along the top and bottom edges only, a strong barrel lens and one about 0.15 weaker
+        # fit the points equally well, some 25 px apart at the frame's edge. Each answer is a
+        # sharp minimum on its own, and the fit picked the wrong one rated excellent.
+        r = np.linspace(0.0, 1.0, 65)
+        for seed in range(6):
+            result = fit_lens_from_lines(lines_for(*truth, (TOP, BOTTOM), noise=1.0, seed=seed), W, H)
+            off = HALF_DIAG * np.abs((result.k1 - truth[0]) * r**3 + (result.k2 - truth[1]) * r**5).max()
+            assert result.rating == RATING_LOW, seed
+            assert off <= 3.0 * result.uncertainty_px, seed
+            assert result.hint == "Add a line near the left edge."
+        # The side edges the hint asks for rule the other lens out.
+        result = fit_lens_from_lines(lines_for(*truth, EDGES, noise=1.0, seed=0), W, H)
+        assert result.rating in ("good", "excellent")
 
     def test_sloppier_points_lower_the_rating(self) -> None:
         precise = fit_lens_from_lines(lines_for(-0.3, 0.05, EDGES, noise=0.5, seed=3), W, H)

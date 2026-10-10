@@ -3381,7 +3381,14 @@ _SHARE_DOC_DIR = Path("/usr/share/openfollow")
 
 def _bundled_doc_path(name: str) -> Path | None:
     """Path to a bundled repo-root doc (LICENSE / THIRD_PARTY_NOTICES.md), or None."""
-    for candidate in (Path(__file__).resolve().parents[2] / name, _SHARE_DOC_DIR / name):
+    roots = [Path(__file__).resolve().parents[2]]
+    # The macOS app unpacks its bundled data under sys._MEIPASS.
+    frozen_root = getattr(sys, "_MEIPASS", None)
+    if frozen_root:
+        roots.append(Path(frozen_root))
+    roots.append(_SHARE_DOC_DIR)
+    for root in roots:
+        candidate = root / name
         if candidate.is_file():
             return candidate
     return None

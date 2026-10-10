@@ -265,3 +265,40 @@ def test_run_export_returns_one_on_failure(launcher, monkeypatch, tmp_path) -> N
 
     _install_fake_export(monkeypatch, _boom)
     assert launcher.run_export(["m.pt"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# run_selfcheck
+# ---------------------------------------------------------------------------
+
+
+def _install_fake_gst(monkeypatch, missing: set[str]) -> None:
+    """Stand in for gi / Gst, resolving every element except ``missing``."""
+    gst = types.SimpleNamespace(
+        init=lambda argv: None,
+        ElementFactory=types.SimpleNamespace(find=lambda name: None if name in missing else object()),
+    )
+    repository = types.ModuleType("gi.repository")
+    repository.Gst = gst  # type: ignore[attr-defined]
+    gi = types.ModuleType("gi")
+    gi.require_version = lambda namespace, version: None  # type: ignore[attr-defined]
+    gi.repository = repository  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "gi", gi)
+    monkeypatch.setitem(sys.modules, "gi.repository", repository)
+
+
+@pytest.mark.parametrize(
+    "element",
+    [
+        pytest.param("webpdec", id="webp-media"),
+        pytest.param("jpegenc", id="snapshots-and-uploads"),
+        pytest.param("decodebin", id="network-and-gallery-decode"),
+        pytest.param("rtspsrc", id="rtsp-input"),
+        pytest.param("srtsrc", id="srt-input"),
+    ],
+)
+def test_selfcheck_fails_when_an_element_the_app_builds_is_missing(launcher, monkeypatch, capsys, element) -> None:
+    _install_fake_gst(monkeypatch, {element})
+
+    assert launcher.run_selfcheck() == 1
+    assert capsys.readouterr().out.strip() == f"FAIL: missing GStreamer elements: {element}"

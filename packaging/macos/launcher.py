@@ -30,6 +30,19 @@ APP_NAME = "OpenFollow"
 SEED_CONFIG_NAME = "config.seed.toml"
 STORAGE_PLACEHOLDER = "@STORAGE_PATH@"
 
+# Elements the app builds that the spec's plugin allowlist could drop.
+REQUIRED_GST_ELEMENTS = (
+    "gtksink",
+    "videoconvert",
+    "videotestsrc",
+    "avfvideosrc",
+    "decodebin",
+    "rtspsrc",
+    "srtsrc",
+    "jpegenc",
+    "webpdec",
+)
+
 
 def default_config_dir() -> Path:
     """Per-user, writable config home for the bundled app."""
@@ -137,8 +150,7 @@ def run_selfcheck() -> int:
         from gi.repository import Gst
 
         Gst.init(None)
-        required = ("gtksink", "videoconvert", "videotestsrc", "avfvideosrc")
-        missing = [name for name in required if Gst.ElementFactory.find(name) is None]
+        missing = [name for name in REQUIRED_GST_ELEMENTS if Gst.ElementFactory.find(name) is None]
         if missing:
             print(f"FAIL: missing GStreamer elements: {', '.join(missing)}")
             return 1

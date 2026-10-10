@@ -493,6 +493,7 @@ Everything lives under [`packaging/macos/`](../packaging/macos/):
 | `build-dmg.sh` | Orchestrates icon → quality-tier models → PyInstaller → ad-hoc sign → self-check → DMG. |
 | `openfollow.spec` | PyInstaller spec (collects the native stack + detection/export extras + every bundled `models/*.onnx`). |
 | `launcher.py` | Bundle entry point: `--export` re-exec, `OPENFOLLOW_SELFCHECK`, and the GUI (seeds per-user config + all quality-tier models on first run). |
+| `check_macos_minimum.py` | Build-time check: fails when a bundled Mach-O needs a newer macOS than the Info.plist's `LSMinimumSystemVersion`. |
 | `runtime_hook.py` | Points `GI_TYPELIB_PATH` / `GST_PLUGIN_PATH` / GdkPixbuf / GTK theme paths at the bundle before `gi` loads. |
 | `config.seed.toml` | First-run config (binds the web UI to port 8080, enables detection). |
 | `make-icns.sh` | Renders the `.icns` from `openfollow/web/static/icon.svg`. |
@@ -508,15 +509,33 @@ make dmg            # -> dist/OpenFollow-<version>-<arch>.dmg
 
 `make dmg` is macOS-only, installs the optional `package-macos` Poetry group plus
 the `detection` + `export` extras, then runs `build-dmg.sh`. The build host needs
-an uplink (torch / ultralytics wheels + the five YOLO26 tier weights). The output is
-**single-arch** (matches the build host; an Intel `.dmg` needs an Intel build
-host). It is **large** because of torch – on Apple Silicon the `.app` is ~900 MB
-and the compressed `.dmg` ~350 MB.
+an uplink (torch / ultralytics wheels + the five YOLO26 tier weights). It is
+**large** because of torch – on Apple Silicon the `.app` is ~900 MB and the
+compressed `.dmg` ~350 MB.
+
+The app is **Apple Silicon only** and needs **macOS 15.0 or later**. It is built
+for the build host's architecture, and the bundled native stack comes from
+Homebrew bottles, which target the build host's macOS: today they declare
+`minos 15.0`. The spec writes that value as `LSMinimumSystemVersion`, so an
+older Mac refuses the app with a message instead of quitting at launch. After
+the freeze, `check_macos_minimum.py` reads every bundled Mach-O's minimum
+(`otool -l`, `LC_BUILD_VERSION`) and fails the build when one is newer than the
+declared value. When a newer build host's bottles move up, raise
+`LSMinimumSystemVersion` in `openfollow.spec` and the version stated here.
 
 A post-build self-check runs the frozen app with a scrubbed environment
 (`env -i HOME=$HOME OPENFOLLOW_SELFCHECK=1 …`) and fails the build unless the
 bundled `gi` / GStreamer elements and the detection deps all resolve from inside
-the `.app`.
+the `.app`. The elements it requires (`REQUIRED_GST_ELEMENTS` in `launcher.py`)
+are the ones the plugin allowlist could drop: the display sink, the decoders and
+network sources, `jpegenc` for snapshots and uploads, and `webpdec` for WebP
+media in the Media Gallery. `tests/test_macos_bundle_contract.py` pins each to a
+plugin the allowlist keeps.
+
+The About page's **License**, **Third-party notices** and **Written offer** read
+`LICENSE`, `THIRD_PARTY_NOTICES.md` and `WRITTEN_OFFER.md` from the bundle root
+(`sys._MEIPASS`), as the `.deb` ships them to `/usr/share/openfollow`, so the
+app shows them offline.
 
 ### Build internals (when the native stack breaks)
 

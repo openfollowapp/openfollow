@@ -115,6 +115,11 @@ poetry run pyinstaller --noconfirm --clean \
   exit 1
 }
 
+# Homebrew bottles target the build host's macOS. A library needing a newer one
+# than the Info.plist declares makes the app quit at launch on an older Mac.
+echo "==> Checking the declared macOS minimum"
+poetry run python "$SCRIPT_DIR/check_macos_minimum.py" "$APP"
+
 echo "==> Ad-hoc signing"
 codesign --force --deep --sign - "$APP"
 

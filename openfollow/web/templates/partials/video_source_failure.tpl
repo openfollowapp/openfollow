@@ -13,10 +13,10 @@
 %# Polled on its own so a failure that starts while this page is open still
 %# shows up. Only the box is swapped - re-rendering the form would discard
 %# whatever the operator is part-way through typing, which is what they came
-%# here to do.
+%# here to do. Only while it shows: a hidden tab or wizard step asks nothing.
 <div id="video-source-failure"
      hx-get="/section/video_source/failure"
-     hx-trigger="every 3s"
+     hx-trigger="every 3s [this.offsetParent !== null]"
      hx-target="this"
      hx-swap="innerHTML">
 % if show_failure:

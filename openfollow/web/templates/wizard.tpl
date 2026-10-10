@@ -141,6 +141,7 @@
     stroke: var(--accent);
     stroke-width: 2;
     fill: none;
+    vector-effect: non-scaling-stroke;
   }
   .wizard-overlay .handle:active { cursor: grabbing; }
   /* Fine-adjust mode: 2×2 grid of 4× zoom windows (one per corner).
@@ -225,6 +226,9 @@
   .wizard-status.error { color: var(--error-text); }
   /* Lens step: traced lines, their points and the curve the fitted lens predicts. */
   .lens-hit { pointer-events: all; cursor: crosshair; }
+  /* Strokes in CSS pixels: the viewBox is the snapshot's own resolution, which a phone shows at a fifth. */
+  .lens-chord, .lens-curve, .lens-pending, .lens-candidate-line, .lens-candidate-hit,
+  .lens-point .dot, .wizard-point .dot { vector-effect: non-scaling-stroke; }
   .lens-chord { fill: none; stroke: var(--accent); stroke-width: 1.5; stroke-opacity: 0.7; }
   .lens-curve { fill: none; stroke: var(--success-line); stroke-width: 2; stroke-dasharray: 6 4; }
   .lens-line.misfit .lens-curve, .lens-line.misfit .lens-chord { stroke: var(--caution-line); }
@@ -234,7 +238,7 @@
   .lens-point.unsnapped .dot { stroke-dasharray: 2 2; }
   .lens-point.selected .dot { stroke-width: 3; }
   .lens-pending { fill: none; stroke: var(--accent); stroke-width: 2; stroke-dasharray: 3 3; }
-  .lens-label { fill: var(--text); font-size: 11px; font-weight: 600; pointer-events: none; }
+  .lens-label { fill: var(--text); font-weight: 600; pointer-events: none; }
   /* The grid's own lines inside the quad, as the Operator Screen draws them. */
   .wizard-grid-line { fill: none; stroke: var(--accent); stroke-opacity: 0.4; stroke-width: 1; vector-effect: non-scaling-stroke; pointer-events: none; }
   #review-grid .wizard-grid-line { stroke: var(--success-mark); stroke-opacity: 0.5; }
@@ -247,7 +251,9 @@
   /* Suggested edges: faint and dashed until tapped, with a wide invisible stroke to tap. */
   .lens-candidate-line { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-opacity: 0.6; stroke-dasharray: 8 6; pointer-events: none; }
   .lens-candidate-hit { fill: none; stroke: transparent; stroke-width: 24; pointer-events: stroke; cursor: pointer; }
-  .lens-candidate:hover .lens-candidate-line { stroke-opacity: 1; }
+  .lens-candidate:hover .lens-candidate-line, .lens-candidate:focus .lens-candidate-line { stroke-opacity: 1; }
+  .lens-candidate:focus { outline: none; }
+  .lens-candidate:focus .lens-candidate-line { stroke-width: 4; }
   .lens-edges { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: none; pointer-events: none; }
   .lens-dev { display: inline-flex; align-items: center; gap: 0.35rem; color: var(--muted); font-size: 0.85rem; }
   /* Graded meter (docs/STATUS_LANGUAGE.md): five segments, filled in the level's line colour. */
@@ -449,14 +455,14 @@
       <div class="row">
         <div class="field">
           <label for="grid_width">Width ({{_len}})</label>
-          <input type="{{'text' if _imp else 'number'}}"{{!'' if _imp else ' step="0.1" min="0.1"'}} id="grid_width" value="{{format_length(config.grid.width, _us) if _imp else config.grid.width}}" oninput="onGridInputChanged()">
+          <input type="{{'text' if _imp else 'number'}}"{{!(' data-meters="%s"' % config.grid.width) if _imp else ' step="0.1" min="0.1"'}} id="grid_width" value="{{format_length(config.grid.width, _us) if _imp else config.grid.width}}" oninput="onGridInputChanged()">
           % if _imp:
           <small class="metric-echo" id="grid_width-echo">Stored: {{metric_echo(config.grid.width)}}</small>
           % end
         </div>
         <div class="field">
           <label for="grid_depth">Depth ({{_len}})</label>
-          <input type="{{'text' if _imp else 'number'}}"{{!'' if _imp else ' step="0.1" min="0.1"'}} id="grid_depth" value="{{format_length(config.grid.depth, _us) if _imp else config.grid.depth}}" oninput="onGridInputChanged()">
+          <input type="{{'text' if _imp else 'number'}}"{{!(' data-meters="%s"' % config.grid.depth) if _imp else ' step="0.1" min="0.1"'}} id="grid_depth" value="{{format_length(config.grid.depth, _us) if _imp else config.grid.depth}}" oninput="onGridInputChanged()">
           % if _imp:
           <small class="metric-echo" id="grid_depth-echo">Stored: {{metric_echo(config.grid.depth)}}</small>
           % end
@@ -465,14 +471,14 @@
       <div class="row">
         <div class="field">
           <label for="grid_z_offset">Z Offset ({{_len}})</label>
-          <input type="{{'text' if _imp else 'number'}}"{{!'' if _imp else ' step="0.01"'}} id="grid_z_offset" value="{{format_length(config.grid.z_offset, _us) if _imp else config.grid.z_offset}}" oninput="onGridInputChanged()">
+          <input type="{{'text' if _imp else 'number'}}"{{!(' data-meters="%s"' % config.grid.z_offset) if _imp else ' step="0.01"'}} id="grid_z_offset" value="{{format_length(config.grid.z_offset, _us) if _imp else config.grid.z_offset}}" oninput="onGridInputChanged()">
           % if _imp:
           <small class="metric-echo" id="grid_z_offset-echo">Stored: {{metric_echo(config.grid.z_offset)}}</small>
           % end
         </div>
         <div class="field">
           <label for="grid_spacing">Spacing ({{_len}})</label>
-          <input type="{{'text' if _imp else 'number'}}"{{!'' if _imp else ' step="0.1" min="0.1"'}} id="grid_spacing" value="{{format_length(config.grid.spacing, _us) if _imp else config.grid.spacing}}" oninput="onGridInputChanged()">
+          <input type="{{'text' if _imp else 'number'}}"{{!(' data-meters="%s"' % config.grid.spacing) if _imp else ' step="0.1" min="0.1"'}} id="grid_spacing" value="{{format_length(config.grid.spacing, _us) if _imp else config.grid.spacing}}" oninput="onGridInputChanged()">
           % if _imp:
           <small class="metric-echo" id="grid_spacing-echo">Stored: {{metric_echo(config.grid.spacing)}}</small>
           % end
@@ -493,14 +499,14 @@
       <div class="row">
         <div class="field">
           <label for="grid_x_offset">X Offset ({{_len}}) <span style="font-weight:400;text-transform:none;letter-spacing:0;">(stage left +)</span></label>
-          <input type="{{'text' if _imp else 'number'}}"{{!'' if _imp else ' step="0.01"'}} id="grid_x_offset" value="{{format_length(config.grid.x_offset, _us) if _imp else config.grid.x_offset}}" oninput="onGridInputChanged()">
+          <input type="{{'text' if _imp else 'number'}}"{{!(' data-meters="%s"' % config.grid.x_offset) if _imp else ' step="0.01"'}} id="grid_x_offset" value="{{format_length(config.grid.x_offset, _us) if _imp else config.grid.x_offset}}" oninput="onGridInputChanged()">
           % if _imp:
           <small class="metric-echo" id="grid_x_offset-echo">Stored: {{metric_echo(config.grid.x_offset)}}</small>
           % end
         </div>
         <div class="field">
           <label for="grid_y_offset">Y Offset ({{_len}}) <span style="font-weight:400;text-transform:none;letter-spacing:0;">(upstage +)</span></label>
-          <input type="{{'text' if _imp else 'number'}}"{{!'' if _imp else ' step="0.01"'}} id="grid_y_offset" value="{{format_length(config.grid.y_offset, _us) if _imp else config.grid.y_offset}}" oninput="onGridInputChanged()">
+          <input type="{{'text' if _imp else 'number'}}"{{!(' data-meters="%s"' % config.grid.y_offset) if _imp else ' step="0.01"'}} id="grid_y_offset" value="{{format_length(config.grid.y_offset, _us) if _imp else config.grid.y_offset}}" oninput="onGridInputChanged()">
           % if _imp:
           <small class="metric-echo" id="grid_y_offset-echo">Stored: {{metric_echo(config.grid.y_offset)}}</small>
           % end
@@ -578,7 +584,7 @@
     <div id="lens-container" class="wizard-preview-container" style="display:none;">
       <img id="lens-image" alt="Camera snapshot">
       <canvas id="lens-edges" class="lens-edges" aria-hidden="true"></canvas>
-      <svg id="lens-overlay" class="wizard-overlay" xmlns="http://www.w3.org/2000/svg">
+      <svg id="lens-overlay" class="wizard-overlay" tabindex="-1" xmlns="http://www.w3.org/2000/svg">
         <rect id="lens-hit" class="lens-hit" x="0" y="0" width="100%" height="100%" fill="transparent"/>
         <g id="lens-candidates"></g>
         <g id="lens-lines"></g>
@@ -589,8 +595,8 @@
     <div id="lens-no-feed" class="wizard-no-feed" style="display:none;">No video feed available. Configure a video source in the Video Source step, then return here and press <strong>Refresh Image</strong>.</div>
 
     <div id="lens-notice" class="notice" role="status" style="display:none;"></div>
-    <div id="lens-status" class="wizard-status" style="display:none;"></div>
-    <div id="lens-misfit" class="notice warning" style="display:none;"></div>
+    <div id="lens-status" class="wizard-status" role="alert" style="display:none;"></div>
+    <div id="lens-misfit" class="notice warning" role="status" style="display:none;"></div>
 
     <div style="margin-top:0.72rem;display:flex;gap:0.5rem;flex-wrap:wrap;">
       <button type="button" class="secondary" onclick="loadSnapshot()">Refresh Image</button>
@@ -602,7 +608,7 @@
 % end
     </div>
 
-    <div id="lens-result" class="notice" style="display:none;margin-top:0.72rem;">
+    <div id="lens-result" class="notice" role="status" style="display:none;margin-top:0.72rem;">
       <div class="lens-result-main">
         <span class="wizard-meter" aria-hidden="true"><span class="wizard-meter-seg"></span><span class="wizard-meter-seg"></span><span class="wizard-meter-seg"></span><span class="wizard-meter-seg"></span><span class="wizard-meter-seg"></span></span>
         <span id="lens-result-text"></span>
@@ -718,21 +724,21 @@
       <div class="row">
         <div class="field">
           <label for="cam_pos_x">Pos X ({{_len}}) <span style="font-weight:400;text-transform:none;letter-spacing:0;">(stage left +)</span></label>
-          <input type="{{'text' if _imp else 'number'}}"{{!'' if _imp else ' step="0.01"'}} id="cam_pos_x" value="{{format_length(config.camera.pos_x, _us) if _imp else config.camera.pos_x}}" oninput="onCamInputChanged()">
+          <input type="{{'text' if _imp else 'number'}}"{{!(' data-meters="%s"' % config.camera.pos_x) if _imp else ' step="0.01"'}} id="cam_pos_x" value="{{format_length(config.camera.pos_x, _us) if _imp else config.camera.pos_x}}" oninput="onCamInputChanged()">
           % if _imp:
           <small class="metric-echo" id="cam_pos_x-echo">Stored: {{metric_echo(config.camera.pos_x)}}</small>
           % end
         </div>
         <div class="field">
           <label for="cam_pos_y">Pos Y ({{_len}}) <span style="font-weight:400;text-transform:none;letter-spacing:0;">(upstage +)</span></label>
-          <input type="{{'text' if _imp else 'number'}}"{{!'' if _imp else ' step="0.01"'}} id="cam_pos_y" value="{{format_length(config.camera.pos_y, _us) if _imp else config.camera.pos_y}}" oninput="onCamInputChanged()">
+          <input type="{{'text' if _imp else 'number'}}"{{!(' data-meters="%s"' % config.camera.pos_y) if _imp else ' step="0.01"'}} id="cam_pos_y" value="{{format_length(config.camera.pos_y, _us) if _imp else config.camera.pos_y}}" oninput="onCamInputChanged()">
           % if _imp:
           <small class="metric-echo" id="cam_pos_y-echo">Stored: {{metric_echo(config.camera.pos_y)}}</small>
           % end
         </div>
         <div class="field">
           <label for="cam_pos_z">Pos Z ({{_len}}) <span style="font-weight:400;text-transform:none;letter-spacing:0;">(height)</span></label>
-          <input type="{{'text' if _imp else 'number'}}"{{!'' if _imp else ' step="0.01"'}} id="cam_pos_z" value="{{format_length(config.camera.pos_z, _us) if _imp else config.camera.pos_z}}" oninput="onCamInputChanged()">
+          <input type="{{'text' if _imp else 'number'}}"{{!(' data-meters="%s"' % config.camera.pos_z) if _imp else ' step="0.01"'}} id="cam_pos_z" value="{{format_length(config.camera.pos_z, _us) if _imp else config.camera.pos_z}}" oninput="onCamInputChanged()">
           % if _imp:
           <small class="metric-echo" id="cam_pos_z-echo">Stored: {{metric_echo(config.camera.pos_z)}}</small>
           % end
@@ -1079,10 +1085,16 @@
   // Length input <-> metres helpers (WUNIT defined at the top of the IIFE).
   // wizReadLen returns METRES (NaN if unparseable); wizWriteLen takes METRES
   // and renders in the active unit + refreshes the "Stored:" echo.
+  // ft/in text is rounded to 0.01 in, so text read back carries a residue (0.5 m reads
+  // 0.500126 m, enough to change the HUD's grid line count). While a field still shows
+  // its ``data-meters`` formatted, those metres are the exact value.
   function wizReadLen(id) {
     var el = document.getElementById(id);
     if (!el) return NaN;
-    return WUNIT.isImperial() ? WUNIT.parseLength(el.value) : parseFloat(el.value);
+    if (!WUNIT.isImperial()) return parseFloat(el.value);
+    var meters = parseFloat(el.dataset.meters);
+    if (isFinite(meters) && el.value === WUNIT.formatLength(meters)) return meters;
+    return WUNIT.parseLength(el.value);
   }
   function wizUpdateEcho(id, meters) {
     var e = document.getElementById(id + '-echo');
@@ -1092,6 +1104,7 @@
     var el = document.getElementById(id);
     if (!el) return;
     el.value = WUNIT.isImperial() ? WUNIT.formatLength(meters) : meters;
+    if (WUNIT.isImperial()) el.dataset.meters = meters;
     wizUpdateEcho(id, meters);
   }
 
@@ -1618,19 +1631,6 @@
     setGridValues(lastGridValues);
   };
 
-  // ft/in text is rounded to 0.01 in, so a length read from it carries a residue
-  // (7.5 m reads back as 7.500112 m); leaving imperial snaps the saved lengths
-  // to the millimetre so the metric fields don't show it.
-  function snapStoredLengthsToMm() {
-    try {
-      var state = JSON.parse(sessionStorage.getItem(STORAGE_KEY));
-      var mm = function(v) { return Math.round(v * 1000) / 1000; };
-      ['pos_x', 'pos_y', 'pos_z'].forEach(function(k) { state.camera[k] = mm(state.camera[k]); });
-      Object.keys(state.grid).forEach(function(k) { state.grid[k] = mm(state.grid[k]); });
-      sessionStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    } catch(e) {}
-  }
-
   // Length fields are rendered per unit, so a switch reloads into this step;
   // the session holds the values in metres and restores them in the new unit.
   document.getElementById('wizard-unit-system').addEventListener('change', function() {
@@ -1642,8 +1642,12 @@
       select.value = WUNIT.isImperial() ? 'imperial' : 'metric';
       saveError.show(box, info, 'Not changed.', near);
     }
+    // The session carries the lengths across the reload; one that does not read would arrive as 0.
+    var badLen = invalidLengthFields();
+    if (badLen.length) {
+      return keepCurrent({ error: 'These lengths do not read: ' + badLen.join(', ') + '.', action: 'Correct them, then change the unit.' });
+    }
     saveToSession();
-    if (WUNIT.isImperial()) snapStoredLengthsToMm();
     var body = new FormData();
     body.append('unit_system', select.value);
     fetch('/settings/unit-system', { method: 'POST', body: body })
@@ -2629,7 +2633,7 @@
     var g = document.getElementById(containerId);
     var focused = g.contains(document.activeElement) ? document.activeElement.dataset.corner : null;
     g.innerHTML = '';
-    var u = overlayUnit();
+    var px = overlayPx();
     var centre = [0, 0];
     CORNER_NAMES.forEach(function(k) {
       centre[0] += corners[k][0] / 4;
@@ -2640,9 +2644,10 @@
       var group;
       // Only Corner Pinning drags a corner; elsewhere the grid's own corner is the mark.
       if (draggable) {
-        group = pointHandle(pos, 7);
+        group = pointHandle(pos, 4, px);
         group.dataset.corner = name;
         group.dataset.idx = i;
+        group.setAttribute('aria-label', 'Corner ' + name);
       } else {
         group = svgEl('g', { transform: 'translate('+pos[0]+','+pos[1]+')' });
       }
@@ -2652,9 +2657,9 @@
       var sx = pos[0] < centre[0] ? -1 : 1;
       var sy = pos[1] < centre[1] ? -1 : 1;
       var label = svgEl('text', {
-        x: sx * 1.6*u, y: sy * 1.6*u,
-        fill: 'rgba(247,245,233,0.95)', stroke: '#000', 'stroke-width': 0.3*u, 'paint-order': 'stroke',
-        'font-size': 1.3*u, 'font-weight': 700, 'text-anchor': sx < 0 ? 'end' : 'start',
+        x: sx * 14 * px, y: sy * 14 * px,
+        fill: 'rgba(247,245,233,0.95)', stroke: '#000', 'stroke-width': 3 * px, 'paint-order': 'stroke',
+        'font-size': 13 * px, 'font-weight': 700, 'text-anchor': sx < 0 ? 'end' : 'start',
         'dominant-baseline': 'central', 'pointer-events': 'none',
       });
       label.textContent = name;
@@ -2671,34 +2676,44 @@
     return el;
   }
 
-  // One hundredth of the frame. The overlay's viewBox is the snapshot's own
-  // resolution, so a size fixed in viewBox units shrinks on a larger frame.
-  function overlayUnit() {
-    return Math.max(imageWidth, imageHeight, 1) / 100;
+  // Snapshot pixels per CSS pixel in the full previews, which all span the
+  // wizard's column. The viewBox is the snapshot's own resolution, so a size
+  // meant for a finger or an eye is this many viewBox units per CSS pixel; a
+  // hidden preview measures nothing, so the one showing is asked.
+  function overlayPx() {
+    var overlays = document.querySelectorAll('svg.wizard-overlay');
+    for (var i = 0; i < overlays.length; i++) {
+      var width = overlays[i].getBoundingClientRect().width;
+      if (width > 0 && imageWidth > 0) return imageWidth / width;
+    }
+    return 1;
   }
 
   function renderRefMarker(containerId, pos, draggable) {
     var g = document.getElementById(containerId);
     var hadFocus = g.contains(document.activeElement);
     g.innerHTML = '';
+    var px = overlayPx();
     if (draggable) {
-      var handle = pointHandle(pos, 7);
+      var handle = pointHandle(pos, 4, px);
       handle.dataset.refHandle = '1';
+      handle.setAttribute('aria-label', 'Reference Point');
       g.appendChild(handle);
       // Drawn again under a keyboard nudge: keep the focus so the next arrow moves it too.
       if (hadFocus) handle.focus({ preventScroll: true });
     } else {
-      g.appendChild(pointMarker(pos));
+      g.appendChild(pointMarker(pos, { r: 4 * px }));
     }
   }
 
   // The Lens step's point, used for every point the wizard drags: the dot, a
-  // focus ring and the grab area around it.
-  function pointHandle(pos, r) {
+  // focus ring and a 44 px grab area around it, sized in CSS pixels by ``px``
+  // (``overlayPx``) so a phone's finger finds it.
+  function pointHandle(pos, r, px) {
     var g = svgEl('g', { class: 'handle wizard-point', tabindex: '0', transform: 'translate(' + pos[0] + ',' + pos[1] + ')' });
-    g.appendChild(svgEl('rect', { x: -22, y: -22, width: 44, height: 44, fill: 'transparent' }));
-    g.appendChild(svgEl('circle', { r: 14, class: 'handle-ring' }));
-    g.appendChild(svgEl('circle', { r: r, class: 'dot' }));
+    g.appendChild(svgEl('rect', { x: -22 * px, y: -22 * px, width: 44 * px, height: 44 * px, fill: 'transparent' }));
+    g.appendChild(svgEl('circle', { r: 9 * px, class: 'handle-ring' }));
+    g.appendChild(svgEl('circle', { r: r * px, class: 'dot' }));
     return g;
   }
 
@@ -2735,14 +2750,19 @@
     var box = overlay.getBoundingClientRect(), cont = container.getBoundingClientRect();
     var sx = box.left - cont.left + pos[0] / imageWidth * box.width;
     var sy = box.top - cont.top + pos[1] / imageHeight * box.height;
-    var size = loupe.offsetWidth || 120;
-    // Offset from the finger: above and to the right, flipped when it would leave the image.
-    var lx = sx + 30, ly = sy - size - 30;
-    if (lx + size > cont.width) lx = sx - size - 30;
-    if (ly < 0) ly = sy + 30;
-    loupe.style.left = Math.max(0, lx) + 'px';
-    loupe.style.top = Math.max(0, ly) + 'px';
+    var at = loupePlace(sx, sy, loupe.offsetWidth || 120, cont.width, cont.height);
+    loupe.style.left = at[0] + 'px';
+    loupe.style.top = at[1] + 'px';
     loupe.style.display = 'block';
+  }
+
+  // Offset from the finger: above and to the right, flipped when it would leave the image.
+  // A short preview fits the loupe neither above nor below the finger: keep it inside, beside the finger.
+  function loupePlace(sx, sy, size, width, height) {
+    var lx = sx + 30, ly = sy - size - 30;
+    if (lx + size > width) lx = sx - size - 30;
+    if (ly < 0) ly = sy + 30;
+    return [Math.max(0, Math.min(lx, width - size)), Math.max(0, Math.min(ly, height - size))];
   }
 
   function hideLoupe(containerId) {
@@ -4385,8 +4405,9 @@
   }
 
   // ---- rendering ----
-  function lensHandle(line, i, j) {
-    var g = pointHandle(lensPointPos(line, j), j === 0 || j === 4 ? 7 : 6);
+  function lensHandle(line, i, j, px) {
+    var g = pointHandle(lensPointPos(line, j), j === 0 || j === 4 ? 4 : 3.5, px);
+    g.setAttribute('aria-label', 'Line ' + (i + 1) + (j === 0 ? ', start' : j === 4 ? ', end' : ', middle point ' + j));
     var cls = 'handle lens-point';
     if (!lensPointIsOn(line, j)) cls += ' off';
     if (!line.snapped[j]) cls += ' unsnapped';
@@ -4402,7 +4423,7 @@
     g.innerHTML = '';
     lensCandidates.forEach(function(cand, i) {
       if (cand.used) return;
-      var group = svgEl('g');
+      var group = svgEl('g', { tabindex: '0', role: 'button', 'aria-label': 'Suggested edge ' + (i + 1) });
       group.setAttribute('class', 'lens-candidate');
       group.dataset.candidate = i;
       var hit = svgEl('polyline');
@@ -4422,6 +4443,7 @@
     var g = document.getElementById('lens-lines');
     // Rebuilding the handles drops a focused one, which would leave the keys dead after a click.
     var hadFocus = g.contains(document.activeElement);
+    var px = overlayPx();
     g.innerHTML = '';
     lensLines.forEach(function(line, i) {
       var group = svgEl('g');
@@ -4437,13 +4459,10 @@
       chord.setAttribute('class', 'lens-chord');
       chord.setAttribute('points', lensPointsAttr(lensActivePoints(line)));
       group.appendChild(chord);
-      var label = svgEl('text');
-      label.setAttribute('class', 'lens-label');
-      label.setAttribute('x', line.p0[0] + 10);
-      label.setAttribute('y', line.p0[1] - 10);
+      var label = svgEl('text', { class: 'lens-label', x: line.p0[0] + 8 * px, y: line.p0[1] - 8 * px, 'font-size': 11 * px });
       label.textContent = String(i + 1);
       group.appendChild(label);
-      for (var j = 0; j < 5; j++) group.appendChild(lensHandle(line, i, j));
+      for (var j = 0; j < 5; j++) group.appendChild(lensHandle(line, i, j, px));
       g.appendChild(group);
     });
     var pending = document.getElementById('lens-pending');
@@ -4453,7 +4472,7 @@
       c.setAttribute('class', 'lens-pending');
       c.setAttribute('cx', lensPending[0]);
       c.setAttribute('cy', lensPending[1]);
-      c.setAttribute('r', '7');
+      c.setAttribute('r', 5 * px);
       pending.appendChild(c);
     }
     renderLensToolbar();
@@ -4551,10 +4570,13 @@
   };
   window.lensDeleteSelectedLine = function() {
     if (!lensSelected) return;
+    var hadFocus = document.getElementById('lens-lines').contains(document.activeElement);
     lensReleaseCandidate(lensLines[lensSelected.line]);
     lensLines.splice(lensSelected.line, 1);
-    lensSelected = null;
+    // The keys stay on the line that took its place, or on the picture when none is left.
+    lensSelected = lensLines.length ? { line: Math.min(lensSelected.line, lensLines.length - 1), point: 0 } : null;
     lensChanged();
+    if (hadFocus && !lensSelected) document.getElementById('lens-overlay').focus({ preventScroll: true });
   };
   window.lensClearLines = function() {
     lensLines.forEach(lensReleaseCandidate);
@@ -4749,7 +4771,23 @@
     }
     overlay.addEventListener('pointerup', endDrag);
     overlay.addEventListener('pointercancel', endDrag);
+    // A point reached with Tab is the selected one, so the toolbar acts on what has the focus.
+    overlay.addEventListener('focusin', function(e) {
+      var h = e.target.closest ? e.target.closest('.lens-point') : null;
+      if (!h) return;
+      var line = +h.dataset.line, point = +h.dataset.point;
+      if (lensSelected && lensSelected.line === line && lensSelected.point === point) return;
+      lensSelected = { line: line, point: point };
+      renderLens();
+    });
     overlay.addEventListener('keydown', function(e) {
+      var candidate = e.target.closest ? e.target.closest('.lens-candidate') : null;
+      if (candidate && (e.key === 'Enter' || e.key === ' ')) {
+        e.preventDefault();
+        lensAddCandidate(+candidate.dataset.candidate);
+        lensFocusSelected();
+        return;
+      }
       var handle = e.target.closest ? e.target.closest('.lens-point') : null;
       if (!handle) return;
       var i = +handle.dataset.line, j = +handle.dataset.point, line = lensLines[i];
@@ -4833,6 +4871,16 @@
   setupCoarseZoomDragging();
   setupRefDragging(document.getElementById('coarse-ref'));
   setupCornerDragging(document.getElementById('fine-corners'));
+  // Handles and labels are sized in CSS pixels of the preview's width at render time.
+  var resizeTimer = null;
+  window.addEventListener('resize', function() {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(function() {
+      if (!imageWidth) return;
+      projectAndOverlay();
+      renderLens();
+    }, 200);
+  });
   lensInit();
   wizardGo(restored ? currentStep : 0);
 })();

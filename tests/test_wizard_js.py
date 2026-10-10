@@ -15,8 +15,9 @@ from openfollow.scene.edge_chains import edge_map_scale
 from openfollow.scene.edge_snap import band_half_size, band_step
 from openfollow.scene.lens_fit import fit_lens_from_lines
 from openfollow.scene.solver import apply_overlay_distortion, invert_normalised_radius
+from openfollow.units import format_length
 from tests._lens_band import scaled_luma
-from tests._wizard_js import needs_node, run_wizard_js
+from tests._wizard_js import length_page, needs_node, run_wizard_js
 
 pytestmark = [pytest.mark.unit, needs_node]
 
@@ -222,3 +223,49 @@ def test_a_line_counts_exactly_when_the_fit_takes_it(span: float) -> None:
     except ValueError:
         taken = False
     assert counts == taken
+
+
+@pytest.mark.parametrize(("width", "height"), [(324, 182), (390, 219), (1079, 608), (1400, 788)])
+def test_the_loupe_stays_inside_the_preview_and_beside_the_finger(width: int, height: int) -> None:
+    size = 120
+    fingers = [[x, y] for x in np.linspace(0, width, 27).tolist() for y in np.linspace(0, height, 15).tolist()]
+    places = run_wizard_js(
+        "fingers.map(function(f) { return loupePlace(f[0], f[1], size, width, height); })",
+        functions=("loupePlace",),
+        fingers=fingers,
+        size=size,
+        width=width,
+        height=height,
+    )
+    for (sx, sy), (left, top) in zip(fingers, places, strict=True):
+        # A phone's preview is shorter than the loupe above and below the finger together.
+        assert 0 <= left <= width - size and 0 <= top <= height - size, (sx, sy)
+        # Every preview here is wider than two loupes with their offsets, so the finger stays in sight.
+        assert left >= sx + 30 or left + size <= sx - 30, (sx, sy)
+
+
+_LENGTH_FUNCTIONS = ("wizReadLen", "wizUpdateEcho", "wizWriteLen")
+
+
+@pytest.mark.parametrize("system", ["imperial", "metric"])
+@pytest.mark.parametrize("meters", [0.5, 7.5, 0.3048, -2.25, 11.0, 0.123456])
+def test_a_written_length_reads_back_the_metres_it_was_written_from(system: str, meters: float) -> None:
+    shown, read = run_wizard_js(
+        "(function() { wizWriteLen('f', m); return [fields.f.value, wizReadLen('f')]; })()",
+        functions=_LENGTH_FUNCTIONS,
+        prelude=length_page(system, {"f": {"value": "", "dataset": {}}}),
+        m=meters,
+    )
+    # Read back from its ft / in text, 0.5 m was 0.500126 m: one grid line more than the HUD draws.
+    assert read == meters
+    if system == "imperial":
+        assert shown == format_length(meters, "imperial")
+
+
+def test_an_edited_imperial_length_reads_what_it_shows() -> None:
+    read = run_wizard_js(
+        "(function() { wizWriteLen('f', 0.5); fields.f.value = '2 ft'; return wizReadLen('f'); })()",
+        functions=_LENGTH_FUNCTIONS,
+        prelude=length_page("imperial", {"f": {"value": "", "dataset": {}}}),
+    )
+    assert read == pytest.approx(0.6096, abs=1e-12)

@@ -2087,6 +2087,15 @@ class TestWizardLensStepPage:
         assert "<label>Barrel / fisheye</label>" in camera and "<label>Edge fit</label>" in camera
         assert "(k1)" not in camera and "(k2)" not in camera
 
+    def test_the_lens_step_speaks_to_a_screen_reader(self, live_server_lens) -> None:
+        _, body = _get(live_server_lens[1], "/wizard")
+        # A failed fit interrupts; a rating or a misfit waits its turn.
+        assert re.search(r'<div id="lens-status"[^>]*role="alert"', body)
+        assert re.search(r'<div id="lens-misfit"[^>]*role="status"', body)
+        assert re.search(r'<div id="lens-result"[^>]*role="status"', body)
+        # Deleting the last line leaves the keys on the picture.
+        assert re.search(r'<svg id="lens-overlay"[^>]*tabindex="-1"', body)
+
     def test_the_edge_view_is_a_developer_control(self, live_server_lens, live_server_lens_dev) -> None:
         _, plain = _get(live_server_lens[1], "/wizard")
         _, dev = _get(live_server_lens_dev[1], "/wizard")
@@ -2286,6 +2295,58 @@ class TestWizardLensTemplate:
         # Restored values never count as a fresh visit, whose Y Offset default would overwrite them.
         assert body.group(1).rstrip().endswith("return true;\n    } catch(e) { return false; }")
         assert "state._lensLines.filter(lensRestoredLine)" in body.group(1)
+
+    def test_suggestions_and_points_work_from_the_keyboard(self) -> None:
+        import re
+
+        src = self._src()
+        assert "svgEl('g', { tabindex: '0', role: 'button', 'aria-label': 'Suggested edge ' + (i + 1) })" in src
+        keys = re.search(r"overlay\.addEventListener\('keydown', function\(e\) \{(.*?)\n    \}\);", src, re.S)
+        assert keys
+        candidate = keys.group(1).split("var handle =")[0]
+        assert "e.key === 'Enter' || e.key === ' '" in candidate and "lensAddCandidate(" in candidate
+        # Every point says what it is.
+        assert "'Line ' + (i + 1) + (j === 0 ? ', start' : j === 4 ? ', end' : ', middle point ' + j)" in src
+        assert "group.setAttribute('aria-label', 'Corner ' + name);" in src
+        assert "handle.setAttribute('aria-label', 'Reference Point');" in src
+        # A point reached with Tab is the selected one, so the toolbar acts on what has the focus.
+        focus = re.search(r"overlay\.addEventListener\('focusin', function\(e\) \{(.*?)\n    \}\);", src, re.S)
+        assert focus and "lensSelected = { line: line, point: point };" in focus.group(1)
+        # Delete leaves the keys on the line that took its place, or on the picture when none is left.
+        delete = re.search(r"window\.lensDeleteSelectedLine = function\(\) \{(.*?)\n  \};", src, re.S)
+        assert delete
+        assert "point: 0 } : null;" in delete.group(1)
+        assert "document.getElementById('lens-overlay').focus({ preventScroll: true })" in delete.group(1)
+
+    def test_handles_and_labels_are_sized_in_css_pixels(self) -> None:
+        import re
+
+        src = self._src()
+        # The viewBox is the snapshot's own resolution, which a phone shows a 1080p frame at a fifth of.
+        handle = re.search(r"function pointHandle\(pos, r, px\) \{(.*?)\n  \}\n", src, re.S)
+        assert handle and "width: 44 * px, height: 44 * px" in handle.group(1)
+        calls = [line for line in src.splitlines() if "pointHandle(" in line and "function pointHandle" not in line]
+        assert len(calls) == 3 and all(line.rstrip().endswith(", px);") for line in calls)
+        assert "imageWidth / width" in src
+        assert "x: sx * 14 * px, y: sy * 14 * px" in src and "'font-size': 13 * px" in src
+        assert "'font-size': 11 * px" in src
+        # A rotated phone or a resized window draws them again at the new size.
+        assert "window.addEventListener('resize'" in src
+
+    def test_a_unit_switch_waits_for_lengths_that_read(self) -> None:
+        import re
+
+        src = self._src()
+        handler = re.search(
+            r"getElementById\('wizard-unit-system'\)\.addEventListener\('change', function\(\) \{(.*?)\n  \}\);",
+            src,
+            re.S,
+        )
+        assert handler
+        body = handler.group(1)
+        # The session carries the lengths across the reload; one that does not read would arrive as 0.
+        assert body.index("var badLen = invalidLengthFields();") < body.index("saveToSession();")
+        assert "if (badLen.length) {\n      return keepCurrent(" in body
 
     def test_middle_points_move_across_the_line_only(self) -> None:
         src = self._src()

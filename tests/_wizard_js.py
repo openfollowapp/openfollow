@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 WIZARD_TEMPLATE = Path(__file__).resolve().parent.parent / "openfollow" / "web" / "templates" / "wizard.tpl"
+UNITS_JS = Path(__file__).resolve().parent.parent / "openfollow" / "web" / "static" / "js" / "units.js"
 NODE = shutil.which("node")
 needs_node = pytest.mark.skipif(NODE is None, reason="node is not installed")
 
@@ -42,19 +43,38 @@ def wizard_var(name: str) -> str:
 
 
 def run_wizard_js(
-    expression: str, *, functions: tuple[str, ...] = (), variables: tuple[str, ...] = (), **inputs: Any
+    expression: str,
+    *,
+    functions: tuple[str, ...] = (),
+    variables: tuple[str, ...] = (),
+    prelude: str = "",
+    **inputs: Any,
 ) -> Any:
     """Evaluate ``expression`` beside the named wizard functions and variables; ``inputs`` arrive as JSON.
 
+    ``prelude`` runs first: the globals a function reads from the page (``document``, ``WUNIT``).
     ``Infinity`` and ``NaN`` inputs survive (``json.dumps`` writes them as JS literals); the
     result comes back through ``JSON.stringify``, where they read as ``null``.
     """
     assert NODE is not None
-    parts = [wizard_var(v) for v in variables] + [wizard_function(f) for f in functions]
+    parts = [prelude] + [wizard_var(v) for v in variables] + [wizard_function(f) for f in functions]
     parts += [f"var {key} = {json.dumps(value)};" for key, value in inputs.items()]
     parts.append(f"process.stdout.write(JSON.stringify({expression}));")
     done = subprocess.run([NODE, "-e", "\n".join(parts)], capture_output=True, text=True, timeout=60, check=True)
     return json.loads(done.stdout)
+
+
+def length_page(system: str, fields: dict[str, dict[str, Any]]) -> str:
+    """A ``prelude``: ``units.js`` under ``system`` and a page whose inputs are ``fields`` (id -> value, dataset)."""
+    return "\n".join(
+        (
+            f"var window = {{ OPENFOLLOW_UNIT_SYSTEM: {json.dumps(system)} }};",
+            UNITS_JS.read_text(encoding="utf-8"),
+            "var WUNIT = window.OpenFollow.units;",
+            f"var fields = {json.dumps(fields)};",
+            "var document = { getElementById: function(id) { return fields[id] || null; } };",
+        )
+    )
 
 
 def assert_script_parses(source: str, path: Path) -> None:

@@ -22,7 +22,8 @@ This file fills in:
   box-coords unprojection, ``max_persons`` cap, degenerate-box skip).
 * ``_OnnxBackend._prepare_predictions`` shape-matrix branches.
 * The CoreML compiled-model cache: keyed by the model file, pruned on
-  replacement, absent on CPU-only hosts, uncached fallback on failure.
+  replacement and by ``remove_coreml_compiles``, absent on CPU-only hosts,
+  uncached fallback on failure.
 * ``_nms`` early-exit on single remaining index (``order.size == 1``).
 * ``_run`` outer try/except guard (inner raise → ``logger.exception``).
 * ``_run_inner`` loop matrix: no sample → sample-timeout counter,
@@ -66,6 +67,7 @@ from openfollow.video.detection import (
     _nms,
     _OnnxBackend,
     _TrackedPerson,
+    remove_coreml_compiles,
 )
 
 pytestmark = pytest.mark.unit
@@ -513,6 +515,65 @@ class TestCoreMLModelCache:
             _OnnxBackend(str(model), cache_root=tmp_path / "cache")
 
         assert len(calls) == 2
+
+
+class TestRemoveCoreMLCompiles:
+    """Deleting a model drops every compile of it, and nothing else."""
+
+    @staticmethod
+    def _compiles(cache_root: Path, *names: str) -> list[Path]:
+        dirs = [cache_root / "coreml" / name for name in names]
+        for directory in dirs:
+            directory.mkdir(parents=True)
+            (directory / "compiled").write_bytes(b"compiled")
+        return dirs
+
+    def test_removes_every_compile_of_the_model(self, tmp_path: Path) -> None:
+        current, replaced = self._compiles(tmp_path, "yolo26n-1000-200", "yolo26n-990-100")
+        kept = self._compiles(tmp_path, "yolo26n-int8-1000-200", "yolo26m-5000-300", "yolo26n-notes", "yolo26n-a-b")
+
+        remove_coreml_compiles(tmp_path, "yolo26n.onnx")
+
+        assert not current.exists()
+        assert not replaced.exists()
+        assert all(directory.is_dir() for directory in kept)
+
+    def test_storage_without_compiles_is_left_alone(self, tmp_path: Path) -> None:
+        # The Pi: CPU builds never create the directory.
+        remove_coreml_compiles(tmp_path, "yolo26n.onnx")
+
+        assert not (tmp_path / "coreml").exists()
+
+    def test_an_unreadable_cache_is_logged(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        (tmp_path / "coreml").write_text("a file where the cache directory belongs")
+
+        with caplog.at_level(logging.WARNING, logger="openfollow.video.detection"):
+            remove_coreml_compiles(tmp_path, "yolo26n.onnx")
+
+        assert any("CoreML model cache" in r.getMessage() for r in caplog.records)
+
+    def test_a_compile_that_cannot_be_removed_is_logged_and_the_rest_go(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        stuck, removable = self._compiles(tmp_path, "yolo26n-1000-200", "yolo26n-990-100")
+        real_rmtree = detection_module.shutil.rmtree
+
+        def _rmtree(path: Any, *args: Any, **kwargs: Any) -> None:
+            if Path(path) == stuck:
+                raise PermissionError("operation not permitted")
+            real_rmtree(path, *args, **kwargs)
+
+        monkeypatch.setattr(detection_module.shutil, "rmtree", _rmtree)
+
+        with caplog.at_level(logging.WARNING, logger="openfollow.video.detection"):
+            remove_coreml_compiles(tmp_path, "yolo26n.onnx")
+
+        assert stuck.is_dir()
+        assert not removable.exists()
+        assert any(str(stuck) in r.getMessage() for r in caplog.records)
 
 
 class TestDetectorModelCacheLocation:

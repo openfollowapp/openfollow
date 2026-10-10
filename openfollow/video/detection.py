@@ -94,6 +94,11 @@ def resolve_detection_storage_path(storage_path: str) -> str:
     return str(Path.cwd() / _LOCAL_STORAGE_DIRNAME)
 
 
+def detection_cache_dir(storage_path: str) -> Path:
+    """The storage's cache: ``XDG_CACHE_HOME`` for the runtime, and the compiled models."""
+    return Path(resolve_detection_storage_path(storage_path)).expanduser() / "cache"
+
+
 def check_detection_dependencies(
     config: DetectionConfig | None = None,
 ) -> list[str]:
@@ -246,6 +251,30 @@ def _letterbox(
 _COREML_PROVIDER = "CoreMLExecutionProvider"
 
 
+def remove_coreml_compiles(cache_root: Path, model_name: str) -> None:
+    """Remove every compiled-CoreML copy of ``model_name`` under ``cache_root``.
+
+    Matches ``<stem>-<size>-<mtime>`` exactly, never a longer name that only
+    starts with the stem. A copy that cannot be removed is logged and left.
+    """
+    stem = Path(model_name).stem
+    try:
+        entries = list((cache_root / "coreml").iterdir())
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        logger.warning("Could not list the CoreML model cache under %s: %s", cache_root, exc)
+        return
+    for entry in entries:
+        prefix, *identity = entry.name.rsplit("-", 2)
+        if prefix != stem or len(identity) != 2 or not all(part.isdigit() for part in identity):
+            continue
+        try:
+            shutil.rmtree(entry)
+        except OSError as exc:
+            logger.warning("Could not remove the CoreML model cache %s: %s", entry, exc)
+
+
 def _coreml_cache_dir(cache_root: Path, model_path: str) -> Path | None:
     """The compiled-CoreML cache for one model file, or ``None`` when there is none to use.
 
@@ -258,14 +287,10 @@ def _coreml_cache_dir(cache_root: Path, model_path: str) -> Path | None:
     except OSError:
         return None  # the build itself reports the missing model
     name = Path(model_path).stem
-    coreml_root = cache_root / "coreml"
-    cache_dir = coreml_root / f"{name}-{stat.st_size}-{stat.st_mtime_ns}"
+    cache_dir = cache_root / "coreml" / f"{name}-{stat.st_size}-{stat.st_mtime_ns}"
     try:
         if not cache_dir.is_dir():
-            if coreml_root.is_dir():
-                for entry in coreml_root.iterdir():
-                    if entry.name.rsplit("-", 2)[0] == name:
-                        shutil.rmtree(entry, ignore_errors=True)
+            remove_coreml_compiles(cache_root, name)
             cache_dir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         logger.warning("CoreML model cache unavailable at %s (%s); compiling %s without it", cache_dir, exc, name)
@@ -574,7 +599,7 @@ class PersonDetector:
             logger.error("Failed to initialize detection storage: %s", exc)
             return
 
-        self._load_backend(cache_root=self._runtime_cache_dir(config))
+        self._load_backend(cache_root=detection_cache_dir(config.storage_path))
 
     def _load_backend(self, base_model_path: str | None = None, cache_root: Path | None = None) -> None:
         # ``base_model_path`` lets the live-rebuild path pass the candidate
@@ -630,11 +655,6 @@ class PersonDetector:
         )
 
     @staticmethod
-    def _runtime_cache_dir(config: DetectionConfig) -> Path:
-        """The storage's cache: ``XDG_CACHE_HOME`` for the runtime, and the compiled models."""
-        return Path(resolve_detection_storage_path(config.storage_path)).expanduser() / "cache"
-
-    @staticmethod
     def _prepare_model_path(config: DetectionConfig) -> str:
         model_name = config.model.strip()
         if not model_name:
@@ -646,7 +666,7 @@ class PersonDetector:
             raise ValueError("detection.storage_path must be an absolute path")
 
         models_dir = storage_root / "models"
-        cache_dir = PersonDetector._runtime_cache_dir(config)
+        cache_dir = detection_cache_dir(config.storage_path)
 
         for directory in (storage_root, models_dir, cache_dir):
             directory.mkdir(parents=True, exist_ok=True)
@@ -1043,7 +1063,7 @@ class PersonDetector:
                 self._restore_storage_env(old_env)
                 return
             try:
-                self._load_backend(new_model_path, self._runtime_cache_dir(pending))
+                self._load_backend(new_model_path, detection_cache_dir(pending.storage_path))
             except Exception:
                 logger.exception(
                     "detection: backend rebuild failed; keeping prior config",

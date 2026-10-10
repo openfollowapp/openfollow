@@ -6971,6 +6971,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             target.unlink()
         except OSError as exc:
             return _render_detection(cfg, install_feedback=f"Could not delete `{name}`: {exc}.", install_error=True)
+        from openfollow.video.detection import detection_cache_dir, remove_coreml_compiles
+
+        remove_coreml_compiles(detection_cache_dir(cfg.detection.storage_path), name)
         logger.info("Deleted detection model %s", name)
         return _render_detection(cfg, install_feedback=f"Deleted `{name}`.")
 

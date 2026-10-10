@@ -1030,20 +1030,19 @@
   var snapshotUrl = null;
   var imageWidth = 0;
   var imageHeight = 0;
-  var solvedCamera = null;
   var originalFov = parseFloat(document.getElementById('cam_fov').value);
 
-  // Camera state before coarse calibration (for reset)
-  var preCoarseCamera = null;
+  // The pose (``snapshotPose``) before Reference Mapping, for its Reset.
+  var preCoarsePose = null;
 
-  // Camera state before the first solve of the current corner-pinning
-  // session. ``solveFromCorners`` writes the solved camera back into
-  // the camera form fields on success – without a snapshot, ``Reset
-  // Corners`` would re-project from those overwritten values and the
-  // corners would visibly stay where the operator dragged them. Reset
-  // restores from this snapshot AND clears it so the next solve takes
-  // a fresh snapshot for the next session.
-  var preCornerPinningCamera = null;
+  // The pose before the first solve of the current corner-pinning session.
+  // Every solve writes its camera into the form, so without it ``Reset
+  // Corners`` would re-project from the solved camera and the corners would
+  // stay where the operator dragged them. Reset restores it AND clears it so
+  // the next solve takes a fresh one for the next session.
+  var preCornerPinningPose = null;
+  // Every solve counts here; an answer to an older one is dropped.
+  var poseSeq = 0;
 
   // Corner screen positions for fine calibration
   var cornerPositions = { DSL: null, DSR: null, USR: null, USL: null };
@@ -1219,7 +1218,6 @@
     try {
       var state = getState();
       state._stepKey = WIZ_STEPS[currentStep];
-      state._solvedCamera = solvedCamera;
       state._originalFov = originalFov;
       state._lensLines = lensLines;
       state._lensImage = lensImageSize;
@@ -1267,18 +1265,22 @@
           document.getElementById('cam_focal').value = state.lens.focal;
         }
       }
-      if (state._solvedCamera) solvedCamera = state._solvedCamera;
       if (state._originalFov) originalFov = state._originalFov;
-      if (Array.isArray(state._lensLines)) lensLines = state._lensLines;
-      if (state._lensImage) lensImageSize = state._lensImage;
-      if (state._lensFit) lensFit = state._lensFit;
-      if (state._pinnedCorners) pinnedCorners = state._pinnedCorners;
-      if (state._lensSolvedWith) lensSolvedWith = state._lensSolvedWith;
-      if (typeof state._stepKey === 'string' && WIZ[state._stepKey] !== undefined) {
-        currentStep = WIZ[state._stepKey];
-        return true;
+      // Lens state only in the shape this page draws: a session saved by
+      // another version must not stop the wizard from opening.
+      if (Array.isArray(state._lensLines)) lensLines = state._lensLines.filter(lensRestoredLine);
+      if (lensRestoredPair(state._lensImage)) lensImageSize = state._lensImage;
+      if (state._lensFit && typeof state._lensFit.rating === 'string' && isFinite(state._lensFit.k1)
+          && isFinite(state._lensFit.k2)) lensFit = state._lensFit;
+      if (state._pinnedCorners && lensRestoredPair(state._pinnedCorners.size)
+          && Array.isArray(state._pinnedCorners.corners) && state._pinnedCorners.corners.length === 4
+          && state._pinnedCorners.corners.every(lensRestoredPair)) pinnedCorners = state._pinnedCorners;
+      if (state._lensSolvedWith && isFinite(state._lensSolvedWith.k1) && isFinite(state._lensSolvedWith.k2)) {
+        lensSolvedWith = state._lensSolvedWith;
       }
-      return false;
+      // A step this page leaves out (the Lens step switched off) starts at Preparation, values kept.
+      if (typeof state._stepKey === 'string' && WIZ[state._stepKey] !== undefined) currentStep = WIZ[state._stepKey];
+      return true;
     } catch(e) { return false; }
   }
 
@@ -1316,7 +1318,7 @@
     }
     // Entering Reference Mapping saves the camera state for its Reset.
     if (key === 'ref') {
-      preCoarseCamera = getState().camera;
+      preCoarsePose = snapshotPose();
     }
     if (key === 'review') {
       populateReview();
@@ -2617,6 +2619,7 @@
 
   function renderCornerMarkers(containerId, corners, draggable) {
     var g = document.getElementById(containerId);
+    var focused = g.contains(document.activeElement) ? document.activeElement.dataset.corner : null;
     g.innerHTML = '';
     var u = overlayUnit();
     var centre = [0, 0];
@@ -2650,11 +2653,8 @@
       group.appendChild(label);
 
       g.appendChild(group);
+      if (name === focused) group.focus({ preventScroll: true });
     });
-
-    if (draggable) {
-      setupCornerDragging(g);
-    }
   }
 
   function svgEl(tag, attrs) {
@@ -2671,12 +2671,14 @@
 
   function renderRefMarker(containerId, pos, draggable) {
     var g = document.getElementById(containerId);
+    var hadFocus = g.contains(document.activeElement);
     g.innerHTML = '';
     if (draggable) {
       var handle = pointHandle(pos, 7);
       handle.dataset.refHandle = '1';
       g.appendChild(handle);
-      setupRefDragging(handle);
+      // Drawn again under a keyboard nudge: keep the focus so the next arrow moves it too.
+      if (hadFocus) handle.focus({ preventScroll: true });
     } else {
       g.appendChild(pointMarker(pos));
     }
@@ -2743,15 +2745,20 @@
   // ---------------------------------------------------------------
   // Reference Point dragging (Reference Mapping)
   // ---------------------------------------------------------------
-  function setupRefDragging(handle) {
+  // Bound once to the Reference Point's group: the handle in it is drawn again
+  // on every projection, so each event finds it afresh.
+  function setupRefDragging(container) {
     var svg = document.getElementById('coarse-overlay');
     var dragging = false;
     var startScreen = null;
     var startPos = null;
     var startCornerPositions = null;
 
+    function refHandle() { return container.querySelector('[data-ref-handle]'); }
+
     function getPos() {
-      var t = handle.getAttribute('transform');
+      var handle = refHandle();
+      var t = handle ? handle.getAttribute('transform') : '';
       var m = t.match(/translate\(([\d.e+-]+),([\d.e+-]+)\)/);
       return m ? [parseFloat(m[1]), parseFloat(m[2])] : [0,0];
     }
@@ -2766,6 +2773,7 @@
     }
 
     function onDown(e) {
+      if (!e.target.closest('[data-ref-handle]')) return;
       e.preventDefault();
       dragging = true;
       var cx = e.touches ? e.touches[0].clientX : e.clientX;
@@ -2777,7 +2785,7 @@
       CORNER_NAMES.forEach(function(k) {
         startCornerPositions[k] = cornerPositions[k].slice();
       });
-      handle.style.cursor = 'grabbing';
+      refHandle().style.cursor = 'grabbing';
     }
 
     function onMove(e) {
@@ -2790,7 +2798,7 @@
       var dy = cur[1] - startScreen[1];
       var nx = startPos[0] + dx;
       var ny = startPos[1] + dy;
-      handle.setAttribute('transform', 'translate('+nx+','+ny+')');
+      refHandle().setAttribute('transform', 'translate('+nx+','+ny+')');
       showLoupe('coarse-container', 'coarse-overlay', [nx, ny]);
       shiftCoarseCorners(dx, dy, startCornerPositions);
       // Move z-offset group along with everything else
@@ -2801,20 +2809,22 @@
       if (!dragging) return;
       dragging = false;
       hideLoupe('coarse-container');
-      handle.style.cursor = '';
+      refHandle().style.cursor = '';
       document.getElementById('coarse-zoff').removeAttribute('transform');
       applyCoarseOffset(startPos, getPos(), startCornerPositions);
     }
 
-    handle.addEventListener('mousedown', onDown);
-    handle.addEventListener('touchstart', onDown, { passive: false });
+    container.addEventListener('mousedown', onDown);
+    container.addEventListener('touchstart', onDown, { passive: false });
     window.addEventListener('mousemove', onMove);
     window.addEventListener('touchmove', onMove, { passive: false });
     window.addEventListener('mouseup', onUp);
     window.addEventListener('touchend', onUp);
 
     // Keyboard arrow support
-    handle.addEventListener('keydown', function(e) {
+    container.addEventListener('keydown', function(e) {
+      var handle = e.target.closest('[data-ref-handle]');
+      if (!handle) return;
       var step = e.shiftKey ? 10 : 1;
       var pos = getPos();
       var moved = false;
@@ -2844,8 +2854,9 @@
         }, 300);
       }
     });
-    // Initialize startPos for keyboard on focus
-    handle.addEventListener('focus', function() {
+    // Initialize startPos for keyboard on focus, the focus kept across a redraw included
+    container.addEventListener('focusin', function(e) {
+      if (!e.target.closest('[data-ref-handle]')) return;
       startPos = getPos();
       startCornerPositions = {};
       CORNER_NAMES.forEach(function(k) {
@@ -3041,16 +3052,16 @@
       cornerPositions.USL,
     ];
 
+    var seq = ++poseSeq;
+    var body = wizardSolveBody(screenCorners);
     fetch('/api/wizard/solve', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(wizardSolveBody(screenCorners)),
+      body: JSON.stringify(body),
     }).then(function(r) { return r.json(); })
     .then(function(data) {
-      if (data.error) return;
-      wizardApplySolvedCamera(data.camera);
-      notePinnedCorners(screenCorners);
-      saveToSession();
+      if (seq !== poseSeq || data.error) return;
+      applySolvedPose(data.camera, screenCorners, body);
       projectAndOverlay();
     });
   }
@@ -3091,23 +3102,34 @@
     document.getElementById('cam_fov').value = cam.fov;
   }
 
-  // The solve undistorted these pins with the lens of that moment. Keep them
-  // so a later lens change can solve again from the same pins.
-  function notePinnedCorners(screenCorners) {
-    pinnedCorners = screenCorners.map(function(p) { return [p[0], p[1]]; });
-    lensSolvedWith = { k1: wizReadLensCoeff('wiz_lens_k1'), k2: wizReadLensCoeff('wiz_lens_k2') };
+  // Every solve lands here. The form holds the pose Review shows and Apply
+  // saves; the pins and the lens pair the request undistorted them with are
+  // kept, with the snapshot size, so a later lens change solves again from them.
+  function applySolvedPose(camera, screenCorners, body) {
+    wizardApplySolvedCamera(camera);
+    pinnedCorners = {
+      size: [body.image_width, body.image_height],
+      corners: screenCorners.map(function(p) { return [p[0], p[1]]; }),
+    };
+    lensSolvedWith = { k1: body.camera.lens_k1, k2: body.camera.lens_k2 };
+    if (document.getElementById('fine-solved-params').style.display !== 'none') showSolvedParams(camera);
+    saveToSession();
+    if (currentStep === WIZ.review) populateReview();
+  }
+
+  // The pose in the form, with the lens pair and pins it was solved from: what a Reset puts back.
+  function snapshotPose() {
+    return { camera: getState().camera, lensSolvedWith: lensSolvedWith, pins: pinnedCorners };
+  }
+  function restorePose(pose) {
+    poseSeq++;
+    wizardApplySolvedCamera(pose.camera);
+    lensSolvedWith = pose.lensSolvedWith;
+    pinnedCorners = pose.pins;
   }
 
   window.resetCoarseCalibration = function() {
-    if (preCoarseCamera) {
-      wizWriteLen('cam_pos_x', preCoarseCamera.pos_x);
-      wizWriteLen('cam_pos_y', preCoarseCamera.pos_y);
-      wizWriteLen('cam_pos_z', preCoarseCamera.pos_z);
-      document.getElementById('cam_pitch').value = preCoarseCamera.pitch;
-      document.getElementById('cam_yaw').value = preCoarseCamera.yaw;
-      document.getElementById('cam_roll').value = preCoarseCamera.roll;
-      document.getElementById('cam_fov').value = preCoarseCamera.fov;
-    }
+    if (preCoarsePose) restorePose(preCoarsePose);
     saveToSession();
     projectAndOverlay();
   };
@@ -3763,8 +3785,8 @@
     // values that solveFromCorners is about to overwrite. Only takes
     // a snapshot when none exists \u2013 re-entry to the step keeps the
     // original snapshot until Reset clears it.
-    if (preCornerPinningCamera === null) {
-      preCornerPinningCamera = getState().camera;
+    if (preCornerPinningPose === null) {
+      preCornerPinningPose = snapshotPose();
     }
 
     var screenCorners = [
@@ -3774,21 +3796,22 @@
       cornerPositions.USL,
     ];
 
+    var seq = ++poseSeq;
+    var body = wizardSolveBody(screenCorners);
     fetch('/api/wizard/solve', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(wizardSolveBody(screenCorners)),
+      body: JSON.stringify(body),
     }).then(function(r) { return r.json(); })
     .then(function(data) {
+      if (seq !== poseSeq) return;
       if (data.error) {
         showSolveStatus(data.error, false);
         return;
       }
 
-      solvedCamera = data.camera;
       showSolveStatus('Calibration valid', true);
       showSolvedParams(data.camera);
-      notePinnedCorners(screenCorners);
 
       // Snap corners to reprojected positions
       var rp = data.reprojected_corners;
@@ -3813,8 +3836,7 @@
         if (typeof console !== 'undefined' && console.warn) console.warn('fine-zoom render failed:', err);
       }
 
-      wizardApplySolvedCamera(data.camera);
-      saveToSession();
+      applySolvedPose(data.camera, screenCorners, body);
     });
   }
 
@@ -3844,29 +3866,16 @@
   }
 
   window.resetCornerPinning = function() {
-    solvedCamera = null;
-    pinnedCorners = null;
     document.getElementById('fine-status').style.display = 'none';
     document.getElementById('fine-solved-params').style.display = 'none';
     document.getElementById('fine-container').classList.remove('valid', 'invalid');
-    // Restore the camera form from the pre-solve snapshot so the
-    // re-projection produces corners at the operator's pre-pinning
-    // positions (not the dragged-to ones, since solveFromCorners
-    // writes its result back into the form on every successful
-    // solve). Without this, Reset would re-project from the post-
-    // solve camera and the corners would visibly stay where they
-    // were – which is what the operator originally reported as
-    // "reset is broken after a corner is moved". Clearing the
+    // Restore the pose from before this session's first solve, with the lens
+    // and pins it was solved from, so the re-projection puts the corners back
+    // where the operator started, not where they were dragged to. Clearing the
     // snapshot lets the next solve session start fresh.
-    if (preCornerPinningCamera) {
-      wizWriteLen('cam_pos_x', preCornerPinningCamera.pos_x);
-      wizWriteLen('cam_pos_y', preCornerPinningCamera.pos_y);
-      wizWriteLen('cam_pos_z', preCornerPinningCamera.pos_z);
-      document.getElementById('cam_pitch').value = preCornerPinningCamera.pitch;
-      document.getElementById('cam_yaw').value = preCornerPinningCamera.yaw;
-      document.getElementById('cam_roll').value = preCornerPinningCamera.roll;
-      document.getElementById('cam_fov').value = preCornerPinningCamera.fov;
-      preCornerPinningCamera = null;
+    if (preCornerPinningPose) {
+      restorePose(preCornerPinningPose);
+      preCornerPinningPose = null;
       saveToSession();
     }
     // Clear cached zoom-box viewBoxes so the next
@@ -3887,7 +3896,7 @@
   // ---------------------------------------------------------------
   function populateReview() {
     var state = getState();
-    var cam = solvedCamera || state.camera;
+    var cam = state.camera;
     var g = state.grid;
 
     document.getElementById('review-cam-pos-x').textContent = WUNIT.formatLength(Number(cam.pos_x));
@@ -3937,7 +3946,7 @@
       return;
     }
     var state = getState();
-    var camData = solvedCamera || state.camera;
+    var camData = state.camera;
     var gridData = state.grid;
     var lensData = state.lens || {};
 
@@ -4079,7 +4088,7 @@
   var lensFitTimer = null;
   var lensReSolveTimer = null;
   var lensDrag = null;
-  var pinnedCorners = null;  // the screen corners of the last solve
+  var pinnedCorners = null;  // {size, corners} of the last solve: the snapshot size and the four pins
   var lensSolvedWith = { k1: wizReadLensCoeff('wiz_lens_k1'), k2: wizReadLensCoeff('wiz_lens_k2') };
 
   function lensEnabled() { return !!document.getElementById('lens-container'); }
@@ -4103,6 +4112,11 @@
   }
   // A line counts while its ends and at least one middle point remain.
   function lensLineCounts(line) { return lensActivePoints(line).length >= 3; }
+  function lensRestoredPair(p) { return Array.isArray(p) && p.length === 2 && isFinite(p[0]) && isFinite(p[1]); }
+  function lensRestoredLine(line) {
+    return !!line && lensRestoredPair(line.p0) && lensRestoredPair(line.p1) && Array.isArray(line.mids)
+      && line.mids.length === 3 && Array.isArray(line.snapped) && line.snapped.length === 5;
+  }
   function lensSetMidFromPos(line, j, pos) {
     var f = lensFrame(line), m = line.mids[j - 1];
     var bx = line.p0[0] + m.t * f.dx, by = line.p0[1] + m.t * f.dy;
@@ -4585,26 +4599,28 @@
     clearTimeout(lensReSolveTimer);
     lensReSolveTimer = setTimeout(solveFromPinnedCorners, LENS_FIT_DEBOUNCE_MS);
   }
+  // Pins taken on a snapshot of another size are in other pixels: they solve nothing.
   function solveFromPinnedCorners() {
-    if (!pinnedCorners || !imageWidth || !imageHeight) return;
     var pins = pinnedCorners;
+    if (!pins || pins.size[0] !== imageWidth || pins.size[1] !== imageHeight) return;
+    var seq = ++poseSeq;
+    var body = wizardSolveBody(pins.corners);
     fetch('/api/wizard/solve', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(wizardSolveBody(pins)),
+      body: JSON.stringify(body),
     }).then(function(r) { return r.json(); })
     .then(function(data) {
-      if (data.error) return;
-      solvedCamera = data.camera;
-      wizardApplySolvedCamera(data.camera);
-      lensSolvedWith = { k1: wizReadLensCoeff('wiz_lens_k1'), k2: wizReadLensCoeff('wiz_lens_k2') };
-      saveToSession();
+      if (seq !== poseSeq || data.error) return;
+      applySolvedPose(data.camera, pins.corners, body);
       if (currentStep !== WIZ.lens) projectAndOverlay();
     }).catch(function() {});
   }
+  // The pose was solved through another lens pair: a solve from the pins that
+  // failed, is still running or had no pins to start from leaves Review's caution up.
   function lensChangedSinceSolve() {
     var k1 = wizReadLensCoeff('wiz_lens_k1'), k2 = wizReadLensCoeff('wiz_lens_k2');
-    return !pinnedCorners && (Math.abs(k1 - lensSolvedWith.k1) > 1e-9 || Math.abs(k2 - lensSolvedWith.k2) > 1e-9);
+    return Math.abs(k1 - lensSolvedWith.k1) > 1e-9 || Math.abs(k2 - lensSolvedWith.k2) > 1e-9;
   }
   function populateReviewLens(cam) {
     var k1El = document.getElementById('review-lens-k1');
@@ -4746,16 +4762,17 @@
       }
     }
   }
-  preCoarseCamera = getState().camera;
+  preCoarsePose = snapshotPose();
   updatePrepIllustration();
   updateGridIllustration();
   updateCamIllustration();
-  // Bind drag handlers on the four fine-zoom boxes once
-  // at page load. The SVG elements outlive every re-render (we only
-  // mutate their inner <g> children), so a one-time wiring is enough
-  // and cheaper than re-attaching per render.
+  // Bind every drag handler once at page load. The SVG groups outlive every
+  // re-render (only their children are drawn again), and a handler bound per
+  // render would act once for every projection so far.
   setupFineZoomDragging();
   setupCoarseZoomDragging();
+  setupRefDragging(document.getElementById('coarse-ref'));
+  setupCornerDragging(document.getElementById('fine-corners'));
   lensInit();
   wizardGo(restored ? currentStep : 0);
 })();

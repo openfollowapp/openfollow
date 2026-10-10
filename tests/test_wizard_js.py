@@ -147,3 +147,21 @@ def test_band_and_edge_map_geometry_is_the_servers(width: int) -> None:
         imageWidth=width,
     )
     assert (half, step, scale) == (band_half_size(width), band_step(width), edge_map_scale(width))
+
+
+def test_a_restored_line_must_have_the_shape_the_page_draws() -> None:
+    good = {"p0": [1, 2], "p1": [300, 4], "mids": [{}, {}, {}], "snapped": [True] * 5}
+    lines = [
+        good,
+        None,
+        {**good, "p0": [1]},
+        {**good, "p1": ["a", 2]},
+        {**good, "mids": [{}]},
+        {key: value for key, value in good.items() if key != "snapped"},
+    ]
+    kept = run_wizard_js(
+        "lines.map(function(line) { return lensRestoredLine(line); })",
+        functions=("lensRestoredPair", "lensRestoredLine"),
+        lines=lines,
+    )
+    assert kept == [True, False, False, False, False, False]

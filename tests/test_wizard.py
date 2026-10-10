@@ -23,6 +23,7 @@ from openfollow.configuration import CameraConfig, GridConfig
 from openfollow.scene.solver import apply_overlay_distortion, project_points, solve_camera_dlt
 from openfollow.web.server import ConfigWebServer
 from tests._ports import live_on_free_port
+from tests._wizard_js import assert_script_parses, needs_node
 
 # ---------------------------------------------------------------------------
 # Markers
@@ -1550,7 +1551,7 @@ class TestWizardLensCoeffs:
 # ---------------------------------------------------------------------------
 
 
-def _lens_station(tmp_path, monkeypatch, *, developer_mode: bool = False):
+def _lens_station(tmp_path, monkeypatch, *, developer_mode: bool = False, experimental: bool = True):
     """A station with experimental features on, so the wizard renders the Lens step."""
     from openfollow.configuration import AppConfig, save_config
 
@@ -1562,7 +1563,7 @@ def _lens_station(tmp_path, monkeypatch, *, developer_mode: bool = False):
     # Its own file, so a test holding several fixtures keeps the plain station plain.
     config_path = tmp_path / ("config_lens_dev.toml" if developer_mode else "config_lens.toml")
     cfg = AppConfig()
-    cfg.ui.show_experimental_features = True
+    cfg.ui.show_experimental_features = experimental
     cfg.ui.developer_mode = developer_mode
     cfg.camera.lens_k1 = -0.21
     cfg.camera.lens_k2 = 0.03
@@ -1974,6 +1975,22 @@ class TestWizardLensFitEndpoint:
 
 
 @integration
+@needs_node
+class TestWizardScriptParses:
+    """The page's own script, rendered with every toggle: an edit that breaks its syntax stops the whole wizard."""
+
+    @pytest.mark.parametrize(("experimental", "developer"), [(False, False), (True, False), (True, True)])
+    def test_every_inline_script_parses(self, tmp_path, monkeypatch, experimental: bool, developer: bool) -> None:
+        with _lens_station(tmp_path, monkeypatch, developer_mode=developer, experimental=experimental) as (_, base):
+            status, page = _get(base, "/wizard")
+        assert status == 200
+        scripts = re.findall(r"<script>(.*?)</script>", page, re.S)
+        assert len(scripts) >= 2
+        for i, source in enumerate(scripts):
+            assert_script_parses(source, tmp_path / f"wizard-{i}.js")
+
+
+@integration
 class TestLensChangeAfterPinning:
     """The pins are undistorted with whatever pair is current, so a new pair solves again from them."""
 
@@ -2148,10 +2165,6 @@ class TestWizardLensTemplate:
         import re
 
         src = self._src()
-        solve = re.search(r"function solveFromCorners\(\) \{(.*?)\n  \}\n", src, re.S)
-        coarse = re.search(r"function applyCoarseOffset\(.*?\) \{(.*?)\n  \}\n", src, re.S)
-        assert solve and "notePinnedCorners(screenCorners)" in solve.group(1)
-        assert coarse and "notePinnedCorners(screenCorners)" in coarse.group(1)
         changed = re.search(r"function onLensCoeffChanged\(\) \{(.*?)\n  \}\n", src, re.S)
         assert changed and "solveFromPinnedCorners" in changed.group(1)
         assert "if (!pinnedCorners" in changed.group(1)
@@ -2160,11 +2173,76 @@ class TestWizardLensTemplate:
         assert fit and "onLensCoeffChanged()" in fit.group(1)
         slider = re.search(r"window\.onWizardLensInput = function\(.*?\) \{(.*?)\n  \};\n", src, re.S)
         assert slider and "onLensCoeffChanged()" in slider.group(1)
-        # Reset drops the pins, and Review's caution follows the pins.
-        reset = re.search(r"window\.resetCornerPinning = function\(\) \{(.*?)\n  \};\n", src, re.S)
-        assert reset and "pinnedCorners = null" in reset.group(1)
-        assert "return !pinnedCorners && (" in src
+        # Pins taken on a snapshot of another size solve nothing.
+        again = re.search(r"function solveFromPinnedCorners\(\) \{(.*?)\n  \}\n", src, re.S)
+        assert again and "pins.size[0] !== imageWidth || pins.size[1] !== imageHeight" in again.group(1)
+        # Review's caution follows the pair the pose was solved with, pins or not, so a
+        # failed or pending solve from the pins leaves it up.
+        caution = re.search(r"function lensChangedSinceSolve\(\) \{(.*?)\n  \}\n", src, re.S)
+        assert caution and "pinnedCorners" not in caution.group(1)
         assert "'review-lens-caution').style.display = lensChangedSinceSolve()" in src
+
+    def test_every_solve_lands_in_the_form_through_one_path(self) -> None:
+        import re
+
+        src = self._src()
+        for name in ("solveFromCorners", "applyCoarseOffset", "solveFromPinnedCorners"):
+            body = re.search(r"function " + name + r"\(.*?\) \{(.*?)\n  \}\n", src, re.S)
+            assert body, name
+            assert "var seq = ++poseSeq;" in body.group(1), name
+            assert "seq !== poseSeq" in body.group(1), name
+            assert "applySolvedPose(data.camera, " in body.group(1), name
+            # The pair recorded is the one the request undistorted the pins with.
+            assert "var body = wizardSolveBody(" in body.group(1), name
+        pose = re.search(r"function applySolvedPose\(camera, screenCorners, body\) \{(.*?)\n  \}\n", src, re.S)
+        assert pose and "lensSolvedWith = { k1: body.camera.lens_k1, k2: body.camera.lens_k2 };" in pose.group(1)
+        # Review and Apply read the form every solve writes, so a later edit is what they save.
+        assert "solvedCamera" not in src
+        assert "var cam = state.camera;" in src and "var camData = state.camera;" in src
+
+    def test_a_reset_restores_the_pose_with_its_lens_and_pins(self) -> None:
+        import re
+
+        src = self._src()
+        restore = re.search(r"function restorePose\(pose\) \{(.*?)\n  \}\n", src, re.S)
+        assert restore
+        for line in (
+            "poseSeq++;",
+            "wizardApplySolvedCamera(pose.camera);",
+            "lensSolvedWith = pose.lensSolvedWith;",
+            "pinnedCorners = pose.pins;",
+        ):
+            assert line in restore.group(1)
+        for name, snapshot in (
+            ("resetCornerPinning", "preCornerPinningPose"),
+            ("resetCoarseCalibration", "preCoarsePose"),
+        ):
+            body = re.search(r"window\." + name + r" = function\(\) \{(.*?)\n  \};\n", src, re.S)
+            assert body and f"restorePose({snapshot})" in body.group(1), name
+
+    def test_drag_handlers_are_bound_once_at_page_load(self) -> None:
+        import re
+
+        src = self._src()
+        # A handler bound per projection acted once for every projection so far: one arrow press moved a corner N px.
+        for name, group in (("setupCornerDragging", "fine-corners"), ("setupRefDragging", "coarse-ref")):
+            calls = re.findall(name + r"\((.*?)\);", src)
+            assert calls == [f"document.getElementById('{group}')"], name
+        for name in ("renderCornerMarkers", "renderRefMarker"):
+            body = re.search(r"function " + name + r"\(.*?\) \{(.*?)\n  \}\n", src, re.S)
+            assert body and "setup" not in body.group(1), name
+            # A redraw under a keyboard nudge keeps the focus on the handle.
+            assert "focus({ preventScroll: true })" in body.group(1), name
+
+    def test_a_session_from_another_page_keeps_its_values(self) -> None:
+        import re
+
+        src = self._src()
+        body = re.search(r"function restoreFromSession\(\) \{(.*?)\n  \}\n", src, re.S)
+        assert body
+        # Restored values never count as a fresh visit, whose Y Offset default would overwrite them.
+        assert body.group(1).rstrip().endswith("return true;\n    } catch(e) { return false; }")
+        assert "state._lensLines.filter(lensRestoredLine)" in body.group(1)
 
     def test_middle_points_move_across_the_line_only(self) -> None:
         src = self._src()

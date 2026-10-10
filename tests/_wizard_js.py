@@ -55,3 +55,11 @@ def run_wizard_js(
     parts.append(f"process.stdout.write(JSON.stringify({expression}));")
     done = subprocess.run([NODE, "-e", "\n".join(parts)], capture_output=True, text=True, timeout=60, check=True)
     return json.loads(done.stdout)
+
+
+def assert_script_parses(source: str, path: Path) -> None:
+    """``node --check`` the script, written to ``path``; a syntax error fails with node's message."""
+    assert NODE is not None
+    path.write_text(source, encoding="utf-8")
+    done = subprocess.run([NODE, "--check", str(path)], capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0, done.stderr

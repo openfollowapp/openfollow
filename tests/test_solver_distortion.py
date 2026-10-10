@@ -103,9 +103,10 @@ def test_nan_rows_pass_through() -> None:
     assert np.all(np.isfinite(out[1]))
 
 
-# Any pair that does not fold inside the frame is a valid lens, so the forward
-# map is a bijection on the whole frame and the Newton inverse recovers every
-# pinhole point exactly, strong barrel and pincushion alike.
+# Any pair that does not fold inside the frame is a valid lens: the forward map
+# is one-to-one over every pinhole point of the frame, and the Newton inverse
+# recovers each exactly, strong barrel and pincushion alike. A screen point past
+# what the warp reaches has no preimage and lands on the fold ring.
 _K1 = st.floats(min_value=-0.8, max_value=0.8)
 _K2 = st.floats(min_value=-0.5, max_value=0.5)
 _X = st.floats(min_value=0.0, max_value=_W)
@@ -139,6 +140,18 @@ def test_strong_lenses_invert_to_the_pixel_everywhere(k1: float, k2: float) -> N
     pts = np.column_stack([rng.uniform(0.0, _W, 500), rng.uniform(0.0, _H, 500)])
     back = invert_overlay_distortion(apply_overlay_distortion(pts, _W, _H, k1, k2), _W, _H, k1, k2)
     assert np.max(np.hypot(*(back - pts).T)) < 1e-6
+
+
+@pytest.mark.parametrize("k1", [-0.8, -0.7, -0.6, -0.47, -0.38, -0.3, -0.19])
+@pytest.mark.parametrize("excess", [1e-12, 1e-9, 1e-4, 1e-2])
+def test_the_inverse_converges_where_the_warp_barely_climbs(k1: float, excess: float) -> None:
+    # Just above k2 = 9 k1^2 / 20 the warp's slope nearly touches zero past the frame
+    # without folding, and Newton creeps there: twelve steps missed by up to 108 px.
+    k2 = 9.0 * k1 * k1 / 20.0 * (1.0 + excess)
+    assert lens_warp_is_valid(k1, k2)
+    rd = np.linspace(0.0, 1.0, 2001)
+    ru = invert_normalised_radius(rd, k1, k2)
+    assert np.max(np.abs(ru * (1.0 + k1 * ru**2 + k2 * ru**4) - rd)) * _HALF_DIAG < 0.01
 
 
 def test_inverse_stays_bounded_for_out_of_domain_corner() -> None:

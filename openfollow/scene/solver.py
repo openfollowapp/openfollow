@@ -324,10 +324,14 @@ def ring_silhouette_edges(
     ]
 
 
-# Newton iterations to invert the radial warp. ``r*f(r)`` is monotone up to the
-# fold radius, so a bracketed Newton step converges to machine precision from
-# any start inside the bracket within a handful of steps.
-_DISTORTION_INVERT_ITERS = 12
+# Newton iterations to invert the radial warp, at most. ``r*f(r)`` is monotone up
+# to the fold radius, so a bracketed Newton step converges from any start inside
+# the bracket: most radii settle in a handful of steps, but just above
+# k2 = 9*k1^2/20 the slope nearly touches zero past the frame and Newton creeps
+# (24 steps settle every valid pair). The loop stops once every radius moves by
+# less than ``_DISTORTION_INVERT_SETTLED``.
+_DISTORTION_INVERT_ITERS = 40
+_DISTORTION_INVERT_SETTLED = 1e-14
 # A preimage past this many half-diagonals is no longer a screen point; it caps
 # the bracket for a warp that never folds (pincushion).
 _DISTORTION_INVERT_R_CAP = 4.0
@@ -341,7 +345,8 @@ def _fold_radius(k1: npt.ArrayLike, k2: npt.ArrayLike) -> npt.NDArray[np.float64
     out = np.full(a.shape, np.inf)
     linear = (b == 0.0) & (a < 0.0)
     safe_a = np.where(linear, a, -1.0)
-    out = np.where(linear, np.sqrt(-1.0 / (3.0 * safe_a)), out)
+    with np.errstate(over="ignore"):
+        out = np.where(linear, np.sqrt(-1.0 / (3.0 * safe_a)), out)
     disc = 9.0 * a * a - 20.0 * b
     quadratic = (b != 0.0) & (disc >= 0.0)
     sq = np.sqrt(np.where(quadratic, disc, 0.0))
@@ -383,7 +388,11 @@ def invert_normalised_radius(
         step = np.where(slope > tiny, h / np.maximum(slope, tiny), 0.0)
         cand = r - step
         bisect = (cand < lo) | (cand > hi) | (slope <= tiny)
-        r = np.where(bisect, 0.5 * (lo + hi), cand)
+        moved = np.where(bisect, 0.5 * (lo + hi), cand)
+        settled = bool(np.all((np.abs(moved - r) <= _DISTORTION_INVERT_SETTLED) | np.isnan(moved)))
+        r = moved
+        if settled:
+            break
     return np.asarray(r, dtype=np.float64)
 
 

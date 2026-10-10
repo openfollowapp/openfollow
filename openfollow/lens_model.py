@@ -10,12 +10,20 @@ anywhere out to the corner: ``r*f(r)`` must keep growing on ``[0, 1]``, which is
 map two pinhole points onto one screen point, so a click there has no single
 preimage.
 
+The rule is about pinhole radii. Under barrel distortion the warp takes the
+frame corner to ``f(1) < 1``, so a screen point beyond what the warp reaches
+has no preimage at all: the inverse puts it on the fold ring. A pair fitted
+without its edge term can leave a band along the frame's edge like that.
+
 This module is stdlib-only because ``configuration.py`` reads it.
 """
 
 from __future__ import annotations
 
 import math
+
+# No lens comes near this; past it ``9*k1*k1`` overflows and the fold check reads garbage.
+_MAX_COEFFICIENT = 1e3
 
 
 def lens_fold_radius(k1: float, k2: float) -> float:
@@ -36,12 +44,12 @@ def lens_fold_radius(k1: float, k2: float) -> float:
 
 
 def lens_warp_is_valid(k1: object, k2: object) -> bool:
-    """True when the pair is finite and the warp does not fold out to the corner."""
+    """True when the pair is finite, of a lens's size, and the warp does not fold out to the corner."""
     try:
         a = float(k1)  # type: ignore[arg-type]
         b = float(k2)  # type: ignore[arg-type]
     except (TypeError, ValueError, OverflowError):
         return False
-    if not (math.isfinite(a) and math.isfinite(b)):
+    if not (math.isfinite(a) and math.isfinite(b)) or max(abs(a), abs(b)) > _MAX_COEFFICIENT:
         return False
     return lens_fold_radius(a, b) > 1.0

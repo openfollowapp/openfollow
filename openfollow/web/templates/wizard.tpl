@@ -1177,8 +1177,9 @@
     if (sHi > 0 && sHi < s) s = sHi;
     return Math.sqrt(s);
   }
+  // Mirror lens_model.lens_warp_is_valid, its bound on a lens's size included.
   function wizLensIsValid(k1, k2) {
-    return isFinite(k1) && isFinite(k2) && wizLensFoldRadius(k1, k2) > 1;
+    return isFinite(k1) && isFinite(k2) && Math.max(Math.abs(k1), Math.abs(k2)) <= 1e3 && wizLensFoldRadius(k1, k2) > 1;
   }
   function wizLensPairValid() {
     return wizLensIsValid(wizReadLensCoeff('wiz_lens_k1'), wizReadLensCoeff('wiz_lens_k2'));
@@ -3298,7 +3299,8 @@
   // exactly like the rendered HUD and stays correct live while a corner is
   // dragged (no server round-trip needed).
   var DISTORTION_SUBDIVISIONS = 12;
-  var DISTORTION_INVERT_ITERS = 12;
+  var DISTORTION_INVERT_ITERS = 40;
+  var DISTORTION_INVERT_SETTLED = 1e-14;
   var DISTORTION_INVERT_R_CAP = 4;
 
   function wizApplyDistortion(pt, k1, k2) {
@@ -3324,7 +3326,10 @@
       var slope = 1 + 3 * k1 * r2 + 5 * k2 * r2 * r2;
       if (h < 0) lo = r; else if (h > 0) hi = r;
       var cand = slope > 1e-12 ? r - h / slope : r;
-      r = (cand < lo || cand > hi || slope <= 1e-12) ? 0.5 * (lo + hi) : cand;
+      var moved = (cand < lo || cand > hi || slope <= 1e-12) ? 0.5 * (lo + hi) : cand;
+      var settled = Math.abs(moved - r) <= DISTORTION_INVERT_SETTLED;
+      r = moved;
+      if (settled) break;
     }
     return r;
   }

@@ -27,7 +27,12 @@ _LENS_FUNCTIONS = (
     "wizInvertRadius",
     "wizInvertDistortion",
 )
-_LENS_VARS = ("DISTORTION_SUBDIVISIONS", "DISTORTION_INVERT_ITERS", "DISTORTION_INVERT_R_CAP")
+_LENS_VARS = (
+    "DISTORTION_SUBDIVISIONS",
+    "DISTORTION_INVERT_ITERS",
+    "DISTORTION_INVERT_SETTLED",
+    "DISTORTION_INVERT_R_CAP",
+)
 _W, _H = 1920, 1080
 
 # Pairs across the valid region: pinhole, barrel, a 100 degree lens, pincushion, mixed signs.
@@ -98,9 +103,11 @@ def test_fold_radius_and_validity_are_the_servers() -> None:
     out = run_wizard_js(
         "pairs.map(function(p) { return [wizLensFoldRadius(p[0], p[1]), wizLensIsValid(p[0], p[1])]; })",
         functions=("wizLensFoldRadius", "wizLensIsValid"),
-        pairs=[[a, b] for a in k1s for b in k2s],
+        pairs=[[a, b] for a in k1s for b in k2s] + [[-1e200, 1e200], [2e3, 0.0]],
     )
-    for (radius, valid), (a, b) in zip(out, [(a, b) for a in k1s for b in k2s], strict=True):
+    for (radius, valid), (a, b) in zip(
+        out, [(a, b) for a in k1s for b in k2s] + [(-1e200, 1e200), (2e3, 0.0)], strict=True
+    ):
         expected = lens_fold_radius(a, b)
         assert (radius is None) == math.isinf(expected), (a, b)
         if radius is not None:
@@ -108,7 +115,11 @@ def test_fold_radius_and_validity_are_the_servers() -> None:
         assert valid == lens_warp_is_valid(a, b), (a, b)
 
 
-@pytest.mark.parametrize(("k1", "k2"), _PAIRS)
+# Just above k2 = 9 k1^2 / 20, where Newton creeps.
+_SLOW_PAIRS = [(k1, 9.0 * k1 * k1 / 20.0 * (1.0 + 1e-9)) for k1 in (-0.8, -0.47, -0.38, -0.19)]
+
+
+@pytest.mark.parametrize(("k1", "k2"), _PAIRS + _SLOW_PAIRS)
 def test_inverse_radius_is_the_servers(k1: float, k2: float) -> None:
     radii = np.linspace(0.0, 1.0, 41).tolist()
     out = run_wizard_js(

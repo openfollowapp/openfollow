@@ -184,11 +184,18 @@ class _Lines:
     def _tls(
         self, ux: FloatArray, uy: FloatArray, rows: npt.NDArray[np.int64]
     ) -> tuple[FloatArray, FloatArray, FloatArray]:
-        """Centroid, direction and centred points of one line's TLS fit."""
+        """Centroid, direction and centred points of one line's TLS fit.
+
+        The direction runs from the line's first point toward its last. The SVD
+        picks its sign freely, and a sign that flips between two nearby ``k``
+        flips every residual, which the Jacobian's central difference reads as a
+        slope thousands of times too steep.
+        """
         centre = np.array([ux[rows].mean(), uy[rows].mean()])
         q = np.column_stack([ux[rows], uy[rows]]) - centre
         _, _, vt = np.linalg.svd(q, full_matrices=False)
-        return centre, np.asarray(vt[0], dtype=np.float64), q
+        direction = np.asarray(vt[0], dtype=np.float64)
+        return centre, -direction if direction @ (q[-1] - q[0]) < 0.0 else direction, q
 
     def residuals(self, k: FloatArray) -> FloatArray:
         """Perpendicular residual of every point about its line's TLS line, in pixels."""

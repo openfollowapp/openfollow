@@ -172,6 +172,17 @@ class TestRating:
         result = fit_lens_from_lines(lines_for(-0.3, 0.05, (MID_H, MID_V), noise=1.0, seed=2), W, H)
         assert result.rating == RATING_LOW
 
+    def test_a_vertical_line_never_flatters_the_rating(self) -> None:
+        # A near-vertical line's fitted direction may come out either way round; read as
+        # flipping between the Jacobian's two samples, it rated these two lines excellent.
+        mid = make_line(*MID_H, -0.3, 0.05, noise=0.7, rng=np.random.default_rng(11))
+        ratings = set()
+        for seed in range(80):
+            vertical = np.array(make_line((400.0, 80.0), (400.0, 1000.0), -0.3, 0.05, noise=0.0))
+            vertical += np.random.default_rng(5000 + seed).normal(0.0, 0.7, vertical.shape)
+            ratings.add(fit_lens_from_lines([mid, vertical.tolist()], W, H).rating)
+        assert "excellent" not in ratings
+
     def test_sloppier_points_lower_the_rating(self) -> None:
         precise = fit_lens_from_lines(lines_for(-0.3, 0.05, EDGES, noise=0.5, seed=3), W, H)
         sloppy = fit_lens_from_lines(lines_for(-0.3, 0.05, EDGES, noise=4.0, seed=3), W, H)

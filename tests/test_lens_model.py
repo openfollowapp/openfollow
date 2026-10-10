@@ -6,13 +6,12 @@ from __future__ import annotations
 
 import math
 
-import numpy as np
 import pytest
-from hypothesis import given
+from hypothesis import assume, given
 from hypothesis import strategies as st
 
 from openfollow.lens_model import lens_fold_radius, lens_warp_is_valid
-from openfollow.scene.solver import _fold_radius
+from openfollow.scene.solver import invert_normalised_radius
 
 pytestmark = pytest.mark.unit
 
@@ -44,6 +43,8 @@ def test_pairs_that_keep_growing_to_the_corner_are_valid(k1: float, k2: float) -
         (-0.25, -0.1),
         (-0.6, 0.1),  # k2 > 0 but the parabola dips below zero inside [0, 1]
         (-1.0, 0.3),  # two real roots, the first at s ~ 0.21
+        (-1e200, 1e200),  # 9 * k1 * k1 overflows: no lens is that strong
+        (2e3, 0.0),
     ],
 )
 def test_pairs_that_fold_inside_the_frame_are_invalid(k1: float, k2: float) -> None:
@@ -89,17 +90,20 @@ _K = st.floats(min_value=-1.0, max_value=1.0)
 
 @given(k1=_K, k2=_K)
 def test_valid_means_the_warp_keeps_growing_on_the_frame(k1: float, k2: float) -> None:
-    # The closed form must agree with a dense sample of g(s) = 1 + 3 k1 s + 5 k2 s^2.
-    s = np.linspace(0.0, 1.0, 2001)
-    growing = bool(np.all(1.0 + 3.0 * k1 * s + 5.0 * k2 * s * s > 0.0))
-    assert lens_warp_is_valid(k1, k2) == growing
+    # The closed form must agree with the least of g(s) = 1 + 3 k1 s + 5 k2 s^2 on [0, 1]:
+    # at an end, or at the vertex of an upward parabola.
+    candidates = [0.0, 1.0]
+    if k2 > 0.0 and 0.0 < -3.0 * k1 / (10.0 * k2) < 1.0:
+        candidates.append(-3.0 * k1 / (10.0 * k2))
+    least = min(1.0 + 3.0 * k1 * s + 5.0 * k2 * s * s for s in candidates)
+    # On the boundary the parabola only touches zero, and rounding decides either way.
+    assume(abs(least) > 1e-9)
+    assert lens_warp_is_valid(k1, k2) == (least > 0.0)
 
 
 @given(k1=_K, k2=_K)
-def test_vectorised_fold_radius_matches_the_scalar_one(k1: float, k2: float) -> None:
-    scalar = lens_fold_radius(k1, k2)
-    vector = float(_fold_radius(k1, k2))
-    if math.isinf(scalar):
-        assert math.isinf(vector)
-    else:
-        assert vector == pytest.approx(scalar, rel=1e-9)
+def test_a_radius_past_the_warp_inverts_to_the_fold_radius(k1: float, k2: float) -> None:
+    # Further than any warp of a lens this size reaches, so the inverse stops at the
+    # fold radius, or at its cap of four half-diagonals for a warp that never folds.
+    stopped = float(invert_normalised_radius(1e6, k1, k2))
+    assert stopped == pytest.approx(min(lens_fold_radius(k1, k2), 4.0), rel=1e-9)

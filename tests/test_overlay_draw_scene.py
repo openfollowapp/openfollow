@@ -20,6 +20,7 @@ from openfollow.runtime.overlay_draw_scene import (
     draw_grid,
     draw_marker,
     draw_origin,
+    grid_line_count,
     project,
 )
 from openfollow.runtime.overlay_state import MarkerOverlayData, OverlayState
@@ -147,6 +148,18 @@ class TestGridLineCountIsBounded:
         # n_z = 6/1+1 = 7 horizontal lines, n_x = 10/1+1 = 11 vertical lines.
         assert len(cr.move_tos) == 7 + 11
         assert len(cr.line_tos) == len(cr.move_tos)
+
+    @pytest.mark.parametrize(
+        ("length", "spacing", "lines"),
+        [
+            (10.0, 1.0, 11),  # a line every spacing, both edges included
+            (9.5, 1.0, 10),  # a remainder spreads the lines evenly rather than adding a short gap
+            (0.1, 1.0, 2),  # never fewer than the two edges
+            (5000.0, 0.05, _MAX_GRID_LINES_PER_AXIS),
+        ],
+    )
+    def test_line_count_per_axis(self, length: float, spacing: float, lines: int) -> None:
+        assert grid_line_count(length, spacing) == lines
 
     def test_hidden_grid_draws_nothing(self) -> None:
         # grid_visible=False short-circuits before any line is emitted.

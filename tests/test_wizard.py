@@ -533,6 +533,29 @@ class TestWizardPage:
         fn = body[start:end]
         assert "if (fineBowedEdges) fineBowedEdges = buildBowedEdges()" in fn
 
+    def test_corner_pinning_and_review_show_the_grid_lines(self, live_server) -> None:
+        """Corner Pinning and Review draw the grid's own lines inside the quad, under the corners."""
+        _, base = live_server
+        status, body = _get(base, "/wizard")
+        assert status == 200
+        fine = body.index('id="fine-quad"')
+        assert fine < body.index('<g id="fine-grid"></g>') < body.index('<g id="fine-corners"></g>')
+        review = body.index('id="review-quad"')
+        assert review < body.index('<g id="review-grid"></g>') < body.index('<g id="review-corners"></g>')
+        start = body.index("function updateAllOverlays(")
+        fn = body[start : body.index("\n  }", start)]
+        assert "renderGridLines('fine-grid', c);" in fn
+        assert "renderGridLines('review-grid', c);" in fn
+
+    def test_the_grid_follows_a_moved_corner(self, live_server) -> None:
+        """A drag, a nudge and the snap after a solve all run updateFineQuad, which redraws the grid from the pins."""
+        _, base = live_server
+        status, body = _get(base, "/wizard")
+        assert status == 200
+        start = body.index("function updateFineQuad(")
+        fn = body[start : body.index("\n  }", start)]
+        assert "renderGridLines('fine-grid', cornerPositions);" in fn
+
     def test_every_overlay_step_has_a_projection_status_surface(self, live_server) -> None:
         """Each step that renders the projected overlay can show a projection error.
 
@@ -1398,6 +1421,39 @@ class TestWizardTemplateSafetyPatterns:
         assert "var vfov" in src
         # The FOV readout reports both axes (degree sign + H and + V).
         assert "\\u00b0H" in src and "\\u00b0V" in src
+
+
+@unit
+class TestWizardGridLines:
+    def _src(self) -> str:
+        from pathlib import Path
+
+        path = Path(__file__).resolve().parent.parent / "openfollow" / "web" / "templates" / "wizard.tpl"
+        return path.read_text(encoding="utf-8")
+
+    def test_line_count_mirrors_the_hud(self) -> None:
+        from openfollow.runtime.overlay_draw_scene import grid_line_count
+
+        src = self._src()
+        cap = re.search(r"var GRID_MAX_LINES_PER_AXIS = (\d+);", src)
+        floor = re.search(
+            r"Math\.min\(Math\.max\(Math\.floor\(length / spacing\) \+ 1, (\d+)\), GRID_MAX_LINES_PER_AXIS\)", src
+        )
+        assert cap is not None and floor is not None, "wizGridLineCount() must mirror grid_line_count"
+        for length, spacing in ((10.0, 1.0), (6.0, 1.0), (9.5, 1.0), (10.0, 0.1), (0.1, 1.0), (7.0, 0.7), (5e3, 0.05)):
+            mirrored = min(max(int(length / spacing) + 1, int(floor.group(1))), int(cap.group(1)))
+            assert mirrored == grid_line_count(length, spacing), (length, spacing)
+
+    def test_lines_are_mapped_from_the_undistorted_corners_and_bowed_again(self) -> None:
+        src = self._src()
+        start = src.index("function wizGridLines(")
+        fn = src[start : src.index("\n  }\n", start)]
+        assert "wizInvertDistortion(corners[name], k1, k2)" in fn
+        assert "if (!isConvex(u)) return [];" in fn
+        assert "wizSquareToQuad(u.DSR, u.DSL, u.USL, u.USR)" in fn
+        assert "wizApplyDistortion(map(" in fn
+        # A folding pair draws pinhole, as the server's projection does.
+        assert "if (!wizLensIsValid(k1, k2)) { k1 = 0; k2 = 0; }" in fn
 
 
 _CAM_LENS = {**_CAM, "lens_k1": -0.2, "lens_k2": 0.02}

@@ -235,6 +235,9 @@
   .lens-point.selected .dot { stroke-width: 3; }
   .lens-pending { fill: none; stroke: var(--accent); stroke-width: 2; stroke-dasharray: 3 3; }
   .lens-label { fill: var(--text); font-size: 11px; font-weight: 600; pointer-events: none; }
+  /* The grid's own lines inside the quad, as the Operator Screen draws them. */
+  .wizard-grid-line { fill: none; stroke: var(--accent); stroke-opacity: 0.4; stroke-width: 1; vector-effect: non-scaling-stroke; pointer-events: none; }
+  #review-grid .wizard-grid-line { stroke: var(--success-mark); stroke-opacity: 0.5; }
   .wizard-loupe {
     position: absolute; width: 120px; height: 120px; border-radius: 50%; overflow: hidden;
     border: 2px solid var(--accent); background: var(--bg-deep); pointer-events: none; display: none;
@@ -859,6 +862,7 @@
         <img id="fine-image" alt="Camera snapshot">
         <svg id="fine-overlay" class="wizard-overlay" xmlns="http://www.w3.org/2000/svg">
           <polygon id="fine-quad" fill="rgba(255,188,0,0.06)" stroke="rgba(255,188,0,0.5)" stroke-width="2" points="0,0"/>
+          <g id="fine-grid"></g>
           <g id="fine-corners"></g>
         </svg>
         <div class="wizard-loupe" aria-hidden="true"><canvas width="240" height="240"></canvas></div>
@@ -932,7 +936,7 @@
     </div>
 
     <p class="wizard-help" style="margin-top:0.72rem;">
-      <strong>Drag each corner marker</strong> to its physical mark on the stage. The labels are stage positions: <strong>DSL</strong>/<strong>USL</strong> are stage left, <strong>DSR</strong>/<strong>USR</strong> are stage right (D = downstage/front, U = upstage/back). With a front-of-house camera you see the audience's view, so stage left is on the right of the image (audience right) and stage right is on the left (audience left).
+      <strong>Drag each corner marker</strong> to its physical mark on the stage. The grid's lines follow, spaced as the Operator Screen draws them. The labels are stage positions: <strong>DSL</strong>/<strong>USL</strong> are stage left, <strong>DSR</strong>/<strong>USR</strong> are stage right (D = downstage/front, U = upstage/back). With a front-of-house camera you see the audience's view, so stage left is on the right of the image (audience right) and stage right is on the left (audience left).
     </p>
     <p class="wizard-tip">Start with the two downstage corners (front), then adjust the upstage corners (back). If a corner turns red, the shape is invalid. For pixel-precise placement, click <strong>Fine adjust</strong> to switch to a 4×-zoomed per-corner view.</p>
     <p>If your corners are invalid, three things could be wrong: The position of your camera relative to the reference point, your marked rectangle has not the same size as the grid, or the corners of your rectangle are not 90 degrees.</p>
@@ -957,6 +961,7 @@
       <img id="review-image" alt="Camera snapshot">
       <svg id="review-overlay" class="wizard-overlay" xmlns="http://www.w3.org/2000/svg">
         <polygon id="review-quad" fill="rgba(255,188,0,0.06)" stroke="rgba(92,201,140,0.8)" stroke-width="2" points="0,0"/>
+        <g id="review-grid"></g>
         <g id="review-zoff"></g>
         <g id="review-corners"></g>
         <g id="review-ref"></g>
@@ -2524,6 +2529,9 @@
       document.getElementById(id).setAttribute('points', quadPts);
     });
 
+    renderGridLines('fine-grid', c);
+    renderGridLines('review-grid', c);
+
     // Corner markers
     renderCornerMarkers('coarse-corners', c, false);
     renderCornerMarkers('fine-corners', c, true);
@@ -3227,6 +3235,7 @@
       quadPts = pts.DSL[0]+','+pts.DSL[1]+' '+pts.DSR[0]+','+pts.DSR[1]+' '+pts.USR[0]+','+pts.USR[1]+' '+pts.USL[0]+','+pts.USL[1];
     }
     document.getElementById('fine-quad').setAttribute('points', quadPts);
+    renderGridLines('fine-grid', cornerPositions);
   }
 
   // ---------------------------------------------------------------
@@ -3351,6 +3360,73 @@
       for (var j = 0; j < poly.length - 1; j++) pts.push(poly[j][0] + ',' + poly[j][1]);
     }
     return pts.join(' ');
+  }
+
+  // Mirrors runtime/overlay_draw_scene.grid_line_count: lines spread evenly
+  // over each axis, both edges included.
+  var GRID_MAX_LINES_PER_AXIS = 200;
+
+  function wizGridLineCount(length, spacing) {
+    return Math.min(Math.max(Math.floor(length / spacing) + 1, 2), GRID_MAX_LINES_PER_AXIS);
+  }
+
+  // The projective map of the unit square onto a quad:
+  // (0,0) -> p0, (1,0) -> p1, (1,1) -> p2, (0,1) -> p3.
+  function wizSquareToQuad(p0, p1, p2, p3) {
+    var dx1 = p1[0] - p2[0], dx2 = p3[0] - p2[0], sx = p0[0] - p1[0] + p2[0] - p3[0];
+    var dy1 = p1[1] - p2[1], dy2 = p3[1] - p2[1], sy = p0[1] - p1[1] + p2[1] - p3[1];
+    var den = dx1 * dy2 - dx2 * dy1;
+    var g = (sx * dy2 - dx2 * sy) / den;
+    var h = (dx1 * sy - sx * dy1) / den;
+    var a = p1[0] - p0[0] + g * p1[0], b = p3[0] - p0[0] + h * p3[0];
+    var d = p1[1] - p0[1] + g * p1[1], e = p3[1] - p0[1] + h * p3[1];
+    return function(s, t) {
+      var w = g * s + h * t + 1;
+      return [(a * s + b * t + p0[0]) / w, (d * s + e * t + p0[1]) / w];
+    };
+  }
+
+  // The grid's inner lines in screen space, from its four corners. A plane
+  // projects through a pinhole by a homography, so the undistorted corners fix
+  // every point of it; each line is then bowed by the lens like the HUD's.
+  // Built from the corners alone, so it follows a corner while it is dragged.
+  function wizGridLines(corners) {
+    var grid = getState().grid;
+    if (!(grid.spacing > 0) || !(grid.width > 0) || !(grid.depth > 0)) return [];
+    if (!CORNER_NAMES.every(function(name) { return corners[name]; })) return [];
+    var k1 = wizReadLensCoeff('wiz_lens_k1');
+    var k2 = wizReadLensCoeff('wiz_lens_k2');
+    if (!wizLensIsValid(k1, k2)) { k1 = 0; k2 = 0; }
+    var u = {};
+    CORNER_NAMES.forEach(function(name) { u[name] = wizInvertDistortion(corners[name], k1, k2); });
+    if (!isConvex(u)) return [];
+    // s runs across the width from DSR, t up the depth from downstage.
+    var map = wizSquareToQuad(u.DSR, u.DSL, u.USL, u.USR);
+    var chords = (k1 || k2) ? DISTORTION_SUBDIVISIONS : 1;
+    var lines = [];
+    function addLine(s0, t0, s1, t1) {
+      var line = [];
+      for (var i = 0; i <= chords; i++) {
+        var f = i / chords;
+        line.push(wizApplyDistortion(map(s0 + f * (s1 - s0), t0 + f * (t1 - t0)), k1, k2));
+      }
+      lines.push(line);
+    }
+    var across = wizGridLineCount(grid.depth, grid.spacing);
+    var along = wizGridLineCount(grid.width, grid.spacing);
+    // The outermost lines are the quad's own outline.
+    for (var i = 1; i < across - 1; i++) addLine(0, i / (across - 1), 1, i / (across - 1));
+    for (var j = 1; j < along - 1; j++) addLine(j / (along - 1), 0, j / (along - 1), 1);
+    return lines;
+  }
+
+  function renderGridLines(groupId, corners) {
+    var group = document.getElementById(groupId);
+    group.innerHTML = '';
+    var d = wizGridLines(corners).map(function(line) {
+      return 'M' + line.map(function(p) { return p[0] + ' ' + p[1]; }).join(' L');
+    }).join(' ');
+    if (d) group.appendChild(svgEl('path', { d: d, class: 'wizard-grid-line' }));
   }
   // Per-corner viewBox state. Each entry is [vbX, vbY, vbW, vbH] in
   // image-pixel coordinates. Lazily populated when zoom mode is first

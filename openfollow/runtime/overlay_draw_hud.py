@@ -1211,9 +1211,9 @@ def build_info_panel_rows(state: OverlayState, *, source_max_len: int = 38) -> l
 
     The two recovery routes an operator has when the web UI is unreachable are
     reading the address off this panel and browsing ``<hostname>.local`` – the
-    running system's hostname, not the station name the config asks for, since
-    a rename that was skipped would otherwise send them to a name avahi never
-    answers on. Both rows show in normal operation rather than only in the
+    name mDNS publishes now (``mdns_name``), not the station name the config
+    asks for, since a rename that was skipped would otherwise send them to a
+    name nothing answers on. Both rows show in normal operation rather than only in the
     broken state, because a row that appears only when things break is a row
     nobody has learned to look for. The hostname row is the one exception: it
     is omitted when the host has no usable name, where naming nothing beats

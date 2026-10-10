@@ -30,18 +30,21 @@ class LocalHostNameReader:
 
     Once a name is known no caller waits: a read older than ``refresh_s`` is
     answered from memory while the next one runs. Before the first answer a
-    caller waits at most its own *wait_s*.
+    caller waits at most its own *wait_s*. A read that gets no answer keeps the
+    last name; only an answer replaces it.
     """
 
     def __init__(
         self,
         *,
+        platform: str = sys.platform,
         run: Callable[..., Any] = subprocess.run,
         clock: Callable[[], float] = time.monotonic,
         thread_factory: Callable[..., threading.Thread] = threading.Thread,
         refresh_s: float = _REFRESH_S,
         timeout_s: float = _SCUTIL_TIMEOUT_S,
     ) -> None:
+        self._platform = platform
         self._run = run
         self._clock = clock
         self._thread_factory = thread_factory
@@ -54,7 +57,9 @@ class LocalHostNameReader:
         self._reading: threading.Event | None = None
 
     def get(self, wait_s: float = 0.0) -> str | None:
-        """The LocalHostName, "" when there is none, or None while the first read runs."""
+        """The LocalHostName, "" when there is none (always off macOS), or None while the first read runs."""
+        if self._platform != "darwin":
+            return ""
         with self._lock:
             read_at = self._read_at
             if self._reading is None and (read_at is None or self._clock() - read_at >= self._refresh_s):
@@ -71,10 +76,10 @@ class LocalHostNameReader:
         try:
             self._thread_factory(target=self._read, args=(reading,), name="mdns-name", daemon=True).start()
         except RuntimeError:
-            self._store("", reading)
+            self._store(None, reading)
 
     def _read(self, reading: threading.Event) -> None:
-        name = ""
+        name: str | None = None
         try:
             done = self._run(
                 [_SCUTIL, "--get", "LocalHostName"],
@@ -83,6 +88,7 @@ class LocalHostNameReader:
                 timeout=self._timeout_s,
                 check=False,
             )
+            # A non-zero exit is scutil saying the name is not set.
             out = str(done.stdout or "").strip() if done.returncode == 0 else ""
             name = out if _LABEL_RE.fullmatch(out) else ""
         except (OSError, ValueError, subprocess.SubprocessError):
@@ -90,9 +96,12 @@ class LocalHostNameReader:
         finally:
             self._store(name, reading)
 
-    def _store(self, name: str, reading: threading.Event) -> None:
+    def _store(self, name: str | None, reading: threading.Event) -> None:
+        """Finish a read; *name* None (no answer) keeps the last one."""
         with self._lock:
-            self._name, self._read_at, self._reading = name, self._clock(), None
+            if name is not None:
+                self._name = name
+            self._read_at, self._reading = self._clock(), None
         reading.set()
 
 
@@ -109,15 +118,14 @@ def set_reader(new: LocalHostNameReader) -> LocalHostNameReader:
 def mdns_label(wait_s: float = 0.0) -> str:
     """The name mDNS publishes for this host, or "" while macOS's first read runs.
 
-    The kernel host name where Bonjour has no LocalHostName. *wait_s* bounds
+    The kernel host name off macOS, and where Bonjour has no LocalHostName. *wait_s* bounds
     the wait for that first read; the frame clock passes none.
     """
-    if sys.platform == "darwin":
-        name = _reader.get(wait_s)
-        if name is None:
-            return ""
-        if name:
-            return name
+    name = _reader.get(wait_s)
+    if name is None:
+        return ""
+    if name:
+        return name
     from openfollow.privilege.device_repair import current_hostname
 
     return current_hostname().strip()

@@ -478,9 +478,8 @@ class TestHostnameRow:
         def _scutil(*_args: object, **_kwargs: object) -> SimpleNamespace:
             return SimpleNamespace(returncode=0, stdout="Studio-Mac\n")
 
-        monkeypatch.setattr(mdns_host.sys, "platform", "darwin")
         monkeypatch.setattr(device_repair, "current_hostname", lambda: "studio")
-        mdns_host.set_reader(mdns_host.LocalHostNameReader(run=_scutil, thread_factory=InlineThread))
+        mdns_host.set_reader(mdns_host.LocalHostNameReader(platform="darwin", run=_scutil, thread_factory=InlineThread))
         app = _build_app()
         app._config = replace(app._config, web_port=8080)
         state = _build(app, pool)

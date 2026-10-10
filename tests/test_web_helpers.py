@@ -3231,22 +3231,27 @@ class TestAllowedRequestHosts:
             assert f"{host}.local" in hosts
 
 
-def test_allowed_request_hosts_on_linux_are_the_kernel_name_and_its_local_name(monkeypatch) -> None:
-    """avahi publishes the kernel host name, so a Pi accepts exactly what it always did."""
+@pytest.mark.parametrize(
+    ("kernel", "names"),
+    [
+        # A Pi's single-label name: exactly what it always accepted.
+        ("openfollow-noble-bear", {"openfollow-noble-bear", "openfollow-noble-bear.local"}),
+        # A dotted kernel name adds the short .local name the HUD has always advertised.
+        ("pi.example.lan", {"pi.example.lan", "pi.example.lan.local", "pi.local"}),
+    ],
+    ids=["single-label", "dotted"],
+)
+def test_allowed_request_hosts_on_linux_are_the_kernel_name_and_its_local_name(
+    monkeypatch, kernel: str, names: set[str]
+) -> None:
+    """avahi publishes the kernel host name, before its first dot."""
     import openfollow.web.routes as routes_mod
     from openfollow import mdns_host
 
-    monkeypatch.setattr(mdns_host.sys, "platform", "linux")
-    monkeypatch.setattr(routes_mod.socket, "gethostname", lambda: "openfollow-noble-bear")
+    mdns_host.set_reader(mdns_host.LocalHostNameReader(platform="linux"))
+    monkeypatch.setattr(routes_mod.socket, "gethostname", lambda: kernel)
     monkeypatch.setattr(routes_mod, "_get_local_ips", lambda: ["192.0.2.10"])
-    assert routes_mod._allowed_request_hosts() == {
-        "127.0.0.1",
-        "::1",
-        "localhost",
-        "192.0.2.10",
-        "openfollow-noble-bear",
-        "openfollow-noble-bear.local",
-    }
+    assert routes_mod._allowed_request_hosts() == {"127.0.0.1", "::1", "localhost", "192.0.2.10", *names}
 
 
 def test_allowed_request_hosts_on_macos_add_the_name_bonjour_publishes(monkeypatch) -> None:
@@ -3260,10 +3265,9 @@ def test_allowed_request_hosts_on_macos_add_the_name_bonjour_publishes(monkeypat
     def _scutil(*_args, **_kwargs):
         return SimpleNamespace(returncode=0, stdout="Studio-Mac\n")
 
-    monkeypatch.setattr(mdns_host.sys, "platform", "darwin")
     monkeypatch.setattr(routes_mod.socket, "gethostname", lambda: "studio.example.lan")
     monkeypatch.setattr(routes_mod, "_get_local_ips", lambda: ["192.0.2.10"])
-    mdns_host.set_reader(mdns_host.LocalHostNameReader(run=_scutil, thread_factory=InlineThread))
+    mdns_host.set_reader(mdns_host.LocalHostNameReader(platform="darwin", run=_scutil, thread_factory=InlineThread))
     assert routes_mod._allowed_request_hosts() == {
         "127.0.0.1",
         "::1",

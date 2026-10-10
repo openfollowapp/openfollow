@@ -99,17 +99,15 @@ def _forget_shared_dns_answers() -> Iterator[None]:
 
 @pytest.fixture(autouse=True)
 def _no_host_bonjour_name() -> Iterator[None]:
-    """No test may read the Mac's own Bonjour name: on macOS every test sees a
-    Mac without one, at once, so it falls back to the kernel host name as on Linux."""
+    """No test may read the Mac's own Bonjour name: every test sees a host that
+    publishes its kernel host name, as on Linux; a test that cares installs a
+    reader of its own."""
     from openfollow import mdns_host
-    from tests._threads import InlineThread
 
     def _no_subprocess(*_args: object, **_kwargs: object) -> object:
         raise OSError("no subprocess in tests")
 
-    previous = mdns_host.set_reader(
-        mdns_host.LocalHostNameReader(run=_no_subprocess, thread_factory=InlineThread)  # type: ignore[arg-type]
-    )
+    previous = mdns_host.set_reader(mdns_host.LocalHostNameReader(platform="linux", run=_no_subprocess))
     yield
     mdns_host.set_reader(previous)
 

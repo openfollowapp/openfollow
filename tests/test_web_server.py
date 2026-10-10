@@ -7297,9 +7297,8 @@ def bonjour_mac(monkeypatch):
     def _scutil(*_args, **_kwargs):
         return SimpleNamespace(returncode=0, stdout="Studio-Mac\n")
 
-    monkeypatch.setattr(mdns_host.sys, "platform", "darwin")
     monkeypatch.setattr(socket, "gethostname", lambda: "studio.example.lan")
-    mdns_host.set_reader(mdns_host.LocalHostNameReader(run=_scutil, thread_factory=InlineThread))
+    mdns_host.set_reader(mdns_host.LocalHostNameReader(platform="darwin", run=_scutil, thread_factory=InlineThread))
 
 
 def test_a_mac_accepts_saves_through_the_name_bonjour_publishes(live_server, bonjour_mac) -> None:

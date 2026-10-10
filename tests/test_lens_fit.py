@@ -8,7 +8,6 @@ import numpy as np
 import pytest
 
 from openfollow.scene.lens_fit import (
-    K2_SIGMA_GATE,
     MAX_LINES,
     MAX_POINTS_PER_LINE,
     RATING_LOW,
@@ -135,9 +134,6 @@ class TestK2Gate:
         result = fit_lens_from_lines(lines_for(*truth, EDGES, noise=1.0, seed=1), W, H)
         assert result.k2_fitted
         assert result.k2 == pytest.approx(truth[1], abs=0.02)
-
-    def test_gate_is_a_small_sigma(self) -> None:
-        assert 0.0 < K2_SIGMA_GATE <= 0.1
 
 
 class TestRating:

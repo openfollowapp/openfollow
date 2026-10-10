@@ -13,7 +13,9 @@ from openfollow.lens_model import lens_fold_radius, lens_warp_is_valid
 from openfollow.runtime.overlay_draw_scene import grid_line_count, project
 from openfollow.scene.edge_chains import edge_map_scale
 from openfollow.scene.edge_snap import band_half_size, band_step
+from openfollow.scene.lens_fit import fit_lens_from_lines
 from openfollow.scene.solver import apply_overlay_distortion, invert_normalised_radius
+from tests._lens_band import scaled_luma
 from tests._wizard_js import needs_node, run_wizard_js
 
 pytestmark = [pytest.mark.unit, needs_node]
@@ -139,7 +141,8 @@ def test_bowing_and_unbowing_a_point_are_the_servers(k1: float, k2: float) -> No
     np.testing.assert_allclose(apply_overlay_distortion(np.array(unbowed), _W, _H, k1, k2), points, atol=1e-6)
 
 
-@pytest.mark.parametrize("width", [320, 640, 1280, 1920, 2560, 3840, 7680])
+# 1200, 2160, 3120 and 1285 sit exactly on a half, where Python's round() goes to even.
+@pytest.mark.parametrize("width", [320, 640, 1200, 1280, 1285, 1920, 2160, 2560, 3120, 3840, 7680])
 def test_band_and_edge_map_geometry_is_the_servers(width: int) -> None:
     half, step, scale = run_wizard_js(
         "[lensBandHalf(), lensBandStep(), lensEdgeScale()]",
@@ -165,3 +168,46 @@ def test_a_restored_line_must_have_the_shape_the_page_draws() -> None:
         lines=lines,
     )
     assert kept == [True, False, False, False, False, False]
+
+
+@pytest.mark.parametrize("scale", [1, 2, 3, 4])
+def test_the_edge_map_is_the_block_means_the_server_is_tested_with(scale: int) -> None:
+    rng = np.random.default_rng(scale)
+    h, w = 37, 53
+    rgb = rng.integers(0, 256, (h, w, 3))
+    rgb[:, 20] = 255  # a one-pixel seam, which a sampled downscale loses between its samples
+    rgba = np.concatenate([rgb, np.full((h, w, 1), 255)], axis=2)
+    luma = run_wizard_js(
+        "Array.from(lensScaledLuma(rgba, w, h, scale))",
+        functions=("lensScaledLuma",),
+        rgba=rgba.ravel().tolist(),
+        w=w,
+        h=h,
+        scale=scale,
+    )
+    expected = scaled_luma((rgb[..., 0] * 299 + rgb[..., 1] * 587 + rgb[..., 2] * 114) / 1000.0, scale)
+    diff = np.abs(np.array(luma).reshape(expected.shape) - expected)
+    # Only a mean exactly on a half may differ: Math.round goes up, numpy to even.
+    assert diff.max() <= 1 and np.mean(diff == 0) > 0.95
+
+
+@pytest.mark.parametrize("span", [9.5, 10.0, 10.5, 40.0])
+def test_a_line_counts_exactly_when_the_fit_takes_it(span: float) -> None:
+    line = {
+        "p0": [100.0, 200.0],
+        "p1": [100.0 + span, 200.0],
+        "mids": [{"t": t, "off": 0.0, "on": True} for t in (0.25, 0.5, 0.75)],
+    }
+    counts = run_wizard_js(
+        "lensLineCounts(line)",
+        functions=("lensFrame", "lensPointPos", "lensPointIsOn", "lensActivePoints", "lensLineCounts"),
+        variables=("LENS_MIN_SPAN_PX",),
+        line=line,
+    )
+    points = [[100.0 + span * t, 200.0] for t in (0.0, 0.25, 0.5, 0.75, 1.0)]
+    try:
+        fit_lens_from_lines([points], 1920.0, 1080.0)
+        taken = True
+    except ValueError:
+        taken = False
+    assert counts == taken

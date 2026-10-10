@@ -23,6 +23,7 @@ edge where the curve runs stays on the curve and is reported as not snapped.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -86,13 +87,16 @@ class SnappedPoint:
 
 
 def band_half_size(canvas_w: float) -> int:
-    """Rows to either side of the chord the wizard cuts, scaled with the snapshot width."""
-    return max(MIN_BAND_HALF, min(MAX_BAND_HALF, round(canvas_w / 10.0)))
+    """Rows to either side of the chord the wizard cuts, scaled with the snapshot width.
+
+    A half rounds up, as the wizard's ``Math.round`` does.
+    """
+    return max(MIN_BAND_HALF, min(MAX_BAND_HALF, math.floor(canvas_w / 10.0 + 0.5)))
 
 
 def band_step(canvas_w: float) -> int:
-    """Chord pixels per band column, scaled with the snapshot width."""
-    return max(1, min(MAX_BAND_STEP, round(canvas_w / 480.0)))
+    """Chord pixels per band column, scaled with the snapshot width; a half rounds up."""
+    return max(1, min(MAX_BAND_STEP, math.floor(canvas_w / 480.0 + 0.5)))
 
 
 def band_columns(length: float, step: int) -> int:

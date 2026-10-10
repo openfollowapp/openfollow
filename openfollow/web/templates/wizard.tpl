@@ -1195,7 +1195,14 @@
     var num = document.getElementById(id);
     var range = document.getElementById(id + '_range');
     if (num) num.value = value;
-    if (range) range.value = value;
+    if (!range) return;
+    // A value past the slider's span widens it, so touching the slider never pulls the value back.
+    var v = parseFloat(value);
+    if (isFinite(v)) {
+      range.min = Math.min(parseFloat(range.min), v);
+      range.max = Math.max(parseFloat(range.max), v);
+    }
+    range.value = value;
   }
 
   // A slider or number edit on the Lens step: mirror the pair, flag a folding
@@ -1204,7 +1211,7 @@
     var num = document.getElementById('wiz_lens_' + which);
     var range = document.getElementById('wiz_lens_' + which + '_range');
     if (num && range) {
-      if (source === 'range') num.value = range.value; else range.value = num.value;
+      if (source === 'range') num.value = range.value; else wizWriteLensCoeff('wiz_lens_' + which, num.value);
     }
     var err = document.getElementById('wiz-lens-error');
     if (err) err.style.display = wizLensPairValid() ? 'none' : 'block';
@@ -4073,6 +4080,11 @@
   var LENS_T = [0.25, 0.5, 0.75];
   var LENS_FIT_DEBOUNCE_MS = 300;
   var LENS_MIN_LINE_PX = 20;
+  // Mirror lens_fit._MIN_LINE_SPAN_PX: a line spanning less carries no direction to fit.
+  var LENS_MIN_SPAN_PX = 10;
+  // CSS pixels a finger may wander before a tap counts as a drag.
+  var LENS_TAP_SLOP_PX = 6;
+  var lensFitSeq = 0;        // every fit request counts; an answer to an older one is dropped
   var LENS_RATING_LEVEL = { low: 'caution', medium: 'caution', okay: 'info', good: 'success', excellent: 'success' };
   var LENS_RATING_SEGMENTS = { low: 1, medium: 2, okay: 3, good: 4, excellent: 5 };
   var LENS_RATING_LABEL = { low: 'Low', medium: 'Medium', okay: 'Okay', good: 'Good', excellent: 'Excellent' };
@@ -4110,8 +4122,14 @@
     for (var j = 0; j < 5; j++) if (lensPointIsOn(line, j)) pts.push(lensPointPos(line, j));
     return pts;
   }
-  // A line counts while its ends and at least one middle point remain.
-  function lensLineCounts(line) { return lensActivePoints(line).length >= 3; }
+  // A line counts while its ends and at least one middle point remain, spanning enough to have a direction.
+  function lensLineCounts(line) {
+    var pts = lensActivePoints(line);
+    if (pts.length < 3) return false;
+    var xs = pts.map(function(p) { return p[0]; }), ys = pts.map(function(p) { return p[1]; });
+    var span = Math.max(Math.max.apply(null, xs) - Math.min.apply(null, xs), Math.max.apply(null, ys) - Math.min.apply(null, ys));
+    return span >= LENS_MIN_SPAN_PX;
+  }
   function lensRestoredPair(p) { return Array.isArray(p) && p.length === 2 && isFinite(p[0]) && isFinite(p[1]); }
   function lensRestoredLine(line) {
     return !!line && lensRestoredPair(line.p0) && lensRestoredPair(line.p1) && Array.isArray(line.mids)
@@ -4147,6 +4165,7 @@
     document.getElementById('lens-overlay').setAttribute('viewBox', '0 0 ' + imageWidth + ' ' + imageHeight);
     lensCanvas = snapshotCanvas;
     if (lensImageSize && (lensImageSize[0] !== imageWidth || lensImageSize[1] !== imageHeight) && lensLines.length) {
+      lensFitSeq++;
       lensLines = [];
       lensFit = null;
       lensSelected = null;
@@ -4195,6 +4214,7 @@
     lensPending = null;
     lensLines.push(line);
     lensSelected = { line: lensLines.length - 1, point: 4 };
+    lensShowNotice('');
     renderLens();
     lensSnapLine(line);
   }
@@ -4206,31 +4226,43 @@
     var scale = lensEdgeScale();
     return { scale: scale, width: Math.ceil(imageWidth / scale), height: Math.ceil(imageHeight / scale) };
   }
-  function lensLumaBase64(canvas, w, h) {
-    var rgba = canvas.getContext('2d').getImageData(0, 0, w, h).data;
-    var luma = new Uint8Array(w * h);
-    for (var i = 0, k = 0; i < luma.length; i++, k += 4) {
-      luma[i] = (rgba[k] * 299 + rgba[k + 1] * 587 + rgba[k + 2] * 114) / 1000;
-    }
+  function lensBase64(bytes) {
     var bin = '';
-    for (var j = 0; j < luma.length; j += 8192) bin += String.fromCharCode.apply(null, luma.subarray(j, j + 8192));
+    for (var j = 0; j < bytes.length; j += 8192) bin += String.fromCharCode.apply(null, bytes.subarray(j, j + 8192));
     return btoa(bin);
+  }
+  // The luma of the RGBA pixels w x h, as means of scale x scale blocks; the last
+  // row and column repeat to fill a block. A canvas scaling down by three or more
+  // samples a few pixels per block and drops one-pixel seams between them.
+  function lensScaledLuma(rgba, w, h, scale) {
+    var sw = Math.ceil(w / scale), sh = Math.ceil(h / scale), out = new Uint8Array(sw * sh);
+    for (var by = 0; by < sh; by++) {
+      for (var bx = 0; bx < sw; bx++) {
+        var sum = 0;
+        for (var dy = 0; dy < scale; dy++) {
+          var row = Math.min(by * scale + dy, h - 1) * w;
+          for (var dx = 0; dx < scale; dx++) {
+            var k = 4 * (row + Math.min(bx * scale + dx, w - 1));
+            sum += (rgba[k] * 299 + rgba[k + 1] * 587 + rgba[k + 2] * 114) / 1000;
+          }
+        }
+        out[by * sw + bx] = Math.round(sum / (scale * scale));
+      }
+    }
+    return out;
   }
   function lensRequestEdges() {
     if (!lensCanvas) return;
     var size = lensEdgeSize();
-    var c = document.createElement('canvas');
-    c.width = size.width; c.height = size.height;
-    var ctx = c.getContext('2d');
-    ctx.imageSmoothingEnabled = true;
-    ctx.drawImage(lensCanvas, 0, 0, size.width, size.height);
+    var rgba = lensCanvas.getContext('2d').getImageData(0, 0, imageWidth, imageHeight).data;
+    var luma = lensScaledLuma(rgba, imageWidth, imageHeight, size.scale);
     var snapshot = lensCanvas;
     fetch('/api/wizard/lens/edges', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         image_width: imageWidth, image_height: imageHeight, scale: size.scale,
-        width: size.width, height: size.height, data: lensLumaBase64(c, size.width, size.height), with_map: LENS_DEV,
+        width: size.width, height: size.height, data: lensBase64(luma), with_map: LENS_DEV,
       }),
     }).then(function(r) {
       return r.json().then(function(data) { return { ok: r.ok, data: data }; });
@@ -4307,22 +4339,24 @@
     c.width = cols; c.height = rows;
     var ctx = c.getContext('2d');
     ctx.imageSmoothingEnabled = true;
-    // image (x, y) -> band (u, v): u along the chord in columns, v across it in rows.
-    ctx.setTransform(tx / step, nx, ty / step, ny, -(p0[0] * tx + p0[1] * ty) / step, -(p0[0] * nx + p0[1] * ny) + half);
+    // image (x, y) -> band (u, v): u along the chord in columns, v across it in rows. A
+    // pixel's centre sits at +0.5 in canvas coordinates, in the image and in the band:
+    // both halves together put each cell's centre on the pixel position the server models.
+    var cx = p0[0] + 0.5, cy = p0[1] + 0.5;
+    ctx.setTransform(tx / step, nx, ty / step, ny, 0.5 - (cx * tx + cy * ty) / step, 0.5 - (cx * nx + cy * ny) + half);
     ctx.drawImage(lensCanvas, 0, 0);
     var rgba = ctx.getImageData(0, 0, cols, rows).data;
     var luma = new Uint8Array(cols * rows);
     for (var i = 0, k = 0; i < luma.length; i++, k += 4) {
-      luma[i] = (rgba[k] * 299 + rgba[k + 1] * 587 + rgba[k + 2] * 114) / 1000;
+      luma[i] = Math.round((rgba[k] * 299 + rgba[k + 1] * 587 + rgba[k + 2] * 114) / 1000);
     }
-    var bin = '';
-    for (var j = 0; j < luma.length; j += 8192) bin += String.fromCharCode.apply(null, luma.subarray(j, j + 8192));
-    return { step: step, half: half, cols: cols, rows: rows, data: btoa(bin) };
+    return { step: step, half: half, cols: cols, rows: rows, data: lensBase64(luma) };
   }
   function lensSnapLine(line) {
     if (!lensCanvas) { lensChanged(); return; }
     var band = lensBand(line.p0, line.p1);
     if (!band) { lensChanged(); return; }
+    var sent = JSON.stringify([line.p0, line.p1, line.mids]);
     fetch('/api/wizard/lens/snap', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -4330,7 +4364,8 @@
     }).then(function(r) {
       return r.json().then(function(data) { return { ok: r.ok, data: data }; });
     }).then(function(res) {
-      if (lensLines.indexOf(line) === -1) return;
+      // A line deleted or moved since is the operator's, not the answer's.
+      if (lensLines.indexOf(line) === -1 || JSON.stringify([line.p0, line.p1, line.mids]) !== sent) return;
       if (res.ok && res.data.points && res.data.points.length === 5) {
         var pts = res.data.points.map(function(p) { return [p.x, p.y]; });
         line.p0 = pts[0];
@@ -4473,11 +4508,23 @@
     box.style.display = '';
     box.className = 'notice' + (level === 'caution' ? ' warning' : level === 'success' ? ' success' : '');
     renderLensMeter(box.querySelector('.wizard-meter'), lensFit.rating);
-    var text = 'Coverage ' + (LENS_RATING_LABEL[lensFit.rating] || lensFit.rating).toLowerCase()
-      + ' · Barrel / fisheye ' + Number(lensFit.k1).toFixed(3)
-      + ' · Edge fit ' + (lensFit.k2_fitted ? Number(lensFit.k2).toFixed(3) : 'not measured');
+    var text = 'Coverage ' + (LENS_RATING_LABEL[lensFit.rating] || lensFit.rating).toLowerCase();
+    if (lensFitApplies(lensFit)) {
+      text += ' · Barrel / fisheye ' + Number(lensFit.k1).toFixed(3)
+        + ' · Edge fit ' + (lensFit.k2_fitted ? Number(lensFit.k2).toFixed(3) : 'not measured');
+    } else {
+      text += ' · Not applied until the coverage improves';
+    }
     document.getElementById('lens-result-text').textContent = text;
     document.getElementById('lens-result-hint').textContent = lensFit.hint || '';
+  }
+
+  function lensFitApplies(fit) { return fit.rating !== 'low'; }
+  // Whether the pair is the one the fit wrote (it writes four decimals).
+  function lensPairIsTheFits(k1, k2) {
+    return !!lensFit && lensFitApplies(lensFit)
+      && Math.abs(k1 - Number(Number(lensFit.k1).toFixed(4))) < 1e-9
+      && Math.abs(k2 - Number(Number(lensFit.k2).toFixed(4))) < 1e-9;
   }
 
   // ---- edits ----
@@ -4509,6 +4556,7 @@
     lensLines = [];
     lensSelected = null;
     lensPending = null;
+    lensShowNotice('');
     lensChanged();
   };
 
@@ -4518,6 +4566,7 @@
     lensFitTimer = setTimeout(runLensFit, LENS_FIT_DEBOUNCE_MS);
   }
   function runLensFit() {
+    var seq = ++lensFitSeq;
     var lines = lensLines.filter(lensLineCounts);
     lensLines.forEach(function(l) { l.curve = null; l.rms = null; l.misfit = false; });
     if (!lines.length) {
@@ -4539,6 +4588,7 @@
     }).then(function(r) {
       return r.json().then(function(data) { return { ok: r.ok, data: data }; });
     }).then(function(res) {
+      if (seq !== lensFitSeq) return;
       if (!res.ok || !res.data || res.data.error) {
         lensShowStatus((res.data && res.data.error) || 'Could not fit the lens.', false);
         return;
@@ -4551,15 +4601,19 @@
         l.rms = r.rms_px;
         l.misfit = !!r.misfit;
       });
-      wizWriteLensCoeff('wiz_lens_k1', Number(res.data.k1).toFixed(4));
-      wizWriteLensCoeff('wiz_lens_k2', Number(res.data.k2).toFixed(4));
-      var err = document.getElementById('wiz-lens-error');
-      if (err) err.style.display = 'none';
+      // A Low fit says what the lines cannot tell: it is shown, and the pair stays as it was.
+      if (lensFitApplies(lensFit)) {
+        wizWriteLensCoeff('wiz_lens_k1', Number(res.data.k1).toFixed(4));
+        wizWriteLensCoeff('wiz_lens_k2', Number(res.data.k2).toFixed(4));
+        var err = document.getElementById('wiz-lens-error');
+        if (err) err.style.display = 'none';
+      }
       renderLensResult();
       renderLens();
-      onLensCoeffChanged();
+      if (lensFitApplies(lensFit)) onLensCoeffChanged();
+      else saveToSession();
     }).catch(function() {
-      lensShowStatus('Could not fit the lens.', false);
+      if (seq === lensFitSeq) lensShowStatus('Could not fit the lens.', false);
     });
   }
 
@@ -4629,13 +4683,14 @@
     document.getElementById('review-lens-k2').textContent = Number(cam.lens_k2).toFixed(3);
     var meter = document.querySelector('#review-lens-rating .wizard-meter');
     var text = document.getElementById('review-lens-rating-text');
-    if (lensFit) {
+    // The rating describes the fit's own pair, not one fine-tuned away from it.
+    if (lensPairIsTheFits(Number(cam.lens_k1), Number(cam.lens_k2))) {
       renderLensMeter(meter, lensFit.rating);
       meter.style.display = '';
       text.textContent = LENS_RATING_LABEL[lensFit.rating] || lensFit.rating;
     } else {
       meter.style.display = 'none';
-      text.textContent = 'Not measured';
+      text.textContent = lensFit && lensFitApplies(lensFit) ? 'Fine-tuned' : 'Not measured';
     }
     document.getElementById('review-lens-caution').style.display = lensChangedSinceSolve() ? '' : 'none';
   }
@@ -4654,21 +4709,21 @@
       } else if (handle) {
         e.preventDefault();
         lensSelected = { line: +handle.dataset.line, point: +handle.dataset.point };
-        lensDrag = { line: lensLines[lensSelected.line], point: lensSelected.point, start: pt, moved: false };
+        lensDrag = { line: lensLines[lensSelected.line], point: lensSelected.point, client: [e.clientX, e.clientY], moved: false };
         overlay.setPointerCapture(e.pointerId);
         renderLens();
         lensFocusSelected();
         showLoupe('lens-container', 'lens-overlay', lensPointPos(lensDrag.line, lensDrag.point));
       } else if (e.target.id === 'lens-hit') {
         e.preventDefault();
-        lensDrag = { trace: true, start: pt, moved: false };
+        lensDrag = { trace: true, client: [e.clientX, e.clientY], moved: false };
         overlay.setPointerCapture(e.pointerId);
       }
     });
     overlay.addEventListener('pointermove', function(e) {
       if (!lensDrag) return;
       var pt = lensSvgPoint(e.clientX, e.clientY);
-      if (Math.abs(pt[0] - lensDrag.start[0]) > 1 || Math.abs(pt[1] - lensDrag.start[1]) > 1) lensDrag.moved = true;
+      if (Math.hypot(e.clientX - lensDrag.client[0], e.clientY - lensDrag.client[1]) > LENS_TAP_SLOP_PX) lensDrag.moved = true;
       if (lensDrag.trace) return;
       e.preventDefault();
       lensMovePoint(lensDrag.line, lensDrag.point, lensClamp(pt));
@@ -4682,7 +4737,7 @@
       hideLoupe('lens-container');
       try { overlay.releasePointerCapture(e.pointerId); } catch (err) {}
       if (drag.trace) {
-        if (!drag.moved) lensTraceClick(lensSvgPoint(e.clientX, e.clientY));
+        if (!drag.moved && e.type !== 'pointercancel') lensTraceClick(lensSvgPoint(e.clientX, e.clientY));
         return;
       }
       if (drag.moved) lensChanged(); else renderLens();

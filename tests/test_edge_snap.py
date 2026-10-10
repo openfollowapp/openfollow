@@ -111,6 +111,10 @@ def test_sample_points_sit_at_the_five_fractions() -> None:
         (1920, 192, 4, 16),
         (3840, MAX_BAND_HALF, MAX_BAND_STEP, 32),
         (9999, MAX_BAND_HALF, MAX_BAND_STEP, 83),
+        # A half rounds up, as the wizard's Math.round does.
+        (1200, 120, 3, 10),
+        (1285, 129, 3, 11),
+        (2160, 216, 5, 18),
     ],
 )
 def test_band_geometry_scales_with_the_snapshot(width: int, half: int, step: int, reach: int) -> None:

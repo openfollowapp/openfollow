@@ -2182,6 +2182,49 @@ class TestWizardLensTemplate:
         assert caution and "pinnedCorners" not in caution.group(1)
         assert "'review-lens-caution').style.display = lensChangedSinceSolve()" in src
 
+    def test_only_the_latest_fit_and_an_unmoved_line_take_an_answer(self) -> None:
+        import re
+
+        src = self._src()
+        fit = re.search(r"function runLensFit\(\) \{(.*?)\n  \}\n", src, re.S)
+        assert fit and "var seq = ++lensFitSeq;" in fit.group(1)
+        assert "if (seq !== lensFitSeq) return;" in fit.group(1)
+        # Lines cleared by a resolution change take no answer meant for the old ones.
+        snapshot = re.search(r"function lensOnSnapshot\(\) \{(.*?)\n  \}\n", src, re.S)
+        assert snapshot and "lensFitSeq++;" in snapshot.group(1)
+        snap = re.search(r"function lensSnapLine\(line\) \{(.*?)\n  \}\n", src, re.S)
+        assert snap and "var sent = JSON.stringify([line.p0, line.p1, line.mids]);" in snap.group(1)
+        assert "JSON.stringify([line.p0, line.p1, line.mids]) !== sent) return;" in snap.group(1)
+
+    def test_a_low_fit_is_shown_and_not_applied(self) -> None:
+        import re
+
+        src = self._src()
+        fit = re.search(r"function runLensFit\(\) \{(.*?)\n  \}\n", src, re.S)
+        assert fit
+        written = fit.group(1).index("wizWriteLensCoeff('wiz_lens_k1'")
+        assert fit.group(1).rfind("if (lensFitApplies(lensFit)) {", 0, written) != -1
+        assert "if (lensFitApplies(lensFit)) onLensCoeffChanged();" in fit.group(1)
+        assert "function lensFitApplies(fit) { return fit.rating !== 'low'; }" in src
+        assert "Not applied until the coverage improves" in src
+        # Review rates the pair only while it is the fit's own.
+        review = re.search(r"function populateReviewLens\(cam\) \{(.*?)\n  \}\n", src, re.S)
+        assert review and "lensPairIsTheFits(Number(cam.lens_k1), Number(cam.lens_k2))" in review.group(1)
+        assert "'Fine-tuned'" in review.group(1)
+
+    def test_a_tap_is_judged_in_screen_pixels_and_a_cancel_traces_nothing(self) -> None:
+        src = self._src()
+        assert "Math.hypot(e.clientX - lensDrag.client[0], e.clientY - lensDrag.client[1]) > LENS_TAP_SLOP_PX" in src
+        assert "if (!drag.moved && e.type !== 'pointercancel') lensTraceClick(" in src
+
+    def test_a_written_pair_widens_its_slider(self) -> None:
+        import re
+
+        src = self._src()
+        write = re.search(r"function wizWriteLensCoeff\(id, value\) \{(.*?)\n  \}\n", src, re.S)
+        assert write and "range.min = Math.min(parseFloat(range.min), v);" in write.group(1)
+        assert "range.max = Math.max(parseFloat(range.max), v);" in write.group(1)
+
     def test_every_solve_lands_in_the_form_through_one_path(self) -> None:
         import re
 

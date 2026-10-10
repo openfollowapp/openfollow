@@ -22,7 +22,8 @@ openfollow/              # Single unified package
 │   ├── camera.py
 │   ├── solver.py        # DLT camera solve + the radial overlay warp and its inverse
 │   ├── lens_fit.py      # k1 / k2 from traced straight lines (the wizard's Lens step)
-│   └── edge_snap.py     # Snap a traced line's points onto a brightness edge
+│   ├── edge_snap.py     # Snap a traced line's points onto a brightness edge
+│   └── edge_chains.py   # Edge suggestions: line-like edges found in a scaled snapshot
 ├── video/               # Video pipeline + overlay
 │   ├── receiver.py      # Generic GStreamer orchestrator
 │   ├── overlay.py       # Cairo HUD renderer

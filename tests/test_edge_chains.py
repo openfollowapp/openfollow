@@ -279,6 +279,19 @@ def test_a_spotlight_rim_is_not_offered() -> None:
     assert find(disc) == []
 
 
+@pytest.mark.parametrize(("radius", "span_deg"), [(1000.0, 110.0), (800.0, 120.0), (1500.0, 80.0)])
+def test_a_wide_arc_is_never_offered_whole(radius: float, span_deg: float) -> None:
+    # A round truss or a curved stage front: gently curved at its middle, as a line near a
+    # wide lens's corner is, but sagging a quarter of its length from its own chord. A short
+    # piece of it bows like a line and may be offered; the arc may not.
+    yy, xx = np.mgrid[0:H, 0:W]
+    centre_y = 120.0 + radius
+    angle = np.degrees(np.arctan2(xx - 960.0, centre_y - yy))
+    on_arc = (np.abs(np.hypot(xx - 960.0, yy - centre_y) - radius) <= 7.0) & (np.abs(angle) <= span_deg / 2)
+    arc_length = radius * np.radians(span_deg)
+    assert all(c.length < 0.3 * arc_length for c in find(np.where(on_arc, BRIGHT, DARK)))
+
+
 def test_a_wavy_edge_is_not_offered() -> None:
     yy, xx = np.mgrid[0:H, 0:W]
     wave = np.where(yy > 500.0 + 8.0 * np.sin(2.0 * np.pi * xx / 600.0), BRIGHT, DARK)

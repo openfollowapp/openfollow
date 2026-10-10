@@ -142,9 +142,7 @@ def _frame(
 
 
 def _subpixel_peak(signed: npt.NDArray[np.float64], i: int) -> float:
-    """Parabolic refinement of the peak at index ``i`` by its two neighbours."""
-    if i <= 0 or i >= len(signed) - 1:
-        return 0.0
+    """Parabolic refinement of the peak at index ``i`` (which has both neighbours) by its two neighbours."""
     left, mid, right = signed[i - 1], signed[i], signed[i + 1]
     if not (np.isfinite(left) and np.isfinite(right)):
         return 0.0
@@ -276,8 +274,6 @@ def snap_line_to_edges(
     # The clicks say where the line ends: the fitted ends stay within their reach.
     coefficients[2:] = np.clip(coefficients[2:], -reach, reach)
     curve = design @ coefficients
-    if best_score <= 0.0:
-        curve = np.zeros(cols)
 
     points = []
     for fraction in LINE_SAMPLE_FRACTIONS:
@@ -294,7 +290,15 @@ def snap_line_to_edges(
         snapped = best_score > 0.0 and peak >= min_strength
         if snapped:
             j = lo + int(np.nanargmax(window))
-            offset = j - half + _subpixel_peak(np.where(np.isfinite(profile), profile, -np.inf), j)
+            known_profile = np.where(np.isfinite(profile), profile, -np.inf)
+            # The window's own edge on the flank of a peak beyond it is no peak.
+            snapped = known_profile[j] >= max(known_profile[j - 1], known_profile[j + 1])
+        if snapped:
+            offset = j - half + _subpixel_peak(known_profile, j)
         position = a + fraction * (b - a) + offset * normal
         points.append(SnappedPoint(float(position[0]), float(position[1]), snapped))
+    if sum(p.snapped for p in points) < 2:
+        # Nothing along the path stands out as an edge: the best path over grain is
+        # still a path, so the line stays where it was clicked.
+        return [SnappedPoint(float(x), float(y), False) for x, y in line_sample_points(p0, p1)]
     return points

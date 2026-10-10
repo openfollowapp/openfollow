@@ -54,6 +54,9 @@ _JOIN_MIN_POINTS = 8
 # The sharpest bend a straight line takes through a lens, as curvature times the scaled width:
 # about 2 for a 100 degree lens, while a spotlight's rim is 20 and more.
 _MAX_CURVATURE_WIDTH = 4.0
+# How far a straight line through a lens strays from its own chord, as a share of the chord: a
+# few percent, while a wide arc (a round truss, a curved stage front) strays a quarter of it.
+_MAX_SAG_FRACTION = 0.1
 # A chain with this share of its points within the distance (snapshot pixels) of an accepted one repeats it.
 _DUPLICATE_DISTANCE = 16.0
 _DUPLICATE_FRACTION = 0.5
@@ -257,7 +260,7 @@ def _arc_length(chain: npt.NDArray[np.float64]) -> float:
 
 
 def _bows_like_a_line(chain: npt.NDArray[np.float64], max_curvature: float) -> bool:
-    """Whether the chain follows one quartic, bent no more than a lens bends a straight line."""
+    """Whether the chain follows one quartic, bent and bowed no more than a lens bends a straight line."""
     centre = chain.mean(axis=0)
     rel = chain - centre
     _values, vectors = np.linalg.eigh(rel.T @ rel)
@@ -266,9 +269,16 @@ def _bows_like_a_line(chain: npt.NDArray[np.float64], max_curvature: float) -> b
     v = rel @ np.array([-axis[1], axis[0]])
     design = np.column_stack([u**k for k in range(5)])
     coefficients, *_ = np.linalg.lstsq(design, v, rcond=None)
-    residual = v - design @ coefficients
+    fitted = design @ coefficients
+    residual = v - fitted
     rms = float(np.sqrt(np.mean(residual * residual)))
-    return rms <= _SMOOTH_RMS and 2.0 * abs(float(coefficients[2])) <= max_curvature
+    if rms > _SMOOTH_RMS or 2.0 * abs(float(coefficients[2])) > max_curvature:
+        return False
+    # The curvature at the middle passes a wide arc too; its sag from the chord does not.
+    first, last = int(np.argmin(u)), int(np.argmax(u))
+    span = float(u[last] - u[first])
+    chord = fitted[first] + (u - u[first]) * (fitted[last] - fitted[first]) / span
+    return float(np.max(np.abs(fitted - chord))) <= _MAX_SAG_FRACTION * span + _SMOOTH_RMS
 
 
 def _close_pairs(pts: npt.NDArray[np.float64], radius: float) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]:
@@ -293,8 +303,7 @@ def _close_pairs(pts: npt.NDArray[np.float64], radius: float) -> tuple[npt.NDArr
             keep = a < b if dx == 0 and dy == 0 else np.ones(a.shape, dtype=bool)
             firsts.append(np.minimum(a[keep], b[keep]))
             seconds.append(np.maximum(a[keep], b[keep]))
-    if not firsts:
-        return np.empty(0, dtype=np.int64), np.empty(0, dtype=np.int64)
+    # Every point meets its own cell, so neither list is empty.
     return np.concatenate(firsts), np.concatenate(seconds)
 
 

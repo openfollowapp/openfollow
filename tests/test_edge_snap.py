@@ -13,7 +13,6 @@ from openfollow.scene.edge_snap import (
     MAX_BAND_STEP,
     MIN_BAND_HALF,
     LumaBand,
-    _subpixel_peak,
     band_columns,
     band_half_size,
     band_step,
@@ -234,13 +233,25 @@ def test_a_covered_stretch_leaves_its_point_on_the_curve_unsnapped() -> None:
     assert np.hypot(pts[2].x - chord_mid[0], pts[2].y - chord_mid[1]) > 30.0
 
 
-def test_noise_alone_snaps_nothing_and_leaves_the_line_where_it_was() -> None:
+@pytest.mark.parametrize("sigma", [1.5, 3.0, 6.0])
+def test_noise_alone_snaps_nothing_and_leaves_the_line_where_it_was(sigma: float) -> None:
+    # The best path through grain is still a path: followed, it moved points 16 px.
     rng = np.random.default_rng(1)
-    img = np.clip(DARK + rng.normal(0.0, 1.5, (H, W)), 0, 255)
+    img = np.clip(DARK + rng.normal(0.0, sigma, (H, W)), 0, 255)
     p0, p1 = (200.0, 600.0), (1700.0, 630.0)
     pts = snap(img, p0, p1)
     assert not any(p.snapped for p in pts)
-    np.testing.assert_allclose([[p.x, p.y] for p in pts], line_sample_points(p0, p1), atol=end_search_radius(W) + 30.0)
+    np.testing.assert_allclose([[p.x, p.y] for p in pts], line_sample_points(p0, p1))
+
+
+def test_an_end_beside_an_edge_beyond_its_reach_is_not_snapped_onto_its_flank() -> None:
+    p0, p1 = (200.0, 600.0), (1700.0, 630.0)
+    img = strip_frame(p0, p1, STRAIGHT, noise=1.0)
+    # The strip's upper edge sits 7 px above its centre line, and one pixel past the ends' reach.
+    shift = 7.0 + end_search_radius(W) + 1.0
+    clicks = (p0[0], p0[1] - shift), (p1[0], p1[1] - shift)
+    pts = snap_line_to_edges(*clicks, cut_band(img, *clicks), W, H)
+    assert [p.snapped for p in pts] == [False, True, True, True, False]
 
 
 def test_a_flat_frame_keeps_the_chord_exactly() -> None:
@@ -316,17 +327,30 @@ def test_a_degenerate_line_is_refused() -> None:
         snap_line_to_edges((200.0, 600.0), (200.0, 600.0), band, W, H)
 
 
-@pytest.mark.parametrize(
-    ("signed", "i", "expected"),
-    [
-        (np.array([1.0, 5.0, 1.0]), 1, 0.0),
-        (np.array([1.0, 5.0, 3.0]), 1, 1.0 / 6.0),
-        (np.array([1.0, 5.0, 1.0]), 0, 0.0),
-        (np.array([1.0, 5.0, 1.0]), 2, 0.0),
-        (np.array([np.nan, 5.0, 1.0]), 1, 0.0),
-        (np.array([5.0, 5.0, 5.0]), 1, 0.0),
-    ],
-    ids=["symmetric", "leaning", "first", "last", "masked-neighbour", "flat"],
-)
-def test_sub_pixel_refinement_stays_within_half_a_pixel_and_declines_without_a_peak(signed, i, expected) -> None:
-    assert _subpixel_peak(signed, i) == pytest.approx(expected)
+def step_frame(edge_x: float, *, ramp: float = 1.0) -> np.ndarray:
+    """Dark left of ``edge_x``, bright right of it, the step spread linearly over ``ramp`` pixels."""
+    xx = np.arange(W, dtype=np.float64)[None, :] * np.ones((H, 1))
+    return DARK + (BRIGHT - DARK) * np.clip((xx - edge_x) / ramp + 0.5, 0.0, 1.0)
+
+
+@pytest.mark.parametrize("fraction", [0.0, 0.25, 0.5, 0.75])
+def test_an_edge_between_pixels_is_found_to_a_tenth_of_one(fraction: float) -> None:
+    edge = 1000.0 + fraction
+    pts = snap(step_frame(edge, ramp=2.0), (edge + 5.0, 100.0), (edge + 5.0, 900.0))
+    assert all(p.snapped for p in pts)
+    assert max(abs(p.x - edge) for p in pts) < 0.1
+
+
+def test_a_very_soft_edge_snaps_onto_its_ramp() -> None:
+    # Spread over twenty pixels, the gradient has a flat top: no parabola to refine.
+    pts = snap(step_frame(1000.0, ramp=20.0), (1000.0, 100.0), (1000.0, 900.0))
+    assert all(p.snapped for p in pts)
+    assert all(990.0 <= p.x <= 1010.0 for p in pts)
+
+
+def test_an_edge_beside_the_frame_border_snaps_to_its_pixel() -> None:
+    # The cells outside the snapshot carry no gradient, so the peak beside them has one
+    # neighbour to refine it by, and stays on its pixel.
+    pts = snap(step_frame(1.0), (12.0, 100.0), (12.0, 900.0))
+    assert all(p.snapped for p in pts)
+    np.testing.assert_allclose([p.x for p in pts], 1.0)

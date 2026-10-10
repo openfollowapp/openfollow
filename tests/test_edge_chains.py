@@ -211,7 +211,14 @@ def test_the_limit_caps_the_suggestions() -> None:
     for y in (150.0, 500.0, 850.0):
         img = straight_strip((300.0, y), (1600.0, y), base=img)
     assert len(find(img, limit=2)) == 2
-    assert MAX_CANDIDATES >= 3
+
+
+def test_more_lines_than_the_cap_offer_the_cap() -> None:
+    img = np.full((H, W), DARK)
+    for x in (320.0, 960.0, 1600.0):
+        for y in (120.0, 330.0, 540.0, 750.0, 960.0):
+            img = straight_strip((x - 200.0, y), (x + 200.0, y), base=img)
+    assert len(find(img)) == MAX_CANDIDATES
 
 
 # --------------------------------------------------------------------------- #
@@ -286,6 +293,30 @@ def test_a_short_edge_is_not_offered() -> None:
 @pytest.mark.parametrize("contrast", [12.0, 20.0], ids=["below-the-weak-level", "weak-but-never-strong"])
 def test_a_faint_edge_is_not_offered(contrast: float) -> None:
     assert find(straight_strip((200.0, 300.0), (1700.0, 330.0), bright=DARK + contrast)) == []
+
+
+def bars(width: int, height: int) -> np.ndarray:
+    """Rows of short bars, the texture of a perforated panel or an LED wall."""
+    img = np.full((height, width), 40.0)
+    for y in range(8, height - 8, 16):
+        for x0 in range(4, width - 34, 36):
+            img[y : y + 2, x0 : x0 + 30] = 220.0
+    return img
+
+
+def test_a_textured_picture_costs_no_more_memory_than_a_flat_one() -> None:
+    # Every bar is a piece; pairing each piece's ends with every other's took gigabytes.
+    import tracemalloc
+
+    def peak(img: np.ndarray) -> int:
+        tracemalloc.start()
+        try:
+            find_edge_candidates(img, 1, img.shape[1], img.shape[0])
+            return tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+
+    assert peak(bars(640, 360)) < 1.5 * peak(np.full((360, 640), 40.0))
 
 
 def test_noise_alone_offers_nothing() -> None:

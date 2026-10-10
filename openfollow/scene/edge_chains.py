@@ -271,6 +271,33 @@ def _bows_like_a_line(chain: npt.NDArray[np.float64], max_curvature: float) -> b
     return rms <= _SMOOTH_RMS and 2.0 * abs(float(coefficients[2])) <= max_curvature
 
 
+def _close_pairs(pts: npt.NDArray[np.float64], radius: float) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]:
+    """Index pairs ``a < b`` of points that may lie within ``radius``: those in the same or a touching cell.
+
+    A textured picture has thousands of pieces, so each end meets only the ends in
+    its own and the touching cells of a grid ``radius`` wide.
+    """
+    keys = np.floor(pts / radius).astype(np.int64)
+    members: dict[tuple[int, int], list[int]] = {}
+    for i, (cx, cy) in enumerate(keys.tolist()):
+        members.setdefault((cx, cy), []).append(i)
+    cells = {key: np.array(found, dtype=np.int64) for key, found in members.items()}
+    firsts, seconds = [], []
+    for (cx, cy), here in cells.items():
+        # Half the neighbourhood, so each pair of cells is met once.
+        for dx, dy in ((0, 0), (1, -1), (1, 0), (1, 1), (0, 1)):
+            there = cells.get((cx + dx, cy + dy))
+            if there is None:
+                continue
+            a, b = (grid.ravel() for grid in np.meshgrid(here, there, indexing="ij"))
+            keep = a < b if dx == 0 and dy == 0 else np.ones(a.shape, dtype=bool)
+            firsts.append(np.minimum(a[keep], b[keep]))
+            seconds.append(np.maximum(a[keep], b[keep]))
+    if not firsts:
+        return np.empty(0, dtype=np.int64), np.empty(0, dtype=np.int64)
+    return np.concatenate(firsts), np.concatenate(seconds)
+
+
 def _join_across_gaps(
     pieces: list[npt.NDArray[np.float64]], gap: float, max_curvature: float
 ) -> list[npt.NDArray[np.float64]]:
@@ -290,15 +317,16 @@ def _join_across_gaps(
     out /= np.linalg.norm(out, axis=2, keepdims=True)
     pts = ends.reshape(-1, 2)
     dirs = out.reshape(-1, 2)
-    delta = pts[None, :, :] - pts[:, None, :]
-    distance = np.linalg.norm(delta, axis=2)
-    with np.errstate(invalid="ignore", divide="ignore"):
-        unit = delta / distance[:, :, None]
-    towards = np.sum(dirs[:, None, :] * unit, axis=2)
-    back = -np.sum(dirs[None, :, :] * unit, axis=2)
     own = np.arange(2 * n) // 2
-    linkable = (distance <= gap) & (towards >= _JOIN_COSINE) & (back >= _JOIN_COSINE) & (own[:, None] != own[None, :])
-    order = np.argsort(distance, axis=None, kind="stable")
+    end_a, end_b = _close_pairs(pts, gap)
+    delta = pts[end_b] - pts[end_a]
+    distance = np.linalg.norm(delta, axis=1)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        unit = delta / distance[:, None]
+    towards = np.sum(dirs[end_a] * unit, axis=1)
+    back = -np.sum(dirs[end_b] * unit, axis=1)
+    linkable = (distance <= gap) & (towards >= _JOIN_COSINE) & (back >= _JOIN_COSINE) & (own[end_a] != own[end_b])
+    end_a, end_b, distance = end_a[linkable], end_b[linkable], distance[linkable]
     group = list(range(n))
 
     def root(i: int) -> int:
@@ -307,10 +335,11 @@ def _join_across_gaps(
         return i
 
     link: dict[int, int] = {}
-    for flat in order:
-        a, b = divmod(int(flat), 2 * n)
+    # Nearest first; ties in the order of the ends.
+    for k in np.lexsort((end_b, end_a, distance)):
+        a, b = int(end_a[k]), int(end_b[k])
         pa, pb = own[a], own[b]
-        if a >= b or not linkable[a, b] or a in link or b in link or root(pa) == root(pb):
+        if a in link or b in link or root(pa) == root(pb):
             continue
         # Oriented so each piece runs into the gap: a's piece ends at a, b's piece starts at b.
         first = pieces[pa] if a % 2 == 1 else pieces[pa][::-1]
@@ -350,6 +379,21 @@ def _runs_alike(chain: npt.NDArray[np.float64], other: npt.NDArray[np.float64], 
         return False
     a, b = chain[-1] - chain[0], other[-1] - other[0]
     return abs(float(a @ b)) >= _CROWD_COSINE * float(np.linalg.norm(a) * np.linalg.norm(b))
+
+
+def _repeats(
+    chain: npt.NDArray[np.float64], other: npt.NDArray[np.float64], box: npt.NDArray[np.float64], distance: float
+) -> bool:
+    """Whether most of the chain lies within ``distance`` of ``other``, whose box grown by it is ``box``.
+
+    A point outside the box is farther than ``distance`` from all of ``other``, so
+    only the points inside it are measured.
+    """
+    near = np.all((chain >= box[0]) & (chain <= box[1]), axis=1)
+    if np.mean(near) < _DUPLICATE_FRACTION:
+        return False
+    within = np.count_nonzero(_distance_to_polyline(chain[near], other) <= distance)
+    return within / len(chain) >= _DUPLICATE_FRACTION
 
 
 def _distance_to_polyline(
@@ -411,18 +455,14 @@ def find_edge_candidates(
         scored.append((score, piece, length, mean))
     scored.sort(key=lambda item: -item[0])
 
-    kept: list[npt.NDArray[np.float64]] = []
+    kept: list[tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]] = []
     candidates: list[EdgeCandidate] = []
     for _score, piece, length, mean in scored:
         if len(candidates) >= limit:
             break
-        if any(
-            np.mean(_distance_to_polyline(piece, other) <= duplicate) >= _DUPLICATE_FRACTION
-            or _runs_alike(piece, other, crowd)
-            for other in kept
-        ):
+        if any(_runs_alike(piece, other, crowd) or _repeats(piece, other, box, duplicate) for other, box in kept):
             continue
-        kept.append(piece)
+        kept.append((piece, np.array([piece.min(axis=0) - duplicate, piece.max(axis=0) + duplicate])))
         index = np.unique(np.append(np.arange(0, len(piece), _OUTPUT_SPACING), len(piece) - 1))
         full = (piece[index] + 0.5) * scale - 0.5
         points = [(float(x), float(y)) for x, y in full]

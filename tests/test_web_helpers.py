@@ -3231,6 +3231,50 @@ class TestAllowedRequestHosts:
             assert f"{host}.local" in hosts
 
 
+def test_allowed_request_hosts_on_linux_are_the_kernel_name_and_its_local_name(monkeypatch) -> None:
+    """avahi publishes the kernel host name, so a Pi accepts exactly what it always did."""
+    import openfollow.web.routes as routes_mod
+    from openfollow import mdns_host
+
+    monkeypatch.setattr(mdns_host.sys, "platform", "linux")
+    monkeypatch.setattr(routes_mod.socket, "gethostname", lambda: "openfollow-noble-bear")
+    monkeypatch.setattr(routes_mod, "_get_local_ips", lambda: ["192.0.2.10"])
+    assert routes_mod._allowed_request_hosts() == {
+        "127.0.0.1",
+        "::1",
+        "localhost",
+        "192.0.2.10",
+        "openfollow-noble-bear",
+        "openfollow-noble-bear.local",
+    }
+
+
+def test_allowed_request_hosts_on_macos_add_the_name_bonjour_publishes(monkeypatch) -> None:
+    """A DHCP-named Mac answers mDNS by its LocalHostName; its kernel name stays accepted too."""
+    from types import SimpleNamespace
+
+    import openfollow.web.routes as routes_mod
+    from openfollow import mdns_host
+    from tests._threads import InlineThread
+
+    def _scutil(*_args, **_kwargs):
+        return SimpleNamespace(returncode=0, stdout="Studio-Mac\n")
+
+    monkeypatch.setattr(mdns_host.sys, "platform", "darwin")
+    monkeypatch.setattr(routes_mod.socket, "gethostname", lambda: "studio.example.lan")
+    monkeypatch.setattr(routes_mod, "_get_local_ips", lambda: ["192.0.2.10"])
+    mdns_host.set_reader(mdns_host.LocalHostNameReader(run=_scutil, thread_factory=InlineThread))
+    assert routes_mod._allowed_request_hosts() == {
+        "127.0.0.1",
+        "::1",
+        "localhost",
+        "192.0.2.10",
+        "studio.example.lan",
+        "studio.example.lan.local",
+        "studio-mac.local",
+    }
+
+
 def test_allowed_request_hosts_blank_hostname_falls_back(monkeypatch) -> None:
     """A blank ``socket.gethostname()`` leaves only loopback + local IPs
     in the allowlist (no empty/``.local`` host entries)."""

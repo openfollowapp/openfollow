@@ -103,6 +103,12 @@ class TestPushedSettingsModal:
             in (modal)
         )
 
+    def test_a_locked_modal_shows_no_close_button(self) -> None:
+        # The global ``button`` rule sets ``display``, which outranks the browser's own ``[hidden]`` rule.
+        base = _BASE.read_text(encoding="utf-8")
+        assert "closeBtn.hidden = !_modalDismissable;" in function_body(base, "openModal")
+        assert "\n .modal-close[hidden] { display: none; }\n" in base
+
     def test_it_never_replaces_another_open_modal(self) -> None:
         poll = function_body(_poller(), "pollPushedSettings")
         assert poll.index("if (!ours && !root.hidden) return;") < poll.index("openModal({")
@@ -148,7 +154,7 @@ class TestPushedSettingsModal:
         body = function_body(_poller(), "pushedSettingsBody")
         caution = body[body.index("if (push.backup_error) {") :]
         assert "caution.className = 'field-caution-msg';" in caution
-        assert "caution.textContent = 'No backup was made: ' + push.backup_error + '.';" in caution
+        assert "caution.textContent = NO_BACKUP_MADE;" in caution
 
     def test_the_box_says_the_settings_already_apply(self) -> None:
         body = function_body(_poller(), "pushedSettingsBody")

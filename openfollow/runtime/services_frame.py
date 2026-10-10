@@ -12,12 +12,7 @@ from openfollow.runtime_metrics import OverlayStatePool
 
 
 def update_video(app: Any, logger: logging.Logger) -> None:
-    """Log the source geometry once per receiver.
-
-    It never touches the window: the HUD fits the scene into the rectangle
-    gtksink letterboxes the video into, so the window's shape is the
-    operator's and the OS's.
-    """
+    """Log the source geometry once per receiver; the window's shape is the OS's, not the source's."""
     try:
         w, h = app._video_receiver.resolution
         if w <= 0 or h <= 0:

@@ -200,9 +200,6 @@ class FakeGtkWidget:
     def remove_tick_callback(self, _cid: int) -> None:
         return None
 
-    def set_geometry_hints(self, _win: Any, geometry: Any, mask: int) -> None:
-        self.geometry_hints = {"geometry": geometry, "mask": mask}
-
 
 class FakeGtk:
     """Module-level recording fake for ``gi.repository.Gtk``.

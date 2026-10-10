@@ -217,6 +217,24 @@ def test_receiver_state_machine_clear_source_caps_drops_a_prior_source() -> None
     assert state.source_framerate == 0.0
 
 
+def test_receiver_state_machine_pairs_the_pixel_aspect_ratio_with_the_size() -> None:
+    state = ReceiverStateMachine(reconnect_delay=1.0)
+    assert state.pixel_aspect_ratio == (1, 1)
+    assert state.set_resolution(704, 576, (12, 11)) is True
+    assert state.pixel_aspect_ratio == (12, 11)
+    # The same size at another pixel aspect ratio is a new shape on screen.
+    assert state.set_resolution(704, 576, (1, 1)) is True
+    assert state.set_resolution(704, 576) is False
+
+    state.set_resolution(704, 576, (12, 11))
+    state.clear_source_caps()
+    assert state.pixel_aspect_ratio == (1, 1)
+
+    state.set_placeholder_pipeline(True)
+    assert state.set_resolution(1920, 1080, (4, 3)) is False
+    assert state.pixel_aspect_ratio == (1, 1)
+
+
 def test_receiver_bus_handler_dispatches_core_message_types() -> None:
     class FakeGst:
         class MessageType:

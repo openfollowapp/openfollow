@@ -1790,10 +1790,16 @@ class TestPadEvent:
         fps_num: int = 30,
         fps_den: int = 1,
         fraction_returns: tuple[bool, int, int] = None,
+        par: tuple[int, int] | None = None,
     ):
+        fractions = {
+            "framerate": fraction_returns if fraction_returns is not None else (True, fps_num, fps_den),
+            # A field the caps do not carry reads as GStreamer reports it: not found.
+            "pixel-aspect-ratio": (True, *par) if par is not None else (False, 0, 0),
+        }
         structure = SimpleNamespace(
             get_value=lambda key: {"width": width, "height": height}.get(key),
-            get_fraction=lambda key: fraction_returns if fraction_returns is not None else (True, fps_num, fps_den),
+            get_fraction=lambda key: fractions[key],
         )
         caps = SimpleNamespace(get_structure=lambda _idx: structure)
         event = SimpleNamespace(
@@ -1888,6 +1894,67 @@ class TestPadEvent:
 
         assert r.resolution == (1024, 768)
         assert r.source_framerate == 25.0
+
+    def test_caps_without_a_pixel_aspect_ratio_are_square(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._on_pad_event(object(), self._make_caps_event(1280, 720)[0])
+        assert r.pixel_aspect_ratio == (1, 1)
+
+    @pytest.mark.parametrize(
+        ("par", "expected"),
+        [((12, 11), (12, 11)), ((24, 22), (12, 11)), ((1, 1), (1, 1))],
+        ids=["d1", "unreduced", "square"],
+    )
+    def test_caps_publish_the_pixel_aspect_ratio_in_lowest_terms(
+        self, fake_gst, fake_glib, fake_input_cls, par: tuple[int, int], expected: tuple[int, int]
+    ) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._on_pad_event(object(), self._make_caps_event(704, 576, par=par)[0])
+        assert r.resolution == (704, 576)
+        assert r.pixel_aspect_ratio == expected
+
+    @pytest.mark.parametrize("par", [(0, 1), (1, 0), (-12, 11)], ids=["zero", "zero-den", "negative"])
+    def test_an_invalid_pixel_aspect_ratio_reads_as_square(
+        self, fake_gst, fake_glib, fake_input_cls, par: tuple[int, int]
+    ) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._on_pad_event(object(), self._make_caps_event(704, 576, par=par)[0])
+        assert r.pixel_aspect_ratio == (1, 1)
+
+    def test_a_raising_pixel_aspect_read_keeps_the_resolution(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+
+        def _get_fraction(key: str) -> tuple[bool, int, int]:
+            if key == "pixel-aspect-ratio":
+                raise RuntimeError("bad")
+            return (True, 25, 1)
+
+        structure = SimpleNamespace(
+            get_value=lambda key: {"width": 704, "height": 576}.get(key), get_fraction=_get_fraction
+        )
+        caps = SimpleNamespace(get_structure=lambda _i: structure)
+        event = SimpleNamespace(type=FakeEventType.CAPS, parse_caps=lambda: caps)
+        r._on_pad_event(object(), SimpleNamespace(get_event=lambda: event))
+        assert r.resolution == (704, 576)
+        assert r.pixel_aspect_ratio == (1, 1)
+
+    def test_a_pixel_aspect_change_alone_is_a_new_shape(self, fake_gst, fake_glib, fake_input_cls, caplog) -> None:
+        import logging as _logging
+
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._on_pad_event(object(), self._make_caps_event(720, 576, par=(16, 15))[0])
+        with caplog.at_level(_logging.INFO, logger="openfollow.video.receiver"):
+            r._on_pad_event(object(), self._make_caps_event(720, 576, par=(64, 45))[0])
+        assert r.pixel_aspect_ratio == (64, 45)
+        assert [rec.message for rec in caplog.records if "Video resolution" in rec.message] == [
+            "Video resolution: 720x576, pixel aspect ratio 64:45"
+        ]
+
+    def test_placeholder_caps_leave_the_pixel_aspect_ratio_square(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._state.set_placeholder_pipeline(True)
+        r._on_pad_event(object(), self._make_caps_event(1920, 1080, par=(4, 3))[0])
+        assert r.pixel_aspect_ratio == (1, 1)
 
 
 # --------------------------------------------------------------------------- #
@@ -2542,7 +2609,7 @@ class TestVideoFlowTransitionBranches:
     def _caps(width: int, height: int):
         structure = SimpleNamespace(
             get_value=lambda key: {"width": width, "height": height}.get(key),
-            get_fraction=lambda _k: (True, 30, 1),
+            get_fraction=lambda key: (True, 30, 1) if key == "framerate" else (False, 0, 0),
         )
         caps = SimpleNamespace(get_structure=lambda _i: structure)
         event = SimpleNamespace(type=FakeEventType.CAPS, parse_caps=lambda: caps)

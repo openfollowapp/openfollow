@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import NamedTuple
 
@@ -23,6 +24,13 @@ class VideoRect(NamedTuple):
     y: int
     width: int
     height: int
+
+
+class SceneView(NamedTuple):
+    """The rectangle the scene is drawn in and how wide one frame pixel is drawn there."""
+
+    rect: VideoRect
+    pixel_aspect: float
 
 
 @dataclass(frozen=True)
@@ -377,20 +385,45 @@ def centered_panel_layout(
     return CenteredPanelLayout(x=x, y=y, width=width, height=height)
 
 
-def video_rect(canvas_w: int, canvas_h: int, source_w: int, source_h: int) -> VideoRect:
+def display_size(source_w: int, source_h: int, par: tuple[int, int] = (1, 1)) -> tuple[int, int]:
+    """The size gtksink shows a frame of pixel aspect ratio ``par`` at.
+
+    gtksink's ``_apply_par`` for a square-pixel screen: the side the reduced
+    display ratio divides is kept, the other scaled and truncated.
+    """
+    par_n, par_d = par
+    if source_w <= 0 or source_h <= 0 or par_n <= 0 or par_d <= 0:
+        return source_w, source_h
+    num, den = source_w * par_n, source_h * par_d
+    common = math.gcd(num, den)
+    num, den = num // common, den // common
+    if source_h % den == 0:
+        return source_h * num // den, source_h
+    if source_w % num == 0:
+        return source_w, source_w * den // num
+    return source_h * num // den, source_h
+
+
+def pixel_aspect(source_w: int, source_h: int, par: tuple[int, int] = (1, 1)) -> float:
+    """How much wider than tall gtksink draws one frame pixel; 1.0 when square."""
+    display_w, display_h = display_size(source_w, source_h, par)
+    if source_w <= 0 or source_h <= 0 or display_w <= 0 or display_h <= 0:
+        return 1.0
+    return (display_w * source_h) / (display_h * source_w)
+
+
+def video_rect(canvas_w: int, canvas_h: int, source_w: int, source_h: int, par: tuple[int, int] = (1, 1)) -> VideoRect:
     """The rectangle gtksink letterboxes a ``source_w`` x ``source_h`` frame into.
 
-    Same arithmetic as GStreamer's ``gst_video_sink_center_rect`` with scaling,
-    which ``force-aspect-ratio`` uses: the ratios are compared as floats, the
-    fitted side is truncated like a C ``gint`` and the remainder is centred by
-    integer division. An integer cross-multiplication lands a pixel off the
-    sink in some shapes. The whole canvas when the source is unknown or the
-    shapes match. The source is the caps size: a source with non-square pixels
-    is fitted by its display size instead, which nothing here models.
+    ``gst_video_sink_center_rect`` on the frame's display size, float ratios and
+    C truncation included; the whole canvas while the source is unknown.
     """
     if source_w <= 0 or source_h <= 0 or canvas_w <= 0 or canvas_h <= 0:
         return VideoRect(0, 0, canvas_w, canvas_h)
-    src_ratio = source_w / source_h
+    display_w, display_h = display_size(source_w, source_h, par)
+    if display_w <= 0 or display_h <= 0:
+        return VideoRect(0, 0, canvas_w, canvas_h)
+    src_ratio = display_w / display_h
     dst_ratio = canvas_w / canvas_h
     if src_ratio > dst_ratio:
         height = int(canvas_w / src_ratio)
@@ -399,6 +432,14 @@ def video_rect(canvas_w: int, canvas_h: int, source_w: int, source_h: int) -> Vi
         width = int(canvas_h * src_ratio)
         return VideoRect((canvas_w - width) // 2, 0, width, canvas_h)
     return VideoRect(0, 0, canvas_w, canvas_h)
+
+
+def scene_view(canvas_w: int, canvas_h: int, source_w: int, source_h: int, par: tuple[int, int] = (1, 1)) -> SceneView:
+    """Where, and how stretched, the scene lands on the video gtksink draws."""
+    return SceneView(
+        video_rect(canvas_w, canvas_h, source_w, source_h, par),
+        pixel_aspect(source_w, source_h, par),
+    )
 
 
 def selectable_list_layout(

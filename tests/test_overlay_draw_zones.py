@@ -332,7 +332,7 @@ class TestLensDistortion:
         state.lens_k1 = -0.15
         state.lens_k2 = 0.04
 
-        def _nan_segments(_cam, segments, _w, _h, _k1, _k2, n):
+        def _nan_segments(_cam, segments, _w, _h, _k1, _k2, n, _pixel_aspect=1.0):
             segs = np.asarray(segments, dtype=np.float64).reshape(-1, 2, 3)
             out = np.full((segs.shape[0], n + 1, 2), 100.0)
             out[0, n // 2] = np.nan  # one sub-point on the first edge behind camera
@@ -345,3 +345,31 @@ class TestLensDistortion:
         # A closed outline can't be partially drawn -> whole zone skipped.
         assert cr.closes == 0
         assert cr.fill_preserves == 0
+
+
+# --------------------------------------------------------------------------- #
+# A frame of non-square pixels
+# --------------------------------------------------------------------------- #
+
+
+class TestNonSquarePixels:
+    """Drawn 1200 wide over a D1 frame of 12:11 pixels, a zone is the
+    square-pixel zone drawn 1100 wide, stretched across by 12/11."""
+
+    @pytest.mark.parametrize("k1", [0.0, -0.15])
+    def test_a_zone_outline_is_stretched(self, k1: float) -> None:
+        def draw(state: OverlayState, w: int) -> FakeCairo:
+            state.lens_k1 = k1
+            cr = FakeCairo()
+            draw_zones(FakeRenderer(), cr, state, w, 900)
+            return cr
+
+        square = draw(_state_with_zone(vertices=_square(0.0, 2.0), name=""), 1100)
+        non_square = _state_with_zone(vertices=_square(0.0, 2.0), name="")
+        non_square.source_resolution = (704, 576)
+        non_square.source_par = (12, 11)
+        stretched = draw(non_square, 1200)
+        aspect = 12 / 11
+        assert square.line_tos
+        np.testing.assert_allclose(stretched.move_tos, [(x * aspect, y) for x, y in square.move_tos], atol=1e-6)
+        np.testing.assert_allclose(stretched.line_tos, [(x * aspect, y) for x, y in square.line_tos], atol=1e-6)

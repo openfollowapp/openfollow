@@ -136,6 +136,7 @@ class _FakeVideoReceiver:
         )
         self.source_name = "NDI://CAM"
         self.resolution = (1920, 1080)
+        self.pixel_aspect_ratio = (1, 1)
         self.source_selection_active = False
         self.discovered_sources = ["CAM1", "CAM2"]
         self.selected_source_index = 1
@@ -1978,13 +1979,21 @@ class TestMissingControllerSurfaces:
 
 
 class TestSourceResolutionFlow:
-    """The HUD letterboxes the scene by the frame's caps size, read off the
-    receiver every frame."""
+    """The HUD letterboxes the scene by the frame's caps size and pixel
+    aspect ratio, read off the receiver every frame."""
 
     def test_overlay_state_carries_the_source_resolution(self, pool: OverlayStatePool) -> None:
         app = _build_app()
         app._video_receiver.resolution = (1024, 768)
         assert _build(app, pool).source_resolution == (1024, 768)
+
+    def test_overlay_state_carries_the_pixel_aspect_ratio(self, pool: OverlayStatePool) -> None:
+        app = _build_app()
+        app._video_receiver.resolution = (704, 576)
+        app._video_receiver.pixel_aspect_ratio = (12, 11)
+        state = _build(app, pool)
+        assert state.source_par == (12, 11)
+        assert state.pixel_aspect == pytest.approx(12 / 11)
 
     def test_a_placeholder_publishes_no_source_resolution(self, pool: OverlayStatePool) -> None:
         # The placeholder clears the caps, so the scene fills the canvas
@@ -1996,10 +2005,13 @@ class TestSourceResolutionFlow:
     def test_a_changed_shape_replaces_the_pooled_value(self) -> None:
         pool = OverlayStatePool(pool_size=1)
         app = _build_app()
-        app._video_receiver.resolution = (1920, 1080)
+        app._video_receiver.resolution = (704, 576)
+        app._video_receiver.pixel_aspect_ratio = (12, 11)
         first = _build(app, pool)
         pool.release(first)
         app._video_receiver.resolution = (1024, 768)
+        app._video_receiver.pixel_aspect_ratio = (1, 1)
         second = _build(app, pool)
         assert second is first
         assert second.source_resolution == (1024, 768)
+        assert second.source_par == (1, 1)

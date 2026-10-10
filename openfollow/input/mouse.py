@@ -26,11 +26,10 @@ from __future__ import annotations
 import logging
 import math
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
 
-from openfollow.runtime.overlay_layout import video_rect
 from openfollow.runtime.services_detection_pin import (
     get_or_create_manual_marker,
     is_assist_controlled,
@@ -82,6 +81,18 @@ _WHEEL_CLICKS_PER_S = 10.0
 # of the first counts as a double right-click (reset to default).
 _DOUBLE_CLICK_S = 0.4
 _DOUBLE_CLICK_PX = 8.0
+
+
+class _PointerView(NamedTuple):
+    """The camera buffer and the pointer in the frame's own pixels."""
+
+    cam: npt.NDArray[np.float64]
+    x: float
+    y: float
+    width: float
+    height: int
+    # How much wider than tall one frame pixel is drawn (1.0 when square).
+    pixel_aspect: float
 
 
 class MouseHandler:
@@ -335,12 +346,13 @@ class MouseHandler:
             return None
         return app._server.get_marker(app._selected_id)
 
-    def _view_inputs(self, x: float, y: float) -> tuple[npt.NDArray[np.float64], float, float, int, int] | None:
-        """Camera buffer, the pointer in video pixels and the video size, or None.
+    def _view_inputs(self, x: float, y: float) -> _PointerView | None:
+        """The camera and the pointer in frame pixels, or None off the picture.
 
-        Pointer events arrive in window pixels. The scene is drawn into the
-        rectangle gtksink letterboxes the frame into (``video_rect``, the one
-        the renderer uses), so the pointer is moved into it here, once.
+        Pointer events arrive in window pixels and are read through the view
+        the renderer last drew the scene in. A pointer outside that picture
+        (a letterbox bar, or past the window's edge during a drag) is no point
+        on the stage.
         """
         app = self._app
         if app._camera is None:  # pragma: no cover
@@ -348,16 +360,13 @@ class MouseHandler:
             # the None arm is unreachable at runtime but keeps the type checker
             # honest – treat it as a defensive no-op rather than ``assert``.
             return None
-        if app._canvas is not None:
-            canvas_w, canvas_h = app._canvas.get_canvas_size()
-        else:
-            canvas_w, canvas_h = app._config.window_width, app._config.window_height
-        if canvas_w <= 0 or canvas_h <= 0:
+        renderer = app._runtime_services._overlay_renderer
+        view = renderer.scene_view if renderer is not None else None
+        if view is None:
             return None
-        receiver = app._video_receiver
-        source_w, source_h = receiver.resolution if receiver is not None else (0, 0)
-        rect = video_rect(canvas_w, canvas_h, source_w, source_h)
-        if rect.width <= 0 or rect.height <= 0:
+        rect, aspect = view
+        px, py = x - rect.x, y - rect.y
+        if not (0.0 <= px < rect.width and 0.0 <= py < rect.height):
             return None
         cam_cfg = app._camera.to_config()
         buf = self._cam_buffer
@@ -368,14 +377,14 @@ class MouseHandler:
         buf[4] = cam_cfg.yaw
         buf[5] = cam_cfg.roll
         buf[6] = cam_cfg.fov
-        return buf, x - rect.x, y - rect.y, rect.width, rect.height
+        return _PointerView(buf, px / aspect, py, rect.width / aspect, rect.height, aspect)
 
     def _unproject(self, x: float, y: float) -> tuple[float, float] | None:
         """Unproject a window point onto the stage plane; None if off-plane."""
         view = self._view_inputs(x, y)
         if view is None:
             return None
-        buf, px, py, w, h = view
+        buf, px, py, w, h, _aspect = view
         self._screen_buffer[0, 0] = px
         self._screen_buffer[0, 1] = py
         # The cursor lands on the (lens-distorted) video, so undistort it back to
@@ -402,7 +411,7 @@ class MouseHandler:
         view = self._view_inputs(x, y)
         if view is None:
             return None
-        buf, px, py, w, h = view
+        buf, px, py, w, h, aspect = view
         cfg = app._config
         z_off = cfg.grid.z_offset
         # The grab area is the ring that is drawn: the cone's base ring
@@ -437,7 +446,7 @@ class MouseHandler:
             if not np.all(np.isfinite(center)):
                 continue
             cx, cy = float(center[0]), float(center[1])
-            dist = math.hypot(px - cx, py - cy)
+            dist = math.hypot((px - cx) * aspect, py - cy)
             hit = False
             if gc_on and gc_size > 0.0:
                 ring = ground_circle_world_ring(mx, my, z_off, gc_size, segments=ring_segments)

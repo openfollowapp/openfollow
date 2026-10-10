@@ -105,12 +105,11 @@ class TestUpdateVideo:
         assert matching == []
 
     def test_never_touches_the_window_whatever_the_source_does(self, caplog) -> None:  # noqa: ANN001
-        """The window's shape is the operator's and the OS's.
+        """The window's shape is the operator's and the OS's, never the source's.
 
-        A hard aspect hint froze the macOS app in fullscreen: Quartz refuses
-        the constrained resize and GTK waits forever for the configure event.
-        The HUD letterboxes itself instead, so no source change may reach the
-        canvas, however the shape moves.
+        Under macOS fullscreen Quartz refuses any size GTK asks for and GTK
+        then waits forever for the configure event, so no source change may
+        reach the canvas, however the shape moves.
         """
         app = _fake_app(resolution=(1920, 1080))
         logger = logging.getLogger("test-update-video")
@@ -136,4 +135,5 @@ class TestUpdateVideo:
         with caplog.at_level(logging.DEBUG, logger="test-update-video"):
             update_video(app, logger)
         assert app._video_logged is False
-        assert any("Video update error" in r.message for r in caplog.records)
+        assert any(r.levelname == "DEBUG" and "Video update error" in r.message for r in caplog.records)
+        assert not [r for r in caplog.records if "Video update error" in r.message and r.levelno > logging.DEBUG]

@@ -76,7 +76,7 @@ from openfollow.runtime.overlay_draw_scene import (
     project as project_overlay_points,
 )
 from openfollow.runtime.overlay_draw_zones import draw_zones as draw_zones_pass
-from openfollow.runtime.overlay_layout import video_rect
+from openfollow.runtime.overlay_layout import SceneView, scene_view
 from openfollow.runtime.overlay_state import MarkerOverlayData, OverlayState
 
 logger = logging.getLogger(__name__)
@@ -162,6 +162,9 @@ class CairoOverlayRenderer:
         # Max 200 lines = 400 endpoints. Resized if needed.
         self._grid_pts_buf = np.zeros((400, 3), dtype=np.float64)
         self._cone_cache = ConeCache()
+        # Where the scene was last drawn: the mouse reads the pointer through
+        # it, so a click lands on the ring the operator sees.
+        self.scene_view: SceneView | None = None
 
         # Rolling timestamps of recent draw callbacks for FPS measurement.
         # Appended on the GTK main thread (per-frame ``draw``); read on the
@@ -295,7 +298,9 @@ class CairoOverlayRenderer:
             try:
                 # The scene sits on the video, which gtksink letterboxes into
                 # this rectangle; the HUD below belongs to the screen.
-                rect = video_rect(width, height, *state.source_resolution)
+                view = scene_view(width, height, *state.source_resolution, state.source_par)
+                self.scene_view = view
+                rect = view.rect
                 if rect.width > 0 and rect.height > 0:
                     cr.save()
                     try:
@@ -307,11 +312,11 @@ class CairoOverlayRenderer:
                         self._draw_zones(cr, state, rect.width, rect.height)
                         for t in state.markers:
                             self._draw_marker(cr, state, t, rect.width, rect.height)
-                        self._cone_cache.retain(state.markers)
                         if state.detections and state.detection_show_boxes:
                             self._draw_detections(cr, state, rect.width, rect.height)
                     finally:
                         cr.restore()
+                self._cone_cache.retain(state.markers)
                 self._draw_hud(cr, state, width, height)
             finally:
                 # Balance the save even if a draw raised, so the "Overlay

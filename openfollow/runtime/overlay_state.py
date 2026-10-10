@@ -14,6 +14,7 @@ from openfollow.configuration import (
     _GRID_THICKNESS_DEFAULT,
     _GRID_TRANSPARENCY_DEFAULT,
 )
+from openfollow.runtime import overlay_layout
 from openfollow.units import UnitSystem
 
 if TYPE_CHECKING:
@@ -146,9 +147,11 @@ class OverlayState:
     selected_id: int | None = None
     # Camera: [pos_x, pos_y, pos_z, pitch, yaw, roll, fov]
     camera_params: npt.NDArray[Any] | None = None
-    # The source's caps size, (0, 0) while unknown (placeholder): the scene is
-    # drawn into the rectangle gtksink letterboxes that frame into.
+    # The source's caps size, (0, 0) while unknown (placeholder), and its pixel
+    # aspect ratio: the scene is drawn into the rectangle gtksink letterboxes
+    # that frame into, stretched the way gtksink stretches the frame.
     source_resolution: tuple[int, int] = (0, 0)
+    source_par: tuple[int, int] = (1, 1)
     # Radial lens-distortion coefficients bowing the overlay to match the lens.
     # 0/0 = pinhole (no curvature) – the renderer fast-paths to straight lines.
     lens_k1: float = 0.0
@@ -323,12 +326,18 @@ class OverlayState:
     zone_polygons: list[tuple[list[tuple[float, float]], str, str, bool, int]] = field(default_factory=list)
     zone_z_offset: float = 0.0
 
+    @property
+    def pixel_aspect(self) -> float:
+        """How much wider than tall gtksink draws one frame pixel; 1.0 when square."""
+        return overlay_layout.pixel_aspect(*self.source_resolution, self.source_par)
+
     def reset(self) -> None:
         """Reset state for reuse in object pool."""
         self.markers.clear()
         self.selected_id = None
         self.camera_params = None
         self.source_resolution = (0, 0)
+        self.source_par = (1, 1)
         self.lens_k1 = 0.0
         self.lens_k2 = 0.0
         self.grid_config = None

@@ -20,8 +20,10 @@ from openfollow.configuration import (
     CameraConfig,
     GridConfig,
 )
-from openfollow.input.mouse import MouseHandler
+from openfollow.input.mouse import _MIN_GRAB_PX, MouseHandler
 from openfollow.psn.marker import Marker
+from openfollow.runtime.overlay_draw_scene import project as draw_project
+from openfollow.runtime.overlay_layout import SceneView, scene_view
 from openfollow.scene.solver import project_points, unproject_to_plane
 
 pytestmark = pytest.mark.unit
@@ -50,14 +52,9 @@ class _DummyCamera:
         return self._cfg
 
 
-class _DummyCanvas:
-    def __init__(self, w: int, h: int) -> None:
-        self._size = (w, h)
-        self.calls = 0
-
-    def get_canvas_size(self) -> tuple[int, int]:
-        self.calls += 1
-        return self._size
+class _DummyRenderer:
+    def __init__(self, view: SceneView | None) -> None:
+        self.scene_view = view
 
 
 class _DummyApp:
@@ -81,9 +78,9 @@ class _DummyApp:
         )
         self._config.controller.mouse_enabled = True
         self._camera = _DummyCamera(self._config.camera)
-        self._canvas = None
-        # No source shape: the video fills the canvas, as on the placeholder.
-        self._video_receiver = SimpleNamespace(resolution=(0, 0))
+        # The scene was drawn across the whole window, as with no source shape.
+        view = scene_view(self._config.window_width, self._config.window_height, 0, 0)
+        self._runtime_services = SimpleNamespace(_overlay_renderer=_DummyRenderer(view))
 
         self._server = _DummyServer()
         self._server.add_marker(1).set_pos(0.0, 0.0, 0.0)
@@ -104,10 +101,18 @@ def _cam_buffer(app: _DummyApp) -> np.ndarray:
     )
 
 
+def _draw(
+    app: _DummyApp, canvas: tuple[int, int], source: tuple[int, int] = (0, 0), par: tuple[int, int] = (1, 1)
+) -> SceneView:
+    """Stand in for the renderer drawing the scene on ``canvas`` over ``source``."""
+    view = scene_view(*canvas, *source, par)
+    app._runtime_services._overlay_renderer.scene_view = view
+    return view
+
+
 def _canvas_size(app: _DummyApp) -> tuple[int, int]:
-    if app._canvas is not None:
-        return app._canvas.get_canvas_size()
-    return app._config.window_width, app._config.window_height
+    rect = app._runtime_services._overlay_renderer.scene_view.rect
+    return rect.width, rect.height
 
 
 def _ground_center(app: _DummyApp, marker_id: int) -> tuple[float, float]:
@@ -394,12 +399,27 @@ class TestPosition:
         x2, _y2, _ = app._server.get_marker(1).pos
         assert abs(x2 - wx) < abs(x1 - wx)
 
-    def test_uses_canvas_size_when_available(self) -> None:
+    def test_reads_the_pointer_through_the_drawn_view(self) -> None:
         app = _DummyApp()
-        app._canvas = _DummyCanvas(1280, 720)
+        whole_window = _ground_center(app, 1)
+        _draw(app, (1000, 500))
+        drawn = _ground_center(app, 1)
+        assert math.hypot(drawn[0] - whole_window[0], drawn[1] - whole_window[1]) > _MIN_GRAB_PX
         handler = MouseHandler(app)
-        _grab(handler, app)
-        assert app._canvas.calls > 0
+        assert handler.on_pointer_down(*whole_window, 1) is False
+        assert handler.on_pointer_down(*drawn, 1) is True
+
+    def test_nothing_drawn_yet_ignores_the_pointer(self) -> None:
+        app = _DummyApp()
+        cx, cy = _ground_center(app, 1)
+        app._runtime_services._overlay_renderer.scene_view = None
+        assert MouseHandler(app).on_pointer_down(cx, cy, 1) is False
+
+    def test_no_renderer_ignores_the_pointer(self) -> None:
+        app = _DummyApp()
+        cx, cy = _ground_center(app, 1)
+        app._runtime_services._overlay_renderer = None
+        assert MouseHandler(app).on_pointer_down(cx, cy, 1) is False
 
     def test_second_update_is_noop_once_settled(self) -> None:
         app = _DummyApp()
@@ -965,7 +985,7 @@ class TestEdges:
 
     def test_degenerate_canvas_blocks_grab(self) -> None:
         app = _DummyApp()
-        app._canvas = _DummyCanvas(0, 0)
+        _draw(app, (0, 0))
         handler = MouseHandler(app)
         assert handler.on_pointer_down(640, 360, 1) is False
 
@@ -1023,7 +1043,7 @@ class TestEdges:
         handler = MouseHandler(app)
         _grab(handler, app)
         before = app._server.get_marker(1).pos
-        app._canvas = _DummyCanvas(0, 0)  # degenerate – unprojection is skipped
+        _draw(app, (0, 0))  # degenerate – unprojection is skipped
         assert handler.on_pointer_move(800, 300) is True
         handler.update()
         assert app._server.get_marker(1).pos == before
@@ -1089,7 +1109,7 @@ class TestLensDistortionInput:
         app._config.camera.lens_k1 = -0.2  # barrel
         monkeypatch.setattr(mouse_module, "unproject_to_plane", _spy)
         handler.on_pointer_move(1200, 600)
-        # Canvas defaults to 1280x720 (no _canvas), so centre is (640, 360).
+        # The scene is drawn across the default 1280x720 window, so centre is (640, 360).
         cx, cy = 640.0, 360.0
         r_cursor = math.hypot(1200.0 - cx, 600.0 - cy)
         s = captured["screen"][0]
@@ -1139,26 +1159,34 @@ class TestHitTestLensDistortion:
 _LETTERBOX_1000 = (0, 219, 1000, 562)  # 16:9 feed on a square canvas
 _PILLARBOX_4_3 = (240, 0, 1440, 1080)  # 4:3 feed on a 16:9 canvas
 _PILLARBOX_PORTRAIT = (437, 0, 405, 720)  # 9:16 feed on a 16:9 canvas
+# A D1 frame of 12:11 pixels, which gtksink shows 768x576, on a square canvas.
+_D1, _D1_PAR = (704, 576), (12, 11)
+_LETTERBOX_D1 = (0, 125, 1000, 750)
 
 
-def _letterboxed_app(canvas: tuple[int, int], source: tuple[int, int]) -> _DummyApp:
+def _letterboxed_app(canvas: tuple[int, int], source: tuple[int, int], par: tuple[int, int] = (1, 1)) -> _DummyApp:
     app = _DummyApp()
-    app._canvas = _DummyCanvas(*canvas)
-    app._video_receiver.resolution = source
+    _draw(app, canvas, source, par)
     return app
 
 
-def _ground_center_in(app: _DummyApp, rect: tuple[int, int, int, int], marker_id: int = 1) -> tuple[float, float]:
-    """Window pixel of a marker's ground centre when the video sits in ``rect``."""
-    m = app._server.get_marker(marker_id)
+def _drawn_at(
+    app: _DummyApp, rect: tuple[int, int, int, int], wx: float, wy: float, *, aspect: float = 1.0
+) -> tuple[float, float]:
+    """Window pixel where the renderer draws the stage point ``(wx, wy)`` in ``rect``."""
     x, y, w, h = rect
-    scr = project_points(
-        _cam_buffer(app),
-        np.array([[m.pos[0], m.pos[1], app._config.grid.z_offset]], dtype=np.float64),
-        float(w),
-        float(h),
-    )
+    cam = app._config.camera
+    point = [(wx, wy, app._config.grid.z_offset)]
+    scr = draw_project(_cam_buffer(app), point, w, h, cam.lens_k1, cam.lens_k2, aspect)
     return float(scr[0, 0]) + x, float(scr[0, 1]) + y
+
+
+def _ground_center_in(
+    app: _DummyApp, rect: tuple[int, int, int, int], marker_id: int = 1, *, aspect: float = 1.0
+) -> tuple[float, float]:
+    """Window pixel of a marker's ground centre as drawn in ``rect``."""
+    m = app._server.get_marker(marker_id)
+    return _drawn_at(app, rect, m.pos[0], m.pos[1], aspect=aspect)
 
 
 class TestLetterboxedVideo:
@@ -1229,13 +1257,6 @@ class TestLetterboxedVideo:
         assert handler.on_pointer_down(500, 100, 1) is False  # above the frame
         assert handler.active is False
 
-    def test_no_receiver_means_the_whole_canvas(self) -> None:
-        app = _letterboxed_app((1000, 1000), (1920, 1080))
-        app._video_receiver = None
-        handler = MouseHandler(app)
-        cx, cy = _ground_center_in(app, (0, 0, 1000, 1000))
-        assert handler.on_pointer_down(cx, cy, 1) is True
-
     def test_unknown_source_shape_means_the_whole_canvas(self) -> None:
         app = _letterboxed_app((1000, 1000), (0, 0))
         handler = MouseHandler(app)
@@ -1248,7 +1269,7 @@ class TestLetterboxedVideo:
         cx, cy = _ground_center_in(app, _LETTERBOX_1000)
         handler.on_pointer_down(cx, cy, 1)
         before = app._server.get_marker(1).pos
-        app._canvas = _DummyCanvas(1, 1)  # a frame fitted into one pixel has no height
+        _draw(app, (1, 1), (1920, 1080))  # a frame fitted into one pixel has no height
         assert handler.on_pointer_move(cx + 50, cy + 50) is True
         handler.update()
         assert app._server.get_marker(1).pos == before
@@ -1282,38 +1303,115 @@ class TestLetterboxedVideo:
         assert app._server.get_marker(1).pos == _DEFAULT_POS
 
     @pytest.mark.parametrize(
-        ("canvas", "source", "rect"),
+        ("canvas", "source", "par", "rect"),
         [
-            ((1000, 1000), (1920, 1080), _LETTERBOX_1000),
-            ((1920, 1080), (1024, 768), _PILLARBOX_4_3),
-            ((1280, 720), (1080, 1920), _PILLARBOX_PORTRAIT),
+            ((1000, 1000), (1920, 1080), (1, 1), _LETTERBOX_1000),
+            ((1920, 1080), (1024, 768), (1, 1), _PILLARBOX_4_3),
+            ((1280, 720), (1080, 1920), (1, 1), _PILLARBOX_PORTRAIT),
+            ((1000, 1000), _D1, _D1_PAR, _LETTERBOX_D1),
         ],
-        ids=["16:9", "4:3", "portrait"],
+        ids=["16:9", "4:3", "portrait", "non-square pixels"],
     )
     def test_the_mouse_and_the_detection_pin_agree_on_every_shape(
-        self, canvas: tuple[int, int], source: tuple[int, int], rect: tuple[int, int, int, int]
+        self,
+        canvas: tuple[int, int],
+        source: tuple[int, int],
+        par: tuple[int, int],
+        rect: tuple[int, int, int, int],
     ) -> None:
         """One stage point, three readers, one answer.
 
-        The overlay projects a point with the rect's size and the pointer is
-        read back through the same rect; the detection pin unprojects frame
-        pixels with the source size. All of them must land on the same stage
-        point, whatever the shape of the window.
+        The renderer draws a point into the rect, stretched as gtksink
+        stretches the frame, and the pointer is read back through the same
+        view; the detection pin unprojects frame pixels with the source size.
+        All of them land on the same stage point, whatever the shape of the
+        window or of the frame's pixels.
         """
-        app = _letterboxed_app(canvas, source)
+        app = _letterboxed_app(canvas, source, par)
+        app._config.grid.z_offset = 0.5  # a raised stage: every reader must use its plane
         handler = MouseHandler(app)
         x0, y0, w, h = rect
-        world = np.array([[2.0, 3.0, app._config.grid.z_offset]], dtype=np.float64)
-        on_overlay = project_points(_cam_buffer(app), world, float(w), float(h))[0]
-        # The pointer lands on the overlay's pixel, offset by the bars.
-        via_mouse = handler._unproject(float(on_overlay[0]) + x0, float(on_overlay[1]) + y0)
+        aspect = app._runtime_services._overlay_renderer.scene_view.pixel_aspect
+        drawn = _drawn_at(app, rect, 2.0, 3.0, aspect=aspect)
+        via_mouse = handler._unproject(*drawn)
         assert via_mouse is not None
         assert via_mouse[0] == pytest.approx(2.0, abs=1e-6)
         assert via_mouse[1] == pytest.approx(3.0, abs=1e-6)
         # The same pixel in the frame's own resolution, as the detection pin
         # reads it. The rect is the sink's truncated fit (562 for 562.5), so
         # the two paths agree to a fraction of a pixel, millimetres on stage.
-        frame_px = np.array([[on_overlay[0] * source[0] / w, on_overlay[1] * source[1] / h]], dtype=np.float64)
-        via_pin = unproject_to_plane(_cam_buffer(app), frame_px, float(source[0]), float(source[1]), 0.0)[0]
+        frame_px = np.array(
+            [[(drawn[0] - x0) * source[0] / w, (drawn[1] - y0) * source[1] / h]],
+            dtype=np.float64,
+        )
+        plane_z = app._config.grid.z_offset
+        via_pin = unproject_to_plane(_cam_buffer(app), frame_px, float(source[0]), float(source[1]), plane_z)[0]
         assert via_pin[0] == pytest.approx(2.0, abs=1e-3)
         assert via_pin[1] == pytest.approx(3.0, abs=1e-3)
+
+    def test_a_drag_into_the_bar_holds_the_marker(self) -> None:
+        app = _letterboxed_app((1000, 1000), (1920, 1080))
+        handler = MouseHandler(app)
+        handler.on_pointer_down(*_ground_center_in(app, _LETTERBOX_1000), 1)
+        x0, y0, w, h = _LETTERBOX_1000
+        handler.on_pointer_move(x0 + 500.0, y0 + h - 10.0)  # the bottom of the picture
+        handler.update()
+        held = app._server.get_marker(1).pos
+        # Read as a frame pixel, the bar below the picture is still stage floor.
+        in_bar = unproject_to_plane(
+            _cam_buffer(app), np.array([[500.0, h + 40.0]], dtype=np.float64), float(w), float(h), 0.0
+        )[0]
+        assert np.all(np.isfinite(in_bar)) and abs(in_bar[1] - held[1]) > 0.1
+        assert handler.on_pointer_move(x0 + 500.0, y0 + h + 40.0) is True
+        handler.update()
+        assert app._server.get_marker(1).pos == held
+
+    def test_a_drag_past_the_window_edge_holds_the_marker(self) -> None:
+        app = _DummyApp()  # the scene fills the 1280x720 window
+        handler = MouseHandler(app)
+        _grab(handler, app)
+        handler.on_pointer_move(640.0, 700.0)
+        handler.update()
+        held = app._server.get_marker(1).pos
+        handler.on_pointer_move(640.0, 760.0)  # an implicit grab keeps reporting below the window
+        handler.update()
+        assert app._server.get_marker(1).pos == held
+
+    def test_a_click_in_the_bar_never_grabs_by_the_touch_radius(self) -> None:
+        app = _letterboxed_app((1000, 1000), (1920, 1080))
+        app._config.marker.ground_circle = False  # the touch radius alone decides
+        x0, y0, w, h = _LETTERBOX_1000
+        # A marker drawn 4 px above the bottom of the picture ...
+        world = unproject_to_plane(
+            _cam_buffer(app), np.array([[500.0, h - 4.0]], dtype=np.float64), float(w), float(h), 0.0
+        )[0]
+        app._server.get_marker(1).set_pos(float(world[0]), float(world[1]), 0.0)
+        handler = MouseHandler(app)
+        # ... is inside the touch radius of a click 6 px into the bar below it.
+        assert _MIN_GRAB_PX > 10.0
+        assert handler.on_pointer_down(x0 + 500.0, y0 + h + 6.0, 1) is False
+        assert handler.on_pointer_down(x0 + 500.0, y0 + h - 6.0, 1) is True
+
+    def test_a_frame_of_non_square_pixels_is_read_where_it_is_drawn(self) -> None:
+        app = _letterboxed_app((1000, 1000), _D1, _D1_PAR)
+        view = app._runtime_services._overlay_renderer.scene_view
+        assert tuple(view.rect) == _LETTERBOX_D1
+        app._config.marker.ground_circle = False  # the touch radius alone decides
+        # Near the bottom of the picture, where the stretch moves a point most.
+        app._server.get_marker(1).set_pos(2.0, -4.0, 0.0)
+        drawn = _ground_center_in(app, _LETTERBOX_D1, aspect=view.pixel_aspect)
+        unstretched = _ground_center_in(app, _LETTERBOX_D1)
+        assert math.hypot(drawn[0] - unstretched[0], drawn[1] - unstretched[1]) > _MIN_GRAB_PX
+        handler = MouseHandler(app)
+        assert handler.on_pointer_down(*unstretched, 1) is False
+        assert handler.on_pointer_down(*drawn, 1) is True
+
+    def test_non_square_pixels_and_a_lens_read_back_the_drawn_point(self) -> None:
+        app = _letterboxed_app((1000, 1000), _D1, _D1_PAR)
+        app._config.camera.lens_k1 = -0.15
+        aspect = app._runtime_services._overlay_renderer.scene_view.pixel_aspect
+        drawn = _drawn_at(app, _LETTERBOX_D1, 6.0, 2.0, aspect=aspect)
+        via_mouse = MouseHandler(app)._unproject(*drawn)
+        assert via_mouse is not None
+        assert via_mouse[0] == pytest.approx(6.0, abs=1e-6)
+        assert via_mouse[1] == pytest.approx(2.0, abs=1e-6)

@@ -26,6 +26,8 @@ from typing import Any
 
 import pytest
 
+from tests._fake_gtk import FakeGdkWindowState
+
 pytestmark = pytest.mark.unit
 
 # --------------------------------------------------------------------------- #
@@ -66,13 +68,6 @@ class FakeGdkModifierType:
     META_MASK = 1 << 28
     BUTTON1_MASK = 256  # GDK_BUTTON1_MASK
     BUTTON3_MASK = 1024  # GDK_BUTTON3_MASK
-
-
-class FakeGdkWindowState:
-    """``Gdk.WindowState`` bits the window reads, with GDK's values."""
-
-    MAXIMIZED = 1 << 2
-    FULLSCREEN = 1 << 4
 
 
 # Lookup table consulted by the fake ``Gdk.keyval_name``. Tests can
@@ -138,9 +133,13 @@ class FakeGdkSurface:
 
     def __init__(self) -> None:
         self.cursor_calls: list[Any] = []
+        self.state = 0
 
     def set_cursor(self, cursor: Any) -> None:
         self.cursor_calls.append(cursor)
+
+    def get_state(self) -> int:
+        return self.state
 
 
 class FakeGdk:
@@ -549,12 +548,16 @@ class TestPublicApi:
         assert window._window.resize_calls == [(1920, 1080)]
 
 
-def _window_state(new_state: int, changed: int = FakeGdkWindowState.FULLSCREEN) -> SimpleNamespace:
-    return SimpleNamespace(new_window_state=new_state, changed_mask=changed)
+def _set_window_state(window: Any, new_state: int) -> Any:
+    """Move GDK's window state to ``new_state`` and deliver its event, as GDK does."""
+    surface = window._window._gdk_window
+    event = SimpleNamespace(new_window_state=new_state, changed_mask=surface.state ^ new_state)
+    surface.state = new_state
+    return window._window.fire("window-state-event", event)
 
 
 class TestFullscreenResize:
-    """Fullscreen belongs to the OS, and the window never asks for a size there.
+    """The window never asks for a size while it is fullscreen.
 
     On Quartz a resize is refused while the window is fullscreen and no
     configure event comes back; GTK then freezes the frame clock waiting for
@@ -563,52 +566,61 @@ class TestFullscreenResize:
 
     def test_window_state_handler_returns_false(self, window) -> None:
         # GTK's own handler records the state; stopping emission would desync it.
-        assert window._window.fire("window-state-event", _window_state(FakeGdkWindowState.FULLSCREEN)) is False
+        assert _set_window_state(window, FakeGdkWindowState.FULLSCREEN) is False
 
     def test_apply_window_size_while_fullscreen_defers_the_resize(self, window) -> None:
-        window._window.fire("window-state-event", _window_state(FakeGdkWindowState.FULLSCREEN))
+        _set_window_state(window, FakeGdkWindowState.FULLSCREEN)
         window.apply_window_size(1920, 1080)
         assert window._window.resize_calls == []
         assert window._window.default_size == (1920, 1080)
 
     def test_deferred_size_is_applied_once_when_fullscreen_ends(self, window) -> None:
-        window._window.fire("window-state-event", _window_state(FakeGdkWindowState.FULLSCREEN))
+        _set_window_state(window, FakeGdkWindowState.FULLSCREEN)
         window.apply_window_size(1920, 1080)
-        window._window.fire("window-state-event", _window_state(0))
+        _set_window_state(window, 0)
         assert window._window.resize_calls == [(1920, 1080)]
-        window._window.fire("window-state-event", _window_state(0))
+        _set_window_state(window, FakeGdkWindowState.MAXIMIZED)
         assert window._window.resize_calls == [(1920, 1080)]
 
     def test_latest_pending_size_wins(self, window) -> None:
-        window._window.fire("window-state-event", _window_state(FakeGdkWindowState.FULLSCREEN))
+        _set_window_state(window, FakeGdkWindowState.FULLSCREEN)
         window.apply_window_size(1920, 1080)
         window.apply_window_size(1280, 720)
-        window._window.fire("window-state-event", _window_state(0))
+        _set_window_state(window, 0)
         assert window._window.resize_calls == [(1280, 720)]
 
     def test_leaving_fullscreen_with_nothing_pending_does_not_resize(self, window) -> None:
-        window._window.fire("window-state-event", _window_state(FakeGdkWindowState.FULLSCREEN))
-        window._window.fire("window-state-event", _window_state(0))
+        _set_window_state(window, FakeGdkWindowState.FULLSCREEN)
+        _set_window_state(window, 0)
         assert window._window.resize_calls == []
 
-    def test_os_driven_fullscreen_is_tracked_without_a_fullscreen_call(self, window) -> None:
-        # The green button never goes through fullscreen(); the state event alone counts.
+    def test_os_driven_fullscreen_is_read_without_a_fullscreen_call(self, window) -> None:
+        # The green button never goes through fullscreen(); GDK's state alone counts.
         assert window._window.fullscreen_calls == 0
-        window._window.fire("window-state-event", _window_state(FakeGdkWindowState.FULLSCREEN))
+        window._window._gdk_window.state = FakeGdkWindowState.FULLSCREEN
         window.apply_window_size(1920, 1080)
         assert window._window.resize_calls == []
 
     def test_a_resize_after_fullscreen_ended_is_immediate_again(self, window) -> None:
-        window._window.fire("window-state-event", _window_state(FakeGdkWindowState.FULLSCREEN))
-        window._window.fire("window-state-event", _window_state(0))
+        _set_window_state(window, FakeGdkWindowState.FULLSCREEN)
+        _set_window_state(window, 0)
+        window.apply_window_size(1920, 1080)
+        assert window._window.resize_calls == [(1920, 1080)]
+
+    def test_a_missed_leave_event_never_holds_a_later_resize(self, window) -> None:
+        _set_window_state(window, FakeGdkWindowState.FULLSCREEN)
+        window.apply_window_size(1280, 720)
+        window._window._gdk_window.state = 0  # left fullscreen, its event never seen
+        window.apply_window_size(1920, 1080)
+        assert window._window.resize_calls == [(1920, 1080)]
+
+    def test_an_unrealised_window_resizes_at_once(self, window) -> None:
+        window._window._gdk_window = None
         window.apply_window_size(1920, 1080)
         assert window._window.resize_calls == [(1920, 1080)]
 
     def test_other_state_bits_do_not_defer(self, window) -> None:
-        window._window.fire(
-            "window-state-event",
-            _window_state(FakeGdkWindowState.MAXIMIZED, changed=FakeGdkWindowState.MAXIMIZED),
-        )
+        _set_window_state(window, FakeGdkWindowState.MAXIMIZED)
         window.apply_window_size(1920, 1080)
         assert window._window.resize_calls == [(1920, 1080)]
 
@@ -623,14 +635,13 @@ class TestFullscreenResize:
         window.attach_hud(lambda cr, w, h: None)
         window.start_hud_tick()
         assert window._window.tick() is True
-        window._window.fire("window-state-event", _window_state(FakeGdkWindowState.FULLSCREEN))
+        _set_window_state(window, FakeGdkWindowState.FULLSCREEN)
         window._window.fire("configure-event", SimpleNamespace(width=1512, height=982))
         window.apply_window_size(1920, 1080)
         window._window.fire("configure-event", SimpleNamespace(width=1512, height=982))
         assert window._window.tick() is True
         assert window._window.set_geometry_hints_calls == []
         assert window._window.resize_calls == []
-        assert not hasattr(window, "set_aspect_ratio")
 
 
 # --------------------------------------------------------------------------- #

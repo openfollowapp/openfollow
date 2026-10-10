@@ -11,9 +11,12 @@ from openfollow.runtime.overlay_layout import (
     bottom_left_info_panel_layout,
     build_help_sections,
     centered_panel_layout,
+    display_size,
     format_source_text,
     help_sections_height,
     marker_card_y,
+    pixel_aspect,
+    scene_view,
     selectable_list_layout,
     video_rect,
     virtual_fader_card_y,
@@ -739,3 +742,81 @@ def test_video_rect_truncates_and_centres_like_the_sink() -> None:
 def test_video_rect_is_degenerate_on_a_one_pixel_canvas() -> None:
     # Consumers must guard a zero side rather than divide by it.
     assert video_rect(1, 1, 1920, 1080).height == 0
+
+
+# --------------------------------------------------------------------------- #
+# display_size / pixel_aspect – a frame of non-square pixels
+# --------------------------------------------------------------------------- #
+
+# Expected values follow gtksink's ``_apply_par``, worked by hand.
+
+
+@pytest.mark.parametrize(
+    ("source", "par", "expected"),
+    [
+        # D1 PAL at 12:11 is 4:3, and 576 divides by 3: the height stays.
+        ((704, 576), (12, 11), (768, 576)),
+        # HDV at 4:3 is shown 16:9.
+        ((1440, 1080), (4, 3), (1920, 1080)),
+        # NTSC DV at 10:11 is 15:11; 480 does not divide by 11, 720 does by 15: the width stays.
+        ((720, 480), (10, 11), (720, 528)),
+        # 59:54 makes 295:216, which divides neither side: the height stays, the width truncates.
+        ((720, 576), (59, 54), (786, 576)),
+        # Square pixels are shown at their own size, whatever the shape.
+        ((1366, 768), (1, 1), (1366, 768)),
+        ((1001, 999), (1, 1), (1001, 999)),
+    ],
+)
+def test_display_size_follows_the_sink(
+    source: tuple[int, int], par: tuple[int, int], expected: tuple[int, int]
+) -> None:
+    assert display_size(*source, par) == expected
+
+
+@pytest.mark.parametrize("par", [(0, 1), (1, 0), (-4, 3)])
+def test_display_size_ignores_an_invalid_pixel_aspect_ratio(par: tuple[int, int]) -> None:
+    assert display_size(704, 576, par) == (704, 576)
+
+
+@pytest.mark.parametrize("source", [(1920, 1080), (1001, 999), (1080, 1920), (0, 0)])
+def test_pixel_aspect_is_exactly_one_for_square_pixels(source: tuple[int, int]) -> None:
+    assert pixel_aspect(*source) == 1.0
+
+
+def test_pixel_aspect_is_the_stretch_the_sink_draws() -> None:
+    assert pixel_aspect(704, 576, (12, 11)) == pytest.approx(12 / 11)
+    # Where the sink truncates, the stretch is what it draws, not the caps' ratio.
+    assert pixel_aspect(720, 576, (59, 54)) == pytest.approx(786 / 720)
+    assert pixel_aspect(720, 576, (59, 54)) != pytest.approx(59 / 54)
+
+
+def test_a_display_size_that_truncates_to_nothing_is_ignored() -> None:
+    # 3x1 at 2:9 is 2:3 wide; the sink would show it 0 pixels wide.
+    assert display_size(3, 1, (2, 9)) == (0, 1)
+    assert pixel_aspect(3, 1, (2, 9)) == 1.0
+    assert tuple(video_rect(800, 600, 3, 1, (2, 9))) == (0, 0, 800, 600)
+
+
+@pytest.mark.parametrize(
+    ("source", "par", "canvas", "expected"),
+    [
+        ((704, 576), (12, 11), (1000, 1000), (0, 125, 1000, 750)),
+        # HDV fills a 16:9 screen, where its 4:3 caps size would be pillarboxed.
+        ((1440, 1080), (4, 3), (1920, 1080), (0, 0, 1920, 1080)),
+        ((720, 576), (16, 15), (1280, 720), (160, 0, 960, 720)),
+    ],
+)
+def test_video_rect_fits_the_display_size_of_non_square_pixels(
+    source: tuple[int, int],
+    par: tuple[int, int],
+    canvas: tuple[int, int],
+    expected: tuple[int, int, int, int],
+) -> None:
+    assert tuple(video_rect(*canvas, *source, par)) == expected
+
+
+def test_scene_view_pairs_the_rect_with_the_stretch() -> None:
+    view = scene_view(1000, 1000, 704, 576, (12, 11))
+    assert tuple(view.rect) == (0, 125, 1000, 750)
+    assert view.pixel_aspect == pytest.approx(12 / 11)
+    assert scene_view(1512, 982, 1920, 1080) == ((0, 66, 1512, 850), 1.0)

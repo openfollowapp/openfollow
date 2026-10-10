@@ -885,3 +885,96 @@ class TestLetterboxedScene:
         _scene_renderer((1920, 1080)).draw(fake, 1000, 1000)
         assert fake.saves == fake.restores
         assert any("Overlay Error" in t for t in fake.text_calls)
+
+    def test_a_frame_of_non_square_pixels_is_boxed_by_its_display_size(self, pass_sizes) -> None:
+        # D1 at 12:11 is shown 768x576 (4:3), not at its 704x576 caps size.
+        renderer = _scene_renderer((704, 576))
+        renderer.state.source_par = (12, 11)
+        fake = FakeCairo()
+        renderer.draw(fake, 1000, 1000)
+        for name in _SCENE:
+            assert pass_sizes[name] == [(1000, 750)], name
+        assert fake.translates == [(0, 125)]
+
+    def test_the_drawn_view_is_published_for_the_pointer(self, pass_sizes) -> None:
+        renderer = _scene_renderer((704, 576))
+        assert renderer.scene_view is None  # nothing drawn yet
+        renderer.state.source_par = (12, 11)
+        renderer.draw(FakeCairo(), 1000, 1000)
+        rect, aspect = renderer.scene_view
+        assert tuple(rect) == (0, 125, 1000, 750)
+        assert aspect == pytest.approx(12 / 11)
+
+    def test_a_menu_frame_keeps_the_view_last_drawn(self, pass_sizes) -> None:
+        renderer = _scene_renderer((1920, 1080))
+        renderer.draw(FakeCairo(), 1000, 1000)
+        drawn = renderer.scene_view
+        renderer.state.settings_menu_active = True
+        renderer.draw(FakeCairo(), 640, 480)
+        assert renderer.scene_view == drawn
+
+
+@pytest.mark.filterwarnings("ignore:Rsvg.Handle.render_cairo is deprecated:DeprecationWarning")
+def test_a_frame_with_no_room_for_the_scene_still_forgets_a_removed_cone(monkeypatch) -> None:
+    """A frame fitted into nothing draws no scene but still drops the cones of markers gone."""
+    import cairo
+
+    from openfollow.runtime import overlay_draw_scene as scene
+    from openfollow.runtime.overlay_state import MarkerOverlayData
+
+    worked_out: list[int] = []
+    real = scene._cone_geometry
+
+    def _counting(state, t, w, h):
+        worked_out.append(t.marker_id)
+        return real(state, t, w, h)
+
+    monkeypatch.setattr(scene, "_cone_geometry", _counting)
+    renderer = CairoOverlayRenderer()
+    state = renderer.state
+    state.camera_params = np.array([0.0, -11.0, 6.0, -22.0, 0.0, 0.0, 60.0])
+    state.grid_config = (10.0, 6.0, 1.0, 0.0, 3.0, 0.0)
+    state.marker_style = "cone"
+    state.source_resolution = (1280, 720)
+    a = MarkerOverlayData(marker_id=1, x=-1.0, y=2.0, z=1.6, color="#ff3333")
+    b = MarkerOverlayData(marker_id=2, x=1.0, y=2.0, z=1.6, color="#33aaff")
+
+    def frame(width: int, height: int, *markers: MarkerOverlayData) -> None:
+        state.markers = list(markers)
+        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
+        renderer.draw(cairo.Context(surface), width, height)
+
+    frame(1280, 720, a, b)
+    frame(1, 1, a)  # 16:9 in one pixel has no height: no scene this frame
+    frame(1280, 720, a, b)
+    assert sorted(worked_out) == [1, 2, 2]
+
+
+@pytest.mark.filterwarnings("ignore:Rsvg.Handle.render_cairo is deprecated:DeprecationWarning")
+def test_a_cone_is_drawn_again_when_the_frame_s_pixels_change_shape(monkeypatch) -> None:
+    import cairo
+
+    from openfollow.runtime import overlay_draw_scene as scene
+    from openfollow.runtime.overlay_state import MarkerOverlayData
+
+    worked_out: list[int] = []
+    real = scene._cone_geometry
+
+    def _counting(state, t, w, h):
+        worked_out.append(t.marker_id)
+        return real(state, t, w, h)
+
+    monkeypatch.setattr(scene, "_cone_geometry", _counting)
+    renderer = CairoOverlayRenderer()
+    state = renderer.state
+    state.camera_params = np.array([0.0, -11.0, 6.0, -22.0, 0.0, 0.0, 60.0])
+    state.grid_config = (10.0, 6.0, 1.0, 0.0, 3.0, 0.0)
+    state.marker_style = "cone"
+    state.markers = [MarkerOverlayData(marker_id=1, x=-1.0, y=2.0, z=1.6, color="#ff3333")]
+    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 1280, 720)
+    # Both frames box to the same 1280x720 rectangle; only the stretch differs.
+    state.source_resolution = (1280, 720)
+    renderer.draw(cairo.Context(surface), 1280, 720)
+    state.source_resolution, state.source_par = (1152, 720), (10, 9)
+    renderer.draw(cairo.Context(surface), 1280, 720)
+    assert worked_out == [1, 1]

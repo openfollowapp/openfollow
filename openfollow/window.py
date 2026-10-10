@@ -157,10 +157,7 @@ class GtkNativeSinkWindow:
         # The pointer poll runs every frame; throttle its failure log so a
         # persistent error can't flood the journal at the display tick rate.
         self._poll_err_log = ThrottledExceptionLogger(logger, "Pointer poll failed")
-        # Fullscreen belongs to the OS (the green button on macOS, Cage on a
-        # Pi), so it is read from the window-state event, never assumed from
-        # fullscreen(); a resize asked for while fullscreen waits here.
-        self._fullscreen = False
+        # A resize asked for while the window is fullscreen waits here.
         self._pending_size: tuple[int, int] | None = None
         self._setup_events()
         self._window.show_all()
@@ -368,11 +365,16 @@ class GtkNativeSinkWindow:
         size lands when the window leaves fullscreen.
         """
         self._window.set_default_size(width, height)
-        if self._fullscreen:
+        if self._is_fullscreen():
             self._pending_size = (width, height)
             return
         self._pending_size = None
         self._window.resize(width, height)
+
+    def _is_fullscreen(self) -> bool:
+        """Read from GDK, which records the OS's fullscreen (the green button) as well as ``fullscreen()``."""
+        gdk_window = self._window.get_window()
+        return gdk_window is not None and bool(gdk_window.get_state() & self._Gdk.WindowState.FULLSCREEN)
 
     def get_canvas_size(self) -> tuple[int, int]:
         """Return current window client-area size in pixels."""
@@ -644,9 +646,8 @@ class GtkNativeSinkWindow:
         return False
 
     def _on_window_state(self, widget: Any, event: Any) -> bool:
-        fullscreen = bool(event.new_window_state & self._Gdk.WindowState.FULLSCREEN)
-        left_fullscreen = self._fullscreen and not fullscreen
-        self._fullscreen = fullscreen
+        fullscreen = self._Gdk.WindowState.FULLSCREEN
+        left_fullscreen = bool(event.changed_mask & fullscreen) and not (event.new_window_state & fullscreen)
         if left_fullscreen and self._pending_size is not None:
             width, height = self._pending_size
             self._pending_size = None

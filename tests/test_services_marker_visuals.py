@@ -940,6 +940,7 @@ def _make_visual_app(marker: object, *, controlled: bool) -> SimpleNamespace:
         ),
         source_name="",
         resolution=(1920, 1080),
+        pixel_aspect_ratio=(1, 1),
         source_selection_active=False,
         discovered_sources=[],
         selected_source_index=0,

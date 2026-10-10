@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 import threading
 import time
@@ -254,6 +255,11 @@ class GstNativeSinkReceiver:
     @property
     def resolution(self) -> tuple[int, int]:
         return self._state.resolution
+
+    @property
+    def pixel_aspect_ratio(self) -> tuple[int, int]:
+        """The source's pixel aspect ratio from its caps, ``(1, 1)`` when square or unknown."""
+        return self._state.pixel_aspect_ratio
 
     @property
     def source_framerate(self) -> float:
@@ -1041,10 +1047,26 @@ class GstNativeSinkReceiver:
                     w = structure.get_value("width")
                     h = structure.get_value("height")
                     if isinstance(w, int) and isinstance(h, int) and w > 0 and h > 0:
-                        if self._state.set_resolution(w, h):
-                            logger.info("Video resolution: %dx%d", w, h)
+                        par = self._pixel_aspect_from_structure(structure)
+                        if self._state.set_resolution(w, h, par):
+                            if par == (1, 1):
+                                logger.info("Video resolution: %dx%d", w, h)
+                            else:
+                                logger.info("Video resolution: %dx%d, pixel aspect ratio %d:%d", w, h, *par)
                     self._apply_framerate_from_structure(structure)
         return cast(int, Gst.PadProbeReturn.OK)  # mypy narrowing
+
+    @staticmethod
+    def _pixel_aspect_from_structure(structure: Any) -> tuple[int, int]:
+        """The caps' pixel aspect ratio in lowest terms; square when absent or invalid."""
+        try:
+            ok, num, den = structure.get_fraction("pixel-aspect-ratio")
+        except Exception:
+            return (1, 1)
+        if not ok or num <= 0 or den <= 0:
+            return (1, 1)
+        common = math.gcd(num, den)
+        return (num // common, den // common)
 
     def _on_sink_buffer(self, pad: Any, info: Any) -> int:
         """Record frame arrival time; detect connection on real buffer flow.

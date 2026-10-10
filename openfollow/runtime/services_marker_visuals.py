@@ -388,6 +388,7 @@ def build_initial_overlay_state(cfg: Any) -> OverlayState:
 
     state.video_connected = False
     state.source_resolution = (0, 0)
+    state.source_par = (1, 1)
     state.source_label = ""
     state.reconnect_attempt = 0
     state.error_message = ""
@@ -507,6 +508,7 @@ def build_marker_visual_state(
     state.video_source_type = app._config.video_source_type
     state.video_connected = status.is_connected
     state.source_resolution = video_receiver.resolution
+    state.source_par = video_receiver.pixel_aspect_ratio
     state.source_label = video_receiver.source_name
     state.reconnect_attempt = status.reconnect_attempt
     state.error_message = status.error_message

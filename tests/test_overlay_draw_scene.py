@@ -17,12 +17,14 @@ import pytest
 
 from openfollow.runtime.overlay_draw_scene import (
     _MAX_GRID_LINES_PER_AXIS,
+    _cone_geometry,
     draw_grid,
     draw_marker,
     draw_origin,
     project,
 )
 from openfollow.runtime.overlay_state import MarkerOverlayData, OverlayState
+from openfollow.scene.solver import apply_overlay_distortion, project_points
 from tests._fake_cairo import FakeCairo, FakeRenderer
 
 pytestmark = pytest.mark.unit
@@ -200,7 +202,7 @@ class TestAssistGhost:
         state = _state_with_grid_offset(0.0, 0.0, 0.0)
         ghost = MarkerOverlayData(marker_id=1, x=1.0, y=1.0, z=0.0, color="#33ff99", is_assist_ghost=True)
 
-        def _fake_project(_cam, pts, _w, _h, _k1=0.0, _k2=0.0):
+        def _fake_project(_cam, pts, _w, _h, _k1=0.0, _k2=0.0, _pixel_aspect=1.0):
             # The marker's own position (2 points) stays finite so draw_marker
             # reaches the ghost path; the crosshair (6) and ground ring (24)
             # project to non-finite, so their segments are skipped and the ring
@@ -347,7 +349,7 @@ class TestLensDistortionWarp:
         state.show_origin = True
         state.origin_length = 3.0
 
-        def _fake_project(_cam, pts, _w, _h, _k1=0.0, _k2=0.0):
+        def _fake_project(_cam, pts, _w, _h, _k1=0.0, _k2=0.0, _pixel_aspect=1.0):
             out = np.tile(np.array([[100.0, 100.0]]), (len(pts), 1)).astype(float)
             out[len(pts) // 2] = np.nan  # one sub-point behind the camera
             return out
@@ -357,3 +359,71 @@ class TestLensDistortionWarp:
         draw_origin(cr, state, 1920, 1080)
         # Each axis splits into two finite runs -> two move_tos per axis.
         assert len(cr.move_tos) == 3 * 2
+
+
+# --------------------------------------------------------------------------- #
+# A frame of non-square pixels
+# --------------------------------------------------------------------------- #
+
+# D1 at 12:11: gtksink shows it 768x576, each frame pixel 12/11 as wide as tall.
+_D1_ASPECT = 12 / 11
+
+
+def _non_square(state: OverlayState) -> OverlayState:
+    state.source_resolution = (704, 576)
+    state.source_par = (12, 11)
+    return state
+
+
+def _stretched(points: list[tuple[float, float]] | list[tuple[float, float, float]]) -> list[tuple[float, float]]:
+    return [(p[0] * _D1_ASPECT, p[1]) for p in points]
+
+
+class TestNonSquarePixels:
+    """A frame of non-square pixels is projected in its own pixels, as it was
+    calibrated, and stretched the way gtksink stretches the frame."""
+
+    @pytest.mark.parametrize(("k1", "k2"), [(0.0, 0.0), (-0.15, 0.04)])
+    def test_a_point_lands_on_the_frame_pixel_the_sink_draws_there(self, k1: float, k2: float) -> None:
+        # gtksink fits the 768x576 display size into 1000x750: the frame's own
+        # pixels are scaled by 1000/704 across and 750/576 down.
+        cam = _camera_params()
+        world = np.array([(1.5, 2.0, 0.0), (-2.0, 4.0, 1.0)], dtype=np.float64)
+        in_frame = apply_overlay_distortion(project_points(cam, world, 704.0, 576.0), 704.0, 576.0, k1, k2)
+        on_sink = np.column_stack([in_frame[:, 0] * 1000 / 704, in_frame[:, 1] * 750 / 576])
+        np.testing.assert_allclose(project(cam, world, 1000, 750, k1, k2, _D1_ASPECT), on_sink, atol=1e-6)
+
+    @pytest.mark.parametrize("k1", [0.0, -0.15])
+    def test_every_scene_line_and_glyph_is_stretched(self, k1: float) -> None:
+        # Drawn 1200 wide at 12:11, the scene is the square-pixel scene drawn
+        # 1100 wide, stretched across by 12/11.
+        marker = MarkerOverlayData(marker_id=1, x=1.0, y=1.0, z=1.0, color="#33ff99")
+        ghost = MarkerOverlayData(marker_id=2, x=-1.0, y=2.0, z=1.0, color="#33ff99", is_assist_ghost=True)
+
+        def draw(state: OverlayState, w: int) -> FakeCairo:
+            state.show_origin = True
+            cr = FakeCairo()
+            draw_grid(FakeRenderer(), cr, state, w, 900)
+            draw_origin(cr, state, w, 900)
+            draw_marker(cr, state, marker, w, 900)
+            draw_marker(cr, state, ghost, w, 900)
+            return cr
+
+        square = draw(_marker_state(k1=k1), 1100)
+        stretched = draw(_non_square(_marker_state(k1=k1)), 1200)
+        assert square.line_tos and square.arcs
+        np.testing.assert_allclose(stretched.move_tos, _stretched(square.move_tos), atol=1e-6)
+        np.testing.assert_allclose(stretched.line_tos, _stretched(square.line_tos), atol=1e-6)
+        np.testing.assert_allclose([a[:2] for a in stretched.arcs], _stretched(square.arcs), atol=1e-6)
+
+    @pytest.mark.parametrize("k1", [0.0, -0.15])
+    def test_a_cone_is_stretched(self, k1: float) -> None:
+        state = _marker_state(k1=k1)
+        t = MarkerOverlayData(marker_id=1, x=1.0, y=2.0, z=1.6, color="#ff3333")
+        square = _cone_geometry(state, t, 1100, 900)
+        stretched = _cone_geometry(_non_square(_marker_state(k1=k1)), t, 1200, 900)
+        assert len(square.edge_lines) == len(stretched.edge_lines) == 2
+        pairs = [(square.base_ring, stretched.base_ring), (square.top_ring, stretched.top_ring)]
+        pairs += list(zip(square.edge_lines, stretched.edge_lines, strict=True))
+        for sq, st in pairs:
+            np.testing.assert_allclose(st, _stretched([tuple(p) for p in sq]), atol=1e-6)

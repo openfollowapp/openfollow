@@ -41,6 +41,7 @@ class ReceiverStateMachine:
         # nothing.
         self._phase_lock = threading.Lock()
         self.resolution: tuple[int, int] = (0, 0)
+        self.pixel_aspect_ratio: tuple[int, int] = (1, 1)
         self.source_framerate: float = 0.0
         # What the source element itself delivered: a pixel format for raw
         # video, else the media type.
@@ -85,24 +86,26 @@ class ReceiverStateMachine:
     def clear_source_caps(self) -> None:
         """Forget the negotiated resolution / frame rate / format of the last source."""
         self.resolution = (0, 0)
+        self.pixel_aspect_ratio = (1, 1)
         self.source_framerate = 0.0
         self.source_format = ""
 
-    def set_resolution(self, width: int, height: int) -> bool:
-        """Record the source's negotiated resolution; ``True`` when it changed.
+    def set_resolution(self, width: int, height: int, pixel_aspect_ratio: tuple[int, int] = (1, 1)) -> bool:
+        """Record the source's negotiated size and pixel aspect ratio; ``True`` when either changed.
 
         Placeholder caps are refused for the same reason placeholder buffers
         can't connect (see ``mark_frame_received``): the "No Signal" pipeline
         feeds the *shared* sink, whose caps probe is attached once for the
         sink's lifetime, so its 1920x1080 would otherwise be published as the
-        source's own geometry and pin the window's aspect hint to 16:9 for a
-        source that has never delivered a frame.
+        source's own geometry and box the HUD's scene to 16:9 for a source
+        that has never delivered a frame.
         """
         if self.is_placeholder_pipeline:
             return False
-        previous = self.resolution
+        previous = (self.resolution, self.pixel_aspect_ratio)
+        self.pixel_aspect_ratio = pixel_aspect_ratio
         self.resolution = (width, height)
-        return previous != self.resolution
+        return previous != (self.resolution, self.pixel_aspect_ratio)
 
     def set_source_framerate(self, fps: float) -> None:
         if self.is_placeholder_pipeline:

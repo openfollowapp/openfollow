@@ -337,6 +337,8 @@ def step_frame(edge_x: float, *, ramp: float = 1.0) -> np.ndarray:
 def test_an_edge_between_pixels_is_found_to_a_tenth_of_one(fraction: float) -> None:
     edge = 1000.0 + fraction
     pts = snap(step_frame(edge, ramp=2.0), (edge + 5.0, 100.0), (edge + 5.0, 900.0))
+    # Plain bools and floats: the snap route answers them as JSON.
+    assert all(type(p.snapped) is bool and type(p.x) is float for p in pts)
     assert all(p.snapped for p in pts)
     assert max(abs(p.x - edge) for p in pts) < 0.1
 

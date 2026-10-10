@@ -292,7 +292,7 @@ def snap_line_to_edges(
             j = lo + int(np.nanargmax(window))
             known_profile = np.where(np.isfinite(profile), profile, -np.inf)
             # The window's own edge on the flank of a peak beyond it is no peak.
-            snapped = known_profile[j] >= max(known_profile[j - 1], known_profile[j + 1])
+            snapped = bool(known_profile[j] >= max(known_profile[j - 1], known_profile[j + 1]))
         if snapped:
             offset = j - half + _subpixel_peak(known_profile, j)
         position = a + fraction * (b - a) + offset * normal

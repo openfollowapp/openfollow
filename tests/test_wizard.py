@@ -1800,7 +1800,8 @@ class TestWizardLensEdgesEndpoint:
             lambda b: b.update(scale=1),
             lambda b: b.update(width=b["width"] + 1),
             lambda b: b.update(height=b["height"] - 1),
-            lambda b: b.update(scale=1, width=2000, height=2000, image_width=2000, image_height=2000),
+            # A tall snapshot keeps scale 1, so only the pixel cap refuses it.
+            lambda b: b.update(scale=1, width=1280, height=2000, image_width=1280, image_height=2000),
             lambda b: b.update(image_width=0),
             lambda b: b.update(image_height="tall"),
             lambda b: b.pop("scale"),

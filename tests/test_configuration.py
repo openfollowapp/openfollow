@@ -12,6 +12,8 @@ try:
 except ImportError:
     import tomli as tomllib  # type: ignore[no-redef]
 
+import logging
+
 import pytest
 
 from openfollow.configuration import (
@@ -2704,15 +2706,16 @@ def test_camera_config_lens_distortion_defaults_to_pinhole() -> None:
     [
         (0.1, 0.1),
         ("0.15", 0.15),
-        (1.5, 0.4),  # above clamp
-        (-1.5, -0.4),  # below clamp
+        (1.5, 1.5),  # pincushion never folds, so no box clamps it
+        (-1.5, 0.0),  # folds with k2 = 0 -> the pair falls back to pinhole
+        (-0.5, 0.0),
         (None, 0.0),
         ("nope", 0.0),
-        (float("inf"), 0.0),  # non-finite -> declared default, not the clamp
+        (float("inf"), 0.0),  # non-finite -> declared default
         (float("nan"), 0.0),
     ],
 )
-def test_camera_config_coerces_and_clamps_lens_k1(bad_k: object, expected: float) -> None:
+def test_camera_config_coerces_lens_k1(bad_k: object, expected: float) -> None:
     cfg = CameraConfig(lens_k1=bad_k)  # type: ignore[arg-type]
     assert cfg.lens_k1 == expected
 
@@ -2722,17 +2725,38 @@ def test_camera_config_coerces_and_clamps_lens_k1(bad_k: object, expected: float
     [
         (0.03, 0.03),
         ("0.04", 0.04),
-        (1.5, 0.2),
-        (-1.5, -0.2),
+        (1.5, 1.5),
+        (-1.5, 0.0),  # folds with k1 = 0
         (None, 0.0),
         ("nope", 0.0),
         (float("inf"), 0.0),
         (float("nan"), 0.0),
     ],
 )
-def test_camera_config_coerces_and_clamps_lens_k2(bad_k: object, expected: float) -> None:
+def test_camera_config_coerces_lens_k2(bad_k: object, expected: float) -> None:
     cfg = CameraConfig(lens_k2=bad_k)  # type: ignore[arg-type]
     assert cfg.lens_k2 == expected
+
+
+@pytest.mark.parametrize("k1,k2", [(-0.4, -0.2), (-0.34, 0.0), (-0.25, -0.1), (-0.6, 0.1)])
+def test_camera_config_folding_lens_pair_falls_back_to_pinhole_with_a_warning(
+    k1: float, k2: float, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
+        cfg = CameraConfig(lens_k1=k1, lens_k2=k2)
+    assert (cfg.lens_k1, cfg.lens_k2) == (0.0, 0.0)
+    assert any("folds" in rec.getMessage() for rec in caplog.records)
+
+
+@pytest.mark.parametrize("k1,k2", [(-0.47, 0.25), (-0.45, 0.2), (0.6, 0.4), (-0.3, 0.0)])
+def test_camera_config_keeps_a_wide_lens_pair_outside_the_old_box(k1: float, k2: float) -> None:
+    cfg = CameraConfig(lens_k1=k1, lens_k2=k2)
+    assert (cfg.lens_k1, cfg.lens_k2) == (k1, k2)
+
+
+def test_camera_config_wrong_type_on_one_coefficient_keeps_the_other() -> None:
+    cfg = CameraConfig(lens_k1="abc", lens_k2=0.3)  # type: ignore[arg-type]
+    assert (cfg.lens_k1, cfg.lens_k2) == (0.0, 0.3)
 
 
 def test_camera_config_rejects_inf_fov_to_default() -> None:
@@ -6712,6 +6736,38 @@ class TestUiConfig:
             str(temp_config_path),
         )
         assert load_config(str(temp_config_path)).ui.show_experimental_features is True
+
+    # developer_mode: config-only, shows the developer's views in the web UI.
+    def test_developer_mode_default_is_false(self) -> None:
+        from openfollow.configuration import UiConfig
+
+        assert UiConfig().developer_mode is False
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            (True, True),
+            ("true", True),
+            ("on", True),
+            (False, False),
+            ("off", False),
+            ("maybe", False),
+            (42, False),
+            (None, False),
+        ],
+    )
+    def test_developer_mode_coercion(self, value, expected) -> None:  # noqa: ANN001
+        from openfollow.configuration import UiConfig
+
+        assert UiConfig(developer_mode=value).developer_mode is expected  # type: ignore[arg-type]
+
+    def test_developer_mode_toml_round_trip(self, temp_config_path) -> None:  # noqa: ANN001
+        from openfollow.configuration import AppConfig, UiConfig, load_config, save_config
+
+        save_config(AppConfig(ui=UiConfig(developer_mode=True)), str(temp_config_path))
+        loaded = load_config(str(temp_config_path))
+        assert loaded.ui.developer_mode is True
+        assert loaded.ui.show_experimental_features is False
 
 
 class TestTriggerZonesConfigDropsNonObjectZones:

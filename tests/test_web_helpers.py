@@ -225,13 +225,21 @@ def test_apply_section_data_camera_lens_distortion_roundtrips() -> None:
     assert config.camera.lens_k2 == pytest.approx(0.03)
 
 
-def test_apply_section_data_camera_lens_distortion_clamps_out_of_range() -> None:
+def test_apply_section_data_camera_lens_distortion_folding_pair_falls_back() -> None:
     config = AppConfig()
     ok = apply_section_data(config, "camera", {"lens_k1": "5", "lens_k2": "-5"})
     assert ok is True
-    # __post_init__ re-runs after the web save, clamping to the configured band.
-    assert config.camera.lens_k1 == 0.4
-    assert config.camera.lens_k2 == -0.2
+    # __post_init__ re-runs after the web save: a pair that folds inside the frame is pinhole.
+    assert config.camera.lens_k1 == 0.0
+    assert config.camera.lens_k2 == 0.0
+
+
+def test_apply_section_data_camera_lens_distortion_keeps_a_wide_lens() -> None:
+    config = AppConfig()
+    ok = apply_section_data(config, "camera", {"lens_k1": "-0.47", "lens_k2": "0.25"})
+    assert ok is True
+    assert config.camera.lens_k1 == pytest.approx(-0.47)
+    assert config.camera.lens_k2 == pytest.approx(0.25)
 
 
 def test_apply_section_data_mouse3d_roundtrips() -> None:

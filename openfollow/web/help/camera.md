@@ -2,7 +2,7 @@
 
 Where the real camera sits in the venue and which lens it uses. OpenFollow uses these to project tracked points into stage coordinates, so they must match the physical rig.
 
-The easiest way to set them is the **Setup Wizard** (the Open Setup Wizard button on the Camera & Grid tab), which solves position, orientation, and field of view from four marked grid corners. The fields here are for direct edits and fine-tuning.
+The easiest way to set them is the **Setup Wizard** (the Open Setup Wizard button on the General or Camera & Grid tab), which solves position, orientation, and field of view from four marked grid corners. The fields here are for direct edits and fine-tuning.
 
 Positions are in **metres**, relative to the **Reference Point** – the single physical point on stage that is the (0, 0, 0) of your show (see Core Concepts). Orientation is in **degrees**.
 
@@ -31,14 +31,16 @@ OpenFollow only needs the **horizontal** field of view; the sensor and focal-len
 
 ## Lens distortion (experimental)
 
-Wide-angle and fisheye lenses bow straight lines, so the pinhole overlay (grid, markers, zones) no longer sits on top of the curved video. These two sliders bow the **overlay** to match the lens. The video frame itself is never warped (warping every pixel would be too slow on a Pi), so there is no performance cost when the sliders are at `0`.
+Wide-angle and fisheye lenses bow straight lines, so the pinhole overlay (grid, markers, zones) no longer sits on top of the curved video. Two values bow the **overlay** to match the lens. The video frame itself is never warped (warping every pixel would be too slow on a Pi), so there is no performance cost when both are `0`.
 
-- **Barrel / fisheye (k1)** – the main correction. Drag it negative until the overlay grid hugs a wide-angle / fisheye image (lines curve inward); positive corrects a pincushion lens (lines curve outward).
-- **Edge fit (k2)** – a finer, higher-order adjustment for the frame edges, where strong fisheye lenses bend the most. Set k1 first, then nudge k2.
+- **Barrel / fisheye** – the main correction. Negative hugs a wide-angle / fisheye image (lines curve inward); positive corrects a pincushion lens (lines curve outward).
+- **Edge fit** – a finer adjustment for the frame edges, where strong fisheye lenses bend the most.
 
-The correction is centred on the middle of the image. Tune by eye: enable experimental features, open this page next to the live display, and adjust until the overlay lines follow the video. Mouse placement and AI tracking are corrected to match, so clicking a point in the video still lands the marker there. `0` / `0` disables the correction (plain pinhole).
+**Measure them instead of guessing.** With experimental features on, the **Setup Wizard** gains a **Lens** step between Video Source and Camera Position. It suggests the clearest edges of the picture as dashed lines; tap the ones that are straight in reality – a stage edge, a tape line, a truss, the edge of an LED wall – or click the start and the end of such an edge yourself. Each line follows its edge along the whole length, bowed the way the lens bows it, and its five points can be dragged; its ends stay within a few pixels of where you clicked. From the keyboard, Tab reaches the suggestions (Enter adds one) and the points: the arrow keys move a point (Shift for ten pixels), Space switches a middle point off and on, and Delete removes its line. The wizard fits both values so the lines come out straight. Nothing is printed or carried, and the lens is measured as rigged, at show zoom and focus. A five-step coverage rating says how well the lines pin the lens down: lines near the edges and corners of the image tell the most, and the edge fit is only measured once a line reaches a corner. Apply is never blocked by the rating; some venues simply have no straight edges in the corners. A **Low** rating means the lines say too little about the lens (lines through the middle of the picture, for one), so its values are shown but not applied until more lines raise it. The sliders under the result fine-tune the pair, and Review repeats the rating while the pair is the fit's own, or says it was fine-tuned. Skipping the step keeps the current pair.
 
-The **Setup Wizard** also carries these sliders in its Corner Pinning step (behind the same experimental-features toggle): bow the projected grid to match the lens, then pin the corners. The solve undistorts the pinned corners before fitting the pinhole pose, so a fisheye lens no longer skews the calibration. Sliders set in the wizard are saved back here on Apply, and vice versa.
+The correction is centred on the middle of the image. Mouse placement and AI tracking are corrected to match, so clicking a point in the video still lands the marker there. `0` / `0` disables the correction (plain pinhole).
+
+The one limit on the pair is that the overlay must not fold anywhere out to the frame corner. The form checks the pair whenever either value or its slider changes and keeps **Save** disabled while it folds; a hand-edited file, or a request that skips the form, falls back to `0` / `0`. There is no fixed range: a lens with about 100° horizontal field of view on 16:9 lands around `-0.47` barrel / fisheye and `0.25` edge fit, and the sliders cover the common span while the number fields accept any pair that does not fold. The Corner Pinning solve undistorts the pinned corners with the current pair, so a lens changed after pinning is solved again from the same pins, and Review says so when there are no pins to solve from.
 
 ## Saving & sharing
 

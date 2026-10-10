@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import collections
 import copy
 import functools
@@ -69,6 +71,7 @@ from openfollow.configuration import (
     viewed_with_controlled,
 )
 from openfollow.input.mouse3d_status import status_key
+from openfollow.lens_model import lens_warp_is_valid
 
 # Module-level so handler closures resolve ``save_catalog`` from this
 # namespace at call time (tests monkeypatch it for persist-failure paths).
@@ -93,6 +96,7 @@ from openfollow.network.validate import (
 from openfollow.palette import AUTO_PICK_ORDER
 from openfollow.privilege.camera_config import AUTOMATIC
 from openfollow.runtime.diagnostics_export import WEB, ExportStatus, status_lines
+from openfollow.scene.edge_snap import LumaBand
 from openfollow.station_fqdn import canonical_host, fqdn_problem
 from openfollow.templates import (
     TEMPLATE_FILE_SUFFIX,
@@ -3283,9 +3287,9 @@ def _load_json_body() -> Any:
     """
     try:
         data = json.loads(request.body.read().decode("utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        # Non-UTF-8 bytes raise UnicodeDecodeError before json.loads runs;
-        # treat it as a malformed body (400) rather than an uncaught 500.
+    except (ValueError, RecursionError):
+        # Non-UTF-8 bytes, an integer literal past Python's digit limit and nesting
+        # past the recursion limit are malformed bodies (400), not an uncaught 500.
         response.status = 400
         return None
     # JSON literal `null` parses to Python None without raising; treat it as
@@ -3305,25 +3309,99 @@ _WIZARD_CAMERA_FIELDS = ("pos_x", "pos_y", "pos_z", "pitch", "yaw", "roll", "fov
 
 
 def _wizard_lens_coeffs(cam: Any) -> tuple[float, float]:
-    """Extract clamped lens-distortion coefficients from a wizard camera dict.
+    """Extract the lens-distortion coefficients from a wizard camera dict.
 
     Absent or unparseable values fall back to ``0.0`` (pinhole), so an older
-    client that posts no coefficients keeps the previous behaviour. Bounds mirror
-    ``CameraConfig.__post_init__``.
+    client that posts no coefficients keeps the previous behaviour. A pair
+    that folds the warp inside the frame falls back the same way, as
+    ``CameraConfig.__post_init__`` does.
     """
 
-    def _clamp(value: Any, lo: float, hi: float) -> float:
+    def _as_coeff(value: Any) -> float:
         try:
             f = float(value)
         except (TypeError, ValueError):
             return 0.0
-        if not math.isfinite(f):
-            return 0.0
-        return max(lo, min(hi, f))
+        return f if math.isfinite(f) else 0.0
 
     if not isinstance(cam, dict):
         return 0.0, 0.0
-    return _clamp(cam.get("lens_k1", 0.0), -0.4, 0.4), _clamp(cam.get("lens_k2", 0.0), -0.2, 0.2)
+    k1, k2 = _as_coeff(cam.get("lens_k1", 0.0)), _as_coeff(cam.get("lens_k2", 0.0))
+    if not lens_warp_is_valid(k1, k2):
+        return 0.0, 0.0
+    return k1, k2
+
+
+# A band column per chord pixel at most, on a snapshot no wider than the wizard accepts.
+_LENS_BAND_MAX_COLUMNS = 8192
+
+
+def _parse_lens_snap_body(data: Any) -> tuple[float, float, list[float], list[float], LumaBand]:
+    """Validate a ``/api/wizard/lens/snap`` body; raises for the endpoint's 400."""
+    import numpy as np
+
+    from openfollow.scene.edge_snap import MAX_BAND_HALF, MAX_BAND_STEP, MIN_BAND_HALF
+
+    if not isinstance(data, dict):
+        raise TypeError("body must be an object")
+    img_w, img_h = _json_canvas(data)
+    ends = [_json_point(data[key], key) for key in ("p0", "p1")]
+    band = data["band"]
+    if not isinstance(band, dict):
+        raise TypeError("band must be an object")
+    step, half, cols, rows = (_json_int(band[k], f"band {k}") for k in ("step", "half", "cols", "rows"))
+    if not 1 <= step <= MAX_BAND_STEP:
+        raise ValueError(f"band step must be within 1..{MAX_BAND_STEP}")
+    if not MIN_BAND_HALF <= half <= MAX_BAND_HALF:
+        raise ValueError(f"band half must be within {MIN_BAND_HALF}..{MAX_BAND_HALF}")
+    if rows != 2 * half + 1:
+        raise ValueError("band rows must be 2 * half + 1")
+    if not 2 <= cols <= _LENS_BAND_MAX_COLUMNS:
+        raise ValueError(f"band columns must be within 2..{_LENS_BAND_MAX_COLUMNS}")
+    pixels = band["data"]
+    if not isinstance(pixels, str):
+        raise TypeError("band data must be a base64 string")
+    try:
+        buf = base64.b64decode(pixels, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("band data is not valid base64") from exc
+    if len(buf) != rows * cols:
+        raise ValueError("band data does not match its size")
+    luma = np.frombuffer(buf, dtype=np.uint8).reshape(rows, cols).astype(np.float64)
+    return img_w, img_h, ends[0], ends[1], LumaBand(step, half, luma)
+
+
+# The scaled luma the edge suggestions are found in, at most (a snapshot scaled to the map width).
+_LENS_EDGE_MAX_PIXELS = 2 * 1024 * 1024
+
+
+def _parse_lens_edges_body(data: Any) -> tuple[float, float, int, Any, bool]:
+    """Validate a ``/api/wizard/lens/edges`` body; raises for the endpoint's 400."""
+    import numpy as np
+
+    from openfollow.scene.edge_chains import edge_map_scale, edge_map_size
+
+    if not isinstance(data, dict):
+        raise TypeError("body must be an object")
+    img_w, img_h = _json_canvas(data)
+    scale, width, height = (_json_int(data[k], k) for k in ("scale", "width", "height"))
+    if scale != edge_map_scale(img_w):
+        raise ValueError(f"scale must be {edge_map_scale(img_w)} for this snapshot")
+    if (width, height) != edge_map_size(img_w, img_h, scale):
+        raise ValueError("width and height must be the snapshot scaled by scale")
+    if width * height > _LENS_EDGE_MAX_PIXELS:
+        raise ValueError("the scaled luma is too large")
+    pixels = data["data"]
+    if not isinstance(pixels, str):
+        raise TypeError("data must be a base64 string")
+    try:
+        buf = base64.b64decode(pixels, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("data is not valid base64") from exc
+    if len(buf) != width * height:
+        raise ValueError("data does not match its size")
+    luma = np.frombuffer(buf, dtype=np.uint8).reshape(height, width).astype(np.float64)
+    return img_w, img_h, scale, luma, data.get("with_map") is True
 
 
 def _wizard_camera_params(cam: Any) -> Any:
@@ -3350,18 +3428,59 @@ def _wizard_camera_params(cam: Any) -> Any:
     return params
 
 
+# The widest snapshot side the wizard takes: an 8K frame, twice over.
+_WIZARD_MAX_CANVAS = 16384.0
+
+
 def _require_wizard_canvas(img_w: float, img_h: float) -> None:
-    """Reject a degenerate canvas before the solver divides by it.
+    """Reject a degenerate or absurd canvas before the solver divides by it.
 
     Raises ``ValueError`` so the wizard endpoints surface a 400 instead of a
-    500 from ``canvas_w / canvas_h`` (or the focal-length divide).
+    500 from ``canvas_w / canvas_h`` (or the focal-length divide), and before
+    a canvas of 1e170 overflows the Lens step's maths into a solve that never
+    returns.
     """
     # math.isfinite rejects NaN/Inf, which a bare ``<= 0`` lets through
     # (``NaN <= 0`` is False) – json.loads accepts NaN/Infinity, so a crafted
     # body could otherwise feed non-finite dims into the solver and emit a
     # non-standard-JSON "NaN" response instead of a clean 400.
-    if not math.isfinite(img_w) or not math.isfinite(img_h) or img_w <= 0.0 or img_h <= 0.0:
-        raise ValueError(f"image_width and image_height must be finite values > 0, got {img_w}x{img_h}")
+    if not all(math.isfinite(v) and 0.0 < v <= _WIZARD_MAX_CANVAS for v in (img_w, img_h)):
+        raise ValueError(
+            f"image_width and image_height must be within (0, {_WIZARD_MAX_CANVAS:g}], got {img_w}x{img_h}"
+        )
+
+
+def _json_number(value: Any, name: str) -> float:
+    """A finite JSON number; a boolean, a string or an out-of-range integer raises."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"{name} must be a number")
+    try:
+        number = float(value)
+    except OverflowError as exc:
+        raise ValueError(f"{name} is out of range") from exc
+    if not math.isfinite(number):
+        raise ValueError(f"{name} must be finite")
+    return number
+
+
+def _json_int(value: Any, name: str) -> int:
+    number = _json_number(value, name)
+    if not number.is_integer():
+        raise ValueError(f"{name} must be a whole number")
+    return int(number)
+
+
+def _json_point(value: Any, name: str) -> list[float]:
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        raise ValueError(f"{name} must be [x, y]")
+    return [_json_number(value[0], name), _json_number(value[1], name)]
+
+
+def _json_canvas(data: dict[str, Any]) -> tuple[float, float]:
+    img_w = _json_number(data["image_width"], "image_width")
+    img_h = _json_number(data["image_height"], "image_height")
+    _require_wizard_canvas(img_w, img_h)
+    return img_w, img_h
 
 
 def _repo_root_for_diagnostics() -> Path | None:
@@ -5189,7 +5308,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     @app.get("/section/video_source/failure")
     def get_video_source_failure() -> Any:
-        """Just the video failure box, for the Camera & Grid tab to poll.
+        """Just the video failure box, for the Camera & Grid tab and the Setup Wizard to poll.
 
         Only the box: re-swapping the Video Source form would discard whatever
         the operator is part-way through typing into the URL or password
@@ -8449,13 +8568,18 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                     f'aria-live="assertive">'
                     f"{html_mod.escape(unit_err, quote=True)}</span>"
                 )
-        # Only the URL-allowlist check reads the TOML config; skip the
-        # per-keystroke parse for every other rule (see
-        # ``validation.needs_cfg``). The request-scoped cache reuses the
+        # Only the lens pair's fold check reads the TOML config (a sibling left
+        # empty keeps its saved value); skip the per-keystroke parse for every
+        # other rule (see ``validation.needs_cfg``). The request-scoped cache reuses the
         # parse from ``_check_auth``'s PIN read so blur validation doesn't
         # duplicate disk I/O.
-        cfg = _request_scoped_config() if needs_cfg(rules[field_name]) else None
-        err = validate(section, field_name, raw, cfg=cfg)
+        cfg = _request_scoped_config() if needs_cfg(section, field_name) else None
+        # ``request.query`` is a MultiDict; flatten siblings into a plain
+        # dict so the cross-field rules (the lens fold check, the ``max_speed``
+        # advisory) can read the rest of the form without seeing the field
+        # being validated as its own context entry.
+        context = {k: request.query.get(k, "") for k in request.query if k != field_name}
+        err = validate(section, field_name, raw, cfg=cfg, context=context)
         if err is None and (section, field_name) == ("network", "label"):
             from openfollow.net_adapters import label_conflict
 
@@ -8546,11 +8670,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                     f'<span class="field-warn-msg" role="status" aria-live="polite">'
                     f"{html_mod.escape(err_msg, quote=True)}</span>"
                 )
-        # ``request.query`` is a MultiDict; flatten siblings into a plain
-        # dict so ``note()`` can read cross-field context (e.g. ``min_speed``
-        # for the ``max_speed`` advisory) without leaking the field being
-        # validated as its own context entry.
-        context = {k: request.query.get(k, "") for k in request.query if k != field_name}
         advisory = note(section, field_name, raw, context=context)
         if advisory is not None:
             # Notes are polite: queued behind the user's current reading
@@ -9276,7 +9395,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     def wizard_page() -> Any:
         """Setup wizard page."""
         config = _request_scoped_config()
-        input_data = _build_input_template_data(config)
+        input_data = _build_input_template_data(config, server.get_runtime_stats().get("video"))
         # Footer "Update available" flag: an update is most often discovered
         # while the operator is still in the Setup Wizard.
         return template(
@@ -9399,7 +9518,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 {
                     "error": (
                         "Camera cannot see all grid corners with these parameters. "
-                        "Adjust the camera position and angle in Step 4 (Camera Position)."
+                        "Adjust the camera position and angle in the Camera Position step."
                     )
                 }
             )
@@ -9547,6 +9666,93 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 "reprojected_corners": reprojected.tolist(),
             }
         )
+
+    @app.post("/api/wizard/lens/snap")
+    def api_wizard_lens_snap() -> Any:
+        """Place a traced line's five points on the brightness edge the operator meant."""
+        response.content_type = "application/json"
+        data = _load_json_body()
+        if data is None:
+            return json.dumps({"error": "Invalid JSON"})
+        try:
+            img_w, img_h, p0, p1, band = _parse_lens_snap_body(data)
+        except (KeyError, TypeError, ValueError) as exc:
+            response.status = 400
+            return json.dumps({"error": str(exc)})
+
+        from openfollow.scene.edge_snap import snap_line_to_edges
+
+        try:
+            points = snap_line_to_edges(p0, p1, band, img_w, img_h)
+        except ValueError as exc:
+            response.status = 400
+            return json.dumps({"error": str(exc)})
+        return json.dumps({"points": [{"x": p.x, "y": p.y, "snapped": p.snapped} for p in points]})
+
+    @app.post("/api/wizard/lens/edges")
+    def api_wizard_lens_edges() -> Any:
+        """Suggest the snapshot's edges a Lens line could be traced along, from its scaled luma."""
+        response.content_type = "application/json"
+        data = _load_json_body()
+        if data is None:
+            return json.dumps({"error": "Invalid JSON"})
+        try:
+            img_w, img_h, scale, luma, with_map = _parse_lens_edges_body(data)
+        except (KeyError, TypeError, ValueError) as exc:
+            response.status = 400
+            return json.dumps({"error": str(exc)})
+
+        from openfollow.scene.edge_chains import candidate_sample_points, find_edge_candidates
+        from openfollow.scene.edge_snap import LINE_SAMPLE_FRACTIONS
+
+        found = find_edge_candidates(luma, scale, img_w, img_h)
+        candidates = [
+            {
+                "points": [[x, y] for x, y in c.points],
+                "samples": [[x, y] for x, y in candidate_sample_points(c.points, LINE_SAMPLE_FRACTIONS)],
+                "length": c.length,
+                "strength": c.strength,
+            }
+            for c in found.candidates
+        ]
+        edges = None
+        if with_map:
+            height, width = found.edge_map.shape
+            edges = {"width": width, "height": height, "data": base64.b64encode(found.edge_map.tobytes()).decode()}
+        return json.dumps({"candidates": candidates, "edges": edges})
+
+    @app.post("/api/wizard/lens/fit")
+    def api_wizard_lens_fit() -> Any:
+        """Fit k1 / k2 to the traced lines; returns the rating and each line's predicted curve."""
+        response.content_type = "application/json"
+        data = _load_json_body()
+        if data is None:
+            return json.dumps({"error": "Invalid JSON"})
+        try:
+            if not isinstance(data, dict):
+                raise TypeError("body must be an object")
+            img_w, img_h = _json_canvas(data)
+            raw_lines = data["lines"]
+            if not isinstance(raw_lines, list) or not raw_lines:
+                raise ValueError("lines must be a non-empty list")
+            lines = []
+            for line in raw_lines:
+                pts = line.get("points") if isinstance(line, dict) else line
+                if not isinstance(pts, list):
+                    raise ValueError("each line needs a points list")
+                lines.append([_json_point(p, "point") for p in pts])
+        except (KeyError, TypeError, ValueError) as exc:
+            response.status = 400
+            return json.dumps({"error": str(exc)})
+
+        from openfollow.scene.lens_fit import fit_lens_from_lines, fit_result_to_dict
+
+        try:
+            result = fit_lens_from_lines(lines, img_w, img_h)
+        except ValueError as exc:
+            response.status = 400
+            return json.dumps({"error": str(exc)})
+        return json.dumps(fit_result_to_dict(result))
 
     # -- Marker catalog (shared id/name/color + per-station selection) ----
 

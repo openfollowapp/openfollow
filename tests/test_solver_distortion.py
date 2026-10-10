@@ -15,10 +15,11 @@ import math
 
 import numpy as np
 import pytest
-from hypothesis import given
+from hypothesis import assume, given
 from hypothesis import strategies as st
 
-from openfollow.scene.solver import apply_overlay_distortion, invert_overlay_distortion
+from openfollow.lens_model import lens_fold_radius, lens_warp_is_valid
+from openfollow.scene.solver import apply_overlay_distortion, invert_normalised_radius, invert_overlay_distortion
 
 pytestmark = pytest.mark.unit
 
@@ -102,65 +103,92 @@ def test_nan_rows_pass_through() -> None:
     assert np.all(np.isfinite(out[1]))
 
 
-# Mirror the CameraConfig clamps.
-_K1 = st.floats(min_value=-0.4, max_value=0.4)
-_K2 = st.floats(min_value=-0.2, max_value=0.2)
-# Undistorted-input disk: where the forward map is a clean bijection for every
-# coeff in range, so apply -> invert recovers the original. Even at k1=-0.4,
-# k2=-0.2 the map stays monotonic well past r=0.6, so a pinhole point this far
-# out has a valid distorted image to invert back.
-_R_EDGE = 0.6  # normalised working-disk radius (1.0 == frame corner)
-_R = _R_EDGE * _HALF_DIAG
-_OFFSET = st.floats(min_value=-_R / math.sqrt(2), max_value=_R / math.sqrt(2))
+# Any pair that does not fold inside the frame is a valid lens: the forward map
+# is one-to-one over every pinhole point of the frame, and the Newton inverse
+# recovers each exactly, strong barrel and pincushion alike. A screen point past
+# what the warp reaches has no preimage and lands on the fold ring.
+_K1 = st.floats(min_value=-0.8, max_value=0.8)
+_K2 = st.floats(min_value=-0.5, max_value=0.5)
+_X = st.floats(min_value=0.0, max_value=_W)
+_Y = st.floats(min_value=0.0, max_value=_H)
 
 
-@st.composite
-def _reachable_distorted(draw: st.DrawFn) -> tuple[float, float, float, float]:
-    """An ``(ox, oy, k1, k2)`` whose distorted point is reachable for that pair.
-
-    The invert -> apply round-trip is identity only for *reachable* distorted
-    points: a strong barrel folds the forward map at r_u~0.75, and beyond the
-    fold there is no preimage (invert floors the point – bounded, not identity;
-    covered by the out-of-domain test below). The forward image of the working
-    disk, ``apply(_R_EDGE)``, is the reachable cap for each coefficient pair –
-    it shrinks under barrel (~0.50) and grows under pincushion (~0.70), and stays
-    below the fold (its preimage r_u <= _R_EDGE), so the inverse is well
-    conditioned. Drawing the distorted radius *freely* within that per-coeff cap
-    (not as the forward image of a fixed pinhole point) exercises
-    ``apply o invert == id`` over the whole reachable range for every coefficient,
-    independently of the inverse-then-forward direction.
-    """
-    k1 = draw(_K1)
-    k2 = draw(_K2)
-    r_d_max = _R_EDGE * (1.0 + k1 * _R_EDGE**2 + k2 * _R_EDGE**4)
-    frac = draw(st.floats(min_value=0.0, max_value=1.0))
-    theta = draw(st.floats(min_value=0.0, max_value=2.0 * math.pi))
-    r = frac * r_d_max * _HALF_DIAG
-    return r * math.cos(theta), r * math.sin(theta), k1, k2
-
-
-@given(ox=_OFFSET, oy=_OFFSET, k1=_K1, k2=_K2)
-def test_inverse_round_trips_forward(ox: float, oy: float, k1: float, k2: float) -> None:
-    pt = np.array([[_CX + ox, _CY + oy]])
+@given(x=_X, y=_Y, k1=_K1, k2=_K2)
+def test_inverse_round_trips_forward_over_the_whole_frame(x: float, y: float, k1: float, k2: float) -> None:
+    assume(lens_warp_is_valid(k1, k2))
+    pt = np.array([[x, y]])
     back = invert_overlay_distortion(apply_overlay_distortion(pt, _W, _H, k1, k2), _W, _H, k1, k2)
-    # Sub-pixel agreement on a 1080p frame across the whole clamped range.
-    np.testing.assert_allclose(back, pt, atol=0.5)
+    np.testing.assert_allclose(back, pt, atol=1e-6)
 
 
-@given(params=_reachable_distorted())
-def test_forward_round_trips_inverse(params: tuple[float, float, float, float]) -> None:
-    ox, oy, k1, k2 = params
-    pt = np.array([[_CX + ox, _CY + oy]])
+@given(x=_X, y=_Y, k1=_K1, k2=_K2)
+def test_forward_round_trips_inverse_for_reachable_points(x: float, y: float, k1: float, k2: float) -> None:
+    # A screen point the warp can reach (one inside the forward image of the
+    # frame) comes back exactly; the frame corner maps to r = f(1), so every
+    # point within that radius qualifies.
+    assume(lens_warp_is_valid(k1, k2))
+    pt = np.array([[x, y]])
+    r = math.hypot(x - _CX, y - _CY) / _HALF_DIAG
+    assume(r <= 1.0 + k1 + k2 - 1e-6)
     fwd = apply_overlay_distortion(invert_overlay_distortion(pt, _W, _H, k1, k2), _W, _H, k1, k2)
-    np.testing.assert_allclose(fwd, pt, atol=0.5)
+    np.testing.assert_allclose(fwd, pt, atol=1e-6)
+
+
+@pytest.mark.parametrize("k1,k2", [(-0.3, 0.0), (-0.45, 0.2), (-0.47, 0.25), (0.6, 0.4), (5.0, 0.0)])
+def test_strong_lenses_invert_to_the_pixel_everywhere(k1: float, k2: float) -> None:
+    rng = np.random.default_rng(0)
+    pts = np.column_stack([rng.uniform(0.0, _W, 500), rng.uniform(0.0, _H, 500)])
+    back = invert_overlay_distortion(apply_overlay_distortion(pts, _W, _H, k1, k2), _W, _H, k1, k2)
+    assert np.max(np.hypot(*(back - pts).T)) < 1e-6
+
+
+@pytest.mark.parametrize("k1", [-0.8, -0.7, -0.6, -0.47, -0.38, -0.3, -0.19])
+@pytest.mark.parametrize("excess", [1e-12, 1e-9, 1e-4, 1e-2])
+def test_the_inverse_converges_where_the_warp_barely_climbs(k1: float, excess: float) -> None:
+    # Just above k2 = 9 k1^2 / 20 the warp's slope nearly touches zero past the frame
+    # without folding, and Newton creeps there: twelve steps missed by up to 108 px.
+    k2 = 9.0 * k1 * k1 / 20.0 * (1.0 + excess)
+    assert lens_warp_is_valid(k1, k2)
+    rd = np.linspace(0.0, 1.0, 2001)
+    ru = invert_normalised_radius(rd, k1, k2)
+    assert np.max(np.abs(ru * (1.0 + k1 * ru**2 + k2 * ru**4) - rd)) * _HALF_DIAG < 0.01
 
 
 def test_inverse_stays_bounded_for_out_of_domain_corner() -> None:
     # Under strong barrel a frame-corner click has no undistorted preimage; the
-    # floored iteration must return a finite, sane point (no divergence to inf).
+    # inverse lands on the fold radius, a finite point just past where the warp
+    # stops growing, never a runaway.
     corner = np.array([[_W, _H]])
-    out = invert_overlay_distortion(corner, _W, _H, -0.4, -0.2)
+    k1, k2 = -0.3, 0.0
+    out = invert_overlay_distortion(corner, _W, _H, k1, k2)
     assert np.all(np.isfinite(out))
-    r_out = math.hypot(out[0, 0] - _CX, out[0, 1] - _CY)
-    # Bounded by the factor floor (1/0.2 = 5x), not runaway.
-    assert r_out < 6.0 * _HALF_DIAG
+    r_out = math.hypot(out[0, 0] - _CX, out[0, 1] - _CY) / _HALF_DIAG
+    # Bisection closes on the fold radius at one bit per step, so a few 1e-5 remain.
+    assert r_out == pytest.approx(lens_fold_radius(k1, k2), abs=1e-3)
+
+
+def test_a_folding_pair_still_inverts_inside_its_fold() -> None:
+    # The function accepts any pair; a reachable point under a pair the config
+    # would refuse still comes back, so an old hand-edited file cannot crash the input path.
+    pt = np.array([[_CX + 0.3 * _HALF_DIAG, _CY]])
+    k1, k2 = -0.4, -0.2
+    back = invert_overlay_distortion(apply_overlay_distortion(pt, _W, _H, k1, k2), _W, _H, k1, k2)
+    np.testing.assert_allclose(back, pt, atol=1e-6)
+
+
+def test_normalised_radius_broadcasts_a_grid_of_coefficients() -> None:
+    # The lens fit scans a grid of pairs in one call: radii on one axis, pairs on the other.
+    r_d = np.array([0.0, 0.3, 0.6])[:, None]
+    k1 = np.array([0.0, -0.2, 0.3])[None, :]
+    k2 = np.array([0.0, 0.05, 0.0])[None, :]
+    r_u = invert_normalised_radius(r_d, k1, k2)
+    assert r_u.shape == (3, 3)
+    np.testing.assert_allclose(r_u[:, 0], r_d[:, 0])
+    np.testing.assert_allclose(r_u * (1.0 + k1 * r_u**2 + k2 * r_u**4), np.broadcast_to(r_d, (3, 3)), atol=1e-12)
+
+
+def test_nan_passes_through_the_inverse() -> None:
+    pts = np.array([[np.nan, np.nan], [1700.0, 300.0]])
+    out = invert_overlay_distortion(pts, _W, _H, -0.3, 0.05)
+    assert not np.all(np.isfinite(out[0]))
+    assert np.all(np.isfinite(out[1]))

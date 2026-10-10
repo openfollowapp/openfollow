@@ -94,11 +94,7 @@
         <div class="group">
             <div class="row">
                 <div class="field wide">
-                    <label for="general-unit-system">Displayed unit system</label>
-                    <select id="general-unit-system" name="unit_system">
-                        <option value="metric" {{'selected' if _unit_system == 'metric' else ''}}>Metric (m, m/s)</option>
-                        <option value="imperial" {{'selected' if _unit_system == 'imperial' else ''}}>Imperial (ft / in, ft/s)</option>
-                    </select>
+                    % include('partials/unit_system_select.tpl', select_id='general-unit-system', unit_system=_unit_system)
                 </div>
             </div>
         </div>

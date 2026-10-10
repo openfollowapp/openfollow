@@ -30,6 +30,13 @@ from openfollow.zones.geometry import polygon_signed_area
 # Cairo calls per frame, freezing the overlay.
 _MAX_GRID_LINES_PER_AXIS = 200
 
+
+def grid_line_count(length: float, spacing: float) -> int:
+    """Lines across one axis of the grid, both edges included, spread evenly
+    over ``length``. The setup wizard mirrors this rule (``wizGridLineCount``)."""
+    return min(max(int(length / spacing) + 1, 2), _MAX_GRID_LINES_PER_AXIS)
+
+
 # Chords per straight world line when lens distortion is active. A straight
 # world line stays straight under the pinhole projection; only the radial warp
 # bows it, so we subdivide and warp each chord endpoint to approximate the
@@ -148,8 +155,8 @@ def draw_grid(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> No
     cr.set_source_rgba(r, g, b, state.grid_transparency)
     cr.set_line_width(float(state.grid_thickness))
 
-    n_x = min(max(int(gw / gs) + 1, 2), _MAX_GRID_LINES_PER_AXIS)
-    n_z = min(max(int(gd / gs) + 1, 2), _MAX_GRID_LINES_PER_AXIS)
+    n_x = grid_line_count(gw, gs)
+    n_z = grid_line_count(gd, gs)
     n_pts = (n_x + n_z) * 2
 
     buf = renderer._grid_pts_buf

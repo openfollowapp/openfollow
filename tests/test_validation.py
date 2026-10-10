@@ -169,18 +169,48 @@ def test_validate_range_high() -> None:
 
 
 @pytest.mark.parametrize(
-    "field,raw",
-    [("lens_k1", "0.5"), ("lens_k1", "-0.5"), ("lens_k2", "0.5"), ("lens_k2", "-0.5")],
+    "field,raw,context",
+    [
+        ("lens_k1", "-0.5", None),  # folds against the implied k2 = 0
+        ("lens_k1", "-0.5", {"lens_k2": "0"}),
+        ("lens_k2", "-0.3", {"lens_k1": "-0.2"}),
+        ("lens_k1", "-0.4", {"lens_k2": "-0.2"}),  # the old box's far corner folds
+    ],
 )
-def test_validate_lens_distortion_out_of_range(field: str, raw: str) -> None:
-    err = validate("camera", field, raw)
+def test_validate_lens_distortion_folding_pair(field: str, raw: str, context: dict[str, str] | None) -> None:
+    err = validate("camera", field, raw, context=context)
     assert err is not None
-    assert "between" in err.lower()
+    assert "folds" in err
 
 
-@pytest.mark.parametrize("field,raw", [("lens_k1", "0.1"), ("lens_k2", "-0.03")])
-def test_validate_lens_distortion_in_range_ok(field: str, raw: str) -> None:
-    assert validate("camera", field, raw) is None
+@pytest.mark.parametrize(
+    "field,raw,context",
+    [
+        ("lens_k1", "0.1", None),
+        ("lens_k2", "-0.03", None),
+        ("lens_k1", "5", None),  # pincushion never folds: no box
+        ("lens_k1", "-0.5", {"lens_k2": "0.25"}),  # the sibling keeps the pair valid
+        ("lens_k2", "0.25", {"lens_k1": "-0.47"}),
+        # A sibling that is no finite number carries its own error; the pair is not judged on it.
+        ("lens_k1", "-0.5", {"lens_k2": "abc"}),
+        ("lens_k1", "-0.5", {"lens_k2": "nan"}),
+    ],
+)
+def test_validate_lens_distortion_valid_pair_ok(field: str, raw: str, context: dict[str, str] | None) -> None:
+    assert validate("camera", field, raw, context=context) is None
+
+
+@pytest.mark.parametrize(("saved_k2", "folds"), [(0.0, True), (0.25, False)])
+def test_validate_lens_reads_an_empty_sibling_as_its_saved_value(saved_k2: float, folds: bool) -> None:
+    cfg = AppConfig()
+    cfg.camera.lens_k2 = saved_k2
+    err = validate("camera", "lens_k1", "-0.5", cfg=cfg, context={"lens_k2": ""})
+    assert (err is not None and "folds" in err) is folds
+
+
+@pytest.mark.parametrize("field,raw", [("lens_k1", "abc"), ("lens_k2", "nan"), ("lens_k1", "inf")])
+def test_validate_lens_distortion_wrong_type(field: str, raw: str) -> None:
+    assert validate("camera", field, raw) == "Must be a number."
 
 
 @pytest.mark.parametrize("section", ["grid", "marker"])
@@ -1136,15 +1166,17 @@ def test_mouse3d_button_validation(raw: str, expect_error: bool) -> None:
     assert (err is not None) is expect_error
 
 
-def test_needs_cfg_false_for_every_rule() -> None:
-    """No registered ``FieldRule`` currently reads ``AppConfig``, so
-    ``needs_cfg`` returns ``False`` for all of them – the ``/api/validate``
-    fast-path skips the per-keystroke TOML parse for every field."""
+def test_needs_cfg_only_for_the_lens_pair() -> None:
+    """Only the lens pair's fold check reads ``AppConfig`` (a sibling left empty
+    keeps its saved value), so the ``/api/validate`` fast-path skips the
+    per-keystroke TOML parse for every other field."""
     from openfollow.web.validation import needs_cfg
 
     for section, rules in FIELD_RULES.items():
-        for field_name, rule in rules.items():
-            assert needs_cfg(rule) is False, f"{section}.{field_name}"
+        for field_name in rules:
+            expected = (section, field_name) in (("camera", "lens_k1"), ("camera", "lens_k2"))
+            assert needs_cfg(section, field_name) is expected, f"{section}.{field_name}"
+    assert needs_cfg("camera", "no_such_field") is False
 
 
 # ---------------------------------------------------------------------------
@@ -1184,3 +1216,24 @@ def test_bidi_isolates_and_c1_controls_are_refused_and_stripped(value: str) -> N
     more at home in a config field than a C0 one."""
     assert validate("network", "label", value) == "Remove control or text-direction characters."
     assert _default_sanitiser(value) == "Lighting"
+
+
+def test_each_lens_field_is_checked_again_when_its_slider_or_the_other_value_changes() -> None:
+    # A slider writes its number field without a blur, and a fold fixed from the other
+    # field would otherwise leave this one's error, and the disabled Save, behind.
+    import re
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parent.parent / "openfollow/web/templates/partials/camera.tpl").read_text()
+    for own, other in (("k1", "k2"), ("k2", "k1")):
+        tag = re.search(rf'<input type="number" id="camera-lens-{own}".*?>', src, re.S)
+        assert tag is not None
+        trigger = re.search(r'hx-trigger="([^"]*)"', tag.group(0))
+        assert trigger is not None
+        sources = {part.strip() for part in trigger.group(1).split(",")}
+        assert sources == {
+            "blur changed delay:200ms",
+            f"change from:#camera-lens-{own}-range",
+            f"change from:#camera-lens-{other}",
+            f"change from:#camera-lens-{other}-range",
+        }

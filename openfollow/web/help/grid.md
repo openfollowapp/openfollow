@@ -4,9 +4,9 @@ A reference plane drawn over the live video showing where stage coordinates
 land in the image. A **visual aid** – it doesn't change tracking; only
 calibration sets the maths.
 
-Easiest to set with the **Setup Wizard** (Open Setup Wizard on the Camera &
-Grid tab). All distances are in **metres**, relative to the **Reference
-Point** – the (0, 0, 0) of your show (see Core Concepts).
+Easiest to set with the **Setup Wizard** (Open Setup Wizard on the General or
+Camera & Grid tab). All distances are in **metres**, relative to the
+**Reference Point** – the (0, 0, 0) of your show (see Core Concepts).
 
 ## Display
 

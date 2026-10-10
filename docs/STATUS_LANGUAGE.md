@@ -192,9 +192,29 @@ holds the line.
 | Element | Look |
 |---|---|
 | Invalid / valid preview (Setup Wizard) | 1px `--error-line` / `--success-line` |
+| A traced Lens line that does not fit the others (Setup Wizard) | `--caution-line` stroke; a fitting one is the accent, its predicted curve `--success-line` |
 | Failed / successful save | 2px ring for 0.55 s in `--error-line` / `--success-line` |
 | Invalid field, a control marked unresolved, or a binding another field took | `--error-line` border plus a 1px `--error-line` shadow |
 | An OSC trigger on an input a gamepad or keyboard action also uses | `--caution-line` border plus a 1px `--caution-line` shadow |
+
+### Graded meter
+
+A measurement that has a quality rather than a state, such as the Setup
+Wizard's lens coverage, shows it as five segments (`.wizard-meter`, each
+segment a `.wizard-meter-seg`). The filled segments count the grade, one to
+five, and take the line colour of the level that grade belongs to; the empty
+ones stay the neutral `--border-soft`. The five grades map to three levels:
+
+| Grade | Filled | Level |
+|---|---|---|
+| low, medium | 1, 2 | Caution (`--caution-line`) |
+| okay | 3 | Info (`--info-line`) |
+| good, excellent | 4, 5 | Success (`--success-line`) |
+
+The meter sits inside a box or next to a value and never stands in for the
+word: the grade is written out beside it, and the box it leads takes the same
+level. A meter is never red, because a poor grade is a limitation, not a fault;
+the one thing it measures still works.
 
 ### Inline text
 

@@ -36,6 +36,7 @@ from openfollow.configuration import (
     AppConfig,
     _canonical_marker_token,
 )
+from openfollow.lens_model import lens_warp_is_valid
 from openfollow.net_adapters import LABEL_MAX_LEN
 from openfollow.station_fqdn import FQDN_INPUT_MAX_LEN, fqdn_problem
 from openfollow.text_hygiene import CONTROL_CHARS_RE
@@ -393,8 +394,10 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
         "focal_length_mm": FieldRule(
             _as_optional_float, lo=0.0, human_error="Focal length must be a positive number (or empty)."
         ),
-        "lens_k1": FieldRule(_as_float, lo=-0.4, hi=0.4, human_error="Must be between -0.4 and 0.4."),
-        "lens_k2": FieldRule(_as_float, lo=-0.2, hi=0.2, human_error="Must be between -0.2 and 0.2."),
+        # The pair's one bound, the fold check, is cross-field: ``validate`` reads
+        # the sibling from the form context, or from the saved config when it is empty.
+        "lens_k1": FieldRule(_as_float, human_error="Must be a number."),
+        "lens_k2": FieldRule(_as_float, human_error="Must be a number."),
     },
     "grid": {
         "visible": FieldRule(_as_bool),
@@ -816,18 +819,42 @@ FIELD_RULES["network"] = {
 
 
 # --- Public API -------------------------------------------------------------
+_LENS_FIELDS = ("lens_k1", "lens_k2")
+_LENS_FOLD_ERROR = "This pair folds the overlay inside the frame. Bring either value closer to 0."
+
+
+def _lens_fold_error(field: str, value: float, context: Mapping[str, Any] | None, cfg: AppConfig | None) -> str | None:
+    """The fold check on the pair, with the sibling as the save will read it.
+
+    An empty sibling keeps its saved value (0 without a config); one that is not a
+    finite number carries its own error, so the pair is not judged on it.
+    """
+    other = _LENS_FIELDS[1] if field == _LENS_FIELDS[0] else _LENS_FIELDS[0]
+    raw = context.get(other) if context is not None else None
+    if raw in (None, ""):
+        sibling = float(getattr(cfg.camera, other)) if cfg is not None else 0.0
+    else:
+        sibling = _as_float(raw, math.nan)
+        if not math.isfinite(sibling):
+            return None
+    k1, k2 = (value, sibling) if field == _LENS_FIELDS[0] else (sibling, value)
+    return None if lens_warp_is_valid(k1, k2) else _LENS_FOLD_ERROR
+
+
 def validate(
     section: str,
     field: str,
     raw: Any,
     *,
     cfg: AppConfig | None = None,
+    context: Mapping[str, Any] | None = None,
 ) -> str | None:
     """Return an error string if ``raw`` is invalid for the given field, else None.
 
     Empty input returns ``None`` so an operator who clears a field doesn't
     see a stale "required" complaint on every keystroke. Use ``note()`` to
-    surface advisory text for empty-with-fallback fields.
+    surface advisory text for empty-with-fallback fields. ``context`` carries
+    the rest of the form for the few rules that read a sibling field.
     """
     rule = FIELD_RULES.get(section, {}).get(field)
     if rule is None:
@@ -898,6 +925,10 @@ def validate(
             return rule.human_error
         if rule.hi is not None and bound_value > rule.hi:
             return rule.human_error
+    if section == "camera" and field in _LENS_FIELDS:
+        fold_err = _lens_fold_error(field, parsed, context, cfg)
+        if fold_err is not None:
+            return fold_err
     if rule.custom is not None:
         custom_err = rule.custom(value, cfg)
         if custom_err is not None:
@@ -969,9 +1000,15 @@ def note(
 _CFG_USING_VALIDATORS: frozenset[_CustomValidator] = frozenset()
 
 
-def needs_cfg(rule: FieldRule) -> bool:
-    """True iff ``validate`` would actually consult ``cfg`` for this rule."""
-    return rule.custom in _CFG_USING_VALIDATORS
+# Fields whose check reads the saved config outside their rule: the lens pair reads a
+# sibling left empty as the value the save keeps.
+_CFG_USING_FIELDS: frozenset[tuple[str, str]] = frozenset(("camera", name) for name in _LENS_FIELDS)
+
+
+def needs_cfg(section: str, field: str) -> bool:
+    """True iff ``validate`` would actually consult ``cfg`` for this field."""
+    rule = FIELD_RULES.get(section, {}).get(field)
+    return rule is not None and (rule.custom in _CFG_USING_VALIDATORS or (section, field) in _CFG_USING_FIELDS)
 
 
 __all__ = [

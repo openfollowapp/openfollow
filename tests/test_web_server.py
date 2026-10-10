@@ -205,6 +205,18 @@ def test_index_page_offers_restore_defaults_outside_the_form_gate(live_server) -
     assert "/api/config/reset" in body
 
 
+@pytest.mark.parametrize("tab", ["general", "camera-grid"])
+def test_index_tab_opens_the_setup_wizard(live_server, tab) -> None:
+    _, base = live_server
+    status, body = _get(base, "/")
+    assert status == 200
+
+    start = body.index(f'id="tab-{tab}"')
+    end = body.find('class="tab-content', start)
+    pane = body[start : end if end != -1 else len(body)]
+    assert re.search(r'<a href="/wizard"[^>]*>Open Setup Wizard</a>', pane)
+
+
 def test_update_banner_and_footer_flag_shown_when_available(live_server, monkeypatch) -> None:
     # The background online-sync worker publishes a discovered version via the
     # command queue; the index page renders the banner (General section) and the
@@ -6725,6 +6737,16 @@ def test_validate_endpoint_type_error(live_server) -> None:
     status, body = _get(base, "/api/validate/camera/fov?fov=wide")
     assert status == 200
     assert 'class="field-error-msg"' in body
+
+
+@pytest.mark.parametrize(("saved_k2", "folds"), [(0.0, True), (0.1, False)])
+def test_validate_endpoint_reads_an_empty_lens_sibling_as_its_saved_value(live_server, saved_k2, folds) -> None:
+    # The save keeps the saved value of a field left empty, so the blur check judges that pair.
+    _, base = live_server
+    assert _post_json(base, "/api/config/camera", {"lens_k1": 0.0, "lens_k2": saved_k2})[0] == 200
+    status, body = _get(base, "/api/validate/camera/lens_k1?lens_k1=-0.4&lens_k2=")
+    assert status == 200
+    assert ("folds" in body) is folds
 
 
 def test_validate_endpoint_advisory_note(live_server) -> None:

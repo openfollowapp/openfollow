@@ -992,6 +992,7 @@ Guided workflow for camera positioning and grid calibration, seven steps, eight 
 
 Key implementation details:
 - **Steps are keyed, never numbered, in script.** The template builds the step list (`_steps`, the Lens step only with the toggle) and publishes it as `window.WIZ` (key → index) and `WIZ_STEPS`; step content divs are `#wizard-step-<key>`, nav buttons call `wizardNext()` / `wizardPrev()`, and the session stores `_stepKey`. A step inserted or left out shifts nothing
+- **The script's maths is tested by running it.** `tests/test_wizard_js.py` pulls named functions out of `wizard.tpl` (`tests/_wizard_js.py`, by brace matching) and runs them in node against the Python they mirror: the grid lines against the HUD's, the lens warp, its inverse and the fold check, the band and edge-map geometry. It skips where node is not installed. A function it calls must stay pure: pass in what it reads from the page
 - Server-side projection/unprojection via `/api/wizard/project` and `/api/wizard/unproject` to avoid JS↔Python coordinate math mismatches
 - SVG viewBox matches native image resolution so coordinates map 1:1 regardless of CSS scaling
 - `sessionStorage` persists wizard state across accidental navigation/refresh

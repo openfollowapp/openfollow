@@ -3390,12 +3390,9 @@
   // projects through a pinhole by a homography, so the undistorted corners fix
   // every point of it; each line is then bowed by the lens like the HUD's.
   // Built from the corners alone, so it follows a corner while it is dragged.
-  function wizGridLines(corners) {
-    var grid = getState().grid;
+  function wizGridLines(corners, grid, k1, k2) {
     if (!(grid.spacing > 0) || !(grid.width > 0) || !(grid.depth > 0)) return [];
     if (!CORNER_NAMES.every(function(name) { return corners[name]; })) return [];
-    var k1 = wizReadLensCoeff('wiz_lens_k1');
-    var k2 = wizReadLensCoeff('wiz_lens_k2');
     if (!wizLensIsValid(k1, k2)) { k1 = 0; k2 = 0; }
     var u = {};
     CORNER_NAMES.forEach(function(name) { u[name] = wizInvertDistortion(corners[name], k1, k2); });
@@ -3423,7 +3420,8 @@
   function renderGridLines(groupId, corners) {
     var group = document.getElementById(groupId);
     group.innerHTML = '';
-    var d = wizGridLines(corners).map(function(line) {
+    var lines = wizGridLines(corners, getState().grid, wizReadLensCoeff('wiz_lens_k1'), wizReadLensCoeff('wiz_lens_k2'));
+    var d = lines.map(function(line) {
       return 'M' + line.map(function(p) { return p[0] + ' ' + p[1]; }).join(' L');
     }).join(' ');
     if (d) group.appendChild(svgEl('path', { d: d, class: 'wizard-grid-line' }));

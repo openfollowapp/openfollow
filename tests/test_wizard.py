@@ -1423,39 +1423,6 @@ class TestWizardTemplateSafetyPatterns:
         assert "\\u00b0H" in src and "\\u00b0V" in src
 
 
-@unit
-class TestWizardGridLines:
-    def _src(self) -> str:
-        from pathlib import Path
-
-        path = Path(__file__).resolve().parent.parent / "openfollow" / "web" / "templates" / "wizard.tpl"
-        return path.read_text(encoding="utf-8")
-
-    def test_line_count_mirrors_the_hud(self) -> None:
-        from openfollow.runtime.overlay_draw_scene import grid_line_count
-
-        src = self._src()
-        cap = re.search(r"var GRID_MAX_LINES_PER_AXIS = (\d+);", src)
-        floor = re.search(
-            r"Math\.min\(Math\.max\(Math\.floor\(length / spacing\) \+ 1, (\d+)\), GRID_MAX_LINES_PER_AXIS\)", src
-        )
-        assert cap is not None and floor is not None, "wizGridLineCount() must mirror grid_line_count"
-        for length, spacing in ((10.0, 1.0), (6.0, 1.0), (9.5, 1.0), (10.0, 0.1), (0.1, 1.0), (7.0, 0.7), (5e3, 0.05)):
-            mirrored = min(max(int(length / spacing) + 1, int(floor.group(1))), int(cap.group(1)))
-            assert mirrored == grid_line_count(length, spacing), (length, spacing)
-
-    def test_lines_are_mapped_from_the_undistorted_corners_and_bowed_again(self) -> None:
-        src = self._src()
-        start = src.index("function wizGridLines(")
-        fn = src[start : src.index("\n  }\n", start)]
-        assert "wizInvertDistortion(corners[name], k1, k2)" in fn
-        assert "if (!isConvex(u)) return [];" in fn
-        assert "wizSquareToQuad(u.DSR, u.DSL, u.USL, u.USR)" in fn
-        assert "wizApplyDistortion(map(" in fn
-        # A folding pair draws pinhole, as the server's projection does.
-        assert "if (!wizLensIsValid(k1, k2)) { k1 = 0; k2 = 0; }" in fn
-
-
 _CAM_LENS = {**_CAM, "lens_k1": -0.2, "lens_k2": 0.02}
 
 
@@ -2084,24 +2051,8 @@ class TestWizardLensTemplate:
         assert "wizardNext()" in src and "wizardPrev()" in src
         assert "_stepKey" in src
 
-    def test_inverse_is_the_bracketed_newton_solve(self) -> None:
-        src = self._src()
-        assert "function wizInvertRadius(rd, k1, k2)" in src
-        assert "function wizLensFoldRadius(k1, k2)" in src
-        assert "DISTORTION_INVERT_F_FLOOR" not in src
-        assert "DISTORTION_INVERT_R_CAP = 4" in src
-
-    def test_band_geometry_mirrors_the_server(self) -> None:
-        import re
-
-        from openfollow.scene.edge_snap import band_half_size, band_step
-
-        found = re.findall(r"Math\.max\((\d+), Math\.min\((\d+), Math\.round\(imageWidth / (\d+)\)\)\)", self._src())
-        assert len(found) == 2, "lensBandHalf() and lensBandStep() must mirror edge_snap.band_half_size / band_step"
-        (h_lo, h_hi, h_div), (s_lo, s_hi, s_div) = ((int(g) for g in m) for m in found)
-        for width in (320, 640, 1280, 1920, 2560, 3840, 7680):
-            assert max(h_lo, min(h_hi, round(width / h_div))) == band_half_size(width)
-            assert max(s_lo, min(s_hi, round(width / s_div))) == band_step(width)
+    def test_band_columns_mirror_the_server(self) -> None:
+        # One column per step pixels of the chord, both ends included: edge_snap.band_columns.
         assert "Math.ceil(len / step) + 1" in self._src()
 
     def test_suggestions_are_requested_for_the_lens_step_and_tapped_into_lines(self) -> None:
@@ -2117,18 +2068,6 @@ class TestWizardLensTemplate:
         for name in ("lensDeleteSelectedLine", "lensClearLines"):
             body = re.search(r"window\." + name + r" = function\(\) \{(.*?)\n  \};\n", src, re.S)
             assert body is not None and "lensReleaseCandidate" in body.group(1), name
-
-    def test_edge_map_scale_mirrors_the_server(self) -> None:
-        import math
-        import re
-
-        from openfollow.scene.edge_chains import edge_map_scale
-
-        found = re.findall(r"Math\.max\(1, Math\.min\((\d+), Math\.ceil\(imageWidth / (\d+)\)\)\)", self._src())
-        assert len(found) == 1, "lensEdgeScale() must mirror edge_chains.edge_map_scale"
-        cap, div = (int(g) for g in found[0])
-        for width in (320, 640, 960, 961, 1280, 1920, 2560, 3840, 7680, 99999):
-            assert max(1, min(cap, math.ceil(width / div))) == edge_map_scale(width)
 
     def test_a_middle_point_without_an_edge_starts_switched_off(self) -> None:
         src = self._src()

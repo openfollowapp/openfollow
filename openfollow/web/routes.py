@@ -621,7 +621,7 @@ def _resolved_models_dir(storage_path: str) -> Path:
     """The ``<storage>/models`` directory the runtime loads from.
 
     Storage always resolves to an absolute path (NVMe when mounted, else a
-    ``yolo`` folder under the working dir – see ``resolve_detection_storage_path``),
+    ``yolo`` folder beside the config file – see ``resolve_detection_storage_path``),
     so this is always a concrete path even on a unit without an NVMe.
     """
     from openfollow.video.detection import resolve_detection_storage_path
@@ -1088,7 +1088,7 @@ _DEVICE_LOCAL_FIELDS_BY_SECTION: dict[str, frozenset[str]] = {
     # different network here and take the receiver off the one it was on.
     "osc": frozenset({"listen_iface"}),
     # ``storage_path`` is an absolute filesystem path on THIS device (NVMe
-    # mount or a local working dir). A path from another machine is invalid
+    # mount or a local folder). A path from another machine is invalid
     # here – it must never cross via broadcast/import. Blank means auto-resolve.
     "detection": frozenset({"storage_path"}),
     # ``testpattern_selected_media`` is a device-local gallery item id; the media

@@ -10,6 +10,7 @@ openfollow/              # Single unified package
 ├── system_stats.py      # Runtime system stats collector
 ├── runtime_metrics.py   # Frame metrics + overlay-state pooling helpers
 ├── net_utils.py         # Local IP/network helpers
+├── station_dir.py       # Config file's directory: home of the device-local stores
 ├── packet_chunking.py   # MTU-budgeted datagram split shared by every output
 ├── window.py            # GTK native sink window wrapper
 ├── psn/                 # PSN protocol subpackage

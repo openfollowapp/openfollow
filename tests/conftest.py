@@ -121,6 +121,12 @@ def _no_host_adapters(tmp_path: Path) -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _no_station_dir(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test inherits the config directory an earlier test's app anchored the device-local stores to."""
+    monkeypatch.setattr("openfollow.station_dir._config_dir", None)
+
+
+@pytest.fixture(autouse=True)
 def _no_host_cgroup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """No test may resolve the unit the test process itself runs under.
 

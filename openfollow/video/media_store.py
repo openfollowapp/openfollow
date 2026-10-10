@@ -41,6 +41,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from openfollow.station_dir import station_dir
+
 logger = logging.getLogger(__name__)
 
 # Serialises the capacity-check-then-write across concurrent web uploads so two
@@ -60,7 +62,7 @@ DEFAULT_SELECTED_MEDIA = DEFAULT_STAGE_ID
 # -- Storage location ---------------------------------------------------------
 
 # Mirrors ``resolve_detection_storage_path``: the NVMe location when the drive
-# is mounted, otherwise a folder under the working directory. Device-local by
+# is mounted, otherwise a folder beside the config file. Device-local by
 # construction, so it is never stored in config and never exported.
 _NVME_MOUNTPOINT = "/mnt/nvme"
 _NVME_MEDIA_STORAGE = "/mnt/nvme/openfollow/media"
@@ -116,6 +118,10 @@ _THUMB_SUFFIX = ".thumb.jpg"
 _USER_FILE_RE = re.compile(r"\A(?P<id>[0-9a-f]{16})\.(?P<ext>jpg|webm)\Z")
 
 
+# What the operator sees when the store cannot be written; the log names the path.
+STORE_WRITE_FAILED = "Could not write to the gallery's storage folder."
+
+
 class MediaStoreError(Exception):
     """A media operation failed in a way the operator should see.
 
@@ -158,16 +164,20 @@ def resolve_media_storage_path() -> Path:
     """Return the device-local media directory (does not create it).
 
     NVMe location when ``/mnt/nvme`` is a real mountpoint, otherwise a ``media``
-    folder under the current working directory. Idempotent and host-specific.
+    folder beside the config file. Idempotent and host-specific.
     """
     if os.path.ismount(_NVME_MOUNTPOINT):
         return Path(_NVME_MEDIA_STORAGE)
-    return Path.cwd() / _LOCAL_STORAGE_DIRNAME
+    return station_dir() / _LOCAL_STORAGE_DIRNAME
 
 
 def _ensure_storage_dir() -> Path:
     path = resolve_media_storage_path()
-    path.mkdir(parents=True, exist_ok=True)
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.error("Media store %s cannot be created: %s", path, exc)
+        raise MediaStoreError(STORE_WRITE_FAILED) from exc
     return path
 
 
@@ -404,7 +414,11 @@ def _commit_media(storage: Path, ext: str, incoming_bytes: int, writer: Callable
         _enforce_capacity(storage, incoming_bytes)
         media_id = _new_user_id(storage)
         dest = storage / f"{media_id}.{ext}"
-        writer(dest)
+        try:
+            writer(dest)
+        except OSError as exc:
+            logger.error("Media store %s cannot be written: %s", storage, exc)
+            raise MediaStoreError(STORE_WRITE_FAILED) from exc
     _write_thumb(storage, media_id, dest)
     return _user_item(dest)
 

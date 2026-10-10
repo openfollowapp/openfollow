@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from openfollow import station_dir
 from openfollow.video import media_store as ms
 
 pytestmark = pytest.mark.unit
@@ -62,6 +63,71 @@ def test_storage_path_uses_nvme_when_mounted(monkeypatch: pytest.MonkeyPatch) ->
 def test_storage_path_falls_back_to_workdir(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ms.os.path, "ismount", lambda p: False)
     assert ms.resolve_media_storage_path().name == "media"
+
+
+def test_storage_path_sits_beside_the_config_file_not_in_the_working_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A Finder-launched app starts in the read-only "/".
+    support = tmp_path / "Application Support" / "OpenFollow"
+    monkeypatch.setattr(ms.os.path, "ismount", lambda p: False)
+    monkeypatch.chdir("/")
+    station_dir.set_config_path(str(support / "config.toml"))
+    assert ms.resolve_media_storage_path() == support / "media"
+
+
+def test_storage_path_on_the_appliance_is_where_it_always_was(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The Pi service starts in its state directory and reads config.toml there.
+    state = tmp_path / "var" / "lib" / "openfollow"
+    state.mkdir(parents=True)
+    monkeypatch.setattr(ms.os.path, "ismount", lambda p: False)
+    monkeypatch.chdir(state)
+    station_dir.set_config_path("config.toml")
+    assert ms.resolve_media_storage_path() == Path.cwd() / "media" == state / "media"
+
+
+def test_storage_path_prefers_nvme_over_the_config_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ms.os.path, "ismount", lambda p: p == ms._NVME_MOUNTPOINT)
+    station_dir.set_config_path(str(tmp_path / "config.toml"))
+    assert ms.resolve_media_storage_path() == Path(ms._NVME_MEDIA_STORAGE)
+
+
+def _unwritable_storage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A store whose directory cannot be created: its parent is a file."""
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory")
+    media_dir = blocker / "media"
+    monkeypatch.setattr(ms, "resolve_media_storage_path", lambda: media_dir)
+    return media_dir
+
+
+def test_capture_into_an_unwritable_store_names_the_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _unwritable_storage(tmp_path, monkeypatch)
+    with pytest.raises(ms.MediaStoreError) as exc:
+        ms.save_captured_frame(_JPEG + b"frame")
+    assert exc.value.message == ms.STORE_WRITE_FAILED
+    assert str(tmp_path) not in exc.value.message
+
+
+def test_upload_into_an_unwritable_store_names_the_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _unwritable_storage(tmp_path, monkeypatch)
+    monkeypatch.setattr(ms, "_render_jpeg", _fake_render)
+    with pytest.raises(ms.MediaStoreError) as exc:
+        ms.save_upload(_staged(tmp_path, "in.png", _PNG))
+    assert exc.value.message == ms.STORE_WRITE_FAILED
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root writes regardless of mode")
+def test_a_failed_write_into_an_existing_store_names_the_failure(storage: Path) -> None:
+    storage.mkdir()
+    storage.chmod(0o500)
+    try:
+        with pytest.raises(ms.MediaStoreError) as exc:
+            ms.save_captured_frame(_JPEG + b"frame")
+    finally:
+        storage.chmod(0o700)
+    assert exc.value.message == ms.STORE_WRITE_FAILED
+    assert list(storage.iterdir()) == []
 
 
 # -- id rules -----------------------------------------------------------------

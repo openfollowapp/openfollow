@@ -7677,6 +7677,36 @@ def test_gallery_capture_saves_frame(gallery_server, monkeypatch) -> None:
     assert len(_user_files(media_dir)) == 1
 
 
+def _block_gallery_store(media_dir, monkeypatch) -> None:
+    """Make the store's directory impossible to create: its parent is a file."""
+    from openfollow.video import media_store
+
+    blocker = media_dir.parent / "blocker"
+    blocker.write_text("not a directory")
+    monkeypatch.setattr(media_store, "resolve_media_storage_path", lambda: blocker / "media")
+
+
+def test_gallery_capture_into_an_unwritable_store_answers_json_with_the_reason(gallery_server, monkeypatch) -> None:
+    from openfollow.video import media_store
+
+    server, base, media_dir = gallery_server
+    _block_gallery_store(media_dir, monkeypatch)
+    monkeypatch.setattr(server, "get_full_snapshot", lambda: _JPEG + b"clean-frame")
+    status, body = _post_bytes(base, f"{_GP}/capture", b"")
+    assert status == 200
+    assert json.loads(body) == {"ok": False, "error": media_store.STORE_WRITE_FAILED}
+
+
+def test_gallery_upload_into_an_unwritable_store_shows_the_reason(gallery_server, monkeypatch) -> None:
+    from openfollow.video import media_store
+
+    _, base, media_dir = gallery_server
+    _block_gallery_store(media_dir, monkeypatch)
+    status, body = _post_bytes(base, f"{_GP}/upload", _PNG)
+    assert status == 200
+    assert html.escape(media_store.STORE_WRITE_FAILED) in body
+
+
 def test_gallery_delete_default_refused(gallery_server) -> None:
     _, base, _ = gallery_server
     status, body = _post_bytes(base, f"{_GP}/delete/default:stage", b"")

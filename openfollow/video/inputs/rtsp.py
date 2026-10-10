@@ -20,7 +20,7 @@ from openfollow.video.inputs._base import (
     VideoInputBase,
     video_input_pin_field,
 )
-from openfollow.video.inputs._pin import PinRefusal, check_video_pin, config_pin, resolves_to_ipv6
+from openfollow.video.inputs._pin import PinRefusal, check_video_pin, config_pin, dials_ipv6
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +31,23 @@ _TCP_TIMEOUT_US = 10_000_000
 # rtspsrc "protocols" flags: UDP unicast | UDP multicast | TCP interleaved.
 _TRANSPORTS_ALL = 0x7
 _TRANSPORTS_TCP = 0x4
+# URL schemes whose own transports leave TCP out.
+_UDP_ONLY_SCHEMES = frozenset({"rtspu", "rtspsu"})
+
+
+def _transports(location: str) -> int:
+    """rtspsrc ``protocols`` for *location*: TCP alone where the connection lands on IPv6.
+
+    rtspsrc opens its UDP sockets for the SDP's address family, which most servers
+    give as IPv4 whatever the connection, and udpsink then refuses an IPv6 server.
+    """
+    try:
+        parts = urlsplit(location)
+    except ValueError:
+        return _TRANSPORTS_ALL  # the element reports a URL it cannot read
+    if parts.scheme in _UDP_ONLY_SCHEMES or not dials_ipv6(parts.hostname or ""):
+        return _TRANSPORTS_ALL
+    return _TRANSPORTS_TCP
 
 
 def _endpoint_from_url(
@@ -180,13 +197,8 @@ class RtspInput(VideoInputBase):
         rtspsrc.set_property("latency", 0)
         rtspsrc.set_property("drop-on-latency", True)
         rtspsrc.set_property("buffer-mode", 0)  # none – lowest latency
-        # rtspsrc opens its UDP ports for the family of the literal in the URL, so a
-        # name reads as IPv4 even when the connection lands on IPv6 and udpsink then
-        # refuses the server's address. Such a name takes the interleaved transport;
-        # everything else may negotiate TCP, UDP or multicast.
-        endpoint = self.source_endpoint(config)
-        tcp_only = endpoint is not None and resolves_to_ipv6(endpoint.host)
-        rtspsrc.set_property("protocols", _TRANSPORTS_TCP if tcp_only else _TRANSPORTS_ALL)
+        protocols = _transports(location)
+        rtspsrc.set_property("protocols", protocols)
         pin = config_pin(config)
         if pin:
             # Only the multicast membership can be pinned; the preflight checks
@@ -195,7 +207,7 @@ class RtspInput(VideoInputBase):
         logger.info(
             "RTSP source: %s (latency=0, %s, login=%s)",
             redact_uri(location),
-            "tcp interleaved: the name has an IPv6 address" if tcp_only else "tcp+udp+multicast",
+            "tcp interleaved: connects over IPv6" if protocols == _TRANSPORTS_TCP else "tcp+udp+multicast",
             "set" if (user or password) else "none",
         )
 

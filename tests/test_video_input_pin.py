@@ -412,22 +412,22 @@ def test_a_slow_lookup_holds_one_attempt_and_serves_a_later_one(
     [
         ("", None, False, False),
         ("192.0.2.10", None, False, False),
-        ("2001:db8::10", None, False, False),
-        ("fe80::1%eth0", None, False, False),
+        ("2001:db8::10", None, True, False),
+        ("fe80::1%eth0", None, True, False),
         ("camera.example", ["192.0.2.10"], False, True),
         ("camera.example", ["2001:db8::10"], True, True),
-        ("camera.example", ["192.0.2.10", "2001:db8::10"], True, True),
+        ("camera.example", ["2001:db8::10", "192.0.2.10"], True, True),
+        ("camera.example", ["192.0.2.10", "2001:db8::10"], False, True),
         ("localhost", ["::1", "127.0.0.1"], True, True),
         ("nowhere.example", None, False, True),
     ],
 )
-def test_resolves_to_ipv6_reads_a_name_and_never_a_literal(
+def test_dials_ipv6_reads_the_first_address_a_connection_tries(
     net: SimpleNamespace, host: str, answers: list[str] | None, expected: bool, looked_up: bool
 ) -> None:
     if answers is not None:
         net.answers[host] = answers
-    assert _pin.resolves_to_ipv6(host) is expected
-    # A literal's family is the element's to read: no lookup is spent on it.
+    assert _pin.dials_ipv6(host) is expected
     assert net.lookups == ([host] if looked_up else [])
 
 

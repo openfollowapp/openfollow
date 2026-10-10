@@ -535,6 +535,15 @@ class TestAlertsAndThrottling:
         _poll_n(obs, clk, DOWN_POLLS_BEFORE_SUSPEND)
         assert obs.alerts() == ["plane0: zzz0 is down", "plane1: aaa0 is down"]
 
+    def test_alert_rows_carry_the_key_of_the_plane_they_report(self) -> None:
+        """What lets a sender on a plane already reported down go unreported twice."""
+        down = _Recorder(iface="eth1")
+        up = _Recorder(iface="eth0")
+        obs, clk = _observer(up, down)
+        down.go_down()
+        _poll_n(obs, clk, 1)
+        assert obs.alert_rows() == [("plane1", "plane1: eth1 is down")]
+
     def test_alert_falls_back_when_the_interface_cannot_be_named(self) -> None:
         rec = _Recorder(iface="")
         obs, clk = _observer(rec)

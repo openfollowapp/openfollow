@@ -743,7 +743,7 @@ class TestRttrpmStopTimeout:
 
 
 class TestRttrpmSendErrorSuppression:
-    def test_send_log_is_rate_limited_after_first_5_errors(self, caplog) -> None:
+    def test_a_burst_of_send_errors_logs_once(self, caplog) -> None:
         import errno as _e
         import logging as _logging
 
@@ -752,12 +752,39 @@ class TestRttrpmSendErrorSuppression:
         sock.sendto.side_effect = OSError(_e.EACCES, "denied")  # non-transient
         srv._socket = sock
 
-        with caplog.at_level(_logging.WARNING, logger="openfollow.rttrpm.server"):
+        with caplog.at_level(_logging.WARNING):
             for _ in range(20):
                 srv._send(b"x")
 
-        # First 5 logged, the next 15 suppressed (none of 6..20 hit %100).
-        assert len(caplog.records) == 5
+        assert [r.message for r in caplog.records] == ["RTTrPM output: send failed: [Errno 13] denied"]
+        assert srv.send_health.status().failed == 20
+
+    def test_a_good_send_is_counted(self) -> None:
+        srv = RttrpmServer(host="127.0.0.1")
+        srv._socket = MagicMock()
+        srv._send(b"x")
+        assert srv.send_health.status().sent_total == 1
+
+
+class TestRttrpmSendHealthLifecycle:
+    def test_stopping_forgets_the_streak(self) -> None:
+        import errno as _e
+
+        srv = RttrpmServer(host="192.0.2.30")
+        srv.send_health.record_failure(OSError(_e.ENETUNREACH, "unreachable"), "192.0.2.30")
+        srv.stop()
+        assert srv.send_health.status().state == "ok"
+
+    def test_a_failure_is_recorded_against_the_configured_host(self) -> None:
+        import errno as _e
+
+        srv = RttrpmServer(host="239.1.1.1")
+        sock = MagicMock()
+        sock.sendto.side_effect = OSError(_e.EACCES, "denied")
+        srv._socket = sock
+        srv._send(b"x")
+        status = srv.send_health.status()
+        assert (status.failed, status.errno) == (1, _e.EACCES)
 
 
 class TestRttrpmRebuildSocketFailure:

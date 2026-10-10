@@ -59,6 +59,7 @@ from typing import TYPE_CHECKING, NamedTuple
 from openfollow.net_egress import Egress, is_multicast_host, pin_socket_egress
 from openfollow.packet_chunking import MAX_DATAGRAM_BYTES, chunk_to_datagrams
 from openfollow.psn.marker import is_marker_stale
+from openfollow.send_health import SendHealth
 
 if TYPE_CHECKING:
     from openfollow.psn.marker import Marker
@@ -261,8 +262,7 @@ class RttrpmServer:
         self._stop_event = threading.Event()
         self._socket: socket.socket | None = None
         self._send_thread: threading.Thread | None = None
-        self._send_errors: int = 0
-        self._send_total: int = 0
+        self._send_health = SendHealth("RTTrPM output")
         self._next_rebuild_at: float = 0.0
         self._stale_warned = False
         # Warn-once-per-episode guard: True while a run of capped frames is
@@ -291,10 +291,16 @@ class RttrpmServer:
         with self._lock:
             return self._markers.get(marker_id)
 
+    @property
+    def send_health(self) -> SendHealth:
+        """Whether this server's sends are leaving."""
+        return self._send_health
+
     # -- Lifecycle ------------------------------------------------------------
 
     def start(self) -> None:
         """Open the UDP socket and start the send thread."""
+        self._send_health.reset()
         # One stop signal per generation – see ``PsnServer.start()``.
         stop_event = threading.Event()
         self._stop_event = stop_event
@@ -323,6 +329,7 @@ class RttrpmServer:
             self._socket = None
         if sock is not None:
             sock.close()
+        self._send_health.reset()
 
     def restart(self, *, host: str, port: int, fps: float, context: int, egress: Egress | None) -> None:
         """Stop, reconfigure, and restart; marker registrations survive.
@@ -480,24 +487,14 @@ class RttrpmServer:
         sock = self._socket
         if sock is None:
             return
-        with self._lock:
-            self._send_total += 1
         try:
             sock.sendto(data, (self._host, self._port))
         except OSError as exc:
-            with self._lock:
-                self._send_errors += 1
-                errors = self._send_errors
-                total = self._send_total
-            if errors <= 5 or errors % 100 == 0:
-                logger.warning(
-                    "RTTrPM send failed (%d/%d errors): %s",
-                    errors,
-                    total,
-                    exc,
-                )
+            self._send_health.record_failure(exc, self._host)
             if exc.errno in _TRANSIENT_SEND_ERRNOS:
                 self._maybe_rebuild_socket_after_error(stop_event)
+            return
+        self._send_health.record_success()
 
     def _maybe_rebuild_socket_after_error(self, stop_event: threading.Event | None = None) -> None:
         stop = self._resolve_stop(stop_event)

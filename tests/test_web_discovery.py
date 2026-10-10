@@ -9,7 +9,9 @@ multicast-join failure recovery, self-filtering, and health properties).
 
 from __future__ import annotations
 
+import errno
 import json
+import logging
 import time
 from unittest.mock import MagicMock
 
@@ -22,6 +24,7 @@ from openfollow.web.discovery import (
     MAX_PEERS,
     BeaconPacket,
     BeaconReceiver,
+    BeaconSender,
     PeerInfo,
 )
 
@@ -1138,11 +1141,15 @@ def test_beacon_sender_records_successful_send() -> None:
     assert sender.consecutive_errors == 0
 
 
-def test_beacon_sender_resets_consecutive_errors_on_recovery(monkeypatch) -> None:
-    """Errors bump the counter; a later successful send resets it.
-    The reset is what tells the diagnostics bundle the recent
-    failure has cleared."""
+@pytest.mark.parametrize(("sends", "errors_left"), [(3, 2), (4, 0)])
+def test_beacon_sender_errors_clear_once_sends_keep_succeeding(monkeypatch, sends: int, errors_left: int) -> None:
+    """Errors bump the counter, and one good send does not reset it: with
+    macOS Local Network access off, a fresh socket's first send returns
+    success while nothing leaves. A second good send after the hold does."""
+    import openfollow.send_health as send_health_module
     from openfollow.web.discovery import BeaconSender
+
+    monkeypatch.setattr(send_health_module, "RECOVERY_HOLD_S", 0.0)
 
     class _FlakySocket:
         def __init__(self) -> None:
@@ -1164,7 +1171,7 @@ def test_beacon_sender_resets_consecutive_errors_on_recovery(monkeypatch) -> Non
 
     def _stop_after_n(_t: float) -> bool:
         iterations["n"] += 1
-        if iterations["n"] >= 3:
+        if iterations["n"] >= sends:
             sender._stop_event.set()
         return False
 
@@ -1176,8 +1183,93 @@ def test_beacon_sender_resets_consecutive_errors_on_recovery(monkeypatch) -> Non
     )
 
     sender._run()
+    assert sender.consecutive_errors == errors_left
+    assert sender.send_count == sends - 2
+
+
+def _run_beacon(sender: BeaconSender, sock: object, sends: int) -> None:
+    sender._open_socket = lambda: sock  # type: ignore[assignment]
+    iterations = {"n": 0}
+
+    def _stop_after_n(_t: float) -> bool:
+        iterations["n"] += 1
+        if iterations["n"] >= sends:
+            sender._stop_event.set()
+        return False
+
+    sender._stop_event.wait = _stop_after_n  # type: ignore[assignment]
+    sender._run()
+
+
+class _RefusingSocket:
+    def sendto(self, data: bytes, addr: tuple) -> int:  # noqa: ARG002
+        raise OSError(errno.EHOSTUNREACH, "No route to host")
+
+    def close(self) -> None:
+        pass
+
+
+def test_beacon_send_failures_log_once_per_streak(caplog: pytest.LogCaptureFixture) -> None:
+    sender = BeaconSender(name="X", web_port=80)
+    with caplog.at_level(logging.INFO):
+        _run_beacon(sender, _RefusingSocket(), sends=3)
+    assert [r.getMessage() for r in caplog.records if "Discovery" in r.getMessage()] == [
+        f"Discovery: send failed: [Errno {errno.EHOSTUNREACH}] No route to host"
+    ]
+    status = sender.send_health.status()
+    assert (status.failed, status.errno, sender.consecutive_errors) == (3, errno.EHOSTUNREACH, 3)
+
+
+def test_a_socket_that_takes_one_beacon_then_refuses_never_reads_as_recovered(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """macOS with Local Network access off: each fresh socket's first send
+    returns success and nothing leaves, the next one is refused. That used to
+    log "send recovered" every other beacon while nothing got through."""
+    import openfollow.send_health as send_health_module
+
+    monkeypatch.setattr(send_health_module, "FAILING_AFTER_S", 0.0)
+    monkeypatch.setattr(send_health_module, "RECOVERY_HOLD_S", 0.0)
+
+    class _FirstSendOnly:
+        def __init__(self) -> None:
+            self.sent = 0
+
+        def sendto(self, data: bytes, addr: tuple) -> int:  # noqa: ARG002
+            self.sent += 1
+            if self.sent > 1:
+                raise OSError(errno.EHOSTUNREACH, "No route to host")
+            return len(data)
+
+        def close(self) -> None:
+            pass
+
+    sender = BeaconSender(name="X", web_port=80)
+    sender._open_socket = _FirstSendOnly  # type: ignore[assignment]
+    iterations = {"n": 0}
+
+    def _stop_after_n(_t: float) -> bool:
+        iterations["n"] += 1
+        if iterations["n"] >= 12:
+            sender._stop_event.set()
+        return False
+
+    sender._stop_event.wait = _stop_after_n  # type: ignore[assignment]
+    with caplog.at_level(logging.INFO):
+        sender._run()
+
+    status = sender.send_health.status()
+    assert status.state == "failing"
+    assert sender.consecutive_errors == 6
+    assert not [r for r in caplog.records if "again" in r.getMessage() or "recovered" in r.getMessage()]
+
+
+def test_beacon_reopen_starts_a_new_record() -> None:
+    sender = BeaconSender(name="X", web_port=80)
+    _run_beacon(sender, _RefusingSocket(), sends=2)
+    sender.reopen()
+    assert sender.send_health.status().state == "ok"
     assert sender.consecutive_errors == 0
-    assert sender.send_count == 1
 
 
 def test_beacon_receiver_health_defaults_before_start() -> None:

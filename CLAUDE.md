@@ -618,6 +618,10 @@ Every marker-carrying output grows its datagram with the marker count, and **147
 
 `tests/test_output_packet_splitting.py` pins the cross-protocol invariant (no stream emits a datagram past 1472 at any marker count) plus each protocol's grouping; `scripts/hw_validation/output_datagram_size_probe.py` re-checks it on the DUT against the deployed send paths.
 
+### Send health (`send_health.py`, shared by every sender)
+
+The network observer sees interfaces, not refused sends: macOS with OpenFollow's Local Network permission off fails every LAN send with `EHOSTUNREACH` while address, route and socket all look healthy. PSN, OTP, RTTrPM, the discovery beacon and marker sync each record every send in a `SendHealth`, which owns their send-failure logging. **A streak is failing once a failure lands `FAILING_AFTER_S` after its first**, so a burst at one instant never becomes a row however slowly the sender rebuilds. **It ends only on a success `RECOVERY_HOLD_S` after the first success that followed its last failure**: with Local Network denied, the first send on a fresh socket returns success and nothing leaves, so a socket reopen or a single good send must never be logged or shown as a recovery. `start` / `stop` / a repoint reset the streak. `AppRuntimeServices.network_alert_rows` appends `send_alerts(...)` to the observer's rows, skipping a sender whose plane the observer already reports (the beacon and marker sync count as PSN's), and on macOS folds every multicast `EHOSTUNREACH` into one row naming the permission. The rows reach the HUD and Live Statistics; `/api/stats` publishes them as `network.alerts` plus each sender's record as `network.senders` (a wire interface).
+
 ### PsnServer (`psn/server.py`)
 - Sends PSN multicast at `data_fps` (default 60 Hz)
 - `add_marker(id, name)` / `remove_marker(id)` / `get_marker(id)`

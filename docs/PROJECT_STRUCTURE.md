@@ -11,6 +11,7 @@ openfollow/              # Single unified package
 ├── runtime_metrics.py   # Frame metrics + overlay-state pooling helpers
 ├── net_utils.py         # Local IP/network helpers
 ├── packet_chunking.py   # MTU-budgeted datagram split shared by every output
+├── send_health.py       # Whether each sender's datagrams are leaving; refused-send status rows
 ├── window.py            # GTK native sink window wrapper
 ├── psn/                 # PSN protocol subpackage
 │   ├── clock.py         # Shared microsecond time base (headers + trackers)

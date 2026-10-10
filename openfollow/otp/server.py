@@ -20,6 +20,7 @@ import multicast_expert
 
 from openfollow.packet_chunking import MAX_DATAGRAM_BYTES, chunk_to_datagrams
 from openfollow.psn.marker import Marker, marker_age_s
+from openfollow.send_health import SendHealth
 
 logger = logging.getLogger(__name__)
 
@@ -606,13 +607,11 @@ class OtpServer:
         self._transform_thread: threading.Thread | None = None
         self._adv_thread: threading.Thread | None = None
         self._socket_thread: threading.Thread | None = None
-        self._send_errors: int = 0
-        self._send_total: int = 0
+        self._send_health = SendHealth("OTP output")
         # Counter for dropped folios: one needing more pages than Last Page
         # can number, or one whose pages will not encode. Neither is reachable
         # by configuration, but without throttling either would flood the log
-        # at the transform fps. Same first-5-then-every-100 pattern ``_send``
-        # uses for OSError logging.
+        # at the transform fps, so it logs the first 5, then every 100th.
         self._oversize_drops: int = 0
 
     def _resolve_destinations(self) -> tuple[str, str]:
@@ -643,10 +642,16 @@ class OtpServer:
         with self._lock:
             return self._markers.get(marker_id)
 
+    @property
+    def send_health(self) -> SendHealth:
+        """Whether this server's sends are leaving, every stream together."""
+        return self._send_health
+
     # -- Lifecycle ------------------------------------------------------------
 
     def start(self) -> None:
         """Open the network socket and start transform + advertisement threads."""
+        self._send_health.reset()
         # One stop signal per generation – see ``PsnServer.start()``.
         stop_event = threading.Event()
         self._stop_event = stop_event
@@ -711,6 +716,7 @@ class OtpServer:
             self._socket = None
             stack = self._exit_stack
         stack.close()
+        self._send_health.reset()
 
     def restart(
         self,
@@ -868,7 +874,7 @@ class OtpServer:
             if stop.is_set():
                 return
             if self._try_open_multicast_socket_once(attempt=attempt, stop_event=stop):
-                logger.info("OTP multicast socket recovered on attempt %d.", attempt)
+                logger.debug("OTP multicast socket reopened on attempt %d.", attempt)
                 return
 
     def _handle_send_error(self, exc: OSError, stop_event: threading.Event | None = None) -> None:
@@ -1098,20 +1104,10 @@ class OtpServer:
         sock = self._socket
         if sock is None:
             return
-        with self._lock:
-            self._send_total += 1
         try:
             sock.sendto(data, (dest_ip, self._port))
         except OSError as exc:
-            with self._lock:
-                self._send_errors += 1
-                errors = self._send_errors
-                total = self._send_total
-            if errors <= 5 or errors % 100 == 0:
-                logger.warning(
-                    "OTP send failed (%d/%d errors): %s",
-                    errors,
-                    total,
-                    exc,
-                )
+            self._send_health.record_failure(exc, dest_ip)
             self._handle_send_error(exc, stop_event)
+            return
+        self._send_health.record_success()

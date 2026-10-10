@@ -1402,28 +1402,55 @@ class TestOtpSendOsErrorPath:
         mock_sock = MagicMock()
         mock_sock.sendto.side_effect = OSError(_e.ENETUNREACH, "unreachable")
         srv._socket = mock_sock
-        with caplog.at_level(_logging.WARNING, logger="openfollow.otp.server"):
+        with caplog.at_level(_logging.WARNING):
             srv._send(b"\x00" * 16, "239.159.1.1")
-        assert srv._send_errors == 1
-        assert any("OTP send failed" in r.message for r in caplog.records)
+        assert srv.send_health.status().failed == 1
+        assert any("OTP output: send failed" in r.message for r in caplog.records)
         # Cleanup: ENETUNREACH is transient → spawned recovery thread.
         srv._stop_event.set()
         if srv._socket_thread is not None:
             srv._socket_thread.join(timeout=2.0)
 
-    def test_send_log_throttled_after_5_errors(self, caplog) -> None:
+    def test_a_burst_of_send_errors_logs_once(self, caplog) -> None:
         import logging as _logging
 
         srv = OtpServer(system_number=1)
         mock_sock = MagicMock()
         mock_sock.sendto.side_effect = OSError(99999, "non-transient")
         srv._socket = mock_sock
-        with caplog.at_level(_logging.WARNING, logger="openfollow.otp.server"):
+        with caplog.at_level(_logging.WARNING):
             for _ in range(20):
                 srv._send(b"\x00", "239.159.1.1")
-        # First 5 errors logged, then every 100th – so 20 calls = 5 logs.
-        warning_lines = [r for r in caplog.records if "OTP send failed" in r.message]
-        assert len(warning_lines) == 5
+        warning_lines = [r for r in caplog.records if "OTP output" in r.message]
+        assert len(warning_lines) == 1
+        assert srv.send_health.status().failed == 20
+
+    def test_a_good_send_is_counted(self) -> None:
+        srv = OtpServer(system_number=1)
+        srv._socket = MagicMock()
+        srv._send(b"\x00", "239.159.1.1")
+        assert srv.send_health.status().sent_total == 1
+
+
+class TestOtpSendHealthLifecycle:
+    def test_stopping_forgets_the_streak(self) -> None:
+        import errno as _e
+
+        srv = OtpServer(system_number=1)
+        srv.send_health.record_failure(OSError(_e.ENETUNREACH, "unreachable"), "239.159.1.1")
+        srv.stop()
+        assert srv.send_health.status().state == "ok"
+
+    def test_starting_forgets_the_streak(self) -> None:
+        import errno as _e
+
+        srv = OtpServer(system_number=1, mcast_ip="")
+        srv.send_health.record_failure(OSError(_e.ENETUNREACH, "unreachable"), "127.0.0.1")
+        srv.start()
+        try:
+            assert srv.send_health.status().state == "ok"
+        finally:
+            srv.stop()
 
 
 class TestOtpHandleSendErrorEdges:

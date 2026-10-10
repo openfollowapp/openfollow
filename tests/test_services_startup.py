@@ -7,6 +7,8 @@ and state providers, privilege-broker wiring, and the network apply/renew handle
 
 from __future__ import annotations
 
+import errno
+import os
 import threading
 from types import SimpleNamespace
 
@@ -2652,6 +2654,76 @@ def test_an_outage_alert_names_the_adapter_by_its_label(monkeypatch) -> None:
 
     services.observe_network_planes()
     assert "OTP output: Lighting backup (enx00e04c68a1f2) is not connected" in services.network_alerts()
+
+
+def _failing_sender(label: str, err: int, dest: str, *, platform: str = "linux") -> SimpleNamespace:
+    """A sender whose sends have kept failing, exposed the way every real sender is."""
+    from openfollow.send_health import FAILING_AFTER_S, SendHealth
+
+    now = [100.0]
+    health = SendHealth(label, clock=lambda: now[0], platform=platform)
+    health.record_failure(OSError(err, os.strerror(err)), dest)
+    now[0] += FAILING_AFTER_S
+    health.record_failure(OSError(err, os.strerror(err)), dest)
+    return SimpleNamespace(send_health=health)
+
+
+def test_a_sender_whose_sends_keep_failing_is_a_network_row(monkeypatch) -> None:
+    from openfollow.send_health import SEND_FAILING_ACTION, SendAlert
+
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._app._rttrpm_server = _failing_sender("RTTrPM output", errno.EACCES, "192.0.2.20")
+
+    row = SendAlert(f"RTTrPM output: sends keep failing ({os.strerror(errno.EACCES)})", SEND_FAILING_ACTION)
+    assert services.network_alert_rows() == [row]
+    assert services.network_alerts() == [row.text]
+
+
+def test_macos_refusing_every_sender_is_one_row_naming_local_network(monkeypatch) -> None:
+    from openfollow.send_health import LOCAL_NETWORK_TEXT
+
+    services = _build_services_with_psutil_backend(monkeypatch)
+    refused = (errno.EHOSTUNREACH, "236.10.10.10")
+    services._app._server = _failing_sender("PSN", *refused, platform="darwin")
+    services._app._web_server = SimpleNamespace(beacon_sender=_failing_sender("Discovery", *refused, platform="darwin"))
+    services._app._marker_catalog_sync = _failing_sender("Marker sync", *refused, platform="darwin")
+
+    assert services.network_alerts() == [LOCAL_NETWORK_TEXT]
+
+
+def test_a_sender_on_a_plane_reported_down_is_not_reported_again(monkeypatch) -> None:
+    """The observer's row already says why: the interface has no address."""
+    from openfollow.runtime.network_observer import NetworkPlaneObserver, Plane
+
+    services = _build_services_with_psutil_backend(monkeypatch)
+    plane = Plane(
+        label="PSN",
+        resolve=lambda: ("", "down", "eth0"),
+        current=lambda: None,
+        apply=lambda _address: None,
+        suspend=lambda: None,
+    )
+    services._network_observer = NetworkPlaneObserver(planes=[plane], clock=lambda: 0.0)
+    services._network_observer.poll()
+    services._app._server = _failing_sender("PSN", errno.ENETUNREACH, "236.10.10.10")
+    beacon = _failing_sender("Discovery", errno.ENETUNREACH, "239.255.50.50")
+    services._app._web_server = SimpleNamespace(beacon_sender=beacon)
+    services._app._rttrpm_server = _failing_sender("RTTrPM output", errno.ENETUNREACH, "192.0.2.20")
+
+    assert services.network_alerts() == [
+        "PSN: eth0 is down",
+        f"RTTrPM output: sends keep failing ({os.strerror(errno.ENETUNREACH)})",
+    ]
+
+
+def test_only_real_send_records_are_read(monkeypatch) -> None:
+    """A sender object that exposes no record, or something else under the name, is skipped."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._app._server = SimpleNamespace()
+    services._app._otp_server = SimpleNamespace(send_health=object())
+    services._app._web_server = None
+    assert services.network_alerts() == []
+    assert services._network_stats() == {"alerts": [], "senders": []}
 
 
 class _FqdnAdapter:

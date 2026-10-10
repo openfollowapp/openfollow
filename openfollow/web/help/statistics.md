@@ -32,6 +32,10 @@ The first line is the station's reading of how far the connection got before it 
 
 System health for the station hardware.
 
+A red box at the top of the panel names each output that is not reaching the network, the same rows the on-screen display shows in its top-right corner: a function whose interface has no address (see Network Interface Assignment), or a sender whose sends keep failing while its interface is up. A send failure is shown once it repeats a second or more after the first, and it clears only after sends have kept going out for a second; one send that goes through is not enough.
+
+On macOS, when OpenFollow is not allowed on the local network, the system refuses what it sends, and the box reads **Network output blocked: macOS Local Network access is off**. Nothing this station sends reaches the network – PSN, OTP, RTTrPM, OSC, discovery and marker sync – and other stations drop out of its list, because what they send is blocked on the way in too. Turn OpenFollow on under System Settings → Privacy & Security → Local Network. Output resumes by itself within about ten seconds, without a restart. A copy started from Terminal is not subject to the setting, so it never shows this.
+
 - **IP** – the network address this station is reachable on. Useful for pointing another tool or peer at it.
 - **Controllers** – gamepads and 3D mice connected, and how many are missing. A red warning above the list names each missing controller, the marker its slot drives and the port it was in; the Controller Slots section on the Input tab shows the rest.
 - **CPU** – processor load as a percentage. Sustained values above roughly 80–90 % can cause frame drops or tracking lag.

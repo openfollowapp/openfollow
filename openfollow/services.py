@@ -55,6 +55,7 @@ from openfollow.runtime.services_marker_visuals import (
 )
 from openfollow.runtime_metrics import FrameMetrics, OverlayStatePool
 from openfollow.scene.camera import Camera
+from openfollow.send_health import SendAlert, SendHealth, send_alerts
 from openfollow.system_stats import SystemStatsCollector
 from openfollow.video.failure import ConnectionPhase, VideoFailure, failure_action, failure_sentence
 from openfollow.video.overlay import CairoOverlayRenderer
@@ -1384,9 +1385,46 @@ class AppRuntimeServices:
             sync.update_iface_ip(address, iface=self._app._config.psn_source_iface, force=recovered)
 
     def network_alerts(self) -> list[str]:
-        """Planes not sending: an interface without an address, or a rebind or suspend that failed."""
+        """Outputs not sending: an interface without an address, a failed rebind or stop, or refused sends."""
+        return [alert.text for alert in self.network_alert_rows()]
+
+    def network_alert_rows(self) -> list[SendAlert]:
+        """``network_alerts`` with the next step the web shows under each."""
         observer = self._network_observer
-        return observer.alerts() if observer is not None else []
+        planes = observer.alert_rows() if observer is not None else []
+        rows = [SendAlert(text) for _key, text in planes]
+        # A plane already reported down explains its senders' failures.
+        explained = {key for key, _text in planes}
+        rows.extend(send_alerts(health.status() for key, health in self._send_healths() if key not in explained))
+        return rows
+
+    def _send_healths(self) -> list[tuple[str, SendHealth]]:
+        """Every sender's record, keyed by the plane whose outage already explains its failures.
+
+        The discovery beacon and marker sync follow the station interface, which is PSN's.
+        """
+        app = self._app
+        web = getattr(app, "_web_server", None)
+        senders = [
+            ("PSN", getattr(app, "_server", None)),
+            ("OTP output", getattr(app, "_otp_server", None)),
+            ("RTTrPM output", getattr(app, "_rttrpm_server", None)),
+            ("PSN", getattr(web, "beacon_sender", None)),
+            ("PSN", getattr(app, "_marker_catalog_sync", None)),
+        ]
+        out = []
+        for key, sender in senders:
+            health = getattr(sender, "send_health", None)
+            if isinstance(health, SendHealth):
+                out.append((key, health))
+        return out
+
+    def _network_stats(self) -> dict[str, Any]:
+        """The ``network`` block of the runtime stats: the rows, and every sender's record."""
+        return {
+            "alerts": [asdict(alert) for alert in self.network_alert_rows()],
+            "senders": [health.status().to_dict() for _key, health in self._send_healths()],
+        }
 
     def network_plane_status(self) -> list[dict[str, Any]]:
         """Every network plane as the observer last left it, for the diagnostics bundle."""
@@ -3757,6 +3795,7 @@ class AppRuntimeServices:
                 "items": [],
             },
             "mouse3d": idle_mouse3d_status(cfg.mouse3d.enabled).to_dict(),
+            "network": {"alerts": [], "senders": []},
             "playback": self._frame_metrics.snapshot(),
             "tracking": {
                 "enabled": bool(cfg.detection.enabled),
@@ -3987,6 +4026,7 @@ class AppRuntimeServices:
                 "items": controller_items,
             },
             "mouse3d": mouse3d_status.to_dict(),
+            "network": self._network_stats(),
             "playback": playback_snapshot,
             "tracking": detection_snapshot,
         }

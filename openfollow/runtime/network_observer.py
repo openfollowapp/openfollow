@@ -364,7 +364,11 @@ class NetworkPlaneObserver:
         every interface via psutil - so an outage would put that enumeration on
         the render path for as long as it lasted.
         """
-        out: list[str] = []
+        return [text for _key, text in self.alert_rows()]
+
+    def alert_rows(self) -> list[tuple[str, str]]:
+        """``alerts()`` paired with each plane's state key."""
+        out: list[tuple[str, str]] = []
         for plane in self._polled:
             state = self._states.get(plane.state_key)
             if state is None:
@@ -373,10 +377,10 @@ class NetworkPlaneObserver:
                 # A failed rebind or suspend leads: it says why the plane is
                 # dead, also while its retry waits out the backoff.
                 where = f"{self._name(state.iface)} – " if state.iface else ""
-                out.append(f"{plane.label}: {where}{state.failure}")
+                out.append((plane.state_key, f"{plane.label}: {where}{state.failure}"))
             elif state.suspended or state.down_polls:
                 # Off the show from the first addressless poll; the suspend is
                 # debounced only so Apply and Renew don't tear the plane down.
                 outage = "is down" if state.present else "is not connected"
-                out.append(f"{plane.label}: {self._name(state.iface) or 'interface'} {outage}")
+                out.append((plane.state_key, f"{plane.label}: {self._name(state.iface) or 'interface'} {outage}"))
         return out

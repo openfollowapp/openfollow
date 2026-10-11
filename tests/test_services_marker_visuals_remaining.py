@@ -1502,8 +1502,8 @@ class TestStatusFlagsSnapshot:
         app._runtime_services = SimpleNamespace(_status_flags=flags)
         state = _build(app, pool)
         assert state.status_flags == [
-            ("update_available", "Update available", "info"),
             ("midi_unavailable", "Backend down", "error"),
+            ("update_available", "Update available", "info"),
         ]
 
     def test_malformed_tuple_value_degrades_without_raising(
@@ -1530,6 +1530,24 @@ class TestStatusFlagsSnapshot:
             ("long", "Three parts", "info"),
         ]
 
+    def test_faults_come_before_notices_whoever_raised_them(
+        self,
+        pool: OverlayStatePool,
+    ) -> None:
+        """The badge folds rows past its first few into "+N more"; a held
+        notice must never push a fault there."""
+        app = _build_app()
+        flags: dict[str, object] = {
+            "pushed_settings": ("info", "Settings pushed from Stage Left"),
+            "diagnostics_export": ("success", "Diagnostics saved to SanDisk Ultra"),
+            "late_caution": ("caution", "Caution"),
+            "midi_unavailable": "Backend down",
+        }
+        app._runtime_services = SimpleNamespace(_status_flags=flags)
+        state = _build(app, pool)
+        assert [row[2] for row in state.status_flags] == ["error", "caution", "info", "success"]
+        assert state.status_flags[0] == ("midi_unavailable", "Backend down", "error")
+
     def test_a_message_that_is_not_text_is_drawn_as_its_text(
         self,
         pool: OverlayStatePool,
@@ -1545,9 +1563,9 @@ class TestStatusFlagsSnapshot:
         app._runtime_services = SimpleNamespace(_status_flags=flags)
         state = _build(app, pool)
         assert state.status_flags == [
+            ("bare", "7", "error"),
             ("count", "5", "info"),
             ("listed", "['oops']", "info"),
-            ("bare", "7", "error"),
         ]
         cr = FakeCairo()
         draw_status_badge(FakeRenderer(state=state), cr, state, 1920, 1080)

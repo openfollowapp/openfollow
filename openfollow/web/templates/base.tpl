@@ -2249,7 +2249,7 @@
  .notice.success, .network-banner.network-banner-ok { border-color: var(--success-border); background: var(--success-fill); }
  .notice.success::before, .network-banner.network-banner-ok::before { background-image: var(--success-sign); }
  /* The next step under what the station observed. */
- .notice .notice-sub { margin-top: 3px; font-weight: 400; color: var(--muted); }
+ .notice .notice-sub, .gallery-error .notice-sub { margin-top: 3px; font-weight: 400; color: var(--muted); }
  .notice a, .gallery-error a { color: inherit; }
  .notice code { color: var(--text); }
  /* Destructive controls: the error text, and the fault-row tint under the pointer. */

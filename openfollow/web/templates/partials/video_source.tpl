@@ -97,9 +97,12 @@
         </div>
         <!-- Live preview is redundant for the Media Gallery's static content. -->
         <div class="row" id="preview-row" style="margin-top:0.5rem;display:{{'none' if config.video_source_type == 'testpattern' else ''}}">
-            <div class="field checkbox-field inline">
-                <input type="checkbox" id="show-preview-cb">
-                <label for="show-preview-cb">Show Preview</label>
+            <div class="field checkbox-field">
+                <label for="show-preview-cb">Preview</label>
+                <div class="checkbox-wrap checkbox-field inline">
+                    <input type="checkbox" id="show-preview-cb">
+                    <label for="show-preview-cb">Show a snapshot of the video input</label>
+                </div>
             </div>
         </div>
         <div id="video-preview-wrap" style="display:none;">

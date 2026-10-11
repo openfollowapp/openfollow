@@ -514,7 +514,10 @@
             'data-value="' + escapeAttr(z.color || '#ff8000') + '" aria-label="Zone colour"></button>' +
             '<input type="hidden" data-zone-field="color" value="' + escapeAttr(z.color || '#ff8000') + '">' +
             '</div>';
-        html += '      <div class="field checkbox-field"><label>Enabled</label><div class="checkbox-wrap"><input type="checkbox" data-zone-field="enabled" ' + (z.enabled ? 'checked' : '') + '></div></div>';
+        html += '      <div class="field checkbox-field"><label for="zone-detail-enabled">Zone</label>' +
+            '<div class="checkbox-wrap checkbox-field inline">' +
+            '<input type="checkbox" id="zone-detail-enabled" data-zone-field="enabled" ' + (z.enabled ? 'checked' : '') + '>' +
+            '<label for="zone-detail-enabled">Use this zone</label></div></div>';
         html += '    </div>';
         html += '    <div class="row">';
         html += '      <div class="field"><label>Trigger Source</label><select data-zone-field="trigger_source">';

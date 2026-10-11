@@ -9,8 +9,11 @@
     <div class="group">
         <div class="row">
             <div class="field checkbox-field">
-                <label>Enabled</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="keyboard_enabled" {{'checked' if config.controller.keyboard_enabled else ''}}></div>
+                <label for="keyboard-enabled">Keyboard</label>
+                <div class="checkbox-wrap checkbox-field inline">
+                    <input type="checkbox" id="keyboard-enabled" name="keyboard_enabled" {{'checked' if config.controller.keyboard_enabled else ''}}>
+                    <label for="keyboard-enabled">Move markers with the keyboard</label>
+                </div>
             </div>
         </div>
 

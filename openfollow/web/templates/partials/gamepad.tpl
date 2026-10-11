@@ -10,12 +10,18 @@
     <div class="group">
         <div class="row">
             <div class="field checkbox-field">
-                <label>Enabled</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="enabled" {{'checked' if config.controller.enabled else ''}}></div>
+                <label for="gamepad-enabled">Gamepad</label>
+                <div class="checkbox-wrap checkbox-field inline">
+                    <input type="checkbox" id="gamepad-enabled" name="enabled" {{'checked' if config.controller.enabled else ''}}>
+                    <label for="gamepad-enabled">Control markers with gamepads</label>
+                </div>
             </div>
-            <div class="field checkbox-field">
-                <label>Invert Stick Y</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="invert_y" {{'checked' if config.controller.invert_y else ''}}></div>
+            <div class="field">
+                <label for="gamepad-invert-y">Stick Y axis</label>
+                <select id="gamepad-invert-y" name="invert_y">
+                    <option value="false" {{'' if config.controller.invert_y else 'selected'}}>Push up to move up the screen</option>
+                    <option value="true" {{'selected' if config.controller.invert_y else ''}}>Push up to move down the screen</option>
+                </select>
             </div>
             <div class="field">
                 <label>Axis Deadzone (0–1)</label>

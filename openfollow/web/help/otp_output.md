@@ -6,7 +6,7 @@ Sends tracked marker positions as ANSI E1.59 Object Transform Protocol (OTP) mul
 
 ## OTP Network
 
-- **Enabled** – master toggle for the OTP transmitter. Off by default; no packets are sent while unchecked.
+- **OTP output** – master toggle for the OTP transmitter. Off by default; no packets are sent while unchecked.
 - **System Number** – OTP system identifier, 1 – 200. It also determines the multicast addresses packets are sent to (see **Multicast addresses**); change it to move OTP traffic onto a different multicast group. Default: `1`.
 - **Multicast addresses** – read-only display of the two addresses derived automatically from System Number, per ANSI E1.59 Table 15-19. **Transform** carries the position data (e.g. `239.159.1.1` for System Number 1); **Advertisement** carries discovery packets (`239.159.2.1`). Adjust System Number to change the group.
 - **UDP Port** – port the transmitter binds to and sends from, 1–65535. Default: `5568`.
@@ -15,4 +15,4 @@ Sends tracked marker positions as ANSI E1.59 Object Transform Protocol (OTP) mul
 
 ## Saving
 
-- **Save** – writes the current settings to disk and applies them live. OTP output starts or restarts immediately after saving if **Enabled** is checked.
+- **Save** – writes the current settings to disk and applies them live. OTP output starts or restarts immediately after saving if **OTP output** is on.

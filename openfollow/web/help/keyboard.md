@@ -2,7 +2,7 @@
 
 Configure how a keyboard drives markers on the Operator Screen. Keyboard input uses direct hardware polling, so it stays responsive under heavy pipeline load. All four input methods (keyboard, gamepad, mouse, OSC) can be active at once – within a frame, last-write-wins per axis.
 
-**Enabled** – master toggle. When off, all keyboard movement and action keys are ignored. Leave on unless an operator is using a gamepad exclusively on this station.
+**Keyboard** – master toggle for the movement keys. When off, the movement keys are ignored; the action keys still work. Leave on unless an operator is using a gamepad exclusively on this station.
 
 ## Button Mapping
 
@@ -20,7 +20,7 @@ Expand **Button Mapping** to customise which keys perform which actions. Click *
 
 Arrow keys are reserved for navigating the on-screen menu and cannot be used for movement.
 
-> If these keys move the marker the *opposite* way to what you see on screen, check **Invert control direction** under Markers & Zones → Marker Movement. It reverses left/right and forward/back for the keyboard, gamepad and 3D Mouse together, so the controls match a camera looking from upstage.
+> If these keys move the marker the *opposite* way to what you see on screen, check **Control direction** under Markers & Zones → Marker Movement. **Camera looks downstage** reverses left/right and forward/back for the keyboard, gamepad and 3D Mouse together, so the controls match a camera looking from upstage.
 
 - **Z+** – raise the active marker. Default: `q`.
 - **Z-** – lower the active marker. Default: `e`.

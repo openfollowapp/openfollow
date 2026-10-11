@@ -1556,6 +1556,9 @@ class TestUrlEditorInputRouting:
         class _KB:
             def on_key_down(self, _ev) -> None: ...
 
+            def take_text_key(self, _key) -> bool:
+                return True
+
         class _IM:
             keyboard_handler = _KB()
 

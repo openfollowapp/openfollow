@@ -48,7 +48,7 @@ Detection quality is a simple choice of tier, from fastest to most accurate. Hig
 
 All five tiers come pre-installed on the macOS app. On a Raspberry Pi the Fastest / Fast / Balanced tiers ship in the image; the heavier Accurate / Most Accurate tiers (which a Pi can't run well anyway) appear grayed out and can be fetched from **Advanced models** on a workstation.
 
-**Advanced models** (collapsed by default) is for everything beyond the tiers: downloading other cataloged models, selecting a model you downloaded yourself, deleting models to free space, and a readout of free / total space on the storage disk. Storage is automatic – model files live in a `models/` folder on the NVMe (`/mnt/nvme/openfollow/yolo`) when a drive is mounted, otherwise a local `yolo` folder under the application working directory. The path is specific to this device, so it is never written into a config export and never overwritten by an import or peer broadcast. (An advanced operator can override it with `detection.storage_path` in `config.toml`.)
+**Advanced models** (collapsed by default) is for everything beyond the tiers: downloading other cataloged models, selecting a model you downloaded yourself, deleting models to free space, and a readout of free / total space on the storage disk. Storage is automatic – model files live in a `models/` folder on the NVMe (`/mnt/nvme/openfollow/yolo`) when a drive is mounted, otherwise a local `yolo` folder beside the station's `config.toml`. The path is specific to this device, so it is never written into a config export and never overwritten by an import or peer broadcast. (An advanced operator can override it with `detection.storage_path` in `config.toml`.)
 
 ## Sensitivity & Overlay
 

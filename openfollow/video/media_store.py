@@ -30,6 +30,7 @@ hardening step (server-side transcode / stricter demux) would go here.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import re
@@ -40,6 +41,8 @@ import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+
+from openfollow.station_dir import station_dir
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +63,7 @@ DEFAULT_SELECTED_MEDIA = DEFAULT_STAGE_ID
 # -- Storage location ---------------------------------------------------------
 
 # Mirrors ``resolve_detection_storage_path``: the NVMe location when the drive
-# is mounted, otherwise a folder under the working directory. Device-local by
+# is mounted, otherwise a folder beside the config file. Device-local by
 # construction, so it is never stored in config and never exported.
 _NVME_MOUNTPOINT = "/mnt/nvme"
 _NVME_MEDIA_STORAGE = "/mnt/nvme/openfollow/media"
@@ -116,16 +119,23 @@ _THUMB_SUFFIX = ".thumb.jpg"
 _USER_FILE_RE = re.compile(r"\A(?P<id>[0-9a-f]{16})\.(?P<ext>jpg|webm)\Z")
 
 
+# What the operator sees when the store cannot be written; the log names the path.
+STORE_WRITE_FAILED = "Could not write to the gallery's storage folder."
+STORE_WRITE_ACTION = "Download a diagnostics bundle."
+
+
 class MediaStoreError(Exception):
     """A media operation failed in a way the operator should see.
 
     ``message`` is safe to surface verbatim in the web UI – it names the
     specific limit or format problem and never leaks a filesystem path.
+    ``action`` is one short next step, kept apart from it, or "".
     """
 
-    def __init__(self, message: str) -> None:
+    def __init__(self, message: str, action: str = "") -> None:
         super().__init__(message)
         self.message = message
+        self.action = action
 
 
 @dataclass(frozen=True)
@@ -158,16 +168,24 @@ def resolve_media_storage_path() -> Path:
     """Return the device-local media directory (does not create it).
 
     NVMe location when ``/mnt/nvme`` is a real mountpoint, otherwise a ``media``
-    folder under the current working directory. Idempotent and host-specific.
+    folder beside the config file. Idempotent and host-specific.
     """
     if os.path.ismount(_NVME_MOUNTPOINT):
         return Path(_NVME_MEDIA_STORAGE)
-    return Path.cwd() / _LOCAL_STORAGE_DIRNAME
+    return station_dir() / _LOCAL_STORAGE_DIRNAME
+
+
+def _store_failed(storage: Path, exc: OSError) -> MediaStoreError:
+    logger.error("Media store %s cannot be written: %s", storage, exc)
+    return MediaStoreError(STORE_WRITE_FAILED, STORE_WRITE_ACTION)
 
 
 def _ensure_storage_dir() -> Path:
     path = resolve_media_storage_path()
-    path.mkdir(parents=True, exist_ok=True)
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise _store_failed(path, exc) from exc
     return path
 
 
@@ -262,9 +280,18 @@ def _stat_user_files(storage: Path) -> list[tuple[Path, os.stat_result]]:
 
 
 def list_media() -> list[MediaItem]:
-    """Every gallery entry: the two defaults first, then user media newest-first."""
+    """Every gallery entry: the two defaults first, then user media newest-first.
+
+    A store that cannot be listed lists the defaults alone, so the grid still renders.
+    """
     items = [_default_item(mid) for mid in DEFAULT_IDS]
-    items.extend(_user_item(f, size=info.st_size) for f, info in _stat_user_files(resolve_media_storage_path()))
+    storage = resolve_media_storage_path()
+    try:
+        files = _stat_user_files(storage)
+    except OSError as exc:
+        logger.error("Media store %s cannot be listed: %s", storage, exc)
+        return items
+    items.extend(_user_item(f, size=info.st_size) for f, info in files)
     return items
 
 
@@ -372,10 +399,21 @@ def validate_video_probe(probe: VideoProbe) -> None:
 # -- Save paths ---------------------------------------------------------------
 
 
+def _part_path(dest: Path) -> Path:
+    return dest.with_name(dest.name + ".part")
+
+
 def _write_atomic(dest: Path, data: bytes) -> None:
-    tmp = dest.with_name(dest.name + ".part")
+    tmp = _part_path(dest)
     tmp.write_bytes(data)
     os.replace(tmp, dest)
+
+
+def _discard_partial(dest: Path) -> None:
+    """Remove what a failed write left behind, so no half-written file lists as media."""
+    for path in (dest, _part_path(dest)):
+        with contextlib.suppress(OSError):
+            path.unlink(missing_ok=True)
 
 
 def _write_thumb(storage: Path, media_id: str, source: Path) -> None:
@@ -389,7 +427,12 @@ def _write_thumb(storage: Path, media_id: str, source: Path) -> None:
     except MediaStoreError:
         logger.warning("Thumbnail render failed for %s", media_id)
         return
-    _write_atomic(storage / f"{media_id}{_THUMB_SUFFIX}", data)
+    thumb = storage / f"{media_id}{_THUMB_SUFFIX}"
+    try:
+        _write_atomic(thumb, data)
+    except OSError as exc:
+        _discard_partial(thumb)
+        logger.warning("Thumbnail for %s cannot be written: %s", media_id, exc)
 
 
 def _commit_media(storage: Path, ext: str, incoming_bytes: int, writer: Callable[[Path], object]) -> MediaItem:
@@ -401,10 +444,17 @@ def _commit_media(storage: Path, ext: str, incoming_bytes: int, writer: Callable
     JPEG, or a clip move) into the ``dest`` path it is handed.
     """
     with _store_lock:
-        _enforce_capacity(storage, incoming_bytes)
-        media_id = _new_user_id(storage)
+        try:
+            _enforce_capacity(storage, incoming_bytes)
+            media_id = _new_user_id(storage)
+        except OSError as exc:
+            raise _store_failed(storage, exc) from exc
         dest = storage / f"{media_id}.{ext}"
-        writer(dest)
+        try:
+            writer(dest)
+        except OSError as exc:
+            _discard_partial(dest)
+            raise _store_failed(storage, exc) from exc
     _write_thumb(storage, media_id, dest)
     return _user_item(dest)
 

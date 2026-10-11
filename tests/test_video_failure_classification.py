@@ -218,6 +218,7 @@ class TestOperatorText:
             "unreachable",
             "refused",
             "unauthorized",
+            "access_denied",
             "stream_not_found",
             "no_data",
             "unsupported_format",
@@ -401,6 +402,72 @@ class TestNotFoundDoesNotClaimSomethingAnswered:
         sentence = failure_sentence(VideoFailure.STREAM_NOT_FOUND, where=where)
         assert where in sentence
         assert "answered" not in sentence
+
+
+class TestALocalDeviceTheSystemWillNotOpenIsNotALogin:
+    """macOS's capture element reports a denied camera permission as "not
+    authorised". A USB camera has no username or password, so "Login rejected"
+    and "Check the username and password" left the operator nothing to do."""
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "Device video access permission has been explicitly denied before",
+            "Device video access permission has been denied",
+            "Device video access permission cannot be granted by the user",
+        ],
+    )
+    def test_a_local_source_not_authorised_is_denied_access(self, message: str) -> None:
+        verdict = classify_failure(
+            phase=ConnectionPhase.STARTING,
+            domain=RESOURCE_DOMAIN,
+            code=RESOURCE_NOT_AUTHORIZED,
+            message=message,
+            debug="Authorization status: 2",
+            kind=SourceKind.LOCAL,
+        )
+        assert verdict == VideoFailure.ACCESS_DENIED
+
+    @pytest.mark.parametrize("kind", [SourceKind.REMOTE, SourceKind.NAMED, SourceKind.LISTENER])
+    def test_a_network_source_not_authorised_is_still_a_rejected_login(self, kind: SourceKind) -> None:
+        verdict = classify_failure(
+            phase=ConnectionPhase.TRANSPORT_UP,
+            domain=RESOURCE_DOMAIN,
+            code=RESOURCE_NOT_AUTHORIZED,
+            debug="gstrtspsrc.c(7469): Unauthorized (401)",
+            kind=kind,
+        )
+        assert verdict == VideoFailure.UNAUTHORIZED
+
+    def test_a_caller_that_names_no_kind_keeps_the_login_reading(self) -> None:
+        verdict = classify_failure(phase=ConnectionPhase.STARTING, domain=RESOURCE_DOMAIN, code=RESOURCE_NOT_AUTHORIZED)
+        assert verdict == VideoFailure.UNAUTHORIZED
+
+    def test_it_reads_as_access_and_sends_the_operator_to_the_permission(self) -> None:
+        where = "FaceTime HD Camera (1920x1080@30)"
+        assert failure_chip(VideoFailure.ACCESS_DENIED) == "Access denied"
+        assert (
+            failure_sentence(VideoFailure.ACCESS_DENIED, where=where, kind=SourceKind.LOCAL)
+            == "This station was denied access to FaceTime HD Camera (1920x1080@30)."
+        )
+        action = failure_action(VideoFailure.ACCESS_DENIED, kind=SourceKind.LOCAL)
+        assert (
+            action == "Allow OpenFollow under System Settings → Privacy & Security → Camera, then restart OpenFollow."
+        )
+
+    def test_nothing_asks_for_a_login(self) -> None:
+        text = (
+            failure_chip(VideoFailure.ACCESS_DENIED)
+            + failure_sentence(VideoFailure.ACCESS_DENIED, where="X", kind=SourceKind.LOCAL)
+            + failure_action(VideoFailure.ACCESS_DENIED, kind=SourceKind.LOCAL)
+        ).lower()
+        for word in ("login", "username", "password"):
+            assert word not in text
+
+    def test_the_action_says_a_restart_is_needed(self) -> None:
+        """macOS holds the denial for the life of the process: allowing the
+        camera changes nothing until OpenFollow starts again."""
+        assert "restart OpenFollow" in failure_action(VideoFailure.ACCESS_DENIED, kind=SourceKind.LOCAL)
 
 
 class TestAnInputThatDialsNothingIsNotDescribedAsUnanswered:

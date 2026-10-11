@@ -5,6 +5,8 @@ confirmation that outlives the reload it ends in."""
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from bottle import template
 
@@ -71,6 +73,20 @@ class TestImportControl:
         assert "including the station '\n                + 'name." in question
         assert "confirmLabel: 'Import'" in question
         assert "danger: true" in question
+
+
+class TestOnlyTheConfirmationIsRed:
+    @pytest.mark.parametrize("button_id", ["import-btn", "restore-defaults-btn"])
+    def test_the_control_that_opens_the_question_is_not_red(self, button_id: str) -> None:
+        button = re.search(rf'<button[^>]*id="{button_id}"[^>]*>', _page())
+        assert button
+        assert "danger" not in button.group(0)
+
+    def test_the_restore_question_takes_the_danger_button(self) -> None:
+        body = function_body(_page(), "restoreDefaults")
+        question = body[body.index("modalConfirm({") : body.index("});")]
+        assert "confirmLabel: 'Restore Defaults'," in question
+        assert "danger: true," in question
 
 
 class TestImportProgress:

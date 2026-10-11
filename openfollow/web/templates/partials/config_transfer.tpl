@@ -29,7 +29,7 @@
         <div class="group">
             <h3 class="group-title">Restore Defaults</h3>
             <div class="actions" id="restore-actions">
-                <button type="button" class="btn-danger" id="restore-defaults-btn"
+                <button type="button" class="btn-secondary" id="restore-defaults-btn"
                         onclick="restoreDefaults()">Restore Defaults</button>
             </div>
         </div>

@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 
 from openfollow.configuration import Mouse3DConfig
+from openfollow.runtime.overlay_layout import PictureGeometry
 from openfollow.runtime.overlay_state import OverlayState
 from openfollow.runtime.services_marker_visuals import (
     _populate_pi_network_overlay,
@@ -456,7 +457,7 @@ class TestBuildInitialOverlayState:
         state = build_initial_overlay_state(cfg)
 
         assert state.video_connected is False
-        assert state.source_resolution == (0, 0)
+        assert state.picture_size == (0, 0)
         assert state.source_label == ""
         assert state.reconnect_attempt == 0
         assert state.error_message == ""
@@ -939,8 +940,7 @@ def _make_visual_app(marker: object, *, controlled: bool) -> SimpleNamespace:
             )
         ),
         source_name="",
-        resolution=(1920, 1080),
-        pixel_aspect_ratio=(1, 1),
+        picture_geometry=PictureGeometry(1920, 1080),
         source_selection_active=False,
         discovered_sources=[],
         selected_source_index=0,

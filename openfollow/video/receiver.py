@@ -23,6 +23,7 @@ from openfollow.video.inputs._base import InputCapabilities, ReconnectPolicy
 from openfollow.video.inputs._pin import PinRefusal, config_pin
 
 if TYPE_CHECKING:
+    from openfollow.runtime.overlay_layout import PictureGeometry
     from openfollow.video.detection import PersonDetector
     from openfollow.video.inputs._base import VideoInputBase
     from openfollow.video.overlay import CairoOverlayRenderer
@@ -257,9 +258,13 @@ class GstNativeSinkReceiver:
         return self._state.resolution
 
     @property
-    def pixel_aspect_ratio(self) -> tuple[int, int]:
-        """The source's pixel aspect ratio from its caps, ``(1, 1)`` when square or unknown."""
-        return self._state.pixel_aspect_ratio
+    def picture_geometry(self) -> PictureGeometry:
+        """Size and pixel aspect ratio of the last source picture on the sink.
+
+        gtksink leaves that frame up in its box through a reconnect, until the
+        next caps, so the HUD boxes the scene by this, not by ``resolution``.
+        """
+        return self._state.picture_geometry
 
     @property
     def source_framerate(self) -> float:

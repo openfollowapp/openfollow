@@ -34,6 +34,7 @@ from openfollow.psn.marker import Marker
 from openfollow.psn.receiver import PsnReceiver
 from openfollow.runtime.marker_velocity import _MAX_REPORTED_SPEED_MPS
 from openfollow.runtime.overlay_draw_hud import draw_marker_card
+from openfollow.runtime.overlay_layout import PictureGeometry
 from openfollow.runtime.overlay_state import MarkerOverlayData, OverlayState
 from openfollow.runtime.overlay_status_badge import draw_status_badge
 from openfollow.runtime.services_detection_pin import get_or_create_manual_marker
@@ -136,7 +137,7 @@ class _FakeVideoReceiver:
         )
         self.source_name = "NDI://CAM"
         self.resolution = (1920, 1080)
-        self.pixel_aspect_ratio = (1, 1)
+        self.picture_geometry = PictureGeometry(1920, 1080)
         self.source_selection_active = False
         self.discovered_sources = ["CAM1", "CAM2"]
         self.selected_source_index = 1
@@ -1996,44 +1997,49 @@ class TestMissingControllerSurfaces:
 
 
 # --------------------------------------------------------------------------- #
-# Source shape → state flow
+# Picture shape → state flow
 # --------------------------------------------------------------------------- #
 
 
-class TestSourceResolutionFlow:
-    """The HUD letterboxes the scene by the frame's caps size and pixel
-    aspect ratio, read off the receiver every frame."""
+class TestPictureGeometryFlow:
+    """The HUD letterboxes the scene by the picture the sink shows, read off
+    the receiver every frame."""
 
-    def test_overlay_state_carries_the_source_resolution(self, pool: OverlayStatePool) -> None:
+    def test_overlay_state_carries_the_picture_size(self, pool: OverlayStatePool) -> None:
         app = _build_app()
-        app._video_receiver.resolution = (1024, 768)
-        assert _build(app, pool).source_resolution == (1024, 768)
+        app._video_receiver.picture_geometry = PictureGeometry(1024, 768)
+        assert _build(app, pool).picture_size == (1024, 768)
 
     def test_overlay_state_carries_the_pixel_aspect_ratio(self, pool: OverlayStatePool) -> None:
         app = _build_app()
-        app._video_receiver.resolution = (704, 576)
-        app._video_receiver.pixel_aspect_ratio = (12, 11)
+        app._video_receiver.picture_geometry = PictureGeometry(704, 576, (12, 11))
         state = _build(app, pool)
-        assert state.source_par == (12, 11)
+        assert state.picture_par == (12, 11)
         assert state.pixel_aspect == pytest.approx(12 / 11)
 
-    def test_a_placeholder_publishes_no_source_resolution(self, pool: OverlayStatePool) -> None:
-        # The placeholder clears the caps, so the scene fills the canvas
-        # rather than keeping the last feed's shape.
+    def test_a_reconnect_keeps_the_box_of_the_picture_still_shown(self, pool: OverlayStatePool) -> None:
+        # A reconnect forgets the source's resolution, but gtksink keeps the
+        # last frame up in its box until new caps arrive.
         app = _build_app()
         app._video_receiver.resolution = (0, 0)
-        assert _build(app, pool).source_resolution == (0, 0)
+        app._video_receiver.picture_geometry = PictureGeometry(1024, 768)
+        assert _build(app, pool).picture_size == (1024, 768)
+
+    def test_before_any_picture_the_scene_fills_the_canvas(self, pool: OverlayStatePool) -> None:
+        app = _build_app()
+        app._video_receiver.picture_geometry = PictureGeometry()
+        state = _build(app, pool)
+        assert state.picture_size == (0, 0)
+        assert state.picture_par == (1, 1)
 
     def test_a_changed_shape_replaces_the_pooled_value(self) -> None:
         pool = OverlayStatePool(pool_size=1)
         app = _build_app()
-        app._video_receiver.resolution = (704, 576)
-        app._video_receiver.pixel_aspect_ratio = (12, 11)
+        app._video_receiver.picture_geometry = PictureGeometry(704, 576, (12, 11))
         first = _build(app, pool)
         pool.release(first)
-        app._video_receiver.resolution = (1024, 768)
-        app._video_receiver.pixel_aspect_ratio = (1, 1)
+        app._video_receiver.picture_geometry = PictureGeometry(1024, 768)
         second = _build(app, pool)
         assert second is first
-        assert second.source_resolution == (1024, 768)
-        assert second.source_par == (1, 1)
+        assert second.picture_size == (1024, 768)
+        assert second.picture_par == (1, 1)

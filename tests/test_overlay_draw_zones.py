@@ -366,8 +366,8 @@ class TestNonSquarePixels:
 
         square = draw(_state_with_zone(vertices=_square(0.0, 2.0), name=""), 1100)
         non_square = _state_with_zone(vertices=_square(0.0, 2.0), name="")
-        non_square.source_resolution = (704, 576)
-        non_square.source_par = (12, 11)
+        non_square.picture_size = (704, 576)
+        non_square.picture_par = (12, 11)
         stretched = draw(non_square, 1200)
         aspect = 12 / 11
         assert square.line_tos

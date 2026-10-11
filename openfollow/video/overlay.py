@@ -298,7 +298,7 @@ class CairoOverlayRenderer:
             try:
                 # The scene sits on the video, which gtksink letterboxes into
                 # this rectangle; the HUD below belongs to the screen.
-                view = scene_view(width, height, *state.source_resolution, state.source_par)
+                view = scene_view(width, height, *state.picture_size, state.picture_par)
                 self.scene_view = view
                 rect = view.rect
                 if rect.width > 0 and rect.height > 0:

@@ -26,6 +26,14 @@ class VideoRect(NamedTuple):
     height: int
 
 
+class PictureGeometry(NamedTuple):
+    """The caps size and pixel aspect ratio of a picture a source delivered."""
+
+    width: int = 0
+    height: int = 0
+    par: tuple[int, int] = (1, 1)
+
+
 class SceneView(NamedTuple):
     """The rectangle the scene is drawn in and how wide one frame pixel is drawn there."""
 

@@ -370,8 +370,8 @@ _D1_ASPECT = 12 / 11
 
 
 def _non_square(state: OverlayState) -> OverlayState:
-    state.source_resolution = (704, 576)
-    state.source_par = (12, 11)
+    state.picture_size = (704, 576)
+    state.picture_par = (12, 11)
     return state
 
 

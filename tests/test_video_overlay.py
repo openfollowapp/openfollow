@@ -793,7 +793,7 @@ _SCENE = ("draw_grid_pass", "draw_origin_pass", "draw_zones_pass", "draw_marker_
 def _scene_renderer(source: tuple[int, int]) -> CairoOverlayRenderer:
     renderer = CairoOverlayRenderer()
     renderer.state.camera_params = np.zeros(7, dtype=np.float64)
-    renderer.state.source_resolution = source
+    renderer.state.picture_size = source
     renderer.state.markers = [MarkerOverlayData(marker_id=0, x=0, y=0, z=0, color="#fff")]
     return renderer
 
@@ -889,7 +889,7 @@ class TestLetterboxedScene:
     def test_a_frame_of_non_square_pixels_is_boxed_by_its_display_size(self, pass_sizes) -> None:
         # D1 at 12:11 is shown 768x576 (4:3), not at its 704x576 caps size.
         renderer = _scene_renderer((704, 576))
-        renderer.state.source_par = (12, 11)
+        renderer.state.picture_par = (12, 11)
         fake = FakeCairo()
         renderer.draw(fake, 1000, 1000)
         for name in _SCENE:
@@ -899,7 +899,7 @@ class TestLetterboxedScene:
     def test_the_drawn_view_is_published_for_the_pointer(self, pass_sizes) -> None:
         renderer = _scene_renderer((704, 576))
         assert renderer.scene_view is None  # nothing drawn yet
-        renderer.state.source_par = (12, 11)
+        renderer.state.picture_par = (12, 11)
         renderer.draw(FakeCairo(), 1000, 1000)
         rect, aspect = renderer.scene_view
         assert tuple(rect) == (0, 125, 1000, 750)
@@ -935,7 +935,7 @@ def test_a_frame_with_no_room_for_the_scene_still_forgets_a_removed_cone(monkeyp
     state.camera_params = np.array([0.0, -11.0, 6.0, -22.0, 0.0, 0.0, 60.0])
     state.grid_config = (10.0, 6.0, 1.0, 0.0, 3.0, 0.0)
     state.marker_style = "cone"
-    state.source_resolution = (1280, 720)
+    state.picture_size = (1280, 720)
     a = MarkerOverlayData(marker_id=1, x=-1.0, y=2.0, z=1.6, color="#ff3333")
     b = MarkerOverlayData(marker_id=2, x=1.0, y=2.0, z=1.6, color="#33aaff")
 
@@ -973,8 +973,8 @@ def test_a_cone_is_drawn_again_when_the_frame_s_pixels_change_shape(monkeypatch)
     state.markers = [MarkerOverlayData(marker_id=1, x=-1.0, y=2.0, z=1.6, color="#ff3333")]
     surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 1280, 720)
     # Both frames box to the same 1280x720 rectangle; only the stretch differs.
-    state.source_resolution = (1280, 720)
+    state.picture_size = (1280, 720)
     renderer.draw(cairo.Context(surface), 1280, 720)
-    state.source_resolution, state.source_par = (1152, 720), (10, 9)
+    state.picture_size, state.picture_par = (1152, 720), (10, 9)
     renderer.draw(cairo.Context(surface), 1280, 720)
     assert worked_out == [1, 1]

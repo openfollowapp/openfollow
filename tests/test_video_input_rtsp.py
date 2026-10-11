@@ -112,7 +112,7 @@ class TestCreatePipeline:
         assert pipeline.get_by_name("rtspsrc").properties["protocols"] == 0x7
         assert names.looked_up == []
 
-    def test_a_name_with_an_ipv6_address_takes_tcp_interleaved(
+    def test_a_name_dialled_over_ipv6_takes_tcp_interleaved(
         self, names: _Names, caplog: pytest.LogCaptureFixture
     ) -> None:
         names.answers["camera.example"] = ["2001:db8::10", "192.0.2.10"]
@@ -125,6 +125,11 @@ class TestCreatePipeline:
         names.answers["localhost"] = ["::1", "127.0.0.1"]
         pipeline = self._build(config={"rtsp_url": "rtsp://localhost:8554/demo"})
         assert pipeline.get_by_name("rtspsrc").properties["protocols"] == 0x4
+
+    def test_a_dual_stack_name_dialled_over_ipv4_keeps_every_transport(self, names: _Names) -> None:
+        names.answers["camera.example"] = ["192.0.2.10", "2001:db8::10"]
+        pipeline = self._build(config={"rtsp_url": "rtsp://camera.example:554/stream"})
+        assert pipeline.get_by_name("rtspsrc").properties["protocols"] == 0x7
 
     @pytest.mark.parametrize("addresses", [["192.0.2.10"], ["192.0.2.10", "192.0.2.11"]])
     def test_a_name_with_only_ipv4_addresses_keeps_every_transport(self, names: _Names, addresses: list[str]) -> None:

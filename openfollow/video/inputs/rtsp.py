@@ -20,7 +20,7 @@ from openfollow.video.inputs._base import (
     VideoInputBase,
     video_input_pin_field,
 )
-from openfollow.video.inputs._pin import PinRefusal, check_video_pin, config_pin, resolves_to_ipv6
+from openfollow.video.inputs._pin import PinRefusal, check_video_pin, config_pin, dials_ipv6
 
 logger = logging.getLogger(__name__)
 
@@ -182,10 +182,10 @@ class RtspInput(VideoInputBase):
         rtspsrc.set_property("buffer-mode", 0)  # none – lowest latency
         # rtspsrc opens its UDP ports for the family of the literal in the URL, so a
         # name reads as IPv4 even when the connection lands on IPv6 and udpsink then
-        # refuses the server's address. Such a name takes the interleaved transport;
-        # everything else may negotiate TCP, UDP or multicast.
+        # refuses the server's address. A name dialled over IPv6 takes the interleaved
+        # transport; everything else may negotiate TCP, UDP or multicast.
         endpoint = self.source_endpoint(config)
-        tcp_only = endpoint is not None and resolves_to_ipv6(endpoint.host)
+        tcp_only = endpoint is not None and dials_ipv6(endpoint.host)
         rtspsrc.set_property("protocols", _TRANSPORTS_TCP if tcp_only else _TRANSPORTS_ALL)
         pin = config_pin(config)
         if pin:
@@ -195,7 +195,7 @@ class RtspInput(VideoInputBase):
         logger.info(
             "RTSP source: %s (latency=0, %s, login=%s)",
             redact_uri(location),
-            "tcp interleaved: the name has an IPv6 address" if tcp_only else "tcp+udp+multicast",
+            "tcp interleaved: the name is dialled over IPv6" if tcp_only else "tcp+udp+multicast",
             "set" if (user or password) else "none",
         )
 

@@ -58,6 +58,9 @@ class ConfigField:
     # the secret and is invisible in a password field, so trimming one fails
     # authentication with nothing on screen to explain why.
     strip: bool = True
+    # False = stored with the source but never part of the build: a change to it
+    # alone does not reconnect the input.
+    rebuilds: bool = True
 
 
 @dataclass
@@ -367,8 +370,14 @@ class VideoInputBase(ABC):
 
     @classmethod
     def config_changed(cls, old_cfg: Any, new_cfg: Any) -> bool:
-        """Whether config relevant to this input changed, including the station interface a blank pin follows."""
-        return cls.runtime_config(old_cfg) != cls.runtime_config(new_cfg)
+        """Whether config relevant to this input changed, including the station interface a blank pin follows.
+
+        A field declared ``rebuilds=False`` is left out.
+        """
+        quiet = {f.name for f in cls.config_fields() if not f.rebuilds}
+        old = {key: value for key, value in cls.runtime_config(old_cfg).items() if key not in quiet}
+        new = {key: value for key, value in cls.runtime_config(new_cfg).items() if key not in quiet}
+        return old != new
 
     @classmethod
     def route_target(cls, config: dict[str, Any]) -> str:

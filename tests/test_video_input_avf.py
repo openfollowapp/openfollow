@@ -93,6 +93,9 @@ def _no_cameras_listed_yet(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     names: dict[str, str] = {}
     monkeypatch.setattr(avf_module, "_camera_names", names)
     monkeypatch.setattr(avf_module, "_checked_index", {})
+    # A listing nothing stubs never reaches this machine's cameras; a test of the
+    # real listing sets darwin itself.
+    monkeypatch.setattr(sys, "platform", "linux")
     return names
 
 
@@ -377,6 +380,43 @@ class TestAvfConfigChanged:
         old = AppConfig()
         new = AppConfig(avf_width=1280, avf_height=720)
         assert AvfInput.config_changed(old, new) is True
+
+    def test_a_name_alone_reconnects_nothing(self) -> None:
+        """The name never affects the build; a swap would black the video out for it."""
+        from openfollow.configuration import AppConfig
+
+        old = AppConfig(video_source_type="avf", avf_unique_id="0x14100000")
+        new = AppConfig(video_source_type="avf", avf_unique_id="0x14100000", avf_device_name="Capture Card")
+        assert AvfInput.config_changed(old, new) is False
+
+    def test_another_camera_with_its_name_still_reconnects(self) -> None:
+        from openfollow.configuration import AppConfig
+
+        old = AppConfig(video_source_type="avf", avf_unique_id="0x14100000", avf_device_name="Capture Card")
+        new = AppConfig(video_source_type="avf", avf_unique_id="47B4B64B", avf_device_name="FaceTime HD Camera")
+        assert AvfInput.config_changed(old, new) is True
+
+    def test_the_first_unchanged_save_of_an_older_config_reconnects_nothing(self, _no_cameras_listed_yet) -> None:
+        """An older config has the camera but no name; that save records it."""
+        import copy
+
+        from openfollow.configuration import AppConfig
+        from openfollow.web.routes import apply_section_data
+
+        _no_cameras_listed_yet["0x14100000"] = "Capture Card"
+        old = AppConfig(video_source_type="avf", avf_unique_id="0x14100000")
+        new = copy.deepcopy(old)
+        form = {
+            "video_source_type": "avf",
+            "avf_unique_id": "0x14100000",
+            "avf_device_index": "-1",
+            "avf_width": "1920",
+        }
+
+        apply_section_data(new, "video_source", form)
+
+        assert new.avf_device_name == "Capture Card"
+        assert AvfInput.config_changed(old, new) is False
 
 
 class TestAvfWebUI:
@@ -836,11 +876,7 @@ class TestAvfLinkFailures:
 
 class TestHandleListDevices:
     def test_no_devices_returns_fallback_option(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(
-            avf_module,
-            "_discover_avf_devices",
-            lambda: [],
-        )
+        _cameras(monkeypatch)
         html = AvfInput().handle_list_devices({"avf_unique_id": ""})
         assert "-- No devices found --" in html
 
@@ -869,9 +905,7 @@ class TestHandleListDevices:
         ]
 
     def test_a_camera_without_a_unique_id_shows_its_listed_name(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(
-            avf_module, "_discover_avf_devices", lambda: [{"unique_id": "", "name": "avf0", "index": "0"}]
-        )
+        monkeypatch.setattr(avf_module, "_list_avf_devices", lambda: [{"unique_id": "", "name": "avf0", "index": "0"}])
 
         assert ">avf0</option>" in AvfInput().handle_list_devices({})
 
@@ -897,7 +931,7 @@ class TestHandleListDevices:
         self, monkeypatch: pytest.MonkeyPatch, _no_cameras_listed_yet
     ) -> None:
         _no_cameras_listed_yet["0x14100000"] = "Capture <Card>"
-        monkeypatch.setattr(avf_module, "_discover_avf_devices", lambda: [])
+        _cameras(monkeypatch)
 
         html = AvfInput().handle_list_devices({"avf_unique_id": "0x14100000"})
 
@@ -905,7 +939,7 @@ class TestHandleListDevices:
 
     def test_a_remembered_camera_hides_the_empty_list_marker(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """An empty value would clear the remembered camera on the next save."""
-        monkeypatch.setattr(avf_module, "_discover_avf_devices", lambda: [])
+        _cameras(monkeypatch)
 
         html = AvfInput().handle_list_devices({"avf_unique_id": "0x14100000"})
 
@@ -913,11 +947,26 @@ class TestHandleListDevices:
         assert 'value=""' not in html
 
     def test_a_remembered_value_is_escaped(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(avf_module, "_discover_avf_devices", lambda: [])
+        _cameras(monkeypatch)
 
         html = AvfInput().handle_list_devices({"avf_unique_id": '"><script>'})
 
         assert "<script>" not in html
+
+    def test_a_list_that_cannot_be_read_does_not_call_the_camera_unavailable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ "(unavailable)" means not connected, which a list that was never read
+        cannot tell; the camera stays selected, as the build refuses as unknown."""
+
+        def _broken() -> list[dict[str, str]]:
+            raise RuntimeError("the device monitor did not start")
+
+        monkeypatch.setattr(avf_module, "_list_avf_devices", _broken)
+
+        html = AvfInput().handle_list_devices({"avf_unique_id": "0x14100000", "avf_device_name": "Capture Card"})
+
+        assert html == '<option value="0x14100000" selected>Capture Card</option>'
 
 
 # --------------------------------------------------------------------------- #

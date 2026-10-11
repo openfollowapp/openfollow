@@ -283,8 +283,10 @@ class TestConfigRoundTrip:
                 setattr(new, field.name, not bool(field.default))
             else:
                 continue
-            assert plugin.config_changed(old, new) is True, (
-                f"{plugin.__name__}.config_changed missed mutation of {field.name}"
+            # A field that never takes part in the build must not reconnect the input.
+            assert plugin.config_changed(old, new) is field.rebuilds, (
+                f"{plugin.__name__}.config_changed {'missed' if field.rebuilds else 'rebuilds on'} "
+                f"a mutation of {field.name}"
             )
 
 

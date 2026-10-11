@@ -149,7 +149,9 @@ class AvfInput(VideoInputBase):
     def config_fields(cls) -> list[ConfigField]:
         return [
             ConfigField("avf_unique_id", str, "", "Device"),
-            ConfigField("avf_device_name", str, "", "Device name", device_editable=False),
+            # Recorded on the first save of an older config, or when macOS
+            # reports another name; neither may black the video out.
+            ConfigField("avf_device_name", str, "", "Device name", device_editable=False, rebuilds=False),
             ConfigField(
                 "avf_device_index",
                 int,
@@ -397,16 +399,23 @@ class AvfInput(VideoInputBase):
         config: dict[str, Any],
     ) -> str:
         """Return ``<option>`` elements for the device dropdown."""
-        devices = _discover_avf_devices()
+        try:
+            devices = _list_avf_devices()
+            listed = True
+        except Exception as exc:
+            logger.debug("AVFoundation device discovery failed: %s", exc)
+            devices, listed = [], False
         current = config.get("avf_unique_id", "")
 
         options: list[str] = []
-        # A remembered camera that is not connected stays selected, so saving
-        # the section never silently replaces it with the first one listed.
+        # A remembered camera that is not listed stays selected, so saving the
+        # section never silently replaces it with the first one listed. Only a
+        # list that was read can say it is not connected.
         if current and current not in {dev["unique_id"] for dev in devices}:
             cur = self._esc(current)
             name = self._esc(_camera_name(current, config.get("avf_device_name")))
-            options.append(f'<option value="{cur}" selected>{name} (unavailable)</option>')
+            suffix = " (unavailable)" if listed else ""
+            options.append(f'<option value="{cur}" selected>{name}{suffix}</option>')
         for dev in devices:
             uid = self._esc(dev["unique_id"])
             label = self._esc(_camera_name(dev["unique_id"]) if dev["unique_id"] else dev["name"])

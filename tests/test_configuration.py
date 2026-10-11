@@ -1930,6 +1930,27 @@ def test_apply_runtime_swaps_video_on_plugin_field_change() -> None:
     assert app._runtime_services.video_swaps == [new_config]
 
 
+def test_recording_a_usb_cameras_name_swaps_no_video() -> None:
+    """The first save of an older config records the name; that must not black the video out."""
+    app = _DummyApp(AppConfig(video_source_type="avf", avf_unique_id="0x14100000"))
+
+    apply_runtime_config_changes(
+        app, AppConfig(video_source_type="avf", avf_unique_id="0x14100000", avf_device_name="Capture Card")
+    )
+
+    assert app._runtime_services.video_swaps == []
+
+
+def test_choosing_another_usb_camera_still_swaps_video() -> None:
+    app = _DummyApp(AppConfig(video_source_type="avf", avf_unique_id="0x14100000", avf_device_name="Capture Card"))
+    new_config = AppConfig(video_source_type="avf", avf_unique_id="47B4B64B", avf_device_name="FaceTime HD Camera")
+
+    apply_runtime_config_changes(app, new_config)
+
+    assert app._runtime_services.video_swaps == [new_config]
+    assert app._config.avf_device_name == "FaceTime HD Camera"
+
+
 @pytest.mark.parametrize("station", ["eth1", ""], ids=["moved", "auto-detect"])
 def test_a_station_change_rebuilds_a_video_input_that_follows_it(monkeypatch, station: str) -> None:
     """The station row is committed before the video block runs; compared

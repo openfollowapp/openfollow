@@ -501,20 +501,26 @@ class TestCoreMLModelCache:
         assert _cached(calls) == [False]
         assert any("CoreML model cache" in r.getMessage() for r in caplog.records)
 
-    def test_failed_cached_build_retries_into_an_empty_cache(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        # A half-written compile (a quit during the first build) fails the load
-        # rather than recompiling; one compile into a clean cache repairs it.
+    @staticmethod
+    def _half_written_compile(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[Path, Path]:
+        """A model whose cache holds a compile cut short (a quit during the first build)."""
         first: list[dict[str, Any]] = []
         _install_fake_onnxruntime(monkeypatch, _recording_session_factory(first), _COREML_HOST)
         model = _write_model(tmp_path / "models")
         _OnnxBackend(str(model), cache_root=tmp_path / "cache")
         half_written = _coreml_cache_of(first[0]) / "compiled_model.mlmodelc"
         half_written.write_bytes(b"truncated")
+        return model, half_written
+
+    def test_failed_cached_build_retries_into_an_empty_cache(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # The half-written compile fails the load rather than recompiling; one
+        # compile into the emptied cache repairs it.
+        model, half_written = self._half_written_compile(monkeypatch, tmp_path)
         calls: list[dict[str, Any]] = []
         corrupt = RuntimeError("Failed to create MLModel, error: Unable to load model")
         factory = _recording_session_factory(calls, cached_failures=(corrupt,))
@@ -529,17 +535,17 @@ class TestCoreMLModelCache:
         assert not half_written.exists()
         assert any("CoreML model cache" in r.getMessage() for r in caplog.records)
 
-    def test_cached_build_failing_twice_builds_uncached_and_drops_the_cache(
+    def test_emptied_cache_failing_again_builds_uncached_and_drops_it(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
+        model, _ = self._half_written_compile(monkeypatch, tmp_path)
         calls: list[dict[str, Any]] = []
         refused = RuntimeError("Failed to create MLModel, error: Unable to load model")
         factory = _recording_session_factory(calls, cached_failures=(refused, refused))
         _install_fake_onnxruntime(monkeypatch, factory, _COREML_HOST)
-        model = _write_model(tmp_path / "models")
 
         with caplog.at_level(logging.WARNING, logger="openfollow.video.detection"):
             backend = _OnnxBackend(str(model), cache_root=tmp_path / "cache")
@@ -550,6 +556,27 @@ class TestCoreMLModelCache:
         # Dropped, so the next build compiles a clean copy.
         assert not _coreml_cache_of(calls[0]).exists()
         assert sum("CoreML model cache" in r.getMessage() for r in caplog.records) == 2
+
+    def test_failed_cold_compile_builds_uncached_without_a_retry(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # Nothing was cached to repair, so compiling into the cache again would only fail again.
+        calls: list[dict[str, Any]] = []
+        uncompilable = RuntimeError("Failed to create MLModel, error: compiler failed")
+        factory = _recording_session_factory(calls, cached_failures=(uncompilable, uncompilable))
+        _install_fake_onnxruntime(monkeypatch, factory, _COREML_HOST)
+        model = _write_model(tmp_path / "models")
+
+        with caplog.at_level(logging.WARNING, logger="openfollow.video.detection"):
+            backend = _OnnxBackend(str(model), cache_root=tmp_path / "cache")
+
+        assert backend.model_input_size == 320
+        assert _cached(calls) == [True, False]
+        assert not _coreml_cache_of(calls[0]).exists()
+        assert sum("CoreML model cache" in r.getMessage() for r in caplog.records) == 1
 
     def test_build_failing_without_the_cache_too_raises(
         self,
@@ -565,7 +592,7 @@ class TestCoreMLModelCache:
         with pytest.raises(RuntimeError, match="protobuf parsing failed"):
             _OnnxBackend(str(model), cache_root=tmp_path / "cache")
 
-        assert _cached(calls) == [True, True, False]
+        assert _cached(calls) == [True, False]
 
 
 class TestRemoveCoreMLCompiles:

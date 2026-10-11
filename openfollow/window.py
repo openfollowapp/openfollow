@@ -186,6 +186,11 @@ class GtkNativeSinkWindow:
         """
         return self._closing
 
+    @property
+    def has_keyboard_focus(self) -> bool:
+        """True while this is the key window, the one the keyboard types into."""
+        return bool(self._window.has_toplevel_focus())
+
     # -- Extended API ---------------------------------------------------------
 
     def embed_widget(self, widget: Any) -> None:

@@ -465,6 +465,28 @@ class TestHostnameRow:
         state = _build(app, pool)
         assert state.hostname_text == "of-1.stage.example.com" + shown
 
+    def test_a_mac_shows_the_name_bonjour_publishes(
+        self,
+        pool: OverlayStatePool,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The kernel name a DHCP server gave a Mac is not what Bonjour answers on."""
+        from types import SimpleNamespace
+
+        import openfollow.privilege.device_repair as device_repair
+        from openfollow import mdns_host
+        from tests._threads import InlineThread
+
+        def _scutil(*_args: object, **_kwargs: object) -> SimpleNamespace:
+            return SimpleNamespace(returncode=0, stdout="Studio-Mac\n")
+
+        monkeypatch.setattr(device_repair, "current_hostname", lambda: "studio")
+        mdns_host.set_reader(mdns_host.LocalHostNameReader(platform="darwin", run=_scutil, thread_factory=InlineThread))
+        app = _build_app()
+        app._config = replace(app._config, web_port=8080)
+        state = _build(app, pool)
+        assert state.hostname_text == "Studio-Mac.local:8080"
+
     @pytest.mark.parametrize("name", ["", "localhost"])
     def test_unusable_hostname_yields_no_row(
         self,

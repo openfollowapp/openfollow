@@ -2507,15 +2507,12 @@ class AppRuntimeServices:
 
         - on  → on  (different cfg) : ``PersonDetector.reload_config``
           stages the swap; the worker drains it between frames and
-          rebuilds the backend session if model / backend / device /
-          storage_path changed.
+          rebuilds the backend session if model / storage_path changed.
         - on  → off                 : ``stop()`` + drop the reference.
         - off → off                 : no-op.
 
-        The fourth state – ``off → on`` – needs the receiver pipeline to
-        wire the appsink into a freshly-constructed detector, which
-        ``init_video`` only does at startup; the dispatcher catches that
-        case and falls back to ``request_restart()``.
+        The dispatcher sends ``off → on`` (and the other transitions that
+        need a fresh detector) to ``swap_detector`` instead.
 
         The detector reference lives on ``AppRuntimeServices`` (set in
         ``init_video``), not on ``OpenFollowApp``, so read/write
@@ -2529,9 +2526,8 @@ class AppRuntimeServices:
         elif detector is not None and not new_cfg.enabled:
             detector.stop()
             self._person_detector = None
-        # else: detector is None – caller (dispatcher) handles the
-        # off→on case via request_restart and the off→off case is a
-        # genuine no-op.
+        # else: detector is None – off→off is a genuine no-op; the
+        # dispatcher sends off→on to ``swap_detector``.
 
     def swap_detector(self, new_cfg: DetectionConfig) -> None:
         """Apply a ``detection`` config change live for the three
@@ -2541,11 +2537,14 @@ class AppRuntimeServices:
 
         Each case reduces to the same primitive: rebuild the receiver
         pipeline so the detection branch matches the new detector's
-        appsink caps. ``PersonDetector`` construction is cheap once the
-        model file is cached – ``_load_backend`` is the only heavy step,
-        accepted as a brief GTK-thread stall on save. Backend-init
-        failures land as ``available=False`` (swallowed in ``__init__``);
-        the reason surfaces via runtime-stats ``missing_deps``, not a raise.
+        appsink caps. The detector is built here, on the GTK thread, and
+        its session build holds the GIL, so every thread (frame clock,
+        output senders, web server) stops until it is done: on CoreML a
+        model's first build compiles it for seconds, while later builds
+        load the compiled copy from the storage cache; the CPU provider
+        (the Pi) builds without one. Backend-init failures land as
+        ``available=False`` (swallowed in ``__init__``); the reason
+        surfaces via runtime-stats ``missing_deps``, not a raise.
 
         Skip-rebuild fast path: when **both** old and new detector are
         unavailable (or there's no old detector) the prior pipeline never

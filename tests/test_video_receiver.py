@@ -288,6 +288,7 @@ class FakeInput:
     input_id = "fake"
     display_name = "Fake"
     source_element_name: str | None = None
+    source_kind = SourceKind.REMOTE
 
     # Defaults – override per-test via subclass.
     _available: tuple[bool, str] = (True, "")
@@ -418,6 +419,7 @@ class FakeInputAlt:
     input_id = "fake_alt"
     display_name = "FakeAlt"
     source_element_name: str | None = None
+    source_kind = SourceKind.REMOTE
 
     _available: tuple[bool, str] = (True, "")
     _capabilities = InputCapabilities(
@@ -1045,6 +1047,57 @@ class TestARefusedStartIsClassified:
         r = _make_receiver(input_config={"fake_source": "cam-1"})
         r.play()
         assert r.status_marker.failure == VideoFailure.UNKNOWN
+        assert fake_glib.timers
+
+    @pytest.mark.parametrize(
+        ("kind", "expected"),
+        [(SourceKind.LOCAL, VideoFailure.ACCESS_DENIED), (SourceKind.REMOTE, VideoFailure.UNAUTHORIZED)],
+    )
+    def test_not_authorised_is_read_by_what_the_input_opens(
+        self, fake_gst, fake_glib, picker, monkeypatch, kind: SourceKind, expected: VideoFailure
+    ) -> None:
+        """A camera the operating system will not open is not a rejected login."""
+
+        class _Err:
+            message = "Device video access permission has been explicitly denied before"
+            domain = RESOURCE_DOMAIN
+            code = RESOURCE_NOT_AUTHORIZED
+
+        class _Msg:
+            def parse_error(self) -> tuple[_Err, str]:
+                return _Err(), "Authorization status: 2"
+
+        monkeypatch.setattr(FakeInput, "source_kind", kind)
+        FakeInput.create_pipeline_result = self._refusing(_Msg())
+        r = _make_receiver(input_config={"fake_source": "FaceTime HD Camera (1920x1080@30)"})
+
+        r.play()
+
+        assert r.status_marker.failure is expected
+        assert fake_glib.timers
+
+    @pytest.mark.parametrize(
+        ("kind", "expected"),
+        [(SourceKind.LOCAL, VideoFailure.ACCESS_DENIED), (SourceKind.REMOTE, VideoFailure.UNAUTHORIZED)],
+    )
+    def test_a_posted_not_authorised_is_read_by_what_the_input_opens(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch, kind: SourceKind, expected: VideoFailure
+    ) -> None:
+        """A permission prompt refused while the camera starts is posted to the
+        bus after a start that succeeded, not left there by a refused one."""
+        monkeypatch.setattr(FakeInput, "source_kind", kind)
+        r = _make_receiver(input_config={"fake_source": "FaceTime HD Camera (1920x1080@30)"})
+
+        r._handle_bus_error(
+            BusError(
+                "Device video access permission has been denied",
+                RESOURCE_DOMAIN,
+                RESOURCE_NOT_AUTHORIZED,
+                "Authorization status: 2",
+            )
+        )
+
+        assert r.status_marker.failure is expected
         assert fake_glib.timers
 
 
@@ -5016,8 +5069,9 @@ class TestTheInputDeclaresWhatItGetsVideoFrom:
         assert _make_receiver(input_config={"fake_source": "cam-1"}).source_kind is SourceKind.NAMED
 
     def test_every_registered_plugin_declares_one(self) -> None:
-        """A plugin that forgets falls back to LOCAL, which names no address,
-        port or sender - so the worst case is vague, never wrong."""
+        """The kind picks the wording and how "not authorised" is read, so every
+        plugin carries one; ``test_every_plugin_declares_its_source_kind`` holds
+        each to declaring it rather than inheriting LOCAL."""
         from openfollow.video.inputs import get_registry
 
         for plugin in get_registry().values():

@@ -1074,6 +1074,9 @@ class TestVideoFailureReachesTheTopRightBadge:
     def test_the_row_names_the_failure_not_just_that_there_is_one(self) -> None:
         assert self._flags_after(VideoFailure.UNAUTHORIZED)["video_failure"] == ("error", "Video: Login rejected")
 
+    def test_a_camera_the_system_will_not_open_is_not_a_login(self) -> None:
+        assert self._flags_after(VideoFailure.ACCESS_DENIED)["video_failure"] == ("error", "Video: Access denied")
+
     def test_a_healthy_feed_clears_the_row(self) -> None:
         assert self._flags_after(VideoFailure.NONE)["video_failure"] is None
 

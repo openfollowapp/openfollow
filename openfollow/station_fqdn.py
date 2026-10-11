@@ -11,6 +11,8 @@ from __future__ import annotations
 import logging
 import re
 
+from openfollow.mdns_host import mdns_label
+
 logger = logging.getLogger(__name__)
 
 FQDN_MAX_LEN = 253
@@ -65,15 +67,14 @@ def normalize_fqdn(raw: object) -> str:
     return ""
 
 
-def mdns_name() -> str:
+def mdns_name(wait_s: float = 0.0) -> str:
     """``<hostname>.local``, or "" when the host has no usable name.
 
-    The running hostname, never the station slug the config asks for: when the rename was
-    skipped, the desired name is an address avahi never answers on.
+    The name mDNS publishes now, never the station slug the config asks for: when the
+    rename was skipped, the desired name is an address avahi never answers on. *wait_s*
+    bounds the wait for macOS's first read of it (see ``mdns_host``).
     """
-    from openfollow.privilege.device_repair import current_hostname
-
-    name = current_hostname()
+    name = mdns_label(wait_s)
     return f"{name}.local" if name and name != "localhost" else ""
 
 

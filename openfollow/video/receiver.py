@@ -1100,6 +1100,7 @@ class GstNativeSinkReceiver:
             code=error.code if error else 0,
             message=error.message if error else "",
             debug=error.debug if error else "",
+            kind=self._input.source_kind,
         )
 
     def _schedule_reconnect(

@@ -60,7 +60,7 @@ def _install_fake_onnx_backend(
     """
     iterator = iter(results)
 
-    def _fake(model_path):  # noqa: ANN001, ANN202
+    def _fake(model_path, _cache_root=None):  # noqa: ANN001, ANN202
         record.append(model_path)
         result = next(iterator)
         if isinstance(result, Exception):

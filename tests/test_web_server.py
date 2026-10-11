@@ -3509,6 +3509,53 @@ def test_delete_model_removes_file_and_reports(live_server, monkeypatch, tmp_pat
     assert not model.exists()
 
 
+def _seed_coreml_compiles(tmp_path, *names: str):
+    """Create compiled-model cache dirs under the seeded storage."""
+    dirs = [tmp_path / "store" / "cache" / "coreml" / name for name in names]
+    for directory in dirs:
+        directory.mkdir(parents=True)
+        (directory / "compiled").write_bytes(b"compiled")
+    return dirs
+
+
+def test_delete_model_removes_its_compiled_copies(live_server, monkeypatch, tmp_path) -> None:
+    _, base = live_server
+    _seed_storage_model(monkeypatch, tmp_path)
+    current, replaced = _seed_coreml_compiles(tmp_path, "yolo11n-0123456789abcdef", "yolo11n-fedcba9876543210")
+    variant, other = _seed_coreml_compiles(tmp_path, "yolo11n-int8-0123456789abcdef", "yolov8n-0123456789abcdef")
+
+    status, body = _post_form(base, "/section/detection/models/delete", {"model": "yolo11n.onnx"})
+
+    assert status == 200
+    assert "Deleted" in body
+    assert not current.exists()
+    assert not replaced.exists()
+    assert variant.is_dir()  # a name that only starts with the deleted one
+    assert other.is_dir()
+
+
+def test_delete_model_succeeds_when_its_compile_cannot_be_removed(live_server, monkeypatch, tmp_path, caplog) -> None:
+    import openfollow.video.detection as detection_mod
+
+    _, base = live_server
+    model = _seed_storage_model(monkeypatch, tmp_path)
+    [compiled] = _seed_coreml_compiles(tmp_path, "yolo11n-0123456789abcdef")
+
+    def refuse(*_a, **_kw):
+        raise PermissionError("operation not permitted")
+
+    monkeypatch.setattr(detection_mod.shutil, "rmtree", refuse)
+
+    with caplog.at_level("WARNING", logger="openfollow.video.detection"):
+        status, body = _post_form(base, "/section/detection/models/delete", {"model": "yolo11n.onnx"})
+
+    assert status == 200
+    assert "Deleted" in body and "Could not delete" not in body
+    assert not model.exists()
+    assert compiled.is_dir()
+    assert any(str(compiled) in r.getMessage() for r in caplog.records)
+
+
 def test_delete_model_rejects_unknown_name(live_server, monkeypatch, tmp_path) -> None:
     _, base = live_server
     model = _seed_storage_model(monkeypatch, tmp_path)

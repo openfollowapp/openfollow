@@ -41,4 +41,4 @@ Four actions sit below the cards.
 
 - **Test peer connectivity** – probes every known station on its advertised port and displays a small results table. A green chip means the station responded with an HTTP status and a round-trip time; a red chip means it was unreachable, with a reason. If the table shows "No peers known yet", wait for discovery or check the **Beacon receiver** card above.
 
-- **Restart application** – restarts the OpenFollow process (not the operating system). A confirmation prompt appears first; the page reloads automatically once the station comes back. Use this after changing a setting that requires a restart, such as the web port or Person Detection engine.
+- **Restart application** – restarts the OpenFollow process (not the operating system). A confirmation prompt appears first; the page reloads automatically once the station comes back. Use this after changing a setting that requires a restart, such as the web port.

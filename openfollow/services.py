@@ -16,7 +16,7 @@ import os
 import sys
 import threading
 import time
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -55,7 +55,7 @@ from openfollow.runtime.services_marker_visuals import (
 )
 from openfollow.runtime_metrics import FrameMetrics, OverlayStatePool
 from openfollow.scene.camera import Camera
-from openfollow.send_health import SendAlert, SendHealth, send_alerts
+from openfollow.send_health import OSC_SEND_FAILING_ACTION, SendAlert, SendHealth, SendHealthStatus, send_alerts
 from openfollow.system_stats import SystemStatsCollector
 from openfollow.video.failure import ConnectionPhase, VideoFailure, failure_action, failure_sentence
 from openfollow.video.overlay import CairoOverlayRenderer
@@ -69,6 +69,7 @@ if TYPE_CHECKING:
     from openfollow.configuration import (
         AppConfig,
         DetectionConfig,
+        OscDestinationConfig,
         OscDestinationsConfig,
         OscTransmittersConfig,
         OtpOutputConfig,
@@ -1392,16 +1393,22 @@ class AppRuntimeServices:
         """``network_alerts`` with the next step the web shows under each."""
         observer = self._network_observer
         planes = observer.alert_rows() if observer is not None else []
-        rows = [SendAlert(text) for _key, text in planes]
+        rows = [SendAlert(plane.text, plane.action) for plane in planes]
         # A plane already reported down explains its senders' failures.
-        explained = {key for key, _text in planes}
-        rows.extend(send_alerts(health.status() for key, health in self._send_healths() if key not in explained))
+        explained = {plane.key for plane in planes}
+        osc = self._osc_sender_statuses()
+        statuses = [status for key, status in [*self._fixed_sender_statuses(), *osc] if key not in explained]
+        rows.extend(send_alerts(statuses, actions={status.label: OSC_SEND_FAILING_ACTION for _key, status in osc}))
         return rows
 
-    def _send_healths(self) -> list[tuple[str, SendHealth]]:
-        """Every sender's record, keyed by the plane whose outage already explains its failures.
+    def _sender_statuses(self) -> list[tuple[str, SendHealthStatus]]:
+        """Every sender's record, keyed by the plane whose outage already explains its failures."""
+        return [*self._fixed_sender_statuses(), *self._osc_sender_statuses()]
 
-        The discovery beacon and marker sync follow the station interface, which is PSN's.
+    def _fixed_sender_statuses(self) -> list[tuple[str, SendHealthStatus]]:
+        """PSN, OTP, RTTrPM, the discovery beacon and marker sync.
+
+        The beacon and marker sync follow the station interface, which is PSN's.
         """
         app = self._app
         web = getattr(app, "_web_server", None)
@@ -1416,14 +1423,34 @@ class AppRuntimeServices:
         for key, sender in senders:
             health = getattr(sender, "send_health", None)
             if isinstance(health, SendHealth):
-                out.append((key, health))
+                out.append((key, health.status()))
         return out
+
+    def _osc_sender_statuses(self) -> list[tuple[str, SendHealthStatus]]:
+        """One record per OSC target a destination in use sends to, named after its destinations.
+
+        Read through the config, not the client cache: a cached client outlives
+        the row that used it and the destination's previous address, and its
+        last streak would otherwise stay on screen for good.
+        """
+        named: dict[int, tuple[str, SendHealth, list[str]]] = {}
+        for dest in self._osc_destinations_in_use():
+            egress = self._osc_egress.for_destination(dest)
+            health = self._osc_service.send_health_for(dest.host, dest.port, dest.protocol, dest.framing, egress)
+            if health is None:
+                continue
+            key = f"osc_out:{egress.iface}" if egress is not None else ""
+            names = named.setdefault(id(health), (key, health, []))[2]
+            names.append(dest.name or f"{dest.host}:{dest.port}")
+        return [
+            (key, replace(health.status(), label=f"OSC to {', '.join(names)}")) for key, health, names in named.values()
+        ]
 
     def _network_stats(self) -> dict[str, Any]:
         """The ``network`` block of the runtime stats: the rows, and every sender's record."""
         return {
             "alerts": [asdict(alert) for alert in self.network_alert_rows()],
-            "senders": [health.status().to_dict() for _key, health in self._send_healths()],
+            "senders": [status.to_dict() for _key, status in self._sender_statuses()],
         }
 
     def network_plane_status(self) -> list[dict[str, Any]]:
@@ -2229,15 +2256,10 @@ class AppRuntimeServices:
         from openfollow.net_utils import resolve_plane_source_ip
 
         cfg = self._app._config
-        ids = {row.destination_id for row in cfg.osc_transmitters.transmitters if row.enabled}
-        if cfg.trigger_zones.enabled:
-            ids |= {zone.destination_id for zone in cfg.trigger_zones.zones if zone.enabled}
-        by_id = cfg.osc_destinations.by_id()
-        in_use = [by_id[dest_id] for dest_id in ids if dest_id in by_id]
         ifaces = sorted(
             {
                 plane_source_iface(dest.source_iface, cfg.psn_source_iface)
-                for dest in in_use
+                for dest in self._osc_destinations_in_use()
                 if not is_loopback_host(dest.host)
             }
             - {""}
@@ -2259,6 +2281,14 @@ class AppRuntimeServices:
             )
 
         return [_plane(iface) for iface in ifaces]
+
+    def _osc_destinations_in_use(self) -> list[OscDestinationConfig]:
+        """Destinations an enabled transmitter row or an armed, enabled zone sends to, in config order."""
+        cfg = self._app._config
+        ids = {row.destination_id for row in cfg.osc_transmitters.transmitters if row.enabled}
+        if cfg.trigger_zones.enabled:
+            ids |= {zone.destination_id for zone in cfg.trigger_zones.zones if zone.enabled}
+        return [dest for dest in cfg.osc_destinations.destinations if dest.id in ids]
 
     def _follow_station_osc_input(self) -> None:
         # The OSC membership inherits the station pin the same way, and the

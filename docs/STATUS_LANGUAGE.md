@@ -292,13 +292,14 @@ attributes, so it spells the token's value.
   Only stopping the output waits out the gap an Apply or Renew leaves. A
   rebind or stop that fails names the interface and the failure in that row
   instead, until a later outage of that interface takes the row back. A
-  sender whose sends keep failing while its interface is up gets its own row
-  once a failure lands a second after the first, and keeps it until sends have
-  gone out for a second (`send_health.py`); on macOS every sender refused the
-  way a denied Local Network permission refuses them shares one row naming
-  that permission. No status row is caution today: the HUD shows faults,
-  progress and results, and a limitation worth knowing lives on the web UI and
-  the on-screen Network screen.
+  sender whose sends keep failing while its interface is up (each OSC
+  destination in use is one) gets its own row once a failure lands a second
+  after the first, and keeps it until sends have gone out for a second
+  (`send_health.py`); on macOS every sender refused the way a denied Local
+  Network permission refuses them shares one row, saying macOS refuses the
+  station's sends, with the permission in its next step. No status row is
+  caution today: the HUD shows faults, progress and results, and a limitation
+  worth knowing lives on the web UI and the on-screen Network screen.
 - The on-screen Network screen: a notice is a row in its level's fill and border,
   led by its sign (`draw_level_sign`), its text wrapped rather than cut. An
   interface pill that names a state takes its level's chip colours (a link-local

@@ -14,6 +14,7 @@ from openfollow.send_health import (
     FAILING_AFTER_S,
     LOCAL_NETWORK_ACTION,
     LOCAL_NETWORK_TEXT,
+    OSC_SEND_FAILING_ACTION,
     RECOVERY_HOLD_S,
     SEND_FAILING_ACTION,
     SendAlert,
@@ -178,6 +179,80 @@ class TestLogging:
             f"PSN: sends still failing after 61 s (4 failed): [Errno {errno.EHOSTUNREACH}] No route to host"
         ]
 
+    def test_sporadic_failures_log_once_a_minute(self, caplog: pytest.LogCaptureFixture) -> None:
+        """One failure every 1.5 s at 60 Hz: each is a streak that clears without ever failing."""
+        health, clock = _health()
+        start = clock.now
+        next_failure = start + 0.5
+        with caplog.at_level(logging.DEBUG, logger="openfollow.send_health"):
+            for frame in range(10 * 60 * 60):
+                clock.now = start + frame / 60
+                if clock.now >= next_failure:
+                    health.record_failure(OSError(errno.ENOBUFS, "No buffer space available"), _GROUP)
+                    next_failure += 1.5
+                else:
+                    health.record_success()
+        levels = [record.levelno for record in caplog.records if record.name == "openfollow.send_health"]
+        assert levels.count(logging.WARNING) == 10
+        assert levels.count(logging.INFO) == levels.count(logging.ERROR) == 0
+        reports = [record.getMessage() for record in caplog.records if record.levelno == logging.WARNING]
+        assert reports[0] == f"PSN: send failed: [Errno {errno.ENOBUFS}] No buffer space available"
+        assert reports[1] == f"{reports[0]} (39 brief failures since the last report)"
+
+    def test_a_blip_that_never_failed_ends_at_debug(self, caplog: pytest.LogCaptureFixture) -> None:
+        health, clock = _health()
+        with caplog.at_level(logging.DEBUG, logger="openfollow.send_health"):
+            health.record_failure(_REFUSED, _GROUP)
+            health.record_success()
+            clock.now += RECOVERY_HOLD_S
+            health.record_success()
+        assert health.status().state == "ok"
+        ended = [record for record in caplog.records if "sending again" in record.getMessage()]
+        assert [record.levelno for record in ended] == [logging.DEBUG]
+
+    def test_a_streak_that_keeps_failing_is_reported_inside_the_quiet_minute(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        health, clock = _health()
+        health.record_failure(_REFUSED, _GROUP)
+        health.record_success()
+        clock.now += RECOVERY_HOLD_S
+        health.record_success()
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger="openfollow.send_health"):
+            clock.now += 10.0
+            _failing(health, clock)
+            health.record_success()
+            clock.now += RECOVERY_HOLD_S
+            health.record_success()
+        assert _messages(caplog) == [
+            f"PSN: sends keep failing: [Errno {errno.EHOSTUNREACH}] No route to host",
+            "PSN: sending again after 2 s (2 sends failed).",
+        ]
+
+    def test_a_brief_failure_reported_later_is_not_counted_twice(self, caplog: pytest.LogCaptureFixture) -> None:
+        """A quiet streak that goes on to fail has its own line, so the next summary leaves it out."""
+        health, clock = _health()
+        health.record_failure(_REFUSED, _GROUP)
+        for _ in range(2):
+            health.record_success()
+            clock.now += RECOVERY_HOLD_S
+            health.record_success()
+            clock.now += 5.0
+            health.record_failure(_REFUSED, _GROUP)
+        clock.now += FAILING_AFTER_S
+        health.record_failure(_REFUSED, _GROUP)
+        health.record_success()
+        clock.now += RECOVERY_HOLD_S
+        health.record_success()
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="openfollow.send_health"):
+            clock.now += 60.0
+            health.record_failure(_REFUSED, _GROUP)
+        assert _messages(caplog) == [
+            f"PSN: send failed: [Errno {errno.EHOSTUNREACH}] No route to host (1 brief failure since the last report)"
+        ]
+
     @pytest.mark.parametrize(("platform", "named"), [("darwin", True), ("linux", False)])
     def test_only_macos_names_the_local_network_permission(
         self, caplog: pytest.LogCaptureFixture, platform: str, named: bool
@@ -259,6 +334,13 @@ class TestSendAlerts:
             SendAlert("OTP output: sends keep failing (Network is unreachable)", SEND_FAILING_ACTION),
         ]
 
+    def test_a_sender_can_carry_its_own_next_step(self) -> None:
+        statuses = [_status("OSC to Lighting desk"), _status("OTP output")]
+        assert send_alerts(statuses, actions={"OSC to Lighting desk": OSC_SEND_FAILING_ACTION}) == [
+            SendAlert("OSC to Lighting desk: sends keep failing (Network is unreachable)", OSC_SEND_FAILING_ACTION),
+            SendAlert("OTP output: sends keep failing (Network is unreachable)", SEND_FAILING_ACTION),
+        ]
+
     def test_a_refused_unicast_send_alone_does_not_name_the_permission(self) -> None:
         (alert,) = send_alerts([_status("RTTrPM output", err=errno.EHOSTUNREACH)])
         assert alert.text == "RTTrPM output: sends keep failing (No route to host)"
@@ -268,6 +350,11 @@ class TestSendAlerts:
 
     def test_the_rows_fit_two_status_row_lines(self) -> None:
         assert len(LOCAL_NETWORK_TEXT) <= 80
+
+    def test_the_local_network_row_states_what_was_observed(self) -> None:
+        """The permission is the inferred cause, so it belongs in the next step, not the main line."""
+        assert "Local Network" not in LOCAL_NETWORK_TEXT
+        assert "Local Network" in LOCAL_NETWORK_ACTION
 
 
 def test_concurrent_senders_lose_no_count() -> None:

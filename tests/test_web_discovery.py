@@ -1209,7 +1209,11 @@ class _RefusingSocket:
         pass
 
 
-def test_beacon_send_failures_log_once_per_streak(caplog: pytest.LogCaptureFixture) -> None:
+def test_beacon_send_failures_log_once_per_streak(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # However long the three sends take, they never reach failing.
+    monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", float("inf"))
     sender = BeaconSender(name="X", web_port=80)
     with caplog.at_level(logging.INFO):
         _run_beacon(sender, _RefusingSocket(), sends=3)
@@ -1224,8 +1228,8 @@ def test_a_socket_that_takes_one_beacon_then_refuses_never_reads_as_recovered(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """macOS with Local Network access off: each fresh socket's first send
-    returns success and nothing leaves, the next one is refused. That used to
-    log "send recovered" every other beacon while nothing got through."""
+    returns success and nothing leaves, the next one is refused. Nothing gets
+    through, so nothing may be logged as a recovery."""
     import openfollow.send_health as send_health_module
 
     monkeypatch.setattr(send_health_module, "FAILING_AFTER_S", 0.0)

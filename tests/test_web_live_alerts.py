@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 from bottle import html_escape, template
 
+from openfollow.send_health import LOCAL_NETWORK_ACTION, LOCAL_NETWORK_TEXT
 from openfollow.web import server as _server_module  # noqa: F401 - registers tpl path
 from openfollow.web.live_alerts import statistics_alerts
 
@@ -23,10 +24,7 @@ _MISSING_PAD = {
 }
 
 
-_LOCAL_NETWORK = {
-    "text": "Network output blocked: macOS Local Network access is off",
-    "action": "Turn on OpenFollow in System Settings → Privacy & Security → Local Network.",
-}
+_LOCAL_NETWORK = {"text": LOCAL_NETWORK_TEXT, "action": LOCAL_NETWORK_ACTION}
 
 
 def _stats(**sections: Any) -> dict[str, Any]:
@@ -46,16 +44,23 @@ def _every_box() -> dict[str, Any]:
         },
         controllers={"items": [{"controller_index": 0, "state": "connected"}, _MISSING_PAD]},
         tracking={"enabled": True, "missing_deps": ["onnxruntime"]},
-        network={"alerts": [_LOCAL_NETWORK, {"text": "PSN: eth0.10 is down", "action": ""}]},
+        network={
+            "alerts": [
+                _LOCAL_NETWORK,
+                {"text": "PSN: eth0.10 is down", "action": "Check the cable."},
+                {"text": "OTP output: eth1 is down", "action": ""},
+            ]
+        },
     )
 
 
 def test_everything_the_boxes_say_is_spoken_in_page_order() -> None:
     assert statistics_alerts(_every_box()).spoken() == [
         "Nothing answered at the camera's address. Check the address and port.",
-        "Network output blocked: macOS Local Network access is off "
-        "Turn on OpenFollow in System Settings → Privacy & Security → Local Network.",
-        "PSN: eth0.10 is down",
+        "macOS refuses this station's network sends. "
+        "Turn on OpenFollow under System Settings → Privacy & Security → Local Network.",
+        "PSN: eth0.10 is down. Check the cable.",
+        "OTP output: eth1 is down",
         "C2 missing · marker 5 · Xbox Wireless Controller (USB 2, port 2)",
         "Missing packages: onnxruntime. Install them from the Person Detection section, then restart.",
     ]
@@ -89,6 +94,20 @@ def test_no_network_row_says_nothing(network: dict[str, Any]) -> None:
     assert statistics_alerts(_stats(network=network)).network == ()
 
 
+@pytest.mark.parametrize(
+    ("row", "spoken"),
+    [
+        ({"text": "PSN: eth0 is down", "action": "Check the cable."}, "PSN: eth0 is down. Check the cable."),
+        ({"text": "Sends stopped.", "action": "Check the cable."}, "Sends stopped. Check the cable."),
+        ({"text": "Is it down?", "action": "Check the cable."}, "Is it down? Check the cable."),
+        ({"text": "PSN: eth0 is down", "action": ""}, "PSN: eth0 is down"),
+    ],
+    ids=["no-stop", "stop", "question", "no-action"],
+)
+def test_a_row_and_its_next_step_are_read_as_two_sentences(row: dict[str, str], spoken: str) -> None:
+    assert statistics_alerts(_stats(network={"alerts": [row]})).spoken() == [spoken]
+
+
 def test_a_network_row_moving_on_is_announced_again() -> None:
     first = statistics_alerts(_stats(network={"alerts": [_LOCAL_NETWORK]})).key()
     cleared = statistics_alerts(_stats(network={"alerts": []})).key()
@@ -113,7 +132,7 @@ def test_the_key_changes_only_with_what_is_said() -> None:
 
 def test_the_panel_boxes_carry_no_role() -> None:
     html = template("partials/statistics", stats=_every_box())
-    assert html.count('class="notice error"') == 5
+    assert html.count('class="notice error"') == 6
     assert "role=" not in html
     assert "aria-live" not in html
 

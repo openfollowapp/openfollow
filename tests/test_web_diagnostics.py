@@ -4293,7 +4293,7 @@ def test_collect_runtime_state_names_what_each_controller_cannot_do() -> None:
 def test_collect_runtime_state_says_whether_each_sender_is_getting_out() -> None:
     stats = _stats()
     stats["network"] = {
-        "alerts": [{"text": "Network output blocked: macOS Local Network access is off", "action": "Turn it on."}],
+        "alerts": [{"text": "macOS refuses this station's network sends", "action": "Turn it on."}],
         "senders": [
             {
                 "label": "PSN",
@@ -4339,8 +4339,19 @@ def test_collect_runtime_state_says_whether_each_sender_is_getting_out() -> None
         "    Marker sync   retrying  0 sent, 1 failed",
         "      1 failed for 0 s: Network is unreachable [errno 51]",
         "    OTP output    ok        900 sent, 0 failed",
-        "    on screen: Network output blocked: macOS Local Network access is off",
+        "    on screen: macOS refuses this station's network sends",
     ]
+
+
+def test_a_sender_named_past_the_column_keeps_its_state_apart() -> None:
+    stats = _stats()
+    stats["network"] = {
+        "senders": [
+            {"label": "OSC to Lighting desk", "state": "ok", "sent_total": 12, "failed_total": 0},
+        ]
+    }
+    rows = diag.collect_runtime_state(diag.DiagnosticsProviders(runtime_stats=lambda: stats))
+    assert "    OSC to Lighting desk ok        12 sent, 0 failed" in rows
 
 
 def test_collect_runtime_state_with_no_sender_says_so() -> None:

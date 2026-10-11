@@ -743,10 +743,12 @@ class TestRttrpmStopTimeout:
 
 
 class TestRttrpmSendErrorSuppression:
-    def test_a_burst_of_send_errors_logs_once(self, caplog) -> None:
+    def test_a_burst_of_send_errors_logs_once(self, caplog, monkeypatch) -> None:
         import errno as _e
         import logging as _logging
 
+        # However long the burst takes, it never reaches failing.
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", float("inf"))
         srv = RttrpmServer(host="127.0.0.1")
         sock = MagicMock()
         sock.sendto.side_effect = OSError(_e.EACCES, "denied")  # non-transient

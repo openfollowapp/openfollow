@@ -19,6 +19,10 @@ a quiet socket rebuild never becomes a row, however slowly the sender retries.
 first send on a fresh socket returns success and nothing leaves, so every
 rebuild looks like a recovery. A streak ends only on a success at least
 ``RECOVERY_HOLD_S`` after the first success that followed its last failure.
+
+A streak's first failure is logged at most once a minute per sender, and the
+next such line counts the brief streaks held back. A streak that reaches
+failing is always logged when it does and when it ends.
 """
 
 from __future__ import annotations
@@ -28,7 +32,7 @@ import logging
 import sys
 import threading
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -38,12 +42,14 @@ logger = logging.getLogger(__name__)
 
 FAILING_AFTER_S = 1.0
 RECOVERY_HOLD_S = 1.0
-# How often a failing streak repeats itself in the log.
+# How often a failing streak repeats itself in the log, and the shortest gap
+# between two logged streak starts.
 _REMIND_EVERY_S = 60.0
 
-LOCAL_NETWORK_TEXT = "Network output blocked: macOS Local Network access is off"
-LOCAL_NETWORK_ACTION = "Turn on OpenFollow in System Settings → Privacy & Security → Local Network."
+LOCAL_NETWORK_TEXT = "macOS refuses this station's network sends"
+LOCAL_NETWORK_ACTION = "Turn on OpenFollow under System Settings → Privacy & Security → Local Network."
 SEND_FAILING_ACTION = "Check this station's network settings and firewall."
+OSC_SEND_FAILING_ACTION = "Check the destination's address under OSC Destinations, and this station's firewall."
 
 
 def looks_like_local_network(err: int | None, multicast: bool, platform: str = sys.platform) -> bool:
@@ -110,6 +116,10 @@ class SendHealth:
         self._failing = False
         self._first_ok: float | None = None
         self._last_log = 0.0
+        # Streak starts are logged no earlier than this; the ones held back are counted.
+        self._quiet_until = 0.0
+        self._quiet_starts = 0
+        self._start_logged = False
         self._error = ""
         self._errno: int | None = None
         self._multicast = False
@@ -127,8 +137,10 @@ class SendHealth:
                 return
             lasted = now - self._streak_start
             failed = self._streak_failures
+            # A streak that never failed put nothing on screen.
+            level = logging.INFO if self._failing else logging.DEBUG
             self._clear_streak()
-        logger.info("%s: sending again after %.0f s (%d sends failed).", self.label, lasted, failed)
+        logger.log(level, "%s: sending again after %.0f s (%d sends failed).", self.label, lasted, failed)
 
     def record_failure(self, exc: OSError, dest: str) -> None:
         """Count a send to *dest* that raised *exc*. Logs once per streak, then as a reminder."""
@@ -145,13 +157,26 @@ class SendHealth:
                 self._streak_failures = 1
                 self._last_log = now
                 message = f"{self.label}: send failed: {reason}"
-                level = logging.WARNING
+                self._start_logged = now >= self._quiet_until
+                if self._start_logged:
+                    self._quiet_until = now + _REMIND_EVERY_S
+                    if self._quiet_starts:
+                        plural = "s" if self._quiet_starts != 1 else ""
+                        message += f" ({self._quiet_starts} brief failure{plural} since the last report)"
+                    self._quiet_starts = 0
+                    level = logging.WARNING
+                else:
+                    self._quiet_starts += 1
+                    level = logging.DEBUG
             else:
                 self._streak_failures += 1
                 lasted = now - self._streak_start
                 if not self._failing and lasted >= FAILING_AFTER_S:
                     self._failing = True
                     self._last_log = now
+                    if not self._start_logged:
+                        # Reported here, so the next summary leaves it out.
+                        self._quiet_starts -= 1
                     message = f"{self.label}: sends keep failing: {reason}"
                     if looks_like_local_network(self._errno, self._multicast, self._platform):
                         message += (
@@ -201,20 +226,23 @@ class SendHealth:
         self._first_ok = None
 
 
-def send_alerts(statuses: Iterable[SendHealthStatus]) -> list[SendAlert]:
+def send_alerts(statuses: Iterable[SendHealthStatus], actions: Mapping[str, str] | None = None) -> list[SendAlert]:
     """One row per failing sender, with every sender macOS refuses folded into one.
 
     Local Network access is one switch for the whole app, so a station showing
     its signature anywhere gets a single row naming it in place of one per
-    output, and a unicast sender refused the same way rides along.
+    output, and a unicast sender refused the same way rides along. *actions*
+    gives the senders it names by label their own next step.
     """
+    actions = actions or {}
     failing = [status for status in statuses if status.failing]
     blocked = any(status.local_network for status in failing)
     alerts: list[SendAlert] = []
     for status in failing:
         if blocked and status.errno == errno.EHOSTUNREACH:
             continue
-        alerts.append(SendAlert(f"{status.label}: sends keep failing ({status.error})", SEND_FAILING_ACTION))
+        action = actions.get(status.label, SEND_FAILING_ACTION)
+        alerts.append(SendAlert(f"{status.label}: sends keep failing ({status.error})", action))
     if blocked:
         alerts.insert(0, SendAlert(LOCAL_NETWORK_TEXT, LOCAL_NETWORK_ACTION))
     return alerts

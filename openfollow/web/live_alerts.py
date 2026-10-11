@@ -20,6 +20,14 @@ __all__ = ["StatisticsAlerts", "statistics_alerts"]
 DETECTION_MISSING_STEP = "Install them from the Person Detection section, then restart."
 
 
+def _read_out(text: str, action: str) -> str:
+    """*text* and its next step as two sentences: a row may be written without a closing stop."""
+    if not action:
+        return text
+    stop = "" if text.endswith((".", "!", "?", "…")) else "."
+    return f"{text}{stop} {action}"
+
+
 @dataclass(frozen=True)
 class StatisticsAlerts:
     # The failure sentence (or the element's own wording) and its action.
@@ -33,8 +41,8 @@ class StatisticsAlerts:
 
     def spoken(self) -> list[str]:
         """Every box's text in page order, as the announcer reads it."""
-        out = [" ".join(part for part in self.video if part)] if self.video is not None else []
-        out.extend(" ".join(part for part in row if part) for row in self.network)
+        out = [_read_out(*self.video)] if self.video is not None else []
+        out.extend(_read_out(*row) for row in self.network)
         out.extend(self.controllers)
         if self.detection is not None:
             out.append(f"{self.detection} {DETECTION_MISSING_STEP}")

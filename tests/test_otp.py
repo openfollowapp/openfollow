@@ -1411,9 +1411,11 @@ class TestOtpSendOsErrorPath:
         if srv._socket_thread is not None:
             srv._socket_thread.join(timeout=2.0)
 
-    def test_a_burst_of_send_errors_logs_once(self, caplog) -> None:
+    def test_a_burst_of_send_errors_logs_once(self, caplog, monkeypatch) -> None:
         import logging as _logging
 
+        # However long the burst takes, it never reaches failing.
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", float("inf"))
         srv = OtpServer(system_number=1)
         mock_sock = MagicMock()
         mock_sock.sendto.side_effect = OSError(99999, "non-transient")

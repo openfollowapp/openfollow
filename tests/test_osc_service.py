@@ -16,6 +16,7 @@ The integration block catches any regression in OSC behaviour.
 
 from __future__ import annotations
 
+import errno
 import logging
 import socket
 import threading
@@ -236,9 +237,9 @@ def test_send_message_failure_increments_error_counter(
     stats = patched_service.stats_for("h", 1)
     assert stats.total_errors == 3
     assert "net unreachable" in stats.last_error
-    # First few errors logged at WARNING.
-    warnings = [r for r in caplog.records if "OSC send" in r.message]
-    assert len(warnings) >= 1
+    # The first failure of the streak is logged at WARNING.
+    warnings = [r for r in caplog.records if "OSC to udp://h:1: send failed" in r.message]
+    assert len(warnings) == 1
 
 
 def test_send_error_throttle_quiet_after_burst(
@@ -253,6 +254,98 @@ def test_send_error_throttle_quiet_after_burst(
             patched_service.send("/x", host="h", port=1)
     warnings = [r for r in caplog.records if "OSC send" in r.message]
     assert len(warnings) <= 5
+
+
+class TestSendHealth:
+    """Each target records its own sends, so a stuck one shows while others keep going."""
+
+    @pytest.fixture(autouse=True)
+    def _failing_on_the_second_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import openfollow.send_health as send_health_module
+
+        monkeypatch.setattr(send_health_module, "FAILING_AFTER_S", 0.0)
+
+    def test_a_target_whose_sends_keep_failing_reads_as_failing(self, patched_service: OscService) -> None:
+        patched_service.send("/ok", host="192.0.2.40", port=8000)
+        _FakeClient.instances[0].send_exc = OSError(errno.ENETUNREACH, "Network is unreachable")
+        for _ in range(2):
+            assert patched_service.send("/x", host="192.0.2.40", port=8000) is False
+        health = patched_service.send_health_for("192.0.2.40", 8000)
+        assert health is not None
+        status = health.status()
+        assert (status.state, status.errno, status.sent_total, status.failed_total) == (
+            "failing",
+            errno.ENETUNREACH,
+            1,
+            2,
+        )
+
+    def test_a_healthy_target_does_not_clear_a_stuck_one(self, patched_service: OscService) -> None:
+        patched_service.send("/x", host="192.0.2.40", port=8000)
+        _FakeClient.instances[0].send_exc = OSError(errno.EPERM, "Operation not permitted")
+        for _ in range(3):
+            patched_service.send("/x", host="192.0.2.40", port=8000)
+            patched_service.send("/x", host="192.0.2.41", port=8000)
+        stuck = patched_service.send_health_for("192.0.2.40", 8000)
+        healthy = patched_service.send_health_for("192.0.2.41", 8000)
+        assert stuck is not None and healthy is not None
+        assert stuck.status().state == "failing"
+        assert healthy.status().state == "ok"
+
+    def test_the_log_names_the_target(self, patched_service: OscService, caplog: pytest.LogCaptureFixture) -> None:
+        patched_service.send("/x", host="192.0.2.40", port=8000)
+        _FakeClient.instances[0].send_exc = OSError(errno.ENETUNREACH, "Network is unreachable")
+        with caplog.at_level(logging.WARNING):
+            for _ in range(20):
+                patched_service.send("/x", host="192.0.2.40", port=8000)
+        assert [r.getMessage() for r in caplog.records] == [
+            f"OSC to udp://192.0.2.40:8000: send failed: [Errno {errno.ENETUNREACH}] Network is unreachable",
+            f"OSC to udp://192.0.2.40:8000: sends keep failing: [Errno {errno.ENETUNREACH}] Network is unreachable",
+        ]
+
+    def test_a_message_that_will_not_encode_is_not_a_network_failure(self, patched_service: OscService) -> None:
+        patched_service.send("/x", host="192.0.2.40", port=8000)
+        _FakeClient.instances[0].send_exc = RuntimeError("BuildError: un-encodable arg")
+        patched_service.send("/x", host="192.0.2.40", port=8000)
+        health = patched_service.send_health_for("192.0.2.40", 8000)
+        assert health is not None
+        assert health.status().failed_total == 0
+        assert patched_service.stats_for("192.0.2.40", 8000).total_errors == 1
+
+    def test_a_tcp_send_held_back_by_its_backoff_is_not_another_failure(self, patched_tcp_service: OscService) -> None:
+        """Nothing was attempted, and its wording would hide the refusal that opened the window."""
+        from openfollow.osc.transport import TcpBackoffError
+
+        svc = patched_tcp_service
+        svc.send("/x", host="192.0.2.40", port=3032, protocol="tcp")
+        sender = _FakeTcpSender.instances[0]
+        sender.send_message = _raises(OSError(errno.ECONNREFUSED, "Connection refused"))  # type: ignore[method-assign]
+        svc.send("/x", host="192.0.2.40", port=3032, protocol="tcp")
+        sender.send_message = _raises(TcpBackoffError("TCP 192.0.2.40:3032 in backoff window"))  # type: ignore[method-assign]
+        for _ in range(5):
+            assert svc.send("/x", host="192.0.2.40", port=3032, protocol="tcp") is False
+        health = svc.send_health_for("192.0.2.40", 3032, "tcp")
+        assert health is not None
+        status = health.status()
+        assert (status.failed, status.error) == (1, "Connection refused")
+        assert svc.stats_for("192.0.2.40", 3032, "tcp").total_errors == 6
+
+    def test_an_unknown_target_has_no_record(self, patched_service: OscService) -> None:
+        assert patched_service.send_health_for("192.0.2.40", 8000) is None
+
+    def test_a_dropped_target_starts_a_new_record(self, patched_service: OscService) -> None:
+        patched_service.send("/x", host="192.0.2.40", port=8000)
+        first = patched_service.send_health_for("192.0.2.40", 8000)
+        patched_service.evict("192.0.2.40", 8000)
+        patched_service.send("/x", host="192.0.2.40", port=8000)
+        assert patched_service.send_health_for("192.0.2.40", 8000) is not first
+
+
+def _raises(exc: Exception) -> Any:
+    def _send(_address: str, _args: list[Any]) -> None:
+        raise exc
+
+    return _send
 
 
 # ---------------------------------------------------------------------------

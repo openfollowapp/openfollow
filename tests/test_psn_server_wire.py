@@ -436,6 +436,8 @@ class TestSendThrottleAndRecovery:
         # Non-transient errno so _handle_send_error is a no-op – we
         # want to isolate the logging, not the recovery.
         monkeypatch.setattr(server_module, "_SOCKET_RETRY_DELAY", 0.0)
+        # However long the burst takes, it never reaches failing.
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", float("inf"))
         _FakeMcastSocket.sendto_raises = OSError(errno.EACCES, "operation not permitted")
         srv = PsnServer(mcast_ip="236.10.10.10")
         srv._exit_stack = contextlib.ExitStack()

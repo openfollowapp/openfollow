@@ -15,6 +15,10 @@ When a receiver of OSC Data moves to a new IP, change that one destination and e
   - **Length-prefix (OSC 1.0)** – each packet is preceded by a 32-bit big-endian length.
 - **Source Interface** – read-only here; the interface this destination's messages leave from, set under **General → Network Interface Assignment**. `Follows station default interface` is the default.
 
+## When a destination cannot be reached
+
+A destination whose sends keep failing while its interface is up, refused by a firewall or with no route to its host, gets a red row on the Operator Screen and in Statistics → Device, named after the destination (its address when it has no name). Only destinations an enabled transmitter or trigger zone sends to are shown. The row clears once sends to it have kept going through for a second.
+
 ## Managing destinations
 
 - **+ New destination** – add a blank destination.

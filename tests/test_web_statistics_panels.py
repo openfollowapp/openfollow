@@ -15,7 +15,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from bottle import template
+from bottle import html_escape, template
 
 from openfollow.web import server as _server_module  # noqa: F401 – registers tpl path
 
@@ -466,7 +466,7 @@ class TestThePipelineWordingIsEvidenceNotTheMessage:
 class TestNetworkRows:
     _ROWS = {
         "alerts": [
-            {"text": "Network output blocked: macOS Local Network access is off", "action": "Turn it <on>."},
+            {"text": "macOS refuses this station's network sends", "action": "Turn it <on>."},
             {"text": "PSN: eth0.10 is down", "action": ""},
         ]
     }
@@ -474,7 +474,7 @@ class TestNetworkRows:
     def test_each_row_is_an_error_box_in_the_device_panel(self) -> None:
         device = _panel(_render(network=self._ROWS), "Device")
         assert device.count('class="notice error"') == 2
-        assert "Network output blocked: macOS Local Network access is off" in device
+        assert html_escape("macOS refuses this station's network sends") in device
         assert "PSN: eth0.10 is down" in device
 
     def test_the_next_step_sits_under_its_row_escaped(self) -> None:

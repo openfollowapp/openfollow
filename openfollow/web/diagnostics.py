@@ -573,7 +573,7 @@ def _runtime_senders(network: dict[str, Any]) -> list[str]:
         rows.append("    (none running)")
     for sender in senders:
         state = str(sender.get("state") or "?")
-        line = f"    {str(sender.get('label') or '?'):<14}{state:<9}"
+        line = f"    {str(sender.get('label') or '?'):<13} {state:<9}"
         line += f" {sender.get('sent_total', 0)} sent, {sender.get('failed_total', 0)} failed"
         rows.append(line)
         if state != "ok":

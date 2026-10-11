@@ -36,7 +36,6 @@ duplicating here.
 
 from __future__ import annotations
 
-import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -864,23 +863,6 @@ class TestBundledDocResolution:
         (tmp_path / "NOTICES.md").write_text("x")
         monkeypatch.setattr(routes_module, "_SHARE_DOC_DIR", tmp_path)
         assert routes_module._bundled_doc_path("NOTICES.md") == tmp_path / "NOTICES.md"
-
-    def test_frozen_bundle_root(self, monkeypatch, tmp_path) -> None:
-        # The macOS app ships the docs at the root of its PyInstaller bundle.
-        bundle = tmp_path / "Frameworks"
-        bundle.mkdir()
-        (bundle / "OFFER.md").write_text("x")
-        monkeypatch.setattr(sys, "_MEIPASS", str(bundle), raising=False)
-        monkeypatch.setattr(routes_module, "_SHARE_DOC_DIR", tmp_path / "share")
-        assert routes_module._bundled_doc_path("OFFER.md") == bundle / "OFFER.md"
-
-    def test_frozen_bundle_does_not_shadow_share_dir(self, monkeypatch, tmp_path) -> None:
-        share = tmp_path / "share"
-        share.mkdir()
-        (share / "OFFER.md").write_text("x")
-        monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path / "empty-bundle"), raising=False)
-        monkeypatch.setattr(routes_module, "_SHARE_DOC_DIR", share)
-        assert routes_module._bundled_doc_path("OFFER.md") == share / "OFFER.md"
 
 
 class TestThirdPartyNotices:

@@ -1868,7 +1868,7 @@ def _coerce_unit_input(
 
 
 # Bool checkboxes the mouse form submits; an unticked one is absent from the POST.
-_MOUSE_BOOL_FIELDS = ("mouse_enabled", "mouse_double_click_reset", "mouse_wheel_z_enabled", "mouse_wheel_invert")
+_MOUSE_BOOL_FIELDS = ("mouse_enabled", "mouse_double_click_reset", "mouse_wheel_z_enabled")
 
 
 def _normalize_unit_fields(
@@ -6396,16 +6396,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     @app.post("/section/movement")
     def update_movement() -> Any:
-        """Update movement speed settings.
-
-        Only this route lists ``invert_control_direction`` in ``bool_fields``:
-        it renders the checkbox, and an unchecked box isn't posted. The
-        ``marker`` section shares ``MarkerConfig`` but must leave it alone.
-        """
-        cfg = _save_section_from_form(
-            "movement",
-            bool_fields=("invert_control_direction",),
-        )
+        """Update movement speed settings."""
+        cfg = _save_section_from_form("movement")
         return template("partials/movement", config=cfg, saved=True)
 
     @app.post("/section/marker")
@@ -6421,7 +6413,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 "z_line",
                 "ground_circle",
                 "ground_circle_filled",
-                "z_display_from_stage",
             ),
         )
         return template("partials/marker", config=cfg, saved=True)
@@ -6431,7 +6422,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """Update gamepad (controller) settings."""
         cfg = _save_section_from_form(
             "gamepad",
-            bool_fields=("enabled", "invert_y", "swap_triggers"),
+            bool_fields=("enabled", "swap_triggers"),
         )
         response.set_header("HX-Trigger", "controllerBindingsSaved")
         return template(
@@ -6460,8 +6451,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     @app.post("/section/mouse3d")
     def update_mouse3d() -> Any:
         """Update 3D Mouse settings."""
-        bool_fields = ("enabled", *(f"invert_{axis}" for axis in MOUSE3D_AXES))
-        cfg = _save_section_from_form("mouse3d", bool_fields=bool_fields)
+        cfg = _save_section_from_form("mouse3d", bool_fields=("enabled",))
         return template("partials/mouse3d", config=cfg, saved=True, mouse3d_status=_mouse3d_status_view(server))
 
     @app.get("/section/mouse3d/status")
@@ -6525,7 +6515,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     @app.post("/section/operator_messages")
     def update_operator_messages() -> Any:
         """Update the OSC operator-message overlay settings."""
-        cfg = _save_section_from_form("operator_messages", bool_fields=("enabled", "route_by_marker"))
+        cfg = _save_section_from_form("operator_messages", bool_fields=("enabled",))
         return template("partials/operator_messages", config=cfg, saved=True)
 
     # ------------------------------------------------------------------

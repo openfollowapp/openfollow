@@ -1,6 +1,6 @@
 # 3D Mouse Input
 
-Steer the selected marker with a 6DOF "3D Mouse" – a spring-centred puck you push, pull, lift and twist. Off by default; turn it on with the **Enabled** checkbox.
+Steer the selected marker with a 6DOF "3D Mouse" – a spring-centred puck you push, pull, lift and twist. Off by default; turn it on with **Steer markers with a 3D Mouse**.
 
 **A controller in its own right.** A 3D Mouse counts alongside gamepads in one shared numbering, ordered by the USB socket each is plugged into (see Controller Slots), so its bound marker carries a controller badge (`C1`, `C2`, …) on the Operator Screen. A 3Dconnexion puck is never treated as a gamepad, even where the operating system offers it as a game controller: it only drives a marker through this section.
 
@@ -50,9 +50,9 @@ The defaults are in the table above (push drives x / y / z with the up/down moti
 
 **Deadzone** (0–1) – a per-axis dead band near centre: deflection below it is ignored so the marker doesn't creep when your hand rests on the puck. Set it per axis – e.g. a larger deadzone on a twitchy rotation axis than on the translations. Raise an axis's deadzone if the marker drifts at rest on it.
 
-**Invert** – flips that axis's direction.
+**Direction** – **Normal** or **Inverted** for that axis.
 
-> For a camera looking from **upstage**, use **Invert control direction** under Markers & Zones → Marker Movement rather than inverting axes here. It reverses left/right and forward/back together for the 3D Mouse, keyboard and gamepad at once, so every device on the station agrees on which way is stage left. Per-axis **Invert** here is for the puck's own feel, and stacks on top of it.
+> For a camera looking from **upstage**, set **Control direction** under Markers & Zones → Marker Movement to **Camera looks downstage** rather than inverting axes here. It reverses left/right and forward/back together for the 3D Mouse, keyboard and gamepad at once, so every device on the station agrees on which way is stage left. Per-axis **Direction** here is for the puck's own feel, and stacks on top of it.
 
 ## Response curve
 

@@ -771,6 +771,7 @@
  input[type="color"] { height: 39px; padding: 2px; cursor: pointer; }
  .checkbox-field { justify-content: flex-start; min-width: 180px; }
  .checkbox-wrap { height: 39px; display: flex; align-items: center; }
+ .checkbox-wrap.inline { height: auto; min-height: 39px; }
  input[type="checkbox"] {
  width: 18px;
  height: 18px;

@@ -31,7 +31,7 @@ import tomllib
 import openfollow
 import openfollow.services as services_module
 import openfollow.web.discovery as discovery_module
-from openfollow.configuration import AppConfig, load_config, save_config
+from openfollow.configuration import MOUSE3D_AXIS_FORM_LABELS, AppConfig, load_config, save_config
 from openfollow.marker_catalog import MarkerCatalog
 from openfollow.palette import AUTO_PICK_ORDER
 from openfollow.runtime.overlay_links import SUPPORT
@@ -2165,6 +2165,65 @@ def test_form_post_mouse_saves_the_wheel_settings_on_every_platform(live_server,
     saved = load_config(server.config_path)
     assert saved.controller.mouse_wheel_z_enabled is False
     assert saved.controller.mouse_wheel_z_step == pytest.approx(0.4)
+
+
+_TRUE_FALSE_DROPDOWNS = [
+    pytest.param("/section/marker", "z_display_from_stage", lambda c: c.marker.z_display_from_stage, id="z-readout"),
+    pytest.param(
+        "/section/mouse", "mouse_wheel_invert", lambda c: c.controller.mouse_wheel_invert, id="wheel-direction"
+    ),
+    pytest.param(
+        "/section/movement",
+        "invert_control_direction",
+        lambda c: c.marker.invert_control_direction,
+        id="control-direction",
+    ),
+    pytest.param("/section/gamepad", "invert_y", lambda c: c.controller.invert_y, id="stick-y-axis"),
+    pytest.param("/section/mouse3d", "invert_pan_x", lambda c: c.mouse3d.invert_pan_x, id="3d-mouse-direction"),
+    pytest.param(
+        "/section/operator_messages",
+        "route_by_marker",
+        lambda c: c.operator_messages.route_by_marker,
+        id="message-routing",
+    ),
+]
+
+
+def _selected_options(body: str, name: str) -> list[str]:
+    select = body.split(f'name="{name}"', 1)[1].split("</select>", 1)[0]
+    return re.findall(r'<option value="([^"]*)" selected>', select)
+
+
+@pytest.mark.parametrize(("path", "field", "read"), _TRUE_FALSE_DROPDOWNS)
+@pytest.mark.parametrize("value", [True, False])
+def test_a_true_false_dropdown_saves_and_shows_the_chosen_option(live_server, path, field, read, value) -> None:
+    # A dropdown always posts its value, so "false" has to save False.
+    server, base = live_server
+    status, body = _post_form(base, path, {field: str(value).lower()})
+    assert status == 200
+    assert read(load_config(server.config_path)) is value
+    assert _selected_options(body, field) == [str(value).lower()]
+
+
+@pytest.mark.parametrize(("path", "field", "read"), _TRUE_FALSE_DROPDOWNS)
+@pytest.mark.parametrize("value", [True, False])
+def test_a_post_without_the_dropdown_keeps_its_value(live_server, path, field, read, value) -> None:
+    server, base = live_server
+    _post_form(base, path, {field: str(value).lower()})
+    status, _ = _post_form(base, path, {})
+    assert status == 200
+    assert read(load_config(server.config_path)) is value
+
+
+def test_each_3d_mouse_axis_direction_is_named_after_its_axis(live_server) -> None:
+    # Six selects share the visible label "Direction"; the axis tells them apart.
+    _, base = live_server
+    status, body = _get(base, "/section/mouse3d")
+    assert status == 200
+    for axis, label in MOUSE3D_AXIS_FORM_LABELS:
+        ids = re.search(rf'<select id="m3d-invert-{axis}"[^>]*aria-labelledby="([^"]+)"', body).group(1).split()
+        names = [html.unescape(re.search(rf'id="{i}">([^<]*)<', body).group(1)) for i in ids]
+        assert names == [label, "Direction"]
 
 
 def test_form_post_mouse_renders_saved_partial(live_server) -> None:
@@ -6757,8 +6816,8 @@ def test_update_marker_post_persists_visual_booleans(live_server) -> None:
         {
             "ball_visible": "on",
             "crosshair_visible": "on",
-            # z_line + ground_circle + ground_circle_filled +
-            # z_display_from_stage all omitted -> coerced to False.
+            # z_line + ground_circle + ground_circle_filled all omitted
+            # -> coerced to False.
         },
     )
     assert status == 200
@@ -6805,29 +6864,6 @@ def test_marker_save_preserves_invert_control_direction(live_server) -> None:
     status, _ = _post_form(base, "/section/marker", {"ball_visible": "on"})
     assert status == 200
     assert load_config(server.config_path).marker.invert_control_direction is True
-
-
-def test_movement_save_can_turn_invert_control_direction_on_and_off(live_server) -> None:
-    """An unchecked checkbox isn't posted at all, so the owning section has to
-    declare it as a bool field – otherwise it could be switched on but never
-    off, stranding the operator with reversed controls."""
-    server, base = live_server
-
-    status, _ = _post_form(
-        base,
-        "/section/movement",
-        {"min_speed": "0.2", "move_speed": "1.5", "max_speed": "4.0", "invert_control_direction": "on"},
-    )
-    assert status == 200
-    assert load_config(server.config_path).marker.invert_control_direction is True
-
-    status, _ = _post_form(
-        base,
-        "/section/movement",
-        {"min_speed": "0.2", "move_speed": "1.5", "max_speed": "4.0"},
-    )
-    assert status == 200
-    assert load_config(server.config_path).marker.invert_control_direction is False
 
 
 def test_api_video_snapshot_returns_jpeg_when_provider_yields_bytes(

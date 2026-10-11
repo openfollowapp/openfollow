@@ -27,7 +27,7 @@ Click a strip to open its settings in the detail panel below.
 - **Display name** – label shown on the Operator Screen (when enabled) and in trigger forms referencing this fader. Up to 32 characters; defaults to `Fader 1`, `Fader 2`, etc.
 - **Default value** – the fader's value at startup (0.00 to 1.00).
 - **Colour** – swatch that tints the fader strip in the web interface.
-- **Show on Operator Screen** – when checked, this fader appears on the Operator Screen.
+- **Operator Screen** – when checked, this fader appears on the Operator Screen.
 
 ### Source
 

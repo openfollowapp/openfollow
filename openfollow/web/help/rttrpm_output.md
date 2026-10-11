@@ -6,7 +6,7 @@ Sends tracked marker positions over Real Time Tracking Protocol – Motion (RTTr
 
 ## RTTrPM Network
 
-- **Enabled** – master toggle. Turn on to start sending RTTrPM packets.
+- **RTTrPM output** – master toggle. Turn on to start sending RTTrPM packets.
 - **Destination Host** – IP address of the RTTrPM receiver (e.g. `192.168.1.50`); a hostname is also accepted. Default: `127.0.0.1`.
 - **UDP Port** – destination UDP port, 1–65535. Default: `36700`.
 - **Send Rate (FPS)** – position packets sent per second, 1–240. Default: `60`. Match it to your receiver's expected update rate; higher rates give smoother motion but increase network load.

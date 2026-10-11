@@ -31,9 +31,11 @@ class _FakeKeyboardHandler:
         self._key_presses = list(key_presses or [])
         self.polled = 0
         self.consumed = 0
+        self.owned: list[bool] = []
 
-    def poll_discrete_keys(self) -> None:
+    def poll_discrete_keys(self, *, owned: bool = True) -> None:
         self.polled += 1
+        self.owned.append(owned)
 
     def consume_key_presses(self) -> list[str]:
         self.consumed += 1
@@ -231,6 +233,18 @@ class TestAnimate:
         assert mgr.keyboard_handler.polled == 1
         assert mgr.keyboard_handler.consumed == 1
         assert app._calls.count("handle_key_press") == 2
+
+    @pytest.mark.parametrize(
+        ("focused", "url_editor", "owned"),
+        [(True, False, True), (False, False, False), (True, True, False)],
+    )
+    def test_poll_learns_who_owns_the_keyboard(self, focused: bool, url_editor: bool, owned: bool) -> None:
+        mgr = _FakeInputManager()
+        app = _make_fake_app(input_manager=mgr)
+        app._canvas.has_keyboard_focus = focused
+        app._url_editor_active = url_editor
+        orch.animate(app)
+        assert mgr.keyboard_handler.owned == [owned]
 
     def test_runs_display_bound_checks(self) -> None:
         app = _make_fake_app()

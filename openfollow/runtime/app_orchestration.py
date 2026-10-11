@@ -17,6 +17,7 @@ from openfollow.configuration import (
     save_config,
 )
 from openfollow.psn.marker import MARKER_STALE_AFTER_S
+from openfollow.runtime.app_modes import keyboard_owned
 
 if TYPE_CHECKING:
     from openfollow.app import OpenFollowApp
@@ -166,7 +167,7 @@ def animate(app: OpenFollowApp) -> None:
     app._last_animate_time = frame_start
 
     if app._input_manager is not None:
-        app._input_manager.keyboard_handler.poll_discrete_keys()
+        app._input_manager.keyboard_handler.poll_discrete_keys(owned=keyboard_owned(app))
         key_presses = app._input_manager.keyboard_handler.consume_key_presses()
     else:
         key_presses = []

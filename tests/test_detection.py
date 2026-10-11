@@ -778,7 +778,7 @@ def test_drain_swaps_hot_path_fields_without_rebuild() -> None:
 
     rebuild_calls: list[str | None] = []
 
-    def _spy_load(base_model_path: str | None = None) -> None:
+    def _spy_load(base_model_path: str | None = None, _cache_root: Path | None = None) -> None:
         rebuild_calls.append(base_model_path)
 
     detector._load_backend = _spy_load  # type: ignore[method-assign]
@@ -834,7 +834,7 @@ def test_drain_rebuilds_backend_when_model_changes() -> None:
     rebuild_calls: list[str | None] = []
     new_backend = object()
 
-    def _spy_load(base_model_path: str | None = None) -> None:
+    def _spy_load(base_model_path: str | None = None, _cache_root: Path | None = None) -> None:
         rebuild_calls.append(base_model_path)
         # Mirror the real ``_load_backend`` contract: assign
         # ``self._backend`` on a successful load. The drain checks
@@ -864,7 +864,7 @@ def test_drain_keeps_prior_config_when_backend_rebuild_raises(
     detector._backend_name = "onnx-old"
     detector._model_path = "/old/path/yolov8n.onnx"
 
-    def _raising_load(_base_model_path: str | None = None) -> None:
+    def _raising_load(_base_model_path: str | None = None, _cache_root: Path | None = None) -> None:
         raise OSError("simulated session load failure")
 
     detector._load_backend = _raising_load  # type: ignore[method-assign]
@@ -900,7 +900,7 @@ def test_drain_keeps_prior_config_when_load_backend_silently_loads_nothing(
     detector._backend_name = "onnx-old"
     detector._model_path = "/old/path/yolov8n.onnx"
 
-    def _silent_no_load(_base_model_path: str | None = None) -> None:
+    def _silent_no_load(_base_model_path: str | None = None, _cache_root: Path | None = None) -> None:
         # Mirrors real ``_load_backend`` when every attempt's import /
         # session-load fails: log + return without raising and without
         # assigning ``self._backend``.
@@ -976,7 +976,7 @@ def test_drain_restores_env_vars_when_backend_rebuild_raises(
     sentinel_backend = object()
     detector._backend = sentinel_backend  # type: ignore[assignment]
 
-    def _raising_load(_base_model_path: str | None = None) -> None:
+    def _raising_load(_base_model_path: str | None = None, _cache_root: Path | None = None) -> None:
         raise OSError("simulated session load failure")
 
     detector._load_backend = _raising_load  # type: ignore[method-assign]
@@ -1007,7 +1007,7 @@ def test_drain_restores_env_vars_when_load_backend_silently_loads_nothing(
     sentinel_backend = object()
     detector._backend = sentinel_backend  # type: ignore[assignment]
 
-    def _silent_no_load(_base_model_path: str | None = None) -> None:
+    def _silent_no_load(_base_model_path: str | None = None, _cache_root: Path | None = None) -> None:
         return None
 
     detector._load_backend = _silent_no_load  # type: ignore[method-assign]
@@ -1038,7 +1038,7 @@ def test_drain_restores_env_vars_when_pre_existing_values_present(
     sentinel_backend = object()
     detector._backend = sentinel_backend  # type: ignore[assignment]
 
-    def _raising_load(_base_model_path: str | None = None) -> None:
+    def _raising_load(_base_model_path: str | None = None, _cache_root: Path | None = None) -> None:
         raise OSError("simulated")
 
     detector._load_backend = _raising_load  # type: ignore[method-assign]
@@ -1086,7 +1086,7 @@ def test_drain_restores_env_baseline_on_storage_path_cleared(
     # a real ONNX session.
     new_backend = object()
 
-    def _spy_load(_base_model_path: str | None = None) -> None:
+    def _spy_load(_base_model_path: str | None = None, _cache_root: Path | None = None) -> None:
         detector._backend = new_backend  # type: ignore[assignment]
 
     detector._load_backend = _spy_load  # type: ignore[method-assign]

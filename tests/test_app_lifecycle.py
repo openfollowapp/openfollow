@@ -174,6 +174,24 @@ class TestConstruction:
         assert isinstance(app._runtime_services, _FakeRuntimeServices)
         assert app._runtime_services.app is app
 
+    def test_device_local_stores_sit_beside_the_config_file(
+        self,
+        patched_ctor,  # noqa: ANN001
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import os
+        from pathlib import Path
+
+        from openfollow.video.detection import resolve_detection_storage_path
+        from openfollow.video.media_store import resolve_media_storage_path
+
+        monkeypatch.setattr(os.path, "ismount", lambda _p: False)
+        monkeypatch.chdir("/")
+        OpenFollowApp(config_path=patched_ctor.cfg_path)
+        config_dir = Path(patched_ctor.cfg_path).parent
+        assert resolve_media_storage_path() == config_dir / "media"
+        assert resolve_detection_storage_path("") == str(config_dir / "yolo")
+
     def test_config_mtime_captured_from_existing_file(
         self,
         patched_ctor,  # noqa: ANN001

@@ -720,13 +720,8 @@ def handle_key_press(app: OpenFollowApp, key: str) -> None:
         elif key == "ArrowDown":
             app._video_receiver.select_source_down()
         elif key == "Enter":
-            # pragma: no branch – the Enter→confirm fallback only trips when
-            # confirm returns False AND a stale source name remains, a state
-            # the source-selection handler clears before exposing Enter.
-            if not app._video_receiver.confirm_source_selection():  # pragma: no branch
-                source_label = app._video_receiver.source_name
-                if source_label:  # pragma: no branch
-                    app._video_receiver.set_source(source_label)
+            # With nothing listed yet there is nothing to confirm, as on the gamepad.
+            app._video_receiver.confirm_source_selection()
         # pragma: no branch – source-selection Escape arm completes the elif chain.
         elif key == "Escape":  # pragma: no branch
             app._video_receiver.exit_source_selection()

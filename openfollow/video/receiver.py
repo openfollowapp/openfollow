@@ -132,7 +132,7 @@ class GstNativeSinkReceiver:
         self._selected_source_index: int = 0
         self._discovery_thread: threading.Thread | None = None
         self._discovery_lock = threading.Lock()
-        # Why the last build was refused under the interface pin, if it was.
+        # Why the input's preflight refused the last build, if it did.
         self._pin_refusal: PinRefusal | None = None
         # How a refusal names the pinned interface: "Lighting (eth1)" when labelled.
         self._iface_name: Callable[[str], str] = iface_name or str
@@ -600,8 +600,8 @@ class GstNativeSinkReceiver:
             logger.exception("%s interface check failed", self._input.display_name)
             refusal = PinRefusal(VideoFailure.UNKNOWN, f"the interface pin could not be checked: {e}")
         if refusal is not None:
-            # Nothing is built, so nothing leaves on another interface; the
-            # caller schedules the retry.
+            # Nothing is built, so nothing leaves on another interface and no
+            # other device is opened; the caller schedules the retry.
             logger.warning("%s not started: %s", self._input.display_name, self._refusal_text(refusal))
             self._pin_refusal = refusal
             self._status_marker.set_disconnected(
@@ -930,7 +930,8 @@ class GstNativeSinkReceiver:
             cfg = load_config(self._config_path)
             if self._input.config_fields():
                 primary_field = self._input.config_fields()[0].name
-                setattr(cfg, primary_field, source_name)
+                # The web save's path, so an input stores what goes with the source too.
+                self._input.apply_config_fields(cfg, {primary_field: source_name})
             save_config(cfg, self._config_path)
             logger.info(
                 "Saved %s source '%s' to %s",

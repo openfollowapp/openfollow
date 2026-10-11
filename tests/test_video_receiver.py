@@ -57,6 +57,7 @@ from openfollow.video.inputs._base import (
     InputCapabilities,
     ReconnectPolicy,
     SourceEndpoint,
+    VideoInputBase,
 )
 from openfollow.video.inputs._pin import PinRefusal
 
@@ -356,6 +357,9 @@ class FakeInput:
     @classmethod
     def source_labels(cls, sources: list[str]) -> list[str]:
         return list(sources)
+
+    # The base's field-apply, as a real input inherits it.
+    apply_config_fields = VideoInputBase.__dict__["apply_config_fields"]
 
     @classmethod
     def web_ui_html(cls, config: dict[str, Any]) -> str:  # pragma: no cover
@@ -1413,6 +1417,26 @@ class TestSaveSourceToConfig:
         assert saved[0][0].fake_source == "cam-42"
         assert saved[0][1] == cfg_path
 
+    def test_a_usb_camera_picked_on_screen_is_stored_with_its_name(
+        self, fake_gst, fake_glib, monkeypatch, tmp_path
+    ) -> None:
+        """The picker saves through the input's own field-apply, as the web form does."""
+        from openfollow.configuration import AppConfig, load_config, save_config
+        from openfollow.video.inputs import avf
+
+        monkeypatch.setattr(avf, "_camera_names", {"47B4B64B": "FaceTime HD Camera"})
+        monkeypatch.setattr(receiver_mod, "get_input_class", lambda _input_id: avf.AvfInput)
+        path = str(tmp_path / "config.toml")
+        save_config(
+            AppConfig(video_source_type="avf", avf_unique_id="0x14100000", avf_device_name="Capture Card"), path
+        )
+        r = receiver_mod.GstNativeSinkReceiver(source_type="avf", input_config={}, config_path=path)
+
+        r._save_source_to_config("47B4B64B")
+
+        cfg = load_config(path)
+        assert (cfg.avf_unique_id, cfg.avf_device_name) == ("47B4B64B", "FaceTime HD Camera")
+
     def test_save_source_swallows_errors(self, fake_gst, fake_glib, fake_input_cls, monkeypatch) -> None:
         """A failing save must not crash the GLib main-thread handler."""
         import openfollow.configuration as configuration_mod
@@ -2242,6 +2266,24 @@ class TestThePickerNamesWhatItLists:
         picker.swap_input("fake_alt", {"alt_url": "test://x"})
 
         assert picker.discovered_source_labels == []
+
+    def test_enter_while_the_picker_still_scans_never_stores_the_label(self, picker, monkeypatch) -> None:
+        """The label names the camera; storing it as the ID made a connected camera read as not found."""
+        from openfollow.configuration import AppConfig
+        from openfollow.runtime import app_modes
+
+        monkeypatch.setattr(
+            FakeInput, "get_source_label", classmethod(lambda _cls, _cfg: "FaceTime HD Camera (1920x1080@30)")
+        )
+        picker._input_config["fake_source"] = "47B4B64B"
+        app = SimpleNamespace(
+            _config=AppConfig(), _button_detection=None, _settings_menu_active=False, _video_receiver=picker
+        )
+
+        app_modes.handle_key_press(app, "Enter")
+
+        assert picker._input_config["fake_source"] == "47B4B64B"
+        assert picker.source_selection_active is True
 
     def test_a_source_chosen_elsewhere_closes_the_picker(self, picker) -> None:
         """The web UI choosing a camera must not leave a stale picker over the Operator Screen."""
@@ -5399,24 +5441,30 @@ class TestARememberedDeviceThatIsAbsent:
         assert absent.status_marker.failure is VideoFailure.STREAM_NOT_FOUND
         assert FakeInput.create_pipeline_call_count == 0
 
-    def test_a_usb_camera_that_is_missing_is_reported_not_replaced(self, fake_gst, fake_glib, monkeypatch) -> None:
-        """The capture card is named as not found; the laptop camera is never opened in its place."""
-        from openfollow.video.failure import SourceKind, failure_sentence
+    def _usb_camera(self, monkeypatch, listing) -> tuple[receiver_mod.GstNativeSinkReceiver, list[Any]]:  # noqa: ANN001
+        """The real macOS USB camera input, built from a config that remembers a capture card."""
+        from openfollow.configuration import AppConfig
         from openfollow.video.inputs import avf
 
         monkeypatch.setattr(avf.AvfInput, "is_available", classmethod(lambda _cls: (True, "")))
-        monkeypatch.setattr(
-            avf,
-            "_discover_avf_devices",
-            lambda: [{"unique_id": "47B4B64B", "name": "FaceTime HD Camera", "index": "0"}],
-        )
+        monkeypatch.setattr(avf, "_list_avf_devices", listing)
         monkeypatch.setattr(avf, "_camera_names", {})
         monkeypatch.setattr(receiver_mod, "get_input_class", lambda _input_id: avf.AvfInput)
         built: list[Any] = []
         monkeypatch.setattr(avf.AvfInput, "create_pipeline", lambda *args, **kwargs: built.append(args))
-        r = receiver_mod.GstNativeSinkReceiver(
-            source_type="avf",
-            input_config={"avf_unique_id": "0x14100000", "avf_width": 1920, "avf_height": 1080, "avf_framerate": 30},
+        cfg = AppConfig(video_source_type="avf", avf_unique_id="0x14100000", avf_device_name="Capture Card")
+        r = receiver_mod.GstNativeSinkReceiver(source_type="avf", input_config=avf.AvfInput.runtime_config(cfg))
+        return r, built
+
+    def test_a_usb_camera_missing_since_startup_is_reported_by_name_not_replaced(
+        self, fake_gst, fake_glib, monkeypatch
+    ) -> None:
+        """The capture card is named as not found; the laptop camera is never opened in its place."""
+        from openfollow.runtime.overlay_layout import format_source_text
+        from openfollow.video.failure import SourceKind, failure_sentence
+
+        r, built = self._usb_camera(
+            monkeypatch, lambda: [{"unique_id": "47B4B64B", "name": "FaceTime HD Camera", "index": "0"}]
         )
 
         r.create_pipeline()
@@ -5426,5 +5474,25 @@ class TestARememberedDeviceThatIsAbsent:
         status = r.status_marker.snapshot()
         assert status.failure is VideoFailure.STREAM_NOT_FOUND
         assert failure_sentence(status.failure, where=status.source_name, kind=SourceKind.LOCAL) == (
-            "0x14100000 (1920x1080@30) was not found."
+            "Capture Card (1920x1080@30) was not found."
         )
+        assert format_source_text("avf", r.source_name) == "AVF: Capture Card (1920x1080@30)"
+
+    def test_a_camera_list_that_cannot_be_read_is_not_reported_as_a_missing_camera(
+        self, fake_gst, fake_glib, monkeypatch, caplog
+    ) -> None:
+        def _broken() -> list[dict[str, str]]:
+            raise RuntimeError("the device monitor did not start")
+
+        r, built = self._usb_camera(monkeypatch, _broken)
+
+        with caplog.at_level(logging.WARNING):
+            r.create_pipeline()
+            r.start()
+
+        assert built == []
+        status = r.status_marker.snapshot()
+        assert status.failure is VideoFailure.UNKNOWN
+        assert status.error_message == "the camera list could not be read: the device monitor did not start"
+        assert "the camera list could not be read" in caplog.text
+        assert [cb.__name__ for _delay, cb in fake_glib.timers.values()] == ["_do_reconnect"]

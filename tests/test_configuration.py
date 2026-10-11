@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from types import SimpleNamespace
 
 try:
@@ -350,6 +351,50 @@ def test_stream_credentials_coerce_non_string_to_blank(field: str, bad: object) 
 
 def test_rtsp_user_is_stripped_on_load() -> None:
     assert AppConfig(rtsp_user="  operator  ").rtsp_user == "operator"
+
+
+@pytest.mark.parametrize("bad", [5, True, None, ["Capture Card"], {"a": 1}, 3.5])
+def test_avf_device_name_coerces_non_string_to_blank(bad: object) -> None:
+    """The name is rendered on the HUD and in the web UI; a hand-edited
+    non-string would reach the label as ``5`` or ``['Capture Card']``."""
+    assert AppConfig(avf_device_name=bad).avf_device_name == ""  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("Capture Card", "Capture Card"),
+        ("  Capture Card \n", "Capture Card"),
+        ("Capture\x00\x07 Card", "Capture Card"),
+        ("Capture ‮Card⁦", "Capture Card"),
+        ("‎", ""),
+    ],
+    ids=["plain", "whitespace", "control", "bidi", "only-direction-marks"],
+)
+def test_avf_device_name_is_cleaned_on_load(raw: str, expected: str) -> None:
+    assert AppConfig(avf_device_name=raw).avf_device_name == expected
+
+
+def test_avf_device_name_is_capped() -> None:
+    from openfollow.configuration import AVF_DEVICE_NAME_MAX_LEN
+
+    assert AppConfig(avf_device_name="C" * 1000).avf_device_name == "C" * AVF_DEVICE_NAME_MAX_LEN
+
+
+def test_avf_device_name_survives_a_toml_round_trip(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    save_config(AppConfig(avf_unique_id="0x14100000", avf_device_name="Capture Card"), str(path))
+
+    cfg = load_config(str(path))
+
+    assert (cfg.avf_unique_id, cfg.avf_device_name) == ("0x14100000", "Capture Card")
+
+
+def test_a_hand_edited_avf_device_name_is_cleaned_on_load(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text('avf_unique_id = "0x14100000"\navf_device_name = 42\n')
+
+    assert load_config(str(path)).avf_device_name == ""
 
 
 @pytest.mark.parametrize("field", ["rtsp_password", "srt_passphrase"])

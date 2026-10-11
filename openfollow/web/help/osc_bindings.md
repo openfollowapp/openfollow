@@ -27,11 +27,11 @@ When the transmitter sends. Pick one **Trigger type** from the dropdown; the fie
   - *Send always* – fire every tick regardless of movement.
   - *Send only on change* – fire only when the Default marker has moved at least **Min change (m)** along any axis since the last send. The gate always watches the Default marker, even if the body references other markers via `[x:N]`. When several Default markers are named, each marker's send is gated by that marker's own movement. Transmitters with no Default marker fire every tick.
 
-- **Hotkey** – fires on a keyboard combination. Set the **Key**, any **Modifiers** (Ctrl, Shift, Alt, Cmd), and the **Edge** (Press or Release). Movement keys are reserved and cannot be assigned.
+- **Hotkey** – fires on a keyboard combination. Set the **Key**, any **Modifiers** (Ctrl, Shift, Alt, Cmd), and the **Edge** (Press or Release). Movement keys are reserved and cannot be assigned. A hotkey fires only on keys the Operator Screen receives: not while one of its text fields (a stream URL or a network address) is being edited, and on a Mac not from keys typed into another window, such as Spotlight.
 
 - **Controller button** – fires on a gamepad button edge. Set the **Button** (A, B, X, Y, bumpers, D-Pad, Start, Back, etc.) and the **Edge** (Press or Release). Multiple transmitters can share a button and fire independently.
 
-A key or button that a keyboard or gamepad action also uses gets an amber outline and names that action: one press does both, whatever modifiers are held. That can be deliberate, so it never holds **Save**. Menu buttons are left out, since triggers don't fire while a menu is open, and so is a device switched off under Input.
+A key or button that a keyboard or gamepad action also uses gets an amber outline and names that action: one press does both, whatever modifiers are held, except on a Mac, where a press with Command held, or Control or Option when no keyboard action uses them, fires only the trigger. That can be deliberate, so it never holds **Save**. Menu buttons are left out, since triggers don't fire while a menu is open, and so is a device switched off under Input.
 
 - **MIDI message** – fires when an incoming MIDI event matches the pattern. All match fields default to "any" – leave one blank to match anything.
   - **Type** – Note On, Note Off, Control Change, Program Change, Key Pressure, or Channel Pressure.

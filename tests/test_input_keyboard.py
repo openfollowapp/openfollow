@@ -369,3 +369,452 @@ def test_poll_discrete_prunes_edge_state_for_unpolled_keys(monkeypatch) -> None:
     handler.poll_discrete_keys()
 
     assert "unbound_key" not in handler._prev_key_state
+
+
+# ---------------------------------------------------------------------------
+# macOS: the poll reads the whole system's keyboard, so it acts only on presses
+# that started while the Operator Screen owned it. ``_FakePoller`` stands in
+# for Quartz; ``FallbackKeyboardPoller`` is the Linux path, which GTK feeds
+# with this window's own key events only.
+# ---------------------------------------------------------------------------
+
+
+def _handler_with_bus(monkeypatch, poller=None):
+    poller = poller if poller is not None else _FakePoller()
+    monkeypatch.setattr(keyboard_module, "create_keyboard_poller", lambda: poller)
+    bus = InputEventBus()
+    seen: list[KeyEvent] = []
+    bus.subscribe_key(seen.append)
+    return KeyboardHandler(_DummyApp(), event_bus=bus), poller, seen
+
+
+def test_keys_typed_while_another_window_owns_the_keyboard_act_nowhere(monkeypatch) -> None:
+    """Typing into Spotlight over the Operator Screen: the poll still reads the
+    keys, but no action, bus event, held key or movement comes of them."""
+    handler, poller, seen = _handler_with_bus(monkeypatch)
+
+    poller.pressed = {"x", "h", "w"}
+    handler.poll_discrete_keys(owned=False)
+
+    assert handler.consume_key_presses() == []
+    assert seen == []
+    assert handler.keys == set()
+    assert handler.update(0.016) is None
+
+
+def test_press_from_another_window_stays_ignored_until_released(monkeypatch) -> None:
+    handler, poller, seen = _handler_with_bus(monkeypatch)
+
+    poller.pressed = {"x", "w"}
+    handler.poll_discrete_keys(owned=False)
+    handler.poll_discrete_keys(owned=True)
+
+    assert handler.consume_key_presses() == []
+    assert handler.keys == set()
+    assert handler.update(0.016) is None
+
+    poller.pressed = set()
+    handler.poll_discrete_keys(owned=True)
+    poller.pressed = {"x"}
+    handler.poll_discrete_keys(owned=True)
+    assert handler.consume_key_presses() == ["x"]
+    assert [e.edge for e in seen] == ["press"]
+
+
+def test_press_seen_as_the_keyboard_comes_back_is_ignored(monkeypatch) -> None:
+    """The Escape that closes Spotlight can be down before the poll next runs,
+    on the same tick that finds the Operator Screen owning the keyboard again."""
+    handler, poller, seen = _handler_with_bus(monkeypatch)
+
+    handler.poll_discrete_keys(owned=False)
+    poller.pressed = {"Escape"}
+    handler.poll_discrete_keys(owned=True)
+
+    assert handler.consume_key_presses() == []
+    assert seen == []
+
+    poller.pressed = set()
+    handler.poll_discrete_keys(owned=True)
+    poller.pressed = {"Escape"}
+    handler.poll_discrete_keys(owned=True)
+    assert handler.consume_key_presses() == ["Escape"]
+
+
+def test_bus_sees_a_release_only_when_it_saw_the_press(monkeypatch) -> None:
+    handler, poller, seen = _handler_with_bus(monkeypatch)
+
+    poller.pressed = {"q"}
+    handler.poll_discrete_keys(owned=False)
+    poller.pressed = set()
+    handler.poll_discrete_keys(owned=True)
+    assert seen == []
+
+    poller.pressed = {"q"}
+    handler.poll_discrete_keys(owned=True)
+    poller.pressed = set()
+    handler.poll_discrete_keys(owned=False)
+    assert [(e.key, e.edge) for e in seen] == [("q", "press"), ("q", "release")]
+
+
+def test_clear_keeps_a_press_from_another_window_ignored(monkeypatch) -> None:
+    """``clear()`` (focus-out, leaving a menu) resets edge state, so the poll
+    sees every held key afresh; one pressed elsewhere must not then act."""
+    handler, poller, _seen = _handler_with_bus(monkeypatch)
+
+    poller.pressed = {"x"}
+    handler.poll_discrete_keys(owned=False)
+    handler.clear()
+    handler.poll_discrete_keys(owned=True)
+
+    assert handler.consume_key_presses() == []
+
+
+@pytest.mark.parametrize(
+    ("modifier", "canonical"),
+    [("Meta", "cmd"), ("Control", "ctrl"), ("Alt", "alt")],
+)
+def test_shortcut_modifier_keeps_the_press_from_acting(monkeypatch, modifier, canonical) -> None:
+    """Cmd+H must not toggle help. The bus still gets the press with its
+    modifiers, so an OSC hotkey bound to that combination keeps firing."""
+    handler, poller, seen = _handler_with_bus(monkeypatch)
+
+    poller.pressed = {modifier, "h"}
+    handler.poll_discrete_keys()
+
+    assert handler.consume_key_presses() == []
+    assert KeyEvent(key="h", modifiers=frozenset({canonical}), edge="press") in seen
+
+
+def test_modifier_bound_to_an_action_is_not_a_shortcut_modifier(monkeypatch) -> None:
+    """Control on Z-: holding it alongside W drives both, whichever came first."""
+    app = _DummyApp()
+    app._config.controller.key_move_z_down = "Control"
+    poller = _FakePoller()
+    monkeypatch.setattr(keyboard_module, "create_keyboard_poller", lambda: poller)
+    handler = KeyboardHandler(app, event_bus=InputEventBus())
+    speed = app._config.marker.move_speed
+
+    poller.pressed = {"w"}
+    handler.poll_discrete_keys()
+    poller.pressed = {"w", "Control"}
+    handler.poll_discrete_keys()
+    assert handler.update(0.016) == pytest.approx((0.0, speed, -speed))
+
+    poller.pressed = {"Control"}
+    handler.poll_discrete_keys()
+    poller.pressed = {"Control", "w"}
+    handler.poll_discrete_keys()
+    poller.pressed = {"w"}
+    handler.poll_discrete_keys()
+    assert handler.update(0.016) == pytest.approx((0.0, speed, 0.0))
+
+
+def test_alt_bound_to_an_action_leaves_other_action_keys_working(monkeypatch) -> None:
+    app = _DummyApp()
+    app._config.controller.key_speed_up = "Alt"
+    poller = _FakePoller()
+    monkeypatch.setattr(keyboard_module, "create_keyboard_poller", lambda: poller)
+    handler = KeyboardHandler(app, event_bus=InputEventBus())
+
+    poller.pressed = {"Alt"}
+    handler.poll_discrete_keys()
+    poller.pressed = {"Alt", "h"}
+    handler.poll_discrete_keys()
+
+    assert handler.consume_key_presses() == ["Alt", "h"]
+
+
+def test_command_stays_a_shortcut_modifier_beside_a_bound_control(monkeypatch) -> None:
+    app = _DummyApp()
+    app._config.controller.key_move_z_down = "Control"
+    poller = _FakePoller()
+    monkeypatch.setattr(keyboard_module, "create_keyboard_poller", lambda: poller)
+    handler = KeyboardHandler(app, event_bus=InputEventBus())
+
+    poller.pressed = {"Meta", "h"}
+    handler.poll_discrete_keys()
+
+    assert handler.consume_key_presses() == []
+
+
+def test_rebinding_a_modifier_updates_the_shortcut_modifiers(monkeypatch) -> None:
+    import dataclasses
+
+    app = _DummyApp()
+    poller = _FakePoller()
+    monkeypatch.setattr(keyboard_module, "create_keyboard_poller", lambda: poller)
+    handler = KeyboardHandler(app, event_bus=InputEventBus())
+    poller.pressed = {"Control", "h"}
+    handler.poll_discrete_keys()
+    assert handler.consume_key_presses() == []
+
+    app._config.controller = dataclasses.replace(app._config.controller, key_move_z_down="Control")
+    poller.pressed = set()
+    handler.poll_discrete_keys()
+    poller.pressed = {"Control", "h"}
+    handler.poll_discrete_keys()
+    assert handler.consume_key_presses() == ["h"]
+
+
+def test_bus_gets_the_release_of_a_press_it_saw_before_focus_out(monkeypatch) -> None:
+    """Cmd+Space opens Spotlight: the bus saw both presses, so it gets both
+    releases even though focus-out reset the edge state in between."""
+    handler, poller, seen = _handler_with_bus(monkeypatch)
+
+    poller.pressed = {"Meta", "Space"}
+    handler.poll_discrete_keys(owned=True)
+    handler.clear()
+    handler.poll_discrete_keys(owned=False)
+    poller.pressed = set()
+    handler.poll_discrete_keys(owned=False)
+
+    assert sorted((e.key, e.edge) for e in seen) == [
+        ("Meta", "press"),
+        ("Meta", "release"),
+        ("Space", "press"),
+        ("Space", "release"),
+    ]
+
+
+def test_bus_gets_a_release_that_happens_while_edge_state_is_reset(monkeypatch) -> None:
+    handler, poller, seen = _handler_with_bus(monkeypatch)
+
+    poller.pressed = {"q"}
+    handler.poll_discrete_keys(owned=True)
+    handler.clear()
+    poller.pressed = set()
+    handler.poll_discrete_keys(owned=False)
+
+    assert [(e.key, e.edge) for e in seen] == [("q", "press"), ("q", "release")]
+
+
+def test_shift_is_not_a_shortcut_modifier(monkeypatch) -> None:
+    handler, poller, _seen = _handler_with_bus(monkeypatch)
+
+    poller.pressed = {"Shift", "x"}
+    handler.poll_discrete_keys()
+
+    assert handler.consume_key_presses() == ["x"]
+    assert handler.keys == {"Shift", "x"}
+
+
+def test_shortcut_key_stays_ignored_after_the_modifier_is_released(monkeypatch) -> None:
+    """Cmd+M, letting go of Cmd first: M must not open the Settings menu,
+    which reads the held set rather than a press edge."""
+    handler, poller, _seen = _handler_with_bus(monkeypatch)
+
+    poller.pressed = {"Meta", "m"}
+    handler.poll_discrete_keys()
+    assert handler.keys == {"Meta"}
+
+    poller.pressed = {"m"}
+    handler.poll_discrete_keys()
+    assert handler.keys == set()
+
+    poller.pressed = set()
+    handler.poll_discrete_keys()
+    poller.pressed = {"m"}
+    handler.poll_discrete_keys()
+    assert handler.keys == {"m"}
+
+
+def test_movement_pauses_while_a_shortcut_modifier_is_held(monkeypatch) -> None:
+    handler, poller, _seen = _handler_with_bus(monkeypatch)
+
+    poller.pressed = {"w"}
+    handler.poll_discrete_keys()
+    assert handler.update(0.016) is not None
+
+    poller.pressed = {"w", "Meta"}
+    handler.poll_discrete_keys()
+    assert handler.update(0.016) is None
+
+    poller.pressed = {"w"}
+    handler.poll_discrete_keys()
+    assert handler.update(0.016) is not None
+
+
+def test_key_pressed_for_a_shortcut_never_moves_the_marker(monkeypatch) -> None:
+    """Cmd+S, letting go of Cmd first: S must not then drive the marker."""
+    handler, poller, _seen = _handler_with_bus(monkeypatch)
+
+    poller.pressed = {"Meta", "s"}
+    handler.poll_discrete_keys()
+    assert handler.update(0.016) is None
+
+    poller.pressed = {"s"}
+    handler.poll_discrete_keys()
+    assert handler.update(0.016) is None
+
+
+def test_text_field_drops_the_gtk_copy_of_a_polled_press(monkeypatch) -> None:
+    """The Enter that opens the URL editor reaches it again as a GTK key-down,
+    plus its auto-repeats; none of them may confirm the editor."""
+    handler, poller, _seen = _handler_with_bus(monkeypatch)
+
+    poller.pressed = {"Enter"}
+    handler.poll_discrete_keys(owned=True)
+    assert handler.consume_key_presses() == ["Enter"]
+
+    assert handler.take_text_key("Enter") is False
+    handler.poll_discrete_keys(owned=False)
+    assert handler.take_text_key("Enter") is False
+
+    poller.pressed = set()
+    handler.poll_discrete_keys(owned=False)
+    poller.pressed = {"Enter"}
+    handler.poll_discrete_keys(owned=False)
+    assert handler.take_text_key("Enter") is True
+    assert handler.take_text_key("a") is True
+
+
+def test_press_a_text_field_took_first_never_reaches_the_poll(monkeypatch) -> None:
+    """GTK can deliver Escape before the poll sees it: the editor closes onto
+    the Settings menu, which must not then take the same Escape too."""
+    handler, poller, seen = _handler_with_bus(monkeypatch)
+
+    assert handler.take_text_key("Escape") is True
+    poller.pressed = {"Escape"}
+    handler.poll_discrete_keys(owned=True)
+
+    assert handler.consume_key_presses() == []
+    assert seen == []
+
+
+def test_quick_tap_a_text_field_took_does_not_swallow_the_next_press(monkeypatch) -> None:
+    """A tap shorter than one poll is never seen held; the next press counts."""
+    handler, poller, _seen = _handler_with_bus(monkeypatch)
+
+    assert handler.take_text_key("Enter") is True
+    handler.poll_discrete_keys(owned=True)
+    poller.pressed = {"Enter"}
+    handler.poll_discrete_keys(owned=True)
+
+    assert handler.consume_key_presses() == ["Enter"]
+
+
+def test_late_gtk_copy_of_a_short_polled_tap_is_still_dropped(monkeypatch) -> None:
+    """A quick Enter on RTSP: the swap blocks the main loop, the key is already
+    up when the poll next runs, and only then does GTK deliver its key-down."""
+    handler, poller, _seen = _handler_with_bus(monkeypatch)
+    now = [100.0]
+    handler._clock = lambda: now[0]
+
+    poller.pressed = {"Enter"}
+    handler.poll_discrete_keys(owned=True)
+    poller.pressed = set()
+    now[0] += 0.016
+    handler.poll_discrete_keys(owned=False)
+    now[0] += 0.2
+    assert handler.take_text_key("Enter") is False
+
+    now[0] += 1.0
+    handler.poll_discrete_keys(owned=False)
+    assert handler.take_text_key("Enter") is True
+
+
+def test_second_press_after_the_gtk_copy_arrived_goes_to_the_text_field(monkeypatch) -> None:
+    """Once GTK has delivered the copy of a polled press, nothing more of that
+    press is due: a deliberate second Enter right after it is the editor's,
+    even when GTK delivers it before the poll sees it."""
+    handler, poller, _seen = _handler_with_bus(monkeypatch)
+    now = [100.0]
+    handler._clock = lambda: now[0]
+
+    poller.pressed = {"Enter"}
+    handler.poll_discrete_keys(owned=True)
+    assert handler.take_text_key("Enter") is False
+    poller.pressed = set()
+    handler.poll_discrete_keys(owned=False)
+    now[0] += 0.2
+
+    assert handler.take_text_key("Enter") is True
+
+
+def test_gtk_copy_delivered_before_the_poll_claims_counts_too(monkeypatch) -> None:
+    """GTK can deliver the Enter that picks RTSP to the source list before the
+    poll sees it; the editor the poll then opens owes that press nothing."""
+    handler, poller, _seen = _handler_with_bus(monkeypatch)
+    now = [100.0]
+    handler._clock = lambda: now[0]
+
+    handler.on_key_down({"key": "Enter"})
+    poller.pressed = {"Enter"}
+    handler.poll_discrete_keys(owned=True)
+    assert handler.consume_key_presses() == ["Enter"]
+    poller.pressed = set()
+    handler.poll_discrete_keys(owned=False)
+    now[0] += 0.2
+
+    assert handler.take_text_key("Enter") is True
+
+
+def test_gtk_copy_delivered_to_a_menu_after_the_poll_claims_counts(monkeypatch) -> None:
+    handler, poller, _seen = _handler_with_bus(monkeypatch)
+    now = [100.0]
+    handler._clock = lambda: now[0]
+
+    poller.pressed = {"Enter"}
+    handler.poll_discrete_keys(owned=True)
+    handler.on_key_down({"key": "Enter"})
+    poller.pressed = set()
+    handler.poll_discrete_keys(owned=True)
+    now[0] += 0.2
+
+    assert handler.take_text_key("Enter") is True
+
+
+def test_gtk_key_down_the_poll_never_sees_held_is_forgotten(monkeypatch) -> None:
+    """A tap shorter than one poll leaves no GTK mark for the next press, whose
+    own copy is then still due after its release."""
+    handler, poller, _seen = _handler_with_bus(monkeypatch)
+    now = [100.0]
+    handler._clock = lambda: now[0]
+
+    handler.on_key_down({"key": "Enter"})
+    handler.poll_discrete_keys(owned=True)
+    poller.pressed = {"Enter"}
+    handler.poll_discrete_keys(owned=True)
+    poller.pressed = set()
+    handler.poll_discrete_keys(owned=False)
+    now[0] += 0.2
+
+    assert handler.take_text_key("Enter") is False
+
+
+def test_next_press_the_poll_sees_belongs_to_the_text_field(monkeypatch) -> None:
+    handler, poller, _seen = _handler_with_bus(monkeypatch)
+    now = [100.0]
+    handler._clock = lambda: now[0]
+
+    poller.pressed = {"Enter"}
+    handler.poll_discrete_keys(owned=True)
+    poller.pressed = set()
+    handler.poll_discrete_keys(owned=False)
+    poller.pressed = {"Enter"}
+    handler.poll_discrete_keys(owned=False)
+
+    assert handler.take_text_key("Enter") is True
+
+
+def test_linux_keyboard_ignores_ownership_and_shortcut_modifiers(monkeypatch) -> None:
+    """GTK feeds the fallback poller from this window's own key events, so the
+    macOS rules leave it exactly as it was."""
+    poller = FallbackKeyboardPoller()
+    handler, _poller, seen = _handler_with_bus(monkeypatch, poller)
+
+    poller.on_key_down("Control")
+    poller.on_key_down("x")
+    handler.poll_discrete_keys(owned=False)
+    assert handler.consume_key_presses() == ["x"]
+    assert handler.keys == {"Control", "x"}
+    assert KeyEvent(key="x", modifiers=frozenset({"ctrl"}), edge="press") in seen
+
+    poller.on_key_down("w")
+    assert handler.update(0.016) is not None
+
+    assert handler.take_text_key("x") is True
+    assert handler.take_text_key("Enter") is True
+    poller.on_key_down("Enter")
+    handler.poll_discrete_keys(owned=True)
+    assert handler.consume_key_presses() == ["Enter"]

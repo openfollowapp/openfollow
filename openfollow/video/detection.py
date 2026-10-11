@@ -12,9 +12,12 @@ surface them.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import logging
 import os
+import re
+import shutil
 import threading
 import time
 from collections import deque
@@ -91,6 +94,11 @@ def resolve_detection_storage_path(storage_path: str) -> str:
     if os.path.ismount(_NVME_MOUNTPOINT):
         return _NVME_DETECTION_STORAGE
     return str(station_dir() / _LOCAL_STORAGE_DIRNAME)
+
+
+def detection_cache_dir(storage_path: str) -> Path:
+    """The storage's cache: ``XDG_CACHE_HOME`` for the runtime, and the compiled models."""
+    return Path(resolve_detection_storage_path(storage_path)).expanduser() / "cache"
 
 
 def check_detection_dependencies(
@@ -242,6 +250,68 @@ def _letterbox(
     return padded, scale, (pad_x, pad_y)
 
 
+_COREML_PROVIDER = "CoreMLExecutionProvider"
+# Hex digits of a compile's identity: size, mtime and onnxruntime version.
+_COMPILE_ID_DIGITS = 16
+
+
+def _compile_dir_pattern(model_name: str) -> re.Pattern[str]:
+    """``<stem>-<identity>``; the fixed-width suffix keeps a longer name from matching."""
+    return re.compile(re.escape(Path(model_name).stem) + rf"-[0-9a-f]{{{_COMPILE_ID_DIGITS}}}")
+
+
+def remove_coreml_compiles(cache_root: Path, model_name: str) -> None:
+    """Remove every compiled-CoreML copy of ``model_name`` under ``cache_root``.
+
+    A copy that cannot be removed is logged and left.
+    """
+    pattern = _compile_dir_pattern(model_name)
+    try:
+        entries = list((cache_root / "coreml").iterdir())
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        logger.warning("Could not list the CoreML model cache under %s: %s", cache_root, exc)
+        return
+    for entry in entries:
+        if not pattern.fullmatch(entry.name):
+            continue
+        try:
+            shutil.rmtree(entry)
+        except OSError as exc:
+            logger.warning("Could not remove the CoreML model cache %s: %s", entry, exc)
+
+
+def _coreml_cache_dir(cache_root: Path, model_path: str, runtime_version: str) -> tuple[Path, bool] | None:
+    """The compiled-CoreML cache for one model file and whether it already holds a
+    compile, or ``None`` when there is none to use.
+
+    onnxruntime keys its cache by the model path alone and never invalidates it,
+    so a replaced file or an updated onnxruntime would load the old compile. The
+    directory is therefore named by the file's size and mtime and the runtime
+    version, and older compiles of the same name are removed.
+    """
+    try:
+        stat = os.stat(model_path)
+    except OSError:
+        return None  # the build itself reports the missing model
+    identity = f"{stat.st_size}:{stat.st_mtime_ns}:{runtime_version}".encode()
+    digest = hashlib.sha256(identity).hexdigest()[:_COMPILE_ID_DIGITS]
+    name = Path(model_path).name
+    cache_dir = cache_root / "coreml" / f"{Path(name).stem}-{digest}"
+    try:
+        if cache_dir.is_dir():
+            holds_compile = any(cache_dir.iterdir())
+        else:
+            holds_compile = False
+            remove_coreml_compiles(cache_root, name)
+            cache_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.warning("CoreML model cache unavailable at %s (%s); compiling %s without it", cache_dir, exc, name)
+        return None
+    return cache_dir, holds_compile
+
+
 class _OnnxBackend:
     """YOLO ONNX Runtime backend.
 
@@ -249,6 +319,11 @@ class _OnnxBackend:
     Apple Silicon) and falls back to CPU otherwise. For a medium/large
     model on Apple Silicon, CoreML is roughly an order of magnitude faster
     than the CPU provider.
+
+    Building the session holds the GIL throughout, so every Python thread stops
+    while it runs. CoreML compiles the model there, which takes seconds, so a
+    CoreML build gets a compiled-model cache under ``cache_root`` and only a
+    model's first build pays the compile.
     """
 
     @staticmethod
@@ -261,12 +336,12 @@ class _OnnxBackend:
         kept as the trailing fallback for ops the accelerator can't run.
         """
         providers: list[str] = []
-        if "CoreMLExecutionProvider" in available:
-            providers.append("CoreMLExecutionProvider")
+        if _COREML_PROVIDER in available:
+            providers.append(_COREML_PROVIDER)
         providers.append("CPUExecutionProvider")
         return providers
 
-    def __init__(self, model_path: str) -> None:
+    def __init__(self, model_path: str, cache_root: Path | None = None) -> None:
         import onnxruntime as ort
 
         session_options = ort.SessionOptions()
@@ -276,12 +351,11 @@ class _OnnxBackend:
         session_options.intra_op_num_threads = 4
 
         providers = self._select_providers(ort.get_available_providers())
+        cache = None
+        if cache_root is not None and _COREML_PROVIDER in providers:
+            cache = _coreml_cache_dir(cache_root, model_path, ort.__version__)
 
-        self._session: Any = ort.InferenceSession(
-            model_path,
-            sess_options=session_options,
-            providers=providers,
-        )
+        self._session: Any = self._create_session(ort, model_path, session_options, providers, cache)
         logger.info("ONNX detection providers: %s", ", ".join(self._session.get_providers()))
         input_meta = self._session.get_inputs()[0]
         output_meta = self._session.get_outputs()[0]
@@ -290,6 +364,44 @@ class _OnnxBackend:
         self._output_name = output_meta.name
         self._input_shape = tuple(input_meta.shape)
         self._model_input_size = self._extract_input_size(self._input_shape)
+
+    @staticmethod
+    def _create_session(
+        ort: Any,
+        model_path: str,
+        session_options: Any,
+        providers: list[str],
+        cache: tuple[Path, bool] | None,
+    ) -> Any:
+        if cache is not None:
+            cache_dir, holds_compile = cache
+            options = [{"ModelCacheDirectory": str(cache_dir)} if p == _COREML_PROVIDER else {} for p in providers]
+            # A half-written compile fails the load rather than being recompiled, so a cache that
+            # held one is emptied and tried once more; a failed cold compile would only fail again.
+            next_steps = ["building without it"]
+            if holds_compile:
+                next_steps.insert(0, "retrying with an empty cache")
+            for next_step in next_steps:
+                try:
+                    return ort.InferenceSession(
+                        model_path,
+                        sess_options=session_options,
+                        providers=providers,
+                        provider_options=options,
+                    )
+                except Exception as exc:
+                    shutil.rmtree(cache_dir, ignore_errors=True)
+                    logger.warning(
+                        "Loading %s through the CoreML model cache failed (%s); %s",
+                        model_path,
+                        exc,
+                        next_step,
+                    )
+        return ort.InferenceSession(
+            model_path,
+            sess_options=session_options,
+            providers=providers,
+        )
 
     @property
     def model_input_size(self) -> int | None:
@@ -508,19 +620,20 @@ class PersonDetector:
             logger.error("Failed to initialize detection storage: %s", exc)
             return
 
-        self._load_backend()
+        self._load_backend(cache_root=detection_cache_dir(config.storage_path))
 
-    def _load_backend(self, base_model_path: str | None = None) -> None:
+    def _load_backend(self, base_model_path: str | None = None, cache_root: Path | None = None) -> None:
         # ``base_model_path`` lets the live-rebuild path pass the candidate
         # model WITHOUT pre-committing it to ``self._model_path`` – the backend
         # triple (_backend / _backend_name / _model_path) is published together
         # only on a successful load below, so a failed/slow rebuild never
         # exposes a half-applied new-model/old-backend state. Defaults to the
-        # current path for the construction-time load.
+        # current path for the construction-time load. ``cache_root`` is the
+        # candidate's storage cache, where a CoreML build keeps its compile.
         model_path = base_model_path if base_model_path is not None else self._model_path
 
         try:
-            backend: _InferenceBackend = _OnnxBackend(model_path)
+            backend: _InferenceBackend = _OnnxBackend(model_path, cache_root)
         except ImportError as exc:
             logger.warning(
                 "onnxruntime not installed – person detection disabled. "
@@ -574,7 +687,7 @@ class PersonDetector:
             raise ValueError("detection.storage_path must be an absolute path")
 
         models_dir = storage_root / "models"
-        cache_dir = storage_root / "cache"
+        cache_dir = detection_cache_dir(config.storage_path)
 
         for directory in (storage_root, models_dir, cache_dir):
             directory.mkdir(parents=True, exist_ok=True)
@@ -925,12 +1038,13 @@ class PersonDetector:
           NOT live-applied here – the GStreamer appsink caps are
           pinned at pipeline build time and live-restamping
           ``_inference_size`` would silently disagree with the
-          appsink resolution. The dispatcher treats it as
-          restart-required so the receiver pipeline rebuilds with
+          appsink resolution. The dispatcher routes it to
+          ``swap_detector``, which rebuilds the receiver pipeline with
           matching caps.
         - Rebuilds the inference backend when ``model`` or ``storage_path``
-          changes – this is the heavy step, and it stays on the worker
-          thread so the GTK thread isn't blocked by ONNX session loads.
+          changes – this is the heavy step. It runs on the worker thread,
+          but the session build holds the GIL and so stops every thread
+          for its duration (see ``_OnnxBackend``).
 
         Failure mode: if the backend rebuild raises *or* silently
         fails to load (``_load_backend`` logs a warning and returns
@@ -970,7 +1084,7 @@ class PersonDetector:
                 self._restore_storage_env(old_env)
                 return
             try:
-                self._load_backend(new_model_path)
+                self._load_backend(new_model_path, detection_cache_dir(pending.storage_path))
             except Exception:
                 logger.exception(
                     "detection: backend rebuild failed; keeping prior config",
@@ -1006,9 +1120,8 @@ class PersonDetector:
         # worker would cause the backend to internally rescale frames
         # that arrive at the OLD caps resolution, defeating the
         # accuracy/perf change the operator intended. The dispatcher
-        # treats ``inference_size`` changes as cold-path
-        # (request_restart) so the receiver pipeline rebuilds with
-        # caps matching the new resolution.
+        # routes ``inference_size`` changes to ``swap_detector`` so the
+        # receiver pipeline rebuilds with caps matching the new resolution.
 
         self._config = pending
         logger.info(

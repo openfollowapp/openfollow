@@ -238,10 +238,15 @@ if _PYTHONOSC_AVAILABLE:  # pragma: no branch
             return iter(handlers)
 
     class _FilteredOSCUDPServer(BlockingOSCUDPServer):
-        """OSC UDP server with an optional source-IP allowlist.
+        """IPv4 OSC UDP server with an optional source-IP allowlist.
 
         ``verify_request`` runs before dispatch; returning False drops the
         packet with no handler invoked. An empty allowlist accepts everything.
+
+        The family is IPv4 because the multicast membership and the allowlist
+        entries are: left to infer it from ``""``, python-osc opens a dual-stack
+        IPv6 socket on macOS, which refuses ``IP_ADD_MEMBERSHIP`` with EINVAL and
+        names an IPv4 sender ``::ffff:a.b.c.d``.
         """
 
         def __init__(
@@ -250,7 +255,7 @@ if _PYTHONOSC_AVAILABLE:  # pragma: no branch
             dispatcher: Dispatcher,
             allowed_ips: frozenset[str],
         ) -> None:
-            super().__init__(server_address, dispatcher)
+            super().__init__(server_address, dispatcher, family=socket.AF_INET)
             self._allowed_ips = allowed_ips
 
         def verify_request(

@@ -1189,6 +1189,19 @@ def _ground_center_in(
     return _drawn_at(app, rect, m.pos[0], m.pos[1], aspect=aspect)
 
 
+def _dragged_to(
+    app: _DummyApp, rect: tuple[int, int, int, int], pointer: tuple[float, float], *, aspect: float = 1.0
+) -> tuple[float, float]:
+    """Where marker 1 lands when grabbed where it is drawn and dragged to ``pointer``."""
+    app._config.controller.mouse_smoothing = 0.0  # the marker lands on the target in one update
+    handler = MouseHandler(app)
+    assert handler.on_pointer_down(*_ground_center_in(app, rect, aspect=aspect), 1) is True
+    handler.on_pointer_move(*pointer)
+    handler.update()
+    x, y, _ = app._server.get_marker(1).pos
+    return x, y
+
+
 class TestLetterboxedVideo:
     """The pointer is read through the rectangle gtksink letterboxes the
     frame into, the same one the overlay draws the scene in, so a click
@@ -1329,12 +1342,10 @@ class TestLetterboxedVideo:
         """
         app = _letterboxed_app(canvas, source, par)
         app._config.grid.z_offset = 0.5  # a raised stage: every reader must use its plane
-        handler = MouseHandler(app)
         x0, y0, w, h = rect
         aspect = app._runtime_services._overlay_renderer.scene_view.pixel_aspect
         drawn = _drawn_at(app, rect, 2.0, 3.0, aspect=aspect)
-        via_mouse = handler._unproject(*drawn)
-        assert via_mouse is not None
+        via_mouse = _dragged_to(app, rect, drawn, aspect=aspect)
         assert via_mouse[0] == pytest.approx(2.0, abs=1e-6)
         assert via_mouse[1] == pytest.approx(3.0, abs=1e-6)
         # The same pixel in the frame's own resolution, as the detection pin
@@ -1411,7 +1422,6 @@ class TestLetterboxedVideo:
         app._config.camera.lens_k1 = -0.15
         aspect = app._runtime_services._overlay_renderer.scene_view.pixel_aspect
         drawn = _drawn_at(app, _LETTERBOX_D1, 6.0, 2.0, aspect=aspect)
-        via_mouse = MouseHandler(app)._unproject(*drawn)
-        assert via_mouse is not None
+        via_mouse = _dragged_to(app, _LETTERBOX_D1, drawn, aspect=aspect)
         assert via_mouse[0] == pytest.approx(6.0, abs=1e-6)
         assert via_mouse[1] == pytest.approx(2.0, abs=1e-6)

@@ -2680,7 +2680,7 @@ def test_a_sender_whose_sends_keep_failing_is_a_network_row(monkeypatch) -> None
 
 
 def test_macos_refusing_every_sender_is_one_row_naming_local_network(monkeypatch) -> None:
-    from openfollow.send_health import LOCAL_NETWORK_TEXT
+    from openfollow.send_health import LOCAL_NETWORK_ACTION, LOCAL_NETWORK_HUD_TEXT, LOCAL_NETWORK_TEXT
 
     services = _build_services_with_psutil_backend(monkeypatch)
     refused = (errno.EHOSTUNREACH, "236.10.10.10")
@@ -2688,7 +2688,17 @@ def test_macos_refusing_every_sender_is_one_row_naming_local_network(monkeypatch
     services._app._web_server = SimpleNamespace(beacon_sender=_failing_sender("Discovery", *refused, platform="darwin"))
     services._app._marker_catalog_sync = _failing_sender("Marker sync", *refused, platform="darwin")
 
-    assert services.network_alerts() == [LOCAL_NETWORK_TEXT]
+    # The Operator Screen names the permission; the web states the observation, the permission under it.
+    assert services.network_alerts() == [LOCAL_NETWORK_HUD_TEXT]
+    assert services._network_stats()["alerts"] == [{"text": LOCAL_NETWORK_TEXT, "action": LOCAL_NETWORK_ACTION}]
+
+
+def test_linux_refusing_the_same_way_never_names_local_network(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._app._server = _failing_sender("PSN", errno.EHOSTUNREACH, "236.10.10.10", platform="linux")
+
+    assert services.network_alerts() == [f"PSN: sends keep failing ({os.strerror(errno.EHOSTUNREACH)})"]
+    assert "Local Network" not in repr(services._network_stats())
 
 
 def test_a_sender_on_a_plane_reported_down_is_not_reported_again(monkeypatch) -> None:
@@ -2880,13 +2890,13 @@ def test_an_osc_destination_on_a_plane_reported_down_is_not_reported_again(osc_s
 
 
 def test_macos_refusing_osc_too_stays_one_row(osc_services) -> None:
-    from openfollow.send_health import LOCAL_NETWORK_TEXT
+    from openfollow.send_health import LOCAL_NETWORK_HUD_TEXT
 
     osc_services._app._server = _failing_sender("PSN", errno.EHOSTUNREACH, "236.10.10.10", platform="darwin")
     _OscClient.refusing.add("192.0.2.40")
     _OscClient.send_errno = errno.EHOSTUNREACH
     _send_osc(osc_services, "desk")
-    assert osc_services.network_alerts() == [LOCAL_NETWORK_TEXT]
+    assert osc_services.network_alerts() == [LOCAL_NETWORK_HUD_TEXT]
 
 
 class _FqdnAdapter:

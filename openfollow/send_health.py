@@ -47,6 +47,8 @@ RECOVERY_HOLD_S = 1.0
 _REMIND_EVERY_S = 60.0
 
 LOCAL_NETWORK_TEXT = "macOS refuses this station's network sends"
+# The Operator Screen shows no next step, and its operator is at this station.
+LOCAL_NETWORK_HUD_TEXT = "macOS refuses network sends – check Local Network"
 LOCAL_NETWORK_ACTION = "Turn on OpenFollow under System Settings → Privacy & Security → Local Network."
 SEND_FAILING_ACTION = "Check this station's network settings and firewall."
 OSC_SEND_FAILING_ACTION = "Check the destination's address under OSC Destinations, and this station's firewall."
@@ -89,10 +91,18 @@ class SendHealthStatus:
 
 @dataclass(frozen=True)
 class SendAlert:
-    """A status row: what the station observed, and one next step for the web."""
+    """A status row: what the station observed, and one next step for the web.
+
+    ``hud`` stands in for ``text`` on the Operator Screen, for a row whose next step it must not lose.
+    """
 
     text: str
     action: str = ""
+    hud: str = ""
+
+    @property
+    def hud_text(self) -> str:
+        return self.hud or self.text
 
 
 class SendHealth:
@@ -244,5 +254,5 @@ def send_alerts(statuses: Iterable[SendHealthStatus], actions: Mapping[str, str]
         action = actions.get(status.label, SEND_FAILING_ACTION)
         alerts.append(SendAlert(f"{status.label}: sends keep failing ({status.error})", action))
     if blocked:
-        alerts.insert(0, SendAlert(LOCAL_NETWORK_TEXT, LOCAL_NETWORK_ACTION))
+        alerts.insert(0, SendAlert(LOCAL_NETWORK_TEXT, LOCAL_NETWORK_ACTION, LOCAL_NETWORK_HUD_TEXT))
     return alerts

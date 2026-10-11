@@ -1386,8 +1386,8 @@ class AppRuntimeServices:
             sync.update_iface_ip(address, iface=self._app._config.psn_source_iface, force=recovered)
 
     def network_alerts(self) -> list[str]:
-        """Outputs not sending: an interface without an address, a failed rebind or stop, or refused sends."""
-        return [alert.text for alert in self.network_alert_rows()]
+        """Outputs not sending (no address, a failed rebind or stop, refused sends), worded for the HUD."""
+        return [alert.hud_text for alert in self.network_alert_rows()]
 
     def network_alert_rows(self) -> list[SendAlert]:
         """``network_alerts`` with the next step the web shows under each."""
@@ -1449,7 +1449,7 @@ class AppRuntimeServices:
     def _network_stats(self) -> dict[str, Any]:
         """The ``network`` block of the runtime stats: the rows, and every sender's record."""
         return {
-            "alerts": [asdict(alert) for alert in self.network_alert_rows()],
+            "alerts": [{"text": alert.text, "action": alert.action} for alert in self.network_alert_rows()],
             "senders": [status.to_dict() for _key, status in self._sender_statuses()],
         }
 

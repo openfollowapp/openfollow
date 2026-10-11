@@ -297,7 +297,10 @@ attributes, so it spells the token's value.
   after the first, and keeps it until sends have gone out for a second
   (`send_health.py`); on macOS every sender refused the way a denied Local
   Network permission refuses them shares one row, saying macOS refuses the
-  station's sends, with the permission in its next step. No status row is
+  station's sends, with the permission in its next step. The HUD shows no
+  next step and its operator is at that station, so its row names the
+  permission itself ("macOS refuses network sends – check Local Network").
+  No status row is
   caution today: the HUD shows faults, progress and results, and a limitation
   worth knowing lives on the web UI and the on-screen Network screen.
 - The on-screen Network screen: a notice is a row in its level's fill and border,

@@ -13,6 +13,7 @@ import pytest
 from openfollow.send_health import (
     FAILING_AFTER_S,
     LOCAL_NETWORK_ACTION,
+    LOCAL_NETWORK_HUD_TEXT,
     LOCAL_NETWORK_TEXT,
     OSC_SEND_FAILING_ACTION,
     RECOVERY_HOLD_S,
@@ -330,7 +331,7 @@ class TestSendAlerts:
             _status("OTP output"),
         ]
         assert send_alerts(statuses) == [
-            SendAlert(LOCAL_NETWORK_TEXT, LOCAL_NETWORK_ACTION),
+            SendAlert(LOCAL_NETWORK_TEXT, LOCAL_NETWORK_ACTION, LOCAL_NETWORK_HUD_TEXT),
             SendAlert("OTP output: sends keep failing (Network is unreachable)", SEND_FAILING_ACTION),
         ]
 
@@ -350,6 +351,17 @@ class TestSendAlerts:
 
     def test_the_rows_fit_two_status_row_lines(self) -> None:
         assert len(LOCAL_NETWORK_TEXT) <= 80
+        assert len(LOCAL_NETWORK_HUD_TEXT) <= 80
+
+    def test_the_operator_screen_row_points_at_the_permission(self) -> None:
+        """The Operator Screen shows no next step, and the operator is standing at this station."""
+        assert LOCAL_NETWORK_HUD_TEXT == "macOS refuses network sends \u2013 check Local Network"
+        (alert,) = send_alerts([_status("PSN", err=errno.EHOSTUNREACH, local=True)])
+        assert alert.hud_text == LOCAL_NETWORK_HUD_TEXT
+
+    def test_a_row_without_its_own_operator_screen_text_shows_its_main_line(self) -> None:
+        (alert,) = send_alerts([_status("OTP output")])
+        assert alert.hud_text == alert.text
 
     def test_the_local_network_row_states_what_was_observed(self) -> None:
         """The permission is the inferred cause, so it belongs in the next step, not the main line."""

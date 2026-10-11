@@ -12,7 +12,7 @@ This station's name, web access and display units, plus the settings you set onc
 
 **Advanced Settings** – opens closed on every page load.
 
-**mDNS address** – the station's `.local` name, which computers on the same network open it by. Read only; it follows the station name.
+**mDNS address** – the station's `.local` name, which computers on the same network open it by. Read only. On a Raspberry Pi it follows the station name; on a Mac it is the Local hostname set under System Settings → General → Sharing.
 
 **Custom domain name (FQDN)** – this station's name on a venue network with its own DNS, such as `of-1.stage.example.com`. The name has to resolve to this station in the venue's DNS. The web UI then accepts changes made through it, and the Operator Screen shows it in place of the `.local` name, which keeps working. On Linux it is also listed in `/etc/hosts`. Where OpenFollow manages the network settings it is sent to the DHCP server too (some register it in DNS, others ignore it), and **saving a changed name reconnects every network interface**: each link drops for a few seconds. A caution under the field lists any interface that does not send the name. **Remove FQDN** on the Operator Screen's Network screen clears it; where saving reconnects, it reads **Remove FQDN (interrupts network traffic)**.
 

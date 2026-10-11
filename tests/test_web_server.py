@@ -7285,6 +7285,44 @@ def test_saves_through_the_configured_fqdn_work_from_the_next_request(live_serve
     assert _raw_request(base, "/section/general", headers=elsewhere, data=rename)[0] == 403
 
 
+@pytest.fixture()
+def bonjour_mac(monkeypatch):
+    """A Mac whose kernel host name came from DHCP while Bonjour publishes another."""
+    import socket
+    from types import SimpleNamespace
+
+    from openfollow import mdns_host
+    from tests._threads import InlineThread
+
+    def _scutil(*_args, **_kwargs):
+        return SimpleNamespace(returncode=0, stdout="Studio-Mac\n")
+
+    monkeypatch.setattr(socket, "gethostname", lambda: "studio.example.lan")
+    mdns_host.set_reader(mdns_host.LocalHostNameReader(platform="darwin", run=_scutil, thread_factory=InlineThread))
+
+
+def test_a_mac_accepts_saves_through_the_name_bonjour_publishes(live_server, bonjour_mac) -> None:
+    server, base = live_server
+    form = {"HX-Request": "true", "Content-Type": "application/x-www-form-urlencoded"}
+    rename = urllib.parse.urlencode({"psn_system_name": "Stage Left"}).encode()
+    via_bonjour = {**form, "Origin": "http://studio-mac.local:8080"}
+    assert _raw_request(base, "/section/general", headers=via_bonjour, data=rename)[0] == 200
+    assert load_config(server.config_path).psn_system_name == "Stage Left"
+    # The kernel's own name stays accepted beside it.
+    via_kernel = {**form, "Origin": "http://studio.example.lan:8080"}
+    assert _raw_request(base, "/section/general", headers=via_kernel, data=rename)[0] == 200
+
+
+def test_a_mac_opened_through_its_bonjour_name_shows_no_refusal_and_names_it(live_server, bonjour_mac) -> None:
+    _, base = live_server
+    status, body, _headers = _raw_request(base, "/", headers={"Host": "studio-mac.local:8080"}, method="GET")
+    assert status == 200
+    assert "does not accept changes made through" not in body
+    field = re.search(r'<input id="general-mdns-address"[^>]*>', body)
+    assert field is not None
+    assert 'value="Studio-Mac.local"' in field.group(0)
+
+
 def test_the_fqdn_field_is_saved_and_redrawn_with_the_station_settings_form(live_server) -> None:
     """It sits in Advanced Settings, outside the name and PIN form: ``form=`` puts it in
     that form's POST, and the form re-renders the field's group out of band."""

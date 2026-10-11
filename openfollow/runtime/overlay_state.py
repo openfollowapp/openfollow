@@ -195,8 +195,8 @@ class OverlayState:
     ip_text: str = ""
     # ``<hostname>.local`` – the recovery route that works whatever address
     # the station ends up with, so the HUD carries it alongside the IP. Always
-    # the real ``current_hostname()``: advertising a name avahi isn't
-    # answering to is worse than showing none.
+    # the name mDNS publishes now (``mdns_name``): advertising a name nothing
+    # answers to is worse than showing none.
     hostname_text: str = ""
     # True when ip_text is an RFC 3927 self-assigned address, i.e. DHCP never
     # answered. Drives the qualifier that stops an operator reading a

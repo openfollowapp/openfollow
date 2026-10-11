@@ -134,10 +134,10 @@ class VideoInputBase(ABC):
     # "reached, sent nothing usable". ``None`` = no such boundary.
     source_element_name: str | None = None
 
-    # What this input gets its video from, which picks the wording of the
-    # advice an operator is given. ``LOCAL`` is the conservative default: it
-    # names no address, port or sender, so a plugin that forgets to declare
-    # cannot point at a setting that does not exist.
+    # What this input gets its video from: picks the wording of the advice an
+    # operator is given, and whether "not authorised" is a rejected login or a
+    # device the system refused. Every plugin declares it; a network input left
+    # on ``LOCAL`` would read a rejected login as a refused device.
     source_kind: SourceKind = SourceKind.LOCAL
 
     # Honours ``video_input_iface`` (blank follows the station interface); the

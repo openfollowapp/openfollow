@@ -305,6 +305,40 @@ def test_resolve_storage_whitespace_only_treated_as_blank(monkeypatch, tmp_path)
     assert detection_module.resolve_detection_storage_path("   ") == str(tmp_path / "yolo")
 
 
+def test_resolve_storage_blank_sits_beside_the_config_file_not_in_the_working_directory(monkeypatch, tmp_path) -> None:
+    from openfollow import station_dir
+
+    detection_module = _load_detection_module()
+    # A Finder-launched app starts in the read-only "/".
+    support = tmp_path / "Application Support" / "OpenFollow"
+    monkeypatch.setattr(os.path, "ismount", lambda _p: False)
+    monkeypatch.chdir("/")
+    station_dir.set_config_path(str(support / "config.toml"))
+    assert detection_module.resolve_detection_storage_path("") == str(support / "yolo")
+
+
+def test_resolve_storage_blank_on_the_appliance_is_where_it_always_was(monkeypatch, tmp_path) -> None:
+    from openfollow import station_dir
+
+    detection_module = _load_detection_module()
+    # The Pi service starts in its state directory and reads config.toml there.
+    state = tmp_path / "var" / "lib" / "openfollow"
+    state.mkdir(parents=True)
+    monkeypatch.setattr(os.path, "ismount", lambda _p: False)
+    monkeypatch.chdir(state)
+    station_dir.set_config_path("config.toml")
+    assert detection_module.resolve_detection_storage_path("") == str(Path.cwd() / "yolo") == str(state / "yolo")
+
+
+def test_resolve_storage_blank_prefers_nvme_over_the_config_directory(monkeypatch, tmp_path) -> None:
+    from openfollow import station_dir
+
+    detection_module = _load_detection_module()
+    monkeypatch.setattr(os.path, "ismount", lambda p: p == detection_module._NVME_MOUNTPOINT)
+    station_dir.set_config_path(str(tmp_path / "config.toml"))
+    assert detection_module.resolve_detection_storage_path("") == detection_module._NVME_DETECTION_STORAGE
+
+
 def test_prepare_model_path_blank_redirects_to_mounted_nvme(tmp_path: Path, monkeypatch) -> None:
     """On a unit with the NVMe mounted, a blank storage_path resolves models
     under the NVMe location instead of the bare cwd model name."""

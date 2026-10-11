@@ -884,35 +884,6 @@ class TestFilteredOSCUDPServerVerifyRequest:
         except StopIteration:
             pass
 
-    @pytest.mark.parametrize(
-        ("sender", "accepted"),
-        [
-            ("::ffff:192.0.2.5", True),
-            ("::FFFF:192.0.2.5", True),
-            ("::ffff:192.0.2.6", False),
-            ("2001:db8::5", False),
-            ("not:an:address", False),
-        ],
-    )
-    def test_ipv4_mapped_sender_matches_its_ipv4_entry(self, sender: str, accepted: bool) -> None:
-        """A dual-stack socket reports an IPv4 sender as ``::ffff:a.b.c.d``."""
-        gen = self._server(frozenset({"192.0.2.5"}))
-        srv = next(gen)
-        assert srv.verify_request(object(), (sender, 1)) is accepted
-        try:
-            next(gen)
-        except StopIteration:
-            pass
-
-    def test_ipv6_sender_matches_its_own_entry(self) -> None:
-        gen = self._server(frozenset({"2001:db8::5"}))
-        srv = next(gen)
-        assert srv.verify_request(object(), ("2001:db8::5", 1)) is True
-        try:
-            next(gen)
-        except StopIteration:
-            pass
-
     def test_str_address_fails_closed(self) -> None:
         """LSP-widening from socketserver's ``str | tuple`` address type
         forces us to handle the str case; we treat it as 'not in

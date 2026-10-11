@@ -1085,6 +1085,15 @@ class TestTheSentenceNeverContradictsTheState:
         video = self._video(services, monkeypatch, VideoFailure.UNREACHABLE)
         assert video["failure_text"] == "Nothing answered at CAM1."
 
+    def test_a_camera_the_system_will_not_open_is_published_as_such(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Support tooling matches the wire value; the operator reads no login advice."""
+        video = self._video(services, monkeypatch, VideoFailure.ACCESS_DENIED)
+        assert video["failure"] == "access_denied"
+        assert video["failure_text"] == "This station was denied access to CAM1."
+        assert "Privacy & Security" in video["failure_action"]
+
 
 class TestTheSentenceNamesTheSourceThatFailed:
     """Seen on a real NDI camera: the box read "Video from the video source

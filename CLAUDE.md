@@ -322,7 +322,7 @@ Each plugin declares:
 - `web_routes()` → additional HTTP endpoints (e.g. `/video-input/ndi/sources`)
 - `is_available()` → `(bool, reason)`; defaults to `(True, "")`. Override when the plugin needs an OS or GStreamer element that isn't universally present (e.g. `v4l2src` on Linux, `avfvideosrc` on macOS, the `ndisrc` plugin from gst-plugin-ndi).
 - `source_element_name` → the **instance name** of the element that first produces bytes from the source (`"rtspsrc"`, `"udpsrc"`, `"media_source"`, …), or `None` for an input with no such boundary. The receiver probes it for the first buffer → `DATA_ARRIVING`. `TestSourceElementDeclaration` in [`tests/test_video_input_plugins.py`](tests/test_video_input_plugins.py) builds each plugin's pipeline and asserts the name resolves, so a rename inside `create_pipeline` can't silently detach the probe
-- `source_kind` → `SourceKind.REMOTE` (dials a host: rtsp, srt), `NAMED` (finds a source by name: ndi), `LISTENER` (waits at an address: rtp) or `LOCAL` (hardware or a file on this box). It picks the **wording** of the sentence and the action, so an NDI source is not told to check an address and port it does not have, and a USB camera is not told to check a sender. Defaults to `LOCAL`, which names no address, port or sender - a plugin that forgets is vague, never wrong
+- `source_kind` → `SourceKind.REMOTE` (dials a host: rtsp, srt), `NAMED` (finds a source by name: ndi), `LISTENER` (waits at an address: rtp) or `LOCAL` (hardware or a file on this box). It picks the **wording** of the sentence and the action, so an NDI source is not told to check an address and port it does not have, and a USB camera is not told to check a sender. It also decides how a `NOT_AUTHORIZED` error is classified (`LOCAL`: `ACCESS_DENIED`, any other kind: `UNAUTHORIZED`), so a network plugin left on the `LOCAL` default would read an RTSP 401 as "Access denied" with the macOS camera instruction. Every plugin must therefore declare it (`test_every_plugin_declares_its_source_kind`)
 - `observe_progress(pipeline, report)` → optional; report protocol progress only that plugin can see. RTSP wires `rtspsrc::on-sdp` → `TRANSPORT_UP` + `STREAM_DESCRIBED`. The receiver keeps the furthest phase reported, so a duplicate or out-of-order report is harmless
 
 ### Receiver (`video/receiver.py`) – generic orchestrator
@@ -468,6 +468,14 @@ endpoint. `srtsrc` posts a real error once internal retry is off (below), but
 reports every cause identically. The remaining inputs are a listener, a
 discovery-by-name protocol and local devices, none of which can be refused. The
 member ships unreachable and its text match is dead.
+
+**`NOT_AUTHORIZED` is read by the input's `SourceKind`.** From a `LOCAL` input it
+is `ACCESS_DENIED`, the operating system refusing the device: a local source has
+no login, so "Login rejected" left nothing to act on. Among local source
+elements, only macOS's `avfvideosrc` posts it (the camera permission, read once
+per process), so the action names that setting and a restart; every network
+kind stays `UNAUTHORIZED`.
+`classify_failure` takes the kind, and the receiver passes its input's.
 
 **The element must give up before our watchdog does**, or the pipeline is torn
 down before it can say why and the failure is classified from the phase alone.
@@ -1258,7 +1266,7 @@ This repo has two active development streams (Mac dev + Pi). Merge conflicts hap
 - **Always combine both sides** – never just pick one side
 
 ### macOS vs Pi differences
-- **macOS:** Quartz keyboard polling, per-frame GDK pointer polling (`window.poll_pointer`; under the pipeline GTK button events never arrive and motion arrives intermittently, while scroll events do arrive, so wheel-Z works, counted per wheel click and rate-limited as described under Mouse), NDI via libndi dylib, SDL's HIDAPI joystick backend switched off (`SDL_JOYSTICK_HIDAPI=0` in `GamepadHandler`: SDL before 2.32.6 kept a closed device's HID callback registered, so a reopen turned input into a use-after-free; pygame-ce bundles a fixed SDL, and the backend stays off until pads are verified on it)
+- **macOS:** the `.local` name is Bonjour's LocalHostName, not the kernel host name (which DHCP often sets): `mdns_host` reads `scutil --get LocalHostName` on a worker thread, bounded, re-read every 10 s (a read that gets no answer keeps the last name), so the frame clock never waits and a request waits only for the first read; the kernel name stays an accepted host. Quartz keyboard polling, per-frame GDK pointer polling (`window.poll_pointer`; under the pipeline GTK button events never arrive and motion arrives intermittently, while scroll events do arrive, so wheel-Z works, counted per wheel click and rate-limited as described under Mouse), NDI via libndi dylib, SDL's HIDAPI joystick backend switched off (`SDL_JOYSTICK_HIDAPI=0` in `GamepadHandler`: SDL before 2.32.6 kept a closed device's HID callback registered, so a reopen turned input into a use-after-free; pygame-ce bundles a fixed SDL, and the backend stays off until pads are verified on it)
 - **Pi:** GTK event-based keyboard + GTK pointer/scroll events, NDI via ARM libndi, Cage compositor, systemd service
 - `gst_runtime_available()` checks GStreamer at runtime
 

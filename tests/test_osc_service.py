@@ -772,6 +772,51 @@ def test_listener_restart_on_changed_params() -> None:
     svc.shutdown()
 
 
+def _resolver_answering_ipv6_first(_host: Any, port: Any, *_a: Any, **_k: Any) -> list[tuple[Any, ...]]:
+    """``getaddrinfo`` as macOS answers it for ``""``, where glibc raises."""
+    return [
+        (socket.AF_INET6, socket.SOCK_DGRAM, socket.IPPROTO_UDP, "", ("::1", port, 0, 0)),
+        (socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP, "", ("127.0.0.1", port)),
+    ]
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not _PYTHONOSC_AVAILABLE, reason="python-osc not installed")
+def test_listener_is_ipv4_when_the_resolver_answers_ipv6_first(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An IPv6 listener refuses the IPv4 membership on macOS. Linux accepts that
+    join, so the bound address is what tells the two families apart everywhere."""
+    monkeypatch.setattr(socket, "getaddrinfo", _resolver_answering_ipv6_first)
+    svc = OscService()
+    bind_free_udp_port(lambda p: svc.start_listener(p, allowed_ips=()))
+    try:
+        assert svc._listener.socket.getsockname()[0] == "0.0.0.0"
+    finally:
+        svc.shutdown()
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not _PYTHONOSC_AVAILABLE, reason="python-osc not installed")
+def test_allowlisted_ipv4_sender_is_received_when_the_resolver_answers_ipv6_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An IPv6 listener names an IPv4 sender ``::ffff:a.b.c.d``, which matches no entry."""
+    monkeypatch.setattr(socket, "getaddrinfo", _resolver_answering_ipv6_first)
+    svc = OscService()
+    received: list[str] = []
+    svc.subscribe("/cue/*", lambda address, *args: received.append(address))
+    port = bind_free_udp_port(lambda p: svc.start_listener(p, allowed_ips=["127.0.0.1"]))
+    sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sender.sendto(b"/cue/1\x00\x00,\x00\x00\x00", ("127.0.0.1", port))
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline and not received:
+            time.sleep(0.01)
+        assert received == ["/cue/1"]
+    finally:
+        sender.close()
+        svc.shutdown()
+
+
 @pytest.mark.skipif(not _PYTHONOSC_AVAILABLE, reason="python-osc not installed")
 def test_restart_listener_on_bind_failure_raises() -> None:
     """Hard-signal contract: bind failure raises OSError so the
@@ -1130,8 +1175,39 @@ def test_listener_always_binds_every_interface(monkeypatch: pytest.MonkeyPatch) 
         )
     )
     try:
-        assert svc._listener.socket.getsockname()[0] in ("0.0.0.0", "::")
+        assert svc._listener.socket.getsockname()[0] == "0.0.0.0"
     finally:
+        svc.shutdown()
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not _PYTHONOSC_AVAILABLE, reason="python-osc not installed")
+def test_listener_joins_the_group_and_receives_from_it() -> None:
+    """A real join on the loopback interface, so no route or host address is
+    involved. A dual-stack IPv6 socket refuses it on macOS with EINVAL."""
+    svc = OscService()
+    received: list[str] = []
+    svc.subscribe("/cue/*", lambda address, *args: received.append(address))
+    port = bind_free_udp_port(
+        lambda p: svc.restart_listener(
+            port=p,
+            allowed_ips=(),
+            multicast_group="239.20.20.20",
+            multicast_iface="127.0.0.1",
+        )
+    )
+    sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        assert svc.listener_status()["multicast_joined"] is True
+        sender.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton("127.0.0.1"))
+        sender.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 1)
+        sender.sendto(b"/cue/1\x00\x00,\x00\x00\x00", ("239.20.20.20", port))
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline and not received:
+            time.sleep(0.01)
+        assert received == ["/cue/1"]
+    finally:
+        sender.close()
         svc.shutdown()
 
 

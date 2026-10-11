@@ -186,6 +186,29 @@ class TestMacOSPollerIsKeyPressed:
         assert cg.calls == [(1, _MAC_KEY_CODES["a"])]
 
 
+class TestMacOSPollerOwnership:
+    """The real Quartz poller gets the macOS rules, right-hand modifiers included."""
+
+    def test_right_command_keeps_the_press_from_acting(self, monkeypatch) -> None:
+        poller, _ = _make_poller_with_quartz({_MAC_KEY_CODES["RightMeta"], _MAC_KEY_CODES["h"]})
+        monkeypatch.setattr(keyboard_module, "create_keyboard_poller", lambda: poller)
+        handler = KeyboardHandler(_DummyApp())
+
+        handler.poll_discrete_keys()
+
+        assert handler.consume_key_presses() == []
+
+    def test_press_while_another_window_owns_the_keyboard_acts_nowhere(self, monkeypatch) -> None:
+        poller, _ = _make_poller_with_quartz({_MAC_KEY_CODES["h"]})
+        monkeypatch.setattr(keyboard_module, "create_keyboard_poller", lambda: poller)
+        handler = KeyboardHandler(_DummyApp())
+
+        handler.poll_discrete_keys(owned=False)
+
+        assert handler.consume_key_presses() == []
+        assert handler.take_text_key("h") is True
+
+
 # --------------------------------------------------------------------------- #
 # MacOSKeyboardPoller.__init__ – Quartz load failure + layout-map branches
 # --------------------------------------------------------------------------- #

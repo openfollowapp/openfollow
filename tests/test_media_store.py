@@ -9,12 +9,14 @@ checks are all exercised without a live pipeline.
 
 from __future__ import annotations
 
+import errno
 import os
 import threading
 from pathlib import Path
 
 import pytest
 
+from openfollow import station_dir
 from openfollow.video import media_store as ms
 
 pytestmark = pytest.mark.unit
@@ -62,6 +64,122 @@ def test_storage_path_uses_nvme_when_mounted(monkeypatch: pytest.MonkeyPatch) ->
 def test_storage_path_falls_back_to_workdir(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ms.os.path, "ismount", lambda p: False)
     assert ms.resolve_media_storage_path().name == "media"
+
+
+def test_storage_path_sits_beside_the_config_file_not_in_the_working_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A Finder-launched app starts in the read-only "/".
+    support = tmp_path / "Application Support" / "OpenFollow"
+    monkeypatch.setattr(ms.os.path, "ismount", lambda p: False)
+    monkeypatch.chdir("/")
+    station_dir.set_config_path(str(support / "config.toml"))
+    assert ms.resolve_media_storage_path() == support / "media"
+
+
+def test_storage_path_on_the_appliance_is_where_it_always_was(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The Pi service starts in its state directory and reads config.toml there.
+    state = tmp_path / "var" / "lib" / "openfollow"
+    state.mkdir(parents=True)
+    monkeypatch.setattr(ms.os.path, "ismount", lambda p: False)
+    monkeypatch.chdir(state)
+    station_dir.set_config_path("config.toml")
+    assert ms.resolve_media_storage_path() == Path.cwd() / "media" == state / "media"
+
+
+def test_storage_path_prefers_nvme_over_the_config_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ms.os.path, "ismount", lambda p: p == ms._NVME_MOUNTPOINT)
+    station_dir.set_config_path(str(tmp_path / "config.toml"))
+    assert ms.resolve_media_storage_path() == Path(ms._NVME_MEDIA_STORAGE)
+
+
+def _unwritable_storage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A store whose directory cannot be created: its parent is a file."""
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory")
+    media_dir = blocker / "media"
+    monkeypatch.setattr(ms, "resolve_media_storage_path", lambda: media_dir)
+    return media_dir
+
+
+def test_capture_into_an_unwritable_store_names_the_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _unwritable_storage(tmp_path, monkeypatch)
+    with pytest.raises(ms.MediaStoreError) as exc:
+        ms.save_captured_frame(_JPEG + b"frame")
+    assert (exc.value.message, exc.value.action) == (ms.STORE_WRITE_FAILED, ms.STORE_WRITE_ACTION)
+    assert str(tmp_path) not in exc.value.message
+
+
+def test_upload_into_an_unwritable_store_names_the_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _unwritable_storage(tmp_path, monkeypatch)
+    monkeypatch.setattr(ms, "_render_jpeg", _fake_render)
+    with pytest.raises(ms.MediaStoreError) as exc:
+        ms.save_upload(_staged(tmp_path, "in.png", _PNG))
+    assert (exc.value.message, exc.value.action) == (ms.STORE_WRITE_FAILED, ms.STORE_WRITE_ACTION)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root writes regardless of mode")
+def test_a_failed_write_into_an_existing_store_names_the_failure(storage: Path) -> None:
+    storage.mkdir()
+    storage.chmod(0o500)
+    try:
+        with pytest.raises(ms.MediaStoreError) as exc:
+            ms.save_captured_frame(_JPEG + b"frame")
+    finally:
+        storage.chmod(0o700)
+    assert exc.value.message == ms.STORE_WRITE_FAILED
+    assert list(storage.iterdir()) == []
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root lists regardless of mode")
+def test_an_unreadable_store_lists_the_defaults_alone(storage: Path) -> None:
+    storage.mkdir()
+    storage.chmod(0o300)
+    try:
+        listed = [item.media_id for item in ms.list_media()]
+    finally:
+        storage.chmod(0o700)
+    assert listed == list(ms.DEFAULT_IDS)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root lists regardless of mode")
+def test_an_unreadable_store_names_the_failure(storage: Path) -> None:
+    storage.mkdir()
+    storage.chmod(0o300)
+    try:
+        with pytest.raises(ms.MediaStoreError) as exc:
+            ms.save_captured_frame(_JPEG + b"frame")
+    finally:
+        storage.chmod(0o700)
+    assert exc.value.message == ms.STORE_WRITE_FAILED
+
+
+def test_an_image_write_that_fails_part_way_leaves_nothing(storage: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _no_space(src: object, dst: object) -> None:
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    storage.mkdir()
+    monkeypatch.setattr(ms.os, "replace", _no_space)
+    with pytest.raises(ms.MediaStoreError) as exc:
+        ms.save_captured_frame(_JPEG + b"frame")
+    assert exc.value.message == ms.STORE_WRITE_FAILED
+    assert list(storage.iterdir()) == []
+
+
+def test_a_clip_move_that_fails_part_way_lists_no_half_clip(
+    storage: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Across filesystems a move copies, so a full disk can leave part of the clip behind.
+    def _partial_copy(src: str, dst: str) -> None:
+        Path(dst).write_bytes(_WEBM)
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(ms, "_probe_video", lambda src: _valid_probe())
+    monkeypatch.setattr(ms.shutil, "move", _partial_copy)
+    with pytest.raises(ms.MediaStoreError) as exc:
+        ms.save_uploaded_video(_staged(tmp_path, "clip.webm", _WEBM + b"vp8-payload"))
+    assert exc.value.message == ms.STORE_WRITE_FAILED
+    assert [item.media_id for item in ms.list_media()] == list(ms.DEFAULT_IDS)
 
 
 # -- id rules -----------------------------------------------------------------
@@ -439,6 +557,23 @@ def test_thumbnail_failure_does_not_orphan_main_file(storage: Path, monkeypatch:
 
     assert (storage / f"{item.media_id}.jpg").exists()  # main survives
     assert not (storage / f"{item.media_id}.thumb.jpg").exists()  # thumb skipped, not orphaned
+
+
+def test_a_thumbnail_that_cannot_be_written_keeps_the_saved_frame(
+    storage: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    media_id = "cccccccccccccccc"
+    monkeypatch.setattr(ms.secrets, "token_hex", lambda n: media_id)
+    monkeypatch.setattr(ms, "_render_jpeg", _fake_render)
+    # A directory where the thumbnail goes: replacing it fails like a full disk would.
+    (storage / f"{media_id}.thumb.jpg" / "blocker").mkdir(parents=True)
+
+    item = ms.save_captured_frame(_JPEG + b"frame")
+
+    assert item.media_id == media_id
+    assert (storage / f"{media_id}.jpg").read_bytes() == _JPEG + b"frame"
+    assert ms.thumb_path(media_id) is None
+    assert not list(storage.glob("*.part"))
 
 
 # -- format sniffer -----------------------------------------------------------

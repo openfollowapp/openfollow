@@ -2660,3 +2660,304 @@ def test_the_drive_screens_own_the_keyboard_while_open(monkeypatch: pytest.Monke
     app_modes.handle_key_press(app, "Enter")
     assert keys == ["Enter"]
     assert app_modes._exclusive_mode_active(app) is True
+
+
+# ---------------------------------------------------------------------------
+# Keyboard ownership: on macOS one key press reaches both the Quartz poll and
+# GTK, and must still act exactly once, on whoever owned the keyboard
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("flag", ["_url_editor_active", "_pi_network_field_edit_active", "_browser_active"])
+def test_a_text_field_owns_the_keyboard(flag: str) -> None:
+    app = SimpleNamespace(_canvas=SimpleNamespace(has_keyboard_focus=True), **{flag: True})
+    assert app_modes.keyboard_owned(app) is False
+
+
+def test_another_window_owns_the_keyboard_while_ours_is_not_key() -> None:
+    app = SimpleNamespace(_canvas=SimpleNamespace(has_keyboard_focus=False))
+    assert app_modes.keyboard_owned(app) is False
+
+
+@pytest.mark.parametrize("flag", ["_settings_menu_active", "_source_type_selection_active", "_field_choice_active"])
+def test_the_operator_screen_owns_the_keyboard_in_its_menus(flag: str) -> None:
+    app = SimpleNamespace(_canvas=SimpleNamespace(has_keyboard_focus=True), **{flag: True})
+    assert app_modes.keyboard_owned(app) is True
+
+
+def test_the_operator_screen_owns_the_keyboard_without_a_window() -> None:
+    assert app_modes.keyboard_owned(SimpleNamespace(_canvas=None)) is True
+
+
+class _HeldKeys:
+    """Stands in for the Quartz poll: the keys held right now."""
+
+    def __init__(self) -> None:
+        self.pressed: set[str] = set()
+
+    def is_key_pressed(self, key: str) -> bool:
+        return key in self.pressed
+
+    def get_pressed_keys(self, keys) -> set[str]:  # noqa: ANN001
+        return {k for k in keys if k in self.pressed}
+
+    def is_available(self) -> bool:
+        return True
+
+
+def _mac_keyboard_app(
+    monkeypatch: pytest.MonkeyPatch, *, swap_error: Exception | None = None
+) -> tuple[SimpleNamespace, _HeldKeys]:
+    """An app on RTSP whose keyboard is the real handler over a fake poll."""
+    from openfollow.configuration import AppConfig
+    from openfollow.input import keyboard as keyboard_module
+    from openfollow.input.events import InputEventBus
+    from openfollow.input.keyboard import KeyboardHandler
+
+    poll = _HeldKeys()
+    monkeypatch.setattr(keyboard_module, "create_keyboard_poller", lambda: poll)
+    monkeypatch.setattr(app_modes, "save_config", lambda *_args, **_kwargs: None)
+    cfg = AppConfig()
+    cfg.video_source_type = "rtsp"
+    cfg.rtsp_url = "rtsp://192.0.2.10/stream"
+    swaps: list[str] = []
+
+    def _swap(new_cfg) -> None:  # noqa: ANN001
+        if swap_error is not None:
+            raise swap_error
+        swaps.append(new_cfg.rtsp_url)
+
+    idle = SimpleNamespace(up_pressed=False, down_pressed=False, confirm_pressed=False, cancel_pressed=False)
+    app = SimpleNamespace(
+        _config=cfg,
+        _config_path="/dev/null",
+        _config_mtime=0.0,
+        _canvas=SimpleNamespace(has_keyboard_focus=True),
+        _runtime_services=SimpleNamespace(swap_video=_swap),
+        _swaps=swaps,
+        _button_detection=None,
+        _settings_menu_active=False,
+        _settings_menu_index=0,
+        _settings_menu_banner="",
+        _about_active=False,
+        _video_receiver=None,
+        _source_type_selection_active=False,
+        _available_source_types=[("rtsp", "RTSP")],
+        _selected_source_type_index=0,
+        _field_choice_active=False,
+        _url_editor_active=False,
+        _url_editor_revert_type="",
+        _browser_active=False,
+        _pi_network_field_edit_active=False,
+        _pi_network_active=False,
+        _controlled_ids=[],
+        _selected_id=None,
+        _show_hud_help=False,
+        _settings_key_pressed=False,
+        _marker_control_suspended=False,
+        _server=None,
+    )
+    app._normalize_key = app_modes.normalize_key
+    app._get_config_mtime = lambda: 0.0
+    app._confirm_source_type_selection = lambda: app_modes.confirm_source_type_selection(app)
+    app._enter_url_editor = lambda **kwargs: app_modes.enter_url_editor(app, **kwargs)
+    app._confirm_url_editor = lambda: app_modes.confirm_url_editor(app)
+    app._enter_settings_menu = lambda **kwargs: app_modes.enter_settings_menu(app, **kwargs)
+    app._input_manager = SimpleNamespace(
+        keyboard_handler=KeyboardHandler(app, event_bus=InputEventBus()),
+        gamepad_handler=SimpleNamespace(read_settings_toggle=lambda: False, read_settings_menu_input=lambda: idle),
+        update=lambda _dt: SimpleNamespace(
+            settings_open_pressed=False,
+            toggle_help_pressed=False,
+            toggle_zones_pressed=False,
+            next_marker_pressed=False,
+            prev_marker_pressed=False,
+            clear_messages_pressed=False,
+        ),
+    )
+    return app, poll
+
+
+def _poll_frame(app: SimpleNamespace) -> None:
+    """The keyboard half of one ``animate`` tick."""
+    keyboard = app._input_manager.keyboard_handler
+    keyboard.poll_discrete_keys(owned=app_modes.keyboard_owned(app))
+    for key in keyboard.consume_key_presses():
+        app_modes.handle_key_press(app, key)
+
+
+def test_enter_that_picks_rtsp_opens_the_url_editor_and_leaves_it_open(monkeypatch: pytest.MonkeyPatch) -> None:
+    app, poll = _mac_keyboard_app(monkeypatch)
+    app._source_type_selection_active = True
+
+    poll.pressed = {"Enter"}
+    _poll_frame(app)
+    assert app._url_editor_active is True
+
+    # GTK delivers the same press, then its auto-repeat.
+    app_modes.on_key_down(app, {"key": "Enter"})
+    app_modes.on_key_down(app, {"key": "Enter"})
+    assert app._url_editor_active is True
+    assert app._url_editor_value == "rtsp://192.0.2.10/stream"
+    assert app._swaps == []
+
+    poll.pressed = set()
+    _poll_frame(app)
+    app_modes.on_key_down(app, {"key": "2"})
+    poll.pressed = {"Enter"}
+    _poll_frame(app)
+    assert app._url_editor_active is True
+    app_modes.on_key_down(app, {"key": "Enter"})
+
+    assert app._url_editor_active is False
+    assert app._swaps == ["rtsp://192.0.2.10/stream2"]
+    _poll_frame(app)
+    assert app._settings_menu_active is False
+
+
+@pytest.mark.parametrize("opening_gtk_first", [False, True])
+@pytest.mark.parametrize("second_gtk_first", [False, True])
+def test_a_quick_second_enter_confirms_the_url_editor(
+    monkeypatch: pytest.MonkeyPatch, opening_gtk_first: bool, second_gtk_first: bool
+) -> None:
+    """Enter on the running RTSP (the reconnect gesture), then Enter again
+    0.2 s later: the second one confirms, whichever channel delivers each first."""
+    app, poll = _mac_keyboard_app(monkeypatch)
+    now = [100.0]
+    app._input_manager.keyboard_handler._clock = lambda: now[0]
+    app._source_type_selection_active = True
+
+    if opening_gtk_first:
+        app_modes.on_key_down(app, {"key": "Enter"})
+    poll.pressed = {"Enter"}
+    _poll_frame(app)
+    if not opening_gtk_first:
+        app_modes.on_key_down(app, {"key": "Enter"})
+    assert app._url_editor_active is True
+
+    now[0] += 0.1
+    poll.pressed = set()
+    _poll_frame(app)
+    now[0] += 0.2
+    if second_gtk_first:
+        app_modes.on_key_down(app, {"key": "Enter"})
+    poll.pressed = {"Enter"}
+    _poll_frame(app)
+    if not second_gtk_first:
+        app_modes.on_key_down(app, {"key": "Enter"})
+
+    assert app._url_editor_active is False
+    assert app._swaps == ["rtsp://192.0.2.10/stream"]
+
+
+def test_a_quick_second_enter_confirms_a_network_field(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openfollow.runtime import app_modes_network
+
+    app, poll = _mac_keyboard_app(monkeypatch)
+    now = [100.0]
+    app._input_manager.keyboard_handler._clock = lambda: now[0]
+    app._pi_network_active = True
+    monkeypatch.setattr(
+        app_modes_network,
+        "handle_pi_network_key",
+        lambda a, key: app_modes_network.enter_pi_network_field_edit(a, "address") if key == "Enter" else None,
+    )
+
+    poll.pressed = {"Enter"}
+    _poll_frame(app)
+    app_modes.on_key_down(app, {"key": "Enter"})
+    now[0] += 0.1
+    poll.pressed = set()
+    _poll_frame(app)
+    now[0] += 0.2
+    app_modes.on_key_down(app, {"key": "Enter"})
+
+    assert app._pi_network_field_edit_active is False
+
+
+def test_escape_that_cancels_the_url_editor_leaves_settings_open(monkeypatch: pytest.MonkeyPatch) -> None:
+    app, poll = _mac_keyboard_app(monkeypatch)
+    app_modes.enter_url_editor(app)
+
+    app_modes.on_key_down(app, {"key": "Escape"})
+    assert app._settings_menu_active is True
+    poll.pressed = {"Escape"}
+    _poll_frame(app)
+
+    assert app._settings_menu_active is True
+
+
+def test_enter_on_a_url_that_fails_does_not_also_run_a_settings_row(monkeypatch: pytest.MonkeyPatch) -> None:
+    app, poll = _mac_keyboard_app(monkeypatch, swap_error=RuntimeError("unreachable"))
+    ran: list[bool] = []
+    monkeypatch.setattr(app_modes, "_settings_menu_confirm", lambda _app: ran.append(True))
+    app_modes.enter_url_editor(app)
+
+    app_modes.on_key_down(app, {"key": "Enter"})
+    assert app._settings_menu_active is True
+    poll.pressed = {"Enter"}
+    _poll_frame(app)
+
+    assert ran == []
+
+
+def test_typing_the_settings_key_into_the_url_editor_types_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    app, poll = _mac_keyboard_app(monkeypatch)
+    app_modes.enter_url_editor(app)
+
+    poll.pressed = {"m"}
+    _poll_frame(app)
+    app_modes.process_input(app, 0.016)
+    app_modes.on_key_down(app, {"key": "m"})
+
+    assert app._url_editor_active is True
+    assert app._url_editor_value == "rtsp://192.0.2.10/streamm"
+
+
+def test_enter_that_opens_a_network_field_does_not_confirm_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openfollow.runtime import app_modes_network
+
+    app, poll = _mac_keyboard_app(monkeypatch)
+    app._pi_network_active = True
+    monkeypatch.setattr(
+        app_modes_network,
+        "handle_pi_network_key",
+        lambda a, key: app_modes_network.enter_pi_network_field_edit(a, "address") if key == "Enter" else None,
+    )
+
+    poll.pressed = {"Enter"}
+    _poll_frame(app)
+    app_modes.on_key_down(app, {"key": "Enter"})
+
+    assert app._pi_network_field_edit_active is True
+
+
+def test_keys_typed_into_another_window_leave_the_operator_screen_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+    app, poll = _mac_keyboard_app(monkeypatch)
+    app._canvas.has_keyboard_focus = False
+
+    poll.pressed = {"h"}
+    _poll_frame(app)
+    app._canvas.has_keyboard_focus = True
+    _poll_frame(app)
+    assert app._show_hud_help is False
+
+    poll.pressed = set()
+    _poll_frame(app)
+    poll.pressed = {"h"}
+    _poll_frame(app)
+    assert app._show_hud_help is True
+
+
+def test_command_shortcuts_leave_the_operator_screen_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+    app, poll = _mac_keyboard_app(monkeypatch)
+
+    poll.pressed = {"Meta", "h"}
+    _poll_frame(app)
+    assert app._show_hud_help is False
+
+    for held in ({"Meta"}, {"Meta", "m"}, {"m"}):
+        poll.pressed = held
+        _poll_frame(app)
+        app_modes.process_input(app, 0.016)
+    assert app._settings_menu_active is False

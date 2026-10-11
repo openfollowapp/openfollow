@@ -165,7 +165,9 @@ the venv back to 3.13.
 
 Then enable detection in the Web UI **Person Detection** section and pick your model from the
 **Model** dropdown (only models already in the storage folder are listed). The storage location
-is automatic; set `detection.storage_path` in `config.toml` to override it.
+is automatic; set `detection.storage_path` in `config.toml` to override it. A run started with a
+config file outside the checkout looks for models in a `yolo/models/` folder beside that file, so
+set `detection.storage_path` (or copy the models there) for such a run.
 See [detection help](../openfollow/web/help/detection.md).
 
 ## Source-based install on a Raspberry Pi

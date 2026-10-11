@@ -3521,8 +3521,8 @@ def _seed_coreml_compiles(tmp_path, *names: str):
 def test_delete_model_removes_its_compiled_copies(live_server, monkeypatch, tmp_path) -> None:
     _, base = live_server
     _seed_storage_model(monkeypatch, tmp_path)
-    current, replaced = _seed_coreml_compiles(tmp_path, "yolo11n-9-200", "yolo11n-8-100")
-    variant, other = _seed_coreml_compiles(tmp_path, "yolo11n-int8-9-200", "yolov8n-9-200")
+    current, replaced = _seed_coreml_compiles(tmp_path, "yolo11n-0123456789abcdef", "yolo11n-fedcba9876543210")
+    variant, other = _seed_coreml_compiles(tmp_path, "yolo11n-int8-0123456789abcdef", "yolov8n-0123456789abcdef")
 
     status, body = _post_form(base, "/section/detection/models/delete", {"model": "yolo11n.onnx"})
 
@@ -3539,7 +3539,7 @@ def test_delete_model_succeeds_when_its_compile_cannot_be_removed(live_server, m
 
     _, base = live_server
     model = _seed_storage_model(monkeypatch, tmp_path)
-    [compiled] = _seed_coreml_compiles(tmp_path, "yolo11n-9-200")
+    [compiled] = _seed_coreml_compiles(tmp_path, "yolo11n-0123456789abcdef")
 
     def refuse(*_a, **_kw):
         raise PermissionError("operation not permitted")

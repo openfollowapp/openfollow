@@ -12,9 +12,11 @@ surface them.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import logging
 import os
+import re
 import shutil
 import threading
 import time
@@ -249,15 +251,21 @@ def _letterbox(
 
 
 _COREML_PROVIDER = "CoreMLExecutionProvider"
+# Hex digits of a compile's identity: size, mtime and onnxruntime version.
+_COMPILE_ID_DIGITS = 16
+
+
+def _compile_dir_pattern(model_name: str) -> re.Pattern[str]:
+    """``<stem>-<identity>``; the fixed-width suffix keeps a longer name from matching."""
+    return re.compile(re.escape(Path(model_name).stem) + rf"-[0-9a-f]{{{_COMPILE_ID_DIGITS}}}")
 
 
 def remove_coreml_compiles(cache_root: Path, model_name: str) -> None:
     """Remove every compiled-CoreML copy of ``model_name`` under ``cache_root``.
 
-    Matches ``<stem>-<size>-<mtime>`` exactly, never a longer name that only
-    starts with the stem. A copy that cannot be removed is logged and left.
+    A copy that cannot be removed is logged and left.
     """
-    stem = Path(model_name).stem
+    pattern = _compile_dir_pattern(model_name)
     try:
         entries = list((cache_root / "coreml").iterdir())
     except FileNotFoundError:
@@ -266,8 +274,7 @@ def remove_coreml_compiles(cache_root: Path, model_name: str) -> None:
         logger.warning("Could not list the CoreML model cache under %s: %s", cache_root, exc)
         return
     for entry in entries:
-        prefix, *identity = entry.name.rsplit("-", 2)
-        if prefix != stem or len(identity) != 2 or not all(part.isdigit() for part in identity):
+        if not pattern.fullmatch(entry.name):
             continue
         try:
             shutil.rmtree(entry)
@@ -275,19 +282,22 @@ def remove_coreml_compiles(cache_root: Path, model_name: str) -> None:
             logger.warning("Could not remove the CoreML model cache %s: %s", entry, exc)
 
 
-def _coreml_cache_dir(cache_root: Path, model_path: str) -> Path | None:
+def _coreml_cache_dir(cache_root: Path, model_path: str, runtime_version: str) -> Path | None:
     """The compiled-CoreML cache for one model file, or ``None`` when there is none to use.
 
-    Named by the file's size and mtime as well as its name, because onnxruntime
-    keys its cache by the model path alone and would load a replaced file's old
-    compile. Older compiles of the same name are removed.
+    onnxruntime keys its cache by the model path alone and never invalidates it,
+    so a replaced file or an updated onnxruntime would load the old compile. The
+    directory is therefore named by the file's size and mtime and the runtime
+    version, and older compiles of the same name are removed.
     """
     try:
         stat = os.stat(model_path)
     except OSError:
         return None  # the build itself reports the missing model
-    name = Path(model_path).stem
-    cache_dir = cache_root / "coreml" / f"{name}-{stat.st_size}-{stat.st_mtime_ns}"
+    identity = f"{stat.st_size}:{stat.st_mtime_ns}:{runtime_version}".encode()
+    digest = hashlib.sha256(identity).hexdigest()[:_COMPILE_ID_DIGITS]
+    name = Path(model_path).name
+    cache_dir = cache_root / "coreml" / f"{Path(name).stem}-{digest}"
     try:
         if not cache_dir.is_dir():
             remove_coreml_compiles(cache_root, name)
@@ -339,7 +349,7 @@ class _OnnxBackend:
         providers = self._select_providers(ort.get_available_providers())
         cache_dir = None
         if cache_root is not None and _COREML_PROVIDER in providers:
-            cache_dir = _coreml_cache_dir(cache_root, model_path)
+            cache_dir = _coreml_cache_dir(cache_root, model_path, ort.__version__)
 
         self._session: Any = self._create_session(ort, model_path, session_options, providers, cache_dir)
         logger.info("ONNX detection providers: %s", ", ".join(self._session.get_providers()))
@@ -361,21 +371,23 @@ class _OnnxBackend:
     ) -> Any:
         if cache_dir is not None:
             options = [{"ModelCacheDirectory": str(cache_dir)} if p == _COREML_PROVIDER else {} for p in providers]
-            try:
-                return ort.InferenceSession(
-                    model_path,
-                    sess_options=session_options,
-                    providers=providers,
-                    provider_options=options,
-                )
-            except Exception as exc:
-                # A half-written compile fails the load instead of being recompiled.
-                logger.warning(
-                    "Loading %s through the CoreML model cache failed (%s); dropping the cache and building without it",
-                    model_path,
-                    exc,
-                )
-                shutil.rmtree(cache_dir, ignore_errors=True)
+            for next_step in ("retrying with an empty cache", "building without it"):
+                try:
+                    return ort.InferenceSession(
+                        model_path,
+                        sess_options=session_options,
+                        providers=providers,
+                        provider_options=options,
+                    )
+                except Exception as exc:
+                    # A half-written compile fails the load instead of being recompiled.
+                    shutil.rmtree(cache_dir, ignore_errors=True)
+                    logger.warning(
+                        "Loading %s through the CoreML model cache failed (%s); %s",
+                        model_path,
+                        exc,
+                        next_step,
+                    )
         return ort.InferenceSession(
             model_path,
             sess_options=session_options,

@@ -1366,10 +1366,9 @@ def test_beacon_receiver_rebuilds_socket_on_iface_change(monkeypatch) -> None:
     sockets: list[_IdleRecvSocket] = []
 
     def _setup() -> _IdleRecvSocket:
-        sock = _IdleRecvSocket()
-        # The socket is recorded first: the test thread waits on opened_with, then reads it.
-        sockets.append(sock)
         opened_with.append(receiver._iface_ip)
+        sock = _IdleRecvSocket()
+        sockets.append(sock)
         return sock
 
     receiver._setup_socket = _setup  # type: ignore[assignment]

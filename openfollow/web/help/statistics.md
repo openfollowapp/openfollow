@@ -13,6 +13,7 @@ The first line is the station's reading of how far the connection got before it 
 - **Unreachable** – nothing answered. The address, the route or the cabling.
 - **Refused** – something answered and said no. The host is there; the port is not open.
 - **Login rejected** – the source answered and refused the credentials.
+- **Access denied** – the operating system did not let this station open a local camera. On macOS, allow OpenFollow under System Settings → Privacy & Security → Camera, then restart OpenFollow: macOS asks again, and applies the change, only when OpenFollow starts.
 - **Not found** – nothing was there under that path, name or device.
 - **No video** – it answered, and no video reached this station. Typically a blocked media path, or a format nothing here can decode.
 - **Unsupported** / **Decode error** – video is arriving; this station cannot turn it into pictures.

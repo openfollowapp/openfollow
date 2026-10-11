@@ -93,7 +93,7 @@ from openfollow.network.validate import (
 from openfollow.palette import AUTO_PICK_ORDER
 from openfollow.privilege.camera_config import AUTOMATIC
 from openfollow.runtime.diagnostics_export import WEB, ExportStatus, status_lines
-from openfollow.station_fqdn import canonical_host, fqdn_problem
+from openfollow.station_fqdn import canonical_host, fqdn_problem, mdns_name
 from openfollow.templates import (
     TEMPLATE_FILE_SUFFIX,
     TEMPLATE_LEGACY_SUFFIX,
@@ -402,18 +402,24 @@ def _is_on_device_request() -> bool:
 # CSRF / DNS-rebind defence. State-changing methods only –
 # safe methods carry no side effects.
 _SAFE_HTTP_METHODS: frozenset[str] = frozenset({"GET", "HEAD", "OPTIONS"})
+# How long a request waits for macOS's first read of the name mDNS publishes.
+_MDNS_NAME_WAIT_S = 2.0
 
 
 def _allowed_request_hosts(fqdn: str = "") -> set[str]:
     """Host names this device legitimately answers to: loopback, its own LAN
-    IPs, its (mDNS) hostname and the FQDN configured for it. A state-changing
-    request whose ``Origin`` names anything else is a cross-origin / DNS-rebound forgery."""
+    IPs, its hostname, the name mDNS publishes for it and the FQDN configured
+    for it. A state-changing request whose ``Origin`` names anything else is a
+    cross-origin / DNS-rebound forgery."""
     hosts = {"127.0.0.1", "::1", "localhost"}
     hosts.update(_get_local_ips())
     host = socket.gethostname().strip().lower()
     if host:
         hosts.add(host)
         hosts.add(f"{host}.local")
+    mdns = mdns_name(_MDNS_NAME_WAIT_S)
+    if mdns:
+        hosts.add(canonical_host(mdns))
     if fqdn:
         hosts.add(canonical_host(fqdn))
     return hosts

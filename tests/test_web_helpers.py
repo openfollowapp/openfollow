@@ -1114,7 +1114,9 @@ class TestTheCameraNameTravelsWithItsId:
     def test_import_applies_both(self) -> None:
         from openfollow.web.routes import _apply_import_data
 
-        imported = _apply_import_data(AppConfig(), {"video_source_type": "avf", **self._CAMERA})
+        # Already on the USB camera: an import only switches to an input this
+        # platform offers, and off macOS that is never this one.
+        imported = _apply_import_data(AppConfig(video_source_type="avf"), {"video_source_type": "avf", **self._CAMERA})
 
         assert (imported.avf_unique_id, imported.avf_device_name) == ("0x14100000", "Capture Card")
 

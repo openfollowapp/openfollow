@@ -55,7 +55,8 @@ class TestToast:
     def test_the_caution_toast_takes_the_caution_colours_and_the_i_sign(self) -> None:
         rule = _rule(".toast.toast-caution")
         assert "border-color: var(--caution-border);" in rule
-        assert "linear-gradient(var(--caution-fill), var(--caution-fill))" in rule
+        assert "--toast-fill: var(--caution-fill);" in rule
+        assert "background: linear-gradient(var(--toast-fill), var(--toast-fill))," in _rule(".toast")
         assert "background-image: var(--info-sign);" in _rule(".toast.toast-caution::before")
 
     def test_the_missing_backup_sentence_names_no_reason(self) -> None:

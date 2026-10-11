@@ -7,8 +7,10 @@ In memory only: a restart clears it.
 
 from __future__ import annotations
 
+import secrets
 import threading
 import time
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -34,27 +36,30 @@ class PushedSettings:
     def __init__(self, clock: Callable[[], float] = time.time) -> None:
         self._clock = clock
         self._lock = threading.Lock()
-        self._pushes: list[Push] = []
-        # Ids of pushes past the listed ones, oldest first, so a removal counts them right.
-        self._earlier: list[int] = []
+        self._pushes: deque[Push] = deque(maxlen=SHOWN)
+        # The lowest id still held. A removal drops a prefix, so the held ids are
+        # consecutive from here to the newest, and the unlisted ones are only counted.
+        self._floor = 1
         self._next_id = 1
+        # Ids start at 1 on every run; a page names the run it saw, so a removal it
+        # sends after a restart can't drop pushes it never showed.
+        self.run = secrets.token_hex(8)
 
     def record(self, station: str, address: str, what: str, backup_error: str = "") -> Push:
         with self._lock:
             push = Push(self._next_id, self._clock(), station, address, what, backup_error)
             self._next_id += 1
             self._pushes.append(push)
-            while len(self._pushes) > SHOWN:
-                self._earlier.append(self._pushes.pop(0).id)
             return push
 
     def snapshot(self) -> tuple[tuple[Push, ...], int]:
         """The listed pushes newest first, and how many earlier ones there were."""
         with self._lock:
-            return tuple(reversed(self._pushes)), len(self._earlier)
+            earlier = self._pushes[0].id - self._floor if self._pushes else 0
+            return tuple(reversed(self._pushes)), earlier
 
     def remove(self, upto: int) -> None:
         """Drop every push up to ``upto``; a push that arrived since stays."""
         with self._lock:
-            self._pushes = [push for push in self._pushes if push.id > upto]
-            self._earlier = [push_id for push_id in self._earlier if push_id > upto]
+            self._floor = max(self._floor, min(upto, self._next_id - 1) + 1)
+            self._pushes = deque((push for push in self._pushes if push.id > upto), maxlen=SHOWN)

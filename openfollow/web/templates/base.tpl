@@ -1464,8 +1464,9 @@
  display: inline-flex;
  align-items: center;
  gap: 8px;
+ --toast-fill: var(--success-fill);
  border: 1px solid var(--success-border);
- background: linear-gradient(var(--success-fill), var(--success-fill)), rgba(7, 19, 13, 0.95);
+ background: linear-gradient(var(--toast-fill), var(--toast-fill)), rgba(7, 19, 13, 0.95);
  color: var(--text);
  padding: 10px 16px 10px 12px;
  border-radius: 999px;
@@ -1477,10 +1478,7 @@
  }
  .toast::before { content: ""; flex: none; width: 16px; height: 16px; background: var(--success-sign) no-repeat center / contain; }
  .toast.show { opacity: 1; pointer-events: auto; }
- .toast.toast-caution {
- border-color: var(--caution-border);
- background: linear-gradient(var(--caution-fill), var(--caution-fill)), rgba(7, 19, 13, 0.95);
- }
+ .toast.toast-caution { --toast-fill: var(--caution-fill); border-color: var(--caution-border); }
  .toast.toast-caution::before { background-image: var(--info-sign); }
  /* Tab navigation */
  .tab-bar {
@@ -5152,7 +5150,10 @@
  // another modal is open rather than replacing it.
  (function () {
  const POLL_MS = 3000;
- let shownLatest = 0;
+ // What the open modal lists, so a poll redraws it whenever that changes.
+ let shownKey = '';
+ // A push was pending while this page was up, so its forms hold the values from before it.
+ let pushSeen = false;
  function pushedSettingsBody(state) {
  const body = document.createDocumentFragment();
  const box = document.createElement('div');
@@ -5186,7 +5187,7 @@
  body.appendChild(list);
  return body;
  }
- async function removePushedSettingsWarning(upto, btn) {
+ async function removePushedSettingsWarning(upto, run, btn) {
  const saveError = window.OpenFollow.saveError;
  const card = document.querySelector('#modal-root .modal-card');
  btn.disabled = true;
@@ -5194,9 +5195,10 @@
  const res = await fetch('/api/pushed-settings/remove', {
  method: 'POST',
  headers: { 'Content-Type': 'application/json' },
- body: JSON.stringify({ upto }),
+ body: JSON.stringify({ upto, run }),
  });
- if (!res.ok) {
+ // 409: OpenFollow restarted since the modal was drawn; the reload shows what is pending now.
+ if (!res.ok && res.status !== 409) {
  btn.disabled = false;
  saveError.show(card, await saveError.fromResponse(res), 'Not removed.', btn.parentElement);
  return;
@@ -5206,9 +5208,8 @@
  saveError.show(card, saveError.UNREACHABLE, 'Not removed.', btn.parentElement);
  return;
  }
- // A newer push may have replaced the modal meanwhile; that one stays.
- const root = document.getElementById('modal-root');
- if (root && root.dataset.pushedSettings === '1' && shownLatest === upto) closeModal();
+ // The page shows the pushed values; a newer push still pending opens the modal again.
+ window.location.reload();
  }
  async function pollPushedSettings() {
  let state;
@@ -5228,19 +5229,22 @@
  return;
  }
  if (!state.pushes.length) {
- if (ours) closeModal();
+ // Removed elsewhere: reload for the pushed values, once no other modal is in the way.
+ if (pushSeen && (ours || root.hidden)) window.location.reload();
  return;
  }
- const latest = state.pushes[0].id;
- if (ours && latest === shownLatest) return;
+ pushSeen = true;
+ const key = state.run + ':' + state.earlier + ':' + state.pushes.map((push) => push.id).join(',');
+ if (ours && key === shownKey) return;
  if (!ours && !root.hidden) return;
- shownLatest = latest;
+ shownKey = key;
+ const latest = state.pushes[0].id;
  openModal({
  title: 'Settings were pushed to this station',
  bodyHTML: pushedSettingsBody(state),
  dismissable: false,
  footerButtons: [
- { label: 'Remove Warning', kind: 'primary', onClick: (btn) => removePushedSettingsWarning(latest, btn) },
+ { label: 'Remove Warning', kind: 'primary', onClick: (btn) => removePushedSettingsWarning(latest, state.run, btn) },
  ],
  onClose: () => { delete root.dataset.pushedSettings; },
  });

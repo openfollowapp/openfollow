@@ -268,6 +268,8 @@ def _archive(
 
     Out of space, it deletes the oldest archives one at a time and retries, but
     never the newest one that already existed. Any other failure deletes nothing.
+    The pruning never takes ``name`` itself, even when a clock set back dates it
+    before every other archive.
     """
     try:
         backup_dir.mkdir(mode=0o700, exist_ok=True)
@@ -290,7 +292,8 @@ def _archive(
         except (tarfile.TarError, ValueError) as exc:
             return _describe(exc)
 
-    for stale in list_archives(backup_dir)[:-keep]:
+    others = [archive for archive in list_archives(backup_dir) if archive.name != name]
+    for stale in others[: max(len(others) - (keep - 1), 0)]:
         with contextlib.suppress(OSError):
             stale.unlink()
     return ""
@@ -347,12 +350,13 @@ def run_web_backup(
     manifest: dict[str, object] = {"kind": kind, "version": version, "created": ts}
     with _WEB_BACKUP_LOCK:
         name = archive_name(config.get("psn_system_name"), version, moment, kind)
-        # Never replace an archive: a later one in the same millisecond moves on by one.
-        while (backup_dir / name).exists():
-            moment += timedelta(milliseconds=1)
-            name = archive_name(config.get("psn_system_name"), version, moment, kind)
         try:
             backup_dir.parent.mkdir(mode=0o700, exist_ok=True)
+            # Never replace an archive: a later one in the same millisecond moves on by one.
+            # ``exists`` raises when the folder can't be searched.
+            while (backup_dir / name).exists():
+                moment += timedelta(milliseconds=1)
+                name = archive_name(config.get("psn_system_name"), version, moment, kind)
         except OSError as exc:
             return WebBackup("", _describe(exc))
         error = _archive(backup_dir, name, _sources(config_path, config), manifest, keep=keep, write=write)

@@ -81,6 +81,19 @@ class TestPushedSettings:
         assert len(listed) == SHOWN
         assert earlier == 2
 
+    def test_a_removal_past_the_newest_push_still_counts_later_ones(self) -> None:
+        register = PushedSettings()
+        register.record("A", "198.51.100.1", "Grid")
+        register.remove(1000)
+        for n in range(SHOWN + 1):
+            register.record(f"S{n}", "198.51.100.1", "Grid")
+        listed, earlier = register.snapshot()
+        assert (len(listed), earlier) == (SHOWN, 1)
+
+    def test_each_run_has_its_own_name(self) -> None:
+        # Ids start at 1 on every run, so a page's ids mean nothing in another run.
+        assert PushedSettings().run != PushedSettings().run
+
 
 def _poller() -> str:
     base = _BASE.read_text(encoding="utf-8")
@@ -99,8 +112,8 @@ class TestPushedSettingsModal:
         modal = poll[poll.index("openModal({") :]
         assert "dismissable: false," in modal
         assert (
-            "{ label: 'Remove Warning', kind: 'primary', onClick: (btn) => removePushedSettingsWarning(latest, btn) }"
-            in (modal)
+            "{ label: 'Remove Warning', kind: 'primary', "
+            "onClick: (btn) => removePushedSettingsWarning(latest, state.run, btn) }" in (modal)
         )
 
     def test_a_locked_modal_shows_no_close_button(self) -> None:
@@ -113,14 +126,19 @@ class TestPushedSettingsModal:
         poll = function_body(_poller(), "pollPushedSettings")
         assert poll.index("if (!ours && !root.hidden) return;") < poll.index("openModal({")
 
-    def test_it_reopens_only_for_a_newer_push(self) -> None:
+    def test_it_redraws_whenever_its_list_changes(self) -> None:
+        # Not only on a newer push: a removal elsewhere can drop older rows and leave the newest.
         poll = function_body(_poller(), "pollPushedSettings")
-        assert poll.index("if (ours && latest === shownLatest) return;") < poll.index("openModal({")
+        key = "const key = state.run + ':' + state.earlier + ':' + state.pushes.map((push) => push.id).join(',');"
+        assert poll.index(key) < poll.index("if (ours && key === shownKey) return;") < poll.index("openModal({")
+        assert poll.index("shownKey = key;") < poll.index("openModal({")
 
-    def test_it_closes_once_the_warning_is_gone_elsewhere(self) -> None:
+    def test_a_removal_elsewhere_reloads_a_page_that_saw_a_push(self) -> None:
+        # Its forms still hold the values from before the push; another open modal is left alone.
         poll = function_body(_poller(), "pollPushedSettings")
         empty = poll[poll.index("if (!state.pushes.length) {") :]
-        assert empty.index("if (ours) closeModal();") < empty.index("return;")
+        assert empty.index("if (pushSeen && (ours || root.hidden)) window.location.reload();") < empty.index("return;")
+        assert poll.index("if (!state.pushes.length) {") < poll.index("pushSeen = true;") < poll.index("openModal({")
 
     def test_a_device_password_prompt_stays_answerable(self) -> None:
         poll = function_body(_poller(), "pollPushedSettings")
@@ -129,16 +147,20 @@ class TestPushedSettingsModal:
         assert "if (ours) closeModal();" in yielded
         assert prompt < poll.index("openModal({")
 
-    def test_removing_closes_only_the_modal_it_removed(self) -> None:
+    def test_removing_reloads_the_page_to_show_the_pushed_values(self) -> None:
         remove = function_body(_poller(), "removePushedSettingsWarning")
-        assert "if (root && root.dataset.pushedSettings === '1' && shownLatest === upto) closeModal();" in remove
-        assert remove.count("closeModal();") == 1
+        assert remove.rstrip().endswith("window.location.reload();")
+        assert "closeModal" not in remove
 
-    def test_removing_sends_the_newest_push_the_page_showed(self) -> None:
+    def test_a_removal_from_before_a_restart_reloads_rather_than_failing(self) -> None:
+        remove = function_body(_poller(), "removePushedSettingsWarning")
+        failed = remove[remove.index("if (!res.ok && res.status !== 409) {") :]
+        assert failed.index("saveError.show(") < failed.index("return;")
+
+    def test_removing_sends_the_newest_push_the_page_showed_and_its_run(self) -> None:
         remove = function_body(_poller(), "removePushedSettingsWarning")
         assert "fetch('/api/pushed-settings/remove', {" in remove
-        assert "body: JSON.stringify({ upto })," in remove
-        assert remove.rindex("closeModal();") > remove.index("if (!res.ok) {")
+        assert "body: JSON.stringify({ upto, run })," in remove
 
     def test_a_failed_removal_reports_like_a_failed_save(self) -> None:
         remove = function_body(_poller(), "removePushedSettingsWarning")

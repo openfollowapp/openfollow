@@ -3990,6 +3990,42 @@ def test_a_push_never_renames_the_station_it_lands_on(live_server, path: str, pa
     assert (saved.camera.pos_x, saved.psn_mcast_ip) != (AppConfig().camera.pos_x, AppConfig().psn_mcast_ip)
 
 
+def test_a_push_from_an_older_station_is_recorded_unnamed_and_keeps_the_name(live_server) -> None:
+    """Stations on 0.5.0-rc1 and earlier push every setting to ``?skip_restart=1``, their name included."""
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.psn_system_name = "Front of House"
+    save_config(cfg, server.config_path)
+
+    status, body = _post_json(
+        base, "/api/config/import?skip_restart=1", {"psn_system_name": "Stage Left", "camera": {"pos_x": 7.25}}
+    )
+    assert status == 200
+    assert "-push-" in body["backup"]
+    assert _pushes(server) == [("", "127.0.0.1", "every shared setting", "")]
+    saved = load_config(server.config_path)
+    assert saved.psn_system_name == "Front of House"
+    assert saved.camera.pos_x == pytest.approx(7.25)
+
+
+@pytest.mark.parametrize(
+    ("section", "label"),
+    [
+        ("osc", "OSC"),
+        ("otp_output", "OTP output"),
+        ("rttrpm_output", "RTTrPM output"),
+        ("psn", "PSN"),
+        ("mouse3d", "3D mouse"),
+        ("video_source", "Video source"),
+    ],
+)
+def test_a_pushed_section_is_named_as_the_operator_knows_it(live_server, section: str, label: str) -> None:
+    server, base = live_server
+    status, _body = _push(base, f"/api/config/{section}", {})
+    assert status == 200
+    assert _pushes(server)[0][2] == label
+
+
 def test_a_section_write_that_is_no_push_records_and_backs_up_nothing(live_server) -> None:
     server, base = live_server
     status, body = _post_json(base, "/api/config/camera", {"pos_x": 2.0})
@@ -4077,6 +4113,7 @@ def test_the_pushed_settings_api_lists_newest_first(live_server) -> None:
         "backup_error": "No space left on device",
     }
     assert [p["station"] for p in body["pushes"]] == ["B", "A"]
+    assert body["run"] == server.pushed_settings.run
 
 
 def test_removing_the_warning_keeps_a_push_that_arrived_since(live_server) -> None:
@@ -4084,9 +4121,20 @@ def test_removing_the_warning_keeps_a_push_that_arrived_since(live_server) -> No
     server.pushed_settings.record("A", "198.51.100.1", "Grid")
     seen = server.pushed_settings.record("B", "198.51.100.2", "Grid")
     server.pushed_settings.record("C", "198.51.100.3", "Camera")
-    status, body = _post_json(base, "/api/pushed-settings/remove", {"upto": seen.id})
+    status, body = _post_json(base, "/api/pushed-settings/remove", {"upto": seen.id, "run": server.pushed_settings.run})
     assert (status, body) == (200, {"success": True})
     assert [p[0] for p in _pushes(server)] == ["C"]
+
+
+@pytest.mark.parametrize("payload", [{"upto": 5, "run": "an-earlier-run"}, {"upto": 5}])
+def test_a_removal_read_from_another_run_is_refused(live_server, payload) -> None:
+    # Ids start at 1 on every run: an id from before a restart names a push the page never showed.
+    server, base = live_server
+    server.pushed_settings.record("A", "198.51.100.1", "Grid")
+    status, body = _post_json(base, "/api/pushed-settings/remove", payload)
+    assert status == 409
+    assert body["error"]
+    assert [p[0] for p in _pushes(server)] == ["A"]
 
 
 @pytest.mark.parametrize("payload", [{}, {"upto": "3"}, {"upto": True}, {"upto": None}, [1]])

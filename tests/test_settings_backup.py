@@ -229,6 +229,23 @@ def test_retention_ignores_the_station_name(tmp_path: Path) -> None:
     ]
 
 
+def _seed_later(backup_dir: Path, count: int, kind: str = "") -> list[str]:
+    """``count`` archives dated after ``_NOW``, as a clock set back finds them."""
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    names = [archive_name("OpenFollow old-name", "0.1.0", _NOW + timedelta(days=d), kind) for d in range(1, count + 1)]
+    for name in names:
+        (backup_dir / name).write_bytes(b"x")
+    return names
+
+
+def test_a_clock_set_back_never_prunes_the_archive_just_written(tmp_path: Path) -> None:
+    state = _station(tmp_path)
+    later = _seed_later(state / "backups", 12)
+    record = run_backup(state, "0.4.3", "0.4.4", now=_NOW)
+    names = [p.name for p in list_archives(state / "backups")]
+    assert names == [record.archive] + later[-(settings_backup.KEEP - 1) :]
+
+
 def test_list_archives_of_a_missing_folder_is_empty(tmp_path: Path) -> None:
     assert list_archives(tmp_path / "absent") == []
 
@@ -634,6 +651,30 @@ def test_a_web_backup_on_a_full_disk_evicts_only_older_web_backups(tmp_path: Pat
     result = _web_backup(state, write=_FullDisk(web, free_after=1))
     assert result.error == ""
     assert [p.name for p in list_archives(web)] == seeded[1:] + [result.archive]
+
+
+def test_a_web_backup_under_a_clock_set_back_is_kept(tmp_path: Path) -> None:
+    state = _station(tmp_path)
+    web = state / "backups" / "web"
+    later = _seed_later(web, 12, "push")
+    result = _web_backup(state)
+    assert [p.name for p in list_archives(web)] == [result.archive] + later[-(settings_backup.KEEP - 1) :]
+
+
+def test_an_unsearchable_web_backup_folder_is_reported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A folder left by a root run (0700, root's) refuses even the check for a free name.
+    state = _station(tmp_path)
+    web = state / "backups" / "web"
+    real_exists = Path.exists
+
+    def exists(self: Path, *args: object, **kwargs: object) -> bool:
+        if self.parent == web:
+            raise PermissionError(errno.EACCES, "Permission denied", str(web))
+        return real_exists(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "exists", exists)
+    result = _web_backup(state)
+    assert result == settings_backup.WebBackup("", f"Permission denied: {web}")
 
 
 def test_web_backup_names_carry_milliseconds() -> None:

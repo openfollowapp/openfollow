@@ -3160,13 +3160,17 @@ def reset_config_to_defaults(current_cfg: AppConfig) -> AppConfig:
 
 # The query parameter marking a request as settings another station pushed.
 PUSHED_FROM_PARAM = "from"
+# Stations on 0.5.0-rc1 and earlier push every setting to the import with this query, and no name.
+UNNAMED_PUSH_PARAM = "skip_restart"
 
 
 def _pushed_by() -> str | None:
     """The pushing station's name, cleaned like a beacon's; ``None`` when this is no push."""
-    if PUSHED_FROM_PARAM not in request.query:
-        return None
-    return clean_peer_name(request.query.get(PUSHED_FROM_PARAM, "")).strip()
+    if PUSHED_FROM_PARAM in request.query:
+        return clean_peer_name(request.query.get(PUSHED_FROM_PARAM, "")).strip()
+    if UNNAMED_PUSH_PARAM in request.query:
+        return ""
+    return None
 
 
 # A push never names the station it lands on: each station keeps its own.
@@ -3178,8 +3182,17 @@ def _without_station_name(data: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in data.items() if key not in _PUSH_EXCLUDED_FIELDS}
 
 
+_SECTION_LABELS = {
+    "mouse3d": "3D mouse",
+    "osc": "OSC",
+    "otp_output": "OTP output",
+    "psn": "PSN",
+    "rttrpm_output": "RTTrPM output",
+}
+
+
 def _section_label(section: str) -> str:
-    return section.replace("_", " ").capitalize()
+    return _SECTION_LABELS.get(section) or section.replace("_", " ").capitalize()
 
 
 def _backup_before(config_path: str, kind: str) -> dict[str, str]:
@@ -8852,18 +8865,25 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                     for push in pushes
                 ],
                 "earlier": earlier,
+                "run": server.pushed_settings.run,
             }
         )
 
     @app.post("/api/pushed-settings/remove")
     def api_pushed_settings_remove() -> Any:
-        """Remove the warning for every push up to ``upto``, the newest one the page showed."""
+        """Remove the warning for every push up to ``upto``, the newest one the page showed.
+
+        ``run`` is the one the page read it from: a removal from before a restart is refused.
+        """
         response.content_type = "application/json"
         data = _load_json_body()
         upto = data.get("upto") if isinstance(data, dict) else None
         if isinstance(upto, bool) or not isinstance(upto, int):
             response.status = 400
             return json.dumps({"error": "The request named no push."})
+        if data.get("run") != server.pushed_settings.run:
+            response.status = 409
+            return json.dumps({"error": "OpenFollow restarted since the warning was shown."})
         server.pushed_settings.remove(upto)
         return json.dumps({"success": True})
 

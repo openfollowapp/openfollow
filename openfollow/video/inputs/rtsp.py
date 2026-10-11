@@ -36,10 +36,11 @@ _UDP_ONLY_SCHEMES = frozenset({"rtspu", "rtspsu"})
 
 
 def _transports(location: str) -> int:
-    """rtspsrc ``protocols`` for *location*: TCP alone where the connection lands on IPv6.
+    """rtspsrc ``protocols`` for *location*: TCP alone where the first address the connection tries is IPv6.
 
     rtspsrc opens its UDP sockets for the SDP's address family, which most servers
     give as IPv4 whatever the connection, and udpsink then refuses an IPv6 server.
+    A fallback to IPv6 after an IPv4 first address fails is not covered.
     """
     try:
         parts = urlsplit(location)
@@ -207,7 +208,7 @@ class RtspInput(VideoInputBase):
         logger.info(
             "RTSP source: %s (latency=0, %s, login=%s)",
             redact_uri(location),
-            "tcp interleaved: connects over IPv6" if protocols == _TRANSPORTS_TCP else "tcp+udp+multicast",
+            "tcp interleaved: dials IPv6 first" if protocols == _TRANSPORTS_TCP else "tcp+udp+multicast",
             "set" if (user or password) else "none",
         )
 

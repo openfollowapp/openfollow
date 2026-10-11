@@ -19,7 +19,7 @@ Which network interface SRT, RTSP and RTP use is set under **Network Interface A
 
 ## Settings (by Source Type)
 
-- **RTSP URL** – the full `rtsp://` address, e.g. `rtsp://192.168.0.182:554/stream1`. Best results: 1080p/720p, 25–30 fps, H.264, ~4–8 Mbps CBR, 1 keyframe/s.
+- **RTSP URL** – the full `rtsp://` address, e.g. `rtsp://192.168.0.182:554/stream1`. Best results: 1080p/720p, 25–30 fps, H.264, ~4–8 Mbps CBR, 1 keyframe/s. A source reached over IPv6 (an IPv6 address, `localhost`, or a name whose first address is IPv6) always runs over TCP, with the video inside the RTSP connection: a firewall needs only that TCP port, and a camera that offers only multicast does not play this way.
 - **Username (optional)** / **Password (optional)** – the camera's login, where one is required. Type the password as it is: no URL-encoding, and `@` or `:` are fine here where they would break a URL. Credentials in the URL (`rtsp://user:pass@host/path`) still work, but these fields override them.
 - **SRT URL** – `srt://0.0.0.0:5000` to listen (listener mode) or `srt://203.0.113.10:5000` to connect (caller mode); a bare `host:port` also works.
 - **Passphrase (optional)** – the SRT stream's encryption key, when the sender encrypts. Same precedence as the RTSP login: filling it in overrides a `?passphrase=` carried in the URL.

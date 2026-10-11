@@ -147,9 +147,13 @@ class TestCreatePipeline:
             assert self._protocols("rtsp://camera.example:554/stream") == 0x4
         assert "tcp interleaved" in caplog.text and "IPv6" in caplog.text
 
-    def test_localhost_on_a_dual_stack_host_takes_tcp_interleaved(self, names: _Names) -> None:
-        names.answers["localhost"] = ["::1", "127.0.0.1"]
-        assert self._protocols("rtsp://localhost:8554/demo") == 0x4
+    @pytest.mark.parametrize("host", ["localhost", "cam.localhost", "LOCALHOST."])
+    def test_a_localhost_name_takes_tcp_interleaved_whatever_the_system_resolver_says(
+        self, names: _Names, host: str
+    ) -> None:
+        names.answers[host.lower()] = ["127.0.0.1", "::1"]
+        assert self._protocols(f"rtsp://{host}:8554/demo") == 0x4
+        assert names.looked_up == []
 
     @pytest.mark.parametrize(
         "addresses", [["192.0.2.10"], ["192.0.2.10", "192.0.2.11"], ["192.0.2.10", "2001:db8::10"]]

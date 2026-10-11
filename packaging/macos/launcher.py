@@ -30,17 +30,41 @@ APP_NAME = "OpenFollow"
 SEED_CONFIG_NAME = "config.seed.toml"
 STORAGE_PLACEHOLDER = "@STORAGE_PATH@"
 
-# Elements the app builds that the spec's plugin allowlist could drop.
+# Every element the app builds on macOS, each from a plugin the spec's allowlist
+# could drop. tests/test_macos_bundle_contract.py checks this against the sources.
 REQUIRED_GST_ELEMENTS = (
-    "gtksink",
-    "videoconvert",
-    "videotestsrc",
+    # built by name
+    "appsink",
     "avfvideosrc",
+    "capsfilter",
     "decodebin",
+    "filesrc",
+    "gtksink",
+    "imagefreeze",
+    "jpegdec",
+    "jpegenc",
+    "queue",
+    "rtpjitterbuffer",
     "rtspsrc",
     "srtsrc",
-    "jpegenc",
+    "tee",
+    "udpsrc",
+    "valve",
+    "videoconvert",
+    "videoscale",
+    "videotestsrc",
+    # plugged by decodebin: PNG / WebP uploads and WebM / VP8 clips
+    "pngdec",
     "webpdec",
+    "matroskademux",
+    "avdec_vp8",
+    # plugged by decodebin: H.264 / H.265 over RTP and RTSP, MPEG-TS over RTP and SRT
+    "rtph264depay",
+    "rtph265depay",
+    "rtpmp2tdepay",
+    "h264parse",
+    "h265parse",
+    "tsdemux",
 )
 
 

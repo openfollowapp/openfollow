@@ -287,16 +287,7 @@ def _install_fake_gst(monkeypatch, missing: set[str]) -> None:
     monkeypatch.setitem(sys.modules, "gi.repository", repository)
 
 
-@pytest.mark.parametrize(
-    "element",
-    [
-        pytest.param("webpdec", id="webp-media"),
-        pytest.param("jpegenc", id="snapshots-and-uploads"),
-        pytest.param("decodebin", id="network-and-gallery-decode"),
-        pytest.param("rtspsrc", id="rtsp-input"),
-        pytest.param("srtsrc", id="srt-input"),
-    ],
-)
+@pytest.mark.parametrize("element", _load_launcher().REQUIRED_GST_ELEMENTS)
 def test_selfcheck_fails_when_an_element_the_app_builds_is_missing(launcher, monkeypatch, capsys, element) -> None:
     _install_fake_gst(monkeypatch, {element})
 

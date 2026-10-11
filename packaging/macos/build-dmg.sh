@@ -124,8 +124,10 @@ echo "==> Ad-hoc signing"
 codesign --force --deep --sign - "$APP"
 
 echo "==> Self-checking bundle (scrubbed env)"
-if ! env -i HOME="$HOME" OPENFOLLOW_SELFCHECK=1 "$APP/Contents/MacOS/OpenFollow" | grep -q '^OK$'; then
-  echo "Bundle self-check failed - the frozen native stack is incomplete." >&2
+selfcheck="$(env -i HOME="$HOME" OPENFOLLOW_SELFCHECK=1 "$APP/Contents/MacOS/OpenFollow")" || true
+if ! grep -q '^OK$' <<<"$selfcheck"; then
+  echo "Bundle self-check failed - the frozen native stack is incomplete:" >&2
+  echo "$selfcheck" >&2
   exit 1
 fi
 

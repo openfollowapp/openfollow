@@ -85,18 +85,17 @@ def _otool_load_commands(path: Path) -> str:
     return subprocess.run(["otool", "-l", str(path)], capture_output=True, text=True, check=True).stdout
 
 
-def needs_newer(
+def bundle_minimums(
     app: Path,
-    minimum: Version,
     load_commands: Callable[[Path], str] = _otool_load_commands,
 ) -> list[tuple[Path, Version]]:
-    """Each bundled Mach-O whose own minimum is newer than ``minimum``."""
-    too_new = []
+    """Each bundled Mach-O that declares a minimum macOS, with that minimum."""
+    minimums = []
     for path in macho_files(app):
         needed = minimum_from_load_commands(load_commands(path))
-        if needed is not None and needed > minimum:
-            too_new.append((path, needed))
-    return too_new
+        if needed is not None:
+            minimums.append((path, needed))
+    return minimums
 
 
 def main(argv: list[str], load_commands: Callable[[Path], str] = _otool_load_commands) -> int:
@@ -109,9 +108,14 @@ def main(argv: list[str], load_commands: Callable[[Path], str] = _otool_load_com
     except KeyError:
         print(f"{app}: Info.plist declares no LSMinimumSystemVersion.", file=sys.stderr)
         return 1
-    too_new = needs_newer(app, minimum, load_commands)
+    minimums = bundle_minimums(app, load_commands)
+    too_new = [(path, needed) for path, needed in minimums if needed > minimum]
     if not too_new:
         print(f"Every bundled Mach-O runs on macOS {format_version(minimum)}.")
+        if minimums:
+            # A plist declaring more than any library needs shows here.
+            path, needed = max(minimums, key=lambda entry: entry[1])
+            print(f"Newest minimum among them: macOS {format_version(needed)} ({path.relative_to(app)}).")
         return 0
     print(
         f"{len(too_new)} bundled Mach-O(s) need a newer macOS than the declared "

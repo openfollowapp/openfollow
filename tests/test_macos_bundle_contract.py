@@ -4,21 +4,25 @@
 
 PyInstaller only runs on a Mac with the Homebrew stack, so ``openfollow.spec``
 and ``build-dmg.sh`` are read as AST and text here, and a missing document,
-plugin or minimum-version check fails ``make ci`` instead of a DMG on a stage.
-The minimum-version checker ``build-dmg.sh`` runs is exercised on a stand-in
-``.app``.
+plugin, GStreamer element or minimum-version check fails ``make ci`` instead of
+a DMG on a stage. The minimum-version checker and the self-check step
+``build-dmg.sh`` runs are exercised on a stand-in ``.app``.
 """
 
 from __future__ import annotations
 
 import ast
 import importlib.util
+import os
 import plistlib
+import shlex
+import subprocess
 import types
 from pathlib import Path
 
 import pytest
 
+from openfollow.web import diagnostics as diagnostics_module
 from openfollow.web import routes as routes_module
 
 pytestmark = pytest.mark.unit
@@ -84,7 +88,7 @@ def test_every_document_the_about_page_reads_is_bundled(spec_tree, monkeypatch) 
 
 
 def test_documents_land_at_the_bundle_root(spec_tree) -> None:
-    # _bundled_doc_path looks for them directly under sys._MEIPASS.
+    # _bundled_doc_path looks beside the openfollow package, which the bundle keeps at its root.
     additions = [
         node.value
         for node in ast.walk(spec_tree)
@@ -101,21 +105,49 @@ def test_documents_land_at_the_bundle_root(spec_tree) -> None:
 
 
 # ---------------------------------------------------------------------------
-# GStreamer plugins
+# GStreamer elements
 # ---------------------------------------------------------------------------
 
-# The plugin each element the self-check requires lives in (Homebrew 1.26).
+_REQUIRED_GST_ELEMENTS = _load("launcher").REQUIRED_GST_ELEMENTS
+
+# The plugin each required element lives in, as gst-inspect-1.0 reports it on
+# Homebrew GStreamer 1.28.
 _ELEMENT_PLUGINS = {
-    "gtksink": "libgstgtk.dylib",
-    "videoconvert": "libgstvideoconvertscale.dylib",
-    "videotestsrc": "libgstvideotestsrc.dylib",
+    "appsink": "libgstapp.dylib",
+    "avdec_vp8": "libgstlibav.dylib",
     "avfvideosrc": "libgstapplemedia.dylib",
+    "capsfilter": "libgstcoreelements.dylib",
     "decodebin": "libgstplayback.dylib",
+    "filesrc": "libgstcoreelements.dylib",
+    "gtksink": "libgstgtk.dylib",
+    "h264parse": "libgstvideoparsersbad.dylib",
+    "h265parse": "libgstvideoparsersbad.dylib",
+    "imagefreeze": "libgstimagefreeze.dylib",
+    "jpegdec": "libgstjpeg.dylib",
+    "jpegenc": "libgstjpeg.dylib",
+    "matroskademux": "libgstmatroska.dylib",
+    "pngdec": "libgstpng.dylib",
+    "queue": "libgstcoreelements.dylib",
+    "rtph264depay": "libgstrtp.dylib",
+    "rtph265depay": "libgstrtp.dylib",
+    "rtpjitterbuffer": "libgstrtpmanager.dylib",
+    "rtpmp2tdepay": "libgstrtp.dylib",
     "rtspsrc": "libgstrtsp.dylib",
     "srtsrc": "libgstsrt.dylib",
-    "jpegenc": "libgstjpeg.dylib",
+    "tee": "libgstcoreelements.dylib",
+    "tsdemux": "libgstmpegtsdemux.dylib",
+    "udpsrc": "libgstudp.dylib",
+    "valve": "libgstcoreelements.dylib",
+    "videoconvert": "libgstvideoconvertscale.dylib",
+    "videoscale": "libgstvideoconvertscale.dylib",
+    "videotestsrc": "libgstvideotestsrc.dylib",
     "webpdec": "libgstwebp.dylib",
 }
+
+# Inputs the app never runs: NDI is not shipped on macOS, the cameras are Linux only.
+_NOT_ON_MACOS = frozenset(
+    {"openfollow/video/inputs/ndi.py", "openfollow/video/inputs/picam.py", "openfollow/video/inputs/v4l2.py"}
+)
 
 
 def _plugin_allowlist(tree: ast.Module) -> set[str]:
@@ -124,14 +156,128 @@ def _plugin_allowlist(tree: ast.Module) -> set[str]:
     return set(ast.literal_eval(call.args[0]))
 
 
+def _launch_elements(description: ast.expr) -> set[str]:
+    """Element names in a ``Gst.parse_launch`` description; a caps segment carries a ``/``."""
+    if isinstance(description, ast.Constant) and isinstance(description.value, str):
+        text = description.value
+    elif isinstance(description, ast.JoinedStr):
+        text = "".join(part.value if isinstance(part, ast.Constant) else "0" for part in description.values)
+    else:
+        pytest.fail(f"cannot read the parse_launch description at line {description.lineno}")
+    return {name for segment in text.split("!") if "/" not in (name := segment.split()[0])}
+
+
+def _is_element_factory(func: ast.expr) -> bool:
+    """``<...>.ElementFactory.make``, or the ``make`` helper an input defines around it."""
+    if isinstance(func, ast.Name):
+        return func.id == "make"
+    return (
+        isinstance(func, ast.Attribute)
+        and func.attr == "make"
+        and isinstance(func.value, ast.Attribute)
+        and func.value.attr == "ElementFactory"
+    )
+
+
+def _elements_built_by_name(path: Path) -> set[str]:
+    names: set[str] = set()
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        first = node.args[0]
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "parse_launch":
+            names |= _launch_elements(first)
+        elif _is_element_factory(node.func) and isinstance(first, ast.Constant) and isinstance(first.value, str):
+            names.add(first.value)
+    return names
+
+
+@pytest.fixture(scope="module")
+def built_by_name() -> dict[str, set[str]]:
+    """Elements each source the app runs on macOS builds from a literal name."""
+    found = {}
+    for path in sorted((_REPO / "openfollow").rglob("*.py")):
+        source = path.relative_to(_REPO).as_posix()
+        if source not in _NOT_ON_MACOS and (names := _elements_built_by_name(path)):
+            found[source] = names
+    return found
+
+
+def test_selfcheck_requires_every_element_the_sources_build(built_by_name) -> None:
+    missing = sorted(
+        f"{element} ({source})"
+        for source, names in built_by_name.items()
+        for element in names - set(_REQUIRED_GST_ELEMENTS)
+    )
+    assert not missing, f"add to REQUIRED_GST_ELEMENTS in packaging/macos/launcher.py: {missing}"
+
+
+def test_the_scan_reads_every_pipeline_the_app_builds(built_by_name) -> None:
+    # Elements built some other way would pass the test above unseen.
+    inputs = _REPO / "openfollow" / "video" / "inputs"
+    expected = {path.relative_to(_REPO).as_posix() for path in inputs.glob("[!_]*.py")} - _NOT_ON_MACOS
+    expected |= {"openfollow/runtime/receiver_pipeline.py", "openfollow/video/media_store.py"}
+    assert expected <= built_by_name.keys()
+
+
+def test_selfcheck_requires_every_element_the_diagnostics_bundle_lists() -> None:
+    listed = {name for name, _used_for in diagnostics_module._SHARED_GST_ELEMENTS}
+    assert listed <= set(_REQUIRED_GST_ELEMENTS), sorted(listed - set(_REQUIRED_GST_ELEMENTS))
+
+
 def test_webp_plugin_is_kept(spec_tree) -> None:
     assert "libgstwebp.dylib" in _plugin_allowlist(spec_tree)
 
 
-@pytest.mark.parametrize("element", _load("launcher").REQUIRED_GST_ELEMENTS)
+@pytest.mark.parametrize("element", _REQUIRED_GST_ELEMENTS)
 def test_every_element_the_selfcheck_requires_survives_the_allowlist(spec_tree, element) -> None:
     assert element in _ELEMENT_PLUGINS, f"name the plugin that provides {element!r} in _ELEMENT_PLUGINS"
     assert _ELEMENT_PLUGINS[element] in _plugin_allowlist(spec_tree)
+
+
+# ---------------------------------------------------------------------------
+# Post-build self-check
+# ---------------------------------------------------------------------------
+
+
+def _run_selfcheck_step(tmp_path: Path, output: str, status: int) -> subprocess.CompletedProcess[str]:
+    """Run build-dmg.sh's self-check step against a stand-in app that prints ``output``."""
+    script = _BUILD_DMG.read_text(encoding="utf-8")
+    step = script[script.index('echo "==> Self-checking bundle') : script.index('echo "==> Building DMG"')]
+    app = tmp_path / "OpenFollow.app"
+    binary = app / "Contents" / "MacOS" / "OpenFollow"
+    binary.parent.mkdir(parents=True)
+    binary.write_text(f"#!/bin/sh\nprintf '%s\\n' {shlex.quote(output)}\nexit {status}\n")
+    binary.chmod(0o755)
+    return subprocess.run(
+        ["bash", "-c", f"set -euo pipefail\nAPP={shlex.quote(str(app))}\n{step}"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={"HOME": str(tmp_path), "PATH": os.environ["PATH"]},
+        timeout=30,
+    )
+
+
+def test_selfcheck_step_passes_on_ok(tmp_path) -> None:
+    result = _run_selfcheck_step(tmp_path, "OK", 0)
+    assert result.returncode == 0
+    assert result.stderr == ""
+
+
+@pytest.mark.parametrize(
+    ("output", "status"),
+    [
+        pytest.param("FAIL: missing GStreamer elements: udpsrc", 1, id="missing-element"),
+        pytest.param("FAIL: No module named 'cv2'", 1, id="missing-module"),
+        pytest.param("", 134, id="crash"),
+    ],
+)
+def test_selfcheck_step_fails_and_shows_what_the_app_printed(tmp_path, output, status) -> None:
+    result = _run_selfcheck_step(tmp_path, output, status)
+    assert result.returncode == 1
+    assert result.stderr.splitlines()[0] == "Bundle self-check failed - the frozen native stack is incomplete:"
+    assert output in result.stderr.splitlines()[1:]
 
 
 # ---------------------------------------------------------------------------
@@ -148,9 +294,10 @@ def test_build_checks_the_bundle_against_the_declared_minimum() -> None:
     assert script.index("pyinstaller") < script.index(check) < script.index("create-dmg \\")
 
 
-def test_packaging_doc_states_the_declared_minimum(spec_tree) -> None:
+@pytest.mark.parametrize("doc_name", ["PACKAGING.md", "DEVELOPMENT.md"])
+def test_docs_state_the_declared_minimum(spec_tree, doc_name) -> None:
     minimum = _info_plist_value(spec_tree, "LSMinimumSystemVersion")
-    doc = (_REPO / "docs" / "PACKAGING.md").read_text(encoding="utf-8")
+    doc = " ".join((_REPO / "docs" / doc_name).read_text(encoding="utf-8").split())
     assert f"macOS {minimum} or later" in doc
     assert "Apple Silicon only" in doc
 
@@ -233,12 +380,22 @@ def test_check_fails_on_a_library_newer_than_the_plist(checker, tmp_path, capsys
     assert "libalias" not in err
 
 
-@pytest.mark.parametrize("declared", ["26.0", "26"])
-def test_check_passes_when_the_plist_covers_every_library(checker, tmp_path, capsys, declared) -> None:
+@pytest.mark.parametrize(
+    ("declared", "runs_on"),
+    [
+        pytest.param("26.0", "26.0", id="exact"),
+        pytest.param("26", "26.0", id="exact-without-minor"),
+        pytest.param("27.0", "27.0", id="declared-above-every-library"),
+    ],
+)
+def test_check_passes_and_names_the_newest_minimum(checker, tmp_path, capsys, declared, runs_on) -> None:
     app = _fake_app(tmp_path, {"LSMinimumSystemVersion": declared})
 
     assert checker.main([str(app)], load_commands=_load_commands) == 0
-    assert "macOS 26.0" in capsys.readouterr().out
+    assert capsys.readouterr().out.splitlines() == [
+        f"Every bundled Mach-O runs on macOS {runs_on}.",
+        "Newest minimum among them: macOS 26.0 (Contents/Frameworks/libnew.dylib).",
+    ]
 
 
 def test_check_fails_without_a_declared_minimum(checker, tmp_path, capsys) -> None:

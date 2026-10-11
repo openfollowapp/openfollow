@@ -7698,11 +7698,12 @@ def test_gallery_upload_rejects_oversize(gallery_server, monkeypatch) -> None:
     assert _user_files(media_dir) == []
 
 
-def test_gallery_capture_503_without_feed(gallery_server) -> None:
+def test_gallery_capture_without_feed_is_refused_beside_the_button(gallery_server) -> None:
+    """A refusal like the store's: 200 with the reason, so the page puts it beside Capture, not under Save."""
     _, base, _ = gallery_server
     status, body = _post_bytes(base, f"{_GP}/capture", b"")
-    assert status == 503
-    assert json.loads(body)["ok"] is False
+    assert status == 200
+    assert json.loads(body) == {"ok": False, "error": "No video frame available to capture.", "action": ""}
 
 
 def test_gallery_capture_saves_frame(gallery_server, monkeypatch) -> None:
@@ -7713,6 +7714,74 @@ def test_gallery_capture_saves_frame(gallery_server, monkeypatch) -> None:
     payload = json.loads(body)
     assert payload["ok"] is True
     assert len(_user_files(media_dir)) == 1
+
+
+def _block_gallery_store(media_dir, monkeypatch) -> None:
+    """Make the store's directory impossible to create: its parent is a file."""
+    from openfollow.video import media_store
+
+    blocker = media_dir.parent / "blocker"
+    blocker.write_text("not a directory")
+    monkeypatch.setattr(media_store, "resolve_media_storage_path", lambda: blocker / "media")
+
+
+def test_gallery_capture_into_an_unwritable_store_answers_json_with_the_reason(gallery_server, monkeypatch) -> None:
+    from openfollow.video import media_store
+
+    server, base, media_dir = gallery_server
+    _block_gallery_store(media_dir, monkeypatch)
+    monkeypatch.setattr(server, "get_full_snapshot", lambda: _JPEG + b"clean-frame")
+    status, body = _post_bytes(base, f"{_GP}/capture", b"")
+    assert status == 200
+    assert json.loads(body) == {
+        "ok": False,
+        "error": media_store.STORE_WRITE_FAILED,
+        "action": media_store.STORE_WRITE_ACTION,
+    }
+
+
+def test_gallery_upload_into_an_unwritable_store_shows_the_reason(gallery_server, monkeypatch) -> None:
+    from openfollow.video import media_store
+
+    _, base, media_dir = gallery_server
+    _block_gallery_store(media_dir, monkeypatch)
+    status, body = _post_bytes(base, f"{_GP}/upload", _PNG)
+    assert status == 200
+    # What the station observed on the main line, the next step on its own line under it.
+    assert (
+        '<div class="gallery-error" role="alert">'
+        f"<div>{html.escape(media_store.STORE_WRITE_FAILED)}</div>"
+        f'<div class="notice-sub">{html.escape(media_store.STORE_WRITE_ACTION)}</div></div>'
+    ) in body
+
+
+def test_gallery_error_without_a_step_has_no_second_line(gallery_server) -> None:
+    _, base, _ = gallery_server
+    status, body = _post_bytes(base, f"{_GP}/upload", _GIF)
+    assert status == 200
+    banner = body[body.index('<div class="gallery-error"') :]
+    assert banner.startswith('<div class="gallery-error" role="alert"><div>Unsupported file.')
+    assert "notice-sub" not in body
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root lists regardless of mode")
+def test_gallery_upload_into_an_unreadable_store_shows_the_reason(gallery_server) -> None:
+    """The refusal re-renders the grid, which must still list the defaults rather than 500."""
+    from openfollow.video import media_store
+
+    _, base, media_dir = gallery_server
+    media_dir.mkdir()
+    media_dir.chmod(0o300)
+    try:
+        status, body = _post_bytes(base, f"{_GP}/upload", _PNG)
+        list_status, listing = _get(base, f"{_GP}/list")
+    finally:
+        media_dir.chmod(0o700)
+    assert status == 200
+    assert html.escape(media_store.STORE_WRITE_FAILED) in body
+    assert 'title="Stage"' in body
+    assert list_status == 200
+    assert 'title="Stage"' in listing and 'title="Grey"' in listing
 
 
 def test_gallery_delete_default_refused(gallery_server) -> None:
@@ -7831,7 +7900,22 @@ def test_gallery_capture_store_error(gallery_server, monkeypatch) -> None:
     monkeypatch.setattr(media_store, "save_captured_frame", boom)
     status, body = _post_bytes(base, f"{_GP}/capture", b"")
     assert status == 200
-    assert json.loads(body) == {"ok": False, "error": "gallery full"}
+    assert json.loads(body) == {"ok": False, "error": "gallery full", "action": ""}
+
+
+def test_gallery_capture_unexpected_error_answers_json(gallery_server, monkeypatch) -> None:
+    from openfollow.video import media_store
+
+    server, base, _ = gallery_server
+    monkeypatch.setattr(server, "get_full_snapshot", lambda: _JPEG + b"frame")
+
+    def boom(jpeg):
+        raise RuntimeError("disk exploded")
+
+    monkeypatch.setattr(media_store, "save_captured_frame", boom)
+    status, body = _post_bytes(base, f"{_GP}/capture", b"")
+    assert status == 200
+    assert json.loads(body) == {"ok": False, "error": "Capture failed.", "action": ""}
 
 
 def test_gallery_download_user_media(gallery_server) -> None:

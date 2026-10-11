@@ -49,6 +49,29 @@ def on_screen_mode_active(app: OpenFollowApp) -> bool:
     )
 
 
+def keyboard_owned(app: OpenFollowApp) -> bool:
+    """Whether the Operator Screen's own controls own the keyboard.
+
+    Not while another window is the key window, and not while a text field
+    reads the keyboard from GTK key events: the URL editor, the network field
+    editor, the embedded browser.
+    """
+    canvas = getattr(app, "_canvas", None)
+    if canvas is not None and not getattr(canvas, "has_keyboard_focus", True):
+        return False
+    return not (
+        getattr(app, "_url_editor_active", False)
+        or getattr(app, "_pi_network_field_edit_active", False)
+        or getattr(app, "_browser_active", False)
+    )
+
+
+def _polled_already(app: OpenFollowApp, key: str) -> bool:
+    """True for a GTK key-down whose press the polled keyboard already acted on."""
+    manager = app._input_manager
+    return manager is not None and not manager.keyboard_handler.take_text_key(key)
+
+
 def close_all_screens(app: OpenFollowApp) -> None:
     """Close every on-screen mode and return to the HUD.
 
@@ -846,7 +869,8 @@ def on_key_down(app: OpenFollowApp, event: dict[str, Any]) -> None:
         # Backspace). Route everything to ``handle_url_editor_key``
         # and skip the digit-as-marker shortcut below so typing "1"
         # goes into the URL buffer instead of picking marker 0.
-        handle_url_editor_key(app, key)
+        if not _polled_already(app, key):
+            handle_url_editor_key(app, key)
         return
 
     # Pi network field editor: same constraint as the URL editor – it
@@ -860,7 +884,8 @@ def on_key_down(app: OpenFollowApp, event: dict[str, Any]) -> None:
     if getattr(app, "_pi_network_field_edit_active", False):
         from openfollow.runtime.app_modes_network import handle_pi_network_field_edit_key
 
-        handle_pi_network_field_edit_key(app, key)
+        if not _polled_already(app, key):
+            handle_pi_network_field_edit_key(app, key)
         return
 
     # Field-choice picker also owns input exclusively. ArrowUp/Down/

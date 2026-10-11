@@ -400,7 +400,7 @@ configuration:
 On a mounted drive the hook creates `/mnt/nvme/openfollow/yolo/{models,cache}`
 owned by the `openfollow` service user. Detection storage auto-resolves to
 `/mnt/nvme/openfollow/yolo` whenever `/mnt/nvme` is mounted, else to a `yolo`
-folder under the service working directory (`/var/lib/openfollow/yolo`) – see
+folder beside `config.toml` (`/var/lib/openfollow/yolo`) – see
 `resolve_detection_storage_path`. There is no per-unit config edit and no web
 field: storage is fully automatic (an absolute `detection.storage_path` in
 `config.toml` still overrides). This mirrors the Ansible deploy's mount layout

@@ -33,6 +33,7 @@ else:
 import numpy as np
 import numpy.typing as npt
 
+from openfollow.station_dir import station_dir
 from openfollow.video.tracking import LOW_DETECTION_THRESHOLD, ByteTracker
 from openfollow.zones.geometry import point_in_polygon
 
@@ -69,10 +70,9 @@ _STEP_HISTORY = 8
 _NVME_MOUNTPOINT = "/mnt/nvme"
 _NVME_DETECTION_STORAGE = "/mnt/nvme/openfollow/yolo"
 
-# Folder under the working directory used for detection storage when no NVMe is
-# present. The service runs with WorkingDirectory=/var/lib/openfollow, so this
-# resolves to /var/lib/openfollow/yolo on the appliance (the checkout dir on a
-# dev machine).
+# Folder beside the config file used for detection storage when no NVMe is
+# present: /var/lib/openfollow/yolo on the appliance, the per-user Application
+# Support folder in the macOS app, the checkout on a dev machine.
 _LOCAL_STORAGE_DIRNAME = "yolo"
 
 
@@ -82,15 +82,15 @@ def resolve_detection_storage_path(storage_path: str) -> str:
     An explicit ``storage_path`` always wins. A blank value resolves
     automatically so the operator never has to choose a location: the NVMe
     location when ``/mnt/nvme`` is a real mountpoint, otherwise a ``yolo`` folder
-    under the current working directory. Idempotent: re-resolving an
-    already-resolved path returns it unchanged.
+    beside the config file. Idempotent: re-resolving an already-resolved path
+    returns it unchanged.
     """
     explicit = storage_path.strip()
     if explicit:
         return explicit
     if os.path.ismount(_NVME_MOUNTPOINT):
         return _NVME_DETECTION_STORAGE
-    return str(Path.cwd() / _LOCAL_STORAGE_DIRNAME)
+    return str(station_dir() / _LOCAL_STORAGE_DIRNAME)
 
 
 def check_detection_dependencies(

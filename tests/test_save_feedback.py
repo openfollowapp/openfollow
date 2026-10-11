@@ -70,6 +70,24 @@ def test_a_template_export_failure_reports_on_the_dialog() -> None:
     assert "showToast" not in body
 
 
+def _assigned_function_body(source: str, name: str) -> str:
+    """The body of ``window.name = function(...) { ... }``."""
+    return _function_body(source.replace(f"window.{name} = function(", f"function {name}("), name)
+
+
+def test_a_refused_capture_reports_as_a_failure_beside_its_button() -> None:
+    """The station refuses a capture with a 200 and ``ok: false``; a grey note was all it showed."""
+    body = _assigned_function_body(_template("partials/video_source.tpl"), "openfollowCaptureFeedback")
+    refusal = (
+        "saveError.show(saveError.boxFor(fb), "
+        "{error: d.error || 'Capture failed.', action: d.action || '', href: ''}, 'Not captured.', fb);"
+    )
+    assert refusal in body
+    # An error status or no answer is the shared handler's, so it is not reported twice.
+    assert body.index("if(!evt.detail.successful) return;") < body.index(refusal)
+    assert set(re.findall(r"fb\.textContent = ([^;]+);", body)) == {"''", "'Captured frame saved to the gallery.'"}
+
+
 _NATIVE_DIALOG = re.compile(r"(?<![\w.])(confirm|alert|prompt)\(")
 
 

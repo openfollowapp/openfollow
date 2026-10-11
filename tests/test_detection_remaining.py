@@ -21,6 +21,9 @@ This file fills in:
   from ONNX graph, empty predictions, score-filter reject,
   box-coords unprojection, ``max_persons`` cap, degenerate-box skip).
 * ``_OnnxBackend._prepare_predictions`` shape-matrix branches.
+* The CoreML compiled-model cache: keyed by the model file, pruned on
+  replacement and by ``remove_coreml_compiles``, absent on CPU-only hosts,
+  uncached fallback on failure.
 * ``_nms`` early-exit on single remaining index (``order.size == 1``).
 * ``_run`` outer try/except guard (inner raise → ``logger.exception``).
 * ``_run_inner`` loop matrix: no sample → sample-timeout counter,
@@ -43,6 +46,7 @@ appsink calls.
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import threading
 import time
@@ -63,6 +67,7 @@ from openfollow.video.detection import (
     _nms,
     _OnnxBackend,
     _TrackedPerson,
+    remove_coreml_compiles,
 )
 
 pytestmark = pytest.mark.unit
@@ -222,6 +227,7 @@ def _install_fake_onnxruntime(
     monkeypatch: pytest.MonkeyPatch,
     session_factory: Any | None = None,
     available_providers: list[str] | None = None,
+    version: str = "1.24.3",
 ) -> types.ModuleType:
     """Install a fake ``onnxruntime`` module.
 
@@ -231,6 +237,7 @@ def _install_fake_onnxruntime(
     defaults to a CPU-only host.
     """
     fake = types.ModuleType("onnxruntime")
+    fake.__version__ = version  # type: ignore[attr-defined]
 
     class _SessionOptions:
         intra_op_num_threads: int = 0
@@ -301,6 +308,397 @@ class TestOnnxBackendConstruction:
 
         _OnnxBackend("models/yolov8n.onnx")
         assert captured["providers"] == ["CoreMLExecutionProvider", "CPUExecutionProvider"]
+
+
+_COREML_HOST = ["CoreMLExecutionProvider", "CPUExecutionProvider"]
+# Shaped like a compile directory's identity: 16 lower-case hex digits.
+_ID_A = "0123456789abcdef"
+_ID_B = "fedcba9876543210"
+
+
+def _recording_session_factory(
+    calls: list[dict[str, Any]],
+    *,
+    cached_failures: tuple[Exception, ...] = (),
+    fail_without_cache: Exception | None = None,
+) -> Any:
+    """Session factory recording every build; successive cached builds raise ``cached_failures`` in turn."""
+    pending = list(cached_failures)
+
+    def _factory(path: str, **kwargs: Any) -> _FakeOnnxSession:
+        calls.append({"path": path, **kwargs})
+        if "provider_options" in kwargs:
+            if pending:
+                raise pending.pop(0)
+        elif fail_without_cache is not None:
+            raise fail_without_cache
+        return _FakeOnnxSession()
+
+    return _factory
+
+
+def _coreml_cache_of(call: dict[str, Any]) -> Path:
+    """The cache directory a recorded build handed to the CoreML provider."""
+    coreml_options, cpu_options = call["provider_options"]
+    assert cpu_options == {}
+    return Path(coreml_options["ModelCacheDirectory"])
+
+
+def _cached(calls: list[dict[str, Any]]) -> list[bool]:
+    return [("provider_options" in call) for call in calls]
+
+
+def _write_model(models_dir: Path, name: str = "yolo26n.onnx", content: bytes = b"model-v1") -> Path:
+    models_dir.mkdir(parents=True, exist_ok=True)
+    path = models_dir / name
+    path.write_bytes(content)
+    return path
+
+
+class TestCoreMLModelCache:
+    """A CoreML build compiles into a cache under the storage, keyed by the model file and the runtime."""
+
+    def test_coreml_build_compiles_into_the_storage_cache(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        calls: list[dict[str, Any]] = []
+        _install_fake_onnxruntime(monkeypatch, _recording_session_factory(calls), _COREML_HOST)
+        model = _write_model(tmp_path / "models")
+
+        _OnnxBackend(str(model), cache_root=tmp_path / "cache")
+
+        [call] = calls
+        assert call["providers"] == _COREML_HOST
+        cache_dir = _coreml_cache_of(call)
+        assert cache_dir.parent == tmp_path / "cache" / "coreml"
+        assert cache_dir.is_dir()
+
+    def test_same_model_file_reuses_its_cache(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        calls: list[dict[str, Any]] = []
+        _install_fake_onnxruntime(monkeypatch, _recording_session_factory(calls), _COREML_HOST)
+        model = _write_model(tmp_path / "models")
+
+        _OnnxBackend(str(model), cache_root=tmp_path / "cache")
+        _OnnxBackend(str(model), cache_root=tmp_path / "cache")
+
+        assert _coreml_cache_of(calls[0]) == _coreml_cache_of(calls[1])
+
+    @pytest.mark.parametrize("change", ["content", "mtime", "pre-1970 mtime", "runtime"])
+    def test_changed_model_or_runtime_never_reuses_the_old_compile(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        change: str,
+    ) -> None:
+        calls: list[dict[str, Any]] = []
+        factory = _recording_session_factory(calls)
+        _install_fake_onnxruntime(monkeypatch, factory, _COREML_HOST)
+        # A dotted name has its own stem to match, not one shortened again.
+        model = _write_model(tmp_path / "models", "yolo26n.fp16.onnx")
+        stat = model.stat()
+        if change == "pre-1970 mtime":
+            os.utime(model, ns=(stat.st_atime_ns, -5_000_000_000))
+        _OnnxBackend(str(model), cache_root=tmp_path / "cache")
+        old_cache = _coreml_cache_of(calls[0])
+
+        if change == "content":
+            model.write_bytes(b"model-v2, a different export")
+        elif change == "runtime":
+            # An app update brings a new onnxruntime but never rewrites a seeded model.
+            _install_fake_onnxruntime(monkeypatch, factory, _COREML_HOST, version="1.25.0")
+        else:
+            os.utime(model, ns=(stat.st_atime_ns, model.stat().st_mtime_ns + 1_000_000_000))
+        _OnnxBackend(str(model), cache_root=tmp_path / "cache")
+
+        new_cache = _coreml_cache_of(calls[1])
+        assert new_cache != old_cache
+        assert new_cache.is_dir()
+        # The stale compile can never be loaded again.
+        assert not old_cache.exists()
+
+    @pytest.mark.parametrize("neighbour", ["yolo26n-int8.onnx", f"yolo26n-{_ID_A}.onnx", "yolo26n-100.onnx"])
+    def test_each_model_keeps_its_own_cache(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        neighbour: str,
+    ) -> None:
+        # Names that extend each other, even with an identity-shaped suffix, never share compiles.
+        calls: list[dict[str, Any]] = []
+        _install_fake_onnxruntime(monkeypatch, _recording_session_factory(calls), _COREML_HOST)
+        fastest = _write_model(tmp_path / "models", "yolo26n.onnx")
+        other = _write_model(tmp_path / "models", neighbour)
+        _OnnxBackend(str(fastest), cache_root=tmp_path / "cache")
+        _OnnxBackend(str(other), cache_root=tmp_path / "cache")
+
+        fastest.write_bytes(b"model-v2, a different export")
+        other.write_bytes(b"model-v2 of the neighbour")
+        _OnnxBackend(str(fastest), cache_root=tmp_path / "cache")
+        _OnnxBackend(str(other), cache_root=tmp_path / "cache")
+
+        caches = [_coreml_cache_of(call) for call in calls]
+        assert len(set(caches)) == 4
+        assert [cache.is_dir() for cache in caches] == [False, False, True, True]
+
+    def test_cpu_only_host_builds_without_a_cache(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        # The Pi: no CoreML provider, so no cache options reach onnxruntime and
+        # nothing is written under the storage cache.
+        calls: list[dict[str, Any]] = []
+        _install_fake_onnxruntime(monkeypatch, _recording_session_factory(calls), ["CPUExecutionProvider"])
+        model = _write_model(tmp_path / "models")
+
+        _OnnxBackend(str(model), cache_root=tmp_path / "cache")
+
+        [call] = calls
+        assert set(call) == {"path", "sess_options", "providers"}
+        assert call["providers"] == ["CPUExecutionProvider"]
+        assert not (tmp_path / "cache").exists()
+
+    def test_no_cache_root_builds_without_a_cache(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        calls: list[dict[str, Any]] = []
+        _install_fake_onnxruntime(monkeypatch, _recording_session_factory(calls), _COREML_HOST)
+        model = _write_model(tmp_path / "models")
+
+        _OnnxBackend(str(model))
+
+        assert _cached(calls) == [False]
+        assert calls[0]["providers"] == _COREML_HOST
+
+    def test_missing_model_is_left_to_the_build_to_report(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        calls: list[dict[str, Any]] = []
+        missing = FileNotFoundError("Load model failed: file does not exist")
+        factory = _recording_session_factory(calls, fail_without_cache=missing)
+        _install_fake_onnxruntime(monkeypatch, factory, _COREML_HOST)
+
+        with pytest.raises(FileNotFoundError):
+            _OnnxBackend(str(tmp_path / "models" / "absent.onnx"), cache_root=tmp_path / "cache")
+
+        assert _cached(calls) == [False]
+        assert not (tmp_path / "cache").exists()
+
+    def test_cache_that_cannot_be_created_falls_back_to_an_uncached_build(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        calls: list[dict[str, Any]] = []
+        _install_fake_onnxruntime(monkeypatch, _recording_session_factory(calls), _COREML_HOST)
+        model = _write_model(tmp_path / "models")
+        blocked = tmp_path / "cache"
+        blocked.write_text("a file where the cache directory belongs")
+
+        with caplog.at_level(logging.WARNING, logger="openfollow.video.detection"):
+            backend = _OnnxBackend(str(model), cache_root=blocked)
+
+        assert backend.model_input_size == 320
+        assert _cached(calls) == [False]
+        assert any("CoreML model cache" in r.getMessage() for r in caplog.records)
+
+    @staticmethod
+    def _half_written_compile(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[Path, Path]:
+        """A model whose cache holds a compile cut short (a quit during the first build)."""
+        first: list[dict[str, Any]] = []
+        _install_fake_onnxruntime(monkeypatch, _recording_session_factory(first), _COREML_HOST)
+        model = _write_model(tmp_path / "models")
+        _OnnxBackend(str(model), cache_root=tmp_path / "cache")
+        half_written = _coreml_cache_of(first[0]) / "compiled_model.mlmodelc"
+        half_written.write_bytes(b"truncated")
+        return model, half_written
+
+    def test_failed_cached_build_retries_into_an_empty_cache(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # The half-written compile fails the load rather than recompiling; one
+        # compile into the emptied cache repairs it.
+        model, half_written = self._half_written_compile(monkeypatch, tmp_path)
+        calls: list[dict[str, Any]] = []
+        corrupt = RuntimeError("Failed to create MLModel, error: Unable to load model")
+        factory = _recording_session_factory(calls, cached_failures=(corrupt,))
+        _install_fake_onnxruntime(monkeypatch, factory, _COREML_HOST)
+
+        with caplog.at_level(logging.WARNING, logger="openfollow.video.detection"):
+            backend = _OnnxBackend(str(model), cache_root=tmp_path / "cache")
+
+        assert backend.model_input_size == 320
+        assert _cached(calls) == [True, True]
+        assert _coreml_cache_of(calls[0]) == _coreml_cache_of(calls[1])
+        assert not half_written.exists()
+        assert any("CoreML model cache" in r.getMessage() for r in caplog.records)
+
+    def test_emptied_cache_failing_again_builds_uncached_and_drops_it(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        model, _ = self._half_written_compile(monkeypatch, tmp_path)
+        calls: list[dict[str, Any]] = []
+        refused = RuntimeError("Failed to create MLModel, error: Unable to load model")
+        factory = _recording_session_factory(calls, cached_failures=(refused, refused))
+        _install_fake_onnxruntime(monkeypatch, factory, _COREML_HOST)
+
+        with caplog.at_level(logging.WARNING, logger="openfollow.video.detection"):
+            backend = _OnnxBackend(str(model), cache_root=tmp_path / "cache")
+
+        assert backend.model_input_size == 320
+        assert _cached(calls) == [True, True, False]
+        assert calls[2]["providers"] == _COREML_HOST
+        # Dropped, so the next build compiles a clean copy.
+        assert not _coreml_cache_of(calls[0]).exists()
+        assert sum("CoreML model cache" in r.getMessage() for r in caplog.records) == 2
+
+    def test_failed_cold_compile_builds_uncached_without_a_retry(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # Nothing was cached to repair, so compiling into the cache again would only fail again.
+        calls: list[dict[str, Any]] = []
+        uncompilable = RuntimeError("Failed to create MLModel, error: compiler failed")
+        factory = _recording_session_factory(calls, cached_failures=(uncompilable, uncompilable))
+        _install_fake_onnxruntime(monkeypatch, factory, _COREML_HOST)
+        model = _write_model(tmp_path / "models")
+
+        with caplog.at_level(logging.WARNING, logger="openfollow.video.detection"):
+            backend = _OnnxBackend(str(model), cache_root=tmp_path / "cache")
+
+        assert backend.model_input_size == 320
+        assert _cached(calls) == [True, False]
+        assert not _coreml_cache_of(calls[0]).exists()
+        assert sum("CoreML model cache" in r.getMessage() for r in caplog.records) == 1
+
+    def test_build_failing_without_the_cache_too_raises(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        calls: list[dict[str, Any]] = []
+        broken = RuntimeError("Load model failed: protobuf parsing failed")
+        factory = _recording_session_factory(calls, cached_failures=(broken, broken), fail_without_cache=broken)
+        _install_fake_onnxruntime(monkeypatch, factory, _COREML_HOST)
+        model = _write_model(tmp_path / "models")
+
+        with pytest.raises(RuntimeError, match="protobuf parsing failed"):
+            _OnnxBackend(str(model), cache_root=tmp_path / "cache")
+
+        assert _cached(calls) == [True, False]
+
+
+class TestRemoveCoreMLCompiles:
+    """Deleting a model drops every compile of it, and nothing else."""
+
+    @staticmethod
+    def _compiles(cache_root: Path, *names: str) -> list[Path]:
+        dirs = [cache_root / "coreml" / name for name in names]
+        for directory in dirs:
+            directory.mkdir(parents=True)
+            (directory / "compiled").write_bytes(b"compiled")
+        return dirs
+
+    def test_removes_every_compile_of_the_model(self, tmp_path: Path) -> None:
+        current, replaced = self._compiles(tmp_path, f"yolo26n-{_ID_A}", f"yolo26n-{_ID_B}")
+        kept = self._compiles(
+            tmp_path,
+            f"yolo26n-int8-{_ID_A}",
+            f"yolo26n-{_ID_A}-{_ID_B}",
+            f"yolo26m-{_ID_A}",
+            "yolo26n-notes",
+            f"yolo26n-{_ID_A[:15]}",
+            f"yolo26n-{_ID_A[:15]}g",
+        )
+
+        remove_coreml_compiles(tmp_path, "yolo26n.onnx")
+
+        assert not current.exists()
+        assert not replaced.exists()
+        assert all(directory.is_dir() for directory in kept)
+
+    def test_storage_without_compiles_is_left_alone(self, tmp_path: Path) -> None:
+        # The Pi: CPU builds never create the directory.
+        remove_coreml_compiles(tmp_path, "yolo26n.onnx")
+
+        assert not (tmp_path / "coreml").exists()
+
+    def test_an_unreadable_cache_is_logged(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        (tmp_path / "coreml").write_text("a file where the cache directory belongs")
+
+        with caplog.at_level(logging.WARNING, logger="openfollow.video.detection"):
+            remove_coreml_compiles(tmp_path, "yolo26n.onnx")
+
+        assert any("CoreML model cache" in r.getMessage() for r in caplog.records)
+
+    def test_a_compile_that_cannot_be_removed_is_logged_and_the_rest_go(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        stuck, removable = self._compiles(tmp_path, f"yolo26n-{_ID_A}", f"yolo26n-{_ID_B}")
+        real_rmtree = detection_module.shutil.rmtree
+
+        def _rmtree(path: Any, *args: Any, **kwargs: Any) -> None:
+            if Path(path) == stuck:
+                raise PermissionError("operation not permitted")
+            real_rmtree(path, *args, **kwargs)
+
+        monkeypatch.setattr(detection_module.shutil, "rmtree", _rmtree)
+
+        with caplog.at_level(logging.WARNING, logger="openfollow.video.detection"):
+            remove_coreml_compiles(tmp_path, "yolo26n.onnx")
+
+        assert stuck.is_dir()
+        assert not removable.exists()
+        assert any(str(stuck) in r.getMessage() for r in caplog.records)
+
+
+class TestDetectorModelCacheLocation:
+    """The detector compiles into the cache of the storage its model came from."""
+
+    def test_detector_compiles_into_its_storage_cache(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+        calls: list[dict[str, Any]] = []
+        _install_fake_onnxruntime(monkeypatch, _recording_session_factory(calls), _COREML_HOST)
+        _write_model(tmp_path / "models")
+
+        detector = PersonDetector(_cfg(enabled=True, model="yolo26n.onnx", storage_path=str(tmp_path)))
+
+        assert detector.available
+        assert _coreml_cache_of(calls[0]).parent == tmp_path / "cache" / "coreml"
+
+    def test_model_change_compiles_into_the_new_storage_cache(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+        calls: list[dict[str, Any]] = []
+        _install_fake_onnxruntime(monkeypatch, _recording_session_factory(calls), _COREML_HOST)
+        old_storage = tmp_path / "old"
+        new_storage = tmp_path / "new"
+        _write_model(old_storage / "models", "yolo26n.onnx")
+        _write_model(new_storage / "models", "yolo26m.onnx")
+        detector = PersonDetector(_cfg(enabled=True, model="yolo26n.onnx", storage_path=str(old_storage)))
+
+        detector.reload_config(_cfg(enabled=True, model="yolo26m.onnx", storage_path=str(new_storage)))
+        detector._drain_pending_config()
+
+        assert detector._model_path == str(new_storage / "models" / "yolo26m.onnx")
+        assert _coreml_cache_of(calls[1]).parent == new_storage / "cache" / "coreml"
 
 
 class _FakeCv2:

@@ -4467,13 +4467,13 @@ def _register_input_plugin_routes(
 _GALLERY_PREFIX = "/video-input/testpattern"
 
 
-def _render_gallery_grid(server: ConfigWebServer, *, error: str = "") -> str:
+def _render_gallery_grid(server: ConfigWebServer, *, error: str = "", action: str = "") -> str:
     """Render the thumbnail grid for the Media Gallery as an HTMX partial.
 
     The selected tile gets the ``selected`` class (amber border in CSS); each
     user tile carries download + delete overlay actions, defaults do not. An
     optional error banner lives *inside* the grid container so the next render
-    clears it.
+    clears it; *action* is its next step, on a line of its own.
     """
     from openfollow.video import media_store
 
@@ -4511,7 +4511,10 @@ def _render_gallery_grid(server: ConfigWebServer, *, error: str = "") -> str:
             f"{actions}"
             "</div>"
         )
-    banner = f'<div class="gallery-error" role="alert">{html_mod.escape(error)}</div>' if error else ""
+    banner = ""
+    if error:
+        step = f'<div class="notice-sub">{html_mod.escape(action)}</div>' if action else ""
+        banner = f'<div class="gallery-error" role="alert"><div>{html_mod.escape(error)}</div>{step}</div>'
     return f'<div id="gallery-grid" class="gallery-grid">{banner}{"".join(tiles)}</div>'
 
 
@@ -4564,7 +4567,7 @@ def _register_gallery_routes(app: Bottle, server: ConfigWebServer) -> None:
             _stream_to_file(request.environ["wsgi.input"], staged, total)
             media_store.save_upload(Path(staged))
         except MediaStoreError as exc:
-            return _render_gallery_grid(server, error=" ".join(filter(None, (exc.message, exc.action))))
+            return _render_gallery_grid(server, error=exc.message, action=exc.action)
         except Exception:
             logger.exception("Media upload failed")
             return _render_gallery_grid(server, error="Upload failed.")
@@ -4576,10 +4579,9 @@ def _register_gallery_routes(app: Bottle, server: ConfigWebServer) -> None:
     def gallery_capture() -> Any:
         response.content_type = "application/json"
         jpeg = server.get_full_snapshot()
-        if jpeg is None:
-            response.status = 503
-            return json.dumps({"ok": False, "error": "No video frame available to capture."})
         # A refusal answers 200 so the page reports it beside the Capture button, not under Save.
+        if jpeg is None:
+            return json.dumps({"ok": False, "error": "No video frame available to capture.", "action": ""})
         try:
             item = media_store.save_captured_frame(jpeg)
         except MediaStoreError as exc:

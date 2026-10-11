@@ -132,6 +132,17 @@ def test_a_failed_write_into_an_existing_store_names_the_failure(storage: Path) 
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root lists regardless of mode")
+def test_an_unreadable_store_lists_the_defaults_alone(storage: Path) -> None:
+    storage.mkdir()
+    storage.chmod(0o300)
+    try:
+        listed = [item.media_id for item in ms.list_media()]
+    finally:
+        storage.chmod(0o700)
+    assert listed == list(ms.DEFAULT_IDS)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root lists regardless of mode")
 def test_an_unreadable_store_names_the_failure(storage: Path) -> None:
     storage.mkdir()
     storage.chmod(0o300)

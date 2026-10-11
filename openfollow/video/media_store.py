@@ -280,9 +280,18 @@ def _stat_user_files(storage: Path) -> list[tuple[Path, os.stat_result]]:
 
 
 def list_media() -> list[MediaItem]:
-    """Every gallery entry: the two defaults first, then user media newest-first."""
+    """Every gallery entry: the two defaults first, then user media newest-first.
+
+    A store that cannot be listed lists the defaults alone, so the grid still renders.
+    """
     items = [_default_item(mid) for mid in DEFAULT_IDS]
-    items.extend(_user_item(f, size=info.st_size) for f, info in _stat_user_files(resolve_media_storage_path()))
+    storage = resolve_media_storage_path()
+    try:
+        files = _stat_user_files(storage)
+    except OSError as exc:
+        logger.error("Media store %s cannot be listed: %s", storage, exc)
+        return items
+    items.extend(_user_item(f, size=info.st_size) for f, info in files)
     return items
 
 

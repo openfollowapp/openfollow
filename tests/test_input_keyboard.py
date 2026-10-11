@@ -713,6 +713,75 @@ def test_late_gtk_copy_of_a_short_polled_tap_is_still_dropped(monkeypatch) -> No
     assert handler.take_text_key("Enter") is True
 
 
+def test_second_press_after_the_gtk_copy_arrived_goes_to_the_text_field(monkeypatch) -> None:
+    """Once GTK has delivered the copy of a polled press, nothing more of that
+    press is due: a deliberate second Enter right after it is the editor's,
+    even when GTK delivers it before the poll sees it."""
+    handler, poller, _seen = _handler_with_bus(monkeypatch)
+    now = [100.0]
+    handler._clock = lambda: now[0]
+
+    poller.pressed = {"Enter"}
+    handler.poll_discrete_keys(owned=True)
+    assert handler.take_text_key("Enter") is False
+    poller.pressed = set()
+    handler.poll_discrete_keys(owned=False)
+    now[0] += 0.2
+
+    assert handler.take_text_key("Enter") is True
+
+
+def test_gtk_copy_delivered_before_the_poll_claims_counts_too(monkeypatch) -> None:
+    """GTK can deliver the Enter that picks RTSP to the source list before the
+    poll sees it; the editor the poll then opens owes that press nothing."""
+    handler, poller, _seen = _handler_with_bus(monkeypatch)
+    now = [100.0]
+    handler._clock = lambda: now[0]
+
+    handler.on_key_down({"key": "Enter"})
+    poller.pressed = {"Enter"}
+    handler.poll_discrete_keys(owned=True)
+    assert handler.consume_key_presses() == ["Enter"]
+    poller.pressed = set()
+    handler.poll_discrete_keys(owned=False)
+    now[0] += 0.2
+
+    assert handler.take_text_key("Enter") is True
+
+
+def test_gtk_copy_delivered_to_a_menu_after_the_poll_claims_counts(monkeypatch) -> None:
+    handler, poller, _seen = _handler_with_bus(monkeypatch)
+    now = [100.0]
+    handler._clock = lambda: now[0]
+
+    poller.pressed = {"Enter"}
+    handler.poll_discrete_keys(owned=True)
+    handler.on_key_down({"key": "Enter"})
+    poller.pressed = set()
+    handler.poll_discrete_keys(owned=True)
+    now[0] += 0.2
+
+    assert handler.take_text_key("Enter") is True
+
+
+def test_gtk_key_down_the_poll_never_sees_held_is_forgotten(monkeypatch) -> None:
+    """A tap shorter than one poll leaves no GTK mark for the next press, whose
+    own copy is then still due after its release."""
+    handler, poller, _seen = _handler_with_bus(monkeypatch)
+    now = [100.0]
+    handler._clock = lambda: now[0]
+
+    handler.on_key_down({"key": "Enter"})
+    handler.poll_discrete_keys(owned=True)
+    poller.pressed = {"Enter"}
+    handler.poll_discrete_keys(owned=True)
+    poller.pressed = set()
+    handler.poll_discrete_keys(owned=False)
+    now[0] += 0.2
+
+    assert handler.take_text_key("Enter") is False
+
+
 def test_next_press_the_poll_sees_belongs_to_the_text_field(monkeypatch) -> None:
     handler, poller, _seen = _handler_with_bus(monkeypatch)
     now = [100.0]

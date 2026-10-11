@@ -2815,6 +2815,66 @@ def test_enter_that_picks_rtsp_opens_the_url_editor_and_leaves_it_open(monkeypat
     assert app._settings_menu_active is False
 
 
+@pytest.mark.parametrize("opening_gtk_first", [False, True])
+@pytest.mark.parametrize("second_gtk_first", [False, True])
+def test_a_quick_second_enter_confirms_the_url_editor(
+    monkeypatch: pytest.MonkeyPatch, opening_gtk_first: bool, second_gtk_first: bool
+) -> None:
+    """Enter on the running RTSP (the reconnect gesture), then Enter again
+    0.2 s later: the second one confirms, whichever channel delivers each first."""
+    app, poll = _mac_keyboard_app(monkeypatch)
+    now = [100.0]
+    app._input_manager.keyboard_handler._clock = lambda: now[0]
+    app._source_type_selection_active = True
+
+    if opening_gtk_first:
+        app_modes.on_key_down(app, {"key": "Enter"})
+    poll.pressed = {"Enter"}
+    _poll_frame(app)
+    if not opening_gtk_first:
+        app_modes.on_key_down(app, {"key": "Enter"})
+    assert app._url_editor_active is True
+
+    now[0] += 0.1
+    poll.pressed = set()
+    _poll_frame(app)
+    now[0] += 0.2
+    if second_gtk_first:
+        app_modes.on_key_down(app, {"key": "Enter"})
+    poll.pressed = {"Enter"}
+    _poll_frame(app)
+    if not second_gtk_first:
+        app_modes.on_key_down(app, {"key": "Enter"})
+
+    assert app._url_editor_active is False
+    assert app._swaps == ["rtsp://192.0.2.10/stream"]
+
+
+def test_a_quick_second_enter_confirms_a_network_field(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openfollow.runtime import app_modes_network
+
+    app, poll = _mac_keyboard_app(monkeypatch)
+    now = [100.0]
+    app._input_manager.keyboard_handler._clock = lambda: now[0]
+    app._pi_network_active = True
+    monkeypatch.setattr(
+        app_modes_network,
+        "handle_pi_network_key",
+        lambda a, key: app_modes_network.enter_pi_network_field_edit(a, "address") if key == "Enter" else None,
+    )
+
+    poll.pressed = {"Enter"}
+    _poll_frame(app)
+    app_modes.on_key_down(app, {"key": "Enter"})
+    now[0] += 0.1
+    poll.pressed = set()
+    _poll_frame(app)
+    now[0] += 0.2
+    app_modes.on_key_down(app, {"key": "Enter"})
+
+    assert app._pi_network_field_edit_active is False
+
+
 def test_escape_that_cancels_the_url_editor_leaves_settings_open(monkeypatch: pytest.MonkeyPatch) -> None:
     app, poll = _mac_keyboard_app(monkeypatch)
     app_modes.enter_url_editor(app)

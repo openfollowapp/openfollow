@@ -515,8 +515,11 @@ class KeyboardHandler:
         self._elsewhere: set[str] = set()  # pressed for another window or a text field
         self._shortcuts: set[str] = set()  # pressed with a shortcut modifier held
         # Presses the Operator Screen took: None while held, then when the
-        # poll saw the release, kept for ``_GTK_COPY_GRACE_S``.
+        # poll saw the release, kept for ``_GTK_COPY_GRACE_S`` unless their
+        # GTK key-down has already come (``_copied``).
         self._claimed: dict[str, float | None] = {}
+        self._copied: set[str] = set()
+        self._gtk_ahead: set[str] = set()  # GTK key-downs the poll has not seen yet
         self._clock = time.monotonic
         self._shortcut_cc: ControllerConfig | None = None
         self._shortcut_cache: tuple[str, ...] = _SHORTCUT_MODIFIERS
@@ -709,16 +712,24 @@ class KeyboardHandler:
 
         On the frame the keyboard comes back, a new press may be the one that
         handed it back (the Escape that closed Spotlight), so it is not ours.
-        A claim still held is the same press seen again after ``clear()``.
+        Seen while the screen does not own the keyboard, a claim still held is
+        the same press again after ``clear()`` and stays claimed.
         """
         if self._is_fallback:
             return True
+        gtk_ahead = key in self._gtk_ahead
+        self._gtk_ahead.discard(key)
         if not self._owned or regained or key in self._elsewhere:
             if self._claimed.get(key) is not None:
                 del self._claimed[key]
+                self._copied.discard(key)
             self._elsewhere.add(key)
             return False
         self._claimed[key] = None
+        if gtk_ahead:
+            self._copied.add(key)
+        else:
+            self._copied.discard(key)
         if self._shortcut_held and key not in self._MODIFIER_KEY_TO_NAME:
             self._shortcuts.add(key)
         return True
@@ -734,14 +745,23 @@ class KeyboardHandler:
     def _forget_released(self, held: set[str]) -> None:
         self._elsewhere &= held
         self._shortcuts &= held
+        self._gtk_ahead &= held
         now = self._clock()
         for key, released_at in list(self._claimed.items()):
             if key in held:
                 continue
-            if released_at is None:
-                self._claimed[key] = now
-            elif now - released_at > _GTK_COPY_GRACE_S:
+            if key in self._copied or (released_at is not None and now - released_at > _GTK_COPY_GRACE_S):
                 del self._claimed[key]
+                self._copied.discard(key)
+            elif released_at is None:
+                self._claimed[key] = now
+
+    def _note_gtk_key_down(self, key: str) -> None:
+        """A GTK key-down reached a screen that reads the poll: mark its press copied."""
+        if key in self._claimed:
+            self._copied.add(key)
+        else:
+            self._gtk_ahead.add(key)
 
     def take_text_key(self, key: str) -> bool:
         """Hand a GTK key-down to an on-screen text field.
@@ -754,6 +774,7 @@ class KeyboardHandler:
         if self._is_fallback:
             return True
         if key in self._claimed:
+            self._copied.add(key)
             return False
         if key in _POLLED_KEY_SET:
             self._elsewhere.add(key)
@@ -790,13 +811,15 @@ class KeyboardHandler:
         return presses
 
     def on_key_down(self, event: dict[str, Any]) -> None:
-        """Handle key press events from GTK (fallback mode only)."""
-        if not self._is_fallback:
-            return
-
+        """Handle key press events from GTK: they feed the fallback poller, and
+        on macOS only mark which polled presses GTK has delivered."""
         key = event.get("key", "")
         if len(key) == 1:
             key = key.lower()
+
+        if not self._is_fallback:
+            self._note_gtk_key_down(key)
+            return
 
         if key in POLLED_KEYS:
             self._poller.on_key_down(key)  # type: ignore[attr-defined]

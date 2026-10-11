@@ -322,10 +322,11 @@ jobs:
           installer-parallel: true
 
       # Deliberately uncached – see the job comment. pip lives inside the venv
-      # being audited, so it is upgraded here too rather than reported on.
+      # being audited, so it is upgraded here too rather than reported on. The
+      # optional Poetry groups are workstation tooling too, so they report here.
       - name: Install export toolchain
         run: |
-          poetry sync --no-interaction -E detection -E export
+          poetry sync --no-interaction -E detection -E export --with mutation,package-macos
           poetry run python -m pip install --upgrade pip
 
       # The report goes to the step summary instead of being left to an exit

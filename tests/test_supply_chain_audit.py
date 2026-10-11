@@ -101,6 +101,24 @@ def _extras_installed(run: str) -> set[str]:
     return extras
 
 
+def _groups_installed(run: str) -> set[str]:
+    """Optional Poetry groups a ``run:`` block adds with ``--with``."""
+    groups: set[str] = set()
+    for command in _shell_commands(run):
+        if _poetry_verb(command) not in {"install", "sync"}:
+            continue
+        expecting = False
+        for token in command:
+            if expecting:
+                groups.update(token.split(","))
+                expecting = False
+            elif token == "--with":
+                expecting = True
+            elif token.startswith("--with="):
+                groups.update(token.split("=", 1)[1].split(","))
+    return {group.strip() for group in groups if group.strip()}
+
+
 def _install_flags(run: str) -> set[str]:
     """Option flags passed to a poetry install/sync, ``--opt=value`` normalised."""
     flags: set[str] = set()
@@ -131,6 +149,7 @@ class _AuditJob:
     name: str
     gating: bool
     extras: frozenset[str]
+    groups: frozenset[str]
     caches_venv: bool
     install_flags: frozenset[str]
 
@@ -146,9 +165,11 @@ def _audit_jobs() -> list[_AuditJob]:
         if not audit_steps:
             continue
         extras: set[str] = set()
+        groups: set[str] = set()
         flags: set[str] = set()
         for run in runs:
             extras |= _extras_installed(run)
+            groups |= _groups_installed(run)
             flags |= _install_flags(run)
         caches_venv = any(
             str(step.get("uses", "")).startswith("actions/cache")
@@ -160,6 +181,7 @@ def _audit_jobs() -> list[_AuditJob]:
                 name=str(name),
                 gating=_gates(job, audit_steps),
                 extras=frozenset(extras),
+                groups=frozenset(groups),
                 caches_venv=caches_venv,
                 install_flags=frozenset(flags),
             )
@@ -173,6 +195,13 @@ def _declared_extras() -> list[str]:
     extras = sorted(pyproject["project"].get("optional-dependencies", {}))
     assert extras, "pyproject declares no optional-dependencies to audit"
     return extras
+
+
+def _optional_groups() -> list[str]:
+    """Poetry groups outside the default install, so outside the gating closure."""
+    pyproject = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))
+    groups = pyproject["tool"]["poetry"].get("group", {})
+    return sorted(name for name, group in groups.items() if group.get("optional"))
 
 
 def _shipped_extras() -> frozenset[str]:
@@ -191,6 +220,15 @@ def test_every_declared_extra_is_audited_somewhere(extra: str) -> None:
         f"the '{extra}' extra is installed by no audit job, so pip-audit never sees "
         f"its dependencies - every audit reports clean no matter what CVEs they "
         f"carry. Add '-E {extra}' to an audit job's install step."
+    )
+
+
+@pytest.mark.parametrize("group", _optional_groups())
+def test_every_optional_group_is_audited_somewhere(group: str) -> None:
+    audited: set[str] = set().union(*(job.groups for job in _audit_jobs()))
+    assert group in audited, (
+        f"the optional '{group}' Poetry group is installed by no audit job, so pip-audit "
+        f"never sees its dependencies. Add '--with {group}' to an audit job's install step."
     )
 
 

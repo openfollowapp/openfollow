@@ -121,9 +121,8 @@ optional = true
 pyinstaller = ">=6.22.3"
 pyinstaller-hooks-contrib = ">=2026.8"
 
-# Mutation testing, optional and off by default; ``make mutation*`` pulls it in
-# with ``--with mutation``. mutmut requires setproctitle, which on macOS turns
-# every pytest-xdist worker into a LaunchServices app renamed once per test.
+# Mutation testing, optional: mutmut pulls in setproctitle, which pytest-xdist
+# then uses to retitle its workers once per test.
 [tool.poetry.group.mutation]
 optional = true
 

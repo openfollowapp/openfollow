@@ -1194,6 +1194,11 @@
   function wizLensIsValid(k1, k2) {
     return isFinite(k1) && isFinite(k2) && Math.max(Math.abs(k1), Math.abs(k2)) <= 1e3 && wizLensFoldRadius(k1, k2) > 1;
   }
+  // The fitted pair as the fields show it: four decimals, unless rounding tips a pair fitted against the fold over it.
+  function wizLensShownPair(k1, k2) {
+    var r1 = k1.toFixed(4), r2 = k2.toFixed(4);
+    return wizLensIsValid(Number(r1), Number(r2)) ? [r1, r2] : [String(k1), String(k2)];
+  }
   function wizLensPairValid() {
     return wizLensIsValid(wizReadLensCoeff('wiz_lens_k1'), wizReadLensCoeff('wiz_lens_k2'));
   }
@@ -4630,8 +4635,9 @@
       });
       // A Low fit says what the lines cannot tell: it is shown, and the pair stays as it was.
       if (lensFitApplies(lensFit)) {
-        wizWriteLensCoeff('wiz_lens_k1', Number(res.data.k1).toFixed(4));
-        wizWriteLensCoeff('wiz_lens_k2', Number(res.data.k2).toFixed(4));
+        var shown = wizLensShownPair(Number(res.data.k1), Number(res.data.k2));
+        wizWriteLensCoeff('wiz_lens_k1', shown[0]);
+        wizWriteLensCoeff('wiz_lens_k2', shown[1]);
         var err = document.getElementById('wiz-lens-error');
         if (err) err.style.display = 'none';
       }

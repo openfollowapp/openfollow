@@ -324,12 +324,8 @@ def ring_silhouette_edges(
     ]
 
 
-# Newton iterations to invert the radial warp, at most. ``r*f(r)`` is monotone up
-# to the fold radius, so a bracketed Newton step converges from any start inside
-# the bracket: most radii settle in a handful of steps, but just above
-# k2 = 9*k1^2/20 the slope nearly touches zero past the frame and Newton creeps
-# (24 steps settle every valid pair). The loop stops once every radius moves by
-# less than ``_DISTORTION_INVERT_SETTLED``.
+# Bracketed Newton steps to invert the radial warp, at most; just above
+# k2 = 9*k1^2/20 the slope nearly vanishes and 24 steps settle every valid pair.
 _DISTORTION_INVERT_ITERS = 40
 _DISTORTION_INVERT_SETTLED = 1e-14
 # A preimage past this many half-diagonals is no longer a screen point; it caps

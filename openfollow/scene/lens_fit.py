@@ -234,9 +234,9 @@ def _in_bounds(k: FloatArray) -> bool:
     return bool(abs(k[0]) <= _K_BOUND and abs(k[1]) <= _K_BOUND and lens_warp_is_valid(k[0], k[1]))
 
 
-def _jacobian(lines: _Lines, k: FloatArray) -> FloatArray:
+def _jacobian(lines: _Lines, k: FloatArray, free: Sequence[int] = (0, 1)) -> FloatArray:
     cols = []
-    for i in (0, 1):
+    for i in free:
         kp = k.copy()
         km = k.copy()
         kp[i] += _JACOBIAN_EPS
@@ -253,7 +253,7 @@ def _refine(lines: _Lines, k0: FloatArray, fit_k2: bool) -> FloatArray:
     lam = 1e-3
     free = [0, 1] if fit_k2 else [0]
     for _ in range(_LM_ITERS):
-        jac = _jacobian(lines, k)[:, free]
+        jac = _jacobian(lines, k, free)
         normal = jac.T @ jac
         grad = jac.T @ res
         delta: FloatArray = np.zeros(len(free))
@@ -376,7 +376,7 @@ def _rival_spread_px(lines: _Lines, solution: _Solution) -> float:
 def _k1_variance(lines: _Lines, k: FloatArray) -> float:
     """Variance of ``k1`` fitted alone at ``k``, from the residual scatter floored at one pixel."""
     sigma2 = _residual_variance(lines, k, 1)
-    column = _jacobian(lines, k)[:, 0]
+    column = _jacobian(lines, k, (0,))[:, 0]
     information = float(column @ column)
     if information <= _SINGULAR_INFORMATION:
         return math.inf
@@ -404,7 +404,7 @@ def _misfits(lines: _Lines, k: FloatArray) -> list[bool]:
             continue
         rms_rest = float(np.sqrt(np.mean(rest.residuals(k_rest) ** 2)))
         rms_line = lines.line_rms(k_rest)[i]
-        sensitivity = _jacobian(lines, k_rest)[lines.idx == i, 0]
+        sensitivity = _jacobian(lines, k_rest, (0,))[lines.idx == i, 0]
         predicted = float(np.sqrt(variance * np.mean(sensitivity**2)))
         flags.append(rms_line > max(_MISFIT_MIN_PX, _MISFIT_RATIO * rms_rest, _MISFIT_RATIO * predicted))
     return flags
@@ -447,8 +447,8 @@ def fit_lens_from_lines(lines: Sequence[Sequence[Sequence[float]]], canvas_w: fl
     data = _Lines.from_lines(lines, canvas_w, canvas_h)
     solution = _solve(data)
     k, k2_fitted = solution.k, solution.k2_fitted
-    rms = data.line_rms(k)
     res = data.residuals(k)
+    rms = [float(np.sqrt(np.mean(res[rows] ** 2))) for rows in data.members]
     uncertainty = max(_corner_uncertainty_px(solution.cov, data.half_diag), _rival_spread_px(data, solution))
     rating = rate_uncertainty(uncertainty)
     flags = _misfits(data, k)

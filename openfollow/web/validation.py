@@ -831,6 +831,8 @@ def _lens_fold_error(field: str, value: float, context: Mapping[str, Any] | None
     """
     other = _LENS_FIELDS[1] if field == _LENS_FIELDS[0] else _LENS_FIELDS[0]
     raw = context.get(other) if context is not None else None
+    if isinstance(raw, str):
+        raw = raw.strip()
     if raw in (None, ""):
         sibling = float(getattr(cfg.camera, other)) if cfg is not None else 0.0
     else:

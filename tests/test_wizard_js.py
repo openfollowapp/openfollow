@@ -269,3 +269,22 @@ def test_an_edited_imperial_length_reads_what_it_shows() -> None:
         prelude=length_page("imperial", {"f": {"value": "", "dataset": {}}}),
     )
     assert read == pytest.approx(0.6096, abs=1e-12)
+
+
+@pytest.mark.parametrize(
+    ("k1", "k2", "shown"),
+    [
+        (-0.3, 0.02, ["-0.3000", "0.0200"]),
+        # Four decimals would put the pair on the fold.
+        (-0.5, 0.10001, ["-0.5", "0.10001"]),
+    ],
+)
+def test_a_fitted_pair_is_shown_as_a_valid_pair(k1: float, k2: float, shown: list[str]) -> None:
+    out = run_wizard_js(
+        "wizLensShownPair(k1, k2)",
+        functions=("wizLensFoldRadius", "wizLensIsValid", "wizLensShownPair"),
+        k1=k1,
+        k2=k2,
+    )
+    assert out == shown
+    assert lens_warp_is_valid(float(out[0]), float(out[1]))

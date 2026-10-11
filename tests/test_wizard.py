@@ -2362,7 +2362,8 @@ class TestWizardLensTemplate:
         src = self._src()
         assert "setTimeout(runLensFit, LENS_FIT_DEBOUNCE_MS)" in src
         assert "'/api/wizard/lens/fit'" in src and "'/api/wizard/lens/snap'" in src
-        assert "wizWriteLensCoeff('wiz_lens_k1', Number(res.data.k1).toFixed(4))" in src
+        assert "wizLensShownPair(Number(res.data.k1), Number(res.data.k2))" in src
+        assert "wizWriteLensCoeff('wiz_lens_k1', shown[0])" in src
         assert "Point off" in src and "Delete line" in src and "Clear lines" in src
 
     def test_a_folding_pair_blocks_apply_with_a_reason(self) -> None:

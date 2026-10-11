@@ -3318,10 +3318,7 @@ def _wizard_lens_coeffs(cam: Any) -> tuple[float, float]:
     """
 
     def _as_coeff(value: Any) -> float:
-        try:
-            f = float(value)
-        except (TypeError, ValueError):
-            return 0.0
+        f = _as_float(value, 0.0)
         return f if math.isfinite(f) else 0.0
 
     if not isinstance(cam, dict):
@@ -3336,10 +3333,23 @@ def _wizard_lens_coeffs(cam: Any) -> tuple[float, float]:
 _LENS_BAND_MAX_COLUMNS = 8192
 
 
-def _parse_lens_snap_body(data: Any) -> tuple[float, float, list[float], list[float], LumaBand]:
-    """Validate a ``/api/wizard/lens/snap`` body; raises for the endpoint's 400."""
+def _json_luma(pixels: Any, rows: int, cols: int, name: str) -> Any:
+    """A base64 string of ``rows * cols`` luma bytes as a float image; raises for a 400."""
     import numpy as np
 
+    if not isinstance(pixels, str):
+        raise TypeError(f"{name} must be a base64 string")
+    try:
+        buf = base64.b64decode(pixels, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError(f"{name} is not valid base64") from exc
+    if len(buf) != rows * cols:
+        raise ValueError(f"{name} does not match its size")
+    return np.frombuffer(buf, dtype=np.uint8).reshape(rows, cols).astype(np.float64)
+
+
+def _parse_lens_snap_body(data: Any) -> tuple[float, float, list[float], list[float], LumaBand]:
+    """Validate a ``/api/wizard/lens/snap`` body; raises for the endpoint's 400."""
     from openfollow.scene.edge_snap import MAX_BAND_HALF, MAX_BAND_STEP, MIN_BAND_HALF
 
     if not isinstance(data, dict):
@@ -3358,16 +3368,7 @@ def _parse_lens_snap_body(data: Any) -> tuple[float, float, list[float], list[fl
         raise ValueError("band rows must be 2 * half + 1")
     if not 2 <= cols <= _LENS_BAND_MAX_COLUMNS:
         raise ValueError(f"band columns must be within 2..{_LENS_BAND_MAX_COLUMNS}")
-    pixels = band["data"]
-    if not isinstance(pixels, str):
-        raise TypeError("band data must be a base64 string")
-    try:
-        buf = base64.b64decode(pixels, validate=True)
-    except (binascii.Error, ValueError) as exc:
-        raise ValueError("band data is not valid base64") from exc
-    if len(buf) != rows * cols:
-        raise ValueError("band data does not match its size")
-    luma = np.frombuffer(buf, dtype=np.uint8).reshape(rows, cols).astype(np.float64)
+    luma = _json_luma(band["data"], rows, cols, "band data")
     return img_w, img_h, ends[0], ends[1], LumaBand(step, half, luma)
 
 
@@ -3377,8 +3378,6 @@ _LENS_EDGE_MAX_PIXELS = 2 * 1024 * 1024
 
 def _parse_lens_edges_body(data: Any) -> tuple[float, float, int, Any, bool]:
     """Validate a ``/api/wizard/lens/edges`` body; raises for the endpoint's 400."""
-    import numpy as np
-
     from openfollow.scene.edge_chains import edge_map_scale, edge_map_size
 
     if not isinstance(data, dict):
@@ -3391,16 +3390,7 @@ def _parse_lens_edges_body(data: Any) -> tuple[float, float, int, Any, bool]:
         raise ValueError("width and height must be the snapshot scaled by scale")
     if width * height > _LENS_EDGE_MAX_PIXELS:
         raise ValueError("the scaled luma is too large")
-    pixels = data["data"]
-    if not isinstance(pixels, str):
-        raise TypeError("data must be a base64 string")
-    try:
-        buf = base64.b64decode(pixels, validate=True)
-    except (binascii.Error, ValueError) as exc:
-        raise ValueError("data is not valid base64") from exc
-    if len(buf) != width * height:
-        raise ValueError("data does not match its size")
-    luma = np.frombuffer(buf, dtype=np.uint8).reshape(height, width).astype(np.float64)
+    luma = _json_luma(data["data"], height, width, "data")
     return img_w, img_h, scale, luma, data.get("with_map") is True
 
 

@@ -200,11 +200,12 @@ def test_validate_lens_distortion_valid_pair_ok(field: str, raw: str, context: d
     assert validate("camera", field, raw, context=context) is None
 
 
+@pytest.mark.parametrize("blank", ["", "   "])
 @pytest.mark.parametrize(("saved_k2", "folds"), [(0.0, True), (0.25, False)])
-def test_validate_lens_reads_an_empty_sibling_as_its_saved_value(saved_k2: float, folds: bool) -> None:
+def test_validate_lens_reads_an_empty_sibling_as_its_saved_value(saved_k2: float, folds: bool, blank: str) -> None:
     cfg = AppConfig()
     cfg.camera.lens_k2 = saved_k2
-    err = validate("camera", "lens_k1", "-0.5", cfg=cfg, context={"lens_k2": ""})
+    err = validate("camera", "lens_k1", "-0.5", cfg=cfg, context={"lens_k2": blank})
     assert (err is not None and "folds" in err) is folds
 
 

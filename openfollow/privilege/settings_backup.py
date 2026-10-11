@@ -134,9 +134,17 @@ def list_archives(backup_dir: Path) -> list[Path]:
     dated = []
     for entry in entries:
         match = _ARCHIVE_RE.fullmatch(entry.name)
-        if match and entry.is_file():
+        if match and _is_file(entry):
             dated.append((match.group(1), entry.name, entry))
     return [entry for _stamp, _name, entry in sorted(dated)]
+
+
+def _is_file(entry: Path) -> bool:
+    """An entry that can't be checked counts by its archive name: ``is_file`` raises in an unsearchable folder."""
+    try:
+        return entry.is_file()
+    except OSError:
+        return True
 
 
 def _load_config(config_path: Path) -> dict[str, object]:

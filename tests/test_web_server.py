@@ -4021,9 +4021,26 @@ def test_a_push_from_an_older_station_is_recorded_unnamed_and_keeps_the_name(liv
 )
 def test_a_pushed_section_is_named_as_the_operator_knows_it(live_server, section: str, label: str) -> None:
     server, base = live_server
-    status, _body = _push(base, f"/api/config/{section}", {})
+    status, _body = _push(base, f"/api/config/{section}", {"unused": 1})
     assert status == 200
     assert _pushes(server)[0][2] == label
+
+
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        ("/api/config/interface_assignment", {"psn": "eth0"}),
+        ("/api/config/psn", {"psn_system_name": "Stage Left"}),
+    ],
+)
+def test_a_push_carrying_nothing_this_station_shares_is_no_push(live_server, path: str, payload: dict) -> None:
+    # A device-local section, or a station name alone, is stripped to nothing.
+    server, base = live_server
+    status, body = _push(base, path, payload)
+    assert status == 200
+    assert "backup" not in body
+    assert _pushes(server) == []
+    assert not (Path(server.config_path).parent / "backups").exists()
 
 
 def test_a_section_write_that_is_no_push_records_and_backs_up_nothing(live_server) -> None:
@@ -4114,6 +4131,7 @@ def test_the_pushed_settings_api_lists_newest_first(live_server) -> None:
     }
     assert [p["station"] for p in body["pushes"]] == ["B", "A"]
     assert body["run"] == server.pushed_settings.run
+    assert body["received"] == 2
 
 
 def test_removing_the_warning_keeps_a_push_that_arrived_since(live_server) -> None:

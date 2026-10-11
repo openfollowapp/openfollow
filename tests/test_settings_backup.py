@@ -246,6 +246,21 @@ def test_a_clock_set_back_never_prunes_the_archive_just_written(tmp_path: Path) 
     assert names == [record.archive] + later[-(settings_backup.KEEP - 1) :]
 
 
+def test_list_archives_counts_an_entry_it_cannot_check_by_its_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    names = _seed_archives(tmp_path, 2)
+    real_is_file = Path.is_file
+
+    def is_file(self: Path, *args: object, **kwargs: object) -> bool:
+        if self.parent == tmp_path:
+            raise PermissionError(errno.EACCES, "Permission denied", str(self))
+        return real_is_file(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "is_file", is_file)
+    assert [p.name for p in list_archives(tmp_path)] == names
+
+
 def test_list_archives_of_a_missing_folder_is_empty(tmp_path: Path) -> None:
     assert list_archives(tmp_path / "absent") == []
 

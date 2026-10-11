@@ -2035,6 +2035,12 @@ def _du_kib(path: Path, *, timeout_s: float) -> int | None:
 
 
 def _archive_rows(folder: Path) -> list[str]:
+    # ``list_archives`` reads a folder it cannot list as empty, which here would read as no backups.
+    try:
+        with os.scandir(folder):
+            pass
+    except OSError as exc:
+        return [f"  Archives: [unavailable: {exc.strerror or exc!s}]"]
     archives = settings_backup.list_archives(folder)
     if not archives:
         return ["  Archives: none"]
@@ -2058,16 +2064,26 @@ def collect_settings_backups(state_dir: Path | None = None, *, web_dir: Path | N
     backup_dir = state_dir / settings_backup.BACKUP_DIR_NAME
     rows = _update_backup_rows(state_dir, backup_dir)
     if web_dir is not None:
-        if web_dir.is_dir():
-            rows.append(f"  Web UI folder: {web_dir}")
-            rows.extend(_archive_rows(web_dir))
+        try:
+            present = web_dir.is_dir()
+        except OSError as exc:
+            rows.append(f"  Web UI folder: {web_dir} [unavailable: {exc.strerror or exc!s}]")
         else:
-            rows.append(f"  Web UI folder: {web_dir} (none yet)")
+            if present:
+                rows.append(f"  Web UI folder: {web_dir}")
+                rows.extend(_archive_rows(web_dir))
+            else:
+                rows.append(f"  Web UI folder: {web_dir} (none yet)")
     return rows
 
 
 def _update_backup_rows(state_dir: Path, backup_dir: Path) -> list[str]:
-    if not backup_dir.is_dir():
+    # ``is_dir`` raises inside a folder that can't be searched, and one section must not sink the bundle.
+    try:
+        present = backup_dir.is_dir()
+    except OSError as exc:
+        return [f"  Folder: {backup_dir} [unavailable: {exc.strerror or exc!s}]"]
+    if not present:
         return [f"  [not applicable: no {backup_dir}]"]
     rows = [f"  Folder: {backup_dir}", *_archive_rows(backup_dir)]
     record = settings_backup.read_record(state_dir)

@@ -8866,6 +8866,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 ],
                 "earlier": earlier,
                 "run": server.pushed_settings.run,
+                # Read after the list, so it never counts fewer pushes than the list holds.
+                "received": server.pushed_settings.received,
             }
         )
 
@@ -9015,6 +9017,10 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         backup: dict[str, str] = {}
         if pushed_by is not None:
             scrubbed = _without_station_name(scrubbed)
+            # Carrying nothing this station shares (a device-local section, a name alone), it is no push.
+            if not scrubbed:
+                pushed_by = None
+        if pushed_by is not None:
             # A known section before archiving, and the archive before the lock.
             if not apply_section_data(load_config(server.config_path), section, scrubbed):
                 response.status = 404

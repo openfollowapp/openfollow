@@ -52,6 +52,12 @@ class PushedSettings:
             self._pushes.append(push)
             return push
 
+    @property
+    def received(self) -> int:
+        """Pushes recorded this run, removed ones included."""
+        with self._lock:
+            return self._next_id - 1
+
     def snapshot(self) -> tuple[tuple[Push, ...], int]:
         """The listed pushes newest first, and how many earlier ones there were."""
         with self._lock:

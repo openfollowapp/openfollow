@@ -90,6 +90,14 @@ class TestPushedSettings:
         listed, earlier = register.snapshot()
         assert (len(listed), earlier) == (SHOWN, 1)
 
+    def test_received_counts_every_push_of_the_run_removed_ones_too(self) -> None:
+        register = PushedSettings()
+        assert register.received == 0
+        seen = register.record("A", "198.51.100.1", "Grid")
+        register.record("B", "198.51.100.2", "Camera")
+        register.remove(seen.id)
+        assert register.received == 2
+
     def test_each_run_has_its_own_name(self) -> None:
         # Ids start at 1 on every run, so a page's ids mean nothing in another run.
         assert PushedSettings().run != PushedSettings().run
@@ -133,12 +141,29 @@ class TestPushedSettingsModal:
         assert poll.index(key) < poll.index("if (ours && key === shownKey) return;") < poll.index("openModal({")
         assert poll.index("shownKey = key;") < poll.index("openModal({")
 
-    def test_a_removal_elsewhere_reloads_a_page_that_saw_a_push(self) -> None:
-        # Its forms still hold the values from before the push; another open modal is left alone.
+    def test_a_page_counts_pushes_from_its_first_answer(self) -> None:
+        poll = function_body(_poller(), "pollPushedSettings")
+        first = poll.index("if (!baseline) baseline = { run: state.run, received: state.received };")
+        since = poll.index(
+            "const pushedSinceLoad = state.run === baseline.run "
+            "? state.received !== baseline.received : state.received > 0;"
+        )
+        assert first < since < poll.index("if (!state.pushes.length) {")
+
+    def test_a_removal_elsewhere_reloads_a_page_loaded_before_the_push(self) -> None:
+        # Even one that never saw it pending; another open modal is left alone, and an older push just closes.
         poll = function_body(_poller(), "pollPushedSettings")
         empty = poll[poll.index("if (!state.pushes.length) {") :]
-        assert empty.index("if (pushSeen && (ours || root.hidden)) window.location.reload();") < empty.index("return;")
-        assert poll.index("if (!state.pushes.length) {") < poll.index("pushSeen = true;") < poll.index("openModal({")
+        empty = empty[: empty.index("return;")]
+        assert (
+            "if (pushedSinceLoad && (ours || root.hidden)) window.location.reload();\n else if (ours) closeModal();"
+            in (empty)
+        )
+
+    def test_a_hidden_tab_asks_only_once_shown(self) -> None:
+        poll = function_body(_poller(), "pollPushedSettings")
+        assert poll.index("if (document.hidden && baseline) return;") < poll.index("fetch('/api/pushed-settings'")
+        assert "document.addEventListener('visibilitychange', pollPushedSettings);" in _poller()
 
     def test_a_device_password_prompt_stays_answerable(self) -> None:
         poll = function_body(_poller(), "pollPushedSettings")

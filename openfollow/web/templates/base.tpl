@@ -5145,15 +5145,13 @@
  % end
  % if defined('config') and config:
  <script>
- // Settings another station pushed here: a locked modal on every page until
- // someone removes the warning, which clears it everywhere. It waits while
- // another modal is open rather than replacing it.
+ // Settings another station pushed here: a locked modal on every page until someone removes the warning.
  (function () {
  const POLL_MS = 3000;
  // What the open modal lists, so a poll redraws it whenever that changes.
  let shownKey = '';
- // A push was pending while this page was up, so its forms hold the values from before it.
- let pushSeen = false;
+ // The pushes counted when the page first asked: a later count means its forms may predate one.
+ let baseline = null;
  function pushedSettingsBody(state) {
  const body = document.createDocumentFragment();
  const box = document.createElement('div');
@@ -5212,6 +5210,8 @@
  window.location.reload();
  }
  async function pollPushedSettings() {
+ // A hidden tab asks again when it is shown; the first ask sets the baseline regardless.
+ if (document.hidden && baseline) return;
  let state;
  try {
  const res = await fetch('/api/pushed-settings', { headers: { Accept: 'application/json' } });
@@ -5223,6 +5223,9 @@
  const root = document.getElementById('modal-root');
  if (!root || !state || !Array.isArray(state.pushes)) return;
  const ours = !root.hidden && root.dataset.pushedSettings === '1';
+ if (!baseline) baseline = { run: state.run, received: state.received };
+ // Ids and counts start again on every run.
+ const pushedSinceLoad = state.run === baseline.run ? state.received !== baseline.received : state.received > 0;
  // A device-password prompt must stay answerable; the locked modal would make it inert.
  if (document.querySelector('#privilege-password-modal [role="dialog"]')) {
  if (ours) closeModal();
@@ -5230,10 +5233,10 @@
  }
  if (!state.pushes.length) {
  // Removed elsewhere: reload for the pushed values, once no other modal is in the way.
- if (pushSeen && (ours || root.hidden)) window.location.reload();
+ if (pushedSinceLoad && (ours || root.hidden)) window.location.reload();
+ else if (ours) closeModal();
  return;
  }
- pushSeen = true;
  const key = state.run + ':' + state.earlier + ':' + state.pushes.map((push) => push.id).join(',');
  if (ours && key === shownKey) return;
  if (!ours && !root.hidden) return;
@@ -5253,6 +5256,7 @@
  document.addEventListener('DOMContentLoaded', () => {
  pollPushedSettings();
  setInterval(pollPushedSettings, POLL_MS);
+ document.addEventListener('visibilitychange', pollPushedSettings);
  });
  })();
  </script>

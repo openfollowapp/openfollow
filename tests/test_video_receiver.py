@@ -5550,3 +5550,37 @@ class TestARememberedDeviceThatIsAbsent:
         assert status.error_message == "the camera list could not be read: the device monitor did not start"
         assert "the camera list could not be read" in caplog.text
         assert [cb.__name__ for _delay, cb in fake_glib.timers.values()] == ["_do_reconnect"]
+
+    def test_a_connected_camera_the_system_denies_reads_as_access_by_name(
+        self, fake_gst, fake_glib, monkeypatch
+    ) -> None:
+        """Listing works while camera access is denied, so the build goes ahead
+        and the element's refusal names the camera, not "not found"."""
+        from openfollow.video.failure import SourceKind, failure_sentence
+        from openfollow.video.inputs import avf
+
+        class _Err:
+            message = "Device video access permission has been explicitly denied before"
+            domain = RESOURCE_DOMAIN
+            code = RESOURCE_NOT_AUTHORIZED
+
+        class _Msg:
+            def parse_error(self) -> tuple[_Err, str]:
+                return _Err(), "Authorization status: 2"
+
+        r, _built = self._usb_camera(
+            monkeypatch, lambda: [{"unique_id": "0x14100000", "name": "Capture Card", "index": "0"}]
+        )
+        refusing = FakePipeline(
+            set_state_returns={FakeState.PLAYING: FakeStateChangeReturn.FAILURE}, bus=FakeBus(pop_message=_Msg())
+        )
+        monkeypatch.setattr(avf.AvfInput, "create_pipeline", lambda *args, **kwargs: refusing)
+
+        r.create_pipeline()
+        r.start()
+
+        status = r.status_marker.snapshot()
+        assert status.failure is VideoFailure.ACCESS_DENIED
+        assert failure_sentence(status.failure, where=status.source_name, kind=SourceKind.LOCAL) == (
+            "This station was denied access to Capture Card (1920x1080@30)."
+        )

@@ -2785,6 +2785,9 @@ class AppRuntimeServices:
             zone_diagnostics_provider=self._get_zone_diagnostics_snapshot,
             zone_test_send=self._zone_test_send,
             marker_positions_provider=self._get_marker_positions_snapshot,
+            marker_position_provider=self._marker_position,
+            path_state_provider=self._path_state,
+            path_recorder=self._record_path,
             # Live per-marker move speeds; the ``dict(...)`` copy is the
             # mutation-isolation boundary so the web thread never holds the live dict.
             marker_move_speeds_provider=lambda: dict(self._app._config.marker_move_speeds),
@@ -3689,6 +3692,30 @@ class AppRuntimeServices:
         except Exception:  # noqa: BLE001
             return []
         return [(marker_id, x, y) for (_kind, marker_id), x, y in positions]
+
+    def _marker_position(self, marker_id: int) -> tuple[float, float, float] | None:
+        """A marker's broadcast X/Y/Z: a controlled one's own, or an online remote one's."""
+        app = self._app
+        if marker_id in app._controlled_ids:
+            marker = app._server.get_marker(marker_id) if app._server is not None else None
+        elif app._psn_receiver is not None and app._psn_receiver.is_marker_online(marker_id):
+            marker = app._psn_receiver.get_marker(marker_id)
+        else:
+            marker = None
+        if marker is None:
+            return None
+        x, y, z = marker.pos
+        return float(x), float(y), float(z)
+
+    def _path_state(self) -> dict[str, Any]:
+        engine = self._app._paths
+        return {"recording": engine.recording, "locks": engine.locked()}
+
+    def _record_path(self, name: str | None) -> bool:
+        from openfollow.configuration import load_config
+
+        # The web UI may have created the path a moment ago; the file is ahead of the running config.
+        return bool(self._app._paths.record(name, load_config(self._app._config_path).paths))
 
     def _mouse3d_latest_button(self) -> int | None:
         """Watch briefly for a 3D Mouse button press, for the web bind helper.

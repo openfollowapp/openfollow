@@ -39,19 +39,19 @@ class TestJunctions:
         assert find_junctions([H, V]) == [Junction(0, pytest.approx(5.0), 1, pytest.approx(5.0))]
 
     def test_paths_crossing_at_different_heights_do_not_meet(self) -> None:
-        bridge = _curve([(0, -5, 0.5), (0, 5, 0.5)])
+        bridge = _curve([(0, -5, 0.25), (0, 5, 0.25)])
         assert find_junctions([H, bridge]) == []
 
     def test_a_small_height_difference_still_meets(self) -> None:
-        near = _curve([(0, -5, 0.08), (0, 5, 0.08)])
+        near = _curve([(0, -5, 0.18), (0, 5, 0.18)])
         assert len(find_junctions([H, near])) == 1
 
     def test_a_path_ending_on_another_joins_it_there(self) -> None:
-        branch = _curve([(2, 0.05, 0), (2, 4, 0)])
+        branch = _curve([(2, 0.18, 0), (2, 4, 0)])
         assert find_junctions([H, branch]) == [Junction(0, pytest.approx(7.0), 1, 0.0)]
 
     def test_a_path_ending_short_of_another_does_not(self) -> None:
-        branch = _curve([(2, 0.3, 0), (2, 4, 0)])
+        branch = _curve([(2, 0.25, 0), (2, 4, 0)])
         assert find_junctions([H, branch]) == []
 
     def test_a_crossing_on_a_corner_point_counts_once(self) -> None:
@@ -158,10 +158,19 @@ class TestSteering:
         step = net.walk(Place(0, 5.0), 0.0, -1.0, 1.0)
         assert _at(net, step.place) == (0.0, -1.0)
 
-    def test_a_marker_next_to_a_crossing_can_still_take_it(self) -> None:
+    def test_a_marker_in_the_switch_area_can_still_take_the_crossing(self) -> None:
         net = PathNetwork([H, V])
-        step = net.walk(Place(0, 4.97), 0.0, 1.0, 1.0)
+        step = net.walk(Place(0, 4.75), 0.0, 1.0, 1.0)
         assert step.place.path == 1
+        assert _at(net, step.place) == (0.0, 1.0)
+
+    def test_a_marker_short_of_the_switch_area_cannot(self) -> None:
+        net = PathNetwork([H, V])
+        assert net.walk(Place(0, 4.65), 0.0, 1.0, 1.0).place == Place(0, 4.65)
+
+    def test_just_past_a_crossing_the_marker_can_still_turn(self) -> None:
+        net = PathNetwork([H, V])
+        assert net.walk(Place(0, 5.25), 0.0, -1.0, 1.0).place.path == 1
 
     def test_a_branch_is_entered_only_the_way_it_leads(self) -> None:
         branch = _curve([(2, 0, 0), (2, 4, 0)])

@@ -11,13 +11,9 @@ until it is on it. Locks and recording live in memory only.
 
 from __future__ import annotations
 
-import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
-from itertools import pairwise
-
-import numpy as np
 
 from openfollow.configuration import PathConfig, PathsConfig
 from openfollow.paths.geometry import PathCurve, PathPoint, build_curve
@@ -29,9 +25,6 @@ Point = tuple[float, float, float]
 HEIGHT_BLEND_S = 0.5
 # How far inside its path an end looks to see which way it points.
 _END_LOOK_M = 0.5
-
-# Longest straight piece drawn as one line: shorter pieces bow with the lens like the grid.
-_DRAW_STEP_M = 0.25
 
 
 class Press(Enum):
@@ -119,7 +112,7 @@ class PathEngine:
                 curves.append(curve)
                 releases.append((path.release_at_start, path.release_at_end))
                 self._names.append(path.name)
-                self._drawn.append((_line(curve), _ends(path, curve)))
+                self._drawn.append((_line(curve), path_ends(path, curve)))
         self._network = PathNetwork(curves, releases) if curves else None
         if not enabled or (self._recording is not None and cfg.find(self._recording) is None):
             self._recording = None
@@ -158,6 +151,10 @@ class PathEngine:
 
     def is_locked(self, marker_id: int) -> bool:
         return marker_id in self._locks
+
+    def locked(self) -> dict[int, str]:
+        """Every locked marker and the name of the path it is on; safe to call from another thread."""
+        return {marker_id: lock.name for marker_id, lock in tuple(self._locks.items())}
 
     def locked_path(self, marker_id: int) -> str | None:
         lock = self._locks.get(marker_id)
@@ -321,11 +318,11 @@ class PathEngine:
         if self._recorded is None or self._recorded[0] != key:
             curve = _curve_of(path)
             line = [(p.x, p.y, p.z) for p in path.points] if curve is None else _line(curve)
-            self._recorded = (key, PathDrawing(path.name, line, _ends(path, curve)))
+            self._recorded = (key, PathDrawing(path.name, line, path_ends(path, curve)))
         return self._recorded[1]
 
 
-def _ends(path: PathConfig, curve: PathCurve | None) -> list[PathEnd]:
+def path_ends(path: PathConfig, curve: PathCurve | None) -> list[PathEnd]:
     """An open path's two ends; a closed one has none, and a corner shows as its curve.
 
     A path of one point (being recorded) is that point, drawn as an end that holds.
@@ -344,12 +341,4 @@ def _ends(path: PathConfig, curve: PathCurve | None) -> list[PathEnd]:
 
 
 def _line(curve: PathCurve) -> list[Point]:
-    """The curve to draw: its points, long straight runs split so a lens can bow them."""
-    line: list[Point] = []
-    xyz = np.column_stack((curve.xy, curve.z))
-    for a, b in pairwise(xyz):
-        count = max(1, math.ceil(float(np.linalg.norm(b[:2] - a[:2])) / _DRAW_STEP_M))
-        line.extend((float(x), float(y), float(z)) for x, y, z in (a + (b - a) * (k / count) for k in range(count)))
-    x, y, z = xyz[-1]
-    line.append((float(x), float(y), float(z)))
-    return line
+    return curve.drawn()

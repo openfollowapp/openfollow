@@ -21,11 +21,11 @@ import numpy as np
 
 from openfollow.paths.geometry import FloatArray, PathCurve
 
-# How close two paths must come, in plan and in height, to meet.
-JUNCTION_REACH_M = 0.1
-JUNCTION_HEIGHT_M = 0.1
-# A marker this close to a junction may steer into the other path.
-_CAPTURE_M = 0.05
+# How close a path's end must come to another path, and how close their heights must be, to meet.
+JUNCTION_REACH_M = 0.2
+JUNCTION_HEIGHT_M = 0.2
+# The switch area: a marker this close to a junction, along its path, may steer into the other path.
+SWITCH_AREA_M = 0.3
 # The other path wins only when its direction is this much closer to the push.
 _SWITCH_MARGIN_RAD = math.radians(15.0)
 _SAME_JUNCTION_M = 0.05
@@ -160,7 +160,7 @@ class PathNetwork:
         other: list[_Way] = []
         curve = self.curves[place.path]
         for s, partner in self._stations[place.path]:
-            if abs(curve.offset(place.s, s)) <= _CAPTURE_M:
+            if abs(curve.offset(place.s, s)) <= SWITCH_AREA_M:
                 other.extend(self._ways(partner))
 
         def angle(way: _Way) -> float:
@@ -181,7 +181,7 @@ class PathNetwork:
             d = sign * (s - place.s)
             if curve.closed:
                 d %= curve.length
-            if d > _CAPTURE_M:
+            if d > SWITCH_AREA_M:
                 ahead.append(d)
         return min(ahead, default=None)
 

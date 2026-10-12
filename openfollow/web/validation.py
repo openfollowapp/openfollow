@@ -643,6 +643,10 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
         "debounce_ms": FieldRule(_as_int, lo=0, hi=60000, human_error="Debounce must be between 0 and 60000 ms."),
         "hysteresis": FieldRule(_as_float, lo=0.0, hi=10.0, human_error="Hysteresis must be between 0 and 10 m."),
     },
+    "paths": {
+        "show_paths": FieldRule(_as_bool),
+        "slide_time": FieldRule(_as_float, lo=0.0, hi=10.0, human_error="Slide time must be between 0 and 10 s."),
+    },
     # Shared OSC destination profiles (name + connection).
     "osc_destination": {
         "name": FieldRule(_as_str, max_len=64, human_error="Name must be 0–64 characters."),

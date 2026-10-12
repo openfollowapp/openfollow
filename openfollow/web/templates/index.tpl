@@ -74,6 +74,7 @@
     % include('partials/movement.tpl', config=config, saved=False)
     % include('partials/trigger_zones.tpl', config=config, saved=False)
     % include('partials/zone_editor.tpl', config=config)
+    % include('partials/paths.tpl', config=config, saved=False)
 </div>
 
 <!-- Input -->

@@ -16,6 +16,7 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
+from itertools import pairwise
 
 import numpy as np
 import numpy.typing as npt
@@ -27,6 +28,8 @@ _MAX_ARC_STEP_RAD = math.radians(5.0)
 # Below this two points are one, and a turn this close to none or to a full reversal gets no arc.
 _SAME_POINT_M = 1e-6
 _STRAIGHT_RAD = 1e-6
+# Longest straight piece drawn as one line: shorter pieces bow with a lens like the grid.
+_DRAW_STEP_M = 0.25
 
 
 @dataclass(frozen=True)
@@ -96,6 +99,17 @@ class PathCurve:
             half = self.length / 2.0
             delta = (delta + half) % self.length - half
         return delta
+
+    def drawn(self) -> list[tuple[float, float, float]]:
+        """The curve to draw: its points, with long straight runs split so a lens can bow them."""
+        line: list[tuple[float, float, float]] = []
+        xyz = np.column_stack((self.xy, self.z))
+        for a, b in pairwise(xyz):
+            count = max(1, math.ceil(float(np.linalg.norm(b[:2] - a[:2])) / _DRAW_STEP_M))
+            line.extend((float(x), float(y), float(z)) for x, y, z in (a + (b - a) * (k / count) for k in range(count)))
+        x, y, z = xyz[-1]
+        line.append((float(x), float(y), float(z)))
+        return line
 
     def advance(self, s: float, ds: float) -> tuple[float, int]:
         """Travel ``ds`` from ``s``: the new ``s``, and -1 / +1 when an open curve's start / end stopped it."""

@@ -53,6 +53,8 @@ from openfollow.configuration import (
     CONTROLLER_BINDING_FIELDS,
     DEFAULT_UPDATE_SERVICE_NAME,
     MARKER_TOKEN_ALL,
+    MAX_PATH_POINTS,
+    MAX_PATHS,
     MOUSE3D_AXES,
     MOUSE3D_BUTTON_FIELDS,
     VALID_BUTTON_NAMES,
@@ -60,11 +62,13 @@ from openfollow.configuration import (
     DetectionMaskConfig,
     OscDestinationConfig,
     OscTransmitterConfig,
+    PathConfig,
     TriggerZoneConfig,
     _coerce_marker_tokens,
     apply_renamed_marker_keys,
     config_write_lock,
     load_config,
+    path_name_from,
     save_config,
     viewed_with_controlled,
 )
@@ -226,6 +230,7 @@ VALID_SECTIONS = {
     "otp_output",
     "rttrpm_output",
     "trigger_zones",
+    "paths",
     "osc_bindings",
     "osc_destinations",
     "interface_assignment",
@@ -4663,6 +4668,237 @@ def _register_gallery_routes(app: Bottle, server: ConfigWebServer) -> None:
         return _render_gallery_grid(server)
 
 
+_PATHS_API = "/api/paths"
+
+
+def _json_error(status: int, message: str) -> str:
+    response.status = status
+    return json.dumps({"error": message})
+
+
+def _camera_view(cfg: AppConfig) -> tuple[Any, float, float]:
+    """The saved camera as the solver's parameter vector, with its lens."""
+    import numpy as np
+
+    cam = cfg.camera
+    params = np.array([cam.pos_x, cam.pos_y, cam.pos_z, cam.pitch, cam.yaw, cam.roll, cam.fov], dtype=np.float64)
+    return params, cam.lens_k1, cam.lens_k2
+
+
+def _register_path_routes(app: Bottle, server: ConfigWebServer) -> None:
+    """Register the path editor's routes: the paths, recording, and the view over the video frame."""
+    from openfollow.paths.engine import path_ends
+    from openfollow.paths.geometry import PathPoint, build_curve
+    from openfollow.scene.solver import (
+        apply_overlay_distortion,
+        invert_overlay_distortion,
+        project_points,
+        unproject_to_plane,
+    )
+
+    def _snapshot() -> dict[str, Any]:
+        cfg = load_config(server.config_path)
+        state = server.get_path_state()
+        return {
+            "show_paths": cfg.paths.show_paths,
+            "slide_time": cfg.paths.slide_time,
+            "paths": [asdict(path) for path in cfg.paths.paths],
+            "recording": state.get("recording"),
+            "locks": {str(marker_id): name for marker_id, name in state.get("locks", {}).items()},
+            "floor_z": cfg.grid.z_offset,
+            "max_paths": MAX_PATHS,
+            "max_points": MAX_PATH_POINTS,
+            "markers": [marker_id for marker_id, _x, _y in server.get_marker_positions()],
+        }
+
+    def _body() -> dict[str, Any] | str:
+        data = _load_json_body()
+        if not isinstance(data, dict):
+            return _json_error(400, "Expected a JSON object")
+        return data
+
+    def _name_error(cfg: AppConfig, name: str, current: PathConfig | None) -> str | None:
+        if not name:
+            return "Use letters, digits, '.', '-' or '_' in a path name."
+        clash = cfg.paths.find(name)
+        if clash is not None and clash is not current:
+            return f"A path called {clash.name} already exists."
+        return None
+
+    @app.get(_PATHS_API)
+    def paths_list() -> Any:
+        response.content_type = "application/json"
+        return json.dumps(_snapshot())
+
+    @app.post(_PATHS_API)
+    def paths_create() -> Any:
+        response.content_type = "application/json"
+        data = _body()
+        if isinstance(data, str):
+            return data
+        with _config_write_lock:
+            cfg = load_config(server.config_path)
+            if len(cfg.paths.paths) >= MAX_PATHS:
+                return _json_error(409, f"Paths are limited to {MAX_PATHS}.")
+            name = path_name_from(data.get("name", "")) if data.get("name") else ""
+            if data.get("name") and (problem := _name_error(cfg, name, None)) is not None:
+                return _json_error(400, problem)
+            cfg.paths.paths.append(PathConfig(name=name))
+            cfg.paths.__post_init__()
+            created = cfg.paths.paths[-1].name
+            save_config(cfg, server.config_path)
+        return json.dumps({"success": True, "name": created})
+
+    @app.put(_PATHS_API + "/<name>")
+    def paths_update(name: str) -> Any:
+        """Change a path's name, closed and release options, or its whole list of points."""
+        response.content_type = "application/json"
+        data = _body()
+        if isinstance(data, str):
+            return data
+        with _config_write_lock:
+            cfg = load_config(server.config_path)
+            path = cfg.paths.find(name)
+            if path is None:
+                return _json_error(404, f"No path called {name}.")
+            if "name" in data:
+                new_name = path_name_from(data["name"])
+                if (problem := _name_error(cfg, new_name, path)) is not None:
+                    return _json_error(400, problem)
+                path.name = new_name
+            for flag in ("closed", "release_at_start", "release_at_end"):
+                if flag in data:
+                    setattr(path, flag, _as_bool(data[flag], getattr(path, flag)))
+            if "points" in data:
+                if not isinstance(data["points"], list):
+                    return _json_error(400, "points must be a list")
+                path.points = data["points"]
+            path.__post_init__()
+            save_config(cfg, server.config_path)
+        return json.dumps({"success": True, "path": asdict(path)})
+
+    @app.post(_PATHS_API + "/<name>/active")
+    def paths_set_active(name: str) -> Any:
+        response.content_type = "application/json"
+        data = _body()
+        if isinstance(data, str):
+            return data
+        with _config_write_lock:
+            cfg = load_config(server.config_path)
+            path = cfg.paths.find(name)
+            if path is None:
+                return _json_error(404, f"No path called {name}.")
+            path.active = _as_bool(data.get("active"), path.active)
+            save_config(cfg, server.config_path)
+        return json.dumps({"success": True, "active": path.active})
+
+    @app.delete(_PATHS_API + "/<name>")
+    def paths_delete(name: str) -> Any:
+        response.content_type = "application/json"
+        with _config_write_lock:
+            cfg = load_config(server.config_path)
+            path = cfg.paths.find(name)
+            if path is None:
+                return _json_error(404, f"No path called {name}.")
+            cfg.paths.paths.remove(path)
+            save_config(cfg, server.config_path)
+        return json.dumps({"success": True})
+
+    @app.post(_PATHS_API + "/<name>/record")
+    def paths_record(name: str) -> Any:
+        """Start recording into a path (``{"on": true}``) or stop (``{"on": false}``)."""
+        response.content_type = "application/json"
+        data = _body()
+        if isinstance(data, str):
+            return data
+        on = _as_bool(data.get("on"), False)
+        if not server.record_path(name if on else None):
+            return _json_error(409, "Paths are switched off, or there is no such path.")
+        return json.dumps({"success": True, "recording": name if on else None})
+
+    @app.get(_PATHS_API + "/marker/<marker_id:int>")
+    def paths_marker_position(marker_id: int) -> Any:
+        """Where a marker is on the wire, for "Point from marker"."""
+        response.content_type = "application/json"
+        position = server.get_marker_position(marker_id)
+        if position is None:
+            return _json_error(404, f"Marker {marker_id} has no position on this station.")
+        x, y, z = position
+        return json.dumps({"x": x, "y": y, "z": z})
+
+    @app.post(_PATHS_API + "/view")
+    def paths_view() -> Any:
+        """Every path and its points as seen by the saved camera in a ``w`` x ``h`` picture; null behind it."""
+        import numpy as np
+
+        response.content_type = "application/json"
+        data = _body()
+        if isinstance(data, str):
+            return data
+        try:
+            w, h = float(data["w"]), float(data["h"])
+            _require_wizard_canvas(w, h)
+        except (KeyError, TypeError, ValueError):
+            return _json_error(400, "w and h must be the picture's size in pixels")
+        cfg = load_config(server.config_path)
+        params, k1, k2 = _camera_view(cfg)
+
+        def seen(points: list[tuple[float, float, float]]) -> list[list[float] | None]:
+            if not points:
+                return []
+            screen = apply_overlay_distortion(project_points(params, np.array(points), w, h), w, h, k1, k2)
+            return [[float(x), float(y)] if np.isfinite(x) and np.isfinite(y) else None for x, y in screen]
+
+        views = []
+        for path in cfg.paths.paths:
+            corners = [(p.x, p.y, p.z) for p in path.points]
+            curve = build_curve([PathPoint(p.x, p.y, p.z, p.radius) for p in path.points], path.closed)
+            ends = path_ends(path, curve)
+            tips, backs = seen([e.at for e in ends]), seen([e.inside for e in ends])
+            views.append(
+                {
+                    "name": path.name,
+                    "line": seen(curve.drawn() if curve is not None else corners),
+                    "points": seen(corners),
+                    "ends": [
+                        {"at": at, "inside": inside, "releases": end.releases}
+                        for end, at, inside in zip(ends, tips, backs, strict=True)
+                    ],
+                }
+            )
+        markers = []
+        for marker_id, _x, _y in server.get_marker_positions():
+            position = server.get_marker_position(marker_id)
+            if position is not None:
+                markers.append({"id": marker_id, "at": seen([position])[0]})
+        return json.dumps({"paths": views, "markers": markers})
+
+    @app.post(_PATHS_API + "/unproject")
+    def paths_unproject() -> Any:
+        """The stage position under a picture point, on the horizontal plane at height ``z``."""
+        import numpy as np
+
+        response.content_type = "application/json"
+        data = _body()
+        if isinstance(data, str):
+            return data
+        try:
+            x, y, z = float(data["x"]), float(data["y"]), float(data["z"])
+            w, h = float(data["w"]), float(data["h"])
+            _require_wizard_canvas(w, h)
+            if not all(np.isfinite(v) for v in (x, y, z)):
+                raise ValueError("not finite")
+        except (KeyError, TypeError, ValueError):
+            return _json_error(400, "x, y, z, w and h must be numbers")
+        cfg = load_config(server.config_path)
+        params, k1, k2 = _camera_view(cfg)
+        pinhole = invert_overlay_distortion(np.array([[x, y]], dtype=np.float64), w, h, k1, k2)
+        world = unproject_to_plane(params, pinhole, w, h, z)[0]
+        if not (np.isfinite(world[0]) and np.isfinite(world[1])):
+            return _json_error(422, "That point of the picture does not reach the stage.")
+        return json.dumps({"x": float(world[0]), "y": float(world[1]), "z": z})
+
+
 def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     """Register all routes on the Bottle app."""
 
@@ -7113,6 +7349,12 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """Update RTTrPM output settings."""
         cfg = _save_section_from_form("rttrpm_output", bool_fields=("enabled",))
         return template("partials/rttrpm_output", config=cfg, saved=True)
+
+    @app.post("/section/paths")
+    def update_paths_settings() -> Any:
+        """Save whether paths are drawn and the slide time (the paths themselves have their own routes)."""
+        cfg = _save_section_from_form("paths", bool_fields=("show_paths",))
+        return template("partials/paths", config=cfg, saved=True)
 
     @app.post("/section/trigger_zones")
     def update_trigger_zones() -> Any:
@@ -9692,3 +9934,4 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     _register_input_plugin_routes(app, server)
     _register_gallery_routes(app, server)
+    _register_path_routes(app, server)

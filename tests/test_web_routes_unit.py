@@ -1853,7 +1853,7 @@ class TestApplyPathsSection:
         assert cfg.paths.paths == before
         assert cfg.paths.slide_time == 2.0
 
-    @pytest.mark.parametrize(("raw", "want"), [("1.5", 1.5), ("x", 0.5), (-3, 0.0), (50, 10.0)])
+    @pytest.mark.parametrize(("raw", "want"), [("1.5", 1.5), ("x", 1.0), (-3, 0.0), (50, 10.0)])
     def test_the_slide_time_is_coerced_like_a_toml_load(self, raw: object, want: float) -> None:
         cfg = self._cfg()
         apply_section_data(cfg, "paths", {"slide_time": raw})

@@ -923,12 +923,12 @@ class PathsConfig:
     """Paths, and how a marker slides onto one."""
 
     show_paths: bool = True
-    slide_time: float = 0.5  # seconds
+    slide_time: float = 1.0  # seconds
     paths: list[PathConfig] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.show_paths = _coerce_bool(self.show_paths, True)
-        self.slide_time = _coerce_float(self.slide_time, 0.5, lo=0.0, hi=10.0)
+        self.slide_time = _coerce_float(self.slide_time, 1.0, lo=0.0, hi=10.0)
         raw = self.paths if isinstance(self.paths, list) else []
         paths = [
             PathConfig(**_filter_known(PathConfig, p)) if isinstance(p, dict) else p

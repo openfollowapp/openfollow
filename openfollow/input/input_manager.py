@@ -218,7 +218,7 @@ class InputManager:
     def _move(self, marker_id: int, marker: Marker, vx: float, vy: float, vz: float, dt: float) -> None:
         """Move by a velocity: along its path for a locked marker, freely otherwise."""
         paths = self._paths()
-        on_path = paths.move(marker_id, vx, vy, dt) if paths is not None else None
+        on_path = paths.move(marker_id, vx, vy, dt, vz) if paths is not None else None
         if on_path is not None:
             marker.set_pos(*on_path)
             return

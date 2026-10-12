@@ -4,8 +4,9 @@
 
 Runs on the frame loop. Every movement source asks the engine before it writes a
 locked marker and writes what it answers, so a locked marker is on its path in
-every write and no output ever carries a position off it. A marker sliding onto
-a path ignores input until it lands. Locks and recording live in memory only.
+every write and no output ever carries a position off it. A marker pressed onto
+a path keeps moving under its input while the path pulls it in, harder and harder
+until it is on it. Locks and recording live in memory only.
 """
 
 from __future__ import annotations
@@ -46,8 +47,8 @@ class Press(Enum):
 class _Lock:
     name: str
     place: Place
-    # Where the slide started and how far into it the marker is; None once it has landed.
-    slide_from: Point | None = None
+    # While pulled in: where the marker would be without the path, and how long it has been pulled.
+    free: Point | None = None
     slide_elapsed: float = 0.0
     # Moved by a reload, not by its marker: the next tick writes it.
     moved: bool = False
@@ -102,7 +103,11 @@ class PathEngine:
         """Rebuild from ``cfg``; with ``enabled`` False nothing is active and nobody stays locked."""
         # Where each locked marker is, or is sliding to, on the paths as they were.
         old = self._network
-        spots = {m: old.point(lock.place) for m, lock in self._locks.items()} if old is not None else {}
+        spots = (
+            {m: lock.free if lock.free is not None else old.point(lock.place) for m, lock in self._locks.items()}
+            if old is not None
+            else {}
+        )
         self.enabled = enabled
         self._slide_time = cfg.slide_time
         curves: list[PathCurve] = []
@@ -186,7 +191,7 @@ class PathEngine:
         return True
 
     def _start(self, marker_id: int, place: Place, pos: Point) -> None:
-        self._locks[marker_id] = _Lock(self._names[place.path], place, slide_from=pos)
+        self._locks[marker_id] = _Lock(self._names[place.path], place, free=pos)
 
     def release(self, marker_id: int) -> None:
         self._locks.pop(marker_id, None)
@@ -204,11 +209,11 @@ class PathEngine:
         for marker_id, lock in self._locks.items():
             # A lock only ever lives on a network: a reload without one releases everybody.
             assert self._network is not None
-            if lock.slide_from is not None:
+            if lock.free is not None:
                 lock.slide_elapsed += dt
-                out[marker_id] = self._sliding(lock)
+                out[marker_id] = self._pulled(lock)
                 if lock.slide_elapsed >= self._slide_time:
-                    lock.slide_from = None
+                    lock.free = None
             elif lock.z_shift:
                 lock.z_elapsed += dt
                 out[marker_id] = self._at(lock)
@@ -227,21 +232,34 @@ class PathEngine:
             z += lock.z_shift * (1.0 - _ease(min(lock.z_elapsed / HEIGHT_BLEND_S, 1.0)))
         return x, y, z
 
-    def _sliding(self, lock: _Lock) -> Point:
-        assert self._network is not None and lock.slide_from is not None
+    def _pulled(self, lock: _Lock) -> Point:
+        """Between where the marker would be and the nearest point of its path, closer the longer it is pulled."""
+        assert self._network is not None and lock.free is not None
         target = self._network.point(lock.place)
         u = 1.0 if self._slide_time <= 0.0 else min(lock.slide_elapsed / self._slide_time, 1.0)
         k = _ease(u)
-        x0, y0, z0 = lock.slide_from
+        x0, y0, z0 = lock.free
         return x0 + (target[0] - x0) * k, y0 + (target[1] - y0) * k, z0 + (target[2] - z0) * k
 
-    def move(self, marker_id: int, vx: float, vy: float, dt: float) -> Point | None:
-        """Where a push of ``(vx, vy)`` m/s for ``dt`` puts a locked marker; ``None`` when it is not locked."""
+    def _move_free(self, lock: _Lock, free: Point) -> Point:
+        """Carry a pulled marker's own movement on, and aim the pull at the point of the path nearest it."""
+        assert self._network is not None
+        lock.free = free
+        s, _ = self._network.curves[lock.place.path].nearest(free[0], free[1])
+        lock.place = Place(lock.place.path, s)
+        return self._pulled(lock)
+
+    def move(self, marker_id: int, vx: float, vy: float, dt: float, vz: float = 0.0) -> Point | None:
+        """Where a push of ``(vx, vy, vz)`` m/s for ``dt`` puts a locked marker; ``None`` when it is not locked.
+
+        Once on the path only the push along it counts and the height is the path's.
+        """
         lock = self._locks.get(marker_id)
         if lock is None or self._network is None:
             return None
-        if lock.slide_from is not None:
-            return self._sliding(lock)
+        if lock.free is not None:
+            x, y, z = lock.free
+            return self._move_free(lock, (x + vx * dt, y + vy * dt, z + vz * dt))
         step = self._network.walk(lock.place, vx, vy, dt)
         self._set_place(lock, step.place)
         if step.released:
@@ -253,8 +271,8 @@ class PathEngine:
         lock = self._locks.get(marker_id)
         if lock is None or self._network is None:
             return None
-        if lock.slide_from is not None:
-            return self._sliding(lock)
+        if lock.free is not None:
+            return self._move_free(lock, (x, y, lock.free[2]))
         place = self._network.nearest(x, y, among=self._network.connected(lock.place.path))
         assert place is not None
         self._set_place(lock, place)
@@ -265,8 +283,9 @@ class PathEngine:
         lock = self._locks.get(marker_id)
         if lock is None or self._network is None:
             return None
-        if lock.slide_from is not None:
-            return self._sliding(lock)
+        if lock.free is not None:
+            fx, fy, fz = lock.free
+            return self._move_free(lock, (fx + (x - fx) * fraction, fy + (y - fy) * fraction, fz))
         target = self._network.nearest(x, y, among=self._network.connected(lock.place.path))
         assert target is not None
         self._set_place(lock, self._network.glide(lock.place, target, fraction))

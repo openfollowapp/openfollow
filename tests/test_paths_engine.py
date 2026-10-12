@@ -79,18 +79,39 @@ class TestPress:
         assert engine.is_locked(2)
 
 
-class TestSlide:
-    def test_the_slide_eases_from_where_the_marker_stood(self) -> None:
+class TestPull:
+    """A Pathfinder press pulls the marker in while it keeps moving, harder until it is on the path."""
+
+    def test_the_pull_starts_where_the_marker_stood_and_grows(self) -> None:
         engine = _engine(CROSS, slide_time=1.0)
         engine.press(1, (2.0, 2.0, 1.0))
         assert _round(engine.tick(0.0)[1]) == (2.0, 2.0, 1.0)
-        # Halfway in time is halfway in distance: the ease is symmetric.
+        # Halfway in time is halfway in: the pull eases in and out.
         assert _round(engine.tick(0.5)[1]) == (2.0, 1.0, 0.5)
-        early = engine.tick(0.25)[1]
-        # Three quarters of the time covers more than three quarters of the way.
-        assert early[1] < 0.5
+        # Three quarters of the time pulls more than three quarters of the way.
+        assert engine.tick(0.25)[1][1] < 0.5
 
-    def test_the_slide_lands_on_the_path_s_height(self) -> None:
+    def test_the_marker_keeps_its_own_movement_while_it_is_pulled_in(self) -> None:
+        engine = _engine(CROSS, slide_time=1.0)
+        engine.press(1, (0.0, 2.0, 0.0))
+        engine.tick(0.5)
+        # Moving 2 m/s along the stage: it goes on moving, now half pulled onto the cross.
+        assert _round(engine.move(1, 2.0, 0.0, 0.5)) == (1.0, 1.0, 0.0)
+        engine.tick(0.5)
+        # Landed on the cross where its movement took it, not where it was pressed.
+        assert _round(engine.move(1, 0.0, 0.0, 0.0)) == (1.0, 0.0, 0.0)
+        assert engine.locked_path(1) == "cross"
+
+    def test_height_and_mouse_and_osc_carry_on_during_the_pull(self) -> None:
+        engine = _engine(CROSS, slide_time=1.0)
+        engine.press(1, (0.0, 2.0, 0.0))
+        engine.tick(0.5)
+        assert _round(engine.move(1, 0.0, 0.0, 0.5, vz=2.0)) == (0.0, 1.0, 0.5)
+        assert _round(engine.project(1, 3.0, 2.0)) == (3.0, 1.0, 0.5)
+        # The mouse moves the free position a fraction of the way to the cursor.
+        assert _round(engine.glide(1, 5.0, 2.0, 0.5)) == (4.0, 1.0, 0.5)
+
+    def test_the_pull_ends_on_the_path_s_height(self) -> None:
         engine = _engine(RAMP)
         engine.press(1, (1.0, 2.5, 3.0))
         assert _round(_landed(engine)) == (0.0, 2.5, 1.0)
@@ -101,16 +122,7 @@ class TestSlide:
         engine.press(1, (2.0, 2.0, 0.0))
         assert _round(engine.tick(0.0)[1]) == (2.0, 0.0, 0.0)
 
-    def test_input_during_the_slide_is_ignored(self) -> None:
-        engine = _engine(CROSS, slide_time=1.0)
-        engine.press(1, (2.0, 2.0, 0.0))
-        engine.tick(0.5)
-        held = engine.move(1, 5.0, 0.0, 1.0)
-        assert _round(held) == (2.0, 1.0, 0.0)
-        assert _round(engine.project(1, -4.0, 0.0)) == (2.0, 1.0, 0.0)
-        assert _round(engine.glide(1, -4.0, 0.0, 1.0)) == (2.0, 1.0, 0.0)
-
-    def test_a_press_during_the_slide_releases_where_it_is(self) -> None:
+    def test_a_press_during_the_pull_releases_where_it_is(self) -> None:
         engine = _engine(CROSS, slide_time=1.0)
         engine.press(1, (2.0, 2.0, 0.0))
         engine.tick(0.5)
@@ -216,12 +228,20 @@ class TestReload:
         # Written once: the next frame leaves it to the marker's input.
         assert engine.tick(0.02) == {}
 
-    def test_an_edit_during_a_slide_retargets_it(self) -> None:
+    def test_an_edit_during_the_pull_retargets_it(self) -> None:
         engine = _engine(CROSS, slide_time=1.0)
         engine.press(1, (3.0, 2.0, 0.0))
         moved = _path("cross", [(-5, 1, 0), (5, 1, 0)], active=True)
         engine.reload(PathsConfig(slide_time=1.0, paths=[moved]), enabled=True)
         assert _round(_landed(engine)) == (3.0, 1.0, 0.0)
+
+    def test_an_edit_during_the_pull_aims_from_where_the_marker_would_be(self) -> None:
+        engine = _engine(CROSS, slide_time=1.0)
+        engine.press(1, (3.0, 2.0, 0.0))
+        # The cross now runs up the stage at x = 4: nearest to (3, 2), not to the old target (3, 0).
+        turned = _path("cross", [(4, -5, 0), (4, 5, 0)], active=True)
+        engine.reload(PathsConfig(slide_time=1.0, paths=[turned]), enabled=True)
+        assert _round(_landed(engine)) == (4.0, 2.0, 0.0)
 
     def test_switching_paths_off_releases_everyone_and_stops_recording(self) -> None:
         cfg = PathsConfig(paths=[CROSS])

@@ -74,7 +74,7 @@ class TestPathfinder:
         assert [(p.x, p.y, p.z, p.radius) for p in saved] == [(0.0, 0.0, 0.0, 0.5), (1.5, 2.0, 0.8, 0.5)]
         assert app._config_mtime == app._get_config_mtime()
         # The engine already draws the new point.
-        assert app._paths.drawings(app._config.paths)[0].points[-1] == (1.5, 2.0, 0.8)
+        assert app._paths.drawings(app._config.paths)[0].ends[-1].at == pytest.approx((1.5, 2.0, 0.8))
 
     def test_a_full_path_takes_no_more_points(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
         full = PathConfig(name="full", points=[PathPointConfig(x=i) for i in range(MAX_PATH_POINTS)])

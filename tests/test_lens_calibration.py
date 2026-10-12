@@ -148,3 +148,12 @@ def test_a_single_bowed_edge_already_tells_the_pair() -> None:
     assert len(cal.lines) == 1
     assert cal.fit.k1 == pytest.approx(lens[0], abs=K_TOLERANCE)
     assert cal.fit.k2 == pytest.approx(lens[1], abs=K_TOLERANCE)
+
+
+def test_the_arena_default_gives_back_the_lens_it_was_drawn_with() -> None:
+    """The Media Gallery's Arena demonstrates the Lens step; the help drawer names the pair it measures."""
+    cv2 = pytest.importorskip("cv2", reason="decoding the picture needs the detection extra")
+    from openfollow.video import media_store
+
+    img = cv2.imread(str(media_store.ARENA_ASSET_JPG), cv2.IMREAD_GRAYSCALE).astype(np.float64)
+    assert_recovered(calibrate(img).fit, (-0.15, 0.02))

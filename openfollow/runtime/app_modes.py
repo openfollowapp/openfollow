@@ -24,6 +24,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_CAMERA_POSE_FIELDS = ("pos_x", "pos_y", "pos_z", "pitch", "yaw", "roll", "fov")
+
 
 def on_screen_mode_active(app: OpenFollowApp) -> bool:
     """True while any on-screen mode is up, i.e. the operator is not on the HUD.
@@ -896,7 +898,9 @@ def on_key_down(app: OpenFollowApp, event: dict[str, Any]) -> None:
 
     modifier_keys = app._input_manager.keyboard_handler.keys if app._input_manager is not None else set()
     if key == "s" and ("Control" in modifier_keys or "Meta" in modifier_keys) and app._camera is not None:
-        app._config.camera = app._camera.to_config()
+        # The pose only: the lens pair and the calibration points are the Setup Wizard's.
+        pose = app._camera.to_config()
+        app._config.camera = replace(app._config.camera, **{f: getattr(pose, f) for f in _CAMERA_POSE_FIELDS})
         # Route through _persist_config so a save failure (read-only fs, disk
         # full) is logged and swallowed like every other persist site, instead
         # of raising out of the GTK key handler.

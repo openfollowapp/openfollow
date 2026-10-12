@@ -28,7 +28,7 @@ import pytest
 import openfollow
 import openfollow.services as services_module
 import openfollow.web.discovery as discovery_module
-from openfollow.configuration import AppConfig, load_config, save_config
+from openfollow.configuration import AppConfig, CameraConfig, load_config, save_config
 from openfollow.marker_catalog import MarkerCatalog
 from openfollow.palette import AUTO_PICK_ORDER
 from openfollow.runtime.overlay_links import SUPPORT
@@ -2013,6 +2013,18 @@ def test_form_post_camera_renders_saved_partial(live_server) -> None:
     status, body = _post_form(base, "/section/camera", {"pos_x": "1.5", "pos_y": "-5.0", "pos_z": "4.0"})
     assert status == 200
     assert len(body) > 50
+
+
+def test_a_camera_form_save_keeps_the_calibration_points(live_server) -> None:
+    """The form carries no points or corner pins; saving it must not drop what the Setup Wizard saved."""
+    server, base = live_server
+    point = {"corner_a": "DSL", "corner_b": "DSR", "distance_a": 21.4, "distance_b": 23.9, "pin_x": 0.4, "pin_y": 0.2}
+    pins = [[0.8, 0.9], [0.2, 0.9], [0.3, 0.6], [0.7, 0.6]]
+    save_config(AppConfig(camera=CameraConfig(calibration_points=[point], corner_pins=pins)), server.config_path)
+    status, _body = _post_form(base, "/section/camera", {"pos_x": "1.5", "pos_y": "-5.0", "pos_z": "4.0"})
+    assert status == 200
+    saved = load_config(server.config_path).camera
+    assert (saved.pos_x, [p.distance_a for p in saved.calibration_points], saved.corner_pins) == (1.5, [21.4], pins)
 
 
 def test_form_post_osc_renders_saved_partial(live_server) -> None:

@@ -52,13 +52,16 @@ if TYPE_CHECKING:
     from openfollow.web.server import ConfigWebServer
 
 from openfollow.configuration import (
+    CALIBRATION_CORNERS,
     CONTROLLER_BINDING_FIELDS,
     DEFAULT_UPDATE_SERVICE_NAME,
     MARKER_TOKEN_ALL,
+    MAX_CALIBRATION_POINTS,
     MOUSE3D_AXES,
     MOUSE3D_BUTTON_FIELDS,
     VALID_BUTTON_NAMES,
     AppConfig,
+    CalibrationPointConfig,
     DetectionMaskConfig,
     OscDestinationConfig,
     OscTransmitterConfig,
@@ -1786,6 +1789,11 @@ def _as_float_or_zero(value: Any, default: float) -> float:
     return out
 
 
+def _as_json_list(value: Any, current: Any) -> Any:
+    """A JSON list as sent; anything else keeps the current value. The dataclass coerces each entry."""
+    return list(value) if isinstance(value, list) else current
+
+
 def _as_optional_float(value: Any, default: float | None) -> float | None:
     """Parse to float; explicit None or blank string clears to None.
 
@@ -2069,6 +2077,8 @@ _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
         "focal_length_mm": _as_optional_float,
         "lens_k1": _as_float,
         "lens_k2": _as_float,
+        "calibration_points": _as_json_list,
+        "corner_pins": _as_json_list,
     },
     "grid": {
         "visible": _as_bool,
@@ -3471,6 +3481,61 @@ def _json_canvas(data: dict[str, Any]) -> tuple[float, float]:
     img_h = _json_number(data["image_height"], "image_height")
     _require_wizard_canvas(img_w, img_h)
     return img_w, img_h
+
+
+def _wizard_calibration_points(
+    raw: Any, img_w: float, img_h: float
+) -> list[tuple[CalibrationPointConfig, list[float]]]:
+    """The posted calibration points with their pins in snapshot pixels; malformed raises.
+
+    The ranges are the config's own rule, so a point the Setup Wizard can solve with is one it can save.
+    """
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or len(raw) > MAX_CALIBRATION_POINTS:
+        raise ValueError(f"calibration_points must be a list of at most {MAX_CALIBRATION_POINTS}")
+    points = []
+    for n, entry in enumerate(raw, start=1):
+        if not isinstance(entry, dict):
+            raise ValueError(f"calibration point {n} must be an object")
+        corners = (entry.get("corner_a"), entry.get("corner_b"))
+        if not all(isinstance(c, str) and c in CALIBRATION_CORNERS for c in corners):
+            raise ValueError(f"calibration point {n} needs two grid corners")
+        pin = _json_point(entry.get("pin"), f"calibration point {n} pin")
+        point = CalibrationPointConfig(
+            corner_a=str(corners[0]),
+            corner_b=str(corners[1]),
+            distance_a=_json_number(entry.get("distance_a"), f"calibration point {n} distance_a"),
+            distance_b=_json_number(entry.get("distance_b"), f"calibration point {n} distance_b"),
+            height=_json_number(entry.get("height", 0.0), f"calibration point {n} height"),
+            pin_x=pin[0] / img_w,
+            pin_y=pin[1] / img_h,
+        )
+        problem = point.problem()
+        if problem:
+            raise ValueError(f"calibration point {n} {problem}")
+        points.append((point, pin))
+    return points
+
+
+def _point_answer(fit: Any, params: Any, img_w: float, img_h: float, k1: float, k2: float) -> dict[str, Any]:
+    """One point of a solve's answer; ``seen`` is where the solved camera shows its place on the snapshot."""
+    import numpy as np
+
+    from openfollow.scene.solver import apply_overlay_distortion, project_points
+
+    seen = None
+    if fit.position is not None:
+        projected = project_points(params, np.array([fit.position], dtype=np.float64), img_w, img_h)
+        if bool(np.isfinite(projected).all()):
+            seen = apply_overlay_distortion(projected, img_w, img_h, k1, k2)[0].tolist()
+    return {
+        "status": fit.status,
+        "reason": fit.reason,
+        "residual": fit.residual if math.isfinite(fit.residual) else None,
+        "position": None if fit.position is None else list(fit.position),
+        "seen": seen,
+    }
 
 
 def _repo_root_for_diagnostics() -> Path | None:
@@ -9596,12 +9661,14 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                     raise ValueError("each screen_corner must be [x, y]")
                 if not all(math.isfinite(float(c)) for c in p):
                     raise ValueError("screen_corner coords must be finite numbers")
+            calibration_points = _wizard_calibration_points(data.get("calibration_points"), img_w, img_h)
         except (KeyError, TypeError, ValueError) as exc:
             response.status = 400
             return json.dumps({"error": str(exc)})
 
         import numpy as np
 
+        from openfollow.scene.calibration_points import CalibrationPoint, solve_with_points
         from openfollow.scene.solver import (
             apply_overlay_distortion,
             invert_overlay_distortion,
@@ -9619,7 +9686,31 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         world_tuples = [tuple(p) for p in world_corners]
         screen_tuples = [(float(p[0]), float(p[1])) for p in screen_undistorted]
 
-        result = solve_camera_dlt(world_tuples, screen_tuples, img_w, img_h)
+        solved = None
+        if calibration_points:
+            # Each point names its corners; ``world_corners`` arrive in CALIBRATION_CORNERS order.
+            corner_at = {
+                name: (float(world_corners[i][0]), float(world_corners[i][1]), float(world_corners[i][2]))
+                for i, name in enumerate(CALIBRATION_CORNERS)
+            }
+            pins = invert_overlay_distortion(
+                np.array([pin for _point, pin in calibration_points], dtype=np.float64), img_w, img_h, k1, k2
+            )
+            measured = [
+                CalibrationPoint(
+                    corner_a=corner_at[point.corner_a],
+                    corner_b=corner_at[point.corner_b],
+                    distance_a=point.distance_a,
+                    distance_b=point.distance_b,
+                    height=point.height,
+                    pin=(float(pin[0]), float(pin[1])),
+                )
+                for (point, _), pin in zip(calibration_points, pins, strict=True)
+            ]
+            solved = solve_with_points(world_tuples, screen_tuples, measured, img_w, img_h)
+            result = None if solved is None else solved.camera
+        else:
+            result = solve_camera_dlt(world_tuples, screen_tuples, img_w, img_h)
         if result is None:
             response.status = 422
             return json.dumps({"error": "Invalid perspective – adjust corners"})
@@ -9642,20 +9733,22 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # snap feedback lands where the operator pinned (on the distorted video).
         reprojected = apply_overlay_distortion(project_points(params, world_arr, img_w, img_h), img_w, img_h, k1, k2)
 
-        return json.dumps(
-            {
-                "camera": {
-                    "pos_x": result.pos_x,
-                    "pos_y": result.pos_y,
-                    "pos_z": result.pos_z,
-                    "pitch": result.pitch,
-                    "yaw": result.yaw,
-                    "roll": result.roll,
-                    "fov": result.fov,
-                },
-                "reprojected_corners": reprojected.tolist(),
-            }
-        )
+        answer: dict[str, Any] = {
+            "camera": {
+                "pos_x": result.pos_x,
+                "pos_y": result.pos_y,
+                "pos_z": result.pos_z,
+                "pitch": result.pitch,
+                "yaw": result.yaw,
+                "roll": result.roll,
+                "fov": result.fov,
+            },
+            "reprojected_corners": reprojected.tolist(),
+        }
+        if solved is not None:
+            answer["corner_residual"] = solved.corner_residual
+            answer["calibration_points"] = [_point_answer(fit, params, img_w, img_h, k1, k2) for fit in solved.points]
+        return json.dumps(answer)
 
     @app.post("/api/wizard/lens/snap")
     def api_wizard_lens_snap() -> Any:

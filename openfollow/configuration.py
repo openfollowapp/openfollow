@@ -394,6 +394,56 @@ def _coerce_bool(value: Any, default: bool) -> bool:
 # --- Config dataclasses --------------------------------------------------
 
 
+CALIBRATION_CORNERS = ("DSL", "DSR", "USR", "USL")
+MAX_CALIBRATION_POINTS = 6
+
+
+@dataclass
+class CalibrationPointConfig:
+    """A far point measured with a laser from two grid corners, for the Setup Wizard's camera solve.
+
+    ``position`` is where the solve the camera pose came from put it, kept with the pose; like the
+    pose, it does not follow a later grid edit. The measurements are what the next solve reads.
+    """
+
+    # A missing corner or pin is no measurement: problem() refuses these defaults.
+    corner_a: str = ""
+    corner_b: str = ""
+    distance_a: float = 0.0  # m from corner_a's mark
+    distance_b: float = 0.0
+    height: float = 0.0  # m above stage level
+    pin_x: float = math.nan  # where it is on the snapshot, as a fraction of its width / height
+    pin_y: float = math.nan
+    position: list[float] = field(default_factory=list)  # x, y, z in m; empty when no solve placed it
+
+    def __post_init__(self) -> None:
+        # An unreadable value reads as NaN, which problem() refuses; a boolean too (``float(True)`` is 1 m).
+        def number(value: Any) -> float:
+            return math.nan if isinstance(value, bool) else _coerce_float(value, math.nan)
+
+        self.corner_a = _coerce_choice(self.corner_a, CALIBRATION_CORNERS, "")
+        self.corner_b = _coerce_choice(self.corner_b, CALIBRATION_CORNERS, "")
+        self.distance_a = number(self.distance_a)
+        self.distance_b = number(self.distance_b)
+        self.height = number(self.height)
+        self.pin_x = number(self.pin_x)
+        self.pin_y = number(self.pin_y)
+        coords = [number(v) for v in self.position] if isinstance(self.position, list | tuple) else []
+        self.position = coords if len(coords) == 3 and all(math.isfinite(c) for c in coords) else []
+
+    def problem(self) -> str:
+        """Why the point cannot be used, or ``""``. A measurement is dropped, never clamped."""
+        if not self.corner_a or not self.corner_b or self.corner_a == self.corner_b:
+            return "needs two different grid corners"
+        if not (0.0 < self.distance_a <= 200.0 and 0.0 < self.distance_b <= 200.0):
+            return "needs both distances between 0 and 200 m"
+        if not -10.0 <= self.height <= 10.0:
+            return "needs a height within 10 m of stage level"
+        if not (0.0 <= self.pin_x <= 1.0 and 0.0 <= self.pin_y <= 1.0):
+            return "needs its pin on the snapshot"
+        return ""
+
+
 @dataclass
 class CameraConfig:
     pos_x: float = 0.0
@@ -413,6 +463,10 @@ class CameraConfig:
     # video frame is never warped. 0/0 = pinhole (no curvature).
     lens_k1: float = 0.0
     lens_k2: float = 0.0
+    calibration_points: list[CalibrationPointConfig] = field(default_factory=list)
+    # The Setup Wizard's corner pins (DSL, DSR, USR, USL) the pose was solved from with the points, as
+    # fractions of the snapshot; empty when it has none. Kept with the pose, like the points' positions.
+    corner_pins: list[list[float]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         # These feed ``project_points`` via a numpy float array. Clamp fov out
@@ -438,6 +492,69 @@ class CameraConfig:
             )
             self.lens_k1 = 0.0
             self.lens_k2 = 0.0
+        self.calibration_points = _coerce_calibration_points(self.calibration_points)
+        self.corner_pins = _coerce_corner_pins(self.corner_pins)
+
+
+# The drops last reported, by field: every load_config builds the camera again, so a file says it once.
+_reported_drops: dict[str, str] = {}
+
+# A grid corner may sit off the snapshot, never this many snapshot widths or heights from it.
+CORNER_PIN_REACH = 10.0
+
+
+def _report_drops(name: str, said: str) -> None:
+    if _reported_drops.get(name) != said:
+        _reported_drops[name] = said
+        logger.warning("%s: %s; dropped", name, said)
+
+
+def _coerce_calibration_points(value: Any) -> list[CalibrationPointConfig]:
+    """Entries as dataclasses; an entry that cannot be used is dropped with one warning, past the cap too."""
+    points: list[CalibrationPointConfig] = []
+    entries = value if isinstance(value, list) else []
+    dropped: list[str] = [] if isinstance(value, list) else ["is not a list of tables"]
+    for i, entry in enumerate(entries, start=1):
+        if len(points) == MAX_CALIBRATION_POINTS:
+            dropped.append(f"entries from {i} on, past the first {MAX_CALIBRATION_POINTS} usable")
+            break
+        if isinstance(entry, dict):
+            entry = CalibrationPointConfig(**_filter_known(CalibrationPointConfig, entry))
+        if not isinstance(entry, CalibrationPointConfig):
+            dropped.append(f"entry {i} is not a table")
+            continue
+        problem = entry.problem()
+        if problem:
+            dropped.append(f"entry {i} {problem}")
+            continue
+        points.append(entry)
+    if dropped:
+        _report_drops(
+            "camera.calibration_points",
+            "; ".join(dropped[:3]) + (f"; {len(dropped) - 3} more" if len(dropped) > 3 else ""),
+        )
+    return points
+
+
+def _coerce_corner_pins(value: Any) -> list[list[float]]:
+    """Four [x, y] fractions of the snapshot, or none; anything else is dropped with one warning."""
+    if isinstance(value, list) and not value:
+        return []
+
+    def number(v: Any) -> float:
+        return math.nan if isinstance(v, bool) else _coerce_float(v, math.nan)
+
+    pins = (
+        [[number(v) for v in pin] if isinstance(pin, list | tuple) else [] for pin in value]
+        if isinstance(value, list | tuple)
+        else []
+    )
+    if len(pins) == 4 and all(
+        len(pin) == 2 and all(math.isfinite(c) and abs(c) <= CORNER_PIN_REACH for c in pin) for pin in pins
+    ):
+        return pins
+    _report_drops("camera.corner_pins", "needs four [x, y] pairs on or near the snapshot")
+    return []
 
 
 _GRID_COLOR_DEFAULT = "#545454"

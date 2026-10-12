@@ -452,6 +452,28 @@ class TestSaveCameraGrid:
         assert entry.template.payload["camera"]["pos_x"] == 1.5
         assert entry.template.payload["grid"]["width"] == 12.0
 
+    def test_the_calibration_points_travel_with_the_camera(self, live_server) -> None:
+        from openfollow.configuration import CalibrationPointConfig
+
+        _, base, cfg_path = live_server
+        point = CalibrationPointConfig("DSR", "DSL", 18.5, 19.25, 0.5, 0.4, 0.2)
+        pins = [[0.81, 0.94], [0.14, 0.95], [0.37, 0.61], [0.66, 0.6]]
+        cfg = load_config(cfg_path)
+        cfg.camera.calibration_points = [point]
+        cfg.camera.corner_pins = pins
+        save_config(cfg, cfg_path)
+        status, body = _post_json(base, "/api/templates/camera_grid/save", {"name": "Far Field"})
+        assert status == 200
+        filename = json.loads(body)["filename"]
+        cfg = load_config(cfg_path)
+        cfg.camera.calibration_points = []
+        cfg.camera.corner_pins = []
+        save_config(cfg, cfg_path)
+        status, _ = _post_empty(base, f"/api/templates/{filename}/apply?confirm=1")
+        assert status == 200
+        applied = load_config(cfg_path).camera
+        assert (applied.calibration_points, applied.corner_pins) == ([point], pins)
+
 
 class TestSaveZones:
     def test_reads_current_zones_section_from_config(self, live_server) -> None:

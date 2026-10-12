@@ -7241,7 +7241,7 @@ def test_validate_move_stick_leaving_the_fader_stick_rechecks_it(live_server) ->
 @pytest.mark.parametrize(
     ("field", "value", "caution"),
     [
-        ("trigger.button", "B", "Also 'Toggle Zone Overlay' on gamepad input"),
+        ("trigger.button", "Y", "Also 'Toggle Help' on gamepad input"),
         ("trigger.button", "A", ""),
         ("trigger.key", "x", "Also 'Reset Marker' on keyboard input"),
         ("trigger.key", "p", ""),

@@ -1927,7 +1927,6 @@ _KEYBOARD_ACTION_FIELDS = (
 GAMEPAD_ACTION_BUTTON_FORM_LABELS = (
     ("btn_reset", "Reset Marker"),
     ("btn_toggle_help", "Toggle Help"),
-    ("btn_toggle_zones", "Toggle Zone Overlay"),
     ("btn_settings", "Settings Menu"),
     ("btn_speed_down", "Speed -"),
     ("btn_speed_up", "Speed +"),
@@ -1936,8 +1935,9 @@ GAMEPAD_ACTION_BUTTON_FORM_LABELS = (
     ("btn_next_marker", "Next Marker"),
     ("btn_prev_marker", "Prev Marker"),
     ("btn_clear_messages", "Clear Messages"),
-    ("btn_pathfinder", "Pathfinder"),
+    ("btn_toggle_zones", "Toggle Zone Overlay"),
     ("btn_toggle_paths", "Toggle Paths"),
+    ("btn_pathfinder", "Pathfinder"),
 )
 GAMEPAD_MENU_BUTTON_FORM_LABELS = (
     ("btn_menu_confirm", "Confirm"),
@@ -2004,7 +2004,6 @@ class ControllerConfig:
     btn_speed_up: str = "RB"
     btn_move_z_down: str = "LT"
     btn_move_z_up: str = "RT"
-    btn_toggle_zones: str = "B"
     # Cycle bindings (marker selection only; calibration is web-UI-only).
     btn_next_marker: str = "DPAD_RIGHT"
     btn_prev_marker: str = "DPAD_LEFT"
@@ -2016,8 +2015,9 @@ class ControllerConfig:
     btn_menu_cancel: str = "B"
     # Clear all operator-message cards. Default unbound; edge-triggered.
     btn_clear_messages: str = ""
-    btn_pathfinder: str = ""
+    btn_toggle_zones: str = ""
     btn_toggle_paths: str = ""
+    btn_pathfinder: str = ""
     move_xy_stick: str = "left"
     # Marker-fader integrator: which stick Y-axis (if any) drives the fader of
     # the currently-controlled marker. The bus integrates

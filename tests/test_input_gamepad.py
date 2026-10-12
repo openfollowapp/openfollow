@@ -892,10 +892,10 @@ class TestUpdate:
         assert 0 in result.resets
 
     def test_dispatch_edges_for_configured_buttons(self, stubbed_pygame) -> None:
-        handler, _ = make_handler(stubbed_pygame)
+        handler, _ = make_handler(stubbed_pygame, config=ControllerConfig(btn_toggle_zones="B"))
         joy = FakeJoystick(num_buttons=16)
         joy.press(CONTROLLER_BUTTON_Y)  # toggle help
-        joy.press(CONTROLLER_BUTTON_B)  # toggle zones (btn_toggle_zones default)
+        joy.press(CONTROLLER_BUTTON_B)  # toggle zones
         joy.press(CONTROLLER_BUTTON_DPAD_RIGHT)  # next marker
         joy.press(CONTROLLER_BUTTON_DPAD_LEFT)  # prev marker
         joy.press(CONTROLLER_BUTTON_BACK)  # settings

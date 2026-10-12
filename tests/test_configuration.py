@@ -7041,7 +7041,7 @@ class TestPathsConfig:
         assert [p.name for p in cfg.paths] == [f"p{i}" for i in range(MAX_PATHS)]
         assert "keeping the first" in caplog.text
 
-    @pytest.mark.parametrize(("raw", "want"), [(2, 2.0), (-1, 0.0), (99, 10.0), ("x", 0.5), (None, 0.5)])
+    @pytest.mark.parametrize(("raw", "want"), [(2, 2.0), (-1, 0.0), (99, 10.0), ("x", 1.0), (None, 1.0)])
     def test_the_slide_time_is_seconds_from_zero_to_ten(self, raw: object, want: float) -> None:
         from openfollow.configuration import PathsConfig
 

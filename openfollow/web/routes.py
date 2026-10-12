@@ -145,6 +145,7 @@ from openfollow.units import UnitSystem, parse_length, parse_speed
 from openfollow.web import diagnostics, peer_auth
 from openfollow.web._md import render_help_markdown
 from openfollow.web.bindings import check_binding, osc_row_overlap, osc_trigger_overlap
+from openfollow.web.config_cache import ParsedConfigCache
 from openfollow.web.discovery import clean_peer_name
 from openfollow.web.keyboard_layout_view import build_keyboard_layout_view, station_catalog, variant_options
 from openfollow.web.labels import video_error_token
@@ -4512,12 +4513,13 @@ def _resolve_marker_catalog_path(config_path: str, cfg_path_field: str) -> str:
 
 
 # Request-scoped config cache key. The ``before_request`` hook in
-# ``setup_routes`` parses ``config.toml`` once per request and stashes the
-# result here on ``request.environ``. Lifting the key + accessor to module
-# scope lets route groups registered *outside* ``setup_routes`` – such as
-# ``_register_marker_catalog_routes`` below – reuse that same per-request
-# parse instead of hitting disk again.
+# ``setup_routes`` takes one copy of the config per request and stashes it
+# here on ``request.environ``. Lifting the key + accessor to module scope lets
+# route groups registered *outside* ``setup_routes`` – such as
+# ``_register_marker_catalog_routes`` below – reuse that same copy.
 _ENV_CONFIG_KEY = "openfollow.loaded_config"
+# The file is parsed again only when it changed; each request gets its own copy.
+_CONFIG_CACHE = ParsedConfigCache()
 
 
 def _port_suffix(netloc: str) -> str:
@@ -4534,16 +4536,16 @@ def _port_suffix(netloc: str) -> str:
 
 
 def _request_config(server: ConfigWebServer) -> AppConfig:
-    """Return the config parsed once for the current request.
+    """Return this request's copy of the config.
 
     Reads the ``before_request``-populated ``request.environ`` cache and
-    falls back to a fresh ``load_config`` (caching it on the environ) when
-    the hook hasn't run – e.g. a handler exercised directly in a unit test.
+    falls back to a fresh copy (caching it on the environ) when the hook
+    hasn't run – e.g. a handler exercised directly in a unit test.
     """
     cached = request.environ.get(_ENV_CONFIG_KEY)
     if cached is not None:
         return cached  # type: ignore[no-any-return]
-    cfg = load_config(server.config_path)
+    cfg = _CONFIG_CACHE.load(server.config_path)
     request.environ[_ENV_CONFIG_KEY] = cfg
     return cfg
 

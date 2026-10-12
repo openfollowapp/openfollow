@@ -18,6 +18,7 @@ endpoints or the populated Devices table.
 from __future__ import annotations
 
 import contextlib
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -273,6 +274,33 @@ class TestMidiSectionRender:
 # ---------------------------------------------------------------------------
 # MIDI Patches – CRUD operations
 # ---------------------------------------------------------------------------
+
+
+class TestShowLive:
+    """The fader strips poll the station only after Show live, and only for a while."""
+
+    @pytest.mark.parametrize("route", ["/section/midi/faders/values", "/section/midi/marker-faders/values"])
+    def test_a_value_poll_runs_only_while_show_live_does(self, live_server, route: str) -> None:
+        _, base, _ = live_server
+        _, body = _get(base, "/section/midi")
+        poll = re.search(r'<div hx-get="' + re.escape(route) + r'"\s+hx-trigger="([^"]*)"', body)
+        assert poll, route
+        assert poll.group(1) == "every 500ms [midiLiveActive()], midi-live from:body"
+
+    def test_no_poll_runs_on_its_own_schedule(self, live_server) -> None:
+        _, base, _ = live_server
+        _, body = _get(base, "/section/midi")
+        assert "every 100ms" not in body
+        assert not re.search(r'hx-trigger="every [^"\[]*"', body), "a poll without a condition runs while nobody looks"
+
+    def test_each_fader_group_has_a_show_live_button_that_is_not_a_save(self, live_server) -> None:
+        _, base, _ = live_server
+        _, body = _get(base, "/section/midi")
+        buttons = re.findall(r"<button[^>]*data-midi-live[^>]*>([^<]*)</button>", body)
+        assert buttons == ["Show live", "Show live"]
+        for tag in re.findall(r"<button[^>]*data-midi-live[^>]*>", body):
+            assert 'type="button"' in tag and "save-btn" not in tag
+            assert 'aria-pressed="false"' in tag
 
 
 class TestSavePatches:

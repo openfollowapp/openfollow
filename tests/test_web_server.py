@@ -7574,47 +7574,36 @@ def test_validate_reuses_request_scoped_config_cache(live_server) -> None:
     assert body == ""
 
 
-def test_get_handler_parses_config_once_per_request(live_server, monkeypatch) -> None:
-    """GET handlers reuse request-scoped config cache to parse config exactly once per request."""
+class _CountingCache:
+    """Stands in for the request config cache, counting the copies taken."""
+
+    def __init__(self) -> None:
+        from openfollow.web.config_cache import ParsedConfigCache
+
+        self._real = ParsedConfigCache()
+        self.taken = 0
+
+    def load(self, path: str):  # noqa: ANN201 - returns the real cache's AppConfig
+        self.taken += 1
+        return self._real.load(path)
+
+
+@pytest.mark.parametrize("path", ["/", "/api/markers/catalog"])
+def test_a_request_takes_one_copy_of_the_config_and_parses_nothing_itself(live_server, monkeypatch, path) -> None:
+    """``_check_auth`` (before_request) takes the request's copy; the handler reuses it."""
     import openfollow.web.routes as routes_mod
 
-    calls: list[str] = []
+    server, base = live_server
+    save_config(AppConfig(), server.config_path)
+    cache = _CountingCache()
+    parses: list[str] = []
     real_load = routes_mod.load_config
-
-    def _counting(path, *a, **k):
-        calls.append(path)
-        return real_load(path, *a, **k)
-
-    monkeypatch.setattr(routes_mod, "load_config", _counting)
-    _, base = live_server
-    calls.clear()
-    status, _ = _get(base, "/")
+    monkeypatch.setattr(routes_mod, "_CONFIG_CACHE", cache)
+    monkeypatch.setattr(routes_mod, "load_config", lambda p, *a, **k: parses.append(p) or real_load(p, *a, **k))
+    status, _ = _get(base, path)
     assert status == 200
-    # ``_check_auth`` (before_request) parses once and caches on the request
-    # environ; ``index`` reuses that instead of a second parse.
-    assert len(calls) == 1
-
-
-def test_marker_catalog_parses_config_once_per_request(
-    live_server,
-    monkeypatch,
-) -> None:
-    import openfollow.web.routes as routes_mod
-
-    calls: list[str] = []
-    real_load = routes_mod.load_config
-
-    def _counting(path, *a, **k):
-        calls.append(path)
-        return real_load(path, *a, **k)
-
-    monkeypatch.setattr(routes_mod, "load_config", _counting)
-    _, base = live_server
-    calls.clear()
-    status, _ = _get(base, "/api/markers/catalog")
-    assert status == 200
-    # before_request parses + caches; the catalog handler reuses that cache.
-    assert len(calls) == 1
+    assert cache.taken == 1
+    assert parses == []
 
 
 # ---------------------------------------------------------------------------
@@ -9128,3 +9117,21 @@ def test_restart_through_a_foreign_origin_is_refused(pin_protected_server) -> No
     status = _post_status_with_headers(base, "/api/restart", extra_headers={"Origin": "http://evil.example.com"})
     assert status == 403
     assert server.check_restart_requested() is False
+
+
+def test_requests_share_one_parse_of_an_unchanged_config(live_server, monkeypatch) -> None:
+    """An open page polls; parsing config.toml for every request cost a Pi tens of milliseconds each."""
+    import openfollow.web.config_cache as cache_module
+    import openfollow.web.routes as routes_module
+    from openfollow.web.config_cache import ParsedConfigCache
+
+    server, base = live_server
+    save_config(AppConfig(), server.config_path)
+    parses: list[str] = []
+    real = cache_module.load_config
+    monkeypatch.setattr(cache_module, "load_config", lambda path: parses.append(path) or real(path))
+    monkeypatch.setattr(routes_module, "_CONFIG_CACHE", ParsedConfigCache())
+    for _ in range(3):
+        status, _body = _get(base, "/api/info")
+        assert status == 200
+    assert parses == [server.config_path]

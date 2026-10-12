@@ -80,6 +80,10 @@ class PathCurve:
         norm = math.hypot(dx, dy)
         return float(dx / norm), float(dy / norm)
 
+    def segments(self) -> tuple[FloatArray, FloatArray, FloatArray, FloatArray]:
+        """Each segment's start point, vector, squared length and ``s`` at its start."""
+        return self._seg_start, self._seg_vec, self._seg_len2, self.s[:-1]
+
     def nearest(self, x: float, y: float) -> tuple[float, float]:
         """The ``s`` of the curve's point nearest ``(x, y)``, and its distance."""
         rel = np.array([x, y]) - self._seg_start

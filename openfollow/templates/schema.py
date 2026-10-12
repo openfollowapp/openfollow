@@ -19,6 +19,7 @@ VALID_TYPES: tuple[str, ...] = (
     "osc_output",
     "camera_grid",
     "zones",
+    "paths",
 )  # fixed set of template types
 
 
@@ -249,6 +250,7 @@ def validate_payload(template_type: str, payload: Mapping[str, Any]) -> None:
     from openfollow.configuration import (
         CameraConfig,
         GridConfig,
+        PathsConfig,
         TriggerZonesConfig,
     )
 
@@ -381,6 +383,21 @@ def validate_payload(template_type: str, payload: Mapping[str, Any]) -> None:
             raise TemplateValidationError(
                 f"zones payload invalid: {exc}",
             ) from exc
+        return
+
+    if template_type == "paths":
+        # Without a paths array, applying would delete every path.
+        if not isinstance(payload, dict) or not isinstance(payload.get("paths"), list):
+            raise TemplateValidationError("paths payload must include a 'paths' array")
+        for i, path in enumerate(payload["paths"]):
+            if not isinstance(path, dict):
+                raise TemplateValidationError(
+                    f"paths payload 'paths[{i}]' must be object, got {type(path).__name__}",
+                )
+        try:
+            PathsConfig(**payload)
+        except TypeError as exc:
+            raise TemplateValidationError(f"paths payload invalid: {exc}") from exc
         return
 
     # Defensive: unreachable if gates are in sync.

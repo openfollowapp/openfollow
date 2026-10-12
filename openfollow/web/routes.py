@@ -327,6 +327,7 @@ _BLANK_IFACE_LABELS = {kind: f"-- {label} --" for kind, label in diagnostics.BLA
 
 _SECTION_CONFIG_ATTRS = {
     "camera": "camera",
+    "paths": "paths",
     "grid": "grid",
     "movement": "marker",
     "marker": "marker",
@@ -1100,6 +1101,8 @@ _DEVICE_LOCAL_FIELDS_BY_SECTION: dict[str, frozenset[str]] = {
     # strip it (matching the full export/import redaction).
     "video_source": frozenset({"testpattern_selected_media", "video_input_iface"}),
     "rttrpm_output": frozenset({"source_iface"}),
+    # Whether this station draws paths; toggled on its own keyboard or pad.
+    "paths": frozenset({"show_paths"}),
 }
 
 # Sections that are device-local as a whole. Every row of the Network Interface
@@ -1675,6 +1678,15 @@ def apply_section_data(cfg: AppConfig, section: str, data: Mapping[str, Any]) ->
         cfg.detection.__post_init__()
         return True
 
+    if section == "paths":
+        _apply_parsed_updates(cfg.paths, data, _PATHS_FIELD_PARSERS)
+        # Anything but a list leaves the paths alone rather than deleting them all.
+        if isinstance(data.get("paths"), list):
+            cfg.paths.replace_paths(data["paths"])
+        else:
+            cfg.paths.__post_init__()
+        return True
+
     if section == "trigger_zones":
         # Global settings only – zones list CRUD happens via /api/zones
         tz = cfg.trigger_zones
@@ -2231,6 +2243,12 @@ _TRIGGER_ZONES_FIELD_PARSERS: dict[str, _FieldParser] = {
     "eval_fps": _as_int,
     "debounce_ms": _as_int,
     "hysteresis": _as_float,
+}
+
+
+_PATHS_FIELD_PARSERS: dict[str, _FieldParser] = {
+    "show_paths": _as_bool,
+    "slide_time": _as_float,
 }
 
 
@@ -3274,6 +3292,9 @@ def _apply_import_data(current_cfg: AppConfig, data: dict[str, Any]) -> AppConfi
                 _apply_zone_fields(zone, item)
                 new_zones.append(zone)
             cfg.trigger_zones.zones = new_zones
+
+    if "paths" in data and isinstance(data["paths"], dict):
+        apply_section_data(cfg, "paths", strip_device_local_fields("paths", data["paths"]))
 
     # Marker config feeds both "marker" and "movement" parser maps
     if "marker" in data and isinstance(data["marker"], dict):
@@ -6171,15 +6192,18 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     @app.post("/settings/experimental")
     def update_experimental() -> Any:
         """Persist ``[ui] show_experimental_features``. Turning it off also
-        disables ``detection.enabled`` (still experimental); the config-reload
-        watcher applies that at runtime. The body-class show/hide flip is done
-        client-side. Responds empty (hx-swap="none")."""
+        disables ``detection.enabled`` and deactivates every path (both still
+        experimental); the config-reload watcher applies that at runtime. The
+        body-class show/hide flip is done client-side. Responds empty
+        (hx-swap="none")."""
         show = _as_bool(request.forms.get("show_experimental_features"), False)
 
         def _mutate(cfg: AppConfig) -> None:
             cfg.ui.show_experimental_features = show
             if not show:
                 cfg.detection.enabled = False
+                for path in cfg.paths.paths:
+                    path.active = False
 
         _persist_ui_change(_mutate)
         return ""
@@ -8088,6 +8112,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
           ``config.toml`` after the section's own POST).
         - ``zones``: ``{"name": str}`` – same pattern; the server
           reads the current ``trigger_zones`` section.
+        - ``paths``: ``{"name": str}`` – the current paths and slide time,
+          without Active flags, which belong to the station.
 
         Both implicit-read variants run inside the config-write lock
         so a concurrent ``/section/...`` POST can't tear the captured
@@ -8128,6 +8154,13 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                     "camera": asdict(cfg.camera),
                     "grid": asdict(cfg.grid),
                 }
+        elif template_type == "paths":
+            with _config_write_lock:
+                cfg = load_config(server.config_path)
+                paths = [asdict(path) for path in cfg.paths.paths]
+                for path in paths:
+                    path.pop("active")
+                payload = {"slide_time": cfg.paths.slide_time, "paths": paths}
         else:  # zones – the only remaining option per the early gate
             with _config_write_lock:
                 cfg = load_config(server.config_path)
@@ -8168,8 +8201,10 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
           sections (whichever the payload carries – partial templates
           are honoured; the absent half is left alone).
         - ``zones`` replaces the entire ``trigger_zones`` section.
+        - ``paths`` replaces every path and the slide time; each path this
+          station already has by name keeps its Active flag.
 
-        ``camera_grid`` and ``zones`` require ``?confirm=1`` because
+        ``camera_grid``, ``zones`` and ``paths`` require ``?confirm=1`` because
         they overwrite a whole section. The caller's UI should show a
         confirm dialog before adding the parameter; the server gate
         is defence-in-depth so a forged request can't side-effect
@@ -8186,7 +8221,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             return json.dumps({"error": entry.error})
         tpl = entry.template
         confirm = request.query.get("confirm", "") == "1"
-        if tpl.type in ("camera_grid", "zones") and not confirm:
+        if tpl.type in ("camera_grid", "zones", "paths") and not confirm:
             response.status = 400
             return json.dumps(
                 {
@@ -8238,6 +8273,12 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 cfg = load_config(server.config_path)
                 cfg.camera = CameraConfig(**tpl.payload["camera"])
                 cfg.grid = GridConfig(**tpl.payload["grid"])
+                save_config(cfg, server.config_path)
+            return json.dumps({"ok": True})
+        if tpl.type == "paths":
+            with _config_write_lock:
+                cfg = load_config(server.config_path)
+                apply_section_data(cfg, "paths", strip_device_local_fields("paths", tpl.payload))
                 save_config(cfg, server.config_path)
             return json.dumps({"ok": True})
         # tpl.type == "zones" – the only remaining option per the

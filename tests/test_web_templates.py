@@ -1528,3 +1528,64 @@ def test_removing_a_zone_vertex_is_a_danger_button() -> None:
         Path(__file__).resolve().parent.parent / "openfollow" / "web" / "templates" / "partials" / "zone_editor.tpl"
     )
     assert """<button type="button" class="danger" data-vertex-delete=""" in zone_editor.read_text(encoding="utf-8")
+
+
+class TestSavePaths:
+    def test_saves_the_paths_and_slide_time_without_active_flags(self, live_server) -> None:
+        from openfollow.configuration import PathConfig, PathPointConfig
+
+        _, base, cfg_path = live_server
+        cfg = load_config(cfg_path)
+        cfg.paths.slide_time = 1.5
+        cfg.paths.paths.append(PathConfig(name="cross", active=True, points=[PathPointConfig(1, 2, 0)]))
+        save_config(cfg, cfg_path)
+        status, body = _post_json(base, "/api/templates/paths/save", {"name": "Stage Crosses"})
+        assert status == 200
+        from openfollow.templates.loader import find_template
+
+        entry = find_template(_templates_root(cfg_path), json.loads(body)["filename"])
+        assert entry is not None and entry.template is not None
+        assert entry.template.payload["slide_time"] == 1.5
+        assert [p["name"] for p in entry.template.payload["paths"]] == ["cross"]
+        assert "active" not in entry.template.payload["paths"][0]
+        assert entry.template.payload["paths"][0]["points"][0]["y"] == 2.0
+
+
+class TestApplyPaths:
+    def _template(self, cfg_path: str) -> None:
+        write_user_template(
+            _templates_root(cfg_path),
+            "paths",
+            "Crosses",
+            {
+                "show_paths": False,
+                "slide_time": 2.0,
+                "paths": [{"name": "cross", "points": [{"x": 5}]}, {"name": "new"}],
+            },
+        )
+
+    def test_replaces_the_paths_keeping_this_station_s_active_flags(self, live_server) -> None:
+        from openfollow.configuration import PathConfig
+
+        _, base, cfg_path = live_server
+        cfg = load_config(cfg_path)
+        cfg.paths.paths = [PathConfig(name="Cross", active=True), PathConfig(name="old", active=True)]
+        save_config(cfg, cfg_path)
+        self._template(cfg_path)
+        status, body = _post_empty(base, "/api/templates/paths.crosses.oftemplate/apply?confirm=1")
+        assert status == 200
+        assert json.loads(body)["ok"] is True
+        out = load_config(cfg_path).paths
+        assert [(p.name, p.active) for p in out.paths] == [("cross", True), ("new", False)]
+        assert out.paths[0].points[0].x == 5.0
+        assert out.slide_time == 2.0
+        # Whether this station draws paths is its own, whatever the file says.
+        assert out.show_paths is True
+
+    def test_requires_confirm(self, live_server) -> None:
+        _, base, cfg_path = live_server
+        self._template(cfg_path)
+        status, body = _post_empty(base, "/api/templates/paths.crosses.oftemplate/apply")
+        assert status == 400
+        assert "?confirm=1" in json.loads(body)["error"]
+        assert load_config(cfg_path).paths.paths == []

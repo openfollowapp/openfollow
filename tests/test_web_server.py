@@ -8390,3 +8390,29 @@ def test_vlan_subinterface_is_offered_as_a_plane_pin(live_server, monkeypatch) -
     assert status == 200
     assert 'value="eth0.10"' in body
     assert "eth0.10 – 10.20.0.5" in body
+
+
+def test_api_config_paths_reads_and_takes_paths_keeping_station_state(live_server) -> None:
+    """A peer or API client replaces the paths; Active flags and visibility stay this station's."""
+    from openfollow.configuration import PathConfig
+
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.paths.show_paths = False
+    cfg.paths.paths = [PathConfig(name="cross", active=True)]
+    save_config(cfg, server.config_path)
+
+    with urllib.request.urlopen(f"{base}/api/config/paths", timeout=5) as resp:
+        got = json.loads(resp.read())
+    assert got["paths"][0]["name"] == "cross"
+    assert got["show_paths"] is False
+
+    status, data = _post_json(
+        base,
+        "/api/config/paths",
+        {"show_paths": True, "slide_time": 0.8, "paths": [{"name": "cross", "active": False, "closed": True}]},
+    )
+    assert status == 200 and data["success"] is True
+    out = load_config(server.config_path).paths
+    assert (out.show_paths, out.slide_time) == (False, 0.8)
+    assert [(p.name, p.active, p.closed) for p in out.paths] == [("cross", True, True)]

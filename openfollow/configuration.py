@@ -856,6 +856,124 @@ class TriggerZonesConfig:
         ]
 
 
+# A path is addressed by name over OSC, so names keep to what an OSC address allows.
+PATH_NAME_MAX_LEN = 32
+PATH_NAME_PATTERN = re.compile(r"[A-Za-z0-9._-]+")
+MAX_PATHS = 32
+MAX_PATH_POINTS = 100
+# Stage coordinates in metres; far beyond any venue.
+_PATH_COORD_LIMIT = 1000.0
+DEFAULT_PATH_RADIUS = 0.5
+
+
+@dataclass
+class PathPointConfig:
+    """One point of a path: a stage position and the radius its corner is rounded with."""
+
+    x: float = 0.0
+    y: float = 0.0
+    z: float = 0.0
+    radius: float = DEFAULT_PATH_RADIUS  # metres
+
+    def __post_init__(self) -> None:
+        self.x = _coerce_float(self.x, 0.0, lo=-_PATH_COORD_LIMIT, hi=_PATH_COORD_LIMIT)
+        self.y = _coerce_float(self.y, 0.0, lo=-_PATH_COORD_LIMIT, hi=_PATH_COORD_LIMIT)
+        self.z = _coerce_float(self.z, 0.0, lo=-_PATH_COORD_LIMIT, hi=_PATH_COORD_LIMIT)
+        self.radius = _coerce_float(self.radius, DEFAULT_PATH_RADIUS, lo=0.0, hi=100.0)
+
+
+def path_name_from(value: Any) -> str:
+    """``value`` reduced to the characters a path name allows, at most 32 of them."""
+    text = value if isinstance(value, str) else ""
+    return "".join(PATH_NAME_PATTERN.findall(text))[:PATH_NAME_MAX_LEN]
+
+
+@dataclass
+class PathConfig:
+    """A path a marker can be locked onto, in PSN-absolute world coordinates."""
+
+    name: str = ""
+    # Per station: a push or an import keeps this station's flag (see PathsConfig.replace_paths).
+    active: bool = False
+    closed: bool = False
+    # Ends of an open path: pushing past one releases the marker instead of stopping it there.
+    release_at_start: bool = False
+    release_at_end: bool = False
+    points: list[PathPointConfig] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.name = path_name_from(self.name)
+        self.active = _coerce_bool(self.active, False)
+        self.closed = _coerce_bool(self.closed, False)
+        self.release_at_start = _coerce_bool(self.release_at_start, False)
+        self.release_at_end = _coerce_bool(self.release_at_end, False)
+        raw = self.points if isinstance(self.points, list) else []
+        points = [
+            PathPointConfig(**_filter_known(PathPointConfig, p)) if isinstance(p, dict) else p
+            for p in raw
+            if isinstance(p, (dict, PathPointConfig))
+        ]
+        if len(points) > MAX_PATH_POINTS:
+            logger.warning("Path %r has %d points, keeping the first %d", self.name, len(points), MAX_PATH_POINTS)
+        self.points = points[:MAX_PATH_POINTS]
+
+
+@dataclass
+class PathsConfig:
+    """Paths, and how a marker slides onto one."""
+
+    show_paths: bool = True
+    slide_time: float = 0.5  # seconds
+    paths: list[PathConfig] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.show_paths = _coerce_bool(self.show_paths, True)
+        self.slide_time = _coerce_float(self.slide_time, 0.5, lo=0.0, hi=10.0)
+        raw = self.paths if isinstance(self.paths, list) else []
+        paths = [
+            PathConfig(**_filter_known(PathConfig, p)) if isinstance(p, dict) else p
+            for p in raw
+            if isinstance(p, (dict, PathConfig))
+        ]
+        if len(paths) > MAX_PATHS:
+            logger.warning("%d paths configured, keeping the first %d", len(paths), MAX_PATHS)
+        self.paths = paths[:MAX_PATHS]
+        self._give_unique_names()
+
+    def _give_unique_names(self) -> None:
+        # OSC finds a path by name ignoring case, so two must never match.
+        taken: set[str] = set()
+        for index, path in enumerate(self.paths):
+            base = path.name or f"path-{index + 1}"
+            name, n = base, 1
+            while name.lower() in taken:
+                n += 1
+                suffix = f"-{n}"
+                name = base[: PATH_NAME_MAX_LEN - len(suffix)] + suffix
+            if name != path.name:
+                if path.name:
+                    logger.warning("Path name %r is already taken, renamed to %r", path.name, name)
+                path.name = name
+            taken.add(name.lower())
+
+    def find(self, name: str) -> PathConfig | None:
+        """The path called ``name``, ignoring case."""
+        wanted = name.lower()
+        return next((path for path in self.paths if path.name.lower() == wanted), None)
+
+    def replace_paths(self, raw: Any) -> None:
+        """Take ``raw``'s paths, keeping this station's Active flag for each name it already has.
+
+        A new name arrives inactive: what is active is decided per station, by its
+        own web UI and desk.
+        """
+        active = {path.name.lower(): path.active for path in self.paths}
+        self.paths = raw if isinstance(raw, list) else []
+        self.__post_init__()
+        for path in self.paths:
+            path.active = active.get(path.name.lower(), False)
+
+
 @dataclass
 class MidiPatch:
     """A stable, integer-ID'd MIDI slot the operator assigns a device to.
@@ -2401,6 +2519,7 @@ class AppConfig:
     osc_destinations: OscDestinationsConfig = field(default_factory=OscDestinationsConfig)
     detection: DetectionConfig = field(default_factory=DetectionConfig)
     trigger_zones: TriggerZonesConfig = field(default_factory=TriggerZonesConfig)
+    paths: PathsConfig = field(default_factory=PathsConfig)
     midi: MidiConfig = field(default_factory=MidiConfig)
     virtual_faders: VirtualFadersConfig = field(
         default_factory=VirtualFadersConfig,
@@ -2540,6 +2659,7 @@ _SUB_CONFIG_MAP: dict[str, type] = {
     "osc_destinations": OscDestinationsConfig,
     "detection": DetectionConfig,
     "trigger_zones": TriggerZonesConfig,
+    "paths": PathsConfig,
     "midi": MidiConfig,
     "virtual_faders": VirtualFadersConfig,
     "network": NetworkConfig,
@@ -3616,6 +3736,9 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
         # in place – they're reused if a future row targets the same
         # destination and can't be safely evicted without per-caller
         # ownership tracking.
+
+    if new_config.paths != app._config.paths:
+        app._config.paths = new_config.paths
 
     # The MIDI ``apply_config`` is idempotent (same device on same patch is a
     # no-op), so re-applying on every reload pass is safe.

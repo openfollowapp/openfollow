@@ -1254,6 +1254,29 @@ def test_full_config_round_trip_leaves_the_receivers_otp_pin_alone() -> None:
     assert new.otp_output.enabled is True
 
 
+def test_broadcast_all_carries_paths_to_a_peer_that_keeps_its_own_active_flags() -> None:
+    """Every station on one stage shares the floor coordinates, so paths are pushed;
+    what is active, and whether paths are drawn, stays with each station."""
+    from openfollow.configuration import PathConfig, PathPointConfig, PathsConfig
+    from openfollow.web.routes import _apply_import_data, _strip_broadcast_excluded
+
+    sender = AppConfig(
+        paths=PathsConfig(
+            show_paths=False,
+            slide_time=1.5,
+            paths=[PathConfig(name="cross", active=True, points=[PathPointConfig(0, 0, 0), PathPointConfig(4, 0, 0)])],
+        )
+    )
+    receiver = AppConfig(paths=PathsConfig(paths=[PathConfig(name="cross", active=False)]))
+
+    new = _apply_import_data(receiver, _strip_broadcast_excluded(_config_dict_redacted(sender)))
+
+    assert [p.x for p in new.paths.paths[0].points] == [0.0, 4.0]
+    assert new.paths.slide_time == 1.5
+    assert new.paths.paths[0].active is False
+    assert new.paths.show_paths is True
+
+
 def test_apply_import_data_preserves_osc_listen_iface() -> None:
     """Device-local like ``psn_source_iface``. An imported pin naming an
     adapter this station does not have would silently drop its OSC multicast

@@ -6966,3 +6966,175 @@ def test_a_refused_station_fqdn_is_reported_once_not_on_every_load(caplog, monke
         " and no hyphen at the start or end of a part.",
         "Ignoring station_fqdn '.': Enter the full name with its domain, such as of-1.stage.example.com.",
     ]
+
+
+class TestPathsConfig:
+    """Paths: points, names that OSC can address, caps, and the per-station Active flag."""
+
+    @pytest.mark.parametrize("bad", [None, "abc", [], {}, float("nan"), float("inf")])
+    def test_a_point_coordinate_of_the_wrong_type_falls_back_to_zero(self, bad: object) -> None:
+        from openfollow.configuration import PathPointConfig
+
+        p = PathPointConfig(x=bad, y=bad, z=bad)
+        assert (p.x, p.y, p.z) == (0.0, 0.0, 0.0)
+
+    def test_point_coordinates_clamp_to_a_stage_sized_range(self) -> None:
+        from openfollow.configuration import PathPointConfig
+
+        p = PathPointConfig(x=5000, y=-5000, z="12.5")
+        assert (p.x, p.y, p.z) == (1000.0, -1000.0, 12.5)
+
+    @pytest.mark.parametrize(("raw", "want"), [(-1.0, 0.0), (500, 100.0), ("x", 0.5), (None, 0.5), (2, 2.0)])
+    def test_a_point_radius_is_a_non_negative_length(self, raw: object, want: float) -> None:
+        from openfollow.configuration import PathPointConfig
+
+        assert PathPointConfig(radius=raw).radius == want
+
+    @pytest.mark.parametrize(
+        ("raw", "want"),
+        [
+            ("downstage-cross", "downstage-cross"),
+            ("Down Stage/Cross!", "DownStageCross"),
+            ("a" * 40, "a" * 32),
+            ("v1.2_b", "v1.2_b"),
+            (None, ""),
+            (42, ""),
+        ],
+    )
+    def test_a_path_name_keeps_only_what_an_osc_address_allows(self, raw: object, want: str) -> None:
+        from openfollow.configuration import PathConfig
+
+        assert PathConfig(name=raw).name == want
+
+    @pytest.mark.parametrize("field", ["active", "closed", "release_at_start", "release_at_end"])
+    @pytest.mark.parametrize(("raw", "want"), [(True, True), ("yes", True), ("off", False), (1, False), (None, False)])
+    def test_path_switches_take_booleans_only(self, field: str, raw: object, want: bool) -> None:
+        from openfollow.configuration import PathConfig
+
+        assert getattr(PathConfig(**{field: raw}), field) is want
+
+    def test_path_points_come_from_tables_and_junk_entries_are_dropped(self) -> None:
+        from openfollow.configuration import PathConfig, PathPointConfig
+
+        path = PathConfig(points=[{"x": 1, "y": 2, "z": 0.5, "radius": 0, "stale": 1}, "junk", 7, PathPointConfig(x=3)])
+        assert path.points == [PathPointConfig(1.0, 2.0, 0.5, 0.0), PathPointConfig(x=3.0)]
+
+    def test_a_points_value_that_is_not_a_list_reads_as_no_points(self) -> None:
+        from openfollow.configuration import PathConfig
+
+        assert PathConfig(points="nope").points == []
+
+    def test_a_path_keeps_at_most_its_point_cap(self, caplog) -> None:
+        from openfollow.configuration import MAX_PATH_POINTS, PathConfig
+
+        with caplog.at_level("WARNING"):
+            path = PathConfig(name="long", points=[{"x": i} for i in range(MAX_PATH_POINTS + 5)])
+        assert len(path.points) == MAX_PATH_POINTS
+        assert path.points[-1].x == MAX_PATH_POINTS - 1
+        assert "keeping the first" in caplog.text
+
+    def test_paths_keep_at_most_their_cap(self, caplog) -> None:
+        from openfollow.configuration import MAX_PATHS, PathsConfig
+
+        with caplog.at_level("WARNING"):
+            cfg = PathsConfig(paths=[{"name": f"p{i}"} for i in range(MAX_PATHS + 3)])
+        assert [p.name for p in cfg.paths] == [f"p{i}" for i in range(MAX_PATHS)]
+        assert "keeping the first" in caplog.text
+
+    @pytest.mark.parametrize(("raw", "want"), [(2, 2.0), (-1, 0.0), (99, 10.0), ("x", 0.5), (None, 0.5)])
+    def test_the_slide_time_is_seconds_from_zero_to_ten(self, raw: object, want: float) -> None:
+        from openfollow.configuration import PathsConfig
+
+        assert PathsConfig(slide_time=raw).slide_time == want
+
+    @pytest.mark.parametrize(("raw", "want"), [(False, False), ("no", False), ("junk", True), (None, True)])
+    def test_show_paths_takes_booleans_only(self, raw: object, want: bool) -> None:
+        from openfollow.configuration import PathsConfig
+
+        assert PathsConfig(show_paths=raw).show_paths is want
+
+    def test_paths_from_tables_become_paths_and_junk_is_dropped(self) -> None:
+        from openfollow.configuration import PathConfig, PathsConfig
+
+        cfg = PathsConfig(paths=[{"name": "a", "closed": True, "stale": 1}, "junk", PathConfig(name="b")])
+        assert [(p.name, p.closed) for p in cfg.paths] == [("a", True), ("b", False)]
+        assert PathsConfig(paths={"name": "a"}).paths == []
+
+    def test_a_path_with_no_name_gets_one_from_its_place(self) -> None:
+        from openfollow.configuration import PathsConfig
+
+        cfg = PathsConfig(paths=[{"name": "path-2"}, {"name": ""}, {"name": "!!"}])
+        assert [p.name for p in cfg.paths] == ["path-2", "path-2-2", "path-3"]
+
+    def test_names_that_match_ignoring_case_are_made_unique(self, caplog) -> None:
+        from openfollow.configuration import PathsConfig
+
+        with caplog.at_level("WARNING"):
+            cfg = PathsConfig(
+                paths=[{"name": "Cross"}, {"name": "cross"}, {"name": "CROSS"}, {"name": "x" * 32}, {"name": "X" * 32}]
+            )
+        assert [p.name for p in cfg.paths] == ["Cross", "cross-2", "CROSS-3", "x" * 32, "X" * 30 + "-2"]
+        assert "'cross' is already taken, renamed to 'cross-2'" in caplog.text
+
+    def test_a_path_is_found_by_name_ignoring_case(self) -> None:
+        from openfollow.configuration import PathsConfig
+
+        cfg = PathsConfig(paths=[{"name": "Downstage-Cross"}, {"name": "loop"}])
+        found = cfg.find("downstage-cross")
+        assert found is not None and found.name == "Downstage-Cross"
+        assert cfg.find("nope") is None
+
+    def test_replacing_paths_keeps_this_station_s_active_flags_by_name(self) -> None:
+        from openfollow.configuration import PathsConfig
+
+        cfg = PathsConfig(paths=[{"name": "Cross", "active": True}, {"name": "loop", "active": False}])
+        cfg.replace_paths(
+            [
+                {"name": "LOOP", "active": True, "points": [{"x": 1}]},
+                {"name": "cross", "active": False, "closed": True},
+                {"name": "new", "active": True},
+            ]
+        )
+        assert [(p.name, p.active, p.closed) for p in cfg.paths] == [
+            ("LOOP", False, False),
+            ("cross", True, True),
+            ("new", False, False),
+        ]
+        assert cfg.paths[0].points[0].x == 1.0
+
+    def test_replacing_with_something_that_is_not_a_list_clears_the_paths(self) -> None:
+        from openfollow.configuration import PathsConfig
+
+        cfg = PathsConfig(paths=[{"name": "cross", "active": True}])
+        cfg.replace_paths("junk")
+        assert cfg.paths == []
+
+    def test_paths_survive_a_save_and_load(self, tmp_path) -> None:
+        from openfollow.configuration import PathConfig, PathPointConfig, PathsConfig
+
+        paths = PathsConfig(
+            show_paths=False,
+            slide_time=1.25,
+            paths=[
+                PathConfig(
+                    name="cross",
+                    active=True,
+                    closed=False,
+                    release_at_end=True,
+                    points=[PathPointConfig(0, 0, 0, 0), PathPointConfig(4, 0, 1.5, 1.0)],
+                ),
+                PathConfig(name="loop", closed=True),
+            ],
+        )
+        target = tmp_path / "config.toml"
+        save_config(AppConfig(paths=paths), str(target))
+        assert load_config(str(target)).paths == paths
+
+
+def test_apply_runtime_takes_new_paths() -> None:
+    from openfollow.configuration import PathConfig, PathsConfig
+
+    app = _app_with()
+    new_paths = PathsConfig(paths=[PathConfig(name="cross", active=True)])
+    apply_runtime_config_changes(app, AppConfig(paths=new_paths))
+    assert app._config.paths == new_paths

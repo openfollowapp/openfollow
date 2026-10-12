@@ -546,6 +546,35 @@ class TestApplyImportData:
         )
         assert out.psn_source_iface == "eth0"
 
+    def test_paths_import_with_this_station_s_active_flags_and_visibility(self) -> None:
+        from openfollow.configuration import PathConfig, PathsConfig
+
+        current = AppConfig(paths=PathsConfig(show_paths=False, paths=[PathConfig(name="cross", active=True)]))
+        out = _apply_import_data(
+            current,
+            {
+                "paths": {
+                    "show_paths": True,
+                    "slide_time": 2.0,
+                    "paths": [
+                        {"name": "cross", "active": False, "points": [{"x": 1}, {"x": 3}]},
+                        {"name": "loop", "active": True, "closed": True},
+                    ],
+                }
+            },
+        )
+        assert [(p.name, p.active) for p in out.paths.paths] == [("cross", True), ("loop", False)]
+        assert [p.x for p in out.paths.paths[0].points] == [1.0, 3.0]
+        assert out.paths.slide_time == 2.0
+        assert out.paths.show_paths is False
+
+    def test_an_import_without_paths_keeps_this_station_s(self) -> None:
+        from openfollow.configuration import PathConfig, PathsConfig
+
+        current = AppConfig(paths=PathsConfig(paths=[PathConfig(name="cross")]))
+        assert _apply_import_data(current, {"paths": "junk"}).paths == current.paths
+        assert _apply_import_data(current, {}).paths == current.paths
+
     def test_trigger_zones_list_imports_atomically(self) -> None:
         """The zones list replaces the existing zones entirely – an
         empty list clears them, a populated list uses the new set.
@@ -822,6 +851,10 @@ class TestStripDeviceLocalFields:
     def test_rttrpm_output_section_drops_source_iface(self) -> None:
         scrubbed = strip_device_local_fields("rttrpm_output", {"enabled": True, "source_iface": "eth0"})
         assert scrubbed == {"enabled": True}
+
+    def test_the_paths_section_drops_this_station_s_visibility(self) -> None:
+        scrubbed = strip_device_local_fields("paths", {"show_paths": False, "slide_time": 1.0, "paths": []})
+        assert scrubbed == {"slide_time": 1.0, "paths": []}
 
     def test_the_interface_assignment_section_is_dropped_whole(self) -> None:
         """Its per-destination keys are not known in advance, so a field list
@@ -1799,3 +1832,34 @@ class TestApplyInterfaceAssignmentSenders:
         cfg = self._cfg()
         apply_section_data(cfg, "interface_assignment", {"osc_destinations.media.v2.source_iface": None})
         assert cfg.osc_destinations.destinations[1].source_iface == "eth2"
+
+
+class TestApplyPathsSection:
+    def _cfg(self) -> AppConfig:
+        from openfollow.configuration import PathConfig, PathsConfig
+
+        return AppConfig(paths=PathsConfig(paths=[PathConfig(name="cross", active=True), PathConfig(name="loop")]))
+
+    def test_paths_are_replaced_and_keep_their_active_flags(self) -> None:
+        cfg = self._cfg()
+        assert apply_section_data(cfg, "paths", {"paths": [{"name": "loop", "active": True}, {"name": "cross"}]})
+        assert [(p.name, p.active) for p in cfg.paths.paths] == [("loop", False), ("cross", True)]
+
+    @pytest.mark.parametrize("raw", ["junk", {"name": "x"}, None])
+    def test_a_paths_value_that_is_not_a_list_leaves_them_alone(self, raw: object) -> None:
+        cfg = self._cfg()
+        before = list(cfg.paths.paths)
+        assert apply_section_data(cfg, "paths", {"paths": raw, "slide_time": 2})
+        assert cfg.paths.paths == before
+        assert cfg.paths.slide_time == 2.0
+
+    @pytest.mark.parametrize(("raw", "want"), [("1.5", 1.5), ("x", 0.5), (-3, 0.0), (50, 10.0)])
+    def test_the_slide_time_is_coerced_like_a_toml_load(self, raw: object, want: float) -> None:
+        cfg = self._cfg()
+        apply_section_data(cfg, "paths", {"slide_time": raw})
+        assert cfg.paths.slide_time == want
+
+    def test_this_station_s_own_save_sets_visibility(self) -> None:
+        cfg = self._cfg()
+        apply_section_data(cfg, "paths", {"show_paths": "off"})
+        assert cfg.paths.show_paths is False

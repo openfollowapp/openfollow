@@ -1374,3 +1374,25 @@ class TestBackwardCompat:
         )
         cam = CameraConfig(**tpl.payload["camera"])
         assert cam.fov == CameraConfig().fov
+
+
+class TestPathsPayload:
+    @pytest.mark.parametrize("payload", [{}, {"slide_time": 1.0}, {"paths": "nope"}, {"paths": {"name": "a"}}])
+    def test_a_payload_without_a_paths_array_is_rejected(self, payload: dict) -> None:
+        # Applying it would delete every path on the station.
+        with pytest.raises(TemplateValidationError, match="must include a 'paths' array"):
+            validate_payload("paths", payload)
+
+    def test_a_path_entry_that_is_not_an_object_is_rejected(self) -> None:
+        with pytest.raises(TemplateValidationError, match=r"'paths\[1\]' must be object, got str"):
+            validate_payload("paths", {"paths": [{"name": "a"}, "b"]})
+
+    def test_an_unknown_key_is_rejected(self) -> None:
+        with pytest.raises(TemplateValidationError, match="paths payload invalid"):
+            validate_payload("paths", {"paths": [], "bogus": 1})
+
+    def test_a_full_snapshot_passes(self) -> None:
+        validate_payload(
+            "paths",
+            {"slide_time": 0.5, "paths": [{"name": "cross", "closed": True, "points": [{"x": 1, "y": 2, "z": 0}]}]},
+        )

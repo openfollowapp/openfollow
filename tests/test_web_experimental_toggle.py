@@ -134,3 +134,29 @@ class TestBodyGate:
         assert 'class="show-experimental"' not in body
         # Gate CSS is present regardless.
         assert "body:not(.show-experimental) .experimental-feature" in body
+
+
+class TestPathsCutOff:
+    def test_turning_off_deactivates_every_path_and_keeps_them(self, live_server) -> None:
+        from openfollow.configuration import PathConfig
+
+        server, base = live_server
+        cfg = load_config(server.config_path)
+        cfg.ui.show_experimental_features = True
+        cfg.paths.paths = [PathConfig(name="cross", active=True), PathConfig(name="loop", active=True)]
+        save_config(cfg, server.config_path)
+
+        assert _set_experimental(base, on=False)[0] == 200
+        out = load_config(server.config_path).paths.paths
+        assert [(p.name, p.active) for p in out] == [("cross", False), ("loop", False)]
+
+    def test_turning_on_activates_nothing(self, live_server) -> None:
+        from openfollow.configuration import PathConfig
+
+        server, base = live_server
+        cfg = load_config(server.config_path)
+        cfg.paths.paths = [PathConfig(name="cross")]
+        save_config(cfg, server.config_path)
+
+        assert _set_experimental(base, on=True)[0] == 200
+        assert load_config(server.config_path).paths.paths[0].active is False

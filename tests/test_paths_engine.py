@@ -269,13 +269,24 @@ class TestDrawings:
         drawn = {d.name: d for d in engine.drawings(cfg)}
         assert set(drawn) == {"cross", "Ramp"}
         assert (drawn["cross"].locked, drawn["Ramp"].locked) == (False, True)
-        # Dots mark the ends; the middle point is a corner, which shows as the curve.
-        assert drawn["Ramp"].points == [(0.0, -5.0, 0.0), (0.0, 5.0, 2.0)]
+        # The two ends are marked; the middle point is a corner, which shows as the curve.
+        assert [_round(e.at) for e in drawn["Ramp"].ends] == [(0.0, -5.0, 0.0), (0.0, 5.0, 2.0)]
 
-    def test_a_closed_path_has_no_dots(self) -> None:
+    def test_each_end_knows_which_way_is_out_and_whether_it_releases(self) -> None:
+        line = _path("line", [(0, 0, 0), (4, 0, 0)], active=True, release_at_end=True)
+        [start, end] = _engine(line).drawings(PathsConfig(paths=[line]))[0].ends
+        assert (_round(start.at), _round(start.inside), start.releases) == ((0.0, 0.0, 0.0), (0.5, 0.0, 0.0), False)
+        assert (_round(end.at), _round(end.inside), end.releases) == ((4.0, 0.0, 0.0), (3.5, 0.0, 0.0), True)
+
+    def test_a_short_path_looks_no_further_in_than_its_middle(self) -> None:
+        stub = _path("stub", [(0, 0, 0), (0.4, 0, 0)], active=True)
+        [start, _end] = _engine(stub).drawings(PathsConfig(paths=[stub]))[0].ends
+        assert _round(start.inside) == (0.2, 0.0, 0.0)
+
+    def test_a_closed_path_has_no_ends(self) -> None:
         ring = _path("ring", [(0, 0, 0), (2, 0, 0), (2, 2, 0)], active=True, closed=True)
         cfg = PathsConfig(paths=[ring])
-        assert _engine(ring).drawings(cfg)[0].points == []
+        assert _engine(ring).drawings(cfg)[0].ends == []
 
     def test_a_long_straight_run_is_drawn_in_short_pieces(self) -> None:
         drawn = _engine(CROSS).drawings(PathsConfig(paths=[CROSS]))[0]
@@ -301,7 +312,16 @@ class TestDrawings:
         cfg = PathsConfig(paths=[draft])
         engine = _engine(draft)
         engine.record("draft", cfg)
-        assert engine.drawings(cfg)[0].curve == [(2.0, 3.0, 0.0)]
+        [drawn] = engine.drawings(cfg)
+        assert drawn.curve == [(2.0, 3.0, 0.0)]
+        assert [(e.at, e.releases) for e in drawn.ends] == [((2.0, 3.0, 0.0), False)]
+
+    def test_a_recorded_path_with_no_points_has_nothing_to_mark(self) -> None:
+        draft = _path("draft", [])
+        cfg = PathsConfig(paths=[draft])
+        engine = _engine(draft)
+        engine.record("draft", cfg)
+        assert engine.drawings(cfg)[0].ends == []
 
     def test_a_recorded_active_path_is_drawn_once(self) -> None:
         cfg = PathsConfig(paths=[CROSS])

@@ -319,11 +319,15 @@ class OverlayState:
     # Each entry: (vertices_world_xy, color_hex, name, is_occupied, count)
     zone_polygons: list[tuple[list[tuple[float, float]], str, str, bool, int]] = field(default_factory=list)
     zone_z_offset: float = 0.0
-    # Paths: (curve, points, locked) each, world X/Y/Z.
+    # Paths: (curve, ends, locked) each, world X/Y/Z; an end is (at, a point just inside the path, releases).
     show_paths: bool = False
-    path_lines: list[tuple[list[tuple[float, float, float]], list[tuple[float, float, float]], bool]] = field(
-        default_factory=list
-    )
+    path_lines: list[
+        tuple[
+            list[tuple[float, float, float]],
+            list[tuple[tuple[float, float, float], tuple[float, float, float], bool]],
+            bool,
+        ]
+    ] = field(default_factory=list)
 
     def reset(self) -> None:
         """Reset state for reuse in object pool."""

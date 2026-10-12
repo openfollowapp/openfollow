@@ -355,7 +355,9 @@ def _populate_path_overlay(state: OverlayState, cfg: Any, app: Any) -> None:
     if engine is None or not state.show_paths:
         state.path_lines = []
         return
-    state.path_lines = [(d.curve, d.points, d.locked) for d in engine.drawings(cfg.paths)]
+    state.path_lines = [
+        (d.curve, [(e.at, e.inside, e.releases) for e in d.ends], d.locked) for d in engine.drawings(cfg.paths)
+    ]
 
 
 def _populate_zone_overlay(state: OverlayState, cfg: Any, app: Any) -> None:

@@ -1151,9 +1151,9 @@ class TestPathsOnTheOperatorScreen:
         app._paths.press(1, (0.5, 0.5, 0.0))
         state = self._state(app)
         assert state.show_paths is True
-        [(curve, points, locked)] = state.path_lines
-        assert (curve[0], curve[-1], points, locked) == ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), points, True)
-        assert points == [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)]
+        [(curve, ends, locked)] = state.path_lines
+        assert (curve[0], curve[-1], locked) == ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), True)
+        assert ends == [((0.0, 0.0, 0.0), (0.5, 0.0, 0.0), False), ((1.0, 0.0, 0.0), (0.5, 0.0, 0.0), False)]
 
     @pytest.mark.parametrize(("enabled", "show"), [(False, True), (True, False)])
     def test_nothing_is_drawn_while_paths_are_off_or_hidden(self, enabled: bool, show: bool) -> None:

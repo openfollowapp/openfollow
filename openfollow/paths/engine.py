@@ -26,6 +26,8 @@ Point = tuple[float, float, float]
 
 # Switching onto a path at another height eases the height over this long instead of jumping.
 HEIGHT_BLEND_S = 0.5
+# How far inside its path an end looks to see which way it points.
+_END_LOOK_M = 0.5
 
 # Longest straight piece drawn as one line: shorter pieces bow with the lens like the grid.
 _DRAW_STEP_M = 0.25
@@ -55,12 +57,21 @@ class _Lock:
 
 
 @dataclass(frozen=True)
+class PathEnd:
+    """An end of an open path: where it is, a point just inside the path from it, and whether it releases."""
+
+    at: Point
+    inside: Point
+    releases: bool
+
+
+@dataclass(frozen=True)
 class PathDrawing:
-    """One path for the Operator Screen: its curve, the points it marks with a dot, and whether a marker is on it."""
+    """One path for the Operator Screen: its curve, its ends, and whether a marker is on it."""
 
     name: str
     curve: list[Point]
-    points: list[Point]
+    ends: list[PathEnd]
     locked: bool = False
 
 
@@ -80,7 +91,7 @@ class PathEngine:
         self._network: PathNetwork | None = None
         self._names: list[str] = []
         self._slide_time = 0.5
-        self._drawn: list[tuple[list[Point], list[Point]]] = []
+        self._drawn: list[tuple[list[Point], list[PathEnd]]] = []
         self._locks: dict[int, _Lock] = {}
         self._recording: str | None = None
         self._recorded: tuple[tuple[object, ...], PathDrawing] | None = None
@@ -103,7 +114,7 @@ class PathEngine:
                 curves.append(curve)
                 releases.append((path.release_at_start, path.release_at_end))
                 self._names.append(path.name)
-                self._drawn.append((_line(curve), _ends(path)))
+                self._drawn.append((_line(curve), _ends(path, curve)))
         self._network = PathNetwork(curves, releases) if curves else None
         if not enabled or (self._recording is not None and cfg.find(self._recording) is None):
             self._recording = None
@@ -277,8 +288,8 @@ class PathEngine:
             return []
         locked = {lock.name.lower() for lock in self._locks.values()}
         out = [
-            PathDrawing(name, line, points, name.lower() in locked)
-            for name, (line, points) in zip(self._names, self._drawn, strict=True)
+            PathDrawing(name, line, ends, name.lower() in locked)
+            for name, (line, ends) in zip(self._names, self._drawn, strict=True)
         ]
         recorded = cfg.find(self._recording) if self._recording is not None else None
         if recorded is not None and self._index(recorded.name) is None:
@@ -289,17 +300,28 @@ class PathEngine:
         # Recording an inactive path changes it point by point; build it only when it changed.
         key = (path.name, path.closed, tuple((p.x, p.y, p.z, p.radius) for p in path.points))
         if self._recorded is None or self._recorded[0] != key:
-            points = [(p.x, p.y, p.z) for p in path.points]
             curve = _curve_of(path)
-            self._recorded = (key, PathDrawing(path.name, points if curve is None else _line(curve), points))
+            line = [(p.x, p.y, p.z) for p in path.points] if curve is None else _line(curve)
+            self._recorded = (key, PathDrawing(path.name, line, _ends(path, curve)))
         return self._recorded[1]
 
 
-def _ends(path: PathConfig) -> list[Point]:
-    """The points drawn as dots: an open path's two ends; a corner shows as its curve."""
-    if path.closed:
+def _ends(path: PathConfig, curve: PathCurve | None) -> list[PathEnd]:
+    """An open path's two ends; a closed one has none, and a corner shows as its curve.
+
+    A path of one point (being recorded) is that point, drawn as an end that holds.
+    """
+    if path.closed or not path.points:
         return []
-    return [(p.x, p.y, p.z) for p in (path.points[0], path.points[-1])]
+    if curve is None:
+        first = path.points[0]
+        at = (first.x, first.y, first.z)
+        return [PathEnd(at, at, False)]
+    look = min(_END_LOOK_M, curve.length / 2.0)
+    return [
+        PathEnd(curve.point(0.0), curve.point(look), path.release_at_start),
+        PathEnd(curve.point(curve.length), curve.point(curve.length - look), path.release_at_end),
+    ]
 
 
 def _line(curve: PathCurve) -> list[Point]:

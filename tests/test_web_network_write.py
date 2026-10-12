@@ -167,8 +167,7 @@ class FakeNetwork:
         self.vlans_created.append((parent, vlan_id))
         if self.vlan_create_result.ok:
             # The card is re-rendered from the interface list straight after,
-            # so the new link has to be in it - that is the whole point of the
-            # forced re-read.
+            # so the new link has to be in it.
             name = vlan_interface_name(parent, vlan_id)
             self.interfaces.append(name)
             self.vlans.append({"name": name, "parent": parent, "vlan_id": vlan_id})
@@ -1063,14 +1062,12 @@ def test_interface_list_uses_the_richer_provider_when_wired(tmp_path, monkeypatc
         # wlan0 is not the active interface, yet its own address is shown.
         assert "172.16.4.20" in body
         assert "Static" in body
-        # A second render inside the TTL window reuses the snapshot rather
-        # than shelling out to the backend again.
+        # Every render, Scan included, reads the list once, so a freshly
+        # plugged NIC appears at once.
         before = len(calls)
         _get(base, "/section/network/status")
-        assert len(calls) == before
-        # Scan bypasses the cache so a freshly plugged NIC appears at once.
         _get(base, "/section/network/status?scan=1")
-        assert len(calls) == before + 1
+        assert len(calls) == before + 2
 
 
 # --------------------------------------------------------------------------- #
@@ -1179,7 +1176,6 @@ def test_card_synthesises_rows_when_no_interface_provider_is_wired(net_server) -
     interface snapshot rather than showing an empty list."""
     fake, base = net_server
     fake.provide_rows = False
-    # ?scan=1 bypasses the TTL cache the earlier requests populated.
     status, body = _get(base, "/section/network/status?scan=1")
     assert status == 200
     assert "eth0" in body and "wlan0" in body

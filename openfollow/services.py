@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import gc
 import json
@@ -16,6 +17,7 @@ import os
 import sys
 import threading
 import time
+from collections.abc import Iterator
 from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -78,6 +80,7 @@ if TYPE_CHECKING:
         ApplyResult,
         Ipv4Config,
         NetworkAdapter,
+        NetworkReading,
     )
     from openfollow.privilege import PrivilegeBroker  # noqa: F401
     from openfollow.psn.marker import Marker
@@ -97,6 +100,10 @@ _RECENT_OSC_SENDS_LIMIT = 100
 # Detect click never pins its request thread for seconds; the browser widget
 # (detect-input.js) re-polls until the operator presses a button or gives up.
 _MOUSE3D_WEB_DETECT_BUDGET_S = 0.35
+
+# How long one network backend reading serves the web UI after it completes, so
+# every section one render asks for shares it.
+_NETWORK_READING_MAX_AGE_S = 1.0
 
 
 def _format_lease_remaining(seconds: int | None) -> str | None:
@@ -820,6 +827,14 @@ class AppRuntimeServices:
         # Serialise web-driven apply / renew so two concurrent requests
         # can't race the host's network state.
         self._network_op_lock = threading.Lock()
+        # The backend reading the web UI's network sections render from, as
+        # (ticket, when it completed, reading). Each read takes a ticket as it
+        # starts; one started before the stored reading, or before a network
+        # change or a Scan (the floor), is not kept.
+        self._network_reading_lock = threading.Lock()
+        self._network_reading: tuple[int, float, NetworkReading] | None = None
+        self._network_reading_ticket = 0
+        self._network_reading_floor = 0
         self._fqdn_lock = threading.Lock()
         self._fqdn_generation = 0
         # The name the DHCP side was last set to and what came of it, replaced whole.
@@ -836,10 +851,15 @@ class AppRuntimeServices:
         """Host-network adapter (NM / dhcpcd / psutil)."""
         return self._network_adapter
 
-    @property
-    def network_op_lock(self) -> threading.Lock:
-        """Held around every change to the host's network configuration."""
-        return self._network_op_lock
+    @contextlib.contextmanager
+    def network_change(self) -> Iterator[None]:
+        """Held around every change to the host's network configuration, from the
+        web UI and the Operator Screen alike; the web UI reads the network again after."""
+        with self._network_op_lock:
+            try:
+                yield
+            finally:
+                self._forget_network_reading()
 
     @property
     def privilege_broker(self) -> PrivilegeBroker:
@@ -2439,7 +2459,7 @@ class AppRuntimeServices:
         from openfollow.privilege.device_repair import sync_running_hostname_hosts
 
         time.sleep(self._fqdn_reconnect_delay_s)
-        with self._network_op_lock:
+        with self.network_change():
             if generation != self._fqdn_generation:
                 return
             # The 127.0.1.1 line is a Debian convention; elsewhere it maps a name to nothing.
@@ -2477,7 +2497,7 @@ class AppRuntimeServices:
         return worker
 
     def _reconcile_station_fqdn(self, fqdn: str, generation: int) -> None:
-        with self._network_op_lock:
+        with self.network_change():
             # A save since startup has its own worker with the newer name; writing ours after it would undo it.
             if generation != self._fqdn_generation:
                 return
@@ -2809,6 +2829,7 @@ class AppRuntimeServices:
             network_vlan_provider=self._network_vlan_provider,
             network_vlan_create_handler=self._handle_network_vlan_create,
             network_vlan_delete_handler=self._handle_network_vlan_delete,
+            network_rescan_handler=self._forget_network_reading,
             # Privilege capability snapshot for the diagnostics bundle.
             privilege_states_provider=self._privilege_states_provider,
             # Boot-autostart switch: host state on read, broker-elevated write.
@@ -2948,6 +2969,33 @@ class AppRuntimeServices:
 
         return inputs.usb_camera_names()
 
+    def _read_network(self) -> NetworkReading | None:
+        """The backend reading the web UI's network sections render from; ``None`` without an adapter.
+
+        Shared while younger than :data:`_NETWORK_READING_MAX_AGE_S`.
+        """
+        adapter = getattr(self, "_network_adapter", None)
+        if adapter is None:
+            return None
+        with self._network_reading_lock:
+            held = self._network_reading
+            if held is not None and time.monotonic() - held[1] < _NETWORK_READING_MAX_AGE_S:
+                return held[2]
+            self._network_reading_ticket += 1
+            ticket = self._network_reading_ticket
+        reading = cast("NetworkReading", adapter.read_network())
+        with self._network_reading_lock:
+            held = self._network_reading
+            if ticket > self._network_reading_floor and (held is None or ticket > held[0]):
+                self._network_reading = (ticket, time.monotonic(), reading)
+        return reading
+
+    def _forget_network_reading(self) -> None:
+        """Drop the shared reading, and any read already under way: after a change to the network, or for Scan."""
+        with self._network_reading_lock:
+            self._network_reading = None
+            self._network_reading_floor = self._network_reading_ticket
+
     def _network_state_provider(self) -> dict[str, Any] | None:
         """Snapshot the active adapter's state for the web Overview.
 
@@ -2963,19 +3011,16 @@ class AppRuntimeServices:
         renders the "configure from the device" banner when the dict
         is empty / missing fields.
         """
-        from openfollow.network.adapter import is_loopback
-
-        adapter = getattr(self, "_network_adapter", None)
-        if adapter is None:
+        reading = self._read_network()
+        if reading is None:
             return None
-        # Drop loopback – it's always ``is_up`` on Linux and would make
-        # the Overview report 127.0.0.1 as the device address.
-        interfaces = [i for i in adapter.list_interfaces() if not is_loopback(i)]
+        adapter = self._network_adapter
+        interfaces = reading.interfaces
         if not interfaces:
             return {"interfaces": [], "writable": adapter.is_writable()}
         # Pick the first interface that's up; fall back to the first.
         chosen = next((i for i in interfaces if i.is_up), interfaces[0])
-        state = adapter.get_state(chosen.name)
+        state = reading.states.get(chosen.name)
         if state is None:
             return {
                 "interfaces": [i.name for i in interfaces],
@@ -3025,12 +3070,11 @@ class AppRuntimeServices:
         ``iface`` selects a specific interface; ``None`` picks the first one
         that's up (else the first). Returns ``None`` when no adapter is wired.
         """
-        from openfollow.network.adapter import is_loopback
-
-        adapter = getattr(self, "_network_adapter", None)
-        if adapter is None:
+        reading = self._read_network()
+        if reading is None:
             return None
-        interfaces = [i for i in adapter.list_interfaces() if not is_loopback(i)]
+        adapter = self._network_adapter
+        interfaces = reading.interfaces
         names = [i.name for i in interfaces]
         base: dict[str, Any] = {
             "interfaces": names,
@@ -3044,7 +3088,7 @@ class AppRuntimeServices:
             chosen = next((i for i in interfaces if i.is_up), interfaces[0])
             chosen_name = chosen.name
         base["active_interface"] = chosen_name
-        state = adapter.get_state(chosen_name)
+        state = reading.states.get(chosen_name)
         if state is None:
             base.update(
                 method="dhcp",
@@ -3074,28 +3118,16 @@ class AppRuntimeServices:
     def _network_interfaces_provider(self) -> list[dict[str, Any]]:
         """Every non-loopback interface with its full IPv4 detail and up-state.
 
-        The single-interface form only ever showed one adapter at a time, so
-        there was nowhere to see a multi-NIC (or tagged-VLAN) station's layout.
-        This backs the interface list that replaced its picker.
-
         Each row carries router / DNS / lease as well as the address, so the
-        card can render every interface's editor without a second read: the
-        ``get_state`` below already returns them.
-
-        One ``get_state`` per interface means one backend call each – on the
-        NetworkManager adapter that is an ``nmcli`` subprocess – so the caller
-        is expected to cache it rather than resolve on every render.
+        card can render every interface's editor without a second read.
         """
-        from openfollow.network.adapter import is_loopback
         from openfollow.network.validate import prefix_to_mask
 
-        adapter = getattr(self, "_network_adapter", None)
-        if adapter is None:
+        reading = self._read_network()
+        if reading is None:
             return []
         rows: list[dict[str, Any]] = []
-        for iface in adapter.list_interfaces():
-            if is_loopback(iface):
-                continue
+        for iface in reading.interfaces:
             row: dict[str, Any] = {
                 "name": iface.name,
                 "kind": iface.kind,
@@ -3108,14 +3140,7 @@ class AppRuntimeServices:
                 "dns": [],
                 "lease_display": None,
             }
-            # A per-interface read can fail (interface disappearing mid-scan,
-            # backend hiccup) without invalidating the rest of the list, so
-            # degrade that row instead of dropping the whole panel.
-            try:
-                state = adapter.get_state(iface.name)
-            except Exception:  # noqa: BLE001
-                logger.exception("Network state read failed for %s", iface.name)
-                state = None
+            state = reading.states.get(iface.name)
             if state is not None:
                 lease = state.lease
                 seconds = lease.lease_seconds_remaining if lease and lease.lease_seconds_remaining is not None else None
@@ -3161,7 +3186,7 @@ class AppRuntimeServices:
             return ApplyResult(ok=False, message="No network adapter available.")
         if not adapter.is_writable():
             return ApplyResult(ok=False, message="Read-only host – cannot apply.")
-        with self._network_op_lock:
+        with self.network_change():
             return cast(ApplyResult, adapter.apply_ipv4(iface, config))
 
     def _handle_network_renew(self, iface: str) -> ApplyResult:
@@ -3174,7 +3199,7 @@ class AppRuntimeServices:
             return ApplyResult(ok=False, message="No network adapter available.")
         if not adapter.is_writable():
             return ApplyResult(ok=False, message="Read-only host – cannot renew.")
-        with self._network_op_lock:
+        with self.network_change():
             return cast(ApplyResult, adapter.renew_lease(iface))
 
     def _network_vlan_provider(self) -> dict[str, Any]:
@@ -3183,10 +3208,11 @@ class AppRuntimeServices:
         if adapter is None or not adapter.supports_vlans():
             return {"supported": False, "vlans": []}
         try:
-            vlans = adapter.list_vlans()
+            reading = self._read_network()
         except Exception:  # noqa: BLE001
             logger.exception("VLAN list read failed")
             return {"supported": True, "vlans": []}
+        vlans = reading.vlans if reading is not None else ()
         return {
             "supported": True,
             "vlans": [{"name": v.name, "parent": v.parent, "vlan_id": v.vlan_id} for v in vlans],
@@ -3202,7 +3228,7 @@ class AppRuntimeServices:
             return ApplyResult(ok=False, message="No network adapter available.")
         if not adapter.is_writable():
             return ApplyResult(ok=False, message="Read-only host – cannot create a VLAN.")
-        with self._network_op_lock:
+        with self.network_change():
             return cast(ApplyResult, adapter.create_vlan(parent, vlan_id))
 
     def _handle_network_vlan_delete(self, name: str) -> ApplyResult:
@@ -3215,7 +3241,7 @@ class AppRuntimeServices:
             return ApplyResult(ok=False, message="No network adapter available.")
         if not adapter.is_writable():
             return ApplyResult(ok=False, message="Read-only host – cannot delete a VLAN.")
-        with self._network_op_lock:
+        with self.network_change():
             return cast(ApplyResult, adapter.delete_vlan(name))
 
     def _privilege_states_provider(self) -> dict[str, str]:

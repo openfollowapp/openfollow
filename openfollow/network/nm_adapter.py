@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 import subprocess
 import time
-from collections.abc import Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import NamedTuple
 
@@ -21,11 +21,13 @@ from openfollow.network.adapter import (
     LeaseInfo,
     NetworkAdapter,
     NetworkInterface,
+    NetworkReading,
     NetworkState,
     VlanInterface,
     address_source_of,
+    is_loopback,
 )
-from openfollow.network.validate import is_link_local, validate_apply, vlan_interface_name
+from openfollow.network.validate import is_link_local, parse_prefix, validate_apply, vlan_interface_name
 from openfollow.privilege.broker import PrivilegeBroker, PrivilegeError
 from openfollow.privilege.capabilities import (
     NETWORK_NM_CON_ADD,
@@ -40,9 +42,14 @@ logger = logging.getLogger(__name__)
 
 _NMCLI_TIMEOUT = 8
 
-_PROFILE_LIST_FIELDS = "NAME,UUID,AUTOCONNECT,AUTOCONNECT-PRIORITY,TIMESTAMP"
+_PROFILE_LIST_FIELDS = "NAME,UUID,TYPE,DEVICE,AUTOCONNECT,AUTOCONNECT-PRIORITY,TIMESTAMP"
+# Every listed profile's interface, IPv4 method and VLAN link in one call; nmcli
+# leaves the vlan fields out for a profile that is not a VLAN.
+_PROFILE_FIELDS = "connection.uuid,connection.interface-name,ipv4.method,ipv4.addresses,vlan.parent,vlan.id"
 # Every device's state, active profile and address in one call.
 _SOURCE_FIELDS = "GENERAL.DEVICE,GENERAL.TYPE,GENERAL.STATE,GENERAL.CON-UUID,IP4.ADDRESS"
+# ... and everything the network card shows of it.
+_STATE_FIELDS = f"{_SOURCE_FIELDS},GENERAL.HWADDR,IP4.GATEWAY,IP4.DNS,DHCP4.OPTION"
 
 # nmcli(1) EXIT STATUS
 _NMCLI_NOT_FOUND = 10
@@ -119,11 +126,11 @@ def _show_records(text: str) -> list[tuple[str, str]]:
     return out
 
 
-def _device_records(text: str) -> list[dict[str, str]]:
-    """One ``{field: value}`` per device of a terse ``device show`` over every device."""
-    records: list[dict[str, str]] = [{}]  # collects anything before the first device, then dropped
+def _records(text: str, first: str) -> list[dict[str, str]]:
+    """One ``{field: value}`` per record of a terse ``show`` over several, each opening with its *first* field."""
+    records: list[dict[str, str]] = [{}]  # collects anything before the first record, then dropped
     for key, value in _show_records(text):
-        if key == "GENERAL.DEVICE":
+        if key == first:
             records.append({})
         records[-1].setdefault(key, value)
     return records[1:]
@@ -140,15 +147,137 @@ def _split_ipv4(value: str) -> tuple[str | None, int | None]:
         return (address or None, None)
 
 
-def _profile_method(parsed: dict[str, list[str]]) -> Ipv4Method | None:
+def _profile_method(fields: Mapping[str, str]) -> Ipv4Method | None:
     """A profile's IPv4 method from its ``ipv4.method`` / ``ipv4.addresses``; None for any other method."""
-    method = (parsed.get("ipv4.method", [""])[0] or "").lower()
-    addresses = parsed.get("ipv4.addresses", [""])[0] or ""
+    method = fields.get("ipv4.method", "").lower()
+    addresses = fields.get("ipv4.addresses", "")
     if method == "manual":
         return Ipv4Method.STATIC if not addresses.startswith("dhcp") else Ipv4Method.DHCP_WITH_MANUAL_ADDRESS
     if method == "auto":
         return Ipv4Method.DHCP
     return None
+
+
+class _Profile(NamedTuple):
+    name: str
+    uuid: str
+    kind: str
+    device: str  # the device it is active on, empty when it is not
+    rank: tuple[bool, int, int]  # as autoconnect ranks profiles: enabled, priority, last used
+
+
+def _profile_rows(text: str) -> list[_Profile]:
+    """One :class:`_Profile` per row of a terse ``connection show`` list."""
+    out: list[_Profile] = []
+    for line in text.splitlines():
+        fields = _split_terse(line)
+        if len(fields) < 7:
+            continue
+        name, uuid, kind, device, autoconnect, priority, timestamp = fields[:7]
+        out.append(_Profile(name, uuid, kind, device, (autoconnect == "yes", _as_int(priority), _as_int(timestamp))))
+    return out
+
+
+def _saved_profile(
+    profiles: Sequence[_Profile], details: Mapping[str, Mapping[str, str]], iface: str
+) -> _Profile | None:
+    """The saved profile NetworkManager would bring up on *iface*.
+
+    An inactive profile lists no DEVICE, so it is found by the interface it
+    names. Ranked as autoconnect ranks them: enabled, priority, last used. A
+    profile naming no interface is never claimed: it can come up on any adapter.
+    """
+    bound = [p for p in profiles if details.get(p.uuid, {}).get("connection.interface-name") == iface]
+    return max(bound, key=lambda p: (p.rank, p.name)) if bound else None
+
+
+def _vlans(profiles: Sequence[_Profile], details: Mapping[str, Mapping[str, str]]) -> tuple[VlanInterface, ...]:
+    """The VLAN link of each VLAN profile active on a device."""
+    # ``vlan.parent`` holds either the parent interface name or the UUID of the
+    # parent's own profile, which names its interface even while another is active on it.
+    device_by_uuid = {
+        p.uuid: p.device or details.get(p.uuid, {}).get("connection.interface-name", "") for p in profiles
+    }
+    out: list[VlanInterface] = []
+    for profile in profiles:
+        if profile.kind != "vlan":
+            continue
+        fields = details.get(profile.uuid, {})
+        try:
+            vlan_id = int(fields.get("vlan.id", ""))
+        except ValueError:
+            continue
+        raw_parent = fields.get("vlan.parent", "")
+        parent = device_by_uuid.get(raw_parent, raw_parent)
+        if parent and profile.device:
+            out.append(VlanInterface(name=profile.device, parent=parent, vlan_id=vlan_id))
+    return tuple(out)
+
+
+def _is_connected(state: str) -> bool:
+    """``device show``'s ``100 (connected)``, read as the ``device`` list's ``connected``."""
+    return state.partition(" (")[2].startswith("connected")
+
+
+def _parse_lease(options: Iterable[str]) -> LeaseInfo | None:
+    """The lease in NetworkManager's ``DHCP4.OPTION`` values (``name = value``); None when it holds none."""
+    addr: str | None = None
+    prefix: int | None = None
+    router: str | None = None
+    dns: list[str] = []
+    lease_seconds: int | None = None
+    for option in options:
+        if "=" not in option:
+            continue
+        key, _, val = option.partition("=")
+        key = key.strip()
+        val = val.strip()
+        if key == "ip_address":
+            addr = val
+        elif key == "subnet_mask":
+            prefix = parse_prefix(val)
+        elif key == "routers":
+            router = val.split()[0] if val else None
+        elif key == "domain_name_servers":
+            dns = val.split()[:3]
+        elif key == "expiry":
+            # Convert absolute epoch timestamp to seconds-remaining.
+            try:
+                expiry_epoch = int(val)
+            except ValueError:
+                lease_seconds = None
+            else:
+                lease_seconds = max(0, expiry_epoch - int(time.time()))
+    if addr is None and router is None and not dns:
+        return None
+    return LeaseInfo(
+        address=addr,
+        prefix=prefix,
+        router=router,
+        dns=tuple(dns),
+        lease_seconds_remaining=lease_seconds,
+    )
+
+
+def _reading_state(device: Mapping[str, str], method: Ipv4Method) -> NetworkState:
+    """One device of a ``device show`` over every device, with its profile's IPv4 method."""
+    address, prefix = _split_ipv4(device.get("IP4.ADDRESS[1]", ""))
+    interface = NetworkInterface(
+        name=device.get("GENERAL.DEVICE", ""),
+        mac=device.get("GENERAL.HWADDR") or None,
+        kind=device.get("GENERAL.TYPE") or None,
+        is_up=_is_connected(device.get("GENERAL.STATE", "")),
+    )
+    dns = [value for key, value in device.items() if key.startswith("IP4.DNS") and value]
+    ipv4 = Ipv4Config(
+        method=method,
+        address=address,
+        prefix=prefix,
+        router=device.get("IP4.GATEWAY") or None,
+        dns=tuple(dns[:3]),
+    )
+    lease = _parse_lease(value for key, value in device.items() if key.startswith("DHCP4.OPTION"))
+    return NetworkState(interface=interface, ipv4=ipv4, lease=lease)
 
 
 def _unescape_terse(value: str) -> str:
@@ -268,40 +397,31 @@ class NetworkManagerAdapter(NetworkAdapter):
         return self._saved_connection_for(iface)
 
     def _saved_connection_for(self, iface: str) -> str | None:
-        """The saved profile NetworkManager would bring up on *iface*.
+        """The name of the saved profile NetworkManager would bring up on *iface*."""
+        try:
+            profiles = self._read_profiles()
+            details = self._profile_details(profiles)
+        except (RuntimeError, FileNotFoundError, subprocess.SubprocessError):
+            return None
+        saved = _saved_profile(profiles, details, iface)
+        return saved.name if saved else None
 
-        An inactive profile lists no DEVICE, so it is found by the interface it
-        names. Ranked as autoconnect ranks them: enabled, priority, last used. A
-        profile naming no interface is never claimed: it can come up on any adapter.
+    def _read_profiles(self) -> list[_Profile]:
+        return _profile_rows(self._run(["nmcli", "-t", "-f", _PROFILE_LIST_FIELDS, "connection", "show"]).stdout)
+
+    def _profile_details(self, profiles: Sequence[_Profile]) -> dict[str, dict[str, str]]:
+        """Every listed profile's :data:`_PROFILE_FIELDS`, in one call.
+
+        Raises when a profile was deleted since the list was read: nmcli stops at
+        it, so the profiles after it would be missing, and a saved profile ranked
+        among only some of them could be the wrong one.
         """
-        try:
-            res = self._run(["nmcli", "-t", "-f", _PROFILE_LIST_FIELDS, "connection", "show"])
-        except (RuntimeError, FileNotFoundError, subprocess.SubprocessError):
-            return None
-        profiles: dict[str, tuple[tuple[bool, int, int], str]] = {}
-        for line in res.stdout.splitlines():
-            fields = _split_terse(line)
-            if len(fields) < 5:
-                continue
-            name, uuid, autoconnect, priority, timestamp = fields[:5]
-            profiles[uuid] = ((autoconnect == "yes", _as_int(priority), _as_int(timestamp)), name)
         if not profiles:
-            return None
-        argv = ["nmcli", "-t", "-f", "connection.uuid,connection.interface-name", "connection", "show"]
-        for uuid in profiles:
-            argv += ["uuid", uuid]
-        try:
-            res = self._run(argv)
-        except (RuntimeError, FileNotFoundError, subprocess.SubprocessError):
-            return None
-        bound: list[tuple[tuple[bool, int, int], str]] = []
-        uuid = ""
-        for key, value in _show_records(res.stdout):
-            if key == "connection.uuid":
-                uuid = value
-            elif key == "connection.interface-name" and value == iface and uuid in profiles:
-                bound.append(profiles[uuid])
-        return max(bound)[1] if bound else None
+            return {}
+        argv = ["nmcli", "-t", "-f", _PROFILE_FIELDS, "connection", "show"]
+        for profile in profiles:
+            argv += ["uuid", profile.uuid]
+        return {r["connection.uuid"]: r for r in _records(self._run(argv).stdout, "connection.uuid")}
 
     def _device_state(self, iface: str) -> str | None:
         """nmcli's STATE word for *iface*, ``""`` if absent, ``None`` if unreadable.
@@ -357,89 +477,43 @@ class NetworkManagerAdapter(NetworkAdapter):
             return f"{iface} is not present. Check the adapter, then Scan."
         return f"No saved profile for {iface}. Connect the cable once to create one."
 
-    def _parse_show(self, text: str) -> dict[str, list[str]]:
-        out: dict[str, list[str]] = {}
-        for line in text.splitlines():
-            # nmcli ``-t`` uses ``:`` as the field separator; the field name
-            # never contains one, so the first ``:`` is always the split.
-            key, _, value = line.partition(":")
-            if not key:
-                continue
-            out.setdefault(key.strip(), []).append(_unescape_terse(value.strip()))
-        return out
-
     def get_state(self, iface: str) -> NetworkState | None:
-        ifaces = {i.name: i for i in self.list_interfaces()}
-        if iface not in ifaces:
-            return None
+        return self.read_network().states.get(iface)
+
+    def read_network(self) -> NetworkReading:
+        """Three ``nmcli`` runs however many interfaces: every device, the profile list, every profile.
+
+        Never raises: a failed device read reads as no interfaces, a failed profile
+        read as every interface on DHCP and no VLANs, never as no addresses.
+        """
         try:
-            dev = self._run(
-                [
-                    "nmcli",
-                    "-t",
-                    "-f",
-                    "IP4.ADDRESS,IP4.GATEWAY,IP4.DNS,GENERAL.HWADDR",
-                    "device",
-                    "show",
-                    iface,
-                ]
+            devices = _records(
+                self._run(["nmcli", "-t", "-f", _STATE_FIELDS, "device", "show"]).stdout, "GENERAL.DEVICE"
             )
-        except (RuntimeError, FileNotFoundError, subprocess.SubprocessError):
-            return None
-        parsed = self._parse_show(dev.stdout)
-
-        ip4_addresses = parsed.get("IP4.ADDRESS[1]") or []
-        addr, prefix = _split_ipv4(ip4_addresses[0]) if ip4_addresses else (None, None)
-
-        gw_list = parsed.get("IP4.GATEWAY") or []
-        router = gw_list[0] if gw_list and gw_list[0] else None
-        dns_list = [v for k, vs in parsed.items() if k.startswith("IP4.DNS") for v in vs if v]
-        mac_list = parsed.get("GENERAL.HWADDR") or []
-        mac = mac_list[0] if mac_list else None
-
-        method = self._read_method(iface)
-        ipv4 = Ipv4Config(
-            method=method,
-            address=addr,
-            prefix=prefix,
-            router=router,
-            dns=tuple(dns_list[:3]),
-        )
-        iface_obj = ifaces[iface]
-        if mac and iface_obj.mac is None:
-            iface_obj = NetworkInterface(
-                name=iface_obj.name,
-                mac=mac,
-                kind=iface_obj.kind,
-                is_up=iface_obj.is_up,
-            )
-        lease = self._read_lease(iface)
-        return NetworkState(interface=iface_obj, ipv4=ipv4, lease=lease)
-
-    def _read_method(self, iface: str) -> Ipv4Method:
-        name = self._connection_for(iface)
-        if not name:
-            return Ipv4Method.DHCP
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("nmcli device read failed: %s", exc)
+            return NetworkReading()
         try:
-            res = self._run(
-                [
-                    "nmcli",
-                    "-t",
-                    "-f",
-                    "ipv4.method,ipv4.addresses",
-                    "connection",
-                    "show",
-                    name,
-                ]
-            )
-        except (RuntimeError, FileNotFoundError, subprocess.SubprocessError):
-            return Ipv4Method.DHCP
-        return _profile_method(self._parse_show(res.stdout)) or Ipv4Method.DHCP
+            profiles = self._read_profiles()
+            details = self._profile_details(profiles)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("nmcli profile read failed: %s", exc)
+            profiles, details = [], {}
+        states: dict[str, NetworkState] = {}
+        for device in devices:
+            name = device.get("GENERAL.DEVICE", "")
+            uuid = device.get("GENERAL.CON-UUID", "")
+            if not uuid and (saved := _saved_profile(profiles, details, name)) is not None:
+                uuid = saved.uuid
+            state = _reading_state(device, _profile_method(details.get(uuid, {})) or Ipv4Method.DHCP)
+            if name and not is_loopback(state.interface):
+                states[name] = state
+        return NetworkReading(tuple(state.interface for state in states.values()), states, _vlans(profiles, details))
 
     # ---- diagnostics ----------------------------------------------------
 
     def read_address_sources(self) -> list[AddressSourceReading]:
-        devices = _device_records(self._read(["nmcli", "-t", "-f", _SOURCE_FIELDS, "device", "show"]))
+        devices = _records(self._read(["nmcli", "-t", "-f", _SOURCE_FIELDS, "device", "show"]), "GENERAL.DEVICE")
         return [
             self._address_source(device)
             for device in devices
@@ -468,10 +542,10 @@ class NetworkManagerAdapter(NetworkAdapter):
             show = self._read(["nmcli", "-t", "-f", "ipv4.method,ipv4.addresses", "connection", "show", "uuid", uuid])
         except BackendReadError as exc:
             return AddressSourceReading(name, address, "unreadable", str(exc))
-        parsed = self._parse_show(show)
-        method = _profile_method(parsed)
+        fields = dict(_show_records(show))
+        method = _profile_method(fields)
         if method is None:
-            word = (parsed.get("ipv4.method") or [""])[0] or "unset"
+            word = fields.get("ipv4.method") or "unset"
             return AddressSourceReading(name, address, "unknown", f"profile ipv4.method is {word}")
         return AddressSourceReading(name, address, address_source_of(address, method))
 
@@ -480,45 +554,7 @@ class NetworkManagerAdapter(NetworkAdapter):
             res = self._run(["nmcli", "-t", "-f", "DHCP4.OPTION", "device", "show", iface])
         except (RuntimeError, FileNotFoundError, subprocess.SubprocessError):
             return None
-        addr: str | None = None
-        prefix: int | None = None
-        router: str | None = None
-        dns: list[str] = []
-        lease_seconds: int | None = None
-        for line in res.stdout.splitlines():
-            _, _, value = line.partition(":")
-            if "=" not in value:
-                continue
-            key, _, val = value.partition("=")
-            key = key.strip()
-            val = val.strip()
-            if key == "ip_address":
-                addr = val
-            elif key == "subnet_mask":
-                from openfollow.network.validate import parse_prefix
-
-                prefix = parse_prefix(val)
-            elif key == "routers":
-                router = val.split()[0] if val else None
-            elif key == "domain_name_servers":
-                dns = val.split()[:3]
-            elif key == "expiry":
-                # Convert absolute epoch timestamp to seconds-remaining.
-                try:
-                    expiry_epoch = int(val)
-                except ValueError:
-                    lease_seconds = None
-                else:
-                    lease_seconds = max(0, expiry_epoch - int(time.time()))
-        if addr is None and router is None and not dns:
-            return None
-        return LeaseInfo(
-            address=addr,
-            prefix=prefix,
-            router=router,
-            dns=tuple(dns),
-            lease_seconds_remaining=lease_seconds,
-        )
+        return _parse_lease(value for _key, value in _show_records(res.stdout))
 
     # ---- mutation -------------------------------------------------------
 
@@ -765,52 +801,8 @@ class NetworkManagerAdapter(NetworkAdapter):
     def supports_vlans(self) -> bool:
         return True
 
-    def _vlan_profiles(self) -> tuple[list[tuple[str, str]], dict[str, str]]:
-        """Return ``([(profile name, device)], {uuid: device})`` for the
-        connection list, filtered to VLAN profiles. The UUID map covers every
-        profile, not just VLANs, because it exists to resolve a VLAN's parent
-        reference back to an interface name."""
-        try:
-            res = self._run(["nmcli", "-t", "-f", "NAME,UUID,TYPE,DEVICE", "connection", "show"])
-        except (RuntimeError, FileNotFoundError, subprocess.SubprocessError) as exc:
-            logger.warning("nmcli VLAN profile list failed: %s", exc)
-            return ([], {})
-        out: list[tuple[str, str]] = []
-        device_by_uuid: dict[str, str] = {}
-        for line in res.stdout.splitlines():
-            parts = _split_terse(line)
-            if len(parts) < 4:
-                continue
-            name, uuid, kind, device = parts[0], parts[1], parts[2], parts[3]
-            device_by_uuid[uuid] = device
-            if kind == "vlan":
-                out.append((name, device))
-        return (out, device_by_uuid)
-
     def list_vlans(self) -> list[VlanInterface]:
-        profiles, device_by_uuid = self._vlan_profiles()
-        vlans: list[VlanInterface] = []
-        for name, device in profiles:
-            try:
-                res = self._run(["nmcli", "-t", "-f", "vlan.parent,vlan.id", "connection", "show", "id", name])
-            except (RuntimeError, FileNotFoundError, subprocess.SubprocessError):
-                continue
-            parsed = self._parse_show(res.stdout)
-            raw_parent = (parsed.get("vlan.parent") or [""])[0]
-            raw_id = (parsed.get("vlan.id") or [""])[0]
-            try:
-                vlan_id = int(raw_id)
-            except ValueError:
-                continue
-            # ``vlan.parent`` holds either the parent interface name or the
-            # UUID of the parent's own profile, depending on how the VLAN was
-            # created. Resolve the UUID form back to a device so the caller
-            # always gets a name.
-            parent = device_by_uuid.get(raw_parent, raw_parent)
-            if not parent or not device:
-                continue
-            vlans.append(VlanInterface(name=device, parent=parent, vlan_id=vlan_id))
-        return vlans
+        return list(self.read_network().vlans)
 
     def create_vlan(self, parent: str, vlan_id: int) -> ApplyResult:
         name = vlan_interface_name(parent, vlan_id)
@@ -854,8 +846,9 @@ class NetworkManagerAdapter(NetworkAdapter):
         """Return the VLAN profile bound to ``iface``, or None when ``iface``
         is not a VLAN. This is the check that keeps ``con delete`` – a
         wildcarded grant – off an operator's physical-NIC profile."""
-        profiles, _ = self._vlan_profiles()
-        for name, device in profiles:
-            if device == iface:
-                return name
-        return None
+        try:
+            profiles = self._read_profiles()
+        except (RuntimeError, FileNotFoundError, subprocess.SubprocessError) as exc:
+            logger.warning("nmcli VLAN profile list failed: %s", exc)
+            return None
+        return next((p.name for p in profiles if p.kind == "vlan" and p.device == iface), None)

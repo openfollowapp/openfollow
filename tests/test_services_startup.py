@@ -16,8 +16,19 @@ import openfollow.privilege.broker as broker_module
 import openfollow.services as services_module
 from openfollow.configuration import AppConfig
 from openfollow.net_egress import Egress
+from openfollow.network.adapter import ApplyResult, NetworkAdapter
 
 pytestmark = pytest.mark.integration
+
+
+class _ReadOnlyAdapter(NetworkAdapter):
+    """A backend the tests below give only the reads they need."""
+
+    def apply_ipv4(self, iface, config):
+        return ApplyResult(ok=False)
+
+    def renew_lease(self, iface):
+        return ApplyResult(ok=False)
 
 
 class _FakeWindow:
@@ -230,7 +241,7 @@ def test_network_state_provider_returns_none_when_no_adapter(monkeypatch) -> Non
 def test_network_state_provider_returns_empty_when_no_interfaces(monkeypatch) -> None:
     services = _build_services_with_psutil_backend(monkeypatch)
 
-    class _FakeAdapter:
+    class _FakeAdapter(_ReadOnlyAdapter):
         backend_name = "fake"
 
         def list_interfaces(self):
@@ -258,7 +269,7 @@ def test_network_state_provider_returns_full_state(monkeypatch) -> None:
         NetworkState,
     )
 
-    class _FakeAdapter:
+    class _FakeAdapter(_ReadOnlyAdapter):
         backend_name = "fake-dhcpcd"
 
         def list_interfaces(self):
@@ -308,7 +319,7 @@ def test_network_state_provider_filters_loopback(monkeypatch) -> None:
         NetworkState,
     )
 
-    class _FakeAdapter:
+    class _FakeAdapter(_ReadOnlyAdapter):
         backend_name = "fake"
 
         def list_interfaces(self):
@@ -339,7 +350,7 @@ def test_network_state_provider_returns_empty_when_only_loopback(monkeypatch) ->
     services = _build_services_with_psutil_backend(monkeypatch)
     from openfollow.network.adapter import NetworkInterface
 
-    class _FakeAdapter:
+    class _FakeAdapter(_ReadOnlyAdapter):
         backend_name = "fake"
 
         def list_interfaces(self):
@@ -360,7 +371,7 @@ def test_network_state_provider_when_get_state_returns_none(monkeypatch) -> None
     services = _build_services_with_psutil_backend(monkeypatch)
     from openfollow.network.adapter import NetworkInterface
 
-    class _FakeAdapter:
+    class _FakeAdapter(_ReadOnlyAdapter):
         backend_name = "fake-nm"
 
         def list_interfaces(self):
@@ -675,7 +686,7 @@ class TestFormatLeaseRemaining:
 
 
 # Web network write providers / handlers (services layer)
-class _FakeWritableAdapter:
+class _FakeWritableAdapter(NetworkAdapter):
     """Minimal writable NetworkAdapter stand-in for network handlers."""
 
     backend_name = "fake"
@@ -1124,7 +1135,7 @@ def test_network_interfaces_provider_lists_every_interface(monkeypatch) -> None:
     replaced it, so every adapter carries its own address and method."""
     services = _build_services_with_psutil_backend(monkeypatch)
 
-    class _FakeAdapter:
+    class _FakeAdapter(_ReadOnlyAdapter):
         backend_name = "fake"
 
         def list_interfaces(self):
@@ -1154,7 +1165,7 @@ def test_network_interfaces_provider_carries_router_dns_and_lease(monkeypatch) -
     lease, so dropping them here would cost a second backend read per row."""
     services = _build_services_with_psutil_backend(monkeypatch)
 
-    class _FakeAdapter:
+    class _FakeAdapter(_ReadOnlyAdapter):
         backend_name = "fake"
 
         def list_interfaces(self):
@@ -1193,7 +1204,7 @@ def test_network_interfaces_provider_defaults_the_detail_when_state_is_unreadabl
     list, and the row still has to carry every key the editor renders."""
     services = _build_services_with_psutil_backend(monkeypatch)
 
-    class _FakeAdapter:
+    class _FakeAdapter(_ReadOnlyAdapter):
         backend_name = "fake"
 
         def list_interfaces(self):
@@ -1215,7 +1226,7 @@ def test_network_interfaces_provider_defaults_the_detail_when_state_is_unreadabl
 def test_network_interfaces_provider_skips_loopback(monkeypatch) -> None:
     services = _build_services_with_psutil_backend(monkeypatch)
 
-    class _FakeAdapter:
+    class _FakeAdapter(_ReadOnlyAdapter):
         backend_name = "fake"
 
         def list_interfaces(self):
@@ -1236,7 +1247,7 @@ def test_network_interfaces_provider_carries_the_device_type(monkeypatch) -> Non
     VLAN profile still names it."""
     services = _build_services_with_psutil_backend(monkeypatch)
 
-    class _FakeAdapter:
+    class _FakeAdapter(_ReadOnlyAdapter):
         backend_name = "fake"
 
         def list_interfaces(self):
@@ -1258,7 +1269,7 @@ def test_network_interfaces_provider_reports_an_addressless_interface(monkeypatc
     is exactly what the operator needs to see."""
     services = _build_services_with_psutil_backend(monkeypatch)
 
-    class _FakeAdapter:
+    class _FakeAdapter(_ReadOnlyAdapter):
         backend_name = "fake"
 
         def list_interfaces(self):
@@ -1291,7 +1302,7 @@ def test_network_interfaces_provider_degrades_one_failing_row(monkeypatch) -> No
     must degrade that row, not drop the whole list."""
     services = _build_services_with_psutil_backend(monkeypatch)
 
-    class _FakeAdapter:
+    class _FakeAdapter(_ReadOnlyAdapter):
         backend_name = "fake"
 
         def list_interfaces(self):
@@ -1309,6 +1320,212 @@ def test_network_interfaces_provider_degrades_one_failing_row(monkeypatch) -> No
     rows = {r["name"]: r for r in services._network_interfaces_provider()}
     assert rows["eth0"]["address"] == ""
     assert rows["eth1"]["address"] == "10.0.0.9"
+
+
+# --------------------------------------------------------------------------- #
+# One backend reading serves the web UI's network sections
+# --------------------------------------------------------------------------- #
+
+
+class _CountingAdapter(_ReadOnlyAdapter):
+    """Each reading writes its own number into every interface's address."""
+
+    backend_name = "fake-nm"
+
+    def __init__(self) -> None:
+        self.reads = 0
+        self.during_read: list = []  # run inside the next read, once each
+
+    def list_interfaces(self):
+        return []
+
+    def get_state(self, iface):
+        return None
+
+    def supports_vlans(self) -> bool:
+        return True
+
+    def read_network(self):
+        from openfollow.network.adapter import (
+            Ipv4Config,
+            Ipv4Method,
+            NetworkInterface,
+            NetworkReading,
+            NetworkState,
+            VlanInterface,
+        )
+
+        self.reads += 1
+        n = self.reads
+        while self.during_read:
+            self.during_read.pop()()
+        eth0 = NetworkInterface("eth0", None, "ethernet", is_up=True)
+        eth1 = NetworkInterface("eth1", None, "ethernet", is_up=True)
+        return NetworkReading(
+            (eth0, eth1),
+            {
+                "eth0": NetworkState(eth0, Ipv4Config(Ipv4Method.DHCP, f"192.0.2.{n}", 24), None),
+                "eth1": NetworkState(eth1, Ipv4Config(Ipv4Method.DHCP, f"198.51.100.{n}", 24), None),
+            },
+            (VlanInterface(f"eth0.{n}", "eth0", n),),
+        )
+
+
+@pytest.fixture
+def counted(monkeypatch):
+    """A reading never ages out unless a test says so, so no assertion rests on the clock."""
+    monkeypatch.setattr(services_module, "_NETWORK_READING_MAX_AGE_S", float("inf"))
+    services = _build_services_with_psutil_backend(monkeypatch)
+    adapter = _CountingAdapter()
+    services._network_adapter = adapter
+    return services, adapter
+
+
+def test_the_network_sections_share_one_reading(counted) -> None:
+    services, adapter = counted
+    assert services._network_config_provider()["address"] == "192.0.2.1"
+    assert services._network_state_provider()["address"] == "192.0.2.1"
+    assert services._network_vlan_provider()["vlans"] == [{"name": "eth0.1", "parent": "eth0", "vlan_id": 1}]
+    assert adapter.reads == 1
+
+
+def test_a_reading_past_its_age_is_taken_again(counted, monkeypatch) -> None:
+    services, adapter = counted
+    monkeypatch.setattr(services_module, "_NETWORK_READING_MAX_AGE_S", 0.0)
+    services._network_config_provider()
+    assert services._network_config_provider()["address"] == "192.0.2.2"
+
+
+def test_a_slow_read_is_shared_for_its_whole_age_after_it_completes(counted, monkeypatch) -> None:
+    services, adapter = counted
+    monkeypatch.setattr(services_module, "_NETWORK_READING_MAX_AGE_S", 1.0)
+    clock = [100.0]
+    # The services module's own reference only; the time module stays real everywhere else.
+    monkeypatch.setattr(services_module, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    adapter.during_read.append(lambda: clock.__setitem__(0, 101.5))
+    services._network_config_provider()
+    clock[0] = 102.4
+    services._network_config_provider()
+    assert adapter.reads == 1
+    clock[0] = 102.6
+    services._network_config_provider()
+    assert adapter.reads == 2
+
+
+def test_the_interface_list_shares_the_reading_too(counted) -> None:
+    services, adapter = counted
+    assert services._network_config_provider()["address"] == "192.0.2.1"
+    assert [r["address"] for r in services._network_interfaces_provider()] == ["192.0.2.1", "198.51.100.1"]
+    assert adapter.reads == 1
+
+
+def test_a_vlan_list_that_cannot_be_read_keeps_the_vlan_controls(counted) -> None:
+    """A failed read is not evidence the backend lost its VLAN support."""
+    services, adapter = counted
+
+    def _read_network():
+        raise RuntimeError("nmcli wedged")
+
+    adapter.read_network = _read_network
+    assert services._network_vlan_provider() == {"supported": True, "vlans": []}
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda s: s._handle_network_apply("eth0", _dhcp()),
+        lambda s: s._handle_network_renew("eth0"),
+        lambda s: s._handle_network_vlan_create("eth0", 10),
+        lambda s: s._handle_network_vlan_delete("eth0.10"),
+    ],
+)
+def test_a_change_from_the_web_ui_is_read_back_at_once(counted, change) -> None:
+    services, _adapter = counted
+    services._network_config_provider()
+    change(services)
+    assert services._network_config_provider()["address"] == "192.0.2.2"
+
+
+def test_a_change_that_raises_still_drops_the_reading(counted) -> None:
+    services, adapter = counted
+
+    def _apply(iface, config):
+        raise RuntimeError("nmcli wedged")
+
+    adapter.apply_ipv4 = _apply
+    services._network_config_provider()
+    with pytest.raises(RuntimeError):
+        services._handle_network_apply("eth0", _dhcp())
+    assert services._network_config_provider()["address"] == "192.0.2.2"
+
+
+def test_a_read_under_way_when_a_change_lands_is_not_kept(counted) -> None:
+    """Its reading may predate the change, so the next render reads again."""
+    services, adapter = counted
+    adapter.during_read.append(services._forget_network_reading)
+    services._network_config_provider()
+    assert services._network_config_provider()["address"] == "192.0.2.2"
+    services._network_config_provider()
+    assert adapter.reads == 2
+
+
+def test_a_read_that_started_first_does_not_replace_a_newer_one(counted) -> None:
+    """A Scan that finishes before a slower read begun earlier keeps its reading."""
+    services, adapter = counted
+    adapter.during_read.append(services._read_network)
+    services._network_config_provider()
+    assert services._network_config_provider()["address"] == "192.0.2.2"
+    assert adapter.reads == 2
+
+
+def test_one_card_render_reads_the_backend_once(counted, monkeypatch, tmp_path) -> None:
+    """Every section of the card comes from one reading; a render inside its age shares it, and Scan takes a new one."""
+    import urllib.request
+
+    import openfollow.web.discovery as discovery_module
+    from openfollow.web.server import ConfigWebServer
+    from tests._ports import live_on_free_port
+
+    for attr in ("BeaconSender", "BeaconReceiver"):
+        monkeypatch.setattr(getattr(discovery_module, attr), "start", lambda self: None)
+        monkeypatch.setattr(getattr(discovery_module, attr), "stop", lambda self: None)
+    services, adapter = counted
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("controlled_marker_ids = [1]\n", encoding="utf-8")
+
+    def _server(port: int) -> ConfigWebServer:
+        return ConfigWebServer(
+            config_path=str(config_path),
+            host="127.0.0.1",
+            port=port,
+            system_name="TestSystem",
+            network_config_provider=services._network_config_provider,
+            network_interfaces_provider=services._network_interfaces_provider,
+            network_vlan_provider=services._network_vlan_provider,
+            network_rescan_handler=services._forget_network_reading,
+        )
+
+    with live_on_free_port(_server) as (_srv, base):
+
+        def _render(path: str) -> str:
+            with urllib.request.urlopen(f"{base}{path}", timeout=5) as response:
+                return response.read().decode()
+
+        first = _render("/section/network/status")
+        assert adapter.reads == 1
+        _render("/section/network/status")
+        assert adapter.reads == 1
+        scanned = _render("/section/network/status?scan=1")
+        assert adapter.reads == 2
+    assert "192.0.2.1" in first and "198.51.100.1" in first
+    assert "192.0.2.2" in scanned and "198.51.100.2" in scanned
+    assert "192.0.2.1" not in scanned
+
+
+def _dhcp():
+    from openfollow.network.adapter import Ipv4Config, Ipv4Method
+
+    return Ipv4Config(method=Ipv4Method.DHCP)
 
 
 # --------------------------------------------------------------------------- #
@@ -2689,6 +2906,31 @@ def fqdn_services(monkeypatch):
     return services, hosts
 
 
+@pytest.mark.parametrize("raises", [False, True])
+def test_the_reconnect_for_a_new_station_fqdn_is_read_back_at_once(fqdn_services, monkeypatch, raises) -> None:
+    """Every interface reconnects, so a reading from before it no longer describes them."""
+    from openfollow.network.adapter import ApplyResult
+
+    services, _hosts = fqdn_services
+    monkeypatch.setattr(services_module, "_NETWORK_READING_MAX_AGE_S", float("inf"))
+    counting = _CountingAdapter()
+    services._network_adapter = counting
+    services._network_config_provider()
+
+    def _set_dhcp_fqdn(fqdn, *, reconnect=True):
+        if raises:
+            raise RuntimeError("nmcli wedged")
+        return ApplyResult(ok=True, message="Applied.")
+
+    counting.set_dhcp_fqdn = _set_dhcp_fqdn
+    if raises:
+        with pytest.raises(RuntimeError):
+            services._apply_station_fqdn("of-1.stage.example.com", services._fqdn_generation)
+    else:
+        services.apply_station_fqdn_change("of-1.stage.example.com").join(timeout=5)
+    assert services._network_config_provider()["address"] == "192.0.2.2"
+
+
 def test_a_new_station_fqdn_reaches_etc_hosts_and_dhcp(fqdn_services) -> None:
     services, hosts = fqdn_services
     adapter = services._network_adapter = _FqdnAdapter()
@@ -2881,9 +3123,9 @@ def test_what_dhcp_could_not_do_is_reported_for_the_configured_name_only(fqdn_se
     assert services.station_fqdn_problems() == ()
 
 
-def test_the_screens_lock_is_the_one_the_web_apply_holds(monkeypatch) -> None:
-    """The Operator Screen takes ``network_op_lock``; it only serialises anything if the web's
-    apply holds that same lock while it changes the host."""
+def test_a_web_change_holds_the_lock_the_operator_screen_takes(monkeypatch) -> None:
+    """The Operator Screen changes the network inside ``network_change``, so it and a
+    web apply exclude each other only if both hold the same lock."""
     from openfollow.network.adapter import ApplyResult, Ipv4Config, Ipv4Method
 
     services = _build_services_with_psutil_backend(monkeypatch)
@@ -2894,12 +3136,23 @@ def test_the_screens_lock_is_the_one_the_web_apply_holds(monkeypatch) -> None:
             return True
 
         def apply_ipv4(self, iface, config):
-            held.append(services.network_op_lock.locked())
+            held.append(services._network_op_lock.locked())
             return ApplyResult(ok=True)
 
     services._network_adapter = _Adapter()
     services._handle_network_apply("eth0", Ipv4Config(method=Ipv4Method.DHCP))
-    assert held == [True]
+    with services.network_change():
+        held.append(services._network_op_lock.locked())
+    assert held == [True, True]
+    assert not services._network_op_lock.locked()
+
+
+def test_a_change_from_the_operator_screen_is_read_back_at_once(counted) -> None:
+    services, _adapter = counted
+    services._network_config_provider()
+    with services.network_change():
+        pass
+    assert services._network_config_provider()["address"] == "192.0.2.2"
 
 
 @pytest.mark.parametrize(

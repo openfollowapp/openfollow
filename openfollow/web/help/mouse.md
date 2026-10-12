@@ -10,6 +10,8 @@ Click-and-drag control for steering markers directly on the live video. Off by d
 
 **Double right-click** – when on, **double right-clicking** snaps the controlled marker back to the default position (the same as the reset key) and lets go of it, so it parks there until you grab it again. It sits on the right button because that's already the release button. Turn it off if you find yourself resetting markers by accident.
 
+A marker locked onto a path *(experimental)* stays on it while you steer: it travels along the path, through any path joined to it, towards the point nearest the cursor, and the scroll wheel leaves its height to the path.
+
 ## Steering refinements
 
 **Hysteresis (px)** – a deadband on the cursor, in screen pixels, so small hand-tremor doesn't make the marker wiggle. The marker only moves once the cursor travels past this many pixels from where it last settled. `0` applies every movement (direct control). Start around `3`–`6` if a resting hand makes the marker drift.

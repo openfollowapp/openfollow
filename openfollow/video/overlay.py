@@ -57,6 +57,7 @@ from openfollow.runtime.overlay_draw_hud import (
 from openfollow.runtime.overlay_draw_messages import (
     draw_operator_messages as draw_operator_messages_pass,
 )
+from openfollow.runtime.overlay_draw_paths import draw_paths as draw_paths_pass
 from openfollow.runtime.overlay_draw_scene import (
     ConeCache,
 )
@@ -295,6 +296,7 @@ class CairoOverlayRenderer:
                 self._draw_grid(cr, state, width, height)
                 self._draw_origin(cr, state, width, height)
                 self._draw_zones(cr, state, width, height)
+                draw_paths_pass(self, cr, state, width, height)
                 for t in state.markers:
                     self._draw_marker(cr, state, t, width, height)
                 self._cone_cache.retain(state.markers)

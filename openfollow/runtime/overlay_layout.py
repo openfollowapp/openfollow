@@ -57,7 +57,12 @@ _MOUSE3D_BTN_LABELS: tuple[tuple[str, str], ...] = (
     ("speed_down", "Speed -"),
     ("toggle_help", "Toggle help"),
     ("toggle_zones", "Toggle zones"),
+    ("pathfinder", "Pathfinder"),
+    ("toggle_paths", "Toggle paths"),
 )
+
+
+_PATH_HELP: tuple[tuple[str, str], ...] = (("pathfinder", "Pathfinder"), ("toggle_paths", "Toggle paths"))
 
 
 # Friendly short names shown in the help overlay for each button code.
@@ -222,6 +227,9 @@ def build_help_sections(
             zones_key = kl.get("toggle_zones", "")
             if zones_key:
                 keyboard.append(f"{_key_label(zones_key)}: Toggle zone overlay")
+            for action, label in _PATH_HELP:
+                if kl.get(action):
+                    keyboard.append(f"{_key_label(kl[action])}: {label}")
             if settings_key:
                 keyboard.append(f"{_key_label(settings_key)}: Settings menu")
         if controller_connected:
@@ -263,6 +271,9 @@ def build_help_sections(
                 controller.append(f"{settings_btn}: Settings menu")
             if bl.get("toggle_zones"):
                 controller.append(f"{_btn('toggle_zones', 'B')}: Toggle zone overlay")
+            for action, label in _PATH_HELP:
+                if bl.get(action):
+                    controller.append(f"{_btn(action, '')}: {label}")
         if mouse_enabled:
             mouse = [
                 "Left click: Grab marker",

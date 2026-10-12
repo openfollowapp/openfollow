@@ -7138,3 +7138,72 @@ def test_apply_runtime_takes_new_paths() -> None:
     new_paths = PathsConfig(paths=[PathConfig(name="cross", active=True)])
     apply_runtime_config_changes(app, AppConfig(paths=new_paths))
     assert app._config.paths == new_paths
+
+
+class TestPathBindings:
+    """Pathfinder and Toggle paths start unbound and validate like every other binding."""
+
+    @pytest.mark.parametrize("field", ["btn_pathfinder", "btn_toggle_paths", "key_pathfinder", "key_toggle_paths"])
+    def test_they_start_unbound(self, field: str) -> None:
+        assert getattr(ControllerConfig(), field) == ""
+
+    @pytest.mark.parametrize(
+        ("field", "bad"), [("btn_pathfinder", "ZZ"), ("btn_toggle_paths", 3), ("key_pathfinder", "F99")]
+    )
+    def test_an_unknown_input_falls_back_to_unbound(self, field: str, bad: object) -> None:
+        assert getattr(ControllerConfig(**{field: bad}), field) == ""
+
+    def test_a_movement_key_is_refused(self) -> None:
+        assert ControllerConfig(key_toggle_paths="w").key_toggle_paths == ""
+
+    def test_a_shared_input_stays_with_the_action_above(self) -> None:
+        cfg = ControllerConfig(key_reset="x", key_pathfinder="x", btn_reset="X", btn_pathfinder="X")
+        assert (cfg.key_reset, cfg.key_pathfinder) == ("x", "")
+        assert (cfg.btn_reset, cfg.btn_pathfinder) == ("X", "")
+
+    @pytest.mark.parametrize("field", ["btn_pathfinder", "btn_toggle_paths"])
+    def test_3d_mouse_path_buttons_start_unbound(self, field: str) -> None:
+        assert getattr(Mouse3DConfig(), field) == -1
+
+
+class TestPathsHotReload:
+    def _app(self) -> _DummyApp:
+        from openfollow.paths.engine import PathEngine
+
+        app = _app_with()
+        app._paths = PathEngine()
+        return app
+
+    @staticmethod
+    def _config(*, experimental: bool, active: bool = True) -> AppConfig:
+        from openfollow.configuration import PathConfig, PathPointConfig, PathsConfig
+
+        cfg = AppConfig()
+        cfg.ui.show_experimental_features = experimental
+        cfg.paths = PathsConfig(
+            paths=[PathConfig(name="cross", active=active, points=[PathPointConfig(0, 0, 0), PathPointConfig(1, 0, 0)])]
+        )
+        return cfg
+
+    def test_new_paths_reach_the_engine(self) -> None:
+        app = self._app()
+        apply_runtime_config_changes(app, self._config(experimental=True))
+        assert app._paths.enabled
+        assert app._paths.lock_onto(1, "cross", (0.5, 0.5, 0.0))
+
+    def test_switching_experimental_features_off_releases_everyone(self) -> None:
+        app = self._app()
+        apply_runtime_config_changes(app, self._config(experimental=True))
+        app._paths.press(1, (0.5, 0.5, 0.0))
+        apply_runtime_config_changes(app, self._config(experimental=False))
+        assert not app._paths.enabled
+        assert not app._paths.is_locked(1)
+
+    def test_an_unrelated_change_keeps_the_locks(self) -> None:
+        app = self._app()
+        apply_runtime_config_changes(app, self._config(experimental=True))
+        app._paths.press(1, (0.5, 0.5, 0.0))
+        changed = self._config(experimental=True)
+        changed.grid.width = 12.0
+        apply_runtime_config_changes(app, changed)
+        assert app._paths.is_locked(1)

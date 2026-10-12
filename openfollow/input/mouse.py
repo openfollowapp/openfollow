@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from openfollow.runtime import paths_runtime
 from openfollow.runtime.services_detection_pin import (
     get_or_create_manual_marker,
     is_assist_controlled,
@@ -186,6 +187,10 @@ class MouseHandler:
         marker = self._get_selected_marker()
         if marker is None:
             return False
+        paths = getattr(self._app, "_paths", None)
+        if paths is not None and paths.is_locked(self._app._selected_id):
+            # A locked marker's height is its path's.
+            return True
         clicks = self._take_wheel_clicks(abs(dy))
         if clicks:
             x, y, z = marker.pos
@@ -223,10 +228,17 @@ class MouseHandler:
         if marker is None or self._target_world is None:
             return
         tx, ty = self._target_world
+        alpha = max(1.0 - app._config.controller.mouse_smoothing, _MIN_GLIDE_ALPHA)
+        paths = getattr(app, "_paths", None)
+        on_path = paths.glide(app._selected_id, tx, ty, alpha) if paths is not None else None
+        if on_path is not None:
+            # Locked: the marker travels its path towards the point nearest the cursor.
+            marker.set_pos(*on_path)
+            self._smooth_world = (on_path[0], on_path[1])
+            return
         if self._smooth_world is None:
             mx, my, _ = marker.pos
             self._smooth_world = (mx, my)
-        alpha = max(1.0 - app._config.controller.mouse_smoothing, _MIN_GLIDE_ALPHA)
         sx, sy = self._smooth_world
         nx = sx + alpha * (tx - sx)
         ny = sy + alpha * (ty - sy)
@@ -312,6 +324,7 @@ class MouseHandler:
         marker = self._get_selected_marker()
         if marker is None:
             return
+        paths_runtime.release(self._app, self._app._selected_id)
         marker.set_pos(*self._app._get_default_marker_position())
         # Drop any pending glide so ``update`` doesn't drag it back.
         self._target_world = None

@@ -2156,6 +2156,8 @@ _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
         "btn_menu_confirm": _as_str,
         "btn_menu_cancel": _as_str,
         "btn_clear_messages": _as_str,
+        "btn_pathfinder": _as_str,
+        "btn_toggle_paths": _as_str,
         "move_xy_stick": _as_str,
         "marker_fader_stick": _as_str,
         "marker_fader_max_speed_s": _as_float,
@@ -2183,6 +2185,8 @@ _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
         "key_prev_marker": _as_str,
         "key_settings": _as_str,
         "key_clear_messages": _as_str,
+        "key_pathfinder": _as_str,
+        "key_toggle_paths": _as_str,
     },
     "osc": {
         "enabled": _as_bool,

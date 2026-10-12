@@ -1110,3 +1110,94 @@ class TestNetworkScreenHeadline:
         state.pi_network.title = "stale"
         _populate_pi_network_overlay(SimpleNamespace(_pi_network_active=True), state)
         assert state.pi_network.title == ""
+
+
+class TestPathsOnTheOperatorScreen:
+    """Paths reach the overlay, the status corner and the help only while paths run."""
+
+    @staticmethod
+    def _app(*, enabled: bool = True, show: bool = True, mouse3d: bool = False):  # noqa: ANN205
+        from openfollow.configuration import PathConfig, PathPointConfig, PathsConfig
+        from openfollow.paths.engine import PathEngine
+
+        app = _make_visual_app(_TornMarker([(0.0, 0.0, 0.0)]), controlled=False)
+        app._config.paths = PathsConfig(
+            show_paths=show,
+            paths=[PathConfig(name="cross", active=True, points=[PathPointConfig(0, 0, 0), PathPointConfig(1, 0, 0)])],
+        )
+        cc = app._config.controller
+        cc.key_pathfinder, cc.key_toggle_paths = "p", "o"
+        cc.btn_pathfinder, cc.btn_toggle_paths = "A", "Y"
+        app._config.mouse3d.btn_pathfinder = 2
+        app._config.mouse3d.enabled = mouse3d
+        app._paths = PathEngine()
+        app._paths.reload(app._config.paths, enabled=enabled)
+        app._runtime_services = SimpleNamespace(_status_flags={})
+        return app
+
+    @staticmethod
+    def _state(app):  # noqa: ANN001, ANN205
+        return build_marker_visual_state(
+            app,
+            overlay_state_pool=OverlayStatePool(),
+            system_stats=None,
+            person_detector=None,
+            cam_params_buffer=np.zeros(7),
+            dt=1.0 / 60.0,
+        )
+
+    def test_active_paths_reach_the_overlay(self) -> None:
+        app = self._app()
+        app._paths.press(1, (0.5, 0.5, 0.0))
+        state = self._state(app)
+        assert state.show_paths is True
+        [(curve, points, locked)] = state.path_lines
+        assert (curve[0], curve[-1], points, locked) == ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), points, True)
+        assert points == [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)]
+
+    @pytest.mark.parametrize(("enabled", "show"), [(False, True), (True, False)])
+    def test_nothing_is_drawn_while_paths_are_off_or_hidden(self, enabled: bool, show: bool) -> None:
+        state = self._state(self._app(enabled=enabled, show=show))
+        assert state.show_paths is False
+        assert state.path_lines == []
+
+    def test_an_app_without_paths_draws_none(self) -> None:
+        app = self._app()
+        del app._paths
+        state = self._state(app)
+        assert (state.show_paths, state.path_lines) == (False, [])
+        assert state.keyboard_labels["pathfinder"] == ""
+
+    def test_recording_shows_a_blue_row_in_the_status_corner(self) -> None:
+        app = self._app()
+        app._paths.record("cross", app._config.paths)
+        self._state(app)
+        assert app._runtime_services._status_flags["path_recording"] == ("info", "Recording path cross: 2 points")
+
+    def test_the_row_is_cleared_while_paths_are_off(self) -> None:
+        app = self._app(enabled=False)
+        app._runtime_services._status_flags["path_recording"] = ("info", "stale")
+        self._state(app)
+        assert app._runtime_services._status_flags["path_recording"] is None
+
+    def test_help_names_the_path_bindings_only_while_paths_run(self) -> None:
+        on = self._state(self._app())
+        assert (on.keyboard_labels["pathfinder"], on.keyboard_labels["toggle_paths"]) == ("p", "o")
+        assert (on.button_labels["pathfinder"], on.button_labels["toggle_paths"]) == ("A", "Y")
+        off = self._state(self._app(enabled=False))
+        assert (off.keyboard_labels["pathfinder"], off.button_labels["toggle_paths"]) == ("", "")
+
+    def test_3d_mouse_help_names_the_path_buttons_only_while_paths_run(self) -> None:
+        on_app = self._app(mouse3d=True)
+        on_app._input_manager = SimpleNamespace(
+            get_marker_gamepad_speeds=dict,
+            get_controller_info=list,
+            identify_flash_marker=lambda: None,
+            marker_cycle_active=lambda: True,
+            is_keyboard_connected=lambda: False,
+            mouse3d_manager=SimpleNamespace(connected=True),
+        )
+        off_app = self._app(enabled=False, mouse3d=True)
+        off_app._input_manager = on_app._input_manager
+        assert self._state(on_app).mouse3d_buttons["pathfinder"] == 2
+        assert "pathfinder" not in self._state(off_app).mouse3d_buttons

@@ -1127,3 +1127,55 @@ class TestHitTestLensDistortion:
         assert MouseHandler(app).on_pointer_down(float(bowed[0]), float(bowed[1]), 1) is True
         # Clicking the raw pinhole centre (where the circle is NOT drawn) misses.
         assert MouseHandler(app).on_pointer_down(float(pinhole[0]), float(pinhole[1]), 1) is False
+
+
+class TestLockedOnAPath:
+    """A locked marker follows its path towards the cursor and keeps the path's height."""
+
+    @staticmethod
+    def _app() -> _DummyApp:
+        from openfollow.configuration import PathConfig, PathPointConfig, PathsConfig
+        from openfollow.paths.engine import PathEngine
+
+        app = _DummyApp()
+        engine = PathEngine()
+        cross = PathConfig(
+            name="cross", active=True, points=[PathPointConfig(-5, 0, 0.5, 0), PathPointConfig(5, 0, 0.5, 0)]
+        )
+        engine.reload(PathsConfig(slide_time=0.0, paths=[cross]), enabled=True)
+        engine.press(1, (0.0, 0.0, 0.0))
+        engine.tick(0.0)
+        app._paths = engine  # type: ignore[attr-defined]
+        return app
+
+    def test_a_drag_moves_the_marker_along_its_path_under_the_cursor(self) -> None:
+        app = self._app()
+        handler = MouseHandler(app)
+        cx, cy = _ground_center(app, 1)
+        handler.on_pointer_down(cx, cy, 1)
+        tx, ty = _stage_point_on_screen(app, 2.0, 3.0)
+        handler.on_pointer_move(tx, ty)
+        handler.update()
+        assert app._server.get_marker(1).pos == pytest.approx((2.0, 0.0, 0.5), abs=1e-3)
+
+    def test_the_wheel_leaves_a_locked_marker_s_height_alone(self) -> None:
+        app = self._app()
+        app._server.get_marker(1).set_pos(1.0, 0.0, 0.5)
+        handler = MouseHandler(app)
+        _grab(handler, app)
+        assert handler.on_wheel(1.0) is True
+        assert app._server.get_marker(1).pos[2] == 0.5
+
+    def test_a_double_right_click_releases_the_marker_from_its_path(self) -> None:
+        app = self._app()
+        handler = MouseHandler(app)
+        clock = _FakeClock()
+        handler._clock = clock
+        cx, cy = _ground_center(app, 1)
+        handler.on_pointer_down(cx, cy, 1)
+        clock.t = 0.1
+        handler.on_pointer_down(cx, cy, 3)
+        clock.t = 0.2
+        handler.on_pointer_down(cx, cy, 3)
+        assert not app._paths.is_locked(1)  # type: ignore[attr-defined]
+        assert app._server.get_marker(1).pos == _DEFAULT_POS

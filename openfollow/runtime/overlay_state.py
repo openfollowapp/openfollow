@@ -319,6 +319,11 @@ class OverlayState:
     # Each entry: (vertices_world_xy, color_hex, name, is_occupied, count)
     zone_polygons: list[tuple[list[tuple[float, float]], str, str, bool, int]] = field(default_factory=list)
     zone_z_offset: float = 0.0
+    # Paths: (curve, points, locked) each, world X/Y/Z.
+    show_paths: bool = False
+    path_lines: list[tuple[list[tuple[float, float, float]], list[tuple[float, float, float]], bool]] = field(
+        default_factory=list
+    )
 
     def reset(self) -> None:
         """Reset state for reuse in object pool."""
@@ -427,6 +432,8 @@ class OverlayState:
         self.show_zones = False
         self.zone_polygons = []
         self.zone_z_offset = 0.0
+        self.show_paths = False
+        self.path_lines = []
         # Clear fader/badge stacks on pool reuse to avoid stale entries.
         self.virtual_faders_display = []
         self.status_flags = []

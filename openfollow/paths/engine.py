@@ -1,0 +1,284 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 OpenFollow Project
+"""Markers locked onto the active paths, and where each movement source may put them.
+
+Runs on the frame loop. Every movement source asks the engine before it writes a
+locked marker and writes what it answers, so a locked marker is on its path in
+every write and no output ever carries a position off it. A marker sliding onto
+a path ignores input until it lands. Locks and recording live in memory only.
+"""
+
+from __future__ import annotations
+
+import math
+from collections.abc import Sequence
+from dataclasses import dataclass
+from enum import Enum
+from itertools import pairwise
+
+import numpy as np
+
+from openfollow.configuration import PathConfig, PathsConfig
+from openfollow.paths.geometry import PathCurve, PathPoint, build_curve
+from openfollow.paths.network import PathNetwork, Place
+
+Point = tuple[float, float, float]
+
+# Longest straight piece drawn as one line: shorter pieces bow with the lens like the grid.
+_DRAW_STEP_M = 0.25
+
+
+class Press(Enum):
+    """What a Pathfinder press did."""
+
+    NONE = "none"
+    LOCKED = "locked"
+    RELEASED = "released"
+    RECORD = "record"
+
+
+@dataclass
+class _Lock:
+    name: str
+    place: Place
+    # Where the slide started and how far into it the marker is; None once it has landed.
+    slide_from: Point | None = None
+    slide_elapsed: float = 0.0
+    # Moved by a reload, not by its marker: the next tick writes it.
+    moved: bool = False
+
+
+@dataclass(frozen=True)
+class PathDrawing:
+    """One path for the Operator Screen: its curve, its points, and whether a marker is on it."""
+
+    name: str
+    curve: list[Point]
+    points: list[Point]
+    locked: bool = False
+
+
+def _curve_of(path: PathConfig) -> PathCurve | None:
+    return build_curve([PathPoint(p.x, p.y, p.z, p.radius) for p in path.points], path.closed)
+
+
+def _ease(u: float) -> float:
+    return u * u * (3.0 - 2.0 * u)
+
+
+class PathEngine:
+    """The network of active paths and each locked marker's place on it."""
+
+    def __init__(self) -> None:
+        self.enabled = False
+        self._network: PathNetwork | None = None
+        self._names: list[str] = []
+        self._slide_time = 0.5
+        self._drawn: list[tuple[list[Point], list[Point]]] = []
+        self._locks: dict[int, _Lock] = {}
+        self._recording: str | None = None
+        self._recorded: tuple[tuple[object, ...], PathDrawing] | None = None
+
+    # -- configuration -------------------------------------------------
+
+    def reload(self, cfg: PathsConfig, *, enabled: bool) -> None:
+        """Rebuild from ``cfg``; with ``enabled`` False nothing is active and nobody stays locked."""
+        # Where each locked marker is, or is sliding to, on the paths as they were.
+        old = self._network
+        spots = {m: old.point(lock.place) for m, lock in self._locks.items()} if old is not None else {}
+        self.enabled = enabled
+        self._slide_time = cfg.slide_time
+        curves: list[PathCurve] = []
+        releases: list[tuple[bool, bool]] = []
+        self._names, self._drawn = [], []
+        for path in cfg.paths if enabled else []:
+            curve = _curve_of(path) if path.active else None
+            if curve is not None:
+                curves.append(curve)
+                releases.append((path.release_at_start, path.release_at_end))
+                self._names.append(path.name)
+                self._drawn.append((_line(curve), [(p.x, p.y, p.z) for p in path.points]))
+        self._network = PathNetwork(curves, releases) if curves else None
+        if not enabled or (self._recording is not None and cfg.find(self._recording) is None):
+            self._recording = None
+        for marker_id, lock in list(self._locks.items()):
+            index = self._index(lock.name)
+            if index is None or self._network is None or marker_id not in spots:
+                del self._locks[marker_id]
+                continue
+            # The path may have changed under the marker: put it back on the edited curve.
+            x, y, _ = spots[marker_id]
+            lock.place = Place(index, self._network.curves[index].nearest(x, y)[0])
+            lock.moved = True
+
+    def _index(self, name: str) -> int | None:
+        wanted = name.lower()
+        return next((i for i, n in enumerate(self._names) if n.lower() == wanted), None)
+
+    # -- recording -----------------------------------------------------
+
+    @property
+    def recording(self) -> str | None:
+        return self._recording
+
+    def record(self, name: str | None, cfg: PathsConfig) -> bool:
+        """Record into the path called ``name`` (``None`` stops); False when there is no such path."""
+        if name is None:
+            self._recording = None
+            return True
+        path = cfg.find(name)
+        if path is None or not self.enabled:
+            return False
+        self._recording = path.name
+        return True
+
+    # -- locks ---------------------------------------------------------
+
+    def is_locked(self, marker_id: int) -> bool:
+        return marker_id in self._locks
+
+    def locked_path(self, marker_id: int) -> str | None:
+        lock = self._locks.get(marker_id)
+        return None if lock is None else lock.name
+
+    def press(self, marker_id: int, pos: Point) -> Press:
+        """A Pathfinder press for ``marker_id``, standing at ``pos``."""
+        if not self.enabled:
+            return Press.NONE
+        if self._recording is not None:
+            return Press.RECORD
+        if self._locks.pop(marker_id, None) is not None:
+            return Press.RELEASED
+        if self._network is None:
+            return Press.NONE
+        place = self._network.nearest(pos[0], pos[1])
+        if place is None:  # pragma: no cover - a network always holds a curve
+            return Press.NONE
+        self._start(marker_id, place, pos)
+        return Press.LOCKED
+
+    def lock_onto(self, marker_id: int, name: str, pos: Point) -> bool:
+        """Slide ``marker_id`` onto the active path called ``name``; False when there is none."""
+        index = self._index(name)
+        if index is None or self._network is None:
+            return False
+        place = self._network.nearest(pos[0], pos[1], among=[index])
+        if place is None:  # pragma: no cover - one index always answers
+            return False
+        self._start(marker_id, place, pos)
+        return True
+
+    def _start(self, marker_id: int, place: Place, pos: Point) -> None:
+        self._locks[marker_id] = _Lock(self._names[place.path], place, slide_from=pos)
+
+    def release(self, marker_id: int) -> None:
+        self._locks.pop(marker_id, None)
+
+    def release_all(self, keep: Sequence[int] = ()) -> None:
+        """Release every marker but those in ``keep``."""
+        for marker_id in [m for m in self._locks if m not in keep]:
+            del self._locks[marker_id]
+
+    # -- movement ------------------------------------------------------
+
+    def tick(self, dt: float) -> dict[int, Point]:
+        """Advance every slide; the positions of markers the engine itself moved this frame."""
+        out: dict[int, Point] = {}
+        for marker_id, lock in self._locks.items():
+            # A lock only ever lives on a network: a reload without one releases everybody.
+            assert self._network is not None
+            if lock.slide_from is not None:
+                lock.slide_elapsed += dt
+                out[marker_id] = self._sliding(lock)
+                if lock.slide_elapsed >= self._slide_time:
+                    lock.slide_from = None
+            elif lock.moved:
+                out[marker_id] = self._network.point(lock.place)
+            lock.moved = False
+        return out
+
+    def _sliding(self, lock: _Lock) -> Point:
+        assert self._network is not None and lock.slide_from is not None
+        target = self._network.point(lock.place)
+        u = 1.0 if self._slide_time <= 0.0 else min(lock.slide_elapsed / self._slide_time, 1.0)
+        k = _ease(u)
+        x0, y0, z0 = lock.slide_from
+        return x0 + (target[0] - x0) * k, y0 + (target[1] - y0) * k, z0 + (target[2] - z0) * k
+
+    def move(self, marker_id: int, vx: float, vy: float, dt: float) -> Point | None:
+        """Where a push of ``(vx, vy)`` m/s for ``dt`` puts a locked marker; ``None`` when it is not locked."""
+        lock = self._locks.get(marker_id)
+        if lock is None or self._network is None:
+            return None
+        if lock.slide_from is not None:
+            return self._sliding(lock)
+        step = self._network.walk(lock.place, vx, vy, dt)
+        lock.place = step.place
+        if step.released:
+            del self._locks[marker_id]
+        return self._network.point(step.place)
+
+    def project(self, marker_id: int, x: float, y: float) -> Point | None:
+        """Where an absolute position lands for a locked marker: the nearest point it can reach."""
+        lock = self._locks.get(marker_id)
+        if lock is None or self._network is None:
+            return None
+        if lock.slide_from is not None:
+            return self._sliding(lock)
+        place = self._network.nearest(x, y, among=self._network.connected(lock.place.path))
+        assert place is not None
+        self._set_place(lock, place)
+        return self._network.point(place)
+
+    def glide(self, marker_id: int, x: float, y: float, fraction: float) -> Point | None:
+        """Move a locked marker ``fraction`` of the way towards the reachable point nearest ``(x, y)``."""
+        lock = self._locks.get(marker_id)
+        if lock is None or self._network is None:
+            return None
+        if lock.slide_from is not None:
+            return self._sliding(lock)
+        target = self._network.nearest(x, y, among=self._network.connected(lock.place.path))
+        assert target is not None
+        self._set_place(lock, self._network.glide(lock.place, target, fraction))
+        return self._network.point(lock.place)
+
+    def _set_place(self, lock: _Lock, place: Place) -> None:
+        lock.place = place
+        lock.name = self._names[place.path]
+
+    # -- drawing -------------------------------------------------------
+
+    def drawings(self, cfg: PathsConfig) -> list[PathDrawing]:
+        """The paths the Operator Screen draws: every active one, and the one being recorded."""
+        if not self.enabled:
+            return []
+        locked = {lock.name.lower() for lock in self._locks.values()}
+        out = [
+            PathDrawing(name, line, points, name.lower() in locked)
+            for name, (line, points) in zip(self._names, self._drawn, strict=True)
+        ]
+        recorded = cfg.find(self._recording) if self._recording is not None else None
+        if recorded is not None and self._index(recorded.name) is None:
+            out.append(self._recorded_drawing(recorded))
+        return out
+
+    def _recorded_drawing(self, path: PathConfig) -> PathDrawing:
+        # Recording an inactive path changes it point by point; build it only when it changed.
+        key = (path.name, path.closed, tuple((p.x, p.y, p.z, p.radius) for p in path.points))
+        if self._recorded is None or self._recorded[0] != key:
+            points = [(p.x, p.y, p.z) for p in path.points]
+            curve = _curve_of(path)
+            self._recorded = (key, PathDrawing(path.name, points if curve is None else _line(curve), points))
+        return self._recorded[1]
+
+
+def _line(curve: PathCurve) -> list[Point]:
+    """The curve to draw: its points, long straight runs split so a lens can bow them."""
+    line: list[Point] = []
+    xyz = np.column_stack((curve.xy, curve.z))
+    for a, b in pairwise(xyz):
+        count = max(1, math.ceil(float(np.linalg.norm(b[:2] - a[:2])) / _DRAW_STEP_M))
+        line.extend((float(x), float(y), float(z)) for x, y, z in (a + (b - a) * (k / count) for k in range(count)))
+    x, y, z = xyz[-1]
+    line.append((float(x), float(y), float(z)))
+    return line

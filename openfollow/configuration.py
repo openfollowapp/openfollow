@@ -1879,6 +1879,8 @@ _BUTTON_MAPPING_FIELDS = (
     "btn_menu_confirm",
     "btn_menu_cancel",
     "btn_clear_messages",  # clear operator-message cards
+    "btn_pathfinder",
+    "btn_toggle_paths",
     # Deprecated – superseded by btn_menu_confirm / btn_menu_cancel. Kept
     # in the mapping so legacy configs still validate and fall back to
     # defaults on invalid values; no longer used for dispatch.
@@ -1915,6 +1917,8 @@ _KEYBOARD_ACTION_FIELDS = (
     "key_prev_marker",
     "key_settings",
     "key_clear_messages",  # clear operator-message cards
+    "key_pathfinder",
+    "key_toggle_paths",
 )
 
 # Binding groups in form order: the fields of one group may not share an input,
@@ -1932,6 +1936,8 @@ GAMEPAD_ACTION_BUTTON_FORM_LABELS = (
     ("btn_next_marker", "Next Marker"),
     ("btn_prev_marker", "Prev Marker"),
     ("btn_clear_messages", "Clear Messages"),
+    ("btn_pathfinder", "Pathfinder"),
+    ("btn_toggle_paths", "Toggle Paths"),
 )
 GAMEPAD_MENU_BUTTON_FORM_LABELS = (
     ("btn_menu_confirm", "Confirm"),
@@ -1952,6 +1958,8 @@ KEYBOARD_ACTION_FORM_LABELS = (
     ("key_clear_messages", "Clear Messages"),
     ("key_next_marker", "Next Marker"),
     ("key_prev_marker", "Prev Marker"),
+    ("key_pathfinder", "Pathfinder"),
+    ("key_toggle_paths", "Toggle Paths"),
 )
 CONTROLLER_BINDING_GROUPS = tuple(
     tuple(name for name, _ in labels)
@@ -2008,6 +2016,8 @@ class ControllerConfig:
     btn_menu_cancel: str = "B"
     # Clear all operator-message cards. Default unbound; edge-triggered.
     btn_clear_messages: str = ""
+    btn_pathfinder: str = ""
+    btn_toggle_paths: str = ""
     move_xy_stick: str = "left"
     # Marker-fader integrator: which stick Y-axis (if any) drives the fader of
     # the currently-controlled marker. The bus integrates
@@ -2070,6 +2080,8 @@ class ControllerConfig:
     key_settings: str = "m"
     # Clear all operator-message cards. Default unbound.
     key_clear_messages: str = ""
+    key_pathfinder: str = ""
+    key_toggle_paths: str = ""
 
     def __post_init__(self) -> None:
         """Validate configuration values."""
@@ -2221,6 +2233,8 @@ MOUSE3D_BUTTON_FIELDS = (
     "btn_speed_down",
     "btn_toggle_help",
     "btn_toggle_zones",
+    "btn_pathfinder",
+    "btn_toggle_paths",
 )
 # Web-form row labels (gesture-first, config key in parens) in display order.
 # Single source for the form's axis/button loops; the consistency test asserts
@@ -2241,6 +2255,8 @@ MOUSE3D_BUTTON_FORM_LABELS = (
     ("btn_speed_down", "Speed down"),
     ("btn_toggle_help", "Toggle help"),
     ("btn_toggle_zones", "Toggle zones"),
+    ("btn_pathfinder", "Pathfinder"),
+    ("btn_toggle_paths", "Toggle paths"),
 )
 
 
@@ -2290,6 +2306,8 @@ class Mouse3DConfig:
     btn_speed_down: int = -1
     btn_toggle_help: int = -1
     btn_toggle_zones: int = -1
+    btn_pathfinder: int = -1
+    btn_toggle_paths: int = -1
 
     def __post_init__(self) -> None:
         self.enabled = _coerce_bool(self.enabled, False)
@@ -3737,8 +3755,12 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
         # destination and can't be safely evicted without per-caller
         # ownership tracking.
 
-    if new_config.paths != app._config.paths:
+    paths_changed = new_config.paths != app._config.paths
+    if paths_changed:
         app._config.paths = new_config.paths
+    engine = getattr(app, "_paths", None)
+    if engine is not None and (paths_changed or engine.enabled != app._config.ui.show_experimental_features):
+        engine.reload(app._config.paths, enabled=app._config.ui.show_experimental_features)
 
     # The MIDI ``apply_config`` is idempotent (same device on same patch is a
     # no-op), so re-applying on every reload pass is safe.

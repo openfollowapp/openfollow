@@ -18,7 +18,14 @@ The receiver accepts two message shapes:
 - **Full triple** – `/marker/{id}` with three float arguments: `x`, `y`, `z`. All three axes update in one message.
 - **Per-axis** – `/marker/{id}/x`, `/marker/{id}/y`, `/marker/{id}/z`, each carrying a single float. Only the addressed axis updates; the others keep their values, allowing partial updates from systems that work axis-by-axis.
 
-In both shapes `{id}` is the integer marker ID (1 or higher). Coordinates follow OpenFollow's stage convention: X is stage left (positive) / stage right (negative); Y is upstage (positive) / downstage (negative); Z is height above the stage floor. All values are in **metres**, relative to the **Reference Point**.
+In both shapes `{id}` is the integer marker ID (1 or higher). A marker locked onto a path stays on it: a position sent to it lands on the nearest point of its path, or of a path joined to it, and its height is the path's. Coordinates follow OpenFollow's stage convention: X is stage left (positive) / stage right (negative); Y is upstage (positive) / downstage (negative); Z is height above the stage floor. All values are in **metres**, relative to the **Reference Point**.
+
+## Path commands *(experimental)*
+
+- `/path/{name}/active` with one argument, `1` / `0` or `true` / `false`, switches the path called `{name}` on or off. Path names match ignoring case. Switching a path off releases every marker on it where it stands.
+- `/marker/{id}/path` with a path name locks marker `{id}` onto that path: it slides there over the slide time and then moves only along it. With no name it releases the marker. Only active paths, and only markers this station controls, are affected.
+
+Path commands are ignored while experimental features are off.
 
 ## Saving
 

@@ -1594,3 +1594,22 @@ def test_release_restores_full_validity_on_the_wire(monkeypatch) -> None:
     _run(app, None)
 
     assert marker.to_psn_marker().status == 1.0
+
+
+def test_replace_keeps_a_marker_locked_on_a_path_on_it(monkeypatch) -> None:
+    """Fully Automatic projects the person's place onto the marker's path, height included."""
+    from openfollow.configuration import PathConfig, PathPointConfig, PathsConfig
+    from openfollow.paths.engine import PathEngine
+
+    app = _make_app(detection_cfg=_status_cfg(), resolution=(1000, 1000))
+    engine = PathEngine()
+    path = PathConfig(name="row", active=True, points=[PathPointConfig(0, 2, 0.3, 0), PathPointConfig(10, 2, 0.3, 0)])
+    engine.reload(PathsConfig(slide_time=0.0, paths=[path]), enabled=True)
+    engine.press(0, (5.0, 2.0, 0.0))
+    engine.tick(0.0)
+    app._paths = engine
+
+    _run(app, _StubDetector(_tracked(0.6)), monkeypatch, unproject=_linear_unproject)
+
+    # The person stands at (5, 1); the path runs along y = 2 at 0.3 m.
+    assert app._server.get_marker(0).pos == pytest.approx((5.0, 2.0, 0.3))

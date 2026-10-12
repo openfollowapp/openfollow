@@ -375,8 +375,12 @@ def apply_detection_pin(
         age_s=best.age_s,
         grace_s=person_detector.coast_s,
     )
+    # On a path the marker stays on it: the person's place projects onto the path.
+    paths = getattr(app, "_paths", None)
+    on_path = paths.project(marker.marker_id, smooth_x, smooth_y) if paths is not None else None
+    x, y, z = on_path if on_path is not None else (smooth_x, smooth_y, marker.pos[2])
     # One write: no packet pairs this position with the previous frame's status.
-    marker.set_pos(smooth_x, smooth_y, marker.pos[2], status=status)
+    marker.set_pos(x, y, z, status=status)
     pin_state.status = status
 
 

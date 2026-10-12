@@ -497,6 +497,8 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
         "btn_menu_confirm": _menu_button_rule(),
         "btn_menu_cancel": _menu_button_rule(),
         "btn_clear_messages": _button_rule(),
+        "btn_pathfinder": _button_rule(),
+        "btn_toggle_paths": _button_rule(),
         "move_xy_stick": FieldRule(
             _as_str, choices=VALID_STICKS, human_error=f"Stick must be one of: {', '.join(VALID_STICKS)}."
         ),
@@ -541,6 +543,8 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
         "key_prev_marker": _key_rule(),
         "key_settings": _key_rule(),
         "key_clear_messages": _key_rule(),
+        "key_pathfinder": _key_rule(),
+        "key_toggle_paths": _key_rule(),
     },
     "osc": {
         "enabled": FieldRule(_as_bool),

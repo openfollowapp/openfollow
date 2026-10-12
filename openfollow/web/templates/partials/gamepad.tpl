@@ -189,6 +189,11 @@
                         % include('partials/button_binding_select.tpl', name=name, label=action_labels[name], value=getattr(c, name), buttons=action_buttons)
                         % end
                     </div>
+                    <div class="row experimental-feature">
+                        % for name in ('btn_pathfinder', 'btn_toggle_paths'):
+                        % include('partials/button_binding_select.tpl', name=name, label=action_labels[name], value=getattr(c, name), buttons=action_buttons)
+                        % end
+                    </div>
                 </div>
                 <div class="group">
                     <h3 class="group-title">Menu Navigation</h3>

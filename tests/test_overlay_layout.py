@@ -678,3 +678,28 @@ def test_selectable_list_layout_no_scroll_when_selected_within_visible() -> None
     # `max_visible` will be ≥ 2 with this height, so selected_idx=1 fits.
     assert layout.scroll_offset == 0
     assert layout.max_visible >= 2
+
+
+def test_build_help_sections_names_bound_path_actions() -> None:
+    sections = dict(
+        build_help_sections(
+            mode="normal",
+            keyboard_connected=True,
+            controller_connected=True,
+            keyboard_labels={"pathfinder": "p", "toggle_paths": "o"},
+            button_labels={"pathfinder": "A", "toggle_paths": ""},
+            mouse3d_connected=True,
+            mouse3d_buttons={"pathfinder": 2, "toggle_paths": 3},
+        )
+    )
+    assert "P: Pathfinder" in sections["Keyboard"]
+    assert "O: Toggle paths" in sections["Keyboard"]
+    assert "A: Pathfinder" in sections["Controller"]
+    assert not any("Toggle paths" in line for line in sections["Controller"])
+    assert "Btn 2: Pathfinder" in sections["3D Mouse"]
+    assert "Btn 3: Toggle paths" in sections["3D Mouse"]
+
+
+def test_build_help_sections_leaves_out_unbound_path_actions() -> None:
+    sections = dict(build_help_sections(mode="normal", keyboard_connected=True, controller_connected=False))
+    assert not any("Path" in line for line in sections["Keyboard"])

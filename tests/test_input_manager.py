@@ -746,3 +746,117 @@ def test_invert_control_direction_leaves_osc_positions_absolute(monkeypatch) -> 
     manager.update(1.0)
 
     assert app._server.get_marker(10).pos == pytest.approx((3.0, 4.0, 5.0))
+
+
+# --------------------------------------------------------------------------- #
+# Paths: every input writes a locked marker through the path engine
+# --------------------------------------------------------------------------- #
+
+
+def _cross_engine():  # noqa: ANN202
+    from openfollow.configuration import PathConfig, PathPointConfig, PathsConfig
+    from openfollow.paths.engine import PathEngine
+
+    engine = PathEngine()
+    cross = PathConfig(name="cross", active=True, points=[PathPointConfig(-5, 0, 0, 0), PathPointConfig(5, 0, 0, 0)])
+    engine.reload(PathsConfig(slide_time=0.0, paths=[cross]), enabled=True)
+    return engine
+
+
+@pytest.fixture
+def path_app(monkeypatch):  # noqa: ANN001, ANN201
+    monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
+    monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
+    app = _DummyApp()
+    app._paths = _cross_engine()
+    return app
+
+
+def test_a_locked_marker_lands_then_moves_along_its_path_at_its_height(path_app) -> None:  # noqa: ANN001
+    app = path_app
+    app._server.get_marker(10).set_pos(0.0, 2.0, 0.0)
+    app._paths.press(10, (0.0, 2.0, 0.0))
+    # Up and across, and Z up: only the part along the path moves it, and Z is the path's.
+    _FakeKeyboardHandler.next_velocity = (0.5, 0.5, 1.0)
+    InputManager(app).update(2.0)
+    assert app._server.get_marker(10).pos == pytest.approx((1.0, 0.0, 0.0))
+
+
+def test_a_pad_s_pathfinder_press_locks_the_marker_that_pad_drives(path_app) -> None:  # noqa: ANN001
+    app = path_app
+    app._server.get_marker(11).set_pos(2.0, 3.0, 0.0)
+    _FakeGamepadHandler.next_update = GamepadUpdate(pathfinder_presses={1})
+    InputManager(app).update(0.02)
+    assert app._paths.locked_path(11) == "cross"
+    assert not app._paths.is_locked(10)
+
+
+def test_a_gamepad_push_moves_a_locked_marker_along_its_path(path_app) -> None:  # noqa: ANN001
+    app = path_app
+    app._paths.press(11, (0.0, 0.0, 0.0))
+    app._paths.tick(0.0)
+    _FakeGamepadHandler.next_update = GamepadUpdate(movements={1: (0.0, 1.0, 1.0)})
+    InputManager(app).update(1.0)
+    assert app._server.get_marker(11).pos == pytest.approx((0.0, 0.0, 0.0))
+
+
+def test_a_reset_releases_the_marker_from_its_path(path_app) -> None:  # noqa: ANN001
+    app = path_app
+    app._paths.press(10, (0.0, 1.0, 0.0))
+    _FakeGamepadHandler.next_update = GamepadUpdate(resets={0})
+    InputManager(app).update(0.02)
+    assert not app._paths.is_locked(10)
+    assert app._server.get_marker(10).pos == pytest.approx((5.0, 6.0, 7.0))
+
+
+def test_an_osc_position_for_a_locked_marker_lands_on_its_path(path_app) -> None:  # noqa: ANN001
+    app = path_app
+    app._paths.press(10, (0.0, 0.0, 0.0))
+    app._paths.tick(0.0)
+    manager = InputManager(app)
+    manager.osc_handler = SimpleNamespace(flush_updates=lambda: {10: {"x": 3.0, "y": 4.0, "z": 9.0}})
+    manager.update(0.02)
+    assert app._server.get_marker(10).pos == pytest.approx((3.0, 0.0, 0.0))
+
+
+def test_a_marker_no_longer_controlled_is_released(path_app) -> None:  # noqa: ANN001
+    app = path_app
+    app._paths.press(99, (0.0, 1.0, 0.0))
+    InputManager(app).update(0.02)
+    assert not app._paths.is_locked(99)
+
+
+def test_path_commands_from_osc_reach_the_engine(path_app) -> None:  # noqa: ANN001
+    from openfollow.osc.paths import MarkerPath
+
+    app = path_app
+    manager = InputManager(app)
+    manager.path_osc_handler = SimpleNamespace(take=lambda: [MarkerPath(10, "cross")])
+    manager.update(0.02)
+    assert app._paths.locked_path(10) == "cross"
+
+
+def test_the_keyboard_pathfinder_press_locks_the_selected_marker(path_app) -> None:  # noqa: ANN001
+    app = path_app
+    manager = InputManager(app)
+    manager.pathfinder(10)
+    assert app._paths.locked_path(10) == "cross"
+    manager.pathfinder(None)
+    assert app._paths.is_locked(10)
+
+
+def test_without_paths_a_pathfinder_press_does_nothing(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
+    monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
+    app = _DummyApp()
+    InputManager(app).pathfinder(10)
+    assert app._server.get_marker(10).pos == pytest.approx((0.0, 0.0, 0.0))
+
+
+def test_a_sliding_marker_the_server_does_not_have_is_skipped(path_app) -> None:  # noqa: ANN001
+    app = path_app
+    app._controlled_ids = [10, 11, 12]
+    app._paths.press(12, (0.0, 1.0, 0.0))
+    app._paths.press(10, (2.0, 1.0, 0.0))
+    InputManager(app).update(0.02)
+    assert app._server.get_marker(10).pos == pytest.approx((2.0, 0.0, 0.0))

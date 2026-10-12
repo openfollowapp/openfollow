@@ -56,8 +56,10 @@ def test_a_path_with_a_marker_on_it_is_white_and_heavier() -> None:
     cr = FakeCairo()
     draw_paths(FakeRenderer(), cr, _state(locked=True), 1920, 1080)
     colours, widths = _rgba_and_widths(cr)
-    assert colours == [COLOR_PATH_LOCKED]
-    assert widths == [PATH_LOCKED_LINE_WIDTH]
+    # Drawn grey with every path, then white over it.
+    assert colours[-1] == COLOR_PATH_LOCKED
+    assert widths[-1] == PATH_LOCKED_LINE_WIDTH
+    assert colours == [COLOR_PATH, COLOR_PATH_LOCKED]
 
 
 @pytest.mark.parametrize(("show", "camera"), [(False, True), (True, False)])
@@ -128,15 +130,16 @@ def _pixels(surface: object) -> np.ndarray:
 
 
 @pytest.fixture
-def shape_calls(monkeypatch) -> list[int]:
+def shape_calls(monkeypatch) -> list[tuple[bool, ...]]:
+    """Each projection, as the locked flags of the paths it projected."""
     from openfollow.runtime import overlay_draw_paths as mod
 
-    calls: list[int] = []
+    calls: list[tuple[bool, ...]] = []
     real = mod._path_shapes
 
-    def _counting(state, w, h):
-        calls.append(len(state.path_lines))
-        return real(state, w, h)
+    def _counting(state, w, h, lines):
+        calls.append(tuple(locked for _curve, _ends, locked in lines))
+        return real(state, w, h, lines)
 
     monkeypatch.setattr(mod, "_path_shapes", _counting)
     return calls
@@ -172,24 +175,30 @@ def test_paths_that_did_not_change_are_not_drawn_again(shape_calls) -> None:
         cr = FakeCairo()
         draw_paths(FakeRenderer(), cr, state, 1920, 1080, cache)
         assert ("paint",) in cr.calls
-    assert shape_calls == [2]
+    assert shape_calls == [(False, True), (True,)]
+
+
+BOTH = [(False, True), (True,), (False, True), (True,)]
 
 
 @pytest.mark.parametrize(
-    "change",
+    ("change", "calls"),
     [
-        {"line": (list(LINE[:2]), ENDS, False)},
-        {"line": (LINE, [ENDS[0], ((1.0, 2.0, 0.0), (0.5, 2.0, 0.0), True)], False)},
-        {"line": (LINE, ENDS, True)},
-        {"state": {"camera_params": np.array([0.2, -6.0, 2.5, -15.0, 0.0, 0.0, 60.0])}},
-        {"state": {"lens_k1": 0.05}},
-        {"state": {"lens_k2": 0.02}},
-        {"size": (1280, 720)},
-        {"scale": 2.0},
+        ({"line": (list(LINE[:2]), ENDS, False)}, [(False, True), (True,), (False, True)]),
+        (
+            {"line": (LINE, [ENDS[0], ((1.0, 2.0, 0.0), (0.5, 2.0, 0.0), True)], False)},
+            [(False, True), (True,), (False, True)],
+        ),
+        ({"line": (LINE, ENDS, True)}, [(False, True), (True,), (True, True)]),
+        ({"state": {"camera_params": np.array([0.2, -6.0, 2.5, -15.0, 0.0, 0.0, 60.0])}}, BOTH),
+        ({"state": {"lens_k1": 0.05}}, BOTH),
+        ({"state": {"lens_k2": 0.02}}, BOTH),
+        ({"size": (1280, 720)}, BOTH),
+        ({"scale": 2.0}, BOTH),
     ],
     ids=["curve", "end", "locked", "camera", "k1", "k2", "frame", "scale"],
 )
-def test_anything_a_path_is_drawn_from_draws_the_paths_again(shape_calls, change: dict) -> None:
+def test_anything_a_path_is_drawn_from_draws_its_picture_again(shape_calls, change: dict, calls: list) -> None:
     from types import SimpleNamespace
 
     from openfollow.runtime.overlay_draw_paths import PathCache
@@ -204,7 +213,28 @@ def test_anything_a_path_is_drawn_from_draws_the_paths_again(shape_calls, change
     cr.get_target = lambda: SimpleNamespace(get_device_scale=lambda: (scale, scale))  # type: ignore[method-assign]
     w, h = change.get("size", (1920, 1080))
     draw_paths(FakeRenderer(), cr, state, w, h, cache)
-    assert shape_calls == [2, 2]
+    assert shape_calls == calls
+
+
+def test_a_marker_moving_to_another_path_draws_only_the_paths_it_is_on(shape_calls) -> None:
+    from openfollow.runtime.overlay_draw_paths import PathCache
+
+    cache = PathCache()
+    draw_paths(FakeRenderer(), FakeCairo(), _scene(), 1920, 1080, cache)
+    moved = _scene(path_lines=[(LINE, ENDS, True), (CURVE, RELEASE_ENDS, False)])
+    cr = FakeCairo()
+    draw_paths(FakeRenderer(), cr, moved, 1920, 1080, cache)
+    assert shape_calls == [(False, True), (True,), (True,)]
+    assert cr.calls.count(("paint",)) == 2
+
+
+def test_with_no_marker_on_a_path_only_the_paths_are_pasted(shape_calls) -> None:
+    from openfollow.runtime.overlay_draw_paths import PathCache
+
+    cr = FakeCairo()
+    draw_paths(FakeRenderer(), cr, _scene(path_lines=[(LINE, ENDS, False)]), 1920, 1080, PathCache())
+    assert shape_calls == [(False,)]
+    assert cr.calls.count(("paint",)) == 1
 
 
 @pytest.mark.parametrize(

@@ -746,9 +746,9 @@ def test_the_renderer_keeps_its_paths_as_one_picture_between_frames(monkeypatch)
     calls: list[int] = []
     real = overlay_draw_paths._path_shapes
 
-    def _counting(state, w, h):
+    def _counting(state, w, h, lines):
         calls.append(1)
-        return real(state, w, h)
+        return real(state, w, h, lines)
 
     monkeypatch.setattr(overlay_draw_paths, "_path_shapes", _counting)
     renderer = CairoOverlayRenderer()

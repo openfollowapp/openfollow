@@ -751,7 +751,7 @@ def test_apply_section_data_mouse_clamps_and_applies() -> None:
 # re-run after a web-form save, otherwise a crafted POST that slips past
 # the field parser (or mutates a field the parser leaves alone) persists
 # an invalid value to config.toml. See "Validation contract" in
-# CLAUDE.md.
+# docs/architecture/config.md.
 
 
 def test_apply_section_data_grid_clamps_appearance_via_post_init() -> None:

@@ -439,7 +439,8 @@ class InputManager:
                     y = axes.get("y", cur_y)
                     z = axes.get("z", cur_z)
                     marker.set_pos(x, y, z)
-                    logger.info(
+                    # Once per write: a desk streaming positions writes every frame.
+                    logger.debug(
                         "OSC jump: marker %d → (%.3f, %.3f, %.3f)",
                         marker_id,
                         x,

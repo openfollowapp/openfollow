@@ -6,6 +6,7 @@ per-subsystem failure isolation."""
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -746,3 +747,19 @@ def test_invert_control_direction_leaves_osc_positions_absolute(monkeypatch) -> 
     manager.update(1.0)
 
     assert app._server.get_marker(10).pos == pytest.approx((3.0, 4.0, 5.0))
+
+
+def test_an_osc_position_stream_writes_nothing_to_the_log_at_info(monkeypatch, caplog) -> None:
+    """A desk streams positions at frame rate; one INFO line per write floods the journal."""
+    monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
+    monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
+    app = _DummyApp()
+    manager = InputManager(app)
+    manager.osc_handler = SimpleNamespace(flush_updates=lambda: {10: {"x": 3.0, "y": 4.0, "z": 5.0}})
+
+    with caplog.at_level(logging.INFO, logger=input_manager_module.logger.name):
+        for _ in range(3):
+            manager.update(1 / 60)
+
+    assert app._server.get_marker(10).pos == pytest.approx((3.0, 4.0, 5.0))
+    assert [r.getMessage() for r in caplog.records if r.levelno >= logging.INFO] == []

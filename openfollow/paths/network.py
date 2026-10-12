@@ -29,6 +29,9 @@ SWITCH_AREA_M = 0.3
 # The other path wins only when its direction is this much closer to the push.
 _SWITCH_MARGIN_RAD = math.radians(15.0)
 _SAME_JUNCTION_M = 0.05
+
+# Segment starts, vectors, squared lengths, ``s`` at each start, and the path each belongs to.
+_SegmentIndex = tuple[FloatArray, FloatArray, FloatArray, FloatArray, FloatArray]
 _PARALLEL = 1e-12
 _EPS = 1e-6
 _MAX_LEGS = 16
@@ -78,29 +81,58 @@ class PathNetwork:
         for j in self.junctions:
             self._stations[j.a].append((j.s_a, Place(j.b, j.s_b)))
             self._stations[j.b].append((j.s_b, Place(j.a, j.s_a)))
+        self._groups = self._find_groups()
+        self._indexes: dict[frozenset[int], _SegmentIndex | None] = {}
 
     def point(self, place: Place) -> tuple[float, float, float]:
         return self.curves[place.path].point(place.s)
 
     def nearest(self, x: float, y: float, among: Iterable[int] | None = None) -> Place | None:
-        """The place nearest ``(x, y)`` on the given paths (all of them by default)."""
-        best: tuple[float, Place] | None = None
-        for i in range(len(self.curves)) if among is None else among:
-            s, dist = self.curves[i].nearest(x, y)
-            if best is None or dist < best[0]:
-                best = (dist, Place(i, s))
-        return None if best is None else best[1]
+        """The place nearest ``(x, y)`` on the given paths (all of them by default); a tie goes to the lower path."""
+        index = self._segment_index(range(len(self.curves)) if among is None else among)
+        if index is None:
+            return None
+        start, vec, len2, s0, owner = index
+        rel = np.array([x, y]) - start
+        t = np.clip(np.einsum("ij,ij->i", rel, vec) / len2, 0.0, 1.0)
+        gap = rel - t[:, None] * vec
+        i = int(np.argmin(np.einsum("ij,ij->i", gap, gap)))
+        return Place(int(owner[i]), float(s0[i] + t[i] * math.sqrt(len2[i])))
 
-    def connected(self, path: int) -> set[int]:
+    def _segment_index(self, paths: Iterable[int]) -> _SegmentIndex | None:
+        """Every segment of ``paths`` in one set of arrays, lower paths first, kept per set of paths."""
+        key = frozenset(paths)
+        if key not in self._indexes:
+            parts = [(i, *self.curves[i].segments()) for i in sorted(key)]
+            self._indexes[key] = (
+                (
+                    np.concatenate([p[1] for p in parts]),
+                    np.concatenate([p[2] for p in parts]),
+                    np.concatenate([p[3] for p in parts]),
+                    np.concatenate([p[4] for p in parts]),
+                    np.concatenate([np.full(len(p[3]), p[0]) for p in parts]),
+                )
+                if parts
+                else None
+            )
+        return self._indexes[key]
+
+    def connected(self, path: int) -> frozenset[int]:
         """Every path reachable from ``path`` through junctions, ``path`` included."""
-        seen = {path}
-        todo = [path]
-        while todo:
-            for _, other in self._stations[todo.pop()]:
-                if other.path not in seen:
-                    seen.add(other.path)
-                    todo.append(other.path)
-        return seen
+        return self._groups[path]
+
+    def _find_groups(self) -> list[frozenset[int]]:
+        groups = []
+        for start in range(len(self.curves)):
+            seen = {start}
+            todo = [start]
+            while todo:
+                for _, other in self._stations[todo.pop()]:
+                    if other.path not in seen:
+                        seen.add(other.path)
+                        todo.append(other.path)
+            groups.append(frozenset(seen))
+        return groups
 
     def walk(self, place: Place, vx: float, vy: float, dt: float) -> Step:
         """Move a locked marker for ``dt`` seconds under the push ``(vx, vy)`` in m/s."""

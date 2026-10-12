@@ -40,7 +40,6 @@ Controls active during show operation.
 
 - **Reset Marker** – snaps the active marker to its configured default position. Default: `X`.
 - **Toggle Help** – shows or hides the help overlay on the Operator Screen. Default: `Y`.
-- **Toggle Zone Overlay** – shows or hides the zone overlay on the Operator Screen. Default: `B`.
 - **Settings Menu** – opens the on-screen Settings menu; pressed in any menu, it closes them all. Default: `Back`.
 - **Move X/Y** – which stick drives the marker's horizontal position: `Left Stick` or `Right Stick`. Default: `Left Stick`. The deadzone and response curve above apply to the chosen stick.
 - **Marker fader stick** – which stick Y axis continuously drives the fader value of the marker this controller currently controls: `Left Stick Y`, `Right Stick Y`, or `– (unused)`. The same deadzone and response curve apply. See Hardware Inputs → Marker Faders to send this value via OSC.
@@ -49,8 +48,9 @@ Controls active during show operation.
 - **Move Z−** / **Move Z+** – lower or raise the marker's height. Defaults: `LT` / `RT`.
 - **Next Marker** / **Prev Marker** – cycle which marker this controller drives. Defaults: `D-Pad Right` / `D-Pad Left`. These are suppressed automatically when more than one controller is connected – gamepads and 3D mice share one numbering – since each controller is pinned to its own marker by the USB socket it is plugged into (see Controller Slots).
 - **Clear Messages** – clears every operator-message card. Default: unbound.
-- **Pathfinder** *(experimental)* – slides the marker this controller drives onto the nearest active path, where it stays until pressed again; while a path is recording, adds the marker's position to it instead. Default: unbound.
+- **Toggle Zone Overlay** – shows or hides the zone overlay on the Operator Screen. Default: unbound.
 - **Toggle Paths** *(experimental)* – shows or hides paths on the Operator Screen. Default: unbound.
+- **Pathfinder** *(experimental)* – slides the marker this controller drives onto the nearest active path, where it stays until pressed again; while a path is recording, adds the marker's position to it instead. Default: unbound.
 
 ### Menu Navigation
 

@@ -57,6 +57,7 @@ from openfollow.runtime.overlay_draw_hud import (
 from openfollow.runtime.overlay_draw_messages import (
     draw_operator_messages as draw_operator_messages_pass,
 )
+from openfollow.runtime.overlay_draw_paths import PathCache
 from openfollow.runtime.overlay_draw_paths import draw_paths as draw_paths_pass
 from openfollow.runtime.overlay_draw_scene import (
     ConeCache,
@@ -162,6 +163,7 @@ class CairoOverlayRenderer:
         # Max 200 lines = 400 endpoints. Resized if needed.
         self._grid_pts_buf = np.zeros((400, 3), dtype=np.float64)
         self._cone_cache = ConeCache()
+        self._path_cache = PathCache()
 
         # Rolling timestamps of recent draw callbacks for FPS measurement.
         # Appended on the GTK main thread (per-frame ``draw``); read on the
@@ -296,7 +298,7 @@ class CairoOverlayRenderer:
                 self._draw_grid(cr, state, width, height)
                 self._draw_origin(cr, state, width, height)
                 self._draw_zones(cr, state, width, height)
-                draw_paths_pass(self, cr, state, width, height)
+                draw_paths_pass(self, cr, state, width, height, self._path_cache)
                 for t in state.markers:
                     self._draw_marker(cr, state, t, width, height)
                 self._cone_cache.retain(state.markers)

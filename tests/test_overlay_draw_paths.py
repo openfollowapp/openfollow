@@ -103,3 +103,127 @@ def test_an_end_seen_end_on_falls_back_to_a_dot() -> None:
     draw_paths(FakeRenderer(), cr, state, 1920, 1080)
     assert len(cr.arcs) == 1
     assert cr.closes == 0
+
+
+# --------------------------------------------------------------------------- #
+# PathCache – every path as one picture, drawn again only on a change
+# --------------------------------------------------------------------------- #
+
+CURVE = [(-2.0 + 0.1 * i, 2.0 + 0.04 * i * i, 0.0) for i in range(30)]
+RELEASE_ENDS = [((-2.0, 2.0, 0.0), (-1.9, 2.0, 0.0), True), (CURVE[-1], CURVE[-2], False)]
+
+
+def _scene(**overrides: object) -> OverlayState:
+    state = _state()
+    state.path_lines = [(LINE, ENDS, False), (CURVE, RELEASE_ENDS, True)]
+    for name, value in overrides.items():
+        setattr(state, name, value)
+    return state
+
+
+def _pixels(surface: object) -> np.ndarray:
+    surface.flush()
+    h, stride = surface.get_height(), surface.get_stride()
+    return np.ndarray((h, stride // 4, 4), np.uint8, surface.get_data())[:, : surface.get_width()].astype(int)
+
+
+@pytest.fixture
+def shape_calls(monkeypatch) -> list[int]:
+    from openfollow.runtime import overlay_draw_paths as mod
+
+    calls: list[int] = []
+    real = mod._path_shapes
+
+    def _counting(state, w, h):
+        calls.append(len(state.path_lines))
+        return real(state, w, h)
+
+    monkeypatch.setattr(mod, "_path_shapes", _counting)
+    return calls
+
+
+@pytest.mark.parametrize(
+    ("scale", "overrides"),
+    [(1.0, {}), (2.0, {}), (1.0, {"lens_k1": -0.15, "lens_k2": 0.02})],
+    ids=["screen", "hidpi", "lens"],
+)
+def test_cached_paths_look_like_paths_drawn_directly(scale: float, overrides: dict) -> None:
+    import cairo
+
+    from openfollow.runtime.overlay_draw_paths import PathCache
+
+    state = _scene(**overrides)
+    surfaces = []
+    for cache in (None, PathCache()):
+        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, int(1920 * scale), int(1080 * scale))
+        surface.set_device_scale(scale, scale)
+        draw_paths(FakeRenderer(), cairo.Context(surface), state, 1920, 1080, cache)
+        surfaces.append(_pixels(surface))
+    direct, cached = surfaces
+    assert direct[..., 3].any()
+    assert np.abs(direct - cached).max() <= 1
+
+
+def test_paths_that_did_not_change_are_not_drawn_again(shape_calls) -> None:
+    from openfollow.runtime.overlay_draw_paths import PathCache
+
+    cache, state = PathCache(), _scene()
+    for _ in range(3):
+        cr = FakeCairo()
+        draw_paths(FakeRenderer(), cr, state, 1920, 1080, cache)
+        assert ("paint",) in cr.calls
+    assert shape_calls == [2]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"line": (list(LINE[:2]), ENDS, False)},
+        {"line": (LINE, [ENDS[0], ((1.0, 2.0, 0.0), (0.5, 2.0, 0.0), True)], False)},
+        {"line": (LINE, ENDS, True)},
+        {"state": {"camera_params": np.array([0.2, -6.0, 2.5, -15.0, 0.0, 0.0, 60.0])}},
+        {"state": {"lens_k1": 0.05}},
+        {"state": {"lens_k2": 0.02}},
+        {"size": (1280, 720)},
+        {"scale": 2.0},
+    ],
+    ids=["curve", "end", "locked", "camera", "k1", "k2", "frame", "scale"],
+)
+def test_anything_a_path_is_drawn_from_draws_the_paths_again(shape_calls, change: dict) -> None:
+    from types import SimpleNamespace
+
+    from openfollow.runtime.overlay_draw_paths import PathCache
+
+    cache = PathCache()
+    draw_paths(FakeRenderer(), FakeCairo(), _scene(), 1920, 1080, cache)
+    state = _scene(**change.get("state", {}))
+    if "line" in change:
+        state.path_lines = [change["line"], *state.path_lines[1:]]
+    cr = FakeCairo()
+    scale = change.get("scale", 1.0)
+    cr.get_target = lambda: SimpleNamespace(get_device_scale=lambda: (scale, scale))  # type: ignore[method-assign]
+    w, h = change.get("size", (1920, 1080))
+    draw_paths(FakeRenderer(), cr, state, w, h, cache)
+    assert shape_calls == [2, 2]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [[(-1.0, -20.0, 0.0), (1.0, -20.0, 0.0)], [(60.0, 2.0, 0.0), (61.0, 2.0, 0.0)]],
+    ids=["behind-camera", "off-frame"],
+)
+def test_paths_nowhere_on_screen_paint_nothing(line: list) -> None:
+    from openfollow.runtime.overlay_draw_paths import PathCache
+
+    state = _scene(path_lines=[(line, [], False)])
+    cr = FakeCairo()
+    draw_paths(FakeRenderer(), cr, state, 1920, 1080, PathCache())
+    assert ("paint",) not in cr.calls
+
+
+def test_a_path_cache_asked_to_draw_without_a_camera_draws_nothing() -> None:
+    from openfollow.runtime.overlay_draw_paths import PathCache
+
+    cr = FakeCairo()
+    PathCache().draw(cr, _scene(camera_params=None), 1920, 1080)
+    assert cr.calls == []

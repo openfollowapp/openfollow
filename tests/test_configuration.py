@@ -1117,10 +1117,12 @@ def test_loading_default_config_does_not_emit_deprecation_warnings(
     ("upper", "lower"),
     [
         ("btn_reset", "btn_toggle_help"),
-        ("btn_toggle_zones", "btn_settings"),
         ("btn_settings", "btn_next_marker"),
         ("btn_speed_up", "btn_move_z_up"),
         ("btn_prev_marker", "btn_clear_messages"),
+        ("btn_clear_messages", "btn_toggle_zones"),
+        ("btn_toggle_zones", "btn_toggle_paths"),
+        ("btn_toggle_paths", "btn_pathfinder"),
         ("btn_menu_confirm", "btn_menu_cancel"),
     ],
 )
@@ -1128,6 +1130,11 @@ def test_gamepad_button_on_two_actions_stays_on_the_upper_one(upper: str, lower:
     config = ControllerConfig(**{upper: "START", lower: "START"})
     assert getattr(config, upper) == "START"
     assert getattr(config, lower) == ""
+
+
+def test_gamepad_zone_overlay_paths_and_pathfinder_start_unbound() -> None:
+    config = ControllerConfig()
+    assert (config.btn_toggle_zones, config.btn_toggle_paths, config.btn_pathfinder) == ("", "", "")
 
 
 def test_gamepad_trigger_shared_by_z_and_an_action_stays_on_the_upper_one() -> None:

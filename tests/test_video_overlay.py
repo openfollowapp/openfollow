@@ -738,3 +738,25 @@ def test_the_screen_reuses_a_still_cone_and_forgets_a_removed_one(monkeypatch) -
     frame(a)
     frame(a, b)
     assert sorted(worked_out) == [1, 2, 2]
+
+
+def test_the_renderer_keeps_its_paths_as_one_picture_between_frames(monkeypatch) -> None:
+    from openfollow.runtime import overlay_draw_paths
+
+    calls: list[int] = []
+    real = overlay_draw_paths._path_shapes
+
+    def _counting(state, w, h):
+        calls.append(1)
+        return real(state, w, h)
+
+    monkeypatch.setattr(overlay_draw_paths, "_path_shapes", _counting)
+    renderer = CairoOverlayRenderer()
+    renderer.state.camera_params = np.array([0.0, -6.0, 2.5, -15.0, 0.0, 0.0, 60.0])
+    renderer.state.show_paths = True
+    renderer.state.path_lines = [([(-1.0, 2.0, 0.0), (1.0, 2.0, 0.0)], [], False)]
+    frames = [RecordingCairo() for _ in range(3)]
+    for cr in frames:
+        renderer.draw(cr, 1920, 1080)
+    assert calls == [1]
+    assert all(("paint",) in cr.calls for cr in frames)

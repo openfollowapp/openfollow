@@ -137,7 +137,7 @@
                 <div class="group">
                     <h3 class="group-title">Normal Mode</h3>
                     <div class="row">
-                        % for name in ('btn_reset', 'btn_toggle_help', 'btn_toggle_zones', 'btn_settings'):
+                        % for name in ('btn_reset', 'btn_toggle_help', 'btn_settings'):
                         % include('partials/button_binding_select.tpl', name=name, label=action_labels[name], value=getattr(c, name), buttons=action_buttons)
                         % end
                     </div>
@@ -189,9 +189,10 @@
                         % include('partials/button_binding_select.tpl', name=name, label=action_labels[name], value=getattr(c, name), buttons=action_buttons)
                         % end
                     </div>
-                    <div class="row experimental-feature">
-                        % for name in ('btn_pathfinder', 'btn_toggle_paths'):
-                        % include('partials/button_binding_select.tpl', name=name, label=action_labels[name], value=getattr(c, name), buttons=action_buttons)
+                    <div class="row">
+                        % include('partials/button_binding_select.tpl', name='btn_toggle_zones', label=action_labels['btn_toggle_zones'], value=c.btn_toggle_zones, buttons=action_buttons)
+                        % for name in ('btn_toggle_paths', 'btn_pathfinder'):
+                        % include('partials/button_binding_select.tpl', name=name, label=action_labels[name], value=getattr(c, name), buttons=action_buttons, field_class='experimental-feature')
                         % end
                     </div>
                 </div>

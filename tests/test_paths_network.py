@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import math
+import random
 
 import pytest
 
@@ -247,6 +248,32 @@ class TestNearest:
         net = PathNetwork([H, V])
         assert net.nearest(0.3, 3.0, among=[0]) == Place(0, pytest.approx(5.3))
         assert net.nearest(0.3, 3.0, among=[]) is None
+
+    def test_a_tie_between_paths_goes_to_the_lower_one(self) -> None:
+        # (0, 0) is on both H and V, at the crossing.
+        net = PathNetwork([V, H])
+        assert net.nearest(0.0, 0.0).path == 0
+        assert net.nearest(0.0, 0.0, among={1, 0}).path == 0
+        assert net.nearest(0.0, 0.0, among=[1]).path == 1
+
+    @pytest.mark.parametrize("seed", range(6))
+    def test_the_nearest_place_matches_measuring_every_path(self, seed: int) -> None:
+        rng = random.Random(seed)
+        curves = []
+        while len(curves) < 24:
+            count = rng.randint(2, 6)
+            points = [(rng.uniform(-6, 6), rng.uniform(-9, 1), 0.0) for _ in range(count)]
+            curves.append(_curve(points, closed=count >= 3 and rng.random() < 0.3))
+        net = PathNetwork(curves)
+        groups = {net.connected(i) for i in range(len(curves))}
+        for _ in range(150):
+            x, y = rng.uniform(-8, 8), rng.uniform(-11, 3)
+            for among in (None, *groups, [rng.randrange(len(curves))]):
+                paths = range(len(curves)) if among is None else among
+                dist, path, s = min((curves[i].nearest(x, y)[1], i, curves[i].nearest(x, y)[0]) for i in paths)
+                place = net.nearest(x, y, among=among)
+                assert place.path == path
+                assert place.s == pytest.approx(s, abs=1e-9)
 
     def test_paths_joined_through_junctions_are_connected(self) -> None:
         apart = _curve([(20, 0, 0), (30, 0, 0)])

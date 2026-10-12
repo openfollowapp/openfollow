@@ -3872,10 +3872,9 @@
  btn_settings: 'BACK',
  btn_speed_down: 'LB', btn_speed_up: 'RB',
  btn_move_z_down: 'LT', btn_move_z_up: 'RT',
- btn_toggle_zones: 'B',
  btn_next_marker: 'DPAD_RIGHT', btn_prev_marker: 'DPAD_LEFT',
  btn_clear_messages: '',
- btn_pathfinder: '', btn_toggle_paths: '',
+ btn_toggle_zones: '', btn_toggle_paths: '', btn_pathfinder: '',
  move_xy_stick: 'left', marker_fader_stick: '',
  btn_menu_confirm: 'A', btn_menu_cancel: 'B',
  };

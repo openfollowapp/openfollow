@@ -4629,7 +4629,7 @@ def _register_gallery_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     @app.get(_GALLERY_PREFIX + "/thumb/<media_id>")
     def gallery_thumb(media_id: str) -> Any:
-        if media_id == media_store.DEFAULT_STAGE_ID:
+        if media_store.is_default(media_id):
             item = media_store.resolve(media_id)
             path = item.path if item is not None else None
         elif media_store.is_valid_id(media_id) and not media_store.is_default(media_id):

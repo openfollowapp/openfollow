@@ -7623,7 +7623,7 @@ def test_gallery_list_shows_defaults(gallery_server) -> None:
     status, body = _get(base, f"{_GP}/list")
     assert status == 200
     assert 'id="gallery-grid"' in body
-    assert "Stage" in body and "Grey" in body
+    assert re.findall(r'class="gallery-select" type="button" title="([^"]+)"', body) == ["Stage", "Arena", "Grey"]
     assert "gallery-label" not in body  # no visible per-tile labels
     assert 'title="Stage"' in body  # name kept as hover/aria name only
 
@@ -7726,6 +7726,29 @@ def test_gallery_thumb_stage_serves_asset(gallery_server) -> None:
     status, body = _get_raw(base, f"{_GP}/thumb/default:stage")
     assert status == 200  # the bundled Stage asset
     assert body[:3] == b"\xff\xd8\xff"  # JPEG
+
+
+def test_gallery_thumb_arena_serves_its_picture(gallery_server) -> None:
+    from openfollow.video import media_store
+
+    _, base, _ = gallery_server
+    status, body = _get_raw(base, f"{_GP}/thumb/default:arena")
+    assert status == 200
+    assert body == media_store.ARENA_ASSET_JPG.read_bytes()
+
+
+def test_gallery_thumb_grey_has_none(gallery_server) -> None:
+    _, base, _ = gallery_server
+    status, _body = _get_raw(base, f"{_GP}/thumb/default:grey")
+    assert status == 404
+
+
+def test_gallery_select_arena_persists(gallery_server) -> None:
+    server, base, _ = gallery_server
+    status, body = _post_form(base, f"{_GP}/select", {"media_id": "default:arena"})
+    assert status == 200
+    assert load_config(server.config_path).testpattern_selected_media == "default:arena"
+    assert '<div class="gallery-tile selected"><button class="gallery-select" type="button" title="Arena"' in body
 
 
 def test_video_source_section_hides_capture_for_gallery(live_server) -> None:

@@ -95,20 +95,6 @@ def _split_terse(line: str) -> list[str]:
     return fields
 
 
-def _name_and_device(line: str) -> tuple[str, str]:
-    """Split one ``NAME,DEVICE`` row, tolerating a colon in the profile name.
-
-    ``partition(":")`` cuts at the escaped colon inside the name, so the device
-    column lands in the remainder and never matches - which makes a profile
-    called ``Wired connection: office`` invisible to every lookup, and reports
-    "no profile bound to eth0" for an interface that has one.
-    """
-    fields = _split_terse(line)
-    if len(fields) < 2:
-        return ("", "")
-    return (fields[0], fields[1])
-
-
 def _as_int(value: str) -> int:
     try:
         return int(value)
@@ -178,6 +164,13 @@ def _profile_rows(text: str) -> list[_Profile]:
     return out
 
 
+def _active_profile(profiles: Sequence[_Profile], iface: str) -> _Profile | None:
+    """The profile active on *iface* itself; a plugin VPN lists the device it runs over."""
+    if not iface:
+        return None  # every inactive profile lists an empty device
+    return next((p for p in profiles if p.device == iface and p.kind != "vpn"), None)
+
+
 def _saved_profile(
     profiles: Sequence[_Profile], details: Mapping[str, Mapping[str, str]], iface: str
 ) -> _Profile | None:
@@ -187,30 +180,39 @@ def _saved_profile(
     names. Ranked as autoconnect ranks them: enabled, priority, last used. A
     profile naming no interface is never claimed: it can come up on any adapter.
     """
+    if not iface:
+        return None
     bound = [p for p in profiles if details.get(p.uuid, {}).get("connection.interface-name") == iface]
     return max(bound, key=lambda p: (p.rank, p.name)) if bound else None
 
 
-def _vlans(profiles: Sequence[_Profile], details: Mapping[str, Mapping[str, str]]) -> tuple[VlanInterface, ...]:
-    """The VLAN link of each VLAN profile active on a device."""
+def _device_by_uuid(profiles: Sequence[_Profile], details: Mapping[str, Mapping[str, str]]) -> dict[str, str]:
+    """Each profile's interface: the one it is active on, else the one it names."""
+    return {p.uuid: p.device or details.get(p.uuid, {}).get("connection.interface-name", "") for p in profiles}
+
+
+def _vlan_link(fields: Mapping[str, str], device_by_uuid: Mapping[str, str]) -> tuple[str, int] | None:
+    """A VLAN profile's parent interface and VLAN id; None when it cannot be placed."""
     # ``vlan.parent`` holds either the parent interface name or the UUID of the
     # parent's own profile, which names its interface even while another is active on it.
-    device_by_uuid = {
-        p.uuid: p.device or details.get(p.uuid, {}).get("connection.interface-name", "") for p in profiles
-    }
+    try:
+        vlan_id = int(fields.get("vlan.id", ""))
+    except ValueError:
+        return None
+    raw_parent = fields.get("vlan.parent", "")
+    parent = device_by_uuid.get(raw_parent, raw_parent)
+    return (parent, vlan_id) if parent else None
+
+
+def _vlans(profiles: Sequence[_Profile], details: Mapping[str, Mapping[str, str]]) -> tuple[VlanInterface, ...]:
+    """The VLAN link of each VLAN profile active on a device."""
+    device_by_uuid = _device_by_uuid(profiles, details)
     out: list[VlanInterface] = []
     for profile in profiles:
-        if profile.kind != "vlan":
+        if profile.kind != "vlan" or not profile.device:
             continue
-        fields = details.get(profile.uuid, {})
-        try:
-            vlan_id = int(fields.get("vlan.id", ""))
-        except ValueError:
-            continue
-        raw_parent = fields.get("vlan.parent", "")
-        parent = device_by_uuid.get(raw_parent, raw_parent)
-        if parent and profile.device:
-            out.append(VlanInterface(name=profile.device, parent=parent, vlan_id=vlan_id))
+        if (link := _vlan_link(details.get(profile.uuid, {}), device_by_uuid)) is not None:
+            out.append(VlanInterface(name=profile.device, parent=link[0], vlan_id=link[1]))
     return tuple(out)
 
 
@@ -385,26 +387,19 @@ class NetworkManagerAdapter(NetworkAdapter):
             )
         return out
 
-    def _connection_for(self, iface: str) -> str | None:
-        try:
-            res = self._run(["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"])
-        except (RuntimeError, FileNotFoundError, subprocess.SubprocessError):
-            return None
-        for line in res.stdout.splitlines():
-            name, dev = _name_and_device(line)
-            if dev == iface:
-                return name
-        return self._saved_connection_for(iface)
+    def _profile_for(self, iface: str) -> _Profile | None:
+        """The profile active on *iface*, else the saved one NetworkManager would bring up there.
 
-    def _saved_connection_for(self, iface: str) -> str | None:
-        """The name of the saved profile NetworkManager would bring up on *iface*."""
+        A write names it by UUID: profiles may share a name, and nmcli given a
+        name edits the first namesake it finds and deletes them all.
+        """
         try:
             profiles = self._read_profiles()
-            details = self._profile_details(profiles)
+            if (active := _active_profile(profiles, iface)) is not None:
+                return active
+            return _saved_profile(profiles, self._profile_details(profiles), iface)
         except (RuntimeError, FileNotFoundError, subprocess.SubprocessError):
             return None
-        saved = _saved_profile(profiles, details, iface)
-        return saved.name if saved else None
 
     def _read_profiles(self) -> list[_Profile]:
         return _profile_rows(self._run(["nmcli", "-t", "-f", _PROFILE_LIST_FIELDS, "connection", "show"]).stdout)
@@ -568,21 +563,16 @@ class NetworkManagerAdapter(NetworkAdapter):
             if errors:
                 return ApplyResult(ok=False, message="; ".join(errors))
 
-        name = self._connection_for(iface)
-        if not name:
+        profile = self._profile_for(iface)
+        if profile is None:
             return ApplyResult(
                 ok=False,
                 message=self._no_profile_message(iface),
             )
-        # Use long argv form to match sudoers rule. The explicit ``id``
-        # keyword (``con mod id <name>``) makes a profile name beginning
-        # with ``-`` the connection ID. nmcli's ``con`` subcommands do NOT
-        # treat ``--`` as an end-of-options marker – they read it as a
-        # literal connection name (``unknown connection '--'``) – so ``id``
-        # is the portable disambiguator per ``ARGUMENTS := [id|uuid|path]
-        # <ID>`` (the sudoers ``con mod *`` glob still matches). Verified on
-        # nmcli 1.52.1 / Debian trixie.
-        modify_argv = ["/usr/bin/nmcli", "con", "mod", "id", name]
+        name = profile.name
+        # Long argv form to match the sudoers rule; ``uuid`` pins the argument to a UUID,
+        # never a name (nmcli's ``con`` verbs read ``--`` as a connection name).
+        modify_argv = ["/usr/bin/nmcli", "con", "mod", "uuid", profile.uuid]
         if config.method == Ipv4Method.DHCP:
             modify_argv += [
                 "ipv4.method",
@@ -676,7 +666,7 @@ class NetworkManagerAdapter(NetworkAdapter):
         # active is already in the state con down asks for.
         down = self._run_privileged(
             NETWORK_NM_CON_DOWN,
-            ["/usr/bin/nmcli", "con", "down", "id", name],
+            ["/usr/bin/nmcli", "con", "down", "uuid", profile.uuid],
             reason=f"Bring NetworkManager profile {name} down",
         )
         if not down.ok and down.returncode != _NMCLI_NOT_FOUND and down.detail:
@@ -684,7 +674,7 @@ class NetworkManagerAdapter(NetworkAdapter):
 
         up = self._run_privileged(
             NETWORK_NM_CON_UP,
-            ["/usr/bin/nmcli", "con", "up", "id", name],
+            ["/usr/bin/nmcli", "con", "up", "uuid", profile.uuid],
             reason=f"Bring NetworkManager profile {name} up",
         )
         if not up.ok:
@@ -704,21 +694,21 @@ class NetworkManagerAdapter(NetworkAdapter):
         return ApplyResult(ok=True, message="Applied.", partial_failures=tuple(partial))
 
     def renew_lease(self, iface: str) -> ApplyResult:
-        name = self._connection_for(iface)
-        if not name:
+        profile = self._profile_for(iface)
+        if profile is None:
             return ApplyResult(ok=False, message=self._no_profile_message(iface))
         if not self._has_carrier(iface):
             return ApplyResult(ok=False, message=f"{iface} has no link, so there is no lease to request.")
         # NM has no explicit renew verb; use down/up cycle.
         self._run_privileged(
             NETWORK_NM_CON_DOWN,
-            ["/usr/bin/nmcli", "con", "down", "id", name],
-            reason=f"Bring NetworkManager profile {name} down",
+            ["/usr/bin/nmcli", "con", "down", "uuid", profile.uuid],
+            reason=f"Bring NetworkManager profile {profile.name} down",
         )
         up = self._run_privileged(
             NETWORK_NM_CON_UP,
-            ["/usr/bin/nmcli", "con", "up", "id", name],
-            reason=f"Renew DHCP lease via NetworkManager profile {name}",
+            ["/usr/bin/nmcli", "con", "up", "uuid", profile.uuid],
+            reason=f"Renew DHCP lease via NetworkManager profile {profile.name}",
         )
         if not up.ok:
             if self._awaiting_dhcp(iface):
@@ -732,7 +722,7 @@ class NetworkManagerAdapter(NetworkAdapter):
     # ---- VLAN sub-interfaces --------------------------------------------
 
     def set_dhcp_fqdn(self, fqdn: str, *, reconnect: bool = True) -> ApplyResult:
-        profiles: list[tuple[str, str]] = []
+        profiles: list[tuple[str, _Profile]] = []
         # An external connection belongs to whatever made it, and one whose state is unknown may be one.
         skipped: list[str] = []
         for device in self.list_interfaces():
@@ -741,8 +731,8 @@ class NetworkManagerAdapter(NetworkAdapter):
             state = self._device_state(device.name)
             if state is None:
                 skipped.append(f"{device.name}: NetworkManager did not report its state, so it was left alone.")
-            elif "externally" not in state and (name := self._connection_for(device.name)) is not None:
-                profiles.append((device.name, name))
+            elif "externally" not in state and (profile := self._profile_for(device.name)) is not None:
+                profiles.append((device.name, profile))
         if not profiles:
             return ApplyResult(
                 ok=False,
@@ -750,32 +740,32 @@ class NetworkManagerAdapter(NetworkAdapter):
                 partial_failures=tuple(skipped),
             )
         failures: list[str] = []
-        written: list[tuple[str, str]] = []
-        for iface, name in profiles:
-            if not reconnect and self._profile_dhcp_fqdn(name) == fqdn:
+        written: list[tuple[str, _Profile]] = []
+        for iface, profile in profiles:
+            if not reconnect and self._profile_dhcp_fqdn(profile.uuid) == fqdn:
                 continue
             # Refused while the profile names its own ``ipv4.dhcp-hostname``: the two
             # are exclusive, and the operator's own setting is left as it is.
             mod = self._run_privileged(
                 NETWORK_NM_CON_MOD,
-                ["/usr/bin/nmcli", "con", "mod", "id", name, "ipv4.dhcp-fqdn", fqdn],
-                reason=f"Set the DHCP name of NetworkManager profile {name}",
+                ["/usr/bin/nmcli", "con", "mod", "uuid", profile.uuid, "ipv4.dhcp-fqdn", fqdn],
+                reason=f"Set the DHCP name of NetworkManager profile {profile.name}",
                 allow_prompt=False,
             )
             if mod.ok:
-                written.append((iface, name))
+                written.append((iface, profile))
             else:
                 failures.append(
-                    f"Profile '{name}' was not updated ({mod.detail})."
+                    f"Profile '{profile.name}' was not updated ({mod.detail})."
                     if mod.detail
-                    else f"Profile '{name}' was not updated."
+                    else f"Profile '{profile.name}' was not updated."
                 )
-        for iface, name in written if reconnect else []:
+        for iface, profile in written if reconnect else []:
             if not self._has_carrier(iface):
                 continue  # the profile carries the name; it goes out when the link comes up
             up = self._run_privileged(
                 NETWORK_NM_CON_UP,
-                ["/usr/bin/nmcli", "con", "up", "id", name],
+                ["/usr/bin/nmcli", "con", "up", "uuid", profile.uuid],
                 reason=f"Reconnect {iface} so its DHCP server sees the name",
                 allow_prompt=False,
             )
@@ -790,10 +780,10 @@ class NetworkManagerAdapter(NetworkAdapter):
             return ApplyResult(ok=False, message="No profile could be updated.", partial_failures=problems)
         return ApplyResult(ok=True, message="Applied." if written else "Unchanged.", partial_failures=problems)
 
-    def _profile_dhcp_fqdn(self, name: str) -> str | None:
+    def _profile_dhcp_fqdn(self, uuid: str) -> str | None:
         """The profile's ``ipv4.dhcp-fqdn``, or None when it cannot be read."""
         try:
-            res = self._run(["nmcli", "-g", "ipv4.dhcp-fqdn", "connection", "show", "id", name])
+            res = self._run(["nmcli", "-g", "ipv4.dhcp-fqdn", "connection", "show", "uuid", uuid])
         except (RuntimeError, FileNotFoundError, subprocess.SubprocessError):
             return None
         return res.stdout.strip()
@@ -830,25 +820,49 @@ class NetworkManagerAdapter(NetworkAdapter):
         return ApplyResult(ok=True, message=f"Created {name}. Give it an address with Edit.")
 
     def delete_vlan(self, name: str) -> ApplyResult:
-        profile = self._vlan_profile_name(name)
-        if profile is None:
+        try:
+            profiles = self._vlan_profiles(name)
+        except (RuntimeError, FileNotFoundError, subprocess.SubprocessError) as exc:
+            logger.warning("nmcli VLAN profile read failed: %s", exc)
+            return ApplyResult(ok=False, message=f"Could not read the profiles of {name}; nothing was removed.")
+        if not profiles:
             return ApplyResult(ok=False, message=f"{name} is not a VLAN interface.")
-        ok, detail, _ = self._run_privileged(
+        argv = ["/usr/bin/nmcli", "con", "delete"]
+        for profile in profiles:
+            argv += ["uuid", profile.uuid]
+        ok, detail, returncode = self._run_privileged(
             NETWORK_NM_CON_DELETE,
-            ["/usr/bin/nmcli", "con", "delete", "id", profile],
-            reason=f"Delete VLAN profile {profile}",
+            argv,
+            reason=f"Delete the profiles of VLAN interface {name}",
         )
-        if not ok:
+        # nmcli still deletes every UUID it finds when one is already gone.
+        if not ok and not (returncode == _NMCLI_NOT_FOUND and self._vlan_removed(name)):
             return ApplyResult(ok=False, message=detail or f"Could not remove VLAN interface {name}.")
         return ApplyResult(ok=True, message=f"Removed VLAN interface {name}.")
 
-    def _vlan_profile_name(self, iface: str) -> str | None:
-        """Return the VLAN profile bound to ``iface``, or None when ``iface``
-        is not a VLAN. This is the check that keeps ``con delete`` – a
-        wildcarded grant – off an operator's physical-NIC profile."""
+    def _vlan_profiles(self, iface: str) -> list[_Profile]:
+        """The VLAN profile active on ``iface``, then every other one for the
+        same parent and VLAN id that autoconnects, which would bring it straight
+        back; empty when ``iface`` is not a VLAN. Raises when the profiles
+        cannot be read. This is the check that keeps ``con delete`` – a
+        wildcarded grant – off an operator's physical-NIC profile, which may
+        share a VLAN profile's name: the delete names each by UUID."""
+        profiles = self._read_profiles()
+        vlans = [p for p in profiles if p.kind == "vlan"]
+        active = _active_profile(vlans, iface)
+        if active is None:
+            return []
+        if not (others := [p for p in vlans if p is not active and p.rank[0]]):  # rank[0]: autoconnects
+            return [active]
+        details = self._profile_details(profiles)
+        device_by_uuid = _device_by_uuid(profiles, details)
+        if (link := _vlan_link(details.get(active.uuid, {}), device_by_uuid)) is None:
+            return [active]
+        return [active, *(p for p in others if _vlan_link(details.get(p.uuid, {}), device_by_uuid) == link)]
+
+    def _vlan_removed(self, iface: str) -> bool:
+        """No VLAN profile is active on ``iface`` any more; False when that cannot be read."""
         try:
-            profiles = self._read_profiles()
-        except (RuntimeError, FileNotFoundError, subprocess.SubprocessError) as exc:
-            logger.warning("nmcli VLAN profile list failed: %s", exc)
-            return None
-        return next((p.name for p in profiles if p.kind == "vlan" and p.device == iface), None)
+            return not self._vlan_profiles(iface)
+        except (RuntimeError, FileNotFoundError, subprocess.SubprocessError):
+            return False

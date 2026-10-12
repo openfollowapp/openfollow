@@ -23,7 +23,7 @@ from openfollow.network.adapter import (
 )
 from openfollow.network.nm_adapter import NetworkManagerAdapter
 from openfollow.privilege.capabilities import NETWORK_NM_CON_ADD, NETWORK_NM_CON_DELETE
-from tests._fake_broker import FakeBroker, make_failure
+from tests._fake_broker import FakeBroker, make_failure, make_nonzero
 
 pytestmark = pytest.mark.unit
 
@@ -92,8 +92,16 @@ def adapter(monkeypatch, tmp_path):
     return a, captured, responses
 
 
-_ACTIVE_PROFILES = ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"]
-_SAVED_PROFILES = ["nmcli", "-t", "-f", nm_adapter._PROFILE_LIST_FIELDS, "connection", "show"]
+_PROFILES = ["nmcli", "-t", "-f", nm_adapter._PROFILE_LIST_FIELDS, "connection", "show"]
+
+
+def _active(responses, *rows: str) -> None:
+    """The profile list with each ``name:device`` of *rows* active on its device, its UUID ``uuid-<name>``."""
+    listed = []
+    for row in rows:
+        name, _, device = row.rpartition(":")
+        listed.append(f"{name}:uuid-{name}:802-3-ethernet:{device}:yes:0:0\n")
+    _set(responses, _PROFILES, stdout="".join(listed))
 
 
 def _bound_to(*uuids: str) -> list[str]:
@@ -101,6 +109,12 @@ def _bound_to(*uuids: str) -> list[str]:
     for uuid in uuids:
         argv += ["uuid", uuid]
     return argv
+
+
+def _written(a: NetworkManagerAdapter, iface: str) -> str | None:
+    """The UUID an Apply to *iface* writes; None when it writes nothing."""
+    a.apply_ipv4(iface, Ipv4Config(method=Ipv4Method.DHCP))
+    return a._broker.calls[0].argv[4] if a._broker.calls else None
 
 
 def _carrier(iface: str, value: str) -> None:
@@ -142,11 +156,7 @@ class TestListInterfaces:
 
 class TestApplyIpv4:
     def _prime_connection(self, responses, name="Wired connection 1", device="eth0"):
-        _set(
-            responses,
-            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
-            stdout=f"{name}:{device}\n",
-        )
+        _active(responses, f"{name}:{device}")
 
     def test_static_issues_modify_argv(self, adapter) -> None:
         a, captured, responses = adapter
@@ -221,8 +231,7 @@ class TestApplyIpv4:
 
     def test_unknown_connection_returns_failure(self, adapter) -> None:
         a, _captured, responses = adapter
-        _set(responses, ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"], stdout="")
-        _set(responses, _SAVED_PROFILES, stdout="")
+        _set(responses, _PROFILES, stdout="")
         # Device absent from nmcli entirely: says to check the adapter, which
         # is the only one of the three causes that fits an unknown device.
         _set(responses, ["nmcli", "-t", "-f", "DEVICE,STATE", "device"], stdout="")
@@ -236,12 +245,7 @@ class TestActionableMessages:
     message - "no profile bound" described adapter state and told them nothing."""
 
     def _no_profile(self, responses) -> None:
-        for argv in (
-            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
-            _SAVED_PROFILES,
-            ["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show"],
-        ):
-            _set(responses, argv, stdout="")
+        _set(responses, _PROFILES, stdout="")
 
     def test_unmanaged_device_says_how_to_hand_it_to_networkmanager(self, adapter) -> None:
         a, _captured, responses = adapter
@@ -308,7 +312,7 @@ class TestActionableMessages:
         """Saved for when the cable goes in. A con down here marks the profile as
         switched off by the operator, and NetworkManager then never brings it up."""
         a, captured, responses = adapter
-        _set(responses, _ACTIVE_PROFILES, stdout="Wired:eth0\n")
+        _active(responses, "Wired:eth0")
         _carrier("eth0", "0\n")
         result = a.apply_ipv4("eth0", config)
         assert (result.ok, result.pending) == (True, True)
@@ -318,7 +322,7 @@ class TestActionableMessages:
 
     def test_a_failed_save_without_a_link_is_not_pending(self, adapter) -> None:
         a, _captured, responses = adapter
-        _set(responses, _ACTIVE_PROFILES, stdout="Wired:eth0\n")
+        _active(responses, "Wired:eth0")
         _carrier("eth0", "0\n")
         a._broker.responses = [subprocess.CompletedProcess(["sudo"], 1, "", "Sorry, user may not run nmcli con mod")]
         result = a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP))
@@ -330,7 +334,7 @@ class TestActionableMessages:
         """An admin-down interface (rfkill) reports no carrier at all; it is not
         told to check a cable."""
         a, _captured, responses = adapter
-        _set(responses, _ACTIVE_PROFILES, stdout="Wired:eth0\n")
+        _active(responses, "Wired:eth0")
         if carrier is not None:
             _carrier("eth0", carrier)
         a._broker.responses = [_OK, _OK, _NO_SUITABLE_DEVICE]
@@ -340,14 +344,14 @@ class TestActionableMessages:
 
     def test_con_down_of_an_inactive_profile_is_not_a_warning(self, adapter) -> None:
         a, _captured, responses = adapter
-        _set(responses, _ACTIVE_PROFILES, stdout="Wired:eth0\n")
+        _active(responses, "Wired:eth0")
         a._broker.responses = [_OK, _NOT_ACTIVE, _OK]
         result = a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP))
         assert (result.ok, result.message, result.partial_failures) == (True, "Applied.", ())
 
     def test_a_real_con_down_failure_is_still_reported(self, adapter) -> None:
         a, _captured, responses = adapter
-        _set(responses, _ACTIVE_PROFILES, stdout="Wired:eth0\n")
+        _active(responses, "Wired:eth0")
         a._broker.responses = [_OK, subprocess.CompletedProcess(["sudo"], 1, "", "Error: timed out."), _OK]
         result = a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP))
         assert result.ok is True
@@ -360,7 +364,7 @@ class TestActionableMessages:
         """With no DHCP server the activation never completes, so con up always
         outlasts the broker - the profile is applied and its fallback in use."""
         a, _captured, responses = adapter
-        _set(responses, _ACTIVE_PROFILES, stdout="Wired:eth0\n")
+        _active(responses, "Wired:eth0")
         _set(
             responses,
             ["nmcli", "-t", "-f", "DEVICE,STATE", "device"],
@@ -384,7 +388,7 @@ class TestActionableMessages:
     )
     def test_any_other_failed_activation_is_still_a_failure(self, adapter, config, state) -> None:
         a, _captured, responses = adapter
-        _set(responses, _ACTIVE_PROFILES, stdout="Wired:eth0\n")
+        _active(responses, "Wired:eth0")
         _set(responses, ["nmcli", "-t", "-f", "DEVICE,STATE", "device"], stdout=f"eth0:{state}\n")
         a._broker.exceptions = [None, None, make_failure(self._TIMED_OUT)]
         result = a.apply_ipv4("eth0", config)
@@ -393,7 +397,7 @@ class TestActionableMessages:
 
     def test_renew_with_no_server_answering_says_so(self, adapter) -> None:
         a, _captured, responses = adapter
-        _set(responses, _ACTIVE_PROFILES, stdout="Wired:eth0\n")
+        _active(responses, "Wired:eth0")
         _set(
             responses,
             ["nmcli", "-t", "-f", "DEVICE,STATE", "device"],
@@ -406,7 +410,7 @@ class TestActionableMessages:
 
     def test_renew_without_a_link_explains_why_and_leaves_the_profile_alone(self, adapter) -> None:
         a, _captured, responses = adapter
-        _set(responses, _ACTIVE_PROFILES, stdout="Wired:eth0\n")
+        _active(responses, "Wired:eth0")
         _carrier("eth0", "0\n")
         result = a.renew_lease("eth0")
         assert result.ok is False
@@ -417,7 +421,7 @@ class TestActionableMessages:
         """A missing helper or an ungranted rule is not a link problem, and
         sending the operator to check a cable hides the actual fix."""
         a, _captured, responses = adapter
-        _set(responses, _ACTIVE_PROFILES, stdout="Wired:eth0\n")
+        _active(responses, "Wired:eth0")
         _carrier("eth0", "1\n")
         a._broker.exceptions = [None, make_failure("not authorised")]
         result = a.renew_lease("eth0")
@@ -427,11 +431,7 @@ class TestActionableMessages:
 
     def test_save_failure_names_the_profile(self, adapter) -> None:
         a, _captured, responses = adapter
-        _set(
-            responses,
-            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
-            stdout="Wired:eth0\n",
-        )
+        _active(responses, "Wired:eth0")
         a._broker.exceptions = [make_failure("read-only")]
         result = a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP))
         assert result.ok is False
@@ -442,11 +442,7 @@ class TestActionableMessages:
 class TestRenewLease:
     def test_renew_does_down_then_up(self, adapter) -> None:
         a, captured, responses = adapter
-        _set(
-            responses,
-            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
-            stdout="Wired:eth0\n",
-        )
+        _active(responses, "Wired:eth0")
         result = a.renew_lease("eth0")
         assert result.ok is True
         down = [c for c in captured if c[:3] == ["nmcli", "connection", "down"]]
@@ -455,8 +451,7 @@ class TestRenewLease:
 
     def test_renew_no_connection_returns_failure(self, adapter) -> None:
         a, _captured, responses = adapter
-        _set(responses, ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"], stdout="")
-        _set(responses, _SAVED_PROFILES, stdout="")
+        _set(responses, _PROFILES, stdout="")
         _set(responses, ["nmcli", "-t", "-f", "DEVICE,STATE", "device"], stdout="eth0:disconnected\n")
         result = a.renew_lease("eth0")
         assert result.ok is False
@@ -465,11 +460,7 @@ class TestRenewLease:
 
     def test_renew_propagates_up_failure(self, adapter) -> None:
         a, _captured, responses = adapter
-        _set(
-            responses,
-            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
-            stdout="Wired:eth0\n",
-        )
+        _active(responses, "Wired:eth0")
         # Renew: 1) con down (ok), 2) con up (fail). Seed broker
         # responses in that order.
         broker = a._broker
@@ -512,11 +503,7 @@ class TestReadLease:
 class TestApplyVariants:
     def test_dhcp_with_manual_address_uses_lease_defaults(self, adapter) -> None:
         a, captured, responses = adapter
-        _set(
-            responses,
-            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
-            stdout="Wired:eth0\n",
-        )
+        _active(responses, "Wired:eth0")
         _set(
             responses,
             ["nmcli", "-t", "-f", "DHCP4.OPTION", "device", "show", "eth0"],
@@ -542,11 +529,7 @@ class TestApplyVariants:
         nmcli argv – a rogue DHCP server's garbage values are dropped
         (gateway → empty) rather than applied verbatim."""
         a, captured, responses = adapter
-        _set(
-            responses,
-            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
-            stdout="Wired:eth0\n",
-        )
+        _active(responses, "Wired:eth0")
         _set(
             responses,
             ["nmcli", "-t", "-f", "DHCP4.OPTION", "device", "show", "eth0"],
@@ -564,32 +547,23 @@ class TestApplyVariants:
         # Only the valid DNS entries survive, canonicalised and in order.
         assert modify[modify.index("ipv4.dns") + 1] == "9.9.9.9 1.1.1.1"
 
-    def test_con_verbs_pass_profile_name_with_id_keyword(self, adapter) -> None:
-        """``con mod`` / ``con up`` pass the profile name after the explicit
-        ``id`` keyword so a leading-dash name is the connection ID, not
-        consumed as an option. nmcli's ``con`` subcommands do not treat
-        ``--`` as end-of-options (they read it as a literal name)."""
-        a, captured, responses = adapter
-        _set(
-            responses,
-            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
-            stdout="-weird:eth0\n",
-        )
-        from openfollow.network.adapter import Ipv4Config, Ipv4Method
-
+    def test_con_verbs_pass_the_profile_uuid_with_the_uuid_keyword(self, adapter) -> None:
+        """``con mod`` / ``down`` / ``up`` pass the UUID after the explicit
+        ``uuid`` keyword, never the name: a leading-dash name never reaches the
+        argv, and nmcli's ``con`` subcommands do not treat ``--`` as
+        end-of-options (they read it as a literal name)."""
+        a, _captured, responses = adapter
+        _active(responses, "-weird:eth0")
         a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP))
-        modify = next(c for c in captured if c[:3] == ["nmcli", "connection", "modify"])
-        assert modify[3:5] == ["id", "-weird"]
-        up = next(c for c in captured if c[:3] == ["nmcli", "connection", "up"])
-        assert up[3:5] == ["id", "-weird"]
+        assert [call.argv[2:5] for call in a._broker.calls] == [
+            ["mod", "uuid", "uuid--weird"],
+            ["down", "uuid", "uuid--weird"],
+            ["up", "uuid", "uuid--weird"],
+        ]
 
     def test_dhcp_with_manual_address_no_lease_falls_back_to_defaults(self, adapter) -> None:
         a, captured, responses = adapter
-        _set(
-            responses,
-            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
-            stdout="Wired:eth0\n",
-        )
+        _active(responses, "Wired:eth0")
         _set(
             responses,
             ["nmcli", "-t", "-f", "DHCP4.OPTION", "device", "show", "eth0"],
@@ -604,11 +578,7 @@ class TestApplyVariants:
 
     def test_unsupported_method_returns_failure(self, adapter, monkeypatch) -> None:
         a, _captured, responses = adapter
-        _set(
-            responses,
-            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
-            stdout="Wired:eth0\n",
-        )
+        _active(responses, "Wired:eth0")
         from openfollow.network.adapter import Ipv4Config
 
         class _FakeMethod:
@@ -633,11 +603,7 @@ class TestApplyVariants:
 
     def test_apply_modify_failure_short_circuits(self, adapter) -> None:
         a, _captured, responses = adapter
-        _set(
-            responses,
-            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
-            stdout="Wired:eth0\n",
-        )
+        _active(responses, "Wired:eth0")
         # Apply: 1) con mod (fail) – should short-circuit before down/up.
         a._broker.responses = [
             subprocess.CompletedProcess(["sudo"], 1, "", "modify failed"),
@@ -650,11 +616,7 @@ class TestApplyVariants:
 
     def test_apply_up_failure_reported_as_partial(self, adapter) -> None:
         a, _captured, responses = adapter
-        _set(
-            responses,
-            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
-            stdout="Wired:eth0\n",
-        )
+        _active(responses, "Wired:eth0")
         # Apply: 1) mod (ok), 2) down (ok), 3) up (fail) – apply is the
         # gate, so this surfaces as ``ok=False`` not a partial. Asserts
         # the message preserves the broker stderr.
@@ -697,8 +659,7 @@ class TestSavedProfileForAnUnpluggedAdapter:
     out has to be matched to its profile by the interface the profile names."""
 
     def _saved(self, responses, rows: str, records: str, *uuids: str) -> None:
-        _set(responses, _ACTIVE_PROFILES, stdout="Wired connection 1:eth0\n")
-        _set(responses, _SAVED_PROFILES, stdout=rows)
+        _set(responses, _PROFILES, stdout=rows)
         _set(responses, _bound_to(*uuids), stdout=records)
 
     def test_apply_edits_the_profile_saved_for_the_adapter(self, adapter) -> None:
@@ -714,19 +675,19 @@ class TestSavedProfileForAnUnpluggedAdapter:
         )
         a.apply_ipv4("eth1", Ipv4Config(method=Ipv4Method.STATIC, address="192.0.2.50", prefix=24))
         modify = next(c for c in captured if c[:3] == ["nmcli", "connection", "modify"])
-        assert modify[3:5] == ["id", "Wired connection 2"]
+        assert modify[3:5] == ["uuid", "u-2"]
 
     @pytest.mark.parametrize(
         ("rows", "chosen"),
         [
             # Autoconnect off loses to on, however recent.
-            ("Old:u-1:802-3-ethernet::yes:0:100\nNewer:u-2:802-3-ethernet::no:0:900\n", "Old"),
+            ("Old:u-1:802-3-ethernet::yes:0:100\nNewer:u-2:802-3-ethernet::no:0:900\n", "u-1"),
             # Priority beats recency; the auto-created profile sits at -999.
-            ("Wired connection 2:u-1:802-3-ethernet::yes:-999:900\nStage:u-2:802-3-ethernet::yes:0:100\n", "Stage"),
+            ("Wired connection 2:u-1:802-3-ethernet::yes:-999:900\nStage:u-2:802-3-ethernet::yes:0:100\n", "u-2"),
             # Equal otherwise: the one last used.
-            ("Old:u-1:802-3-ethernet::yes:0:100\nNewer:u-2:802-3-ethernet::yes:0:900\n", "Newer"),
+            ("Old:u-1:802-3-ethernet::yes:0:100\nNewer:u-2:802-3-ethernet::yes:0:900\n", "u-2"),
             # Never used: nmcli prints 0, and an unreadable field counts as 0.
-            ("Never:u-1:802-3-ethernet::yes:0:\nUsed:u-2:802-3-ethernet::yes:0:5\n", "Used"),
+            ("Never:u-1:802-3-ethernet::yes:0:\nUsed:u-2:802-3-ethernet::yes:0:5\n", "u-2"),
         ],
     )
     def test_several_profiles_for_one_adapter_rank_as_autoconnect_does(self, adapter, rows, chosen) -> None:
@@ -739,7 +700,7 @@ class TestSavedProfileForAnUnpluggedAdapter:
             "u-1",
             "u-2",
         )
-        assert a._connection_for("eth1") == chosen
+        assert _written(a, "eth1") == chosen
 
     def test_a_profile_naming_no_interface_is_not_claimed(self, adapter) -> None:
         """It can come up on any adapter, so editing it edits more than this one."""
@@ -751,8 +712,8 @@ class TestSavedProfileForAnUnpluggedAdapter:
             "u-1",
         )
         _set(responses, ["nmcli", "-t", "-f", "DEVICE,STATE", "device"], stdout="eth1:unavailable\n")
-        assert a._connection_for("eth1") is None
         assert "No saved profile" in a.apply_ipv4("eth1", Ipv4Config(method=Ipv4Method.DHCP)).message
+        assert a._broker.calls == []
 
     def test_a_colon_in_a_profile_name_survives(self, adapter) -> None:
         a, _captured, responses = adapter
@@ -762,14 +723,14 @@ class TestSavedProfileForAnUnpluggedAdapter:
             "connection.uuid:u-1\nconnection.interface-name:eth1\n",
             "u-1",
         )
-        assert a._connection_for("eth1") == "Stage: left"
+        assert _written(a, "eth1") == "u-1"
 
     @pytest.mark.parametrize("failing", ["list", "show"])
     def test_an_unreadable_profile_list_finds_nothing(self, adapter, failing) -> None:
         a, _captured, responses = adapter
         self._saved(responses, "Stage:u-1:802-3-ethernet::yes:0:100\n", "", "u-1")
-        _set(responses, _SAVED_PROFILES if failing == "list" else _bound_to("u-1"), returncode=8)
-        assert a._connection_for("eth1") is None
+        _set(responses, _PROFILES if failing == "list" else _bound_to("u-1"), returncode=8)
+        assert _written(a, "eth1") is None
 
     def test_fallback_subprocess_failure_returns_none(self, adapter) -> None:
         a, _captured, _responses = adapter
@@ -778,7 +739,7 @@ class TestSavedProfileForAnUnpluggedAdapter:
             raise RuntimeError("missing")
 
         a._run = fake_run
-        assert a._connection_for("eth0") is None
+        assert _written(a, "eth0") is None
 
     def test_run_actually_uses_subprocess_run(self, monkeypatch) -> None:
         # Cover the real _run path (not the test fixture's override).
@@ -853,11 +814,11 @@ class TestBrokerNotConfigured:
 
         a = NetworkManagerAdapter()  # no broker
 
-        # Prime the connection-name lookup; otherwise apply short-
-        # circuits before reaching the broker path.
+        # Prime the profile lookup; otherwise apply short-circuits before
+        # reaching the broker path.
         def _run(argv, *, check=True):
-            if argv[:5] == ["nmcli", "-t", "-f", "NAME,DEVICE", "connection"]:
-                return sp.CompletedProcess(argv, 0, "Wired:eth0\n", "")
+            if argv == _PROFILES:
+                return sp.CompletedProcess(argv, 0, "Wired:u-1:802-3-ethernet:eth0:yes:0:0\n", "")
             return sp.CompletedProcess(argv, 0, "", "")
 
         monkeypatch.setattr(a, "_run", _run)
@@ -873,7 +834,7 @@ class TestBrokerNotConfigured:
         a = NetworkManagerAdapter()  # no broker
 
         def _run(argv, *, check=True):
-            return sp.CompletedProcess(argv, 0, "Wired:eth0\n", "")
+            return sp.CompletedProcess(argv, 0, "Wired:u-1:802-3-ethernet:eth0:yes:0:0\n", "")
 
         monkeypatch.setattr(a, "_run", _run)
         result = a.renew_lease("eth0")
@@ -885,11 +846,7 @@ class TestBrokerNotConfigured:
         """A PrivilegeError on the modify step surfaces with the
         broker's message preserved – no unhandled traceback."""
         a, _captured, responses = adapter
-        _set(
-            responses,
-            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
-            stdout="Wired:eth0\n",
-        )
+        _active(responses, "Wired:eth0")
         a._broker.exceptions = [make_failure("operator cancelled")]
         from openfollow.network.adapter import Ipv4Config, Ipv4Method
 
@@ -905,11 +862,7 @@ class TestApplyConnectionVerbFailures:
         fails after a flaky down, the apply still surfaces as
         ``ok=False`` with the up-failure detail."""
         a, _captured, responses = adapter
-        _set(
-            responses,
-            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
-            stdout="Wired:eth0\n",
-        )
+        _active(responses, "Wired:eth0")
         # Apply: 1) mod (ok), 2) down (fail; downgraded to warning),
         # 3) up (fail; gate).
         a._broker.responses = [
@@ -930,11 +883,7 @@ class TestRenewSubprocessError:
         then up (gate). A failing up step surfaces a clean message
         with the broker's stderr detail."""
         a, _captured, responses = adapter
-        _set(
-            responses,
-            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
-            stdout="Wired:eth0\n",
-        )
+        _active(responses, "Wired:eth0")
         a._broker.responses = [
             subprocess.CompletedProcess(["sudo"], 0, "", ""),  # down
             subprocess.CompletedProcess(["sudo"], 1, "", "nmcli missing"),  # up
@@ -952,11 +901,7 @@ class TestApplyBoundaryValidation:
     the apply fail; only validation should."""
 
     def _prime(self, responses, name="Wired", device="eth0"):
-        _set(
-            responses,
-            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
-            stdout=f"{name}:{device}\n",
-        )
+        _active(responses, f"{name}:{device}")
 
     @pytest.mark.parametrize("address", ["not-an-ip", "10.0.0.5 8.8.8.8", "10.0.0.5\nipv4.dns evil"])
     def test_rejects_invalid_static_address(self, adapter, address) -> None:
@@ -993,22 +938,14 @@ class TestApplyBoundaryValidation:
         assert not [c for c in captured if c[:3] == ["nmcli", "connection", "modify"]]
 
 
-class TestConnectionForActiveLoopFallthrough:
+class TestActiveLoopFallthrough:
     def test_active_loop_no_match_then_fallback_returns_none(self, adapter) -> None:
-        """Active list has rows but none for the requested iface; fallback
-        list also empty – overall None."""
+        """A profile is active, but on another interface, and none is saved
+        for the requested one – overall None."""
         a, _captured, responses = adapter
-        _set(
-            responses,
-            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
-            stdout="Wifi:wlan0\n",  # rows present, but eth0 not in them
-        )
-        _set(
-            responses,
-            _SAVED_PROFILES,
-            stdout="",
-        )
-        assert a._connection_for("eth0") is None
+        _active(responses, "Wifi:wlan0")
+        _set(responses, _bound_to("uuid-Wifi"), stdout="connection.uuid:uuid-Wifi\nconnection.interface-name:wlan0\n")
+        assert _written(a, "eth0") is None
 
 
 class TestConnectionLookupSurvivesAColonInTheName:
@@ -1022,45 +959,35 @@ class TestConnectionLookupSurvivesAColonInTheName:
     different route.
     """
 
+    _OFFICE = "Wired connection\\: office:u-1:802-3-ethernet:eth0:yes:0:0\n"
+
     def test_active_pass_finds_a_colon_named_profile(self, adapter) -> None:
         a, _captured, responses = adapter
-        _set(
-            responses,
-            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
-            stdout="Wired connection\\: office:eth0\n",
-        )
-        assert a._connection_for("eth0") == "Wired connection: office"
+        _set(responses, _PROFILES, stdout=self._OFFICE)
+        a._broker.exceptions = [make_failure("read-only")]
+        assert "profile 'Wired connection: office'" in a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP)).message
 
     def test_apply_reaches_the_profile_instead_of_reporting_none(self, adapter) -> None:
         """The operator-visible half: the apply succeeds rather than claiming
         the interface has no profile."""
         a, captured, responses = adapter
-        _set(
-            responses,
-            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
-            stdout="Wired connection\\: office:eth0\n",
-        )
+        _set(responses, _PROFILES, stdout=self._OFFICE)
         result = a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP))
         assert result.ok is True, result.message
         modify = next(c for c in captured if c[:3] == ["nmcli", "connection", "modify"])
-        assert "Wired connection: office" in modify
+        assert modify[3:5] == ["uuid", "u-1"]
 
     def test_a_short_row_is_ignored(self, adapter) -> None:
         a, _captured, responses = adapter
-        _set(
-            responses,
-            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
-            stdout="truncated\n",
-        )
-        _set(responses, _SAVED_PROFILES, stdout="")
-        assert a._connection_for("eth0") is None
+        _set(responses, _PROFILES, stdout="truncated:eth0\n")
+        assert _written(a, "eth0") is None
 
 
 class TestVlans:
     @staticmethod
     def _prime(responses, rows: str, records: str = "", *uuids: str) -> None:
         """The profile list and, for the listed *uuids*, their one detail read."""
-        _set(responses, _SAVED_PROFILES, stdout=rows)
+        _set(responses, _PROFILES, stdout=rows)
         if uuids:
             _set(responses, _bound_to(*uuids), stdout=records)
 
@@ -1130,7 +1057,7 @@ class TestVlans:
         self._prime(responses, "vlan\\: ten:uuid-v10:vlan:eth0.10:yes:0:0\n")
         result = a.delete_vlan("eth0.10")
         assert result.ok is True
-        assert ["nmcli", "connection", "delete", "id", "vlan: ten"] in captured
+        assert ["nmcli", "connection", "delete", "uuid", "uuid-v10"] in captured
 
     def test_ignores_non_vlan_profiles(self, adapter) -> None:
         a, _captured, responses = adapter
@@ -1180,7 +1107,7 @@ class TestVlans:
         result = a.delete_vlan("eth0.10")
         assert result.ok is True
         assert result.message == "Removed VLAN interface eth0.10."
-        assert ["nmcli", "connection", "delete", "id", "vlan10"] in captured
+        assert ["nmcli", "connection", "delete", "uuid", "uuid-v10"] in captured
 
     def test_delete_targets_the_matching_profile_not_the_first(self, adapter) -> None:
         """With several VLANs on one parent, deleting the wrong profile tears
@@ -1192,8 +1119,8 @@ class TestVlans:
         )
         result = a.delete_vlan("eth0.20")
         assert result.ok is True
-        assert ["nmcli", "connection", "delete", "id", "vlan20"] in captured
-        assert ["nmcli", "connection", "delete", "id", "vlan10"] not in captured
+        assert ["nmcli", "connection", "delete", "uuid", "uuid-v20"] in captured
+        assert ["nmcli", "connection", "delete", "uuid", "uuid-v10"] not in captured
 
     def test_delete_uses_the_delete_capability(self, adapter) -> None:
         a, _captured, responses = adapter
@@ -1282,7 +1209,7 @@ class TestSetDhcpFqdn:
     def _station(adapter, *, devices: str, active: str):
         a, _captured, responses = adapter
         responses[tuple(_DEVICES)] = subprocess.CompletedProcess(_DEVICES, 0, stdout=devices, stderr="")
-        responses[tuple(_ACTIVE_PROFILES)] = subprocess.CompletedProcess(_ACTIVE_PROFILES, 0, stdout=active, stderr="")
+        _active(responses, *active.splitlines())
         return a, responses
 
     def _eth0_and_vlan(self, adapter):
@@ -1306,10 +1233,10 @@ class TestSetDhcpFqdn:
         result = a.set_dhcp_fqdn(_FQDN)
         assert (result.ok, result.partial_failures) == (True, ())
         assert self._argv(a) == [
-            ["/usr/bin/nmcli", "con", "mod", "id", "Wired connection 1", "ipv4.dhcp-fqdn", _FQDN],
-            ["/usr/bin/nmcli", "con", "mod", "id", "eth0.13", "ipv4.dhcp-fqdn", _FQDN],
-            ["/usr/bin/nmcli", "con", "up", "id", "Wired connection 1"],
-            ["/usr/bin/nmcli", "con", "up", "id", "eth0.13"],
+            ["/usr/bin/nmcli", "con", "mod", "uuid", "uuid-Wired connection 1", "ipv4.dhcp-fqdn", _FQDN],
+            ["/usr/bin/nmcli", "con", "mod", "uuid", "uuid-eth0.13", "ipv4.dhcp-fqdn", _FQDN],
+            ["/usr/bin/nmcli", "con", "up", "uuid", "uuid-Wired connection 1"],
+            ["/usr/bin/nmcli", "con", "up", "uuid", "uuid-eth0.13"],
         ]
 
     def test_a_blank_name_clears_it_so_the_hostname_goes_out_again(self, adapter) -> None:
@@ -1320,8 +1247,8 @@ class TestSetDhcpFqdn:
 
     def test_an_interface_without_a_link_keeps_the_name_for_when_it_connects(self, adapter) -> None:
         a, responses = self._station(adapter, devices="eth1:ethernet:unavailable\n", active="")
-        responses[tuple(_SAVED_PROFILES)] = subprocess.CompletedProcess(
-            _SAVED_PROFILES, 0, stdout="Wired connection 2:u2:802-3-ethernet::yes:0:1\n", stderr=""
+        responses[tuple(_PROFILES)] = subprocess.CompletedProcess(
+            _PROFILES, 0, stdout="Wired connection 2:u2:802-3-ethernet::yes:0:1\n", stderr=""
         )
         responses[tuple(_bound_to("u2"))] = subprocess.CompletedProcess(
             [], 0, stdout="connection.uuid:u2\nconnection.interface-name:eth1\n", stderr=""
@@ -1329,7 +1256,7 @@ class TestSetDhcpFqdn:
         _carrier("eth1", "0")
         result = a.set_dhcp_fqdn(_FQDN)
         assert (result.ok, result.partial_failures) == (True, ())
-        assert self._argv(a) == [["/usr/bin/nmcli", "con", "mod", "id", "Wired connection 2", "ipv4.dhcp-fqdn", _FQDN]]
+        assert self._argv(a) == [["/usr/bin/nmcli", "con", "mod", "uuid", "u2", "ipv4.dhcp-fqdn", _FQDN]]
 
     def test_a_profile_naming_its_own_dhcp_hostname_is_reported_and_left_alone(self, adapter) -> None:
         """NetworkManager refuses the two together; the operator's hostname is not cleared to make room."""
@@ -1341,7 +1268,7 @@ class TestSetDhcpFqdn:
         assert result.partial_failures[0].startswith("Profile 'Wired connection 1' was not updated (")
         assert "dhcp-hostname is also set" in result.partial_failures[0]
         ups = [argv[-1] for argv in self._argv(a) if argv[2] == "up"]
-        assert ups == ["eth0.13"]
+        assert ups == ["uuid-eth0.13"]
 
     def test_a_profile_still_waiting_for_a_lease_is_not_a_failure(self, adapter) -> None:
         """With no DHCP server answering, ``con up`` outlasts the broker's timeout though the
@@ -1389,7 +1316,7 @@ class TestSetDhcpFqdnSafeguards:
     def _station(adapter, *, devices: str, active: str, states: str = ""):
         a, _captured, responses = adapter
         responses[tuple(_DEVICES)] = subprocess.CompletedProcess(_DEVICES, 0, stdout=devices, stderr="")
-        responses[tuple(_ACTIVE_PROFILES)] = subprocess.CompletedProcess(_ACTIVE_PROFILES, 0, stdout=active, stderr="")
+        _active(responses, *active.splitlines())
         responses[tuple(_DEVICE_STATES)] = subprocess.CompletedProcess(_DEVICE_STATES, 0, stdout=states, stderr="")
         return a, responses
 
@@ -1412,7 +1339,7 @@ class TestSetDhcpFqdnSafeguards:
         )
         _carrier("eth0", "1")
         a.set_dhcp_fqdn(self._FQDN)
-        assert {call.argv[4] for call in a._broker.calls} == {"Wired connection 1"}
+        assert {call.argv[4] for call in a._broker.calls} == {"uuid-Wired connection 1"}
 
     def _two_profiles(self, adapter, *, current: dict[str, str]):
         a, responses = self._station(
@@ -1421,7 +1348,7 @@ class TestSetDhcpFqdnSafeguards:
             active="Wired connection 1:eth0\nWired connection 2:eth1\n",
         )
         for name, value in current.items():
-            argv = ["nmcli", "-g", "ipv4.dhcp-fqdn", "connection", "show", "id", name]
+            argv = ["nmcli", "-g", "ipv4.dhcp-fqdn", "connection", "show", "uuid", f"uuid-{name}"]
             responses[tuple(argv)] = subprocess.CompletedProcess(argv, 0, stdout=value + "\n", stderr="")
         _carrier("eth0", "1")
         _carrier("eth1", "1")
@@ -1444,7 +1371,7 @@ class TestSetDhcpFqdnSafeguards:
         result = a.set_dhcp_fqdn(self._FQDN)
         unread = "NetworkManager did not report its state, so it was left alone."
         if failing == "once":
-            assert {call.argv[4] for call in a._broker.calls} == {"Wired connection 2"}
+            assert {call.argv[4] for call in a._broker.calls} == {"uuid-Wired connection 2"}
             assert (result.ok, result.partial_failures) == (True, (f"eth0: {unread}",))
         else:
             assert a._broker.calls == []
@@ -1457,7 +1384,7 @@ class TestSetDhcpFqdnSafeguards:
         result = a.set_dhcp_fqdn(self._FQDN, reconnect=False)
         assert (result.ok, result.message) == (True, "Applied.")
         assert [call.argv for call in a._broker.calls] == [
-            ["/usr/bin/nmcli", "con", "mod", "id", "Wired connection 2", "ipv4.dhcp-fqdn", self._FQDN]
+            ["/usr/bin/nmcli", "con", "mod", "uuid", "uuid-Wired connection 2", "ipv4.dhcp-fqdn", self._FQDN]
         ]
 
     def test_reconciling_a_station_already_in_line_touches_nothing(self, adapter) -> None:
@@ -1477,7 +1404,7 @@ class TestSetDhcpFqdnSafeguards:
 
         a._run = _run  # type: ignore[method-assign]
         a.set_dhcp_fqdn(self._FQDN, reconnect=False)
-        assert [call.argv[4] for call in a._broker.calls] == ["Wired connection 1", "Wired connection 2"]
+        assert [call.argv[4] for call in a._broker.calls] == ["uuid-Wired connection 1", "uuid-Wired connection 2"]
 
 
 @dataclass(frozen=True)
@@ -1496,10 +1423,12 @@ class _Device:
     hwaddr: str = ""
     dhcp: tuple[str, ...] = ()  # DHCP4.OPTION values, ``name = value``
     vlan: tuple[str, str] | None = None  # its profile's (vlan.parent, vlan.id)
+    fqdn: str = ""  # its profile's ipv4.dhcp-fqdn
+    profile_uuid: str = ""  # set where another profile shares the name
 
     @property
     def uuid(self) -> str:
-        return f"uuid-{self.profile}" if self.profile else ""
+        return (self.profile_uuid or f"uuid-{self.profile}") if self.profile else ""
 
 
 @dataclass(frozen=True)
@@ -1511,10 +1440,14 @@ class _Saved:
     method: str = "auto"
     addresses: str = ""
     rank: str = "yes:0:0"  # AUTOCONNECT:AUTOCONNECT-PRIORITY:TIMESTAMP
+    fqdn: str = ""
+    profile_uuid: str = ""
+    kind: str = "802-3-ethernet"
+    vlan: tuple[str, str] | None = None
 
     @property
     def uuid(self) -> str:
-        return f"uuid-{self.name}"
+        return self.profile_uuid or f"uuid-{self.name}"
 
 
 class _Station:
@@ -1563,15 +1496,20 @@ class _Station:
                 out.append(
                     {"name": d.profile, "uuid": d.uuid, "kind": kind, "device": d.name, "rank": "yes:0:0"}
                     | {"interface": d.name, "method": d.method, "addresses": d.addresses, "vlan": d.vlan}
+                    | {"fqdn": d.fqdn}
                 )
         for p in self.saved:
             out.append(
-                {"name": p.name, "uuid": p.uuid, "kind": "802-3-ethernet", "device": "", "rank": p.rank}
-                | {"interface": p.interface, "method": p.method, "addresses": p.addresses, "vlan": None}
+                {"name": p.name, "uuid": p.uuid, "kind": p.kind, "device": "", "rank": p.rank}
+                | {"interface": p.interface, "method": p.method, "addresses": p.addresses, "vlan": p.vlan}
+                | {"fqdn": p.fqdn}
             )
         return out
 
     def _answer(self, argv: list[str]) -> str:
+        if argv[1:3] == ["-g", "ipv4.dhcp-fqdn"]:
+            by_uuid = {p["uuid"]: p for p in self._profiles()}
+            return f"{by_uuid[argv[-1]]['fqdn']}\n" if argv[-2] == "uuid" and argv[-1] in by_uuid else ""
         fields, verb = argv[3], argv[4:]
         if fields == "DEVICE,TYPE,STATE":
             return "".join(f"{d.name}:{d.kind}:{d.state.split(' ', 1)[1][1:-1]}\n" for d in self.devices)
@@ -1613,8 +1551,6 @@ class _Station:
                     record += f"vlan.parent:{p['vlan'][0]}\nvlan.id:{p['vlan'][1]}\n"
                 records.append(record)
             return "\n".join(records)
-        if fields == "NAME,DEVICE":
-            return "".join(f"{d.profile}:{d.name}\n" for d in self.devices if d.profile)
         if fields == "ipv4.method,ipv4.addresses":
             key = verb[-1]
             device = next((d for d in self.devices if key in (d.profile, d.uuid)), None)
@@ -1976,3 +1912,205 @@ class TestReadNetwork:
         a._run = _run
         assert a.read_network() == NetworkReading()
         assert "nmcli device read failed" in caplog.text
+
+
+class TestProfilesSharingAName:
+    """NetworkManager lets profiles share a name. Given one, nmcli edits the first namesake it
+    finds, prints every namesake's value and deletes them all, so every write and every
+    per-profile read names the profile by its UUID."""
+
+    _FQDN = "of-1.stage.example.com"
+
+    @staticmethod
+    def _targets(a) -> list[list[str]]:
+        """Verb and profile of each privileged ``nmcli con`` call."""
+        return [call.argv[2:5] for call in a._broker.calls]
+
+    @staticmethod
+    def _active_and_namesake(station, **namesake):
+        """``Wired connection 1`` active on eth0 and a saved profile of the same name, ranked
+        above it by autoconnect, so neither listing order nor ranking finds the active one."""
+        saved = _Saved("Wired connection 1", "eth0", rank="yes:100:999", profile_uuid="uuid-namesake", **namesake)
+        return station(
+            _Device("eth0", "192.0.2.10/24", "Wired connection 1", profile_uuid="uuid-active"), saved=(saved,)
+        )
+
+    def test_apply_writes_and_reconnects_the_active_profile(self, station) -> None:
+        a, _ = self._active_and_namesake(station, method="manual", addresses="198.51.100.7/24")
+        result = a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP))
+        assert (result.ok, result.message) == (True, "Applied.")
+        assert self._targets(a) == [
+            ["mod", "uuid", "uuid-active"],
+            ["down", "uuid", "uuid-active"],
+            ["up", "uuid", "uuid-active"],
+        ]
+
+    def test_apply_to_an_unplugged_adapter_writes_the_profile_saved_for_it(self, station) -> None:
+        a, _ = station(
+            _Device("eth1", state="20 (unavailable)"),
+            saved=(
+                _Saved("Wired connection 2", "eth2", rank="yes:100:999", profile_uuid="uuid-eth2"),
+                _Saved("Wired connection 2", "eth1", profile_uuid="uuid-eth1"),
+            ),
+        )
+        _carrier("eth1", "0")
+        result = a.apply_ipv4("eth1", Ipv4Config(method=Ipv4Method.STATIC, address="192.0.2.50", prefix=24))
+        assert (result.ok, result.pending) == (True, True)
+        assert self._targets(a) == [["mod", "uuid", "uuid-eth1"]]
+
+    def test_a_failed_save_names_the_profile_by_its_name(self, station) -> None:
+        a, _ = self._active_and_namesake(station)
+        a._broker.exceptions = [make_failure("read-only")]
+        result = a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP))
+        assert result.message == (
+            "Could not save the settings to profile 'Wired connection 1'; nothing was changed (read-only)."
+        )
+
+    def test_renew_reconnects_the_active_profile(self, station) -> None:
+        a, _ = self._active_and_namesake(station)
+        assert a.renew_lease("eth0").ok
+        assert self._targets(a) == [["down", "uuid", "uuid-active"], ["up", "uuid", "uuid-active"]]
+
+    def test_the_dhcp_name_goes_to_the_active_profile(self, station) -> None:
+        a, _ = self._active_and_namesake(station)
+        result = a.set_dhcp_fqdn(self._FQDN)
+        assert (result.ok, result.partial_failures) == (True, ())
+        assert [call.argv for call in a._broker.calls] == [
+            ["/usr/bin/nmcli", "con", "mod", "uuid", "uuid-active", "ipv4.dhcp-fqdn", self._FQDN],
+            ["/usr/bin/nmcli", "con", "up", "uuid", "uuid-active"],
+        ]
+
+    def test_reconciling_reads_the_dhcp_name_of_the_active_profile(self, station) -> None:
+        """Read by name, the namesake's blank value would come back with it and never match."""
+        a, nmcli = station(
+            _Device("eth0", "192.0.2.10/24", "Wired connection 1", fqdn=self._FQDN, profile_uuid="uuid-active"),
+            saved=(_Saved("Wired connection 1", "eth0", rank="yes:100:999", profile_uuid="uuid-namesake"),),
+        )
+        result = a.set_dhcp_fqdn(self._FQDN, reconnect=False)
+        assert (result.ok, result.message) == (True, "Unchanged.")
+        assert a._broker.calls == []
+        assert [c[-2:] for c in nmcli.calls if c[1:3] == ["-g", "ipv4.dhcp-fqdn"]] == [["uuid", "uuid-active"]]
+
+    def _vlan_and_namesakes(self, station, *, active_vlan: tuple[str, str] = ("eth0", "10"), **fail):
+        """eth0.10 active; saved copies of it, naming its interface or none, its parent given as
+        the interface or the parent's profile; a manual copy; another adapter's VLAN of the same
+        name; other VLANs; and an ethernet profile named like it."""
+        return station(
+            _Device("eth0", "192.0.2.10/24", "Wired connection 1"),
+            _Device("eth0.10", "169.254.32.55/16", "eth0.10", kind="vlan", vlan=active_vlan),
+            saved=(
+                _Saved("eth0.10", "eth0.10", kind="vlan", vlan=("eth0", "10"), profile_uuid="uuid-copy"),
+                _Saved("Hand-made", "", kind="vlan", vlan=("eth0", "10")),
+                _Saved("On the parent profile", "", kind="vlan", vlan=("uuid-Wired connection 1", "10")),
+                _Saved("Manual", "eth0.10", kind="vlan", vlan=("eth0", "10"), rank="no:0:0"),
+                _Saved("eth0.10", "eth0.10", kind="vlan", vlan=("eth1", "10"), profile_uuid="uuid-eth1"),
+                _Saved("eth0.20", "eth0.20", kind="vlan", vlan=("eth0", "20")),
+                _Saved("Unplaceable", "", kind="vlan", vlan=("eth0", "ten")),
+                _Saved("eth0.10", "of-dup0", profile_uuid="uuid-ethernet"),
+            ),
+            **fail,
+        )
+
+    def test_removing_a_vlan_deletes_its_saved_copies_too(self, station) -> None:
+        """A copy for the same parent and VLAN id that autoconnects would bring the VLAN straight
+        back; a manual one, or another adapter's VLAN whose name shortens alike, would not."""
+        a, _ = self._vlan_and_namesakes(station)
+        assert a.delete_vlan("eth0.10").ok
+        assert [call.argv for call in a._broker.calls] == [
+            ["/usr/bin/nmcli", "con", "delete"]
+            + [
+                "uuid",
+                "uuid-eth0.10",
+                "uuid",
+                "uuid-copy",
+                "uuid",
+                "uuid-Hand-made",
+                "uuid",
+                "uuid-On the parent profile",
+            ]
+        ]
+        assert a._broker.calls[0].reason == "Delete the profiles of VLAN interface eth0.10"
+
+    def test_an_active_vlan_that_cannot_be_placed_deletes_only_itself(self, station) -> None:
+        a, _ = self._vlan_and_namesakes(station, active_vlan=("eth0", "ten"))
+        assert a.delete_vlan("eth0.10").ok
+        assert [call.argv[3:] for call in a._broker.calls] == [["uuid", "uuid-eth0.10"]]
+
+    # What nmcli 1.52 printed on the bench, exit status 10, for one UUID of several already gone.
+    _ONE_GONE = make_nonzero(rc=10, stderr="Error: cannot delete unknown connection(s): uuid 'uuid-copy'.")
+
+    def _delete_then(self, a, nmcli, **after) -> None:
+        """Apply *after* to the fake nmcli once the delete has run, as NetworkManager would."""
+        run = a._broker.run
+
+        def _run(*args, **kwargs):
+            try:
+                return run(*args, **kwargs)
+            finally:
+                for key, value in after.items():
+                    setattr(nmcli, key, value)
+
+        a._broker.run = _run
+
+    def test_a_copy_gone_before_the_delete_still_reports_the_vlan_removed(self, station) -> None:
+        """nmcli deletes every UUID it finds and exits 10 for one already gone."""
+        a, nmcli = self._vlan_and_namesakes(station)
+        a._broker.responses = [self._ONE_GONE]
+        self._delete_then(a, nmcli, devices=nmcli.devices[:1], saved=())
+        result = a.delete_vlan("eth0.10")
+        assert (result.ok, result.message) == (True, "Removed VLAN interface eth0.10.")
+
+    @pytest.mark.parametrize("after", ["still up", "unreadable"])
+    def test_a_partial_delete_is_a_failure_unless_the_vlan_is_gone(self, station, after: str) -> None:
+        """Exit 10 may name the active profile itself, replaced since it was read."""
+        a, nmcli = self._vlan_and_namesakes(station)
+        a._broker.responses = [self._ONE_GONE]
+        if after == "unreadable":
+            self._delete_then(a, nmcli, fail={_profile_list: _NOT_RUNNING})
+        result = a.delete_vlan("eth0.10")
+        assert result.ok is False
+        assert "unknown connection" in result.message
+
+    def test_unreadable_copies_remove_nothing(self, station, caplog) -> None:
+        """Removing only the active profile would leave a copy to bring the VLAN back."""
+        a, _ = self._vlan_and_namesakes(station, fail={_profile_detail: _NOT_RUNNING})
+        result = a.delete_vlan("eth0.10")
+        assert (result.ok, result.message) == (False, "Could not read the profiles of eth0.10; nothing was removed.")
+        assert a._broker.calls == []
+        assert "nmcli VLAN profile read failed" in caplog.text
+
+    def test_removing_a_vlan_deletes_only_its_own_profile(self, station) -> None:
+        """``con delete`` given the name would also delete the ethernet profile sharing it."""
+        a, _ = station(
+            _Device("eth0", "192.0.2.10/24", "Wired connection 1"),
+            _Device("eth0.99", "169.254.32.55/16", "eth0.99", kind="vlan", vlan=("eth0", "99")),
+            saved=(_Saved("eth0.99", "of-dup0", profile_uuid="uuid-ethernet"),),
+        )
+        result = a.delete_vlan("eth0.99")
+        assert (result.ok, result.message) == (True, "Removed VLAN interface eth0.99.")
+        assert [call.argv for call in a._broker.calls] == [["/usr/bin/nmcli", "con", "delete", "uuid", "uuid-eth0.99"]]
+
+
+class TestWhichProfileAWriteAddresses:
+    def test_a_vpn_running_over_the_interface_is_not_its_profile(self, adapter) -> None:
+        """nmcli lists a plugin VPN with the device it runs over, as the card's device read does not."""
+        a, _captured, responses = adapter
+        _set(
+            responses,
+            _PROFILES,
+            stdout="Backstage VPN:uuid-vpn:vpn:eth0:yes:0:0\n"
+            "Wired connection 1:uuid-wired:802-3-ethernet:eth0:yes:0:0\n",
+        )
+        assert a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP)).ok
+        assert {call.argv[4] for call in a._broker.calls} == {"uuid-wired"}
+
+    def test_no_interface_has_no_profile(self, station) -> None:
+        """Every inactive profile lists an empty device, and an unbound one an empty interface."""
+        a, _ = station(
+            _Device("eth1", state="20 (unavailable)"),
+            saved=(_Saved("Any wired", ""), _Saved("eth1.10", "eth1.10", kind="vlan")),
+        )
+        assert not a.apply_ipv4("", Ipv4Config(method=Ipv4Method.DHCP)).ok
+        assert not a.renew_lease("").ok
+        assert not a.delete_vlan("").ok
+        assert a._broker.calls == []

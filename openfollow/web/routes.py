@@ -5316,6 +5316,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         them; ``label_result`` reports a label save on its row (``iface``, and
         ``error`` with the ``entered`` text, or ``saved``).
         """
+        if request.query.get("scan"):
+            server.rescan_network()
         cfg = server.get_network_config(iface)
         if not cfg or not cfg.get("interfaces"):
             return {
@@ -5341,10 +5343,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             "lease_display": cfg.get("lease_display"),
             "banner": banner,
         }
-        # The interface list replaced the old single picker, so the card can
-        # show a multi-NIC (or tagged-VLAN) station's whole layout. ``Scan``
-        # forces a re-read; ordinary renders come off the TTL cache.
-        rows = server.get_network_interfaces(force=bool(request.query.get("scan")))
+        rows = server.get_network_interfaces()
         if not rows:
             # No richer provider wired (or it failed): synthesise the list from
             # the single-interface snapshot so the card still renders every
@@ -5395,12 +5394,11 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         net["editing_iface"] = net["active_interface"] if (iface or editable) else ""
         net["vlan_form"] = dict(vlan_form) if vlan_form else {}
         _add_adapter_fields(net, _request_scoped_config().interface_labels if labels is None else labels, label_result)
-        # The single-interface snapshot is a fresh read; it belongs to the row
-        # being configured, while the others keep their own detail off the
-        # cached scan. Captured before the operator's submitted input is
-        # layered on, because the row's summary line reports what the adapter
-        # holds - a rejected address must not appear there as a live one, with
-        # the previous prefix and an up status dot beside it.
+        # The single-interface snapshot belongs to the row being configured.
+        # Captured before the operator's submitted input is layered on, because
+        # the row's summary line reports what the adapter holds - a rejected
+        # address must not appear there as a live one, with the previous prefix
+        # and an up status dot beside it.
         live = {
             "method": net["method"],
             "address": net["address"],
@@ -5447,7 +5445,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         net["display_names"] = {name: display_name(name, labels) for name in names}
 
     def _resolve_network_iface(iface: str) -> tuple[str | None, str]:
-        """Validate the posted interface against the adapter's live list.
+        """Validate the posted interface against the interfaces the backend reports.
 
         A privileged adapter write must never receive a raw/forged POST value.
         Blank means "whichever interface the form defaulted to" and resolves to
@@ -5478,16 +5476,10 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     ) -> Any:
         """Re-render the card after a VLAN create / delete.
 
-        The interface list is force-refreshed because a VLAN that was just
-        created (or removed) has to appear (or vanish) immediately – waiting
-        out the TTL would show the operator a list that contradicts the banner
-        they are reading.
-
         Read-only: a VLAN write is not an edit of some other interface, and
         ``iface`` expands the new row rather than making it writable. A refused
         create passes ``vlan_form`` so the operator's entry survives the swap.
         """
-        server.get_network_interfaces(force=True)
         return template(
             "partials/network",
             net=_build_network_form_context(iface=iface, banner=banner, vlan_form=vlan_form),
@@ -5545,7 +5537,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         The interface is named in the path rather than carried in a picker, so
         which adapter is being edited is never ambiguous, and only one is ever
         writable at a time. ``_build_network_form_context`` sanitises it
-        against the adapter's live list, falling back to the active interface
+        against the interfaces the backend reports, falling back to the active interface
         if it's unknown.
         """
         return template(

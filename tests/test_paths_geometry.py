@@ -106,12 +106,30 @@ class TestHeight:
         assert c.point(1.5)[2] == pytest.approx(0.75)
         assert c.point(c.length)[2] == pytest.approx(0.0)
 
-    def test_height_runs_through_the_arc_from_where_it_starts_to_where_it_ends(self) -> None:
-        c = _curve([(0, 0, 0, 0), (4, 0, 4, 1.0), (4, 4, 0, 0)])
-        # The arc starts 1 m before the point (z 3) and ends 1 m after it (z 3), so it peaks short of 4.
-        assert c.point(3.0)[2] == pytest.approx(3.0)
-        assert c.point(3 + math.pi / 4)[2] == pytest.approx(3.0, abs=1e-3)
-        assert c.point(3 + math.pi / 2)[2] == pytest.approx(3.0, abs=1e-3)
+    def test_a_bend_in_height_alone_is_rounded_too(self) -> None:
+        # Straight in plan, level for 4 m, then climbing 1 m in 2 m: the bend is only in height.
+        c = _curve([(0, 0, 0, 0), (4, 0, 0, 2.0), (6, 0, 1, 0)])
+        # A sharp bend would sit at height 0 at x = 4; rounded, the path is already rising there.
+        s4, _ = c.nearest(4.0, 0.0)
+        assert c.point(s4)[2] > 0.01
+        # Level well before the bend, on the slope after it, and no step anywhere along the way.
+        s2, _ = c.nearest(2.0, 0.0)
+        assert c.point(s2)[2] == pytest.approx(0.0)
+        assert c.point(c.length)[2] == pytest.approx(1.0)
+        rise = np.diff(c.z) / np.diff(c.s)
+        assert np.all(np.diff(rise) >= -1e-9)
+        assert rise.max() == pytest.approx(0.5, abs=1e-3)
+
+    def test_a_rounded_height_bend_stays_within_a_millimetre_of_its_circle(self) -> None:
+        c = _curve([(0, 0, 0, 0), (4, 0, 0, 2.0), (6, 0, 1, 0)])
+        on_arc = np.column_stack((c.xy, c.z))[(c.xy[:, 0] > 2.5) & (c.xy[:, 0] < 5.5)]
+        # The arc's centre sits above the bend, square to the level stretch: x where it starts, z = radius.
+        turn = math.atan2(1, 2)
+        reach = 2.0 * math.tan(turn / 2)
+        centre = np.array([4 - reach, 0.0, 2.0])
+        arc = on_arc[(on_arc[:, 0] >= 4 - reach - 1e-9)]
+        assert len(arc) > 2
+        assert np.allclose(np.linalg.norm(arc - centre, axis=1), 2.0, atol=1e-6)
 
 
 class TestClosed:

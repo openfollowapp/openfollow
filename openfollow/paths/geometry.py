@@ -4,10 +4,11 @@
 
 Each interior corner (every corner of a closed path) is replaced by a circular
 arc of that point's radius, shrunk where it would take more than half of either
-neighbouring segment. The curve is held as a dense polyline whose chords stay
-within a millimetre of the arcs, so walking it by arc length is exact enough to
-show no facets. Positions are PSN-absolute metres; the walk is in X/Y and Z
-follows along it.
+neighbouring segment. The arc lies in the plane of the two segments, so a change
+of height is rounded just like a turn. The curve is held as a dense polyline
+whose chords stay within a millimetre of the arcs, so walking it by arc length is
+exact enough to show no facets. Positions are PSN-absolute metres; the walk is
+measured in X/Y and the height comes with it.
 """
 
 from __future__ import annotations
@@ -148,31 +149,26 @@ def _distinct(points: Sequence[PathPoint], closed: bool) -> list[PathPoint]:
 
 def _corner(prev: PathPoint, at: PathPoint, nxt: PathPoint) -> list[tuple[float, float, float]]:
     """The samples replacing corner ``at``: the point itself, or the arc rounding it."""
-    len_in = math.hypot(at.x - prev.x, at.y - prev.y)
-    len_out = math.hypot(nxt.x - at.x, nxt.y - at.y)
-    ux, uy = (at.x - prev.x) / len_in, (at.y - prev.y) / len_in
-    vx, vy = (nxt.x - at.x) / len_out, (nxt.y - at.y) / len_out
-    turn = math.acos(max(-1.0, min(1.0, ux * vx + uy * vy)))
+    here = np.array([at.x, at.y, at.z])
+    u = here - np.array([prev.x, prev.y, prev.z])
+    v = np.array([nxt.x, nxt.y, nxt.z]) - here
+    len_in, len_out = float(np.linalg.norm(u)), float(np.linalg.norm(v))
+    u, v = u / len_in, v / len_out
+    turn = math.acos(max(-1.0, min(1.0, float(u @ v))))
     if at.radius <= 0.0 or turn < _STRAIGHT_RAD or turn > math.pi - _STRAIGHT_RAD:
         return [(at.x, at.y, at.z)]
     half_tan = math.tan(turn / 2.0)
     reach = min(at.radius * half_tan, 0.5 * min(len_in, len_out))
     radius = reach / half_tan
-    ax, ay = at.x - ux * reach, at.y - uy * reach
-    left = ux * vy - uy * vx > 0.0
-    side = 1.0 if left else -1.0
-    cx, cy = ax - uy * radius * side, ay + ux * radius * side
-    start = math.atan2(ay - cy, ax - cx)
-    sweep = turn * side
+    # Towards the centre, in the plane of both segments, square to the incoming one.
+    inward = v - float(u @ v) * u
+    inward /= np.linalg.norm(inward)
+    centre = here - u * reach + inward * radius
     step = min(_MAX_ARC_STEP_RAD, 2.0 * math.acos(max(-1.0, 1.0 - _ARC_TOLERANCE_M / radius)))
     count = max(1, math.ceil(turn / step))
-    z_in = at.z + (prev.z - at.z) * reach / len_in
-    z_out = at.z + (nxt.z - at.z) * reach / len_out
-    return [
-        (
-            cx + radius * math.cos(start + sweep * k / count),
-            cy + radius * math.sin(start + sweep * k / count),
-            z_in + (z_out - z_in) * k / count,
-        )
-        for k in range(count + 1)
-    ]
+    out = []
+    for k in range(count + 1):
+        a = turn * k / count
+        x, y, z = centre + radius * (math.sin(a) * u - math.cos(a) * inward)
+        out.append((float(x), float(y), float(z)))
+    return out

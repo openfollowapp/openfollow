@@ -41,15 +41,17 @@ def draw_paths(renderer: Any, cr: Any, state: OverlayState, w: int, h: int, cach
     if not state.show_paths or state.camera_params is None:
         return
     if cache is None:
-        _paint_paths(cr, _path_shapes(state, w, h))
+        shapes = _path_shapes(state, w, h, state.path_lines)
+        _paint_paths(cr, shapes, locked=False)
+        _paint_paths(cr, [shape for shape in shapes if shape.locked], locked=True)
     else:
         cache.draw(cr, state, w, h)
 
 
-def _path_shapes(state: OverlayState, w: int, h: int) -> list[_Path]:
+def _path_shapes(state: OverlayState, w: int, h: int, lines: list[Any]) -> list[_Path]:
     cam = state.camera_params
     shapes = []
-    for curve, ends, locked in state.path_lines:
+    for curve, ends, locked in lines:
         # The curve is drawn finely enough that projecting its points bows it with the lens.
         line = project(cam, curve, w, h, state.lens_k1, state.lens_k2)
         on_screen = []
@@ -60,11 +62,12 @@ def _path_shapes(state: OverlayState, w: int, h: int) -> list[_Path]:
     return shapes
 
 
-def _paint_paths(cr: Any, shapes: list[_Path]) -> None:
+def _paint_paths(cr: Any, shapes: list[_Path], *, locked: bool) -> None:
+    """Every path in one style: a path with a marker on it is drawn grey, then white over it."""
     for shape in shapes:
-        cr.set_source_rgba(*(COLOR_PATH_LOCKED if shape.locked else COLOR_PATH))
+        cr.set_source_rgba(*(COLOR_PATH_LOCKED if locked else COLOR_PATH))
         if _stroke_polyline(cr, shape.line):
-            cr.set_line_width(PATH_LOCKED_LINE_WIDTH if shape.locked else PATH_LINE_WIDTH)
+            cr.set_line_width(PATH_LOCKED_LINE_WIDTH if locked else PATH_LINE_WIDTH)
             cr.stroke()
         for ex, ey, ix, iy, releases in shape.ends:
             if not all(math.isfinite(v) for v in (ex, ey)):
@@ -88,62 +91,63 @@ def _arrowhead(cr: Any, x: float, y: float, ux: float, uy: float) -> None:
 
 
 class PathCache:
-    """Every path as one picture, drawn again only when a path, a lock or the view changed.
+    """Every path as one picture, and the paths with a marker on them as a second picture over it.
 
-    The Operator Screen redraws on every display refresh; paths that did not change
-    are then one paint instead of projecting and stroking every curve.
+    The Operator Screen redraws on every display refresh. The paths change only with
+    the paths or the view; which ones carry a marker changes whenever a marker crosses
+    a junction, and then only the second, smaller picture is drawn again.
     """
 
     def __init__(self) -> None:
-        self._entry: tuple[tuple[Any, ...], cairo.ImageSurface | None, int, int] | None = None
+        self._layers: dict[bool, tuple[tuple[Any, ...], cairo.ImageSurface | None, int, int]] = {}
 
     def draw(self, cr: Any, state: OverlayState, w: int, h: int) -> None:
         cam = state.camera_params
         if cam is None:
             return
-        scale = cr.get_target().get_device_scale()
+        view = (tuple(float(v) for v in cam), state.lens_k1, state.lens_k2, w, h, cr.get_target().get_device_scale())
+        self._paste(cr, state, w, h, view, state.path_lines, locked=False)
+        on = [line for line in state.path_lines if line[2]]
+        if on:
+            self._paste(cr, state, w, h, view, on, locked=True)
+
+    def _paste(
+        self, cr: Any, state: OverlayState, w: int, h: int, view: tuple[Any, ...], lines: list[Any], *, locked: bool
+    ) -> None:
         # A path's curve is the engine's own list until the paths reload, so comparing it is cheap.
-        key = (
-            tuple((curve, tuple(ends), locked) for curve, ends, locked in state.path_lines),
-            tuple(float(v) for v in cam),
-            state.lens_k1,
-            state.lens_k2,
-            w,
-            h,
-            scale,
-        )
-        if self._entry is None or self._entry[0] != key:
-            self._entry = (key, *self._render(state, w, h, scale))
-        _, picture, x0, y0 = self._entry
+        key = (tuple((curve, tuple(ends)) for curve, ends, _ in lines), *view)
+        entry = self._layers.get(locked)
+        if entry is None or entry[0] != key:
+            entry = (key, *_render(state, lines, w, h, view[-1], locked=locked))
+            self._layers[locked] = entry
+        _, picture, x0, y0 = entry
         if picture is not None:
             cr.set_source_surface(picture, x0, y0)
             cr.paint()
 
-    @staticmethod
-    def _render(
-        state: OverlayState, w: int, h: int, scale: tuple[float, float]
-    ) -> tuple[cairo.ImageSurface | None, int, int]:
-        shapes = _path_shapes(state, w, h)
-        points = [shape.line for shape in shapes] + [
-            np.array([(ex, ey)]) for shape in shapes for ex, ey, *_ in shape.ends
-        ]
-        bounds = np.vstack(points) if points else np.empty((0, 2))
-        bounds = bounds[np.all(np.isfinite(bounds), axis=1)]
-        if len(bounds) == 0:
-            return None, 0, 0
-        # An arrowhead reaches its length past the end; one more pixel for anti-aliasing.
-        pad = int(math.ceil(max(PATH_ARROW_LENGTH, PATH_POINT_RADIUS, PATH_LOCKED_LINE_WIDTH))) + 1
-        x0 = max(0, int(math.floor(bounds[:, 0].min())) - pad)
-        y0 = max(0, int(math.floor(bounds[:, 1].min())) - pad)
-        x1 = min(w, int(math.ceil(bounds[:, 0].max())) + pad)
-        y1 = min(h, int(math.ceil(bounds[:, 1].max())) + pad)
-        if x1 <= x0 or y1 <= y0:
-            return None, 0, 0
-        sx, sy = scale
-        # Drawn at the target's device scale, so a HiDPI screen gets sharp paths.
-        picture = cairo.ImageSurface(cairo.FORMAT_ARGB32, math.ceil((x1 - x0) * sx), math.ceil((y1 - y0) * sy))
-        picture.set_device_scale(sx, sy)
-        ctx = cairo.Context(picture)
-        ctx.translate(-x0, -y0)
-        _paint_paths(ctx, shapes)
-        return picture, x0, y0
+
+def _render(
+    state: OverlayState, lines: list[Any], w: int, h: int, scale: tuple[float, float], *, locked: bool
+) -> tuple[cairo.ImageSurface | None, int, int]:
+    shapes = _path_shapes(state, w, h, lines)
+    points = [shape.line for shape in shapes] + [np.array([(ex, ey)]) for shape in shapes for ex, ey, *_ in shape.ends]
+    bounds = np.vstack(points) if points else np.empty((0, 2))
+    bounds = bounds[np.all(np.isfinite(bounds), axis=1)]
+    if len(bounds) == 0:
+        return None, 0, 0
+    # An arrowhead reaches its length past the end; one more pixel for anti-aliasing.
+    pad = int(math.ceil(max(PATH_ARROW_LENGTH, PATH_POINT_RADIUS, PATH_LOCKED_LINE_WIDTH))) + 1
+    x0 = max(0, int(math.floor(bounds[:, 0].min())) - pad)
+    y0 = max(0, int(math.floor(bounds[:, 1].min())) - pad)
+    x1 = min(w, int(math.ceil(bounds[:, 0].max())) + pad)
+    y1 = min(h, int(math.ceil(bounds[:, 1].max())) + pad)
+    if x1 <= x0 or y1 <= y0:
+        return None, 0, 0
+    sx, sy = scale
+    # Drawn at the target's device scale, so a HiDPI screen gets sharp paths.
+    picture = cairo.ImageSurface(cairo.FORMAT_ARGB32, math.ceil((x1 - x0) * sx), math.ceil((y1 - y0) * sy))
+    picture.set_device_scale(sx, sy)
+    ctx = cairo.Context(picture)
+    ctx.translate(-x0, -y0)
+    _paint_paths(ctx, shapes, locked=locked)
+    return picture, x0, y0

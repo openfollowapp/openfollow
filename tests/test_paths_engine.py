@@ -147,11 +147,13 @@ class TestMove:
     def test_an_absolute_position_lands_on_the_nearest_point_it_can_reach(self) -> None:
         apart = _path("apart", [(20, 0, 0), (30, 0, 0)], active=True)
         engine = self._locked(CROSS, RAMP, apart, at=(-3.0, 0.0, 0.0))
-        # Up the ramp, which crosses the cross: reachable.
-        assert _round(engine.project(1, 0.3, 4.0)) == (0.0, 4.0, 1.6)
+        # Up the ramp, which crosses the cross: reachable. The height eases up to the ramp's.
+        assert _round(engine.project(1, 0.3, 4.0)) == (0.0, 4.0, 0.0)
         assert engine.locked_path(1) == "Ramp"
+        assert _round(engine.tick(0.5)[1]) == (0.0, 4.0, 1.6)
         # The separate path is nearer to (19, 0) but cannot be reached from here.
-        assert _round(engine.project(1, 19.0, 0.0)) == (5.0, 0.0, 0.0)
+        assert _round(engine.project(1, 19.0, 0.0)) == (5.0, 0.0, 1.6)
+        assert _round(engine.tick(0.5)[1]) == (5.0, 0.0, 0.0)
 
     def test_a_glide_never_aims_at_a_path_it_cannot_reach(self) -> None:
         apart = _path("apart", [(20, 0, 0), (30, 0, 0)], active=True)
@@ -163,6 +165,7 @@ class TestMove:
         engine = self._locked(CROSS, RAMP, at=(-4.0, 0.0, 0.0))
         # 4 m along the cross, then 4 m up the ramp: half way is the crossing.
         assert _round(engine.glide(1, 0.0, 4.0, 0.5)) == (0.0, 0.0, 0.0)
+        # The paths meet at one height, so the ramp's own rise is all the height there is.
         assert _round(engine.glide(1, 0.0, 4.0, 1.0)) == (0.0, 4.0, 1.6)
         assert engine.locked_path(1) == "Ramp"
 
@@ -266,7 +269,13 @@ class TestDrawings:
         drawn = {d.name: d for d in engine.drawings(cfg)}
         assert set(drawn) == {"cross", "Ramp"}
         assert (drawn["cross"].locked, drawn["Ramp"].locked) == (False, True)
-        assert drawn["Ramp"].points == [(0.0, -5.0, 0.0), (0.0, 0.0, 0.0), (0.0, 5.0, 2.0)]
+        # Dots mark the ends; the middle point is a corner, which shows as the curve.
+        assert drawn["Ramp"].points == [(0.0, -5.0, 0.0), (0.0, 5.0, 2.0)]
+
+    def test_a_closed_path_has_no_dots(self) -> None:
+        ring = _path("ring", [(0, 0, 0), (2, 0, 0), (2, 2, 0)], active=True, closed=True)
+        cfg = PathsConfig(paths=[ring])
+        assert _engine(ring).drawings(cfg)[0].points == []
 
     def test_a_long_straight_run_is_drawn_in_short_pieces(self) -> None:
         drawn = _engine(CROSS).drawings(PathsConfig(paths=[CROSS]))[0]
@@ -299,3 +308,40 @@ class TestDrawings:
         engine = _engine(CROSS)
         engine.record("cross", cfg)
         assert [d.name for d in engine.drawings(cfg)] == ["cross"]
+
+
+class TestSwitchingPaths:
+    """Through a junction onto another path: the lock follows, and a height step eases."""
+
+    def _crossing(self, height: float) -> tuple[PathEngine, PathsConfig]:
+        low = _path("low", [(-5, 0, 0), (5, 0, 0)], active=True)
+        high = _path("high", [(0, -5, height), (0, 5, height)], active=True)
+        cfg = PathsConfig(slide_time=0.0, paths=[low, high])
+        engine = PathEngine()
+        engine.reload(cfg, enabled=True)
+        engine.press(1, (-1.0, 0.0, 0.0))
+        engine.tick(0.0)
+        return engine, cfg
+
+    def test_the_lock_and_the_highlight_follow_the_marker_onto_the_other_path(self) -> None:
+        engine, cfg = self._crossing(0.0)
+        engine.move(1, 0.5, 1.0, 3.0)
+        assert engine.locked_path(1) == "high"
+        assert {d.name: d.locked for d in engine.drawings(cfg)} == {"low": False, "high": True}
+
+    def test_a_height_step_at_a_junction_eases_over_half_a_second(self) -> None:
+        engine, _ = self._crossing(0.08)
+        # Onto the higher path: the height starts where the marker was.
+        assert engine.move(1, 0.5, 1.0, 3.0)[2] == pytest.approx(0.0)
+        assert engine.tick(0.25)[1][2] == pytest.approx(0.04)
+        assert engine.tick(0.25)[1][2] == pytest.approx(0.08)
+        # Done: nothing more for the engine to write, and moves carry the path's height.
+        assert engine.tick(0.1) == {}
+        assert engine.move(1, 0.0, 1.0, 0.1)[2] == pytest.approx(0.08)
+
+    def test_a_switch_during_an_ease_starts_from_where_the_height_is(self) -> None:
+        engine, _ = self._crossing(0.08)
+        engine.move(1, 0.5, 1.0, 3.0)
+        mid = engine.tick(0.25)[1][2]
+        # Straight back down onto the lower path through the same crossing.
+        assert engine.move(1, -0.5, -1.0, 0.0001)[2] == pytest.approx(mid, abs=1e-3)

@@ -24,6 +24,9 @@ from openfollow.paths.network import PathNetwork, Place
 
 Point = tuple[float, float, float]
 
+# Switching onto a path at another height eases the height over this long instead of jumping.
+HEIGHT_BLEND_S = 0.5
+
 # Longest straight piece drawn as one line: shorter pieces bow with the lens like the grid.
 _DRAW_STEP_M = 0.25
 
@@ -46,11 +49,14 @@ class _Lock:
     slide_elapsed: float = 0.0
     # Moved by a reload, not by its marker: the next tick writes it.
     moved: bool = False
+    # Height still to ease out after switching onto a path at another height, and how far into that.
+    z_shift: float = 0.0
+    z_elapsed: float = 0.0
 
 
 @dataclass(frozen=True)
 class PathDrawing:
-    """One path for the Operator Screen: its curve, its points, and whether a marker is on it."""
+    """One path for the Operator Screen: its curve, the points it marks with a dot, and whether a marker is on it."""
 
     name: str
     curve: list[Point]
@@ -97,7 +103,7 @@ class PathEngine:
                 curves.append(curve)
                 releases.append((path.release_at_start, path.release_at_end))
                 self._names.append(path.name)
-                self._drawn.append((_line(curve), [(p.x, p.y, p.z) for p in path.points]))
+                self._drawn.append((_line(curve), _ends(path)))
         self._network = PathNetwork(curves, releases) if curves else None
         if not enabled or (self._recording is not None and cfg.find(self._recording) is None):
             self._recording = None
@@ -192,10 +198,23 @@ class PathEngine:
                 out[marker_id] = self._sliding(lock)
                 if lock.slide_elapsed >= self._slide_time:
                     lock.slide_from = None
+            elif lock.z_shift:
+                lock.z_elapsed += dt
+                out[marker_id] = self._at(lock)
+                if lock.z_elapsed >= HEIGHT_BLEND_S:
+                    lock.z_shift = 0.0
             elif lock.moved:
-                out[marker_id] = self._network.point(lock.place)
+                out[marker_id] = self._at(lock)
             lock.moved = False
         return out
+
+    def _at(self, lock: _Lock) -> Point:
+        """Where a landed lock puts its marker: its place, with what is left of a height switch."""
+        assert self._network is not None
+        x, y, z = self._network.point(lock.place)
+        if lock.z_shift:
+            z += lock.z_shift * (1.0 - _ease(min(lock.z_elapsed / HEIGHT_BLEND_S, 1.0)))
+        return x, y, z
 
     def _sliding(self, lock: _Lock) -> Point:
         assert self._network is not None and lock.slide_from is not None
@@ -213,10 +232,10 @@ class PathEngine:
         if lock.slide_from is not None:
             return self._sliding(lock)
         step = self._network.walk(lock.place, vx, vy, dt)
-        lock.place = step.place
+        self._set_place(lock, step.place)
         if step.released:
             del self._locks[marker_id]
-        return self._network.point(step.place)
+        return self._at(lock)
 
     def project(self, marker_id: int, x: float, y: float) -> Point | None:
         """Where an absolute position lands for a locked marker: the nearest point it can reach."""
@@ -228,7 +247,7 @@ class PathEngine:
         place = self._network.nearest(x, y, among=self._network.connected(lock.place.path))
         assert place is not None
         self._set_place(lock, place)
-        return self._network.point(place)
+        return self._at(lock)
 
     def glide(self, marker_id: int, x: float, y: float, fraction: float) -> Point | None:
         """Move a locked marker ``fraction`` of the way towards the reachable point nearest ``(x, y)``."""
@@ -240,9 +259,13 @@ class PathEngine:
         target = self._network.nearest(x, y, among=self._network.connected(lock.place.path))
         assert target is not None
         self._set_place(lock, self._network.glide(lock.place, target, fraction))
-        return self._network.point(lock.place)
+        return self._at(lock)
 
     def _set_place(self, lock: _Lock, place: Place) -> None:
+        if place.path != lock.place.path:
+            # Onto another path: carry the height across and let it ease to the new path's.
+            assert self._network is not None
+            lock.z_shift, lock.z_elapsed = self._at(lock)[2] - self._network.point(place)[2], 0.0
         lock.place = place
         lock.name = self._names[place.path]
 
@@ -270,6 +293,13 @@ class PathEngine:
             curve = _curve_of(path)
             self._recorded = (key, PathDrawing(path.name, points if curve is None else _line(curve), points))
         return self._recorded[1]
+
+
+def _ends(path: PathConfig) -> list[Point]:
+    """The points drawn as dots: an open path's two ends; a corner shows as its curve."""
+    if path.closed:
+        return []
+    return [(p.x, p.y, p.z) for p in (path.points[0], path.points[-1])]
 
 
 def _line(curve: PathCurve) -> list[Point]:

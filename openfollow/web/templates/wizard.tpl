@@ -3607,7 +3607,8 @@
   // event delegation off each SVG keeps re-renders cheap (we never
   // remove/replace the SVG element itself, only its inner groups).
   function setupFineZoomDragging() {
-    var boxes = document.querySelectorAll('.fine-zoom-box');
+    // The Reference Mapping crop shares the class; it drags the Reference Point.
+    var boxes = document.querySelectorAll('.fine-zoom-box[data-corner]');
     for (var i = 0; i < boxes.length; i++) {
       _attachFineZoomBoxHandlers(boxes[i]);
     }

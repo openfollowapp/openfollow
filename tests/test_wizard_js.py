@@ -288,3 +288,41 @@ def test_a_fitted_pair_is_shown_as_a_valid_pair(k1: float, k2: float, shown: lis
     )
     assert out == shown
     assert lens_warp_is_valid(float(out[0]), float(out[1]))
+
+
+def _zoom_boxes() -> list[dict]:
+    """Every element the template gives the ``fine-zoom-box`` class, with its classes and data attributes."""
+    import re
+
+    from tests._wizard_js import WIZARD_TEMPLATE
+
+    boxes = []
+    for tag in re.findall(r"<div\b[^>]*\bclass=\"[^\"]*\bfine-zoom-box\b[^\"]*\"[^>]*>", WIZARD_TEMPLATE.read_text()):
+        attrs = dict(re.findall(r'([\w-]+)="([^"]*)"', tag))
+        dataset = {k[len("data-") :]: v for k, v in attrs.items() if k.startswith("data-")}
+        boxes.append({"classes": attrs["class"].split(), "attrs": attrs, "dataset": dataset})
+    return boxes
+
+
+def test_the_corner_drag_is_wired_to_the_corner_boxes_only() -> None:
+    boxes = _zoom_boxes()
+    # The Reference Mapping crop shares the look of a corner box but drags the Reference Point.
+    assert any("corner" not in box["dataset"] for box in boxes)
+    wired = run_wizard_js(
+        "(function() { setupFineZoomDragging(); return wired; })()",
+        functions=("setupFineZoomDragging",),
+        prelude="""
+var wired = [];
+function _attachFineZoomBoxHandlers(box) { wired.push(box.dataset.corner === undefined ? null : box.dataset.corner); }
+var document = { querySelectorAll: function(sel) {
+  var m = /^\\.([\\w-]+)((?:\\[[\\w-]+\\])*)$/.exec(sel);
+  if (!m) throw new Error('selector the test cannot read: ' + sel);
+  var needs = m[2].match(/[\\w-]+/g) || [];
+  return BOXES.filter(function(b) {
+    return b.classes.indexOf(m[1]) !== -1 && needs.every(function(a) { return a in b.attrs; });
+  });
+} };
+""",
+        BOXES=boxes,
+    )
+    assert sorted(wired, key=str) == ["DSL", "DSR", "USL", "USR"]

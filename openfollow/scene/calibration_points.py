@@ -41,6 +41,10 @@ _FLOOR_PROBES = np.array([[x, y] for y in np.linspace(0.0, 1.0, 7) for x in np.l
 # Two measured circles may miss each other by this much and still be one point: the noise of
 # two distances. A point straight off the end of its baseline lies on that edge.
 _MEET_TOLERANCE = 3.0 * math.sqrt(2.0) * DISTANCE_SIGMA
+# Points pinned this close (snapshot px), or placed this close (m), are one spot measured twice:
+# they count once when points check each other.
+SAME_SPOT_PX = 3.0
+SAME_SPOT_M = 0.05
 
 REASON_DIFFER = "The two distances differ by more than the corners are apart."
 REASON_SHORT = "The two distances add up to less than the corners are apart."
@@ -177,6 +181,26 @@ def _floor_holds(
     return bool(np.all((ratio <= FLOOR_REACH) & (ratio >= 1.0 / FLOOR_REACH)))
 
 
+def _spots(
+    ids: Sequence[int], points: Sequence[CalibrationPoint], places: dict[int, npt.NDArray[np.float64]]
+) -> dict[int, int]:
+    """Each id's spot: the smallest id it is linked to by pins within SAME_SPOT_PX or places within SAME_SPOT_M."""
+    spot = {i: i for i in ids}
+
+    def root(i: int) -> int:
+        while spot[i] != i:
+            i = spot[i]
+        return i
+
+    for n, i in enumerate(ids):
+        for j in ids[n + 1 :]:
+            pin_gap = math.dist(points[i].pin, points[j].pin)
+            if pin_gap <= SAME_SPOT_PX or float(np.linalg.norm(places[i] - places[j])) <= SAME_SPOT_M:
+                a, b = root(i), root(j)
+                spot[max(a, b)] = min(a, b)
+    return {i: root(i) for i in ids}
+
+
 def _in_range(x: npt.NDArray[np.float64]) -> bool:
     """Whether the fitted pitch and field of view are ones the corner solve could have given."""
     return abs(float(x[3])) <= POSE_PITCH_LIMIT_DEG and POSE_FOV_RANGE_DEG[0] <= float(x[6]) <= POSE_FOV_RANGE_DEG[1]
@@ -286,7 +310,9 @@ def solve_with_points(
     included, is left out. A fit that passes is still left out the same way when it moves the floor
     across the picture past :data:`FLOOR_REACH` from where the corners alone put it, or leaves the pitch and
     field of view the corner solve keeps a camera in. A point that is the
-    only one in the fit cannot be cross-checked: ``unverified``.
+    only one in the fit cannot be cross-checked: ``unverified``. Points of one spot (pins within
+    :data:`SAME_SPOT_PX`, or places within :data:`SAME_SPOT_M`) count once in all of that, and are
+    left out together.
     """
     world = np.array(corner_world, dtype=np.float64)
     screen = np.array(corner_screen, dtype=np.float64)
@@ -321,6 +347,7 @@ def solve_with_points(
             active.remove(i)
 
     active = sorted(places)
+    spot_of = _spots(active, points, places)
     solved = None
     while active:
         result = fit(active)
@@ -330,9 +357,10 @@ def solve_with_points(
             continue
         problem, x, r = result
         worst = problem.per_point(r)
-        # A lone point can bend the camera off the corners while fitting itself, so they count too.
-        # With more, the points check each other: corners a few px off would throw good points away.
-        alone = len(active) == 1 and float(np.abs(r[:8]).max()) > FLAG_SIGMA
+        spots = sorted({spot_of[i] for i in active})
+        # A lone spot can bend the camera off the corners while fitting itself, so they count too.
+        # With more, the spots check each other: corners a few px off would throw good points away.
+        alone = len(spots) == 1 and float(np.abs(r[:8]).max()) > FLAG_SIGMA
         reason = ""
         if float(worst.max()) <= FLAG_SIGMA and not alone:
             fitted = np.column_stack([x[7:].reshape(len(active), 2), problem.z])
@@ -343,17 +371,17 @@ def solve_with_points(
                 break
             else:
                 reason = REASON_FLOOR
-        if len(active) == 1:
+        if len(spots) == 1:
             leave_out(active[:], reason or REASON_DISAGREES_CORNERS, worst)
-        elif len(active) == 2:
+        elif len(spots) == 2:
             leave_out(active[:], reason or REASON_PAIR, worst)
         else:
             costs = {}
-            for i in active:
-                rest = fit([j for j in active if j != i])
-                costs[i] = math.inf if rest is None else float(rest[2] @ rest[2])
-            out = min(costs, key=lambda i: costs[i])
-            leave_out([out], reason or REASON_DISAGREES, worst[[active.index(out)]])
+            for spot in spots:
+                rest = fit([j for j in active if spot_of[j] != spot])
+                costs[spot] = math.inf if rest is None else float(rest[2] @ rest[2])
+            out = [i for i in active if spot_of[i] == min(costs, key=lambda k: costs[k])]
+            leave_out(out, reason or REASON_DISAGREES, worst[[active.index(i) for i in out]])
 
     if solved is None:
         # No point is used, so none may move the pose: it is the corners' own solve.
@@ -361,7 +389,7 @@ def solve_with_points(
         return CalibrationSolve(seed, tuple(f for f in fits if f is not None), float(np.abs(corners).max()))
 
     problem, x, r = solved
-    status: Status = "ok" if len(active) > 1 else "unverified"
+    status: Status = "ok" if len({spot_of[i] for i in active}) > 1 else "unverified"
     xy = x[7:].reshape(len(active), 2)
     for j, i in enumerate(active):
         fits[i] = PointFit((float(xy[j, 0]), float(xy[j, 1]), float(problem.z[j])), status, "", float(worst[j]))

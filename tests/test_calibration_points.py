@@ -299,6 +299,48 @@ class TestPlausibility:
         assert (solved.points[0].status, solved.points[0].reason) == ("flagged", cp.REASON_BEHIND)
         assert solved.points[1].status == "unverified"
 
+    @pytest.mark.parametrize("second_pair", [(DSL, DSR), (DSL, USL)])
+    def test_one_spot_entered_twice_is_a_lone_point(self, second_pair) -> None:
+        """Pinned 30 px off, the same spot agrees with itself however often it is entered: it is not a
+        cross-check, so it reads as a lone point does."""
+        wrong = [_point((0.0, -30.0), pin_err=(0.0, 30.0)), _point((0.0, -30.0), *second_pair, pin_err=(0.0, 30.0))]
+        solved = solve_with_points(CORNERS, _pins(CORNERS), wrong, W, H)
+        alone = solve_with_points(CORNERS, _pins(CORNERS), wrong[:1], W, H)
+        assert solved is not None and alone is not None
+        assert [p.status for p in solved.points] == ["unverified"] * 2 == [alone.points[0].status] * 2
+
+    def test_a_spot_entered_twice_does_not_outvote_a_correct_point(self) -> None:
+        """Two entries of one wrong spot beside one correct point are two spots that disagree."""
+        wrong = _point((0.0, -30.0), pin_err=(0.0, 30.0))
+        solved = solve_with_points(CORNERS, _pins(CORNERS), [wrong, wrong, _point((5.0, -35.0))], W, H)
+        assert solved is not None
+        assert [(p.status, p.reason) for p in solved.points] == [("flagged", cp.REASON_PAIR)] * 3
+        assert np.allclose(_params(solved.camera), TRUE, atol=1e-6)
+
+    def test_of_three_spots_a_wrong_one_entered_twice_is_left_out_whole(self) -> None:
+        wrong = [_point((0.0, -30.0), pin_err=(0.0, 30.0)), _point((0.0, -30.0), DSL, USL, pin_err=(0.0, 30.0))]
+        solved = solve_with_points(CORNERS, _pins(CORNERS), [*wrong, _point((5.0, -35.0)), _point((-4.0, -20.0))], W, H)
+        assert solved is not None
+        assert [p.status for p in solved.points] == ["flagged", "flagged", "ok", "ok"]
+        assert np.allclose(_params(solved.camera), TRUE, atol=1e-6)
+
+    def test_points_placed_within_a_few_cm_are_one_spot_however_they_are_pinned(self) -> None:
+        """Pins apart but places together: the same spot pinned twice, which checks nothing either."""
+        first = _point((0.0, -30.0))
+        second = _point((0.0, -30.0), DSL, USL, pin_err=(cp.SAME_SPOT_PX + 2.0, 0.0))
+        solved = solve_with_points(CORNERS, _pins(CORNERS), [first, second], W, H)
+        assert solved is not None
+        assert [p.status for p in solved.points] == ["unverified"] * 2
+
+    def test_distinct_spots_still_check_each_other(self) -> None:
+        """Spots pinned just past the same-spot distance count as two."""
+        near = _point((-4.0, -20.0))
+        beside = _point((-3.9, -20.0))
+        assert math.dist(near.pin, beside.pin) > cp.SAME_SPOT_PX
+        solved = solve_with_points(CORNERS, _pins(CORNERS), [near, beside], W, H)
+        assert solved is not None
+        assert [p.status for p in solved.points] == ["ok", "ok"]
+
     def test_corners_that_give_no_camera_give_no_solve(self) -> None:
         line = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
         assert solve_with_points(line, _pins(CORNERS), [_point((5.0, -35.0))], W, H) is None

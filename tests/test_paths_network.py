@@ -74,6 +74,15 @@ class TestJunctions:
     def test_paths_running_side_by_side_do_not_meet(self) -> None:
         assert find_junctions([H, _curve([(-5, 0.3, 0), (5, 0.3, 0)])]) == []
 
+    def test_a_path_passing_the_same_spot_of_another_twice_meets_it_twice(self) -> None:
+        # Up through (0, 0), round, and diagonally back through (0, 0).
+        twice = _curve([(0, -2, 0, 0), (0, 2, 0, 0), (2, 2, 0, 0), (-2, -2, 0, 0)])
+        junctions = find_junctions([H, twice])
+        assert [(j.s_a, j.s_b) for j in junctions] == [
+            (pytest.approx(5.0), pytest.approx(2.0)),
+            (pytest.approx(5.0), pytest.approx(6.0 + 2 * math.sqrt(2))),
+        ]
+
     def test_a_closed_path_meets_an_open_one_twice(self) -> None:
         ring = _curve([(-2, -2, 0), (2, -2, 0), (2, 2, 0), (-2, 2, 0)], closed=True)
         assert len(find_junctions([H, ring])) == 2

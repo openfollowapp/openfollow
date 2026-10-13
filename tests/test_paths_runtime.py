@@ -84,8 +84,25 @@ class TestPathfinder:
         with caplog.at_level(logging.WARNING):
             paths_runtime.pathfinder(app, 3, _Marker(9, 9, 0))
         assert len(app._config.paths.paths[0].points) == MAX_PATH_POINTS
-        assert "already has 100 points" in caplog.text
-        assert not Path(app._config_path).exists()
+        assert len(load_config(app._config_path).paths.paths[0].points) == MAX_PATH_POINTS
+        assert caplog.text.count("already has 100 points") == 1
+
+    def test_a_point_added_to_an_active_path_is_part_of_it_at_once(self, tmp_path: Path) -> None:
+        app = _App(tmp_path, _cross())
+        app._paths.record("cross", app._config.paths)
+        paths_runtime.pathfinder(app, 3, _Marker(5, 3, 0))
+        assert app._paths.drawings(app._config.paths)[0].ends[-1].at == pytest.approx((5.0, 3.0, 0.0))
+
+    def test_a_path_made_on_the_web_moments_ago_is_recorded_into_the_file(self, tmp_path: Path) -> None:
+        app = _saved_after(tmp_path, lambda web: web.paths.paths.append(PathConfig(name="fresh")))
+        # Recording starts from the file, before the reload watcher has brought the new path in.
+        assert app._paths.record("fresh", load_config(app._config_path).paths)
+        paths_runtime.pathfinder(app, 3, _Marker(1, 2, 0))
+        paths_runtime.pathfinder(app, 3, _Marker(3, 2, 0))
+        fresh = load_config(app._config_path).paths.find("fresh")
+        assert fresh is not None
+        assert [(p.x, p.y) for p in fresh.points] == [(1.0, 2.0), (3.0, 2.0)]
+        assert app._paths.recording == "fresh"
 
 
 def test_toggle_paths_flips_visibility_and_saves_it(tmp_path: Path) -> None:
@@ -147,19 +164,27 @@ class TestSavesLeaveWebSavesAlone:
     def test_a_web_save_made_just_before_survives_and_is_still_applied(
         self, tmp_path: Path, save: Any, saved: Any
     ) -> None:
-        app = _saved_after(tmp_path, lambda web: setattr(web, "psn_system_name", "Saved-From-Web"))
+        def web_edit(web: AppConfig) -> None:
+            web.psn_system_name = "Saved-From-Web"
+            web.paths.paths[0].points[0].radius = 2.0
+
+        app = _saved_after(tmp_path, web_edit)
         save(app)
         on_disk = load_config(app._config_path)
         assert on_disk.psn_system_name == "Saved-From-Web"
+        assert on_disk.paths.paths[0].points[0].radius == 2.0
         assert saved(on_disk)
         # Not marked as loaded: the reload watcher still applies the web save.
         assert app._get_config_mtime() > app._config_mtime
 
     @pytest.mark.parametrize("save", [_switch_cross_off, _record_a_point])
-    def test_a_path_a_web_save_removed_is_not_written_back(self, tmp_path: Path, save: Any) -> None:
+    def test_a_path_a_web_save_removed_is_not_written_back(
+        self, tmp_path: Path, save: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
         app = _saved_after(tmp_path, lambda web: setattr(web.paths, "paths", []))
         save(app)
         assert load_config(app._config_path).paths.paths == []
+        assert "Failed to save" not in caplog.text
 
 
 class TestCommands:

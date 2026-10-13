@@ -42,21 +42,29 @@ def pathfinder(app: Any, marker_id: int, marker: Any) -> None:
 
 
 def _record_point(app: Any, marker: Any) -> None:
-    path = app._config.paths.find(app._paths.recording or "")
-    if path is None:  # pragma: no cover - the engine stops recording a path that is gone
-        return
-    if len(path.points) >= MAX_PATH_POINTS:
-        logger.warning("Path %s already has %d points; not adding another", path.name, MAX_PATH_POINTS)
-        return
-    name, (x, y, z) = path.name, marker.pos
+    """Add ``marker``'s position to the recorded path, in the running config and in the file, each as it has it.
+
+    The file can hold a path the running config does not have yet: one just made on the web.
+    """
+    name = app._paths.recording or ""
+    x, y, z = marker.pos
+    full: list[str] = []
 
     def add_point(cfg: AppConfig) -> None:
-        recorded = cfg.paths.find(name)
-        if recorded is not None:
-            recorded.points.append(PathPointConfig(x, y, z))
+        path = cfg.paths.find(name)
+        if path is None:
+            return
+        if len(path.points) >= MAX_PATH_POINTS:
+            full.append(path.name)
+            return
+        path.points.append(PathPointConfig(x, y, z))
 
     _write(app, add_point)
-    reload_paths(app)
+    if full:
+        logger.warning("Path %s already has %d points; not adding another", full[0], MAX_PATH_POINTS)
+    # A rebuild from a running config without the path would stop recording it; the reload watcher brings it.
+    if app._config.paths.find(name) is not None:
+        reload_paths(app)
 
 
 def toggle_paths(app: Any) -> None:

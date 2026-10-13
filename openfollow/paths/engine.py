@@ -177,8 +177,7 @@ class PathEngine:
         if self._network is None:
             return Press.NONE
         place = self._network.nearest(pos[0], pos[1])
-        if place is None:  # pragma: no cover - a network always holds a curve
-            return Press.NONE
+        assert place is not None  # a network always holds a curve
         self._start(marker_id, place, pos)
         return Press.LOCKED
 
@@ -188,8 +187,7 @@ class PathEngine:
         if index is None or self._network is None:
             return False
         place = self._network.nearest(pos[0], pos[1], among=[index])
-        if place is None:  # pragma: no cover - one index always answers
-            return False
+        assert place is not None  # one path always answers
         self._start(marker_id, place, pos)
         return True
 

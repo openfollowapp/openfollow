@@ -83,6 +83,21 @@ class TestJunctions:
             (pytest.approx(5.0), pytest.approx(6.0 + 2 * math.sqrt(2))),
         ]
 
+    @pytest.mark.parametrize(
+        ("vee", "line"),
+        [
+            ([(-3.5, 0.5), (-3.3, -1.2), (-2.6, -2.9)], [(-5.0, -1.4), (-1.6, -1.0)]),
+            ([(-2.1, 1.2), (-1.9, -0.5), (-1.2, -2.2)], [(-3.6, -0.7), (-0.2, -0.3)]),
+            ([(-2.5, -3.0), (-1.2, -3.3), (0.6, -3.6)], [(-1.5, -4.6), (-0.9, -2.0)]),
+        ],
+    )
+    def test_a_path_through_another_s_sharp_corner_point_meets_it_once(
+        self, vee: list[tuple[float, float]], line: list[tuple[float, float]]
+    ) -> None:
+        # Typed to one decimal, the crossing falls a rounding error outside both segments meeting there.
+        corner = _curve([(x, y, 0, 0) for x, y in vee])
+        assert len(find_junctions([corner, _curve([(x, y, 0) for x, y in line])])) == 1
+
     def test_a_crossing_on_a_closed_path_s_first_point_counts_once(self) -> None:
         # The crossing at (0, 0) ends the diamond's last segment and starts its first.
         diamond = _curve([(0, 0, 0, 0), (1, -1, 0, 0), (2, 0, 0, 0), (1, 1, 0, 0)], closed=True)
@@ -124,13 +139,14 @@ def _reference_junctions(curves: list[PathCurve]) -> list[Junction]:
             with np.errstate(divide="ignore", invalid="ignore"):
                 t = (qp[..., 0] * w[..., 1] - qp[..., 1] * w[..., 0]) / denom
                 u = (qp[..., 0] * r[..., 1] - qp[..., 1] * r[..., 0]) / denom
-            hit = (np.abs(denom) > 1e-12) & (t >= 0.0) & (t <= 1.0) & (u >= 0.0) & (u <= 1.0)
+            on = 1e-9
+            hit = (np.abs(denom) > 1e-12) & (t >= -on) & (t <= 1 + on) & (u >= -on) & (u <= 1 + on)
             pair = [
                 Junction(
                     a,
-                    float(ca.s[i] + t[i, k] * (ca.s[i + 1] - ca.s[i])),
+                    float(np.clip(ca.s[i] + t[i, k] * (ca.s[i + 1] - ca.s[i]), 0.0, ca.length)),
                     b,
-                    float(cb.s[k] + u[i, k] * (cb.s[k + 1] - cb.s[k])),
+                    float(np.clip(cb.s[k] + u[i, k] * (cb.s[k + 1] - cb.s[k]), 0.0, cb.length)),
                 )
                 for i, k in zip(*np.nonzero(hit), strict=True)
             ]

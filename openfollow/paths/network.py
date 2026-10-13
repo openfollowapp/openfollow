@@ -34,6 +34,8 @@ _SAME_JUNCTION_M = 0.05
 # Segment starts, vectors, squared lengths, ``s`` at each start, and the path each belongs to.
 _SegmentIndex = tuple[FloatArray, FloatArray, FloatArray, FloatArray, FloatArray]
 _PARALLEL = 1e-12
+# How far past a segment's end, as a fraction of it, a crossing still counts: one through a vertex sits on both.
+_ON_SEGMENT = 1e-9
 _EPS = 1e-6
 _MAX_LEGS = 16
 # Segments per bounding box when looking for crossings, and pairs of boxes tested in one pass.
@@ -325,12 +327,14 @@ def _crossings(ca: PathCurve, cb: PathCurve, boxes_a: FloatArray, boxes_b: Float
         with np.errstate(divide="ignore", invalid="ignore"):
             t = _cross(qp, w) / denom
             u = _cross(qp, r) / denom
-        hit = (np.abs(denom) > _PARALLEL) & (t >= 0.0) & (t <= 1.0) & (u >= 0.0) & (u <= 1.0)
+        lo_t, hi_t = -_ON_SEGMENT, 1.0 + _ON_SEGMENT
+        hit = (np.abs(denom) > _PARALLEL) & (t >= lo_t) & (t <= hi_t) & (u >= lo_t) & (u <= hi_t)
         hits.append((ia[hit], ib[hit], t[hit], u[hit]))
     ia, ib, t, u = (np.concatenate(part) for part in zip(*hits, strict=True))
     order = np.lexsort((ib, ia))
-    sa = ca.s[ia] + t * (ca.s[ia + 1] - ca.s[ia])
-    sb = cb.s[ib] + u * (cb.s[ib + 1] - cb.s[ib])
+    # A crossing just past an end of the whole curve is at that end.
+    sa = np.clip(ca.s[ia] + t * (ca.s[ia + 1] - ca.s[ia]), 0.0, ca.length)
+    sb = np.clip(cb.s[ib] + u * (cb.s[ib + 1] - cb.s[ib]), 0.0, cb.length)
     return [(float(sa[k]), float(sb[k])) for k in order]
 
 

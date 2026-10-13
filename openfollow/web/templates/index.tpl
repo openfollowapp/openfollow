@@ -66,6 +66,7 @@
     % include('partials/video_source.tpl', config=config, saved=False, available_inputs=available_inputs, input_html_fragments=input_html_fragments, video_failure=video_failure, video_failure_text=video_failure_text, video_error_message=video_error_message, video_failure_action=video_failure_action)
     % include('partials/camera.tpl', config=config, saved=False)
     % include('partials/grid.tpl', config=config, saved=False)
+    % include('partials/ground_grid.tpl', config=config, saved=False)
 </div>
 
 <!-- Markers & Zones -->

@@ -8416,3 +8416,107 @@ def test_api_config_paths_reads_and_takes_paths_keeping_station_state(live_serve
     out = load_config(server.config_path).paths
     assert (out.show_paths, out.slide_time) == (False, 0.8)
     assert [(p.name, p.active, p.closed) for p in out.paths] == [("cross", True, True)]
+
+
+# ---------------------------------------------------------------------------
+# Ground grid section: form -> config, broadcast, import / export
+# ---------------------------------------------------------------------------
+
+_GG_SQUARE = [[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0]]
+
+
+def test_ground_grid_post_persists_every_field_and_renders_partial(live_server) -> None:
+    server, base = live_server
+    status, body = _post_form(
+        base,
+        "/section/ground_grid",
+        {"enabled": "on", "visible": "on", "z_offset": "-0.75", "vertices": json.dumps(_GG_SQUARE)},
+    )
+    assert status == 200
+    assert 'id="ground-grid-section"' in body
+    gg = load_config(server.config_path).ground_grid
+    assert (gg.enabled, gg.visible, gg.z_offset, gg.vertices) == (True, True, -0.75, _GG_SQUARE)
+
+
+def test_ground_grid_post_unticked_boxes_turn_off(live_server) -> None:
+    server, base = live_server
+    _post_form(base, "/section/ground_grid", {"enabled": "on", "visible": "on"})
+    status, _ = _post_form(base, "/section/ground_grid", {"z_offset": "0"})
+    assert status == 200
+    gg = load_config(server.config_path).ground_grid
+    assert (gg.enabled, gg.visible) == (False, False)
+
+
+@pytest.mark.parametrize("bad", ["not json", "null", "5", '"text"', '{"x": 1}'])
+def test_ground_grid_post_malformed_vertices_keep_the_polygon(live_server, bad: str) -> None:
+    server, base = live_server
+    _post_form(base, "/section/ground_grid", {"vertices": json.dumps(_GG_SQUARE)})
+    status, _ = _post_form(base, "/section/ground_grid", {"vertices": bad})
+    assert status == 200
+    assert load_config(server.config_path).ground_grid.vertices == _GG_SQUARE
+
+
+def test_ground_grid_post_drops_bad_corners_and_caps_the_count(live_server) -> None:
+    from openfollow.configuration import GROUND_GRID_MAX_VERTICES
+
+    server, base = live_server
+    corners = [[0, 0], ["x", 1], [1, "NaN"], [1, 0], [1, 1]] + [[i, 5] for i in range(GROUND_GRID_MAX_VERTICES)]
+    status, _ = _post_form(base, "/section/ground_grid", {"vertices": json.dumps(corners)})
+    assert status == 200
+    saved = load_config(server.config_path).ground_grid.vertices
+    assert saved[:3] == [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]
+    assert len(saved) == GROUND_GRID_MAX_VERTICES
+
+
+@pytest.mark.parametrize(("bad", "expected"), [("abc", -0.5), ("", -0.5), ("inf", 0.0), ("nan", 0.0)])
+def test_ground_grid_post_bad_height_never_stores_a_non_number(live_server, bad: str, expected: float) -> None:
+    server, base = live_server
+    _post_form(base, "/section/ground_grid", {"z_offset": "-0.5"})
+    status, _ = _post_form(base, "/section/ground_grid", {"z_offset": bad})
+    assert status == 200
+    assert load_config(server.config_path).ground_grid.z_offset == expected
+
+
+@pytest.mark.parametrize(("raw", "invalid"), [("-0.4", False), ("abc", True)])
+def test_ground_grid_height_blur_validation(live_server, raw: str, invalid: bool) -> None:
+    _, base = live_server
+    status, body = _get(base, f"/api/validate/ground_grid/z_offset?z_offset={urllib.parse.quote(raw)}")
+    assert status == 200
+    assert ("field-error-msg" in body) is invalid
+
+
+def test_ground_grid_broadcast_saves_the_polygon_locally(live_server) -> None:
+    server, base = live_server
+    status, body = _post_json(
+        base,
+        "/api/config/ground_grid/broadcast",
+        {"enabled": True, "visible": False, "z_offset": -1, "vertices": json.dumps(_GG_SQUARE)},
+    )
+    assert status == 200
+    assert body["local_updated"] is True
+    gg = load_config(server.config_path).ground_grid
+    assert (gg.enabled, gg.visible, gg.z_offset, gg.vertices) == (True, False, -1.0, _GG_SQUARE)
+
+
+def test_ground_grid_travels_through_export_and_import(live_server) -> None:
+    server, base = live_server
+    _post_form(base, "/section/ground_grid", {"enabled": "on", "z_offset": "-0.6", "vertices": json.dumps(_GG_SQUARE)})
+    with urllib.request.urlopen(f"{base}/api/config/export", timeout=5) as resp:
+        exported = json.loads(resp.read())
+    assert exported["ground_grid"]["vertices"] == _GG_SQUARE
+
+    _post_form(base, "/section/ground_grid", {"vertices": "[]", "z_offset": "0"})
+    status, _ = _post_raw_json(base, "/api/config/import", exported)
+    assert status == 200
+    gg = load_config(server.config_path).ground_grid
+    assert (gg.enabled, gg.z_offset, gg.vertices) == (True, -0.6, _GG_SQUARE)
+
+
+def test_ground_grid_section_is_experimental_on_the_settings_page(live_server) -> None:
+    _, base = live_server
+    status, body = _get(base, "/")
+    assert status == 200
+    form_tag = re.search(r'<form id="ground-grid-section"[^>]*>', body)
+    assert form_tag is not None
+    assert "experimental-feature" in form_tag.group(0)
+    assert 'name="vertices"' in body

@@ -217,6 +217,7 @@ VALID_SECTIONS = {
     "video_source",
     "camera",
     "grid",
+    "ground_grid",
     "movement",
     "marker",
     "controller",
@@ -334,6 +335,7 @@ _SECTION_CONFIG_ATTRS = {
     "camera": "camera",
     "paths": "paths",
     "grid": "grid",
+    "ground_grid": "ground_grid",
     "movement": "marker",
     "marker": "marker",
     "controller": "controller",
@@ -1727,6 +1729,8 @@ def apply_section_data(cfg: AppConfig, section: str, data: Mapping[str, Any]) ->
         cfg.mouse3d.__post_init__()
     elif section == "grid":
         cfg.grid.__post_init__()
+    elif section == "ground_grid":
+        cfg.ground_grid.__post_init__()
     elif section == "camera":
         cfg.camera.__post_init__()
     elif section in ("marker", "movement"):
@@ -1834,6 +1838,7 @@ _SECTION_LENGTH_FIELDS: dict[str, frozenset[str]] = {
             "max_height",
         }
     ),
+    "ground_grid": frozenset({"z_offset"}),
     "marker": frozenset(
         {"ball_size", "crosshair_size", "ground_circle_size", "cone_base_diameter", "cone_top_diameter"}
     ),
@@ -2071,6 +2076,17 @@ def _as_ip_list(value: Any, default: list[str]) -> list[str]:
 
 _FieldParser = Callable[[Any, Any], Any]
 
+
+def _as_vertices(value: Any, current: list[list[float]]) -> list[list[float]]:
+    """A corner list as a list or as its JSON text (a form field); else *current*."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return current
+    return _parse_vertices(value, current)
+
+
 _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
     "camera": {
         "pos_x": _as_float,
@@ -2102,6 +2118,12 @@ _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
         "origin_visible": _as_bool,
         "origin_length": _as_float,
         "origin_thickness": _as_int,
+    },
+    "ground_grid": {
+        "enabled": _as_bool,
+        "visible": _as_bool,
+        "z_offset": _as_float,
+        "vertices": _as_vertices,
     },
     "movement": {
         "min_speed": _as_float,
@@ -3254,6 +3276,7 @@ def _apply_import_data(current_cfg: AppConfig, data: dict[str, Any]) -> AppConfi
     for section in (
         "camera",
         "grid",
+        "ground_grid",
         "controller",
         "osc",
         "otp_output",
@@ -6668,6 +6691,12 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """Update grid settings."""
         cfg = _save_section_from_form("grid", bool_fields=("visible", "origin_visible"))
         return template("partials/grid", config=cfg, saved=True)
+
+    @app.post("/section/ground_grid")
+    def update_ground_grid() -> Any:
+        """Update the experimental ground grid, its polygon included."""
+        cfg = _save_section_from_form("ground_grid", bool_fields=("enabled", "visible"))
+        return template("partials/ground_grid", config=cfg, saved=True)
 
     @app.post("/section/movement")
     def update_movement() -> Any:

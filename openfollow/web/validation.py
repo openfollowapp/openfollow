@@ -396,6 +396,11 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
         "lens_k1": FieldRule(_as_float, lo=-0.4, hi=0.4, human_error="Must be between -0.4 and 0.4."),
         "lens_k2": FieldRule(_as_float, lo=-0.2, hi=0.2, human_error="Must be between -0.2 and 0.2."),
     },
+    "ground_grid": {
+        "enabled": FieldRule(_as_bool),
+        "visible": FieldRule(_as_bool),
+        "z_offset": FieldRule(_as_float, human_error="Must be a number."),
+    },
     "grid": {
         "visible": FieldRule(_as_bool),
         "width": FieldRule(_as_float, lo=0.1, human_error="Width must be at least 0.1 m."),

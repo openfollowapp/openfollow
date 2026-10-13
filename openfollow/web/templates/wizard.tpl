@@ -1230,7 +1230,7 @@
   }
 
   // A slider or number edit on the Lens step: mirror the pair, flag a folding
-  // pair, redraw the predicted curves and the projected grid, and persist.
+  // pair, redraw the predicted curves, and persist.
   window.onWizardLensInput = function(which, source) {
     var num = document.getElementById('wiz_lens_' + which);
     var range = document.getElementById('wiz_lens_' + which + '_range');
@@ -1242,7 +1242,7 @@
     lensRecomputeCurves();
     renderLens();
     onLensCoeffChanged();
-    projectAndOverlay();
+    if (currentStep !== WIZ.lens) projectAndOverlay();
   };
 
   function saveToSession() {
@@ -3648,6 +3648,7 @@
       if (!fineZoomReady()) return;
       var p = svgPoint(e.clientX, e.clientY);
       if (!p) return;
+      poseSeq++;
       cornerPositions[corner] = [p[0], p[1]];
       // Update the moved corner's full-view marker too – the operator
       // may flip back to the full view at any time.
@@ -3736,6 +3737,7 @@
       else if (e.key === 'ArrowDown') { pos[1] += step; moved = true; }
       if (!moved) return;
       e.preventDefault();
+      poseSeq++;
       // Mirror to the full-view handle so a flip-back shows the
       // same position.
       var fullHandle = document.querySelector('#fine-corners .handle[data-corner="' + corner + '"]');
@@ -4628,9 +4630,7 @@
     }).then(function(res) {
       if (seq !== lensFitSeq) return;
       if (!res.ok || !res.data || res.data.error) {
-        lensFit = null;
-        renderLensResult();
-        lensShowStatus((res.data && res.data.error) || 'Could not fit the lens.', false);
+        lensFitFailed((res.data && res.data.error) || 'Could not fit the lens.');
         return;
       }
       lensShowStatus('', true);
@@ -4654,8 +4654,16 @@
       if (lensFitApplies(lensFit)) onLensCoeffChanged();
       else saveToSession();
     }).catch(function() {
-      if (seq === lensFitSeq) lensShowStatus('Could not fit the lens.', false);
+      if (seq === lensFitSeq) lensFitFailed('Could not fit the lens.');
     });
+  }
+  // The lines have changed since the last fit, so nothing of it stays on screen.
+  function lensFitFailed(message) {
+    lensFit = null;
+    renderLensResult();
+    renderLens();
+    saveToSession();
+    lensShowStatus(message, false);
   }
 
   // The curve a lens pair predicts for a line: the straight line through the

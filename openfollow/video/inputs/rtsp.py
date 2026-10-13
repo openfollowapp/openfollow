@@ -40,7 +40,8 @@ def _transports(location: str) -> int:
 
     rtspsrc opens its UDP sockets for the SDP's address family, which most servers
     give as IPv4 whatever the connection, and udpsink then refuses an IPv6 server.
-    A fallback to IPv6 after an IPv4 first address fails is not covered.
+    A fallback to IPv6 after an IPv4 first address fails is not covered, and TCP
+    alone leaves multicast out: a multicast-only server reached over IPv6 does not play.
     """
     try:
         parts = urlsplit(location)

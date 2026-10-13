@@ -3102,6 +3102,16 @@ def test_is_on_device_request_handles_a_missing_connection_address(monkeypatch) 
     assert routes_mod._is_on_device_request() is False
 
 
+def test_a_lan_client_claiming_loopback_in_forwarded_for_is_not_on_device(monkeypatch) -> None:
+    from bottle import LocalRequest
+
+    from openfollow.web import routes as routes_mod
+
+    req = LocalRequest({"REMOTE_ADDR": "192.0.2.5", "HTTP_X_FORWARDED_FOR": "127.0.0.1"})
+    monkeypatch.setattr(routes_mod, "request", req)
+    assert routes_mod._is_on_device_request() is False
+
+
 def test_no_code_reads_bottles_forwarded_for_address() -> None:
     """Bottle's ``remote_addr`` / ``remote_route`` read a client-set X-Forwarded-For; ``REMOTE_ADDR`` is the peer."""
     import ast

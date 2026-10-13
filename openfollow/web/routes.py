@@ -4780,8 +4780,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         if path == "/system/privilege/password/modal":
             return
 
-        # Peer-to-peer (HMAC-signed) request. Replaces the legacy
-        # X-Auth-Pin header that leaked the PIN over plain HTTP.
+        # Peer-to-peer (HMAC-signed) request; the PIN itself never travels.
         signature = request.headers.get(peer_auth.SIGNATURE_HEADER, "")
         timestamp = request.headers.get(peer_auth.TIMESTAMP_HEADER, "")
         if signature and timestamp:

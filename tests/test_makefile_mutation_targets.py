@@ -86,3 +86,20 @@ def test_mutation_targets_run_mutmut_once_it_is_installed(tmp_path: Path, target
     calls = log.read_text(encoding="utf-8").splitlines()
     assert "run python -c import mutmut" in calls
     assert calls[-1] == expected
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "MODULE=openfollow.zones.engine mutation-module",
+        "MUTANT=openfollow.zones.engine.x_update__mutmut_1 mutation-show",
+        "mutation-results",
+    ],
+    ids=["module", "show", "results"],
+)
+def test_mutation_targets_stop_before_mutmut_when_it_is_missing(tmp_path: Path, target: str) -> None:
+    failing = '#!/bin/sh\necho "$*" >> "$POETRY_LOG"\nexit 1\n'
+    run, log = _make(tmp_path, failing, *target.split())
+    assert run.returncode != 0, run.stdout + run.stderr
+    assert "mutmut could not be imported" in run.stdout + run.stderr
+    assert not [call for call in log.read_text(encoding="utf-8").splitlines() if call.startswith("run mutmut")]

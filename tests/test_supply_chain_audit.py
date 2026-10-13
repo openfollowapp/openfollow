@@ -20,6 +20,7 @@ in *that* holding up a Pi release is what gets an audit ignored or deleted.
 
 from __future__ import annotations
 
+import functools
 import re
 import shlex
 from dataclasses import dataclass
@@ -83,42 +84,37 @@ def _poetry_verb(command: list[str]) -> str | None:
     return next((token for token in command[1:] if not token.startswith("-")), None)
 
 
-def _extras_installed(run: str) -> set[str]:
-    """Extras a ``run:`` block installs, over every spelling poetry accepts."""
-    extras: set[str] = set()
+def _option_values(run: str, names: set[str]) -> list[str]:
+    """Values a poetry install/sync in ``run`` passes to ``names``, over every spelling poetry accepts."""
+    values: list[str] = []
     for command in _shell_commands(run):
         if _poetry_verb(command) not in {"install", "sync"}:
             continue
         expecting = False
         for token in command:
             if expecting:
-                extras.add(token)
+                values.append(token)
                 expecting = False
-            elif token in {"-E", "--extras"}:
+            elif token in names:
                 expecting = True
-            elif token.startswith("--extras="):
-                extras.add(token.split("=", 1)[1])
-            elif token.startswith("-E") and len(token) > 2:
-                extras.add(token[2:])
-    return extras
+            else:
+                for name in names:
+                    if name.startswith("--") and token.startswith(f"{name}="):
+                        values.append(token.split("=", 1)[1])
+                    elif not name.startswith("--") and token.startswith(name) and len(token) > len(name):
+                        values.append(token[len(name) :])
+    return values
+
+
+def _extras_installed(run: str) -> set[str]:
+    """Extras a ``run:`` block installs."""
+    return set(_option_values(run, {"-E", "--extras"}))
 
 
 def _groups_installed(run: str) -> set[str]:
     """Optional Poetry groups a ``run:`` block adds with ``--with``."""
-    groups: set[str] = set()
-    for command in _shell_commands(run):
-        if _poetry_verb(command) not in {"install", "sync"}:
-            continue
-        expecting = False
-        for token in command:
-            if expecting:
-                groups.update(token.split(","))
-                expecting = False
-            elif token == "--with":
-                expecting = True
-            elif token.startswith("--with="):
-                groups.update(token.split("=", 1)[1].split(","))
-    return {group.strip() for group in groups if group.strip()}
+    groups = (group.strip() for value in _option_values(run, {"--with"}) for group in value.split(","))
+    return {group for group in groups if group}
 
 
 def _install_flags(run: str) -> set[str]:
@@ -146,6 +142,14 @@ def _gates(job: dict[str, Any], audit_steps: list[dict[str, Any]]) -> bool:
     return True
 
 
+def _caches_venv(steps: list[dict[str, Any]]) -> bool:
+    return any(
+        str(step.get("uses", "")).startswith("actions/cache")
+        and ".venv" in str((step.get("with") or {}).get("path", ""))
+        for step in steps
+    )
+
+
 @dataclass(frozen=True)
 class _AuditJob:
     name: str
@@ -157,7 +161,8 @@ class _AuditJob:
     runs_on: str
 
 
-def _audit_jobs() -> list[_AuditJob]:
+@functools.cache
+def _audit_jobs() -> tuple[_AuditJob, ...]:
     """Every ci.yml job that runs pip-audit, with the closure it audits."""
     doc: dict[str, Any] = yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))
     jobs: list[_AuditJob] = []
@@ -174,11 +179,7 @@ def _audit_jobs() -> list[_AuditJob]:
             extras |= _extras_installed(run)
             groups |= _groups_installed(run)
             flags |= _install_flags(run)
-        caches_venv = any(
-            str(step.get("uses", "")).startswith("actions/cache")
-            and ".venv" in str((step.get("with") or {}).get("path", ""))
-            for step in steps
-        )
+        caches_venv = _caches_venv(steps)
         jobs.append(
             _AuditJob(
                 name=str(name),
@@ -187,11 +188,11 @@ def _audit_jobs() -> list[_AuditJob]:
                 groups=frozenset(groups),
                 caches_venv=caches_venv,
                 install_flags=frozenset(flags),
-                runs_on=f"{job.get('runs-on', '')} {job.get('strategy', '')}",
+                runs_on=str(job.get("runs-on", "")),
             )
         )
     assert jobs, "ci.yml has no job that runs pip-audit"
-    return jobs
+    return tuple(jobs)
 
 
 def _declared_extras() -> list[str]:
@@ -242,8 +243,14 @@ _LINUX = {
     "sys_platform": "linux",
     "platform_system": "Linux",
     "platform_machine": "x86_64",
+    "platform_release": "",
+    "platform_version": "",
     "os_name": "posix",
     "python_version": "3.13",
+    "python_full_version": "3.13.0",
+    "implementation_name": "cpython",
+    "implementation_version": "3.13.0",
+    "platform_python_implementation": "CPython",
 }
 _DARWIN = [
     {**_LINUX, "sys_platform": "darwin", "platform_system": "Darwin", "platform_machine": machine}
@@ -257,11 +264,18 @@ def _installs(marker: str | None, env: dict[str, str], extras: set[str]) -> bool
     return any(Marker(marker).evaluate({**env, "extra": extra}) for extra in extras | {""})
 
 
+@functools.cache
+def _lock_packages() -> tuple[dict[str, Any], ...]:
+    return tuple(tomllib.loads(_LOCK.read_text(encoding="utf-8"))["package"])
+
+
 def _darwin_only_packages(group: str) -> list[str]:
     """Lock packages ``group`` installs on macOS but no Linux audit installs at all."""
-    extras: set[str] = set().union(*(job.extras for job in _audit_jobs()))
+    linux_jobs = [job for job in _audit_jobs() if "macos" not in job.runs_on.lower()]
+    extras: set[str] = set().union(*(job.extras for job in linux_jobs))
+    audited_groups = {"main", "dev"}.union(*(job.groups for job in linux_jobs))
     names: list[str] = []
-    for package in tomllib.loads(_LOCK.read_text(encoding="utf-8"))["package"]:
+    for package in _lock_packages():
         groups = package.get("groups", [])
         if group not in groups:
             continue
@@ -273,7 +287,7 @@ def _darwin_only_packages(group: str) -> list[str]:
         on_darwin_only = not _installs(marker_for(group), _LINUX, extras) and any(
             _installs(marker_for(group), env, extras) for env in _DARWIN
         )
-        covered = any(_installs(marker_for(g), _LINUX, extras) for g in groups if g in {"main", "dev"})
+        covered = any(_installs(marker_for(g), _LINUX, extras) for g in groups if g in audited_groups)
         if on_darwin_only and not covered:
             names.append(package["name"])
     return sorted(names)
@@ -289,6 +303,8 @@ def _job_comments(job_name: str) -> str:
     last = start + 1
     while last < len(lines) and not re.match(r"^  [A-Za-z0-9_-]+:\s*$", lines[last]):
         last += 1
+    while last > start + 1 and lines[last - 1].startswith("  #"):  # the next job's own preamble
+        last -= 1
     return " ".join(line.strip().lstrip("#").strip() for line in lines[first:last] if line.strip().startswith("#"))
 
 
@@ -327,11 +343,7 @@ def test_every_job_restoring_a_cached_venv_syncs_it_to_the_lock() -> None:
     doc: dict[str, Any] = yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))
     for name, job in doc["jobs"].items():
         steps = job.get("steps") or []
-        if not any(
-            str(step.get("uses", "")).startswith("actions/cache")
-            and ".venv" in str((step.get("with") or {}).get("path", ""))
-            for step in steps
-        ):
+        if not _caches_venv(steps):
             continue
         verbs = {
             _poetry_verb(command)

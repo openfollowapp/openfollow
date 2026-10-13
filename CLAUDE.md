@@ -294,6 +294,9 @@ Each of these has broken before or would break silently. The guides hold the why
   has the rules). It runs `make ci` on a testing Pi when one is reachable
   (`OPENFOLLOW_CI_HOSTS`), else locally. `make ci` = lint + typecheck + security
   + tests + e2e smoke + build, a superset of GitHub CI (which skips mypy).
+  A push that changes only Markdown docs outside `openfollow/` (README,
+  SECURITY.md, CLAUDE.md, `docs/`, skills) skips the gate; help `.md` files
+  under `openfollow/` ship with the app and still need it.
 - `make format` fixes a lint formatting failure. No `-k`, no `--no-verify`.
 - The pre-commit hook runs ruff and bandit from the poetry env (`repo: local`).
   Never give either a `rev:`-pinned hook repo: it re-pins what `pyproject.toml`

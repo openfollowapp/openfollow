@@ -20,6 +20,11 @@ dev Mac masks. When no Pi is reachable it falls back to
 running `make ci` locally. **It must pass before every `git push`.** No
 exceptions for "trivial" changes.
 
+The one exception is a docs-only push: when every changed file is Markdown
+outside `openfollow/` (README, SECURITY.md, CLAUDE.md, `docs/`,
+`.claude/skills/`), skip the gate. Help `.md` files under `openfollow/` ship
+with the app and are read by tests, so a change to one still runs the gate.
+
 ## Run it
 
 ```bash

@@ -13,7 +13,7 @@ Include what you can of:
 - the steps that reproduce it, and what happens;
 - anything you have found about how to fix it.
 
-Please do not attach a configuration file (`.ofsettings`) from a real show: it carries the camera logins and SRT passphrases the station uses. A diagnostics bundle has those redacted, so it can go into the private report, but it still describes the show network (addresses, host and station names), so never post one publicly.
+Please do not attach a configuration file (`.ofsettings`) or a settings backup (`.ofbackup`) from a real show: they carry the camera logins and SRT passphrases the station uses. A diagnostics bundle has those redacted, so it can go into the private report, but it still describes the show network (addresses, host and station names), so never post one publicly.
 
 ## What happens next
 

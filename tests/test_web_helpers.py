@@ -3109,11 +3109,15 @@ def test_no_code_reads_bottles_forwarded_for_address() -> None:
 
     import openfollow
 
+    root = Path(openfollow.__file__).parent
     offenders = []
-    for path in sorted(Path(openfollow.__file__).parent.rglob("*.py")):
-        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+    for path in sorted(root.rglob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        if "remote_addr" not in source and "remote_route" not in source:
+            continue
+        for node in ast.walk(ast.parse(source)):
             if isinstance(node, ast.Attribute) and node.attr in ("remote_addr", "remote_route"):
-                offenders.append(f"{path.name}:{node.lineno}")
+                offenders.append(f"{path.relative_to(root)}:{node.lineno}")
     assert offenders == []
 
 

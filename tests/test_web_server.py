@@ -4907,8 +4907,8 @@ def test_login_submit_renders_error_template_on_invalid_pin(pin_protected_server
     assert '<div class="notice error" role="alert">' in body
 
 
-def test_repeated_wrong_pin_locks_out_with_retry_after(pin_protected_server) -> None:
-    _, base, _ = pin_protected_server
+def test_repeated_wrong_pin_locks_out_with_retry_after(frozen_throttle_pin_server) -> None:
+    _, base, _ = frozen_throttle_pin_server
 
     status1, _, _ = _post_form_full(base, "/login", {"pin": "wrong-1"})
     assert status1 == 200  # first failure renders template, no penalty yet
@@ -4922,12 +4922,12 @@ def test_repeated_wrong_pin_locks_out_with_retry_after(pin_protected_server) -> 
     assert int(headers2["Retry-After"]) >= 1
 
 
-def test_lockout_blocks_correct_pin_during_window(pin_protected_server) -> None:
+def test_lockout_blocks_correct_pin_during_window(frozen_throttle_pin_server) -> None:
     """Even the correct PIN is rejected with 429 while the IP is locked
     out. Otherwise an attacker could probe whether their *guess* matches
     by timing the response – a 200 vs 429 split would leak whether they
     happened to guess right just before being locked out."""
-    _, base, pin = pin_protected_server
+    _, base, pin = frozen_throttle_pin_server
 
     _post_form_full(base, "/login", {"pin": "wrong-1"})
     status, _, _ = _post_form_full(base, "/login", {"pin": pin})
@@ -5000,9 +5000,9 @@ def _signed_post_full(
         return e.code, dict(e.headers.items())
 
 
-def test_peer_auth_signature_failure_locks_out(pin_protected_server) -> None:
+def test_peer_auth_signature_failure_locks_out(frozen_throttle_pin_server) -> None:
     """Peer-auth signature path is subject to rate-limit throttle like login."""
-    _, base, _ = pin_protected_server
+    _, base, _ = frozen_throttle_pin_server
 
     body = b'{"pos_x": 1.0}'
     bogus_sig = "0" * 64  # SHA-256 hex length, but never a valid HMAC

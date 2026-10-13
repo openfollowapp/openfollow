@@ -272,16 +272,28 @@ def test_run_export_returns_one_on_failure(launcher, monkeypatch, tmp_path) -> N
 # ---------------------------------------------------------------------------
 
 
-def _install_fake_gst(monkeypatch, missing: set[str]) -> None:
-    """Stand in for gi / Gst, resolving every element except ``missing``."""
+def _install_fake_gst(
+    monkeypatch, missing: set[str], *, typefinders: bool = True, namespaces: frozenset[str] = frozenset()
+) -> None:
+    """Stand in for gi / Gst, resolving every element except ``missing``.
+
+    ``namespaces`` are the typelibs gi reports as unavailable.
+    """
     gst = types.SimpleNamespace(
         init=lambda argv: None,
         ElementFactory=types.SimpleNamespace(find=lambda name: None if name in missing else object()),
+        TypeFindFactory=types.SimpleNamespace(get_list=lambda: [object()] if typefinders else []),
     )
     repository = types.ModuleType("gi.repository")
     repository.Gst = gst  # type: ignore[attr-defined]
+    repository.GstPbutils = types.SimpleNamespace()  # type: ignore[attr-defined]
     gi = types.ModuleType("gi")
-    gi.require_version = lambda namespace, version: None  # type: ignore[attr-defined]
+
+    def require_version(namespace: str, version: str) -> None:
+        if namespace in namespaces:
+            raise ValueError(f"Namespace {namespace} not available")
+
+    gi.require_version = require_version  # type: ignore[attr-defined]
     gi.repository = repository  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "gi", gi)
     monkeypatch.setitem(sys.modules, "gi.repository", repository)
@@ -293,3 +305,19 @@ def test_selfcheck_fails_when_an_element_the_app_builds_is_missing(launcher, mon
 
     assert launcher.run_selfcheck() == 1
     assert capsys.readouterr().out.strip() == f"FAIL: missing GStreamer elements: {element}"
+
+
+def test_selfcheck_fails_without_typefinders(launcher, monkeypatch, capsys) -> None:
+    # decodebin identifies a stream or an uploaded file through them.
+    _install_fake_gst(monkeypatch, set(), typefinders=False)
+
+    assert launcher.run_selfcheck() == 1
+    assert capsys.readouterr().out.strip() == "FAIL: no GStreamer typefinders"
+
+
+def test_selfcheck_fails_without_the_discoverer_typelib(launcher, monkeypatch, capsys) -> None:
+    # The Media Gallery reads clip metadata through GstPbutils.Discoverer.
+    _install_fake_gst(monkeypatch, set(), namespaces=frozenset({"GstPbutils"}))
+
+    assert launcher.run_selfcheck() == 1
+    assert capsys.readouterr().out.strip() == "FAIL: Namespace GstPbutils not available"

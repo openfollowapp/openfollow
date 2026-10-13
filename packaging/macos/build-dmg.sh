@@ -22,6 +22,10 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "The macOS DMG build must run on macOS." >&2
   exit 1
 fi
+if [[ "$(uname -m)" != "arm64" ]]; then
+  echo "The macOS app is Apple Silicon only; this host is $(uname -m)." >&2
+  exit 1
+fi
 
 cd "$REPO"
 

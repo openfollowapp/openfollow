@@ -513,29 +513,31 @@ an uplink (torch / ultralytics wheels + the five YOLO26 tier weights). It is
 **large** because of torch – on Apple Silicon the `.app` is ~900 MB and the
 compressed `.dmg` ~350 MB.
 
-The app is **Apple Silicon only** and needs **macOS 15.0 or later**. It is built
-for the build host's architecture, and the bundled native stack comes from
-Homebrew bottles, which target the build host's macOS: today they declare
-`minos 15.0`. The spec writes that value as `LSMinimumSystemVersion`, so an
-older Mac refuses the app with a message instead of quitting at launch. After
-the freeze, `check_macos_minimum.py` reads every bundled Mach-O's minimum
-(`otool -l`, `LC_BUILD_VERSION`) and fails the build when one is newer than the
-declared value. On success it prints the newest minimum it found, so a declared
-value above what the libraries need shows in the build log. When a newer build
-host's bottles move up, raise `LSMinimumSystemVersion` in `openfollow.spec` and
-the version stated here and in `DEVELOPMENT.md`.
+The app is **Apple Silicon only** and needs **macOS 15.0 or later**.
+`build-dmg.sh` refuses any other host and the spec freezes for `arm64`. The
+bundled native stack comes from Homebrew bottles, which target the build host's
+macOS: today they declare `minos 15.0`. The spec writes that value as
+`LSMinimumSystemVersion`, so an older Mac refuses the app with a message instead
+of quitting at launch. After the freeze, `check_macos_minimum.py` reads every
+bundled Mach-O's minimum (`otool -l`, `LC_BUILD_VERSION`) and fails the build
+when one is newer than the declared value. On success it prints the newest
+minimum it found, so a declared value above what the libraries need shows in the
+build log. When a newer build host's bottles move up, raise
+`LSMinimumSystemVersion` in `openfollow.spec` and the version stated here and in
+`DEVELOPMENT.md`.
 
-A post-build self-check runs the frozen app with a scrubbed environment
-(`env -i HOME=$HOME OPENFOLLOW_SELFCHECK=1 …`) and fails the build unless the
-bundled `gi` / GStreamer elements and the detection deps all resolve from inside
-the `.app` and the app exits cleanly; a failure prints the exit status and
-everything the app wrote, such as the missing elements or a crash. The elements it requires (`REQUIRED_GST_ELEMENTS` in `launcher.py`)
-are every one the app builds on macOS: those its pipelines create by name, and
-those `decodebin` plugs for Media Gallery uploads and clips and for H.264 /
-H.265 / MPEG-TS streams. `tests/test_macos_bundle_contract.py` fails when an
-element the sources create by name, or one the diagnostics bundle checks, is
-missing from that list, and pins each listed element to a plugin the allowlist
-keeps.
+A post-build self-check runs the frozen app with a scrubbed environment (`env -i
+HOME=$HOME OPENFOLLOW_SELFCHECK=1 …`) and fails the build unless the bundled
+`gi` / GStreamer elements and the detection deps all resolve from inside the
+`.app` (typefinders and the `GstPbutils` typelib included) and the app exits
+cleanly; a failure prints the exit status and everything the app wrote, such as
+the missing elements or a crash. The elements it requires
+(`REQUIRED_GST_ELEMENTS` in `launcher.py`) are every one the app builds on
+macOS: those its pipelines create by name, and those `decodebin` plugs for Media
+Gallery uploads and clips and for H.264 / H.265 / MPEG-TS streams.
+`tests/test_macos_bundle_contract.py` fails when an element the sources create
+by name, or one the diagnostics bundle checks, is missing from that list, and
+pins each listed element to a plugin the allowlist keeps.
 
 The About page's **License**, **Third-party notices** and **Written offer** read
 `LICENSE`, `THIRD_PARTY_NOTICES.md` and `WRITTEN_OFFER.md` from beside the

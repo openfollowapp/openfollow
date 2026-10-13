@@ -47,6 +47,7 @@ hiddenimports = [
     "gi.repository.GdkPixbuf",
     "gi.repository.Gst",
     "gi.repository.GstApp",
+    "gi.repository.GstPbutils",
     "gi.repository.GstVideo",
     "gi.repository.Rsvg",
     "cairo",
@@ -248,7 +249,7 @@ exe = EXE(  # noqa: F821
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
-    target_arch=None,
+    target_arch="arm64",
     codesign_identity=None,
     entitlements_file=None,
 )

@@ -181,6 +181,13 @@ def run_selfcheck() -> int:
         if missing:
             print(f"FAIL: missing GStreamer elements: {', '.join(missing)}")
             return 1
+        # decodebin identifies streams and uploads through these, not by element name.
+        if not Gst.TypeFindFactory.get_list():
+            print("FAIL: no GStreamer typefinders")
+            return 1
+        # The Media Gallery reads clip metadata through GstPbutils.Discoverer.
+        gi.require_version("GstPbutils", "1.0")
+        from gi.repository import GstPbutils  # noqa: F401
 
         # Video input plugins are discovered by walking the package at runtime;
         # PyInstaller can miss the dynamically imported ones (see openfollow.spec).

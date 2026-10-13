@@ -106,6 +106,40 @@ def test_documents_land_at_the_bundle_root(spec_tree) -> None:
 
 
 # ---------------------------------------------------------------------------
+# GObject typelibs
+# ---------------------------------------------------------------------------
+
+
+def _required_namespaces() -> set[str]:
+    """Namespaces the sources pin with ``gi.require_version("<name>", ...)``."""
+    names: set[str] = set()
+    for path in (_REPO / "openfollow").rglob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "require_version"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+            ):
+                names.add(node.args[0].value)
+    return names
+
+
+# The embedded browser imports it optionally and runs without it.
+_OPTIONAL_NAMESPACES = frozenset({"WebKit2"})
+
+
+def test_every_typelib_the_sources_load_is_frozen(spec_tree) -> None:
+    # PyInstaller's gi hooks collect a typelib only for a named gi.repository import.
+    hidden = set(ast.literal_eval(_assigned(spec_tree, "hiddenimports")))
+    namespaces = _required_namespaces() - _OPTIONAL_NAMESPACES
+    assert "GstPbutils" in namespaces
+    missing = sorted(name for name in namespaces if f"gi.repository.{name}" not in hidden)
+    assert not missing, f"add to hiddenimports in packaging/macos/openfollow.spec: {missing}"
+
+
+# ---------------------------------------------------------------------------
 # GStreamer elements
 # ---------------------------------------------------------------------------
 
@@ -438,3 +472,57 @@ def test_check_fails_without_a_declared_minimum(checker, tmp_path, capsys) -> No
 def test_check_usage(checker, argv, capsys) -> None:
     assert checker.main(argv) == 2
     assert "usage:" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# Apple Silicon only
+# ---------------------------------------------------------------------------
+
+
+def _run_host_check(tmp_path: Path, system: str, machine: str) -> subprocess.CompletedProcess[str]:
+    """Run build-dmg.sh's host check with ``uname`` answering ``system`` / ``machine``."""
+    script = _BUILD_DMG.read_text(encoding="utf-8")
+    step = script[script.index('if [[ "$(uname -s)"') : script.index('cd "$REPO"')]
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    uname = bin_dir / "uname"
+    uname.write_text(f'#!/bin/sh\ncase "$1" in -s) echo {system} ;; -m) echo {machine} ;; esac\n')
+    uname.chmod(0o755)
+    return subprocess.run(
+        ["bash", "-c", f"set -euo pipefail\n{step}"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={"PATH": f"{bin_dir}:{os.environ['PATH']}"},
+        timeout=30,
+    )
+
+
+def test_build_runs_on_an_apple_silicon_mac(tmp_path) -> None:
+    result = _run_host_check(tmp_path, "Darwin", "arm64")
+    assert result.returncode == 0
+    assert result.stderr == ""
+
+
+@pytest.mark.parametrize(
+    ("system", "machine", "message"),
+    [
+        pytest.param("Darwin", "x86_64", "The macOS app is Apple Silicon only; this host is x86_64.", id="intel"),
+        pytest.param("Linux", "aarch64", "The macOS DMG build must run on macOS.", id="not-macos"),
+    ],
+)
+def test_build_refuses_another_host(tmp_path, system, machine, message) -> None:
+    result = _run_host_check(tmp_path, system, machine)
+    assert result.returncode == 1
+    assert result.stderr.strip() == message
+
+
+def test_spec_freezes_for_arm64(spec_tree) -> None:
+    exes = [
+        node
+        for node in ast.walk(spec_tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "EXE"
+    ]
+    assert len(exes) == 1
+    target = next(k.value for k in exes[0].keywords if k.arg == "target_arch")
+    assert ast.literal_eval(target) == "arm64"

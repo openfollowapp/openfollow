@@ -310,19 +310,16 @@ function peArrowhead(x, y, ux, uy, half, side) {
         ]));
         details.appendChild(body);
         if (name in open) details.open = true;
-        details.addEventListener('toggle', function() {
-            // Opened again by a redraw: the row the picture edits stays the one the operator opened last.
-            if (details.open && name in open) return;
+        // The operator's click, not the toggle event: a redraw reopening a row fires toggle too.
+        summary.addEventListener('click', function() {
             if (details.open) {
-                open[name] = 'basics';
-                selected = name;
-            } else {
                 delete open[name];
                 if (selected === name) selected = null;
+            } else {
+                open[name] = 'basics';
+                selected = name;
             }
-            // A redraw that came between the click and this event drew the row as it was.
-            if (!details.isConnected) renderList();
-            else root.querySelectorAll('.path-row').forEach(function(r) { r.classList.toggle('pe-selected', r.dataset.path === selected); });
+            root.querySelectorAll('.path-row').forEach(function(r) { r.classList.toggle('pe-selected', r.dataset.path === selected); });
             renderFrame();
         });
         return details;

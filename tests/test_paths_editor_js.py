@@ -431,3 +431,65 @@ class TestEditingThePoints:
             """
         )
         assert out == {"urls": ["/api/paths/cross", "/api/paths/ds"], "saved": ["ds", -2], "selected": "ds"}
+
+    def test_a_renamed_row_stays_open_on_its_tab(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            row('cross').querySelector('[data-row-tab$="-points"]').click();
+            var name = row('cross').querySelector('input[id$="-name"]');
+            typeInto(name, 'ds'); enter(name);
+            await settle();
+            out.open = row('ds').open;
+            out.tab = row('ds').querySelector('.row-tab-btn.active').textContent;
+            """
+        )
+        assert out == {"open": True, "tab": "Points"}
+
+    def test_a_refused_rename_puts_the_name_back(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            refuse = function (req) {
+                if (req.method === 'PUT' && 'name' in req.body) return { status: 400, body: { error: 'Taken.' } };
+            };
+            var name = row('cross').querySelector('input[id$="-name"]');
+            typeInto(name, 'LOOP'); enter(name);
+            await settle();
+            out.shown = row('cross').querySelector('input[id$="-name"]').value;
+            out.names = model.paths.map(function (p) { return p.name; });
+            """
+        )
+        assert out == {"shown": "cross", "names": ["cross", "loop"]}
+
+    def test_writes_that_are_not_edits_of_one_path_are_each_sent(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            holdWhen = function (req) { return req.method === 'PUT'; };
+            var cells = inputs('cross', 0);
+            typeInto(cells[0], '-2'); enter(cells[0]);  // in flight
+            editor().querySelector('[data-pe="new"]').click();
+            editor().querySelector('[data-pe="new"]').click();
+            holdWhen = null; release(); await settle();
+            out.names = model.paths.map(function (p) { return p.name; });
+            """
+        )
+        assert out["names"] == ["cross", "loop", "path-3", "path-4"]
+
+    def test_a_deleted_path_does_not_hand_its_open_row_to_a_new_one_of_that_name(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            model.paths.shift();  // deleted on another station
+            row('loop').querySelector('input[id$="-active"]').click();  // a save, then a load
+            await settle();
+            out.gone = row('cross') === null;
+            model.paths.push(blank('cross'));  // and made again there
+            row('loop').querySelector('input[id$="-active"]').click();
+            await settle();
+            out.open = row('cross').open;
+            out.selected = selectedRow();
+            """
+        )
+        assert out == {"gone": True, "open": False, "selected": None}

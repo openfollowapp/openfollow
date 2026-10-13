@@ -418,6 +418,11 @@ def test_a_slow_lookup_holds_one_attempt_and_serves_a_later_one(
         ("camera.example", ["2001:db8::10"], True, True),
         ("camera.example", ["2001:db8::10", "192.0.2.10"], True, True),
         ("camera.example", ["192.0.2.10", "2001:db8::10"], False, True),
+        ("localhost", ["::1", "127.0.0.1"], True, False),
+        ("localhost", ["127.0.0.1"], True, False),
+        ("LocalHost.", ["127.0.0.1"], True, False),
+        ("camera.localhost", None, True, False),
+        ("Camera.LocalHost.", ["127.0.0.1"], True, False),
         ("localhost.example.com", ["192.0.2.10"], False, True),
         ("mylocalhost", ["192.0.2.10"], False, True),
         ("nowhere.example", None, False, True),
@@ -430,25 +435,6 @@ def test_dials_ipv6_reads_the_first_address_a_connection_tries(
         net.answers[host] = answers
     assert _pin.dials_ipv6(host) is expected
     assert net.lookups == ([host] if looked_up else [])
-
-
-@pytest.mark.parametrize(
-    ("host", "answers"),
-    [
-        ("localhost", ["127.0.0.1", "::1"]),
-        ("cam.localhost", None),
-        ("LOCALHOST.", None),
-        ("Cam.LocalHost.", ["127.0.0.1"]),
-    ],
-)
-def test_a_localhost_name_dials_ipv6_whatever_the_system_resolver_says(
-    net: SimpleNamespace, host: str, answers: list[str] | None
-) -> None:
-    # GLib answers these names itself, ::1 first, without asking the system resolver.
-    if answers is not None:
-        net.answers[host] = answers
-    assert _pin.dials_ipv6(host) is True
-    assert net.lookups == []
 
 
 def test_a_lookup_that_cannot_start_a_thread_says_so_and_is_tried_again(

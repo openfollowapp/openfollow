@@ -630,6 +630,11 @@ class TestFailedSaves:
                 "pointer(picture(), 'pointerdown', 640, 10); pointer(picture(), 'click', 640, 10);",
                 "Not saved. That point of the picture does not reach the stage.",
             ),
+            (
+                "'/api/paths/unproject'",
+                "pointer(handles()[0], 'pointerdown', 340, 560); pointer(picture(), 'pointerup', 640, 10);",
+                "Not saved. That point of the picture does not reach the stage.",
+            ),
         ],
     )
     def test_a_point_the_station_cannot_place_says_why(self, refused: str, steps: str, line: str) -> None:
@@ -643,10 +648,10 @@ class TestFailedSaves:
             {steps}
             await settle();
             out.line = errorLine();
-            out.points = model.paths[0].points.length;
+            out.points = model.paths[0].points.map(function (p) {{ return [p.x, p.y]; }});
             """
         )
-        assert out == {"line": line, "points": 2}
+        assert out == {"line": line, "points": [[-3, 2], [3, 2]]}
 
 
 class TestApplyToAllStations:

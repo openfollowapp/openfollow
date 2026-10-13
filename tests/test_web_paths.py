@@ -22,13 +22,19 @@ MARKERS = {2: (1.5, 3.0, 1.6), 3: (-2.0, 4.0, 0.0)}
 
 
 class _Recorder:
-    def __init__(self) -> None:
+    def __init__(self, config_path: str) -> None:
         self.calls: list[str | None] = []
         self.answer = True
+        self.config_path = config_path
+        # Each rename the station was told of, with the names the file held at that moment.
+        self.renames: list[tuple[str, str, list[str]]] = []
 
     def __call__(self, name: str | None) -> bool:
         self.calls.append(name)
         return self.answer
+
+    def renaming(self, old: str, new: str) -> None:
+        self.renames.append((old, new, [p.name for p in load_config(self.config_path).paths.paths]))
 
 
 @pytest.fixture()
@@ -36,8 +42,8 @@ def live(tmp_path, monkeypatch):  # noqa: ANN001, ANN201
     for cls in (discovery_module.BeaconSender, discovery_module.BeaconReceiver):
         monkeypatch.setattr(cls, "start", lambda self: None)
         monkeypatch.setattr(cls, "stop", lambda self: None)
-    recorder = _Recorder()
     config_path = str(tmp_path / "config.toml")
+    recorder = _Recorder(config_path)
     with live_on_free_port(
         lambda port: ConfigWebServer(
             config_path=config_path,
@@ -49,6 +55,7 @@ def live(tmp_path, monkeypatch):  # noqa: ANN001, ANN201
             marker_position_provider=MARKERS.get,
             path_state_provider=lambda: {"recording": "cross", "locks": {2: "cross"}},
             path_recorder=recorder,
+            path_renamer=recorder.renaming,
         )
     ) as (server, base):
         yield base, config_path, recorder
@@ -147,6 +154,22 @@ class TestUpdate:
         assert _call(base, "PUT", "/api/paths/DownStage", {"name": "LOOP"})[0] == 400
         assert _call(base, "PUT", "/api/paths/DownStage", {"name": "DownStage"})[0] == 200
         assert [p.name for p in load_config(config_path).paths.paths] == ["DownStage", "loop"]
+
+    def test_a_rename_tells_the_station_before_it_is_saved(self, live) -> None:  # noqa: ANN001
+        base, config_path, recorder = live
+        _with_paths(config_path, _cross(), PathConfig(name="loop"))
+        _call(base, "PUT", "/api/paths/cross", {"name": "Down Stage"})
+        assert recorder.renames == [("cross", "DownStage", ["cross", "loop"])]
+        assert [p.name for p in load_config(config_path).paths.paths] == ["DownStage", "loop"]
+
+    @pytest.mark.parametrize(
+        "body", [{"name": "cross"}, {"name": "LOOP"}, {"closed": True}, {"name": "ds", "points": "x"}]
+    )
+    def test_no_rename_is_told_when_none_is_saved(self, live, body: dict) -> None:  # noqa: ANN001
+        base, config_path, recorder = live
+        _with_paths(config_path, _cross(), PathConfig(name="loop"))
+        _call(base, "PUT", "/api/paths/cross", body)
+        assert recorder.renames == []
 
     def test_points_that_are_not_a_list_are_refused(self, live) -> None:  # noqa: ANN001
         base, config_path, _ = live
@@ -336,3 +359,4 @@ def test_a_server_without_a_station_behind_it_answers_empty(tmp_path) -> None:  
     assert server.get_marker_position(2) is None
     assert server.get_path_state() == {"recording": None, "locks": {}}
     assert server.record_path("cross") is False
+    server.path_renaming("cross", "ds")  # nobody to tell

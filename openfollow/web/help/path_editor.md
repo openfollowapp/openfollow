@@ -7,7 +7,7 @@
 One row per path. The row's header shows a green dot while the path is active, its name, whether it is **Open** or **Closed**, how many points it has, a blue **Recording** chip while it records, and which markers are locked onto it now. Open a row to edit it; the picture below edits the row opened last.
 
 - **Path** (Basics) – an active path can be locked onto and is drawn on the Operator Screen. Saved, so it survives a restart; each station keeps its own when paths are imported or pushed. Switching a path off releases every marker on it.
-- **Name** (Basics) – names are what OSC uses: letters, digits, `.`, `-` and `_`, up to 32, never the same as another path's ignoring case.
+- **Name** (Basics) – names are what OSC uses: letters, digits, `.`, `-` and `_`, up to 32, never the same as another path's ignoring case. A renamed path keeps the markers on it and its recording.
 - **Record** / **Stop recording** – while a path records, every **Pathfinder** press adds the position of the marker that input drives (X, Y and height) as the path's next point. One path records at a time; a restart stops recording.
 - **Delete** – removes the path after confirmation.
 

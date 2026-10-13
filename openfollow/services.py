@@ -2788,6 +2788,7 @@ class AppRuntimeServices:
             marker_position_provider=self._marker_position,
             path_state_provider=self._path_state,
             path_recorder=self._record_path,
+            path_renamer=self._stage_path_rename,
             # Live per-marker move speeds; the ``dict(...)`` copy is the
             # mutation-isolation boundary so the web thread never holds the live dict.
             marker_move_speeds_provider=lambda: dict(self._app._config.marker_move_speeds),
@@ -3716,6 +3717,9 @@ class AppRuntimeServices:
 
         # The web UI may have created the path a moment ago; the file is ahead of the running config.
         return bool(self._app._paths.record(name, load_config(self._app._config_path).paths))
+
+    def _stage_path_rename(self, old: str, new: str) -> None:
+        self._app._paths.stage_rename(old, new)
 
     def _mouse3d_latest_button(self) -> int | None:
         """Watch briefly for a 3D Mouse button press, for the web bind helper.

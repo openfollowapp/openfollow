@@ -84,3 +84,15 @@ def test_recording_reads_the_paths_from_the_file_the_web_ui_just_wrote(tmp_path)
     assert svc._record_path("nope") is False
     assert svc._record_path(None) is True
     assert svc._app._paths.recording is None
+
+
+def test_a_rename_the_web_ui_is_saving_keeps_the_markers_on_the_path(tmp_path) -> None:  # noqa: ANN001
+    svc = _services(tmp_path)
+    engine = svc._app._paths
+    engine.press(7, (1.0, 0.2, 0.0))
+    svc._stage_path_rename("cross", "ds")
+    renamed = PathsConfig(
+        paths=[PathConfig(name="ds", active=True, points=[PathPointConfig(0, 0, 0), PathPointConfig(4, 0, 0)])]
+    )
+    engine.reload(renamed, enabled=True)
+    assert engine.locked_path(7) == "ds"

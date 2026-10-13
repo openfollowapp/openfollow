@@ -4761,6 +4761,7 @@ def _register_path_routes(app: Bottle, server: ConfigWebServer) -> None:
             path = cfg.paths.find(name)
             if path is None:
                 return _json_error(404, f"No path called {name}.")
+            was = path.name
             if "name" in data:
                 new_name = path_name_from(data["name"])
                 if (problem := _name_error(cfg, new_name, path)) is not None:
@@ -4774,6 +4775,8 @@ def _register_path_routes(app: Bottle, server: ConfigWebServer) -> None:
                     return _json_error(400, "points must be a list")
                 path.points = data["points"]
             path.__post_init__()
+            if path.name != was:
+                server.path_renaming(was, path.name)
             save_config(cfg, server.config_path)
         return json.dumps({"success": True, "path": asdict(path)})
 

@@ -175,6 +175,7 @@ class ConfigWebServer:
         marker_position_provider: Callable[[int], tuple[float, float, float] | None] | None = None,
         path_state_provider: Callable[[], dict[str, Any]] | None = None,
         path_recorder: Callable[[str | None], bool] | None = None,
+        path_renamer: Callable[[str, str], None] | None = None,
         # Live per-marker move speeds (R/T + gamepad bumpers). Device-local and
         # runtime-authoritative; the section-save path overlays them onto the fresh
         # disk load so a save can't clobber a speed the operator just ramped.
@@ -293,6 +294,7 @@ class ConfigWebServer:
         self._marker_position_provider = marker_position_provider
         self._path_state_provider = path_state_provider
         self._path_recorder = path_recorder
+        self._path_renamer = path_renamer
         self._marker_move_speeds_provider = marker_move_speeds_provider
         self._full_snapshot_provider = full_snapshot_provider
         self._mouse3d_button_provider = mouse3d_button_provider
@@ -945,6 +947,11 @@ class ConfigWebServer:
     def record_path(self, name: str | None) -> bool:
         """Start recording into the path called ``name``, or stop with ``None``."""
         return self._path_recorder is not None and self._path_recorder(name)
+
+    def path_renaming(self, old: str, new: str) -> None:
+        """Path ``old`` is about to be saved as ``new``: the markers on it and its recording follow."""
+        if self._path_renamer is not None:
+            self._path_renamer(old, new)
 
     def get_marker_move_speeds(self) -> dict[int, float]:
         """Return live per-marker move speeds; empty dict when unwired.

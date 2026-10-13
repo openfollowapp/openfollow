@@ -385,3 +385,57 @@ class TestSwitchingPaths:
         mid = engine.tick(0.25)[1][2]
         # Straight back down onto the lower path through the same crossing.
         assert engine.move(1, -0.5, -1.0, 0.0001)[2] == pytest.approx(mid, abs=1e-3)
+
+
+class TestRename:
+    @staticmethod
+    def _renamed(name: str, *others: PathConfig) -> PathsConfig:
+        return PathsConfig(paths=[_path(name, [(-5, 0, 0), (5, 0, 0)], active=True), *others])
+
+    def _locked_and_recording(self) -> PathEngine:
+        engine = _engine(CROSS)
+        engine.press(1, (3.0, 0.2, 0.0))
+        engine.record("cross", PathsConfig(paths=[CROSS]))
+        return engine
+
+    def test_a_staged_rename_keeps_the_markers_on_the_path_and_its_recording(self) -> None:
+        engine = self._locked_and_recording()
+        engine.stage_rename("cross", "DownStage")
+        engine.reload(self._renamed("DownStage"), enabled=True)
+        assert (engine.locked_path(1), engine.recording) == ("DownStage", "DownStage")
+        assert engine.move(1, 1.0, 0.0, 0.1) is not None
+
+    def test_a_rename_nobody_staged_releases_them(self) -> None:
+        engine = self._locked_and_recording()
+        engine.reload(self._renamed("DownStage"), enabled=True)
+        assert (engine.is_locked(1), engine.recording) == (False, None)
+
+    def test_a_reload_before_the_rename_is_saved_keeps_it_for_the_next(self) -> None:
+        engine = self._locked_and_recording()
+        engine.stage_rename("cross", "DownStage")
+        engine.reload(PathsConfig(paths=[CROSS]), enabled=True)
+        assert (engine.locked_path(1), engine.recording) == ("cross", "cross")
+        engine.reload(self._renamed("DownStage"), enabled=True)
+        assert (engine.locked_path(1), engine.recording) == ("DownStage", "DownStage")
+
+    def test_two_renames_before_the_reload_land_on_the_last_name(self) -> None:
+        engine = self._locked_and_recording()
+        engine.stage_rename("cross", "a")
+        engine.stage_rename("A", "b")
+        engine.reload(self._renamed("b"), enabled=True)
+        assert (engine.locked_path(1), engine.recording) == ("b", "b")
+
+    def test_a_change_of_case_carries_the_new_spelling(self) -> None:
+        engine = self._locked_and_recording()
+        engine.stage_rename("cross", "Cross")
+        engine.reload(self._renamed("Cross"), enabled=True)
+        assert (engine.locked_path(1), engine.recording) == ("Cross", "Cross")
+
+    def test_a_rename_whose_old_name_is_still_there_moves_nothing_and_is_used_up(self) -> None:
+        engine = self._locked_and_recording()
+        engine.stage_rename("cross", "ds")
+        # The rename was lost and a path called ds was made beside cross.
+        engine.reload(PathsConfig(paths=[CROSS, _path("ds", [(0, -5, 0), (0, 5, 0)], active=True)]), enabled=True)
+        assert (engine.locked_path(1), engine.recording) == ("cross", "cross")
+        engine.reload(self._renamed("ds"), enabled=True)
+        assert (engine.is_locked(1), engine.recording) == (False, None)

@@ -11,6 +11,7 @@ until it is on it. Locks and recording live in memory only.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
@@ -89,11 +90,14 @@ class PathEngine:
         self._locks: dict[int, _Lock] = {}
         self._recording: str | None = None
         self._recorded: tuple[tuple[object, ...], PathDrawing] | None = None
+        self._renames: dict[str, str] = {}
+        self._renames_lock = threading.Lock()
 
     # -- configuration -------------------------------------------------
 
     def reload(self, cfg: PathsConfig, *, enabled: bool) -> None:
         """Rebuild from ``cfg``; with ``enabled`` False nothing is active and nobody stays locked."""
+        self._carry_renames(cfg)
         # Where each locked marker is, or is sliding to, on the paths as they were.
         old = self._network
         spots = (
@@ -320,6 +324,35 @@ class PathEngine:
             line = [(p.x, p.y, p.z) for p in path.points] if curve is None else _line(curve)
             self._recorded = (key, PathDrawing(path.name, line, path_ends(path, curve)))
         return self._recorded[1]
+
+    # -- renames -------------------------------------------------------
+
+    def stage_rename(self, old: str, new: str) -> None:
+        """Move locks and recording from path ``old`` to ``new`` at the first reload whose paths hold ``new``.
+
+        Safe from another thread. Staged before the rename is saved, so the reload that reads it always finds it.
+        """
+        with self._renames_lock:
+            for key, target in self._renames.items():
+                if target.lower() == old.lower():
+                    self._renames[key] = new
+            self._renames[old.lower()] = new
+
+    def _carry_renames(self, cfg: PathsConfig) -> None:
+        with self._renames_lock:
+            landed = {old: new for old, new in self._renames.items() if cfg.find(new) is not None}
+            for old in landed:
+                del self._renames[old]
+        # Only where the old name is gone: a rename whose save was lost leaves both.
+        moved = {}
+        for old, new in landed.items():
+            before = cfg.find(old)
+            if before is None or before is cfg.find(new):
+                moved[old] = new
+        for lock in self._locks.values():
+            lock.name = moved.get(lock.name.lower(), lock.name)
+        if self._recording is not None:
+            self._recording = moved.get(self._recording.lower(), self._recording)
 
 
 def path_ends(path: PathConfig, curve: PathCurve | None) -> list[PathEnd]:

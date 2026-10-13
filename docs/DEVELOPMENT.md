@@ -36,12 +36,11 @@ poetry install
 poetry run openfollow
 ```
 
-**Refreshing an existing venv.** `poetry install` removes extras it is not
-given but keeps any other package outside the selected groups, such as
-mutmut and setproctitle from the optional `mutation` group. Run `poetry sync`
-(with the extras you use, e.g. `poetry sync -E detection`) to bring a venv back
-to exactly the lock; [COVERAGE.md](COVERAGE.md) covers adding the `mutation`
-group for mutation runs.
+**Refreshing an existing venv.** `poetry install` removes only the extras it is
+not given, so a venv keeps any other package the default install leaves out,
+such as the optional `mutation` group (mutmut and setproctitle). `poetry sync`
+with the extras you use (e.g. `poetry sync -E detection`) brings it back to the
+lock; see [COVERAGE.md](COVERAGE.md) to add the group for mutation runs.
 
 > On macOS the on-device **Settings → Open Web UI** action opens the running web
 > UI in your default browser (the embedded overlay used on Linux/Pi isn't
@@ -312,8 +311,8 @@ Use this only if you can’t (or don’t want to) use Ansible.
    poetry run openfollow
    ```
 
-   For an existing venv, run `poetry sync` (with your extras) to bring it back
-   to the lock (see "Refreshing an existing venv" above).
+   In an existing checkout, `poetry sync` with your extras also removes what the
+   default install leaves out (see "Refreshing an existing venv" above).
 
 5. Headless display over SSH (renders to HDMI via Cage):
 

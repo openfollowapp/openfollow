@@ -1564,7 +1564,7 @@
  drag-and-drop wiring lives in the document-level JS at the
  bottom of this file. ``cursor: grab`` flips to ``grabbing``
  while the row is mid-drag. */
- .osc-binding-drag-handle, .osc-destination-drag-handle {
+ .osc-binding-drag-handle, .osc-destination-drag-handle, .row-drag-handle {
  cursor: grab;
  color: var(--muted);
  font-family: ui-monospace, monospace;
@@ -1575,10 +1575,10 @@
  user-select: none;
  letter-spacing: -0.1em;
  }
- .osc-binding-drag-handle:hover, .osc-destination-drag-handle:hover { color: var(--text); }
- .osc-binding-drag-handle:active, .osc-destination-drag-handle:active { cursor: grabbing; }
- .osc-binding-row.dragging, .osc-destination-row.dragging { opacity: 0.55; }
- .osc-binding-row.drop-target, .osc-destination-row.drop-target { outline: 2px dashed var(--accent); outline-offset: 2px; }
+ .osc-binding-drag-handle:hover, .osc-destination-drag-handle:hover, .row-drag-handle:hover { color: var(--text); }
+ .osc-binding-drag-handle:active, .osc-destination-drag-handle:active, .row-drag-handle:active { cursor: grabbing; }
+ .osc-binding-row.dragging, .osc-destination-row.dragging, .reorder-row.dragging { opacity: 0.55; }
+ .osc-binding-row.drop-target, .osc-destination-row.drop-target, .reorder-row.drop-target { outline: 2px dashed var(--accent); outline-offset: 2px; }
  .osc-binding-enabled-dot { width: 0.55rem; height: 0.55rem; border-radius: 999px; background: var(--muted); flex: none; }
  /* The state dots: 14px outside, so a -2.6px margin keeps the grey dot's footprint. */
  .osc-binding-enabled-dot.on, .osc-binding-enabled-dot.invalid { box-sizing: content-box; margin: -2.6px; background-clip: content-box; }
@@ -5053,19 +5053,23 @@
  restoreHiddenInvalid(group);
  refreshFormGate(group.closest('form'));
  });
- // Generic drag-reorder shared by the OSC Transmitters + OSC Destinations
- // row lists: same ⋮⋮ handle on both. Each row carries the bulk-reorder
- // endpoint + swap target in ``data-reorder-url`` / ``data-reorder-target``,
- // so one set of listeners drives both lists.
- const OSC_REORDER_HANDLE_SEL = '.osc-binding-drag-handle, .osc-destination-drag-handle';
- const OSC_REORDER_ROW_SEL = '.osc-binding-row, .osc-destination-row';
+ // Generic drag-reorder shared by the OSC Transmitters, OSC Destinations and
+ // other row lists (``.reorder-row`` rows with a ``.row-drag-handle``): the
+ // same ⋮⋮ handle on each, a row moving only among its own siblings. A row
+ // carrying its bulk-reorder endpoint + swap target in ``data-reorder-url`` /
+ // ``data-reorder-target`` POSTs the new order; any other list receives a
+ // ``rows-reordered`` event with the row ids in their new order.
+ const OSC_REORDER_HANDLE_SEL = '.osc-binding-drag-handle, .osc-destination-drag-handle, .row-drag-handle';
+ const OSC_REORDER_ROW_SEL = '.osc-binding-row, .osc-destination-row, .reorder-row';
  let oscDragSourceId = null;
+ let oscDragSourceList = null;
  document.addEventListener('dragstart', (event) => {
  const handle = event.target.closest(OSC_REORDER_HANDLE_SEL);
  if (!handle) return;
  const row = handle.closest(OSC_REORDER_ROW_SEL);
  if (!row) return;
  oscDragSourceId = row.dataset.rowId;
+ oscDragSourceList = row.parentElement;
  row.classList.add('dragging');
  // ``effectAllowed = "move"`` + a payload satisfies Firefox's
  // drag-init contract; the actual id transfer happens via the
@@ -5084,11 +5088,12 @@
  el.classList.remove('drop-target');
  });
  oscDragSourceId = null;
+ oscDragSourceList = null;
  });
  document.addEventListener('dragover', (event) => {
  if (!oscDragSourceId) return;
  const targetRow = event.target.closest(OSC_REORDER_ROW_SEL);
- if (!targetRow) return;
+ if (!targetRow || targetRow.parentElement !== oscDragSourceList) return;
  event.preventDefault();
  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
  document.querySelectorAll('.drop-target').forEach(el => {
@@ -5101,12 +5106,11 @@
  document.addEventListener('drop', (event) => {
  if (!oscDragSourceId) return;
  const targetRow = event.target.closest(OSC_REORDER_ROW_SEL);
- if (!targetRow) return;
+ // Don't cross lists: a drag started in one list only reorders within it.
+ if (!targetRow || targetRow.parentElement !== oscDragSourceList) return;
  event.preventDefault();
  const list = targetRow.parentElement;
- if (!list) return;
- // Don't cross lists: a drag started in one list only reorders within it.
- const sourceRow = list.querySelector('[data-row-id="' + oscDragSourceId + '"]');
+ const sourceRow = Array.from(list.children).find(el => el.dataset.rowId === oscDragSourceId);
  if (!sourceRow || sourceRow === targetRow) {
  oscDragSourceId = null;
  return;
@@ -5120,19 +5124,22 @@
  // Build the new ordering and POST it to the row's own reorder
  // endpoint. HTMX is already loaded so ``htmx.ajax`` keeps the
  // re-render flow identical to every other CRUD round-trip.
+ const order = Array.from(list.children)
+ .filter(el => el.matches(OSC_REORDER_ROW_SEL))
+ .map(el => el.dataset.rowId);
  const url = targetRow.dataset.reorderUrl;
  const targetId = targetRow.dataset.reorderTarget;
  if (url && targetId) {
- const order = Array.from(list.querySelectorAll(OSC_REORDER_ROW_SEL))
- .map(el => el.dataset.rowId)
- .join(',');
  window.htmx.ajax('POST', url, {
  target: '#' + targetId,
  swap: 'outerHTML',
- values: { order },
+ values: { order: order.join(',') },
  });
+ } else {
+ list.dispatchEvent(new CustomEvent('rows-reordered', { bubbles: true, detail: { order } }));
  }
  oscDragSourceId = null;
+ oscDragSourceList = null;
  });
  document.addEventListener('DOMContentLoaded', () => {
  initializeSectionFolding(document);

@@ -94,6 +94,14 @@ Object.defineProperties(El.prototype, {
     },
     children: { get: function () { return this.childNodes.filter(function (n) { return n.nodeType === 1; }); } },
     firstChild: { get: function () { return this.childNodes[0] || null; } },
+    parentElement: { get: function () { return this.parentNode && this.parentNode.nodeType === 1 ? this.parentNode : null; } },
+    nextSibling: {
+        get: function () {
+            var siblings = this.parentNode ? this.parentNode.childNodes : [];
+            var i = siblings.indexOf(this);
+            return i >= 0 ? siblings[i + 1] || null : null;
+        },
+    },
     previousSibling: {
         get: function () {
             var siblings = this.parentNode ? this.parentNode.childNodes : [];
@@ -148,6 +156,13 @@ El.prototype.replaceChildren = function () {
     this.childNodes.slice().forEach(function (n) { n.parentNode = null; });
     this.childNodes = [];
     this.append.apply(this, arguments);
+};
+El.prototype.insertBefore = function (n, ref) {
+    if (n.parentNode) n.parentNode.removeChild(n);
+    var i = ref ? this.childNodes.indexOf(ref) : this.childNodes.length;
+    this.childNodes.splice(i, 0, n);
+    n.parentNode = this;
+    return n;
 };
 El.prototype.after = function (n) {
     var parent = this.parentNode;
@@ -250,6 +265,7 @@ function runListeners(node, ev, capture) {
     });
 }
 El.prototype.dispatchEvent = function (ev) {
+    if (!('stopped' in ev)) ev = makeEvent(ev.type, { bubbles: ev.bubbles, detail: ev.detail });  // a CustomEvent
     ev.target = this;
     var path = [];
     for (var n = this; n; n = n.parentNode) path.push(n);
@@ -261,6 +277,7 @@ El.prototype.dispatchEvent = function (ev) {
 // What a mouse click does: focus moves to it, a checkbox flips, a summary opens or closes its details.
 var FOCUSABLE = { INPUT: 1, BUTTON: 1, SELECT: 1, TEXTAREA: 1, SUMMARY: 1, A: 1 };
 El.prototype.click = function () {
+    if (this.disabled) return;
     if (FOCUSABLE[this.tagName]) this.focus();
     var box = this.tagName === 'INPUT' && this.type === 'checkbox';
     if (box) this.checked = !this.checked;
@@ -316,7 +333,8 @@ El.prototype.getClientRects = function () {
     }
     return [{}];
 };
-El.prototype.getBoundingClientRect = function () { return { x: 0, y: 0, width: 0, height: 0 }; };
+// Every box is 20 px tall at the top of the page: a drop at clientY 0-9 is in a row's upper half.
+El.prototype.getBoundingClientRect = function () { return { x: 0, y: 0, top: 0, width: 0, height: 20 }; };
 
 // The picture: client coordinates are picture coordinates.
 El.prototype.setPointerCapture = function (id) { this.captured = id; };
@@ -336,7 +354,13 @@ Object.defineProperty(document, 'hidden', { value: false, writable: true });
 document.createElement = function (tag) { return new El(tag); };
 document.createElementNS = function (ns, tag) { return new El(tag, ns); };
 document.createTextNode = function (s) { return new Text(s); };
-document.getElementById = function (id) { return document.querySelector('#' + id); };
+document.getElementById = function (id) {
+    var found = null;
+    (function walk(node) {
+        node.children.forEach(function (c) { if (!found && c.getAttribute('id') === id) found = c; if (!found) walk(c); });
+    })(document);
+    return found;
+};
 Object.defineProperty(document, 'activeElement', {
     get: function () { return document._focus && document._focus.isConnected ? document._focus : document.body; },
 });

@@ -2487,6 +2487,40 @@ class TestWizardSolveWithCalibrationPoints:
         status, _ = _post_json(base, "/api/wizard/solve", {**_solve_body(points), "solve_page": page, "solve_seq": 7})
         assert status == 409
 
+    def test_a_fit_overtaken_while_it_runs_is_dropped(self, live_server, monkeypatch) -> None:
+        import openfollow.scene.calibration_points as cp
+
+        _, base = live_server
+        page = f"page-{uuid.uuid4().hex[:8]}"
+        points = [_laser_point((2.0, 14.0)), _laser_point((-3.0, 18.0))]
+        real = cp.solve_with_points
+        newer: list[int] = []
+
+        def overtaken(*args, **kwargs):
+            if not newer:
+                newer.append(0)
+                body = {**_solve_body(points), "solve_page": page, "solve_seq": 8}
+                newer[0] = _post_json(base, "/api/wizard/solve", body)[0]
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(cp, "solve_with_points", overtaken)
+        older = {**_solve_body(points), "solve_page": page, "solve_seq": 7}
+        status, data = _post_json(base, "/api/wizard/solve", older)
+        assert (status, data) == (409, {"error": "A newer solve was asked for."})
+        assert newer == [200]
+
+    def test_only_the_most_recent_pages_are_remembered(self, live_server) -> None:
+        _, base = live_server
+
+        def solve(page: str, seq: int) -> int:
+            return _post_json(base, "/api/wizard/solve", {**_solve_body(None), "solve_page": page, "solve_seq": seq})[0]
+
+        pages = [f"page-{n}" for n in range(64)]
+        assert solve("page-first", 5) == 200
+        assert [solve(page, 5) for page in pages] == [200] * 64
+        assert solve(pages[-1], 4) == 409
+        assert solve("page-first", 4) == 200
+
     @pytest.mark.parametrize(
         "change",
         [

@@ -208,6 +208,34 @@ class TestConstrain:
         assert _round(engine.tick(0.0)[1]) == (0.0, 1.0, 0.5)
 
 
+class TestTakeOver:
+    """Another position takes a locked marker over: the lock moves to it, and nothing jumps."""
+
+    def test_a_landed_lock_moves_to_the_reachable_point_nearest_it(self) -> None:
+        engine = _engine(CROSS, RAMP, slide_time=0.0)
+        engine.press(1, (-3.0, 0.0, 0.0))
+        engine.tick(0.0)
+        engine.take_over(1, (0.0, 3.0, 0.7))
+        assert engine.locked_path(1) == "Ramp"
+        # Written from where it was taken over, the height easing to the ramp's 1.2 m.
+        assert _round(engine.move(1, 0.0, 0.0, 0.0)) == (0.0, 3.0, 0.7)
+        assert _round(engine.tick(10.0)[1]) == (0.0, 3.0, 1.2)
+
+    def test_a_lock_being_pulled_in_is_pulled_in_afresh_from_it(self) -> None:
+        engine = _engine(CROSS, slide_time=1.0)
+        engine.press(1, (0.0, 2.0, 0.0))
+        engine.tick(0.5)
+        engine.take_over(1, (3.0, 1.5, 0.4))
+        assert _round(engine.tick(0.0)[1]) == (3.0, 1.5, 0.4)
+        assert _round(engine.tick(0.5)[1]) == (3.0, 0.75, 0.2)
+        assert _round(engine.tick(0.5)[1]) == (3.0, 0.0, 0.0)
+
+    def test_an_unlocked_marker_is_left_alone(self) -> None:
+        engine = _engine(CROSS)
+        engine.take_over(1, (0.0, 1.0, 0.0))
+        assert not engine.is_locked(1)
+
+
 class TestLockOnto:
     def test_a_marker_locks_onto_a_named_path_ignoring_case(self) -> None:
         engine = _engine(CROSS, RAMP)

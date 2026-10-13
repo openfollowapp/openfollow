@@ -562,7 +562,12 @@ def _prune_manual_markers(app: Any, *, keep: set[int]) -> None:
     is off). Any other ghost is discarded – when the operator changes the
     controlled set or turns assist off, the old anchors must not linger.
     """
-    prune_to_keep(app._assist_manual, keep)
+    paths = getattr(app, "_paths", None)
+    for marker_id, _anchor in prune_to_keep(app._assist_manual, keep):
+        out = app._server.get_marker(marker_id)
+        if paths is not None and out is not None:
+            # A lock held the anchor's place; the output, which input drives from now, takes it over.
+            paths.take_over(marker_id, out.pos)
 
 
 def _prune_pin_states(app: Any, *, keep: set[int]) -> None:

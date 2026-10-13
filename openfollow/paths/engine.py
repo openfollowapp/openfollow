@@ -302,6 +302,25 @@ class PathEngine:
         px, py, pz = self._network.point(place)
         return px, py, pz + self._height_left(lock)
 
+    def take_over(self, marker_id: int, pos: Point) -> None:
+        """Move a locked marker's lock to ``pos``, where another position now writes the marker, without a jump.
+
+        Landed, the lock goes to the reachable point nearest ``pos`` and eases from ``pos``'s height; pulled
+        in, it is pulled in afresh from ``pos``.
+        """
+        lock = self._locks.get(marker_id)
+        if lock is None or self._network is None:
+            return
+        x, y, z = pos
+        if lock.free is not None:
+            lock.free, lock.slide_elapsed = pos, 0.0
+            lock.place = Place(lock.place.path, self._network.curves[lock.place.path].nearest(x, y)[0])
+            return
+        place = self._network.nearest(x, y, among=self._network.connected(lock.place.path))
+        assert place is not None
+        lock.place, lock.name = place, self._names[place.path]
+        lock.z_shift, lock.z_elapsed = z - self._network.point(place)[2], 0.0
+
     def _set_place(self, lock: _Lock, place: Place) -> None:
         if place.path != lock.place.path:
             # Onto another path: carry the height across and let it ease to the new path's.

@@ -38,7 +38,9 @@ def draw_paths(renderer: Any, cr: Any, state: OverlayState, w: int, h: int, cach
 
     An end that holds the marker carries a dot; one that releases it, an arrowhead pointing out.
     """
-    if not state.show_paths or state.camera_params is None:
+    if not state.show_paths or not state.path_lines or state.camera_params is None:
+        if cache is not None:
+            cache.clear()
         return
     if cache is None:
         shapes = _path_shapes(state, w, h, state.path_lines)
@@ -101,6 +103,10 @@ class PathCache:
     def __init__(self) -> None:
         self._layers: dict[bool, tuple[tuple[Any, ...], cairo.ImageSurface | None, int, int]] = {}
 
+    def clear(self) -> None:
+        """Let go of both pictures, which can run to a hundred megabytes each on a HiDPI 4K screen."""
+        self._layers.clear()
+
     def draw(self, cr: Any, state: OverlayState, w: int, h: int) -> None:
         cam = state.camera_params
         if cam is None:
@@ -110,6 +116,8 @@ class PathCache:
         on = [line for line in state.path_lines if line[2]]
         if on:
             self._paste(cr, state, w, h, view, on, locked=True)
+        else:
+            self._layers.pop(True, None)
 
     def _paste(
         self, cr: Any, state: OverlayState, w: int, h: int, view: tuple[Any, ...], lines: list[Any], *, locked: bool

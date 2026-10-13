@@ -229,6 +229,38 @@ def test_retention_ignores_the_station_name(tmp_path: Path) -> None:
     ]
 
 
+def _seed_later(backup_dir: Path, count: int, kind: str = "") -> list[str]:
+    """``count`` archives dated after ``_NOW``, as a clock set back finds them."""
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    names = [archive_name("OpenFollow old-name", "0.1.0", _NOW + timedelta(days=d), kind) for d in range(1, count + 1)]
+    for name in names:
+        (backup_dir / name).write_bytes(b"x")
+    return names
+
+
+def test_a_clock_set_back_never_prunes_the_archive_just_written(tmp_path: Path) -> None:
+    state = _station(tmp_path)
+    later = _seed_later(state / "backups", 12)
+    record = run_backup(state, "0.4.3", "0.4.4", now=_NOW)
+    names = [p.name for p in list_archives(state / "backups")]
+    assert names == [record.archive] + later[-(settings_backup.KEEP - 1) :]
+
+
+def test_list_archives_counts_an_entry_it_cannot_check_by_its_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    names = _seed_archives(tmp_path, 2)
+    real_is_file = Path.is_file
+
+    def is_file(self: Path, *args: object, **kwargs: object) -> bool:
+        if self.parent == tmp_path:
+            raise PermissionError(errno.EACCES, "Permission denied", str(self))
+        return real_is_file(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "is_file", is_file)
+    assert [p.name for p in list_archives(tmp_path)] == names
+
+
 def test_list_archives_of_a_missing_folder_is_empty(tmp_path: Path) -> None:
     assert list_archives(tmp_path / "absent") == []
 
@@ -546,3 +578,143 @@ def test_main_without_the_state_folder(tmp_path: Path, monkeypatch: pytest.Monke
     monkeypatch.setattr(settings_backup, "STATE_DIR", tmp_path / "absent")
     assert settings_backup.main(["upgrade", "0.4.3", "0.4.4"]) == 0
     assert not (tmp_path / "absent").exists()
+
+
+# --- before a web UI change ---------------------------------------------------
+
+
+def _web_backup(state: Path, kind: str = "import", **kwargs: object) -> settings_backup.WebBackup:
+    return settings_backup.run_web_backup(state / "config.toml", "0.5.0", kind, now=_NOW, **kwargs)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected"),
+    [
+        ("import", "brave-otter-v0.5.0-import-20260929T180000.000Z.ofbackup"),
+        ("defaults", "brave-otter-v0.5.0-defaults-20260929T180000.000Z.ofbackup"),
+        ("../push", "brave-otter-v0.5.0-push-20260929T180000.000Z.ofbackup"),
+        ("//", "brave-otter-v0.5.0-20260929T180000.000Z.ofbackup"),
+    ],
+)
+def test_archive_name_names_the_change(kind: str, expected: str) -> None:
+    assert archive_name("OpenFollow brave-otter", "0.5.0", _NOW, kind) == expected
+
+
+def test_a_web_backup_holds_the_settings_before_the_change(tmp_path: Path) -> None:
+    state = _station(tmp_path)
+    result = _web_backup(state)
+    assert result == settings_backup.WebBackup("brave-otter-v0.5.0-import-20260929T180000.000Z.ofbackup", "")
+    members = _members(state / "backups" / "web" / result.archive)
+    assert members["config.toml"] == b'psn_system_name = "OpenFollow brave-otter"\n'
+    assert members["markers.toml"] == b"[[markers]]\nid = 1\n"
+    assert members["templates/user/grid.oftemplate"] == b"grid"
+    manifest = json.loads(members["manifest.json"])
+    assert {key: manifest[key] for key in ("kind", "version", "created")} == {
+        "kind": "import",
+        "version": "0.5.0",
+        "created": "2026-09-29T18:00:00+00:00",
+    }
+
+
+def test_a_web_backup_archives_the_config_file_it_was_given(tmp_path: Path) -> None:
+    state = _station(tmp_path)
+    (state / "show.toml").write_text('psn_system_name = "OpenFollow Stage Left"\n', encoding="utf-8")
+    result = settings_backup.run_web_backup(state / "show.toml", "0.5.0", "import", now=_NOW)
+    assert result.archive == "Stage-Left-v0.5.0-import-20260929T180000.000Z.ofbackup"
+    members = _members(state / "backups" / "web" / result.archive)
+    assert members["config.toml"] == b'psn_system_name = "OpenFollow Stage Left"\n'
+
+
+def test_a_web_backup_folder_is_private(tmp_path: Path) -> None:
+    state = _station(tmp_path)
+    result = _web_backup(state)
+    assert stat.S_IMODE((state / "backups").stat().st_mode) == 0o700
+    assert stat.S_IMODE((state / "backups" / "web").stat().st_mode) == 0o700
+    assert stat.S_IMODE((state / "backups" / "web" / result.archive).stat().st_mode) == 0o600
+
+
+def test_web_backups_keep_their_own_ten_and_leave_the_update_backups_alone(tmp_path: Path) -> None:
+    state = _station(tmp_path)
+    update = run_backup(state, "0.4.3", "0.5.0", now=_NOW - timedelta(days=30))
+    record_before = (state / "backups" / settings_backup.RECORD_NAME).read_bytes()
+    seeded = _seed_archives(state / "backups" / "web", 12)
+    result = _web_backup(state, "defaults")
+    assert [p.name for p in list_archives(state / "backups" / "web")] == seeded[3:] + [result.archive]
+    assert [p.name for p in list_archives(state / "backups")] == [update.archive]
+    assert (state / "backups" / settings_backup.RECORD_NAME).read_bytes() == record_before
+
+
+def test_a_web_backup_writes_no_update_record(tmp_path: Path) -> None:
+    state = _station(tmp_path)
+    _web_backup(state)
+    assert read_record(state) is None
+    assert not (state / "backups" / "web" / settings_backup.RECORD_NAME).exists()
+
+
+def test_a_web_backup_that_cannot_create_its_folder_reports_why(tmp_path: Path) -> None:
+    state = _station(tmp_path)
+    (state / "backups").write_text("not a folder", encoding="utf-8")
+    result = _web_backup(state)
+    assert result.archive == ""
+    assert result.error
+
+
+def test_a_web_backup_on_a_full_disk_evicts_only_older_web_backups(tmp_path: Path) -> None:
+    state = _station(tmp_path)
+    web = state / "backups" / "web"
+    seeded = _seed_archives(web, 3)
+    result = _web_backup(state, write=_FullDisk(web, free_after=1))
+    assert result.error == ""
+    assert [p.name for p in list_archives(web)] == seeded[1:] + [result.archive]
+
+
+def test_a_web_backup_under_a_clock_set_back_is_kept(tmp_path: Path) -> None:
+    state = _station(tmp_path)
+    web = state / "backups" / "web"
+    later = _seed_later(web, 12, "push")
+    result = _web_backup(state)
+    assert [p.name for p in list_archives(web)] == [result.archive] + later[-(settings_backup.KEEP - 1) :]
+
+
+def test_an_unsearchable_web_backup_folder_is_reported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A folder left by a root run (0700, root's) refuses even the check for a free name.
+    state = _station(tmp_path)
+    web = state / "backups" / "web"
+    real_exists = Path.exists
+
+    def exists(self: Path, *args: object, **kwargs: object) -> bool:
+        if self.parent == web:
+            raise PermissionError(errno.EACCES, "Permission denied", str(web))
+        return real_exists(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "exists", exists)
+    result = _web_backup(state)
+    assert result == settings_backup.WebBackup("", f"Permission denied: {web}")
+
+
+def test_web_backup_names_carry_milliseconds() -> None:
+    moment = _NOW + timedelta(microseconds=123_456)
+    assert archive_name("x", "0.5.0", moment, "push").endswith("-push-20260929T180000.123Z.ofbackup")
+
+
+def test_two_web_backups_in_one_instant_are_both_kept(tmp_path: Path) -> None:
+    state = _station(tmp_path)
+    first = _web_backup(state, "push")
+    (state / "config.toml").write_text('psn_system_name = "OpenFollow brave-otter"\nweb_port = 81\n', encoding="utf-8")
+    second = _web_backup(state, "push")
+    assert (first.archive, second.archive) == (
+        "brave-otter-v0.5.0-push-20260929T180000.000Z.ofbackup",
+        "brave-otter-v0.5.0-push-20260929T180000.001Z.ofbackup",
+    )
+    web = state / "backups" / "web"
+    assert _members(web / first.archive)["config.toml"] == b'psn_system_name = "OpenFollow brave-otter"\n'
+    assert [p.name for p in list_archives(web)] == [first.archive, second.archive]
+
+
+def test_archives_order_by_millisecond(tmp_path: Path) -> None:
+    for name in ("x-v1-push-20260101T000000.900Z.ofbackup", "x-v1-push-20260101T000000.100Z.ofbackup"):
+        (tmp_path / name).write_bytes(b"")
+    assert [p.name for p in list_archives(tmp_path)] == [
+        "x-v1-push-20260101T000000.100Z.ofbackup",
+        "x-v1-push-20260101T000000.900Z.ofbackup",
+    ]

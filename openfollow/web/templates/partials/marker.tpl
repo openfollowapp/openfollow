@@ -103,8 +103,11 @@
                 <span id="marker-cone-thickness-error" class="field-error"></span>
             </div>
             <div class="field checkbox-field">
-                <label>Filled</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="cone_filled" {{'checked' if config.marker.cone_filled else ''}}></div>
+                <label for="marker-cone-filled">Cone fill</label>
+                <div class="checkbox-wrap checkbox-field inline">
+                    <input type="checkbox" id="marker-cone-filled" name="cone_filled" {{'checked' if config.marker.cone_filled else ''}}>
+                    <label for="marker-cone-filled">Fill the cone</label>
+                </div>
             </div>
             <div class="field">
                 <label>Fill Opacity (0–1)</label>
@@ -115,8 +118,11 @@
                 <span id="marker-cone-opacity-error" class="field-error"></span>
             </div>
             <div class="field checkbox-field">
-                <label>Shaded</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="cone_shaded" {{'checked' if config.marker.cone_shaded else ''}}></div>
+                <label for="marker-cone-shaded">Shading</label>
+                <div class="checkbox-wrap checkbox-field inline">
+                    <input type="checkbox" id="marker-cone-shaded" name="cone_shaded" {{'checked' if config.marker.cone_shaded else ''}}>
+                    <label for="marker-cone-shaded">Shade the cone</label>
+                </div>
             </div>
         </div>
     </div>
@@ -125,8 +131,11 @@
         <h3 class="group-title">Body</h3>
         <div class="fields-grid">
             <div class="field checkbox-field">
-                <label>Show Ball</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="ball_visible" {{'checked' if config.marker.ball_visible else ''}}></div>
+                <label for="marker-ball-visible">Ball</label>
+                <div class="checkbox-wrap checkbox-field inline">
+                    <input type="checkbox" id="marker-ball-visible" name="ball_visible" {{'checked' if config.marker.ball_visible else ''}}>
+                    <label for="marker-ball-visible">Show the ball</label>
+                </div>
             </div>
             <div class="field">
                 <label>Ball Size ({{_len}})</label>
@@ -154,8 +163,11 @@
         <h3 class="group-title">Crosshair</h3>
         <div class="fields-grid">
             <div class="field checkbox-field">
-                <label>Show Crosshair</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="crosshair_visible" {{'checked' if config.marker.crosshair_visible else ''}}></div>
+                <label for="marker-crosshair-visible">Crosshair</label>
+                <div class="checkbox-wrap checkbox-field inline">
+                    <input type="checkbox" id="marker-crosshair-visible" name="crosshair_visible" {{'checked' if config.marker.crosshair_visible else ''}}>
+                    <label for="marker-crosshair-visible">Show the crosshair</label>
+                </div>
             </div>
             <div class="field">
                 <label>Crosshair Size ({{_len}})</label>
@@ -195,8 +207,11 @@
         <h3 class="group-title">Z Line</h3>
         <div class="fields-grid">
             <div class="field checkbox-field">
-                <label>Z Line</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="z_line" {{'checked' if config.marker.z_line else ''}}></div>
+                <label for="marker-z-line-visible">Z Line</label>
+                <div class="checkbox-wrap checkbox-field inline">
+                    <input type="checkbox" id="marker-z-line-visible" name="z_line" {{'checked' if config.marker.z_line else ''}}>
+                    <label for="marker-z-line-visible">Show the Z Line</label>
+                </div>
             </div>
             <div class="field">
                 <label>Z Line Thickness (px)</label>
@@ -213,8 +228,11 @@
         <h3 class="group-title">Ground Circle</h3>
         <div class="fields-grid">
             <div class="field checkbox-field">
-                <label>Ground Circle</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="ground_circle" {{'checked' if config.marker.ground_circle else ''}}></div>
+                <label for="marker-ground-circle-visible">Ground circle</label>
+                <div class="checkbox-wrap checkbox-field inline">
+                    <input type="checkbox" id="marker-ground-circle-visible" name="ground_circle" {{'checked' if config.marker.ground_circle else ''}}>
+                    <label for="marker-ground-circle-visible">Show the ground circle</label>
+                </div>
             </div>
             <div class="field">
                 <label>Circle Size ({{_len}})</label>
@@ -228,8 +246,11 @@
                 % end
             </div>
             <div class="field checkbox-field">
-                <label>Filled</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="ground_circle_filled" {{'checked' if config.marker.ground_circle_filled else ''}}></div>
+                <label for="marker-ground-circle-filled">Circle fill</label>
+                <div class="checkbox-wrap checkbox-field inline">
+                    <input type="checkbox" id="marker-ground-circle-filled" name="ground_circle_filled" {{'checked' if config.marker.ground_circle_filled else ''}}>
+                    <label for="marker-ground-circle-filled">Fill the ground circle</label>
+                </div>
             </div>
         </div>
     </div>
@@ -237,9 +258,12 @@
     <div class="group">
         <h3 class="group-title">Z Display</h3>
         <div class="fields-grid">
-            <div class="field checkbox-field">
-                <label>Z from Stage Level</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="z_display_from_stage" {{'checked' if config.marker.z_display_from_stage else ''}}></div>
+            <div class="field span-2">
+                <label for="marker-z-display-from-stage">Z readout</label>
+                <select id="marker-z-display-from-stage" name="z_display_from_stage">
+                    <option value="false" {{'' if config.marker.z_display_from_stage else 'selected'}}>Show Z relative to the Reference Point</option>
+                    <option value="true" {{'selected' if config.marker.z_display_from_stage else ''}}>Show Z relative to the grid</option>
+                </select>
             </div>
         </div>
     </div>

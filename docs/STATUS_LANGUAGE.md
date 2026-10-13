@@ -233,16 +233,35 @@ A failed save is a red line under the form's actions, what the station
 observed plus one next step, next to the red ring. It is not a box and never a
 toast.
 
+A change that went through with something worth knowing about it (an import
+or a restore to defaults for which no backup could be made) is a caution toast
+on the page the change reloaded to, in place of its confirmation.
+
+### Pushed settings
+
+Settings another station pushed here are an info box in a locked dialog on
+every page (`base.tpl`'s pushed-settings poll): the box says they are already
+applied, a list below names each push, and a push for which no backup could be
+made carries a caution line (`.field-caution-msg`), the same sentence as the
+toast: "No backup was made. Details in Logs." Its one button removes the
+warning; it is not a confirmation, because nothing waits on it.
+
 ### Toast
 
-The toast only confirms: success fill and border over the opaque dark base,
-off-white text, led by the success sign. A failure never uses the toast.
+The toast confirms: success fill and border over the opaque dark base,
+off-white text, led by the success sign. A change that went through with
+something worth knowing about it takes the caution fill and border instead, led
+by the "i" sign (`.toast-caution`). It stays 10 seconds, a new toast restarts
+the time, and a click closes it. A failure never uses the toast.
 
 ### Destructive actions
 
-Delete, Discard, Forget, Restore Defaults and Restart are not states, but red
-already means "stop or lose something", so they take the error red rather than a
-second, paler one:
+Delete, Discard, Forget, Import, Restore Defaults and Restart are not states, but
+red already means "stop or lose something", so they take the error red rather than
+a second, paler one. Only the control that makes the change is red: a dialog's
+confirm, or a control that acts at once. One that only opens the question is not
+destructive and keeps its normal style (**Import Configuration…**, **Restore
+Defaults** in the Configuration section).
 
 | Control | Look |
 |---|---|
@@ -298,8 +317,10 @@ attributes, so it spells the token's value.
   led by its level's off-white sign (`draw_level_sign`): the warning sign for
   an error, the "i" for caution and info, the off-white check for a success
   ("Diagnostics saved to …"). A level the HUD does not know draws as an
-  error. The "+N more" row takes the gravest level among the rows it hides,
-  in the order error, caution, info, success.
+  error. Rows are listed gravest first, each level in the order raised, so a
+  notice held until someone acts never pushes a fault out of sight. The "+N
+  more" row takes the gravest level among the rows it hides, in the order
+  error, caution, info, success.
 - Every status row wraps at a space onto a second line and is cut with an
   ellipsis only past it, whatever wrote it; the sign sits centred on a
   two-line row. A row naming an interface by label and name ("OTP output:
@@ -313,6 +334,10 @@ attributes, so it spells the token's value.
   status row is caution today: the HUD shows faults, progress and results, and
   a limitation worth knowing lives on the web UI and the on-screen Network
   screen.
+- Settings another station pushed here are an info row naming the newest push
+  ("Settings pushed from Stage Left (+1 more)"), held until the warning is
+  removed, on the web UI or from the Settings menu, whose first entry is
+  Remove Pushed Settings Warning while one was pending when it opened.
 - The on-screen Network screen: a notice is a row in its level's fill and border,
   led by its sign (`draw_level_sign`), its text wrapped rather than cut. An
   interface pill that names a state takes its level's chip colours (a link-local

@@ -86,10 +86,13 @@
 
     <div class="group">
         <h3 class="group-title">Control direction</h3>
-        <div class="row">
-            <div class="field checkbox-field wide">
-                <label for="movement-invert-control-direction">Invert control direction</label>
-                <div class="checkbox-wrap"><input type="checkbox" id="movement-invert-control-direction" name="invert_control_direction" {{'checked' if config.marker.invert_control_direction else ''}}></div>
+        <div class="fields-grid">
+            <div class="field">
+                <label for="movement-invert-control-direction">Control direction</label>
+                <select id="movement-invert-control-direction" name="invert_control_direction">
+                    <option value="false" {{'' if config.marker.invert_control_direction else 'selected'}}>Camera looks upstage</option>
+                    <option value="true" {{'selected' if config.marker.invert_control_direction else ''}}>Camera looks downstage</option>
+                </select>
             </div>
         </div>
     </div>

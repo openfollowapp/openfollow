@@ -10,7 +10,7 @@ Camera & Grid tab). All distances are in **metres**, relative to the
 
 ## Display
 
-- **Show Grid** – draw or hide the whole grid overlay on the Operator Screen.
+- **Grid** – draw or hide the whole grid overlay on the Operator Screen.
   The Origin Marker below has its own toggle, so the origin cross can still show
   when the grid lines are hidden. Display only – it never affects tracking,
   calibration, or any output protocol.
@@ -48,7 +48,7 @@ Use when the Reference Point isn't at the grid centre.
 A small cross at the Reference Point to confirm it lines up with your physical
 mark.
 
-- **Show Origin** – turn the marker on or off.
+- **Origin** – turn the cross on or off.
 - **Length** – arm length of the cross, in metres.
 - **Thickness** – line weight in pixels (1–20).
 

@@ -17,7 +17,7 @@ from openfollow.scene.lens_fit import fit_lens_from_lines
 from openfollow.scene.solver import apply_overlay_distortion, invert_normalised_radius
 from openfollow.units import format_length
 from tests._lens_band import scaled_luma
-from tests._wizard_js import length_page, needs_node, run_wizard_js
+from tests._wizard_js import length_page, needs_node, run_wizard_js, wizard_window_function
 
 pytestmark = [pytest.mark.unit, needs_node]
 
@@ -326,3 +326,188 @@ var document = { querySelectorAll: function(sel) {
         BOXES=boxes,
     )
     assert sorted(wired, key=str) == ["DSL", "DSR", "USL", "USR"]
+
+
+@pytest.mark.parametrize(("k1", "k2"), [(-0.33, 1e-15), (-0.33, -1e-15), (-0.3, 1e-12), (0.4, 1e-14)])
+def test_fold_radius_is_the_servers_when_the_edge_term_is_tiny(k1: float, k2: float) -> None:
+    radius, valid = run_wizard_js(
+        "[wizLensFoldRadius(k1, k2), wizLensIsValid(k1, k2)]",
+        functions=("wizLensFoldRadius", "wizLensIsValid"),
+        k1=k1,
+        k2=k2,
+    )
+    expected = lens_fold_radius(k1, k2)
+    assert (radius is None) == math.isinf(expected)
+    if radius is not None:
+        assert radius == pytest.approx(expected, rel=1e-9)
+    assert valid == lens_warp_is_valid(k1, k2)
+
+
+@pytest.mark.parametrize(("k1", "k2"), [(-0.3, 0.02), (-0.5, 0.10001)])
+def test_the_pair_a_fit_wrote_reads_as_the_fits(k1: float, k2: float) -> None:
+    out = run_wizard_js(
+        "(function() { var s = wizLensShownPair(k1, k2); return lensPairIsTheFits(Number(s[0]), Number(s[1])); })()",
+        functions=("wizLensFoldRadius", "wizLensIsValid", "wizLensShownPair", "lensFitApplies", "lensPairIsTheFits"),
+        prelude=f"var lensFit = {{ k1: {k1!r}, k2: {k2!r}, rating: 'good' }};",
+        k1=k1,
+        k2=k2,
+    )
+    assert out is True
+
+
+def test_an_edit_drops_the_answer_to_a_fit_already_in_flight() -> None:
+    out = run_wizard_js(
+        "(function() { var before = lensFitSeq; scheduleLensFit(); return lensFitSeq !== before; })()",
+        functions=("scheduleLensFit",),
+        prelude="var lensFitSeq = 3, lensFitTimer = null, LENS_FIT_DEBOUNCE_MS = 300;"
+        " function setTimeout() { return 1; } function clearTimeout() {} function runLensFit() {}",
+    )
+    assert out is True
+
+
+# A thenable that settles at once, so a fetch chain runs before the expression is read.
+_SYNC_FETCH = (
+    "function settled(v) { return { then: function(f) { var r = f(v); return r && r.then ? r : settled(r); },"
+    " catch: function() { return this; } }; }"
+    " function fetch() { return settled({ ok: false,"
+    " json: function() { return settled({ error: 'At most 32 lines.' }); } }); }"
+)
+
+
+def test_a_failed_fit_leaves_no_earlier_fit_standing() -> None:
+    out = run_wizard_js(
+        "(function() { runLensFit(); return [lensFit, shown, status]; })()",
+        functions=("runLensFit", "lensFitFailed"),
+        prelude=_SYNC_FETCH
+        + " var lensFitSeq = 0, imageWidth = 1920, imageHeight = 1080, shown = 'unset', status = null;"
+        " var lensFit = { k1: -0.2, k2: 0, rating: 'good' };"
+        " var lensLines = [{ points: 5 }];"
+        " function lensLineCounts() { return true; } function lensActivePoints() { return []; }"
+        " function lensShowStatus(text, ok) { status = [text, ok]; }"
+        " function renderLensResult() { shown = lensFit; } function renderLens() {} function saveToSession() {}",
+    )
+    assert out == [None, None, ["At most 32 lines.", False]]
+
+
+def test_the_corners_a_solve_records_are_the_ones_it_sent() -> None:
+    out = run_wizard_js(
+        "(function() { var sent = wizSolveCorners(pos); pos.DSL[0] -= 10; return sent; })()",
+        functions=("wizSolveCorners",),
+        variables=("CORNER_NAMES",),
+        pos={"DSL": [1, 2], "DSR": [3, 4], "USR": [5, 6], "USL": [7, 8]},
+    )
+    assert out == [[1, 2], [3, 4], [5, 6], [7, 8]]
+
+
+def test_a_corner_nudge_drops_the_answer_to_a_solve_in_flight() -> None:
+    out = run_wizard_js(
+        "(function() { setupCornerDragging(container); var before = poseSeq;"
+        " listeners.keydown({ key: 'ArrowLeft', shiftKey: false, target: handle, preventDefault: function() {} });"
+        " return [poseSeq !== before, cornerPositions.DSL]; })()",
+        functions=("setupCornerDragging",),
+        prelude="var poseSeq = 7, arrowDebounceTimer = null, cornerPositions = { DSL: [100, 50] };"
+        " var listeners = {}; var container = { addEventListener: function(n, f) { listeners[n] = f; } };"
+        " var handle = { dataset: { corner: 'DSL' }, setAttribute: function() {},"
+        " closest: function() { return handle; } };"
+        " var document = { getElementById: function() { return {}; } };"
+        " var window = { addEventListener: function() {} };"
+        " function setTimeout() { return 1; } function clearTimeout() {}"
+        " function updateFineQuad() {} function refreshFineZoomNeighbourhood() {} function solveFromCorners() {}",
+    )
+    assert out == [True, [99, 50]]
+
+
+@pytest.mark.parametrize(
+    ("key", "shows"),
+    [
+        ("prep", False),
+        ("grid", False),
+        ("video", False),
+        ("lens", True),
+        ("camera", False),
+        ("ref", True),
+        ("corners", True),
+        ("review", True),
+    ],
+)
+def test_only_a_step_that_shows_the_snapshot_loads_it(key: str, shows: bool) -> None:
+    steps = ["prep", "grid", "video", "lens", "camera", "ref", "corners", "review"]
+    out = run_wizard_js(
+        "wizStepNeedsSnapshot(key, WIZ)",
+        functions=("wizStepNeedsSnapshot",),
+        key=key,
+        WIZ={k: i for i, k in enumerate(steps)},
+    )
+    assert out is shows
+
+
+_ZOOM_BOX = (
+    "var poseSeq = 7, arrowDebounceTimer = null, cornerPositions = { DSL: [100, 50] }, FINE_NEIGHBOURS = { DSL: [] };"
+    " var listeners = {};"
+    " var svg = { addEventListener: function(n, f) { listeners[n] = f; }, setAttribute: function() {},"
+    " setPointerCapture: function() {}, getScreenCTM: function() { return { inverse: function() {} }; },"
+    " createSVGPoint: function() { return { matrixTransform: function() { return { x: 120, y: 60 }; } }; } };"
+    " var box = { dataset: { corner: 'DSL' }, querySelector: function() { return svg; } };"
+    " var document = { querySelector: function() { return null; } };"
+    " function setTimeout() { return 1; } function clearTimeout() {} function fineZoomReady() { return true; }"
+    " function updateFineQuad() {} function refreshFineZoomNeighbourhood() {} function renderFineZoomBox() {}"
+    " function recenterFineZoomBoxIfNeeded() { return false; } function solveFromCorners() {}"
+)
+
+
+@pytest.mark.parametrize(
+    ("event", "payload"),
+    [
+        ("keydown", "{ key: 'ArrowLeft', shiftKey: false, preventDefault: function() {} }"),
+        ("pointerdown", "{ pointerId: 1, clientX: 0, clientY: 0, preventDefault: function() {} }"),
+    ],
+)
+def test_a_zoom_box_move_drops_the_answer_to_a_solve_in_flight(event: str, payload: str) -> None:
+    out = run_wizard_js(
+        f"(function() {{ _attachFineZoomBoxHandlers(box); var before = poseSeq; listeners.{event}({payload});"
+        " return poseSeq !== before; })()",
+        functions=("_attachFineZoomBoxHandlers",),
+        prelude=_ZOOM_BOX,
+    )
+    assert out is True
+
+
+_FIT_PAGE = (
+    " var lensFitSeq = 0, imageWidth = 1920, imageHeight = 1080, drawn = 0, saved = 0;"
+    " var lensFit = { k1: -0.2, k2: 0, rating: 'good' };"
+    " var lensLines = [{ points: 5 }];"
+    " function lensLineCounts() { return true; } function lensActivePoints() { return []; }"
+    " function lensShowStatus() {} function renderLensResult() {}"
+    " function renderLens() { drawn++; } function saveToSession() { saved++; }"
+)
+# A fetch whose request never reaches the server: the chain goes straight to its catch.
+_FAILED_FETCH = (
+    "function rejected() { return { then: function() { return this; }, catch: function(f) { f(new Error('x')); } }; }"
+    " function fetch() { return rejected(); }"
+)
+
+
+@pytest.mark.parametrize("fetch_stub", [_SYNC_FETCH, _FAILED_FETCH], ids=["refused", "unreachable"])
+def test_a_failed_fit_redraws_and_stores_no_fit(fetch_stub: str) -> None:
+    out = run_wizard_js(
+        "(function() { runLensFit(); return [lensFit, drawn, saved]; })()",
+        functions=("runLensFit", "lensFitFailed"),
+        prelude=fetch_stub + _FIT_PAGE,
+    )
+    assert out[0] is None
+    assert out[1] >= 1 and out[2] >= 1
+
+
+def test_a_lens_slider_on_the_lens_step_projects_nothing() -> None:
+    out = run_wizard_js(
+        "(function() { onWizardLensInput('k1', 'range'); return projected; })()",
+        prelude="var window = {}; var projected = 0, currentStep = 3, WIZ = { lens: 3 };"
+        " var fields = { wiz_lens_k1: { value: '-0.2' }, wiz_lens_k1_range: { value: '-0.2' } };"
+        " var document = { getElementById: function(id) { return fields[id] || null; } };"
+        " function wizWriteLensCoeff() {} function wizLensPairValid() { return true; }"
+        " function lensRecomputeCurves() {} function renderLens() {} function onLensCoeffChanged() {}"
+        " function projectAndOverlay() { projected++; }\n"
+        + wizard_window_function("onWizardLensInput")
+        + "\nvar onWizardLensInput = window.onWizardLensInput;",
+    )
+    assert out == 0

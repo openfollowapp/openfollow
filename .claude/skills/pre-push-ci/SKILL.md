@@ -54,8 +54,8 @@ OpenFollow runs on isolated show LANs with no WAN. The app – including the web
 
 - No CDN-loaded JS/CSS/fonts. Bundle assets under `openfollow/web/static/` and
   reference via the `/assets/<filename:path>` route.
-- No outbound HTTP from server-side code at runtime. The gated `git pull` update
-  flow is the only sanctioned exception.
+- No outbound HTTP from server-side code at runtime, except the four exceptions
+  listed in `CLAUDE.md` "Offline runtime".
 - No silent "online fallback". Ask: *does this still work after I unplug the WAN
   cable?* If no, it's broken.
 
@@ -65,8 +65,8 @@ OpenFollow runs on isolated show LANs with no WAN. The app – including the web
   user explicitly directed otherwise).
 - **Docs gate:** if the change touched a control, config field, route, keybind,
   or documented behaviour, update the matching docs in the same change –
-  `openfollow/web/help/<section>.md`, the relevant `docs/` file, and/or the
-  `CLAUDE.md` tables. A behaviour change with stale docs is incomplete.
+  `openfollow/web/help/<section>.md`, the matching `docs/architecture/` guide,
+  and/or another `docs/` file. A behaviour change with stale docs is incomplete.
 
 **Done when:** `make ci-remote` exits 0 (on the Pi when reachable, else locally)
 and the docs reflect the change.

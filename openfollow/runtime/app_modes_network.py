@@ -27,7 +27,6 @@ from openfollow.network.adapter import (
     Ipv4Method,
     NetworkAdapter,
     NetworkState,
-    is_loopback,
 )
 from openfollow.network.validate import (
     describe_applied,
@@ -117,9 +116,9 @@ class _NetworkSnapshot:
     state: NetworkState | None
     pending: Ipv4Config | None
     # Interface name -> "DHCP" / "Static". Read here rather than in the row
-    # builder: the rows are rebuilt every frame and this costs one adapter
-    # call per interface, which the render loop cannot afford. This read is
-    # already off-thread and budgeted.
+    # builder: the rows are rebuilt every frame and this is a backend read,
+    # which the render loop cannot afford. This read is already off-thread
+    # and budgeted.
     methods: dict[str, str] = field(default_factory=dict)
     # Interface name -> which adapter it is. Off-thread for the same reason:
     # describing one can read sysfs or run ``ip`` / ``networksetup``.
@@ -131,20 +130,16 @@ def _read_pi_network(app: OpenFollowApp) -> _NetworkSnapshot:
     adapter = _network_adapter(app)
     if adapter is None:
         return _NetworkSnapshot(False, [], "", None, None)
-    # Drop loopback; would become default selection on Linux.
-    interfaces = [i for i in adapter.list_interfaces() if not is_loopback(i)]
+    reading = adapter.read_network()
+    interfaces = list(reading.interfaces)
     if not interfaces:
         return _NetworkSnapshot(True, [], "", None, None)
     active = getattr(app, "_pi_network_active_iface", "") or interfaces[0].name
     if active not in {i.name for i in interfaces}:
         active = interfaces[0].name
-    state = adapter.get_state(active)
+    state = reading.states.get(active)
     pending = state.ipv4 if state is not None else Ipv4Config(method=Ipv4Method.DHCP)
-    methods: dict[str, str] = {}
-    for iface in interfaces:
-        iface_state = state if iface.name == active else adapter.get_state(iface.name)
-        if iface_state is not None:
-            methods[iface.name] = _METHOD_LABELS.get(iface_state.ipv4.method, "")
+    methods = {name: _METHOD_LABELS.get(iface_state.ipv4.method, "") for name, iface_state in reading.states.items()}
     adapters = {iface.name: describe(iface.name) for iface in interfaces}
     return _NetworkSnapshot(True, interfaces, active, state, pending, methods, adapters)
 
@@ -1155,12 +1150,12 @@ def _start_worker(
 
     # The web's apply and renew and the station FQDN's DHCP change hold the same lock:
     # dhcpcd.conf and the NM profiles are read, changed and written back.
-    lock = getattr(getattr(app, "_runtime_services", None), "network_op_lock", None) or contextlib.nullcontext()
+    network_change = getattr(getattr(app, "_runtime_services", None), "network_change", None) or contextlib.nullcontext
 
     def _run() -> None:
         result: ApplyResult
         try:
-            with lock:
+            with network_change():
                 result = fn()
         except Exception as exc:  # noqa: BLE001
             logger.exception("Network %s failed", action_label)

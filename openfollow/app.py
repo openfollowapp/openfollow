@@ -321,6 +321,8 @@ class OpenFollowApp:
         self._settings_menu_active: bool = False
         self._settings_menu_index: int = 0
         self._settings_menu_banner: str = ""
+        # Newest pushed-settings warning pending when the Settings menu opened.
+        self._settings_pushed_upto: int | None = None
         self._settings_key_pressed: bool = False
         # True while a modal/overlay suspends direct marker control; drives the
         # one-shot keyboard clear when control RETURNS to the marker (the
@@ -547,6 +549,11 @@ class OpenFollowApp:
         from openfollow.runtime.app_modes_media import check_diagnostics_export
 
         check_diagnostics_export(self)
+
+    def _check_pushed_settings(self) -> None:
+        from openfollow.runtime.pushed_settings_hud import check_pushed_settings
+
+        check_pushed_settings(self)
 
     def _check_update_request(self) -> None:
         runtime_check_update_request(self)

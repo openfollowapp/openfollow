@@ -4,10 +4,14 @@
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Literal
+
+logger = logging.getLogger(__name__)
 
 
 class Ipv4Method(str, Enum):
@@ -114,6 +118,18 @@ class VlanInterface:
 
 
 @dataclass(frozen=True)
+class NetworkReading:
+    """Every interface but loopback, its state, and the VLAN links, read together.
+
+    An interface whose state could not be read is listed without one.
+    """
+
+    interfaces: tuple[NetworkInterface, ...] = ()
+    states: Mapping[str, NetworkState] = field(default_factory=dict)
+    vlans: tuple[VlanInterface, ...] = ()
+
+
+@dataclass(frozen=True)
 class ApplyResult:
     ok: bool
     message: str = ""
@@ -145,6 +161,32 @@ class NetworkAdapter(ABC):
     @abstractmethod
     def get_state(self, iface: str) -> NetworkState | None:
         """Return current state for ``iface`` or ``None`` if unknown."""
+
+    def read_network(self) -> NetworkReading:
+        """Every interface, its state and the VLAN links, for a view listing them all.
+
+        Falls back quietly like ``list_interfaces`` / ``get_state``. This default
+        asks ``get_state`` per interface; a backend that can read them all at once
+        overrides it, so the view costs the same however many interfaces the
+        station has. A backend whose ``get_state`` reads through this must override it.
+        """
+        interfaces = tuple(i for i in self.list_interfaces() if not is_loopback(i))
+        states: dict[str, NetworkState] = {}
+        for iface in interfaces:
+            # One interface vanishing mid-read must not cost the rest of the list.
+            try:
+                state = self.get_state(iface.name)
+            except Exception:  # noqa: BLE001
+                logger.exception("Network state read failed for %s", iface.name)
+                continue
+            if state is not None:
+                states[iface.name] = state
+        try:
+            vlans = tuple(self.list_vlans())
+        except Exception:  # noqa: BLE001
+            logger.exception("VLAN list read failed")
+            vlans = ()
+        return NetworkReading(interfaces, states, vlans)
 
     @abstractmethod
     def apply_ipv4(self, iface: str, config: Ipv4Config) -> ApplyResult:

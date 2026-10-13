@@ -18,6 +18,7 @@ from openfollow.network.adapter import (
     Ipv4Config,
     Ipv4Method,
     LeaseInfo,
+    NetworkAdapter,
     NetworkInterface,
     NetworkState,
 )
@@ -26,7 +27,7 @@ from openfollow.runtime import ipv4_digit_grid
 pytestmark = pytest.mark.unit
 
 
-class _FakeAdapter:
+class _FakeAdapter(NetworkAdapter):
     backend_name = "fake"
 
     def __init__(self, writable: bool = True) -> None:
@@ -707,6 +708,29 @@ class TestRefreshPiNetworkEdgeCases:
         from openfollow.network.adapter import Ipv4Method
 
         assert app._pi_network_pending_config.method == Ipv4Method.DHCP
+
+    def test_every_interface_comes_from_one_reading(self) -> None:
+        """The backend's whole reading, never one read per interface."""
+        adapter = _FakeAdapter()
+        adapter.method = Ipv4Method.STATIC
+        reading = adapter.read_network()
+        readings: list[int] = []
+
+        def _read_network():
+            readings.append(1)
+            return reading
+
+        def _per_interface(*_args):
+            raise AssertionError("read per interface")
+
+        adapter.read_network = _read_network
+        adapter.list_interfaces = adapter.get_state = _per_interface
+        app = _make_app(adapter)
+        anm._refresh_pi_network(app)
+        assert readings == [1]
+        assert [i.name for i in app._pi_network_interfaces] == ["eth0", "wlan0"]
+        assert app._pi_network_methods == {"eth0": "Static", "wlan0": "Static"}
+        assert app._pi_network_state_cache is reading.states["eth0"]
 
 
 class TestPiNetworkMove:
@@ -1974,7 +1998,7 @@ class TestNetworkActionsShareTheStationsLock:
 
         adapter.apply_ipv4 = _apply  # type: ignore[method-assign]
         app = _make_app(adapter)
-        app._runtime_services.network_op_lock = lock
+        app._runtime_services.network_change = lambda: lock
         anm.enter_pi_network(app)
 
         _confirm_key(app, "dhcp")

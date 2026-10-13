@@ -26,6 +26,7 @@ import openfollow
 from openfollow.net_utils import get_local_ipv4_addresses, get_primary_local_ipv4
 from openfollow.services import WebCommandQueue
 from openfollow.web.discovery import BeaconReceiver, BeaconSender, PeerInfo
+from openfollow.web.pushed_settings import PushedSettings
 
 logger = logging.getLogger(__name__)
 
@@ -56,11 +57,6 @@ _FALLBACK_PORTS: tuple[int, ...] = (8080, 2010)
 # paths and the resolver enumerates interfaces, so an IP change is picked up
 # within this window rather than re-resolving on every request.
 _LOCAL_IP_REFRESH_TTL = 5.0
-# How long the Network Settings interface list is reused before re-reading.
-# Enumerating every adapter costs one backend call each (an ``nmcli``
-# subprocess on the NetworkManager backend), and addresses don't change on a
-# sub-second cadence. ``Scan`` bypasses this.
-_NETWORK_IFACES_TTL = 5.0
 
 _AUTOSTART_UNREADABLE = "Could not read whether this service starts at boot."
 _CAMERA_SETUP_UNAVAILABLE = "Camera setup is not available on this build."
@@ -142,10 +138,10 @@ def _copy_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Copy the list, each row, *and* any list a row holds.
 
     Copying only the list leaves every caller holding the cached dicts, so a
-    template helper decorating a row corrupts what the next render reads. Rows
+    template helper decorating a row corrupts what a later render reads. Rows
     carry a ``dns`` list, which a per-row ``dict()`` would still share with the
     cache - one in-place edit anywhere downstream would rewrite what every
-    render inside the TTL window reads.
+    render served from it reads.
     """
     return [{k: list(v) if isinstance(v, list) else v for k, v in row.items()} for row in rows]
 
@@ -218,6 +214,8 @@ class ConfigWebServer:
         network_vlan_provider: Callable[[], dict[str, Any]] | None = None,
         network_vlan_create_handler: Callable[[str, int], ApplyResult] | None = None,
         network_vlan_delete_handler: Callable[[str], ApplyResult] | None = None,
+        # Scan: drop the network reading the sections share, so the next read asks the backend.
+        network_rescan_handler: Callable[[], None] | None = None,
         # Privilege capability snapshot for the diagnostics bundle; optional for tests.
         privilege_states_provider: Callable[[], dict[str, str]] | None = None,
         # Boot-autostart switch: host state on read, broker-elevated write.
@@ -280,6 +278,7 @@ class ConfigWebServer:
         # rather than showing a number whose meaning changed silently.
         self._station_interface_down = False
         self._command_queue = command_queue or WebCommandQueue()
+        self.pushed_settings = PushedSettings()
         self._runtime_stats_provider = runtime_stats_provider
         self.crash_restarts_provider = crash_restarts_provider
         self.online_sync_status_provider = online_sync_status_provider
@@ -308,17 +307,15 @@ class ConfigWebServer:
         self._network_config_provider = network_config_provider
         self._network_interfaces_provider = network_interfaces_provider
         self._network_address_sources_provider = network_address_sources_provider
-        # TTL cache for the interface list: enumerating every adapter's method
-        # costs one backend call each, and the General tab re-renders often.
-        # ``Scan`` bypasses it, so a freshly plugged NIC never needs a wait.
+        # The last interface list read, served when a read fails.
         self._network_ifaces_cache: list[dict[str, Any]] = []
-        self._network_ifaces_ts = 0.0  # monotonic; 0 = never populated
         self._network_ifaces_lock = threading.Lock()
         self._network_apply_handler = network_apply_handler
         self._network_renew_handler = network_renew_handler
         self._network_vlan_provider = network_vlan_provider
         self._network_vlan_create_handler = network_vlan_create_handler
         self._network_vlan_delete_handler = network_vlan_delete_handler
+        self._network_rescan_handler = network_rescan_handler
         self._psn_source_advisory_provider = psn_source_advisory_provider
         self._web_bind_advisory_provider = web_bind_advisory_provider
         self._privilege_states_provider = privilege_states_provider
@@ -485,37 +482,27 @@ class ConfigWebServer:
             logger.exception("Network config provider raised")
             return None
 
-    def get_network_interfaces(self, *, force: bool = False) -> list[dict[str, Any]]:
-        """Every interface with address / method / up-state, TTL-cached.
+    def get_network_interfaces(self) -> list[dict[str, Any]]:
+        """Every interface with address / method / up-state.
 
-        ``force=True`` is the ``Scan`` path: it re-reads immediately so a
-        just-plugged adapter (or a just-created VLAN) shows up without waiting
-        out the TTL.
-
-        The provider is called outside the lock: it shells out per interface,
-        and holding the lock across that would serialise every render behind
-        one slow backend read. A concurrent caller may duplicate the work, but
-        both write the same snapshot, which is cheaper than the contention.
+        A provider that raises serves the last good list rather than blanking the card.
         """
         if self._network_interfaces_provider is None:
             return []
-        now = time.monotonic()
-        if not force:
-            with self._network_ifaces_lock:
-                if self._network_ifaces_ts and now - self._network_ifaces_ts < _NETWORK_IFACES_TTL:
-                    return _copy_rows(self._network_ifaces_cache)
         try:
             rows = self._network_interfaces_provider()
         except Exception:  # noqa: BLE001
             logger.exception("Network interfaces provider raised")
-            # Serve the last good snapshot rather than blanking the list on a
-            # transient backend failure.
             with self._network_ifaces_lock:
                 return _copy_rows(self._network_ifaces_cache)
         with self._network_ifaces_lock:
             self._network_ifaces_cache = _copy_rows(rows)
-            self._network_ifaces_ts = time.monotonic()
         return _copy_rows(rows)
+
+    def rescan_network(self) -> None:
+        """Make the next network read ask the backend rather than share the last reading."""
+        if self._network_rescan_handler is not None:
+            self._network_rescan_handler()
 
     def read_address_sources(self) -> list[dict[str, Any]] | None:
         """Each interface's address source read now, uncached; a backend failure

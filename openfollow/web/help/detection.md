@@ -57,8 +57,8 @@ How sensitive detection is, and what the overlay draws.
 - **Detection sensitivity (0–1)** – the score a detection must reach to start a new track or be treated as a confident sighting. Lower catches more people but more false positives; higher is stricter. Default `0.2`. Detections that dip just below this threshold are not thrown away: the tracker still uses them to hold an already-tracked person, so an actor stepping into shadow (and dimming the detection) keeps their identity instead of being dropped.
 - **Detection rate (FPS)** – how often the model runs: 1, 2, 5, 10, 15, or 30 fps. Higher is more responsive but uses more CPU. Default 15 fps.
 - **Maximum people** – maximum detections kept per frame (highest-confidence first). 1–50. Default `10`. Reducing this limits CPU when many people are in view.
-- **Show boxes** – draw a bounding rectangle around each detected person. On by default.
-- **Show labels** – draw a text label (confidence score) inside or above each box. On by default.
+- **Boxes** – draw a bounding rectangle around each detected person. On by default.
+- **Labels** – draw a text label (confidence score) inside or above each box. On by default.
 - **Box color** – color of the boxes. Click the swatch to open the color picker. Default gray (`#808080`). A box currently attached to a marker is drawn in **that marker's** color instead, so you can see which detection is driving each followspot.
 - **Box thickness (px)** – line weight for the boxes, 1–10 pixels. Default `2`.
 

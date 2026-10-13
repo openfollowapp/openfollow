@@ -944,11 +944,13 @@ class PathsConfig:
 
     def _give_unique_names(self) -> None:
         # OSC finds a path by name ignoring case, so two must never match.
+        explicit = {path.name.lower() for path in self.paths if path.name}
         taken: set[str] = set()
         for index, path in enumerate(self.paths):
             base = path.name or f"path-{index + 1}"
             name, n = base, 1
-            while name.lower() in taken:
+            # A name made up here, or a clash's new one, never takes a name another path was given.
+            while name.lower() in taken or (name != path.name and name.lower() in explicit):
                 n += 1
                 suffix = f"-{n}"
                 name = base[: PATH_NAME_MAX_LEN - len(suffix)] + suffix

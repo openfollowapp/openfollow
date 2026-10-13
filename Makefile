@@ -159,14 +159,16 @@ install-hooks:
 
 # mutmut is in the optional ``mutation`` Poetry group. Only checked here:
 # ``poetry install`` removes every extra it is not given.
+MUTMUT_CHECK = poetry run python -c "import mutmut" || { echo "mutmut could not be imported; if it is not installed, run: poetry install --with mutation -E detection (plus any other extras you use)"; exit 2; }
+
 mutation-deps:
-	@poetry run python -c "import mutmut" 2>/dev/null || { echo "mutmut is not installed; run: poetry install --with mutation -E detection (plus any other extras you use)"; exit 2; }
+	@$(MUTMUT_CHECK)
 
 mutation-clean:
 	rm -rf mutants .mutmut-cache
 
 mutation: mutation-deps
-	@$(MAKE) --no-print-directory mutation-clean
+	rm -rf mutants .mutmut-cache
 	poetry run mutmut run
 
 # Mutate one module by mutant-name pattern, which mutmut derives from the dotted
@@ -182,7 +184,7 @@ mutation: mutation-deps
 # the one the committed config already covers.
 mutation-module:
 	@test -n "$(MODULE)" || { echo "usage: make mutation-module MODULE=openfollow.<module>"; exit 2; }
-	@$(MAKE) --no-print-directory mutation-deps
+	@$(MUTMUT_CHECK)
 	@echo "note: mutants run against $(MUTATION_TESTS) - a module outside that reports every mutant survived"
 	poetry run mutmut run "$(MODULE).*"
 
@@ -192,5 +194,5 @@ mutation-results: mutation-deps
 mutation-show:
 	@# Pass MUTANT=<full-name> e.g. `make mutation-show MUTANT=openfollow.zones.engine.xǁZoneEngineǁupdate__mutmut_13`
 	@test -n "$(MUTANT)" || { echo "usage: make mutation-show MUTANT=<mutant-name>"; exit 2; }
-	@$(MAKE) --no-print-directory mutation-deps
+	@$(MUTMUT_CHECK)
 	poetry run mutmut show "$(MUTANT)"

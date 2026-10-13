@@ -529,10 +529,11 @@ class TestSteering:
 
     def test_pushing_towards_the_other_path_takes_it_at_the_crossing(self) -> None:
         net = PathNetwork([H, V])
-        # 60 degrees: 30 off V, 60 off H. Half speed along H reaches the crossing in 2 s, then 0.87 m/s up V.
+        # 60 degrees: 30 off V, 60 off H. Half speed along H reaches the 0.5 m window in 1 s, the push carries the
+        # marker on to the crossing in 0.5 s, then 1.5 s up V at 0.87 m/s.
         step = net.walk(Place(0, 4.0), *_push(60.0), dt=3.0)
         assert step.place.path == 1
-        assert _at(net, step.place) == pytest.approx((0.0, math.cos(math.radians(30.0))), abs=1e-6)
+        assert _at(net, step.place) == pytest.approx((0.0, 1.5 * math.cos(math.radians(30.0))), abs=1e-6)
 
     def test_a_push_only_a_little_closer_to_the_other_path_stays(self) -> None:
         net = PathNetwork([H, V])
@@ -545,15 +546,31 @@ class TestSteering:
         step = net.walk(Place(0, 5.0), 0.0, -1.0, 1.0)
         assert _at(net, step.place) == (0.0, -1.0)
 
-    def test_a_marker_in_the_switch_area_can_still_take_the_crossing(self) -> None:
+    def test_a_marker_in_the_switch_area_runs_on_to_the_crossing_and_takes_it(self) -> None:
         net = PathNetwork([H, V])
         step = net.walk(Place(0, 4.75), 0.0, 1.0, 1.0)
         assert step.place.path == 1
-        assert _at(net, step.place) == (0.0, 1.0)
+        assert _at(net, step.place) == (0.0, 0.75)
+
+    def test_a_turn_taken_short_of_the_crossing_does_not_jump_there(self) -> None:
+        net = PathNetwork([H, V])
+        step = net.walk(Place(0, 4.6), 0.0, 1.0, 0.1)
+        assert step.place == Place(0, pytest.approx(4.7))
 
     def test_a_marker_short_of_the_switch_area_cannot(self) -> None:
         net = PathNetwork([H, V])
-        assert net.walk(Place(0, 4.65), 0.0, 1.0, 1.0).place == Place(0, 4.65)
+        # At 1 m/s the area is its 0.5 m floor, also 0.5 s of travel.
+        assert net.walk(Place(0, 4.45), 0.0, 1.0, 1.0).place == Place(0, 4.45)
+
+    @pytest.mark.parametrize(
+        ("speed", "start", "turns"), [(2.0, 4.05, True), (2.0, 3.95, False), (0.2, 4.55, True), (0.2, 4.45, False)]
+    )
+    def test_the_switch_area_grows_with_speed_and_never_shrinks_below_its_floor(
+        self, speed: float, start: float, turns: bool
+    ) -> None:
+        net = PathNetwork([H, V])
+        step = net.walk(Place(0, start), 0.0, speed, 0.01)
+        assert (step.place.path == 1 or step.place.s > start) is turns
 
     def test_just_past_a_crossing_the_marker_can_still_turn(self) -> None:
         net = PathNetwork([H, V])
@@ -582,7 +599,8 @@ class TestSteering:
         start = Place(1, ring.length - 0.3)
         step = net.walk(start, *_push(-30.0), dt=1.6 + 1.0)
         assert step.place.path == 0
-        assert _at(net, step.place) == pytest.approx((-2.0 + math.cos(math.radians(30.0)), 0.0), abs=1e-6)
+        # 0.6 s down the ring to the 0.5 m window, 0.5 s on to the crossing, then 1.5 s along H at 0.87 m/s.
+        assert _at(net, step.place) == pytest.approx((-2.0 + 1.5 * math.cos(math.radians(30.0)), 0.0), abs=1e-6)
 
     # B turns sharply up at (2, 0), where the branch A coming up from (2, -2) ends.
     SHARP = _curve([(0, 0, 0, 0), (2, 0, 0, 0), (2, 2, 0, 0)])

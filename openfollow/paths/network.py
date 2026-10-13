@@ -26,8 +26,10 @@ from openfollow.paths.geometry import FloatArray, PathCurve
 # How close a path's end must come to another path, and how close their heights must be, to meet.
 JUNCTION_REACH_M = 0.2
 JUNCTION_HEIGHT_M = 0.2
-# The switch area: a marker this close to a junction, along its path, may steer into the other path.
-SWITCH_AREA_M = 0.3
+# The switch area: a marker this close to a junction, along its path, may steer into the other path;
+# at speed, as far as it travels in SWITCH_LOOKAHEAD_S.
+SWITCH_AREA_M = 0.5
+SWITCH_LOOKAHEAD_S = 0.5
 # A position may switch paths this much further from a junction than that: about one sample's step.
 _POSITION_STEP_M = 0.15
 # The other path wins only when its direction is more than this much closer to the push.
@@ -148,15 +150,26 @@ class PathNetwork:
         if speed <= 0.0 or dt <= 0.0:
             return Step(place)
         wx, wy = vx / speed, vy / speed
+        area = max(SWITCH_AREA_M, speed * SWITCH_LOOKAHEAD_S)
         time_left = dt
         for _ in range(_MAX_LEGS):
-            way = self._choose(place, wx, wy)
+            way, to_junction = self._choose(place, wx, wy, area)
             if way is None:
                 break
+            if abs(to_junction) > _EPS:
+                # A turn taken short of its junction runs there first, at the push's speed.
+                own = self.curves[place.path]
+                leg = min(speed * time_left, abs(to_junction))
+                s, _ = own.advance(place.s, math.copysign(leg, to_junction))
+                if leg < abs(to_junction):
+                    return Step(Place(place.path, s))
+                place = way.place
+                time_left -= leg / speed
+                continue
             curve = self.curves[way.place.path]
             rate = speed * (wx * way.dx + wy * way.dy)
             budget = rate * time_left
-            ahead = self._next_junction(way.place, way.sign)
+            ahead = self._next_junction(way.place, way.sign, area)
             leg = budget if ahead is None else min(budget, ahead)
             s, end = curve.advance(way.place.s, way.sign * leg)
             place = Place(way.place.path, s)
@@ -181,33 +194,39 @@ class PathNetwork:
             ways.append(_Way(place, -1, -ax, -ay))
         return ways
 
-    def _choose(self, place: Place, wx: float, wy: float) -> _Way | None:
+    def _choose(self, place: Place, wx: float, wy: float, area: float) -> tuple[_Way | None, float]:
+        """The way to go, and how far along this path its junction is when it leaves this path (else 0)."""
         stay = self._ways(place)
-        other: list[_Way] = []
+        other: list[tuple[_Way, float]] = []
         curve = self.curves[place.path]
         for s, partner in self._stations[place.path]:
-            if abs(curve.offset(place.s, s)) <= SWITCH_AREA_M:
-                other.extend(self._ways(partner))
+            off = curve.offset(place.s, s)
+            if abs(off) <= area:
+                other.extend((way, off) for way in self._ways(partner))
 
         def angle(way: _Way) -> float:
             return math.acos(max(-1.0, min(1.0, wx * way.dx + wy * way.dy)))
 
         best = min(stay, key=angle, default=None)
-        challenger = min(other, key=angle, default=None)
-        if challenger is not None and (best is None or angle(challenger) + _SWITCH_MARGIN_RAD < angle(best)):
-            best = challenger
+        to_junction = 0.0
+        challenger = min(other, key=lambda pair: angle(pair[0]), default=None)
+        if challenger is not None and (best is None or angle(challenger[0]) + _SWITCH_MARGIN_RAD < angle(best)):
+            best, to_junction = challenger
         if best is None or wx * best.dx + wy * best.dy <= 0.0:
-            return None
-        return best
+            return None, 0.0
+        return best, to_junction
 
-    def _next_junction(self, place: Place, sign: int) -> float | None:
+    def _next_junction(self, place: Place, sign: int, area: float) -> float | None:
+        """How far ahead the walk must ask again: where the next switch area starts, or, inside one, its junction."""
         curve = self.curves[place.path]
         ahead = []
         for s, _ in self._stations[place.path]:
             d = sign * (s - place.s)
             if curve.closed:
                 d %= curve.length
-            if d > SWITCH_AREA_M:
+            if d > area:
+                ahead.append(d - area)
+            elif d > _EPS:
                 ahead.append(d)
         return min(ahead, default=None)
 

@@ -80,6 +80,7 @@ function peArrowhead(x, y, ux, uy, half, side) {
     var open = {};            // name -> the row's open tab, for every open row
     var imgW = 1280, imgH = 720, snapshotUrl = null;
     var drag = null;          // {index, z} while a point is dragged
+    var dragEnded = false;    // the click that ends a drag is not a click on the picture
 
     function api(method, url, body) {
         var opts = { method: method, headers: { 'Content-Type': 'application/json' } };
@@ -420,13 +421,16 @@ function peArrowhead(x, y, ux, uy, half, side) {
         ev.preventDefault();
         ev.stopPropagation();
         drag = { index: index, z: find(selected).points[index].z };
+        dragEnded = false;
         svg.setPointerCapture(ev.pointerId);
     }
+    svg.addEventListener('pointerdown', function() { dragEnded = false; });
     svg.addEventListener('pointerup', function(ev) {
         if (!drag) return;
         var at = toPicture(ev);
         var d = drag;
         drag = null;
+        dragEnded = true;
         if (!at) return;
         var p = find(selected);
         onStage(at, d.z).then(function(w) {
@@ -435,7 +439,9 @@ function peArrowhead(x, y, ux, uy, half, side) {
             return put(p, { points: points }).then(load);
         }).catch(failed);
     });
+    svg.addEventListener('pointercancel', function() { drag = null; });
     svg.addEventListener('click', function(ev) {
+        if (dragEnded) { dragEnded = false; return; }
         var p = find(selected);
         if (drag || !p) return;
         var at = toPicture(ev);

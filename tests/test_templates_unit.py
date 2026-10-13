@@ -1396,3 +1396,11 @@ class TestPathsPayload:
             "paths",
             {"slide_time": 0.5, "paths": [{"name": "cross", "closed": True, "points": [{"x": 1, "y": 2, "z": 0}]}]},
         )
+
+
+@pytest.mark.parametrize("ground", ["pit", [], {"no_such_field": 1}], ids=["string", "list", "unknown-field"])
+def test_a_camera_grid_template_s_ground_grid_must_be_a_ground_grid(ground: object) -> None:
+    from openfollow.templates.schema import TemplateValidationError, validate_payload
+
+    with pytest.raises(TemplateValidationError, match="ground_grid"):
+        validate_payload("camera_grid", {"camera": {}, "grid": {}, "ground_grid": ground})

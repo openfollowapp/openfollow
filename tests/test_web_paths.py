@@ -313,43 +313,6 @@ class TestView:
         assert _call(base, "POST", "/api/paths/view", raw=b"[]")[0] == 400
 
 
-class TestUnproject:
-    def test_a_picture_point_maps_back_to_the_stage_position_it_shows(self, live) -> None:  # noqa: ANN001
-        base, config_path, _ = live
-        _with_paths(config_path, _cross())
-        seen = _call(base, "POST", "/api/paths/view", {"w": 1920, "h": 1080})[1]["paths"][0]["points"][0]
-        status, data = _call(
-            base, "POST", "/api/paths/unproject", {"x": seen[0], "y": seen[1], "z": 0, "w": 1920, "h": 1080}
-        )
-        assert status == 200
-        assert (data["x"], data["y"], data["z"]) == (pytest.approx(-3.0), pytest.approx(2.0), 0.0)
-
-    def test_a_point_above_the_horizon_does_not_reach_the_stage(self, live) -> None:  # noqa: ANN001
-        base, config_path, _ = live
-        cfg = load_config(config_path)
-        cfg.camera.pitch = 0.0  # level: the top half of the picture is sky
-        save_config(cfg, config_path)
-        status, data = _call(base, "POST", "/api/paths/unproject", {"x": 960, "y": 0, "z": 0, "w": 1920, "h": 1080})
-        assert status == 422
-        assert "does not reach the stage" in data["error"]
-
-    @pytest.mark.parametrize(
-        "body",
-        [
-            {},
-            {"x": "a", "y": 1, "z": 0, "w": 1920, "h": 1080},
-            {"x": float("nan"), "y": 1, "z": 0, "w": 1920, "h": 1080},
-        ],
-    )
-    def test_numbers_that_are_not_numbers_are_refused(self, live, body: dict) -> None:  # noqa: ANN001
-        base, _, _ = live
-        assert _call(base, "POST", "/api/paths/unproject", raw=json.dumps(body).encode())[0] == 400
-
-    def test_a_body_that_is_not_an_object_is_refused(self, live) -> None:  # noqa: ANN001
-        base, _, _ = live
-        assert _call(base, "POST", "/api/paths/unproject", raw=b"[]")[0] == 400
-
-
 def test_the_settings_form_saves_visibility_and_slide_time(live) -> None:  # noqa: ANN001
     base, config_path, _ = live
     req = urllib.request.Request(

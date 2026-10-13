@@ -24,6 +24,22 @@ def _close(a: tuple[float, ...], b: tuple[float, ...], tol: float = 1e-6) -> boo
     return all(abs(x - y) <= tol for x, y in zip(a, b, strict=True))
 
 
+def _cos(degrees: float) -> float:
+    return math.cos(math.radians(degrees))
+
+
+def _sin(degrees: float) -> float:
+    return math.sin(math.radians(degrees))
+
+
+def _gap(a: PathCurve, b: PathCurve) -> float:
+    """How far apart two curves get: the farthest any sample of one lies from the other."""
+    return max(
+        max(b.nearest(float(x), float(y))[1] for x, y in a.xy),
+        max(a.nearest(float(x), float(y))[1] for x, y in b.xy),
+    )
+
+
 class TestStraight:
     def test_a_two_point_path_runs_straight_between_them(self) -> None:
         c = _curve([(0, 0, 0), (3, 4, 2)])
@@ -93,8 +109,39 @@ class TestCorner:
         assert dist == pytest.approx(1.0, abs=1e-3)
         assert c.point(s)[:2] == pytest.approx((2.0, 1.0), abs=1e-3)
 
-    def test_turning_straight_back_keeps_the_corner_sharp(self) -> None:
+    @pytest.mark.parametrize("turn", [30.0, 90.0, 120.0])
+    def test_a_turn_up_to_120_degrees_keeps_the_point_s_radius(self, turn: float) -> None:
+        c = _curve([(0, 0, 0, 0), (4, 0, 0, 0.5), (4 + 4 * _cos(turn), 4 * _sin(turn), 0, 0)])
+        reach = 0.5 * math.tan(math.radians(turn) / 2)
+        assert c.length == pytest.approx(8 - 2 * reach + 0.5 * math.radians(turn), abs=1e-3)
+
+    @pytest.mark.parametrize("turn", [121.0, 150.0, 179.0, 179.9999, 180.0])
+    def test_a_sharper_turn_passes_the_point_at_its_radius(self, turn: float) -> None:
+        c = _curve([(0, 0, 0, 0), (4, 0, 0, 0.5), (4 + 4 * _cos(turn), 4 * _sin(turn), 0, 0)])
+        assert c.nearest(4.0, 0.0)[1] == pytest.approx(0.5, abs=0.001)
+
+    def test_an_out_and_back_runs_out_to_within_the_radius_of_its_far_point(self) -> None:
+        c = _curve([(0, 0, 0, 0), (4, 0, 0, 0.5), (0, 0.01, 0, 0)])
+        assert c.nearest(4.0, 0.0)[1] <= 0.5 + 0.001
+        assert c.length == pytest.approx(7.0, abs=0.01)
+
+    @pytest.mark.parametrize("back_y", [1e-9, -1e-9, 1e-6, -1e-6, 1e-3, -1e-3])
+    def test_a_turn_close_to_straight_back_changes_the_curve_as_little(self, back_y: float) -> None:
+        straight_back = _curve([(0, 0, 0, 0), (4, 0, 0, 0.5), (0, 0, 0, 0)])
+        near = _curve([(0, 0, 0, 0), (4, 0, 0, 0.5), (0, back_y, 0, 0)])
+        assert _gap(near, straight_back) <= abs(back_y) * 1.01
+
+    def test_turning_straight_back_turns_the_radius_short_of_the_point(self) -> None:
         c = _curve([(0, 0, 0, 0), (4, 0, 0, 1.0), (1, 0, 0, 0)])
+        assert c.length == pytest.approx(5.0)
+        assert _close(c.point(3.0), (3.0, 0.0, 0.0))
+
+    def test_turning_straight_back_takes_at_most_half_the_shorter_segment(self) -> None:
+        c = _curve([(0, 0, 0, 0), (1, 0, 0, 5.0), (0, 0.001, 0, 0)])
+        assert c.xy[:, 0].max() == pytest.approx(0.5, abs=1e-3)
+
+    def test_turning_straight_back_with_no_radius_reaches_the_point(self) -> None:
+        c = _curve([(0, 0, 0, 0), (4, 0, 0, 0), (1, 0, 0, 0)])
         assert c.length == pytest.approx(7.0)
         assert _close(c.point(4.0), (4.0, 0.0, 0.0))
 

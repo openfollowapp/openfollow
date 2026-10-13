@@ -1855,7 +1855,10 @@ class TestPadEvent:
             get_value=lambda key: {"width": width, "height": height}.get(key),
             get_fraction=lambda key: fractions[key],
         )
-        caps = SimpleNamespace(get_structure=lambda _idx: structure)
+        caps = SimpleNamespace(
+            get_structure=lambda _idx: structure,
+            to_string=lambda: _caps_string(width, height, par),
+        )
         event = SimpleNamespace(
             type=FakeEventType.CAPS,
             parse_caps=lambda: caps,
@@ -1902,7 +1905,7 @@ class TestPadEvent:
             get_value=lambda key: {"width": 800, "height": 600}.get(key),
             get_fraction=lambda _k: (_ for _ in ()).throw(RuntimeError("bad")),
         )
-        caps = SimpleNamespace(get_structure=lambda _i: structure)
+        caps = SimpleNamespace(get_structure=lambda _i: structure, to_string=lambda: _caps_string(800, 600))
         event = SimpleNamespace(type=FakeEventType.CAPS, parse_caps=lambda: caps)
         info = SimpleNamespace(get_event=lambda: event)
         r._on_pad_event(object(), info)  # must not raise
@@ -1975,7 +1978,9 @@ class TestPadEvent:
         r._on_pad_event(object(), self._make_caps_event(704, 576, par=par)[0])
         assert r.picture_geometry.par == (1, 1)
 
-    def test_a_raising_pixel_aspect_read_keeps_the_resolution(self, fake_gst, fake_glib, fake_input_cls) -> None:
+    def test_the_pixel_aspect_ratio_is_read_from_the_caps_string(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        """The structure getters are what GStreamer 1.26.2 broke, so a getter
+        that cannot answer must not turn a non-square picture square."""
         r = _make_receiver(input_config={"fake_source": "cam-1"})
 
         def _get_fraction(key: str) -> tuple[bool, int, int]:
@@ -1986,9 +1991,20 @@ class TestPadEvent:
         structure = SimpleNamespace(
             get_value=lambda key: {"width": 704, "height": 576}.get(key), get_fraction=_get_fraction
         )
-        caps = SimpleNamespace(get_structure=lambda _i: structure)
+        caps = SimpleNamespace(get_structure=lambda _i: structure, to_string=lambda: _caps_string(704, 576, (12, 11)))
         event = SimpleNamespace(type=FakeEventType.CAPS, parse_caps=lambda: caps)
         r._on_pad_event(object(), SimpleNamespace(get_event=lambda: event))
+        assert r.picture_geometry == PictureGeometry(704, 576, (12, 11))
+
+    def test_a_pixel_aspect_range_reads_as_square(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        info, event = self._make_caps_event(704, 576)
+        caps = event.parse_caps()
+        ranged = (
+            "video/x-raw, width=(int)704, height=(int)576, pixel-aspect-ratio=(fraction)[ 1/2147483647, 2147483647/1 ]"
+        )
+        event.parse_caps = lambda: SimpleNamespace(get_structure=caps.get_structure, to_string=lambda: ranged)
+        r._on_pad_event(object(), info)
         assert r.resolution == (704, 576)
         assert r.picture_geometry.par == (1, 1)
 
@@ -2013,13 +2029,21 @@ class TestPadEvent:
         assert r.picture_geometry == PictureGeometry(704, 576, (12, 11))
 
 
+def _caps_string(width: int, height: int, par: tuple[int, int] | None = None) -> str:
+    """Caps in the form ``Gst.Caps.to_string`` prints them."""
+    fields = f"video/x-raw, format=(string)I420, width=(int){width}, height=(int){height}"
+    if par is not None:
+        fields += f", pixel-aspect-ratio=(fraction){par[0]}/{par[1]}"
+    return fields + ", framerate=(fraction)30/1"
+
+
 def _caps_info(width: int, height: int) -> Any:
     """A sink-pad probe info carrying square-pixel caps of ``width`` x ``height``."""
     structure = SimpleNamespace(
         get_value=lambda key: {"width": width, "height": height}.get(key),
         get_fraction=lambda key: (True, 30, 1) if key == "framerate" else (False, 0, 0),
     )
-    caps = SimpleNamespace(get_structure=lambda _i: structure)
+    caps = SimpleNamespace(get_structure=lambda _i: structure, to_string=lambda: _caps_string(width, height))
     event = SimpleNamespace(type=FakeEventType.CAPS, parse_caps=lambda: caps)
     return SimpleNamespace(get_event=lambda: event)
 
@@ -2735,7 +2759,7 @@ class TestVideoFlowTransitionBranches:
             get_value=lambda key: {"width": width, "height": height}.get(key),
             get_fraction=lambda key: (True, 30, 1) if key == "framerate" else (False, 0, 0),
         )
-        caps = SimpleNamespace(get_structure=lambda _i: structure)
+        caps = SimpleNamespace(get_structure=lambda _i: structure, to_string=lambda: _caps_string(width, height))
         event = SimpleNamespace(type=FakeEventType.CAPS, parse_caps=lambda: caps)
         return SimpleNamespace(get_event=lambda: event), event
 

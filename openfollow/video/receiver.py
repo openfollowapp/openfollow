@@ -1052,7 +1052,7 @@ class GstNativeSinkReceiver:
                     w = structure.get_value("width")
                     h = structure.get_value("height")
                     if isinstance(w, int) and isinstance(h, int) and w > 0 and h > 0:
-                        par = self._pixel_aspect_from_structure(structure)
+                        par = _pixel_aspect(caps.to_string())
                         if self._state.set_resolution(w, h, par):
                             if par == (1, 1):
                                 logger.info("Video resolution: %dx%d", w, h)
@@ -1060,18 +1060,6 @@ class GstNativeSinkReceiver:
                                 logger.info("Video resolution: %dx%d, pixel aspect ratio %d:%d", w, h, *par)
                     self._apply_framerate_from_structure(structure)
         return cast(int, Gst.PadProbeReturn.OK)  # mypy narrowing
-
-    @staticmethod
-    def _pixel_aspect_from_structure(structure: Any) -> tuple[int, int]:
-        """The caps' pixel aspect ratio in lowest terms; square when absent or invalid."""
-        try:
-            ok, num, den = structure.get_fraction("pixel-aspect-ratio")
-        except Exception:
-            return (1, 1)
-        if not ok or num <= 0 or den <= 0:
-            return (1, 1)
-        common = math.gcd(num, den)
-        return (num // common, den // common)
 
     def _on_sink_buffer(self, pad: Any, info: Any) -> int:
         """Record frame arrival time; detect connection on real buffer flow.
@@ -1471,6 +1459,21 @@ class GstNativeSinkReceiver:
         finally:
             with self._discovery_lock:
                 self._discovery_running = False
+
+
+def _pixel_aspect(caps: str) -> tuple[int, int]:
+    """The caps' pixel aspect ratio in lowest terms; square when absent or invalid.
+
+    Read from the caps string, as ``_source_format`` is.
+    """
+    match = re.search(r"\bpixel-aspect-ratio=(?:\(fraction\))?(-?\d+)/(-?\d+)", caps)
+    if match is None:
+        return (1, 1)
+    num, den = int(match.group(1)), int(match.group(2))
+    if num <= 0 or den <= 0:
+        return (1, 1)
+    common = math.gcd(num, den)
+    return (num // common, den // common)
 
 
 def _source_format(caps: str) -> str:

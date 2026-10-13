@@ -1099,3 +1099,20 @@ class TestRttrpmThreadGenerations:
 
         assert srv._socket is live_socket
         live_socket.close.assert_not_called()
+
+    def test_a_stopped_generation_leaves_the_socket_rebuild_to_the_live_one(self) -> None:
+        """A survivor of stop() finds no socket: it must not spend the rebuild slot the live generation needs."""
+        srv = RttrpmServer(host="127.0.0.1", port=4242)
+        srv.register_marker(_marker(1))
+        srv._socket = None
+        srv._next_rebuild_at = 0.0
+        stale = threading.Event()
+        stale.set()
+
+        new_sock = MagicMock()
+        with patch("openfollow.rttrpm.server.socket.socket", return_value=new_sock):
+            srv._send_packet(stale)
+            srv._send_packet(threading.Event())
+
+        assert srv._socket is new_sock
+        new_sock.sendto.assert_called_once()

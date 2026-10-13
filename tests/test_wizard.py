@@ -2478,6 +2478,12 @@ class TestWizardSolveWithCalibrationPoints:
         assert (status, data) == (409, {"error": "A newer solve was asked for."})
         assert _post_json(base, "/api/wizard/solve", other_page)[0] == 200
 
+    @pytest.mark.parametrize("body", [[], "x", 5, None], ids=["array", "string", "number", "null"])
+    def test_a_body_that_is_not_an_object_is_refused_not_a_crash(self, live_server, body) -> None:
+        _, base = live_server
+        status, _ = _post_raw(base, "/api/wizard/solve", body)
+        assert status == 400
+
     @pytest.mark.parametrize(
         "malformed",
         ["a point", "the corners", "the canvas"],

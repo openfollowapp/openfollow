@@ -4197,14 +4197,15 @@
     else if (calibAwaiting !== null && calibAwaiting > i) calibAwaiting--;
     // An answer already on its way was solved with the point and maps by the old indices.
     poseSeq++;
+    // A pose fitted with the deleted point answers for none of the rest; forgotten before the session is
+    // saved and the solve sent, so a reload or a solve that fails leaves nothing of it. The held corner
+    // pins are the operator's, not the point's: they stay. The solve's answer brings the rest back.
+    if (fitted) calibTakeAnswer([], []);
     saveToSession();
     renderCalibList();
     renderCalibOverlay();
     clearTimeout(calibSolveTimer);
     calibSolveTimer = null;
-    // A pose fitted with the deleted point answers for none of the rest; forgotten now, so a solve that
-    // fails or is superseded leaves nothing of it, and the solve's answer brings the rest back.
-    if (fitted) calibForgetPose();
     solveFromCorners();
   };
 

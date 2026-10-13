@@ -9769,6 +9769,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             return json.dumps({"error": "Invalid JSON"})
 
         try:
+            if not isinstance(data, dict):
+                raise TypeError("the body must be a JSON object")
             # Recorded before the rest is read: a newer body refused as malformed still supersedes.
             stale = solve_turns.turn(data)
             world_corners = data["world_corners"]

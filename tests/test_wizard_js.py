@@ -1396,7 +1396,7 @@ function fetch(_url, opts) {{ sent.push(JSON.parse(opts.body)); return {{ then: 
 _CHANGE_PAGE = """
 var poseSeq = 4, solved = 0, scheduled = 0, calibAwaiting = null, calibSolveTimer = null, window = {};
 function saveToSession() {} function renderCalibList() {} function renderCalibOverlay() {}
-function renderCalibStatus() {} function setFineZoomMode() {} function calibForgetPose() {}
+function renderCalibStatus() {} function setFineZoomMode() {} function calibTakeAnswer() {}
 function solveFromCorners() { solved++; } function calibScheduleSolve() { scheduled++; }
 function wizReadLen(id) { return { 'calib-a-0': 20.0, 'calib-b-0': 19.25, 'calib-h-0': 0.0 }[id]; }
 """
@@ -1429,17 +1429,20 @@ def test_a_change_to_the_points_drops_older_answers_and_solves_again(change: str
 def test_a_delete_forgets_a_pose_the_deleted_point_may_have_been_fitted_with(
     deleted, deleted_answer, forgotten
 ) -> None:
-    """Forgotten before the solve is sent, so neither a failed nor a superseded solve leaves it standing;
-    the solve's answer brings the rest back."""
-    answers, positions, held, timer, solved = run_wizard_js(
+    """Forgotten before the session is saved and the solve sent, so neither a reload nor a failed or
+    superseded solve leaves it standing; the solve's answer brings the rest back. The held corner pins
+    are the operator's, never the deleted point's: they stay."""
+    answers, positions, held, timer, solved, stored = run_wizard_js(
         "(function() { window.calibDelete(1); return [calibAnswers, calibPoints.map(function(p) {"
-        " return p.position; }), calibHeldPins, calibSolveTimer, solved]; })()",
+        " return p.position; }), calibHeldPins, calibSolveTimer, solved, stored]; })()",
         functions=("calibNumber", "calibComplete", "calibTakeAnswer", "calibForgetPose"),
         prelude=_NO_CALIB_DRAWING
         + """
 var poseSeq = 4, calibAwaiting = null, window = {}, calibHeldPins = { world: [], corners: [] }, solved = 0;
 var calibSolveTimer = setTimeout(function() {}, 0);
-function saveToSession() {} function renderCalibList() {}
+var stored = null;
+function saveToSession() { stored = calibPoints.map(function(p) { return p.position; }); }
+function renderCalibList() {}
 function solveFromCorners() { solved++; }
 """
         + wizard_function("calibDelete", prefix="window."),
@@ -1447,14 +1450,12 @@ function solveFromCorners() { solved++; }
         calibAnswers=[{"status": "ok", "position": [1, 2, 0]}, deleted_answer],
     )
     assert (timer, solved) == (None, 1)  # one solve, the delete's own; a point solve still to come would repeat it
+    assert held == {"world": [], "corners": []}
+    assert stored == positions
     if forgotten:
-        assert (answers, positions, held) == ([None], [None], None)
+        assert (answers, positions) == ([None], [None])
     else:
-        assert (answers, positions, held) == (
-            [{"status": "ok", "position": [1, 2, 0]}],
-            [[1, 2, 0]],
-            {"world": [], "corners": []},
-        )
+        assert (answers, positions) == ([{"status": "ok", "position": [1, 2, 0]}], [[1, 2, 0]])
 
 
 @pytest.mark.parametrize(("added", "snapped"), [(False, True), (True, False)], ids=["none added", "point added"])

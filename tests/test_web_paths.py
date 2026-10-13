@@ -188,7 +188,8 @@ class TestActiveAndDelete:
 
 class TestRecord:
     def test_record_and_stop_reach_the_station(self, live) -> None:  # noqa: ANN001
-        base, _, recorder = live
+        base, config_path, recorder = live
+        _with_paths(config_path, _cross())
         assert _call(base, "POST", "/api/paths/cross/record", {"on": True}) == (
             200,
             {"success": True, "recording": "cross"},
@@ -197,11 +198,20 @@ class TestRecord:
         assert recorder.calls == ["cross", None]
 
     def test_a_refused_recording_says_so(self, live) -> None:  # noqa: ANN001
-        base, _, recorder = live
+        base, config_path, recorder = live
+        _with_paths(config_path, _cross())
         recorder.answer = False
-        status, data = _call(base, "POST", "/api/paths/cross/record", {"on": True})
-        assert status == 409
-        assert "switched off" in data["error"]
+        assert _call(base, "POST", "/api/paths/cross/record", {"on": True}) == (
+            409,
+            {"error": "Paths are switched off."},
+        )
+
+    @pytest.mark.parametrize("on", [True, False])
+    def test_recording_into_an_unknown_path_is_not_found(self, live, on: bool) -> None:  # noqa: ANN001
+        base, config_path, recorder = live
+        _with_paths(config_path, _cross())
+        assert _call(base, "POST", "/api/paths/nope/record", {"on": on}) == (404, {"error": "No path called nope."})
+        assert recorder.calls == []
 
     def test_a_body_that_is_not_an_object_is_refused(self, live) -> None:  # noqa: ANN001
         base, _, recorder = live

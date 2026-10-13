@@ -4812,8 +4812,10 @@ def _register_path_routes(app: Bottle, server: ConfigWebServer) -> None:
         if isinstance(data, str):
             return data
         on = _as_bool(data.get("on"), False)
+        if load_config(server.config_path).paths.find(name) is None:
+            return _json_error(404, f"No path called {name}.")
         if not server.record_path(name if on else None):
-            return _json_error(409, "Paths are switched off, or there is no such path.")
+            return _json_error(409, "Paths are switched off.")
         return json.dumps({"success": True, "recording": name if on else None})
 
     @app.get(_PATHS_API + "/marker/<marker_id:int>")

@@ -104,6 +104,20 @@ class PathCurve:
         leaving = k if k < last else (0 if self.closed else last - 1)
         return self._unit(arriving), self._unit(leaving)
 
+    def to_vertex(self, s: float, sign: int) -> float:
+        """How far ``s`` lies from the next vertex towards ``sign`` (+1 / -1); infinite past an open end."""
+        s = self.wrap(s)
+        last = len(self.s) - 1
+        if sign > 0:
+            k = int(np.searchsorted(self.s, s + _ON_VERTEX_M, side="right"))
+            if k <= last:
+                return float(self.s[k] - s)
+            return self.length - s + float(self.s[1]) if self.closed else math.inf
+        k = int(np.searchsorted(self.s, s - _ON_VERTEX_M, side="left")) - 1
+        if k >= 0:
+            return float(s - self.s[k])
+        return s + self.length - float(self.s[last - 1]) if self.closed else math.inf
+
     def _unit(self, i: int) -> tuple[float, float]:
         dx, dy = self._seg_vec[i] / math.sqrt(self._seg_len2[i])
         return float(dx), float(dy)
@@ -153,9 +167,9 @@ class PathCurve:
 
 
 def build_curve(points: Sequence[PathPoint], closed: bool) -> PathCurve | None:
-    """The curve through ``points``, or ``None`` when fewer than two distinct points remain.
+    """The curve through ``points``, or ``None`` when fewer than two distinct points remain, arcs included.
 
-    A closed path needs three: two points make an open one.
+    A closed path needs three: two make an open one.
     """
     pts = _distinct(points, closed)
     if len(pts) < 2:
@@ -169,14 +183,22 @@ def build_curve(points: Sequence[PathPoint], closed: bool) -> PathCurve | None:
         samples.append((pts[0].x, pts[0].y, pts[0].z))
     for i in corners:
         samples.extend(rounded[i])
-    if closed:
-        samples.append(samples[0])
-    else:
+    if not closed:
         samples.append((pts[-1].x, pts[-1].y, pts[-1].z))
-    arr = np.array(samples, dtype=np.float64)
-    # Drop the repeats a corner meeting its neighbour's corner leaves behind.
-    keep = np.concatenate(([True], np.hypot(*np.diff(arr[:, :2], axis=0).T) > _SAME_POINT_M))
-    arr = arr[keep]
+    # Drop the repeats a corner meeting its neighbour's corner leaves, and arc steps too short to count.
+    kept = samples[:1]
+    for p in samples[1:]:
+        if math.hypot(p[0] - kept[-1][0], p[1] - kept[-1][1]) > _SAME_POINT_M:
+            kept.append(p)
+    if closed:
+        while len(kept) > 1 and math.hypot(kept[-1][0] - kept[0][0], kept[-1][1] - kept[0][1]) <= _SAME_POINT_M:
+            kept.pop()
+        closed = len(kept) >= 3
+        if closed:
+            kept.append(kept[0])
+    if len(kept) < 2:
+        return None
+    arr = np.array(kept, dtype=np.float64)
     corner_xy = np.array([(pts[i].x, pts[i].y) for i in corners], dtype=np.float64).reshape(-1, 2)
     return PathCurve(arr[:, :2].copy(), arr[:, 2].copy(), closed, corner_xy)
 

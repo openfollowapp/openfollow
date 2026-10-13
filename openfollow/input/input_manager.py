@@ -31,6 +31,7 @@ from openfollow.osc.paths import PathOscAdapter
 from openfollow.runtime import paths_runtime
 from openfollow.runtime.services_detection_pin import (
     get_or_create_manual_marker,
+    hand_over_anchors,
     is_assist_controlled,
 )
 
@@ -44,6 +45,9 @@ logger = logging.getLogger(__name__)
 
 # How long Identify flashes the marker card on the Operator Screen.
 _IDENTIFY_FLASH_S = 3.0
+
+# OSC writes to a marker this far apart count as a new stream, logged at INFO.
+_OSC_STREAM_GAP_S = 5.0
 
 
 def resolve_osc_multicast_iface(listen_iface: str, station_iface: str) -> str | None:
@@ -140,6 +144,8 @@ class InputManager:
         self._usb_hosts = usb_host_paths()
         # (slot index, clock time it started) of the latest Identify.
         self._identify_flash: tuple[int, float] | None = None
+        # Clock time of each marker's latest OSC position write.
+        self._osc_last_write: dict[int, float] = {}
         self._refresh_slots()
 
         osc_cfg = app._config.osc
@@ -477,7 +483,18 @@ class InputManager:
                     landed = paths.project(marker_id, x, y) if paths is not None else None
                     x, y, z = landed if landed is not None else (x, y, z)
                     marker.set_pos(x, y, z)
-                    logger.info(
+                    now = self._clock()
+                    last = self._osc_last_write.get(marker_id)
+                    self._osc_last_write[marker_id] = now
+                    if last is None or now - last >= _OSC_STREAM_GAP_S:
+                        logger.info(
+                            "OSC positions arriving for marker %d, first at (%.3f, %.3f, %.3f)",
+                            marker_id,
+                            x,
+                            y,
+                            z,
+                        )
+                    logger.debug(
                         "OSC jump: marker %d → (%.3f, %.3f, %.3f)",
                         marker_id,
                         x,
@@ -492,14 +509,16 @@ class InputManager:
     def update_paths(self, dt: float) -> None:
         """Run the path engine for one frame, whatever input does: menus open or no marker controlled.
 
-        Releases markers no longer controlled, applies OSC path commands, then writes the
-        markers the engine moved itself (slides, edits). ``animate`` calls it after the frame's
-        discrete key presses (Reset, Pathfinder) and before :meth:`update`.
+        Hands the lock of a marker assist no longer drives from its anchor to its output, releases
+        markers no longer controlled, applies OSC path commands, then writes the markers the engine
+        moved itself (slides, edits). ``animate`` calls it after the frame's discrete key presses
+        (Reset, Pathfinder) and before :meth:`update`.
         """
         commands = self.path_osc_handler.take() if self.path_osc_handler is not None else []
         paths = self._paths()
         if paths is None:
             return
+        hand_over_anchors(self.app)
         paths.release_all(keep=self.app._controlled_ids)
         paths_runtime.apply_commands(self.app, commands, self.app._controlled_ids, self._get_marker)
         for slid_id, slid_to in paths.tick(dt).items():
@@ -704,6 +723,7 @@ class InputManager:
         if self.osc_handler is not None:
             self.osc_handler.stop()
             self.osc_handler = None
+        self._osc_last_write.clear()
         if enabled:
             self.osc_handler = OscMarkerAdapter(
                 self.app._runtime_services._osc_service,

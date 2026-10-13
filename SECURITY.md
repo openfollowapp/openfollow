@@ -13,9 +13,10 @@ Include what you can of:
 - the OpenFollow version (shown on the About page) and how it was installed (Raspberry Pi image, `.deb`, macOS app);
 - what an attacker needs: a place on the show network, a browser session, the web PIN, physical access;
 - the steps that reproduce it, and what happens;
+- a diagnostics file from the station (web UI: Diagnostics → Bundle & tools → **Download diagnostics bundle**; Operator Screen: Settings → **Export Diagnostics File for Support**);
 - anything you have found about how to fix it.
 
-Please do not attach a configuration file (`.ofsettings`) or a settings backup (`.ofbackup`) from a real show: they carry the camera logins and SRT passphrases the station uses. A diagnostics bundle has those redacted, so it can go into the private report, but it still describes the show network (addresses, host and station names), so never post one publicly.
+A diagnostics file has every credential redacted, so it is safe to attach. Please do not attach a configuration file (`.ofsettings`) or a settings backup (`.ofbackup`) instead: they carry the camera logins and SRT passphrases the station uses.
 
 ## What happens next
 

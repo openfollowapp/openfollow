@@ -96,6 +96,13 @@ def test_toggle_paths_flips_visibility_and_saves_it(tmp_path: Path) -> None:
     assert app._config.paths.show_paths is True
 
 
+def test_toggle_paths_does_nothing_while_experimental_features_are_off(tmp_path: Path) -> None:
+    app = _App(tmp_path, _cross(), experimental=False)
+    paths_runtime.toggle_paths(app)
+    assert app._config.paths.show_paths is True
+    assert not Path(app._config_path).exists()
+
+
 def test_a_failed_save_is_logged_and_still_applied(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     app = _App(tmp_path, _cross(active=False))
     app._config_path = str(tmp_path / "missing" / "config.toml")

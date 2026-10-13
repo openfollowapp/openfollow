@@ -13,6 +13,16 @@ It is a **visual aid** on the Operator Screen only. Mouse placement, person
 detection, the OSC height placeholders and the height on the marker card stay
 on the main grid, and no output protocol changes.
 
+## Area
+
+The polygon is drawn on a top-down stage plan with the main grid and the live markers, like the Zone Editor.
+
+- **Draw polygon** – click to place corners; click the first corner or double-click to close it (**Finish polygon** works too). The new polygon replaces the old one.
+- **Drag a corner** to move it. **Clear polygon** removes it.
+- **Top-down / Camera** switches to the camera picture with the polygon's outline and its grid lines at the **Height** typed in, as the saved camera and lens see them. Dragging a corner there lands it on the ground grid's own height under the pointer. This browser remembers the choice.
+
+Changes to the polygon show at once but are kept only when you **Save** (or **Apply to all stations**).
+
 ## Settings
 
 - **Ground grid** – use the polygon. Off, nothing changes on the Operator

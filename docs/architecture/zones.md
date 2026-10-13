@@ -40,8 +40,11 @@ Occupancy is carried across config reloads via `_zone_signature = (vertices, tri
 - `state.show_zones = bool(tz.show_overlay)` – rendering is driven by `show_overlay` alone.
 - Engine occupancy (`is_occupied`, `count`) is only read when `tz.enabled` is also true; otherwise polygons render with `(False, 0)`.
 
+## Zone Editor (`partials/zone_editor.tpl`)
+The top-down plan is the shared `static/js/polygon-plan.js` (`PolygonPlan`: the fitted view and its transforms, the main grid, live markers, drawing a polygon, dragging the selected polygon's corners with the view held still); the editor keeps its zones, selection, details panel and saving. A Top-down / Camera switch (remembered per browser) swaps in `static/js/picture-view.js`: the snapshot with every zone outline on the floor plane as the saved camera and lens see it (`/api/scene/project`), the selected zone's corners as handles that drop onto that plane (`/api/scene/unproject` at the grid's `z_offset`). New zones are drawn in the top-down view only. The ground grid's editor uses the same two modules.
+
 ## Web API (`web/routes.py`)
-- `GET /api/zones` / `POST /api/zones` / `PUT /api/zones/<index>` / `DELETE /api/zones/<index>` – CRUD for the zones list
+- `GET /api/zones` / `POST /api/zones` / `PUT /api/zones/<index>` / `DELETE /api/zones/<index>` – CRUD for the zones list; the GET also carries the main grid (with `z_offset`) and the live marker positions for the editors
 - `GET/POST /api/config/trigger_zones` – section-level config
 - `_load_json_body()` returns `Any`; callers must also `isinstance(data, dict)` check and 400 on non-object bodies.
 

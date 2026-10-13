@@ -19,6 +19,7 @@ openfollow/              # Single unified package
 │   └── receiver.py      # PSN listener
 ├── scene/               # Camera model + calibration math
 │   ├── camera.py
+│   ├── ground_grid.py   # Grid lines clipped to the ground-grid polygon (HUD + web)
 │   └── solver.py        # DLT camera solve (used by the web wizard)
 ├── video/               # Video pipeline + overlay
 │   ├── receiver.py      # Generic GStreamer orchestrator
@@ -38,6 +39,7 @@ openfollow/              # Single unified package
     ├── routes.py
     ├── discovery.py
     ├── peer_auth.py     # HMAC-signed peer request auth (no PIN on the wire)
+    ├── static/js/       # polygon-plan.js (top-down plan), picture-view.js (camera picture), ...
     └── templates/
 ```
 

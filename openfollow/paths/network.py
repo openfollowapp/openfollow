@@ -213,38 +213,67 @@ def extend_to_corners(curves: Sequence[PathCurve]) -> list[PathCurve]:
     """``curves``, each open end that lies on another path's corner point carried on to that corner's arc.
 
     An arc passes its corner point by, so an end within reach of the point may be out of reach of the
-    curve. Such an end, touching no other curve, runs on straight to where the corner's curve passes
-    nearest the point, at the same height, and so touches it: the old end becomes a sharp inner point.
+    curve. Such an end runs on straight to where the corner's curve passes nearest the point, at the
+    same height, and so touches it; the old end becomes a sharp inner point. An end touching another
+    curve already joins it and stays, unless what it touches is an end carried on to the same corner.
     """
+    targets = {}
+    for i, curve in enumerate(curves):
+        for side in () if curve.closed else (0, 1):
+            target = _corner_target(curves, i, side)
+            if target is not None:
+                targets[(i, side)] = target
+    touched = {end: _touched(curves, *end) for end in targets}
+    # Drop each end touching anything but an end still carried on to its corner, until none is left to drop.
+    carried = set(targets)
+    while dropped := {
+        end for end in carried if any(t not in carried or targets[t][0] != targets[end][0] for t in touched[end])
+    }:
+        carried -= dropped
     out = []
     for i, curve in enumerate(curves):
-        if curve.closed:
-            out.append(curve)
-            continue
-        start, end = _corner_target(curves, i, 0.0), _corner_target(curves, i, curve.length)
         xy, z = curve.xy, curve.z
-        if start is not None:
-            xy, z = np.vstack(([start[:2]], xy)), np.concatenate(([start[2]], z))
-        if end is not None:
-            xy, z = np.vstack((xy, [end[:2]])), np.concatenate((z, [end[2]]))
+        if (i, 0) in carried:
+            (tx, ty, tz) = targets[(i, 0)][1]
+            xy, z = np.vstack(([(tx, ty)], xy)), np.concatenate(([tz], z))
+        if (i, 1) in carried:
+            (tx, ty, tz) = targets[(i, 1)][1]
+            xy, z = np.vstack((xy, [(tx, ty)])), np.concatenate((z, [tz]))
         out.append(curve if xy is curve.xy else PathCurve(xy, z, False, curve.corners))
     return out
 
 
-def _corner_target(curves: Sequence[PathCurve], i: int, s_end: float) -> tuple[float, float, float] | None:
-    """Where the end of curve ``i`` at ``s_end`` is carried on to, if anywhere."""
-    x, y, z = curves[i].point(s_end)
-    others = [curve for k, curve in enumerate(curves) if k != i]
+def _corner_target(
+    curves: Sequence[PathCurve], i: int, side: int
+) -> tuple[tuple[int, int], tuple[float, float, float]] | None:
+    """The nearest corner point within reach of an end of curve ``i`` (0 start, 1 end), and where it runs on to."""
+    x, y, z = curves[i].point(side * curves[i].length)
     targets = []
-    for other in others:
-        for cx, cy in other.corners[np.hypot(*(other.corners - (x, y)).T) <= JUNCTION_REACH_M]:
-            tx, ty, tz = other.point(other.nearest(cx, cy)[0])
-            if abs(tz - z) <= JUNCTION_HEIGHT_M:
-                targets.append((math.hypot(cx - x, cy - y), tx, ty, tz))
-    if not targets or any(other.nearest(x, y)[1] <= JUNCTION_REACH_M for other in others):
+    for k, other in enumerate(curves):
+        if k == i:
+            continue
+        gaps = np.hypot(*(other.corners - (x, y)).T)
+        for c in np.flatnonzero(gaps <= JUNCTION_REACH_M):
+            place = other.point(other.nearest(*other.corners[c])[0])
+            if abs(place[2] - z) <= JUNCTION_HEIGHT_M:
+                targets.append((float(gaps[c]), (k, int(c)), place))
+    if not targets:
         return None
-    _, tx, ty, tz = min(targets)
-    return tx, ty, tz
+    _, corner, place = min(targets)
+    return corner, place
+
+
+def _touched(curves: Sequence[PathCurve], i: int, side: int) -> list[tuple[int, int]]:
+    """What an end of curve ``i`` touches at its height: another curve's end (0 / 1), or elsewhere on it (-1)."""
+    x, y, z = curves[i].point(side * curves[i].length)
+    out = []
+    for k, other in enumerate(curves):
+        s, dist = other.nearest(x, y)
+        if k == i or dist > JUNCTION_REACH_M or abs(other.point(s)[2] - z) > JUNCTION_HEIGHT_M:
+            continue
+        at_end = 0 if s <= _EPS else 1 if s >= other.length - _EPS else -1
+        out.append((k, -1 if other.closed else at_end))
+    return out
 
 
 def find_junctions(curves: Sequence[PathCurve]) -> list[Junction]:

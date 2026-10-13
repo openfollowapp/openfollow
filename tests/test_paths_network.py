@@ -306,6 +306,51 @@ class TestCornerExtension:
         assert net.curves[0] is branch
         assert net.junctions == [Junction(0, branch.length, 1, pytest.approx(7.0))]
 
+    def test_an_end_under_a_path_at_another_height_still_runs_on(self) -> None:
+        bridge = _curve([(1, -1, 2.0), (3, 1, 2.0)])
+        net = PathNetwork([_curve([(2, -2, 0), (2, 0, 0)]), self.ROUNDED, bridge])
+        assert net.curves[0].point(net.curves[0].length) == pytest.approx(self.VERTEX)
+        assert [(j.a, j.b) for j in net.junctions] == [(0, 1)]
+
+    SPURS = (_curve([(2, -2, 0), (2, 0, 0)]), _curve([(4, -1, 0), (2, 0, 0)]), _curve([(4, 0.3, 0), (2, 0, 0)]))
+
+    @pytest.mark.parametrize("count", [2, 3])
+    @pytest.mark.parametrize("main_first", [False, True])
+    def test_spurs_ending_on_one_corner_point_all_run_on_and_join_the_corner_path(
+        self, count: int, main_first: bool
+    ) -> None:
+        spurs = list(self.SPURS[:count])
+        curves = [self.ROUNDED, *spurs] if main_first else [*reversed(spurs), self.ROUNDED]
+        net = PathNetwork(curves)
+        main = curves.index(self.ROUNDED)
+        for i, curve in enumerate(net.curves):
+            if i != main:
+                assert curve.point(curve.length) == pytest.approx(self.VERTEX)
+                with_main = [j for j in net.junctions if {j.a, j.b} == {i, main}]
+                assert len(with_main) == 1
+
+    def test_a_marker_on_one_of_two_spurs_walks_on_to_the_corner_path(self) -> None:
+        net = PathNetwork([*self.SPURS[:2], self.ROUNDED])
+        step = net.walk(Place(0, 2.0), -1.0, 0.0, 1.0)
+        assert step.place.path == 2
+        assert net.point(step.place)[0] < self.VERTEX[0]
+
+    def test_of_two_spurs_ending_at_each_other_only_one_on_the_corner_point_neither_runs_on(self) -> None:
+        # The first ends 8 cm from the corner point, the second 15 cm from it and 8.5 cm from the first's end.
+        on = _curve([(2, -2, 0), (2, -0.08, 0)])
+        off = _curve([(4, -1, 0), (2.06, -0.14, 0)])
+        net = PathNetwork([on, off, self.ROUNDED])
+        assert net.curves[:2] == [on, off]
+        assert {(j.a, j.b) for j in net.junctions} == {(0, 1)}
+
+    def test_a_spur_on_a_corner_point_stays_when_the_spur_it_touches_there_stays(self) -> None:
+        # Both ends lie on the corner point and touch each other; the second also touches a path beside it.
+        first = _curve([(1.96, -2, 0), (1.96, 0, 0)])
+        second = _curve([(4, -1, 0), (2.05, 0, 0)])
+        beside = _curve([(2.13, -1, 0), (2.13, 1, 0)])
+        net = PathNetwork([first, second, self.ROUNDED, beside])
+        assert net.curves[:2] == [first, second]
+
     def test_an_end_runs_on_to_the_nearest_of_several_corner_points(self) -> None:
         hook = _curve([(0, 0, 0, 0), (2, 0, 0, 0.5), (2, 2, 0, 0.5), (0, 2, 0, 0)])
         net = PathNetwork([_curve([(2, 4, 0), (2, 2.05, 0)]), hook])

@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from openfollow.paths.geometry import PathCurve, PathPoint, build_curve
+from openfollow.paths.network import PathNetwork, Place
 
 pytestmark = pytest.mark.unit
 
@@ -62,6 +63,48 @@ class TestStraight:
     def test_a_repeated_point_is_dropped(self) -> None:
         c = _curve([(0, 0, 0, 0), (2, 0, 0, 0), (2, 0, 0, 0), (2, 2, 0, 0)])
         assert c.length == pytest.approx(4.0)
+
+
+class TestTinyPaths:
+    """Points a few micrometres apart, whose arcs take sub-micrometre steps."""
+
+    CASES = [
+        ([(0, 0, 0, 0), (1.5e-6, 0, 0, 0.5), (3e-6, 5e-7, 0, 0)], False),
+        ([(0, 0, 0, 0.5), (2e-6, 0, 0, 0.5), (1e-6, 2e-6, 0, 0.5)], True),
+        ([(0, 0, 0, 0.5), (2e-6, 0, 0, 0.5), (1e-6, 2e-6, 0, 0.5)], False),
+    ]
+
+    @pytest.mark.parametrize(("points", "closed"), CASES)
+    def test_a_curve_built_from_them_has_distinct_steps(self, points: list[tuple[float, ...]], closed: bool) -> None:
+        c = build_curve([PathPoint(*p) for p in points], closed)
+        assert c is not None
+        assert len(c.xy) >= (4 if c.closed else 2)
+        assert np.all(np.diff(c.s) > 1e-6)
+        assert c.length > 0.0
+        if c.closed:
+            assert tuple(c.xy[0]) == tuple(c.xy[-1])
+
+    @pytest.mark.parametrize(("points", "closed"), CASES)
+    def test_it_can_be_walked_and_projected_onto(self, points: list[tuple[float, ...]], closed: bool) -> None:
+        c = build_curve([PathPoint(*p) for p in points], closed)
+        assert c is not None
+        net = PathNetwork([c])
+        place = net.nearest(1e-6, 1e-6)
+        assert place is not None
+        assert c.tangent(place.s) is not None
+        assert net.walk(Place(0, 0.0), 1.0, 0.0, 1.0).place.path == 0
+
+    def test_a_closed_one_left_with_two_distinct_samples_is_open(self) -> None:
+        c = build_curve(
+            [PathPoint(0, 0, 0, 0.5), PathPoint(2.5e-6, 0, 0, 0.5), PathPoint(1.25e-6, 1.5e-6, 0, 0.5)], True
+        )
+        assert c is not None
+        assert not c.closed
+        assert len(c.xy) == 2
+
+    def test_one_left_with_a_single_distinct_sample_is_no_curve(self) -> None:
+        points = [PathPoint(0, 0, 0, 0.5), PathPoint(1.01e-6, 0, 0, 0.5), PathPoint(5e-7, 1.01e-6, 0, 0.5)]
+        assert build_curve(points, True) is None
 
 
 class TestCorner:

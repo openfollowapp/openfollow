@@ -157,7 +157,7 @@ hand-edited `config.toml` and a crafted `POST /section/<name>`:
    and sanitisation, with the standard validate markup on the input
    (`tests/test_template_validation_consistency.py` enforces it).
 
-Device-local fields (interface pins, paths, the PIN) are stripped from export and
+Device-local fields (interface pins, file paths, the PIN) are stripped from export and
 broadcast; device-identity fields survive import and Restore defaults. Both sets,
 hot reload and live-apply are in the [config guide](docs/architecture/config.md).
 

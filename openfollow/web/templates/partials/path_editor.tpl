@@ -268,11 +268,13 @@ function peArrowhead(x, y, ux, uy, half, side) {
         var again = keep.id ? document.getElementById(keep.id) : null;
         if (!again) return;
         again.focus();
-        if (again.type === 'text' && keep.value !== keep.defaultValue) {
+        if (again.type !== 'text') return;
+        if (keep.value !== keep.defaultValue) {
             again.value = keep.value;
-            again.setSelectionRange(keep.selectionStart, keep.selectionEnd);
             again.setAttribute('aria-invalid', keep.getAttribute('aria-invalid') || 'false');
         }
+        // Tab selects a field's text, so typing replaces it; a redraw before the first key must keep that.
+        again.setSelectionRange(keep.selectionStart, keep.selectionEnd);
     }
     function row(p, index, lockedIds) {
         var name = p.name;

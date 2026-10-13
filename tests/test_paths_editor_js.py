@@ -314,6 +314,23 @@ class TestEditingThePoints:
         )
         assert out == {"redrawn": True, "focused": True, "typed": ["7", 1], "loopPoints": 3, "saved": 7}
 
+    def test_a_redraw_between_tab_and_the_first_key_keeps_the_text_selected(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            typeInto(inputs('cross', 0)[0], '-2');
+            tabTo(inputs('cross', 0)[1]);
+            model.paths[1].closed = true;  // changed elsewhere: the load after the save of X redraws
+            await settle();
+            var y = document.activeElement;
+            typeKeys(y, '6');
+            inputs('cross', 0)[2].focus();
+            await settle();
+            out.saved = model.paths[0].points[0].y;
+            """
+        )
+        assert out["saved"] == 6
+
     def test_a_field_saves_once_when_left_after_a_change_and_not_at_all_untouched(self) -> None:
         out = _editor(
             """

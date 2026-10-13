@@ -282,6 +282,14 @@ El.prototype.blur = function () {
 };
 // The operator typing: focus the field and replace its text. Enter commits it as leaving would.
 function typeInto(el, text) { el.focus(); el.value = text; el._typed = true; el.dispatchEvent(makeEvent('input')); }
+// Tab into a field, which selects its text, then keys typed over the selection.
+function tabTo(el) { el.focus(); el.select(); }
+function typeKeys(el, text) {
+    el.value = el.value.slice(0, el.selectionStart) + text + el.value.slice(el.selectionEnd);
+    el.selectionStart = el.selectionEnd = el.selectionStart + text.length;
+    el._typed = true;
+    el.dispatchEvent(makeEvent('input'));
+}
 function enter(el) { if (el._typed) { el._typed = false; el.dispatchEvent(makeEvent('change')); } }
 El.prototype.select = function () { this.selectionStart = 0; this.selectionEnd = this.value.length; };
 El.prototype.setSelectionRange = function (a, b) {

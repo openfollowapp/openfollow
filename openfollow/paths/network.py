@@ -15,6 +15,8 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from functools import cached_property
+from typing import Any
 
 import numpy as np
 import numpy.typing as npt
@@ -26,6 +28,8 @@ JUNCTION_REACH_M = 0.2
 JUNCTION_HEIGHT_M = 0.2
 # The switch area: a marker this close to a junction, along its path, may steer into the other path.
 SWITCH_AREA_M = 0.3
+# A position may switch paths this much further from a junction than that: about one sample's step.
+_POSITION_STEP_M = 0.15
 # The other path wins only when its direction is more than this much closer to the push.
 _SWITCH_MARGIN_RAD = math.radians(15.0)
 _SAME_JUNCTION_M = 0.05
@@ -33,10 +37,13 @@ _SAME_JUNCTION_M = 0.05
 # Segment starts, vectors, squared lengths, ``s`` at each start, and the path each belongs to.
 _SegmentIndex = tuple[FloatArray, FloatArray, FloatArray, FloatArray, FloatArray]
 _PARALLEL = 1e-12
+# How far past a segment's end, as a fraction of it, a crossing still counts: one through a vertex sits on both.
+_ON_SEGMENT = 1e-9
 _EPS = 1e-6
 _MAX_LEGS = 16
-# Segments per bounding box when looking for crossings.
+# Segments per bounding box when looking for crossings, and pairs of boxes tested in one pass.
 _BOX_SEGMENTS = 16
+_BOX_PAIRS_PER_PASS = 512
 
 
 @dataclass(frozen=True)
@@ -204,43 +211,94 @@ class PathNetwork:
                 ahead.append(d)
         return min(ahead, default=None)
 
+    @cached_property
+    def _junction_points(self) -> dict[int, list[tuple[float, float]]]:
+        """Each path's junctions in plan, in the order of its stations."""
+        return {i: [self.curves[i].point(s)[:2] for s, _ in stations] for i, stations in self._stations.items()}
+
+    def follow(self, place: Place, x: float, y: float) -> Place:
+        """Where a position ``(x, y)`` puts a marker at ``place``: along its path, onto another only at a junction.
+
+        Another path counts where it meets this one at a junction that ``(x, y)`` lies close to, and that path's
+        point nearest it close along that path; the nearest point wins, and a tie stays on this path.
+        """
+        s, best = self.curves[place.path].nearest(x, y)
+        found = Place(place.path, s)
+        reach = SWITCH_AREA_M + _POSITION_STEP_M
+        for (_, there), (jx, jy) in zip(self._stations[place.path], self._junction_points[place.path], strict=True):
+            if math.hypot(x - jx, y - jy) > reach:
+                continue
+            other = self.curves[there.path]
+            s_other, gap = other.nearest(x, y)
+            # Measured along the other path: one passing back over the junction higher up is not near it.
+            if gap < best and abs(other.offset(there.s, s_other)) <= reach:
+                found, best = Place(there.path, s_other), gap
+        return found
+
 
 def extend_to_corners(curves: Sequence[PathCurve]) -> list[PathCurve]:
     """``curves``, each open end that lies on another path's corner point carried on to that corner's arc.
 
     An arc passes its corner point by, so an end within reach of the point may be out of reach of the
-    curve. Such an end, touching no other curve, runs on straight to where the corner's curve passes
-    nearest the point, at the same height, and so touches it: the old end becomes a sharp inner point.
+    curve. Such an end runs on straight to where the corner's curve passes nearest the point, at the
+    same height, and so touches it; the old end becomes a sharp inner point. An end lying on another
+    curve's side joins it there and stays, as running on would leave that curve. Another path's end
+    touching ours does not stop it, as it still touches our curve afterwards, unless that end runs on
+    to a different corner, which would part the two: then both stay.
     """
+    targets = {}
+    for i, curve in enumerate(curves):
+        for side in () if curve.closed else (0, 1):
+            target = _corner_target(curves, i, side)
+            if target is not None:
+                targets[(i, side)] = target
+    touched = {end: _touched(curves, *end) for end in targets}
+    free = {end for end in targets if all(side >= 0 for _, side in touched[end])}
+    carried = {end for end in free if not any(t in free and targets[t][0] != targets[end][0] for t in touched[end])}
     out = []
     for i, curve in enumerate(curves):
-        if curve.closed:
-            out.append(curve)
-            continue
-        start, end = _corner_target(curves, i, 0.0), _corner_target(curves, i, curve.length)
         xy, z = curve.xy, curve.z
-        if start is not None:
-            xy, z = np.vstack(([start[:2]], xy)), np.concatenate(([start[2]], z))
-        if end is not None:
-            xy, z = np.vstack((xy, [end[:2]])), np.concatenate((z, [end[2]]))
+        if (i, 0) in carried:
+            (tx, ty, tz) = targets[(i, 0)][1]
+            xy, z = np.vstack(([(tx, ty)], xy)), np.concatenate(([tz], z))
+        if (i, 1) in carried:
+            (tx, ty, tz) = targets[(i, 1)][1]
+            xy, z = np.vstack((xy, [(tx, ty)])), np.concatenate((z, [tz]))
         out.append(curve if xy is curve.xy else PathCurve(xy, z, False, curve.corners))
     return out
 
 
-def _corner_target(curves: Sequence[PathCurve], i: int, s_end: float) -> tuple[float, float, float] | None:
-    """Where the end of curve ``i`` at ``s_end`` is carried on to, if anywhere."""
-    x, y, z = curves[i].point(s_end)
-    others = [curve for k, curve in enumerate(curves) if k != i]
+def _corner_target(
+    curves: Sequence[PathCurve], i: int, side: int
+) -> tuple[tuple[int, int], tuple[float, float, float]] | None:
+    """The nearest corner point within reach of an end of curve ``i`` (0 start, 1 end), and where it runs on to."""
+    x, y, z = curves[i].point(side * curves[i].length)
     targets = []
-    for other in others:
-        for cx, cy in other.corners[np.hypot(*(other.corners - (x, y)).T) <= JUNCTION_REACH_M]:
-            tx, ty, tz = other.point(other.nearest(cx, cy)[0])
-            if abs(tz - z) <= JUNCTION_HEIGHT_M:
-                targets.append((math.hypot(cx - x, cy - y), tx, ty, tz))
-    if not targets or any(other.nearest(x, y)[1] <= JUNCTION_REACH_M for other in others):
+    for k, other in enumerate(curves):
+        if k == i:
+            continue
+        gaps = np.hypot(*(other.corners - (x, y)).T)
+        for c in np.flatnonzero(gaps <= JUNCTION_REACH_M):
+            place = other.point(other.nearest(*other.corners[c])[0])
+            if abs(place[2] - z) <= JUNCTION_HEIGHT_M:
+                targets.append((float(gaps[c]), (k, int(c)), place))
+    if not targets:
         return None
-    _, tx, ty, tz = min(targets)
-    return tx, ty, tz
+    _, corner, place = min(targets)
+    return corner, place
+
+
+def _touched(curves: Sequence[PathCurve], i: int, side: int) -> list[tuple[int, int]]:
+    """What an end of curve ``i`` touches at its height: an open curve's end (0 / 1), or its side (-1)."""
+    x, y, z = curves[i].point(side * curves[i].length)
+    out = []
+    for k, other in enumerate(curves):
+        s, dist = other.nearest(x, y)
+        if k == i or dist > JUNCTION_REACH_M or abs(other.point(s)[2] - z) > JUNCTION_HEIGHT_M:
+            continue
+        at_end = not other.closed and (s <= _EPS or s >= other.length - _EPS)
+        out.append((k, (0 if s <= _EPS else 1) if at_end else -1))
+    return out
 
 
 def find_junctions(curves: Sequence[PathCurve]) -> list[Junction]:
@@ -256,12 +314,29 @@ def find_junctions(curves: Sequence[PathCurve]) -> list[Junction]:
             pair = [Junction(a, sa, b, sb) for sa, sb in _crossings(ca, cb, boxes[a], boxes[b])]
             pair += [Junction(a, sa, b, sb) for sa, sb in _touches(ca, cb)]
             pair += [Junction(a, sa, b, sb) for sb, sa in _touches(cb, ca)]
-            kept: list[Junction] = []
-            for j in pair:
-                if _same_height(ca, j.s_a, cb, j.s_b) and not any(_same_junction(ca, cb, j, k) for k in kept):
-                    kept.append(j)
-            found += kept
+            found += _distinct_junctions(ca, cb, pair)
     return found
+
+
+def _distinct_junctions(ca: PathCurve, cb: PathCurve, pair: list[Junction]) -> list[Junction]:
+    """``pair`` at the same height, less each that repeats one kept before it."""
+    kept: list[Junction] = []
+    # Kept junctions by ``s_a`` in steps of _SAME_JUNCTION_M: a repeat lies within two steps.
+    near: dict[int, list[Junction]] = {}
+    for j in pair:
+        if not _same_height(ca, j.s_a, cb, j.s_b):
+            continue
+        spans = (j.s_a - ca.length, j.s_a, j.s_a + ca.length) if ca.closed else (j.s_a,)
+        steps = {_step(s) + d for s in spans for d in (-2, -1, 0, 1, 2)}
+        if any(_same_junction(ca, cb, j, k) for step in steps for k in near.get(step, ())):
+            continue
+        kept.append(j)
+        near.setdefault(_step(j.s_a), []).append(j)
+    return kept
+
+
+def _step(s: float) -> int:
+    return math.floor(s / _SAME_JUNCTION_M)
 
 
 def _boxes(curve: PathCurve) -> FloatArray:
@@ -290,25 +365,30 @@ def _crossings(ca: PathCurve, cb: PathCurve, boxes_a: FloatArray, boxes_b: Float
     """Where ``ca`` crosses ``cb`` in plan, in segment order along ``ca`` then ``cb``: (s on ``ca``, s on ``cb``)."""
     run_a, run_b = np.nonzero(_overlapping(boxes_a, boxes_b))
     offsets = np.arange(_BOX_SEGMENTS)
-    ia, ib = np.broadcast_arrays(
-        run_a[:, None, None] * _BOX_SEGMENTS + offsets[None, :, None],
-        run_b[:, None, None] * _BOX_SEGMENTS + offsets[None, None, :],
-    )
     pa, ra, _, _ = ca.segments()
     pb, rb, _, _ = cb.segments()
-    valid = (ia < len(pa)) & (ib < len(pb))
-    ia, ib = ia[valid], ib[valid]
-    r, rb = ra[ia], rb[ib]
-    qp = pb[ib] - pa[ia]
-    denom = _cross(r, rb)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        t = _cross(qp, rb) / denom
-        u = _cross(qp, r) / denom
-    hit = (np.abs(denom) > _PARALLEL) & (t >= 0.0) & (t <= 1.0) & (u >= 0.0) & (u <= 1.0)
-    ia, ib, t, u = ia[hit], ib[hit], t[hit], u[hit]
+    hits: list[tuple[npt.NDArray[Any], ...]] = [(np.empty(0, dtype=np.intp),) * 2 + (np.empty(0),) * 2]
+    for lo in range(0, len(run_a), _BOX_PAIRS_PER_PASS):
+        ia, ib = np.broadcast_arrays(
+            run_a[lo : lo + _BOX_PAIRS_PER_PASS, None, None] * _BOX_SEGMENTS + offsets[None, :, None],
+            run_b[lo : lo + _BOX_PAIRS_PER_PASS, None, None] * _BOX_SEGMENTS + offsets[None, None, :],
+        )
+        valid = (ia < len(pa)) & (ib < len(pb))
+        ia, ib = ia[valid], ib[valid]
+        r, w = ra[ia], rb[ib]
+        qp = pb[ib] - pa[ia]
+        denom = _cross(r, w)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            t = _cross(qp, w) / denom
+            u = _cross(qp, r) / denom
+        lo_t, hi_t = -_ON_SEGMENT, 1.0 + _ON_SEGMENT
+        hit = (np.abs(denom) > _PARALLEL) & (t >= lo_t) & (t <= hi_t) & (u >= lo_t) & (u <= hi_t)
+        hits.append((ia[hit], ib[hit], t[hit], u[hit]))
+    ia, ib, t, u = (np.concatenate(part) for part in zip(*hits, strict=True))
     order = np.lexsort((ib, ia))
-    sa = ca.s[ia] + t * (ca.s[ia + 1] - ca.s[ia])
-    sb = cb.s[ib] + u * (cb.s[ib + 1] - cb.s[ib])
+    # A crossing just past an end of the whole curve is at that end.
+    sa = np.clip(ca.s[ia] + t * (ca.s[ia + 1] - ca.s[ia]), 0.0, ca.length)
+    sb = np.clip(cb.s[ib] + u * (cb.s[ib + 1] - cb.s[ib]), 0.0, cb.length)
     return [(float(sa[k]), float(sb[k])) for k in order]
 
 

@@ -51,7 +51,7 @@ class PathCurve:
         self.xy = xy
         self.z = z
         self.closed = closed
-        # The configured points rounded into the curve, in plan: an arc passes them by.
+        # The configured inner points (every point when closed), in plan; an arc rounding one passes it by.
         self.corners: FloatArray = np.empty((0, 2)) if corners is None else corners
         steps = np.hypot(*np.diff(xy, axis=0).T)
         self.s: FloatArray = np.concatenate(([0.0], np.cumsum(steps)))

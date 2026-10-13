@@ -5,10 +5,10 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import Any
 
-from openfollow.configuration import MAX_PATH_POINTS, PathPointConfig, save_config
+from openfollow.configuration import MAX_PATH_POINTS, AppConfig, PathConfig, PathPointConfig, save_config_change
 from openfollow.osc.paths import MarkerPath, PathActive, PathCommand
 from openfollow.paths.engine import Press
 
@@ -42,50 +42,84 @@ def pathfinder(app: Any, marker_id: int, marker: Any) -> None:
 
 
 def _record_point(app: Any, marker: Any) -> None:
-    path = app._config.paths.find(app._paths.recording or "")
-    if path is None:  # pragma: no cover - the engine stops recording a path that is gone
-        return
-    if len(path.points) >= MAX_PATH_POINTS:
-        logger.warning("Path %s already has %d points; not adding another", path.name, MAX_PATH_POINTS)
-        return
+    """Add ``marker``'s position to the recorded path, in the running config and in the file, each as it has it.
+
+    The file can hold a path the running config does not have yet: one just made on the web.
+    """
+    name = app._paths.recording or ""
     x, y, z = marker.pos
-    path.points.append(PathPointConfig(x, y, z))
-    _save(app)
+    full: list[str] = []
+
+    def add_point(cfg: AppConfig) -> None:
+        path = cfg.paths.find(name)
+        if path is None:
+            return
+        if len(path.points) >= MAX_PATH_POINTS:
+            full.append(path.name)
+            return
+        path.points.append(PathPointConfig(x, y, z))
+
+    _write(app, add_point)
+    if full:
+        logger.warning("Path %s already has %d points; not adding another", full[0], MAX_PATH_POINTS)
+    # A rebuild from a running config without the path would stop recording it; the reload watcher brings it.
+    if app._config.paths.find(name) is not None:
+        reload_paths(app)
 
 
 def toggle_paths(app: Any) -> None:
     """Show or hide paths on the Operator Screen, and remember it; nothing while paths are off."""
     if not app._paths.enabled:
         return
-    app._config.paths.show_paths = not app._config.paths.show_paths
-    _save(app)
+    show = not app._config.paths.show_paths
+    _write(app, lambda cfg: setattr(cfg.paths, "show_paths", show))
 
 
 def apply_commands(app: Any, commands: Iterable[PathCommand], controlled: Iterable[int], marker_of: Any) -> None:
-    """Apply OSC path commands; ``marker_of(id)`` resolves the marker input steers."""
+    """Apply one frame's OSC path commands in order; ``marker_of(id)`` resolves the marker input steers.
+
+    A switch lands in the running config at once; the file and the engine take the net result once,
+    after the last command, so a burst costs one save and one rebuild. Only a lock onto a path switched
+    earlier in the same frame rebuilds the engine first.
+    """
     if not app._paths.enabled:
         return
     controlled_ids = set(controlled)
+    # Each switched path, with its flag before this frame and as the engine was last built.
+    before: dict[str, tuple[PathConfig, bool]] = {}
+    built: dict[str, tuple[PathConfig, bool]] = {}
     for command in commands:
         if isinstance(command, PathActive):
-            _set_active(app, command.name, command.active)
+            path = app._config.paths.find(command.name)
+            if path is None:
+                logger.info("OSC: no path called %r", command.name)
+                continue
+            before.setdefault(path.name, (path, path.active))
+            built.setdefault(path.name, (path, path.active))
+            path.active = command.active
         elif isinstance(command, MarkerPath) and command.marker_id in controlled_ids:
             if command.name is None:
                 app._paths.release(command.marker_id)
                 continue
+            target = app._config.paths.find(command.name)
+            if target is not None and built.get(target.name, (target, target.active))[1] != target.active:
+                reload_paths(app)
+                built.clear()
             marker = marker_of(command.marker_id)
             if marker is not None and not app._paths.lock_onto(command.marker_id, command.name, marker.pos):
                 logger.info("OSC: no active path %r to lock marker %d onto", command.name, command.marker_id)
+    switched = {name: path.active for name, (path, was) in before.items() if path.active != was}
+    if switched:
+        _write(app, lambda cfg: _switch(cfg, switched))
+    if any(path.active != was for path, was in built.values()):
+        reload_paths(app)
 
 
-def _set_active(app: Any, name: str, active: bool) -> None:
-    path = app._config.paths.find(name)
-    if path is None:
-        logger.info("OSC: no path called %r", name)
-        return
-    if path.active != active:
-        path.active = active
-        _save(app)
+def _switch(cfg: AppConfig, switched: dict[str, bool]) -> None:
+    for name, active in switched.items():
+        path = cfg.paths.find(name)
+        if path is not None:
+            path.active = active
 
 
 def recording_row(app: Any) -> tuple[str, str] | None:
@@ -98,11 +132,13 @@ def recording_row(app: Any) -> tuple[str, str] | None:
     return "info", f"Recording path {path.name}: {count} point{'' if count == 1 else 's'}"
 
 
-def _save(app: Any) -> None:
-    """Persist a change made on the frame loop and apply it to the engine at once."""
+def _write(app: Any, change: Callable[[AppConfig], None]) -> None:
+    """Make ``change`` in the running config and in the config file as it is now.
+
+    Only the change is written, so a web save the reload watcher has not applied yet is kept, and
+    the file is not marked as loaded, so the watcher still applies it.
+    """
     try:
-        save_config(app._config, app._config_path)
-        app._config_mtime = app._get_config_mtime()
+        save_config_change(app._config_path, app._config, change)
     except Exception:
         logger.exception("Failed to save the paths change.")
-    reload_paths(app)

@@ -171,6 +171,11 @@ class PathEngine:
         lock = self._locks.get(marker_id)
         return None if lock is None else lock.name
 
+    def free_position(self, marker_id: int) -> Point | None:
+        """Where a marker being pulled onto its path would be without it; ``None`` once on it, or unlocked."""
+        lock = self._locks.get(marker_id)
+        return None if lock is None else lock.free
+
     def press(self, marker_id: int, pos: Point) -> Press:
         """A Pathfinder press for ``marker_id``, standing at ``pos``."""
         if not self.enabled:
@@ -182,8 +187,7 @@ class PathEngine:
         if self._network is None:
             return Press.NONE
         place = self._network.nearest(pos[0], pos[1])
-        if place is None:  # pragma: no cover - a network always holds a curve
-            return Press.NONE
+        assert place is not None  # a network always holds a curve
         self._start(marker_id, place, pos)
         return Press.LOCKED
 
@@ -193,8 +197,7 @@ class PathEngine:
         if index is None or self._network is None:
             return False
         place = self._network.nearest(pos[0], pos[1], among=[index])
-        if place is None:  # pragma: no cover - one index always answers
-            return False
+        assert place is not None  # one path always answers
         self._start(marker_id, place, pos)
         return True
 
@@ -280,15 +283,13 @@ class PathEngine:
         return self._at(lock)
 
     def project(self, marker_id: int, x: float, y: float) -> Point | None:
-        """Where an absolute position lands for a locked marker: the nearest point it can reach."""
+        """Where an absolute position lands for a locked marker: along its path, onto another only at a junction."""
         lock = self._locks.get(marker_id)
         if lock is None or self._network is None:
             return None
         if lock.free is not None:
             return self._move_free(lock, (x, y, lock.free[2]))
-        place = self._network.nearest(x, y, among=self._network.connected(lock.place.path))
-        assert place is not None
-        self._set_place(lock, place)
+        self._set_place(lock, self._network.follow(lock.place, x, y))
         return self._at(lock)
 
     def constrain(self, marker_id: int, x: float, y: float) -> Point | None:
@@ -302,10 +303,27 @@ class PathEngine:
         if lock.free is not None:
             curve = self._network.curves[lock.place.path]
             return self._pull(lock, (x, y, lock.free[2]), curve.point(curve.nearest(x, y)[0]))
+        px, py, pz = self._network.point(self._network.follow(lock.place, x, y))
+        return px, py, pz + self._height_left(lock)
+
+    def take_over(self, marker_id: int, pos: Point) -> None:
+        """Move a locked marker's lock to ``pos``, where another position now writes the marker, without a jump.
+
+        Landed, the lock goes to the reachable point nearest ``pos`` and eases from ``pos``'s height; pulled
+        in, it is pulled in afresh from ``pos``.
+        """
+        lock = self._locks.get(marker_id)
+        if lock is None or self._network is None:
+            return
+        x, y, z = pos
+        if lock.free is not None:
+            lock.free, lock.slide_elapsed = pos, 0.0
+            lock.place = Place(lock.place.path, self._network.curves[lock.place.path].nearest(x, y)[0])
+            return
         place = self._network.nearest(x, y, among=self._network.connected(lock.place.path))
         assert place is not None
-        px, py, pz = self._network.point(place)
-        return px, py, pz + self._height_left(lock)
+        lock.place, lock.name = place, self._names[place.path]
+        lock.z_shift, lock.z_elapsed = z - self._network.point(place)[2], 0.0
 
     def _set_place(self, lock: _Lock, place: Place) -> None:
         if place.path != lock.place.path:

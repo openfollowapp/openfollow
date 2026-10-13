@@ -547,7 +547,8 @@ class TestZoneCache:
             {"state": {"camera_params": np.array([0.2, -6.0, 2.5, -15.0, 0.0, 0.0, 60.0])}},
             {"state": {"lens_k1": 0.05}},
             {"state": {"lens_k2": 0.02}},
-            {"size": (1280, 720)},
+            {"size": (1280, 1080)},
+            {"size": (1920, 720)},
             {"scale": 2.0},
             {"hint_style": "FULL"},
         ],
@@ -561,7 +562,8 @@ class TestZoneCache:
             "camera",
             "k1",
             "k2",
-            "frame",
+            "width",
+            "height",
             "scale",
             "font-options",
         ],
@@ -614,17 +616,6 @@ class TestZoneCache:
         options.set_antialias(cairo.ANTIALIAS_SUBPIXEL)
         after.get_font_options = lambda: options  # type: ignore[method-assign]
         draw_zones(FakeRenderer(), after, state, 1920, 1080, cache)
-        assert after.surfaces[0] is before.surfaces[0]
-
-    def test_a_change_to_a_zone_that_is_not_drawn_keeps_the_picture(self) -> None:
-        from openfollow.runtime.overlay_draw_zones import ZoneCache
-
-        drawn = (_square(0.0, 2.0, 1.0), "#ffaa00", "Pit", False, 0)
-        cache, before, after = ZoneCache(), FakeCairo(), FakeCairo()
-        behind = self._state(zone_polygons=[drawn, (_square(0.0, -20.0, 1.0), "#33aaff", "Behind", False, 0)])
-        draw_zones(FakeRenderer(), before, behind, 1920, 1080, cache)
-        moved = self._state(zone_polygons=[drawn, (_square(0.5, -21.0, 1.0), "#33aaff", "Behind", True, 1)])
-        draw_zones(FakeRenderer(), after, moved, 1920, 1080, cache)
         assert after.surfaces[0] is before.surfaces[0]
 
     def test_zones_all_behind_the_camera_paint_nothing(self) -> None:

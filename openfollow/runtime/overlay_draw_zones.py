@@ -120,10 +120,10 @@ def _paint_zones(renderer: Any, cr: Any, zones: list[_Zone]) -> None:
 
 
 class ZoneCache:
-    """Every zone as one picture, drawn again only when what a zone shows on screen changed.
+    """Every zone as one picture, drawn again only when a zone, its occupancy or the view changed.
 
     The Operator Screen redraws on every display refresh; zones that did not
-    change are then their projection and one paint instead of each zone's fill, outline and label.
+    change are then one paint instead of each zone's projection, fill, outline and label.
     """
 
     def __init__(self) -> None:
@@ -134,24 +134,31 @@ class ZoneCache:
         self._entry = None
 
     def draw(self, renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
-        if state.camera_params is None:
+        cam = state.camera_params
+        if cam is None:
             return
-        zones = _zone_outlines(state, w, h)
         scale = cr.get_target().get_device_scale()
         options = cr.get_target().get_font_options()
         options.merge(cr.get_font_options())
         # The labels are always gray (``_paint_zones``), so the screen's antialias does not change the picture.
         options.set_antialias(cairo.ANTIALIAS_GRAY)
-        # Keyed on what is drawn, so every projection input is covered by the outlines.
+        # Every input a zone is projected or drawn from; one missing here freezes on screen.
         key = (
-            tuple((z.outline.tobytes(), z.color, z.name, z.is_occupied, z.count) for z in zones),
+            tuple(
+                (tuple(tuple(v) for v in vertices), color, name, is_occupied, count)
+                for vertices, color, name, is_occupied, count in state.zone_polygons
+            ),
+            state.zone_z_offset,
+            tuple(float(v) for v in cam),
+            state.lens_k1,
+            state.lens_k2,
             w,
             h,
             scale,
             options,
         )
         if self._entry is None or self._entry[0] != key:
-            self._entry = (key, *self._render(renderer, zones, w, h, scale, options))
+            self._entry = (key, *self._render(renderer, _zone_outlines(state, w, h), w, h, scale, options))
         _, picture, x0, y0 = self._entry
         if picture is not None:
             cr.set_source_surface(picture, x0, y0)

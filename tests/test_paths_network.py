@@ -14,7 +14,15 @@ import pytest
 from openfollow.configuration import MAX_PATH_POINTS, MAX_PATHS
 from openfollow.paths import network
 from openfollow.paths.geometry import PathCurve, PathPoint, build_curve
-from openfollow.paths.network import Junction, PathNetwork, Place, Step, extend_to_corners, find_junctions
+from openfollow.paths.network import (
+    _MAX_STEPS,
+    Junction,
+    PathNetwork,
+    Place,
+    Step,
+    extend_to_corners,
+    find_junctions,
+)
 
 REACH = network.JUNCTION_REACH_M
 
@@ -655,6 +663,12 @@ class TestVertices:
         net = PathNetwork([wave])
         step = net.walk(Place(0, 0.0), 1.0, 0.0, dt=100.0)
         assert step.place.s == pytest.approx(wave.length)
+
+    def test_one_step_takes_a_bounded_number_of_legs(self) -> None:
+        # 400 points 5 cm apart: every one is a vertex, and one huge step stops after _MAX_STEPS legs.
+        dotted = _curve([(0.05 * i, 0, 0, 0) for i in range(400)])
+        step = PathNetwork([dotted]).walk(Place(0, 0.0), 1.0, 0.0, 100.0)
+        assert step.place.s == pytest.approx(_MAX_STEPS * 0.05)
 
 
 class TestSteering:

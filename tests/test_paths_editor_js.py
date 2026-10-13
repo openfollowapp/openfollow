@@ -678,6 +678,22 @@ class TestFollowingARecording:
             setup=f"model.recording = {json.dumps(recording or None)};",
         )
 
+    def test_a_point_recorded_while_typing_shows_and_keeps_what_is_typed(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            var name = row('cross').querySelector('input[id$="-name"]');
+            typeInto(name, 'ds');
+            model.paths[0].points.push({ x: 5, y: 2, z: 0, radius: 0.5 });  // a Pathfinder press
+            tickIntervals(); await settle();
+            var now = row('cross').querySelector('input[id$="-name"]');
+            out.points = row('cross').querySelectorAll('.pe-points tbody tr').length;
+            out.typing = [document.activeElement === now, now.value];
+            """,
+            setup="model.recording = 'cross';",
+        )
+        assert out == {"points": 3, "typing": [True, "ds"]}
+
     def test_nothing_is_asked_while_nothing_records(self) -> None:
         assert self._polls("", recording="")["polled"] == 0
 

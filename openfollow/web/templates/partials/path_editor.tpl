@@ -558,7 +558,7 @@ function peArrowhead(x, y, ux, uy, half, side) {
     // Recording adds points from the Operator Screen: follow it while the rows are on screen.
     function onScreen() { return !document.hidden && q('list').getClientRects().length > 0; }
     setInterval(function() {
-        if (data && data.recording && !writing && onScreen() && !root.contains(document.activeElement)) load();
+        if (data && data.recording && !writing && onScreen()) load();
     }, 1000);
 
     load();

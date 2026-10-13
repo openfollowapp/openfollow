@@ -166,6 +166,23 @@ class TestLogging:
         levels = [record.levelno for record in caplog.records if record.name == "openfollow.send_health"]
         assert levels == [logging.WARNING, logging.ERROR, logging.INFO]
 
+    def test_a_failing_streak_cut_short_by_a_reset_logs_its_end(self, caplog: pytest.LogCaptureFixture) -> None:
+        health, clock = _health()
+        _failing(health, clock)
+        clock.now += 4
+        caplog.clear()
+        with caplog.at_level(logging.DEBUG, logger="openfollow.send_health"):
+            health.reset()
+        assert _messages(caplog) == ["PSN: stopped after 5 s of failing sends (2 failed)."]
+
+    def test_a_reset_outside_a_failing_streak_logs_nothing(self, caplog: pytest.LogCaptureFixture) -> None:
+        health, _clock = _health()
+        health.record_failure(_REFUSED, _GROUP)
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger="openfollow.send_health"):
+            health.reset()
+        assert _messages(caplog) == []
+
     def test_a_failing_streak_reminds_once_a_minute(self, caplog: pytest.LogCaptureFixture) -> None:
         health, clock = _health()
         _failing(health, clock)

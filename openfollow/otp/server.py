@@ -1107,6 +1107,8 @@ class OtpServer:
         try:
             sock.sendto(data, (dest_ip, self._port))
         except OSError as exc:
+            if self._resolve_stop(stop_event).is_set():
+                return
             self._send_health.record_failure(exc, dest_ip)
             self._handle_send_error(exc, stop_event)
             return

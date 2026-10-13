@@ -490,6 +490,8 @@ class RttrpmServer:
         try:
             sock.sendto(data, (self._host, self._port))
         except OSError as exc:
+            if self._resolve_stop(stop_event).is_set():
+                return
             self._send_health.record_failure(exc, self._host)
             if exc.errno in _TRANSIENT_SEND_ERRNOS:
                 self._maybe_rebuild_socket_after_error(stop_event)

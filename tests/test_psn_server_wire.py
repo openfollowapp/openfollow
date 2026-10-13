@@ -524,6 +524,16 @@ class TestSendBeforeSocketOpen:
         status = srv.send_health.status()
         assert (status.sent_total, status.failed_total) == (0, 0)
 
+    def test_a_send_failing_after_its_generation_stopped_records_nothing(self) -> None:
+        """A send thread that outlived stop()'s join must not open a streak on the next generation."""
+        srv = PsnServer(mcast_ip="236.10.10.10")
+        _FakeMcastSocket.sendto_raises = OSError(errno.EBADF, "Bad file descriptor")
+        srv._socket = _FakeMcastSocket(socket.AF_INET)
+        stale = threading.Event()
+        stale.set()
+        srv._send(b"\x00", stale)
+        assert srv.send_health.status().failed_total == 0
+
 
 # --------------------------------------------------------------------------- #
 # Live-apply seams: rebind_mcast_ip + update_system_name

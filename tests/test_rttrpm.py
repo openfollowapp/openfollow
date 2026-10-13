@@ -777,6 +777,18 @@ class TestRttrpmSendHealthLifecycle:
         srv.stop()
         assert srv.send_health.status().state == "ok"
 
+    def test_a_send_failing_after_its_generation_stopped_records_nothing(self) -> None:
+        import errno as _e
+
+        srv = RttrpmServer(host="192.0.2.30")
+        sock = MagicMock()
+        sock.sendto.side_effect = OSError(_e.EBADF, "Bad file descriptor")
+        srv._socket = sock
+        stale = threading.Event()
+        stale.set()
+        srv._send(b"x", stale)
+        assert srv.send_health.status().failed_total == 0
+
     def test_a_failure_is_recorded_against_the_configured_host(self) -> None:
         import errno as _e
 

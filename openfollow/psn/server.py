@@ -514,6 +514,9 @@ class PsnServer:
         try:
             sock.sendto(data, (dest, self._port))
         except OSError as exc:
+            if self._resolve_stop(stop_event).is_set():
+                # A survivor of stop(): the record belongs to the next generation.
+                return
             self._send_health.record_failure(exc, dest)
             # Rebuild socket on transient interface errors.
             self._handle_send_error(exc, stop_event)

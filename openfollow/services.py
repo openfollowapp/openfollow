@@ -1391,19 +1391,21 @@ class AppRuntimeServices:
 
     def network_alert_rows(self) -> list[SendAlert]:
         """``network_alerts`` with the next step the web shows under each."""
+        return self._alert_rows(self._fixed_sender_statuses(), self._osc_sender_statuses())
+
+    def _alert_rows(
+        self,
+        fixed: list[tuple[str, SendHealthStatus]],
+        osc: list[tuple[str, SendHealthStatus]],
+    ) -> list[SendAlert]:
         observer = self._network_observer
         planes = observer.alert_rows() if observer is not None else []
         rows = [SendAlert(plane.text, plane.action) for plane in planes]
         # A plane already reported down explains its senders' failures.
         explained = {plane.key for plane in planes}
-        osc = self._osc_sender_statuses()
-        statuses = [status for key, status in [*self._fixed_sender_statuses(), *osc] if key not in explained]
+        statuses = [status for key, status in [*fixed, *osc] if key not in explained]
         rows.extend(send_alerts(statuses, actions={status.label: OSC_SEND_FAILING_ACTION for _key, status in osc}))
         return rows
-
-    def _sender_statuses(self) -> list[tuple[str, SendHealthStatus]]:
-        """Every sender's record, keyed by the plane whose outage already explains its failures."""
-        return [*self._fixed_sender_statuses(), *self._osc_sender_statuses()]
 
     def _fixed_sender_statuses(self) -> list[tuple[str, SendHealthStatus]]:
         """PSN, OTP, RTTrPM, the discovery beacon and marker sync.
@@ -1448,9 +1450,11 @@ class AppRuntimeServices:
 
     def _network_stats(self) -> dict[str, Any]:
         """The ``network`` block of the runtime stats: the rows, and every sender's record."""
+        # Each record is read once, so the rows and the senders describe the same moment.
+        fixed, osc = self._fixed_sender_statuses(), self._osc_sender_statuses()
         return {
-            "alerts": [{"text": alert.text, "action": alert.action} for alert in self.network_alert_rows()],
-            "senders": [status.to_dict() for _key, status in self._sender_statuses()],
+            "alerts": [{"text": alert.text, "action": alert.action} for alert in self._alert_rows(fixed, osc)],
+            "senders": [status.to_dict() for _key, status in [*fixed, *osc]],
         }
 
     def network_plane_status(self) -> list[dict[str, Any]]:

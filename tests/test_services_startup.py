@@ -2742,6 +2742,32 @@ def test_a_plane_row_carries_its_next_step_to_the_web(monkeypatch) -> None:
     assert services._network_stats()["alerts"] == [{"text": "PSN: eth0 is down", "action": PLANE_DOWN_ACTION}]
 
 
+def test_one_stats_snapshot_reads_each_record_once(monkeypatch) -> None:
+    """A streak that ends between two reads must not leave a row beside a sender reading ok."""
+    from openfollow.send_health import SendHealth
+
+    class _Recovering(SendHealth):
+        def status(self):  # type: ignore[no-untyped-def]
+            status = super().status()
+            # Every later read finds the streak over.
+            self.reset()
+            return status
+
+    from openfollow.send_health import FAILING_AFTER_S
+
+    now = [100.0]
+    health = _Recovering("RTTrPM output", clock=lambda: now[0])
+    health.record_failure(OSError(errno.EACCES, os.strerror(errno.EACCES)), "192.0.2.20")
+    now[0] += FAILING_AFTER_S
+    health.record_failure(OSError(errno.EACCES, os.strerror(errno.EACCES)), "192.0.2.20")
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._app._rttrpm_server = SimpleNamespace(send_health=health)
+
+    stats = services._network_stats()
+    assert [sender["state"] for sender in stats["senders"]] == ["failing"]
+    assert len(stats["alerts"]) == 1
+
+
 def test_only_real_send_records_are_read(monkeypatch) -> None:
     """A sender object that exposes no record, or something else under the name, is skipped."""
     services = _build_services_with_psutil_backend(monkeypatch)

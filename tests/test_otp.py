@@ -1443,6 +1443,18 @@ class TestOtpSendHealthLifecycle:
         srv.stop()
         assert srv.send_health.status().state == "ok"
 
+    def test_a_send_failing_after_its_generation_stopped_records_nothing(self) -> None:
+        import errno as _e
+
+        srv = OtpServer(system_number=1)
+        sock = MagicMock()
+        sock.sendto.side_effect = OSError(_e.EBADF, "Bad file descriptor")
+        srv._socket = sock
+        stale = threading.Event()
+        stale.set()
+        srv._send(b"\x00", "239.159.1.1", stale)
+        assert srv.send_health.status().failed_total == 0
+
     def test_starting_forgets_the_streak(self) -> None:
         import errno as _e
 

@@ -22,7 +22,7 @@ rebuild looks like a recovery. A streak ends only on a success at least
 
 A streak's first failure is logged at most once a minute per sender, and the
 next such line counts the brief streaks held back. A streak that reaches
-failing is always logged when it does and when it ends.
+failing is always logged when it does and when it ends, or is reset.
 """
 
 from __future__ import annotations
@@ -206,7 +206,12 @@ class SendHealth:
     def reset(self) -> None:
         """Forget the current streak: the sender was stopped, restarted or repointed."""
         with self._lock:
+            failing = self._failing
+            lasted = self._clock() - self._streak_start if self._streak_start is not None else 0.0
+            failed = self._streak_failures
             self._clear_streak()
+        if failing:
+            logger.info("%s: stopped after %.0f s of failing sends (%d failed).", self.label, lasted, failed)
 
     def status(self) -> SendHealthStatus:
         with self._lock:

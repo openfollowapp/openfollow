@@ -414,6 +414,10 @@ class TestCornerExtension:
         assert net.curves == [peak, valley]
         assert net.junctions == []
 
+    def test_an_end_on_its_own_path_s_corner_point_stays(self) -> None:
+        hooked = _curve([(0, 0, 0, 0), (2, 0, 0, 0.5), (2, 2, 0, 0), (2.05, 0.05, 0, 0)])
+        assert PathNetwork([hooked]).curves[0] is hooked
+
     def test_a_closed_path_has_no_end_to_run_on(self) -> None:
         ring = _curve([(2, 0, 0, 0), (3, -1, 0, 0), (3, 1, 0, 0)], closed=True)
         net = PathNetwork([ring, self.ROUNDED])

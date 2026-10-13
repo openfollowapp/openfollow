@@ -11,6 +11,9 @@ signature without touching the GStreamer / Cairo integration layer.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from typing import Any
+
 import numpy as np
 import pytest
 
@@ -345,3 +348,172 @@ class TestLensDistortion:
         # A closed outline can't be partially drawn -> whole zone skipped.
         assert cr.closes == 0
         assert cr.fill_preserves == 0
+
+
+# --------------------------------------------------------------------------- #
+# ZoneCache – every zone as one picture, drawn again only on a change
+# --------------------------------------------------------------------------- #
+
+
+def _blank(scale: float, background: tuple[float, ...]) -> Any:
+    import cairo
+
+    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, int(1920 * scale), int(1080 * scale))
+    cr = cairo.Context(surface)
+    cr.set_source_rgba(*background)
+    cr.paint()
+    return surface
+
+
+class TestZoneCache:
+    @staticmethod
+    def _pixels(surface: Any) -> np.ndarray:
+        surface.flush()
+        h, stride = surface.get_height(), surface.get_stride()
+        return np.ndarray((h, stride // 4, 4), np.uint8, surface.get_data())[:, : surface.get_width()].astype(int)
+
+    @staticmethod
+    def _state(**overrides: Any) -> OverlayState:
+        state = OverlayState()
+        state.camera_params = _camera_params()
+        state.show_zones = True
+        state.zone_polygons = [
+            (_square(0.0, 2.0, 1.0), "#ffaa00", "Pit", False, 0),
+            (_square(-2.5, 4.0, 0.8), "#33aaff", "Wing", True, 2),
+            # Smaller than its label, which then reaches past the outline.
+            (_square(2.5, 3.0, 0.05), "#ff3333", "A long label on a tiny zone", False, 0),
+        ]
+        for name, value in overrides.items():
+            setattr(state, name, value)
+        return state
+
+    @pytest.fixture
+    def outline_calls(self, monkeypatch) -> list[int]:
+        from openfollow.runtime import overlay_draw_zones as mod
+
+        calls: list[int] = []
+        real = mod._zone_outlines
+
+        def _counting(state, w, h):
+            calls.append(len(state.zone_polygons))
+            return real(state, w, h)
+
+        monkeypatch.setattr(mod, "_zone_outlines", _counting)
+        return calls
+
+    @pytest.mark.parametrize("background", [(0.2, 0.3, 0.4, 1.0), (0.2, 0.3, 0.4, 0.5)], ids=["opaque", "translucent"])
+    @pytest.mark.parametrize(
+        ("scale", "overrides"),
+        [
+            (1.0, {}),
+            (2.0, {}),
+            (1.0, {"lens_k1": -0.15, "lens_k2": 0.02}),
+            # Seen from low down, the corners turn sharp enough for a miter tip to reach well past them.
+            (1.0, {"camera_params": np.array([0.0, -10.0, 0.6, -2.0, 0.0, 0.0, 60.0])}),
+            # Leading spaces put the glyphs well left of where the label's box starts.
+            (1.0, {"zone_polygons": [(_square(0.0, 2.0, 0.05), "#ffaa00", "      Pit", True, 3)]}),
+        ],
+        ids=["screen", "hidpi", "lens", "acute-corners", "spaced-label"],
+    )
+    def test_cached_zones_look_like_zones_drawn_directly(
+        self, scale: float, overrides: dict, background: tuple[float, ...]
+    ) -> None:
+        """Over a frame already drawn, so a picture pasted in place of the frame shows."""
+        import cairo
+
+        from openfollow.runtime.overlay_draw_zones import ZoneCache
+
+        if "camera_params" in overrides:
+            overrides = {**overrides, "zone_polygons": [(_square(0.0, 0.0, 2.0), "#ffaa00", "", False, 0)]}
+        state = self._state(**overrides)
+        surfaces = []
+        for cache in (None, ZoneCache()):
+            surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, int(1920 * scale), int(1080 * scale))
+            surface.set_device_scale(scale, scale)
+            cr = cairo.Context(surface)
+            cr.set_source_rgba(*background)
+            cr.paint()
+            draw_zones(FakeRenderer(), cr, state, 1920, 1080, cache)
+            surfaces.append(self._pixels(surface))
+        direct, cached = surfaces
+        assert (direct != self._pixels(_blank(scale, background))).any(), "the scene must draw something"
+        # Two levels: translucent zones blended twice round differently by a level.
+        assert np.abs(direct - cached).max() <= 2
+
+    def test_zones_that_did_not_change_are_not_drawn_again(self, outline_calls) -> None:
+        from openfollow.runtime.overlay_draw_zones import ZoneCache
+
+        cache, state = ZoneCache(), self._state()
+        for _ in range(3):
+            cr = FakeCairo()
+            draw_zones(FakeRenderer(), cr, state, 1920, 1080, cache)
+            assert ("paint",) in cr.calls
+        assert outline_calls == [3]
+
+    @pytest.mark.parametrize(
+        "change",
+        [
+            {"polygon": (_square(0.2, 2.0, 1.0), "#ffaa00", "Pit", False, 0)},
+            {"polygon": (_square(0.0, 2.0, 1.0), "#00ff00", "Pit", False, 0)},
+            {"polygon": (_square(0.0, 2.0, 1.0), "#ffaa00", "Stage", False, 0)},
+            {"polygon": (_square(0.0, 2.0, 1.0), "#ffaa00", "Pit", True, 1)},
+            {"polygon": (_square(0.0, 2.0, 1.0), "#ffaa00", "Pit", True, 0)},
+            {"state": {"zone_z_offset": 0.5}},
+            {"state": {"camera_params": np.array([0.2, -6.0, 2.5, -15.0, 0.0, 0.0, 60.0])}},
+            {"state": {"lens_k1": 0.05}},
+            {"state": {"lens_k2": 0.02}},
+            {"size": (1280, 720)},
+            {"scale": 2.0},
+        ],
+        ids=["vertices", "color", "name", "occupied", "count", "z-offset", "camera", "k1", "k2", "frame", "scale"],
+    )
+    def test_anything_a_zone_is_drawn_from_draws_the_zones_again(self, outline_calls, change: dict) -> None:
+        from openfollow.runtime.overlay_draw_zones import ZoneCache
+
+        cache = ZoneCache()
+        draw_zones(FakeRenderer(), FakeCairo(), self._state(), 1920, 1080, cache)
+        state = self._state(**change.get("state", {}))
+        if "polygon" in change:
+            state.zone_polygons = [change["polygon"], *state.zone_polygons[1:]]
+        cr = FakeCairo()
+        scale = change.get("scale", 1.0)
+        cr.get_target = lambda: SimpleNamespace(get_device_scale=lambda: (scale, scale))  # type: ignore[method-assign]
+        w, h = change.get("size", (1920, 1080))
+        draw_zones(FakeRenderer(), cr, state, w, h, cache)
+        assert outline_calls == [3, 3]
+
+    def test_another_occupant_draws_the_zones_again(self, outline_calls) -> None:
+        from openfollow.runtime.overlay_draw_zones import ZoneCache
+
+        cache = ZoneCache()
+        occupied = (_square(0.0, 2.0, 1.0), "#ffaa00", "Pit", True, 1)
+        state = self._state()
+        state.zone_polygons = [occupied, *state.zone_polygons[1:]]
+        draw_zones(FakeRenderer(), FakeCairo(), state, 1920, 1080, cache)
+        state = self._state()
+        state.zone_polygons = [(*occupied[:4], 2), *state.zone_polygons[1:]]
+        draw_zones(FakeRenderer(), FakeCairo(), state, 1920, 1080, cache)
+        assert outline_calls == [3, 3]
+
+    def test_zones_all_behind_the_camera_paint_nothing(self) -> None:
+        from openfollow.runtime.overlay_draw_zones import ZoneCache
+
+        state = self._state(zone_polygons=[(_square(0.0, -20.0, 1.0), "#ffaa00", "Behind", False, 0)])
+        cr = FakeCairo()
+        draw_zones(FakeRenderer(), cr, state, 1920, 1080, ZoneCache())
+        assert ("paint",) not in cr.calls
+
+    def test_zones_entirely_outside_the_frame_paint_nothing(self) -> None:
+        from openfollow.runtime.overlay_draw_zones import ZoneCache
+
+        state = self._state(zone_polygons=[(_square(60.0, 2.0, 1.0), "#ffaa00", "", False, 0)])
+        cr = FakeCairo()
+        draw_zones(FakeRenderer(), cr, state, 1920, 1080, ZoneCache())
+        assert ("paint",) not in cr.calls
+
+    def test_a_cache_asked_to_draw_without_a_camera_draws_nothing(self) -> None:
+        from openfollow.runtime.overlay_draw_zones import ZoneCache
+
+        cr = FakeCairo()
+        ZoneCache().draw(FakeRenderer(), cr, self._state(camera_params=None), 1920, 1080)
+        assert cr.calls == []

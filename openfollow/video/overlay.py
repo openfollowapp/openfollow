@@ -75,6 +75,7 @@ from openfollow.runtime.overlay_draw_scene import (
 from openfollow.runtime.overlay_draw_scene import (
     project as project_overlay_points,
 )
+from openfollow.runtime.overlay_draw_zones import ZoneCache
 from openfollow.runtime.overlay_draw_zones import draw_zones as draw_zones_pass
 from openfollow.runtime.overlay_state import MarkerOverlayData, OverlayState
 
@@ -161,6 +162,7 @@ class CairoOverlayRenderer:
         # Max 200 lines = 400 endpoints. Resized if needed.
         self._grid_pts_buf = np.zeros((400, 3), dtype=np.float64)
         self._cone_cache = ConeCache()
+        self._zone_cache = ZoneCache()
 
         # Rolling timestamps of recent draw callbacks for FPS measurement.
         # Appended on the GTK main thread (per-frame ``draw``); read on the
@@ -424,7 +426,7 @@ class CairoOverlayRenderer:
     # ------------------------------------------------------------------
 
     def _draw_zones(self, cr: Any, state: OverlayState, w: int, h: int) -> None:
-        draw_zones_pass(self, cr, state, w, h)
+        draw_zones_pass(self, cr, state, w, h, self._zone_cache)
 
     # ------------------------------------------------------------------
     # Person detection bounding boxes

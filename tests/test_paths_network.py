@@ -520,6 +520,34 @@ class TestLegs:
         step = net.walk(Place(0, 0.0), 1.0, 0.0, 100.0)
         assert _at(net, step.place) == (-4.5 + 0.5 * 15, 0.0)
 
+    def test_a_leg_ending_where_a_switch_area_starts_still_moves_on(self) -> None:
+        # At 1.3 m/s the area reaches 0.65 m: from 4.35 the leg to it is a rounding error long.
+        net = PathNetwork([H, V])
+        assert net.walk(Place(0, 4.35), 1.3, 0.0, 1.0).place == Place(0, pytest.approx(5.65))
+
+    def test_a_steady_push_carries_the_marker_through_a_crossing_every_frame(self) -> None:
+        net = PathNetwork([H, V])
+        place = Place(0, 1.652)
+        for _ in range(600):
+            step = net.walk(place, 1.3, 0.0, 1 / 60)
+            assert step.place.path == 0
+            assert step.place.s == pytest.approx(min(place.s + 1.3 / 60, H.length))
+            place = step.place
+        assert place.s == pytest.approx(H.length)
+
+    @pytest.mark.parametrize("seed", range(4))
+    def test_every_frame_of_a_push_along_the_path_moves_the_marker(self, seed: int) -> None:
+        rng = random.Random(seed)
+        net = PathNetwork([H, V])
+        for _ in range(40):
+            speed = rng.uniform(0.05, 4.0) * rng.choice((-1.0, 1.0))
+            place = Place(0, rng.uniform(0.0, H.length))
+            for _ in range(120):
+                step = net.walk(place, speed, 0.0, 1 / 60)
+                assert step.place.path == 0
+                assert step.place.s == pytest.approx(min(max(place.s + speed / 60, 0.0), H.length))
+                place = step.place
+
 
 class TestSteering:
     def test_pushing_straight_on_keeps_the_path_through_a_crossing(self) -> None:

@@ -256,7 +256,8 @@ class PathNetwork:
             d = sign * (s - place.s)
             if curve.closed:
                 d %= curve.length
-            if d > area:
+            # A leg cut at an area's start leaves a rounding error to it, too short for the curve to advance.
+            if d > area + _EPS:
                 ahead.append(d - area)
             elif d > _EPS:
                 ahead.append(d)

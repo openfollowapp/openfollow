@@ -30,6 +30,9 @@ JUNCTION_HEIGHT_M = 0.2
 # at speed, as far as it travels in SWITCH_LOOKAHEAD_S.
 SWITCH_AREA_M = 0.5
 SWITCH_LOOKAHEAD_S = 0.5
+# The Operator Screen's switch arrows: the stretch of each way out of a junction they cover, in metres.
+SWITCH_ARROW_FROM_M = 0.25
+SWITCH_ARROW_TO_M = 0.55
 # A position may switch paths this much further from a junction than that: about one sample's step.
 _POSITION_STEP_M = 0.15
 # The other path wins only when its direction is more than this much closer to the push.
@@ -181,6 +184,35 @@ class PathNetwork:
                 break
             time_left -= leg / rate
         return Step(place)
+
+    def switch_arrows(
+        self, place: Place, speed: float
+    ) -> list[tuple[tuple[float, float, float], tuple[float, float, float]]]:
+        """Where a marker at ``place`` pushed at ``speed`` m/s may turn: a short stretch along every way out of
+        each junction in its switch area, as (tail, tip), but the way back to the marker."""
+        area = max(SWITCH_AREA_M, speed * SWITCH_LOOKAHEAD_S)
+        curve = self.curves[place.path]
+        out = []
+        # Junctions a few centimetres apart (an end touching a path it also crosses) show their ways once.
+        seen: set[tuple[int, int, int, int]] = set()
+        for s, partner in self._stations[place.path]:
+            off = curve.offset(place.s, s)
+            if abs(off) > area:
+                continue
+            ahead = [w for w in self._ways(Place(place.path, s)) if abs(off) <= _EPS or w.sign * off > 0]
+            for way in ahead + self._ways(partner):
+                c = self.curves[way.place.path]
+                tail, _ = c.advance(way.place.s, way.sign * SWITCH_ARROW_FROM_M)
+                tip, _ = c.advance(way.place.s, way.sign * SWITCH_ARROW_TO_M)
+                # An end closer than the arrow leaves no stretch to draw.
+                if abs(c.offset(tail, tip)) <= _EPS:
+                    continue
+                a, b = c.point(tail), c.point(tip)
+                key = (round(a[0] * 100), round(a[1] * 100), round(b[0] * 100), round(b[1] * 100))
+                if key not in seen:
+                    seen.add(key)
+                    out.append((a, b))
+        return out
 
     def _ways(self, place: Place) -> list[_Way]:
         curve = self.curves[place.path]

@@ -290,3 +290,46 @@ def test_a_path_cache_asked_to_draw_without_a_camera_draws_nothing() -> None:
     cr = FakeCairo()
     PathCache().draw(cr, _scene(camera_params=None), 1920, 1080)
     assert cr.calls == []
+
+
+# --------------------------------------------------------------------------- #
+# Switch arrows – where a locked marker can turn at a nearby junction
+# --------------------------------------------------------------------------- #
+
+
+def test_each_way_a_marker_can_turn_is_a_white_arrow_along_it() -> None:
+    from openfollow.runtime.overlay_draw_scene import project
+
+    state = _state()
+    arrow = ((0.25, 2.0, 0.0), (0.55, 2.0, 0.0))
+    state.path_arrows = [arrow]
+    plain, cr = FakeCairo(), FakeCairo()
+    draw_paths(FakeRenderer(), plain, _state(), 1920, 1080)
+    draw_paths(FakeRenderer(), cr, state, 1920, 1080)
+    (tx, ty), (px, py) = project(state.camera_params, list(arrow), 1920, 1080)
+    assert cr.calls[len(plain.calls) :][:2] == [("rgba", *COLOR_PATH_LOCKED), ("line_width", PATH_LINE_WIDTH)]
+    assert (cr.strokes, cr.closes, cr.fills) == (plain.strokes + 1, plain.closes + 1, plain.fills + 1)
+    assert [pytest.approx(v) for v in cr.line_tos[len(plain.line_tos)]] == [px, py]
+    # The arrowhead's tip sits half its length past the stretch's end, along it.
+    head = cr.move_tos[-1]
+    ux, uy = (px - tx) / np.hypot(px - tx, py - ty), (py - ty) / np.hypot(px - tx, py - ty)
+    assert head == (pytest.approx(px + ux * PATH_ARROW_LENGTH / 2), pytest.approx(py + uy * PATH_ARROW_LENGTH / 2))
+
+
+def test_an_arrow_behind_the_camera_is_left_out() -> None:
+    state = _state()
+    state.path_arrows = [((0.0, -20.0, 0.0), (0.3, -20.0, 0.0))]
+    plain, cr = FakeCairo(), FakeCairo()
+    draw_paths(FakeRenderer(), plain, _state(), 1920, 1080)
+    draw_paths(FakeRenderer(), cr, state, 1920, 1080)
+    assert (cr.strokes, cr.fills) == (plain.strokes, plain.fills)
+
+
+def test_cached_paths_draw_their_arrows_too() -> None:
+    from openfollow.runtime.overlay_draw_paths import PathCache
+
+    state = _state()
+    state.path_arrows = [((0.25, 2.0, 0.0), (0.55, 2.0, 0.0))]
+    cr = FakeCairo()
+    draw_paths(FakeRenderer(), cr, state, 1920, 1080, PathCache())
+    assert cr.strokes == 1 and cr.closes == 1

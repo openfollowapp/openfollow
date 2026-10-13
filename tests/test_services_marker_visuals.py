@@ -1146,6 +1146,18 @@ class TestPathsOnTheOperatorScreen:
             dt=1.0 / 60.0,
         )
 
+    def test_the_ways_a_marker_can_turn_reach_the_overlay(self) -> None:
+        app = self._app()
+        arrow = ((0.25, 0.0, 0.0), (0.55, 0.0, 0.0))
+        app._paths.switch_arrows = lambda: [arrow]
+        assert self._state(app).path_arrows == [arrow]
+
+    @pytest.mark.parametrize("change", [{"show": False}, {"enabled": False}], ids=["hidden", "experimental-off"])
+    def test_hidden_paths_show_no_turns(self, change: dict) -> None:
+        app = self._app(**change)
+        app._paths.switch_arrows = lambda: [((0.0, 0.0, 0.0), (0.3, 0.0, 0.0))]
+        assert self._state(app).path_arrows == []
+
     def test_active_paths_reach_the_overlay(self) -> None:
         app = self._app()
         app._paths.press(1, (0.5, 0.5, 0.0))

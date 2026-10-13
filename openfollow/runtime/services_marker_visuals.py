@@ -354,7 +354,9 @@ def _populate_path_overlay(state: OverlayState, cfg: Any, app: Any) -> None:
     state.show_paths = engine is not None and engine.enabled and bool(cfg.paths.show_paths)
     if engine is None or not state.show_paths:
         state.path_lines = []
+        state.path_arrows = []
         return
+    state.path_arrows = engine.switch_arrows()
     state.path_lines = [
         (d.curve, [(e.at, e.inside, e.releases) for e in d.ends], d.locked) for d in engine.drawings(cfg.paths)
     ]

@@ -683,3 +683,42 @@ class TestNearest:
         net = PathNetwork([H, apart, V, branch])
         assert net.connected(0) == {0, 2, 3}
         assert net.connected(1) == {1}
+
+
+def _tips(arrows: list) -> list[tuple[float, float]]:
+    return sorted((round(tip[0], 6), round(tip[1], 6)) for _tail, tip in arrows)
+
+
+class TestSwitchArrows:
+    def test_approaching_a_crossing_shows_every_way_on_but_back(self) -> None:
+        net = PathNetwork([H, V])
+        arrows = net.switch_arrows(Place(0, 4.8), 1.0)
+        assert _tips(arrows) == [(0.0, -0.55), (0.0, 0.55), (0.55, 0.0)]
+        tails = sorted((round(t[0], 6), round(t[1], 6)) for t, _tip in arrows)
+        assert tails == [(0.0, -0.25), (0.0, 0.25), (0.25, 0.0)]
+
+    def test_standing_on_the_crossing_every_way_shows(self) -> None:
+        net = PathNetwork([H, V])
+        assert _tips(net.switch_arrows(Place(0, 5.0), 0.0)) == [(-0.55, 0.0), (0.0, -0.55), (0.0, 0.55), (0.55, 0.0)]
+
+    def test_past_the_crossing_the_way_back_to_the_marker_is_left_out(self) -> None:
+        net = PathNetwork([H, V])
+        assert _tips(net.switch_arrows(Place(0, 5.2), 0.0)) == [(-0.55, 0.0), (0.0, -0.55), (0.0, 0.55)]
+
+    @pytest.mark.parametrize(("start", "speed", "shown"), [(4.4, 1.0, False), (4.1, 2.0, True), (4.75, 0.0, True)])
+    def test_the_arrows_show_exactly_where_a_turn_can_be_taken(self, start: float, speed: float, shown: bool) -> None:
+        net = PathNetwork([H, V])
+        assert bool(net.switch_arrows(Place(0, start), speed)) is shown
+
+    def test_a_branch_shows_straight_on_and_the_way_into_it(self) -> None:
+        branch = _curve([(2, 0, 0), (2, 4, 0)])
+        net = PathNetwork([H, branch])
+        assert _tips(net.switch_arrows(Place(0, 6.8), 1.0)) == [(2.0, 0.55), (2.55, 0.0)]
+
+    def test_an_end_too_close_to_the_junction_draws_no_arrow(self) -> None:
+        short = _curve([(-5, 0, 0), (0.1, 0, 0)])
+        net = PathNetwork([short, V])
+        assert _tips(net.switch_arrows(Place(0, 4.9), 1.0)) == [(0.0, -0.55), (0.0, 0.55)]
+
+    def test_a_lone_path_has_none(self) -> None:
+        assert PathNetwork([H]).switch_arrows(Place(0, 5.0), 1.0) == []

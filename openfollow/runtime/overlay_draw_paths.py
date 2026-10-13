@@ -48,6 +48,25 @@ def draw_paths(renderer: Any, cr: Any, state: OverlayState, w: int, h: int, cach
         _paint_paths(cr, [shape for shape in shapes if shape.locked], locked=True)
     else:
         cache.draw(cr, state, w, h)
+    _paint_switch_arrows(cr, state, w, h)
+
+
+def _paint_switch_arrows(cr: Any, state: OverlayState, w: int, h: int) -> None:
+    """A small white arrow along each way a locked marker can turn into; drawn every frame, as markers move."""
+    if not state.path_arrows:
+        return
+    cr.set_source_rgba(*COLOR_PATH_LOCKED)
+    cr.set_line_width(PATH_LINE_WIDTH)
+    for tail, tip in state.path_arrows:
+        (tx, ty), (px, py) = project(state.camera_params, [tail, tip], w, h, state.lens_k1, state.lens_k2)
+        length = math.hypot(px - tx, py - ty)
+        if not (math.isfinite(length) and length > 0.0):
+            continue
+        cr.move_to(tx, ty)
+        cr.line_to(px, py)
+        cr.stroke()
+        _arrowhead(cr, px, py, (px - tx) / length, (py - ty) / length)
+        cr.fill()
 
 
 def _path_shapes(state: OverlayState, w: int, h: int, lines: list[Any]) -> list[_Path]:

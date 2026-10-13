@@ -271,8 +271,7 @@ def _touched(curves: Sequence[PathCurve], i: int, side: int) -> list[tuple[int, 
         s, dist = other.nearest(x, y)
         if k == i or dist > JUNCTION_REACH_M or abs(other.point(s)[2] - z) > JUNCTION_HEIGHT_M:
             continue
-        at_end = 0 if s <= _EPS else 1 if s >= other.length - _EPS else -1
-        out.append((k, -1 if other.closed else at_end))
+        out.append((k, 0 if s <= _EPS else 1 if s >= other.length - _EPS else -1))
     return out
 
 

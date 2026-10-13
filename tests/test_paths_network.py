@@ -329,6 +329,25 @@ class TestCornerExtension:
                 with_main = [j for j in net.junctions if {j.a, j.b} == {i, main}]
                 assert len(with_main) == 1
 
+    def test_a_spur_drawn_away_from_the_corner_point_runs_on_with_the_other(self) -> None:
+        away = _curve([(2, 0, 0), (4, -1, 0)])
+        net = PathNetwork([self.SPURS[0], away, self.ROUNDED])
+        assert net.curves[0].point(net.curves[0].length) == pytest.approx(self.VERTEX)
+        assert net.curves[1].point(0.0) == pytest.approx(self.VERTEX)
+
+    def test_a_spur_on_a_corner_point_beside_another_spur_s_side_stays(self) -> None:
+        # The first ends 5 cm beside the second, which runs on up to the corner point itself.
+        beside = _curve([(0, -1, 0), (1.95, -0.06, 0)])
+        net = PathNetwork([beside, self.SPURS[0], self.ROUNDED])
+        assert net.curves[0] is beside
+
+    def test_spurs_on_two_corner_points_of_one_path_touching_each_other_stay(self) -> None:
+        # The path turns down at (2, 0) and, later, up at (2.12, 0); the spurs end 8 cm apart, one on each.
+        zigzag = _curve([(0, 2, 0, 0), (2, 0, 0, 0.5), (4, 2, 0, 0), (4, -2, 0, 0), (2.12, 0, 0, 0.5), (0, -2, 0, 0)])
+        left, right = _curve([(0, 0, 0), (2, 0, 0)]), _curve([(4.5, 0, 0), (2.08, 0, 0)])
+        net = PathNetwork([left, right, zigzag])
+        assert net.curves[:2] == [left, right]
+
     def test_a_marker_on_one_of_two_spurs_walks_on_to_the_corner_path(self) -> None:
         net = PathNetwork([*self.SPURS[:2], self.ROUNDED])
         step = net.walk(Place(0, 2.0), -1.0, 0.0, 1.0)

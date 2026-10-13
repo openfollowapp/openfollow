@@ -10,10 +10,10 @@ stage plan. A marker standing inside it (seen from above) gets its dropline,
 ground circle, cone base and assist ring drawn down to the ground grid's
 height instead of the main grid's.
 
-It is a **visual aid** on the Operator Screen only. Where a dragged marker
-lands, person detection, the OSC height placeholders and the height on the
-marker card stay on the main grid, and no output protocol changes. A marker
-inside it is grabbed with the mouse by its ring where it is drawn.
+It is a **visual aid** on the Operator Screen only. Person detection, the OSC
+height placeholders and the height on the marker card stay on the main grid,
+and no output protocol changes. A marker inside it is grabbed with the mouse
+by its ring where it is drawn, and dragged across the floor it was grabbed on.
 
 ## Area
 

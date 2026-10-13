@@ -1239,6 +1239,18 @@ class TestGrabOnTheGroundGrid:
         self._pit(app)
         assert MouseHandler(app).on_pointer_down(*self._seen(app, 0.0), 1) is False
 
+    def test_a_marker_grabbed_on_the_pit_floor_does_not_jump_when_the_mouse_moves(self) -> None:
+        app = _DummyApp()
+        self._pit(app)
+        handler = MouseHandler(app)
+        x, y = self._seen(app, -1.5)
+        assert handler.on_pointer_down(x, y, 1) is True
+        # A move of one pixel from where it was grabbed leaves the marker where it is.
+        handler.on_pointer_move(x + 1.0, y)
+        handler.update()
+        mx, my, _ = app._server.get_marker(1).pos
+        assert (mx, my) == (pytest.approx(0.0, abs=0.05), pytest.approx(0.0, abs=0.05))
+
     def test_without_experimental_features_the_ring_stays_on_the_main_grid(self) -> None:
         app = _DummyApp()
         self._pit(app, experimental=False)

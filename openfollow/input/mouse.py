@@ -101,6 +101,8 @@ class MouseHandler:
         # EMA target (world x, y) and the current smoothed world position.
         self._target_world: tuple[float, float] | None = None
         self._smooth_world: tuple[float, float] | None = None
+        # The floor the grabbed marker stood on: the cursor is read on it for the whole drag.
+        self._drag_floor_z: float | None = None
         # Last right-click for double-click (reset) detection:
         # (time, x, y, released_active) – the bool records whether that click
         # released an active mouse grab, so reset only arms after real control.
@@ -272,6 +274,8 @@ class MouseHandler:
         paths_runtime.release(self._app, marker_id)
         self._app._selected_id = marker_id
         self._active = True
+        grabbed = self._app._server.get_marker(marker_id) if self._app._server is not None else None
+        self._drag_floor_z = floor_height(self._app._config, *grabbed.pos[:2]) if grabbed is not None else None
         self._anchor_screen = (x, y)
         # No target until the first move, so the grab itself never yanks the
         # marker to the click. ``update`` seeds the glide from the marker's
@@ -389,7 +393,7 @@ class MouseHandler:
         # is configured. k1/k2 live on the config (the Camera object is pinhole).
         cam = self._app._config.camera
         screen = invert_overlay_distortion(self._screen_buffer, float(w), float(h), cam.lens_k1, cam.lens_k2)
-        plane_z = self._app._config.grid.z_offset
+        plane_z = self._app._config.grid.z_offset if self._drag_floor_z is None else self._drag_floor_z
         world = unproject_to_plane(buf, screen, float(w), float(h), plane_z)
         if not np.all(np.isfinite(world[0])):
             return None

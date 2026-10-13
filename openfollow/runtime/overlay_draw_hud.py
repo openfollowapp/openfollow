@@ -1824,7 +1824,9 @@ def draw_pi_network_screen(
     while data rows sit indented below them.
     """
     net = state.pi_network
-    subtitle = "Address settings for this interface." if net.open_iface else "Interfaces on this station."
+    subtitle = net.subtitle or (
+        "Address settings for this interface." if net.open_iface else "Interfaces on this station."
+    )
     panel_w = panel_width(w)
     panel_h = screen_height(h)
     panel_x, panel_y, panel_w, panel_h = draw_modal_shell(
@@ -1832,7 +1834,7 @@ def draw_pi_network_screen(
         cr,
         w,
         h,
-        title=(net.title or net.open_iface).upper() if net.open_iface else "NETWORK INTERFACES",
+        title=(net.title or net.open_iface).upper() if (net.open_iface or net.title) else "NETWORK INTERFACES",
         subtitle=subtitle,
         panel_w=panel_w,
         panel_h=panel_h,

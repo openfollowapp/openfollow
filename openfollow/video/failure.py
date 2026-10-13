@@ -215,21 +215,48 @@ _KIND_ACTIONS: dict[SourceKind, dict[VideoFailure, str]] = {
 _ANONYMOUS_SOURCE = "the video source"
 
 
+# Simple network mode has no video input pin: video rides the station interface,
+# and a camera only another interface reaches needs Advanced mode's own pin.
+_SIMPLE_SENTENCES: dict[VideoFailure, str] = {
+    VideoFailure.INTERFACE_DOWN: "The station interface has no address.",
+    VideoFailure.WRONG_INTERFACE: "{where} is not reached through the station interface.",
+}
+_SIMPLE_NO_DIAL_SENTENCES: dict[VideoFailure, str] = {
+    VideoFailure.WRONG_INTERFACE: "{where} listens at an address the station interface does not have.",
+}
+_SIMPLE_ACTIONS: dict[VideoFailure, str] = {
+    VideoFailure.INTERFACE_DOWN: "Check its cable, or choose another Interface under Network Interface Settings.",
+    VideoFailure.WRONG_INTERFACE: "Check the camera's address, or pin the interface that reaches it in Advanced mode.",
+}
+_SIMPLE_KIND_ACTIONS: dict[SourceKind, dict[VideoFailure, str]] = {
+    SourceKind.LISTENER: {
+        VideoFailure.WRONG_INTERFACE: (
+            "Set the RTP URL's address to 0.0.0.0, or pin the interface that has it in Advanced mode."
+        ),
+    },
+}
+
+
 def failure_chip(failure: VideoFailure) -> str:
     """Two or three words for a status chip."""
     return _CHIPS.get(failure, _CHIPS[VideoFailure.UNKNOWN])
 
 
-def failure_sentence(failure: VideoFailure, *, where: str = "", kind: SourceKind = SourceKind.REMOTE) -> str:
+def failure_sentence(
+    failure: VideoFailure, *, where: str = "", kind: SourceKind = SourceKind.REMOTE, simple: bool = False
+) -> str:
     """One sentence naming what was observed, for an operator.
 
     ``where`` MUST already be redacted: it reaches the HUD and the stats
     route. Anything but ``REMOTE`` connects nowhere, so the wording does
-    not report that nothing "answered" a request never made.
+    not report that nothing "answered" a request never made. ``simple``
+    names the station interface, Simple network mode's only one.
     """
     template = _SENTENCES.get(failure, _SENTENCES[VideoFailure.UNKNOWN])
+    if simple:
+        template = _SIMPLE_SENTENCES.get(failure, template)
     if kind is not SourceKind.REMOTE:
-        template = _NO_DIAL_SENTENCES.get(failure, template)
+        template = (_SIMPLE_NO_DIAL_SENTENCES if simple else _NO_DIAL_SENTENCES).get(failure, template)
     return template.format(where=where.strip() or _ANONYMOUS_SOURCE)
 
 
@@ -242,7 +269,7 @@ def _silence_verdict(phase: ConnectionPhase, saw_video: bool) -> VideoFailure:
     return VideoFailure.UNREACHABLE
 
 
-def failure_action(failure: VideoFailure, *, kind: SourceKind = SourceKind.REMOTE) -> str:
+def failure_action(failure: VideoFailure, *, kind: SourceKind = SourceKind.REMOTE, simple: bool = False) -> str:
     """The one thing to try next, or ``""`` when there is nothing to suggest.
 
     Deliberately not folded into :func:`failure_sentence`: an operator reading a
@@ -254,6 +281,10 @@ def failure_action(failure: VideoFailure, *, kind: SourceKind = SourceKind.REMOT
     to check an address and port for an NDI source, which has neither, sends
     them looking for a setting that does not exist.
     """
+    if simple:
+        simple_action = _SIMPLE_KIND_ACTIONS.get(kind, {}).get(failure) or _SIMPLE_ACTIONS.get(failure)
+        if simple_action:
+            return simple_action
     per_kind = _KIND_ACTIONS.get(kind, {})
     if failure in per_kind:
         return per_kind[failure]

@@ -14,7 +14,7 @@ import shutil
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -2460,6 +2460,83 @@ class UiConfig:
         self.show_experimental_features = _coerce_bool(self.show_experimental_features, False)
 
 
+NETWORK_MODE_SIMPLE = "simple"
+NETWORK_MODE_ADVANCED = "advanced"
+NETWORK_MODES = (NETWORK_MODE_SIMPLE, NETWORK_MODE_ADVANCED)
+
+
+def plane_pins(cfg: AppConfig) -> list[tuple[str, str]]:
+    """Every per-plane interface pin that is set, plus ``web_bind_iface``, as ``(key, iface)``.
+
+    Keys are the Network Interface Assignment form keys. ``psn_source_iface`` is
+    the station interface, not a per-plane pin, and ``web_bind`` is config-only.
+    """
+    pins = [
+        ("otp_output.source_iface", cfg.otp_output.source_iface),
+        ("rttrpm_output.source_iface", cfg.rttrpm_output.source_iface),
+        ("osc.listen_iface", cfg.osc.listen_iface),
+    ]
+    pins.extend(
+        (f"osc_destinations.{dest.id}.source_iface", dest.source_iface) for dest in cfg.osc_destinations.destinations
+    )
+    pins.append(("video_input_iface", cfg.video_input_iface))
+    pins.append(("web_bind_iface", cfg.web_bind_iface))
+    return [(key, value) for key, value in pins if isinstance(value, str) and value.strip()]
+
+
+def enforce_network_mode(cfg: AppConfig) -> None:
+    """Clear every per-plane pin and ``web_bind_iface`` in Simple: Simple never holds a hidden pin."""
+    if cfg.network_mode != NETWORK_MODE_SIMPLE:
+        return
+    cfg.otp_output.source_iface = ""
+    cfg.rttrpm_output.source_iface = ""
+    cfg.osc.listen_iface = ""
+    for dest in cfg.osc_destinations.destinations:
+        dest.source_iface = ""
+    cfg.video_input_iface = ""
+    cfg.web_bind_iface = ""
+
+
+def starting_network_mode(data: Mapping[str, Any]) -> str:
+    """The mode a raw TOML config without ``network_mode`` starts in.
+
+    Advanced when it sets a per-plane pin or ``web_bind_iface``, else Simple.
+    VLANs and interface labels do not count.
+    """
+
+    def _set(section: Any, key: str) -> bool:
+        value = section.get(key) if isinstance(section, Mapping) else None
+        return isinstance(value, str) and bool(value.strip())
+
+    dests = data.get("osc_destinations")
+    dest_list = dests.get("destinations") if isinstance(dests, Mapping) else None
+    pinned = (
+        _set(data.get("otp_output"), "source_iface")
+        or _set(data.get("rttrpm_output"), "source_iface")
+        or _set(data.get("osc"), "listen_iface")
+        or _set(data, "video_input_iface")
+        or _set(data, "web_bind_iface")
+        or any(_set(d, "source_iface") for d in dest_list or () if isinstance(d, Mapping))
+    )
+    return NETWORK_MODE_ADVANCED if pinned else NETWORK_MODE_SIMPLE
+
+
+def network_mode_stored(path: str) -> bool:
+    """Whether the config file at ``path`` already records ``network_mode``."""
+    try:
+        with open(path, "rb") as f:
+            return "network_mode" in tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError):
+        return False
+
+
+def effective_interface_labels(cfg: Any) -> dict[str, str]:
+    """Labels the UI names interfaces by: none in Simple, where raw names are shown."""
+    if getattr(cfg, "network_mode", NETWORK_MODE_ADVANCED) == NETWORK_MODE_SIMPLE:
+        return {}
+    return dict(getattr(cfg, "interface_labels", None) or {})
+
+
 @dataclass
 class AppConfig:
     # Video source
@@ -2529,6 +2606,10 @@ class AppConfig:
     # This station's name on a venue's DNS. Blank = only its ``<host>.local`` name.
     # Device-local: it names this box.
     station_fqdn: str = ""
+    # "simple": the station interface carries every plane; "advanced": per-plane
+    # pins. Device-local. A config without it starts in the mode its pins imply
+    # (``starting_network_mode``).
+    network_mode: str = NETWORK_MODE_SIMPLE
 
     # Web-triggered update settings (signed-.deb GitHub-release installer)
     update_github_repo: str = "openfollowapp/openfollow"
@@ -2612,6 +2693,8 @@ class AppConfig:
         self.video_input_iface = self.video_input_iface.strip()
         self.interface_labels = normalize_labels(self.interface_labels)
         self.station_fqdn = normalize_fqdn(self.station_fqdn)
+        self.network_mode = _coerce_choice(self.network_mode, NETWORK_MODES, NETWORK_MODE_SIMPLE)
+        enforce_network_mode(self)
         # Strip ``psn_source_iface`` so whitespace doesn't look like a value
         # change each load and trigger a needless rebind cycle.
         if not isinstance(self.psn_source_iface, str):
@@ -2935,6 +3018,9 @@ def load_config(path: str = "config.toml", *, strict: bool = False) -> AppConfig
             from openfollow.net_utils import get_iface_for_ip
 
             _otp["source_iface"] = get_iface_for_ip(_legacy_otp_ip.strip())
+
+    if "network_mode" not in data:
+        data["network_mode"] = starting_network_mode(data)
 
     # Build sub-config instances from their TOML sections
     sub_kwargs: dict[str, Any] = {}

@@ -115,6 +115,11 @@ def get_iface_for_ip(ip: str) -> str:
     return ""
 
 
+def auto_station_iface() -> str:
+    """The interface an Automatic station interface resolves to now, or "" when none does."""
+    return get_iface_for_ip(get_primary_local_ipv4(default=""))
+
+
 def list_iface_ipv4() -> list[tuple[str, str]]:
     """Return [(iface_name, ipv4)] for every non-loopback IPv4, sorted by name."""
     out: list[tuple[str, str]] = []

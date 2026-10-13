@@ -114,6 +114,13 @@ sudo -u openfollow sed -i '/^web_bind_iface/d;/^web_bind /d' /var/lib/openfollow
 sudo systemctl restart openfollow
 ```
 
+A web UI pin exists only in Advanced network mode. A station in Simple holds
+none: `network_mode = "simple"` in the config file clears every pin when it
+loads, so setting it there and restarting is another way back. In Simple,
+Settings → Network shows the station interface alone: an **Interface** row
+(Automatic or a named interface; changing it moves all traffic), the IPv4
+method, address, DNS, **Apply Changes** and **Renew DHCP lease**.
+
 The pin only ever takes effect on restart, and an interface that has no
 address at boot is ignored: the UI serves on every interface and the station
 says so both on its own screen and in the web Network Interface Assignment panel. A

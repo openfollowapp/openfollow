@@ -15,7 +15,7 @@ Pick the protocol or device for your setup; the fields below update to match.
 - **Pi Camera** – CSI camera modules and HDMI/SDI-to-CSI adapters on the ribbon-cable port.
 - **Media Gallery** – play a stored still image or short looping clip, or capture a frame from a live source; ships with a Stage scene and a Grey card for bench-testing calibration and detection without a camera.
 
-Which network interface SRT, RTSP and RTP use is set under **Network Interface Assignment**, in the Video input row.
+Which network interface SRT, RTSP and RTP use is set under **Network Interface Assignment**, in the Video input row. In Simple network mode they use the station interface.
 
 ## Settings (by Source Type)
 

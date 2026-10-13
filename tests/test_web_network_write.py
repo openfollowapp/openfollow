@@ -250,7 +250,7 @@ def net_server(tmp_path, monkeypatch):
     monkeypatch.setattr(routes_module, "request_local_iface", lambda _environ: fake.session_iface)
     monkeypatch.setattr(routes_module, "request_local_addr", lambda _environ: fake.session_address)
     config_path = tmp_path / "config.toml"
-    config_path.write_text("controlled_marker_ids = [1]\n", encoding="utf-8")
+    config_path.write_text('network_mode = "advanced"\ncontrolled_marker_ids = [1]\n', encoding="utf-8")
     with live_on_free_port(
         lambda port: ConfigWebServer(
             config_path=str(config_path),
@@ -852,7 +852,7 @@ def test_no_provider_renders_unavailable(tmp_path, monkeypatch) -> None:
         monkeypatch.setattr(getattr(discovery_module, attr), "start", lambda self: None)
         monkeypatch.setattr(getattr(discovery_module, attr), "stop", lambda self: None)
     config_path = tmp_path / "config.toml"
-    config_path.write_text("controlled_marker_ids = [1]\n", encoding="utf-8")
+    config_path.write_text('network_mode = "advanced"\ncontrolled_marker_ids = [1]\n', encoding="utf-8")
     with live_on_free_port(
         lambda port: ConfigWebServer(
             config_path=str(config_path),
@@ -894,7 +894,7 @@ def test_no_provider_renders_unavailable(tmp_path, monkeypatch) -> None:
 
 def _make_server(tmp_path, **kwargs) -> ConfigWebServer:
     config_path = tmp_path / "config.toml"
-    config_path.write_text("controlled_marker_ids = [1]\n", encoding="utf-8")
+    config_path.write_text('network_mode = "advanced"\ncontrolled_marker_ids = [1]\n', encoding="utf-8")
     return ConfigWebServer(
         config_path=str(config_path),
         host="127.0.0.1",
@@ -1015,7 +1015,7 @@ def test_no_interfaces_renders_empty_list_not_a_crash(tmp_path, monkeypatch) -> 
         monkeypatch.setattr(getattr(discovery_module, attr), "stop", lambda self: None)
     fake = FakeNetwork(interfaces=())
     config_path = tmp_path / "config.toml"
-    config_path.write_text("controlled_marker_ids = [1]\n", encoding="utf-8")
+    config_path.write_text('network_mode = "advanced"\ncontrolled_marker_ids = [1]\n', encoding="utf-8")
     with live_on_free_port(
         lambda port: ConfigWebServer(
             config_path=str(config_path),
@@ -1047,7 +1047,7 @@ def test_interface_list_uses_the_richer_provider_when_wired(tmp_path, monkeypatc
         ]
 
     config_path = tmp_path / "config.toml"
-    config_path.write_text("controlled_marker_ids = [1]\n", encoding="utf-8")
+    config_path.write_text('network_mode = "advanced"\ncontrolled_marker_ids = [1]\n', encoding="utf-8")
     with live_on_free_port(
         lambda port: ConfigWebServer(
             config_path=str(config_path),

@@ -804,6 +804,7 @@ class TestInitOtp:
         NIC happens to be up instead is worse than sending nothing, because a
         stopped output is visible and a misrouted one is not.
         """
+        services._app._config.network_mode = "advanced"
         from dataclasses import replace
 
         cfg = replace(
@@ -968,7 +969,9 @@ class TestResolveWebBind:
 
     def test_a_live_pin_binds_that_interface(self, services: AppRuntimeServices, monkeypatch) -> None:
         _fake_ifaces(monkeypatch, {"eth1": "172.16.4.20"})
-        services._app._config = replace(services._app._config, web_bind="", web_bind_iface="eth1")
+        services._app._config = replace(
+            services._app._config, network_mode="advanced", web_bind="", web_bind_iface="eth1"
+        )
         assert services._resolve_web_bind() == "172.16.4.20"
         advisory = services._web_bind_advisory()
         assert advisory["status"] == "iface"
@@ -982,7 +985,9 @@ class TestResolveWebBind:
         """The web UI is the one plane that fails open: a pin that misses must
         not take the config UI down, because nobody could then correct it."""
         _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
-        services._app._config = replace(services._app._config, web_bind="", web_bind_iface="eth1")
+        services._app._config = replace(
+            services._app._config, network_mode="advanced", web_bind="", web_bind_iface="eth1"
+        )
         assert services._resolve_web_bind() == "0.0.0.0"
         advisory = services._web_bind_advisory()
         assert advisory["status"] == "down"
@@ -990,6 +995,7 @@ class TestResolveWebBind:
         assert advisory["resolved_ip"] == ""
 
     def test_a_missed_pin_is_named_by_its_label(self, services: AppRuntimeServices, monkeypatch) -> None:
+        services._app._config.network_mode = "advanced"
         _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
         services._app._config = replace(
             services._app._config, web_bind="", web_bind_iface="eth1", interface_labels={"eth1": "Office"}
@@ -1010,7 +1016,9 @@ class TestResolveWebBind:
         """Each resolve re-states the whole advisory, so a stale "down" banner
         cannot outlive the restart that fixed it."""
         _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
-        services._app._config = replace(services._app._config, web_bind="", web_bind_iface="eth1")
+        services._app._config = replace(
+            services._app._config, network_mode="advanced", web_bind="", web_bind_iface="eth1"
+        )
         services._resolve_web_bind()
         assert services._web_bind_advisory()["status"] == "down"
         _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5", "eth1": "172.16.4.20"})
@@ -2474,7 +2482,7 @@ class TestApplyRttrpmOutputChange:
         services._app._server = _FakePsnServer()
         services._app._controlled_ids = []
         cfg = self._enabled_cfg(source_iface="eth1")
-        services._app._config = replace(services._app._config, rttrpm_output=cfg)
+        services._app._config = replace(services._app._config, network_mode="advanced", rttrpm_output=cfg)
         with pytest.raises(OSError, match="pinned to eth1"):
             services.apply_rttrpm_output_change(cfg)
         assert services._app._rttrpm_server is None
@@ -2485,7 +2493,9 @@ class TestApplyRttrpmOutputChange:
         self._ifaces(monkeypatch, {})
         monkeypatch.setattr(services_module, "RttrpmServer", _FakeRttrpmServer)
         services._app._rttrpm_server = None
-        services._app._config = replace(services._app._config, rttrpm_output=self._enabled_cfg(source_iface="eth9"))
+        services._app._config = replace(
+            services._app._config, network_mode="advanced", rttrpm_output=self._enabled_cfg(source_iface="eth9")
+        )
         services.init_rttrpm()
         assert services._app._rttrpm_server is None
 
@@ -4409,6 +4419,7 @@ class TestApplyStationIfaceChange:
     def test_own_pin_is_left_alone(self, services: AppRuntimeServices) -> None:
         """OTP pinned to its own interface is unaffected by the station moving –
         repointing it would silently override the operator's choice."""
+        services._app._config.network_mode = "advanced"
         services._app._otp_server = _FakeOtpServer()
         calls = self._services_with_otp(services, "eth1")
         services.apply_station_iface_change()
@@ -4448,6 +4459,7 @@ class TestApplyStationIfaceChange:
     def test_rttrpm_with_its_own_pin_or_switched_off_is_left_alone(
         self, services: AppRuntimeServices, pin: str, enabled: bool
     ) -> None:
+        services._app._config.network_mode = "advanced"
         calls = self._record_rttrpm(services, pin, enabled=enabled)
         services.apply_station_iface_change()
         assert calls == []

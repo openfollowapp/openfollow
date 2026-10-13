@@ -19,6 +19,7 @@ from openfollow.configuration import (
     MOUSE3D_AXES,
     MOUSE3D_AXIS_TARGETS,
     MOUSE3D_BUTTON_FIELDS,
+    NETWORK_MODES,
     RESERVED_MOVEMENT_KEYS,
     VALID_BUTTON_NAMES,
     VALID_CURVES,
@@ -825,6 +826,9 @@ FIELD_RULES["mouse3d"] = _mouse3d_rules
 # other labels and the row's interface, so the validate route checks it.
 FIELD_RULES["network"] = {
     "label": FieldRule(_as_str, max_len=LABEL_MAX_LEN, human_error=f"A label is at most {LABEL_MAX_LEN} characters."),
+    "network_mode": FieldRule(
+        _as_str, choices=NETWORK_MODES, human_error="Network mode must be 'simple' or 'advanced'."
+    ),
 }
 
 

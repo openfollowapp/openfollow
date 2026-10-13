@@ -279,10 +279,13 @@ window.loadAutostart();
 %# the same interface list. Lazy-loaded like the network region so the
 %# General render doesn't pay for the address resolution.
 %# ------------------------------------------------------------------
+%# Advanced only: in Simple the station interface carries every function.
+% if config.network_mode == 'advanced':
 <div id="interface-assignment" hx-get="/section/interface_assignment" hx-trigger="load"
      hx-target="this" hx-swap="innerHTML">
     <p class="muted">Loading interface assignment…</p>
 </div>
+% end
 
 %# ------------------------------------------------------------------
 %# 3. Software Update – GitHub Releases signed-bundle (.ofupdate) installer.

@@ -1845,12 +1845,12 @@ def test_app_config_coerces_non_str_psn_source_iface() -> None:
 
 @pytest.mark.parametrize(("raw", "expected"), [(None, ""), (5, ""), (True, ""), ([], ""), ("  eth1  ", "eth1")])
 def test_app_config_normalises_video_input_iface(raw: object, expected: str) -> None:
-    assert AppConfig(video_input_iface=raw).video_input_iface == expected  # type: ignore[arg-type]
+    assert AppConfig(network_mode="advanced", video_input_iface=raw).video_input_iface == expected  # type: ignore[arg-type]
 
 
 def test_video_input_iface_survives_a_toml_round_trip(tmp_path) -> None:
     path = tmp_path / "config.toml"
-    save_config(AppConfig(video_input_iface="eth0.13"), path)
+    save_config(AppConfig(network_mode="advanced", video_input_iface="eth0.13"), path)
     assert load_config(path).video_input_iface == "eth0.13"
 
 
@@ -1879,7 +1879,7 @@ def test_app_config_strips_web_bind_iface_at_construction() -> None:
     """Stripped on load so a hand-edited TOML matches the panel's save path -
     an unstripped ``" eth0 "`` would resolve to no address and read as a
     down interface."""
-    assert AppConfig(web_bind_iface="  eth0  ").web_bind_iface == "eth0"
+    assert AppConfig(network_mode="advanced", web_bind_iface="  eth0  ").web_bind_iface == "eth0"
 
 
 @pytest.mark.parametrize("bad", [0, None, True, 1.5, ["eth0"], {"iface": "eth0"}])
@@ -2034,9 +2034,9 @@ def test_a_station_change_leaves_a_video_input_with_its_own_pin(monkeypatch) -> 
         },
     )
     fields = {"video_source_type": "srt", "srt_host": "srt://203.0.113.20:5000", "video_input_iface": "eth1"}
-    app = _DummyApp(AppConfig(psn_source_iface="eth0", **fields))
+    app = _DummyApp(AppConfig(network_mode="advanced", psn_source_iface="eth0", **fields))
 
-    apply_runtime_config_changes(app, AppConfig(psn_source_iface="eth1", **fields))
+    apply_runtime_config_changes(app, AppConfig(network_mode="advanced", psn_source_iface="eth1", **fields))
 
     assert app._runtime_services.video_swaps == []
 
@@ -7391,3 +7391,132 @@ def test_trigger_zone_vertices_reject_non_list(bad: object) -> None:
     from openfollow.configuration import TriggerZoneConfig
 
     assert TriggerZoneConfig(vertices=bad).vertices == []
+
+
+# --------------------------------------------------------------------------- #
+# Network mode
+# --------------------------------------------------------------------------- #
+
+_PLANE_PINS = {
+    "otp_output": lambda: OtpOutputConfig(source_iface="eth1"),
+    "rttrpm_output": lambda: RttrpmOutputConfig(source_iface="eth1"),
+    "osc": lambda: OscConfig(listen_iface="eth1"),
+    "video_input_iface": lambda: "eth1",
+    "web_bind_iface": lambda: "eth1",
+}
+
+
+def test_a_fresh_station_starts_in_simple() -> None:
+    assert AppConfig().network_mode == "simple"
+
+
+@pytest.mark.parametrize("raw", ["Simple", "", "expert", None, 1, True, ["simple"]])
+def test_an_unknown_network_mode_reads_as_simple(raw: object) -> None:
+    assert AppConfig(network_mode=raw).network_mode == "simple"  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("field", sorted(_PLANE_PINS))
+def test_simple_holds_no_plane_pin(field: str) -> None:
+    from openfollow.configuration import plane_pins
+
+    cfg = AppConfig(network_mode="simple", **{field: _PLANE_PINS[field]()})
+    assert plane_pins(cfg) == []
+
+
+def test_simple_clears_an_osc_destination_pin() -> None:
+    from openfollow.configuration import OscDestinationConfig, OscDestinationsConfig, plane_pins
+
+    dests = OscDestinationsConfig(destinations=[OscDestinationConfig(id="desk", source_iface="eth1")])
+    assert plane_pins(AppConfig(network_mode="simple", osc_destinations=dests)) == []
+    dests = OscDestinationsConfig(destinations=[OscDestinationConfig(id="desk", source_iface="eth1")])
+    assert plane_pins(AppConfig(network_mode="advanced", osc_destinations=dests)) == [
+        ("osc_destinations.desk.source_iface", "eth1")
+    ]
+
+
+@pytest.mark.parametrize("field", sorted(_PLANE_PINS))
+def test_advanced_keeps_its_pins(field: str) -> None:
+    from openfollow.configuration import plane_pins
+
+    assert len(plane_pins(AppConfig(network_mode="advanced", **{field: _PLANE_PINS[field]()}))) == 1
+
+
+def test_simple_keeps_the_station_interface_and_web_bind() -> None:
+    cfg = AppConfig(network_mode="simple", psn_source_iface="eth0", web_bind="192.0.2.5")
+    assert (cfg.psn_source_iface, cfg.web_bind) == ("eth0", "192.0.2.5")
+
+
+_TOML_PINS = [
+    'video_input_iface = "eth1"',
+    'web_bind_iface = "eth1"',
+    '[otp_output]\nsource_iface = "eth1"',
+    '[rttrpm_output]\nsource_iface = "eth1"',
+    '[osc]\nlisten_iface = "eth1"',
+    '[[osc_destinations.destinations]]\nid = "desk"\nsource_iface = "eth1"',
+]
+
+
+@pytest.mark.parametrize("toml", _TOML_PINS)
+def test_a_config_without_a_mode_starts_in_advanced_when_it_pins_a_plane(tmp_path, toml: str) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(toml + "\n")
+    cfg = load_config(str(path))
+    assert cfg.network_mode == "advanced"
+    assert "eth1" in str(config_to_toml_dict(cfg))
+
+
+@pytest.mark.parametrize(
+    "toml",
+    [
+        "",
+        'psn_source_iface = "eth0"',
+        'web_bind = "192.0.2.5"',
+        '[interface_labels]\neth0 = "Show"',
+        'video_input_iface = "  "',
+        "video_input_iface = 5",
+        '[osc_destinations]\ndestinations = ["x"]',
+    ],
+)
+def test_a_config_without_a_mode_starts_in_simple_without_a_plane_pin(tmp_path, toml: str) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(toml + "\n")
+    assert load_config(str(path)).network_mode == "simple"
+
+
+@pytest.mark.parametrize("toml", _TOML_PINS)
+def test_a_pin_hand_edited_into_a_simple_config_is_cleared_at_load(tmp_path, toml: str) -> None:
+    from openfollow.configuration import plane_pins
+
+    path = tmp_path / "config.toml"
+    path.write_text('network_mode = "simple"\n' + toml + "\n")
+    assert plane_pins(load_config(str(path))) == []
+
+
+def test_the_mode_survives_a_toml_round_trip(tmp_path) -> None:
+    from openfollow.configuration import network_mode_stored
+
+    path = tmp_path / "config.toml"
+    assert not network_mode_stored(str(path))
+    path.write_text("not = [toml")
+    assert not network_mode_stored(str(path))
+    save_config(AppConfig(network_mode="advanced"), str(path))
+    assert network_mode_stored(str(path))
+    assert load_config(str(path)).network_mode == "advanced"
+
+
+def test_a_hot_reload_into_simple_clears_the_live_pins(tmp_path) -> None:
+    path = tmp_path / "config.toml"
+    save_config(AppConfig(network_mode="advanced", otp_output=OtpOutputConfig(source_iface="eth1")), str(path))
+    text = path.read_text().replace('network_mode = "advanced"', 'network_mode = "simple"')
+    path.write_text(text)
+    assert load_config(str(path), strict=True).otp_output.source_iface == ""
+
+
+def test_labels_name_interfaces_only_in_advanced() -> None:
+    from openfollow.configuration import effective_interface_labels
+
+    labels = {"eth0": "Show"}
+    assert effective_interface_labels(AppConfig(network_mode="simple", interface_labels=labels)) == {}
+    assert effective_interface_labels(AppConfig(network_mode="advanced", interface_labels=labels)) == labels
+    assert AppConfig(network_mode="simple", interface_labels=labels).interface_labels == labels
+    assert effective_interface_labels(None) == {}

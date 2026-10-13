@@ -1548,7 +1548,8 @@ def _video_disconnect_banner_text(app: OpenFollowApp) -> str:
     # classification the pipeline's own wording is all there is, and it stands
     # in for the sentence rather than sitting beside it.
     if failure not in (VideoFailure.NONE, VideoFailure.UNKNOWN):
-        return failure_sentence(failure, where=source_label, kind=kind)
+        simple = getattr(getattr(app, "_config", None), "network_mode", "") == "simple"
+        return failure_sentence(failure, where=source_label, kind=kind, simple=simple)
     if error:
         return error
     label = f" – {source_label}" if source_label else ""

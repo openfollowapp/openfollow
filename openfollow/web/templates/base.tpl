@@ -2469,6 +2469,67 @@
  const box = document.getElementById('net-busy');
  if (box && netBusyText(evt.detail.elt) !== null) box.hidden = true;
  });
+ // Network mode switch. Simple first reads what it would clear and remove, and
+ // asks only when that is something; the answer reloads the page, because the
+ // mode decides which sections it shows, or carries the restart notice.
+ function netConfirmSimple(preview) {
+ const list = (items) => '<ul>' + items.map((item) => '<li>' + escapeHTML(item) + '</li>').join('') + '</ul>';
+ let html = '<p>All traffic moves to the station interface, ' + escapeHTML(preview.station) + '.</p>';
+ if (preview.pins.length) html += '<p><strong>Interface pins cleared</strong></p>' + list(preview.pins);
+ if (preview.restart) html += '<p>OpenFollow restarts to serve the web UI on every interface.</p>';
+ if (preview.vlans.length) html += '<p><strong>VLAN interfaces removed</strong></p>' + list(preview.vlans);
+ if (preview.kept.length) html += '<p><strong>VLAN interfaces kept</strong></p>' + list(preview.kept);
+ return new Promise((resolve) => {
+ let confirmed = false;
+ openModal({
+ title: 'Switch to Simple network mode?',
+ bodyHTML: html,
+ footerButtons: [
+ { label: 'Cancel', onClick: () => closeModal() },
+ { label: 'Switch to Simple', kind: 'danger', onClick: () => { confirmed = true; closeModal(); } },
+ ],
+ onClose: () => resolve(confirmed),
+ });
+ });
+ }
+ async function netSwitchMode(input) {
+ const group = input.closest('.net-mode-switch');
+ const radios = Array.from(group.querySelectorAll('input[name="network_mode"]'));
+ const saveError = window.OpenFollow.saveError;
+ const box = saveError.boxFor(group);
+ const fail = (info) => {
+ radios.forEach((radio) => { radio.disabled = false; radio.checked = radio.value === group.dataset.mode; });
+ saveError.show(box, info, 'Not switched.');
+ };
+ const expired = { error: 'Your session has expired.', action: 'Reload the page and sign in again.' };
+ // The switch shows the mode in force until the new one is saved.
+ radios.forEach((radio) => { radio.disabled = true; radio.checked = radio.value === group.dataset.mode; });
+ try {
+ if (input.value === 'simple') {
+ const resp = await fetch('/section/network/mode/preview');
+ if (resp.redirected) return fail(expired);
+ if (!resp.ok) return fail(await saveError.fromResponse(resp));
+ const preview = await resp.json();
+ if ((preview.pins.length || preview.vlans.length || preview.kept.length) && !(await netConfirmSimple(preview))) {
+ radios.forEach((radio) => { radio.disabled = false; radio.checked = radio.value === group.dataset.mode; });
+ return;
+ }
+ }
+ const resp = await fetch('/section/network/mode', {
+ method: 'POST',
+ headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+ body: new URLSearchParams({ network_mode: input.value }).toString(),
+ });
+ if (resp.redirected) return fail(expired);
+ if (!resp.ok) return fail(await saveError.fromResponse(resp));
+ if (resp.headers.get('HX-Refresh') === 'true') { window.location.reload(); return; }
+ const region = document.getElementById('network-interface');
+ region.innerHTML = await resp.text();
+ htmx.process(region);
+ } catch (err) {
+ fail(saveError.UNREACHABLE);
+ }
+ }
 
  const sectionFoldStoragePrefix = 'psnfs:section:';
  const advancedFoldStoragePrefix = 'psnfs:advanced:';

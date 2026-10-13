@@ -27,6 +27,7 @@ import numpy as np
 from openfollow.configuration import (
     ControllerButtonTrigger,
     HotkeyTrigger,
+    effective_interface_labels,
     viewed_with_controlled,
 )
 from openfollow.input import InputManager
@@ -1314,7 +1315,7 @@ class AppRuntimeServices:
         ]
 
     def _iface_display_name(self, iface: str) -> str:
-        return display_name(iface, self._app._config.interface_labels)
+        return display_name(iface, effective_interface_labels(self._app._config))
 
     def observe_network_planes(self) -> None:
         """Follow every plane's configured interface. Called from housekeeping.
@@ -3886,6 +3887,7 @@ class AppRuntimeServices:
 
         app = self._app
         cfg = app._config
+        simple = getattr(cfg, "network_mode", "") == "simple"
         system_stats = self._system_stats.stats if self._system_stats is not None else None
 
         cpu_percent = float(system_stats.cpu_percent) if system_stats is not None else 0.0
@@ -3939,7 +3941,9 @@ class AppRuntimeServices:
             failure_text = (
                 ""
                 if status.failure in (VideoFailure.NONE, VideoFailure.UNKNOWN)
-                else failure_sentence(status.failure, where=status.source_name, kind=receiver.source_kind)
+                else failure_sentence(
+                    status.failure, where=status.source_name, kind=receiver.source_kind, simple=simple
+                )
             )
             video_snapshot = {
                 "source_type": cfg.video_source_type,
@@ -3953,7 +3957,7 @@ class AppRuntimeServices:
                 "failure_action": (
                     ""
                     if status.failure is VideoFailure.NONE
-                    else failure_action(status.failure, kind=receiver.source_kind)
+                    else failure_action(status.failure, kind=receiver.source_kind, simple=simple)
                 ),
                 # The phase the verdict was formed at, not the in-flight one:
                 # the attempt is reset before each retry, so a live read

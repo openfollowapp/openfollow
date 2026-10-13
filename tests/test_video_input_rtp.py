@@ -647,5 +647,5 @@ class TestRtpFollowsTheStation:
     def test_the_pin_the_listener_runs_with(self, url: str, own: str, expected: str) -> None:
         from openfollow.configuration import AppConfig
 
-        cfg = AppConfig(rtp_url=url, video_input_iface=own, psn_source_iface="eth0")
+        cfg = AppConfig(network_mode="advanced", rtp_url=url, video_input_iface=own, psn_source_iface="eth0")
         assert RtpInput.runtime_config(cfg)["video_input_iface"] == expected

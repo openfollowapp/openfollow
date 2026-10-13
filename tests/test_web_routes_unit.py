@@ -1055,7 +1055,7 @@ class TestInterfaceAssignmentRows:
 
     def test_the_rows_that_always_ride_the_station_sit_directly_under_it(self, monkeypatch) -> None:
         self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})
-        rows = build_interface_assignment_rows(AppConfig(psn_source_iface="eth0"))
+        rows = build_interface_assignment_rows(AppConfig(network_mode="advanced", psn_source_iface="eth0"))
         labels = [row["label"] for row in rows]
         assert labels[:3] == ["Station default", "PSN in / out", "Discovery / marker sync"]
         # Each is listed once.
@@ -1064,7 +1064,7 @@ class TestInterfaceAssignmentRows:
 
     def test_station_row_owns_psn_source_iface(self, monkeypatch) -> None:
         self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})
-        cfg = AppConfig(psn_source_iface="eth0")
+        cfg = AppConfig(network_mode="advanced", psn_source_iface="eth0")
         rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
         station = rows["Station default"]
         assert station["key"] == "psn_source_iface"
@@ -1077,7 +1077,7 @@ class TestInterfaceAssignmentRows:
         """An OTP row left on "follow station" must display where it actually
         points – an empty cell would hide the indirection entirely."""
         self._ifaces(monkeypatch, {"eth0": "192.168.1.5", "eth1": "10.0.0.9"})
-        cfg = AppConfig(psn_source_iface="eth0")
+        cfg = AppConfig(network_mode="advanced", psn_source_iface="eth0")
         cfg.otp_output.source_iface = ""
         rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
         assert rows["OTP output"]["value"] == ""
@@ -1086,7 +1086,7 @@ class TestInterfaceAssignmentRows:
 
     def test_pinned_plane_shows_its_own_address(self, monkeypatch) -> None:
         self._ifaces(monkeypatch, {"eth0": "192.168.1.5", "eth1": "10.0.0.9"})
-        cfg = AppConfig(psn_source_iface="eth0")
+        cfg = AppConfig(network_mode="advanced", psn_source_iface="eth0")
         cfg.otp_output.source_iface = "eth1"
         rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
         assert rows["OTP output"]["address"] == "10.0.0.9"
@@ -1096,7 +1096,7 @@ class TestInterfaceAssignmentRows:
         they follow the station pin and must not offer their own dropdown –
         a picker would imply an independence they don't have."""
         self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})
-        cfg = AppConfig(psn_source_iface="eth0")
+        cfg = AppConfig(network_mode="advanced", psn_source_iface="eth0")
         rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
         for label in ("PSN in / out", "Discovery / marker sync"):
             assert rows[label]["editable"] is False
@@ -1105,7 +1105,7 @@ class TestInterfaceAssignmentRows:
 
     def test_osc_input_row_follows_the_station_by_default(self, monkeypatch) -> None:
         self._ifaces(monkeypatch, {"eth0": "192.168.1.5", "eth1": "10.0.0.9"})
-        cfg = AppConfig(psn_source_iface="eth0")
+        cfg = AppConfig(network_mode="advanced", psn_source_iface="eth0")
         rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
         osc = rows["OSC input"]
         assert osc["key"] == "osc.listen_iface"
@@ -1115,7 +1115,7 @@ class TestInterfaceAssignmentRows:
 
     def test_osc_input_row_shows_its_own_pin(self, monkeypatch) -> None:
         self._ifaces(monkeypatch, {"eth0": "192.168.1.5", "eth1": "10.0.0.9"})
-        cfg = AppConfig(psn_source_iface="eth0")
+        cfg = AppConfig(network_mode="advanced", psn_source_iface="eth0")
         cfg.osc.listen_iface = "eth1"
         rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
         assert rows["OSC input"]["address"] == "10.0.0.9"
@@ -1125,7 +1125,7 @@ class TestInterfaceAssignmentRows:
         per membership. Naming the auto-detected primary would read as a
         restriction the socket does not have."""
         self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})
-        cfg = AppConfig(psn_source_iface="")
+        cfg = AppConfig(network_mode="advanced", psn_source_iface="")
         rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
         assert rows["OSC input"]["address"] == "Default interface"
 
@@ -1134,7 +1134,7 @@ class TestInterfaceAssignmentRows:
         is no membership, so an address here would imply the row was doing
         something to a listener it does not touch."""
         self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})
-        cfg = AppConfig(psn_source_iface="eth0")
+        cfg = AppConfig(network_mode="advanced", psn_source_iface="eth0")
         cfg.osc.multicast_group = ""
         rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
         assert rows["OSC input"]["address"] == "No multicast group"
@@ -1149,7 +1149,7 @@ class TestInterfaceAssignmentRows:
         would claim a subscription that does not exist. An unplugged adapter
         and one without an address are told apart."""
         self._ifaces(monkeypatch, {"eth0": "192.168.1.5", **({} if eth9 is None else {"eth9": eth9})})
-        cfg = AppConfig(psn_source_iface="eth0")
+        cfg = AppConfig(network_mode="advanced", psn_source_iface="eth0")
         cfg.osc.listen_iface = "eth9"
         rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
         assert rows["OSC input"]["address"] == state
@@ -1158,7 +1158,10 @@ class TestInterfaceAssignmentRows:
 
     def test_a_down_station_puts_its_followers_down_too(self, monkeypatch) -> None:
         self._ifaces(monkeypatch, {"eth0": ""})
-        rows = {r["label"]: r for r in build_interface_assignment_rows(AppConfig(psn_source_iface="eth0"))}
+        rows = {
+            r["label"]: r
+            for r in build_interface_assignment_rows(AppConfig(network_mode="advanced", psn_source_iface="eth0"))
+        }
         assert {label: rows[label]["address"] for label in ("Station default", "PSN in / out")} == {
             "Station default": "Interface down",
             "PSN in / out": "Interface down",
@@ -1167,7 +1170,7 @@ class TestInterfaceAssignmentRows:
 
     def test_a_row_names_its_pin_by_label_for_the_bundle(self, monkeypatch) -> None:
         self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})
-        cfg = AppConfig(psn_source_iface="eth0", interface_labels={"eth0": "Lighting"})
+        cfg = AppConfig(network_mode="advanced", psn_source_iface="eth0", interface_labels={"eth0": "Lighting"})
         rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
         assert rows["Station default"]["value_display"] == "Lighting (eth0)"
         assert rows["OTP output"]["value_display"] == ""
@@ -1176,13 +1179,13 @@ class TestInterfaceAssignmentRows:
         """Both read one resolution. A second NIC walk could disagree with the
         row above if an address moves mid-render."""
         self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})
-        cfg = AppConfig(psn_source_iface="eth0")
+        cfg = AppConfig(network_mode="advanced", psn_source_iface="eth0")
         rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
         assert rows["OSC input"]["address"] == rows["Station default"]["address"]
 
     def _video_row(self, monkeypatch, **fields: object) -> dict:
         self._ifaces(monkeypatch, {"eth0": "192.0.2.10", "eth1": "198.51.100.10"})
-        cfg = AppConfig(**fields)
+        cfg = AppConfig(network_mode="advanced", **fields)
         return next(r for r in build_interface_assignment_rows(cfg) if r["label"].startswith("Video input"))
 
     @pytest.mark.parametrize(
@@ -1362,7 +1365,7 @@ class TestInterfaceAssignmentRows:
         names = {f"osc{i}.example": f"203.0.113.{i}" for i in range(3)}
         self._names(monkeypatch, names, barrier=threading.Barrier(3))
         self._ifaces(monkeypatch, {"eth1": "198.51.100.10"})
-        cfg = AppConfig()
+        cfg = AppConfig(network_mode="advanced")
         cfg.rttrpm_output.host = ""
         cfg.osc_destinations.destinations = [
             OscDestinationConfig(id=f"d{i}", name=f"d{i}", host=host, port=8000) for i, host in enumerate(names)
@@ -1375,7 +1378,7 @@ class TestInterfaceAssignmentRows:
         asked = self._pick(monkeypatch, "198.51.100.10")
         self._names(monkeypatch, {"dual.example": ["2001:db8::20", "203.0.113.20"]})
         self._ifaces(monkeypatch, {"eth1": "198.51.100.10"})
-        cfg = AppConfig()
+        cfg = AppConfig(network_mode="advanced")
         cfg.rttrpm_output.host = "dual.example"
         build_interface_assignment_rows(cfg)
         assert asked == ["203.0.113.20"]
@@ -1392,7 +1395,7 @@ class TestInterfaceAssignmentRows:
         monkeypatch.setattr("openfollow.video.inputs._pin.route_source", lambda _a, _p=0: "198.51.100.10")
         check_video_pin("eth1", "camera.example", 5000, forced_device=False)
         osc_service._resolve_host("osc.example")
-        cfg = AppConfig(video_source_type="srt", srt_host="srt://camera.example:5000")
+        cfg = AppConfig(network_mode="advanced", video_source_type="srt", srt_host="srt://camera.example:5000")
         cfg.rttrpm_output.host = "osc.example"
         build_interface_assignment_rows(cfg)
         assert sorted(looked_up) == ["camera.example", "osc.example"]
@@ -1403,7 +1406,7 @@ class TestInterfaceAssignmentRows:
 
         asked = self._pick(monkeypatch, "2001:db8::10")
         self._names(monkeypatch, {"v6.example": ["2001:db8::20"]})
-        cfg = AppConfig()
+        cfg = AppConfig(network_mode="advanced")
         cfg.osc_destinations.destinations = [
             OscDestinationConfig(id="tcp", name="tcp", host="v6.example", port=8000, protocol="tcp"),
             OscDestinationConfig(id="udp", name="udp", host="v6.example", port=8000),
@@ -1424,14 +1427,14 @@ class TestInterfaceAssignmentRows:
 
         resolver = net_utils.BoundedResolver(thread_factory=lambda **_k: _NoThread())
         monkeypatch.setattr(routes_module, "IPV4_RESOLVER", resolver)
-        cfg = AppConfig()
+        cfg = AppConfig(network_mode="advanced")
         cfg.rttrpm_output.host = "rttrpm.example"
         rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
         assert rows["RTTrPM output"]["address"] == "Name not looked up"
 
     def test_an_ipv6_literal_for_an_ipv4_output_says_so(self, monkeypatch) -> None:
         self._names(monkeypatch, {})
-        cfg = AppConfig()
+        cfg = AppConfig(network_mode="advanced")
         cfg.rttrpm_output.host = "2001:db8::20"
         rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
         assert rows["RTTrPM output"]["address"] == "Not an IPv4 address"
@@ -1444,7 +1447,7 @@ class TestInterfaceAssignmentRows:
     def test_a_sender_with_no_destination_is_left_to_the_routing_table(self, monkeypatch) -> None:
         """Not "All interfaces": an output sends from one interface, not all of them."""
         self._ifaces(monkeypatch, {"eth0": "192.0.2.10"})
-        cfg = AppConfig()
+        cfg = AppConfig(network_mode="advanced")
         cfg.rttrpm_output.host = ""
         rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
         assert rows["RTTrPM output"]["address"] == "Per routing table"
@@ -1489,7 +1492,7 @@ class TestInterfaceAssignmentRows:
 
     def test_an_unknown_video_input_is_read_only(self, monkeypatch) -> None:
         self._ifaces(monkeypatch, {"eth0": "192.0.2.10"})
-        cfg = AppConfig()
+        cfg = AppConfig(network_mode="advanced")
         cfg.video_source_type = "gone"
         row = next(r for r in build_interface_assignment_rows(cfg) if r["label"].startswith("Video input"))
         assert row["label"] == "Video input (gone)"
@@ -1497,7 +1500,7 @@ class TestInterfaceAssignmentRows:
         assert row["note"] == "Not a network input"
 
     def test_saving_the_panel_sets_the_video_input_pin(self, monkeypatch) -> None:
-        cfg = AppConfig(video_source_type="srt")
+        cfg = AppConfig(network_mode="advanced", video_source_type="srt")
         apply_section_data(cfg, "interface_assignment", {"video_input_iface": "  eth1  "})
         assert cfg.video_input_iface == "eth1"
         apply_section_data(cfg, "interface_assignment", {"video_input_iface": ""})
@@ -1508,7 +1511,7 @@ class TestInterfaceAssignmentRows:
         write – the row list and the target map have to stay in step."""
         self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})
         # A network video input, so the Video input row is a control too.
-        cfg = AppConfig(video_source_type="srt")
+        cfg = AppConfig(network_mode="advanced", video_source_type="srt")
         rows = build_interface_assignment_rows(cfg)
         editable = {r["key"] for r in rows if r["editable"]}
         destinations = {f"osc_destinations.{dest.id}.source_iface" for dest in cfg.osc_destinations.destinations}
@@ -1520,7 +1523,7 @@ class TestInterfaceAssignmentRows:
 
     def test_the_rttrpm_row_follows_the_station_and_its_own_pin(self, monkeypatch) -> None:
         self._ifaces(monkeypatch, {"eth0": "192.168.1.5", "eth1": "10.0.0.9"})
-        cfg = AppConfig(psn_source_iface="eth0")
+        cfg = AppConfig(network_mode="advanced", psn_source_iface="eth0")
         cfg.rttrpm_output.host = "198.51.100.20"
         row = self._row(cfg, "RTTrPM output")
         assert (row["key"], row["blank"], row["address"]) == ("rttrpm_output.source_iface", "station", "192.168.1.5")
@@ -1537,7 +1540,7 @@ class TestInterfaceAssignmentRows:
         where it routes this one now, not an auto-detected address it is not bound to."""
         self._ifaces(monkeypatch, {"eth0": "192.168.1.5", "eth1": "10.0.0.9"})
         asked = TestInterfaceAssignmentRows._pick(monkeypatch, "10.0.0.9")
-        cfg = AppConfig()
+        cfg = AppConfig(network_mode="advanced")
         cfg.rttrpm_output.host = "198.51.100.20"
         cfg.osc_destinations.destinations[0].host = "198.51.100.21"
         assert self._row(cfg, "RTTrPM output")["address"] == "eth1 – 10.0.0.9"
@@ -1547,7 +1550,7 @@ class TestInterfaceAssignmentRows:
     def test_the_pis_pick_names_its_interface_by_label(self, monkeypatch) -> None:
         self._ifaces(monkeypatch, {"eth0": "192.168.1.5", "eth1": "10.0.0.9"})
         TestInterfaceAssignmentRows._pick(monkeypatch, "10.0.0.9")
-        cfg = AppConfig(interface_labels={"eth1": "Lighting"})
+        cfg = AppConfig(network_mode="advanced", interface_labels={"eth1": "Lighting"})
         cfg.rttrpm_output.host = "198.51.100.20"
         assert self._row(cfg, "RTTrPM output")["address"] == "Lighting (eth1) – 10.0.0.9"
 
@@ -1559,7 +1562,7 @@ class TestInterfaceAssignmentRows:
         reads: list[int] = []
         real = net_utils_module.present_interfaces
         monkeypatch.setattr(net_utils_module, "present_interfaces", lambda: reads.append(1) or real())
-        cfg = AppConfig(psn_source_iface="eth0")
+        cfg = AppConfig(network_mode="advanced", psn_source_iface="eth0")
         cfg.otp_output.source_iface = "eth8"
         cfg.osc.listen_iface = "eth9"
         rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
@@ -1568,7 +1571,7 @@ class TestInterfaceAssignmentRows:
 
     def test_a_loopback_destination_reads_loopback(self, monkeypatch) -> None:
         self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})
-        cfg = AppConfig(psn_source_iface="eth0")
+        cfg = AppConfig(network_mode="advanced", psn_source_iface="eth0")
         assert cfg.rttrpm_output.host == "127.0.0.1"
         assert self._row(cfg, "RTTrPM output")["address"] == "Loopback"
         assert self._row(cfg, "OSC Destination Default")["address"] == "Loopback"
@@ -1577,7 +1580,7 @@ class TestInterfaceAssignmentRows:
         from openfollow.configuration import OscDestinationConfig, OscDestinationsConfig
 
         self._ifaces(monkeypatch, {"eth1": "10.0.0.9"})
-        cfg = AppConfig()
+        cfg = AppConfig(network_mode="advanced")
         cfg.osc_destinations = OscDestinationsConfig(
             destinations=[
                 OscDestinationConfig(id="foh", name="FOH console", host="198.51.100.20", source_iface="eth1"),
@@ -1599,7 +1602,7 @@ class TestApplyInterfaceAssignment:
     """The panel writes across several owning dataclasses in one save."""
 
     def test_writes_top_level_and_sub_config_pins(self) -> None:
-        cfg = AppConfig()
+        cfg = AppConfig(network_mode="advanced")
         apply_section_data(
             cfg,
             "interface_assignment",
@@ -1611,7 +1614,7 @@ class TestApplyInterfaceAssignment:
     def test_strips_whitespace_like_post_init(self) -> None:
         """A stray-space pin would compare unequal to the stored value on
         every hot-reload pass and trigger a needless socket rebind."""
-        cfg = AppConfig()
+        cfg = AppConfig(network_mode="advanced")
         apply_section_data(
             cfg,
             "interface_assignment",
@@ -1623,12 +1626,12 @@ class TestApplyInterfaceAssignment:
     def test_writes_the_osc_listener_pin(self) -> None:
         """The panel is the only editing surface for this field, so a save that
         skipped it would leave the row visibly set and the socket unmoved."""
-        cfg = AppConfig()
+        cfg = AppConfig(network_mode="advanced")
         apply_section_data(cfg, "interface_assignment", {"osc.listen_iface": "  eth1 "})
         assert cfg.osc.listen_iface == "eth1"
 
     def test_absent_key_leaves_current_value(self) -> None:
-        cfg = AppConfig(psn_source_iface="eth0")
+        cfg = AppConfig(network_mode="advanced", psn_source_iface="eth0")
         cfg.otp_output.source_iface = "eth1"
         apply_section_data(cfg, "interface_assignment", {"psn_source_iface": "eth2"})
         assert cfg.psn_source_iface == "eth2"
@@ -1636,13 +1639,13 @@ class TestApplyInterfaceAssignment:
 
     def test_blank_clears_a_pin(self) -> None:
         """Selecting "follow station interface" has to be able to undo a pin."""
-        cfg = AppConfig()
+        cfg = AppConfig(network_mode="advanced")
         cfg.otp_output.source_iface = "eth1"
         apply_section_data(cfg, "interface_assignment", {"otp_output.source_iface": ""})
         assert cfg.otp_output.source_iface == ""
 
     def test_none_pin_preserves_current(self) -> None:
-        cfg = AppConfig(psn_source_iface="eth0")
+        cfg = AppConfig(network_mode="advanced", psn_source_iface="eth0")
         apply_section_data(cfg, "interface_assignment", {"psn_source_iface": None})
         assert cfg.psn_source_iface == "eth0"
 
@@ -1653,7 +1656,7 @@ class TestApplyInterfaceAssignment:
         save paths, the value is stringified rather than rejected: the result
         is a nonsense interface name that resolves to nothing and falls through
         to the station pin, so output degrades rather than crashing."""
-        cfg = AppConfig(psn_source_iface="eth0")
+        cfg = AppConfig(network_mode="advanced", psn_source_iface="eth0")
         apply_section_data(cfg, "interface_assignment", {"psn_source_iface": bad})
         assert isinstance(cfg.psn_source_iface, str)
 
@@ -1661,7 +1664,7 @@ class TestApplyInterfaceAssignment:
         """The re-run is what stops a crafted POST bypassing validation a
         hand-edited TOML would trip – prove it by smuggling an out-of-range
         sibling field past the parser and watching it get clamped."""
-        cfg = AppConfig()
+        cfg = AppConfig(network_mode="advanced")
         cfg.otp_output.port = 999999
         apply_section_data(cfg, "interface_assignment", {"otp_output.source_iface": "eth1"})
         assert cfg.otp_output.port == 65535
@@ -1669,7 +1672,7 @@ class TestApplyInterfaceAssignment:
     def test_untouched_config_is_not_renormalised(self) -> None:
         """``__post_init__`` runs only on the dataclasses the save touched, so
         a panel save can't silently rewrite an unrelated section."""
-        cfg = AppConfig()
+        cfg = AppConfig(network_mode="advanced")
         cfg.otp_output.port = 999999
         apply_section_data(cfg, "interface_assignment", {"psn_source_iface": "eth0"})
         assert cfg.otp_output.port == 999999
@@ -1820,7 +1823,7 @@ class TestApplyInterfaceAssignmentSenders:
     def _cfg() -> AppConfig:
         from openfollow.configuration import OscDestinationConfig, OscDestinationsConfig
 
-        cfg = AppConfig()
+        cfg = AppConfig(network_mode="advanced")
         cfg.osc_destinations = OscDestinationsConfig(
             destinations=[
                 OscDestinationConfig(id="foh", host="198.51.100.20"),

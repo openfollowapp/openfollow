@@ -259,6 +259,8 @@ Each of these has broken before or would break silently. The guides hold the why
 - A pinned multicast socket selects its interface by **name/index**
   (`net_utils.iface_mreqn`, `McastTxSocket(iface=)`), never by address alone.
 - A pinned plane **fails closed**; only the web UI fails open.
+- **Simple network mode never holds a per-plane pin**: `enforce_network_mode` runs in
+  `AppConfig.__post_init__` and after every `apply_section_data`.
 - `uses_interface` reads config only, never live addresses.
 - The network backend is read once per render (`NetworkAdapter.read_network()`):
   never loop `get_state` per interface in a view.

@@ -323,6 +323,14 @@ def _populate_media_overlay(app: Any, state: OverlayState) -> None:
     )
 
 
+# Simple network mode's screens, by which picker is open: (title, subtitle).
+_SIMPLE_NETWORK_TITLES = {
+    "": ("Network", "The interface that carries this station's traffic."),
+    "interface": ("Interface", "Every function moves to the one chosen."),
+    "method": ("Configure IPv4", "How the interface gets its address."),
+}
+
+
 def _populate_pi_network_overlay(app: Any, state: OverlayState) -> None:
     """Snapshot the Network screens for draw-pass consumption."""
     target = state.pi_network
@@ -335,10 +343,14 @@ def _populate_pi_network_overlay(app: Any, state: OverlayState) -> None:
         target.selected_index = int(getattr(app, "_pi_network_index", 0))
         target.active_iface = str(getattr(app, "_pi_network_active_iface", ""))
         target.open_iface = str(getattr(app, "_pi_network_open_iface", ""))
-        if target.open_iface:
+        simple_title = _SIMPLE_NETWORK_TITLES.get(str(getattr(app, "_pi_network_picker", "") or ""))
+        if getattr(getattr(app, "_config", None), "network_mode", "advanced") == "simple" and simple_title:
+            target.title, target.subtitle = simple_title
+        elif target.open_iface:
+            from openfollow.configuration import effective_interface_labels
             from openfollow.net_adapters import display_name
 
-            labels = getattr(getattr(app, "_config", None), "interface_labels", None) or {}
+            labels = effective_interface_labels(getattr(app, "_config", None))
             target.title = f"Network Interface: {display_name(target.open_iface, labels)}"
         target.banner = str(getattr(app, "_pi_network_banner", ""))
         target.banner_level = str(getattr(app, "_pi_network_banner_level", "") or "")
@@ -543,12 +555,13 @@ def build_marker_visual_state(
     state.source_label = video_receiver.source_name
     state.reconnect_attempt = status.reconnect_attempt
     state.error_message = status.error_message
+    simple = getattr(app._config, "network_mode", "") == "simple"
     # UNKNOWN contributes no sentence anywhere: it would sit beside the
     # element's own wording and contradict it.
     state.video_failure_action = (
         ""
         if status.failure is VideoFailure.NONE
-        else failure_action(status.failure, kind=_receiver_kind(video_receiver))
+        else failure_action(status.failure, kind=_receiver_kind(video_receiver), simple=simple)
     )
     state.video_failure_text = (
         ""
@@ -560,6 +573,7 @@ def build_marker_visual_state(
             status.failure,
             where=status.source_name,
             kind=_receiver_kind(video_receiver),
+            simple=simple,
         )
     )
     state.source_selection_active = video_receiver.source_selection_active

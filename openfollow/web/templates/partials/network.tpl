@@ -30,6 +30,7 @@
 % _session_addr = _net.get("session_address", "")
 % _editing = _net.get("editing_iface", "")
 % _polls = _net.get("available") and not _editable
+% _simple = _net.get("mode", "simple") == "simple"
 %# Offered whenever the host is writable: creating a link is its own confirmed
 %# action, not something a row's Edit button gates. On a read-only or
 %# non-NetworkManager stack the controls are omitted entirely.
@@ -58,6 +59,61 @@
     %# Outside the polled list, so a poll during a slow request leaves it alone.
     <div id="net-busy" class="network-banner network-banner-info network-banner-busy" role="status" hidden>
         <span class="modal-spinner" aria-hidden="true"></span><span class="net-busy-text"></span>
+    </div>
+
+    % if _net.get("restarting"):
+    <div class="restart-notice"
+         hx-get="/api/info"
+         hx-trigger="every 2s"
+         hx-swap="none"
+         hx-on::after-request="if(event.detail.successful) window.location.reload()">App is restarting&hellip;
+        If this page does not come back, the web UI has moved - the station's
+        Network screen lists the address that reaches it.</div>
+    % elif _net.get("restart_refused"):
+    <div class="notice error" role="alert">An update is running, so OpenFollow was not restarted.
+        <div class="notice-sub">Restart it once the update has finished.</div></div>
+    % end
+
+    %# The mode decides what the rest of the page shows, so switching reloads it.
+    %# Switching to Simple is confirmed when it clears a pin or removes a VLAN.
+    <div class="group">
+        <div class="network-grid">
+            <label id="net-mode-label">Network mode</label>
+            <div class="seg-toggle net-mode-switch" role="radiogroup" aria-labelledby="net-mode-label"
+                 data-mode="{{_net.get('mode', 'simple')}}">
+                <label class="seg-option">
+                    <input type="radio" name="network_mode" value="simple" {{'checked' if _simple else ''}}
+                           onchange="netSwitchMode(this)">
+                    <span><strong>Simple</strong></span>
+                </label>
+                <label class="seg-option">
+                    <input type="radio" name="network_mode" value="advanced" {{'' if _simple else 'checked'}}
+                           onchange="netSwitchMode(this)">
+                    <span><strong>Advanced</strong></span>
+                </label>
+            </div>
+            % if _simple and _net.get("available"):
+            %# Every plane follows this one interface; a change applies at once.
+            % _station = _net.get("station_iface", "")
+            % _resolved = _net.get("station_resolved", "")
+            <label for="net-station-iface">Interface</label>
+            <form class="net-station-form" hx-post="/section/network/station" hx-target="#network-interface"
+                  hx-swap="innerHTML" hx-trigger="change" data-busy-text="Moving all traffic to {psn_source_iface}…">
+                <select id="net-station-iface" name="psn_source_iface">
+                    <option value="" {{'' if _station else 'selected'}}>{{('Automatic (' + _resolved + ')') if _resolved else 'Automatic'}}</option>
+                    % for _oname, _oaddr in _net.get("station_options", []):
+                    <option value="{{_oname}}" {{'selected' if _oname == _station else ''}}>{{_oname}} – {{_oaddr or 'no address'}}</option>
+                    % end
+                </select>
+            </form>
+            % end
+        </div>
+        % _leftover = _net.get("leftover_vlans", []) if _simple else []
+        % if _leftover:
+        <div class="notice warning" role="status">{{', '.join(_leftover)}} {{'is' if len(_leftover) == 1 else 'are'}} still on this station.
+            <div class="notice-sub">Remove {{'it' if len(_leftover) == 1 else 'them'}} in Advanced mode.</div>
+        </div>
+        % end
     </div>
 
     % if not _net.get("available"):
@@ -89,7 +145,15 @@
         %# empty the live list instead of replacing it.
         <div id="net-iface-list" class="net-iface-list">
             % if not _rows:
+            % if _simple and _net.get("station_options"):
+            % if _net.get("station_iface"):
+            <p class="muted">{{_net["station_iface"]}} is not connected. Pick another interface above.</p>
+            % else:
+            <p class="muted">No interface has an address yet.</p>
+            % end
+            % else:
             <p class="muted">No network interfaces detected.</p>
+            % end
             % else:
             % for _i, row in enumerate(_rows):
             % _name = row.get("name", "")
@@ -104,7 +168,7 @@
             % _dis = '' if _row_edit else 'disabled'
             %# The row being edited – and the row an apply reported on – opens
             %# itself and outranks the remembered state.
-            % _force = 'open data-adv-force-open="1"' if _name and _name in (_editing, _net.get("label_iface")) else ''
+            % _force = 'open data-adv-force-open="1"' if _simple or (_name and _name in (_editing, _net.get("label_iface"))) else ''
             <details class="net-iface-row" data-adv-key="net-iface-{{_name}}"
                      data-mode="{{'edit' if _row_edit else 'view'}}" data-method="{{_rmethod}}" {{!_force}}>
                 <summary class="net-iface-summary">
@@ -112,7 +176,7 @@
                     %# The label leads when there is one; the kernel name and which
                     %# adapter it is sit underneath, so two USB adapters can be told apart.
                     % _label = row.get("label", "")
-                    % _sub = " · ".join(part for part in ((_name if _label else ""), row.get("description", "")) if part)
+                    % _sub = "" if _simple else " · ".join(part for part in ((_name if _label else ""), row.get("description", "")) if part)
                     <span class="net-iface-ident">
                         <span class="net-iface-name">{{_label or _name}}</span>
                         % if _sub:
@@ -124,7 +188,7 @@
                     %# address is answering their own session.
                     <span class="stat-chip info" title="This station is answering your browser at {{_session_addr}}, an address on this interface">This session</span>
                     % end
-                    % if _vlan_id is not None:
+                    % if _vlan_id is not None and not _simple:
                     <span class="stat-chip">VLAN {{_vlan_id}}</span>
                     % end
                     <span class="net-iface-addr {{'' if _addr else 'muted'}}">{{(_addr + ('/' + str(_prefix) if _prefix else '')) if _addr else '(no address)'}}</span>
@@ -135,6 +199,7 @@
 
                 %# Its own form: a label is OpenFollow's setting, saved without touching
                 %# the network, so it is editable on a stack this card cannot write.
+                % if not _simple:
                 <form class="net-label-form {{'save-flash saved' if row.get('label_saved') else ''}}"
                       hx-post="/section/network/label" hx-target="#network-interface"
                       hx-swap="innerHTML" hx-trigger="submit" hx-include="{{_keep}}">
@@ -176,6 +241,7 @@
                         </div>
                     </div>
                 </form>
+                % end
 
                 <form class="net-iface-form"
                 % if _row_edit:
@@ -282,7 +348,7 @@
                         <button type="submit" class="save-btn">Apply</button>
                         %# Delete lives inside the row's own form, so it can
                         %# only ever be aimed at the interface named above it.
-                        % if _vlan_id is not None:
+                        % if _vlan_id is not None and not _simple:
                         <button type="button" class="danger"
                                 hx-post="/section/network/vlan/delete" hx-target="#network-interface"
                                 hx-swap="innerHTML" hx-include="closest form" hx-disabled-elt="this"

@@ -1749,6 +1749,7 @@ def test_a_routing_change_restages_the_egress_table(monkeypatch) -> None:
 )
 def test_a_zone_test_send_to_a_down_interface_says_so(monkeypatch, labels, named) -> None:
     services = _build_services_with_psutil_backend(monkeypatch)
+    services._app._config.network_mode = "advanced"
     services._app._config.interface_labels = labels
     _fake_ifaces(monkeypatch, {})
     service = _RecordingOscService()
@@ -2677,6 +2678,7 @@ def test_a_blank_video_pin_is_followed_through_the_station(monkeypatch) -> None:
 
 def test_a_video_pin_outage_names_the_interface_by_label(monkeypatch) -> None:
     services = _build_services_with_psutil_backend(monkeypatch)
+    services._app._config.network_mode = "advanced"
     cfg = services._app._config
     cfg.video_source_type = "srt"
     cfg.video_input_iface = "eth1"
@@ -2859,6 +2861,7 @@ def test_an_outage_alert_names_the_adapter_by_its_label(monkeypatch) -> None:
     """The station's own labels name the interface on the HUD, and an adapter
     that is gone reads as not connected rather than down."""
     services = _build_services_with_psutil_backend(monkeypatch)
+    services._app._config.network_mode = "advanced"
     _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
     services._app._config.psn_source_iface = "eth0"
     services._app._config.otp_output.enabled = True

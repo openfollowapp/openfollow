@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from openfollow.paths.geometry import PathCurve, PathPoint, build_curve
+from openfollow.paths.network import PathNetwork, Place
 
 pytestmark = pytest.mark.unit
 
@@ -62,6 +63,48 @@ class TestStraight:
     def test_a_repeated_point_is_dropped(self) -> None:
         c = _curve([(0, 0, 0, 0), (2, 0, 0, 0), (2, 0, 0, 0), (2, 2, 0, 0)])
         assert c.length == pytest.approx(4.0)
+
+
+class TestTinyPaths:
+    """Points a few micrometres apart, whose arcs take sub-micrometre steps."""
+
+    CASES = [
+        ([(0, 0, 0, 0), (1.5e-6, 0, 0, 0.5), (3e-6, 5e-7, 0, 0)], False),
+        ([(0, 0, 0, 0.5), (2e-6, 0, 0, 0.5), (1e-6, 2e-6, 0, 0.5)], True),
+        ([(0, 0, 0, 0.5), (2e-6, 0, 0, 0.5), (1e-6, 2e-6, 0, 0.5)], False),
+    ]
+
+    @pytest.mark.parametrize(("points", "closed"), CASES)
+    def test_a_curve_built_from_them_has_distinct_steps(self, points: list[tuple[float, ...]], closed: bool) -> None:
+        c = build_curve([PathPoint(*p) for p in points], closed)
+        assert c is not None
+        assert len(c.xy) >= (4 if c.closed else 2)
+        assert np.all(np.diff(c.s) > 1e-6)
+        assert c.length > 0.0
+        if c.closed:
+            assert tuple(c.xy[0]) == tuple(c.xy[-1])
+
+    @pytest.mark.parametrize(("points", "closed"), CASES)
+    def test_it_can_be_walked_and_projected_onto(self, points: list[tuple[float, ...]], closed: bool) -> None:
+        c = build_curve([PathPoint(*p) for p in points], closed)
+        assert c is not None
+        net = PathNetwork([c])
+        place = net.nearest(1e-6, 1e-6)
+        assert place is not None
+        assert c.tangent(place.s) is not None
+        assert net.walk(Place(0, 0.0), 1.0, 0.0, 1.0).place.path == 0
+
+    def test_a_closed_one_left_with_two_distinct_samples_is_open(self) -> None:
+        c = build_curve(
+            [PathPoint(0, 0, 0, 0.5), PathPoint(2.5e-6, 0, 0, 0.5), PathPoint(1.25e-6, 1.5e-6, 0, 0.5)], True
+        )
+        assert c is not None
+        assert not c.closed
+        assert len(c.xy) == 2
+
+    def test_one_left_with_a_single_distinct_sample_is_no_curve(self) -> None:
+        points = [PathPoint(0, 0, 0, 0.5), PathPoint(1.01e-6, 0, 0, 0.5), PathPoint(5e-7, 1.01e-6, 0, 0.5)]
+        assert build_curve(points, True) is None
 
 
 class TestCorner:
@@ -200,6 +243,33 @@ class TestDirections:
     def test_a_closed_path_arrives_at_its_start_along_its_last_segment(self, s: float) -> None:
         c = _curve([(0, 0, 0, 0), (2, 0, 0, 0), (2, 2, 0, 0), (0, 2, 0, 0)], closed=True)
         assert c.directions(s) == ((0.0, -1.0), (1.0, 0.0))
+
+
+class TestToVertex:
+    CORNER = [(0, 0, 0, 0), (2, 0, 0, 0), (2, 2, 0, 0)]
+    SQUARE = [(0, 0, 0, 0), (2, 0, 0, 0), (2, 2, 0, 0), (0, 2, 0, 0)]
+
+    @pytest.mark.parametrize(("s", "sign", "want"), [(0.5, 1, 1.5), (0.5, -1, 0.5), (3.0, -1, 1.0), (3.0, 1, 1.0)])
+    def test_the_distance_to_the_next_vertex_either_way(self, s: float, sign: int, want: float) -> None:
+        assert _curve(self.CORNER).to_vertex(s, sign) == pytest.approx(want)
+
+    @pytest.mark.parametrize("s", [2.0, float(np.nextafter(2.0, 0.0)), float(np.nextafter(2.0, 3.0))])
+    @pytest.mark.parametrize("sign", [1, -1])
+    def test_on_a_vertex_the_next_one_is_beyond_it(self, s: float, sign: int) -> None:
+        assert _curve(self.CORNER).to_vertex(s, sign) == pytest.approx(2.0)
+
+    @pytest.mark.parametrize(("s", "sign"), [(4.0, 1), (0.0, -1)])
+    def test_past_an_open_end_there_is_none(self, s: float, sign: int) -> None:
+        assert _curve(self.CORNER).to_vertex(s, sign) == math.inf
+
+    @pytest.mark.parametrize(("s", "sign", "want"), [(7.5, 1, 0.5), (0.0, 1, 2.0), (0.0, -1, 2.0), (0.5, -1, 0.5)])
+    def test_a_closed_curve_wraps_round_its_first_point(self, s: float, sign: int, want: float) -> None:
+        assert _curve(self.SQUARE, closed=True).to_vertex(s, sign) == pytest.approx(want)
+
+    def test_every_vertex_of_an_arc_counts(self) -> None:
+        c = _curve([(0, 0, 0, 0), (4, 0, 0, 1.0), (4, 4, 0, 0)])
+        s_in = float(c.s[1])
+        assert c.to_vertex(s_in, 1) == pytest.approx(float(c.s[2] - c.s[1]))
 
 
 class TestHeight:

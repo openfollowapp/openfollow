@@ -157,7 +157,7 @@ hand-edited `config.toml` and a crafted `POST /section/<name>`:
    and sanitisation, with the standard validate markup on the input
    (`tests/test_template_validation_consistency.py` enforces it).
 
-Device-local fields (interface pins, paths, the PIN) are stripped from export and
+Device-local fields (interface pins, file paths, the PIN) are stripped from export and
 broadcast; device-identity fields survive import and Restore defaults. Both sets,
 hot reload and live-apply are in the [config guide](docs/architecture/config.md).
 
@@ -279,6 +279,9 @@ Each of these has broken before or would break silently. The guides hold the why
 - htmx 1.9: `hx-on::after-request`.
 - Wizard APIs answer a malformed body with 400, never 500.
 - Peer broadcast goes only to private IPs, HMAC-signed with the PIN as key.
+- A client address that decides anything (throttle, on-device check, records)
+  is `_client_address()`, the connection's `REMOTE_ADDR`; never Bottle's
+  `request.remote_addr`, which trusts a client-set `X-Forwarded-For`.
 
 **Packaging**
 - `privilege/camera_config.py`, `privilege/media_writer.py` and
@@ -293,6 +296,9 @@ Each of these has broken before or would break silently. The guides hold the why
   has the rules). It runs `make ci` on a testing Pi when one is reachable
   (`OPENFOLLOW_CI_HOSTS`), else locally. `make ci` = lint + typecheck + security
   + tests + e2e smoke + build, a superset of GitHub CI (which skips mypy).
+  A push that changes only Markdown docs outside `openfollow/` (README,
+  SECURITY.md, CLAUDE.md, `docs/`, skills) skips the gate; help `.md` files
+  under `openfollow/` ship with the app and still need it.
 - `make format` fixes a lint formatting failure. No `-k`, no `--no-verify`.
 - The pre-commit hook runs ruff and bandit from the poetry env (`repo: local`).
   Never give either a `rev:`-pinned hook repo: it re-pins what `pyproject.toml`

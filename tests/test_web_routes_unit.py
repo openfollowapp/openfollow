@@ -35,6 +35,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 try:
     import tomllib
@@ -567,6 +568,37 @@ class TestApplyImportData:
         assert [p.x for p in out.paths.paths[0].points] == [1.0, 3.0]
         assert out.paths.slide_time == 2.0
         assert out.paths.show_paths is False
+
+    @staticmethod
+    def _experimental_station() -> AppConfig:
+        from openfollow.configuration import DetectionConfig, PathConfig, PathsConfig, UiConfig
+
+        return AppConfig(
+            ui=UiConfig(show_experimental_features=True),
+            detection=DetectionConfig(enabled=True),
+            paths=PathsConfig(paths=[PathConfig(name="cross", active=True), PathConfig(name="loop", active=True)]),
+        )
+
+    @pytest.mark.parametrize("with_paths", [True, False])
+    def test_an_import_turning_experimental_features_off_turns_them_off_as_the_toggle_does(
+        self, with_paths: bool
+    ) -> None:
+        data: dict[str, Any] = {"ui": {"show_experimental_features": False}, "detection": {"enabled": True}}
+        if with_paths:
+            data["paths"] = {"paths": [{"name": "cross", "active": True}, {"name": "loop"}]}
+        out = _apply_import_data(self._experimental_station(), data)
+        assert out.ui.show_experimental_features is False
+        assert [p.active for p in out.paths.paths] == [False, False]
+        assert out.detection.enabled is False
+
+    @pytest.mark.parametrize("ui", [{"show_experimental_features": True}, {"unit_system": "imperial"}, None])
+    def test_an_import_leaving_experimental_features_on_keeps_them(self, ui: dict[str, Any] | None) -> None:
+        data: dict[str, Any] = {"paths": {"paths": [{"name": "cross"}, {"name": "loop"}]}}
+        if ui is not None:
+            data["ui"] = ui
+        out = _apply_import_data(self._experimental_station(), data)
+        assert [p.active for p in out.paths.paths] == [True, True]
+        assert out.detection.enabled is True
 
     def test_an_import_without_paths_keeps_this_station_s(self) -> None:
         from openfollow.configuration import PathConfig, PathsConfig

@@ -196,36 +196,6 @@ class TestSteering:
         assert step.place.path == 0
 
 
-class TestGlide:
-    def test_a_glide_travels_the_route_through_a_crossing(self) -> None:
-        net = PathNetwork([H, V])
-        # From (-4, 0) to (0, 4): 4 m along H, then 4 m up V.
-        assert _at(net, net.glide(Place(0, 1.0), Place(1, 9.0), 0.25)) == (-2.0, 0.0)
-        assert _at(net, net.glide(Place(0, 1.0), Place(1, 9.0), 0.75)) == (0.0, 2.0)
-        assert net.glide(Place(0, 1.0), Place(1, 9.0), 1.0) == Place(1, 9.0)
-
-    def test_a_glide_round_a_loop_takes_the_shorter_way(self) -> None:
-        ring = _curve([(0, 0, 0), (2, 0, 0), (2, 2, 0), (0, 2, 0)], closed=True)
-        net = PathNetwork([ring])
-        assert net.glide(Place(0, 0.5), Place(0, 7.5), 0.5).s == pytest.approx(0.0)
-
-    def test_a_glide_from_a_crossing_to_the_same_spot_lands_on_the_target_path(self) -> None:
-        net = PathNetwork([H, V])
-        assert net.glide(Place(0, 5.0), Place(1, 5.0), 0.5) == Place(1, 5.0)
-
-    def test_a_glide_finds_the_shorter_of_two_routes(self) -> None:
-        # From (-4, 0) to (4, 0) along H is 8 m; the detour up V, along the top and down is longer.
-        top = _curve([(0, 3, 0), (4, 3, 0)])
-        right = _curve([(4, 3, 0), (4, -1, 0)])
-        net = PathNetwork([H, V, top, right])
-        assert _at(net, net.glide(Place(0, 1.0), Place(0, 9.0), 0.5)) == (0.0, 0.0)
-
-    def test_a_glide_to_an_unconnected_path_stays_put(self) -> None:
-        apart = _curve([(20, 0, 0), (30, 0, 0)])
-        net = PathNetwork([H, apart])
-        assert net.glide(Place(0, 1.0), Place(1, 3.0), 0.5) == Place(0, 1.0)
-
-
 class TestNearest:
     def test_the_nearest_place_over_all_paths(self) -> None:
         net = PathNetwork([H, V])

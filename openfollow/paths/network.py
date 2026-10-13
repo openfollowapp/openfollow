@@ -11,11 +11,9 @@ the push best, but leaves its own path only when the other is clearly better.
 
 from __future__ import annotations
 
-import heapq
 import math
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from itertools import pairwise
 
 import numpy as np
 
@@ -161,21 +159,6 @@ class PathNetwork:
             time_left -= leg / rate
         return Step(place)
 
-    def glide(self, place: Place, target: Place, fraction: float) -> Place:
-        """Move ``fraction`` of the way to ``target``, travelling along the network's shortest route."""
-        route = self._route(place, target)
-        if route is None:
-            return place
-        total = sum(abs(self.curves[a.path].offset(a.s, b.s)) for a, b in route)
-        remaining = total * min(max(fraction, 0.0), 1.0)
-        for a, b in route:
-            curve = self.curves[a.path]
-            delta = curve.offset(a.s, b.s)
-            if abs(delta) > remaining:
-                return Place(a.path, curve.wrap(a.s + math.copysign(remaining, delta)))
-            remaining -= abs(delta)
-        return target
-
     def _ways(self, place: Place) -> list[_Way]:
         curve = self.curves[place.path]
         tx, ty = curve.tangent(place.s)
@@ -216,43 +199,6 @@ class PathNetwork:
             if d > _CAPTURE_M:
                 ahead.append(d)
         return min(ahead, default=None)
-
-    def _route(self, start: Place, target: Place) -> list[tuple[Place, Place]] | None:
-        """The legs of the shortest route, each along one path; ``None`` when unreachable."""
-        nodes: list[Place] = [start, target]
-        for j in self.junctions:
-            nodes.extend((Place(j.a, j.s_a), Place(j.b, j.s_b)))
-        partner = {}
-        for k in range(2, len(nodes), 2):
-            partner[k] = k + 1
-            partner[k + 1] = k
-        dist = {0: 0.0}
-        prev: dict[int, int] = {}
-        heap = [(0.0, 0)]
-        while heap:
-            d, k = heapq.heappop(heap)
-            if k == 1:
-                break
-            here = nodes[k]
-            steps = [
-                (m, abs(self.curves[here.path].offset(here.s, nodes[m].s)))
-                for m in range(len(nodes))
-                if m != k and nodes[m].path == here.path
-            ]
-            if k in partner:
-                steps.append((partner[k], 0.0))
-            for m, cost in steps:
-                if d + cost < dist.get(m, math.inf) - _EPS:
-                    dist[m] = d + cost
-                    prev[m] = k
-                    heapq.heappush(heap, (d + cost, m))
-        if 1 not in dist:
-            return None
-        chain = [1]
-        while chain[-1] != 0:
-            chain.append(prev[chain[-1]])
-        chain.reverse()
-        return [(nodes[a], nodes[b]) for a, b in pairwise(chain) if nodes[a].path == nodes[b].path]
 
 
 def find_junctions(curves: Sequence[PathCurve]) -> list[Junction]:

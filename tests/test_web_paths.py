@@ -304,10 +304,21 @@ def test_the_settings_form_saves_visibility_and_slide_time(live) -> None:  # noq
         headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
     with urllib.request.urlopen(req, timeout=5) as r:
-        html = r.read().decode()
-    assert 'id="paths-section"' in html
+        html = r.read().decode().strip()
+    # The form swaps itself out (hx-swap outerHTML): an editor in the answer would land beside the page's own.
+    assert html.startswith('<form id="paths-section"') and html.endswith("</form>")
+    assert html.count("<form") == 1
+    assert "path-editor-section" not in html
     saved = load_config(config_path).paths
     assert (saved.slide_time, saved.show_paths) == (2.5, False)
+
+
+def test_the_page_has_one_path_editor(live) -> None:  # noqa: ANN001
+    base, _, _ = live
+    with urllib.request.urlopen(f"{base}/", timeout=5) as r:
+        html = r.read().decode()
+    assert html.count('id="paths-section"') == 1
+    assert html.count('id="path-editor-section"') == 1
 
 
 def test_a_server_without_a_station_behind_it_answers_empty(tmp_path) -> None:  # noqa: ANN001

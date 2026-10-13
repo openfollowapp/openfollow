@@ -16,7 +16,7 @@ from tests._fake_cairo import FakeCairo
 
 pytestmark = [pytest.mark.unit, pytest.mark.skipif(shutil.which("node") is None, reason="needs node")]
 
-_TEMPLATE = Path(__file__).parents[1] / "openfollow" / "web" / "templates" / "partials" / "paths.tpl"
+_TEMPLATE = Path(__file__).parents[1] / "openfollow" / "web" / "templates" / "partials" / "path_editor.tpl"
 
 
 def _function(name: str) -> str:

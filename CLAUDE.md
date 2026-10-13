@@ -313,7 +313,7 @@ Read the guide before changing code in its paths.
 | `input/`, `binding_conflicts.py`, the OSC listener | [input](docs/architecture/input.md) |
 | `video/detection.py`, `video/tracking.py`, `runtime/services_detection_pin.py`, `model_seed.py` | [detection](docs/architecture/detection.md) |
 | `zones/` | [zones](docs/architecture/zones.md) |
-| `paths/`, `runtime/paths_runtime.py`, `osc/paths.py`, `runtime/overlay_draw_paths.py`, the path editor (`partials/paths.tpl`, `/api/paths`) | [paths](docs/architecture/paths.md) |
+| `paths/`, `runtime/paths_runtime.py`, `osc/paths.py`, `runtime/overlay_draw_paths.py`, the path editor (`partials/paths.tpl`, `partials/path_editor.tpl`, `/api/paths`) | [paths](docs/architecture/paths.md) |
 | `web/` (copy, routes, auth, peers, Setup Wizard) | [web](docs/architecture/web.md) |
 | `runtime/deb_update.py`, `runtime/online_sync.py`, `web/whats_new.py`, `privilege/settings_backup.py` | [update](docs/architecture/update.md) |
 | `uri_redaction.py`, `web/diagnostics.py`, `runtime/removable_media.py`, `runtime/diagnostics_export.py`, `privilege/media_writer.py` | [diagnostics](docs/architecture/diagnostics.md) |

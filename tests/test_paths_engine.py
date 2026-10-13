@@ -5,6 +5,9 @@
 from __future__ import annotations
 
 import math
+import sys
+from types import FrameType
+from typing import Any
 
 import pytest
 
@@ -489,3 +492,146 @@ class TestRename:
         slope = _path("Slope", [(0, -5, 0), (0, 0, 0), (0, 5, 2)], active=True)
         engine.reload(PathsConfig(paths=[slope]), enabled=True)
         assert (engine.locked_path(2), engine.recording) == ("Slope", "Slope")
+
+
+class TestRenamesThatReuseANameBeforeTheReload:
+    # Two parallel paths 6 m apart, with no junction: a marker carried to the wrong one jumps 6 m.
+    DS = [(-5, 0, 0), (5, 0, 0)]
+    US = [(-5, 6, 0), (5, 6, 0)]
+
+    def _two_locked(self) -> PathEngine:
+        engine = _engine(_path("cross", self.DS, active=True), _path("loop", self.US, active=True), slide_time=0.0)
+        engine.press(1, (3.0, 0.2, 0.0))
+        engine.press(2, (3.0, 5.8, 0.0))
+        engine.tick(1.0)
+        return engine
+
+    def _reload(self, engine: PathEngine, *named: tuple[str, list[tuple[float, float, float]]]) -> None:
+        engine.reload(PathsConfig(slide_time=0.0, paths=[_path(n, pts, active=True) for n, pts in named]), enabled=True)
+
+    def test_a_name_given_up_and_taken_by_another_path_carries_both(self) -> None:
+        engine = self._two_locked()
+        engine.stage_rename("cross", "ds")
+        engine.stage_rename("loop", "cross")
+        self._reload(engine, ("ds", self.DS), ("cross", self.US))
+        assert (engine.locked_path(1), engine.locked_path(2)) == ("ds", "cross")
+        assert engine.tick(0.02) == {1: pytest.approx((3.0, 0.0, 0.0)), 2: pytest.approx((3.0, 6.0, 0.0))}
+
+    def test_the_reused_name_renamed_again_follows_the_path_that_took_it(self) -> None:
+        engine = self._two_locked()
+        engine.stage_rename("cross", "ds")
+        engine.stage_rename("loop", "cross")
+        engine.stage_rename("CROSS", "us")
+        self._reload(engine, ("ds", self.DS), ("us", self.US))
+        assert (engine.locked_path(1), engine.locked_path(2)) == ("ds", "us")
+
+    def test_two_paths_swap_names_through_a_third(self) -> None:
+        engine = self._two_locked()
+        engine.record("cross", PathsConfig(paths=[_path("cross", self.DS)]))
+        for old, new in [("cross", "tmp"), ("loop", "cross"), ("tmp", "loop")]:
+            engine.stage_rename(old, new)
+        self._reload(engine, ("loop", self.DS), ("cross", self.US))
+        assert (engine.locked_path(1), engine.locked_path(2), engine.recording) == ("loop", "cross", "loop")
+
+    def test_a_path_made_since_the_reload_under_a_given_up_name_takes_nothing(self) -> None:
+        engine = self._two_locked()
+        engine.stage_rename("cross", "ds")
+        engine.stage_rename("cross", "fresh")  # a new path called cross, renamed
+        self._reload(engine, ("ds", self.DS), ("fresh", self.US), ("loop", self.US))
+        assert (engine.locked_path(1), engine.locked_path(2)) == ("ds", "loop")
+
+
+class TestTheWebView:
+    def test_a_staged_rename_names_the_locks_and_the_recording_before_the_reload(self) -> None:
+        engine = _engine(CROSS, RAMP)
+        engine.press(1, (3.0, 0.2, 0.0))
+        engine.press(2, (0.2, 3.0, 0.0))
+        engine.record("cross", PathsConfig(paths=[CROSS]))
+        engine.stage_rename("CROSS", "ds")
+        assert engine.web_state() == ("ds", {1: "ds", 2: "Ramp"})
+        assert (engine.locked_path(1), engine.recording) == ("cross", "cross")
+
+    def test_nothing_recording(self) -> None:
+        assert _engine(CROSS).web_state() == (None, {})
+
+
+def _stop_at(step: int, prepare: Any, run: Any, functions: set[str]) -> tuple[PathEngine, int]:
+    """Run ``run(engine, cfg)`` with a web Stop landing at bytecode ``step`` of the engine's ``functions``.
+
+    A Stop that finds the engine's lock held lands at the first step after it is let go, or once ``run`` is
+    done, as the web thread waits for it. Returns the engine and how many steps there were.
+    """
+    from openfollow.paths import engine as engine_module
+
+    engine, cfg = prepare()
+    count = 0
+    waiting = False
+
+    def local(frame: FrameType, event: str, arg: object) -> Any:
+        nonlocal count, waiting
+        frame.f_trace_opcodes = True
+        if event == "opcode":
+            count += 1
+            waiting = waiting or count == step
+            if waiting and not engine._web_lock.locked():
+                engine.record(None, cfg)
+                waiting = False
+        return local
+
+    def tracer(frame: FrameType, event: str, arg: object) -> Any:
+        if frame.f_globals is vars(engine_module) and frame.f_code.co_name in functions:
+            return local
+        return None
+
+    before = sys.gettrace()
+    sys.settrace(tracer)
+    try:
+        run(engine, cfg)
+    finally:
+        sys.settrace(before)
+    if waiting:
+        engine.record(None, cfg)
+    return engine, count
+
+
+def _stop_lands_at_every_step(prepare: Any, run: Any, functions: set[str]) -> list[PathEngine]:
+    """The engines left by a web Stop landing at each step in turn; the first had no Stop."""
+    first, steps = _stop_at(0, prepare, run, functions)
+    return [first, *(_stop_at(step, prepare, run, functions)[0] for step in range(1, steps + 1))]
+
+
+class TestAStopFromTheWebThread:
+    @staticmethod
+    def _recording(*, renamed: bool) -> tuple[PathEngine, PathsConfig]:
+        engine = _engine(CROSS)
+        engine.record("cross", PathsConfig(paths=[CROSS]))
+        if renamed:
+            engine.stage_rename("cross", "ds")
+        return engine, PathsConfig(paths=[_path("ds" if renamed else "cross", [(-5, 0, 0), (5, 0, 0)])])
+
+    @pytest.mark.parametrize("renamed", [False, True])
+    def test_is_never_undone_by_a_reload_wherever_it_lands(self, renamed: bool) -> None:
+        engines = _stop_lands_at_every_step(
+            lambda: self._recording(renamed=renamed),
+            lambda engine, cfg: engine.reload(cfg, enabled=True),
+            {"reload", "_carry_renames"},
+        )
+        assert len(engines) > 20
+        assert [engine.recording for engine in engines[1:]] == [None] * (len(engines) - 1)
+
+    def test_is_never_undone_by_switching_paths_off(self) -> None:
+        engines = _stop_lands_at_every_step(
+            lambda: self._recording(renamed=False),
+            lambda engine, cfg: engine.reload(cfg, enabled=False),
+            {"reload"},
+        )
+        assert len(engines) > 20
+        assert {engine.recording for engine in engines} == {None}
+
+    def test_never_breaks_drawing_the_recorded_path(self) -> None:
+        engines = _stop_lands_at_every_step(
+            lambda: self._recording(renamed=False),
+            lambda engine, cfg: engine.drawings(cfg),
+            {"drawings"},
+        )
+        assert len(engines) > 5

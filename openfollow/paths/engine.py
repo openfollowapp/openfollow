@@ -90,8 +90,9 @@ class PathEngine:
         self._locks: dict[int, _Lock] = {}
         self._recording: str | None = None
         self._recorded: tuple[tuple[object, ...], PathDrawing] | None = None
+        # Written by the web thread: renames staged before they are saved, and the recording.
         self._renames: dict[str, str] = {}
-        self._renames_lock = threading.Lock()
+        self._web_lock = threading.Lock()
 
     # -- configuration -------------------------------------------------
 
@@ -123,8 +124,9 @@ class PathEngine:
         self._drawn = [
             (_line(curve), path_ends(path, curve)) for path, curve in zip(built, network_curves, strict=True)
         ]
-        if not enabled or (self._recording is not None and cfg.find(self._recording) is None):
-            self._recording = None
+        recording = self._recording
+        if recording is not None and (not enabled or cfg.find(recording) is None):
+            self._replace_recording(recording, None)
         for marker_id, lock in list(self._locks.items()):
             index = self._index(lock.name)
             if index is None or self._network is None or marker_id not in spots:
@@ -147,23 +149,23 @@ class PathEngine:
 
     def record(self, name: str | None, cfg: PathsConfig) -> bool:
         """Record into the path called ``name`` (``None`` stops); False when there is no such path."""
-        if name is None:
-            self._recording = None
-            return True
-        path = cfg.find(name)
-        if path is None or not self.enabled:
+        path = cfg.find(name) if name is not None else None
+        if name is not None and (path is None or not self.enabled):
             return False
-        self._recording = path.name
+        with self._web_lock:
+            self._recording = None if path is None else path.name
         return True
+
+    def _replace_recording(self, was: str, now: str | None) -> None:
+        """Change the recording the frame loop read as ``was``, unless the web thread changed it since."""
+        with self._web_lock:
+            if self._recording == was:
+                self._recording = now
 
     # -- locks ---------------------------------------------------------
 
     def is_locked(self, marker_id: int) -> bool:
         return marker_id in self._locks
-
-    def locked(self) -> dict[int, str]:
-        """Every locked marker and the name of the path it is on; safe to call from another thread."""
-        return {marker_id: lock.name for marker_id, lock in tuple(self._locks.items())}
 
     def locked_path(self, marker_id: int) -> str | None:
         lock = self._locks.get(marker_id)
@@ -324,7 +326,8 @@ class PathEngine:
             PathDrawing(name, line, ends, name.lower() in locked)
             for name, (line, ends) in zip(self._names, self._drawn, strict=True)
         ]
-        recorded = cfg.find(self._recording) if self._recording is not None else None
+        recording = self._recording
+        recorded = cfg.find(recording) if recording is not None else None
         if recorded is not None and self._index(recorded.name) is None:
             out.append(self._recorded_drawing(recorded))
         return out
@@ -344,28 +347,43 @@ class PathEngine:
         """Move locks and recording from path ``old`` to ``new`` at the first reload whose paths hold ``new``.
 
         Safe from another thread. Staged before the rename is saved, so the reload that reads it always finds it.
+        A rename is kept against the name the path had at the last reload, so names swapped or reused before
+        the reload still follow their paths.
         """
-        with self._renames_lock:
-            for key, target in self._renames.items():
-                if target.lower() == old.lower():
-                    self._renames[key] = new
-            self._renames[old.lower()] = new
+        wanted = old.lower()
+        with self._web_lock:
+            key = next((k for k, now in self._renames.items() if now.lower() == wanted), None)
+            if key is None:
+                if wanted in self._renames:
+                    return  # made since the last reload under a name another path gave up: nothing follows it
+                key = wanted
+            self._renames[key] = new
 
     def _carry_renames(self, cfg: PathsConfig) -> None:
-        with self._renames_lock:
-            landed = {old: new for old, new in self._renames.items() if cfg.find(new) is not None}
-            for old in landed:
-                del self._renames[old]
-        # Only where the old name is gone: a rename whose save was lost leaves both.
-        moved = {}
-        for old, new in landed.items():
-            before = cfg.find(old)
-            if before is None or before is cfg.find(new):
-                moved[old] = new
+        with self._web_lock:
+            landed = {key: now for key, now in self._renames.items() if cfg.find(now) is not None}
+            for key in landed:
+                del self._renames[key]
+        taken = {now.lower() for now in landed.values()}
+        # An old name still in the paths is another path's new name, or a rename whose save was lost.
+        moved = {key: now for key, now in landed.items() if key in taken or cfg.find(key) is None}
         for lock in self._locks.values():
             lock.name = moved.get(lock.name.lower(), lock.name)
-        if self._recording is not None:
-            self._recording = moved.get(self._recording.lower(), self._recording)
+        recording = self._recording
+        if recording is not None and recording.lower() in moved:
+            self._replace_recording(recording, moved[recording.lower()])
+
+    def web_state(self) -> tuple[str | None, dict[int, str]]:
+        """The recording and each locked marker's path, named as the paths file has them; safe from another thread."""
+        with self._web_lock:
+            renames = dict(self._renames)
+            recording = self._recording
+
+        def named(name: str) -> str:
+            return renames.get(name.lower(), name)
+
+        locks = {marker_id: named(lock.name) for marker_id, lock in tuple(self._locks.items())}
+        return (None if recording is None else named(recording)), locks
 
 
 def path_ends(path: PathConfig, curve: PathCurve | None) -> list[PathEnd]:

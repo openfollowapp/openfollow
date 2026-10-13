@@ -937,7 +937,11 @@ class TestSendHealth:
         status = sync.send_health.status()
         assert (status.state, status.failed, status.errno) == ("retrying", 1, err)
 
-    def test_the_failure_is_logged_once_by_the_record_not_per_rebuild(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_the_failure_is_logged_once_by_the_record_not_per_rebuild(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # However long the three rebuilds take, they never reach failing.
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", float("inf"))
         sync = _make_sync()
         with caplog.at_level(logging.INFO):
             for _ in range(3):

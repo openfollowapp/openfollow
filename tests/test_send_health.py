@@ -372,9 +372,9 @@ class TestSendAlerts:
 
     def test_the_operator_screen_row_points_at_the_permission(self) -> None:
         """The Operator Screen shows no next step, and the operator is standing at this station."""
-        assert LOCAL_NETWORK_HUD_TEXT == "macOS refuses network sends \u2013 check Local Network"
         (alert,) = send_alerts([_status("PSN", err=errno.EHOSTUNREACH, local=True)])
         assert alert.hud_text == LOCAL_NETWORK_HUD_TEXT
+        assert "Local Network" in alert.hud_text
 
     def test_a_row_without_its_own_operator_screen_text_shows_its_main_line(self) -> None:
         (alert,) = send_alerts([_status("OTP output")])

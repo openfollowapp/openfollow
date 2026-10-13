@@ -1189,11 +1189,10 @@
     if (k2 === 0) return k1 < 0 ? Math.sqrt(-1 / (3 * k1)) : Infinity;
     var disc = 9 * k1 * k1 - 20 * k2;
     if (disc < 0) return Infinity;
-    var sq = Math.sqrt(disc);
-    var sLo = (-3 * k1 - sq) / (10 * k2), sHi = (-3 * k1 + sq) / (10 * k2);
+    // The q form keeps both roots exact when k2 is tiny against k1.
+    var q = -0.5 * (3 * k1 + (k1 < 0 ? -1 : 1) * Math.sqrt(disc));
     var s = Infinity;
-    if (sLo > 0) s = sLo;
-    if (sHi > 0 && sHi < s) s = sHi;
+    [q / (5 * k2), q !== 0 ? 1 / q : Infinity].forEach(function(r) { if (r > 0 && r < s) s = r; });
     return Math.sqrt(s);
   }
   // Mirror lens_model.lens_warp_is_valid, its bound on a lens's size included.
@@ -1319,8 +1318,10 @@
   // ---------------------------------------------------------------
   // Step Navigation
   // ---------------------------------------------------------------
-  // The first step that needs the snapshot: the Lens step when it is shown.
-  var WIZ_FIRST_SNAPSHOT = WIZ.lens !== undefined ? WIZ.lens : WIZ.ref;
+  // The steps that show the snapshot: Lens, and Reference Mapping onwards.
+  function wizStepNeedsSnapshot(key, steps) {
+    return key === 'lens' || steps[key] >= steps.ref;
+  }
 
   window.wizardGo = function(step) {
     saveToSession();
@@ -1336,7 +1337,7 @@
       btn.setAttribute('aria-current', s === step ? 'step' : 'false');
       if (s < step) btn.classList.add('completed');
     });
-    if (step >= WIZ_FIRST_SNAPSHOT) {
+    if (wizStepNeedsSnapshot(key, WIZ)) {
       loadSnapshot();
     }
     if (key === 'prep') {
@@ -3084,12 +3085,7 @@
       return;
     }
 
-    var screenCorners = [
-      cornerPositions.DSL,
-      cornerPositions.DSR,
-      cornerPositions.USR,
-      cornerPositions.USL,
-    ];
+    var screenCorners = wizSolveCorners(cornerPositions);
 
     var seq = ++poseSeq;
     var body = wizardSolveBody(screenCorners);
@@ -3118,6 +3114,11 @@
       [ox - hw, oy + hd, oz],
       [ox + hw, oy + hd, oz],
     ];
+  }
+
+  // Copies, so a nudge while the solve is out cannot change the pins it records.
+  function wizSolveCorners(positions) {
+    return CORNER_NAMES.map(function(k) { return positions[k].slice(); });
   }
 
   function wizardSolveBody(screenCorners) {
@@ -3207,6 +3208,7 @@
       var cy = e.touches ? e.touches[0].clientY : e.clientY;
       var startSvg = svgPoint(cx, cy);
       var startPos = cornerPositions[cornerName].slice();
+      poseSeq++;
       dragging = { handle: handle, corner: cornerName, startSvg: startSvg, startPos: startPos };
       handle.style.cursor = 'grabbing';
       showLoupe('fine-container', 'fine-overlay', startPos);
@@ -3269,6 +3271,7 @@
       else if (e.key === 'ArrowDown') { pos[1] += step; moved = true; }
       if (moved) {
         e.preventDefault();
+        poseSeq++;
         handle.setAttribute('transform', 'translate('+pos[0]+','+pos[1]+')');
         updateFineQuad();
         // Keep zoom view in sync with arrow-key nudges.
@@ -3833,12 +3836,7 @@
       preCornerPinningPose = snapshotPose();
     }
 
-    var screenCorners = [
-      cornerPositions.DSL,
-      cornerPositions.DSR,
-      cornerPositions.USR,
-      cornerPositions.USL,
-    ];
+    var screenCorners = wizSolveCorners(cornerPositions);
 
     var seq = ++poseSeq;
     var body = wizardSolveBody(screenCorners);
@@ -4556,11 +4554,11 @@
   }
 
   function lensFitApplies(fit) { return fit.rating !== 'low'; }
-  // Whether the pair is the one the fit wrote (it writes four decimals).
+  // Whether the pair is the one the fit wrote.
   function lensPairIsTheFits(k1, k2) {
-    return !!lensFit && lensFitApplies(lensFit)
-      && Math.abs(k1 - Number(Number(lensFit.k1).toFixed(4))) < 1e-9
-      && Math.abs(k2 - Number(Number(lensFit.k2).toFixed(4))) < 1e-9;
+    if (!lensFit || !lensFitApplies(lensFit)) return false;
+    var shown = wizLensShownPair(Number(lensFit.k1), Number(lensFit.k2));
+    return Math.abs(k1 - Number(shown[0])) < 1e-9 && Math.abs(k2 - Number(shown[1])) < 1e-9;
   }
 
   // ---- edits ----
@@ -4601,6 +4599,7 @@
 
   // ---- fit ----
   function scheduleLensFit() {
+    lensFitSeq++;
     clearTimeout(lensFitTimer);
     lensFitTimer = setTimeout(runLensFit, LENS_FIT_DEBOUNCE_MS);
   }
@@ -4629,6 +4628,8 @@
     }).then(function(res) {
       if (seq !== lensFitSeq) return;
       if (!res.ok || !res.data || res.data.error) {
+        lensFit = null;
+        renderLensResult();
         lensShowStatus((res.data && res.data.error) || 'Could not fit the lens.', false);
         return;
       }

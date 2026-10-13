@@ -214,8 +214,10 @@ def extend_to_corners(curves: Sequence[PathCurve]) -> list[PathCurve]:
 
     An arc passes its corner point by, so an end within reach of the point may be out of reach of the
     curve. Such an end runs on straight to where the corner's curve passes nearest the point, at the
-    same height, and so touches it; the old end becomes a sharp inner point. An end touching another
-    curve already joins it and stays, unless what it touches is an end carried on to the same corner.
+    same height, and so touches it; the old end becomes a sharp inner point. An end lying on another
+    curve's side joins it there and stays, as running on would leave that curve. Another path's end
+    touching ours does not stop it, as it still touches our curve afterwards, unless that end runs on
+    to a different corner, which would part the two: then both stay.
     """
     targets = {}
     for i, curve in enumerate(curves):
@@ -224,12 +226,8 @@ def extend_to_corners(curves: Sequence[PathCurve]) -> list[PathCurve]:
             if target is not None:
                 targets[(i, side)] = target
     touched = {end: _touched(curves, *end) for end in targets}
-    # Drop each end touching anything but an end still carried on to its corner, until none is left to drop.
-    carried = set(targets)
-    while dropped := {
-        end for end in carried if any(t not in carried or targets[t][0] != targets[end][0] for t in touched[end])
-    }:
-        carried -= dropped
+    free = {end for end in targets if all(side >= 0 for _, side in touched[end])}
+    carried = {end for end in free if not any(t in free and targets[t][0] != targets[end][0] for t in touched[end])}
     out = []
     for i, curve in enumerate(curves):
         xy, z = curve.xy, curve.z
@@ -264,14 +262,15 @@ def _corner_target(
 
 
 def _touched(curves: Sequence[PathCurve], i: int, side: int) -> list[tuple[int, int]]:
-    """What an end of curve ``i`` touches at its height: another curve's end (0 / 1), or elsewhere on it (-1)."""
+    """What an end of curve ``i`` touches at its height: an open curve's end (0 / 1), or its side (-1)."""
     x, y, z = curves[i].point(side * curves[i].length)
     out = []
     for k, other in enumerate(curves):
         s, dist = other.nearest(x, y)
         if k == i or dist > JUNCTION_REACH_M or abs(other.point(s)[2] - z) > JUNCTION_HEIGHT_M:
             continue
-        out.append((k, 0 if s <= _EPS else 1 if s >= other.length - _EPS else -1))
+        at_end = not other.closed and (s <= _EPS or s >= other.length - _EPS)
+        out.append((k, (0 if s <= _EPS else 1) if at_end else -1))
     return out
 
 

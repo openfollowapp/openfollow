@@ -354,21 +354,35 @@ class TestCornerExtension:
         assert step.place.path == 2
         assert net.point(step.place)[0] < self.VERTEX[0]
 
-    def test_of_two_spurs_ending_at_each_other_only_one_on_the_corner_point_neither_runs_on(self) -> None:
+    def test_of_two_spurs_ending_at_each_other_the_one_on_the_corner_point_runs_on_and_they_still_meet(
+        self,
+    ) -> None:
         # The first ends 8 cm from the corner point, the second 15 cm from it and 8.5 cm from the first's end.
         on = _curve([(2, -2, 0), (2, -0.08, 0)])
         off = _curve([(4, -1, 0), (2.06, -0.14, 0)])
         net = PathNetwork([on, off, self.ROUNDED])
-        assert net.curves[:2] == [on, off]
-        assert {(j.a, j.b) for j in net.junctions} == {(0, 1)}
+        assert net.curves[0].point(net.curves[0].length) == pytest.approx(self.VERTEX)
+        assert net.curves[1] is off
+        assert sorted((j.a, j.b) for j in net.junctions) == [(0, 1), (0, 2)]
+        spurs = next(j for j in net.junctions if j.b == 1)
+        assert (spurs.s_a, spurs.s_b) == (pytest.approx(on.nearest(2.06, -0.14)[0]), off.length)
 
-    def test_a_spur_on_a_corner_point_stays_when_the_spur_it_touches_there_stays(self) -> None:
-        # Both ends lie on the corner point and touch each other; the second also touches a path beside it.
+    def test_a_spur_on_a_corner_point_runs_on_past_a_spur_end_that_stays(self) -> None:
+        # Both ends lie on the corner point and touch each other; the second also lies on the side of a third path.
         first = _curve([(1.96, -2, 0), (1.96, 0, 0)])
         second = _curve([(4, -1, 0), (2.05, 0, 0)])
         beside = _curve([(2.13, -1, 0), (2.13, 1, 0)])
         net = PathNetwork([first, second, self.ROUNDED, beside])
-        assert net.curves[:2] == [first, second]
+        assert net.curves[0].point(net.curves[0].length) == pytest.approx(self.VERTEX)
+        assert net.curves[1] is second
+        assert {(0, 1), (0, 2), (1, 3)} <= {(j.a, j.b) for j in net.junctions}
+
+    def test_an_end_on_a_closed_path_s_first_point_stays_though_another_corner_point_is_near(self) -> None:
+        # The ring's sharp first point lies on its curve, 6 cm from B's corner point.
+        ring = _curve([(2.05, -0.03, 0, 0), (3, -1, 0, 0), (3.5, 0.5, 0, 0)], closed=True)
+        spur = _curve([(2.05, -2, 0), (2.05, -0.03, 0)])
+        net = PathNetwork([spur, ring, self.ROUNDED])
+        assert net.curves[0] is spur
 
     def test_an_end_runs_on_to_the_nearest_of_several_corner_points(self) -> None:
         hook = _curve([(0, 0, 0, 0), (2, 0, 0, 0.5), (2, 2, 0, 0.5), (0, 2, 0, 0)])

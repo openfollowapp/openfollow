@@ -408,14 +408,7 @@ class InputManager:
         if not self.app._controlled_ids:
             return gamepad_result
 
-        # Markers sliding onto a path, or put back on one an edit moved, before any input.
         paths = self._paths()
-        if paths is not None:
-            paths.release_all(keep=self.app._controlled_ids)
-            for slid_id, slid_to in paths.tick(dt).items():
-                slid = self._get_marker(slid_id)
-                if slid:
-                    slid.set_pos(*slid_to)
 
         # Get keyboard velocity for selected marker
         try:
@@ -475,7 +468,9 @@ class InputManager:
                     marker = self._get_marker(marker_id)
                     if not marker:
                         continue
-                    cur_x, cur_y, cur_z = marker.pos
+                    # While pulled onto a path, the axes left out come from where it would be without the path.
+                    free = paths.free_position(marker_id) if paths is not None else None
+                    cur_x, cur_y, cur_z = free if free is not None else marker.pos
                     x = axes.get("x", cur_x)
                     y = axes.get("y", cur_y)
                     z = axes.get("z", cur_z)
@@ -491,12 +486,26 @@ class InputManager:
                     )
             except Exception:
                 logger.exception("OSC flush/apply failed this tick.")
-        if self.path_osc_handler is not None and paths is not None:
-            paths_runtime.apply_commands(
-                self.app, self.path_osc_handler.take(), self.app._controlled_ids, self._get_marker
-            )
 
         return gamepad_result
+
+    def update_paths(self, dt: float) -> None:
+        """Run the path engine for one frame, whatever input does: menus open or no marker controlled.
+
+        Releases markers no longer controlled, applies OSC path commands, then writes the
+        markers the engine moved itself (slides, edits). ``animate`` calls it after the frame's
+        discrete key presses (Reset, Pathfinder) and before :meth:`update`.
+        """
+        commands = self.path_osc_handler.take() if self.path_osc_handler is not None else []
+        paths = self._paths()
+        if paths is None:
+            return
+        paths.release_all(keep=self.app._controlled_ids)
+        paths_runtime.apply_commands(self.app, commands, self.app._controlled_ids, self._get_marker)
+        for slid_id, slid_to in paths.tick(dt).items():
+            slid = self._get_marker(slid_id)
+            if slid:
+                slid.set_pos(*slid_to)
 
     def _apply_mouse3d(
         self,

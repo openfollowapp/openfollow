@@ -7004,6 +7004,8 @@ class TestPathsConfig:
             ("Down Stage/Cross!", "DownStageCross"),
             ("a" * 40, "a" * 32),
             ("v1.2_b", "v1.2_b"),
+            (".hidden", ".hidden"),
+            ("..a", "..a"),
             (None, ""),
             (42, ""),
         ],
@@ -7012,6 +7014,14 @@ class TestPathsConfig:
         from openfollow.configuration import PathConfig
 
         assert PathConfig(name=raw).name == want
+
+    @pytest.mark.parametrize("raw", [".", "..", "...", "./..", " . ", "." * 40])
+    def test_a_path_name_of_dots_alone_is_no_name(self, raw: str) -> None:
+        # A URL resolves "." and ".." away, so the path could never be addressed.
+        from openfollow.configuration import PathConfig, PathsConfig
+
+        assert PathConfig(name=raw).name == ""
+        assert PathsConfig(paths=[{"name": raw}]).paths[0].name == "path-1"
 
     @pytest.mark.parametrize("field", ["active", "closed", "release_at_start", "release_at_end"])
     @pytest.mark.parametrize(("raw", "want"), [(True, True), ("yes", True), ("off", False), (1, False), (None, False)])
@@ -7072,6 +7082,19 @@ class TestPathsConfig:
 
         cfg = PathsConfig(paths=[{"name": "path-2"}, {"name": ""}, {"name": "!!"}])
         assert [p.name for p in cfg.paths] == ["path-2", "path-2-2", "path-3"]
+
+    @pytest.mark.parametrize(
+        ("names", "want"),
+        [
+            (["..", "path-1"], ["path-1-2", "path-1"]),
+            (["", "PATH-1"], ["path-1-2", "PATH-1"]),
+            (["cross", "cross", "cross-2"], ["cross", "cross-3", "cross-2"]),
+        ],
+    )
+    def test_a_name_made_up_never_takes_one_a_later_path_was_given(self, names: list[str], want: list[str]) -> None:
+        from openfollow.configuration import PathsConfig
+
+        assert [p.name for p in PathsConfig(paths=[{"name": n} for n in names]).paths] == want
 
     def test_names_that_match_ignoring_case_are_made_unique(self, caplog) -> None:
         from openfollow.configuration import PathsConfig

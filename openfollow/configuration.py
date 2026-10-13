@@ -41,9 +41,11 @@ logger = logging.getLogger(__name__)
 # Serializes load→mutate→``save_config`` spans against the on-disk config.
 # ``save_config`` overwrites the whole file, so two interleaving spans would
 # have the later save clobber the earlier. Held by the off-GTK-thread writers
-# that run concurrently: the threaded WSGI request handlers and the
-# marker-catalog sync receiver. GTK-main-loop writers (on-screen menu,
-# receiver self-heal) do NOT take this lock and can still interleave.
+# that run concurrently (the threaded WSGI request handlers and the
+# marker-catalog sync receiver) and by main-loop writers that write only their
+# own change (``save_config_change``, the move-speed flush). Other GTK-main-loop
+# writers (on-screen menu, receiver self-heal) do NOT take this lock and can
+# still interleave.
 config_write_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
@@ -883,9 +885,11 @@ class PathPointConfig:
 
 
 def path_name_from(value: Any) -> str:
-    """``value`` reduced to the characters a path name allows, at most 32 of them."""
+    """``value`` reduced to the characters a path name allows, at most 32 of them; dots alone make no name."""
     text = value if isinstance(value, str) else ""
-    return "".join(PATH_NAME_PATTERN.findall(text))[:PATH_NAME_MAX_LEN]
+    name = "".join(PATH_NAME_PATTERN.findall(text))[:PATH_NAME_MAX_LEN]
+    # A URL resolves dot segments away, even written as %2E, so such a name could never be addressed.
+    return name if name.strip(".") else ""
 
 
 @dataclass
@@ -942,11 +946,13 @@ class PathsConfig:
 
     def _give_unique_names(self) -> None:
         # OSC finds a path by name ignoring case, so two must never match.
+        explicit = {path.name.lower() for path in self.paths if path.name}
         taken: set[str] = set()
         for index, path in enumerate(self.paths):
             base = path.name or f"path-{index + 1}"
             name, n = base, 1
-            while name.lower() in taken:
+            # A name made up here, or a clash's new one, never takes a name another path was given.
+            while name.lower() in taken or (name != path.name and name.lower() in explicit):
                 n += 1
                 suffix = f"-{n}"
                 name = base[: PATH_NAME_MAX_LEN - len(suffix)] + suffix
@@ -3117,6 +3123,23 @@ def save_config(config: AppConfig, path: str = "config.toml") -> None:
         except OSError:
             pass
         raise
+
+
+def save_config_change(path: str, running: AppConfig, change: Callable[[AppConfig], None]) -> None:
+    """Make ``change`` in ``running`` and in the config file as it is on disk now.
+
+    For a writer whose running config may lag the file: only what ``change`` sets is written, under
+    ``config_write_lock``, so a save another thread made in the meantime survives. With no file yet,
+    ``running`` is written whole.
+    """
+    change(running)
+    with config_write_lock:
+        if not os.path.exists(path):
+            save_config(running, path)
+            return
+        current = load_config(path, strict=True)
+        change(current)
+        save_config(current, path)
 
 
 # ---------------------------------------------------------------------------

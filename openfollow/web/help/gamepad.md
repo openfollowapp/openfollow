@@ -50,7 +50,7 @@ Controls active during show operation.
 - **Clear Messages** – clears every operator-message card. Default: unbound.
 - **Toggle Zone Overlay** – shows or hides the zone overlay on the Operator Screen. Default: unbound.
 - **Toggle Paths** *(experimental)* – shows or hides paths on the Operator Screen. Default: unbound.
-- **Pathfinder** *(experimental)* – slides the marker this controller drives onto the nearest active path, where it stays until pressed again; while a path is recording, adds the marker's position to it instead. Default: unbound.
+- **Pathfinder** *(experimental)* – slides the marker this controller drives onto the nearest active path, where it stays until pressed again or moved past an end of the path that releases it; while a path is recording, adds the marker's position to it instead. Default: unbound.
 
 ### Menu Navigation
 

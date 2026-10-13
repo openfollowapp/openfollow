@@ -24,6 +24,22 @@ def _close(a: tuple[float, ...], b: tuple[float, ...], tol: float = 1e-6) -> boo
     return all(abs(x - y) <= tol for x, y in zip(a, b, strict=True))
 
 
+def _cos(degrees: float) -> float:
+    return math.cos(math.radians(degrees))
+
+
+def _sin(degrees: float) -> float:
+    return math.sin(math.radians(degrees))
+
+
+def _gap(a: PathCurve, b: PathCurve) -> float:
+    """How far apart two curves get: the farthest any sample of one lies from the other."""
+    return max(
+        max(b.nearest(float(x), float(y))[1] for x, y in a.xy),
+        max(a.nearest(float(x), float(y))[1] for x, y in b.xy),
+    )
+
+
 class TestStraight:
     def test_a_two_point_path_runs_straight_between_them(self) -> None:
         c = _curve([(0, 0, 0), (3, 4, 2)])
@@ -93,10 +109,97 @@ class TestCorner:
         assert dist == pytest.approx(1.0, abs=1e-3)
         assert c.point(s)[:2] == pytest.approx((2.0, 1.0), abs=1e-3)
 
-    def test_turning_straight_back_keeps_the_corner_sharp(self) -> None:
-        c = _curve([(0, 0, 0, 0), (4, 0, 0, 1.0), (1, 0, 0, 0)])
+    @pytest.mark.parametrize("turn", [30.0, 90.0, 120.0])
+    def test_a_turn_up_to_120_degrees_keeps_the_point_s_radius(self, turn: float) -> None:
+        c = _curve([(0, 0, 0, 0), (4, 0, 0, 0.5), (4 + 4 * _cos(turn), 4 * _sin(turn), 0, 0)])
+        reach = 0.5 * math.tan(math.radians(turn) / 2)
+        assert c.length == pytest.approx(8 - 2 * reach + 0.5 * math.radians(turn), abs=1e-3)
+
+    @pytest.mark.parametrize("turn", [121.0, 150.0, 170.0, 179.0])
+    def test_a_sharper_turn_meets_its_segments_three_radii_over_tan_half_the_turn_from_the_point(
+        self, turn: float
+    ) -> None:
+        c = _curve([(0, 0, 0, 0), (4, 0, 0, 0.5), (4 + 4 * _cos(turn), 4 * _sin(turn), 0, 0)])
+        half_tan = math.tan(math.radians(turn) / 2)
+        reach = 3 * 0.5 / half_tan
+        radius = reach / half_tan
+        assert c.length == pytest.approx(8 - 2 * reach + radius * math.radians(turn), abs=1e-3)
+        middle = radius * (1 / math.cos(math.radians(turn) / 2) - 1)
+        assert c.nearest(4.0, 0.0)[1] == pytest.approx(middle, abs=1e-3)
+
+    def test_a_150_degree_turn_passes_its_point_closer_than_a_right_angle_does(self) -> None:
+        c = _curve([(0, 0, 0, 0), (4, 0, 0, 0.5), (4 + 4 * _cos(150), 4 * _sin(150), 0, 0)])
+        assert c.nearest(4.0, 0.0)[1] == pytest.approx(0.308, abs=2e-3)
+
+    def test_an_out_and_back_runs_out_to_its_far_point(self) -> None:
+        c = _curve([(0, 0, 0, 0), (4, 0, 0, 0.5), (0, 0.01, 0, 0)])
+        assert c.nearest(4.0, 0.0)[1] <= 0.01
+        assert c.length == pytest.approx(8.0, abs=0.01)
+
+    @pytest.mark.parametrize("back_y", [1e-9, -1e-9, 1e-6, -1e-6, 1e-3, -1e-3])
+    def test_a_turn_close_to_straight_back_changes_the_curve_as_little(self, back_y: float) -> None:
+        straight_back = _curve([(0, 0, 0, 0), (4, 0, 0, 0.5), (0, 0, 0, 0)])
+        near = _curve([(0, 0, 0, 0), (4, 0, 0, 0.5), (0, back_y, 0, 0)])
+        assert _gap(near, straight_back) <= abs(back_y) * 1.01
+
+    @pytest.mark.parametrize("radius", [0.0, 1.0])
+    def test_turning_straight_back_reaches_the_point(self, radius: float) -> None:
+        c = _curve([(0, 0, 0, 0), (4, 0, 0, radius), (1, 0, 0, 0)])
         assert c.length == pytest.approx(7.0)
         assert _close(c.point(4.0), (4.0, 0.0, 0.0))
+
+    def test_a_large_radius_nearly_straight_back_passes_close_to_the_point(self) -> None:
+        # 179.97 degrees at 20 m: the arc meets each segment 16 mm short of the point.
+        turn = 179.97
+        c = _curve([(0, 0, 0, 0), (100, 0, 0, 20.0), (100 + 100 * _cos(turn), 100 * _sin(turn), 0, 0)])
+        reach = 3 * 20.0 / math.tan(math.radians(turn) / 2)
+        assert c.nearest(100.0, 0.0)[1] == pytest.approx(reach, abs=1e-4)
+
+    def test_a_sharper_turn_still_takes_at_most_half_the_shorter_segment(self) -> None:
+        c = _curve([(0, 0, 0, 0), (1, 0, 0, 50.0), (1 + 4 * _cos(150), 4 * _sin(150), 0, 0)])
+        radius = 0.5 / math.tan(math.radians(75))
+        assert _close(c.point(0.5), (0.5, 0.0, 0.0), tol=1e-9)
+        assert c.length == pytest.approx(0.5 + radius * math.radians(150) + 3.5, abs=1e-3)
+
+
+class TestCorners:
+    def test_an_open_path_s_corners_are_its_inner_points(self) -> None:
+        c = _curve([(0, 0, 0, 0.5), (2, 0, 1, 0.5), (2, 2, 0, 0), (0, 3, 0, 0.5)])
+        assert c.corners.tolist() == [[2.0, 0.0], [2.0, 2.0]]
+
+    def test_every_point_of_a_closed_path_is_a_corner(self) -> None:
+        c = _curve([(0, 0, 0), (2, 0, 0), (2, 2, 0)], closed=True)
+        assert c.corners.tolist() == [[0.0, 0.0], [2.0, 0.0], [2.0, 2.0]]
+
+    def test_a_two_point_path_has_no_corners(self) -> None:
+        assert _curve([(0, 0, 0), (2, 0, 0)]).corners.shape == (0, 2)
+
+
+class TestDirections:
+    CORNER = [(0, 0, 0, 0), (2, 0, 0, 0), (2, 2, 0, 0)]
+
+    def test_on_a_sharp_corner_arriving_and_leaving_differ(self) -> None:
+        c = _curve(self.CORNER)
+        assert c.directions(2.0) == ((1.0, 0.0), (0.0, 1.0))
+        assert c.tangent(2.0) == (0.0, 1.0)
+
+    @pytest.mark.parametrize("s", [float(np.nextafter(2.0, 0.0)), float(np.nextafter(2.0, 3.0)), 2.0 - 1e-10])
+    def test_a_hair_off_a_sharp_corner_is_on_it(self, s: float) -> None:
+        assert _curve(self.CORNER).directions(s) == ((1.0, 0.0), (0.0, 1.0))
+
+    @pytest.mark.parametrize(("s", "want"), [(1.0, (1.0, 0.0)), (3.0, (0.0, 1.0)), (2.0 - 1e-6, (1.0, 0.0))])
+    def test_between_corners_both_follow_the_segment(self, s: float, want: tuple[float, float]) -> None:
+        assert _curve(self.CORNER).directions(s) == (want, want)
+
+    def test_an_open_end_has_one_direction(self) -> None:
+        c = _curve(self.CORNER)
+        assert c.directions(0.0) == ((1.0, 0.0), (1.0, 0.0))
+        assert c.directions(c.length) == ((0.0, 1.0), (0.0, 1.0))
+
+    @pytest.mark.parametrize("s", [0.0, 8.0, float(np.nextafter(8.0, 0.0)), -1e-12])
+    def test_a_closed_path_arrives_at_its_start_along_its_last_segment(self, s: float) -> None:
+        c = _curve([(0, 0, 0, 0), (2, 0, 0, 0), (2, 2, 0, 0), (0, 2, 0, 0)], closed=True)
+        assert c.directions(s) == ((0.0, -1.0), (1.0, 0.0))
 
 
 class TestHeight:

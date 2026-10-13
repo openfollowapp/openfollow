@@ -165,7 +165,8 @@ mutation-deps:
 mutation-clean:
 	rm -rf mutants .mutmut-cache
 
-mutation: mutation-deps mutation-clean
+mutation: mutation-deps
+	@$(MAKE) --no-print-directory mutation-clean
 	poetry run mutmut run
 
 # Mutate one module by mutant-name pattern, which mutmut derives from the dotted

@@ -340,7 +340,7 @@ jobs:
           report="$(make audit 2>&1)"
           set -e
           {
-            echo "## Export toolchain audit (report-only, non-gating)"
+            echo "## Workstation toolchain audit: export extra and optional groups (report-only, non-gating)"
             echo
             echo '```'
             echo "$report"

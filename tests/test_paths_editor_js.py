@@ -220,6 +220,8 @@ class TestTheSelectedPath:
             """
             openRow('cross'); await settle();
             openRow('cross'); await settle();
+            row('loop').querySelector('input[id$="-closed"]').click();  // redraws the rows
+            await settle();
             out.selected = selectedRow();
             out.handles = handles().length;
             out.open = !!row('cross').open;
@@ -445,6 +447,19 @@ class TestEditingThePoints:
             """
         )
         assert out == {"open": True, "tab": "Points"}
+
+    def test_a_rename_the_station_reads_as_the_same_name_keeps_the_row_open(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            var name = row('cross').querySelector('input[id$="-name"]');
+            typeInto(name, 'cross!'); enter(name);
+            await settle();
+            out.open = row('cross').open;
+            out.shown = row('cross').querySelector('input[id$="-name"]').value;
+            """
+        )
+        assert out == {"open": True, "shown": "cross"}
 
     def test_a_refused_rename_puts_the_name_back(self) -> None:
         out = _editor(

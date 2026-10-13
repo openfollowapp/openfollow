@@ -67,6 +67,11 @@ class TestJunctions:
         assert dist == pytest.approx(0.5 * (math.sqrt(2) - 1))
         assert find_junctions([branch, self.ROUNDED]) == [Junction(0, branch.length, 1, s_corner)]
 
+    def test_a_path_ending_on_one_of_several_corner_points_joins_at_that_one(self) -> None:
+        hook = _curve([(0, 0, 0, 0), (2, 0, 0, 0.5), (2, 2, 0, 0.5), (0, 2, 0, 0)])
+        branch = _curve([(2, 4, 0), (2, 2, 0)])
+        assert find_junctions([branch, hook]) == [Junction(0, branch.length, 1, hook.nearest(2.0, 2.0)[0])]
+
     def test_a_path_ending_beyond_reach_of_a_corner_point_does_not_join(self) -> None:
         branch = _curve([(2, -2, 0), (2, -0.11, 0)])
         assert find_junctions([branch, self.ROUNDED]) == []

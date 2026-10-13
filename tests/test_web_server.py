@@ -8552,6 +8552,9 @@ def test_ground_grid_broadcast_saves_the_polygon_locally(live_server) -> None:
 
 def test_ground_grid_travels_through_export_and_import(live_server) -> None:
     server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.ui.show_experimental_features = True
+    save_config(cfg, server.config_path)
     _post_form(base, "/section/ground_grid", {"enabled": "on", "z_offset": "-0.6", "vertices": json.dumps(_GG_SQUARE)})
     with urllib.request.urlopen(f"{base}/api/config/export", timeout=5) as resp:
         exported = json.loads(resp.read())

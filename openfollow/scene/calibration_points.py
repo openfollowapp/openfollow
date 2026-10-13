@@ -51,7 +51,7 @@ REASON_DISAGREES_CORNERS = "It disagrees with the corners."
 REASON_PAIR = "The two points disagree, and two cannot tell which one is wrong."
 REASON_FLOOR = "It moves the far floor too far from where the corners put it."
 REASON_SAME_PLACE = "Its two corners are at the same place."
-REASON_RANGE = "It tilts or narrows the camera past what the corners can solve."
+REASON_RANGE = "It tilts the camera or changes its lens past what the corners can solve."
 
 Status = Literal["ok", "unverified", "flagged"]
 
@@ -203,7 +203,6 @@ class _Problem:
         self.db = np.array([p.distance_b for p in points], dtype=np.float64)
         self.pins = np.array([p.pin for p in points], dtype=np.float64).reshape(self.n, 2)
         self.canvas = (canvas_w, canvas_h)
-        self.stale: Callable[[], bool] | None = None
 
     def residuals(self, x: npt.NDArray[np.float64]) -> npt.NDArray[np.float64] | None:
         """Corner pins (8), then per point its pin (2) and its distances (2); None off the valid range."""
@@ -224,16 +223,20 @@ class _Problem:
 
 
 def _fit(
-    problem: _Problem, x0: npt.NDArray[np.float64], iterations: int = 100
+    problem: _Problem,
+    x0: npt.NDArray[np.float64],
+    iterations: int = 100,
+    stale: Callable[[], bool] | None = None,
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]] | None:
-    """Levenberg-Marquardt from ``x0``; None when the start or a derivative probe is off the valid range."""
+    """Levenberg-Marquardt from ``x0``; None when the start or a derivative probe is off the valid range.
+    ``stale`` is asked before every iteration and raises :class:`SolveSuperseded` once it answers True."""
     x = x0.copy()
     r = problem.residuals(x)
     if r is None:
         return None
     damping = 1e-3
     for _ in range(iterations):
-        if problem.stale is not None and problem.stale():
+        if stale is not None and stale():
             raise SolveSuperseded
         jac = np.empty((r.size, x.size))
         for k in range(x.size):
@@ -273,8 +276,8 @@ def solve_with_points(
     stale: Callable[[], bool] | None = None,
 ) -> CalibrationSolve | None:
     """The camera from the four corners and the calibration points; None when the corners give none.
-    When no point is used, the camera is exactly the corners' own solve. ``stale`` is asked between
-    fits and iterations; once it answers True the solve raises :class:`SolveSuperseded`.
+    When no point is used, the camera is exactly the corners' own solve. ``stale`` is asked before every
+    iteration of every fit; once it answers True the solve raises :class:`SolveSuperseded`.
 
     A point the distances place nowhere is flagged and left out. When a point's residual passes
     :data:`FLAG_SIGMA`, three or more points drop the one whose removal leaves the others the best fit,
@@ -306,12 +309,9 @@ def solve_with_points(
         places[i] = place
 
     def fit(ids: list[int]) -> tuple[_Problem, npt.NDArray[np.float64], npt.NDArray[np.float64]] | None:
-        if stale is not None and stale():
-            raise SolveSuperseded
         problem = _Problem(world, screen, [points[i] for i in ids], canvas_w, canvas_h)
-        problem.stale = stale
         x0 = np.concatenate([seed_params, np.array([places[i][:2] for i in ids]).ravel()])
-        fitted = _fit(problem, x0)
+        fitted = _fit(problem, x0, stale=stale)
         return None if fitted is None else (problem, *fitted)
 
     def leave_out(ids: list[int], reason: str, residuals: npt.NDArray[np.float64]) -> None:

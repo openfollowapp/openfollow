@@ -386,7 +386,7 @@ class TestTheFitsGuards:
 
     def test_points_no_fit_can_take_are_left_out_and_the_corners_solve(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fit = cp._fit
-        monkeypatch.setattr(cp, "_fit", lambda problem, x0: None if problem.n else fit(problem, x0))
+        monkeypatch.setattr(cp, "_fit", lambda problem, x0, **kw: None if problem.n else fit(problem, x0, **kw))
         solved = solve_with_points(CORNERS, _pins(CORNERS), [_point((0.0, -20.0)), _point((5.0, -35.0))], W, H)
         assert solved is not None
         assert [(p.status, p.reason) for p in solved.points] == [("flagged", cp.REASON_DISAGREES_CORNERS)] * 2
@@ -428,16 +428,18 @@ class TestASupersededSolve:
         with pytest.raises(cp.SolveSuperseded):
             solve_with_points(CORNERS, _pins(CORNERS), [_point((0.0, -20.0))], W, H, stale=lambda: True)
 
-    def test_it_stops_between_iterations_once_a_newer_one_arrives(self) -> None:
+    def test_it_stops_once_a_newer_one_arrives_while_it_runs(self) -> None:
         asked = []
 
-        def stale() -> bool:  # current when the fit starts, superseded by its first iteration
+        def stale() -> bool:  # current when the solve starts, superseded while it runs
             asked.append(1)
             return len(asked) > 1
 
+        # Distances off by 30 cm keep the fit iterating; current throughout, it solves.
+        points = [_point((0.0, -20.0), err_a=0.3), _point((5.0, -35.0), err_b=-0.3)]
+        assert solve_with_points(CORNERS, _pins(CORNERS), points, W, H) is not None
         with pytest.raises(cp.SolveSuperseded):
-            solve_with_points(CORNERS, _pins(CORNERS), [_point((0.0, -20.0)), _point((5.0, -35.0))], W, H, stale=stale)
-        assert len(asked) == 2
+            solve_with_points(CORNERS, _pins(CORNERS), points, W, H, stale=stale)
 
     def test_a_current_one_solves_as_without_the_check(self) -> None:
         points = [_point((0.0, -20.0)), _point((5.0, -35.0))]

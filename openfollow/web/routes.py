@@ -3552,34 +3552,36 @@ def _wizard_calibration_points(
     return points
 
 
-# The newest solve each Setup Wizard page asked for, so a joint fit it no longer waits on stops early.
-_SOLVE_PAGES_KEPT = 64
-_wizard_solve_seqs: collections.OrderedDict[str, int] = collections.OrderedDict()
-_wizard_solve_lock = threading.Lock()
+class _WizardSolveTurns:
+    """The newest solve each Setup Wizard page asked for, so a joint fit it no longer waits on stops early."""
 
+    _PAGES_KEPT = 64
 
-def _wizard_solve_turn(data: dict[str, Any]) -> Callable[[], bool] | None:
-    """Record this solve as its page's newest; the answer is whether a newer one has been asked for since.
+    def __init__(self) -> None:
+        self._seqs: collections.OrderedDict[str, int] = collections.OrderedDict()
+        self._lock = threading.Lock()
 
-    None when the body names no page. A body naming only one of the two is malformed and raises.
-    """
-    page, seq = data.get("solve_page"), data.get("solve_seq")
-    if page is None and seq is None:
-        return None
-    if not isinstance(page, str) or not 0 < len(page) <= 64:
-        raise ValueError("solve_page must be a name of 1 to 64 characters")
-    number = _json_int(seq, "solve_seq")
-    with _wizard_solve_lock:
-        newest = max(number, _wizard_solve_seqs.pop(page, number))
-        _wizard_solve_seqs[page] = newest
-        while len(_wizard_solve_seqs) > _SOLVE_PAGES_KEPT:
-            _wizard_solve_seqs.popitem(last=False)
+    def turn(self, data: dict[str, Any]) -> Callable[[], bool] | None:
+        """Record this solve as its page's newest; the answer is whether a newer one has been asked for.
 
-    def stale() -> bool:
-        with _wizard_solve_lock:
-            return _wizard_solve_seqs.get(page, number) != number
+        None when the body names no page. A body naming only one of the two is malformed and raises.
+        """
+        page, seq = data.get("solve_page"), data.get("solve_seq")
+        if page is None and seq is None:
+            return None
+        if not isinstance(page, str) or not 0 < len(page) <= 64:
+            raise ValueError("solve_page must be a name of 1 to 64 characters")
+        number = _json_int(seq, "solve_seq")
+        with self._lock:
+            self._seqs[page] = max(number, self._seqs.pop(page, number))
+            while len(self._seqs) > self._PAGES_KEPT:
+                self._seqs.popitem(last=False)
 
-    return stale
+        def stale() -> bool:
+            with self._lock:
+                return self._seqs.get(page, number) != number
+
+        return stale
 
 
 def _point_answer(fit: Any, params: Any, img_w: float, img_h: float, k1: float, k2: float) -> dict[str, Any]:
@@ -9753,6 +9755,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
         return json.dumps({"world_points": world.tolist()})
 
+    solve_turns = _WizardSolveTurns()
+
     @app.post("/api/wizard/solve")
     def api_wizard_solve() -> Any:
         """Run DLT camera solve from 4 corner correspondences."""
@@ -9782,11 +9786,15 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                     raise ValueError("each screen_corner must be [x, y]")
                 if not all(math.isfinite(float(c)) for c in p):
                     raise ValueError("screen_corner coords must be finite numbers")
+            # Recorded before the points are read: a newer body refused as malformed still supersedes.
+            stale = solve_turns.turn(data)
             calibration_points = _wizard_calibration_points(data.get("calibration_points"), img_w, img_h)
-            stale = _wizard_solve_turn(data)
         except (KeyError, TypeError, ValueError) as exc:
             response.status = 400
             return json.dumps({"error": str(exc)})
+        if stale is not None and stale():
+            response.status = 409
+            return json.dumps({"error": "A newer solve was asked for."})
 
         import numpy as np
 

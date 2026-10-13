@@ -14,6 +14,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 
 import numpy as np
 import pytest
@@ -2464,16 +2465,27 @@ class TestWizardSolveWithCalibrationPoints:
         assert np.allclose([p["seen"] for p in data["calibration_points"]], [p["pin"] for p in points], atol=1e-3)
         assert data["corner_residual"] == pytest.approx(0.0, abs=1e-3)
 
-    def test_a_solve_older_than_one_already_asked_for_is_dropped(self, live_server) -> None:
+    @pytest.mark.parametrize("with_points", [True, False], ids=["joint fit", "corners only"])
+    def test_a_solve_older_than_one_already_asked_for_is_dropped(self, live_server, with_points) -> None:
         _, base = live_server
-        points = [_laser_point((2.0, 14.0)), _laser_point((-3.0, 18.0))]
-        newer = {**_solve_body(points), "solve_page": "page-a", "solve_seq": 7}
-        older = {**_solve_body(points), "solve_page": "page-a", "solve_seq": 6}
-        other_page = {**_solve_body(points), "solve_page": "page-b", "solve_seq": 1}
+        page, other = f"page-{uuid.uuid4().hex[:8]}", f"page-{uuid.uuid4().hex[:8]}"
+        points = [_laser_point((2.0, 14.0)), _laser_point((-3.0, 18.0))] if with_points else None
+        newer = {**_solve_body(points), "solve_page": page, "solve_seq": 7}
+        older = {**_solve_body(points), "solve_page": page, "solve_seq": 6}
+        other_page = {**_solve_body(points), "solve_page": other, "solve_seq": 1}
         assert _post_json(base, "/api/wizard/solve", newer)[0] == 200
         status, data = _post_json(base, "/api/wizard/solve", older)
         assert (status, data) == (409, {"error": "A newer solve was asked for."})
         assert _post_json(base, "/api/wizard/solve", other_page)[0] == 200
+
+    def test_a_newer_solve_refused_as_malformed_still_supersedes_the_older(self, live_server) -> None:
+        _, base = live_server
+        page = f"page-{uuid.uuid4().hex[:8]}"
+        points = [_laser_point((2.0, 14.0))]
+        bad = {**_solve_body([{**points[0], "distance_a": 500.0}]), "solve_page": page, "solve_seq": 8}
+        assert _post_json(base, "/api/wizard/solve", bad)[0] == 400
+        status, _ = _post_json(base, "/api/wizard/solve", {**_solve_body(points), "solve_page": page, "solve_seq": 7})
+        assert status == 409
 
     @pytest.mark.parametrize(
         "change",

@@ -570,7 +570,7 @@ def test_a_solve_while_points_exist_holds_the_corners_it_was_solved_from() -> No
 
 
 _SOLVE_PAGE = """
-function answered(value) { return { then: function(f) { return answered(f(value)); } }; }
+function answered(value) { return { then: function(f) { return answered(f(value)); }, catch: function() {} }; }
 var sent = 0, landed = 0, poseSeq = 0, preCornerPinningPose = null;
 function fetch(_url, _opts) { sent++; return answered({ json: function() { return reply; } }); }
 function invalidLengthFields() { return []; } function snapshotPose() { return {}; }
@@ -1396,8 +1396,8 @@ function fetch(_url, opts) {{ sent.push(JSON.parse(opts.body)); return {{ then: 
 _CHANGE_PAGE = """
 var poseSeq = 4, solved = 0, scheduled = 0, calibAwaiting = null, calibSolveTimer = null, window = {};
 function saveToSession() {} function renderCalibList() {} function renderCalibOverlay() {}
-function renderCalibStatus() {} function setFineZoomMode() {}
-function solveFromCorners() { solved++; return true; } function calibScheduleSolve() { scheduled++; }
+function renderCalibStatus() {} function setFineZoomMode() {} function calibForgetPose() {}
+function solveFromCorners() { solved++; } function calibScheduleSolve() { scheduled++; }
 function wizReadLen(id) { return { 'calib-a-0': 20.0, 'calib-b-0': 19.25, 'calib-h-0': 0.0 }[id]; }
 """
 
@@ -1414,23 +1414,35 @@ def test_a_change_to_the_points_drops_older_answers_and_solves_again(change: str
     assert after == [5, 1]
 
 
-@pytest.mark.parametrize(("solves", "forgotten"), [(True, False), (False, True)], ids=["solves", "cannot solve"])
-def test_a_delete_that_cannot_solve_leaves_no_pose_from_the_deleted_point(solves: bool, forgotten: bool) -> None:
+@pytest.mark.parametrize(
+    ("fails", "deleted_answer", "forgotten"),
+    [
+        (False, {"status": "ok"}, False),
+        (True, {"status": "ok"}, True),
+        (True, {"status": "unverified"}, True),
+        (True, {"status": "flagged"}, False),  # left out of the fit: the pose is the rest's own
+        (True, None, False),  # never in the fit
+    ],
+    ids=["solves", "fails, was used", "fails, was the only one", "fails, was left out", "fails, had no answer"],
+)
+def test_a_delete_whose_solve_fails_leaves_no_pose_from_the_deleted_point(fails, deleted_answer, forgotten) -> None:
     """A fit that used the deleted point is not the remaining points' answer: they read Not solved."""
-    answers, positions, held = run_wizard_js(
+    answers, positions, held, timer = run_wizard_js(
         "(function() { window.calibDelete(1); return [calibAnswers, calibPoints.map(function(p) {"
-        " return p.position; }), calibHeldPins]; })()",
+        " return p.position; }), calibHeldPins, calibSolveTimer]; })()",
         functions=("calibTakeAnswer", "calibForgetPose"),
         prelude=_NO_CALIB_DRAWING
         + f"""
 var poseSeq = 4, calibAwaiting = null, window = {{}}, calibHeldPins = {{ world: [], corners: [] }};
+var calibSolveTimer = setTimeout(function() {{}}, 0);
 function saveToSession() {{}} function renderCalibList() {{}}
-function solveFromCorners() {{ return {json.dumps(solves)}; }}
+function solveFromCorners(failed) {{ if ({json.dumps(fails)} && failed) failed(); }}
 """
         + wizard_function("calibDelete", prefix="window."),
         calibPoints=[{**_POINT, "pin": [0.25, 0.5], "position": [1, 2, 0]}, {**_POINT, "pin": [0.75, 0.5]}],
-        calibAnswers=[{"status": "ok", "position": [1, 2, 0]}, {"status": "ok"}],
+        calibAnswers=[{"status": "ok", "position": [1, 2, 0]}, deleted_answer],
     )
+    assert timer is None  # the delete's own solve is the one; a point solve still to come would repeat it
     if forgotten:
         assert (answers, positions, held) == ([None], [None], None)
     else:
@@ -1439,6 +1451,38 @@ function solveFromCorners() {{ return {json.dumps(solves)}; }}
             [[1, 2, 0]],
             {"world": [], "corners": []},
         )
+
+
+@pytest.mark.parametrize(
+    ("corners", "bad_lengths", "reply", "failed"),
+    [
+        (_CORNERS_PINNED, [], {"camera": {}, "reprojected_corners": [[1, 1], [2, 1], [2, 2], [1, 2]]}, False),
+        ({**_CORNERS_PINNED, "DSL": None}, [], None, True),
+        ({**_CORNERS_PINNED, "DSL": [1000, 500]}, [], None, True),  # no convex quad
+        (_CORNERS_PINNED, ["Width"], None, True),
+        (_CORNERS_PINNED, [], {"error": "Invalid perspective"}, True),
+        (_CORNERS_PINNED, [], "unreachable", True),
+    ],
+    ids=["solved", "corners not placed", "not convex", "invalid length", "refused", "unreachable"],
+)
+def test_a_corner_solve_says_when_it_could_not_solve(corners, bad_lengths, reply, failed) -> None:
+    said = run_wizard_js(
+        "(function() { var said = false; solveFromCorners(function() { said = true; }); return said; })()",
+        functions=("isConvex", "quadArea", "wizSolveCorners", "solveFromCorners"),
+        variables=("CORNER_NAMES",),
+        prelude=_SOLVE_PAGE
+        + f"""
+function invalidLengthFields() {{ return {json.dumps(bad_lengths)}; }}
+function wizardSolveBody(sc) {{ return {{ screen_corners: sc }}; }}
+function rejected() {{ return {{ then: function() {{ return this; }}, catch: function(f) {{ f(new Error('x')); }} }}; }}
+function fetch() {{
+  return reply === 'unreachable' ? rejected() : answered({{ json: function() {{ return reply; }} }});
+}}
+""",
+        cornerPositions=corners,
+        reply=reply,
+    )
+    assert said is failed
 
 
 @pytest.mark.parametrize(("added", "snapped"), [(False, True), (True, False)], ids=["none added", "point added"])
@@ -1459,7 +1503,7 @@ def test_a_corners_only_answer_landing_after_a_point_was_added_holds_the_pins(ad
         ),
         variables=("CORNER_NAMES",),
         prelude=f"""
-function answered(value) {{ return {{ then: function(f) {{ return answered(f(value)); }} }}; }}
+function answered(value) {{ return {{ then: function(f) {{ return answered(f(value)); }}, catch: function() {{}} }}; }}
 var poseSeq = 0, preCornerPinningPose = null, CALIB_ENABLED = true, WIZ_SOLVE_PAGE = 'p';
 var imageWidth = 1920, imageHeight = 1080, heldBody = null;
 function fetch() {{

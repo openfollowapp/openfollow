@@ -3917,17 +3917,20 @@
     return Math.abs(area)/2;
   }
 
-  // True when a solve was sent.
-  function solveFromCorners() {
+  // ``failed`` runs when no solve can be sent, or its answer is an error or never comes.
+  function solveFromCorners(failed) {
+    var fail = failed || function() {};
     // No projection has placed the corners yet: a calibration point can still ask for a solve.
-    if (CORNER_NAMES.some(function(n) { return !cornerPositions[n]; })) return;
+    if (CORNER_NAMES.some(function(n) { return !cornerPositions[n]; })) { fail(); return; }
     if (!isConvex(cornerPositions) || quadArea(cornerPositions) < 100) {
       showSolveStatus('Invalid perspective \u2013 adjust corners', false);
+      fail();
       return;
     }
     var badLen = invalidLengthFields();
     if (badLen.length) {
       showSolveStatus('Fix invalid length field(s) first: ' + badLen.join(', '), false);
+      fail();
       return;
     }
 
@@ -3953,6 +3956,7 @@
       if (seq !== poseSeq) return;
       if (data.error) {
         showSolveStatus(data.error, false);
+        fail();
         return;
       }
 
@@ -3986,8 +3990,7 @@
       }
 
       applySolvedPose(data.camera, screenCorners, body, data.calibration_points);
-    });
-    return true;
+    }).catch(function() { if (seq === poseSeq) fail(); });
   }
 
   function showSolveStatus(msg, ok) {
@@ -4191,6 +4194,7 @@
   };
 
   window.calibDelete = function(i) {
+    var used = calibAnswers[i] && calibAnswers[i].status !== 'flagged';
     calibPoints.splice(i, 1);
     calibAnswers.splice(i, 1);
     if (calibAwaiting === i) calibAwaiting = null;
@@ -4200,8 +4204,10 @@
     saveToSession();
     renderCalibList();
     renderCalibOverlay();
+    clearTimeout(calibSolveTimer);
+    calibSolveTimer = null;
     // A pose fitted with the deleted point answers for none of the rest.
-    if (!solveFromCorners()) calibForgetPose();
+    solveFromCorners(used ? calibForgetPose : null);
   };
 
   // Each distance stays with the corner it was measured from, whatever order the corners are tapped in.

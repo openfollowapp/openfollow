@@ -4,10 +4,12 @@
 
 Each interior corner (every corner of a closed path) is replaced by a circular
 arc of that point's radius, shrunk where it would take more than half of either
-neighbouring segment. The arc lies in the plane of the two segments, so a change
-of height is rounded just like a turn. The curve is held as a dense polyline
-whose chords stay within a millimetre of the arcs, so walking it by arc length is
-exact enough to show no facets. Positions are PSN-absolute metres; the walk is
+neighbouring segment. A turn sharper than 120 degrees gets a tighter arc, the
+tighter the sharper, so a path turning straight back still reaches its far
+point. The arc lies in the plane of the two segments, so a change of height is
+rounded just like a turn. The curve is held as a dense polyline whose chords
+stay within a millimetre of the arcs, so walking it by arc length is exact
+enough to show no facets. Positions are PSN-absolute metres; the walk is
 measured in X/Y and the height comes with it.
 """
 
@@ -27,6 +29,8 @@ _MAX_ARC_STEP_RAD = math.radians(5.0)
 # Below this two points are one, and a turn this close to none or to a full reversal gets no arc.
 _SAME_POINT_M = 1e-6
 _STRAIGHT_RAD = 1e-6
+# A place this close to a vertex of the polyline is on it, whatever rounding put it a hair to one side.
+_ON_VERTEX_M = 1e-9
 
 
 @dataclass(frozen=True)
@@ -40,10 +44,12 @@ class PathPoint:
 class PathCurve:
     """A path's curve, addressed by arc length ``s`` from its start."""
 
-    def __init__(self, xy: FloatArray, z: FloatArray, closed: bool) -> None:
+    def __init__(self, xy: FloatArray, z: FloatArray, closed: bool, corners: FloatArray | None = None) -> None:
         self.xy = xy
         self.z = z
         self.closed = closed
+        # The configured points rounded into the curve, in plan: an arc passes them by.
+        self.corners: FloatArray = np.empty((0, 2)) if corners is None else corners
         steps = np.hypot(*np.diff(xy, axis=0).T)
         self.s: FloatArray = np.concatenate(([0.0], np.cumsum(steps)))
         self._seg_start = xy[:-1]
@@ -76,9 +82,28 @@ class PathCurve:
 
     def tangent(self, s: float) -> tuple[float, float]:
         """The unit direction of travel at ``s``, towards growing ``s``."""
-        dx, dy = self._seg_vec[self._segment(self.wrap(s))]
-        norm = math.hypot(dx, dy)
-        return float(dx / norm), float(dy / norm)
+        return self.directions(s)[1]
+
+    def directions(self, s: float) -> tuple[tuple[float, float], tuple[float, float]]:
+        """The unit directions, towards growing ``s``, of arriving at and leaving ``s``.
+
+        They differ only on a vertex, where a sharp corner turns.
+        """
+        s = self.wrap(s)
+        last = len(self.s) - 1
+        k = int(np.searchsorted(self.s, s))
+        if k > 0 and s - self.s[k - 1] < self.s[k] - s:
+            k -= 1
+        if abs(self.s[k] - s) > _ON_VERTEX_M:
+            along = self._unit(self._segment(s))
+            return along, along
+        arriving = k - 1 if k > 0 else (last - 1 if self.closed else 0)
+        leaving = k if k < last else (0 if self.closed else last - 1)
+        return self._unit(arriving), self._unit(leaving)
+
+    def _unit(self, i: int) -> tuple[float, float]:
+        dx, dy = self._seg_vec[i] / math.sqrt(self._seg_len2[i])
+        return float(dx), float(dy)
 
     def segments(self) -> tuple[FloatArray, FloatArray, FloatArray, FloatArray]:
         """Each segment's start point, vector, squared length and ``s`` at its start."""
@@ -138,7 +163,8 @@ def build_curve(points: Sequence[PathPoint], closed: bool) -> PathCurve | None:
     # Drop the repeats a corner meeting its neighbour's corner leaves behind.
     keep = np.concatenate(([True], np.hypot(*np.diff(arr[:, :2], axis=0).T) > _SAME_POINT_M))
     arr = arr[keep]
-    return PathCurve(arr[:, :2].copy(), arr[:, 2].copy(), closed)
+    corner_xy = np.array([(pts[i].x, pts[i].y) for i in corners], dtype=np.float64).reshape(-1, 2)
+    return PathCurve(arr[:, :2].copy(), arr[:, 2].copy(), closed, corner_xy)
 
 
 def _distinct(points: Sequence[PathPoint], closed: bool) -> list[PathPoint]:
@@ -162,7 +188,8 @@ def _corner(prev: PathPoint, at: PathPoint, nxt: PathPoint) -> list[tuple[float,
     if at.radius <= 0.0 or turn < _STRAIGHT_RAD or turn > math.pi - _STRAIGHT_RAD:
         return [(at.x, at.y, at.z)]
     half_tan = math.tan(turn / 2.0)
-    reach = min(at.radius * half_tan, 0.5 * min(len_in, len_out))
+    # Past a 120 degree turn the arc tightens, closing on the point as the turn reaches straight back.
+    reach = min(at.radius * half_tan, 3.0 * at.radius / half_tan, 0.5 * min(len_in, len_out))
     radius = reach / half_tan
     # Towards the centre, in the plane of both segments, square to the incoming one.
     inward = v - float(u @ v) * u

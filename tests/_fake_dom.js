@@ -62,6 +62,7 @@ Object.defineProperties(El.prototype, {
                 return first ? first.value : '';
             }
             if (this.tagName === 'OPTION') return this.getAttribute('value') || this.textContent;
+            if (this._value === null && (this.type === 'checkbox' || this.type === 'radio')) return this.getAttribute('value') || 'on';
             return this._value !== null ? this._value : this.getAttribute('value') || '';
         },
         set: function (v) { this._value = String(v); },
@@ -240,8 +241,10 @@ El.prototype.dispatchEvent = function (ev) {
     for (var j = 1; ev.bubbles && j < path.length && !ev.stopped; j++) runListeners(path[j], ev, false);
     return !ev.defaultPrevented;
 };
-// What a mouse click does: a checkbox flips, a summary opens or closes its details.
+// What a mouse click does: focus moves to it, a checkbox flips, a summary opens or closes its details.
+var FOCUSABLE = { INPUT: 1, BUTTON: 1, SELECT: 1, TEXTAREA: 1, SUMMARY: 1, A: 1 };
 El.prototype.click = function () {
+    if (FOCUSABLE[this.tagName]) this.focus();
     var box = this.tagName === 'INPUT' && this.type === 'checkbox';
     if (box) this.checked = !this.checked;
     var ok = this.dispatchEvent(makeEvent('click'));
@@ -274,7 +277,11 @@ El.prototype.blur = function () {
 function typeInto(el, text) { el.focus(); el.value = text; el._typed = true; el.dispatchEvent(makeEvent('input')); }
 function enter(el) { if (el._typed) { el._typed = false; el.dispatchEvent(makeEvent('change')); } }
 El.prototype.select = function () { this.selectionStart = 0; this.selectionEnd = this.value.length; };
-El.prototype.setSelectionRange = function (a, b) { this.selectionStart = a; this.selectionEnd = b; };
+El.prototype.setSelectionRange = function (a, b) {
+    if (this.type !== 'text') throw new Error('InvalidStateError: no selection on a ' + this.type + ' input');
+    this.selectionStart = a;
+    this.selectionEnd = b;
+};
 
 // Rendered: in the document, and neither it nor an ancestor hidden or display: none.
 El.prototype.getClientRects = function () {

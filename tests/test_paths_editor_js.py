@@ -332,9 +332,10 @@ class TestEditingThePoints:
         out = _editor(
             """
             openRow('cross'); await settle();
-            var y = inputs('cross', 0)[1];
+            var x = inputs('cross', 0)[0], y = inputs('cross', 0)[1];
+            typeInto(x, '-2');
             typeInto(y, 'abc'); enter(y);
-            row('loop').querySelector('input[id$="-closed"]').click();  // redraws the rows
+            model.paths[1].closed = true;  // changed elsewhere: the load after the save of X redraws
             await settle();
             var now = inputs('cross', 0)[1];
             out.shown = [now !== y, document.activeElement === now, now.value, now.getAttribute('aria-invalid')];
@@ -347,10 +348,10 @@ class TestEditingThePoints:
         out = _editor(
             """
             openRow('cross'); await settle();
-            var y = inputs('cross', 0)[1];
+            var x = inputs('cross', 0)[0], y = inputs('cross', 0)[1];
+            typeInto(x, '-2');
             y.focus();
-            model.paths[0].points[0].y = 5;  // moved by another station's push
-            row('loop').querySelector('input[id$="-closed"]').click();  // saves loop, then loads
+            model.paths[0].points[0].y = 5;  // moved by another station's push before the load
             await settle();
             var now = inputs('cross', 0)[1];
             out.shown = [document.activeElement === now, now.value];
@@ -358,7 +359,7 @@ class TestEditingThePoints:
             out.crossSaves = puts().filter(function (r) { return r.url === '/api/paths/cross'; }).length;
             """
         )
-        assert out == {"shown": [True, "5.000 m"], "crossSaves": 0}
+        assert out == {"shown": [True, "5.000 m"], "crossSaves": 1}
 
     def test_a_new_point_shows_in_the_table_at_once(self) -> None:
         out = _editor(

@@ -107,8 +107,8 @@ def _option_values(run: str, names: set[str]) -> list[str]:
 
 
 def _extras_installed(run: str) -> set[str]:
-    """Extras a ``run:`` block installs."""
-    return set(_option_values(run, {"-E", "--extras"}))
+    """Extras a ``run:`` block installs; poetry splits one ``-E`` value on whitespace."""
+    return {extra for value in _option_values(run, {"-E", "--extras"}) for extra in value.split()}
 
 
 def _groups_installed(run: str) -> set[str]:
@@ -158,15 +158,45 @@ class _AuditJob:
     groups: frozenset[str]
     caches_venv: bool
     install_flags: frozenset[str]
-    runs_on: str
+    runners: tuple[str, ...]
+
+    @property
+    def on_macos(self) -> bool:
+        return any("macos" in runner.lower() for runner in self.runners)
+
+    @property
+    def on_linux(self) -> bool:
+        return any("macos" not in runner.lower() for runner in self.runners)
+
+
+@functools.cache
+def _workflow_text() -> str:
+    return _WORKFLOW.read_text(encoding="utf-8")
+
+
+@functools.cache
+def _workflow_doc() -> dict[str, Any]:
+    doc: dict[str, Any] = yaml.safe_load(_workflow_text())
+    return doc
+
+
+def _runners(job: dict[str, Any]) -> tuple[str, ...]:
+    """Each runner a job runs on, a ``matrix.os`` runs-on expanded to its legs."""
+    runs_on = job.get("runs-on", "")
+    if isinstance(runs_on, list):
+        return (" ".join(map(str, runs_on)),)
+    if "matrix.os" in str(runs_on):
+        matrix = (job.get("strategy") or {}).get("matrix") or {}
+        legs = [*matrix.get("os", []), *(entry["os"] for entry in matrix.get("include", []) if "os" in entry)]
+        return tuple(map(str, legs))
+    return (str(runs_on),)
 
 
 @functools.cache
 def _audit_jobs() -> tuple[_AuditJob, ...]:
     """Every ci.yml job that runs pip-audit, with the closure it audits."""
-    doc: dict[str, Any] = yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))
     jobs: list[_AuditJob] = []
-    for name, job in doc["jobs"].items():
+    for name, job in _workflow_doc()["jobs"].items():
         steps = job.get("steps") or []
         runs = [_strip_comments(str(step.get("run", ""))) for step in steps]
         audit_steps = [step for step, run in zip(steps, runs, strict=True) if _AUDIT_COMMAND.search(run)]
@@ -188,7 +218,7 @@ def _audit_jobs() -> tuple[_AuditJob, ...]:
                 groups=frozenset(groups),
                 caches_venv=caches_venv,
                 install_flags=frozenset(flags),
-                runs_on=str(job.get("runs-on", "")),
+                runners=_runners(job),
             )
         )
     assert jobs, "ci.yml has no job that runs pip-audit"
@@ -269,13 +299,13 @@ def _lock_packages() -> tuple[dict[str, Any], ...]:
     return tuple(tomllib.loads(_LOCK.read_text(encoding="utf-8"))["package"])
 
 
-def _darwin_only_packages(group: str) -> list[str]:
+def _darwin_only_packages(group: str, jobs: tuple[_AuditJob, ...], packages: tuple[dict[str, Any], ...]) -> list[str]:
     """Lock packages ``group`` installs on macOS but no Linux audit installs at all."""
-    linux_jobs = [job for job in _audit_jobs() if "macos" not in job.runs_on.lower()]
+    linux_jobs = [job for job in jobs if job.on_linux]
     extras: set[str] = set().union(*(job.extras for job in linux_jobs))
     audited_groups = {"main", "dev"}.union(*(job.groups for job in linux_jobs))
     names: list[str] = []
-    for package in _lock_packages():
+    for package in packages:
         groups = package.get("groups", [])
         if group not in groups:
             continue
@@ -293,9 +323,9 @@ def _darwin_only_packages(group: str) -> list[str]:
     return sorted(names)
 
 
-def _job_comments(job_name: str) -> str:
-    """The comment block above a ci.yml job and every comment inside it."""
-    lines = _WORKFLOW.read_text(encoding="utf-8").splitlines()
+def _job_comments(workflow: str, job_name: str) -> str:
+    """The comment block above a workflow job and every comment inside it."""
+    lines = workflow.splitlines()
     start = lines.index(f"  {job_name}:")
     first = start
     while first > 0 and lines[first - 1].startswith("  #"):
@@ -303,8 +333,8 @@ def _job_comments(job_name: str) -> str:
     last = start + 1
     while last < len(lines) and not re.match(r"^  [A-Za-z0-9_-]+:\s*$", lines[last]):
         last += 1
-    while last > start + 1 and lines[last - 1].startswith("  #"):  # the next job's own preamble
-        last -= 1
+    while last > start + 1 and (not lines[last - 1].strip() or lines[last - 1].startswith("  #")):
+        last -= 1  # the next job's own preamble
     return " ".join(line.strip().lstrip("#").strip() for line in lines[first:last] if line.strip().startswith("#"))
 
 
@@ -312,13 +342,11 @@ def _job_comments(job_name: str) -> str:
 def test_darwin_only_dependencies_audited_on_linux_are_named_as_uncovered(group: str) -> None:
     """An audit on a Linux runner skips the group's macOS-only packages. Its job comment must say which."""
     jobs = [job for job in _audit_jobs() if group in job.groups]
-    audited_on_macos = any("macos" in job.runs_on.lower() for job in jobs)
-    comments = " ".join(_job_comments(job.name) for job in jobs)
-    unnamed = (
-        []
-        if audited_on_macos
-        else [n for n in _darwin_only_packages(group) if not re.search(rf"\b{re.escape(n)}\b", comments)]
+    comments = " ".join(_job_comments(_workflow_text(), job.name) for job in jobs)
+    darwin_only = (
+        [] if any(job.on_macos for job in jobs) else _darwin_only_packages(group, _audit_jobs(), _lock_packages())
     )
+    unnamed = [n for n in darwin_only if not re.search(rf"\b{re.escape(n)}\b", comments)]
     assert not unnamed, (
         f"the '{group}' group is audited only on Linux, where {unnamed} never install, so "
         "pip-audit never sees them. Name them in the audit job's comment as not covered."
@@ -340,8 +368,7 @@ def test_optional_groups_never_gate_a_release_or_reach_a_venv_cache(group: str) 
 
 def test_every_job_restoring_a_cached_venv_syncs_it_to_the_lock() -> None:
     """``poetry install`` keeps packages outside the selected closure, so a restored venv would too."""
-    doc: dict[str, Any] = yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))
-    for name, job in doc["jobs"].items():
+    for name, job in _workflow_doc()["jobs"].items():
         steps = job.get("steps") or []
         if not _caches_venv(steps):
             continue
@@ -413,3 +440,117 @@ def test_the_gating_audit_keeps_the_build_toolchain_in_its_closure() -> None:
             "Poetry groups from the audited closure. The 'dev' group is meant to be in it: "
             "its tooling runs in the pipeline that builds the release."
         )
+
+
+# --- the parsers the guards above rely on -----------------------------------
+
+
+@pytest.mark.parametrize(
+    ("run", "extras", "groups"),
+    [
+        ("poetry sync -E detection --with mutation", {"detection"}, {"mutation"}),
+        ("poetry install --extras=export --with=a,b", {"export"}, {"a", "b"}),
+        ("poetry sync -Edetection --with a --with b", {"detection"}, {"a", "b"}),
+        ('poetry install -E "detection export"', {"detection", "export"}, set()),
+        ("poetry run pytest -E x --with y", set(), set()),
+        ("# poetry sync -E detection", set(), set()),
+    ],
+    ids=["separate", "equals", "attached-repeated", "space-separated", "not-an-install", "comment"],
+)
+def test_install_parsers_read_every_spelling(run: str, extras: set[str], groups: set[str]) -> None:
+    assert _extras_installed(run) == extras
+    assert _groups_installed(run) == groups
+
+
+@pytest.mark.parametrize(
+    ("job", "runners"),
+    [
+        ({"runs-on": "ubuntu-latest"}, ("ubuntu-latest",)),
+        ({"runs-on": ["self-hosted", "macOS"]}, ("self-hosted macOS",)),
+        (
+            {
+                "runs-on": "${{ matrix.os }}",
+                "strategy": {"matrix": {"os": ["ubuntu-latest"], "include": [{"os": "macos-14"}]}},
+            },
+            ("ubuntu-latest", "macos-14"),
+        ),
+    ],
+    ids=["literal", "label-list", "matrix"],
+)
+def test_runners_expand_a_matrix_into_its_legs(job: dict[str, Any], runners: tuple[str, ...]) -> None:
+    assert _runners(job) == runners
+
+
+_TWO_JOBS = """\
+jobs:
+  # audit preamble names macholib
+  audit:
+    steps:
+      # step comment
+      - run: make audit
+
+  # next preamble names pyinstaller
+
+  next:
+    steps: []
+"""
+
+
+def test_job_comments_stop_before_the_next_jobs_preamble() -> None:
+    comments = _job_comments(_TWO_JOBS, "audit")
+    assert "macholib" in comments
+    assert "step comment" in comments
+    assert "pyinstaller" not in comments
+
+
+def _job(*, groups: set[str], runners: tuple[str, ...] = ("ubuntu-latest",)) -> _AuditJob:
+    return _AuditJob(
+        name="job",
+        gating=False,
+        extras=frozenset(),
+        groups=frozenset(groups),
+        caches_venv=False,
+        install_flags=frozenset(),
+        runners=runners,
+    )
+
+
+_MAC = 'sys_platform == "darwin"'
+
+
+@pytest.mark.parametrize(
+    ("package", "jobs", "uncovered"),
+    [
+        ({"groups": ["macos"], "markers": _MAC}, (_job(groups={"macos"}),), True),
+        (
+            {"groups": ["macos"], "markers": f'{_MAC} and platform_machine == "arm64"'},
+            (_job(groups={"macos"}),),
+            True,
+        ),
+        ({"groups": ["dev", "macos"], "markers": {"macos": _MAC}}, (_job(groups={"macos"}),), False),
+        (
+            {"groups": ["mutation", "macos"], "markers": {"macos": _MAC}},
+            (_job(groups={"macos", "mutation"}),),
+            False,
+        ),
+        (
+            {"groups": ["mutation", "macos"], "markers": {"macos": _MAC}},
+            (_job(groups={"macos"}), _job(groups={"mutation"}, runners=("macos-14",))),
+            True,
+        ),
+        ({"groups": ["macos"], "markers": 'sys_platform == "win32"'}, (_job(groups={"macos"}),), False),
+        ({"groups": ["macos"]}, (_job(groups={"macos"}),), False),
+    ],
+    ids=[
+        "darwin-only",
+        "compound-marker",
+        "dev-installs-it-on-linux",
+        "linux-audited-group-installs-it",
+        "macos-job-is-not-linux-coverage",
+        "windows-only",
+        "unconditional",
+    ],
+)
+def test_darwin_only_packages(package: dict[str, Any], jobs: tuple[_AuditJob, ...], uncovered: bool) -> None:
+    named = _darwin_only_packages("macos", jobs, ({"name": "pkg", **package},))
+    assert named == (["pkg"] if uncovered else [])

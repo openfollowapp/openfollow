@@ -8832,9 +8832,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         return json.dumps(_config_dict_redacted(cfg), indent=2)
 
     def _record_push(station: str, what: str, backup: dict[str, str]) -> None:
-        # The socket's peer, not ``remote_addr``: Bottle takes that from a client-set X-Forwarded-For.
-        address = request.environ.get("REMOTE_ADDR", "")
-        server.pushed_settings.record(station, address, what, backup.get("backup_error", ""))
+        server.pushed_settings.record(station, _client_address(), what, backup.get("backup_error", ""))
 
     @app.get("/api/pushed-settings")
     def api_pushed_settings() -> Any:

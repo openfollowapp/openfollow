@@ -3102,6 +3102,21 @@ def test_is_on_device_request_handles_a_missing_connection_address(monkeypatch) 
     assert routes_mod._is_on_device_request() is False
 
 
+def test_no_code_reads_bottles_forwarded_for_address() -> None:
+    """Bottle's ``remote_addr`` / ``remote_route`` read a client-set X-Forwarded-For; ``REMOTE_ADDR`` is the peer."""
+    import ast
+    from pathlib import Path
+
+    import openfollow
+
+    offenders = []
+    for path in sorted(Path(openfollow.__file__).parent.rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Attribute) and node.attr in ("remote_addr", "remote_route"):
+                offenders.append(f"{path.name}:{node.lineno}")
+    assert offenders == []
+
+
 # ---------------------------------------------------------------------------
 # _cancel_button_label – gamepad-button label for the on-device footer hint
 # ---------------------------------------------------------------------------

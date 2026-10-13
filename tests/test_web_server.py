@@ -2378,6 +2378,20 @@ def test_post_general_with_restart_flag_queues_restart(live_server) -> None:
 @pytest.fixture()
 def pin_protected_server(tmp_path, monkeypatch):
     """Variant of ``live_server`` that starts with a configured web PIN."""
+    yield from _serve_with_pin(tmp_path, monkeypatch)
+
+
+@pytest.fixture()
+def frozen_throttle_pin_server(tmp_path, monkeypatch):
+    """``pin_protected_server`` whose login throttle never sees time pass, so a lockout cannot expire mid-test."""
+    import openfollow.web.routes as routes_module
+    from openfollow.web.login_throttle import LoginThrottle
+
+    monkeypatch.setattr(routes_module, "LoginThrottle", lambda: LoginThrottle(clock=lambda: 1000.0))
+    yield from _serve_with_pin(tmp_path, monkeypatch)
+
+
+def _serve_with_pin(tmp_path, monkeypatch):
     monkeypatch.setattr(discovery_module.BeaconSender, "start", lambda self: None)
     monkeypatch.setattr(discovery_module.BeaconSender, "stop", lambda self: None)
     monkeypatch.setattr(discovery_module.BeaconReceiver, "start", lambda self: None)
@@ -5017,9 +5031,9 @@ def test_peer_auth_signature_failure_locks_out(pin_protected_server) -> None:
     assert "Retry-After" in headers2
 
 
-def test_a_forwarded_for_header_does_not_escape_the_login_lockout(pin_protected_server) -> None:
+def test_a_forwarded_for_header_does_not_escape_the_login_lockout(frozen_throttle_pin_server) -> None:
     """The lockout follows the connection: any client can set X-Forwarded-For."""
-    _, base, _ = pin_protected_server
+    _, base, _ = frozen_throttle_pin_server
 
     status1, _, _ = _post_form_full(base, "/login", {"pin": "wrong-1"}, headers={"X-Forwarded-For": "203.0.113.1"})
     assert status1 == 200
@@ -5027,8 +5041,8 @@ def test_a_forwarded_for_header_does_not_escape_the_login_lockout(pin_protected_
     assert status2 == 429
 
 
-def test_a_forwarded_for_header_does_not_escape_the_peer_lockout(pin_protected_server) -> None:
-    _, base, _ = pin_protected_server
+def test_a_forwarded_for_header_does_not_escape_the_peer_lockout(frozen_throttle_pin_server) -> None:
+    _, base, _ = frozen_throttle_pin_server
     body = b'{"pos_x": 1.0}'
     ts = str(int(time.time()))
 

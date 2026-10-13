@@ -5,11 +5,11 @@
 Each interior corner (every corner of a closed path) is replaced by a circular
 arc of that point's radius, shrunk where it would take more than half of either
 neighbouring segment or pass farther from the point than that radius, which a
-turn sharper than 120 degrees would. The arc lies in the plane of the two segments, so a change
-of height is rounded just like a turn. The curve is held as a dense polyline
-whose chords stay within a millimetre of the arcs, so walking it by arc length is
-exact enough to show no facets. Positions are PSN-absolute metres; the walk is
-measured in X/Y and the height comes with it.
+turn sharper than 120 degrees would. The arc lies in the plane of the two
+segments, so a change of height is rounded just like a turn. The curve is held
+as a dense polyline whose chords stay within a millimetre of the arcs, so walking
+it by arc length is exact enough to show no facets. Positions are PSN-absolute
+metres; the walk is measured in X/Y and the height comes with it.
 """
 
 from __future__ import annotations

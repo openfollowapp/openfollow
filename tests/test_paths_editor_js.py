@@ -234,14 +234,13 @@ class TestEditingThePoints:
             """
             openRow('cross'); await settle();
             var x = inputs('cross', 0)[0], y = inputs('cross', 0)[1];
-            x.focus(); x.value = '-2';
-            tab(x, y);
-            y.value = '7';  // typed before the save of X is answered
+            typeInto(x, '-2');
+            typeInto(y, '7');  // Tab leaves X; Y is typed before the save of X is answered
             await settle();
             var now = inputs('cross', 0)[1];
             out.focused = document.activeElement === now;
             out.typed = now.value;
-            tab(now, inputs('cross', 0)[2]);
+            inputs('cross', 0)[2].focus();
             await settle();
             out.saved = [model.paths[0].points[0].x, model.paths[0].points[0].y];
             """
@@ -254,9 +253,9 @@ class TestEditingThePoints:
             openRow('cross'); await settle();
             holdWhen = function (req) { return req.method === 'PUT'; };
             var cells = inputs('cross', 0);
-            cells[0].value = '-2'; cells[0].dispatchEvent(makeEvent('change'));
-            cells[1].value = '7'; cells[1].dispatchEvent(makeEvent('change'));
-            cells[2].value = '1.5'; cells[2].dispatchEvent(makeEvent('change'));
+            typeInto(cells[0], '-2'); enter(cells[0]);
+            typeInto(cells[1], '7'); enter(cells[1]);
+            typeInto(cells[2], '1.5'); enter(cells[2]);
             await settle();
             out.inFlight = puts().length;
             holdWhen = null;
@@ -275,9 +274,9 @@ class TestEditingThePoints:
             openRow('cross'); await settle();
             holdWhen = function (req) { return req.method === 'GET' && req.url === '/api/paths'; };
             var cells = inputs('cross', 0);
-            cells[0].value = '-2'; cells[0].dispatchEvent(makeEvent('change'));
+            typeInto(cells[0], '-2'); enter(cells[0]);
             await settle();  // saved; the load after it waits
-            cells[1].value = '7'; cells[1].dispatchEvent(makeEvent('change'));
+            typeInto(cells[1], '7'); enter(cells[1]);
             await settle();
             releaseFirst(); await settle();  // the load from before Y was typed
             out.shown = inputs('cross', 0)[1].value;
@@ -295,9 +294,8 @@ class TestEditingThePoints:
             openRow('loop'); await settle();
             openRow('cross'); await settle();
             var x = inputs('cross', 0)[0], y = inputs('cross', 0)[1];
-            x.value = '-2';
-            tab(x, y);
-            y.value = '7';
+            typeInto(x, '-2');
+            typeInto(y, '7');
             y.setSelectionRange(1, 1);
             model.paths[1].points.push({ x: 2, y: 4, z: 0, radius: 0.5 });  // recorded on the Operator Screen
             await settle();
@@ -306,7 +304,7 @@ class TestEditingThePoints:
             out.focused = document.activeElement === now;
             out.typed = [now.value, now.selectionStart];
             out.loopPoints = row('loop').querySelectorAll('.pe-points tbody tr').length;
-            tab(now, inputs('cross', 0)[2]);
+            inputs('cross', 0)[2].focus();  // a redrawn field gets no change event, only blur
             await settle();
             out.saved = model.paths[0].points[0].y;
             """
@@ -322,8 +320,8 @@ class TestEditingThePoints:
             cells[1].focus();  // left untouched
             await settle();
             out.untouched = puts().length;
-            cells[1].value = '7';
-            tab(cells[1], cells[2]);
+            typeInto(cells[1], '7');
+            cells[2].focus();
             await settle();
             out.changed = puts().length;
             """
@@ -335,7 +333,7 @@ class TestEditingThePoints:
             """
             openRow('cross'); await settle();
             var y = inputs('cross', 0)[1];
-            y.focus(); y.value = 'abc'; y.dispatchEvent(makeEvent('change'));
+            typeInto(y, 'abc'); enter(y);
             row('loop').querySelector('input[id$="-closed"]').click();  // redraws the rows
             await settle();
             var now = inputs('cross', 0)[1];
@@ -381,13 +379,13 @@ class TestEditingThePoints:
             openRow('cross'); await settle();
             holdWhen = function (req) { return req.method === 'PUT'; };
             var cells = inputs('cross', 0);
-            cells[0].value = '-2'; cells[0].dispatchEvent(makeEvent('change'));  // in flight
-            cells[1].value = '7'; cells[1].dispatchEvent(makeEvent('change'));   // waiting
+            typeInto(cells[0], '-2'); enter(cells[0]);  // in flight
+            typeInto(cells[1], '7'); enter(cells[1]);   // waiting
             editor().querySelector('[data-pe="template-load"]').click();
             templateDialog.onApplied();
             await settle();
             cells = inputs('cross', 0);
-            cells[2].value = '1.5'; cells[2].dispatchEvent(makeEvent('change'));
+            typeInto(cells[2], '1.5'); enter(cells[2]);
             holdWhen = null; release(); await settle();
             var p = model.paths[0].points[0];
             out.saved = [p.x, p.y, p.z];
@@ -401,9 +399,9 @@ class TestEditingThePoints:
             openRow('cross'); await settle();
             holdWhen = function (req) { return req.url === '/api/paths/view'; };
             var cells = inputs('cross', 0);
-            cells[0].value = '-2'; cells[0].dispatchEvent(makeEvent('change'));
+            typeInto(cells[0], '-2'); enter(cells[0]);
             await settle();
-            cells[1].value = '7'; cells[1].dispatchEvent(makeEvent('change'));
+            typeInto(cells[1], '7'); enter(cells[1]);
             await settle();
             out.asked = held.length;
             releaseLast(); await settle();   // the picture after both edits
@@ -420,9 +418,9 @@ class TestEditingThePoints:
             openRow('cross'); await settle();
             holdWhen = function (req) { return req.method === 'PUT'; };
             var name = row('cross').querySelector('input[id$="-name"]');
-            name.value = 'ds'; name.dispatchEvent(makeEvent('change'));
+            typeInto(name, 'ds'); enter(name);
             var cells = inputs('cross', 0);
-            cells[0].value = '-2'; cells[0].dispatchEvent(makeEvent('change'));
+            typeInto(cells[0], '-2'); enter(cells[0]);
             await settle();
             holdWhen = null;
             release(); await settle();

@@ -77,6 +77,4 @@ function handles() { return editor().querySelectorAll('.pe-handle'); }
 function pointer(target, type, x, y) { target.dispatchEvent(makeEvent(type, { clientX: x, clientY: y, pointerId: 1 })); }
 function selectedRow() { var r = editor().querySelector('.path-row.pe-selected'); return r ? r.dataset.path : null; }
 function inputs(name, i) { return row(name).querySelectorAll('.pe-points tbody tr')[i].querySelectorAll('input'); }
-// Tab out of a field: its change, then focus moves on (which blurs it).
-function tab(from, to) { from.dispatchEvent(makeEvent('change')); to.focus(); }
 function errorLine() { var line = editor().querySelector('.save-error'); return line ? line.textContent : null; }

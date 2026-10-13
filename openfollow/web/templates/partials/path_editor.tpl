@@ -252,8 +252,7 @@ function peArrowhead(x, y, ux, uy, half, side) {
     // Rebuilds the rows. The field the operator is in is focused again, with what was typed there and not yet saved.
     function renderList() {
         var list = q('list');
-        var had = document.activeElement;
-        var keep = had && had.id && list.contains(had) ? had : null;
+        var keep = document.activeElement;
         list.innerHTML = '';
         q('empty').hidden = data.paths.length > 0;
         var locks = {};
@@ -264,7 +263,7 @@ function peArrowhead(x, y, ux, uy, half, side) {
         data.paths.forEach(function(p, index) {
             list.appendChild(row(p, index, locks[p.name.toLowerCase()] || []));
         });
-        var again = keep && document.getElementById(keep.id);
+        var again = keep.id ? document.getElementById(keep.id) : null;
         if (!again) return;
         again.focus();
         if (again.type === 'text' && keep.value !== keep.defaultValue) {

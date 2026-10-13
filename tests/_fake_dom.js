@@ -253,18 +253,26 @@ El.prototype.click = function () {
         this.parentNode.open = !this.parentNode.open;
     }
 };
+// Leaving a field: its change first when it was typed into (a value set by script fires none), then blur.
+function leave(el) {
+    if (el._typed) { el._typed = false; el.dispatchEvent(makeEvent('change')); }
+    el.dispatchEvent(makeEvent('blur', { bubbles: false }));
+}
 El.prototype.focus = function () {
     var was = document._focus;
     if (was === this) return;
     document._focus = this;
-    if (was && was.isConnected) was.dispatchEvent(makeEvent('blur', { bubbles: false }));
+    if (was && was.isConnected) leave(was);
     this.dispatchEvent(makeEvent('focus', { bubbles: false }));
 };
 El.prototype.blur = function () {
     if (document._focus !== this) return;
     document._focus = null;
-    this.dispatchEvent(makeEvent('blur', { bubbles: false }));
+    leave(this);
 };
+// The operator typing: focus the field and replace its text. Enter commits it as leaving would.
+function typeInto(el, text) { el.focus(); el.value = text; el._typed = true; el.dispatchEvent(makeEvent('input')); }
+function enter(el) { if (el._typed) { el._typed = false; el.dispatchEvent(makeEvent('change')); } }
 El.prototype.select = function () { this.selectionStart = 0; this.selectionEnd = this.value.length; };
 El.prototype.setSelectionRange = function (a, b) { this.selectionStart = a; this.selectionEnd = b; };
 

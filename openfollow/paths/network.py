@@ -15,6 +15,7 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 import numpy.typing as npt
@@ -35,8 +36,9 @@ _SegmentIndex = tuple[FloatArray, FloatArray, FloatArray, FloatArray, FloatArray
 _PARALLEL = 1e-12
 _EPS = 1e-6
 _MAX_LEGS = 16
-# Segments per bounding box when looking for crossings.
+# Segments per bounding box when looking for crossings, and pairs of boxes tested in one pass.
 _BOX_SEGMENTS = 16
+_BOX_PAIRS_PER_PASS = 512
 
 
 @dataclass(frozen=True)
@@ -256,12 +258,29 @@ def find_junctions(curves: Sequence[PathCurve]) -> list[Junction]:
             pair = [Junction(a, sa, b, sb) for sa, sb in _crossings(ca, cb, boxes[a], boxes[b])]
             pair += [Junction(a, sa, b, sb) for sa, sb in _touches(ca, cb)]
             pair += [Junction(a, sa, b, sb) for sb, sa in _touches(cb, ca)]
-            kept: list[Junction] = []
-            for j in pair:
-                if _same_height(ca, j.s_a, cb, j.s_b) and not any(_same_junction(ca, cb, j, k) for k in kept):
-                    kept.append(j)
-            found += kept
+            found += _distinct_junctions(ca, cb, pair)
     return found
+
+
+def _distinct_junctions(ca: PathCurve, cb: PathCurve, pair: list[Junction]) -> list[Junction]:
+    """``pair`` at the same height, less each that repeats one kept before it."""
+    kept: list[Junction] = []
+    # Kept junctions by ``s_a`` in steps of _SAME_JUNCTION_M: a repeat lies within two steps.
+    near: dict[int, list[Junction]] = {}
+    for j in pair:
+        if not _same_height(ca, j.s_a, cb, j.s_b):
+            continue
+        spans = (j.s_a - ca.length, j.s_a, j.s_a + ca.length) if ca.closed else (j.s_a,)
+        steps = {_step(s) + d for s in spans for d in (-2, -1, 0, 1, 2)}
+        if any(_same_junction(ca, cb, j, k) for step in steps for k in near.get(step, ())):
+            continue
+        kept.append(j)
+        near.setdefault(_step(j.s_a), []).append(j)
+    return kept
+
+
+def _step(s: float) -> int:
+    return math.floor(s / _SAME_JUNCTION_M)
 
 
 def _boxes(curve: PathCurve) -> FloatArray:
@@ -290,22 +309,25 @@ def _crossings(ca: PathCurve, cb: PathCurve, boxes_a: FloatArray, boxes_b: Float
     """Where ``ca`` crosses ``cb`` in plan, in segment order along ``ca`` then ``cb``: (s on ``ca``, s on ``cb``)."""
     run_a, run_b = np.nonzero(_overlapping(boxes_a, boxes_b))
     offsets = np.arange(_BOX_SEGMENTS)
-    ia, ib = np.broadcast_arrays(
-        run_a[:, None, None] * _BOX_SEGMENTS + offsets[None, :, None],
-        run_b[:, None, None] * _BOX_SEGMENTS + offsets[None, None, :],
-    )
     pa, ra, _, _ = ca.segments()
     pb, rb, _, _ = cb.segments()
-    valid = (ia < len(pa)) & (ib < len(pb))
-    ia, ib = ia[valid], ib[valid]
-    r, rb = ra[ia], rb[ib]
-    qp = pb[ib] - pa[ia]
-    denom = _cross(r, rb)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        t = _cross(qp, rb) / denom
-        u = _cross(qp, r) / denom
-    hit = (np.abs(denom) > _PARALLEL) & (t >= 0.0) & (t <= 1.0) & (u >= 0.0) & (u <= 1.0)
-    ia, ib, t, u = ia[hit], ib[hit], t[hit], u[hit]
+    hits: list[tuple[npt.NDArray[Any], ...]] = [(np.empty(0, dtype=np.intp),) * 2 + (np.empty(0),) * 2]
+    for lo in range(0, len(run_a), _BOX_PAIRS_PER_PASS):
+        ia, ib = np.broadcast_arrays(
+            run_a[lo : lo + _BOX_PAIRS_PER_PASS, None, None] * _BOX_SEGMENTS + offsets[None, :, None],
+            run_b[lo : lo + _BOX_PAIRS_PER_PASS, None, None] * _BOX_SEGMENTS + offsets[None, None, :],
+        )
+        valid = (ia < len(pa)) & (ib < len(pb))
+        ia, ib = ia[valid], ib[valid]
+        r, w = ra[ia], rb[ib]
+        qp = pb[ib] - pa[ia]
+        denom = _cross(r, w)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            t = _cross(qp, w) / denom
+            u = _cross(qp, r) / denom
+        hit = (np.abs(denom) > _PARALLEL) & (t >= 0.0) & (t <= 1.0) & (u >= 0.0) & (u <= 1.0)
+        hits.append((ia[hit], ib[hit], t[hit], u[hit]))
+    ia, ib, t, u = (np.concatenate(part) for part in zip(*hits, strict=True))
     order = np.lexsort((ib, ia))
     sa = ca.s[ia] + t * (ca.s[ia + 1] - ca.s[ia])
     sb = cb.s[ib] + u * (cb.s[ib + 1] - cb.s[ib])

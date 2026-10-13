@@ -83,6 +83,12 @@ class TestJunctions:
             (pytest.approx(5.0), pytest.approx(6.0 + 2 * math.sqrt(2))),
         ]
 
+    def test_a_crossing_on_a_closed_path_s_first_point_counts_once(self) -> None:
+        # The crossing at (0, 0) ends the diamond's last segment and starts its first.
+        diamond = _curve([(0, 0, 0, 0), (1, -1, 0, 0), (2, 0, 0, 0), (1, 1, 0, 0)], closed=True)
+        junctions = find_junctions([diamond, _curve([(-1, 0, 0), (3, 0, 0)])])
+        assert len(junctions) == 2
+
     def test_a_closed_path_meets_an_open_one_twice(self) -> None:
         ring = _curve([(-2, -2, 0), (2, -2, 0), (2, 2, 0), (-2, 2, 0)], closed=True)
         assert len(find_junctions([H, ring])) == 2
@@ -178,6 +184,33 @@ class TestJunctionSearch:
         assert junctions == _reference_junctions([along_x, along_y])
         assert len(junctions) >= 1
         assert sum(tested) / 3 < 0.05 * 200 * 200
+
+
+def _comb(teeth: int, along_x: bool) -> PathCurve:
+    """A zigzag of sharp teeth 0.2 m apart across a 6 m square."""
+    points = [(-3 + 0.2 * i, 3.0 if i % 2 else -3.0, 0, 0) for i in range(teeth)]
+    return _curve(points if along_x else [(y, x, z, r) for x, y, z, r in points])
+
+
+class TestJunctionSearchCost:
+    def test_a_repeat_is_looked_for_only_among_nearby_junctions(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        compared = []
+        same = network._same_junction
+        monkeypatch.setattr(network, "_same_junction", lambda *args: compared.append(1) or same(*args))
+        junctions = find_junctions([_comb(30, along_x=True), _comb(30, along_x=False)])
+        assert len(junctions) > 800
+        assert len(compared) < 10 * len(junctions)
+
+    def test_a_dense_pair_is_tested_in_bounded_passes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        rng = random.Random(3)
+        scribbles = [_curve([(rng.uniform(0, 2), rng.uniform(0, 2), 0, 0.5) for _ in range(40)]) for _ in range(2)]
+        sizes = []
+        cross = network._cross
+        monkeypatch.setattr(network, "_cross", lambda a, b: sizes.append(a.size // 2) or cross(a, b))
+        assert find_junctions(scribbles) == _reference_junctions(scribbles)
+        # Three products per pass, and more than one pass.
+        assert len(sizes) > 3
+        assert max(sizes) <= network._BOX_PAIRS_PER_PASS * network._BOX_SEGMENTS**2
 
 
 class TestCornerExtension:

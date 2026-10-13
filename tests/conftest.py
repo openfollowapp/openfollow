@@ -166,6 +166,24 @@ def temp_config_path(tmp_path: Path) -> Path:
     return tmp_path / "config.toml"
 
 
+def pytest_configure(config: pytest.Config) -> None:
+    """Stop pytest-xdist retitling each worker per test (see test_xdist_worker_title).
+
+    xdist exec's its worker module, so its namespace is reached through the plugin.
+    """
+    if not hasattr(config, "workerinput"):
+        return
+    for plugin in config.pluginmanager.get_plugins():
+        run_one_test = getattr(type(plugin), "run_one_test", None)
+        if type(plugin).__name__ == "WorkerInteractor" and run_one_test is not None:
+            if "setproctitle" in run_one_test.__globals__:
+                run_one_test.__globals__["setproctitle"] = _no_title
+
+
+def _no_title(_title: str) -> None:
+    pass
+
+
 @pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(
     config: pytest.Config,

@@ -17,6 +17,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from openfollow.configuration import save_config
+from openfollow.runtime import paths_runtime
 from openfollow.video.failure import SourceKind, VideoFailure, failure_sentence
 
 if TYPE_CHECKING:
@@ -237,6 +238,8 @@ def process_input(app: OpenFollowApp, dt: float) -> None:
         cycle_marker(app, -1)
     if result.clear_messages_pressed:
         app._clear_operator_messages()
+    if result.toggle_paths_pressed:
+        paths_runtime.toggle_paths(app)
 
 
 def _toggle_zone_overlay(app: OpenFollowApp) -> None:
@@ -833,6 +836,7 @@ def handle_key_press(app: OpenFollowApp, key: str) -> None:
         # is registered with the server, so get_marker(_selected_id)
         # never returns None at the call site.
         if marker is not None:  # pragma: no branch
+            paths_runtime.release(app, app._selected_id)
             marker.set_pos(*app._get_default_marker_position())
     elif cc.key_toggle_help and key == cc.key_toggle_help:
         app._show_hud_help = not app._show_hud_help
@@ -844,6 +848,10 @@ def handle_key_press(app: OpenFollowApp, key: str) -> None:
         app.adjust_move_speed(+1)
     elif cc.key_clear_messages and key == cc.key_clear_messages:
         app._clear_operator_messages()
+    elif cc.key_pathfinder and key == cc.key_pathfinder and app._input_manager is not None:
+        app._input_manager.pathfinder(app._selected_id)
+    elif cc.key_toggle_paths and key == cc.key_toggle_paths:
+        paths_runtime.toggle_paths(app)
 
 
 def on_key_down(app: OpenFollowApp, event: dict[str, Any]) -> None:

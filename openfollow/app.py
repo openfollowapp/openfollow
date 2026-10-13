@@ -33,6 +33,7 @@ from openfollow.marker_catalog import (
     save_catalog,
 )
 from openfollow.palette import AUTO_PICK_ORDER as _PALETTE_AUTO_PICK_ORDER
+from openfollow.paths.engine import PathEngine
 from openfollow.runtime.app_commands import (
     check_button_detection_request as runtime_check_button_detection_request,
 )
@@ -239,6 +240,9 @@ class OpenFollowApp:
         self._last_config_check: float = 0.0
         self._web_commands: WebCommandQueue = WebCommandQueue()
         self._runtime_services: AppRuntimeServices = AppRuntimeServices(self)
+        # Markers locked onto paths; rebuilt whenever the paths or the experimental switch change.
+        self._paths: PathEngine = PathEngine()
+        self._paths.reload(self._config.paths, enabled=self._config.ui.show_experimental_features)
 
         self._canvas: GtkNativeSinkWindow | None = None
         self._camera: Camera | None = None

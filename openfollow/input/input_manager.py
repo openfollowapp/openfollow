@@ -27,20 +27,27 @@ from openfollow.logging_setup import ThrottledExceptionLogger
 from openfollow.net_utils import plane_source_iface
 from openfollow.osc.input import OscMarkerAdapter
 from openfollow.osc.operator_message import OperatorMessageOscAdapter
+from openfollow.osc.paths import PathOscAdapter
+from openfollow.runtime import paths_runtime
 from openfollow.runtime.services_detection_pin import (
     get_or_create_manual_marker,
+    hand_over_anchors,
     is_assist_controlled,
 )
 
 if TYPE_CHECKING:
     from openfollow.app import OpenFollowApp
     from openfollow.configuration import Mouse3DConfig
+    from openfollow.paths.engine import PathEngine
     from openfollow.psn.marker import Marker
 
 logger = logging.getLogger(__name__)
 
 # How long Identify flashes the marker card on the Operator Screen.
 _IDENTIFY_FLASH_S = 3.0
+
+# OSC writes to a marker this far apart count as a new stream, logged at INFO.
+_OSC_STREAM_GAP_S = 5.0
 
 
 def resolve_osc_multicast_iface(listen_iface: str, station_iface: str) -> str | None:
@@ -137,6 +144,8 @@ class InputManager:
         self._usb_hosts = usb_host_paths()
         # (slot index, clock time it started) of the latest Identify.
         self._identify_flash: tuple[int, float] | None = None
+        # Clock time of each marker's latest OSC position write.
+        self._osc_last_write: dict[int, float] = {}
         self._refresh_slots()
 
         osc_cfg = app._config.osc
@@ -178,6 +187,8 @@ class InputManager:
         # gated on ``osc_handler is not None`` and ``[operator_messages] enabled``.
         self.operator_message_handler: OperatorMessageOscAdapter | None = None
         self._rebuild_operator_message_handler()
+        self.path_osc_handler: PathOscAdapter | None = None
+        self._rebuild_path_osc_handler()
 
     def _get_marker(self, marker_id: int) -> Marker | None:
         """Resolve the marker operator input should steer.
@@ -206,6 +217,32 @@ class InputManager:
         if server is None:  # pragma: no cover
             return None
         return server.get_marker(marker_id)
+
+    def _paths(self) -> PathEngine | None:
+        return getattr(self.app, "_paths", None)
+
+    def _move(self, marker_id: int, marker: Marker, vx: float, vy: float, vz: float, dt: float) -> None:
+        """Move by a velocity: along its path for a locked marker, freely otherwise."""
+        paths = self._paths()
+        on_path = paths.move(marker_id, vx, vy, dt, vz) if paths is not None else None
+        if on_path is not None:
+            marker.set_pos(*on_path)
+            return
+        x, y, z = marker.pos
+        marker.set_pos(x + vx * dt, y + vy * dt, z + vz * dt)
+
+    def _reset(self, marker_id: int, marker: Marker) -> None:
+        """Send a marker to its default position, releasing it from any path."""
+        paths = self._paths()
+        if paths is not None:
+            paths.release(marker_id)
+        marker.set_pos(*self.app._get_default_marker_position())
+
+    def pathfinder(self, marker_id: int | None) -> None:
+        """A Pathfinder press for ``marker_id``: the keyboard's selected marker or a controller's own."""
+        marker = self._get_marker(marker_id) if marker_id is not None else None
+        if marker_id is not None and marker is not None and self._paths() is not None:
+            paths_runtime.pathfinder(self.app, marker_id, marker)
 
     def _live_controllers(self) -> list[LiveController]:
         """Controllers attached now, of every kind that is switched on.
@@ -377,6 +414,8 @@ class InputManager:
         if not self.app._controlled_ids:
             return gamepad_result
 
+        paths = self._paths()
+
         # Get keyboard velocity for selected marker
         try:
             keyboard_velocity = self.keyboard_handler.update(dt)
@@ -389,8 +428,7 @@ class InputManager:
                 if marker:
                     vx, vy, vz = keyboard_velocity
                     vx, vy = _oriented(vx, vy, invert_xy)
-                    x, y, z = marker.pos
-                    marker.set_pos(x + vx * dt, y + vy * dt, z + vz * dt)
+                    self._move(self.app._selected_id, marker, vx, vy, vz, dt)
         except Exception:
             logger.exception("Keyboard update failed this tick.")
 
@@ -402,7 +440,7 @@ class InputManager:
             marker = self._get_marker(marker_id)
             if marker:
                 default_pos = self.app._get_default_marker_position()
-                marker.set_pos(*default_pos)
+                self._reset(marker_id, marker)
                 logger.info(
                     "Gamepad instance %s reset marker %s to default position (%s, %s, %s)",
                     controller_idx,
@@ -420,8 +458,10 @@ class InputManager:
             marker = self._get_marker(marker_id)
             if marker:
                 ovx, ovy = _oriented(vx, vy, invert_xy)
-                x, y, z = marker.pos
-                marker.set_pos(x + ovx * dt, y + ovy * dt, z + vz * dt)
+                self._move(marker_id, marker, ovx, ovy, vz, dt)
+
+        for controller_idx in gamepad_result.pathfinder_presses:
+            self.pathfinder(self._gamepad_marker_id(controller_idx, slots))
 
         # Apply OSC position jumps (absolute writes – full triples
         # overwrite all axes, per-axis updates merge with the marker's
@@ -434,12 +474,27 @@ class InputManager:
                     marker = self._get_marker(marker_id)
                     if not marker:
                         continue
-                    cur_x, cur_y, cur_z = marker.pos
+                    # While pulled onto a path, the axes left out come from where it would be without the path.
+                    free = paths.free_position(marker_id) if paths is not None else None
+                    cur_x, cur_y, cur_z = free if free is not None else marker.pos
                     x = axes.get("x", cur_x)
                     y = axes.get("y", cur_y)
                     z = axes.get("z", cur_z)
+                    landed = paths.project(marker_id, x, y) if paths is not None else None
+                    x, y, z = landed if landed is not None else (x, y, z)
                     marker.set_pos(x, y, z)
-                    logger.info(
+                    now = self._clock()
+                    last = self._osc_last_write.get(marker_id)
+                    self._osc_last_write[marker_id] = now
+                    if last is None or now - last >= _OSC_STREAM_GAP_S:
+                        logger.info(
+                            "OSC positions arriving for marker %d, first at (%.3f, %.3f, %.3f)",
+                            marker_id,
+                            x,
+                            y,
+                            z,
+                        )
+                    logger.debug(
                         "OSC jump: marker %d → (%.3f, %.3f, %.3f)",
                         marker_id,
                         x,
@@ -450,6 +505,26 @@ class InputManager:
                 logger.exception("OSC flush/apply failed this tick.")
 
         return gamepad_result
+
+    def update_paths(self, dt: float) -> None:
+        """Run the path engine for one frame, whatever input does: menus open or no marker controlled.
+
+        Hands the lock of a marker assist no longer drives from its anchor to its output, releases
+        markers no longer controlled, applies OSC path commands, then writes the markers the engine
+        moved itself (slides, edits). ``animate`` calls it after the frame's discrete key presses
+        (Reset, Pathfinder) and before :meth:`update`.
+        """
+        commands = self.path_osc_handler.take() if self.path_osc_handler is not None else []
+        paths = self._paths()
+        if paths is None:
+            return
+        hand_over_anchors(self.app)
+        paths.release_all(keep=self.app._controlled_ids)
+        paths_runtime.apply_commands(self.app, commands, self.app._controlled_ids, self._get_marker)
+        for slid_id, slid_to in paths.tick(dt).items():
+            slid = self._get_marker(slid_id)
+            if slid:
+                slid.set_pos(*slid_to)
 
     def _apply_mouse3d(
         self,
@@ -481,6 +556,8 @@ class InputManager:
             gamepad_result.toggle_help_pressed = True
         if m3d.toggle_zones:
             gamepad_result.toggle_zones_pressed = True
+        if m3d.toggle_paths:
+            gamepad_result.toggle_paths_pressed = True
 
         marker_id = self._controller_marker_id(self._mouse3d_unified_idx(local_idx, slots), slots)
         if marker_id is None:
@@ -489,7 +566,9 @@ class InputManager:
         if marker is None:
             return
         if m3d.reset:
-            marker.set_pos(*self.app._get_default_marker_position())
+            self._reset(marker_id, marker)
+        if m3d.pathfinder:
+            self.pathfinder(marker_id)
         if m3d.speed_steps:
             direction = 1 if m3d.speed_steps > 0 else -1
             for _ in range(abs(m3d.speed_steps)):
@@ -498,8 +577,7 @@ class InputManager:
         if vx or vy or vz:
             vx, vy = _oriented(vx, vy, invert_xy)
             speed = self.app.get_marker_move_speed(marker_id)
-            x, y, z = marker.pos
-            marker.set_pos(x + vx * speed * dt, y + vy * speed * dt, z + vz * speed * dt)
+            self._move(marker_id, marker, vx * speed, vy * speed, vz * speed, dt)
         if m3d.fader_signal:
             # ``fader``-mapped axes integrate into the marker's fader, mirroring
             # the gamepad marker-fader stick: delta = signal × dt / max_speed_s.
@@ -641,9 +719,11 @@ class InputManager:
         """
         # Drop the operator-message adapter before tearing the listener down.
         self._stop_operator_message_handler()
+        self._stop_path_osc_handler()
         if self.osc_handler is not None:
             self.osc_handler.stop()
             self.osc_handler = None
+        self._osc_last_write.clear()
         if enabled:
             self.osc_handler = OscMarkerAdapter(
                 self.app._runtime_services._osc_service,
@@ -666,6 +746,7 @@ class InputManager:
                 )
                 self.osc_handler = None
         self._rebuild_operator_message_handler()
+        self._rebuild_path_osc_handler()
 
     def restart_mouse3d(self, config: Mouse3DConfig) -> None:
         """Live-apply a 3D Mouse config change.
@@ -714,6 +795,19 @@ class InputManager:
             self.operator_message_handler.stop()
             self.operator_message_handler = None
 
+    def _rebuild_path_osc_handler(self) -> None:
+        """Subscribe the path commands whenever the OSC listener is up."""
+        self._stop_path_osc_handler()
+        if self.osc_handler is None:
+            return
+        self.path_osc_handler = PathOscAdapter(self.app._runtime_services._osc_service)
+        self.path_osc_handler.start()
+
+    def _stop_path_osc_handler(self) -> None:
+        if self.path_osc_handler is not None:
+            self.path_osc_handler.stop()
+            self.path_osc_handler = None
+
     def stop(self) -> None:
         """Stop input subsystems and release resources."""
         self.gamepad_handler.stop()
@@ -721,5 +815,6 @@ class InputManager:
         # The live-disable path (restart_mouse3d) uses the non-blocking default.
         self.mouse3d_manager.stop(wait=True)
         self._stop_operator_message_handler()
+        self._stop_path_osc_handler()
         if self.osc_handler is not None:
             self.osc_handler.stop()

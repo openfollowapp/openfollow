@@ -109,6 +109,7 @@ def test_toggle_mirrors_server_cascade_clientside() -> None:
     base = _read("base.tpl")
     assert "function onExperimentalToggle(cb)" in base
     assert '#detection-section input[name="enabled"]' in base
+    assert '#ground-grid-section input[name="enabled"]' in base
     assert '#mouse-section input[name="mouse_enabled"]' not in base
     # Checkbox is wired to the handler.
     assert "onExperimentalToggle(this)" in _read("partials/general.tpl")

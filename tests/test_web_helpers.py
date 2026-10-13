@@ -1263,6 +1263,29 @@ def test_full_config_round_trip_leaves_the_receivers_otp_pin_alone() -> None:
     assert new.otp_output.enabled is True
 
 
+def test_broadcast_all_carries_paths_to_a_peer_that_keeps_its_own_active_flags() -> None:
+    """Every station on one stage shares the floor coordinates, so paths are pushed;
+    what is active, and whether paths are drawn, stays with each station."""
+    from openfollow.configuration import PathConfig, PathPointConfig, PathsConfig
+    from openfollow.web.routes import _apply_import_data, _strip_broadcast_excluded
+
+    sender = AppConfig(
+        paths=PathsConfig(
+            show_paths=False,
+            slide_time=1.5,
+            paths=[PathConfig(name="cross", active=True, points=[PathPointConfig(0, 0, 0), PathPointConfig(4, 0, 0)])],
+        )
+    )
+    receiver = AppConfig(paths=PathsConfig(paths=[PathConfig(name="cross", active=False)]))
+
+    new = _apply_import_data(receiver, _strip_broadcast_excluded(_config_dict_redacted(sender)))
+
+    assert [p.x for p in new.paths.paths[0].points] == [0.0, 4.0]
+    assert new.paths.slide_time == 1.5
+    assert new.paths.paths[0].active is False
+    assert new.paths.show_paths is True
+
+
 def test_apply_import_data_preserves_osc_listen_iface() -> None:
     """Device-local like ``psn_source_iface``. An imported pin naming an
     adapter this station does not have would silently drop its OSC multicast
@@ -3057,13 +3080,13 @@ def test_apply_import_data_ignores_zones_key_when_value_is_not_a_list() -> None:
 )
 def test_is_on_device_request_true_for_loopback(monkeypatch, remote) -> None:
     """The embedded WebKit overlay loads ``http://127.0.0.1:<port>/``;
-    a loopback ``remote_addr`` is the signal to render gamepad-only
+    a loopback connection is the signal to render gamepad-only
     affordances. Cover IPv4, IPv6, and the hostname-resolved form."""
     from openfollow.web import routes as routes_mod
 
     class _FakeReq:
         def __init__(self, addr: str) -> None:
-            self.remote_addr = addr
+            self.environ = {"REMOTE_ADDR": addr}
 
     monkeypatch.setattr(routes_mod, "request", _FakeReq(remote))
     assert routes_mod._is_on_device_request() is True
@@ -3075,40 +3098,69 @@ def test_is_on_device_request_true_for_loopback(monkeypatch, remote) -> None:
 )
 def test_is_on_device_request_false_for_lan_and_empty(monkeypatch, remote) -> None:
     """LAN clients hit the server's external IP – never appear as
-    loopback. An empty ``remote_addr`` (no source available) is
+    loopback. An empty ``REMOTE_ADDR`` (no source available) is
     treated as off-device so the footer hint doesn't leak to remote
     operators who can't act on the B-button instruction."""
     from openfollow.web import routes as routes_mod
 
     class _FakeReq:
         def __init__(self, addr: str) -> None:
-            self.remote_addr = addr
+            self.environ = {"REMOTE_ADDR": addr}
 
     monkeypatch.setattr(routes_mod, "request", _FakeReq(remote))
     assert routes_mod._is_on_device_request() is False
 
 
 def test_is_on_device_request_strips_surrounding_whitespace(monkeypatch) -> None:
-    """Be lenient about whitespace in ``remote_addr`` since some WSGI
+    """Be lenient about whitespace in ``REMOTE_ADDR`` since some WSGI
     layers normalise inconsistently; the loopback check must still
     fire on ``" 127.0.0.1 "`` and similar."""
     from openfollow.web import routes as routes_mod
 
     class _FakeReq:
-        remote_addr = "  127.0.0.1  "
+        environ = {"REMOTE_ADDR": "  127.0.0.1  "}
 
     monkeypatch.setattr(routes_mod, "request", _FakeReq())
     assert routes_mod._is_on_device_request() is True
 
 
-def test_is_on_device_request_handles_none_remote_addr(monkeypatch) -> None:
+def test_is_on_device_request_handles_a_missing_connection_address(monkeypatch) -> None:
     from openfollow.web import routes as routes_mod
 
     class _FakeReq:
-        remote_addr = None
+        environ: dict[str, str] = {}
 
     monkeypatch.setattr(routes_mod, "request", _FakeReq())
     assert routes_mod._is_on_device_request() is False
+
+
+def test_a_lan_client_claiming_loopback_in_forwarded_for_is_not_on_device(monkeypatch) -> None:
+    from bottle import LocalRequest
+
+    from openfollow.web import routes as routes_mod
+
+    req = LocalRequest({"REMOTE_ADDR": "192.0.2.5", "HTTP_X_FORWARDED_FOR": "127.0.0.1"})
+    monkeypatch.setattr(routes_mod, "request", req)
+    assert routes_mod._is_on_device_request() is False
+
+
+def test_no_code_reads_bottles_forwarded_for_address() -> None:
+    """Bottle's ``remote_addr`` / ``remote_route`` read a client-set X-Forwarded-For; ``REMOTE_ADDR`` is the peer."""
+    import ast
+    from pathlib import Path
+
+    import openfollow
+
+    root = Path(openfollow.__file__).parent
+    offenders = []
+    for path in sorted(root.rglob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        if "remote_addr" not in source and "remote_route" not in source:
+            continue
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, ast.Attribute) and node.attr in ("remote_addr", "remote_route"):
+                offenders.append(f"{path.relative_to(root)}:{node.lineno}")
+    assert offenders == []
 
 
 # ---------------------------------------------------------------------------

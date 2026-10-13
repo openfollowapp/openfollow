@@ -20,6 +20,6 @@ This station's name, web access and display units, plus the settings you set onc
 
 > Off, this web UI is gone after the next reboot too, and switching it back on takes SSH or a keyboard on the station. Absent on macOS and where OpenFollow is not a system service.
 
-**Experimental features** – shows Person Detection, RTTrPM Output and the Setup Wizard's calibration points, each marked *Experimental*. Turning it off also switches person detection off; turning it back on does not.
+**Experimental features** – shows Person Detection, RTTrPM Output, Paths, the Ground Grid and the Setup Wizard's calibration points, each marked *Experimental*. Turning it off also switches person detection and the ground grid off and deactivates every path; turning it back on does not.
 
 **Save** – saves the station name, PIN and custom domain name. No restart is needed.

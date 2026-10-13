@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import functools
 import math
 from collections.abc import Iterable
 from typing import Any, NamedTuple
@@ -14,6 +15,7 @@ import numpy.typing as npt
 
 from openfollow.runtime.overlay_draw_style import parse_hex
 from openfollow.runtime.overlay_state import MarkerOverlayData, OverlayState
+from openfollow.scene.ground_grid import grid_segments_in_polygon, main_grid_steps, outline_segments
 from openfollow.scene.solver import (
     apply_overlay_distortion,
     cone_ring_angles,
@@ -22,7 +24,7 @@ from openfollow.scene.solver import (
     project_points,
     ring_silhouette_indices,
 )
-from openfollow.zones.geometry import polygon_signed_area
+from openfollow.zones.geometry import point_in_polygon, polygon_signed_area
 
 # Cap grid lines per axis. A degenerate width/depth ÷ spacing (e.g. from a
 # hand-edited config.toml or peer broadcast – neither has an upper clamp) would
@@ -179,6 +181,42 @@ def draw_grid(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> No
     cr.stroke()
 
 
+def floor_z_at(state: OverlayState, x: float, y: float) -> float:
+    """The floor under world ``(x, y)``: the ground grid's Z inside its polygon,
+    else the main grid's. The one place a marker's floor height is decided."""
+    if state.ground_grid_active and point_in_polygon(x, y, state.ground_grid_vertices):
+        return state.ground_grid_z
+    return state.grid_config[5] if state.grid_config else 0.0
+
+
+@functools.lru_cache(maxsize=4)
+def _ground_grid_segments(
+    verts: tuple[tuple[float, float], ...], gc: tuple[float, ...], z: float
+) -> npt.NDArray[np.float64]:
+    """The ground grid's lines and outline in world space; kept, as the polygon changes only on a save."""
+    gw, gd, gs, x_off, y_off, _ = gc
+    step_x, step_y = main_grid_steps(gw, gd, gs, _MAX_GRID_LINES_PER_AXIS)
+    lines = grid_segments_in_polygon(
+        verts, x_off - gw / 2.0, y_off - gd / 2.0, step_x, step_y, z, _MAX_GRID_LINES_PER_AXIS
+    )
+    segments = np.concatenate([lines, outline_segments(verts, z)])
+    segments.setflags(write=False)
+    return segments
+
+
+def draw_ground_grid(cr: Any, state: OverlayState, w: int, h: int) -> None:
+    """Main-grid-aligned lines clipped to the ground-grid polygon, plus its outline, in the main grid's style."""
+    gc = state.grid_config
+    if not state.ground_grid_visible or gc is None:
+        return
+    segments = _ground_grid_segments(tuple(map(tuple, state.ground_grid_vertices)), tuple(gc), state.ground_grid_z)
+    r, g, b = parse_hex(state.grid_color)
+    cr.set_source_rgba(r, g, b, state.grid_transparency)
+    cr.set_line_width(float(state.grid_thickness))
+    if _draw_world_lines(cr, state.camera_params, segments, w, h, state.lens_k1, state.lens_k2):
+        cr.stroke()
+
+
 def draw_origin(cr: Any, state: OverlayState, w: int, h: int) -> None:
     if not state.show_origin:
         return
@@ -315,7 +353,7 @@ def _cone_geometry(state: OverlayState, t: MarkerOverlayData, w: int, h: int) ->
     cone is not symmetric, so a marker under the stage reads as pointing down.
     """
     tx, ty, tz = t.x, t.y, t.z
-    z_off = state.grid_config[5] if state.grid_config else 0.0
+    z_off = floor_z_at(state, tx, ty)
     r_base, r_top = state.cone_base_diameter / 2.0, state.cone_top_diameter / 2.0
     silhouette = cone_silhouette_angles(state.camera_params, (tx, ty), z_off, tz, r_base, r_top)
     angles, at = cone_ring_angles(silhouette)
@@ -488,7 +526,7 @@ def _draw_assist_ghost(
     cr.stroke()
 
     if state.grid_config:
-        z_off = state.grid_config[5]
+        z_off = floor_z_at(state, tx, ty)
         gc_pts = ground_circle_world_ring(tx, ty, z_off, state.ground_circle_size)
         gc_scr = project(cam, gc_pts, w, h, state.lens_k1, state.lens_k2)
         if _path_ring(cr, gc_scr[np.all(np.isfinite(gc_scr), axis=1)]):
@@ -543,6 +581,7 @@ class ConeCache:
             state.lens_k1,
             state.lens_k2,
             tuple(state.grid_config),
+            floor_z_at(state, t.x, t.y),
             state.cone_base_diameter,
             state.cone_top_diameter,
             rgb,
@@ -677,14 +716,14 @@ def draw_marker(
         cr.stroke()
 
     if state.show_z_line and state.grid_config:
-        z_off = state.grid_config[5]
+        z_off = floor_z_at(state, tx, ty)
         cr.set_source_rgba(r, g, b, 0.8)
         cr.set_line_width(state.z_line_thickness)
         if _draw_world_lines(cr, cam, [((tx, ty, tz), (tx, ty, z_off))], w, h, state.lens_k1, state.lens_k2):
             cr.stroke()
 
     if state.show_ground_circle and state.grid_config:
-        z_off = state.grid_config[5]
+        z_off = floor_z_at(state, tx, ty)
         gc_pts = ground_circle_world_ring(tx, ty, z_off, state.ground_circle_size)
         gc_scr = project(cam, gc_pts, w, h, state.lens_k1, state.lens_k2)
         if _path_ring(cr, gc_scr[np.all(np.isfinite(gc_scr), axis=1)]):

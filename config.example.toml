@@ -65,6 +65,14 @@ origin_visible = false
 origin_length = 1.0
 origin_thickness = 3
 
+# Experimental: a second floor, one polygon at its own absolute Z. A marker
+# inside it draws its dropline, ground circle and cone base at z_offset.
+[ground_grid]
+enabled = false
+visible = true
+z_offset = 0.0
+vertices = []
+
 [marker]
 min_speed = 0.1
 max_speed = 3.0
@@ -118,13 +126,14 @@ deadzone = 0.01
 invert_y = false
 curve = "logarithmic"
 btn_reset = "X"
-btn_source_select = "BACK"
 btn_toggle_help = "Y"
 btn_speed_down = "LB"
 btn_speed_up = "RB"
 btn_move_z_down = "LT"
 btn_move_z_up = "RT"
-btn_toggle_zones = "B"
+btn_toggle_zones = ""
+btn_toggle_paths = ""
+btn_pathfinder = ""
 move_xy_stick = "right"
 src_btn_confirm = "A"
 src_btn_cancel = "B"
@@ -150,6 +159,8 @@ key_toggle_help = "h"
 key_toggle_zones = "z"
 key_speed_down = "r"
 key_speed_up = "t"
+key_pathfinder = ""
+key_toggle_paths = ""
 
 # Intentionally empty: the button-detection wizard fills this in per-device.
 # Shipping captured raw indices here would mis-map any other controller.
@@ -192,6 +203,8 @@ btn_speed_up = -1
 btn_speed_down = -1
 btn_toggle_help = -1
 btn_toggle_zones = -1
+btn_pathfinder = -1
+btn_toggle_paths = -1
 
 [osc]
 enabled = true

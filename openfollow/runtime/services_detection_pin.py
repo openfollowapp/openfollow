@@ -375,8 +375,12 @@ def apply_detection_pin(
         age_s=best.age_s,
         grace_s=person_detector.coast_s,
     )
+    # On a path the marker stays on it: the person's place projects onto the path.
+    paths = getattr(app, "_paths", None)
+    on_path = paths.project(marker.marker_id, smooth_x, smooth_y) if paths is not None else None
+    x, y, z = on_path if on_path is not None else (smooth_x, smooth_y, marker.pos[2])
     # One write: no packet pairs this position with the previous frame's status.
-    marker.set_pos(smooth_x, smooth_y, marker.pos[2], status=status)
+    marker.set_pos(x, y, z, status=status)
     pin_state.status = status
 
 
@@ -407,8 +411,15 @@ def _apply_assist_all(
     if not target_ids:
         return
 
+    paths = getattr(app, "_paths", None)
     w, h = app._video_receiver.resolution
     if w <= 0 or h <= 0:
+        # No feed to place anyone on: an output locked onto a path is still held on it where it stands.
+        for mid in target_ids:
+            out = app._server.get_marker(mid)
+            on_path = paths.constrain(mid, out.pos[0], out.pos[1]) if paths is not None and out is not None else None
+            if on_path is not None:
+                out.set_pos(*on_path)
         return
 
     steps = dt_steps(dt)  # shared by the inner smoothing and the outer glide
@@ -468,6 +479,7 @@ def _apply_assist_all(
             _det_worlds_for(plane_z),
             radius_sq,
             steps,
+            paths,
         )
 
 
@@ -482,6 +494,7 @@ def _assist_one(
     det_worlds: list[tuple[int, float, float]],
     radius_sq: float,
     steps: float,
+    paths: Any = None,
 ) -> None:
     """Glide one assist marker's output toward the person nearest its anchor.
 
@@ -537,13 +550,23 @@ def _assist_one(
         state.ai_smooth_y = out_y
     state.ai_smooth_x += glide * (target_x - state.ai_smooth_x)
     state.ai_smooth_y += glide * (target_y - state.ai_smooth_y)
-    out_marker.set_pos(state.ai_smooth_x, state.ai_smooth_y, manual_z)
+    # On a path the output stays on it too; the anchor's place there is left alone.
+    on_path = paths.constrain(marker_id, state.ai_smooth_x, state.ai_smooth_y) if paths is not None else None
+    out_marker.set_pos(*(on_path if on_path is not None else (state.ai_smooth_x, state.ai_smooth_y, manual_z)))
 
     # The locked person (if any) is the attached box; the overlay paints it in
     # the output marker's colour. ``None`` while gliding home leaves all boxes
     # in the default detection colour.
     state.attached_track_id = state.locked_track_id
     state.attached_marker_id = marker_id
+
+
+def hand_over_anchors(app: Any) -> None:
+    """Drop the anchor of every marker no longer under assist control, its path lock going to the output.
+
+    Called before anything writes a marker in the frame, so input moves a locked marker on from its output.
+    """
+    _prune_manual_markers(app, keep={m for m in app._assist_manual if is_assist_controlled(app, m)})
 
 
 def _prune_manual_markers(app: Any, *, keep: set[int]) -> None:
@@ -553,7 +576,12 @@ def _prune_manual_markers(app: Any, *, keep: set[int]) -> None:
     is off). Any other ghost is discarded – when the operator changes the
     controlled set or turns assist off, the old anchors must not linger.
     """
-    prune_to_keep(app._assist_manual, keep)
+    paths = getattr(app, "_paths", None)
+    for marker_id, _anchor in prune_to_keep(app._assist_manual, keep):
+        out = app._server.get_marker(marker_id)
+        if paths is not None and out is not None:
+            # A lock held the anchor's place; the output, which input drives from now, takes it over.
+            paths.take_over(marker_id, out.pos)
 
 
 def _prune_pin_states(app: Any, *, keep: set[int]) -> None:

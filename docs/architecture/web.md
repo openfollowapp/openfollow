@@ -53,6 +53,14 @@ and "manage X under Y" pointers – goes in that section's **help drawer markdow
 | `/api/wizard/project` | POST | Project grid corners + ref point to screen coords |
 | `/api/wizard/unproject` | POST | Unproject screen points to world plane, return delta |
 | `/api/wizard/solve` | POST | Run DLT solve from 4 corner screen positions |
+| `/api/scene/project` | POST | World polylines (bowed by the lens) and points as the saved camera sees them in a `w` x `h` picture |
+| `/api/scene/unproject` | POST | The stage point under a picture point, on the plane at a height (422 above the horizon) |
+| `/api/ground_grid/view` | POST | A ground-grid polygon at a height: its outline, corners and clipped grid lines in the picture |
+| `/api/paths` | GET/POST | List the paths, create one |
+| `/api/paths/<name>` | PUT/DELETE | Change a path's name, options or points; delete it |
+| `/api/paths/<name>/active`, `/record` | POST | Switch a path; start or stop recording into it |
+| `/api/paths/marker/<id>` | GET | A marker's position on the wire, for Point from |
+| `/api/paths/view` | POST | Every path, its points and ends as the saved camera sees them |
 
 ## HTMX notes
 - HTMX version: 1.9 – use `hx-on::after-request` (double colon), NOT `hx-on:htmx:after-request`
@@ -154,6 +162,8 @@ Per-IP exponential-backoff lockout on PIN authentication. Without this, a 4-digi
 - **`_is_stale` requires both conditions:** an entry is collectable only when the idle threshold has passed *and* `lockout_until` has expired. Defends against a misconfigured `reset_after_s < max_lockout_s` where the per-IP GC could otherwise drop an entry mid-lockout, letting an attacker reset their failure count by waiting one idle window.
 - **Wire response:** locked-out callers get `429 + Retry-After: <seconds>`. The header is computed via `math.ceil(remaining)` so it never overshoots the cap (`int(remaining) + 1` would advertise `31` on a `30 s` cap). `bottle.abort()` discards thread-local response headers, so the 429 is raised as `HTTPResponse(headers={"Retry-After": …})` directly – not via `abort()`.
 - **Threading:** every public method takes the instance lock, and `now = self._clock()` is read **inside** the critical section so a contended caller can't compute `lockout_until = now + delay` against a stale timestamp.
+- **Keyed on the connection, never a header:** the address is `_client_address()`, the WSGI `REMOTE_ADDR`. Bottle's `request.remote_addr` takes a client-set `X-Forwarded-For` first, so a client could present a fresh address per guess and never be locked out; do not use it for anything that decides access.
+- **No reverse proxy on the station:** behind one, every client connects from loopback and shares one lockout. That deployment is not supported.
 - **Per-IP, not per-account:** acceptable because there is only one shared PIN. Legitimate users behind the same NAT share lockout – a known trade-off on a LAN show network. No persistence across server restarts; matches the LAN threat model.
 - **Coverage:** 100% line + branch in `tests/test_login_throttle.py` (mock-clock unit tests, including thread-safety stress) + integration tests in `tests/test_web_server.py` (live server, real `urllib`, both vectors). Module is in the `mypy --strict` batch.
 

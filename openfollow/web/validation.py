@@ -399,6 +399,11 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
         "lens_k1": FieldRule(_as_float, human_error="Must be a number."),
         "lens_k2": FieldRule(_as_float, human_error="Must be a number."),
     },
+    "ground_grid": {
+        "enabled": FieldRule(_as_bool),
+        "visible": FieldRule(_as_bool),
+        "z_offset": FieldRule(_as_float, human_error="Must be a number."),
+    },
     "grid": {
         "visible": FieldRule(_as_bool),
         "width": FieldRule(_as_float, lo=0.1, human_error="Width must be at least 0.1 m."),
@@ -500,6 +505,8 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
         "btn_menu_confirm": _menu_button_rule(),
         "btn_menu_cancel": _menu_button_rule(),
         "btn_clear_messages": _button_rule(),
+        "btn_pathfinder": _button_rule(),
+        "btn_toggle_paths": _button_rule(),
         "move_xy_stick": FieldRule(
             _as_str, choices=VALID_STICKS, human_error=f"Stick must be one of: {', '.join(VALID_STICKS)}."
         ),
@@ -544,6 +551,8 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
         "key_prev_marker": _key_rule(),
         "key_settings": _key_rule(),
         "key_clear_messages": _key_rule(),
+        "key_pathfinder": _key_rule(),
+        "key_toggle_paths": _key_rule(),
     },
     "osc": {
         "enabled": FieldRule(_as_bool),
@@ -641,6 +650,10 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
         ),
         "debounce_ms": FieldRule(_as_int, lo=0, hi=60000, human_error="Debounce must be between 0 and 60000 ms."),
         "hysteresis": FieldRule(_as_float, lo=0.0, hi=10.0, human_error="Hysteresis must be between 0 and 10 m."),
+    },
+    "paths": {
+        "show_paths": FieldRule(_as_bool),
+        "slide_time": FieldRule(_as_float, lo=0.0, hi=10.0, human_error="Slide time must be between 0 and 10 s."),
     },
     # Shared OSC destination profiles (name + connection).
     "osc_destination": {

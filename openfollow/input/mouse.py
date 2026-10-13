@@ -30,10 +30,12 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from openfollow.runtime import paths_runtime
 from openfollow.runtime.services_detection_pin import (
     get_or_create_manual_marker,
     is_assist_controlled,
 )
+from openfollow.scene.ground_grid import floor_height
 from openfollow.scene.solver import (
     CONE_RING_SEGMENTS,
     GROUND_RING_SEGMENTS,
@@ -99,6 +101,8 @@ class MouseHandler:
         # EMA target (world x, y) and the current smoothed world position.
         self._target_world: tuple[float, float] | None = None
         self._smooth_world: tuple[float, float] | None = None
+        # The floor the grabbed marker stood on: the cursor is read on it for the whole drag.
+        self._drag_floor_z: float | None = None
         # Last right-click for double-click (reset) detection:
         # (time, x, y, released_active) – the bool records whether that click
         # released an active mouse grab, so reset only arms after real control.
@@ -186,6 +190,10 @@ class MouseHandler:
         marker = self._get_selected_marker()
         if marker is None:
             return False
+        paths = getattr(self._app, "_paths", None)
+        if paths is not None and paths.is_locked(self._app._selected_id):
+            # A locked marker's height is its path's.
+            return True
         clicks = self._take_wheel_clicks(abs(dy))
         if clicks:
             x, y, z = marker.pos
@@ -219,14 +227,20 @@ class MouseHandler:
         app = self._app
         if not app._config.controller.mouse_enabled:
             return
+        paths = getattr(app, "_paths", None)
+        if paths is not None and paths.is_locked(app._selected_id):
+            # Locked onto a path while held: the path has the marker now, so let go of it.
+            self._active = False
+            logger.info("Mouse let go of marker %s: it is locked onto a path", app._selected_id)
+            return
         marker = self._get_selected_marker()
         if marker is None or self._target_world is None:
             return
         tx, ty = self._target_world
+        alpha = max(1.0 - app._config.controller.mouse_smoothing, _MIN_GLIDE_ALPHA)
         if self._smooth_world is None:
             mx, my, _ = marker.pos
             self._smooth_world = (mx, my)
-        alpha = max(1.0 - app._config.controller.mouse_smoothing, _MIN_GLIDE_ALPHA)
         sx, sy = self._smooth_world
         nx = sx + alpha * (tx - sx)
         ny = sy + alpha * (ty - sy)
@@ -256,8 +270,12 @@ class MouseHandler:
         marker_id = self._hit_test(x, y)
         if marker_id is None:
             return False
+        # The mouse moves markers freely: a grab takes the marker off its path where it stands.
+        paths_runtime.release(self._app, marker_id)
         self._app._selected_id = marker_id
         self._active = True
+        grabbed = self._app._server.get_marker(marker_id) if self._app._server is not None else None
+        self._drag_floor_z = floor_height(self._app._config, *grabbed.pos[:2]) if grabbed is not None else None
         self._anchor_screen = (x, y)
         # No target until the first move, so the grab itself never yanks the
         # marker to the click. ``update`` seeds the glide from the marker's
@@ -312,6 +330,7 @@ class MouseHandler:
         marker = self._get_selected_marker()
         if marker is None:
             return
+        paths_runtime.release(self._app, self._app._selected_id)
         marker.set_pos(*self._app._get_default_marker_position())
         # Drop any pending glide so ``update`` doesn't drag it back.
         self._target_world = None
@@ -374,7 +393,7 @@ class MouseHandler:
         # is configured. k1/k2 live on the config (the Camera object is pinhole).
         cam = self._app._config.camera
         screen = invert_overlay_distortion(self._screen_buffer, float(w), float(h), cam.lens_k1, cam.lens_k2)
-        plane_z = self._app._config.grid.z_offset
+        plane_z = self._app._config.grid.z_offset if self._drag_floor_z is None else self._drag_floor_z
         world = unproject_to_plane(buf, screen, float(w), float(h), plane_z)
         if not np.all(np.isfinite(world[0])):
             return None
@@ -395,9 +414,8 @@ class MouseHandler:
             return None
         buf, w, h = view
         cfg = app._config
-        z_off = cfg.grid.z_offset
-        # The grab area is the ring that is drawn: the cone's base ring
-        # in cone style, else the ground circle.
+        # The grab area is the ring that is drawn, on the floor it is drawn on:
+        # the cone's base ring in cone style, else the ground circle.
         if cfg.marker.marker_style == "cone":
             gc_on = True
             gc_size = cfg.marker.cone_base_diameter / 2.0
@@ -418,6 +436,7 @@ class MouseHandler:
             if marker is None:
                 continue
             mx, my, _ = marker.pos
+            z_off = floor_height(cfg, mx, my)
             center = apply_overlay_distortion(
                 project_points(buf, np.array([[mx, my, z_off]], dtype=np.float64), float(w), float(h)),
                 float(w),

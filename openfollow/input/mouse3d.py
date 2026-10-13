@@ -305,6 +305,8 @@ class Mouse3DUpdate:
     prev_marker: bool = False
     toggle_help: bool = False
     toggle_zones: bool = False
+    pathfinder: bool = False
+    toggle_paths: bool = False
 
 
 def _finite_axis(value: Any) -> float:
@@ -584,6 +586,8 @@ class Mouse3DHandler:
             prev_marker=self._fired(cfg.btn_prev_marker, edges),
             toggle_help=self._fired(cfg.btn_toggle_help, edges),
             toggle_zones=self._fired(cfg.btn_toggle_zones, edges),
+            pathfinder=self._fired(cfg.btn_pathfinder, edges),
+            toggle_paths=self._fired(cfg.btn_toggle_paths, edges),
         )
 
     def _shape(self, value: float, deadzone: float, curve: str) -> float:

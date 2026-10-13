@@ -439,3 +439,12 @@ class TestRename:
         assert (engine.locked_path(1), engine.recording) == ("cross", "cross")
         engine.reload(self._renamed("ds"), enabled=True)
         assert (engine.is_locked(1), engine.recording) == (False, None)
+
+    def test_names_match_ignoring_case(self) -> None:
+        engine = _engine(RAMP)
+        engine.press(2, (0.2, 3.0, 0.0))
+        engine.record("ramp", PathsConfig(paths=[RAMP]))
+        engine.stage_rename("RAMP", "Slope")
+        slope = _path("Slope", [(0, -5, 0), (0, 0, 0), (0, 5, 2)], active=True)
+        engine.reload(PathsConfig(paths=[slope]), enabled=True)
+        assert (engine.locked_path(2), engine.recording) == ("Slope", "Slope")

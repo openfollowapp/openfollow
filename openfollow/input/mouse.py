@@ -228,7 +228,6 @@ class MouseHandler:
         if paths is not None and paths.is_locked(app._selected_id):
             # Locked onto a path while held: the path has the marker now, so let go of it.
             self._active = False
-            self._reset_tracking()
             logger.info("Mouse let go of marker %s: it is locked onto a path", app._selected_id)
             return
         marker = self._get_selected_marker()

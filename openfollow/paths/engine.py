@@ -278,15 +278,13 @@ class PathEngine:
         return self._at(lock)
 
     def project(self, marker_id: int, x: float, y: float) -> Point | None:
-        """Where an absolute position lands for a locked marker: the nearest point it can reach."""
+        """Where an absolute position lands for a locked marker: along its path, onto another only at a junction."""
         lock = self._locks.get(marker_id)
         if lock is None or self._network is None:
             return None
         if lock.free is not None:
             return self._move_free(lock, (x, y, lock.free[2]))
-        place = self._network.nearest(x, y, among=self._network.connected(lock.place.path))
-        assert place is not None
-        self._set_place(lock, place)
+        self._set_place(lock, self._network.follow(lock.place, x, y))
         return self._at(lock)
 
     def constrain(self, marker_id: int, x: float, y: float) -> Point | None:
@@ -300,9 +298,7 @@ class PathEngine:
         if lock.free is not None:
             curve = self._network.curves[lock.place.path]
             return self._pull(lock, (x, y, lock.free[2]), curve.point(curve.nearest(x, y)[0]))
-        place = self._network.nearest(x, y, among=self._network.connected(lock.place.path))
-        assert place is not None
-        px, py, pz = self._network.point(place)
+        px, py, pz = self._network.point(self._network.follow(lock.place, x, y))
         return px, py, pz + self._height_left(lock)
 
     def take_over(self, marker_id: int, pos: Point) -> None:

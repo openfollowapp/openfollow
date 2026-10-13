@@ -15,6 +15,7 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from functools import cached_property
 
 import numpy as np
 import numpy.typing as npt
@@ -26,6 +27,8 @@ JUNCTION_REACH_M = 0.1
 JUNCTION_HEIGHT_M = 0.1
 # A marker this close to a junction may steer into the other path.
 _CAPTURE_M = 0.05
+# A position may switch paths this much further from a junction than that: about one sample's step.
+_POSITION_STEP_M = 0.15
 # The other path wins only when its direction is more than this much closer to the push.
 _SWITCH_MARGIN_RAD = math.radians(15.0)
 _SAME_JUNCTION_M = 0.05
@@ -203,6 +206,30 @@ class PathNetwork:
             if d > _CAPTURE_M:
                 ahead.append(d)
         return min(ahead, default=None)
+
+    @cached_property
+    def _junction_points(self) -> dict[int, list[tuple[float, float]]]:
+        """Each path's junctions in plan, in the order of its stations."""
+        return {i: [self.curves[i].point(s)[:2] for s, _ in stations] for i, stations in self._stations.items()}
+
+    def follow(self, place: Place, x: float, y: float) -> Place:
+        """Where a position ``(x, y)`` puts a marker at ``place``: along its path, onto another only at a junction.
+
+        Another path counts where it meets this one at a junction that ``(x, y)`` lies close to, and that path's
+        point nearest it close along that path; the nearest point wins, and a tie stays on this path.
+        """
+        s, best = self.curves[place.path].nearest(x, y)
+        found = Place(place.path, s)
+        reach = _CAPTURE_M + _POSITION_STEP_M
+        for (_, there), (jx, jy) in zip(self._stations[place.path], self._junction_points[place.path], strict=True):
+            if math.hypot(x - jx, y - jy) > reach:
+                continue
+            other = self.curves[there.path]
+            s_other, gap = other.nearest(x, y)
+            # Measured along the other path: one passing back over the junction higher up is not near it.
+            if gap < best and abs(other.offset(there.s, s_other)) <= reach:
+                found, best = Place(there.path, s_other), gap
+        return found
 
 
 def extend_to_corners(curves: Sequence[PathCurve]) -> list[PathCurve]:

@@ -11,6 +11,7 @@ until it is on it. Locks and recording live in memory only.
 
 from __future__ import annotations
 
+import math
 import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -49,6 +50,8 @@ class _Lock:
     # Height still to ease out after switching onto a path at another height, and how far into that.
     z_shift: float = 0.0
     z_elapsed: float = 0.0
+    # The last push's speed, which sets how far ahead of a junction a turn can be taken.
+    speed: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -273,6 +276,7 @@ class PathEngine:
         lock = self._locks.get(marker_id)
         if lock is None or self._network is None:
             return None
+        lock.speed = math.hypot(vx, vy)
         if lock.free is not None:
             x, y, z = lock.free
             return self._move_free(lock, (x + vx * dt, y + vy * dt, z + vz * dt))
@@ -334,6 +338,16 @@ class PathEngine:
         lock.name = self._names[place.path]
 
     # -- drawing -------------------------------------------------------
+
+    def switch_arrows(self) -> list[tuple[Point, Point]]:
+        """Every way a landed marker can turn at a junction it is close enough to, as (tail, tip)."""
+        if self._network is None:
+            return []
+        out = []
+        for lock in self._locks.values():
+            if lock.free is None:
+                out.extend(self._network.switch_arrows(lock.place, lock.speed))
+        return out
 
     def drawings(self, cfg: PathsConfig) -> list[PathDrawing]:
         """The paths the Operator Screen draws: every active one, and the one being recorded."""

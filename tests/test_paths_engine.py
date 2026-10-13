@@ -803,3 +803,22 @@ class TestAStopFromTheWebThread:
             {"drawings"},
         )
         assert len(engines) > 5
+
+
+class TestSwitchArrows:
+    def test_a_landed_marker_near_a_junction_gets_its_arrows(self) -> None:
+        engine = _engine(CROSS, RAMP)
+        engine.press(1, (-0.8, 0.0, 0.0))
+        _landed(engine)
+        assert engine.switch_arrows() == []
+        # Pushed at 2 m/s the switch area reaches 1 m ahead.
+        engine.move(1, 2.0, 0.0, 0.01)
+        assert len(engine.switch_arrows()) == 3
+
+    def test_a_marker_still_pulled_onto_its_path_gets_none(self) -> None:
+        engine = _engine(CROSS, RAMP, slide_time=1.0)
+        engine.press(1, (0.1, 0.5, 0.0))
+        assert engine.switch_arrows() == []
+
+    def test_no_active_path_no_arrows(self) -> None:
+        assert _engine().switch_arrows() == []

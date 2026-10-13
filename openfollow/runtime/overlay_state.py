@@ -334,6 +334,8 @@ class OverlayState:
             bool,
         ]
     ] = field(default_factory=list)
+    # Where a locked marker can turn at a nearby junction: a short (tail, tip) stretch along each way.
+    path_arrows: list[tuple[tuple[float, float, float], tuple[float, float, float]]] = field(default_factory=list)
 
     def reset(self) -> None:
         """Reset state for reuse in object pool."""
@@ -448,6 +450,7 @@ class OverlayState:
         self.zone_z_offset = 0.0
         self.show_paths = False
         self.path_lines = []
+        self.path_arrows = []
         # Clear fader/badge stacks on pool reuse to avoid stale entries.
         self.virtual_faders_display = []
         self.status_flags = []

@@ -69,6 +69,10 @@
             <button type="button" id="ground-grid-refresh-btn" class="secondary" hidden>Refresh Image</button>
             <span id="ground-grid-status" class="section-note"></span>
         </div>
+        <div class="field" id="ground-grid-vertex-field" style="margin-top:0.5rem;" hidden>
+            <label>Vertices (x, y in {{_len}})</label>
+            <div id="ground-grid-vertex-list" style="display:flex;flex-direction:column;gap:0.25rem;"></div>
+        </div>
     </div>
 
     <input type="hidden" id="ground-grid-vertices" name="vertices" value="{{json.dumps(_gg.vertices)}}">
@@ -98,6 +102,82 @@
         changed = true;
     }
 
+    // -- vertex list: each corner typed in; the field shows metres, or ft / in on an imperial station ----
+    var units = window.OpenFollow.units;
+    var vertexField = document.getElementById('ground-grid-vertex-field');
+    var vertexList = document.getElementById('ground-grid-vertex-list');
+
+    function shown(m) { return units.isImperial() ? units.formatLength(m) : Number(m).toFixed(3); }
+    function echo(v) { return 'Stored: ' + units.metricEcho(v[0]) + ', ' + units.metricEcho(v[1]); }
+
+    function renderVertices() {
+        vertexField.hidden = verts.length === 0;
+        vertexList.replaceChildren();
+        verts.forEach(function(v, i) {
+            var row = document.createElement('div');
+            row.setAttribute('style', 'display:flex;align-items:center;gap:0.25rem;');
+            var name = document.createElement('span');
+            name.setAttribute('style', 'min-width:2.5em;font-size:0.85em;opacity:0.7;');
+            name.textContent = 'V' + (i + 1);
+            row.appendChild(name);
+            [0, 1].forEach(function(axis) {
+                var input = document.createElement('input');
+                input.type = units.isImperial() ? 'text' : 'number';
+                if (!units.isImperial()) input.setAttribute('step', 'any');
+                input.setAttribute('style', 'width:' + (units.isImperial() ? '9em' : '7em') + ';');
+                input.setAttribute('aria-label', 'V' + (i + 1) + ' ' + (axis ? 'y' : 'x'));
+                input.setAttribute('data-vertex', i + ':' + axis);
+                input.value = shown(v[axis]);
+                input.addEventListener('input', function() { typed(i, axis, input.value); });
+                // Leaving it shows what Save will store.
+                input.addEventListener('change', function() { syncVertex(i); });
+                row.appendChild(input);
+            });
+            var remove = document.createElement('button');
+            remove.type = 'button';
+            remove.className = 'danger';
+            remove.textContent = '×';
+            remove.setAttribute('aria-label', 'Remove V' + (i + 1));
+            remove.disabled = verts.length <= 3;
+            remove.addEventListener('click', function() {
+                if (verts.length <= 3) return;
+                verts.splice(i, 1);
+                store();
+                renderVertices();
+                plan.render();
+            });
+            row.appendChild(remove);
+            vertexList.appendChild(row);
+            if (units.isImperial()) {
+                var note = document.createElement('small');
+                note.className = 'metric-echo';
+                note.setAttribute('data-vertex-echo', String(i));
+                note.textContent = echo(v);
+                vertexList.appendChild(note);
+            }
+        });
+    }
+
+    function typed(i, axis, raw) {
+        var value = units.isImperial() ? units.parseLength(raw) : parseFloat(raw);
+        if (!verts[i] || !isFinite(value)) return;
+        verts[i][axis] = value;
+        store();
+        var note = vertexList.querySelector('[data-vertex-echo="' + i + '"]');
+        if (note) note.textContent = echo(verts[i]);
+        plan.render();
+    }
+
+    function syncVertex(i) {
+        if (!verts[i]) return;
+        [0, 1].forEach(function(axis) {
+            var input = vertexList.querySelector('[data-vertex="' + i + ':' + axis + '"]');
+            if (input) input.value = shown(verts[i][axis]);
+        });
+        var note = vertexList.querySelector('[data-vertex-echo="' + i + '"]');
+        if (note) note.textContent = echo(verts[i]);
+    }
+
     var plan = new window.OpenFollow.PolygonPlan(canvas, {
         polygons: function() { return [verts]; },
         editable: function() { return verts.length ? verts : null; },
@@ -112,8 +192,9 @@
             ctx.stroke();
             p.drawHandles(verts, '#7cf');
         },
+        onDragMove: syncVertex,
         onDragEnd: store,
-        onDraftClose: function(drawn) { verts = drawn; store(); },
+        onDraftClose: function(drawn) { verts = drawn; store(); renderVertices(); },
         onRender: function() {
             var drawing = !!plan.draft;
             finishBtn.disabled = !(drawing && plan.draft.vertices.length >= 3);
@@ -191,6 +272,7 @@
                 if (!verts[i]) return;
                 verts[i] = [w.x, w.y];
                 store();
+                syncVertex(i);
                 plan.render();
             }, function(info) {
                 window.OpenFollow.saveError.show(form, info, 'Not moved.');
@@ -219,7 +301,7 @@
     drawBtn.addEventListener('click', function() { plan.startDraft(); });
     finishBtn.addEventListener('click', function() { plan.finishDraft(); });
     cancelBtn.addEventListener('click', function() { plan.cancelDraft(); });
-    clearBtn.addEventListener('click', function() { verts = []; store(); plan.render(); });
+    clearBtn.addEventListener('click', function() { verts = []; store(); renderVertices(); plan.render(); });
 
     // Grid and live markers from the zones endpoint, while the plan is on screen.
     function visible() {
@@ -238,6 +320,7 @@
             .catch(function() {});
     }
     plan.grid = {{!json.dumps({k: getattr(config.grid, k) for k in ("width", "depth", "spacing", "x_offset", "y_offset")})}};
+    renderVertices();
     window.OpenFollow.viewSwitch(document.getElementById('ground-grid-view-switch'), 'ground_grid', applyMode);
     refresh();
     if (window.__groundGridTimer) clearInterval(window.__groundGridTimer);

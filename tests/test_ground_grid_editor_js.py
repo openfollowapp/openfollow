@@ -229,3 +229,128 @@ def test_camera_view_disables_drawing() -> None:
         + "choose('camera'); await settle(); out.draw = document.getElementById('ground-grid-draw-btn').disabled;"
     )
     assert out["draw"] is True
+
+
+_ROWS = """
+function cell(i, axis) { return document.querySelector('[data-vertex="' + i + ':' + axis + '"]'); }
+function rows() {
+    return document.querySelectorAll('#ground-grid-vertex-list input').map(function (n) { return n.value; });
+}
+function removeButtons() {
+    return document.querySelectorAll('#ground-grid-vertex-list button').map(function (b) { return b.disabled; });
+}
+function listHidden() { return document.getElementById('ground-grid-vertex-field').hidden; }
+"""
+
+
+def test_the_saved_polygon_is_listed_vertex_by_vertex() -> None:
+    out = _editor(
+        _ROWS + "out.rows = rows(); out.removable = removeButtons(); out.hidden = listHidden();", _cfg(_SQUARE)
+    )
+    assert out["rows"] == ["0.000", "2.000", "2.000", "2.000", "2.000", "4.000", "0.000", "4.000"]
+    assert out["removable"] == [False] * 4
+    assert out["hidden"] is False
+
+
+def test_with_no_polygon_there_is_no_list() -> None:
+    out = _editor(_ROWS + "out.rows = rows(); out.hidden = listHidden();")
+    assert out == {"rows": [], "hidden": True}
+
+
+def test_a_typed_coordinate_moves_its_vertex() -> None:
+    out = _editor(
+        _ROWS + "typeInto(cell(1, 1), '2.5'); out.verts = stored(); out.status = status();",
+        _cfg(_SQUARE),
+    )
+    assert out["verts"] == [[0.0, 2.0], [2.0, 2.5], [2.0, 4.0], [0.0, 4.0]]
+    assert out["status"] == "Polygon changed. Save to keep it."
+
+
+def test_an_unreadable_coordinate_keeps_the_vertex_and_shows_it_again_on_leaving() -> None:
+    out = _editor(
+        _ROWS + "typeInto(cell(0, 0), 'abc'); out.verts = stored(); leave(cell(0, 0)); out.shown = cell(0, 0).value;",
+        _cfg(_SQUARE),
+    )
+    assert out["verts"] == _SQUARE
+    assert out["shown"] == "0.000"
+
+
+def test_a_vertex_is_removed_down_to_three() -> None:
+    out = _editor(
+        _ROWS
+        + """
+        document.querySelectorAll('#ground-grid-vertex-list button')[1].click();
+        out.verts = stored(); out.rows = rows(); out.removable = removeButtons();
+        document.querySelectorAll('#ground-grid-vertex-list button')[0].click();
+        out.after = stored();
+        """,
+        _cfg(_SQUARE),
+    )
+    assert out["verts"] == [[0.0, 2.0], [2.0, 4.0], [0.0, 4.0]]
+    assert out["rows"] == ["0.000", "2.000", "2.000", "4.000", "0.000", "4.000"]
+    assert out["removable"] == [True] * 3
+    assert out["after"] == out["verts"]
+
+
+def test_dragging_a_corner_on_the_plan_moves_its_numbers_with_it() -> None:
+    # (2, 4) is (810, 275) on the fitted plan, 85 px per metre.
+    out = _editor(
+        _ROWS
+        + """
+        at('mousedown', 810, 275); at('mousemove', 895, 275);
+        out.during = [cell(2, 0).value, cell(2, 1).value];
+        at('mouseup', 895, 275);
+        """,
+        _cfg(_SQUARE),
+    )
+    assert out["during"] == ["3.000", "4.000"]
+
+
+def test_a_drawn_polygon_is_listed_and_a_cleared_one_is_not() -> None:
+    out = _editor(
+        _ROWS
+        + """
+        button('ground-grid-draw-btn');
+        at('click', 640, 360); at('click', 740, 360); at('click', 740, 260);
+        button('ground-grid-finish-btn');
+        out.count = rows().length;
+        button('ground-grid-clear-btn');
+        out.cleared = rows(); out.hidden = listHidden();
+        """
+    )
+    assert out == {"count": 6, "cleared": [], "hidden": True}
+
+
+def test_a_corner_dropped_in_the_camera_view_moves_its_numbers() -> None:
+    out = _editor(
+        _CAMERA
+        + _ROWS
+        + """
+        choose('camera'); await showPicture();
+        pointer(svg().querySelectorAll('.pv-handle')[2], 'pointerdown', 840, -40);
+        pointer(svg(), 'pointerup', 940, -40);
+        await settle();
+        out.row = [cell(2, 0).value, cell(2, 1).value];
+        """,
+        _cfg(_SQUARE),
+    )
+    assert out["row"] == ["3.000", "4.000"]
+
+
+def test_an_imperial_station_types_feet_and_sees_what_is_stored() -> None:
+    cfg = _cfg(_SQUARE)
+    cfg.ui.unit_system = "imperial"
+    out = _editor(
+        _ROWS
+        + """
+        out.type = cell(0, 0).type;
+        typeInto(cell(0, 0), '3 ft');
+        out.x = stored()[0][0];
+        out.echo = document.querySelector('[data-vertex-echo="0"]').textContent;
+        """,
+        cfg,
+        setup="window.OpenFollow.units.setSystem('imperial');",
+    )
+    assert out["type"] == "text"
+    assert out["x"] == pytest.approx(0.9144)
+    assert out["echo"] == "Stored: 0.914 m, 2.000 m"

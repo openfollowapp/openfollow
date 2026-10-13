@@ -74,13 +74,18 @@ function peArrowhead(x, y, ux, uy, half, side) {
     var units = window.OpenFollow.units;
     var SVG_NS = 'http://www.w3.org/2000/svg';
     var svg = q('svg'), img = q('img');
-    var data = null;          // GET /api/paths
+    var data = null;          // GET /api/paths, with the edits made here since
     var view = null;          // POST /api/paths/view for the picture shown
+    var views = 0;            // view requests made, so an older answer is dropped
     var selected = null;      // the path the picture edits: the row opened last
     var open = {};            // name -> the row's open tab, for every open row
     var imgW = 1280, imgH = 720, snapshotUrl = null;
-    var drag = null;          // {index, z} while a point is dragged
+    var drag = null;          // {name, index, z} while a point is dragged
     var dragEnded = false;    // the click that ends a drag is not a click on the picture
+    var waiting = [];         // writes not sent yet, oldest first; one is in flight at a time
+    var writing = false;
+    var edits = 0;            // a load asked for before the latest edit is out of date
+    var rendering = false;    // a field a redraw removes was not left by the operator
 
     function api(method, url, body) {
         var opts = { method: method, headers: { 'Content-Type': 'application/json' } };
@@ -122,28 +127,44 @@ function peArrowhead(x, y, ux, uy, half, side) {
     function field(label, forId, control, cls) {
         return make('div', { 'class': 'field' + (cls ? ' ' + cls : '') }, [make('label', { 'for': forId, text: label }), control]);
     }
-    function lengthInput(value, onChange) {
-        var input = make('input', { type: 'text', value: units.formatLength(value) });
-        input.addEventListener('change', function() {
-            var parsed = units.parseLength(input.value);
+    // Commits on change, or when left holding text it has not committed; defaultValue is the text committed last.
+    function textInput(attrs, onCommit) {
+        var input = make('input', Object.assign({ type: 'text' }, attrs));
+        function commit() {
+            if (rendering || input.value === input.defaultValue) return;
+            if (onCommit(input.value) !== false) input.defaultValue = input.value;
+        }
+        input.addEventListener('change', commit);
+        input.addEventListener('blur', commit);
+        return input;
+    }
+    function lengthInput(id, value, onChange) {
+        var input = textInput({ id: id, value: units.formatLength(value) }, function(text) {
+            var parsed = units.parseLength(text);
             input.setAttribute('aria-invalid', isFinite(parsed) ? 'false' : 'true');
-            if (isFinite(parsed)) onChange(parsed);
+            if (!isFinite(parsed)) return false;
+            onChange(parsed);
         });
         return input;
     }
 
     // -- loading --------------------------------------------------------
     function load() {
+        var asked = edits;
         return api('GET', '/api/paths').then(function(json) {
+            if (asked !== edits || writing) return;
+            var changed = JSON.stringify(json) !== JSON.stringify(data);
             data = json;
             Object.keys(open).forEach(function(name) { if (!find(name)) delete open[name]; });
             if (selected !== null && !find(selected)) selected = null;
-            renderList();
+            if (changed) renderList();
             return loadView();
         }).catch(failed);
     }
     function loadView() {
+        var asked = ++views;
         return api('POST', '/api/paths/view', { w: imgW, h: imgH }).then(function(json) {
+            if (asked !== views) return;
             view = json;
             renderFrame();
         }).catch(failed);
@@ -171,39 +192,112 @@ function peArrowhead(x, y, ux, uy, half, side) {
         });
     }
 
-    // -- one row per path -------------------------------------------------
-    function renderList() {
-        var list = q('list');
-        list.innerHTML = '';
-        q('empty').hidden = data.paths.length > 0;
-        var locks = {};
-        Object.keys(data.locks).forEach(function(id) {
-            var key = data.locks[id].toLowerCase();
-            (locks[key] = locks[key] || []).push(id);
-        });
-        data.paths.forEach(function(p, index) {
-            list.appendChild(row(p, index, locks[p.name.toLowerCase()] || []));
+    // -- saving: edits apply here at once, then go to the station in order ---
+    // One write in flight at a time. A write still waiting under the same key sends the latest data when it goes.
+    function write(key, send) {
+        edits++;
+        if (!key || !waiting.some(function(w) { return w.key === key; })) waiting.push({ key: key, send: send });
+        if (!writing) next();
+    }
+    function next() {
+        var w = waiting.shift();
+        writing = !!w;
+        if (w) w.send().catch(failed).then(next);
+        else load();
+    }
+    // Changes the path called ``name`` here and saves its options and points; ``redraw`` when the rows change with it.
+    function edit(name, change, redraw) {
+        var p = find(name);
+        if (!p) return;
+        change(p);
+        if (redraw) renderList();
+        write('path:' + p.name, function() {
+            return api('PUT', '/api/paths/' + enc(p.name), {
+                closed: p.closed, release_at_start: p.release_at_start, release_at_end: p.release_at_end, points: p.points
+            });
         });
     }
+    function addPoint(name, pt) {
+        var p = find(name);
+        if (!p) return;
+        if (p.points.length >= data.max_points) { say('A path holds at most ' + data.max_points + ' points.'); return; }
+        edit(name, function(path) { path.points.push({ x: pt.x, y: pt.y, z: pt.z, radius: 0.5 }); }, true);
+    }
+    function rename(name, to) {
+        var p = find(name);
+        if (!p) return;
+        write(null, function() {
+            return api('PUT', '/api/paths/' + enc(p.name), { name: to }).then(function(json) {
+                var from = p.name;
+                p.name = json.path.name;
+                if (from !== p.name && from in open) { open[p.name] = open[from]; delete open[from]; }
+                if (selected === from) selected = p.name;
+                renderList();
+            }, function(err) {
+                renderList();
+                throw err;
+            });
+        });
+    }
+    function setActive(name, on) {
+        var p = find(name);
+        if (!p) return;
+        p.active = on;
+        renderList();
+        write('active:' + p.name, function() {
+            return api('POST', '/api/paths/' + enc(p.name) + '/active', { active: p.active });
+        });
+    }
+
+    // -- one row per path -------------------------------------------------
+    // Rebuilds the rows. The field the operator is in is focused again, with what was typed there and not yet saved.
+    function renderList() {
+        var list = q('list');
+        var had = document.activeElement;
+        var keep = had && had.id && list.contains(had) ? had : null;
+        rendering = true;
+        try {
+            list.innerHTML = '';
+            q('empty').hidden = data.paths.length > 0;
+            var locks = {};
+            Object.keys(data.locks).forEach(function(id) {
+                var key = data.locks[id].toLowerCase();
+                (locks[key] = locks[key] || []).push(id);
+            });
+            data.paths.forEach(function(p, index) {
+                list.appendChild(row(p, index, locks[p.name.toLowerCase()] || []));
+            });
+        } finally {
+            rendering = false;
+        }
+        var again = keep && document.getElementById(keep.id);
+        if (!again || again === keep) return;
+        again.focus();
+        if (again.type === 'text' && keep.value !== keep.defaultValue) {
+            again.value = keep.value;
+            again.setSelectionRange(keep.selectionStart, keep.selectionEnd);
+        }
+    }
     function row(p, index, lockedIds) {
-        var recording = !!data.recording && data.recording.toLowerCase() === p.name.toLowerCase();
-        var details = make('details', { 'class': 'osc-binding-row path-row' + (p.name === selected ? ' pe-selected' : ''), 'data-path': p.name });
+        var name = p.name;
+        var recording = !!data.recording && data.recording.toLowerCase() === name.toLowerCase();
+        var details = make('details', { 'class': 'osc-binding-row path-row' + (name === selected ? ' pe-selected' : ''), 'data-path': name });
         var summary = make('summary', { 'class': 'osc-binding-summary' }, [
             make('span', { 'class': 'osc-binding-enabled-dot ' + (p.active ? 'on' : 'off'), 'aria-label': p.active ? 'Active' : 'Inactive' }),
-            make('span', { 'class': 'osc-binding-title', text: p.name }),
+            make('span', { 'class': 'osc-binding-title', text: name }),
             make('span', { 'class': 'osc-binding-kind-badge', text: p.closed ? 'Closed' : 'Open' }),
             make('span', { 'class': 'osc-binding-kind-badge', text: p.points.length + (p.points.length === 1 ? ' point' : ' points') })
         ]);
         if (recording) summary.appendChild(make('span', { 'class': 'stat-chip info', text: 'Recording' }));
         summary.appendChild(make('span', { 'class': 'osc-binding-target', text: lockedIds.length ? 'Marker ' + lockedIds.join(', ') : '' }));
         details.appendChild(summary);
-        var tab = open[p.name] || 'basics';
-        var key = 'path-' + index;
+        var tab = open[name] || 'basics';
+        var key = 'pe-path-' + index;
         var body = make('div', { 'class': 'path-body' });
         var bar = make('div', { 'class': 'row-tab-bar', role: 'tablist' });
         [['basics', 'Basics'], ['points', 'Points']].forEach(function(t) {
             var b = make('button', { type: 'button', 'class': 'row-tab-btn' + (tab === t[0] ? ' active' : ''), 'data-row-tab': key + '-' + t[0], role: 'tab', 'aria-selected': tab === t[0] ? 'true' : 'false', 'aria-controls': 'row-tab-' + key + '-' + t[0], text: t[1] });
-            b.addEventListener('click', function() { open[p.name] = t[0]; });
+            b.addEventListener('click', function() { open[name] = t[0]; });
             bar.appendChild(b);
         });
         body.appendChild(bar);
@@ -211,111 +305,97 @@ function peArrowhead(x, y, ux, uy, half, side) {
         body.appendChild(pointsPanel(p, key, tab === 'points'));
         body.appendChild(make('div', { 'class': 'actions osc-binding-actions' }, [
             button(recording ? 'Stop recording' : 'Record', function() {
-                api('POST', '/api/paths/' + enc(p.name) + '/record', { on: !recording }).then(load, failed);
+                var path = find(name);
+                write(null, function() { return api('POST', '/api/paths/' + enc(path.name) + '/record', { on: !recording }); });
             }),
             button('Delete', function() {
-                if (!window.confirm('Delete path ' + p.name + '?')) return;
-                api('DELETE', '/api/paths/' + enc(p.name)).then(load, failed);
+                if (!window.confirm('Delete path ' + name + '?')) return;
+                var path = find(name);
+                write(null, function() { return api('DELETE', '/api/paths/' + enc(path.name)); });
             }, 'danger')
         ]));
         details.appendChild(body);
-        if (p.name in open) details.open = true;
+        if (name in open) details.open = true;
         details.addEventListener('toggle', function() {
             // Opened again by a redraw: the row the picture edits stays the one the operator opened last.
-            if (details.open && p.name in open) return;
+            if (details.open && name in open) return;
             if (details.open) {
-                open[p.name] = 'basics';
-                selected = p.name;
+                open[name] = 'basics';
+                selected = name;
             } else {
-                delete open[p.name];
-                if (selected === p.name) selected = null;
+                delete open[name];
+                if (selected === name) selected = null;
             }
-            root.querySelectorAll('.path-row').forEach(function(r) { r.classList.toggle('pe-selected', r.dataset.path === selected); });
+            // A redraw that came between the click and this event drew the row as it was.
+            if (!details.isConnected) renderList();
+            else root.querySelectorAll('.path-row').forEach(function(r) { r.classList.toggle('pe-selected', r.dataset.path === selected); });
             renderFrame();
         });
         return details;
     }
-    function put(p, change) {
-        return api('PUT', '/api/paths/' + enc(p.name), change);
-    }
     function basicsPanel(p, key, active) {
+        var name = p.name;
         var panel = make('div', { 'class': 'row-tab-panel' + (active ? ' active' : ''), id: 'row-tab-' + key + '-basics', role: 'tabpanel' });
-        var name = make('input', { type: 'text', id: key + '-name', value: p.name, maxlength: '32', autocomplete: 'off', spellcheck: 'false' });
-        name.addEventListener('change', function() {
-            put(p, { name: name.value }).then(function(json) {
-                var tab = open[p.name];
-                delete open[p.name];
-                open[json.path.name] = tab;
-                if (selected === p.name) selected = json.path.name;
-                return load();
-            }).catch(function(err) { name.value = p.name; failed(err); });
+        var nameInput = textInput({ id: key + '-name', value: name, maxlength: '32', autocomplete: 'off', spellcheck: 'false' }, function(text) {
+            rename(name, text);
         });
         var first = make('div', { 'class': 'row' }, [
             make('div', { 'class': 'field checkbox-field' }, [
                 make('label', { 'for': key + '-active', text: 'Path' }),
-                checkbox(key + '-active', p.active, 'Let markers lock onto it', function(on) {
-                    api('POST', '/api/paths/' + enc(p.name) + '/active', { active: on }).then(load, failed);
-                })
+                checkbox(key + '-active', p.active, 'Let markers lock onto it', function(on) { setActive(name, on); })
             ]),
-            field('Name', key + '-name', name)
+            field('Name', key + '-name', nameInput)
         ]);
         var second = make('div', { 'class': 'row' }, [
             make('div', { 'class': 'field checkbox-field' }, [
                 make('label', { 'for': key + '-closed', text: 'Shape' }),
-                checkbox(key + '-closed', p.closed, 'Join the last point to the first', function(on) { put(p, { closed: on }).then(load, failed); })
+                checkbox(key + '-closed', p.closed, 'Join the last point to the first', function(on) {
+                    edit(name, function(path) { path.closed = on; }, true);
+                })
             ])
         ]);
         panel.append(first, second);
         return panel;
     }
     // A corner's radius, or what an open path's end does with a marker pushed past it.
-    function option(p, pt, i, last, key, save) {
+    function option(p, pt, i, last, key) {
+        var name = p.name;
         if (p.closed || (i > 0 && i < last)) {
             var id = key + '-radius-' + i;
-            var radius = lengthInput(pt.radius, function(v) {
-                var points = p.points.slice();
-                points[i] = Object.assign({}, pt, { radius: v });
-                save(points);
+            var radius = lengthInput(id, pt.radius, function(v) {
+                edit(name, function(path) { path.points[i].radius = v; }, false);
             });
-            radius.id = id;
             return make('span', { 'class': 'pe-radius' }, [make('label', { 'for': id, text: 'Radius:' }), radius]);
         }
         if (last === 0) return '–';
         var flag = i === 0 ? 'release_at_start' : 'release_at_end';
-        var end = make('select', { 'aria-label': 'End at point ' + (i + 1) });
+        var end = make('select', { id: key + '-end-' + i, 'aria-label': 'End at point ' + (i + 1) });
         [['hold', 'Hold at end'], ['release', 'Release at end']].forEach(function(o) {
             end.appendChild(make('option', { value: o[0], text: o[1] }));
         });
         end.value = p[flag] ? 'release' : 'hold';
         end.addEventListener('change', function() {
-            var change = {};
-            change[flag] = end.value === 'release';
-            put(p, change).then(load, failed);
+            edit(name, function(path) { path[flag] = end.value === 'release'; }, false);
         });
         return end;
     }
     function pointsPanel(p, key, active) {
+        var name = p.name;
         var panel = make('div', { 'class': 'row-tab-panel' + (active ? ' active' : ''), id: 'row-tab-' + key + '-points', role: 'tabpanel' });
-        var save = function(points) { return put(p, { points: points }).then(load, failed); };
         var last = p.points.length - 1;
         var tbody = make('tbody');
         p.points.forEach(function(pt, i) {
             var cells = [String(i + 1)];
             ['x', 'y', 'z'].forEach(function(axis) {
-                cells.push(lengthInput(pt[axis], function(v) {
-                    var points = p.points.slice();
-                    points[i] = Object.assign({}, pt);
-                    points[i][axis] = v;
-                    save(points);
+                cells.push(lengthInput(key + '-' + axis + '-' + i, pt[axis], function(v) {
+                    edit(name, function(path) { path.points[i][axis] = v; }, false);
                 }));
             });
-            cells.push(option(p, pt, i, last, key, save));
+            cells.push(option(p, pt, i, last, key));
             var move = function(step) {
                 var j = i + step;
                 if (j < 0 || j > last) return;
-                var points = p.points.slice();
-                var t = points[i]; points[i] = points[j]; points[j] = t;
-                save(points);
+                edit(name, function(path) { var t = path.points[i]; path.points[i] = path.points[j]; path.points[j] = t; }, true);
             };
             cells.push(make('span', {}, [
                 button('↑', function() { move(-1); }),
@@ -323,32 +403,26 @@ function peArrowhead(x, y, ux, uy, half, side) {
                 button('↓', function() { move(1); }),
                 ' ',
                 button('Delete', function() {
-                    var points = p.points.slice();
-                    points.splice(i, 1);
-                    save(points);
+                    edit(name, function(path) { path.points.splice(i, 1); }, true);
                 }, 'danger')
             ]));
             tbody.appendChild(make('tr', {}, cells.map(function(c) { return make('td', {}, [c]); })));
         });
         var head = make('thead', {}, [make('tr', {}, ['#', 'X', 'Y', 'Z', 'Option', ''].map(function(t) { return make('th', { text: t }); }))]);
-        if (p.points.length) panel.appendChild(make('table', { 'class': 'data-table pe-points', 'aria-label': 'Points of ' + p.name }, [head, tbody]));
+        if (p.points.length) panel.appendChild(make('table', { 'class': 'data-table pe-points', 'aria-label': 'Points of ' + name }, [head, tbody]));
         else panel.appendChild(make('p', { 'class': 'empty-state', text: 'No points yet.' }));
-        var addPoint = function(pt) {
-            if (p.points.length >= data.max_points) { say('A path holds at most ' + data.max_points + ' points.'); return; }
-            save(p.points.concat([{ x: pt.x, y: pt.y, z: pt.z, radius: 0.5 }]));
-        };
         var markerSel = make('select', { id: key + '-marker' });
         data.markers.forEach(function(id) { markerSel.appendChild(make('option', { value: String(id), text: 'Marker ' + id })); });
         panel.appendChild(make('div', { 'class': 'pe-add' }, [
             button('+ Point', function() {
-                var lastPt = p.points[last];
-                addPoint(lastPt ? { x: lastPt.x + 1, y: lastPt.y, z: lastPt.z } : { x: 0, y: 0, z: data.floor_z });
+                var path = find(name), end = path && path.points[path.points.length - 1];
+                addPoint(name, end ? { x: end.x + 1, y: end.y, z: end.z } : { x: 0, y: 0, z: data.floor_z });
             }),
             make('label', { 'class': 'inline-label', 'for': key + '-marker', text: 'Point from' }),
             markerSel,
             button('Add', function() {
                 if (!markerSel.value) return;
-                api('GET', '/api/paths/marker/' + markerSel.value).then(addPoint, failed);
+                api('GET', '/api/paths/marker/' + markerSel.value).then(function(pt) { addPoint(name, pt); }, failed);
             })
         ]));
         return panel;
@@ -422,7 +496,9 @@ function peArrowhead(x, y, ux, uy, half, side) {
     function startDrag(ev, index) {
         ev.preventDefault();
         ev.stopPropagation();
-        drag = { index: index, z: find(selected).points[index].z };
+        var pt = find(selected).points[index];
+        if (!pt) return;  // the picture still shows a point deleted here a moment ago
+        drag = { name: selected, index: index, z: pt.z };
         svg.setPointerCapture(ev.pointerId);
     }
     svg.addEventListener('pointerdown', function() { dragEnded = false; });
@@ -433,11 +509,8 @@ function peArrowhead(x, y, ux, uy, half, side) {
         drag = null;
         dragEnded = true;
         if (!at) return;
-        var p = find(selected);
         onStage(at, d.z).then(function(w) {
-            var points = p.points.slice();
-            points[d.index] = Object.assign({}, points[d.index], { x: w.x, y: w.y });
-            return put(p, { points: points }).then(load);
+            edit(d.name, function(path) { Object.assign(path.points[d.index] || {}, { x: w.x, y: w.y }); }, true);
         }).catch(failed);
     });
     svg.addEventListener('pointercancel', function() { drag = null; });
@@ -447,19 +520,18 @@ function peArrowhead(x, y, ux, uy, half, side) {
         if (drag || !p) return;
         var at = toPicture(ev);
         if (!at) return;
-        onStage(at, data.floor_z).then(function(w) {
-            if (p.points.length >= data.max_points) { say('A path holds at most ' + data.max_points + ' points.'); return; }
-            return put(p, { points: p.points.concat([{ x: w.x, y: w.y, z: w.z, radius: 0.5 }]) }).then(load);
-        }).catch(failed);
+        var name = p.name;
+        onStage(at, data.floor_z).then(function(w) { addPoint(name, w); }).catch(failed);
     });
 
     // -- toolbar --------------------------------------------------------
     q('new').addEventListener('click', function() {
-        api('POST', '/api/paths', {}).then(function(json) {
-            open[json.name] = 'basics';
-            selected = json.name;
-            return load();
-        }, failed);
+        write(null, function() {
+            return api('POST', '/api/paths', {}).then(function(json) {
+                open[json.name] = 'basics';
+                selected = json.name;
+            });
+        });
     });
     q('refresh').addEventListener('click', loadSnapshot);
     q('template-save').addEventListener('click', function() {
@@ -474,17 +546,19 @@ function peArrowhead(x, y, ux, uy, half, side) {
         });
     });
     q('push').addEventListener('click', function() {
-        api('GET', '/api/config/paths').then(function(section) {
-            return api('POST', '/api/config/paths/broadcast', section);
-        }).then(function(json) {
-            var failedPeers = json.peer_results.filter(function(peer) { return !peer.success; });
-            say(failedPeers.length ? 'Not applied on ' + failedPeers.length + ' station(s).' : 'Applied to ' + json.peer_results.length + ' station(s).');
-        }).catch(failed);
+        write(null, function() {
+            return api('GET', '/api/config/paths').then(function(section) {
+                return api('POST', '/api/config/paths/broadcast', section);
+            }).then(function(json) {
+                var failedPeers = json.peer_results.filter(function(peer) { return !peer.success; });
+                say(failedPeers.length ? 'Not applied on ' + failedPeers.length + ' station(s).' : 'Applied to ' + json.peer_results.length + ' station(s).');
+            });
+        });
     });
 
     // Recording adds points from the Operator Screen; keep the rows in step while it runs.
     setInterval(function() {
-        if (data && data.recording && root.offsetParent !== null && !root.contains(document.activeElement)) load();
+        if (data && data.recording && !writing && root.offsetParent !== null && !root.contains(document.activeElement)) load();
     }, 1000);
 
     load();

@@ -353,9 +353,10 @@ globalThis.fetch = function (url, opts) {
     opts = opts || {};
     var req = { method: (opts.method || 'GET').toUpperCase(), url: url, body: opts.body ? JSON.parse(opts.body) : undefined };
     requests.push(req);
+    // The station answers when asked; a held answer only arrives later.
+    var out = station(req);
     return new Promise(function (resolve, reject) {
         var answer = function () {
-            var out = station(req);
             if (out === 'unreachable') reject(new TypeError('Failed to fetch'));
             else resolve(respond(out.status || 200, out.body));
         };
@@ -364,6 +365,7 @@ globalThis.fetch = function (url, opts) {
     });
 };
 function release() { var all = held; held = []; all.forEach(function (a) { a(); }); }
+function releaseFirst() { held.shift()(); }
 
 globalThis.window = globalThis;
 globalThis.document = document;

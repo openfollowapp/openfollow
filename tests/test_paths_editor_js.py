@@ -170,6 +170,22 @@ class TestDraggingAPoint:
         )
         assert [(p["x"], p["y"]) for p in out["saved"]] == [(-3, 2), (3, 2), (0.0, 5.0)]
 
+    def test_a_point_deleted_in_the_table_cannot_be_dragged_from_the_old_picture(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            holdWhen = function (req) { return req.url === '/api/paths/view'; };
+            row('cross').querySelectorAll('.pe-points tbody tr')[1].querySelector('button.danger').click();
+            await settle();
+            out.shown = handles().length;  // the picture has not caught up yet
+            pointer(handles()[1], 'pointerdown', 940, 560);
+            pointer(picture(), 'pointerup', 1040, 660);
+            await settle();
+            out.saved = model.paths[0].points.map(function (p) { return [p.x, p.y]; });
+            """
+        )
+        assert out == {"shown": 2, "saved": [[-3, 2]]}
+
 
 class TestTheSelectedPath:
     def test_the_picture_keeps_the_row_opened_last_across_a_redraw(self) -> None:
@@ -187,6 +203,18 @@ class TestTheSelectedPath:
         )
         assert out == {"before": "cross", "after": "cross", "handles": 2, "saved": True}
 
+    def test_a_row_opened_just_before_a_redraw_shows_open(self) -> None:
+        out = _editor(
+            """
+            openRow('cross');  // its toggle event is still to come
+            row('loop').querySelector('input[id$="-closed"]').click();  // redraws the rows now
+            await settle();
+            out.open = row('cross').open;
+            out.selected = selectedRow();
+            """
+        )
+        assert out == {"open": True, "selected": "cross"}
+
     def test_closing_the_selected_row_leaves_the_picture_without_one(self) -> None:
         out = _editor(
             """
@@ -198,3 +226,108 @@ class TestTheSelectedPath:
             """
         )
         assert out == {"selected": None, "handles": 0, "open": False}
+
+
+class TestEditingThePoints:
+    def test_tabbing_through_a_point_saves_every_field(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            var x = inputs('cross', 0)[0], y = inputs('cross', 0)[1];
+            x.focus(); x.value = '-2';
+            tab(x, y);
+            y.value = '7';  // typed before the save of X is answered
+            await settle();
+            var now = inputs('cross', 0)[1];
+            out.focused = document.activeElement === now;
+            out.typed = now.value;
+            tab(now, inputs('cross', 0)[2]);
+            await settle();
+            out.saved = [model.paths[0].points[0].x, model.paths[0].points[0].y];
+            """
+        )
+        assert out == {"focused": True, "typed": "7", "saved": [-2, 7]}
+
+    def test_one_save_at_a_time_and_the_next_carries_every_edit_since(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            holdWhen = function (req) { return req.method === 'PUT'; };
+            var cells = inputs('cross', 0);
+            cells[0].value = '-2'; cells[0].dispatchEvent(makeEvent('change'));
+            cells[1].value = '7'; cells[1].dispatchEvent(makeEvent('change'));
+            cells[2].value = '1.5'; cells[2].dispatchEvent(makeEvent('change'));
+            await settle();
+            out.inFlight = puts().length;
+            holdWhen = null;
+            release(); await settle();
+            out.sent = puts().map(function (r) { var p = r.body.points[0]; return [p.x, p.y, p.z]; });
+            out.saved = model.paths[0].points[0];
+            """
+        )
+        assert out["inFlight"] == 1
+        assert out["sent"] == [[-2, 2, 0], [-2, 7, 1.5]]
+        assert (out["saved"]["x"], out["saved"]["y"], out["saved"]["z"]) == (-2, 7, 1.5)
+
+    def test_a_load_that_started_before_an_edit_does_not_undo_it(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            holdWhen = function (req) { return req.method === 'GET' && req.url === '/api/paths'; };
+            var cells = inputs('cross', 0);
+            cells[0].value = '-2'; cells[0].dispatchEvent(makeEvent('change'));
+            await settle();  // saved; the load after it waits
+            cells[1].value = '7'; cells[1].dispatchEvent(makeEvent('change'));
+            await settle();
+            releaseFirst(); await settle();  // the load from before Y was typed
+            out.shown = inputs('cross', 0)[1].value;
+            holdWhen = null;
+            release(); await settle();
+            out.after = [inputs('cross', 0)[1].value, model.paths[0].points[0].y];
+            """
+        )
+        assert out["shown"] == "7"
+        assert out["after"] == ["7", 7]
+
+    def test_a_redraw_while_typing_keeps_the_field_and_what_was_typed(self) -> None:
+        out = _editor(
+            """
+            openRow('loop'); await settle();
+            openRow('cross'); await settle();
+            var x = inputs('cross', 0)[0], y = inputs('cross', 0)[1];
+            x.value = '-2';
+            tab(x, y);
+            y.value = '7';
+            y.setSelectionRange(1, 1);
+            model.paths[1].points.push({ x: 2, y: 4, z: 0, radius: 0.5 });  // recorded on the Operator Screen
+            await settle();
+            var now = inputs('cross', 0)[1];
+            out.redrawn = now !== y;
+            out.focused = document.activeElement === now;
+            out.typed = [now.value, now.selectionStart];
+            out.loopPoints = row('loop').querySelectorAll('.pe-points tbody tr').length;
+            tab(now, inputs('cross', 0)[2]);
+            await settle();
+            out.saved = model.paths[0].points[0].y;
+            """
+        )
+        assert out == {"redrawn": True, "focused": True, "typed": ["7", 1], "loopPoints": 3, "saved": 7}
+
+    def test_a_rename_and_an_edit_land_on_the_renamed_path(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            holdWhen = function (req) { return req.method === 'PUT'; };
+            var name = row('cross').querySelector('input[id$="-name"]');
+            name.value = 'ds'; name.dispatchEvent(makeEvent('change'));
+            var cells = inputs('cross', 0);
+            cells[0].value = '-2'; cells[0].dispatchEvent(makeEvent('change'));
+            await settle();
+            holdWhen = null;
+            release(); await settle();
+            out.urls = puts().map(function (r) { return r.url; });
+            out.saved = [model.paths[0].name, model.paths[0].points[0].x];
+            out.selected = selectedRow();
+            """
+        )
+        assert out == {"urls": ["/api/paths/cross", "/api/paths/ds"], "saved": ["ds", -2], "selected": "ds"}

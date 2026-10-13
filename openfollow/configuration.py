@@ -398,6 +398,11 @@ CALIBRATION_CORNERS = ("DSL", "DSR", "USR", "USL")
 MAX_CALIBRATION_POINTS = 6
 
 
+def _coerce_measured(value: Any) -> float:
+    """A measured number, or NaN for one that cannot be read; a boolean too (``float(True)`` is 1 m)."""
+    return math.nan if isinstance(value, bool) else _coerce_float(value, math.nan)
+
+
 @dataclass
 class CalibrationPointConfig:
     """A far point measured with a laser from two grid corners, for the Setup Wizard's camera solve.
@@ -417,18 +422,14 @@ class CalibrationPointConfig:
     position: list[float] = field(default_factory=list)  # x, y, z in m; empty when no solve placed it
 
     def __post_init__(self) -> None:
-        # An unreadable value reads as NaN, which problem() refuses; a boolean too (``float(True)`` is 1 m).
-        def number(value: Any) -> float:
-            return math.nan if isinstance(value, bool) else _coerce_float(value, math.nan)
-
         self.corner_a = _coerce_choice(self.corner_a, CALIBRATION_CORNERS, "")
         self.corner_b = _coerce_choice(self.corner_b, CALIBRATION_CORNERS, "")
-        self.distance_a = number(self.distance_a)
-        self.distance_b = number(self.distance_b)
-        self.height = number(self.height)
-        self.pin_x = number(self.pin_x)
-        self.pin_y = number(self.pin_y)
-        coords = [number(v) for v in self.position] if isinstance(self.position, list | tuple) else []
+        self.distance_a = _coerce_measured(self.distance_a)
+        self.distance_b = _coerce_measured(self.distance_b)
+        self.height = _coerce_measured(self.height)
+        self.pin_x = _coerce_measured(self.pin_x)
+        self.pin_y = _coerce_measured(self.pin_y)
+        coords = [_coerce_measured(v) for v in self.position] if isinstance(self.position, list | tuple) else []
         self.position = coords if len(coords) == 3 and all(math.isfinite(c) for c in coords) else []
 
     def problem(self) -> str:
@@ -504,7 +505,10 @@ CORNER_PIN_REACH = 10.0
 
 
 def _report_drops(name: str, said: str) -> None:
-    if _reported_drops.get(name) != said:
+    """Warn once per distinct ``said``; an empty one is a clean load, so the next drop is told again."""
+    if not said:
+        _reported_drops.pop(name, None)
+    elif _reported_drops.get(name) != said:
         _reported_drops[name] = said
         logger.warning("%s: %s; dropped", name, said)
 
@@ -528,30 +532,27 @@ def _coerce_calibration_points(value: Any) -> list[CalibrationPointConfig]:
             dropped.append(f"entry {i} {problem}")
             continue
         points.append(entry)
-    if dropped:
-        _report_drops(
-            "camera.calibration_points",
-            "; ".join(dropped[:3]) + (f"; {len(dropped) - 3} more" if len(dropped) > 3 else ""),
-        )
+    _report_drops(
+        "camera.calibration_points",
+        "; ".join(dropped[:3]) + (f"; {len(dropped) - 3} more" if len(dropped) > 3 else ""),
+    )
     return points
 
 
 def _coerce_corner_pins(value: Any) -> list[list[float]]:
     """Four [x, y] fractions of the snapshot, or none; anything else is dropped with one warning."""
     if isinstance(value, list) and not value:
+        _report_drops("camera.corner_pins", "")
         return []
-
-    def number(v: Any) -> float:
-        return math.nan if isinstance(v, bool) else _coerce_float(v, math.nan)
-
     pins = (
-        [[number(v) for v in pin] if isinstance(pin, list | tuple) else [] for pin in value]
+        [[_coerce_measured(v) for v in pin] if isinstance(pin, list | tuple) else [] for pin in value]
         if isinstance(value, list | tuple)
         else []
     )
     if len(pins) == 4 and all(
         len(pin) == 2 and all(math.isfinite(c) and abs(c) <= CORNER_PIN_REACH for c in pin) for pin in pins
     ):
+        _report_drops("camera.corner_pins", "")
         return pins
     _report_drops("camera.corner_pins", "needs four [x, y] pairs on or near the snapshot")
     return []

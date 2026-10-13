@@ -961,7 +961,7 @@
       <summary>Advanced <span class="badge-experimental">Experimental</span></summary>
       <div class="inline-advanced-content">
         <div id="calib-list"></div>
-        <div id="calib-notice" class="notice" role="status" style="display:none;">
+        <div id="calib-notice" class="notice warning" role="status" style="display:none;">
           <div>One point is in the solve, and nothing cross-checks it.</div>
           <div class="notice-sub" id="calib-notice-step">Add a second point to cross-check it.</div>
         </div>
@@ -3222,6 +3222,7 @@
     pinnedCorners = {
       size: [body.image_width, body.image_height],
       corners: screenCorners.map(function(p) { return [p[0], p[1]]; }),
+      withPoints: 'calibIndices' in body,
     };
     calibHeldPins = body.calibHold ? { world: body.world_corners, corners: screenCorners.map(function(p) {
       return [p[0] / body.image_width, p[1] / body.image_height];
@@ -4773,7 +4774,8 @@
   var lensFitTimer = null;
   var lensReSolveTimer = null;
   var lensDrag = null;
-  var pinnedCorners = null;  // {size, corners} of the last solve: the snapshot size and the four pins
+  // {size, corners, withPoints} of the last solve: the snapshot size, the four pins, whether it took the points
+  var pinnedCorners = null;
   var lensSolvedWith = { k1: wizReadLensCoeff('wiz_lens_k1'), k2: wizReadLensCoeff('wiz_lens_k2') };
 
   function lensEnabled() { return !!document.getElementById('lens-container'); }
@@ -5334,7 +5336,7 @@
     var pins = pinnedCorners;
     if (!pins || pins.size[0] !== imageWidth || pins.size[1] !== imageHeight) return;
     var seq = ++poseSeq;
-    var body = wizardSolveBody(pins.corners);
+    var body = wizardSolveBody(pins.corners, pins.withPoints);
     fetch('/api/wizard/solve', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

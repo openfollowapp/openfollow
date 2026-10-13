@@ -1378,6 +1378,29 @@ function applySolvedPose(camera, corners, body, answers) { handed = answers; }
     assert handed == ["answer"]
 
 
+@pytest.mark.parametrize(("points", "expected"), [(False, [False]), (True, [True])], ids=["rigid shift", "corners"])
+def test_the_lens_resolve_leaves_the_points_out_where_the_pins_came_without_them(points: bool, expected) -> None:
+    """Reference Mapping's rigid shift is no perspective image: solved again for a new lens pair, its
+    pins must not judge the points either, nor be held as the corners the points were solved with."""
+    asked = run_wizard_js(
+        "(function() { var body = { image_width: 1920, image_height: 1080, camera: { lens_k1: 0, lens_k2: 0 } };"
+        " if (points) Object.defineProperty(body, 'calibIndices', { value: [] });"
+        " applySolvedPose({}, [[1, 2], [3, 4], [5, 6], [7, 8]], body, []);"
+        " solveFromPinnedCorners(); return asked; })()",
+        functions=("calibTakeAnswer", "applySolvedPose", "solveFromPinnedCorners"),
+        prelude=_POSE_PAGE
+        + """
+var asked = [], imageWidth = 1920, imageHeight = 1080;
+function wizardSolveBody(sc, withPoints) { asked.push(withPoints !== false); return { screen_corners: sc }; }
+function fetch() { return { then: function() { return { then: function() { return { catch: function() {} }; } }; } }; }
+""",
+        calibPoints=[],
+        calibAnswers=[],
+        points=points,
+    )
+    assert asked == expected
+
+
 @pytest.mark.parametrize(
     ("taps", "expected"),
     [

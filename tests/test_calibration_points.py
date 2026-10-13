@@ -56,6 +56,9 @@ class TestTrilaterate:
         first, second = trilaterate(DSL, DSR, math.hypot(1.0, 3.0), math.hypot(9.0, 3.0), 0.0)
         assert sorted([tuple(np.round(first, 9)), tuple(np.round(second, 9))]) == [(-4.0, -3.0, 0.0), (-4.0, 3.0, 0.0)]
 
+    def test_two_corners_at_one_place_give_a_reason_not_a_division_by_zero(self) -> None:
+        assert trilaterate(DSL, DSL, 5.0, 5.0, 0.0) == cp.REASON_SAME_PLACE
+
     def test_a_point_above_stage_level_takes_its_height(self) -> None:
         places = trilaterate(DSL, DSR, math.sqrt(1 + 9 + 4), math.sqrt(81 + 9 + 4), 2.0)
         assert {tuple(np.round(p, 9)) for p in places} == {(-4.0, -3.0, 2.0), (-4.0, 3.0, 2.0)}

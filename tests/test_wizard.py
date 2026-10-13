@@ -1365,6 +1365,12 @@ class TestWizardTemplateSafetyPatterns:
         path = Path(__file__).resolve().parent.parent / "openfollow" / "web" / "templates" / "wizard.tpl"
         return path.read_text(encoding="utf-8")
 
+    def test_the_unverified_point_notice_is_at_its_chips_level(self) -> None:
+        """The notice explains the Unverified chip, a caution: one level for one state."""
+        src = self._wizard_tpl()
+        assert "unverified: ['stat-chip warn', 'Unverified']" in src
+        assert '<div id="calib-notice" class="notice warning"' in src
+
     def test_snapshot_revokes_previous_blob_url(self) -> None:
         src = self._wizard_tpl()
         assert "URL.revokeObjectURL" in src, "loadSnapshot() must revoke the previous blob URL to avoid memory leaks."

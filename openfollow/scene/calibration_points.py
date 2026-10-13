@@ -44,6 +44,7 @@ REASON_DISAGREES = "It disagrees with the corners and the other points."
 REASON_DISAGREES_CORNERS = "It disagrees with the corners."
 REASON_PAIR = "The two points disagree, and two cannot tell which one is wrong."
 REASON_FLOOR = "It moves the far floor too far from where the corners put it."
+REASON_SAME_PLACE = "Its two corners are at the same place."
 
 Status = Literal["ok", "unverified", "flagged"]
 
@@ -94,6 +95,8 @@ def trilaterate(
     pa = np.array(a[:2], dtype=np.float64)
     pb = np.array(b[:2], dtype=np.float64)
     d = float(np.linalg.norm(pb - pa))
+    if d == 0.0:
+        return REASON_SAME_PLACE
     if abs(ra - rb) > d + _MEET_TOLERANCE:
         return REASON_DIFFER
     if ra + rb < d - _MEET_TOLERANCE:

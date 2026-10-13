@@ -169,3 +169,32 @@ class TestDraggingAPoint:
             """
         )
         assert [(p["x"], p["y"]) for p in out["saved"]] == [(-3, 2), (3, 2), (0.0, 5.0)]
+
+
+class TestTheSelectedPath:
+    def test_the_picture_keeps_the_row_opened_last_across_a_redraw(self) -> None:
+        out = _editor(
+            """
+            openRow('loop'); await settle();
+            openRow('cross'); await settle();
+            out.before = selectedRow();
+            row('cross').querySelector('input[id$="-closed"]').click();
+            await settle();
+            out.after = selectedRow();
+            out.handles = handles().length;
+            out.saved = model.paths[0].closed;
+            """
+        )
+        assert out == {"before": "cross", "after": "cross", "handles": 2, "saved": True}
+
+    def test_closing_the_selected_row_leaves_the_picture_without_one(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            openRow('cross'); await settle();
+            out.selected = selectedRow();
+            out.handles = handles().length;
+            out.open = !!row('cross').open;
+            """
+        )
+        assert out == {"selected": None, "handles": 0, "open": False}

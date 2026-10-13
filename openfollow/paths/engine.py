@@ -50,7 +50,7 @@ class _Lock:
     # Height still to ease out after switching onto a path at another height, and how far into that.
     z_shift: float = 0.0
     z_elapsed: float = 0.0
-    # The last push's speed, which sets how far ahead of a junction a turn can be taken.
+    # This frame's push speed, which sets how far ahead of a junction a turn can be taken.
     speed: float = 0.0
 
 
@@ -223,6 +223,8 @@ class PathEngine:
         for marker_id, lock in self._locks.items():
             # A lock only ever lives on a network: a reload without one releases everybody.
             assert self._network is not None
+            # Ticked before the frame's input: a frame without a push leaves it at 0.
+            lock.speed = 0.0
             if lock.free is not None:
                 lock.slide_elapsed += dt
                 out[marker_id] = self._pulled(lock)

@@ -815,6 +815,20 @@ class TestSwitchArrows:
         engine.move(1, 2.0, 0.0, 0.01)
         assert len(engine.switch_arrows()) == 3
 
+    def test_a_frame_without_a_push_narrows_the_arrows_to_the_switch_area_floor(self) -> None:
+        engine = _engine(CROSS, RAMP)
+        engine.press(1, (-0.8, 0.0, 0.0))
+        _landed(engine)
+        engine.move(1, 2.0, 0.0, 0.01)
+        assert engine.switch_arrows()
+        # The marker stands 0.78 m short of the crossing: outside the 0.5 m area once nothing pushes it.
+        engine.tick(1 / 60)
+        assert engine.switch_arrows() == []
+        engine.tick(1 / 60)
+        assert engine.switch_arrows() == []
+        engine.move(1, 2.0, 0.0, 0.01)
+        assert engine.switch_arrows()
+
     def test_a_marker_still_pulled_onto_its_path_gets_none(self) -> None:
         engine = _engine(CROSS, RAMP, slide_time=1.0)
         engine.press(1, (0.1, 0.5, 0.0))

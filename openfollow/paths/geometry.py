@@ -43,10 +43,12 @@ class PathPoint:
 class PathCurve:
     """A path's curve, addressed by arc length ``s`` from its start."""
 
-    def __init__(self, xy: FloatArray, z: FloatArray, closed: bool) -> None:
+    def __init__(self, xy: FloatArray, z: FloatArray, closed: bool, corners: FloatArray | None = None) -> None:
         self.xy = xy
         self.z = z
         self.closed = closed
+        # The configured points rounded into the curve, in plan: an arc passes them by.
+        self.corners: FloatArray = np.empty((0, 2)) if corners is None else corners
         steps = np.hypot(*np.diff(xy, axis=0).T)
         self.s: FloatArray = np.concatenate(([0.0], np.cumsum(steps)))
         self._seg_start = xy[:-1]
@@ -160,7 +162,8 @@ def build_curve(points: Sequence[PathPoint], closed: bool) -> PathCurve | None:
     # Drop the repeats a corner meeting its neighbour's corner leaves behind.
     keep = np.concatenate(([True], np.hypot(*np.diff(arr[:, :2], axis=0).T) > _SAME_POINT_M))
     arr = arr[keep]
-    return PathCurve(arr[:, :2].copy(), arr[:, 2].copy(), closed)
+    corner_xy = np.array([(pts[i].x, pts[i].y) for i in corners], dtype=np.float64).reshape(-1, 2)
+    return PathCurve(arr[:, :2].copy(), arr[:, 2].copy(), closed, corner_xy)
 
 
 def _distinct(points: Sequence[PathPoint], closed: bool) -> list[PathPoint]:

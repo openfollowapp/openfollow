@@ -57,6 +57,44 @@ class TestJunctions:
         branch = _curve([(2, 0.3, 0), (2, 4, 0)])
         assert find_junctions([H, branch]) == []
 
+    # B turns up at (2, 0) with the default radius, so its curve passes 0.21 m inside the point.
+    ROUNDED = _curve([(0, 0, 0, 0), (2, 0, 0, 0.5), (2, 2, 0, 0)])
+
+    @pytest.mark.parametrize("gap", [0.0, 0.09])
+    def test_a_path_ending_on_another_s_rounded_corner_point_joins_where_that_curve_passes_it(self, gap: float) -> None:
+        branch = _curve([(2, -2, 0), (2, -gap, 0)])
+        s_corner, dist = self.ROUNDED.nearest(2.0, 0.0)
+        assert dist == pytest.approx(0.5 * (math.sqrt(2) - 1))
+        assert find_junctions([branch, self.ROUNDED]) == [Junction(0, branch.length, 1, s_corner)]
+
+    def test_a_path_ending_beyond_reach_of_a_corner_point_does_not_join(self) -> None:
+        branch = _curve([(2, -2, 0), (2, -0.11, 0)])
+        assert find_junctions([branch, self.ROUNDED]) == []
+
+    def test_an_end_on_the_curve_beside_a_corner_point_joins_where_it_lies(self) -> None:
+        # A gentle bend: the curve passes 2 cm from the point, and the end lies on it 9 cm along.
+        gentle = _curve([(0, 0, 0, 0), (2, 0, 0, 0.5), (4, 1, 0, 0)])
+        s_end, _ = gentle.nearest(1.91, 0.0)
+        branch = _curve([(1.91, -2, 0), (1.91, 0.0, 0)])
+        assert find_junctions([branch, gentle]) == [Junction(0, branch.length, 1, pytest.approx(s_end))]
+
+    @pytest.mark.parametrize("closed", [False, True])
+    def test_paths_turning_at_the_same_point_join_there(self, closed: bool) -> None:
+        # A peak and a valley at (0, 0): rounded on opposite sides, their curves stay 0.41 m apart.
+        peak = _curve([(-2, -2, 0, 0.5), (0, 0, 0, 0.5), (2, -2, 0, 0.5)], closed=closed)
+        valley = _curve([(-2, 2, 0, 0.5), (0, 0, 0, 0.5), (2, 2, 0, 0.5)])
+        assert find_junctions([peak, valley]) == [
+            Junction(0, peak.nearest(0.0, 0.0)[0], 1, valley.nearest(0.0, 0.0)[0])
+        ]
+
+    @pytest.mark.parametrize(("dy", "z", "meets"), [(0.09, 0.0, True), (0.11, 0.0, False), (0.0, 0.5, False)])
+    def test_turning_points_join_only_within_reach_and_at_the_same_height(
+        self, dy: float, z: float, meets: bool
+    ) -> None:
+        peak = _curve([(-2, -2, 0, 0.5), (0, 0, 0, 0.5), (2, -2, 0, 0.5)])
+        valley = _curve([(-2, 2, z, 0.5), (0, dy, z, 0.5), (2, 2, z, 0.5)])
+        assert len(find_junctions([peak, valley])) == int(meets)
+
     def test_a_crossing_on_a_corner_point_counts_once(self) -> None:
         # The crossing sits exactly on V2's middle point, the end of one segment and the start of the next.
         v2 = _curve([(0, -5, 0, 0), (0, 0, 0, 0), (0, 5, 0, 0)])
@@ -100,8 +138,24 @@ def _reference_junctions(curves: list[PathCurve]) -> list[Junction]:
         )
 
     def touches(end_of: PathCurve, on: PathCurve) -> list[tuple[float, float]]:
-        ends = [] if end_of.closed else [0.0, end_of.length]
-        return [(s, on.nearest(*end_of.point(s)[:2])[0]) for s in ends if on.nearest(*end_of.point(s)[:2])[1] <= 0.1]
+        out = []
+        for s in [] if end_of.closed else [0.0, end_of.length]:
+            x, y, _ = end_of.point(s)
+            s_on, dist = on.nearest(x, y)
+            if dist > 0.1 and len(on.corners):
+                cx, cy = min(on.corners.tolist(), key=lambda c: math.hypot(c[0] - x, c[1] - y))
+                s_on, dist = on.nearest(cx, cy)[0], math.hypot(cx - x, cy - y)
+            if dist <= 0.1:
+                out.append((s, s_on))
+        return out
+
+    def shared(ca: PathCurve, cb: PathCurve) -> list[tuple[float, float]]:
+        return [
+            (ca.nearest(*p)[0], cb.nearest(*q)[0])
+            for p in ca.corners.tolist()
+            for q in cb.corners.tolist()
+            if math.hypot(p[0] - q[0], p[1] - q[1]) <= 0.1
+        ]
 
     for a, ca in enumerate(curves):
         for b in range(a + 1, len(curves)):
@@ -124,6 +178,7 @@ def _reference_junctions(curves: list[PathCurve]) -> list[Junction]:
             ]
             pair += [Junction(a, sa, b, sb) for sa, sb in touches(ca, cb)]
             pair += [Junction(a, sa, b, sb) for sb, sa in touches(cb, ca)]
+            pair += [Junction(a, sa, b, sb) for sa, sb in shared(ca, cb)]
             for j in pair:
                 level = abs(ca.point(j.s_a)[2] - cb.point(j.s_b)[2]) <= 0.1
                 if level and not any(same(j, k) for k in found):
@@ -156,6 +211,12 @@ class TestJunctionSearch:
             on = rng.choice(curves)
             x, y, z = on.point(rng.uniform(0, on.length))
             curves.append(_curve([(x + gap, y, z, 0), (x + 3, y + rng.uniform(-3, 3), z, 0)]))
+        # Branches ending on, near, and out of reach of a corner, and paths turning at one.
+        for gap in (0.0, 0.05, 0.099, 0.101):
+            on = rng.choice([c for c in curves if len(c.corners)])
+            x, y = on.corners[rng.randrange(len(on.corners))]
+            curves.append(_curve([(x + gap, y, 0, 0), (x + 3, y + rng.uniform(-3, 3), 0, 0)]))
+            curves.append(_curve([(x - 2, y - 2, 0, 0), (x, y + gap, 0, 0.5), (x + 2, y - rng.uniform(1, 3), 0, 0)]))
         assert find_junctions(curves) == _reference_junctions(curves)
 
     def test_paths_far_apart_are_never_compared(self, monkeypatch: pytest.MonkeyPatch) -> None:

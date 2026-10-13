@@ -207,16 +207,20 @@ class PathNetwork:
 def find_junctions(curves: Sequence[PathCurve]) -> list[Junction]:
     """Where each pair of curves crosses or touches, at the same height."""
     boxes = [_boxes(curve) for curve in curves]
-    whole = [np.concatenate((b[:, :2].min(axis=0), b[:, 2:].max(axis=0)))[None, :] for b in boxes]
+    whole = [
+        np.concatenate((np.vstack((b[:, :2], c.corners)).min(axis=0), np.vstack((b[:, 2:], c.corners)).max(axis=0)))
+        for b, c in zip(boxes, curves, strict=True)
+    ]
     found: list[Junction] = []
     for a in range(len(curves)):
         for b in range(a + 1, len(curves)):
             ca, cb = curves[a], curves[b]
-            if not _overlapping(whole[a], whole[b])[0, 0]:
+            if not _overlapping(whole[a][None, :], whole[b][None, :])[0, 0]:
                 continue
             pair = [Junction(a, sa, b, sb) for sa, sb in _crossings(ca, cb, boxes[a], boxes[b])]
             pair += [Junction(a, sa, b, sb) for sa, sb in _touches(ca, cb)]
             pair += [Junction(a, sa, b, sb) for sb, sa in _touches(cb, ca)]
+            pair += [Junction(a, sa, b, sb) for sa, sb in _shared_corners(ca, cb)]
             kept: list[Junction] = []
             for j in pair:
                 if _same_height(ca, j.s_a, cb, j.s_b) and not any(_same_junction(ca, cb, j, k) for k in kept):
@@ -279,16 +283,29 @@ def _cross(a: FloatArray, b: FloatArray) -> FloatArray:
 
 
 def _touches(end_of: PathCurve, on: PathCurve) -> list[tuple[float, float]]:
-    """Ends of open ``end_of`` lying on ``on``: (s on ``end_of``, s on ``on``)."""
+    """Ends of open ``end_of`` lying on ``on``, or else on one of its corners: (s on ``end_of``, s on ``on``)."""
     if end_of.closed:
         return []
     out = []
     for s_end in (0.0, end_of.length):
         x, y, _ = end_of.point(s_end)
         s_on, dist = on.nearest(x, y)
+        if dist > JUNCTION_REACH_M and len(on.corners):
+            gaps = np.hypot(*(on.corners - (x, y)).T)
+            i = int(np.argmin(gaps))
+            s_on, dist = on.nearest(*on.corners[i])[0], float(gaps[i])
         if dist <= JUNCTION_REACH_M:
             out.append((s_end, s_on))
     return out
+
+
+def _shared_corners(ca: PathCurve, cb: PathCurve) -> list[tuple[float, float]]:
+    """Corners the curves share, each joined where its own curve passes nearest: (s on ``ca``, s on ``cb``)."""
+    gaps = np.hypot(*(ca.corners[:, None, :] - cb.corners[None, :, :]).transpose(2, 0, 1))
+    return [
+        (ca.nearest(*ca.corners[i])[0], cb.nearest(*cb.corners[k])[0])
+        for i, k in zip(*np.nonzero(gaps <= JUNCTION_REACH_M), strict=True)
+    ]
 
 
 def _same_height(ca: PathCurve, sa: float, cb: PathCurve, sb: float) -> bool:

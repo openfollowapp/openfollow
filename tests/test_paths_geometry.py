@@ -153,6 +153,19 @@ class TestCorner:
         assert _close(c.point(4.0), (4.0, 0.0, 0.0))
 
 
+class TestCorners:
+    def test_an_open_path_s_corners_are_its_inner_points(self) -> None:
+        c = _curve([(0, 0, 0, 0.5), (2, 0, 1, 0.5), (2, 2, 0, 0), (0, 3, 0, 0.5)])
+        assert c.corners.tolist() == [[2.0, 0.0], [2.0, 2.0]]
+
+    def test_every_point_of_a_closed_path_is_a_corner(self) -> None:
+        c = _curve([(0, 0, 0), (2, 0, 0), (2, 2, 0)], closed=True)
+        assert c.corners.tolist() == [[0.0, 0.0], [2.0, 0.0], [2.0, 2.0]]
+
+    def test_a_two_point_path_has_no_corners(self) -> None:
+        assert _curve([(0, 0, 0), (2, 0, 0)]).corners.shape == (0, 2)
+
+
 class TestDirections:
     CORNER = [(0, 0, 0, 0), (2, 0, 0, 0), (2, 2, 0, 0)]
 

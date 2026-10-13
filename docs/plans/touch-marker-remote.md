@@ -15,10 +15,11 @@ Feel prototype (simulated stage, no station): the artifact linked from the PR.
 | Launcher | Round button, bottom corner, shown in every browser while the station allows the remote. |
 | Gate | `touch_remote.enabled`, device-local, off by default. Off ⇒ no launcher, every remote route answers 403. |
 | Picker | Chips for `controlled_marker_ids` only, with catalog name and colour. |
-| Arbitration | While the card is open, the remote **holds** the picked marker: gamepad, keyboard, 3D mouse, 2D mouse, OSC positions, OSC path commands and the detection pin skip it. Closing the card releases. |
+| Arbitration | While the card is open, the remote **holds** the picked marker: gamepad, keyboard, 3D mouse, 2D mouse, OSC positions and OSC path commands skip it. Closing the card releases. |
+| Detection | Taking a hold while `detection.enabled` is on saves it off, station-wide, with a caution notice in the card. Closing the card leaves it off; turning detection back on restarts the app as usual. |
 | Two remotes | The newest pick steals the hold; the earlier card shows "Taken by another remote" (error level) and stops sending. |
 | Stick | Rate control. Deflection past the dead zone, shaped by the curve, times the station's `marker.max_speed` (`MarkerConfig.max_speed`), never a marker's own adjusted speed. `invert_control_direction` applied once in `InputManager.update`, as for every relative input. A per-device "facing FOH" flip turns the stick 180° on the client. |
-| Dead-man | No drive message for 250 ms ⇒ velocity zero. No heartbeat for 2 s ⇒ hold released (the marker stays where it stopped). |
+| Dead-man | No drive message for 250 ms ⇒ velocity zero. No heartbeat for 10 s ⇒ hold released (the marker stays where it stopped). |
 | Z | Detented drum: one notch per `z_notch_px` of finger travel moves Z by `z_step_m`, snapped to the step. Ignored while the marker is on a path (the path owns height). |
 | Buttons | Reset and Pathfinder only. Pathfinder shows only while paths run; it reads "Record point" while a path records. |
 | X / Y / Z entry | Behind an "X Y Z" toggle. Glide releases any path lock, then travels to the target at the station's `marker.max_speed`. No clamp; non-finite or wrong-type input answers 400. |
@@ -38,10 +39,11 @@ Feel prototype (simulated stage, no station): the artifact linked from the PR.
 ### Runtime arbitration (`runtime/touch_remote.py`)
 - [ ] `TouchRemote`: thread-safe registry. Web threads write sessions (token → held marker, stick vector, last-seen, queued Z notches, queued Reset / Pathfinder / Glide); the frame loop reads and applies. Clock injected (`time.monotonic` default) for hermetic tests.
 - [ ] `hold(token, marker_id)`: newest wins; the previous holder's next request learns it lost the marker.
-- [ ] `held_ids()` read by `InputManager` each frame; every other source skips a held marker (gamepad, keyboard, 3D mouse, 2D mouse grab, OSC `/marker/*`, OSC `/marker/<id>/path`, the detection pin).
+- [ ] `held_ids()` read by `InputManager` each frame; every other source skips a held marker (gamepad, keyboard, 3D mouse, 2D mouse grab, OSC `/marker/*`, OSC `/marker/<id>/path`).
 - [ ] Per-frame apply in `InputManager.update`: the velocity goes through `_move` (paths-aware), with `invert_control_direction` applied there once; Z notches via `set_pos` unless locked; Reset through `_reset`; Pathfinder through `InputManager.pathfinder`; Glide releases the lock, then steps toward the target at the station's `marker.max_speed` each frame until it arrives or the stick moves.
 - [ ] The per-frame `set_speed` freshness stamp is kept while held (never gated on movement).
-- [ ] Dead-man: 250 ms stale ⇒ zero velocity; 2 s stale ⇒ release.
+- [ ] Taking a hold with detection on saves `detection.enabled = false` through the normal config save (hot reload stops the detector, no restart) and reports it in the `hold` answer.
+- [ ] Dead-man: 250 ms stale ⇒ zero velocity; 10 s stale ⇒ release.
 - [ ] Holds released for markers that leave `controlled_marker_ids` and when `enabled` turns off (hot reload).
 - [ ] HUD caution status row "Web remote holds marker N" while any hold exists (status language).
 
@@ -59,7 +61,7 @@ Feel prototype (simulated stage, no station): the artifact linked from the PR.
 - [ ] "Touch remote" section with the single `enabled` checkbox (Input tab), `<label>` only; explanation in a new `openfollow/web/help/touch_remote.md`.
 
 ### Tests
-- [ ] `tests/test_touch_remote.py`: hold, steal, release on close / stale / uncontrolled / disabled; dead-man at 250 ms and 2 s on an injected clock; curve and dead-zone shaping; Z notch snapping; Glide arrival and cancellation; Pathfinder hand-off; held marker ignored by the other sources.
+- [ ] `tests/test_touch_remote.py`: hold, steal, release on close / stale / uncontrolled / disabled; dead-man at 250 ms and 10 s on an injected clock; curve and dead-zone shaping; Z notch snapping; Glide arrival and cancellation; Pathfinder hand-off; a hold with detection on saves it off and leaves it off on close; held marker ignored by the other sources.
 - [ ] Route tests: each endpoint's 200 / 400 / 403 / 409, wrong-type parametrisation, PIN required.
 - [ ] Seam tests: `POST /api/remote/drive` → frame update → `marker.pos` (`tests/test_services_marker_visuals.py` style); config hot reload disabling releases holds (`tests/test_configuration.py`).
 - [ ] Template tests: launcher absent while disabled; validate markup on the checkbox (`test_template_validation_consistency.py`); status language (`test_status_language.py`).
@@ -72,4 +74,4 @@ Feel prototype (simulated stage, no station): the artifact linked from the PR.
 
 ## Verify
 - [ ] `make ci-remote` green.
-- [ ] Manual on an iPad against a station: stick, drum, Reset, Pathfinder on and off a path, Glide, hand and flip toggles, Wi-Fi off mid-push (stops within 250 ms, releases after 2 s), two tablets stealing a marker.
+- [ ] Manual on an iPad against a station: stick, drum, Reset, Pathfinder on and off a path, Glide, hand and flip toggles, Wi-Fi off mid-push (stops within 250 ms, releases after 10 s), two tablets stealing a marker.

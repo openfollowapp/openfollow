@@ -565,7 +565,7 @@ class TestFailedSaves:
             await settle();
             out.before = errorLine() !== null;
             refuse = null;
-            row('cross').querySelector('input[id$="-closed"]').click();
+            row('cross').querySelector('.pe-add button').click();  // a button: no input event to clear it
             await settle();
             out.after = errorLine();
             """

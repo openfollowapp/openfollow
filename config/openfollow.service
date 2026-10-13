@@ -38,6 +38,7 @@ TimeoutStopSec=15
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=WLR_BACKENDS=drm,libinput
 Environment=WLR_RENDERER=gles2
+Environment=OPENFOLLOW_KIOSK=1
 
 # Logging to journalctl
 StandardOutput=journal

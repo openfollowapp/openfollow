@@ -98,6 +98,9 @@ _RECENT_OSC_SENDS_LIMIT = 100
 # (detect-input.js) re-polls until the operator presses a button or gives up.
 _MOUSE3D_WEB_DETECT_BUDGET_S = 0.35
 
+# Set to "1" by every Cage launcher: the app is the kiosk session.
+KIOSK_ENV = "OPENFOLLOW_KIOSK"
+
 
 def _format_lease_remaining(seconds: int | None) -> str | None:
     """Render a DHCP lease's seconds-remaining as a compact human label.
@@ -128,9 +131,6 @@ def _format_lease_remaining(seconds: int | None) -> str | None:
 # ---------------------------------------------------------------------------
 # Web Command Queue
 # ---------------------------------------------------------------------------
-
-# Set by the .deb's openfollow.service: the app is the Cage kiosk session.
-KIOSK_ENV = "OPENFOLLOW_KIOSK"
 
 # Progress of the detached installer (apply-update.sh), polled by the web UI.
 # In the openfollow-owned state dir so this (openfollow-user) process can clear
@@ -893,8 +893,6 @@ class AppRuntimeServices:
             max(1, int(cfg.window_width)),
             max(1, int(cfg.window_height)),
         )
-        # Under the kiosk session the window is the whole screen; decorated, its
-        # close button ends the session and its title bar takes height from the video.
         if self._is_pi or os.environ.get(KIOSK_ENV) == "1":
             win.fullscreen()
         self._app._canvas = win

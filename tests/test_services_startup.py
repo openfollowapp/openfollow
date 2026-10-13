@@ -8,7 +8,6 @@ and state providers, privilege-broker wiring, and the network apply/renew handle
 from __future__ import annotations
 
 import threading
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -105,8 +104,8 @@ def test_runtime_services_exit_when_gstreamer_is_unavailable(monkeypatch) -> Non
 def test_init_canvas_goes_fullscreen_on_a_pi_or_under_the_kiosk_session(
     monkeypatch, is_pi: bool, kiosk: str | None, fullscreen: bool
 ) -> None:
-    """Windowed under the kiosk, the window carried a title bar whose close
-    button ended the session, on every host that is not a Pi."""
+    """Under the kiosk session the window is fullscreen on any host, so it has
+    no title bar and no close button that would end the session."""
     monkeypatch.setattr(services_module, "gst_runtime_available", lambda: True)
     monkeypatch.setattr(services_module, "GtkNativeSinkWindow", _FakeWindow)
     monkeypatch.setattr(
@@ -130,12 +129,6 @@ def test_init_canvas_goes_fullscreen_on_a_pi_or_under_the_kiosk_session(
 
     assert isinstance(app._canvas, _FakeWindow)
     assert app._canvas.fullscreen_called is fullscreen
-
-
-def test_the_kiosk_unit_marks_its_session() -> None:
-    unit = Path(__file__).resolve().parents[1] / "packaging" / "debian" / "openfollow.service"
-    lines = unit.read_text(encoding="utf-8").splitlines()
-    assert f"Environment={services_module.KIOSK_ENV}=1" in lines
 
 
 def _init_canvas_with_mouse(monkeypatch, *, mouse_enabled: bool) -> _FakeWindow:

@@ -111,6 +111,7 @@ Environment=XDG_RUNTIME_DIR=/run/user/{uid}
 Environment=WLR_BACKENDS=drm,libinput
 Environment=WLR_RENDERER=gles2
 Environment=GDK_BACKEND=wayland
+Environment=OPENFOLLOW_KIOSK=1
 Environment=GST_PLUGIN_FEATURE_RANK=v4l2slh264dec:257,v4l2slh265dec:257,v4l2h264dec:257,v4l2h265dec:257,openh264dec:1
 StandardOutput=journal
 StandardError=journal

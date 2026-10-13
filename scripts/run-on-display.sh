@@ -30,6 +30,8 @@ fi
 # wlroots (Cage compositor) configuration
 export WLR_BACKENDS=drm
 export WLR_RENDERER=gles2
+# The app is the kiosk session: fullscreen on any host.
+export OPENFOLLOW_KIOSK=1
 
 cd "$REPO_ROOT"
 

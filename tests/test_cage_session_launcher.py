@@ -103,3 +103,30 @@ def test_kanshi_launcher_tears_down_on_app_exit(rel: str) -> None:
         # (and a clean exit isn't reported as failure when kanshi already died).
         assert "rc=$?" in cmd, f"{rel}: capture the app exit status before kill:\n  {cmd}"
         assert "exit $rc" in cmd, f"{rel}: re-emit the app exit code after killing kanshi:\n  {cmd}"
+
+
+def _kiosk_env_source(rel: str) -> str:
+    """Return the text that sets a launcher's environment. ``session.sh``
+    inherits the .deb unit's, so its unit is read in its place."""
+    if rel == "packaging/debian/session.sh":
+        return (_repo_root() / "packaging/debian/openfollow.service").read_text()
+    if rel == "openfollow/privilege/systemd_unit.py":
+        from openfollow.privilege.systemd_unit import render_service_unit
+
+        return render_service_unit(
+            user="openfollow",
+            uid=1000,
+            repo_dir=Path("/opt/openfollow"),
+            poetry_bin=Path("/usr/bin/poetry"),
+        )
+    return (_repo_root() / rel).read_text()
+
+
+@pytest.mark.parametrize("rel", _LAUNCHERS)
+def test_launcher_marks_the_kiosk_session(rel: str) -> None:
+    """Every Cage launcher hands the app the kiosk flag, so the window is
+    fullscreen on any host, not only on a Pi."""
+    from openfollow.services import KIOSK_ENV
+
+    lines = [ln.strip() for ln in _kiosk_env_source(rel).splitlines()]
+    assert f"Environment={KIOSK_ENV}=1" in lines or f"export {KIOSK_ENV}=1" in lines, rel

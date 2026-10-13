@@ -193,10 +193,11 @@ BOTH = [(False, True), (True,), (False, True), (True,)]
         ({"state": {"camera_params": np.array([0.2, -6.0, 2.5, -15.0, 0.0, 0.0, 60.0])}}, BOTH),
         ({"state": {"lens_k1": 0.05}}, BOTH),
         ({"state": {"lens_k2": 0.02}}, BOTH),
-        ({"size": (1280, 720)}, BOTH),
+        ({"size": (1280, 1080)}, BOTH),
+        ({"size": (1920, 720)}, BOTH),
         ({"scale": 2.0}, BOTH),
     ],
-    ids=["curve", "end", "locked", "camera", "k1", "k2", "frame", "scale"],
+    ids=["curve", "end", "locked", "camera", "k1", "k2", "width", "height", "scale"],
 )
 def test_anything_a_path_is_drawn_from_draws_its_picture_again(shape_calls, change: dict, calls: list) -> None:
     from types import SimpleNamespace

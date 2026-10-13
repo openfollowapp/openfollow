@@ -4126,7 +4126,7 @@
  document.body.classList.toggle('show-experimental', cb.checked);
  if (cb.checked) return;
  document.querySelectorAll(
- '#detection-section input[name="enabled"]'
+ '#detection-section input[name="enabled"], #ground-grid-section input[name="enabled"]'
  ).forEach(function (el) { el.checked = false; });
  }
  function switchTab(tabId) {

@@ -6449,8 +6449,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     @app.post("/settings/experimental")
     def update_experimental() -> Any:
         """Persist ``[ui] show_experimental_features``. Turning it off also
-        disables ``detection.enabled`` and deactivates every path (both still
-        experimental); the config-reload watcher applies that at runtime. The
+        disables ``detection.enabled`` and ``ground_grid.enabled`` and
+        deactivates every path (all still experimental); the config-reload
+        watcher applies that at runtime. The
         body-class show/hide flip is done client-side. Responds empty
         (hx-swap="none")."""
         show = _as_bool(request.forms.get("show_experimental_features"), False)
@@ -6459,6 +6460,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             cfg.ui.show_experimental_features = show
             if not show:
                 cfg.detection.enabled = False
+                cfg.ground_grid.enabled = False
                 for path in cfg.paths.paths:
                     path.active = False
 

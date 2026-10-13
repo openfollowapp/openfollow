@@ -22,6 +22,7 @@ from pathlib import Path
 
 import pytest
 
+from openfollow.video.inputs.rtp import RtpInput
 from openfollow.web import diagnostics as diagnostics_module
 from openfollow.web import routes as routes_module
 
@@ -227,10 +228,18 @@ def test_selfcheck_requires_every_element_the_diagnostics_bundle_lists() -> None
     assert listed <= set(_REQUIRED_GST_ELEMENTS), sorted(listed - set(_REQUIRED_GST_ELEMENTS))
 
 
-@pytest.mark.parametrize("decoder", ["avdec_h264", "avdec_h265"])
-def test_selfcheck_requires_a_decoder_for_every_stream_codec(decoder) -> None:
-    # decodebin plugs these for RTSP / RTP / SRT cameras; no source names them.
-    assert decoder in _REQUIRED_GST_ELEMENTS
+# What decodebin plugs for each encoding the RTP input offers; no source names them.
+_RTP_ENCODING_ELEMENTS = {
+    "H264": {"rtph264depay", "h264parse", "avdec_h264"},
+    "H265": {"rtph265depay", "h265parse", "avdec_h265"},
+    "MP2T": {"rtpmp2tdepay", "tsdemux"},
+}
+
+
+@pytest.mark.parametrize("encoding", RtpInput._ENCODINGS)
+def test_selfcheck_requires_what_decodebin_plugs_for_every_rtp_encoding(encoding) -> None:
+    assert encoding in _RTP_ENCODING_ELEMENTS, f"name what decodebin plugs for {encoding!r} in _RTP_ENCODING_ELEMENTS"
+    assert _RTP_ENCODING_ELEMENTS[encoding] <= set(_REQUIRED_GST_ELEMENTS)
 
 
 def test_webp_plugin_is_kept(spec_tree) -> None:
@@ -248,14 +257,15 @@ def test_every_element_the_selfcheck_requires_survives_the_allowlist(spec_tree, 
 # ---------------------------------------------------------------------------
 
 
-def _run_selfcheck_step(tmp_path: Path, output: str, status: int) -> subprocess.CompletedProcess[str]:
+def _run_selfcheck_step(tmp_path: Path, output: str, status: int, stderr: str = "") -> subprocess.CompletedProcess[str]:
     """Run build-dmg.sh's self-check step against a stand-in app that prints ``output``."""
     script = _BUILD_DMG.read_text(encoding="utf-8")
     step = script[script.index('echo "==> Self-checking bundle') : script.index('echo "==> Building DMG"')]
     app = tmp_path / "OpenFollow.app"
     binary = app / "Contents" / "MacOS" / "OpenFollow"
     binary.parent.mkdir(parents=True)
-    binary.write_text(f"#!/bin/sh\nprintf '%s\\n' {shlex.quote(output)}\nexit {status}\n")
+    to_stderr = f"printf '%s\\n' {shlex.quote(stderr)} >&2\n" if stderr else ""
+    binary.write_text(f"#!/bin/sh\nprintf '%s\\n' {shlex.quote(output)}\n{to_stderr}exit {status}\n")
     binary.chmod(0o755)
     return subprocess.run(
         ["bash", "-c", f"set -euo pipefail\nAPP={shlex.quote(str(app))}\n{step}"],
@@ -285,8 +295,18 @@ def test_selfcheck_step_passes_on_ok(tmp_path) -> None:
 def test_selfcheck_step_fails_and_shows_what_the_app_printed(tmp_path, output, status) -> None:
     result = _run_selfcheck_step(tmp_path, output, status)
     assert result.returncode == 1
-    assert result.stderr.splitlines()[0] == "Bundle self-check failed - the frozen native stack is incomplete:"
+    assert result.stderr.splitlines()[0] == f"Bundle self-check failed (exit status {status}):"
     assert output in result.stderr.splitlines()[1:]
+
+
+def test_selfcheck_step_shows_what_the_app_wrote_to_stderr(tmp_path) -> None:
+    result = _run_selfcheck_step(tmp_path, "OK", 134, stderr="Fatal Python error: Aborted")
+    assert result.returncode == 1
+    assert result.stderr.splitlines() == [
+        "Bundle self-check failed (exit status 134):",
+        "OK",
+        "Fatal Python error: Aborted",
+    ]
 
 
 # ---------------------------------------------------------------------------

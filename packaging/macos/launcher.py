@@ -65,6 +65,7 @@ REQUIRED_GST_ELEMENTS = (
     "h264parse",
     "h265parse",
     "tsdemux",
+    # software H.264 / H.265 decoders; VideoToolbox takes a stream first where it can
     "avdec_h264",
     "avdec_h265",
 )

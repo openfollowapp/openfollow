@@ -528,8 +528,8 @@ the version stated here and in `DEVELOPMENT.md`.
 A post-build self-check runs the frozen app with a scrubbed environment
 (`env -i HOME=$HOME OPENFOLLOW_SELFCHECK=1 …`) and fails the build unless the
 bundled `gi` / GStreamer elements and the detection deps all resolve from inside
-the `.app`; a failure prints what the app reported, such as the missing
-elements. The elements it requires (`REQUIRED_GST_ELEMENTS` in `launcher.py`)
+the `.app` and the app exits cleanly; a failure prints the exit status and
+everything the app wrote, such as the missing elements or a crash. The elements it requires (`REQUIRED_GST_ELEMENTS` in `launcher.py`)
 are every one the app builds on macOS: those its pipelines create by name, and
 those `decodebin` plugs for Media Gallery uploads and clips and for H.264 /
 H.265 / MPEG-TS streams. `tests/test_macos_bundle_contract.py` fails when an

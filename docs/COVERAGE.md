@@ -169,7 +169,7 @@ Three reasons:
    but killing them requires tests that assert on implementation
    details. Forcing every survivor to zero on every PR would push
    tests toward the "tautological" anti-pattern
-   [`CLAUDE.md` §"Test coverage"](../CLAUDE.md#test-coverage)
+   [`CLAUDE.md` §"Test coverage"](../CLAUDE.md#test-coverage-required-for-every-code-change)
    explicitly forbids.
 
 Instead, mutmut is used as a **sampling tool**: run it when touching

@@ -1563,12 +1563,12 @@ def _lens_station(
     monkeypatch,
     *,
     developer_mode: bool = False,
-    experimental: bool = True,
+    experimental: bool = False,
     points: tuple = (),
     corner_pins: list | None = None,
     unit_system: str = "metric",
 ):
-    """A station with experimental features on, so the wizard renders the Lens step."""
+    """A station with a stored lens pair for the wizard's Lens step."""
     from openfollow.configuration import AppConfig, save_config
 
     monkeypatch.setattr(discovery_module.BeaconSender, "start", lambda self: None)
@@ -2050,18 +2050,19 @@ class TestLensChangeAfterPinning:
 
 @integration
 class TestWizardLensStepPage:
-    def test_without_the_toggle_the_wizard_keeps_seven_steps(self, live_server) -> None:
-        _, base = live_server
-        _, body = _get(base, "/wizard")
-        assert body.count('class="wizard-step-btn') == 7
-        assert 'id="wizard-step-lens"' not in body
-        assert "4. Camera Position" in body
-        # The stored pair rides along in hidden inputs so Apply keeps it.
-        assert '<input type="hidden" id="wiz_lens_k1"' in body
-        assert '<input type="hidden" id="wiz_lens_k2"' in body
-        assert "lens: " not in body.split("window.WIZ = {")[1].split("};")[0]
+    @pytest.mark.parametrize("experimental", [False, True])
+    def test_the_lens_step_ignores_the_experimental_toggle(self, tmp_path, monkeypatch, experimental: bool) -> None:
+        with _lens_station(tmp_path, monkeypatch, experimental=experimental) as (_, base):
+            status, body = _get(base, "/wizard")
+        assert status == 200
+        assert body.count('class="wizard-step-btn') == 8
+        assert 'class="wizard-step-btn experimental-feature' not in body
+        assert 'id="wizard-step-lens"' in body
+        assert "lens: 3" in body.split("window.WIZ = {")[1].split("};")[0]
+        assert 'type="hidden" id="wiz_lens_k1"' not in body
+        assert 'id="review-lens-rating"' in body and 'id="review-lens-caution"' in body
 
-    def test_with_the_toggle_the_lens_step_sits_after_video_source(self, live_server_lens) -> None:
+    def test_the_lens_step_sits_after_video_source(self, live_server_lens) -> None:
         _, base = live_server_lens
         status, body = _get(base, "/wizard")
         assert status == 200
@@ -2078,12 +2079,6 @@ class TestWizardLensStepPage:
         assert "Fine-tune" in body
         # No step is referred to by number anywhere, since the Lens step shifts the numbering.
         assert re.search(r"Step \d", body) is None
-
-    def test_review_repeats_the_rating_and_the_values_only_with_the_step(self, live_server, live_server_lens) -> None:
-        _, plain = _get(live_server[1], "/wizard")
-        _, lens = _get(live_server_lens[1], "/wizard")
-        assert 'id="review-lens-rating"' in lens and 'id="review-lens-caution"' in lens
-        assert 'id="review-lens-rating"' not in plain and 'id="review-lens-caution"' not in plain
 
     def test_the_operator_never_sees_a_coefficient_name(self, live_server_lens) -> None:
         """The pair is Barrel / fisheye and Edge fit everywhere an operator reads: never k1 or k2."""
@@ -2634,7 +2629,10 @@ def _saved_points() -> tuple:
 class TestCalibrationPointsPages:
     def test_the_section_comes_with_the_toggle_and_starts_from_the_saved_points(self, tmp_path, monkeypatch) -> None:
         pins = [[0.81, 0.94], [0.14, 0.95], [0.37, 0.61], [0.66, 0.6]]
-        with _lens_station(tmp_path, monkeypatch, points=_saved_points(), corner_pins=pins) as (_server, base):
+        with _lens_station(tmp_path, monkeypatch, experimental=True, points=_saved_points(), corner_pins=pins) as (
+            _server,
+            base,
+        ):
             _, body = _get(base, "/wizard")
         saved_pins = re.search(r"var CALIB_SAVED_CORNERS = (.*);  //", body)
         assert saved_pins and json.loads(saved_pins.group(1)) == pins
@@ -2686,7 +2684,7 @@ class TestCalibrationPointsPages:
         return [re.findall(r"<t[hd][^>]*>(.*?)</t[hd]>", row) for row in re.findall(r"<tr>(.*?)</tr>", body, re.S)]
 
     def test_the_camera_form_lists_the_saved_points_read_only(self, tmp_path, monkeypatch) -> None:
-        with _lens_station(tmp_path, monkeypatch, points=_saved_points()) as (_server, base):
+        with _lens_station(tmp_path, monkeypatch, experimental=True, points=_saved_points()) as (_server, base):
             _, camera = _get(base, "/section/camera")
         assert self._rows(camera) == [
             ["1", "DSR<br>18.500 m", "DSL<br>19.250 m", "0.000 m", "X = 2.500 m<br>Y = -14.000 m<br>Z = 0.000 m"],
@@ -2694,7 +2692,9 @@ class TestCalibrationPointsPages:
         ]
 
     def test_the_camera_form_lists_them_in_the_unit_system_shown(self, tmp_path, monkeypatch) -> None:
-        with _lens_station(tmp_path, monkeypatch, points=_saved_points(), unit_system="imperial") as (_server, base):
+        with _lens_station(
+            tmp_path, monkeypatch, experimental=True, points=_saved_points(), unit_system="imperial"
+        ) as (_server, base):
             _, camera = _get(base, "/section/camera")
         assert self._rows(camera)[0] == [
             "1",

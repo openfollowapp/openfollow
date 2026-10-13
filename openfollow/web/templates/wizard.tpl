@@ -5,6 +5,7 @@
 % _len = unit_suffix_length(_us)
 % import json
 % from openfollow.configuration import MAX_CALIBRATION_POINTS
+% _show_calib = bool(config.ui.show_experimental_features)
 % _calib_corners = config.camera.corner_pins
 % _calib_saved = [{'corner_a': c.corner_a, 'corner_b': c.corner_b, 'distance_a': c.distance_a, 'distance_b': c.distance_b, 'height': c.height, 'pin': [c.pin_x, c.pin_y], 'position': c.position} for c in config.camera.calibration_points]
 
@@ -286,16 +287,9 @@
   <h2>Setup Wizard</h2>
 </div>
 
-% # The Lens step ships behind the experimental-features toggle: without it the
-% # wizard leaves the step out and keeps seven steps. The order is published to
-% # the page script as WIZ (key -> index), so no button or script carries a
-% # step number.
-% _show_lens = bool(config.ui.show_experimental_features)
-% _steps = [('prep', 'Preparation'), ('grid', 'Grid Setup'), ('video', 'Video Source')]
-% if _show_lens:
-%   _steps.append(('lens', 'Lens'))
-% end
-% _steps += [('camera', 'Camera Position'), ('ref', 'Reference Mapping'), ('corners', 'Corner Pinning'), ('review', 'Review')]
+% # The order is published to the page script as WIZ (key -> index), so no
+% # button or script carries a step number.
+% _steps = [('prep', 'Preparation'), ('grid', 'Grid Setup'), ('video', 'Video Source'), ('lens', 'Lens'), ('camera', 'Camera Position'), ('ref', 'Reference Mapping'), ('corners', 'Corner Pinning'), ('review', 'Review')]
 % _keys_js = ', '.join("'" + k + "'" for k, _ in _steps)
 <script>
   window.WIZ = {
@@ -307,7 +301,7 @@
 </script>
 <nav class="wizard-steps" aria-label="Setup wizard steps">
 % for _i, (_key, _label) in enumerate(_steps):
-  <button type="button" class="wizard-step-btn{{' experimental-feature' if _key == 'lens' else ''}}" data-step="{{_i}}" onclick="wizardGo({{_i}})">{{_i + 1}}. {{_label}}</button>
+  <button type="button" class="wizard-step-btn" data-step="{{_i}}" onclick="wizardGo({{_i}})">{{_i + 1}}. {{_label}}</button>
 % end
 </nav>
 
@@ -586,12 +580,11 @@
   </div>
 </div>
 
-% if _show_lens:
-<!-- Lens: the distortion from lines that are straight in reality (experimental) -->
-<div class="wizard-content experimental-feature" id="wizard-step-lens">
+<!-- Lens: the distortion from lines that are straight in reality -->
+<div class="wizard-content" id="wizard-step-lens">
   <div class="section">
     <div class="section-head">
-      <h2>Lens <span class="badge-experimental">Experimental</span></h2>
+      <h2>Lens</h2>
       <span class="section-note">Measure the lens from edges that are straight in reality</span>
     </div>
 
@@ -674,11 +667,6 @@
     </div>
   </div>
 </div>
-% else:
-% # Without the Lens step the stored pair rides along so Apply keeps it.
-<input type="hidden" id="wiz_lens_k1" value="{{config.camera.lens_k1}}">
-<input type="hidden" id="wiz_lens_k2" value="{{config.camera.lens_k2}}">
-% end
 
 <!-- Camera Position -->
 <div class="wizard-content" id="wizard-step-camera">
@@ -962,7 +950,7 @@
               title="Load a snapshot first">Fine adjust</button>
     </div>
 
-% if _show_lens:
+% if _show_calib:
     <details class="inline-advanced experimental-feature" id="calib-section">
       <summary>Advanced <span class="badge-experimental">Experimental</span></summary>
       <div class="inline-advanced-content">
@@ -1012,11 +1000,9 @@
     <div id="review-no-feed" class="wizard-no-feed" style="display:none;">No video feed available. Values below are still valid, but the visual review is unavailable.</div>
 
     <div id="review-status" class="wizard-status" style="display:none;"></div>
-% if _show_lens:
     <div id="review-lens-caution" class="notice warning" style="display:none;">Lens changed &ndash; redo Corner Pinning so the position matches.</div>
-% end
 
-% if _show_lens:
+% if _show_calib:
     <div class="group experimental-feature" id="review-calib" style="display:none;">
       <div class="group-title">Calibration points</div>
       <div id="review-calib-list"></div>
@@ -1033,11 +1019,9 @@
         <div class="wizard-solved-param"><span class="param-label">Yaw</span><span class="param-value" id="review-cam-yaw">-</span></div>
         <div class="wizard-solved-param"><span class="param-label">Roll</span><span class="param-value" id="review-cam-roll">-</span></div>
         <div class="wizard-solved-param"><span class="param-label">FOV</span><span class="param-value" id="review-cam-fov">-</span></div>
-% if _show_lens:
         <div class="wizard-solved-param"><span class="param-label">Barrel / fisheye</span><span class="param-value" id="review-lens-k1">-</span></div>
         <div class="wizard-solved-param"><span class="param-label">Edge fit</span><span class="param-value" id="review-lens-k2">-</span></div>
         <div class="wizard-solved-param"><span class="param-label">Lens coverage</span><span class="param-value" id="review-lens-rating"><span class="wizard-meter" aria-hidden="true"><span class="wizard-meter-seg"></span><span class="wizard-meter-seg"></span><span class="wizard-meter-seg"></span><span class="wizard-meter-seg"></span><span class="wizard-meter-seg"></span></span> <span id="review-lens-rating-text">-</span></span></div>
-% end
       </div>
     </div>
 
@@ -1075,7 +1059,7 @@
   // Calibration points (Corner Pinning, experimental). The pin is a fraction of the snapshot, so a
   // snapshot of another size keeps it on its mark; ``position`` is where this pose's solve put it.
   // ---------------------------------------------------------------
-  var CALIB_ENABLED = {{'true' if _show_lens else 'false'}};
+  var CALIB_ENABLED = {{'true' if _show_calib else 'false'}};
   // Names this page to the solve route, which stops a fit once the page asks for a newer one.
   var WIZ_SOLVE_PAGE = Math.random().toString(36).slice(2, 12) || 'page';
   var CALIB_MAX = {{MAX_CALIBRATION_POINTS}};
@@ -4766,7 +4750,7 @@
 
 
   // ---------------------------------------------------------------
-  // Lens (experimental): the distortion from lines that are straight in reality
+  // Lens: the distortion from lines that are straight in reality
   // ---------------------------------------------------------------
   // A line keeps its endpoints p0 / p1 (image px) and its three middle points
   // in the line's own frame as (t, off): t along the chord, off along its
@@ -4798,8 +4782,6 @@
   // {size, corners, withPoints} of the last solve: the snapshot size, the four pins, whether it took the points
   var pinnedCorners = null;
   var lensSolvedWith = { k1: wizReadLensCoeff('wiz_lens_k1'), k2: wizReadLensCoeff('wiz_lens_k2') };
-
-  function lensEnabled() { return !!document.getElementById('lens-container'); }
 
   function lensFrame(line) {
     var dx = line.p1[0] - line.p0[0], dy = line.p1[1] - line.p0[1];
@@ -4857,7 +4839,6 @@
 
   // ---- snapshot ----
   function lensOnSnapshot() {
-    if (!lensEnabled()) return;
     document.getElementById('lens-overlay').setAttribute('viewBox', '0 0 ' + imageWidth + ' ' + imageHeight);
     lensCanvas = snapshotCanvas;
     if (lensImageSize && (lensImageSize[0] !== imageWidth || lensImageSize[1] !== imageHeight) && lensLines.length) {
@@ -5109,7 +5090,6 @@
     });
   }
   function renderLens() {
-    if (!lensEnabled()) return;
     renderLensCandidates();
     var g = document.getElementById('lens-lines');
     // Rebuilding the handles drops a focused one, which would leave the keys dead after a click.
@@ -5348,7 +5328,6 @@
     return out;
   }
   function lensRecomputeCurves() {
-    if (!lensEnabled()) return;
     var k1 = wizReadLensCoeff('wiz_lens_k1'), k2 = wizReadLensCoeff('wiz_lens_k2');
     lensLines.forEach(function(line) { line.curve = lensLineCounts(line) ? lensPredictCurve(line, k1, k2) : null; });
   }
@@ -5385,9 +5364,7 @@
     return Math.abs(k1 - lensSolvedWith.k1) > 1e-9 || Math.abs(k2 - lensSolvedWith.k2) > 1e-9;
   }
   function populateReviewLens(cam) {
-    var k1El = document.getElementById('review-lens-k1');
-    if (!k1El) return;
-    k1El.textContent = Number(cam.lens_k1).toFixed(3);
+    document.getElementById('review-lens-k1').textContent = Number(cam.lens_k1).toFixed(3);
     document.getElementById('review-lens-k2').textContent = Number(cam.lens_k2).toFixed(3);
     var meter = document.querySelector('#review-lens-rating .wizard-meter');
     var text = document.getElementById('review-lens-rating-text');
@@ -5405,7 +5382,6 @@
 
   // ---- pointer + keyboard ----
   function lensInit() {
-    if (!lensEnabled()) return;
     var overlay = document.getElementById('lens-overlay');
     overlay.addEventListener('pointerdown', function(e) {
       var handle = e.target.closest ? e.target.closest('.lens-point') : null;

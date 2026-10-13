@@ -37,7 +37,6 @@ _GATED_ROOTS = [
     # outside its tab wrapper.
     ("partials/detection.tpl", 'id="detection-section"'),
     ("partials/rttrpm_output.tpl", 'id="rttrpm-output-section"'),
-    ("wizard.tpl", 'id="wizard-step-lens"'),
 ]
 
 
@@ -51,7 +50,6 @@ def test_section_root_carries_gate_class(rel: str, anchor: str) -> None:
 # Person Detection page has no single header: every collapsible box carries its
 # own badge.
 _BADGED_HEADERS = [
-    ("wizard.tpl", "Lens"),
     ("partials/detection.tpl", "Tracking"),
     ("partials/detection.tpl", "Detection Model"),
     ("partials/detection.tpl", "Sensitivity &amp; Overlay"),
@@ -66,18 +64,29 @@ def test_section_header_carries_badge(rel: str, heading: str) -> None:
     assert "badge-experimental" in line, f"{rel}: {heading!r} header is missing the Experimental badge"
 
 
-def test_wizard_lens_step_is_left_out_without_the_toggle() -> None:
-    # The Lens step is rendered server-side only with the toggle on, so the
-    # wizard keeps seven steps without it; the stored pair still rides along
-    # in hidden inputs so Apply keeps it. Corner Pinning carries no lens
-    # controls of its own any more.
+# Lens distortion is a regular feature: its Camera group, wizard step and
+# step button render whatever the experimental toggle says.
+_UNGATED = [
+    ("partials/camera.tpl", "Lens distortion"),
+    ("wizard.tpl", 'id="wizard-step-lens"'),
+    ("wizard.tpl", "<h2>Lens"),
+    ("wizard.tpl", 'class="wizard-step-btn'),
+]
+
+
+@pytest.mark.parametrize("rel,anchor", _UNGATED)
+def test_lens_distortion_is_not_gated(rel: str, anchor: str) -> None:
+    text = _read(rel)
+    line = _line_with(text, anchor)
+    assert "experimental-feature" not in line
+    assert "badge-experimental" not in line
+
+
+def test_wizard_lens_step_has_one_set_of_coefficient_inputs() -> None:
     wiz = _read("wizard.tpl")
-    assert "% if _show_lens:" in wiz
-    assert 'id="wizard-step-lens"' in wiz
-    assert '<input type="hidden" id="wiz_lens_k1"' in wiz
-    assert '<input type="hidden" id="wiz_lens_k2"' in wiz
-    assert "cp-lens-controls" not in wiz
-    assert "cp_lens_k1" not in wiz
+    assert wiz.count('id="wiz_lens_k1"') == 1
+    assert wiz.count('id="wiz_lens_k2"') == 1
+    assert '<input type="hidden" id="wiz_lens_k1"' not in wiz
 
 
 def test_base_tpl_ships_gate_css_and_body_class() -> None:

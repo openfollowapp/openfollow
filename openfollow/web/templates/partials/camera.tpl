@@ -120,8 +120,8 @@
         </p>
     </div>
 
-    <div class="group experimental-feature">
-        <h3 class="group-title">Lens distortion <span class="badge-experimental">Experimental</span></h3>
+    <div class="group">
+        <h3 class="group-title">Lens distortion</h3>
         <div class="row">
             <div class="field">
                 <label>Barrel / fisheye</label>

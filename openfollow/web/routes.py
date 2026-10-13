@@ -3552,8 +3552,11 @@ def _wizard_calibration_points(
     return points
 
 
+_SUPERSEDED = json.dumps({"error": "A newer solve was asked for."})
+
+
 class _WizardSolveTurns:
-    """The newest solve each Setup Wizard page asked for, so a joint fit it no longer waits on stops early."""
+    """The newest solve each Setup Wizard page asked for, so a fit the page has stopped waiting on stops early."""
 
     _PAGES_KEPT = 64
 
@@ -9766,6 +9769,10 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             return json.dumps({"error": "Invalid JSON"})
 
         try:
+            if not isinstance(data, dict):
+                raise TypeError("the body must be a JSON object")
+            # Recorded before the rest is read: a newer body refused as malformed still supersedes.
+            stale = solve_turns.turn(data)
             world_corners = data["world_corners"]
             screen_corners = data["screen_corners"]
             img_w = float(data["image_width"])
@@ -9786,15 +9793,13 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                     raise ValueError("each screen_corner must be [x, y]")
                 if not all(math.isfinite(float(c)) for c in p):
                     raise ValueError("screen_corner coords must be finite numbers")
-            # Recorded before the points are read: a newer body refused as malformed still supersedes.
-            stale = solve_turns.turn(data)
             calibration_points = _wizard_calibration_points(data.get("calibration_points"), img_w, img_h)
         except (KeyError, TypeError, ValueError) as exc:
             response.status = 400
             return json.dumps({"error": str(exc)})
         if stale is not None and stale():
             response.status = 409
-            return json.dumps({"error": "A newer solve was asked for."})
+            return _SUPERSEDED
 
         import numpy as np
 
@@ -9841,7 +9846,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 solved = solve_with_points(world_tuples, screen_tuples, measured, img_w, img_h, stale=stale)
             except SolveSuperseded:
                 response.status = 409
-                return json.dumps({"error": "A newer solve was asked for."})
+                return _SUPERSEDED
             result = None if solved is None else solved.camera
         else:
             result = solve_camera_dlt(world_tuples, screen_tuples, img_w, img_h)

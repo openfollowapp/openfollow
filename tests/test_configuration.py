@@ -7411,8 +7411,19 @@ def test_a_fresh_station_starts_in_simple() -> None:
 
 
 @pytest.mark.parametrize("raw", ["Simple", "", "expert", None, 1, True, ["simple"]])
-def test_an_unknown_network_mode_reads_as_simple(raw: object) -> None:
+def test_an_unknown_network_mode_without_a_pin_reads_as_simple(raw: object) -> None:
     assert AppConfig(network_mode=raw).network_mode == "simple"  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("raw", ["Advanced", " advanced ", "ADVANCED"])
+def test_the_mode_is_read_case_and_space_blind(raw: str) -> None:
+    assert AppConfig(network_mode=raw).network_mode == "advanced"
+
+
+@pytest.mark.parametrize("raw", ["advance", "", None, True, 3])
+def test_an_unreadable_mode_never_erases_a_pin(raw: object) -> None:
+    cfg = AppConfig(network_mode=raw, video_input_iface="eth1")  # type: ignore[arg-type]
+    assert (cfg.network_mode, cfg.video_input_iface) == ("advanced", "eth1")
 
 
 @pytest.mark.parametrize("field", sorted(_PLANE_PINS))

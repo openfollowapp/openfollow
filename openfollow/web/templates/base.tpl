@@ -2504,6 +2504,7 @@
  const expired = { error: 'Your session has expired.', action: 'Reload the page and sign in again.' };
  // The switch shows the mode in force until the new one is saved.
  radios.forEach((radio) => { radio.disabled = true; radio.checked = radio.value === group.dataset.mode; });
+ const body = new URLSearchParams({ network_mode: input.value });
  try {
  if (input.value === 'simple') {
  const resp = await fetch('/section/network/mode/preview');
@@ -2514,11 +2515,13 @@
  radios.forEach((radio) => { radio.disabled = false; radio.checked = radio.value === group.dataset.mode; });
  return;
  }
+ // Only what the dialog listed is removed.
+ preview.remove.forEach((name) => body.append('vlans', name));
  }
  const resp = await fetch('/section/network/mode', {
  method: 'POST',
  headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
- body: new URLSearchParams({ network_mode: input.value }).toString(),
+ body: body.toString(),
  });
  if (resp.redirected) return fail(expired);
  if (!resp.ok) return fail(await saveError.fromResponse(resp));

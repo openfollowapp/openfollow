@@ -52,7 +52,7 @@ def present(monkeypatch):
 def _post_headers(base: str, path: str, data: dict) -> tuple[int, str, dict]:
     req = urllib.request.Request(
         f"{base}{path}",
-        data=urllib.parse.urlencode(data).encode(),
+        data=urllib.parse.urlencode(data, doseq=True).encode(),
         headers={"Content-Type": "application/x-www-form-urlencoded"},
         method="POST",
     )
@@ -87,6 +87,8 @@ def test_the_simple_card_follows_a_named_station_interface(net_server, tmp_path,
     _fake, base = net_server
     _set(tmp_path, network_mode="simple", psn_source_iface="wlan0")
     _status, body = _get(base, "/section/network/status")
+    # Automatic names what it would pick, not the interface pinned now.
+    assert '<option value="" >Automatic (eth0)</option>' in body
     assert '<option value="wlan0" selected>wlan0 – 10.9.9.9</option>' in body
     assert 'data-adv-key="net-iface-wlan0"' in body
     assert 'data-adv-key="net-iface-eth0"' not in body
@@ -213,6 +215,7 @@ def test_the_preview_is_read_when_the_switch_is_clicked(net_server, tmp_path, pr
         "station": "Automatic (eth0)",
         "pins": ["OTP output: Lighting (eth0.20)", "Web UI: wlan0"],
         "vlans": ["Lighting (eth0.20)"],
+        "remove": ["eth0.20"],
         "kept": [],
         "restart": True,
     }
@@ -244,7 +247,9 @@ def test_switching_to_simple_clears_every_pin_and_removes_the_vlans(net_server, 
     ]
     fake.session_iface = "eth0.30"
     _set(tmp_path, **{"otp_output.source_iface": "eth0.20", "osc.listen_iface": "eth0.20", "video_input_iface": "eth0"})
-    status, _body, headers = _post_headers(base, "/section/network/mode", {"network_mode": "simple"})
+    status, _body, headers = _post_headers(
+        base, "/section/network/mode", {"network_mode": "simple", "vlans": ["eth0.20", "eth0.30"]}
+    )
     assert status == 200
     assert headers.get("hx-refresh") == "true"
     saved = _saved(tmp_path)
@@ -254,11 +259,38 @@ def test_switching_to_simple_clears_every_pin_and_removes_the_vlans(net_server, 
     assert fake.vlans_deleted == ["eth0.20"]
 
 
+def test_only_the_vlans_the_dialog_listed_are_removed(net_server, tmp_path, present) -> None:  # noqa: F811
+    fake, base = net_server
+    fake.vlans = [
+        {"name": "eth0.20", "parent": "eth0", "vlan_id": 20},
+        {"name": "eth0.30", "parent": "eth0", "vlan_id": 30},
+    ]
+    _post_headers(base, "/section/network/mode", {"network_mode": "simple", "vlans": ["eth0.20", "eth9.99"]})
+    assert fake.vlans_deleted == ["eth0.20"]
+
+
+def test_a_cleared_web_pin_still_in_force_restarts(net_server, tmp_path, present, monkeypatch) -> None:  # noqa: F811
+    import openfollow.web.server as server_module
+
+    monkeypatch.setattr(
+        server_module.ConfigWebServer,
+        "get_web_bind_advisory",
+        lambda self: {"bind_at_start": "", "iface_at_start": "wlan0"},
+    )
+    restarts: list[bool] = []
+    monkeypatch.setattr(
+        server_module.ConfigWebServer, "request_restart_unless_updating", lambda self: restarts.append(True) or True
+    )
+    _fake, base = net_server
+    _post_headers(base, "/section/network/mode", {"network_mode": "simple"})
+    assert restarts == [True]
+
+
 def test_the_station_interfaces_own_vlan_is_kept(net_server, tmp_path, present) -> None:  # noqa: F811
     fake, base = net_server
     fake.vlans = [{"name": "eth0.20", "parent": "eth0", "vlan_id": 20}]
     _set(tmp_path, psn_source_iface="eth0.20")
-    _post_headers(base, "/section/network/mode", {"network_mode": "simple"})
+    _post_headers(base, "/section/network/mode", {"network_mode": "simple", "vlans": "eth0.20"})
     assert fake.vlans_deleted == []
 
 
@@ -267,7 +299,7 @@ def test_a_failed_removal_does_not_stop_the_switch(net_server, tmp_path, present
     fake.interfaces.append("eth0.20")
     fake.vlans = [{"name": "eth0.20", "parent": "eth0", "vlan_id": 20}]
     fake.vlan_delete_result = ApplyResult(ok=False, message="device busy")
-    _post_headers(base, "/section/network/mode", {"network_mode": "simple"})
+    _post_headers(base, "/section/network/mode", {"network_mode": "simple", "vlans": "eth0.20"})
     assert _saved(tmp_path).network_mode == "simple"
     _status, body = _get(base, "/section/network/status")
     assert "eth0.20 is still on this station." in body

@@ -16,7 +16,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from openfollow.configuration import effective_interface_labels, is_simple_mode
@@ -156,7 +156,8 @@ def _read_pi_network(app: OpenFollowApp) -> _NetworkSnapshot:
         if station and station not in names:
             # Never another interface in its place: the screen would edit one it does not name.
             return _NetworkSnapshot(True, interfaces, station, None, None, methods, adapters, auto)
-        active = station or auto or active
+        # Automatic with no address anywhere edits the first interface, never one left over from a visit.
+        active = station or auto or interfaces[0].name
     if active not in names:
         active = interfaces[0].name
     state = reading.states.get(active)
@@ -185,6 +186,7 @@ def _apply_pi_network_snapshot(app: OpenFollowApp, snap: _NetworkSnapshot) -> No
     app._pi_network_auto_iface = snap.auto_iface
     app._pi_network_state_cache = snap.state
     app._pi_network_pending_config = snap.pending
+    app._pi_network_dns_edited = False
 
 
 def _refresh_pi_network(app: OpenFollowApp) -> None:
@@ -602,6 +604,8 @@ def _simple_rows(
         )
     for problem in _fqdn_problems(app):
         rows.append({"kind": "notice", "level": "caution", "label": f"DHCP: {problem}", "value": ""})
+    # ``web_bind`` and a pin awaiting its restart survive into Simple.
+    rows.extend(_reachability_notices(app, ifaces))
 
     name = str(getattr(app, "_pi_network_active_iface", "") or "")
     address = next((addr for iface_name, addr in ifaces if iface_name == name), "")
@@ -1278,6 +1282,7 @@ def confirm_pi_network_field_edit(app: OpenFollowApp) -> None:
         new_dns[index] = "" if canon in (None, "0.0.0.0") else canon
         # No gaps: an apply refuses an empty server, so the rest move up.
         new_dns = [server for server in new_dns if server]
+        app._pi_network_dns_edited = True
 
     app._pi_network_pending_config = Ipv4Config(
         method=pending.method,
@@ -1408,6 +1413,9 @@ def _apply_pi_network(app: OpenFollowApp) -> None:
     if adapter is None or pending is None or not iface:
         _set_banner(app, "No network adapter available.")
         return
+    if pending.method != Ipv4Method.STATIC and not getattr(app, "_pi_network_dns_edited", False):
+        # The servers shown are what DHCP handed out; sent back they would pin them over the lease's.
+        pending = replace(pending, dns=())
     errors = validate_apply(pending.method, pending.address, pending.prefix, pending.router, list(pending.dns))
     if errors:
         _set_banner(app, errors[0])

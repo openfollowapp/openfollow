@@ -60,6 +60,7 @@ from openfollow.configuration import (
     MOUSE3D_BUTTON_FIELDS,
     NETWORK_MODE_SIMPLE,
     NETWORK_MODES,
+    PLANE_PIN_FIELDS,
     VALID_BUTTON_NAMES,
     AppConfig,
     DetectionMaskConfig,
@@ -74,6 +75,7 @@ from openfollow.configuration import (
     enforce_network_mode,
     load_config,
     path_name_from,
+    plane_pin_key,
     save_config,
     viewed_with_controlled,
 )
@@ -1076,11 +1078,7 @@ def get_section_data(cfg: AppConfig, section: str) -> dict[str, Any] | None:
 # Network Interface Assignment form key -> (sub-config attr or None for top-level, field).
 _INTERFACE_ASSIGNMENT_TARGETS: dict[str, tuple[str | None, str]] = {
     "psn_source_iface": (None, "psn_source_iface"),
-    "otp_output.source_iface": ("otp_output", "source_iface"),
-    "rttrpm_output.source_iface": ("rttrpm_output", "source_iface"),
-    "osc.listen_iface": ("osc", "listen_iface"),
-    "video_input_iface": (None, "video_input_iface"),
-    "web_bind_iface": (None, "web_bind_iface"),
+    **{key: (owner, name) for key, owner, name, _label in PLANE_PIN_FIELDS},
 }
 
 # One more row per OSC destination, keyed ``osc_destinations.<id>.source_iface``.
@@ -1088,8 +1086,7 @@ _DEST_PIN_PREFIX = "osc_destinations."
 _DEST_PIN_SUFFIX = ".source_iface"
 
 
-def _dest_pin_key(dest_id: str) -> str:
-    return f"{_DEST_PIN_PREFIX}{dest_id}{_DEST_PIN_SUFFIX}"
+_dest_pin_key = plane_pin_key
 
 
 _DEVICE_LOCAL_FIELDS_BY_SECTION: dict[str, frozenset[str]] = {
@@ -1456,13 +1453,7 @@ def _video_input_row(cfg: AppConfig, wait_s: float | None, names: _PanelNames) -
     return {**row, "key": "video_input_iface", "address": address, "editable": True}
 
 
-_PLANE_PIN_LABELS = {
-    "otp_output.source_iface": "OTP output",
-    "rttrpm_output.source_iface": "RTTrPM output",
-    "osc.listen_iface": "OSC input",
-    "video_input_iface": "Video input",
-    "web_bind_iface": "Web UI",
-}
+_PLANE_PIN_LABELS = {key: label for key, _owner, _name, label in PLANE_PIN_FIELDS}
 
 
 def _plane_pin_label(cfg: AppConfig, key: str) -> str:
@@ -5945,10 +5936,11 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """Simple: the card shows the station interface alone, and offers the picker that moves it."""
         from openfollow.net_utils import auto_station_iface
 
-        resolved = station or auto_station_iface()
+        auto = auto_station_iface()
+        resolved = station or auto
         rows = net["iface_rows"]
         net["station_iface"] = station
-        net["station_resolved"] = resolved
+        net["station_auto"] = auto
         net["station_options"] = [
             (str(row.get("name", "")), str(row.get("address", "")))
             for row in rows
@@ -6392,6 +6384,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 "station": f"Automatic ({station})" if station and not cfg.psn_source_iface else station or "Automatic",
                 "pins": [f"{label}: {display_name(iface, labels)}" for label, iface in changes["pins"]],
                 "vlans": [display_name(name, labels) for name in changes["vlans"]],
+                # The interface names the switch posts back, matching ``vlans``.
+                "remove": list(changes["vlans"]),
                 "kept": [f"{display_name(name, labels)} – {reason}" for name, reason in changes["kept"]],
                 "restart": any(label == _PLANE_PIN_LABELS["web_bind_iface"] for label, _ in changes["pins"]),
             }
@@ -6407,21 +6401,29 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         mode = (request.forms.get("network_mode") or "").strip()
         if mode not in NETWORK_MODES:
             abort(400, "Network mode must be Simple or Advanced.")
+        simple = mode == NETWORK_MODE_SIMPLE
+        # Read before the config lock (a backend read can be slow), and only
+        # the VLANs the confirm dialog listed: one added since was never shown.
+        confirmed = set(request.forms.getall("vlans"))
+        vlans = (
+            [name for name in _simple_changes(_request_scoped_config())["vlans"] if name in confirmed] if simple else []
+        )
+        # A web UI pin cleared but not yet restarted is still in force.
+        web_pinned = bool(server.get_web_bind_advisory().get("iface_at_start"))
         with _config_write_lock:
             cfg = _load_config_for_edit()
-            changes = _simple_changes(cfg) if mode == NETWORK_MODE_SIMPLE else {"vlans": []}
-            web_pinned = bool(cfg.web_bind_iface)
+            web_pinned = web_pinned or bool(cfg.web_bind_iface)
             cfg.network_mode = mode
             enforce_network_mode(cfg)
             save_config(cfg, server.config_path)
             request.environ[_ENV_CONFIG_KEY] = cfg
         # Outside the config lock: each removal is a privileged backend call the frame loop must not wait on.
-        for name in changes["vlans"]:
+        for name in vlans:
             result = server.delete_network_vlan(name)
             if not result.ok:
                 logger.warning("Switching to Simple left VLAN %s: %s", name, result.message)
         restarting = refused = False
-        if web_pinned and mode == NETWORK_MODE_SIMPLE and _web_bind_restart_pending(cfg, resolve_web_bind_for(cfg)):
+        if simple and web_pinned and _web_bind_restart_pending(cfg, resolve_web_bind_for(cfg)):
             restarting = server.request_restart_unless_updating()
             refused = not restarting
         if not (restarting or refused):

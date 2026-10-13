@@ -3031,6 +3031,18 @@ class TestTheSimpleScreen:
         assert _row(app, "method")["kind"] == "display"
         assert "apply" not in _keys(app) and "renew" not in _keys(app)
 
+    def test_automatic_with_nothing_resolved_never_edits_a_leftover_interface(self, monkeypatch, tmp_path) -> None:
+        app = _simple_app(monkeypatch, tmp_path, auto="")
+        app._pi_network_active_iface = "wlan0"
+        anm._refresh_pi_network(app)
+        assert app._pi_network_active_iface == "eth0"
+
+    def test_a_web_ui_served_at_one_address_says_so(self, monkeypatch, tmp_path) -> None:
+        app = _simple_app(monkeypatch, tmp_path)
+        app._web_server = _FakeWebServer(bind_host="192.168.1.50")
+        labels = [row.get("label") for row in anm.build_pi_network_rows(app) if row.get("kind") == "notice"]
+        assert "Web UI is served only at 192.168.1.50" in labels
+
     def test_the_ipv4_heading_names_the_interface_it_edits(self, monkeypatch, tmp_path) -> None:
         app = _simple_app(monkeypatch, tmp_path, auto="")
         headers = [row.get("label") for row in anm.build_pi_network_rows(app) if row.get("kind") == "header"]
@@ -3237,6 +3249,21 @@ class TestTheSimpleMethodAndDns:
         assert app._pi_network_field_edit_active
         assert app._pi_network_banner == "Invalid DNS server address."
         assert app._pi_network_pending_config.dns == ("8.8.8.8",)
+
+    def test_a_dhcp_apply_pins_no_dns_the_operator_did_not_edit(self, monkeypatch, tmp_path) -> None:
+        adapter = _FakeAdapter()
+        app = _simple_app(monkeypatch, tmp_path, adapter=adapter)
+        _confirm_key(app, "apply")
+        app._pi_network_worker.join(timeout=5)
+        assert adapter.apply_calls[0][1].dns == ()
+
+    def test_a_static_apply_keeps_the_dns_shown(self, monkeypatch, tmp_path) -> None:
+        adapter = _FakeAdapter()
+        adapter.method = Ipv4Method.STATIC
+        app = _simple_app(monkeypatch, tmp_path, adapter=adapter)
+        _confirm_key(app, "apply")
+        app._pi_network_worker.join(timeout=5)
+        assert adapter.apply_calls[0][1].dns == ("8.8.8.8",)
 
     def test_apply_writes_the_station_interface_with_its_dns(self, monkeypatch, tmp_path) -> None:
         adapter = _FakeAdapter()

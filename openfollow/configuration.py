@@ -2465,22 +2465,35 @@ NETWORK_MODE_ADVANCED = "advanced"
 NETWORK_MODES = (NETWORK_MODE_SIMPLE, NETWORK_MODE_ADVANCED)
 
 
+# Every per-plane interface pin, plus the web UI's: (form key, owning section or
+# None for top level, field, the Assignment panel's name for it). Each OSC
+# destination's ``source_iface`` is one more, keyed by its id.
+PLANE_PIN_FIELDS: tuple[tuple[str, str | None, str, str], ...] = (
+    ("otp_output.source_iface", "otp_output", "source_iface", "OTP output"),
+    ("rttrpm_output.source_iface", "rttrpm_output", "source_iface", "RTTrPM output"),
+    ("osc.listen_iface", "osc", "listen_iface", "OSC input"),
+    ("video_input_iface", None, "video_input_iface", "Video input"),
+    ("web_bind_iface", None, "web_bind_iface", "Web UI"),
+)
+
+
+def plane_pin_key(dest_id: str) -> str:
+    """The form key of an OSC destination's pin."""
+    return f"osc_destinations.{dest_id}.source_iface"
+
+
 def plane_pins(cfg: AppConfig) -> list[tuple[str, str]]:
     """Every per-plane interface pin that is set, plus ``web_bind_iface``, as ``(key, iface)``.
 
-    Keys are the Network Interface Assignment form keys. ``psn_source_iface`` is
-    the station interface, not a per-plane pin, and ``web_bind`` is config-only.
+    ``psn_source_iface`` is the station interface, not a per-plane pin, and
+    ``web_bind`` is config-only.
     """
-    pins = [
-        ("otp_output.source_iface", cfg.otp_output.source_iface),
-        ("rttrpm_output.source_iface", cfg.rttrpm_output.source_iface),
-        ("osc.listen_iface", cfg.osc.listen_iface),
+    pins = [(key, getattr(getattr(cfg, owner) if owner else cfg, name)) for key, owner, name, _ in PLANE_PIN_FIELDS]
+    # In the Assignment panel's order: the destinations follow OSC input.
+    after_osc = [key for key, *_ in PLANE_PIN_FIELDS].index("osc.listen_iface") + 1
+    pins[after_osc:after_osc] = [
+        (plane_pin_key(dest.id), dest.source_iface) for dest in cfg.osc_destinations.destinations
     ]
-    pins.extend(
-        (f"osc_destinations.{dest.id}.source_iface", dest.source_iface) for dest in cfg.osc_destinations.destinations
-    )
-    pins.append(("video_input_iface", cfg.video_input_iface))
-    pins.append(("web_bind_iface", cfg.web_bind_iface))
     return [(key, value) for key, value in pins if isinstance(value, str) and value.strip()]
 
 
@@ -2488,13 +2501,10 @@ def enforce_network_mode(cfg: AppConfig) -> None:
     """Clear every per-plane pin and ``web_bind_iface`` in Simple: Simple never holds a hidden pin."""
     if cfg.network_mode != NETWORK_MODE_SIMPLE:
         return
-    cfg.otp_output.source_iface = ""
-    cfg.rttrpm_output.source_iface = ""
-    cfg.osc.listen_iface = ""
+    for _key, owner, name, _label in PLANE_PIN_FIELDS:
+        setattr(getattr(cfg, owner) if owner else cfg, name, "")
     for dest in cfg.osc_destinations.destinations:
         dest.source_iface = ""
-    cfg.video_input_iface = ""
-    cfg.web_bind_iface = ""
 
 
 def starting_network_mode(data: Mapping[str, Any]) -> str:
@@ -2510,15 +2520,21 @@ def starting_network_mode(data: Mapping[str, Any]) -> str:
 
     dests = data.get("osc_destinations")
     dest_list = dests.get("destinations") if isinstance(dests, Mapping) else None
-    pinned = (
-        _set(data.get("otp_output"), "source_iface")
-        or _set(data.get("rttrpm_output"), "source_iface")
-        or _set(data.get("osc"), "listen_iface")
-        or _set(data, "video_input_iface")
-        or _set(data, "web_bind_iface")
-        or any(_set(d, "source_iface") for d in dest_list or () if isinstance(d, Mapping))
+    pinned = any(_set(data.get(owner) if owner else data, name) for _key, owner, name, _ in PLANE_PIN_FIELDS) or any(
+        _set(d, "source_iface") for d in dest_list or () if isinstance(d, Mapping)
     )
     return NETWORK_MODE_ADVANCED if pinned else NETWORK_MODE_SIMPLE
+
+
+def _coerce_network_mode(cfg: AppConfig) -> str:
+    """``network_mode`` read case- and space-blind; anything else keeps the mode the pins imply.
+
+    A typo must never read as Simple and erase every pin.
+    """
+    raw = cfg.network_mode.strip().lower() if isinstance(cfg.network_mode, str) else None
+    if raw in NETWORK_MODES:
+        return str(raw)
+    return NETWORK_MODE_ADVANCED if plane_pins(cfg) else NETWORK_MODE_SIMPLE
 
 
 def network_mode_unsaved(path: str) -> bool:
@@ -2702,7 +2718,7 @@ class AppConfig:
         self.video_input_iface = self.video_input_iface.strip()
         self.interface_labels = normalize_labels(self.interface_labels)
         self.station_fqdn = normalize_fqdn(self.station_fqdn)
-        self.network_mode = _coerce_choice(self.network_mode, NETWORK_MODES, NETWORK_MODE_SIMPLE)
+        self.network_mode = _coerce_network_mode(self)
         enforce_network_mode(self)
         # Strip ``psn_source_iface`` so whitespace doesn't look like a value
         # change each load and trigger a needless rebind cycle.

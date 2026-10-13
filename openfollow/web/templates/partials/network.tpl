@@ -95,12 +95,12 @@
             % if _simple and _net.get("available"):
             %# Every plane follows this one interface; a change applies at once.
             % _station = _net.get("station_iface", "")
-            % _resolved = _net.get("station_resolved", "")
+            % _auto = _net.get("station_auto", "")
             <label for="net-station-iface">Interface</label>
             <form class="net-station-form" hx-post="/section/network/station" hx-target="#network-interface"
                   hx-swap="innerHTML" hx-trigger="change" data-busy-text="Moving all traffic to {psn_source_iface}…">
                 <select id="net-station-iface" name="psn_source_iface">
-                    <option value="" {{'' if _station else 'selected'}}>{{('Automatic (' + _resolved + ')') if _resolved else 'Automatic'}}</option>
+                    <option value="" {{'' if _station else 'selected'}}>{{('Automatic (' + _auto + ')') if _auto else 'Automatic'}}</option>
                     % for _oname, _oaddr in _net.get("station_options", []):
                     <option value="{{_oname}}" {{'selected' if _oname == _station else ''}}>{{_oname}} – {{_oaddr or 'no address'}}</option>
                     % end

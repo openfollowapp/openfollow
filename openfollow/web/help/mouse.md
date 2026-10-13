@@ -18,6 +18,8 @@ Click-and-drag control for steering markers directly on the live video. Off by d
 
 **Maximum Y+ (m)** – the farthest **upstage** (away from the audience, the +Y direction) a mouse target may go. Near the top of the picture the floor stretches toward the horizon, where a tiny cursor move maps to an enormous upstage distance; this caps that so the marker (and its light) can't shoot off into the far field. A move past the limit is ignored and the marker holds its last position. `0` means no upstage limit.
 
+When the video is boxed between black bars, the bars are not stage: a click in a bar grabs nothing, and dragging into one holds the marker where it was, as past the limit.
+
 ## Scroll wheel (height)
 
 **Wheel controls Z** – when on, the scroll wheel raises and lowers the controlled marker's height. Turn it off to disable wheel-height entirely.

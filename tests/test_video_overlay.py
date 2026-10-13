@@ -50,12 +50,26 @@ class FakeCairo:
         self.move_tos: list[tuple[float, float]] = []
         self.rgba_calls: list[tuple[float, ...]] = []
         self.font_size_calls: list[float] = []
+        self.translates: list[tuple[float, float]] = []
+        self.clip_rects: list[tuple[float, float, float, float]] = []
+        self._path_rect: tuple[float, float, float, float] | None = None
 
     def save(self) -> None:
         self.saves += 1
 
     def restore(self) -> None:
         self.restores += 1
+
+    def translate(self, x: float, y: float) -> None:
+        self.translates.append((x, y))
+
+    def rectangle(self, x: float, y: float, w: float, h: float) -> None:
+        self._path_rect = (x, y, w, h)
+
+    def clip(self) -> None:
+        assert self._path_rect is not None, "clip() without a path"
+        self.clip_rects.append(self._path_rect)
+        self._path_rect = None
 
     def set_source_rgba(self, *args: float) -> None:
         self.rgba_calls.append(args)
@@ -109,6 +123,34 @@ def patched_passes(monkeypatch):
     ):
         monkeypatch.setattr(overlay_module, name, _record(name))
     return calls
+
+
+@pytest.fixture
+def pass_sizes(monkeypatch):
+    """Record the ``(w, h)`` each scene / HUD pass is handed, keyed by name."""
+    sizes: dict[str, list[tuple[int, int]]] = {}
+
+    def _record(name: str):
+        def _stub(*args, **kwargs) -> None:
+            # Every pass takes its canvas as the two ints among its arguments.
+            ints = tuple(a for a in args if type(a) is int)
+            sizes.setdefault(name, []).append((ints[0], ints[1]))
+
+        return _stub
+
+    for name in (
+        "draw_hud_pass",
+        "draw_detections_pass",
+        "draw_grid_pass",
+        "draw_origin_pass",
+        "draw_marker_pass",
+        "draw_zones_pass",
+        "draw_settings_overlay_pass",
+        "draw_menu_help_pass",
+        "draw_button_detection_overlay_pass",
+    ):
+        monkeypatch.setattr(overlay_module, name, _record(name))
+    return sizes
 
 
 # --------------------------------------------------------------------------- #
@@ -738,3 +780,201 @@ def test_the_screen_reuses_a_still_cone_and_forgets_a_removed_one(monkeypatch) -
     frame(a)
     frame(a, b)
     assert sorted(worked_out) == [1, 2, 2]
+
+
+# --------------------------------------------------------------------------- #
+# The scene sits on the video; the HUD sits on the screen
+# --------------------------------------------------------------------------- #
+
+
+_SCENE = ("draw_grid_pass", "draw_origin_pass", "draw_zones_pass", "draw_marker_pass")
+
+
+def _scene_renderer(source: tuple[int, int]) -> CairoOverlayRenderer:
+    renderer = CairoOverlayRenderer()
+    renderer.state.camera_params = np.zeros(7, dtype=np.float64)
+    renderer.state.picture_size = source
+    renderer.state.markers = [MarkerOverlayData(marker_id=0, x=0, y=0, z=0, color="#fff")]
+    return renderer
+
+
+class TestLetterboxedScene:
+    """gtksink letterboxes the frame into a rectangle of the source's shape;
+    the scene passes are translated and clipped into that same rectangle so
+    the overlay stays on the video whatever the window's shape, while the
+    HUD keeps the whole canvas. The rect values are gtksink's own, worked by
+    hand."""
+
+    def test_scene_passes_get_the_video_rect_and_the_hud_keeps_the_canvas(self, pass_sizes) -> None:
+        fake = FakeCairo()
+        _scene_renderer((1920, 1080)).draw(fake, 1000, 1000)
+        for name in _SCENE:
+            assert pass_sizes[name] == [(1000, 562)], name
+        assert pass_sizes["draw_hud_pass"] == [(1000, 1000)]
+        assert fake.translates == [(0, 219)]
+        assert fake.clip_rects == [(0, 0, 1000, 562)]
+
+    @pytest.mark.parametrize(
+        ("source", "canvas", "rect"),
+        [
+            ((1024, 768), (1920, 1080), (240, 0, 1440, 1080)),
+            ((1080, 1920), (1280, 720), (437, 0, 405, 720)),
+        ],
+        ids=["4:3", "portrait"],
+    )
+    def test_a_narrower_source_is_pillarboxed(self, pass_sizes, source, canvas, rect) -> None:
+        fake = FakeCairo()
+        _scene_renderer(source).draw(fake, *canvas)
+        x, y, w, h = rect
+        assert pass_sizes["draw_grid_pass"] == [(w, h)]
+        assert pass_sizes["draw_hud_pass"] == [canvas]
+        assert fake.translates == [(x, y)]
+        assert fake.clip_rects == [(0, 0, w, h)]
+
+    def test_detection_boxes_scale_with_the_video_rect(self, pass_sizes) -> None:
+        renderer = _scene_renderer((1920, 1080))
+        renderer.state.detections = [object()]
+        renderer.state.detection_show_boxes = True
+        renderer.draw(FakeCairo(), 1000, 1000)
+        assert pass_sizes["draw_detections_pass"] == [(1000, 562)]
+
+    @pytest.mark.parametrize("source", [(0, 0), (1920, 1080)], ids=["unknown", "matching"])
+    def test_the_whole_canvas_when_there_is_nothing_to_box(self, pass_sizes, source) -> None:
+        fake = FakeCairo()
+        _scene_renderer(source).draw(fake, 1280, 720)
+        for name in (*_SCENE, "draw_hud_pass"):
+            assert pass_sizes[name] == [(1280, 720)], name
+        assert fake.translates == [(0, 0)]
+
+    def test_menus_and_the_wizard_ignore_the_video_rect(self, pass_sizes) -> None:
+        renderer = _scene_renderer((1920, 1080))
+        renderer.state.settings_menu_active = True
+        fake = FakeCairo()
+        renderer.draw(fake, 1000, 1000)
+        assert pass_sizes["draw_settings_overlay_pass"] == [(1000, 1000)]
+        assert pass_sizes["draw_menu_help_pass"] == [(1000, 1000)]
+        assert fake.translates == []
+
+        renderer.state.settings_menu_active = False
+        renderer.state.button_detection = ButtonDetectionState(active=True)
+        fake = FakeCairo()
+        renderer.draw(fake, 1000, 1000)
+        assert pass_sizes["draw_button_detection_overlay_pass"] == [(1000, 1000)]
+        assert fake.translates == []
+
+    def test_a_degenerate_rect_skips_the_scene_but_draws_the_hud(self, pass_sizes, caplog) -> None:  # noqa: ANN001
+        # A 16:9 frame fitted into one pixel has no height: nothing to draw it in.
+        fake = FakeCairo()
+        _scene_renderer((1920, 1080)).draw(fake, 1, 1)
+        assert all(name not in pass_sizes for name in _SCENE)
+        assert pass_sizes["draw_hud_pass"] == [(1, 1)]
+        assert fake.translates == []
+        assert not any("overlay draw error" in r.message.lower() for r in caplog.records)
+
+    def test_the_translate_is_undone_before_the_hud(self, monkeypatch, pass_sizes) -> None:
+        fake = FakeCairo()
+        _scene_renderer((1920, 1080)).draw(fake, 1000, 1000)
+        assert fake.saves == fake.restores == 2
+
+        def _boom(*args, **kwargs) -> None:
+            raise RuntimeError("pass failure")
+
+        # A raising scene pass still leaves a balanced context for the fallback text.
+        monkeypatch.setattr(overlay_module, "draw_zones_pass", _boom)
+        fake = FakeCairo()
+        _scene_renderer((1920, 1080)).draw(fake, 1000, 1000)
+        assert fake.saves == fake.restores
+        assert any("Overlay Error" in t for t in fake.text_calls)
+
+    def test_a_frame_of_non_square_pixels_is_boxed_by_its_display_size(self, pass_sizes) -> None:
+        # D1 at 12:11 is shown 768x576 (4:3), not at its 704x576 caps size.
+        renderer = _scene_renderer((704, 576))
+        renderer.state.picture_par = (12, 11)
+        fake = FakeCairo()
+        renderer.draw(fake, 1000, 1000)
+        for name in _SCENE:
+            assert pass_sizes[name] == [(1000, 750)], name
+        assert fake.translates == [(0, 125)]
+
+    def test_the_drawn_view_is_published_for_the_pointer(self, pass_sizes) -> None:
+        renderer = _scene_renderer((704, 576))
+        assert renderer.scene_view is None  # nothing drawn yet
+        renderer.state.picture_par = (12, 11)
+        renderer.draw(FakeCairo(), 1000, 1000)
+        rect, aspect = renderer.scene_view
+        assert tuple(rect) == (0, 125, 1000, 750)
+        assert aspect == pytest.approx(12 / 11)
+
+    def test_a_menu_frame_keeps_the_view_last_drawn(self, pass_sizes) -> None:
+        renderer = _scene_renderer((1920, 1080))
+        renderer.draw(FakeCairo(), 1000, 1000)
+        drawn = renderer.scene_view
+        renderer.state.settings_menu_active = True
+        renderer.draw(FakeCairo(), 640, 480)
+        assert renderer.scene_view == drawn
+
+
+@pytest.mark.filterwarnings("ignore:Rsvg.Handle.render_cairo is deprecated:DeprecationWarning")
+def test_a_frame_with_no_room_for_the_scene_still_forgets_a_removed_cone(monkeypatch) -> None:
+    """A frame fitted into nothing draws no scene but still drops the cones of markers gone."""
+    import cairo
+
+    from openfollow.runtime import overlay_draw_scene as scene
+    from openfollow.runtime.overlay_state import MarkerOverlayData
+
+    worked_out: list[int] = []
+    real = scene._cone_geometry
+
+    def _counting(state, t, w, h):
+        worked_out.append(t.marker_id)
+        return real(state, t, w, h)
+
+    monkeypatch.setattr(scene, "_cone_geometry", _counting)
+    renderer = CairoOverlayRenderer()
+    state = renderer.state
+    state.camera_params = np.array([0.0, -11.0, 6.0, -22.0, 0.0, 0.0, 60.0])
+    state.grid_config = (10.0, 6.0, 1.0, 0.0, 3.0, 0.0)
+    state.marker_style = "cone"
+    state.picture_size = (1280, 720)
+    a = MarkerOverlayData(marker_id=1, x=-1.0, y=2.0, z=1.6, color="#ff3333")
+    b = MarkerOverlayData(marker_id=2, x=1.0, y=2.0, z=1.6, color="#33aaff")
+
+    def frame(width: int, height: int, *markers: MarkerOverlayData) -> None:
+        state.markers = list(markers)
+        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
+        renderer.draw(cairo.Context(surface), width, height)
+
+    frame(1280, 720, a, b)
+    frame(1, 1, a)  # 16:9 in one pixel has no height: no scene this frame
+    frame(1280, 720, a, b)
+    assert sorted(worked_out) == [1, 2, 2]
+
+
+@pytest.mark.filterwarnings("ignore:Rsvg.Handle.render_cairo is deprecated:DeprecationWarning")
+def test_a_cone_is_drawn_again_when_the_frame_s_pixels_change_shape(monkeypatch) -> None:
+    import cairo
+
+    from openfollow.runtime import overlay_draw_scene as scene
+    from openfollow.runtime.overlay_state import MarkerOverlayData
+
+    worked_out: list[int] = []
+    real = scene._cone_geometry
+
+    def _counting(state, t, w, h):
+        worked_out.append(t.marker_id)
+        return real(state, t, w, h)
+
+    monkeypatch.setattr(scene, "_cone_geometry", _counting)
+    renderer = CairoOverlayRenderer()
+    state = renderer.state
+    state.camera_params = np.array([0.0, -11.0, 6.0, -22.0, 0.0, 0.0, 60.0])
+    state.grid_config = (10.0, 6.0, 1.0, 0.0, 3.0, 0.0)
+    state.marker_style = "cone"
+    state.markers = [MarkerOverlayData(marker_id=1, x=-1.0, y=2.0, z=1.6, color="#ff3333")]
+    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 1280, 720)
+    # Both frames box to the same 1280x720 rectangle; only the stretch differs.
+    state.picture_size = (1280, 720)
+    renderer.draw(cairo.Context(surface), 1280, 720)
+    state.picture_size, state.picture_par = (1152, 720), (10, 9)
+    renderer.draw(cairo.Context(surface), 1280, 720)
+    assert worked_out == [1, 1]

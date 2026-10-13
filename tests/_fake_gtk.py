@@ -53,7 +53,6 @@ class FakeCanvas:
         self.embed_widget_calls: list[Any] = []
         self.hud_draw_fn: Callable[..., Any] | None = None
         self.title: str | None = None
-        self.aspect_ratio: tuple[int, int] | None = None
         self.fullscreen_called: bool = False
         self.close_called: bool = False
         self.hud_tick_started: bool = False
@@ -79,9 +78,6 @@ class FakeCanvas:
 
     def set_title(self, title: str) -> None:
         self.title = title
-
-    def set_aspect_ratio(self, w: int, h: int) -> None:
-        self.aspect_ratio = (w, h)
 
     def fullscreen(self) -> None:
         self.fullscreen_called = True
@@ -204,9 +200,6 @@ class FakeGtkWidget:
     def remove_tick_callback(self, _cid: int) -> None:
         return None
 
-    def set_geometry_hints(self, _win: Any, geometry: Any, mask: int) -> None:
-        self.geometry_hints = {"geometry": geometry, "mask": mask}
-
 
 class FakeGtk:
     """Module-level recording fake for ``gi.repository.Gtk``.
@@ -241,19 +234,17 @@ class FakeGtk:
         cls.main_quit_calls += 1
 
 
-class FakeGdkWindowHints:
-    ASPECT = 1
+class FakeGdkWindowState:
+    """``Gdk.WindowState`` bits the window reads, with GDK's values."""
+
+    MAXIMIZED = 1 << 2
+    FULLSCREEN = 1 << 4
 
 
 class FakeGdk:
     """Module-level recording fake for ``gi.repository.Gdk``."""
 
-    WindowHints = FakeGdkWindowHints
-
-    class Geometry:
-        def __init__(self) -> None:
-            self.min_aspect: float = 0.0
-            self.max_aspect: float = 0.0
+    WindowState = FakeGdkWindowState
 
 
 class FakeGLib:

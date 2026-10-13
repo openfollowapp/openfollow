@@ -98,6 +98,20 @@ class TestJunctions:
         corner = _curve([(x, y, 0, 0) for x, y in vee])
         assert len(find_junctions([corner, _curve([(x, y, 0) for x, y in line])])) == 1
 
+    def test_a_crossing_found_a_rounding_error_past_a_path_s_end_is_at_that_end(self) -> None:
+        # The branch ends on the line; the intersection lands a rounding error beyond its end.
+        branch = _curve([(-4.9, -3.7, 0), (-4.0, -4.0, 0)])
+        line = _curve([(-4.3, -4.9, 0), (-3.7, -3.1, 0)])
+        assert [j.s_a for j in find_junctions([branch, line])] == [branch.length]
+        assert [j.s_b for j in find_junctions([line, branch])] == [branch.length]
+        # Turned round, it lands a rounding error before its start.
+        back = _curve([(-4.0, -4.0, 0), (-4.9, -3.7, 0)])
+        assert [j.s_a for j in find_junctions([back, line])] == [0.0]
+
+    def test_a_corner_stopping_a_micrometre_short_of_another_path_does_not_meet_it(self) -> None:
+        vee = _curve([(-1, 2, 0, 0), (0, 1e-6, 0, 0), (1, 2, 0, 0)])
+        assert find_junctions([vee, H]) == []
+
     def test_a_crossing_on_a_closed_path_s_first_point_counts_once(self) -> None:
         # The crossing at (0, 0) ends the diamond's last segment and starts its first.
         diamond = _curve([(0, 0, 0, 0), (1, -1, 0, 0), (2, 0, 0, 0), (1, 1, 0, 0)], closed=True)

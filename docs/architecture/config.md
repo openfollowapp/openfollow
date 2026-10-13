@@ -28,6 +28,7 @@ All config lives in `config.toml` (auto-reloaded when file changes on disk).
 - **`MarkerConfig.marker_style = "cone"`**: see [hud](hud.md#cone-markers).
 - **`DetectionConfig`**: see [detection](detection.md#config).
 - **`PathsConfig`**: show_paths, slide_time (s, 0-10, default 1), paths (`list[PathConfig]`: name, active, closed, release_at_start, release_at_end, points `list[PathPointConfig]` of x / y / z / radius). See [paths](paths.md).
+- **`GroundGridConfig`**: enabled (drop markers inside it onto its height), visible (draw it), z_offset (absolute world Z), vertices (up to 64 finite `[x, y]`, PSN-absolute); both flags need `ui.show_experimental_features` and three corners. See [hud](hud.md#floor-height-and-the-ground-grid).
 - **`OscConfig.allowed_sender_ips`** normalises to `list[str]` in `__post_init__`, so malformed TOML can't reach the filter; see [input](input.md#osc-input-allowlist). **`OscConfig.listen_iface`**: see [network](network.md#osc-listener-multicast-membership).
 
 ## Validation contract (REQUIRED for every config change)

@@ -1130,10 +1130,11 @@ class TestHitTestLensDistortion:
 
 
 class TestLockedOnAPath:
-    """A locked marker follows its path towards the cursor and keeps the path's height."""
+    """The mouse moves markers freely: a grab takes a marker off its path, and it never writes a locked one."""
 
     @staticmethod
-    def _app() -> _DummyApp:
+    def _app(slide_time: float = 0.0, slide: float = 0.0) -> _DummyApp:
+        """Marker 1 pressed onto a cross along y = 0 at 0.5 m from (0, 2, 0), ``slide`` seconds into the pull."""
         from openfollow.configuration import PathConfig, PathPointConfig, PathsConfig
         from openfollow.paths.engine import PathEngine
 
@@ -1142,29 +1143,55 @@ class TestLockedOnAPath:
         cross = PathConfig(
             name="cross", active=True, points=[PathPointConfig(-5, 0, 0.5, 0), PathPointConfig(5, 0, 0.5, 0)]
         )
-        engine.reload(PathsConfig(slide_time=0.0, paths=[cross]), enabled=True)
-        engine.press(1, (0.0, 0.0, 0.0))
-        engine.tick(0.0)
+        engine.reload(PathsConfig(slide_time=slide_time, paths=[cross]), enabled=True)
+        engine.press(1, (0.0, 2.0, 0.0))
+        app._server.get_marker(1).set_pos(*engine.tick(slide)[1])
         app._paths = engine  # type: ignore[attr-defined]
         return app
 
-    def test_a_drag_moves_the_marker_along_its_path_under_the_cursor(self) -> None:
+    def test_a_grab_takes_the_marker_off_its_path_where_it_stands_then_moves_it_freely(self) -> None:
         app = self._app()
         handler = MouseHandler(app)
-        cx, cy = _ground_center(app, 1)
-        handler.on_pointer_down(cx, cy, 1)
+        assert _grab(handler, app)
+        assert not app._paths.is_locked(1)  # type: ignore[attr-defined]
+        assert app._server.get_marker(1).pos == pytest.approx((0.0, 0.0, 0.5))
         tx, ty = _stage_point_on_screen(app, 2.0, 3.0)
         handler.on_pointer_move(tx, ty)
         handler.update()
-        assert app._server.get_marker(1).pos == pytest.approx((2.0, 0.0, 0.5), abs=1e-3)
+        assert app._server.get_marker(1).pos == pytest.approx((2.0, 3.0, 0.5), abs=1e-3)
+
+    def test_a_grab_during_the_pull_leaves_the_marker_where_the_pull_had_it(self) -> None:
+        app = self._app(slide_time=1.0, slide=0.5)
+        assert app._server.get_marker(1).pos == pytest.approx((0.0, 1.0, 0.25))
+        assert _grab(MouseHandler(app), app)
+        assert not app._paths.is_locked(1)  # type: ignore[attr-defined]
+        assert app._paths.tick(0.5) == {}  # type: ignore[attr-defined]
+        assert app._server.get_marker(1).pos == pytest.approx((0.0, 1.0, 0.25))
+
+    def test_a_lock_taken_while_the_mouse_holds_the_marker_ends_the_grab(self) -> None:
+        app = self._app()
+        engine = app._paths  # type: ignore[attr-defined]
+        handler = MouseHandler(app)
+        _grab(handler, app)
+        tx, ty = _stage_point_on_screen(app, 2.0, 3.0)
+        handler.on_pointer_move(tx, ty)
+        engine.press(1, app._server.get_marker(1).pos)
+        before = app._server.get_marker(1).pos
+        handler.update()
+        assert handler.active is False
+        assert app._server.get_marker(1).pos == before
+        # Let go for good: later moves record nothing and write nothing.
+        assert handler.on_pointer_move(tx, ty) is False
+        handler.update()
+        assert app._server.get_marker(1).pos == before
 
     def test_the_wheel_leaves_a_locked_marker_s_height_alone(self) -> None:
         app = self._app()
-        app._server.get_marker(1).set_pos(1.0, 0.0, 0.5)
         handler = MouseHandler(app)
         _grab(handler, app)
+        app._paths.press(1, app._server.get_marker(1).pos)  # type: ignore[attr-defined]
         assert handler.on_wheel(1.0) is True
-        assert app._server.get_marker(1).pos[2] == 0.5
+        assert app._server.get_marker(1).pos == pytest.approx((0.0, 0.0, 0.5))
 
     def test_a_double_right_click_releases_the_marker_from_its_path(self) -> None:
         app = self._app()
@@ -1173,6 +1200,8 @@ class TestLockedOnAPath:
         handler._clock = clock
         cx, cy = _ground_center(app, 1)
         handler.on_pointer_down(cx, cy, 1)
+        # Locked again while held, then double right-clicked before the next frame.
+        app._paths.press(1, app._server.get_marker(1).pos)  # type: ignore[attr-defined]
         clock.t = 0.1
         handler.on_pointer_down(cx, cy, 3)
         clock.t = 0.2

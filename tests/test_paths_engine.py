@@ -102,14 +102,12 @@ class TestPull:
         assert _round(engine.move(1, 0.0, 0.0, 0.0)) == (1.0, 0.0, 0.0)
         assert engine.locked_path(1) == "cross"
 
-    def test_height_and_mouse_and_osc_carry_on_during_the_pull(self) -> None:
+    def test_height_and_osc_carry_on_during_the_pull(self) -> None:
         engine = _engine(CROSS, slide_time=1.0)
         engine.press(1, (0.0, 2.0, 0.0))
         engine.tick(0.5)
         assert _round(engine.move(1, 0.0, 0.0, 0.5, vz=2.0)) == (0.0, 1.0, 0.5)
         assert _round(engine.project(1, 3.0, 2.0)) == (3.0, 1.0, 0.5)
-        # The mouse moves the free position a fraction of the way to the cursor.
-        assert _round(engine.glide(1, 5.0, 2.0, 0.5)) == (4.0, 1.0, 0.5)
 
     def test_the_pull_ends_on_the_path_s_height(self) -> None:
         engine = _engine(RAMP)
@@ -149,7 +147,6 @@ class TestMove:
         engine = _engine(CROSS)
         assert engine.move(1, 1.0, 0.0, 1.0) is None
         assert engine.project(1, 0.0, 0.0) is None
-        assert engine.glide(1, 0.0, 0.0, 0.5) is None
         assert engine.constrain(1, 0.0, 0.0) is None
 
     def test_an_end_that_releases_lets_the_marker_go(self) -> None:
@@ -167,20 +164,6 @@ class TestMove:
         # The separate path is nearer to (19, 0) but cannot be reached from here.
         assert _round(engine.project(1, 19.0, 0.0)) == (5.0, 0.0, 1.6)
         assert _round(engine.tick(0.5)[1]) == (5.0, 0.0, 0.0)
-
-    def test_a_glide_never_aims_at_a_path_it_cannot_reach(self) -> None:
-        apart = _path("apart", [(20, 0, 0), (30, 0, 0)], active=True)
-        engine = self._locked(CROSS, apart, at=(-4.0, 0.0, 0.0))
-        # Nearest to (19, 0) overall is the separate path; the marker heads for the cross's end instead.
-        assert _round(engine.glide(1, 19.0, 0.0, 0.5)) == (0.5, 0.0, 0.0)
-
-    def test_a_glide_travels_towards_the_reachable_point_nearest_the_target(self) -> None:
-        engine = self._locked(CROSS, RAMP, at=(-4.0, 0.0, 0.0))
-        # 4 m along the cross, then 4 m up the ramp: half way is the crossing.
-        assert _round(engine.glide(1, 0.0, 4.0, 0.5)) == (0.0, 0.0, 0.0)
-        # The paths meet at one height, so the ramp's own rise is all the height there is.
-        assert _round(engine.glide(1, 0.0, 4.0, 1.0)) == (0.0, 4.0, 1.6)
-        assert engine.locked_path(1) == "Ramp"
 
 
 class TestConstrain:

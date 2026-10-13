@@ -299,19 +299,6 @@ class PathEngine:
         px, py, pz = self._network.point(place)
         return px, py, pz + self._height_left(lock)
 
-    def glide(self, marker_id: int, x: float, y: float, fraction: float) -> Point | None:
-        """Move a locked marker ``fraction`` of the way towards the reachable point nearest ``(x, y)``."""
-        lock = self._locks.get(marker_id)
-        if lock is None or self._network is None:
-            return None
-        if lock.free is not None:
-            fx, fy, fz = lock.free
-            return self._move_free(lock, (fx + (x - fx) * fraction, fy + (y - fy) * fraction, fz))
-        target = self._network.nearest(x, y, among=self._network.connected(lock.place.path))
-        assert target is not None
-        self._set_place(lock, self._network.glide(lock.place, target, fraction))
-        return self._at(lock)
-
     def _set_place(self, lock: _Lock, place: Place) -> None:
         if place.path != lock.place.path:
             # Onto another path: carry the height across and let it ease to the new path's.

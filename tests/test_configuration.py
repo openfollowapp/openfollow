@@ -6997,6 +6997,8 @@ class TestPathsConfig:
             ("Down Stage/Cross!", "DownStageCross"),
             ("a" * 40, "a" * 32),
             ("v1.2_b", "v1.2_b"),
+            (".hidden", ".hidden"),
+            ("..a", "..a"),
             (None, ""),
             (42, ""),
         ],
@@ -7005,6 +7007,14 @@ class TestPathsConfig:
         from openfollow.configuration import PathConfig
 
         assert PathConfig(name=raw).name == want
+
+    @pytest.mark.parametrize("raw", [".", "..", "...", "./..", " . ", "." * 40])
+    def test_a_path_name_of_dots_alone_is_no_name(self, raw: str) -> None:
+        # A URL resolves "." and ".." away, so the path could never be addressed.
+        from openfollow.configuration import PathConfig, PathsConfig
+
+        assert PathConfig(name=raw).name == ""
+        assert PathsConfig(paths=[{"name": raw}]).paths[0].name == "path-1"
 
     @pytest.mark.parametrize("field", ["active", "closed", "release_at_start", "release_at_end"])
     @pytest.mark.parametrize(("raw", "want"), [(True, True), ("yes", True), ("off", False), (1, False), (None, False)])

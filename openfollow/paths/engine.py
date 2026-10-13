@@ -112,15 +112,18 @@ class PathEngine:
         self._slide_time = cfg.slide_time
         curves: list[PathCurve] = []
         releases: list[tuple[bool, bool]] = []
-        self._names, self._drawn = [], []
+        built: list[PathConfig] = []
         for path in cfg.paths if enabled else []:
             curve = _curve_of(path) if path.active else None
             if curve is not None:
                 curves.append(curve)
                 releases.append((path.release_at_start, path.release_at_end))
-                self._names.append(path.name)
-                self._drawn.append((_line(curve), _ends(path, curve)))
+                built.append(path)
         self._network = PathNetwork(curves, releases) if curves else None
+        self._names = [path.name for path in built]
+        # Drawn from the network's curves: an end carried on to a corner is part of its path.
+        network_curves = self._network.curves if self._network is not None else []
+        self._drawn = [(_line(curve), _ends(path, curve)) for path, curve in zip(built, network_curves, strict=True)]
         if not enabled or (self._recording is not None and cfg.find(self._recording) is None):
             self._recording = None
         for marker_id, lock in list(self._locks.items()):

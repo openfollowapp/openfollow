@@ -242,6 +242,20 @@ class TestCornerExtension:
         end = net.curves[0].point(net.curves[0].length)
         assert end == pytest.approx(hook.point(hook.nearest(2.0, 2.0)[0]))
 
+    def test_an_end_runs_on_to_the_nearer_of_two_paths_corner_points(self) -> None:
+        # A peak at (0.05, 0) and a valley at (-0.08, 0), both rounded 0.21 m away from the end at (0, 0).
+        peak = _curve([(-1.95, -2, 0, 0), (0.05, 0, 0, 0.5), (2.05, -2, 0, 0)])
+        valley = _curve([(-2.08, 2, 0, 0), (-0.08, 0, 0, 0.5), (1.92, 2, 0, 0)])
+        net = PathNetwork([_curve([(-3, 0, 0), (0, 0, 0)]), valley, peak])
+        end = net.curves[0].point(net.curves[0].length)
+        assert end == pytest.approx(peak.point(peak.nearest(0.05, 0.0)[0]))
+
+    def test_a_carried_on_curve_keeps_its_corner_points(self) -> None:
+        bent = _curve([(0, -2, 0, 0), (2, -2, 0, 0.5), (2, 0, 0, 0)])
+        net = PathNetwork([bent, self.ROUNDED])
+        assert net.curves[0].length > bent.length
+        assert net.curves[0].corners.tolist() == [[2.0, -2.0]]
+
     def test_the_run_on_climbs_linearly_to_the_corner_s_height(self) -> None:
         raised = _curve([(0, 0, 0.08, 0), (2, 0, 0.08, 0.5), (2, 2, 0.08, 0)])
         net = PathNetwork([_curve([(2, -2, 0), (2, 0, 0)]), raised])

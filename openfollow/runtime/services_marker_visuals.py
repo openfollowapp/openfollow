@@ -22,6 +22,7 @@ from openfollow.runtime.overlay_state import (
     OverlayState,
     VirtualFaderDisplayData,
 )
+from openfollow.runtime.paths_runtime import RECORDING_FLAG, recording_row
 from openfollow.runtime.services_detection_pin import is_assist_controlled
 from openfollow.runtime.state_maps import get_or_create, prune_to_keep
 from openfollow.runtime_metrics import OverlayStatePool
@@ -256,6 +257,24 @@ def sync_grid_config(state: OverlayState, cfg: Any) -> None:
     state.origin_thickness = _soft_int(g.origin_thickness, d.origin_thickness, lo=1)
 
 
+def sync_ground_grid_config(state: OverlayState, cfg: Any) -> None:
+    """Copy the ground grid into the overlay state: ``enabled`` drops markers inside it onto its height
+    and ``visible`` draws it, each on its own; neither without experimental features or three corners."""
+    # getattr: a shim config without the section draws no ground grid.
+    gg = getattr(cfg, "ground_grid", None)
+    if gg is None:
+        state.ground_grid_vertices = []
+        state.ground_grid_z = 0.0
+        state.ground_grid_active = state.ground_grid_visible = False
+        return
+    state.ground_grid_vertices = [(float(v[0]), float(v[1])) for v in gg.vertices]
+    state.ground_grid_z = _soft_float(gg.z_offset, 0.0)
+    experimental = _soft_bool(getattr(getattr(cfg, "ui", None), "show_experimental_features", False), False)
+    usable = experimental and len(state.ground_grid_vertices) >= 3
+    state.ground_grid_active = usable and _soft_bool(gg.enabled, False)
+    state.ground_grid_visible = usable and _soft_bool(gg.visible, True)
+
+
 def sync_ui_config(state: OverlayState, cfg: Any) -> None:
     """Copy the UI display unit system into the overlay state.
 
@@ -347,6 +366,20 @@ def _populate_pi_network_overlay(app: Any, state: OverlayState) -> None:
         )
 
 
+def _populate_path_overlay(state: OverlayState, cfg: Any, app: Any) -> None:
+    """Copy the paths to draw into the overlay state; nothing while paths are off or hidden."""
+    engine = getattr(app, "_paths", None)
+    state.show_paths = engine is not None and engine.enabled and bool(cfg.paths.show_paths)
+    if engine is None or not state.show_paths:
+        state.path_lines = []
+        state.path_arrows = []
+        return
+    state.path_arrows = engine.switch_arrows()
+    state.path_lines = [
+        (d.curve, [(e.at, e.inside, e.releases) for e in d.ends], d.locked) for d in engine.drawings(cfg.paths)
+    ]
+
+
 def _populate_zone_overlay(state: OverlayState, cfg: Any, app: Any) -> None:
     """Copy zone polygons + occupancy into the overlay state."""
     tz = cfg.trigger_zones
@@ -384,6 +417,7 @@ def build_initial_overlay_state(cfg: Any) -> OverlayState:
     """Create the initial disconnected overlay state from config."""
     state = OverlayState()
     sync_grid_config(state, cfg)
+    sync_ground_grid_config(state, cfg)
     sync_marker_config(state, cfg)
     sync_ui_config(state, cfg)
 
@@ -714,6 +748,7 @@ def build_marker_visual_state(
 
     sync_marker_config(state, cfg)
     sync_grid_config(state, cfg)
+    sync_ground_grid_config(state, cfg)
     sync_ui_config(state, cfg)
 
     if person_detector is not None:
@@ -745,6 +780,9 @@ def build_marker_visual_state(
     # and 3D mouse help so neither promises a no-op control. Read the same
     # predicate the action gate uses so the help and the action can't drift.
     state.marker_cycle_enabled = app._input_manager is None or app._input_manager.marker_cycle_active()
+    # Paths are experimental: while they are off their bindings do nothing, so help names none.
+    paths_engine = getattr(app, "_paths", None)
+    paths_on = paths_engine is not None and paths_engine.enabled
     state.button_labels = {
         "reset": cc.btn_reset,
         "toggle_help": cc.btn_toggle_help,
@@ -759,6 +797,8 @@ def build_marker_visual_state(
         "menu_confirm": cc.btn_menu_confirm,
         "menu_cancel": cc.btn_menu_cancel,
         "move_xy_stick": cc.move_xy_stick,
+        "pathfinder": cc.btn_pathfinder if paths_on else "",
+        "toggle_paths": cc.btn_toggle_paths if paths_on else "",
     }
     state.keyboard_labels = {
         "move_layout": cc.key_move_layout,
@@ -772,9 +812,12 @@ def build_marker_visual_state(
         "next_marker": cc.key_next_marker,
         "prev_marker": cc.key_prev_marker,
         "settings": cc.key_settings,
+        "pathfinder": cc.key_pathfinder if paths_on else "",
+        "toggle_paths": cc.key_toggle_paths if paths_on else "",
     }
 
     _populate_zone_overlay(state, cfg, app)
+    _populate_path_overlay(state, cfg, app)
 
     # Only a gamepad lights the gamepad help section / status: a 3D mouse is a
     # unified controller (it gets a card badge) but has its own help section, so
@@ -808,7 +851,11 @@ def build_marker_visual_state(
     )
     if state.mouse3d_connected:
         state.mouse3d_axis_map = {axis: getattr(m3d_cfg, f"map_{axis}") for axis in MOUSE3D_AXES}
-        state.mouse3d_buttons = {name[4:]: getattr(m3d_cfg, name) for name in MOUSE3D_BUTTON_FIELDS}
+        state.mouse3d_buttons = {
+            name[4:]: getattr(m3d_cfg, name)
+            for name in MOUSE3D_BUTTON_FIELDS
+            if paths_on or name not in ("btn_pathfinder", "btn_toggle_paths")
+        }
     else:
         state.mouse3d_axis_map = {}
         state.mouse3d_buttons = {}
@@ -849,6 +896,7 @@ def build_marker_visual_state(
             if status.failure not in (VideoFailure.NONE, VideoFailure.NOT_CONFIGURED)
             else None
         )
+        flags_dict[RECORDING_FLAG] = recording_row(app) if paths_on else None
     if flags_dict:
         # ``dict`` insertion order preserves the order subsystems
         # registered their slots; surface flags in that order so

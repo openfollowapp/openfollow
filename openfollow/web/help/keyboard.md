@@ -34,6 +34,8 @@ Arrow keys are reserved for navigating the on-screen menu and cannot be used for
 - **Settings Menu** – open the Settings menu on the Operator Screen; pressed in any menu, it closes them all. While a menu is open, the Operator Screen lists the menu keys in its top-left corner. Default: `m`.
 - **Clear Messages** – clear every operator-message card. Default: *(unset)*.
 - **Next Marker** / **Prev Marker** – cycle which marker your inputs drive, when more than one controlled marker is configured. Defaults: `Tab` / *(unset)*.
+- **Pathfinder** *(experimental)* – slide the selected marker onto the nearest active path, where it stays until pressed again or moved past an end of the path that releases it; while a path is recording, add the marker's position to it instead. Default: *(unset)*.
+- **Toggle Paths** *(experimental)* – show or hide paths on the Operator Screen. Default: *(unset)*.
 
 > Each key drives one action. Typing a key another action already uses moves it when the field loses focus: the field you changed says in blue where it came from, and the field it left empties and turns red, since that action does nothing until it gets a key again. Once the key moves on, the red field only names the key it lost. The notes clear on **Save**. The WASD and IJKL keys are kept for movement whichever layout is chosen, so no action can use them.
 

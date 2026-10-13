@@ -41,11 +41,14 @@ Occupancy is carried across config reloads via `_zone_signature = (vertices, tri
 - Engine occupancy (`is_occupied`, `count`) is only read when `tz.enabled` is also true; otherwise polygons render with `(False, 0)`.
 - `overlay_draw_zones.ZoneCache` keeps every zone as one picture and the renderer paints it on each display refresh, with no projection on a cache hit. The picture's size comes from the ink extents of the zones drawn on a recording surface at the screen's device scale, so a miter tip at an acute corner or a glyph past its label box is never cut off; where lens distortion throws an outline too far out for cairo to measure, the picture is the whole frame. It is let go while no zone is drawn, and drawn again only when a zone's vertices, colour, name, occupancy or count, the grid z offset (the stage plane), the camera, the lens, the frame size, the device scale or the screen's font options change. Anything a zone is drawn from and missing from that key freezes on screen: a new projection input (in `project()` or `_zone_outlines`) must be added to the key and to the redraw test's cases in the same change. Zone labels are drawn with grayscale antialiasing, cached or not, since subpixel coverage does not survive the picture's alpha channel, so the screen's antialias mode is not part of the key.
 
+## Zone Editor (`partials/zone_editor.tpl`)
+The top-down plan is the shared `static/js/polygon-plan.js` (`PolygonPlan`: the fitted view and its transforms, the main grid, live markers, drawing a polygon, dragging the selected polygon's corners with the view held still); the editor keeps its zones, selection, details panel and saving. A Top-down / Camera switch (remembered per browser) swaps in `static/js/picture-view.js`: the snapshot with every zone outline on the floor plane as the saved camera and lens see it (`/api/scene/project`), the selected zone's corners as handles that drop onto that plane (`/api/scene/unproject` at the grid's `z_offset`). New zones are drawn in the top-down view only. The ground grid's editor uses the same two modules.
+
 ## Web API (`web/routes.py`)
-- `GET /api/zones` / `POST /api/zones` / `PUT /api/zones/<index>` / `DELETE /api/zones/<index>` – CRUD for the zones list
+- `GET /api/zones` / `POST /api/zones` / `PUT /api/zones/<index>` / `DELETE /api/zones/<index>` – CRUD for the zones list; the GET also carries the main grid (with `z_offset`) and the live marker positions for the editors
 - `GET/POST /api/config/trigger_zones` – section-level config
 - `_load_json_body()` returns `Any`; callers must also `isinstance(data, dict)` check and 400 on non-object bodies.
 
 ## Keybinds
 - `key_toggle_zones` (default `z`) – flips `trigger_zones.show_overlay`
-- `btn_toggle_zones` (default `B`) – gamepad equivalent; persisted to `config.toml` via `save_config`
+- `btn_toggle_zones` (unbound by default) – gamepad equivalent; persisted to `config.toml` via `save_config`

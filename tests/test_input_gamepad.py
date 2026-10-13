@@ -892,10 +892,10 @@ class TestUpdate:
         assert 0 in result.resets
 
     def test_dispatch_edges_for_configured_buttons(self, stubbed_pygame) -> None:
-        handler, _ = make_handler(stubbed_pygame)
+        handler, _ = make_handler(stubbed_pygame, config=ControllerConfig(btn_toggle_zones="B"))
         joy = FakeJoystick(num_buttons=16)
         joy.press(CONTROLLER_BUTTON_Y)  # toggle help
-        joy.press(CONTROLLER_BUTTON_B)  # toggle zones (btn_toggle_zones default)
+        joy.press(CONTROLLER_BUTTON_B)  # toggle zones
         joy.press(CONTROLLER_BUTTON_DPAD_RIGHT)  # next marker
         joy.press(CONTROLLER_BUTTON_DPAD_LEFT)  # prev marker
         joy.press(CONTROLLER_BUTTON_BACK)  # settings
@@ -962,6 +962,43 @@ class TestUpdate:
         handler._shoulder_axis_baselines[0] = {4: 0.0, 6: 0.0}  # seed so the delta reads as a press
         result = handler.update(0.016)
         assert result.clear_messages_pressed is True
+
+    def test_path_buttons_are_unbound_until_set(self, stubbed_pygame) -> None:
+        handler, _ = make_handler(stubbed_pygame)
+        joy = FakeJoystick(num_buttons=16)
+        for button in range(16):
+            joy.press(button)
+        handler.joysticks[0] = joy
+        handler.capabilities[0] = ControllerCapabilities(backend="joystick")
+        handler._bumper_state[0] = (False, False)
+        handler._shoulder_axis_baselines[0] = {}
+        result = handler.update(0.016)
+        assert result.pathfinder_presses == set()
+        assert result.toggle_paths_pressed is False
+
+    def test_a_pathfinder_press_is_reported_for_the_pad_that_pressed(self, stubbed_pygame) -> None:
+        handler, _ = make_handler(stubbed_pygame, config=ControllerConfig(btn_pathfinder="START"))
+        for idx in (0, 1):
+            joy = FakeJoystick(num_buttons=16)
+            if idx == 1:
+                joy.press(CONTROLLER_BUTTON_START)
+            handler.joysticks[idx] = joy
+            handler.capabilities[idx] = ControllerCapabilities(backend="joystick")
+            handler._bumper_state[idx] = (False, False)
+            handler._shoulder_axis_baselines[idx] = {}
+        assert handler.update(0.016).pathfinder_presses == {1}
+        # Held is not pressed again.
+        assert handler.update(0.016).pathfinder_presses == set()
+
+    def test_toggle_paths_fires_on_its_button(self, stubbed_pygame) -> None:
+        handler, _ = make_handler(stubbed_pygame, config=ControllerConfig(btn_toggle_paths="START"))
+        joy = FakeJoystick(num_buttons=16)
+        joy.press(CONTROLLER_BUTTON_START)
+        handler.joysticks[0] = joy
+        handler.capabilities[0] = ControllerCapabilities(backend="joystick")
+        handler._bumper_state[0] = (False, False)
+        handler._shoulder_axis_baselines[0] = {}
+        assert handler.update(0.016).toggle_paths_pressed is True
 
     def test_toggle_zones_trigger_binding_fires(self, stubbed_pygame) -> None:
         config = ControllerConfig(btn_toggle_zones="LT", btn_move_z_down="")
@@ -1202,6 +1239,21 @@ class TestSettingsMenuInput:
         handler._shoulder_axis_baselines[0] = {}
         handler.read_settings_menu_input()
         assert handler.update(0.016).clear_messages_pressed is False
+
+    def test_path_buttons_held_through_the_menu_do_not_fire_on_close(self, stubbed_pygame) -> None:
+        config = ControllerConfig(btn_pathfinder="START", btn_toggle_paths="Y", btn_toggle_help="")
+        handler, _ = make_handler(stubbed_pygame, config=config)
+        joy = FakeJoystick(num_buttons=16)
+        joy.press(CONTROLLER_BUTTON_START)
+        joy.press(CONTROLLER_BUTTON_Y)
+        handler.joysticks[0] = joy
+        handler.capabilities[0] = ControllerCapabilities(backend="joystick")
+        handler._bumper_state[0] = (False, False)
+        handler._shoulder_axis_baselines[0] = {}
+        handler.read_settings_menu_input()
+        result = handler.update(0.016)
+        assert result.pathfinder_presses == set()
+        assert result.toggle_paths_pressed is False
 
 
 # --------------------------------------------------------------------------- #

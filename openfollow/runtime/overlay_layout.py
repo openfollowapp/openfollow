@@ -55,9 +55,14 @@ _MOUSE3D_BTN_LABELS: tuple[tuple[str, str], ...] = (
     ("prev_marker", "Marker prev"),
     ("speed_up", "Speed +"),
     ("speed_down", "Speed -"),
-    ("toggle_help", "Toggle help"),
+    ("toggle_help", "Toggle Help (this overlay)"),
     ("toggle_zones", "Toggle zones"),
+    ("pathfinder", "Toggle Pathfinder"),
+    ("toggle_paths", "Toggle paths"),
 )
+
+
+_PATH_HELP: tuple[tuple[str, str], ...] = (("pathfinder", "Toggle Pathfinder"), ("toggle_paths", "Toggle paths"))
 
 
 # Friendly short names shown in the help overlay for each button code.
@@ -218,10 +223,13 @@ def build_help_sections(
             if reset_raw:
                 keyboard.append(f"{_key_label(reset_raw)}: Reset marker")
             if help_raw:
-                keyboard.append(f"{_key_label(help_raw)}: Toggle help")
+                keyboard.append(f"{_key_label(help_raw)}: Toggle Help (this overlay)")
             zones_key = kl.get("toggle_zones", "")
             if zones_key:
                 keyboard.append(f"{_key_label(zones_key)}: Toggle zone overlay")
+            for action, label in _PATH_HELP:
+                if kl.get(action):
+                    keyboard.append(f"{_key_label(kl[action])}: {label}")
             if settings_key:
                 keyboard.append(f"{_key_label(settings_key)}: Settings menu")
         if controller_connected:
@@ -257,12 +265,15 @@ def build_help_sections(
                 controller.append(f"{reset_btn}: Reset marker")
             help_btn = _btn("toggle_help", "Y")
             if help_btn:
-                controller.append(f"{help_btn}: Toggle help")
+                controller.append(f"{help_btn}: Toggle Help (this overlay)")
+            if bl.get("toggle_zones"):
+                controller.append(f"{_btn('toggle_zones', 'B')}: Toggle zone overlay")
+            for action, label in _PATH_HELP:
+                if bl.get(action):
+                    controller.append(f"{_btn(action, '')}: {label}")
             settings_btn = _btn("settings", "Back")
             if settings_btn:
                 controller.append(f"{settings_btn}: Settings menu")
-            if bl.get("toggle_zones"):
-                controller.append(f"{_btn('toggle_zones', 'B')}: Toggle zone overlay")
         if mouse_enabled:
             mouse = [
                 "Left click: Grab marker",

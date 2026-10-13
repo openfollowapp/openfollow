@@ -145,6 +145,26 @@
                 <span id="keyboard-key-prev-marker-error" class="field-error"></span>
                         </div>
                     </div>
+                    <div class="row experimental-feature">
+                        <div class="field">
+                            <label for="keyboard-key-pathfinder">{{kb_labels['key_pathfinder']}}</label>
+                            <input id="keyboard-key-pathfinder" type="text" name="key_pathfinder"
+                                   value="{{config.controller.key_pathfinder}}"
+                       hx-get="/api/validate/keyboard/key_pathfinder" hx-trigger="blur changed delay:200ms"
+                       hx-target="#keyboard-key-pathfinder-error" hx-swap="innerHTML" hx-include="closest form"
+                       aria-describedby="keyboard-key-pathfinder-error" aria-invalid="false">
+                <span id="keyboard-key-pathfinder-error" class="field-error"></span>
+                        </div>
+                        <div class="field">
+                            <label for="keyboard-key-toggle-paths">{{kb_labels['key_toggle_paths']}}</label>
+                            <input id="keyboard-key-toggle-paths" type="text" name="key_toggle_paths"
+                                   value="{{config.controller.key_toggle_paths}}"
+                       hx-get="/api/validate/keyboard/key_toggle_paths" hx-trigger="blur changed delay:200ms"
+                       hx-target="#keyboard-key-toggle-paths-error" hx-swap="innerHTML" hx-include="closest form"
+                       aria-describedby="keyboard-key-toggle-paths-error" aria-invalid="false">
+                <span id="keyboard-key-toggle-paths-error" class="field-error"></span>
+                        </div>
+                    </div>
                 </div>
             </div>
         </details>

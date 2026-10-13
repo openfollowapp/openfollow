@@ -7,7 +7,7 @@ Covers `input/`, `binding_conflicts.py`, the OSC listener. The rules that apply 
 **Linux/fallback:** GTK event-based tracking.
 
 ### Discrete vs continuous keys (config-driven)
-Discrete keys (edge-detected, one event per press) come from two sources: a fixed set of modal-overlay keys `_MODAL_DISCRETE_KEYS` (`Tab`, `Enter`, `Escape`, the arrows, `b`) **plus** the operator-bound action keys named in `_DISCRETE_ACTION_FIELDS`, whose values are read from `ControllerConfig` (`key_reset`, `key_toggle_help`, `key_toggle_zones`, `key_speed_down`, `key_speed_up`, `key_next_marker`, `key_prev_marker`). The polled set is rebuilt from config – there are no hardcoded `n`/`c`/`i` action keys.
+Discrete keys (edge-detected, one event per press) come from two sources: a fixed set of modal-overlay keys `_MODAL_DISCRETE_KEYS` (`Tab`, `Enter`, `Escape`, the arrows, `b`) **plus** the operator-bound action keys named in `_DISCRETE_ACTION_FIELDS`, whose values are read from `ControllerConfig` (`key_reset`, `key_toggle_help`, `key_toggle_zones`, `key_speed_down`, `key_speed_up`, `key_next_marker`, `key_prev_marker`, `key_clear_messages`, `key_pathfinder`, `key_toggle_paths`). The polled set is rebuilt from config – there are no hardcoded `n`/`c`/`i` action keys.
 
 Movement keys (`key_move_layout`, default WASD) are continuous-polled (held = repeated).
 

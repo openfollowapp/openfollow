@@ -78,6 +78,7 @@ ranges. Diagnostics bundles stay in the support channel.
 | `psn` / `otp` / `rttrpm` | That protocol's sender / receiver |
 | `osc` | OSC input and output |
 | `zones` | Trigger zones |
+| `paths` | Paths: path config, geometry, the pathfinder lock, the path editor |
 | `markers` | Marker catalog, marker control and visibility |
 | `scene` | Camera model and calibration solver |
 | `config` | Config model, validation, import / export / peer transfer |
@@ -156,7 +157,7 @@ hand-edited `config.toml` and a crafted `POST /section/<name>`:
    and sanitisation, with the standard validate markup on the input
    (`tests/test_template_validation_consistency.py` enforces it).
 
-Device-local fields (interface pins, paths, the PIN) are stripped from export and
+Device-local fields (interface pins, file paths, the PIN) are stripped from export and
 broadcast; device-identity fields survive import and Restore defaults. Both sets,
 hot reload and live-apply are in the [config guide](docs/architecture/config.md).
 
@@ -188,8 +189,9 @@ OpenFollowApp (app.py)
 ```
 
 **Frame loop:** `_animate()` on a ~60 Hz `GLib.timeout_add`, integrating real
-elapsed time: `_process_input(dt)` → `update_video()` → `apply_detection_pin()`
-→ `update_zone_triggers()` → `update_marker_visuals()`.
+elapsed time: discrete key presses → `_input_manager.update_paths(dt)` →
+`_process_input(dt)` → `update_video()` → `apply_detection_pin()` →
+`update_zone_triggers()` → `update_marker_visuals()`.
 
 **Three clocks, none of them the display.** Marker state, input, detection,
 zones and outputs run off the frame timeout; slow web-driven housekeeping off a
@@ -312,13 +314,14 @@ Read the guide before changing code in its paths.
 |---|---|
 | `configuration.py`, config import / export / reset / push, hot reload | [config](docs/architecture/config.md) |
 | `video/` (not detection), `video/inputs/`, `privilege/camera_config.py` | [video](docs/architecture/video.md) |
-| `video/overlay.py`, `runtime/overlay_*`, `window.py`, on-screen menus | [hud](docs/architecture/hud.md) |
+| `video/overlay.py`, `runtime/overlay_*`, `window.py`, on-screen menus, `scene/ground_grid.py` | [hud](docs/architecture/hud.md) |
 | `psn/`, `otp/`, `rttrpm/`, the OSC transmitter, `packet_chunking.py`, the stall watchdog | [outputs](docs/architecture/outputs.md) |
 | `net_utils.py`, `net_adapters.py`, `network/`, `station_fqdn.py`, `runtime/network_observer.py`, `web/discovery.py`, any `*_iface` field | [network](docs/architecture/network.md) |
 | `input/`, `binding_conflicts.py`, the OSC listener | [input](docs/architecture/input.md) |
 | `video/detection.py`, `video/tracking.py`, `runtime/services_detection_pin.py`, `model_seed.py` | [detection](docs/architecture/detection.md) |
 | `zones/` | [zones](docs/architecture/zones.md) |
-| `web/` (copy, routes, auth, peers, Setup Wizard) | [web](docs/architecture/web.md) |
+| `paths/`, `runtime/paths_runtime.py`, `osc/paths.py`, `runtime/overlay_draw_paths.py`, the path editor (`partials/paths.tpl`, `partials/path_editor.tpl`, `/api/paths`) | [paths](docs/architecture/paths.md) |
+| `web/` (copy, routes, auth, peers, Setup Wizard), `static/js/polygon-plan.js`, `static/js/picture-view.js` | [web](docs/architecture/web.md) |
 | `runtime/deb_update.py`, `runtime/online_sync.py`, `web/whats_new.py`, `privilege/settings_backup.py` | [update](docs/architecture/update.md) |
 | `uri_redaction.py`, `web/diagnostics.py`, `runtime/removable_media.py`, `runtime/diagnostics_export.py`, `privilege/media_writer.py` | [diagnostics](docs/architecture/diagnostics.md) |
 | `packaging/`, the `.deb`, image and macOS bundle | [`docs/PACKAGING.md`](docs/PACKAGING.md) |

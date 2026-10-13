@@ -70,6 +70,8 @@ station = function (req) {
 // -- helpers for the steps -------------------------------------------------------
 function editor() { return document.getElementById('path-editor-section'); }
 function picture() { return editor().querySelector('svg'); }
+// A path's control by what it is: 'name', 'closed', 'x-0', 'delete-2', 'add-point', 'record'...
+function control(name, what) { return document.getElementById('pe:' + name + ':' + what); }
 function row(name) { return editor().querySelector('.path-row[data-path="' + name + '"]'); }
 function openRow(name) { row(name).querySelector('summary').click(); }
 function puts() { return requests.filter(function (r) { return r.method === 'PUT'; }); }
@@ -78,3 +80,19 @@ function pointer(target, type, x, y) { target.dispatchEvent(makeEvent(type, { cl
 function selectedRow() { var r = editor().querySelector('.path-row.pe-selected'); return r ? r.dataset.path : null; }
 function inputs(name, i) { return row(name).querySelectorAll('.pe-points tbody tr')[i].querySelectorAll('input'); }
 function errorLine() { var line = editor().querySelector('.save-error'); return line ? line.textContent : null; }
+function pointRows(name) { return row(name).querySelectorAll('.pe-points tbody tr'); }
+// Drag point ``from`` of a path by its handle onto point ``onto``, in its upper (y 5) or lower (y 15) half.
+function dragPoint(name, from, onto, y) {
+    var handle = pointRows(name)[from].querySelector('.row-drag-handle'), target = pointRows(name)[onto];
+    var ev = function (type) { return makeEvent(type, { clientY: y, dataTransfer: { setData: function () {} } }); };
+    handle.dispatchEvent(ev('dragstart'));
+    target.dispatchEvent(ev('dragover'));
+    target.dispatchEvent(ev('drop'));
+    handle.dispatchEvent(ev('dragend'));
+}
+function points(i) { return model.paths[i].points.map(function (p) { return [p.x, p.y]; }); }
+function sent(pattern) { return requests.filter(function (r) { return pattern.test(r.url); }).map(function (r) { return r.body; }); }
+function asked(pattern) { return requests.filter(function (r) { return pattern.test(r.url); }).map(function (r) { return r.url; }); }
+function texts(nodes) { return nodes.map(function (n) { return n.textContent; }); }
+function labels(name, controls) { return controls.map(function (c) { return control(name, c).getAttribute('aria-label'); }); }
+function twoPoints(y) { return [{ x: 0, y: y, z: 0, radius: 0.5 }, { x: 1, y: y, z: 0, radius: 0.5 }]; }

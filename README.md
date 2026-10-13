@@ -145,7 +145,7 @@ details.
 
 ## Security notes
 
-OpenFollow is designed for trusted LAN deployment, but a few knobs are worth reviewing before running on a shared production network:
+OpenFollow is designed for trusted LAN deployment, but a few knobs are worth reviewing before running on a shared production network. To report a vulnerability, see [SECURITY.md](SECURITY.md); please don't open a public issue.
 
 - **Web PIN (`web_pin`):** set a PIN under General → Network to require authentication for every non-asset route. Browser sessions use a `SameSite=Strict` cookie; peer-to-peer broadcasts between OpenFollow instances are HMAC-signed (the PIN itself never travels on the wire). Unset PIN = open, useful for bench testing only.
 - **OSC input allowlist (`osc.allowed_sender_ips`):** any LAN device can otherwise inject `/marker/{id} x y z` messages and hijack marker positions. Leave empty only while you're sure the LAN is trusted – OpenFollow logs a prominent warning at startup in that case. List one IP per authorised control surface (lighting console, touch panel, etc.).

@@ -1358,6 +1358,59 @@ class TestWizardSolveBadInput:
 #   - applyAndFinish() inspects response.ok before redirecting
 
 
+# An integer JSON carries exactly but no float holds: float() raises OverflowError on it.
+_TOO_BIG = 10**400
+
+
+def _set_path(body: dict, path: tuple) -> dict:
+    """``body`` with the value at ``path`` replaced by :data:`_TOO_BIG`."""
+    out = json.loads(json.dumps(body))
+    target = out
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = _TOO_BIG
+    return out
+
+
+@integration
+class TestWizardNumbersTooLargeForAFloat:
+    """Every number the three wizard routes read is a 400 when no float holds it, never a 500."""
+
+    @staticmethod
+    def _bodies() -> dict[str, dict]:
+        world = _world_corners().tolist()
+        screen = project_points(_cam_params(None), _world_corners(), IMG_W, IMG_H).tolist()
+        size = {"image_width": IMG_W, "image_height": IMG_H}
+        return {
+            "/api/wizard/project": {"camera": _CAM, "grid": _GRID, **size},
+            "/api/wizard/unproject": {"camera": _CAM, "screen_points": [[960.0, 700.0]], **size},
+            "/api/wizard/solve": {"world_corners": world, "screen_corners": screen, "camera": _CAM, **size},
+        }
+
+    @pytest.mark.parametrize(
+        ("path", "where"),
+        [
+            ("/api/wizard/project", ("image_width",)),
+            ("/api/wizard/project", ("grid", "width")),
+            ("/api/wizard/project", ("grid", "z_offset")),
+            ("/api/wizard/project", ("camera", "pitch")),
+            ("/api/wizard/unproject", ("screen_points", 0, 1)),
+            ("/api/wizard/unproject", ("plane_z",)),
+            ("/api/wizard/unproject", ("camera", "fov")),
+            ("/api/wizard/solve", ("image_width",)),
+            ("/api/wizard/solve", ("screen_corners", 2, 0)),
+            ("/api/wizard/solve", ("world_corners", 1, 2)),
+        ],
+    )
+    def test_is_a_400(self, live_server, path: str, where: tuple) -> None:
+        _, base = live_server
+        good = self._bodies()[path]
+        assert _post_json(base, path, good)[0] == 200
+        status, raw = _post_raw(base, path, _set_path(good, where))
+        assert status == 400
+        assert "error" in json.loads(raw)
+
+
 @unit
 class TestWizardTemplateSafetyPatterns:
     def _wizard_tpl(self) -> str:

@@ -3507,8 +3507,8 @@ def _parse_lens_edges_body(data: Any) -> tuple[float, float, int, Any, bool]:
 def _wizard_camera_params(cam: Any) -> Any:
     """Coerce a wizard camera dict into the np.float64 parameter vector.
 
-    Raises ``KeyError``/``TypeError``/``ValueError`` on bad input so the
-    endpoints can convert any failure into a uniform HTTP 400 response.
+    Raises ``KeyError``/``TypeError``/``ValueError``/``OverflowError`` on bad input
+    so the endpoints can convert any failure into a uniform HTTP 400 response.
     Imported lazily to keep numpy off the import path of routes that
     don't use it.
     """
@@ -10084,6 +10084,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         if data is None:
             return json.dumps({"error": "Invalid JSON"})
 
+        # OverflowError: a JSON integer no float holds, read by float().
         try:
             cam = data["camera"]
             grid = data["grid"]
@@ -10096,7 +10097,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             ox = float(grid.get("x_offset") or 0)
             oy = float(grid.get("y_offset") or 0)
             oz = float(grid.get("z_offset") or 0)
-        except (KeyError, TypeError, ValueError) as exc:
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
             response.status = 400
             return json.dumps({"error": str(exc)})
 
@@ -10221,7 +10222,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 [[float(p[0]), float(p[1])] for p in screen_points],
                 dtype=np.float64,
             )
-        except (KeyError, TypeError, ValueError) as exc:
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
             response.status = 400
             return json.dumps({"error": str(exc)})
 
@@ -10277,7 +10278,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 if not all(math.isfinite(float(c)) for c in p):
                     raise ValueError("screen_corner coords must be finite numbers")
             calibration_points = _wizard_calibration_points(data.get("calibration_points"), img_w, img_h)
-        except (KeyError, TypeError, ValueError) as exc:
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
             response.status = 400
             return json.dumps({"error": str(exc)})
         if stale is not None and stale():

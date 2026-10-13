@@ -136,9 +136,16 @@ class TestCorner:
         assert c.length == pytest.approx(5.0)
         assert _close(c.point(3.0), (3.0, 0.0, 0.0))
 
-    def test_turning_straight_back_takes_at_most_half_the_shorter_segment(self) -> None:
-        c = _curve([(0, 0, 0, 0), (1, 0, 0, 5.0), (0, 0.001, 0, 0)])
+    @pytest.mark.parametrize("back_y", [0.0, 0.001])
+    def test_turning_straight_back_takes_at_most_half_the_shorter_segment(self, back_y: float) -> None:
+        c = _curve([(0, 0, 0, 0), (1, 0, 0, 5.0), (0, back_y, 0, 0)])
         assert c.xy[:, 0].max() == pytest.approx(0.5, abs=1e-3)
+
+    def test_a_large_radius_nearly_straight_back_still_passes_at_its_radius(self) -> None:
+        # 179.97 degrees: the arc is 5 mm across, its middle 20 m from the point.
+        turn = 179.97
+        c = _curve([(0, 0, 0, 0), (100, 0, 0, 20.0), (100 + 100 * _cos(turn), 100 * _sin(turn), 0, 0)])
+        assert c.nearest(100.0, 0.0)[1] == pytest.approx(20.0, abs=0.001)
 
     def test_turning_straight_back_with_no_radius_reaches_the_point(self) -> None:
         c = _curve([(0, 0, 0, 0), (4, 0, 0, 0), (1, 0, 0, 0)])

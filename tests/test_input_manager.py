@@ -749,6 +749,250 @@ def test_invert_control_direction_leaves_osc_positions_absolute(monkeypatch) -> 
     assert app._server.get_marker(10).pos == pytest.approx((3.0, 4.0, 5.0))
 
 
+# --------------------------------------------------------------------------- #
+# Paths: every input writes a locked marker through the path engine
+# --------------------------------------------------------------------------- #
+
+
+def _cross_engine():  # noqa: ANN202
+    from openfollow.configuration import PathConfig, PathPointConfig, PathsConfig
+    from openfollow.paths.engine import PathEngine
+
+    engine = PathEngine()
+    cross = PathConfig(name="cross", active=True, points=[PathPointConfig(-5, 0, 0, 0), PathPointConfig(5, 0, 0, 0)])
+    engine.reload(PathsConfig(slide_time=0.0, paths=[cross]), enabled=True)
+    return engine
+
+
+@pytest.fixture
+def path_app(monkeypatch):  # noqa: ANN001, ANN201
+    monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
+    monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
+    app = _DummyApp()
+    app._paths = _cross_engine()
+    return app
+
+
+def test_a_locked_marker_lands_then_moves_along_its_path_at_its_height(path_app) -> None:  # noqa: ANN001
+    app = path_app
+    app._server.get_marker(10).set_pos(0.0, 2.0, 0.0)
+    app._paths.press(10, (0.0, 2.0, 0.0))
+    # Up and across, and Z up: only the part along the path moves it, and Z is the path's.
+    _FakeKeyboardHandler.next_velocity = (0.5, 0.5, 1.0)
+    InputManager(app).update(2.0)
+    assert app._server.get_marker(10).pos == pytest.approx((1.0, 0.0, 0.0))
+
+
+def test_a_pad_s_pathfinder_press_locks_the_marker_that_pad_drives(path_app) -> None:  # noqa: ANN001
+    app = path_app
+    app._server.get_marker(11).set_pos(2.0, 3.0, 0.0)
+    _FakeGamepadHandler.next_update = GamepadUpdate(pathfinder_presses={1})
+    InputManager(app).update(0.02)
+    assert app._paths.locked_path(11) == "cross"
+    assert not app._paths.is_locked(10)
+
+
+def test_a_gamepad_push_moves_a_locked_marker_along_its_path(path_app) -> None:  # noqa: ANN001
+    app = path_app
+    app._paths.press(11, (0.0, 0.0, 0.0))
+    app._paths.tick(0.0)
+    _FakeGamepadHandler.next_update = GamepadUpdate(movements={1: (0.0, 1.0, 1.0)})
+    InputManager(app).update(1.0)
+    assert app._server.get_marker(11).pos == pytest.approx((0.0, 0.0, 0.0))
+
+
+def test_a_reset_releases_the_marker_from_its_path(path_app) -> None:  # noqa: ANN001
+    app = path_app
+    app._paths.press(10, (0.0, 1.0, 0.0))
+    _FakeGamepadHandler.next_update = GamepadUpdate(resets={0})
+    InputManager(app).update(0.02)
+    assert not app._paths.is_locked(10)
+    assert app._server.get_marker(10).pos == pytest.approx((5.0, 6.0, 7.0))
+
+
+def test_an_osc_position_for_a_locked_marker_lands_on_its_path(path_app) -> None:  # noqa: ANN001
+    app = path_app
+    app._paths.press(10, (0.0, 0.0, 0.0))
+    app._paths.tick(0.0)
+    manager = InputManager(app)
+    manager.osc_handler = SimpleNamespace(flush_updates=lambda: {10: {"x": 3.0, "y": 4.0, "z": 9.0}})
+    manager.update(0.02)
+    assert app._server.get_marker(10).pos == pytest.approx((3.0, 0.0, 0.0))
+
+
+@pytest.mark.parametrize(
+    ("axes", "pulled", "landed"),
+    [
+        # Only Z: nothing moves, and the pull carries on from where it was.
+        ({"z": 0.0}, (0.0, 1.0, 0.0), (0.0, 0.0, 0.0)),
+        # Only X: the free position moves along X and keeps its Y.
+        ({"x": 3.0}, (3.0, 1.0, 0.0), (3.0, 0.0, 0.0)),
+    ],
+)
+def test_a_per_axis_osc_position_during_the_pull_keeps_the_axes_it_leaves_out(  # noqa: ANN001
+    path_app, axes, pulled, landed
+) -> None:
+    from openfollow.configuration import PathConfig, PathPointConfig, PathsConfig
+
+    app = path_app
+    cross = PathConfig(name="cross", active=True, points=[PathPointConfig(-5, 0, 0, 0), PathPointConfig(5, 0, 0, 0)])
+    app._paths.reload(PathsConfig(slide_time=1.0, paths=[cross]), enabled=True)
+    marker = app._server.get_marker(10)
+    marker.set_pos(0.0, 2.0, 0.0)
+    app._paths.press(10, marker.pos)
+    manager = InputManager(app)
+    manager.update_paths(0.5)
+    manager.osc_handler = SimpleNamespace(flush_updates=lambda: {10: axes})
+    manager.update(0.0)
+    assert marker.pos == pytest.approx(pulled)
+    manager.update_paths(0.5)
+    assert marker.pos == pytest.approx(landed)
+
+
+def test_a_marker_no_longer_controlled_is_released(path_app) -> None:  # noqa: ANN001
+    app = path_app
+    app._paths.press(99, (0.0, 1.0, 0.0))
+    InputManager(app).update_paths(0.02)
+    assert not app._paths.is_locked(99)
+
+
+def test_with_no_marker_controlled_every_lock_is_released(path_app) -> None:  # noqa: ANN001
+    app = path_app
+    app._paths.press(10, (0.0, 1.0, 0.0))
+    app._controlled_ids = []
+    InputManager(app).update_paths(0.02)
+    assert not app._paths.is_locked(10)
+
+
+def test_path_commands_from_osc_reach_the_engine_and_the_marker_lands_that_frame(path_app) -> None:  # noqa: ANN001
+    from openfollow.osc.paths import MarkerPath
+
+    app = path_app
+    app._server.get_marker(10).set_pos(2.0, 1.0, 0.0)
+    manager = InputManager(app)
+    manager.path_osc_handler = SimpleNamespace(take=lambda: [MarkerPath(10, "cross")])
+    manager.update_paths(0.02)
+    assert app._paths.locked_path(10) == "cross"
+    assert app._server.get_marker(10).pos == pytest.approx((2.0, 0.0, 0.0))
+
+
+def test_a_station_controlling_no_marker_still_switches_paths(path_app, tmp_path) -> None:  # noqa: ANN001
+    from openfollow.configuration import PathConfig, PathPointConfig, PathsConfig
+    from openfollow.osc.paths import PathActive
+
+    app = path_app
+    app._controlled_ids = []
+    app._config.ui.show_experimental_features = True
+    app._config.paths = PathsConfig(
+        slide_time=0.0,
+        paths=[PathConfig(name="cross", active=True, points=[PathPointConfig(-5, 0, 0), PathPointConfig(5, 0, 0)])],
+    )
+    app._config_path = str(tmp_path / "config.toml")
+    app._get_config_mtime = lambda: 1.0
+    manager = InputManager(app)
+    manager.path_osc_handler = SimpleNamespace(take=lambda: [PathActive("cross", False)])
+    manager.update_paths(0.02)
+    assert app._config.paths.paths[0].active is False
+    assert app._paths.press(10, (0.0, 1.0, 0.0)).value == "none"
+
+
+def test_without_paths_path_commands_are_still_taken(monkeypatch) -> None:  # noqa: ANN001
+    from openfollow.osc.paths import PathActive
+
+    monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
+    monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
+    queued = [PathActive("cross", False)]
+    manager = InputManager(_DummyApp())
+    manager.path_osc_handler = SimpleNamespace(take=lambda: [queued.pop()] if queued else [])
+    manager.update_paths(0.02)
+    assert queued == []
+
+
+def test_a_slide_carries_on_while_a_menu_is_open(path_app) -> None:  # noqa: ANN001
+    from openfollow.configuration import PathConfig, PathPointConfig, PathsConfig
+    from openfollow.runtime.app_modes import process_input
+
+    app = path_app
+    cross = PathConfig(name="cross", active=True, points=[PathPointConfig(-5, 0, 0, 0), PathPointConfig(5, 0, 0, 0)])
+    app._paths.reload(PathsConfig(slide_time=1.0, paths=[cross]), enabled=True)
+    app._server.get_marker(10).set_pos(0.0, 2.0, 0.0)
+    app._paths.press(10, (0.0, 2.0, 0.0))
+    manager = InputManager(app)
+    app._input_manager = manager
+    manager.gamepad_handler.read_settings_toggle = lambda: False
+    app._button_detection = None
+    app._settings_menu_active = True
+    app._process_settings_menu_input = lambda: None
+    # One frame as the frame loop runs it: the engine, then input, which the open menu keeps for itself.
+    manager.update_paths(0.5)
+    process_input(app, 0.5)
+    assert app._server.get_marker(10).pos == pytest.approx((0.0, 1.0, 0.0))
+
+
+def test_the_keyboard_pathfinder_press_locks_the_selected_marker(path_app) -> None:  # noqa: ANN001
+    app = path_app
+    manager = InputManager(app)
+    manager.pathfinder(10)
+    assert app._paths.locked_path(10) == "cross"
+    manager.pathfinder(None)
+    assert app._paths.is_locked(10)
+
+
+def test_without_paths_a_pathfinder_press_does_nothing(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
+    monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
+    app = _DummyApp()
+    InputManager(app).pathfinder(10)
+    assert app._server.get_marker(10).pos == pytest.approx((0.0, 0.0, 0.0))
+
+
+def test_a_sliding_marker_the_server_does_not_have_is_skipped(path_app) -> None:  # noqa: ANN001
+    app = path_app
+    app._controlled_ids = [10, 11, 12]
+    app._paths.press(12, (0.0, 1.0, 0.0))
+    app._paths.press(10, (2.0, 1.0, 0.0))
+    InputManager(app).update_paths(0.02)
+    assert app._server.get_marker(10).pos == pytest.approx((2.0, 0.0, 0.0))
+
+
+@pytest.mark.parametrize("off", ["tracking off", "fully automatic"])
+def test_when_assist_stops_input_moves_a_locked_marker_on_from_its_output(path_app, off: str) -> None:  # noqa: ANN001
+    import numpy as np
+
+    from openfollow.runtime.services_detection_pin import apply_detection_pin, get_or_create_manual_marker
+
+    app = path_app
+    app._config.detection.enabled = True
+    app._config.detection.pin_mode = "assist"
+    app._detection_pin_states = {}
+    app._detection_pin_mode = "assist"
+    app._video_receiver = SimpleNamespace(resolution=(0, 0))
+    # The output stands at x = 3 on the path, the anchor input steers at x = 2, locked there.
+    app._server.get_marker(10).set_pos(3.0, 0.0, 0.0)
+    anchor = get_or_create_manual_marker(app, 10)
+    anchor.set_pos(2.0, 0.0, 0.0)
+    app._paths.press(10, anchor.pos)
+    app._paths.tick(0.0)
+    manager = InputManager(app)
+    # Assist stops between frames, as a config reload does.
+    if off == "tracking off":
+        app._config.detection.enabled = False
+    else:
+        app._config.detection.pin_mode = "replace"
+    _FakeKeyboardHandler.next_velocity = (0.5, 0.0, 0.0)
+    # One frame in the frame loop's order: the engine, input, then the detection pin.
+    manager.update_paths(0.02)
+    manager.update(0.02)
+    apply_detection_pin(
+        app,
+        person_detector=None,
+        unproject_cam_buffer=np.zeros(7),
+        screen_point_buffer=np.zeros((1, 2)),
+        dt=0.02,
+    )
+    assert app._server.get_marker(10).pos == pytest.approx((3.01, 0.0, 0.0))
+
+
 class _Clock:
     def __init__(self) -> None:
         self.now = 1000.0
@@ -768,6 +1012,8 @@ def _osc_station(monkeypatch, pending: dict[int, dict[str, float]]):  # noqa: AN
     manager._clock = clock
     adapter = SimpleNamespace(start=lambda: None, stop=lambda: None, flush_updates=lambda: dict(pending))
     monkeypatch.setattr(input_manager_module, "OscMarkerAdapter", lambda *_a, **_kw: adapter)
+    paths = SimpleNamespace(start=lambda: None, stop=lambda: None, take=lambda: [])
+    monkeypatch.setattr(input_manager_module, "PathOscAdapter", lambda *_a, **_kw: paths)
     manager.osc_handler = adapter
     return app, manager, clock
 

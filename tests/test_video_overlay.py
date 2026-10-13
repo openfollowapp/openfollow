@@ -740,6 +740,61 @@ def test_the_screen_reuses_a_still_cone_and_forgets_a_removed_one(monkeypatch) -
     assert sorted(worked_out) == [1, 2, 2]
 
 
+def test_the_renderer_keeps_its_paths_as_one_picture_between_frames(monkeypatch) -> None:
+    from openfollow.runtime import overlay_draw_paths
+
+    calls: list[int] = []
+    real = overlay_draw_paths._path_shapes
+
+    def _counting(state, w, h, lines):
+        calls.append(1)
+        return real(state, w, h, lines)
+
+    monkeypatch.setattr(overlay_draw_paths, "_path_shapes", _counting)
+    renderer = CairoOverlayRenderer()
+    renderer.state.camera_params = np.array([0.0, -6.0, 2.5, -15.0, 0.0, 0.0, 60.0])
+    renderer.state.show_paths = True
+    renderer.state.path_lines = [([(-1.0, 2.0, 0.0), (1.0, 2.0, 0.0)], [], False)]
+    frames = [RecordingCairo() for _ in range(3)]
+    for cr in frames:
+        renderer.draw(cr, 1920, 1080)
+    assert calls == [1]
+    assert all(("paint",) in cr.calls for cr in frames)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("settings_menu_active", True),
+        ("camera_params", None),
+        ("button_detection", ButtonDetectionState(active=True)),
+    ],
+    ids=["menu-open", "no-camera", "button-wizard"],
+)
+def test_the_renderer_lets_its_path_pictures_go_while_the_scene_is_not_drawn(monkeypatch, field, value) -> None:
+    from openfollow.runtime import overlay_draw_paths
+
+    calls: list[int] = []
+    real = overlay_draw_paths._path_shapes
+
+    def _counting(state, w, h, lines):
+        calls.append(1)
+        return real(state, w, h, lines)
+
+    monkeypatch.setattr(overlay_draw_paths, "_path_shapes", _counting)
+    renderer = CairoOverlayRenderer()
+    renderer.state.camera_params = np.array([0.0, -6.0, 2.5, -15.0, 0.0, 0.0, 60.0])
+    renderer.state.show_paths = True
+    renderer.state.path_lines = [([(-1.0, 2.0, 0.0), (1.0, 2.0, 0.0)], [], False)]
+    renderer.draw(RecordingCairo(), 1920, 1080)
+    shown = getattr(renderer.state, field)
+    setattr(renderer.state, field, value)
+    renderer.draw(RecordingCairo(), 1920, 1080)
+    setattr(renderer.state, field, shown)
+    renderer.draw(RecordingCairo(), 1920, 1080)
+    assert calls == [1, 1]
+
+
 def _zone_renderer() -> CairoOverlayRenderer:
     renderer = CairoOverlayRenderer()
     renderer.state.camera_params = np.array([0.0, -6.0, 2.5, -15.0, 0.0, 0.0, 60.0])
@@ -777,3 +832,20 @@ def test_the_renderer_lets_its_zone_picture_go_while_the_scene_is_not_drawn(fiel
     setattr(renderer.state, field, shown)
     renderer.draw(after, 1920, 1080)
     assert after.surfaces[0] is not before.surfaces[0]
+
+
+def test_the_renderer_draws_a_displayed_ground_grid() -> None:
+    def frame(visible: bool) -> RecordingCairo:
+        renderer = CairoOverlayRenderer()
+        renderer.state.camera_params = np.array([0.0, -6.0, 2.5, -15.0, 0.0, 0.0, 60.0])
+        renderer.state.grid_config = (10.0, 6.0, 1.0, 0.0, 3.0, 0.0)
+        renderer.state.ground_grid_visible = visible
+        renderer.state.ground_grid_vertices = [(-1.0, 1.0), (1.0, 1.0), (1.0, 3.0), (-1.0, 3.0)]
+        renderer.state.ground_grid_z = -0.5
+        cr = RecordingCairo()
+        renderer.draw(cr, 1920, 1080)
+        return cr
+
+    hidden, shown = frame(False), frame(True)
+    assert shown.strokes == hidden.strokes + 1
+    assert len(shown.line_tos) > len(hidden.line_tos)

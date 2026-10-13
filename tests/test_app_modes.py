@@ -2631,6 +2631,7 @@ def _idle_update_result() -> SimpleNamespace:
         next_marker_pressed=False,
         prev_marker_pressed=False,
         clear_messages_pressed=False,
+        toggle_paths_pressed=False,
     )
 
 
@@ -2805,3 +2806,83 @@ class TestTheSettingsButtonClosesEverything:
         app._enter_settings_menu = lambda **_kw: setattr(app, "_settings_menu_active", True)
         process_input(app, 0.016)
         assert app._settings_menu_active is True
+
+
+class TestPathKeys:
+    """Pathfinder and Toggle paths on the keyboard and through the controller result."""
+
+    def _app(self, tmp_path, **controller):  # noqa: ANN001, ANN202
+        from openfollow.configuration import AppConfig, PathConfig, PathPointConfig, PathsConfig
+        from openfollow.paths.engine import PathEngine
+
+        cfg = AppConfig()
+        cfg.ui.show_experimental_features = True
+        cfg.paths = PathsConfig(
+            slide_time=0.0,
+            paths=[PathConfig(name="cross", active=True, points=[PathPointConfig(-5, 0, 0), PathPointConfig(5, 0, 0)])],
+        )
+        for name, value in controller.items():
+            setattr(cfg.controller, name, value)
+        presses: list[int | None] = []
+        marker = SimpleNamespace(pos=(0.0, 1.0, 0.0), set_pos=lambda *p: setattr(marker, "pos", p))
+        engine = PathEngine()
+        engine.reload(cfg.paths, enabled=True)
+        app = SimpleNamespace(
+            _config=cfg,
+            _config_path=str(tmp_path / "config.toml"),
+            _config_mtime=0.0,
+            _get_config_mtime=lambda: 1.0,
+            _paths=engine,
+            _selected_id=10,
+            _server=SimpleNamespace(get_marker=lambda _id: marker),
+            _input_manager=SimpleNamespace(pathfinder=presses.append),
+            _get_default_marker_position=lambda: (5.0, 6.0, 7.0),
+            _settings_menu_active=False,
+            _button_detection=None,
+            _source_type_selection_active=False,
+            _url_editor_active=False,
+            _field_choice_active=False,
+            _browser_active=False,
+            _video_receiver=None,
+        )
+        return app, presses, marker
+
+    def test_the_pathfinder_key_presses_for_the_selected_marker(self, tmp_path) -> None:  # noqa: ANN001
+        app, presses, _ = self._app(tmp_path, key_pathfinder="p")
+        handle_key_press(app, "p")
+        assert presses == [10]
+
+    def test_the_toggle_paths_key_hides_and_shows_paths(self, tmp_path) -> None:  # noqa: ANN001
+        from openfollow.configuration import load_config
+
+        app, _, _ = self._app(tmp_path, key_toggle_paths="o")
+        handle_key_press(app, "o")
+        assert app._config.paths.show_paths is False
+        assert load_config(app._config_path).paths.show_paths is False
+
+    def test_the_reset_key_releases_the_marker_from_its_path(self, tmp_path) -> None:  # noqa: ANN001
+        app, _, marker = self._app(tmp_path)
+        app._paths.press(10, (0.0, 1.0, 0.0))
+        handle_key_press(app, app._config.controller.key_reset)
+        assert not app._paths.is_locked(10)
+        assert marker.pos == (5.0, 6.0, 7.0)
+
+    def test_unbound_path_keys_do_nothing(self, tmp_path) -> None:  # noqa: ANN001
+        app, presses, _ = self._app(tmp_path)
+        handle_key_press(app, "p")
+        handle_key_press(app, "o")
+        assert presses == []
+        assert app._config.paths.show_paths is True
+
+    def test_a_controller_s_toggle_paths_press_toggles_them(self, tmp_path) -> None:  # noqa: ANN001
+        app, _, _ = self._app(tmp_path)
+        result = _idle_update_result()
+        result.toggle_paths_pressed = True
+        app._input_manager = SimpleNamespace(
+            keyboard_handler=SimpleNamespace(keys=set(), clear=lambda: None),
+            update=lambda _dt: result,
+        )
+        app._settings_key_pressed = False
+        app._clear_operator_messages = lambda: None
+        process_input(app, 0.016)
+        assert app._config.paths.show_paths is False

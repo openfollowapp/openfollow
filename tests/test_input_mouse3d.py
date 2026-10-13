@@ -246,6 +246,8 @@ def test_fader_axis_accumulates_into_signal() -> None:
         ({"btn_prev_marker": 2}, 2, "prev_marker"),
         ({"btn_toggle_help": 3}, 3, "toggle_help"),
         ({"btn_toggle_zones": 4}, 4, "toggle_zones"),
+        ({"btn_pathfinder": 2}, 2, "pathfinder"),
+        ({"btn_toggle_paths": 3}, 3, "toggle_paths"),
     ],
 )
 def test_button_edge_fires_bound_action(cfg_kwargs, index, attr) -> None:  # noqa: ANN001
@@ -2885,3 +2887,38 @@ def test_open_keeps_any_other_refusal_as_it_was(monkeypatch, tmp_path, exists) -
     with pytest.raises(RuntimeError) as info:
         _PySpaceMouseBackend().open(str(node))
     assert info.value is refusal
+
+
+def _cross_engine():  # noqa: ANN202
+    from openfollow.configuration import PathConfig, PathPointConfig, PathsConfig
+    from openfollow.paths.engine import PathEngine
+
+    engine = PathEngine()
+    cross = PathConfig(name="cross", active=True, points=[PathPointConfig(-5, 0, 0, 0), PathPointConfig(5, 0, 0, 0)])
+    engine.reload(PathsConfig(slide_time=0.0, paths=[cross]), enabled=True)
+    return engine
+
+
+def test_mouse3d_pathfinder_locks_and_its_moves_follow_the_path(wired) -> None:  # noqa: ANN001
+    manager, app = wired
+    app._config.mouse3d.enabled = True
+    app._paths = _cross_engine()
+    app._server.get_marker(10).set_pos(1.0, 2.0, 0.0)
+    manager.mouse3d_manager.next_update = Mouse3DUpdate(pathfinder=True)
+    manager.update(0.02)
+    assert app._paths.locked_path(10) == "cross"
+    manager.mouse3d_manager.next_update = Mouse3DUpdate(velocity=(1.0, 1.0, 1.0))
+    manager.update(0.5)  # lands at (1, 0, 0), then 2.0 m/s * 0.5 s along x
+    assert app._server.get_marker(10).pos == pytest.approx((2.0, 0.0, 0.0))
+
+
+def test_mouse3d_reset_releases_and_toggle_paths_folds_into_the_result(wired) -> None:  # noqa: ANN001
+    manager, app = wired
+    app._config.mouse3d.enabled = True
+    app._paths = _cross_engine()
+    app._paths.press(10, (0.0, 1.0, 0.0))
+    manager.mouse3d_manager.next_update = Mouse3DUpdate(reset=True, toggle_paths=True)
+    result = manager.update(0.02)
+    assert not app._paths.is_locked(10)
+    assert result.toggle_paths_pressed is True
+    assert app._server.get_marker(10).pos == pytest.approx((5.0, 6.0, 7.0))

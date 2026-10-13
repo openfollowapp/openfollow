@@ -107,6 +107,21 @@ class TestCascadeDisable:
         assert out.detection.enabled is False
         assert out.controller.mouse_enabled is True
 
+    def test_turning_off_disables_the_ground_grid_and_keeps_its_polygon(self, live_server) -> None:
+        server, base = live_server
+        cfg = load_config(server.config_path)
+        cfg.ui.show_experimental_features = True
+        cfg.ground_grid.enabled = True
+        cfg.ground_grid.vertices = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]
+        save_config(cfg, server.config_path)
+
+        status, _ = _set_experimental(base, on=False)
+        assert status == 200
+
+        out = load_config(server.config_path)
+        assert out.ground_grid.enabled is False
+        assert out.ground_grid.vertices == [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]
+
     def test_turning_on_does_not_reenable_detection(self, live_server) -> None:
         server, base = live_server
         # Turning on does not re-enable an already-off feature.

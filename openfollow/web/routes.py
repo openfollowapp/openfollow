@@ -52,7 +52,10 @@ if TYPE_CHECKING:
 from openfollow.configuration import (
     CONTROLLER_BINDING_FIELDS,
     DEFAULT_UPDATE_SERVICE_NAME,
+    GROUND_GRID_MAX_VERTICES,
     MARKER_TOKEN_ALL,
+    MAX_PATH_POINTS,
+    MAX_PATHS,
     MOUSE3D_AXES,
     MOUSE3D_BUTTON_FIELDS,
     VALID_BUTTON_NAMES,
@@ -60,11 +63,13 @@ from openfollow.configuration import (
     DetectionMaskConfig,
     OscDestinationConfig,
     OscTransmitterConfig,
+    PathConfig,
     TriggerZoneConfig,
     _coerce_marker_tokens,
     apply_renamed_marker_keys,
     config_write_lock,
     load_config,
+    path_name_from,
     save_config,
     viewed_with_controlled,
 )
@@ -213,6 +218,7 @@ VALID_SECTIONS = {
     "video_source",
     "camera",
     "grid",
+    "ground_grid",
     "movement",
     "marker",
     "controller",
@@ -226,6 +232,7 @@ VALID_SECTIONS = {
     "otp_output",
     "rttrpm_output",
     "trigger_zones",
+    "paths",
     "osc_bindings",
     "osc_destinations",
     "interface_assignment",
@@ -329,6 +336,7 @@ _SECTION_CONFIG_ATTRS = {
     "camera": "camera",
     "paths": "paths",
     "grid": "grid",
+    "ground_grid": "ground_grid",
     "movement": "marker",
     "marker": "marker",
     "controller": "controller",
@@ -1726,6 +1734,8 @@ def apply_section_data(cfg: AppConfig, section: str, data: Mapping[str, Any]) ->
         cfg.mouse3d.__post_init__()
     elif section == "grid":
         cfg.grid.__post_init__()
+    elif section == "ground_grid":
+        cfg.ground_grid.__post_init__()
     elif section == "camera":
         cfg.camera.__post_init__()
     elif section in ("marker", "movement"):
@@ -1833,6 +1843,7 @@ _SECTION_LENGTH_FIELDS: dict[str, frozenset[str]] = {
             "max_height",
         }
     ),
+    "ground_grid": frozenset({"z_offset"}),
     "marker": frozenset(
         {"ball_size", "crosshair_size", "ground_circle_size", "cone_base_diameter", "cone_top_diameter"}
     ),
@@ -2070,6 +2081,17 @@ def _as_ip_list(value: Any, default: list[str]) -> list[str]:
 
 _FieldParser = Callable[[Any, Any], Any]
 
+
+def _as_vertices(value: Any, current: list[list[float]]) -> list[list[float]]:
+    """A corner list as a list or as its JSON text (a form field); else *current*."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return current
+    return _parse_vertices(value, current)
+
+
 _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
     "camera": {
         "pos_x": _as_float,
@@ -2101,6 +2123,12 @@ _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
         "origin_visible": _as_bool,
         "origin_length": _as_float,
         "origin_thickness": _as_int,
+    },
+    "ground_grid": {
+        "enabled": _as_bool,
+        "visible": _as_bool,
+        "z_offset": _as_float,
+        "vertices": _as_vertices,
     },
     "movement": {
         "min_speed": _as_float,
@@ -2160,6 +2188,8 @@ _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
         "btn_menu_confirm": _as_str,
         "btn_menu_cancel": _as_str,
         "btn_clear_messages": _as_str,
+        "btn_pathfinder": _as_str,
+        "btn_toggle_paths": _as_str,
         "move_xy_stick": _as_str,
         "marker_fader_stick": _as_str,
         "marker_fader_max_speed_s": _as_float,
@@ -2187,6 +2217,8 @@ _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
         "key_prev_marker": _as_str,
         "key_settings": _as_str,
         "key_clear_messages": _as_str,
+        "key_pathfinder": _as_str,
+        "key_toggle_paths": _as_str,
     },
     "osc": {
         "enabled": _as_bool,
@@ -3232,8 +3264,10 @@ def _backup_before(config_path: str, kind: str) -> dict[str, str]:
 
 
 def _turn_off_experimental_features(cfg: AppConfig) -> None:
-    """What turning experimental features off turns off with them: detection, and every path's Active flag."""
+    """What turning experimental features off turns off with them: detection, the ground grid's drop, and every
+    path's Active flag."""
     cfg.detection.enabled = False
+    cfg.ground_grid.enabled = False
     for path in cfg.paths.paths:
         path.active = False
 
@@ -3256,6 +3290,7 @@ def _apply_import_data(current_cfg: AppConfig, data: dict[str, Any]) -> AppConfi
     for section in (
         "camera",
         "grid",
+        "ground_grid",
         "controller",
         "osc",
         "otp_output",
@@ -4670,6 +4705,391 @@ def _register_gallery_routes(app: Bottle, server: ConfigWebServer) -> None:
             response.status = 400
             return _render_gallery_grid(server, error=exc.message)
         return _render_gallery_grid(server)
+
+
+_PATHS_API = "/api/paths"
+
+
+def _json_error(status: int, message: str) -> str:
+    response.status = status
+    return json.dumps({"error": message})
+
+
+def _camera_view(cfg: AppConfig) -> tuple[Any, float, float]:
+    """The saved camera as the solver's parameter vector, with its lens."""
+    import numpy as np
+
+    cam = cfg.camera
+    params = np.array([cam.pos_x, cam.pos_y, cam.pos_z, cam.pitch, cam.yaw, cam.roll, cam.fov], dtype=np.float64)
+    return params, cam.lens_k1, cam.lens_k2
+
+
+# Chords per straight world segment when the lens bows it, as on the Operator Screen.
+_PICTURE_SUBDIVISIONS = 12
+# Upper bound on the world points one picture request projects.
+_PICTURE_MAX_POINTS = 20000
+
+
+def _picture_points(
+    params: Any, k1: float, k2: float, w: float, h: float, points: Sequence[Sequence[float]]
+) -> list[list[float] | None]:
+    """World points as seen by the camera in a ``w`` x ``h`` picture, lens included; null behind it."""
+    import numpy as np
+
+    from openfollow.scene.solver import apply_overlay_distortion, project_points
+
+    if not len(points):
+        return []
+    screen = apply_overlay_distortion(project_points(params, np.asarray(points, dtype=np.float64), w, h), w, h, k1, k2)
+    return [[float(x), float(y)] if np.isfinite(x) and np.isfinite(y) else None for x, y in screen]
+
+
+def _subdivided(polyline: Sequence[Sequence[float]], n: int) -> list[list[float]]:
+    """*polyline* with each segment split into *n* chords, so a lens can bow it."""
+    if n <= 1 or len(polyline) < 2:
+        return [list(p) for p in polyline]
+    out = [list(polyline[0])]
+    for a, b in zip(polyline, polyline[1:], strict=False):
+        for k in range(1, n + 1):
+            t = k / n
+            out.append([a[i] + (b[i] - a[i]) * t for i in range(3)])
+    return out
+
+
+def _picture_polylines(cfg: AppConfig, w: float, h: float, polylines: Sequence[Sequence[Sequence[float]]]) -> list[Any]:
+    """World polylines as picture polylines in the saved camera, bowed like the Operator Screen draws them."""
+    params, k1, k2 = _camera_view(cfg)
+    n = _PICTURE_SUBDIVISIONS if (k1 or k2) else 1
+    return [_picture_points(params, k1, k2, w, h, _subdivided(line, n)) for line in polylines]
+
+
+def _picture_size(data: Mapping[str, Any]) -> tuple[float, float]:
+    """The picture's ``w`` x ``h`` from a request body; ValueError when unusable."""
+    try:
+        if isinstance(data["w"], bool) or isinstance(data["h"], bool):
+            raise TypeError("bool")
+        w, h = float(data["w"]), float(data["h"])
+    except (KeyError, TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("w and h must be the picture's size in pixels") from exc
+    _require_wizard_canvas(w, h)
+    return w, h
+
+
+def _world_polylines(raw: Any, dims: int) -> list[list[list[float]]]:
+    """A list of polylines of finite ``dims``-number points; ValueError otherwise."""
+    if not isinstance(raw, list):
+        raise ValueError("polylines must be a list")
+    out: list[list[list[float]]] = []
+    total = 0
+    for line in raw:
+        if not isinstance(line, list):
+            raise ValueError("each polyline must be a list of points")
+        pts: list[list[float]] = []
+        for pt in line:
+            if not isinstance(pt, list) or len(pt) != dims or any(isinstance(v, bool) for v in pt):
+                raise ValueError(f"each point must be {dims} numbers")
+            try:
+                vals = [float(v) for v in pt]
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(f"each point must be {dims} numbers") from exc
+            if not all(math.isfinite(v) for v in vals):
+                raise ValueError("points must be finite")
+            pts.append(vals)
+        total += len(pts)
+        out.append(pts)
+    if total * _PICTURE_SUBDIVISIONS > _PICTURE_MAX_POINTS:
+        raise ValueError("too many points")
+    return out
+
+
+def _register_scene_routes(app: Bottle, server: ConfigWebServer) -> None:
+    """Register the camera-picture routes the plan editors share: world to picture and back."""
+    import numpy as np
+
+    from openfollow.runtime.overlay_draw_scene import _MAX_GRID_LINES_PER_AXIS
+    from openfollow.scene.ground_grid import grid_segments_in_polygon, main_grid_steps
+    from openfollow.scene.solver import invert_overlay_distortion, unproject_to_plane
+
+    def _body() -> dict[str, Any] | str:
+        data = _load_json_body()
+        if not isinstance(data, dict):
+            return _json_error(400, "Expected a JSON object")
+        return data
+
+    @app.post("/api/scene/project")
+    def scene_project() -> Any:
+        """World ``polylines`` (bowed by the lens) and single ``points``, each ``[x, y, z]``, as the saved
+        camera sees them in a ``w`` x ``h`` picture; null behind it."""
+        response.content_type = "application/json"
+        data = _body()
+        if isinstance(data, str):
+            return data
+        try:
+            w, h = _picture_size(data)
+            lines = _world_polylines(data.get("polylines", []), 3)
+            (points,) = _world_polylines([data.get("points", [])], 3)
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        cfg = load_config(server.config_path)
+        return json.dumps(
+            {
+                "polylines": _picture_polylines(cfg, w, h, lines),
+                "points": _picture_points(*_camera_view(cfg), w, h, points),
+            }
+        )
+
+    @app.post("/api/scene/unproject")
+    def scene_unproject() -> Any:
+        """The stage position under a picture point, on the horizontal plane at height ``z``."""
+        response.content_type = "application/json"
+        data = _body()
+        if isinstance(data, str):
+            return data
+        try:
+            w, h = _picture_size(data)
+            if any(isinstance(data[k], bool) for k in ("x", "y", "z")):
+                raise ValueError("bool")
+            x, y, z = float(data["x"]), float(data["y"]), float(data["z"])
+            if not all(np.isfinite(v) for v in (x, y, z)):
+                raise ValueError("not finite")
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return _json_error(400, "x, y, z, w and h must be numbers")
+        cfg = load_config(server.config_path)
+        params, k1, k2 = _camera_view(cfg)
+        pinhole = invert_overlay_distortion(np.array([[x, y]], dtype=np.float64), w, h, k1, k2)
+        world = unproject_to_plane(params, pinhole, w, h, z)[0]
+        if not (np.isfinite(world[0]) and np.isfinite(world[1])):
+            return _json_error(422, "That point of the picture does not reach the stage.")
+        return json.dumps({"x": float(world[0]), "y": float(world[1]), "z": z})
+
+    @app.post("/api/ground_grid/view")
+    def ground_grid_view() -> Any:
+        """A ground-grid polygon at height ``z`` as the camera sees it: outline, corners and the clipped grid lines."""
+        response.content_type = "application/json"
+        data = _body()
+        if isinstance(data, str):
+            return data
+        try:
+            w, h = _picture_size(data)
+            (verts,) = _world_polylines([data.get("vertices")], 2)
+            if isinstance(data.get("z"), bool):
+                raise ValueError("z must be a number")
+            z = float(data["z"])
+            if not math.isfinite(z):
+                raise ValueError("z must be finite")
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return _json_error(400, "vertices, z, w and h must be numbers")
+        cfg = load_config(server.config_path)
+        g = cfg.grid
+        verts = verts[:GROUND_GRID_MAX_VERTICES]
+        corners = [[*v, z] for v in verts]
+        step_x, step_y = main_grid_steps(g.width, g.depth, g.spacing, _MAX_GRID_LINES_PER_AXIS)
+        lines = grid_segments_in_polygon(
+            verts, g.x_offset - g.width / 2.0, g.y_offset - g.depth / 2.0, step_x, step_y, z, _MAX_GRID_LINES_PER_AXIS
+        )
+        outline = corners + corners[:1] if len(corners) >= 3 else []
+        return json.dumps(
+            {
+                "outline": _picture_polylines(cfg, w, h, [outline])[0],
+                "lines": _picture_polylines(cfg, w, h, [seg.tolist() for seg in lines]),
+                "corners": _picture_points(*_camera_view(cfg), w, h, corners),
+            }
+        )
+
+
+def _register_path_routes(app: Bottle, server: ConfigWebServer) -> None:
+    """Register the path editor's routes: the paths, recording, and the view over the video frame."""
+    from openfollow.paths.engine import path_ends
+    from openfollow.paths.geometry import PathPoint, build_curve
+    from openfollow.paths.network import extend_to_corners
+
+    def _snapshot() -> dict[str, Any]:
+        cfg = load_config(server.config_path)
+        state = server.get_path_state()
+        return {
+            "show_paths": cfg.paths.show_paths,
+            "slide_time": cfg.paths.slide_time,
+            "paths": [asdict(path) for path in cfg.paths.paths],
+            "recording": state.get("recording"),
+            "locks": {str(marker_id): name for marker_id, name in state.get("locks", {}).items()},
+            "floor_z": cfg.grid.z_offset,
+            "max_paths": MAX_PATHS,
+            "max_points": MAX_PATH_POINTS,
+            "markers": [marker_id for marker_id, _x, _y in server.get_marker_positions()],
+        }
+
+    def _body() -> dict[str, Any] | str:
+        data = _load_json_body()
+        if not isinstance(data, dict):
+            return _json_error(400, "Expected a JSON object")
+        return data
+
+    def _name_error(cfg: AppConfig, name: str, current: PathConfig | None) -> str | None:
+        if not name:
+            return "Use letters, digits, '.', '-' or '_' in a path name, and not dots alone."
+        clash = cfg.paths.find(name)
+        if clash is not None and clash is not current:
+            return f"A path called {clash.name} already exists."
+        return None
+
+    @app.get(_PATHS_API)
+    def paths_list() -> Any:
+        response.content_type = "application/json"
+        return json.dumps(_snapshot())
+
+    @app.post(_PATHS_API)
+    def paths_create() -> Any:
+        response.content_type = "application/json"
+        data = _body()
+        if isinstance(data, str):
+            return data
+        with _config_write_lock:
+            cfg = load_config(server.config_path)
+            if len(cfg.paths.paths) >= MAX_PATHS:
+                return _json_error(409, f"Paths are limited to {MAX_PATHS}.")
+            name = path_name_from(data.get("name", "")) if data.get("name") else ""
+            if data.get("name") and (problem := _name_error(cfg, name, None)) is not None:
+                return _json_error(400, problem)
+            cfg.paths.paths.append(PathConfig(name=name))
+            cfg.paths.__post_init__()
+            created = cfg.paths.paths[-1].name
+            save_config(cfg, server.config_path)
+        return json.dumps({"success": True, "name": created})
+
+    @app.put(_PATHS_API + "/<name>")
+    def paths_update(name: str) -> Any:
+        """Change a path's name, closed and release options, or its whole list of points."""
+        response.content_type = "application/json"
+        data = _body()
+        if isinstance(data, str):
+            return data
+        with _config_write_lock:
+            cfg = load_config(server.config_path)
+            path = cfg.paths.find(name)
+            if path is None:
+                return _json_error(404, f"No path called {name}.")
+            was = path.name
+            if "name" in data:
+                new_name = path_name_from(data["name"])
+                if (problem := _name_error(cfg, new_name, path)) is not None:
+                    return _json_error(400, problem)
+                path.name = new_name
+            for flag in ("closed", "release_at_start", "release_at_end"):
+                if flag in data:
+                    setattr(path, flag, _as_bool(data[flag], getattr(path, flag)))
+            if "points" in data:
+                if not isinstance(data["points"], list):
+                    return _json_error(400, "points must be a list")
+                path.points = data["points"]
+            path.__post_init__()
+            if path.name != was:
+                server.path_renaming(was, path.name)
+            save_config(cfg, server.config_path)
+        return json.dumps({"success": True, "path": asdict(path)})
+
+    @app.post(_PATHS_API + "/<name>/active")
+    def paths_set_active(name: str) -> Any:
+        response.content_type = "application/json"
+        data = _body()
+        if isinstance(data, str):
+            return data
+        with _config_write_lock:
+            cfg = load_config(server.config_path)
+            path = cfg.paths.find(name)
+            if path is None:
+                return _json_error(404, f"No path called {name}.")
+            path.active = _as_bool(data.get("active"), path.active)
+            save_config(cfg, server.config_path)
+        return json.dumps({"success": True, "active": path.active})
+
+    @app.delete(_PATHS_API + "/<name>")
+    def paths_delete(name: str) -> Any:
+        response.content_type = "application/json"
+        with _config_write_lock:
+            cfg = load_config(server.config_path)
+            path = cfg.paths.find(name)
+            if path is None:
+                return _json_error(404, f"No path called {name}.")
+            cfg.paths.paths.remove(path)
+            save_config(cfg, server.config_path)
+        return json.dumps({"success": True})
+
+    @app.post(_PATHS_API + "/<name>/record")
+    def paths_record(name: str) -> Any:
+        """Start recording into a path (``{"on": true}``) or stop (``{"on": false}``)."""
+        response.content_type = "application/json"
+        data = _body()
+        if isinstance(data, str):
+            return data
+        on = _as_bool(data.get("on"), False)
+        if load_config(server.config_path).paths.find(name) is None:
+            return _json_error(404, f"No path called {name}.")
+        if not server.record_path(name if on else None):
+            return _json_error(409, "Paths are switched off.")
+        return json.dumps({"success": True, "recording": name if on else None})
+
+    @app.get(_PATHS_API + "/marker/<marker_id:int>")
+    def paths_marker_position(marker_id: int) -> Any:
+        """Where a marker is on the wire, for "Point from marker"."""
+        response.content_type = "application/json"
+        position = server.get_marker_position(marker_id)
+        if position is None:
+            return _json_error(404, f"Marker {marker_id} has no position on this station.")
+        x, y, z = position
+        return json.dumps({"x": x, "y": y, "z": z})
+
+    @app.post(_PATHS_API + "/view")
+    def paths_view() -> Any:
+        """Every path and its points as seen by the saved camera in a ``w`` x ``h`` picture; null behind it."""
+        response.content_type = "application/json"
+        data = _body()
+        if isinstance(data, str):
+            return data
+        try:
+            w, h = float(data["w"]), float(data["h"])
+            _require_wizard_canvas(w, h)
+        except (KeyError, TypeError, ValueError):
+            return _json_error(400, "w and h must be the picture's size in pixels")
+        cfg = load_config(server.config_path)
+        params, k1, k2 = _camera_view(cfg)
+
+        def seen(points: list[tuple[float, float, float]]) -> list[list[float] | None]:
+            return _picture_points(params, k1, k2, w, h, points)
+
+        curves = [
+            build_curve([PathPoint(p.x, p.y, p.z, p.radius) for p in path.points], path.closed)
+            for path in cfg.paths.paths
+        ]
+        # Active paths as the station walks them: an end on another's corner point runs on to its arc.
+        active = {
+            i: c
+            for i, (path, c) in enumerate(zip(cfg.paths.paths, curves, strict=True))
+            if path.active and c is not None
+        }
+        for i, carried in zip(active, extend_to_corners(list(active.values())), strict=True):
+            curves[i] = carried
+        views = []
+        for path, curve in zip(cfg.paths.paths, curves, strict=True):
+            corners = [(p.x, p.y, p.z) for p in path.points]
+            ends = path_ends(path, curve)
+            tips, backs = seen([e.at for e in ends]), seen([e.inside for e in ends])
+            views.append(
+                {
+                    "name": path.name,
+                    "line": seen(curve.drawn() if curve is not None else corners),
+                    "points": seen(corners),
+                    "ends": [
+                        {"at": at, "inside": inside, "releases": end.releases}
+                        for end, at, inside in zip(ends, tips, backs, strict=True)
+                    ],
+                }
+            )
+        markers = []
+        for marker_id, _x, _y in server.get_marker_positions():
+            position = server.get_marker_position(marker_id)
+            if position is not None:
+                markers.append({"id": marker_id, "at": seen([position])[0]})
+        return json.dumps({"paths": views, "markers": markers})
 
 
 def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
@@ -6204,8 +6624,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     @app.post("/settings/experimental")
     def update_experimental() -> Any:
         """Persist ``[ui] show_experimental_features``. Turning it off also
-        disables ``detection.enabled`` and deactivates every path (both still
-        experimental); the config-reload watcher applies that at runtime. The
+        disables ``detection.enabled`` and ``ground_grid.enabled`` and
+        deactivates every path (all still experimental); the config-reload
+        watcher applies that at runtime. The
         body-class show/hide flip is done client-side. Responds empty
         (hx-swap="none")."""
         show = _as_bool(request.forms.get("show_experimental_features"), False)
@@ -6419,6 +6840,12 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """Update grid settings."""
         cfg = _save_section_from_form("grid", bool_fields=("visible", "origin_visible"))
         return template("partials/grid", config=cfg, saved=True)
+
+    @app.post("/section/ground_grid")
+    def update_ground_grid() -> Any:
+        """Update the experimental ground grid, its polygon included."""
+        cfg = _save_section_from_form("ground_grid", bool_fields=("enabled", "visible"))
+        return template("partials/ground_grid", config=cfg, saved=True)
 
     @app.post("/section/movement")
     def update_movement() -> Any:
@@ -7119,6 +7546,12 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """Update RTTrPM output settings."""
         cfg = _save_section_from_form("rttrpm_output", bool_fields=("enabled",))
         return template("partials/rttrpm_output", config=cfg, saved=True)
+
+    @app.post("/section/paths")
+    def update_paths_settings() -> Any:
+        """Save whether paths are drawn and the slide time (the paths themselves have their own routes)."""
+        cfg = _save_section_from_form("paths", bool_fields=("show_paths",))
+        return template("partials/paths", config=cfg, saved=True)
 
     @app.post("/section/trigger_zones")
     def update_trigger_zones() -> Any:
@@ -8163,6 +8596,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 payload = {
                     "camera": asdict(cfg.camera),
                     "grid": asdict(cfg.grid),
+                    "ground_grid": asdict(cfg.ground_grid),
                 }
         elif template_type == "paths":
             with _config_write_lock:
@@ -8277,12 +8711,14 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # The schema requires BOTH halves, so this apply path needs no
             # conditional checks – a partial template is rejected by the
             # loader and would have returned 404 / 400 above.
-            from openfollow.configuration import CameraConfig, GridConfig
+            from openfollow.configuration import CameraConfig, GridConfig, GroundGridConfig
 
             with _config_write_lock:
                 cfg = load_config(server.config_path)
                 cfg.camera = CameraConfig(**tpl.payload["camera"])
                 cfg.grid = GridConfig(**tpl.payload["grid"])
+                if "ground_grid" in tpl.payload:
+                    cfg.ground_grid = GroundGridConfig(**tpl.payload["ground_grid"])
                 save_config(cfg, server.config_path)
             return json.dumps({"ok": True})
         if tpl.type == "paths":
@@ -9193,6 +9629,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                     "spacing": cfg.grid.spacing,
                     "x_offset": cfg.grid.x_offset,
                     "y_offset": cfg.grid.y_offset,
+                    "z_offset": cfg.grid.z_offset,
                 },
                 "zones": zones_out,
                 "markers": [{"id": marker_id, "x": x, "y": y} for marker_id, x, y in server.get_marker_positions()],
@@ -9696,3 +10133,5 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     _register_input_plugin_routes(app, server)
     _register_gallery_routes(app, server)
+    _register_path_routes(app, server)
+    _register_scene_routes(app, server)

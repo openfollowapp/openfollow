@@ -179,6 +179,8 @@ def animate(app: OpenFollowApp) -> None:
     # housekeeping timeout (see ``housekeeping``) so they keep their own cadence
     # rather than the frame rate.
     app._check_video_disconnect_banner()
+    if app._input_manager is not None:
+        app._input_manager.update_paths(dt)
     app._process_input(dt)
 
     svc = app._runtime_services

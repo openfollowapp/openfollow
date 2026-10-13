@@ -417,6 +417,24 @@ def test_example_config_matches_current_schema() -> None:
     assert cfg.osc_destinations.get(first.id) is first
 
 
+@pytest.mark.parametrize(("section", "defaults"), [("controller", ControllerConfig()), ("mouse3d", Mouse3DConfig())])
+def test_example_config_binds_nothing_the_defaults_leave_unbound(section: str, defaults: object) -> None:
+    """A station seeded from the example must not start with a binding a fresh config leaves unbound."""
+    from pathlib import Path
+
+    example_path = Path(__file__).resolve().parents[1] / "config.example.toml"
+    example = tomllib.loads(example_path.read_text(encoding="utf-8"))[section]
+    # A field the code dropped is silently filtered on load.
+    assert [name for name in example if not hasattr(defaults, name)] == []
+    unbound = {"", -1}
+    bound = {
+        name: value
+        for name, value in example.items()
+        if name.startswith(("btn_", "key_")) and getattr(defaults, name) in unbound and value not in unbound
+    }
+    assert bound == {}
+
+
 def test_bootstrap_copies_example_when_config_absent(tmp_path) -> None:
     """First-run path: ``config.toml`` is missing, ``config.example.toml``
     sits next to it → copy the example into place verbatim."""
@@ -1117,10 +1135,12 @@ def test_loading_default_config_does_not_emit_deprecation_warnings(
     ("upper", "lower"),
     [
         ("btn_reset", "btn_toggle_help"),
-        ("btn_toggle_zones", "btn_settings"),
         ("btn_settings", "btn_next_marker"),
         ("btn_speed_up", "btn_move_z_up"),
         ("btn_prev_marker", "btn_clear_messages"),
+        ("btn_clear_messages", "btn_toggle_zones"),
+        ("btn_toggle_zones", "btn_toggle_paths"),
+        ("btn_toggle_paths", "btn_pathfinder"),
         ("btn_menu_confirm", "btn_menu_cancel"),
     ],
 )
@@ -1128,6 +1148,11 @@ def test_gamepad_button_on_two_actions_stays_on_the_upper_one(upper: str, lower:
     config = ControllerConfig(**{upper: "START", lower: "START"})
     assert getattr(config, upper) == "START"
     assert getattr(config, lower) == ""
+
+
+def test_gamepad_zone_overlay_paths_and_pathfinder_start_unbound() -> None:
+    config = ControllerConfig()
+    assert (config.btn_toggle_zones, config.btn_toggle_paths, config.btn_pathfinder) == ("", "", "")
 
 
 def test_gamepad_trigger_shared_by_z_and_an_action_stays_on_the_upper_one() -> None:
@@ -7161,3 +7186,208 @@ def test_apply_runtime_takes_new_paths() -> None:
     new_paths = PathsConfig(paths=[PathConfig(name="cross", active=True)])
     apply_runtime_config_changes(app, AppConfig(paths=new_paths))
     assert app._config.paths == new_paths
+
+
+class TestPathBindings:
+    """Pathfinder and Toggle paths start unbound and validate like every other binding."""
+
+    @pytest.mark.parametrize("field", ["btn_pathfinder", "btn_toggle_paths", "key_pathfinder", "key_toggle_paths"])
+    def test_they_start_unbound(self, field: str) -> None:
+        assert getattr(ControllerConfig(), field) == ""
+
+    @pytest.mark.parametrize(
+        ("field", "bad"), [("btn_pathfinder", "ZZ"), ("btn_toggle_paths", 3), ("key_pathfinder", "F99")]
+    )
+    def test_an_unknown_input_falls_back_to_unbound(self, field: str, bad: object) -> None:
+        assert getattr(ControllerConfig(**{field: bad}), field) == ""
+
+    def test_a_movement_key_is_refused(self) -> None:
+        assert ControllerConfig(key_toggle_paths="w").key_toggle_paths == ""
+
+    def test_a_shared_input_stays_with_the_action_above(self) -> None:
+        cfg = ControllerConfig(key_reset="x", key_pathfinder="x", btn_reset="X", btn_pathfinder="X")
+        assert (cfg.key_reset, cfg.key_pathfinder) == ("x", "")
+        assert (cfg.btn_reset, cfg.btn_pathfinder) == ("X", "")
+
+    @pytest.mark.parametrize("field", ["btn_pathfinder", "btn_toggle_paths"])
+    def test_3d_mouse_path_buttons_start_unbound(self, field: str) -> None:
+        assert getattr(Mouse3DConfig(), field) == -1
+
+
+class TestPathsHotReload:
+    def _app(self) -> _DummyApp:
+        from openfollow.paths.engine import PathEngine
+
+        app = _app_with()
+        app._paths = PathEngine()
+        return app
+
+    @staticmethod
+    def _config(*, experimental: bool, active: bool = True) -> AppConfig:
+        from openfollow.configuration import PathConfig, PathPointConfig, PathsConfig
+
+        cfg = AppConfig()
+        cfg.ui.show_experimental_features = experimental
+        cfg.paths = PathsConfig(
+            paths=[PathConfig(name="cross", active=active, points=[PathPointConfig(0, 0, 0), PathPointConfig(1, 0, 0)])]
+        )
+        return cfg
+
+    def test_new_paths_reach_the_engine(self) -> None:
+        app = self._app()
+        apply_runtime_config_changes(app, self._config(experimental=True))
+        assert app._paths.enabled
+        assert app._paths.lock_onto(1, "cross", (0.5, 0.5, 0.0))
+
+    def test_switching_experimental_features_off_releases_everyone(self) -> None:
+        app = self._app()
+        apply_runtime_config_changes(app, self._config(experimental=True))
+        app._paths.press(1, (0.5, 0.5, 0.0))
+        apply_runtime_config_changes(app, self._config(experimental=False))
+        assert not app._paths.enabled
+        assert not app._paths.is_locked(1)
+
+    def test_an_unrelated_change_keeps_the_locks(self) -> None:
+        app = self._app()
+        apply_runtime_config_changes(app, self._config(experimental=True))
+        app._paths.press(1, (0.5, 0.5, 0.0))
+        changed = self._config(experimental=True)
+        changed.grid.width = 12.0
+        apply_runtime_config_changes(app, changed)
+        assert app._paths.is_locked(1)
+
+
+# ---------------------------------------------------------------------------
+# GroundGridConfig
+# ---------------------------------------------------------------------------
+
+
+def test_ground_grid_defaults_are_inactive() -> None:
+    from openfollow.configuration import GroundGridConfig
+
+    gg = GroundGridConfig()
+    assert (gg.enabled, gg.visible, gg.z_offset, gg.vertices) == (False, True, 0.0, [])
+    assert gg.active is False
+
+
+@pytest.mark.parametrize("bad", [None, "abc", 3, [1, 2]])
+def test_ground_grid_flags_reject_wrong_type(bad: object) -> None:
+    from openfollow.configuration import GroundGridConfig
+
+    gg = GroundGridConfig(enabled=bad, visible=bad)
+    assert (gg.enabled, gg.visible) == (False, True)
+
+
+@pytest.mark.parametrize(("value", "expected"), [("true", True), ("false", False), (True, True)])
+def test_ground_grid_flags_accept_bool_forms(value: object, expected: bool) -> None:
+    from openfollow.configuration import GroundGridConfig
+
+    assert GroundGridConfig(enabled=value).enabled is expected
+
+
+@pytest.mark.parametrize(("value", "expected"), [(-1.5, -1.5), ("0.6", 0.6), (2, 2.0)])
+def test_ground_grid_z_offset_keeps_finite_numbers(value: object, expected: float) -> None:
+    from openfollow.configuration import GroundGridConfig
+
+    assert GroundGridConfig(z_offset=value).z_offset == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("bad", [None, "abc", True, float("nan"), float("inf"), [1.0]])
+def test_ground_grid_z_offset_rejects_wrong_type_to_default(bad: object) -> None:
+    from openfollow.configuration import GroundGridConfig
+
+    assert GroundGridConfig(z_offset=bad).z_offset == 0.0
+
+
+@pytest.mark.parametrize("bad", [None, "abc", True, 5, {"x": 1}])
+def test_ground_grid_vertices_reject_non_list(bad: object) -> None:
+    from openfollow.configuration import GroundGridConfig
+
+    assert GroundGridConfig(vertices=bad).vertices == []
+
+
+def test_ground_grid_vertices_keep_only_finite_pairs() -> None:
+    from openfollow.configuration import GroundGridConfig
+
+    gg = GroundGridConfig(
+        vertices=[
+            [0, 0],
+            ["1", "2.5"],
+            ["bad", 1],
+            [3],
+            "xy",
+            [True, 1],
+            [float("nan"), 1],
+            [4, float("inf")],
+            (5, 6, 7),
+        ]
+    )
+    assert gg.vertices == [[0.0, 0.0], [1.0, 2.5], [5.0, 6.0]]
+
+
+def test_ground_grid_vertices_are_capped() -> None:
+    from openfollow.configuration import GROUND_GRID_MAX_VERTICES, GroundGridConfig
+
+    gg = GroundGridConfig(vertices=[[float(i), 0.0] for i in range(GROUND_GRID_MAX_VERTICES + 10)])
+    assert len(gg.vertices) == GROUND_GRID_MAX_VERTICES
+    assert gg.vertices[-1] == [float(GROUND_GRID_MAX_VERTICES - 1), 0.0]
+
+
+@pytest.mark.parametrize(
+    ("enabled", "vertices", "active"),
+    [
+        (True, [[0, 0], [1, 0], [1, 1]], True),
+        (True, [[0, 0], [1, 0]], False),
+        (False, [[0, 0], [1, 0], [1, 1]], False),
+        (True, [[0, 0], [1, 0], ["x", 1]], False),
+    ],
+)
+def test_ground_grid_active_needs_enabled_and_three_corners(enabled: bool, vertices: list, active: bool) -> None:
+    from openfollow.configuration import GroundGridConfig
+
+    assert GroundGridConfig(enabled=enabled, vertices=vertices).active is active
+
+
+def test_ground_grid_round_trips_through_toml(tmp_path) -> None:
+    from openfollow.configuration import load_config, save_config
+
+    cfg = AppConfig()
+    cfg.ground_grid.enabled = True
+    cfg.ground_grid.visible = False
+    cfg.ground_grid.z_offset = -1.2
+    cfg.ground_grid.vertices = [[0.0, 0.0], [2.0, 0.0], [2.0, 1.5]]
+    path = tmp_path / "config.toml"
+    save_config(cfg, str(path))
+
+    loaded = load_config(str(path))
+    assert loaded.ground_grid == cfg.ground_grid
+
+
+def test_ground_grid_hand_edited_toml_is_normalised(tmp_path) -> None:
+    from openfollow.configuration import load_config
+
+    path = tmp_path / "config.toml"
+    path.write_text('[ground_grid]\nenabled = "yes"\nz_offset = "low"\nvertices = [[0, 0], ["a", 1], [1, 0], [1, 1]]\n')
+    gg = load_config(str(path)).ground_grid
+    assert gg.enabled is True
+    assert gg.z_offset == 0.0
+    assert gg.vertices == [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]
+
+
+def test_apply_runtime_ground_grid_swaps_live() -> None:
+    app = _DummyApp(AppConfig())
+    new_config = AppConfig()
+    new_config.ground_grid.enabled = True
+    new_config.ground_grid.vertices = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]
+
+    apply_runtime_config_changes(app, new_config)
+
+    assert app._config.ground_grid == new_config.ground_grid
+    assert app._web_commands.restart_requested is False
+
+
+@pytest.mark.parametrize("bad", [None, 7, True])
+def test_trigger_zone_vertices_reject_non_list(bad: object) -> None:
+    from openfollow.configuration import TriggerZoneConfig
+
+    assert TriggerZoneConfig(vertices=bad).vertices == []

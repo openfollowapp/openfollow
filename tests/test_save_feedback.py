@@ -14,7 +14,8 @@ from tests._template_source import function_body
 pytestmark = pytest.mark.unit
 
 _PACKAGE = Path(__file__).resolve().parent.parent / "openfollow"
-_WRITE = re.compile(r"method:\s*['\"](POST|PUT|DELETE|PATCH)['\"]")
+# A fetch option, or a request helper called with the method first (``api('PUT', url, body)``).
+_WRITE = re.compile(r"method:\s*['\"](?:POST|PUT|DELETE|PATCH)['\"]|\(\s*['\"](?:POST|PUT|DELETE|PATCH)['\"]\s*,")
 
 
 def _sources_with_scripts() -> list[Path]:
@@ -28,6 +29,16 @@ def test_every_file_that_saves_by_script_reports_failures_through_the_shared_hel
     assert len(writers) >= 8, "the scan no longer finds the script-driven saves"
     silent = [path.name for path in writers if "saveError" not in path.read_text(encoding="utf-8")]
     assert silent == []
+
+
+@pytest.mark.parametrize("call", ["api('PUT', '/api/paths/' + name, body)", "fetch(url, { method: 'POST' })"])
+def test_the_save_scan_sees_a_request_helper_and_a_fetch_option(call: str) -> None:
+    assert _WRITE.search(call)
+
+
+@pytest.mark.parametrize("call", ["api('GET', '/api/paths')", "fetch('/api/paths')"])
+def test_the_save_scan_leaves_reads_alone(call: str) -> None:
+    assert not _WRITE.search(call)
 
 
 def _template(relative: str) -> str:
@@ -57,7 +68,7 @@ def test_a_template_export_failure_reports_on_the_dialog() -> None:
     assert "showToast" not in body
 
 
-_NATIVE_DIALOG = re.compile(r"(?<![\w.])(confirm|alert|prompt)\(")
+_NATIVE_DIALOG = re.compile(r"(?<![\w.])(?:window\.)?(confirm|alert|prompt)\(")
 
 
 def test_no_template_or_input_plugin_opens_a_native_browser_dialog() -> None:
@@ -67,6 +78,18 @@ def test_no_template_or_input_plugin_opens_a_native_browser_dialog() -> None:
         for match in _NATIVE_DIALOG.finditer(path.read_text(encoding="utf-8"))
     ]
     assert offenders == []
+
+
+@pytest.mark.parametrize(
+    "call", ["confirm('Delete?')", "window.confirm('Delete?')", "if (!alert(x))", "window.prompt('Name')"]
+)
+def test_the_dialog_scan_sees_a_native_dialog_with_or_without_window(call: str) -> None:
+    assert _NATIVE_DIALOG.search(call)
+
+
+@pytest.mark.parametrize("call", ["modalConfirm({})", "window.modalConfirm({})", "evt.detail.confirm(x)"])
+def test_the_dialog_scan_leaves_the_station_s_dialog_alone(call: str) -> None:
+    assert not _NATIVE_DIALOG.search(call)
 
 
 def test_every_hx_confirm_names_its_button_and_the_listener_asks_in_the_modal() -> None:

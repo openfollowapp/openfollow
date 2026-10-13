@@ -41,9 +41,11 @@ logger = logging.getLogger(__name__)
 # Serializes load→mutate→``save_config`` spans against the on-disk config.
 # ``save_config`` overwrites the whole file, so two interleaving spans would
 # have the later save clobber the earlier. Held by the off-GTK-thread writers
-# that run concurrently: the threaded WSGI request handlers and the
-# marker-catalog sync receiver. GTK-main-loop writers (on-screen menu,
-# receiver self-heal) do NOT take this lock and can still interleave.
+# that run concurrently (the threaded WSGI request handlers and the
+# marker-catalog sync receiver) and by main-loop writers that write only their
+# own change (``save_config_change``, the move-speed flush). Other GTK-main-loop
+# writers (on-screen menu, receiver self-heal) do NOT take this lock and can
+# still interleave.
 config_write_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
@@ -489,6 +491,55 @@ class GridConfig:
         self.origin_thickness = _coerce_int(self.origin_thickness, 3, lo=1, hi=20)
 
 
+def _coerce_xy_vertices(value: Any, *, max_count: int | None = None) -> list[list[float]]:
+    """Keep finite ``[x, y]`` pairs from *value*; anything else is dropped.
+
+    Non-finite coordinates are dropped too: they make every point-in-polygon
+    comparison False and silently corrupt the containment test.
+    """
+    if not isinstance(value, (list, tuple)):
+        return []
+    cleaned: list[list[float]] = []
+    for v in value:
+        if not isinstance(v, (list, tuple)) or len(v) < 2 or isinstance(v[0], bool) or isinstance(v[1], bool):
+            continue
+        try:
+            x, y = float(v[0]), float(v[1])
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if math.isfinite(x) and math.isfinite(y):
+            cleaned.append([x, y])
+    return cleaned[:max_count] if max_count is not None else cleaned
+
+
+# Upper bound on ground-grid polygon corners.
+GROUND_GRID_MAX_VERTICES = 64
+
+
+@dataclass
+class GroundGridConfig:
+    """A second floor: one polygon at its own absolute Z (experimental).
+
+    Active only when ``enabled`` and the polygon has at least three corners; a
+    marker inside it in XY gets its floor elements drawn at ``z_offset``.
+    """
+
+    enabled: bool = False
+    visible: bool = True
+    z_offset: float = 0.0
+    vertices: list[list[float]] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.enabled = _coerce_bool(self.enabled, False)
+        self.visible = _coerce_bool(self.visible, True)
+        self.z_offset = 0.0 if isinstance(self.z_offset, bool) else _coerce_float(self.z_offset, 0.0)
+        self.vertices = _coerce_xy_vertices(self.vertices, max_count=GROUND_GRID_MAX_VERTICES)
+
+    @property
+    def active(self) -> bool:
+        return self.enabled and len(self.vertices) >= 3
+
+
 # Operator Screen marker glyph; each style reads only its own fields.
 _MARKER_STYLES = ("crosshair", "cone")
 
@@ -787,21 +838,7 @@ class TriggerZoneConfig:
                 self.trigger_source,
             )
             self.trigger_source = "markers"
-        # Normalize vertices to [float, float] pairs
-        cleaned: list[list[float]] = []
-        for v in self.vertices:
-            if isinstance(v, (list, tuple)) and len(v) >= 2:
-                try:
-                    x, y = float(v[0]), float(v[1])
-                except (TypeError, ValueError):
-                    continue
-                # Drop non-finite coords: ``float("nan")`` / ``float("inf")``
-                # survive coercion but make every point-in-polygon comparison
-                # False, silently corrupting membership tests for the zone.
-                if not (math.isfinite(x) and math.isfinite(y)):
-                    continue
-                cleaned.append([x, y])
-        self.vertices = cleaned
+        self.vertices = _coerce_xy_vertices(self.vertices)
         # Coerce ``triggered_by`` items to ``int``; drop anything that
         # can't be coerced (a hand-edited TOML with ``["a", 1]`` won't
         # crash the engine – it'll filter on ``[1]`` and log nothing,
@@ -1883,6 +1920,8 @@ _BUTTON_MAPPING_FIELDS = (
     "btn_menu_confirm",
     "btn_menu_cancel",
     "btn_clear_messages",  # clear operator-message cards
+    "btn_pathfinder",
+    "btn_toggle_paths",
     # Deprecated – superseded by btn_menu_confirm / btn_menu_cancel. Kept
     # in the mapping so legacy configs still validate and fall back to
     # defaults on invalid values; no longer used for dispatch.
@@ -1919,6 +1958,8 @@ _KEYBOARD_ACTION_FIELDS = (
     "key_prev_marker",
     "key_settings",
     "key_clear_messages",  # clear operator-message cards
+    "key_pathfinder",
+    "key_toggle_paths",
 )
 
 # Binding groups in form order: the fields of one group may not share an input,
@@ -1927,7 +1968,6 @@ _KEYBOARD_ACTION_FIELDS = (
 GAMEPAD_ACTION_BUTTON_FORM_LABELS = (
     ("btn_reset", "Reset Marker"),
     ("btn_toggle_help", "Toggle Help"),
-    ("btn_toggle_zones", "Toggle Zone Overlay"),
     ("btn_settings", "Settings Menu"),
     ("btn_speed_down", "Speed -"),
     ("btn_speed_up", "Speed +"),
@@ -1936,6 +1976,9 @@ GAMEPAD_ACTION_BUTTON_FORM_LABELS = (
     ("btn_next_marker", "Next Marker"),
     ("btn_prev_marker", "Prev Marker"),
     ("btn_clear_messages", "Clear Messages"),
+    ("btn_toggle_zones", "Toggle Zone Overlay"),
+    ("btn_toggle_paths", "Toggle Paths"),
+    ("btn_pathfinder", "Pathfinder"),
 )
 GAMEPAD_MENU_BUTTON_FORM_LABELS = (
     ("btn_menu_confirm", "Confirm"),
@@ -1956,6 +1999,8 @@ KEYBOARD_ACTION_FORM_LABELS = (
     ("key_clear_messages", "Clear Messages"),
     ("key_next_marker", "Next Marker"),
     ("key_prev_marker", "Prev Marker"),
+    ("key_pathfinder", "Pathfinder"),
+    ("key_toggle_paths", "Toggle Paths"),
 )
 CONTROLLER_BINDING_GROUPS = tuple(
     tuple(name for name, _ in labels)
@@ -2000,7 +2045,6 @@ class ControllerConfig:
     btn_speed_up: str = "RB"
     btn_move_z_down: str = "LT"
     btn_move_z_up: str = "RT"
-    btn_toggle_zones: str = "B"
     # Cycle bindings (marker selection only; calibration is web-UI-only).
     btn_next_marker: str = "DPAD_RIGHT"
     btn_prev_marker: str = "DPAD_LEFT"
@@ -2012,6 +2056,9 @@ class ControllerConfig:
     btn_menu_cancel: str = "B"
     # Clear all operator-message cards. Default unbound; edge-triggered.
     btn_clear_messages: str = ""
+    btn_toggle_zones: str = ""
+    btn_toggle_paths: str = ""
+    btn_pathfinder: str = ""
     move_xy_stick: str = "left"
     # Marker-fader integrator: which stick Y-axis (if any) drives the fader of
     # the currently-controlled marker. The bus integrates
@@ -2074,6 +2121,8 @@ class ControllerConfig:
     key_settings: str = "m"
     # Clear all operator-message cards. Default unbound.
     key_clear_messages: str = ""
+    key_pathfinder: str = ""
+    key_toggle_paths: str = ""
 
     def __post_init__(self) -> None:
         """Validate configuration values."""
@@ -2225,6 +2274,8 @@ MOUSE3D_BUTTON_FIELDS = (
     "btn_speed_down",
     "btn_toggle_help",
     "btn_toggle_zones",
+    "btn_pathfinder",
+    "btn_toggle_paths",
 )
 # Web-form row labels (gesture-first, config key in parens) in display order.
 # Single source for the form's axis/button loops; the consistency test asserts
@@ -2245,6 +2296,8 @@ MOUSE3D_BUTTON_FORM_LABELS = (
     ("btn_speed_down", "Speed down"),
     ("btn_toggle_help", "Toggle help"),
     ("btn_toggle_zones", "Toggle zones"),
+    ("btn_pathfinder", "Pathfinder"),
+    ("btn_toggle_paths", "Toggle paths"),
 )
 
 
@@ -2294,6 +2347,8 @@ class Mouse3DConfig:
     btn_speed_down: int = -1
     btn_toggle_help: int = -1
     btn_toggle_zones: int = -1
+    btn_pathfinder: int = -1
+    btn_toggle_paths: int = -1
 
     def __post_init__(self) -> None:
         self.enabled = _coerce_bool(self.enabled, False)
@@ -2512,6 +2567,7 @@ class AppConfig:
     # Sub-configs
     camera: CameraConfig = field(default_factory=CameraConfig)
     grid: GridConfig = field(default_factory=GridConfig)
+    ground_grid: GroundGridConfig = field(default_factory=GroundGridConfig)
     marker: MarkerConfig = field(default_factory=MarkerConfig)
     controller: ControllerConfig = field(default_factory=ControllerConfig)
     mouse3d: Mouse3DConfig = field(default_factory=Mouse3DConfig)
@@ -2652,6 +2708,7 @@ def _filter_known(cls: type, data: dict[str, Any]) -> dict[str, Any]:
 _SUB_CONFIG_MAP: dict[str, type] = {
     "camera": CameraConfig,
     "grid": GridConfig,
+    "ground_grid": GroundGridConfig,
     "marker": MarkerConfig,
     "controller": ControllerConfig,
     "mouse3d": Mouse3DConfig,
@@ -3105,6 +3162,23 @@ def save_config(config: AppConfig, path: str = "config.toml") -> None:
         raise
 
 
+def save_config_change(path: str, running: AppConfig, change: Callable[[AppConfig], None]) -> None:
+    """Make ``change`` in ``running`` and in the config file as it is on disk now.
+
+    For a writer whose running config may lag the file: only what ``change`` sets is written, under
+    ``config_write_lock``, so a save another thread made in the meantime survives. With no file yet,
+    ``running`` is written whole.
+    """
+    change(running)
+    with config_write_lock:
+        if not os.path.exists(path):
+            save_config(running, path)
+            return
+        current = load_config(path, strict=True)
+        change(current)
+        save_config(current, path)
+
+
 # ---------------------------------------------------------------------------
 # Runtime Hot-Reload
 # ---------------------------------------------------------------------------
@@ -3415,6 +3489,9 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
     # Grid and camera updates (no renderer needed - Cairo overlay reads from config)
     if new_config.grid != app._config.grid:
         app._config.grid = new_config.grid
+
+    if new_config.ground_grid != app._config.ground_grid:
+        app._config.ground_grid = new_config.ground_grid
 
     if new_config.camera != app._config.camera:
         app._camera = Camera.from_config(new_config.camera)
@@ -3741,8 +3818,12 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
         # destination and can't be safely evicted without per-caller
         # ownership tracking.
 
-    if new_config.paths != app._config.paths:
+    paths_changed = new_config.paths != app._config.paths
+    if paths_changed:
         app._config.paths = new_config.paths
+    engine = getattr(app, "_paths", None)
+    if engine is not None and (paths_changed or engine.enabled != app._config.ui.show_experimental_features):
+        engine.reload(app._config.paths, enabled=app._config.ui.show_experimental_features)
 
     # The MIDI ``apply_config`` is idempotent (same device on same patch is a
     # no-op), so re-applying on every reload pass is safe.

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -147,11 +148,9 @@ def test_a_file_on_another_device_with_the_same_inode_is_read_again(
     os.utime(config_file, ns=(before.st_atime_ns, before.st_mtime_ns))
     real_stat = os.stat
 
-    def _other_device(p: str) -> os.stat_result:
+    def _other_device(p: str) -> SimpleNamespace:
         st = real_stat(p)
-        fields = list(st)
-        fields[2] = st.st_dev + 1  # st_dev
-        return os.stat_result(fields)
+        return SimpleNamespace(st_dev=st.st_dev + 1, st_ino=st.st_ino, st_mtime_ns=st.st_mtime_ns, st_size=st.st_size)
 
     monkeypatch.setattr(cache_module.os, "stat", _other_device)
     assert cache.load(config_file).psn_system_name == "Moved!"

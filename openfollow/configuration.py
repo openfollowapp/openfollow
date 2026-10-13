@@ -3302,6 +3302,20 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
             app._config.video_source_type = old_video_source_type
             for name, value in old_field_values.items():
                 setattr(app._config, name, value)
+    else:
+        # A field that does not rebuild the input is committed without a swap.
+        input_cls = get_input_class(app._config.video_source_type)
+        quiet = {
+            f.name: getattr(new_config, f.name, f.default)
+            for f in (input_cls.config_fields() if input_cls is not None else [])
+            if not f.rebuilds and getattr(app._config, f.name, f.default) != getattr(new_config, f.name, f.default)
+        }
+        if quiet:
+            for name, value in quiet.items():
+                setattr(app._config, name, value)
+            receiver = getattr(app, "_video_receiver", None)
+            if receiver is not None:
+                receiver.update_input_fields(quiet)
 
     # Grid and camera updates (no renderer needed - Cairo overlay reads from config)
     if new_config.grid != app._config.grid:

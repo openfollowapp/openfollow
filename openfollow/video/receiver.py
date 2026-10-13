@@ -843,6 +843,10 @@ class GstNativeSinkReceiver:
                         self._start_connection_timeout()
                     logger.info("Native sink pipeline started – waiting for first frame.")
 
+    def update_input_fields(self, values: dict[str, Any]) -> None:
+        """Store input fields that do not rebuild the input; the running pipeline is left alone."""
+        self._input_config.update(values)
+
     def set_source(self, source_name: str) -> None:
         """Change the source and attempt to connect."""
         source_name = source_name.strip()

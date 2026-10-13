@@ -71,6 +71,8 @@ def _list_avf_devices() -> list[dict[str, str]]:
         return []
     from gi.repository import Gst
 
+    from openfollow.configuration import clean_avf_device_name
+
     Gst.init(None)
     monitor = Gst.DeviceMonitor.new()
     monitor.add_filter("Video/Source", None)
@@ -91,7 +93,7 @@ def _list_avf_devices() -> list[dict[str, str]]:
         if api != "avf":
             continue
         unique_id = props.get_string("avf.unique_id") or ""
-        name = dev.get_display_name() or unique_id or f"avf{avf_index}"
+        name = clean_avf_device_name(dev.get_display_name()) or unique_id or f"avf{avf_index}"
         result.append(
             {
                 "unique_id": unique_id,
@@ -422,7 +424,8 @@ class AvfInput(VideoInputBase):
             sel = " selected" if dev["unique_id"] == current else ""
             options.append(f'<option value="{uid}"{sel}>{label}</option>')
         if not options:
-            options.append('<option value="">-- No devices found --</option>')
+            empty = "No devices found" if listed else "Camera list could not be read"
+            options.append(f'<option value="">-- {empty} --</option>')
         return "\n".join(options)
 
     # -- Config ---------------------------------------------------------

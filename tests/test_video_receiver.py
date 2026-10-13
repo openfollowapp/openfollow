@@ -1378,6 +1378,18 @@ class TestSourceSelectionNavigation:
 # --------------------------------------------------------------------------- #
 
 
+class TestUpdateInputFields:
+    def test_a_field_that_does_not_rebuild_is_stored_without_a_build(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        builds = FakeInput.create_pipeline_call_count
+
+        r.update_input_fields({"fake_source": "Capture Card"})
+
+        assert r.source_name == "Capture Card"
+        assert FakeInput.create_pipeline_call_count == builds
+        assert r._pipeline is None
+
+
 class TestSetSource:
     def test_set_source_with_configured_value_creates_pipeline_and_plays(
         self, fake_gst, fake_glib, fake_input_cls

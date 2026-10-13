@@ -344,6 +344,24 @@ class TestDiscoverAvfDevices:
 
         assert avf_module._camera_names == {"47B4B64B": "FaceTime HD Camera"}
 
+    def test_a_listed_name_is_cleaned_as_a_stored_one_is(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Drawn on the HUD, and compared with the stored (cleaned) name to tell two cameras apart."""
+        from openfollow.configuration import AVF_DEVICE_NAME_MAX_LEN
+
+        monkeypatch.setattr(sys, "platform", "darwin")
+        fake = _make_fake_gst_with_devices(
+            [
+                _FakeDevice(props={"device.api": "avf", "avf.unique_id": "A"}, display_name="Capture\u202e Card\n"),
+                _FakeDevice(props={"device.api": "avf", "avf.unique_id": "B"}, display_name="C" * 1000),
+                _FakeDevice(props={"device.api": "avf", "avf.unique_id": "C"}, display_name="\u200e"),
+            ]
+        )
+        with patch("gi.repository.Gst", fake):
+            names = [dev["name"] for dev in avf_module._list_avf_devices()]
+
+        assert names == ["Capture Card", "C" * AVF_DEVICE_NAME_MAX_LEN, "C"]
+        assert avf_module._camera_names == dict(zip("ABC", names, strict=True))
+
     def test_a_listing_that_cannot_be_read_says_so(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The build must not read a broken listing as "no camera"; the lists an
         operator reads still show none."""
@@ -967,6 +985,18 @@ class TestHandleListDevices:
         html = AvfInput().handle_list_devices({"avf_unique_id": "0x14100000", "avf_device_name": "Capture Card"})
 
         assert html == '<option value="0x14100000" selected>Capture Card</option>'
+
+    def test_a_list_that_cannot_be_read_with_no_camera_chosen_says_so(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Not "No devices found": that sends the operator to a cable, not to the listing."""
+
+        def _broken() -> list[dict[str, str]]:
+            raise RuntimeError("the device monitor did not start")
+
+        monkeypatch.setattr(avf_module, "_list_avf_devices", _broken)
+
+        assert AvfInput().handle_list_devices({"avf_unique_id": ""}) == (
+            '<option value="">-- Camera list could not be read --</option>'
+        )
 
 
 # --------------------------------------------------------------------------- #

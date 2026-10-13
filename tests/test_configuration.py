@@ -1939,6 +1939,32 @@ def test_recording_a_usb_cameras_name_swaps_no_video() -> None:
     )
 
     assert app._runtime_services.video_swaps == []
+    # Committed all the same: a later wholesale ``save_config(app._config)`` would write the blank back.
+    assert app._config.avf_device_name == "Capture Card"
+
+
+def test_a_recorded_camera_name_reaches_the_running_input() -> None:
+    """It names the camera on screen while that camera is not connected."""
+    app = _DummyApp(AppConfig(video_source_type="avf", avf_unique_id="0x14100000"))
+    noted: list[dict[str, object]] = []
+    app._video_receiver = SimpleNamespace(update_input_fields=noted.append)
+
+    apply_runtime_config_changes(
+        app, AppConfig(video_source_type="avf", avf_unique_id="0x14100000", avf_device_name="Capture Card")
+    )
+
+    assert noted == [{"avf_device_name": "Capture Card"}]
+
+
+def test_an_unchanged_save_hands_the_running_input_nothing() -> None:
+    cfg = AppConfig(video_source_type="avf", avf_unique_id="0x14100000", avf_device_name="Capture Card")
+    app = _DummyApp(cfg)
+    noted: list[dict[str, object]] = []
+    app._video_receiver = SimpleNamespace(update_input_fields=noted.append)
+
+    apply_runtime_config_changes(app, AppConfig(**{**cfg.__dict__}))
+
+    assert noted == []
 
 
 def test_choosing_another_usb_camera_still_swaps_video() -> None:

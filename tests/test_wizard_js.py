@@ -1026,6 +1026,7 @@ def test_held_corners_survive_a_reload_of_the_page() -> None:
         ),
         variables=("STORAGE_KEY", "CORNER_NAMES"),
         prelude="""
+var CALIB_ENABLED = true;
 var calibHeldPins = null, calibPoints = [], calibAnswers = [], calibAwaiting = null, CALIB_MAX = 6;
 var WIZ = {}, WIZ_STEPS = [], currentStep = 0, lensLines = null, lensImageSize = null, lensFit = null;
 var pinnedCorners = null, lensSolvedWith = null, originalFov = 60;
@@ -1036,6 +1037,37 @@ var sessionStorage = { getItem: function(k) { return store[k] || null; }, setIte
         good=_GOOD_HELD,
     )
     assert held == _GOOD_HELD
+
+
+@pytest.mark.parametrize(("enabled", "expected"), [(True, 30.0), (False, 18.5)], ids=["shown", "hidden"])
+def test_a_reload_with_the_points_hidden_keeps_the_saved_ones(enabled: bool, expected: float) -> None:
+    """Apply writes the saved points while the section is hidden, never edits the operator cannot see."""
+    distance = run_wizard_js(
+        "(function() { calibPoints = [edited]; saveToSession(); calibPoints = [saved]; restoreFromSession();"
+        " return calibPoints[0].distance_a; })()",
+        functions=(
+            "lensRestoredPair",
+            "calibNumber",
+            "calibRestored",
+            "calibLoad",
+            "calibHeldRestored",
+            "saveToSession",
+            "restoreFromSession",
+        ),
+        variables=("STORAGE_KEY", "CORNER_NAMES"),
+        prelude=f"var CALIB_ENABLED = {json.dumps(enabled)};"
+        + """
+var calibHeldPins = null, calibPoints = [], calibAnswers = [], calibAwaiting = null, CALIB_MAX = 6;
+var WIZ = {}, WIZ_STEPS = [], currentStep = 0, lensLines = null, lensImageSize = null, lensFit = null;
+var pinnedCorners = null, lensSolvedWith = null, originalFov = 60;
+function getState() { return {}; }
+var store = {};
+var sessionStorage = { getItem: function(k) { return store[k] || null; }, setItem: function(k, v) { store[k] = v; } };
+""",
+        saved={**_POINT, "pin": [0.25, 0.5]},
+        edited={**_POINT, "distance_a": 30.0, "pin": [0.25, 0.5]},
+    )
+    assert distance == expected
 
 
 def test_a_snapshot_of_the_pose_carries_the_corners_it_was_solved_from() -> None:

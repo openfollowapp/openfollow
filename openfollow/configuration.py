@@ -505,10 +505,7 @@ CORNER_PIN_REACH = 10.0
 
 
 def _report_drops(name: str, said: str) -> None:
-    """Warn once per distinct ``said``; an empty one is a clean load, so the next drop is told again."""
-    if not said:
-        _reported_drops.pop(name, None)
-    elif _reported_drops.get(name) != said:
+    if _reported_drops.get(name) != said:
         _reported_drops[name] = said
         logger.warning("%s: %s; dropped", name, said)
 
@@ -532,17 +529,17 @@ def _coerce_calibration_points(value: Any) -> list[CalibrationPointConfig]:
             dropped.append(f"entry {i} {problem}")
             continue
         points.append(entry)
-    _report_drops(
-        "camera.calibration_points",
-        "; ".join(dropped[:3]) + (f"; {len(dropped) - 3} more" if len(dropped) > 3 else ""),
-    )
+    if dropped:
+        _report_drops(
+            "camera.calibration_points",
+            "; ".join(dropped[:3]) + (f"; {len(dropped) - 3} more" if len(dropped) > 3 else ""),
+        )
     return points
 
 
 def _coerce_corner_pins(value: Any) -> list[list[float]]:
     """Four [x, y] fractions of the snapshot, or none; anything else is dropped with one warning."""
     if isinstance(value, list) and not value:
-        _report_drops("camera.corner_pins", "")
         return []
     pins = (
         [[_coerce_measured(v) for v in pin] if isinstance(pin, list | tuple) else [] for pin in value]
@@ -552,7 +549,6 @@ def _coerce_corner_pins(value: Any) -> list[list[float]]:
     if len(pins) == 4 and all(
         len(pin) == 2 and all(math.isfinite(c) and abs(c) <= CORNER_PIN_REACH for c in pin) for pin in pins
     ):
-        _report_drops("camera.corner_pins", "")
         return pins
     _report_drops("camera.corner_pins", "needs four [x, y] pairs on or near the snapshot")
     return []

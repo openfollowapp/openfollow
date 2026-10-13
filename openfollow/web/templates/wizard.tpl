@@ -1361,7 +1361,8 @@
       if (state._lensSolvedWith && isFinite(state._lensSolvedWith.k1) && isFinite(state._lensSolvedWith.k2)) {
         lensSolvedWith = state._lensSolvedWith;
       }
-      if (Array.isArray(state._calibPoints)) calibLoad(state._calibPoints);
+      // Hidden, the points are the saved ones: Apply never writes edits the operator cannot see.
+      if (CALIB_ENABLED && Array.isArray(state._calibPoints)) calibLoad(state._calibPoints);
       calibHeldPins = calibHeldRestored(state._calibHeldPins);
       // A step this page leaves out (the Lens step switched off) starts at Preparation, values kept.
       if (typeof state._stepKey === 'string' && WIZ[state._stepKey] !== undefined) currentStep = WIZ[state._stepKey];

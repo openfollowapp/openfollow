@@ -7147,23 +7147,16 @@ def test_a_dropped_calibration_point_is_reported_once_not_on_every_load(caplog, 
     assert cfg_mod._reported_drops == {"camera.calibration_points": "entry 1 needs a height within 10 m of stage level"}
 
 
-@pytest.mark.parametrize(
-    ("field", "bad", "good"),
-    [
-        ("calibration_points", [_with(distance_a=250.0)], [_GOOD_POINT]),
-        ("corner_pins", [[0.1, 0.2]], [[0.81, 0.94], [0.14, 0.95], [0.37, 0.61], [0.66, 0.6]]),
-    ],
-)
-def test_a_drop_that_comes_back_after_a_clean_load_is_reported_again(field, bad, good, caplog, monkeypatch) -> None:
-    """A fixed file forgets the report, so the same mistake made again is not dropped unseen."""
+def test_a_camera_built_without_points_between_loads_does_not_repeat_the_warning(caplog, monkeypatch) -> None:
+    """The frame loop builds a bare CameraConfig every frame (``Camera.to_config``); it is no new file."""
     import openfollow.configuration as cfg_mod
 
     monkeypatch.setattr(cfg_mod, "_reported_drops", {})
     with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
-        for value in (bad, good, bad):
-            CameraConfig(**{field: value})
+        for _ in range(3):
+            CameraConfig(calibration_points=[_with(distance_a=250.0)], corner_pins=[[0.1, 0.2]])
+            CameraConfig()
     assert len(caplog.records) == 2
-    assert caplog.records[0].getMessage() == caplog.records[1].getMessage()
 
 
 def test_many_unusable_calibration_points_are_reported_in_one_line(caplog, monkeypatch) -> None:

@@ -452,6 +452,7 @@ def _apply_assist_all(
         return worlds
 
     radius_sq = cfg.detection.assist_radius_m**2
+    paths = getattr(app, "_paths", None)
 
     for mid in sorted(target_ids):
         out_marker = app._server.get_marker(mid)
@@ -472,6 +473,7 @@ def _apply_assist_all(
             _det_worlds_for(plane_z),
             radius_sq,
             steps,
+            paths,
         )
 
 
@@ -486,6 +488,7 @@ def _assist_one(
     det_worlds: list[tuple[int, float, float]],
     radius_sq: float,
     steps: float,
+    paths: Any = None,
 ) -> None:
     """Glide one assist marker's output toward the person nearest its anchor.
 
@@ -541,7 +544,9 @@ def _assist_one(
         state.ai_smooth_y = out_y
     state.ai_smooth_x += glide * (target_x - state.ai_smooth_x)
     state.ai_smooth_y += glide * (target_y - state.ai_smooth_y)
-    out_marker.set_pos(state.ai_smooth_x, state.ai_smooth_y, manual_z)
+    # On a path the output stays on it too; the anchor's place there is left alone.
+    on_path = paths.constrain(marker_id, state.ai_smooth_x, state.ai_smooth_y) if paths is not None else None
+    out_marker.set_pos(*(on_path if on_path is not None else (state.ai_smooth_x, state.ai_smooth_y, manual_z)))
 
     # The locked person (if any) is the attached box; the overlay paints it in
     # the output marker's colour. ``None`` while gliding home leaves all boxes

@@ -150,6 +150,7 @@ class TestMove:
         assert engine.move(1, 1.0, 0.0, 1.0) is None
         assert engine.project(1, 0.0, 0.0) is None
         assert engine.glide(1, 0.0, 0.0, 0.5) is None
+        assert engine.constrain(1, 0.0, 0.0) is None
 
     def test_an_end_that_releases_lets_the_marker_go(self) -> None:
         engine = self._locked(_path("out", [(0, 0, 0), (2, 0, 0)], active=True, release_at_end=True), at=(1, 0, 0))
@@ -180,6 +181,42 @@ class TestMove:
         # The paths meet at one height, so the ramp's own rise is all the height there is.
         assert _round(engine.glide(1, 0.0, 4.0, 1.0)) == (0.0, 4.0, 1.6)
         assert engine.locked_path(1) == "Ramp"
+
+
+class TestConstrain:
+    """A second position following a locked marker is put on its path as ``project`` would, the lock left alone."""
+
+    def _locked(self, *paths: PathConfig, at: tuple[float, float, float]) -> PathEngine:
+        engine = _engine(*paths, slide_time=0.0)
+        engine.press(1, at)
+        engine.tick(0.0)
+        return engine
+
+    def test_a_position_lands_on_the_nearest_point_the_marker_can_reach(self) -> None:
+        apart = _path("apart", [(20, 0, 0), (30, 0, 0)], active=True)
+        engine = self._locked(CROSS, RAMP, apart, at=(-3.0, 0.0, 0.0))
+        assert _round(engine.constrain(1, 3.0, 2.0)) == (3.0, 0.0, 0.0)
+        assert _round(engine.constrain(1, 0.3, 4.0)) == (0.0, 4.0, 1.6)
+        assert _round(engine.constrain(1, 19.0, 0.0)) == (5.0, 0.0, 0.0)
+        # The marker is where it was, on the path it was on.
+        assert _round(engine.move(1, 0.0, 0.0, 0.0)) == (-3.0, 0.0, 0.0)
+        assert engine.locked_path(1) == "cross"
+
+    def test_it_shares_what_is_left_of_the_marker_s_height_switch(self) -> None:
+        engine = self._locked(CROSS, RAMP, at=(-3.0, 0.0, 0.0))
+        engine.project(1, 0.3, 4.0)
+        # The ramp is 1.2 m up at y = 3, and the marker's 1.6 m step up has not begun to ease.
+        assert _round(engine.constrain(1, 0.0, 3.0)) == (0.0, 3.0, -0.4)
+        engine.tick(0.25)
+        assert _round(engine.constrain(1, 0.0, 3.0)) == (0.0, 3.0, 0.4)
+
+    def test_during_the_pull_it_is_pulled_in_as_far_as_the_marker(self) -> None:
+        engine = _engine(CROSS, slide_time=1.0)
+        engine.press(1, (0.0, 2.0, 1.0))
+        engine.tick(0.5)
+        # Half pulled in: half way from (3, 2) at the marker's free height to (3, 0) on the cross.
+        assert _round(engine.constrain(1, 3.0, 2.0)) == (3.0, 1.0, 0.5)
+        assert _round(engine.tick(0.0)[1]) == (0.0, 1.0, 0.5)
 
 
 class TestLockOnto:

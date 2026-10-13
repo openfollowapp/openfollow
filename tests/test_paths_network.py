@@ -83,6 +83,47 @@ class TestJunctions:
             (pytest.approx(5.0), pytest.approx(6.0 + 2 * math.sqrt(2))),
         ]
 
+    @pytest.mark.parametrize(
+        ("vee", "line"),
+        [
+            ([(-3.5, 0.5), (-3.3, -1.2), (-2.6, -2.9)], [(-5.0, -1.4), (-1.6, -1.0)]),
+            ([(-2.1, 1.2), (-1.9, -0.5), (-1.2, -2.2)], [(-3.6, -0.7), (-0.2, -0.3)]),
+            ([(-2.5, -3.0), (-1.2, -3.3), (0.6, -3.6)], [(-1.5, -4.6), (-0.9, -2.0)]),
+        ],
+    )
+    def test_a_path_through_another_s_sharp_corner_point_meets_it_once(
+        self, vee: list[tuple[float, float]], line: list[tuple[float, float]]
+    ) -> None:
+        # Typed to one decimal, the crossing falls a rounding error outside both segments meeting there.
+        corner = _curve([(x, y, 0, 0) for x, y in vee])
+        assert len(find_junctions([corner, _curve([(x, y, 0) for x, y in line])])) == 1
+
+    def test_a_crossing_found_a_rounding_error_past_a_path_s_end_is_at_that_end(self) -> None:
+        # The branch ends on the line; the intersection lands a rounding error beyond its end.
+        branch = _curve([(-4.9, -3.7, 0), (-4.0, -4.0, 0)])
+        line = _curve([(-4.3, -4.9, 0), (-3.7, -3.1, 0)])
+        assert [j.s_a for j in find_junctions([branch, line])] == [branch.length]
+        assert [j.s_b for j in find_junctions([line, branch])] == [branch.length]
+        # Turned round, it lands a rounding error before its start.
+        back = _curve([(-4.0, -4.0, 0), (-4.9, -3.7, 0)])
+        assert [j.s_a for j in find_junctions([back, line])] == [0.0]
+
+    def test_a_corner_stopping_a_micrometre_short_of_another_path_does_not_meet_it(self) -> None:
+        vee = _curve([(-1, 2, 0, 0), (0, 1e-6, 0, 0), (1, 2, 0, 0)])
+        assert find_junctions([vee, H]) == []
+
+    def test_a_crossing_on_a_closed_path_s_first_point_counts_once(self) -> None:
+        # The crossing at (0, 0) ends the diamond's last segment and starts its first.
+        diamond = _curve([(0, 0, 0, 0), (1, -1, 0, 0), (2, 0, 0, 0), (1, 1, 0, 0)], closed=True)
+        junctions = find_junctions([diamond, _curve([(-1, 0, 0), (3, 0, 0)])])
+        assert len(junctions) == 2
+
+    def test_a_junction_found_twice_across_a_closed_path_s_seam_counts_once(self) -> None:
+        # B crosses the diamond's last segment 2.8 cm before the seam, and ends 1.8 cm after it.
+        diamond = _curve([(0, 0, 0, 0), (1, -1, 0, 0), (2, 0, 0, 0), (1, 1, 0, 0)], closed=True)
+        junctions = find_junctions([diamond, _curve([(0, 1, 0), (0.02, -0.005, 0)])])
+        assert len(junctions) == 1
+
     def test_a_closed_path_meets_an_open_one_twice(self) -> None:
         ring = _curve([(-2, -2, 0), (2, -2, 0), (2, 2, 0), (-2, 2, 0)], closed=True)
         assert len(find_junctions([H, ring])) == 2
@@ -112,13 +153,14 @@ def _reference_junctions(curves: list[PathCurve]) -> list[Junction]:
             with np.errstate(divide="ignore", invalid="ignore"):
                 t = (qp[..., 0] * w[..., 1] - qp[..., 1] * w[..., 0]) / denom
                 u = (qp[..., 0] * r[..., 1] - qp[..., 1] * r[..., 0]) / denom
-            hit = (np.abs(denom) > 1e-12) & (t >= 0.0) & (t <= 1.0) & (u >= 0.0) & (u <= 1.0)
+            on = 1e-9
+            hit = (np.abs(denom) > 1e-12) & (t >= -on) & (t <= 1 + on) & (u >= -on) & (u <= 1 + on)
             pair = [
                 Junction(
                     a,
-                    float(ca.s[i] + t[i, k] * (ca.s[i + 1] - ca.s[i])),
+                    float(np.clip(ca.s[i] + t[i, k] * (ca.s[i + 1] - ca.s[i]), 0.0, ca.length)),
                     b,
-                    float(cb.s[k] + u[i, k] * (cb.s[k + 1] - cb.s[k])),
+                    float(np.clip(cb.s[k] + u[i, k] * (cb.s[k + 1] - cb.s[k]), 0.0, cb.length)),
                 )
                 for i, k in zip(*np.nonzero(hit), strict=True)
             ]
@@ -180,6 +222,34 @@ class TestJunctionSearch:
         assert sum(tested) / 3 < 0.05 * 200 * 200
 
 
+def _comb(teeth: int, along_x: bool) -> PathCurve:
+    """A zigzag of sharp teeth 0.2 m apart across a 6 m square."""
+    points = [(-3 + 0.2 * i, 3.0 if i % 2 else -3.0, 0, 0) for i in range(teeth)]
+    return _curve(points if along_x else [(y, x, z, r) for x, y, z, r in points])
+
+
+class TestJunctionSearchCost:
+    def test_a_repeat_is_looked_for_only_among_nearby_junctions(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        compared = []
+        same = network._same_junction
+        monkeypatch.setattr(network, "_same_junction", lambda *args: compared.append(1) or same(*args))
+        junctions = find_junctions([_comb(30, along_x=True), _comb(30, along_x=False)])
+        # The crossings lie about 20 cm apart: most have no junction within reach to compare with.
+        assert len(junctions) > 800
+        assert len(compared) < len(junctions) / 2
+
+    def test_a_dense_pair_is_tested_in_bounded_passes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        rng = random.Random(3)
+        scribbles = [_curve([(rng.uniform(0, 2), rng.uniform(0, 2), 0, 0.5) for _ in range(40)]) for _ in range(2)]
+        sizes = []
+        cross = network._cross
+        monkeypatch.setattr(network, "_cross", lambda a, b: sizes.append(a.size // 2) or cross(a, b))
+        assert find_junctions(scribbles) == _reference_junctions(scribbles)
+        # Three products per pass, and more than one pass.
+        assert len(sizes) > 3
+        assert max(sizes) <= network._BOX_PAIRS_PER_PASS * network._BOX_SEGMENTS**2
+
+
 class TestCornerExtension:
     # B turns up at (2, 0) with the default radius, so its curve passes 0.21 m inside the point.
     ROUNDED = _curve([(0, 0, 0, 0), (2, 0, 0, 0.5), (2, 2, 0, 0)])
@@ -236,6 +306,96 @@ class TestCornerExtension:
         assert net.curves[0] is branch
         assert net.junctions == [Junction(0, branch.length, 1, pytest.approx(7.0))]
 
+    def test_an_end_under_a_path_at_another_height_still_runs_on(self) -> None:
+        bridge = _curve([(1, -1, 2.0), (3, 1, 2.0)])
+        net = PathNetwork([_curve([(2, -2, 0), (2, 0, 0)]), self.ROUNDED, bridge])
+        assert net.curves[0].point(net.curves[0].length) == pytest.approx(self.VERTEX)
+        assert [(j.a, j.b) for j in net.junctions] == [(0, 1)]
+
+    SPURS = (_curve([(2, -2, 0), (2, 0, 0)]), _curve([(4, -1, 0), (2, 0, 0)]), _curve([(4, 0.3, 0), (2, 0, 0)]))
+
+    @pytest.mark.parametrize("count", [2, 3])
+    @pytest.mark.parametrize("main_first", [False, True])
+    def test_spurs_ending_on_one_corner_point_all_run_on_and_join_the_corner_path(
+        self, count: int, main_first: bool
+    ) -> None:
+        spurs = list(self.SPURS[:count])
+        curves = [self.ROUNDED, *spurs] if main_first else [*reversed(spurs), self.ROUNDED]
+        net = PathNetwork(curves)
+        main = curves.index(self.ROUNDED)
+        for i, curve in enumerate(net.curves):
+            if i != main:
+                assert curve.point(curve.length) == pytest.approx(self.VERTEX)
+                with_main = [j for j in net.junctions if {j.a, j.b} == {i, main}]
+                assert len(with_main) == 1
+
+    def test_a_spur_drawn_away_from_the_corner_point_runs_on_with_the_other(self) -> None:
+        away = _curve([(2, 0, 0), (4, -1, 0)])
+        net = PathNetwork([self.SPURS[0], away, self.ROUNDED])
+        assert net.curves[0].point(net.curves[0].length) == pytest.approx(self.VERTEX)
+        assert net.curves[1].point(0.0) == pytest.approx(self.VERTEX)
+
+    def test_a_spur_on_a_corner_point_beside_another_spur_s_side_stays(self) -> None:
+        # The first ends 5 cm beside the second, which runs on up to the corner point itself.
+        beside = _curve([(0, -1, 0), (1.95, -0.06, 0)])
+        net = PathNetwork([beside, self.SPURS[0], self.ROUNDED])
+        assert net.curves[0] is beside
+
+    # The path turns down at (2, 0) and, later, up at (2.12, 0).
+    ZIGZAG = _curve([(0, 2, 0, 0), (2, 0, 0, 0.5), (4, 2, 0, 0), (4, -2, 0, 0), (2.12, 0, 0, 0.5), (0, -2, 0, 0)])
+
+    @pytest.mark.parametrize("right_ends_there", [True, False])
+    def test_spurs_on_two_corner_points_of_one_path_touching_each_other_stay(self, right_ends_there: bool) -> None:
+        # The spurs end, or the right one starts, 8 cm apart, one on each corner point: running on would part them.
+        left = _curve([(0, 0, 0), (2, 0, 0)])
+        right = _curve([(4.5, 0, 0), (2.08, 0, 0)] if right_ends_there else [(2.08, 0, 0), (4.5, 0, 0)])
+        net = PathNetwork([left, right, self.ZIGZAG])
+        assert net.curves[:2] == [left, right]
+
+    def test_a_spur_runs_on_past_a_spur_end_on_another_corner_point_that_stays(self) -> None:
+        # As above, but the right spur's end also lies on the side of a third path, so it stays.
+        left, right = _curve([(0, 0, 0), (2, 0, 0)]), _curve([(4.5, 0, 0), (2.08, 0, 0)])
+        beside = _curve([(2.16, -1, 0), (2.16, 1, 0)])
+        net = PathNetwork([left, right, self.ZIGZAG, beside])
+        assert net.curves[0] is not left
+        assert net.curves[1] is right
+
+    def test_a_marker_on_one_of_two_spurs_walks_on_to_the_corner_path(self) -> None:
+        net = PathNetwork([*self.SPURS[:2], self.ROUNDED])
+        step = net.walk(Place(0, 2.0), -1.0, 0.0, 1.0)
+        assert step.place.path == 2
+        assert net.point(step.place)[0] < self.VERTEX[0]
+
+    def test_of_two_spurs_ending_at_each_other_the_one_on_the_corner_point_runs_on_and_they_still_meet(
+        self,
+    ) -> None:
+        # The first ends 8 cm from the corner point, the second 15 cm from it and 8.5 cm from the first's end.
+        on = _curve([(2, -2, 0), (2, -0.08, 0)])
+        off = _curve([(4, -1, 0), (2.06, -0.14, 0)])
+        net = PathNetwork([on, off, self.ROUNDED])
+        assert net.curves[0].point(net.curves[0].length) == pytest.approx(self.VERTEX)
+        assert net.curves[1] is off
+        assert sorted((j.a, j.b) for j in net.junctions) == [(0, 1), (0, 2)]
+        spurs = next(j for j in net.junctions if j.b == 1)
+        assert (spurs.s_a, spurs.s_b) == (pytest.approx(on.nearest(2.06, -0.14)[0]), off.length)
+
+    def test_a_spur_on_a_corner_point_runs_on_past_a_spur_end_that_stays(self) -> None:
+        # Both ends lie on the corner point and touch each other; the second also lies on the side of a third path.
+        first = _curve([(1.96, -2, 0), (1.96, 0, 0)])
+        second = _curve([(4, -1, 0), (2.05, 0, 0)])
+        beside = _curve([(2.13, -1, 0), (2.13, 1, 0)])
+        net = PathNetwork([first, second, self.ROUNDED, beside])
+        assert net.curves[0].point(net.curves[0].length) == pytest.approx(self.VERTEX)
+        assert net.curves[1] is second
+        assert {(0, 1), (0, 2), (1, 3)} <= {(j.a, j.b) for j in net.junctions}
+
+    def test_an_end_on_a_closed_path_s_first_point_stays_though_another_corner_point_is_near(self) -> None:
+        # The ring's sharp first point lies on its curve, 6 cm from B's corner point.
+        ring = _curve([(2.05, -0.03, 0, 0), (3, -1, 0, 0), (3.5, 0.5, 0, 0)], closed=True)
+        spur = _curve([(2.05, -2, 0), (2.05, -0.03, 0)])
+        net = PathNetwork([spur, ring, self.ROUNDED])
+        assert net.curves[0] is spur
+
     def test_an_end_runs_on_to_the_nearest_of_several_corner_points(self) -> None:
         hook = _curve([(0, 0, 0, 0), (2, 0, 0, 0.5), (2, 2, 0, 0.5), (0, 2, 0, 0)])
         net = PathNetwork([_curve([(2, 4, 0), (2, 2.05, 0)]), hook])
@@ -279,6 +439,10 @@ class TestCornerExtension:
         net = PathNetwork([peak, valley])
         assert net.curves == [peak, valley]
         assert net.junctions == []
+
+    def test_an_end_on_its_own_path_s_corner_point_stays(self) -> None:
+        hooked = _curve([(0, 0, 0, 0), (2, 0, 0, 0.5), (2, 2, 0, 0), (2.05, 0.05, 0, 0)])
+        assert PathNetwork([hooked]).curves[0] is hooked
 
     def test_a_closed_path_has_no_end_to_run_on(self) -> None:
         ring = _curve([(2, 0, 0, 0), (3, -1, 0, 0), (3, 1, 0, 0)], closed=True)

@@ -378,7 +378,15 @@ def test_each_answer_lands_on_the_point_it_answers() -> None:
     sent, answers = run_wizard_js(
         "(function() { var sent = calibPayload(); calibTakeAnswer(sent.indices, ['first', 'third']);"
         " return [sent, calibAnswers]; })()",
-        functions=("calibNumber", "calibComplete", "calibPinPx", "calibPayload", "calibTakeAnswer"),
+        functions=(
+            "calibNumber",
+            "calibComplete",
+            "calibPinPx",
+            "calibPayload",
+            "calibMeasured",
+            "calibRecordFit",
+            "calibTakeAnswer",
+        ),
         prelude="function renderCalibStatus() {} function renderCalibOverlay() {}",
         calibPoints=points,
         calibAnswers=[None, None, None],
@@ -474,7 +482,7 @@ def test_apply_saves_each_complete_point_with_where_the_solve_of_this_pose_put_i
     ]
 
 
-_NO_CALIB_DRAWING = "function renderCalibStatus() {} function renderCalibOverlay() {}"
+_NO_CALIB_DRAWING = "function renderCalibStatus() {} function renderCalibOverlay() {} function calibRecordFit() {}"
 
 
 def test_a_solve_gives_each_point_it_took_its_place_and_the_rest_none() -> None:
@@ -576,6 +584,7 @@ function fetch(_url, _opts) { sent++; return answered({ json: function() { retur
 function invalidLengthFields() { return []; } function snapshotPose() { return {}; }
 function showSolveStatus() {} function showSolvedParams() {} function updateFineQuad() {}
 function renderAllFineZoomBoxes() {} function applySolvedPose(c, s, b, answers) { landed++; handed = answers; }
+function calibSolveFailed() {}
 var handed = null;
 var document = { getElementById: function() { return { querySelectorAll: function() { return []; } }; } };
 """
@@ -655,6 +664,8 @@ function touch(target, x, y) {
 }
 """
 _DRAG_FUNCTIONS = (
+    "calibMeasured",
+    "calibRecordFit",
     "calibPicking",
     "svgEl",
     "pointHandle",
@@ -1020,6 +1031,8 @@ def test_held_corners_survive_a_reload_of_the_page() -> None:
             "lensRestoredPair",
             "calibNumber",
             "calibRestored",
+            "calibMeasured",
+            "calibRecordFit",
             "calibLoad",
             "calibHeldRestored",
             "saveToSession",
@@ -1530,6 +1543,84 @@ var document = {{ getElementById: function() {{ return {{ querySelectorAll: func
     )
     assert (corners != _CORNERS_PINNED) is snapped
     assert held is not snapped
+
+
+_EDIT_PAGE = (
+    _NO_CALIB_DRAWING
+    + """
+function answered(value) { return { then: function(f, _r) { return answered(f(value)); } }; }
+function rejected() { return { then: function(f, r) { return r ? (r(new Error('x')), rejected()) : rejected(); } }; }
+var poseSeq = 0, preCornerPinningPose = null, landed = 0, badLengths = [];
+function fetch() { return reply === 'unreachable' ? rejected() : answered({ json: function() { return reply; } }); }
+function invalidLengthFields() { return badLengths; } function snapshotPose() { return {}; }
+function showSolveStatus() {} function showSolvedParams() {} function updateFineQuad() {}
+function renderAllFineZoomBoxes() {} function applySolvedPose() { landed++; }
+function wizardSolveBody(sc) {
+  var b = { screen_corners: sc }; Object.defineProperty(b, 'calibHold', { value: true }); return b;
+}
+var document = { getElementById: function() { return { querySelectorAll: function() { return []; } }; } };
+"""
+)
+_EDIT_FUNCTIONS = (
+    "isConvex",
+    "quadArea",
+    "wizSolveCorners",
+    "calibMeasured",
+    "calibRecordFit",
+    "calibSolveFailed",
+    "calibTakeAnswer",
+    "calibRestored",
+    "calibNumber",
+    "calibLoad",
+    "solveFromCorners",
+)
+
+
+@pytest.mark.parametrize("loaded", [False, True], ids=["solved here", "saved pose"])
+@pytest.mark.parametrize(
+    ("edited", "reply", "bad_lengths", "forgotten"),
+    [
+        (True, {"error": "Invalid perspective"}, [], True),
+        (True, "unreachable", [], True),
+        (True, None, ["Width"], True),  # no solve can be sent
+        (True, {"camera": {}, "reprojected_corners": []}, [], False),  # it solves: its answer replaces them
+        (False, {"error": "Invalid perspective"}, [], False),  # a corner drag that fails: the points are as fitted
+    ],
+    ids=["refused", "unreachable", "cannot send", "solves", "nothing edited"],
+)
+def test_an_edit_that_cannot_be_solved_forgets_the_answers_of_the_old_measurement(
+    loaded, edited, reply, bad_lengths, forgotten
+) -> None:
+    """The pose and every answer were fitted with the point as it was: a failed re-solve leaves them Not solved."""
+    answers, positions, landed = run_wizard_js(
+        """(function() {
+          if (loaded) { calibLoad(saved); }
+          else { calibPoints = saved; calibAnswers = [null, null]; calibTakeAnswer([0, 1], answered_with); }
+          badLengths = bad;
+          if (edited) { calibPoints[0].distance_a = 30.0; calibAnswers[0] = null; calibPoints[0].position = null; }
+          solveFromCorners();
+          return [calibAnswers, calibPoints.map(function(p) { return p.position; }), landed];
+        })()""",
+        functions=_EDIT_FUNCTIONS,
+        variables=("CORNER_NAMES",),
+        prelude=_EDIT_PAGE + "var CALIB_MAX = 6, calibAwaiting = null, calibPoints = [], calibAnswers = [];",
+        loaded=loaded,
+        edited=edited,
+        saved=[
+            {**_POINT, "pin": [0.25, 0.5], "position": [1, 2, 0]},
+            {**_POINT, "pin": [0.75, 0.5], "position": [3, 4, 0]},
+        ],
+        answered_with=[{"status": "ok", "position": [1, 2, 0]}, {"status": "ok", "position": [3, 4, 0]}],
+        reply=reply,
+        bad=bad_lengths,
+        cornerPositions=_CORNERS_PINNED,
+    )
+    edited_position = None if edited else [1, 2, 0]
+    if forgotten:
+        assert (answers, positions) == ([None, None], [None, None])
+    else:
+        assert positions == [edited_position, [3, 4, 0]]
+    assert landed == (1 if isinstance(reply, dict) and "camera" in reply else 0)
 
 
 def test_the_lens_resolve_hands_its_point_answers_on() -> None:

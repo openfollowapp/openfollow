@@ -1067,6 +1067,7 @@
   var CALIB_SAVED_CORNERS = {{!json.dumps(_calib_corners)}};  // the corner pins the saved pose was solved from
   var calibPoints = [];
   var calibAnswers = [];  // the last solve's answer for each point, null until one arrives
+  var calibFitted = [];  // the points the pose was fitted with, each with what it was measured as then
   var calibAwaiting = null;  // the point whose corners the next taps on the corners choose
   var calibDrawn = [];  // per point, its handle and the lines from its pin: a drag moves them in place
   var calibDrag = null;  // the point being dragged: nothing draws the points again under it
@@ -3903,14 +3904,16 @@
 
   function solveFromCorners() {
     // No projection has placed the corners yet: a calibration point can still ask for a solve.
-    if (CORNER_NAMES.some(function(n) { return !cornerPositions[n]; })) return;
+    if (CORNER_NAMES.some(function(n) { return !cornerPositions[n]; })) { calibSolveFailed(); return; }
     if (!isConvex(cornerPositions) || quadArea(cornerPositions) < 100) {
       showSolveStatus('Invalid perspective \u2013 adjust corners', false);
+      calibSolveFailed();
       return;
     }
     var badLen = invalidLengthFields();
     if (badLen.length) {
       showSolveStatus('Fix invalid length field(s) first: ' + badLen.join(', '), false);
+      calibSolveFailed();
       return;
     }
 
@@ -3936,6 +3939,7 @@
       if (seq !== poseSeq) return;
       if (data.error) {
         showSolveStatus(data.error, false);
+        calibSolveFailed();
         return;
       }
 
@@ -3969,7 +3973,7 @@
       }
 
       applySolvedPose(data.camera, screenCorners, body, data.calibration_points);
-    });
+    }, function() { if (seq === poseSeq) calibSolveFailed(); });  // never answered; a throw above is not this
   }
 
   function showSolveStatus(msg, ok) {
@@ -4055,6 +4059,7 @@
     calibPoints = (Array.isArray(points) ? points : []).map(calibRestored).filter(Boolean).slice(0, CALIB_MAX);
     calibAnswers = calibPoints.map(function() { return null; });
     calibAwaiting = null;
+    calibRecordFit();
   }
 
   function calibPinPx(p) { return [p.pin[0] * imageWidth, p.pin[1] * imageHeight]; }
@@ -4095,8 +4100,26 @@
       var a = calibAnswers[i];
       p.position = a && a.status !== 'flagged' ? a.position : null;  // a left-out place is not the solve's
     });
+    calibRecordFit();
     renderCalibStatus();
     renderCalibOverlay();
+  }
+
+  // A point is in the pose's fit while its answer is not Left out, or, loaded without one, it has a position.
+  function calibRecordFit() {
+    calibFitted = [];
+    calibPoints.forEach(function(p, i) {
+      var a = calibAnswers[i];
+      if (a ? a.status !== 'flagged' : p.position) calibFitted.push({ point: p, as: calibMeasured(p) });
+    });
+  }
+
+  // A re-solve that could not be had: answers fitted with a point as it no longer reads are not this pose's.
+  function calibSolveFailed() {
+    var changed = calibFitted.some(function(f) {
+      return calibPoints.indexOf(f.point) === -1 || calibMeasured(f.point) !== f.as;
+    });
+    if (changed) calibTakeAnswer([], []);
   }
 
   // What a point was measured as: a snapshot's place for it holds only while this is unchanged.

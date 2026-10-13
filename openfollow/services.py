@@ -3709,8 +3709,8 @@ class AppRuntimeServices:
         return float(x), float(y), float(z)
 
     def _path_state(self) -> dict[str, Any]:
-        engine = self._app._paths
-        return {"recording": engine.recording, "locks": engine.locked()}
+        recording, locks = self._app._paths.web_state()
+        return {"recording": recording, "locks": locks}
 
     def _record_path(self, name: str | None) -> bool:
         from openfollow.configuration import load_config

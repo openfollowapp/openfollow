@@ -290,3 +290,21 @@ def test_storage_that_throws_leaves_the_switch_working() -> None:
         " setItem: function () { throw new Error('denied'); } };",
     )
     assert out["planHidden"] is True
+
+
+def test_a_held_corner_follows_the_pointer_before_it_drops() -> None:
+    out = _editor(
+        _CAMERA
+        + """
+        choose('camera'); await showPicture();
+        zoneLines()[0].dispatchEvent(makeEvent('click'));
+        await settle();
+        var corner = cornerHandles()[2];
+        pointer(corner, 'pointerdown', 840, -40);
+        pointer(svg(), 'pointermove', 900, -10);
+        out.at = [corner.getAttribute('cx'), corner.getAttribute('cy')];
+        out.puts = requests.filter(function (r) { return r.method === 'PUT'; }).length;
+        """
+    )
+    assert out["at"] == ["900", "-10"]
+    assert out["puts"] == 0

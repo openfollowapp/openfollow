@@ -21,7 +21,15 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from openfollow.configuration import CameraConfig, DetectionConfig, GridConfig
+from openfollow.configuration import (
+    CameraConfig,
+    DetectionConfig,
+    GridConfig,
+    PathConfig,
+    PathPointConfig,
+    PathsConfig,
+)
+from openfollow.paths.engine import PathEngine
 from openfollow.runtime.frame_timing import NOMINAL_FRAME_DT
 from openfollow.runtime.services_detection_pin import (
     DetectionPinState,
@@ -1596,26 +1604,72 @@ def test_release_restores_full_validity_on_the_wire(monkeypatch) -> None:
     assert marker.to_psn_marker().status == 1.0
 
 
-def test_assist_keeps_the_output_of_a_marker_locked_on_a_path_on_it(monkeypatch) -> None:
-    """The AI Assisted output stays on the anchor's path, and the anchor's place on it is left alone."""
-    from openfollow.configuration import PathConfig, PathPointConfig, PathsConfig
-    from openfollow.paths.engine import PathEngine
-
+def _assist_on_a_row(slide_time: float = 0.0) -> tuple[SimpleNamespace, PathEngine]:
+    """Assist with the anchor pressed onto a row along y = 1 at 0.3 m from (4, 1); the engine."""
     app = _assist_app(_assist_cfg())
     engine = PathEngine()
     path = PathConfig(name="row", active=True, points=[PathPointConfig(0, 1, 0.3, 0), PathPointConfig(10, 1, 0.3, 0)])
-    engine.reload(PathsConfig(slide_time=0.0, paths=[path]), enabled=True)
+    engine.reload(PathsConfig(slide_time=slide_time, paths=[path]), enabled=True)
     anchor = _seed_anchor(app, 4.0, 1.0, 0.3)
     engine.press(_PID, anchor.pos)
-    engine.tick(0.0)
+    anchor.set_pos(*engine.tick(0.0)[_PID])
     app._paths = engine
+    return app, engine
 
+
+def test_assist_keeps_the_output_of_a_marker_locked_on_a_path_on_it(monkeypatch) -> None:
+    """The AI Assisted output stays on the anchor's path, and the anchor's place on it is left alone."""
+    app, engine = _assist_on_a_row()
     # The person stands at (5, 0): within reach of the anchor, off the path along y = 1.
     _run_assist(app, _AssistDetector([_det(0.5, 1)]), monkeypatch)
 
     assert app._server.get_marker(_PID).pos == pytest.approx((5.0, 1.0, 0.3))
-    assert anchor.pos == (4.0, 1.0, 0.3)
+    assert app._assist_manual[_PID].pos == pytest.approx((4.0, 1.0, 0.3))
     assert engine.move(_PID, 0.0, 0.0, 0.0) == pytest.approx((4.0, 1.0, 0.3))
+
+
+@pytest.mark.parametrize("off", ["tracking off", "fully automatic"])
+def test_when_assist_stops_the_output_takes_the_lock_over_where_it_stands(monkeypatch, off: str) -> None:
+    app, engine = _assist_on_a_row()
+    _run_assist(app, _AssistDetector([_det(0.5, 1)]), monkeypatch)
+    out = app._server.get_marker(_PID)
+    assert out.pos == pytest.approx((5.0, 1.0, 0.3))
+    if off == "tracking off":
+        app._config.detection.enabled = False
+    else:
+        app._config.detection.pin_mode = "replace"
+    # Fully Automatic tracking nobody leaves the marker where it is.
+    _run(app, _StubDetector(None), monkeypatch, unproject=_linear_unproject)
+    # The first push moves the marker on from the output's place, not the anchor's at x = 4.
+    assert engine.move(_PID, 0.5, 0.0, 0.02) == pytest.approx((5.01, 1.0, 0.3))
+
+
+def test_when_assist_stops_mid_pull_the_output_is_pulled_in_from_where_it_stands(monkeypatch) -> None:
+    app, engine = _assist_on_a_row(slide_time=1.0)
+    # The anchor is pressed from (4, 3); the person stands at (5, 3), the output half pulled in towards y = 1.
+    anchor = _seed_anchor(app, 4.0, 3.0, 0.0)
+    engine.release(_PID)
+    engine.press(_PID, anchor.pos)
+    anchor.set_pos(*engine.tick(0.5)[_PID])
+    _run_assist(app, _AssistDetector([_det(0.5, 1, y1=0.3)]), monkeypatch)
+    out = app._server.get_marker(_PID)
+    assert out.pos == pytest.approx((5.0, 2.0, 0.15))
+    app._config.detection.enabled = False
+    _run_assist(app, _AssistDetector([]), monkeypatch)
+    assert engine.tick(0.0)[_PID] == pytest.approx((5.0, 2.0, 0.15))
+    assert engine.tick(1.0)[_PID] == pytest.approx((5.0, 1.0, 0.3))
+
+
+@pytest.mark.parametrize("locked", [True, False])
+def test_with_no_feed_only_a_locked_output_is_held_on_its_path(monkeypatch, locked: bool) -> None:
+    app, engine = _assist_on_a_row()
+    app._video_receiver.resolution = (0, 0)
+    out = app._server.get_marker(_PID)
+    out.set_pos(4.0, 3.0, 0.0)
+    if not locked:
+        engine.release(_PID)
+    _run_assist(app, _AssistDetector([]), monkeypatch)
+    assert out.pos == pytest.approx((4.0, 1.0, 0.3) if locked else (4.0, 3.0, 0.0))
 
 
 def test_replace_keeps_a_marker_locked_on_a_path_on_it(monkeypatch) -> None:

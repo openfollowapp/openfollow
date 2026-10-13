@@ -96,3 +96,12 @@ def test_a_rename_the_web_ui_is_saving_keeps_the_markers_on_the_path(tmp_path) -
     )
     engine.reload(renamed, enabled=True)
     assert engine.locked_path(7) == "ds"
+
+
+def test_the_path_state_names_a_path_by_a_rename_saved_before_the_reload(tmp_path) -> None:  # noqa: ANN001
+    svc = _services(tmp_path)
+    engine = svc._app._paths
+    engine.press(7, (1.0, 0.2, 0.0))
+    engine.record("cross", svc._app._config.paths)
+    svc._stage_path_rename("cross", "ds")
+    assert svc._path_state() == {"recording": "ds", "locks": {7: "ds"}}

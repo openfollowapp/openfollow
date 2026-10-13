@@ -14,6 +14,7 @@ import pytest
 
 from openfollow.runtime.overlay_draw_style import PATH_ARROW_LENGTH, PATH_ARROW_WIDTH
 from tests._fake_cairo import FakeCairo
+from tests._template_source import reorder_script
 
 pytestmark = [pytest.mark.unit, pytest.mark.skipif(shutil.which("node") is None, reason="needs node")]
 
@@ -40,16 +41,16 @@ def _run(call: str, *names: str) -> object:
     return json.loads(out.stdout)
 
 
+_PICTURE_VIEW = Path(__file__).parents[1] / "openfollow" / "web" / "static" / "js" / "picture-view.js"
+
+
 def _runs(points: str) -> object:
-    script = "var window = {};\n" + (_PICTURE_VIEW.read_text(encoding="utf-8"))
+    script = "var window = {};\n" + _PICTURE_VIEW.read_text(encoding="utf-8")
     script += f"\nprocess.stdout.write(JSON.stringify(window.OpenFollow.pictureRuns({points})));"
     node = shutil.which("node")
     assert node is not None
     out = subprocess.run([node, "-e", script], capture_output=True, text=True, check=True, timeout=10)  # nosec B603
     return json.loads(out.stdout)
-
-
-_PICTURE_VIEW = Path(__file__).parents[1] / "openfollow" / "web" / "static" / "js" / "picture-view.js"
 
 
 class TestPolylines:
@@ -94,6 +95,7 @@ def _editor(steps: str, setup: str = "") -> Any:
             (_STATIC / "units.js").read_text(encoding="utf-8"),
             (_STATIC / "save-feedback.js").read_text(encoding="utf-8"),
             (_STATIC / "picture-view.js").read_text(encoding="utf-8"),
+            reorder_script(),
             f"parseHTML({json.dumps(markup)}, document.body);",
             setup,
             script,
@@ -184,21 +186,56 @@ class TestDraggingAPoint:
         )
         assert [(p["x"], p["y"]) for p in out["saved"]] == [(-3, 2), (3, 2), (0.0, 5.0)]
 
-    def test_a_point_deleted_in_the_table_cannot_be_dragged_from_the_old_picture(self) -> None:
+    def test_the_picture_offers_no_handles_until_it_shows_the_rows_as_they_are(self) -> None:
         out = _editor(
             """
             openRow('cross'); await settle();
             holdWhen = function (req) { return req.url === '/api/paths/view'; };
-            row('cross').querySelectorAll('.pe-points tbody tr')[1].querySelector('button.danger').click();
+            control('cross', 'delete-0').click();  // the picture still shows three points
             await settle();
-            out.shown = handles().length;  // the picture has not caught up yet
-            pointer(handles()[1], 'pointerdown', 940, 560);
-            pointer(picture(), 'pointerup', 1040, 660);
+            out.behind = handles().length;
+            holdWhen = null; release(); await settle();
+            out.caughtUp = handles().length;
+            pointer(handles()[0], 'pointerdown', 940, 560);  // (3, 2), now the first point
+            pointer(picture(), 'pointerup', 940, 760);
             await settle();
             out.saved = model.paths[0].points.map(function (p) { return [p.x, p.y]; });
+            """,
+            setup="model.paths[0].points.push({ x: 0, y: 0, z: 0, radius: 0.5 });",
+        )
+        assert out == {"behind": 0, "caughtUp": 2, "saved": [[3, 4], [0, 0]]}
+
+    def test_a_point_gone_by_the_time_its_drag_ends_moves_nothing(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            pointer(handles()[2], 'pointerdown', 640, 360);
+            model.paths[0].points.pop();  // deleted on another station
+            control('loop', 'closed').click();  // a save, then a load
+            await settle();
+            pointer(picture(), 'pointerup', 740, 460);
+            await settle();
+            out.saved = model.paths[0].points.map(function (p) { return [p.x, p.y]; });
+            out.line = errorLine();
+            """,
+            setup="model.paths[0].points.push({ x: 0, y: 0, z: 0, radius: 0.5 });",
+        )
+        assert out == {"saved": [[-3, 2], [3, 2]], "line": None}
+
+    def test_a_dragged_point_follows_the_pointer(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            var dot = handles()[0];
+            pointer(dot, 'pointerdown', 340, 560);
+            pointer(picture(), 'pointermove', 400, 600);
+            out.during = [dot.getAttribute('cx'), dot.getAttribute('cy')];
+            pointer(picture(), 'pointerup', 400, 600);
+            pointer(picture(), 'pointermove', 500, 700);  // after the drag: nothing follows
+            out.after = [dot.getAttribute('cx'), dot.getAttribute('cy')];
             """
         )
-        assert out == {"shown": 2, "saved": [[-3, 2]]}
+        assert out == {"during": ["400", "600"], "after": ["400", "600"]}
 
 
 class TestTheSelectedPath:
@@ -208,7 +245,7 @@ class TestTheSelectedPath:
             openRow('loop'); await settle();
             openRow('cross'); await settle();
             out.before = selectedRow();
-            row('cross').querySelector('input[id$="-closed"]').click();
+            control('cross', 'closed').click();
             await settle();
             out.after = selectedRow();
             out.handles = handles().length;
@@ -221,7 +258,7 @@ class TestTheSelectedPath:
         out = _editor(
             """
             openRow('cross');  // its toggle event is still to come
-            row('loop').querySelector('input[id$="-closed"]').click();  // redraws the rows now
+            control('loop', 'closed').click();  // redraws the rows now
             await settle();
             out.open = row('cross').open;
             out.selected = selectedRow();
@@ -234,7 +271,7 @@ class TestTheSelectedPath:
             """
             openRow('cross'); await settle();
             openRow('cross'); await settle();
-            row('loop').querySelector('input[id$="-closed"]').click();  // redraws the rows
+            control('loop', 'closed').click();  // redraws the rows
             await settle();
             out.selected = selectedRow();
             out.handles = handles().length;
@@ -451,7 +488,7 @@ class TestEditingThePoints:
             """
             openRow('cross'); await settle();
             holdWhen = function (req) { return req.method === 'PUT'; };
-            var name = row('cross').querySelector('input[id$="-name"]');
+            var name = control('cross', 'name');
             typeInto(name, 'ds'); enter(name);
             var cells = inputs('cross', 0);
             typeInto(cells[0], '-2'); enter(cells[0]);
@@ -469,8 +506,8 @@ class TestEditingThePoints:
         out = _editor(
             """
             openRow('cross'); await settle();
-            row('cross').querySelector('[data-row-tab$="-points"]').click();
-            var name = row('cross').querySelector('input[id$="-name"]');
+            control('cross', 'tab-points').click();
+            var name = control('cross', 'name');
             typeInto(name, 'ds'); enter(name);
             await settle();
             out.open = row('ds').open;
@@ -483,11 +520,11 @@ class TestEditingThePoints:
         out = _editor(
             """
             openRow('cross'); await settle();
-            var name = row('cross').querySelector('input[id$="-name"]');
+            var name = control('cross', 'name');
             typeInto(name, 'cross!'); enter(name);
             await settle();
             out.open = row('cross').open;
-            out.shown = row('cross').querySelector('input[id$="-name"]').value;
+            out.shown = control('cross', 'name').value;
             """
         )
         assert out == {"open": True, "shown": "cross"}
@@ -499,10 +536,10 @@ class TestEditingThePoints:
             refuse = function (req) {
                 if (req.method === 'PUT' && 'name' in req.body) return { status: 400, body: { error: 'Taken.' } };
             };
-            var name = row('cross').querySelector('input[id$="-name"]');
+            var name = control('cross', 'name');
             typeInto(name, 'LOOP'); enter(name);
             await settle();
-            out.shown = row('cross').querySelector('input[id$="-name"]').value;
+            out.shown = control('cross', 'name').value;
             out.names = model.paths.map(function (p) { return p.name; });
             """
         )
@@ -528,11 +565,11 @@ class TestEditingThePoints:
             """
             openRow('cross'); await settle();
             model.paths.shift();  // deleted on another station
-            row('loop').querySelector('input[id$="-active"]').click();  // a save, then a load
+            control('loop', 'active').click();  // a save, then a load
             await settle();
             out.gone = row('cross') === null;
             model.paths.push(blank('cross'));  // and made again there
-            row('loop').querySelector('input[id$="-active"]').click();
+            control('loop', 'active').click();
             await settle();
             out.open = row('cross').open;
             out.selected = selectedRow();
@@ -591,7 +628,7 @@ class TestFailedSaves:
             """
             openRow('cross'); await settle();
             refuse = function (req) { if (req.method === 'PUT') return 'unreachable'; };
-            row('cross').querySelector('input[id$="-closed"]').click();
+            control('cross', 'closed').click();
             await settle();
             out.before = errorLine() !== null;
             refuse = null;
@@ -717,11 +754,11 @@ class TestFollowingARecording:
         out = _editor(
             """
             openRow('cross'); await settle();
-            var name = row('cross').querySelector('input[id$="-name"]');
+            var name = control('cross', 'name');
             typeInto(name, 'ds');
             model.paths[0].points.push({ x: 5, y: 2, z: 0, radius: 0.5 });  // a Pathfinder press
             tickIntervals(); await settle();
-            var now = row('cross').querySelector('input[id$="-name"]');
+            var now = control('cross', 'name');
             out.points = row('cross').querySelectorAll('.pe-points tbody tr').length;
             out.typing = [document.activeElement === now, now.value];
             """,
@@ -734,7 +771,7 @@ class TestFollowingARecording:
 
     def test_nothing_is_asked_while_a_save_is_on_its_way(self) -> None:
         held = "holdWhen = function (req) { return req.method === 'PUT'; }; openRow('cross'); await settle();"
-        held += " row('cross').querySelector('.pe-add button').click(); before = gets();"
+        held += " control('cross', 'closed').click(); before = gets();"
         assert self._polls(held)["polled"] == 0
 
     def test_the_rows_follow_a_recording_while_on_screen(self) -> None:
@@ -750,3 +787,402 @@ class TestFollowingARecording:
     )
     def test_nothing_is_asked_while_the_rows_are_not_on_screen(self, hide: str) -> None:
         assert self._polls(hide)["polled"] == 0
+
+
+class TestReorderingThePoints:
+    def test_a_drop_reorders_the_points_and_saves_them_once(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            control('cross', 'tab-points').click();
+            dragPoint('cross', 0, 2, 15);  // the first point to the end
+            out.shown = pointRows('cross').map(function (r) { return r.querySelectorAll('input')[0].value; });
+            await settle();
+            out.puts = puts().map(function (r) { return r.body; });
+            out.saved = points(0);
+            """,
+            setup="model.paths[0].points.push({ x: 0, y: 0, z: 0, radius: 0.5 });",
+        )
+        assert out["shown"] == ["3.000 m", "0.000 m", "-3.000 m"]
+        assert out["saved"] == [[3, 2], [0, 0], [-3, 2]]
+        assert [list(body) for body in out["puts"]] == [["points"]]
+
+    def test_the_rows_carry_no_up_and_down_buttons(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            out.buttons = texts(row('cross').querySelectorAll('.pe-points button'));
+            out.handles = row('cross').querySelectorAll('.pe-points .row-drag-handle').length;
+            """
+        )
+        assert out == {"buttons": ["Delete", "Delete"], "handles": 2}
+
+
+class TestPointFromAMarker:
+    def test_the_chosen_marker_is_kept_for_the_next_add(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            var sel = control('cross', 'marker');
+            sel.value = '3'; sel.dispatchEvent(makeEvent('change'));
+            control('cross', 'add-marker').click(); await settle();
+            control('cross', 'add-marker').click(); await settle();
+            out.asked = asked(/marker/);
+            out.shown = control('cross', 'marker').value;
+            """,
+            setup="model.markers = [2, 3];",
+        )
+        assert out == {"asked": ["/api/paths/marker/3", "/api/paths/marker/3"], "shown": "3"}
+
+    def test_without_a_marker_add_asks_nothing(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            control('cross', 'add-marker').click(); await settle();
+            out.asked = asked(/marker/).length;
+            out.points = model.paths[0].points.length;
+            """,
+            setup="model.markers = [];",
+        )
+        assert out == {"asked": 0, "points": 2}
+
+
+_TWO_MORE = (
+    "model.paths.push(blank('fifth', { points: twoPoints(9) }));"
+    "model.paths.push(blank('sixth', { points: twoPoints(8) }));"
+    "model.recording = 'loop';"  # the rows follow the recording, so a poll redraws them
+)
+
+
+class TestFocusFollowsItsPath:
+    def test_an_earlier_path_deleted_elsewhere_leaves_typing_in_its_own_path(self) -> None:
+        out = _editor(
+            """
+            openRow('sixth'); await settle();
+            openRow('fifth'); await settle();
+            typeInto(control('fifth', 'x-0'), '9');
+            model.paths.shift();  // cross deleted on another station
+            tickIntervals(); await settle();
+            var now = document.activeElement;
+            out.focus = [now.id, now.value];
+            control('fifth', 'y-0').focus(); await settle();
+            out.puts = puts().map(function (r) { return r.url; });
+            out.fifth = points(1)[0];
+            """,
+            setup=_TWO_MORE,
+        )
+        assert out == {"focus": ["pe:fifth:x-0", "9"], "puts": ["/api/paths/fifth"], "fifth": [9, 9]}
+
+    def test_typing_in_a_path_deleted_elsewhere_goes_nowhere(self) -> None:
+        out = _editor(
+            """
+            openRow('sixth'); await settle();
+            openRow('fifth'); await settle();
+            typeInto(control('fifth', 'x-0'), '9');
+            model.paths.splice(2, 1);  // fifth deleted on another station
+            tickIntervals(); await settle();
+            out.focus = document.activeElement.tagName;
+            document.body.focus(); await settle();
+            out.puts = puts().length;
+            """,
+            setup=_TWO_MORE,
+        )
+        assert out == {"focus": "BODY", "puts": 0}
+
+    def test_a_field_follows_its_path_through_a_rename(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            var name = control('cross', 'name');
+            typeInto(name, 'ds'); enter(name);
+            await settle();
+            out.focus = document.activeElement.id;
+            """
+        )
+        assert out["focus"] == "pe:ds:name"
+
+
+class TestFocusAfterARowButton:
+    @pytest.mark.parametrize("what", ["add-point", "add-marker", "record"])
+    def test_stays_on_the_button(self, what: str) -> None:
+        out = _editor(
+            f"""
+            openRow('cross'); await settle();
+            control('cross', {json.dumps(what)}).click(); await settle();
+            out.focus = document.activeElement.id;
+            out.label = document.activeElement.textContent;
+            """
+        )
+        assert out["focus"] == f"pe:cross:{what}"
+        assert out["label"] == {"add-point": "+ Point", "add-marker": "Add", "record": "Stop recording"}[what]
+
+    @pytest.mark.parametrize(
+        ("deleted", "count", "focus"),
+        [(0, 3, "pe:cross:delete-0"), (2, 3, "pe:cross:delete-1"), (0, 1, "pe:cross:add-point")],
+    )
+    def test_a_point_s_delete_moves_to_the_point_that_takes_its_place(
+        self, deleted: int, count: int, focus: str
+    ) -> None:
+        out = _editor(
+            f"""
+            openRow('cross'); await settle();
+            control('cross', 'delete-{deleted}').click(); await settle();
+            out.focus = document.activeElement.id;
+            out.points = model.paths[0].points.length;
+            """,
+            setup=f"model.paths[0].points = model.paths[0].points.concat(twoPoints(0)).slice(0, {count});",
+        )
+        assert out == {"focus": focus, "points": count - 1}
+
+
+class TestSavingOnlyWhatChanged:
+    @pytest.mark.parametrize(
+        ("steps", "body"),
+        [
+            ("control('cross', 'closed').click();", {"closed": True}),
+            (
+                "var sel = control('cross', 'end-0'); sel.value = 'release'; sel.dispatchEvent(makeEvent('change'));",
+                {"release_at_start": True},
+            ),
+        ],
+    )
+    def test_an_option_saves_that_option_alone(self, steps: str, body: dict) -> None:
+        out = _editor(
+            f"""
+            openRow('cross'); await settle();
+            {steps}
+            await settle();
+            out.puts = puts().map(function (r) {{ return r.body; }});
+            """
+        )
+        assert out["puts"] == [body]
+
+    def test_a_point_recorded_just_before_a_shape_change_is_kept(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            model.paths[0].points.push({ x: 7, y: 7, z: 0, radius: 0.5 });  // a Pathfinder press, saved
+            control('cross', 'closed').click();  // before the next poll
+            await settle();
+            out.points = model.paths[0].points.length;
+            out.closed = model.paths[0].closed;
+            """,
+            setup="model.recording = 'cross';",
+        )
+        assert out == {"points": 3, "closed": True}
+
+
+class TestARecordingPath:
+    def test_its_points_cannot_be_edited_here(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            out.disabled = ['x-0', 'y-1', 'z-1', 'delete-0', 'add-point', 'add-marker'].map(function (c) {
+                return control('cross', c).disabled;
+            });
+            out.handles = [row('cross').querySelectorAll('.row-drag-handle').length, handles().length];
+            out.options = [control('cross', 'closed').disabled, control('cross', 'end-0').disabled];
+            pointer(picture(), 'pointerdown', 640, 860);
+            pointer(picture(), 'click', 640, 860);
+            await settle();
+            out.line = errorLine();
+            out.points = model.paths[0].points.length;
+            """,
+            setup="model.recording = 'cross';",
+        )
+        assert out == {
+            "disabled": [True] * 6,
+            "handles": [0, 0],
+            "options": [False, False],
+            "line": "Not saved. Path cross is recording. Stop recording to change its points.",
+            "points": 2,
+        }
+
+    def test_its_corner_radius_cannot_be_edited_here(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            out.disabled = control('cross', 'radius-1').disabled;
+            """,
+            setup="model.recording = 'cross'; model.paths[0].points.push({ x: 0, y: 0, z: 0, radius: 0.5 });",
+        )
+        assert out["disabled"] is True
+
+
+class TestTheRowActions:
+    def test_stop_recording_stops_it(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            control('cross', 'record').click(); await settle();
+            out.sent = sent(/record/);
+            out.recording = model.recording;
+            out.label = control('cross', 'record').textContent;
+            """,
+            setup="model.recording = 'cross';",
+        )
+        assert out == {"sent": [{"on": False}], "recording": None, "label": "Record"}
+
+    def test_record_starts_it(self) -> None:
+        out = _editor(
+            """
+            openRow('loop'); await settle();
+            control('loop', 'record').click(); await settle();
+            out.sent = sent(/record/);
+            out.chip = row('loop').querySelector('.stat-chip').textContent;
+            """
+        )
+        assert out == {"sent": [{"on": True}], "chip": "Recording"}
+
+    def test_the_active_switch_switches_the_path(self) -> None:
+        out = _editor(
+            """
+            openRow('loop'); await settle();
+            control('loop', 'active').click(); await settle();
+            out.sent = sent(/active/);
+            out.active = model.paths[1].active;
+            out.dot = row('loop').querySelector('.osc-binding-enabled-dot').getAttribute('aria-label');
+            """
+        )
+        assert out == {"sent": [{"active": True}], "active": True, "dot": "Active"}
+
+    def test_a_corner_radius_saves_with_the_points(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            var r = control('cross', 'radius-1');
+            typeInto(r, '25cm'); enter(r);
+            await settle();
+            out.radius = model.paths[0].points[1].radius;
+            out.label = r.getAttribute('aria-label');
+            """,
+            setup="model.paths[0].points.push({ x: 0, y: 0, z: 0, radius: 0.5 });",
+        )
+        assert out == {"radius": 0.25, "label": "Point 2 radius"}
+
+    def test_an_end_that_releases_shows_it(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            out.ends = [control('cross', 'end-0').value, control('cross', 'end-1').value];
+            """,
+            setup="model.paths[0].release_at_end = true;",
+        )
+        assert out["ends"] == ["hold", "release"]
+
+    def test_the_header_names_the_markers_on_the_path(self) -> None:
+        out = _editor(
+            "out.target = row('cross').querySelector('.osc-binding-target').textContent;"
+            "out.others = row('loop').querySelector('.osc-binding-target').textContent;",
+            setup="model.locks = { 2: 'CROSS', 5: 'cross' };",
+        )
+        assert out == {"target": "Marker 2, 5", "others": ""}
+
+    def test_a_new_path_opens_as_the_one_the_picture_edits(self) -> None:
+        out = _editor(
+            """
+            editor().querySelector('[data-pe="new"]').click(); await settle();
+            out.open = row('path-3').open;
+            out.selected = selectedRow();
+            """
+        )
+        assert out == {"open": True, "selected": "path-3"}
+
+
+class TestNamesForAssistiveTechnology:
+    def test_each_point_field_and_delete_names_its_point(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            out.names = labels('cross', ['x-0', 'y-0', 'z-1', 'delete-1']);
+            """
+        )
+        assert out["names"] == ["Point 1 X", "Point 1 Y", "Point 2 Z", "Delete point 2"]
+
+    def test_a_length_that_does_not_read_says_why(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            var y = control('cross', 'y-0');
+            typeInto(y, 'abc'); enter(y);
+            out.invalid = y.getAttribute('aria-invalid');
+            out.line = errorLine();
+            out.puts = puts().length;
+            """
+        )
+        assert out == {"invalid": "true", "line": 'Not saved. Point 1 Y: "abc" is not a length.', "puts": 0}
+
+
+class TestTheRemainingGuards:
+    def test_focus_sent_by_a_delete_is_not_sent_again_by_a_later_redraw(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            control('cross', 'delete-0').click(); await settle();
+            control('cross', 'y-0').focus();
+            model.paths[1].closed = true;  // changed elsewhere: the next poll redraws
+            tickIntervals(); await settle();
+            out.focus = document.activeElement.id;
+            """,
+            setup="model.recording = 'loop'; model.paths[0].points.push({ x: 0, y: 0, z: 0, radius: 0.5 });",
+        )
+        assert out["focus"] == "pe:cross:y-0"
+
+    def test_a_points_edit_waiting_behind_an_option_is_still_sent(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            holdWhen = function (req) { return req.method === 'PUT'; };
+            var x = control('cross', 'x-0');
+            typeInto(x, '-2'); enter(x);  // in flight
+            control('cross', 'closed').click();  // waiting
+            var y = control('cross', 'y-0');
+            typeInto(y, '7'); enter(y);  // waiting too
+            holdWhen = null; release(); await settle();
+            out.saved = [points(0)[0], model.paths[0].closed];
+            """
+        )
+        assert out["saved"] == [[-2, 7], True]
+
+    def test_a_change_from_elsewhere_takes_the_handles_off_until_the_picture_shows_it(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            out.before = handles().length;
+            holdWhen = function (req) { return req.url === '/api/paths/view'; };
+            model.paths[0].points.unshift({ x: 0, y: 0, z: 0, radius: 0.5 });  // added on another station
+            tickIntervals(); await settle();
+            out.behind = handles().length;
+            holdWhen = null; release(); await settle();
+            out.after = handles().length;
+            """,
+            setup="model.recording = 'loop';",
+        )
+        assert out == {"before": 2, "behind": 0, "after": 3}
+
+    def test_two_drops_in_a_row_reorder_from_the_order_shown(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            dragPoint('cross', 0, 2, 15);  // A to the end: B C A
+            dragPoint('cross', 0, 2, 15);  // B to the end: C A B
+            await settle();
+            out.saved = points(0);
+            """,
+            setup="model.paths[0].points.push({ x: 0, y: 0, z: 0, radius: 0.5 });",
+        )
+        assert out["saved"] == [[0, 0], [-3, 2], [3, 2]]
+
+    def test_moving_the_pointer_without_a_drag_leaves_clicks_working(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            pointer(picture(), 'pointermove', 600, 800);
+            pointer(picture(), 'pointerdown', 640, 860);
+            pointer(picture(), 'pointerup', 640, 860);
+            pointer(picture(), 'click', 640, 860);
+            await settle();
+            out.points = model.paths[0].points.length;
+            """
+        )
+        assert out["points"] == 3

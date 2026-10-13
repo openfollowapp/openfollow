@@ -819,6 +819,35 @@ def test_an_osc_position_for_a_locked_marker_lands_on_its_path(path_app) -> None
     assert app._server.get_marker(10).pos == pytest.approx((3.0, 0.0, 0.0))
 
 
+@pytest.mark.parametrize(
+    ("axes", "pulled", "landed"),
+    [
+        # Only Z: nothing moves, and the pull carries on from where it was.
+        ({"z": 0.0}, (0.0, 1.0, 0.0), (0.0, 0.0, 0.0)),
+        # Only X: the free position moves along X and keeps its Y.
+        ({"x": 3.0}, (3.0, 1.0, 0.0), (3.0, 0.0, 0.0)),
+    ],
+)
+def test_a_per_axis_osc_position_during_the_pull_keeps_the_axes_it_leaves_out(  # noqa: ANN001
+    path_app, axes, pulled, landed
+) -> None:
+    from openfollow.configuration import PathConfig, PathPointConfig, PathsConfig
+
+    app = path_app
+    cross = PathConfig(name="cross", active=True, points=[PathPointConfig(-5, 0, 0, 0), PathPointConfig(5, 0, 0, 0)])
+    app._paths.reload(PathsConfig(slide_time=1.0, paths=[cross]), enabled=True)
+    marker = app._server.get_marker(10)
+    marker.set_pos(0.0, 2.0, 0.0)
+    app._paths.press(10, marker.pos)
+    manager = InputManager(app)
+    manager.update_paths(0.5)
+    manager.osc_handler = SimpleNamespace(flush_updates=lambda: {10: axes})
+    manager.update(0.0)
+    assert marker.pos == pytest.approx(pulled)
+    manager.update_paths(0.5)
+    assert marker.pos == pytest.approx(landed)
+
+
 def test_a_marker_no_longer_controlled_is_released(path_app) -> None:  # noqa: ANN001
     app = path_app
     app._paths.press(99, (0.0, 1.0, 0.0))

@@ -7083,6 +7083,19 @@ class TestPathsConfig:
         cfg = PathsConfig(paths=[{"name": "path-2"}, {"name": ""}, {"name": "!!"}])
         assert [p.name for p in cfg.paths] == ["path-2", "path-2-2", "path-3"]
 
+    @pytest.mark.parametrize(
+        ("names", "want"),
+        [
+            (["..", "path-1"], ["path-1-2", "path-1"]),
+            (["", "PATH-1"], ["path-1-2", "PATH-1"]),
+            (["cross", "cross", "cross-2"], ["cross", "cross-3", "cross-2"]),
+        ],
+    )
+    def test_a_name_made_up_never_takes_one_a_later_path_was_given(self, names: list[str], want: list[str]) -> None:
+        from openfollow.configuration import PathsConfig
+
+        assert [p.name for p in PathsConfig(paths=[{"name": n} for n in names]).paths] == want
+
     def test_names_that_match_ignoring_case_are_made_unique(self, caplog) -> None:
         from openfollow.configuration import PathsConfig
 

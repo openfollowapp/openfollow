@@ -42,7 +42,7 @@
         this.w = 1280;
         this.h = 720;
         this._url = null;
-        this._drag = null;      // the drop callback while a handle is held
+        this._drag = null;      // {drop, dot} while a handle is held
         this._dragEnded = false; // the click that ends a drag is not a click on the picture
         this._bind();
     }
@@ -118,7 +118,7 @@
             ev.stopPropagation();
             var drop = onGrab();
             if (!drop) return;
-            view._drag = drop;
+            view._drag = { drop: drop, dot: dot };
             view.svg.setPointerCapture(ev.pointerId);
         });
         return dot;
@@ -132,9 +132,16 @@
     P._bind = function () {
         var view = this, svg = this.svg;
         svg.addEventListener('pointerdown', function () { view._dragEnded = false; });
+        // The held handle follows the pointer; the drop lands it on the stage.
+        svg.addEventListener('pointermove', function (ev) {
+            var at = view._drag && view.toPicture(ev);
+            if (!at) return;
+            view._drag.dot.setAttribute('cx', at.x);
+            view._drag.dot.setAttribute('cy', at.y);
+        });
         svg.addEventListener('pointerup', function (ev) {
             if (!view._drag) return;
-            var drop = view._drag;
+            var drop = view._drag.drop;
             view._drag = null;
             view._dragEnded = true;
             var at = view.toPicture(ev);

@@ -666,7 +666,7 @@ class TestApplyToAllStations:
 
 
 class TestFollowingARecording:
-    def _polls(self, hide: str) -> Any:
+    def _polls(self, hide: str, recording: str = "cross") -> Any:
         return _editor(
             f"""
             function gets() {{ return requests.filter(function (r) {{ return r.url === '/api/paths'; }}).length; }}
@@ -675,8 +675,16 @@ class TestFollowingARecording:
             tickIntervals(); await settle();
             out.polled = gets() - before;
             """,
-            setup="model.recording = 'cross';",
+            setup=f"model.recording = {json.dumps(recording or None)};",
         )
+
+    def test_nothing_is_asked_while_nothing_records(self) -> None:
+        assert self._polls("", recording="")["polled"] == 0
+
+    def test_nothing_is_asked_while_a_save_is_on_its_way(self) -> None:
+        held = "holdWhen = function (req) { return req.method === 'PUT'; }; openRow('cross'); await settle();"
+        held += " row('cross').querySelector('.pe-add button').click(); before = gets();"
+        assert self._polls(held)["polled"] == 0
 
     def test_the_rows_follow_a_recording_while_on_screen(self) -> None:
         assert self._polls("")["polled"] == 1

@@ -187,10 +187,16 @@ class PathEngine:
         return Press.LOCKED
 
     def lock_onto(self, marker_id: int, name: str, pos: Point) -> bool:
-        """Slide ``marker_id`` onto the active path called ``name``; False when there is none."""
+        """Slide ``marker_id`` onto the active path called ``name``; False when there is none.
+
+        A marker already on that path, or being pulled onto it, is left as it is.
+        """
         index = self._index(name)
         if index is None or self._network is None:
             return False
+        lock = self._locks.get(marker_id)
+        if lock is not None and lock.place.path == index:
+            return True
         place = self._network.nearest(pos[0], pos[1], among=[index])
         assert place is not None  # one path always answers
         self._start(marker_id, place, pos)

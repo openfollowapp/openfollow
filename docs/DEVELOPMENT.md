@@ -36,6 +36,13 @@ poetry install
 poetry run openfollow
 ```
 
+**Refreshing an existing venv.** Mutation testing (mutmut) lives in the
+optional `mutation` group, and `poetry install` never removes a package, so a
+venv created before it moved there still carries mutmut and setproctitle. Run
+`poetry sync` once (with the extras you use, e.g. `poetry sync -E detection`)
+to bring the venv back to the lock; see [COVERAGE.md](COVERAGE.md) to add the
+group back for mutation runs.
+
 > On macOS the on-device **Settings → Open Web UI** action opens the running web
 > UI in your default browser (the embedded overlay used on Linux/Pi isn't
 > available on macOS). The UI is also reachable from any browser on the LAN.
@@ -304,6 +311,9 @@ Use this only if you can’t (or don’t want to) use Ansible.
    poetry install
    poetry run openfollow
    ```
+
+   An existing checkout's venv: run `poetry sync` once (with your extras) to
+   drop the optional `mutation` group (see "Refreshing an existing venv" above).
 
 5. Headless display over SSH (renders to HDMI via Cage):
 

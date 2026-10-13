@@ -103,8 +103,9 @@ jobs:
         # ``mido`` + ``python-rtmidi`` are base deps now, so a plain install
         # builds them; the ``libasound2-dev`` step above provides the ALSA
         # headers ``python-rtmidi`` needs to build its wheel on CI's Python
-        # 3.13 (which has no prebuilt rtmidi wheel).
-        run: poetry install --no-interaction -E detection
+        # 3.13 (which has no prebuilt rtmidi wheel). ``sync`` so a restored
+        # cache sheds whatever the lock no longer lists.
+        run: poetry sync --no-interaction -E detection
 
       # Lint: `make lint` runs `ruff check` + `ruff format --check`.
       # Single source of truth in `[tool.ruff]` block of pyproject.toml.
@@ -226,8 +227,7 @@ jobs:
       # Own key prefix. Both jobs cache ``.venv``, and on a ``poetry.lock``
       # change both miss and both save concurrently – with one shared key
       # whichever post-step wins the race decides what the other job starts
-      # from, and ``test`` installs with ``poetry install``, which computes no
-      # uninstalls and would carry the surplus forward on every later run.
+      # from.
       - name: Cache Poetry virtualenv
         uses: actions/cache@v6
         with:
@@ -274,11 +274,12 @@ jobs:
   # must not block a release. It must not be invisible either – an extra outside
   # the audited closure drifts silently, with both pip-audit and Dependabot
   # reporting nothing. The optional Poetry groups (mutation, package-macos) are
-  # workstation tooling too and report here. Hence its own job with its own
-  # throwaway venv: ~6 GB of torch + CUDA wheels must never reach the `.venv`
-  # cache the gating jobs restore from, and caching it here would put a ~3 GB
-  # entry in a 10 GB per-repository budget and evict every other job's venv by
-  # LRU.
+  # workstation tooling too and report here. This runner is Linux, so the
+  # darwin-only packages of package-macos (macholib) never install and are not
+  # covered by any audit. Hence its own job with its own throwaway venv: ~6 GB
+  # of torch + CUDA wheels must never reach the `.venv` cache the gating jobs
+  # restore from, and caching it here would put a ~3 GB entry in a 10 GB
+  # per-repository budget and evict every other job's venv by LRU.
   audit-export:
     if: github.event_name != 'pull_request'
     # Report-only down to the install: a PyPI hiccup, a hash mismatch or a full

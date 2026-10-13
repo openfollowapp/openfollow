@@ -38,6 +38,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 _WORKFLOW = _REPO_ROOT / ".github" / "workflows" / "ci.yml"
 _PYPROJECT = _REPO_ROOT / "pyproject.toml"
 _DEB_BUILD = _REPO_ROOT / "packaging" / "build-deb.sh"
+_LOCK = _REPO_ROOT / "poetry.lock"
 
 _AUDIT_COMMAND = re.compile(r"\b(?:make\s+audit|pip-audit)\b")
 _SHELL_SEPARATORS = frozenset({"&&", "||", ";", "|"})
@@ -152,6 +153,7 @@ class _AuditJob:
     groups: frozenset[str]
     caches_venv: bool
     install_flags: frozenset[str]
+    runs_on: str
 
 
 def _audit_jobs() -> list[_AuditJob]:
@@ -184,6 +186,7 @@ def _audit_jobs() -> list[_AuditJob]:
                 groups=frozenset(groups),
                 caches_venv=caches_venv,
                 install_flags=frozenset(flags),
+                runs_on=str(job.get("runs-on", "")),
             )
         )
     assert jobs, "ci.yml has no job that runs pip-audit"
@@ -225,11 +228,66 @@ def test_every_declared_extra_is_audited_somewhere(extra: str) -> None:
 
 @pytest.mark.parametrize("group", _optional_groups())
 def test_every_optional_group_is_audited_somewhere(group: str) -> None:
+    """Installed by some audit job; platform-specific packages may still be skipped (see below)."""
     audited: set[str] = set().union(*(job.groups for job in _audit_jobs()))
     assert group in audited, (
         f"the optional '{group}' Poetry group is installed by no audit job, so pip-audit "
         f"never sees its dependencies. Add '--with {group}' to an audit job's install step."
     )
+
+
+def _darwin_only_packages(group: str) -> list[str]:
+    """Lock packages ``group`` installs on macOS only, so a Linux runner never resolves them."""
+    names: list[str] = []
+    for package in tomllib.loads(_LOCK.read_text(encoding="utf-8"))["package"]:
+        if group not in package.get("groups", []):
+            continue
+        markers = package.get("markers")
+        marker = markers.get(group) if isinstance(markers, dict) else markers
+        if marker and re.fullmatch(r'(sys_platform|platform_system) == "(darwin|Darwin)"', marker.strip()):
+            names.append(package["name"])
+    return sorted(names)
+
+
+def _workflow_comments() -> str:
+    lines = _WORKFLOW.read_text(encoding="utf-8").splitlines()
+    return " ".join(line.strip().lstrip("#").strip() for line in lines if line.strip().startswith("#"))
+
+
+@pytest.mark.parametrize("group", _optional_groups())
+def test_darwin_only_dependencies_audited_on_linux_are_named_as_uncovered(group: str) -> None:
+    """An audit on a Linux runner skips the group's macOS-only packages. The workflow must say which."""
+    jobs = [job for job in _audit_jobs() if group in job.groups]
+    audited_on_macos = any(job.runs_on.startswith("macos") for job in jobs)
+    comments = _workflow_comments()
+    unnamed = [] if audited_on_macos else [n for n in _darwin_only_packages(group) if n not in comments]
+    assert not unnamed, (
+        f"the '{group}' group is audited only on Linux, where {unnamed} never install, so "
+        "pip-audit never sees them. Name them in the audit job's comment as not covered."
+    )
+
+
+def test_every_job_restoring_a_cached_venv_syncs_it_to_the_lock() -> None:
+    """``poetry install`` never uninstalls, so a restored venv would keep what the lock dropped."""
+    doc: dict[str, Any] = yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))
+    for name, job in doc["jobs"].items():
+        steps = job.get("steps") or []
+        if not any(
+            str(step.get("uses", "")).startswith("actions/cache")
+            and ".venv" in str((step.get("with") or {}).get("path", ""))
+            for step in steps
+        ):
+            continue
+        verbs = {
+            _poetry_verb(command)
+            for step in steps
+            for command in _shell_commands(str(step.get("run", "")))
+            if _poetry_verb(command) in {"install", "sync"}
+        }
+        assert verbs == {"sync"}, (
+            f"job '{name}' restores a cached .venv and installs with {sorted(verbs)}. Use "
+            "'poetry sync' so packages the lock no longer lists are removed."
+        )
 
 
 def test_extras_the_deb_ships_are_covered_by_a_gating_audit() -> None:
@@ -266,8 +324,7 @@ def test_the_workstation_closure_is_never_saved_into_a_venv_cache() -> None:
         assert not job.caches_venv, (
             f"audit job '{job.name}' installs {sorted(workstation_only & job.extras)} and "
             "caches '.venv'. The export closure is multiple GB: it would evict every "
-            "other job's cache by LRU, and any job restoring it installs with a poetry "
-            "'install' that computes no uninstalls, carrying the surplus forward."
+            "other job's cache by LRU."
         )
 
 

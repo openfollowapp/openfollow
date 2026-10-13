@@ -6,6 +6,8 @@ Please report security problems privately, never in a public issue, pull request
 
 Use GitHub's private vulnerability reporting: on this repository's **Security** tab, choose **Report a vulnerability**. Only the maintainers see the report, and a fix can be prepared in a private fork before anything is public.
 
+If you cannot use GitHub's reporting, email hello@openfollow.app instead.
+
 Include what you can of:
 
 - the OpenFollow version (shown on the About page) and how it was installed (Raspberry Pi image, `.deb`, macOS app);

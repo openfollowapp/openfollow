@@ -4,7 +4,7 @@
 # lint / typecheck / security / test / build steps plus coverage and mutation.
 
 .PHONY: ci ci-remote lint format typecheck security audit test test-unit test-integration test-smoke-e2e build dmg coverage coverage-html coverage-xml install-hooks \
-        mutation mutation-module mutation-results mutation-show mutation-clean
+        mutation mutation-deps mutation-module mutation-results mutation-show mutation-clean
 
 # Combined line + branch coverage floor – ratchet up with every PR.
 # Path to 100% is the gate; CI invokes test-integration so the
@@ -157,10 +157,20 @@ install-hooks:
 # See docs/COVERAGE.md for the policy and how to interpret survivors.
 # ---------------------------------------------------------------------------
 
-mutation-clean:
-	rm -rf mutants .mutmut-cache
+# mutmut is in the optional ``mutation`` Poetry group. Only checked here:
+# ``poetry install`` removes every extra it is not given.
+MUTMUT_CHECK = poetry run python -c "import mutmut" || { echo "mutmut could not be imported; if it is not installed, run: poetry install --with mutation -E detection (plus any other extras you use)"; exit 2; }
 
-mutation: mutation-clean
+mutation-deps:
+	@$(MUTMUT_CHECK)
+
+MUTATION_CLEAN = rm -rf mutants .mutmut-cache
+
+mutation-clean:
+	$(MUTATION_CLEAN)
+
+mutation: mutation-deps
+	$(MUTATION_CLEAN)
 	poetry run mutmut run
 
 # Mutate one module by mutant-name pattern, which mutmut derives from the dotted
@@ -176,13 +186,15 @@ mutation: mutation-clean
 # the one the committed config already covers.
 mutation-module:
 	@test -n "$(MODULE)" || { echo "usage: make mutation-module MODULE=openfollow.<module>"; exit 2; }
+	@$(MUTMUT_CHECK)
 	@echo "note: mutants run against $(MUTATION_TESTS) - a module outside that reports every mutant survived"
 	poetry run mutmut run "$(MODULE).*"
 
-mutation-results:
+mutation-results: mutation-deps
 	poetry run mutmut results
 
 mutation-show:
 	@# Pass MUTANT=<full-name> e.g. `make mutation-show MUTANT=openfollow.zones.engine.xǁZoneEngineǁupdate__mutmut_13`
 	@test -n "$(MUTANT)" || { echo "usage: make mutation-show MUTANT=<mutant-name>"; exit 2; }
+	@$(MUTMUT_CHECK)
 	poetry run mutmut show "$(MUTANT)"

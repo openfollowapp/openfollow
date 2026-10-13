@@ -984,7 +984,25 @@ class TestHandleListDevices:
 
         html = AvfInput().handle_list_devices({"avf_unique_id": "0x14100000", "avf_device_name": "Capture Card"})
 
-        assert html == '<option value="0x14100000" selected>Capture Card</option>'
+        assert html.split("\n")[0] == '<option value="0x14100000" selected>Capture Card</option>'
+
+    def test_a_list_that_cannot_be_read_says_so_beside_a_remembered_camera(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Otherwise the remembered camera reads as the only one connected. Not
+        selectable, so a save keeps the remembered camera."""
+
+        def _broken() -> list[dict[str, str]]:
+            raise RuntimeError("the device monitor did not start")
+
+        monkeypatch.setattr(avf_module, "_list_avf_devices", _broken)
+
+        html = AvfInput().handle_list_devices({"avf_unique_id": "0x14100000", "avf_device_name": "Capture Card"})
+
+        assert html.split("\n") == [
+            '<option value="0x14100000" selected>Capture Card</option>',
+            '<option value="" disabled>-- Camera list could not be read --</option>',
+        ]
 
     def test_a_list_that_cannot_be_read_with_no_camera_chosen_says_so(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Not "No devices found": that sends the operator to a cable, not to the listing."""

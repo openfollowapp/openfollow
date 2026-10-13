@@ -423,9 +423,12 @@ class AvfInput(VideoInputBase):
             label = self._esc(_camera_name(dev["unique_id"]) if dev["unique_id"] else dev["name"])
             sel = " selected" if dev["unique_id"] == current else ""
             options.append(f'<option value="{uid}"{sel}>{label}</option>')
-        if not options:
-            empty = "No devices found" if listed else "Camera list could not be read"
-            options.append(f'<option value="">-- {empty} --</option>')
+        if not listed:
+            # Disabled beside a remembered camera, so a save keeps that camera.
+            disabled = " disabled" if options else ""
+            options.append(f'<option value=""{disabled}>-- Camera list could not be read --</option>')
+        elif not options:
+            options.append('<option value="">-- No devices found --</option>')
         return "\n".join(options)
 
     # -- Config ---------------------------------------------------------

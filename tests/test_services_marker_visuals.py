@@ -1201,3 +1201,76 @@ class TestPathsOnTheOperatorScreen:
         off_app._input_manager = on_app._input_manager
         assert self._state(on_app).mouse3d_buttons["pathfinder"] == 2
         assert "pathfinder" not in self._state(off_app).mouse3d_buttons
+
+
+# --------------------------------------------------------------------------- #
+# Ground grid: config -> overlay state -> floor height
+# --------------------------------------------------------------------------- #
+
+
+class TestGroundGridSync:
+    @staticmethod
+    def _cfg(**gg: object):
+        from openfollow.configuration import AppConfig, GroundGridConfig
+
+        cfg = AppConfig()
+        cfg.ground_grid = GroundGridConfig(**gg)
+        return cfg
+
+    _SQUARE = [[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0]]
+
+    def test_enabled_polygon_redirects_the_floor_of_a_marker_inside(self) -> None:
+        from openfollow.runtime.overlay_draw_scene import floor_z_at
+
+        state = build_initial_overlay_state(self._cfg(enabled=True, z_offset=-0.9, vertices=self._SQUARE))
+        assert state.ground_grid_active is True
+        assert state.ground_grid_visible is True
+        assert floor_z_at(state, 1.0, 1.0) == -0.9
+        assert floor_z_at(state, 3.0, 1.0) == 0.0
+
+    @pytest.mark.parametrize(
+        "gg",
+        [
+            {"enabled": False, "vertices": _SQUARE},
+            {"enabled": True, "vertices": _SQUARE[:2]},
+        ],
+        ids=["disabled", "two-corners"],
+    )
+    def test_inactive_ground_grid_neither_redirects_nor_draws(self, gg: dict) -> None:
+        from openfollow.runtime.overlay_draw_scene import floor_z_at
+
+        state = build_initial_overlay_state(self._cfg(z_offset=-0.9, **gg))
+        assert state.ground_grid_active is False
+        assert state.ground_grid_visible is False
+        assert floor_z_at(state, 1.0, 1.0) == 0.0
+
+    def test_hidden_ground_grid_still_redirects(self) -> None:
+        state = build_initial_overlay_state(self._cfg(enabled=True, visible=False, vertices=self._SQUARE))
+        assert state.ground_grid_active is True
+        assert state.ground_grid_visible is False
+
+    def test_reset_clears_the_ground_grid(self) -> None:
+        state = build_initial_overlay_state(self._cfg(enabled=True, z_offset=-0.9, vertices=self._SQUARE))
+        state.reset()
+        assert (
+            state.ground_grid_active,
+            state.ground_grid_visible,
+            state.ground_grid_z,
+            state.ground_grid_vertices,
+        ) == (
+            False,
+            False,
+            0.0,
+            [],
+        )
+
+    def test_shim_config_without_the_section_has_no_ground_grid(self) -> None:
+        from types import SimpleNamespace
+
+        from openfollow.configuration import AppConfig
+        from openfollow.runtime.services_marker_visuals import sync_ground_grid_config
+
+        state = build_initial_overlay_state(self._cfg(enabled=True, vertices=self._SQUARE))
+        sync_ground_grid_config(state, SimpleNamespace(grid=AppConfig().grid))
+        assert state.ground_grid_active is False
+        assert state.ground_grid_vertices == []

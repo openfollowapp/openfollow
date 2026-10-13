@@ -156,6 +156,12 @@ class OverlayState:
     grid_color: str = _GRID_COLOR_DEFAULT
     grid_thickness: int = _GRID_THICKNESS_DEFAULT
     grid_transparency: float = _GRID_TRANSPARENCY_DEFAULT
+    # Ground grid: a polygon floor at its own Z. ``ground_grid_active`` redirects
+    # the floor elements of markers inside it; ``ground_grid_visible`` draws it.
+    ground_grid_active: bool = False
+    ground_grid_visible: bool = False
+    ground_grid_z: float = 0.0
+    ground_grid_vertices: list[tuple[float, float]] = field(default_factory=list)
     # Marker visual config
     marker_style: str = "crosshair"
     cone_base_diameter: float = 0.6
@@ -341,6 +347,10 @@ class OverlayState:
         self.grid_color = _GRID_COLOR_DEFAULT
         self.grid_thickness = _GRID_THICKNESS_DEFAULT
         self.grid_transparency = _GRID_TRANSPARENCY_DEFAULT
+        self.ground_grid_active = False
+        self.ground_grid_visible = False
+        self.ground_grid_z = 0.0
+        self.ground_grid_vertices = []
         self.marker_style = "crosshair"
         self.cone_base_diameter = 0.6
         self.cone_top_diameter = 0.3

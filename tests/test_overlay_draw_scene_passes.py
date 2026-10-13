@@ -1276,6 +1276,13 @@ class TestConeCache:
             {"state": {"lens_k1": 0.05}},
             {"state": {"lens_k2": 0.02}},
             {"state": {"grid_config": (10.0, 6.0, 1.0, 0.0, 0.0, 0.3)}},
+            {
+                "state": {
+                    "ground_grid_active": True,
+                    "ground_grid_vertices": [(0.0, 0.0), (2.0, 0.0), (2.0, 1.0), (0.0, 1.0)],
+                    "ground_grid_z": -0.5,
+                }
+            },
             {"state": {"cone_base_diameter": 0.8}},
             {"state": {"cone_top_diameter": 0.1}},
             {"state": {"cone_thickness": 4}},

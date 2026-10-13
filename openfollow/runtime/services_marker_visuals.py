@@ -257,6 +257,17 @@ def sync_grid_config(state: OverlayState, cfg: Any) -> None:
     state.origin_thickness = _soft_int(g.origin_thickness, d.origin_thickness, lo=1)
 
 
+def sync_ground_grid_config(state: OverlayState, cfg: Any) -> None:
+    """Copy the ground grid into the overlay state; inactive unless enabled with three corners."""
+    # getattr: a shim config without the section draws no ground grid.
+    gg = getattr(cfg, "ground_grid", None)
+    verts = [(float(v[0]), float(v[1])) for v in gg.vertices] if gg is not None else []
+    state.ground_grid_vertices = verts
+    state.ground_grid_z = _soft_float(gg.z_offset, 0.0) if gg is not None else 0.0
+    state.ground_grid_active = gg is not None and _soft_bool(gg.enabled, False) and len(verts) >= 3
+    state.ground_grid_visible = state.ground_grid_active and _soft_bool(gg.visible, True)
+
+
 def sync_ui_config(state: OverlayState, cfg: Any) -> None:
     """Copy the UI display unit system into the overlay state.
 
@@ -397,6 +408,7 @@ def build_initial_overlay_state(cfg: Any) -> OverlayState:
     """Create the initial disconnected overlay state from config."""
     state = OverlayState()
     sync_grid_config(state, cfg)
+    sync_ground_grid_config(state, cfg)
     sync_marker_config(state, cfg)
     sync_ui_config(state, cfg)
 
@@ -727,6 +739,7 @@ def build_marker_visual_state(
 
     sync_marker_config(state, cfg)
     sync_grid_config(state, cfg)
+    sync_ground_grid_config(state, cfg)
     sync_ui_config(state, cfg)
 
     if person_detector is not None:

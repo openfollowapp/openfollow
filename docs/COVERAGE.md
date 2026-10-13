@@ -118,6 +118,12 @@ mutants on e.g. overlay renderers.
 
 ### Workflow
 
+mutmut lives in the optional `mutation` Poetry group, outside the default
+`poetry install`. Install it once with
+`poetry install --with mutation -E detection` (add any other extras you use:
+`poetry install` removes those it is not given); the `make mutation*` targets
+stop with that hint when it is missing.
+
 ```shell
 # Run the default audit (zones/engine).
 make mutation

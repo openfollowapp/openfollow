@@ -10,6 +10,7 @@ persist on/off, the one-way cascade-disable of person detection when off
 
 from __future__ import annotations
 
+import json
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -160,3 +161,25 @@ class TestPathsCutOff:
 
         assert _set_experimental(base, on=True)[0] == 200
         assert load_config(server.config_path).paths.paths[0].active is False
+
+    def test_an_import_turning_experimental_features_off_deactivates_every_path(self, live_server) -> None:
+        from openfollow.configuration import PathConfig
+
+        server, base = live_server
+        cfg = load_config(server.config_path)
+        cfg.ui.show_experimental_features = True
+        cfg.paths.paths = [PathConfig(name="cross", active=True)]
+        save_config(cfg, server.config_path)
+
+        body = {"ui": {"show_experimental_features": False}, "paths": {"paths": [{"name": "cross", "active": True}]}}
+        req = urllib.request.Request(
+            f"{base}/api/config/import",
+            data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=5) as r:
+            assert r.status == 200
+        out = load_config(server.config_path)
+        assert out.ui.show_experimental_features is False
+        assert [(p.name, p.active) for p in out.paths.paths] == [("cross", False)]

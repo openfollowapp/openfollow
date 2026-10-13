@@ -3227,6 +3227,13 @@ def _backup_before(config_path: str, kind: str) -> dict[str, str]:
     return {"backup": result.archive}
 
 
+def _turn_off_experimental_features(cfg: AppConfig) -> None:
+    """What turning experimental features off turns off with them: detection, and every path's Active flag."""
+    cfg.detection.enabled = False
+    for path in cfg.paths.paths:
+        path.active = False
+
+
 def _apply_import_data(current_cfg: AppConfig, data: dict[str, Any]) -> AppConfig:
     """Build a new config from import data, preserving this device's identity.
 
@@ -3317,6 +3324,8 @@ def _apply_import_data(current_cfg: AppConfig, data: dict[str, Any]) -> AppConfi
         if "show_experimental_features" in ui_data:
             cfg.ui.show_experimental_features = ui_data["show_experimental_features"]
         cfg.ui.__post_init__()
+        if "show_experimental_features" in ui_data and not cfg.ui.show_experimental_features:
+            _turn_off_experimental_features(cfg)
 
     # Fields not covered by any section
     if "window_width" in data:
@@ -6201,9 +6210,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         def _mutate(cfg: AppConfig) -> None:
             cfg.ui.show_experimental_features = show
             if not show:
-                cfg.detection.enabled = False
-                for path in cfg.paths.paths:
-                    path.active = False
+                _turn_off_experimental_features(cfg)
 
         _persist_ui_change(_mutate)
         return ""

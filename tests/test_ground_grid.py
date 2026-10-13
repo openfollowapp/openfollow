@@ -80,6 +80,10 @@ class TestGridSegmentsInPolygon:
     def test_degenerate_input_gives_no_lines(self, verts: list, spacing: float) -> None:
         assert grid_segments_in_polygon(verts, 0.0, 0.0, spacing, 0.0, 200).shape == (0, 2, 3)
 
+    def test_a_polygon_between_grid_lines_gets_no_lines(self) -> None:
+        sliver = [(0.2, 0.2), (0.8, 0.2), (0.8, 0.8)]
+        assert grid_segments_in_polygon(sliver, 0.0, 0.0, 1.0, 0.0, 200).shape == (0, 2, 3)
+
     def test_outline_closes_the_polygon_at_z(self) -> None:
         segs = outline_segments(_SQUARE, 1.5)
         assert segs.shape == (4, 2, 3)
@@ -220,6 +224,13 @@ class TestDrawGroundGrid:
         cr = FakeCairo()
         draw_ground_grid(cr, _state(**override), _W, _H)
         assert cr.calls == []
+
+    def test_a_ground_grid_behind_the_camera_strokes_nothing(self) -> None:
+        cr = FakeCairo()
+        behind = [(-1.0, -40.0), (1.0, -40.0), (1.0, -42.0), (-1.0, -42.0)]
+        draw_ground_grid(cr, _state(ground_grid_vertices=behind), _W, _H)
+        assert cr.strokes == 0
+        assert cr.move_tos == []
 
     def test_main_grid_hidden_still_draws_the_ground_grid(self) -> None:
         cr = FakeCairo()

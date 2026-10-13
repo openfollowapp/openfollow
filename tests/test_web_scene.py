@@ -177,6 +177,7 @@ class TestGroundGridView:
             {"w": _W, "h": _H, "vertices": _SQUARE, "z": True},
             {"w": _W, "h": _H, "vertices": _SQUARE, "z": None},
             {"w": _W, "h": _H, "vertices": _SQUARE, "z": "low"},
+            {"w": _W, "h": _H, "vertices": _SQUARE, "z": "nan"},
             {"w": _W, "h": _H, "vertices": _SQUARE},
             {"w": _W, "h": _H, "vertices": "abc", "z": 0},
             {"w": _W, "h": _H, "vertices": [[0, 0, 0]], "z": 0},
@@ -186,6 +187,11 @@ class TestGroundGridView:
     def test_malformed_input_is_refused(self, live, body: dict) -> None:  # noqa: ANN001
         base, _ = live
         assert _call(base, "/api/ground_grid/view", raw=json.dumps(body).encode())[0] == 400
+
+
+def test_the_ground_grid_view_refuses_a_body_that_is_not_an_object(live) -> None:  # noqa: ANN001
+    base, _ = live
+    assert _call(base, "/api/ground_grid/view", raw=b"[]")[0] == 400
 
 
 def test_the_zone_editor_learns_the_floor_height(live) -> None:  # noqa: ANN001

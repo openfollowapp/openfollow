@@ -421,7 +421,6 @@ function peArrowhead(x, y, ux, uy, half, side) {
         ev.preventDefault();
         ev.stopPropagation();
         drag = { index: index, z: find(selected).points[index].z };
-        dragEnded = false;
         svg.setPointerCapture(ev.pointerId);
     }
     svg.addEventListener('pointerdown', function() { dragEnded = false; });
@@ -441,7 +440,7 @@ function peArrowhead(x, y, ux, uy, half, side) {
     });
     svg.addEventListener('pointercancel', function() { drag = null; });
     svg.addEventListener('click', function(ev) {
-        if (dragEnded) { dragEnded = false; return; }
+        if (dragEnded) return;
         var p = find(selected);
         if (drag || !p) return;
         var at = toPicture(ev);

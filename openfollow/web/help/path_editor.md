@@ -17,7 +17,7 @@ One row per path. The row's header shows a green dot while the path is active, i
 
 - **Shape** – a closed path joins its last point to its first, and a marker can go round it.
 - **Points** – X, Y and Z of each point, in order. Z is the height the locked marker has there; between points it changes evenly.
-- **Option** – for a corner, its **Radius**: how much the path is rounded there. Default 0.5 m. A radius too large for the neighbouring points is made smaller. For the first and last point of an open path, what a marker pushed past that end does: **Hold at end** keeps it there, **Release at end** lets it go.
+- **Option** – for a corner, its **Radius**: how much the path is rounded there. Default 0.5 m. A radius too large for the neighbouring points is made smaller, and so is the rounding of a turn sharper than 120°, down to none for a path that turns straight back, so the marker still reaches the point. For the first and last point of an open path, what a marker pushed past that end does: **Hold at end** keeps it there, **Release at end** lets it go.
 - **↑ / ↓** move a point in the order; **Delete** removes it. **+ Point** adds one a metre past the last. **Point from marker** adds the position a marker has on the wire now.
 
 ## Picture

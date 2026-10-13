@@ -80,6 +80,7 @@ from openfollow.runtime.overlay_draw_scene import (
 from openfollow.runtime.overlay_draw_scene import (
     project as project_overlay_points,
 )
+from openfollow.runtime.overlay_draw_zones import ZoneCache
 from openfollow.runtime.overlay_draw_zones import draw_zones as draw_zones_pass
 from openfollow.runtime.overlay_state import MarkerOverlayData, OverlayState
 
@@ -167,6 +168,7 @@ class CairoOverlayRenderer:
         self._grid_pts_buf = np.zeros((400, 3), dtype=np.float64)
         self._cone_cache = ConeCache()
         self._path_cache = PathCache()
+        self._zone_cache = ZoneCache()
 
         # Rolling timestamps of recent draw callbacks for FPS measurement.
         # Appended on the GTK main thread (per-frame ``draw``); read on the
@@ -285,14 +287,20 @@ class CairoOverlayRenderer:
 
             # Button detection wizard takes exclusive visual control
             if state.button_detection is not None and state.button_detection.active:
+                self._zone_cache.clear()
+                self._path_cache.clear()
                 self._draw_button_detection_overlay(cr, state, width, height)
                 return
 
             if self._draw_menu_screen(cr, state, width, height):
+                self._zone_cache.clear()
+                self._path_cache.clear()
                 draw_menu_help_pass(self, cr, state, width, height)
                 return
 
             if state.camera_params is None:
+                self._zone_cache.clear()
+                self._path_cache.clear()
                 self._draw_hud(cr, state, width, height)
                 return
 
@@ -432,7 +440,7 @@ class CairoOverlayRenderer:
     # ------------------------------------------------------------------
 
     def _draw_zones(self, cr: Any, state: OverlayState, w: int, h: int) -> None:
-        draw_zones_pass(self, cr, state, w, h)
+        draw_zones_pass(self, cr, state, w, h, self._zone_cache)
 
     # ------------------------------------------------------------------
     # Person detection bounding boxes

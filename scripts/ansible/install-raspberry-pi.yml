@@ -58,8 +58,8 @@
     # later with `-e install_detection_extra=true`. Default off so a base
     # install stays fast.
     install_detection_extra: false
-    # Dev/CI toolchain (ruff, pytest, mypy, bandit, pip-audit, mutmut,
-    # pre-commit, hypothesis, coverage) is opt-in: consumer Pis never run it, so
+    # Dev/CI toolchain (ruff, pytest, mypy, bandit, pip-audit, pre-commit,
+    # hypothesis, coverage) is opt-in: consumer Pis never run it, so
     # the default install is `--only main`. Set `-e openfollow_install_dev=true`
     # on a testing Pi that runs `make ci` via `make ci-remote`.
     openfollow_install_dev: false
@@ -790,8 +790,8 @@
 
     # Consumer Pis only need the runtime deps, so the default install is
     # `--only main`: it skips the dev/CI group (ruff, pytest, mypy, bandit,
-    # pip-audit, mutmut, pre-commit, hypothesis, coverage), which the device
-    # never runs. That keeps the install lean and stops a dev-only package's
+    # pip-audit, pre-commit, hypothesis, coverage), which the device never
+    # runs. That keeps the install lean and stops a dev-only package's
     # download breaking a production install. A testing Pi that runs `make ci`
     # (via `make ci-remote`) needs the dev group, so set
     # `-e openfollow_install_dev=true` there – that drops `--only main` and

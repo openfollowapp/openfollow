@@ -251,6 +251,39 @@ def test_paths_nowhere_on_screen_paint_nothing(line: list) -> None:
     assert ("paint",) not in cr.calls
 
 
+@pytest.mark.parametrize(
+    "hidden",
+    [{"show_paths": False}, {"path_lines": []}, {"camera_params": None}],
+    ids=["overlay-off", "no-paths", "no-camera"],
+)
+def test_the_pictures_are_let_go_while_no_path_is_drawn(shape_calls, hidden: dict) -> None:
+    from openfollow.runtime.overlay_draw_paths import PathCache
+
+    cache = PathCache()
+    draw_paths(FakeRenderer(), FakeCairo(), _scene(), 1920, 1080, cache)
+    draw_paths(FakeRenderer(), FakeCairo(), _scene(**hidden), 1920, 1080, cache)
+    # Shown again unchanged, both pictures are drawn afresh: none was kept meanwhile.
+    draw_paths(FakeRenderer(), FakeCairo(), _scene(), 1920, 1080, cache)
+    assert shape_calls == BOTH
+
+
+def test_the_locked_picture_is_let_go_while_no_marker_is_on_a_path(shape_calls) -> None:
+    from openfollow.runtime.overlay_draw_paths import PathCache
+
+    cache = PathCache()
+    draw_paths(FakeRenderer(), FakeCairo(), _scene(), 1920, 1080, cache)
+    draw_paths(
+        FakeRenderer(),
+        FakeCairo(),
+        _scene(path_lines=[(LINE, ENDS, False), (CURVE, RELEASE_ENDS, False)]),
+        1920,
+        1080,
+        cache,
+    )
+    draw_paths(FakeRenderer(), FakeCairo(), _scene(), 1920, 1080, cache)
+    assert shape_calls == [(False, True), (True,), (True,)]
+
+
 def test_a_path_cache_asked_to_draw_without_a_camera_draws_nothing() -> None:
     from openfollow.runtime.overlay_draw_paths import PathCache
 

@@ -35,6 +35,7 @@ from openfollow.runtime.services_detection_pin import (
     get_or_create_manual_marker,
     is_assist_controlled,
 )
+from openfollow.scene.ground_grid import floor_height
 from openfollow.scene.solver import (
     CONE_RING_SEGMENTS,
     GROUND_RING_SEGMENTS,
@@ -409,9 +410,8 @@ class MouseHandler:
             return None
         buf, w, h = view
         cfg = app._config
-        z_off = cfg.grid.z_offset
-        # The grab area is the ring that is drawn: the cone's base ring
-        # in cone style, else the ground circle.
+        # The grab area is the ring that is drawn, on the floor it is drawn on:
+        # the cone's base ring in cone style, else the ground circle.
         if cfg.marker.marker_style == "cone":
             gc_on = True
             gc_size = cfg.marker.cone_base_diameter / 2.0
@@ -432,6 +432,7 @@ class MouseHandler:
             if marker is None:
                 continue
             mx, my, _ = marker.pos
+            z_off = floor_height(cfg, mx, my)
             center = apply_overlay_distortion(
                 project_points(buf, np.array([[mx, my, z_off]], dtype=np.float64), float(w), float(h)),
                 float(w),

@@ -10,9 +10,10 @@ stage plan. A marker standing inside it (seen from above) gets its dropline,
 ground circle, cone base and assist ring drawn down to the ground grid's
 height instead of the main grid's.
 
-It is a **visual aid** on the Operator Screen only. Mouse placement, person
-detection, the OSC height placeholders and the height on the marker card stay
-on the main grid, and no output protocol changes.
+It is a **visual aid** on the Operator Screen only. Where a dragged marker
+lands, person detection, the OSC height placeholders and the height on the
+marker card stay on the main grid, and no output protocol changes. A marker
+inside it is grabbed with the mouse by its ring where it is drawn.
 
 ## Area
 
@@ -40,7 +41,7 @@ Changes to the polygon show at once but are kept only when you **Save** (or **Ap
   the marker sits below this height.
 
 The polygon needs at least three corners; with fewer the ground grid does
-nothing. Up to 64 corners are kept. Where the outline crosses itself, areas
+nothing. Up to 64 corners are kept; a drawing closes by itself at the 64th. Where the outline crosses itself, areas
 covered an odd number of times count as inside, as for trigger zones.
 
 ## Saving & sharing

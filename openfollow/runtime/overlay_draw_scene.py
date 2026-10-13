@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import functools
 import math
 from collections.abc import Iterable
 from typing import Any, NamedTuple
@@ -14,7 +15,7 @@ import numpy.typing as npt
 
 from openfollow.runtime.overlay_draw_style import parse_hex
 from openfollow.runtime.overlay_state import MarkerOverlayData, OverlayState
-from openfollow.scene.ground_grid import grid_segments_in_polygon, outline_segments
+from openfollow.scene.ground_grid import grid_segments_in_polygon, main_grid_steps, outline_segments
 from openfollow.scene.solver import (
     apply_overlay_distortion,
     cone_ring_angles,
@@ -181,16 +182,27 @@ def floor_z_at(state: OverlayState, x: float, y: float) -> float:
     return state.grid_config[5] if state.grid_config else 0.0
 
 
+@functools.lru_cache(maxsize=4)
+def _ground_grid_segments(
+    verts: tuple[tuple[float, float], ...], gc: tuple[float, ...], z: float
+) -> npt.NDArray[np.float64]:
+    """The ground grid's lines and outline in world space; kept, as the polygon changes only on a save."""
+    gw, gd, gs, x_off, y_off, _ = gc
+    step_x, step_y = main_grid_steps(gw, gd, gs, _MAX_GRID_LINES_PER_AXIS)
+    lines = grid_segments_in_polygon(
+        verts, x_off - gw / 2.0, y_off - gd / 2.0, step_x, step_y, z, _MAX_GRID_LINES_PER_AXIS
+    )
+    segments = np.concatenate([lines, outline_segments(verts, z)])
+    segments.setflags(write=False)
+    return segments
+
+
 def draw_ground_grid(cr: Any, state: OverlayState, w: int, h: int) -> None:
     """Main-grid-aligned lines clipped to the ground-grid polygon, plus its outline, in the main grid's style."""
     gc = state.grid_config
     if not state.ground_grid_visible or gc is None:
         return
-    gw, gd, gs, x_off, y_off, _ = gc
-    verts = state.ground_grid_vertices
-    z = state.ground_grid_z
-    lines = grid_segments_in_polygon(verts, x_off - gw / 2.0, y_off - gd / 2.0, gs, z, _MAX_GRID_LINES_PER_AXIS)
-    segments = np.concatenate([lines, outline_segments(verts, z)])
+    segments = _ground_grid_segments(tuple(map(tuple, state.ground_grid_vertices)), tuple(gc), state.ground_grid_z)
     r, g, b = parse_hex(state.grid_color)
     cr.set_source_rgba(r, g, b, state.grid_transparency)
     cr.set_line_width(float(state.grid_thickness))

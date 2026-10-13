@@ -500,7 +500,8 @@ class TestWalk:
 
     def test_a_closed_path_carries_on_round(self) -> None:
         ring = _curve([(0, 0, 0), (2, 0, 0), (2, 2, 0), (0, 2, 0)], closed=True)
-        step = PathNetwork([ring]).walk(Place(0, 7.5), 0.0, -1.0, 1.0)
+        # Down the last side and along the first, at cos 45 on each.
+        step = PathNetwork([ring]).walk(Place(0, 7.5), *_push(-45.0), dt=math.sqrt(2.0))
         assert step.place.s == pytest.approx(0.5)
 
 
@@ -511,6 +512,55 @@ class TestLegs:
         net = PathNetwork([H, *comb])
         step = net.walk(Place(0, 0.0), 1.0, 0.0, 100.0)
         assert _at(net, step.place) == (-4.5 + 0.5 * 15, 0.0)
+
+
+def _frames(net: PathNetwork, place: Place, push: tuple[float, float], count: int) -> list[tuple[float, float]]:
+    """Where the marker is after each of ``count`` 60 Hz frames under ``push``."""
+    out = []
+    for _ in range(count):
+        place = net.walk(place, *push, dt=1 / 60).place
+        x, y, _ = net.point(place)
+        out.append((x, y))
+    return out
+
+
+class TestVertices:
+    @pytest.mark.parametrize(
+        ("points", "start", "push"),
+        [
+            # A sharp turn back more than a right angle, pushed along the arriving segment.
+            ([(0, 0, 0, 0), (5, 0, 0, 0), (0, 1, 0, 0)], 4.51, (2.0, 0.0)),
+            # A hairpin, whose tight arc turns away from the push part-way round.
+            ([(0, 0, 0, 0), (5, 0, 0, 1.0), (0, 0.5, 0, 0)], 4.0, (3.0, 0.0)),
+        ],
+    )
+    def test_a_marker_pushed_into_a_turn_away_from_the_push_comes_to_rest(
+        self, points: list[tuple[float, ...]], start: float, push: tuple[float, float]
+    ) -> None:
+        trail = _frames(PathNetwork([_curve(points)]), Place(0, start), push, 120)
+        xs = [x for x, _ in trail]
+        assert all(b >= a - 1e-12 for a, b in zip(xs, xs[1:], strict=False))
+        assert len(set(trail[-60:])) == 1
+
+    def test_a_right_angle_stops_a_push_along_its_first_segment_on_the_corner(self) -> None:
+        net = PathNetwork([_curve([(0, 0, 0, 0), (5, 0, 0, 0), (5, 5, 0, 0)])])
+        trail = _frames(net, Place(0, 4.91), (1.0, 0.0), 30)
+        assert all(y == 0.0 and x <= 5.0 for x, y in trail)
+        assert trail[-1] == pytest.approx((5.0, 0.0))
+
+    def test_past_a_sharp_corner_the_marker_moves_at_the_leaving_segment_s_rate(self) -> None:
+        # Pushed 30 degrees above x: along x at cos 30 for 0.5 m, then up at sin 30.
+        net = PathNetwork([_curve([(0, 0, 0, 0), (2, 0, 0, 0), (2, 2, 0, 0)])])
+        before = 0.5 / math.cos(math.radians(30.0))
+        step = net.walk(Place(0, 1.5), *_push(30.0), dt=before + 1.0)
+        assert _at(net, step.place) == pytest.approx((2.0, 0.5), abs=1e-6)
+
+    def test_one_step_runs_on_through_many_rounded_corners(self) -> None:
+        # Ten gentle bends, each arc a dozen vertices or more, all with a share along x.
+        wave = _curve([(i, 0.5 * (i % 2), 0, 2.0) for i in range(11)])
+        net = PathNetwork([wave])
+        step = net.walk(Place(0, 0.0), 1.0, 0.0, dt=100.0)
+        assert step.place.s == pytest.approx(wave.length)
 
 
 class TestSteering:

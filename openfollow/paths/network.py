@@ -37,7 +37,9 @@ _PARALLEL = 1e-12
 # How far past a segment's end, as a fraction of it, a crossing still counts: one through a vertex sits on both.
 _ON_SEGMENT = 1e-9
 _EPS = 1e-6
+# Junctions one walk crosses at most, and legs it takes at most, each ending at a junction or a vertex.
 _MAX_LEGS = 16
+_MAX_STEPS = 256
 # Segments per bounding box when looking for crossings, and pairs of boxes tested in one pass.
 _BOX_SEGMENTS = 16
 _BOX_PAIRS_PER_PASS = 512
@@ -146,7 +148,8 @@ class PathNetwork:
             return Step(place)
         wx, wy = vx / speed, vy / speed
         time_left = dt
-        for _ in range(_MAX_LEGS):
+        junctions = 0
+        for _ in range(_MAX_STEPS):
             way = self._choose(place, wx, wy)
             if way is None:
                 break
@@ -154,7 +157,8 @@ class PathNetwork:
             rate = speed * (wx * way.dx + wy * way.dy)
             budget = rate * time_left
             ahead = self._next_junction(way.place, way.sign)
-            leg = budget if ahead is None else min(budget, ahead)
+            # A leg also ends at the next vertex: the direction, and so the rate, may change there.
+            leg = min(budget, curve.to_vertex(way.place.s, way.sign), math.inf if ahead is None else ahead)
             s, end = curve.advance(way.place.s, way.sign * leg)
             place = Place(way.place.path, s)
             if end != 0:
@@ -163,6 +167,10 @@ class PathNetwork:
                 break
             if leg >= budget:
                 break
+            if ahead is not None and leg >= ahead:
+                junctions += 1
+                if junctions == _MAX_LEGS:
+                    break
             time_left -= leg / rate
         return Step(place)
 

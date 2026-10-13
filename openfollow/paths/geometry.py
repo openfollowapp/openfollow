@@ -101,6 +101,20 @@ class PathCurve:
         leaving = k if k < last else (0 if self.closed else last - 1)
         return self._unit(arriving), self._unit(leaving)
 
+    def to_vertex(self, s: float, sign: int) -> float:
+        """How far ``s`` lies from the next vertex towards ``sign`` (+1 / -1); infinite past an open end."""
+        s = self.wrap(s)
+        last = len(self.s) - 1
+        if sign > 0:
+            k = int(np.searchsorted(self.s, s + _ON_VERTEX_M, side="right"))
+            if k <= last:
+                return float(self.s[k] - s)
+            return self.length - s + float(self.s[1]) if self.closed else math.inf
+        k = int(np.searchsorted(self.s, s - _ON_VERTEX_M, side="left")) - 1
+        if k >= 0:
+            return float(s - self.s[k])
+        return s + self.length - float(self.s[last - 1]) if self.closed else math.inf
+
     def _unit(self, i: int) -> tuple[float, float]:
         dx, dy = self._seg_vec[i] / math.sqrt(self._seg_len2[i])
         return float(dx), float(dy)

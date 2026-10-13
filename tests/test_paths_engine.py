@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import math
 import sys
+import threading
 from types import FrameType
 from typing import Any
 
@@ -556,26 +557,25 @@ class TestTheWebView:
 
 
 def _stop_at(step: int, prepare: Any, run: Any, functions: set[str]) -> tuple[PathEngine, int]:
-    """Run ``run(engine, cfg)`` with a web Stop landing at bytecode ``step`` of the engine's ``functions``.
+    """Run ``run(engine, cfg)`` with a web thread's Stop sent at bytecode ``step`` of the engine's ``functions``.
 
-    A Stop that finds the engine's lock held lands at the first step after it is let go, or once ``run`` is
-    done, as the web thread waits for it. Returns the engine and how many steps there were.
+    The Stop runs on its own thread and is given a moment to land there; one that has to wait for the
+    engine's lock lands once the lock is let go. Returns the engine and how many steps there were.
     """
     from openfollow.paths import engine as engine_module
 
     engine, cfg = prepare()
     count = 0
-    waiting = False
+    stop = threading.Thread(target=engine.record, args=(None, cfg))
 
     def local(frame: FrameType, event: str, arg: object) -> Any:
-        nonlocal count, waiting
+        nonlocal count
         frame.f_trace_opcodes = True
         if event == "opcode":
             count += 1
-            waiting = waiting or count == step
-            if waiting and not engine._web_lock.locked():
-                engine.record(None, cfg)
-                waiting = False
+            if count == step:
+                stop.start()
+                stop.join(timeout=0.02)
         return local
 
     def tracer(frame: FrameType, event: str, arg: object) -> Any:
@@ -589,13 +589,13 @@ def _stop_at(step: int, prepare: Any, run: Any, functions: set[str]) -> tuple[Pa
         run(engine, cfg)
     finally:
         sys.settrace(before)
-    if waiting:
-        engine.record(None, cfg)
+    if stop.ident is not None:
+        stop.join()
     return engine, count
 
 
 def _stop_lands_at_every_step(prepare: Any, run: Any, functions: set[str]) -> list[PathEngine]:
-    """The engines left by a web Stop landing at each step in turn; the first had no Stop."""
+    """The engines left by a web Stop sent at each step in turn; the first had no Stop."""
     first, steps = _stop_at(0, prepare, run, functions)
     return [first, *(_stop_at(step, prepare, run, functions)[0] for step in range(1, steps + 1))]
 
@@ -614,7 +614,7 @@ class TestAStopFromTheWebThread:
         engines = _stop_lands_at_every_step(
             lambda: self._recording(renamed=renamed),
             lambda engine, cfg: engine.reload(cfg, enabled=True),
-            {"reload", "_carry_renames"},
+            {"reload", "_carry_renames", "_replace_recording"},
         )
         assert len(engines) > 20
         assert [engine.recording for engine in engines[1:]] == [None] * (len(engines) - 1)
@@ -623,7 +623,7 @@ class TestAStopFromTheWebThread:
         engines = _stop_lands_at_every_step(
             lambda: self._recording(renamed=False),
             lambda engine, cfg: engine.reload(cfg, enabled=False),
-            {"reload"},
+            {"reload", "_replace_recording"},
         )
         assert len(engines) > 20
         assert {engine.recording for engine in engines} == {None}

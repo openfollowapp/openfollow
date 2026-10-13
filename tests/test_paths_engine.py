@@ -628,6 +628,22 @@ class TestAStopFromTheWebThread:
         assert len(engines) > 20
         assert {engine.recording for engine in engines} == {None}
 
+    def test_a_recording_started_while_the_old_one_is_dropped_is_kept(self) -> None:
+        engine = _engine(CROSS, RAMP)
+        engine.record("cross", PathsConfig(paths=[CROSS]))
+        cfg = PathsConfig(paths=[RAMP])  # cross deleted
+        find = cfg.find
+
+        def find_and_record(name: str) -> PathConfig | None:
+            # The reload asks whether the recorded path is gone: the web thread records Ramp right then.
+            if name == "cross":
+                engine.record("ramp", cfg)
+            return find(name)
+
+        cfg.find = find_and_record  # type: ignore[method-assign]
+        engine.reload(cfg, enabled=True)
+        assert engine.recording == "Ramp"
+
     def test_never_breaks_drawing_the_recorded_path(self) -> None:
         engines = _stop_lands_at_every_step(
             lambda: self._recording(renamed=False),

@@ -5062,14 +5062,14 @@
  const OSC_REORDER_HANDLE_SEL = '.osc-binding-drag-handle, .osc-destination-drag-handle, .row-drag-handle';
  const OSC_REORDER_ROW_SEL = '.osc-binding-row, .osc-destination-row, .reorder-row';
  let oscDragSourceId = null;
- let oscDragSourceList = null;
+ let oscDragSourceRow = null;
  document.addEventListener('dragstart', (event) => {
  const handle = event.target.closest(OSC_REORDER_HANDLE_SEL);
  if (!handle) return;
  const row = handle.closest(OSC_REORDER_ROW_SEL);
  if (!row) return;
  oscDragSourceId = row.dataset.rowId;
- oscDragSourceList = row.parentElement;
+ oscDragSourceRow = row;
  row.classList.add('dragging');
  // ``effectAllowed = "move"`` + a payload satisfies Firefox's
  // drag-init contract; the actual id transfer happens via the
@@ -5088,12 +5088,12 @@
  el.classList.remove('drop-target');
  });
  oscDragSourceId = null;
- oscDragSourceList = null;
+ oscDragSourceRow = null;
  });
  document.addEventListener('dragover', (event) => {
  if (!oscDragSourceId) return;
  const targetRow = event.target.closest(OSC_REORDER_ROW_SEL);
- if (!targetRow || targetRow.parentElement !== oscDragSourceList) return;
+ if (!targetRow || targetRow.parentElement !== oscDragSourceRow.parentElement) return;
  event.preventDefault();
  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
  document.querySelectorAll('.drop-target').forEach(el => {
@@ -5107,11 +5107,11 @@
  if (!oscDragSourceId) return;
  const targetRow = event.target.closest(OSC_REORDER_ROW_SEL);
  // Don't cross lists: a drag started in one list only reorders within it.
- if (!targetRow || targetRow.parentElement !== oscDragSourceList) return;
+ if (!targetRow || targetRow.parentElement !== oscDragSourceRow.parentElement) return;
  event.preventDefault();
  const list = targetRow.parentElement;
- const sourceRow = Array.from(list.children).find(el => el.dataset.rowId === oscDragSourceId);
- if (!sourceRow || sourceRow === targetRow) {
+ const sourceRow = oscDragSourceRow;
+ if (sourceRow === targetRow) {
  oscDragSourceId = null;
  return;
  }
@@ -5128,10 +5128,9 @@
  .filter(el => el.matches(OSC_REORDER_ROW_SEL))
  .map(el => el.dataset.rowId);
  const url = targetRow.dataset.reorderUrl;
- const targetId = targetRow.dataset.reorderTarget;
- if (url && targetId) {
+ if (url) {
  window.htmx.ajax('POST', url, {
- target: '#' + targetId,
+ target: '#' + targetRow.dataset.reorderTarget,
  swap: 'outerHTML',
  values: { order: order.join(',') },
  });
@@ -5139,7 +5138,7 @@
  list.dispatchEvent(new CustomEvent('rows-reordered', { bubbles: true, detail: { order } }));
  }
  oscDragSourceId = null;
- oscDragSourceList = null;
+ oscDragSourceRow = null;
  });
  document.addEventListener('DOMContentLoaded', () => {
  initializeSectionFolding(document);

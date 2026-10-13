@@ -952,3 +952,41 @@ def test_a_sliding_marker_the_server_does_not_have_is_skipped(path_app) -> None:
     app._paths.press(10, (2.0, 1.0, 0.0))
     InputManager(app).update_paths(0.02)
     assert app._server.get_marker(10).pos == pytest.approx((2.0, 0.0, 0.0))
+
+
+@pytest.mark.parametrize("off", ["tracking off", "fully automatic"])
+def test_when_assist_stops_input_moves_a_locked_marker_on_from_its_output(path_app, off: str) -> None:  # noqa: ANN001
+    import numpy as np
+
+    from openfollow.runtime.services_detection_pin import apply_detection_pin, get_or_create_manual_marker
+
+    app = path_app
+    app._config.detection.enabled = True
+    app._config.detection.pin_mode = "assist"
+    app._detection_pin_states = {}
+    app._detection_pin_mode = "assist"
+    app._video_receiver = SimpleNamespace(resolution=(0, 0))
+    # The output stands at x = 3 on the path, the anchor input steers at x = 2, locked there.
+    app._server.get_marker(10).set_pos(3.0, 0.0, 0.0)
+    anchor = get_or_create_manual_marker(app, 10)
+    anchor.set_pos(2.0, 0.0, 0.0)
+    app._paths.press(10, anchor.pos)
+    app._paths.tick(0.0)
+    manager = InputManager(app)
+    # Assist stops between frames, as a config reload does.
+    if off == "tracking off":
+        app._config.detection.enabled = False
+    else:
+        app._config.detection.pin_mode = "replace"
+    _FakeKeyboardHandler.next_velocity = (0.5, 0.0, 0.0)
+    # One frame in the frame loop's order: the engine, input, then the detection pin.
+    manager.update_paths(0.02)
+    manager.update(0.02)
+    apply_detection_pin(
+        app,
+        person_detector=None,
+        unproject_cam_buffer=np.zeros(7),
+        screen_point_buffer=np.zeros((1, 2)),
+        dt=0.02,
+    )
+    assert app._server.get_marker(10).pos == pytest.approx((3.01, 0.0, 0.0))

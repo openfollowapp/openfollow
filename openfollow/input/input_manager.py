@@ -31,6 +31,7 @@ from openfollow.osc.paths import PathOscAdapter
 from openfollow.runtime import paths_runtime
 from openfollow.runtime.services_detection_pin import (
     get_or_create_manual_marker,
+    hand_over_anchors,
     is_assist_controlled,
 )
 
@@ -492,14 +493,16 @@ class InputManager:
     def update_paths(self, dt: float) -> None:
         """Run the path engine for one frame, whatever input does: menus open or no marker controlled.
 
-        Releases markers no longer controlled, applies OSC path commands, then writes the
-        markers the engine moved itself (slides, edits). ``animate`` calls it after the frame's
-        discrete key presses (Reset, Pathfinder) and before :meth:`update`.
+        Hands the lock of a marker assist no longer drives from its anchor to its output, releases
+        markers no longer controlled, applies OSC path commands, then writes the markers the engine
+        moved itself (slides, edits). ``animate`` calls it after the frame's discrete key presses
+        (Reset, Pathfinder) and before :meth:`update`.
         """
         commands = self.path_osc_handler.take() if self.path_osc_handler is not None else []
         paths = self._paths()
         if paths is None:
             return
+        hand_over_anchors(self.app)
         paths.release_all(keep=self.app._controlled_ids)
         paths_runtime.apply_commands(self.app, commands, self.app._controlled_ids, self._get_marker)
         for slid_id, slid_to in paths.tick(dt).items():

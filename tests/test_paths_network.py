@@ -893,10 +893,15 @@ class TestSwitchArrows:
         net = PathNetwork([H, branch])
         assert _tips(net.switch_arrows(Place(1, 0.2), 1.0)) == [(1.45, 0.0), (2.55, 0.0)]
 
-    def test_an_end_too_close_to_the_junction_draws_no_arrow(self) -> None:
+    def test_two_junctions_a_hair_apart_show_their_ways_once(self) -> None:
         short = _curve([(-5, 0, 0), (0.1, 0, 0)])
         net = PathNetwork([short, V])
         assert _tips(net.switch_arrows(Place(0, 4.9), 1.0)) == [(0.0, -0.55), (0.0, 0.55)]
+
+    def test_another_path_ending_just_past_the_junction_has_no_arrow_that_way(self) -> None:
+        stub = _curve([(0, -5, 0), (0, 0.1, 0)])
+        net = PathNetwork([H, stub])
+        assert _tips(net.switch_arrows(Place(0, 4.8), 1.0)) == [(0.0, -0.55)]
 
     def test_a_lone_path_has_none(self) -> None:
         assert PathNetwork([H]).switch_arrows(Place(0, 5.0), 1.0) == []

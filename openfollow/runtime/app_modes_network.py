@@ -152,8 +152,10 @@ def _read_pi_network(app: OpenFollowApp) -> _NetworkSnapshot:
     methods = {name: _METHOD_LABELS.get(iface_state.ipv4.method, "") for name, iface_state in reading.states.items()}
     adapters = {iface.name: describe(iface.name) for iface in interfaces}
     names = {i.name for i in interfaces}
-    if _simple(app):
-        station = str(getattr(app._config, "psn_source_iface", "") or "")
+    # Read once: a hot reload between two reads would pair one station's values with another's.
+    station_read = _station_iface(app) if _simple(app) else None
+    if station_read is not None:
+        station = station_read
         auto = "" if station else auto_station_iface()
         if station and station not in names:
             # Never another interface in its place: the screen would edit one it does not name.
@@ -164,7 +166,6 @@ def _read_pi_network(app: OpenFollowApp) -> _NetworkSnapshot:
         active = interfaces[0].name
     state = reading.states.get(active)
     pending = state.ipv4 if state is not None else Ipv4Config(method=Ipv4Method.DHCP)
-    station_read = str(getattr(app._config, "psn_source_iface", "") or "") if _simple(app) else None
     return _NetworkSnapshot(True, interfaces, active, state, pending, methods, adapters, auto, station_read)
 
 
@@ -1434,8 +1435,15 @@ def _apply_pi_network(app: OpenFollowApp) -> None:
     if adapter is None or pending is None or not iface:
         _set_banner(app, "No network adapter available.")
         return
-    if pending.method == Ipv4Method.DHCP and not getattr(app, "_pi_network_dns_edited", False):
-        # The servers shown are what DHCP handed out; sent back they would pin them over the lease's.
+    state: NetworkState | None = getattr(app, "_pi_network_state_cache", None)
+    lease_dns = state.lease.dns if state is not None and state.lease is not None else None
+    if (
+        pending.method == Ipv4Method.DHCP
+        and not getattr(app, "_pi_network_dns_edited", False)
+        and lease_dns is not None
+        and tuple(pending.dns) == tuple(lease_dns)
+    ):
+        # The lease's own servers: sent back they would be pinned over the lease's. Manual ones stay.
         pending = replace(pending, dns=())
     errors = validate_apply(pending.method, pending.address, pending.prefix, pending.router, list(pending.dns))
     if errors:

@@ -7,6 +7,7 @@ editing, and the apply/renew worker lifecycle (generation-guarded drain)."""
 from __future__ import annotations
 
 import threading
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -3279,6 +3280,14 @@ class TestTheSimpleMethodAndDns:
         assert app._pi_network_field_edit_active
         assert app._pi_network_banner == "Invalid DNS server address."
         assert app._pi_network_pending_config.dns == ("8.8.8.8",)
+
+    def test_a_dhcp_apply_keeps_manual_dns_that_is_not_the_leases(self, monkeypatch, tmp_path) -> None:
+        adapter = _FakeAdapter()
+        app = _simple_app(monkeypatch, tmp_path, adapter=adapter)
+        app._pi_network_pending_config = replace(app._pi_network_pending_config, dns=("192.0.2.53",))
+        _confirm_key(app, "apply")
+        app._pi_network_worker.join(timeout=5)
+        assert adapter.apply_calls[0][1].dns == ("192.0.2.53",)
 
     def test_a_dhcp_apply_pins_no_dns_the_operator_did_not_edit(self, monkeypatch, tmp_path) -> None:
         adapter = _FakeAdapter()

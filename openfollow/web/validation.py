@@ -48,6 +48,7 @@ from openfollow.web.routes import (
     _as_int,
     _as_int_list,
     _as_ip_list,
+    _as_network_mode,
     _as_optional_float,
     _as_optional_int,
     _as_positive_int,
@@ -827,7 +828,7 @@ FIELD_RULES["mouse3d"] = _mouse3d_rules
 FIELD_RULES["network"] = {
     "label": FieldRule(_as_str, max_len=LABEL_MAX_LEN, human_error=f"A label is at most {LABEL_MAX_LEN} characters."),
     "network_mode": FieldRule(
-        _as_str, choices=NETWORK_MODES, human_error="Network mode must be 'simple' or 'advanced'."
+        _as_network_mode, choices=NETWORK_MODES, human_error="Network mode must be 'simple' or 'advanced'."
     ),
 }
 

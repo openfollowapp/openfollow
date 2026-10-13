@@ -30,7 +30,7 @@
 % _session_addr = _net.get("session_address", "")
 % _editing = _net.get("editing_iface", "")
 % _polls = _net.get("available") and not _editable
-% _simple = _net.get("mode", "simple") == "simple"
+% _simple = _net.get("mode", "advanced") == "simple"
 %# Offered whenever the host is writable: creating a link is its own confirmed
 %# action, not something a row's Edit button gates. On a read-only or
 %# non-NetworkManager stack the controls are omitted entirely.
@@ -80,7 +80,7 @@
         <div class="network-grid">
             <label id="net-mode-label">Network mode</label>
             <div class="seg-toggle net-mode-switch" role="radiogroup" aria-labelledby="net-mode-label"
-                 data-mode="{{_net.get('mode', 'simple')}}">
+                 data-mode="{{_net.get('mode', 'advanced')}}">
                 <label class="seg-option">
                     <input type="radio" name="network_mode" value="simple" {{'checked' if _simple else ''}}
                            onchange="netSwitchMode(this)">
@@ -97,8 +97,10 @@
             % _station = _net.get("station_iface", "")
             % _auto = _net.get("station_auto", "")
             <label for="net-station-iface">Interface</label>
+            %# A refused pick puts the picker back on the interface in force.
             <form class="net-station-form" hx-post="/section/network/station" hx-target="#network-interface"
-                  hx-swap="innerHTML" hx-trigger="change" data-busy-text="Moving all traffic to {psn_source_iface}…">
+                  hx-swap="innerHTML" hx-trigger="change" data-busy-text="Moving all traffic to the chosen interface…"
+                  hx-on::after-request="if (!event.detail.successful) this.reset()">
                 <select id="net-station-iface" name="psn_source_iface">
                     <option value="" {{'' if _station else 'selected'}}>{{('Automatic (' + _auto + ')') if _auto else 'Automatic'}}</option>
                     % for _oname, _oaddr in _net.get("station_options", []):
@@ -108,6 +110,16 @@
             </form>
             % end
         </div>
+        % if _simple and _net.get("web_restart_pending") and not _net.get("restarting"):
+        <div class="notice warning" role="status">The web UI answers on one interface until OpenFollow restarts.
+            <div class="actions">
+                <button type="button" class="danger"
+                        hx-post="/section/network/restart" hx-target="#network-interface" hx-swap="innerHTML"
+                        hx-confirm="Outputs pause until OpenFollow is back."
+                        data-confirm-title="Restart OpenFollow?" data-confirm-label="Restart" data-confirm-danger>Restart OpenFollow</button>
+            </div>
+        </div>
+        % end
         % _leftover = _net.get("leftover_vlans", []) if _simple else []
         % if _leftover:
         <div class="notice warning" role="status">{{', '.join(_leftover)}} {{'is' if len(_leftover) == 1 else 'are'}} still on this station.

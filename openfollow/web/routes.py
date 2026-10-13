@@ -1060,7 +1060,7 @@ def get_section_data(cfg: AppConfig, section: str) -> dict[str, Any] | None:
             form_key: getattr(cfg if attr is None else getattr(cfg, attr), field_name)
             for form_key, (attr, field_name) in _INTERFACE_ASSIGNMENT_TARGETS.items()
         }
-        payload.update({_dest_pin_key(dest.id): dest.source_iface for dest in cfg.osc_destinations.destinations})
+        payload.update({plane_pin_key(dest.id): dest.source_iface for dest in cfg.osc_destinations.destinations})
         return payload
     section_attr = _SECTION_CONFIG_ATTRS.get(section)
     if section_attr is None:
@@ -1082,11 +1082,7 @@ _INTERFACE_ASSIGNMENT_TARGETS: dict[str, tuple[str | None, str]] = {
 }
 
 # One more row per OSC destination, keyed ``osc_destinations.<id>.source_iface``.
-_DEST_PIN_PREFIX = "osc_destinations."
-_DEST_PIN_SUFFIX = ".source_iface"
-
-
-_dest_pin_key = plane_pin_key
+_DEST_PIN_PREFIX, _DEST_PIN_SUFFIX = plane_pin_key("\0").split("\0")
 
 
 _DEVICE_LOCAL_FIELDS_BY_SECTION: dict[str, frozenset[str]] = {
@@ -1464,6 +1460,11 @@ def _plane_pin_label(cfg: AppConfig, key: str) -> str:
     return f"OSC Destination {(dest.name or f'{dest.host}:{dest.port}') if dest else key}"
 
 
+def _as_network_mode(raw: Any, fallback: str) -> str:
+    """A posted network mode, read case- and space-blind like the config reads it."""
+    return _as_str(raw, fallback).strip().lower()
+
+
 def simple_mode_changes(
     cfg: AppConfig, vlans: Mapping[str, Any], station_iface: str, session_iface: str
 ) -> dict[str, Any]:
@@ -1593,7 +1594,7 @@ def _interface_assignment_rows(
         },
         *(
             {
-                "key": _dest_pin_key(dest.id),
+                "key": plane_pin_key(dest.id),
                 "label": f"OSC Destination {dest.name or f'{dest.host}:{dest.port}'}",
                 "value": dest.source_iface,
                 "address": _sender(dest.source_iface, dest.host, tcp=dest.protocol == "tcp"),
@@ -5898,6 +5899,11 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         mode_cfg = _request_scoped_config()
         net["mode"] = mode_cfg.network_mode
         if mode_cfg.network_mode == NETWORK_MODE_SIMPLE:
+            advisory = server.get_web_bind_advisory()
+            # A pin Simple cleared still holds the listener until OpenFollow restarts.
+            net["web_restart_pending"] = (
+                bool(advisory.get("iface_at_start")) and advisory.get("status") == "iface" and not mode_cfg.web_bind
+            )
             # Only what the backend lists as a VLAN: that is what Advanced can remove.
             _narrow_to_station(net, mode_cfg.psn_source_iface, set(vlan_ids) if net["supports_vlans"] else set())
             labels = {}
@@ -6370,14 +6376,17 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         return changes
 
     def _simple_switch_restarts(cfg: AppConfig) -> bool:
-        """Whether switching ``cfg`` to Simple restarts OpenFollow: a web UI pin is in force.
+        """Whether switching ``cfg`` to Simple restarts OpenFollow: a web UI pin holds the listener.
 
-        In force is what the server started with, saved or not; without a
-        runtime to say, it is the saved pin.
+        It holds it when the server started on it, saved or not, unless ``web_bind``
+        outranks it or it was down and the server already serves everywhere.
+        Without a runtime to say, it is the saved pin.
         """
+        if cfg.web_bind:
+            return False
         advisory = server.get_web_bind_advisory()
         if "iface_at_start" in advisory:
-            return bool(advisory["iface_at_start"])
+            return bool(advisory["iface_at_start"]) and advisory.get("status") == "iface"
         return bool(cfg.web_bind_iface)
 
     @app.get("/section/network/mode/preview")
@@ -6409,7 +6418,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         A VLAN that fails to go does not stop the switch: the Simple card names
         what is left. A web UI pin in force restarts OpenFollow.
         """
-        mode = (request.forms.get("network_mode") or "").strip()
+        mode = _as_network_mode(request.forms.get("network_mode"), "")
         if mode not in NETWORK_MODES:
             abort(400, "Network mode must be Simple or Advanced.")
         simple = mode == NETWORK_MODE_SIMPLE
@@ -6431,15 +6440,21 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             result = server.delete_network_vlan(name)
             if not result.ok:
                 logger.warning("Switching to Simple left VLAN %s: %s", name, result.message)
-        restarting = refused = False
-        if restart:
-            restarting = server.request_restart_unless_updating()
-            refused = not restarting
-        if not (restarting or refused):
-            # The mode decides which sections the page shows.
+        restarting = restart and server.request_restart_unless_updating()
+        if not restarting:
+            # The mode decides which sections the page shows. A refused restart is
+            # named on the reloaded card, which offers it again.
             response.set_header("HX-Refresh", "true")
         net = _build_network_form_context()
-        net.update(restarting=restarting, restart_refused=refused)
+        net.update(restarting=restarting)
+        return template("partials/network", net=net)
+
+    @app.post("/section/network/restart")
+    def network_restart() -> Any:
+        """Restart for a web UI pin Simple cleared; refused while an update runs."""
+        restarting = server.request_restart_unless_updating()
+        net = _build_network_form_context()
+        net.update(restarting=restarting, restart_refused=not restarting)
         return template("partials/network", net=net)
 
     @app.post("/section/network/station")

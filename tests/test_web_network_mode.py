@@ -81,6 +81,8 @@ def test_the_simple_card_shows_the_station_interface_alone(net_server, tmp_path,
     assert "net-label-form" not in body
     assert "+ Add VLAN" not in body
     assert "VLAN 20" not in body
+    # A refused pick puts the picker back.
+    assert 'hx-on::after-request="if (!event.detail.successful) this.reset()"' in body
 
 
 def test_the_simple_card_follows_a_named_station_interface(net_server, tmp_path, present) -> None:  # noqa: F811
@@ -238,7 +240,7 @@ def test_the_preview_warns_of_a_restart_for_a_pin_still_in_force(net_server, pre
     monkeypatch.setattr(
         server_module.ConfigWebServer,
         "get_web_bind_advisory",
-        lambda self: {"bind_at_start": "", "iface_at_start": "wlan0"},
+        lambda self: {"bind_at_start": "", "iface_at_start": "wlan0", "status": "iface"},
     )
     _fake, base = net_server
     preview = json.loads(_get(base, "/section/network/mode/preview")[1])
@@ -299,7 +301,7 @@ def test_a_cleared_web_pin_still_in_force_restarts(net_server, tmp_path, present
     monkeypatch.setattr(
         server_module.ConfigWebServer,
         "get_web_bind_advisory",
-        lambda self: {"bind_at_start": "", "iface_at_start": "wlan0"},
+        lambda self: {"bind_at_start": "", "iface_at_start": "wlan0", "status": "iface"},
     )
     restarts: list[bool] = []
     monkeypatch.setattr(
@@ -336,7 +338,7 @@ def test_a_web_ui_pin_in_force_restarts_openfollow(net_server, tmp_path, present
     monkeypatch.setattr(
         server_module.ConfigWebServer,
         "get_web_bind_advisory",
-        lambda self: {"bind_at_start": "", "iface_at_start": "wlan0"},
+        lambda self: {"bind_at_start": "", "iface_at_start": "wlan0", "status": "iface"},
     )
     restarts: list[bool] = []
     monkeypatch.setattr(
@@ -358,12 +360,67 @@ def test_a_restart_refused_by_an_update_says_so(net_server, tmp_path, present, m
     monkeypatch.setattr(
         server_module.ConfigWebServer,
         "get_web_bind_advisory",
-        lambda self: {"bind_at_start": "", "iface_at_start": "wlan0"},
+        lambda self: {"bind_at_start": "", "iface_at_start": "wlan0", "status": "iface"},
     )
     monkeypatch.setattr(server_module.ConfigWebServer, "request_restart_unless_updating", lambda self: False)
     _fake, base = net_server
-    _status, body, _headers = _post_headers(base, "/section/network/mode", {"network_mode": "simple"})
+    _status, _body, headers = _post_headers(base, "/section/network/mode", {"network_mode": "simple"})
+    # The page reloads into Simple, whose card offers the restart again.
+    assert headers.get("hx-refresh") == "true"
+    _status, card = _get(base, "/section/network/status")
+    assert "The web UI answers on one interface until OpenFollow restarts." in card
+    assert 'hx-post="/section/network/restart"' in card
+    _status, body = _post(base, "/section/network/restart", {})
     assert "An update is running, so OpenFollow was not restarted." in body
+
+
+def test_the_card_restarts_for_a_pin_simple_cleared(net_server, tmp_path, present, monkeypatch) -> None:  # noqa: F811
+    import openfollow.web.server as server_module
+
+    monkeypatch.setattr(
+        server_module.ConfigWebServer,
+        "get_web_bind_advisory",
+        lambda self: {"bind_at_start": "", "iface_at_start": "wlan0", "status": "iface"},
+    )
+    monkeypatch.setattr(server_module.ConfigWebServer, "request_restart_unless_updating", lambda self: True)
+    _fake, base = net_server
+    _set(tmp_path, network_mode="simple")
+    _status, body = _post(base, "/section/network/restart", {})
+    assert "restart-notice" in body
+    assert "until OpenFollow restarts" not in body
+
+
+@pytest.mark.parametrize(
+    ("advisory", "web_bind"),
+    [
+        ({"bind_at_start": "", "iface_at_start": "wlan0", "status": "down"}, ""),
+        ({"bind_at_start": "", "iface_at_start": "wlan0", "status": "iface"}, "198.51.100.10"),
+        ({"bind_at_start": "", "iface_at_start": "", "status": ""}, ""),
+    ],
+    ids=["pin-was-down", "web-bind-outranks", "no-pin"],
+)
+def test_no_restart_where_clearing_the_pin_moves_nothing(
+    net_server,  # noqa: F811
+    tmp_path,
+    present,
+    monkeypatch,
+    advisory,
+    web_bind,
+) -> None:
+    import openfollow.web.server as server_module
+
+    _set(tmp_path, web_bind=web_bind)
+    monkeypatch.setattr(server_module.ConfigWebServer, "get_web_bind_advisory", lambda self: advisory)
+    restarts: list[bool] = []
+    monkeypatch.setattr(
+        server_module.ConfigWebServer, "request_restart_unless_updating", lambda self: restarts.append(True) or True
+    )
+    _fake, base = net_server
+    assert json.loads(_get(base, "/section/network/mode/preview")[1])["restart"] is False
+    _post_headers(base, "/section/network/mode", {"network_mode": "simple"})
+    assert restarts == []
+    _status, card = _get(base, "/section/network/status")
+    assert "until OpenFollow restarts" not in card
 
 
 def test_switching_to_advanced_changes_only_the_mode(net_server, tmp_path, present) -> None:  # noqa: F811
@@ -377,7 +434,15 @@ def test_switching_to_advanced_changes_only_the_mode(net_server, tmp_path, prese
     assert fake.vlans_deleted == []
 
 
-@pytest.mark.parametrize("body", [{}, {"network_mode": ""}, {"network_mode": "Simple"}, {"network_mode": "expert"}])
+@pytest.mark.parametrize("raw", ["Simple", " simple "])
+def test_the_switch_reads_the_mode_like_the_config_does(net_server, tmp_path, raw) -> None:  # noqa: F811
+    _fake, base = net_server
+    status, _text = _post(base, "/section/network/mode", {"network_mode": raw})
+    assert status == 200
+    assert _saved(tmp_path).network_mode == "simple"
+
+
+@pytest.mark.parametrize("body", [{}, {"network_mode": ""}, {"network_mode": "expert"}, {"network_mode": "simple1"}])
 def test_a_malformed_switch_is_refused(net_server, tmp_path, body) -> None:  # noqa: F811
     _fake, base = net_server
     status, _text = _post(base, "/section/network/mode", body)

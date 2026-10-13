@@ -2511,7 +2511,8 @@
  if (resp.redirected) return fail(expired);
  if (!resp.ok) return fail(await saveError.fromResponse(resp));
  const preview = await resp.json();
- if ((preview.pins.length || preview.vlans.length || preview.kept.length) && !(await netConfirmSimple(preview))) {
+ const listed = preview.pins.length || preview.vlans.length || preview.kept.length || preview.restart;
+ if (listed && !(await netConfirmSimple(preview))) {
  radios.forEach((radio) => { radio.disabled = false; radio.checked = radio.value === group.dataset.mode; });
  return;
  }

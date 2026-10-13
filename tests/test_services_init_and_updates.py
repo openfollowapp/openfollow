@@ -1125,6 +1125,29 @@ class TestInitWebServer:
         provider = services._app._web_server.kwargs["network_planes_provider"]
         assert provider.__func__ is AppRuntimeServices.network_plane_status
 
+    def test_wires_scan_to_a_fresh_network_reading(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from openfollow import web
+        from openfollow.network.adapter import NetworkReading
+
+        monkeypatch.setattr(web, "ConfigWebServer", _FakeWebServer)
+        monkeypatch.setattr(services_module, "_NETWORK_READING_MAX_AGE_S", float("inf"))
+        services._preview_provider = SimpleNamespace(get_snapshot=lambda: None)
+        services._snapshot_provider = SimpleNamespace(get_snapshot=lambda: None)
+        reads: list[int] = []
+        services._network_adapter = SimpleNamespace(
+            read_network=lambda: reads.append(1) or NetworkReading(), is_writable=lambda: False, backend_name="fake"
+        )
+
+        services.init_web_server()
+        services._network_config_provider()
+        services._network_config_provider()
+        assert reads == [1]
+        services._app._web_server.kwargs["network_rescan_handler"]()
+        services._network_config_provider()
+        assert reads == [1, 1]
+
     def test_wires_osc_binding_diagnostics_providers(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
     ) -> None:

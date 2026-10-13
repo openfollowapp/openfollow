@@ -9,8 +9,11 @@
         <h3 class="group-title">RTTrPM Network</h3>
         <div class="row">
             <div class="field checkbox-field">
-                <label>Enabled</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="enabled" {{'checked' if config.rttrpm_output.enabled else ''}}></div>
+                <label for="rttrpm-output-enabled">RTTrPM output</label>
+                <div class="checkbox-wrap checkbox-field inline">
+                    <input type="checkbox" id="rttrpm-output-enabled" name="enabled" {{'checked' if config.rttrpm_output.enabled else ''}}>
+                    <label for="rttrpm-output-enabled">Send marker positions over RTTrPM</label>
+                </div>
             </div>
             <div class="field">
                 <label>Destination Host</label>

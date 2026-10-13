@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+from tests._template_source import function_body
+
 pytestmark = pytest.mark.unit
 
 _PACKAGE = Path(__file__).resolve().parent.parent / "openfollow"
@@ -28,43 +30,28 @@ def test_every_file_that_saves_by_script_reports_failures_through_the_shared_hel
     assert silent == []
 
 
-def _function_body(source: str, name: str) -> str:
-    """The body of ``function name(...) { ... }``, matched to its closing brace."""
-    start = source.index(f"function {name}(")
-    opening = source.index("{", start)
-    depth = 0
-    for index in range(opening, len(source)):
-        if source[index] == "{":
-            depth += 1
-        elif source[index] == "}":
-            depth -= 1
-            if depth == 0:
-                return source[opening + 1 : index]
-    raise AssertionError(f"{name} has no closing brace")
-
-
 def _template(relative: str) -> str:
     return (_PACKAGE / "web" / "templates" / relative).read_text(encoding="utf-8")
 
 
 def test_a_restart_that_gets_no_answer_says_so() -> None:
-    body = _function_body(_template("base.tpl"), "confirmRestartApp")
+    body = function_body(_template("base.tpl"), "confirmRestartApp")
     assert "saveError.UNREACHABLE" in body
 
 
 def test_a_zone_save_that_saves_nothing_resolves_null() -> None:
-    body = _function_body(_template("partials/zone_editor.tpl"), "saveSelectedZone")
+    body = function_body(_template("partials/zone_editor.tpl"), "saveSelectedZone")
     assert "Promise.resolve()" not in body
 
 
 @pytest.mark.parametrize("name", ["duplicateSelectedZone", "onZoneTestSendClick"])
 def test_zone_actions_chained_on_a_save_stop_when_it_failed(name: str) -> None:
-    body = _function_body(_template("partials/zone_editor.tpl"), name)
+    body = function_body(_template("partials/zone_editor.tpl"), name)
     assert re.search(r"saveSelectedZone\(\)\.then\(function\s*\((\w+)\)\s*\{\s*if\s*\(!\1\)\s*return", body)
 
 
 def test_a_template_export_failure_reports_on_the_dialog() -> None:
-    body = _function_body(_template("base.tpl"), "onExportClick")
+    body = function_body(_template("base.tpl"), "onExportClick")
     assert "saveError.show(card, await saveError.fromResponse(res), 'Not exported.')" in body
     assert "saveError.show(card, saveError.UNREACHABLE, 'Not exported.')" in body
     assert "showToast" not in body
@@ -98,7 +85,7 @@ def test_every_hx_confirm_names_its_button_and_the_listener_asks_in_the_modal() 
 
 
 # The actions docs/STATUS_LANGUAGE.md lists under "Destructive actions".
-_DESTRUCTIVE_LABELS = ("Delete", "Discard", "Forget", "Remove", "Restore Defaults", "Restart")
+_DESTRUCTIVE_LABELS = ("Delete", "Discard", "Forget", "Import", "Remove", "Restore Defaults", "Restart")
 
 
 def test_a_confirm_that_stops_or_loses_something_takes_the_danger_button() -> None:

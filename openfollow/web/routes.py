@@ -31,7 +31,7 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from bottle import Bottle, HTTPResponse, abort, redirect, request, response, static_file, template
 
@@ -91,6 +91,7 @@ from openfollow.network.validate import (
     vlan_interface_name,
 )
 from openfollow.palette import AUTO_PICK_ORDER
+from openfollow.privilege import settings_backup
 from openfollow.privilege.camera_config import AUTOMATIC
 from openfollow.runtime.diagnostics_export import WEB, ExportStatus, status_lines
 from openfollow.station_fqdn import canonical_host, fqdn_problem
@@ -120,6 +121,7 @@ from openfollow.units import UnitSystem, parse_length, parse_speed
 from openfollow.web import diagnostics, peer_auth
 from openfollow.web._md import render_help_markdown
 from openfollow.web.bindings import check_binding, osc_row_overlap, osc_trigger_overlap
+from openfollow.web.discovery import clean_peer_name
 from openfollow.web.labels import video_error_token
 from openfollow.web.live_alerts import statistics_alerts
 from openfollow.web.login_throttle import LoginThrottle
@@ -1709,7 +1711,7 @@ def apply_section_data(cfg: AppConfig, section: str, data: Mapping[str, Any]) ->
             logger.info("%r moved from %s to %s", move.value, move.field, move.kept_by)
     # Re-run the dataclass ``__post_init__`` after a web-form save so the
     # same coercion/clamping rules that protect hand-edited config.toml also
-    # protect crafted POSTs. See "Validation contract" in CLAUDE.md.
+    # protect crafted POSTs. See "Validation contract" in docs/architecture/config.md.
     if section in ("controller", "gamepad", "keyboard", "mouse"):
         cfg.controller.__post_init__()
     elif section == "mouse3d":
@@ -1874,7 +1876,7 @@ def _coerce_unit_input(
 
 
 # Bool checkboxes the mouse form submits; an unticked one is absent from the POST.
-_MOUSE_BOOL_FIELDS = ("mouse_enabled", "mouse_double_click_reset", "mouse_wheel_z_enabled", "mouse_wheel_invert")
+_MOUSE_BOOL_FIELDS = ("mouse_enabled", "mouse_double_click_reset", "mouse_wheel_z_enabled")
 
 
 def _normalize_unit_fields(
@@ -3164,16 +3166,59 @@ def reset_config_to_defaults(current_cfg: AppConfig) -> AppConfig:
     return fresh
 
 
-def _apply_import_data(
-    current_cfg: AppConfig,
-    data: dict[str, Any],
-    *,
-    skip_restart_sections: bool = False,
-) -> AppConfig:
-    """Build a new config from import data, preserving this device's identity.
+# The query parameter marking a request as settings another station pushed.
+PUSHED_FROM_PARAM = "from"
+# Stations on 0.5.0-rc1 and earlier push every setting to the import with this query, and no name.
+UNNAMED_PUSH_PARAM = "skip_restart"
 
-    *skip_restart_sections* survives in the API for backwards compatibility
-    but no longer gates anything: every section is live-reloadable.
+
+def _pushed_by() -> str | None:
+    """The pushing station's name, cleaned like a beacon's; ``None`` when this is no push."""
+    if PUSHED_FROM_PARAM in request.query:
+        return clean_peer_name(request.query.get(PUSHED_FROM_PARAM, "")).strip()
+    if UNNAMED_PUSH_PARAM in request.query:
+        return ""
+    return None
+
+
+# A push never names the station it lands on: each station keeps its own.
+_PUSH_EXCLUDED_FIELDS = frozenset({"psn_system_name"})
+
+
+def _without_station_name(data: dict[str, Any]) -> dict[str, Any]:
+    """``data`` without the fields that name a station, for a push."""
+    return {key: value for key, value in data.items() if key not in _PUSH_EXCLUDED_FIELDS}
+
+
+_SECTION_LABELS = {
+    "mouse3d": "3D mouse",
+    "osc": "OSC",
+    "otp_output": "OTP output",
+    "psn": "PSN",
+    "rttrpm_output": "RTTrPM output",
+}
+
+
+def _section_label(section: str) -> str:
+    return _SECTION_LABELS.get(section) or section.replace("_", " ").capitalize()
+
+
+def _backup_before(config_path: str, kind: str) -> dict[str, str]:
+    """Archive the settings ``kind`` is about to replace; the response fields reporting it.
+
+    A failed backup never blocks the change: the operator is told, and it is logged.
+    Call it before taking ``_config_write_lock``: the main loop takes that lock too,
+    and writing an archive to an SD card can take a while.
+    """
+    result = settings_backup.run_web_backup(Path(config_path), openfollow.__version__, kind)
+    if result.error:
+        logger.warning("Settings backup before %s failed, continuing: %s", kind, result.error)
+        return {"backup_error": result.error}
+    return {"backup": result.archive}
+
+
+def _apply_import_data(current_cfg: AppConfig, data: dict[str, Any]) -> AppConfig:
+    """Build a new config from import data, preserving this device's identity.
 
     Each section is applied without its ``_DEVICE_LOCAL_FIELDS_BY_SECTION``,
     and the ``_DEVICE_IDENTITY_FIELDS`` are snapshotted before the section
@@ -3268,17 +3313,6 @@ def _apply_import_data(
 
     restore_device_identity(cfg, device_identity)
     return cfg
-
-
-def _import_needs_restart(old: AppConfig, new: AppConfig) -> list[str]:
-    """Return human-readable reasons the imported config requires a restart.
-
-    No config-detectable diff triggers a restart today (every section
-    applies live). Kept as a placeholder: if a section regains a
-    restart-only path, add the diff check here and have
-    ``api_import_config`` consult this helper again.
-    """
-    return []
 
 
 def _load_json_body() -> Any:
@@ -3542,6 +3576,7 @@ def build_diagnostics_bundle(server: ConfigWebServer, cfg: AppConfig | None = No
         update_service_name=cfg.update_service_name or None,
         repo_root=_repo_root_for_diagnostics(),
         extra_storage_paths=extra_storage or None,
+        config_path=Path(server.config_path),
     )
     text = diagnostics.format_bundle(bundle)
     # Best-effort on-disk copy. Failure (read-only fs, no perms)
@@ -3886,17 +3921,22 @@ def _peer_auth_headers(
     }
 
 
+def _push_path(path: str, sender: str) -> str:
+    """``path`` marked as a push from ``sender``; the mark is signed with the rest of the path."""
+    return f"{path}?{PUSHED_FROM_PARAM}={quote(sender, safe='')}"
+
+
 def _send_config_to_peer(
-    ip: str, port: int, section: str, data: dict[str, Any], pin: str = "", *, expected_port: int
+    ip: str, port: int, section: str, data: dict[str, Any], pin: str = "", *, expected_port: int, sender: str
 ) -> bool:
-    """Send config update to a remote peer."""
+    """Send config update to a remote peer, marked as a push from ``sender``."""
     if not _is_private_peer_ip(ip):
         logger.warning("Refusing peer broadcast to non-private IP: %s", ip)
         return False
     if not _is_allowed_peer_port(port, expected_port):
         logger.warning("Refusing peer broadcast to unexpected port: %s:%d", ip, port)
         return False
-    path = f"/api/config/{section}"
+    path = _push_path(f"/api/config/{section}", sender)
     body = json.dumps(data).encode("utf-8")
     url = f"http://{ip}:{port}{path}"
     try:
@@ -3909,15 +3949,17 @@ def _send_config_to_peer(
         return False
 
 
-def _send_config_import_to_peer(ip: str, port: int, data: dict[str, Any], pin: str = "", *, expected_port: int) -> bool:
-    """Send full config to a remote peer via the import endpoint."""
+def _send_config_import_to_peer(
+    ip: str, port: int, data: dict[str, Any], pin: str = "", *, expected_port: int, sender: str
+) -> bool:
+    """Send full config to a remote peer via the import endpoint, marked as a push from ``sender``."""
     if not _is_private_peer_ip(ip):
         logger.warning("Refusing peer broadcast to non-private IP: %s", ip)
         return False
     if not _is_allowed_peer_port(port, expected_port):
         logger.warning("Refusing peer broadcast to unexpected port: %s:%d", ip, port)
         return False
-    path = "/api/config/import?skip_restart=1"
+    path = _push_path("/api/config/import", sender)
     body = json.dumps(data).encode("utf-8")
     url = f"http://{ip}:{port}{path}"
     try:
@@ -5282,6 +5324,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         them; ``label_result`` reports a label save on its row (``iface``, and
         ``error`` with the ``entered`` text, or ``saved``).
         """
+        if request.query.get("scan"):
+            server.rescan_network()
         cfg = server.get_network_config(iface)
         if not cfg or not cfg.get("interfaces"):
             return {
@@ -5307,10 +5351,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             "lease_display": cfg.get("lease_display"),
             "banner": banner,
         }
-        # The interface list replaced the old single picker, so the card can
-        # show a multi-NIC (or tagged-VLAN) station's whole layout. ``Scan``
-        # forces a re-read; ordinary renders come off the TTL cache.
-        rows = server.get_network_interfaces(force=bool(request.query.get("scan")))
+        rows = server.get_network_interfaces()
         if not rows:
             # No richer provider wired (or it failed): synthesise the list from
             # the single-interface snapshot so the card still renders every
@@ -5361,12 +5402,11 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         net["editing_iface"] = net["active_interface"] if (iface or editable) else ""
         net["vlan_form"] = dict(vlan_form) if vlan_form else {}
         _add_adapter_fields(net, _request_scoped_config().interface_labels if labels is None else labels, label_result)
-        # The single-interface snapshot is a fresh read; it belongs to the row
-        # being configured, while the others keep their own detail off the
-        # cached scan. Captured before the operator's submitted input is
-        # layered on, because the row's summary line reports what the adapter
-        # holds - a rejected address must not appear there as a live one, with
-        # the previous prefix and an up status dot beside it.
+        # The single-interface snapshot belongs to the row being configured.
+        # Captured before the operator's submitted input is layered on, because
+        # the row's summary line reports what the adapter holds - a rejected
+        # address must not appear there as a live one, with the previous prefix
+        # and an up status dot beside it.
         live = {
             "method": net["method"],
             "address": net["address"],
@@ -5413,7 +5453,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         net["display_names"] = {name: display_name(name, labels) for name in names}
 
     def _resolve_network_iface(iface: str) -> tuple[str | None, str]:
-        """Validate the posted interface against the adapter's live list.
+        """Validate the posted interface against the interfaces the backend reports.
 
         A privileged adapter write must never receive a raw/forged POST value.
         Blank means "whichever interface the form defaulted to" and resolves to
@@ -5444,16 +5484,10 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     ) -> Any:
         """Re-render the card after a VLAN create / delete.
 
-        The interface list is force-refreshed because a VLAN that was just
-        created (or removed) has to appear (or vanish) immediately – waiting
-        out the TTL would show the operator a list that contradicts the banner
-        they are reading.
-
         Read-only: a VLAN write is not an edit of some other interface, and
         ``iface`` expands the new row rather than making it writable. A refused
         create passes ``vlan_form`` so the operator's entry survives the swap.
         """
-        server.get_network_interfaces(force=True)
         return template(
             "partials/network",
             net=_build_network_form_context(iface=iface, banner=banner, vlan_form=vlan_form),
@@ -5511,7 +5545,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         The interface is named in the path rather than carried in a picker, so
         which adapter is being edited is never ambiguous, and only one is ever
         writable at a time. ``_build_network_form_context`` sanitises it
-        against the adapter's live list, falling back to the active interface
+        against the interfaces the backend reports, falling back to the active interface
         if it's unknown.
         """
         return template(
@@ -6362,16 +6396,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     @app.post("/section/movement")
     def update_movement() -> Any:
-        """Update movement speed settings.
-
-        Only this route lists ``invert_control_direction`` in ``bool_fields``:
-        it renders the checkbox, and an unchecked box isn't posted. The
-        ``marker`` section shares ``MarkerConfig`` but must leave it alone.
-        """
-        cfg = _save_section_from_form(
-            "movement",
-            bool_fields=("invert_control_direction",),
-        )
+        """Update movement speed settings."""
+        cfg = _save_section_from_form("movement")
         return template("partials/movement", config=cfg, saved=True)
 
     @app.post("/section/marker")
@@ -6387,7 +6413,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 "z_line",
                 "ground_circle",
                 "ground_circle_filled",
-                "z_display_from_stage",
             ),
         )
         return template("partials/marker", config=cfg, saved=True)
@@ -6397,7 +6422,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """Update gamepad (controller) settings."""
         cfg = _save_section_from_form(
             "gamepad",
-            bool_fields=("enabled", "invert_y", "swap_triggers"),
+            bool_fields=("enabled", "swap_triggers"),
         )
         response.set_header("HX-Trigger", "controllerBindingsSaved")
         return template(
@@ -6426,8 +6451,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     @app.post("/section/mouse3d")
     def update_mouse3d() -> Any:
         """Update 3D Mouse settings."""
-        bool_fields = ("enabled", *(f"invert_{axis}" for axis in MOUSE3D_AXES))
-        cfg = _save_section_from_form("mouse3d", bool_fields=bool_fields)
+        cfg = _save_section_from_form("mouse3d", bool_fields=("enabled",))
         return template("partials/mouse3d", config=cfg, saved=True, mouse3d_status=_mouse3d_status_view(server))
 
     @app.get("/section/mouse3d/status")
@@ -6491,7 +6515,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     @app.post("/section/operator_messages")
     def update_operator_messages() -> Any:
         """Update the OSC operator-message overlay settings."""
-        cfg = _save_section_from_form("operator_messages", bool_fields=("enabled", "route_by_marker"))
+        cfg = _save_section_from_form("operator_messages", bool_fields=("enabled",))
         return template("partials/operator_messages", config=cfg, saved=True)
 
     # ------------------------------------------------------------------
@@ -8807,16 +8831,60 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         )
         return json.dumps(_config_dict_redacted(cfg), indent=2)
 
+    def _record_push(station: str, what: str, backup: dict[str, str]) -> None:
+        # The socket's peer, not ``remote_addr``: Bottle takes that from a client-set X-Forwarded-For.
+        address = request.environ.get("REMOTE_ADDR", "")
+        server.pushed_settings.record(station, address, what, backup.get("backup_error", ""))
+
+    @app.get("/api/pushed-settings")
+    def api_pushed_settings() -> Any:
+        """Settings other stations pushed here since the warning was last removed, newest first."""
+        response.content_type = "application/json"
+        pushes, earlier = server.pushed_settings.snapshot()
+        return json.dumps(
+            {
+                "pushes": [
+                    {
+                        "id": push.id,
+                        "time": time.strftime("%H:%M", time.localtime(push.at)),
+                        "station": push.station,
+                        "address": push.address,
+                        "what": push.what,
+                        "backup_error": push.backup_error,
+                    }
+                    for push in pushes
+                ],
+                "earlier": earlier,
+                "run": server.pushed_settings.run,
+                # Read after the list, so it never counts fewer pushes than the list holds.
+                "received": server.pushed_settings.received,
+            }
+        )
+
+    @app.post("/api/pushed-settings/remove")
+    def api_pushed_settings_remove() -> Any:
+        """Remove the warning for every push up to ``upto``, the newest one the page showed.
+
+        ``run`` is the one the page read it from: a removal from before a restart is refused.
+        """
+        response.content_type = "application/json"
+        data = _load_json_body()
+        upto = data.get("upto") if isinstance(data, dict) else None
+        if isinstance(upto, bool) or not isinstance(upto, int):
+            response.status = 400
+            return json.dumps({"error": "The request named no push."})
+        if data.get("run") != server.pushed_settings.run:
+            response.status = 409
+            return json.dumps({"error": "OpenFollow restarted since the warning was shown."})
+        server.pushed_settings.remove(upto)
+        return json.dumps({"success": True})
+
     @app.post("/api/config/import")
     def api_import_config() -> Any:
-        """Import a config from JSON, preserving the device IP address.
+        """Import a config from JSON, preserving this station's identity.
 
         Every section in the imported payload applies live via the
-        hot-reload path. The ``confirm_restart`` / ``skip_restart`` query
-        params are still accepted (older peers send them) but no longer
-        change the outcome. If a future section regains a restart-only path,
-        this endpoint must consult ``_import_needs_restart`` before reporting
-        ``needs_restart`` again.
+        hot-reload path.
         """
         response.content_type = "application/json"
 
@@ -8827,6 +8895,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             response.status = 400
             return json.dumps({"error": "Expected a JSON object"})
 
+        pushed_by = _pushed_by()
+        backup = _backup_before(server.config_path, "import" if pushed_by is None else "push")
         with _config_write_lock:
             current = load_config(server.config_path)
             # Per-marker move speeds are device-local + runtime-authoritative:
@@ -8838,9 +8908,11 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             speeds = server.get_marker_move_speeds()
             if speeds:
                 current.marker_move_speeds = dict(speeds)
-            full_cfg = _apply_import_data(current, data)
+            full_cfg = _apply_import_data(current, data if pushed_by is None else _without_station_name(data))
             save_config(full_cfg, server.config_path)
-            return json.dumps({"success": True, "needs_restart": False})
+        if pushed_by is not None:
+            _record_push(pushed_by, "every shared setting", backup)
+        return json.dumps({"success": True, **backup})
 
     @app.post("/api/config/reset")
     def api_reset_config() -> Any:
@@ -8862,11 +8934,12 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         reset would silently, partially undo itself.
         """
         response.content_type = "application/json"
+        backup = _backup_before(server.config_path, "defaults")
         with _config_write_lock:
             current = load_config(server.config_path)
             save_config(reset_config_to_defaults(current), server.config_path)
         server.request_restart()
-        return json.dumps({"success": True, "needs_restart": True, "restarting": True})
+        return json.dumps({"success": True, "needs_restart": True, "restarting": True, **backup})
 
     @app.post("/api/config/broadcast-all")
     def api_broadcast_all() -> Any:
@@ -8877,8 +8950,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # the PIN here so the credential never travels in the broadcast body
         # (peer auth still carries it in the signed header via ``pin=``).
         # OSC destinations / transmitters / zones export via file but are never
-        # real-time shared – strip them from the broadcast body.
-        cfg_data = _strip_broadcast_excluded(_config_dict_redacted(cfg))
+        # real-time shared – strip them from the broadcast body. Each peer keeps
+        # its own station name.
+        cfg_data = _without_station_name(_strip_broadcast_excluded(_config_dict_redacted(cfg)))
         peers = server.get_peers()
         pin = cfg.web_pin
         results = _broadcast_to_peers(
@@ -8889,6 +8963,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 cfg_data,
                 pin=pin,
                 expected_port=server.display_port,
+                sender=cfg.psn_system_name,
             ),
             overall_timeout=_BROADCAST_IMPORT_TIMEOUT_S,
         )
@@ -8927,19 +9002,34 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         if data is None:
             return json.dumps({"error": "Invalid JSON"})
 
+        pushed_by = _pushed_by()
+        scrubbed = strip_device_local_fields(section, data)
+        backup: dict[str, str] = {}
+        if pushed_by is not None:
+            scrubbed = _without_station_name(scrubbed)
+            # Carrying nothing this station shares (a device-local section, a name alone), it is no push.
+            if not scrubbed:
+                pushed_by = None
+        if pushed_by is not None:
+            # A known section before archiving, and the archive before the lock.
+            if not apply_section_data(load_config(server.config_path), section, scrubbed):
+                response.status = 404
+                return json.dumps({"error": "Unknown section"})
+            backup = _backup_before(server.config_path, "push")
+
         with _config_write_lock:
             # A peer-broadcast / external-API receive: no live-speed overlay. Section
             # applies never touch top-level ``marker_move_speeds`` (device-local,
             # runtime-authoritative), and Part 0 keeps the ensuing reload from
             # clobbering the live dict, so a plain disk load is correct here.
             cfg = load_config(server.config_path)
-            scrubbed = strip_device_local_fields(section, data)
             if not apply_section_data(cfg, section, scrubbed):
                 response.status = 404
                 return json.dumps({"error": "Unknown section"})
-
             save_config(cfg, server.config_path)
-        return json.dumps({"success": True})
+        if pushed_by is not None:
+            _record_push(pushed_by, _section_label(section), backup)
+        return json.dumps({"success": True, **backup})
 
     @app.post("/api/config/<section>/broadcast")
     def api_broadcast_section(section: str) -> Any:
@@ -8974,7 +9064,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
         peers = server.get_peers()
         pin = cfg.web_pin
-        peer_data = strip_device_local_fields(section, data)
+        peer_data = _without_station_name(strip_device_local_fields(section, data))
         results = _broadcast_to_peers(
             peers,
             lambda peer: _send_config_to_peer(
@@ -8984,6 +9074,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 peer_data,
                 pin=pin,
                 expected_port=server.display_port,
+                sender=cfg.psn_system_name,
             ),
             overall_timeout=_BROADCAST_SECTION_TIMEOUT_S,
         )

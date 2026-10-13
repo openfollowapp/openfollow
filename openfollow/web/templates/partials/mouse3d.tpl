@@ -10,8 +10,11 @@
     <div class="group">
         <div class="row">
             <div class="field checkbox-field">
-                <label>Enabled</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="enabled" {{'checked' if m.enabled else ''}}></div>
+                <label for="m3d-enabled">3D Mouse</label>
+                <div class="checkbox-wrap checkbox-field inline">
+                    <input type="checkbox" id="m3d-enabled" name="enabled" {{'checked' if m.enabled else ''}}>
+                    <label for="m3d-enabled">Steer markers with a 3D Mouse</label>
+                </div>
             </div>
             <div class="field">
                 <label for="m3d-curve">Response curve</label>
@@ -29,7 +32,7 @@
         % for axis, label in MOUSE3D_AXIS_FORM_LABELS:
         <div class="row">
             <div class="field">
-                <label for="m3d-map-{{axis}}">{{label}}</label>
+                <label for="m3d-map-{{axis}}" id="m3d-map-{{axis}}-label">{{label}}</label>
                 <select id="m3d-map-{{axis}}" name="map_{{axis}}">
                     % for t in MOUSE3D_AXIS_TARGETS:
                     <option value="{{t}}" {{'selected' if getattr(m, 'map_' + axis) == t else ''}}>{{t}}</option>
@@ -46,9 +49,12 @@
                 <span id="m3d-{{idp}}-{{axis}}-error" class="field-error"></span>
             </div>
             % end
-            <div class="field checkbox-field">
-                <label>Invert</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="invert_{{axis}}" {{'checked' if getattr(m, 'invert_' + axis) else ''}}></div>
+            <div class="field">
+                <label for="m3d-invert-{{axis}}" id="m3d-invert-{{axis}}-label">Direction</label>
+                <select id="m3d-invert-{{axis}}" name="invert_{{axis}}" aria-labelledby="m3d-map-{{axis}}-label m3d-invert-{{axis}}-label">
+                    <option value="false" {{'' if getattr(m, 'invert_' + axis) else 'selected'}}>Normal</option>
+                    <option value="true" {{'selected' if getattr(m, 'invert_' + axis) else ''}}>Inverted</option>
+                </select>
             </div>
         </div>
         % end

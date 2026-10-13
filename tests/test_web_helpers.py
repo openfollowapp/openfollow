@@ -751,7 +751,7 @@ def test_apply_section_data_mouse_clamps_and_applies() -> None:
 # re-run after a web-form save, otherwise a crafted POST that slips past
 # the field parser (or mutates a field the parser leaves alone) persists
 # an invalid value to config.toml. See "Validation contract" in
-# CLAUDE.md.
+# docs/architecture/config.md.
 
 
 def test_apply_section_data_grid_clamps_appearance_via_post_init() -> None:
@@ -1096,7 +1096,7 @@ def test_wizard_camera_params_raises_valueerror_on_non_numeric() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _apply_import_data / _import_needs_restart
+# _apply_import_data
 # ---------------------------------------------------------------------------
 
 
@@ -1302,10 +1302,8 @@ def test_apply_import_data_preserves_testpattern_selected_media() -> None:
     assert new.testpattern_selected_media == "0123456789abcdef"  # device selection kept
 
 
-def test_apply_import_data_skip_restart_sections_applies_every_section(
-    monkeypatch,
-) -> None:
-    """All sections apply live; skip_restart flag is preserved for backwards compatibility."""
+def test_apply_import_data_applies_every_section(monkeypatch) -> None:
+    """Video source, outputs and detection off->on all apply from one import."""
     from openfollow.web.routes import _apply_import_data
 
     monkeypatch.setattr(inputs_module, "get_available_input_ids", lambda: ["rtsp", "srt"])
@@ -1321,7 +1319,7 @@ def test_apply_import_data_skip_restart_sections_applies_every_section(
         "detection": {"enabled": True},  # – off→on now live
         "camera": {"pos_x": 42.0},
     }
-    new = _apply_import_data(current, imported, skip_restart_sections=True)
+    new = _apply_import_data(current, imported)
 
     assert new.video_source_type == "srt"  # applied
     assert new.detection.enabled is True  # applied
@@ -1551,37 +1549,6 @@ def test_apply_import_data_non_dict_ui_section_preserves_current() -> None:
 
     assert new.ui.unit_system == "imperial"
     assert new.ui.show_experimental_features is True
-
-
-def test_import_needs_restart_detects_each_restart_reason() -> None:
-    """All config changes apply live; nothing is flagged as requiring restart."""
-    from openfollow.web.routes import _import_needs_restart
-
-    base = AppConfig()
-
-    video_changed = AppConfig()
-    video_changed.video_source_type = "different-source"
-    assert _import_needs_restart(base, video_changed) == []
-
-    otp_changed = AppConfig()
-    otp_changed.otp_output.enabled = not base.otp_output.enabled
-    assert _import_needs_restart(base, otp_changed) == []
-
-    rttrpm_changed = AppConfig()
-    rttrpm_changed.rttrpm_output.enabled = not base.rttrpm_output.enabled
-    assert _import_needs_restart(base, rttrpm_changed) == []
-
-    detection_off_to_on = AppConfig()
-    detection_off_to_on.detection.enabled = True
-    assert _import_needs_restart(base, detection_off_to_on) == []
-
-
-def test_import_needs_restart_returns_empty_when_identical() -> None:
-    from openfollow.web.routes import _import_needs_restart
-
-    base = AppConfig()
-    twin = AppConfig()
-    assert _import_needs_restart(base, twin) == []
 
 
 # ---------------------------------------------------------------------------
@@ -1836,7 +1803,7 @@ def test_send_config_to_peer_refuses_public_ip(caplog) -> None:
     from openfollow.web.routes import _send_config_to_peer
 
     with caplog.at_level("WARNING", logger="openfollow.web.routes"):
-        assert _send_config_to_peer("8.8.8.8", 80, "camera", {}, pin="", expected_port=80) is False
+        assert _send_config_to_peer("8.8.8.8", 80, "camera", {}, pin="", expected_port=80, sender="Stage Left") is False
     assert any("non-private" in r.message for r in caplog.records)
 
 
@@ -1844,7 +1811,7 @@ def test_send_config_import_to_peer_refuses_public_ip(caplog) -> None:
     from openfollow.web.routes import _send_config_import_to_peer
 
     with caplog.at_level("WARNING", logger="openfollow.web.routes"):
-        assert _send_config_import_to_peer("1.1.1.1", 80, {}, pin="", expected_port=80) is False
+        assert _send_config_import_to_peer("1.1.1.1", 80, {}, pin="", expected_port=80, sender="Stage Left") is False
     assert any("non-private" in r.message for r in caplog.records)
 
 
@@ -1871,9 +1838,11 @@ def test_send_config_to_peer_posts_on_private_ip(monkeypatch) -> None:
 
     monkeypatch.setattr(routes_mod.urllib.request, "urlopen", _fake_urlopen)
 
-    ok = _send_config_to_peer("10.0.0.5", 8080, "camera", {"pos_x": 1.5}, pin="", expected_port=8080)
+    ok = _send_config_to_peer(
+        "10.0.0.5", 8080, "camera", {"pos_x": 1.5}, pin="", expected_port=8080, sender="Stage Left"
+    )
     assert ok is True
-    assert captured["url"] == "http://10.0.0.5:8080/api/config/camera"
+    assert captured["url"] == "http://10.0.0.5:8080/api/config/camera?from=Stage%20Left"
     assert captured["method"] == "POST"
     assert b'"pos_x": 1.5' in captured["body"]  # type: ignore[operator]
 
@@ -1889,7 +1858,7 @@ def test_send_config_to_peer_returns_false_on_urlerror(monkeypatch) -> None:
 
     monkeypatch.setattr(routes_mod.urllib.request, "urlopen", _fail)
 
-    assert _send_config_to_peer("10.0.0.5", 80, "camera", {}, pin="", expected_port=80) is False
+    assert _send_config_to_peer("10.0.0.5", 80, "camera", {}, pin="", expected_port=80, sender="Stage Left") is False
 
 
 def test_send_config_import_to_peer_returns_false_on_timeout(monkeypatch) -> None:
@@ -1901,7 +1870,7 @@ def test_send_config_import_to_peer_returns_false_on_timeout(monkeypatch) -> Non
 
     monkeypatch.setattr(routes_mod.urllib.request, "urlopen", _timeout)
 
-    assert _send_config_import_to_peer("10.0.0.5", 80, {}, pin="", expected_port=80) is False
+    assert _send_config_import_to_peer("10.0.0.5", 80, {}, pin="", expected_port=80, sender="Stage Left") is False
 
 
 # ---------------------------------------------------------------------------
@@ -2894,8 +2863,8 @@ def test_apply_import_data_preserves_psn_source_ip_across_import() -> None:
     assert new.psn_source_ip == "10.10.10.10"
 
 
-def test_apply_import_data_skip_restart_applies_every_section() -> None:
-    """All sections apply live; skip_restart_sections flag is preserved for backwards compatibility."""
+def test_apply_import_data_applies_detection_and_output_tuning() -> None:
+    """Detection, OTP and RTTrPM tuning apply alongside the always-live camera."""
     from openfollow.web.routes import _apply_import_data
 
     base = AppConfig()
@@ -2911,7 +2880,6 @@ def test_apply_import_data_skip_restart_applies_every_section() -> None:
             "rttrpm_output": {"fps": 60},
             "camera": {"pos_x": 7.5},  # always live
         },
-        skip_restart_sections=True,
     )
 
     # All sections applied – made detection live too.
@@ -2932,7 +2900,7 @@ def test_send_config_import_to_peer_refuses_non_private_ip(caplog) -> None:
     from openfollow.web.routes import _send_config_import_to_peer
 
     with caplog.at_level(_logging.WARNING, logger="openfollow.web.routes"):
-        ok = _send_config_import_to_peer("8.8.8.8", 8000, {"x": 1}, expected_port=8000)
+        ok = _send_config_import_to_peer("8.8.8.8", 8000, {"x": 1}, expected_port=8000, sender="Stage Left")
     assert ok is False
     assert any("non-private" in rec.message.lower() for rec in caplog.records)
 
@@ -2966,12 +2934,13 @@ def test_send_config_import_to_peer_returns_true_on_http_200(monkeypatch) -> Non
         8000,
         {"camera": {"pos_x": 1.0}},
         expected_port=8000,
+        sender="Stage Left",
     )
     assert ok is True
     # Exact path the peer's bottle dispatcher expects – drift here would
     # break peer broadcasts silently (the receiver would 404 and the
-    # import would never apply).
-    assert captured["url"] == "http://198.51.100.5:8000/api/config/import?skip_restart=1"
+    # import would never apply). The query marks it as a push.
+    assert captured["url"] == "http://198.51.100.5:8000/api/config/import?from=Stage%20Left"
     assert captured["timeout"] == 10
     assert b'"camera"' in captured["body"]
 
@@ -2984,7 +2953,9 @@ def test_send_config_import_to_peer_returns_false_on_url_error(monkeypatch) -> N
 
     monkeypatch.setattr(routes_mod.urllib.request, "urlopen", _boom)
 
-    assert routes_mod._send_config_import_to_peer("10.0.0.1", 8000, {}, expected_port=8000) is False
+    assert (
+        routes_mod._send_config_import_to_peer("10.0.0.1", 8000, {}, expected_port=8000, sender="Stage Left") is False
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -3199,7 +3170,7 @@ class TestPeerPortAllowlist:
         from openfollow.web.routes import _send_config_to_peer
 
         with caplog.at_level("WARNING", logger="openfollow.web.routes"):
-            ok = _send_config_to_peer("10.0.0.5", 31337, "camera", {}, pin="", expected_port=8080)
+            ok = _send_config_to_peer("10.0.0.5", 31337, "camera", {}, pin="", expected_port=8080, sender="Stage Left")
         assert ok is False
         assert any("unexpected port" in r.message for r in caplog.records)
 
@@ -3207,7 +3178,7 @@ class TestPeerPortAllowlist:
         from openfollow.web.routes import _send_config_import_to_peer
 
         with caplog.at_level("WARNING", logger="openfollow.web.routes"):
-            ok = _send_config_import_to_peer("10.0.0.5", 31337, {}, pin="", expected_port=8080)
+            ok = _send_config_import_to_peer("10.0.0.5", 31337, {}, pin="", expected_port=8080, sender="Stage Left")
         assert ok is False
         assert any("unexpected port" in r.message for r in caplog.records)
 

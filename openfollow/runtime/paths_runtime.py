@@ -8,7 +8,7 @@ import logging
 from collections.abc import Callable, Iterable
 from typing import Any
 
-from openfollow.configuration import MAX_PATH_POINTS, AppConfig, PathPointConfig, save_config_change
+from openfollow.configuration import MAX_PATH_POINTS, AppConfig, PathConfig, PathPointConfig, save_config_change
 from openfollow.osc.paths import MarkerPath, PathActive, PathCommand
 from openfollow.paths.engine import Press
 
@@ -76,36 +76,50 @@ def toggle_paths(app: Any) -> None:
 
 
 def apply_commands(app: Any, commands: Iterable[PathCommand], controlled: Iterable[int], marker_of: Any) -> None:
-    """Apply OSC path commands; ``marker_of(id)`` resolves the marker input steers."""
+    """Apply one frame's OSC path commands in order; ``marker_of(id)`` resolves the marker input steers.
+
+    A switch lands in the running config at once; the file and the engine take the net result once,
+    after the last command, so a burst costs one save and one rebuild. Only a lock onto a path switched
+    earlier in the same frame rebuilds the engine first.
+    """
     if not app._paths.enabled:
         return
     controlled_ids = set(controlled)
+    # Each switched path, with its flag before this frame and as the engine was last built.
+    before: dict[str, tuple[PathConfig, bool]] = {}
+    built: dict[str, tuple[PathConfig, bool]] = {}
     for command in commands:
         if isinstance(command, PathActive):
-            _set_active(app, command.name, command.active)
+            path = app._config.paths.find(command.name)
+            if path is None:
+                logger.info("OSC: no path called %r", command.name)
+                continue
+            before.setdefault(path.name, (path, path.active))
+            built.setdefault(path.name, (path, path.active))
+            path.active = command.active
         elif isinstance(command, MarkerPath) and command.marker_id in controlled_ids:
             if command.name is None:
                 app._paths.release(command.marker_id)
                 continue
+            target = app._config.paths.find(command.name)
+            if target is not None and built.get(target.name, (target, target.active))[1] != target.active:
+                reload_paths(app)
+                built.clear()
             marker = marker_of(command.marker_id)
             if marker is not None and not app._paths.lock_onto(command.marker_id, command.name, marker.pos):
                 logger.info("OSC: no active path %r to lock marker %d onto", command.name, command.marker_id)
-
-
-def _set_active(app: Any, name: str, active: bool) -> None:
-    path = app._config.paths.find(name)
-    if path is None:
-        logger.info("OSC: no path called %r", name)
-        return
-    if path.active != active:
-        _write(app, lambda cfg: _switch(cfg, path.name, active))
+    switched = {name: path.active for name, (path, was) in before.items() if path.active != was}
+    if switched:
+        _write(app, lambda cfg: _switch(cfg, switched))
+    if any(path.active != was for path, was in built.values()):
         reload_paths(app)
 
 
-def _switch(cfg: AppConfig, name: str, active: bool) -> None:
-    path = cfg.paths.find(name)
-    if path is not None:
-        path.active = active
+def _switch(cfg: AppConfig, switched: dict[str, bool]) -> None:
+    for name, active in switched.items():
+        path = cfg.paths.find(name)
+        if path is not None:
+            path.active = active
 
 
 def recording_row(app: Any) -> tuple[str, str] | None:

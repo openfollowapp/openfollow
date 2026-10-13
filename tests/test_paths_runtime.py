@@ -20,7 +20,7 @@ from openfollow.configuration import (
     load_config,
     save_config,
 )
-from openfollow.osc.paths import MarkerPath, PathActive
+from openfollow.osc.paths import MarkerPath, PathActive, PathCommand
 from openfollow.paths.engine import PathEngine
 from openfollow.runtime import paths_runtime
 
@@ -236,6 +236,91 @@ class TestCommands:
         app = _App(tmp_path, _cross(active=False), experimental=False)
         paths_runtime.apply_commands(app, [PathActive("cross", True)], [], lambda _id: None)
         assert app._config.paths.paths[0].active is False
+
+
+def _side(active: bool = False) -> PathConfig:
+    return PathConfig(name="side", active=active, points=[PathPointConfig(0, 3, 0), PathPointConfig(5, 3, 0)])
+
+
+class TestOneFrameOfCommands:
+    """A frame's switches reach the file and the engine once, net; locks and releases keep their order."""
+
+    @pytest.fixture
+    def counted(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[_App, dict[str, int]]:
+        app = _App(tmp_path, _cross(), _side())
+        calls = {"save": 0, "reload": 0}
+        save, reload = paths_runtime.save_config_change, app._paths.reload
+
+        def counted_save(*args: Any) -> None:
+            calls["save"] += 1
+            save(*args)
+
+        def counted_reload(*args: Any, **kwargs: Any) -> None:
+            calls["reload"] += 1
+            reload(*args, **kwargs)
+
+        monkeypatch.setattr(paths_runtime, "save_config_change", counted_save)
+        monkeypatch.setattr(app._paths, "reload", counted_reload)
+        return app, calls
+
+    def test_a_burst_of_switches_is_one_save_and_one_rebuild_and_the_last_per_path_wins(
+        self, counted: tuple[_App, dict[str, int]]
+    ) -> None:
+        app, calls = counted
+        # Cross ends switched off, side switched on.
+        burst = [PathActive("CROSS", i % 2 == 0) for i in range(200)] + [
+            PathActive("side", on) for on in (True, False, True)
+        ]
+        paths_runtime.apply_commands(app, burst, [], lambda _id: None)
+        assert calls == {"save": 1, "reload": 1}
+        on_disk = load_config(app._config_path).paths
+        assert [p.active for p in app._config.paths.paths] == [p.active for p in on_disk.paths] == [False, True]
+        assert not app._paths.lock_onto(1, "cross", (0.0, 1.0, 0.0))
+        assert app._paths.lock_onto(1, "side", (0.0, 1.0, 0.0))
+
+    def test_a_path_switched_off_and_on_again_in_one_frame_changes_nothing(
+        self, counted: tuple[_App, dict[str, int]]
+    ) -> None:
+        app, calls = counted
+        app._paths.press(3, (0.0, 1.0, 0.0))
+        paths_runtime.apply_commands(app, [PathActive("cross", False), PathActive("cross", True)], [], lambda _id: None)
+        assert calls == {"save": 0, "reload": 0}
+        assert app._paths.is_locked(3)
+        assert not Path(app._config_path).exists()
+
+    @pytest.mark.parametrize(
+        ("commands", "locked", "saves", "reloads"),
+        [
+            # A lock onto a path switched on before it in the frame finds it.
+            ([PathActive("side", True), MarkerPath(3, "side")], "side", 1, 1),
+            # A lock sent before the switch does not.
+            ([MarkerPath(3, "side"), PathActive("side", True)], None, 1, 1),
+            # A lock onto a path then switched off is released by it.
+            ([MarkerPath(3, "cross"), PathActive("cross", False)], None, 1, 1),
+            # A lock onto a path nobody switched needs no rebuild first, so another path's blip costs nothing.
+            ([PathActive("side", True), MarkerPath(3, "cross"), PathActive("side", False)], "cross", 0, 0),
+        ],
+    )
+    def test_locks_keep_their_place_among_the_switches(
+        self,
+        counted: tuple[_App, dict[str, int]],
+        commands: list[PathCommand],
+        locked: str | None,
+        saves: int,
+        reloads: int,
+    ) -> None:
+        app, calls = counted
+        markers = {3: _Marker(1, 2, 0)}
+        paths_runtime.apply_commands(app, commands, [3], markers.get)
+        assert app._paths.locked_path(3) == locked
+        assert calls == {"save": saves, "reload": reloads}
+
+    def test_a_release_needs_no_rebuild(self, counted: tuple[_App, dict[str, int]]) -> None:
+        app, calls = counted
+        app._paths.press(3, (0.0, 1.0, 0.0))
+        paths_runtime.apply_commands(app, [PathActive("side", True), MarkerPath(3, None)], [3], {}.get)
+        assert not app._paths.is_locked(3)
+        assert calls == {"save": 1, "reload": 1}
 
 
 class TestRecordingRow:

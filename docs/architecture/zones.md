@@ -39,7 +39,7 @@ Occupancy is carried across config reloads via `_zone_signature = (vertices, tri
 `_populate_zone_overlay`:
 - `state.show_zones = bool(tz.show_overlay)` – rendering is driven by `show_overlay` alone.
 - Engine occupancy (`is_occupied`, `count`) is only read when `tz.enabled` is also true; otherwise polygons render with `(False, 0)`.
-- `overlay_draw_zones.ZoneCache` keeps every zone as one picture and the renderer paints it on each display refresh. The picture's size comes from the ink extents of the zones drawn on a recording surface, so a miter tip at an acute corner or a glyph past its label box is never cut off. It is drawn again only when a zone's vertices, colour, name, occupancy or count, the grid z offset (the stage plane), the camera, the lens, the frame size or the device scale change. Anything a zone is drawn from and missing from that key freezes on screen.
+- `overlay_draw_zones.ZoneCache` keeps every zone as one picture and the renderer paints it on each display refresh. The picture's size comes from the ink extents of the zones drawn on a recording surface at the screen's device scale, so a miter tip at an acute corner or a glyph past its label box is never cut off; where lens distortion throws an outline too far out for cairo to measure, the picture is the whole frame. It is let go while no zone is drawn, and drawn again only when a zone's vertices, colour, name, occupancy or count, the grid z offset (the stage plane), the camera, the lens, the frame size or the device scale change. Anything a zone is drawn from and missing from that key freezes on screen.
 
 ## Web API (`web/routes.py`)
 - `GET /api/zones` / `POST /api/zones` / `PUT /api/zones/<index>` / `DELETE /api/zones/<index>` – CRUD for the zones list

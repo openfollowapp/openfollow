@@ -419,13 +419,21 @@ class TestZoneCache:
         self, scale: float, overrides: dict, background: tuple[float, ...]
     ) -> None:
         """Over a frame already drawn, so a picture pasted in place of the frame shows."""
+        if "camera_params" in overrides:
+            overrides = {**overrides, "zone_polygons": [(_square(0.0, 0.0, 2.0), "#ffaa00", "", False, 0)]}
+        self._assert_cached_looks_direct(self._state(**overrides), scale, background)
+
+    def _assert_cached_looks_direct(
+        self,
+        state: OverlayState,
+        scale: float = 1.0,
+        background: tuple[float, ...] = (0.2, 0.3, 0.4, 1.0),
+        renderer: Any = None,
+    ) -> None:
         import cairo
 
         from openfollow.runtime.overlay_draw_zones import ZoneCache
 
-        if "camera_params" in overrides:
-            overrides = {**overrides, "zone_polygons": [(_square(0.0, 0.0, 2.0), "#ffaa00", "", False, 0)]}
-        state = self._state(**overrides)
         surfaces = []
         for cache in (None, ZoneCache()):
             surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, int(1920 * scale), int(1080 * scale))
@@ -433,12 +441,55 @@ class TestZoneCache:
             cr = cairo.Context(surface)
             cr.set_source_rgba(*background)
             cr.paint()
-            draw_zones(FakeRenderer(), cr, state, 1920, 1080, cache)
+            draw_zones(renderer or FakeRenderer(), cr, state, 1920, 1080, cache)
             surfaces.append(self._pixels(surface))
         direct, cached = surfaces
         assert (direct != self._pixels(_blank(scale, background))).any(), "the scene must draw something"
         # Two levels: translucent zones blended twice round differently by a level.
         assert np.abs(direct - cached).max() <= 2
+
+    @pytest.mark.parametrize(
+        "roll",
+        [0.0, 90.0, -90.0, 180.0],
+        ids=["past-the-bottom", "past-the-left", "past-the-right", "past-the-top"],
+    )
+    def test_a_zone_running_far_past_an_edge_looks_like_one_drawn_directly(self, roll: float) -> None:
+        """Further past the edge than a picture can be wide, so only the part on screen fits."""
+        camera = _camera_params()
+        camera[5] = roll
+        # Its near end is almost level with the lens, which puts it tens of thousands of pixels out.
+        zone = [(-0.05, -6.6), (0.05, -6.6), (0.05, 2.0), (-0.05, 2.0)]
+        state = self._state(camera_params=camera, zone_polygons=[(zone, "#ffaa00", "Z", False, 0)])
+        self._assert_cached_looks_direct(state)
+
+    @pytest.mark.parametrize("roll", [0.0, 90.0], ids=["too-wide", "too-tall"])
+    def test_zones_too_large_for_cairo_to_measure_still_show(self, roll: float) -> None:
+        """Lens distortion throws a corner far enough out to wrap cairo's fixed point."""
+        camera = _camera_params()
+        camera[5] = roll
+        state = self._state(
+            camera_params=camera,
+            lens_k1=-0.15,
+            lens_k2=0.02,
+            zone_polygons=[
+                ([(-6.0, -5.9), (6.0, -5.9), (6.0, -2.9), (-6.0, -2.9)], "#ffaa00", "Front", False, 0),
+                (_square(0.0, 3.0, 1.0), "#33aaff", "Pit", False, 0),
+            ],
+        )
+        self._assert_cached_looks_direct(state)
+
+    def test_a_label_measured_at_the_screens_scale_is_not_cut_off(self) -> None:
+        """Hinted glyphs can measure wider at a higher device scale than at scale one."""
+
+        class _HintedRenderer(FakeRenderer):
+            @staticmethod
+            def _set_ui_font(cr: Any, size: float, bold: bool = False) -> None:
+                FakeRenderer._set_ui_font(cr, size * (0.9 + 0.1 * cr.get_target().get_device_scale()[0]), bold)
+
+        state = self._state(
+            zone_polygons=[(_square(0.0, 2.0, 0.05), "#ffaa00", "A long label on a tiny zone", False, 0)]
+        )
+        self._assert_cached_looks_direct(state, scale=2.0, renderer=_HintedRenderer())
 
     def test_zones_that_did_not_change_are_not_drawn_again(self, outline_calls) -> None:
         from openfollow.runtime.overlay_draw_zones import ZoneCache
@@ -453,11 +504,12 @@ class TestZoneCache:
     @pytest.mark.parametrize(
         "change",
         [
-            {"polygon": (_square(0.2, 2.0, 1.0), "#ffaa00", "Pit", False, 0)},
-            {"polygon": (_square(0.0, 2.0, 1.0), "#00ff00", "Pit", False, 0)},
-            {"polygon": (_square(0.0, 2.0, 1.0), "#ffaa00", "Stage", False, 0)},
-            {"polygon": (_square(0.0, 2.0, 1.0), "#ffaa00", "Pit", True, 1)},
-            {"polygon": (_square(0.0, 2.0, 1.0), "#ffaa00", "Pit", True, 0)},
+            {"zone": (0, (_square(0.2, 2.0, 1.0), "#ffaa00", "Pit", False, 0))},
+            {"zone": (0, (_square(0.0, 2.0, 1.0), "#00ff00", "Pit", False, 0))},
+            {"zone": (0, (_square(0.0, 2.0, 1.0), "#ffaa00", "Stage", False, 0))},
+            {"zone": (0, (_square(0.0, 2.0, 1.0), "#ffaa00", "Pit", True, 0))},
+            # Another occupant of the occupied Wing.
+            {"zone": (1, (_square(-2.5, 4.0, 0.8), "#33aaff", "Wing", True, 3))},
             {"state": {"zone_z_offset": 0.5}},
             {"state": {"camera_params": np.array([0.2, -6.0, 2.5, -15.0, 0.0, 0.0, 60.0])}},
             {"state": {"lens_k1": 0.05}},
@@ -473,26 +525,14 @@ class TestZoneCache:
         cache = ZoneCache()
         draw_zones(FakeRenderer(), FakeCairo(), self._state(), 1920, 1080, cache)
         state = self._state(**change.get("state", {}))
-        if "polygon" in change:
-            state.zone_polygons = [change["polygon"], *state.zone_polygons[1:]]
+        if "zone" in change:
+            index, zone = change["zone"]
+            state.zone_polygons[index] = zone
         cr = FakeCairo()
         scale = change.get("scale", 1.0)
         cr.get_target = lambda: SimpleNamespace(get_device_scale=lambda: (scale, scale))  # type: ignore[method-assign]
         w, h = change.get("size", (1920, 1080))
         draw_zones(FakeRenderer(), cr, state, w, h, cache)
-        assert outline_calls == [3, 3]
-
-    def test_another_occupant_draws_the_zones_again(self, outline_calls) -> None:
-        from openfollow.runtime.overlay_draw_zones import ZoneCache
-
-        cache = ZoneCache()
-        occupied = (_square(0.0, 2.0, 1.0), "#ffaa00", "Pit", True, 1)
-        state = self._state()
-        state.zone_polygons = [occupied, *state.zone_polygons[1:]]
-        draw_zones(FakeRenderer(), FakeCairo(), state, 1920, 1080, cache)
-        state = self._state()
-        state.zone_polygons = [(*occupied[:4], 2), *state.zone_polygons[1:]]
-        draw_zones(FakeRenderer(), FakeCairo(), state, 1920, 1080, cache)
         assert outline_calls == [3, 3]
 
     def test_zones_all_behind_the_camera_paint_nothing(self) -> None:
@@ -503,13 +543,37 @@ class TestZoneCache:
         draw_zones(FakeRenderer(), cr, state, 1920, 1080, ZoneCache())
         assert ("paint",) not in cr.calls
 
-    def test_zones_entirely_outside_the_frame_paint_nothing(self) -> None:
+    @pytest.mark.parametrize(
+        "zone",
+        [
+            _square(60.0, 2.0, 1.0),
+            # Close to the camera: below the frame and far wider than it.
+            [(-30.0, -5.5), (30.0, -5.5), (30.0, -5.0), (-30.0, -5.0)],
+        ],
+        ids=["right-of-the-frame", "below-the-frame"],
+    )
+    def test_zones_entirely_outside_the_frame_paint_nothing(self, zone: list) -> None:
         from openfollow.runtime.overlay_draw_zones import ZoneCache
 
-        state = self._state(zone_polygons=[(_square(60.0, 2.0, 1.0), "#ffaa00", "", False, 0)])
+        state = self._state(zone_polygons=[(zone, "#ffaa00", "Z", False, 0)])
         cr = FakeCairo()
         draw_zones(FakeRenderer(), cr, state, 1920, 1080, ZoneCache())
         assert ("paint",) not in cr.calls
+
+    @pytest.mark.parametrize(
+        "hidden",
+        [{"show_zones": False}, {"zone_polygons": []}, {"camera_params": None}],
+        ids=["overlay-off", "no-zones", "no-camera"],
+    )
+    def test_the_picture_is_let_go_while_no_zone_is_drawn(self, outline_calls, hidden: dict) -> None:
+        from openfollow.runtime.overlay_draw_zones import ZoneCache
+
+        cache, state = ZoneCache(), self._state()
+        draw_zones(FakeRenderer(), FakeCairo(), state, 1920, 1080, cache)
+        draw_zones(FakeRenderer(), FakeCairo(), self._state(**hidden), 1920, 1080, cache)
+        # Shown again unchanged, the zones are drawn afresh: no picture was kept meanwhile.
+        draw_zones(FakeRenderer(), FakeCairo(), state, 1920, 1080, cache)
+        assert outline_calls == [3, 3]
 
     def test_a_cache_asked_to_draw_without_a_camera_draws_nothing(self) -> None:
         from openfollow.runtime.overlay_draw_zones import ZoneCache

@@ -32,6 +32,8 @@ class _Zone:
 def draw_zones(renderer: Any, cr: Any, state: OverlayState, w: int, h: int, cache: ZoneCache | None = None) -> None:
     """Render all configured zones as filled+stroked polygons with labels."""
     if not state.show_zones or not state.zone_polygons or state.camera_params is None:
+        if cache is not None:
+            cache.clear()
         return
     if cache is None:
         _paint_zones(renderer, cr, _zone_outlines(state, w, h))
@@ -121,6 +123,10 @@ class ZoneCache:
     def __init__(self) -> None:
         self._entry: tuple[tuple[Any, ...], cairo.ImageSurface | None, int, int] | None = None
 
+    def clear(self) -> None:
+        """Let go of the picture, which can run to a hundred megabytes on a HiDPI 4K screen."""
+        self._entry = None
+
     def draw(self, renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
         cam = state.camera_params
         if cam is None:
@@ -153,19 +159,25 @@ class ZoneCache:
         zones = _zone_outlines(state, w, h)
         if not zones:
             return None, 0, 0
+        sx, sy = scale
         # Measured on a recording first: its ink extents cover what the outline does not,
         # such as a miter tip at an acute corner or a glyph reaching past its label box.
+        # At the target's scale, because hinted glyph metrics differ between scales.
         recording = cairo.RecordingSurface(cairo.CONTENT_COLOR_ALPHA, None)
+        recording.set_device_scale(sx, sy)
         _paint_zones(renderer, cairo.Context(recording), zones)
         ix, iy, iw, ih = recording.ink_extents()
-        # One pixel more for the anti-aliased edge.
-        x0 = max(0, math.floor(ix) - 1)
-        y0 = max(0, math.floor(iy) - 1)
-        x1 = min(w, math.ceil(ix + iw) + 1)
-        y1 = min(h, math.ceil(iy + ih) + 1)
-        if x1 <= x0 or y1 <= y0:
-            return None, 0, 0
-        sx, sy = scale
+        if iw < 0 or ih < 0:
+            # Cairo's fixed point wraps an extent past 2**23 device pixels, which lens distortion reaches.
+            x0, y0, x1, y1 = 0, 0, w, h
+        else:
+            # One pixel more: Quartz renders a glyph up to a pixel past the extents it measures.
+            x0 = max(0, math.floor(ix / sx) - 1)
+            y0 = max(0, math.floor(iy / sy) - 1)
+            x1 = min(w, math.ceil((ix + iw) / sx) + 1)
+            y1 = min(h, math.ceil((iy + ih) / sy) + 1)
+            if x1 <= x0 or y1 <= y0:
+                return None, 0, 0
         # Drawn at the target's device scale, so a HiDPI screen gets sharp zones.
         picture = cairo.ImageSurface(cairo.FORMAT_ARGB32, math.ceil((x1 - x0) * sx), math.ceil((y1 - y0) * sy))
         picture.set_device_scale(sx, sy)

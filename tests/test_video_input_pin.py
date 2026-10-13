@@ -418,7 +418,11 @@ def test_a_slow_lookup_holds_one_attempt_and_serves_a_later_one(
         ("camera.example", ["2001:db8::10"], True, True),
         ("camera.example", ["2001:db8::10", "192.0.2.10"], True, True),
         ("camera.example", ["192.0.2.10", "2001:db8::10"], False, True),
-        ("localhost", ["::1", "127.0.0.1"], True, True),
+        ("localhost", ["::1", "127.0.0.1"], True, False),
+        ("localhost", ["127.0.0.1"], True, False),
+        ("LocalHost.", ["127.0.0.1"], True, False),
+        ("camera.localhost", ["127.0.0.1"], True, False),
+        ("notlocalhost", ["127.0.0.1"], False, True),
         ("nowhere.example", None, False, True),
     ],
 )

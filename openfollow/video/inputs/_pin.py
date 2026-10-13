@@ -83,9 +83,13 @@ def is_local_destination(host: str) -> bool:
 def dials_ipv6(host: str) -> bool:
     """Whether a connection to *host* tries an IPv6 address first, as far as a bounded lookup tells.
 
-    A name's addresses are dialled in resolver order. A name whose lookup is
-    still running reads as IPv4 this attempt; the answer serves the next one.
+    A name's addresses are dialled in resolver order. GLib answers a localhost
+    name itself, ``::1`` first, whatever the hosts file says. A name whose lookup
+    is still running reads as IPv4 this attempt; the answer serves the next one.
     """
+    name = host.lower().removesuffix(".")
+    if name == "localhost" or name.endswith(".localhost"):
+        return True
     addresses = _resolver.lookup(host, _RESOLVE_WAIT_S).addresses if host else ()
     return bool(addresses) and ":" in addresses[0]
 

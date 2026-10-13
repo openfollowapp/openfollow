@@ -29,6 +29,7 @@
  <script src="/assets/js/detect-input.js?v={{_asset_v}}"></script>
  <script src="/assets/js/save-feedback.js?v={{_asset_v}}"></script>
  <script src="/assets/js/binding-steal.js?v={{_asset_v}}"></script>
+ <script src="/assets/js/polygon-plan.js?v={{_asset_v}}"></script>
  <style>
  :root {
  color-scheme: dark;

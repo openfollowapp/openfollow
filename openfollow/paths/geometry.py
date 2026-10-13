@@ -27,6 +27,8 @@ _MAX_ARC_STEP_RAD = math.radians(5.0)
 # Below this two points are one, and a turn this close to none or to a full reversal gets no arc.
 _SAME_POINT_M = 1e-6
 _STRAIGHT_RAD = 1e-6
+# A place this close to a vertex of the polyline is on it, whatever rounding put it a hair to one side.
+_ON_VERTEX_M = 1e-9
 
 
 @dataclass(frozen=True)
@@ -76,9 +78,28 @@ class PathCurve:
 
     def tangent(self, s: float) -> tuple[float, float]:
         """The unit direction of travel at ``s``, towards growing ``s``."""
-        dx, dy = self._seg_vec[self._segment(self.wrap(s))]
-        norm = math.hypot(dx, dy)
-        return float(dx / norm), float(dy / norm)
+        return self.directions(s)[1]
+
+    def directions(self, s: float) -> tuple[tuple[float, float], tuple[float, float]]:
+        """The unit directions, towards growing ``s``, of arriving at and leaving ``s``.
+
+        They differ only on a vertex, where a sharp corner turns.
+        """
+        s = self.wrap(s)
+        last = len(self.s) - 1
+        k = int(np.searchsorted(self.s, s))
+        if k > 0 and s - self.s[k - 1] < self.s[k] - s:
+            k -= 1
+        if abs(self.s[k] - s) > _ON_VERTEX_M:
+            along = self._unit(self._segment(s))
+            return along, along
+        arriving = k - 1 if k > 0 else (last - 1 if self.closed else 0)
+        leaving = k if k < last else (0 if self.closed else last - 1)
+        return self._unit(arriving), self._unit(leaving)
+
+    def _unit(self, i: int) -> tuple[float, float]:
+        dx, dy = self._seg_vec[i] / math.sqrt(self._seg_len2[i])
+        return float(dx), float(dy)
 
     def segments(self) -> tuple[FloatArray, FloatArray, FloatArray, FloatArray]:
         """Each segment's start point, vector, squared length and ``s`` at its start."""

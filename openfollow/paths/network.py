@@ -161,13 +161,14 @@ class PathNetwork:
 
     def _ways(self, place: Place) -> list[_Way]:
         curve = self.curves[place.path]
-        tx, ty = curve.tangent(place.s)
+        # On a sharp corner, back is along the segment that arrived there.
+        (ax, ay), (lx, ly) = curve.directions(place.s)
         release_start, release_end = self.releases[place.path]
         ways = []
         if curve.closed or place.s < curve.length - _EPS or release_end:
-            ways.append(_Way(place, 1, tx, ty))
+            ways.append(_Way(place, 1, lx, ly))
         if curve.closed or place.s > _EPS or release_start:
-            ways.append(_Way(place, -1, -tx, -ty))
+            ways.append(_Way(place, -1, -ax, -ay))
         return ways
 
     def _choose(self, place: Place, wx: float, wy: float) -> _Way | None:

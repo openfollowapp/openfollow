@@ -7,6 +7,7 @@ from __future__ import annotations
 import math
 import random
 
+import numpy as np
 import pytest
 
 from openfollow.paths.geometry import PathCurve, PathPoint, build_curve
@@ -188,6 +189,34 @@ class TestSteering:
         step = net.walk(start, *_push(-30.0), dt=1.6 + 1.0)
         assert step.place.path == 0
         assert _at(net, step.place) == pytest.approx((-2.0 + math.cos(math.radians(30.0)), 0.0), abs=1e-6)
+
+    # B turns sharply up at (2, 0), where the branch A coming up from (2, -2) ends.
+    SHARP = _curve([(0, 0, 0, 0), (2, 0, 0, 0), (2, 2, 0, 0)])
+
+    @pytest.mark.parametrize(("push", "want"), [((-1.0, 0.0), (1.5, 0.0)), ((0.0, 1.0), (2.0, 0.5))])
+    def test_from_a_branch_ending_on_a_sharp_corner_either_way_can_be_taken(
+        self, push: tuple[float, float], want: tuple[float, float]
+    ) -> None:
+        branch = _curve([(2, -2, 0), (2, 0, 0)])
+        net = PathNetwork([branch, self.SHARP])
+        step = net.walk(Place(0, branch.length), *push, dt=0.5)
+        assert step.place.path == 1
+        assert _at(net, step.place) == want
+
+    @pytest.mark.parametrize("s", [2.0, float(np.nextafter(2.0, 0.0)), float(np.nextafter(2.0, 3.0))])
+    @pytest.mark.parametrize(("push", "want"), [((-1.0, 0.0), (1.0, 0.0)), ((0.0, 1.0), (2.0, 1.0))])
+    def test_on_a_sharp_corner_the_marker_leaves_by_either_segment(
+        self, s: float, push: tuple[float, float], want: tuple[float, float]
+    ) -> None:
+        net = PathNetwork([self.SHARP])
+        assert _at(net, net.walk(Place(0, s), *push, dt=1.0).place) == want
+
+    @pytest.mark.parametrize(("push", "want"), [((0.0, 1.0), 7.0), ((1.0, 0.0), 1.0)])
+    def test_at_a_closed_path_s_sharp_first_point_the_marker_leaves_by_either_segment(
+        self, push: tuple[float, float], want: float
+    ) -> None:
+        square = _curve([(0, 0, 0, 0), (2, 0, 0, 0), (2, 2, 0, 0), (0, 2, 0, 0)], closed=True)
+        assert PathNetwork([square]).walk(Place(0, 0.0), *push, dt=1.0).place.s == pytest.approx(want)
 
     def test_coming_back_the_marker_can_leave_the_branch_again(self) -> None:
         branch = _curve([(2, 0, 0), (2, 4, 0)])

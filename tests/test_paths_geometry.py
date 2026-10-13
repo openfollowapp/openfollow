@@ -99,6 +99,33 @@ class TestCorner:
         assert _close(c.point(4.0), (4.0, 0.0, 0.0))
 
 
+class TestDirections:
+    CORNER = [(0, 0, 0, 0), (2, 0, 0, 0), (2, 2, 0, 0)]
+
+    def test_on_a_sharp_corner_arriving_and_leaving_differ(self) -> None:
+        c = _curve(self.CORNER)
+        assert c.directions(2.0) == ((1.0, 0.0), (0.0, 1.0))
+        assert c.tangent(2.0) == (0.0, 1.0)
+
+    @pytest.mark.parametrize("s", [float(np.nextafter(2.0, 0.0)), float(np.nextafter(2.0, 3.0)), 2.0 - 1e-10])
+    def test_a_hair_off_a_sharp_corner_is_on_it(self, s: float) -> None:
+        assert _curve(self.CORNER).directions(s) == ((1.0, 0.0), (0.0, 1.0))
+
+    @pytest.mark.parametrize(("s", "want"), [(1.0, (1.0, 0.0)), (3.0, (0.0, 1.0)), (2.0 - 1e-6, (1.0, 0.0))])
+    def test_between_corners_both_follow_the_segment(self, s: float, want: tuple[float, float]) -> None:
+        assert _curve(self.CORNER).directions(s) == (want, want)
+
+    def test_an_open_end_has_one_direction(self) -> None:
+        c = _curve(self.CORNER)
+        assert c.directions(0.0) == ((1.0, 0.0), (1.0, 0.0))
+        assert c.directions(c.length) == ((0.0, 1.0), (0.0, 1.0))
+
+    @pytest.mark.parametrize("s", [0.0, 8.0, float(np.nextafter(8.0, 0.0)), -1e-12])
+    def test_a_closed_path_arrives_at_its_start_along_its_last_segment(self, s: float) -> None:
+        c = _curve([(0, 0, 0, 0), (2, 0, 0, 0), (2, 2, 0, 0), (0, 2, 0, 0)], closed=True)
+        assert c.directions(s) == ((0.0, -1.0), (1.0, 0.0))
+
+
 class TestHeight:
     def test_height_follows_the_straight_parts_linearly(self) -> None:
         c = _curve([(0, 0, 0, 0), (4, 0, 2, 1.0), (4, 4, 0, 0)])

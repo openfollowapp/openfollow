@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""The path network: junctions, walking a locked marker, steering at crossings, gliding."""
+"""The path network: junctions, walking a locked marker, steering at crossings, nearest places."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import random
 import numpy as np
 import pytest
 
+from openfollow.paths import network
 from openfollow.paths.geometry import PathCurve, PathPoint, build_curve
 from openfollow.paths.network import Junction, PathNetwork, Place, find_junctions
 
@@ -76,6 +77,98 @@ class TestJunctions:
     def test_a_closed_path_meets_an_open_one_twice(self) -> None:
         ring = _curve([(-2, -2, 0), (2, -2, 0), (2, 2, 0), (-2, 2, 0)], closed=True)
         assert len(find_junctions([H, ring])) == 2
+
+
+def _reference_junctions(curves: list[PathCurve]) -> list[Junction]:
+    """Every segment of every pair of curves tested against every other, the junctions in the order found."""
+    found: list[Junction] = []
+
+    def same(j: Junction, k: Junction) -> bool:
+        return (
+            (j.a, j.b) == (k.a, k.b)
+            and abs(curves[j.a].offset(j.s_a, k.s_a)) <= 0.05
+            and abs(curves[j.b].offset(j.s_b, k.s_b)) <= 0.05
+        )
+
+    def touches(end_of: PathCurve, on: PathCurve) -> list[tuple[float, float]]:
+        ends = [] if end_of.closed else [0.0, end_of.length]
+        return [(s, on.nearest(*end_of.point(s)[:2])[0]) for s in ends if on.nearest(*end_of.point(s)[:2])[1] <= 0.1]
+
+    for a, ca in enumerate(curves):
+        for b in range(a + 1, len(curves)):
+            cb = curves[b]
+            r, w = np.diff(ca.xy, axis=0)[:, None, :], np.diff(cb.xy, axis=0)[None, :, :]
+            qp = cb.xy[None, :-1, :] - ca.xy[:-1, None, :]
+            denom = r[..., 0] * w[..., 1] - r[..., 1] * w[..., 0]
+            with np.errstate(divide="ignore", invalid="ignore"):
+                t = (qp[..., 0] * w[..., 1] - qp[..., 1] * w[..., 0]) / denom
+                u = (qp[..., 0] * r[..., 1] - qp[..., 1] * r[..., 0]) / denom
+            hit = (np.abs(denom) > 1e-12) & (t >= 0.0) & (t <= 1.0) & (u >= 0.0) & (u <= 1.0)
+            pair = [
+                Junction(
+                    a,
+                    float(ca.s[i] + t[i, k] * (ca.s[i + 1] - ca.s[i])),
+                    b,
+                    float(cb.s[k] + u[i, k] * (cb.s[k + 1] - cb.s[k])),
+                )
+                for i, k in zip(*np.nonzero(hit), strict=True)
+            ]
+            pair += [Junction(a, sa, b, sb) for sa, sb in touches(ca, cb)]
+            pair += [Junction(a, sa, b, sb) for sb, sa in touches(cb, ca)]
+            for j in pair:
+                level = abs(ca.point(j.s_a)[2] - cb.point(j.s_b)[2]) <= 0.1
+                if level and not any(same(j, k) for k in found):
+                    found.append(j)
+    return found
+
+
+def _wander(rng: random.Random, count: int) -> list[tuple[float, ...]]:
+    x, y, heading = rng.uniform(-6, 6), rng.uniform(-5, 5), rng.uniform(0, 2 * math.pi)
+    z, radius = rng.choice([0.0, 0.05, 0.5]), rng.choice([0.0, 0.2, 0.5, 2.0])
+    points = []
+    for _ in range(count):
+        points.append((round(x, 2), round(y, 2), z, radius))
+        heading += rng.uniform(-1.5, 1.5)
+        step = rng.uniform(0.2, 1.5)
+        x, y = min(8, max(-8, x + step * math.cos(heading))), min(6, max(-6, y + step * math.sin(heading)))
+    return points
+
+
+class TestJunctionSearch:
+    @pytest.mark.parametrize("seed", range(10))
+    def test_the_junctions_are_those_of_testing_every_pair_of_segments(self, seed: int) -> None:
+        rng = random.Random(seed)
+        curves = []
+        for _ in range(rng.randint(3, 7)):
+            count = rng.randint(2, 30)
+            curves.append(_curve(_wander(rng, count), closed=count >= 3 and rng.random() < 0.3))
+        # Branches ending on, near, and just out of reach of a path.
+        for gap in (0.0, 0.05, 0.099, 0.101, 0.3):
+            on = rng.choice(curves)
+            x, y, z = on.point(rng.uniform(0, on.length))
+            curves.append(_curve([(x + gap, y, z, 0), (x + 3, y + rng.uniform(-3, 3), z, 0)]))
+        assert find_junctions(curves) == _reference_junctions(curves)
+
+    def test_paths_far_apart_are_never_compared(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        compared = []
+        monkeypatch.setattr(network, "_crossings", lambda *args: compared.append(args) or [])
+        monkeypatch.setattr(network, "_touches", lambda *args: compared.append(args) or [])
+        assert find_junctions([H, _curve([(20, -5, 0), (20, 5, 0)])]) == []
+        assert compared == []
+
+    def test_long_paths_are_compared_segment_by_segment_only_where_they_come_near(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A zigzags along x in 0 <= y <= 1, B along y in 0 <= x <= 1: they meet only near the origin.
+        along_x = _curve([(-50 + 0.5 * i, i % 2, 0, 0) for i in range(201)])
+        along_y = _curve([(i % 2, -50 + 0.5 * i, 0, 0) for i in range(201)])
+        tested = []
+        cross = network._cross
+        monkeypatch.setattr(network, "_cross", lambda a, b: tested.append(a.size // 2) or cross(a, b))
+        junctions = find_junctions([along_x, along_y])
+        assert junctions == _reference_junctions([along_x, along_y])
+        assert len(junctions) >= 1
+        assert sum(tested) / 3 < 0.05 * 200 * 200
 
 
 class TestWalk:

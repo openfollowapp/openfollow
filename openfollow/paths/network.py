@@ -16,6 +16,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
 import numpy as np
+import numpy.typing as npt
 
 from openfollow.paths.geometry import FloatArray, PathCurve
 
@@ -33,7 +34,8 @@ _SegmentIndex = tuple[FloatArray, FloatArray, FloatArray, FloatArray, FloatArray
 _PARALLEL = 1e-12
 _EPS = 1e-6
 _MAX_LEGS = 16
-_INTERSECT_CHUNK = 256
+# Segments per bounding box when looking for crossings.
+_BOX_SEGMENTS = 16
 
 
 @dataclass(frozen=True)
@@ -204,37 +206,71 @@ class PathNetwork:
 
 def find_junctions(curves: Sequence[PathCurve]) -> list[Junction]:
     """Where each pair of curves crosses or touches, at the same height."""
+    boxes = [_boxes(curve) for curve in curves]
+    whole = [np.concatenate((b[:, :2].min(axis=0), b[:, 2:].max(axis=0)))[None, :] for b in boxes]
     found: list[Junction] = []
     for a in range(len(curves)):
         for b in range(a + 1, len(curves)):
-            pair = [Junction(a, sa, b, sb) for sa, sb in _crossings(curves[a], curves[b])]
-            pair += [Junction(a, sa, b, sb) for sa, sb in _touches(curves[a], curves[b])]
-            pair += [Junction(a, sa, b, sb) for sb, sa in _touches(curves[b], curves[a])]
+            ca, cb = curves[a], curves[b]
+            if not _overlapping(whole[a], whole[b])[0, 0]:
+                continue
+            pair = [Junction(a, sa, b, sb) for sa, sb in _crossings(ca, cb, boxes[a], boxes[b])]
+            pair += [Junction(a, sa, b, sb) for sa, sb in _touches(ca, cb)]
+            pair += [Junction(a, sa, b, sb) for sb, sa in _touches(cb, ca)]
+            kept: list[Junction] = []
             for j in pair:
-                if _same_height(curves[a], j.s_a, curves[b], j.s_b) and not any(
-                    _same_junction(curves, j, k) for k in found
-                ):
-                    found.append(j)
+                if _same_height(ca, j.s_a, cb, j.s_b) and not any(_same_junction(ca, cb, j, k) for k in kept):
+                    kept.append(j)
+            found += kept
     return found
 
 
-def _crossings(ca: PathCurve, cb: PathCurve) -> list[tuple[float, float]]:
-    pa, ra = ca.xy[:-1], np.diff(ca.xy, axis=0)
-    pb, rb = cb.xy[:-1], np.diff(cb.xy, axis=0)
-    out: list[tuple[float, float]] = []
-    for lo in range(0, len(pa), _INTERSECT_CHUNK):
-        p, r = pa[lo : lo + _INTERSECT_CHUNK, None, :], ra[lo : lo + _INTERSECT_CHUNK, None, :]
-        qp = pb[None, :, :] - p
-        denom = _cross(r, rb[None, :, :])
-        with np.errstate(divide="ignore", invalid="ignore"):
-            t = _cross(qp, rb[None, :, :]) / denom
-            u = _cross(qp, r) / denom
-        hit = (np.abs(denom) > _PARALLEL) & (t >= 0.0) & (t <= 1.0) & (u >= 0.0) & (u <= 1.0)
-        for i, k in zip(*np.nonzero(hit), strict=True):
-            sa = ca.s[lo + i] + t[i, k] * (ca.s[lo + i + 1] - ca.s[lo + i])
-            sb = cb.s[k] + u[i, k] * (cb.s[k + 1] - cb.s[k])
-            out.append((float(sa), float(sb)))
-    return out
+def _boxes(curve: PathCurve) -> FloatArray:
+    """The plan bounding box of each run of ``_BOX_SEGMENTS`` segments: min x, min y, max x, max y."""
+    n = len(curve.xy) - 1
+    starts = np.arange(0, n, _BOX_SEGMENTS)
+    ends = curve.xy[np.minimum(starts + _BOX_SEGMENTS, n)]
+    lo = np.minimum(np.minimum.reduceat(curve.xy[:-1], starts, axis=0), ends)
+    hi = np.maximum(np.maximum.reduceat(curve.xy[:-1], starts, axis=0), ends)
+    result: FloatArray = np.hstack((lo, hi))
+    return result
+
+
+def _overlapping(a: FloatArray, b: FloatArray) -> npt.NDArray[np.bool_]:
+    """Which boxes of ``a`` come within reach of which of ``b``."""
+    m = JUNCTION_REACH_M
+    return (
+        (a[:, None, 0] <= b[None, :, 2] + m)
+        & (b[None, :, 0] <= a[:, None, 2] + m)
+        & (a[:, None, 1] <= b[None, :, 3] + m)
+        & (b[None, :, 1] <= a[:, None, 3] + m)
+    )
+
+
+def _crossings(ca: PathCurve, cb: PathCurve, boxes_a: FloatArray, boxes_b: FloatArray) -> list[tuple[float, float]]:
+    """Where ``ca`` crosses ``cb`` in plan, in segment order along ``ca`` then ``cb``: (s on ``ca``, s on ``cb``)."""
+    run_a, run_b = np.nonzero(_overlapping(boxes_a, boxes_b))
+    offsets = np.arange(_BOX_SEGMENTS)
+    ia, ib = np.broadcast_arrays(
+        run_a[:, None, None] * _BOX_SEGMENTS + offsets[None, :, None],
+        run_b[:, None, None] * _BOX_SEGMENTS + offsets[None, None, :],
+    )
+    pa, ra, _, _ = ca.segments()
+    pb, rb, _, _ = cb.segments()
+    valid = (ia < len(pa)) & (ib < len(pb))
+    ia, ib = ia[valid], ib[valid]
+    r, rb = ra[ia], rb[ib]
+    qp = pb[ib] - pa[ia]
+    denom = _cross(r, rb)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        t = _cross(qp, rb) / denom
+        u = _cross(qp, r) / denom
+    hit = (np.abs(denom) > _PARALLEL) & (t >= 0.0) & (t <= 1.0) & (u >= 0.0) & (u <= 1.0)
+    ia, ib, t, u = ia[hit], ib[hit], t[hit], u[hit]
+    order = np.lexsort((ib, ia))
+    sa = ca.s[ia] + t * (ca.s[ia + 1] - ca.s[ia])
+    sb = cb.s[ib] + u * (cb.s[ib + 1] - cb.s[ib])
+    return [(float(sa[k]), float(sb[k])) for k in order]
 
 
 def _cross(a: FloatArray, b: FloatArray) -> FloatArray:
@@ -259,9 +295,5 @@ def _same_height(ca: PathCurve, sa: float, cb: PathCurve, sb: float) -> bool:
     return abs(ca.point(sa)[2] - cb.point(sb)[2]) <= JUNCTION_HEIGHT_M
 
 
-def _same_junction(curves: Sequence[PathCurve], j: Junction, k: Junction) -> bool:
-    return (
-        (j.a, j.b) == (k.a, k.b)
-        and abs(curves[j.a].offset(j.s_a, k.s_a)) <= _SAME_JUNCTION_M
-        and abs(curves[j.b].offset(j.s_b, k.s_b)) <= _SAME_JUNCTION_M
-    )
+def _same_junction(ca: PathCurve, cb: PathCurve, j: Junction, k: Junction) -> bool:
+    return abs(ca.offset(j.s_a, k.s_a)) <= _SAME_JUNCTION_M and abs(cb.offset(j.s_b, k.s_b)) <= _SAME_JUNCTION_M

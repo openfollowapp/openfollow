@@ -186,7 +186,9 @@ def run_selfcheck() -> int:
 
         for namespace, version in REQUIRED_TYPELIBS:
             gi.require_version(namespace, version)
-            importlib.import_module(f"gi.repository.{namespace}")
+            # Importing Gtk / Gdk initialises the display, which a headless build has none of.
+            if namespace not in ("Gtk", "Gdk"):
+                importlib.import_module(f"gi.repository.{namespace}")
         from gi.repository import Gst, GstPbutils
 
         Gst.init(None)

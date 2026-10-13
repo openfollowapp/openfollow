@@ -109,12 +109,19 @@ def test_documents_land_at_the_bundle_root(spec_tree) -> None:
 # GObject typelibs
 # ---------------------------------------------------------------------------
 
+# Inputs the app never runs: NDI is not shipped on macOS, the cameras are Linux only.
+_NOT_ON_MACOS = frozenset(
+    {"openfollow/video/inputs/ndi.py", "openfollow/video/inputs/picam.py", "openfollow/video/inputs/v4l2.py"}
+)
+
 
 def _gi_namespaces() -> tuple[set[tuple[str, str]], set[str]]:
     """``(name, version)`` the sources pin, and every namespace they import from ``gi.repository``."""
     pinned: set[tuple[str, str]] = set()
     imported: set[str] = set()
     for path in (_REPO / "openfollow").rglob("*.py"):
+        if path.relative_to(_REPO).as_posix() in _NOT_ON_MACOS:
+            continue
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if isinstance(node, ast.ImportFrom) and node.module == "gi.repository":
                 imported |= {alias.name for alias in node.names}
@@ -129,7 +136,7 @@ def _gi_namespaces() -> tuple[set[tuple[str, str]], set[str]]:
     return pinned, imported | {name for name, _version in pinned}
 
 
-# The embedded browser imports it optionally and runs without it.
+# The on-device browser's WebKitGTK is not part of the macOS bundle; the app runs without it.
 _OPTIONAL_NAMESPACES = frozenset({"WebKit2"})
 
 
@@ -188,11 +195,6 @@ _ELEMENT_PLUGINS = {
     "videotestsrc": "libgstvideotestsrc.dylib",
     "webpdec": "libgstwebp.dylib",
 }
-
-# Inputs the app never runs: NDI is not shipped on macOS, the cameras are Linux only.
-_NOT_ON_MACOS = frozenset(
-    {"openfollow/video/inputs/ndi.py", "openfollow/video/inputs/picam.py", "openfollow/video/inputs/v4l2.py"}
-)
 
 
 def _plugin_allowlist(tree: ast.Module) -> set[str]:

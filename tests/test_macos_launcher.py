@@ -278,12 +278,14 @@ def _install_fake_gst(
     *,
     plugins: frozenset[str] = frozenset({"typefindfunctions"}),
     namespaces: frozenset[str] = frozenset(),
+    unloadable: frozenset[str] = frozenset({"Gtk", "Gdk"}),
     discoverer_error: str = "",
 ) -> None:
     """Stand in for gi / Gst, resolving every element except ``missing``.
 
     ``plugins`` are the GStreamer plugins the registry holds, ``namespaces``
-    the typelibs gi reports as unavailable.
+    the typelibs gi reports as unavailable, ``unloadable`` the ones whose
+    import fails. Gtk and Gdk fail by default: importing them opens the display.
     """
 
     def new_discoverer(timeout: int) -> object:
@@ -319,7 +321,7 @@ def _install_fake_gst(
         "Rsvg": types.SimpleNamespace(),
     }.items():
         setattr(repository, name, module)
-        monkeypatch.setitem(sys.modules, f"gi.repository.{name}", module)
+        monkeypatch.setitem(sys.modules, f"gi.repository.{name}", None if name in unloadable else module)
 
 
 @pytest.mark.parametrize("element", _load_launcher().REQUIRED_GST_ELEMENTS)
@@ -344,6 +346,22 @@ def test_selfcheck_fails_without_a_typelib_the_app_pins(launcher, monkeypatch, c
 
     assert launcher.run_selfcheck() == 1
     assert capsys.readouterr().out.strip() == f"FAIL: Namespace {namespace} not available"
+
+
+@pytest.mark.parametrize("namespace", ["Gst", "GstApp", "GstPbutils", "Rsvg"])
+def test_selfcheck_fails_when_a_typelib_does_not_load(launcher, monkeypatch, capsys, namespace) -> None:
+    _install_fake_gst(monkeypatch, set(), unloadable=frozenset({"Gtk", "Gdk", namespace}))
+
+    assert launcher.run_selfcheck() == 1
+    assert capsys.readouterr().out.strip() == f"FAIL: import of gi.repository.{namespace} halted; None in sys.modules"
+
+
+def test_selfcheck_reaches_the_discoverer_without_importing_gtk(launcher, monkeypatch, capsys) -> None:
+    # The fake leaves Gtk / Gdk unimportable, so reaching the Discoverer proves neither was imported.
+    _install_fake_gst(monkeypatch, set(), discoverer_error="reached the discoverer")
+
+    assert launcher.run_selfcheck() == 1
+    assert capsys.readouterr().out.strip() == "FAIL: reached the discoverer"
 
 
 def test_selfcheck_fails_when_the_discoverer_cannot_be_built(launcher, monkeypatch, capsys) -> None:

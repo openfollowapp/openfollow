@@ -31,6 +31,7 @@ from openfollow.rttrpm.server import (
     encode_rttrpm_packet,
     encode_rttrpm_trackable_module,
 )
+from openfollow.send_health import SendHealth
 
 pytestmark = pytest.mark.unit
 
@@ -775,6 +776,22 @@ class TestRttrpmSendHealthLifecycle:
         srv = RttrpmServer(host="192.0.2.30")
         srv.send_health.record_failure(OSError(_e.ENETUNREACH, "unreachable"), "192.0.2.30")
         srv.stop()
+        assert srv.send_health.status().state == "ok"
+
+    def test_an_output_with_nothing_to_send_ends_its_failing_streak(self) -> None:
+        """No trackable means no send, so a row saying sends keep failing would never clear."""
+        import errno as _e
+
+        from openfollow.send_health import FAILING_AFTER_S
+
+        now = [100.0]
+        srv = RttrpmServer(host="192.0.2.30")
+        srv._send_health = SendHealth("RTTrPM output", clock=lambda: now[0])
+        srv.send_health.record_failure(OSError(_e.EACCES, "denied"), "192.0.2.30")
+        now[0] += FAILING_AFTER_S
+        srv.send_health.record_failure(OSError(_e.EACCES, "denied"), "192.0.2.30")
+        assert srv.send_health.status().state == "failing"
+        srv._send_packet()
         assert srv.send_health.status().state == "ok"
 
     def test_a_send_failing_after_its_generation_stopped_records_nothing(self) -> None:

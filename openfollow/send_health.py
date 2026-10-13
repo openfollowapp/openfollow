@@ -211,7 +211,7 @@ class SendHealth:
             failed = self._streak_failures
             self._clear_streak()
         if failing:
-            logger.info("%s: stopped after %.0f s of failing sends (%d failed).", self.label, lasted, failed)
+            logger.info("%s: send record reset after %.0f s of failing sends (%d failed).", self.label, lasted, failed)
 
     def status(self) -> SendHealthStatus:
         with self._lock:

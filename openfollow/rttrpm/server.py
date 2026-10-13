@@ -401,6 +401,8 @@ class RttrpmServer:
         self._warn_if_withheld(len(markers) - len(live))
         markers = live
         if not markers:
+            # Nothing is sent, so no send can end a failing streak.
+            self._send_health.reset()
             return
         # A prior socket rebuild that failed leaves _socket None; retry it
         # (throttled) here so the loop can recover instead of spinning on a

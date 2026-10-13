@@ -173,7 +173,7 @@ class TestLogging:
         caplog.clear()
         with caplog.at_level(logging.DEBUG, logger="openfollow.send_health"):
             health.reset()
-        assert _messages(caplog) == ["PSN: stopped after 5 s of failing sends (2 failed)."]
+        assert _messages(caplog) == ["PSN: send record reset after 5 s of failing sends (2 failed)."]
 
     def test_a_reset_outside_a_failing_streak_logs_nothing(self, caplog: pytest.LogCaptureFixture) -> None:
         health, _clock = _health()

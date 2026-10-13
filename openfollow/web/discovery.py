@@ -254,12 +254,12 @@ class BeaconSender:
                             last_error_log = now
                         self._stop_event.wait(BEACON_INTERVAL)
                         continue
-                    self._open_errors = 0
 
                 data = self._packet.to_bytes()
                 try:
                     sock.sendto(data, (BEACON_MCAST_GROUP, BEACON_PORT))
                     self._send_health.record_success()
+                    self._open_errors = 0
                     self._last_send_ts = time.monotonic()
                     self._send_count += 1
                 except OSError as exc:

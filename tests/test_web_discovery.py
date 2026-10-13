@@ -1268,6 +1268,40 @@ def test_a_socket_that_takes_one_beacon_then_refuses_never_reads_as_recovered(
     assert not [r for r in caplog.records if "again" in r.getMessage() or "recovered" in r.getMessage()]
 
 
+@pytest.mark.parametrize(("send_fails", "expected"), [(True, 4), (False, 0)])
+def test_beacon_open_failures_count_until_a_beacon_leaves(send_fails: bool, expected: int) -> None:
+    """A socket that opens and then cannot send has not ended the outage its failed opens began."""
+
+    class _Socket:
+        def sendto(self, data: bytes, addr: tuple) -> int:  # noqa: ARG002
+            if send_fails:
+                raise OSError(errno.EACCES, "Permission denied")
+            return len(data)
+
+        def close(self) -> None:
+            pass
+
+    opens = {"n": 0}
+
+    def _open() -> _Socket:
+        opens["n"] += 1
+        if opens["n"] <= 3:
+            raise OSError(errno.EADDRNOTAVAIL, "Can't assign requested address")
+        return _Socket()
+
+    sender = BeaconSender(name="X", web_port=80)
+    sender._open_socket = _open  # type: ignore[assignment]
+
+    def _stop_after_fourth_open(_t: float) -> bool:
+        if opens["n"] >= 4:
+            sender._stop_event.set()
+        return False
+
+    sender._stop_event.wait = _stop_after_fourth_open  # type: ignore[assignment]
+    sender._run()
+    assert sender.consecutive_errors == expected
+
+
 def test_beacon_reopen_starts_a_new_record() -> None:
     sender = BeaconSender(name="X", web_port=80)
     _run_beacon(sender, _RefusingSocket(), sends=2)

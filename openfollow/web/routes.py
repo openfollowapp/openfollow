@@ -1720,7 +1720,7 @@ def apply_section_data(cfg: AppConfig, section: str, data: Mapping[str, Any]) ->
             logger.info("%r moved from %s to %s", move.value, move.field, move.kept_by)
     # Re-run the dataclass ``__post_init__`` after a web-form save so the
     # same coercion/clamping rules that protect hand-edited config.toml also
-    # protect crafted POSTs. See "Validation contract" in CLAUDE.md.
+    # protect crafted POSTs. See "Validation contract" in docs/architecture/config.md.
     if section in ("controller", "gamepad", "keyboard", "mouse"):
         cfg.controller.__post_init__()
     elif section == "mouse3d":

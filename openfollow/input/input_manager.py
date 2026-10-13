@@ -660,6 +660,7 @@ class InputManager:
         if self.osc_handler is not None:
             self.osc_handler.stop()
             self.osc_handler = None
+        self._osc_last_write.clear()
         if enabled:
             self.osc_handler = OscMarkerAdapter(
                 self.app._runtime_services._osc_service,

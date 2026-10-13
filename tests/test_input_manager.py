@@ -762,10 +762,13 @@ def _osc_station(monkeypatch, pending: dict[int, dict[str, float]]):  # noqa: AN
     monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
     monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
     app = _DummyApp()
+    app._runtime_services._osc_service = None
     manager = InputManager(app)
     clock = _Clock()
     manager._clock = clock
-    manager.osc_handler = SimpleNamespace(flush_updates=lambda: dict(pending))
+    adapter = SimpleNamespace(start=lambda: None, stop=lambda: None, flush_updates=lambda: dict(pending))
+    monkeypatch.setattr(input_manager_module, "OscMarkerAdapter", lambda *_a, **_kw: adapter)
+    manager.osc_handler = adapter
     return app, manager, clock
 
 
@@ -780,7 +783,6 @@ def _stream(manager, clock, seconds: float, rate_hz: float = 30.0) -> None:  # n
 
 
 def test_an_osc_position_stream_logs_one_info_line_when_it_starts(monkeypatch, caplog) -> None:
-    """A desk streams positions at frame rate; one INFO line per write floods the journal."""
     app, manager, clock = _osc_station(monkeypatch, {10: {"x": 3.0, "y": 4.0, "z": 5.0}})
 
     with caplog.at_level(logging.INFO, logger=input_manager_module.logger.name):
@@ -834,3 +836,15 @@ def test_every_osc_position_write_is_traced_at_debug(monkeypatch, caplog) -> Non
     assert [r.getMessage() for r in caplog.records if r.levelno == logging.DEBUG] == [
         "OSC jump: marker 10 → (3.000, 4.000, 5.000)"
     ] * 3
+
+
+def test_an_osc_stream_on_a_restarted_listener_logs_again(monkeypatch, caplog) -> None:
+    pending = {10: {"x": 3.0, "y": 4.0, "z": 5.0}}
+    _app, manager, clock = _osc_station(monkeypatch, pending)
+
+    with caplog.at_level(logging.INFO, logger=input_manager_module.logger.name):
+        _stream(manager, clock, seconds=1.0)
+        manager.restart_osc(enabled=True, port=9001)
+        _stream(manager, clock, seconds=1.0)
+
+    assert _osc_info_lines(caplog) == ["OSC positions arriving for marker 10, first at (3.000, 4.000, 5.000)"] * 2

@@ -114,12 +114,14 @@ def _post_raw_json(base: str, path: str, payload: object, method: str = "POST") 
         return e.code, json.loads(e.read().decode() or "{}")
 
 
-def _post_form_full(base: str, path: str, data: dict) -> tuple[int, str, dict]:
+def _post_form_full(
+    base: str, path: str, data: dict, *, headers: dict[str, str] | None = None
+) -> tuple[int, str, dict]:
     """Form POST returning ``(status, body, headers_dict)``."""
     req = urllib.request.Request(
         f"{base}{path}",
         data=urllib.parse.urlencode(data).encode(),
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        headers={"Content-Type": "application/x-www-form-urlencoded", **(headers or {})},
         method="POST",
     )
     try:
@@ -2376,6 +2378,20 @@ def test_post_general_with_restart_flag_queues_restart(live_server) -> None:
 @pytest.fixture()
 def pin_protected_server(tmp_path, monkeypatch):
     """Variant of ``live_server`` that starts with a configured web PIN."""
+    yield from _serve_with_pin(tmp_path, monkeypatch)
+
+
+@pytest.fixture()
+def frozen_throttle_pin_server(tmp_path, monkeypatch):
+    """``pin_protected_server`` whose login throttle never sees time pass, so a lockout cannot expire mid-test."""
+    import openfollow.web.routes as routes_module
+    from openfollow.web.login_throttle import LoginThrottle
+
+    monkeypatch.setattr(routes_module, "LoginThrottle", lambda **kw: LoginThrottle(**kw, clock=lambda: 1000.0))
+    yield from _serve_with_pin(tmp_path, monkeypatch)
+
+
+def _serve_with_pin(tmp_path, monkeypatch):
     monkeypatch.setattr(discovery_module.BeaconSender, "start", lambda self: None)
     monkeypatch.setattr(discovery_module.BeaconSender, "stop", lambda self: None)
     monkeypatch.setattr(discovery_module.BeaconReceiver, "start", lambda self: None)
@@ -4891,8 +4907,8 @@ def test_login_submit_renders_error_template_on_invalid_pin(pin_protected_server
     assert '<div class="notice error" role="alert">' in body
 
 
-def test_repeated_wrong_pin_locks_out_with_retry_after(pin_protected_server) -> None:
-    _, base, _ = pin_protected_server
+def test_repeated_wrong_pin_locks_out_with_retry_after(frozen_throttle_pin_server) -> None:
+    _, base, _ = frozen_throttle_pin_server
 
     status1, _, _ = _post_form_full(base, "/login", {"pin": "wrong-1"})
     assert status1 == 200  # first failure renders template, no penalty yet
@@ -4906,12 +4922,12 @@ def test_repeated_wrong_pin_locks_out_with_retry_after(pin_protected_server) -> 
     assert int(headers2["Retry-After"]) >= 1
 
 
-def test_lockout_blocks_correct_pin_during_window(pin_protected_server) -> None:
+def test_lockout_blocks_correct_pin_during_window(frozen_throttle_pin_server) -> None:
     """Even the correct PIN is rejected with 429 while the IP is locked
     out. Otherwise an attacker could probe whether their *guess* matches
     by timing the response – a 200 vs 429 split would leak whether they
     happened to guess right just before being locked out."""
-    _, base, pin = pin_protected_server
+    _, base, pin = frozen_throttle_pin_server
 
     _post_form_full(base, "/login", {"pin": "wrong-1"})
     status, _, _ = _post_form_full(base, "/login", {"pin": pin})
@@ -4959,6 +4975,7 @@ def _signed_post_full(
     *,
     signature: str,
     timestamp: str,
+    headers: dict[str, str] | None = None,
 ) -> tuple[int, dict]:
     """Send a signed POST with a caller-supplied signature/timestamp pair.
 
@@ -4972,6 +4989,7 @@ def _signed_post_full(
             "Content-Type": "application/json",
             peer_auth.TIMESTAMP_HEADER: timestamp,
             peer_auth.SIGNATURE_HEADER: signature,
+            **(headers or {}),
         },
         method="POST",
     )
@@ -4982,9 +5000,9 @@ def _signed_post_full(
         return e.code, dict(e.headers.items())
 
 
-def test_peer_auth_signature_failure_locks_out(pin_protected_server) -> None:
+def test_peer_auth_signature_failure_locks_out(frozen_throttle_pin_server) -> None:
     """Peer-auth signature path is subject to rate-limit throttle like login."""
-    _, base, _ = pin_protected_server
+    _, base, _ = frozen_throttle_pin_server
 
     body = b'{"pos_x": 1.0}'
     bogus_sig = "0" * 64  # SHA-256 hex length, but never a valid HMAC
@@ -5011,6 +5029,40 @@ def test_peer_auth_signature_failure_locks_out(pin_protected_server) -> None:
     )
     assert status2 == 429
     assert "Retry-After" in headers2
+
+
+def test_a_forwarded_for_header_does_not_escape_the_login_lockout(frozen_throttle_pin_server) -> None:
+    """The lockout follows the connection: any client can set X-Forwarded-For."""
+    _, base, _ = frozen_throttle_pin_server
+
+    status1, _, _ = _post_form_full(base, "/login", {"pin": "wrong-1"}, headers={"X-Forwarded-For": "203.0.113.1"})
+    assert status1 == 200
+    status2, _, _ = _post_form_full(base, "/login", {"pin": "wrong-2"}, headers={"X-Forwarded-For": "203.0.113.2"})
+    assert status2 == 429
+
+
+def test_a_forwarded_for_header_does_not_escape_the_peer_lockout(frozen_throttle_pin_server) -> None:
+    _, base, _ = frozen_throttle_pin_server
+    body = b'{"pos_x": 1.0}'
+    ts = "0"  # any rejected signature counts as a failure, a stale one included
+
+    status1, _ = _signed_post_full(
+        base, "/api/config/camera", body, signature="0" * 64, timestamp=ts, headers={"X-Forwarded-For": "203.0.113.1"}
+    )
+    assert status1 == 401
+    status2, _ = _signed_post_full(
+        base, "/api/config/camera", body, signature="0" * 64, timestamp=ts, headers={"X-Forwarded-For": "203.0.113.2"}
+    )
+    assert status2 == 429
+
+
+def test_a_forwarded_for_header_does_not_decide_the_on_device_footer(live_server) -> None:
+    """The embedded browser is recognised by its loopback connection, whatever a header says."""
+    _, base = live_server
+    req = urllib.request.Request(f"{base}/", headers={"X-Forwarded-For": "198.51.100.7"})
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        body = resp.read().decode()
+    assert '<footer class="on-device-footer">' in body
 
 
 def test_logout_clears_cookie_and_redirects_to_login(live_server) -> None:

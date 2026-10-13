@@ -417,6 +417,24 @@ def test_example_config_matches_current_schema() -> None:
     assert cfg.osc_destinations.get(first.id) is first
 
 
+@pytest.mark.parametrize(("section", "defaults"), [("controller", ControllerConfig()), ("mouse3d", Mouse3DConfig())])
+def test_example_config_binds_nothing_the_defaults_leave_unbound(section: str, defaults: object) -> None:
+    """A station seeded from the example must not start with a binding a fresh config leaves unbound."""
+    from pathlib import Path
+
+    example_path = Path(__file__).resolve().parents[1] / "config.example.toml"
+    example = tomllib.loads(example_path.read_text(encoding="utf-8"))[section]
+    # A field the code dropped is silently filtered on load.
+    assert [name for name in example if not hasattr(defaults, name)] == []
+    unbound = {"", -1}
+    bound = {
+        name: value
+        for name, value in example.items()
+        if name.startswith(("btn_", "key_")) and getattr(defaults, name) in unbound and value not in unbound
+    }
+    assert bound == {}
+
+
 def test_bootstrap_copies_example_when_config_absent(tmp_path) -> None:
     """First-run path: ``config.toml`` is missing, ``config.example.toml``
     sits next to it → copy the example into place verbatim."""

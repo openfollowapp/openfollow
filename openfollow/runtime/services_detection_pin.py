@@ -561,6 +561,14 @@ def _assist_one(
     state.attached_marker_id = marker_id
 
 
+def hand_over_anchors(app: Any) -> None:
+    """Drop the anchor of every marker no longer under assist control, its path lock going to the output.
+
+    Called before anything writes a marker in the frame, so input moves a locked marker on from its output.
+    """
+    _prune_manual_markers(app, keep={m for m in app._assist_manual if is_assist_controlled(app, m)})
+
+
 def _prune_manual_markers(app: Any, *, keep: set[int]) -> None:
     """Drop stale manual ghosts so a re-engage re-seeds fresh from the marker.
 

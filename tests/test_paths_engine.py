@@ -371,6 +371,24 @@ class TestLockOnto:
         assert engine.locked_path(1) == "Ramp"
         assert _round(_landed(engine)) == (0.0, 1.0, 0.4)
 
+    def test_locking_again_onto_the_path_it_is_on_leaves_a_landed_marker_on_it(self) -> None:
+        engine = _engine(CROSS, RAMP)
+        engine.lock_onto(1, "cross", (3.0, 1.0, 0.0))
+        landed = _landed(engine)
+        # A desk resending the lock, in any case, for the marker standing where it landed.
+        assert engine.lock_onto(1, "CROSS", landed)
+        assert engine.free_position(1) is None
+        # A push off the path does not move it off.
+        assert _round(engine.move(1, 0.0, 1.0, 0.1)) == (3.0, 0.0, 0.0)
+
+    def test_locking_onto_another_path_pulls_the_marker_onto_that_one(self) -> None:
+        engine = _engine(CROSS, RAMP)
+        engine.lock_onto(1, "cross", (3.0, 1.0, 0.0))
+        landed = _landed(engine)
+        assert engine.lock_onto(1, "ramp", landed)
+        assert engine.free_position(1) == landed
+        assert _round(_landed(engine)) == (0.0, 0.0, 0.0)
+
     @pytest.mark.parametrize("name", ["nope", "off"])
     def test_only_an_active_path_can_be_locked_onto(self, name: str) -> None:
         engine = _engine(CROSS, _path("off", [(0, 0, 0), (1, 0, 0)]))
@@ -814,6 +832,20 @@ class TestSwitchArrows:
         # Pushed at 2 m/s the switch area reaches 1 m ahead.
         engine.move(1, 2.0, 0.0, 0.01)
         assert len(engine.switch_arrows()) == 3
+
+    def test_a_frame_without_a_push_narrows_the_arrows_to_the_switch_area_floor(self) -> None:
+        engine = _engine(CROSS, RAMP)
+        engine.press(1, (-0.8, 0.0, 0.0))
+        _landed(engine)
+        engine.move(1, 2.0, 0.0, 0.01)
+        assert engine.switch_arrows()
+        # The marker stands 0.78 m short of the crossing: outside the 0.5 m area once nothing pushes it.
+        engine.tick(1 / 60)
+        assert engine.switch_arrows() == []
+        engine.tick(1 / 60)
+        assert engine.switch_arrows() == []
+        engine.move(1, 2.0, 0.0, 0.01)
+        assert engine.switch_arrows()
 
     def test_a_marker_still_pulled_onto_its_path_gets_none(self) -> None:
         engine = _engine(CROSS, RAMP, slide_time=1.0)

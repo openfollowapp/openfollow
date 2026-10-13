@@ -49,6 +49,10 @@ def _cross(active: bool = True) -> PathConfig:
     return PathConfig(name="cross", active=active, points=[PathPointConfig(-5, 0, 0), PathPointConfig(5, 0, 0)])
 
 
+def _levels(caplog: pytest.LogCaptureFixture, message: str) -> list[int]:
+    return [record.levelno for record in caplog.records if record.getMessage() == message]
+
+
 class TestPathfinder:
     def test_a_press_locks_and_a_second_releases(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
         app = _App(tmp_path, _cross())
@@ -200,11 +204,12 @@ class TestCommands:
         paths_runtime.apply_commands(app, [PathActive("cross", True)], [], lambda _id: None)
         assert not Path(app._config_path).exists()
 
-    def test_an_unknown_path_is_logged(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    def test_an_unknown_path_is_logged_at_debug(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
         app = _App(tmp_path, _cross())
-        with caplog.at_level(logging.INFO):
+        with caplog.at_level(logging.DEBUG):
             paths_runtime.apply_commands(app, [PathActive("nope", True)], [], lambda _id: None)
-        assert "OSC: no path called 'nope'" in caplog.text
+        # A source resending every frame must not flood the journal.
+        assert _levels(caplog, "OSC: no path called 'nope'") == [logging.DEBUG]
 
     def test_a_controlled_marker_locks_and_is_released(self, tmp_path: Path) -> None:
         app = _App(tmp_path, _cross())
@@ -224,13 +229,13 @@ class TestCommands:
         paths_runtime.apply_commands(app, [MarkerPath(3, "cross")], [3], lambda _id: None)
         assert not app._paths.is_locked(3)
 
-    def test_locking_onto_a_path_that_is_not_active_is_logged(
+    def test_locking_onto_a_path_that_is_not_active_is_logged_at_debug(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
         app = _App(tmp_path, _cross(active=False))
-        with caplog.at_level(logging.INFO):
+        with caplog.at_level(logging.DEBUG):
             paths_runtime.apply_commands(app, [MarkerPath(3, "cross")], [3], {3: _Marker(0, 1, 0)}.get)
-        assert "OSC: no active path 'cross' to lock marker 3 onto" in caplog.text
+        assert _levels(caplog, "OSC: no active path 'cross' to lock marker 3 onto") == [logging.DEBUG]
 
     def test_with_paths_switched_off_commands_do_nothing(self, tmp_path: Path) -> None:
         app = _App(tmp_path, _cross(active=False), experimental=False)

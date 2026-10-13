@@ -399,15 +399,19 @@ def _get_local_ips() -> list[str]:
     return sorted(ip for ip in get_local_ipv4_addresses() if ip and not ip.startswith("127.") and ip != "localhost")
 
 
+def _client_address() -> str:
+    """The connection's peer address; ``request.remote_addr`` would trust a client-set X-Forwarded-For."""
+    return str(request.environ.get("REMOTE_ADDR") or "").strip()
+
+
 def _is_on_device_request() -> bool:
     """True when the request originated from the embedded WebView.
 
     The on-device WebKit overlay loads ``http://127.0.0.1:<port>/``, so a
-    loopback ``remote_addr`` distinguishes it from LAN clients (which hit
-    the external IP). Covers IPv4/IPv6 loopback and the ``localhost`` literal.
+    loopback connection distinguishes it from LAN clients (which hit the
+    external IP). Covers IPv4/IPv6 loopback and the ``localhost`` literal.
     """
-    remote = (request.remote_addr or "").strip()
-    return remote in ("127.0.0.1", "::1", "localhost")
+    return _client_address() in ("127.0.0.1", "::1", "localhost")
 
 
 # CSRF / DNS-rebind defence. State-changing methods only –
@@ -3259,6 +3263,15 @@ def _backup_before(config_path: str, kind: str) -> dict[str, str]:
     return {"backup": result.archive}
 
 
+def _turn_off_experimental_features(cfg: AppConfig) -> None:
+    """What turning experimental features off turns off with them: detection, the ground grid's drop, and every
+    path's Active flag."""
+    cfg.detection.enabled = False
+    cfg.ground_grid.enabled = False
+    for path in cfg.paths.paths:
+        path.active = False
+
+
 def _apply_import_data(current_cfg: AppConfig, data: dict[str, Any]) -> AppConfig:
     """Build a new config from import data, preserving this device's identity.
 
@@ -3350,6 +3363,8 @@ def _apply_import_data(current_cfg: AppConfig, data: dict[str, Any]) -> AppConfi
         if "show_experimental_features" in ui_data:
             cfg.ui.show_experimental_features = ui_data["show_experimental_features"]
         cfg.ui.__post_init__()
+        if "show_experimental_features" in ui_data and not cfg.ui.show_experimental_features:
+            _turn_off_experimental_features(cfg)
 
     # Fields not covered by any section
     if "window_width" in data:
@@ -5215,12 +5230,11 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         if path == "/system/privilege/password/modal":
             return
 
-        # Peer-to-peer (HMAC-signed) request. Replaces the legacy
-        # X-Auth-Pin header that leaked the PIN over plain HTTP.
+        # Peer-to-peer (HMAC-signed) request; the PIN itself never travels.
         signature = request.headers.get(peer_auth.SIGNATURE_HEADER, "")
         timestamp = request.headers.get(peer_auth.TIMESTAMP_HEADER, "")
         if signature and timestamp:
-            remote = request.remote_addr or ""
+            remote = _client_address()
             # Reject locked-out IPs *before* the body read + HMAC compute,
             # so a flood of bogus signatures can't keep us hashing.
             _abort_if_locked(remote)
@@ -5310,7 +5324,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         if not pin:
             redirect("/")
 
-        remote = request.remote_addr or ""
+        remote = _client_address()
         # Reserve a single guess atomically: refuse while locked out (short-
         # circuits any timing leak from compare_digest) AND serialize
         # concurrent submissions for this IP to one guess per window.
@@ -6620,10 +6634,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         def _mutate(cfg: AppConfig) -> None:
             cfg.ui.show_experimental_features = show
             if not show:
-                cfg.detection.enabled = False
-                cfg.ground_grid.enabled = False
-                for path in cfg.paths.paths:
-                    path.active = False
+                _turn_off_experimental_features(cfg)
 
         _persist_ui_change(_mutate)
         return ""
@@ -9300,9 +9311,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         return json.dumps(_config_dict_redacted(cfg), indent=2)
 
     def _record_push(station: str, what: str, backup: dict[str, str]) -> None:
-        # The socket's peer, not ``remote_addr``: Bottle takes that from a client-set X-Forwarded-For.
-        address = request.environ.get("REMOTE_ADDR", "")
-        server.pushed_settings.record(station, address, what, backup.get("backup_error", ""))
+        server.pushed_settings.record(station, _client_address(), what, backup.get("backup_error", ""))
 
     @app.get("/api/pushed-settings")
     def api_pushed_settings() -> Any:

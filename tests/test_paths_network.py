@@ -4,15 +4,25 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import random
 
 import numpy as np
 import pytest
 
+from openfollow.configuration import MAX_PATH_POINTS, MAX_PATHS
 from openfollow.paths import network
 from openfollow.paths.geometry import PathCurve, PathPoint, build_curve
-from openfollow.paths.network import Junction, PathNetwork, Place, Step, extend_to_corners, find_junctions
+from openfollow.paths.network import (
+    _MAX_STEPS,
+    Junction,
+    PathNetwork,
+    Place,
+    Step,
+    extend_to_corners,
+    find_junctions,
+)
 
 REACH = network.JUNCTION_REACH_M
 
@@ -250,6 +260,62 @@ class TestJunctionSearchCost:
         # Three products per pass, and more than one pass.
         assert len(sizes) > 3
         assert max(sizes) <= network._BOX_PAIRS_PER_PASS * network._BOX_SEGMENTS**2
+
+
+def _tangle() -> list[PathCurve]:
+    """As many paths of as many points as a config holds, scribbled over one 2 m square."""
+    rng = random.Random(5)
+    return [
+        _curve([(rng.uniform(0, 2), rng.uniform(0, 2), 0, 0.5) for _ in range(MAX_PATH_POINTS)])
+        for _ in range(MAX_PATHS)
+    ]
+
+
+class TestJunctionCap:
+    def test_a_dense_tangle_keeps_the_most_junctions_a_network_holds_and_says_so(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.WARNING, logger="openfollow.paths.network"):
+            net = PathNetwork(_tangle())
+        assert len(net.junctions) == network.MAX_JUNCTIONS
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "left out" in warnings[0].getMessage()
+
+    def test_once_the_cap_is_reached_the_search_stops(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        pairs, heights = [], []
+        crossings, same_height = network._crossings, network._same_height
+        monkeypatch.setattr(network, "_crossings", lambda *args: pairs.append(1) or crossings(*args))
+        monkeypatch.setattr(network, "_same_height", lambda *args: heights.append(1) or same_height(*args))
+        curves = _tangle()
+        find_junctions(curves)
+        # Of the 496 pairs, each crossing the others hundreds of times, only the first few are searched.
+        assert len(pairs) < 5
+        assert len(heights) < 2 * network.MAX_JUNCTIONS
+
+    @pytest.mark.parametrize("seed", range(3))
+    def test_past_the_cap_the_junctions_kept_are_the_first_ones(
+        self, seed: int, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        rng = random.Random(seed)
+        curves = [_curve(_wander(rng, 30)) for _ in range(6)]
+        every = _reference_junctions(curves)
+        assert len(every) > 10
+        monkeypatch.setattr(network, "MAX_JUNCTIONS", 10)
+        with caplog.at_level(logging.WARNING, logger="openfollow.paths.network"):
+            assert find_junctions(curves) == every[:10]
+        assert len(caplog.records) == 1
+
+    def test_a_network_with_exactly_as_many_junctions_as_the_cap_keeps_them_all_quietly(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        curves = [_curve(_wander(random.Random(1), 30)) for _ in range(6)]
+        every = _reference_junctions(curves)
+        assert every
+        monkeypatch.setattr(network, "MAX_JUNCTIONS", len(every))
+        with caplog.at_level(logging.WARNING, logger="openfollow.paths.network"):
+            assert find_junctions(curves) == every
+        assert caplog.records == []
 
 
 class TestCornerExtension:
@@ -508,7 +574,8 @@ class TestWalk:
 
     def test_a_closed_path_carries_on_round(self) -> None:
         ring = _curve([(0, 0, 0), (2, 0, 0), (2, 2, 0), (0, 2, 0)], closed=True)
-        step = PathNetwork([ring]).walk(Place(0, 7.5), 0.0, -1.0, 1.0)
+        # Down the last side and along the first, at cos 45 on each.
+        step = PathNetwork([ring]).walk(Place(0, 7.5), *_push(-45.0), dt=math.sqrt(2.0))
         assert step.place.s == pytest.approx(0.5)
 
 
@@ -519,6 +586,89 @@ class TestLegs:
         net = PathNetwork([H, *comb])
         step = net.walk(Place(0, 0.0), 1.0, 0.0, 100.0)
         assert _at(net, step.place) == (-4.5 + 0.5 * 15, 0.0)
+
+    def test_a_leg_ending_where_a_switch_area_starts_still_moves_on(self) -> None:
+        # At 1.3 m/s the area reaches 0.65 m: from 4.35 the leg to it is a rounding error long.
+        net = PathNetwork([H, V])
+        assert net.walk(Place(0, 4.35), 1.3, 0.0, 1.0).place == Place(0, pytest.approx(5.65))
+
+    def test_a_steady_push_carries_the_marker_through_a_crossing_every_frame(self) -> None:
+        net = PathNetwork([H, V])
+        place = Place(0, 1.652)
+        for _ in range(600):
+            step = net.walk(place, 1.3, 0.0, 1 / 60)
+            assert step.place.path == 0
+            assert step.place.s == pytest.approx(min(place.s + 1.3 / 60, H.length))
+            place = step.place
+        assert place.s == pytest.approx(H.length)
+
+    @pytest.mark.parametrize("seed", range(4))
+    def test_every_frame_of_a_push_along_the_path_moves_the_marker(self, seed: int) -> None:
+        rng = random.Random(seed)
+        net = PathNetwork([H, V])
+        for _ in range(40):
+            speed = rng.uniform(0.05, 4.0) * rng.choice((-1.0, 1.0))
+            place = Place(0, rng.uniform(0.0, H.length))
+            for _ in range(120):
+                step = net.walk(place, speed, 0.0, 1 / 60)
+                assert step.place.path == 0
+                assert step.place.s == pytest.approx(min(max(place.s + speed / 60, 0.0), H.length))
+                place = step.place
+
+
+def _frames(net: PathNetwork, place: Place, push: tuple[float, float], count: int) -> list[tuple[float, float]]:
+    """Where the marker is after each of ``count`` 60 Hz frames under ``push``."""
+    out = []
+    for _ in range(count):
+        place = net.walk(place, *push, dt=1 / 60).place
+        x, y, _ = net.point(place)
+        out.append((x, y))
+    return out
+
+
+class TestVertices:
+    @pytest.mark.parametrize(
+        ("points", "start", "push"),
+        [
+            # A sharp turn back more than a right angle, pushed along the arriving segment.
+            ([(0, 0, 0, 0), (5, 0, 0, 0), (0, 1, 0, 0)], 4.51, (2.0, 0.0)),
+            # A hairpin, whose tight arc turns away from the push part-way round.
+            ([(0, 0, 0, 0), (5, 0, 0, 1.0), (0, 0.5, 0, 0)], 4.0, (3.0, 0.0)),
+        ],
+    )
+    def test_a_marker_pushed_into_a_turn_away_from_the_push_comes_to_rest(
+        self, points: list[tuple[float, ...]], start: float, push: tuple[float, float]
+    ) -> None:
+        trail = _frames(PathNetwork([_curve(points)]), Place(0, start), push, 120)
+        xs = [x for x, _ in trail]
+        assert all(b >= a - 1e-12 for a, b in zip(xs, xs[1:], strict=False))
+        assert len(set(trail[-60:])) == 1
+
+    def test_a_right_angle_stops_a_push_along_its_first_segment_on_the_corner(self) -> None:
+        net = PathNetwork([_curve([(0, 0, 0, 0), (5, 0, 0, 0), (5, 5, 0, 0)])])
+        trail = _frames(net, Place(0, 4.91), (1.0, 0.0), 30)
+        assert all(y == 0.0 and x <= 5.0 for x, y in trail)
+        assert trail[-1] == pytest.approx((5.0, 0.0))
+
+    def test_past_a_sharp_corner_the_marker_moves_at_the_leaving_segment_s_rate(self) -> None:
+        # Pushed 30 degrees above x: along x at cos 30 for 0.5 m, then up at sin 30.
+        net = PathNetwork([_curve([(0, 0, 0, 0), (2, 0, 0, 0), (2, 2, 0, 0)])])
+        before = 0.5 / math.cos(math.radians(30.0))
+        step = net.walk(Place(0, 1.5), *_push(30.0), dt=before + 1.0)
+        assert _at(net, step.place) == pytest.approx((2.0, 0.5), abs=1e-6)
+
+    def test_one_step_runs_on_through_many_rounded_corners(self) -> None:
+        # Ten gentle bends, each arc a dozen vertices or more, all with a share along x.
+        wave = _curve([(i, 0.5 * (i % 2), 0, 2.0) for i in range(11)])
+        net = PathNetwork([wave])
+        step = net.walk(Place(0, 0.0), 1.0, 0.0, dt=100.0)
+        assert step.place.s == pytest.approx(wave.length)
+
+    def test_one_step_takes_a_bounded_number_of_legs(self) -> None:
+        # 400 points 5 cm apart: every one is a vertex, and one huge step stops after _MAX_STEPS legs.
+        dotted = _curve([(0.05 * i, 0, 0, 0) for i in range(400)])
+        step = PathNetwork([dotted]).walk(Place(0, 0.0), 1.0, 0.0, 100.0)
+        assert step.place.s == pytest.approx(_MAX_STEPS * 0.05)
 
 
 class TestSteering:
@@ -572,6 +722,14 @@ class TestSteering:
         step = net.walk(Place(0, start), 0.0, speed, 0.01)
         assert (step.place.path == 1 or step.place.s > start) is turns
 
+    @pytest.mark.parametrize("far_first", [True, False])
+    def test_of_two_equally_good_turns_the_nearer_junction_wins(self, far_first: bool) -> None:
+        # Rungs cross H at x = -0.45 and x = 0.1, both inside the switch area of a marker at x = 0.
+        far = _curve([(-0.45, -1, 0), (-0.45, 1, 0)])
+        near = _curve([(0.1, -1, 0), (0.1, 1, 0)])
+        net = PathNetwork([H, far, near] if far_first else [H, near, far])
+        assert _at(net, net.walk(Place(0, 5.0), 0.0, 1.0, 0.05).place) == (0.05, 0.0)
+
     def test_just_past_a_crossing_the_marker_can_still_turn(self) -> None:
         net = PathNetwork([H, V])
         assert net.walk(Place(0, 5.25), 0.0, -1.0, 1.0).place.path == 1
@@ -582,6 +740,19 @@ class TestSteering:
         assert net.walk(Place(0, 7.0), 0.0, 1.0, 1.0).place == Place(1, pytest.approx(1.0))
         # Down, there is no branch to take; the marker stays put on H.
         assert net.walk(Place(0, 7.0), 0.0, -1.0, 1.0).place == Place(0, 7.0)
+
+    @pytest.mark.parametrize("start", [7.0, 7.3])
+    def test_a_push_across_the_path_by_a_branch_end_that_releases_moves_nothing(self, start: float) -> None:
+        # The branch comes down from (2, 4) and ends on H at (2, 0), releasing there.
+        branch = _curve([(2, 4, 0), (2, 0, 0)])
+        net = PathNetwork([H, branch], [(False, False), (False, True)])
+        assert net.walk(Place(0, start), 0.0, -1.0, 1.0) == Step(Place(0, start))
+
+    def test_on_a_branch_its_own_end_that_releases_still_lets_go_at_the_junction(self) -> None:
+        branch = _curve([(2, 4, 0), (2, 0, 0)])
+        net = PathNetwork([H, branch], [(False, False), (False, True)])
+        step = net.walk(Place(1, 3.8), 0.0, -1.0, 1.0)
+        assert step == Step(Place(1, pytest.approx(4.0)), released=True)
 
     def test_at_the_end_of_a_branch_a_diagonal_push_carries_on_along_the_path_it_joins(self) -> None:
         # The branch comes down from (2, 4) and ends on H at (2, 0).

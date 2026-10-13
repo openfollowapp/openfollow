@@ -43,7 +43,22 @@
 
     <div class="group">
         <h3 class="group-title">Area</h3>
-        <div class="gg-plan-wrap" style="position:relative;border:1px solid var(--border,#444);border-radius:6px;background:#111;overflow:hidden;width:100%;">
+        <div class="seg-toggle plan-view-switch" id="ground-grid-view-switch" role="radiogroup" aria-label="Ground grid view">
+            <label class="seg-option">
+                <input type="radio" name="ground_grid_view" value="plan" checked>
+                <span><strong>Top-down</strong></span>
+            </label>
+            <label class="seg-option">
+                <input type="radio" name="ground_grid_view" value="camera">
+                <span><strong>Camera</strong></span>
+            </label>
+        </div>
+        <div class="pv-stage" id="ground-grid-picture" hidden>
+            <img alt="Camera picture with the ground grid">
+            <svg viewBox="0 0 1280 720" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg"></svg>
+        </div>
+        <div class="pv-nofeed" id="ground-grid-picture-nofeed" hidden>No video picture.</div>
+        <div class="gg-plan-wrap" id="ground-grid-plan-wrap" style="position:relative;border:1px solid var(--border,#444);border-radius:6px;background:#111;overflow:hidden;width:100%;">
             <canvas id="ground-grid-canvas" width="1280" height="720" style="display:block;width:100%;height:auto;background:#111;cursor:crosshair;"></canvas>
         </div>
         <div style="display:flex;gap:0.5rem;margin-top:0.5rem;flex-wrap:wrap;">
@@ -51,6 +66,7 @@
             <button type="button" id="ground-grid-finish-btn" class="secondary" disabled>Finish polygon</button>
             <button type="button" id="ground-grid-cancel-btn" class="secondary" disabled>Cancel drawing</button>
             <button type="button" id="ground-grid-clear-btn" class="danger">Clear polygon</button>
+            <button type="button" id="ground-grid-refresh-btn" class="secondary" hidden>Refresh Image</button>
             <span id="ground-grid-status" class="section-note"></span>
         </div>
     </div>
@@ -102,7 +118,7 @@
             var drawing = !!plan.draft;
             finishBtn.disabled = !(drawing && plan.draft.vertices.length >= 3);
             cancelBtn.disabled = !drawing;
-            drawBtn.disabled = drawing;
+            drawBtn.disabled = drawing || mode === 'camera';
             clearBtn.disabled = drawing || verts.length === 0;
             if (drawing) {
                 statusEl.textContent = 'Drawing: ' + plan.draft.vertices.length + ' point(s). Click the first point or double-click to close.';
@@ -111,8 +127,94 @@
             } else {
                 statusEl.textContent = verts.length >= 3 ? '' : 'No polygon yet.';
             }
+            projectGround();
         },
     });
+
+    // -- camera view: the ground grid at the Height typed in, as the saved camera sees it ----
+    var form = document.getElementById('ground-grid-section');
+    var pictureEl = document.getElementById('ground-grid-picture');
+    var nofeedEl = document.getElementById('ground-grid-picture-nofeed');
+    var planWrap = document.getElementById('ground-grid-plan-wrap');
+    var refreshBtn = document.getElementById('ground-grid-refresh-btn');
+    var heightInput = document.getElementById('ground-grid-z-offset');
+    var savedZ = {{_gg.z_offset}};
+    var pv = new window.OpenFollow.PictureView({
+        stage: pictureEl, img: pictureEl.querySelector('img'), svg: pictureEl.querySelector('svg'), nofeed: nofeedEl,
+        onSize: function() { viewKey = ''; projectGround(); },
+    });
+    var mode = 'plan', view = null, viewKey = '', viewSeq = 0;
+
+    function height() {
+        var units = window.OpenFollow.units;
+        var v = units.isImperial() ? units.parseLength(heightInput.value) : parseFloat(heightInput.value);
+        return isFinite(v) ? v : savedZ;
+    }
+
+    function projectGround() {
+        if (mode !== 'camera') return;
+        var z = height();
+        var key = JSON.stringify([verts, z, pv.w, pv.h]);
+        if (key === viewKey) return;
+        viewKey = key;
+        var asked = ++viewSeq;
+        window.OpenFollow.stationApi('POST', '/api/ground_grid/view', { w: pv.w, h: pv.h, vertices: verts, z: z })
+            .then(function(json) {
+                if (asked !== viewSeq) return;
+                view = json;
+                renderPicture();
+            }, function() { viewKey = ''; });
+    }
+
+    function renderPicture() {
+        pv.clear();
+        if (!view) return;
+        view.lines.forEach(function(points) {
+            pv.polylines(points).forEach(function(run) {
+                pv.svg.appendChild(pv.el('polyline', { points: run, 'class': 'pv-grid-line', 'vector-effect': 'non-scaling-stroke' }));
+            });
+        });
+        pv.polylines(view.outline).forEach(function(run) {
+            pv.svg.appendChild(pv.el('polyline', { points: run, 'class': 'pv-outline', 'vector-effect': 'non-scaling-stroke' }));
+        });
+        view.corners.forEach(function(pt, i) {
+            if (pt) pv.svg.appendChild(pv.handle(pt, 'pv-handle', function() { return grab(i); }));
+        });
+    }
+
+    // A corner dropped in the picture lands on the ground grid's own plane.
+    function grab(i) {
+        if (!verts[i]) return null;
+        var z = height();
+        return function(at) {
+            pv.onStage(at, z).then(function(w) {
+                if (!verts[i]) return;
+                verts[i] = [w.x, w.y];
+                store();
+                plan.render();
+            }, function(info) {
+                window.OpenFollow.saveError.show(form, info, 'Not moved.');
+            });
+        };
+    }
+
+    function applyMode(next) {
+        mode = next;
+        var camera = mode === 'camera';
+        planWrap.hidden = camera;
+        refreshBtn.hidden = !camera;
+        if (camera) {
+            if (plan.draft) plan.cancelDraft();
+            viewKey = '';
+            pv.load();
+        } else {
+            pictureEl.hidden = true;
+            nofeedEl.hidden = true;
+        }
+        plan.render();
+    }
+    refreshBtn.addEventListener('click', function() { pv.load(); });
+    heightInput.addEventListener('input', projectGround);
 
     drawBtn.addEventListener('click', function() { plan.startDraft(); });
     finishBtn.addEventListener('click', function() { plan.finishDraft(); });
@@ -136,7 +238,7 @@
             .catch(function() {});
     }
     plan.grid = {{!json.dumps({k: getattr(config.grid, k) for k in ("width", "depth", "spacing", "x_offset", "y_offset")})}};
-    plan.render();
+    window.OpenFollow.viewSwitch(document.getElementById('ground-grid-view-switch'), 'ground_grid', applyMode);
     refresh();
     if (window.__groundGridTimer) clearInterval(window.__groundGridTimer);
     window.__groundGridTimer = setInterval(function() {

@@ -40,17 +40,29 @@ def _run(call: str, *names: str) -> object:
     return json.loads(out.stdout)
 
 
+def _runs(points: str) -> object:
+    script = "var window = {};\n" + (_PICTURE_VIEW.read_text(encoding="utf-8"))
+    script += f"\nprocess.stdout.write(JSON.stringify(window.OpenFollow.pictureRuns({points})));"
+    node = shutil.which("node")
+    assert node is not None
+    out = subprocess.run([node, "-e", script], capture_output=True, text=True, check=True, timeout=10)  # nosec B603
+    return json.loads(out.stdout)
+
+
+_PICTURE_VIEW = Path(__file__).parents[1] / "openfollow" / "web" / "static" / "js" / "picture-view.js"
+
+
 class TestPolylines:
     def test_a_point_behind_the_camera_breaks_the_line(self) -> None:
         points = [[0, 0], [1, 1], None, [2, 2], [3, 3], [4, 4]]
-        assert _run(f"pePolylines({json.dumps(points)})", "pePolylines") == [[[0, 0], [1, 1]], [[2, 2], [3, 3], [4, 4]]]
+        assert _runs(json.dumps(points)) == [[[0, 0], [1, 1]], [[2, 2], [3, 3], [4, 4]]]
 
     def test_a_lone_visible_point_draws_no_line(self) -> None:
-        assert _run("pePolylines([[0, 0], null, [5, 5], null])", "pePolylines") == []
-        assert _run("pePolylines([[0, 0], [1, 1], null, [5, 5]])", "pePolylines") == [[[0, 0], [1, 1]]]
+        assert _runs("[[0, 0], null, [5, 5], null]") == []
+        assert _runs("[[0, 0], [1, 1], null, [5, 5]]") == [[[0, 0], [1, 1]]]
 
     def test_no_points_no_lines(self) -> None:
-        assert _run("pePolylines([])", "pePolylines") == []
+        assert _runs("[]") == []
 
 
 def test_the_arrowhead_is_the_operator_screen_s() -> None:
@@ -81,6 +93,7 @@ def _editor(steps: str, setup: str = "") -> Any:
             (Path(__file__).parent / "_path_editor_page.js").read_text(encoding="utf-8"),
             (_STATIC / "units.js").read_text(encoding="utf-8"),
             (_STATIC / "save-feedback.js").read_text(encoding="utf-8"),
+            (_STATIC / "picture-view.js").read_text(encoding="utf-8"),
             f"parseHTML({json.dumps(markup)}, document.body);",
             setup,
             script,
@@ -626,12 +639,12 @@ class TestFailedSaves:
                 "Not saved. Marker 2 has no position on this station.",
             ),
             (
-                "'/api/paths/unproject'",
+                "'/api/scene/unproject'",
                 "pointer(picture(), 'pointerdown', 640, 10); pointer(picture(), 'click', 640, 10);",
                 "Not saved. That point of the picture does not reach the stage.",
             ),
             (
-                "'/api/paths/unproject'",
+                "'/api/scene/unproject'",
                 "pointer(handles()[0], 'pointerdown', 340, 560); pointer(picture(), 'pointerup', 640, 10);",
                 "Not saved. That point of the picture does not reach the stage.",
             ),

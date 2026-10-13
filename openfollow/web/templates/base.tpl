@@ -30,6 +30,7 @@
  <script src="/assets/js/save-feedback.js?v={{_asset_v}}"></script>
  <script src="/assets/js/binding-steal.js?v={{_asset_v}}"></script>
  <script src="/assets/js/polygon-plan.js?v={{_asset_v}}"></script>
+ <script src="/assets/js/picture-view.js?v={{_asset_v}}"></script>
  <style>
  :root {
  color-scheme: dark;
@@ -413,6 +414,17 @@
  /* Segmented two-option toggle (Tracking Mode): equal-width cells. */
  .seg-toggle { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; max-width: 30rem; padding: 4px; border: 1px solid var(--border-soft); border-radius: 0.7rem; background: rgba(0, 0, 0, 0.22); }
  .seg-toggle--3 { grid-template-columns: repeat(3, 1fr); max-width: 36rem; }
+ /* A plan editor's camera view: the snapshot with an SVG in picture pixels over it. */
+ .plan-view-switch { margin-bottom: 0.6rem; }
+ .pv-stage { position: relative; width: 100%; line-height: 0; border-radius: 6px; overflow: hidden; background: var(--bg-base); }
+ .pv-stage img { display: block; width: 100%; height: auto; }
+ .pv-stage svg { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; }
+ .pv-nofeed { padding: 24px 12px; border: 1px dashed var(--border); border-radius: 6px; text-align: center; }
+ .pv-zone { stroke-width: 2; fill-opacity: 0.18; cursor: pointer; }
+ .pv-zone-selected { stroke-width: 3; }
+ .pv-grid-line { stroke: var(--muted); stroke-width: 1; fill: none; }
+ .pv-outline { stroke: var(--accent); stroke-width: 2.5; fill: none; }
+ .pv-handle { fill: var(--text); stroke: var(--accent); stroke-width: 2; }
  /* An option is a <label>: it reads in normal case, not the form label's caps. */
  .seg-toggle .seg-option { margin: 0; display: flex; cursor: pointer; text-transform: none; letter-spacing: normal; }
  .seg-toggle .seg-option input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }

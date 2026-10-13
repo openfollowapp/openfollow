@@ -6,6 +6,21 @@
     </div>
 
     <div class="group">
+        <div class="seg-toggle plan-view-switch" id="zone-view-switch" role="radiogroup" aria-label="Zone editor view">
+            <label class="seg-option">
+                <input type="radio" name="zone_editor_view" value="plan" checked>
+                <span><strong>Top-down</strong></span>
+            </label>
+            <label class="seg-option">
+                <input type="radio" name="zone_editor_view" value="camera">
+                <span><strong>Camera</strong></span>
+            </label>
+        </div>
+        <div class="pv-stage" id="zone-picture" hidden>
+            <img alt="Camera picture with the zones">
+            <svg viewBox="0 0 1280 720" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg"></svg>
+        </div>
+        <div class="pv-nofeed" id="zone-picture-nofeed" hidden>No video picture.</div>
         <div id="zone-canvas-wrap" style="position:relative;border:1px solid var(--border,#444);border-radius:6px;background:#111;overflow:hidden;width:100%;">
             <canvas id="zone-canvas" width="1280" height="720" style="display:block;width:100%;height:auto;background:#111;cursor:crosshair;"></canvas>
         </div>
@@ -14,6 +29,7 @@
             <button type="button" id="zone-finish-btn" class="secondary" disabled>Finish Polygon</button>
             <button type="button" id="zone-cancel-btn" class="secondary" disabled>Cancel Drawing</button>
             <button type="button" id="zone-delete-btn" class="danger" disabled>Delete Selected</button>
+            <button type="button" id="zone-refresh-btn" class="secondary" hidden>Refresh Image</button>
             <!-- Save / Load template buttons. Save captures entire
                  trigger_zones section (defaults + zones[]) as
                  .oftemplate under templates/user/. Load lists
@@ -91,8 +107,105 @@
         onDragMove: function(vertexIdx) { syncVertexInputs(state.selectedIndex, vertexIdx); },
         onDragEnd: function() { updateZoneVertices(state.selectedIndex); },
         onDraftClose: createZone,
-        onRender: updateButtons,
+        onRender: function() { updateButtons(); projectZones(); },
     });
+
+    // -- camera view: the zones as the saved camera sees them, on the floor plane ----
+    var editorSection = document.getElementById('zone-editor-section');
+    var pictureEl = document.getElementById('zone-picture');
+    var canvasWrap = document.getElementById('zone-canvas-wrap');
+    var refreshBtn = document.getElementById('zone-refresh-btn');
+    var pv = new window.OpenFollow.PictureView({
+        stage: pictureEl, img: pictureEl.querySelector('img'), svg: pictureEl.querySelector('svg'),
+        nofeed: document.getElementById('zone-picture-nofeed'),
+        onSize: function() { projectedKey = ''; projectZones(); },
+    });
+    var mode = 'plan';
+    var projected = null, projectedKey = '', projectSeq = 0;
+
+    function floorZ() { return Number(plan.grid.z_offset) || 0; }
+
+    function projectZones() {
+        if (mode !== 'camera') return;
+        var z = floorZ();
+        var outlines = state.zones.map(function(zone) {
+            var v = (zone && zone.vertices) || [];
+            return v.length >= 3 ? v.concat([v[0]]).map(function(p) { return [p[0], p[1], z]; }) : [];
+        });
+        var sel = state.zones[state.selectedIndex];
+        var corners = sel && sel.vertices ? sel.vertices.map(function(p) { return [p[0], p[1], z]; }) : [];
+        var key = JSON.stringify([outlines, corners, state.selectedIndex, pv.w, pv.h]);
+        if (key === projectedKey) return;
+        projectedKey = key;
+        var asked = ++projectSeq;
+        pv.project(outlines, corners).then(function(json) {
+            if (asked !== projectSeq) return;
+            projected = json;
+            renderPicture();
+        }, function() { projectedKey = ''; });
+    }
+
+    function renderPicture() {
+        pv.clear();
+        if (!projected) return;
+        projected.polylines.forEach(function(points, i) {
+            var zone = state.zones[i];
+            if (!zone) return;
+            var col = zone.color || '#ff8000';
+            pv.polylines(points).forEach(function(run) {
+                var line = pv.el('polyline', {
+                    points: run, stroke: col, fill: col, 'vector-effect': 'non-scaling-stroke',
+                    'class': 'pv-zone' + (i === state.selectedIndex ? ' pv-zone-selected' : ''),
+                });
+                line.addEventListener('click', function() {
+                    if (state.selectedIndex === i) return;
+                    state.selectedIndex = i;
+                    renderDetails();
+                    render();
+                });
+                pv.svg.appendChild(line);
+            });
+        });
+        projected.points.forEach(function(pt, i) {
+            if (pt) pv.svg.appendChild(pv.handle(pt, 'pv-handle', function() { return grabCorner(i); }));
+        });
+    }
+
+    // A corner dropped in the picture lands on the floor plane under the pointer.
+    function grabCorner(vertexIdx) {
+        var idx = state.selectedIndex, z = floorZ();
+        var zone = state.zones[idx];
+        if (!zone || !zone.vertices || !zone.vertices[vertexIdx]) return null;
+        return function(at) {
+            pv.onStage(at, z).then(function(w) {
+                var current = state.zones[idx];
+                if (!current || !current.vertices[vertexIdx]) return;
+                current.vertices[vertexIdx] = [w.x, w.y];
+                syncVertexInputs(idx, vertexIdx);
+                render();
+                updateZoneVertices(idx);
+            }, function(info) {
+                window.OpenFollow.saveError.show(editorSection, info, 'Not moved.');
+            });
+        };
+    }
+
+    function applyMode(next) {
+        mode = next;
+        var camera = mode === 'camera';
+        canvasWrap.hidden = camera;
+        refreshBtn.hidden = !camera;
+        if (camera) {
+            if (plan.draft) plan.cancelDraft();
+            projectedKey = '';
+            pv.load();
+        } else {
+            pictureEl.hidden = true;
+            document.getElementById('zone-picture-nofeed').hidden = true;
+        }
+        render();
+    }
+    refreshBtn.addEventListener('click', function() { pv.load(); });
 
     function fetchZones() {
         fetch('/api/zones', {cache: 'no-store'})
@@ -194,7 +307,7 @@
         finishBtn.disabled = !(drawing && plan.draft.vertices.length >= 3);
         cancelBtn.disabled = !drawing;
         deleteBtn.disabled = (state.selectedIndex < 0);
-        addBtn.disabled = drawing;
+        addBtn.disabled = drawing || mode === 'camera';
         if (drawing) {
             statusEl.textContent = 'Drawing: ' + plan.draft.vertices.length + ' point(s). Click first vertex or double-click to close.';
         } else if (state.selectedIndex >= 0) {
@@ -920,6 +1033,7 @@
         return section.getClientRects().length > 0;
     }
 
+    window.OpenFollow.viewSwitch(document.getElementById('zone-view-switch'), 'zones', applyMode);
     if (isZoneEditorVisible()) fetchZones();
     if (window.__zoneEditorTimer) clearInterval(window.__zoneEditorTimer);
     window.__zoneEditorTimer = setInterval(function() {

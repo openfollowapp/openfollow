@@ -57,6 +57,16 @@ station = function (req) {
         model.zones.push(req.body);
         return { body: { success: true, index: model.zones.length - 1 } };
     }
+    // The picture shows stage (x, y) at pixel (640 + 100 x, 360 - 100 y).
+    if (req.url === '/api/scene/project') {
+        var seen = function (p) { return [640 + 100 * p[0], 360 - 100 * p[1]]; };
+        return { body: { polylines: req.body.polylines.map(function (l) { return l.map(seen); }),
+                         points: req.body.points.map(seen) } };
+    }
+    if (req.url === '/api/scene/unproject') {
+        return { body: { x: (req.body.x - 640) / 100, y: (360 - req.body.y) / 100, z: req.body.z } };
+    }
+    if (req.url === '/api/video/snapshot/full') return { body: 'jpeg' };
     if ((m = /^\\/api\\/zones\\/(\\d+)$/.exec(req.url)) && req.method === 'PUT') {
         Object.assign(model.zones[+m[1]], req.body);
         return { body: { success: true } };
@@ -80,7 +90,7 @@ function puts() { return requests.filter(function (r) { return r.method === 'PUT
 """
 
 
-def _editor(steps: str) -> Any:
+def _editor(steps: str, setup: str = "") -> Any:
     rendered = template("partials/zone_editor", config=AppConfig())
     markup = rendered[: rendered.index("<script>")]
     start = rendered.index("<script>") + len("<script>")
@@ -92,8 +102,10 @@ def _editor(steps: str) -> Any:
             (_STATIC / "units.js").read_text(encoding="utf-8"),
             (_STATIC / "save-feedback.js").read_text(encoding="utf-8"),
             (_STATIC / "polygon-plan.js").read_text(encoding="utf-8"),
+            (_STATIC / "picture-view.js").read_text(encoding="utf-8"),
             f"parseHTML({json.dumps(markup)}, document.body);",
             _SETUP_CANVAS,
+            setup,
             script,
             "(async function () { var out = {}; await settle();",
             steps,
@@ -167,3 +179,114 @@ def test_pressing_inside_a_zone_selects_it_and_dragging_a_corner_saves_it() -> N
     moved = out["puts"][0]
     assert moved[:2] == [[0, 2], [2, 2]] and moved[3] == [0, 4]
     assert moved[2] == [pytest.approx(3.0), pytest.approx(4.0)]
+
+
+# -- the camera view ---------------------------------------------------------------
+
+_CAMERA = """
+function choose(mode) {
+    var radio = document.querySelector('#zone-view-switch input[value="' + mode + '"]');
+    radio.checked = true;
+    radio.dispatchEvent(makeEvent('change'));
+}
+async function showPicture() {
+    await settle();
+    var img = document.querySelector('#zone-picture img');
+    img.naturalWidth = 1280; img.naturalHeight = 720;
+    img.onload();
+    await settle();
+}
+function svg() { return document.querySelector('#zone-picture svg'); }
+function zoneLines() { return svg().querySelectorAll('polyline'); }
+function cornerHandles() { return svg().querySelectorAll('.pv-handle'); }
+function pointer(target, type, x, y) {
+    target.dispatchEvent(makeEvent(type, { clientX: x, clientY: y, pointerId: 1 }));
+}
+"""
+
+
+def test_camera_view_shows_the_zones_and_hides_the_plan() -> None:
+    out = _editor(
+        _CAMERA
+        + """
+        choose('camera'); await showPicture();
+        out.planHidden = document.getElementById('zone-canvas-wrap').hidden;
+        out.pictureShown = !document.getElementById('zone-picture').hidden;
+        out.lines = zoneLines().map(function (l) { return l.getAttribute('points'); });
+        out.addDisabled = document.getElementById('zone-add-btn').disabled;
+        out.projected = requests.filter(function (r) { return r.url === '/api/scene/project'; }).map(function (r) {
+            return r.body.polylines;
+        })[0];
+        """
+    )
+    assert out["planHidden"] is True and out["pictureShown"] is True
+    assert out["addDisabled"] is True
+    # The closed outline on the floor plane (the grid's z_offset, absent here: 0).
+    assert out["projected"] == [[[0, 2, 0], [2, 2, 0], [2, 4, 0], [0, 4, 0], [0, 2, 0]]]
+    assert out["lines"] == ["640,160 840,160 840,-40 640,-40 640,160"]
+
+
+def test_camera_view_selects_a_zone_and_drags_its_corner_onto_the_floor() -> None:
+    out = _editor(
+        _CAMERA
+        + """
+        choose('camera'); await showPicture();
+        out.before = cornerHandles().length;
+        zoneLines()[0].dispatchEvent(makeEvent('click'));
+        await settle();
+        out.after = cornerHandles().length;
+        // The corner (2, 4) shows at (840, -40); drop it at (940, -40), stage (3, 4).
+        pointer(cornerHandles()[2], 'pointerdown', 840, -40);
+        pointer(svg(), 'pointerup', 940, -40);
+        await settle();
+        var putReqs = requests.filter(function (r) { return r.method === 'PUT'; });
+        out.puts = putReqs.map(function (r) { return r.body.vertices; });
+        out.unproject = requests.filter(function (r) { return r.url === '/api/scene/unproject'; }).map(function (r) {
+            return r.body.z;
+        });
+        """
+    )
+    assert out["before"] == 0 and out["after"] == 4
+    assert out["unproject"] == [0]
+    assert out["puts"] == [[[0, 2], [2, 2], [pytest.approx(3.0), pytest.approx(4.0)], [0, 4]]]
+
+
+def test_no_picture_says_so() -> None:
+    out = _editor(
+        _CAMERA
+        + """
+        var real = station;
+        station = function (req) {
+            return req.url === '/api/video/snapshot/full' ? { status: 503, body: 'no feed' } : real(req);
+        };
+        choose('camera'); await settle();
+        out.nofeed = !document.getElementById('zone-picture-nofeed').hidden;
+        out.stage = document.getElementById('zone-picture').hidden;
+        """
+    )
+    assert out == {"nofeed": True, "stage": True}
+
+
+def test_the_chosen_view_is_remembered_in_this_browser() -> None:
+    out = _editor(
+        _CAMERA
+        + "choose('plan'); out.saved = saved; out.planHidden = document.getElementById('zone-canvas-wrap').hidden;",
+        setup="var saved = {}; globalThis.localStorage = { getItem: function (k) { return 'camera'; },"
+        " setItem: function (k, v) { saved[k] = v; } };",
+    )
+    assert out == {"saved": {"openfollow:plan-view:zones": "plan"}, "planHidden": False}
+    opened = _editor(
+        "out.planHidden = document.getElementById('zone-canvas-wrap').hidden;",
+        setup="globalThis.localStorage = { getItem: function () { return 'camera'; }, setItem: function () {} };",
+    )
+    assert opened["planHidden"] is True
+
+
+def test_storage_that_throws_leaves_the_switch_working() -> None:
+    out = _editor(
+        _CAMERA
+        + "choose('camera'); await settle(); out.planHidden = document.getElementById('zone-canvas-wrap').hidden;",
+        setup="globalThis.localStorage = { getItem: function () { throw new Error('denied'); },"
+        " setItem: function () { throw new Error('denied'); } };",
+    )
+    assert out["planHidden"] is True

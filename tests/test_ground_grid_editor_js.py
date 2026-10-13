@@ -37,6 +37,16 @@ station = function (req) {
         var grid = { width: 10, depth: 6, spacing: 1, x_offset: 0, y_offset: 3 };
         return { body: { zones: [], markers: [], grid: grid } };
     }
+    // The picture shows stage (x, y) at pixel (640 + 100 x, 360 - 100 y).
+    var seen = function (p) { return [640 + 100 * p[0], 360 - 100 * p[1]]; };
+    if (req.url === '/api/ground_grid/view') {
+        var v = req.body.vertices;
+        return { body: { outline: v.length >= 3 ? v.concat([v[0]]).map(seen) : [], lines: [], corners: v.map(seen) } };
+    }
+    if (req.url === '/api/scene/unproject') {
+        return { body: { x: (req.body.x - 640) / 100, y: (360 - req.body.y) / 100, z: req.body.z } };
+    }
+    if (req.url === '/api/video/snapshot/full') return { body: 'jpeg' };
     return { body: '' };
 };
 """
@@ -58,7 +68,7 @@ def _cfg(vertices: list | None = None) -> AppConfig:
     return cfg
 
 
-def _editor(steps: str, cfg: AppConfig | None = None, field: str | None = None) -> Any:
+def _editor(steps: str, cfg: AppConfig | None = None, field: str | None = None, setup: str = "") -> Any:
     rendered = template("partials/ground_grid", config=cfg or _cfg())
     start = rendered.index("<script>")
     markup = rendered[:start] + "</form>"
@@ -68,10 +78,14 @@ def _editor(steps: str, cfg: AppConfig | None = None, field: str | None = None) 
         [
             (_TESTS / "_fake_dom.js").read_text(encoding="utf-8"),
             _PAGE,
+            (_STATIC / "units.js").read_text(encoding="utf-8"),
+            (_STATIC / "save-feedback.js").read_text(encoding="utf-8"),
             (_STATIC / "polygon-plan.js").read_text(encoding="utf-8"),
+            (_STATIC / "picture-view.js").read_text(encoding="utf-8"),
             f"parseHTML({json.dumps(markup)}, document.body);",
             _SETUP,
             override,
+            setup,
             script,
             "(async function () { var out = {}; await settle();",
             steps,
@@ -141,3 +155,77 @@ def test_the_plan_starts_on_the_saved_main_grid() -> None:
     rendered = template("partials/ground_grid", config=cfg)
     assert '"width": 14.0' in rendered
     assert '"x_offset": 1.5' in rendered
+
+
+_CAMERA = """
+function choose(mode) {
+    var radio = document.querySelector('#ground-grid-view-switch input[value="' + mode + '"]');
+    radio.checked = true;
+    radio.dispatchEvent(makeEvent('change'));
+}
+async function showPicture() {
+    await settle();
+    var img = document.querySelector('#ground-grid-picture img');
+    img.naturalWidth = 1280; img.naturalHeight = 720;
+    img.onload();
+    await settle();
+}
+function svg() { return document.querySelector('#ground-grid-picture svg'); }
+function views() { return requests.filter(function (r) { return r.url === '/api/ground_grid/view'; }); }
+function pointer(target, type, x, y) {
+    target.dispatchEvent(makeEvent(type, { clientX: x, clientY: y, pointerId: 1 }));
+}
+"""
+
+
+def test_camera_view_draws_the_polygon_at_the_typed_height() -> None:
+    cfg = _cfg(_SQUARE)
+    cfg.ground_grid.z_offset = -0.8
+    out = _editor(
+        _CAMERA
+        + """
+        choose('camera'); await showPicture();
+        out.planHidden = document.getElementById('ground-grid-plan-wrap').hidden;
+        out.outline = svg().querySelectorAll('.pv-outline').map(function (l) { return l.getAttribute('points'); });
+        out.handles = svg().querySelectorAll('.pv-handle').length;
+        out.firstZ = views()[views().length - 1].body.z;
+        typeInto(document.getElementById('ground-grid-z-offset'), '-1.5');
+        await settle();
+        out.typedZ = views()[views().length - 1].body.z;
+        """,
+        cfg,
+    )
+    assert out["planHidden"] is True
+    assert out["outline"] == ["640,160 840,160 840,-40 640,-40 640,160"]
+    assert out["handles"] == 4
+    assert out["firstZ"] == -0.8
+    assert out["typedZ"] == -1.5
+
+
+def test_camera_view_drops_a_corner_on_the_ground_grid_plane() -> None:
+    cfg = _cfg(_SQUARE)
+    cfg.ground_grid.z_offset = -0.8
+    out = _editor(
+        _CAMERA
+        + """
+        choose('camera'); await showPicture();
+        // The corner (2, 4) shows at (840, -40); drop it at (940, -40), stage (3, 4).
+        pointer(svg().querySelectorAll('.pv-handle')[2], 'pointerdown', 840, -40);
+        pointer(svg(), 'pointerup', 940, -40);
+        await settle();
+        out.verts = stored(); out.status = status();
+        out.z = requests.filter(function (r) { return r.url === '/api/scene/unproject'; })[0].body.z;
+        """,
+        cfg,
+    )
+    assert out["z"] == -0.8
+    assert out["verts"] == [[0.0, 2.0], [2.0, 2.0], [pytest.approx(3.0), pytest.approx(4.0)], [0.0, 4.0]]
+    assert out["status"] == "Polygon changed. Save to keep it."
+
+
+def test_camera_view_disables_drawing() -> None:
+    out = _editor(
+        _CAMERA
+        + "choose('camera'); await settle(); out.draw = document.getElementById('ground-grid-draw-btn').disabled;"
+    )
+    assert out["draw"] is True

@@ -52,6 +52,7 @@ if TYPE_CHECKING:
 from openfollow.configuration import (
     CONTROLLER_BINDING_FIELDS,
     DEFAULT_UPDATE_SERVICE_NAME,
+    GROUND_GRID_MAX_VERTICES,
     MARKER_TOKEN_ALL,
     MAX_PATH_POINTS,
     MAX_PATHS,
@@ -4708,17 +4709,180 @@ def _camera_view(cfg: AppConfig) -> tuple[Any, float, float]:
     return params, cam.lens_k1, cam.lens_k2
 
 
+# Chords per straight world segment when the lens bows it, as on the Operator Screen.
+_PICTURE_SUBDIVISIONS = 12
+# Upper bound on the world points one picture request projects.
+_PICTURE_MAX_POINTS = 20000
+
+
+def _picture_points(
+    params: Any, k1: float, k2: float, w: float, h: float, points: Sequence[Sequence[float]]
+) -> list[list[float] | None]:
+    """World points as seen by the camera in a ``w`` x ``h`` picture, lens included; null behind it."""
+    import numpy as np
+
+    from openfollow.scene.solver import apply_overlay_distortion, project_points
+
+    if not len(points):
+        return []
+    screen = apply_overlay_distortion(project_points(params, np.asarray(points, dtype=np.float64), w, h), w, h, k1, k2)
+    return [[float(x), float(y)] if np.isfinite(x) and np.isfinite(y) else None for x, y in screen]
+
+
+def _subdivided(polyline: Sequence[Sequence[float]], n: int) -> list[list[float]]:
+    """*polyline* with each segment split into *n* chords, so a lens can bow it."""
+    if n <= 1 or len(polyline) < 2:
+        return [list(p) for p in polyline]
+    out = [list(polyline[0])]
+    for a, b in zip(polyline, polyline[1:], strict=False):
+        for k in range(1, n + 1):
+            t = k / n
+            out.append([a[i] + (b[i] - a[i]) * t for i in range(3)])
+    return out
+
+
+def _picture_polylines(cfg: AppConfig, w: float, h: float, polylines: Sequence[Sequence[Sequence[float]]]) -> list[Any]:
+    """World polylines as picture polylines in the saved camera, bowed like the Operator Screen draws them."""
+    params, k1, k2 = _camera_view(cfg)
+    n = _PICTURE_SUBDIVISIONS if (k1 or k2) else 1
+    return [_picture_points(params, k1, k2, w, h, _subdivided(line, n)) for line in polylines]
+
+
+def _picture_size(data: Mapping[str, Any]) -> tuple[float, float]:
+    """The picture's ``w`` x ``h`` from a request body; ValueError when unusable."""
+    try:
+        if isinstance(data["w"], bool) or isinstance(data["h"], bool):
+            raise TypeError("bool")
+        w, h = float(data["w"]), float(data["h"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("w and h must be the picture's size in pixels") from exc
+    _require_wizard_canvas(w, h)
+    return w, h
+
+
+def _world_polylines(raw: Any, dims: int) -> list[list[list[float]]]:
+    """A list of polylines of finite ``dims``-number points; ValueError otherwise."""
+    if not isinstance(raw, list):
+        raise ValueError("polylines must be a list")
+    out: list[list[list[float]]] = []
+    total = 0
+    for line in raw:
+        if not isinstance(line, list):
+            raise ValueError("each polyline must be a list of points")
+        pts: list[list[float]] = []
+        for pt in line:
+            if not isinstance(pt, list) or len(pt) != dims or any(isinstance(v, bool) for v in pt):
+                raise ValueError(f"each point must be {dims} numbers")
+            vals = [float(v) for v in pt]
+            if not all(math.isfinite(v) for v in vals):
+                raise ValueError("points must be finite")
+            pts.append(vals)
+        total += len(pts)
+        out.append(pts)
+    if total * _PICTURE_SUBDIVISIONS > _PICTURE_MAX_POINTS:
+        raise ValueError("too many points")
+    return out
+
+
+def _register_scene_routes(app: Bottle, server: ConfigWebServer) -> None:
+    """Register the camera-picture routes the plan editors share: world to picture and back."""
+    import numpy as np
+
+    from openfollow.runtime.overlay_draw_scene import _MAX_GRID_LINES_PER_AXIS
+    from openfollow.scene.ground_grid import grid_segments_in_polygon
+    from openfollow.scene.solver import invert_overlay_distortion, unproject_to_plane
+
+    def _body() -> dict[str, Any] | str:
+        data = _load_json_body()
+        if not isinstance(data, dict):
+            return _json_error(400, "Expected a JSON object")
+        return data
+
+    @app.post("/api/scene/project")
+    def scene_project() -> Any:
+        """World ``polylines`` (bowed by the lens) and single ``points``, each ``[x, y, z]``, as the saved
+        camera sees them in a ``w`` x ``h`` picture; null behind it."""
+        response.content_type = "application/json"
+        data = _body()
+        if isinstance(data, str):
+            return data
+        try:
+            w, h = _picture_size(data)
+            lines = _world_polylines(data.get("polylines", []), 3)
+            (points,) = _world_polylines([data.get("points", [])], 3)
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        cfg = load_config(server.config_path)
+        return json.dumps(
+            {
+                "polylines": _picture_polylines(cfg, w, h, lines),
+                "points": _picture_points(*_camera_view(cfg), w, h, points),
+            }
+        )
+
+    @app.post("/api/scene/unproject")
+    def scene_unproject() -> Any:
+        """The stage position under a picture point, on the horizontal plane at height ``z``."""
+        response.content_type = "application/json"
+        data = _body()
+        if isinstance(data, str):
+            return data
+        try:
+            w, h = _picture_size(data)
+            if any(isinstance(data[k], bool) for k in ("x", "y", "z")):
+                raise ValueError("bool")
+            x, y, z = float(data["x"]), float(data["y"]), float(data["z"])
+            if not all(np.isfinite(v) for v in (x, y, z)):
+                raise ValueError("not finite")
+        except (KeyError, TypeError, ValueError):
+            return _json_error(400, "x, y, z, w and h must be numbers")
+        cfg = load_config(server.config_path)
+        params, k1, k2 = _camera_view(cfg)
+        pinhole = invert_overlay_distortion(np.array([[x, y]], dtype=np.float64), w, h, k1, k2)
+        world = unproject_to_plane(params, pinhole, w, h, z)[0]
+        if not (np.isfinite(world[0]) and np.isfinite(world[1])):
+            return _json_error(422, "That point of the picture does not reach the stage.")
+        return json.dumps({"x": float(world[0]), "y": float(world[1]), "z": z})
+
+    @app.post("/api/ground_grid/view")
+    def ground_grid_view() -> Any:
+        """A ground-grid polygon at height ``z`` as the camera sees it: outline, corners and the clipped grid lines."""
+        response.content_type = "application/json"
+        data = _body()
+        if isinstance(data, str):
+            return data
+        try:
+            w, h = _picture_size(data)
+            (verts,) = _world_polylines([data.get("vertices")], 2)
+            if isinstance(data.get("z"), bool):
+                raise ValueError("z must be a number")
+            z = float(data["z"])
+            if not math.isfinite(z):
+                raise ValueError("z must be finite")
+        except (KeyError, TypeError, ValueError):
+            return _json_error(400, "vertices, z, w and h must be numbers")
+        cfg = load_config(server.config_path)
+        g = cfg.grid
+        verts = verts[:GROUND_GRID_MAX_VERTICES]
+        corners = [[*v, z] for v in verts]
+        lines = grid_segments_in_polygon(
+            verts, g.x_offset - g.width / 2.0, g.y_offset - g.depth / 2.0, g.spacing, z, _MAX_GRID_LINES_PER_AXIS
+        )
+        outline = corners + corners[:1] if len(corners) >= 3 else []
+        return json.dumps(
+            {
+                "outline": _picture_polylines(cfg, w, h, [outline])[0],
+                "lines": _picture_polylines(cfg, w, h, [seg.tolist() for seg in lines]),
+                "corners": _picture_points(*_camera_view(cfg), w, h, corners),
+            }
+        )
+
+
 def _register_path_routes(app: Bottle, server: ConfigWebServer) -> None:
     """Register the path editor's routes: the paths, recording, and the view over the video frame."""
     from openfollow.paths.engine import path_ends
     from openfollow.paths.geometry import PathPoint, build_curve
     from openfollow.paths.network import extend_to_corners
-    from openfollow.scene.solver import (
-        apply_overlay_distortion,
-        invert_overlay_distortion,
-        project_points,
-        unproject_to_plane,
-    )
 
     def _snapshot() -> dict[str, Any]:
         cfg = load_config(server.config_path)
@@ -4858,8 +5022,6 @@ def _register_path_routes(app: Bottle, server: ConfigWebServer) -> None:
     @app.post(_PATHS_API + "/view")
     def paths_view() -> Any:
         """Every path and its points as seen by the saved camera in a ``w`` x ``h`` picture; null behind it."""
-        import numpy as np
-
         response.content_type = "application/json"
         data = _body()
         if isinstance(data, str):
@@ -4873,10 +5035,7 @@ def _register_path_routes(app: Bottle, server: ConfigWebServer) -> None:
         params, k1, k2 = _camera_view(cfg)
 
         def seen(points: list[tuple[float, float, float]]) -> list[list[float] | None]:
-            if not points:
-                return []
-            screen = apply_overlay_distortion(project_points(params, np.array(points), w, h), w, h, k1, k2)
-            return [[float(x), float(y)] if np.isfinite(x) and np.isfinite(y) else None for x, y in screen]
+            return _picture_points(params, k1, k2, w, h, points)
 
         curves = [
             build_curve([PathPoint(p.x, p.y, p.z, p.radius) for p in path.points], path.closed)
@@ -4912,31 +5071,6 @@ def _register_path_routes(app: Bottle, server: ConfigWebServer) -> None:
             if position is not None:
                 markers.append({"id": marker_id, "at": seen([position])[0]})
         return json.dumps({"paths": views, "markers": markers})
-
-    @app.post(_PATHS_API + "/unproject")
-    def paths_unproject() -> Any:
-        """The stage position under a picture point, on the horizontal plane at height ``z``."""
-        import numpy as np
-
-        response.content_type = "application/json"
-        data = _body()
-        if isinstance(data, str):
-            return data
-        try:
-            x, y, z = float(data["x"]), float(data["y"]), float(data["z"])
-            w, h = float(data["w"]), float(data["h"])
-            _require_wizard_canvas(w, h)
-            if not all(np.isfinite(v) for v in (x, y, z)):
-                raise ValueError("not finite")
-        except (KeyError, TypeError, ValueError):
-            return _json_error(400, "x, y, z, w and h must be numbers")
-        cfg = load_config(server.config_path)
-        params, k1, k2 = _camera_view(cfg)
-        pinhole = invert_overlay_distortion(np.array([[x, y]], dtype=np.float64), w, h, k1, k2)
-        world = unproject_to_plane(params, pinhole, w, h, z)[0]
-        if not (np.isfinite(world[0]) and np.isfinite(world[1])):
-            return _json_error(422, "That point of the picture does not reach the stage.")
-        return json.dumps({"x": float(world[0]), "y": float(world[1]), "z": z})
 
 
 def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
@@ -9479,6 +9613,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                     "spacing": cfg.grid.spacing,
                     "x_offset": cfg.grid.x_offset,
                     "y_offset": cfg.grid.y_offset,
+                    "z_offset": cfg.grid.z_offset,
                 },
                 "zones": zones_out,
                 "markers": [{"id": marker_id, "x": x, "y": y} for marker_id, x, y in server.get_marker_positions()],
@@ -9983,3 +10118,4 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     _register_input_plugin_routes(app, server)
     _register_gallery_routes(app, server)
     _register_path_routes(app, server)
+    _register_scene_routes(app, server)

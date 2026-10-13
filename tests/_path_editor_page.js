@@ -51,7 +51,7 @@ station = function (req) {
             return { name: p.name, line: p.points.map(seen), points: p.points.map(seen), ends: [] };
         }) } };
     }
-    if (url === '/api/paths/unproject') return { body: { x: (b.x - 640) / 100, y: (b.y - 360) / 100, z: b.z } };
+    if (url === '/api/scene/unproject') return { body: { x: (b.x - 640) / 100, y: (b.y - 360) / 100, z: b.z } };
     if ((m = /^\/api\/paths\/marker\/(\d+)$/.exec(url))) return { body: { x: 1, y: 1, z: 1.5 } };
     if ((m = /^\/api\/paths\/([^/]+)(\/\w+)?$/.exec(url))) {
         var p = findPath(m[1]);

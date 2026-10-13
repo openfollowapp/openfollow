@@ -49,16 +49,6 @@
 </style>
 
 <script>
-// A run of visible picture points per polyline; a point behind the camera (null) breaks the line.
-function pePolylines(points) {
-    var runs = [], run = [];
-    points.forEach(function(pt) {
-        if (pt) run.push(pt);
-        else { if (run.length > 1) runs.push(run); run = []; }
-    });
-    if (run.length > 1) runs.push(run);
-    return runs;
-}
 // The Operator Screen's arrowhead: a triangle centred on (x, y), its tip pointing along the unit (ux, uy).
 function peArrowhead(x, y, ux, uy, half, side) {
     return [[x + ux * half, y + uy * half], [x - ux * half - uy * side, y - uy * half + ux * side], [x - ux * half + uy * side, y - uy * half - ux * side]];
@@ -71,16 +61,15 @@ function peArrowhead(x, y, ux, uy, half, side) {
     function q(name) { return root.querySelector('[data-pe="' + name + '"]'); }
     var units = window.OpenFollow.units;
     var saveError = window.OpenFollow.saveError;
-    var SVG_NS = 'http://www.w3.org/2000/svg';
-    var svg = q('svg'), img = q('img'), toolbar = q('toolbar');
+    var svg = q('svg'), toolbar = q('toolbar');
+    var pv = new window.OpenFollow.PictureView({
+        stage: q('stage'), img: q('img'), svg: svg, nofeed: q('nofeed'), onSize: loadView,
+    });
     var data = null;          // GET /api/paths, with the edits made here since
     var view = null;          // POST /api/paths/view for the picture shown
     var views = 0;            // view requests made, so an older answer is dropped
     var selected = null;      // the path the picture edits: the row opened last
     var open = {};            // name -> the row's open tab, for every open row
-    var imgW = 1280, imgH = 720, snapshotUrl = null;
-    var drag = null;          // {name, index, z} while a point is dragged
-    var dragEnded = false;    // the click that ends a drag is not a click on the picture
     var waiting = [];         // writes not sent yet, oldest first; one is in flight at a time
     var writing = false;
     var edits = 0;            // a load asked for before the latest edit is out of date
@@ -161,35 +150,12 @@ function peArrowhead(x, y, ux, uy, half, side) {
     }
     function loadView() {
         var asked = ++views;
-        return api('POST', '/api/paths/view', { w: imgW, h: imgH }).then(function(json) {
+        return api('POST', '/api/paths/view', { w: pv.w, h: pv.h }).then(function(json) {
             if (asked !== views) return;
             view = json;
             renderFrame();
         }).catch(ignore);
     }
-    function loadSnapshot() {
-        fetch('/api/video/snapshot/full', { cache: 'no-store' }).then(function(res) {
-            if (!res.ok) throw new Error('no feed');
-            return res.blob();
-        }).then(function(blob) {
-            var url = URL.createObjectURL(blob);
-            img.onload = function() {
-                if (snapshotUrl) URL.revokeObjectURL(snapshotUrl);
-                snapshotUrl = url;
-                imgW = img.naturalWidth || imgW;
-                imgH = img.naturalHeight || imgH;
-                svg.setAttribute('viewBox', '0 0 ' + imgW + ' ' + imgH);
-                q('stage').hidden = false;
-                q('nofeed').hidden = true;
-                loadView();
-            };
-            img.src = url;
-        }).catch(function() {
-            q('stage').hidden = true;
-            q('nofeed').hidden = false;
-        });
-    }
-
     // -- saving: edits apply here at once, then go to the station in order ---
     // One write in flight at a time. A write still waiting under the same key sends the latest data when it goes.
     function write(key, send) {
@@ -428,14 +394,7 @@ function peArrowhead(x, y, ux, uy, half, side) {
     }
 
     // -- the picture ------------------------------------------------------
-    function el(name, attrs) {
-        var n = document.createElementNS(SVG_NS, name);
-        Object.keys(attrs).forEach(function(k) { n.setAttribute(k, attrs[k]); });
-        return n;
-    }
-    function polylines(points) {
-        return pePolylines(points).map(function(run) { return run.map(function(pt) { return pt.join(','); }).join(' '); });
-    }
+    function el(name, attrs) { return pv.el(name, attrs); }
     function renderFrame() {
         while (svg.firstChild) svg.removeChild(svg.firstChild);
         if (!view || !data) return;
@@ -443,7 +402,7 @@ function peArrowhead(x, y, ux, uy, half, side) {
             var p = find(v.name);
             var isSel = v.name === selected;
             var state = isSel ? 'selected' : (p && p.active ? 'active' : 'inactive');
-            polylines(v.line).forEach(function(points) {
+            pv.polylines(v.line).forEach(function(points) {
                 svg.appendChild(el('polyline', { points: points, 'class': 'pe-line-' + state, 'vector-effect': 'non-scaling-stroke' }));
             });
             // An end that holds is a dot, one that releases an arrowhead pointing out; a corner is its curve.
@@ -461,11 +420,7 @@ function peArrowhead(x, y, ux, uy, half, side) {
             });
             if (!isSel) return;
             v.points.forEach(function(pt, i) {
-                if (!pt) return;
-                var dot = el('circle', { cx: pt[0], cy: pt[1], r: 7, 'class': 'pe-handle', 'vector-effect': 'non-scaling-stroke' });
-                dot.style.cursor = 'grab';
-                dot.addEventListener('pointerdown', function(ev) { startDrag(ev, i); });
-                svg.appendChild(dot);
+                if (pt) svg.appendChild(pv.handle(pt, 'pe-handle', function() { return grab(i); }));
             });
         });
         view.markers.forEach(function(m) {
@@ -478,49 +433,28 @@ function peArrowhead(x, y, ux, uy, half, side) {
     }
     function arrowhead(x, y, ux, uy, cls) {
         // In picture pixels, the Operator Screen's 14 x 12 px arrowhead on a 1920 px wide picture.
-        var pts = peArrowhead(x, y, ux, uy, 7 * imgW / 1920, 6 * imgW / 1920);
+        var pts = peArrowhead(x, y, ux, uy, 7 * pv.w / 1920, 6 * pv.w / 1920);
         return el('polygon', { points: pts.map(function(p) { return p.join(','); }).join(' '), 'class': cls });
     }
-    function toPicture(evt) {
-        var ctm = svg.getScreenCTM();
-        if (!ctm) return null;
-        var pt = svg.createSVGPoint();
-        pt.x = evt.clientX; pt.y = evt.clientY;
-        var at = pt.matrixTransform(ctm.inverse());
-        return { x: at.x, y: at.y };
+    // Dropped where the picture shows it, on the plane at the point's own height.
+    function grab(index) {
+        var name = selected, pt = find(name).points[index];
+        if (!pt) return null;  // the picture still shows a point deleted here a moment ago
+        var z = pt.z;
+        return function(at) {
+            pv.onStage(at, z).then(function(w) {
+                edit(name, function(path) { Object.assign(path.points[index] || {}, { x: w.x, y: w.y }); }, true);
+            }).catch(failed);
+        };
     }
-    function onStage(at, z) {
-        return api('POST', '/api/paths/unproject', { x: at.x, y: at.y, z: z, w: imgW, h: imgH });
-    }
-    function startDrag(ev, index) {
-        ev.preventDefault();
-        ev.stopPropagation();
-        var pt = find(selected).points[index];
-        if (!pt) return;  // the picture still shows a point deleted here a moment ago
-        drag = { name: selected, index: index, z: pt.z };
-        svg.setPointerCapture(ev.pointerId);
-    }
-    svg.addEventListener('pointerdown', function() { dragEnded = false; });
-    svg.addEventListener('pointerup', function(ev) {
-        if (!drag) return;
-        var at = toPicture(ev);
-        var d = drag;
-        drag = null;
-        dragEnded = true;
-        if (!at) return;
-        onStage(at, d.z).then(function(w) {
-            edit(d.name, function(path) { Object.assign(path.points[d.index] || {}, { x: w.x, y: w.y }); }, true);
-        }).catch(failed);
-    });
-    svg.addEventListener('pointercancel', function() { drag = null; });
     svg.addEventListener('click', function(ev) {
-        if (dragEnded) return;
+        if (pv.dragJustEnded()) return;
         var p = find(selected);
-        if (drag || !p) return;
-        var at = toPicture(ev);
+        if (pv.dragging() || !p) return;
+        var at = pv.toPicture(ev);
         if (!at) return;
         var name = p.name;
-        onStage(at, data.floor_z).then(function(w) { addPoint(name, w); }).catch(failed);
+        pv.onStage(at, data.floor_z).then(function(w) { addPoint(name, w); }).catch(failed);
     });
 
     // -- toolbar --------------------------------------------------------
@@ -532,7 +466,7 @@ function peArrowhead(x, y, ux, uy, half, side) {
             });
         });
     });
-    q('refresh').addEventListener('click', loadSnapshot);
+    q('refresh').addEventListener('click', function() { pv.load(); });
     q('template-save').addEventListener('click', function() {
         window.saveCurrentSectionAsTemplate({ type: 'paths', title: 'Save paths as template', placeholder: 'e.g. Stage crosses', onSaved: function() {} });
     });
@@ -567,6 +501,6 @@ function peArrowhead(x, y, ux, uy, half, side) {
     }, 1000);
 
     load();
-    loadSnapshot();
+    pv.load();
 })();
 </script>

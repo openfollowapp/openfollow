@@ -166,6 +166,11 @@ class PathEngine:
         lock = self._locks.get(marker_id)
         return None if lock is None else lock.name
 
+    def free_position(self, marker_id: int) -> Point | None:
+        """Where a marker being pulled onto its path would be without it; ``None`` once on it, or unlocked."""
+        lock = self._locks.get(marker_id)
+        return None if lock is None else lock.free
+
     def press(self, marker_id: int, pos: Point) -> Press:
         """A Pathfinder press for ``marker_id``, standing at ``pos``."""
         if not self.enabled:

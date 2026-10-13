@@ -115,6 +115,14 @@ class TestPull:
         assert _round(_landed(engine)) == (0.0, 2.5, 1.0)
         assert engine.tick(0.1) == {}
 
+    def test_the_free_position_is_known_only_while_the_marker_is_pulled_in(self) -> None:
+        engine = _engine(CROSS, slide_time=1.0)
+        engine.press(1, (2.0, 2.0, 1.0))
+        engine.move(1, 1.0, 0.0, 0.5)
+        assert engine.free_position(1) == (2.5, 2.0, 1.0)
+        engine.tick(1.0)
+        assert engine.free_position(1) is None
+
     def test_a_zero_slide_time_lands_at_once(self) -> None:
         engine = _engine(CROSS, slide_time=0.0)
         engine.press(1, (2.0, 2.0, 0.0))
@@ -147,6 +155,7 @@ class TestMove:
         engine = _engine(CROSS)
         assert engine.move(1, 1.0, 0.0, 1.0) is None
         assert engine.project(1, 0.0, 0.0) is None
+        assert engine.free_position(1) is None
         assert engine.constrain(1, 0.0, 0.0) is None
 
     def test_an_end_that_releases_lets_the_marker_go(self) -> None:

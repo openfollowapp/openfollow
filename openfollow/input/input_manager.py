@@ -468,7 +468,9 @@ class InputManager:
                     marker = self._get_marker(marker_id)
                     if not marker:
                         continue
-                    cur_x, cur_y, cur_z = marker.pos
+                    # While pulled onto a path, the axes left out come from where it would be without the path.
+                    free = paths.free_position(marker_id) if paths is not None else None
+                    cur_x, cur_y, cur_z = free if free is not None else marker.pos
                     x = axes.get("x", cur_x)
                     y = axes.get("y", cur_y)
                     z = axes.get("z", cur_z)

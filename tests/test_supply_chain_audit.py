@@ -29,6 +29,7 @@ from typing import Any
 import pytest
 import tomllib
 import yaml
+from packaging.markers import Marker
 
 from tests._gha_expr import evaluate
 
@@ -186,7 +187,7 @@ def _audit_jobs() -> list[_AuditJob]:
                 groups=frozenset(groups),
                 caches_venv=caches_venv,
                 install_flags=frozenset(flags),
-                runs_on=str(job.get("runs-on", "")),
+                runs_on=f"{job.get('runs-on', '')} {job.get('strategy', '')}",
             )
         )
     assert jobs, "ci.yml has no job that runs pip-audit"
@@ -236,39 +237,93 @@ def test_every_optional_group_is_audited_somewhere(group: str) -> None:
     )
 
 
+# The audit runners' platform, and macOS for comparison.
+_LINUX = {
+    "sys_platform": "linux",
+    "platform_system": "Linux",
+    "platform_machine": "x86_64",
+    "os_name": "posix",
+    "python_version": "3.13",
+}
+_DARWIN = [
+    {**_LINUX, "sys_platform": "darwin", "platform_system": "Darwin", "platform_machine": machine}
+    for machine in ("arm64", "x86_64")
+]
+
+
+def _installs(marker: str | None, env: dict[str, str], extras: set[str]) -> bool:
+    if not marker:
+        return True
+    return any(Marker(marker).evaluate({**env, "extra": extra}) for extra in extras | {""})
+
+
 def _darwin_only_packages(group: str) -> list[str]:
-    """Lock packages ``group`` installs on macOS only, so a Linux runner never resolves them."""
+    """Lock packages ``group`` installs on macOS but no Linux audit installs at all."""
+    extras: set[str] = set().union(*(job.extras for job in _audit_jobs()))
     names: list[str] = []
     for package in tomllib.loads(_LOCK.read_text(encoding="utf-8"))["package"]:
-        if group not in package.get("groups", []):
+        groups = package.get("groups", [])
+        if group not in groups:
             continue
         markers = package.get("markers")
-        marker = markers.get(group) if isinstance(markers, dict) else markers
-        if marker and re.fullmatch(r'(sys_platform|platform_system) == "(darwin|Darwin)"', marker.strip()):
+
+        def marker_for(name: str, markers: Any = markers) -> str | None:
+            return markers.get(name) if isinstance(markers, dict) else markers
+
+        on_darwin_only = not _installs(marker_for(group), _LINUX, extras) and any(
+            _installs(marker_for(group), env, extras) for env in _DARWIN
+        )
+        covered = any(_installs(marker_for(g), _LINUX, extras) for g in groups if g in {"main", "dev"})
+        if on_darwin_only and not covered:
             names.append(package["name"])
     return sorted(names)
 
 
-def _workflow_comments() -> str:
+def _job_comments(job_name: str) -> str:
+    """The comment block above a ci.yml job and every comment inside it."""
     lines = _WORKFLOW.read_text(encoding="utf-8").splitlines()
-    return " ".join(line.strip().lstrip("#").strip() for line in lines if line.strip().startswith("#"))
+    start = lines.index(f"  {job_name}:")
+    first = start
+    while first > 0 and lines[first - 1].startswith("  #"):
+        first -= 1
+    last = start + 1
+    while last < len(lines) and not re.match(r"^  [A-Za-z0-9_-]+:\s*$", lines[last]):
+        last += 1
+    return " ".join(line.strip().lstrip("#").strip() for line in lines[first:last] if line.strip().startswith("#"))
 
 
 @pytest.mark.parametrize("group", _optional_groups())
 def test_darwin_only_dependencies_audited_on_linux_are_named_as_uncovered(group: str) -> None:
-    """An audit on a Linux runner skips the group's macOS-only packages. The workflow must say which."""
+    """An audit on a Linux runner skips the group's macOS-only packages. Its job comment must say which."""
     jobs = [job for job in _audit_jobs() if group in job.groups]
-    audited_on_macos = any(job.runs_on.startswith("macos") for job in jobs)
-    comments = _workflow_comments()
-    unnamed = [] if audited_on_macos else [n for n in _darwin_only_packages(group) if n not in comments]
+    audited_on_macos = any("macos" in job.runs_on.lower() for job in jobs)
+    comments = " ".join(_job_comments(job.name) for job in jobs)
+    unnamed = (
+        []
+        if audited_on_macos
+        else [n for n in _darwin_only_packages(group) if not re.search(rf"\b{re.escape(n)}\b", comments)]
+    )
     assert not unnamed, (
         f"the '{group}' group is audited only on Linux, where {unnamed} never install, so "
         "pip-audit never sees them. Name them in the audit job's comment as not covered."
     )
 
 
+@pytest.mark.parametrize("group", _optional_groups())
+def test_optional_groups_never_gate_a_release_or_reach_a_venv_cache(group: str) -> None:
+    for job in _audit_jobs():
+        assert not (job.gating and group in job.groups), (
+            f"the gating audit job '{job.name}' installs the optional '{group}' group, "
+            "workstation tooling whose CVEs must not block a release."
+        )
+        assert not (job.caches_venv and group in job.groups), (
+            f"audit job '{job.name}' installs the optional '{group}' group and caches '.venv', "
+            "so every job restoring that cache would start with it."
+        )
+
+
 def test_every_job_restoring_a_cached_venv_syncs_it_to_the_lock() -> None:
-    """``poetry install`` never uninstalls, so a restored venv would keep what the lock dropped."""
+    """``poetry install`` keeps packages outside the selected closure, so a restored venv would too."""
     doc: dict[str, Any] = yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))
     for name, job in doc["jobs"].items():
         steps = job.get("steps") or []

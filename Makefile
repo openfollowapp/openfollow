@@ -164,11 +164,13 @@ MUTMUT_CHECK = poetry run python -c "import mutmut" || { echo "mutmut could not 
 mutation-deps:
 	@$(MUTMUT_CHECK)
 
+MUTATION_CLEAN = rm -rf mutants .mutmut-cache
+
 mutation-clean:
-	rm -rf mutants .mutmut-cache
+	$(MUTATION_CLEAN)
 
 mutation: mutation-deps
-	rm -rf mutants .mutmut-cache
+	$(MUTATION_CLEAN)
 	poetry run mutmut run
 
 # Mutate one module by mutant-name pattern, which mutmut derives from the dotted

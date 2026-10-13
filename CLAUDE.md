@@ -277,6 +277,9 @@ Each of these has broken before or would break silently. The guides hold the why
 - htmx 1.9: `hx-on::after-request`.
 - Wizard APIs answer a malformed body with 400, never 500.
 - Peer broadcast goes only to private IPs, HMAC-signed with the PIN as key.
+- A client address that decides anything (throttle, on-device check, records)
+  is `_client_address()`, the connection's `REMOTE_ADDR`; never Bottle's
+  `request.remote_addr`, which trusts a client-set `X-Forwarded-For`.
 
 **Packaging**
 - `privilege/camera_config.py`, `privilege/media_writer.py` and

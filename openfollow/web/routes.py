@@ -391,11 +391,7 @@ def _get_local_ips() -> list[str]:
 
 
 def _client_address() -> str:
-    """The address the request's connection came from.
-
-    Never ``request.remote_addr``: Bottle takes that from ``X-Forwarded-For``,
-    which any client can set, so a client could name its own address.
-    """
+    """The connection's peer address; ``request.remote_addr`` would trust a client-set X-Forwarded-For."""
     return str(request.environ.get("REMOTE_ADDR") or "").strip()
 
 

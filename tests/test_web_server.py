@@ -2387,7 +2387,7 @@ def frozen_throttle_pin_server(tmp_path, monkeypatch):
     import openfollow.web.routes as routes_module
     from openfollow.web.login_throttle import LoginThrottle
 
-    monkeypatch.setattr(routes_module, "LoginThrottle", lambda: LoginThrottle(clock=lambda: 1000.0))
+    monkeypatch.setattr(routes_module, "LoginThrottle", lambda **kw: LoginThrottle(**kw, clock=lambda: 1000.0))
     yield from _serve_with_pin(tmp_path, monkeypatch)
 
 
@@ -5044,7 +5044,7 @@ def test_a_forwarded_for_header_does_not_escape_the_login_lockout(frozen_throttl
 def test_a_forwarded_for_header_does_not_escape_the_peer_lockout(frozen_throttle_pin_server) -> None:
     _, base, _ = frozen_throttle_pin_server
     body = b'{"pos_x": 1.0}'
-    ts = str(int(time.time()))
+    ts = "0"  # any rejected signature counts as a failure, a stale one included
 
     status1, _ = _signed_post_full(
         base, "/api/config/camera", body, signature="0" * 64, timestamp=ts, headers={"X-Forwarded-For": "203.0.113.1"}

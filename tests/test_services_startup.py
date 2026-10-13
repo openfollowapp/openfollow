@@ -2864,6 +2864,46 @@ def test_an_osc_record_nothing_sends_through_any_more_raises_no_row(osc_services
     assert osc_services.network_alerts() == []
 
 
+@pytest.mark.parametrize("leave", ["row-disabled", "zones-disarmed", "destination-repointed"])
+def test_an_osc_target_back_in_use_starts_with_a_clean_record(osc_services, leave: str) -> None:
+    """Its cached client outlived the row, and the target may well be reachable by the time it returns."""
+    from openfollow.configuration import TriggerZoneConfig
+
+    cfg = osc_services._app._config
+    if leave == "zones-disarmed":
+        cfg.osc_transmitters.transmitters = []
+        cfg.trigger_zones.zones = [TriggerZoneConfig(destination_id="desk")]
+        cfg.trigger_zones.enabled = True
+    _OscClient.refusing.add("192.0.2.40")
+    _send_osc(osc_services, "desk")
+    assert len(osc_services.network_alerts()) == 1
+
+    if leave == "row-disabled":
+        cfg.osc_transmitters.transmitters[0].enabled = False
+    elif leave == "zones-disarmed":
+        cfg.trigger_zones.enabled = False
+    else:
+        cfg.osc_destinations.destinations[0].host = "192.0.2.50"
+    osc_services.forget_idle_osc_send_records()
+    _OscClient.refusing.clear()
+    if leave == "row-disabled":
+        cfg.osc_transmitters.transmitters[0].enabled = True
+    elif leave == "zones-disarmed":
+        cfg.trigger_zones.enabled = True
+    else:
+        cfg.osc_destinations.destinations[0].host = "192.0.2.40"
+
+    assert osc_services.network_alerts() == []
+
+
+def test_forgetting_idle_osc_records_keeps_a_streak_still_in_use(osc_services) -> None:
+    _OscClient.refusing.add("192.0.2.40")
+    _send_osc(osc_services, "desk")
+    osc_services._app._config.osc_transmitters.transmitters[1].enabled = False
+    osc_services.forget_idle_osc_send_records()
+    assert [row.split(":")[0] for row in osc_services.network_alerts()] == ["OSC to Lighting desk"]
+
+
 def test_a_trigger_zone_destination_is_in_use_while_zones_are_armed(osc_services) -> None:
     from openfollow.configuration import TriggerZoneConfig
 

@@ -330,6 +330,23 @@ class TestSendHealth:
         assert (status.failed, status.error) == (1, "Connection refused")
         assert svc.stats_for("192.0.2.40", 3032, "tcp").total_errors == 6
 
+    def test_a_target_left_out_of_the_targets_in_use_loses_its_streak(self, patched_service: OscService) -> None:
+        for host in ("192.0.2.40", "192.0.2.41"):
+            patched_service.send("/x", host=host, port=8000)
+        for client in _FakeClient.instances:
+            client.send_exc = OSError(errno.ENETUNREACH, "Network is unreachable")
+        for _ in range(2):
+            for host in ("192.0.2.40", "192.0.2.41"):
+                patched_service.send("/x", host=host, port=8000)
+
+        patched_service.reset_send_health_except([("192.0.2.40", 8000, "udp", "slip", None)])
+
+        kept = patched_service.send_health_for("192.0.2.40", 8000)
+        idle = patched_service.send_health_for("192.0.2.41", 8000)
+        assert kept is not None and idle is not None
+        assert kept.status().state == "failing"
+        assert (idle.status().state, idle.status().failed_total) == ("ok", 2)
+
     def test_an_unknown_target_has_no_record(self, patched_service: OscService) -> None:
         assert patched_service.send_health_for("192.0.2.40", 8000) is None
 

@@ -484,6 +484,17 @@ class OscService:
             entry = self._cache.get(key)
         return entry.health if entry is not None else None
 
+    def reset_send_health_except(self, targets: Iterable[tuple[str, int, str, str, Egress | None]]) -> None:
+        """Forget the streak of every cached target not in *targets* (host, port, protocol, framing, egress)."""
+        keep = {
+            (host, int(port), protocol, _cache_framing(protocol, framing), egress)
+            for host, port, protocol, framing, egress in targets
+        }
+        with self._cache_lock:
+            idle = [entry.health for key, entry in self._cache.items() if key not in keep]
+        for health in idle:
+            health.reset()
+
     def _get_or_create_client(
         self,
         host: str,

@@ -3617,6 +3617,10 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
         # destination and can't be safely evicted without per-caller
         # ownership tracking.
 
+    if osc_transmitters_changed or osc_destinations_changed or trigger_zones_changed:
+        # Against the committed config, so a reverted routing apply keeps its records.
+        app._runtime_services.forget_idle_osc_send_records()
+
     # The MIDI ``apply_config`` is idempotent (same device on same patch is a
     # no-op), so re-applying on every reload pass is safe.
     if new_config.midi != app._config.midi:

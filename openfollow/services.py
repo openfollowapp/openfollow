@@ -1448,6 +1448,17 @@ class AppRuntimeServices:
             (key, replace(health.status(), label=f"OSC to {', '.join(names)}")) for key, health, names in named.values()
         ]
 
+    def forget_idle_osc_send_records(self) -> None:
+        """Clear the streak of every OSC target nothing sends to now. Called on each OSC routing or zones change.
+
+        A cached client outlives the row that used it, so its last streak
+        would otherwise come back on screen with the row, unsent and stale.
+        """
+        self._osc_service.reset_send_health_except(
+            (dest.host, dest.port, dest.protocol, dest.framing, self._osc_egress.for_destination(dest))
+            for dest in self._osc_destinations_in_use()
+        )
+
     def _network_stats(self) -> dict[str, Any]:
         """The ``network`` block of the runtime stats: the rows, and every sender's record."""
         # Each record is read once, so the rows and the senders describe the same moment.

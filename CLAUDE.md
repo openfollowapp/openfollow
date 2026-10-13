@@ -980,11 +980,11 @@ table and fails a status rule that carries a literal colour.
 - Restart detection: polls `/section/general` every 2s; on success → `window.location.reload()`
 
 ### Setup wizard (`/wizard`)
-Guided workflow for camera positioning and grid calibration, seven steps, eight with the experimental **Lens** step:
+Guided workflow for camera positioning and grid calibration, eight steps:
 1. **Preparation** – info + SVG stage layout illustration
 2. **Grid Setup** – the displayed unit system first (shared with General; a change reloads into the step, lengths kept in metres, and is refused while a length does not read), then width, depth, z_offset, spacing, x_offset, y_offset; dynamic SVG illustration updates from input
 3. **Video Source** – select and configure camera input (reuses video source UI); save & restart to activate. Carries the Video Source panel's failure box, polled only while it shows (`[this.offsetParent !== null]`)
-4. **Lens** (only with `ui.show_experimental_features`) – measure `lens_k1` / `lens_k2` from lines that are straight in reality (see "Lens distortion from straight lines" below); skipping keeps the current pair. `ui.developer_mode` (config-only, no form control) adds a **Show edges** checkbox that lays the edge map the suggestions were picked from over the snapshot
+4. **Lens** – measure `lens_k1` / `lens_k2` from lines that are straight in reality (see "Lens distortion from straight lines" below); skipping keeps the current pair. `ui.developer_mode` (config-only, no form control) adds a **Show edges** checkbox that lays the edge map the suggestions were picked from over the snapshot
 5. **Camera Position** – pos_x/y/z, pitch/yaw/roll, fov; dynamic isometric illustration
 6. **Reference Mapping** – draggable marker for coarse calibration (single known point); rigid-body shift of all corners. **Fine adjust** swaps in one 4× crop around the Reference Point, dragged and nudged like a Corner Pinning box
 7. **Corner Pinning** – 4 draggable corners, DLT solve, solved camera params displayed. The grid's inner lines are drawn inside the quad as the HUD draws them (`wizGridLines`: the undistorted corners fix the plane's homography, the lens bows each line again, the line count mirrors `overlay_draw_scene.grid_line_count`), so they follow a dragged corner. Every point the wizard drags (Lens, Reference Mapping, Corner Pinning) is the Lens step's dot (`pointHandle`), and dragging one in a full view shows the shared loupe (`showLoupe`: a 4× look at the full-resolution snapshot beside the finger). A corner nothing drags (Reference Mapping, Review) carries no marker, and corner labels sit diagonally outward from the grid's centre

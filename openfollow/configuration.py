@@ -28,7 +28,7 @@ except ImportError:
 import tomli_w
 
 from openfollow.binding_conflicts import BindingMove, settle_duplicates
-from openfollow.lens_model import lens_warp_is_valid
+from openfollow.lens_model import pull_back_to_fold
 from openfollow.net_adapters import normalize_labels
 from openfollow.station_fqdn import normalize_fqdn
 from openfollow.units import UnitSystem
@@ -484,22 +484,21 @@ class CameraConfig:
         self.sensor_width_mm = _coerce_optional_float(self.sensor_width_mm, None, lo=0.0)
         self.focal_length_mm = _coerce_optional_float(self.focal_length_mm, None, lo=0.0)
         # The one bound on the pair is that the warp must not fold before the
-        # frame corner; a folding pair falls back to the pinhole default.
-        self.lens_k1 = _coerce_float(self.lens_k1, 0.0)
-        self.lens_k2 = _coerce_float(self.lens_k2, 0.0)
-        if not lens_warp_is_valid(self.lens_k1, self.lens_k2):
-            logger.warning(
-                "camera.lens_k1=%s / lens_k2=%s folds the overlay warp inside the frame; using 0 / 0",
-                self.lens_k1,
-                self.lens_k2,
+        # frame corner; a folding pair is pulled back along its own direction.
+        k1 = _coerce_float(self.lens_k1, 0.0)
+        k2 = _coerce_float(self.lens_k2, 0.0)
+        self.lens_k1, self.lens_k2 = pull_back_to_fold(k1, k2)
+        if (self.lens_k1, self.lens_k2) != (k1, k2):
+            _report_once(
+                "camera.lens",
+                f"lens_k1={k1} / lens_k2={k2} folds the overlay warp inside the frame; "
+                f"using {self.lens_k1:.6g} / {self.lens_k2:.6g}",
             )
-            self.lens_k1 = 0.0
-            self.lens_k2 = 0.0
         self.calibration_points = _coerce_calibration_points(self.calibration_points)
         self.corner_pins = _coerce_corner_pins(self.corner_pins)
 
 
-# The drops last reported, by field: every load_config builds the camera again, so a file says it once.
+# The warnings last reported, by field: every load_config builds the camera again, so a file says it once.
 _reported_drops: dict[str, str] = {}
 
 # A grid corner may sit off the snapshot, never this many snapshot widths or heights from it.
@@ -510,6 +509,12 @@ def _report_drops(name: str, said: str) -> None:
     if _reported_drops.get(name) != said:
         _reported_drops[name] = said
         logger.warning("%s: %s; dropped", name, said)
+
+
+def _report_once(name: str, said: str) -> None:
+    if _reported_drops.get(name) != said:
+        _reported_drops[name] = said
+        logger.warning("%s: %s", name, said)
 
 
 def _coerce_calibration_points(value: Any) -> list[CalibrationPointConfig]:

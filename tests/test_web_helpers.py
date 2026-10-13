@@ -14,6 +14,7 @@ import pytest
 
 import openfollow.video.inputs as inputs_module
 from openfollow.configuration import AppConfig, CameraConfig, OscDestinationConfig, OscDestinationsConfig
+from openfollow.lens_model import lens_warp_is_valid
 from openfollow.web.routes import (
     _as_int_list,
     _as_ip_list,
@@ -226,13 +227,15 @@ def test_apply_section_data_camera_lens_distortion_roundtrips() -> None:
     assert config.camera.lens_k2 == pytest.approx(0.03)
 
 
-def test_apply_section_data_camera_lens_distortion_folding_pair_falls_back() -> None:
+def test_apply_section_data_camera_lens_distortion_folding_pair_is_pulled_back() -> None:
     config = AppConfig()
     ok = apply_section_data(config, "camera", {"lens_k1": "5", "lens_k2": "-5"})
     assert ok is True
-    # __post_init__ re-runs after the web save: a pair that folds inside the frame is pinhole.
-    assert config.camera.lens_k1 == 0.0
-    assert config.camera.lens_k2 == 0.0
+    # __post_init__ re-runs after the web save: a folding pair keeps its direction, short of the fold.
+    k1, k2 = config.camera.lens_k1, config.camera.lens_k2
+    assert lens_warp_is_valid(k1, k2)
+    assert 0.0 < k1 < 5.0 and k2 == pytest.approx(-k1)
+    assert not lens_warp_is_valid(k1 * 1.02, k2 * 1.02)
 
 
 def test_apply_section_data_camera_lens_distortion_keeps_a_wide_lens() -> None:

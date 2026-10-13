@@ -10,7 +10,7 @@ import pytest
 from hypothesis import assume, given
 from hypothesis import strategies as st
 
-from openfollow.lens_model import lens_fold_radius, lens_warp_is_valid
+from openfollow.lens_model import PULL_BACK_MARGIN, lens_fold_radius, lens_warp_is_valid, pull_back_to_fold
 from openfollow.scene.solver import invert_normalised_radius
 
 pytestmark = pytest.mark.unit
@@ -107,3 +107,22 @@ def test_a_radius_past_the_warp_inverts_to_the_fold_radius(k1: float, k2: float)
     # fold radius, or at its cap of four half-diagonals for a warp that never folds.
     stopped = float(invert_normalised_radius(1e6, k1, k2))
     assert stopped == pytest.approx(min(lens_fold_radius(k1, k2), 4.0), rel=1e-9)
+
+
+@given(k1=st.floats(min_value=-1e4, max_value=1e4), k2=st.floats(min_value=-1e4, max_value=1e4))
+def test_a_pair_is_pulled_back_along_its_ray_to_just_short_of_the_fold(k1: float, k2: float) -> None:
+    pulled = pull_back_to_fold(k1, k2)
+    if lens_warp_is_valid(k1, k2):
+        assert pulled == (k1, k2)
+        return
+    assert lens_warp_is_valid(*pulled)
+    t = pulled[0] / k1 if abs(k1) >= abs(k2) else pulled[1] / k2
+    assert 0.0 < t < 1.0
+    assert pulled == pytest.approx((t * k1, t * k2))
+    # The margin is all that stands between it and the fold.
+    assert not lens_warp_is_valid(t * k1 / (1.0 - 2.0 * PULL_BACK_MARGIN), t * k2 / (1.0 - 2.0 * PULL_BACK_MARGIN))
+
+
+@pytest.mark.parametrize("k1,k2", [(math.nan, -0.4), (-0.4, math.inf), (-math.inf, 0.0)])
+def test_a_pair_that_is_no_number_pulls_back_to_pinhole(k1: float, k2: float) -> None:
+    assert pull_back_to_fold(k1, k2) == (0.0, 0.0)

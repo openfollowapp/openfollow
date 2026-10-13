@@ -1453,6 +1453,21 @@ class TestWizardLensDistortion:
         )
         assert moved
 
+    def test_project_reads_a_folding_pair_as_a_save_would_keep_it(self, live_server) -> None:
+        """The slider's earlier end stop folds; the preview bows with the pair a save would keep."""
+        _, base = live_server
+        body = {"grid": _GRID, "image_width": IMG_W, "image_height": IMG_H}
+        kept = CameraConfig(lens_k1=-0.4, lens_k2=0.0)
+        _, folding = _post_json(
+            base, "/api/wizard/project", {**body, "camera": {**_CAM, "lens_k1": -0.4, "lens_k2": 0.0}}
+        )
+        _, pulled = _post_json(
+            base, "/api/wizard/project", {**body, "camera": {**_CAM, "lens_k1": kept.lens_k1, "lens_k2": kept.lens_k2}}
+        )
+        _, plain = _post_json(base, "/api/wizard/project", {**body, "camera": _CAM})
+        assert folding["corners"] == pulled["corners"]
+        assert folding["corners"] != plain["corners"]
+
     def test_project_zero_lens_matches_no_lens_key(self, live_server) -> None:
         _, base = live_server
         body = {"grid": _GRID, "image_width": IMG_W, "image_height": IMG_H}
@@ -1543,12 +1558,14 @@ class TestWizardLensCoeffs:
         assert _wizard_lens_coeffs({"lens_k1": "abc"}) == (0.0, 0.0)
         assert _wizard_lens_coeffs({"lens_k1": float("inf"), "lens_k2": float("nan")}) == (0.0, 0.0)
 
-    def test_a_folding_pair_falls_back_to_pinhole(self) -> None:
+    @pytest.mark.parametrize("k1,k2", [(5.0, -5.0), (-0.4, -0.2), (-0.4, 0.0), (-0.1, 0.02)])
+    def test_a_pair_reads_as_the_saved_config_reads_it(self, k1: float, k2: float) -> None:
+        """A folding pair is pulled back toward the fold, never dropped to pinhole, exactly as a save is."""
         from openfollow.web.routes import _wizard_lens_coeffs
 
-        assert _wizard_lens_coeffs({"lens_k1": 5.0, "lens_k2": -5.0}) == (0.0, 0.0)
-        assert _wizard_lens_coeffs({"lens_k1": -0.4, "lens_k2": -0.2}) == (0.0, 0.0)
-        assert _wizard_lens_coeffs({"lens_k1": -0.1, "lens_k2": 0.02}) == pytest.approx((-0.1, 0.02))
+        saved = CameraConfig(lens_k1=k1, lens_k2=k2)
+        assert _wizard_lens_coeffs({"lens_k1": k1, "lens_k2": k2}) == (saved.lens_k1, saved.lens_k2)
+        assert _wizard_lens_coeffs({"lens_k1": k1, "lens_k2": k2}) != (0.0, 0.0)
         # A wide lens outside the old +-0.4 / +-0.2 box passes through unclamped.
         assert _wizard_lens_coeffs({"lens_k1": -0.47, "lens_k2": 0.25}) == pytest.approx((-0.47, 0.25))
 

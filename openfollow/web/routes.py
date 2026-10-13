@@ -79,7 +79,7 @@ from openfollow.configuration import (
     viewed_with_controlled,
 )
 from openfollow.input.mouse3d_status import status_key
-from openfollow.lens_model import lens_warp_is_valid
+from openfollow.lens_model import pull_back_to_fold
 
 # Module-level so handler closures resolve ``save_catalog`` from this
 # namespace at call time (tests monkeypatch it for persist-failure paths).
@@ -3426,7 +3426,7 @@ def _wizard_lens_coeffs(cam: Any) -> tuple[float, float]:
 
     Absent or unparseable values fall back to ``0.0`` (pinhole), so an older
     client that posts no coefficients keeps the previous behaviour. A pair
-    that folds the warp inside the frame falls back the same way, as
+    that folds the warp inside the frame is pulled back toward the fold, as
     ``CameraConfig.__post_init__`` does.
     """
 
@@ -3436,10 +3436,7 @@ def _wizard_lens_coeffs(cam: Any) -> tuple[float, float]:
 
     if not isinstance(cam, dict):
         return 0.0, 0.0
-    k1, k2 = _as_coeff(cam.get("lens_k1", 0.0)), _as_coeff(cam.get("lens_k2", 0.0))
-    if not lens_warp_is_valid(k1, k2):
-        return 0.0, 0.0
-    return k1, k2
+    return pull_back_to_fold(_as_coeff(cam.get("lens_k1", 0.0)), _as_coeff(cam.get("lens_k2", 0.0)))
 
 
 # A band column per chord pixel at most, on a snapshot no wider than the wizard accepts.

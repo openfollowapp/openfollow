@@ -22,25 +22,32 @@ class ParsedConfigCache:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._entry: tuple[tuple[str, int, int, int], bytes] | None = None
+        self._entry: tuple[tuple[str, int, int, int, int], bytes] | None = None
 
     def load(self, path: str) -> AppConfig:
         try:
-            st = os.stat(path)
+            key = _key(path)
         except OSError:
             return load_config(path)
-        # A save replaces the file, so the inode moves even within one mtime tick.
-        key = (path, st.st_ino, st.st_mtime_ns, st.st_size)
         with self._lock:
             entry = self._entry
         if entry is None or entry[0] != key:
             try:
                 parsed = load_config(path, strict=True)
+                read_whole = _key(path) == key
             except Exception:
-                # Served but never kept: a read that failed once falls back to the backup or
-                # to defaults, whose empty web_pin would open the login until the next save.
+                read_whole = False
+            if not read_whole:
+                # Served but never kept: a read that failed, or a file that changed or went away while
+                # it was read, falls back to the backup or to defaults, whose empty web_pin opens the login.
                 return load_config(path)
             entry = (key, pickle.dumps(parsed))
             with self._lock:
                 self._entry = entry
         return pickle.loads(entry[1])  # type: ignore[no-any-return]  # nosec B301 - our own bytes
+
+
+def _key(path: str) -> tuple[str, int, int, int, int]:
+    st = os.stat(path)
+    # A save replaces the file, so the inode moves even within one mtime tick.
+    return (path, st.st_dev, st.st_ino, st.st_mtime_ns, st.st_size)

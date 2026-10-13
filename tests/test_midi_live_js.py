@@ -18,11 +18,11 @@ _TEMPLATE = Path(__file__).parents[1] / "openfollow" / "web" / "templates" / "pa
 # A page with two Show live buttons, a clock and timers the test moves by hand.
 _HARNESS = """
 var now = 1000, timers = [], triggered = [];
-var buttons = [0, 1].map(function () {
-    return {textContent: 'Show live'};
-});
+var buttons;
+// What the server renders: two fresh Show live buttons, on the first load and on every re-render.
+function render() { buttons = [0, 1].map(function () { return {textContent: 'Show live'}; }); }
 var window = {};
-var document = {body: 'body', querySelectorAll: function () { return buttons; }};
+var document = {body: 'body', querySelectorAll: function (sel) { return sel === '[data-midi-live]' ? buttons : []; }};
 var htmx = {trigger: function (target, name) { triggered.push(name); }};
 Date.now = function () { return now; };
 function setTimeout(fn, ms) { timers.push({at: now + ms, fn: fn}); return timers.length; }
@@ -45,7 +45,7 @@ def _script() -> str:
 
 
 def _run(steps: str) -> object:
-    source = _HARNESS + f"var load = function () {{ {_script()} }};\nload();\nvar out = [];\n{steps}\n"
+    source = _HARNESS + f"var load = function () {{ render(); {_script()} }};\nload();\nvar out = [];\n{steps}\n"
     source += "process.stdout.write(JSON.stringify(out));"
     node = shutil.which("node")
     assert node is not None

@@ -108,8 +108,8 @@
  % # Virtual Faders – visual mixer-style strip row + detail panel.
  % # Each strip is a vertical fader graphic the operator can click
  % # to load that fader's editable config into the detail panel
- % # below. Live values arrive via HTMX out-of-band swaps, only
- % # while "Show live" runs: the strip's fill bar + handle + numeric
+ % # below. Live values arrive via HTMX out-of-band swaps, once on
+ % # load and while "Show live" runs: the strip's fill bar + handle + numeric
  % # value are id-keyed so the poll response targets each one
  % # without re-rendering the click handler / selection state.
  % # ----------------------------------------------------------------
@@ -200,9 +200,7 @@
  % # the stick, so this is purely a readout that mirrors the
  % # Virtual Faders strip graphic. Live values arrive while "Show
  % # live" runs, via OOB swaps keyed by marker id. ``defined()`` guard keeps
- % # the legacy ``index.tpl`` include working without threading the
- % # kwarg through it – that path renders an empty strip set until
- % # Show live runs.
+ % # a caller that passes no values working: it renders no strips.
  % marker_fader_values = marker_fader_values if defined('marker_fader_values') else []
  <div class="group">
  <h3 class="group-title">Marker Faders</h3>

@@ -12,7 +12,7 @@ import pytest
 
 from openfollow.paths import network
 from openfollow.paths.geometry import PathCurve, PathPoint, build_curve
-from openfollow.paths.network import Junction, PathNetwork, Place, find_junctions
+from openfollow.paths.network import Junction, PathNetwork, Place, Step, find_junctions
 
 pytestmark = pytest.mark.unit
 
@@ -273,7 +273,7 @@ class TestWalk:
 
     def test_an_open_end_stops_the_marker(self) -> None:
         step = PathNetwork([H]).walk(Place(0, 9.5), 1.0, 0.0, 1.0)
-        assert step == Step_(Place(0, 10.0), released=False)
+        assert step == Step(Place(0, 10.0), released=False)
 
     def test_an_end_that_releases_lets_go(self) -> None:
         step = PathNetwork([H], [(False, True)]).walk(Place(0, 9.5), 1.0, 0.0, 1.0)
@@ -287,7 +287,7 @@ class TestWalk:
 
     def test_at_a_stopping_end_a_push_outward_does_nothing(self) -> None:
         net = PathNetwork([H])
-        assert net.walk(Place(0, 10.0), 1.0, 0.0, 1.0) == Step_(Place(0, 10.0))
+        assert net.walk(Place(0, 10.0), 1.0, 0.0, 1.0) == Step(Place(0, 10.0))
 
     def test_a_closed_path_carries_on_round(self) -> None:
         ring = _curve([(0, 0, 0), (2, 0, 0), (2, 2, 0), (0, 2, 0)], closed=True)
@@ -439,9 +439,3 @@ class TestNearest:
         net = PathNetwork([H, apart, V, branch])
         assert net.connected(0) == {0, 2, 3}
         assert net.connected(1) == {1}
-
-
-def Step_(place: Place, released: bool = False) -> object:  # noqa: N802 - reads like the dataclass
-    from openfollow.paths.network import Step
-
-    return Step(place, released)

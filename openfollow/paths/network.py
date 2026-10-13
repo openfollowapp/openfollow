@@ -25,7 +25,7 @@ JUNCTION_REACH_M = 0.1
 JUNCTION_HEIGHT_M = 0.1
 # A marker this close to a junction may steer into the other path.
 _CAPTURE_M = 0.05
-# The other path wins only when its direction is this much closer to the push.
+# The other path wins only when its direction is more than this much closer to the push.
 _SWITCH_MARGIN_RAD = math.radians(15.0)
 _SAME_JUNCTION_M = 0.05
 

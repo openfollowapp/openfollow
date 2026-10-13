@@ -7995,7 +7995,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     # ---- File-based template system ---------------------------------------
     #
     # Routes for listing, saving, applying, and deleting templates of the
-    # three supported types (``osc_output`` / ``camera_grid`` / ``zones``).
+    # four supported types (``osc_output`` / ``camera_grid`` / ``zones`` / ``paths``).
     # The on-disk layer is :mod:`openfollow.templates`; these routes are thin
     # HTTP adapters over its loader / writer / schema functions so the
     # validation rules (envelope shape, payload validation, slug + conflict
@@ -8115,7 +8115,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         - ``paths``: ``{"name": str}`` – the current paths and slide time,
           without Active flags, which belong to the station.
 
-        Both implicit-read variants run inside the config-write lock
+        The three implicit-read variants run inside the config-write lock
         so a concurrent ``/section/...`` POST can't tear the captured
         snapshot."""
         response.content_type = "application/json"

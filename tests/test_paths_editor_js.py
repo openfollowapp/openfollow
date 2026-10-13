@@ -69,8 +69,8 @@ def test_the_arrowhead_is_the_operator_screen_s() -> None:
 _STATIC = Path(__file__).parents[1] / "openfollow" / "web" / "static" / "js"
 
 
-def _editor(steps: str) -> Any:
-    """Run the Path Editor's script on the fake DOM, then ``steps`` (async, filling ``out``)."""
+def _editor(steps: str, setup: str = "") -> Any:
+    """Run ``setup``, then the Path Editor's script on the fake DOM, then ``steps`` (async, filling ``out``)."""
     template = _TEMPLATE.read_text(encoding="utf-8")
     markup = template[: template.index("<style>")]
     start = template.index("<script>") + len("<script>")
@@ -82,6 +82,7 @@ def _editor(steps: str) -> Any:
             (_STATIC / "units.js").read_text(encoding="utf-8"),
             (_STATIC / "save-feedback.js").read_text(encoding="utf-8"),
             f"parseHTML({json.dumps(markup)}, document.body);",
+            setup,
             script,
             "(async function () { var out = {}; await settle();",
             steps,
@@ -508,3 +509,157 @@ class TestEditingThePoints:
             """
         )
         assert out == {"gone": True, "open": False, "selected": None}
+
+
+class TestFailedSaves:
+    def test_a_refused_save_rings_the_editor_and_says_why_with_the_station_s_next_step(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            refuse = function (req) {
+                if (req.method !== 'PUT') return;
+                var error = 'This station does not accept changes made through that name';
+                var href = 'http://192.0.2.10/';
+                return { status: 403, body: { error: error, action: 'Open it at 192.0.2.10', href: href } };
+            };
+            var x = inputs('cross', 0)[0];
+            typeInto(x, '-2'); enter(x);
+            await settle();
+            var line = editor().querySelector('.save-error');
+            out.line = line.textContent;
+            out.href = line.querySelector('a').getAttribute('href');
+            out.ring = editor().classList.contains('save-failed');
+            out.underToolbar = line.previousSibling === editor().querySelector('[data-pe="toolbar"]');
+            out.shown = inputs('cross', 0)[0].value;  // the station's points come back
+            """
+        )
+        assert out == {
+            "line": "Not saved. This station does not accept changes made through that name. Open it at 192.0.2.10",
+            "href": "http://192.0.2.10/",
+            "ring": True,
+            "underToolbar": True,
+            "shown": "-3.000 m",
+        }
+
+    def test_a_save_that_gets_no_answer_says_the_station_did_not_answer(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            refuse = function (req) { if (req.method === 'PUT') return 'unreachable'; };
+            var x = inputs('cross', 0)[0];
+            typeInto(x, '-2'); enter(x);
+            await settle();
+            out.line = errorLine();
+            """
+        )
+        assert out["line"] == (
+            "Not saved. The station did not answer. Check that it is switched on and on this network, then save again."
+        )
+
+    def test_the_next_save_clears_the_line(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            refuse = function (req) { if (req.method === 'PUT') return 'unreachable'; };
+            row('cross').querySelector('input[id$="-closed"]').click();
+            await settle();
+            out.before = errorLine() !== null;
+            refuse = null;
+            row('cross').querySelector('input[id$="-closed"]').click();
+            await settle();
+            out.after = errorLine();
+            """
+        )
+        assert out == {"before": True, "after": None}
+
+    @pytest.mark.parametrize(("answer", "deleted"), [(False, False), (True, True)])
+    def test_delete_asks_in_the_station_s_dialog(self, answer: bool, deleted: bool) -> None:
+        out = _editor(
+            f"""
+            confirmAnswer = {json.dumps(answer)};
+            openRow('cross'); await settle();
+            row('cross').querySelector('.osc-binding-actions button.danger').click();
+            await settle();
+            out.asked = confirmed.map(function (c) {{ return [c.confirmLabel, c.danger, c.message]; }});
+            out.names = model.paths.map(function (p) {{ return p.name; }});
+            """
+        )
+        assert out["asked"] == [["Delete", True, "Delete path cross?"]]
+        assert ("cross" not in out["names"]) is deleted
+
+    def test_a_point_past_the_limit_is_not_saved_and_says_so(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            row('cross').querySelector('.pe-add button').click();
+            await settle();
+            out.puts = puts().length;
+            out.line = errorLine();
+            """,
+            setup="for (var i = 0; i < 98; i++) model.paths[0].points.push({ x: i, y: 0, z: 0, radius: 0.5 });",
+        )
+        assert out == {"puts": 0, "line": "Not saved. A path holds at most 100 points."}
+
+    @pytest.mark.parametrize(
+        ("refused", "steps", "line"),
+        [
+            (
+                "'/api/paths/marker/2'",
+                "row('cross').querySelectorAll('.pe-add button')[1].click();",
+                "Not saved. Marker 2 has no position on this station.",
+            ),
+            (
+                "'/api/paths/unproject'",
+                "pointer(picture(), 'pointerdown', 640, 10); pointer(picture(), 'click', 640, 10);",
+                "Not saved. That point of the picture does not reach the stage.",
+            ),
+        ],
+    )
+    def test_a_point_the_station_cannot_place_says_why(self, refused: str, steps: str, line: str) -> None:
+        error = line.removeprefix("Not saved. ")
+        out = _editor(
+            f"""
+            refuse = function (req) {{
+                if (req.url === {refused}) return {{ status: 422, body: {{ error: {json.dumps(error)} }} }};
+            }};
+            openRow('cross'); await settle();
+            {steps}
+            await settle();
+            out.line = errorLine();
+            out.points = model.paths[0].points.length;
+            """
+        )
+        assert out == {"line": line, "points": 2}
+
+
+class TestApplyToAllStations:
+    def _push(self, answer: str) -> Any:
+        return _editor(
+            f"""
+            refuse = function (req) {{
+                if (req.url === '/api/config/paths') return {{ body: {{ paths: [] }} }};
+                if (req.url === '/api/config/paths/broadcast') return {answer};
+            }};
+            editor().querySelector('[data-pe="push"]').click();
+            await settle();
+            out.line = errorLine();
+            out.toasts = toasts;
+            """
+        )
+
+    def test_every_station_applied_is_a_toast(self) -> None:
+        out = self._push("{ body: { peer_results: [{ name: 'A', success: true }, { name: 'B', success: true }] } }")
+        assert out == {"line": None, "toasts": ["Applied to 2 station(s)"]}
+
+    def test_stations_that_did_not_apply_are_named(self) -> None:
+        out = self._push(
+            "{ body: { peer_results: [{ name: 'A', success: true }, { ip: '192.0.2.7', success: false }] } }"
+        )
+        assert out == {
+            "line": "Not applied on 1 of 2 stations: 192.0.2.7. Check that they are switched on, then apply again.",
+            "toasts": [],
+        }
+
+    def test_a_push_the_station_refused_is_not_applied(self) -> None:
+        out = self._push("{ status: 403, body: { error: 'Refused' } }")
+        assert out == {"line": "Not applied. Refused.", "toasts": []}

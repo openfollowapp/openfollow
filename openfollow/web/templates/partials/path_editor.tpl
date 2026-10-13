@@ -7,7 +7,7 @@
     <div class="pe-list" data-pe="list"></div>
     <p class="empty-state" data-pe="empty" hidden>No paths yet. Use <em>+ New path</em> below to create one.</p>
 
-    <div class="actions pe-toolbar">
+    <div class="actions pe-toolbar" data-pe="toolbar">
         <button type="button" class="save-btn" data-pe="new">+ New path</button>
         <button type="button" class="secondary" data-pe="template-save">Save as template…</button>
         <button type="button" class="secondary" data-pe="template-load">Load template…</button>
@@ -22,7 +22,6 @@
     <div class="actions">
         <button type="button" class="secondary" data-pe="refresh">Refresh Image</button>
     </div>
-    <p class="pe-status" data-pe="status" aria-live="polite"></p>
 </div>
 
 <style>
@@ -38,7 +37,6 @@
     #path-editor-section .pe-stage img { display: block; width: 100%; height: auto; }
     #path-editor-section .pe-stage svg { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; cursor: crosshair; }
     #path-editor-section .pe-no-feed { padding: 24px 12px; border: 1px dashed var(--border); border-radius: 8px; text-align: center; margin-top: 1rem; }
-    #path-editor-section .pe-status { min-height: 1.2em; }
     #path-editor-section .pe-line-inactive { stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 6 5; fill: none; }
     #path-editor-section .pe-line-active { stroke: var(--text); stroke-width: 2; fill: none; }
     #path-editor-section .pe-line-selected { stroke: var(--accent); stroke-width: 3; fill: none; }
@@ -72,8 +70,9 @@ function peArrowhead(x, y, ux, uy, half, side) {
 
     function q(name) { return root.querySelector('[data-pe="' + name + '"]'); }
     var units = window.OpenFollow.units;
+    var saveError = window.OpenFollow.saveError;
     var SVG_NS = 'http://www.w3.org/2000/svg';
-    var svg = q('svg'), img = q('img');
+    var svg = q('svg'), img = q('img'), toolbar = q('toolbar');
     var data = null;          // GET /api/paths, with the edits made here since
     var view = null;          // POST /api/paths/view for the picture shown
     var views = 0;            // view requests made, so an older answer is dropped
@@ -86,18 +85,17 @@ function peArrowhead(x, y, ux, uy, half, side) {
     var writing = false;
     var edits = 0;            // a load asked for before the latest edit is out of date
 
+    // Resolves the station's JSON answer; rejects with saveError's {error, action, href}.
     function api(method, url, body) {
         var opts = { method: method, headers: { 'Content-Type': 'application/json' } };
         if (body !== undefined) opts.body = JSON.stringify(body);
         return fetch(url, opts).then(function(res) {
-            return res.json().catch(function() { return {}; }).then(function(json) {
-                if (!res.ok) throw new Error(json.error || ('HTTP ' + res.status));
-                return json;
-            });
-        });
+            if (!res.ok) return saveError.fromResponse(res).then(function(info) { throw info; });
+            return res.json().catch(function() { return {}; });
+        }, function() { throw saveError.UNREACHABLE; });
     }
-    function say(text) { q('status').textContent = text || ''; }
-    function failed(err) { say(err.message); }
+    function failed(info, lead) { saveError.show(root, info, lead, toolbar); }
+    function ignore() {}
     function enc(name) { return encodeURIComponent(name); }
     function find(name) {
         return data ? data.paths.find(function(p) { return p.name === name; }) || null : null;
@@ -158,7 +156,7 @@ function peArrowhead(x, y, ux, uy, half, side) {
             if (selected !== null && !find(selected)) selected = null;
             if (changed) renderList();
             return loadView();
-        }).catch(failed);
+        }).catch(ignore);
     }
     function loadView() {
         var asked = ++views;
@@ -166,7 +164,7 @@ function peArrowhead(x, y, ux, uy, half, side) {
             if (asked !== views) return;
             view = json;
             renderFrame();
-        }).catch(failed);
+        }).catch(ignore);
     }
     function loadSnapshot() {
         fetch('/api/video/snapshot/full', { cache: 'no-store' }).then(function(res) {
@@ -195,6 +193,7 @@ function peArrowhead(x, y, ux, uy, half, side) {
     // One write in flight at a time. A write still waiting under the same key sends the latest data when it goes.
     function write(key, send) {
         edits++;
+        saveError.clear(root);
         if (!key || !waiting.some(function(w) { return w.key === key; })) waiting.push({ key: key, send: send });
         if (!writing) next();
     }
@@ -219,7 +218,10 @@ function peArrowhead(x, y, ux, uy, half, side) {
     function addPoint(name, pt) {
         var p = find(name);
         if (!p) return;
-        if (p.points.length >= data.max_points) { say('A path holds at most ' + data.max_points + ' points.'); return; }
+        if (p.points.length >= data.max_points) {
+            failed({ error: 'A path holds at most ' + data.max_points + ' points.', action: '', href: '' });
+            return;
+        }
         edit(name, function(path) { path.points.push({ x: pt.x, y: pt.y, z: pt.z, radius: 0.5 }); }, true);
     }
     function rename(name, to) {
@@ -303,9 +305,10 @@ function peArrowhead(x, y, ux, uy, half, side) {
                 write(null, function() { return api('POST', '/api/paths/' + enc(path.name) + '/record', { on: !recording }); });
             }),
             button('Delete', function() {
-                if (!window.confirm('Delete path ' + name + '?')) return;
                 var path = find(name);
-                write(null, function() { return api('DELETE', '/api/paths/' + enc(path.name)); });
+                modalConfirm({ title: 'Delete path?', message: 'Delete path ' + name + '?', confirmLabel: 'Delete', danger: true }).then(function(ok) {
+                    if (ok) write(null, function() { return api('DELETE', '/api/paths/' + enc(path.name)); });
+                });
             }, 'danger')
         ]));
         details.appendChild(body);
@@ -541,9 +544,14 @@ function peArrowhead(x, y, ux, uy, half, side) {
             return api('GET', '/api/config/paths').then(function(section) {
                 return api('POST', '/api/config/paths/broadcast', section);
             }).then(function(json) {
-                var failedPeers = json.peer_results.filter(function(peer) { return !peer.success; });
-                say(failedPeers.length ? 'Not applied on ' + failedPeers.length + ' station(s).' : 'Applied to ' + json.peer_results.length + ' station(s).');
-            });
+                var peers = json.peer_results, missed = peers.filter(function(peer) { return !peer.success; });
+                if (!missed.length) { showToast('Applied to ' + peers.length + ' station(s)'); return; }
+                failed({
+                    error: 'Not applied on ' + missed.length + ' of ' + peers.length + ' stations: ' + missed.map(function(peer) { return peer.name || peer.ip; }).join(', ') + '.',
+                    action: 'Check that they are switched on, then apply again.',
+                    href: ''
+                }, '');
+            }, function(info) { failed(info, 'Not applied.'); });
         });
     });
 

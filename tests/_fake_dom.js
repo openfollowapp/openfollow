@@ -55,6 +55,7 @@ Object.defineProperties(El.prototype, {
     className: attrProp('class'),
     type: { get: function () { return this.getAttribute('type') || (this.tagName === 'INPUT' ? 'text' : ''); } },
     defaultValue: attrProp('value'),
+    href: attrProp('href'),
     value: {
         get: function () {
             if (this.tagName === 'SELECT' && this._value === null) {
@@ -93,6 +94,12 @@ Object.defineProperties(El.prototype, {
     },
     children: { get: function () { return this.childNodes.filter(function (n) { return n.nodeType === 1; }); } },
     firstChild: { get: function () { return this.childNodes[0] || null; } },
+    previousSibling: {
+        get: function () {
+            var siblings = this.parentNode ? this.parentNode.childNodes : [];
+            return siblings[siblings.indexOf(this) - 1] || null;
+        },
+    },
     isConnected: {
         get: function () {
             for (var n = this; n; n = n.parentNode) if (n === document) return true;

@@ -1660,6 +1660,18 @@ def test_when_assist_stops_mid_pull_the_output_is_pulled_in_from_where_it_stands
     assert engine.tick(1.0)[_PID] == pytest.approx((5.0, 1.0, 0.3))
 
 
+@pytest.mark.parametrize("locked", [True, False])
+def test_with_no_feed_only_a_locked_output_is_held_on_its_path(monkeypatch, locked: bool) -> None:
+    app, engine = _assist_on_a_row()
+    app._video_receiver.resolution = (0, 0)
+    out = app._server.get_marker(_PID)
+    out.set_pos(4.0, 3.0, 0.0)
+    if not locked:
+        engine.release(_PID)
+    _run_assist(app, _AssistDetector([]), monkeypatch)
+    assert out.pos == pytest.approx((4.0, 1.0, 0.3) if locked else (4.0, 3.0, 0.0))
+
+
 def test_replace_keeps_a_marker_locked_on_a_path_on_it(monkeypatch) -> None:
     """Fully Automatic projects the person's place onto the marker's path, height included."""
     from openfollow.configuration import PathConfig, PathPointConfig, PathsConfig

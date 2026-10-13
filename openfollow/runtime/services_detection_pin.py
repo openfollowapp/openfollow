@@ -411,8 +411,15 @@ def _apply_assist_all(
     if not target_ids:
         return
 
+    paths = getattr(app, "_paths", None)
     w, h = app._video_receiver.resolution
     if w <= 0 or h <= 0:
+        # No feed to place anyone on: an output locked onto a path is still held on it where it stands.
+        for mid in target_ids:
+            out = app._server.get_marker(mid)
+            on_path = paths.constrain(mid, out.pos[0], out.pos[1]) if paths is not None and out is not None else None
+            if on_path is not None:
+                out.set_pos(*on_path)
         return
 
     steps = dt_steps(dt)  # shared by the inner smoothing and the outer glide
@@ -452,7 +459,6 @@ def _apply_assist_all(
         return worlds
 
     radius_sq = cfg.detection.assist_radius_m**2
-    paths = getattr(app, "_paths", None)
 
     for mid in sorted(target_ids):
         out_marker = app._server.get_marker(mid)

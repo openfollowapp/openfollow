@@ -85,7 +85,6 @@ function peArrowhead(x, y, ux, uy, half, side) {
     var waiting = [];         // writes not sent yet, oldest first; one is in flight at a time
     var writing = false;
     var edits = 0;            // a load asked for before the latest edit is out of date
-    var rendering = false;    // a field a redraw removes was not left by the operator
 
     function api(method, url, body) {
         var opts = { method: method, headers: { 'Content-Type': 'application/json' } };
@@ -131,7 +130,7 @@ function peArrowhead(x, y, ux, uy, half, side) {
     function textInput(attrs, onCommit) {
         var input = make('input', Object.assign({ type: 'text' }, attrs));
         function commit() {
-            if (rendering || input.value === input.defaultValue) return;
+            if (input.value === input.defaultValue) return;
             if (onCommit(input.value) !== false) input.defaultValue = input.value;
         }
         input.addEventListener('change', commit);
@@ -255,27 +254,23 @@ function peArrowhead(x, y, ux, uy, half, side) {
         var list = q('list');
         var had = document.activeElement;
         var keep = had && had.id && list.contains(had) ? had : null;
-        rendering = true;
-        try {
-            list.innerHTML = '';
-            q('empty').hidden = data.paths.length > 0;
-            var locks = {};
-            Object.keys(data.locks).forEach(function(id) {
-                var key = data.locks[id].toLowerCase();
-                (locks[key] = locks[key] || []).push(id);
-            });
-            data.paths.forEach(function(p, index) {
-                list.appendChild(row(p, index, locks[p.name.toLowerCase()] || []));
-            });
-        } finally {
-            rendering = false;
-        }
+        list.innerHTML = '';
+        q('empty').hidden = data.paths.length > 0;
+        var locks = {};
+        Object.keys(data.locks).forEach(function(id) {
+            var key = data.locks[id].toLowerCase();
+            (locks[key] = locks[key] || []).push(id);
+        });
+        data.paths.forEach(function(p, index) {
+            list.appendChild(row(p, index, locks[p.name.toLowerCase()] || []));
+        });
         var again = keep && document.getElementById(keep.id);
-        if (!again || again === keep) return;
+        if (!again) return;
         again.focus();
         if (again.type === 'text' && keep.value !== keep.defaultValue) {
             again.value = keep.value;
             again.setSelectionRange(keep.selectionStart, keep.selectionEnd);
+            again.setAttribute('aria-invalid', keep.getAttribute('aria-invalid') || 'false');
         }
     }
     function row(p, index, lockedIds) {

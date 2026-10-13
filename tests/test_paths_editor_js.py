@@ -313,6 +313,107 @@ class TestEditingThePoints:
         )
         assert out == {"redrawn": True, "focused": True, "typed": ["7", 1], "loopPoints": 3, "saved": 7}
 
+    def test_a_field_saves_once_when_left_after_a_change_and_not_at_all_untouched(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            var cells = inputs('cross', 0);
+            cells[0].focus();
+            cells[1].focus();  // left untouched
+            await settle();
+            out.untouched = puts().length;
+            cells[1].value = '7';
+            tab(cells[1], cells[2]);
+            await settle();
+            out.changed = puts().length;
+            """
+        )
+        assert out == {"untouched": 0, "changed": 1}
+
+    def test_text_that_does_not_read_as_a_length_survives_a_redraw_unsaved(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            var y = inputs('cross', 0)[1];
+            y.focus(); y.value = 'abc'; y.dispatchEvent(makeEvent('change'));
+            row('loop').querySelector('input[id$="-closed"]').click();  // redraws the rows
+            await settle();
+            var now = inputs('cross', 0)[1];
+            out.shown = [now !== y, document.activeElement === now, now.value, now.getAttribute('aria-invalid')];
+            out.saved = model.paths[0].points[0].y;
+            """
+        )
+        assert out == {"shown": [True, True, "abc", "true"], "saved": 2}
+
+    def test_a_field_left_untouched_shows_what_the_station_changed_and_saves_nothing(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            var y = inputs('cross', 0)[1];
+            y.focus();
+            model.paths[0].points[0].y = 5;  // moved by another station's push
+            row('loop').querySelector('input[id$="-closed"]').click();  // saves loop, then loads
+            await settle();
+            var now = inputs('cross', 0)[1];
+            out.shown = [document.activeElement === now, now.value];
+            now.blur(); await settle();
+            out.crossSaves = puts().filter(function (r) { return r.url === '/api/paths/cross'; }).length;
+            """
+        )
+        assert out == {"shown": [True, "5.000 m"], "crossSaves": 0}
+
+    def test_a_new_point_shows_in_the_table_at_once(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            holdWhen = function (req) { return req.method === 'PUT'; };
+            row('cross').querySelector('.pe-add button').click();
+            out.rows = row('cross').querySelectorAll('.pe-points tbody tr').length;
+            holdWhen = null; release(); await settle();
+            out.saved = model.paths[0].points.map(function (p) { return [p.x, p.y]; });
+            """
+        )
+        assert out == {"rows": 3, "saved": [[-3, 2], [3, 2], [4, 2]]}
+
+    def test_a_template_loaded_during_a_save_does_not_lose_an_edit(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            holdWhen = function (req) { return req.method === 'PUT'; };
+            var cells = inputs('cross', 0);
+            cells[0].value = '-2'; cells[0].dispatchEvent(makeEvent('change'));  // in flight
+            cells[1].value = '7'; cells[1].dispatchEvent(makeEvent('change'));   // waiting
+            editor().querySelector('[data-pe="template-load"]').click();
+            templateDialog.onApplied();
+            await settle();
+            cells = inputs('cross', 0);
+            cells[2].value = '1.5'; cells[2].dispatchEvent(makeEvent('change'));
+            holdWhen = null; release(); await settle();
+            var p = model.paths[0].points[0];
+            out.saved = [p.x, p.y, p.z];
+            """
+        )
+        assert out["saved"] == [-2, 7, 1.5]
+
+    def test_an_older_picture_answer_does_not_replace_a_newer_one(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            holdWhen = function (req) { return req.url === '/api/paths/view'; };
+            var cells = inputs('cross', 0);
+            cells[0].value = '-2'; cells[0].dispatchEvent(makeEvent('change'));
+            await settle();
+            cells[1].value = '7'; cells[1].dispatchEvent(makeEvent('change'));
+            await settle();
+            out.asked = held.length;
+            releaseLast(); await settle();   // the picture after both edits
+            out.handle = handles()[0].getAttribute('cy');
+            release(); await settle();       // the one asked for between them
+            out.after = handles()[0].getAttribute('cy');
+            """
+        )
+        assert out == {"asked": 2, "handle": "1060", "after": "1060"}
+
     def test_a_rename_and_an_edit_land_on_the_renamed_path(self) -> None:
         out = _editor(
             """

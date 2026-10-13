@@ -366,6 +366,7 @@ globalThis.fetch = function (url, opts) {
 };
 function release() { var all = held; held = []; all.forEach(function (a) { a(); }); }
 function releaseFirst() { held.shift()(); }
+function releaseLast() { held.pop()(); }
 
 globalThis.window = globalThis;
 globalThis.document = document;

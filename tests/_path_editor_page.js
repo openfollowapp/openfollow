@@ -9,7 +9,8 @@ var confirmed = [], confirmAnswer = true, toasts = [];
 function modalConfirm(opts) { confirmed.push(opts); return Promise.resolve(confirmAnswer); }
 function showToast(message) { toasts.push(message); }
 window.saveCurrentSectionAsTemplate = function () {};
-window.modalChooseTemplate = function () {};
+var templateDialog = null;
+window.modalChooseTemplate = function (opts) { templateDialog = opts; };
 window.DOMParser = function () {};
 window.DOMParser.prototype.parseFromString = function (text) {
     return { querySelector: function () { return null; }, body: { textContent: text } };

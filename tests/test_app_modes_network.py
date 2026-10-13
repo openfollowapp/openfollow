@@ -2979,9 +2979,15 @@ def _simple_app(monkeypatch, tmp_path, *, station: str = "", auto: str = "eth0",
     # Polled once a second like the real check, and just polled.
     app._last_config_check = 1e9
 
+    app._reload_applies = True
+
     def _check_config_reload() -> None:
+        from openfollow.configuration import load_config
+
         if app._last_config_check < 1.0:
             app._reloads += 1
+            if app._reload_applies:
+                app._config.psn_source_iface = load_config(app._config_path).psn_source_iface
 
     app._check_config_reload = _check_config_reload
     anm.enter_pi_network(app)
@@ -3136,11 +3142,35 @@ class TestTheSimpleInterfacePicker:
         _confirm_key(app, "pick:wlan0")
         assert load_config(app._config_path).psn_source_iface == "wlan0"
         assert app._reloads == 1
-        # The running config moves through the hot reload, never ahead of the file.
-        assert app._config.psn_source_iface == ""
+        assert app._config.psn_source_iface == "wlan0"
+        assert app._pi_network_active_iface == "wlan0"
         assert app._pi_network_picker == ""
         assert app._pi_network_banner_level == "success"
         assert anm.build_pi_network_rows(app)[app._pi_network_index]["key"] == "interface"
+
+    def test_a_pick_the_reload_did_not_apply_is_not_reported_as_done(self, monkeypatch, tmp_path) -> None:
+        app = _simple_app(monkeypatch, tmp_path)
+        app._reload_applies = False
+        _confirm_key(app, "interface")
+        _confirm_key(app, "pick:wlan0")
+        assert app._pi_network_banner_level == "caution"
+        # Still read for eth0, so nothing on the screen edits wlan0 with eth0's values.
+        assert app._pi_network_active_iface == "eth0"
+
+    def test_a_read_that_overruns_leaves_nothing_to_apply(self, monkeypatch, tmp_path) -> None:
+        app = _simple_app(monkeypatch, tmp_path)
+        monkeypatch.setattr(anm, "_refresh_pi_network_bounded", lambda _app: None)
+        _confirm_key(app, "interface")
+        _confirm_key(app, "pick:wlan0")
+        assert app._pi_network_pending_config is None
+        assert "apply" not in _keys(app)
+
+    def test_a_change_made_elsewhere_while_open_locks_the_fields(self, monkeypatch, tmp_path) -> None:
+        app = _simple_app(monkeypatch, tmp_path)
+        app._config.psn_source_iface = "wlan0"
+        labels = [row.get("label") for row in anm.build_pi_network_rows(app)]
+        assert "The network settings changed. Close and reopen this screen." in labels
+        assert "apply" not in _keys(app)
 
     def test_choosing_automatic_clears_the_pin(self, monkeypatch, tmp_path) -> None:
         from openfollow.configuration import load_config
@@ -3257,9 +3287,11 @@ class TestTheSimpleMethodAndDns:
         app._pi_network_worker.join(timeout=5)
         assert adapter.apply_calls[0][1].dns == ()
 
-    def test_a_static_apply_keeps_the_dns_shown(self, monkeypatch, tmp_path) -> None:
+    @pytest.mark.parametrize("method", [Ipv4Method.STATIC, Ipv4Method.DHCP_WITH_MANUAL_ADDRESS])
+    def test_an_apply_with_a_manual_address_keeps_the_dns_shown(self, monkeypatch, tmp_path, method) -> None:
+        """A manual address is stored as a manual profile: it has no lease to take DNS from."""
         adapter = _FakeAdapter()
-        adapter.method = Ipv4Method.STATIC
+        adapter.method = method
         app = _simple_app(monkeypatch, tmp_path, adapter=adapter)
         _confirm_key(app, "apply")
         app._pi_network_worker.join(timeout=5)

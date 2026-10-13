@@ -4,7 +4,7 @@ The station's network adapters and their IPv4 settings. When this page is unreac
 
 ## Network mode
 
-- **Simple** – one interface carries everything: PSN, discovery, marker sync, OTP, RTTrPM, OSC in and out, and network video. The web UI answers on every interface. A station on one show network needs nothing more.
+- **Simple** – one interface carries everything: PSN, discovery, marker sync, OTP, RTTrPM, OSC in and out, and network video. The web UI answers on every interface, unless `web_bind` in `config.toml` fixes it to one address. A station on one show network needs nothing more.
 - **Advanced** – every function can be pinned to its own interface under **Network Interface Assignment**, adapters can be labelled, and VLANs can be added.
 
 The mode belongs to this station: a config export leaves it out, and an import or **Restore defaults** keeps it. It can be changed here only, not on the station's screen. A station that has never chosen starts in Simple, or in Advanced when its config already pins a function or the web UI to an interface.

@@ -129,6 +129,17 @@ def test_a_vlan_left_over_in_simple_is_named(net_server, tmp_path, present) -> N
     assert "Remove it in Advanced mode." in body
 
 
+@pytest.mark.parametrize("supported", [True, False])
+def test_only_a_vlan_the_backend_can_remove_is_named_as_left(net_server, tmp_path, present, supported) -> None:  # noqa: F811
+    fake, base = net_server
+    fake.interfaces.append("eth0.20")
+    fake.kinds = {"eth0.20": "vlan"}
+    fake.supports_vlans = supported
+    _set(tmp_path, network_mode="simple")
+    _status, body = _get(base, "/section/network/status")
+    assert "still on this station" not in body
+
+
 def test_the_advanced_card_lists_every_interface(net_server, tmp_path, present) -> None:  # noqa: F811
     _fake, base = net_server
     _status, body = _get(base, "/section/network/status")
@@ -187,7 +198,7 @@ def test_the_change_list_names_every_pin_and_vlan() -> None:
     cfg.otp_output.source_iface = "eth0.20"
     vlans = {"supported": True, "vlans": [{"name": "eth0.20"}, {"name": "eth0.30"}, {"name": "eth0.40"}]}
     changes = simple_mode_changes(cfg, vlans, station_iface="eth0.40", session_iface="eth0.30")
-    assert changes["pins"] == [
+    assert [(label, iface) for _key, label, iface in changes["pins"]] == [
         ("OTP output", "eth0.20"),
         ("OSC Destination Desk", "eth0.20"),
         ("OSC Destination 198.51.100.4:9000", "eth1"),
@@ -219,6 +230,19 @@ def test_the_preview_is_read_when_the_switch_is_clicked(net_server, tmp_path, pr
         "kept": [],
         "restart": True,
     }
+
+
+def test_the_preview_warns_of_a_restart_for_a_pin_still_in_force(net_server, present, monkeypatch) -> None:  # noqa: F811
+    import openfollow.web.server as server_module
+
+    monkeypatch.setattr(
+        server_module.ConfigWebServer,
+        "get_web_bind_advisory",
+        lambda self: {"bind_at_start": "", "iface_at_start": "wlan0"},
+    )
+    _fake, base = net_server
+    preview = json.loads(_get(base, "/section/network/mode/preview")[1])
+    assert (preview["pins"], preview["restart"]) == ([], True)
 
 
 def test_a_preview_with_nothing_to_change_is_empty(net_server, present) -> None:  # noqa: F811

@@ -373,6 +373,8 @@ class OpenFollowApp:
         # "method"), and the interface an Automatic station resolves to.
         self._pi_network_picker: str = ""
         self._pi_network_auto_iface: str = ""
+        # The station interface the screen's values were read for; None when read in Advanced.
+        self._pi_network_read_station: str | None = None
         # Whether the operator edited a DNS server; untouched, a DHCP apply sends none.
         self._pi_network_dns_edited: bool = False
         # Interface-address enumeration for the screen's rows, held briefly so

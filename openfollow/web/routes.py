@@ -1460,9 +1460,8 @@ def _plane_pin_label(cfg: AppConfig, key: str) -> str:
     """The Assignment panel's name for a ``plane_pins`` key."""
     if key in _PLANE_PIN_LABELS:
         return _PLANE_PIN_LABELS[key]
-    dest_id = key[len(_DEST_PIN_PREFIX) : -len(_DEST_PIN_SUFFIX)]
-    dest = next((d for d in cfg.osc_destinations.destinations if d.id == dest_id), None)
-    return f"OSC Destination {(dest.name or f'{dest.host}:{dest.port}') if dest else dest_id}"
+    dest = next((d for d in cfg.osc_destinations.destinations if plane_pin_key(d.id) == key), None)
+    return f"OSC Destination {(dest.name or f'{dest.host}:{dest.port}') if dest else key}"
 
 
 def simple_mode_changes(
@@ -1470,14 +1469,14 @@ def simple_mode_changes(
 ) -> dict[str, Any]:
     """What switching ``cfg`` to Simple clears and removes.
 
-    ``pins``: ``(function, interface)`` per per-plane pin and the web UI pin.
+    ``pins``: ``(key, function, interface)`` per per-plane pin and the web UI pin.
     ``vlans``: VLAN interfaces to remove, every one listed but the station
     interface (``station_iface``, already resolved from Automatic) and the one
     this session arrives on. ``kept``: ``(vlan, reason)`` for the session's.
     """
     from openfollow.configuration import plane_pins
 
-    pins = [(_plane_pin_label(cfg, key), iface) for key, iface in plane_pins(cfg)]
+    pins = [(key, _plane_pin_label(cfg, key), iface) for key, iface in plane_pins(cfg)]
     names = [str(v.get("name", "")) for v in vlans.get("vlans", [])] if vlans.get("supported") else []
     others = [name for name in names if name and name != station_iface]
     return {
@@ -5899,7 +5898,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         mode_cfg = _request_scoped_config()
         net["mode"] = mode_cfg.network_mode
         if mode_cfg.network_mode == NETWORK_MODE_SIMPLE:
-            _narrow_to_station(net, mode_cfg.psn_source_iface, vlan_names)
+            # Only what the backend lists as a VLAN: that is what Advanced can remove.
+            _narrow_to_station(net, mode_cfg.psn_source_iface, set(vlan_ids) if net["supports_vlans"] else set())
             labels = {}
         _add_adapter_fields(net, mode_cfg.interface_labels if labels is None else labels, label_result)
         # The single-interface snapshot belongs to the row being configured.
@@ -6369,6 +6369,17 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         changes["station"] = station
         return changes
 
+    def _simple_switch_restarts(cfg: AppConfig) -> bool:
+        """Whether switching ``cfg`` to Simple restarts OpenFollow: a web UI pin is in force.
+
+        In force is what the server started with, saved or not; without a
+        runtime to say, it is the saved pin.
+        """
+        advisory = server.get_web_bind_advisory()
+        if "iface_at_start" in advisory:
+            return bool(advisory["iface_at_start"])
+        return bool(cfg.web_bind_iface)
+
     @app.get("/section/network/mode/preview")
     def network_mode_preview() -> Any:
         """What switching to Simple would clear and remove, read when the switch is clicked."""
@@ -6382,12 +6393,12 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         return json.dumps(
             {
                 "station": f"Automatic ({station})" if station and not cfg.psn_source_iface else station or "Automatic",
-                "pins": [f"{label}: {display_name(iface, labels)}" for label, iface in changes["pins"]],
+                "pins": [f"{label}: {display_name(iface, labels)}" for _key, label, iface in changes["pins"]],
                 "vlans": [display_name(name, labels) for name in changes["vlans"]],
                 # The interface names the switch posts back, matching ``vlans``.
                 "remove": list(changes["vlans"]),
                 "kept": [f"{display_name(name, labels)} – {reason}" for name, reason in changes["kept"]],
-                "restart": any(label == _PLANE_PIN_LABELS["web_bind_iface"] for label, _ in changes["pins"]),
+                "restart": _simple_switch_restarts(cfg),
             }
         )
 
@@ -6408,11 +6419,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         vlans = (
             [name for name in _simple_changes(_request_scoped_config())["vlans"] if name in confirmed] if simple else []
         )
-        # A web UI pin cleared but not yet restarted is still in force.
-        web_pinned = bool(server.get_web_bind_advisory().get("iface_at_start"))
         with _config_write_lock:
             cfg = _load_config_for_edit()
-            web_pinned = web_pinned or bool(cfg.web_bind_iface)
+            restart = simple and _simple_switch_restarts(cfg)
             cfg.network_mode = mode
             enforce_network_mode(cfg)
             save_config(cfg, server.config_path)
@@ -6423,7 +6432,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             if not result.ok:
                 logger.warning("Switching to Simple left VLAN %s: %s", name, result.message)
         restarting = refused = False
-        if simple and web_pinned and _web_bind_restart_pending(cfg, resolve_web_bind_for(cfg)):
+        if restart:
             restarting = server.request_restart_unless_updating()
             refused = not restarting
         if not (restarting or refused):

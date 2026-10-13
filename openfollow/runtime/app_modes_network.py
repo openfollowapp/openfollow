@@ -129,6 +129,8 @@ class _NetworkSnapshot:
     # Simple: what an Automatic station interface resolves to, read here because
     # it probes the routing table.
     auto_iface: str = ""
+    # The station interface the read was made for; None when not read for Simple.
+    station: str | None = None
 
 
 def _simple(app: OpenFollowApp) -> bool:
@@ -155,14 +157,15 @@ def _read_pi_network(app: OpenFollowApp) -> _NetworkSnapshot:
         auto = "" if station else auto_station_iface()
         if station and station not in names:
             # Never another interface in its place: the screen would edit one it does not name.
-            return _NetworkSnapshot(True, interfaces, station, None, None, methods, adapters, auto)
+            return _NetworkSnapshot(True, interfaces, station, None, None, methods, adapters, auto, station)
         # Automatic with no address anywhere edits the first interface, never one left over from a visit.
         active = station or auto or interfaces[0].name
     if active not in names:
         active = interfaces[0].name
     state = reading.states.get(active)
     pending = state.ipv4 if state is not None else Ipv4Config(method=Ipv4Method.DHCP)
-    return _NetworkSnapshot(True, interfaces, active, state, pending, methods, adapters, auto)
+    station_read = str(getattr(app._config, "psn_source_iface", "") or "") if _simple(app) else None
+    return _NetworkSnapshot(True, interfaces, active, state, pending, methods, adapters, auto, station_read)
 
 
 def _apply_pi_network_snapshot(app: OpenFollowApp, snap: _NetworkSnapshot) -> None:
@@ -184,6 +187,7 @@ def _apply_pi_network_snapshot(app: OpenFollowApp, snap: _NetworkSnapshot) -> No
     app._pi_network_methods = snap.methods
     app._pi_network_adapters = snap.adapters
     app._pi_network_auto_iface = snap.auto_iface
+    app._pi_network_read_station = snap.station
     app._pi_network_state_cache = snap.state
     app._pi_network_pending_config = snap.pending
     app._pi_network_dns_edited = False
@@ -642,10 +646,21 @@ def _simple_rows(
         )
 
     present = name in {iface.name for iface in getattr(app, "_pi_network_interfaces", None) or []}
+    # Read for another station interface, or in Advanced: the values below are not this one's.
+    current = getattr(app, "_pi_network_read_station", None) == station
     if not present:
         missing = f"{name} is not connected." if name else "This station has no network interface."
         rows.append({"kind": "notice", "level": "error", "label": missing, "value": ""})
-    editable = writable and present
+    elif not current:
+        rows.append(
+            {
+                "kind": "notice",
+                "level": "info",
+                "label": "The network settings changed. Close and reopen this screen.",
+                "value": "",
+            }
+        )
+    editable = writable and present and current
     method = pending.method if pending else Ipv4Method.DHCP
     # Named, because Automatic with no address anywhere edits the first interface.
     rows.append({"kind": "header", "label": f"IPv4 \u2013 {name}" if name else "IPv4"})
@@ -802,9 +817,15 @@ def _pick_station_iface(app: OpenFollowApp, name: str) -> None:
     # Applied now, not on the next one-second poll: the screen re-reads from the running config.
     app._last_config_check = 0.0
     app._check_config_reload()
-    app._pi_network_active_iface = name
+    # A read that overruns its budget must not leave the old interface's settings to apply to this one.
+    app._pi_network_pending_config = None
+    app._pi_network_state_cache = None
+    app._pi_network_read_station = None
     _refresh_pi_network_bounded(app)
-    _set_banner(app, f"All traffic now uses {name or 'the automatic interface'}.", "success")
+    if _station_iface(app) != name:
+        _set_banner(app, "Saved, but not applied yet. Check the station's status rows.", "caution")
+    else:
+        _set_banner(app, f"All traffic now uses {name or 'the automatic interface'}.", "success")
     _focus_row(app, "interface")
 
 
@@ -1017,10 +1038,10 @@ def _close_pi_network_iface(app: OpenFollowApp) -> None:
 
 def _leave_pi_network_level(app: OpenFollowApp) -> None:
     """Cancel backs out one level, so it never skips the list on the way out."""
-    if getattr(app, "_pi_network_picker", ""):
+    if _simple(app) and str(getattr(app, "_pi_network_picker", "") or ""):
         _close_picker(app)
         return
-    if getattr(app, "_pi_network_open_iface", ""):
+    if not _simple(app) and str(getattr(app, "_pi_network_open_iface", "") or ""):
         _close_pi_network_iface(app)
         return
     exit_pi_network(app)
@@ -1413,7 +1434,7 @@ def _apply_pi_network(app: OpenFollowApp) -> None:
     if adapter is None or pending is None or not iface:
         _set_banner(app, "No network adapter available.")
         return
-    if pending.method != Ipv4Method.STATIC and not getattr(app, "_pi_network_dns_edited", False):
+    if pending.method == Ipv4Method.DHCP and not getattr(app, "_pi_network_dns_edited", False):
         # The servers shown are what DHCP handed out; sent back they would pin them over the lease's.
         pending = replace(pending, dns=())
     errors = validate_apply(pending.method, pending.address, pending.prefix, pending.router, list(pending.dns))

@@ -14,7 +14,7 @@ import shutil
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -2507,29 +2507,12 @@ def enforce_network_mode(cfg: AppConfig) -> None:
         dest.source_iface = ""
 
 
-def starting_network_mode(data: Mapping[str, Any]) -> str:
-    """The mode a raw TOML config without ``network_mode`` starts in.
-
-    Advanced when it sets a per-plane pin or ``web_bind_iface``, else Simple.
-    VLANs and interface labels do not count.
-    """
-
-    def _set(section: Any, key: str) -> bool:
-        value = section.get(key) if isinstance(section, Mapping) else None
-        return isinstance(value, str) and bool(value.strip())
-
-    dests = data.get("osc_destinations")
-    dest_list = dests.get("destinations") if isinstance(dests, Mapping) else None
-    pinned = any(_set(data.get(owner) if owner else data, name) for _key, owner, name, _ in PLANE_PIN_FIELDS) or any(
-        _set(d, "source_iface") for d in dest_list or () if isinstance(d, Mapping)
-    )
-    return NETWORK_MODE_ADVANCED if pinned else NETWORK_MODE_SIMPLE
-
-
 def _coerce_network_mode(cfg: AppConfig) -> str:
-    """``network_mode`` read case- and space-blind; anything else keeps the mode the pins imply.
+    """``network_mode`` read case- and space-blind; anything else is the mode the pins imply.
 
-    A typo must never read as Simple and erase every pin.
+    That is also how a config without the field starts: Advanced when it pins a
+    plane or the web UI (VLANs and labels do not count), else Simple. A typo
+    must never read as Simple and erase every pin.
     """
     raw = cfg.network_mode.strip().lower() if isinstance(cfg.network_mode, str) else None
     if raw in NETWORK_MODES:
@@ -2632,8 +2615,7 @@ class AppConfig:
     # Device-local: it names this box.
     station_fqdn: str = ""
     # "simple": the station interface carries every plane; "advanced": per-plane
-    # pins. Device-local. A config without it starts in the mode its pins imply
-    # (``starting_network_mode``).
+    # pins. Device-local. A config without it starts in the mode its pins imply.
     network_mode: str = NETWORK_MODE_SIMPLE
 
     # Web-triggered update settings (signed-.deb GitHub-release installer)
@@ -3044,8 +3026,8 @@ def load_config(path: str = "config.toml", *, strict: bool = False) -> AppConfig
 
             _otp["source_iface"] = get_iface_for_ip(_legacy_otp_ip.strip())
 
-    if "network_mode" not in data:
-        data["network_mode"] = starting_network_mode(data)
+    # Missing, it is decided from the pins (``_coerce_network_mode``).
+    data.setdefault("network_mode", None)
 
     # Build sub-config instances from their TOML sections
     sub_kwargs: dict[str, Any] = {}

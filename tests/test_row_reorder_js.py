@@ -19,18 +19,18 @@ pytestmark = [pytest.mark.unit, pytest.mark.skipif(shutil.which("node") is None,
 _TESTS = Path(__file__).parent
 
 
-# An OSC Transmitters list and a list of plain reorder rows, three rows each.
+# An OSC Destinations list and a list of plain reorder rows, three rows each.
 _OSC_ROW = (
-    '<details class="osc-binding-row" data-row-id="{0}" data-reorder-url="/section/osc_bindings/reorder"'
-    ' data-reorder-target="osc-bindings-section"><summary>'
-    '<span class="osc-binding-drag-handle" draggable="true">x</span>{0}</summary></details>'
+    '<details class="osc-destination-row" data-row-id="{0}" data-reorder-url="/section/osc_destinations/reorder"'
+    ' data-reorder-target="osc-destinations-section"><summary>'
+    '<span class="osc-destination-drag-handle" draggable="true">x</span>{0}</summary></details>'
 )
 _PLAIN_ROW = (
     '<tr class="reorder-row" data-row-id="{0}"><td><span class="row-drag-handle" draggable="true">x</span></td></tr>'
 )
 # A second plain list with the same ids, and a note in the OSC list that is not a row.
 _MARKUP = (
-    '<div class="osc-bindings-list" id="osc">'
+    '<div class="osc-destinations-list" id="osc">'
     + "".join(_OSC_ROW.format(i) for i in "abc")
     + '<p>note</p></div><table><tbody id="plain">'
     + "".join(_PLAIN_ROW.format(i) for i in "012")
@@ -86,8 +86,8 @@ def test_an_osc_list_posts_its_new_order_through_htmx() -> None:
     assert out["posted"] == [
         [
             "POST",
-            "/section/osc_bindings/reorder",
-            {"target": "#osc-bindings-section", "swap": "outerHTML", "values": {"order": "c,a,b"}},
+            "/section/osc_destinations/reorder",
+            {"target": "#osc-destinations-section", "swap": "outerHTML", "values": {"order": "c,a,b"}},
         ]
     ]
     assert out["events"] == []

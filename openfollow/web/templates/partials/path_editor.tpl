@@ -84,6 +84,7 @@ function peArrowhead(x, y, ux, uy, half, side) {
     var waiting = [];         // writes not sent yet, oldest first; one is in flight at a time
     var writing = false;
     var edits = 0;            // a load asked for before the latest edit is out of date
+    var removing = false;     // Chrome fires change and blur on a focused field a redraw removes
 
     // Resolves the station's JSON answer; rejects with saveError's {error, action, href}.
     function api(method, url, body) {
@@ -128,7 +129,7 @@ function peArrowhead(x, y, ux, uy, half, side) {
     function textInput(attrs, onCommit) {
         var input = make('input', Object.assign({ type: 'text' }, attrs));
         function commit() {
-            if (input.value === input.defaultValue) return;
+            if (removing || input.value === input.defaultValue) return;
             if (onCommit(input.value) !== false) input.defaultValue = input.value;
         }
         input.addEventListener('change', commit);
@@ -255,7 +256,9 @@ function peArrowhead(x, y, ux, uy, half, side) {
     function renderList() {
         var list = q('list');
         var keep = document.activeElement;
+        removing = true;
         list.innerHTML = '';
+        removing = false;
         q('empty').hidden = data.paths.length > 0;
         var locks = {};
         Object.keys(data.locks).forEach(function(id) {

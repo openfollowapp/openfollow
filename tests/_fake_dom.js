@@ -127,7 +127,16 @@ El.prototype.append = function () {
         this.appendChild(typeof n === 'string' ? new Text(n) : n);
     }
 };
+// Chrome takes focus off a field it removes while the field is still in place, firing its change and blur.
+function blurIfRemoved(n) {
+    var focused = document._focus;
+    if (focused && n.nodeType === 1 && n.contains(focused)) {
+        document._focus = null;
+        leave(focused);
+    }
+}
 El.prototype.removeChild = function (n) {
+    blurIfRemoved(n);
     var i = this.childNodes.indexOf(n);
     if (i >= 0) this.childNodes.splice(i, 1);
     n.parentNode = null;
@@ -135,6 +144,7 @@ El.prototype.removeChild = function (n) {
 };
 El.prototype.remove = function () { if (this.parentNode) this.parentNode.removeChild(this); };
 El.prototype.replaceChildren = function () {
+    this.childNodes.forEach(blurIfRemoved);
     this.childNodes.slice().forEach(function (n) { n.parentNode = null; });
     this.childNodes = [];
     this.append.apply(this, arguments);

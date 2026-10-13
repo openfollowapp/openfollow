@@ -157,7 +157,7 @@ class OverlayState:
     grid_thickness: int = _GRID_THICKNESS_DEFAULT
     grid_transparency: float = _GRID_TRANSPARENCY_DEFAULT
     # Ground grid: a polygon floor at its own Z. ``ground_grid_active`` redirects
-    # the floor elements of markers inside it; ``ground_grid_visible`` draws it.
+    # the floor elements of markers inside it; ``ground_grid_visible`` draws it, on its own.
     ground_grid_active: bool = False
     ground_grid_visible: bool = False
     ground_grid_z: float = 0.0

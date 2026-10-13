@@ -258,7 +258,8 @@ def sync_grid_config(state: OverlayState, cfg: Any) -> None:
 
 
 def sync_ground_grid_config(state: OverlayState, cfg: Any) -> None:
-    """Copy the ground grid into the overlay state; inactive unless enabled with three corners."""
+    """Copy the ground grid into the overlay state: ``enabled`` drops markers inside it onto its height
+    and ``visible`` draws it, each on its own; neither without experimental features or three corners."""
     # getattr: a shim config without the section draws no ground grid.
     gg = getattr(cfg, "ground_grid", None)
     if gg is None:
@@ -268,8 +269,10 @@ def sync_ground_grid_config(state: OverlayState, cfg: Any) -> None:
         return
     state.ground_grid_vertices = [(float(v[0]), float(v[1])) for v in gg.vertices]
     state.ground_grid_z = _soft_float(gg.z_offset, 0.0)
-    state.ground_grid_active = _soft_bool(gg.enabled, False) and len(state.ground_grid_vertices) >= 3
-    state.ground_grid_visible = state.ground_grid_active and _soft_bool(gg.visible, True)
+    experimental = _soft_bool(getattr(getattr(cfg, "ui", None), "show_experimental_features", False), False)
+    usable = experimental and len(state.ground_grid_vertices) >= 3
+    state.ground_grid_active = usable and _soft_bool(gg.enabled, False)
+    state.ground_grid_visible = usable and _soft_bool(gg.visible, True)
 
 
 def sync_ui_config(state: OverlayState, cfg: Any) -> None:

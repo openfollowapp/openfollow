@@ -1,7 +1,8 @@
 # Ground Grid
 
 > Experimental. Shown only with **Experimental features** on (General tab);
-> turning those off also switches the ground grid off and keeps its polygon.
+> turning those off hides the ground grid and switches **Ground grid** off; the
+> polygon and **Display** are kept.
 
 A second floor at its own height, for an area that is lower or higher than the
 main grid: a pit, a riser, a ramp's landing. It is one polygon drawn on the
@@ -26,11 +27,13 @@ Changes to the polygon show at once but are kept only when you **Save** (or **Ap
 
 ## Settings
 
-- **Ground grid** – use the polygon. Off, nothing changes on the Operator
-  Screen; the polygon is kept.
+- **Ground grid** – markers standing inside the polygon get their floor
+  elements drawn down to its height. Off, they stay on the main grid; the
+  polygon is kept.
 - **Display** – draw the ground grid: the main grid's lines inside the
   polygon, lined up with the main grid, plus the polygon's outline, in the
-  main grid's colour, thickness and opacity. Off, markers still drop onto it.
+  main grid's colour, thickness and opacity, whether or not **Ground grid**
+  is on. Off, markers inside it still drop onto it when **Ground grid** is on.
 - **Height** – the ground grid's height in world coordinates, the same frame
   as the main grid's Z offset and every marker. A pit below the main grid has
   a lower value; the dropline of a marker inside it can also point up when

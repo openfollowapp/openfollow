@@ -1210,10 +1210,11 @@ class TestPathsOnTheOperatorScreen:
 
 class TestGroundGridSync:
     @staticmethod
-    def _cfg(**gg: object):
+    def _cfg(*, experimental: bool = True, **gg: object):
         from openfollow.configuration import AppConfig, GroundGridConfig
 
         cfg = AppConfig()
+        cfg.ui.show_experimental_features = experimental
         cfg.ground_grid = GroundGridConfig(**gg)
         return cfg
 
@@ -1231,18 +1232,35 @@ class TestGroundGridSync:
     @pytest.mark.parametrize(
         "gg",
         [
-            {"enabled": False, "vertices": _SQUARE},
             {"enabled": True, "vertices": _SQUARE[:2]},
+            {"enabled": True, "vertices": _SQUARE, "experimental": False},
         ],
-        ids=["disabled", "two-corners"],
+        ids=["two-corners", "experimental-off"],
     )
-    def test_inactive_ground_grid_neither_redirects_nor_draws(self, gg: dict) -> None:
+    def test_unusable_ground_grid_neither_redirects_nor_draws(self, gg: dict) -> None:
         from openfollow.runtime.overlay_draw_scene import floor_z_at
 
         state = build_initial_overlay_state(self._cfg(z_offset=-0.9, **gg))
         assert state.ground_grid_active is False
         assert state.ground_grid_visible is False
         assert floor_z_at(state, 1.0, 1.0) == 0.0
+
+    def test_a_displayed_ground_grid_draws_without_dropping_markers(self) -> None:
+        from openfollow.runtime.overlay_draw_scene import floor_z_at
+
+        state = build_initial_overlay_state(self._cfg(enabled=False, z_offset=-0.9, vertices=self._SQUARE))
+        assert state.ground_grid_visible is True
+        assert state.ground_grid_active is False
+        assert floor_z_at(state, 1.0, 1.0) == 0.0
+
+    def test_turning_experimental_features_off_hides_it_at_once(self) -> None:
+        from openfollow.runtime.services_marker_visuals import sync_ground_grid_config
+
+        cfg = self._cfg(enabled=True, vertices=self._SQUARE)
+        state = build_initial_overlay_state(cfg)
+        cfg.ui.show_experimental_features = False
+        sync_ground_grid_config(state, cfg)
+        assert (state.ground_grid_active, state.ground_grid_visible) == (False, False)
 
     def test_hidden_ground_grid_still_redirects(self) -> None:
         state = build_initial_overlay_state(self._cfg(enabled=True, visible=False, vertices=self._SQUARE))

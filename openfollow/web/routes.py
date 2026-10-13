@@ -4754,7 +4754,7 @@ def _picture_size(data: Mapping[str, Any]) -> tuple[float, float]:
         if isinstance(data["w"], bool) or isinstance(data["h"], bool):
             raise TypeError("bool")
         w, h = float(data["w"]), float(data["h"])
-    except (KeyError, TypeError, ValueError) as exc:
+    except (KeyError, TypeError, ValueError, OverflowError) as exc:
         raise ValueError("w and h must be the picture's size in pixels") from exc
     _require_wizard_canvas(w, h)
     return w, h
@@ -4773,7 +4773,10 @@ def _world_polylines(raw: Any, dims: int) -> list[list[list[float]]]:
         for pt in line:
             if not isinstance(pt, list) or len(pt) != dims or any(isinstance(v, bool) for v in pt):
                 raise ValueError(f"each point must be {dims} numbers")
-            vals = [float(v) for v in pt]
+            try:
+                vals = [float(v) for v in pt]
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(f"each point must be {dims} numbers") from exc
             if not all(math.isfinite(v) for v in vals):
                 raise ValueError("points must be finite")
             pts.append(vals)
@@ -4789,7 +4792,7 @@ def _register_scene_routes(app: Bottle, server: ConfigWebServer) -> None:
     import numpy as np
 
     from openfollow.runtime.overlay_draw_scene import _MAX_GRID_LINES_PER_AXIS
-    from openfollow.scene.ground_grid import grid_segments_in_polygon
+    from openfollow.scene.ground_grid import grid_segments_in_polygon, main_grid_steps
     from openfollow.scene.solver import invert_overlay_distortion, unproject_to_plane
 
     def _body() -> dict[str, Any] | str:
@@ -4834,7 +4837,7 @@ def _register_scene_routes(app: Bottle, server: ConfigWebServer) -> None:
             x, y, z = float(data["x"]), float(data["y"]), float(data["z"])
             if not all(np.isfinite(v) for v in (x, y, z)):
                 raise ValueError("not finite")
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, OverflowError):
             return _json_error(400, "x, y, z, w and h must be numbers")
         cfg = load_config(server.config_path)
         params, k1, k2 = _camera_view(cfg)
@@ -4859,14 +4862,15 @@ def _register_scene_routes(app: Bottle, server: ConfigWebServer) -> None:
             z = float(data["z"])
             if not math.isfinite(z):
                 raise ValueError("z must be finite")
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, OverflowError):
             return _json_error(400, "vertices, z, w and h must be numbers")
         cfg = load_config(server.config_path)
         g = cfg.grid
         verts = verts[:GROUND_GRID_MAX_VERTICES]
         corners = [[*v, z] for v in verts]
+        step_x, step_y = main_grid_steps(g.width, g.depth, g.spacing, _MAX_GRID_LINES_PER_AXIS)
         lines = grid_segments_in_polygon(
-            verts, g.x_offset - g.width / 2.0, g.y_offset - g.depth / 2.0, g.spacing, z, _MAX_GRID_LINES_PER_AXIS
+            verts, g.x_offset - g.width / 2.0, g.y_offset - g.depth / 2.0, step_x, step_y, z, _MAX_GRID_LINES_PER_AXIS
         )
         outline = corners + corners[:1] if len(corners) >= 3 else []
         return json.dumps(
@@ -8581,6 +8585,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 payload = {
                     "camera": asdict(cfg.camera),
                     "grid": asdict(cfg.grid),
+                    "ground_grid": asdict(cfg.ground_grid),
                 }
         elif template_type == "paths":
             with _config_write_lock:
@@ -8695,12 +8700,14 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # The schema requires BOTH halves, so this apply path needs no
             # conditional checks – a partial template is rejected by the
             # loader and would have returned 404 / 400 above.
-            from openfollow.configuration import CameraConfig, GridConfig
+            from openfollow.configuration import CameraConfig, GridConfig, GroundGridConfig
 
             with _config_write_lock:
                 cfg = load_config(server.config_path)
                 cfg.camera = CameraConfig(**tpl.payload["camera"])
                 cfg.grid = GridConfig(**tpl.payload["grid"])
+                if "ground_grid" in tpl.payload:
+                    cfg.ground_grid = GroundGridConfig(**tpl.payload["ground_grid"])
                 save_config(cfg, server.config_path)
             return json.dumps({"ok": True})
         if tpl.type == "paths":

@@ -354,3 +354,20 @@ def test_an_imperial_station_types_feet_and_sees_what_is_stored() -> None:
     assert out["type"] == "text"
     assert out["x"] == pytest.approx(0.9144)
     assert out["echo"] == "Stored: 0.914 m, 2.000 m"
+
+
+def test_a_drawing_closes_at_the_last_corner_save_keeps() -> None:
+    from openfollow.configuration import GROUND_GRID_MAX_VERTICES
+
+    out = _editor(
+        f"""
+        button('ground-grid-draw-btn');
+        for (var i = 0; i < {GROUND_GRID_MAX_VERTICES + 3}; i++) {{
+            var a = 2 * Math.PI * i / {GROUND_GRID_MAX_VERTICES + 3};
+            at('click', 640 + 300 * Math.cos(a), 360 + 300 * Math.sin(a));
+        }}
+        out.count = stored().length;
+        out.drawing = !document.getElementById('ground-grid-cancel-btn').disabled;
+        """
+    )
+    assert out == {"count": GROUND_GRID_MAX_VERTICES, "drawing": False}

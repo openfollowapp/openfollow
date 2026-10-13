@@ -4,6 +4,7 @@
 % _imp = _us is UnitSystem.IMPERIAL
 % _len = unit_suffix_length(_us)
 % _gg = config.ground_grid
+% from openfollow.configuration import GROUND_GRID_MAX_VERTICES
 <form id="ground-grid-section" class="section experimental-feature {{'saved' if defined('saved') and saved else ''}}" data-fold-key="ground_grid" data-help="ground_grid"
       hx-post="/section/ground_grid" hx-target="#ground-grid-section" hx-swap="outerHTML" hx-trigger="submit">
     <div class="section-head">
@@ -196,6 +197,11 @@
         onDragEnd: store,
         onDraftClose: function(drawn) { verts = drawn; store(); renderVertices(); },
         onRender: function() {
+            // Save keeps this many corners, so a drawing closes at the last one.
+            if (plan.draft && plan.draft.vertices.length >= {{GROUND_GRID_MAX_VERTICES}}) {
+                plan.finishDraft();
+                return;
+            }
             var drawing = !!plan.draft;
             finishBtn.disabled = !(drawing && plan.draft.vertices.length >= 3);
             cancelBtn.disabled = !drawing;

@@ -452,6 +452,21 @@ class TestSaveCameraGrid:
         assert entry.template.payload["camera"]["pos_x"] == 1.5
         assert entry.template.payload["grid"]["width"] == 12.0
 
+    def test_the_ground_grid_goes_with_the_camera_and_grid(self, live_server) -> None:
+        _, base, cfg_path = live_server
+        cfg = load_config(cfg_path)
+        cfg.ground_grid.vertices = [[0.0, 0.0], [2.0, 0.0], [2.0, 2.0]]
+        cfg.ground_grid.z_offset = -1.2
+        save_config(cfg, cfg_path)
+        status, body = _post_json(base, "/api/templates/camera_grid/save", {"name": "Pit Rig"})
+        assert status == 200
+        from openfollow.templates.loader import find_template
+
+        entry = find_template(_templates_root(cfg_path), json.loads(body)["filename"])
+        assert entry is not None and entry.template is not None
+        assert entry.template.payload["ground_grid"]["z_offset"] == -1.2
+        assert entry.template.payload["ground_grid"]["vertices"] == [[0.0, 0.0], [2.0, 0.0], [2.0, 2.0]]
+
 
 class TestSaveZones:
     def test_reads_current_zones_section_from_config(self, live_server) -> None:
@@ -784,6 +799,29 @@ class TestApplyCameraGrid:
         cfg = load_config(cfg_path)
         assert cfg.camera.pos_x == 2.5
         assert cfg.grid.width == 20.0
+
+    def test_a_template_with_a_ground_grid_replaces_this_station_s(self, live_server) -> None:
+        _, base, cfg_path = live_server
+        write_user_template(
+            _templates_root(cfg_path),
+            "camera_grid",
+            "Pit",
+            {"camera": {}, "grid": {}, "ground_grid": {"z_offset": -0.8, "vertices": [[0, 0], [1, 0], [1, 1]]}},
+        )
+        status, _ = _post_empty(base, "/api/templates/camera_grid.pit.oftemplate/apply?confirm=1")
+        assert status == 200
+        gg = load_config(cfg_path).ground_grid
+        assert (gg.z_offset, gg.vertices) == (-0.8, [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]])
+
+    def test_a_template_without_one_leaves_this_station_s_ground_grid(self, live_server) -> None:
+        _, base, cfg_path = live_server
+        cfg = load_config(cfg_path)
+        cfg.ground_grid.vertices = [[0.0, 0.0], [2.0, 0.0], [2.0, 2.0]]
+        save_config(cfg, cfg_path)
+        write_user_template(_templates_root(cfg_path), "camera_grid", "Old", {"camera": {}, "grid": {}})
+        status, _ = _post_empty(base, "/api/templates/camera_grid.old.oftemplate/apply?confirm=1")
+        assert status == 200
+        assert load_config(cfg_path).ground_grid.vertices == [[0.0, 0.0], [2.0, 0.0], [2.0, 2.0]]
 
     def test_partial_camera_only_template_rejected_at_write_time(
         self,

@@ -15,7 +15,7 @@ import pytest
 import openfollow.web.discovery as discovery_module
 from openfollow.configuration import load_config, save_config
 from openfollow.runtime.overlay_draw_scene import project
-from openfollow.scene.ground_grid import grid_segments_in_polygon
+from openfollow.scene.ground_grid import grid_segments_in_polygon, main_grid_steps
 from openfollow.web.server import ConfigWebServer
 from tests._ports import live_on_free_port
 
@@ -97,6 +97,10 @@ class TestProject:
             {"w": True, "h": _H, "points": []},
             {"w": 0, "h": _H, "points": []},
             {"h": _H, "points": []},
+            {"w": _W, "h": _H, "points": [[None, 0, 0]]},
+            {"w": _W, "h": _H, "points": [[{}, 0, 0]]},
+            {"w": _W, "h": _H, "points": [[10**400, 0, 0]]},
+            {"w": 10**400, "h": _H, "points": []},
         ],
     )
     def test_malformed_input_is_refused(self, live, body: dict) -> None:  # noqa: ANN001
@@ -138,6 +142,7 @@ class TestUnproject:
             {"x": float("nan"), "y": 1, "z": 0, "w": _W, "h": _H},
             {"x": True, "y": 1, "z": 0, "w": _W, "h": _H},
             {"x": 1, "y": 1, "z": None, "w": _W, "h": _H},
+            {"x": 10**400, "y": 1, "z": 0, "w": _W, "h": _H},
         ],
     )
     def test_numbers_that_are_not_numbers_are_refused(self, live, body: dict) -> None:  # noqa: ANN001
@@ -156,8 +161,9 @@ class TestGroundGridView:
         g = load_config(config_path).grid
         status, data = _call(base, "/api/ground_grid/view", {"w": _W, "h": _H, "vertices": _SQUARE, "z": -0.8})
         assert status == 200
+        step_x, step_y = main_grid_steps(g.width, g.depth, g.spacing, 200)
         segs = grid_segments_in_polygon(
-            _SQUARE, g.x_offset - g.width / 2, g.y_offset - g.depth / 2, g.spacing, -0.8, 200
+            _SQUARE, g.x_offset - g.width / 2, g.y_offset - g.depth / 2, step_x, step_y, -0.8, 200
         )
         assert len(data["lines"]) == len(segs)
         assert data["lines"][0] == [[pytest.approx(v) for v in p] for p in project(cam, segs[0], _W, _H).tolist()]
@@ -182,6 +188,9 @@ class TestGroundGridView:
             {"w": _W, "h": _H, "vertices": "abc", "z": 0},
             {"w": _W, "h": _H, "vertices": [[0, 0, 0]], "z": 0},
             {"w": _W, "h": _H, "vertices": [[0, "y"]], "z": 0},
+            {"w": _W, "h": _H, "vertices": [[None, 0]], "z": 0},
+            {"w": _W, "h": _H, "vertices": [[10**400, 0]], "z": 0},
+            {"w": _W, "h": _H, "vertices": _SQUARE, "z": 10**400},
         ],
     )
     def test_malformed_input_is_refused(self, live, body: dict) -> None:  # noqa: ANN001

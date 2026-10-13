@@ -71,6 +71,6 @@ Each button drives one action. Typing or detecting an index another action alrea
 
 **Detect** – click a binding's **Detect** button, then press the button on the device; the field fills in automatically. It works whether or not the feature is enabled, as long as the device is connected.
 
-Bindable actions: **Reset marker** (return the marker to its default position), **Next / Previous marker** (cycle the selected marker, when this is the only controller – see above), **Speed up / Speed down** (step the move-speed), **Toggle help**, **Toggle zones**, and, as experimental features, **Pathfinder** (lock the marker onto the nearest active path, or release it) and **Toggle paths**. The Settings menu has no 3D-mouse binding: it needs a keyboard (or gamepad) to open and navigate.
+Bindable actions: **Reset marker** (return the marker to its default position), **Next / Previous marker** (cycle the selected marker, when this is the only controller – see above), **Speed up / Speed down** (step the move-speed), **Toggle help**, **Toggle zones**, and, as experimental features, **Pathfinder** (lock the marker onto the nearest active path, or release it; moving it past an end of the path that releases it lets it go too) and **Toggle paths**. The Settings menu has no 3D-mouse binding: it needs a keyboard (or gamepad) to open and navigate.
 
 **Save** – store the settings. Changes apply immediately, with no restart, but are lost on restart unless you save.

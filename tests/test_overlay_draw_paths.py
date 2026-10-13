@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""Paths on the video overlay: a line through each curve, a dot on each point, white while locked."""
+"""Paths on the video overlay: a line through each curve, its ends marked, white while locked."""
 
 from __future__ import annotations
 

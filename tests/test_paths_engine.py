@@ -154,6 +154,12 @@ class TestMove:
         assert _round(engine.move(1, 1.0, 0.0, 5.0)) == (2.0, 0.0, 0.0)
         assert not engine.is_locked(1)
 
+    def test_an_absolute_position_past_an_end_that_releases_stops_there(self) -> None:
+        """Only a push lets go at such an end: OSC and Fully Automatic keep the marker on the path."""
+        engine = self._locked(_path("out", [(0, 0, 0), (2, 0, 0)], active=True, release_at_end=True), at=(1, 0, 0))
+        assert _round(engine.project(1, 9.0, 0.0)) == (2.0, 0.0, 0.0)
+        assert engine.is_locked(1)
+
     def test_an_absolute_position_lands_on_the_nearest_point_it_can_reach(self) -> None:
         apart = _path("apart", [(20, 0, 0), (30, 0, 0)], active=True)
         engine = self._locked(CROSS, RAMP, apart, at=(-3.0, 0.0, 0.0))

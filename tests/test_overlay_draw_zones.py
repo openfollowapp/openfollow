@@ -442,23 +442,18 @@ class TestZoneCache:
         # Two levels: translucent zones blended twice round differently by a level.
         assert np.abs(direct - cached).max() <= 2
 
-    @pytest.mark.parametrize("antialias", ["NONE", "GRAY"])
-    def test_labels_in_the_picture_take_the_screens_font_options(self, antialias: str) -> None:
+    @pytest.mark.parametrize("background", [(0.2, 0.3, 0.4, 1.0), (0.2, 0.3, 0.4, 0.5)], ids=["opaque", "translucent"])
+    @pytest.mark.parametrize("antialias", ["NONE", "GRAY", "SUBPIXEL"])
+    def test_labels_look_the_same_cached_or_direct_whatever_the_screens_antialias(
+        self, antialias: str, background: tuple[float, ...]
+    ) -> None:
         import cairo
 
         options = cairo.FontOptions()
         options.set_antialias(getattr(cairo, f"ANTIALIAS_{antialias}"))
+        options.set_subpixel_order(cairo.SUBPIXEL_ORDER_RGB)
         options.set_hint_style(cairo.HINT_STYLE_NONE)
         options.set_hint_metrics(cairo.HINT_METRICS_OFF)
-        self._assert_cached_looks_direct(self._state(), font_options=options)
-
-    @pytest.mark.parametrize("background", [(0.2, 0.3, 0.4, 1.0), (0.2, 0.3, 0.4, 0.5)], ids=["opaque", "translucent"])
-    def test_labels_look_the_same_cached_or_direct_on_a_subpixel_screen(self, background: tuple[float, ...]) -> None:
-        import cairo
-
-        options = cairo.FontOptions()
-        options.set_antialias(cairo.ANTIALIAS_SUBPIXEL)
-        options.set_subpixel_order(cairo.SUBPIXEL_ORDER_RGB)
         self._assert_cached_looks_direct(self._state(), background=background, font_options=options)
 
     @pytest.mark.parametrize(
@@ -554,7 +549,7 @@ class TestZoneCache:
             {"state": {"lens_k2": 0.02}},
             {"size": (1280, 720)},
             {"scale": 2.0},
-            {"antialias": "NONE"},
+            {"hint_style": "FULL"},
         ],
         ids=[
             "vertices",
@@ -587,9 +582,9 @@ class TestZoneCache:
         cr.get_target = lambda: SimpleNamespace(  # type: ignore[method-assign]
             get_device_scale=lambda: (scale, scale), get_font_options=cairo.FontOptions
         )
-        if "antialias" in change:
+        if "hint_style" in change:
             options = cairo.FontOptions()
-            options.set_antialias(getattr(cairo, f"ANTIALIAS_{change['antialias']}"))
+            options.set_hint_style(getattr(cairo, f"HINT_STYLE_{change['hint_style']}"))
             cr.get_font_options = lambda: options  # type: ignore[method-assign]
         w, h = change.get("size", (1920, 1080))
         draw_zones(FakeRenderer(), cr, state, w, h, cache)
@@ -607,6 +602,19 @@ class TestZoneCache:
         cr.set_font_options(options)
         draw_zones(FakeRenderer(), cr, self._state(), 1920, 1080, ZoneCache() if cached else None)
         assert cr.get_font_options() == options
+
+    def test_an_antialias_change_alone_keeps_the_picture(self) -> None:
+        import cairo
+
+        from openfollow.runtime.overlay_draw_zones import ZoneCache
+
+        cache, state, before, after = ZoneCache(), self._state(), FakeCairo(), FakeCairo()
+        draw_zones(FakeRenderer(), before, state, 1920, 1080, cache)
+        options = cairo.FontOptions()
+        options.set_antialias(cairo.ANTIALIAS_SUBPIXEL)
+        after.get_font_options = lambda: options  # type: ignore[method-assign]
+        draw_zones(FakeRenderer(), after, state, 1920, 1080, cache)
+        assert after.surfaces[0] is before.surfaces[0]
 
     def test_a_change_to_a_zone_that_is_not_drawn_keeps_the_picture(self) -> None:
         from openfollow.runtime.overlay_draw_zones import ZoneCache

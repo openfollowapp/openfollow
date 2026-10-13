@@ -140,9 +140,11 @@ class ZoneCache:
         scale = cr.get_target().get_device_scale()
         options = cr.get_target().get_font_options()
         options.merge(cr.get_font_options())
+        # The labels are always gray (``_paint_zones``), so the screen's antialias does not change the picture.
+        options.set_antialias(cairo.ANTIALIAS_GRAY)
         # Keyed on what is drawn, so every projection input is covered by the outlines.
         key = (
-            tuple((z.outline.shape, z.outline.tobytes(), z.color, z.name, z.is_occupied, z.count) for z in zones),
+            tuple((z.outline.tobytes(), z.color, z.name, z.is_occupied, z.count) for z in zones),
             w,
             h,
             scale,

@@ -1596,8 +1596,28 @@ def _interface_assignment_rows(
     return rows
 
 
+# The grid fields that place its corners; a change under this (m) is a length re-read from how a form shows it.
+_GRID_CORNER_FIELDS = ("width", "depth", "x_offset", "y_offset", "z_offset")
+_GRID_CORNER_TOLERANCE_M = 1e-3
+
+
+def _grid_corner_placement(cfg: AppConfig) -> tuple[float, ...]:
+    return tuple(float(getattr(cfg.grid, name)) for name in _GRID_CORNER_FIELDS)
+
+
+def _forget_corner_pins_off_grid(cfg: AppConfig, before: tuple[float, ...]) -> None:
+    """Drop ``camera.corner_pins`` once the grid's corners moved from ``before``: they were pinned on those."""
+    after = _grid_corner_placement(cfg)
+    if any(abs(a - b) > _GRID_CORNER_TOLERANCE_M for a, b in zip(before, after, strict=True)):
+        cfg.camera.corner_pins = []
+
+
 def apply_section_data(cfg: AppConfig, section: str, data: Mapping[str, Any]) -> bool:
-    """Apply section updates in-place. Returns False for unknown sections."""
+    """Apply section updates in-place. Returns False for unknown sections.
+
+    A grid write that moves the grid's corners drops ``camera.corner_pins``, so a write that brings
+    pins for the new grid applies the grid first.
+    """
     if section == "interface_assignment":
         _apply_interface_assignment(cfg, data)
         return True
@@ -1725,6 +1745,7 @@ def apply_section_data(cfg: AppConfig, section: str, data: Mapping[str, Any]) ->
     if parser_map is None:  # pragma: no cover
         return False
     target = getattr(cfg, section_attr)
+    corners_before = _grid_corner_placement(cfg)
     before = {name: getattr(target, name) for name in _BINDING_FIELDS_BY_ATTR.get(section_attr, ())}
     _apply_parsed_updates(target, data, parser_map)
     if before:
@@ -1741,6 +1762,7 @@ def apply_section_data(cfg: AppConfig, section: str, data: Mapping[str, Any]) ->
         cfg.mouse3d.__post_init__()
     elif section == "grid":
         cfg.grid.__post_init__()
+        _forget_corner_pins_off_grid(cfg, corners_before)
     elif section == "ground_grid":
         cfg.ground_grid.__post_init__()
     elif section == "camera":
@@ -3300,10 +3322,10 @@ def _apply_import_data(current_cfg: AppConfig, data: dict[str, Any]) -> AppConfi
     # General section (top-level scalar fields)
     apply_section_data(cfg, "general", strip_device_local_fields("general", data))
 
-    # Sections that are always live-reloadable.
+    # Sections that are always live-reloadable. The grid goes before the camera, whose corner pins it drops.
     for section in (
-        "camera",
         "grid",
+        "camera",
         "ground_grid",
         "controller",
         "osc",

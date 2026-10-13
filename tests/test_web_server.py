@@ -2032,6 +2032,72 @@ def test_a_camera_form_save_keeps_the_calibration_points(live_server) -> None:
     assert (saved.pos_x, [p.distance_a for p in saved.calibration_points], saved.corner_pins) == (1.5, [21.4], pins)
 
 
+_HELD_PINS = [[0.8, 0.9], [0.2, 0.9], [0.3, 0.6], [0.7, 0.6]]
+
+
+def _post_grid(base: str, how: str, fields: dict) -> int:
+    if how == "form":
+        return _post_form(base, "/section/grid", {k: str(v) for k, v in fields.items()})[0]
+    return _post_json(base, "/api/config/grid" if how == "api" else "/api/config/grid/broadcast", fields)[0]
+
+
+@pytest.mark.parametrize("how", ["form", "api", "broadcast"])
+@pytest.mark.parametrize(
+    "moved", [{"width": 12.0}, {"depth": 8.0}, {"x_offset": 0.5}, {"y_offset": 2.0}, {"z_offset": 0.3}]
+)
+def test_a_grid_write_that_moves_the_corners_forgets_the_corner_pins(live_server, how: str, moved: dict) -> None:
+    """The Setup Wizard's corner pins were placed on the grid's corners; held against others they are wrong."""
+    server, base = live_server
+    save_config(AppConfig(camera=CameraConfig(corner_pins=_HELD_PINS)), server.config_path)
+    assert _post_grid(base, how, moved) == 200
+    assert load_config(server.config_path).camera.corner_pins == []
+
+
+@pytest.mark.parametrize("how", ["form", "api", "broadcast"])
+@pytest.mark.parametrize(
+    "kept", [{"spacing": 0.5}, {"max_height": 4.0}, {"width": 10.0, "depth": 6.0}, {"width": 10.0004}]
+)
+def test_a_grid_write_that_leaves_the_corners_keeps_the_corner_pins(live_server, how: str, kept: dict) -> None:
+    server, base = live_server
+    save_config(AppConfig(camera=CameraConfig(corner_pins=_HELD_PINS)), server.config_path)
+    assert _post_grid(base, how, kept) == 200
+    assert load_config(server.config_path).camera.corner_pins == _HELD_PINS
+
+
+def test_an_imperial_grid_form_save_of_the_same_grid_keeps_the_corner_pins(live_server) -> None:
+    """The form shows each length to a hundredth of an inch; posting it back unchanged is no move."""
+    from openfollow.configuration import GridConfig
+    from openfollow.units import UnitSystem, format_length
+
+    server, base = live_server
+    cfg = AppConfig(camera=CameraConfig(corner_pins=_HELD_PINS), grid=GridConfig(width=10.37, y_offset=2.91))
+    cfg.ui.unit_system = "imperial"
+    save_config(cfg, server.config_path)
+    shown = {
+        name: format_length(getattr(cfg.grid, name), UnitSystem.IMPERIAL)
+        for name in ("width", "depth", "x_offset", "y_offset", "z_offset")
+    }
+    assert _post_grid(base, "form", shown) == 200
+    assert load_config(server.config_path).camera.corner_pins == _HELD_PINS
+
+
+@pytest.mark.parametrize(
+    ("camera", "grid", "pins"),
+    [
+        ({"pos_x": 1.0}, {"width": 12.0}, []),  # another grid, and no pins of its own
+        ({"corner_pins": [[0.1, 0.9], [0.9, 0.9], [0.8, 0.5], [0.2, 0.5]]}, {"width": 12.0}, None),  # its own pins
+        ({"pos_x": 1.0}, {"spacing": 0.5}, _HELD_PINS),  # the same corners
+    ],
+)
+def test_an_import_keeps_corner_pins_only_on_the_grid_they_belong_to(live_server, camera, grid, pins) -> None:
+    server, base = live_server
+    save_config(AppConfig(camera=CameraConfig(corner_pins=_HELD_PINS)), server.config_path)
+    status, _ = _post_json(base, "/api/config/import", {"camera": camera, "grid": grid})
+    assert status == 200
+    expected = camera["corner_pins"] if pins is None else pins
+    assert load_config(server.config_path).camera.corner_pins == expected
+
+
 def test_form_post_osc_renders_saved_partial(live_server) -> None:
     _, base = live_server
     status, body = _post_form(base, "/section/osc", {"enabled": "true", "port": "8765"})

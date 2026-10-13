@@ -1363,6 +1363,46 @@ def test_the_solve_page_is_a_name_the_server_takes() -> None:
     assert isinstance(page, str) and 0 < len(page) <= 64
 
 
+# Review's Apply on a page whose saves answer at once, each body kept by its URL in the order sent.
+_APPLY_PAGE = """
+var window = { OpenFollow: { saveError: { show: function() {} } } }, sent = {}, order = [], SENSOR_SIZES = [];
+function invalidLengthFields() { return []; } function wizLensPairValid() { return true; }
+function getState() { return { camera: { pos_x: 1, lens_k1: 0, lens_k2: 0 }, grid: { width: 12 }, lens: {} }; }
+var document = { querySelector: function() { return null; } };
+function answered(value) {
+  return { then: function(f) { var r = f(value); return r && typeof r.then === 'function' ? r : answered(r); },
+           catch: function() { return this; } };
+}
+function fetch(url, opts) { sent[url] = JSON.parse(opts.body); order.push(url); return answered({ ok: true }); }
+"""
+
+
+def test_apply_saves_the_grid_before_the_camera_that_brings_the_corner_pins() -> None:
+    """A grid write that moves the corners drops the saved corner pins, so the camera's must land after it."""
+    order = run_wizard_js(
+        "(function() { window.applyAndFinish(); return order; })()",
+        functions=("calibNumber", "calibComplete", "calibSaved", "calibHeldFor"),
+        prelude=_APPLY_PAGE
+        + "var CALIB_ENABLED = true, calibHeldPins = null; function wizardWorldCorners() { return []; }"
+        + wizard_function("applyAndFinish", prefix="window."),
+        calibPoints=[],
+    )
+    assert order == ["/api/config/grid", "/api/config/camera"]
+
+
+def test_apply_sends_the_camera_only_once_the_grid_is_answered() -> None:
+    sent = run_wizard_js(
+        "(function() { window.applyAndFinish(); return order; })()",
+        functions=("calibNumber", "calibComplete", "calibSaved", "calibHeldFor"),
+        prelude=_APPLY_PAGE
+        + "var CALIB_ENABLED = true, calibHeldPins = null; function wizardWorldCorners() { return []; }"
+        + "fetch = function(url) { order.push(url); return { then: function() { return this; }, catch: Object }; };"
+        + wizard_function("applyAndFinish", prefix="window."),
+        calibPoints=[],
+    )
+    assert sent == ["/api/config/grid"]
+
+
 @pytest.mark.parametrize("enabled", [True, False])
 @pytest.mark.parametrize(
     ("held", "world", "pins"),
@@ -1373,17 +1413,12 @@ def test_apply_saves_the_points_with_the_pose_with_or_without_the_section(enable
     """Without the section they are the saved points, each place kept only with the pose it came from; the
     corner pins go with them while they belong to this pose and grid, and none otherwise."""
     payload = run_wizard_js(
-        "(function() { window.applyAndFinish(); return sent[0]; })()",
+        "(function() { window.applyAndFinish(); return sent['/api/config/camera']; })()",
         functions=("calibNumber", "calibComplete", "calibSaved", "calibHeldFor"),
-        prelude=f"""
-var window = {{ OpenFollow: {{ saveError: {{ show: function() {{}} }} }} }}, CALIB_ENABLED = {json.dumps(enabled)};
-var calibHeldPins = {json.dumps(_GOOD_HELD if held else None)};
+        prelude=_APPLY_PAGE
+        + f"""
+var CALIB_ENABLED = {json.dumps(enabled)}, calibHeldPins = {json.dumps(_GOOD_HELD if held else None)};
 function wizardWorldCorners() {{ return {json.dumps(world)}; }}
-var sent = [], SENSOR_SIZES = [];
-function invalidLengthFields() {{ return []; }} function wizLensPairValid() {{ return true; }}
-function getState() {{ return {{ camera: {{ pos_x: 1, lens_k1: 0, lens_k2: 0 }}, grid: {{}}, lens: {{}} }}; }}
-var document = {{ querySelector: function() {{ return null; }} }};
-function fetch(_url, opts) {{ sent.push(JSON.parse(opts.body)); return {{ then: function() {{ return this; }} }}; }}
 """
         + wizard_function("applyAndFinish", prefix="window."),
         calibPoints=[{**_POINT, "pin": [0.25, 0.5], "position": [2.5, 9.0, 0.0]}, {**_POINT, "distance_a": None}],

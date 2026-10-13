@@ -4130,7 +4130,8 @@
     return h && rows(h.world, 3) && rows(h.corners, 2) ? h : null;
   }
 
-  // A fresh run starts from the corner pins the saved pose was solved from, on the grid saved with it.
+  // A fresh run starts from the corner pins the saved pose was solved from: the server drops them
+  // whenever the grid's corners move, so they are on the saved grid.
   function calibHoldSavedPins() {
     calibHeldPins = calibHeldRestored({ world: wizardWorldCorners(), corners: CALIB_SAVED_CORNERS });
   }
@@ -4662,19 +4663,19 @@
     var held = calibHeldFor();
     cameraPayload.corner_pins = held ? held.corners : [];
 
-    Promise.all([
-      fetch('/api/config/camera', {
+    // The grid first: a grid write that moves the corners drops the saved corner pins.
+    fetch('/api/config/grid', {
+      method: 'POST', headers: headers,
+      body: JSON.stringify({
+        width: gridData.width, depth: gridData.depth, spacing: gridData.spacing,
+        x_offset: gridData.x_offset, y_offset: gridData.y_offset, z_offset: gridData.z_offset,
+      }),
+    }).then(function(grid) {
+      return fetch('/api/config/camera', {
         method: 'POST', headers: headers,
         body: JSON.stringify(cameraPayload),
-      }),
-      fetch('/api/config/grid', {
-        method: 'POST', headers: headers,
-        body: JSON.stringify({
-          width: gridData.width, depth: gridData.depth, spacing: gridData.spacing,
-          x_offset: gridData.x_offset, y_offset: gridData.y_offset, z_offset: gridData.z_offset,
-        }),
-      }),
-    ]).then(async function(responses) {
+      }).then(function(camera) { return [camera, grid]; });
+    }).then(async function(responses) {
       var labeled = [
         { name: 'camera', response: responses[0] },
         { name: 'grid', response: responses[1] },

@@ -529,15 +529,15 @@ build log. When a newer build host's bottles move up, raise
 A post-build self-check runs the frozen app with a scrubbed environment (`env -i
 HOME=$HOME OPENFOLLOW_SELFCHECK=1 …`) and fails the build unless the bundled
 `gi` / GStreamer elements and the detection deps all resolve from inside the
-`.app` (typefinders and the `GstPbutils` typelib included) and the app exits
-cleanly; a failure prints the exit status and everything the app wrote, such as
-the missing elements or a crash. The elements it requires
-(`REQUIRED_GST_ELEMENTS` in `launcher.py`) are every one the app builds on
-macOS: those its pipelines create by name, and those `decodebin` plugs for Media
-Gallery uploads and clips and for H.264 / H.265 / MPEG-TS streams.
-`tests/test_macos_bundle_contract.py` fails when an element the sources create
-by name, or one the diagnostics bundle checks, is missing from that list, and
-pins each listed element to a plugin the allowlist keeps.
+`.app` (every typelib the app pins, the `typefindfunctions` plugin and a
+`GstPbutils` Discoverer included) and the app exits cleanly; a failure prints
+the exit status and everything the app wrote, such as the missing elements or a
+crash. The elements it requires (`REQUIRED_GST_ELEMENTS` in `launcher.py`) are
+every one the app builds on macOS: those its pipelines create by name, and those
+`decodebin` plugs for Media Gallery uploads and clips and for H.264 / H.265 /
+MPEG-TS streams. `tests/test_macos_bundle_contract.py` fails when an element the
+sources create by name, or one the diagnostics bundle checks, is missing from
+that list, and pins each listed element to a plugin the allowlist keeps.
 
 The About page's **License**, **Third-party notices** and **Written offer** read
 `LICENSE`, `THIRD_PARTY_NOTICES.md` and `WRITTEN_OFFER.md` from beside the

@@ -110,20 +110,23 @@ def test_documents_land_at_the_bundle_root(spec_tree) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _required_namespaces() -> set[str]:
-    """Namespaces the sources pin with ``gi.require_version("<name>", ...)``."""
-    names: set[str] = set()
+def _gi_namespaces() -> tuple[set[tuple[str, str]], set[str]]:
+    """``(name, version)`` the sources pin, and every namespace they import from ``gi.repository``."""
+    pinned: set[tuple[str, str]] = set()
+    imported: set[str] = set()
     for path in (_REPO / "openfollow").rglob("*.py"):
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-            if (
+            if isinstance(node, ast.ImportFrom) and node.module == "gi.repository":
+                imported |= {alias.name for alias in node.names}
+            elif (
                 isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Attribute)
                 and node.func.attr == "require_version"
-                and node.args
-                and isinstance(node.args[0], ast.Constant)
+                and len(node.args) == 2
+                and all(isinstance(arg, ast.Constant) for arg in node.args)
             ):
-                names.add(node.args[0].value)
-    return names
+                pinned.add((node.args[0].value, node.args[1].value))
+    return pinned, imported | {name for name, _version in pinned}
 
 
 # The embedded browser imports it optionally and runs without it.
@@ -133,10 +136,15 @@ _OPTIONAL_NAMESPACES = frozenset({"WebKit2"})
 def test_every_typelib_the_sources_load_is_frozen(spec_tree) -> None:
     # PyInstaller's gi hooks collect a typelib only for a named gi.repository import.
     hidden = set(ast.literal_eval(_assigned(spec_tree, "hiddenimports")))
-    namespaces = _required_namespaces() - _OPTIONAL_NAMESPACES
-    assert "GstPbutils" in namespaces
-    missing = sorted(name for name in namespaces if f"gi.repository.{name}" not in hidden)
+    _pinned, namespaces = _gi_namespaces()
+    missing = sorted(name for name in namespaces - _OPTIONAL_NAMESPACES if f"gi.repository.{name}" not in hidden)
     assert not missing, f"add to hiddenimports in packaging/macos/openfollow.spec: {missing}"
+
+
+def test_selfcheck_loads_every_typelib_the_sources_pin() -> None:
+    pinned, _namespaces = _gi_namespaces()
+    required = {(name, version) for name, version in pinned if name not in _OPTIONAL_NAMESPACES}
+    assert required == set(_load("launcher").REQUIRED_TYPELIBS)
 
 
 # ---------------------------------------------------------------------------
@@ -276,8 +284,9 @@ def test_selfcheck_requires_what_decodebin_plugs_for_every_rtp_encoding(encoding
     assert _RTP_ENCODING_ELEMENTS[encoding] <= set(_REQUIRED_GST_ELEMENTS)
 
 
-def test_webp_plugin_is_kept(spec_tree) -> None:
-    assert "libgstwebp.dylib" in _plugin_allowlist(spec_tree)
+@pytest.mark.parametrize("plugin", ["libgstwebp.dylib", "libgsttypefindfunctions.dylib"])
+def test_plugins_the_selfcheck_cannot_name_by_element_are_kept(spec_tree, plugin) -> None:
+    assert plugin in _plugin_allowlist(spec_tree)
 
 
 @pytest.mark.parametrize("element", _REQUIRED_GST_ELEMENTS)

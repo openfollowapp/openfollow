@@ -30,6 +30,16 @@ APP_NAME = "OpenFollow"
 SEED_CONFIG_NAME = "config.seed.toml"
 STORAGE_PLACEHOLDER = "@STORAGE_PATH@"
 
+# Every typelib the app pins; the spec freezes each as a hidden import.
+REQUIRED_TYPELIBS = (
+    ("Gtk", "3.0"),
+    ("Gdk", "3.0"),
+    ("Gst", "1.0"),
+    ("GstApp", "1.0"),
+    ("GstPbutils", "1.0"),
+    ("Rsvg", "2.0"),
+)
+
 # Every element the app builds on macOS, each from a plugin the spec's allowlist
 # could drop. tests/test_macos_bundle_contract.py checks this against the sources.
 REQUIRED_GST_ELEMENTS = (
@@ -170,24 +180,26 @@ def run_export(export_args: list[str]) -> int:
 def run_selfcheck() -> int:
     """Verify the bundled native stack resolves; print OK / FAIL, return 0 / 1."""
     try:
+        import importlib
+
         import gi
 
-        gi.require_version("Gtk", "3.0")
-        gi.require_version("Gst", "1.0")
-        from gi.repository import Gst
+        for namespace, version in REQUIRED_TYPELIBS:
+            gi.require_version(namespace, version)
+            importlib.import_module(f"gi.repository.{namespace}")
+        from gi.repository import Gst, GstPbutils
 
         Gst.init(None)
         missing = [name for name in REQUIRED_GST_ELEMENTS if Gst.ElementFactory.find(name) is None]
         if missing:
             print(f"FAIL: missing GStreamer elements: {', '.join(missing)}")
             return 1
-        # decodebin identifies streams and uploads through these, not by element name.
-        if not Gst.TypeFindFactory.get_list():
-            print("FAIL: no GStreamer typefinders")
+        # decodebin identifies streams and uploads through its typefinders, not by element name.
+        if Gst.Registry.get().find_plugin("typefindfunctions") is None:
+            print("FAIL: missing GStreamer plugin: typefindfunctions")
             return 1
-        # The Media Gallery reads clip metadata through GstPbutils.Discoverer.
-        gi.require_version("GstPbutils", "1.0")
-        from gi.repository import GstPbutils  # noqa: F401
+        # The Media Gallery reads clip metadata through it; building one loads libgstpbutils.
+        GstPbutils.Discoverer.new(Gst.SECOND)
 
         # Video input plugins are discovered by walking the package at runtime;
         # PyInstaller can miss the dynamically imported ones (see openfollow.spec).
@@ -201,8 +213,6 @@ def run_selfcheck() -> int:
         if missing_inputs:
             print(f"FAIL: missing video input plugins: {', '.join(sorted(missing_inputs))}")
             return 1
-
-        import importlib
 
         for mod in ("onnxruntime", "cv2", "ultralytics"):
             importlib.import_module(mod)

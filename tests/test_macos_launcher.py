@@ -273,20 +273,33 @@ def test_run_export_returns_one_on_failure(launcher, monkeypatch, tmp_path) -> N
 
 
 def _install_fake_gst(
-    monkeypatch, missing: set[str], *, typefinders: bool = True, namespaces: frozenset[str] = frozenset()
+    monkeypatch,
+    missing: set[str],
+    *,
+    plugins: frozenset[str] = frozenset({"typefindfunctions"}),
+    namespaces: frozenset[str] = frozenset(),
+    discoverer_error: str = "",
 ) -> None:
     """Stand in for gi / Gst, resolving every element except ``missing``.
 
-    ``namespaces`` are the typelibs gi reports as unavailable.
+    ``plugins`` are the GStreamer plugins the registry holds, ``namespaces``
+    the typelibs gi reports as unavailable.
     """
+
+    def new_discoverer(timeout: int) -> object:
+        if discoverer_error:
+            raise RuntimeError(discoverer_error)
+        return object()
+
     gst = types.SimpleNamespace(
         init=lambda argv: None,
+        SECOND=1_000_000_000,
         ElementFactory=types.SimpleNamespace(find=lambda name: None if name in missing else object()),
-        TypeFindFactory=types.SimpleNamespace(get_list=lambda: [object()] if typefinders else []),
+        Registry=types.SimpleNamespace(
+            get=lambda: types.SimpleNamespace(find_plugin=lambda name: object() if name in plugins else None)
+        ),
     )
     repository = types.ModuleType("gi.repository")
-    repository.Gst = gst  # type: ignore[attr-defined]
-    repository.GstPbutils = types.SimpleNamespace()  # type: ignore[attr-defined]
     gi = types.ModuleType("gi")
 
     def require_version(namespace: str, version: str) -> None:
@@ -297,6 +310,16 @@ def _install_fake_gst(
     gi.repository = repository  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "gi", gi)
     monkeypatch.setitem(sys.modules, "gi.repository", repository)
+    for name, module in {
+        "Gst": gst,
+        "GstPbutils": types.SimpleNamespace(Discoverer=types.SimpleNamespace(new=new_discoverer)),
+        "GstApp": types.SimpleNamespace(),
+        "Gtk": types.SimpleNamespace(),
+        "Gdk": types.SimpleNamespace(),
+        "Rsvg": types.SimpleNamespace(),
+    }.items():
+        setattr(repository, name, module)
+        monkeypatch.setitem(sys.modules, f"gi.repository.{name}", module)
 
 
 @pytest.mark.parametrize("element", _load_launcher().REQUIRED_GST_ELEMENTS)
@@ -307,17 +330,25 @@ def test_selfcheck_fails_when_an_element_the_app_builds_is_missing(launcher, mon
     assert capsys.readouterr().out.strip() == f"FAIL: missing GStreamer elements: {element}"
 
 
-def test_selfcheck_fails_without_typefinders(launcher, monkeypatch, capsys) -> None:
-    # decodebin identifies a stream or an uploaded file through them.
-    _install_fake_gst(monkeypatch, set(), typefinders=False)
+def test_selfcheck_fails_without_the_typefinders_plugin(launcher, monkeypatch, capsys) -> None:
+    # decodebin identifies streams and uploads through it; another plugin's typefinder must not stand in.
+    _install_fake_gst(monkeypatch, set(), plugins=frozenset({"subparse"}))
 
     assert launcher.run_selfcheck() == 1
-    assert capsys.readouterr().out.strip() == "FAIL: no GStreamer typefinders"
+    assert capsys.readouterr().out.strip() == "FAIL: missing GStreamer plugin: typefindfunctions"
 
 
-def test_selfcheck_fails_without_the_discoverer_typelib(launcher, monkeypatch, capsys) -> None:
-    # The Media Gallery reads clip metadata through GstPbutils.Discoverer.
-    _install_fake_gst(monkeypatch, set(), namespaces=frozenset({"GstPbutils"}))
+@pytest.mark.parametrize("namespace", [name for name, _version in _load_launcher().REQUIRED_TYPELIBS])
+def test_selfcheck_fails_without_a_typelib_the_app_pins(launcher, monkeypatch, capsys, namespace) -> None:
+    _install_fake_gst(monkeypatch, set(), namespaces=frozenset({namespace}))
 
     assert launcher.run_selfcheck() == 1
-    assert capsys.readouterr().out.strip() == "FAIL: Namespace GstPbutils not available"
+    assert capsys.readouterr().out.strip() == f"FAIL: Namespace {namespace} not available"
+
+
+def test_selfcheck_fails_when_the_discoverer_cannot_be_built(launcher, monkeypatch, capsys) -> None:
+    # The typelib imports lazily; only building a Discoverer loads libgstpbutils.
+    _install_fake_gst(monkeypatch, set(), discoverer_error="cannot load libgstpbutils")
+
+    assert launcher.run_selfcheck() == 1
+    assert capsys.readouterr().out.strip() == "FAIL: cannot load libgstpbutils"

@@ -179,6 +179,8 @@ _VIDEO_DATA = st.dictionaries(
                 "picam_width",
                 "v4l2_device",
                 "avf_device_index",
+                "avf_unique_id",
+                "avf_device_name",
                 "testpattern_selected_media",
             ]
         ),
@@ -201,3 +203,16 @@ def test_apply_section_data_video_source_never_raises(
     if vst is not None:
         payload["video_source_type"] = vst
     assert apply_section_data(AppConfig(), "video_source", payload) is True
+
+
+@given(data=_VIDEO_DATA)
+def test_the_usb_camera_save_always_stores_a_clean_name(data: dict[str, Any]) -> None:
+    """Forced onto the macOS USB camera, which is not an available input on Linux."""
+    from openfollow.configuration import clean_avf_device_name
+
+    cfg = AppConfig(video_source_type="avf")
+    payload = {key: value for key, value in data.items() if key != "video_source_type"}
+
+    assert apply_section_data(cfg, "video_source", payload) is True
+    assert isinstance(cfg.avf_device_name, str)
+    assert cfg.avf_device_name == clean_avf_device_name(cfg.avf_device_name)

@@ -28,7 +28,7 @@ _RESOLVE_WAIT_S = 0.3
 
 @dataclass(frozen=True)
 class PinRefusal:
-    """Why a pinned input may not dial; ``detail`` names the interfaces.
+    """Why an input may not be built; ``detail`` names the interfaces, or the absent device.
 
     ``template`` repeats it with ``{pin}`` where the pinned interface goes, so the
     receiver can name that one the way the station labels it.

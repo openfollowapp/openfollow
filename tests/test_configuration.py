@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from types import SimpleNamespace
 
 try:
@@ -350,6 +351,50 @@ def test_stream_credentials_coerce_non_string_to_blank(field: str, bad: object) 
 
 def test_rtsp_user_is_stripped_on_load() -> None:
     assert AppConfig(rtsp_user="  operator  ").rtsp_user == "operator"
+
+
+@pytest.mark.parametrize("bad", [5, True, None, ["Capture Card"], {"a": 1}, 3.5])
+def test_avf_device_name_coerces_non_string_to_blank(bad: object) -> None:
+    """The name is rendered on the HUD and in the web UI; a hand-edited
+    non-string would reach the label as ``5`` or ``['Capture Card']``."""
+    assert AppConfig(avf_device_name=bad).avf_device_name == ""  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("Capture Card", "Capture Card"),
+        ("  Capture Card \n", "Capture Card"),
+        ("Capture\x00\x07 Card", "Capture Card"),
+        ("Capture ‮Card⁦", "Capture Card"),
+        ("‎", ""),
+    ],
+    ids=["plain", "whitespace", "control", "bidi", "only-direction-marks"],
+)
+def test_avf_device_name_is_cleaned_on_load(raw: str, expected: str) -> None:
+    assert AppConfig(avf_device_name=raw).avf_device_name == expected
+
+
+def test_avf_device_name_is_capped() -> None:
+    from openfollow.configuration import AVF_DEVICE_NAME_MAX_LEN
+
+    assert AppConfig(avf_device_name="C" * 1000).avf_device_name == "C" * AVF_DEVICE_NAME_MAX_LEN
+
+
+def test_avf_device_name_survives_a_toml_round_trip(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    save_config(AppConfig(avf_unique_id="0x14100000", avf_device_name="Capture Card"), str(path))
+
+    cfg = load_config(str(path))
+
+    assert (cfg.avf_unique_id, cfg.avf_device_name) == ("0x14100000", "Capture Card")
+
+
+def test_a_hand_edited_avf_device_name_is_cleaned_on_load(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text('avf_unique_id = "0x14100000"\navf_device_name = 42\n')
+
+    assert load_config(str(path)).avf_device_name == ""
 
 
 @pytest.mark.parametrize("field", ["rtsp_password", "srt_passphrase"])
@@ -1883,6 +1928,53 @@ def test_apply_runtime_swaps_video_on_plugin_field_change() -> None:
     assert app._config.srt_host == "srt://192.168.0.10:1600"
     assert app._web_commands.restart_requested is False
     assert app._runtime_services.video_swaps == [new_config]
+
+
+def test_recording_a_usb_cameras_name_swaps_no_video() -> None:
+    """The first save of an older config records the name; that must not black the video out."""
+    app = _DummyApp(AppConfig(video_source_type="avf", avf_unique_id="0x14100000"))
+
+    apply_runtime_config_changes(
+        app, AppConfig(video_source_type="avf", avf_unique_id="0x14100000", avf_device_name="Capture Card")
+    )
+
+    assert app._runtime_services.video_swaps == []
+    # Committed all the same: a later wholesale ``save_config(app._config)`` would write the blank back.
+    assert app._config.avf_device_name == "Capture Card"
+
+
+def test_a_recorded_camera_name_reaches_the_running_input() -> None:
+    """It names the camera on screen while that camera is not connected."""
+    app = _DummyApp(AppConfig(video_source_type="avf", avf_unique_id="0x14100000"))
+    noted: list[dict[str, object]] = []
+    app._video_receiver = SimpleNamespace(update_input_fields=noted.append)
+
+    apply_runtime_config_changes(
+        app, AppConfig(video_source_type="avf", avf_unique_id="0x14100000", avf_device_name="Capture Card")
+    )
+
+    assert noted == [{"avf_device_name": "Capture Card"}]
+
+
+def test_an_unchanged_save_hands_the_running_input_nothing() -> None:
+    cfg = AppConfig(video_source_type="avf", avf_unique_id="0x14100000", avf_device_name="Capture Card")
+    app = _DummyApp(cfg)
+    noted: list[dict[str, object]] = []
+    app._video_receiver = SimpleNamespace(update_input_fields=noted.append)
+
+    apply_runtime_config_changes(app, AppConfig(**{**cfg.__dict__}))
+
+    assert noted == []
+
+
+def test_choosing_another_usb_camera_still_swaps_video() -> None:
+    app = _DummyApp(AppConfig(video_source_type="avf", avf_unique_id="0x14100000", avf_device_name="Capture Card"))
+    new_config = AppConfig(video_source_type="avf", avf_unique_id="47B4B64B", avf_device_name="FaceTime HD Camera")
+
+    apply_runtime_config_changes(app, new_config)
+
+    assert app._runtime_services.video_swaps == [new_config]
+    assert app._config.avf_device_name == "FaceTime HD Camera"
 
 
 @pytest.mark.parametrize("station", ["eth1", ""], ids=["moved", "auto-detect"])

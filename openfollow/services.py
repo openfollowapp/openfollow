@@ -28,6 +28,7 @@ from openfollow.configuration import (
     ControllerButtonTrigger,
     HotkeyTrigger,
     effective_interface_labels,
+    is_simple_mode,
     viewed_with_controlled,
 )
 from openfollow.input import InputManager
@@ -3887,7 +3888,7 @@ class AppRuntimeServices:
 
         app = self._app
         cfg = app._config
-        simple = getattr(cfg, "network_mode", "") == "simple"
+        simple = is_simple_mode(cfg)
         system_stats = self._system_stats.stats if self._system_stats is not None else None
 
         cpu_percent = float(system_stats.cpu_percent) if system_stats is not None else 0.0

@@ -2521,18 +2521,27 @@ def starting_network_mode(data: Mapping[str, Any]) -> str:
     return NETWORK_MODE_ADVANCED if pinned else NETWORK_MODE_SIMPLE
 
 
-def network_mode_stored(path: str) -> bool:
-    """Whether the config file at ``path`` already records ``network_mode``."""
+def network_mode_unsaved(path: str) -> bool:
+    """Whether the config file at ``path`` reads but records no ``network_mode``.
+
+    A file that does not read says nothing: the config may have come from the
+    backup, and saving over the original would discard what the operator wrote.
+    """
     try:
         with open(path, "rb") as f:
-            return "network_mode" in tomllib.load(f)
+            return "network_mode" not in tomllib.load(f)
     except (OSError, tomllib.TOMLDecodeError):
         return False
 
 
+def is_simple_mode(cfg: Any) -> bool:
+    """Whether ``cfg`` is in Simple network mode; anything without the field reads as Advanced."""
+    return getattr(cfg, "network_mode", NETWORK_MODE_ADVANCED) == NETWORK_MODE_SIMPLE
+
+
 def effective_interface_labels(cfg: Any) -> dict[str, str]:
     """Labels the UI names interfaces by: none in Simple, where raw names are shown."""
-    if getattr(cfg, "network_mode", NETWORK_MODE_ADVANCED) == NETWORK_MODE_SIMPLE:
+    if is_simple_mode(cfg):
         return {}
     return dict(getattr(cfg, "interface_labels", None) or {})
 
@@ -3477,6 +3486,10 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
     # looping on subsequent passes.
     if new_config.web_pin != app._config.web_pin:
         app._config.web_pin = new_config.web_pin
+    # Read live by the Network screen, the labels and the video wording; the
+    # pins it clears arrive through their own sections above.
+    if new_config.network_mode != app._config.network_mode:
+        app._config.network_mode = new_config.network_mode
     # Read live by the HUD's outage rows and the Network screen; nothing to rebind.
     if new_config.interface_labels != app._config.interface_labels:
         app._config.interface_labels = dict(new_config.interface_labels)

@@ -2976,9 +2976,12 @@ def _simple_app(monkeypatch, tmp_path, *, station: str = "", auto: str = "eth0",
     app._config_path = str(tmp_path / "config.toml")
     save_config(AppConfig(psn_source_iface=station), app._config_path)
     app._reloads = 0
+    # Polled once a second like the real check, and just polled.
+    app._last_config_check = 1e9
 
     def _check_config_reload() -> None:
-        app._reloads += 1
+        if app._last_config_check < 1.0:
+            app._reloads += 1
 
     app._check_config_reload = _check_config_reload
     anm.enter_pi_network(app)
@@ -3019,6 +3022,27 @@ class TestTheSimpleScreen:
     def test_automatic_that_resolves_nowhere_says_only_automatic(self, monkeypatch, tmp_path) -> None:
         app = _simple_app(monkeypatch, tmp_path, auto="")
         assert _row(app, "interface")["value"] == "Automatic"
+
+    def test_a_station_interface_that_is_gone_edits_nothing_in_its_place(self, monkeypatch, tmp_path) -> None:
+        app = _simple_app(monkeypatch, tmp_path, station="eth9")
+        assert app._pi_network_active_iface == "eth9"
+        assert _row(app, "interface")["value"] == "eth9"
+        assert any(row.get("label") == "eth9 is not connected." for row in anm.build_pi_network_rows(app))
+        assert _row(app, "method")["kind"] == "display"
+        assert "apply" not in _keys(app) and "renew" not in _keys(app)
+
+    def test_the_ipv4_heading_names_the_interface_it_edits(self, monkeypatch, tmp_path) -> None:
+        app = _simple_app(monkeypatch, tmp_path, auto="")
+        headers = [row.get("label") for row in anm.build_pi_network_rows(app) if row.get("kind") == "header"]
+        assert "IPv4 \u2013 eth0" in headers
+
+    def test_a_station_with_no_interface_says_so(self, monkeypatch, tmp_path) -> None:
+        adapter = _FakeAdapter()
+        adapter._interfaces = []
+        app = _simple_app(monkeypatch, tmp_path, adapter=adapter)
+        assert any(
+            row.get("label") == "This station has no network interface." for row in anm.build_pi_network_rows(app)
+        )
 
     def test_a_named_interface_is_the_one_loaded(self, monkeypatch, tmp_path) -> None:
         app = _simple_app(monkeypatch, tmp_path, station="wlan0")
@@ -3181,7 +3205,8 @@ class TestTheSimpleMethodAndDns:
         [
             ("dns_1", "192.0.2.53", ("192.0.2.53",)),
             ("dns_2", "192.0.2.53", ("8.8.8.8", "192.0.2.53")),
-            ("dns_3", "192.0.2.53", ("8.8.8.8", "", "192.0.2.53")),
+            # An apply refuses an empty server, so none is left between two.
+            ("dns_3", "192.0.2.53", ("8.8.8.8", "192.0.2.53")),
             ("dns_1", "", ()),
             ("dns_1", "0.0.0.0", ()),
         ],

@@ -607,6 +607,13 @@ class TestSimpleNetworkModeWording:
         assert "pinned for video input" in failure_sentence(failure, where="cam")
         assert "Advanced mode" not in failure_action(failure)
 
+    @pytest.mark.parametrize("kind", [SourceKind.LISTENER, SourceKind.LOCAL])
+    @pytest.mark.parametrize("failure", [VideoFailure.UNREACHABLE, VideoFailure.NO_DATA])
+    def test_a_source_that_dials_nothing_keeps_its_wording(self, kind: SourceKind, failure: VideoFailure) -> None:
+        assert failure_sentence(failure, where="cam", kind=kind, simple=True) == failure_sentence(
+            failure, where="cam", kind=kind
+        )
+
     @pytest.mark.parametrize("failure", [VideoFailure.UNREACHABLE, VideoFailure.STALLED, VideoFailure.REFUSED])
     def test_other_failures_read_the_same_in_both_modes(self, failure: VideoFailure) -> None:
         assert failure_sentence(failure, where="cam", simple=True) == failure_sentence(failure, where="cam")

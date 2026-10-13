@@ -19,7 +19,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from openfollow.configuration import effective_interface_labels
+from openfollow.configuration import effective_interface_labels, is_simple_mode
 from openfollow.net_adapters import Adapter, describe, display_name
 from openfollow.net_utils import WEB_BIND_ALL, auto_station_iface
 from openfollow.network.adapter import (
@@ -133,7 +133,7 @@ class _NetworkSnapshot:
 
 def _simple(app: OpenFollowApp) -> bool:
     """Simple network mode: one screen for the station interface, which carries everything."""
-    return getattr(getattr(app, "_config", None), "network_mode", "advanced") == "simple"
+    return is_simple_mode(getattr(app, "_config", None))
 
 
 def _read_pi_network(app: OpenFollowApp) -> _NetworkSnapshot:
@@ -147,16 +147,20 @@ def _read_pi_network(app: OpenFollowApp) -> _NetworkSnapshot:
         return _NetworkSnapshot(True, [], "", None, None)
     active = getattr(app, "_pi_network_active_iface", "") or interfaces[0].name
     auto = ""
+    methods = {name: _METHOD_LABELS.get(iface_state.ipv4.method, "") for name, iface_state in reading.states.items()}
+    adapters = {iface.name: describe(iface.name) for iface in interfaces}
+    names = {i.name for i in interfaces}
     if _simple(app):
         station = str(getattr(app._config, "psn_source_iface", "") or "")
         auto = "" if station else auto_station_iface()
+        if station and station not in names:
+            # Never another interface in its place: the screen would edit one it does not name.
+            return _NetworkSnapshot(True, interfaces, station, None, None, methods, adapters, auto)
         active = station or auto or active
-    if active not in {i.name for i in interfaces}:
+    if active not in names:
         active = interfaces[0].name
     state = reading.states.get(active)
     pending = state.ipv4 if state is not None else Ipv4Config(method=Ipv4Method.DHCP)
-    methods = {name: _METHOD_LABELS.get(iface_state.ipv4.method, "") for name, iface_state in reading.states.items()}
-    adapters = {iface.name: describe(iface.name) for iface in interfaces}
     return _NetworkSnapshot(True, interfaces, active, state, pending, methods, adapters, auto)
 
 
@@ -633,19 +637,25 @@ def _simple_rows(
             }
         )
 
+    present = name in {iface.name for iface in getattr(app, "_pi_network_interfaces", None) or []}
+    if not present:
+        missing = f"{name} is not connected." if name else "This station has no network interface."
+        rows.append({"kind": "notice", "level": "error", "label": missing, "value": ""})
+    editable = writable and present
     method = pending.method if pending else Ipv4Method.DHCP
-    rows.append({"kind": "header", "label": "IPv4"})
+    # Named, because Automatic with no address anywhere edits the first interface.
+    rows.append({"kind": "header", "label": f"IPv4 \u2013 {name}" if name else "IPv4"})
     rows.append(
         {
-            "kind": "choice" if writable else "display",
+            "kind": "choice" if editable else "display",
             "key": "method",
             "label": "Configure",
             "value": dict(_METHOD_CHOICES).get(method, str(method)),
-            "opens": writable,
+            "opens": editable,
         }
     )
-    owns_address = writable and method in (Ipv4Method.STATIC, Ipv4Method.DHCP_WITH_MANUAL_ADDRESS)
-    owns_rest = writable and method == Ipv4Method.STATIC
+    owns_address = editable and method in (Ipv4Method.STATIC, Ipv4Method.DHCP_WITH_MANUAL_ADDRESS)
+    owns_rest = editable and method == Ipv4Method.STATIC
     rows.append(
         {
             "kind": "text" if owns_address else "display",
@@ -674,16 +684,16 @@ def _simple_rows(
     dns = list(pending.dns) if pending else []
     for i, key in enumerate(_DNS_FIELDS):
         value = dns[i] if i < len(dns) and dns[i] else ""
-        rows.append({"kind": "text" if writable else "display", "key": key, "label": f"DNS {i + 1}", "value": value})
+        rows.append({"kind": "text" if editable else "display", "key": key, "label": f"DNS {i + 1}", "value": value})
 
     rows.append({"kind": "header", "label": "Actions"})
-    if writable:
+    if editable:
         rows.append({"kind": "action", "key": "apply", "label": "Working..." if busy else "Apply Changes", "value": ""})
         if method != Ipv4Method.STATIC:
             rows.append(
                 {"kind": "action", "key": "renew", "label": "Working..." if busy else "Renew DHCP lease", "value": ""}
             )
-    else:
+    elif not writable:
         rows.append(
             {
                 "kind": "notice",
@@ -785,6 +795,8 @@ def _pick_station_iface(app: OpenFollowApp, name: str) -> None:
         logger.exception("Could not save the station interface")
         _set_banner(app, "Could not save - the interface is unchanged.")
         return
+    # Applied now, not on the next one-second poll: the screen re-reads from the running config.
+    app._last_config_check = 0.0
     app._check_config_reload()
     app._pi_network_active_iface = name
     _refresh_pi_network_bounded(app)
@@ -1264,9 +1276,8 @@ def confirm_pi_network_field_edit(app: OpenFollowApp) -> None:
         new_dns.extend([""] * (index + 1 - len(new_dns)))
         # Like the router: left at 0.0.0.0 it means none.
         new_dns[index] = "" if canon in (None, "0.0.0.0") else canon
-        # Positional: a cleared middle server stays a gap, trailing blanks go.
-        while new_dns and not new_dns[-1]:
-            new_dns.pop()
+        # No gaps: an apply refuses an empty server, so the rest move up.
+        new_dns = [server for server in new_dns if server]
 
     app._pi_network_pending_config = Ipv4Config(
         method=pending.method,

@@ -109,6 +109,14 @@ def test_automatic_with_no_address_anywhere_says_so(net_server, tmp_path, monkey
     assert '<option value="" selected>Automatic</option>' in body
 
 
+def test_an_unavailable_backend_still_shows_the_mode_in_force(net_server, tmp_path) -> None:  # noqa: F811
+    fake, base = net_server
+    fake.interfaces = []
+    _status, body = _get(base, "/section/network/status")
+    assert 'name="network_mode" value="advanced" checked' in body
+    assert 'data-mode="advanced"' in body
+
+
 def test_a_vlan_left_over_in_simple_is_named(net_server, tmp_path, present) -> None:  # noqa: F811
     fake, base = net_server
     fake.interfaces.append("eth0.20")

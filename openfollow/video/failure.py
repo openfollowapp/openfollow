@@ -253,10 +253,11 @@ def failure_sentence(
     names the station interface, Simple network mode's only one.
     """
     template = _SENTENCES.get(failure, _SENTENCES[VideoFailure.UNKNOWN])
-    if simple:
-        template = _SIMPLE_SENTENCES.get(failure, template)
     if kind is not SourceKind.REMOTE:
-        template = (_SIMPLE_NO_DIAL_SENTENCES if simple else _NO_DIAL_SENTENCES).get(failure, template)
+        template = _NO_DIAL_SENTENCES.get(failure, template)
+    if simple:
+        table = _SIMPLE_SENTENCES if kind is SourceKind.REMOTE else {**_SIMPLE_SENTENCES, **_SIMPLE_NO_DIAL_SENTENCES}
+        template = table.get(failure, template)
     return template.format(where=where.strip() or _ANONYMOUS_SOURCE)
 
 

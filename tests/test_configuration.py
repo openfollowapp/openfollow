@@ -7493,14 +7493,17 @@ def test_a_pin_hand_edited_into_a_simple_config_is_cleared_at_load(tmp_path, tom
 
 
 def test_the_mode_survives_a_toml_round_trip(tmp_path) -> None:
-    from openfollow.configuration import network_mode_stored
+    from openfollow.configuration import network_mode_unsaved
 
     path = tmp_path / "config.toml"
-    assert not network_mode_stored(str(path))
+    # A file that does not read says nothing: it may have been recovered from the backup.
+    assert not network_mode_unsaved(str(path))
     path.write_text("not = [toml")
-    assert not network_mode_stored(str(path))
+    assert not network_mode_unsaved(str(path))
+    path.write_text('psn_source_iface = "eth0"\n')
+    assert network_mode_unsaved(str(path))
     save_config(AppConfig(network_mode="advanced"), str(path))
-    assert network_mode_stored(str(path))
+    assert not network_mode_unsaved(str(path))
     assert load_config(str(path)).network_mode == "advanced"
 
 
@@ -7520,3 +7523,10 @@ def test_labels_name_interfaces_only_in_advanced() -> None:
     assert effective_interface_labels(AppConfig(network_mode="advanced", interface_labels=labels)) == labels
     assert AppConfig(network_mode="simple", interface_labels=labels).interface_labels == labels
     assert effective_interface_labels(None) == {}
+
+
+@pytest.mark.parametrize(("old", "new"), [("advanced", "simple"), ("simple", "advanced")])
+def test_a_mode_switch_reaches_the_running_config(old: str, new: str) -> None:
+    app = _DummyApp(AppConfig(network_mode=old))
+    apply_runtime_config_changes(app, AppConfig(network_mode=new))
+    assert app._config.network_mode == new

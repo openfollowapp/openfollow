@@ -23,7 +23,7 @@ from openfollow.configuration import (
     bootstrap_config_if_missing,
     config_write_lock,
     load_config,
-    network_mode_stored,
+    network_mode_unsaved,
     save_config,
 )
 from openfollow.logging_setup import ThrottledExceptionLogger
@@ -758,7 +758,7 @@ class OpenFollowApp:
             self._config.psn_system_name = derive_station_name(self._config.station_id)
             dirty = True
         # The starting network mode is decided once, then kept.
-        if not network_mode_stored(self._config_path):
+        if network_mode_unsaved(self._config_path):
             dirty = True
         if dirty:
             try:

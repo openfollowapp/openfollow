@@ -5837,6 +5837,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 "editable": editable,
                 "banner": banner,
                 "vlan_form": {},
+                "mode": _request_scoped_config().network_mode,
             }
         net: dict[str, Any] = {
             "available": True,
@@ -6414,10 +6415,11 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             enforce_network_mode(cfg)
             save_config(cfg, server.config_path)
             request.environ[_ENV_CONFIG_KEY] = cfg
-            for name in changes["vlans"]:
-                result = server.delete_network_vlan(name)
-                if not result.ok:
-                    logger.warning("Switching to Simple left VLAN %s: %s", name, result.message)
+        # Outside the config lock: each removal is a privileged backend call the frame loop must not wait on.
+        for name in changes["vlans"]:
+            result = server.delete_network_vlan(name)
+            if not result.ok:
+                logger.warning("Switching to Simple left VLAN %s: %s", name, result.message)
         restarting = refused = False
         if web_pinned and mode == NETWORK_MODE_SIMPLE and _web_bind_restart_pending(cfg, resolve_web_bind_for(cfg)):
             restarting = server.request_restart_unless_updating()

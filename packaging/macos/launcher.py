@@ -30,6 +30,56 @@ APP_NAME = "OpenFollow"
 SEED_CONFIG_NAME = "config.seed.toml"
 STORAGE_PLACEHOLDER = "@STORAGE_PATH@"
 
+# Every typelib the app pins; the spec freezes each as a hidden import.
+REQUIRED_TYPELIBS = (
+    ("Gtk", "3.0"),
+    ("Gdk", "3.0"),
+    ("Gst", "1.0"),
+    ("GstApp", "1.0"),
+    ("GstPbutils", "1.0"),
+    ("Rsvg", "2.0"),
+)
+
+# Every element the app builds on macOS, each from a plugin the spec's allowlist
+# could drop. tests/test_macos_bundle_contract.py checks this against the sources.
+REQUIRED_GST_ELEMENTS = (
+    # built by name
+    "appsink",
+    "avfvideosrc",
+    "capsfilter",
+    "decodebin",
+    "filesrc",
+    "gtksink",
+    "imagefreeze",
+    "jpegdec",
+    "jpegenc",
+    "queue",
+    "rtpjitterbuffer",
+    "rtspsrc",
+    "srtsrc",
+    "tee",
+    "udpsrc",
+    "valve",
+    "videoconvert",
+    "videoscale",
+    "videotestsrc",
+    # plugged by decodebin: PNG / WebP uploads and WebM / VP8 clips
+    "pngdec",
+    "webpdec",
+    "matroskademux",
+    "avdec_vp8",
+    # plugged by decodebin: H.264 / H.265 over RTP and RTSP, MPEG-TS over RTP and SRT
+    "rtph264depay",
+    "rtph265depay",
+    "rtpmp2tdepay",
+    "h264parse",
+    "h265parse",
+    "tsdemux",
+    # software H.264 / H.265 decoders; VideoToolbox takes a stream first where it can
+    "avdec_h264",
+    "avdec_h265",
+)
+
 
 def default_config_dir() -> Path:
     """Per-user, writable config home for the bundled app."""
@@ -130,18 +180,28 @@ def run_export(export_args: list[str]) -> int:
 def run_selfcheck() -> int:
     """Verify the bundled native stack resolves; print OK / FAIL, return 0 / 1."""
     try:
+        import importlib
+
         import gi
 
-        gi.require_version("Gtk", "3.0")
-        gi.require_version("Gst", "1.0")
-        from gi.repository import Gst
+        for namespace, version in REQUIRED_TYPELIBS:
+            gi.require_version(namespace, version)
+            # Importing Gtk / Gdk initialises the display, which a headless build has none of.
+            if namespace not in ("Gtk", "Gdk"):
+                importlib.import_module(f"gi.repository.{namespace}")
+        from gi.repository import Gst, GstPbutils
 
         Gst.init(None)
-        required = ("gtksink", "videoconvert", "videotestsrc", "avfvideosrc")
-        missing = [name for name in required if Gst.ElementFactory.find(name) is None]
+        missing = [name for name in REQUIRED_GST_ELEMENTS if Gst.ElementFactory.find(name) is None]
         if missing:
             print(f"FAIL: missing GStreamer elements: {', '.join(missing)}")
             return 1
+        # decodebin identifies streams and uploads through its typefinders, not by element name.
+        if Gst.Registry.get().find_plugin("typefindfunctions") is None:
+            print("FAIL: missing GStreamer plugin: typefindfunctions")
+            return 1
+        # The Media Gallery reads clip metadata through it; building one loads libgstpbutils.
+        GstPbutils.Discoverer.new(Gst.SECOND)
 
         # Video input plugins are discovered by walking the package at runtime;
         # PyInstaller can miss the dynamically imported ones (see openfollow.spec).
@@ -155,8 +215,6 @@ def run_selfcheck() -> int:
         if missing_inputs:
             print(f"FAIL: missing video input plugins: {', '.join(sorted(missing_inputs))}")
             return 1
-
-        import importlib
 
         for mod in ("onnxruntime", "cv2", "ultralytics"):
             importlib.import_module(mod)

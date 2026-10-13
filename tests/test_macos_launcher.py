@@ -265,3 +265,108 @@ def test_run_export_returns_one_on_failure(launcher, monkeypatch, tmp_path) -> N
 
     _install_fake_export(monkeypatch, _boom)
     assert launcher.run_export(["m.pt"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# run_selfcheck
+# ---------------------------------------------------------------------------
+
+
+def _install_fake_gst(
+    monkeypatch,
+    missing: set[str],
+    *,
+    plugins: frozenset[str] = frozenset({"typefindfunctions"}),
+    namespaces: frozenset[str] = frozenset(),
+    unloadable: frozenset[str] = frozenset({"Gtk", "Gdk"}),
+    discoverer_error: str = "",
+) -> None:
+    """Stand in for gi / Gst, resolving every element except ``missing``.
+
+    ``plugins`` are the GStreamer plugins the registry holds, ``namespaces``
+    the typelibs gi reports as unavailable, ``unloadable`` the ones whose
+    import fails. Gtk and Gdk fail by default: importing them opens the display.
+    """
+
+    def new_discoverer(timeout: int) -> object:
+        if discoverer_error:
+            raise RuntimeError(discoverer_error)
+        return object()
+
+    gst = types.SimpleNamespace(
+        init=lambda argv: None,
+        SECOND=1_000_000_000,
+        ElementFactory=types.SimpleNamespace(find=lambda name: None if name in missing else object()),
+        Registry=types.SimpleNamespace(
+            get=lambda: types.SimpleNamespace(find_plugin=lambda name: object() if name in plugins else None)
+        ),
+    )
+    repository = types.ModuleType("gi.repository")
+    gi = types.ModuleType("gi")
+
+    def require_version(namespace: str, version: str) -> None:
+        if namespace in namespaces:
+            raise ValueError(f"Namespace {namespace} not available")
+
+    gi.require_version = require_version  # type: ignore[attr-defined]
+    gi.repository = repository  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "gi", gi)
+    monkeypatch.setitem(sys.modules, "gi.repository", repository)
+    for name, module in {
+        "Gst": gst,
+        "GstPbutils": types.SimpleNamespace(Discoverer=types.SimpleNamespace(new=new_discoverer)),
+        "GstApp": types.SimpleNamespace(),
+        "Gtk": types.SimpleNamespace(),
+        "Gdk": types.SimpleNamespace(),
+        "Rsvg": types.SimpleNamespace(),
+    }.items():
+        setattr(repository, name, module)
+        monkeypatch.setitem(sys.modules, f"gi.repository.{name}", None if name in unloadable else module)
+
+
+@pytest.mark.parametrize("element", _load_launcher().REQUIRED_GST_ELEMENTS)
+def test_selfcheck_fails_when_an_element_the_app_builds_is_missing(launcher, monkeypatch, capsys, element) -> None:
+    _install_fake_gst(monkeypatch, {element})
+
+    assert launcher.run_selfcheck() == 1
+    assert capsys.readouterr().out.strip() == f"FAIL: missing GStreamer elements: {element}"
+
+
+def test_selfcheck_fails_without_the_typefinders_plugin(launcher, monkeypatch, capsys) -> None:
+    # decodebin identifies streams and uploads through it; another plugin's typefinder must not stand in.
+    _install_fake_gst(monkeypatch, set(), plugins=frozenset({"subparse"}))
+
+    assert launcher.run_selfcheck() == 1
+    assert capsys.readouterr().out.strip() == "FAIL: missing GStreamer plugin: typefindfunctions"
+
+
+@pytest.mark.parametrize("namespace", [name for name, _version in _load_launcher().REQUIRED_TYPELIBS])
+def test_selfcheck_fails_without_a_typelib_the_app_pins(launcher, monkeypatch, capsys, namespace) -> None:
+    _install_fake_gst(monkeypatch, set(), namespaces=frozenset({namespace}))
+
+    assert launcher.run_selfcheck() == 1
+    assert capsys.readouterr().out.strip() == f"FAIL: Namespace {namespace} not available"
+
+
+@pytest.mark.parametrize("namespace", ["Gst", "GstApp", "GstPbutils", "Rsvg"])
+def test_selfcheck_fails_when_a_typelib_does_not_load(launcher, monkeypatch, capsys, namespace) -> None:
+    _install_fake_gst(monkeypatch, set(), unloadable=frozenset({"Gtk", "Gdk", namespace}))
+
+    assert launcher.run_selfcheck() == 1
+    assert capsys.readouterr().out.strip() == f"FAIL: import of gi.repository.{namespace} halted; None in sys.modules"
+
+
+def test_selfcheck_reaches_the_discoverer_without_importing_gtk(launcher, monkeypatch, capsys) -> None:
+    # The fake leaves Gtk / Gdk unimportable, so reaching the Discoverer proves neither was imported.
+    _install_fake_gst(monkeypatch, set(), discoverer_error="reached the discoverer")
+
+    assert launcher.run_selfcheck() == 1
+    assert capsys.readouterr().out.strip() == "FAIL: reached the discoverer"
+
+
+def test_selfcheck_fails_when_the_discoverer_cannot_be_built(launcher, monkeypatch, capsys) -> None:
+    # The typelib imports lazily; only building a Discoverer loads libgstpbutils.
+    _install_fake_gst(monkeypatch, set(), discoverer_error="cannot load libgstpbutils")
+
+    assert launcher.run_selfcheck() == 1
+    assert capsys.readouterr().out.strip() == "FAIL: cannot load libgstpbutils"

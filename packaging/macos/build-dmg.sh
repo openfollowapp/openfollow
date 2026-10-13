@@ -22,6 +22,10 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "The macOS DMG build must run on macOS." >&2
   exit 1
 fi
+if [[ "$(uname -m)" != "arm64" ]]; then
+  echo "The macOS app is Apple Silicon only; this host is $(uname -m)." >&2
+  exit 1
+fi
 
 cd "$REPO"
 
@@ -115,12 +119,20 @@ poetry run pyinstaller --noconfirm --clean \
   exit 1
 }
 
+# Homebrew bottles target the build host's macOS. A library needing a newer one
+# than the Info.plist declares makes the app quit at launch on an older Mac.
+echo "==> Checking the declared macOS minimum"
+poetry run python "$SCRIPT_DIR/check_macos_minimum.py" "$APP"
+
 echo "==> Ad-hoc signing"
 codesign --force --deep --sign - "$APP"
 
 echo "==> Self-checking bundle (scrubbed env)"
-if ! env -i HOME="$HOME" OPENFOLLOW_SELFCHECK=1 "$APP/Contents/MacOS/OpenFollow" | grep -q '^OK$'; then
-  echo "Bundle self-check failed - the frozen native stack is incomplete." >&2
+status=0
+selfcheck="$(env -i HOME="$HOME" OPENFOLLOW_SELFCHECK=1 "$APP/Contents/MacOS/OpenFollow" 2>&1)" || status=$?
+if [ "$status" -ne 0 ] || ! grep -q '^OK$' <<<"$selfcheck"; then
+  echo "Bundle self-check failed (exit status $status):" >&2
+  echo "$selfcheck" >&2
   exit 1
 fi
 

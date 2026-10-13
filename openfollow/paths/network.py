@@ -3,7 +3,8 @@
 """The active paths as one network: where they cross, and how a locked marker moves through it.
 
 Two paths cross where they meet in plan at the same height, and a path whose
-end lies on another joins it there too. A path crossing itself is not a
+end lies on another joins it there too, carried on to the curve first when it
+ends on a corner point the curve rounds away. A path crossing itself is not a
 junction. A locked marker moves along its path by the part of the operator's
 push that points along it; at a junction it takes whichever direction matches
 the push best, but leaves its own path only when the other is clearly better.
@@ -74,7 +75,7 @@ class PathNetwork:
     """The active paths' curves, the junctions between them, and movement through them."""
 
     def __init__(self, curves: Sequence[PathCurve], releases: Sequence[tuple[bool, bool]] | None = None) -> None:
-        self.curves = list(curves)
+        self.curves = extend_to_corners(curves)
         self.releases = list(releases) if releases is not None else [(False, False)] * len(self.curves)
         self.junctions = find_junctions(self.curves)
         self._stations: dict[int, list[tuple[float, Place]]] = {i: [] for i in range(len(self.curves))}
@@ -204,13 +205,48 @@ class PathNetwork:
         return min(ahead, default=None)
 
 
+def extend_to_corners(curves: Sequence[PathCurve]) -> list[PathCurve]:
+    """``curves``, each open end that lies on another path's corner point carried on to that corner's arc.
+
+    An arc passes its corner point by, so an end within reach of the point may be out of reach of the
+    curve. Such an end, touching no other curve, runs on straight to where the corner's curve passes
+    nearest the point, at the same height, and so touches it: the old end becomes a sharp inner point.
+    """
+    out = []
+    for i, curve in enumerate(curves):
+        if curve.closed:
+            out.append(curve)
+            continue
+        start, end = _corner_target(curves, i, 0.0), _corner_target(curves, i, curve.length)
+        xy, z = curve.xy, curve.z
+        if start is not None:
+            xy, z = np.vstack(([start[:2]], xy)), np.concatenate(([start[2]], z))
+        if end is not None:
+            xy, z = np.vstack((xy, [end[:2]])), np.concatenate((z, [end[2]]))
+        out.append(curve if xy is curve.xy else PathCurve(xy, z, False, curve.corners))
+    return out
+
+
+def _corner_target(curves: Sequence[PathCurve], i: int, s_end: float) -> tuple[float, float, float] | None:
+    """Where the end of curve ``i`` at ``s_end`` is carried on to, if anywhere."""
+    x, y, z = curves[i].point(s_end)
+    others = [curve for k, curve in enumerate(curves) if k != i]
+    targets = []
+    for other in others:
+        for cx, cy in other.corners[np.hypot(*(other.corners - (x, y)).T) <= JUNCTION_REACH_M]:
+            tx, ty, tz = other.point(other.nearest(cx, cy)[0])
+            if abs(tz - z) <= JUNCTION_HEIGHT_M:
+                targets.append((math.hypot(cx - x, cy - y), tx, ty, tz))
+    if not targets or any(other.nearest(x, y)[1] <= JUNCTION_REACH_M for other in others):
+        return None
+    _, tx, ty, tz = min(targets)
+    return tx, ty, tz
+
+
 def find_junctions(curves: Sequence[PathCurve]) -> list[Junction]:
     """Where each pair of curves crosses or touches, at the same height."""
     boxes = [_boxes(curve) for curve in curves]
-    whole = [
-        np.concatenate((np.vstack((b[:, :2], c.corners)).min(axis=0), np.vstack((b[:, 2:], c.corners)).max(axis=0)))
-        for b, c in zip(boxes, curves, strict=True)
-    ]
+    whole = [np.concatenate((b[:, :2].min(axis=0), b[:, 2:].max(axis=0))) for b in boxes]
     found: list[Junction] = []
     for a in range(len(curves)):
         for b in range(a + 1, len(curves)):
@@ -220,7 +256,6 @@ def find_junctions(curves: Sequence[PathCurve]) -> list[Junction]:
             pair = [Junction(a, sa, b, sb) for sa, sb in _crossings(ca, cb, boxes[a], boxes[b])]
             pair += [Junction(a, sa, b, sb) for sa, sb in _touches(ca, cb)]
             pair += [Junction(a, sa, b, sb) for sb, sa in _touches(cb, ca)]
-            pair += [Junction(a, sa, b, sb) for sa, sb in _shared_corners(ca, cb)]
             kept: list[Junction] = []
             for j in pair:
                 if _same_height(ca, j.s_a, cb, j.s_b) and not any(_same_junction(ca, cb, j, k) for k in kept):
@@ -283,29 +318,16 @@ def _cross(a: FloatArray, b: FloatArray) -> FloatArray:
 
 
 def _touches(end_of: PathCurve, on: PathCurve) -> list[tuple[float, float]]:
-    """Ends of open ``end_of`` lying on ``on``, or else on one of its corners: (s on ``end_of``, s on ``on``)."""
+    """Ends of open ``end_of`` lying on ``on``: (s on ``end_of``, s on ``on``)."""
     if end_of.closed:
         return []
     out = []
     for s_end in (0.0, end_of.length):
         x, y, _ = end_of.point(s_end)
         s_on, dist = on.nearest(x, y)
-        if dist > JUNCTION_REACH_M and len(on.corners):
-            gaps = np.hypot(*(on.corners - (x, y)).T)
-            i = int(np.argmin(gaps))
-            s_on, dist = on.nearest(*on.corners[i])[0], float(gaps[i])
         if dist <= JUNCTION_REACH_M:
             out.append((s_end, s_on))
     return out
-
-
-def _shared_corners(ca: PathCurve, cb: PathCurve) -> list[tuple[float, float]]:
-    """Corners the curves share, each joined where its own curve passes nearest: (s on ``ca``, s on ``cb``)."""
-    gaps = np.hypot(*(ca.corners[:, None, :] - cb.corners[None, :, :]).transpose(2, 0, 1))
-    return [
-        (ca.nearest(*ca.corners[i])[0], cb.nearest(*cb.corners[k])[0])
-        for i, k in zip(*np.nonzero(gaps <= JUNCTION_REACH_M), strict=True)
-    ]
 
 
 def _same_height(ca: PathCurve, sa: float, cb: PathCurve, sb: float) -> bool:

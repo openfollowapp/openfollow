@@ -12,7 +12,7 @@ import pytest
 
 from openfollow.paths import network
 from openfollow.paths.geometry import PathCurve, PathPoint, build_curve
-from openfollow.paths.network import Junction, PathNetwork, Place, Step, find_junctions
+from openfollow.paths.network import Junction, PathNetwork, Place, Step, extend_to_corners, find_junctions
 
 pytestmark = pytest.mark.unit
 
@@ -57,49 +57,6 @@ class TestJunctions:
         branch = _curve([(2, 0.3, 0), (2, 4, 0)])
         assert find_junctions([H, branch]) == []
 
-    # B turns up at (2, 0) with the default radius, so its curve passes 0.21 m inside the point.
-    ROUNDED = _curve([(0, 0, 0, 0), (2, 0, 0, 0.5), (2, 2, 0, 0)])
-
-    @pytest.mark.parametrize("gap", [0.0, 0.09])
-    def test_a_path_ending_on_another_s_rounded_corner_point_joins_where_that_curve_passes_it(self, gap: float) -> None:
-        branch = _curve([(2, -2, 0), (2, -gap, 0)])
-        s_corner, dist = self.ROUNDED.nearest(2.0, 0.0)
-        assert dist == pytest.approx(0.5 * (math.sqrt(2) - 1))
-        assert find_junctions([branch, self.ROUNDED]) == [Junction(0, branch.length, 1, s_corner)]
-
-    def test_a_path_ending_on_one_of_several_corner_points_joins_at_that_one(self) -> None:
-        hook = _curve([(0, 0, 0, 0), (2, 0, 0, 0.5), (2, 2, 0, 0.5), (0, 2, 0, 0)])
-        branch = _curve([(2, 4, 0), (2, 2, 0)])
-        assert find_junctions([branch, hook]) == [Junction(0, branch.length, 1, hook.nearest(2.0, 2.0)[0])]
-
-    def test_a_path_ending_beyond_reach_of_a_corner_point_does_not_join(self) -> None:
-        branch = _curve([(2, -2, 0), (2, -0.11, 0)])
-        assert find_junctions([branch, self.ROUNDED]) == []
-
-    def test_an_end_on_the_curve_beside_a_corner_point_joins_where_it_lies(self) -> None:
-        # A gentle bend: the curve passes 2 cm from the point, and the end lies on it 9 cm along.
-        gentle = _curve([(0, 0, 0, 0), (2, 0, 0, 0.5), (4, 1, 0, 0)])
-        s_end, _ = gentle.nearest(1.91, 0.0)
-        branch = _curve([(1.91, -2, 0), (1.91, 0.0, 0)])
-        assert find_junctions([branch, gentle]) == [Junction(0, branch.length, 1, pytest.approx(s_end))]
-
-    @pytest.mark.parametrize("closed", [False, True])
-    def test_paths_turning_at_the_same_point_join_there(self, closed: bool) -> None:
-        # A peak and a valley at (0, 0): rounded on opposite sides, their curves stay 0.41 m apart.
-        peak = _curve([(-2, -2, 0, 0.5), (0, 0, 0, 0.5), (2, -2, 0, 0.5)], closed=closed)
-        valley = _curve([(-2, 2, 0, 0.5), (0, 0, 0, 0.5), (2, 2, 0, 0.5)])
-        assert find_junctions([peak, valley]) == [
-            Junction(0, peak.nearest(0.0, 0.0)[0], 1, valley.nearest(0.0, 0.0)[0])
-        ]
-
-    @pytest.mark.parametrize(("dy", "z", "meets"), [(0.09, 0.0, True), (0.11, 0.0, False), (0.0, 0.5, False)])
-    def test_turning_points_join_only_within_reach_and_at_the_same_height(
-        self, dy: float, z: float, meets: bool
-    ) -> None:
-        peak = _curve([(-2, -2, 0, 0.5), (0, 0, 0, 0.5), (2, -2, 0, 0.5)])
-        valley = _curve([(-2, 2, z, 0.5), (0, dy, z, 0.5), (2, 2, z, 0.5)])
-        assert len(find_junctions([peak, valley])) == int(meets)
-
     def test_a_crossing_on_a_corner_point_counts_once(self) -> None:
         # The crossing sits exactly on V2's middle point, the end of one segment and the start of the next.
         v2 = _curve([(0, -5, 0, 0), (0, 0, 0, 0), (0, 5, 0, 0)])
@@ -143,24 +100,8 @@ def _reference_junctions(curves: list[PathCurve]) -> list[Junction]:
         )
 
     def touches(end_of: PathCurve, on: PathCurve) -> list[tuple[float, float]]:
-        out = []
-        for s in [] if end_of.closed else [0.0, end_of.length]:
-            x, y, _ = end_of.point(s)
-            s_on, dist = on.nearest(x, y)
-            if dist > 0.1 and len(on.corners):
-                cx, cy = min(on.corners.tolist(), key=lambda c: math.hypot(c[0] - x, c[1] - y))
-                s_on, dist = on.nearest(cx, cy)[0], math.hypot(cx - x, cy - y)
-            if dist <= 0.1:
-                out.append((s, s_on))
-        return out
-
-    def shared(ca: PathCurve, cb: PathCurve) -> list[tuple[float, float]]:
-        return [
-            (ca.nearest(*p)[0], cb.nearest(*q)[0])
-            for p in ca.corners.tolist()
-            for q in cb.corners.tolist()
-            if math.hypot(p[0] - q[0], p[1] - q[1]) <= 0.1
-        ]
+        ends = [] if end_of.closed else [0.0, end_of.length]
+        return [(s, on.nearest(*end_of.point(s)[:2])[0]) for s in ends if on.nearest(*end_of.point(s)[:2])[1] <= 0.1]
 
     for a, ca in enumerate(curves):
         for b in range(a + 1, len(curves)):
@@ -183,7 +124,6 @@ def _reference_junctions(curves: list[PathCurve]) -> list[Junction]:
             ]
             pair += [Junction(a, sa, b, sb) for sa, sb in touches(ca, cb)]
             pair += [Junction(a, sa, b, sb) for sb, sa in touches(cb, ca)]
-            pair += [Junction(a, sa, b, sb) for sa, sb in shared(ca, cb)]
             for j in pair:
                 level = abs(ca.point(j.s_a)[2] - cb.point(j.s_b)[2]) <= 0.1
                 if level and not any(same(j, k) for k in found):
@@ -216,12 +156,6 @@ class TestJunctionSearch:
             on = rng.choice(curves)
             x, y, z = on.point(rng.uniform(0, on.length))
             curves.append(_curve([(x + gap, y, z, 0), (x + 3, y + rng.uniform(-3, 3), z, 0)]))
-        # Branches ending on, near, and out of reach of a corner, and paths turning at one.
-        for gap in (0.0, 0.05, 0.099, 0.101):
-            on = rng.choice([c for c in curves if len(c.corners)])
-            x, y = on.corners[rng.randrange(len(on.corners))]
-            curves.append(_curve([(x + gap, y, 0, 0), (x + 3, y + rng.uniform(-3, 3), 0, 0)]))
-            curves.append(_curve([(x - 2, y - 2, 0, 0), (x, y + gap, 0, 0.5), (x + 2, y - rng.uniform(1, 3), 0, 0)]))
         assert find_junctions(curves) == _reference_junctions(curves)
 
     def test_paths_far_apart_are_never_compared(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -244,6 +178,103 @@ class TestJunctionSearch:
         assert junctions == _reference_junctions([along_x, along_y])
         assert len(junctions) >= 1
         assert sum(tested) / 3 < 0.05 * 200 * 200
+
+
+class TestCornerExtension:
+    # B turns up at (2, 0) with the default radius, so its curve passes 0.21 m inside the point.
+    ROUNDED = _curve([(0, 0, 0, 0), (2, 0, 0, 0.5), (2, 2, 0, 0)])
+    VERTEX = ROUNDED.point(ROUNDED.nearest(2.0, 0.0)[0])
+
+    @pytest.mark.parametrize("gap", [0.0, 0.09])
+    def test_an_end_on_a_rounded_corner_point_runs_on_to_the_arc_and_joins_there(self, gap: float) -> None:
+        branch = _curve([(2, -2, 0), (2, -gap, 0)])
+        net = PathNetwork([branch, self.ROUNDED])
+        extended = net.curves[0]
+        assert extended.point(extended.length) == pytest.approx(self.VERTEX)
+        assert extended.length == pytest.approx(branch.length + math.dist((2, -gap, 0), self.VERTEX))
+        assert len(net.junctions) == 1
+        j = net.junctions[0]
+        assert j.s_a == pytest.approx(extended.length)
+        assert net.point(Place(0, j.s_a)) == pytest.approx(net.point(Place(1, j.s_b)), abs=1e-9)
+
+    def test_on_a_right_angle_at_the_default_radius_the_end_runs_on_0_207_m(self) -> None:
+        net = PathNetwork([_curve([(2, -2, 0), (2, 0, 0)]), self.ROUNDED])
+        assert net.curves[0].length == pytest.approx(2.0 + 0.5 * (math.sqrt(2) - 1))
+
+    def test_the_old_end_becomes_a_sharp_inner_point(self) -> None:
+        net = PathNetwork([_curve([(2, -2, 0), (2, 0, 0)]), self.ROUNDED])
+        arriving, leaving = net.curves[0].directions(2.0)
+        assert arriving == pytest.approx((0.0, 1.0))
+        assert leaving == pytest.approx((-math.sqrt(0.5), math.sqrt(0.5)))
+
+    def test_a_start_on_a_corner_point_runs_on_backwards(self) -> None:
+        branch = _curve([(2, 0, 0), (2, -2, 0)])
+        net = PathNetwork([branch, self.ROUNDED])
+        assert net.curves[0].point(0.0) == pytest.approx(self.VERTEX)
+        assert net.curves[0].point(net.curves[0].length) == pytest.approx((2.0, -2.0, 0.0))
+        assert [j.s_a for j in net.junctions] == [pytest.approx(0.0)]
+
+    def test_an_end_beyond_reach_of_the_corner_point_stays_and_does_not_join(self) -> None:
+        branch = _curve([(2, -2, 0), (2, -0.11, 0)])
+        net = PathNetwork([branch, self.ROUNDED])
+        assert net.curves[0] is branch
+        assert net.junctions == []
+
+    def test_an_end_on_the_curve_beside_a_corner_point_stays_and_joins_where_it_lies(self) -> None:
+        # A gentle bend: the curve passes 2 cm from the point, and the end lies on it 9 cm along.
+        gentle = _curve([(0, 0, 0, 0), (2, 0, 0, 0.5), (4, 1, 0, 0)])
+        branch = _curve([(1.91, -2, 0), (1.91, 0.0, 0)])
+        net = PathNetwork([branch, gentle])
+        assert net.curves[0] is branch
+        assert net.junctions == [Junction(0, branch.length, 1, pytest.approx(gentle.nearest(1.91, 0.0)[0]))]
+
+    def test_an_end_touching_another_path_stays_though_a_corner_point_is_near(self) -> None:
+        # The end lies 5 cm above H and 9 cm below the corner of B, which runs 14 cm above H.
+        branch = _curve([(4, 2, 0), (2, 0.05, 0)])
+        beside = _curve([(-2, 0.14, 0, 0), (2, 0.14, 0, 0.5), (2, 3, 0, 0)])
+        net = PathNetwork([branch, H, beside])
+        assert net.curves[0] is branch
+        assert net.junctions == [Junction(0, branch.length, 1, pytest.approx(7.0))]
+
+    def test_an_end_runs_on_to_the_nearest_of_several_corner_points(self) -> None:
+        hook = _curve([(0, 0, 0, 0), (2, 0, 0, 0.5), (2, 2, 0, 0.5), (0, 2, 0, 0)])
+        net = PathNetwork([_curve([(2, 4, 0), (2, 2.05, 0)]), hook])
+        end = net.curves[0].point(net.curves[0].length)
+        assert end == pytest.approx(hook.point(hook.nearest(2.0, 2.0)[0]))
+
+    def test_the_run_on_climbs_linearly_to_the_corner_s_height(self) -> None:
+        raised = _curve([(0, 0, 0.08, 0), (2, 0, 0.08, 0.5), (2, 2, 0.08, 0)])
+        net = PathNetwork([_curve([(2, -2, 0), (2, 0, 0)]), raised])
+        extended = net.curves[0]
+        assert extended.point(2.0)[2] == pytest.approx(0.0)
+        assert extended.point((2.0 + extended.length) / 2)[2] == pytest.approx(0.04)
+        assert extended.point(extended.length)[2] == pytest.approx(0.08)
+        assert len(net.junctions) == 1
+
+    def test_an_end_below_a_corner_point_at_another_height_stays(self) -> None:
+        bridge = _curve([(0, 0, 0.5, 0), (2, 0, 0.5, 0.5), (2, 2, 0.5, 0)])
+        branch = _curve([(2, -2, 0), (2, 0, 0)])
+        net = PathNetwork([branch, bridge])
+        assert net.curves[0] is branch
+        assert net.junctions == []
+
+    def test_paths_turning_at_the_same_point_with_curves_apart_do_not_join(self) -> None:
+        # A peak and a valley at (0, 0): rounded on opposite sides, their curves stay 0.41 m apart.
+        peak = _curve([(-2, -2, 0, 0.5), (0, 0, 0, 0.5), (2, -2, 0, 0.5)])
+        valley = _curve([(-2, 2, 0, 0.5), (0, 0, 0, 0.5), (2, 2, 0, 0.5)])
+        net = PathNetwork([peak, valley])
+        assert net.curves == [peak, valley]
+        assert net.junctions == []
+
+    def test_a_closed_path_has_no_end_to_run_on(self) -> None:
+        ring = _curve([(2, 0, 0, 0), (3, -1, 0, 0), (3, 1, 0, 0)], closed=True)
+        net = PathNetwork([ring, self.ROUNDED])
+        assert net.curves[0] is ring
+
+    def test_the_curves_alone_can_be_carried_on_without_a_network(self) -> None:
+        curves = extend_to_corners([_curve([(2, -2, 0), (2, 0, 0)]), self.ROUNDED])
+        assert curves[0].point(curves[0].length) == pytest.approx(self.VERTEX)
+        assert curves[1] is self.ROUNDED
 
 
 class TestWalk:

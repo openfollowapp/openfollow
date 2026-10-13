@@ -281,14 +281,17 @@ class CairoOverlayRenderer:
 
             # Button detection wizard takes exclusive visual control
             if state.button_detection is not None and state.button_detection.active:
+                self._zone_cache.clear()
                 self._draw_button_detection_overlay(cr, state, width, height)
                 return
 
             if self._draw_menu_screen(cr, state, width, height):
+                self._zone_cache.clear()
                 draw_menu_help_pass(self, cr, state, width, height)
                 return
 
             if state.camera_params is None:
+                self._zone_cache.clear()
                 self._draw_hud(cr, state, width, height)
                 return
 

@@ -132,6 +132,8 @@ class ZoneCache:
         if cam is None:
             return
         scale = cr.get_target().get_device_scale()
+        options = cr.get_target().get_font_options()
+        options.merge(cr.get_font_options())
         key = (
             tuple(
                 (tuple(tuple(v) for v in vertices), color, name, is_occupied, count)
@@ -144,9 +146,10 @@ class ZoneCache:
             w,
             h,
             scale,
+            options,
         )
         if self._entry is None or self._entry[0] != key:
-            self._entry = (key, *self._render(renderer, state, w, h, scale))
+            self._entry = (key, *self._render(renderer, state, w, h, scale, options))
         _, picture, x0, y0 = self._entry
         if picture is not None:
             cr.set_source_surface(picture, x0, y0)
@@ -154,18 +157,19 @@ class ZoneCache:
 
     @staticmethod
     def _render(
-        renderer: Any, state: OverlayState, w: int, h: int, scale: tuple[float, float]
+        renderer: Any, state: OverlayState, w: int, h: int, scale: tuple[float, float], options: cairo.FontOptions
     ) -> tuple[cairo.ImageSurface | None, int, int]:
         zones = _zone_outlines(state, w, h)
         if not zones:
             return None, 0, 0
         sx, sy = scale
-        # Measured on a recording first: its ink extents cover what the outline does not,
-        # such as a miter tip at an acute corner or a glyph reaching past its label box.
-        # At the target's scale, because hinted glyph metrics differ between scales.
+        # Ink extents cover a miter tip or a glyph past its label box; scale and font
+        # options are the target's, as hinted glyph metrics depend on both.
         recording = cairo.RecordingSurface(cairo.CONTENT_COLOR_ALPHA, None)
         recording.set_device_scale(sx, sy)
-        _paint_zones(renderer, cairo.Context(recording), zones)
+        measure = cairo.Context(recording)
+        measure.set_font_options(options)
+        _paint_zones(renderer, measure, zones)
         ix, iy, iw, ih = recording.ink_extents()
         if iw < 0 or ih < 0:
             # Cairo's fixed point wraps an extent past 2**23 device pixels, which lens distortion reaches.
@@ -183,6 +187,7 @@ class ZoneCache:
         picture.set_device_scale(sx, sy)
         # Painted again rather than replayed, so text lands exactly as drawn directly.
         ctx = cairo.Context(picture)
+        ctx.set_font_options(options)
         ctx.translate(-x0, -y0)
         _paint_zones(renderer, ctx, zones)
         return picture, x0, y0

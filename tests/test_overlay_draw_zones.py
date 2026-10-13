@@ -387,20 +387,6 @@ class TestZoneCache:
             setattr(state, name, value)
         return state
 
-    @pytest.fixture
-    def outline_calls(self, monkeypatch) -> list[int]:
-        from openfollow.runtime import overlay_draw_zones as mod
-
-        calls: list[int] = []
-        real = mod._zone_outlines
-
-        def _counting(state, w, h):
-            calls.append(len(state.zone_polygons))
-            return real(state, w, h)
-
-        monkeypatch.setattr(mod, "_zone_outlines", _counting)
-        return calls
-
     @pytest.mark.parametrize("background", [(0.2, 0.3, 0.4, 1.0), (0.2, 0.3, 0.4, 0.5)], ids=["opaque", "translucent"])
     @pytest.mark.parametrize(
         ("scale", "overrides"),
@@ -429,16 +415,24 @@ class TestZoneCache:
         scale: float = 1.0,
         background: tuple[float, ...] = (0.2, 0.3, 0.4, 1.0),
         renderer: Any = None,
+        font_options: Any = None,
     ) -> None:
         import cairo
 
         from openfollow.runtime.overlay_draw_zones import ZoneCache
 
+        if font_options is None:
+            # Pinned, so the host's fontconfig (subpixel order, hinting) cannot decide the result.
+            font_options = cairo.FontOptions()
+            font_options.set_antialias(cairo.ANTIALIAS_GRAY)
+            font_options.set_hint_style(cairo.HINT_STYLE_NONE)
+            font_options.set_hint_metrics(cairo.HINT_METRICS_OFF)
         surfaces = []
         for cache in (None, ZoneCache()):
             surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, int(1920 * scale), int(1080 * scale))
             surface.set_device_scale(scale, scale)
             cr = cairo.Context(surface)
+            cr.set_font_options(font_options)
             cr.set_source_rgba(*background)
             cr.paint()
             draw_zones(renderer or FakeRenderer(), cr, state, 1920, 1080, cache)
@@ -447,6 +441,16 @@ class TestZoneCache:
         assert (direct != self._pixels(_blank(scale, background))).any(), "the scene must draw something"
         # Two levels: translucent zones blended twice round differently by a level.
         assert np.abs(direct - cached).max() <= 2
+
+    @pytest.mark.parametrize("antialias", ["NONE", "GRAY"])
+    def test_labels_in_the_picture_take_the_screens_font_options(self, antialias: str) -> None:
+        import cairo
+
+        options = cairo.FontOptions()
+        options.set_antialias(getattr(cairo, f"ANTIALIAS_{antialias}"))
+        options.set_hint_style(cairo.HINT_STYLE_NONE)
+        options.set_hint_metrics(cairo.HINT_METRICS_OFF)
+        self._assert_cached_looks_direct(self._state(), font_options=options)
 
     @pytest.mark.parametrize(
         "roll",
@@ -514,15 +518,17 @@ class TestZoneCache:
         # The ink, plus the margin of a pixel on each side.
         assert pictures == [(pytest.approx(ink[0], abs=4 * scale), pytest.approx(ink[1], abs=4 * scale))]
 
-    def test_zones_that_did_not_change_are_not_drawn_again(self, outline_calls) -> None:
+    def test_zones_that_did_not_change_are_not_drawn_again(self) -> None:
         from openfollow.runtime.overlay_draw_zones import ZoneCache
 
         cache, state = ZoneCache(), self._state()
+        pictures = []
         for _ in range(3):
             cr = FakeCairo()
             draw_zones(FakeRenderer(), cr, state, 1920, 1080, cache)
             assert ("paint",) in cr.calls
-        assert outline_calls == [3]
+            pictures += cr.surfaces
+        assert len(pictures) == 3 and all(p is pictures[0] for p in pictures)
 
     @pytest.mark.parametrize(
         "change",
@@ -539,24 +545,46 @@ class TestZoneCache:
             {"state": {"lens_k2": 0.02}},
             {"size": (1280, 720)},
             {"scale": 2.0},
+            {"antialias": "NONE"},
         ],
-        ids=["vertices", "color", "name", "occupied", "count", "z-offset", "camera", "k1", "k2", "frame", "scale"],
+        ids=[
+            "vertices",
+            "color",
+            "name",
+            "occupied",
+            "count",
+            "z-offset",
+            "camera",
+            "k1",
+            "k2",
+            "frame",
+            "scale",
+            "font-options",
+        ],
     )
-    def test_anything_a_zone_is_drawn_from_draws_the_zones_again(self, outline_calls, change: dict) -> None:
+    def test_anything_a_zone_is_drawn_from_draws_the_zones_again(self, change: dict) -> None:
+        import cairo
+
         from openfollow.runtime.overlay_draw_zones import ZoneCache
 
-        cache = ZoneCache()
-        draw_zones(FakeRenderer(), FakeCairo(), self._state(), 1920, 1080, cache)
+        cache, first = ZoneCache(), FakeCairo()
+        draw_zones(FakeRenderer(), first, self._state(), 1920, 1080, cache)
         state = self._state(**change.get("state", {}))
         if "zone" in change:
             index, zone = change["zone"]
             state.zone_polygons[index] = zone
         cr = FakeCairo()
         scale = change.get("scale", 1.0)
-        cr.get_target = lambda: SimpleNamespace(get_device_scale=lambda: (scale, scale))  # type: ignore[method-assign]
+        cr.get_target = lambda: SimpleNamespace(  # type: ignore[method-assign]
+            get_device_scale=lambda: (scale, scale), get_font_options=cairo.FontOptions
+        )
+        if "antialias" in change:
+            options = cairo.FontOptions()
+            options.set_antialias(getattr(cairo, f"ANTIALIAS_{change['antialias']}"))
+            cr.get_font_options = lambda: options  # type: ignore[method-assign]
         w, h = change.get("size", (1920, 1080))
         draw_zones(FakeRenderer(), cr, state, w, h, cache)
-        assert outline_calls == [3, 3]
+        assert len(cr.surfaces) == 1 and cr.surfaces[0] is not first.surfaces[0]
 
     def test_zones_all_behind_the_camera_paint_nothing(self) -> None:
         from openfollow.runtime.overlay_draw_zones import ZoneCache
@@ -588,15 +616,16 @@ class TestZoneCache:
         [{"show_zones": False}, {"zone_polygons": []}, {"camera_params": None}],
         ids=["overlay-off", "no-zones", "no-camera"],
     )
-    def test_the_picture_is_let_go_while_no_zone_is_drawn(self, outline_calls, hidden: dict) -> None:
+    def test_the_picture_is_let_go_while_no_zone_is_drawn(self, hidden: dict) -> None:
         from openfollow.runtime.overlay_draw_zones import ZoneCache
 
         cache, state = ZoneCache(), self._state()
-        draw_zones(FakeRenderer(), FakeCairo(), state, 1920, 1080, cache)
+        before, after = FakeCairo(), FakeCairo()
+        draw_zones(FakeRenderer(), before, state, 1920, 1080, cache)
         draw_zones(FakeRenderer(), FakeCairo(), self._state(**hidden), 1920, 1080, cache)
         # Shown again unchanged, the zones are drawn afresh: no picture was kept meanwhile.
-        draw_zones(FakeRenderer(), FakeCairo(), state, 1920, 1080, cache)
-        assert outline_calls == [3, 3]
+        draw_zones(FakeRenderer(), after, state, 1920, 1080, cache)
+        assert after.surfaces[0] is not before.surfaces[0]
 
     def test_a_cache_asked_to_draw_without_a_camera_draws_nothing(self) -> None:
         from openfollow.runtime.overlay_draw_zones import ZoneCache

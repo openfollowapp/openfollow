@@ -92,7 +92,7 @@ def apply_commands(app: Any, commands: Iterable[PathCommand], controlled: Iterab
         if isinstance(command, PathActive):
             path = app._config.paths.find(command.name)
             if path is None:
-                logger.info("OSC: no path called %r", command.name)
+                logger.debug("OSC: no path called %r", command.name)
                 continue
             before.setdefault(path.name, (path, path.active))
             built.setdefault(path.name, (path, path.active))
@@ -107,7 +107,7 @@ def apply_commands(app: Any, commands: Iterable[PathCommand], controlled: Iterab
                 built.clear()
             marker = marker_of(command.marker_id)
             if marker is not None and not app._paths.lock_onto(command.marker_id, command.name, marker.pos):
-                logger.info("OSC: no active path %r to lock marker %d onto", command.name, command.marker_id)
+                logger.debug("OSC: no active path %r to lock marker %d onto", command.name, command.marker_id)
     switched = {name: path.active for name, (path, was) in before.items() if path.active != was}
     if switched:
         _write(app, lambda cfg: _switch(cfg, switched))

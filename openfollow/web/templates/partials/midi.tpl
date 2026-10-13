@@ -115,7 +115,7 @@
  % # ----------------------------------------------------------------
  <div class="group">
  <h3 class="group-title">Virtual Faders</h3>
- <button type="button" class="secondary small" data-midi-live onclick="midiToggleLive()">Show live</button>
+ <button type="button" class="secondary small" data-midi-live aria-pressed="false" onclick="midiToggleLive()">Show live</button>
  % # ``selected_fader`` ships from the route handler – defaults
  % # to 1 on initial render, but a save handler can pass the
  % # just-saved fader's index so re-rendering after a per-fader
@@ -204,7 +204,7 @@
  % marker_fader_values = marker_fader_values if defined('marker_fader_values') else []
  <div class="group">
  <h3 class="group-title">Marker Faders</h3>
- <button type="button" class="secondary small" data-midi-live onclick="midiToggleLive()">Show live</button>
+ <button type="button" class="secondary small" data-midi-live aria-pressed="false" onclick="midiToggleLive()">Show live</button>
  % if marker_fader_values:
  <div class="midi-fader-strips" role="group" aria-label="Marker faders">
  % for entry in marker_fader_values:
@@ -256,6 +256,7 @@
      function label(on) {
          document.querySelectorAll('[data-midi-live]').forEach(function (button) {
              button.textContent = on ? 'Stop live' : 'Show live';
+             button.setAttribute('aria-pressed', on ? 'true' : 'false');
          });
      }
      window.midiLiveActive = function () { return Date.now() < live.until; };

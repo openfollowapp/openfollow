@@ -150,8 +150,10 @@ def test_a_file_on_another_device_with_the_same_inode_is_read_again(
     os.utime(config_file, ns=(before.st_atime_ns, before.st_mtime_ns))
     real_stat = os.stat
 
-    def _other_device(p: str) -> SimpleNamespace:
-        st = real_stat(p)
+    def _other_device(p: object, *args: object, **kwargs: object) -> object:
+        st = real_stat(p, *args, **kwargs)  # type: ignore[arg-type]
+        if p != config_file:
+            return st
         return SimpleNamespace(st_dev=st.st_dev + 1, st_ino=st.st_ino, st_mtime_ns=st.st_mtime_ns, st_size=st.st_size)
 
     monkeypatch.setattr(cache_module.os, "stat", _other_device)

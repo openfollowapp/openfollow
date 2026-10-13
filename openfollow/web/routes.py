@@ -7621,7 +7621,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
         if not 1 <= idx <= VIRTUAL_FADER_COUNT:
             return _render_midi_section(
-                load_config(server.config_path),
+                _request_scoped_config(),
                 saved=False,
             )
         # All faders are uniform (MIDI / unmapped); ``source_kind`` is
@@ -7684,9 +7684,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             abort(404, "No MIDI Learn for this fader")
             return ""  # pragma: no cover - abort() raises first
         poll = server.midi_capture_arm(_fader_learn_row_id(idx))
-        # Reuse the per-request parse the ``before_request`` hook already
-        # stashed rather than re-reading config.toml – this arms off the
-        # 250 ms poll loop, so a second disk read per request adds up.
+        # Arms off the 250 ms poll loop – reuse the request's copy.
         return _render_midi_fader_capture_status(
             _request_scoped_config(),
             idx,
@@ -8653,7 +8651,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     # simultaneous Capture flows on different rows can't clobber each other.
     @app.post("/section/osc/midi/learn/arm/<row_id>")
     def section_osc_midi_learn_arm(row_id: str) -> Any:
-        cfg = load_config(server.config_path)
+        cfg = _request_scoped_config()
         if _find_osc_binding(cfg, row_id) is None:
             abort(404, "Unknown binding")
             return ""  # pragma: no cover - abort() raises before we reach here

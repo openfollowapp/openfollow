@@ -20,7 +20,12 @@ _HARNESS = """
 var now = 1000, timers = [], triggered = [];
 var buttons;
 // What the server renders: two fresh Show live buttons, on the first load and on every re-render.
-function render() { buttons = [0, 1].map(function () { return {textContent: 'Show live'}; }); }
+function render() {
+    buttons = [0, 1].map(function () {
+        return {textContent: 'Show live', pressed: 'false',
+                setAttribute: function (k, v) { if (k === 'aria-pressed') { this.pressed = v; } }};
+    });
+}
 var window = {};
 var document = {body: 'body', querySelectorAll: function (sel) { return sel === '[data-midi-live]' ? buttons : []; }};
 var htmx = {trigger: function (target, name) { triggered.push(name); }};
@@ -80,3 +85,12 @@ def test_a_re_render_of_the_section_keeps_a_live_view_going() -> None:
     (after,) = _run("window.midiToggleLive(); advance(3000); load(); out.push(view());")
     assert after["active"] is True
     assert after["labels"] == ["Stop live"] * 2
+
+
+def test_both_buttons_report_their_state_to_assistive_tech() -> None:
+    on, off = _run(
+        "window.midiToggleLive(); out.push(buttons.map(function (b) { return b.pressed; }));"
+        "advance(10000); out.push(buttons.map(function (b) { return b.pressed; }));"
+    )
+    assert on == ["true", "true"]
+    assert off == ["false", "false"]

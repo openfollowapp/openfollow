@@ -299,7 +299,10 @@ class TestShowLive:
         _, base, _ = live_server
         _, body = _get(base, "/section/midi")
         assert "every 100ms" not in body
-        assert not re.search(r'hx-trigger="every [^"\[]*"', body), "a poll without a condition runs while nobody looks"
+        for trigger in re.findall(r'hx-trigger="([^"]*)"', body):
+            for clause in trigger.split(","):
+                if clause.strip().startswith("every"):
+                    assert "[" in clause, f"a poll without a condition runs while nobody looks: {trigger}"
 
     def test_each_fader_group_has_a_show_live_button_that_is_not_a_save(self, live_server) -> None:
         _, base, _ = live_server
@@ -308,6 +311,7 @@ class TestShowLive:
         assert buttons == ["Show live", "Show live"]
         for tag in re.findall(r"<button[^>]*data-midi-live[^>]*>", body):
             assert 'type="button"' in tag and "save-btn" not in tag
+            assert 'aria-pressed="false"' in tag
 
 
 class TestSavePatches:

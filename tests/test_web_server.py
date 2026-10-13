@@ -7618,6 +7618,29 @@ def test_a_request_takes_one_copy_of_the_config_and_parses_nothing_itself(
     assert parses == []
 
 
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("/section/osc/midi/learn/arm/no-such-row", 404),
+        ("/section/midi/faders/99", 200),
+    ],
+)
+def test_a_midi_post_that_writes_nothing_parses_nothing_itself(live_server, monkeypatch, path, expected) -> None:
+    import openfollow.web.routes as routes_mod
+
+    server, base = live_server
+    save_config(AppConfig(), server.config_path)
+    cache = _CountingCache()
+    parses: list[str] = []
+    real_load = routes_mod.load_config
+    monkeypatch.setattr(routes_mod, "_CONFIG_CACHE", cache)
+    monkeypatch.setattr(routes_mod, "load_config", lambda p, *a, **k: parses.append(p) or real_load(p, *a, **k))
+    status, _ = _post_form(base, path, {})
+    assert status == expected
+    assert cache.taken == 1
+    assert parses == []
+
+
 # ---------------------------------------------------------------------------
 # ``/api/validate/zone/<field>`` endpoints serve the four per-zone OSC address fields
 # ---------------------------------------------------------------------------

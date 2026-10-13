@@ -493,7 +493,8 @@ class InputManager:
         """Run the path engine for one frame, whatever input does: menus open or no marker controlled.
 
         Releases markers no longer controlled, applies OSC path commands, then writes the
-        markers the engine moved itself (slides, edits), before any input this frame.
+        markers the engine moved itself (slides, edits). ``animate`` calls it after the frame's
+        discrete key presses (Reset, Pathfinder) and before :meth:`update`.
         """
         commands = self.path_osc_handler.take() if self.path_osc_handler is not None else []
         paths = self._paths()

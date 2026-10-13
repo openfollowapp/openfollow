@@ -663,3 +663,31 @@ class TestApplyToAllStations:
     def test_a_push_the_station_refused_is_not_applied(self) -> None:
         out = self._push("{ status: 403, body: { error: 'Refused' } }")
         assert out == {"line": "Not applied. Refused.", "toasts": []}
+
+
+class TestFollowingARecording:
+    def _polls(self, hide: str) -> Any:
+        return _editor(
+            f"""
+            function gets() {{ return requests.filter(function (r) {{ return r.url === '/api/paths'; }}).length; }}
+            var before = gets();
+            {hide}
+            tickIntervals(); await settle();
+            out.polled = gets() - before;
+            """,
+            setup="model.recording = 'cross';",
+        )
+
+    def test_the_rows_follow_a_recording_while_on_screen(self) -> None:
+        assert self._polls("")["polled"] == 1
+
+    @pytest.mark.parametrize(
+        "hide",
+        [
+            "document.hidden = true;",  # the browser tab is in the background
+            "editor().parentNode.style.display = 'none';",  # another page tab is shown
+            "editor().querySelector('[data-pe=\"list\"]').style.display = 'none';",  # the section is folded
+        ],
+    )
+    def test_nothing_is_asked_while_the_rows_are_not_on_screen(self, hide: str) -> None:
+        assert self._polls(hide)["polled"] == 0

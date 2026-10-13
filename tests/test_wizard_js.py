@@ -590,7 +590,7 @@ def test_the_corners_snap_to_a_solve_only_while_there_are_no_points(hold: bool) 
     snapped = not hold
     corners, landed, handed = run_wizard_js(
         "(function() { solveFromCorners(); return [cornerPositions, landed, handed]; })()",
-        functions=("isConvex", "quadArea", "solveFromCorners"),
+        functions=("isConvex", "quadArea", "wizSolveCorners", "solveFromCorners"),
         variables=("CORNER_NAMES",),
         prelude=_SOLVE_PAGE
         + "function wizardSolveBody(sc) { var b = { screen_corners: sc };"
@@ -606,7 +606,7 @@ def test_the_corners_snap_to_a_solve_only_while_there_are_no_points(hold: bool) 
 def test_a_point_asking_for_a_solve_before_the_corners_are_placed_sends_nothing() -> None:
     sent = run_wizard_js(
         "(function() { solveFromCorners(); return sent; })()",
-        functions=("isConvex", "quadArea", "solveFromCorners"),
+        functions=("isConvex", "quadArea", "wizSolveCorners", "solveFromCorners"),
         variables=("CORNER_NAMES",),
         prelude=_SOLVE_PAGE + "function wizardSolveBody(sc) { return { screen_corners: sc }; }",
         cornerPositions={"DSL": None, "DSR": None, "USR": None, "USL": None},
@@ -816,6 +816,7 @@ def test_the_reference_mapping_solve_leaves_the_points_out() -> None:
             "calibComplete",
             "calibPinPx",
             "calibPayload",
+            "wizSolveCorners",
             "wizardSolveBody",
             "applyCoarseOffset",
         ),
@@ -1173,7 +1174,7 @@ def test_a_corner_drag_drops_a_point_solve_still_to_come() -> None:
         })()""",
         functions=("setupCornerDragging",),
         prelude="""
-var calibSolveTimer = 'pending', cleared = [], cornerPositions = { DSL: [1, 2] };
+var calibSolveTimer = 'pending', cleared = [], cornerPositions = { DSL: [1, 2] }, poseSeq = 0;
 function clearTimeout(t) { cleared.push(t); } function showLoupe() {}
 var handle = { dataset: { corner: 'DSL' }, style: {} };
 var container = { listeners: {}, addEventListener: function(t, f) { this.listeners[t] = f; } };

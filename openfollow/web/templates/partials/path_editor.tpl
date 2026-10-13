@@ -222,7 +222,7 @@ function peArrowhead(x, y, ux, uy, half, side) {
         if (p.name in open) details.open = true;
         details.addEventListener('toggle', function() {
             // Opened again by a redraw: the row the picture edits stays the one the operator opened last.
-            if (details.open === (p.name in open)) return;
+            if (details.open && p.name in open) return;
             if (details.open) {
                 open[p.name] = 'basics';
                 selected = p.name;

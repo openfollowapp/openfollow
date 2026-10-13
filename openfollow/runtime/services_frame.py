@@ -12,7 +12,7 @@ from openfollow.runtime_metrics import OverlayStatePool
 
 
 def update_video(app: Any, logger: logging.Logger) -> None:
-    """Log the source geometry once per receiver; the window's shape is the OS's, not the source's."""
+    """Log the source geometry once per receiver."""
     try:
         w, h = app._video_receiver.resolution
         if w <= 0 or h <= 0:

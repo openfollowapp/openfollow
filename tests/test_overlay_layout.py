@@ -557,7 +557,7 @@ def test_build_help_sections_normal_drops_lines_for_empty_keyboard_actions() -> 
     )
     keyboard = next(lines for title, lines in sections if title == "Keyboard")
     assert not any("Reset marker" in line for line in keyboard)
-    assert not any("Toggle help" in line for line in keyboard)
+    assert not any("Toggle Help" in line for line in keyboard)
     assert not any("Settings menu" in line for line in keyboard)
     # Movement still rendered (non-empty defaults).
     assert any("Move X/Y" in line for line in keyboard)
@@ -599,7 +599,7 @@ def test_build_help_sections_normal_btn_returns_empty_when_action_explicitly_cle
     )
     controller = next(lines for title, lines in sections if title == "Controller")
     assert not any("Reset marker" in line for line in controller)
-    assert not any("Toggle help" in line for line in controller)
+    assert not any("Toggle Help" in line for line in controller)
     assert not any("Settings menu" in line for line in controller)
     # The L-Stick movement line is unconditional.
     assert any("Move X/Y" in line for line in controller)
@@ -712,13 +712,16 @@ def test_build_help_sections_lists_the_toggles_as_one_group(section: str) -> Non
             mode="normal",
             keyboard_connected=True,
             controller_connected=True,
-            keyboard_labels={"toggle_help": "h", "toggle_zones": "z", "pathfinder": "p"},
-            button_labels={"toggle_help": "Y", "toggle_zones": "B", "pathfinder": "A"},
+            keyboard_labels={"toggle_help": "h", "toggle_zones": "z", "pathfinder": "p", "toggle_paths": "o"},
+            button_labels={"toggle_help": "Y", "toggle_zones": "B", "pathfinder": "A", "toggle_paths": "Start"},
             mouse3d_connected=True,
-            mouse3d_buttons={"toggle_help": 0, "toggle_zones": 1, "pathfinder": 2},
+            mouse3d_buttons={"toggle_help": 0, "toggle_zones": 1, "pathfinder": 2, "toggle_paths": 3},
         )
     )
     lines = sections[section]
-    labels = ("Toggle Help (this overlay)", "Toggle zone", "Toggle Pathfinder")
-    rows = [next(i for i, line in enumerate(lines) if label in line) for label in labels]
-    assert rows == list(range(rows[0], rows[0] + 3))
+    labels = ("Toggle Help (this overlay)", "Toggle zone", "Toggle Pathfinder", "Toggle paths")
+    rows = [next((i for i, line in enumerate(lines) if label in line), None) for label in labels]
+    assert None not in rows, f"{section} lacks {labels[rows.index(None)]!r}: {lines}"
+    assert rows == list(range(rows[0], rows[0] + len(labels))), lines
+    settings = [i for i, line in enumerate(lines) if "Settings menu" in line]
+    assert all(i > rows[-1] for i in settings), lines

@@ -214,11 +214,12 @@ class PathNetwork:
                     out.append((a, b))
         return out
 
-    def _ways(self, place: Place) -> list[_Way]:
+    def _ways(self, place: Place, *, release: bool = True) -> list[_Way]:
+        """The ways on from ``place``; with ``release`` False, none off an end that releases."""
         curve = self.curves[place.path]
         # On a sharp corner, back is along the segment that arrived there.
         (ax, ay), (lx, ly) = curve.directions(place.s)
-        release_start, release_end = self.releases[place.path]
+        release_start, release_end = self.releases[place.path] if release else (False, False)
         ways = []
         if curve.closed or place.s < curve.length - _EPS or release_end:
             ways.append(_Way(place, 1, lx, ly))
@@ -234,7 +235,8 @@ class PathNetwork:
         for s, partner in self._stations[place.path]:
             off = curve.offset(place.s, s)
             if abs(off) <= area:
-                other.extend((way, off) for way in self._ways(partner))
+                # Off another path's end that releases would only let the marker go: never a turn.
+                other.extend((way, off) for way in self._ways(partner, release=False))
 
         def angle(way: _Way) -> float:
             return math.acos(max(-1.0, min(1.0, wx * way.dx + wy * way.dy)))

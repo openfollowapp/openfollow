@@ -619,6 +619,19 @@ class TestSteering:
         # Down, there is no branch to take; the marker stays put on H.
         assert net.walk(Place(0, 7.0), 0.0, -1.0, 1.0).place == Place(0, 7.0)
 
+    @pytest.mark.parametrize("start", [7.0, 7.3])
+    def test_a_push_across_the_path_by_a_branch_end_that_releases_moves_nothing(self, start: float) -> None:
+        # The branch comes down from (2, 4) and ends on H at (2, 0), releasing there.
+        branch = _curve([(2, 4, 0), (2, 0, 0)])
+        net = PathNetwork([H, branch], [(False, False), (False, True)])
+        assert net.walk(Place(0, start), 0.0, -1.0, 1.0) == Step(Place(0, start))
+
+    def test_on_a_branch_its_own_end_that_releases_still_lets_go_at_the_junction(self) -> None:
+        branch = _curve([(2, 4, 0), (2, 0, 0)])
+        net = PathNetwork([H, branch], [(False, False), (False, True)])
+        step = net.walk(Place(1, 3.8), 0.0, -1.0, 1.0)
+        assert step == Step(Place(1, pytest.approx(4.0)), released=True)
+
     def test_at_the_end_of_a_branch_a_diagonal_push_carries_on_along_the_path_it_joins(self) -> None:
         # The branch comes down from (2, 4) and ends on H at (2, 0).
         branch = _curve([(2, 4, 0), (2, 0, 0)])

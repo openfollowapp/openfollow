@@ -491,6 +491,29 @@ class TestZoneCache:
         )
         self._assert_cached_looks_direct(state, scale=2.0, renderer=_HintedRenderer())
 
+    @pytest.mark.parametrize("scale", [1.0, 2.0], ids=["screen", "hidpi"])
+    def test_the_picture_holds_the_zones_not_the_frame(self, scale: float) -> None:
+        import cairo
+
+        from openfollow.runtime.overlay_draw_zones import ZoneCache
+
+        pictures: list[tuple[int, int]] = []
+
+        class _Context(cairo.Context):
+            def set_source_surface(self, surface: Any, x: float = 0.0, y: float = 0.0) -> None:
+                pictures.append((surface.get_width(), surface.get_height()))
+                super().set_source_surface(surface, x, y)
+
+        state = self._state(zone_polygons=[(_square(-1.0, 2.0, 0.5), "#ffaa00", "Pit", False, 0)])
+        clear = (0.0, 0.0, 0.0, 0.0)
+        surface = _blank(scale, clear)
+        surface.set_device_scale(scale, scale)
+        draw_zones(FakeRenderer(), _Context(surface), state, 1920, 1080, ZoneCache())
+        ys, xs = np.nonzero((self._pixels(surface) != self._pixels(_blank(scale, clear))).any(axis=2))
+        ink = (int(xs.max() - xs.min()) + 1, int(ys.max() - ys.min()) + 1)
+        # The ink, plus the margin of a pixel on each side.
+        assert pictures == [(pytest.approx(ink[0], abs=4 * scale), pytest.approx(ink[1], abs=4 * scale))]
+
     def test_zones_that_did_not_change_are_not_drawn_again(self, outline_calls) -> None:
         from openfollow.runtime.overlay_draw_zones import ZoneCache
 

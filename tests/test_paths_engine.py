@@ -419,12 +419,15 @@ class TestRename:
         assert (engine.locked_path(1), engine.recording) == ("DownStage", "DownStage")
 
     def test_two_renames_before_the_reload_land_on_the_last_name(self) -> None:
-        engine = self._locked_and_recording()
+        loop = _path("loop", [(0, -5, 0), (0, 5, 0)], active=True)
+        engine = _engine(CROSS, loop)
+        engine.press(1, (3.0, 0.2, 0.0))
+        engine.press(2, (0.2, 3.0, 0.0))
         engine.stage_rename("loop", "arc")  # another path's rename, not part of this one's
         engine.stage_rename("cross", "a")
         engine.stage_rename("A", "b")
-        engine.reload(self._renamed("b", _path("arc", [(0, -5, 0), (0, 5, 0)])), enabled=True)
-        assert (engine.locked_path(1), engine.recording) == ("b", "b")
+        engine.reload(self._renamed("b", _path("arc", [(0, -5, 0), (0, 5, 0)], active=True)), enabled=True)
+        assert (engine.locked_path(1), engine.locked_path(2)) == ("b", "arc")
 
     def test_a_change_of_case_carries_the_new_spelling(self) -> None:
         engine = self._locked_and_recording()

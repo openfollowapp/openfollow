@@ -200,8 +200,9 @@ class PathNetwork:
     def switch_arrows(
         self, place: Place, speed: float
     ) -> list[tuple[tuple[float, float, float], tuple[float, float, float]]]:
-        """Where a marker at ``place`` pushed at ``speed`` m/s may turn: a short stretch along every way out of
-        each junction in its switch area, as (tail, tip), but the way back to the marker."""
+        """Where a marker at ``place`` pushed at ``speed`` m/s may turn: a short stretch, as (tail, tip), along
+        every way onto another path at each junction in its switch area. Carrying on along its own path needs
+        no arrow."""
         area = max(SWITCH_AREA_M, speed * SWITCH_LOOKAHEAD_S)
         curve = self.curves[place.path]
         out = []
@@ -211,8 +212,7 @@ class PathNetwork:
             off = curve.offset(place.s, s)
             if abs(off) > area:
                 continue
-            ahead = [w for w in self._ways(Place(place.path, s)) if abs(off) <= _EPS or w.sign * off > 0]
-            for way in ahead + self._ways(partner):
+            for way in self._ways(partner):
                 c = self.curves[way.place.path]
                 tail, _ = c.advance(way.place.s, way.sign * SWITCH_ARROW_FROM_M)
                 tip, _ = c.advance(way.place.s, way.sign * SWITCH_ARROW_TO_M)

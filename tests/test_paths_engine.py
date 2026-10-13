@@ -831,7 +831,7 @@ class TestSwitchArrows:
         assert engine.switch_arrows() == []
         # Pushed at 2 m/s the switch area reaches 1 m ahead.
         engine.move(1, 2.0, 0.0, 0.01)
-        assert len(engine.switch_arrows()) == 3
+        assert len(engine.switch_arrows()) == 2
 
     def test_a_frame_without_a_push_narrows_the_arrows_to_the_switch_area_floor(self) -> None:
         engine = _engine(CROSS, RAMP)

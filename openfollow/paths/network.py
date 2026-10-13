@@ -12,6 +12,7 @@ the push best, but leaves its own path only when the other is clearly better.
 
 from __future__ import annotations
 
+import logging
 import math
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -22,9 +23,13 @@ import numpy.typing as npt
 
 from openfollow.paths.geometry import FloatArray, PathCurve
 
+logger = logging.getLogger(__name__)
+
 # How close two paths must come, in plan and in height, to meet.
 JUNCTION_REACH_M = 0.1
 JUNCTION_HEIGHT_M = 0.1
+# The most junctions one network holds: past it the search stops, so a dense tangle builds in bounded time.
+MAX_JUNCTIONS = 1024
 # A marker this close to a junction may steer into the other path.
 _CAPTURE_M = 0.05
 # The other path wins only when its direction is more than this much closer to the push.
@@ -283,7 +288,7 @@ def _touched(curves: Sequence[PathCurve], i: int, side: int) -> list[tuple[int, 
 
 
 def find_junctions(curves: Sequence[PathCurve]) -> list[Junction]:
-    """Where each pair of curves crosses or touches, at the same height."""
+    """Where each pair of curves crosses or touches, at the same height, lower pairs first, up to ``MAX_JUNCTIONS``."""
     boxes = [_boxes(curve) for curve in curves]
     whole = [np.concatenate((b[:, :2].min(axis=0), b[:, 2:].max(axis=0))) for b in boxes]
     found: list[Junction] = []
@@ -295,12 +300,23 @@ def find_junctions(curves: Sequence[PathCurve]) -> list[Junction]:
             pair = [Junction(a, sa, b, sb) for sa, sb in _crossings(ca, cb, boxes[a], boxes[b])]
             pair += [Junction(a, sa, b, sb) for sa, sb in _touches(ca, cb)]
             pair += [Junction(a, sa, b, sb) for sb, sa in _touches(cb, ca)]
-            found += _distinct_junctions(ca, cb, pair)
+            kept = _distinct_junctions(ca, cb, pair, MAX_JUNCTIONS - len(found))
+            if len(found) + len(kept) > MAX_JUNCTIONS:
+                logger.warning(
+                    "Paths: the active paths meet in more than %d places; junctions past the first %d are left out",
+                    MAX_JUNCTIONS,
+                    MAX_JUNCTIONS,
+                )
+                return found + kept[: MAX_JUNCTIONS - len(found)]
+            found += kept
     return found
 
 
-def _distinct_junctions(ca: PathCurve, cb: PathCurve, pair: list[Junction]) -> list[Junction]:
-    """``pair`` at the same height, less each that repeats one kept before it."""
+def _distinct_junctions(ca: PathCurve, cb: PathCurve, pair: list[Junction], limit: int) -> list[Junction]:
+    """``pair`` at the same height, less each that repeats one kept before it.
+
+    Stops at ``limit + 1`` junctions, so a result longer than ``limit`` says some were left out.
+    """
     kept: list[Junction] = []
     # Kept junctions by ``s_a`` in steps of _SAME_JUNCTION_M: a repeat lies within two steps.
     near: dict[int, list[Junction]] = {}
@@ -312,6 +328,8 @@ def _distinct_junctions(ca: PathCurve, cb: PathCurve, pair: list[Junction]) -> l
         if any(_same_junction(ca, cb, j, k) for step in steps for k in near.get(step, ())):
             continue
         kept.append(j)
+        if len(kept) > limit:
+            break
         near.setdefault(_step(j.s_a), []).append(j)
     return kept
 

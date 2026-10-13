@@ -4,12 +4,14 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import random
 
 import numpy as np
 import pytest
 
+from openfollow.configuration import MAX_PATH_POINTS, MAX_PATHS
 from openfollow.paths import network
 from openfollow.paths.geometry import PathCurve, PathPoint, build_curve
 from openfollow.paths.network import Junction, PathNetwork, Place, Step, extend_to_corners, find_junctions
@@ -248,6 +250,62 @@ class TestJunctionSearchCost:
         # Three products per pass, and more than one pass.
         assert len(sizes) > 3
         assert max(sizes) <= network._BOX_PAIRS_PER_PASS * network._BOX_SEGMENTS**2
+
+
+def _tangle() -> list[PathCurve]:
+    """As many paths of as many points as a config holds, scribbled over one 2 m square."""
+    rng = random.Random(5)
+    return [
+        _curve([(rng.uniform(0, 2), rng.uniform(0, 2), 0, 0.5) for _ in range(MAX_PATH_POINTS)])
+        for _ in range(MAX_PATHS)
+    ]
+
+
+class TestJunctionCap:
+    def test_a_dense_tangle_keeps_the_most_junctions_a_network_holds_and_says_so(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.WARNING, logger="openfollow.paths.network"):
+            net = PathNetwork(_tangle())
+        assert len(net.junctions) == network.MAX_JUNCTIONS
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "left out" in warnings[0].getMessage()
+
+    def test_once_the_cap_is_reached_the_search_stops(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        pairs, heights = [], []
+        crossings, same_height = network._crossings, network._same_height
+        monkeypatch.setattr(network, "_crossings", lambda *args: pairs.append(1) or crossings(*args))
+        monkeypatch.setattr(network, "_same_height", lambda *args: heights.append(1) or same_height(*args))
+        curves = _tangle()
+        find_junctions(curves)
+        # Of the 496 pairs, each crossing the others hundreds of times, only the first few are searched.
+        assert len(pairs) < 5
+        assert len(heights) < 2 * network.MAX_JUNCTIONS
+
+    @pytest.mark.parametrize("seed", range(3))
+    def test_past_the_cap_the_junctions_kept_are_the_first_ones(
+        self, seed: int, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        rng = random.Random(seed)
+        curves = [_curve(_wander(rng, 30)) for _ in range(6)]
+        every = _reference_junctions(curves)
+        assert len(every) > 10
+        monkeypatch.setattr(network, "MAX_JUNCTIONS", 10)
+        with caplog.at_level(logging.WARNING, logger="openfollow.paths.network"):
+            assert find_junctions(curves) == every[:10]
+        assert len(caplog.records) == 1
+
+    def test_a_network_with_exactly_as_many_junctions_as_the_cap_keeps_them_all_quietly(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        curves = [_curve(_wander(random.Random(1), 30)) for _ in range(6)]
+        every = _reference_junctions(curves)
+        assert every
+        monkeypatch.setattr(network, "MAX_JUNCTIONS", len(every))
+        with caplog.at_level(logging.WARNING, logger="openfollow.paths.network"):
+            assert find_junctions(curves) == every
+        assert caplog.records == []
 
 
 class TestCornerExtension:

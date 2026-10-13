@@ -280,7 +280,7 @@ function peArrowhead(x, y, ux, uy, half, side) {
     // with what was typed there and not yet saved; an action can name another control in ``focusNext``.
     function renderList(from, to) {
         var list = q('list');
-        var keep = document.activeElement, want = focusNext || keep.id, typed = !focusNext;
+        var keep = document.activeElement, want = focusNext || keep.id;
         focusNext = null;
         if (from && want.indexOf(idOf(from, '')) === 0) want = idOf(to, want.slice(idOf(from, '').length));
         removing = true;
@@ -298,7 +298,7 @@ function peArrowhead(x, y, ux, uy, half, side) {
         var again = want ? document.getElementById(want) : null;
         if (!again) return;
         again.focus();
-        if (!typed || again.type !== 'text') return;
+        if (again.type !== 'text') return;
         if (keep.value !== keep.defaultValue) {
             again.value = keep.value;
             again.setAttribute('aria-invalid', keep.getAttribute('aria-invalid') || 'false');

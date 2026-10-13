@@ -1098,3 +1098,78 @@ class TestNamesForAssistiveTechnology:
             """
         )
         assert out == {"invalid": "true", "line": 'Not saved. Point 1 Y: "abc" is not a length.', "puts": 0}
+
+
+class TestTheRemainingGuards:
+    def test_focus_sent_by_a_delete_is_not_sent_again_by_a_later_redraw(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            control('cross', 'delete-0').click(); await settle();
+            control('cross', 'y-0').focus();
+            model.paths[1].closed = true;  // changed elsewhere: the next poll redraws
+            tickIntervals(); await settle();
+            out.focus = document.activeElement.id;
+            """,
+            setup="model.recording = 'loop'; model.paths[0].points.push({ x: 0, y: 0, z: 0, radius: 0.5 });",
+        )
+        assert out["focus"] == "pe:cross:y-0"
+
+    def test_a_points_edit_waiting_behind_an_option_is_still_sent(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            holdWhen = function (req) { return req.method === 'PUT'; };
+            var x = control('cross', 'x-0');
+            typeInto(x, '-2'); enter(x);  // in flight
+            control('cross', 'closed').click();  // waiting
+            var y = control('cross', 'y-0');
+            typeInto(y, '7'); enter(y);  // waiting too
+            holdWhen = null; release(); await settle();
+            out.saved = [points(0)[0], model.paths[0].closed];
+            """
+        )
+        assert out["saved"] == [[-2, 7], True]
+
+    def test_a_change_from_elsewhere_takes_the_handles_off_until_the_picture_shows_it(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            out.before = handles().length;
+            holdWhen = function (req) { return req.url === '/api/paths/view'; };
+            model.paths[0].points.unshift({ x: 0, y: 0, z: 0, radius: 0.5 });  // added on another station
+            tickIntervals(); await settle();
+            out.behind = handles().length;
+            holdWhen = null; release(); await settle();
+            out.after = handles().length;
+            """,
+            setup="model.recording = 'loop';",
+        )
+        assert out == {"before": 2, "behind": 0, "after": 3}
+
+    def test_two_drops_in_a_row_reorder_from_the_order_shown(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            dragPoint('cross', 0, 2, 15);  // A to the end: B C A
+            dragPoint('cross', 0, 2, 15);  // B to the end: C A B
+            await settle();
+            out.saved = points(0);
+            """,
+            setup="model.paths[0].points.push({ x: 0, y: 0, z: 0, radius: 0.5 });",
+        )
+        assert out["saved"] == [[0, 0], [-3, 2], [3, 2]]
+
+    def test_moving_the_pointer_without_a_drag_leaves_clicks_working(self) -> None:
+        out = _editor(
+            """
+            openRow('cross'); await settle();
+            pointer(picture(), 'pointermove', 600, 800);
+            pointer(picture(), 'pointerdown', 640, 860);
+            pointer(picture(), 'pointerup', 640, 860);
+            pointer(picture(), 'click', 640, 860);
+            await settle();
+            out.points = model.paths[0].points.length;
+            """
+        )
+        assert out["points"] == 3

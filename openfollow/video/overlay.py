@@ -69,6 +69,9 @@ from openfollow.runtime.overlay_draw_scene import (
     draw_grid as draw_grid_pass,
 )
 from openfollow.runtime.overlay_draw_scene import (
+    draw_ground_grid as draw_ground_grid_pass,
+)
+from openfollow.runtime.overlay_draw_scene import (
     draw_marker as draw_marker_pass,
 )
 from openfollow.runtime.overlay_draw_scene import (
@@ -304,6 +307,7 @@ class CairoOverlayRenderer:
             cr.save()
             try:
                 self._draw_grid(cr, state, width, height)
+                draw_ground_grid_pass(cr, state, width, height)
                 self._draw_origin(cr, state, width, height)
                 self._draw_zones(cr, state, width, height)
                 draw_paths_pass(self, cr, state, width, height, self._path_cache)

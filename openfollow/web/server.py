@@ -172,6 +172,10 @@ class ConfigWebServer:
         zone_diagnostics_provider: (Callable[[int], dict[str, Any] | None] | None) = None,
         zone_test_send: (Callable[[int, str], dict[str, Any]] | None) = None,
         marker_positions_provider: Callable[[], list[tuple[int, float, float]]] | None = None,
+        marker_position_provider: Callable[[int], tuple[float, float, float] | None] | None = None,
+        path_state_provider: Callable[[], dict[str, Any]] | None = None,
+        path_recorder: Callable[[str | None], bool] | None = None,
+        path_renamer: Callable[[str, str], None] | None = None,
         # Live per-marker move speeds (R/T + gamepad bumpers). Device-local and
         # runtime-authoritative; the section-save path overlays them onto the fresh
         # disk load so a save can't clobber a speed the operator just ramped.
@@ -287,6 +291,10 @@ class ConfigWebServer:
         self._zone_diagnostics_provider = zone_diagnostics_provider
         self._zone_test_send = zone_test_send
         self._marker_positions_provider = marker_positions_provider
+        self._marker_position_provider = marker_position_provider
+        self._path_state_provider = path_state_provider
+        self._path_recorder = path_recorder
+        self._path_renamer = path_renamer
         self._marker_move_speeds_provider = marker_move_speeds_provider
         self._full_snapshot_provider = full_snapshot_provider
         self._mouse3d_button_provider = mouse3d_button_provider
@@ -923,6 +931,27 @@ class ConfigWebServer:
         if self._marker_positions_provider is None:
             return []
         return self._marker_positions_provider()
+
+    def get_marker_position(self, marker_id: int) -> tuple[float, float, float] | None:
+        """Where ``marker_id`` is on the wire now, X/Y/Z; ``None`` when it is not here or offline."""
+        if self._marker_position_provider is None:
+            return None
+        return self._marker_position_provider(marker_id)
+
+    def get_path_state(self) -> dict[str, Any]:
+        """Which path records and which markers are locked onto which path."""
+        if self._path_state_provider is None:
+            return {"recording": None, "locks": {}}
+        return self._path_state_provider()
+
+    def record_path(self, name: str | None) -> bool:
+        """Start recording into the path called ``name``, or stop with ``None``."""
+        return self._path_recorder is not None and self._path_recorder(name)
+
+    def path_renaming(self, old: str, new: str) -> None:
+        """Path ``old`` is about to be saved as ``new``: the markers on it and its recording follow."""
+        if self._path_renamer is not None:
+            self._path_renamer(old, new)
 
     def get_marker_move_speeds(self) -> dict[int, float]:
         """Return live per-marker move speeds; empty dict when unwired.

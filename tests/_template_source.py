@@ -4,6 +4,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+_BASE = Path(__file__).parent.parent / "openfollow" / "web" / "templates" / "base.tpl"
+
 
 def function_body(source: str, name: str) -> str:
     """The body of ``function name(...) { ... }``, matched to its closing brace."""
@@ -18,3 +22,10 @@ def function_body(source: str, name: str) -> str:
             if depth == 0:
                 return source[opening + 1 : index]
     raise AssertionError(f"{name} has no closing brace")
+
+
+def reorder_script() -> str:
+    """The shared drag-reorder listeners from base.tpl's page script."""
+    text = _BASE.read_text(encoding="utf-8")
+    start = text.index("// Generic drag-reorder shared by")
+    return text[start : text.index("document.addEventListener('DOMContentLoaded'", start)]

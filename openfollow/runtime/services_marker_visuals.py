@@ -257,6 +257,24 @@ def sync_grid_config(state: OverlayState, cfg: Any) -> None:
     state.origin_thickness = _soft_int(g.origin_thickness, d.origin_thickness, lo=1)
 
 
+def sync_ground_grid_config(state: OverlayState, cfg: Any) -> None:
+    """Copy the ground grid into the overlay state: ``enabled`` drops markers inside it onto its height
+    and ``visible`` draws it, each on its own; neither without experimental features or three corners."""
+    # getattr: a shim config without the section draws no ground grid.
+    gg = getattr(cfg, "ground_grid", None)
+    if gg is None:
+        state.ground_grid_vertices = []
+        state.ground_grid_z = 0.0
+        state.ground_grid_active = state.ground_grid_visible = False
+        return
+    state.ground_grid_vertices = [(float(v[0]), float(v[1])) for v in gg.vertices]
+    state.ground_grid_z = _soft_float(gg.z_offset, 0.0)
+    experimental = _soft_bool(getattr(getattr(cfg, "ui", None), "show_experimental_features", False), False)
+    usable = experimental and len(state.ground_grid_vertices) >= 3
+    state.ground_grid_active = usable and _soft_bool(gg.enabled, False)
+    state.ground_grid_visible = usable and _soft_bool(gg.visible, True)
+
+
 def sync_ui_config(state: OverlayState, cfg: Any) -> None:
     """Copy the UI display unit system into the overlay state.
 
@@ -354,7 +372,9 @@ def _populate_path_overlay(state: OverlayState, cfg: Any, app: Any) -> None:
     state.show_paths = engine is not None and engine.enabled and bool(cfg.paths.show_paths)
     if engine is None or not state.show_paths:
         state.path_lines = []
+        state.path_arrows = []
         return
+    state.path_arrows = engine.switch_arrows()
     state.path_lines = [
         (d.curve, [(e.at, e.inside, e.releases) for e in d.ends], d.locked) for d in engine.drawings(cfg.paths)
     ]
@@ -397,6 +417,7 @@ def build_initial_overlay_state(cfg: Any) -> OverlayState:
     """Create the initial disconnected overlay state from config."""
     state = OverlayState()
     sync_grid_config(state, cfg)
+    sync_ground_grid_config(state, cfg)
     sync_marker_config(state, cfg)
     sync_ui_config(state, cfg)
 
@@ -727,6 +748,7 @@ def build_marker_visual_state(
 
     sync_marker_config(state, cfg)
     sync_grid_config(state, cfg)
+    sync_ground_grid_config(state, cfg)
     sync_ui_config(state, cfg)
 
     if person_detector is not None:

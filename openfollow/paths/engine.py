@@ -12,12 +12,10 @@ until it is on it. Locks and recording live in memory only.
 from __future__ import annotations
 
 import math
+import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
-from itertools import pairwise
-
-import numpy as np
 
 from openfollow.configuration import PathConfig, PathsConfig
 from openfollow.paths.geometry import PathCurve, PathPoint, build_curve
@@ -29,9 +27,6 @@ Point = tuple[float, float, float]
 HEIGHT_BLEND_S = 0.5
 # How far inside its path an end looks to see which way it points.
 _END_LOOK_M = 0.5
-
-# Longest straight piece drawn as one line: shorter pieces bow with the lens like the grid.
-_DRAW_STEP_M = 0.25
 
 
 class Press(Enum):
@@ -55,6 +50,8 @@ class _Lock:
     # Height still to ease out after switching onto a path at another height, and how far into that.
     z_shift: float = 0.0
     z_elapsed: float = 0.0
+    # This frame's push speed, which sets how far ahead of a junction a turn can be taken.
+    speed: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -96,11 +93,15 @@ class PathEngine:
         self._locks: dict[int, _Lock] = {}
         self._recording: str | None = None
         self._recorded: tuple[tuple[object, ...], PathDrawing] | None = None
+        # Written by the web thread: renames staged before they are saved, and the recording.
+        self._renames: dict[str, str] = {}
+        self._web_lock = threading.Lock()
 
     # -- configuration -------------------------------------------------
 
     def reload(self, cfg: PathsConfig, *, enabled: bool) -> None:
         """Rebuild from ``cfg``; with ``enabled`` False nothing is active and nobody stays locked."""
+        self._carry_renames(cfg)
         # Where each locked marker is, or is sliding to, on the paths as they were.
         old = self._network
         spots = (
@@ -123,9 +124,12 @@ class PathEngine:
         self._names = [path.name for path in built]
         # Drawn from the network's curves: an end carried on to a corner is part of its path.
         network_curves = self._network.curves if self._network is not None else []
-        self._drawn = [(_line(curve), _ends(path, curve)) for path, curve in zip(built, network_curves, strict=True)]
-        if not enabled or (self._recording is not None and cfg.find(self._recording) is None):
-            self._recording = None
+        self._drawn = [
+            (_line(curve), path_ends(path, curve)) for path, curve in zip(built, network_curves, strict=True)
+        ]
+        recording = self._recording
+        if recording is not None and (not enabled or cfg.find(recording) is None):
+            self._replace_recording(recording, None)
         for marker_id, lock in list(self._locks.items()):
             index = self._index(lock.name)
             if index is None or self._network is None or marker_id not in spots:
@@ -148,14 +152,18 @@ class PathEngine:
 
     def record(self, name: str | None, cfg: PathsConfig) -> bool:
         """Record into the path called ``name`` (``None`` stops); False when there is no such path."""
-        if name is None:
-            self._recording = None
-            return True
-        path = cfg.find(name)
-        if path is None or not self.enabled:
+        path = cfg.find(name) if name is not None else None
+        if name is not None and (path is None or not self.enabled):
             return False
-        self._recording = path.name
+        with self._web_lock:
+            self._recording = None if path is None else path.name
         return True
+
+    def _replace_recording(self, was: str, now: str | None) -> None:
+        """Change the recording the frame loop read as ``was``, unless the web thread changed it since."""
+        with self._web_lock:
+            if self._recording == was:
+                self._recording = now
 
     # -- locks ---------------------------------------------------------
 
@@ -221,6 +229,8 @@ class PathEngine:
         for marker_id, lock in self._locks.items():
             # A lock only ever lives on a network: a reload without one releases everybody.
             assert self._network is not None
+            # Ticked before the frame's input: a frame without a push leaves it at 0.
+            lock.speed = 0.0
             if lock.free is not None:
                 lock.slide_elapsed += dt
                 out[marker_id] = self._pulled(lock)
@@ -274,6 +284,7 @@ class PathEngine:
         lock = self._locks.get(marker_id)
         if lock is None or self._network is None:
             return None
+        lock.speed = math.hypot(vx, vy)
         if lock.free is not None:
             x, y, z = lock.free
             return self._move_free(lock, (x + vx * dt, y + vy * dt, z + vz * dt))
@@ -336,6 +347,16 @@ class PathEngine:
 
     # -- drawing -------------------------------------------------------
 
+    def switch_arrows(self) -> list[tuple[Point, Point]]:
+        """Every way a landed marker can turn at a junction it is close enough to, as (tail, tip)."""
+        if self._network is None:
+            return []
+        out = []
+        for lock in self._locks.values():
+            if lock.free is None:
+                out.extend(self._network.switch_arrows(lock.place, lock.speed))
+        return out
+
     def drawings(self, cfg: PathsConfig) -> list[PathDrawing]:
         """The paths the Operator Screen draws: every active one, and the one being recorded."""
         if not self.enabled:
@@ -345,7 +366,8 @@ class PathEngine:
             PathDrawing(name, line, ends, name.lower() in locked)
             for name, (line, ends) in zip(self._names, self._drawn, strict=True)
         ]
-        recorded = cfg.find(self._recording) if self._recording is not None else None
+        recording = self._recording
+        recorded = cfg.find(recording) if recording is not None else None
         if recorded is not None and self._index(recorded.name) is None:
             out.append(self._recorded_drawing(recorded))
         return out
@@ -356,11 +378,55 @@ class PathEngine:
         if self._recorded is None or self._recorded[0] != key:
             curve = _curve_of(path)
             line = [(p.x, p.y, p.z) for p in path.points] if curve is None else _line(curve)
-            self._recorded = (key, PathDrawing(path.name, line, _ends(path, curve)))
+            self._recorded = (key, PathDrawing(path.name, line, path_ends(path, curve)))
         return self._recorded[1]
 
+    # -- renames -------------------------------------------------------
 
-def _ends(path: PathConfig, curve: PathCurve | None) -> list[PathEnd]:
+    def stage_rename(self, old: str, new: str) -> None:
+        """Move locks and recording from path ``old`` to ``new`` at the first reload whose paths hold ``new``.
+
+        Safe from another thread. Staged before the rename is saved, so the reload that reads it always finds it.
+        A rename is kept against the name the path had at the last reload, so names swapped or reused before
+        the reload still follow their paths.
+        """
+        wanted = old.lower()
+        with self._web_lock:
+            key = next((k for k, now in self._renames.items() if now.lower() == wanted), None)
+            if key is None:
+                if wanted in self._renames:
+                    return  # made since the last reload under a name another path gave up: nothing follows it
+                key = wanted
+            self._renames[key] = new
+
+    def _carry_renames(self, cfg: PathsConfig) -> None:
+        with self._web_lock:
+            landed = {key: now for key, now in self._renames.items() if cfg.find(now) is not None}
+            for key in landed:
+                del self._renames[key]
+        taken = {now.lower() for now in landed.values()}
+        # An old name still in the paths is another path's new name, or a rename whose save was lost.
+        moved = {key: now for key, now in landed.items() if key in taken or cfg.find(key) is None}
+        for lock in self._locks.values():
+            lock.name = moved.get(lock.name.lower(), lock.name)
+        recording = self._recording
+        if recording is not None and recording.lower() in moved:
+            self._replace_recording(recording, moved[recording.lower()])
+
+    def web_state(self) -> tuple[str | None, dict[int, str]]:
+        """The recording and each locked marker's path, named as the paths file has them; safe from another thread."""
+        with self._web_lock:
+            renames = dict(self._renames)
+            recording = self._recording
+
+        def named(name: str) -> str:
+            return renames.get(name.lower(), name)
+
+        locks = {marker_id: named(lock.name) for marker_id, lock in tuple(self._locks.items())}
+        return (None if recording is None else named(recording)), locks
+
+
+def path_ends(path: PathConfig, curve: PathCurve | None) -> list[PathEnd]:
     """An open path's two ends; a closed one has none, and a corner shows as its curve.
 
     A path of one point (being recorded) is that point, drawn as an end that holds.
@@ -379,12 +445,4 @@ def _ends(path: PathConfig, curve: PathCurve | None) -> list[PathEnd]:
 
 
 def _line(curve: PathCurve) -> list[Point]:
-    """The curve to draw: its points, long straight runs split so a lens can bow them."""
-    line: list[Point] = []
-    xyz = np.column_stack((curve.xy, curve.z))
-    for a, b in pairwise(xyz):
-        count = max(1, math.ceil(float(np.linalg.norm(b[:2] - a[:2])) / _DRAW_STEP_M))
-        line.extend((float(x), float(y), float(z)) for x, y, z in (a + (b - a) * (k / count) for k in range(count)))
-    x, y, z = xyz[-1]
-    line.append((float(x), float(y), float(z)))
-    return line
+    return curve.drawn()

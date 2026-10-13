@@ -53,6 +53,14 @@ and "manage X under Y" pointers – goes in that section's **help drawer markdow
 | `/api/wizard/project` | POST | Project grid corners + ref point to screen coords |
 | `/api/wizard/unproject` | POST | Unproject screen points to world plane, return delta |
 | `/api/wizard/solve` | POST | Run DLT solve from 4 corner screen positions |
+| `/api/scene/project` | POST | World polylines (bowed by the lens) and points as the saved camera sees them in a `w` x `h` picture |
+| `/api/scene/unproject` | POST | The stage point under a picture point, on the plane at a height (422 above the horizon) |
+| `/api/ground_grid/view` | POST | A ground-grid polygon at a height: its outline, corners and clipped grid lines in the picture |
+| `/api/paths` | GET/POST | List the paths, create one |
+| `/api/paths/<name>` | PUT/DELETE | Change a path's name, options or points; delete it |
+| `/api/paths/<name>/active`, `/record` | POST | Switch a path; start or stop recording into it |
+| `/api/paths/marker/<id>` | GET | A marker's position on the wire, for Point from |
+| `/api/paths/view` | POST | Every path, its points and ends as the saved camera sees them |
 
 ## HTMX notes
 - HTMX version: 1.9 – use `hx-on::after-request` (double colon), NOT `hx-on:htmx:after-request`

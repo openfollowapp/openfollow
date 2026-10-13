@@ -491,6 +491,55 @@ class GridConfig:
         self.origin_thickness = _coerce_int(self.origin_thickness, 3, lo=1, hi=20)
 
 
+def _coerce_xy_vertices(value: Any, *, max_count: int | None = None) -> list[list[float]]:
+    """Keep finite ``[x, y]`` pairs from *value*; anything else is dropped.
+
+    Non-finite coordinates are dropped too: they make every point-in-polygon
+    comparison False and silently corrupt the containment test.
+    """
+    if not isinstance(value, (list, tuple)):
+        return []
+    cleaned: list[list[float]] = []
+    for v in value:
+        if not isinstance(v, (list, tuple)) or len(v) < 2 or isinstance(v[0], bool) or isinstance(v[1], bool):
+            continue
+        try:
+            x, y = float(v[0]), float(v[1])
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if math.isfinite(x) and math.isfinite(y):
+            cleaned.append([x, y])
+    return cleaned[:max_count] if max_count is not None else cleaned
+
+
+# Upper bound on ground-grid polygon corners.
+GROUND_GRID_MAX_VERTICES = 64
+
+
+@dataclass
+class GroundGridConfig:
+    """A second floor: one polygon at its own absolute Z (experimental).
+
+    Active only when ``enabled`` and the polygon has at least three corners; a
+    marker inside it in XY gets its floor elements drawn at ``z_offset``.
+    """
+
+    enabled: bool = False
+    visible: bool = True
+    z_offset: float = 0.0
+    vertices: list[list[float]] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.enabled = _coerce_bool(self.enabled, False)
+        self.visible = _coerce_bool(self.visible, True)
+        self.z_offset = 0.0 if isinstance(self.z_offset, bool) else _coerce_float(self.z_offset, 0.0)
+        self.vertices = _coerce_xy_vertices(self.vertices, max_count=GROUND_GRID_MAX_VERTICES)
+
+    @property
+    def active(self) -> bool:
+        return self.enabled and len(self.vertices) >= 3
+
+
 # Operator Screen marker glyph; each style reads only its own fields.
 _MARKER_STYLES = ("crosshair", "cone")
 
@@ -789,21 +838,7 @@ class TriggerZoneConfig:
                 self.trigger_source,
             )
             self.trigger_source = "markers"
-        # Normalize vertices to [float, float] pairs
-        cleaned: list[list[float]] = []
-        for v in self.vertices:
-            if isinstance(v, (list, tuple)) and len(v) >= 2:
-                try:
-                    x, y = float(v[0]), float(v[1])
-                except (TypeError, ValueError):
-                    continue
-                # Drop non-finite coords: ``float("nan")`` / ``float("inf")``
-                # survive coercion but make every point-in-polygon comparison
-                # False, silently corrupting membership tests for the zone.
-                if not (math.isfinite(x) and math.isfinite(y)):
-                    continue
-                cleaned.append([x, y])
-        self.vertices = cleaned
+        self.vertices = _coerce_xy_vertices(self.vertices)
         # Coerce ``triggered_by`` items to ``int``; drop anything that
         # can't be coerced (a hand-edited TOML with ``["a", 1]`` won't
         # crash the engine – it'll filter on ``[1]`` and log nothing,
@@ -2532,6 +2567,7 @@ class AppConfig:
     # Sub-configs
     camera: CameraConfig = field(default_factory=CameraConfig)
     grid: GridConfig = field(default_factory=GridConfig)
+    ground_grid: GroundGridConfig = field(default_factory=GroundGridConfig)
     marker: MarkerConfig = field(default_factory=MarkerConfig)
     controller: ControllerConfig = field(default_factory=ControllerConfig)
     mouse3d: Mouse3DConfig = field(default_factory=Mouse3DConfig)
@@ -2672,6 +2708,7 @@ def _filter_known(cls: type, data: dict[str, Any]) -> dict[str, Any]:
 _SUB_CONFIG_MAP: dict[str, type] = {
     "camera": CameraConfig,
     "grid": GridConfig,
+    "ground_grid": GroundGridConfig,
     "marker": MarkerConfig,
     "controller": ControllerConfig,
     "mouse3d": Mouse3DConfig,
@@ -3452,6 +3489,9 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
     # Grid and camera updates (no renderer needed - Cairo overlay reads from config)
     if new_config.grid != app._config.grid:
         app._config.grid = new_config.grid
+
+    if new_config.ground_grid != app._config.ground_grid:
+        app._config.ground_grid = new_config.ground_grid
 
     if new_config.camera != app._config.camera:
         app._camera = Camera.from_config(new_config.camera)

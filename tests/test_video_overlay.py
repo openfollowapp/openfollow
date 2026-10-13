@@ -832,3 +832,20 @@ def test_the_renderer_lets_its_zone_picture_go_while_the_scene_is_not_drawn(fiel
     setattr(renderer.state, field, shown)
     renderer.draw(after, 1920, 1080)
     assert after.surfaces[0] is not before.surfaces[0]
+
+
+def test_the_renderer_draws_a_displayed_ground_grid() -> None:
+    def frame(visible: bool) -> RecordingCairo:
+        renderer = CairoOverlayRenderer()
+        renderer.state.camera_params = np.array([0.0, -6.0, 2.5, -15.0, 0.0, 0.0, 60.0])
+        renderer.state.grid_config = (10.0, 6.0, 1.0, 0.0, 3.0, 0.0)
+        renderer.state.ground_grid_visible = visible
+        renderer.state.ground_grid_vertices = [(-1.0, 1.0), (1.0, 1.0), (1.0, 3.0), (-1.0, 3.0)]
+        renderer.state.ground_grid_z = -0.5
+        cr = RecordingCairo()
+        renderer.draw(cr, 1920, 1080)
+        return cr
+
+    hidden, shown = frame(False), frame(True)
+    assert shown.strokes == hidden.strokes + 1
+    assert len(shown.line_tos) > len(hidden.line_tos)

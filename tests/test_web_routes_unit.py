@@ -571,11 +571,12 @@ class TestApplyImportData:
 
     @staticmethod
     def _experimental_station() -> AppConfig:
-        from openfollow.configuration import DetectionConfig, PathConfig, PathsConfig, UiConfig
+        from openfollow.configuration import DetectionConfig, GroundGridConfig, PathConfig, PathsConfig, UiConfig
 
         return AppConfig(
             ui=UiConfig(show_experimental_features=True),
             detection=DetectionConfig(enabled=True),
+            ground_grid=GroundGridConfig(enabled=True),
             paths=PathsConfig(paths=[PathConfig(name="cross", active=True), PathConfig(name="loop", active=True)]),
         )
 
@@ -590,6 +591,7 @@ class TestApplyImportData:
         assert out.ui.show_experimental_features is False
         assert [p.active for p in out.paths.paths] == [False, False]
         assert out.detection.enabled is False
+        assert out.ground_grid.enabled is False
 
     @pytest.mark.parametrize("ui", [{"show_experimental_features": True}, {"unit_system": "imperial"}, None])
     def test_an_import_leaving_experimental_features_on_keeps_them(self, ui: dict[str, Any] | None) -> None:
@@ -599,6 +601,7 @@ class TestApplyImportData:
         out = _apply_import_data(self._experimental_station(), data)
         assert [p.active for p in out.paths.paths] == [True, True]
         assert out.detection.enabled is True
+        assert out.ground_grid.enabled is True
 
     def test_an_import_without_paths_keeps_this_station_s(self) -> None:
         from openfollow.configuration import PathConfig, PathsConfig

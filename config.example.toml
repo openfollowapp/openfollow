@@ -65,6 +65,14 @@ origin_visible = false
 origin_length = 1.0
 origin_thickness = 3
 
+# Experimental: a second floor, one polygon at its own absolute Z. A marker
+# inside it draws its dropline, ground circle and cone base at z_offset.
+[ground_grid]
+enabled = false
+visible = true
+z_offset = 0.0
+vertices = []
+
 [marker]
 min_speed = 0.1
 max_speed = 3.0

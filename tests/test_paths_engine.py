@@ -5,6 +5,10 @@
 from __future__ import annotations
 
 import math
+import sys
+import threading
+from types import FrameType
+from typing import Any
 
 import pytest
 
@@ -592,3 +596,261 @@ class TestSwitchingPaths:
         mid = engine.tick(0.25)[1][2]
         # Straight back down onto the lower path through the same crossing.
         assert engine.move(1, -0.5, -1.0, 0.0001)[2] == pytest.approx(mid, abs=1e-3)
+
+
+class TestRename:
+    @staticmethod
+    def _renamed(name: str, *others: PathConfig) -> PathsConfig:
+        return PathsConfig(paths=[_path(name, [(-5, 0, 0), (5, 0, 0)], active=True), *others])
+
+    def _locked_and_recording(self) -> PathEngine:
+        engine = _engine(CROSS)
+        engine.press(1, (3.0, 0.2, 0.0))
+        engine.record("cross", PathsConfig(paths=[CROSS]))
+        return engine
+
+    def test_a_staged_rename_keeps_the_markers_on_the_path_and_its_recording(self) -> None:
+        engine = self._locked_and_recording()
+        engine.stage_rename("cross", "DownStage")
+        engine.reload(self._renamed("DownStage"), enabled=True)
+        assert (engine.locked_path(1), engine.recording) == ("DownStage", "DownStage")
+        assert engine.move(1, 1.0, 0.0, 0.1) is not None
+
+    def test_a_rename_nobody_staged_releases_them(self) -> None:
+        engine = self._locked_and_recording()
+        engine.reload(self._renamed("DownStage"), enabled=True)
+        assert (engine.is_locked(1), engine.recording) == (False, None)
+
+    def test_a_reload_before_the_rename_is_saved_keeps_it_for_the_next(self) -> None:
+        engine = self._locked_and_recording()
+        engine.stage_rename("cross", "DownStage")
+        engine.reload(PathsConfig(paths=[CROSS]), enabled=True)
+        assert (engine.locked_path(1), engine.recording) == ("cross", "cross")
+        engine.reload(self._renamed("DownStage"), enabled=True)
+        assert (engine.locked_path(1), engine.recording) == ("DownStage", "DownStage")
+
+    def test_two_renames_before_the_reload_land_on_the_last_name(self) -> None:
+        loop = _path("loop", [(0, -5, 0), (0, 5, 0)], active=True)
+        engine = _engine(CROSS, loop)
+        engine.press(1, (3.0, 0.2, 0.0))
+        engine.press(2, (0.2, 3.0, 0.0))
+        engine.stage_rename("loop", "arc")  # another path's rename, not part of this one's
+        engine.stage_rename("cross", "a")
+        engine.stage_rename("A", "b")
+        engine.reload(self._renamed("b", _path("arc", [(0, -5, 0), (0, 5, 0)], active=True)), enabled=True)
+        assert (engine.locked_path(1), engine.locked_path(2)) == ("b", "arc")
+
+    def test_a_change_of_case_carries_the_new_spelling(self) -> None:
+        engine = self._locked_and_recording()
+        engine.stage_rename("cross", "Cross")
+        engine.reload(self._renamed("Cross"), enabled=True)
+        assert (engine.locked_path(1), engine.recording) == ("Cross", "Cross")
+
+    def test_a_rename_whose_old_name_is_still_there_moves_nothing_and_is_used_up(self) -> None:
+        engine = self._locked_and_recording()
+        engine.stage_rename("cross", "ds")
+        # The rename was lost and a path called ds was made beside cross.
+        engine.reload(PathsConfig(paths=[CROSS, _path("ds", [(0, -5, 0), (0, 5, 0)], active=True)]), enabled=True)
+        assert (engine.locked_path(1), engine.recording) == ("cross", "cross")
+        engine.reload(self._renamed("ds"), enabled=True)
+        assert (engine.is_locked(1), engine.recording) == (False, None)
+
+    def test_names_match_ignoring_case(self) -> None:
+        engine = _engine(RAMP)
+        engine.press(2, (0.2, 3.0, 0.0))
+        engine.record("ramp", PathsConfig(paths=[RAMP]))
+        engine.stage_rename("RAMP", "Slope")
+        slope = _path("Slope", [(0, -5, 0), (0, 0, 0), (0, 5, 2)], active=True)
+        engine.reload(PathsConfig(paths=[slope]), enabled=True)
+        assert (engine.locked_path(2), engine.recording) == ("Slope", "Slope")
+
+
+class TestRenamesThatReuseANameBeforeTheReload:
+    # Two parallel paths 6 m apart, with no junction: a marker carried to the wrong one jumps 6 m.
+    DS = [(-5, 0, 0), (5, 0, 0)]
+    US = [(-5, 6, 0), (5, 6, 0)]
+
+    def _two_locked(self) -> PathEngine:
+        engine = _engine(_path("cross", self.DS, active=True), _path("loop", self.US, active=True), slide_time=0.0)
+        engine.press(1, (3.0, 0.2, 0.0))
+        engine.press(2, (3.0, 5.8, 0.0))
+        engine.tick(1.0)
+        return engine
+
+    def _reload(self, engine: PathEngine, *named: tuple[str, list[tuple[float, float, float]]]) -> None:
+        engine.reload(PathsConfig(slide_time=0.0, paths=[_path(n, pts, active=True) for n, pts in named]), enabled=True)
+
+    def test_a_name_given_up_and_taken_by_another_path_carries_both(self) -> None:
+        engine = self._two_locked()
+        engine.stage_rename("cross", "ds")
+        engine.stage_rename("loop", "cross")
+        self._reload(engine, ("ds", self.DS), ("cross", self.US))
+        assert (engine.locked_path(1), engine.locked_path(2)) == ("ds", "cross")
+        assert engine.tick(0.02) == {1: pytest.approx((3.0, 0.0, 0.0)), 2: pytest.approx((3.0, 6.0, 0.0))}
+
+    def test_the_reused_name_renamed_again_follows_the_path_that_took_it(self) -> None:
+        engine = self._two_locked()
+        engine.stage_rename("cross", "ds")
+        engine.stage_rename("loop", "cross")
+        engine.stage_rename("CROSS", "us")
+        self._reload(engine, ("ds", self.DS), ("us", self.US))
+        assert (engine.locked_path(1), engine.locked_path(2)) == ("ds", "us")
+
+    def test_two_paths_swap_names_through_a_third(self) -> None:
+        engine = self._two_locked()
+        engine.record("cross", PathsConfig(paths=[_path("cross", self.DS)]))
+        for old, new in [("cross", "tmp"), ("loop", "cross"), ("tmp", "loop")]:
+            engine.stage_rename(old, new)
+        self._reload(engine, ("loop", self.DS), ("cross", self.US))
+        assert (engine.locked_path(1), engine.locked_path(2), engine.recording) == ("loop", "cross", "loop")
+
+    def test_a_path_made_since_the_reload_under_a_given_up_name_takes_nothing(self) -> None:
+        engine = self._two_locked()
+        engine.stage_rename("cross", "ds")
+        engine.stage_rename("cross", "fresh")  # a new path called cross, renamed
+        self._reload(engine, ("ds", self.DS), ("fresh", self.US), ("loop", self.US))
+        assert (engine.locked_path(1), engine.locked_path(2)) == ("ds", "loop")
+
+
+class TestTheWebView:
+    def test_a_staged_rename_names_the_locks_and_the_recording_before_the_reload(self) -> None:
+        engine = _engine(CROSS, RAMP)
+        engine.press(1, (3.0, 0.2, 0.0))
+        engine.press(2, (0.2, 3.0, 0.0))
+        engine.record("cross", PathsConfig(paths=[CROSS]))
+        engine.stage_rename("CROSS", "ds")
+        assert engine.web_state() == ("ds", {1: "ds", 2: "Ramp"})
+        assert (engine.locked_path(1), engine.recording) == ("cross", "cross")
+
+    def test_nothing_recording(self) -> None:
+        assert _engine(CROSS).web_state() == (None, {})
+
+
+def _stop_at(step: int, prepare: Any, run: Any, functions: set[str]) -> tuple[PathEngine, int]:
+    """Run ``run(engine, cfg)`` with a web thread's Stop sent at bytecode ``step`` of the engine's ``functions``.
+
+    The Stop runs on its own thread and is given a moment to land there; one that has to wait for the
+    engine's lock lands once the lock is let go. Returns the engine and how many steps there were.
+    """
+    from openfollow.paths import engine as engine_module
+
+    engine, cfg = prepare()
+    count = 0
+    stop = threading.Thread(target=engine.record, args=(None, cfg))
+
+    def local(frame: FrameType, event: str, arg: object) -> Any:
+        nonlocal count
+        frame.f_trace_opcodes = True
+        if event == "opcode":
+            count += 1
+            if count == step:
+                stop.start()
+                stop.join(timeout=0.02)
+        return local
+
+    def tracer(frame: FrameType, event: str, arg: object) -> Any:
+        if frame.f_globals is vars(engine_module) and frame.f_code.co_name in functions:
+            return local
+        return None
+
+    before = sys.gettrace()
+    sys.settrace(tracer)
+    try:
+        run(engine, cfg)
+    finally:
+        sys.settrace(before)
+    if stop.ident is not None:
+        stop.join()
+    return engine, count
+
+
+def _stop_lands_at_every_step(prepare: Any, run: Any, functions: set[str]) -> list[PathEngine]:
+    """The engines left by a web Stop sent at each step in turn; the first had no Stop."""
+    first, steps = _stop_at(0, prepare, run, functions)
+    return [first, *(_stop_at(step, prepare, run, functions)[0] for step in range(1, steps + 1))]
+
+
+class TestAStopFromTheWebThread:
+    @staticmethod
+    def _recording(*, renamed: bool) -> tuple[PathEngine, PathsConfig]:
+        engine = _engine(CROSS)
+        engine.record("cross", PathsConfig(paths=[CROSS]))
+        if renamed:
+            engine.stage_rename("cross", "ds")
+        return engine, PathsConfig(paths=[_path("ds" if renamed else "cross", [(-5, 0, 0), (5, 0, 0)])])
+
+    @pytest.mark.parametrize("renamed", [False, True])
+    def test_is_never_undone_by_a_reload_wherever_it_lands(self, renamed: bool) -> None:
+        engines = _stop_lands_at_every_step(
+            lambda: self._recording(renamed=renamed),
+            lambda engine, cfg: engine.reload(cfg, enabled=True),
+            {"reload", "_carry_renames", "_replace_recording"},
+        )
+        assert len(engines) > 20
+        assert [engine.recording for engine in engines[1:]] == [None] * (len(engines) - 1)
+
+    def test_is_never_undone_by_switching_paths_off(self) -> None:
+        engines = _stop_lands_at_every_step(
+            lambda: self._recording(renamed=False),
+            lambda engine, cfg: engine.reload(cfg, enabled=False),
+            {"reload", "_replace_recording"},
+        )
+        assert len(engines) > 20
+        assert {engine.recording for engine in engines} == {None}
+
+    def test_a_recording_started_while_the_old_one_is_dropped_is_kept(self) -> None:
+        engine = _engine(CROSS, RAMP)
+        engine.record("cross", PathsConfig(paths=[CROSS]))
+        cfg = PathsConfig(paths=[RAMP])  # cross deleted
+        find = cfg.find
+
+        def find_and_record(name: str) -> PathConfig | None:
+            # The reload asks whether the recorded path is gone: the web thread records Ramp right then.
+            if name == "cross":
+                engine.record("ramp", cfg)
+            return find(name)
+
+        cfg.find = find_and_record  # type: ignore[method-assign]
+        engine.reload(cfg, enabled=True)
+        assert engine.recording == "Ramp"
+
+    def test_never_breaks_drawing_the_recorded_path(self) -> None:
+        engines = _stop_lands_at_every_step(
+            lambda: self._recording(renamed=False),
+            lambda engine, cfg: engine.drawings(cfg),
+            {"drawings"},
+        )
+        assert len(engines) > 5
+
+
+class TestSwitchArrows:
+    def test_a_landed_marker_near_a_junction_gets_its_arrows(self) -> None:
+        engine = _engine(CROSS, RAMP)
+        engine.press(1, (-0.8, 0.0, 0.0))
+        _landed(engine)
+        assert engine.switch_arrows() == []
+        # Pushed at 2 m/s the switch area reaches 1 m ahead.
+        engine.move(1, 2.0, 0.0, 0.01)
+        assert len(engine.switch_arrows()) == 2
+
+    def test_a_frame_without_a_push_narrows_the_arrows_to_the_switch_area_floor(self) -> None:
+        engine = _engine(CROSS, RAMP)
+        engine.press(1, (-0.8, 0.0, 0.0))
+        _landed(engine)
+        engine.move(1, 2.0, 0.0, 0.01)
+        assert engine.switch_arrows()
+        # The marker stands 0.78 m short of the crossing: outside the 0.5 m area once nothing pushes it.
+        engine.tick(1 / 60)
+        assert engine.switch_arrows() == []
+        engine.tick(1 / 60)
+        assert engine.switch_arrows() == []
+        engine.move(1, 2.0, 0.0, 0.01)
+        assert engine.switch_arrows()
+
+    def test_a_marker_still_pulled_onto_its_path_gets_none(self) -> None:
+        engine = _engine(CROSS, RAMP, slide_time=1.0)
+        engine.press(1, (0.1, 0.5, 0.0))
+        assert engine.switch_arrows() == []
+
+    def test_no_active_path_no_arrows(self) -> None:
+        assert _engine().switch_arrows() == []

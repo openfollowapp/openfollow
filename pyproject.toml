@@ -95,7 +95,6 @@ pytest = "^9.1.1"
 pytest-cov = "^7.1"
 coverage = { extras = ["toml"], version = "^7.16" }
 pre-commit = "^4.6.2"
-mutmut = "^3.8"
 mypy = "^2.3"
 
 # Static type checking: mypy --strict for all openfollow.* modules.
@@ -121,6 +120,14 @@ optional = true
 [tool.poetry.group.package-macos.dependencies]
 pyinstaller = ">=6.22.3"
 pyinstaller-hooks-contrib = ">=2026.8"
+
+# Mutation testing, optional: mutmut pulls in setproctitle, which pytest-xdist
+# then uses to retitle its workers on every test.
+[tool.poetry.group.mutation]
+optional = true
+
+[tool.poetry.group.mutation.dependencies]
+mutmut = "^3.8"
 
 # Linting: ruff check/format (faster pyflakes/pycodestyle/isort/pyupgrade bundle).
 # line-length=120 matches old flake8 setting. target-version=py310 matches requires-python.

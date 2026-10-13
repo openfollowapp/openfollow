@@ -3,7 +3,7 @@
 """Invariant: the Ansible Poetry install stays runtime-only by default.
 
 Consumer Pis must not pull the dev/CI group (ruff, pytest, mypy, bandit,
-pip-audit, mutmut, pre-commit, hypothesis, coverage) – none of it runs on the
+pip-audit, pre-commit, hypothesis, coverage) – none of it runs on the
 device, and a dev-only package's broken download must not be able to fail a
 production install. The dev group is opt-in via ``openfollow_install_dev`` for a
 testing Pi that runs ``make ci`` (``make ci-remote``).

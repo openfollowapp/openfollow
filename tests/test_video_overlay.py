@@ -760,3 +760,42 @@ def test_the_renderer_keeps_its_paths_as_one_picture_between_frames(monkeypatch)
         renderer.draw(cr, 1920, 1080)
     assert calls == [1]
     assert all(("paint",) in cr.calls for cr in frames)
+
+
+def _zone_renderer() -> CairoOverlayRenderer:
+    renderer = CairoOverlayRenderer()
+    renderer.state.camera_params = np.array([0.0, -6.0, 2.5, -15.0, 0.0, 0.0, 60.0])
+    renderer.state.show_zones = True
+    renderer.state.zone_polygons = [([(-1.0, 1.0), (1.0, 1.0), (1.0, 3.0), (-1.0, 3.0)], "#ffaa00", "Pit", False, 0)]
+    return renderer
+
+
+def test_the_renderer_keeps_its_zones_as_one_picture_between_frames() -> None:
+    renderer = _zone_renderer()
+    frames = [RecordingCairo() for _ in range(3)]
+    for cr in frames:
+        renderer.draw(cr, 1920, 1080)
+    pictures = [s for cr in frames for s in cr.surfaces]
+    assert len(pictures) == 3 and all(p is pictures[0] for p in pictures)
+    assert all(("paint",) in cr.calls for cr in frames)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("settings_menu_active", True),
+        ("camera_params", None),
+        ("button_detection", ButtonDetectionState(active=True)),
+    ],
+    ids=["menu-open", "no-camera", "button-wizard"],
+)
+def test_the_renderer_lets_its_zone_picture_go_while_the_scene_is_not_drawn(field: str, value: object) -> None:
+    renderer = _zone_renderer()
+    before, after = RecordingCairo(), RecordingCairo()
+    renderer.draw(before, 1920, 1080)
+    shown = getattr(renderer.state, field)
+    setattr(renderer.state, field, value)
+    renderer.draw(RecordingCairo(), 1920, 1080)
+    setattr(renderer.state, field, shown)
+    renderer.draw(after, 1920, 1080)
+    assert after.surfaces[0] is not before.surfaces[0]

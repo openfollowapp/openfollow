@@ -166,10 +166,9 @@ class PathNetwork:
             leg = min(budget, curve.to_vertex(way.place.s, way.sign), math.inf if ahead is None else ahead)
             s, end = curve.advance(way.place.s, way.sign * leg)
             place = Place(way.place.path, s)
-            if end != 0:
-                if self.releases[place.path][0 if end < 0 else 1]:
-                    return Step(place, released=True)
-                break
+            # An end is a vertex, so a leg stops on it; only a releasing end lets the marker past.
+            if end != 0 and self.releases[place.path][0 if end < 0 else 1]:
+                return Step(place, released=True)
             if leg >= budget:
                 break
             if ahead is not None and leg >= ahead:

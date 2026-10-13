@@ -7588,8 +7588,18 @@ class _CountingCache:
         return self._real.load(path)
 
 
-@pytest.mark.parametrize("path", ["/", "/api/markers/catalog"])
-def test_a_request_takes_one_copy_of_the_config_and_parses_nothing_itself(live_server, monkeypatch, path) -> None:
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("/", 200),
+        ("/api/markers/catalog", 200),
+        # Polled every 250 ms while a MIDI capture runs; the row lookup reads the config.
+        ("/section/osc/midi/learn/poll/no-such-row", 404),
+    ],
+)
+def test_a_request_takes_one_copy_of_the_config_and_parses_nothing_itself(
+    live_server, monkeypatch, path, expected
+) -> None:
     """``_check_auth`` (before_request) takes the request's copy; the handler reuses it."""
     import openfollow.web.routes as routes_mod
 
@@ -7601,7 +7611,7 @@ def test_a_request_takes_one_copy_of_the_config_and_parses_nothing_itself(live_s
     monkeypatch.setattr(routes_mod, "_CONFIG_CACHE", cache)
     monkeypatch.setattr(routes_mod, "load_config", lambda p, *a, **k: parses.append(p) or real_load(p, *a, **k))
     status, _ = _get(base, path)
-    assert status == 200
+    assert status == expected
     assert cache.taken == 1
     assert parses == []
 

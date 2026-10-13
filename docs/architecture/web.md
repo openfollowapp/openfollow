@@ -69,8 +69,8 @@ and "manage X under Y" pointers – goes in that section's **help drawer markdow
 
 ## Polling costs the station (`web/config_cache.py`)
 Every request the web server answers runs on a thread of its own and reads the config first, in `_check_auth`. So an open page is never free, and anything it polls is paid for on the station, which also runs the frame loop.
-- **Polls run only while someone is looking.** A live readout polls only after the operator asks for it, for a bounded time. The MIDI fader strips use **Show live**: every 500 ms for 10 s (`midiLiveActive()` gates their `hx-trigger`), then nothing until it is pressed again. Do not add a poll on a fixed schedule that runs while its section is hidden.
-- **`config.toml` is parsed once per change.** `ParsedConfigCache` keys the parse on the file's inode, mtime and size. Each request gets its own copy, unpickled from the stored bytes, so a handler that changes its config in place reaches no other request. Saves still load a fresh config under the write lock.
+- **A new poll runs only while someone is looking.** A live readout polls after the operator asks for it, for a bounded time: the MIDI fader strips use **Show live**, every 500 ms for 10 s (`midiLiveActive()` gates their `hx-trigger`), then nothing until it is pressed again. A status poll stops while its section is folded or on another tab, as `controller_slots.tpl` gates its own. Some older polls still run on a fixed schedule while the page is open; do not add another.
+- **`config.toml` is parsed once per change.** `ParsedConfigCache` keys the parse on the file's inode, mtime and size, and keeps only a strict, successful parse: a read that failed is served through `load_config`'s fallback once and never kept, because the defaults it falls back to carry an empty `web_pin`. Each request gets its own copy, unpickled from the stored bytes, so a handler that changes its config in place reaches no other request. Saves still load a fresh config under the write lock.
 
 ## Setup wizard (`/wizard`)
 Guided workflow for camera positioning and grid calibration, eight steps:

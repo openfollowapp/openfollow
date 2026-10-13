@@ -5448,10 +5448,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 headers={"Retry-After": str(retry_after)},
             )
 
-    # Request-scoped config cache. ``_check_auth`` reads ``web_pin`` on every
-    # request and the blur-validation handlers parse the same TOML again;
-    # stashing the parsed config on ``request.environ`` collapses both to one
-    # disk hit per request (the blur endpoint fires rapidly while typing).
+    # Request-scoped config: ``_check_auth`` and the handler share one copy per request.
     # Thin wrapper over module-level ``_request_config``.
     def _request_scoped_config() -> AppConfig:
         return _request_config(server)
@@ -8668,7 +8665,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     @app.get("/section/osc/midi/learn/poll/<row_id>")
     def section_osc_midi_learn_poll(row_id: str) -> Any:
-        cfg = load_config(server.config_path)
+        cfg = _request_scoped_config()
         if _find_osc_binding(cfg, row_id) is None:
             abort(404, "Unknown binding")
             return ""  # pragma: no cover - abort() raises before we reach here

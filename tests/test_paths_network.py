@@ -341,12 +341,24 @@ class TestCornerExtension:
         net = PathNetwork([beside, self.SPURS[0], self.ROUNDED])
         assert net.curves[0] is beside
 
-    def test_spurs_on_two_corner_points_of_one_path_touching_each_other_stay(self) -> None:
-        # The path turns down at (2, 0) and, later, up at (2.12, 0); the spurs end 8 cm apart, one on each.
-        zigzag = _curve([(0, 2, 0, 0), (2, 0, 0, 0.5), (4, 2, 0, 0), (4, -2, 0, 0), (2.12, 0, 0, 0.5), (0, -2, 0, 0)])
-        left, right = _curve([(0, 0, 0), (2, 0, 0)]), _curve([(4.5, 0, 0), (2.08, 0, 0)])
-        net = PathNetwork([left, right, zigzag])
+    # The path turns down at (2, 0) and, later, up at (2.12, 0).
+    ZIGZAG = _curve([(0, 2, 0, 0), (2, 0, 0, 0.5), (4, 2, 0, 0), (4, -2, 0, 0), (2.12, 0, 0, 0.5), (0, -2, 0, 0)])
+
+    @pytest.mark.parametrize("right_ends_there", [True, False])
+    def test_spurs_on_two_corner_points_of_one_path_touching_each_other_stay(self, right_ends_there: bool) -> None:
+        # The spurs end, or the right one starts, 8 cm apart, one on each corner point: running on would part them.
+        left = _curve([(0, 0, 0), (2, 0, 0)])
+        right = _curve([(4.5, 0, 0), (2.08, 0, 0)] if right_ends_there else [(2.08, 0, 0), (4.5, 0, 0)])
+        net = PathNetwork([left, right, self.ZIGZAG])
         assert net.curves[:2] == [left, right]
+
+    def test_a_spur_runs_on_past_a_spur_end_on_another_corner_point_that_stays(self) -> None:
+        # As above, but the right spur's end also lies on the side of a third path, so it stays.
+        left, right = _curve([(0, 0, 0), (2, 0, 0)]), _curve([(4.5, 0, 0), (2.08, 0, 0)])
+        beside = _curve([(2.16, -1, 0), (2.16, 1, 0)])
+        net = PathNetwork([left, right, self.ZIGZAG, beside])
+        assert net.curves[0] is not left
+        assert net.curves[1] is right
 
     def test_a_marker_on_one_of_two_spurs_walks_on_to_the_corner_path(self) -> None:
         net = PathNetwork([*self.SPURS[:2], self.ROUNDED])

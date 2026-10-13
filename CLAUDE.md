@@ -189,8 +189,9 @@ OpenFollowApp (app.py)
 ```
 
 **Frame loop:** `_animate()` on a ~60 Hz `GLib.timeout_add`, integrating real
-elapsed time: `_process_input(dt)` → `update_video()` → `apply_detection_pin()`
-→ `update_zone_triggers()` → `update_marker_visuals()`.
+elapsed time: `_input_manager.update_paths(dt)` → `_process_input(dt)` →
+`update_video()` → `apply_detection_pin()` → `update_zone_triggers()` →
+`update_marker_visuals()`.
 
 **Three clocks, none of them the display.** Marker state, input, detection,
 zones and outputs run off the frame timeout; slow web-driven housekeeping off a

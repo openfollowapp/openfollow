@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from openfollow.osc.paths import MarkerPath, PathActive, PathOscAdapter
+from openfollow.osc.paths import MAX_PENDING, MarkerPath, PathActive, PathOscAdapter
 
 pytestmark = pytest.mark.unit
 
@@ -107,4 +107,13 @@ def test_commands_come_out_once_in_the_order_they_arrived() -> None:
     service.handlers["/path/*/active"]("/path/a/active", 1)
     service.handlers["/marker/*/path"]("/marker/2/path", "a")
     assert adapter.take() == [PathActive("a", True), MarkerPath(2, "a")]
+    assert adapter.take() == []
+
+
+def test_a_queue_nobody_takes_keeps_only_the_newest_commands() -> None:
+    adapter, service = _adapter()
+    for marker_id in range(1, MAX_PENDING + 6):
+        service.handlers["/marker/*/path"](f"/marker/{marker_id}/path", "a")
+    taken = adapter.take()
+    assert [command.marker_id for command in taken] == list(range(6, MAX_PENDING + 6))  # type: ignore[union-attr]
     assert adapter.take() == []

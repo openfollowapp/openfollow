@@ -45,6 +45,10 @@ class _FakeKeyboardHandler:
 class _FakeInputManager:
     def __init__(self, keys: list[str] | None = None) -> None:
         self.keyboard_handler = _FakeKeyboardHandler(keys)
+        self.path_frames: list[float] = []
+
+    def update_paths(self, dt: float) -> None:
+        self.path_frames.append(dt)
 
 
 class _FakeCanvas:
@@ -232,6 +236,18 @@ class TestAnimate:
         assert mgr.keyboard_handler.polled == 1
         assert mgr.keyboard_handler.consumed == 1
         assert app._calls.count("handle_key_press") == 2
+
+    def test_the_path_engine_runs_once_every_frame_before_input(self) -> None:
+        """Outside input processing, so a menu or a station controlling no marker never stops it."""
+        mgr = _FakeInputManager()
+        app = _make_fake_app(input_manager=mgr)
+        order: list[tuple[str, float]] = []
+        mgr.update_paths = lambda dt: order.append(("paths", dt))  # type: ignore[method-assign]
+        app._process_input = lambda dt: order.append(("input", dt))
+        orch.animate(app)
+        orch.animate(app)
+        assert [name for name, _ in order] == ["paths", "input", "paths", "input"]
+        assert order[0][1] == order[1][1] == pytest.approx(orch._DEFAULT_FRAME_DT)
 
     def test_runs_display_bound_checks(self) -> None:
         app = _make_fake_app()

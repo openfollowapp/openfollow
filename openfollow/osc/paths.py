@@ -19,12 +19,16 @@ from __future__ import annotations
 import logging
 import math
 import threading
+from collections import deque
 from dataclasses import dataclass
 from typing import Any
 
 from openfollow.osc.service import OscService
 
 logger = logging.getLogger(__name__)
+
+# Most commands held for the frame loop; past this the oldest are dropped.
+MAX_PENDING = 256
 
 _TRUE = frozenset({"1", "true", "on", "yes"})
 _FALSE = frozenset({"0", "false", "off", "no"})
@@ -55,7 +59,7 @@ class PathOscAdapter:
     def __init__(self, service: OscService) -> None:
         self._service = service
         self._lock = threading.Lock()
-        self._pending: list[PathCommand] = []
+        self._pending: deque[PathCommand] = deque(maxlen=MAX_PENDING)
         self._started = False
 
     def start(self) -> None:
@@ -75,9 +79,10 @@ class PathOscAdapter:
         self._started = False
 
     def take(self) -> list[PathCommand]:
-        """Every command received since the last call, oldest first."""
+        """Every command received since the last call, oldest first, at most ``MAX_PENDING``."""
         with self._lock:
-            pending, self._pending = self._pending, []
+            pending = list(self._pending)
+            self._pending.clear()
         return pending
 
     def _push(self, command: PathCommand) -> None:

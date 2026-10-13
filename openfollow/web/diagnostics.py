@@ -2034,25 +2034,58 @@ def _du_kib(path: Path, *, timeout_s: float) -> int | None:
         return None
 
 
-def collect_settings_backups(state_dir: Path | None = None) -> list[str]:
-    """The pre-update settings archives by name and size, and the last attempt.
-
-    Never their contents: an archive holds the web PIN and stream credentials.
-    """
-    state_dir = state_dir or settings_backup.STATE_DIR
-    backup_dir = state_dir / settings_backup.BACKUP_DIR_NAME
-    if not backup_dir.is_dir():
-        return [f"  [not applicable: no {backup_dir}]"]
-    rows = [f"  Folder: {backup_dir}"]
-    archives = settings_backup.list_archives(backup_dir)
+def _archive_rows(folder: Path) -> list[str]:
+    # ``list_archives`` reads a folder it cannot list as empty, which here would read as no backups.
+    try:
+        with os.scandir(folder):
+            pass
+    except OSError as exc:
+        return [f"  Archives: [unavailable: {exc.strerror or exc!s}]"]
+    archives = settings_backup.list_archives(folder)
     if not archives:
-        rows.append("  Archives: none")
+        return ["  Archives: none"]
+    rows = []
     for archive in reversed(archives):
         try:
             size = f"{archive.stat().st_size} B"
         except OSError as exc:
             size = f"[unavailable: {exc.strerror or exc!s}]"
         rows.append(f"    {archive.name}  {size}")
+    return rows
+
+
+def collect_settings_backups(state_dir: Path | None = None, *, web_dir: Path | None = None) -> list[str]:
+    """The settings archives by name and size: the pre-update ones with the
+    last attempt, then the ones taken before a web UI change.
+
+    Never their contents: an archive holds the web PIN and stream credentials.
+    """
+    state_dir = state_dir or settings_backup.STATE_DIR
+    backup_dir = state_dir / settings_backup.BACKUP_DIR_NAME
+    rows = _update_backup_rows(state_dir, backup_dir)
+    if web_dir is not None:
+        try:
+            present = web_dir.is_dir()
+        except OSError as exc:
+            rows.append(f"  Web UI folder: {web_dir} [unavailable: {exc.strerror or exc!s}]")
+        else:
+            if present:
+                rows.append(f"  Web UI folder: {web_dir}")
+                rows.extend(_archive_rows(web_dir))
+            else:
+                rows.append(f"  Web UI folder: {web_dir} (none yet)")
+    return rows
+
+
+def _update_backup_rows(state_dir: Path, backup_dir: Path) -> list[str]:
+    # ``is_dir`` raises inside a folder that can't be searched, and one section must not sink the bundle.
+    try:
+        present = backup_dir.is_dir()
+    except OSError as exc:
+        return [f"  Folder: {backup_dir} [unavailable: {exc.strerror or exc!s}]"]
+    if not present:
+        return [f"  [not applicable: no {backup_dir}]"]
+    rows = [f"  Folder: {backup_dir}", *_archive_rows(backup_dir)]
     record = settings_backup.read_record(state_dir)
     if record is None:
         rows.append("  Last attempt: not recorded")
@@ -3108,6 +3141,7 @@ def collect_bundle(
     update_service_name: str | None = None,
     repo_root: Path | None = None,
     extra_storage_paths: list[Path] | None = None,
+    config_path: Path | None = None,
     budget_s: float | None = None,
 ) -> DiagnosticsBundle:
     """Run every collector and pack the result into a
@@ -3120,6 +3154,9 @@ def collect_bundle(
     size in the storage breakdown and report disk usage for – the
     route layer passes the operator's configured detection
     ``storage_path`` so its footprint shows up alongside the SD card.
+
+    ``config_path`` is the station's config file; E5c lists the web UI's
+    settings backups kept beside it.
 
     ``budget_s`` is the whole-assembly wall-clock budget; sections not reached
     before it expires are listed as skipped rather than run. ``None`` reads
@@ -3186,7 +3223,9 @@ def collect_bundle(
             extra_paths=extra_storage_paths,
             budget_s=remaining(_STORAGE_SECTION_BUDGET_S),
         ),
-        "e5c_backups": collect_settings_backups,
+        "e5c_backups": lambda: collect_settings_backups(
+            web_dir=settings_backup.web_backup_dir(config_path) if config_path else None,
+        ),
         "e6_health": collect_system_health,
         "e7_net": lambda: collect_network_interfaces(
             address_sources=p.address_sources,

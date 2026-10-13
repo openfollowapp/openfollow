@@ -37,6 +37,21 @@ def wizard_function(name: str, *, prefix: str = "function ") -> str:
     raise ValueError(f"unbalanced braces in {name}")
 
 
+def wizard_window_function(name: str) -> str:
+    """The source of ``window.name = function(...) { ... };`` in the wizard, found by matching its braces."""
+    src = WIZARD_TEMPLATE.read_text(encoding="utf-8")
+    start = src.index(f"window.{name} = function(")
+    depth = 0
+    for i in range(src.index("{", start), len(src)):
+        if src[i] == "{":
+            depth += 1
+        elif src[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return src[start : i + 1] + ";"
+    raise ValueError(f"unbalanced braces in {name}")
+
+
 def wizard_var(name: str) -> str:
     """The wizard's one-line ``var name = ...;`` declaration."""
     match = re.search(rf"^\s*var {name} = [^\n]*;$", WIZARD_TEMPLATE.read_text(encoding="utf-8"), re.M)

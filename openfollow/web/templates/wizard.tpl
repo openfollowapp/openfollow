@@ -259,7 +259,7 @@
   .lens-candidate:focus { outline: none; }
   .lens-candidate:focus .lens-candidate-line { stroke-width: 4; }
   .lens-edges { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: none; pointer-events: none; }
-  .lens-dev { display: inline-flex; align-items: center; gap: 0.35rem; color: var(--muted); font-size: 0.85rem; }
+  .lens-dev { margin-top: 0.72rem; }
   /* Graded meter (docs/STATUS_LANGUAGE.md): five segments, filled in the level's line colour. */
   .wizard-meter { display: inline-flex; gap: 3px; vertical-align: middle; }
   .wizard-meter-seg { width: 14px; height: 8px; border-radius: 2px; background: var(--border-soft); }
@@ -617,10 +617,16 @@
       <button type="button" class="secondary" id="lens-toggle-point" onclick="lensToggleSelectedPoint()" disabled>Point off</button>
       <button type="button" class="secondary" id="lens-delete-line" onclick="lensDeleteSelectedLine()" disabled>Delete line</button>
       <button type="button" class="secondary" id="lens-clear" onclick="lensClearLines()" disabled>Clear lines</button>
-% if config.ui.developer_mode:
-      <label class="lens-dev"><input type="checkbox" id="lens-show-edges" onchange="lensToggleEdgeView(this.checked)"> Show edges</label>
-% end
     </div>
+% if config.ui.developer_mode:
+    <div class="field checkbox-field lens-dev">
+      <label for="lens-show-edges">Edge map</label>
+      <div class="checkbox-wrap checkbox-field inline">
+        <input type="checkbox" id="lens-show-edges" onchange="lensToggleEdgeView(this.checked)">
+        <label for="lens-show-edges">Show edges</label>
+      </div>
+    </div>
+% end
 
     <div id="lens-result" class="notice" role="status" style="display:none;margin-top:0.72rem;">
       <div class="lens-result-main">
@@ -1238,11 +1244,10 @@
     if (k2 === 0) return k1 < 0 ? Math.sqrt(-1 / (3 * k1)) : Infinity;
     var disc = 9 * k1 * k1 - 20 * k2;
     if (disc < 0) return Infinity;
-    var sq = Math.sqrt(disc);
-    var sLo = (-3 * k1 - sq) / (10 * k2), sHi = (-3 * k1 + sq) / (10 * k2);
+    // The q form keeps both roots exact when k2 is tiny against k1.
+    var q = -0.5 * (3 * k1 + (k1 < 0 ? -1 : 1) * Math.sqrt(disc));
     var s = Infinity;
-    if (sLo > 0) s = sLo;
-    if (sHi > 0 && sHi < s) s = sHi;
+    [q / (5 * k2), q !== 0 ? 1 / q : Infinity].forEach(function(r) { if (r > 0 && r < s) s = r; });
     return Math.sqrt(s);
   }
   // Mirror lens_model.lens_warp_is_valid, its bound on a lens's size included.
@@ -1280,7 +1285,7 @@
   }
 
   // A slider or number edit on the Lens step: mirror the pair, flag a folding
-  // pair, redraw the predicted curves and the projected grid, and persist.
+  // pair, redraw the predicted curves, and persist.
   window.onWizardLensInput = function(which, source) {
     var num = document.getElementById('wiz_lens_' + which);
     var range = document.getElementById('wiz_lens_' + which + '_range');
@@ -1292,7 +1297,7 @@
     lensRecomputeCurves();
     renderLens();
     onLensCoeffChanged();
-    projectAndOverlay();
+    if (currentStep !== WIZ.lens) projectAndOverlay();
   };
 
   function saveToSession() {
@@ -1373,8 +1378,10 @@
   // ---------------------------------------------------------------
   // Step Navigation
   // ---------------------------------------------------------------
-  // The first step that needs the snapshot: the Lens step when it is shown.
-  var WIZ_FIRST_SNAPSHOT = WIZ.lens !== undefined ? WIZ.lens : WIZ.ref;
+  // The steps that show the snapshot: Lens, and Reference Mapping onwards.
+  function wizStepNeedsSnapshot(key, steps) {
+    return key === 'lens' || steps[key] >= steps.ref;
+  }
 
   window.wizardGo = function(step) {
     saveToSession();
@@ -1390,7 +1397,7 @@
       btn.setAttribute('aria-current', s === step ? 'step' : 'false');
       if (s < step) btn.classList.add('completed');
     });
-    if (step >= WIZ_FIRST_SNAPSHOT) {
+    if (wizStepNeedsSnapshot(key, WIZ)) {
       loadSnapshot();
     }
     if (key === 'prep') {
@@ -3148,12 +3155,7 @@
       return;
     }
 
-    var screenCorners = [
-      cornerPositions.DSL,
-      cornerPositions.DSR,
-      cornerPositions.USR,
-      cornerPositions.USL,
-    ];
+    var screenCorners = wizSolveCorners(cornerPositions);
 
     var seq = ++poseSeq;
     // A rigid shift is no perspective image: the points would be judged against its error.
@@ -3183,6 +3185,11 @@
       [ox - hw, oy + hd, oz],
       [ox + hw, oy + hd, oz],
     ];
+  }
+
+  // Copies, so a nudge while the solve is out cannot change the pins it records.
+  function wizSolveCorners(positions) {
+    return CORNER_NAMES.map(function(k) { return positions[k].slice(); });
   }
 
   function wizardSolveBody(screenCorners, withPoints) {
@@ -3291,6 +3298,7 @@
       var cy = e.touches ? e.touches[0].clientY : e.clientY;
       var startSvg = svgPoint(cx, cy);
       var startPos = cornerPositions[cornerName].slice();
+      poseSeq++;
       dragging = { handle: handle, corner: cornerName, startSvg: startSvg, startPos: startPos };
       // A point solve still to come would read this corner half-dragged; the drag's end solves.
       clearTimeout(calibSolveTimer);
@@ -3356,6 +3364,7 @@
       else if (e.key === 'ArrowDown') { pos[1] += step; moved = true; }
       if (moved) {
         e.preventDefault();
+        poseSeq++;
         handle.setAttribute('transform', 'translate('+pos[0]+','+pos[1]+')');
         updateFineQuad();
         // Keep zoom view in sync with arrow-key nudges.
@@ -3733,6 +3742,7 @@
       if (!fineZoomReady()) return;
       var p = svgPoint(e.clientX, e.clientY);
       if (!p) return;
+      poseSeq++;
       cornerPositions[corner] = [p[0], p[1]];
       // Update the moved corner's full-view marker too – the operator
       // may flip back to the full view at any time.
@@ -3821,6 +3831,7 @@
       else if (e.key === 'ArrowDown') { pos[1] += step; moved = true; }
       if (!moved) return;
       e.preventDefault();
+      poseSeq++;
       // Mirror to the full-view handle so a flip-back shows the
       // same position.
       var fullHandle = document.querySelector('#fine-corners .handle[data-corner="' + corner + '"]');
@@ -3923,12 +3934,7 @@
       preCornerPinningPose = snapshotPose();
     }
 
-    var screenCorners = [
-      cornerPositions.DSL,
-      cornerPositions.DSR,
-      cornerPositions.USR,
-      cornerPositions.USL,
-    ];
+    var screenCorners = wizSolveCorners(cornerPositions);
 
     var seq = ++poseSeq;
     var body = wizardSolveBody(screenCorners);
@@ -5195,11 +5201,11 @@
   }
 
   function lensFitApplies(fit) { return fit.rating !== 'low'; }
-  // Whether the pair is the one the fit wrote (it writes four decimals).
+  // Whether the pair is the one the fit wrote.
   function lensPairIsTheFits(k1, k2) {
-    return !!lensFit && lensFitApplies(lensFit)
-      && Math.abs(k1 - Number(Number(lensFit.k1).toFixed(4))) < 1e-9
-      && Math.abs(k2 - Number(Number(lensFit.k2).toFixed(4))) < 1e-9;
+    if (!lensFit || !lensFitApplies(lensFit)) return false;
+    var shown = wizLensShownPair(Number(lensFit.k1), Number(lensFit.k2));
+    return Math.abs(k1 - Number(shown[0])) < 1e-9 && Math.abs(k2 - Number(shown[1])) < 1e-9;
   }
 
   // ---- edits ----
@@ -5240,6 +5246,7 @@
 
   // ---- fit ----
   function scheduleLensFit() {
+    lensFitSeq++;
     clearTimeout(lensFitTimer);
     lensFitTimer = setTimeout(runLensFit, LENS_FIT_DEBOUNCE_MS);
   }
@@ -5268,7 +5275,7 @@
     }).then(function(res) {
       if (seq !== lensFitSeq) return;
       if (!res.ok || !res.data || res.data.error) {
-        lensShowStatus((res.data && res.data.error) || 'Could not fit the lens.', false);
+        lensFitFailed((res.data && res.data.error) || 'Could not fit the lens.');
         return;
       }
       lensShowStatus('', true);
@@ -5292,8 +5299,16 @@
       if (lensFitApplies(lensFit)) onLensCoeffChanged();
       else saveToSession();
     }).catch(function() {
-      if (seq === lensFitSeq) lensShowStatus('Could not fit the lens.', false);
+      if (seq === lensFitSeq) lensFitFailed('Could not fit the lens.');
     });
+  }
+  // The lines have changed since the last fit, so nothing of it stays on screen.
+  function lensFitFailed(message) {
+    lensFit = null;
+    renderLensResult();
+    renderLens();
+    saveToSession();
+    lensShowStatus(message, false);
   }
 
   // The curve a lens pair predicts for a line: the straight line through the

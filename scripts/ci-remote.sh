@@ -7,7 +7,7 @@
 #
 # The Pi is the real deployment target (aarch64 / Python 3.13 / trixie), so the
 # gate catches arch- and version-specific failures the dev Mac masks (missing
-# cp313 wheels, mypy reexport rules, ...). See CLAUDE.md "Local CI gate".
+# cp313 wheels, mypy reexport rules, ...). See CLAUDE.md "Development".
 #
 # Mechanism: rsync the working tree onto the Pi's existing checkout, run
 # `make ci` in its already-installed poetry env (no fresh install – a fresh

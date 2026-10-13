@@ -7,7 +7,6 @@
     <p style="color:var(--muted);font-size:0.88rem;margin:0 0 0.8rem;">
         Sends all current settings to every online peer on the network.
         Each peer's device-specific IP address will be preserved.
-        Restart-requiring changes (video source, OTP, RTTrPM, detection) are applied without automatic restart.
     </p>
 
     <div id="send-config-result" style="display:none;margin-bottom:0.72rem;" class="update-notice"></div>

@@ -8,7 +8,9 @@ Bundle-assembly test wires everything end-to-end.
 
 from __future__ import annotations
 
+import errno
 import logging
+import os
 import platform
 import re
 import socket
@@ -5976,6 +5978,78 @@ def test_collect_settings_backups_an_archive_that_vanishes(tmp_path: Path, monke
 
 def test_the_bundle_carries_the_settings_backups_section() -> None:
     assert ("E5c. Settings backups", "e5c_backups") in diag._BUNDLE_SECTIONS
+
+
+def test_collect_settings_backups_lists_the_web_ui_backups_newest_first(tmp_path: Path) -> None:
+    web = tmp_path / "config" / "backups" / "web"
+    web.mkdir(parents=True)
+    (web / "x-v0.5.0-import-20261001T000000Z.ofbackup").write_bytes(b"web_pin = a")
+    (web / "x-v0.5.0-defaults-20261002T000000Z.ofbackup").write_bytes(b"web_pin = bb")
+    rows = diag.collect_settings_backups(tmp_path, web_dir=web)
+    start = rows.index(f"  Web UI folder: {web}")
+    assert rows[start + 1 :] == [
+        "    x-v0.5.0-defaults-20261002T000000Z.ofbackup  12 B",
+        "    x-v0.5.0-import-20261001T000000Z.ofbackup  11 B",
+    ]
+
+
+def test_collect_settings_backups_before_any_web_ui_backup(tmp_path: Path) -> None:
+    web = tmp_path / "backups" / "web"
+    assert diag.collect_settings_backups(tmp_path, web_dir=web)[-1] == f"  Web UI folder: {web} (none yet)"
+
+
+def _refuse(monkeypatch, method: str, target: Path) -> None:
+    """``Path.<method>`` raises for *target*, as inside a folder that can't be searched."""
+    real = getattr(Path, method)
+
+    def refused(self: Path, *args, **kwargs):
+        if self == target:
+            raise PermissionError(errno.EACCES, "Permission denied", str(self))
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, method, refused)
+
+
+def test_collect_settings_backups_an_unsearchable_web_ui_folder(tmp_path: Path, monkeypatch) -> None:
+    _backups(tmp_path)
+    web = tmp_path / "backups" / "web"
+    _refuse(monkeypatch, "is_dir", web)
+    rows = diag.collect_settings_backups(tmp_path, web_dir=web)
+    assert rows[-1] == f"  Web UI folder: {web} [unavailable: Permission denied]"
+    assert "    brave-otter-v0.4.3-20260929T180000Z.ofbackup  19 B" in rows
+
+
+def test_collect_settings_backups_an_unsearchable_update_folder(tmp_path: Path, monkeypatch) -> None:
+    _refuse(monkeypatch, "is_dir", tmp_path / "backups")
+    assert diag.collect_settings_backups(tmp_path) == [
+        f"  Folder: {tmp_path / 'backups'} [unavailable: Permission denied]"
+    ]
+
+
+def test_collect_settings_backups_an_unreadable_folder_is_not_reported_empty(tmp_path: Path, monkeypatch) -> None:
+    backup_dir = _backups(tmp_path)
+    real = os.scandir
+
+    def scandir(path=".", *args, **kwargs):
+        if Path(path) == backup_dir:
+            raise PermissionError(errno.EACCES, "Permission denied", str(path))
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(diag.os, "scandir", scandir)
+    rows = diag.collect_settings_backups(tmp_path)
+    assert "  Archives: [unavailable: Permission denied]" in rows
+    assert "  Archives: none" not in rows
+
+
+def test_collect_settings_backups_an_empty_web_ui_folder(tmp_path: Path) -> None:
+    web = tmp_path / "backups" / "web"
+    web.mkdir(parents=True)
+    assert diag.collect_settings_backups(tmp_path, web_dir=web)[-2:] == [f"  Web UI folder: {web}", "  Archives: none"]
+
+
+def test_the_bundle_lists_the_web_ui_backups_beside_its_config(tmp_path: Path) -> None:
+    bundle = diag.collect_bundle(config_path=tmp_path / "config.toml")
+    assert f"  Web UI folder: {tmp_path / 'backups' / 'web'} (none yet)" in bundle.e5c_backups
 
 
 # ---------------------------------------------------------------------------

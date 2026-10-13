@@ -16,19 +16,22 @@ import json
 import os
 import re
 import sys
+import tarfile
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import wsgiref.util
+from pathlib import Path
 from typing import Any
 
 import pytest
+import tomllib
 
 import openfollow
 import openfollow.services as services_module
 import openfollow.web.discovery as discovery_module
-from openfollow.configuration import AppConfig, CameraConfig, load_config, save_config
+from openfollow.configuration import MOUSE3D_AXIS_FORM_LABELS, AppConfig, CameraConfig, load_config, save_config
 from openfollow.marker_catalog import MarkerCatalog
 from openfollow.palette import AUTO_PICK_ORDER
 from openfollow.runtime.overlay_links import SUPPORT
@@ -2188,6 +2191,65 @@ def test_form_post_mouse_saves_the_wheel_settings_on_every_platform(live_server,
     assert saved.controller.mouse_wheel_z_step == pytest.approx(0.4)
 
 
+_TRUE_FALSE_DROPDOWNS = [
+    pytest.param("/section/marker", "z_display_from_stage", lambda c: c.marker.z_display_from_stage, id="z-readout"),
+    pytest.param(
+        "/section/mouse", "mouse_wheel_invert", lambda c: c.controller.mouse_wheel_invert, id="wheel-direction"
+    ),
+    pytest.param(
+        "/section/movement",
+        "invert_control_direction",
+        lambda c: c.marker.invert_control_direction,
+        id="control-direction",
+    ),
+    pytest.param("/section/gamepad", "invert_y", lambda c: c.controller.invert_y, id="stick-y-axis"),
+    pytest.param("/section/mouse3d", "invert_pan_x", lambda c: c.mouse3d.invert_pan_x, id="3d-mouse-direction"),
+    pytest.param(
+        "/section/operator_messages",
+        "route_by_marker",
+        lambda c: c.operator_messages.route_by_marker,
+        id="message-routing",
+    ),
+]
+
+
+def _selected_options(body: str, name: str) -> list[str]:
+    select = body.split(f'name="{name}"', 1)[1].split("</select>", 1)[0]
+    return re.findall(r'<option value="([^"]*)" selected>', select)
+
+
+@pytest.mark.parametrize(("path", "field", "read"), _TRUE_FALSE_DROPDOWNS)
+@pytest.mark.parametrize("value", [True, False])
+def test_a_true_false_dropdown_saves_and_shows_the_chosen_option(live_server, path, field, read, value) -> None:
+    # A dropdown always posts its value, so "false" has to save False.
+    server, base = live_server
+    status, body = _post_form(base, path, {field: str(value).lower()})
+    assert status == 200
+    assert read(load_config(server.config_path)) is value
+    assert _selected_options(body, field) == [str(value).lower()]
+
+
+@pytest.mark.parametrize(("path", "field", "read"), _TRUE_FALSE_DROPDOWNS)
+@pytest.mark.parametrize("value", [True, False])
+def test_a_post_without_the_dropdown_keeps_its_value(live_server, path, field, read, value) -> None:
+    server, base = live_server
+    _post_form(base, path, {field: str(value).lower()})
+    status, _ = _post_form(base, path, {})
+    assert status == 200
+    assert read(load_config(server.config_path)) is value
+
+
+def test_each_3d_mouse_axis_direction_is_named_after_its_axis(live_server) -> None:
+    # Six selects share the visible label "Direction"; the axis tells them apart.
+    _, base = live_server
+    status, body = _get(base, "/section/mouse3d")
+    assert status == 200
+    for axis, label in MOUSE3D_AXIS_FORM_LABELS:
+        ids = re.search(rf'<select id="m3d-invert-{axis}"[^>]*aria-labelledby="([^"]+)"', body).group(1).split()
+        names = [html.unescape(re.search(rf'id="{i}">([^<]*)<', body).group(1)) for i in ids]
+        assert names == [label, "Direction"]
+
+
 def test_form_post_mouse_renders_saved_partial(live_server) -> None:
     _, base = live_server
     status, body = _post_form(base, "/section/mouse", {"mouse_enabled": "true"})
@@ -3773,7 +3835,7 @@ def test_api_config_import_rejects_malformed_json(live_server) -> None:
     assert status == 400
 
 
-def test_api_config_import_saves_non_restart_changes_immediately(live_server) -> None:
+def test_api_config_import_saves_changes_immediately(live_server) -> None:
     server, base = live_server
     status, body = _post_json(
         base,
@@ -3782,14 +3844,13 @@ def test_api_config_import_saves_non_restart_changes_immediately(live_server) ->
     )
     assert status == 200
     assert body.get("success") is True
-    assert body.get("needs_restart") is False
 
     saved = load_config(server.config_path)
     assert saved.camera.pos_x == pytest.approx(7.25)
     assert saved.psn_system_name == "Imported"
 
 
-def test_api_config_import_detection_off_to_on_saves_live_without_restart_gate(
+def test_api_config_import_detection_off_to_on_saves_live(
     live_server,
 ) -> None:
     server, base = live_server
@@ -3803,13 +3864,12 @@ def test_api_config_import_detection_off_to_on_saves_live_without_restart_gate(
     )
     assert status == 200
     assert body.get("success") is True
-    assert body.get("needs_restart") is False
 
     saved = load_config(server.config_path)
     assert saved.detection.enabled == (not original_detection)
 
 
-def test_api_config_import_otp_change_saves_live_without_restart_gate(
+def test_api_config_import_otp_change_saves_live(
     live_server,
 ) -> None:
     server, base = live_server
@@ -3823,64 +3883,369 @@ def test_api_config_import_otp_change_saves_live_without_restart_gate(
     )
     assert status == 200
     assert body.get("success") is True
-    assert body.get("needs_restart") is False
 
     saved = load_config(server.config_path)
     assert saved.otp_output.enabled == (not original_enabled)
     assert saved.otp_output.priority == 42
 
 
-def test_api_config_import_with_confirm_restart_saves_everything(live_server) -> None:
+def test_api_config_import_applies_a_push_from_an_older_station(live_server) -> None:
+    """Stations on 0.5.0-rc1 and earlier push Broadcast All to ``?skip_restart=1``."""
     server, base = live_server
     before = load_config(server.config_path)
-
-    status, body = _post_json(
-        base,
-        "/api/config/import?confirm_restart=1",
-        {
-            "detection": {"enabled": not before.detection.enabled},
-            "otp_output": {"enabled": True, "priority": 42, "system_number": 7},
-        },
-    )
-    assert status == 200
-    assert body.get("success") is True
-    assert body.get("needs_restart") is False
-
-    saved = load_config(server.config_path)
-    assert saved.otp_output.enabled is True
-    assert saved.otp_output.priority == 42
-    assert saved.otp_output.system_number == 7
-
-
-def test_api_config_import_with_skip_restart_saves_everything_live(
-    live_server,
-) -> None:
-    """All sections apply live; skip_restart flag is preserved for backwards compatibility."""
-    server, base = live_server
-    before = load_config(server.config_path)
-    before_otp = before.otp_output.enabled
-    before_detection = before.detection.enabled
 
     status, body = _post_json(
         base,
         "/api/config/import?skip_restart=1",
         {
-            "otp_output": {"enabled": not before_otp},
-            "detection": {"enabled": not before_detection},
+            "detection": {"enabled": not before.detection.enabled},
             "camera": {"pos_x": 99.0},
         },
     )
     assert status == 200
     assert body.get("success") is True
-    # No diff is restart-gated, so the request is satisfied via the
-    # default save-everything path; the skip_restart=1 query param
-    # has no remaining gate to honour.
-    assert body.get("needs_restart") is False
 
     saved = load_config(server.config_path)
-    assert saved.detection.enabled == (not before_detection)
-    assert saved.otp_output.enabled == (not before_otp)
+    assert saved.detection.enabled == (not before.detection.enabled)
     assert saved.camera.pos_x == pytest.approx(99.0)
+
+
+def _archived_config(server: ConfigWebServer, archive: str) -> dict[str, Any]:
+    """The ``config.toml`` inside one of the web UI's settings backups."""
+    path = Path(server.config_path).parent / "backups" / "web" / archive
+    with tarfile.open(path, "r:gz") as tar:
+        member = tar.extractfile("config.toml")
+        assert member is not None
+        return tomllib.loads(member.read().decode())
+
+
+def _block_backups(server: ConfigWebServer) -> None:
+    """A file where the backups folder goes, so no backup can be written."""
+    (Path(server.config_path).parent / "backups").write_text("not a folder")
+
+
+def test_api_config_import_backs_up_the_settings_it_replaces(live_server) -> None:
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.camera.pos_x = 1.5
+    save_config(cfg, server.config_path)
+
+    status, body = _post_json(base, "/api/config/import", {"camera": {"pos_x": 7.25}})
+    assert status == 200
+    assert body.get("success") is True
+    assert "-import-" in body["backup"]
+    assert "backup_error" not in body
+    assert _archived_config(server, body["backup"])["camera"]["pos_x"] == pytest.approx(1.5)
+    assert load_config(server.config_path).camera.pos_x == pytest.approx(7.25)
+
+
+@pytest.mark.parametrize("path", ["/api/config/import", "/api/config/reset"])
+def test_the_backup_does_not_wait_for_the_write_lock(live_server, path: str) -> None:
+    """The main loop takes the lock too, so a slow archive must not be written under it."""
+    import threading
+
+    from openfollow.configuration import config_write_lock
+
+    server, base = live_server
+    web = Path(server.config_path).parent / "backups" / "web"
+    answers: list[tuple[int, dict]] = []
+    with config_write_lock:
+        sender = threading.Thread(target=lambda: answers.append(_post_json(base, path, {})))
+        sender.start()
+        deadline = time.monotonic() + 5
+        while not (web.is_dir() and any(web.iterdir())) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert web.is_dir() and any(web.iterdir())
+        assert answers == []
+    sender.join(5)
+    assert answers[0][0] == 200
+
+
+def test_api_config_import_goes_ahead_when_no_backup_can_be_made(live_server) -> None:
+    server, base = live_server
+    _block_backups(server)
+
+    status, body = _post_json(base, "/api/config/import", {"camera": {"pos_x": 7.25}})
+    assert status == 200
+    assert body.get("success") is True
+    assert body["backup_error"]
+    assert "backup" not in body
+    assert load_config(server.config_path).camera.pos_x == pytest.approx(7.25)
+
+
+# ---------------------------------------------------------------------------
+# Settings another station pushed here
+# ---------------------------------------------------------------------------
+
+
+def _push(base: str, path: str, data: dict, sender: str = "Stage Left") -> tuple[int, dict]:
+    return _post_json(base, f"{path}?from={urllib.parse.quote(sender, safe='')}", data)
+
+
+def _pushes(server: ConfigWebServer) -> list[tuple[str, str, str, str]]:
+    return [(p.station, p.address, p.what, p.backup_error) for p in server.pushed_settings.snapshot()[0]]
+
+
+def test_a_pushed_import_is_recorded_and_backed_up_as_a_push(live_server) -> None:
+    server, base = live_server
+    status, body = _push(base, "/api/config/import", {"camera": {"pos_x": 7.25}})
+    assert status == 200
+    assert "-push-" in body["backup"]
+    assert _pushes(server) == [("Stage Left", "127.0.0.1", "every shared setting", "")]
+    assert load_config(server.config_path).camera.pos_x == pytest.approx(7.25)
+
+
+def test_a_push_names_the_address_it_came_from_not_a_forwarded_one(live_server) -> None:
+    server, base = live_server
+    req = urllib.request.Request(
+        f"{base}/api/config/grid?from=Stage%20Left",
+        data=json.dumps({"width": 12.0}).encode(),
+        headers={"Content-Type": "application/json", "X-Forwarded-For": "203.0.113.9"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        assert resp.status == 200
+    assert _pushes(server)[0][1] == "127.0.0.1"
+
+
+@pytest.mark.parametrize("path", ["/api/config/grid", "/api/config/no_such_section"])
+def test_a_pushed_section_backup_does_not_wait_for_the_write_lock(live_server, path: str) -> None:
+    """A known section is archived before the lock; an unknown one is refused before any archive."""
+    import threading
+
+    from openfollow.configuration import config_write_lock
+
+    server, base = live_server
+    web = Path(server.config_path).parent / "backups" / "web"
+    answers: list[tuple[int, dict]] = []
+    known = path.endswith("grid")
+    with config_write_lock:
+        sender = threading.Thread(target=lambda: answers.append(_push(base, path, {"width": 12.0})))
+        sender.start()
+        if known:
+            deadline = time.monotonic() + 5
+            while not (web.is_dir() and any(web.iterdir())) and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert web.is_dir() and any(web.iterdir())
+        else:
+            sender.join(5)
+            assert answers and answers[0][0] == 404
+            assert not web.exists()
+    sender.join(5)
+    assert answers[0][0] == (200 if known else 404)
+
+
+def test_an_import_from_this_page_is_no_push(live_server) -> None:
+    server, base = live_server
+    status, body = _post_json(base, "/api/config/import", {"camera": {"pos_x": 7.25}})
+    assert status == 200
+    assert "-import-" in body["backup"]
+    assert _pushes(server) == []
+
+
+def test_a_pushed_section_is_recorded_and_backed_up_as_a_push(live_server) -> None:
+    server, base = live_server
+    status, body = _push(base, "/api/config/grid", {"width": 12.0})
+    assert status == 200
+    assert "-push-" in body["backup"]
+    assert _pushes(server) == [("Stage Left", "127.0.0.1", "Grid", "")]
+    assert load_config(server.config_path).grid.width == pytest.approx(12.0)
+
+
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        ("/api/config/import", {"psn_system_name": "Stage Left", "camera": {"pos_x": 7.25}}),
+        ("/api/config/psn", {"psn_system_name": "Stage Left", "psn_mcast_ip": "236.10.10.11"}),
+    ],
+)
+def test_a_push_never_renames_the_station_it_lands_on(live_server, path: str, payload: dict) -> None:
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.psn_system_name = "Front of House"
+    save_config(cfg, server.config_path)
+
+    status, _body = _push(base, path, payload)
+    assert status == 200
+    saved = load_config(server.config_path)
+    assert saved.psn_system_name == "Front of House"
+    # The rest of the push still applies.
+    assert (saved.camera.pos_x, saved.psn_mcast_ip) != (AppConfig().camera.pos_x, AppConfig().psn_mcast_ip)
+
+
+def test_a_push_from_an_older_station_is_recorded_unnamed_and_keeps_the_name(live_server) -> None:
+    """Stations on 0.5.0-rc1 and earlier push every setting to ``?skip_restart=1``, their name included."""
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.psn_system_name = "Front of House"
+    save_config(cfg, server.config_path)
+
+    status, body = _post_json(
+        base, "/api/config/import?skip_restart=1", {"psn_system_name": "Stage Left", "camera": {"pos_x": 7.25}}
+    )
+    assert status == 200
+    assert "-push-" in body["backup"]
+    assert _pushes(server) == [("", "127.0.0.1", "every shared setting", "")]
+    saved = load_config(server.config_path)
+    assert saved.psn_system_name == "Front of House"
+    assert saved.camera.pos_x == pytest.approx(7.25)
+
+
+@pytest.mark.parametrize(
+    ("section", "label"),
+    [
+        ("osc", "OSC"),
+        ("otp_output", "OTP output"),
+        ("rttrpm_output", "RTTrPM output"),
+        ("psn", "PSN"),
+        ("mouse3d", "3D mouse"),
+        ("video_source", "Video source"),
+    ],
+)
+def test_a_pushed_section_is_named_as_the_operator_knows_it(live_server, section: str, label: str) -> None:
+    server, base = live_server
+    status, _body = _push(base, f"/api/config/{section}", {"unused": 1})
+    assert status == 200
+    assert _pushes(server)[0][2] == label
+
+
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        ("/api/config/interface_assignment", {"psn": "eth0"}),
+        ("/api/config/psn", {"psn_system_name": "Stage Left"}),
+    ],
+)
+def test_a_push_carrying_nothing_this_station_shares_is_no_push(live_server, path: str, payload: dict) -> None:
+    # A device-local section, or a station name alone, is stripped to nothing.
+    server, base = live_server
+    status, body = _push(base, path, payload)
+    assert status == 200
+    assert "backup" not in body
+    assert _pushes(server) == []
+    assert not (Path(server.config_path).parent / "backups").exists()
+
+
+def test_a_section_write_that_is_no_push_records_and_backs_up_nothing(live_server) -> None:
+    server, base = live_server
+    status, body = _post_json(base, "/api/config/camera", {"pos_x": 2.0})
+    assert status == 200
+    assert body == {"success": True}
+    assert _pushes(server) == []
+    assert not (Path(server.config_path).parent / "backups").exists()
+
+
+def test_a_push_to_an_unknown_section_records_nothing(live_server) -> None:
+    server, base = live_server
+    status, _body = _push(base, "/api/config/no_such_section", {"x": 1})
+    assert status == 404
+    assert _pushes(server) == []
+
+
+def test_a_push_whose_backup_failed_carries_the_reason(live_server) -> None:
+    server, base = live_server
+    _block_backups(server)
+    status, body = _push(base, "/api/config/import", {"camera": {"pos_x": 7.25}})
+    assert status == 200
+    assert _pushes(server)[0][3] == body["backup_error"] != ""
+
+
+@pytest.mark.parametrize(
+    ("sent", "shown"),
+    [
+        ("Bühne Links", "Bühne Links"),
+        ("Stage\nLeft\x1b[31m", "StageLeft[31m"),
+        ("x" * 200, "x" * 128),
+        ("  ", ""),
+    ],
+)
+def test_the_pushing_station_name_is_cleaned(live_server, sent: str, shown: str) -> None:
+    server, base = live_server
+    status, _body = _push(base, "/api/config/import", {}, sender=sent)
+    assert status == 200
+    assert _pushes(server)[0][0] == shown
+
+
+@pytest.mark.parametrize("sender", ["send_config_import", "send_config_section"])
+def test_a_signed_push_from_the_real_sender_is_verified_and_recorded(pin_protected_server, sender: str) -> None:
+    from openfollow.web import routes as routes_mod
+
+    server, base, _pin = pin_protected_server
+    port = int(base.rsplit(":", 1)[1])
+    if sender == "send_config_import":
+        ok = routes_mod._send_config_import_to_peer(
+            "127.0.0.1", port, {"camera": {"pos_x": 3.0}}, pin="sekret", expected_port=port, sender="Bühne Links"
+        )
+        what = "every shared setting"
+    else:
+        ok = routes_mod._send_config_to_peer(
+            "127.0.0.1", port, "grid", {"width": 9.0}, pin="sekret", expected_port=port, sender="Bühne Links"
+        )
+        what = "Grid"
+    assert ok is True
+    assert _pushes(server) == [("Bühne Links", "127.0.0.1", what, "")]
+
+
+def test_a_push_signed_with_the_wrong_pin_is_refused_and_not_recorded(pin_protected_server) -> None:
+    from openfollow.web import routes as routes_mod
+
+    server, base, _pin = pin_protected_server
+    port = int(base.rsplit(":", 1)[1])
+    ok = routes_mod._send_config_import_to_peer("127.0.0.1", port, {}, pin="wrong", expected_port=port, sender="X")
+    assert ok is False
+    assert _pushes(server) == []
+
+
+def test_the_pushed_settings_api_lists_newest_first(live_server) -> None:
+    server, base = live_server
+    server.pushed_settings.record("A", "198.51.100.1", "Grid")
+    second = server.pushed_settings.record("B", "198.51.100.2", "every setting", "No space left on device")
+    status, body = _get_json(base, "/api/pushed-settings")
+    assert status == 200
+    assert body["earlier"] == 0
+    newest = body["pushes"][0]
+    assert re.fullmatch(r"\d\d:\d\d", newest.pop("time"))
+    assert newest == {
+        "id": second.id,
+        "station": "B",
+        "address": "198.51.100.2",
+        "what": "every setting",
+        "backup_error": "No space left on device",
+    }
+    assert [p["station"] for p in body["pushes"]] == ["B", "A"]
+    assert body["run"] == server.pushed_settings.run
+    assert body["received"] == 2
+
+
+def test_removing_the_warning_keeps_a_push_that_arrived_since(live_server) -> None:
+    server, base = live_server
+    server.pushed_settings.record("A", "198.51.100.1", "Grid")
+    seen = server.pushed_settings.record("B", "198.51.100.2", "Grid")
+    server.pushed_settings.record("C", "198.51.100.3", "Camera")
+    status, body = _post_json(base, "/api/pushed-settings/remove", {"upto": seen.id, "run": server.pushed_settings.run})
+    assert (status, body) == (200, {"success": True})
+    assert [p[0] for p in _pushes(server)] == ["C"]
+
+
+@pytest.mark.parametrize("payload", [{"upto": 5, "run": "an-earlier-run"}, {"upto": 5}])
+def test_a_removal_read_from_another_run_is_refused(live_server, payload) -> None:
+    # Ids start at 1 on every run: an id from before a restart names a push the page never showed.
+    server, base = live_server
+    server.pushed_settings.record("A", "198.51.100.1", "Grid")
+    status, body = _post_json(base, "/api/pushed-settings/remove", payload)
+    assert status == 409
+    assert body["error"]
+    assert [p[0] for p in _pushes(server)] == ["A"]
+
+
+@pytest.mark.parametrize("payload", [{}, {"upto": "3"}, {"upto": True}, {"upto": None}, [1]])
+def test_removing_the_warning_needs_a_push_id(live_server, payload) -> None:
+    server, base = live_server
+    server.pushed_settings.record("A", "198.51.100.1", "Grid")
+    status, body = _post_json(base, "/api/pushed-settings/remove", payload)
+    assert status == 400
+    assert body["error"]
+    assert [p[0] for p in _pushes(server)] == ["A"]
 
 
 # ---------------------------------------------------------------------------
@@ -3919,6 +4284,31 @@ def test_api_config_reset_restores_defaults_and_keeps_device_fields(live_server)
     assert saved.web_port == 8123
     assert saved.psn_source_iface == "eth0"
     assert saved.detection.storage_path == "/mnt/nvme/openfollow/yolo"
+
+
+def test_api_config_reset_backs_up_the_settings_it_replaces(live_server) -> None:
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.grid.width = 42.0
+    save_config(cfg, server.config_path)
+
+    status, body = _post_json(base, "/api/config/reset", {})
+    assert status == 200
+    assert body.get("success") is True
+    assert "-defaults-" in body["backup"]
+    assert _archived_config(server, body["backup"])["grid"]["width"] == pytest.approx(42.0)
+    assert load_config(server.config_path).grid.width == pytest.approx(AppConfig().grid.width)
+
+
+def test_api_config_reset_goes_ahead_when_no_backup_can_be_made(live_server) -> None:
+    server, base = live_server
+    _block_backups(server)
+
+    status, body = _post_json(base, "/api/config/reset", {})
+    assert status == 200
+    assert body.get("success") is True
+    assert body["backup_error"]
+    assert server.check_restart_requested() is True
 
 
 def test_api_config_reset_keeps_the_web_pin_authenticating(pin_protected_server) -> None:
@@ -6245,6 +6635,34 @@ def test_api_create_detection_mask_drops_garbage_vertices(live_server) -> None:
     assert saved.detection.masks[body["index"]].vertices == [[0.0, 0.0], [1.0, 1.0]]
 
 
+def test_api_broadcast_all_marks_the_push_with_this_station_name(live_server, monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from openfollow.web import routes as routes_mod
+
+    senders: list[str] = []
+    payloads: list[dict] = []
+
+    def _fake_send(ip: str, port: int, data: dict, pin: str = "", *, expected_port: int, sender: str) -> bool:
+        senders.append(sender)
+        payloads.append(data)
+        return True
+
+    monkeypatch.setattr(routes_mod, "_send_config_import_to_peer", _fake_send)
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.psn_system_name = "Front of House"
+    save_config(cfg, server.config_path)
+    monkeypatch.setattr(server, "get_peers", lambda: [SimpleNamespace(name="peer", ip="10.0.0.99", web_port=80)])
+
+    status, _body = _post_json(base, "/api/config/broadcast-all", {})
+    assert status == 200
+    assert senders == ["Front of House"]
+    # Each peer keeps its own station name.
+    assert "psn_system_name" not in payloads[0]
+    assert "camera" in payloads[0]
+
+
 def test_api_broadcast_all_returns_empty_results_when_no_peers(live_server) -> None:
     _, base = live_server
     status, body = _post_json(base, "/api/config/broadcast-all", {})
@@ -6303,8 +6721,10 @@ def test_api_broadcast_section_psn_strips_iface_from_peer_payload(
 
     captured_payloads: list[dict] = []
 
-    def _fake_send(ip: str, port: int, section: str, data: dict, pin: str = "", *, expected_port: int) -> bool:
-        captured_payloads.append({"section": section, "data": dict(data)})
+    def _fake_send(
+        ip: str, port: int, section: str, data: dict, pin: str = "", *, expected_port: int, sender: str
+    ) -> bool:
+        captured_payloads.append({"section": section, "data": dict(data), "sender": sender})
         return True
 
     monkeypatch.setattr(routes_mod, "_send_config_to_peer", _fake_send)
@@ -6341,8 +6761,11 @@ def test_api_broadcast_section_psn_strips_iface_from_peer_payload(
     sent = captured_payloads[0]
     assert sent["section"] == "psn"
     assert "psn_source_iface" not in sent["data"]
-    assert sent["data"]["psn_system_name"] == "Broadcasted"
+    # Each peer keeps its own station name.
+    assert "psn_system_name" not in sent["data"]
     assert sent["data"]["psn_mcast_ip"] == "236.10.10.10"
+    # Marked as a push from this station, under the name it now has.
+    assert sent["sender"] == "Broadcasted"
 
 
 def test_api_broadcast_section_returns_404_for_unknown_section(live_server) -> None:
@@ -6417,8 +6840,8 @@ def test_update_marker_post_persists_visual_booleans(live_server) -> None:
         {
             "ball_visible": "on",
             "crosshair_visible": "on",
-            # z_line + ground_circle + ground_circle_filled +
-            # z_display_from_stage all omitted -> coerced to False.
+            # z_line + ground_circle + ground_circle_filled all omitted
+            # -> coerced to False.
         },
     )
     assert status == 200
@@ -6465,29 +6888,6 @@ def test_marker_save_preserves_invert_control_direction(live_server) -> None:
     status, _ = _post_form(base, "/section/marker", {"ball_visible": "on"})
     assert status == 200
     assert load_config(server.config_path).marker.invert_control_direction is True
-
-
-def test_movement_save_can_turn_invert_control_direction_on_and_off(live_server) -> None:
-    """An unchecked checkbox isn't posted at all, so the owning section has to
-    declare it as a bool field – otherwise it could be switched on but never
-    off, stranding the operator with reversed controls."""
-    server, base = live_server
-
-    status, _ = _post_form(
-        base,
-        "/section/movement",
-        {"min_speed": "0.2", "move_speed": "1.5", "max_speed": "4.0", "invert_control_direction": "on"},
-    )
-    assert status == 200
-    assert load_config(server.config_path).marker.invert_control_direction is True
-
-    status, _ = _post_form(
-        base,
-        "/section/movement",
-        {"min_speed": "0.2", "move_speed": "1.5", "max_speed": "4.0"},
-    )
-    assert status == 200
-    assert load_config(server.config_path).marker.invert_control_direction is False
 
 
 def test_api_video_snapshot_returns_jpeg_when_provider_yields_bytes(

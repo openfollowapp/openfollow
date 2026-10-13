@@ -324,12 +324,18 @@
             <h3 class="group-title">Overlay</h3>
             <div class="row row--toggles">
                 <div class="field checkbox-field">
-                    <label>Show boxes</label>
-                    <div class="checkbox-wrap"><input type="checkbox" name="show_boxes" {{'checked' if det.show_boxes else ''}}></div>
+                    <label for="detection-show-boxes">Boxes</label>
+                    <div class="checkbox-wrap checkbox-field inline">
+                        <input type="checkbox" id="detection-show-boxes" name="show_boxes" {{'checked' if det.show_boxes else ''}}>
+                        <label for="detection-show-boxes">Draw a box around each person</label>
+                    </div>
                 </div>
                 <div class="field checkbox-field">
-                    <label>Show labels</label>
-                    <div class="checkbox-wrap"><input type="checkbox" name="show_labels" {{'checked' if det.show_labels else ''}}></div>
+                    <label for="detection-show-labels">Labels</label>
+                    <div class="checkbox-wrap checkbox-field inline">
+                        <input type="checkbox" id="detection-show-labels" name="show_labels" {{'checked' if det.show_labels else ''}}>
+                        <label for="detection-show-labels">Show each box's confidence</label>
+                    </div>
                 </div>
             </div>
             <div class="row row--pair">

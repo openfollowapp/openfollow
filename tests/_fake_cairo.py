@@ -118,6 +118,9 @@ class FakeCairo:
     def get_font_options(self) -> cairo.FontOptions:
         return cairo.FontOptions()
 
+    def set_font_options(self, options: cairo.FontOptions) -> None:
+        self.calls.append(("font_options",))
+
     def set_source(self, pattern: Any) -> None:
         self.patterns.append(pattern)
         self.calls.append(("source_pattern",))

@@ -452,6 +452,15 @@ class TestZoneCache:
         options.set_hint_metrics(cairo.HINT_METRICS_OFF)
         self._assert_cached_looks_direct(self._state(), font_options=options)
 
+    @pytest.mark.parametrize("background", [(0.2, 0.3, 0.4, 1.0), (0.2, 0.3, 0.4, 0.5)], ids=["opaque", "translucent"])
+    def test_labels_look_the_same_cached_or_direct_on_a_subpixel_screen(self, background: tuple[float, ...]) -> None:
+        import cairo
+
+        options = cairo.FontOptions()
+        options.set_antialias(cairo.ANTIALIAS_SUBPIXEL)
+        options.set_subpixel_order(cairo.SUBPIXEL_ORDER_RGB)
+        self._assert_cached_looks_direct(self._state(), background=background, font_options=options)
+
     @pytest.mark.parametrize(
         "roll",
         [0.0, 90.0, -90.0, 180.0],
@@ -585,6 +594,30 @@ class TestZoneCache:
         w, h = change.get("size", (1920, 1080))
         draw_zones(FakeRenderer(), cr, state, w, h, cache)
         assert len(cr.surfaces) == 1 and cr.surfaces[0] is not first.surfaces[0]
+
+    @pytest.mark.parametrize("cached", [False, True], ids=["direct", "cached"])
+    def test_other_hud_text_keeps_the_screens_font_options(self, cached: bool) -> None:
+        import cairo
+
+        from openfollow.runtime.overlay_draw_zones import ZoneCache
+
+        options = cairo.FontOptions()
+        options.set_antialias(cairo.ANTIALIAS_SUBPIXEL)
+        cr = cairo.Context(_blank(1.0, (0.2, 0.3, 0.4, 1.0)))
+        cr.set_font_options(options)
+        draw_zones(FakeRenderer(), cr, self._state(), 1920, 1080, ZoneCache() if cached else None)
+        assert cr.get_font_options() == options
+
+    def test_a_change_to_a_zone_that_is_not_drawn_keeps_the_picture(self) -> None:
+        from openfollow.runtime.overlay_draw_zones import ZoneCache
+
+        drawn = (_square(0.0, 2.0, 1.0), "#ffaa00", "Pit", False, 0)
+        cache, before, after = ZoneCache(), FakeCairo(), FakeCairo()
+        behind = self._state(zone_polygons=[drawn, (_square(0.0, -20.0, 1.0), "#33aaff", "Behind", False, 0)])
+        draw_zones(FakeRenderer(), before, behind, 1920, 1080, cache)
+        moved = self._state(zone_polygons=[drawn, (_square(0.5, -21.0, 1.0), "#33aaff", "Behind", True, 1)])
+        draw_zones(FakeRenderer(), after, moved, 1920, 1080, cache)
+        assert after.surfaces[0] is before.surfaces[0]
 
     def test_zones_all_behind_the_camera_paint_nothing(self) -> None:
         from openfollow.runtime.overlay_draw_zones import ZoneCache

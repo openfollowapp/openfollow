@@ -77,6 +77,11 @@ def _label(zone: _Zone) -> str:
 
 
 def _paint_zones(renderer: Any, cr: Any, zones: list[_Zone]) -> None:
+    cr.save()
+    # Grayscale labels: subpixel coverage cannot survive the cached picture's one alpha channel.
+    options = cr.get_font_options()
+    options.set_antialias(cairo.ANTIALIAS_GRAY)
+    cr.set_font_options(options)
     for zone in zones:
         outline = zone.outline
         r, g, b = parse_hex(zone.color)
@@ -111,13 +116,14 @@ def _paint_zones(renderer: Any, cr: Any, zones: list[_Zone]) -> None:
             cr.set_source_rgba(r, g, b, 1.0)
             cr.move_to(rect_x + _LABEL_PAD, rect_y + _LABEL_PAD + ext.height)
             cr.show_text(label)
+    cr.restore()
 
 
 class ZoneCache:
-    """Every zone as one picture, drawn again only when a zone, its occupancy or the view changed.
+    """Every zone as one picture, drawn again only when what a zone shows on screen changed.
 
     The Operator Screen redraws on every display refresh; zones that did not
-    change are then one paint instead of each zone's projection, fill, outline and label.
+    change are then their projection and one paint instead of each zone's fill, outline and label.
     """
 
     def __init__(self) -> None:
@@ -128,28 +134,22 @@ class ZoneCache:
         self._entry = None
 
     def draw(self, renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
-        cam = state.camera_params
-        if cam is None:
+        if state.camera_params is None:
             return
+        zones = _zone_outlines(state, w, h)
         scale = cr.get_target().get_device_scale()
         options = cr.get_target().get_font_options()
         options.merge(cr.get_font_options())
+        # Keyed on what is drawn, so every projection input is covered by the outlines.
         key = (
-            tuple(
-                (tuple(tuple(v) for v in vertices), color, name, is_occupied, count)
-                for vertices, color, name, is_occupied, count in state.zone_polygons
-            ),
-            state.zone_z_offset,
-            tuple(float(v) for v in cam),
-            state.lens_k1,
-            state.lens_k2,
+            tuple((z.outline.shape, z.outline.tobytes(), z.color, z.name, z.is_occupied, z.count) for z in zones),
             w,
             h,
             scale,
             options,
         )
         if self._entry is None or self._entry[0] != key:
-            self._entry = (key, *self._render(renderer, state, w, h, scale, options))
+            self._entry = (key, *self._render(renderer, zones, w, h, scale, options))
         _, picture, x0, y0 = self._entry
         if picture is not None:
             cr.set_source_surface(picture, x0, y0)
@@ -157,9 +157,8 @@ class ZoneCache:
 
     @staticmethod
     def _render(
-        renderer: Any, state: OverlayState, w: int, h: int, scale: tuple[float, float], options: cairo.FontOptions
+        renderer: Any, zones: list[_Zone], w: int, h: int, scale: tuple[float, float], options: cairo.FontOptions
     ) -> tuple[cairo.ImageSurface | None, int, int]:
-        zones = _zone_outlines(state, w, h)
         if not zones:
             return None, 0, 0
         sx, sy = scale

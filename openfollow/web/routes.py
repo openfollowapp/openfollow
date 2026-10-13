@@ -4689,6 +4689,7 @@ def _register_path_routes(app: Bottle, server: ConfigWebServer) -> None:
     """Register the path editor's routes: the paths, recording, and the view over the video frame."""
     from openfollow.paths.engine import path_ends
     from openfollow.paths.geometry import PathPoint, build_curve
+    from openfollow.paths.network import extend_to_corners
     from openfollow.scene.solver import (
         apply_overlay_distortion,
         invert_overlay_distortion,
@@ -4719,7 +4720,7 @@ def _register_path_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     def _name_error(cfg: AppConfig, name: str, current: PathConfig | None) -> str | None:
         if not name:
-            return "Use letters, digits, '.', '-' or '_' in a path name."
+            return "Use letters, digits, '.', '-' or '_' in a path name, and not dots alone."
         clash = cfg.paths.find(name)
         if clash is not None and clash is not current:
             return f"A path called {clash.name} already exists."
@@ -4854,10 +4855,21 @@ def _register_path_routes(app: Bottle, server: ConfigWebServer) -> None:
             screen = apply_overlay_distortion(project_points(params, np.array(points), w, h), w, h, k1, k2)
             return [[float(x), float(y)] if np.isfinite(x) and np.isfinite(y) else None for x, y in screen]
 
+        curves = [
+            build_curve([PathPoint(p.x, p.y, p.z, p.radius) for p in path.points], path.closed)
+            for path in cfg.paths.paths
+        ]
+        # Active paths as the station walks them: an end on another's corner point runs on to its arc.
+        active = {
+            i: c
+            for i, (path, c) in enumerate(zip(cfg.paths.paths, curves, strict=True))
+            if path.active and c is not None
+        }
+        for i, carried in zip(active, extend_to_corners(list(active.values())), strict=True):
+            curves[i] = carried
         views = []
-        for path in cfg.paths.paths:
+        for path, curve in zip(cfg.paths.paths, curves, strict=True):
             corners = [(p.x, p.y, p.z) for p in path.points]
-            curve = build_curve([PathPoint(p.x, p.y, p.z, p.radius) for p in path.points], path.closed)
             ends = path_ends(path, curve)
             tips, backs = seen([e.at for e in ends]), seen([e.inside for e in ends])
             views.append(
@@ -8246,7 +8258,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     # ---- File-based template system ---------------------------------------
     #
     # Routes for listing, saving, applying, and deleting templates of the
-    # three supported types (``osc_output`` / ``camera_grid`` / ``zones``).
+    # four supported types (``osc_output`` / ``camera_grid`` / ``zones`` / ``paths``).
     # The on-disk layer is :mod:`openfollow.templates`; these routes are thin
     # HTTP adapters over its loader / writer / schema functions so the
     # validation rules (envelope shape, payload validation, slug + conflict
@@ -8366,7 +8378,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         - ``paths``: ``{"name": str}`` – the current paths and slide time,
           without Active flags, which belong to the station.
 
-        Both implicit-read variants run inside the config-write lock
+        The three implicit-read variants run inside the config-write lock
         so a concurrent ``/section/...`` POST can't tear the captured
         snapshot."""
         response.content_type = "application/json"

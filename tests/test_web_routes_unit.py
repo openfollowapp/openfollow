@@ -1863,3 +1863,9 @@ class TestApplyPathsSection:
         cfg = self._cfg()
         apply_section_data(cfg, "paths", {"show_paths": "off"})
         assert cfg.paths.show_paths is False
+
+    @pytest.mark.parametrize("raw", [".", ".."])
+    def test_a_pushed_name_of_dots_alone_is_renamed(self, raw: str) -> None:
+        cfg = self._cfg()
+        apply_section_data(cfg, "paths", {"paths": [{"name": "cross"}, {"name": raw}]})
+        assert [p.name for p in cfg.paths.paths] == ["cross", "path-2"]

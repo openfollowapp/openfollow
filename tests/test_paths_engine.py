@@ -334,6 +334,17 @@ class TestDrawings:
         cfg = PathsConfig(paths=[ring])
         assert _engine(ring).drawings(cfg)[0].ends == []
 
+    def test_an_end_carried_on_to_a_corner_is_drawn_to_the_corner_arc(self) -> None:
+        corner = _path("corner", [(0, 0, 0), (3, 0, 0), (3, 3, 0)], active=True)
+        corner.points[1].radius = 0.5
+        branch = _path("branch", [(5, -2, 0), (3, 0, 0)], active=True)
+        cfg = PathsConfig(paths=[corner, branch])
+        drawn = {d.name: d for d in _engine(corner, branch).drawings(cfg)}
+        # The 0.5 m arc's middle (sampled, so within a few millimetres), where the walked curve now ends.
+        vertex = (2.5 + 0.5 / math.sqrt(2), 0.5 - 0.5 / math.sqrt(2), 0.0)
+        assert math.dist(drawn["branch"].curve[-1], vertex) < 0.005
+        assert math.dist(drawn["branch"].ends[-1].at, vertex) < 0.005
+
     def test_a_long_straight_run_is_drawn_in_short_pieces(self) -> None:
         drawn = _engine(CROSS).drawings(PathsConfig(paths=[CROSS]))[0]
         steps = [math.dist(a, b) for a, b in zip(drawn.curve, drawn.curve[1:], strict=False)]

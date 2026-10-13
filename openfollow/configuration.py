@@ -883,9 +883,11 @@ class PathPointConfig:
 
 
 def path_name_from(value: Any) -> str:
-    """``value`` reduced to the characters a path name allows, at most 32 of them."""
+    """``value`` reduced to the characters a path name allows, at most 32 of them; dots alone make no name."""
     text = value if isinstance(value, str) else ""
-    return "".join(PATH_NAME_PATTERN.findall(text))[:PATH_NAME_MAX_LEN]
+    name = "".join(PATH_NAME_PATTERN.findall(text))[:PATH_NAME_MAX_LEN]
+    # A URL resolves dot segments away, even written as %2E, so such a name could never be addressed.
+    return name if name.strip(".") else ""
 
 
 @dataclass

@@ -111,7 +111,13 @@ class TestCreate:
         assert _call(base, "POST", "/api/paths", {"name": "Cross"})[1]["name"] == "Cross"
 
     @pytest.mark.parametrize(
-        ("name", "error"), [("cross", "A path called Cross already exists."), ("!!", "Use letters")]
+        ("name", "error"),
+        [
+            ("cross", "A path called Cross already exists."),
+            ("!!", "Use letters"),
+            # A URL resolves a name of dots alone away, so the path could never be reached.
+            ("..", "Use letters, digits, '.', '-' or '_' in a path name, and not dots alone."),
+        ],
     )
     def test_a_name_that_clashes_or_has_nothing_usable_is_refused(self, live, name: str, error: str) -> None:  # noqa: ANN001
         base, config_path, _ = live
@@ -152,6 +158,7 @@ class TestUpdate:
         _with_paths(config_path, _cross(), PathConfig(name="loop"))
         assert _call(base, "PUT", "/api/paths/cross", {"name": "Down Stage"})[1]["path"]["name"] == "DownStage"
         assert _call(base, "PUT", "/api/paths/DownStage", {"name": "LOOP"})[0] == 400
+        assert _call(base, "PUT", "/api/paths/DownStage", {"name": "."})[0] == 400
         assert _call(base, "PUT", "/api/paths/DownStage", {"name": "DownStage"})[0] == 200
         assert [p.name for p in load_config(config_path).paths.paths] == ["DownStage", "loop"]
 
@@ -265,6 +272,21 @@ class TestView:
         assert [e["releases"] for e in view["ends"]] == [False, True]
         assert view["ends"][1]["at"] == view["points"][1]
         assert sorted(m["id"] for m in data["markers"]) == [2, 3]
+
+    @pytest.mark.parametrize("corner_active", [True, False])
+    def test_an_end_on_an_active_corner_point_is_drawn_on_to_its_arc(self, live, corner_active: bool) -> None:  # noqa: ANN001
+        base, config_path, _ = live
+        corner = PathConfig(
+            name="corner",
+            active=corner_active,
+            points=[PathPointConfig(-3, 2, 0, 0), PathPointConfig(0, 2, 0, 0.5), PathPointConfig(0, 5, 0, 0)],
+        )
+        branch = PathConfig(name="branch", active=True, points=[PathPointConfig(2, 0, 0), PathPointConfig(0, 2, 0)])
+        _with_paths(config_path, corner, branch)
+        view = _call(base, "POST", "/api/paths/view", {"w": 1920, "h": 1080})[1]["paths"][1]
+        assert view["ends"][1]["at"] == view["line"][-1]
+        # Carried on, the line ends on the arc beside the point; with the corner's path off, at the point.
+        assert (view["line"][-1] != view["points"][-1]) is corner_active
 
     def test_what_the_camera_cannot_see_is_null(self, live) -> None:  # noqa: ANN001
         base, config_path, _ = live

@@ -1012,6 +1012,8 @@ def _osc_station(monkeypatch, pending: dict[int, dict[str, float]]):  # noqa: AN
     manager._clock = clock
     adapter = SimpleNamespace(start=lambda: None, stop=lambda: None, flush_updates=lambda: dict(pending))
     monkeypatch.setattr(input_manager_module, "OscMarkerAdapter", lambda *_a, **_kw: adapter)
+    paths = SimpleNamespace(start=lambda: None, stop=lambda: None, take=lambda: [])
+    monkeypatch.setattr(input_manager_module, "PathOscAdapter", lambda *_a, **_kw: paths)
     manager.osc_handler = adapter
     return app, manager, clock
 

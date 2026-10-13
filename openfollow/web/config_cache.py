@@ -34,7 +34,13 @@ class ParsedConfigCache:
         with self._lock:
             entry = self._entry
         if entry is None or entry[0] != key:
-            entry = (key, pickle.dumps(load_config(path)))
+            try:
+                parsed = load_config(path, strict=True)
+            except Exception:
+                # Served but never kept: a read that failed once falls back to the backup or
+                # to defaults, whose empty web_pin would open the login until the next save.
+                return load_config(path)
+            entry = (key, pickle.dumps(parsed))
             with self._lock:
                 self._entry = entry
         return pickle.loads(entry[1])  # type: ignore[no-any-return]  # nosec B301 - our own bytes

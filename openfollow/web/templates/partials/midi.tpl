@@ -115,7 +115,7 @@
  % # ----------------------------------------------------------------
  <div class="group">
  <h3 class="group-title">Virtual Faders</h3>
- <button type="button" class="secondary small" data-midi-live aria-pressed="false" onclick="midiToggleLive()">Show live</button>
+ <button type="button" class="secondary small" data-midi-live onclick="midiToggleLive()">Show live</button>
  % # ``selected_fader`` ships from the route handler – defaults
  % # to 1 on initial render, but a save handler can pass the
  % # just-saved fader's index so re-rendering after a per-fader
@@ -183,12 +183,12 @@
  % valid_fader_midi_types=valid_fader_midi_types)
  </div>
 
- % # Polling driver for the live fader values, running only while
- % # "Show live" does; the response is a flat list of OOB snippets
- % # keyed by the per-strip ids above. ``hx-swap="none"`` because
- % # the OOB swaps in the response are how the update lands.
+ % # Polling driver for the live fader values: once on load (the
+ % # strips render each fader's default), then only while "Show live"
+ % # runs. The response is a flat list of OOB snippets keyed by the
+ % # per-strip ids above, so ``hx-swap="none"``.
  <div hx-get="/section/midi/faders/values"
- hx-trigger="every 500ms [midiLiveActive()], midi-live from:body"
+ hx-trigger="load, every 500ms [midiLiveActive()], midi-live from:body"
  hx-swap="none"
  style="display:none"></div>
 
@@ -201,12 +201,12 @@
  % # Virtual Faders strip graphic. Live values arrive while "Show
  % # live" runs, via OOB swaps keyed by marker id. ``defined()`` guard keeps
  % # the legacy ``index.tpl`` include working without threading the
- % # kwarg through it – that path renders an empty strip set and the
- % # poll fills it in.
+ % # kwarg through it – that path renders an empty strip set until
+ % # Show live runs.
  % marker_fader_values = marker_fader_values if defined('marker_fader_values') else []
  <div class="group">
  <h3 class="group-title">Marker Faders</h3>
- <button type="button" class="secondary small" data-midi-live aria-pressed="false" onclick="midiToggleLive()">Show live</button>
+ <button type="button" class="secondary small" data-midi-live onclick="midiToggleLive()">Show live</button>
  % if marker_fader_values:
  <div class="midi-fader-strips" role="group" aria-label="Marker faders">
  % for entry in marker_fader_values:
@@ -258,7 +258,6 @@
      function label(on) {
          document.querySelectorAll('[data-midi-live]').forEach(function (button) {
              button.textContent = on ? 'Stop live' : 'Show live';
-             button.setAttribute('aria-pressed', on ? 'true' : 'false');
          });
      }
      window.midiLiveActive = function () { return Date.now() < live.until; };

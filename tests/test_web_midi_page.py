@@ -279,13 +279,21 @@ class TestMidiSectionRender:
 class TestShowLive:
     """The fader strips poll the station only after Show live, and only for a while."""
 
-    @pytest.mark.parametrize("route", ["/section/midi/faders/values", "/section/midi/marker-faders/values"])
-    def test_a_value_poll_runs_only_while_show_live_does(self, live_server, route: str) -> None:
+    @pytest.mark.parametrize(
+        ("route", "on_load"),
+        [
+            # The virtual strips render each fader's default, so they fetch the live values once.
+            ("/section/midi/faders/values", "load, "),
+            # The marker strips render with the live values already.
+            ("/section/midi/marker-faders/values", ""),
+        ],
+    )
+    def test_a_value_poll_runs_only_while_show_live_does(self, live_server, route: str, on_load: str) -> None:
         _, base, _ = live_server
         _, body = _get(base, "/section/midi")
         poll = re.search(r'<div hx-get="' + re.escape(route) + r'"\s+hx-trigger="([^"]*)"', body)
         assert poll, route
-        assert poll.group(1) == "every 500ms [midiLiveActive()], midi-live from:body"
+        assert poll.group(1) == on_load + "every 500ms [midiLiveActive()], midi-live from:body"
 
     def test_no_poll_runs_on_its_own_schedule(self, live_server) -> None:
         _, base, _ = live_server
@@ -300,7 +308,6 @@ class TestShowLive:
         assert buttons == ["Show live", "Show live"]
         for tag in re.findall(r"<button[^>]*data-midi-live[^>]*>", body):
             assert 'type="button"' in tag and "save-btn" not in tag
-            assert 'aria-pressed="false"' in tag
 
 
 class TestSavePatches:

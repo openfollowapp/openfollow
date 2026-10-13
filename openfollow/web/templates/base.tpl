@@ -1012,6 +1012,7 @@
  border-color: var(--caution-line);
  box-shadow: 0 0 0 1px var(--caution-line);
  }
+ [data-midi-live] { margin-bottom: 0.62rem; }
  /* Virtual Faders: eight vertical fader strips (horizontal layout);
  clicking a strip selects it for editing in the detail panel below. */
  .midi-fader-strips {

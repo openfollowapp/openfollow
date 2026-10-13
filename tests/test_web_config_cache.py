@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -21,9 +22,9 @@ def parses(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     calls: list[str] = []
     real = cache_module.load_config
 
-    def _counting(path: str) -> AppConfig:
+    def _counting(path: str, **kwargs: Any) -> AppConfig:
         calls.append(path)
-        return real(path)
+        return real(path, **kwargs)
 
     monkeypatch.setattr(cache_module, "load_config", _counting)
     return calls
@@ -56,6 +57,32 @@ def test_a_save_is_seen_even_within_the_same_mtime(config_file: str, parses: lis
     assert os.stat(config_file).st_size == before.st_size, "only the inode may tell the two files apart"
     assert cache.load(config_file).psn_system_name == "Behind"
     assert len(parses) == 2
+
+
+def test_an_edit_in_place_of_another_length_is_seen_within_the_same_mtime(config_file: str) -> None:
+    cache = ParsedConfigCache()
+    cache.load(config_file)
+    before = os.stat(config_file)
+    text = Path(config_file).read_text().replace('psn_system_name = "Before"', 'psn_system_name = "Much longer"')
+    with open(config_file, "w") as handle:  # same file, same inode
+        handle.write(text)
+    os.utime(config_file, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert os.stat(config_file).st_size != before.st_size, "only the size may tell the two files apart"
+    assert cache.load(config_file).psn_system_name == "Much longer"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a file whatever its mode")
+def test_a_read_that_failed_is_served_but_never_kept(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    save_config(AppConfig(web_pin="4711"), str(path))
+    Path(str(path) + ".bak").unlink(missing_ok=True)
+    cache = ParsedConfigCache()
+    path.chmod(0)  # leaves the inode, mtime and size alone
+    try:
+        assert cache.load(str(path)).web_pin == "", "the failed read falls back to defaults"
+    finally:
+        path.chmod(0o600)
+    assert cache.load(str(path)).web_pin == "4711", "kept, the defaults would leave the login open"
 
 
 def test_an_edit_in_place_is_seen(config_file: str) -> None:

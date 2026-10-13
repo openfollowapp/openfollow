@@ -19,7 +19,7 @@ _TEMPLATE = Path(__file__).parents[1] / "openfollow" / "web" / "templates" / "pa
 _HARNESS = """
 var now = 1000, timers = [], triggered = [];
 var buttons = [0, 1].map(function () {
-    return {textContent: 'Show live', attrs: {}, setAttribute: function (k, v) { this.attrs[k] = v; }};
+    return {textContent: 'Show live'};
 });
 var window = {};
 var document = {body: 'body', querySelectorAll: function () { return buttons; }};
@@ -33,7 +33,7 @@ function advance(ms) {
 }
 function view() {
     return {active: window.midiLiveActive(), labels: buttons.map(function (b) { return b.textContent; }),
-            pressed: buttons.map(function (b) { return b.attrs['aria-pressed']; }), triggered: triggered.slice()};
+            triggered: triggered.slice()};
 }
 """
 
@@ -55,8 +55,8 @@ def _run(steps: str) -> object:
 
 def test_show_live_polls_at_once_and_marks_both_buttons() -> None:
     before, after = _run("out.push(view()); window.midiToggleLive(); out.push(view());")
-    assert before == {"active": False, "labels": ["Show live"] * 2, "pressed": ["false"] * 2, "triggered": []}
-    assert after == {"active": True, "labels": ["Stop live"] * 2, "pressed": ["true"] * 2, "triggered": ["midi-live"]}
+    assert before == {"active": False, "labels": ["Show live"] * 2, "triggered": []}
+    assert after == {"active": True, "labels": ["Stop live"] * 2, "triggered": ["midi-live"]}
 
 
 def test_it_ends_on_its_own_after_ten_seconds() -> None:

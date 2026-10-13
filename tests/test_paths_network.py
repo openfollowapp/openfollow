@@ -600,6 +600,14 @@ class TestSteering:
         step = net.walk(Place(0, start), 0.0, speed, 0.01)
         assert (step.place.path == 1 or step.place.s > start) is turns
 
+    @pytest.mark.parametrize("far_first", [True, False])
+    def test_of_two_equally_good_turns_the_nearer_junction_wins(self, far_first: bool) -> None:
+        # Rungs cross H at x = -0.45 and x = 0.1, both inside the switch area of a marker at x = 0.
+        far = _curve([(-0.45, -1, 0), (-0.45, 1, 0)])
+        near = _curve([(0.1, -1, 0), (0.1, 1, 0)])
+        net = PathNetwork([H, far, near] if far_first else [H, near, far])
+        assert _at(net, net.walk(Place(0, 5.0), 0.0, 1.0, 0.05).place) == (0.05, 0.0)
+
     def test_just_past_a_crossing_the_marker_can_still_turn(self) -> None:
         net = PathNetwork([H, V])
         assert net.walk(Place(0, 5.25), 0.0, -1.0, 1.0).place.path == 1

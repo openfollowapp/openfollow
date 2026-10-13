@@ -241,7 +241,8 @@ class PathNetwork:
 
         best = min(stay, key=angle, default=None)
         to_junction = 0.0
-        challenger = min(other, key=lambda pair: angle(pair[0]), default=None)
+        # Of two turns as good as each other, the nearer junction's.
+        challenger = min(other, key=lambda pair: (angle(pair[0]), abs(pair[1])), default=None)
         if challenger is not None and (best is None or angle(challenger[0]) + _SWITCH_MARGIN_RAD < angle(best)):
             best, to_junction = challenger
         if best is None or wx * best.dx + wy * best.dy <= 0.0:

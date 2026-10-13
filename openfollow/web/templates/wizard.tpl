@@ -3917,20 +3917,16 @@
     return Math.abs(area)/2;
   }
 
-  // ``failed`` runs when no solve can be sent, or its answer is an error or never comes.
-  function solveFromCorners(failed) {
-    var fail = failed || function() {};
+  function solveFromCorners() {
     // No projection has placed the corners yet: a calibration point can still ask for a solve.
-    if (CORNER_NAMES.some(function(n) { return !cornerPositions[n]; })) { fail(); return; }
+    if (CORNER_NAMES.some(function(n) { return !cornerPositions[n]; })) return;
     if (!isConvex(cornerPositions) || quadArea(cornerPositions) < 100) {
       showSolveStatus('Invalid perspective \u2013 adjust corners', false);
-      fail();
       return;
     }
     var badLen = invalidLengthFields();
     if (badLen.length) {
       showSolveStatus('Fix invalid length field(s) first: ' + badLen.join(', '), false);
-      fail();
       return;
     }
 
@@ -3956,7 +3952,6 @@
       if (seq !== poseSeq) return;
       if (data.error) {
         showSolveStatus(data.error, false);
-        fail();
         return;
       }
 
@@ -3990,7 +3985,7 @@
       }
 
       applySolvedPose(data.camera, screenCorners, body, data.calibration_points);
-    }).catch(function() { if (seq === poseSeq) fail(); });
+    });
   }
 
   function showSolveStatus(msg, ok) {
@@ -4194,7 +4189,8 @@
   };
 
   window.calibDelete = function(i) {
-    var used = calibAnswers[i] && calibAnswers[i].status !== 'flagged';
+    // Any complete point not left out may be in the pose's fit, a saved one too (it loads without an answer).
+    var fitted = calibComplete(calibPoints[i]) && !(calibAnswers[i] && calibAnswers[i].status === 'flagged');
     calibPoints.splice(i, 1);
     calibAnswers.splice(i, 1);
     if (calibAwaiting === i) calibAwaiting = null;
@@ -4206,8 +4202,10 @@
     renderCalibOverlay();
     clearTimeout(calibSolveTimer);
     calibSolveTimer = null;
-    // A pose fitted with the deleted point answers for none of the rest.
-    solveFromCorners(used ? calibForgetPose : null);
+    // A pose fitted with the deleted point answers for none of the rest; forgotten now, so a solve that
+    // fails or is superseded leaves nothing of it, and the solve's answer brings the rest back.
+    if (fitted) calibForgetPose();
+    solveFromCorners();
   };
 
   // Each distance stays with the corner it was measured from, whatever order the corners are tapped in.

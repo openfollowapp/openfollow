@@ -2478,14 +2478,35 @@ class TestWizardSolveWithCalibrationPoints:
         assert (status, data) == (409, {"error": "A newer solve was asked for."})
         assert _post_json(base, "/api/wizard/solve", other_page)[0] == 200
 
-    def test_a_newer_solve_refused_as_malformed_still_supersedes_the_older(self, live_server) -> None:
+    @pytest.mark.parametrize(
+        "malformed",
+        ["a point", "the corners", "the canvas"],
+    )
+    def test_a_newer_solve_refused_as_malformed_still_supersedes_the_older(self, live_server, malformed) -> None:
         _, base = live_server
         page = f"page-{uuid.uuid4().hex[:8]}"
         points = [_laser_point((2.0, 14.0))]
-        bad = {**_solve_body([{**points[0], "distance_a": 500.0}]), "solve_page": page, "solve_seq": 8}
+        broken = {
+            "a point": {"calibration_points": [{**points[0], "distance_a": 500.0}]},
+            "the corners": {"screen_corners": [[0, 0]] * 3},
+            "the canvas": {"image_width": 0},
+        }[malformed]
+        bad = {**_solve_body(points), **broken, "solve_page": page, "solve_seq": 8}
         assert _post_json(base, "/api/wizard/solve", bad)[0] == 400
         status, _ = _post_json(base, "/api/wizard/solve", {**_solve_body(points), "solve_page": page, "solve_seq": 7})
         assert status == 409
+
+    def test_a_page_pushed_out_by_sixty_four_newer_ones_is_forgotten(self, live_server) -> None:
+        _, base = live_server
+        first = f"page-{uuid.uuid4().hex[:8]}"
+        body = {**_solve_body(None), "solve_page": first, "solve_seq": 9}
+        assert _post_json(base, "/api/wizard/solve", body)[0] == 200
+        for n in range(64):
+            body = {**_solve_body(None), "solve_page": f"{first}-{n}", "solve_seq": 1}
+            assert _post_json(base, "/api/wizard/solve", body)[0] == 200
+        # Its newest is forgotten, so an older number solves rather than being refused.
+        body = {**_solve_body(None), "solve_page": first, "solve_seq": 1}
+        assert _post_json(base, "/api/wizard/solve", body)[0] == 200
 
     @pytest.mark.parametrize(
         "change",

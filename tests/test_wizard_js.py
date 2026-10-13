@@ -1415,34 +1415,38 @@ def test_a_change_to_the_points_drops_older_answers_and_solves_again(change: str
 
 
 @pytest.mark.parametrize(
-    ("fails", "deleted_answer", "forgotten"),
+    ("deleted", "deleted_answer", "forgotten"),
     [
-        (False, {"status": "ok"}, False),
-        (True, {"status": "ok"}, True),
-        (True, {"status": "unverified"}, True),
-        (True, {"status": "flagged"}, False),  # left out of the fit: the pose is the rest's own
-        (True, None, False),  # never in the fit
+        ({}, {"status": "ok"}, True),
+        ({}, {"status": "unverified"}, True),
+        ({"position": [3, 4, 0]}, None, True),  # loaded from the config: in the saved pose's fit, no answer yet
+        ({}, None, True),  # complete, just edited: the pose may hold its old measurement
+        ({}, {"status": "flagged"}, False),  # left out of the fit: the pose is the rest's own
+        ({"distance_a": None}, None, False),  # incomplete: never in a fit
     ],
-    ids=["solves", "fails, was used", "fails, was the only one", "fails, was left out", "fails, had no answer"],
+    ids=["used", "the only one", "loaded", "edited", "left out", "incomplete"],
 )
-def test_a_delete_whose_solve_fails_leaves_no_pose_from_the_deleted_point(fails, deleted_answer, forgotten) -> None:
-    """A fit that used the deleted point is not the remaining points' answer: they read Not solved."""
-    answers, positions, held, timer = run_wizard_js(
+def test_a_delete_forgets_a_pose_the_deleted_point_may_have_been_fitted_with(
+    deleted, deleted_answer, forgotten
+) -> None:
+    """Forgotten before the solve is sent, so neither a failed nor a superseded solve leaves it standing;
+    the solve's answer brings the rest back."""
+    answers, positions, held, timer, solved = run_wizard_js(
         "(function() { window.calibDelete(1); return [calibAnswers, calibPoints.map(function(p) {"
-        " return p.position; }), calibHeldPins, calibSolveTimer]; })()",
-        functions=("calibTakeAnswer", "calibForgetPose"),
+        " return p.position; }), calibHeldPins, calibSolveTimer, solved]; })()",
+        functions=("calibNumber", "calibComplete", "calibTakeAnswer", "calibForgetPose"),
         prelude=_NO_CALIB_DRAWING
-        + f"""
-var poseSeq = 4, calibAwaiting = null, window = {{}}, calibHeldPins = {{ world: [], corners: [] }};
-var calibSolveTimer = setTimeout(function() {{}}, 0);
-function saveToSession() {{}} function renderCalibList() {{}}
-function solveFromCorners(failed) {{ if ({json.dumps(fails)} && failed) failed(); }}
+        + """
+var poseSeq = 4, calibAwaiting = null, window = {}, calibHeldPins = { world: [], corners: [] }, solved = 0;
+var calibSolveTimer = setTimeout(function() {}, 0);
+function saveToSession() {} function renderCalibList() {}
+function solveFromCorners() { solved++; }
 """
         + wizard_function("calibDelete", prefix="window."),
-        calibPoints=[{**_POINT, "pin": [0.25, 0.5], "position": [1, 2, 0]}, {**_POINT, "pin": [0.75, 0.5]}],
+        calibPoints=[{**_POINT, "pin": [0.25, 0.5], "position": [1, 2, 0]}, {**_POINT, "pin": [0.75, 0.5], **deleted}],
         calibAnswers=[{"status": "ok", "position": [1, 2, 0]}, deleted_answer],
     )
-    assert timer is None  # the delete's own solve is the one; a point solve still to come would repeat it
+    assert (timer, solved) == (None, 1)  # one solve, the delete's own; a point solve still to come would repeat it
     if forgotten:
         assert (answers, positions, held) == ([None], [None], None)
     else:
@@ -1451,38 +1455,6 @@ function solveFromCorners(failed) {{ if ({json.dumps(fails)} && failed) failed()
             [[1, 2, 0]],
             {"world": [], "corners": []},
         )
-
-
-@pytest.mark.parametrize(
-    ("corners", "bad_lengths", "reply", "failed"),
-    [
-        (_CORNERS_PINNED, [], {"camera": {}, "reprojected_corners": [[1, 1], [2, 1], [2, 2], [1, 2]]}, False),
-        ({**_CORNERS_PINNED, "DSL": None}, [], None, True),
-        ({**_CORNERS_PINNED, "DSL": [1000, 500]}, [], None, True),  # no convex quad
-        (_CORNERS_PINNED, ["Width"], None, True),
-        (_CORNERS_PINNED, [], {"error": "Invalid perspective"}, True),
-        (_CORNERS_PINNED, [], "unreachable", True),
-    ],
-    ids=["solved", "corners not placed", "not convex", "invalid length", "refused", "unreachable"],
-)
-def test_a_corner_solve_says_when_it_could_not_solve(corners, bad_lengths, reply, failed) -> None:
-    said = run_wizard_js(
-        "(function() { var said = false; solveFromCorners(function() { said = true; }); return said; })()",
-        functions=("isConvex", "quadArea", "wizSolveCorners", "solveFromCorners"),
-        variables=("CORNER_NAMES",),
-        prelude=_SOLVE_PAGE
-        + f"""
-function invalidLengthFields() {{ return {json.dumps(bad_lengths)}; }}
-function wizardSolveBody(sc) {{ return {{ screen_corners: sc }}; }}
-function rejected() {{ return {{ then: function() {{ return this; }}, catch: function(f) {{ f(new Error('x')); }} }}; }}
-function fetch() {{
-  return reply === 'unreachable' ? rejected() : answered({{ json: function() {{ return reply; }} }});
-}}
-""",
-        cornerPositions=corners,
-        reply=reply,
-    )
-    assert said is failed
 
 
 @pytest.mark.parametrize(("added", "snapped"), [(False, True), (True, False)], ids=["none added", "point added"])

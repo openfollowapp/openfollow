@@ -4,12 +4,13 @@
 
 Each interior corner (every corner of a closed path) is replaced by a circular
 arc of that point's radius, shrunk where it would take more than half of either
-neighbouring segment or pass farther from the point than that radius, which a
-turn sharper than 120 degrees would. The arc lies in the plane of the two
-segments, so a change of height is rounded just like a turn. The curve is held
-as a dense polyline whose chords stay within a millimetre of the arcs, so walking
-it by arc length is exact enough to show no facets. Positions are PSN-absolute
-metres; the walk is measured in X/Y and the height comes with it.
+neighbouring segment. A turn sharper than 120 degrees gets a tighter arc, the
+tighter the sharper, so a path turning straight back still reaches its far
+point. The arc lies in the plane of the two segments, so a change of height is
+rounded just like a turn. The curve is held as a dense polyline whose chords
+stay within a millimetre of the arcs, so walking it by arc length is exact
+enough to show no facets. Positions are PSN-absolute metres; the walk is
+measured in X/Y and the height comes with it.
 """
 
 from __future__ import annotations
@@ -184,17 +185,11 @@ def _corner(prev: PathPoint, at: PathPoint, nxt: PathPoint) -> list[tuple[float,
     len_in, len_out = float(np.linalg.norm(u)), float(np.linalg.norm(v))
     u, v = u / len_in, v / len_out
     turn = math.acos(max(-1.0, min(1.0, float(u @ v))))
-    if at.radius <= 0.0 or turn < _STRAIGHT_RAD:
+    if at.radius <= 0.0 or turn < _STRAIGHT_RAD or turn > math.pi - _STRAIGHT_RAD:
         return [(at.x, at.y, at.z)]
-    # The arc's middle lies radius * (1 / cos(turn / 2) - 1) from the point: never more than the point's radius.
-    half_cos = math.cos(turn / 2.0)
     half_tan = math.tan(turn / 2.0)
-    radius = at.radius * min(1.0, half_cos / (1.0 - half_cos))
-    reach = min(radius * half_tan, 0.5 * min(len_in, len_out))
-    if turn > math.pi - _STRAIGHT_RAD:
-        # Turning straight back, the arc has shrunk to the spot where the path turns.
-        x, y, z = here - u * reach
-        return [(float(x), float(y), float(z))]
+    # Past a 120 degree turn the arc tightens, closing on the point as the turn reaches straight back.
+    reach = min(at.radius * half_tan, 3.0 * at.radius / half_tan, 0.5 * min(len_in, len_out))
     radius = reach / half_tan
     # Towards the centre, in the plane of both segments, square to the incoming one.
     inward = v - float(u @ v) * u

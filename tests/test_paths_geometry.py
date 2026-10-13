@@ -115,15 +115,26 @@ class TestCorner:
         reach = 0.5 * math.tan(math.radians(turn) / 2)
         assert c.length == pytest.approx(8 - 2 * reach + 0.5 * math.radians(turn), abs=1e-3)
 
-    @pytest.mark.parametrize("turn", [121.0, 150.0, 179.0, 179.9999, 180.0])
-    def test_a_sharper_turn_passes_the_point_at_its_radius(self, turn: float) -> None:
+    @pytest.mark.parametrize("turn", [121.0, 150.0, 170.0, 179.0])
+    def test_a_sharper_turn_meets_its_segments_three_radii_over_tan_half_the_turn_from_the_point(
+        self, turn: float
+    ) -> None:
         c = _curve([(0, 0, 0, 0), (4, 0, 0, 0.5), (4 + 4 * _cos(turn), 4 * _sin(turn), 0, 0)])
-        assert c.nearest(4.0, 0.0)[1] == pytest.approx(0.5, abs=0.001)
+        half_tan = math.tan(math.radians(turn) / 2)
+        reach = 3 * 0.5 / half_tan
+        radius = reach / half_tan
+        assert c.length == pytest.approx(8 - 2 * reach + radius * math.radians(turn), abs=1e-3)
+        middle = radius * (1 / math.cos(math.radians(turn) / 2) - 1)
+        assert c.nearest(4.0, 0.0)[1] == pytest.approx(middle, abs=1e-3)
 
-    def test_an_out_and_back_runs_out_to_within_the_radius_of_its_far_point(self) -> None:
+    def test_a_150_degree_turn_passes_its_point_closer_than_a_right_angle_does(self) -> None:
+        c = _curve([(0, 0, 0, 0), (4, 0, 0, 0.5), (4 + 4 * _cos(150), 4 * _sin(150), 0, 0)])
+        assert c.nearest(4.0, 0.0)[1] == pytest.approx(0.308, abs=2e-3)
+
+    def test_an_out_and_back_runs_out_to_its_far_point(self) -> None:
         c = _curve([(0, 0, 0, 0), (4, 0, 0, 0.5), (0, 0.01, 0, 0)])
-        assert c.nearest(4.0, 0.0)[1] <= 0.5 + 0.001
-        assert c.length == pytest.approx(7.0, abs=0.01)
+        assert c.nearest(4.0, 0.0)[1] <= 0.01
+        assert c.length == pytest.approx(8.0, abs=0.01)
 
     @pytest.mark.parametrize("back_y", [1e-9, -1e-9, 1e-6, -1e-6, 1e-3, -1e-3])
     def test_a_turn_close_to_straight_back_changes_the_curve_as_little(self, back_y: float) -> None:
@@ -131,26 +142,24 @@ class TestCorner:
         near = _curve([(0, 0, 0, 0), (4, 0, 0, 0.5), (0, back_y, 0, 0)])
         assert _gap(near, straight_back) <= abs(back_y) * 1.01
 
-    def test_turning_straight_back_turns_the_radius_short_of_the_point(self) -> None:
-        c = _curve([(0, 0, 0, 0), (4, 0, 0, 1.0), (1, 0, 0, 0)])
-        assert c.length == pytest.approx(5.0)
-        assert _close(c.point(3.0), (3.0, 0.0, 0.0))
-
-    @pytest.mark.parametrize("back_y", [0.0, 0.001])
-    def test_turning_straight_back_takes_at_most_half_the_shorter_segment(self, back_y: float) -> None:
-        c = _curve([(0, 0, 0, 0), (1, 0, 0, 5.0), (0, back_y, 0, 0)])
-        assert c.xy[:, 0].max() == pytest.approx(0.5, abs=1e-3)
-
-    def test_a_large_radius_nearly_straight_back_still_passes_at_its_radius(self) -> None:
-        # 179.97 degrees: the arc is 5 mm across, its middle 20 m from the point.
-        turn = 179.97
-        c = _curve([(0, 0, 0, 0), (100, 0, 0, 20.0), (100 + 100 * _cos(turn), 100 * _sin(turn), 0, 0)])
-        assert c.nearest(100.0, 0.0)[1] == pytest.approx(20.0, abs=0.001)
-
-    def test_turning_straight_back_with_no_radius_reaches_the_point(self) -> None:
-        c = _curve([(0, 0, 0, 0), (4, 0, 0, 0), (1, 0, 0, 0)])
+    @pytest.mark.parametrize("radius", [0.0, 1.0])
+    def test_turning_straight_back_reaches_the_point(self, radius: float) -> None:
+        c = _curve([(0, 0, 0, 0), (4, 0, 0, radius), (1, 0, 0, 0)])
         assert c.length == pytest.approx(7.0)
         assert _close(c.point(4.0), (4.0, 0.0, 0.0))
+
+    def test_a_large_radius_nearly_straight_back_passes_close_to_the_point(self) -> None:
+        # 179.97 degrees at 20 m: the arc meets each segment 16 mm short of the point.
+        turn = 179.97
+        c = _curve([(0, 0, 0, 0), (100, 0, 0, 20.0), (100 + 100 * _cos(turn), 100 * _sin(turn), 0, 0)])
+        reach = 3 * 20.0 / math.tan(math.radians(turn) / 2)
+        assert c.nearest(100.0, 0.0)[1] == pytest.approx(reach, abs=1e-4)
+
+    def test_a_sharper_turn_still_takes_at_most_half_the_shorter_segment(self) -> None:
+        c = _curve([(0, 0, 0, 0), (1, 0, 0, 50.0), (1 + 4 * _cos(150), 4 * _sin(150), 0, 0)])
+        radius = 0.5 / math.tan(math.radians(75))
+        assert _close(c.point(0.5), (0.5, 0.0, 0.0), tol=1e-9)
+        assert c.length == pytest.approx(0.5 + radius * math.radians(150) + 3.5, abs=1e-3)
 
 
 class TestCorners:

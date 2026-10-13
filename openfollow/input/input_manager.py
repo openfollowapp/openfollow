@@ -42,6 +42,9 @@ logger = logging.getLogger(__name__)
 # How long Identify flashes the marker card on the Operator Screen.
 _IDENTIFY_FLASH_S = 3.0
 
+# OSC writes to a marker this far apart count as a new stream, logged at INFO.
+_OSC_STREAM_GAP_S = 5.0
+
 
 def resolve_osc_multicast_iface(listen_iface: str, station_iface: str) -> str | None:
     """Interface the OSC listener should take its multicast membership on.
@@ -137,6 +140,8 @@ class InputManager:
         self._usb_hosts = usb_host_paths()
         # (slot index, clock time it started) of the latest Identify.
         self._identify_flash: tuple[int, float] | None = None
+        # Clock time of each marker's latest OSC position write.
+        self._osc_last_write: dict[int, float] = {}
         self._refresh_slots()
 
         osc_cfg = app._config.osc
@@ -439,7 +444,17 @@ class InputManager:
                     y = axes.get("y", cur_y)
                     z = axes.get("z", cur_z)
                     marker.set_pos(x, y, z)
-                    # Once per write: a desk streaming positions writes every frame.
+                    now = self._clock()
+                    last = self._osc_last_write.get(marker_id)
+                    self._osc_last_write[marker_id] = now
+                    if last is None or now - last >= _OSC_STREAM_GAP_S:
+                        logger.info(
+                            "OSC positions arriving for marker %d, first at (%.3f, %.3f, %.3f)",
+                            marker_id,
+                            x,
+                            y,
+                            z,
+                        )
                     logger.debug(
                         "OSC jump: marker %d → (%.3f, %.3f, %.3f)",
                         marker_id,

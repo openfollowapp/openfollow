@@ -749,17 +749,88 @@ def test_invert_control_direction_leaves_osc_positions_absolute(monkeypatch) -> 
     assert app._server.get_marker(10).pos == pytest.approx((3.0, 4.0, 5.0))
 
 
-def test_an_osc_position_stream_writes_nothing_to_the_log_at_info(monkeypatch, caplog) -> None:
-    """A desk streams positions at frame rate; one INFO line per write floods the journal."""
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _osc_station(monkeypatch, pending: dict[int, dict[str, float]]):  # noqa: ANN202
+    """InputManager on a fake clock whose OSC handler hands out ``pending`` every frame."""
     monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
     monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
     app = _DummyApp()
     manager = InputManager(app)
-    manager.osc_handler = SimpleNamespace(flush_updates=lambda: {10: {"x": 3.0, "y": 4.0, "z": 5.0}})
+    clock = _Clock()
+    manager._clock = clock
+    manager.osc_handler = SimpleNamespace(flush_updates=lambda: dict(pending))
+    return app, manager, clock
+
+
+def _osc_info_lines(caplog) -> list[str]:  # noqa: ANN001
+    return [r.getMessage() for r in caplog.records if r.levelno >= logging.INFO]
+
+
+def _stream(manager, clock, seconds: float, rate_hz: float = 30.0) -> None:  # noqa: ANN001
+    for _ in range(round(seconds * rate_hz)):
+        manager.update(1 / rate_hz)
+        clock.now += 1 / rate_hz
+
+
+def test_an_osc_position_stream_logs_one_info_line_when_it_starts(monkeypatch, caplog) -> None:
+    """A desk streams positions at frame rate; one INFO line per write floods the journal."""
+    app, manager, clock = _osc_station(monkeypatch, {10: {"x": 3.0, "y": 4.0, "z": 5.0}})
 
     with caplog.at_level(logging.INFO, logger=input_manager_module.logger.name):
-        for _ in range(3):
-            manager.update(1 / 60)
+        _stream(manager, clock, seconds=10.0)
 
     assert app._server.get_marker(10).pos == pytest.approx((3.0, 4.0, 5.0))
-    assert [r.getMessage() for r in caplog.records if r.levelno >= logging.INFO] == []
+    assert _osc_info_lines(caplog) == ["OSC positions arriving for marker 10, first at (3.000, 4.000, 5.000)"]
+
+
+def test_an_osc_stream_resuming_after_a_silence_logs_again(monkeypatch, caplog) -> None:
+    pending = {10: {"x": 3.0, "y": 4.0, "z": 5.0}}
+    _app, manager, clock = _osc_station(monkeypatch, pending)
+
+    with caplog.at_level(logging.INFO, logger=input_manager_module.logger.name):
+        manager.update(1 / 30)
+        start = clock.now
+        # A pause just short of the gap is the same stream; binary fractions keep the sums exact.
+        clock.now = start + input_manager_module._OSC_STREAM_GAP_S - 0.125
+        manager.update(1 / 30)
+        pending[10] = {"x": 1.0}
+        clock.now += input_manager_module._OSC_STREAM_GAP_S
+        _stream(manager, clock, seconds=2.0)
+
+    assert _osc_info_lines(caplog) == [
+        "OSC positions arriving for marker 10, first at (3.000, 4.000, 5.000)",
+        "OSC positions arriving for marker 10, first at (1.000, 4.000, 5.000)",
+    ]
+
+
+def test_each_marker_logs_the_start_of_its_own_osc_stream(monkeypatch, caplog) -> None:
+    pending = {10: {"x": 3.0, "y": 4.0, "z": 5.0}}
+    _app, manager, clock = _osc_station(monkeypatch, pending)
+
+    with caplog.at_level(logging.INFO, logger=input_manager_module.logger.name):
+        _stream(manager, clock, seconds=1.0)
+        pending[11] = {"x": -1.0, "y": 2.0, "z": 0.5}
+        _stream(manager, clock, seconds=1.0)
+
+    assert _osc_info_lines(caplog) == [
+        "OSC positions arriving for marker 10, first at (3.000, 4.000, 5.000)",
+        "OSC positions arriving for marker 11, first at (-1.000, 2.000, 0.500)",
+    ]
+
+
+def test_every_osc_position_write_is_traced_at_debug(monkeypatch, caplog) -> None:
+    _app, manager, clock = _osc_station(monkeypatch, {10: {"x": 3.0, "y": 4.0, "z": 5.0}})
+
+    with caplog.at_level(logging.DEBUG, logger=input_manager_module.logger.name):
+        _stream(manager, clock, seconds=0.1)
+
+    assert [r.getMessage() for r in caplog.records if r.levelno == logging.DEBUG] == [
+        "OSC jump: marker 10 → (3.000, 4.000, 5.000)"
+    ] * 3

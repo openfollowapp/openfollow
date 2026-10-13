@@ -9139,7 +9139,7 @@ def test_requests_share_one_parse_of_an_unchanged_config(live_server, monkeypatc
     save_config(AppConfig(), server.config_path)
     parses: list[str] = []
     real = cache_module.load_config
-    monkeypatch.setattr(cache_module, "load_config", lambda path: parses.append(path) or real(path))
+    monkeypatch.setattr(cache_module, "load_config", lambda path, **kw: parses.append(path) or real(path, **kw))
     monkeypatch.setattr(routes_module, "_CONFIG_CACHE", ParsedConfigCache())
     for _ in range(3):
         status, _body = _get(base, "/api/info")

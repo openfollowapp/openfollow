@@ -54,7 +54,9 @@ def _record_point(app: Any, marker: Any) -> None:
 
 
 def toggle_paths(app: Any) -> None:
-    """Show or hide paths on the Operator Screen, and remember it."""
+    """Show or hide paths on the Operator Screen, and remember it; nothing while paths are off."""
+    if not app._paths.enabled:
+        return
     app._config.paths.show_paths = not app._config.paths.show_paths
     _save(app)
 

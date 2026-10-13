@@ -1596,6 +1596,28 @@ def test_release_restores_full_validity_on_the_wire(monkeypatch) -> None:
     assert marker.to_psn_marker().status == 1.0
 
 
+def test_assist_keeps_the_output_of_a_marker_locked_on_a_path_on_it(monkeypatch) -> None:
+    """The AI Assisted output stays on the anchor's path, and the anchor's place on it is left alone."""
+    from openfollow.configuration import PathConfig, PathPointConfig, PathsConfig
+    from openfollow.paths.engine import PathEngine
+
+    app = _assist_app(_assist_cfg())
+    engine = PathEngine()
+    path = PathConfig(name="row", active=True, points=[PathPointConfig(0, 1, 0.3, 0), PathPointConfig(10, 1, 0.3, 0)])
+    engine.reload(PathsConfig(slide_time=0.0, paths=[path]), enabled=True)
+    anchor = _seed_anchor(app, 4.0, 1.0, 0.3)
+    engine.press(_PID, anchor.pos)
+    engine.tick(0.0)
+    app._paths = engine
+
+    # The person stands at (5, 0): within reach of the anchor, off the path along y = 1.
+    _run_assist(app, _AssistDetector([_det(0.5, 1)]), monkeypatch)
+
+    assert app._server.get_marker(_PID).pos == pytest.approx((5.0, 1.0, 0.3))
+    assert anchor.pos == (4.0, 1.0, 0.3)
+    assert engine.move(_PID, 0.0, 0.0, 0.0) == pytest.approx((4.0, 1.0, 0.3))
+
+
 def test_replace_keeps_a_marker_locked_on_a_path_on_it(monkeypatch) -> None:
     """Fully Automatic projects the person's place onto the marker's path, height included."""
     from openfollow.configuration import PathConfig, PathPointConfig, PathsConfig

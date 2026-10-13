@@ -10,7 +10,7 @@ Click-and-drag control for steering markers directly on the live video. Off by d
 
 **Double right-click** – when on, **double right-clicking** snaps the controlled marker back to the default position (the same as the reset key) and lets go of it, so it parks there until you grab it again. It sits on the right button because that's already the release button. Turn it off if you find yourself resetting markers by accident.
 
-A marker locked onto a path *(experimental)* stays on it while you steer: it travels along the path, through any path joined to it, towards the point nearest the cursor, and the scroll wheel leaves its height to the path.
+The mouse never moves a marker along a path *(experimental)*: grabbing a marker locked onto a path takes it off the path where it stands, and you steer it freely from there. A marker locked onto a path while you hold it is let go, and the scroll wheel leaves a locked marker's height to its path.
 
 ## Steering refinements
 

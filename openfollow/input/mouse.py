@@ -224,18 +224,17 @@ class MouseHandler:
         app = self._app
         if not app._config.controller.mouse_enabled:
             return
+        paths = getattr(app, "_paths", None)
+        if paths is not None and paths.is_locked(app._selected_id):
+            # Locked onto a path while held: the path has the marker now, so let go of it.
+            self._active = False
+            logger.info("Mouse let go of marker %s: it is locked onto a path", app._selected_id)
+            return
         marker = self._get_selected_marker()
         if marker is None or self._target_world is None:
             return
         tx, ty = self._target_world
         alpha = max(1.0 - app._config.controller.mouse_smoothing, _MIN_GLIDE_ALPHA)
-        paths = getattr(app, "_paths", None)
-        on_path = paths.glide(app._selected_id, tx, ty, alpha) if paths is not None else None
-        if on_path is not None:
-            # Locked: the marker travels its path towards the point nearest the cursor.
-            marker.set_pos(*on_path)
-            self._smooth_world = (on_path[0], on_path[1])
-            return
         if self._smooth_world is None:
             mx, my, _ = marker.pos
             self._smooth_world = (mx, my)
@@ -268,6 +267,8 @@ class MouseHandler:
         marker_id = self._hit_test(x, y)
         if marker_id is None:
             return False
+        # The mouse moves markers freely: a grab takes the marker off its path where it stands.
+        paths_runtime.release(self._app, marker_id)
         self._app._selected_id = marker_id
         self._active = True
         self._anchor_screen = (x, y)

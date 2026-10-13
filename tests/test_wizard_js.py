@@ -822,7 +822,7 @@ def test_the_reference_mapping_solve_leaves_the_points_out() -> None:
         ),
         variables=("CORNER_NAMES",),
         prelude="""
-var sent = [], poseSeq = 0, CALIB_ENABLED = true, imageWidth = 1920, imageHeight = 1080;
+var sent = [], poseSeq = 0, CALIB_ENABLED = true, imageWidth = 1920, imageHeight = 1080, WIZ_SOLVE_PAGE = 'p';
 var cornerPositions = { DSL: null, DSR: null, USR: null, USL: null };
 function wizardWorldCorners() { return []; } function wizReadLensCoeff() { return 0; }
 function fetch(_url, opts) { sent.push(JSON.parse(opts.body)); return { then: function() { return this; } }; }
@@ -1332,7 +1332,7 @@ def test_a_solve_body_carries_the_points_only_with_the_section(enabled, with_poi
         " !!b.calibHold, Array.isArray(b.calibIndices)]; })()",
         functions=("calibNumber", "calibComplete", "calibPinPx", "calibPayload", "wizardSolveBody"),
         prelude=f"""
-var CALIB_ENABLED = {json.dumps(enabled)}, imageWidth = 1920, imageHeight = 1080;
+var CALIB_ENABLED = {json.dumps(enabled)}, imageWidth = 1920, imageHeight = 1080, poseSeq = 3, WIZ_SOLVE_PAGE = 'p';
 function wizardWorldCorners() {{ return []; }} function wizReadLensCoeff() {{ return 0; }}
 """,
         calibPoints=points,
@@ -1342,6 +1342,25 @@ function wizardWorldCorners() {{ return []; }} function wizReadLensCoeff() {{ re
     assert ("calibration_points" in sent_body) is sent
     assert "calibIndices" not in sent_body and "calibHold" not in sent_body  # never on the wire
     assert (held, indexed) == (hold, enabled and with_points is None)
+
+
+def test_a_solve_body_names_its_page_and_its_place_in_the_pose_sequence() -> None:
+    """The server drops a joint fit once this page has asked for a newer one."""
+    sent = run_wizard_js(
+        "JSON.parse(JSON.stringify(wizardSolveBody([[0, 0]])))",
+        functions=("calibNumber", "calibComplete", "calibPinPx", "calibPayload", "wizardSolveBody"),
+        prelude="""
+var CALIB_ENABLED = true, imageWidth = 1920, imageHeight = 1080, poseSeq = 12, WIZ_SOLVE_PAGE = 'page-a';
+function wizardWorldCorners() { return []; } function wizReadLensCoeff() { return 0; }
+""",
+        calibPoints=[],
+    )
+    assert (sent["solve_page"], sent["solve_seq"]) == ("page-a", 12)
+
+
+def test_the_solve_page_is_a_name_the_server_takes() -> None:
+    page = run_wizard_js("WIZ_SOLVE_PAGE", variables=("WIZ_SOLVE_PAGE",))
+    assert isinstance(page, str) and 0 < len(page) <= 64
 
 
 @pytest.mark.parametrize("enabled", [True, False])
@@ -1378,7 +1397,7 @@ _CHANGE_PAGE = """
 var poseSeq = 4, solved = 0, scheduled = 0, calibAwaiting = null, calibSolveTimer = null, window = {};
 function saveToSession() {} function renderCalibList() {} function renderCalibOverlay() {}
 function renderCalibStatus() {} function setFineZoomMode() {}
-function solveFromCorners() { solved++; } function calibScheduleSolve() { scheduled++; }
+function solveFromCorners() { solved++; return true; } function calibScheduleSolve() { scheduled++; }
 function wizReadLen(id) { return { 'calib-a-0': 20.0, 'calib-b-0': 19.25, 'calib-h-0': 0.0 }[id]; }
 """
 
@@ -1393,6 +1412,72 @@ def test_a_change_to_the_points_drops_older_answers_and_solves_again(change: str
         calibAnswers=[{"status": "ok"}, {"status": "ok"}],
     )
     assert after == [5, 1]
+
+
+@pytest.mark.parametrize(("solves", "forgotten"), [(True, False), (False, True)], ids=["solves", "cannot solve"])
+def test_a_delete_that_cannot_solve_leaves_no_pose_from_the_deleted_point(solves: bool, forgotten: bool) -> None:
+    """A fit that used the deleted point is not the remaining points' answer: they read Not solved."""
+    answers, positions, held = run_wizard_js(
+        "(function() { window.calibDelete(1); return [calibAnswers, calibPoints.map(function(p) {"
+        " return p.position; }), calibHeldPins]; })()",
+        functions=("calibTakeAnswer", "calibForgetPose"),
+        prelude=_NO_CALIB_DRAWING
+        + f"""
+var poseSeq = 4, calibAwaiting = null, window = {{}}, calibHeldPins = {{ world: [], corners: [] }};
+function saveToSession() {{}} function renderCalibList() {{}}
+function solveFromCorners() {{ return {json.dumps(solves)}; }}
+"""
+        + wizard_function("calibDelete", prefix="window."),
+        calibPoints=[{**_POINT, "pin": [0.25, 0.5], "position": [1, 2, 0]}, {**_POINT, "pin": [0.75, 0.5]}],
+        calibAnswers=[{"status": "ok", "position": [1, 2, 0]}, {"status": "ok"}],
+    )
+    if forgotten:
+        assert (answers, positions, held) == ([None], [None], None)
+    else:
+        assert (answers, positions, held) == (
+            [{"status": "ok", "position": [1, 2, 0]}],
+            [[1, 2, 0]],
+            {"world": [], "corners": []},
+        )
+
+
+@pytest.mark.parametrize(("added", "snapped"), [(False, True), (True, False)], ids=["none added", "point added"])
+def test_a_corners_only_answer_landing_after_a_point_was_added_holds_the_pins(added: bool, snapped: bool) -> None:
+    """Whether the pins are held is decided when the answer lands: a point added meanwhile counts."""
+    corners, held = run_wizard_js(
+        "(function() { solveFromCorners(); return [cornerPositions, heldBody]; })()",
+        functions=(
+            "isConvex",
+            "quadArea",
+            "wizSolveCorners",
+            "calibNumber",
+            "calibComplete",
+            "calibPinPx",
+            "calibPayload",
+            "wizardSolveBody",
+            "solveFromCorners",
+        ),
+        variables=("CORNER_NAMES",),
+        prelude=f"""
+function answered(value) {{ return {{ then: function(f) {{ return answered(f(value)); }} }}; }}
+var poseSeq = 0, preCornerPinningPose = null, CALIB_ENABLED = true, WIZ_SOLVE_PAGE = 'p';
+var imageWidth = 1920, imageHeight = 1080, heldBody = null;
+function fetch() {{
+  if ({json.dumps(added)}) calibPoints.push({{ pin: [0.5, 0.5] }});
+  return answered({{ json: function() {{ return reply; }} }});
+}}
+function invalidLengthFields() {{ return []; }} function snapshotPose() {{ return {{}}; }}
+function showSolveStatus() {{}} function showSolvedParams() {{}} function updateFineQuad() {{}}
+function renderAllFineZoomBoxes() {{}} function applySolvedPose(c, s, b) {{ heldBody = !!b.calibHold; }}
+function wizardWorldCorners() {{ return []; }} function wizReadLensCoeff() {{ return 0; }}
+var document = {{ getElementById: function() {{ return {{ querySelectorAll: function() {{ return []; }} }}; }} }};
+""",
+        cornerPositions=_CORNERS_PINNED,
+        calibPoints=[],
+        reply={"camera": {}, "reprojected_corners": [[1501, 901], [401, 899], [601, 501], [1299, 499]]},
+    )
+    assert (corners != _CORNERS_PINNED) is snapped
+    assert held is not snapped
 
 
 def test_the_lens_resolve_hands_its_point_answers_on() -> None:

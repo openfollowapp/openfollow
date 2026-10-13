@@ -13,7 +13,7 @@ round, so neither is reduced to a position before the fit.
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -21,7 +21,13 @@ import numpy as np
 import numpy.typing as npt
 
 from openfollow.configuration import CameraConfig
-from openfollow.scene.solver import project_points, solve_camera_dlt, unproject_to_plane
+from openfollow.scene.solver import (
+    POSE_FOV_RANGE_DEG,
+    POSE_PITCH_LIMIT_DEG,
+    project_points,
+    solve_camera_dlt,
+    unproject_to_plane,
+)
 
 PIXEL_SIGMA = 1.0  # px: a careful pin on a calibration point's mark, native snapshot pixels
 CORNER_SIGMA = 3.0  # px: a pin on a grid corner, whose mark on the stage floor is seldom that sharp
@@ -45,8 +51,13 @@ REASON_DISAGREES_CORNERS = "It disagrees with the corners."
 REASON_PAIR = "The two points disagree, and two cannot tell which one is wrong."
 REASON_FLOOR = "It moves the far floor too far from where the corners put it."
 REASON_SAME_PLACE = "Its two corners are at the same place."
+REASON_RANGE = "It tilts or narrows the camera past what the corners can solve."
 
 Status = Literal["ok", "unverified", "flagged"]
+
+
+class SolveSuperseded(Exception):
+    """A newer solve was asked for while this one ran: its answer would be dropped."""
 
 
 @dataclass(frozen=True)
@@ -166,6 +177,11 @@ def _floor_holds(
     return bool(np.all((ratio <= FLOOR_REACH) & (ratio >= 1.0 / FLOOR_REACH)))
 
 
+def _in_range(x: npt.NDArray[np.float64]) -> bool:
+    """Whether the fitted pitch and field of view are ones the corner solve could have given."""
+    return abs(float(x[3])) <= POSE_PITCH_LIMIT_DEG and POSE_FOV_RANGE_DEG[0] <= float(x[6]) <= POSE_FOV_RANGE_DEG[1]
+
+
 class _Problem:
     """The joint adjustment: camera (7) and each point's x, y; residuals normalised by their sigma."""
 
@@ -187,6 +203,7 @@ class _Problem:
         self.db = np.array([p.distance_b for p in points], dtype=np.float64)
         self.pins = np.array([p.pin for p in points], dtype=np.float64).reshape(self.n, 2)
         self.canvas = (canvas_w, canvas_h)
+        self.stale: Callable[[], bool] | None = None
 
     def residuals(self, x: npt.NDArray[np.float64]) -> npt.NDArray[np.float64] | None:
         """Corner pins (8), then per point its pin (2) and its distances (2); None off the valid range."""
@@ -216,6 +233,8 @@ def _fit(
         return None
     damping = 1e-3
     for _ in range(iterations):
+        if problem.stale is not None and problem.stale():
+            raise SolveSuperseded
         jac = np.empty((r.size, x.size))
         for k in range(x.size):
             step = 1e-6 * (1.0 + abs(x[k]))
@@ -251,16 +270,19 @@ def solve_with_points(
     points: Sequence[CalibrationPoint],
     canvas_w: float,
     canvas_h: float,
+    stale: Callable[[], bool] | None = None,
 ) -> CalibrationSolve | None:
     """The camera from the four corners and the calibration points; None when the corners give none.
-    When no point is used, the camera is exactly the corners' own solve.
+    When no point is used, the camera is exactly the corners' own solve. ``stale`` is asked between
+    fits and iterations; once it answers True the solve raises :class:`SolveSuperseded`.
 
     A point the distances place nowhere is flagged and left out. When a point's residual passes
     :data:`FLAG_SIGMA`, three or more points drop the one whose removal leaves the others the best fit,
     and fit again; two points that disagree are both left out, since from a narrow stage strip neither
     can show the other wrong; a lone point that disagrees with the corners, a corner pin's residual
     included, is left out. A fit that passes is still left out the same way when it moves the floor
-    across the picture past :data:`FLOOR_REACH` from where the corners alone put it. A point that is the
+    across the picture past :data:`FLOOR_REACH` from where the corners alone put it, or leaves the pitch and
+    field of view the corner solve keeps a camera in. A point that is the
     only one in the fit cannot be cross-checked: ``unverified``.
     """
     world = np.array(corner_world, dtype=np.float64)
@@ -284,7 +306,10 @@ def solve_with_points(
         places[i] = place
 
     def fit(ids: list[int]) -> tuple[_Problem, npt.NDArray[np.float64], npt.NDArray[np.float64]] | None:
+        if stale is not None and stale():
+            raise SolveSuperseded
         problem = _Problem(world, screen, [points[i] for i in ids], canvas_w, canvas_h)
+        problem.stale = stale
         x0 = np.concatenate([seed_params, np.array([places[i][:2] for i in ids]).ravel()])
         fitted = _fit(problem, x0)
         return None if fitted is None else (problem, *fitted)
@@ -311,10 +336,13 @@ def solve_with_points(
         reason = ""
         if float(worst.max()) <= FLAG_SIGMA and not alone:
             fitted = np.column_stack([x[7:].reshape(len(active), 2), problem.z])
-            if _floor_holds(seed_params, x[:7], float(world[:, 2].mean()), fitted, canvas_w, canvas_h):
+            if not _in_range(x):
+                reason = REASON_RANGE
+            elif _floor_holds(seed_params, x[:7], float(world[:, 2].mean()), fitted, canvas_w, canvas_h):
                 solved = result
                 break
-            reason = REASON_FLOOR
+            else:
+                reason = REASON_FLOOR
         if len(active) == 1:
             leave_out(active[:], reason or REASON_DISAGREES_CORNERS, worst)
         elif len(active) == 2:

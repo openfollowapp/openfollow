@@ -1076,6 +1076,8 @@
   // snapshot of another size keeps it on its mark; ``position`` is where this pose's solve put it.
   // ---------------------------------------------------------------
   var CALIB_ENABLED = {{'true' if _show_lens else 'false'}};
+  // Names this page to the solve route, which stops a fit once the page asks for a newer one.
+  var WIZ_SOLVE_PAGE = Math.random().toString(36).slice(2, 12) || 'page';
   var CALIB_MAX = {{MAX_CALIBRATION_POINTS}};
   var CALIB_SAVED = {{!json.dumps(_calib_saved)}};
   var CALIB_SAVED_CORNERS = {{!json.dumps(_calib_corners)}};  // the corner pins the saved pose was solved from
@@ -3199,13 +3201,16 @@
       image_width: imageWidth,
       image_height: imageHeight,
       camera: { lens_k1: wizReadLensCoeff('wiz_lens_k1'), lens_k2: wizReadLensCoeff('wiz_lens_k2') },
+      solve_page: WIZ_SOLVE_PAGE,
+      solve_seq: poseSeq,
     };
     if (CALIB_ENABLED && withPoints !== false) {
       var sent = calibPayload();
       if (sent.points.length) body.calibration_points = sent.points;
       // Which point each answer is for, and whether the pins are to be held; not enumerable, never sent.
+      // The hold is read when the answer lands, so a point added while the solve was out counts.
       Object.defineProperty(body, 'calibIndices', { value: sent.indices });
-      Object.defineProperty(body, 'calibHold', { value: calibPoints.length > 0 });
+      Object.defineProperty(body, 'calibHold', { get: function() { return calibPoints.length > 0; } });
     }
     return body;
   }
@@ -3912,6 +3917,7 @@
     return Math.abs(area)/2;
   }
 
+  // True when a solve was sent.
   function solveFromCorners() {
     // No projection has placed the corners yet: a calibration point can still ask for a solve.
     if (CORNER_NAMES.some(function(n) { return !cornerPositions[n]; })) return;
@@ -3981,6 +3987,7 @@
 
       applySolvedPose(data.camera, screenCorners, body, data.calibration_points);
     });
+    return true;
   }
 
   function showSolveStatus(msg, ok) {
@@ -4193,7 +4200,8 @@
     saveToSession();
     renderCalibList();
     renderCalibOverlay();
-    solveFromCorners();
+    // A pose fitted with the deleted point answers for none of the rest.
+    if (!solveFromCorners()) calibForgetPose();
   };
 
   // Each distance stays with the corner it was measured from, whatever order the corners are tapped in.

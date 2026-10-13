@@ -393,3 +393,54 @@ class TestTheFitsGuards:
         assert all(math.isnan(p.residual) for p in solved.points)
         assert solved.points[0].position == pytest.approx((0.0, -20.0, 0.0))
         assert solved.camera == solve_camera_dlt([tuple(c) for c in CORNERS], [tuple(p) for p in _pins(CORNERS)], W, H)
+
+
+class TestTheCornerSolversRange:
+    """A fit with points may not leave the range the corners' own solve keeps a camera in."""
+
+    def test_a_fit_past_the_narrowest_lens_leaves_the_points_out_for_the_corners_camera(self) -> None:
+        # A long lens from far out, its distances a metre long: the fit narrows the lens past 10 degrees.
+        true = np.array([0.0, -70.0, 10.0, -8.0, 0.0, 0.0, 10.1])
+        corners = np.array([[-5.0, 0.0, 0.0], [5.0, 0.0, 0.0], [5.0, 6.0, 0.0], [-5.0, 6.0, 0.0]])
+        pins = project_points(true, corners, W, H)
+        points = []
+        for where in ((2.0, 30.0), (-3.0, 40.0)):
+            place = np.array([where[0], where[1], 0.0])
+            pin = project_points(true, place[None], W, H)[0]
+            points.append(
+                CalibrationPoint(
+                    corner_a=tuple(corners[0]),
+                    corner_b=tuple(corners[1]),
+                    distance_a=float(np.linalg.norm(place - corners[0])) + 1.0,
+                    distance_b=float(np.linalg.norm(place - corners[1])) + 1.0,
+                    height=0.0,
+                    pin=(float(pin[0]), float(pin[1])),
+                )
+            )
+        solved = solve_with_points(corners, pins, points, W, H)
+        assert solved is not None
+        assert [(p.status, p.reason) for p in solved.points] == [("flagged", cp.REASON_RANGE)] * 2
+        assert solved.camera == solve_camera_dlt([tuple(c) for c in corners], [tuple(p) for p in pins], W, H)
+
+
+class TestASupersededSolve:
+    def test_it_stops_and_says_so(self) -> None:
+        with pytest.raises(cp.SolveSuperseded):
+            solve_with_points(CORNERS, _pins(CORNERS), [_point((0.0, -20.0))], W, H, stale=lambda: True)
+
+    def test_it_stops_between_iterations_once_a_newer_one_arrives(self) -> None:
+        asked = []
+
+        def stale() -> bool:  # current when the fit starts, superseded by its first iteration
+            asked.append(1)
+            return len(asked) > 1
+
+        with pytest.raises(cp.SolveSuperseded):
+            solve_with_points(CORNERS, _pins(CORNERS), [_point((0.0, -20.0)), _point((5.0, -35.0))], W, H, stale=stale)
+        assert len(asked) == 2
+
+    def test_a_current_one_solves_as_without_the_check(self) -> None:
+        points = [_point((0.0, -20.0)), _point((5.0, -35.0))]
+        assert solve_with_points(CORNERS, _pins(CORNERS), points, W, H, stale=lambda: False) == solve_with_points(
+            CORNERS, _pins(CORNERS), points, W, H
+        )

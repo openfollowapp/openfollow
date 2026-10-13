@@ -2464,6 +2464,35 @@ class TestWizardSolveWithCalibrationPoints:
         assert np.allclose([p["seen"] for p in data["calibration_points"]], [p["pin"] for p in points], atol=1e-3)
         assert data["corner_residual"] == pytest.approx(0.0, abs=1e-3)
 
+    def test_a_solve_older_than_one_already_asked_for_is_dropped(self, live_server) -> None:
+        _, base = live_server
+        points = [_laser_point((2.0, 14.0)), _laser_point((-3.0, 18.0))]
+        newer = {**_solve_body(points), "solve_page": "page-a", "solve_seq": 7}
+        older = {**_solve_body(points), "solve_page": "page-a", "solve_seq": 6}
+        other_page = {**_solve_body(points), "solve_page": "page-b", "solve_seq": 1}
+        assert _post_json(base, "/api/wizard/solve", newer)[0] == 200
+        status, data = _post_json(base, "/api/wizard/solve", older)
+        assert (status, data) == (409, {"error": "A newer solve was asked for."})
+        assert _post_json(base, "/api/wizard/solve", other_page)[0] == 200
+
+    @pytest.mark.parametrize(
+        "change",
+        [
+            {"solve_page": 3, "solve_seq": 1},
+            {"solve_page": "", "solve_seq": 1},
+            {"solve_page": "x" * 65, "solve_seq": 1},
+            {"solve_page": "page", "solve_seq": "1"},
+            {"solve_page": "page", "solve_seq": True},
+            {"solve_page": "page", "solve_seq": 1.5},
+            {"solve_page": "page"},
+            {"solve_seq": 1},
+        ],
+    )
+    def test_a_malformed_solve_sequence_is_refused(self, live_server, change) -> None:
+        _, base = live_server
+        status, _ = _post_json(base, "/api/wizard/solve", {**_solve_body([_laser_point((2.0, 14.0))]), **change})
+        assert status == 400
+
     def test_points_pinned_on_a_curved_lens_are_straightened_first(self, live_server) -> None:
         _, base = live_server
         lens = (-0.2, 0.05)

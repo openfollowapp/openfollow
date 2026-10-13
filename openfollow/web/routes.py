@@ -3552,6 +3552,36 @@ def _wizard_calibration_points(
     return points
 
 
+# The newest solve each Setup Wizard page asked for, so a joint fit it no longer waits on stops early.
+_SOLVE_PAGES_KEPT = 64
+_wizard_solve_seqs: collections.OrderedDict[str, int] = collections.OrderedDict()
+_wizard_solve_lock = threading.Lock()
+
+
+def _wizard_solve_turn(data: dict[str, Any]) -> Callable[[], bool] | None:
+    """Record this solve as its page's newest; the answer is whether a newer one has been asked for since.
+
+    None when the body names no page. A body naming only one of the two is malformed and raises.
+    """
+    page, seq = data.get("solve_page"), data.get("solve_seq")
+    if page is None and seq is None:
+        return None
+    if not isinstance(page, str) or not 0 < len(page) <= 64:
+        raise ValueError("solve_page must be a name of 1 to 64 characters")
+    number = _json_int(seq, "solve_seq")
+    with _wizard_solve_lock:
+        newest = max(number, _wizard_solve_seqs.pop(page, number))
+        _wizard_solve_seqs[page] = newest
+        while len(_wizard_solve_seqs) > _SOLVE_PAGES_KEPT:
+            _wizard_solve_seqs.popitem(last=False)
+
+    def stale() -> bool:
+        with _wizard_solve_lock:
+            return _wizard_solve_seqs.get(page, number) != number
+
+    return stale
+
+
 def _point_answer(fit: Any, params: Any, img_w: float, img_h: float, k1: float, k2: float) -> dict[str, Any]:
     """One point of a solve's answer; ``seen`` is where the solved camera shows its place on the snapshot."""
     import numpy as np
@@ -9753,13 +9783,14 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 if not all(math.isfinite(float(c)) for c in p):
                     raise ValueError("screen_corner coords must be finite numbers")
             calibration_points = _wizard_calibration_points(data.get("calibration_points"), img_w, img_h)
+            stale = _wizard_solve_turn(data)
         except (KeyError, TypeError, ValueError) as exc:
             response.status = 400
             return json.dumps({"error": str(exc)})
 
         import numpy as np
 
-        from openfollow.scene.calibration_points import CalibrationPoint, solve_with_points
+        from openfollow.scene.calibration_points import CalibrationPoint, SolveSuperseded, solve_with_points
         from openfollow.scene.solver import (
             apply_overlay_distortion,
             invert_overlay_distortion,
@@ -9798,7 +9829,11 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 )
                 for (point, _), pin in zip(calibration_points, pins, strict=True)
             ]
-            solved = solve_with_points(world_tuples, screen_tuples, measured, img_w, img_h)
+            try:
+                solved = solve_with_points(world_tuples, screen_tuples, measured, img_w, img_h, stale=stale)
+            except SolveSuperseded:
+                response.status = 409
+                return json.dumps({"error": "A newer solve was asked for."})
             result = None if solved is None else solved.camera
         else:
             result = solve_camera_dlt(world_tuples, screen_tuples, img_w, img_h)

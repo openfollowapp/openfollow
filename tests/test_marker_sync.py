@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import errno
 import json
+import logging
+import os
 import socket as _socket
 import threading
 import time
@@ -919,6 +921,40 @@ class TestHandleSendError:
         result = sync._handle_send_error(sock, exc)
         assert result is sock
         assert sock.close.call_count == 0
+
+
+class TestSendHealth:
+    def test_every_datagram_of_a_burst_counts_as_sent(self) -> None:
+        sync = _make_sync()
+        sock = MagicMock()
+        sync._send_packet(sock, kind="heartbeat", entries=_catalog_entries(40))
+        assert sync.send_health.status().sent_total == sock.sendto.call_count > 1
+
+    @pytest.mark.parametrize("err", [errno.EHOSTUNREACH, errno.EACCES], ids=["transient", "permanent"])
+    def test_a_failed_send_is_recorded_against_the_catalog_group(self, err: int) -> None:
+        sync = _make_sync()
+        sync._handle_send_error(MagicMock(), OSError(err, os.strerror(err)))
+        status = sync.send_health.status()
+        assert (status.state, status.failed, status.errno) == ("retrying", 1, err)
+
+    def test_the_failure_is_logged_once_by_the_record_not_per_rebuild(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # However long the three rebuilds take, they never reach failing.
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", float("inf"))
+        sync = _make_sync()
+        with caplog.at_level(logging.INFO):
+            for _ in range(3):
+                sync._handle_send_error(MagicMock(), OSError(errno.ENETDOWN, "network down"))
+        assert [r.getMessage() for r in caplog.records] == [
+            f"Marker sync: send failed: [Errno {errno.ENETDOWN}] network down"
+        ]
+
+    def test_a_repoint_starts_a_new_record(self) -> None:
+        sync = _make_sync()
+        sync._handle_send_error(MagicMock(), OSError(errno.ENETDOWN, "network down"))
+        sync.update_iface_ip("192.0.2.7", iface="eth0")
+        assert sync.send_health.status().state == "ok"
 
 
 class TestSendLoopOneIteration:

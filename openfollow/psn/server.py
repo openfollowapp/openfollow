@@ -21,6 +21,7 @@ import pypsn
 from openfollow.packet_chunking import MAX_DATAGRAM_BYTES, chunk_to_datagrams
 from openfollow.psn.clock import psn_timestamp_usec
 from openfollow.psn.marker import Marker, is_marker_stale
+from openfollow.send_health import SendHealth
 
 logger = logging.getLogger(__name__)
 
@@ -97,8 +98,7 @@ class PsnServer:
         self._data_thread: threading.Thread | None = None
         self._info_thread: threading.Thread | None = None
         self._socket_thread: threading.Thread | None = None
-        self._send_errors: int = 0
-        self._send_total: int = 0
+        self._send_health = SendHealth("PSN")
         self._oversize_drops: int = 0
 
     def add_marker(self, marker_id: int, name: str) -> Marker:
@@ -127,8 +127,14 @@ class PsnServer:
         with self._lock:
             return self._markers.get(marker_id)
 
+    @property
+    def send_health(self) -> SendHealth:
+        """Whether this server's sends are leaving, data and info packets together."""
+        return self._send_health
+
     def start(self) -> None:
         """Open the network socket and start send threads."""
+        self._send_health.reset()
         # One stop signal per generation. A thread that outlived its join in
         # stop() keeps the previous, permanently-set one and exits on its next
         # check, rather than being revived by a shared event being cleared here.
@@ -193,6 +199,7 @@ class PsnServer:
             self._socket = None
             stack = self._exit_stack
         stack.close()
+        self._send_health.reset()
 
     def rebind(
         self,
@@ -324,7 +331,8 @@ class PsnServer:
             if stop.is_set():
                 return
             if self._try_open_multicast_socket_once(attempt=attempt, stop_event=stop):
-                logger.info("PSN multicast socket recovered on attempt %d.", attempt)
+                # Not a recovery: only sends that keep succeeding are (see SendHealth).
+                logger.debug("PSN multicast socket reopened on attempt %d.", attempt)
                 return
 
     def _handle_send_error(self, exc: OSError, stop_event: threading.Event | None = None) -> None:
@@ -503,21 +511,14 @@ class PsnServer:
         if sock is None:
             return
         dest = self._mcast_ip if self._mcast_ip else self._target_ip
-        with self._lock:
-            self._send_total += 1
         try:
             sock.sendto(data, (dest, self._port))
         except OSError as exc:
-            with self._lock:
-                self._send_errors += 1
-                errors = self._send_errors
-                total = self._send_total
-            if errors <= 5 or errors % 100 == 0:
-                logger.warning(
-                    "PSN send failed (%d/%d errors): %s",
-                    errors,
-                    total,
-                    exc,
-                )
+            if self._resolve_stop(stop_event).is_set():
+                # A survivor of stop(): the record belongs to the next generation.
+                return
+            self._send_health.record_failure(exc, dest)
             # Rebuild socket on transient interface errors.
             self._handle_send_error(exc, stop_event)
+            return
+        self._send_health.record_success()

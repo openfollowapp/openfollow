@@ -31,6 +31,7 @@ from openfollow.rttrpm.server import (
     encode_rttrpm_packet,
     encode_rttrpm_trackable_module,
 )
+from openfollow.send_health import SendHealth
 
 pytestmark = pytest.mark.unit
 
@@ -743,21 +744,78 @@ class TestRttrpmStopTimeout:
 
 
 class TestRttrpmSendErrorSuppression:
-    def test_send_log_is_rate_limited_after_first_5_errors(self, caplog) -> None:
+    def test_a_burst_of_send_errors_logs_once(self, caplog, monkeypatch) -> None:
         import errno as _e
         import logging as _logging
 
+        # However long the burst takes, it never reaches failing.
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", float("inf"))
         srv = RttrpmServer(host="127.0.0.1")
         sock = MagicMock()
         sock.sendto.side_effect = OSError(_e.EACCES, "denied")  # non-transient
         srv._socket = sock
 
-        with caplog.at_level(_logging.WARNING, logger="openfollow.rttrpm.server"):
+        with caplog.at_level(_logging.WARNING):
             for _ in range(20):
                 srv._send(b"x")
 
-        # First 5 logged, the next 15 suppressed (none of 6..20 hit %100).
-        assert len(caplog.records) == 5
+        assert [r.message for r in caplog.records] == ["RTTrPM output: send failed: [Errno 13] denied"]
+        assert srv.send_health.status().failed == 20
+
+    def test_a_good_send_is_counted(self) -> None:
+        srv = RttrpmServer(host="127.0.0.1")
+        srv._socket = MagicMock()
+        srv._send(b"x")
+        assert srv.send_health.status().sent_total == 1
+
+
+class TestRttrpmSendHealthLifecycle:
+    def test_stopping_forgets_the_streak(self) -> None:
+        import errno as _e
+
+        srv = RttrpmServer(host="192.0.2.30")
+        srv.send_health.record_failure(OSError(_e.ENETUNREACH, "unreachable"), "192.0.2.30")
+        srv.stop()
+        assert srv.send_health.status().state == "ok"
+
+    def test_an_output_with_nothing_to_send_ends_its_failing_streak(self) -> None:
+        """No trackable means no send, so a row saying sends keep failing would never clear."""
+        import errno as _e
+
+        from openfollow.send_health import FAILING_AFTER_S
+
+        now = [100.0]
+        srv = RttrpmServer(host="192.0.2.30")
+        srv._send_health = SendHealth("RTTrPM output", clock=lambda: now[0])
+        srv.send_health.record_failure(OSError(_e.EACCES, "denied"), "192.0.2.30")
+        now[0] += FAILING_AFTER_S
+        srv.send_health.record_failure(OSError(_e.EACCES, "denied"), "192.0.2.30")
+        assert srv.send_health.status().state == "failing"
+        srv._send_packet()
+        assert srv.send_health.status().state == "ok"
+
+    def test_a_send_failing_after_its_generation_stopped_records_nothing(self) -> None:
+        import errno as _e
+
+        srv = RttrpmServer(host="192.0.2.30")
+        sock = MagicMock()
+        sock.sendto.side_effect = OSError(_e.EBADF, "Bad file descriptor")
+        srv._socket = sock
+        stale = threading.Event()
+        stale.set()
+        srv._send(b"x", stale)
+        assert srv.send_health.status().failed_total == 0
+
+    def test_a_failure_is_recorded_against_the_configured_host(self) -> None:
+        import errno as _e
+
+        srv = RttrpmServer(host="239.1.1.1")
+        sock = MagicMock()
+        sock.sendto.side_effect = OSError(_e.EACCES, "denied")
+        srv._socket = sock
+        srv._send(b"x")
+        status = srv.send_health.status()
+        assert (status.failed, status.errno) == (1, _e.EACCES)
 
 
 class TestRttrpmRebuildSocketFailure:
@@ -1041,3 +1099,20 @@ class TestRttrpmThreadGenerations:
 
         assert srv._socket is live_socket
         live_socket.close.assert_not_called()
+
+    def test_a_stopped_generation_leaves_the_socket_rebuild_to_the_live_one(self) -> None:
+        """A survivor of stop() finds no socket: it must not spend the rebuild slot the live generation needs."""
+        srv = RttrpmServer(host="127.0.0.1", port=4242)
+        srv.register_marker(_marker(1))
+        srv._socket = None
+        srv._next_rebuild_at = 0.0
+        stale = threading.Event()
+        stale.set()
+
+        new_sock = MagicMock()
+        with patch("openfollow.rttrpm.server.socket.socket", return_value=new_sock):
+            srv._send_packet(stale)
+            srv._send_packet(threading.Event())
+
+        assert srv._socket is new_sock
+        new_sock.sendto.assert_called_once()

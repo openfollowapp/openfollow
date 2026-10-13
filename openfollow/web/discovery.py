@@ -25,6 +25,7 @@ from openfollow.net_utils import (
     get_local_ipv4_addresses,
     join_multicast_group_on_iface,
 )
+from openfollow.send_health import SendHealth
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +145,8 @@ class BeaconSender:
         # CPython's GIL so the diagnostics-thread reads don't need
         # the discovery thread's own lock; the values are at-most a
         # tick stale, which is fine for a snapshot.
-        self._consecutive_errors = 0
+        self._open_errors = 0
+        self._send_health = SendHealth("Discovery")
         self._last_send_ts = 0.0  # monotonic, 0 = never sent successfully
         self._send_count = 0
 
@@ -184,6 +186,7 @@ class BeaconSender:
         and getting the identical address back does not restore it - so an
         unchanged-IP guard alone would leave the beacon sending nowhere.
         """
+        self._send_health.reset()
         self._reopen.set()
 
     def _drain_reopen(self, sock: socket.socket | None) -> socket.socket | None:
@@ -240,12 +243,12 @@ class BeaconSender:
                     try:
                         sock = self._open_socket()
                     except Exception as exc:
-                        self._consecutive_errors += 1
+                        self._open_errors += 1
                         now = time.monotonic()
-                        if self._consecutive_errors <= 3 or (now - last_error_log) >= 30.0:
+                        if self._open_errors <= 3 or (now - last_error_log) >= 30.0:
                             logger.warning(
                                 "BeaconSender: socket open failed (%d consecutive): %s",
-                                self._consecutive_errors,
+                                self._open_errors,
                                 exc,
                             )
                             last_error_log = now
@@ -255,25 +258,12 @@ class BeaconSender:
                 data = self._packet.to_bytes()
                 try:
                     sock.sendto(data, (BEACON_MCAST_GROUP, BEACON_PORT))
-                    if self._consecutive_errors:
-                        logger.info(
-                            "BeaconSender: send recovered after %d errors.",
-                            self._consecutive_errors,
-                        )
-                        self._consecutive_errors = 0
+                    self._send_health.record_success()
+                    self._open_errors = 0
                     self._last_send_ts = time.monotonic()
                     self._send_count += 1
                 except OSError as exc:
-                    self._consecutive_errors += 1
-                    now = time.monotonic()
-                    # Log first 3 errors, then at most every 30s during an outage.
-                    if self._consecutive_errors <= 3 or (now - last_error_log) >= 30.0:
-                        logger.warning(
-                            "BeaconSender: sendto failed (%d consecutive): %s",
-                            self._consecutive_errors,
-                            exc,
-                        )
-                        last_error_log = now
+                    self._send_health.record_failure(exc, BEACON_MCAST_GROUP)
                     if exc.errno in _TRANSIENT_SEND_ERRNOS:
                         # Interface changed – drop the socket; the next loop
                         # iteration will rebuild it via the branch above.
@@ -309,10 +299,16 @@ class BeaconSender:
 
     @property
     def consecutive_errors(self) -> int:
-        """Send failures since the last successful send. Resets to 0
-        on recovery; non-zero in the bundle is the strongest signal
-        that beacons aren't going out right now."""
-        return self._consecutive_errors
+        """Failed opens and sends since beacons last kept going out.
+
+        Zero again only once sends keep succeeding (see ``SendHealth``);
+        non-zero in the bundle is the strongest signal that beacons
+        aren't going out right now."""
+        return self._open_errors + self._send_health.status().failed
+
+    @property
+    def send_health(self) -> SendHealth:
+        return self._send_health
 
     @property
     def last_send_ts(self) -> float:

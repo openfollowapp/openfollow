@@ -273,8 +273,10 @@ class TestBackoffStateMachine:
         sender = TcpOscSender("127.0.0.1", _free_port())
         # Pretend a previous failure scheduled the next attempt 5s out.
         sender._next_attempt_at = 1e18
-        with pytest.raises(OSError, match="backoff window"):
+        with pytest.raises(transport_module.TcpBackoffError, match="backoff window") as raised:
             sender.send_message("/x", [])
+        # Still an OSError for every caller that only knows the documented contract.
+        assert isinstance(raised.value, OSError)
 
     def test_connect_failure_advances_backoff(
         self,

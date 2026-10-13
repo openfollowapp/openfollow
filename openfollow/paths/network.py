@@ -206,24 +206,29 @@ class PathNetwork:
         area = max(SWITCH_AREA_M, speed * SWITCH_LOOKAHEAD_S)
         curve = self.curves[place.path]
         out = []
-        # Junctions a few centimetres apart (an end touching a path it also crosses) show their ways once.
-        seen: set[tuple[int, int, int, int]] = set()
-        for s, partner in self._stations[place.path]:
-            off = curve.offset(place.s, s)
-            if abs(off) > area:
-                continue
+        near = sorted(
+            (
+                (abs(curve.offset(place.s, s)), partner)
+                for s, partner in self._stations[place.path]
+                if abs(curve.offset(place.s, s)) <= area
+            ),
+            key=lambda pair: pair[0],
+        )
+        # One arrow per other path and direction, at the nearest junction: an end touching a path it also
+        # crosses makes two junctions a few centimetres apart.
+        seen: set[tuple[int, int]] = set()
+        for _, partner in near:
             for way in self._ways(partner):
+                if (way.place.path, way.sign) in seen:
+                    continue
                 c = self.curves[way.place.path]
                 tail, _ = c.advance(way.place.s, way.sign * SWITCH_ARROW_FROM_M)
                 tip, _ = c.advance(way.place.s, way.sign * SWITCH_ARROW_TO_M)
                 # An end closer than the arrow leaves no stretch to draw.
                 if abs(c.offset(tail, tip)) <= _EPS:
                     continue
-                a, b = c.point(tail), c.point(tip)
-                key = (round(a[0] * 100), round(a[1] * 100), round(b[0] * 100), round(b[1] * 100))
-                if key not in seen:
-                    seen.add(key)
-                    out.append((a, b))
+                seen.add((way.place.path, way.sign))
+                out.append((c.point(tail), c.point(tip)))
         return out
 
     def _ways(self, place: Place, *, release: bool = True) -> list[_Way]:

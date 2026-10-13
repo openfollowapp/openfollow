@@ -213,8 +213,11 @@ class TestTakeOver:
 
     def test_a_landed_lock_moves_to_the_reachable_point_nearest_it(self) -> None:
         engine = _engine(CROSS, RAMP, slide_time=0.0)
-        engine.press(1, (-3.0, 0.0, 0.0))
+        engine.press(1, (0.0, 4.0, 1.6))
         engine.tick(0.0)
+        # Onto the cross, its height eased out in full.
+        engine.project(1, -3.0, 0.0)
+        engine.tick(10.0)
         engine.take_over(1, (0.0, 3.0, 0.7))
         assert engine.locked_path(1) == "Ramp"
         # Written from where it was taken over, the height easing to the ramp's 1.2 m.

@@ -1551,8 +1551,8 @@ class TestWizardLensCoeffs:
 # ---------------------------------------------------------------------------
 
 
-def _lens_station(tmp_path, monkeypatch, *, developer_mode: bool = False, experimental: bool = True):
-    """A station with experimental features on, so the wizard renders the Lens step."""
+def _lens_station(tmp_path, monkeypatch, *, developer_mode: bool = False, experimental: bool = False):
+    """A station with a stored lens pair for the wizard's Lens step."""
     from openfollow.configuration import AppConfig, save_config
 
     monkeypatch.setattr(discovery_module.BeaconSender, "start", lambda self: None)
@@ -2031,18 +2031,19 @@ class TestLensChangeAfterPinning:
 
 @integration
 class TestWizardLensStepPage:
-    def test_without_the_toggle_the_wizard_keeps_seven_steps(self, live_server) -> None:
-        _, base = live_server
-        _, body = _get(base, "/wizard")
-        assert body.count('class="wizard-step-btn') == 7
-        assert 'id="wizard-step-lens"' not in body
-        assert "4. Camera Position" in body
-        # The stored pair rides along in hidden inputs so Apply keeps it.
-        assert '<input type="hidden" id="wiz_lens_k1"' in body
-        assert '<input type="hidden" id="wiz_lens_k2"' in body
-        assert "lens: " not in body.split("window.WIZ = {")[1].split("};")[0]
+    @pytest.mark.parametrize("experimental", [False, True])
+    def test_the_lens_step_ignores_the_experimental_toggle(self, tmp_path, monkeypatch, experimental: bool) -> None:
+        with _lens_station(tmp_path, monkeypatch, experimental=experimental) as (_, base):
+            status, body = _get(base, "/wizard")
+        assert status == 200
+        assert body.count('class="wizard-step-btn') == 8
+        assert 'class="wizard-step-btn experimental-feature' not in body
+        assert 'id="wizard-step-lens"' in body
+        assert "lens: 3" in body.split("window.WIZ = {")[1].split("};")[0]
+        assert 'type="hidden" id="wiz_lens_k1"' not in body
+        assert 'id="review-lens-rating"' in body and 'id="review-lens-caution"' in body
 
-    def test_with_the_toggle_the_lens_step_sits_after_video_source(self, live_server_lens) -> None:
+    def test_the_lens_step_sits_after_video_source(self, live_server_lens) -> None:
         _, base = live_server_lens
         status, body = _get(base, "/wizard")
         assert status == 200
@@ -2059,12 +2060,6 @@ class TestWizardLensStepPage:
         assert "Fine-tune" in body
         # No step is referred to by number anywhere, since the Lens step shifts the numbering.
         assert re.search(r"Step \d", body) is None
-
-    def test_review_repeats_the_rating_and_the_values_only_with_the_step(self, live_server, live_server_lens) -> None:
-        _, plain = _get(live_server[1], "/wizard")
-        _, lens = _get(live_server_lens[1], "/wizard")
-        assert 'id="review-lens-rating"' in lens and 'id="review-lens-caution"' in lens
-        assert 'id="review-lens-rating"' not in plain and 'id="review-lens-caution"' not in plain
 
     def test_the_operator_never_sees_a_coefficient_name(self, live_server_lens) -> None:
         """The pair is Barrel / fisheye and Edge fit everywhere an operator reads: never k1 or k2."""

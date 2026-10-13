@@ -692,14 +692,33 @@ def test_build_help_sections_names_bound_path_actions() -> None:
             mouse3d_buttons={"pathfinder": 2, "toggle_paths": 3},
         )
     )
-    assert "P: Pathfinder" in sections["Keyboard"]
+    assert "P: Toggle Pathfinder" in sections["Keyboard"]
     assert "O: Toggle paths" in sections["Keyboard"]
-    assert "A: Pathfinder" in sections["Controller"]
+    assert "A: Toggle Pathfinder" in sections["Controller"]
     assert not any("Toggle paths" in line for line in sections["Controller"])
-    assert "Btn 2: Pathfinder" in sections["3D Mouse"]
+    assert "Btn 2: Toggle Pathfinder" in sections["3D Mouse"]
     assert "Btn 3: Toggle paths" in sections["3D Mouse"]
 
 
 def test_build_help_sections_leaves_out_unbound_path_actions() -> None:
     sections = dict(build_help_sections(mode="normal", keyboard_connected=True, controller_connected=False))
     assert not any("Path" in line for line in sections["Keyboard"])
+
+
+@pytest.mark.parametrize("section", ["Keyboard", "Controller", "3D Mouse"])
+def test_build_help_sections_lists_the_toggles_as_one_group(section: str) -> None:
+    sections = dict(
+        build_help_sections(
+            mode="normal",
+            keyboard_connected=True,
+            controller_connected=True,
+            keyboard_labels={"toggle_help": "h", "toggle_zones": "z", "pathfinder": "p"},
+            button_labels={"toggle_help": "Y", "toggle_zones": "B", "pathfinder": "A"},
+            mouse3d_connected=True,
+            mouse3d_buttons={"toggle_help": 0, "toggle_zones": 1, "pathfinder": 2},
+        )
+    )
+    lines = sections[section]
+    labels = ("Toggle Help (this overlay)", "Toggle zone", "Toggle Pathfinder")
+    rows = [next(i for i, line in enumerate(lines) if label in line) for label in labels]
+    assert rows == list(range(rows[0], rows[0] + 3))

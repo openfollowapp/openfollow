@@ -7595,6 +7595,8 @@ class _CountingCache:
         ("/api/markers/catalog", 200),
         # Polled every 250 ms while a MIDI capture runs; the row lookup reads the config.
         ("/section/osc/midi/learn/poll/no-such-row", 404),
+        ("/section/midi", 200),
+        ("/section/midi/faders/1/detail", 200),
     ],
 )
 def test_a_request_takes_one_copy_of_the_config_and_parses_nothing_itself(
@@ -9130,7 +9132,7 @@ def test_restart_through_a_foreign_origin_is_refused(pin_protected_server) -> No
 
 
 def test_requests_share_one_parse_of_an_unchanged_config(live_server, monkeypatch) -> None:
-    """An open page polls; parsing config.toml for every request cost a Pi tens of milliseconds each."""
+    """Requests against an unchanged config.toml share one parse."""
     import openfollow.web.config_cache as cache_module
     import openfollow.web.routes as routes_module
     from openfollow.web.config_cache import ParsedConfigCache

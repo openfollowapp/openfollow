@@ -4561,9 +4561,7 @@ def _register_marker_catalog_routes(
         """JSON snapshot of the catalog + each peer's broadcast selection."""
         response.content_type = "application/json"
         catalog = server.get_marker_catalog()
-        # Reuse the per-request config the ``before_request`` hook already
-        # parsed (stashed on ``request.environ``) rather than re-reading
-        # ``config.toml`` from disk a second time for this request.
+        # Reuse the request's copy the ``before_request`` hook already took.
         cfg = _request_config(server)
         if catalog is None:
             return json.dumps(
@@ -7446,7 +7444,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     def get_midi_section() -> Any:
         """Render the full MIDI page partial. Used by the initial
         page load (via ``index.tpl``) and by direct HTMX refreshes."""
-        cfg = load_config(server.config_path)
+        cfg = _request_scoped_config()
         return _render_midi_section(cfg)
 
     def _midi_patch_device_fields(identifier: str) -> dict[str, str]:
@@ -7596,7 +7594,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
         if not 1 <= idx <= VIRTUAL_FADER_COUNT:
             idx = 1
-        cfg = load_config(server.config_path)
+        cfg = _request_scoped_config()
         fader = cfg.virtual_faders.faders[idx - 1]
         return template(
             "partials/midi_fader_detail",
@@ -7707,8 +7705,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             abort(404, "No MIDI Learn for this fader")
             return ""  # pragma: no cover - abort() raises first
         poll = server.midi_capture_poll(_fader_learn_row_id(idx))
-        # Fires every 250 ms while listening – read the cached per-request
-        # config instead of hitting disk on each poll.
+        # Fires every 250 ms while listening – reuse the request's copy.
         return _render_midi_fader_capture_status(
             _request_scoped_config(),
             idx,

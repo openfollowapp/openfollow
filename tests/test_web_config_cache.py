@@ -72,17 +72,19 @@ def test_an_edit_in_place_of_another_length_is_seen_within_the_same_mtime(config
     assert cache.load(config_file).psn_system_name == "Much longer"
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a file whatever its mode")
 def test_a_read_that_failed_is_served_but_never_kept(tmp_path: Path) -> None:
     path = tmp_path / "config.toml"
     save_config(AppConfig(web_pin="4711"), str(path))
     Path(str(path) + ".bak").unlink(missing_ok=True)
+    good = path.read_bytes()
+    before = os.stat(path)
     cache = ParsedConfigCache()
-    path.chmod(0)  # leaves the inode, mtime and size alone
-    try:
-        assert cache.load(str(path)).web_pin == "", "the failed read falls back to defaults"
-    finally:
-        path.chmod(0o600)
+    # Same inode, mtime and size: only the parse can tell the broken file apart.
+    path.write_bytes(b"[" * len(good))
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert cache.load(str(path)).web_pin == "", "the failed read falls back to defaults"
+    path.write_bytes(good)
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
     assert cache.load(str(path)).web_pin == "4711", "kept, the defaults would leave the login open"
 
 

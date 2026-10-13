@@ -14,10 +14,7 @@ from openfollow.configuration import AppConfig, load_config
 class ParsedConfigCache:
     """Hands each request its own copy of the config, parsing the file again only when it changed.
 
-    Every request reads the config, and an open page polls; parsing on each one
-    cost a Pi tens of milliseconds per request on a large config. A copy costs a
-    small fraction of that, and keeps a handler that changes its config in place
-    from reaching any other request.
+    The copy keeps a handler that changes its config in place from reaching any other request.
     """
 
     def __init__(self) -> None:

@@ -120,7 +120,7 @@
  % # to 1 on initial render, but a save handler can pass the
  % # just-saved fader's index so re-rendering after a per-fader
  % # save doesn't snap selection back to fader 1. The
- % # ``defined()`` guard keeps the legacy ``index.tpl`` include
+ % # ``defined()`` guard keeps the ``index.tpl`` include
  % # working without having to thread the kwarg through every
  % # caller – only the per-fader save path overrides the default.
  % selected_fader = selected_fader if defined('selected_fader') else 1

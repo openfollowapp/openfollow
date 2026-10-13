@@ -114,6 +114,8 @@ _REQUIRED_GST_ELEMENTS = _load("launcher").REQUIRED_GST_ELEMENTS
 # Homebrew GStreamer 1.28.
 _ELEMENT_PLUGINS = {
     "appsink": "libgstapp.dylib",
+    "avdec_h264": "libgstlibav.dylib",
+    "avdec_h265": "libgstlibav.dylib",
     "avdec_vp8": "libgstlibav.dylib",
     "avfvideosrc": "libgstapplemedia.dylib",
     "capsfilter": "libgstcoreelements.dylib",
@@ -225,6 +227,12 @@ def test_selfcheck_requires_every_element_the_diagnostics_bundle_lists() -> None
     assert listed <= set(_REQUIRED_GST_ELEMENTS), sorted(listed - set(_REQUIRED_GST_ELEMENTS))
 
 
+@pytest.mark.parametrize("decoder", ["avdec_h264", "avdec_h265"])
+def test_selfcheck_requires_a_decoder_for_every_stream_codec(decoder) -> None:
+    # decodebin plugs these for RTSP / RTP / SRT cameras; no source names them.
+    assert decoder in _REQUIRED_GST_ELEMENTS
+
+
 def test_webp_plugin_is_kept(spec_tree) -> None:
     assert "libgstwebp.dylib" in _plugin_allowlist(spec_tree)
 
@@ -271,6 +279,7 @@ def test_selfcheck_step_passes_on_ok(tmp_path) -> None:
         pytest.param("FAIL: missing GStreamer elements: udpsrc", 1, id="missing-element"),
         pytest.param("FAIL: No module named 'cv2'", 1, id="missing-module"),
         pytest.param("", 134, id="crash"),
+        pytest.param("OK", 134, id="ok-then-crash"),
     ],
 )
 def test_selfcheck_step_fails_and_shows_what_the_app_printed(tmp_path, output, status) -> None:

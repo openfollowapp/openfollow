@@ -65,6 +65,8 @@ REQUIRED_GST_ELEMENTS = (
     "h264parse",
     "h265parse",
     "tsdemux",
+    "avdec_h264",
+    "avdec_h265",
 )
 
 

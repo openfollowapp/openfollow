@@ -255,7 +255,7 @@
   .lens-candidate:focus { outline: none; }
   .lens-candidate:focus .lens-candidate-line { stroke-width: 4; }
   .lens-edges { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: none; pointer-events: none; }
-  .lens-dev { display: inline-flex; align-items: center; gap: 0.35rem; color: var(--muted); font-size: 0.85rem; }
+  .lens-dev { margin-top: 0.72rem; }
   /* Graded meter (docs/STATUS_LANGUAGE.md): five segments, filled in the level's line colour. */
   .wizard-meter { display: inline-flex; gap: 3px; vertical-align: middle; }
   .wizard-meter-seg { width: 14px; height: 8px; border-radius: 2px; background: var(--border-soft); }
@@ -603,10 +603,16 @@
       <button type="button" class="secondary" id="lens-toggle-point" onclick="lensToggleSelectedPoint()" disabled>Point off</button>
       <button type="button" class="secondary" id="lens-delete-line" onclick="lensDeleteSelectedLine()" disabled>Delete line</button>
       <button type="button" class="secondary" id="lens-clear" onclick="lensClearLines()" disabled>Clear lines</button>
-% if config.ui.developer_mode:
-      <label class="lens-dev"><input type="checkbox" id="lens-show-edges" onchange="lensToggleEdgeView(this.checked)"> Show edges</label>
-% end
     </div>
+% if config.ui.developer_mode:
+    <div class="field checkbox-field lens-dev">
+      <label for="lens-show-edges">Edge map</label>
+      <div class="checkbox-wrap checkbox-field inline">
+        <input type="checkbox" id="lens-show-edges" onchange="lensToggleEdgeView(this.checked)">
+        <label for="lens-show-edges">Show edges</label>
+      </div>
+    </div>
+% end
 
     <div id="lens-result" class="notice" role="status" style="display:none;margin-top:0.72rem;">
       <div class="lens-result-main">

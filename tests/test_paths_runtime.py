@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -17,6 +18,7 @@ from openfollow.configuration import (
     PathPointConfig,
     PathsConfig,
     load_config,
+    save_config,
 )
 from openfollow.osc.paths import MarkerPath, PathActive
 from openfollow.paths.engine import PathEngine
@@ -72,7 +74,6 @@ class TestPathfinder:
         assert app._config.paths.paths[0].points[-1] == PathPointConfig(1.5, 2.0, 0.8)
         saved = load_config(app._config_path).paths.paths[0].points
         assert [(p.x, p.y, p.z, p.radius) for p in saved] == [(0.0, 0.0, 0.0, 0.5), (1.5, 2.0, 0.8, 0.5)]
-        assert app._config_mtime == app._get_config_mtime()
         # The engine already draws the new point.
         assert app._paths.drawings(app._config.paths)[0].ends[-1].at == pytest.approx((1.5, 2.0, 0.8))
 
@@ -110,6 +111,55 @@ def test_a_failed_save_is_logged_and_still_applied(tmp_path: Path, caplog: pytes
         paths_runtime.apply_commands(app, [PathActive("cross", True)], [], lambda _id: None)
     assert "Failed to save the paths change." in caplog.text
     assert app._paths.press(1, (0.0, 1.0, 0.0)).value == "locked"
+
+
+def _record_a_point(app: _App) -> None:
+    app._paths.record("draft", app._config.paths)
+    paths_runtime.pathfinder(app, 3, _Marker(1, 2, 0))
+
+
+def _switch_cross_off(app: _App) -> None:
+    paths_runtime.apply_commands(app, [PathActive("cross", False)], [], lambda _id: None)
+
+
+def _saved_after(tmp_path: Path, web_change: Any) -> _App:
+    """An app whose config file a web save changed with ``web_change`` after the app loaded it."""
+    app = _App(tmp_path, _cross(), PathConfig(name="draft", points=[PathPointConfig(0, 0, 0)]))
+    save_config(app._config, app._config_path)
+    app._config_mtime = app._get_config_mtime()
+    web = load_config(app._config_path)
+    web_change(web)
+    save_config(web, app._config_path)
+    return app
+
+
+class TestSavesLeaveWebSavesAlone:
+    """A paths save writes only its change into the file as it is, and leaves the file for the watcher."""
+
+    @pytest.mark.parametrize(
+        ("save", "saved"),
+        [
+            (_switch_cross_off, lambda cfg: cfg.paths.paths[0].active is False),
+            (_record_a_point, lambda cfg: len(cfg.paths.paths[1].points) == 2),
+            (paths_runtime.toggle_paths, lambda cfg: cfg.paths.show_paths is False),
+        ],
+    )
+    def test_a_web_save_made_just_before_survives_and_is_still_applied(
+        self, tmp_path: Path, save: Any, saved: Any
+    ) -> None:
+        app = _saved_after(tmp_path, lambda web: setattr(web, "psn_system_name", "Saved-From-Web"))
+        save(app)
+        on_disk = load_config(app._config_path)
+        assert on_disk.psn_system_name == "Saved-From-Web"
+        assert saved(on_disk)
+        # Not marked as loaded: the reload watcher still applies the web save.
+        assert app._get_config_mtime() > app._config_mtime
+
+    @pytest.mark.parametrize("save", [_switch_cross_off, _record_a_point])
+    def test_a_path_a_web_save_removed_is_not_written_back(self, tmp_path: Path, save: Any) -> None:
+        app = _saved_after(tmp_path, lambda web: setattr(web.paths, "paths", []))
+        save(app)
+        assert load_config(app._config_path).paths.paths == []
 
 
 class TestCommands:

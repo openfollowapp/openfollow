@@ -41,9 +41,11 @@ logger = logging.getLogger(__name__)
 # Serializes load→mutate→``save_config`` spans against the on-disk config.
 # ``save_config`` overwrites the whole file, so two interleaving spans would
 # have the later save clobber the earlier. Held by the off-GTK-thread writers
-# that run concurrently: the threaded WSGI request handlers and the
-# marker-catalog sync receiver. GTK-main-loop writers (on-screen menu,
-# receiver self-heal) do NOT take this lock and can still interleave.
+# that run concurrently (the threaded WSGI request handlers and the
+# marker-catalog sync receiver) and by main-loop writers that write only their
+# own change (``save_config_change``, the move-speed flush). Other GTK-main-loop
+# writers (on-screen menu, receiver self-heal) do NOT take this lock and can
+# still interleave.
 config_write_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
@@ -3119,6 +3121,23 @@ def save_config(config: AppConfig, path: str = "config.toml") -> None:
         except OSError:
             pass
         raise
+
+
+def save_config_change(path: str, running: AppConfig, change: Callable[[AppConfig], None]) -> None:
+    """Make ``change`` in ``running`` and in the config file as it is on disk now.
+
+    For a writer whose running config may lag the file: only what ``change`` sets is written, under
+    ``config_write_lock``, so a save another thread made in the meantime survives. With no file yet,
+    ``running`` is written whole.
+    """
+    change(running)
+    with config_write_lock:
+        if not os.path.exists(path):
+            save_config(running, path)
+            return
+        current = load_config(path, strict=True)
+        change(current)
+        save_config(current, path)
 
 
 # ---------------------------------------------------------------------------

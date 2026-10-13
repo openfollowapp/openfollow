@@ -5,10 +5,10 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import Any
 
-from openfollow.configuration import MAX_PATH_POINTS, PathPointConfig, save_config
+from openfollow.configuration import MAX_PATH_POINTS, AppConfig, PathPointConfig, save_config_change
 from openfollow.osc.paths import MarkerPath, PathActive, PathCommand
 from openfollow.paths.engine import Press
 
@@ -48,17 +48,23 @@ def _record_point(app: Any, marker: Any) -> None:
     if len(path.points) >= MAX_PATH_POINTS:
         logger.warning("Path %s already has %d points; not adding another", path.name, MAX_PATH_POINTS)
         return
-    x, y, z = marker.pos
-    path.points.append(PathPointConfig(x, y, z))
-    _save(app)
+    name, (x, y, z) = path.name, marker.pos
+
+    def add_point(cfg: AppConfig) -> None:
+        recorded = cfg.paths.find(name)
+        if recorded is not None:
+            recorded.points.append(PathPointConfig(x, y, z))
+
+    _write(app, add_point)
+    reload_paths(app)
 
 
 def toggle_paths(app: Any) -> None:
     """Show or hide paths on the Operator Screen, and remember it; nothing while paths are off."""
     if not app._paths.enabled:
         return
-    app._config.paths.show_paths = not app._config.paths.show_paths
-    _save(app)
+    show = not app._config.paths.show_paths
+    _write(app, lambda cfg: setattr(cfg.paths, "show_paths", show))
 
 
 def apply_commands(app: Any, commands: Iterable[PathCommand], controlled: Iterable[int], marker_of: Any) -> None:
@@ -84,8 +90,14 @@ def _set_active(app: Any, name: str, active: bool) -> None:
         logger.info("OSC: no path called %r", name)
         return
     if path.active != active:
+        _write(app, lambda cfg: _switch(cfg, path.name, active))
+        reload_paths(app)
+
+
+def _switch(cfg: AppConfig, name: str, active: bool) -> None:
+    path = cfg.paths.find(name)
+    if path is not None:
         path.active = active
-        _save(app)
 
 
 def recording_row(app: Any) -> tuple[str, str] | None:
@@ -98,11 +110,13 @@ def recording_row(app: Any) -> tuple[str, str] | None:
     return "info", f"Recording path {path.name}: {count} point{'' if count == 1 else 's'}"
 
 
-def _save(app: Any) -> None:
-    """Persist a change made on the frame loop and apply it to the engine at once."""
+def _write(app: Any, change: Callable[[AppConfig], None]) -> None:
+    """Make ``change`` in the running config and in the config file as it is now.
+
+    Only the change is written, so a web save the reload watcher has not applied yet is kept, and
+    the file is not marked as loaded, so the watcher still applies it.
+    """
     try:
-        save_config(app._config, app._config_path)
-        app._config_mtime = app._get_config_mtime()
+        save_config_change(app._config_path, app._config, change)
     except Exception:
         logger.exception("Failed to save the paths change.")
-    reload_paths(app)

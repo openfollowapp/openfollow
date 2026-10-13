@@ -89,6 +89,12 @@ class TestJunctions:
         junctions = find_junctions([diamond, _curve([(-1, 0, 0), (3, 0, 0)])])
         assert len(junctions) == 2
 
+    def test_a_junction_found_twice_across_a_closed_path_s_seam_counts_once(self) -> None:
+        # B crosses the diamond's last segment 2.8 cm before the seam, and ends 1.8 cm after it.
+        diamond = _curve([(0, 0, 0, 0), (1, -1, 0, 0), (2, 0, 0, 0), (1, 1, 0, 0)], closed=True)
+        junctions = find_junctions([diamond, _curve([(0, 1, 0), (0.02, -0.005, 0)])])
+        assert len(junctions) == 1
+
     def test_a_closed_path_meets_an_open_one_twice(self) -> None:
         ring = _curve([(-2, -2, 0), (2, -2, 0), (2, 2, 0), (-2, 2, 0)], closed=True)
         assert len(find_junctions([H, ring])) == 2
@@ -198,8 +204,9 @@ class TestJunctionSearchCost:
         same = network._same_junction
         monkeypatch.setattr(network, "_same_junction", lambda *args: compared.append(1) or same(*args))
         junctions = find_junctions([_comb(30, along_x=True), _comb(30, along_x=False)])
+        # The crossings lie about 20 cm apart: most have no junction within reach to compare with.
         assert len(junctions) > 800
-        assert len(compared) < 10 * len(junctions)
+        assert len(compared) < len(junctions) / 2
 
     def test_a_dense_pair_is_tested_in_bounded_passes(self, monkeypatch: pytest.MonkeyPatch) -> None:
         rng = random.Random(3)

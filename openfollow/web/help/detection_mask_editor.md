@@ -2,9 +2,9 @@
 
 Polygons that confine person detection to part of the camera image. With masking on, a person is detected only when their feet fall inside at least one mask; anyone outside every mask is ignored. Use this to keep the audience, wings, or a side screen from being tracked.
 
-## Apply masks
+## Detection area
 
-**Apply masks** is the master switch. It is **off by default**, so drawing a mask does not restrict anything until you turn it on - the masks you draw are saved but inactive. Turn it on to limit detection to the enabled regions; turn it off to detect over the whole frame again without deleting your masks.
+**Detection area** is the master switch. It is **Whole frame** by default, so drawing a mask does not restrict anything until you choose **Only inside the enabled masks** - the masks you draw are saved but inactive. Choose **Whole frame** again to detect over the whole frame without deleting your masks. With no mask enabled, detection covers the whole frame either way.
 
 This section is collapsible and starts collapsed; click the section header to expand it.
 
@@ -34,7 +34,7 @@ The canvas shows a still snapshot from the active video source. Press **Refresh 
 
 Below the canvas, one row per mask:
 
-- **Checkbox** – enable or disable that one mask without deleting it. Disabled masks are ignored even when **Apply masks** is on.
+- **Checkbox** – enable or disable that one mask without deleting it. Disabled masks are ignored even with **Only inside the enabled masks** chosen.
 - **Name** – a label for your own reference.
 - **Delete** – remove the mask.
 

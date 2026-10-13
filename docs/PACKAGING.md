@@ -263,13 +263,14 @@ rules:
 /usr/bin/nmcli con delete *
 ```
 
-Both are wildcarded because the profile name is operator-influenced. The narrowing is
-in the app layer rather than the sudoers rule: it refuses to delete a profile that is
-not a VLAN, and refuses to delete the interface serving the current request. That
-placement yields an actionable error rather than a bare sudo failure, and the threat
-model here is a web user holding the PIN, not someone with shell access. The runtime
-drop-in renders both from `ALL_CAPABILITIES`; only the Ansible playbook mirrors them
-by hand.
+Both are wildcarded because their arguments vary per profile: the operator-influenced
+name for `add`, the UUIDs of the VLAN's profiles for `delete` (profiles may share a
+name, and nmcli given a name deletes every one of them). The narrowing is in the app layer rather than
+the sudoers rule: it refuses to delete a profile that is not a VLAN, and refuses to
+delete the interface serving the current request. That placement yields an actionable
+error rather than a bare sudo failure, and the threat model here is a web user holding
+the PIN, not someone with shell access. The runtime drop-in renders both from
+`ALL_CAPABILITIES`; only the Ansible playbook mirrors them by hand.
 
 **No-DHCP fallback.** The `.deb` writes
 `/etc/NetworkManager/conf.d/10-openfollow-dhcp-fallback.conf`, and the image

@@ -28,7 +28,7 @@ Selecting a zone opens a tabbed detail panel below the canvas.
 
 - **Name** – label shown on the canvas and in diagnostics.
 - **Color** – zone outline and label colour. Click the swatch for the colour picker.
-- **Enabled** – uncheck to disable without deleting. Disabled zones don't fire OSC messages and aren't evaluated for occupancy.
+- **Zone** – untick **Use this zone** to disable it without deleting. Disabled zones don't fire OSC messages, aren't evaluated for occupancy and aren't drawn.
 - **Trigger Source** – what feeds the occupancy engine:
   - `Markers (PSN)` – tracked markers drive events (default).
   - `Detection (AI)` – person-detection bounding boxes drive events. Requires Person Detection enabled.

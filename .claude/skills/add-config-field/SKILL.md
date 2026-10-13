@@ -109,9 +109,9 @@ spec, not the implementation you just wrote.
 - **Help drawer:** update `openfollow/web/help/<section>.md` – the per-section `?`
   drawer (`data-help="<section>"`) is the single home for *how the control
   behaves*. Behavioural detail belongs here, not in a long inline `field-note`.
-- Keep the **website-docs mirror** in mind (the "Check help on merge" auto-memory).
-- For a notable top-level `AppConfig` or sub-config field, add/adjust the row in
-  the config tables in `CLAUDE.md`.
+- For a field with behaviour worth knowing, add/adjust its note in
+  [`docs/architecture/config.md`](../../../docs/architecture/config.md) (or the
+  subsystem guide it belongs to).
 - If any new source line carries a `# pragma: no cover`, add the matching row to
   the Pragma audit table in [`docs/COVERAGE.md`](../../../docs/COVERAGE.md) – a
   pragma without an audit row is a review blocker.
@@ -124,5 +124,5 @@ walks every partial and fails CI if an `<input>` whose `name` is in `FIELD_RULES
 lacks the standard markup, or a field ships without a rule.
 
 **Done when:** dataclass + routes dispatch + template + `FieldRule` + tests are
-all touched, the help `.md` (and any `CLAUDE.md` / `COVERAGE.md`) is updated, and
+all touched, the help `.md` (and any `docs/architecture/` guide / `COVERAGE.md`) is updated, and
 `make ci` is green.

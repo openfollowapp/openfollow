@@ -217,6 +217,10 @@
  line-height: 1.35;
  }
  .save-error a, .notice.error a { color: inherit; }
+ .pushed-settings-list { margin: 0; padding: 0; list-style: none; }
+ .pushed-settings-list li { margin: 0 0 0.4rem; }
+ .pushed-settings-list time { margin-right: 0.6rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+ .pushed-settings-earlier { color: var(--muted); }
  .section-head {
  display: flex;
  align-items: center;
@@ -767,6 +771,7 @@
  input[type="color"] { height: 39px; padding: 2px; cursor: pointer; }
  .checkbox-field { justify-content: flex-start; min-width: 180px; }
  .checkbox-wrap { height: 39px; display: flex; align-items: center; }
+ .checkbox-wrap.inline { height: auto; min-height: 39px; }
  input[type="checkbox"] {
  width: 18px;
  height: 18px;
@@ -1460,17 +1465,22 @@
  display: inline-flex;
  align-items: center;
  gap: 8px;
+ --toast-fill: var(--success-fill);
  border: 1px solid var(--success-border);
- background: linear-gradient(var(--success-fill), var(--success-fill)), rgba(7, 19, 13, 0.95);
+ background: linear-gradient(var(--toast-fill), var(--toast-fill)), rgba(7, 19, 13, 0.95);
  color: var(--text);
  padding: 10px 16px 10px 12px;
  border-radius: 999px;
  opacity: 0;
  transition: opacity 0.3s;
  font-weight: 600;
+ cursor: pointer;
+ pointer-events: none;
  }
  .toast::before { content: ""; flex: none; width: 16px; height: 16px; background: var(--success-sign) no-repeat center / contain; }
- .toast.show { opacity: 1; }
+ .toast.show { opacity: 1; pointer-events: auto; }
+ .toast.toast-caution { --toast-fill: var(--caution-fill); border-color: var(--caution-border); }
+ .toast.toast-caution::before { background-image: var(--info-sign); }
  /* Tab navigation */
  .tab-bar {
  display: flex;
@@ -2045,6 +2055,7 @@
  cursor: pointer;
  }
  .modal-close:hover { background: rgba(255, 255, 255, 0.06); color: var(--text); }
+ .modal-close[hidden] { display: none; }
  .modal-body {
  padding: 1rem 1.2rem;
  color: var(--text);
@@ -2327,7 +2338,7 @@
  <a href="/about">About &amp; license</a>
  </footer>
  </div>
- <div id="toast" class="toast"></div>
+ <div id="toast" class="toast" onclick="hideToast()"></div>
  <!-- Single ``#modal-root`` shared by all modals via helper functions.
  Helpers populate ``.modal-card`` and toggle ``hidden`` on backdrop. -->
  <div id="modal-root" class="modal-backdrop" hidden role="dialog" aria-modal="true" aria-labelledby="modal-title">
@@ -2575,13 +2586,57 @@
  });
  });
  }
- function showToast(message) {
+ const TOAST_MS = 10000;
+ let _toastTimer = null;
+ // ``level`` 'caution' is a change that went through with something worth knowing about it.
+ function showToast(message, level) {
  const toast = document.getElementById('toast');
  if (!toast) return;
  toast.textContent = message;
+ toast.classList.toggle('toast-caution', level === 'caution');
  toast.classList.add('show');
- setTimeout(() => toast.classList.remove('show'), 2000);
+ // A new toast gets the whole time, not what is left of the one it replaces.
+ clearTimeout(_toastTimer);
+ _toastTimer = setTimeout(hideToast, TOAST_MS);
  }
+ function hideToast() {
+ clearTimeout(_toastTimer);
+ const toast = document.getElementById('toast');
+ if (toast) toast.classList.remove('show');
+ }
+ const NO_BACKUP_MADE = 'No backup was made. Details in Logs.';
+ // A toast for the page the next load brings up; false when nothing can carry
+ // it there (a private window), and it is shown now instead.
+ const _TOAST_AFTER_RELOAD_KEY = 'openfollow.toastAfterReload';
+ function toastOnNextLoad(message, level) {
+ try {
+ sessionStorage.setItem(_TOAST_AFTER_RELOAD_KEY, JSON.stringify({ message, level }));
+ return true;
+ } catch (err) {
+ showToast(message, level);
+ return false;
+ }
+ }
+ // A confirmation for a change the page reloads to show. Shown now instead, a
+ // confirmation still reloads; a caution keeps the page, so it can be read.
+ function toastAfterReload(message, level) {
+ if (toastOnNextLoad(message, level)) {
+ window.location.reload();
+ } else if (level !== 'caution') {
+ setTimeout(() => window.location.reload(), 600);
+ }
+ }
+ document.addEventListener('DOMContentLoaded', () => {
+ let pending = null;
+ try {
+ const stored = sessionStorage.getItem(_TOAST_AFTER_RELOAD_KEY);
+ sessionStorage.removeItem(_TOAST_AFTER_RELOAD_KEY);
+ pending = JSON.parse(stored || 'null');
+ } catch (err) {
+ return;
+ }
+ if (pending) showToast(pending.message, pending.level);
+ });
  // ---- Help drawer () --------------------------------------
  //
  // Non-modal side panel showing the server-rendered help doc for a
@@ -5088,6 +5143,124 @@
  </script>
  % if defined('whats_new_pending') and whats_new_pending:
  <script>document.addEventListener('DOMContentLoaded', openfollowShowWhatsNew);</script>
+ % end
+ % if defined('config') and config:
+ <script>
+ // Settings another station pushed here: a locked modal on every page until someone removes the warning.
+ (function () {
+ const POLL_MS = 3000;
+ // What the open modal lists, so a poll redraws it whenever that changes.
+ let shownKey = '';
+ // The pushes counted when the page first asked: a later count means its forms may predate one.
+ let baseline = null;
+ function pushedSettingsBody(state) {
+ const body = document.createDocumentFragment();
+ const box = document.createElement('div');
+ box.className = 'notice';
+ const lead = document.createElement('div');
+ lead.textContent = 'The pushed settings are already applied.';
+ box.appendChild(lead);
+ body.appendChild(box);
+ const list = document.createElement('ul');
+ list.className = 'pushed-settings-list';
+ state.pushes.forEach((push) => {
+ const item = document.createElement('li');
+ const at = document.createElement('time');
+ at.textContent = push.time;
+ const sender = push.station ? push.station + ' (' + push.address + ')' : push.address;
+ item.append(at, sender + ' pushed ' + push.what);
+ if (push.backup_error) {
+ const caution = document.createElement('div');
+ caution.className = 'field-caution-msg';
+ caution.textContent = NO_BACKUP_MADE;
+ item.appendChild(caution);
+ }
+ list.appendChild(item);
+ });
+ if (state.earlier) {
+ const item = document.createElement('li');
+ item.className = 'pushed-settings-earlier';
+ item.textContent = '+' + state.earlier + ' earlier';
+ list.appendChild(item);
+ }
+ body.appendChild(list);
+ return body;
+ }
+ async function removePushedSettingsWarning(upto, run, btn) {
+ const saveError = window.OpenFollow.saveError;
+ const card = document.querySelector('#modal-root .modal-card');
+ btn.disabled = true;
+ try {
+ const res = await fetch('/api/pushed-settings/remove', {
+ method: 'POST',
+ headers: { 'Content-Type': 'application/json' },
+ body: JSON.stringify({ upto, run }),
+ });
+ // 409: OpenFollow restarted since the modal was drawn; the reload shows what is pending now.
+ if (!res.ok && res.status !== 409) {
+ btn.disabled = false;
+ saveError.show(card, await saveError.fromResponse(res), 'Not removed.', btn.parentElement);
+ return;
+ }
+ } catch (err) {
+ btn.disabled = false;
+ saveError.show(card, saveError.UNREACHABLE, 'Not removed.', btn.parentElement);
+ return;
+ }
+ // The page shows the pushed values; a newer push still pending opens the modal again.
+ window.location.reload();
+ }
+ async function pollPushedSettings() {
+ // A hidden tab asks again when it is shown; the first ask sets the baseline regardless.
+ if (document.hidden && baseline) return;
+ let state;
+ try {
+ const res = await fetch('/api/pushed-settings', { headers: { Accept: 'application/json' } });
+ if (!res.ok) return;
+ state = await res.json();
+ } catch (err) {
+ return;
+ }
+ const root = document.getElementById('modal-root');
+ if (!root || !state || !Array.isArray(state.pushes)) return;
+ const ours = !root.hidden && root.dataset.pushedSettings === '1';
+ if (!baseline) baseline = { run: state.run, received: state.received };
+ // Ids and counts start again on every run.
+ const pushedSinceLoad = state.run === baseline.run ? state.received !== baseline.received : state.received > 0;
+ // A device-password prompt must stay answerable; the locked modal would make it inert.
+ if (document.querySelector('#privilege-password-modal [role="dialog"]')) {
+ if (ours) closeModal();
+ return;
+ }
+ if (!state.pushes.length) {
+ // Removed elsewhere: reload for the pushed values, once no other modal is in the way.
+ if (pushedSinceLoad && (ours || root.hidden)) window.location.reload();
+ else if (ours) closeModal();
+ return;
+ }
+ const key = state.run + ':' + state.earlier + ':' + state.pushes.map((push) => push.id).join(',');
+ if (ours && key === shownKey) return;
+ if (!ours && !root.hidden) return;
+ shownKey = key;
+ const latest = state.pushes[0].id;
+ openModal({
+ title: 'Settings were pushed to this station',
+ bodyHTML: pushedSettingsBody(state),
+ dismissable: false,
+ footerButtons: [
+ { label: 'Remove Warning', kind: 'primary', onClick: (btn) => removePushedSettingsWarning(latest, state.run, btn) },
+ ],
+ onClose: () => { delete root.dataset.pushedSettings; },
+ });
+ root.dataset.pushedSettings = '1';
+ }
+ document.addEventListener('DOMContentLoaded', () => {
+ pollPushedSettings();
+ setInterval(pollPushedSettings, POLL_MS);
+ document.addEventListener('visibilitychange', pollPushedSettings);
+ });
+ })();
+ </script>
  % end
  %# Privilege-password modal. Surfaces whenever a privileged subsystem
  %# (e.g. a network apply) parks a password prompt on the broker. Global so

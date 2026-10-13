@@ -14,12 +14,18 @@
         <h3 class="group-title">Global</h3>
         <div class="row">
             <div class="field checkbox-field">
-                <label>Enabled</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="enabled" {{'checked' if config.trigger_zones.enabled else ''}}></div>
+                <label for="trigger-zones-enabled">Trigger zones</label>
+                <div class="checkbox-wrap checkbox-field inline">
+                    <input type="checkbox" id="trigger-zones-enabled" name="enabled" {{'checked' if config.trigger_zones.enabled else ''}}>
+                    <label for="trigger-zones-enabled">Send zone OSC events</label>
+                </div>
             </div>
             <div class="field checkbox-field">
-                <label>Show Overlay</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="show_overlay" {{'checked' if config.trigger_zones.show_overlay else ''}}></div>
+                <label for="trigger-zones-show-overlay">Overlay</label>
+                <div class="checkbox-wrap checkbox-field inline">
+                    <input type="checkbox" id="trigger-zones-show-overlay" name="show_overlay" {{'checked' if config.trigger_zones.show_overlay else ''}}>
+                    <label for="trigger-zones-show-overlay">Show zones on the Operator Screen</label>
+                </div>
             </div>
             <div class="field">
                 <label>Eval Rate (FPS)</label>

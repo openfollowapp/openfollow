@@ -272,6 +272,18 @@ class TestRun:
             "Diagnostics saved to SanDisk Ultra",
         )
 
+    def test_check_pushed_settings_posts_the_newest_push(self, patched_ctor) -> None:  # noqa: ANN001
+        from types import SimpleNamespace
+
+        from openfollow.web.pushed_settings import PushedSettings
+
+        app = OpenFollowApp(config_path=patched_ctor.cfg_path)
+        register = PushedSettings()
+        register.record("Stage Left", "198.51.100.7", "Grid")
+        app._web_server = SimpleNamespace(pushed_settings=register)
+        app._check_pushed_settings()
+        assert app._runtime_services._status_flags["pushed_settings"] == ("info", "Settings pushed from Stage Left")
+
     def test_loopback_resolution_logs_degraded_warning_not_ready(
         self,
         patched_ctor,

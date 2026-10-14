@@ -1930,7 +1930,7 @@ class TestServeOnAllInterfacesIsTheLockoutEscape:
         """A hand edit that broke the file must not block the way back in."""
         _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
         app = _make_app()
-        app._config = AppConfig(web_bind_iface="eth0", psn_system_name="Stage Left")
+        app._config = AppConfig(network_mode="advanced", web_bind_iface="eth0", psn_system_name="Stage Left")
         app._config_path = str(tmp_path / "config.toml")
         (tmp_path / "config.toml").write_text("web_bind_iface = [unclosed", encoding="utf-8")
         anm.enter_pi_network(app)
@@ -3264,7 +3264,7 @@ class TestTheSimpleScreen:
         assert any(row.get("kind") == "notice" for row in anm.build_pi_network_rows(app))
 
     def test_a_web_bind_address_keeps_the_lockout_escape(self, monkeypatch, tmp_path) -> None:
-        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda _app: True)
+        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda _app, *_names, **_kw: True)
         app = _simple_app(monkeypatch, tmp_path)
         assert "web_unpin" not in _keys(app)
         app._config.web_bind = "192.168.1.50"

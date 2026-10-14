@@ -2150,9 +2150,21 @@ def test_apply_runtime_leaves_a_field_the_running_input_shares_to_the_swap() -> 
         def swap_video(self, new_cfg: AppConfig) -> None:
             raise RuntimeError("simulated pipeline build failure")
 
-    app = _DummyApp(AppConfig(video_source_type="rtsp", rtsp_url="rtsp://192.0.2.20/stream", video_input_iface="eth0"))
+    app = _DummyApp(
+        AppConfig(
+            network_mode="advanced",
+            video_source_type="rtsp",
+            rtsp_url="rtsp://192.0.2.20/stream",
+            video_input_iface="eth0",
+        )
+    )
     app._runtime_services = _FailingRuntimeServices()
-    new_config = AppConfig(video_source_type="rtsp", rtsp_url="rtsp://192.0.2.20/stream", video_input_iface="eth1")
+    new_config = AppConfig(
+        network_mode="advanced",
+        video_source_type="rtsp",
+        rtsp_url="rtsp://192.0.2.20/stream",
+        video_input_iface="eth1",
+    )
 
     assert apply_runtime_config_changes(app, new_config) is False
 

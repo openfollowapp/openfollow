@@ -3055,6 +3055,25 @@ class TestTheSimpleScreen:
         headers = [row.get("label") for row in anm.build_pi_network_rows(app) if row.get("kind") == "header"]
         assert "IPv4 \u2013 eth0" in headers
 
+    def test_an_empty_reading_leaves_nothing_of_an_earlier_visit(self, monkeypatch, tmp_path) -> None:
+        adapter = _FakeAdapter()
+        app = _simple_app(monkeypatch, tmp_path, adapter=adapter)
+        assert app._pi_network_active_iface == "eth0"
+        anm.exit_pi_network(app)
+        adapter._interfaces = []
+        anm.enter_pi_network(app)
+        labels = [row.get("label") for row in anm.build_pi_network_rows(app)]
+        assert "This station has no network interface." in labels
+        assert "IPv4" in labels
+
+    def test_a_reentry_read_that_overruns_leaves_nothing_to_apply(self, monkeypatch, tmp_path) -> None:
+        app = _simple_app(monkeypatch, tmp_path)
+        anm.exit_pi_network(app)
+        monkeypatch.setattr(anm, "_refresh_pi_network_bounded", lambda _app: None)
+        anm.enter_pi_network(app)
+        assert app._pi_network_pending_config is None
+        assert "apply" not in _keys(app)
+
     def test_a_station_with_no_interface_says_so(self, monkeypatch, tmp_path) -> None:
         adapter = _FakeAdapter()
         adapter._interfaces = []
@@ -3277,6 +3296,26 @@ class TestTheSimpleMethodAndDns:
         app._pi_network_field_seeded = False
         anm.confirm_pi_network_field_edit(app)
         assert app._pi_network_pending_config.dns == expected
+
+    @pytest.mark.parametrize("field", ["dns_1", "dns_2"])
+    def test_confirming_a_dns_server_unchanged_edits_nothing(self, monkeypatch, tmp_path, field) -> None:
+        adapter = _FakeAdapter()
+        app = _simple_app(monkeypatch, tmp_path, adapter=adapter)
+        _confirm_key(app, field)
+        anm.confirm_pi_network_field_edit(app)
+        _confirm_key(app, "apply")
+        app._pi_network_worker.join(timeout=5)
+        # Still the lease's own servers, so none are pinned.
+        assert adapter.apply_calls[0][1].dns == ()
+
+    def test_static_to_dhcp_leaves_the_static_dns_behind(self, monkeypatch, tmp_path) -> None:
+        adapter = _FakeAdapter()
+        adapter.method = Ipv4Method.STATIC
+        app = _simple_app(monkeypatch, tmp_path, adapter=adapter)
+        _confirm_key(app, "method")
+        _confirm_key(app, "method:dhcp")
+        assert app._pi_network_pending_config.dns == ()
+        assert _row(app, "dns_1")["value"] == ""
 
     def test_an_empty_dns_slot_opens_on_digits_to_edit(self, monkeypatch, tmp_path) -> None:
         app = _simple_app(monkeypatch, tmp_path)

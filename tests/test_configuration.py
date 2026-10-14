@@ -7541,3 +7541,10 @@ def test_a_mode_switch_reaches_the_running_config(old: str, new: str) -> None:
     app = _DummyApp(AppConfig(network_mode=old))
     apply_runtime_config_changes(app, AppConfig(network_mode=new))
     assert app._config.network_mode == new
+
+
+def test_a_cleared_web_ui_pin_reaches_the_running_config() -> None:
+    """The listener waits for a restart, but a whole-config save must not write the pin back."""
+    app = _DummyApp(AppConfig(network_mode="advanced", web_bind_iface="eth1"))
+    apply_runtime_config_changes(app, AppConfig(network_mode="simple"))
+    assert app._config.web_bind_iface == ""

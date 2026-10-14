@@ -3488,6 +3488,10 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
     # pins it clears arrive through their own sections above.
     if new_config.network_mode != app._config.network_mode:
         app._config.network_mode = new_config.network_mode
+    # The listener moves only on a restart, but a whole-config save must not
+    # write a cleared pin back, and the Network screen reads the saved one.
+    if new_config.web_bind_iface != app._config.web_bind_iface:
+        app._config.web_bind_iface = new_config.web_bind_iface
     # Read live by the HUD's outage rows and the Network screen; nothing to rebind.
     if new_config.interface_labels != app._config.interface_labels:
         app._config.interface_labels = dict(new_config.interface_labels)

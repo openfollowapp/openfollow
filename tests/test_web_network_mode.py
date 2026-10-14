@@ -38,6 +38,12 @@ def _saved(tmp_path) -> AppConfig:
     return load_config(_config_path(tmp_path))
 
 
+@pytest.fixture(autouse=True)
+def _no_host_route_probe(monkeypatch):
+    """Automatic resolves to nothing unless a test says otherwise: never the host's own route."""
+    monkeypatch.setattr(net_utils_module, "auto_station_iface", lambda: "")
+
+
 @pytest.fixture()
 def present(monkeypatch):
     """eth0 and wlan0 exist with addresses; Automatic resolves to eth0."""

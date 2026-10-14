@@ -69,9 +69,18 @@ def enter_pi_network(app: OpenFollowApp) -> None:
     # needs to see first.
     app._pi_network_static_edit = False
     app._pi_network_picker = ""
+    _forget_pi_network_reading(app)
     _refresh_pi_network_bounded(app)
     # Skip non-selectable header row.
     app._pi_network_index = _first_selectable_index(app)
+
+
+def _forget_pi_network_reading(app: OpenFollowApp) -> None:
+    """Drop the last reading before a re-read: one that overruns its budget must
+    not leave another interface's settings on screen to apply."""
+    app._pi_network_pending_config = None
+    app._pi_network_state_cache = None
+    app._pi_network_read_station = None
 
 
 def _first_selectable_index(app: OpenFollowApp) -> int:
@@ -184,6 +193,10 @@ def _apply_pi_network_snapshot(app: OpenFollowApp, snap: _NetworkSnapshot) -> No
     if not snap.interfaces:
         app._pi_network_state_cache = None
         app._pi_network_pending_config = None
+        # Nothing of an earlier visit's interface may stay on screen.
+        app._pi_network_active_iface = ""
+        app._pi_network_auto_iface = ""
+        app._pi_network_read_station = snap.station
         return
     app._pi_network_active_iface = snap.active_iface
     app._pi_network_methods = snap.methods
@@ -824,10 +837,7 @@ def _pick_station_iface(app: OpenFollowApp, name: str) -> None:
     # Applied now, not on the next one-second poll: the screen re-reads from the running config.
     app._last_config_check = 0.0
     app._check_config_reload()
-    # A read that overruns its budget must not leave the old interface's settings to apply to this one.
-    app._pi_network_pending_config = None
-    app._pi_network_state_cache = None
-    app._pi_network_read_station = None
+    _forget_pi_network_reading(app)
     _refresh_pi_network_bounded(app)
     if _station_iface(app) != name:
         _set_banner(app, "Saved, but not applied yet. Check the station's status rows.", "caution")
@@ -837,7 +847,11 @@ def _pick_station_iface(app: OpenFollowApp, name: str) -> None:
 
 
 def _pick_method(app: OpenFollowApp, value: str) -> None:
-    """Change the pending method; only the fields that method owns carry over. DNS always does."""
+    """Change the pending method; only the fields that method owns carry over.
+
+    DNS does too, except from a static interface to plain DHCP: its servers are
+    the static network's, and DHCP brings its own.
+    """
     method = next((m for m, _label in _METHOD_CHOICES if m.value == value), None)
     _close_picker(app)
     if method is None:
@@ -850,9 +864,14 @@ def _pick_method(app: OpenFollowApp, value: str) -> None:
         address=pending.address if keep_address else None,
         prefix=pending.prefix if keep_rest else None,
         router=pending.router if keep_rest else None,
-        dns=pending.dns,
+        dns=() if method == Ipv4Method.DHCP and _interface_is_static(app) else pending.dns,
     )
     _focus_row(app, "method")
+
+
+def _interface_is_static(app: OpenFollowApp) -> bool:
+    state: NetworkState | None = getattr(app, "_pi_network_state_cache", None)
+    return state is not None and state.ipv4.method == Ipv4Method.STATIC
 
 
 def _iface_detail_rows(
@@ -1310,7 +1329,8 @@ def confirm_pi_network_field_edit(app: OpenFollowApp) -> None:
         new_dns[index] = "" if canon in (None, "0.0.0.0") else canon
         # No gaps: an apply refuses an empty server, so the rest move up.
         new_dns = [server for server in new_dns if server]
-        app._pi_network_dns_edited = True
+        if tuple(new_dns) != tuple(pending.dns):
+            app._pi_network_dns_edited = True
 
     app._pi_network_pending_config = Ipv4Config(
         method=pending.method,

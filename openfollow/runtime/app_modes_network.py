@@ -755,7 +755,8 @@ def _unpin_web_ui(app: OpenFollowApp) -> None:
         return
     cfg.web_bind = ""
     cfg.web_bind_iface = ""
-    if not _persist_config(app):
+    # The escape must work on a file that no longer parses.
+    if not _persist_config(app, "web_bind", "web_bind_iface", replace_unreadable=True):
         cfg.web_bind, cfg.web_bind_iface = previous
         _set_banner(app, "Could not save - web UI is still pinned.")
         return
@@ -774,20 +775,16 @@ def _remove_fqdn(app: OpenFollowApp) -> None:
     Only this field is written, into the file as it is on disk, so a web save the
     hot reload has not picked up yet is kept rather than overwritten.
     """
-    from openfollow.configuration import config_write_lock, load_config, save_config
+    from openfollow.runtime.app_modes import _persist_config
 
-    if not _station_fqdn(app):
-        return
-    try:
-        with config_write_lock:
-            cfg = load_config(app._config_path, strict=True)
-            cfg.station_fqdn = ""
-            save_config(cfg, app._config_path)
-    except Exception:  # noqa: BLE001 - a failed save is reported on the screen
-        logger.exception("Could not remove the station FQDN")
-        _set_banner(app, "Could not save - the FQDN is still set.")
+    previous = _station_fqdn(app)
+    if not previous:
         return
     app._config.station_fqdn = ""
+    if not _persist_config(app, "station_fqdn"):
+        app._config.station_fqdn = previous
+        _set_banner(app, "Could not save - the FQDN is still set.")
+        return
     app._runtime_services.apply_station_fqdn_change("")
     _set_banner(app, "FQDN removed.", "success")
     _focus_row(app, "")

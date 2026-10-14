@@ -1822,7 +1822,9 @@ class TestServeOnAllInterfacesIsTheLockoutEscape:
     def test_it_clears_the_pin_and_asks_for_a_restart(self, monkeypatch) -> None:
         _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
         saved: list[object] = []
-        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda app: saved.append(app) or True)
+        monkeypatch.setattr(
+            "openfollow.runtime.app_modes._persist_config", lambda app, *names, **_kw: saved.append(names) or True
+        )
         app = _make_app()
         app._config.web_bind_iface = "eth0"
         anm.enter_pi_network(app)
@@ -1830,7 +1832,7 @@ class TestServeOnAllInterfacesIsTheLockoutEscape:
         _confirm_key(app, "web_unpin")
 
         assert app._config.web_bind_iface == ""
-        assert saved, "the cleared pin was never written to disk"
+        assert saved == [("web_bind", "web_bind_iface")], "the cleared pins were not written to disk"
         assert app._restart_requests == 1
 
     def test_it_is_offered_only_while_the_ui_is_pinned(self, monkeypatch) -> None:
@@ -1844,7 +1846,7 @@ class TestServeOnAllInterfacesIsTheLockoutEscape:
         addressing this build cannot manage is exactly where a lockout would
         otherwise be permanent."""
         _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
-        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda app: True)
+        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda app, *names, **_kw: True)
         app = _make_app(_FakeAdapter(writable=False))
         app._config.web_bind_iface = "eth0"
         anm.enter_pi_network(app)
@@ -1857,7 +1859,7 @@ class TestServeOnAllInterfacesIsTheLockoutEscape:
         """Restarting on an unwritten change would reboot the station into the
         same lockout and look like the escape simply did not work."""
         _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
-        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda app: False)
+        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda app, *names, **_kw: False)
         app = _make_app()
         app._config.web_bind_iface = "eth0"
         anm.enter_pi_network(app)
@@ -1867,6 +1869,21 @@ class TestServeOnAllInterfacesIsTheLockoutEscape:
         assert app._config.web_bind_iface == "eth0"
         assert app._restart_requests == 0
         assert "still pinned" in app._pi_network_banner
+
+    def test_it_works_on_a_config_file_that_no_longer_parses(self, monkeypatch, tmp_path) -> None:
+        """A hand edit that broke the file must not block the way back in."""
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        app = _make_app()
+        app._config = AppConfig(web_bind_iface="eth0", psn_system_name="Stage Left")
+        app._config_path = str(tmp_path / "config.toml")
+        (tmp_path / "config.toml").write_text("web_bind_iface = [unclosed", encoding="utf-8")
+        anm.enter_pi_network(app)
+
+        _confirm_key(app, "web_unpin")
+
+        saved = load_config(app._config_path, strict=True)
+        assert (saved.web_bind_iface, saved.psn_system_name) == ("", "Stage Left")
+        assert app._restart_requests == 1
 
 
 class TestTheStationFqdn:
@@ -2167,7 +2184,9 @@ class TestDefensivePathsOnTheReachabilityScreen:
         """The row is only offered while pinned, so reaching this means the
         pin was cleared since it was rendered - the work is already done."""
         saved: list[object] = []
-        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda app: saved.append(app) or True)
+        monkeypatch.setattr(
+            "openfollow.runtime.app_modes._persist_config", lambda app, *names, **_kw: saved.append(names) or True
+        )
         app = _make_app()
         anm.enter_pi_network(app)
 
@@ -2260,7 +2279,7 @@ class TestTheScreenReportsTheLiveBindNotThePin:
         """Clearing only the interface pin would leave this station exactly
         as unreachable while reporting the escape succeeded."""
         _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
-        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda app: True)
+        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda app, *names, **_kw: True)
         app = _make_app()
         app._config.web_bind = "192.168.1.5"
         app._web_server = _FakeWebServer(bind_host="192.168.1.5")
@@ -2273,7 +2292,7 @@ class TestTheScreenReportsTheLiveBindNotThePin:
 
     def test_a_failed_save_restores_both_pins(self, monkeypatch) -> None:
         _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
-        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda app: False)
+        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda app, *names, **_kw: False)
         app = _make_app()
         app._config.web_bind = "192.168.1.5"
         app._config.web_bind_iface = "eth0"
@@ -2318,7 +2337,7 @@ class TestTheCursorSurvivesRowsAppearingAndDisappearing:
         """The escape removes its own row. Landing on the next action down
         means a second Enter tap reconfigures the interface."""
         _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
-        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda app: True)
+        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda app, *names, **_kw: True)
         app = _make_app()
         app._config.web_bind_iface = "eth0"
         app._web_server = _FakeWebServer(bind_host="192.168.1.5")
@@ -2775,7 +2794,7 @@ class TestTheResultLineCarriesItsLevel:
     @pytest.mark.parametrize(("saved", "level"), [(True, "info"), (False, "error")])
     def test_the_unpin_escape(self, monkeypatch, saved: bool, level: str) -> None:
         _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
-        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda app: saved)
+        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda app, *names, **_kw: saved)
         app = _make_app()
         app._config.web_bind_iface = "eth0"
         app._web_server = _FakeWebServer(bind_host="192.168.1.5")

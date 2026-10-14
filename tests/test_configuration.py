@@ -33,8 +33,10 @@ from openfollow.configuration import (
     _apply_with_fallback,
     apply_runtime_config_changes,
     config_to_toml_dict,
+    config_write_lock,
     load_config,
     save_config,
+    save_config_fields,
     viewed_with_controlled,
 )
 from openfollow.lens_model import lens_warp_is_valid
@@ -2047,8 +2049,8 @@ def test_a_station_change_leaves_a_video_input_with_its_own_pin(monkeypatch) -> 
 def test_apply_runtime_swaps_video_on_source_type_change() -> None:
     """Switching ``video_source_type`` between plugins (RTSP → SRT)
     also routes through the live-swap path. The dispatcher commits
-    every plugin field from the new plugin; old plugin fields not
-    used by the new one are left as-is in storage."""
+    every plugin field from the new plugin; the old plugin's fields
+    then take the file's values like any input that is not running."""
     app = _DummyApp(
         AppConfig(
             video_source_type="rtsp",
@@ -2064,19 +2066,15 @@ def test_apply_runtime_swaps_video_on_source_type_change() -> None:
 
     assert app._config.video_source_type == "srt"
     assert app._config.srt_host == "srt://10.0.0.5:5000"
+    assert app._config.rtsp_url == new_config.rtsp_url
     assert app._web_commands.restart_requested is False
     assert app._runtime_services.video_swaps == [new_config]
 
 
 def test_apply_runtime_video_swap_failure_reverts_config() -> None:
-    """When the orchestrator raises, ``_apply_with_fallback`` walks
-    the snapshot back into ``app._config``: every NEW-plugin field
-    the dispatcher just committed gets restored, and
-    ``video_source_type`` reverts. Old-plugin fields (e.g.
-    ``rtsp_url`` during an RTSP → SRT swap) are not touched either
-    way – the dispatcher's commit loop only writes new-plugin
-    fields, so they stay at their pre-swap values regardless of
-    success/failure."""
+    """When the orchestrator raises, ``video_source_type`` reverts and the
+    running input's fields (``rtsp_url`` during an RTSP → SRT swap) stay as it
+    runs them. The new input is not running, so its fields keep the file's values."""
 
     class _FailingRuntimeServices(_DummyRuntimeServices):
         def swap_video(self, new_cfg: AppConfig) -> None:
@@ -2096,13 +2094,354 @@ def test_apply_runtime_video_swap_failure_reverts_config() -> None:
 
     apply_runtime_config_changes(app, new_config)
 
-    # ``video_source_type`` reverted; new-plugin fields walked back
-    # to the snapshot defaults so a later reload retries instead of
-    # no-opping; old-plugin fields untouched throughout.
     assert app._config.video_source_type == "rtsp"
     assert app._config.rtsp_url == "rtsp://192.168.0.20:554/stream"
-    assert app._config.srt_host == AppConfig().srt_host  # back to default
+    assert app._config.srt_host == "srt://10.0.0.5:5000"
     assert app._web_commands.restart_requested is False
+
+
+def test_apply_runtime_mirrors_the_fields_of_an_input_that_failed_to_start() -> None:
+    """A failed swap leaves the new input not running, so its fields take the
+    file's values like any other input's: a later switch to it is built from them."""
+
+    class _FailingRuntimeServices(_DummyRuntimeServices):
+        def swap_video(self, new_cfg: AppConfig) -> None:
+            raise RuntimeError("simulated pipeline build failure")
+
+    app = _DummyApp(
+        AppConfig(video_source_type="srt", srt_host="srt://192.0.2.21:5000", rtsp_url="rtsp://192.0.2.20/one")
+    )
+    app._runtime_services = _FailingRuntimeServices()
+    new_config = AppConfig(video_source_type="rtsp", srt_host="srt://192.0.2.21:5000", rtsp_url="rtsp://192.0.2.20/two")
+
+    assert apply_runtime_config_changes(app, new_config) is False
+
+    assert app._config.video_source_type == "srt"
+    assert app._config.rtsp_url == "rtsp://192.0.2.20/two"
+
+
+def test_apply_runtime_mirrors_the_fields_of_inputs_that_are_not_running() -> None:
+    """An input that is not running reads nothing from its fields, so the reload
+    takes them as the file has them, without rebuilding the running input."""
+    app = _DummyApp(AppConfig(video_source_type="rtsp", rtsp_url="rtsp://192.0.2.20/stream"))
+    new_config = AppConfig(
+        video_source_type="rtsp",
+        rtsp_url="rtsp://192.0.2.20/stream",
+        ndi_source_name="CAM-HOST (Camera 2)",
+        avf_unique_id="avf-test-id",
+        testpattern_selected_media="default:grey",
+        picam_width=1280,
+    )
+
+    assert apply_runtime_config_changes(app, new_config) is True
+
+    assert app._config.ndi_source_name == "CAM-HOST (Camera 2)"
+    assert app._config.avf_unique_id == "avf-test-id"
+    assert app._config.testpattern_selected_media == "default:grey"
+    assert app._config.picam_width == 1280
+    assert app._runtime_services.video_swaps == []
+
+
+def test_apply_runtime_leaves_a_field_the_running_input_shares_to_the_swap() -> None:
+    """``video_input_iface`` belongs to RTSP as well as SRT and RTP: while RTSP runs,
+    a failed swap keeps the value the running input was built with."""
+
+    class _FailingRuntimeServices(_DummyRuntimeServices):
+        def swap_video(self, new_cfg: AppConfig) -> None:
+            raise RuntimeError("simulated pipeline build failure")
+
+    app = _DummyApp(AppConfig(video_source_type="rtsp", rtsp_url="rtsp://192.0.2.20/stream", video_input_iface="eth0"))
+    app._runtime_services = _FailingRuntimeServices()
+    new_config = AppConfig(video_source_type="rtsp", rtsp_url="rtsp://192.0.2.20/stream", video_input_iface="eth1")
+
+    assert apply_runtime_config_changes(app, new_config) is False
+
+    assert app._config.video_input_iface == "eth0"
+
+
+def test_apply_runtime_mirrors_every_input_field_while_the_type_names_no_input() -> None:
+    """A hand-edited file can name a removed plugin: no input runs, so every
+    input's fields are taken as the file has them."""
+    app = _DummyApp(AppConfig(video_source_type="removed-plugin"))
+    new_config = AppConfig(
+        video_source_type="removed-plugin", rtsp_url="rtsp://192.0.2.20/stream", srt_host="srt://192.0.2.21:5000"
+    )
+
+    assert apply_runtime_config_changes(app, new_config) is True
+
+    assert (app._config.rtsp_url, app._config.srt_host) == ("rtsp://192.0.2.20/stream", "srt://192.0.2.21:5000")
+    assert app._runtime_services.video_swaps == []
+
+
+def test_apply_runtime_mirrors_no_plugin_field_that_is_not_stored(monkeypatch) -> None:
+    """A plugin field with no ``AppConfig`` counterpart is never in the file, so
+    there is nothing to mirror and the reload must not trip over it."""
+    from openfollow.video.inputs import get_registry
+    from openfollow.video.inputs._base import ConfigField
+
+    class _UnstoredInput:
+        @classmethod
+        def config_fields(cls) -> list[ConfigField]:
+            return [ConfigField("unstored_width", int, 1920, "Width")]
+
+    registry = {**get_registry(), "unstored": _UnstoredInput}
+    monkeypatch.setattr("openfollow.video.inputs.get_registry", lambda: registry)
+    app = _DummyApp(AppConfig(video_source_type="rtsp"))
+
+    assert apply_runtime_config_changes(app, AppConfig(video_source_type="rtsp", ndi_source_name="CAM")) is True
+
+    assert app._config.ndi_source_name == "CAM"
+    assert not hasattr(app._config, "unstored_width")
+
+
+# ---------------------------------------------------------------------------
+# On-screen saves keep what the file holds
+# ---------------------------------------------------------------------------
+
+
+def _app_on_file(path: str) -> _DummyApp:
+    app = _DummyApp(load_config(path))
+    app._config_path = path
+    return app
+
+
+def test_an_on_screen_save_after_a_reload_keeps_the_file_edits(tmp_path) -> None:
+    """The file is edited while the app runs and reloaded; an Operator Screen save
+    afterwards must not write the running config's older values back."""
+    from openfollow.runtime import app_modes
+
+    path = str(tmp_path / "config.toml")
+    save_config(AppConfig(video_source_type="rtsp", rtsp_url="rtsp://192.0.2.20/stream"), path)
+    app = _app_on_file(path)
+    edited = load_config(path)
+    edited.ndi_source_name = "CAM-HOST (Camera 2)"
+    edited.avf_unique_id = "avf-test-id"
+    edited.testpattern_selected_media = "default:grey"
+    edited.web_port = 8080  # restart-only: the reload never takes it in
+    edited.controlled_marker_ids = [1, 2]
+    save_config(edited, path)
+    assert apply_runtime_config_changes(app, load_config(path, strict=True)) is True
+
+    app_modes._toggle_zone_overlay(app)
+
+    saved = load_config(path)
+    assert saved.trigger_zones.show_overlay is False
+    assert saved.ndi_source_name == "CAM-HOST (Camera 2)"
+    assert saved.avf_unique_id == "avf-test-id"
+    assert saved.testpattern_selected_media == "default:grey"
+    assert saved.web_port == 8080
+    assert saved.controlled_marker_ids == [1, 2]
+
+
+def test_an_on_screen_source_switch_after_a_reload_uses_the_file_values(tmp_path) -> None:
+    """Change Video Source builds the new input from the running config, so the
+    reload must have taken in that input's fields while another one ran."""
+    from openfollow.runtime import app_modes
+
+    path = str(tmp_path / "config.toml")
+    save_config(AppConfig(video_source_type="rtsp", ndi_source_name="CAM-HOST (Camera 1)"), path)
+    app = _app_on_file(path)
+    edited = load_config(path)
+    edited.ndi_source_name = "CAM-HOST (Camera 2)"
+    save_config(edited, path)
+    assert apply_runtime_config_changes(app, load_config(path, strict=True)) is True
+    app._available_source_types = [("ndi", "NDI")]
+    app._selected_source_type_index = 0
+    app._enter_source_selection = lambda: None
+
+    app_modes.confirm_source_type_selection(app)
+
+    assert [cfg.ndi_source_name for cfg in app._runtime_services.video_swaps] == ["CAM-HOST (Camera 2)"]
+    saved = load_config(path)
+    assert (saved.video_source_type, saved.ndi_source_name) == ("ndi", "CAM-HOST (Camera 2)")
+
+
+def test_a_reload_while_an_auto_chained_url_editor_is_open_keeps_the_switch(tmp_path) -> None:
+    """Change Video Source to an input that needs a URL first opens the editor with
+    the old input still running. A reload landing then, as one does right after the
+    operator's previous save, must not take the switch back."""
+    from openfollow.runtime import app_modes
+
+    class _NeedsUrl(_DummyRuntimeServices):
+        def swap_video(self, new_cfg: AppConfig) -> None:
+            super().swap_video(new_cfg)
+            if new_cfg.video_source_type == "rtsp" and not new_cfg.rtsp_url:
+                raise ValueError("rtsp_url is empty")
+
+    path = str(tmp_path / "config.toml")
+    save_config(AppConfig(video_source_type="ndi", ndi_source_name="CAM-HOST (Camera 1)", rtsp_url=""), path)
+    app = _app_on_file(path)
+    app._runtime_services = _NeedsUrl()
+    app._available_source_types = [("rtsp", "RTSP")]
+    app._selected_source_type_index = 0
+    banners: list[str] = []
+    app._enter_url_editor = lambda **kw: app_modes.enter_url_editor(app, **kw)
+    app._confirm_url_editor = lambda: app_modes.confirm_url_editor(app)
+    app._enter_settings_menu = lambda **kw: banners.append(kw.get("banner", ""))
+
+    app_modes.confirm_source_type_selection(app)
+    assert app._url_editor_active is True
+    assert apply_runtime_config_changes(app, load_config(path, strict=True)) is True
+    for ch in "rtsp://192.0.2.20/stream":
+        app_modes.handle_url_editor_key(app, ch)
+    app_modes.handle_url_editor_key(app, "Enter")
+
+    assert [cfg.video_source_type for cfg in app._runtime_services.video_swaps] == ["rtsp", "rtsp"]
+    assert app._config.video_source_type == "rtsp"
+    saved = load_config(path)
+    assert (saved.video_source_type, saved.rtsp_url) == ("rtsp", "rtsp://192.0.2.20/stream")
+    assert banners == []
+
+
+def test_a_reload_while_an_auto_chained_value_picker_is_open_keeps_the_switch(tmp_path) -> None:
+    from openfollow.runtime import app_modes
+
+    class _FailsFirst(_DummyRuntimeServices):
+        def swap_video(self, new_cfg: AppConfig) -> None:
+            super().swap_video(new_cfg)
+            if len(self.video_swaps) == 1:
+                raise RuntimeError("device busy")
+
+    path = str(tmp_path / "config.toml")
+    save_config(AppConfig(video_source_type="ndi", v4l2_render_resolution="native"), path)
+    app = _app_on_file(path)
+    app._runtime_services = _FailsFirst()
+    app._available_source_types = [("v4l2", "USB Camera")]
+    app._selected_source_type_index = 0
+    banners: list[str] = []
+    app._enter_field_choice_picker = lambda **kw: app_modes.enter_field_choice_picker(app, **kw)
+    app._enter_settings_menu = lambda **kw: banners.append(kw.get("banner", ""))
+
+    app_modes.confirm_source_type_selection(app)
+    assert app._field_choice_active is True
+    assert apply_runtime_config_changes(app, load_config(path, strict=True)) is True
+    app._field_choice_selected_index = 1
+    app_modes.confirm_field_choice_picker(app)
+
+    assert [cfg.video_source_type for cfg in app._runtime_services.video_swaps] == ["v4l2", "v4l2"]
+    saved = load_config(path)
+    assert (saved.video_source_type, saved.v4l2_render_resolution) == ("v4l2", app._config.v4l2_render_resolution)
+    assert app._config.video_source_type == "v4l2"
+    assert banners == []
+
+
+def test_a_plain_url_edit_after_a_reload_brought_up_another_input_saves_only_the_url(tmp_path) -> None:
+    """The URL editor opened on the running input; a web save switches the station
+    to another input before Enter. The edit is kept for its own input, which does
+    not come back."""
+    from openfollow.runtime import app_modes
+
+    path = str(tmp_path / "config.toml")
+    save_config(
+        AppConfig(video_source_type="rtsp", rtsp_url="rtsp://192.0.2.20/a", srt_host="srt://192.0.2.30:5000"), path
+    )
+    app = _app_on_file(path)
+    banners: list[str] = []
+    app._confirm_url_editor = lambda: app_modes.confirm_url_editor(app)
+    app._enter_settings_menu = lambda **kw: banners.append(kw.get("banner", ""))
+
+    app_modes.enter_url_editor(app)
+    switched = load_config(path)
+    switched.video_source_type = "srt"
+    save_config(switched, path)
+    assert apply_runtime_config_changes(app, load_config(path, strict=True)) is True
+    app_modes.handle_url_editor_key(app, "Backspace")
+    app_modes.handle_url_editor_key(app, "b")
+    app_modes.handle_url_editor_key(app, "Enter")
+
+    assert [cfg.video_source_type for cfg in app._runtime_services.video_swaps] == ["srt"]
+    assert (app._config.video_source_type, app._config.rtsp_url) == ("srt", "rtsp://192.0.2.20/b")
+    saved = load_config(path)
+    assert (saved.video_source_type, saved.rtsp_url) == ("srt", "rtsp://192.0.2.20/b")
+    assert app._url_editor_active is False
+    assert banners == []
+
+
+def test_a_plain_value_pick_after_a_reload_brought_up_another_input_saves_only_the_value(tmp_path) -> None:
+    from openfollow.runtime import app_modes
+
+    path = str(tmp_path / "config.toml")
+    save_config(AppConfig(video_source_type="v4l2", v4l2_render_resolution="native"), path)
+    app = _app_on_file(path)
+    banners: list[str] = []
+    app._enter_settings_menu = lambda **kw: banners.append(kw.get("banner", ""))
+
+    app_modes.enter_field_choice_picker(app)
+    picked = app._field_choice_options[1][0]
+    switched = load_config(path)
+    switched.video_source_type = "rtsp"
+    switched.rtsp_url = "rtsp://192.0.2.20/a"
+    save_config(switched, path)
+    assert apply_runtime_config_changes(app, load_config(path, strict=True)) is True
+    app._field_choice_selected_index = 1
+    app_modes.confirm_field_choice_picker(app)
+
+    assert [cfg.video_source_type for cfg in app._runtime_services.video_swaps] == ["rtsp"]
+    assert (app._config.video_source_type, app._config.v4l2_render_resolution) == ("rtsp", picked)
+    saved = load_config(path)
+    assert (saved.video_source_type, saved.v4l2_render_resolution) == ("rtsp", picked)
+    assert app._field_choice_active is False
+    assert banners == []
+
+
+def test_a_switch_that_could_not_be_saved_is_saved_by_switching_again_once_the_file_is_fixed(tmp_path) -> None:
+    """What the unsaved banner tells the operator: the repaired file brings its own
+    source back at once, and the next switch is saved."""
+    from pathlib import Path
+
+    from openfollow.runtime import app_modes
+
+    path = str(tmp_path / "config.toml")
+    good = AppConfig(video_source_type="ndi", ndi_source_name="CAM-HOST (Camera 1)", rtsp_url="rtsp://192.0.2.20/a")
+    save_config(good, path)
+    app = _app_on_file(path)
+    banners: list[str] = []
+    app._enter_settings_menu = lambda **kw: banners.append(kw.get("banner", ""))
+    app._enter_url_editor = lambda **_kw: None
+    app._available_source_types = [("rtsp", "RTSP")]
+    app._selected_source_type_index = 0
+    Path(path).write_text("video_source_type = [unclosed", encoding="utf-8")
+
+    app_modes.confirm_source_type_selection(app)
+    assert app._config.video_source_type == "rtsp"
+    assert banners == ["RTSP is live but could not be saved to config.toml. Fix the file, then switch again."]
+
+    save_config(good, path)
+    assert apply_runtime_config_changes(app, load_config(path, strict=True)) is True
+    assert app._config.video_source_type == "ndi"
+    app_modes.confirm_source_type_selection(app)
+
+    assert [cfg.video_source_type for cfg in app._runtime_services.video_swaps] == ["rtsp", "ndi", "rtsp"]
+    assert load_config(path).video_source_type == "rtsp"
+    assert len(banners) == 1
+
+
+def test_an_on_screen_save_keeps_an_edit_the_reload_has_not_seen_and_the_reload_applies_it(
+    tmp_path,
+) -> None:
+    import os
+
+    from openfollow.runtime import app_modes
+    from openfollow.runtime import app_orchestration as orch
+
+    path = str(tmp_path / "config.toml")
+    save_config(AppConfig(), path)
+    os.utime(path, (100.0, 100.0))
+    app = _app_on_file(path)
+    app._config_mtime = 100.0
+    app._last_config_check = float("-inf")
+    app._get_config_mtime = lambda: orch.get_config_mtime(app)
+    edited = load_config(path)
+    edited.grid.spacing = 2.0
+    save_config(edited, path)
+    os.utime(path, (200.0, 200.0))
+
+    app_modes._toggle_zone_overlay(app)  # within the reload's poll interval
+    assert load_config(path).grid.spacing == 2.0
+
+    orch.check_config_reload(app)
+    assert app._config.grid.spacing == 2.0
+    assert app._config.trigger_zones.show_overlay is False
 
 
 def test_apply_runtime_rewires_controlled_marker_ids() -> None:
@@ -4106,6 +4445,200 @@ def test_save_config_swallows_unlink_oserror_and_reraises_original(
 
     with pytest.raises(RuntimeError, match="primary failure"):
         cfg_mod.save_config(AppConfig(), str(temp_config_path))
+
+
+# ---------------------------------------------------------------------------
+# save_config_fields – a runtime save writes what it changed, nothing else
+# ---------------------------------------------------------------------------
+
+
+def test_save_config_fields_keeps_every_other_field_as_the_file_has_it(temp_config_path) -> None:
+    path = str(temp_config_path)
+    save_config(AppConfig(video_source_type="ndi", ndi_source_name="On disk", web_port=8080), path)
+    running = AppConfig(video_source_type="rtsp", ndi_source_name="Stale")
+
+    save_config_fields(running, path, ["video_source_type"])
+
+    saved = load_config(path)
+    assert saved.video_source_type == "rtsp"
+    assert (saved.ndi_source_name, saved.web_port) == ("On disk", 8080)
+
+
+def test_save_config_fields_writes_one_field_of_a_sub_config(temp_config_path) -> None:
+    path = str(temp_config_path)
+    on_disk = AppConfig()
+    on_disk.trigger_zones.eval_fps = 5
+    save_config(on_disk, path)
+    running = AppConfig()
+    running.trigger_zones.show_overlay = False
+
+    save_config_fields(running, path, ["trigger_zones.show_overlay"])
+
+    saved = load_config(path).trigger_zones
+    assert saved.show_overlay is False
+    assert saved.eval_fps == 5
+
+
+def test_save_config_fields_writes_nothing_new_without_names(temp_config_path) -> None:
+    path = str(temp_config_path)
+    save_config(AppConfig(web_port=8080), path)
+
+    save_config_fields(AppConfig(), path, [])
+
+    assert load_config(path).web_port == 8080
+
+
+def test_save_config_fields_writes_the_whole_config_when_the_file_is_missing(temp_config_path) -> None:
+    running = AppConfig(web_port=8080, psn_system_name="Stage Left")
+
+    save_config_fields(running, str(temp_config_path), ["camera"])
+
+    saved = load_config(str(temp_config_path), strict=True)
+    assert (saved.web_port, saved.psn_system_name) == (8080, "Stage Left")
+
+
+@pytest.mark.parametrize("content", ["", "  \n\t\n"])
+def test_save_config_fields_refuses_an_empty_file_and_leaves_it(temp_config_path, content) -> None:
+    """An empty file loads as every default, and an editor that truncates before
+    it writes leaves one for a moment: the unnamed fields must not become defaults."""
+    temp_config_path.write_text(content, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="empty"):
+        save_config_fields(AppConfig(web_port=8080), str(temp_config_path), ["camera"])
+
+    assert temp_config_path.read_text(encoding="utf-8") == content
+
+
+def test_save_config_fields_decides_on_the_bytes_it_parses(temp_config_path, monkeypatch) -> None:
+    """A file emptied after an earlier read saw it whole is still refused: the
+    unnamed fields must not become defaults."""
+    from pathlib import Path
+
+    save_config(AppConfig(web_port=8080), str(temp_config_path))
+    whole = temp_config_path.read_bytes()
+    temp_config_path.write_text("", encoding="utf-8")
+    monkeypatch.setattr(Path, "read_bytes", lambda _self: whole)
+
+    with pytest.raises(ValueError, match="empty"):
+        save_config_fields(AppConfig(web_port=9090), str(temp_config_path), ["camera"])
+
+    monkeypatch.undo()
+    assert temp_config_path.read_text(encoding="utf-8") == ""
+
+
+def test_save_config_fields_writes_whole_a_file_that_vanished_after_an_earlier_check(
+    temp_config_path, monkeypatch
+) -> None:
+    """An editor that renames the file away before it writes leaves no file for a
+    moment: the running config is written, never defaults with one field."""
+    import openfollow.configuration as cfg_mod
+
+    if temp_config_path.exists():
+        temp_config_path.unlink()
+    monkeypatch.setattr(cfg_mod.os.path, "exists", lambda _p: True)
+    running = AppConfig(web_port=8080, psn_system_name="Stage Left")
+
+    save_config_fields(running, str(temp_config_path), ["camera"])
+
+    monkeypatch.undo()
+    saved = load_config(str(temp_config_path), strict=True)
+    assert (saved.web_port, saved.psn_system_name) == (8080, "Stage Left")
+
+
+@pytest.mark.parametrize("content", ["", "  \n\t\n"])
+def test_load_config_strict_refuses_an_empty_file(temp_config_path, content) -> None:
+    temp_config_path.write_text(content, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="empty"):
+        load_config(str(temp_config_path), strict=True)
+    assert load_config(str(temp_config_path)) == AppConfig()
+
+
+@pytest.mark.parametrize("content", ["", "  \n\t\n", "web_port = [unclosed"])
+def test_save_config_fields_can_replace_an_empty_or_unreadable_file(temp_config_path, content) -> None:
+    temp_config_path.write_text(content, encoding="utf-8")
+    running = AppConfig(web_port=8080, psn_system_name="Stage Left")
+
+    save_config_fields(running, str(temp_config_path), ["web_bind_iface"], replace_unreadable=True)
+
+    saved = load_config(str(temp_config_path), strict=True)
+    assert (saved.web_port, saved.psn_system_name) == (8080, "Stage Left")
+
+
+def test_save_config_fields_treats_a_file_it_may_not_read_as_unreadable(temp_config_path, monkeypatch) -> None:
+    import builtins
+    from pathlib import Path
+
+    import openfollow.configuration as cfg_mod
+
+    target = str(temp_config_path)
+    save_config(AppConfig(web_port=8080), target)
+    real_read_bytes = Path.read_bytes
+
+    def _read_bytes(self: Path) -> bytes:
+        if str(self) == target:
+            raise PermissionError(13, "Permission denied", target)
+        return real_read_bytes(self)
+
+    def _open(file, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN202
+        if str(file) == target:
+            raise PermissionError(13, "Permission denied", target)
+        return builtins.open(file, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_bytes", _read_bytes)
+    monkeypatch.setattr(cfg_mod, "open", _open, raising=False)
+
+    with pytest.raises(PermissionError):
+        save_config_fields(AppConfig(), target, ["camera"])
+    save_config_fields(AppConfig(web_port=9090), target, ["camera"], replace_unreadable=True)
+
+    monkeypatch.undo()
+    assert load_config(target, strict=True).web_port == 9090
+
+
+def test_save_config_fields_leaves_an_unreadable_file_alone(temp_config_path) -> None:
+    temp_config_path.write_text("web_port = [unclosed", encoding="utf-8")
+
+    with pytest.raises(tomllib.TOMLDecodeError):
+        save_config_fields(AppConfig(), str(temp_config_path), ["camera"])
+
+    assert temp_config_path.read_text(encoding="utf-8") == "web_port = [unclosed"
+
+
+def test_save_config_fields_holds_the_write_lock_across_load_and_save(temp_config_path, monkeypatch) -> None:
+    import openfollow.configuration as cfg_mod
+
+    save_config(AppConfig(), str(temp_config_path))
+    held: list[bool] = []
+    real_load, real_save = cfg_mod.load_config, cfg_mod.save_config
+
+    def _load(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        held.append(config_write_lock.locked())
+        return real_load(*args, **kwargs)
+
+    def _save(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        held.append(config_write_lock.locked())
+        real_save(*args, **kwargs)
+
+    monkeypatch.setattr(cfg_mod, "load_config", _load)
+    monkeypatch.setattr(cfg_mod, "save_config", _save)
+
+    save_config_fields(AppConfig(), str(temp_config_path), ["camera"])
+
+    assert held == [True, True]
+    assert not config_write_lock.locked()
+
+
+@pytest.mark.parametrize("name", ["no_such_field", "camera.no_such_field", "no_such_section.fov"])
+def test_save_config_fields_refuses_an_unknown_name_and_leaves_the_file(temp_config_path, name) -> None:
+    save_config(AppConfig(web_port=8080), str(temp_config_path))
+    before = temp_config_path.read_bytes()
+
+    with pytest.raises(AttributeError):
+        save_config_fields(AppConfig(), str(temp_config_path), [name])
+
+    assert temp_config_path.read_bytes() == before
+    assert not config_write_lock.locked()
 
 
 # ---------------------------------------------------------------------------

@@ -44,9 +44,8 @@ logger = logging.getLogger(__name__)
 # have the later save clobber the earlier. Held by the off-GTK-thread writers
 # that run concurrently (the threaded WSGI request handlers and the
 # marker-catalog sync receiver) and by main-loop writers that write only their
-# own change (``save_config_change``, the move-speed flush). Other GTK-main-loop
-# writers (on-screen menu, receiver self-heal) do NOT take this lock and can
-# still interleave.
+# own change (``save_config_change``, ``save_config_fields``, the move-speed
+# flush). The receiver's source pick does NOT take it.
 config_write_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
@@ -2927,7 +2926,11 @@ def viewed_with_controlled(controlled: list[int], viewer: list[int]) -> list[int
     return list(viewer) + [mid for mid in controlled if mid not in viewer]
 
 
-def load_config(path: str = "config.toml", *, strict: bool = False) -> AppConfig:
+class ConfigFileEmptyError(ValueError):
+    """A strict load found a file holding only whitespace, which would load as every default."""
+
+
+def load_config(path: str = "config.toml", *, strict: bool = False, missing_ok: bool = True) -> AppConfig:
     """Load config from a TOML file.
 
     Args:
@@ -2935,7 +2938,10 @@ def load_config(path: str = "config.toml", *, strict: bool = False) -> AppConfig
         strict: When True, re-raise parse/read errors instead of logging and
             returning defaults; missing files still return defaults. Used by
             hot-reload, which must not replace the running config with defaults.
-            Strict also skips the ``.bak`` recovery.
+            Strict also skips the ``.bak`` recovery, and refuses an empty file
+            with ``ConfigFileEmptyError``.
+        missing_ok: With *strict*, False raises ``FileNotFoundError`` for a
+            missing file instead of returning defaults.
 
     On the non-strict path, a missing or unparseable primary file is recovered
     from the ``config.toml.bak`` snapshot, degrading to defaults when the
@@ -2946,10 +2952,14 @@ def load_config(path: str = "config.toml", *, strict: bool = False) -> AppConfig
     """
     try:
         with open(path, "rb") as f:
-            data: dict[str, Any] = tomllib.load(f)
+            raw = f.read()
+        # Blank loads as every default; an editor that truncates before it writes leaves one for a moment.
+        if strict and not raw.strip():
+            raise ConfigFileEmptyError(f"Config file {path} is empty.")
+        data: dict[str, Any] = tomllib.loads(raw.decode("utf-8"))
     except FileNotFoundError:
-        # Strict mode (hot-reload): a missing file is not an error and must not
-        # pull in a stale backup. Otherwise recover from the ``.bak``.
+        # Strict mode: a missing file must not pull in a stale backup; it reads
+        # as defaults unless *missing_ok* is off. Otherwise recover from the ``.bak``.
         if not strict:
             backup = _load_backup_data(path)
             if backup is not None:
@@ -2957,6 +2967,8 @@ def load_config(path: str = "config.toml", *, strict: bool = False) -> AppConfig
                 data = backup
             else:
                 return AppConfig()
+        elif not missing_ok:
+            raise
         else:
             return AppConfig()
     except Exception:
@@ -3307,6 +3319,40 @@ def save_config_change(path: str, running: AppConfig, change: Callable[[AppConfi
         save_config(current, path)
 
 
+def save_config_fields(
+    config: AppConfig,
+    path: str,
+    names: Iterable[str],
+    *,
+    replace_unreadable: bool = False,
+) -> None:
+    """Write the named fields of *config* onto the file at *path*; every other field keeps the file's value.
+
+    One dot addresses a sub-config field (``trigger_zones.show_overlay``). A
+    missing file is written from *config* whole. An empty or unreadable file
+    raises and is left alone, or is replaced by *config* whole with
+    *replace_unreadable*.
+    """
+    with config_write_lock:
+        try:
+            on_disk = load_config(path, strict=True, missing_ok=False)
+        except FileNotFoundError:
+            save_config(config, path)
+            return
+        except Exception:
+            if not replace_unreadable:
+                raise
+            logger.warning("Config file %s could not be read - replacing it with the running config.", path)
+            save_config(config, path)
+            return
+        for name in names:
+            parent, _, attr = name.rpartition(".")
+            source = getattr(config, parent) if parent else config
+            target = getattr(on_disk, parent) if parent else on_disk
+            setattr(target, attr, getattr(source, attr))
+        save_config(on_disk, path)
+
+
 # ---------------------------------------------------------------------------
 # Runtime Hot-Reload
 # ---------------------------------------------------------------------------
@@ -3370,6 +3416,18 @@ def _video_config_changed(old_config: AppConfig, new_config: AppConfig) -> bool:
     input_cls = get_input_class(new_config.video_source_type)
     # None only for a hand-edited config.toml naming a removed plugin.
     return input_cls is not None and input_cls.config_changed(old_config, new_config)
+
+
+def _inactive_video_field_names(running_type: str) -> set[str]:
+    """Stored video input fields that the input *running_type* does not declare."""
+    from openfollow.video.inputs import get_input_class, get_registry
+
+    stored = {f.name for f in fields(AppConfig)}
+    names = {f.name for cls in get_registry().values() for f in cls.config_fields()} & stored
+    cls = get_input_class(running_type)
+    if cls is not None:
+        names -= {f.name for f in cls.config_fields()}
+    return names
 
 
 def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> bool:
@@ -3613,6 +3671,11 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
             app._config.video_source_type = old_video_source_type
             for name, value in old_field_values.items():
                 setattr(app._config, name, value)
+
+    # The other inputs' fields drive nothing until their input runs, so they are
+    # mirrored as they are: a later switch to one is built from the file's values.
+    for name in _inactive_video_field_names(app._config.video_source_type):
+        setattr(app._config, name, getattr(new_config, name))
 
     # Grid and camera updates (no renderer needed - Cairo overlay reads from config)
     if new_config.grid != app._config.grid:

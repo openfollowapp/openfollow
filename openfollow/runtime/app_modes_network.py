@@ -28,6 +28,7 @@ from openfollow.network.adapter import (
     Ipv4Method,
     NetworkAdapter,
     NetworkState,
+    format_lease_remaining,
 )
 from openfollow.network.validate import (
     describe_applied,
@@ -736,8 +737,8 @@ def _simple_rows(
     # A lease is the interface's own, not the method picked but not yet applied.
     on_dhcp = state is not None and state.ipv4.method != Ipv4Method.STATIC
     if on_dhcp and state is not None and state.lease and state.lease.lease_seconds_remaining:
-        minutes = max(int(state.lease.lease_seconds_remaining) // 60, 0)
-        rows.append({"kind": "display", "key": "lease", "label": "Lease", "value": f"{minutes} min"})
+        lease = format_lease_remaining(state.lease.lease_seconds_remaining)
+        rows.append({"kind": "display", "key": "lease", "label": "Lease", "value": lease})
 
     rows.append({"kind": "header", "label": "DNS Servers"})
     dns = list(pending.dns) if pending else []

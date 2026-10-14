@@ -634,7 +634,7 @@ def test_prompter_short_circuits_when_web_commands_missing(monkeypatch) -> None:
     assert services._privilege_broker._prompter is None
 
 
-# _format_lease_remaining (web-facing helper)
+# format_lease_remaining: the web card's and the Operator Screen's lease
 class TestFormatLeaseRemaining:
     """Compact human label for DHCP lease seconds-remaining. Covers
     every branch – the NM lease bug surfaced as "29664461 min" in the
@@ -642,47 +642,47 @@ class TestFormatLeaseRemaining:
     epoch by 60. The helper is the single source of truth now."""
 
     def test_none_returns_none(self) -> None:
-        from openfollow.services import _format_lease_remaining
+        from openfollow.network.adapter import format_lease_remaining
 
-        assert _format_lease_remaining(None) is None
+        assert format_lease_remaining(None) is None
 
     def test_zero_renders_as_seconds(self) -> None:
         """Clamped lease shows 0s so the operator sees the lease is
         actively expiring rather than a stale display."""
-        from openfollow.services import _format_lease_remaining
+        from openfollow.network.adapter import format_lease_remaining
 
-        assert _format_lease_remaining(0) == "0 s"
+        assert format_lease_remaining(0) == "0 s"
 
     def test_under_a_minute_renders_seconds(self) -> None:
-        from openfollow.services import _format_lease_remaining
+        from openfollow.network.adapter import format_lease_remaining
 
-        assert _format_lease_remaining(45) == "45 s"
+        assert format_lease_remaining(45) == "45 s"
 
     def test_under_an_hour_renders_minutes(self) -> None:
-        from openfollow.services import _format_lease_remaining
+        from openfollow.network.adapter import format_lease_remaining
 
-        assert _format_lease_remaining(3 * 60) == "3 min"
-        assert _format_lease_remaining(59 * 60) == "59 min"
+        assert format_lease_remaining(3 * 60) == "3 min"
+        assert format_lease_remaining(59 * 60) == "59 min"
 
     def test_under_a_day_renders_hours_and_minutes(self) -> None:
-        from openfollow.services import _format_lease_remaining
+        from openfollow.network.adapter import format_lease_remaining
 
-        assert _format_lease_remaining(2 * 3600 + 13 * 60) == "2h 13m"
+        assert format_lease_remaining(2 * 3600 + 13 * 60) == "2h 13m"
         # Zero-pad the minute slot so columns align in operator-facing UIs.
-        assert _format_lease_remaining(5 * 3600 + 7 * 60) == "5h 07m"
+        assert format_lease_remaining(5 * 3600 + 7 * 60) == "5h 07m"
 
     def test_multi_day_renders_days_and_hours(self) -> None:
-        from openfollow.services import _format_lease_remaining
+        from openfollow.network.adapter import format_lease_remaining
 
-        assert _format_lease_remaining(3 * 86400 + 4 * 3600) == "3d 04h"
+        assert format_lease_remaining(3 * 86400 + 4 * 3600) == "3d 04h"
 
     def test_negative_input_clamps_to_zero(self) -> None:
         """Belt-and-braces: even if a caller passes a negative value
         (the NM adapter clamps to 0 on its side, but other future
         adapters might not), the helper still produces a clean label."""
-        from openfollow.services import _format_lease_remaining
+        from openfollow.network.adapter import format_lease_remaining
 
-        assert _format_lease_remaining(-100) == "0 s"
+        assert format_lease_remaining(-100) == "0 s"
 
 
 # Web network write providers / handlers (services layer)

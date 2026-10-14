@@ -3252,6 +3252,12 @@ class TestTheSimpleScreen:
         assert "eth0" in labels
         assert not any("Show LAN" in str(label) for label in labels)
 
+    def test_the_lease_reads_as_the_web_card_shows_it(self, monkeypatch, tmp_path) -> None:
+        app = _simple_app(monkeypatch, tmp_path)
+        state = app._pi_network_state_cache
+        app._pi_network_state_cache = replace(state, lease=replace(state.lease, lease_seconds_remaining=12494 * 60))
+        assert _row(app, "lease")["value"] == "8d 16h"
+
     def test_the_cursor_opens_on_the_interface(self, monkeypatch, tmp_path) -> None:
         app = _simple_app(monkeypatch, tmp_path)
         assert anm.build_pi_network_rows(app)[app._pi_network_index]["key"] == "interface"

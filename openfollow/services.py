@@ -36,6 +36,7 @@ from openfollow.input.mouse3d import idle_mouse3d_status
 from openfollow.net_adapters import display_name
 from openfollow.net_egress import Egress, is_loopback_host, resolve_egress
 from openfollow.net_utils import ResolveStatus, interface_present, plane_source_iface
+from openfollow.network.adapter import format_lease_remaining
 from openfollow.osc.egress import OscEgressTable
 from openfollow.otp import OtpServer
 from openfollow.psn import MARKER_STALE_AFTER_S, PsnReceiver, PsnServer
@@ -106,32 +107,6 @@ _MOUSE3D_WEB_DETECT_BUDGET_S = 0.35
 # How long one network backend reading serves the web UI after it completes, so
 # every section one render asks for shares it.
 _NETWORK_READING_MAX_AGE_S = 1.0
-
-
-def _format_lease_remaining(seconds: int | None) -> str | None:
-    """Render a DHCP lease's seconds-remaining as a compact human label.
-
-    Returns ``None`` when no lease was surfaced (DHCP not in use, or
-    backend didn't report it). Otherwise:
-
-    - ``< 60s``: ``"X s"``.
-    - ``< 3600s``: ``"Y min"``.
-    - ``< 24h``: ``"Hh Mm"`` (e.g. ``"2h 13m"``).
-    - longer: ``"Dd Hh"`` (e.g. ``"3d 04h"``).
-    """
-    if seconds is None:
-        return None
-    seconds = max(0, int(seconds))
-    if seconds < 60:
-        return f"{seconds} s"
-    if seconds < 3600:
-        return f"{seconds // 60} min"
-    hours, rem = divmod(seconds, 3600)
-    minutes = rem // 60
-    if hours < 24:
-        return f"{hours}h {minutes:02d}m"
-    days, hours = divmod(hours, 24)
-    return f"{days}d {hours:02d}h"
 
 
 # ---------------------------------------------------------------------------
@@ -3059,7 +3034,7 @@ class AppRuntimeServices:
             "router": state.ipv4.router or "–",
             "dns": list(state.ipv4.dns),
             "lease_remaining": lease_seconds,
-            "lease_remaining_display": _format_lease_remaining(lease_seconds),
+            "lease_remaining_display": format_lease_remaining(lease_seconds),
             "writable": adapter.is_writable(),
             "backend": adapter.backend_name,
         }
@@ -3119,7 +3094,7 @@ class AppRuntimeServices:
             subnet_mask=prefix_to_mask(state.ipv4.prefix) or "",
             router=state.ipv4.router or "",
             dns=list(state.ipv4.dns),
-            lease_display=_format_lease_remaining(lease_seconds),
+            lease_display=format_lease_remaining(lease_seconds),
         )
         return base
 
@@ -3159,7 +3134,7 @@ class AppRuntimeServices:
                     method=state.ipv4.method.value,
                     router=state.ipv4.router or "",
                     dns=list(state.ipv4.dns),
-                    lease_display=_format_lease_remaining(seconds),
+                    lease_display=format_lease_remaining(seconds),
                 )
             rows.append(row)
         return rows

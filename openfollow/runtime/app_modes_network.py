@@ -1124,10 +1124,13 @@ def _unpin_web_ui(app: OpenFollowApp) -> None:
     cfg = app._config
     previous = (getattr(cfg, "web_bind", ""), getattr(cfg, "web_bind_iface", ""))
     if not any(previous):
-        # Cleared already, but the listener keeps the pin it started on until a restart.
+        # Cleared already, but the listener keeps the pin it started on until a restart,
+        # which waits for an update, as the web card's does.
         if not _serves_every_interface(app):
-            _set_banner(app, "Web UI will serve on all interfaces after the restart.", "info")
-            app._web_commands.request_restart()
+            if app._web_commands.request_restart_unless_updating():
+                _set_banner(app, "Web UI will serve on all interfaces after the restart.", "info")
+            else:
+                _set_banner(app, "An update is running, so OpenFollow was not restarted.", "caution")
             _focus_row(app, "")
         return
     cfg.web_bind = ""

@@ -143,8 +143,17 @@ def _make_app(adapter: _FakeAdapter | None = None) -> SimpleNamespace:
     app._get_config_mtime = _get_config_mtime
     app._web_server = _FakeWebServer()
     app._restart_requests = 0
+    app._updating = False
+
+    def _restart_unless_updating() -> bool:
+        if app._updating:
+            return False
+        app._restart_requests += 1
+        return True
+
     app._web_commands = SimpleNamespace(
-        request_restart=lambda: setattr(app, "_restart_requests", app._restart_requests + 1)
+        request_restart=lambda: setattr(app, "_restart_requests", app._restart_requests + 1),
+        request_restart_unless_updating=_restart_unless_updating,
     )
     app._advisory_refreshes = 0
 
@@ -1859,6 +1868,16 @@ class TestServeOnAllInterfacesIsTheLockoutEscape:
         _confirm_key(app, "web_unpin")
         assert app._restart_requests == 1
         assert app._pi_network_banner_level == "info"
+
+    def test_a_pin_already_cleared_waits_for_a_running_update(self, monkeypatch) -> None:
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        app = _make_app()
+        app._updating = True
+        app._web_server = _FakeWebServer(bind_host="192.168.1.5")
+        anm.enter_pi_network(app)
+        _confirm_key(app, "web_unpin")
+        assert app._restart_requests == 0
+        assert app._pi_network_banner == "An update is running, so OpenFollow was not restarted."
 
     def test_it_is_offered_only_while_the_ui_is_pinned(self, monkeypatch) -> None:
         _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})

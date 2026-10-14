@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import socket
 import urllib.parse
 import urllib.request
@@ -327,7 +328,11 @@ def test_switching_to_simple_clears_every_pin_and_removes_the_vlans(net_server, 
         {"name": "eth0.30", "parent": "eth0", "vlan_id": 30},
     ]
     fake.session_iface = "eth0.30"
-    _set(tmp_path, **{"otp_output.source_iface": "eth0.20", "osc.listen_iface": "eth0.20", "video_input_iface": "eth0"})
+    _set(
+        tmp_path,
+        **{"otp_output.source_iface": "eth0.20", "osc.listen_iface": "eth0.20", "video_input_iface": "eth0"},
+        interface_labels={"eth0": "Show LAN", "eth0.20": "Cue", "eth0.30": "Desk"},
+    )
     status, _body, headers = _post_headers(
         base, "/section/network/mode", {"network_mode": "simple", "vlans": ["eth0.20", "eth0.30"]}
     )
@@ -338,6 +343,42 @@ def test_switching_to_simple_clears_every_pin_and_removes_the_vlans(net_server, 
     assert (saved.otp_output.source_iface, saved.osc.listen_iface, saved.video_input_iface) == ("", "", "")
     # The session's own VLAN stays, like Remove VLAN refuses it.
     assert fake.vlans_deleted == ["eth0.20"]
+    # The removed VLAN's label goes with it; the kept one's stays.
+    assert saved.interface_labels == {"eth0": "Show LAN", "eth0.30": "Desk"}
+
+
+def test_back_in_advanced_a_removed_vlan_is_not_listed_as_unplugged(net_server, tmp_path, present) -> None:  # noqa: F811
+    fake, base = net_server
+    fake.interfaces.append("eth0.20")
+    fake.vlans = [{"name": "eth0.20", "parent": "eth0", "vlan_id": 20}]
+    _set(tmp_path, network_mode="advanced", interface_labels={"eth0.20": "Cue"})
+    _post_headers(base, "/section/network/mode", {"network_mode": "simple", "vlans": "eth0.20"})
+    fake.interfaces.remove("eth0.20")
+    fake.vlans = []
+    _post_headers(base, "/section/network/mode", {"network_mode": "advanced"})
+    _status, body = _get(base, "/section/network/status")
+    assert "Cue" not in body
+    assert "Not connected" not in body
+
+
+def test_each_switch_logs_the_mode_the_pins_cleared_and_the_vlans_removed(
+    net_server,  # noqa: F811
+    tmp_path,
+    present,
+    caplog,
+) -> None:
+    fake, base = net_server
+    fake.interfaces.append("eth0.20")
+    fake.vlans = [{"name": "eth0.20", "parent": "eth0", "vlan_id": 20}]
+    _set(tmp_path, network_mode="advanced", **{"otp_output.source_iface": "wlan0"})
+    with caplog.at_level(logging.INFO, logger="openfollow.web.routes"):
+        _post_headers(base, "/section/network/mode", {"network_mode": "simple", "vlans": "eth0.20"})
+        _post_headers(base, "/section/network/mode", {"network_mode": "advanced"})
+    lines = [r.getMessage() for r in caplog.records if r.name == "openfollow.web.routes" and r.levelno == logging.INFO]
+    assert lines == [
+        "Network mode Advanced -> Simple; pins cleared: otp_output.source_iface (wlan0); VLANs removed: eth0.20",
+        "Network mode Simple -> Advanced; pins cleared: none; VLANs removed: none",
+    ]
 
 
 def test_only_the_vlans_the_dialog_listed_are_removed(net_server, tmp_path, present) -> None:  # noqa: F811
@@ -380,10 +421,14 @@ def test_a_failed_removal_does_not_stop_the_switch(net_server, tmp_path, present
     fake.interfaces.append("eth0.20")
     fake.vlans = [{"name": "eth0.20", "parent": "eth0", "vlan_id": 20}]
     fake.vlan_delete_result = ApplyResult(ok=False, message="device busy")
+    _set(tmp_path, interface_labels={"eth0.20": "Cue"})
     _post_headers(base, "/section/network/mode", {"network_mode": "simple", "vlans": "eth0.20"})
-    assert _saved(tmp_path).network_mode == "simple"
+    saved = _saved(tmp_path)
+    assert saved.network_mode == "simple"
+    # Still on the station, so still labelled.
+    assert saved.interface_labels == {"eth0.20": "Cue"}
     _status, body = _get(base, "/section/network/status")
-    assert "eth0.20 is still on this station." in body
+    assert "Cue (eth0.20) is still on this station." in body
 
 
 def test_a_web_ui_pin_in_force_restarts_openfollow(net_server, tmp_path, present, monkeypatch) -> None:  # noqa: F811

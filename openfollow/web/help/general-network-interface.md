@@ -12,7 +12,7 @@ The mode belongs to this station: a config export leaves it out, and an import o
 **Switching to Simple** asks first when it has something to undo, and lists it:
 
 - every function's interface pin and the web UI's are cleared, so everything follows the station interface. With a web UI pin in force OpenFollow restarts; when it cannot (an update is running), the card says the web UI answers on one interface until it does, with **Restart OpenFollow**;
-- every VLAN interface is removed except the station interface's own and the one carrying this browser session. A VLAN that cannot be removed does not stop the switch: a caution under the mode names what is left, to remove in Advanced mode.
+- every VLAN interface is removed except the station interface's own and the one carrying this browser session, and its label goes with it. A VLAN that cannot be removed does not stop the switch: it keeps its label, and a caution under the mode names what is left, to remove in Advanced mode.
 
 **Switching to Advanced** changes nothing on the network: every pin is blank, so everything still follows the station interface.
 

@@ -80,6 +80,7 @@ from openfollow.configuration import (
     load_config,
     path_name_from,
     plane_pin_key,
+    plane_pins,
     save_config,
     viewed_with_controlled,
 )
@@ -1481,8 +1482,6 @@ def simple_mode_changes(
     interface (``station_iface``, already resolved from Automatic) and the one
     this session arrives on. ``kept``: ``(vlan, reason)`` for the session's.
     """
-    from openfollow.configuration import plane_pins
-
     pins = [(key, _plane_pin_label(cfg, key), iface) for key, iface in plane_pins(cfg)]
     names = [str(v.get("name", "")) for v in vlans.get("vlans", [])] if vlans.get("supported") else []
     others = [name for name in names if name and name != station_iface]
@@ -6688,17 +6687,37 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         )
         with _config_write_lock:
             cfg = _load_config_for_edit()
+            was = cfg.network_mode
             # Only on a switch: re-posting Simple is not the way to a pending restart.
-            restart = simple and cfg.network_mode != NETWORK_MODE_SIMPLE and _simple_switch_restarts(cfg)
+            restart = simple and was != NETWORK_MODE_SIMPLE and _simple_switch_restarts(cfg)
+            cleared = plane_pins(cfg) if simple else []
             cfg.network_mode = mode
             enforce_network_mode(cfg)
             save_config(cfg, server.config_path)
             request.environ[_ENV_CONFIG_KEY] = cfg
         # Outside the config lock: each removal is a privileged backend call the frame loop must not wait on.
+        removed: list[str] = []
         for name in vlans:
             result = server.delete_network_vlan(name)
-            if not result.ok:
+            if result.ok:
+                removed.append(name)
+            else:
                 logger.warning("Switching to Simple left VLAN %s: %s", name, result.message)
+        if removed:
+            # A removed VLAN's label would list it in Advanced as an adapter not plugged in.
+            with _config_write_lock:
+                cfg = _load_config_for_edit()
+                if any(name in cfg.interface_labels for name in removed):
+                    cfg.interface_labels = {n: label for n, label in cfg.interface_labels.items() if n not in removed}
+                    save_config(cfg, server.config_path)
+                    request.environ[_ENV_CONFIG_KEY] = cfg
+        logger.info(
+            "Network mode %s -> %s; pins cleared: %s; VLANs removed: %s",
+            was.capitalize(),
+            mode.capitalize(),
+            ", ".join(f"{key} ({iface})" for key, iface in cleared) or "none",
+            ", ".join(removed) or "none",
+        )
         restarting = restart and server.request_restart_unless_updating()
         if not restarting:
             # The mode decides which sections the page shows. A refused restart is

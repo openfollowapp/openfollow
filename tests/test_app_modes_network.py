@@ -1820,6 +1820,20 @@ class TestTheScreenCallsOutWhatBreaksReachability:
         assert all(r["kind"] not in {"choice", "text", "action"} for r in _rows_by_kind(app, "notice"))
 
 
+class TestASlowReadLeavesNoOtherInterfacesValues:
+    def test_opening_an_interface_whose_read_overruns_offers_nothing_of_the_last_one(self, monkeypatch) -> None:
+        app = _make_app()
+        anm.enter_pi_network(app)
+        _open_iface(app, "eth0")
+        assert app._pi_network_pending_config is not None
+        anm._close_pi_network_iface(app)
+        gate = _stall_reads(monkeypatch)
+        _open_iface(app, "wlan0")
+        gate.set()
+        assert app._pi_network_pending_config is None
+        assert app._pi_network_state_cache is None
+
+
 class TestServeOnAllInterfacesIsTheLockoutEscape:
     def test_it_clears_the_pin_and_asks_for_a_restart(self, monkeypatch) -> None:
         _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
@@ -3006,6 +3020,20 @@ def _simple_app(monkeypatch, tmp_path, *, station: str = "", auto: str = "eth0",
     return app
 
 
+def _stall_reads(monkeypatch) -> threading.Event:
+    """Every network read blocks until the returned event is set, and the screen waits for none."""
+    gate = threading.Event()
+    real = anm._read_pi_network
+
+    def _slow(app):
+        gate.wait(5)
+        return real(app)
+
+    monkeypatch.setattr(anm, "_read_pi_network", _slow)
+    monkeypatch.setattr(anm, "_ENTRY_READ_BUDGET_S", 0.0)
+    return gate
+
+
 def _keys(app: SimpleNamespace) -> list[str]:
     return [str(row.get("key")) for row in anm.build_pi_network_rows(app) if row.get("key")]
 
@@ -3080,9 +3108,25 @@ class TestTheSimpleScreen:
     def test_a_reentry_read_that_overruns_leaves_nothing_to_apply(self, monkeypatch, tmp_path) -> None:
         app = _simple_app(monkeypatch, tmp_path)
         anm.exit_pi_network(app)
-        monkeypatch.setattr(anm, "_refresh_pi_network_bounded", lambda _app: None)
+        gate = _stall_reads(monkeypatch)
         anm.enter_pi_network(app)
+        gate.set()
         assert app._pi_network_pending_config is None
+        assert "apply" not in _keys(app)
+        # Still being read: no notice claims the interface is gone or changed.
+        notices = [row for row in anm.build_pi_network_rows(app) if row.get("kind") == "notice"]
+        assert notices == []
+        assert app._pi_network_banner == "Querying network status…"
+
+    def test_a_slow_first_read_is_not_reported_as_no_interface(self, monkeypatch, tmp_path) -> None:
+        gate = threading.Event()
+        monkeypatch.setattr(anm, "_ENTRY_READ_BUDGET_S", 0.0)
+        real = anm._read_pi_network
+        monkeypatch.setattr(anm, "_read_pi_network", lambda app: (gate.wait(5), real(app))[1])
+        app = _simple_app(monkeypatch, tmp_path)
+        gate.set()
+        labels = [row.get("label") for row in anm.build_pi_network_rows(app)]
+        assert "This station has no network interface." not in labels
         assert "apply" not in _keys(app)
 
     def test_a_station_with_no_interface_says_so(self, monkeypatch, tmp_path) -> None:
@@ -3190,9 +3234,10 @@ class TestTheSimpleInterfacePicker:
 
     def test_a_read_that_overruns_leaves_nothing_to_apply(self, monkeypatch, tmp_path) -> None:
         app = _simple_app(monkeypatch, tmp_path)
-        monkeypatch.setattr(anm, "_refresh_pi_network_bounded", lambda _app: None)
+        gate = _stall_reads(monkeypatch)
         _confirm_key(app, "interface")
         _confirm_key(app, "pick:wlan0")
+        gate.set()
         assert app._pi_network_pending_config is None
         assert "apply" not in _keys(app)
 

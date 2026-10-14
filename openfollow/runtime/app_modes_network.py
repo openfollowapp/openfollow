@@ -69,18 +69,9 @@ def enter_pi_network(app: OpenFollowApp) -> None:
     # needs to see first.
     app._pi_network_static_edit = False
     app._pi_network_picker = ""
-    _forget_pi_network_reading(app)
     _refresh_pi_network_bounded(app)
     # Skip non-selectable header row.
     app._pi_network_index = _first_selectable_index(app)
-
-
-def _forget_pi_network_reading(app: OpenFollowApp) -> None:
-    """Drop the last reading before a re-read: one that overruns its budget must
-    not leave another interface's settings on screen to apply."""
-    app._pi_network_pending_config = None
-    app._pi_network_state_cache = None
-    app._pi_network_read_station = None
 
 
 def _first_selectable_index(app: OpenFollowApp) -> int:
@@ -185,6 +176,7 @@ def _apply_pi_network_snapshot(app: OpenFollowApp, snap: _NetworkSnapshot) -> No
     # pick, cancel, and a finished apply / renew - so the address enumeration
     # it reads is re-taken on the next rebuild rather than waiting out its TTL.
     app._pi_network_addr_ts = 0.0
+    app._pi_network_reading = False
     if not snap.has_adapter:
         app._pi_network_state_cache = None
         app._pi_network_pending_config = None
@@ -227,8 +219,13 @@ def _refresh_pi_network_bounded(app: OpenFollowApp) -> None:
     thread.join(timeout=_ENTRY_READ_BUDGET_S)
     if holder:
         _apply_pi_network_snapshot(app, holder[0])
-    else:
-        _set_banner(app, "Querying network status…", "info")
+        return
+    # Overrun: the last reading may be another interface's, so nothing of it is left to apply.
+    app._pi_network_pending_config = None
+    app._pi_network_state_cache = None
+    app._pi_network_read_station = None
+    app._pi_network_reading = True
+    _set_banner(app, "Querying network status…", "info")
 
 
 # An address changes on a human timescale; the rows are rebuilt on the frame
@@ -663,7 +660,10 @@ def _simple_rows(
     present = name in {iface.name for iface in getattr(app, "_pi_network_interfaces", None) or []}
     # Read for another station interface, or in Advanced: the values below are not this one's.
     current = getattr(app, "_pi_network_read_station", None) == station
-    if not present:
+    if getattr(app, "_pi_network_reading", False):
+        # The banner says it is still being read; neither notice below would be true yet.
+        current = False
+    elif not present:
         if station or not name:
             missing = f"{name} is not connected." if name else "This station has no network interface."
         else:
@@ -842,7 +842,6 @@ def _pick_station_iface(app: OpenFollowApp, name: str) -> None:
     # Applied now, not on the next one-second poll: the screen re-reads from the running config.
     app._last_config_check = 0.0
     app._check_config_reload()
-    _forget_pi_network_reading(app)
     _refresh_pi_network_bounded(app)
     if _station_iface(app) != name:
         _set_banner(app, "Saved, but not applied yet. Check the station's status rows.", "caution")

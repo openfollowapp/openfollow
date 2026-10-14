@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import ast
+import os
 import re
 import runpy
 import sys
@@ -13,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from openfollow import keyboard_layout as kl
-from tests._xkb import EVDEV_LST, SYSTEM_GB, write_xkb_root
+from tests._xkb import EVDEV_LST, SESSION_ENV, SYSTEM_GB, write_xkb_root
 
 pytestmark = pytest.mark.unit
 
@@ -343,3 +344,10 @@ def test_without_a_toml_reader_the_station_setting_reads_as_unset(monkeypatch, f
     files["config"].write_text('[controller]\nkeyboard_layout = "de"\n')
     monkeypatch.setitem(sys.modules, "tomllib", None)
     assert kl.read_configured(files["config"]) == ("", "")
+
+
+def test_no_test_sees_the_hosts_keyboard() -> None:
+    """A station's xkb data, keyboard file or kiosk session would leak into any test that renders the row."""
+    assert kl.read_catalog() == kl.XkbCatalog()
+    assert kl.read_system_keyboard() == {}
+    assert [name for name in SESSION_ENV if name in os.environ] == []

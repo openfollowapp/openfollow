@@ -6453,7 +6453,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         )
         with _config_write_lock:
             cfg = _load_config_for_edit()
-            restart = simple and _simple_switch_restarts(cfg)
+            # Only on a switch: re-posting Simple is not the way to a pending restart.
+            restart = simple and cfg.network_mode != NETWORK_MODE_SIMPLE and _simple_switch_restarts(cfg)
             cfg.network_mode = mode
             enforce_network_mode(cfg)
             save_config(cfg, server.config_path)

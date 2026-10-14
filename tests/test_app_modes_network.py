@@ -3442,6 +3442,18 @@ class TestTheSimpleMethodAndDns:
         # Still the lease's own servers, so none are pinned.
         assert adapter.apply_calls[0][1].dns == ()
 
+    def test_static_to_dhcp_keeps_servers_typed_here(self, monkeypatch, tmp_path) -> None:
+        adapter = _FakeAdapter()
+        adapter.method = Ipv4Method.STATIC
+        app = _simple_app(monkeypatch, tmp_path, adapter=adapter)
+        _confirm_key(app, "dns_1")
+        app._pi_network_field_value = "192.0.2.53"
+        app._pi_network_field_seeded = False
+        anm.confirm_pi_network_field_edit(app)
+        _confirm_key(app, "method")
+        _confirm_key(app, "method:dhcp")
+        assert app._pi_network_pending_config.dns == ("192.0.2.53",)
+
     def test_static_to_dhcp_leaves_the_static_dns_behind(self, monkeypatch, tmp_path) -> None:
         adapter = _FakeAdapter()
         adapter.method = Ipv4Method.STATIC

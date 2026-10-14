@@ -392,6 +392,24 @@ def test_a_web_ui_pin_in_force_restarts_openfollow(net_server, tmp_path, present
     assert _saved(tmp_path).web_bind_iface == ""
 
 
+def test_reposting_simple_never_restarts_again(net_server, tmp_path, present, monkeypatch) -> None:  # noqa: F811
+    import openfollow.web.server as server_module
+
+    _set(tmp_path, network_mode="simple")
+    monkeypatch.setattr(
+        server_module.ConfigWebServer,
+        "get_web_bind_advisory",
+        lambda self: {"bind_at_start": "", "iface_at_start": "wlan0", "status": "iface"},
+    )
+    restarts: list[bool] = []
+    monkeypatch.setattr(
+        server_module.ConfigWebServer, "request_restart_unless_updating", lambda self: restarts.append(True) or True
+    )
+    _fake, base = net_server
+    status, _body, headers = _post_headers(base, "/section/network/mode", {"network_mode": "simple"})
+    assert (status, headers.get("hx-refresh"), restarts) == (200, "true", [])
+
+
 def test_a_restart_refused_by_an_update_says_so(net_server, tmp_path, present, monkeypatch) -> None:  # noqa: F811
     import openfollow.web.server as server_module
 

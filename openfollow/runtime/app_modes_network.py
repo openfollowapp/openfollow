@@ -873,7 +873,7 @@ def _pick_method(app: OpenFollowApp, value: str) -> None:
     """Change the pending method; only the fields that method owns carry over.
 
     DNS does too, except from a static interface to plain DHCP: its servers are
-    the static network's, and DHCP brings its own.
+    the static network's, and DHCP brings its own. Servers typed here always stay.
     """
     method = next((m for m, _label in _METHOD_CHOICES if m.value == value), None)
     _close_picker(app)
@@ -887,7 +887,13 @@ def _pick_method(app: OpenFollowApp, value: str) -> None:
         address=pending.address if keep_address else None,
         prefix=pending.prefix if keep_rest else None,
         router=pending.router if keep_rest else None,
-        dns=() if method == Ipv4Method.DHCP and _interface_is_static(app) else pending.dns,
+        dns=(
+            ()
+            if method == Ipv4Method.DHCP
+            and _interface_is_static(app)
+            and not getattr(app, "_pi_network_dns_edited", False)
+            else pending.dns
+        ),
     )
     _focus_row(app, "method")
 

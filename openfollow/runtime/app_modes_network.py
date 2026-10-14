@@ -142,7 +142,10 @@ def _read_pi_network(app: OpenFollowApp) -> _NetworkSnapshot:
     """Blocking adapter read. Pure read of app state – safe off the main thread."""
     adapter = _network_adapter(app)
     if adapter is None:
-        return _NetworkSnapshot(False, [], "", None, None)
+        # Nothing to edit, but Simple still names the interface carrying the traffic.
+        station = _station_iface(app) if _simple(app) else None
+        auto = auto_station_iface() if station is not None else ""
+        return _NetworkSnapshot(False, [], station or auto, None, None, auto_iface=auto, station=station)
     reading = adapter.read_network()
     interfaces = list(reading.interfaces)
     if not interfaces:
@@ -168,6 +171,8 @@ def _read_pi_network(app: OpenFollowApp) -> _NetworkSnapshot:
         active = interfaces[0].name
     state = reading.states.get(active)
     pending = state.ipv4 if state is not None else Ipv4Config(method=Ipv4Method.DHCP)
+    # Three servers are shown and allowed; a fourth would make every apply refused, unseen.
+    pending = replace(pending, dns=tuple(pending.dns)[:_MAX_DNS])
     return _NetworkSnapshot(True, interfaces, active, state, pending, methods, adapters, auto, station_read)
 
 
@@ -181,6 +186,10 @@ def _apply_pi_network_snapshot(app: OpenFollowApp, snap: _NetworkSnapshot) -> No
     if not snap.has_adapter:
         app._pi_network_state_cache = None
         app._pi_network_pending_config = None
+        app._pi_network_interfaces = []
+        app._pi_network_active_iface = snap.active_iface
+        app._pi_network_auto_iface = snap.auto_iface
+        app._pi_network_read_station = snap.station
         return
     app._pi_network_interfaces = snap.interfaces
     if not snap.interfaces:
@@ -590,6 +599,7 @@ _METHOD_CHOICES: tuple[tuple[Ipv4Method, str], ...] = (
     (Ipv4Method.STATIC, "Static"),
 )
 _DNS_FIELDS = ("dns_1", "dns_2", "dns_3")
+_MAX_DNS = len(_DNS_FIELDS)
 _PICK_IFACE_PREFIX = "pick:"
 _PICK_METHOD_PREFIX = "method:"
 
@@ -669,7 +679,7 @@ def _simple_rows(
     if reading:
         # The banner says it is still being read; neither notice below would be true yet.
         current = False
-    elif not present:
+    elif not present and _network_adapter(app) is not None:
         # Up with an address but not the backend's: it carries the traffic, it is just not edited here.
         kernel_address = (getattr(app, "_pi_network_addr_cache", None) or {}).get(name, "")
         if name and (kernel_address or not station):
@@ -763,6 +773,9 @@ def _station_picker_rows(app: OpenFollowApp, ifaces: list[tuple[str, str]]) -> l
     """Simple: Automatic or a named interface; the one chosen carries every plane."""
     station = _station_iface(app)
     auto = str(getattr(app, "_pi_network_auto_iface", "") or "")
+    if not ifaces:
+        # No backend to list them: the kernel's interfaces with an address still carry traffic.
+        ifaces = sorted((getattr(app, "_pi_network_addr_cache", None) or {}).items())
     auto_address = next((addr for name, addr in ifaces if name == auto), "")
     rows: list[dict[str, object]] = [{"kind": "header", "label": "Carries all of this station's traffic"}]
     rows.append(
@@ -872,8 +885,9 @@ def _pick_station_iface(app: OpenFollowApp, name: str) -> None:
 def _pick_method(app: OpenFollowApp, value: str) -> None:
     """Change the pending method; only the fields that method owns carry over.
 
-    DNS does too, except from a static interface to plain DHCP: its servers are
-    the static network's, and DHCP brings its own. Servers typed here always stay.
+    DNS does too, except from a static interface to either DHCP method: its
+    servers are the static network's, and DHCP brings its own. Servers typed
+    here always stay.
     """
     method = next((m for m, _label in _METHOD_CHOICES if m.value == value), None)
     _close_picker(app)
@@ -889,7 +903,7 @@ def _pick_method(app: OpenFollowApp, value: str) -> None:
         router=pending.router if keep_rest else None,
         dns=(
             ()
-            if method == Ipv4Method.DHCP
+            if method != Ipv4Method.STATIC
             and _interface_is_static(app)
             and not getattr(app, "_pi_network_dns_edited", False)
             else pending.dns
@@ -1504,7 +1518,7 @@ def _apply_pi_network(app: OpenFollowApp) -> None:
         pending.method in (Ipv4Method.DHCP, Ipv4Method.DHCP_WITH_MANUAL_ADDRESS)
         and not getattr(app, "_pi_network_dns_edited", False)
         and lease_dns is not None
-        and tuple(pending.dns) == tuple(lease_dns)
+        and tuple(pending.dns) == tuple(lease_dns)[:_MAX_DNS]
     ):
         # The lease's own servers: sent back they would be pinned over the lease's. Manual ones stay.
         pending = replace(pending, dns=())

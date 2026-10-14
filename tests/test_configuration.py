@@ -7548,3 +7548,10 @@ def test_a_cleared_web_ui_pin_reaches_the_running_config() -> None:
     app = _DummyApp(AppConfig(network_mode="advanced", web_bind_iface="eth1"))
     apply_runtime_config_changes(app, AppConfig(network_mode="simple"))
     assert app._config.web_bind_iface == ""
+
+
+def test_a_video_pin_simple_cleared_reaches_the_running_config_without_a_rebuild() -> None:
+    """The Media Gallery has no pin to rebuild for, so only the mirror can drop it."""
+    app = _DummyApp(AppConfig(network_mode="advanced", video_input_iface="eth1"))
+    apply_runtime_config_changes(app, AppConfig(network_mode="simple"))
+    assert app._config.video_input_iface == ""

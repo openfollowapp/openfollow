@@ -3014,8 +3014,10 @@ def _simple_app(monkeypatch, tmp_path, *, station: str = "", auto: str = "eth0",
     monkeypatch.setattr(anm, "auto_station_iface", lambda: auto)
 
     def _addresses(app_: SimpleNamespace) -> list[tuple[str, str]]:
+        # Like the real one: the kernel's addresses, for the interfaces the backend lists.
         app_._pi_network_addr_cache = {"eth0": "192.168.1.50"}
-        return [("eth0", "192.168.1.50"), ("wlan0", "")]
+        listed = [str(i.name) for i in getattr(app_, "_pi_network_interfaces", [])]
+        return [(name, app_._pi_network_addr_cache.get(name, "")) for name in listed]
 
     monkeypatch.setattr(anm, "_iface_addresses", _addresses)
     app = _make_app(adapter)
@@ -3170,6 +3172,35 @@ class TestTheSimpleScreen:
         labels = [row.get("label") for row in anm.build_pi_network_rows(app)]
         assert "This station has no network interface." not in labels
         assert "apply" not in _keys(app)
+
+    def test_a_lease_with_more_servers_than_shown_still_applies(self, monkeypatch, tmp_path) -> None:
+        adapter = _FakeAdapter()
+        four = ("192.0.2.1", "192.0.2.2", "192.0.2.3", "192.0.2.4")
+        real = adapter.get_state
+
+        def _four_servers(iface: str):
+            state = real(iface)
+            return replace(state, ipv4=replace(state.ipv4, dns=four), lease=replace(state.lease, dns=four))
+
+        adapter.get_state = _four_servers  # type: ignore[method-assign]
+        app = _simple_app(monkeypatch, tmp_path, adapter=adapter)
+        assert app._pi_network_pending_config.dns == four[:3]
+        _confirm_key(app, "apply")
+        app._pi_network_worker.join(timeout=5)
+        # Still the lease's own: none pinned.
+        assert adapter.apply_calls[0][1].dns == ()
+
+    def test_without_a_network_backend_the_traffic_interface_is_still_named(self, monkeypatch, tmp_path) -> None:
+        app = _simple_app(monkeypatch, tmp_path)
+        app._runtime_services.network_adapter = None
+        anm.exit_pi_network(app)
+        anm.enter_pi_network(app)
+        labels = [row.get("label") for row in anm.build_pi_network_rows(app)]
+        assert "This station has no network interface." not in labels
+        assert _row(app, "interface")["value"] == "Automatic (eth0)"
+        assert "This station's addressing cannot be changed from here." in labels
+        _confirm_key(app, "interface")
+        assert "pick:eth0" in _keys(app)
 
     def test_a_station_with_no_interface_says_so(self, monkeypatch, tmp_path) -> None:
         adapter = _FakeAdapter()
@@ -3454,12 +3485,13 @@ class TestTheSimpleMethodAndDns:
         _confirm_key(app, "method:dhcp")
         assert app._pi_network_pending_config.dns == ("192.0.2.53",)
 
-    def test_static_to_dhcp_leaves_the_static_dns_behind(self, monkeypatch, tmp_path) -> None:
+    @pytest.mark.parametrize("picked", ["method:dhcp", "method:dhcp_manual"])
+    def test_static_to_dhcp_leaves_the_static_dns_behind(self, monkeypatch, tmp_path, picked) -> None:
         adapter = _FakeAdapter()
         adapter.method = Ipv4Method.STATIC
         app = _simple_app(monkeypatch, tmp_path, adapter=adapter)
         _confirm_key(app, "method")
-        _confirm_key(app, "method:dhcp")
+        _confirm_key(app, picked)
         assert app._pi_network_pending_config.dns == ()
         assert _row(app, "dns_1")["value"] == ""
 

@@ -3586,6 +3586,10 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
             app._config.video_source_type = old_video_source_type
             for name, value in old_field_values.items():
                 setattr(app._config, name, value)
+    # The swap commits the video pin only for an input it rebuilds; a pin Simple cleared may need
+    # no rebuild, and must not stay in the running config for a whole-config save to write back.
+    if not getattr(app, "_video_swap_owed", False) and new_config.video_input_iface != app._config.video_input_iface:
+        app._config.video_input_iface = new_config.video_input_iface
 
     # Grid and camera updates (no renderer needed - Cairo overlay reads from config)
     if new_config.grid != app._config.grid:

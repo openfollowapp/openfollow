@@ -110,13 +110,14 @@ def test_a_station_interface_that_is_gone_is_named(net_server, tmp_path, present
     assert '<option value="eth9" selected>eth9 – no address</option>' in body
 
 
-def test_automatic_with_no_address_anywhere_says_so(net_server, tmp_path, monkeypatch) -> None:  # noqa: F811
+def test_automatic_with_no_address_anywhere_offers_the_first_interface(net_server, tmp_path, monkeypatch) -> None:  # noqa: F811
     monkeypatch.setattr(net_utils_module, "auto_station_iface", lambda: "")
     _fake, base = net_server
     _set(tmp_path, network_mode="simple")
     _status, body = _get(base, "/section/network/status")
-    assert "No interface has an address yet." in body
     assert '<option value="" selected>Automatic</option>' in body
+    # The first interface, as the Operator Screen edits it, so it can be given an address.
+    assert 'data-adv-key="net-iface-eth0"' in body
 
 
 def test_an_unavailable_backend_still_shows_the_mode_in_force(net_server, tmp_path) -> None:  # noqa: F811

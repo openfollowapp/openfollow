@@ -1835,6 +1835,17 @@ class TestServeOnAllInterfacesIsTheLockoutEscape:
         assert saved, "the cleared pin was never written to disk"
         assert app._restart_requests == 1
 
+    def test_a_pin_already_cleared_but_still_held_restarts(self, monkeypatch) -> None:
+        """Saved clear, but the listener keeps the pin it started on until a restart."""
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        app = _make_app()
+        app._config.web_bind = ""
+        app._web_server = _FakeWebServer(bind_host="192.168.1.5")
+        anm.enter_pi_network(app)
+        _confirm_key(app, "web_unpin")
+        assert app._restart_requests == 1
+        assert app._pi_network_banner_level == "info"
+
     def test_it_is_offered_only_while_the_ui_is_pinned(self, monkeypatch) -> None:
         _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
         app = _make_app()
@@ -3205,6 +3216,17 @@ class TestTheSimpleInterfacePicker:
         _confirm_key(app, "interface")
         _confirm_key(app, "pick:eth0")
         assert app._reloads == 0
+
+    def test_a_missing_config_file_is_never_replaced_by_defaults(self, monkeypatch, tmp_path) -> None:
+        import os
+
+        app = _simple_app(monkeypatch, tmp_path)
+        os.remove(app._config_path)
+        _confirm_key(app, "interface")
+        _confirm_key(app, "pick:wlan0")
+        assert not os.path.exists(app._config_path)
+        assert app._reloads == 0
+        assert app._pi_network_banner_level == "error"
 
     def test_a_failed_save_says_so_and_moves_nothing(self, monkeypatch, tmp_path) -> None:
         import openfollow.configuration as configuration

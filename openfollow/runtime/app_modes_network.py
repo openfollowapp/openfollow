@@ -820,6 +820,8 @@ def _pick_station_iface(app: OpenFollowApp, name: str) -> None:
     The file is written as it is on disk and applied at once, so the running
     config never gets ahead of what was saved.
     """
+    import os
+
     from openfollow.configuration import config_write_lock, load_config, save_config
 
     _close_picker(app)
@@ -827,6 +829,9 @@ def _pick_station_iface(app: OpenFollowApp, name: str) -> None:
         return
     try:
         with config_write_lock:
+            # A missing file would load as defaults and be saved as such over everything else.
+            if not os.path.exists(app._config_path):
+                raise FileNotFoundError(app._config_path)
             cfg = load_config(app._config_path, strict=True)
             cfg.psn_source_iface = name
             save_config(cfg, app._config_path)
@@ -1101,6 +1106,11 @@ def _unpin_web_ui(app: OpenFollowApp) -> None:
     cfg = app._config
     previous = (getattr(cfg, "web_bind", ""), getattr(cfg, "web_bind_iface", ""))
     if not any(previous):
+        # Cleared already, but the listener keeps the pin it started on until a restart.
+        if not _serves_every_interface(app):
+            _set_banner(app, "Web UI will serve on all interfaces after the restart.", "info")
+            app._web_commands.request_restart()
+            _focus_row(app, "")
         return
     cfg.web_bind = ""
     cfg.web_bind_iface = ""

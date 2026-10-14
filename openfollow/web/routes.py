@@ -5970,6 +5970,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         rows = net["iface_rows"]
         options = [(str(row.get("name", "")), str(row.get("address", ""))) for row in rows]
         resolved = _station_picker(net, station, options)
+        # Automatic with no address anywhere shows the first interface, as the Operator Screen edits it.
+        resolved = resolved or next((name for name, _addr in net["station_options"]), "")
         net["leftover_vlans"] = sorted(name for name in vlan_names if name and name != resolved)
         net["iface_rows"] = [row for row in rows if str(row.get("name", "")) == resolved]
         net["vlan_parents"] = []

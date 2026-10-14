@@ -2,6 +2,7 @@
 % kb_labels = dict(KEYBOARD_ACTION_FORM_LABELS)
 %# Set only where the kiosk session resolved the layout (see keyboard_layout_view).
 % kb_layout = keyboard_layout if defined('keyboard_layout') else None
+% kb_pending = kb_layout is not None and kb_layout.pending and not (defined('restarting') and restarting)
 <form id="keyboard-section" class="section {{'saved' if defined('saved') and saved else ''}}" data-fold-key="keyboard" data-help="keyboard"
       hx-post="/section/keyboard" hx-target="#keyboard-section" hx-swap="outerHTML" hx-trigger="submit">
     <div class="section-head">
@@ -60,9 +61,9 @@
                 <span id="keyboard-variant-error" class="field-error"></span>
             </div>
         </div>
-        % if kb_layout.layout_pending:
+        % if kb_pending and kb_layout.layout_pending:
         <div class="field-caution-msg" role="status">In use: {{kb_layout.in_use_label}} until OpenFollow restarts.</div>
-        % elif kb_layout.pending:
+        % elif kb_pending:
         <div class="field-caution-msg" role="status">The system keyboard settings change when OpenFollow restarts.</div>
         % end
         % end
@@ -222,7 +223,7 @@
 
     <div class="actions">
         <button type="submit" class="save-btn">Save</button>
-        % if kb_layout is not None and kb_layout.pending:
+        % if kb_pending:
         <button type="button" class="danger"
                 hx-post="/section/keyboard/restart"
                 hx-confirm="Outputs pause until OpenFollow is back."

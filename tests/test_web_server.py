@@ -8921,6 +8921,8 @@ def test_keyboard_restart_restarts_and_saves_nothing(live_server, keyboard_stati
     assert server.check_restart_requested() is True
     assert load_config(server.config_path).controller.keyboard_layout == "de"
     assert "restart-notice" in body
+    assert "until OpenFollow restarts" not in body
+    assert 'class="danger"' not in body
     assert 'id="keyboard-section"' in body
 
 

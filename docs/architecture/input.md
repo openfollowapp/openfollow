@@ -7,7 +7,7 @@ Covers `input/`, `binding_conflicts.py`, the OSC listener. The rules that apply 
 **Linux/fallback:** GTK event-based tracking.
 
 ### Discrete vs continuous keys (config-driven)
-Discrete keys (edge-detected, one event per press) come from two sources: a fixed set of modal-overlay keys `_MODAL_DISCRETE_KEYS` (`Tab`, `Enter`, `Escape`, the arrows, `b`) **plus** the operator-bound action keys named in `_DISCRETE_ACTION_FIELDS`, whose values are read from `ControllerConfig` (`key_reset`, `key_toggle_help`, `key_toggle_zones`, `key_speed_down`, `key_speed_up`, `key_next_marker`, `key_prev_marker`). The polled set is rebuilt from config – there are no hardcoded `n`/`c`/`i` action keys.
+Discrete keys (edge-detected, one event per press) come from two sources: a fixed set of modal-overlay keys `_MODAL_DISCRETE_KEYS` (`Tab`, `Enter`, `Escape`, the arrows, `b`) **plus** the operator-bound action keys named in `_DISCRETE_ACTION_FIELDS`, whose values are read from `ControllerConfig` (`key_reset`, `key_toggle_help`, `key_toggle_zones`, `key_speed_down`, `key_speed_up`, `key_next_marker`, `key_prev_marker`, `key_clear_messages`, `key_pathfinder`, `key_toggle_paths`). The polled set is rebuilt from config – there are no hardcoded `n`/`c`/`i` action keys.
 
 Movement keys (`key_move_layout`, default WASD) are continuous-polled (held = repeated).
 
@@ -163,6 +163,9 @@ of the global golden accent, so each card is identifiable at a glance.
 - Non-empty allowlist = drop packets from non-listed IPs (DEBUG-level drop log, rate-limit-friendly).
 - `__post_init__` on `OscConfig` normalises the field to `list[str]` so a hand-edited TOML can't feed a bare string or non-string entries into the runtime filter / web UI / HMAC flow.
 - `_as_ip_list` parser **fails closed**: a submission of `"192.168.1.999"` (all-invalid) preserves the existing value rather than becoming `[]` and silently disabling the filter. Explicit empty (`""`, `[]`, whitespace-only CSV) still clears.
+
+## OSC position write logging (`InputManager.update`, `restart_osc`)
+`OscMarkerAdapter.flush_updates` merges every message since the last frame, so each frame applies at most one write per marker, traced at DEBUG only. One INFO line per marker marks the start of a stream: its first applied write, and the first after `_OSC_STREAM_GAP_S` without one. `restart_osc` resets the per-marker times, so a stream on a rebuilt listener logs its start again. A write for a marker the station does not control, or cannot resolve, is dropped before either line.
 
 ## macOS vs Pi differences
 - **macOS:** Quartz keyboard polling, per-frame GDK pointer polling (`window.poll_pointer`; under the pipeline GTK button events never arrive and motion arrives intermittently, while scroll events do arrive, so wheel-Z works, counted per wheel click and rate-limited as described under Mouse), NDI via libndi dylib, SDL's HIDAPI joystick backend switched off (`SDL_JOYSTICK_HIDAPI=0` in `GamepadHandler`: SDL before 2.32.6 kept a closed device's HID callback registered, so a reopen turned input into a use-after-free; pygame-ce bundles a fixed SDL, and the backend stays off until pads are verified on it)

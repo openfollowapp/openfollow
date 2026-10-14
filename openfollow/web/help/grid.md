@@ -43,6 +43,10 @@ Use when the Reference Point isn't at the grid centre.
 - **Z Offset** – height of the grid plane above the Reference Point. `0` sits it
   on the floor; raise it for a stage deck or riser.
 
+Saving a new width, depth or offset forgets the corner pins the Setup Wizard
+saved with the camera, since they were placed on the old grid; the next run of
+the Setup Wizard pins the corners again.
+
 ## Origin Marker
 
 A small cross at the Reference Point to confirm it lines up with your physical

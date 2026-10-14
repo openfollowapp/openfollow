@@ -455,6 +455,8 @@ class KeyboardHandler:
         "key_next_marker",
         "key_prev_marker",
         "key_clear_messages",
+        "key_pathfinder",
+        "key_toggle_paths",
     )
 
     # Map physical modifier keys to the canonical names used by

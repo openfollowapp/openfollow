@@ -14,6 +14,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 
 import numpy as np
 import pytest
@@ -1357,6 +1358,59 @@ class TestWizardSolveBadInput:
 #   - applyAndFinish() inspects response.ok before redirecting
 
 
+# An integer JSON carries exactly but no float holds: float() raises OverflowError on it.
+_TOO_BIG = 10**400
+
+
+def _set_path(body: dict, path: tuple) -> dict:
+    """``body`` with the value at ``path`` replaced by :data:`_TOO_BIG`."""
+    out = json.loads(json.dumps(body))
+    target = out
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = _TOO_BIG
+    return out
+
+
+@integration
+class TestWizardNumbersTooLargeForAFloat:
+    """Every number the three wizard routes read is a 400 when no float holds it, never a 500."""
+
+    @staticmethod
+    def _bodies() -> dict[str, dict]:
+        world = _world_corners().tolist()
+        screen = project_points(_cam_params(None), _world_corners(), IMG_W, IMG_H).tolist()
+        size = {"image_width": IMG_W, "image_height": IMG_H}
+        return {
+            "/api/wizard/project": {"camera": _CAM, "grid": _GRID, **size},
+            "/api/wizard/unproject": {"camera": _CAM, "screen_points": [[960.0, 700.0]], **size},
+            "/api/wizard/solve": {"world_corners": world, "screen_corners": screen, "camera": _CAM, **size},
+        }
+
+    @pytest.mark.parametrize(
+        ("path", "where"),
+        [
+            ("/api/wizard/project", ("image_width",)),
+            ("/api/wizard/project", ("grid", "width")),
+            ("/api/wizard/project", ("grid", "z_offset")),
+            ("/api/wizard/project", ("camera", "pitch")),
+            ("/api/wizard/unproject", ("screen_points", 0, 1)),
+            ("/api/wizard/unproject", ("plane_z",)),
+            ("/api/wizard/unproject", ("camera", "fov")),
+            ("/api/wizard/solve", ("image_width",)),
+            ("/api/wizard/solve", ("screen_corners", 2, 0)),
+            ("/api/wizard/solve", ("world_corners", 1, 2)),
+        ],
+    )
+    def test_is_a_400(self, live_server, path: str, where: tuple) -> None:
+        _, base = live_server
+        good = self._bodies()[path]
+        assert _post_json(base, path, good)[0] == 200
+        status, raw = _post_raw(base, path, _set_path(good, where))
+        assert status == 400
+        assert "error" in json.loads(raw)
+
+
 @unit
 class TestWizardTemplateSafetyPatterns:
     def _wizard_tpl(self) -> str:
@@ -1364,6 +1418,12 @@ class TestWizardTemplateSafetyPatterns:
 
         path = Path(__file__).resolve().parent.parent / "openfollow" / "web" / "templates" / "wizard.tpl"
         return path.read_text(encoding="utf-8")
+
+    def test_the_unverified_point_notice_is_at_its_chips_level(self) -> None:
+        """The notice explains the Unverified chip, a caution: one level for one state."""
+        src = self._wizard_tpl()
+        assert "unverified: ['stat-chip warn', 'Unverified']" in src
+        assert '<div id="calib-notice" class="notice warning"' in src
 
     def test_snapshot_revokes_previous_blob_url(self) -> None:
         src = self._wizard_tpl()
@@ -1445,6 +1505,21 @@ class TestWizardLensDistortion:
             for n in ("DSL", "DSR", "USR", "USL")
         )
         assert moved
+
+    def test_project_reads_a_folding_pair_as_a_save_would_keep_it(self, live_server) -> None:
+        """The slider's earlier end stop folds; the preview bows with the pair a save would keep."""
+        _, base = live_server
+        body = {"grid": _GRID, "image_width": IMG_W, "image_height": IMG_H}
+        kept = CameraConfig(lens_k1=-0.4, lens_k2=0.0)
+        _, folding = _post_json(
+            base, "/api/wizard/project", {**body, "camera": {**_CAM, "lens_k1": -0.4, "lens_k2": 0.0}}
+        )
+        _, pulled = _post_json(
+            base, "/api/wizard/project", {**body, "camera": {**_CAM, "lens_k1": kept.lens_k1, "lens_k2": kept.lens_k2}}
+        )
+        _, plain = _post_json(base, "/api/wizard/project", {**body, "camera": _CAM})
+        assert folding["corners"] == pulled["corners"]
+        assert folding["corners"] != plain["corners"]
 
     def test_project_zero_lens_matches_no_lens_key(self, live_server) -> None:
         _, base = live_server
@@ -1536,12 +1611,14 @@ class TestWizardLensCoeffs:
         assert _wizard_lens_coeffs({"lens_k1": "abc"}) == (0.0, 0.0)
         assert _wizard_lens_coeffs({"lens_k1": float("inf"), "lens_k2": float("nan")}) == (0.0, 0.0)
 
-    def test_a_folding_pair_falls_back_to_pinhole(self) -> None:
+    @pytest.mark.parametrize("k1,k2", [(5.0, -5.0), (-0.4, -0.2), (-0.4, 0.0), (-0.1, 0.02)])
+    def test_a_pair_reads_as_the_saved_config_reads_it(self, k1: float, k2: float) -> None:
+        """A folding pair is pulled back toward the fold, never dropped to pinhole, exactly as a save is."""
         from openfollow.web.routes import _wizard_lens_coeffs
 
-        assert _wizard_lens_coeffs({"lens_k1": 5.0, "lens_k2": -5.0}) == (0.0, 0.0)
-        assert _wizard_lens_coeffs({"lens_k1": -0.4, "lens_k2": -0.2}) == (0.0, 0.0)
-        assert _wizard_lens_coeffs({"lens_k1": -0.1, "lens_k2": 0.02}) == pytest.approx((-0.1, 0.02))
+        saved = CameraConfig(lens_k1=k1, lens_k2=k2)
+        assert _wizard_lens_coeffs({"lens_k1": k1, "lens_k2": k2}) == (saved.lens_k1, saved.lens_k2)
+        assert _wizard_lens_coeffs({"lens_k1": k1, "lens_k2": k2}) != (0.0, 0.0)
         # A wide lens outside the old +-0.4 / +-0.2 box passes through unclamped.
         assert _wizard_lens_coeffs({"lens_k1": -0.47, "lens_k2": 0.25}) == pytest.approx((-0.47, 0.25))
 
@@ -1551,7 +1628,16 @@ class TestWizardLensCoeffs:
 # ---------------------------------------------------------------------------
 
 
-def _lens_station(tmp_path, monkeypatch, *, developer_mode: bool = False, experimental: bool = False):
+def _lens_station(
+    tmp_path,
+    monkeypatch,
+    *,
+    developer_mode: bool = False,
+    experimental: bool = False,
+    points: tuple = (),
+    corner_pins: list | None = None,
+    unit_system: str = "metric",
+):
     """A station with a stored lens pair for the wizard's Lens step."""
     from openfollow.configuration import AppConfig, save_config
 
@@ -1567,6 +1653,9 @@ def _lens_station(tmp_path, monkeypatch, *, developer_mode: bool = False, experi
     cfg.ui.developer_mode = developer_mode
     cfg.camera.lens_k1 = -0.21
     cfg.camera.lens_k2 = 0.03
+    cfg.camera.calibration_points = list(points)
+    cfg.camera.corner_pins = list(corner_pins or [])
+    cfg.ui.unit_system = unit_system
     save_config(cfg, str(config_path))
     return live_on_free_port(
         lambda port: ConfigWebServer(
@@ -2242,7 +2331,9 @@ class TestWizardLensTemplate:
             assert "applySolvedPose(data.camera, " in body.group(1), name
             # The pair recorded is the one the request undistorted the pins with.
             assert "var body = wizardSolveBody(" in body.group(1), name
-        pose = re.search(r"function applySolvedPose\(camera, screenCorners, body\) \{(.*?)\n  \}\n", src, re.S)
+        pose = re.search(
+            r"function applySolvedPose\(camera, screenCorners, body, pointAnswers\) \{(.*?)\n  \}\n", src, re.S
+        )
         assert pose and "lensSolvedWith = { k1: body.camera.lens_k1, k2: body.camera.lens_k2 };" in pose.group(1)
         # Review and Apply read the form every solve writes, so a later edit is what they save.
         assert "solvedCamera" not in src
@@ -2322,7 +2413,7 @@ class TestWizardLensTemplate:
         handle = re.search(r"function pointHandle\(pos, r, px\) \{(.*?)\n  \}\n", src, re.S)
         assert handle and "width: 44 * px, height: 44 * px" in handle.group(1)
         calls = [line for line in src.splitlines() if "pointHandle(" in line and "function pointHandle" not in line]
-        assert len(calls) == 3 and all(line.rstrip().endswith(", px);") for line in calls)
+        assert len(calls) == 4 and all(line.rstrip().endswith(", px);") for line in calls)
         assert "imageWidth / width" in src
         assert "x: sx * 14 * px, y: sy * 14 * px" in src and "'font-size': 13 * px" in src
         assert "'font-size': 11 * px" in src
@@ -2375,3 +2466,346 @@ class TestWizardLensTemplate:
         assert "LENS_RATING_LEVEL = " + levels in src
         assert "LENS_RATING_SEGMENTS = { low: 1, medium: 2, okay: 3, good: 4, excellent: 5 }" in src
         assert "This line doesn't fit the others – is it really straight?" in src
+
+
+# ---------------------------------------------------------------------------
+# /api/wizard/solve with calibration points
+# ---------------------------------------------------------------------------
+
+
+def _wizard_order_corners() -> np.ndarray:
+    """The four corners as the Setup Wizard sends them: DSL, DSR, USR, USL (X is stage left)."""
+    g = _GRID
+    hw, hd, oy = g["width"] / 2, g["depth"] / 2, g["y_offset"]
+    return np.array([[hw, oy - hd, 0.0], [-hw, oy - hd, 0.0], [-hw, oy + hd, 0.0], [hw, oy + hd, 0.0]])
+
+
+def _laser_point(where, a="DSR", b="DSL", *, err=0.0, distort=None) -> dict:
+    corners = dict(zip(("DSL", "DSR", "USR", "USL"), _wizard_order_corners(), strict=True))
+    place = np.array([where[0], where[1], 0.0])
+    pin = project_points(_cam_params(), place[None], IMG_W, IMG_H)
+    if distort:
+        pin = apply_overlay_distortion(pin, IMG_W, IMG_H, *distort)
+    return {
+        "corner_a": a,
+        "corner_b": b,
+        "distance_a": float(np.linalg.norm(place - corners[a])) + err,
+        "distance_b": float(np.linalg.norm(place - corners[b])) + err,
+        "height": 0.0,
+        "pin": pin[0].tolist(),
+    }
+
+
+def _solve_body(points, distort=None) -> dict:
+    world = _wizard_order_corners()
+    screen = project_points(_cam_params(), world, IMG_W, IMG_H)
+    body = {
+        "world_corners": world.tolist(),
+        "screen_corners": screen.tolist(),
+        "image_width": IMG_W,
+        "image_height": IMG_H,
+    }
+    if distort:
+        body["screen_corners"] = apply_overlay_distortion(screen, IMG_W, IMG_H, *distort).tolist()
+        body["camera"] = {"lens_k1": distort[0], "lens_k2": distort[1]}
+    if points is not None:
+        body["calibration_points"] = points
+    return body
+
+
+def _camera_vector(cam: dict) -> np.ndarray:
+    return np.array([cam[k] for k in ("pos_x", "pos_y", "pos_z", "pitch", "yaw", "roll", "fov")])
+
+
+@integration
+class TestWizardSolveWithCalibrationPoints:
+    def test_exact_points_give_back_the_camera_and_their_places(self, live_server) -> None:
+        _, base = live_server
+        points = [_laser_point((2.0, 14.0)), _laser_point((-3.0, 18.0))]
+        status, data = _post_json(base, "/api/wizard/solve", _solve_body(points))
+        assert status == 200
+        assert np.allclose(_camera_vector(data["camera"]), _cam_params(), atol=1e-5)
+        assert [p["status"] for p in data["calibration_points"]] == ["ok", "ok"]
+        assert np.allclose([p["position"] for p in data["calibration_points"]], [[2, 14, 0], [-3, 18, 0]], atol=1e-5)
+        assert np.allclose([p["seen"] for p in data["calibration_points"]], [p["pin"] for p in points], atol=1e-3)
+        assert data["corner_residual"] == pytest.approx(0.0, abs=1e-3)
+
+    @pytest.mark.parametrize("with_points", [True, False], ids=["joint fit", "corners only"])
+    def test_a_solve_older_than_one_already_asked_for_is_dropped(self, live_server, with_points) -> None:
+        _, base = live_server
+        page, other = f"page-{uuid.uuid4().hex[:8]}", f"page-{uuid.uuid4().hex[:8]}"
+        points = [_laser_point((2.0, 14.0)), _laser_point((-3.0, 18.0))] if with_points else None
+        newer = {**_solve_body(points), "solve_page": page, "solve_seq": 7}
+        older = {**_solve_body(points), "solve_page": page, "solve_seq": 6}
+        other_page = {**_solve_body(points), "solve_page": other, "solve_seq": 1}
+        assert _post_json(base, "/api/wizard/solve", newer)[0] == 200
+        status, data = _post_json(base, "/api/wizard/solve", older)
+        assert (status, data) == (409, {"error": "A newer solve was asked for."})
+        assert _post_json(base, "/api/wizard/solve", other_page)[0] == 200
+
+    @pytest.mark.parametrize("body", [[], "x", 5, None], ids=["array", "string", "number", "null"])
+    def test_a_body_that_is_not_an_object_is_refused_not_a_crash(self, live_server, body) -> None:
+        _, base = live_server
+        status, _ = _post_raw(base, "/api/wizard/solve", body)
+        assert status == 400
+
+    @pytest.mark.parametrize(
+        "malformed",
+        ["a point", "the corners", "the canvas"],
+    )
+    def test_a_newer_solve_refused_as_malformed_still_supersedes_the_older(self, live_server, malformed) -> None:
+        _, base = live_server
+        page = f"page-{uuid.uuid4().hex[:8]}"
+        points = [_laser_point((2.0, 14.0))]
+        broken = {
+            "a point": {"calibration_points": [{**points[0], "distance_a": 500.0}]},
+            "the corners": {"screen_corners": [[0, 0]] * 3},
+            "the canvas": {"image_width": 0},
+        }[malformed]
+        bad = {**_solve_body(points), **broken, "solve_page": page, "solve_seq": 8}
+        assert _post_json(base, "/api/wizard/solve", bad)[0] == 400
+        status, _ = _post_json(base, "/api/wizard/solve", {**_solve_body(points), "solve_page": page, "solve_seq": 7})
+        assert status == 409
+
+    def test_a_fit_overtaken_while_it_runs_is_dropped(self, live_server, monkeypatch) -> None:
+        import openfollow.scene.calibration_points as cp
+
+        _, base = live_server
+        page = f"page-{uuid.uuid4().hex[:8]}"
+        points = [_laser_point((2.0, 14.0)), _laser_point((-3.0, 18.0))]
+        real = cp.solve_with_points
+        newer: list[int] = []
+
+        def overtaken(*args, **kwargs):
+            if not newer:
+                newer.append(0)
+                body = {**_solve_body(points), "solve_page": page, "solve_seq": 8}
+                newer[0] = _post_json(base, "/api/wizard/solve", body)[0]
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(cp, "solve_with_points", overtaken)
+        older = {**_solve_body(points), "solve_page": page, "solve_seq": 7}
+        status, data = _post_json(base, "/api/wizard/solve", older)
+        assert (status, data) == (409, {"error": "A newer solve was asked for."})
+        assert newer == [200]
+
+    def test_a_page_pushed_out_by_sixty_four_newer_ones_is_forgotten(self, live_server) -> None:
+        _, base = live_server
+        first = f"page-{uuid.uuid4().hex[:8]}"
+        body = {**_solve_body(None), "solve_page": first, "solve_seq": 9}
+        assert _post_json(base, "/api/wizard/solve", body)[0] == 200
+        for n in range(64):
+            body = {**_solve_body(None), "solve_page": f"{first}-{n}", "solve_seq": 1}
+            assert _post_json(base, "/api/wizard/solve", body)[0] == 200
+        # Its newest is forgotten, so an older number solves rather than being refused.
+        body = {**_solve_body(None), "solve_page": first, "solve_seq": 1}
+        assert _post_json(base, "/api/wizard/solve", body)[0] == 200
+
+    @pytest.mark.parametrize(
+        "change",
+        [
+            {"solve_page": 3, "solve_seq": 1},
+            {"solve_page": "", "solve_seq": 1},
+            {"solve_page": "x" * 65, "solve_seq": 1},
+            {"solve_page": "page", "solve_seq": "1"},
+            {"solve_page": "page", "solve_seq": True},
+            {"solve_page": "page", "solve_seq": 1.5},
+            {"solve_page": "page"},
+            {"solve_seq": 1},
+        ],
+    )
+    def test_a_malformed_solve_sequence_is_refused(self, live_server, change) -> None:
+        _, base = live_server
+        status, _ = _post_json(base, "/api/wizard/solve", {**_solve_body([_laser_point((2.0, 14.0))]), **change})
+        assert status == 400
+
+    def test_points_pinned_on_a_curved_lens_are_straightened_first(self, live_server) -> None:
+        _, base = live_server
+        lens = (-0.2, 0.05)
+        points = [_laser_point((2.0, 14.0), distort=lens), _laser_point((-3.0, 18.0), distort=lens)]
+        status, data = _post_json(base, "/api/wizard/solve", _solve_body(points, distort=lens))
+        assert status == 200
+        assert np.allclose(_camera_vector(data["camera"]), _cam_params(), atol=1e-3)
+        assert np.allclose([p["seen"] for p in data["calibration_points"]], [p["pin"] for p in points], atol=1e-2)
+
+    def test_a_point_that_disagrees_is_reported_and_left_out(self, live_server) -> None:
+        _, base = live_server
+        points = [_laser_point((2.0, 14.0), err=2.0), _laser_point((-3.0, 18.0)), _laser_point((0.0, 16.0))]
+        status, data = _post_json(base, "/api/wizard/solve", _solve_body(points))
+        assert status == 200
+        answer = data["calibration_points"]
+        assert [p["status"] for p in answer] == ["flagged", "ok", "ok"]
+        assert answer[0]["reason"] == "It disagrees with the corners and the other points."
+        assert np.allclose(_camera_vector(data["camera"]), _cam_params(), atol=1e-5)
+
+    def test_distances_that_place_a_point_nowhere_carry_no_position(self, live_server) -> None:
+        _, base = live_server
+        nowhere = {**_laser_point((2.0, 14.0)), "distance_a": 1.0, "distance_b": 30.0}
+        status, data = _post_json(base, "/api/wizard/solve", _solve_body([nowhere, _laser_point((-3.0, 18.0))]))
+        assert status == 200
+        first = data["calibration_points"][0]
+        assert (first["status"], first["position"], first["seen"], first["residual"]) == ("flagged", None, None, None)
+
+    @pytest.mark.parametrize("points", [None, []])
+    def test_without_points_the_answer_is_the_corner_solve(self, live_server, points) -> None:
+        _, base = live_server
+        status, data = _post_json(base, "/api/wizard/solve", _solve_body(points))
+        assert status == 200
+        assert set(data) == {"camera", "reprojected_corners"}
+        assert np.allclose(_camera_vector(data["camera"]), _cam_params(), atol=1e-4)
+
+    @pytest.mark.parametrize(
+        "change",
+        [
+            lambda p: "not a list",
+            lambda p: [p] * 7,
+            lambda p: ["DSL"],
+            lambda p: [{**p, "corner_a": "FOH"}],
+            lambda p: [{**p, "corner_b": p["corner_a"]}],
+            lambda p: [{**p, "corner_a": 3}],
+            lambda p: [{**p, "distance_a": True}],
+            lambda p: [{**p, "distance_a": "21.4"}],
+            lambda p: [{**p, "distance_b": None}],
+            lambda p: [{**p, "distance_a": 0}],
+            lambda p: [{**p, "distance_b": 201}],
+            lambda p: [{**p, "height": 11}],
+            lambda p: [{**p, "height": "0"}],
+            lambda p: [{**p, "pin": [1.0]}],
+            lambda p: [{**p, "pin": "960,540"}],
+            lambda p: [{k: v for k, v in p.items() if k != "pin"}],
+        ],
+    )
+    def test_a_malformed_point_is_refused(self, live_server, change) -> None:
+        _, base = live_server
+        status, data = _post_json(base, "/api/wizard/solve", _solve_body(change(_laser_point((2.0, 14.0)))))
+        assert status == 400
+        assert "error" in data
+
+    @pytest.mark.parametrize("pin", [[-500.0, 99999.0], [IMG_W + 1.0, 10.0], [10.0, -0.5]])
+    def test_a_pin_off_the_snapshot_is_refused_as_the_config_would(self, live_server, pin) -> None:
+        _, base = live_server
+        status, data = _post_json(base, "/api/wizard/solve", _solve_body([{**_laser_point((2.0, 14.0)), "pin": pin}]))
+        assert (status, data) == (400, {"error": "calibration point 1 needs its pin on the snapshot"})
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf")])
+    def test_a_non_finite_pin_is_refused(self, live_server, bad) -> None:
+        _, base = live_server
+        point = {**_laser_point((2.0, 14.0)), "pin": [bad, 540.0]}
+        status, data = _post_json(base, "/api/wizard/solve", _solve_body([point]))
+        assert status == 400
+        assert "pin" in data["error"]
+
+
+# ---------------------------------------------------------------------------
+# Calibration points on the pages
+# ---------------------------------------------------------------------------
+
+
+def _saved_points() -> tuple:
+    from openfollow.configuration import CalibrationPointConfig
+
+    return (
+        CalibrationPointConfig("DSR", "DSL", 18.5, 19.25, 0.0, 0.4, 0.2, [2.5, -14.0, 0.0]),
+        CalibrationPointConfig("USR", "DSL", 30.0, 31.5, 1.2, 0.625, 0.125),
+    )
+
+
+@integration
+class TestCalibrationPointsPages:
+    def test_the_section_comes_with_the_toggle_and_starts_from_the_saved_points(self, tmp_path, monkeypatch) -> None:
+        pins = [[0.81, 0.94], [0.14, 0.95], [0.37, 0.61], [0.66, 0.6]]
+        with _lens_station(tmp_path, monkeypatch, experimental=True, points=_saved_points(), corner_pins=pins) as (
+            _server,
+            base,
+        ):
+            _, body = _get(base, "/wizard")
+        saved_pins = re.search(r"var CALIB_SAVED_CORNERS = (.*);  //", body)
+        assert saved_pins and json.loads(saved_pins.group(1)) == pins
+        step = _wizard_step(body, "corners")
+        assert 'id="calib-section"' in step and 'id="calib-add"' in step and 'id="fine-calib"' in step
+        assert "var CALIB_ENABLED = true;" in body and "var CALIB_MAX = 6;" in body
+        saved = re.search(r"var CALIB_SAVED = (.*);", body)
+        assert saved and json.loads(saved.group(1)) == [
+            {
+                "corner_a": "DSR",
+                "corner_b": "DSL",
+                "distance_a": 18.5,
+                "distance_b": 19.25,
+                "height": 0.0,
+                "pin": [0.4, 0.2],
+                "position": [2.5, -14.0, 0.0],
+            },
+            {
+                "corner_a": "USR",
+                "corner_b": "DSL",
+                "distance_a": 30.0,
+                "distance_b": 31.5,
+                "height": 1.2,
+                "pin": [0.625, 0.125],
+                "position": [],
+            },
+        ]
+        assert 'id="review-calib"' in _wizard_step(body, "review")
+
+    def test_without_the_toggle_the_wizard_has_no_section(self, tmp_path, monkeypatch) -> None:
+        with _lens_station(tmp_path, monkeypatch, experimental=False, points=_saved_points()) as (_server, base):
+            _, body = _get(base, "/wizard")
+        assert 'id="calib-section"' not in body and 'id="calib-add"' not in body
+        assert "var CALIB_ENABLED = false;" in body
+
+    @staticmethod
+    def _rows(camera: str) -> list[list[str]]:
+        start = camera.index('<div class="group experimental-feature" id="camera-calibration-points">')
+        group = camera[start : camera.index("</table>", start)]
+        assert "<input" not in group and "<select" not in group
+        assert re.findall(r'<th scope="col">(.*?)</th>', group) == [
+            "Point",
+            "First corner<br>Distance",
+            "Second corner<br>Distance",
+            "Height above stage",
+            "Position",
+        ]
+        body = group[group.index("<tbody>") :]
+        return [re.findall(r"<t[hd][^>]*>(.*?)</t[hd]>", row) for row in re.findall(r"<tr>(.*?)</tr>", body, re.S)]
+
+    def test_the_camera_form_lists_the_saved_points_read_only(self, tmp_path, monkeypatch) -> None:
+        with _lens_station(tmp_path, monkeypatch, experimental=True, points=_saved_points()) as (_server, base):
+            _, camera = _get(base, "/section/camera")
+        assert self._rows(camera) == [
+            ["1", "DSR<br>18.500 m", "DSL<br>19.250 m", "0.000 m", "X = 2.500 m<br>Y = -14.000 m<br>Z = 0.000 m"],
+            ["2", "USR<br>30.000 m", "DSL<br>31.500 m", "1.200 m", "–"],
+        ]
+
+    def test_the_camera_form_lists_them_in_the_unit_system_shown(self, tmp_path, monkeypatch) -> None:
+        with _lens_station(
+            tmp_path, monkeypatch, experimental=True, points=_saved_points(), unit_system="imperial"
+        ) as (_server, base):
+            _, camera = _get(base, "/section/camera")
+        assert self._rows(camera)[0] == [
+            "1",
+            "DSR<br>60 ft 8.35 in",
+            "DSL<br>63 ft 1.87 in",
+            "0.00 in",
+            "X = 8 ft 2.43 in<br>Y = -45 ft 11.18 in<br>Z = 0.00 in",
+        ]
+
+    def test_without_points_the_camera_form_has_no_group(self, live_server) -> None:
+        _, camera = _get(live_server[1], "/section/camera")
+        assert "camera-calibration-points" not in camera
+
+
+@unit
+def test_a_point_the_solved_camera_cannot_see_has_no_place_on_the_picture() -> None:
+    from openfollow.scene.calibration_points import PointFit
+    from openfollow.web.routes import _point_answer
+
+    # The camera stands at Y -10 looking upstage, so Y -40 is behind it.
+    behind = PointFit((0.0, -40.0, 0.0), "flagged", "It disagrees with the corners.")
+    answer = _point_answer(behind, _cam_params(), IMG_W, IMG_H, 0.0, 0.0)
+    assert answer == {
+        "status": "flagged",
+        "reason": "It disagrees with the corners.",
+        "residual": None,
+        "position": [0.0, -40.0, 0.0],
+        "seen": None,
+    }

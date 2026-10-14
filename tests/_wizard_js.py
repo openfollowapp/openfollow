@@ -19,10 +19,13 @@ NODE = shutil.which("node")
 needs_node = pytest.mark.skipif(NODE is None, reason="node is not installed")
 
 
-def wizard_function(name: str) -> str:
-    """The source of ``function name(...) { ... }`` in the wizard, found by matching its braces."""
+def wizard_function(name: str, *, prefix: str = "function ") -> str:
+    """The source of ``function name(...) { ... }`` in wizard.tpl, found by matching its braces.
+
+    ``prefix="window."`` takes ``window.name = function(...) { ... }`` instead.
+    """
     src = WIZARD_TEMPLATE.read_text(encoding="utf-8")
-    start = src.index(f"function {name}(")
+    start = src.index(f"{prefix}{name} = function(" if prefix == "window." else f"{prefix}{name}(")
     depth = 0
     for i in range(src.index("{", start), len(src)):
         if src[i] == "{":

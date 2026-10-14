@@ -168,6 +168,27 @@ class _FakeOscHandler:
         return snapshot
 
 
+class _FakePathOscAdapter:
+    """Stand-in for ``PathOscAdapter``: the fake service here cannot subscribe."""
+
+    instances: list[_FakePathOscAdapter] = []
+
+    def __init__(self, service: Any) -> None:
+        self.service = service
+        self.started = False
+        self.stopped = False
+        _FakePathOscAdapter.instances.append(self)
+
+    def start(self) -> None:
+        self.started = True
+
+    def stop(self) -> None:
+        self.stopped = True
+
+    def take(self) -> list[Any]:
+        return []
+
+
 class _FakeOperatorMessageAdapter:
     """Recording stand-in for ``OperatorMessageOscAdapter``.
 
@@ -252,6 +273,8 @@ def _patch_handlers(monkeypatch: pytest.MonkeyPatch) -> None:
         "OperatorMessageOscAdapter",
         _FakeOperatorMessageAdapter,
     )
+    monkeypatch.setattr(input_manager_module, "PathOscAdapter", _FakePathOscAdapter)
+    _FakePathOscAdapter.instances = []
     _FakeOscHandler.instances = []
     _FakeOscHandler.next_updates = {}
     _FakeOperatorMessageAdapter.instances = []
@@ -623,6 +646,39 @@ class TestListenIface:
 # --------------------------------------------------------------------------- #
 # Operator-message adapter wiring
 # --------------------------------------------------------------------------- #
+
+
+class TestPathCommandWiring:
+    """Path commands are heard exactly while the OSC listener is up."""
+
+    def test_subscribed_with_the_listener(self) -> None:
+        manager = InputManager(_DummyApp(osc_enabled=True))
+        [adapter] = _FakePathOscAdapter.instances
+        assert manager.path_osc_handler is adapter
+        assert adapter.started is True
+        assert adapter.service is manager.app._runtime_services._osc_service
+
+    def test_not_subscribed_without_a_listener(self) -> None:
+        manager = InputManager(_DummyApp(osc_enabled=False))
+        assert manager.path_osc_handler is None
+        assert _FakePathOscAdapter.instances == []
+
+    def test_restarting_osc_replaces_the_subscription(self) -> None:
+        app = _DummyApp(osc_enabled=True)
+        manager = InputManager(app)
+        first = manager.path_osc_handler
+        manager.restart_osc(enabled=True, port=9010)
+        assert first is not None and first.stopped is True
+        assert manager.path_osc_handler is not first
+        manager.restart_osc(enabled=False, port=9010)
+        assert manager.path_osc_handler is None
+
+    def test_stop_unsubscribes(self) -> None:
+        manager = InputManager(_DummyApp(osc_enabled=True))
+        adapter = manager.path_osc_handler
+        manager.stop()
+        assert adapter is not None and adapter.stopped is True
+        assert manager.path_osc_handler is None
 
 
 class TestOperatorMessageWiring:

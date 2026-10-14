@@ -6,13 +6,15 @@ the detection-extras probes."""
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import asdict
 
 import pytest
 
 import openfollow.video.inputs as inputs_module
-from openfollow.configuration import AppConfig, OscDestinationConfig, OscDestinationsConfig
+from openfollow.configuration import AppConfig, CameraConfig, OscDestinationConfig, OscDestinationsConfig
+from openfollow.lens_model import lens_warp_is_valid
 from openfollow.web.routes import (
     _as_int_list,
     _as_ip_list,
@@ -225,13 +227,15 @@ def test_apply_section_data_camera_lens_distortion_roundtrips() -> None:
     assert config.camera.lens_k2 == pytest.approx(0.03)
 
 
-def test_apply_section_data_camera_lens_distortion_folding_pair_falls_back() -> None:
+def test_apply_section_data_camera_lens_distortion_folding_pair_is_pulled_back() -> None:
     config = AppConfig()
     ok = apply_section_data(config, "camera", {"lens_k1": "5", "lens_k2": "-5"})
     assert ok is True
-    # __post_init__ re-runs after the web save: a pair that folds inside the frame is pinhole.
-    assert config.camera.lens_k1 == 0.0
-    assert config.camera.lens_k2 == 0.0
+    # __post_init__ re-runs after the web save: a folding pair keeps its direction, short of the fold.
+    k1, k2 = config.camera.lens_k1, config.camera.lens_k2
+    assert lens_warp_is_valid(k1, k2)
+    assert 0.0 < k1 < 5.0 and k2 == pytest.approx(-k1)
+    assert not lens_warp_is_valid(k1 * 1.02, k2 * 1.02)
 
 
 def test_apply_section_data_camera_lens_distortion_keeps_a_wide_lens() -> None:
@@ -1260,6 +1264,29 @@ def test_full_config_round_trip_leaves_the_receivers_otp_pin_alone() -> None:
 
     assert new.otp_output.source_iface == ""
     assert new.otp_output.enabled is True
+
+
+def test_broadcast_all_carries_paths_to_a_peer_that_keeps_its_own_active_flags() -> None:
+    """Every station on one stage shares the floor coordinates, so paths are pushed;
+    what is active, and whether paths are drawn, stays with each station."""
+    from openfollow.configuration import PathConfig, PathPointConfig, PathsConfig
+    from openfollow.web.routes import _apply_import_data, _strip_broadcast_excluded
+
+    sender = AppConfig(
+        paths=PathsConfig(
+            show_paths=False,
+            slide_time=1.5,
+            paths=[PathConfig(name="cross", active=True, points=[PathPointConfig(0, 0, 0), PathPointConfig(4, 0, 0)])],
+        )
+    )
+    receiver = AppConfig(paths=PathsConfig(paths=[PathConfig(name="cross", active=False)]))
+
+    new = _apply_import_data(receiver, _strip_broadcast_excluded(_config_dict_redacted(sender)))
+
+    assert [p.x for p in new.paths.paths[0].points] == [0.0, 4.0]
+    assert new.paths.slide_time == 1.5
+    assert new.paths.paths[0].active is False
+    assert new.paths.show_paths is True
 
 
 def test_apply_import_data_preserves_osc_listen_iface() -> None:
@@ -3056,13 +3083,13 @@ def test_apply_import_data_ignores_zones_key_when_value_is_not_a_list() -> None:
 )
 def test_is_on_device_request_true_for_loopback(monkeypatch, remote) -> None:
     """The embedded WebKit overlay loads ``http://127.0.0.1:<port>/``;
-    a loopback ``remote_addr`` is the signal to render gamepad-only
+    a loopback connection is the signal to render gamepad-only
     affordances. Cover IPv4, IPv6, and the hostname-resolved form."""
     from openfollow.web import routes as routes_mod
 
     class _FakeReq:
         def __init__(self, addr: str) -> None:
-            self.remote_addr = addr
+            self.environ = {"REMOTE_ADDR": addr}
 
     monkeypatch.setattr(routes_mod, "request", _FakeReq(remote))
     assert routes_mod._is_on_device_request() is True
@@ -3074,40 +3101,69 @@ def test_is_on_device_request_true_for_loopback(monkeypatch, remote) -> None:
 )
 def test_is_on_device_request_false_for_lan_and_empty(monkeypatch, remote) -> None:
     """LAN clients hit the server's external IP – never appear as
-    loopback. An empty ``remote_addr`` (no source available) is
+    loopback. An empty ``REMOTE_ADDR`` (no source available) is
     treated as off-device so the footer hint doesn't leak to remote
     operators who can't act on the B-button instruction."""
     from openfollow.web import routes as routes_mod
 
     class _FakeReq:
         def __init__(self, addr: str) -> None:
-            self.remote_addr = addr
+            self.environ = {"REMOTE_ADDR": addr}
 
     monkeypatch.setattr(routes_mod, "request", _FakeReq(remote))
     assert routes_mod._is_on_device_request() is False
 
 
 def test_is_on_device_request_strips_surrounding_whitespace(monkeypatch) -> None:
-    """Be lenient about whitespace in ``remote_addr`` since some WSGI
+    """Be lenient about whitespace in ``REMOTE_ADDR`` since some WSGI
     layers normalise inconsistently; the loopback check must still
     fire on ``" 127.0.0.1 "`` and similar."""
     from openfollow.web import routes as routes_mod
 
     class _FakeReq:
-        remote_addr = "  127.0.0.1  "
+        environ = {"REMOTE_ADDR": "  127.0.0.1  "}
 
     monkeypatch.setattr(routes_mod, "request", _FakeReq())
     assert routes_mod._is_on_device_request() is True
 
 
-def test_is_on_device_request_handles_none_remote_addr(monkeypatch) -> None:
+def test_is_on_device_request_handles_a_missing_connection_address(monkeypatch) -> None:
     from openfollow.web import routes as routes_mod
 
     class _FakeReq:
-        remote_addr = None
+        environ: dict[str, str] = {}
 
     monkeypatch.setattr(routes_mod, "request", _FakeReq())
     assert routes_mod._is_on_device_request() is False
+
+
+def test_a_lan_client_claiming_loopback_in_forwarded_for_is_not_on_device(monkeypatch) -> None:
+    from bottle import LocalRequest
+
+    from openfollow.web import routes as routes_mod
+
+    req = LocalRequest({"REMOTE_ADDR": "192.0.2.5", "HTTP_X_FORWARDED_FOR": "127.0.0.1"})
+    monkeypatch.setattr(routes_mod, "request", req)
+    assert routes_mod._is_on_device_request() is False
+
+
+def test_no_code_reads_bottles_forwarded_for_address() -> None:
+    """Bottle's ``remote_addr`` / ``remote_route`` read a client-set X-Forwarded-For; ``REMOTE_ADDR`` is the peer."""
+    import ast
+    from pathlib import Path
+
+    import openfollow
+
+    root = Path(openfollow.__file__).parent
+    offenders = []
+    for path in sorted(root.rglob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        if "remote_addr" not in source and "remote_route" not in source:
+            continue
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, ast.Attribute) and node.attr in ("remote_addr", "remote_route"):
+                offenders.append(f"{path.relative_to(root)}:{node.lineno}")
+    assert offenders == []
 
 
 # ---------------------------------------------------------------------------
@@ -3731,3 +3787,49 @@ def test_an_import_never_gives_this_station_another_stations_fqdn(current: str) 
 
     new = _apply_import_data(AppConfig(station_fqdn=current), {"station_fqdn": "foreign.example.com"})
     assert new.station_fqdn == current
+
+
+def test_calibration_points_arrive_through_the_camera_section() -> None:
+    cfg = AppConfig()
+    good = {"corner_a": "DSL", "corner_b": "DSR", "distance_a": 21.4, "distance_b": 23.9, "pin_x": 0.4, "pin_y": 0.2}
+    assert apply_section_data(cfg, "camera", {"calibration_points": [good, {**good, "corner_b": "DSL"}, "junk"]})
+    assert [(p.corner_a, p.corner_b, p.distance_a) for p in cfg.camera.calibration_points] == [("DSL", "DSR", 21.4)]
+
+
+@pytest.mark.parametrize("raw", ["DSL", 3, None, {"corner_a": "DSL"}])
+def test_calibration_points_that_are_not_a_list_keep_the_saved_ones(raw: object) -> None:
+    good = {"corner_a": "DSL", "corner_b": "DSR", "distance_a": 21.4, "distance_b": 23.9, "pin_x": 0.4, "pin_y": 0.2}
+    cfg = AppConfig()
+    apply_section_data(cfg, "camera", {"calibration_points": [good]})
+    apply_section_data(cfg, "camera", {"calibration_points": raw, "pos_x": 1.0})
+    assert [p.distance_a for p in cfg.camera.calibration_points] == [21.4]
+    assert cfg.camera.pos_x == 1.0
+
+
+_CORNER_PINS = [[0.81, 0.94], [0.14, 0.95], [0.37, 0.61], [0.66, 0.6]]
+
+
+def test_corner_pins_arrive_through_the_camera_section() -> None:
+    cfg = AppConfig()
+    assert apply_section_data(cfg, "camera", {"corner_pins": _CORNER_PINS})
+    assert cfg.camera.corner_pins == _CORNER_PINS
+    apply_section_data(cfg, "camera", {"corner_pins": [[0.1, 0.2]] * 3})
+    assert cfg.camera.corner_pins == []
+
+
+@pytest.mark.parametrize("raw", ["DSL", 3, None, {"DSL": [0.1, 0.2]}])
+def test_corner_pins_that_are_not_a_list_keep_the_saved_ones(raw: object) -> None:
+    cfg = AppConfig()
+    apply_section_data(cfg, "camera", {"corner_pins": _CORNER_PINS})
+    apply_section_data(cfg, "camera", {"corner_pins": raw, "pos_x": 1.0})
+    assert (cfg.camera.corner_pins, cfg.camera.pos_x) == (_CORNER_PINS, 1.0)
+
+
+def test_corner_pins_travel_with_an_export_and_an_import() -> None:
+    """Not device-local: like the calibration points, they describe the show's camera."""
+    from openfollow.web.routes import _apply_import_data
+
+    exported = _config_dict_redacted(AppConfig(camera=CameraConfig(corner_pins=_CORNER_PINS)))
+    assert exported["camera"]["corner_pins"] == _CORNER_PINS
+    imported = _apply_import_data(AppConfig(), json.loads(json.dumps(exported)))
+    assert imported.camera.corner_pins == _CORNER_PINS

@@ -37,6 +37,7 @@ from openfollow.configuration import (
     save_config,
     viewed_with_controlled,
 )
+from openfollow.lens_model import lens_warp_is_valid
 
 _NEW_BUTTON_FIELDS = (
     "btn_next_marker",
@@ -417,6 +418,24 @@ def test_example_config_matches_current_schema() -> None:
     assert cfg.osc_destinations.destinations
     first = cfg.osc_destinations.destinations[0]
     assert cfg.osc_destinations.get(first.id) is first
+
+
+@pytest.mark.parametrize(("section", "defaults"), [("controller", ControllerConfig()), ("mouse3d", Mouse3DConfig())])
+def test_example_config_binds_nothing_the_defaults_leave_unbound(section: str, defaults: object) -> None:
+    """A station seeded from the example must not start with a binding a fresh config leaves unbound."""
+    from pathlib import Path
+
+    example_path = Path(__file__).resolve().parents[1] / "config.example.toml"
+    example = tomllib.loads(example_path.read_text(encoding="utf-8"))[section]
+    # A field the code dropped is silently filtered on load.
+    assert [name for name in example if not hasattr(defaults, name)] == []
+    unbound = {"", -1}
+    bound = {
+        name: value
+        for name, value in example.items()
+        if name.startswith(("btn_", "key_")) and getattr(defaults, name) in unbound and value not in unbound
+    }
+    assert bound == {}
 
 
 def test_bootstrap_copies_example_when_config_absent(tmp_path) -> None:
@@ -1119,10 +1138,12 @@ def test_loading_default_config_does_not_emit_deprecation_warnings(
     ("upper", "lower"),
     [
         ("btn_reset", "btn_toggle_help"),
-        ("btn_toggle_zones", "btn_settings"),
         ("btn_settings", "btn_next_marker"),
         ("btn_speed_up", "btn_move_z_up"),
         ("btn_prev_marker", "btn_clear_messages"),
+        ("btn_clear_messages", "btn_toggle_zones"),
+        ("btn_toggle_zones", "btn_toggle_paths"),
+        ("btn_toggle_paths", "btn_pathfinder"),
         ("btn_menu_confirm", "btn_menu_cancel"),
     ],
 )
@@ -1130,6 +1151,11 @@ def test_gamepad_button_on_two_actions_stays_on_the_upper_one(upper: str, lower:
     config = ControllerConfig(**{upper: "START", lower: "START"})
     assert getattr(config, upper) == "START"
     assert getattr(config, lower) == ""
+
+
+def test_gamepad_zone_overlay_paths_and_pathfinder_start_unbound() -> None:
+    config = ControllerConfig()
+    assert (config.btn_toggle_zones, config.btn_toggle_paths, config.btn_pathfinder) == ("", "", "")
 
 
 def test_gamepad_trigger_shared_by_z_and_an_action_stays_on_the_upper_one() -> None:
@@ -2707,8 +2733,6 @@ def test_camera_config_lens_distortion_defaults_to_pinhole() -> None:
         (0.1, 0.1),
         ("0.15", 0.15),
         (1.5, 1.5),  # pincushion never folds, so no box clamps it
-        (-1.5, 0.0),  # folds with k2 = 0 -> the pair falls back to pinhole
-        (-0.5, 0.0),
         (None, 0.0),
         ("nope", 0.0),
         (float("inf"), 0.0),  # non-finite -> declared default
@@ -2726,7 +2750,6 @@ def test_camera_config_coerces_lens_k1(bad_k: object, expected: float) -> None:
         (0.03, 0.03),
         ("0.04", 0.04),
         (1.5, 1.5),
-        (-1.5, 0.0),  # folds with k1 = 0
         (None, 0.0),
         ("nope", 0.0),
         (float("inf"), 0.0),
@@ -2738,14 +2761,74 @@ def test_camera_config_coerces_lens_k2(bad_k: object, expected: float) -> None:
     assert cfg.lens_k2 == expected
 
 
-@pytest.mark.parametrize("k1,k2", [(-0.4, -0.2), (-0.34, 0.0), (-0.25, -0.1), (-0.6, 0.1)])
-def test_camera_config_folding_lens_pair_falls_back_to_pinhole_with_a_warning(
-    k1: float, k2: float, caplog: pytest.LogCaptureFixture
+# Pairs that fold, the end stops of the slider's earlier box (-0.4 / -0.2) among them.
+_FOLDING_LENS_PAIRS = [
+    (-0.4, 0.0),
+    (-0.35, 0.0),
+    (-0.38, 0.02),
+    (-0.4, -0.2),
+    (0.4, -1.0),
+    (-1.5, 0.0),
+    (0.0, -1.5),
+    (5.0, -5.0),
+    (-5e3, 0.0),
+]
+
+
+def _assert_pulled_back_toward_the_fold(old: tuple[float, float], new: tuple[float, float]) -> None:
+    """Valid, on the old pair's own ray short of it, and close to where that ray folds."""
+    assert lens_warp_is_valid(*new)
+    scale = (new[0] * old[0] + new[1] * old[1]) / (old[0] ** 2 + old[1] ** 2)
+    assert 0.0 < scale < 1.0
+    assert new == pytest.approx((scale * old[0], scale * old[1]), rel=1e-12, abs=1e-15)
+    assert not lens_warp_is_valid(old[0] * scale * 1.02, old[1] * scale * 1.02)
+
+
+@pytest.mark.parametrize("k1,k2", _FOLDING_LENS_PAIRS)
+def test_camera_config_pulls_a_folding_lens_pair_back_toward_the_fold(
+    k1: float, k2: float, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A pair an earlier release accepted keeps its lens, short of the fold, rather than going pinhole."""
+    import openfollow.configuration as cfg_mod
+
+    monkeypatch.setattr(cfg_mod, "_reported_drops", {})
     with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
         cfg = CameraConfig(lens_k1=k1, lens_k2=k2)
+    _assert_pulled_back_toward_the_fold((k1, k2), (cfg.lens_k1, cfg.lens_k2))
+    [message] = [rec.getMessage() for rec in caplog.records]
+    assert f"lens_k1={float(k1)} / lens_k2={float(k2)} folds" in message
+    assert f"using {cfg.lens_k1:.6g} / {cfg.lens_k2:.6g}" in message
+
+
+def test_a_folding_lens_pair_is_reported_once_not_on_every_load(caplog, monkeypatch) -> None:
+    import openfollow.configuration as cfg_mod
+
+    monkeypatch.setattr(cfg_mod, "_reported_drops", {})
+    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
+        for _ in range(3):
+            CameraConfig(lens_k1=-0.4, lens_k2=0.0)
+    assert len(caplog.records) == 1
+
+
+def test_a_pulled_back_lens_pair_is_stable_across_a_save_and_load(temp_config_path) -> None:
+    temp_config_path.write_text("[camera]\nlens_k1 = -0.38\nlens_k2 = 0.02\n", encoding="utf-8")
+    loaded = load_config(str(temp_config_path))
+    _assert_pulled_back_toward_the_fold((-0.38, 0.02), (loaded.camera.lens_k1, loaded.camera.lens_k2))
+    save_config(loaded, str(temp_config_path))
+    again = load_config(str(temp_config_path))
+    assert (again.camera.lens_k1, again.camera.lens_k2) == (loaded.camera.lens_k1, loaded.camera.lens_k2)
+
+
+@pytest.mark.parametrize("k1,k2", [(0.4, 0.2), (0.4, -0.2), (-0.3, 0.0), (-0.2, 0.05)])
+def test_camera_config_keeps_a_lens_pair_that_does_not_fold(k1: float, k2: float) -> None:
+    cfg = CameraConfig(lens_k1=k1, lens_k2=k2)
+    assert (cfg.lens_k1, cfg.lens_k2) == (k1, k2)
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), "abc", None])
+def test_camera_config_lens_values_that_are_no_number_still_read_as_0(bad: object) -> None:
+    cfg = CameraConfig(lens_k1=bad, lens_k2=bad)  # type: ignore[arg-type]
     assert (cfg.lens_k1, cfg.lens_k2) == (0.0, 0.0)
-    assert any("folds" in rec.getMessage() for rec in caplog.records)
 
 
 @pytest.mark.parametrize("k1,k2", [(-0.47, 0.25), (-0.45, 0.2), (0.6, 0.4), (-0.3, 0.0)])
@@ -7021,4 +7104,661 @@ def test_a_refused_station_fqdn_is_reported_once_not_on_every_load(caplog, monke
         "Ignoring station_fqdn 'of_1.stage.example.com': Use only letters, digits and hyphens between the dots,"
         " and no hyphen at the start or end of a part.",
         "Ignoring station_fqdn '.': Enter the full name with its domain, such as of-1.stage.example.com.",
+    ]
+
+
+class TestPathsConfig:
+    """Paths: points, names that OSC can address, caps, and the per-station Active flag."""
+
+    @pytest.mark.parametrize("bad", [None, "abc", [], {}, float("nan"), float("inf")])
+    def test_a_point_coordinate_of_the_wrong_type_falls_back_to_zero(self, bad: object) -> None:
+        from openfollow.configuration import PathPointConfig
+
+        p = PathPointConfig(x=bad, y=bad, z=bad)
+        assert (p.x, p.y, p.z) == (0.0, 0.0, 0.0)
+
+    def test_point_coordinates_clamp_to_a_stage_sized_range(self) -> None:
+        from openfollow.configuration import PathPointConfig
+
+        p = PathPointConfig(x=5000, y=-5000, z="12.5")
+        assert (p.x, p.y, p.z) == (1000.0, -1000.0, 12.5)
+
+    @pytest.mark.parametrize(("raw", "want"), [(-1.0, 0.0), (500, 100.0), ("x", 0.5), (None, 0.5), (2, 2.0)])
+    def test_a_point_radius_is_a_non_negative_length(self, raw: object, want: float) -> None:
+        from openfollow.configuration import PathPointConfig
+
+        assert PathPointConfig(radius=raw).radius == want
+
+    @pytest.mark.parametrize(
+        ("raw", "want"),
+        [
+            ("downstage-cross", "downstage-cross"),
+            ("Down Stage/Cross!", "DownStageCross"),
+            ("a" * 40, "a" * 32),
+            ("v1.2_b", "v1.2_b"),
+            (".hidden", ".hidden"),
+            ("..a", "..a"),
+            (None, ""),
+            (42, ""),
+        ],
+    )
+    def test_a_path_name_keeps_only_what_an_osc_address_allows(self, raw: object, want: str) -> None:
+        from openfollow.configuration import PathConfig
+
+        assert PathConfig(name=raw).name == want
+
+    @pytest.mark.parametrize("raw", [".", "..", "...", "./..", " . ", "." * 40])
+    def test_a_path_name_of_dots_alone_is_no_name(self, raw: str) -> None:
+        # A URL resolves "." and ".." away, so the path could never be addressed.
+        from openfollow.configuration import PathConfig, PathsConfig
+
+        assert PathConfig(name=raw).name == ""
+        assert PathsConfig(paths=[{"name": raw}]).paths[0].name == "path-1"
+
+    @pytest.mark.parametrize("field", ["active", "closed", "release_at_start", "release_at_end"])
+    @pytest.mark.parametrize(("raw", "want"), [(True, True), ("yes", True), ("off", False), (1, False), (None, False)])
+    def test_path_switches_take_booleans_only(self, field: str, raw: object, want: bool) -> None:
+        from openfollow.configuration import PathConfig
+
+        assert getattr(PathConfig(**{field: raw}), field) is want
+
+    def test_path_points_come_from_tables_and_junk_entries_are_dropped(self) -> None:
+        from openfollow.configuration import PathConfig, PathPointConfig
+
+        path = PathConfig(points=[{"x": 1, "y": 2, "z": 0.5, "radius": 0, "stale": 1}, "junk", 7, PathPointConfig(x=3)])
+        assert path.points == [PathPointConfig(1.0, 2.0, 0.5, 0.0), PathPointConfig(x=3.0)]
+
+    def test_a_points_value_that_is_not_a_list_reads_as_no_points(self) -> None:
+        from openfollow.configuration import PathConfig
+
+        assert PathConfig(points="nope").points == []
+
+    def test_a_path_keeps_at_most_its_point_cap(self, caplog) -> None:
+        from openfollow.configuration import MAX_PATH_POINTS, PathConfig
+
+        with caplog.at_level("WARNING"):
+            path = PathConfig(name="long", points=[{"x": i} for i in range(MAX_PATH_POINTS + 5)])
+        assert len(path.points) == MAX_PATH_POINTS
+        assert path.points[-1].x == MAX_PATH_POINTS - 1
+        assert "keeping the first" in caplog.text
+
+    def test_paths_keep_at_most_their_cap(self, caplog) -> None:
+        from openfollow.configuration import MAX_PATHS, PathsConfig
+
+        with caplog.at_level("WARNING"):
+            cfg = PathsConfig(paths=[{"name": f"p{i}"} for i in range(MAX_PATHS + 3)])
+        assert [p.name for p in cfg.paths] == [f"p{i}" for i in range(MAX_PATHS)]
+        assert "keeping the first" in caplog.text
+
+    @pytest.mark.parametrize(("raw", "want"), [(2, 2.0), (-1, 0.0), (99, 10.0), ("x", 1.0), (None, 1.0)])
+    def test_the_slide_time_is_seconds_from_zero_to_ten(self, raw: object, want: float) -> None:
+        from openfollow.configuration import PathsConfig
+
+        assert PathsConfig(slide_time=raw).slide_time == want
+
+    @pytest.mark.parametrize(("raw", "want"), [(False, False), ("no", False), ("junk", True), (None, True)])
+    def test_show_paths_takes_booleans_only(self, raw: object, want: bool) -> None:
+        from openfollow.configuration import PathsConfig
+
+        assert PathsConfig(show_paths=raw).show_paths is want
+
+    def test_paths_from_tables_become_paths_and_junk_is_dropped(self) -> None:
+        from openfollow.configuration import PathConfig, PathsConfig
+
+        cfg = PathsConfig(paths=[{"name": "a", "closed": True, "stale": 1}, "junk", PathConfig(name="b")])
+        assert [(p.name, p.closed) for p in cfg.paths] == [("a", True), ("b", False)]
+        assert PathsConfig(paths={"name": "a"}).paths == []
+
+    def test_a_path_with_no_name_gets_one_from_its_place(self) -> None:
+        from openfollow.configuration import PathsConfig
+
+        cfg = PathsConfig(paths=[{"name": "path-2"}, {"name": ""}, {"name": "!!"}])
+        assert [p.name for p in cfg.paths] == ["path-2", "path-2-2", "path-3"]
+
+    @pytest.mark.parametrize(
+        ("names", "want"),
+        [
+            (["..", "path-1"], ["path-1-2", "path-1"]),
+            (["", "PATH-1"], ["path-1-2", "PATH-1"]),
+            (["cross", "cross", "cross-2"], ["cross", "cross-3", "cross-2"]),
+        ],
+    )
+    def test_a_name_made_up_never_takes_one_a_later_path_was_given(self, names: list[str], want: list[str]) -> None:
+        from openfollow.configuration import PathsConfig
+
+        assert [p.name for p in PathsConfig(paths=[{"name": n} for n in names]).paths] == want
+
+    def test_names_that_match_ignoring_case_are_made_unique(self, caplog) -> None:
+        from openfollow.configuration import PathsConfig
+
+        with caplog.at_level("WARNING"):
+            cfg = PathsConfig(
+                paths=[{"name": "Cross"}, {"name": "cross"}, {"name": "CROSS"}, {"name": "x" * 32}, {"name": "X" * 32}]
+            )
+        assert [p.name for p in cfg.paths] == ["Cross", "cross-2", "CROSS-3", "x" * 32, "X" * 30 + "-2"]
+        assert "'cross' is already taken, renamed to 'cross-2'" in caplog.text
+
+    def test_a_path_is_found_by_name_ignoring_case(self) -> None:
+        from openfollow.configuration import PathsConfig
+
+        cfg = PathsConfig(paths=[{"name": "Downstage-Cross"}, {"name": "loop"}])
+        found = cfg.find("downstage-cross")
+        assert found is not None and found.name == "Downstage-Cross"
+        assert cfg.find("nope") is None
+
+    def test_replacing_paths_keeps_this_station_s_active_flags_by_name(self) -> None:
+        from openfollow.configuration import PathsConfig
+
+        cfg = PathsConfig(paths=[{"name": "Cross", "active": True}, {"name": "loop", "active": False}])
+        cfg.replace_paths(
+            [
+                {"name": "LOOP", "active": True, "points": [{"x": 1}]},
+                {"name": "cross", "active": False, "closed": True},
+                {"name": "new", "active": True},
+            ]
+        )
+        assert [(p.name, p.active, p.closed) for p in cfg.paths] == [
+            ("LOOP", False, False),
+            ("cross", True, True),
+            ("new", False, False),
+        ]
+        assert cfg.paths[0].points[0].x == 1.0
+
+    def test_replacing_with_something_that_is_not_a_list_clears_the_paths(self) -> None:
+        from openfollow.configuration import PathsConfig
+
+        cfg = PathsConfig(paths=[{"name": "cross", "active": True}])
+        cfg.replace_paths("junk")
+        assert cfg.paths == []
+
+    def test_paths_survive_a_save_and_load(self, tmp_path) -> None:
+        from openfollow.configuration import PathConfig, PathPointConfig, PathsConfig
+
+        paths = PathsConfig(
+            show_paths=False,
+            slide_time=1.25,
+            paths=[
+                PathConfig(
+                    name="cross",
+                    active=True,
+                    closed=False,
+                    release_at_end=True,
+                    points=[PathPointConfig(0, 0, 0, 0), PathPointConfig(4, 0, 1.5, 1.0)],
+                ),
+                PathConfig(name="loop", closed=True),
+            ],
+        )
+        target = tmp_path / "config.toml"
+        save_config(AppConfig(paths=paths), str(target))
+        assert load_config(str(target)).paths == paths
+
+
+def test_apply_runtime_takes_new_paths() -> None:
+    from openfollow.configuration import PathConfig, PathsConfig
+
+    app = _app_with()
+    new_paths = PathsConfig(paths=[PathConfig(name="cross", active=True)])
+    apply_runtime_config_changes(app, AppConfig(paths=new_paths))
+    assert app._config.paths == new_paths
+
+
+class TestPathBindings:
+    """Pathfinder and Toggle paths start unbound and validate like every other binding."""
+
+    @pytest.mark.parametrize("field", ["btn_pathfinder", "btn_toggle_paths", "key_pathfinder", "key_toggle_paths"])
+    def test_they_start_unbound(self, field: str) -> None:
+        assert getattr(ControllerConfig(), field) == ""
+
+    @pytest.mark.parametrize(
+        ("field", "bad"), [("btn_pathfinder", "ZZ"), ("btn_toggle_paths", 3), ("key_pathfinder", "F99")]
+    )
+    def test_an_unknown_input_falls_back_to_unbound(self, field: str, bad: object) -> None:
+        assert getattr(ControllerConfig(**{field: bad}), field) == ""
+
+    def test_a_movement_key_is_refused(self) -> None:
+        assert ControllerConfig(key_toggle_paths="w").key_toggle_paths == ""
+
+    def test_a_shared_input_stays_with_the_action_above(self) -> None:
+        cfg = ControllerConfig(key_reset="x", key_pathfinder="x", btn_reset="X", btn_pathfinder="X")
+        assert (cfg.key_reset, cfg.key_pathfinder) == ("x", "")
+        assert (cfg.btn_reset, cfg.btn_pathfinder) == ("X", "")
+
+    @pytest.mark.parametrize("field", ["btn_pathfinder", "btn_toggle_paths"])
+    def test_3d_mouse_path_buttons_start_unbound(self, field: str) -> None:
+        assert getattr(Mouse3DConfig(), field) == -1
+
+
+class TestPathsHotReload:
+    def _app(self) -> _DummyApp:
+        from openfollow.paths.engine import PathEngine
+
+        app = _app_with()
+        app._paths = PathEngine()
+        return app
+
+    @staticmethod
+    def _config(*, experimental: bool, active: bool = True) -> AppConfig:
+        from openfollow.configuration import PathConfig, PathPointConfig, PathsConfig
+
+        cfg = AppConfig()
+        cfg.ui.show_experimental_features = experimental
+        cfg.paths = PathsConfig(
+            paths=[PathConfig(name="cross", active=active, points=[PathPointConfig(0, 0, 0), PathPointConfig(1, 0, 0)])]
+        )
+        return cfg
+
+    def test_new_paths_reach_the_engine(self) -> None:
+        app = self._app()
+        apply_runtime_config_changes(app, self._config(experimental=True))
+        assert app._paths.enabled
+        assert app._paths.lock_onto(1, "cross", (0.5, 0.5, 0.0))
+
+    def test_switching_experimental_features_off_releases_everyone(self) -> None:
+        app = self._app()
+        apply_runtime_config_changes(app, self._config(experimental=True))
+        app._paths.press(1, (0.5, 0.5, 0.0))
+        apply_runtime_config_changes(app, self._config(experimental=False))
+        assert not app._paths.enabled
+        assert not app._paths.is_locked(1)
+
+    def test_an_unrelated_change_keeps_the_locks(self) -> None:
+        app = self._app()
+        apply_runtime_config_changes(app, self._config(experimental=True))
+        app._paths.press(1, (0.5, 0.5, 0.0))
+        changed = self._config(experimental=True)
+        changed.grid.width = 12.0
+        apply_runtime_config_changes(app, changed)
+        assert app._paths.is_locked(1)
+
+
+# ---------------------------------------------------------------------------
+# GroundGridConfig
+# ---------------------------------------------------------------------------
+
+
+def test_ground_grid_defaults_are_inactive() -> None:
+    from openfollow.configuration import GroundGridConfig
+
+    gg = GroundGridConfig()
+    assert (gg.enabled, gg.visible, gg.z_offset, gg.vertices) == (False, True, 0.0, [])
+    assert gg.active is False
+
+
+@pytest.mark.parametrize("bad", [None, "abc", 3, [1, 2]])
+def test_ground_grid_flags_reject_wrong_type(bad: object) -> None:
+    from openfollow.configuration import GroundGridConfig
+
+    gg = GroundGridConfig(enabled=bad, visible=bad)
+    assert (gg.enabled, gg.visible) == (False, True)
+
+
+@pytest.mark.parametrize(("value", "expected"), [("true", True), ("false", False), (True, True)])
+def test_ground_grid_flags_accept_bool_forms(value: object, expected: bool) -> None:
+    from openfollow.configuration import GroundGridConfig
+
+    assert GroundGridConfig(enabled=value).enabled is expected
+
+
+@pytest.mark.parametrize(("value", "expected"), [(-1.5, -1.5), ("0.6", 0.6), (2, 2.0)])
+def test_ground_grid_z_offset_keeps_finite_numbers(value: object, expected: float) -> None:
+    from openfollow.configuration import GroundGridConfig
+
+    assert GroundGridConfig(z_offset=value).z_offset == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("bad", [None, "abc", True, float("nan"), float("inf"), [1.0]])
+def test_ground_grid_z_offset_rejects_wrong_type_to_default(bad: object) -> None:
+    from openfollow.configuration import GroundGridConfig
+
+    assert GroundGridConfig(z_offset=bad).z_offset == 0.0
+
+
+@pytest.mark.parametrize("bad", [None, "abc", True, 5, {"x": 1}])
+def test_ground_grid_vertices_reject_non_list(bad: object) -> None:
+    from openfollow.configuration import GroundGridConfig
+
+    assert GroundGridConfig(vertices=bad).vertices == []
+
+
+def test_ground_grid_vertices_keep_only_finite_pairs() -> None:
+    from openfollow.configuration import GroundGridConfig
+
+    gg = GroundGridConfig(
+        vertices=[
+            [0, 0],
+            ["1", "2.5"],
+            ["bad", 1],
+            [3],
+            "xy",
+            [True, 1],
+            [float("nan"), 1],
+            [4, float("inf")],
+            (5, 6, 7),
+        ]
+    )
+    assert gg.vertices == [[0.0, 0.0], [1.0, 2.5], [5.0, 6.0]]
+
+
+def test_ground_grid_vertices_are_capped() -> None:
+    from openfollow.configuration import GROUND_GRID_MAX_VERTICES, GroundGridConfig
+
+    gg = GroundGridConfig(vertices=[[float(i), 0.0] for i in range(GROUND_GRID_MAX_VERTICES + 10)])
+    assert len(gg.vertices) == GROUND_GRID_MAX_VERTICES
+    assert gg.vertices[-1] == [float(GROUND_GRID_MAX_VERTICES - 1), 0.0]
+
+
+@pytest.mark.parametrize(
+    ("enabled", "vertices", "active"),
+    [
+        (True, [[0, 0], [1, 0], [1, 1]], True),
+        (True, [[0, 0], [1, 0]], False),
+        (False, [[0, 0], [1, 0], [1, 1]], False),
+        (True, [[0, 0], [1, 0], ["x", 1]], False),
+    ],
+)
+def test_ground_grid_active_needs_enabled_and_three_corners(enabled: bool, vertices: list, active: bool) -> None:
+    from openfollow.configuration import GroundGridConfig
+
+    assert GroundGridConfig(enabled=enabled, vertices=vertices).active is active
+
+
+def test_ground_grid_round_trips_through_toml(tmp_path) -> None:
+    from openfollow.configuration import load_config, save_config
+
+    cfg = AppConfig()
+    cfg.ground_grid.enabled = True
+    cfg.ground_grid.visible = False
+    cfg.ground_grid.z_offset = -1.2
+    cfg.ground_grid.vertices = [[0.0, 0.0], [2.0, 0.0], [2.0, 1.5]]
+    path = tmp_path / "config.toml"
+    save_config(cfg, str(path))
+
+    loaded = load_config(str(path))
+    assert loaded.ground_grid == cfg.ground_grid
+
+
+def test_ground_grid_hand_edited_toml_is_normalised(tmp_path) -> None:
+    from openfollow.configuration import load_config
+
+    path = tmp_path / "config.toml"
+    path.write_text('[ground_grid]\nenabled = "yes"\nz_offset = "low"\nvertices = [[0, 0], ["a", 1], [1, 0], [1, 1]]\n')
+    gg = load_config(str(path)).ground_grid
+    assert gg.enabled is True
+    assert gg.z_offset == 0.0
+    assert gg.vertices == [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]
+
+
+def test_apply_runtime_ground_grid_swaps_live() -> None:
+    app = _DummyApp(AppConfig())
+    new_config = AppConfig()
+    new_config.ground_grid.enabled = True
+    new_config.ground_grid.vertices = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]
+
+    apply_runtime_config_changes(app, new_config)
+
+    assert app._config.ground_grid == new_config.ground_grid
+    assert app._web_commands.restart_requested is False
+
+
+@pytest.mark.parametrize("bad", [None, 7, True])
+def test_trigger_zone_vertices_reject_non_list(bad: object) -> None:
+    from openfollow.configuration import TriggerZoneConfig
+
+    assert TriggerZoneConfig(vertices=bad).vertices == []
+
+
+# ---------------------------------------------------------------------------
+# CameraConfig.calibration_points – laser-measured far points for the Setup Wizard
+# ---------------------------------------------------------------------------
+
+_GOOD_POINT = {
+    "corner_a": "DSL",
+    "corner_b": "DSR",
+    "distance_a": 21.4,
+    "distance_b": 23.9,
+    "height": 0.0,
+    "pin_x": 0.41,
+    "pin_y": 0.22,
+}
+
+
+def _with(**changes: object) -> dict[str, object]:
+    return {**_GOOD_POINT, **changes}
+
+
+def test_calibration_points_survive_a_toml_round_trip(tmp_path) -> None:
+    path = tmp_path / "config.toml"
+    points = [_with(position=[2.5, 9.0, 0.0]), _with(corner_a="USL", distance_a=30.5, height=1.2)]
+    save_config(AppConfig(camera=CameraConfig(calibration_points=points)), path)
+    loaded = load_config(path).camera.calibration_points
+    assert [
+        (p.corner_a, p.corner_b, p.distance_a, p.distance_b, p.height, p.pin_x, p.pin_y, p.position) for p in loaded
+    ] == [
+        ("DSL", "DSR", 21.4, 23.9, 0.0, 0.41, 0.22, [2.5, 9.0, 0.0]),
+        ("USL", "DSR", 30.5, 23.9, 1.2, 0.41, 0.22, []),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ([2.5, 9, -0.5], [2.5, 9.0, -0.5]),
+        (("2.5", "9", "0"), [2.5, 9.0, 0.0]),
+        ([], []),
+        ([2.5, 9.0], []),
+        ([2.5, 9.0, 0.0, 1.0], []),
+        ([2.5, "abc", 0.0], []),
+        ([2.5, None, 0.0], []),
+        ([2.5, True, 0.0], []),
+        ([2.5, float("nan"), 0.0], []),
+        ([2.5, float("inf"), 0.0], []),
+        ("2.5, 9, 0", []),
+        (None, []),
+        ({"x": 1}, []),
+    ],
+)
+def test_a_calibration_point_position_is_three_numbers_or_none(raw: object, expected: list[float]) -> None:
+    (point,) = CameraConfig(calibration_points=[_with(position=raw)]).calibration_points
+    assert point.position == expected
+    assert point.distance_a == 21.4
+
+
+def test_calibration_points_default_to_none() -> None:
+    assert CameraConfig().calibration_points == []
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        _with(corner_a="DSR"),  # the same corner twice
+        _with(corner_a="FOH"),
+        _with(corner_b=None),
+        _with(distance_a=0.0),
+        _with(distance_b=-3.0),
+        _with(distance_a=200.5),
+        _with(distance_a="abc"),
+        _with(distance_b=None),
+        _with(distance_a=True),
+        _with(distance_a=float("inf")),
+        _with(height=10.5),
+        _with(height=-11.0),
+        _with(height="abc"),
+        _with(height=None),
+        _with(height=True),
+        _with(pin_x=-0.2),
+        _with(pin_y=1.3),
+        _with(pin_x="abc"),
+        _with(pin_y=None),
+        _with(pin_x=True),
+        "DSL DSR 21.4 23.9",
+        42,
+    ],
+)
+def test_a_calibration_point_that_cannot_be_used_is_dropped_never_clamped(bad: object) -> None:
+    """A measurement that is wrong is not a measurement nearby: clamping would invent one."""
+    points = CameraConfig(calibration_points=[bad, _GOOD_POINT]).calibration_points  # type: ignore[list-item]
+    assert [(p.distance_a, p.distance_b) for p in points] == [(21.4, 23.9)]
+
+
+@pytest.mark.parametrize(("height", "pin"), [(-10.0, 0.0), (2.5, 1.0), ("2.5", "0.5"), (10, 0)])
+def test_a_calibration_point_keeps_a_height_and_pin_in_range(height: object, pin: object) -> None:
+    (point,) = CameraConfig(calibration_points=[_with(height=height, pin_x=pin, pin_y=pin)]).calibration_points
+    assert (point.height, point.pin_x, point.pin_y) == (float(height), float(pin), float(pin))  # type: ignore[arg-type]
+
+
+def test_a_calibration_point_without_a_height_is_at_stage_level() -> None:
+    entry = {k: v for k, v in _GOOD_POINT.items() if k != "height"}
+    (point,) = CameraConfig(calibration_points=[entry]).calibration_points
+    assert point.height == 0.0
+
+
+def test_a_dropped_calibration_point_is_reported_once_not_on_every_load(caplog, monkeypatch) -> None:
+    """Every web request loads the config again; one bad entry must not repeat its warning each time."""
+    import openfollow.configuration as cfg_mod
+
+    monkeypatch.setattr(cfg_mod, "_reported_drops", {})
+    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
+        for _ in range(3):
+            CameraConfig(calibration_points=[_with(distance_a=250.0), _GOOD_POINT])
+    assert [r.getMessage() for r in caplog.records] == [
+        "camera.calibration_points: entry 1 needs both distances between 0 and 200 m; dropped"
+    ]
+    # Another file's drops are reported in turn; what is remembered is only the last report.
+    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
+        CameraConfig(calibration_points=[_with(height=11.0)])
+    assert caplog.records[-1].getMessage().startswith("camera.calibration_points: entry 1 needs a height")
+    assert cfg_mod._reported_drops == {"camera.calibration_points": "entry 1 needs a height within 10 m of stage level"}
+
+
+def test_a_camera_built_without_points_between_loads_does_not_repeat_the_warning(caplog, monkeypatch) -> None:
+    """The frame loop builds a bare CameraConfig every frame (``Camera.to_config``); it is no new file."""
+    import openfollow.configuration as cfg_mod
+
+    monkeypatch.setattr(cfg_mod, "_reported_drops", {})
+    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
+        for _ in range(3):
+            CameraConfig(calibration_points=[_with(distance_a=250.0)], corner_pins=[[0.1, 0.2]])
+            CameraConfig()
+    assert len(caplog.records) == 2
+
+
+def test_many_unusable_calibration_points_are_reported_in_one_line(caplog, monkeypatch) -> None:
+    import openfollow.configuration as cfg_mod
+
+    monkeypatch.setattr(cfg_mod, "_reported_drops", {})
+    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
+        kept = CameraConfig(calibration_points=[1] * 1000 + [_GOOD_POINT] * 7).calibration_points
+    assert len(kept) == 6
+    assert [r.getMessage() for r in caplog.records] == [
+        "camera.calibration_points: entry 1 is not a table; entry 2 is not a table; entry 3 is not a table;"
+        " 998 more; dropped"
+    ]
+
+
+def test_calibration_points_keep_the_first_six() -> None:
+    points = [_with(distance_a=20.0 + i) for i in range(8)]
+    kept = CameraConfig(calibration_points=points).calibration_points
+    assert [p.distance_a for p in kept] == [20.0, 21.0, 22.0, 23.0, 24.0, 25.0]
+
+
+@pytest.mark.parametrize("raw", ["DSL", 3, None, {"corner_a": "DSL"}])
+def test_calibration_points_that_are_not_a_list_read_as_none_and_say_so(raw: object, caplog, monkeypatch) -> None:
+    """``[camera.calibration_points]`` (one table) where ``[[...]]`` was meant must not vanish unseen."""
+    import openfollow.configuration as cfg_mod
+
+    monkeypatch.setattr(cfg_mod, "_reported_drops", {})
+    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
+        assert CameraConfig(calibration_points=raw).calibration_points == []  # type: ignore[arg-type]
+    assert [r.getMessage() for r in caplog.records] == ["camera.calibration_points: is not a list of tables; dropped"]
+
+
+def test_unknown_keys_in_a_calibration_point_are_ignored() -> None:
+    (point,) = CameraConfig(calibration_points=[_with(fit=1.4)]).calibration_points
+    assert point.distance_a == 21.4
+
+
+@pytest.mark.parametrize("missing", ["corner_a", "corner_b", "pin_x", "pin_y"])
+def test_a_calibration_point_missing_a_corner_or_its_pin_is_dropped_not_invented(missing, caplog, monkeypatch) -> None:
+    """Filled in as DSL / DSR or the snapshot centre, it would be solved with a mark nobody chose."""
+    import openfollow.configuration as cfg_mod
+
+    monkeypatch.setattr(cfg_mod, "_reported_drops", {})
+    entry = {k: v for k, v in _GOOD_POINT.items() if k != missing}
+    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
+        points = CameraConfig(calibration_points=[entry, _GOOD_POINT]).calibration_points
+    assert [(p.corner_a, p.pin_x) for p in points] == [("DSL", 0.41)]
+    reason = "needs its pin on the snapshot" if missing.startswith("pin") else "needs two different grid corners"
+    assert [r.getMessage() for r in caplog.records] == [f"camera.calibration_points: entry 1 {reason}; dropped"]
+
+
+# ---------------------------------------------------------------------------
+# CameraConfig.corner_pins – the Setup Wizard's corner pins, kept with the pose
+# ---------------------------------------------------------------------------
+
+_PINS = [[0.81, 0.94], [0.14, 0.95], [0.37, 0.61], [0.66, 0.6]]
+
+
+def test_corner_pins_default_to_none_and_say_nothing(caplog, monkeypatch) -> None:
+    import openfollow.configuration as cfg_mod
+
+    monkeypatch.setattr(cfg_mod, "_reported_drops", {})
+    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
+        assert CameraConfig().corner_pins == []
+        assert CameraConfig(corner_pins=[]).corner_pins == []
+    assert caplog.records == []
+
+
+def test_corner_pins_survive_a_toml_round_trip(tmp_path) -> None:
+    path = tmp_path / "config.toml"
+    pins = [[1.2, 0.94], [-0.3, 0.95], [0.37, 0.61], [0.66, 0.6]]  # a corner may sit off the snapshot
+    save_config(AppConfig(camera=CameraConfig(corner_pins=pins)), path)
+    assert load_config(path).camera.corner_pins == pins
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (_PINS, _PINS),
+        ([tuple(p) for p in _PINS], _PINS),
+        ([["0.81", "0.94"], *_PINS[1:]], _PINS),
+        ([[1, 0], *_PINS[1:]], [[1.0, 0.0], *_PINS[1:]]),
+        ([[10.0, -10.0], *_PINS[1:]], [[10.0, -10.0], *_PINS[1:]]),
+        ([], []),
+    ],
+)
+def test_corner_pins_keep_four_pairs_of_numbers(raw: object, expected: list) -> None:
+    assert CameraConfig(corner_pins=raw).corner_pins == expected  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "0.8, 0.9",
+        3,
+        None,
+        {"DSL": [0.81, 0.94]},
+        _PINS[:3],
+        [*_PINS, [0.5, 0.5]],
+        [[0.81], *_PINS[1:]],
+        [[0.81, 0.94, 0.1], *_PINS[1:]],
+        ["0.81, 0.94", *_PINS[1:]],
+        [[0.81, "x"], *_PINS[1:]],
+        [[True, 0.94], *_PINS[1:]],
+        [[None, 0.94], *_PINS[1:]],
+        [[float("nan"), 0.94], *_PINS[1:]],
+        [[float("inf"), 0.94], *_PINS[1:]],
+        [[10.5, 0.94], *_PINS[1:]],
+        [[0.81, -11.0], *_PINS[1:]],
+    ],
+)
+def test_unusable_corner_pins_are_dropped_with_one_warning(raw: object, caplog, monkeypatch) -> None:
+    """A wrong pin is no measurement: none at all leaves the next Setup Wizard run on the projection."""
+    import openfollow.configuration as cfg_mod
+
+    monkeypatch.setattr(cfg_mod, "_reported_drops", {})
+    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
+        for _ in range(2):
+            assert CameraConfig(corner_pins=raw).corner_pins == []  # type: ignore[arg-type]
+    assert [r.getMessage() for r in caplog.records] == [
+        "camera.corner_pins: needs four [x, y] pairs on or near the snapshot; dropped"
     ]

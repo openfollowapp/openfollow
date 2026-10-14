@@ -152,6 +152,38 @@
         </div>
     </div>
 
+    % if config.camera.calibration_points:
+    <div class="group experimental-feature" id="camera-calibration-points">
+        <h3 class="group-title">Calibration points <span class="badge-experimental">Experimental</span></h3>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th scope="col">Point</th>
+                    <th scope="col">First corner<br>Distance</th>
+                    <th scope="col">Second corner<br>Distance</th>
+                    <th scope="col">Height above stage</th>
+                    <th scope="col">Position</th>
+                </tr>
+            </thead>
+            <tbody>
+            % for _n, _p in enumerate(config.camera.calibration_points, 1):
+                <tr>
+                    <th scope="row">{{_n}}</th>
+                    <td>{{_p.corner_a}}<br>{{format_length(_p.distance_a, _us)}}</td>
+                    <td>{{_p.corner_b}}<br>{{format_length(_p.distance_b, _us)}}</td>
+                    <td>{{format_length(_p.height, _us)}}</td>
+                    % if _p.position:
+                    <td>X = {{format_length(_p.position[0], _us)}}<br>Y = {{format_length(_p.position[1], _us)}}<br>Z = {{format_length(_p.position[2], _us)}}</td>
+                    % else:
+                    <td>–</td>
+                    % end
+                </tr>
+            % end
+            </tbody>
+        </table>
+    </div>
+    % end
+
     <script>
     (function() {
         if (window.__cameraPanelLensHelperInstalled) return;

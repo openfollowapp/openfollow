@@ -31,7 +31,7 @@ import tomllib
 import openfollow
 import openfollow.services as services_module
 import openfollow.web.discovery as discovery_module
-from openfollow.configuration import MOUSE3D_AXIS_FORM_LABELS, AppConfig, load_config, save_config
+from openfollow.configuration import MOUSE3D_AXIS_FORM_LABELS, AppConfig, CameraConfig, load_config, save_config
 from openfollow.marker_catalog import MarkerCatalog
 from openfollow.palette import AUTO_PICK_ORDER
 from openfollow.runtime.overlay_links import SUPPORT
@@ -114,12 +114,14 @@ def _post_raw_json(base: str, path: str, payload: object, method: str = "POST") 
         return e.code, json.loads(e.read().decode() or "{}")
 
 
-def _post_form_full(base: str, path: str, data: dict) -> tuple[int, str, dict]:
+def _post_form_full(
+    base: str, path: str, data: dict, *, headers: dict[str, str] | None = None
+) -> tuple[int, str, dict]:
     """Form POST returning ``(status, body, headers_dict)``."""
     req = urllib.request.Request(
         f"{base}{path}",
         data=urllib.parse.urlencode(data).encode(),
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        headers={"Content-Type": "application/x-www-form-urlencoded", **(headers or {})},
         method="POST",
     )
     try:
@@ -2018,6 +2020,84 @@ def test_form_post_camera_renders_saved_partial(live_server) -> None:
     assert len(body) > 50
 
 
+def test_a_camera_form_save_keeps_the_calibration_points(live_server) -> None:
+    """The form carries no points or corner pins; saving it must not drop what the Setup Wizard saved."""
+    server, base = live_server
+    point = {"corner_a": "DSL", "corner_b": "DSR", "distance_a": 21.4, "distance_b": 23.9, "pin_x": 0.4, "pin_y": 0.2}
+    pins = [[0.8, 0.9], [0.2, 0.9], [0.3, 0.6], [0.7, 0.6]]
+    save_config(AppConfig(camera=CameraConfig(calibration_points=[point], corner_pins=pins)), server.config_path)
+    status, _body = _post_form(base, "/section/camera", {"pos_x": "1.5", "pos_y": "-5.0", "pos_z": "4.0"})
+    assert status == 200
+    saved = load_config(server.config_path).camera
+    assert (saved.pos_x, [p.distance_a for p in saved.calibration_points], saved.corner_pins) == (1.5, [21.4], pins)
+
+
+_HELD_PINS = [[0.8, 0.9], [0.2, 0.9], [0.3, 0.6], [0.7, 0.6]]
+
+
+def _post_grid(base: str, how: str, fields: dict) -> int:
+    if how == "form":
+        return _post_form(base, "/section/grid", {k: str(v) for k, v in fields.items()})[0]
+    return _post_json(base, "/api/config/grid" if how == "api" else "/api/config/grid/broadcast", fields)[0]
+
+
+@pytest.mark.parametrize("how", ["form", "api", "broadcast"])
+@pytest.mark.parametrize(
+    "moved", [{"width": 12.0}, {"depth": 8.0}, {"x_offset": 0.5}, {"y_offset": 2.0}, {"z_offset": 0.3}]
+)
+def test_a_grid_write_that_moves_the_corners_forgets_the_corner_pins(live_server, how: str, moved: dict) -> None:
+    """The Setup Wizard's corner pins were placed on the grid's corners; held against others they are wrong."""
+    server, base = live_server
+    save_config(AppConfig(camera=CameraConfig(corner_pins=_HELD_PINS)), server.config_path)
+    assert _post_grid(base, how, moved) == 200
+    assert load_config(server.config_path).camera.corner_pins == []
+
+
+@pytest.mark.parametrize("how", ["form", "api", "broadcast"])
+@pytest.mark.parametrize(
+    "kept", [{"spacing": 0.5}, {"max_height": 4.0}, {"width": 10.0, "depth": 6.0}, {"width": 10.0004}]
+)
+def test_a_grid_write_that_leaves_the_corners_keeps_the_corner_pins(live_server, how: str, kept: dict) -> None:
+    server, base = live_server
+    save_config(AppConfig(camera=CameraConfig(corner_pins=_HELD_PINS)), server.config_path)
+    assert _post_grid(base, how, kept) == 200
+    assert load_config(server.config_path).camera.corner_pins == _HELD_PINS
+
+
+def test_an_imperial_grid_form_save_of_the_same_grid_keeps_the_corner_pins(live_server) -> None:
+    """The form shows each length to a hundredth of an inch; posting it back unchanged is no move."""
+    from openfollow.configuration import GridConfig
+    from openfollow.units import UnitSystem, format_length
+
+    server, base = live_server
+    cfg = AppConfig(camera=CameraConfig(corner_pins=_HELD_PINS), grid=GridConfig(width=10.37, y_offset=2.91))
+    cfg.ui.unit_system = "imperial"
+    save_config(cfg, server.config_path)
+    shown = {
+        name: format_length(getattr(cfg.grid, name), UnitSystem.IMPERIAL)
+        for name in ("width", "depth", "x_offset", "y_offset", "z_offset")
+    }
+    assert _post_grid(base, "form", shown) == 200
+    assert load_config(server.config_path).camera.corner_pins == _HELD_PINS
+
+
+@pytest.mark.parametrize(
+    ("camera", "grid", "pins"),
+    [
+        ({"pos_x": 1.0}, {"width": 12.0}, []),  # another grid, and no pins of its own
+        ({"corner_pins": [[0.1, 0.9], [0.9, 0.9], [0.8, 0.5], [0.2, 0.5]]}, {"width": 12.0}, None),  # its own pins
+        ({"pos_x": 1.0}, {"spacing": 0.5}, _HELD_PINS),  # the same corners
+    ],
+)
+def test_an_import_keeps_corner_pins_only_on_the_grid_they_belong_to(live_server, camera, grid, pins) -> None:
+    server, base = live_server
+    save_config(AppConfig(camera=CameraConfig(corner_pins=_HELD_PINS)), server.config_path)
+    status, _ = _post_json(base, "/api/config/import", {"camera": camera, "grid": grid})
+    assert status == 200
+    expected = camera["corner_pins"] if pins is None else pins
+    assert load_config(server.config_path).camera.corner_pins == expected
+
+
 def test_form_post_osc_renders_saved_partial(live_server) -> None:
     _, base = live_server
     status, body = _post_form(base, "/section/osc", {"enabled": "true", "port": "8765"})
@@ -2388,6 +2468,20 @@ def test_post_general_with_restart_flag_queues_restart(live_server) -> None:
 @pytest.fixture()
 def pin_protected_server(tmp_path, monkeypatch):
     """Variant of ``live_server`` that starts with a configured web PIN."""
+    yield from _serve_with_pin(tmp_path, monkeypatch)
+
+
+@pytest.fixture()
+def frozen_throttle_pin_server(tmp_path, monkeypatch):
+    """``pin_protected_server`` whose login throttle never sees time pass, so a lockout cannot expire mid-test."""
+    import openfollow.web.routes as routes_module
+    from openfollow.web.login_throttle import LoginThrottle
+
+    monkeypatch.setattr(routes_module, "LoginThrottle", lambda **kw: LoginThrottle(**kw, clock=lambda: 1000.0))
+    yield from _serve_with_pin(tmp_path, monkeypatch)
+
+
+def _serve_with_pin(tmp_path, monkeypatch):
     monkeypatch.setattr(discovery_module.BeaconSender, "start", lambda self: None)
     monkeypatch.setattr(discovery_module.BeaconSender, "stop", lambda self: None)
     monkeypatch.setattr(discovery_module.BeaconReceiver, "start", lambda self: None)
@@ -4903,8 +4997,8 @@ def test_login_submit_renders_error_template_on_invalid_pin(pin_protected_server
     assert '<div class="notice error" role="alert">' in body
 
 
-def test_repeated_wrong_pin_locks_out_with_retry_after(pin_protected_server) -> None:
-    _, base, _ = pin_protected_server
+def test_repeated_wrong_pin_locks_out_with_retry_after(frozen_throttle_pin_server) -> None:
+    _, base, _ = frozen_throttle_pin_server
 
     status1, _, _ = _post_form_full(base, "/login", {"pin": "wrong-1"})
     assert status1 == 200  # first failure renders template, no penalty yet
@@ -4918,12 +5012,12 @@ def test_repeated_wrong_pin_locks_out_with_retry_after(pin_protected_server) -> 
     assert int(headers2["Retry-After"]) >= 1
 
 
-def test_lockout_blocks_correct_pin_during_window(pin_protected_server) -> None:
+def test_lockout_blocks_correct_pin_during_window(frozen_throttle_pin_server) -> None:
     """Even the correct PIN is rejected with 429 while the IP is locked
     out. Otherwise an attacker could probe whether their *guess* matches
     by timing the response – a 200 vs 429 split would leak whether they
     happened to guess right just before being locked out."""
-    _, base, pin = pin_protected_server
+    _, base, pin = frozen_throttle_pin_server
 
     _post_form_full(base, "/login", {"pin": "wrong-1"})
     status, _, _ = _post_form_full(base, "/login", {"pin": pin})
@@ -4971,6 +5065,7 @@ def _signed_post_full(
     *,
     signature: str,
     timestamp: str,
+    headers: dict[str, str] | None = None,
 ) -> tuple[int, dict]:
     """Send a signed POST with a caller-supplied signature/timestamp pair.
 
@@ -4984,6 +5079,7 @@ def _signed_post_full(
             "Content-Type": "application/json",
             peer_auth.TIMESTAMP_HEADER: timestamp,
             peer_auth.SIGNATURE_HEADER: signature,
+            **(headers or {}),
         },
         method="POST",
     )
@@ -4994,9 +5090,9 @@ def _signed_post_full(
         return e.code, dict(e.headers.items())
 
 
-def test_peer_auth_signature_failure_locks_out(pin_protected_server) -> None:
+def test_peer_auth_signature_failure_locks_out(frozen_throttle_pin_server) -> None:
     """Peer-auth signature path is subject to rate-limit throttle like login."""
-    _, base, _ = pin_protected_server
+    _, base, _ = frozen_throttle_pin_server
 
     body = b'{"pos_x": 1.0}'
     bogus_sig = "0" * 64  # SHA-256 hex length, but never a valid HMAC
@@ -5023,6 +5119,40 @@ def test_peer_auth_signature_failure_locks_out(pin_protected_server) -> None:
     )
     assert status2 == 429
     assert "Retry-After" in headers2
+
+
+def test_a_forwarded_for_header_does_not_escape_the_login_lockout(frozen_throttle_pin_server) -> None:
+    """The lockout follows the connection: any client can set X-Forwarded-For."""
+    _, base, _ = frozen_throttle_pin_server
+
+    status1, _, _ = _post_form_full(base, "/login", {"pin": "wrong-1"}, headers={"X-Forwarded-For": "203.0.113.1"})
+    assert status1 == 200
+    status2, _, _ = _post_form_full(base, "/login", {"pin": "wrong-2"}, headers={"X-Forwarded-For": "203.0.113.2"})
+    assert status2 == 429
+
+
+def test_a_forwarded_for_header_does_not_escape_the_peer_lockout(frozen_throttle_pin_server) -> None:
+    _, base, _ = frozen_throttle_pin_server
+    body = b'{"pos_x": 1.0}'
+    ts = "0"  # any rejected signature counts as a failure, a stale one included
+
+    status1, _ = _signed_post_full(
+        base, "/api/config/camera", body, signature="0" * 64, timestamp=ts, headers={"X-Forwarded-For": "203.0.113.1"}
+    )
+    assert status1 == 401
+    status2, _ = _signed_post_full(
+        base, "/api/config/camera", body, signature="0" * 64, timestamp=ts, headers={"X-Forwarded-For": "203.0.113.2"}
+    )
+    assert status2 == 429
+
+
+def test_a_forwarded_for_header_does_not_decide_the_on_device_footer(live_server) -> None:
+    """The embedded browser is recognised by its loopback connection, whatever a header says."""
+    _, base = live_server
+    req = urllib.request.Request(f"{base}/", headers={"X-Forwarded-For": "198.51.100.7"})
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        body = resp.read().decode()
+    assert '<footer class="on-device-footer">' in body
 
 
 def test_logout_clears_cookie_and_redirects_to_login(live_server) -> None:
@@ -7263,7 +7393,7 @@ def test_validate_move_stick_leaving_the_fader_stick_rechecks_it(live_server) ->
 @pytest.mark.parametrize(
     ("field", "value", "caution"),
     [
-        ("trigger.button", "B", "Also 'Toggle Zone Overlay' on gamepad input"),
+        ("trigger.button", "Y", "Also 'Toggle Help' on gamepad input"),
         ("trigger.button", "A", ""),
         ("trigger.key", "x", "Also 'Reset Marker' on keyboard input"),
         ("trigger.key", "p", ""),
@@ -8435,3 +8565,136 @@ def test_vlan_subinterface_is_offered_as_a_plane_pin(live_server, monkeypatch) -
     assert status == 200
     assert 'value="eth0.10"' in body
     assert "eth0.10 – 10.20.0.5" in body
+
+
+def test_api_config_paths_reads_and_takes_paths_keeping_station_state(live_server) -> None:
+    """A peer or API client replaces the paths; Active flags and visibility stay this station's."""
+    from openfollow.configuration import PathConfig
+
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.paths.show_paths = False
+    cfg.paths.paths = [PathConfig(name="cross", active=True)]
+    save_config(cfg, server.config_path)
+
+    with urllib.request.urlopen(f"{base}/api/config/paths", timeout=5) as resp:
+        got = json.loads(resp.read())
+    assert got["paths"][0]["name"] == "cross"
+    assert got["show_paths"] is False
+
+    status, data = _post_json(
+        base,
+        "/api/config/paths",
+        {"show_paths": True, "slide_time": 0.8, "paths": [{"name": "cross", "active": False, "closed": True}]},
+    )
+    assert status == 200 and data["success"] is True
+    out = load_config(server.config_path).paths
+    assert (out.show_paths, out.slide_time) == (False, 0.8)
+    assert [(p.name, p.active, p.closed) for p in out.paths] == [("cross", True, True)]
+
+
+# ---------------------------------------------------------------------------
+# Ground grid section: form -> config, broadcast, import / export
+# ---------------------------------------------------------------------------
+
+_GG_SQUARE = [[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0]]
+
+
+def test_ground_grid_post_persists_every_field_and_renders_partial(live_server) -> None:
+    server, base = live_server
+    status, body = _post_form(
+        base,
+        "/section/ground_grid",
+        {"enabled": "on", "visible": "on", "z_offset": "-0.75", "vertices": json.dumps(_GG_SQUARE)},
+    )
+    assert status == 200
+    assert 'id="ground-grid-section"' in body
+    gg = load_config(server.config_path).ground_grid
+    assert (gg.enabled, gg.visible, gg.z_offset, gg.vertices) == (True, True, -0.75, _GG_SQUARE)
+
+
+def test_ground_grid_post_unticked_boxes_turn_off(live_server) -> None:
+    server, base = live_server
+    _post_form(base, "/section/ground_grid", {"enabled": "on", "visible": "on"})
+    status, _ = _post_form(base, "/section/ground_grid", {"z_offset": "0"})
+    assert status == 200
+    gg = load_config(server.config_path).ground_grid
+    assert (gg.enabled, gg.visible) == (False, False)
+
+
+@pytest.mark.parametrize("bad", ["not json", "null", "5", '"text"', '{"x": 1}'])
+def test_ground_grid_post_malformed_vertices_keep_the_polygon(live_server, bad: str) -> None:
+    server, base = live_server
+    _post_form(base, "/section/ground_grid", {"vertices": json.dumps(_GG_SQUARE)})
+    status, _ = _post_form(base, "/section/ground_grid", {"vertices": bad})
+    assert status == 200
+    assert load_config(server.config_path).ground_grid.vertices == _GG_SQUARE
+
+
+def test_ground_grid_post_drops_bad_corners_and_caps_the_count(live_server) -> None:
+    from openfollow.configuration import GROUND_GRID_MAX_VERTICES
+
+    server, base = live_server
+    corners = [[0, 0], ["x", 1], [1, "NaN"], [1, 0], [1, 1]] + [[i, 5] for i in range(GROUND_GRID_MAX_VERTICES)]
+    status, _ = _post_form(base, "/section/ground_grid", {"vertices": json.dumps(corners)})
+    assert status == 200
+    saved = load_config(server.config_path).ground_grid.vertices
+    assert saved[:3] == [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]
+    assert len(saved) == GROUND_GRID_MAX_VERTICES
+
+
+@pytest.mark.parametrize(("bad", "expected"), [("abc", -0.5), ("", -0.5), ("inf", 0.0), ("nan", 0.0)])
+def test_ground_grid_post_bad_height_never_stores_a_non_number(live_server, bad: str, expected: float) -> None:
+    server, base = live_server
+    _post_form(base, "/section/ground_grid", {"z_offset": "-0.5"})
+    status, _ = _post_form(base, "/section/ground_grid", {"z_offset": bad})
+    assert status == 200
+    assert load_config(server.config_path).ground_grid.z_offset == expected
+
+
+@pytest.mark.parametrize(("raw", "invalid"), [("-0.4", False), ("abc", True)])
+def test_ground_grid_height_blur_validation(live_server, raw: str, invalid: bool) -> None:
+    _, base = live_server
+    status, body = _get(base, f"/api/validate/ground_grid/z_offset?z_offset={urllib.parse.quote(raw)}")
+    assert status == 200
+    assert ("field-error-msg" in body) is invalid
+
+
+def test_ground_grid_broadcast_saves_the_polygon_locally(live_server) -> None:
+    server, base = live_server
+    status, body = _post_json(
+        base,
+        "/api/config/ground_grid/broadcast",
+        {"enabled": True, "visible": False, "z_offset": -1, "vertices": json.dumps(_GG_SQUARE)},
+    )
+    assert status == 200
+    assert body["local_updated"] is True
+    gg = load_config(server.config_path).ground_grid
+    assert (gg.enabled, gg.visible, gg.z_offset, gg.vertices) == (True, False, -1.0, _GG_SQUARE)
+
+
+def test_ground_grid_travels_through_export_and_import(live_server) -> None:
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.ui.show_experimental_features = True
+    save_config(cfg, server.config_path)
+    _post_form(base, "/section/ground_grid", {"enabled": "on", "z_offset": "-0.6", "vertices": json.dumps(_GG_SQUARE)})
+    with urllib.request.urlopen(f"{base}/api/config/export", timeout=5) as resp:
+        exported = json.loads(resp.read())
+    assert exported["ground_grid"]["vertices"] == _GG_SQUARE
+
+    _post_form(base, "/section/ground_grid", {"vertices": "[]", "z_offset": "0"})
+    status, _ = _post_raw_json(base, "/api/config/import", exported)
+    assert status == 200
+    gg = load_config(server.config_path).ground_grid
+    assert (gg.enabled, gg.z_offset, gg.vertices) == (True, -0.6, _GG_SQUARE)
+
+
+def test_ground_grid_section_is_experimental_on_the_settings_page(live_server) -> None:
+    _, base = live_server
+    status, body = _get(base, "/")
+    assert status == 200
+    form_tag = re.search(r'<form id="ground-grid-section"[^>]*>', body)
+    assert form_tag is not None
+    assert "experimental-feature" in form_tag.group(0)
+    assert 'name="vertices"' in body

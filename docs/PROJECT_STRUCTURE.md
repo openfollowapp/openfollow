@@ -11,6 +11,10 @@ openfollow/              # Single unified package
 ├── runtime_metrics.py   # Frame metrics + overlay-state pooling helpers
 ├── net_utils.py         # Local IP/network helpers
 ├── packet_chunking.py   # MTU-budgeted datagram split shared by every output
+├── paths/               # Paths (experimental)
+│   ├── geometry.py      # A path's curve: straight runs, rounded corners
+│   ├── network.py       # Junctions between active paths, walking a locked marker
+│   └── engine.py        # Locked markers: pull, slide, switch, record
 ├── lens_model.py        # The lens pair's fold check (stdlib-only; config, web and solver read it)
 ├── window.py            # GTK native sink window wrapper
 ├── psn/                 # PSN protocol subpackage
@@ -20,6 +24,7 @@ openfollow/              # Single unified package
 │   └── receiver.py      # PSN listener
 ├── scene/               # Camera model + calibration math
 │   ├── camera.py
+│   ├── ground_grid.py   # Grid lines clipped to the ground-grid polygon (HUD + web)
 │   ├── solver.py        # DLT camera solve + the radial overlay warp and its inverse
 │   ├── lens_fit.py      # k1 / k2 from traced straight lines (the wizard's Lens step)
 │   ├── edge_snap.py     # Snap a traced line's points onto a brightness edge
@@ -42,6 +47,7 @@ openfollow/              # Single unified package
     ├── routes.py
     ├── discovery.py
     ├── peer_auth.py     # HMAC-signed peer request auth (no PIN on the wire)
+    ├── static/js/       # polygon-plan.js (top-down plan), picture-view.js (camera picture), ...
     └── templates/
 ```
 
@@ -62,6 +68,8 @@ from openfollow.services import AppRuntimeServices
 - PSN protocol → `psn/server.py`, `psn/receiver.py`
 - Web API → `web/routes.py`
 - Camera/calibration → `scene/camera.py`, `scene/solver.py` (calibration is the web `/wizard`)
+- Paths → `paths/`, `runtime/paths_runtime.py`, `osc/paths.py`, `runtime/overlay_draw_paths.py`
+- Ground grid → `scene/ground_grid.py`, `runtime/overlay_draw_scene.py` (`floor_z_at`, `draw_ground_grid`)
 
 **Coordinates (PSN):** X=stage left, Y=upstage, Z=up
 

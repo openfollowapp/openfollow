@@ -28,7 +28,7 @@ except ImportError:
 import tomli_w
 
 from openfollow.binding_conflicts import BindingMove, settle_duplicates
-from openfollow.lens_model import lens_warp_is_valid
+from openfollow.lens_model import pull_back_to_fold
 from openfollow.net_adapters import normalize_labels
 from openfollow.station_fqdn import normalize_fqdn
 from openfollow.units import UnitSystem
@@ -42,9 +42,11 @@ logger = logging.getLogger(__name__)
 # Serializes load→mutate→``save_config`` spans against the on-disk config.
 # ``save_config`` overwrites the whole file, so two interleaving spans would
 # have the later save clobber the earlier. Held by the off-GTK-thread writers
-# that run concurrently: the threaded WSGI request handlers and the
-# marker-catalog sync receiver. GTK-main-loop writers (on-screen menu,
-# receiver self-heal) do NOT take this lock and can still interleave.
+# that run concurrently (the threaded WSGI request handlers and the
+# marker-catalog sync receiver) and by main-loop writers that write only their
+# own change (``save_config_change``, the move-speed flush). Other GTK-main-loop
+# writers (on-screen menu, receiver self-heal) do NOT take this lock and can
+# still interleave.
 config_write_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
@@ -394,6 +396,57 @@ def _coerce_bool(value: Any, default: bool) -> bool:
 # --- Config dataclasses --------------------------------------------------
 
 
+CALIBRATION_CORNERS = ("DSL", "DSR", "USR", "USL")
+MAX_CALIBRATION_POINTS = 6
+
+
+def _coerce_measured(value: Any) -> float:
+    """A measured number, or NaN for one that cannot be read; a boolean too (``float(True)`` is 1 m)."""
+    return math.nan if isinstance(value, bool) else _coerce_float(value, math.nan)
+
+
+@dataclass
+class CalibrationPointConfig:
+    """A far point measured with a laser from two grid corners, for the Setup Wizard's camera solve.
+
+    ``position`` is where the solve the camera pose came from put it, kept with the pose; like the
+    pose, it does not follow a later grid edit. The measurements are what the next solve reads.
+    """
+
+    # A missing corner or pin is no measurement: problem() refuses these defaults.
+    corner_a: str = ""
+    corner_b: str = ""
+    distance_a: float = 0.0  # m from corner_a's mark
+    distance_b: float = 0.0
+    height: float = 0.0  # m above stage level
+    pin_x: float = math.nan  # where it is on the snapshot, as a fraction of its width / height
+    pin_y: float = math.nan
+    position: list[float] = field(default_factory=list)  # x, y, z in m; empty when no solve placed it
+
+    def __post_init__(self) -> None:
+        self.corner_a = _coerce_choice(self.corner_a, CALIBRATION_CORNERS, "")
+        self.corner_b = _coerce_choice(self.corner_b, CALIBRATION_CORNERS, "")
+        self.distance_a = _coerce_measured(self.distance_a)
+        self.distance_b = _coerce_measured(self.distance_b)
+        self.height = _coerce_measured(self.height)
+        self.pin_x = _coerce_measured(self.pin_x)
+        self.pin_y = _coerce_measured(self.pin_y)
+        coords = [_coerce_measured(v) for v in self.position] if isinstance(self.position, list | tuple) else []
+        self.position = coords if len(coords) == 3 and all(math.isfinite(c) for c in coords) else []
+
+    def problem(self) -> str:
+        """Why the point cannot be used, or ``""``. A measurement is dropped, never clamped."""
+        if not self.corner_a or not self.corner_b or self.corner_a == self.corner_b:
+            return "needs two different grid corners"
+        if not (0.0 < self.distance_a <= 200.0 and 0.0 < self.distance_b <= 200.0):
+            return "needs both distances between 0 and 200 m"
+        if not -10.0 <= self.height <= 10.0:
+            return "needs a height within 10 m of stage level"
+        if not (0.0 <= self.pin_x <= 1.0 and 0.0 <= self.pin_y <= 1.0):
+            return "needs its pin on the snapshot"
+        return ""
+
+
 @dataclass
 class CameraConfig:
     pos_x: float = 0.0
@@ -413,6 +466,10 @@ class CameraConfig:
     # video frame is never warped. 0/0 = pinhole (no curvature).
     lens_k1: float = 0.0
     lens_k2: float = 0.0
+    calibration_points: list[CalibrationPointConfig] = field(default_factory=list)
+    # The Setup Wizard's corner pins (DSL, DSR, USR, USL) the pose was solved from with the points, as
+    # fractions of the snapshot; empty when it has none. Kept with the pose, like the points' positions.
+    corner_pins: list[list[float]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         # These feed ``project_points`` via a numpy float array. Clamp fov out
@@ -427,17 +484,81 @@ class CameraConfig:
         self.sensor_width_mm = _coerce_optional_float(self.sensor_width_mm, None, lo=0.0)
         self.focal_length_mm = _coerce_optional_float(self.focal_length_mm, None, lo=0.0)
         # The one bound on the pair is that the warp must not fold before the
-        # frame corner; a folding pair falls back to the pinhole default.
-        self.lens_k1 = _coerce_float(self.lens_k1, 0.0)
-        self.lens_k2 = _coerce_float(self.lens_k2, 0.0)
-        if not lens_warp_is_valid(self.lens_k1, self.lens_k2):
-            logger.warning(
-                "camera.lens_k1=%s / lens_k2=%s folds the overlay warp inside the frame; using 0 / 0",
-                self.lens_k1,
-                self.lens_k2,
+        # frame corner; a folding pair is pulled back along its own direction.
+        k1 = _coerce_float(self.lens_k1, 0.0)
+        k2 = _coerce_float(self.lens_k2, 0.0)
+        self.lens_k1, self.lens_k2 = pull_back_to_fold(k1, k2)
+        if (self.lens_k1, self.lens_k2) != (k1, k2):
+            _report_once(
+                "camera.lens",
+                f"lens_k1={k1} / lens_k2={k2} folds the overlay warp inside the frame; "
+                f"using {self.lens_k1:.6g} / {self.lens_k2:.6g}",
             )
-            self.lens_k1 = 0.0
-            self.lens_k2 = 0.0
+        self.calibration_points = _coerce_calibration_points(self.calibration_points)
+        self.corner_pins = _coerce_corner_pins(self.corner_pins)
+
+
+# The warnings last reported, by field: every load_config builds the camera again, so a file says it once.
+_reported_drops: dict[str, str] = {}
+
+# A grid corner may sit off the snapshot, never this many snapshot widths or heights from it.
+CORNER_PIN_REACH = 10.0
+
+
+def _report_drops(name: str, said: str) -> None:
+    if _reported_drops.get(name) != said:
+        _reported_drops[name] = said
+        logger.warning("%s: %s; dropped", name, said)
+
+
+def _report_once(name: str, said: str) -> None:
+    if _reported_drops.get(name) != said:
+        _reported_drops[name] = said
+        logger.warning("%s: %s", name, said)
+
+
+def _coerce_calibration_points(value: Any) -> list[CalibrationPointConfig]:
+    """Entries as dataclasses; an entry that cannot be used is dropped with one warning, past the cap too."""
+    points: list[CalibrationPointConfig] = []
+    entries = value if isinstance(value, list) else []
+    dropped: list[str] = [] if isinstance(value, list) else ["is not a list of tables"]
+    for i, entry in enumerate(entries, start=1):
+        if len(points) == MAX_CALIBRATION_POINTS:
+            dropped.append(f"entries from {i} on, past the first {MAX_CALIBRATION_POINTS} usable")
+            break
+        if isinstance(entry, dict):
+            entry = CalibrationPointConfig(**_filter_known(CalibrationPointConfig, entry))
+        if not isinstance(entry, CalibrationPointConfig):
+            dropped.append(f"entry {i} is not a table")
+            continue
+        problem = entry.problem()
+        if problem:
+            dropped.append(f"entry {i} {problem}")
+            continue
+        points.append(entry)
+    if dropped:
+        _report_drops(
+            "camera.calibration_points",
+            "; ".join(dropped[:3]) + (f"; {len(dropped) - 3} more" if len(dropped) > 3 else ""),
+        )
+    return points
+
+
+def _coerce_corner_pins(value: Any) -> list[list[float]]:
+    """Four [x, y] fractions of the snapshot, or none; anything else is dropped with one warning."""
+    if isinstance(value, list) and not value:
+        return []
+    pins = (
+        [[_coerce_measured(v) for v in pin] if isinstance(pin, list | tuple) else [] for pin in value]
+        if isinstance(value, list | tuple)
+        else []
+    )
+    if len(pins) == 4 and all(
+        len(pin) == 2 and all(math.isfinite(c) and abs(c) <= CORNER_PIN_REACH for c in pin) for pin in pins
+    ):
+        return pins
+    _report_drops("camera.corner_pins", "needs four [x, y] pairs on or near the snapshot")
+    return []
 
 
 _GRID_COLOR_DEFAULT = "#545454"
@@ -493,6 +614,55 @@ class GridConfig:
         self.origin_visible = _coerce_bool(self.origin_visible, False)
         self.origin_length = _coerce_float(self.origin_length, 1.0, lo=0.1)
         self.origin_thickness = _coerce_int(self.origin_thickness, 3, lo=1, hi=20)
+
+
+def _coerce_xy_vertices(value: Any, *, max_count: int | None = None) -> list[list[float]]:
+    """Keep finite ``[x, y]`` pairs from *value*; anything else is dropped.
+
+    Non-finite coordinates are dropped too: they make every point-in-polygon
+    comparison False and silently corrupt the containment test.
+    """
+    if not isinstance(value, (list, tuple)):
+        return []
+    cleaned: list[list[float]] = []
+    for v in value:
+        if not isinstance(v, (list, tuple)) or len(v) < 2 or isinstance(v[0], bool) or isinstance(v[1], bool):
+            continue
+        try:
+            x, y = float(v[0]), float(v[1])
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if math.isfinite(x) and math.isfinite(y):
+            cleaned.append([x, y])
+    return cleaned[:max_count] if max_count is not None else cleaned
+
+
+# Upper bound on ground-grid polygon corners.
+GROUND_GRID_MAX_VERTICES = 64
+
+
+@dataclass
+class GroundGridConfig:
+    """A second floor: one polygon at its own absolute Z (experimental).
+
+    Active only when ``enabled`` and the polygon has at least three corners; a
+    marker inside it in XY gets its floor elements drawn at ``z_offset``.
+    """
+
+    enabled: bool = False
+    visible: bool = True
+    z_offset: float = 0.0
+    vertices: list[list[float]] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.enabled = _coerce_bool(self.enabled, False)
+        self.visible = _coerce_bool(self.visible, True)
+        self.z_offset = 0.0 if isinstance(self.z_offset, bool) else _coerce_float(self.z_offset, 0.0)
+        self.vertices = _coerce_xy_vertices(self.vertices, max_count=GROUND_GRID_MAX_VERTICES)
+
+    @property
+    def active(self) -> bool:
+        return self.enabled and len(self.vertices) >= 3
 
 
 # Operator Screen marker glyph; each style reads only its own fields.
@@ -793,21 +963,7 @@ class TriggerZoneConfig:
                 self.trigger_source,
             )
             self.trigger_source = "markers"
-        # Normalize vertices to [float, float] pairs
-        cleaned: list[list[float]] = []
-        for v in self.vertices:
-            if isinstance(v, (list, tuple)) and len(v) >= 2:
-                try:
-                    x, y = float(v[0]), float(v[1])
-                except (TypeError, ValueError):
-                    continue
-                # Drop non-finite coords: ``float("nan")`` / ``float("inf")``
-                # survive coercion but make every point-in-polygon comparison
-                # False, silently corrupting membership tests for the zone.
-                if not (math.isfinite(x) and math.isfinite(y)):
-                    continue
-                cleaned.append([x, y])
-        self.vertices = cleaned
+        self.vertices = _coerce_xy_vertices(self.vertices)
         # Coerce ``triggered_by`` items to ``int``; drop anything that
         # can't be coerced (a hand-edited TOML with ``["a", 1]`` won't
         # crash the engine – it'll filter on ``[1]`` and log nothing,
@@ -860,6 +1016,128 @@ class TriggerZonesConfig:
             for z in self.zones
             if isinstance(z, (dict, TriggerZoneConfig))
         ]
+
+
+# A path is addressed by name over OSC, so names keep to what an OSC address allows.
+PATH_NAME_MAX_LEN = 32
+PATH_NAME_PATTERN = re.compile(r"[A-Za-z0-9._-]+")
+MAX_PATHS = 32
+MAX_PATH_POINTS = 100
+# Stage coordinates in metres; far beyond any venue.
+_PATH_COORD_LIMIT = 1000.0
+DEFAULT_PATH_RADIUS = 0.5
+
+
+@dataclass
+class PathPointConfig:
+    """One point of a path: a stage position and the radius its corner is rounded with."""
+
+    x: float = 0.0
+    y: float = 0.0
+    z: float = 0.0
+    radius: float = DEFAULT_PATH_RADIUS  # metres
+
+    def __post_init__(self) -> None:
+        self.x = _coerce_float(self.x, 0.0, lo=-_PATH_COORD_LIMIT, hi=_PATH_COORD_LIMIT)
+        self.y = _coerce_float(self.y, 0.0, lo=-_PATH_COORD_LIMIT, hi=_PATH_COORD_LIMIT)
+        self.z = _coerce_float(self.z, 0.0, lo=-_PATH_COORD_LIMIT, hi=_PATH_COORD_LIMIT)
+        self.radius = _coerce_float(self.radius, DEFAULT_PATH_RADIUS, lo=0.0, hi=100.0)
+
+
+def path_name_from(value: Any) -> str:
+    """``value`` reduced to the characters a path name allows, at most 32 of them; dots alone make no name."""
+    text = value if isinstance(value, str) else ""
+    name = "".join(PATH_NAME_PATTERN.findall(text))[:PATH_NAME_MAX_LEN]
+    # A URL resolves dot segments away, even written as %2E, so such a name could never be addressed.
+    return name if name.strip(".") else ""
+
+
+@dataclass
+class PathConfig:
+    """A path a marker can be locked onto, in PSN-absolute world coordinates."""
+
+    name: str = ""
+    # Per station: a push or an import keeps this station's flag (see PathsConfig.replace_paths).
+    active: bool = False
+    closed: bool = False
+    # Ends of an open path: pushing past one releases the marker instead of stopping it there.
+    release_at_start: bool = False
+    release_at_end: bool = False
+    points: list[PathPointConfig] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.name = path_name_from(self.name)
+        self.active = _coerce_bool(self.active, False)
+        self.closed = _coerce_bool(self.closed, False)
+        self.release_at_start = _coerce_bool(self.release_at_start, False)
+        self.release_at_end = _coerce_bool(self.release_at_end, False)
+        raw = self.points if isinstance(self.points, list) else []
+        points = [
+            PathPointConfig(**_filter_known(PathPointConfig, p)) if isinstance(p, dict) else p
+            for p in raw
+            if isinstance(p, (dict, PathPointConfig))
+        ]
+        if len(points) > MAX_PATH_POINTS:
+            logger.warning("Path %r has %d points, keeping the first %d", self.name, len(points), MAX_PATH_POINTS)
+        self.points = points[:MAX_PATH_POINTS]
+
+
+@dataclass
+class PathsConfig:
+    """Paths, and how a marker slides onto one."""
+
+    show_paths: bool = True
+    slide_time: float = 1.0  # seconds
+    paths: list[PathConfig] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.show_paths = _coerce_bool(self.show_paths, True)
+        self.slide_time = _coerce_float(self.slide_time, 1.0, lo=0.0, hi=10.0)
+        raw = self.paths if isinstance(self.paths, list) else []
+        paths = [
+            PathConfig(**_filter_known(PathConfig, p)) if isinstance(p, dict) else p
+            for p in raw
+            if isinstance(p, (dict, PathConfig))
+        ]
+        if len(paths) > MAX_PATHS:
+            logger.warning("%d paths configured, keeping the first %d", len(paths), MAX_PATHS)
+        self.paths = paths[:MAX_PATHS]
+        self._give_unique_names()
+
+    def _give_unique_names(self) -> None:
+        # OSC finds a path by name ignoring case, so two must never match.
+        explicit = {path.name.lower() for path in self.paths if path.name}
+        taken: set[str] = set()
+        for index, path in enumerate(self.paths):
+            base = path.name or f"path-{index + 1}"
+            name, n = base, 1
+            # A name made up here, or a clash's new one, never takes a name another path was given.
+            while name.lower() in taken or (name != path.name and name.lower() in explicit):
+                n += 1
+                suffix = f"-{n}"
+                name = base[: PATH_NAME_MAX_LEN - len(suffix)] + suffix
+            if name != path.name:
+                if path.name:
+                    logger.warning("Path name %r is already taken, renamed to %r", path.name, name)
+                path.name = name
+            taken.add(name.lower())
+
+    def find(self, name: str) -> PathConfig | None:
+        """The path called ``name``, ignoring case."""
+        wanted = name.lower()
+        return next((path for path in self.paths if path.name.lower() == wanted), None)
+
+    def replace_paths(self, raw: Any) -> None:
+        """Take ``raw``'s paths, keeping this station's Active flag for each name it already has.
+
+        A new name arrives inactive: what is active is decided per station, by its
+        own web UI and desk.
+        """
+        active = {path.name.lower(): path.active for path in self.paths}
+        self.paths = raw if isinstance(raw, list) else []
+        self.__post_init__()
+        for path in self.paths:
+            path.active = active.get(path.name.lower(), False)
 
 
 @dataclass
@@ -1767,6 +2045,8 @@ _BUTTON_MAPPING_FIELDS = (
     "btn_menu_confirm",
     "btn_menu_cancel",
     "btn_clear_messages",  # clear operator-message cards
+    "btn_pathfinder",
+    "btn_toggle_paths",
     # Deprecated – superseded by btn_menu_confirm / btn_menu_cancel. Kept
     # in the mapping so legacy configs still validate and fall back to
     # defaults on invalid values; no longer used for dispatch.
@@ -1803,6 +2083,8 @@ _KEYBOARD_ACTION_FIELDS = (
     "key_prev_marker",
     "key_settings",
     "key_clear_messages",  # clear operator-message cards
+    "key_pathfinder",
+    "key_toggle_paths",
 )
 
 # Binding groups in form order: the fields of one group may not share an input,
@@ -1811,7 +2093,6 @@ _KEYBOARD_ACTION_FIELDS = (
 GAMEPAD_ACTION_BUTTON_FORM_LABELS = (
     ("btn_reset", "Reset Marker"),
     ("btn_toggle_help", "Toggle Help"),
-    ("btn_toggle_zones", "Toggle Zone Overlay"),
     ("btn_settings", "Settings Menu"),
     ("btn_speed_down", "Speed -"),
     ("btn_speed_up", "Speed +"),
@@ -1820,6 +2101,9 @@ GAMEPAD_ACTION_BUTTON_FORM_LABELS = (
     ("btn_next_marker", "Next Marker"),
     ("btn_prev_marker", "Prev Marker"),
     ("btn_clear_messages", "Clear Messages"),
+    ("btn_toggle_zones", "Toggle Zone Overlay"),
+    ("btn_toggle_paths", "Toggle Paths"),
+    ("btn_pathfinder", "Pathfinder"),
 )
 GAMEPAD_MENU_BUTTON_FORM_LABELS = (
     ("btn_menu_confirm", "Confirm"),
@@ -1840,6 +2124,8 @@ KEYBOARD_ACTION_FORM_LABELS = (
     ("key_clear_messages", "Clear Messages"),
     ("key_next_marker", "Next Marker"),
     ("key_prev_marker", "Prev Marker"),
+    ("key_pathfinder", "Pathfinder"),
+    ("key_toggle_paths", "Toggle Paths"),
 )
 CONTROLLER_BINDING_GROUPS = tuple(
     tuple(name for name, _ in labels)
@@ -1884,7 +2170,6 @@ class ControllerConfig:
     btn_speed_up: str = "RB"
     btn_move_z_down: str = "LT"
     btn_move_z_up: str = "RT"
-    btn_toggle_zones: str = "B"
     # Cycle bindings (marker selection only; calibration is web-UI-only).
     btn_next_marker: str = "DPAD_RIGHT"
     btn_prev_marker: str = "DPAD_LEFT"
@@ -1896,6 +2181,9 @@ class ControllerConfig:
     btn_menu_cancel: str = "B"
     # Clear all operator-message cards. Default unbound; edge-triggered.
     btn_clear_messages: str = ""
+    btn_toggle_zones: str = ""
+    btn_toggle_paths: str = ""
+    btn_pathfinder: str = ""
     move_xy_stick: str = "left"
     # Marker-fader integrator: which stick Y-axis (if any) drives the fader of
     # the currently-controlled marker. The bus integrates
@@ -1958,6 +2246,8 @@ class ControllerConfig:
     key_settings: str = "m"
     # Clear all operator-message cards. Default unbound.
     key_clear_messages: str = ""
+    key_pathfinder: str = ""
+    key_toggle_paths: str = ""
 
     def __post_init__(self) -> None:
         """Validate configuration values."""
@@ -2109,6 +2399,8 @@ MOUSE3D_BUTTON_FIELDS = (
     "btn_speed_down",
     "btn_toggle_help",
     "btn_toggle_zones",
+    "btn_pathfinder",
+    "btn_toggle_paths",
 )
 # Web-form row labels (gesture-first, config key in parens) in display order.
 # Single source for the form's axis/button loops; the consistency test asserts
@@ -2129,6 +2421,8 @@ MOUSE3D_BUTTON_FORM_LABELS = (
     ("btn_speed_down", "Speed down"),
     ("btn_toggle_help", "Toggle help"),
     ("btn_toggle_zones", "Toggle zones"),
+    ("btn_pathfinder", "Pathfinder"),
+    ("btn_toggle_paths", "Toggle paths"),
 )
 
 
@@ -2178,6 +2472,8 @@ class Mouse3DConfig:
     btn_speed_down: int = -1
     btn_toggle_help: int = -1
     btn_toggle_zones: int = -1
+    btn_pathfinder: int = -1
+    btn_toggle_paths: int = -1
 
     def __post_init__(self) -> None:
         self.enabled = _coerce_bool(self.enabled, False)
@@ -2399,6 +2695,7 @@ class AppConfig:
     # Sub-configs
     camera: CameraConfig = field(default_factory=CameraConfig)
     grid: GridConfig = field(default_factory=GridConfig)
+    ground_grid: GroundGridConfig = field(default_factory=GroundGridConfig)
     marker: MarkerConfig = field(default_factory=MarkerConfig)
     controller: ControllerConfig = field(default_factory=ControllerConfig)
     mouse3d: Mouse3DConfig = field(default_factory=Mouse3DConfig)
@@ -2410,6 +2707,7 @@ class AppConfig:
     osc_destinations: OscDestinationsConfig = field(default_factory=OscDestinationsConfig)
     detection: DetectionConfig = field(default_factory=DetectionConfig)
     trigger_zones: TriggerZonesConfig = field(default_factory=TriggerZonesConfig)
+    paths: PathsConfig = field(default_factory=PathsConfig)
     midi: MidiConfig = field(default_factory=MidiConfig)
     virtual_faders: VirtualFadersConfig = field(
         default_factory=VirtualFadersConfig,
@@ -2538,6 +2836,7 @@ def _filter_known(cls: type, data: dict[str, Any]) -> dict[str, Any]:
 _SUB_CONFIG_MAP: dict[str, type] = {
     "camera": CameraConfig,
     "grid": GridConfig,
+    "ground_grid": GroundGridConfig,
     "marker": MarkerConfig,
     "controller": ControllerConfig,
     "mouse3d": Mouse3DConfig,
@@ -2549,6 +2848,7 @@ _SUB_CONFIG_MAP: dict[str, type] = {
     "osc_destinations": OscDestinationsConfig,
     "detection": DetectionConfig,
     "trigger_zones": TriggerZonesConfig,
+    "paths": PathsConfig,
     "midi": MidiConfig,
     "virtual_faders": VirtualFadersConfig,
     "network": NetworkConfig,
@@ -2990,6 +3290,23 @@ def save_config(config: AppConfig, path: str = "config.toml") -> None:
         raise
 
 
+def save_config_change(path: str, running: AppConfig, change: Callable[[AppConfig], None]) -> None:
+    """Make ``change`` in ``running`` and in the config file as it is on disk now.
+
+    For a writer whose running config may lag the file: only what ``change`` sets is written, under
+    ``config_write_lock``, so a save another thread made in the meantime survives. With no file yet,
+    ``running`` is written whole.
+    """
+    change(running)
+    with config_write_lock:
+        if not os.path.exists(path):
+            save_config(running, path)
+            return
+        current = load_config(path, strict=True)
+        change(current)
+        save_config(current, path)
+
+
 # ---------------------------------------------------------------------------
 # Runtime Hot-Reload
 # ---------------------------------------------------------------------------
@@ -3300,6 +3617,9 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
     # Grid and camera updates (no renderer needed - Cairo overlay reads from config)
     if new_config.grid != app._config.grid:
         app._config.grid = new_config.grid
+
+    if new_config.ground_grid != app._config.ground_grid:
+        app._config.ground_grid = new_config.ground_grid
 
     if new_config.camera != app._config.camera:
         app._camera = Camera.from_config(new_config.camera)
@@ -3625,6 +3945,13 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
         # in place – they're reused if a future row targets the same
         # destination and can't be safely evicted without per-caller
         # ownership tracking.
+
+    paths_changed = new_config.paths != app._config.paths
+    if paths_changed:
+        app._config.paths = new_config.paths
+    engine = getattr(app, "_paths", None)
+    if engine is not None and (paths_changed or engine.enabled != app._config.ui.show_experimental_features):
+        engine.reload(app._config.paths, enabled=app._config.ui.show_experimental_features)
 
     # The MIDI ``apply_config`` is idempotent (same device on same patch is a
     # no-op), so re-applying on every reload pass is safe.

@@ -353,6 +353,9 @@ class GamepadUpdate:
     prev_marker_pressed: bool = False  # Cycle to previous controlled marker
     settings_open_pressed: bool = False  # btn_settings edge – open Settings menu
     clear_messages_pressed: bool = False  # btn_clear_messages edge
+    # Pads whose Pathfinder button went down, routed per pad like resets.
+    pathfinder_presses: set[int] = field(default_factory=set)
+    toggle_paths_pressed: bool = False
 
 
 class GamepadHandler:
@@ -504,6 +507,8 @@ class GamepadHandler:
         self._btn_toggle_zones_id = _resolve(cfg.btn_toggle_zones, -1)
         # Clear operator-message cards; default unbound.
         self._btn_clear_messages_id = _resolve(cfg.btn_clear_messages, BUTTON_ID_UNBOUND)
+        self._btn_pathfinder_id = _resolve(cfg.btn_pathfinder, BUTTON_ID_UNBOUND)
+        self._btn_toggle_paths_id = _resolve(cfg.btn_toggle_paths, BUTTON_ID_UNBOUND)
         # Unified menu confirm/cancel – shared by source / interface
         # selection and the Settings menu.
         self._btn_menu_confirm_id = _resolve(cfg.btn_menu_confirm, CONTROLLER_BUTTON_A)
@@ -1543,6 +1548,10 @@ class GamepadHandler:
                 # _get_button reads LT/RT as triggers and unbound as released.
                 if self._detect_button_edge(controller_idx, self._btn_clear_messages_id):
                     result.clear_messages_pressed = True
+                if self._detect_button_edge(controller_idx, self._btn_pathfinder_id):
+                    result.pathfinder_presses.add(controller_idx)
+                if self._detect_button_edge(controller_idx, self._btn_toggle_paths_id):
+                    result.toggle_paths_pressed = True
                 # Multi-pad: suppress DPAD next/prev to avoid rotating shared
                 # _selected_id. Gamepad-scoped inner guard; the authoritative
                 # cross-device gate is InputManager.marker_cycle_active (which
@@ -1780,6 +1789,8 @@ class GamepadHandler:
             self._btn_toggle_help_id,
             self._btn_toggle_zones_id,
             self._btn_clear_messages_id,
+            self._btn_pathfinder_id,
+            self._btn_toggle_paths_id,
             self._btn_next_marker_id,
             self._btn_prev_marker_id,
             self._btn_settings_id,

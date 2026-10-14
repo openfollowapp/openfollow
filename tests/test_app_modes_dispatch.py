@@ -362,6 +362,41 @@ def test_on_key_down_digit_gated_while_modal_open() -> None:
     assert app._selected_id == 10  # unchanged
 
 
+def test_ctrl_s_saves_the_pose_and_keeps_what_the_setup_wizard_saved(monkeypatch, tmp_path) -> None:
+    from openfollow.configuration import AppConfig, CalibrationPointConfig, CameraConfig
+
+    monkeypatch.setattr(app_modes, "save_config", lambda cfg, path: None)
+    point = CalibrationPointConfig("DSL", "DSR", 21.4, 23.9, 0.0, 0.4, 0.2, [2.5, 9.0, 0.0])
+    config = AppConfig(camera=CameraConfig(lens_k1=-0.2, lens_k2=0.05, calibration_points=[point]))
+    pose = CameraConfig(pos_x=1.0, pos_y=-9.0, pos_z=5.0, pitch=-20.0, yaw=3.0, roll=0.5, fov=42.0)
+    app = SimpleNamespace(
+        _input_manager=SimpleNamespace(keyboard_handler=SimpleNamespace(keys={"Meta"}, on_key_down=lambda e: None)),
+        _controlled_ids=[],
+        _selected_id=None,
+        _config=config,
+        _config_path=str(tmp_path / "c.toml"),
+        _config_mtime=0,
+        _camera=SimpleNamespace(to_config=lambda: pose),
+        _url_editor_active=False,
+        _field_choice_active=False,
+        _browser_active=False,
+    )
+    app._normalize_key = app_modes.normalize_key
+    app._get_config_mtime = lambda: 1
+    app_modes.on_key_down(app, {"key": "s"})
+    cam = app._config.camera
+    assert (cam.pos_x, cam.pos_y, cam.pos_z, cam.pitch, cam.yaw, cam.roll, cam.fov) == (
+        1.0,
+        -9.0,
+        5.0,
+        -20.0,
+        3.0,
+        0.5,
+        42.0,
+    )
+    assert (cam.lens_k1, cam.lens_k2, cam.calibration_points) == (-0.2, 0.05, [point])
+
+
 def test_on_key_down_ctrl_s_gated_while_modal_open(monkeypatch) -> None:
     # #551: Ctrl/Cmd+S must not write config from under a modal.
     writes: list = []

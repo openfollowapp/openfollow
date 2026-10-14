@@ -24,6 +24,8 @@ import math
 
 # No lens comes near this; past it ``9*k1*k1`` overflows and the fold check reads garbage.
 _MAX_COEFFICIENT = 1e3
+# A pulled-back pair stops this fraction short of the fold, so the warp's slope at the corner stays clear of 0.
+PULL_BACK_MARGIN = 0.01
 
 
 def lens_fold_radius(k1: float, k2: float) -> float:
@@ -53,3 +55,24 @@ def lens_warp_is_valid(k1: object, k2: object) -> bool:
     if not (math.isfinite(a) and math.isfinite(b)) or max(abs(a), abs(b)) > _MAX_COEFFICIENT:
         return False
     return lens_fold_radius(a, b) > 1.0
+
+
+def pull_back_to_fold(k1: float, k2: float) -> tuple[float, float]:
+    """The pair itself when it is valid, else ``t * (k1, k2)`` for the largest ``t`` that is, less a margin.
+
+    The valid pairs along a ray from ``(0, 0)`` form one segment, so bisection on
+    :func:`lens_warp_is_valid` finds its end. A non-finite pair gives ``(0, 0)``.
+    """
+    if not (math.isfinite(k1) and math.isfinite(k2)):
+        return 0.0, 0.0
+    if lens_warp_is_valid(k1, k2):
+        return k1, k2
+    lo, hi = 0.0, min(1.0, _MAX_COEFFICIENT / max(abs(k1), abs(k2)))
+    for _ in range(60):
+        mid = 0.5 * (lo + hi)
+        if lens_warp_is_valid(mid * k1, mid * k2):
+            lo = mid
+        else:
+            hi = mid
+    t = lo * (1.0 - PULL_BACK_MARGIN)
+    return t * k1, t * k2

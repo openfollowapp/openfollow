@@ -102,3 +102,12 @@ def test_overlay_state_reset_restores_defaults() -> None:
     assert len(state._marker_pool) == 16
     assert state.virtual_faders_display == []
     assert state.status_flags == []
+
+
+def test_overlay_state_reset_clears_the_paths_and_their_turns() -> None:
+    state = OverlayState()
+    state.show_paths = True
+    state.path_lines = [([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)], [], False)]
+    state.path_arrows = [((0.25, 0.0, 0.0), (0.55, 0.0, 0.0))]
+    state.reset()
+    assert (state.show_paths, state.path_lines, state.path_arrows) == (False, [], [])

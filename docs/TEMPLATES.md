@@ -1,7 +1,7 @@
 # Templates (`.oftemplate`)
 
 Templates are reusable, shareable snapshots of one configuration surface –
-an OSC output row, a camera + grid pair, or a set of trigger zones. They let
+an OSC output row, a camera + grid pair, a set of trigger zones, or a set of paths. They let
 an operator save a known-good setup once and re-apply it (or hand it to
 another station) without re-entering every field.
 
@@ -37,7 +37,7 @@ One template is a JSON object – the *envelope* – with a per-kind `payload`:
 | Field         | Type   | Meaning |
 |---------------|--------|---------|
 | `version`     | int    | **Format** version. The only compatibility gate. Bumped only on a breaking envelope/payload change. |
-| `type`        | string | The kind discriminator: `osc_output`, `camera_grid`, or `zones`. Decides which payload validator runs and which folder/section it applies to. |
+| `type`        | string | The kind discriminator: `osc_output`, `camera_grid`, `zones`, or `paths`. Decides which payload validator runs and which folder/section it applies to. |
 | `id`          | string | Stable handle, minted if absent. |
 | `name`        | string | Operator-facing label. |
 | `is_system`   | bool   | Provenance tag. The *source folder* is authoritative; this is informational and overridden on load. |
@@ -80,6 +80,15 @@ Templates move between machines as single `.oftemplate` files.
 
 This is a LAN/offline flow: operators copy files by hand. There is no central
 gallery and no auto-fetch from a URL.
+
+## Applying a template
+
+`POST /api/templates/<filename>/apply` applies one to the live config.
+`osc_output` adds a new, disabled row with no marker. `camera_grid`, `zones`
+and `paths` overwrite a whole section, so they need `?confirm=1` and are
+refused without it. A `paths` template replaces every path and the slide time;
+each path this station already has by name keeps its Active flag, and a new
+one arrives inactive.
 
 ## Versioning & cross-version compatibility
 

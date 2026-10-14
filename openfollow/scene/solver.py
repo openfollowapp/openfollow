@@ -23,6 +23,9 @@ from openfollow.scene.camera import psn_to_pygfx_array
 # is degenerate (0 → divide-by-zero, 180 → blows up).
 _FOV_MIN_DEG = 1.0
 _FOV_MAX_DEG = 179.0
+# The range the corner solve keeps a camera in; a fit with calibration points may not leave it.
+POSE_PITCH_LIMIT_DEG = 89.0
+POSE_FOV_RANGE_DEG = (10.0, 170.0)
 
 # Below this |cos(pitch)| the camera is within ~0.06° of straight down, where
 # bearing and roll turn the image the same way and the atan2 pair that
@@ -783,8 +786,8 @@ def decompose_homography(
     roll_deg = math.degrees(roll_rad)
 
     # Clamp to valid ranges
-    pitch_deg = max(-89.0, min(89.0, pitch_deg))
-    fov_deg = max(10.0, min(170.0, fov_deg))
+    pitch_deg = max(-POSE_PITCH_LIMIT_DEG, min(POSE_PITCH_LIMIT_DEG, pitch_deg))
+    fov_deg = max(POSE_FOV_RANGE_DEG[0], min(POSE_FOV_RANGE_DEG[1], fov_deg))
 
     return CameraConfig(
         pos_x=round(pos_x, 4),

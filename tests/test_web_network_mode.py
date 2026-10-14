@@ -110,6 +110,20 @@ def test_a_station_interface_that_is_gone_is_named(net_server, tmp_path, present
     assert '<option value="eth9" selected>eth9 – no address</option>' in body
 
 
+def test_a_pinned_interface_the_backend_does_not_manage_is_not_called_unplugged(
+    net_server,  # noqa: F811
+    tmp_path,
+    monkeypatch,
+) -> None:
+    addrs = {"br0": [SimpleNamespace(family=socket.AF_INET, address="198.51.100.2")]}
+    monkeypatch.setattr(net_utils_module.psutil, "net_if_addrs", lambda: addrs)
+    _fake, base = net_server
+    _set(tmp_path, network_mode="simple", psn_source_iface="br0")
+    _status, body = _get(base, "/section/network/status")
+    assert "br0's addressing is not managed here." in body
+    assert "br0 is not connected." not in body
+
+
 def test_automatic_with_no_address_anywhere_offers_the_first_interface(net_server, tmp_path, monkeypatch) -> None:  # noqa: F811
     monkeypatch.setattr(net_utils_module, "auto_station_iface", lambda: "")
     _fake, base = net_server
@@ -143,7 +157,7 @@ def test_an_automatic_interface_the_card_does_not_manage_is_named(net_server, tm
     _fake, base = net_server
     _set(tmp_path, network_mode="simple")
     _status, body = _get(base, "/section/network/status")
-    assert "Automatic picked docker0, whose addressing this card does not manage." in body
+    assert "docker0's addressing is not managed here." in body
 
 
 def test_a_vlan_left_over_in_simple_is_named(net_server, tmp_path, present) -> None:  # noqa: F811

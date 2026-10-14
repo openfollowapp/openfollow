@@ -156,7 +156,8 @@ def _read_pi_network(app: OpenFollowApp) -> _NetworkSnapshot:
     station_read = _station_iface(app) if _simple(app) else None
     if station_read is not None:
         station = station_read
-        auto = "" if station else auto_station_iface()
+        # Always: the picker's Automatic row says where traffic would go.
+        auto = auto_station_iface()
         target = station or auto
         if target and target not in names:
             # Never another interface in its place: the screen would edit one it does not name.
@@ -198,6 +199,7 @@ def _apply_pi_network_snapshot(app: OpenFollowApp, snap: _NetworkSnapshot) -> No
     app._pi_network_state_cache = snap.state
     app._pi_network_pending_config = snap.pending
     app._pi_network_dns_edited = False
+    app._pi_network_read_dns = tuple(snap.pending.dns) if snap.pending else ()
 
 
 def _refresh_pi_network(app: OpenFollowApp) -> None:
@@ -623,13 +625,17 @@ def _simple_rows(
     # ``web_bind`` and a pin awaiting its restart survive into Simple.
     rows.extend(_reachability_notices(app, ifaces))
 
-    name = str(getattr(app, "_pi_network_active_iface", "") or "")
-    address = next((addr for iface_name, addr in ifaces if iface_name == name), "")
+    reading = bool(getattr(app, "_pi_network_reading", False))
     station = _station_iface(app)
     auto = str(getattr(app, "_pi_network_auto_iface", "") or "")
+    # Unanswered, the last reading may be another interface's: nothing of it is shown.
+    name = "" if reading else str(getattr(app, "_pi_network_active_iface", "") or "")
+    address = next((addr for iface_name, addr in ifaces if iface_name == name), "")
     methods = getattr(app, "_pi_network_methods", {}) or {}
     rows.append({"kind": "header", "label": "Interface"})
-    if address and is_link_local(address):
+    if reading:
+        pill, level = "", ""
+    elif address and is_link_local(address):
         pill, level = ("link-local" if methods.get(name) == _STATIC_LABEL else "fallback"), "error"
     elif address:
         pill, level = methods.get(name, ""), ""
@@ -660,15 +666,18 @@ def _simple_rows(
     present = name in {iface.name for iface in getattr(app, "_pi_network_interfaces", None) or []}
     # Read for another station interface, or in Advanced: the values below are not this one's.
     current = getattr(app, "_pi_network_read_station", None) == station
-    if getattr(app, "_pi_network_reading", False):
+    if reading:
         # The banner says it is still being read; neither notice below would be true yet.
         current = False
     elif not present:
-        if station or not name:
-            missing = f"{name} is not connected." if name else "This station has no network interface."
+        # Up with an address but not the backend's: it carries the traffic, it is just not edited here.
+        kernel_address = (getattr(app, "_pi_network_addr_cache", None) or {}).get(name, "")
+        if name and (kernel_address or not station):
+            missing, notice_level = f"{name}'s addressing is not managed here.", "info"
         else:
-            missing = f"Automatic picked {name}, whose addressing this screen does not manage."
-        rows.append({"kind": "notice", "level": "error", "label": missing, "value": ""})
+            missing = f"{name} is not connected." if name else "This station has no network interface."
+            notice_level = "error"
+        rows.append({"kind": "notice", "level": notice_level, "label": missing, "value": ""})
     elif not current:
         rows.append(
             {
@@ -843,10 +852,20 @@ def _pick_station_iface(app: OpenFollowApp, name: str) -> None:
     app._last_config_check = 0.0
     app._check_config_reload()
     _refresh_pi_network_bounded(app)
+    target = name or str(getattr(app, "_pi_network_auto_iface", "") or "")
+    target_address = (getattr(app, "_pi_network_addr_cache", None) or {}).get(target, "")
     if _station_iface(app) != name:
         _set_banner(app, "Saved, but not applied yet. Check the station's status rows.", "caution")
+    elif not target_address:
+        # Every plane fails closed on an interface without an address.
+        _set_banner(
+            app,
+            f"All traffic now uses {target or 'the automatic interface'}, which has no address: "
+            "nothing is sent until it gets one.",
+            "caution",
+        )
     else:
-        _set_banner(app, f"All traffic now uses {name or 'the automatic interface'}.", "success")
+        _set_banner(app, f"All traffic now uses {target}.", "success")
     _focus_row(app, "interface")
 
 
@@ -1338,8 +1357,8 @@ def confirm_pi_network_field_edit(app: OpenFollowApp) -> None:
         new_dns[index] = "" if canon in (None, "0.0.0.0") else canon
         # No gaps: an apply refuses an empty server, so the rest move up.
         new_dns = [server for server in new_dns if server]
-        if tuple(new_dns) != tuple(pending.dns):
-            app._pi_network_dns_edited = True
+        # Edited means different from what was read, so typing the read servers back undoes it.
+        app._pi_network_dns_edited = tuple(new_dns) != tuple(getattr(app, "_pi_network_read_dns", ()))
 
     app._pi_network_pending_config = Ipv4Config(
         method=pending.method,

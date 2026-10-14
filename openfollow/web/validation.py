@@ -882,11 +882,11 @@ def validate(
     if rule.pattern is not None and not re.fullmatch(rule.pattern, value):
         return rule.human_error
     if rule.choices is not None:
-        # For numeric parsers, compare the canonicalised parsed value
-        # against ``choices`` – save-time runs the parser too, so e.g.
-        # ``"010"`` (parsed → 10) must match ``"10"`` in choices to keep
-        # blur and save in lockstep.
-        canonical = str(parsed) if isinstance(parsed, (int, float)) and not isinstance(parsed, bool) else value
+        # Compare the parsed value against ``choices`` – save-time runs the
+        # parser too, so e.g. ``"010"`` (parsed → 10) must match ``"10"``, and
+        # a case-blind parser's ``"Simple"`` match ``"simple"``, to keep blur
+        # and save in lockstep.
+        canonical = str(parsed) if isinstance(parsed, (int, float, str)) and not isinstance(parsed, bool) else value
         if canonical not in rule.choices:
             return rule.human_error
     if isinstance(parsed, (int, float)) and not isinstance(parsed, bool):

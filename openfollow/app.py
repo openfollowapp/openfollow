@@ -377,6 +377,8 @@ class OpenFollowApp:
         self._pi_network_read_station: str | None = None
         # A re-read overran its budget and has not been answered yet.
         self._pi_network_reading: bool = False
+        # The DNS servers as read, against which an edit is told apart.
+        self._pi_network_read_dns: tuple[str, ...] = ()
         # Whether the operator edited a DNS server; untouched, a DHCP apply sends none.
         self._pi_network_dns_edited: bool = False
         # Interface-address enumeration for the screen's rows, held briefly so

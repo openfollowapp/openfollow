@@ -239,6 +239,16 @@ def test_validate_numeric_choices_canonical_match() -> None:
     assert validate("trigger_zones", "eval_fps", "10") is None
 
 
+@pytest.mark.parametrize("raw", ["simple", "Simple", " ADVANCED "])
+def test_validate_a_case_blind_choice_matches_what_save_accepts(raw: str) -> None:
+    assert validate("network", "network_mode", raw) is None
+
+
+@pytest.mark.parametrize("raw", ["expert", "simple1", "advance"])
+def test_validate_an_unknown_network_mode_is_rejected(raw: str) -> None:
+    assert validate("network", "network_mode", raw) is not None
+
+
 def test_validate_numeric_choices_unknown_value_still_rejected() -> None:
     # 7 is not a valid eval_fps (save-time snaps it to 5 with a warning,
     # but the UI uses a hardcoded ``<select>`` so direct API hits with

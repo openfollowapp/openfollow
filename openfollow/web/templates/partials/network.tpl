@@ -158,10 +158,10 @@
         <div id="net-iface-list" class="net-iface-list">
             % if not _rows:
             % if _simple and _net.get("station_options"):
-            % if _net.get("station_iface"):
+            % if _net.get("station_unmanaged") or (_net.get("station_auto") and not _net.get("station_iface")):
+            <p class="muted">{{_net.get("station_iface") or _net.get("station_auto")}}'s addressing is not managed here.</p>
+            % elif _net.get("station_iface"):
             <p class="muted">{{_net["station_iface"]}} is not connected. Pick another interface above.</p>
-            % elif _net.get("station_auto"):
-            <p class="muted">Automatic picked {{_net["station_auto"]}}, whose addressing this card does not manage. Pick an interface above.</p>
             % else:
             <p class="muted">No interface has an address yet.</p>
             % end

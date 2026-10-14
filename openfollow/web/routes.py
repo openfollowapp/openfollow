@@ -5972,6 +5972,11 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         resolved = _station_picker(net, station, options)
         # Automatic with no address anywhere shows the first interface, as the Operator Screen edits it.
         resolved = resolved or next((name for name, _addr in net["station_options"]), "")
+        if resolved and resolved not in [name for name, _addr in options]:
+            from openfollow.net_utils import get_iface_ipv4
+
+            # Up but not the backend's: it carries the traffic, it is just not edited here.
+            net["station_unmanaged"] = bool(get_iface_ipv4(resolved))
         net["leftover_vlans"] = sorted(name for name in vlan_names if name and name != resolved)
         net["iface_rows"] = [row for row in rows if str(row.get("name", "")) == resolved]
         net["vlan_parents"] = []

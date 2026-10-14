@@ -146,7 +146,7 @@ def test_the_image_gives_the_session_a_us_system_layout(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(shutil.which("sh") is None, reason="no POSIX sh available")
-@pytest.mark.parametrize("existing", ['XKBLAYOUT="de"\n', "XKBLAYOUT=gb\n"])
+@pytest.mark.parametrize("existing", ['XKBLAYOUT="de"\n', "XKBLAYOUT=gb\n", "XKBLAYOUT='de'\n"])
 def test_the_image_keeps_a_system_layout_the_base_set(tmp_path: Path, existing: str) -> None:
     target = tmp_path / "etc" / "default" / "keyboard"
     target.parent.mkdir(parents=True)

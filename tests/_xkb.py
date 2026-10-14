@@ -22,6 +22,7 @@ EVDEV_LST = """\
   gb              English (UK)
   de              German
   jp              Japanese
+  custom          A user-defined custom Layout
   Bad             Upper case is not a layout name
 
 ! variant
@@ -38,7 +39,13 @@ EVDEV_LST = """\
 ! option
   grp                  Switching to another layout
   grp:alt_shift_toggle Alt+Shift
+  ctrl:nocaps          Caps Lock as Ctrl
+  custom               Miscellaneous options
+  custom:types         Use user-defined custom XKB types
 """
+
+# The layouts xkb-data ships symbols for: every listed one but ``custom``.
+SYMBOLS = ("al", "us", "gb", "de", "jp")
 
 # A station's ``/etc/default/keyboard``.
 SYSTEM_GB = """\
@@ -55,28 +62,58 @@ BACKSPACE="guess"
 """
 
 
+def write_xkb_root(root: Path, catalog: str = EVDEV_LST, symbols: tuple[str, ...] = SYMBOLS) -> Path:
+    """An xkb data directory under ``root``: the rules' catalog and a symbols file per shipped layout."""
+    (root / "rules").mkdir(parents=True, exist_ok=True)
+    (root / "rules" / "evdev.lst").write_text(catalog, encoding="utf-8")
+    (root / "symbols").mkdir(exist_ok=True)
+    for name in symbols:
+        (root / "symbols" / name).write_text("", encoding="utf-8")
+    return root
+
+
 def install_station_keyboard(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, system: str = SYSTEM_GB) -> None:
-    """Point the resolver at a station's catalog and system file, written under ``tmp_path``."""
-    catalog = tmp_path / "evdev.lst"
-    catalog.write_text(EVDEV_LST, encoding="utf-8")
+    """Point the resolver at a station's xkb data and system file, written under ``tmp_path``."""
+    root = write_xkb_root(tmp_path / "xkb")
     keyboard = tmp_path / "keyboard"
     keyboard.write_text(system, encoding="utf-8")
-    monkeypatch.setattr(keyboard_layout, "EVDEV_LST", catalog)
+    monkeypatch.setattr(keyboard_layout, "XKB_ROOT", root)
+    monkeypatch.setattr(keyboard_layout, "EVDEV_LST", root / "rules" / "evdev.lst")
     monkeypatch.setattr(keyboard_layout, "SYSTEM_KEYBOARD", keyboard)
 
 
 def start_session(
-    monkeypatch: pytest.MonkeyPatch, source: str = "system", layout: str = "gb", variant: str = ""
+    monkeypatch: pytest.MonkeyPatch,
+    source: str = "system",
+    layout: str = "gb",
+    variant: str = "",
+    model: str = "pc105",
+    options: str = "",
 ) -> None:
-    """The environment the packaged session gives the app."""
-    monkeypatch.setenv("OPENFOLLOW_KEYBOARD_SOURCE", source)
-    monkeypatch.setenv("XKB_DEFAULT_LAYOUT", layout)
-    if variant:
-        monkeypatch.setenv("XKB_DEFAULT_VARIANT", variant)
-    else:
-        monkeypatch.delenv("XKB_DEFAULT_VARIANT", raising=False)
+    """The environment the packaged session gives the app; by default what it exports for ``SYSTEM_GB``."""
+    values = {
+        "OPENFOLLOW_KEYBOARD_SOURCE": source,
+        "XKB_DEFAULT_LAYOUT": layout,
+        "XKB_DEFAULT_VARIANT": variant,
+        "XKB_DEFAULT_MODEL": model,
+        "XKB_DEFAULT_OPTIONS": options,
+    }
+    for name, value in values.items():
+        if value:
+            monkeypatch.setenv(name, value)
+        else:
+            monkeypatch.delenv(name, raising=False)
+
+
+SESSION_ENV = (
+    "OPENFOLLOW_KEYBOARD_SOURCE",
+    "XKB_DEFAULT_LAYOUT",
+    "XKB_DEFAULT_VARIANT",
+    "XKB_DEFAULT_MODEL",
+    "XKB_DEFAULT_OPTIONS",
+)
 
 
 def no_session(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in ("OPENFOLLOW_KEYBOARD_SOURCE", "XKB_DEFAULT_LAYOUT", "XKB_DEFAULT_VARIANT"):
+    for name in SESSION_ENV:
         monkeypatch.delenv(name, raising=False)

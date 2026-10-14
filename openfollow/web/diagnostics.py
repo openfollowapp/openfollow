@@ -1784,8 +1784,19 @@ def _collect_detection_models(p: DiagnosticsProviders | None) -> list[str]:
 # E3. Operating system ------------------------------------------------------
 
 
+_XKB_NAME_RE = re.compile(r"[A-Za-z0-9_:,-]*")
+
+
+def _xkb_name(value: str) -> str:
+    """The value as is when it is a plain xkb name, else quoted with its escapes, so it stays on one row."""
+    return value if _XKB_NAME_RE.fullmatch(value) else ascii(value)
+
+
 def _layout_name(layout: str, variant: str) -> str:
-    return f"{layout} ({variant})" if variant else layout
+    """A layout and its variant; nothing without a layout, whose variant would describe nothing."""
+    if not layout:
+        return ""
+    return f"{_xkb_name(layout)} ({_xkb_name(variant)})" if variant else _xkb_name(layout)
 
 
 def collect_keyboard_layout(config_path: Path | None, environ: Mapping[str, str] | None = None) -> str:
@@ -1801,7 +1812,8 @@ def collect_keyboard_layout(config_path: Path | None, environ: Mapping[str, str]
     if source is None:
         in_use = "[not set by the kiosk session]"
     else:
-        in_use = f"{_layout_name(env.get('XKB_DEFAULT_LAYOUT', ''), env.get('XKB_DEFAULT_VARIANT', ''))} ({source})"
+        layout = _layout_name(env.get("XKB_DEFAULT_LAYOUT", ""), env.get("XKB_DEFAULT_VARIANT", ""))
+        in_use = f"{layout or '[none]'} ({_xkb_name(source)})"
     return f"  keyboard layout              configured {configured} | system file {on_file} | in use {in_use}"
 
 

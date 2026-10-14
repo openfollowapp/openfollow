@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -16,7 +17,9 @@ from tests._xkb import install_station_keyboard
 
 pytestmark = pytest.mark.unit
 
-_SESSION = {"OPENFOLLOW_KEYBOARD_SOURCE": "system", "XKB_DEFAULT_LAYOUT": "gb"}
+# What the session exports for the station's system file, and for a layout the station chose.
+_SESSION = {"OPENFOLLOW_KEYBOARD_SOURCE": "system", "XKB_DEFAULT_LAYOUT": "gb", "XKB_DEFAULT_MODEL": "pc105"}
+_CHOSEN = {"OPENFOLLOW_KEYBOARD_SOURCE": "config"}
 
 
 @pytest.fixture(autouse=True)
@@ -110,9 +113,9 @@ def test_a_saved_variant_of_another_layout_shows_as_standard() -> None:
     ("layout", "variant", "session"),
     [
         ("", "", _SESSION),  # System, in use
-        ("gb", "", _SESSION),  # the same layout, chosen
-        ("de", "nodeadkeys", {**_SESSION, "XKB_DEFAULT_LAYOUT": "de", "XKB_DEFAULT_VARIANT": "nodeadkeys"}),
-        ("gb", "nodeadkeys", _SESSION),  # the session drops a variant gb lacks
+        ("gb", "", {**_CHOSEN, "XKB_DEFAULT_LAYOUT": "gb"}),
+        ("de", "nodeadkeys", {**_CHOSEN, "XKB_DEFAULT_LAYOUT": "de", "XKB_DEFAULT_VARIANT": "nodeadkeys"}),
+        ("gb", "nodeadkeys", {**_CHOSEN, "XKB_DEFAULT_LAYOUT": "gb"}),  # the session drops a variant gb lacks
         ("xx", "", _SESSION),  # the session ignores an unknown layout
     ],
 )
@@ -126,10 +129,12 @@ def test_nothing_is_pending_while_the_saved_layout_is_in_use(layout: str, varian
     ("layout", "variant", "session", "in_use"),
     [
         ("de", "", _SESSION, "English (UK)"),
-        ("de", "nodeadkeys", {**_SESSION, "XKB_DEFAULT_LAYOUT": "de"}, "German"),
-        ("de", "", {**_SESSION, "XKB_DEFAULT_LAYOUT": "de", "XKB_DEFAULT_VARIANT": "T3"}, "German (T3)"),
+        ("de", "nodeadkeys", {**_CHOSEN, "XKB_DEFAULT_LAYOUT": "de"}, "German"),
+        ("de", "", {**_CHOSEN, "XKB_DEFAULT_LAYOUT": "de", "XKB_DEFAULT_VARIANT": "T3"}, "German (T3)"),
         ("", "", {**_SESSION, "XKB_DEFAULT_LAYOUT": "de"}, "German"),
         ("", "", {**_SESSION, "XKB_DEFAULT_LAYOUT": "fr"}, "fr"),  # a layout this catalog does not describe
+        # The same layout, chosen: the session would start it without the system file's model.
+        ("gb", "", _SESSION, "English (UK)"),
     ],
 )
 def test_a_saved_layout_that_differs_from_the_one_in_use_is_pending(
@@ -138,6 +143,41 @@ def test_a_saved_layout_that_differs_from_the_one_in_use_is_pending(
     row = view.build_keyboard_layout_view(_cfg(layout, variant), session)
     assert row is not None
     assert (row.pending, row.in_use_label) == (True, in_use)
+
+
+@pytest.fixture
+def system_without_caps_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+    """A system file with an option, and the session it started."""
+    install_station_keyboard(tmp_path, monkeypatch, 'XKBMODEL="pc105"\nXKBLAYOUT="gb"\nXKBOPTIONS="ctrl:nocaps"\n')
+    return {**_SESSION, "XKB_DEFAULT_OPTIONS": "ctrl:nocaps"}
+
+
+def test_the_system_options_in_use_are_nothing_pending(system_without_caps_lock: dict[str, str]) -> None:
+    row = view.build_keyboard_layout_view(_cfg(), system_without_caps_lock)
+    assert row is not None
+    assert row.pending is False
+
+
+def test_choosing_the_system_layout_by_name_drops_its_options_on_restart(
+    system_without_caps_lock: dict[str, str],
+) -> None:
+    """The layout reads the same, but the session would start it without Caps Lock as Ctrl."""
+    row = view.build_keyboard_layout_view(_cfg("gb"), system_without_caps_lock)
+    assert row is not None
+    assert (row.pending, row.in_use_label) == (True, "English (UK)")
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"XKB_DEFAULT_MODEL": "pc104"},
+        {"XKB_DEFAULT_OPTIONS": "grp:alt_shift_toggle"},
+    ],
+)
+def test_a_session_started_with_another_model_or_options_is_pending(changed: dict[str, str]) -> None:
+    row = view.build_keyboard_layout_view(_cfg(), {**_SESSION, **changed})
+    assert row is not None
+    assert row.pending is True
 
 
 def test_a_changed_system_file_is_pending_too() -> None:
@@ -152,11 +192,12 @@ def test_the_catalog_is_read_again_only_when_it_changes(monkeypatch: pytest.Monk
     reads: list[Path] = []
     real = keyboard_layout.read_catalog
 
-    def counting(path: Path | None = None) -> keyboard_layout.XkbCatalog:
+    def counting(path: Path | None = None, xkb_root: Path | None = None) -> keyboard_layout.XkbCatalog:
         reads.append(path)
-        return real(path)
+        return real(path, xkb_root)
 
     monkeypatch.setattr(keyboard_layout, "read_catalog", counting)
+    (keyboard_layout.XKB_ROOT / "symbols" / "fr").write_text("")
     first = view.station_catalog()
     assert view.station_catalog() is first
     assert len(reads) == 1
@@ -165,6 +206,22 @@ def test_the_catalog_is_read_again_only_when_it_changes(monkeypatch: pytest.Monk
     os.utime(keyboard_layout.EVDEV_LST, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
     assert view.station_catalog().layouts == {"fr": "French"}
     assert len(reads) == 2
+
+
+def test_the_catalog_is_read_again_when_the_symbols_change() -> None:
+    symbols = keyboard_layout.XKB_ROOT / "symbols"
+    assert "de" in view.station_catalog().layouts
+    stat = symbols.stat()
+    (symbols / "de").unlink()
+    os.utime(symbols, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+    assert "de" not in view.station_catalog().layouts
+
+
+def test_without_the_symbols_directory_only_system_is_offered() -> None:
+    shutil.rmtree(keyboard_layout.XKB_ROOT / "symbols")
+    row = view.build_keyboard_layout_view(_cfg("de"), _SESSION)
+    assert row is not None
+    assert row.layouts == [("", "System – us")]
 
 
 def test_without_a_catalog_only_system_is_offered() -> None:

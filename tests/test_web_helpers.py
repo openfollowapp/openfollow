@@ -3735,8 +3735,9 @@ def test_the_keyboard_layout_is_not_exported() -> None:
     assert controller["key_reset"] == "x"
 
 
-@pytest.mark.parametrize("section", ["controller", "keyboard"])
+@pytest.mark.parametrize("section", ["controller", "gamepad", "keyboard", "mouse"])
 def test_the_keyboard_layout_is_never_pushed_to_a_peer(section: str) -> None:
+    """Every section that writes the controller config takes the two fields, so each one strips them."""
     pushed = strip_device_local_fields(
         section, {"keyboard_layout": "de", "keyboard_variant": "nodeadkeys", "key_reset": "c"}
     )

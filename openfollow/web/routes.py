@@ -1125,9 +1125,8 @@ _DEVICE_LOCAL_FIELDS_BY_SECTION: dict[str, frozenset[str]] = {
     "rttrpm_output": frozenset({"source_iface"}),
     # Whether this station draws paths; toggled on its own keyboard or pad.
     "paths": frozenset({"show_paths"}),
-    # The keyboard plugged into this station: another station's may differ.
-    "controller": _KEYBOARD_LAYOUT_FIELDS,
-    "keyboard": _KEYBOARD_LAYOUT_FIELDS,
+    # The keyboard plugged into this station, in every section that writes the controller config.
+    **{section: _KEYBOARD_LAYOUT_FIELDS for section, attr in _SECTION_CONFIG_ATTRS.items() if attr == "controller"},
 }
 
 # Sections that are device-local as a whole. Every row of the Network Interface

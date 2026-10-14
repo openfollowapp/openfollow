@@ -44,13 +44,20 @@
                 </select>
                 <span id="keyboard-layout-error" class="field-error"></span>
             </div>
-            <div class="field">
+            %# Reloads the options for a new layout. Save is off meanwhile, or it would send the previous layout's
+            %# variant; the gate runs again after, since htmx re-enables what it disabled.
+            <div class="field" hx-get="/section/keyboard/variants" hx-trigger="change from:#keyboard-layout"
+                 hx-include="#keyboard-layout" hx-target="#keyboard-variant" hx-swap="innerHTML"
+                 hx-disabled-elt="#keyboard-section button[type=submit]"
+                 hx-on::after-request="refreshFormGate(this.closest('form'))">
                 <label for="keyboard-variant">Variant</label>
                 <select id="keyboard-variant" name="keyboard_variant"
-                        hx-get="/section/keyboard/variants" hx-trigger="change from:#keyboard-layout"
-                        hx-include="#keyboard-layout" hx-target="this" hx-swap="innerHTML">
+                        hx-get="/api/validate/keyboard/keyboard_variant" hx-trigger="blur changed delay:200ms"
+                        hx-target="#keyboard-variant-error" hx-swap="innerHTML" hx-include="closest form"
+                        aria-describedby="keyboard-variant-error" aria-invalid="false">
                     % include('partials/keyboard_variant_options.tpl', variants=kb_layout.variants, selected=kb_layout.variant)
                 </select>
+                <span id="keyboard-variant-error" class="field-error"></span>
             </div>
         </div>
         % if kb_layout.pending:

@@ -59,6 +59,7 @@ from openfollow.web.routes import (
 
 _FieldParser = Callable[[Any, Any], Any]
 _CustomValidator = Callable[[str, "AppConfig | None"], "str | None"]
+_SiblingValidator = Callable[[str, Mapping[str, Any]], "str | None"]
 
 
 # --- Sanitiser --------------------------------------------------------------
@@ -120,6 +121,7 @@ class FieldRule:
     type_error: str | None = None  # None → derived from parser
     human_error: str = "Invalid value."
     custom: _CustomValidator | None = None  # extra validator after default checks
+    sibling_check: _SiblingValidator | None = None  # reads the rest of the form, after ``custom``
 
 
 def _resolved_type_error(rule: FieldRule) -> str:
@@ -297,11 +299,14 @@ def _validate_keyboard_layout(value: str, _cfg: AppConfig | None) -> str | None:
     return None
 
 
-def _validate_keyboard_variant(value: str, _cfg: AppConfig | None) -> str | None:
-    """A variant some layout in this station's xkb catalog lists; the save drops one its layout lacks."""
+def _validate_keyboard_variant(value: str, form: Mapping[str, Any]) -> str | None:
+    """A variant of the layout chosen beside it; System takes none. Any well-formed name without a catalog."""
+    layout = str(form.get("keyboard_layout", "")).strip()
+    if not layout:
+        return "System takes the system's own variant: choose Standard."
     catalog = station_catalog()
-    if catalog.variants and not any(catalog.has_variant(layout, value) for layout in catalog.variants):
-        return f"This station has no keyboard variant {value!r}."
+    if catalog.layouts and not catalog.has_variant(layout, value):
+        return f"Layout {layout!r} has no variant {value!r} on this station."
     return None
 
 
@@ -582,7 +587,7 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
             _as_str,
             max_len=64,
             pattern=VARIANT_RE.pattern,
-            custom=_validate_keyboard_variant,
+            sibling_check=_validate_keyboard_variant,
             human_error="A variant name is letters, digits, '_' and '-'.",
         ),
     },
@@ -980,6 +985,8 @@ def validate(
         custom_err = rule.custom(value, cfg)
         if custom_err is not None:
             return custom_err
+    if rule.sibling_check is not None:
+        return rule.sibling_check(value, context or {})
     return None
 
 

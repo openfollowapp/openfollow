@@ -8762,14 +8762,46 @@ def test_keyboard_layout_carries_the_standard_validation_markup(live_server, key
     assert '<span id="keyboard-layout-error" class="field-error"></span>' in body
 
 
-def test_keyboard_variants_reload_with_the_layout(live_server, keyboard_station) -> None:
+def test_keyboard_variant_carries_the_standard_validation_markup(live_server, keyboard_station) -> None:
     _, base = live_server
     _status, body = _get(base, "/section/keyboard")
     select = re.search(r'<select id="keyboard-variant"[^>]*>', body)
     assert select is not None
-    assert 'hx-get="/section/keyboard/variants"' in select.group(0)
-    assert 'hx-trigger="change from:#keyboard-layout"' in select.group(0)
-    assert 'hx-include="#keyboard-layout"' in select.group(0)
+    assert 'hx-get="/api/validate/keyboard/keyboard_variant"' in select.group(0)
+    assert 'hx-trigger="blur changed delay:200ms"' in select.group(0)
+    assert 'hx-target="#keyboard-variant-error"' in select.group(0)
+    assert 'hx-include="closest form"' in select.group(0)
+    assert 'aria-describedby="keyboard-variant-error" aria-invalid="false"' in select.group(0)
+    assert '<span id="keyboard-variant-error" class="field-error"></span>' in body
+
+
+def _variant_field(body: str) -> str:
+    """The element that reloads the Variant options: the field around the select."""
+    select_at = body.index('<select id="keyboard-variant"')
+    start = body.rindex('<div class="field"', 0, select_at)
+    return body[start : body.index(">", start) + 1]
+
+
+def test_keyboard_variants_reload_with_the_layout(live_server, keyboard_station) -> None:
+    _, base = live_server
+    _status, body = _get(base, "/section/keyboard")
+    field = _variant_field(body)
+    assert 'hx-get="/section/keyboard/variants"' in field
+    assert 'hx-trigger="change from:#keyboard-layout"' in field
+    assert 'hx-include="#keyboard-layout"' in field
+    assert 'hx-target="#keyboard-variant" hx-swap="innerHTML"' in field
+
+
+def test_keyboard_save_waits_out_a_variant_reload(live_server, keyboard_station) -> None:
+    """Saved mid-reload, the form would carry the previous layout's variant under the new layout."""
+    _, base = live_server
+    _status, body = _get(base, "/section/keyboard")
+    field = _variant_field(body)
+    assert 'hx-disabled-elt="#keyboard-section button[type=submit]"' in field
+    # htmx re-enables what it disabled; the form gate decides again after the reload.
+    assert "hx-on::after-request=\"refreshFormGate(this.closest('form'))\"" in field
+    section = body[body.index('<form id="keyboard-section"') :]
+    assert re.findall(r"<button[^>]*type=\"submit\"[^>]*>", section) == ['<button type="submit" class="save-btn">']
 
 
 @pytest.mark.parametrize(
@@ -8836,7 +8868,7 @@ def test_keyboard_layout_save_refuses_a_crafted_value(live_server, keyboard_stat
 
 def test_keyboard_layout_in_use_offers_no_restart(live_server, keyboard_station) -> None:
     server, base = live_server
-    _save_layout(server, "gb")
+    _save_layout(server, "")
     _status, body = _get(base, "/section/keyboard")
     assert "until OpenFollow restarts" not in body
     assert "/section/keyboard/restart" not in body
@@ -8895,6 +8927,71 @@ def test_keyboard_layout_blur_validation(live_server, keyboard_station, raw: str
         assert "field-error-msg" not in body
     else:
         assert error in body
+
+
+@pytest.mark.parametrize(
+    ("query", "error"),
+    [
+        ("keyboard_layout=de&keyboard_variant=nodeadkeys", None),
+        ("keyboard_layout=gb&keyboard_variant=nodeadkeys", "has no variant &#x27;nodeadkeys&#x27;"),
+        ("keyboard_layout=&keyboard_variant=nodeadkeys", "System takes the system&#x27;s own variant"),
+    ],
+)
+def test_keyboard_variant_blur_validation_reads_the_layout_beside_it(
+    live_server, keyboard_station, query: str, error: str | None
+) -> None:
+    _, base = live_server
+    status, body = _get(base, f"/api/validate/keyboard/keyboard_variant?{query}")
+    assert status == 200
+    if error is None:
+        assert "field-error-msg" not in body
+    else:
+        assert error in body
+
+
+_CONTROLLER_SECTIONS = ["controller", "gamepad", "keyboard", "mouse"]
+
+
+@pytest.mark.parametrize("section", _CONTROLLER_SECTIONS)
+def test_keyboard_layout_is_never_broadcast_from_any_controller_section(live_server, monkeypatch, section) -> None:
+    """Echoing ``GET /api/config/<section>`` back as a broadcast must not set every peer's layout."""
+    from types import SimpleNamespace
+
+    from openfollow.web import routes as routes_mod
+
+    sent: list[dict] = []
+
+    def _fake_send(ip, port, section_name, data, pin="", *, expected_port, sender) -> bool:
+        sent.append(dict(data))
+        return True
+
+    monkeypatch.setattr(routes_mod, "_send_config_to_peer", _fake_send)
+    server, base = live_server
+    monkeypatch.setattr(server, "get_peers", lambda: [SimpleNamespace(name="peer", ip="10.0.0.99", web_port=80)])
+    _save_layout(server, "de", "nodeadkeys")
+    with urllib.request.urlopen(f"{base}/api/config/{section}", timeout=5) as resp:
+        echoed = json.loads(resp.read())
+    # The station's own view carries them, as it does every device-local field.
+    assert (echoed["keyboard_layout"], echoed["keyboard_variant"]) == ("de", "nodeadkeys")
+    status, body = _post_json(base, f"/api/config/{section}/broadcast", echoed)
+    assert status == 200 and body.get("success") is True
+    assert len(sent) == 1
+    assert "keyboard_layout" not in sent[0]
+    assert "keyboard_variant" not in sent[0]
+    assert sent[0]["key_reset"] == echoed["key_reset"]
+
+
+@pytest.mark.parametrize("section", _CONTROLLER_SECTIONS)
+def test_keyboard_layout_from_a_peer_is_ignored_in_any_controller_section(live_server, section) -> None:
+    server, base = live_server
+    _save_layout(server, "de", "nodeadkeys")
+    status, body = _post_json(
+        base, f"/api/config/{section}", {"keyboard_layout": "jp", "keyboard_variant": "OADG109A", "key_reset": "c"}
+    )
+    assert status == 200 and body.get("success") is True
+    saved = load_config(server.config_path).controller
+    assert (saved.keyboard_layout, saved.keyboard_variant) == ("de", "nodeadkeys")
+    assert saved.key_reset == "c"
 
 
 @pytest.mark.parametrize(

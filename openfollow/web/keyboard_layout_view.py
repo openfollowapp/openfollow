@@ -23,20 +23,23 @@ KEYBOARD_SOURCE_ENV = "OPENFOLLOW_KEYBOARD_SOURCE"
 _SYSTEM_PREFIX = "System – "
 
 _cache_lock = threading.Lock()
-_cache: tuple[tuple[str, int], keyboard_layout.XkbCatalog] | None = None
+_cache: tuple[tuple[str, int, str, int], keyboard_layout.XkbCatalog] | None = None
+_SESSION_ENV = ("XKB_DEFAULT_LAYOUT", "XKB_DEFAULT_VARIANT", "XKB_DEFAULT_MODEL", "XKB_DEFAULT_OPTIONS")
 
 
 def station_catalog() -> keyboard_layout.XkbCatalog:
-    """The station's xkb catalog, re-read only when the file changes."""
+    """The station's xkb catalog, re-read only when the rules file or the symbols directory changes."""
     global _cache
     path = Path(keyboard_layout.EVDEV_LST)
+    root = Path(keyboard_layout.XKB_ROOT)
+    symbols = root / "symbols"
     try:
-        key = (str(path), path.stat().st_mtime_ns)
+        key = (str(path), path.stat().st_mtime_ns, str(symbols), symbols.stat().st_mtime_ns)
     except OSError:
         return keyboard_layout.XkbCatalog()
     with _cache_lock:
         if _cache is None or _cache[0] != key:
-            _cache = (key, keyboard_layout.read_catalog(path))
+            _cache = (key, keyboard_layout.read_catalog(path, root))
         return _cache[1]
 
 
@@ -82,7 +85,7 @@ def build_keyboard_layout_view(
     )
     layout = cfg.controller.keyboard_layout if cfg.controller.keyboard_layout in catalog.layouts else ""
     variant = cfg.controller.keyboard_variant if catalog.has_variant(layout, cfg.controller.keyboard_variant) else ""
-    in_use = (env.get("XKB_DEFAULT_LAYOUT", ""), env.get("XKB_DEFAULT_VARIANT", ""))
+    in_use = tuple(env.get(name, "") for name in _SESSION_ENV)
     return KeyboardLayoutView(
         layouts=[
             ("", _SYSTEM_PREFIX + _describe(catalog, on_system.layout, on_system.variant)),
@@ -91,6 +94,6 @@ def build_keyboard_layout_view(
         variants=variant_options(catalog, layout),
         layout=layout,
         variant=variant,
-        pending=(saved.layout, saved.variant) != in_use,
-        in_use_label=_describe(catalog, *in_use),
+        pending=(saved.layout, saved.variant, saved.model, saved.options) != in_use,
+        in_use_label=_describe(catalog, in_use[0], in_use[1]),
     )

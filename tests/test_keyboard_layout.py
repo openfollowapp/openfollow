@@ -13,31 +13,49 @@ from pathlib import Path
 import pytest
 
 from openfollow import keyboard_layout as kl
-from tests._xkb import EVDEV_LST, SYSTEM_GB
+from tests._xkb import EVDEV_LST, SYSTEM_GB, write_xkb_root
 
 pytestmark = pytest.mark.unit
 
 
 @pytest.fixture
 def files(tmp_path: Path) -> dict[str, Path]:
-    catalog = tmp_path / "evdev.lst"
-    catalog.write_text(EVDEV_LST, encoding="utf-8")
+    root = write_xkb_root(tmp_path / "xkb")
     system = tmp_path / "keyboard"
     system.write_text(SYSTEM_GB, encoding="utf-8")
-    return {"catalog": catalog, "system": system, "config": tmp_path / "config.toml"}
+    return {
+        "root": root,
+        "catalog": root / "rules" / "evdev.lst",
+        "symbols": root / "symbols",
+        "system": system,
+        "config": tmp_path / "config.toml",
+    }
+
+
+@pytest.fixture
+def symbols(files: dict[str, Path]) -> Path:
+    return files["symbols"]
 
 
 def _resolve(files: dict[str, Path], config: str | None = None) -> kl.Resolution:
     if config is not None:
         files["config"].write_text(config, encoding="utf-8")
-    return kl.resolve(files["config"], catalog_path=files["catalog"], system_path=files["system"])
+    return kl.resolve(
+        files["config"], catalog_path=files["catalog"], system_path=files["system"], xkb_root=files["root"]
+    )
+
+
+def _use_files(monkeypatch: pytest.MonkeyPatch, files: dict[str, Path]) -> None:
+    monkeypatch.setattr(kl, "XKB_ROOT", files["root"])
+    monkeypatch.setattr(kl, "EVDEV_LST", files["catalog"])
+    monkeypatch.setattr(kl, "SYSTEM_KEYBOARD", files["system"])
 
 
 # --- the catalog -------------------------------------------------------------
 
 
-def test_the_catalog_lists_layouts_with_their_descriptions() -> None:
-    catalog = kl.parse_catalog(EVDEV_LST)
+def test_the_catalog_lists_layouts_with_their_descriptions(symbols: Path) -> None:
+    catalog = kl.parse_catalog(EVDEV_LST, symbols)
     assert catalog.layouts == {
         "al": "Albanian",
         "us": "English (US)",
@@ -47,8 +65,8 @@ def test_the_catalog_lists_layouts_with_their_descriptions() -> None:
     }
 
 
-def test_variants_belong_to_their_layout_and_keep_their_case() -> None:
-    catalog = kl.parse_catalog(EVDEV_LST)
+def test_variants_belong_to_their_layout_and_keep_their_case(symbols: Path) -> None:
+    catalog = kl.parse_catalog(EVDEV_LST, symbols)
     # A variant name repeats across layouts: "us" here is German (US), not the layout.
     assert catalog.variants_of("de") == (
         ("nodeadkeys", "German (no dead keys)"),
@@ -61,10 +79,34 @@ def test_variants_belong_to_their_layout_and_keep_their_case() -> None:
     assert not catalog.has_variant("gb", "nodeadkeys")
 
 
-def test_models_and_options_are_not_layouts() -> None:
-    catalog = kl.parse_catalog(EVDEV_LST)
+def test_models_and_options_are_not_layouts(symbols: Path) -> None:
+    catalog = kl.parse_catalog(EVDEV_LST, symbols)
     assert "pc105" not in catalog.layouts
     assert "grp" not in catalog.layouts
+
+
+def test_a_listed_layout_without_symbols_is_not_offered(symbols: Path) -> None:
+    """xkb-data lists ``custom`` but ships no symbols for it: Cage could build no keymap from it."""
+    catalog = kl.parse_catalog(EVDEV_LST, symbols)
+    assert "custom" not in catalog.layouts
+    (symbols / "custom").write_text("", encoding="utf-8")
+    assert kl.parse_catalog(EVDEV_LST, symbols).layouts["custom"] == "A user-defined custom Layout"
+
+
+def test_a_symbols_directory_entry_that_is_not_a_file_is_no_layout(symbols: Path) -> None:
+    (symbols / "de").unlink()
+    (symbols / "de").mkdir()
+    assert "de" not in kl.parse_catalog(EVDEV_LST, symbols).layouts
+
+
+def test_the_catalog_lists_the_options_a_keymap_can_take(symbols: Path) -> None:
+    """The ``custom:`` group needs files a user adds; without them no keymap compiles."""
+    assert kl.parse_catalog(EVDEV_LST, symbols).options == {"grp", "grp:alt_shift_toggle", "ctrl:nocaps", "custom"}
+
+
+def test_a_catalog_option_outside_the_name_characters_is_dropped(symbols: Path) -> None:
+    catalog = kl.parse_catalog("! option\n  ctrl:nocaps  Caps Lock as Ctrl\n  bad;opt  Not a name\n", symbols)
+    assert catalog.options == {"ctrl:nocaps"}
 
 
 def test_a_missing_catalog_is_empty(tmp_path: Path) -> None:
@@ -74,8 +116,13 @@ def test_a_missing_catalog_is_empty(tmp_path: Path) -> None:
 
 
 def test_the_catalog_is_read_from_the_system_path_by_default(monkeypatch, files) -> None:
-    monkeypatch.setattr(kl, "EVDEV_LST", files["catalog"])
+    _use_files(monkeypatch, files)
     assert "de" in kl.read_catalog().layouts
+
+
+def test_without_the_symbols_directory_no_layout_is_known(monkeypatch, files, tmp_path: Path) -> None:
+    monkeypatch.setattr(kl, "XKB_ROOT", tmp_path / "absent")
+    assert kl.read_catalog(files["catalog"]).layouts == {}
 
 
 # --- the system file ---------------------------------------------------------
@@ -87,6 +134,10 @@ def test_the_catalog_is_read_from_the_system_path_by_default(monkeypatch, files)
         (SYSTEM_GB, {"XKBMODEL": "pc105", "XKBLAYOUT": "gb", "XKBVARIANT": "", "XKBOPTIONS": ""}),
         ("XKBLAYOUT='de'\n", {"XKBLAYOUT": "de"}),
         ("XKBLAYOUT=de,us\n", {"XKBLAYOUT": "de,us"}),
+        ('export XKBLAYOUT="de"\n', {"XKBLAYOUT": "de"}),
+        ("  export\tXKBVARIANT=nodeadkeys\n", {"XKBVARIANT": "nodeadkeys"}),
+        ('exportXKBLAYOUT="de"\n', {}),
+        ('XKBLAYOUT ="de"\n', {}),
         ('XKBLAYOUT="fr" # the office\n', {"XKBLAYOUT": "fr"}),
         ('XKBLAYOUT="unterminated\n', {}),
         ("XKBLAYOUT=\n", {"XKBLAYOUT": ""}),
@@ -102,7 +153,7 @@ def test_a_missing_system_file_is_empty(tmp_path: Path) -> None:
 
 
 def test_the_system_file_is_read_from_the_system_path_by_default(monkeypatch, files) -> None:
-    monkeypatch.setattr(kl, "SYSTEM_KEYBOARD", files["system"])
+    _use_files(monkeypatch, files)
     assert kl.read_system_keyboard()["XKBLAYOUT"] == "gb"
 
 
@@ -166,6 +217,32 @@ def test_a_system_variant_the_layout_lacks_is_dropped(files) -> None:
     assert _resolve(files) == kl.Resolution("gb", "", "system")
 
 
+@pytest.mark.parametrize(
+    ("options", "kept"),
+    [
+        ("custom:types", ""),  # listed in the rules, but no keymap compiles without the user's files
+        ("ctrl:nocaps,custom:types", "ctrl:nocaps"),
+        ("custom:types,grp:alt_shift_toggle", "grp:alt_shift_toggle"),
+        ("ctrl:nocaps,nosuch:option", "ctrl:nocaps"),
+        ("ctrl:nocaps, grp:alt_shift_toggle,,", "ctrl:nocaps,grp:alt_shift_toggle"),
+    ],
+)
+def test_only_system_options_the_catalog_lists_are_passed_on(files, options: str, kept: str) -> None:
+    files["system"].write_text(f'XKBLAYOUT="gb"\nXKBOPTIONS="{options}"\n', encoding="utf-8")
+    assert _resolve(files).options == kept
+
+
+def test_an_unknown_system_model_is_passed_on(files) -> None:
+    """Models are not checked against the catalog: an unknown one still compiles."""
+    files["system"].write_text('XKBMODEL="mymodel"\nXKBLAYOUT="gb"\n', encoding="utf-8")
+    assert _resolve(files).model == "mymodel"
+
+
+def test_a_listed_layout_without_symbols_falls_through(files) -> None:
+    files["system"].write_text('XKBLAYOUT="custom"\n', encoding="utf-8")
+    assert _resolve(files, '[controller]\nkeyboard_layout = "custom"\n') == kl.Resolution("us", "", "default")
+
+
 def test_system_model_and_options_outside_the_safe_characters_are_dropped(files) -> None:
     files["system"].write_text('XKBMODEL="pc105;x"\nXKBLAYOUT="gb"\nXKBOPTIONS="$(reboot)"\n', encoding="utf-8")
     assert _resolve(files) == kl.Resolution("gb", "", "system", "", "")
@@ -189,16 +266,14 @@ def test_without_a_catalog_nothing_is_trusted(files) -> None:
 
 
 def test_the_helper_prints_one_line_per_setting(monkeypatch, files, capsys) -> None:
-    monkeypatch.setattr(kl, "EVDEV_LST", files["catalog"])
-    monkeypatch.setattr(kl, "SYSTEM_KEYBOARD", files["system"])
+    _use_files(monkeypatch, files)
     files["config"].write_text('[controller]\nkeyboard_layout = "jp"\nkeyboard_variant = "OADG109A"\n')
     assert kl.main(["env", str(files["config"])]) == 0
     assert capsys.readouterr().out == "layout=jp\nvariant=OADG109A\nsource=config\nmodel=\noptions=\n"
 
 
 def test_the_helper_reads_config_toml_in_the_working_directory(monkeypatch, files, capsys) -> None:
-    monkeypatch.setattr(kl, "EVDEV_LST", files["catalog"])
-    monkeypatch.setattr(kl, "SYSTEM_KEYBOARD", files["system"])
+    _use_files(monkeypatch, files)
     files["config"].write_text('[controller]\nkeyboard_layout = "de"\n')
     monkeypatch.chdir(files["config"].parent)
     assert kl.main(["env"]) == 0
@@ -221,8 +296,7 @@ def test_the_helper_refuses_anything_else(argv: list[str], capsys) -> None:
 )
 def test_the_helper_only_prints_values_the_launcher_accepts(monkeypatch, files, capsys, system: str) -> None:
     files["system"].write_text(system, encoding="utf-8")
-    monkeypatch.setattr(kl, "EVDEV_LST", files["catalog"])
-    monkeypatch.setattr(kl, "SYSTEM_KEYBOARD", files["system"])
+    _use_files(monkeypatch, files)
     kl.main(["env", str(files["config"])])
     lines = capsys.readouterr().out.splitlines()
     assert [line.split("=", 1)[0] for line in lines] == ["layout", "variant", "source", "model", "options"]

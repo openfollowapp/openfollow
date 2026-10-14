@@ -15,11 +15,8 @@
 set -u
 export XDG_RUNTIME_DIR="/run/user/$(id -u)"
 until [ -d "$XDG_RUNTIME_DIR" ]; do sleep 0.5; done
-# Cage starts in the keyboard layout the helper resolves: the station's setting,
-# else /etc/default/keyboard, else us. Its output is read line by line, never
-# evaluated, and a value outside the expected characters is ignored. Without the
-# helper nothing is exported: Cage falls back to us, and the web UI hides the
-# setting because OPENFOLLOW_KEYBOARD_SOURCE is unset.
+# Keyboard layout: the station's setting, else /etc/default/keyboard, else us.
+# Read line by line, never evaluated; nothing is exported without the helper.
 kb_layout='' kb_variant='' kb_source='' kb_model='' kb_options=''
 if kb_env=$(/usr/share/openfollow/keyboard-layout env config.toml 2>/dev/null); then
   while IFS='=' read -r key value; do

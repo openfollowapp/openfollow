@@ -91,7 +91,7 @@ mmdebstrap:
     #      when absent or without a layout, so a base that sets one keeps it.
     - |-
       set -eu
-      if ! grep -qs '^XKBLAYOUT="*[a-z]' "$1/etc/default/keyboard"; then
+      if ! grep -qs "^XKBLAYOUT=[\"']*[a-z]" "$1/etc/default/keyboard"; then
         mkdir -p "$1/etc/default"
         cat > "$1/etc/default/keyboard" <<'KEYBOARD'
       XKBMODEL="pc105"

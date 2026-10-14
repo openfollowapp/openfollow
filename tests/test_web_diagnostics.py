@@ -6188,6 +6188,48 @@ def test_keyboard_layout_row_without_a_config_path(xkb_station: Path, monkeypatc
     assert "configured [unknown] |" in diag.collect_keyboard_layout(None)
 
 
+def test_keyboard_layout_row_names_no_variant_without_a_layout(xkb_station: Path) -> None:
+    """A variant alone describes nothing: the session would not use it either."""
+    from openfollow import keyboard_layout
+
+    xkb_station.write_text('[controller]\nkeyboard_variant = "nodeadkeys"\n')
+    keyboard_layout.SYSTEM_KEYBOARD.write_text('XKBVARIANT="nodeadkeys"\n')
+    session = {"OPENFOLLOW_KEYBOARD_SOURCE": "default", "XKB_DEFAULT_VARIANT": "nodeadkeys"}
+    assert diag.collect_keyboard_layout(xkb_station, session) == (
+        "  keyboard layout              configured system | system file [not set] | in use [none] (default)"
+    )
+
+
+@pytest.mark.parametrize(
+    ("config", "system", "session", "expected"),
+    [
+        (
+            '[controller]\nkeyboard_layout = "de\\nevil"\nkeyboard_variant = "x\\u001b[31m"\n',
+            'XKBLAYOUT="gb"\n',
+            {},
+            "configured 'de\\nevil' ('x\\x1b[31m') | system file gb |",
+        ),
+        ("", 'XKBLAYOUT="gb\tx"\nXKBVARIANT="\u202eevil"\n', {}, "| system file 'gb\\tx' ('\\u202eevil') |"),
+        (
+            "",
+            'XKBLAYOUT="gb"\n',
+            {"OPENFOLLOW_KEYBOARD_SOURCE": "sys\ntem", "XKB_DEFAULT_LAYOUT": "gb\r", "XKB_DEFAULT_VARIANT": "\x00"},
+            "| in use 'gb\\r' ('\\x00') ('sys\\ntem')",
+        ),
+    ],
+)
+def test_keyboard_layout_row_stays_one_row_whatever_the_values_hold(
+    xkb_station: Path, config: str, system: str, session: dict[str, str], expected: str
+) -> None:
+    from openfollow import keyboard_layout
+
+    xkb_station.write_text(config)
+    keyboard_layout.SYSTEM_KEYBOARD.write_text(system)
+    row = diag.collect_keyboard_layout(xkb_station, session)
+    assert expected in row
+    assert row.isprintable()
+
+
 def test_collect_os_carries_the_keyboard_layout_of_the_bundles_config(xkb_station: Path) -> None:
     bundle = diag.collect_bundle(config_path=xkb_station)
     assert any("configured de (nodeadkeys)" in row for row in bundle.e3_os)

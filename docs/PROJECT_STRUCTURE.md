@@ -16,6 +16,7 @@ openfollow/              # Single unified package
 │   ├── network.py       # Junctions between active paths, walking a locked marker
 │   └── engine.py        # Locked markers: pull, slide, switch, record
 ├── lens_model.py        # The lens pair's fold check (stdlib-only; config, web and solver read it)
+├── keyboard_layout.py   # Kiosk session keyboard layout resolver (stdlib-only; also the .deb helper)
 ├── window.py            # GTK native sink window wrapper
 ├── psn/                 # PSN protocol subpackage
 │   ├── clock.py         # Shared microsecond time base (headers + trackers)

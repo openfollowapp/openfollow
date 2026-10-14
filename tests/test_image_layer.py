@@ -120,3 +120,46 @@ def test_mount_nvme_never_reformats_existing_data() -> None:
     assert "wipefs --no-act" in body
     assert 'part_count" -eq 0' in body
     assert "leaving untouched" in body
+
+
+def _keyboard_hook() -> str:
+    hooks = [h for h in _customize_hooks() if "/etc/default/keyboard" in h]
+    assert len(hooks) == 1, "expected exactly one keyboard hook"
+    return hooks[0]
+
+
+def _run_keyboard_hook(root: Path) -> None:
+    subprocess.run(["sh", "-c", _keyboard_hook(), "hook", str(root)], check=True, timeout=10)
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="no POSIX sh available")
+def test_the_image_gives_the_session_a_us_system_layout(tmp_path: Path) -> None:
+    from openfollow.keyboard_layout import read_system_keyboard
+
+    _run_keyboard_hook(tmp_path)
+    assert read_system_keyboard(tmp_path / "etc" / "default" / "keyboard") == {
+        "XKBMODEL": "pc105",
+        "XKBLAYOUT": "us",
+        "XKBVARIANT": "",
+        "XKBOPTIONS": "",
+    }
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="no POSIX sh available")
+@pytest.mark.parametrize("existing", ['XKBLAYOUT="de"\n', "XKBLAYOUT=gb\n"])
+def test_the_image_keeps_a_system_layout_the_base_set(tmp_path: Path, existing: str) -> None:
+    target = tmp_path / "etc" / "default" / "keyboard"
+    target.parent.mkdir(parents=True)
+    target.write_text(existing)
+    _run_keyboard_hook(tmp_path)
+    assert target.read_text() == existing
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="no POSIX sh available")
+@pytest.mark.parametrize("existing", ['XKBLAYOUT=""\n', "# no layout\n", ""])
+def test_the_image_fills_in_a_system_file_without_a_layout(tmp_path: Path, existing: str) -> None:
+    target = tmp_path / "etc" / "default" / "keyboard"
+    target.parent.mkdir(parents=True)
+    target.write_text(existing)
+    _run_keyboard_hook(tmp_path)
+    assert 'XKBLAYOUT="us"' in target.read_text()

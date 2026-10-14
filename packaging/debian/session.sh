@@ -15,6 +15,35 @@
 set -u
 export XDG_RUNTIME_DIR="/run/user/$(id -u)"
 until [ -d "$XDG_RUNTIME_DIR" ]; do sleep 0.5; done
+# Cage starts in the keyboard layout the helper resolves: the station's setting,
+# else /etc/default/keyboard, else us. Its output is read line by line, never
+# evaluated, and a value outside the expected characters is ignored. Without the
+# helper nothing is exported: Cage falls back to us, and the web UI hides the
+# setting because OPENFOLLOW_KEYBOARD_SOURCE is unset.
+kb_layout='' kb_variant='' kb_source='' kb_model='' kb_options=''
+if kb_env=$(/usr/share/openfollow/keyboard-layout env config.toml 2>/dev/null); then
+  while IFS='=' read -r key value; do
+    case $key in
+      options) case $value in *[!A-Za-z0-9_:,-]*) continue ;; esac ;;
+      *) case $value in *[!A-Za-z0-9_-]*) continue ;; esac ;;
+    esac
+    case $key in
+      layout) kb_layout=$value ;;
+      variant) kb_variant=$value ;;
+      source) kb_source=$value ;;
+      model) kb_model=$value ;;
+      options) kb_options=$value ;;
+    esac
+  done <<EOF
+$kb_env
+EOF
+fi
+if [ -n "$kb_layout" ] && [ -n "$kb_source" ]; then
+  export XKB_DEFAULT_LAYOUT="$kb_layout" OPENFOLLOW_KEYBOARD_SOURCE="$kb_source"
+  if [ -n "$kb_variant" ]; then export XKB_DEFAULT_VARIANT="$kb_variant"; fi
+  if [ -n "$kb_model" ]; then export XKB_DEFAULT_MODEL="$kb_model"; fi
+  if [ -n "$kb_options" ]; then export XKB_DEFAULT_OPTIONS="$kb_options"; fi
+fi
 # kanshi runs *inside* the Cage session (it needs the Wayland display) to apply
 # the multi-output layout (mirror all HDMI outputs). -c points at the
 # package-managed config (the openfollow user has no ~/.config/kanshi/config,

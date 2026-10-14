@@ -8698,3 +8698,221 @@ def test_ground_grid_section_is_experimental_on_the_settings_page(live_server) -
     assert form_tag is not None
     assert "experimental-feature" in form_tag.group(0)
     assert 'name="vertices"' in body
+
+
+# ---------------------------------------------------------------------------
+# Keyboard Layout: shown where the kiosk session resolved it, applied on restart
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def keyboard_station(tmp_path, monkeypatch):
+    """A station's xkb files, and the session environment that marks the row as usable."""
+    from tests._xkb import install_station_keyboard, start_session
+
+    install_station_keyboard(tmp_path, monkeypatch)
+    start_session(monkeypatch)
+
+
+def _save_layout(server, layout: str, variant: str = "") -> None:
+    cfg = load_config(server.config_path)
+    cfg.controller.keyboard_layout = layout
+    cfg.controller.keyboard_variant = variant
+    save_config(cfg, server.config_path)
+
+
+@pytest.mark.parametrize("path", ["/", "/section/keyboard"])
+def test_keyboard_layout_is_hidden_outside_the_kiosk_session(live_server, monkeypatch, tmp_path, path: str) -> None:
+    from tests._xkb import install_station_keyboard, no_session
+
+    install_station_keyboard(tmp_path, monkeypatch)
+    no_session(monkeypatch)
+    _, base = live_server
+    status, body = _get(base, path)
+    assert status == 200
+    assert 'id="keyboard-section"' in body
+    assert 'name="keyboard_layout"' not in body
+    assert "/section/keyboard/restart" not in body
+
+
+@pytest.mark.parametrize("path", ["/", "/section/keyboard"])
+def test_keyboard_layout_offers_the_stations_layouts(live_server, keyboard_station, path: str) -> None:
+    server, base = live_server
+    _save_layout(server, "de", "T3")
+    _status, body = _get(base, path)
+    layout = re.search(r'<select id="keyboard-layout" name="keyboard_layout".*?</select>', body, re.DOTALL)
+    assert layout is not None
+    options = re.findall(r'<option value="([^"]*)"\s*(selected)?>([^<]*)</option>', layout.group(0))
+    assert options[0] == ("", "", "System – English (UK)")
+    assert ("de", "selected", "German") in options
+    assert {value for value, _, _ in options} == {"", "al", "gb", "us", "de", "jp"}
+    variant = re.search(r'<select id="keyboard-variant" name="keyboard_variant".*?</select>', body, re.DOTALL)
+    assert variant is not None
+    assert '<option value="T3" selected>German (T3)</option>' in variant.group(0)
+    assert '<option value="" >Standard</option>' in variant.group(0)
+
+
+def test_keyboard_layout_carries_the_standard_validation_markup(live_server, keyboard_station) -> None:
+    _, base = live_server
+    _status, body = _get(base, "/section/keyboard")
+    select = re.search(r'<select id="keyboard-layout"[^>]*>', body)
+    assert select is not None
+    assert 'hx-get="/api/validate/keyboard/keyboard_layout"' in select.group(0)
+    assert 'aria-describedby="keyboard-layout-error"' in select.group(0)
+    assert '<span id="keyboard-layout-error" class="field-error"></span>' in body
+
+
+def test_keyboard_variants_reload_with_the_layout(live_server, keyboard_station) -> None:
+    _, base = live_server
+    _status, body = _get(base, "/section/keyboard")
+    select = re.search(r'<select id="keyboard-variant"[^>]*>', body)
+    assert select is not None
+    assert 'hx-get="/section/keyboard/variants"' in select.group(0)
+    assert 'hx-trigger="change from:#keyboard-layout"' in select.group(0)
+    assert 'hx-include="#keyboard-layout"' in select.group(0)
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("keyboard_layout=jp", ["", "OADG109A"]),
+        ("keyboard_layout=de", ["", "nodeadkeys", "T3", "us"]),
+        ("keyboard_layout=", [""]),
+        ("keyboard_layout=xx", [""]),
+        ("", [""]),
+    ],
+)
+def test_keyboard_variants_route_lists_the_layouts_own(live_server, keyboard_station, query: str, expected) -> None:
+    _, base = live_server
+    status, body = _get(base, f"/section/keyboard/variants?{query}")
+    assert status == 200
+    assert re.findall(r'<option value="([^"]*)"', body) == expected
+    # A new layout starts on Standard: the previous layout's variant means nothing here.
+    assert re.findall(r'<option value="([^"]*)" selected>', body) == [""]
+    assert body.count("Standard") == 1
+
+
+def test_keyboard_layout_save_stores_the_choice_and_leaves_the_session_alone(live_server, keyboard_station) -> None:
+    """Save only saves: the layout in use changes on restart, which Save never requests."""
+    server, base = live_server
+    status, body = _post_form(
+        base, "/section/keyboard", {"keyboard_enabled": "on", "keyboard_layout": "de", "keyboard_variant": "nodeadkeys"}
+    )
+    assert status == 200
+    saved = load_config(server.config_path).controller
+    assert (saved.keyboard_layout, saved.keyboard_variant) == ("de", "nodeadkeys")
+    assert server.check_restart_requested() is False
+    assert "In use: English (UK) until OpenFollow restarts." in body
+
+
+def test_keyboard_save_without_the_row_keeps_the_saved_layout(live_server, monkeypatch) -> None:
+    """Outside the kiosk session the form has no layout fields; saving the rest must not clear them."""
+    from tests._xkb import no_session
+
+    no_session(monkeypatch)
+    server, base = live_server
+    _save_layout(server, "de", "nodeadkeys")
+    status, _ = _post_form(base, "/section/keyboard", {"keyboard_enabled": "on"})
+    assert status == 200
+    saved = load_config(server.config_path).controller
+    assert (saved.keyboard_layout, saved.keyboard_variant) == ("de", "nodeadkeys")
+
+
+@pytest.mark.parametrize(
+    ("form", "expected"),
+    [
+        ({"keyboard_layout": "de;reboot", "keyboard_variant": "nodeadkeys"}, ("", "")),
+        ({"keyboard_layout": "", "keyboard_variant": "nodeadkeys"}, ("", "")),
+        ({"keyboard_layout": "de", "keyboard_variant": "$(id)"}, ("de", "")),
+    ],
+)
+def test_keyboard_layout_save_refuses_a_crafted_value(live_server, keyboard_station, form, expected) -> None:
+    server, base = live_server
+    status, _ = _post_form(base, "/section/keyboard", {"keyboard_enabled": "on", **form})
+    assert status == 200
+    saved = load_config(server.config_path).controller
+    assert (saved.keyboard_layout, saved.keyboard_variant) == expected
+
+
+def test_keyboard_layout_in_use_offers_no_restart(live_server, keyboard_station) -> None:
+    server, base = live_server
+    _save_layout(server, "gb")
+    _status, body = _get(base, "/section/keyboard")
+    assert "until OpenFollow restarts" not in body
+    assert "/section/keyboard/restart" not in body
+
+
+def test_keyboard_layout_pending_offers_a_restart(live_server, keyboard_station) -> None:
+    server, base = live_server
+    _save_layout(server, "de")
+    _status, body = _get(base, "/section/keyboard")
+    assert '<div class="field-caution-msg" role="status">In use: English (UK) until OpenFollow restarts.</div>' in body
+    tag_start = body.rindex("<button", 0, body.index('hx-post="/section/keyboard/restart"'))
+    button = body[tag_start : body.index("</button>", tag_start)]
+    assert 'type="button" class="danger"' in button
+    assert button.endswith(">Restart OpenFollow")
+    assert 'hx-confirm="Outputs pause until OpenFollow is back."' in button
+    assert 'data-confirm-title="Restart OpenFollow?"' in button
+    assert 'data-confirm-label="Restart"' in button
+    assert "data-confirm-danger" in button
+
+
+def test_keyboard_restart_restarts_and_saves_nothing(live_server, keyboard_station) -> None:
+    server, base = live_server
+    _save_layout(server, "de")
+    status, body = _post_form(base, "/section/keyboard/restart", {"keyboard_layout": "jp"})
+    assert status == 200
+    assert server.check_restart_requested() is True
+    assert load_config(server.config_path).controller.keyboard_layout == "de"
+    assert "restart-notice" in body
+    assert 'id="keyboard-section"' in body
+
+
+@pytest.mark.parametrize("state", ["queued", "running", "restarting"])
+def test_keyboard_restart_waits_for_a_running_update(live_server, keyboard_station, state: str) -> None:
+    server, base = live_server
+    server.set_update_status(state=state)
+    status, body = _post_form(base, "/section/keyboard/restart", {})
+    assert status == 200
+    assert server.check_restart_requested() is False
+    assert "An update is running, so OpenFollow was not restarted." in body
+    assert "restart-notice" not in body
+
+
+@pytest.mark.parametrize(
+    ("raw", "error"),
+    [
+        ("de", None),
+        ("xx", "This station has no keyboard layout &#x27;xx&#x27;."),
+        ("DE", "A layout name is lower-case letters, digits, &#x27;_&#x27; and &#x27;-&#x27;."),
+    ],
+)
+def test_keyboard_layout_blur_validation(live_server, keyboard_station, raw: str, error: str | None) -> None:
+    _, base = live_server
+    status, body = _get(base, f"/api/validate/keyboard/keyboard_layout?keyboard_layout={raw}")
+    assert status == 200
+    if error is None:
+        assert "field-error-msg" not in body
+    else:
+        assert error in body
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [("POST", "/section/keyboard/restart"), ("GET", "/section/keyboard/variants?keyboard_layout=de")],
+)
+def test_keyboard_layout_routes_need_the_pin(pin_protected_server, method: str, path: str) -> None:
+    server, base, _ = pin_protected_server
+    _status, body, headers = _raw_request(base, path, headers={"HX-Request": "true"}, method=method)
+    assert {k.lower(): v for k, v in headers.items()}.get("hx-redirect") == "/login"
+    assert "option" not in body
+    assert server.check_restart_requested() is False
+
+
+def test_keyboard_restart_through_a_foreign_origin_is_refused(pin_protected_server) -> None:
+    server, base, _ = pin_protected_server
+    status = _post_status_with_headers(
+        base, "/section/keyboard/restart", extra_headers={"Origin": "http://evil.example.com"}
+    )
+    assert status == 403
+    assert server.check_restart_requested() is False

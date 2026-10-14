@@ -1238,3 +1238,57 @@ def test_each_lens_field_is_checked_again_when_its_slider_or_the_other_value_cha
             f"change from:#camera-lens-{other}",
             f"change from:#camera-lens-{other}-range",
         }
+
+
+# ---------------------------------------------------------------------------
+# Keyboard layout / variant: well-formed, and known to this station when it can tell.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def xkb_station(tmp_path, monkeypatch) -> None:
+    from tests._xkb import install_station_keyboard
+
+    install_station_keyboard(tmp_path, monkeypatch)
+
+
+@pytest.fixture
+def no_xkb_catalog(tmp_path, monkeypatch) -> None:
+    from openfollow import keyboard_layout
+
+    monkeypatch.setattr(keyboard_layout, "EVDEV_LST", tmp_path / "absent.lst")
+
+
+@pytest.mark.parametrize("section", ["controller", "keyboard"])
+@pytest.mark.parametrize(
+    ("field", "raw", "error"),
+    [
+        ("keyboard_layout", "de", None),
+        ("keyboard_layout", "", None),
+        ("keyboard_layout", "xx", "This station has no keyboard layout 'xx'."),
+        ("keyboard_layout", "DE", "A layout name is lower-case letters, digits, '_' and '-'."),
+        ("keyboard_layout", "de;id", "A layout name is lower-case letters, digits, '_' and '-'."),
+        ("keyboard_layout", "a" * 33, "Must be at most 32 characters."),
+        ("keyboard_variant", "OADG109A", None),
+        ("keyboard_variant", "nodeadkeys", None),
+        ("keyboard_variant", "nope", "This station has no keyboard variant 'nope'."),
+        ("keyboard_variant", "no dead", "A variant name is letters, digits, '_' and '-'."),
+        ("keyboard_variant", "V" * 65, "Must be at most 64 characters."),
+    ],
+)
+def test_validate_keyboard_layout_against_the_stations_catalog(
+    xkb_station, section: str, field: str, raw: str, error: str | None
+) -> None:
+    assert validate(section, field, raw) == error
+
+
+@pytest.mark.parametrize(("field", "raw"), [("keyboard_layout", "xx"), ("keyboard_variant", "nope")])
+def test_validate_keyboard_layout_takes_any_well_formed_name_without_a_catalog(
+    no_xkb_catalog, field: str, raw: str
+) -> None:
+    assert validate("keyboard", field, raw) is None
+
+
+@pytest.mark.parametrize(("field", "raw"), [("keyboard_layout", "DE"), ("keyboard_variant", "a b")])
+def test_validate_keyboard_layout_still_checks_the_name_without_a_catalog(no_xkb_catalog, field: str, raw: str) -> None:
+    assert validate("keyboard", field, raw) is not None

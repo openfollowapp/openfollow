@@ -134,6 +134,7 @@ from openfollow.web import diagnostics, peer_auth
 from openfollow.web._md import render_help_markdown
 from openfollow.web.bindings import check_binding, osc_row_overlap, osc_trigger_overlap
 from openfollow.web.discovery import clean_peer_name
+from openfollow.web.keyboard_layout_view import build_keyboard_layout_view, station_catalog, variant_options
 from openfollow.web.labels import video_error_token
 from openfollow.web.live_alerts import statistics_alerts
 from openfollow.web.login_throttle import LoginThrottle
@@ -1095,6 +1096,8 @@ def _dest_pin_key(dest_id: str) -> str:
     return f"{_DEST_PIN_PREFIX}{dest_id}{_DEST_PIN_SUFFIX}"
 
 
+_KEYBOARD_LAYOUT_FIELDS = frozenset({"keyboard_layout", "keyboard_variant"})
+
 _DEVICE_LOCAL_FIELDS_BY_SECTION: dict[str, frozenset[str]] = {
     "psn": frozenset({"psn_source_iface"}),
     # ``web_pin`` (login credential) and ``web_port`` (local bind) are
@@ -1122,6 +1125,9 @@ _DEVICE_LOCAL_FIELDS_BY_SECTION: dict[str, frozenset[str]] = {
     "rttrpm_output": frozenset({"source_iface"}),
     # Whether this station draws paths; toggled on its own keyboard or pad.
     "paths": frozenset({"show_paths"}),
+    # The keyboard plugged into this station: another station's may differ.
+    "controller": _KEYBOARD_LAYOUT_FIELDS,
+    "keyboard": _KEYBOARD_LAYOUT_FIELDS,
 }
 
 # Sections that are device-local as a whole. Every row of the Network Interface
@@ -2255,6 +2261,8 @@ _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
         "key_clear_messages": _as_str,
         "key_pathfinder": _as_str,
         "key_toggle_paths": _as_str,
+        "keyboard_layout": _as_str,
+        "keyboard_variant": _as_str,
     },
     "osc": {
         "enabled": _as_bool,
@@ -3143,6 +3151,8 @@ def _config_dict_redacted(cfg: AppConfig) -> dict[str, Any]:
     # multicast membership there until somebody finds the setting.
     d["osc"].pop("listen_iface", None)
     d["rttrpm_output"].pop("source_iface", None)
+    for name in _KEYBOARD_LAYOUT_FIELDS:
+        d["controller"].pop(name, None)
     for dest in d["osc_destinations"]["destinations"]:
         dest.pop("source_iface", None)
     return d
@@ -5830,6 +5840,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # gate for the Startup box has to be supplied here too.
             startup_supported=_startup_settings_supported(),
             button_names=sorted(VALID_BUTTON_NAMES),
+            keyboard_layout=build_keyboard_layout_view(config),
             detection_missing=_get_detection_missing_deps(config),
             detection_extras_installed=extras,
             detection_install=server.get_detection_install_status(),
@@ -6686,6 +6697,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         elif name in ("controller", "gamepad"):
             extra["button_names"] = sorted(VALID_BUTTON_NAMES)
             extra["detection_started"] = server.is_button_detection_active()
+        elif name == "keyboard":
+            extra["keyboard_layout"] = build_keyboard_layout_view(config)
         # ``detection`` is intentionally NOT handled here – it has a
         # dedicated ``@app.get("/section/detection")`` route that
         # builds the extras-status / install-job state needed by the
@@ -7119,7 +7132,29 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             bool_fields=("keyboard_enabled",),
         )
         response.set_header("HX-Trigger", "controllerBindingsSaved")
-        return template("partials/keyboard", config=cfg, saved=True)
+        return template("partials/keyboard", config=cfg, saved=True, keyboard_layout=build_keyboard_layout_view(cfg))
+
+    @app.get("/section/keyboard/variants")
+    def keyboard_variants() -> Any:
+        """The Variant picker's options for the layout just picked; only Standard for System."""
+        return template(
+            "partials/keyboard_variant_options",
+            variants=variant_options(station_catalog(), request.query.get("keyboard_layout", "")),
+            selected="",
+        )
+
+    @app.post("/section/keyboard/restart")
+    def restart_for_keyboard_layout() -> Any:
+        """Restart only, so the session starts in the saved layout; saving is the section's Save."""
+        cfg = _request_scoped_config()
+        refused = not server.request_restart_unless_updating()
+        return template(
+            "partials/keyboard",
+            config=cfg,
+            restarting=not refused,
+            restart_refused=refused,
+            keyboard_layout=build_keyboard_layout_view(cfg),
+        )
 
     @app.post("/section/mouse")
     def update_mouse() -> Any:

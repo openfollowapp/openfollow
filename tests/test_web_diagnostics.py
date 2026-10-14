@@ -6145,3 +6145,49 @@ def test_the_bind_map_shows_a_pin_by_label() -> None:
     row = {"label": "PSN", "value": "eth0", "value_display": "Production (eth0)", "address": "192.0.2.10"}
     rows = _bind_map(interface_assignment_rows=lambda: [{**row, "editable": True, "blank": "auto"}])
     assert "Production (eth0)" in rows[2]
+
+
+# --- E3: the keyboard layout --------------------------------------------------
+
+
+@pytest.fixture
+def xkb_station(tmp_path, monkeypatch) -> Path:
+    from tests._xkb import install_station_keyboard
+
+    install_station_keyboard(tmp_path, monkeypatch)
+    config = tmp_path / "config.toml"
+    config.write_text('[controller]\nkeyboard_layout = "de"\nkeyboard_variant = "nodeadkeys"\n')
+    return config
+
+
+def test_keyboard_layout_row_sets_configured_beside_file_and_session(xkb_station: Path) -> None:
+    session = {"OPENFOLLOW_KEYBOARD_SOURCE": "system", "XKB_DEFAULT_LAYOUT": "gb"}
+    assert diag.collect_keyboard_layout(xkb_station, session) == (
+        "  keyboard layout              configured de (nodeadkeys) | system file gb | in use gb (system)"
+    )
+
+
+def test_keyboard_layout_row_names_a_session_variant(xkb_station: Path) -> None:
+    session = {"OPENFOLLOW_KEYBOARD_SOURCE": "config", "XKB_DEFAULT_LAYOUT": "de", "XKB_DEFAULT_VARIANT": "T3"}
+    assert diag.collect_keyboard_layout(xkb_station, session).endswith("| in use de (T3) (config)")
+
+
+def test_keyboard_layout_row_without_any_setting(xkb_station: Path) -> None:
+    from openfollow import keyboard_layout
+
+    xkb_station.write_text("")
+    keyboard_layout.SYSTEM_KEYBOARD.unlink()
+    assert diag.collect_keyboard_layout(xkb_station, {}) == (
+        "  keyboard layout              configured system | system file [not set]"
+        " | in use [not set by the kiosk session]"
+    )
+
+
+def test_keyboard_layout_row_without_a_config_path(xkb_station: Path, monkeypatch) -> None:
+    monkeypatch.delenv("OPENFOLLOW_KEYBOARD_SOURCE", raising=False)
+    assert "configured [unknown] |" in diag.collect_keyboard_layout(None)
+
+
+def test_collect_os_carries_the_keyboard_layout_of_the_bundles_config(xkb_station: Path) -> None:
+    bundle = diag.collect_bundle(config_path=xkb_station)
+    assert any("configured de (nodeadkeys)" in row for row in bundle.e3_os)

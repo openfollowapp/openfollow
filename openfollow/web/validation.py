@@ -36,10 +36,12 @@ from openfollow.configuration import (
     AppConfig,
     _canonical_marker_token,
 )
+from openfollow.keyboard_layout import LAYOUT_RE, VARIANT_RE
 from openfollow.lens_model import lens_warp_is_valid
 from openfollow.net_adapters import LABEL_MAX_LEN
 from openfollow.station_fqdn import FQDN_INPUT_MAX_LEN, fqdn_problem
 from openfollow.text_hygiene import CONTROL_CHARS_RE
+from openfollow.web.keyboard_layout_view import station_catalog
 from openfollow.web.routes import (
     _as_bool,
     _as_button_index,
@@ -284,6 +286,22 @@ def _validate_keybinding(value: str, _cfg: AppConfig | None) -> str | None:
     if value in RESERVED_MOVEMENT_KEYS:
         reserved = "/".join(sorted(k.upper() for k in RESERVED_MOVEMENT_KEYS))
         return f"Key {value!r} collides with movement layout ({reserved})."
+    return None
+
+
+def _validate_keyboard_layout(value: str, _cfg: AppConfig | None) -> str | None:
+    """A layout this station's xkb catalog lists; any well-formed name when it has none."""
+    catalog = station_catalog()
+    if catalog.layouts and value not in catalog.layouts:
+        return f"This station has no keyboard layout {value!r}."
+    return None
+
+
+def _validate_keyboard_variant(value: str, _cfg: AppConfig | None) -> str | None:
+    """A variant some layout in this station's xkb catalog lists; the save drops one its layout lacks."""
+    catalog = station_catalog()
+    if catalog.variants and not any(catalog.has_variant(layout, value) for layout in catalog.variants):
+        return f"This station has no keyboard variant {value!r}."
     return None
 
 
@@ -553,6 +571,20 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
         "key_clear_messages": _key_rule(),
         "key_pathfinder": _key_rule(),
         "key_toggle_paths": _key_rule(),
+        "keyboard_layout": FieldRule(
+            _as_str,
+            max_len=32,
+            pattern=LAYOUT_RE.pattern,
+            custom=_validate_keyboard_layout,
+            human_error="A layout name is lower-case letters, digits, '_' and '-'.",
+        ),
+        "keyboard_variant": FieldRule(
+            _as_str,
+            max_len=64,
+            pattern=VARIANT_RE.pattern,
+            custom=_validate_keyboard_variant,
+            human_error="A variant name is letters, digits, '_' and '-'.",
+        ),
     },
     "osc": {
         "enabled": FieldRule(_as_bool),

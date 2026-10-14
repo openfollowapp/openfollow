@@ -1015,6 +1015,80 @@ def test_controller_invalid_movement_layout_falls_back_to_wasd() -> None:
     assert config.key_move_layout == "wasd"
 
 
+def test_controller_keyboard_layout_defaults_to_the_system_layout() -> None:
+    config = ControllerConfig()
+    assert (config.keyboard_layout, config.keyboard_variant) == ("", "")
+
+
+@pytest.mark.parametrize(
+    ("layout", "variant", "expected"),
+    [
+        ("de", "nodeadkeys", ("de", "nodeadkeys")),
+        ("jp", "OADG109A", ("jp", "OADG109A")),
+        (" de ", " T3 ", ("de", "T3")),
+        ("de", "", ("de", "")),
+        ("brai", "left_hand_invert", ("brai", "left_hand_invert")),
+    ],
+)
+def test_controller_keyboard_layout_accepts_xkb_names(layout: str, variant: str, expected: tuple[str, str]) -> None:
+    config = ControllerConfig(keyboard_layout=layout, keyboard_variant=variant)
+    assert (config.keyboard_layout, config.keyboard_variant) == expected
+
+
+@pytest.mark.parametrize("value", [None, 7, True, 1.5, ["de"], {"de": 1}])
+def test_controller_keyboard_layout_of_the_wrong_type_falls_back_to_system(value: object) -> None:
+    config = ControllerConfig(keyboard_layout=value, keyboard_variant="nodeadkeys")  # type: ignore[arg-type]
+    assert (config.keyboard_layout, config.keyboard_variant) == ("", "")
+
+
+@pytest.mark.parametrize("value", ["DE", "de us", "de;id", "de,us", "$(id)", "dé", "a" * 33])
+def test_controller_keyboard_layout_outside_the_pattern_falls_back_to_system(value: str) -> None:
+    assert ControllerConfig(keyboard_layout=value).keyboard_layout == ""
+
+
+def test_controller_keyboard_layout_at_its_length_limit_is_kept() -> None:
+    assert ControllerConfig(keyboard_layout="a" * 32).keyboard_layout == "a" * 32
+
+
+@pytest.mark.parametrize("value", [None, 7, False, "no dead", "x;id", "`id`", "a" * 65])
+def test_controller_keyboard_variant_outside_the_pattern_falls_back_to_standard(value: object) -> None:
+    config = ControllerConfig(keyboard_layout="de", keyboard_variant=value)  # type: ignore[arg-type]
+    assert (config.keyboard_layout, config.keyboard_variant) == ("de", "")
+
+
+def test_controller_keyboard_variant_at_its_length_limit_is_kept() -> None:
+    assert ControllerConfig(keyboard_layout="de", keyboard_variant="V" * 64).keyboard_variant == "V" * 64
+
+
+@pytest.mark.parametrize("layout", ["", "   ", None, "DE"])
+def test_controller_keyboard_variant_is_cleared_without_a_layout(layout: object) -> None:
+    """The system's own variant goes with the system layout; a variant alone means nothing."""
+    config = ControllerConfig(keyboard_layout=layout, keyboard_variant="nodeadkeys")  # type: ignore[arg-type]
+    assert config.keyboard_variant == ""
+
+
+def test_controller_keyboard_layout_survives_a_save_and_load(tmp_path) -> None:
+    path = tmp_path / "config.toml"
+    cfg = AppConfig()
+    cfg.controller.keyboard_layout = "de"
+    cfg.controller.keyboard_variant = "nodeadkeys"
+    save_config(cfg, str(path))
+    loaded = load_config(str(path))
+    assert (loaded.controller.keyboard_layout, loaded.controller.keyboard_variant) == ("de", "nodeadkeys")
+
+
+def test_controller_keyboard_layout_is_what_the_session_helper_reads(tmp_path) -> None:
+    """The launcher reads the saved file with its own parser: it must find the field where the app wrote it."""
+    from openfollow.keyboard_layout import read_configured
+
+    path = tmp_path / "config.toml"
+    cfg = AppConfig()
+    cfg.controller.keyboard_layout = "jp"
+    cfg.controller.keyboard_variant = "OADG109A"
+    save_config(cfg, str(path))
+    assert read_configured(path) == ("jp", "OADG109A")
+
+
 def test_controller_button_raw_indices_coerced_to_int() -> None:
     # Only exact integers survive (incl. an int-valued str/float); everything
     # else is dropped so the button read path can't crash. bool, a non-integral

@@ -1,10 +1,24 @@
 % from openfollow.configuration import KEYBOARD_ACTION_FORM_LABELS
 % kb_labels = dict(KEYBOARD_ACTION_FORM_LABELS)
+%# Set only where the kiosk session resolved the layout (see keyboard_layout_view).
+% kb_layout = keyboard_layout if defined('keyboard_layout') else None
 <form id="keyboard-section" class="section {{'saved' if defined('saved') and saved else ''}}" data-fold-key="keyboard" data-help="keyboard"
       hx-post="/section/keyboard" hx-target="#keyboard-section" hx-swap="outerHTML" hx-trigger="submit">
     <div class="section-head">
         <h2>Keyboard Input</h2>
     </div>
+
+    % if defined('restarting') and restarting:
+    <div class="restart-notice"
+         hx-get="/api/info"
+         hx-trigger="every 2s"
+         hx-swap="none"
+         hx-on::after-request="if(event.detail.successful) window.location.reload()">App is restarting&hellip; Please wait.</div>
+    % end
+    % if defined('restart_refused') and restart_refused:
+    <div class="notice error" role="alert">An update is running, so OpenFollow was not restarted.
+        <div class="notice-sub">Restart it once the update has finished.</div></div>
+    % end
 
     <div class="group">
         <div class="row">
@@ -16,6 +30,33 @@
                 </div>
             </div>
         </div>
+        % if kb_layout is not None:
+        <div class="row">
+            <div class="field">
+                <label for="keyboard-layout">Keyboard Layout</label>
+                <select id="keyboard-layout" name="keyboard_layout"
+                        hx-get="/api/validate/keyboard/keyboard_layout" hx-trigger="blur changed delay:200ms"
+                        hx-target="#keyboard-layout-error" hx-swap="innerHTML" hx-include="closest form"
+                        aria-describedby="keyboard-layout-error" aria-invalid="false">
+                    % for value, label in kb_layout.layouts:
+                    <option value="{{value}}" {{'selected' if value == kb_layout.layout else ''}}>{{label}}</option>
+                    % end
+                </select>
+                <span id="keyboard-layout-error" class="field-error"></span>
+            </div>
+            <div class="field">
+                <label for="keyboard-variant">Variant</label>
+                <select id="keyboard-variant" name="keyboard_variant"
+                        hx-get="/section/keyboard/variants" hx-trigger="change from:#keyboard-layout"
+                        hx-include="#keyboard-layout" hx-target="this" hx-swap="innerHTML">
+                    % include('partials/keyboard_variant_options.tpl', variants=kb_layout.variants, selected=kb_layout.variant)
+                </select>
+            </div>
+        </div>
+        % if kb_layout.pending:
+        <div class="field-caution-msg" role="status">In use: {{kb_layout.in_use_label}} until OpenFollow restarts.</div>
+        % end
+        % end
 
         <details class="inline-advanced" data-adv-key="keyboard-mapping">
             <summary>Button Mapping</summary>
@@ -172,5 +213,11 @@
 
     <div class="actions">
         <button type="submit" class="save-btn">Save</button>
+        % if kb_layout is not None and kb_layout.pending:
+        <button type="button" class="danger"
+                hx-post="/section/keyboard/restart"
+                hx-confirm="Outputs pause until OpenFollow is back."
+                data-confirm-title="Restart OpenFollow?" data-confirm-label="Restart" data-confirm-danger>Restart OpenFollow</button>
+        % end
     </div>
 </form>

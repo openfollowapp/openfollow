@@ -5822,14 +5822,26 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             server.rescan_network()
         cfg = server.get_network_config(iface)
         if not cfg or not cfg.get("interfaces"):
-            return {
+            mode_cfg = _request_scoped_config()
+            unavailable: dict[str, Any] = {
                 "available": False,
                 "writable": bool(cfg.get("writable")) if cfg else False,
                 "editable": editable,
                 "banner": banner,
                 "vlan_form": {},
-                "mode": _request_scoped_config().network_mode,
+                "mode": mode_cfg.network_mode,
             }
+            if mode_cfg.network_mode == NETWORK_MODE_SIMPLE:
+                # The picker is the only way to move a Simple station: offered from the kernel's list.
+                from openfollow.net_utils import list_iface_ipv4, present_interfaces
+
+                addresses = dict(list_iface_ipv4())
+                _station_picker(
+                    unavailable,
+                    mode_cfg.psn_source_iface,
+                    [(name, addresses.get(name, "")) for name in sorted(present_interfaces())],
+                )
+            return unavailable
         net: dict[str, Any] = {
             "available": True,
             "editable": editable,
@@ -5938,22 +5950,26 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 break
         return net
 
-    def _narrow_to_station(net: dict[str, Any], station: str, vlan_names: set[str]) -> None:
-        """Simple: the card shows the station interface alone, and offers the picker that moves it."""
+    def _station_picker(net: dict[str, Any], station: str, options: list[tuple[str, str]]) -> str:
+        """Simple's Interface picker: ``options`` as ``(name, address)``, plus a pinned one that is gone.
+
+        Returns the interface the station resolves to.
+        """
         from openfollow.net_utils import auto_station_iface
 
         auto = auto_station_iface()
-        resolved = station or auto
-        rows = net["iface_rows"]
         net["station_iface"] = station
         net["station_auto"] = auto
-        net["station_options"] = [
-            (str(row.get("name", "")), str(row.get("address", "")))
-            for row in rows
-            if row.get("name") and row.get("name") not in LOOPBACK_NAMES
-        ]
+        net["station_options"] = [(name, addr) for name, addr in options if name and name not in LOOPBACK_NAMES]
         if station and station not in [name for name, _addr in net["station_options"]]:
             net["station_options"].append((station, ""))
+        return station or auto
+
+    def _narrow_to_station(net: dict[str, Any], station: str, vlan_names: set[str]) -> None:
+        """Simple: the card shows the station interface alone, and offers the picker that moves it."""
+        rows = net["iface_rows"]
+        options = [(str(row.get("name", "")), str(row.get("address", ""))) for row in rows]
+        resolved = _station_picker(net, station, options)
         net["leftover_vlans"] = sorted(name for name in vlan_names if name and name != resolved)
         net["iface_rows"] = [row for row in rows if str(row.get("name", "")) == resolved]
         net["vlan_parents"] = []

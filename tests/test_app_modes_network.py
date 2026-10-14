@@ -3218,8 +3218,23 @@ class TestTheSimpleMethodAndDns:
         _confirm_key(app, "method")
         _confirm_key(app, "method:static")
         assert [_row(app, key)["kind"] for key in ("address", "prefix", "router")] == ["text"] * 3
-        assert "renew" not in _keys(app)
-        assert "lease" not in _keys(app)
+        # Still on DHCP until applied: its lease and Renew stay.
+        assert "renew" in _keys(app) and "lease" in _keys(app)
+
+    def test_a_static_interface_offers_no_renew_whatever_is_picked(self, monkeypatch, tmp_path) -> None:
+        adapter = _FakeAdapter()
+        adapter.method = Ipv4Method.STATIC
+        app = _simple_app(monkeypatch, tmp_path, adapter=adapter)
+        _confirm_key(app, "method")
+        _confirm_key(app, "method:dhcp")
+        assert "renew" not in _keys(app) and "lease" not in _keys(app)
+
+    def test_an_automatic_interface_this_screen_does_not_manage_is_not_edited(self, monkeypatch, tmp_path) -> None:
+        app = _simple_app(monkeypatch, tmp_path, auto="docker0")
+        assert app._pi_network_active_iface == "docker0"
+        labels = [row.get("label") for row in anm.build_pi_network_rows(app)]
+        assert "Automatic picked docker0, whose addressing this screen does not manage." in labels
+        assert "apply" not in _keys(app)
 
     def test_dhcp_with_a_manual_address_owns_only_the_address(self, monkeypatch, tmp_path) -> None:
         app = _simple_app(monkeypatch, tmp_path)
@@ -3289,19 +3304,23 @@ class TestTheSimpleMethodAndDns:
         app._pi_network_worker.join(timeout=5)
         assert adapter.apply_calls[0][1].dns == ("192.0.2.53",)
 
-    def test_a_dhcp_apply_pins_no_dns_the_operator_did_not_edit(self, monkeypatch, tmp_path) -> None:
+    @pytest.mark.parametrize("picked", ["method:dhcp", "method:dhcp_manual"])
+    def test_a_dhcp_apply_pins_no_dns_the_operator_did_not_edit(self, monkeypatch, tmp_path, picked) -> None:
         adapter = _FakeAdapter()
         app = _simple_app(monkeypatch, tmp_path, adapter=adapter)
+        _confirm_key(app, "method")
+        _confirm_key(app, picked)
         _confirm_key(app, "apply")
         app._pi_network_worker.join(timeout=5)
         assert adapter.apply_calls[0][1].dns == ()
 
     @pytest.mark.parametrize("method", [Ipv4Method.STATIC, Ipv4Method.DHCP_WITH_MANUAL_ADDRESS])
     def test_an_apply_with_a_manual_address_keeps_the_dns_shown(self, monkeypatch, tmp_path, method) -> None:
-        """A manual address is stored as a manual profile: it has no lease to take DNS from."""
+        """A manual address on NetworkManager is a manual profile: no lease, so its DNS is the operator's."""
         adapter = _FakeAdapter()
         adapter.method = method
         app = _simple_app(monkeypatch, tmp_path, adapter=adapter)
+        app._pi_network_state_cache = replace(app._pi_network_state_cache, lease=None)
         _confirm_key(app, "apply")
         app._pi_network_worker.join(timeout=5)
         assert adapter.apply_calls[0][1].dns == ("8.8.8.8",)

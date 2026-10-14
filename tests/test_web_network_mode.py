@@ -121,6 +121,24 @@ def test_an_unavailable_backend_still_shows_the_mode_in_force(net_server, tmp_pa
     assert 'data-mode="advanced"' in body
 
 
+def test_a_simple_station_keeps_its_picker_when_the_backend_cannot_be_read(net_server, tmp_path, present) -> None:  # noqa: F811
+    fake, base = net_server
+    fake.interfaces = []
+    _set(tmp_path, network_mode="simple", psn_source_iface="eth9")
+    _status, body = _get(base, "/section/network/status")
+    assert 'id="net-station-iface"' in body
+    assert '<option value="wlan0" >wlan0 – 10.9.9.9</option>' in body
+    assert '<option value="eth9" selected>eth9 – no address</option>' in body
+
+
+def test_an_automatic_interface_the_card_does_not_manage_is_named(net_server, tmp_path, monkeypatch) -> None:  # noqa: F811
+    monkeypatch.setattr(net_utils_module, "auto_station_iface", lambda: "docker0")
+    _fake, base = net_server
+    _set(tmp_path, network_mode="simple")
+    _status, body = _get(base, "/section/network/status")
+    assert "Automatic picked docker0, whose addressing this card does not manage." in body
+
+
 def test_a_vlan_left_over_in_simple_is_named(net_server, tmp_path, present) -> None:  # noqa: F811
     fake, base = net_server
     fake.interfaces.append("eth0.20")

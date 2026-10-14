@@ -92,7 +92,7 @@
                     <span><strong>Advanced</strong></span>
                 </label>
             </div>
-            % if _simple and _net.get("available"):
+            % if _simple and "station_options" in _net:
             %# Every plane follows this one interface; a change applies at once.
             % _station = _net.get("station_iface", "")
             % _auto = _net.get("station_auto", "")
@@ -160,6 +160,8 @@
             % if _simple and _net.get("station_options"):
             % if _net.get("station_iface"):
             <p class="muted">{{_net["station_iface"]}} is not connected. Pick another interface above.</p>
+            % elif _net.get("station_auto"):
+            <p class="muted">Automatic picked {{_net["station_auto"]}}, whose addressing this card does not manage. Pick an interface above.</p>
             % else:
             <p class="muted">No interface has an address yet.</p>
             % end

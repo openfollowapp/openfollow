@@ -157,9 +157,10 @@ def _read_pi_network(app: OpenFollowApp) -> _NetworkSnapshot:
     if station_read is not None:
         station = station_read
         auto = "" if station else auto_station_iface()
-        if station and station not in names:
+        target = station or auto
+        if target and target not in names:
             # Never another interface in its place: the screen would edit one it does not name.
-            return _NetworkSnapshot(True, interfaces, station, None, None, methods, adapters, auto, station)
+            return _NetworkSnapshot(True, interfaces, target, None, None, methods, adapters, auto, station)
         # Automatic with no address anywhere edits the first interface, never one left over from a visit.
         active = station or auto or interfaces[0].name
     if active not in names:
@@ -650,7 +651,10 @@ def _simple_rows(
     # Read for another station interface, or in Advanced: the values below are not this one's.
     current = getattr(app, "_pi_network_read_station", None) == station
     if not present:
-        missing = f"{name} is not connected." if name else "This station has no network interface."
+        if station or not name:
+            missing = f"{name} is not connected." if name else "This station has no network interface."
+        else:
+            missing = f"Automatic picked {name}, whose addressing this screen does not manage."
         rows.append({"kind": "notice", "level": "error", "label": missing, "value": ""})
     elif not current:
         rows.append(
@@ -696,7 +700,9 @@ def _simple_rows(
         }
     )
     state: NetworkState | None = getattr(app, "_pi_network_state_cache", None)
-    if method != Ipv4Method.STATIC and state is not None and state.lease and state.lease.lease_seconds_remaining:
+    # A lease is the interface's own, not the method picked but not yet applied.
+    on_dhcp = state is not None and state.ipv4.method != Ipv4Method.STATIC
+    if on_dhcp and state is not None and state.lease and state.lease.lease_seconds_remaining:
         minutes = max(int(state.lease.lease_seconds_remaining) // 60, 0)
         rows.append({"kind": "display", "key": "lease", "label": "Lease", "value": f"{minutes} min"})
 
@@ -709,7 +715,7 @@ def _simple_rows(
     rows.append({"kind": "header", "label": "Actions"})
     if editable:
         rows.append({"kind": "action", "key": "apply", "label": "Working..." if busy else "Apply Changes", "value": ""})
-        if method != Ipv4Method.STATIC:
+        if on_dhcp:
             rows.append(
                 {"kind": "action", "key": "renew", "label": "Working..." if busy else "Renew DHCP lease", "value": ""}
             )
@@ -1438,7 +1444,7 @@ def _apply_pi_network(app: OpenFollowApp) -> None:
     state: NetworkState | None = getattr(app, "_pi_network_state_cache", None)
     lease_dns = state.lease.dns if state is not None and state.lease is not None else None
     if (
-        pending.method == Ipv4Method.DHCP
+        pending.method in (Ipv4Method.DHCP, Ipv4Method.DHCP_WITH_MANUAL_ADDRESS)
         and not getattr(app, "_pi_network_dns_edited", False)
         and lease_dns is not None
         and tuple(pending.dns) == tuple(lease_dns)

@@ -1830,6 +1830,16 @@ class TestTheScreenCallsOutWhatBreaksReachability:
 
 
 class TestASlowReadLeavesNoOtherInterfacesValues:
+    def test_apply_during_an_unanswered_read_says_it_is_still_reading(self, monkeypatch) -> None:
+        app = _make_app()
+        anm.enter_pi_network(app)
+        _open_iface(app, "eth0")
+        gate = _stall_reads(monkeypatch)
+        anm._refresh_pi_network_bounded(app)
+        gate.set()
+        anm._apply_pi_network(app)
+        assert app._pi_network_banner == "Still reading the interface. Try again in a moment."
+
     def test_opening_an_interface_whose_read_overruns_offers_nothing_of_the_last_one(self, monkeypatch) -> None:
         app = _make_app()
         anm.enter_pi_network(app)

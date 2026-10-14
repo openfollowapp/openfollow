@@ -218,8 +218,9 @@ def _refresh_pi_network(app: OpenFollowApp) -> None:
 
 def _refresh_pi_network_bounded(app: OpenFollowApp) -> None:
     """Refresh on screen entry without stalling the render loop on a hung
-    backend: read off-thread with a short join budget, keep last-known state
-    if it overruns. The late read only writes the local holder, never app state."""
+    backend: read off-thread with a short join budget. An overrun drops the
+    last reading, which may be another interface's. The late read only writes
+    the local holder, never app state."""
     holder: list[_NetworkSnapshot] = []
     thread = threading.Thread(
         target=lambda: holder.append(_read_pi_network(app)),
@@ -1509,6 +1510,9 @@ def _apply_pi_network(app: OpenFollowApp) -> None:
     adapter = _network_adapter(app)
     pending: Ipv4Config | None = getattr(app, "_pi_network_pending_config", None)
     iface = getattr(app, "_pi_network_active_iface", "")
+    if adapter is not None and iface and getattr(app, "_pi_network_reading", False):
+        _set_banner(app, "Still reading the interface. Try again in a moment.", "info")
+        return
     if adapter is None or pending is None or not iface:
         _set_banner(app, "No network adapter available.")
         return

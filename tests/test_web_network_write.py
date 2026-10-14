@@ -18,6 +18,7 @@ import urllib.request
 import pytest
 
 import openfollow.web.discovery as discovery_module
+from openfollow.configuration import config_write_lock
 from openfollow.network.adapter import ApplyResult, Ipv4Method
 from openfollow.network.validate import vlan_interface_name
 from openfollow.web.routes import _port_suffix
@@ -83,6 +84,7 @@ class FakeNetwork:
         self.kinds: dict[str, str] = {}
         self.vlans_created: list[tuple[str, int]] = []
         self.vlans_deleted: list[str] = []
+        self.config_lock_held: list[bool] = []
         self.vlan_create_result = ApplyResult(ok=True, message="Created.")
         self.vlan_delete_result = ApplyResult(ok=True, message="Deleted.")
         # Which interface is answering the browser. Loopback in a test, so the
@@ -165,6 +167,7 @@ class FakeNetwork:
 
     def vlan_create_handler(self, parent: str, vlan_id: int) -> ApplyResult:
         self.vlans_created.append((parent, vlan_id))
+        self.config_lock_held.append(config_write_lock.locked())
         if self.vlan_create_result.ok:
             # The card is re-rendered from the interface list straight after,
             # so the new link has to be in it.
@@ -175,6 +178,7 @@ class FakeNetwork:
 
     def vlan_delete_handler(self, name: str) -> ApplyResult:
         self.vlans_deleted.append(name)
+        self.config_lock_held.append(config_write_lock.locked())
         return self.vlan_delete_result
 
 
@@ -1583,6 +1587,17 @@ def test_delete_passes_the_interface_to_the_adapter(net_server) -> None:
     status, _body = _post(base, "/section/network/vlan/delete", {"iface": "eth0.10"})
     assert status == 200
     assert fake.vlans_deleted == ["eth0.10"]
+
+
+def test_vlan_changes_leave_the_config_lock_free(net_server) -> None:
+    """The frame clock takes the config lock for an on-screen save; a VLAN change
+    waiting on the network backend must not hold it for that long."""
+    fake, base = net_server
+    _post(base, "/section/network/vlan/create", {"vlan_parent": "eth0", "vlan_id": "10"})
+    _post(base, "/section/network/vlan/delete", {"iface": "eth0.10"})
+    assert fake.vlans_created == [("eth0", 10)]
+    assert fake.vlans_deleted == ["eth0.10"]
+    assert fake.config_lock_held == [False, False]
 
 
 def test_delete_refuses_a_non_vlan_interface(net_server) -> None:

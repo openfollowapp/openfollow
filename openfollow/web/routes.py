@@ -6449,8 +6449,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         errors = validate_vlan_create(parent, vlan_id, interfaces=names, vlan_names=vlan_names)
         if errors:
             return _network_vlan_response(banner={"kind": "error", "text": errors[0]}, vlan_form=entered)
-        with _config_write_lock:
-            result = server.create_network_vlan(parent, vlan_id)
+        result = server.create_network_vlan(parent, vlan_id)
         if not result.ok:
             return _network_vlan_response(banner={"kind": "error", "text": result.message}, vlan_form=entered)
         return _network_vlan_response(
@@ -6481,8 +6480,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                     "text": f"This session is connected over {name}. Reconnect on another interface to remove it.",
                 },
             )
-        with _config_write_lock:
-            result = server.delete_network_vlan(name)
+        result = server.delete_network_vlan(name)
         banner_kind = "ok" if result.ok else "error"
         return _network_vlan_response(banner={"kind": banner_kind, "text": result.message})
 
@@ -9633,10 +9631,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         ``network.backend`` takes effect at startup by design, the
         update / time-sync group is read off ``app._config`` and never
         reassigned, and ``marker_move_speeds`` is deliberately
-        runtime-authoritative. Left running, those keep their pre-reset values
-        in memory, and the next wholesale ``save_config(app._config)`` - the
-        zone-overlay hotkey is one - writes them back over the reset. So the
-        reset would silently, partially undo itself.
+        runtime-authoritative. Left running, the station keeps acting on their
+        pre-reset values, and the next move-speed change writes every old speed
+        back over the reset. So the reset would silently, partially undo itself.
         """
         response.content_type = "application/json"
         backup = _backup_before(server.config_path, "defaults")

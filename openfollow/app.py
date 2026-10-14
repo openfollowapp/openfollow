@@ -238,6 +238,7 @@ class OpenFollowApp:
         self._marker_catalog_sync: Any = None
         self._config_mtime: float = self._get_config_mtime()
         self._last_config_check: float = 0.0
+        self._config_blank_warned_mtime: float | None = None
         self._web_commands: WebCommandQueue = WebCommandQueue()
         self._runtime_services: AppRuntimeServices = AppRuntimeServices(self)
         # Markers locked onto paths; rebuilt whenever the paths or the experimental switch change.
@@ -298,7 +299,7 @@ class OpenFollowApp:
         self._url_editor_field_label: str = ""
         self._url_editor_value: str = ""
         self._url_editor_banner: str = ""
-        self._url_editor_revert_type: str = ""
+        self._url_editor_source_type: str = ""
 
         self._field_choice_active: bool = False
         self._field_choice_field_name: str = ""
@@ -306,7 +307,7 @@ class OpenFollowApp:
         self._field_choice_options: list[tuple[str, str]] = []
         self._field_choice_items: list[str] = []
         self._field_choice_selected_index: int = 0
-        self._field_choice_revert_type: str = ""
+        self._field_choice_source_type: str = ""
 
         self._browser_active: bool = False
         self._browser_overlay: Any | None = None
@@ -690,9 +691,9 @@ class OpenFollowApp:
         self,
         *,
         banner: str = "",
-        revert_type: str = "",
+        source_type: str = "",
     ) -> None:
-        runtime_enter_url_editor(self, banner=banner, revert_type=revert_type)
+        runtime_enter_url_editor(self, banner=banner, source_type=source_type)
 
     def _exit_url_editor(self) -> None:
         runtime_exit_url_editor(self)
@@ -703,8 +704,8 @@ class OpenFollowApp:
     def _confirm_url_editor(self) -> None:
         runtime_confirm_url_editor(self)
 
-    def _enter_field_choice_picker(self, *, revert_type: str = "") -> None:
-        runtime_enter_field_choice_picker(self, revert_type=revert_type)
+    def _enter_field_choice_picker(self, *, source_type: str = "") -> None:
+        runtime_enter_field_choice_picker(self, source_type=source_type)
 
     def _exit_field_choice_picker(self) -> None:
         runtime_exit_field_choice_picker(self)

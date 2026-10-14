@@ -6172,6 +6172,18 @@ def test_keyboard_layout_row_names_a_session_variant(xkb_station: Path) -> None:
     assert diag.collect_keyboard_layout(xkb_station, session).endswith("| in use de (T3) (config)")
 
 
+def test_keyboard_layout_row_names_the_session_keyboards_model_and_options(xkb_station: Path) -> None:
+    session = {
+        "OPENFOLLOW_KEYBOARD_SOURCE": "config",
+        "XKB_DEFAULT_LAYOUT": "de",
+        "XKB_DEFAULT_MODEL": "pc105",
+        "XKB_DEFAULT_OPTIONS": "ctrl:nocaps,grp:alt_shift_toggle",
+    }
+    assert diag.collect_keyboard_layout(xkb_station, session).endswith(
+        "| in use de (config), model pc105, options ctrl:nocaps,grp:alt_shift_toggle"
+    )
+
+
 def test_keyboard_layout_row_without_any_setting(xkb_station: Path) -> None:
     from openfollow import keyboard_layout
 
@@ -6215,6 +6227,12 @@ def test_keyboard_layout_row_names_no_variant_without_a_layout(xkb_station: Path
             'XKBLAYOUT="gb"\n',
             {"OPENFOLLOW_KEYBOARD_SOURCE": "sys\ntem", "XKB_DEFAULT_LAYOUT": "gb\r", "XKB_DEFAULT_VARIANT": "\x00"},
             "| in use 'gb\\r' ('\\x00') ('sys\\ntem')",
+        ),
+        (
+            "",
+            'XKBLAYOUT="gb"\n',
+            {"OPENFOLLOW_KEYBOARD_SOURCE": "system", "XKB_DEFAULT_MODEL": "pc\n105", "XKB_DEFAULT_OPTIONS": "a b"},
+            "(system), model 'pc\\n105', options 'a b'",
         ),
     ],
 )

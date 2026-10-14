@@ -75,8 +75,8 @@ class XkbCatalog:
 class Resolution:
     """What the session starts with, and which source decided it.
 
-    ``model`` / ``options`` come from the system file and are empty unless
-    ``source`` is ``system``: they describe that keyboard, not another layout.
+    ``model`` / ``options`` come from the system file whatever the ``source``:
+    they describe the keyboard, not the layout.
     """
 
     layout: str
@@ -180,20 +180,16 @@ def resolve_settings(
     system: dict[str, str],
 ) -> Resolution:
     """Resolve a station setting against the catalog and the system file."""
+    model = system.get("XKBMODEL", "")
+    keyboard = (model if _WORD_RE.fullmatch(model) else "", _known_options(system.get("XKBOPTIONS", ""), catalog))
     if layout in catalog.layouts:
-        return Resolution(layout, variant if catalog.has_variant(layout, variant) else "", "config")
+        return Resolution(layout, variant if catalog.has_variant(layout, variant) else "", "config", *keyboard)
     system_layout = _first(system.get("XKBLAYOUT", ""))
     if system_layout in catalog.layouts:
         system_variant = _first(system.get("XKBVARIANT", ""))
-        model = system.get("XKBMODEL", "")
-        return Resolution(
-            system_layout,
-            system_variant if catalog.has_variant(system_layout, system_variant) else "",
-            "system",
-            model if _WORD_RE.fullmatch(model) else "",
-            _known_options(system.get("XKBOPTIONS", ""), catalog),
-        )
-    return Resolution(DEFAULT_LAYOUT, "", "default")
+        variant = system_variant if catalog.has_variant(system_layout, system_variant) else ""
+        return Resolution(system_layout, variant, "system", *keyboard)
+    return Resolution(DEFAULT_LAYOUT, "", "default", *keyboard)
 
 
 def resolve(

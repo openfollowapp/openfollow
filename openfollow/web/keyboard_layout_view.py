@@ -61,8 +61,9 @@ class KeyboardLayoutView:
     variants: list[tuple[str, str]]
     layout: str
     variant: str
-    # A restart would change the layout in use.
+    # A restart would change the keyboard in use: its layout, or only the system file's model or options.
     pending: bool
+    layout_pending: bool
     in_use_label: str
 
 
@@ -95,5 +96,6 @@ def build_keyboard_layout_view(
         layout=layout,
         variant=variant,
         pending=(saved.layout, saved.variant, saved.model, saved.options) != in_use,
+        layout_pending=(saved.layout, saved.variant) != in_use[:2],
         in_use_label=_describe(catalog, in_use[0], in_use[1]),
     )

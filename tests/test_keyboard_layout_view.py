@@ -19,7 +19,7 @@ pytestmark = pytest.mark.unit
 
 # What the session exports for the station's system file, and for a layout the station chose.
 _SESSION = {"OPENFOLLOW_KEYBOARD_SOURCE": "system", "XKB_DEFAULT_LAYOUT": "gb", "XKB_DEFAULT_MODEL": "pc105"}
-_CHOSEN = {"OPENFOLLOW_KEYBOARD_SOURCE": "config"}
+_CHOSEN = {"OPENFOLLOW_KEYBOARD_SOURCE": "config", "XKB_DEFAULT_MODEL": "pc105"}
 
 
 @pytest.fixture(autouse=True)
@@ -117,12 +117,14 @@ def test_a_saved_variant_of_another_layout_shows_as_standard() -> None:
         ("de", "nodeadkeys", {**_CHOSEN, "XKB_DEFAULT_LAYOUT": "de", "XKB_DEFAULT_VARIANT": "nodeadkeys"}),
         ("gb", "nodeadkeys", {**_CHOSEN, "XKB_DEFAULT_LAYOUT": "gb"}),  # the session drops a variant gb lacks
         ("xx", "", _SESSION),  # the session ignores an unknown layout
+        ("gb", "", _SESSION),  # the system layout, picked by name
+        ("", "", {**_CHOSEN, "XKB_DEFAULT_LAYOUT": "gb"}),  # back to System, which is that same layout
     ],
 )
 def test_nothing_is_pending_while_the_saved_layout_is_in_use(layout: str, variant: str, session: dict) -> None:
     row = view.build_keyboard_layout_view(_cfg(layout, variant), session)
     assert row is not None
-    assert row.pending is False
+    assert (row.pending, row.layout_pending) == (False, False)
 
 
 @pytest.mark.parametrize(
@@ -133,8 +135,6 @@ def test_nothing_is_pending_while_the_saved_layout_is_in_use(layout: str, varian
         ("de", "", {**_CHOSEN, "XKB_DEFAULT_LAYOUT": "de", "XKB_DEFAULT_VARIANT": "T3"}, "German (T3)"),
         ("", "", {**_SESSION, "XKB_DEFAULT_LAYOUT": "de"}, "German"),
         ("", "", {**_SESSION, "XKB_DEFAULT_LAYOUT": "fr"}, "fr"),  # a layout this catalog does not describe
-        # The same layout, chosen: the session would start it without the system file's model.
-        ("gb", "", _SESSION, "English (UK)"),
     ],
 )
 def test_a_saved_layout_that_differs_from_the_one_in_use_is_pending(
@@ -142,7 +142,7 @@ def test_a_saved_layout_that_differs_from_the_one_in_use_is_pending(
 ) -> None:
     row = view.build_keyboard_layout_view(_cfg(layout, variant), session)
     assert row is not None
-    assert (row.pending, row.in_use_label) == (True, in_use)
+    assert (row.pending, row.layout_pending, row.in_use_label) == (True, True, in_use)
 
 
 @pytest.fixture
@@ -158,13 +158,20 @@ def test_the_system_options_in_use_are_nothing_pending(system_without_caps_lock:
     assert row.pending is False
 
 
-def test_choosing_the_system_layout_by_name_drops_its_options_on_restart(
-    system_without_caps_lock: dict[str, str],
-) -> None:
-    """The layout reads the same, but the session would start it without Caps Lock as Ctrl."""
-    row = view.build_keyboard_layout_view(_cfg("gb"), system_without_caps_lock)
+def test_choosing_the_system_layout_by_name_keeps_its_options(system_without_caps_lock: dict[str, str]) -> None:
+    session = {**system_without_caps_lock, "OPENFOLLOW_KEYBOARD_SOURCE": "config"}
+    for layout in ("gb", ""):
+        row = view.build_keyboard_layout_view(_cfg(layout), session)
+        assert row is not None
+        assert row.pending is False
+
+
+def test_a_chosen_layout_keeps_the_system_options(system_without_caps_lock: dict[str, str]) -> None:
+    """Only the layout changes on restart: the session starts German with Caps Lock still as Ctrl."""
+    session = {**system_without_caps_lock, "OPENFOLLOW_KEYBOARD_SOURCE": "config", "XKB_DEFAULT_LAYOUT": "de"}
+    row = view.build_keyboard_layout_view(_cfg("de"), session)
     assert row is not None
-    assert (row.pending, row.in_use_label) == (True, "English (UK)")
+    assert row.pending is False
 
 
 @pytest.mark.parametrize(
@@ -175,9 +182,11 @@ def test_choosing_the_system_layout_by_name_drops_its_options_on_restart(
     ],
 )
 def test_a_session_started_with_another_model_or_options_is_pending(changed: dict[str, str]) -> None:
-    row = view.build_keyboard_layout_view(_cfg(), {**_SESSION, **changed})
-    assert row is not None
-    assert row.pending is True
+    """The layout stays: only the system keyboard settings change on restart."""
+    for layout in ("", "gb"):
+        row = view.build_keyboard_layout_view(_cfg(layout), {**_SESSION, **changed})
+        assert row is not None
+        assert (row.pending, row.layout_pending) == (True, False)
 
 
 def test_a_changed_system_file_is_pending_too() -> None:

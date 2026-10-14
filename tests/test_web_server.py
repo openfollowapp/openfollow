@@ -8798,8 +8798,11 @@ def test_keyboard_save_waits_out_a_variant_reload(live_server, keyboard_station)
     _status, body = _get(base, "/section/keyboard")
     field = _variant_field(body)
     assert 'hx-disabled-elt="#keyboard-section button[type=submit]"' in field
-    # htmx re-enables what it disabled; the form gate decides again after the reload.
-    assert "hx-on::after-request=\"refreshFormGate(this.closest('form'))\"" in field
+    # A failed reload leaves the previous layout's variants: fall back to Standard, then gate again.
+    assert (
+        "hx-on::after-request=\"if(!event.detail.successful) document.getElementById('keyboard-variant').value='';"
+        " refreshFormGate(this.closest('form'))\""
+    ) in field
     section = body[body.index('<form id="keyboard-section"') :]
     assert re.findall(r"<button[^>]*type=\"submit\"[^>]*>", section) == ['<button type="submit" class="save-btn">']
 
@@ -8887,6 +8890,27 @@ def test_keyboard_layout_pending_offers_a_restart(live_server, keyboard_station)
     assert 'data-confirm-title="Restart OpenFollow?"' in button
     assert 'data-confirm-label="Restart"' in button
     assert "data-confirm-danger" in button
+
+
+def test_keyboard_layout_pending_names_only_the_layout(live_server, keyboard_station) -> None:
+    server, base = live_server
+    _save_layout(server, "de")
+    _status, body = _get(base, "/section/keyboard")
+    assert "The system keyboard settings change" not in body
+
+
+def test_keyboard_settings_pending_without_a_new_layout(live_server, keyboard_station, monkeypatch) -> None:
+    """The system file changed since the session started: the layout stays, the model changes."""
+    from tests._xkb import start_session
+
+    start_session(monkeypatch, model="pc104")
+    server, base = live_server
+    _save_layout(server, "")
+    _status, body = _get(base, "/section/keyboard")
+    caution = "The system keyboard settings change when OpenFollow restarts."
+    assert f'<div class="field-caution-msg" role="status">{caution}</div>' in body
+    assert "until OpenFollow restarts" not in body
+    assert 'hx-post="/section/keyboard/restart"' in body
 
 
 def test_keyboard_restart_restarts_and_saves_nothing(live_server, keyboard_station) -> None:

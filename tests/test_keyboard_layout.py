@@ -163,23 +163,36 @@ def test_the_system_file_is_read_from_the_system_path_by_default(monkeypatch, fi
 
 def test_the_stations_layout_comes_first(files) -> None:
     found = _resolve(files, '[controller]\nkeyboard_layout = "de"\nkeyboard_variant = "nodeadkeys"\n')
-    assert found == kl.Resolution("de", "nodeadkeys", "config")
+    assert found == kl.Resolution("de", "nodeadkeys", "config", "pc105", "")
 
 
-def test_a_station_layout_never_carries_the_system_keyboards_model_or_options(files) -> None:
-    files["system"].write_text('XKBMODEL="pc105"\nXKBLAYOUT="gb"\nXKBOPTIONS="ctrl:nocaps"\n', encoding="utf-8")
-    found = _resolve(files, '[controller]\nkeyboard_layout = "de"\n')
-    assert (found.model, found.options) == ("", "")
+@pytest.mark.parametrize(
+    ("config", "system_layout", "expected"),
+    [
+        ('[controller]\nkeyboard_layout = "de"\n', "gb", ("de", "config")),
+        ("", "gb", ("gb", "system")),
+        ("", "xx", ("us", "default")),
+    ],
+)
+def test_every_layout_keeps_the_system_keyboards_model_and_options(
+    files, config: str, system_layout: str, expected: tuple[str, str]
+) -> None:
+    """Model and options describe the keyboard, so they hold whichever source picks the layout."""
+    files["system"].write_text(
+        f'XKBMODEL="pc104"\nXKBLAYOUT="{system_layout}"\nXKBOPTIONS="ctrl:nocaps,custom:types"\n', encoding="utf-8"
+    )
+    found = _resolve(files, config)
+    assert found == kl.Resolution(expected[0], "", expected[1], "pc104", "ctrl:nocaps")
 
 
 def test_a_variant_of_another_layout_is_dropped(files) -> None:
     found = _resolve(files, '[controller]\nkeyboard_layout = "gb"\nkeyboard_variant = "nodeadkeys"\n')
-    assert found == kl.Resolution("gb", "", "config")
+    assert found == kl.Resolution("gb", "", "config", "pc105", "")
 
 
 def test_the_stations_layout_is_trimmed(files) -> None:
     found = _resolve(files, '[controller]\nkeyboard_layout = " de "\nkeyboard_variant = " T3 "\n')
-    assert found == kl.Resolution("de", "T3", "config")
+    assert found == kl.Resolution("de", "T3", "config", "pc105", "")
 
 
 @pytest.mark.parametrize(
@@ -258,9 +271,11 @@ def test_last_the_default_layout(files, system: str | None) -> None:
     assert _resolve(files) == kl.Resolution("us", "", "default")
 
 
-def test_without_a_catalog_nothing_is_trusted(files) -> None:
+def test_without_a_catalog_no_layout_or_option_is_trusted(files) -> None:
     files["catalog"].unlink()
-    assert _resolve(files, '[controller]\nkeyboard_layout = "de"\n') == kl.Resolution("us", "", "default")
+    files["system"].write_text('XKBMODEL="pc105"\nXKBLAYOUT="gb"\nXKBOPTIONS="ctrl:nocaps"\n', encoding="utf-8")
+    found = _resolve(files, '[controller]\nkeyboard_layout = "de"\n')
+    assert found == kl.Resolution("us", "", "default", "pc105", "")
 
 
 # --- the helper --------------------------------------------------------------
@@ -270,7 +285,7 @@ def test_the_helper_prints_one_line_per_setting(monkeypatch, files, capsys) -> N
     _use_files(monkeypatch, files)
     files["config"].write_text('[controller]\nkeyboard_layout = "jp"\nkeyboard_variant = "OADG109A"\n')
     assert kl.main(["env", str(files["config"])]) == 0
-    assert capsys.readouterr().out == "layout=jp\nvariant=OADG109A\nsource=config\nmodel=\noptions=\n"
+    assert capsys.readouterr().out == "layout=jp\nvariant=OADG109A\nsource=config\nmodel=pc105\noptions=\n"
 
 
 def test_the_helper_reads_config_toml_in_the_working_directory(monkeypatch, files, capsys) -> None:

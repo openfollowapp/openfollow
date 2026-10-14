@@ -163,15 +163,16 @@ def test_the_session_starts_cage_in_the_stations_layout(tmp_path: Path) -> None:
     }
 
 
-def test_the_session_passes_the_system_keyboard_through(tmp_path: Path) -> None:
+@pytest.mark.parametrize(("layout", "source"), [("gb", "system"), ("de", "config"), ("us", "default")])
+def test_the_session_passes_the_system_keyboard_through(tmp_path: Path, layout: str, source: str) -> None:
     helper = _helper_printing(
-        "layout=gb", "variant=", "source=system", "model=pc105", "options=grp:alt_shift_toggle,ctrl:nocaps"
+        f"layout={layout}", "variant=", f"source={source}", "model=pc105", "options=grp:alt_shift_toggle,ctrl:nocaps"
     )
     assert _run_session(tmp_path, helper) == {
-        "XKB_DEFAULT_LAYOUT": "gb",
+        "XKB_DEFAULT_LAYOUT": layout,
         "XKB_DEFAULT_MODEL": "pc105",
         "XKB_DEFAULT_OPTIONS": "grp:alt_shift_toggle,ctrl:nocaps",
-        "OPENFOLLOW_KEYBOARD_SOURCE": "system",
+        "OPENFOLLOW_KEYBOARD_SOURCE": source,
     }
 
 

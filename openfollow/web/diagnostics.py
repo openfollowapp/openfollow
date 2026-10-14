@@ -1814,6 +1814,9 @@ def collect_keyboard_layout(config_path: Path | None, environ: Mapping[str, str]
     else:
         layout = _layout_name(env.get("XKB_DEFAULT_LAYOUT", ""), env.get("XKB_DEFAULT_VARIANT", ""))
         in_use = f"{layout or '[none]'} ({_xkb_name(source)})"
+        for label, name in (("model", "XKB_DEFAULT_MODEL"), ("options", "XKB_DEFAULT_OPTIONS")):
+            if env.get(name):
+                in_use += f", {label} {_xkb_name(env[name])}"
     return f"  keyboard layout              configured {configured} | system file {on_file} | in use {in_use}"
 
 

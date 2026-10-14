@@ -3117,7 +3117,7 @@ class TestTheSimpleScreen:
 
     def test_automatic_names_what_it_resolved_to(self, monkeypatch, tmp_path) -> None:
         app = _simple_app(monkeypatch, tmp_path)
-        assert _row(app, "interface")["value"] == "Automatic (eth0)"
+        assert _row(app, "interface")["value"] == "Automatic (Show LAN (eth0))"
         assert app._pi_network_active_iface == "eth0"
 
     def test_automatic_that_resolves_nowhere_says_only_automatic(self, monkeypatch, tmp_path) -> None:
@@ -3135,16 +3135,18 @@ class TestTheSimpleScreen:
             return [("eth0", "192.168.1.50"), ("wlan0", "")]
 
         monkeypatch.setattr(anm, "_iface_addresses", _addresses)
+        app._config.interface_labels = {"br0": "Bridge"}
         labels = [row.get("label") for row in anm.build_pi_network_rows(app)]
-        assert "br0's addressing is not managed here." in labels
-        assert "br0 is not connected." not in labels
+        assert "Bridge (br0)'s addressing is not managed here." in labels
+        assert "Bridge (br0) is not connected." not in labels
         assert "apply" not in _keys(app)
 
     def test_a_station_interface_that_is_gone_edits_nothing_in_its_place(self, monkeypatch, tmp_path) -> None:
         app = _simple_app(monkeypatch, tmp_path, station="eth9")
         assert app._pi_network_active_iface == "eth9"
         assert _row(app, "interface")["value"] == "eth9"
-        assert any(row.get("label") == "eth9 is not connected." for row in anm.build_pi_network_rows(app))
+        app._config.interface_labels = {"eth9": "Old"}
+        assert any(row.get("label") == "Old (eth9) is not connected." for row in anm.build_pi_network_rows(app))
         assert _row(app, "method")["kind"] == "display"
         assert "apply" not in _keys(app) and "renew" not in _keys(app)
 
@@ -3163,7 +3165,7 @@ class TestTheSimpleScreen:
     def test_the_ipv4_heading_names_the_interface_it_edits(self, monkeypatch, tmp_path) -> None:
         app = _simple_app(monkeypatch, tmp_path, auto="")
         headers = [row.get("label") for row in anm.build_pi_network_rows(app) if row.get("kind") == "header"]
-        assert "IPv4 \u2013 eth0" in headers
+        assert "IPv4 \u2013 Show LAN (eth0)" in headers
 
     def test_an_empty_reading_leaves_nothing_of_an_earlier_visit(self, monkeypatch, tmp_path) -> None:
         adapter = _FakeAdapter()
@@ -3226,7 +3228,7 @@ class TestTheSimpleScreen:
         anm.enter_pi_network(app)
         labels = [row.get("label") for row in anm.build_pi_network_rows(app)]
         assert "This station has no network interface." not in labels
-        assert _row(app, "interface")["value"] == "Automatic (eth0)"
+        assert _row(app, "interface")["value"] == "Automatic (Show LAN (eth0))"
         assert "This station's addressing cannot be changed from here." in labels
         _confirm_key(app, "interface")
         assert "pick:eth0" in _keys(app)
@@ -3245,12 +3247,12 @@ class TestTheSimpleScreen:
         assert app._pi_network_active_iface == "wlan0"
         assert _row(app, "interface")["pill"] == "no address"
 
-    def test_raw_names_only(self, monkeypatch, tmp_path) -> None:
-        app = _simple_app(monkeypatch, tmp_path)
+    def test_a_labelled_interface_is_named_by_its_label(self, monkeypatch, tmp_path) -> None:
+        app = _simple_app(monkeypatch, tmp_path, station="eth0")
+        assert _row(app, "interface")["value"] == "Show LAN (eth0)"
         _confirm_key(app, "interface")
         labels = [row.get("label") for row in anm.build_pi_network_rows(app)]
-        assert "eth0" in labels
-        assert not any("Show LAN" in str(label) for label in labels)
+        assert labels[2:] == ["Show LAN (eth0)", "wlan0"]
 
     def test_the_lease_reads_as_the_web_card_shows_it(self, monkeypatch, tmp_path) -> None:
         app = _simple_app(monkeypatch, tmp_path)
@@ -3287,7 +3289,7 @@ class TestTheSimpleScreen:
         monkeypatch.setattr(anm, "_iface_addresses", lambda _app: [("eth0", "169.254.7.7")])
         assert (_row(app, "interface")["pill"], _row(app, "interface")["pill_level"]) == (pill, "error")
         notices = [row for row in anm.build_pi_network_rows(app) if row.get("kind") == "notice"]
-        assert "169.254.7.7" in str(notices[0]["label"])
+        assert str(notices[0]["label"]).startswith("Show LAN (eth0) has the link-local address 169.254.7.7.")
 
     def test_dhcp_name_problems_and_a_missing_host_are_shown_as_they_are(self, monkeypatch, tmp_path) -> None:
         app = _simple_app(monkeypatch, tmp_path)
@@ -3309,7 +3311,7 @@ class TestTheSimpleInterfacePicker:
         _confirm_key(app, "interface")
         assert _keys(app) == ["pick:", "pick:eth0", "pick:wlan0"]
         assert _row(app, "pick:")["pill"] == "current"
-        assert _row(app, "pick:")["value"] == "now eth0 – 192.168.1.50"
+        assert _row(app, "pick:")["value"] == "now Show LAN (eth0) – 192.168.1.50"
         assert anm.build_pi_network_rows(app)[app._pi_network_index]["key"] == "pick:"
 
     def test_a_pinned_interface_that_is_gone_is_still_listed_as_current(self, monkeypatch, tmp_path) -> None:
@@ -3362,12 +3364,13 @@ class TestTheSimpleInterfacePicker:
         app = _simple_app(monkeypatch, tmp_path)
         _confirm_key(app, "interface")
         _confirm_key(app, "pick:eth0")
-        assert (app._pi_network_banner_level, app._pi_network_banner) == ("success", "All traffic now uses eth0.")
+        assert app._pi_network_banner_level == "success"
+        assert app._pi_network_banner == "All traffic now uses Show LAN (eth0)."
 
     def test_the_automatic_row_names_where_traffic_would_go_while_pinned(self, monkeypatch, tmp_path) -> None:
         app = _simple_app(monkeypatch, tmp_path, station="wlan0")
         _confirm_key(app, "interface")
-        assert _row(app, "pick:")["value"] == "now eth0 \u2013 192.168.1.50"
+        assert _row(app, "pick:")["value"] == "now Show LAN (eth0) \u2013 192.168.1.50"
 
     def test_choosing_automatic_clears_the_pin(self, monkeypatch, tmp_path) -> None:
         from openfollow.configuration import load_config

@@ -1,7 +1,7 @@
 v0.5.0
 ## Simple and Advanced network mode
 
-**General → Network Interface Settings** opens with a **Network mode** switch. **Simple** runs everything over one interface, the one shown below it, as before. **Advanced** gives each function its own interface under **Network Interface Assignment**, with adapter labels and VLANs. A station whose config already pins a function to an interface starts in Advanced; every other station starts in Simple.
+**General → Network Interface Settings** opens with a **Network mode** switch. **Simple** runs everything over one interface, the one shown below it, as before. **Advanced** gives each function its own interface under **Network Interface Assignment**, and adds VLANs. Adapters can be labelled in both modes. A station whose config already pins a function to an interface starts in Advanced; every other station starts in Simple.
 
 In Advanced, check the pins: USB Ethernet adapters are now named after their MAC (`enx…`), so a pin to one may have moved.
 

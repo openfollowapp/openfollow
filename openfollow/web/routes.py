@@ -76,7 +76,6 @@ from openfollow.configuration import (
     _coerce_marker_tokens,
     apply_renamed_marker_keys,
     config_write_lock,
-    effective_interface_labels,
     enforce_network_mode,
     load_config,
     path_name_from,
@@ -1513,15 +1512,14 @@ def build_interface_assignment_rows(cfg: AppConfig, web_bind: tuple[str, str] | 
     from openfollow.net_adapters import display_name
     from openfollow.net_utils import present_interfaces
 
-    labels = effective_interface_labels(cfg)
-    names = _PanelNames(labels, present_interfaces())
+    names = _PanelNames(cfg.interface_labels, present_interfaces())
     # Built once to start every lookup, then for real: each lookup waits from
     # when it started, so the render waits once for all of them.
     _interface_assignment_rows(cfg, web_bind, None, names)
     rows = _interface_assignment_rows(cfg, web_bind, _ROUTE_PICK_WAIT_S, names)
     for row in rows:
         row["outage"] = row["address"] in _OUTAGE_ADDRESSES
-        row["value_display"] = display_name(str(row.get("value") or ""), labels)
+        row["value_display"] = display_name(str(row.get("value") or ""), cfg.interface_labels)
         row["slot"] = _address_slot(row)
     return rows
 
@@ -6066,6 +6064,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                     unavailable,
                     mode_cfg.psn_source_iface,
                     [(name, addresses.get(name, "")) for name in sorted(present_interfaces())],
+                    mode_cfg.interface_labels,
                 )
             return unavailable
         net: dict[str, Any] = {
@@ -6136,16 +6135,21 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         net["vlan_form"] = dict(vlan_form) if vlan_form else {}
         mode_cfg = _request_scoped_config()
         net["mode"] = mode_cfg.network_mode
-        if mode_cfg.network_mode == NETWORK_MODE_SIMPLE:
+        simple = mode_cfg.network_mode == NETWORK_MODE_SIMPLE
+        labels = mode_cfg.interface_labels if labels is None else labels
+        if simple:
             advisory = server.get_web_bind_advisory()
             # A pin Simple cleared still holds the listener until OpenFollow restarts.
             net["web_restart_pending"] = (
                 bool(advisory.get("iface_at_start")) and advisory.get("status") == "iface" and not mode_cfg.web_bind
             )
             # Only what the backend lists as a VLAN: that is what Advanced can remove.
-            _narrow_to_station(net, mode_cfg.psn_source_iface, set(vlan_ids) if net["supports_vlans"] else set())
-            labels = {}
-        _add_adapter_fields(net, mode_cfg.interface_labels if labels is None else labels, label_result)
+            vlan_names = set(vlan_ids) if net["supports_vlans"] else set()
+            _narrow_to_station(net, mode_cfg.psn_source_iface, vlan_names, labels)
+        _add_adapter_fields(net, labels, label_result)
+        if simple:
+            # The card lists the station interface alone, so every other labelled adapter is absent from it.
+            net["absent_rows"] = []
         # The single-interface snapshot belongs to the row being configured.
         # Captured before the operator's submitted input is layered on, because
         # the row's summary line reports what the adapter holds - a rejected
@@ -6176,11 +6180,14 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 break
         return net
 
-    def _station_picker(net: dict[str, Any], station: str, options: list[tuple[str, str]]) -> str:
+    def _station_picker(
+        net: dict[str, Any], station: str, options: list[tuple[str, str]], labels: Mapping[str, str]
+    ) -> str:
         """Simple's Interface picker: ``options`` as ``(name, address)``, plus a pinned one that is gone.
 
-        Returns the interface the station resolves to.
+        Returns the interface the station resolves to. ``station_names`` names each as the UI shows it.
         """
+        from openfollow.net_adapters import display_name
         from openfollow.net_utils import auto_station_iface
 
         auto = auto_station_iface()
@@ -6189,13 +6196,17 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         net["station_options"] = [(name, addr) for name, addr in options if name and name not in LOOPBACK_NAMES]
         if station and station not in [name for name, _addr in net["station_options"]]:
             net["station_options"].append((station, ""))
+        named = {station, auto, *(name for name, _addr in net["station_options"])}
+        net["station_names"] = {name: display_name(name, labels) for name in named if name}
         return station or auto
 
-    def _narrow_to_station(net: dict[str, Any], station: str, vlan_names: set[str]) -> None:
+    def _narrow_to_station(net: dict[str, Any], station: str, vlan_names: set[str], labels: Mapping[str, str]) -> None:
         """Simple: the card shows the station interface alone, and offers the picker that moves it."""
+        from openfollow.net_adapters import display_name
+
         rows = net["iface_rows"]
         options = [(str(row.get("name", "")), str(row.get("address", ""))) for row in rows]
-        resolved = _station_picker(net, station, options)
+        resolved = _station_picker(net, station, options, labels)
         # Automatic with no address anywhere shows the first interface, as the Operator Screen edits it.
         resolved = resolved or next((name for name, _addr in net["station_options"]), "")
         if resolved and resolved not in [name for name, _addr in options]:
@@ -6203,7 +6214,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
             # Up but not the backend's: it carries the traffic, it is just not edited here.
             net["station_unmanaged"] = bool(get_iface_ipv4(resolved))
-        net["leftover_vlans"] = sorted(name for name in vlan_names if name and name != resolved)
+        net["leftover_vlans"] = sorted(display_name(name, labels) for name in vlan_names if name and name != resolved)
         net["iface_rows"] = [row for row in rows if str(row.get("name", "")) == resolved]
         net["vlan_parents"] = []
 
@@ -6643,7 +6654,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
         cfg = _request_scoped_config()
         changes = _simple_changes(cfg)
-        labels = effective_interface_labels(cfg)
+        labels = cfg.interface_labels
         station = display_name(changes["station"], labels) if changes["station"] else ""
         response.content_type = "application/json"
         return json.dumps(
@@ -9536,7 +9547,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         cfg = _request_scoped_config()
 
         def who(name: str) -> str:
-            return _iface_who(name, effective_interface_labels(cfg))
+            return _iface_who(name, cfg.interface_labels)
 
         # ``?current=`` present (even empty) overrides; absent → PSN default. An
         # empty OTP pin must stay empty (auto-detect), not fall back to PSN's.

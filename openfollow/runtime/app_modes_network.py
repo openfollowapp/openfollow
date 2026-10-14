@@ -19,7 +19,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
-from openfollow.configuration import effective_interface_labels, is_simple_mode
+from openfollow.configuration import is_simple_mode
 from openfollow.net_adapters import Adapter, describe, display_name
 from openfollow.net_utils import WEB_BIND_ALL, auto_station_iface
 from openfollow.network.adapter import (
@@ -350,7 +350,7 @@ def _iface_addresses(app: OpenFollowApp) -> list[tuple[str, str]]:
 
 
 def _labels(app: OpenFollowApp) -> dict[str, str]:
-    return effective_interface_labels(getattr(app, "_config", None))
+    return dict(getattr(getattr(app, "_config", None), "interface_labels", None) or {})
 
 
 def _absent_rows(app: OpenFollowApp, ifaces: list[tuple[str, str]]) -> list[dict[str, object]]:
@@ -642,6 +642,8 @@ def _simple_rows(
     auto = str(getattr(app, "_pi_network_auto_iface", "") or "")
     # Unanswered, the last reading may be another interface's: nothing of it is shown.
     name = "" if reading else str(getattr(app, "_pi_network_active_iface", "") or "")
+    labels = _labels(app)
+    shown = display_name(name, labels)
     address = next((addr for iface_name, addr in ifaces if iface_name == name), "")
     methods = getattr(app, "_pi_network_methods", {}) or {}
     rows.append({"kind": "header", "label": "Interface"})
@@ -658,7 +660,8 @@ def _simple_rows(
             "kind": "choice",
             "key": "interface",
             "label": "Interface",
-            "value": station or (f"Automatic ({auto})" if auto else "Automatic"),
+            "value": display_name(station, labels)
+            or (f"Automatic ({display_name(auto, labels)})" if auto else "Automatic"),
             "pill": pill,
             "pill_level": level,
             "opens": True,
@@ -669,7 +672,7 @@ def _simple_rows(
             {
                 "kind": "notice",
                 "level": "error",
-                "label": f"{name} has the link-local address {address}. "
+                "label": f"{shown} has the link-local address {address}. "
                 "Other machines on this network may not reach the station here.",
                 "value": "",
             }
@@ -685,9 +688,9 @@ def _simple_rows(
         # Up with an address but not the backend's: it carries the traffic, it is just not edited here.
         kernel_address = (getattr(app, "_pi_network_addr_cache", None) or {}).get(name, "")
         if name and (kernel_address or not station):
-            missing, notice_level = f"{name}'s addressing is not managed here.", "info"
+            missing, notice_level = f"{shown}'s addressing is not managed here.", "info"
         else:
-            missing = f"{name} is not connected." if name else "This station has no network interface."
+            missing = f"{shown} is not connected." if name else "This station has no network interface."
             notice_level = "error"
         rows.append({"kind": "notice", "level": notice_level, "label": missing, "value": ""})
     elif not current:
@@ -702,7 +705,7 @@ def _simple_rows(
     editable = writable and present and current
     method = pending.method if pending else Ipv4Method.DHCP
     # Named, because Automatic with no address anywhere edits the first interface.
-    rows.append({"kind": "header", "label": f"IPv4 \u2013 {name}" if name else "IPv4"})
+    rows.append({"kind": "header", "label": f"IPv4 \u2013 {shown}" if name else "IPv4"})
     rows.append(
         {
             "kind": "choice" if editable else "display",
@@ -775,6 +778,8 @@ def _station_picker_rows(app: OpenFollowApp, ifaces: list[tuple[str, str]]) -> l
     """Simple: Automatic or a named interface; the one chosen carries every plane."""
     station = _station_iface(app)
     auto = str(getattr(app, "_pi_network_auto_iface", "") or "")
+    labels = _labels(app)
+    now = f"now {display_name(auto, labels)}" if auto else ""
     if not ifaces:
         # No backend to list them: the kernel's interfaces with an address still carry traffic.
         ifaces = sorted((getattr(app, "_pi_network_addr_cache", None) or {}).items())
@@ -785,7 +790,7 @@ def _station_picker_rows(app: OpenFollowApp, ifaces: list[tuple[str, str]]) -> l
             "kind": "choice",
             "key": _PICK_IFACE_PREFIX,
             "label": "Automatic",
-            "value": f"now {auto} \u2013 {auto_address}" if auto and auto_address else (f"now {auto}" if auto else ""),
+            "value": f"{now} \u2013 {auto_address}" if auto and auto_address else now,
             "pill": "current" if not station else "",
             "pill_level": "",
         }
@@ -798,7 +803,7 @@ def _station_picker_rows(app: OpenFollowApp, ifaces: list[tuple[str, str]]) -> l
             {
                 "kind": "choice",
                 "key": f"{_PICK_IFACE_PREFIX}{name}",
-                "label": name,
+                "label": display_name(name, labels),
                 "value": address,
                 "pill": "current" if name == station else ("" if address else "no address"),
                 # Neutral like the Advanced list: an adapter nobody plugged in is not a fault.
@@ -869,18 +874,19 @@ def _pick_station_iface(app: OpenFollowApp, name: str) -> None:
     _refresh_pi_network_bounded(app)
     target = name or str(getattr(app, "_pi_network_auto_iface", "") or "")
     target_address = (getattr(app, "_pi_network_addr_cache", None) or {}).get(target, "")
+    shown = display_name(target, _labels(app))
     if _station_iface(app) != name:
         _set_banner(app, "Saved, but not applied yet. Check the station's status rows.", "caution")
     elif not target_address:
         # Every plane fails closed on an interface without an address.
         _set_banner(
             app,
-            f"All traffic now uses {target or 'the automatic interface'}, which has no address: "
+            f"All traffic now uses {shown or 'the automatic interface'}, which has no address: "
             "nothing is sent until it gets one.",
             "caution",
         )
     else:
-        _set_banner(app, f"All traffic now uses {target}.", "success")
+        _set_banner(app, f"All traffic now uses {shown}.", "success")
     _focus_row(app, "interface")
 
 

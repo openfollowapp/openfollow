@@ -96,15 +96,16 @@
             %# Every plane follows this one interface; a change applies at once.
             % _station = _net.get("station_iface", "")
             % _auto = _net.get("station_auto", "")
+            % _shown = _net.get("station_names", {})
             <label for="net-station-iface">Interface</label>
             %# A refused pick puts the picker back on the interface in force.
             <form class="net-station-form" hx-post="/section/network/station" hx-target="#network-interface"
                   hx-swap="innerHTML" hx-trigger="change" data-busy-text="Moving all traffic to the chosen interface…"
                   hx-on::after-request="if (!event.detail.successful) this.reset()">
                 <select id="net-station-iface" name="psn_source_iface">
-                    <option value="" {{'' if _station else 'selected'}}>{{('Automatic (' + _auto + ')') if _auto else 'Automatic'}}</option>
+                    <option value="" {{'' if _station else 'selected'}}>{{('Automatic (' + _shown.get(_auto, _auto) + ')') if _auto else 'Automatic'}}</option>
                     % for _oname, _oaddr in _net.get("station_options", []):
-                    <option value="{{_oname}}" {{'selected' if _oname == _station else ''}}>{{_oname}} – {{_oaddr or 'no address'}}</option>
+                    <option value="{{_oname}}" {{'selected' if _oname == _station else ''}}>{{_shown.get(_oname, _oname)}} – {{_oaddr or 'no address'}}</option>
                     % end
                 </select>
             </form>
@@ -158,10 +159,12 @@
         <div id="net-iface-list" class="net-iface-list">
             % if not _rows:
             % if _simple and _net.get("station_options"):
+            % _held = _net.get("station_iface") or _net.get("station_auto")
+            % _station_shown = _net.get("station_names", {}).get(_held, _held)
             % if _net.get("station_unmanaged") or (_net.get("station_auto") and not _net.get("station_iface")):
-            <p class="muted">{{_net.get("station_iface") or _net.get("station_auto")}}'s addressing is not managed here.</p>
+            <p class="muted">{{_station_shown}}'s addressing is not managed here.</p>
             % elif _net.get("station_iface"):
-            <p class="muted">{{_net["station_iface"]}} is not connected. Pick another interface above.</p>
+            <p class="muted">{{_station_shown}} is not connected. Pick another interface above.</p>
             % else:
             <p class="muted">No interface has an address yet.</p>
             % end
@@ -190,7 +193,7 @@
                     %# The label leads when there is one; the kernel name and which
                     %# adapter it is sit underneath, so two USB adapters can be told apart.
                     % _label = row.get("label", "")
-                    % _sub = "" if _simple else " · ".join(part for part in ((_name if _label else ""), row.get("description", "")) if part)
+                    % _sub = " · ".join(part for part in ((_name if _label else ""), row.get("description", "")) if part)
                     <span class="net-iface-ident">
                         <span class="net-iface-name">{{_label or _name}}</span>
                         % if _sub:
@@ -213,7 +216,6 @@
 
                 %# Its own form: a label is OpenFollow's setting, saved without touching
                 %# the network, so it is editable on a stack this card cannot write.
-                % if not _simple:
                 <form class="net-label-form {{'save-flash saved' if row.get('label_saved') else ''}}"
                       hx-post="/section/network/label" hx-target="#network-interface"
                       hx-swap="innerHTML" hx-trigger="submit" hx-include="{{_keep}}">
@@ -255,7 +257,6 @@
                         </div>
                     </div>
                 </form>
-                % end
 
                 <form class="net-iface-form"
                 % if _row_edit:

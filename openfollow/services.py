@@ -27,7 +27,6 @@ import numpy as np
 from openfollow.configuration import (
     ControllerButtonTrigger,
     HotkeyTrigger,
-    effective_interface_labels,
     is_simple_mode,
     viewed_with_controlled,
 )
@@ -1291,7 +1290,7 @@ class AppRuntimeServices:
         ]
 
     def _iface_display_name(self, iface: str) -> str:
-        return display_name(iface, effective_interface_labels(self._app._config))
+        return display_name(iface, self._app._config.interface_labels)
 
     def observe_network_planes(self) -> None:
         """Follow every plane's configured interface. Called from housekeeping.

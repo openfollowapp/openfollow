@@ -8185,16 +8185,6 @@ def test_a_hot_reload_into_simple_clears_the_live_pins(tmp_path) -> None:
     assert load_config(str(path), strict=True).otp_output.source_iface == ""
 
 
-def test_labels_name_interfaces_only_in_advanced() -> None:
-    from openfollow.configuration import effective_interface_labels
-
-    labels = {"eth0": "Show"}
-    assert effective_interface_labels(AppConfig(network_mode="simple", interface_labels=labels)) == {}
-    assert effective_interface_labels(AppConfig(network_mode="advanced", interface_labels=labels)) == labels
-    assert AppConfig(network_mode="simple", interface_labels=labels).interface_labels == labels
-    assert effective_interface_labels(None) == {}
-
-
 @pytest.mark.parametrize(("old", "new"), [("advanced", "simple"), ("simple", "advanced")])
 def test_a_mode_switch_reaches_the_running_config(old: str, new: str) -> None:
     app = _DummyApp(AppConfig(network_mode=old))

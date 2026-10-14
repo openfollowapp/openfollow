@@ -77,14 +77,20 @@ def _post_headers(base: str, path: str, data: dict) -> tuple[int, str, dict]:
 def test_the_simple_card_shows_the_station_interface_alone(net_server, tmp_path, present) -> None:  # noqa: F811
     fake, base = net_server
     fake.vlans = [{"name": "wlan0", "parent": "eth0", "vlan_id": 20}]
-    _set(tmp_path, network_mode="simple", interface_labels={"eth0": "Show LAN"})
+    _set(tmp_path, network_mode="simple", interface_labels={"eth0": "Show LAN", "wlan0": "Spare"})
     _status, body = _get(base, "/section/network/status")
     assert 'name="network_mode" value="simple" checked' in body
-    assert '<option value="" selected>Automatic (eth0)</option>' in body
+    assert '<option value="" selected>Automatic (Show LAN (eth0))</option>' in body
+    assert '<option value="wlan0" >Spare (wlan0) – 10.9.9.9</option>' in body
     assert body.count('class="net-iface-row"') == 1
     assert 'data-adv-key="net-iface-eth0"' in body
-    assert "Show LAN" not in body
-    assert "net-label-form" not in body
+    # Named and labelled as in Advanced, with its Adapter block.
+    assert '<span class="net-iface-name">Show LAN</span>' in body
+    assert '<span class="net-iface-sub">eth0</span>' in body
+    assert body.count("net-label-form") == 1
+    assert 'name="label" maxlength="20"\n                                       value="Show LAN"' in body
+    # A labelled adapter the card does not list is not called unplugged.
+    assert "Not connected" not in body
     assert "+ Add VLAN" not in body
     assert "VLAN 20" not in body
     # A refused pick puts the picker back.
@@ -104,10 +110,20 @@ def test_the_simple_card_follows_a_named_station_interface(net_server, tmp_path,
 
 def test_a_station_interface_that_is_gone_is_named(net_server, tmp_path, present) -> None:  # noqa: F811
     _fake, base = net_server
-    _set(tmp_path, network_mode="simple", psn_source_iface="eth9")
+    _set(tmp_path, network_mode="simple", psn_source_iface="eth9", interface_labels={"eth9": "Old"})
     _status, body = _get(base, "/section/network/status")
-    assert "eth9 is not connected." in body
-    assert '<option value="eth9" selected>eth9 – no address</option>' in body
+    assert "Old (eth9) is not connected." in body
+    assert '<option value="eth9" selected>Old (eth9) – no address</option>' in body
+
+
+def test_a_label_is_saved_on_the_simple_card(net_server, tmp_path, present) -> None:  # noqa: F811
+    _fake, base = net_server
+    _set(tmp_path, network_mode="simple")
+    status, body = _post(base, "/section/network/label", {"iface": "eth0", "label": "Stage"})
+    assert status == 200
+    assert _saved(tmp_path).interface_labels == {"eth0": "Stage"}
+    assert '<span class="net-iface-name">Stage</span>' in body
+    assert '<option value="" selected>Automatic (Stage (eth0))</option>' in body
 
 
 def test_a_pinned_interface_the_backend_does_not_manage_is_not_called_unplugged(
@@ -118,9 +134,9 @@ def test_a_pinned_interface_the_backend_does_not_manage_is_not_called_unplugged(
     addrs = {"br0": [SimpleNamespace(family=socket.AF_INET, address="198.51.100.2")]}
     monkeypatch.setattr(net_utils_module.psutil, "net_if_addrs", lambda: addrs)
     _fake, base = net_server
-    _set(tmp_path, network_mode="simple", psn_source_iface="br0")
+    _set(tmp_path, network_mode="simple", psn_source_iface="br0", interface_labels={"br0": "Bridge"})
     _status, body = _get(base, "/section/network/status")
-    assert "br0's addressing is not managed here." in body
+    assert "Bridge (br0)'s addressing is not managed here." in body
     assert "br0 is not connected." not in body
 
 
@@ -164,9 +180,9 @@ def test_a_vlan_left_over_in_simple_is_named(net_server, tmp_path, present) -> N
     fake, base = net_server
     fake.interfaces.append("eth0.20")
     fake.vlans = [{"name": "eth0.20", "parent": "eth0", "vlan_id": 20}]
-    _set(tmp_path, network_mode="simple")
+    _set(tmp_path, network_mode="simple", interface_labels={"eth0.20": "Cue"})
     _status, body = _get(base, "/section/network/status")
-    assert "eth0.20 is still on this station." in body
+    assert "Cue (eth0.20) is still on this station." in body
     assert "Remove it in Advanced mode." in body
 
 

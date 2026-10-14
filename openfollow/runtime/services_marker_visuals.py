@@ -347,10 +347,9 @@ def _populate_pi_network_overlay(app: Any, state: OverlayState) -> None:
         if is_simple_mode(getattr(app, "_config", None)) and simple_title:
             target.title, target.subtitle = simple_title
         elif target.open_iface:
-            from openfollow.configuration import effective_interface_labels
             from openfollow.net_adapters import display_name
 
-            labels = effective_interface_labels(getattr(app, "_config", None))
+            labels = getattr(getattr(app, "_config", None), "interface_labels", None) or {}
             target.title = f"Network Interface: {display_name(target.open_iface, labels)}"
         target.banner = str(getattr(app, "_pi_network_banner", ""))
         target.banner_level = str(getattr(app, "_pi_network_banner_level", "") or "")

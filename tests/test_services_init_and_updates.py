@@ -18,6 +18,7 @@ between ``OpenFollowApp.run()`` and the per-subsystem classes:
 from __future__ import annotations
 
 import json
+import logging
 import socket
 from dataclasses import replace
 from types import SimpleNamespace
@@ -4666,6 +4667,17 @@ class TestSuspendPsnPlanes:
         services._app._server = None
         services._app._psn_receiver = None
         services.suspend_psn_planes()  # must not raise
+
+    @pytest.mark.parametrize("mode", ["simple", "advanced"])
+    def test_the_station_interface_is_named_by_its_label(self, services: AppRuntimeServices, caplog, mode) -> None:
+        services._app._server = None
+        services._app._psn_receiver = None
+        services._app._config.network_mode = mode
+        services._app._config.psn_source_iface = "eth0"
+        services._app._config.interface_labels = {"eth0": "Show LAN"}
+        with caplog.at_level(logging.ERROR):
+            services.suspend_psn_planes()
+        assert "psn_source_iface Show LAN (eth0) has no address" in caplog.text
 
 
 class TestStationFollowersDoNotBindOnADownInterface:

@@ -2665,13 +2665,6 @@ def is_simple_mode(cfg: Any) -> bool:
     return getattr(cfg, "network_mode", NETWORK_MODE_ADVANCED) == NETWORK_MODE_SIMPLE
 
 
-def effective_interface_labels(cfg: Any) -> dict[str, str]:
-    """Labels the UI names interfaces by: none in Simple, where raw names are shown."""
-    if is_simple_mode(cfg):
-        return {}
-    return dict(getattr(cfg, "interface_labels", None) or {})
-
-
 @dataclass
 class AppConfig:
     # Video source

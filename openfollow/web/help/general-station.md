@@ -8,7 +8,7 @@ This station's name, web access and display units, plus the settings you set onc
 
 > Set a PIN on any station that is connected to a shared production network. Leaving it unset is acceptable only on isolated bench or point-to-point networks.
 
-**Displayed unit system** – choose **Metric (m, m/s)** or **Imperial (ft / in, ft/s)**. This controls what the web UI and the Operator Screen show and parse across Camera, Grid, Markers, Movement, Trigger Zones, and the Setup Wizard. Stored configuration and every wire protocol – OSC, PSN, RTTrPM, OTP – always stay metric regardless of this setting. The selection takes effect as soon as you change it; no Save is needed.
+**Displayed unit system** – choose **Metric (m, m/s)** or **Imperial (ft / in, ft/s)**. This controls what the web UI and the Operator Screen show and parse across Camera, Grid, Markers, Movement, Trigger Zones, and the Setup Wizard. Stored configuration and every wire protocol – OSC, PSN, RTTrPM, OTP – always stay metric regardless of this setting. The selection takes effect as soon as you change it; no Save is needed. The Setup Wizard's Grid Setup step offers the same choice.
 
 **Advanced Settings** – opens closed on every page load.
 
@@ -20,6 +20,6 @@ This station's name, web access and display units, plus the settings you set onc
 
 > Off, this web UI is gone after the next reboot too, and switching it back on takes SSH or a keyboard on the station. Absent on macOS and where OpenFollow is not a system service.
 
-**Experimental features** – shows Person Detection, RTTrPM Output, Lens Distortion, Paths and the Ground Grid, each marked *Experimental*. Turning it off also switches person detection and the ground grid off and deactivates every path; turning it back on does not.
+**Experimental features** – shows Person Detection, RTTrPM Output, Paths, the Ground Grid and the Setup Wizard's calibration points, each marked *Experimental*. Turning it off also switches person detection and the ground grid off and deactivates every path; turning it back on does not.
 
 **Save** – saves the station name, PIN and custom domain name. No restart is needed.

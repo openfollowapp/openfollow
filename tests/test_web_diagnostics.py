@@ -3834,6 +3834,35 @@ def test_the_bundle_names_station_default_when_its_interface_is_down(down: bool,
     assert providers.iface_ip() == expected
 
 
+def test_the_bundle_carries_the_calibration_points_with_where_they_were_solved() -> None:
+    import tomllib
+
+    from openfollow.configuration import AppConfig, CalibrationPointConfig
+    from openfollow.web.routes import _build_diagnostics_providers
+
+    cfg = AppConfig()
+    cfg.camera.calibration_points = [
+        CalibrationPointConfig("USR", "USL", 8.078, 3.905, 0.0, 0.6, 0.35, [2.5, 9.0, 0.0])
+    ]
+    cfg.camera.corner_pins = [[0.81, 0.94], [0.14, 0.95], [0.37, 0.61], [0.66, 0.6]]
+    providers = _build_diagnostics_providers(_io_server(), cfg)
+    assert providers.config_redacted_toml is not None
+    dumped = tomllib.loads(providers.config_redacted_toml())
+    assert dumped["camera"]["calibration_points"] == [
+        {
+            "corner_a": "USR",
+            "corner_b": "USL",
+            "distance_a": 8.078,
+            "distance_b": 3.905,
+            "height": 0.0,
+            "pin_x": 0.6,
+            "pin_y": 0.35,
+            "position": [2.5, 9.0, 0.0],
+        }
+    ]
+    assert dumped["camera"]["corner_pins"] == [[0.81, 0.94], [0.14, 0.95], [0.37, 0.61], [0.66, 0.6]]
+
+
 def test_build_diagnostics_providers_wires_io_fields() -> None:
     from openfollow.web.routes import _build_diagnostics_providers
 

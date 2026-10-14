@@ -37,6 +37,10 @@ _GATED_ROOTS = [
     # outside its tab wrapper.
     ("partials/detection.tpl", 'id="detection-section"'),
     ("partials/rttrpm_output.tpl", 'id="rttrpm-output-section"'),
+    # Calibration points: the Camera form's read-only list, the Setup Wizard's section and its Review list.
+    ("partials/camera.tpl", 'id="camera-calibration-points"'),
+    ("wizard.tpl", 'id="calib-section"'),
+    ("wizard.tpl", 'id="review-calib"'),
 ]
 
 
@@ -48,34 +52,47 @@ def test_section_root_carries_gate_class(rel: str, anchor: str) -> None:
 
 # Each experimental section's header must carry the Experimental badge. The
 # Person Detection page has no single header: every collapsible box carries its
-# own badge.
+# own badge. Review's calibration-point list has none: it lists what the badged Advanced section edits.
 _BADGED_HEADERS = [
-    ("partials/detection.tpl", "Tracking"),
-    ("partials/detection.tpl", "Detection Model"),
-    ("partials/detection.tpl", "Sensitivity &amp; Overlay"),
-    ("partials/detection_mask_editor.tpl", "Detection Masks"),
-    ("partials/rttrpm_output.tpl", "RTTrPM Output"),
+    ("partials/detection.tpl", "<h2>Tracking"),
+    ("partials/detection.tpl", "<h2>Detection Model"),
+    ("partials/detection.tpl", "<h2>Sensitivity &amp; Overlay"),
+    ("partials/detection_mask_editor.tpl", "<h2>Detection Masks"),
+    ("partials/rttrpm_output.tpl", "<h2>RTTrPM Output"),
+    ("partials/camera.tpl", '<h3 class="group-title">Calibration points'),
+    ("wizard.tpl", "<summary>Advanced"),
 ]
 
 
 @pytest.mark.parametrize("rel,heading", _BADGED_HEADERS)
 def test_section_header_carries_badge(rel: str, heading: str) -> None:
-    line = _line_with(_read(rel), f"<h2>{heading}")
+    line = _line_with(_read(rel), heading)
     assert "badge-experimental" in line, f"{rel}: {heading!r} header is missing the Experimental badge"
 
 
-def test_wizard_lens_controls_are_experimental_gated() -> None:
-    # The corner-pinning lens-distortion sliders must hide when experimental
-    # features are off – same gate as the Camera-tab group. Both the controls
-    # and the tip below them carry the class so nothing lens-related shows.
+# Lens distortion is a regular feature: its Camera group, wizard step and
+# step button render whatever the experimental toggle says.
+_UNGATED = [
+    ("partials/camera.tpl", "Lens distortion"),
+    ("wizard.tpl", 'id="wizard-step-lens"'),
+    ("wizard.tpl", "<h2>Lens"),
+    ("wizard.tpl", 'class="wizard-step-btn'),
+]
+
+
+@pytest.mark.parametrize("rel,anchor", _UNGATED)
+def test_lens_distortion_is_not_gated(rel: str, anchor: str) -> None:
+    text = _read(rel)
+    line = _line_with(text, anchor)
+    assert "experimental-feature" not in line
+    assert "badge-experimental" not in line
+
+
+def test_wizard_lens_step_has_one_set_of_coefficient_inputs() -> None:
     wiz = _read("wizard.tpl")
-    controls = _line_with(wiz, 'id="cp-lens-controls"')
-    assert "experimental-feature" in controls, "wizard.tpl: lens controls missing the gate class"
-    tip = _line_with(wiz, "Bow the projected grid")
-    assert "experimental-feature" in tip, "wizard.tpl: lens tip missing the gate class"
-    # Marked with the Experimental badge like the Camera-tab group.
-    label = _line_with(wiz, 'for="cp_lens_k1"')
-    assert "badge-experimental" in label, "wizard.tpl: lens controls missing the Experimental badge"
+    assert wiz.count('id="wiz_lens_k1"') == 1
+    assert wiz.count('id="wiz_lens_k2"') == 1
+    assert '<input type="hidden" id="wiz_lens_k1"' not in wiz
 
 
 def test_base_tpl_ships_gate_css_and_body_class() -> None:

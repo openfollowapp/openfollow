@@ -10,6 +10,7 @@ checks are all exercised without a live pipeline.
 from __future__ import annotations
 
 import os
+import struct
 import threading
 from pathlib import Path
 
@@ -69,7 +70,7 @@ def test_storage_path_falls_back_to_workdir(monkeypatch: pytest.MonkeyPatch) -> 
 
 @pytest.mark.parametrize(
     "media_id",
-    [ms.DEFAULT_STAGE_ID, ms.DEFAULT_GREY_ID, "0123456789abcdef"],
+    [ms.DEFAULT_STAGE_ID, ms.DEFAULT_ARENA_ID, ms.DEFAULT_GREY_ID, "0123456789abcdef"],
 )
 def test_valid_ids(media_id: str) -> None:
     assert ms.is_valid_id(media_id)
@@ -98,6 +99,7 @@ def test_invalid_ids(media_id: str) -> None:
 
 def test_defaults_are_read_only() -> None:
     assert ms.is_read_only(ms.DEFAULT_STAGE_ID)
+    assert ms.is_read_only(ms.DEFAULT_ARENA_ID)
     assert ms.is_read_only(ms.DEFAULT_GREY_ID)
     assert not ms.is_read_only("0123456789abcdef")
 
@@ -107,7 +109,7 @@ def test_defaults_are_read_only() -> None:
 
 def test_list_media_defaults_only_when_empty(storage: Path) -> None:
     items = ms.list_media()
-    assert [i.media_id for i in items] == [ms.DEFAULT_STAGE_ID, ms.DEFAULT_GREY_ID]
+    assert [i.media_id for i in items] == [ms.DEFAULT_STAGE_ID, ms.DEFAULT_ARENA_ID, ms.DEFAULT_GREY_ID]
     assert all(i.read_only for i in items)
 
 
@@ -116,6 +118,23 @@ def test_resolve_defaults(storage: Path) -> None:
     grey = ms.resolve(ms.DEFAULT_GREY_ID)
     assert stage is not None and stage.kind == "stage" and stage.path is not None
     assert grey is not None and grey.kind == "grey" and grey.path is None
+    arena = ms.resolve(ms.DEFAULT_ARENA_ID)
+    assert arena is not None and arena.label == "Arena" and arena.kind == "image"
+    assert arena.path == ms.ARENA_ASSET_JPG and arena.size_bytes == ms.ARENA_ASSET_JPG.stat().st_size
+
+
+def test_the_arena_ships_as_a_full_hd_jpeg() -> None:
+    data = ms.ARENA_ASSET_JPG.read_bytes()
+    assert data[:3] == b"\xff\xd8\xff"
+    # The frame header (baseline SOF0 or progressive SOF2) carries height, then width.
+    at = next(i for i in range(2, len(data) - 9) if data[i] == 0xFF and data[i + 1] in (0xC0, 0xC2))
+    assert struct.unpack(">HH", data[at + 5 : at + 9]) == (1080, 1920)
+
+
+def test_without_its_file_there_is_no_arena(storage: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ms, "ARENA_ASSET_JPG", tmp_path / "missing.jpg")
+    assert [i.media_id for i in ms.list_media()] == [ms.DEFAULT_STAGE_ID, ms.DEFAULT_GREY_ID]
+    assert ms.resolve(ms.DEFAULT_ARENA_ID) is None
 
 
 def test_resolve_unknown_and_invalid_return_none(storage: Path) -> None:

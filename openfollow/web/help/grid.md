@@ -4,9 +4,9 @@ A reference plane drawn over the live video showing where stage coordinates
 land in the image. A **visual aid** – it doesn't change tracking; only
 calibration sets the maths.
 
-Easiest to set with the **Setup Wizard** (Open Setup Wizard on the Camera &
-Grid tab). All distances are in **metres**, relative to the **Reference
-Point** – the (0, 0, 0) of your show (see Core Concepts).
+Easiest to set with the **Setup Wizard** (Open Setup Wizard on the General or
+Camera & Grid tab). All distances are in **metres**, relative to the
+**Reference Point** – the (0, 0, 0) of your show (see Core Concepts).
 
 ## Display
 
@@ -42,6 +42,10 @@ Use when the Reference Point isn't at the grid centre.
   front (downstage) edge.
 - **Z Offset** – height of the grid plane above the Reference Point. `0` sits it
   on the floor; raise it for a stage deck or riser.
+
+Saving a new width, depth or offset forgets the corner pins the Setup Wizard
+saved with the camera, since they were placed on the old grid; the next run of
+the Setup Wizard pins the corners again.
 
 ## Origin Marker
 

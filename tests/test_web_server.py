@@ -31,7 +31,7 @@ import tomllib
 import openfollow
 import openfollow.services as services_module
 import openfollow.web.discovery as discovery_module
-from openfollow.configuration import MOUSE3D_AXIS_FORM_LABELS, AppConfig, load_config, save_config
+from openfollow.configuration import MOUSE3D_AXIS_FORM_LABELS, AppConfig, CameraConfig, load_config, save_config
 from openfollow.marker_catalog import MarkerCatalog
 from openfollow.palette import AUTO_PICK_ORDER
 from openfollow.runtime.overlay_links import SUPPORT
@@ -208,6 +208,18 @@ def test_index_page_offers_restore_defaults_outside_the_form_gate(live_server) -
     assert 'type="button"' in button
     assert "save-btn" not in button
     assert "/api/config/reset" in body
+
+
+@pytest.mark.parametrize("tab", ["general", "camera-grid"])
+def test_index_tab_opens_the_setup_wizard(live_server, tab) -> None:
+    _, base = live_server
+    status, body = _get(base, "/")
+    assert status == 200
+
+    start = body.index(f'id="tab-{tab}"')
+    end = body.find('class="tab-content', start)
+    pane = body[start : end if end != -1 else len(body)]
+    assert re.search(r'<a href="/wizard"[^>]*>Open Setup Wizard</a>', pane)
 
 
 def test_update_banner_and_footer_flag_shown_when_available(live_server, monkeypatch) -> None:
@@ -2006,6 +2018,84 @@ def test_form_post_camera_renders_saved_partial(live_server) -> None:
     status, body = _post_form(base, "/section/camera", {"pos_x": "1.5", "pos_y": "-5.0", "pos_z": "4.0"})
     assert status == 200
     assert len(body) > 50
+
+
+def test_a_camera_form_save_keeps_the_calibration_points(live_server) -> None:
+    """The form carries no points or corner pins; saving it must not drop what the Setup Wizard saved."""
+    server, base = live_server
+    point = {"corner_a": "DSL", "corner_b": "DSR", "distance_a": 21.4, "distance_b": 23.9, "pin_x": 0.4, "pin_y": 0.2}
+    pins = [[0.8, 0.9], [0.2, 0.9], [0.3, 0.6], [0.7, 0.6]]
+    save_config(AppConfig(camera=CameraConfig(calibration_points=[point], corner_pins=pins)), server.config_path)
+    status, _body = _post_form(base, "/section/camera", {"pos_x": "1.5", "pos_y": "-5.0", "pos_z": "4.0"})
+    assert status == 200
+    saved = load_config(server.config_path).camera
+    assert (saved.pos_x, [p.distance_a for p in saved.calibration_points], saved.corner_pins) == (1.5, [21.4], pins)
+
+
+_HELD_PINS = [[0.8, 0.9], [0.2, 0.9], [0.3, 0.6], [0.7, 0.6]]
+
+
+def _post_grid(base: str, how: str, fields: dict) -> int:
+    if how == "form":
+        return _post_form(base, "/section/grid", {k: str(v) for k, v in fields.items()})[0]
+    return _post_json(base, "/api/config/grid" if how == "api" else "/api/config/grid/broadcast", fields)[0]
+
+
+@pytest.mark.parametrize("how", ["form", "api", "broadcast"])
+@pytest.mark.parametrize(
+    "moved", [{"width": 12.0}, {"depth": 8.0}, {"x_offset": 0.5}, {"y_offset": 2.0}, {"z_offset": 0.3}]
+)
+def test_a_grid_write_that_moves_the_corners_forgets_the_corner_pins(live_server, how: str, moved: dict) -> None:
+    """The Setup Wizard's corner pins were placed on the grid's corners; held against others they are wrong."""
+    server, base = live_server
+    save_config(AppConfig(camera=CameraConfig(corner_pins=_HELD_PINS)), server.config_path)
+    assert _post_grid(base, how, moved) == 200
+    assert load_config(server.config_path).camera.corner_pins == []
+
+
+@pytest.mark.parametrize("how", ["form", "api", "broadcast"])
+@pytest.mark.parametrize(
+    "kept", [{"spacing": 0.5}, {"max_height": 4.0}, {"width": 10.0, "depth": 6.0}, {"width": 10.0004}]
+)
+def test_a_grid_write_that_leaves_the_corners_keeps_the_corner_pins(live_server, how: str, kept: dict) -> None:
+    server, base = live_server
+    save_config(AppConfig(camera=CameraConfig(corner_pins=_HELD_PINS)), server.config_path)
+    assert _post_grid(base, how, kept) == 200
+    assert load_config(server.config_path).camera.corner_pins == _HELD_PINS
+
+
+def test_an_imperial_grid_form_save_of_the_same_grid_keeps_the_corner_pins(live_server) -> None:
+    """The form shows each length to a hundredth of an inch; posting it back unchanged is no move."""
+    from openfollow.configuration import GridConfig
+    from openfollow.units import UnitSystem, format_length
+
+    server, base = live_server
+    cfg = AppConfig(camera=CameraConfig(corner_pins=_HELD_PINS), grid=GridConfig(width=10.37, y_offset=2.91))
+    cfg.ui.unit_system = "imperial"
+    save_config(cfg, server.config_path)
+    shown = {
+        name: format_length(getattr(cfg.grid, name), UnitSystem.IMPERIAL)
+        for name in ("width", "depth", "x_offset", "y_offset", "z_offset")
+    }
+    assert _post_grid(base, "form", shown) == 200
+    assert load_config(server.config_path).camera.corner_pins == _HELD_PINS
+
+
+@pytest.mark.parametrize(
+    ("camera", "grid", "pins"),
+    [
+        ({"pos_x": 1.0}, {"width": 12.0}, []),  # another grid, and no pins of its own
+        ({"corner_pins": [[0.1, 0.9], [0.9, 0.9], [0.8, 0.5], [0.2, 0.5]]}, {"width": 12.0}, None),  # its own pins
+        ({"pos_x": 1.0}, {"spacing": 0.5}, _HELD_PINS),  # the same corners
+    ],
+)
+def test_an_import_keeps_corner_pins_only_on_the_grid_they_belong_to(live_server, camera, grid, pins) -> None:
+    server, base = live_server
+    save_config(AppConfig(camera=CameraConfig(corner_pins=_HELD_PINS)), server.config_path)
+    status, _ = _post_json(base, "/api/config/import", {"camera": camera, "grid": grid})
+    assert status == 200
+    expected = camera["corner_pins"] if pins is None else pins
+    assert load_config(server.config_path).camera.corner_pins == expected
 
 
 def test_form_post_osc_renders_saved_partial(live_server) -> None:
@@ -7179,6 +7269,16 @@ def test_validate_endpoint_type_error(live_server) -> None:
     assert 'class="field-error-msg"' in body
 
 
+@pytest.mark.parametrize(("saved_k2", "folds"), [(0.0, True), (0.1, False)])
+def test_validate_endpoint_reads_an_empty_lens_sibling_as_its_saved_value(live_server, saved_k2, folds) -> None:
+    # The save keeps the saved value of a field left empty, so the blur check judges that pair.
+    _, base = live_server
+    assert _post_json(base, "/api/config/camera", {"lens_k1": 0.0, "lens_k2": saved_k2})[0] == 200
+    status, body = _get(base, "/api/validate/camera/lens_k1?lens_k1=-0.4&lens_k2=")
+    assert status == 200
+    assert ("folds" in body) is folds
+
+
 def test_validate_endpoint_advisory_note(live_server) -> None:
     """Cross-field auto-correct surfaces as a ``field-note-msg`` span."""
     _, base = live_server
@@ -8053,7 +8153,7 @@ def test_gallery_list_shows_defaults(gallery_server) -> None:
     status, body = _get(base, f"{_GP}/list")
     assert status == 200
     assert 'id="gallery-grid"' in body
-    assert "Stage" in body and "Grey" in body
+    assert re.findall(r'class="gallery-select" type="button" title="([^"]+)"', body) == ["Stage", "Arena", "Grey"]
     assert "gallery-label" not in body  # no visible per-tile labels
     assert 'title="Stage"' in body  # name kept as hover/aria name only
 
@@ -8156,6 +8256,29 @@ def test_gallery_thumb_stage_serves_asset(gallery_server) -> None:
     status, body = _get_raw(base, f"{_GP}/thumb/default:stage")
     assert status == 200  # the bundled Stage asset
     assert body[:3] == b"\xff\xd8\xff"  # JPEG
+
+
+def test_gallery_thumb_arena_serves_its_picture(gallery_server) -> None:
+    from openfollow.video import media_store
+
+    _, base, _ = gallery_server
+    status, body = _get_raw(base, f"{_GP}/thumb/default:arena")
+    assert status == 200
+    assert body == media_store.ARENA_ASSET_JPG.read_bytes()
+
+
+def test_gallery_thumb_grey_has_none(gallery_server) -> None:
+    _, base, _ = gallery_server
+    status, _body = _get_raw(base, f"{_GP}/thumb/default:grey")
+    assert status == 404
+
+
+def test_gallery_select_arena_persists(gallery_server) -> None:
+    server, base, _ = gallery_server
+    status, body = _post_form(base, f"{_GP}/select", {"media_id": "default:arena"})
+    assert status == 200
+    assert load_config(server.config_path).testpattern_selected_media == "default:arena"
+    assert '<div class="gallery-tile selected"><button class="gallery-select" type="button" title="Arena"' in body
 
 
 def test_video_source_section_hides_capture_for_gallery(live_server) -> None:

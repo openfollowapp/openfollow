@@ -120,36 +120,69 @@
         </p>
     </div>
 
-    <div class="group experimental-feature">
-        <h3 class="group-title">Lens distortion <span class="badge-experimental">Experimental</span></h3>
-        <p class="field-note">Overlay-only curvature to match a fisheye / wide-angle lens; the video is never warped.</p>
+    <div class="group">
+        <h3 class="group-title">Lens distortion</h3>
         <div class="row">
             <div class="field">
-                <label>Barrel / fisheye (k1)</label>
-                <input type="number" id="camera-lens-k1" name="lens_k1" value="{{config.camera.lens_k1}}" min="-0.4" max="0.4" step="0.005"
+                <label>Barrel / fisheye</label>
+                <input type="number" id="camera-lens-k1" name="lens_k1" value="{{config.camera.lens_k1}}" step="0.005"
                        oninput="var s=document.getElementById('camera-lens-k1-range'); if (s) s.value=this.value;"
-                       hx-get="/api/validate/camera/lens_k1" hx-trigger="blur changed delay:200ms"
+                       hx-get="/api/validate/camera/lens_k1"
+                       hx-trigger="blur changed delay:200ms, change from:#camera-lens-k1-range, change from:#camera-lens-k2, change from:#camera-lens-k2-range"
                        hx-target="#camera-lens-k1-error" hx-swap="innerHTML" hx-include="closest form"
                        aria-describedby="camera-lens-k1-error" aria-invalid="false">
-                <input type="range" id="camera-lens-k1-range" min="-0.4" max="0.4" step="0.005" value="{{config.camera.lens_k1}}"
-                       aria-label="Barrel / fisheye (k1) slider"
+                <input type="range" id="camera-lens-k1-range" min="{{min(-0.6, config.camera.lens_k1)}}" max="{{max(0.6, config.camera.lens_k1)}}" step="0.005" value="{{config.camera.lens_k1}}"
+                       aria-label="Barrel / fisheye slider"
                        oninput="var n=document.getElementById('camera-lens-k1'); n.value=this.value;">
                 <span id="camera-lens-k1-error" class="field-error"></span>
             </div>
             <div class="field">
-                <label>Edge fit (k2)</label>
-                <input type="number" id="camera-lens-k2" name="lens_k2" value="{{config.camera.lens_k2}}" min="-0.2" max="0.2" step="0.005"
+                <label>Edge fit</label>
+                <input type="number" id="camera-lens-k2" name="lens_k2" value="{{config.camera.lens_k2}}" step="0.005"
                        oninput="var s=document.getElementById('camera-lens-k2-range'); if (s) s.value=this.value;"
-                       hx-get="/api/validate/camera/lens_k2" hx-trigger="blur changed delay:200ms"
+                       hx-get="/api/validate/camera/lens_k2"
+                       hx-trigger="blur changed delay:200ms, change from:#camera-lens-k2-range, change from:#camera-lens-k1, change from:#camera-lens-k1-range"
                        hx-target="#camera-lens-k2-error" hx-swap="innerHTML" hx-include="closest form"
                        aria-describedby="camera-lens-k2-error" aria-invalid="false">
-                <input type="range" id="camera-lens-k2-range" min="-0.2" max="0.2" step="0.005" value="{{config.camera.lens_k2}}"
-                       aria-label="Edge fit (k2) slider"
+                <input type="range" id="camera-lens-k2-range" min="{{min(-0.4, config.camera.lens_k2)}}" max="{{max(0.4, config.camera.lens_k2)}}" step="0.005" value="{{config.camera.lens_k2}}"
+                       aria-label="Edge fit slider"
                        oninput="var n=document.getElementById('camera-lens-k2'); n.value=this.value;">
                 <span id="camera-lens-k2-error" class="field-error"></span>
             </div>
         </div>
     </div>
+
+    % if config.camera.calibration_points:
+    <div class="group experimental-feature" id="camera-calibration-points">
+        <h3 class="group-title">Calibration points <span class="badge-experimental">Experimental</span></h3>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th scope="col">Point</th>
+                    <th scope="col">First corner<br>Distance</th>
+                    <th scope="col">Second corner<br>Distance</th>
+                    <th scope="col">Height above stage</th>
+                    <th scope="col">Position</th>
+                </tr>
+            </thead>
+            <tbody>
+            % for _n, _p in enumerate(config.camera.calibration_points, 1):
+                <tr>
+                    <th scope="row">{{_n}}</th>
+                    <td>{{_p.corner_a}}<br>{{format_length(_p.distance_a, _us)}}</td>
+                    <td>{{_p.corner_b}}<br>{{format_length(_p.distance_b, _us)}}</td>
+                    <td>{{format_length(_p.height, _us)}}</td>
+                    % if _p.position:
+                    <td>X = {{format_length(_p.position[0], _us)}}<br>Y = {{format_length(_p.position[1], _us)}}<br>Z = {{format_length(_p.position[2], _us)}}</td>
+                    % else:
+                    <td>–</td>
+                    % end
+                </tr>
+            % end
+            </tbody>
+        </table>
+    </div>
+    % end
 
     <script>
     (function() {

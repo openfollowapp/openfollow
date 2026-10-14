@@ -17,10 +17,10 @@ video/inputs/
     v4l2.py         # USB camera / capture card plugin (v4l2src, UVC, Linux-only)
     avf.py          # USB camera / capture card plugin (avfvideosrc, macOS-only)
     testpattern.py  # Media Gallery source (id "testpattern"): plays a stored image / VP8 clip
-                    #   or the Stage / Grey defaults from media_store.py – always available
+                    #   or the Stage / Arena / Grey defaults from media_store.py – always available
 ```
 
-The **Media Gallery** (`MediaGalleryInput`, `input_id` `testpattern`) plays a device-local image / looping VP8 clip / bundled default selected via `testpattern_selected_media`. Its library lives in [`video/media_store.py`](../../openfollow/video/media_store.py) (storage resolver, id rules, hard cap, magic-byte + `GstDiscoverer` validation, thumbnails); the web management routes (`/video-input/testpattern/*` in [`web/routes.py`](../../openfollow/web/routes.py)) handle list / upload / capture / select / download / delete. The selection is device-local (web-only via `ConfigField.device_editable=False`; stripped on export, preserved on import) and silently falls back to Stage when unresolvable. Clips loop **seamlessly** via a SEGMENT seek: `on_bus_async_done` arms the loop once (a flushing `FLUSH | SEGMENT` seek), so the clip posts `SEGMENT_DONE` instead of `EOS` at the end, and `on_bus_segment_done` queues the next pass with a non-flushing seek – the sink never stops, so there is no end-of-clip freeze and the stall watchdog never trips. `GstPipeline` aggregates every sink's segment-done into ONE `SEGMENT_DONE` posted by the pipeline itself (`message.src` is the pipeline, not the sink), so the receiver forwards it unfiltered – do NOT re-add a per-sink (`shared_videosink`) src filter, it drops the aggregated message and the clip stalls. `on_bus_eos` stays a fallback that re-arms the loop (a stray EOS is not a disconnect); do NOT loop by a flushing EOS seek: it freezes the clip at its end and flashes "No Signal". WebP image support relies on `gstreamer1.0-plugins-bad` (webpdec/webpenc, via `libgstwebp`); it is treated as always-present and pinned as a dedicated dependency by [`tests/test_system_dependencies.py`](../../tests/test_system_dependencies.py) so a pipeline refactor can't silently drop it.
+The **Media Gallery** (`MediaGalleryInput`, `input_id` `testpattern`) plays a device-local image / looping VP8 clip / bundled default selected via `testpattern_selected_media`. Its library lives in [`video/media_store.py`](../../openfollow/video/media_store.py) (storage resolver, id rules, hard cap, magic-byte + `GstDiscoverer` validation, thumbnails); the web management routes (`/video-input/testpattern/*` in [`web/routes.py`](../../openfollow/web/routes.py)) handle list / upload / capture / select / download / delete. The selection is device-local (web-only via `ConfigField.device_editable=False`; stripped on export, preserved on import) and silently falls back to Stage when unresolvable. The **Arena** default (`default:arena`, `arena_default.jpg`) is an arena seen from a truss above the stage, rendered by `scripts/gen_arena_default.py` from a venue plan through the overlay's own lens model (`apply_overlay_distortion`, Barrel / fisheye -0.15, Edge fit 0.02), so the Lens step measures the pair back; the script prints its camera, grid and the calibration marks' distances, which the help drawer lists. Without its file it is not offered, and a selection of it falls back to Stage. Clips loop **seamlessly** via a SEGMENT seek: `on_bus_async_done` arms the loop once (a flushing `FLUSH | SEGMENT` seek), so the clip posts `SEGMENT_DONE` instead of `EOS` at the end, and `on_bus_segment_done` queues the next pass with a non-flushing seek – the sink never stops, so there is no end-of-clip freeze and the stall watchdog never trips. `GstPipeline` aggregates every sink's segment-done into ONE `SEGMENT_DONE` posted by the pipeline itself (`message.src` is the pipeline, not the sink), so the receiver forwards it unfiltered – do NOT re-add a per-sink (`shared_videosink`) src filter, it drops the aggregated message and the clip stalls. `on_bus_eos` stays a fallback that re-arms the loop (a stray EOS is not a disconnect); do NOT loop by a flushing EOS seek: it freezes the clip at its end and flashes "No Signal". WebP image support relies on `gstreamer1.0-plugins-bad` (webpdec/webpenc, via `libgstwebp`); it is treated as always-present and pinned as a dedicated dependency by [`tests/test_system_dependencies.py`](../../tests/test_system_dependencies.py) so a pipeline refactor can't silently drop it.
 
 **Adding a new protocol:** create `video/inputs/<name>.py` with a `VideoInputBase` subclass. No other files need changes – the registry auto-discovers it, the web UI renders its fields, the receiver delegates to it.
 
@@ -68,6 +68,13 @@ srtsrc → pre_queue → decodebin → post_queue → videoconvert → shared_vi
 - Preserves decoder latency on ASYNC_DONE (do NOT force 0)
 - `pad-added` on decodebin: **do NOT filter by pad name** (uses `src_0`, not `video_0`)
 - Reconnect: 3 retries with 8s first-frame timeout, then no-signal placeholder fallback
+
+## RTSP plugin (`video/inputs/rtsp.py`)
+```
+rtspsrc → decodebin → post_queue (leaky) → videoconvert → shared_videosink
+```
+- `protocols` allows TCP + UDP + multicast, **except for a name dialled over IPv6, which gets TCP interleaved only**. `rtspsrc` opens its UDP ports for the family of the literal in the URL, so a name reads as IPv4 even when the control connection lands on IPv6 (a dual-stack server, `localhost`), and `udpsink` then refuses the server's address with `Invalid address family`. `_pin.dials_ipv6` asks the bounded resolver (`_RESOLVE_WAIT_S`) and reads the family of its first answer, the one the system's address selection (RFC 6724, against its own routes) puts first and the connection dials, so a dual-stack camera reached over IPv4 keeps UDP and multicast; a name still resolving keeps every transport this attempt and the next attempt reads the answer. An IPv6 literal is left to the element, which reads its family itself
+- `tcp-timeout` 10 s so the element gives up before the connection timeout, `latency` 0, `drop-on-latency`, `buffer-mode` none; only the video track is linked into `decodebin`, since an NVR may list its audio track first
 
 ## Stream credentials (RTSP / SRT)
 `rtsp_user` / `rtsp_password` / `srt_passphrase` are rendered as a login block under each plugin's URL (password inputs) and drive the element properties directly. The URL's own credential is **stripped before** `location` / `uri` is handed over – `rtspsrc` tries URL userinfo first and only then falls back to `user-id` / `user-pw`, so leaving it in would let a stale URL credential outrank the form. Blank fields leave the existing URL-userinfo path working untouched.
@@ -150,7 +157,9 @@ generation's phase with another's verdict.
 
 **Surfaces:** the top-right status badge carries the *chip* only
 (`_status_flags["video_failure"]`, ~40 characters per row). The Settings error
-box and both web boxes carry the **sentence plus the action**, and never the
+box and the web boxes (Live Statistics, the Video Source panel and the Setup
+Wizard's Video Source step, the last two one partial) carry the **sentence plus
+the action**, and never the
 element's own wording - every renderer uses `failure_text or error_message`, so
 the raw text appears only when there is no classification to replace it. It
 stays in `/api/stats` and the diagnostics bundle, which is what support reads

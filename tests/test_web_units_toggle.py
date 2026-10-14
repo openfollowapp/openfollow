@@ -9,6 +9,9 @@ POST parsing, and blur validation.
 
 from __future__ import annotations
 
+import html
+import json
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -19,6 +22,7 @@ import openfollow.web.discovery as discovery_module
 from openfollow.configuration import load_config
 from openfollow.web.server import ConfigWebServer
 from tests._ports import live_on_free_port
+from tests._wizard_js import length_page, needs_node, run_wizard_js
 
 pytestmark = pytest.mark.integration
 
@@ -60,6 +64,17 @@ def _post_form(base: str, path: str, data: dict) -> tuple[int, str]:
             return r.status, r.read().decode()
     except urllib.error.HTTPError as e:
         return e.code, e.read().decode()
+
+
+def _post_json(base: str, path: str, data: dict) -> int:
+    req = urllib.request.Request(
+        f"{base}{path}",
+        data=json.dumps(data).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=5) as r:
+        return r.status
 
 
 def _set_unit_system(base: str, value: str) -> tuple[int, str]:
@@ -283,6 +298,69 @@ class TestWizardUnitInjection:
         # "Stored:" string itself lives in the always-present JS helper, so
         # assert on the server-rendered element id instead.)
         assert 'id="grid_width-echo"' not in body
+        assert ' data-meters="' not in body
+
+    @needs_node
+    def test_imperial_lengths_read_as_the_metres_saved(self, live_server) -> None:
+        server, base = live_server
+        _set_unit_system(base, "imperial")
+        # Each shows as ft / in rounded to 0.01 in; read back from that text, 0.5 m was 0.500126 m.
+        assert _post_json(base, "/api/config/grid", {"width": 7.5, "spacing": 0.5, "x_offset": -1.23}) == 200
+        assert _post_json(base, "/api/config/camera", {"pos_x": 0.3, "pos_y": -11.07, "pos_z": 5.5}) == 200
+        cfg = load_config(server.config_path)
+        saved = {f"grid_{k}": getattr(cfg.grid, k) for k in ("width", "depth", "spacing", "x_offset", "y_offset")}
+        saved |= {"grid_z_offset": cfg.grid.z_offset}
+        saved |= {f"cam_{k}": getattr(cfg.camera, k) for k in ("pos_x", "pos_y", "pos_z")}
+        _status, body = _get(base, "/wizard")
+        fields = {}
+        for field_id in saved:
+            tag = re.search(rf'<input\b[^>]*\bid="{field_id}"[^>]*>', body)
+            assert tag, field_id
+            value = re.search(r'\bvalue="([^"]*)"', tag.group(0))
+            meters = re.search(r'\bdata-meters="([^"]*)"', tag.group(0))
+            assert value and meters, field_id
+            fields[field_id] = {"value": html.unescape(value.group(1)), "dataset": {"meters": meters.group(1)}}
+        read = run_wizard_js(
+            "ids.map(function(id) { return wizReadLen(id); })",
+            functions=("wizReadLen",),
+            prelude=length_page("imperial", fields),
+            ids=list(saved),
+        )
+        assert read == list(saved.values())
+
+    @pytest.mark.parametrize("system", ["metric", "imperial"])
+    def test_grid_setup_opens_on_the_unit_choice(self, live_server, system) -> None:
+        server, base = live_server
+        _set_unit_system(base, system)
+        status, body = _get(base, "/wizard")
+        assert status == 200
+
+        step = body[body.index('id="wizard-step-grid"') : body.index('id="wizard-step-video"')]
+        first_control = re.search(r"<(?:select|input)\b[^>]*>", step)
+        assert first_control
+        assert 'id="wizard-unit-system"' in first_control.group(0)
+        assert f'<option value="{system}" selected>' in step
+
+    def test_the_wizard_unit_choice_saves_through_the_settings_route(self, live_server) -> None:
+        server, base = live_server
+        _status, body = _get(base, "/wizard")
+        assert "fetch('/settings/unit-system'" in body
+        assert "body.append('unit_system', select.value)" in body
+        # The route the wizard posts to persists the choice.
+        _set_unit_system(base, "imperial")
+        assert load_config(server.config_path).ui.unit_system == "imperial"
+
+
+@pytest.mark.parametrize("system", ["metric", "imperial"])
+def test_general_shows_the_active_unit_system(live_server, system) -> None:
+    server, base = live_server
+    _set_unit_system(base, system)
+    status, body = _get(base, "/")
+    assert status == 200
+    select = body[
+        body.index('id="general-unit-system"') : body.index("</select>", body.index('id="general-unit-system"'))
+    ]
+    assert f'<option value="{system}" selected>' in select
 
 
 class TestDetectInputWidget:

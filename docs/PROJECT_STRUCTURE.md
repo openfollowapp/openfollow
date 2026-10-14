@@ -15,6 +15,7 @@ openfollow/              # Single unified package
 │   ├── geometry.py      # A path's curve: straight runs, rounded corners
 │   ├── network.py       # Junctions between active paths, walking a locked marker
 │   └── engine.py        # Locked markers: pull, slide, switch, record
+├── lens_model.py        # The lens pair's fold check (stdlib-only; config, web and solver read it)
 ├── window.py            # GTK native sink window wrapper
 ├── psn/                 # PSN protocol subpackage
 │   ├── clock.py         # Shared microsecond time base (headers + trackers)
@@ -24,7 +25,10 @@ openfollow/              # Single unified package
 ├── scene/               # Camera model + calibration math
 │   ├── camera.py
 │   ├── ground_grid.py   # Grid lines clipped to the ground-grid polygon (HUD + web)
-│   └── solver.py        # DLT camera solve (used by the web wizard)
+│   ├── solver.py        # DLT camera solve + the radial overlay warp and its inverse
+│   ├── lens_fit.py      # k1 / k2 from traced straight lines (the wizard's Lens step)
+│   ├── edge_snap.py     # Snap a traced line's points onto a brightness edge
+│   └── edge_chains.py   # Edge suggestions: line-like edges found in a scaled snapshot
 ├── video/               # Video pipeline + overlay
 │   ├── receiver.py      # Generic GStreamer orchestrator
 │   ├── overlay.py       # Cairo HUD renderer

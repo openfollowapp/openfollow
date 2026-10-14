@@ -16,7 +16,7 @@ import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
-from openfollow.configuration import is_simple_mode, save_config
+from openfollow.configuration import is_simple_mode, save_config_fields
 from openfollow.runtime import paths_runtime
 from openfollow.video.failure import SourceKind, VideoFailure, failure_sentence
 
@@ -24,6 +24,9 @@ if TYPE_CHECKING:
     from openfollow.app import OpenFollowApp
 
 logger = logging.getLogger(__name__)
+
+# The fields ``Camera.to_config`` fills in.
+_CAMERA_POSE_FIELDS = ("pos_x", "pos_y", "pos_z", "pitch", "yaw", "roll", "fov")
 
 
 def on_screen_mode_active(app: OpenFollowApp) -> bool:
@@ -244,20 +247,20 @@ def _toggle_zone_overlay(app: OpenFollowApp) -> None:
     """Flip trigger_zones.show_overlay and persist the change."""
     cfg = app._config.trigger_zones
     cfg.show_overlay = not cfg.show_overlay
-    try:
-        save_config(app._config, app._config_path)
-    except Exception as error:  # noqa: BLE001
-        logger.warning("Failed to persist zone overlay toggle: %s", error)
+    _persist_config(app, "trigger_zones.show_overlay")
 
 
-def _persist_config(app: OpenFollowApp) -> bool:
-    """Save config + advance mtime; log and return False on failure (no raise)."""
+def _persist_config(app: OpenFollowApp, *names: str, replace_unreadable: bool = False) -> bool:
+    """Write the named fields into config.toml as it is on disk; log and return False on failure (no raise).
+
+    The mtime is left alone: the reload that follows finds these fields unchanged
+    and applies whatever else the file holds.
+    """
     try:
-        save_config(app._config, app._config_path)
+        save_config_fields(app._config, app._config_path, names, replace_unreadable=replace_unreadable)
     except Exception:
-        logger.exception("Failed to persist config.")
+        logger.exception("Failed to persist %s.", ", ".join(names))
         return False
-    app._config_mtime = app._get_config_mtime()
     return True
 
 
@@ -926,11 +929,13 @@ def on_key_down(app: OpenFollowApp, event: dict[str, Any]) -> None:
 
     modifier_keys = app._input_manager.keyboard_handler.keys if app._input_manager is not None else set()
     if key == "s" and ("Control" in modifier_keys or "Meta" in modifier_keys) and app._camera is not None:
-        app._config.camera = app._camera.to_config()
+        # The pose only: the lens pair and the calibration points are the Setup Wizard's.
+        pose = app._camera.to_config()
+        app._config.camera = replace(app._config.camera, **{f: getattr(pose, f) for f in _CAMERA_POSE_FIELDS})
         # Route through _persist_config so a save failure (read-only fs, disk
         # full) is logged and swallowed like every other persist site, instead
         # of raising out of the GTK key handler.
-        if _persist_config(app):
+        if _persist_config(app, *(f"camera.{name}" for name in _CAMERA_POSE_FIELDS)):
             logger.info("Config saved.")
 
 
@@ -1121,9 +1126,10 @@ def confirm_source_type_selection(app: OpenFollowApp) -> None:
 
     Transactional: on a successful swap, persist + route to next step
     (URL editor or source picker per the plugin's capabilities); on failure
-    with an empty URL field, auto-chain into the URL editor with
-    rollback semantics; otherwise revert the stored type and bounce
-    into the Settings menu with a banner.
+    with an empty URL field, auto-chain into the URL editor for the picked
+    type; otherwise keep the running type and bounce into the Settings menu
+    with a banner. The picked type reaches ``app._config`` only once it runs,
+    so a hot reload in between finds nothing to undo.
 
     When the operator picks the SAME type already running, skip the
     swap but still route to the next step – that path is the way to
@@ -1137,17 +1143,12 @@ def confirm_source_type_selection(app: OpenFollowApp) -> None:
     old_type = app._config.video_source_type
 
     if new_type != old_type:
-        new_cfg = replace(app._config, video_source_type=new_type)
-        app._config.video_source_type = new_type
         try:
-            app._runtime_services.swap_video(new_cfg)
+            app._runtime_services.swap_video(replace(app._config, video_source_type=new_type))
         except Exception as error:  # noqa: BLE001
             # Auto-chain into the URL editor when the plugin we picked
             # has a string field whose current value is empty – almost
-            # always the failure cause for
-            # RTSP / SRT / NDI / RTP. Drop the operator into the
-            # editor directly with ``revert_type`` so cancelling
-            # rolls the partial type change back.
+            # always the failure cause for RTSP / SRT / NDI / RTP.
             #
             # Choice-bearing fields (testpattern) take a parallel
             # auto-chain into the on-device list picker so the
@@ -1155,17 +1156,16 @@ def confirm_source_type_selection(app: OpenFollowApp) -> None:
             choice_field = _first_video_choice_field(new_type)
             if choice_field is not None:
                 exit_source_type_selection(app)
-                app._enter_field_choice_picker(revert_type=old_type)
+                app._enter_field_choice_picker(source_type=new_type)
                 return
             text_field = _first_video_text_field(new_type)
             if text_field is not None and not str(getattr(app._config, text_field[0], "")).strip():
                 exit_source_type_selection(app)
                 app._enter_url_editor(
                     banner=(f"{display} needs a {text_field[1]}. Type it below and press Enter."),
-                    revert_type=old_type,
+                    source_type=new_type,
                 )
                 return
-            app._config.video_source_type = old_type
             logger.warning(
                 "Failed to live-apply video source type %r: %s – keeping %r.",
                 new_type,
@@ -1177,12 +1177,44 @@ def confirm_source_type_selection(app: OpenFollowApp) -> None:
                 banner=(f"Couldn't switch to {display}: {error}. Configure it in the web UI, then try again."),
             )
             return
-        save_config(app._config, app._config_path)
-        app._config_mtime = app._get_config_mtime()
+        app._config.video_source_type = new_type
+        saved = _persist_config(app, "video_source_type")
         logger.info("Video source type set to: %s (live)", new_type)
+        if not saved:
+            exit_source_type_selection(app)
+            app._enter_settings_menu(banner=_unsaved_banner(display, "switch again"))
+            return
 
     exit_source_type_selection(app)
     _route_after_video_source_change(app, new_type)
+
+
+def _unsaved_banner(what: str, again: str) -> str:
+    # A repaired file is reloaded at once and brings its own value back.
+    return f"{what} is live but could not be saved to config.toml. Fix the file, then {again}."
+
+
+def _input_display_name(source_type: str) -> str:
+    from openfollow.video.inputs import get_input_class
+
+    cls = get_input_class(source_type)
+    return cls.display_name if cls else source_type
+
+
+def _input_declares(source_type: str, field: str) -> bool:
+    from openfollow.video.inputs import get_input_class
+
+    cls = get_input_class(source_type)
+    return cls is not None and any(f.name == field for f in cls.config_fields())
+
+
+def _save_for_input_not_running(app: OpenFollowApp, field: str, value: str, label: str, again: str) -> None:
+    """Save a plain edit whose input a reload replaced while the editor was open; nothing is swapped."""
+    setattr(app._config, field, value)
+    if _persist_config(app, field):
+        logger.info("Set %s to %r; its input is not running.", field, value)
+        return
+    app._enter_settings_menu(banner=f"{label} could not be saved to config.toml. Fix the file, then {again}.")
 
 
 # ---------------------------------------------------------------------------
@@ -1194,16 +1226,16 @@ def enter_url_editor(
     app: OpenFollowApp,
     *,
     banner: str = "",
-    revert_type: str = "",
+    source_type: str = "",
 ) -> None:
-    """Open the on-device text editor for the active plugin's URL field.
+    """Open the on-device text editor for a video input's URL field.
 
-    ``revert_type`` is non-empty when the editor was auto-chained from
-    a failed source-type swap: on cancel the type rolls back to the prior
-    value so a partial picker → empty-URL state can't escape a Settings-menu
-    round-trip.
+    ``source_type`` names the input when it is not the one running: the
+    auto-chain from a source switch that needs a URL first. It stays out of
+    ``app._config`` until a confirm brings it up. A plain edit holds none, so
+    its confirm never brings back an input a reload replaced meanwhile.
     """
-    field = _first_video_text_field(app._config.video_source_type)
+    field = _first_video_text_field(source_type or app._config.video_source_type)
     if field is None:
         return
     name, label = field
@@ -1212,7 +1244,7 @@ def enter_url_editor(
     app._url_editor_field_label = label
     app._url_editor_value = str(getattr(app._config, name, ""))
     app._url_editor_banner = banner
-    app._url_editor_revert_type = revert_type
+    app._url_editor_source_type = source_type
 
 
 def exit_url_editor(app: OpenFollowApp) -> None:
@@ -1221,35 +1253,25 @@ def exit_url_editor(app: OpenFollowApp) -> None:
     app._url_editor_field_label = ""
     app._url_editor_value = ""
     app._url_editor_banner = ""
-    app._url_editor_revert_type = ""
+    app._url_editor_source_type = ""
 
 
 def cancel_url_editor(app: OpenFollowApp) -> None:
-    """Close the editor and discard any in-progress edits.
-
-    When auto-chained, ``_url_editor_revert_type`` carries the prior
-    ``video_source_type``: restore it so the operator's
-    aborted picker → empty-URL flow leaves no half-applied state.
-    The receiver is already on the old plugin (``swap_video`` keeps it
-    attached on failure), so this is a pure config restore.
-    """
-    revert_type = app._url_editor_revert_type
-    if revert_type:
-        app._config.video_source_type = revert_type
+    """Close the editor and discard any in-progress edits."""
     exit_url_editor(app)
     _back_to_settings(app)
 
 
 def confirm_url_editor(app: OpenFollowApp) -> None:
-    """Persist the typed value, optionally retry the swap that brought
-    us here, and close the editor.
+    """Live-apply the typed value, persist it once it runs, and close the editor.
 
-    On the auto-chain path (``_url_editor_revert_type`` non-empty), a
-    successful save triggers ``swap_video`` so the operator's intent
-    ("switch to RTSP with this URL") completes in one step. If
-    ``swap_video`` then fails for an unrelated reason – bad URL
-    format, server unreachable – the type rolls back and the operator
-    lands in the Settings menu with a banner.
+    On the auto-chain path (the editor's input is not the running one) a
+    successful swap completes the operator's "switch to RTSP with this URL" in
+    one step. A failed swap leaves the running input and its config as they
+    were and lands in the Settings menu with a banner; the typed value is still
+    kept for the input that could not start, where it drives nothing. A plain
+    edit whose input a reload replaced while it was open is saved for that
+    input, without a swap.
     """
     if not app._url_editor_field_name:
         exit_url_editor(app)
@@ -1257,58 +1279,49 @@ def confirm_url_editor(app: OpenFollowApp) -> None:
     field = app._url_editor_field_name
     label = app._url_editor_field_label
     new_value = app._url_editor_value
-    revert_type = app._url_editor_revert_type
-    old_value = getattr(app._config, field, "")
-    setattr(app._config, field, new_value)
-    _persist_config(app)
+    if not app._url_editor_source_type and not _input_declares(app._config.video_source_type, field):
+        exit_url_editor(app)
+        _save_for_input_not_running(app, field, new_value, label, "enter it again")
+        return
+    source_type = app._url_editor_source_type or app._config.video_source_type
+    switching = source_type != app._config.video_source_type
 
     # Always rebuild the pipeline on confirm. Re-selecting the active
     # source (same type, unchanged URL) is the operator's "reconnect
     # now" gesture: the same-type path skips swap_video in
     # confirm_source_type_selection, so without rebuilding here a dead
     # RTSP/SRT pipeline stayed stuck until the operator bounced through
-    # another source type. ``revert_type`` is only set on the auto-chain
-    # path (empty URL after a type pick), where a failed swap rolls the
-    # type back; on the plain edit path we keep the type and surface the
-    # error, leaving the auto-heal loop to keep retrying in the
-    # background.
+    # another source type.
+    candidate = replace(app._config, video_source_type=source_type)
+    setattr(candidate, field, new_value)
     try:
-        new_cfg = replace(app._config)
-        app._runtime_services.swap_video(new_cfg)
-        # Log the applied change only after swap_video succeeds. On
-        # failure the except below rolls the value back, so emitting an
-        # info "Set …" line before the swap would falsely read as a
-        # successful change when diagnosing reconnect issues.
-        logger.info("Set %s to %r", field, new_value)
+        app._runtime_services.swap_video(candidate)
     except Exception as error:  # noqa: BLE001
-        from openfollow.video.inputs import get_input_class
-
-        failed_type = app._config.video_source_type
-        # swap_video rolls the receiver back to its prior plugin/config
-        # on failure, so undo the stored change too – otherwise config
-        # would diverge from the live receiver and the auto-heal loop
-        # (which reads the receiver's input_config) would keep targeting
-        # the old value. Auto-chain rolls the type back; the plain-edit
-        # path rolls the URL field back.
-        if revert_type:
-            app._config.video_source_type = revert_type
-        else:
-            setattr(app._config, field, old_value)
-        _persist_config(app)
+        if switching:
+            setattr(app._config, field, new_value)
+            _persist_config(app, field)
         logger.warning(
-            "URL editor: swap to %r failed: %s%s.",
-            failed_type,
+            "URL editor: swap to %r with %s=%r failed: %s – keeping %r.",
+            source_type,
+            field,
+            new_value,
             error,
-            f" – reverting to {revert_type!r}" if revert_type else f" – reverting {field} to {old_value!r}",
+            app._config.video_source_type,
         )
-        failed_cls = get_input_class(failed_type)
-        target = failed_cls.display_name if failed_cls else failed_type
+        target = _input_display_name(source_type)
         exit_url_editor(app)
         app._enter_settings_menu(
             banner=(f"Couldn't switch to {target}: {error}. Configure {label} in the web UI, then try again."),
         )
         return
+    setattr(app._config, field, new_value)
+    app._config.video_source_type = source_type
+    saved = _persist_config(app, field, *(("video_source_type",) if switching else ()))
+    logger.info("Set %s to %r", field, new_value)
     exit_url_editor(app)
+    if not saved:
+        what, again = (_input_display_name(source_type), "switch again") if switching else (label, "enter it again")
+        app._enter_settings_menu(banner=_unsaved_banner(what, again))
 
 
 def process_url_editor_input(app: OpenFollowApp) -> None:
@@ -1353,16 +1366,16 @@ def handle_url_editor_key(app: OpenFollowApp, key: str) -> None:
 def enter_field_choice_picker(
     app: OpenFollowApp,
     *,
-    revert_type: str = "",
+    source_type: str = "",
 ) -> None:
-    """Open the on-device list picker for the active plugin's first
+    """Open the on-device list picker for a video input's first
     choices-bearing string field.
 
-    ``revert_type`` mirrors :func:`enter_url_editor` – non-empty when
-    the picker was auto-chained from a failed source-type swap, so
-    cancelling rolls the partial type change back.
+    ``source_type`` mirrors :func:`enter_url_editor`: the input when it is not
+    the one running, kept out of ``app._config`` until a confirm brings it up,
+    and none for a plain edit.
     """
-    field = _first_video_choice_field(app._config.video_source_type)
+    field = _first_video_choice_field(source_type or app._config.video_source_type)
     if field is None:
         return
     name, label, choices = field
@@ -1379,7 +1392,7 @@ def enter_field_choice_picker(
     app._field_choice_options = list(choices)
     app._field_choice_items = items
     app._field_choice_selected_index = selected_idx
-    app._field_choice_revert_type = revert_type
+    app._field_choice_source_type = source_type
 
 
 def exit_field_choice_picker(app: OpenFollowApp) -> None:
@@ -1389,43 +1402,26 @@ def exit_field_choice_picker(app: OpenFollowApp) -> None:
     app._field_choice_options = []
     app._field_choice_items = []
     app._field_choice_selected_index = 0
-    app._field_choice_revert_type = ""
+    app._field_choice_source_type = ""
 
 
 def cancel_field_choice_picker(app: OpenFollowApp) -> None:
-    """Close the picker and discard the selection.
-
-    On the auto-chain path (``_field_choice_revert_type`` non-empty),
-    restore the prior ``video_source_type`` so the operator's aborted
-    picker → empty / invalid value flow leaves no half-applied state.
-    The receiver is already on the old plugin (``swap_video`` keeps it
-    attached on failure), so this is a pure config restore.
-    """
-    revert_type = app._field_choice_revert_type
-    if revert_type:
-        app._config.video_source_type = revert_type
+    """Close the picker and discard the selection."""
     exit_field_choice_picker(app)
     _back_to_settings(app)
 
 
 def confirm_field_choice_picker(app: OpenFollowApp) -> None:
-    """Persist the selected value, live-apply it, and close the picker.
+    """Live-apply the selected value, persist it once it runs, and close the picker.
 
-    ``swap_video`` runs on every confirm, not just the auto-chain
-    path – the operator's intent is "show me this value NOW", whether
-    they reached the picker by changing source-type (auto-chain,
-    ``revert_type`` set) or by editing the value on the already-active
-    plugin (``revert_type`` empty). Without the unconditional swap the
-    same-type-value-change path saved to ``config.toml`` but left the
-    running pipeline on the old value, surprising operators who'd
-    expect the change to apply immediately (consistent with how the
-    web UI's section POST handlers live-apply).
-
-    On swap failure:
-    - Auto-chain path (``revert_type`` set): roll the source TYPE
-      back to the prior plugin and banner.
-    - Same-type path (no ``revert_type``): roll the FIELD value back
-      to what was running before the picker opened and banner.
+    ``swap_video`` runs on every confirm, not just the auto-chain path – the
+    operator's intent is "show me this value NOW", whether they reached the
+    picker by changing source type or by editing the value on the running
+    input. A failed swap leaves the running input and its config as they were
+    and lands in the Settings menu with a banner; on the auto-chain path the
+    chosen value is still kept for the input that could not start. A plain pick
+    for an input a reload replaced is saved without a swap, as in
+    :func:`confirm_url_editor`.
     """
     if not app._field_choice_field_name or not app._field_choice_options:
         exit_field_choice_picker(app)
@@ -1434,57 +1430,53 @@ def confirm_field_choice_picker(app: OpenFollowApp) -> None:
     value, _display = app._field_choice_options[idx]
     field_name = app._field_choice_field_name
     label = app._field_choice_field_label
-    revert_type = app._field_choice_revert_type
-    # Snapshot the prior value for the same-type rollback path –
-    # captured before ``setattr`` so a failed swap on the new value
-    # can restore the running pipeline's config exactly.
-    prior_value = getattr(app._config, field_name, None)
-    setattr(app._config, field_name, value)
-    _persist_config(app)
-    logger.info("Set %s to %r", field_name, value)
+    if not app._field_choice_source_type and not _input_declares(app._config.video_source_type, field_name):
+        exit_field_choice_picker(app)
+        _save_for_input_not_running(app, field_name, value, label, "pick it again")
+        return
+    source_type = app._field_choice_source_type or app._config.video_source_type
+    switching = source_type != app._config.video_source_type
 
+    candidate = replace(app._config, video_source_type=source_type)
+    setattr(candidate, field_name, value)
     try:
-        new_cfg = replace(app._config)
-        app._runtime_services.swap_video(new_cfg)
+        app._runtime_services.swap_video(candidate)
     except Exception as error:  # noqa: BLE001
-        if revert_type:
-            from openfollow.video.inputs import get_input_class
-
-            failed_type = app._config.video_source_type
-            app._config.video_source_type = revert_type
-            _persist_config(app)
+        if switching:
+            setattr(app._config, field_name, value)
+            _persist_config(app, field_name)
             logger.warning(
-                "Field-choice picker: swap to %r still failed: %s – reverting to %r.",
-                failed_type,
+                "Field-choice picker: swap to %r still failed: %s – keeping %r.",
+                source_type,
                 error,
-                revert_type,
+                app._config.video_source_type,
             )
-            failed_cls = get_input_class(failed_type)
-            target = failed_cls.display_name if failed_cls else failed_type
+            target = _input_display_name(source_type)
             exit_field_choice_picker(app)
             app._enter_settings_menu(
                 banner=(f"Couldn't switch to {target}: {error}. Configure {label} in the web UI, then try again."),
             )
             return
-        # Same-type path: revert just the field value. The running
-        # pipeline is still on ``prior_value`` (swap_video keeps the
-        # receiver attached to the old config on failure), so this
-        # restores stored-config / running-pipeline consistency.
-        setattr(app._config, field_name, prior_value)
-        _persist_config(app)
         logger.warning(
-            "Field-choice picker: swap with %s=%r failed: %s – reverting to %r.",
+            "Field-choice picker: swap with %s=%r failed: %s – keeping %r.",
             field_name,
             value,
             error,
-            prior_value,
+            getattr(app._config, field_name, None),
         )
         exit_field_choice_picker(app)
         app._enter_settings_menu(
             banner=(f"Couldn't apply {label} = {value!r}: {error}. Try a different value, or edit in the web UI."),
         )
         return
+    setattr(app._config, field_name, value)
+    app._config.video_source_type = source_type
+    saved = _persist_config(app, field_name, *(("video_source_type",) if switching else ()))
+    logger.info("Set %s to %r", field_name, value)
     exit_field_choice_picker(app)
+    if not saved:
+        what, again = (_input_display_name(source_type), "switch again") if switching else (label, "pick it again")
+        app._enter_settings_menu(banner=_unsaved_banner(what, again))
 
 
 def process_field_choice_picker_input(app: OpenFollowApp) -> None:
@@ -1839,7 +1831,14 @@ def process_button_detection(app: OpenFollowApp) -> None:
         app._config.controller.mapped_controller_guid = wizard.controller_guid
         app._config.controller.__post_init__()
         # Non-raising: tear-down below must run so a disk error can't loop the tick.
-        _persist_config(app)
+        _persist_config(
+            app,
+            *(f"controller.{name}" for name in detect_map),
+            "controller.button_raw_indices",
+            "controller.swap_triggers",
+            "controller.mapped_controller_name",
+            "controller.mapped_controller_guid",
+        )
         input_manager.gamepad_handler.apply_config()
         logger.info("Button detection map applied: %s", detect_map)
         app._button_detection = None

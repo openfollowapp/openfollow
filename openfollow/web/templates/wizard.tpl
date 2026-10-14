@@ -3,6 +3,11 @@
 % _us = UnitSystem(config.ui.unit_system)
 % _imp = _us is UnitSystem.IMPERIAL
 % _len = unit_suffix_length(_us)
+% import json
+% from openfollow.configuration import MAX_CALIBRATION_POINTS
+% _show_calib = bool(config.ui.show_experimental_features)
+% _calib_corners = config.camera.corner_pins
+% _calib_saved = [{'corner_a': c.corner_a, 'corner_b': c.corner_b, 'distance_a': c.distance_a, 'distance_b': c.distance_b, 'height': c.height, 'pin': [c.pin_x, c.pin_y], 'position': c.position} for c in config.camera.calibration_points]
 
 <style>
   .wizard-header {
@@ -141,6 +146,7 @@
     stroke: var(--accent);
     stroke-width: 2;
     fill: none;
+    vector-effect: non-scaling-stroke;
   }
   .wizard-overlay .handle:active { cursor: grabbing; }
   /* Fine-adjust mode: 2×2 grid of 4× zoom windows (one per corner).
@@ -223,6 +229,54 @@
     background: var(--success-sign-green) no-repeat center / contain;
   }
   .wizard-status.error { color: var(--error-text); }
+  /* Lens step: traced lines, their points and the curve the fitted lens predicts. */
+  .lens-hit { pointer-events: all; cursor: crosshair; }
+  /* Strokes in CSS pixels: the viewBox is the snapshot's own resolution, which a phone shows at a fifth. */
+  .lens-chord, .lens-curve, .lens-pending, .lens-candidate-line, .lens-candidate-hit,
+  .lens-point .dot, .wizard-point .dot { vector-effect: non-scaling-stroke; }
+  .lens-chord { fill: none; stroke: var(--accent); stroke-width: 1.5; stroke-opacity: 0.7; }
+  .lens-curve { fill: none; stroke: var(--success-line); stroke-width: 2; stroke-dasharray: 6 4; }
+  .lens-line.misfit .lens-curve, .lens-line.misfit .lens-chord { stroke: var(--caution-line); }
+  .lens-line.selected .lens-chord { stroke-opacity: 1; stroke-width: 2.5; }
+  .lens-point .dot, .wizard-point .dot { fill: var(--accent); stroke: var(--accent); stroke-width: 1.5; }
+  .lens-point.off .dot { fill: none; }
+  .lens-point.unsnapped .dot { stroke-dasharray: 2 2; }
+  .lens-point.selected .dot { stroke-width: 3; }
+  .lens-pending { fill: none; stroke: var(--accent); stroke-width: 2; stroke-dasharray: 3 3; }
+  .lens-label { fill: var(--text); font-weight: 600; pointer-events: none; }
+  /* The grid's own lines inside the quad, as the Operator Screen draws them. */
+  .wizard-grid-line { fill: none; stroke: var(--accent); stroke-opacity: 0.4; stroke-width: 1; vector-effect: non-scaling-stroke; pointer-events: none; }
+  #review-grid .wizard-grid-line { stroke: var(--success-mark); stroke-opacity: 0.5; }
+  .wizard-loupe {
+    position: absolute; width: 120px; height: 120px; border-radius: 50%; overflow: hidden;
+    border: 2px solid var(--accent); background: var(--bg-deep); pointer-events: none; display: none;
+  }
+  .wizard-loupe canvas { width: 100%; height: 100%; display: block; }
+  .lens-result-main { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+  /* Suggested edges: faint and dashed until tapped, with a wide invisible stroke to tap. */
+  .lens-candidate-line { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-opacity: 0.6; stroke-dasharray: 8 6; pointer-events: none; }
+  .lens-candidate-hit { fill: none; stroke: transparent; stroke-width: 24; pointer-events: stroke; cursor: pointer; }
+  .lens-candidate:hover .lens-candidate-line, .lens-candidate:focus .lens-candidate-line { stroke-opacity: 1; }
+  .lens-candidate:focus { outline: none; }
+  .lens-candidate:focus .lens-candidate-line { stroke-width: 4; }
+  .lens-edges { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: none; pointer-events: none; }
+  .lens-dev { margin-top: 0.72rem; }
+  /* Graded meter (docs/STATUS_LANGUAGE.md): five segments, filled in the level's line colour. */
+  .wizard-meter { display: inline-flex; gap: 3px; vertical-align: middle; }
+  .wizard-meter-seg { width: 14px; height: 8px; border-radius: 2px; background: var(--border-soft); }
+  .wizard-meter[data-level="caution"] .wizard-meter-seg.filled { background: var(--caution-line); }
+  .wizard-meter[data-level="info"] .wizard-meter-seg.filled { background: var(--info-line); }
+  .wizard-meter[data-level="success"] .wizard-meter-seg.filled { background: var(--success-line); }
+  /* Calibration points: the guide to each measured corner, and where the solve puts a point it left out. */
+  .calib-guide { fill: none; stroke: var(--accent); stroke-width: 1.5; stroke-opacity: 0.7; stroke-dasharray: 6 4; vector-effect: non-scaling-stroke; pointer-events: none; }
+  .calib-miss { fill: none; stroke: var(--error-mark); stroke-width: 1.5; vector-effect: non-scaling-stroke; pointer-events: none; }
+  .calib-label { fill: var(--text); stroke: var(--bg-deep); font-weight: 700; paint-order: stroke; pointer-events: none; }
+  .wizard-overlay.calib-picking #fine-corners .handle { cursor: pointer; }
+  .calib-row { border-top: 1px solid var(--border-soft); padding: 0.6rem 0; }
+  .calib-row-head { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+  .calib-row-head .calib-delete { margin-left: auto; }
+  .calib-fit { color: var(--muted); }
+  .calib-reason { color: var(--error-text); margin-top: 0.35rem; }
   @media (max-width: 680px) {
     .wizard-step-btn { padding: 0.35rem 0.5rem; font-size: 0.72rem; }
   }
@@ -233,18 +287,26 @@
   <h2>Setup Wizard</h2>
 </div>
 
+% # The order is published to the page script as WIZ (key -> index), so no
+% # button or script carries a step number.
+% _steps = [('prep', 'Preparation'), ('grid', 'Grid Setup'), ('video', 'Video Source'), ('lens', 'Lens'), ('camera', 'Camera Position'), ('ref', 'Reference Mapping'), ('corners', 'Corner Pinning'), ('review', 'Review')]
+% _keys_js = ', '.join("'" + k + "'" for k, _ in _steps)
+<script>
+  window.WIZ = {
+% for _i, (_key, _label) in enumerate(_steps):
+    {{_key}}: {{_i}},
+% end
+  };
+  window.WIZ_STEPS = [{{!_keys_js}}];
+</script>
 <nav class="wizard-steps" aria-label="Setup wizard steps">
-  <button type="button" class="wizard-step-btn" data-step="0" onclick="wizardGo(0)">1. Preparation</button>
-  <button type="button" class="wizard-step-btn" data-step="1" onclick="wizardGo(1)">2. Grid Setup</button>
-  <button type="button" class="wizard-step-btn" data-step="2" onclick="wizardGo(2)">3. Video Source</button>
-  <button type="button" class="wizard-step-btn" data-step="3" onclick="wizardGo(3)">4. Camera Position</button>
-  <button type="button" class="wizard-step-btn" data-step="4" onclick="wizardGo(4)">5. Reference Mapping</button>
-  <button type="button" class="wizard-step-btn" data-step="5" onclick="wizardGo(5)">6. Corner Pinning</button>
-  <button type="button" class="wizard-step-btn" data-step="6" onclick="wizardGo(6)">7. Review</button>
+% for _i, (_key, _label) in enumerate(_steps):
+  <button type="button" class="wizard-step-btn" data-step="{{_i}}" onclick="wizardGo({{_i}})">{{_i + 1}}. {{_label}}</button>
+% end
 </nav>
 
-<!-- Step 1: Preparation -->
-<div class="wizard-content" id="wizard-step-0">
+<!-- Preparation -->
+<div class="wizard-content" id="wizard-step-prep">
   <div class="section">
     <div class="section-head">
       <h2>Preparation</h2>
@@ -327,17 +389,25 @@
 
     <div class="wizard-nav">
       <span class="spacer"></span>
-      <button type="button" class="save-btn" onclick="wizardGo(1)">Next</button>
+      <button type="button" class="save-btn" onclick="wizardNext()">Next</button>
     </div>
   </div>
 </div>
 
-<!-- Step 2: Grid Setup -->
-<div class="wizard-content" id="wizard-step-1">
+<!-- Grid Setup -->
+<div class="wizard-content" id="wizard-step-grid">
   <div class="section">
     <div class="section-head">
       <h2>Grid Setup</h2>
       <span class="section-note">Dimensions and position of the rectangular tracking area</span>
+    </div>
+
+    <div class="group" id="wizard-units">
+      <div class="row">
+        <div class="field">
+          % include('partials/unit_system_select.tpl', select_id='wizard-unit-system', unit_system=_us.value)
+        </div>
+      </div>
     </div>
 
     <svg id="grid-setup-svg" class="wizard-illustration" viewBox="0 0 580 400" style="max-width:580px;" xmlns="http://www.w3.org/2000/svg">
@@ -393,14 +463,14 @@
       <div class="row">
         <div class="field">
           <label for="grid_width">Width ({{_len}})</label>
-          <input type="{{'text' if _imp else 'number'}}"{{!'' if _imp else ' step="0.1" min="0.1"'}} id="grid_width" value="{{format_length(config.grid.width, _us) if _imp else config.grid.width}}" oninput="onGridInputChanged()">
+          <input type="{{'text' if _imp else 'number'}}"{{!(' data-meters="%s"' % config.grid.width) if _imp else ' step="0.1" min="0.1"'}} id="grid_width" value="{{format_length(config.grid.width, _us) if _imp else config.grid.width}}" oninput="onGridInputChanged()">
           % if _imp:
           <small class="metric-echo" id="grid_width-echo">Stored: {{metric_echo(config.grid.width)}}</small>
           % end
         </div>
         <div class="field">
           <label for="grid_depth">Depth ({{_len}})</label>
-          <input type="{{'text' if _imp else 'number'}}"{{!'' if _imp else ' step="0.1" min="0.1"'}} id="grid_depth" value="{{format_length(config.grid.depth, _us) if _imp else config.grid.depth}}" oninput="onGridInputChanged()">
+          <input type="{{'text' if _imp else 'number'}}"{{!(' data-meters="%s"' % config.grid.depth) if _imp else ' step="0.1" min="0.1"'}} id="grid_depth" value="{{format_length(config.grid.depth, _us) if _imp else config.grid.depth}}" oninput="onGridInputChanged()">
           % if _imp:
           <small class="metric-echo" id="grid_depth-echo">Stored: {{metric_echo(config.grid.depth)}}</small>
           % end
@@ -409,14 +479,14 @@
       <div class="row">
         <div class="field">
           <label for="grid_z_offset">Z Offset ({{_len}})</label>
-          <input type="{{'text' if _imp else 'number'}}"{{!'' if _imp else ' step="0.01"'}} id="grid_z_offset" value="{{format_length(config.grid.z_offset, _us) if _imp else config.grid.z_offset}}" oninput="onGridInputChanged()">
+          <input type="{{'text' if _imp else 'number'}}"{{!(' data-meters="%s"' % config.grid.z_offset) if _imp else ' step="0.01"'}} id="grid_z_offset" value="{{format_length(config.grid.z_offset, _us) if _imp else config.grid.z_offset}}" oninput="onGridInputChanged()">
           % if _imp:
           <small class="metric-echo" id="grid_z_offset-echo">Stored: {{metric_echo(config.grid.z_offset)}}</small>
           % end
         </div>
         <div class="field">
           <label for="grid_spacing">Spacing ({{_len}})</label>
-          <input type="{{'text' if _imp else 'number'}}"{{!'' if _imp else ' step="0.1" min="0.1"'}} id="grid_spacing" value="{{format_length(config.grid.spacing, _us) if _imp else config.grid.spacing}}" oninput="onGridInputChanged()">
+          <input type="{{'text' if _imp else 'number'}}"{{!(' data-meters="%s"' % config.grid.spacing) if _imp else ' step="0.1" min="0.1"'}} id="grid_spacing" value="{{format_length(config.grid.spacing, _us) if _imp else config.grid.spacing}}" oninput="onGridInputChanged()">
           % if _imp:
           <small class="metric-echo" id="grid_spacing-echo">Stored: {{metric_echo(config.grid.spacing)}}</small>
           % end
@@ -437,14 +507,14 @@
       <div class="row">
         <div class="field">
           <label for="grid_x_offset">X Offset ({{_len}}) <span style="font-weight:400;text-transform:none;letter-spacing:0;">(stage left +)</span></label>
-          <input type="{{'text' if _imp else 'number'}}"{{!'' if _imp else ' step="0.01"'}} id="grid_x_offset" value="{{format_length(config.grid.x_offset, _us) if _imp else config.grid.x_offset}}" oninput="onGridInputChanged()">
+          <input type="{{'text' if _imp else 'number'}}"{{!(' data-meters="%s"' % config.grid.x_offset) if _imp else ' step="0.01"'}} id="grid_x_offset" value="{{format_length(config.grid.x_offset, _us) if _imp else config.grid.x_offset}}" oninput="onGridInputChanged()">
           % if _imp:
           <small class="metric-echo" id="grid_x_offset-echo">Stored: {{metric_echo(config.grid.x_offset)}}</small>
           % end
         </div>
         <div class="field">
           <label for="grid_y_offset">Y Offset ({{_len}}) <span style="font-weight:400;text-transform:none;letter-spacing:0;">(upstage +)</span></label>
-          <input type="{{'text' if _imp else 'number'}}"{{!'' if _imp else ' step="0.01"'}} id="grid_y_offset" value="{{format_length(config.grid.y_offset, _us) if _imp else config.grid.y_offset}}" oninput="onGridInputChanged()">
+          <input type="{{'text' if _imp else 'number'}}"{{!(' data-meters="%s"' % config.grid.y_offset) if _imp else ' step="0.01"'}} id="grid_y_offset" value="{{format_length(config.grid.y_offset, _us) if _imp else config.grid.y_offset}}" oninput="onGridInputChanged()">
           % if _imp:
           <small class="metric-echo" id="grid_y_offset-echo">Stored: {{metric_echo(config.grid.y_offset)}}</small>
           % end
@@ -460,19 +530,21 @@
     </div>
 
     <div class="wizard-nav">
-      <button type="button" class="secondary" onclick="wizardGo(0)">Back</button>
-      <button type="button" class="save-btn" onclick="wizardGo(2)">Next</button>
+      <button type="button" class="secondary" onclick="wizardPrev()">Back</button>
+      <button type="button" class="save-btn" onclick="wizardNext()">Next</button>
     </div>
   </div>
 </div>
 
-<!-- Step 3: Video Source -->
-<div class="wizard-content" id="wizard-step-2">
+<!-- Video Source -->
+<div class="wizard-content" id="wizard-step-video">
   <div class="section">
     <div class="section-head">
       <h2>Video Source</h2>
       <span class="section-note">Select and configure the camera input</span>
     </div>
+
+    % include('partials/video_source_failure.tpl')
 
     <div class="group">
       <div class="row">
@@ -500,16 +572,104 @@
     <div id="wizard-video-saved" class="notice success" role="status" style="display:none"></div>
 
     <div class="wizard-nav">
-      <button type="button" class="secondary" onclick="wizardGo(1)">Back</button>
+      <button type="button" class="secondary" onclick="wizardPrev()">Back</button>
       <span class="spacer"></span>
       <button type="button" class="secondary" onclick="saveWizardVideoSource().catch(wizardVideoSaveFailed)">Save</button>
-      <button type="button" class="save-btn" onclick="saveWizardVideoSource().then(function(){ wizardGo(3); }).catch(wizardVideoSaveFailed)">Save &amp; Next</button>
+      <button type="button" class="save-btn" onclick="saveWizardVideoSource().then(function(){ wizardNext(); }).catch(wizardVideoSaveFailed)">Save &amp; Next</button>
     </div>
   </div>
 </div>
 
-<!-- Step 4: Camera Extrinsics -->
-<div class="wizard-content" id="wizard-step-3">
+<!-- Lens: the distortion from lines that are straight in reality -->
+<div class="wizard-content" id="wizard-step-lens">
+  <div class="section">
+    <div class="section-head">
+      <h2>Lens</h2>
+      <span class="section-note">Measure the lens from edges that are straight in reality</span>
+    </div>
+
+    <div id="lens-container" class="wizard-preview-container" style="display:none;">
+      <img id="lens-image" alt="Camera snapshot">
+      <canvas id="lens-edges" class="lens-edges" aria-hidden="true"></canvas>
+      <svg id="lens-overlay" class="wizard-overlay" tabindex="-1" xmlns="http://www.w3.org/2000/svg">
+        <rect id="lens-hit" class="lens-hit" x="0" y="0" width="100%" height="100%" fill="transparent"/>
+        <g id="lens-candidates"></g>
+        <g id="lens-lines"></g>
+        <g id="lens-pending"></g>
+      </svg>
+      <div class="wizard-loupe" aria-hidden="true"><canvas width="240" height="240"></canvas></div>
+    </div>
+    <div id="lens-no-feed" class="wizard-no-feed" style="display:none;">No video feed available. Configure a video source in the Video Source step, then return here and press <strong>Refresh Image</strong>.</div>
+
+    <div id="lens-notice" class="notice" role="status" style="display:none;"></div>
+    <div id="lens-status" class="wizard-status" role="alert" style="display:none;"></div>
+    <div id="lens-misfit" class="notice warning" role="status" style="display:none;"></div>
+
+    <div style="margin-top:0.72rem;display:flex;gap:0.5rem;flex-wrap:wrap;">
+      <button type="button" class="secondary" onclick="loadSnapshot()">Refresh Image</button>
+      <button type="button" class="secondary" id="lens-toggle-point" onclick="lensToggleSelectedPoint()" disabled>Point off</button>
+      <button type="button" class="secondary" id="lens-delete-line" onclick="lensDeleteSelectedLine()" disabled>Delete line</button>
+      <button type="button" class="secondary" id="lens-clear" onclick="lensClearLines()" disabled>Clear lines</button>
+    </div>
+% if config.ui.developer_mode:
+    <div class="field checkbox-field lens-dev">
+      <label for="lens-show-edges">Edge map</label>
+      <div class="checkbox-wrap checkbox-field inline">
+        <input type="checkbox" id="lens-show-edges" onchange="lensToggleEdgeView(this.checked)">
+        <label for="lens-show-edges">Show edges</label>
+      </div>
+    </div>
+% end
+
+    <div id="lens-result" class="notice" role="status" style="display:none;margin-top:0.72rem;">
+      <div class="lens-result-main">
+        <span class="wizard-meter" aria-hidden="true"><span class="wizard-meter-seg"></span><span class="wizard-meter-seg"></span><span class="wizard-meter-seg"></span><span class="wizard-meter-seg"></span><span class="wizard-meter-seg"></span></span>
+        <span id="lens-result-text"></span>
+      </div>
+      <div class="notice-sub" id="lens-result-hint"></div>
+    </div>
+
+    <div class="group" style="margin-top:0.72rem;">
+      <div class="group-title">Fine-tune</div>
+      <div class="row">
+        <div class="field" style="flex:1;min-width:200px;">
+          <label for="wiz_lens_k1">Barrel / fisheye</label>
+          <div style="display:flex;gap:0.5rem;align-items:center;">
+            <input type="range" id="wiz_lens_k1_range" min="-0.6" max="0.6" step="0.005"
+                   value="{{config.camera.lens_k1}}" style="flex:1;" oninput="onWizardLensInput('k1', 'range')"
+                   aria-label="Barrel / fisheye slider">
+            <input type="number" id="wiz_lens_k1" step="0.005"
+                   value="{{config.camera.lens_k1}}" style="width:6rem;" oninput="onWizardLensInput('k1', 'number')">
+          </div>
+        </div>
+        <div class="field" style="flex:1;min-width:200px;">
+          <label for="wiz_lens_k2">Edge fit</label>
+          <div style="display:flex;gap:0.5rem;align-items:center;">
+            <input type="range" id="wiz_lens_k2_range" min="-0.4" max="0.4" step="0.005"
+                   value="{{config.camera.lens_k2}}" style="flex:1;" oninput="onWizardLensInput('k2', 'range')"
+                   aria-label="Edge fit slider">
+            <input type="number" id="wiz_lens_k2" step="0.005"
+                   value="{{config.camera.lens_k2}}" style="width:6rem;" oninput="onWizardLensInput('k2', 'number')">
+          </div>
+        </div>
+      </div>
+      <div id="wiz-lens-error" class="wizard-field-error" style="display:none;">This pair folds the overlay inside the frame. Bring either value closer to 0.</div>
+    </div>
+
+    <p class="wizard-help" style="margin-top:0.72rem;">
+      <strong>Tap a dashed suggestion</strong> that is straight in reality, or click the start and the end of a straight edge yourself: a stage edge, a tape line, a truss. Drag a point to correct it. Lines near the picture's edges and corners tell the most.
+    </p>
+    <p class="wizard-tip"><strong>Arrow keys</strong> nudge the selected point (<strong>Shift</strong> for bigger steps), <strong>Space</strong> switches a middle point off or on, <strong>Delete</strong> removes its line, <strong>Esc</strong> cancels a started line. Skipping this step keeps the current values.</p>
+
+    <div class="wizard-nav">
+      <button type="button" class="secondary" onclick="wizardPrev()">Back</button>
+      <button type="button" class="save-btn" onclick="wizardNext()">Next</button>
+    </div>
+  </div>
+</div>
+
+<!-- Camera Position -->
+<div class="wizard-content" id="wizard-step-camera">
   <div class="section">
     <div class="section-head">
       <h2>Camera Position</h2>
@@ -572,21 +732,21 @@
       <div class="row">
         <div class="field">
           <label for="cam_pos_x">Pos X ({{_len}}) <span style="font-weight:400;text-transform:none;letter-spacing:0;">(stage left +)</span></label>
-          <input type="{{'text' if _imp else 'number'}}"{{!'' if _imp else ' step="0.01"'}} id="cam_pos_x" value="{{format_length(config.camera.pos_x, _us) if _imp else config.camera.pos_x}}" oninput="onCamInputChanged()">
+          <input type="{{'text' if _imp else 'number'}}"{{!(' data-meters="%s"' % config.camera.pos_x) if _imp else ' step="0.01"'}} id="cam_pos_x" value="{{format_length(config.camera.pos_x, _us) if _imp else config.camera.pos_x}}" oninput="onCamInputChanged()">
           % if _imp:
           <small class="metric-echo" id="cam_pos_x-echo">Stored: {{metric_echo(config.camera.pos_x)}}</small>
           % end
         </div>
         <div class="field">
           <label for="cam_pos_y">Pos Y ({{_len}}) <span style="font-weight:400;text-transform:none;letter-spacing:0;">(upstage +)</span></label>
-          <input type="{{'text' if _imp else 'number'}}"{{!'' if _imp else ' step="0.01"'}} id="cam_pos_y" value="{{format_length(config.camera.pos_y, _us) if _imp else config.camera.pos_y}}" oninput="onCamInputChanged()">
+          <input type="{{'text' if _imp else 'number'}}"{{!(' data-meters="%s"' % config.camera.pos_y) if _imp else ' step="0.01"'}} id="cam_pos_y" value="{{format_length(config.camera.pos_y, _us) if _imp else config.camera.pos_y}}" oninput="onCamInputChanged()">
           % if _imp:
           <small class="metric-echo" id="cam_pos_y-echo">Stored: {{metric_echo(config.camera.pos_y)}}</small>
           % end
         </div>
         <div class="field">
           <label for="cam_pos_z">Pos Z ({{_len}}) <span style="font-weight:400;text-transform:none;letter-spacing:0;">(height)</span></label>
-          <input type="{{'text' if _imp else 'number'}}"{{!'' if _imp else ' step="0.01"'}} id="cam_pos_z" value="{{format_length(config.camera.pos_z, _us) if _imp else config.camera.pos_z}}" oninput="onCamInputChanged()">
+          <input type="{{'text' if _imp else 'number'}}"{{!(' data-meters="%s"' % config.camera.pos_z) if _imp else ' step="0.01"'}} id="cam_pos_z" value="{{format_length(config.camera.pos_z, _us) if _imp else config.camera.pos_z}}" oninput="onCamInputChanged()">
           % if _imp:
           <small class="metric-echo" id="cam_pos_z-echo">Stored: {{metric_echo(config.camera.pos_z)}}</small>
           % end
@@ -645,52 +805,65 @@
     </div>
 
     <div class="wizard-nav">
-      <button type="button" class="secondary" onclick="wizardGo(2)">Back</button>
-      <button type="button" class="save-btn" onclick="wizardGo(4)">Next</button>
+      <button type="button" class="secondary" onclick="wizardPrev()">Back</button>
+      <button type="button" class="save-btn" onclick="wizardNext()">Next</button>
     </div>
   </div>
 </div>
 
-<!-- Step 5: Coarse Calibration (Reference Mapping) -->
-<div class="wizard-content" id="wizard-step-4">
+<!-- Reference Mapping (coarse calibration) -->
+<div class="wizard-content" id="wizard-step-ref">
   <div class="section">
     <div class="section-head">
       <h2>Reference Mapping</h2>
-      <span class="section-note">Drag the crosshair to the physical Reference Point mark</span>
+      <span class="section-note">Drag the marker to the physical Reference Point mark</span>
     </div>
 
     <div id="coarse-container" class="wizard-preview-container" style="display:none;">
-      <img id="coarse-image" alt="Camera snapshot">
-      <svg id="coarse-overlay" class="wizard-overlay" xmlns="http://www.w3.org/2000/svg">
-        <polygon id="coarse-quad" fill="rgba(255,188,0,0.06)" stroke="rgba(255,188,0,0.5)" stroke-width="2" points="0,0"/>
-        <g id="coarse-zoff"></g>
-        <g id="coarse-corners"></g>
-        <g id="coarse-ref"></g>
-      </svg>
+      <div id="coarse-full-view">
+        <img id="coarse-image" alt="Camera snapshot">
+        <svg id="coarse-overlay" class="wizard-overlay" xmlns="http://www.w3.org/2000/svg">
+          <polygon id="coarse-quad" fill="rgba(255,188,0,0.06)" stroke="rgba(255,188,0,0.5)" stroke-width="2" points="0,0"/>
+          <g id="coarse-zoff"></g>
+          <g id="coarse-corners"></g>
+          <g id="coarse-ref"></g>
+        </svg>
+      </div>
+      % # Fine-adjust view (hidden until toggled): one 4× crop of the snapshot
+      % # centred on the Reference Point, dragged like a Corner Pinning box.
+      <div id="coarse-zoom-view" class="fine-zoom-box" style="display:none;">
+        <svg id="coarse-zoom-svg" class="fine-zoom-svg" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid slice" role="group" aria-label="Fine adjust the Reference Point" tabindex="0">
+          <image data-fine-zoom-image x="0" y="0"/>
+          <polygon id="coarse-zoom-quad" fill="rgba(255,188,0,0.06)" stroke="rgba(255,188,0,0.5)" stroke-width="2" vector-effect="non-scaling-stroke" points="0,0"/>
+          <g id="coarse-zoom-ref"></g>
+        </svg>
+      </div>
+      <div class="wizard-loupe" aria-hidden="true"><canvas width="240" height="240"></canvas></div>
     </div>
-    <div id="coarse-no-feed" class="wizard-no-feed" style="display:none;">No video feed available. Configure a video source in Step 3, then return here and press <strong>Refresh Image</strong>.</div>
+    <div id="coarse-no-feed" class="wizard-no-feed" style="display:none;">No video feed available. Configure a video source in the Video Source step, then return here and press <strong>Refresh Image</strong>.</div>
 
     <div id="coarse-status" class="wizard-status" style="display:none;"></div>
 
     <div style="margin-top:0.72rem;display:flex;gap:0.5rem;flex-wrap:wrap;">
       <button type="button" class="secondary" onclick="loadSnapshot()">Refresh Image</button>
       <button type="button" class="secondary" onclick="resetCoarseCalibration()">Reset</button>
+      <button type="button" class="secondary" id="coarse-zoom-toggle" onclick="toggleCoarseZoomMode()" disabled>Fine adjust</button>
     </div>
 
     <p class="wizard-help" style="margin-top:0.72rem;">
-      <strong>Drag the crosshair marker</strong> to the physical Reference Point mark visible on the stage. All corners move together with the reference point to roughly align the overlay with your stage.
+      <strong>Drag the marker</strong> to the physical Reference Point mark visible on the stage. All corners move together with the reference point to roughly align the overlay with your stage.
     </p>
-    <p class="wizard-tip">Zoom in on your browser (Ctrl/Cmd + scroll) for more precision. You can also click the crosshair and use <strong>arrow keys</strong> to nudge it precisely (hold <strong>Shift</strong> for larger steps).</p>
+    <p class="wizard-tip">For pixel-precise placement, click <strong>Fine adjust</strong> to switch to a 4×-zoomed view of the marker. You can also click the marker and use <strong>arrow keys</strong> to nudge it precisely (hold <strong>Shift</strong> for larger steps).</p>
 
     <div class="wizard-nav">
-      <button type="button" class="secondary" onclick="wizardGo(3)">Back</button>
-      <button type="button" class="save-btn" onclick="wizardGo(5)">Next</button>
+      <button type="button" class="secondary" onclick="wizardPrev()">Back</button>
+      <button type="button" class="save-btn" onclick="wizardNext()">Next</button>
     </div>
   </div>
 </div>
 
-<!-- Step 6: Fine Calibration (Corner Pinning) -->
-<div class="wizard-content" id="wizard-step-5">
+<!-- Corner Pinning (fine calibration) -->
+<div class="wizard-content" id="wizard-step-corners">
   <div class="section">
     <div class="section-head">
       <h2>Corner Pinning</h2>
@@ -703,8 +876,11 @@
         <img id="fine-image" alt="Camera snapshot">
         <svg id="fine-overlay" class="wizard-overlay" xmlns="http://www.w3.org/2000/svg">
           <polygon id="fine-quad" fill="rgba(255,188,0,0.06)" stroke="rgba(255,188,0,0.5)" stroke-width="2" points="0,0"/>
+          <g id="fine-grid"></g>
           <g id="fine-corners"></g>
+          <g id="fine-calib"></g>
         </svg>
+        <div class="wizard-loupe" aria-hidden="true"><canvas width="240" height="240"></canvas></div>
       </div>
       % # Fine-adjust 4-box view (hidden until toggled). Each box:
       % # 4×-zoomed crop of snapshot, centred on corner. data-corner
@@ -750,7 +926,7 @@
         </div>
       </div>
     </div>
-    <div id="fine-no-feed" class="wizard-no-feed" style="display:none;">No video feed available. Configure a video source in Step 3, then return here and press <strong>Refresh Image</strong>.</div>
+    <div id="fine-no-feed" class="wizard-no-feed" style="display:none;">No video feed available. Configure a video source in the Video Source step, then return here and press <strong>Refresh Image</strong>.</div>
 
     <div id="fine-status" class="wizard-status" style="display:none;"></div>
 
@@ -774,46 +950,36 @@
               title="Load a snapshot first">Fine adjust</button>
     </div>
 
-    <div id="cp-lens-controls" class="experimental-feature" style="margin-top:0.72rem;display:flex;gap:1rem;flex-wrap:wrap;align-items:flex-end;">
-      <div class="field" style="flex:1;min-width:200px;">
-        <label for="cp_lens_k1">Lens distortion <span class="badge-experimental">Experimental</span> &ndash; barrel / fisheye (k1)</label>
-        <div style="display:flex;gap:0.5rem;align-items:center;">
-          <input type="range" id="cp_lens_k1_range" min="-0.4" max="0.4" step="0.005"
-                 value="{{config.camera.lens_k1}}" style="flex:1;" oninput="onWizardLensRange('k1')"
-                 aria-label="Lens distortion barrel / fisheye (k1) slider">
-          <input type="number" id="cp_lens_k1" min="-0.4" max="0.4" step="0.005"
-                 value="{{config.camera.lens_k1}}" style="width:6rem;" oninput="onWizardLensNumber('k1')">
+% if _show_calib:
+    <details class="inline-advanced experimental-feature" id="calib-section">
+      <summary>Advanced <span class="badge-experimental">Experimental</span></summary>
+      <div class="inline-advanced-content">
+        <div id="calib-list"></div>
+        <div id="calib-notice" class="notice warning" role="status" style="display:none;">
+          <div>One point is in the solve, and nothing cross-checks it.</div>
+          <div class="notice-sub" id="calib-notice-step">Add a second point to cross-check it.</div>
         </div>
+        <button type="button" class="secondary" id="calib-add" onclick="calibAdd()" disabled>Add calibration point</button>
       </div>
-      <div class="field" style="flex:1;min-width:200px;">
-        <label for="cp_lens_k2">Edge fit (k2)</label>
-        <div style="display:flex;gap:0.5rem;align-items:center;">
-          <input type="range" id="cp_lens_k2_range" min="-0.2" max="0.2" step="0.005"
-                 value="{{config.camera.lens_k2}}" style="flex:1;" oninput="onWizardLensRange('k2')"
-                 aria-label="Lens distortion edge fit (k2) slider">
-          <input type="number" id="cp_lens_k2" min="-0.2" max="0.2" step="0.005"
-                 value="{{config.camera.lens_k2}}" style="width:6rem;" oninput="onWizardLensNumber('k2')">
-        </div>
-      </div>
-    </div>
-    <p class="wizard-tip experimental-feature" style="margin-top:0.4rem;">Bow the projected grid to match a fisheye / wide-angle lens before pinning the corners. Only the overlay is bent; the video is unchanged.</p>
+    </details>
+% end
 
     <p class="wizard-help" style="margin-top:0.72rem;">
-      <strong>Drag each corner marker</strong> to its physical mark on the stage. The labels are stage positions: <strong>DSL</strong>/<strong>USL</strong> are stage left, <strong>DSR</strong>/<strong>USR</strong> are stage right (D = downstage/front, U = upstage/back). With a front-of-house camera you see the audience's view, so stage left is on the right of the image (audience right) and stage right is on the left (audience left).
+      <strong>Drag each corner marker</strong> to its physical mark on the stage. The grid's lines follow, spaced as the Operator Screen draws them. The labels are stage positions: <strong>DSL</strong>/<strong>USL</strong> are stage left, <strong>DSR</strong>/<strong>USR</strong> are stage right (D = downstage/front, U = upstage/back). With a front-of-house camera you see the audience's view, so stage left is on the right of the image (audience right) and stage right is on the left (audience left).
     </p>
     <p class="wizard-tip">Start with the two downstage corners (front), then adjust the upstage corners (back). If a corner turns red, the shape is invalid. For pixel-precise placement, click <strong>Fine adjust</strong> to switch to a 4×-zoomed per-corner view.</p>
     <p>If your corners are invalid, three things could be wrong: The position of your camera relative to the reference point, your marked rectangle has not the same size as the grid, or the corners of your rectangle are not 90 degrees.</p>
     <p>Click a corner or use <strong>Tab</strong> to select it, then use <strong>arrow keys</strong> to nudge (hold <strong>Shift</strong> for larger steps).</p>
 
     <div class="wizard-nav">
-      <button type="button" class="secondary" onclick="wizardGo(4)">Back</button>
-      <button type="button" class="save-btn" onclick="wizardGo(6)">Next</button>
+      <button type="button" class="secondary" onclick="wizardPrev()">Back</button>
+      <button type="button" class="save-btn" onclick="wizardNext()">Next</button>
     </div>
   </div>
 </div>
 
-<!-- Step 7: Review & Apply -->
-<div class="wizard-content" id="wizard-step-6">
+<!-- Review & Apply -->
+<div class="wizard-content" id="wizard-step-review">
   <div class="section">
     <div class="section-head">
       <h2>Review</h2>
@@ -824,14 +990,24 @@
       <img id="review-image" alt="Camera snapshot">
       <svg id="review-overlay" class="wizard-overlay" xmlns="http://www.w3.org/2000/svg">
         <polygon id="review-quad" fill="rgba(255,188,0,0.06)" stroke="rgba(92,201,140,0.8)" stroke-width="2" points="0,0"/>
+        <g id="review-grid"></g>
         <g id="review-zoff"></g>
         <g id="review-corners"></g>
+        <g id="review-calib-points"></g>
         <g id="review-ref"></g>
       </svg>
     </div>
     <div id="review-no-feed" class="wizard-no-feed" style="display:none;">No video feed available. Values below are still valid, but the visual review is unavailable.</div>
 
     <div id="review-status" class="wizard-status" style="display:none;"></div>
+    <div id="review-lens-caution" class="notice warning" style="display:none;">Lens changed &ndash; redo Corner Pinning so the position matches.</div>
+
+% if _show_calib:
+    <div class="group experimental-feature" id="review-calib" style="display:none;">
+      <div class="group-title">Calibration points</div>
+      <div id="review-calib-list"></div>
+    </div>
+% end
 
     <div class="group">
       <div class="group-title">Camera</div>
@@ -843,6 +1019,9 @@
         <div class="wizard-solved-param"><span class="param-label">Yaw</span><span class="param-value" id="review-cam-yaw">-</span></div>
         <div class="wizard-solved-param"><span class="param-label">Roll</span><span class="param-value" id="review-cam-roll">-</span></div>
         <div class="wizard-solved-param"><span class="param-label">FOV</span><span class="param-value" id="review-cam-fov">-</span></div>
+        <div class="wizard-solved-param"><span class="param-label">Barrel / fisheye</span><span class="param-value" id="review-lens-k1">-</span></div>
+        <div class="wizard-solved-param"><span class="param-label">Edge fit</span><span class="param-value" id="review-lens-k2">-</span></div>
+        <div class="wizard-solved-param"><span class="param-label">Lens coverage</span><span class="param-value" id="review-lens-rating"><span class="wizard-meter" aria-hidden="true"><span class="wizard-meter-seg"></span><span class="wizard-meter-seg"></span><span class="wizard-meter-seg"></span><span class="wizard-meter-seg"></span><span class="wizard-meter-seg"></span></span> <span id="review-lens-rating-text">-</span></span></div>
       </div>
     </div>
 
@@ -859,7 +1038,7 @@
     </div>
 
     <div class="wizard-nav">
-      <button type="button" class="secondary" onclick="wizardGo(5)">Back</button>
+      <button type="button" class="secondary" onclick="wizardPrev()">Back</button>
       <span class="spacer"></span>
       <button type="button" class="btn-danger" onclick="discardAndLeave()">Discard &amp; Leave</button>
       <button type="button" class="save-btn" onclick="applyAndFinish()" id="btn-apply-finish">Apply &amp; Finish</button>
@@ -877,6 +1056,26 @@
   var WUNIT = window.OpenFollow.units;
 
   // ---------------------------------------------------------------
+  // Calibration points (Corner Pinning, experimental). The pin is a fraction of the snapshot, so a
+  // snapshot of another size keeps it on its mark; ``position`` is where this pose's solve put it.
+  // ---------------------------------------------------------------
+  var CALIB_ENABLED = {{'true' if _show_calib else 'false'}};
+  // Names this page to the solve route, which stops a fit once the page asks for a newer one.
+  var WIZ_SOLVE_PAGE = Math.random().toString(36).slice(2, 12) || 'page';
+  var CALIB_MAX = {{MAX_CALIBRATION_POINTS}};
+  var CALIB_SAVED = {{!json.dumps(_calib_saved)}};
+  var CALIB_SAVED_CORNERS = {{!json.dumps(_calib_corners)}};  // the corner pins the saved pose was solved from
+  var calibPoints = [];
+  var calibAnswers = [];  // the last solve's answer for each point, null until one arrives
+  var calibAwaiting = null;  // the point whose corners the next taps on the corners choose
+  var calibDrawn = [];  // per point, its handle and the lines from its pin: a drag moves them in place
+  var calibDrag = null;  // the point being dragged: nothing draws the points again under it
+  // {world, corners as fractions of the snapshot} the last solve took while points exist: its projection is no pin
+  var calibHeldPins = null;
+  var calibSolveTimer = null;
+  var CALIB_LEN_UNIT = '{{_len}}';
+
+  // ---------------------------------------------------------------
   // Wizard State
   // ---------------------------------------------------------------
   var STORAGE_KEY = 'psnfs:wizard-state';
@@ -884,20 +1083,19 @@
   var snapshotUrl = null;
   var imageWidth = 0;
   var imageHeight = 0;
-  var solvedCamera = null;
   var originalFov = parseFloat(document.getElementById('cam_fov').value);
 
-  // Camera state before coarse calibration (for reset)
-  var preCoarseCamera = null;
+  // The pose (``snapshotPose``) before Reference Mapping, for its Reset.
+  var preCoarsePose = null;
 
-  // Camera state before the first solve of the current corner-pinning
-  // session. ``solveFromCorners`` writes the solved camera back into
-  // the camera form fields on success – without a snapshot, ``Reset
-  // Corners`` would re-project from those overwritten values and the
-  // corners would visibly stay where the operator dragged them. Reset
-  // restores from this snapshot AND clears it so the next solve takes
-  // a fresh snapshot for the next session.
-  var preCornerPinningCamera = null;
+  // The pose before the first solve of the current corner-pinning session.
+  // Every solve writes its camera into the form, so without it ``Reset
+  // Corners`` would re-project from the solved camera and the corners would
+  // stay where the operator dragged them. Reset restores it AND clears it so
+  // the next solve takes a fresh one for the next session.
+  var preCornerPinningPose = null;
+  // Every solve counts here; an answer to an older one is dropped.
+  var poseSeq = 0;
 
   // Corner screen positions for fine calibration
   var cornerPositions = { DSL: null, DSR: null, USR: null, USL: null };
@@ -934,10 +1132,16 @@
   // Length input <-> metres helpers (WUNIT defined at the top of the IIFE).
   // wizReadLen returns METRES (NaN if unparseable); wizWriteLen takes METRES
   // and renders in the active unit + refreshes the "Stored:" echo.
+  // ft/in text is rounded to 0.01 in, so text read back carries a residue (0.5 m reads
+  // 0.500126 m, enough to change the HUD's grid line count). While a field still shows
+  // its ``data-meters`` formatted, those metres are the exact value.
   function wizReadLen(id) {
     var el = document.getElementById(id);
     if (!el) return NaN;
-    return WUNIT.isImperial() ? WUNIT.parseLength(el.value) : parseFloat(el.value);
+    if (!WUNIT.isImperial()) return parseFloat(el.value);
+    var meters = parseFloat(el.dataset.meters);
+    if (isFinite(meters) && el.value === WUNIT.formatLength(meters)) return meters;
+    return WUNIT.parseLength(el.value);
   }
   function wizUpdateEcho(id, meters) {
     var e = document.getElementById(id + '-echo');
@@ -947,6 +1151,7 @@
     var el = document.getElementById(id);
     if (!el) return;
     el.value = WUNIT.isImperial() ? WUNIT.formatLength(meters) : meters;
+    if (WUNIT.isImperial()) el.dataset.meters = meters;
     wizUpdateEcho(id, meters);
   }
 
@@ -1000,8 +1205,8 @@
         yaw: parseFloat(document.getElementById('cam_yaw').value),
         roll: parseFloat(document.getElementById('cam_roll').value),
         fov: parseFloat(document.getElementById('cam_fov').value),
-        lens_k1: wizReadLensCoeff('cp_lens_k1'),
-        lens_k2: wizReadLensCoeff('cp_lens_k2'),
+        lens_k1: wizReadLensCoeff('wiz_lens_k1'),
+        lens_k2: wizReadLensCoeff('wiz_lens_k2'),
       },
       lens: {
         sensor_id: (document.getElementById('cam_sensor') || {}).value || '',
@@ -1019,49 +1224,80 @@
     };
   }
 
-  // Lens-distortion coefficient bounds (mirror CameraConfig + the server clamp).
-  var LENS_BOUNDS = { cp_lens_k1: [-0.4, 0.4], cp_lens_k2: [-0.2, 0.2] };
+  // Lens coefficients: the one bound on the pair is that the warp must not fold
+  // inside the frame (mirrors openfollow.lens_model.lens_warp_is_valid).
+  function wizLensFoldRadius(k1, k2) {
+    if (k2 === 0) return k1 < 0 ? Math.sqrt(-1 / (3 * k1)) : Infinity;
+    var disc = 9 * k1 * k1 - 20 * k2;
+    if (disc < 0) return Infinity;
+    // The q form keeps both roots exact when k2 is tiny against k1.
+    var q = -0.5 * (3 * k1 + (k1 < 0 ? -1 : 1) * Math.sqrt(disc));
+    var s = Infinity;
+    [q / (5 * k2), q !== 0 ? 1 / q : Infinity].forEach(function(r) { if (r > 0 && r < s) s = r; });
+    return Math.sqrt(s);
+  }
+  // Mirror lens_model.lens_warp_is_valid, its bound on a lens's size included.
+  function wizLensIsValid(k1, k2) {
+    return isFinite(k1) && isFinite(k2) && Math.max(Math.abs(k1), Math.abs(k2)) <= 1e3 && wizLensFoldRadius(k1, k2) > 1;
+  }
+  // The fitted pair as the fields show it: four decimals, unless rounding tips a pair fitted against the fold over it.
+  function wizLensShownPair(k1, k2) {
+    var r1 = k1.toFixed(4), r2 = k2.toFixed(4);
+    return wizLensIsValid(Number(r1), Number(r2)) ? [r1, r2] : [String(k1), String(k2)];
+  }
+  function wizLensPairValid() {
+    return wizLensIsValid(wizReadLensCoeff('wiz_lens_k1'), wizReadLensCoeff('wiz_lens_k2'));
+  }
 
   function wizReadLensCoeff(id) {
     var el = document.getElementById(id);
     if (!el) return 0;
     var v = parseFloat(el.value);
-    if (!isFinite(v)) return 0;
-    var b = LENS_BOUNDS[id];
-    return Math.max(b[0], Math.min(b[1], v));
+    return isFinite(v) ? v : 0;
   }
 
   function wizWriteLensCoeff(id, value) {
     var num = document.getElementById(id);
     var range = document.getElementById(id + '_range');
     if (num) num.value = value;
-    if (range) range.value = value;
+    if (!range) return;
+    // A value past the slider's span widens it, so touching the slider never pulls the value back.
+    var v = parseFloat(value);
+    if (isFinite(v)) {
+      range.min = Math.min(parseFloat(range.min), v);
+      range.max = Math.max(parseFloat(range.max), v);
+    }
+    range.value = value;
   }
 
-  // Mirror the slider into the number box, redraw the projected overlay so the
-  // grid bows to match the lens, and persist.
-  window.onWizardLensRange = function(which) {
-    var num = document.getElementById('cp_lens_' + which);
-    var range = document.getElementById('cp_lens_' + which + '_range');
-    if (num && range) num.value = range.value;
-    projectAndOverlay();
-    saveToSession();
-  };
-
-  window.onWizardLensNumber = function(which) {
-    var num = document.getElementById('cp_lens_' + which);
-    var range = document.getElementById('cp_lens_' + which + '_range');
-    if (num && range) range.value = num.value;
-    projectAndOverlay();
-    saveToSession();
+  // A slider or number edit on the Lens step: mirror the pair, flag a folding
+  // pair, redraw the predicted curves, and persist.
+  window.onWizardLensInput = function(which, source) {
+    var num = document.getElementById('wiz_lens_' + which);
+    var range = document.getElementById('wiz_lens_' + which + '_range');
+    if (num && range) {
+      if (source === 'range') num.value = range.value; else wizWriteLensCoeff('wiz_lens_' + which, num.value);
+    }
+    var err = document.getElementById('wiz-lens-error');
+    if (err) err.style.display = wizLensPairValid() ? 'none' : 'block';
+    lensRecomputeCurves();
+    renderLens();
+    onLensCoeffChanged();
+    if (currentStep !== WIZ.lens) projectAndOverlay();
   };
 
   function saveToSession() {
     try {
       var state = getState();
-      state._step = currentStep;
-      state._solvedCamera = solvedCamera;
+      state._stepKey = WIZ_STEPS[currentStep];
       state._originalFov = originalFov;
+      state._lensLines = lensLines;
+      state._lensImage = lensImageSize;
+      state._lensFit = lensFit;
+      state._pinnedCorners = pinnedCorners;
+      state._lensSolvedWith = lensSolvedWith;
+      state._calibPoints = calibPoints;
+      state._calibHeldPins = calibHeldPins;
       sessionStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     } catch(e) {}
   }
@@ -1079,8 +1315,8 @@
         document.getElementById('cam_yaw').value = state.camera.yaw;
         document.getElementById('cam_roll').value = state.camera.roll;
         document.getElementById('cam_fov').value = state.camera.fov;
-        if (state.camera.lens_k1 !== undefined) wizWriteLensCoeff('cp_lens_k1', state.camera.lens_k1);
-        if (state.camera.lens_k2 !== undefined) wizWriteLensCoeff('cp_lens_k2', state.camera.lens_k2);
+        if (state.camera.lens_k1 !== undefined) wizWriteLensCoeff('wiz_lens_k1', state.camera.lens_k1);
+        if (state.camera.lens_k2 !== undefined) wizWriteLensCoeff('wiz_lens_k2', state.camera.lens_k2);
       }
       if (state.grid) {
         wizWriteLen('grid_width', state.grid.width);
@@ -1103,24 +1339,43 @@
           document.getElementById('cam_focal').value = state.lens.focal;
         }
       }
-      if (state._solvedCamera) solvedCamera = state._solvedCamera;
       if (state._originalFov) originalFov = state._originalFov;
-      if (typeof state._step === 'number') {
-        currentStep = state._step;
-        return true;
+      // Lens state only in the shape this page draws: a session saved by
+      // another version must not stop the wizard from opening.
+      if (Array.isArray(state._lensLines)) lensLines = state._lensLines.filter(lensRestoredLine);
+      if (lensRestoredPair(state._lensImage)) lensImageSize = state._lensImage;
+      if (state._lensFit && typeof state._lensFit.rating === 'string' && isFinite(state._lensFit.k1)
+          && isFinite(state._lensFit.k2)) lensFit = state._lensFit;
+      if (state._pinnedCorners && lensRestoredPair(state._pinnedCorners.size)
+          && Array.isArray(state._pinnedCorners.corners) && state._pinnedCorners.corners.length === 4
+          && state._pinnedCorners.corners.every(lensRestoredPair)) pinnedCorners = state._pinnedCorners;
+      if (state._lensSolvedWith && isFinite(state._lensSolvedWith.k1) && isFinite(state._lensSolvedWith.k2)) {
+        lensSolvedWith = state._lensSolvedWith;
       }
-      return false;
+      // Hidden, the points are the saved ones: Apply never writes edits the operator cannot see.
+      if (CALIB_ENABLED && Array.isArray(state._calibPoints)) calibLoad(state._calibPoints);
+      calibHeldPins = calibHeldRestored(state._calibHeldPins);
+      // A step this page leaves out (the Lens step switched off) starts at Preparation, values kept.
+      if (typeof state._stepKey === 'string' && WIZ[state._stepKey] !== undefined) currentStep = WIZ[state._stepKey];
+      return true;
     } catch(e) { return false; }
   }
 
   // ---------------------------------------------------------------
   // Step Navigation
   // ---------------------------------------------------------------
+  // The steps that show the snapshot: Lens, and Reference Mapping onwards.
+  function wizStepNeedsSnapshot(key, steps) {
+    return key === 'lens' || steps[key] >= steps.ref;
+  }
+
   window.wizardGo = function(step) {
     saveToSession();
+    if (!(step >= 0 && step < WIZ_STEPS.length)) step = 0;
     currentStep = step;
-    document.querySelectorAll('.wizard-content').forEach(function(el, i) {
-      el.classList.toggle('active', i === step);
+    var key = WIZ_STEPS[step];
+    document.querySelectorAll('.wizard-content').forEach(function(el) {
+      el.classList.toggle('active', el.id === 'wizard-step-' + key);
     });
     document.querySelectorAll('.wizard-step-btn').forEach(function(btn) {
       var s = parseInt(btn.dataset.step);
@@ -1128,39 +1383,36 @@
       btn.setAttribute('aria-current', s === step ? 'step' : 'false');
       if (s < step) btn.classList.add('completed');
     });
-    // On entering step 4+ load the snapshot and project
-    if (step >= 4) {
+    if (wizStepNeedsSnapshot(key, WIZ)) {
       loadSnapshot();
     }
-    // On entering preparation step, redraw the illustration
-    if (step === 0) {
+    if (key === 'prep') {
       updatePrepIllustration();
     }
-    // On entering grid setup step, redraw the illustration
-    if (step === 1) {
+    if (key === 'grid') {
       updateGridIllustration();
     }
-    // On entering camera position step, redraw the illustration
-    if (step === 3) {
+    if (key === 'camera') {
       updateCamIllustration();
     }
-    // On entering coarse calibration step, save camera state for reset
-    if (step === 4) {
-      preCoarseCamera = getState().camera;
+    // Entering Reference Mapping saves the camera state for its Reset.
+    if (key === 'ref') {
+      preCoarsePose = snapshotPose();
     }
-    // On entering review step, populate summary
-    if (step === 6) {
+    if (key === 'review') {
       populateReview();
     }
     saveToSession();
   };
+  window.wizardNext = function() { wizardGo(Math.min(currentStep + 1, WIZ_STEPS.length - 1)); };
+  window.wizardPrev = function() { wizardGo(Math.max(currentStep - 1, 0)); };
 
   window.updateWizardState = function() {
     saveToSession();
   };
 
   // ---------------------------------------------------------------
-  // Preparation Illustration (Step 1 – isometric overview)
+  // Preparation illustration (isometric overview)
   // ---------------------------------------------------------------
   function updatePrepIllustration() {
     // Use default values from steps 2 and 4
@@ -1410,7 +1662,7 @@
   }
 
   // ---------------------------------------------------------------
-  // Grid Illustration (Step 4 – dynamic SVG)
+  // Grid illustration (dynamic SVG)
   // ---------------------------------------------------------------
   window.onGridInputChanged = function() {
     saveToSession();
@@ -1436,6 +1688,33 @@
   window.restoreGridToLast = function() {
     setGridValues(lastGridValues);
   };
+
+  // Length fields are rendered per unit, so a switch reloads into this step;
+  // the session holds the values in metres and restores them in the new unit.
+  document.getElementById('wizard-unit-system').addEventListener('change', function() {
+    var select = this;
+    var saveError = window.OpenFollow.saveError;
+    var box = document.querySelector('#wizard-step-grid .section');
+    var near = document.getElementById('wizard-units');
+    function keepCurrent(info) {
+      select.value = WUNIT.isImperial() ? 'imperial' : 'metric';
+      saveError.show(box, info, 'Not changed.', near);
+    }
+    // The session carries the lengths across the reload; one that does not read would arrive as 0.
+    var badLen = invalidLengthFields();
+    if (badLen.length) {
+      return keepCurrent({ error: 'These lengths do not read: ' + badLen.join(', ') + '.', action: 'Correct them, then change the unit.' });
+    }
+    saveToSession();
+    var body = new FormData();
+    body.append('unit_system', select.value);
+    fetch('/settings/unit-system', { method: 'POST', body: body })
+      .then(async function(r) {
+        if (!r.ok) return keepCurrent(await saveError.fromResponse(r));
+        window.location.reload();
+      })
+      .catch(function() { keepCurrent(saveError.UNREACHABLE); });
+  });
 
   function updateGridIllustration() {
     var w = wizReadLen('grid_width') || 1;
@@ -1721,9 +2000,9 @@
   };
 
   // ---------------------------------------------------------------
-  // Camera Position Illustration (Step 4 – isometric dynamic SVG)
+  // Camera Position illustration (isometric dynamic SVG)
   // ---------------------------------------------------------------
-  window.onCamInputChanged = function() {
+  function onCamInputChanged() {
     var pitch = parseFloat(document.getElementById('cam_pitch').value);
     var errEl = document.getElementById('cam-pitch-error');
     if (isNaN(pitch) || pitch > -0.5 || pitch < -90) {
@@ -1731,10 +2010,12 @@
     } else {
       errEl.style.display = 'none';
     }
+    calibForgetPose();
     saveToSession();
     updateCamIllustration();
     refreshLengthEchoes(CAM_LEN_IDS);
-  };
+  }
+  window.onCamInputChanged = onCamInputChanged;
 
   function setCameraValues(vals) {
     // pos_* are METRES (CAMERA_DEFAULTS or lastCameraValues); angles verbatim.
@@ -2121,10 +2402,11 @@
       var nextUrl = URL.createObjectURL(blob);
       var img = new Image();
       img.onload = function() {
+        if (img.naturalWidth !== imageWidth || img.naturalHeight !== imageHeight) calibDropSeen();
         imageWidth = img.naturalWidth;
         imageHeight = img.naturalHeight;
         snapshotUrl = nextUrl;
-        showSnapshotOnCurrentStep(nextUrl);
+        showSnapshotOnCurrentStep(nextUrl, img);
         projectAndOverlay();
         revokeSnapshotUrl(previousUrl);
       };
@@ -2146,6 +2428,7 @@
 
   function setPreviewVisibility(visible) {
     var pairs = [
+      ['lens-container', 'lens-no-feed'],
       ['coarse-container', 'coarse-no-feed'],
       ['fine-container', 'fine-no-feed'],
       ['review-container', 'review-no-feed'],
@@ -2167,8 +2450,11 @@
         toggle.title = 'Load a snapshot first';
       }
       setFineZoomMode(false);
+      document.getElementById('coarse-zoom-toggle').disabled = true;
+      setCoarseZoomMode(false);
     } else {
       updateFineZoomToggleEnabled();
+      updateCoarseZoomToggleEnabled();
     }
   }
 
@@ -2187,10 +2473,19 @@
     setPreviewVisibility(false);
   }
 
-  function showSnapshotOnCurrentStep(url) {
+  function showSnapshotOnCurrentStep(url, img) {
     document.getElementById('coarse-image').src = url;
     document.getElementById('fine-image').src = url;
     document.getElementById('review-image').src = url;
+    snapshotCanvas = document.createElement('canvas');
+    snapshotCanvas.width = imageWidth;
+    snapshotCanvas.height = imageHeight;
+    snapshotCanvas.getContext('2d').drawImage(img, 0, 0);
+    var lensImage = document.getElementById('lens-image');
+    if (lensImage) {
+      lensImage.src = url;
+      lensOnSnapshot();
+    }
     // Each fine-zoom box renders snapshot through own viewBox crop.
     // Update all <image> elements so Refresh Image lands in zoom too.
     var zoomImages = document.querySelectorAll('[data-fine-zoom-image]');
@@ -2203,6 +2498,7 @@
     // re-init from the current ``imageWidth`` / ``imageHeight`` and
     // the freshly-projected corner positions.
     fineZoomViewBoxes = { DSL: null, DSR: null, USR: null, USL: null };
+    coarseZoomViewBox = null;
     // Set grid aspect-ratio as soon as image dimensions known
     // (avoids race where toggle happens before projection populates
     // cornerPositions). Per-box viewBox init still waits for ready().
@@ -2255,14 +2551,13 @@
   // and Review. A failed projection must surface on whichever of those the
   // operator is looking at – not only Corner Pinning – otherwise the overlay
   // silently vanishes on the other two with no explanation.
-  var PROJECTION_STATUS_STEPS = {
-    4: { status: 'coarse-status', container: 'coarse-container' },
-    5: { status: 'fine-status', container: 'fine-container' },
-    6: { status: 'review-status', container: 'review-container' },
-  };
+  var PROJECTION_STATUS_STEPS = {};
+  PROJECTION_STATUS_STEPS[WIZ.ref] = { status: 'coarse-status', container: 'coarse-container' };
+  PROJECTION_STATUS_STEPS[WIZ.corners] = { status: 'fine-status', container: 'fine-container' };
+  PROJECTION_STATUS_STEPS[WIZ.review] = { status: 'review-status', container: 'review-container' };
 
   function currentProjectionEls() {
-    return PROJECTION_STATUS_STEPS[currentStep] || PROJECTION_STATUS_STEPS[5];
+    return PROJECTION_STATUS_STEPS[currentStep] || PROJECTION_STATUS_STEPS[WIZ.corners];
   }
 
   function showProjectionError(msg) {
@@ -2309,6 +2604,9 @@
       document.getElementById(id).setAttribute('points', quadPts);
     });
 
+    renderGridLines('fine-grid', c);
+    renderGridLines('review-grid', c);
+
     // Corner markers
     renderCornerMarkers('coarse-corners', c, false);
     renderCornerMarkers('fine-corners', c, true);
@@ -2327,16 +2625,23 @@
       }
     });
 
-    // Update corner positions for fine calibration
-    cornerPositions.DSL = c.DSL.slice();
-    cornerPositions.DSR = c.DSR.slice();
-    cornerPositions.USR = c.USR.slice();
-    cornerPositions.USL = c.USL.slice();
+    // Update corner positions for fine calibration. Reference Mapping shifts what it draws: the projection;
+    // without the section no point is solved, so nothing is held either.
+    var held = currentStep === WIZ.ref || !CALIB_ENABLED ? null : calibHeldCorners();
+    CORNER_NAMES.forEach(function(k, i) { cornerPositions[k] = (held ? held[i] : c[k]).slice(); });
+
+    // Drawn to the corners just placed.
+    renderCalibOverlay();
+    renderCalibStatus();
 
     // Bowed edges for the fine-zoom view, only when the server supplied a bowed
     // outline (no edge behind the camera) so the zoom boxes match the straight
     // main quad in the behind-camera fallback instead of curving on their own.
     fineBowedEdges = (data.outline && data.outline.length) ? buildBowedEdges() : null;
+    if (held) {
+      renderCornerMarkers('fine-corners', cornerPositions, true);
+      updateFineQuad();
+    }
 
     // Refresh fine-zoom boxes AFTER cornerPositions updated so boxes
     // render new positions. Try/catch so zoom code failures don't break
@@ -2348,6 +2653,9 @@
     }
     // Enable Fine-adjust toggle now that cornerPositions populated.
     updateFineZoomToggleEnabled();
+    recenterCoarseZoomIfNeeded();
+    renderCoarseZoom();
+    updateCoarseZoomToggleEnabled();
   }
 
   function renderZOffsetLine(container, groundPos, elevatedPos, zOffset) {
@@ -2391,120 +2699,162 @@
 
   function renderCornerMarkers(containerId, corners, draggable) {
     var g = document.getElementById(containerId);
+    var focused = g.contains(document.activeElement) ? document.activeElement.dataset.corner : null;
     g.innerHTML = '';
-    var names = CORNER_NAMES;
-    var keys = ['DSL', 'DSR', 'USR', 'USL'];
-    for (var i = 0; i < 4; i++) {
-      var pos = corners[keys[i]];
-      var group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-      group.setAttribute('transform', 'translate('+pos[0]+','+pos[1]+')');
-
+    var px = overlayPx();
+    var centre = [0, 0];
+    CORNER_NAMES.forEach(function(k) {
+      centre[0] += corners[k][0] / 4;
+      centre[1] += corners[k][1] / 4;
+    });
+    CORNER_NAMES.forEach(function(name, i) {
+      var pos = corners[name];
+      var group;
+      // Only Corner Pinning drags a corner; elsewhere the grid's own corner is the mark.
       if (draggable) {
-        group.classList.add('handle');
-        group.setAttribute('tabindex', '0');
-        group.dataset.corner = keys[i];
+        group = pointHandle(pos, 4, px);
+        group.dataset.corner = name;
         group.dataset.idx = i;
-        // Enlarged hit area
-        var hitArea = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-        hitArea.setAttribute('x', '-22');
-        hitArea.setAttribute('y', '-22');
-        hitArea.setAttribute('width', '44');
-        hitArea.setAttribute('height', '44');
-        hitArea.setAttribute('fill', 'transparent');
-        group.appendChild(hitArea);
-        // Focus ring
-        var ring = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-        ring.setAttribute('r', '14');
-        ring.classList.add('handle-ring');
-        group.appendChild(ring);
+        group.setAttribute('aria-label', 'Corner ' + name);
+      } else {
+        group = svgEl('g', { transform: 'translate('+pos[0]+','+pos[1]+')' });
       }
 
-      var circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-      circle.setAttribute('r', '7');
-      circle.setAttribute('fill', 'rgba(255,188,0,0.8)');
-      circle.setAttribute('stroke', '#ffbc00');
-      circle.setAttribute('stroke-width', '1.5');
-      group.appendChild(circle);
-
-      var label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-      label.setAttribute('x', '12');
-      label.setAttribute('y', '4');
-      label.setAttribute('fill', 'rgba(247,245,233,0.8)');
-      label.setAttribute('font-size', '11');
-      label.setAttribute('font-weight', '600');
-      label.textContent = names[i];
+      // Diagonally outward from the grid's centre, so the name never sits on
+      // the grid whichever way the camera looks at it.
+      var sx = pos[0] < centre[0] ? -1 : 1;
+      var sy = pos[1] < centre[1] ? -1 : 1;
+      var label = svgEl('text', {
+        x: sx * 14 * px, y: sy * 14 * px,
+        fill: 'rgba(247,245,233,0.95)', stroke: '#000', 'stroke-width': 3 * px, 'paint-order': 'stroke',
+        'font-size': 13 * px, 'font-weight': 700, 'text-anchor': sx < 0 ? 'end' : 'start',
+        'dominant-baseline': 'central', 'pointer-events': 'none',
+      });
+      label.textContent = name;
       group.appendChild(label);
 
       g.appendChild(group);
-    }
+      if (name === focused) group.focus({ preventScroll: true });
+    });
+  }
 
-    if (draggable) {
-      setupCornerDragging(g);
+  function svgEl(tag, attrs) {
+    var el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+    Object.keys(attrs || {}).forEach(function(k) { el.setAttribute(k, attrs[k]); });
+    return el;
+  }
+
+  // Snapshot pixels per CSS pixel in the full previews, which all span the
+  // wizard's column. The viewBox is the snapshot's own resolution, so a size
+  // meant for a finger or an eye is this many viewBox units per CSS pixel; a
+  // hidden preview measures nothing, so the one showing is asked.
+  function overlayPx() {
+    var overlays = document.querySelectorAll('svg.wizard-overlay');
+    for (var i = 0; i < overlays.length; i++) {
+      var width = overlays[i].getBoundingClientRect().width;
+      if (width > 0 && imageWidth > 0) return imageWidth / width;
     }
+    return 1;
   }
 
   function renderRefMarker(containerId, pos, draggable) {
     var g = document.getElementById(containerId);
+    var hadFocus = g.contains(document.activeElement);
     g.innerHTML = '';
-    var group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-    group.setAttribute('transform', 'translate('+pos[0]+','+pos[1]+')');
-
+    var px = overlayPx();
     if (draggable) {
-      group.classList.add('handle');
-      group.setAttribute('tabindex', '0');
-      group.dataset.refHandle = '1';
-      // Enlarged hit area
-      var hitArea = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-      hitArea.setAttribute('x', '-22');
-      hitArea.setAttribute('y', '-22');
-      hitArea.setAttribute('width', '44');
-      hitArea.setAttribute('height', '44');
-      hitArea.setAttribute('fill', 'transparent');
-      group.appendChild(hitArea);
-      // Focus ring
-      var ring = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-      ring.setAttribute('r', '16');
-      ring.classList.add('handle-ring');
-      group.appendChild(ring);
-    }
-
-    // Crosshair
-    var l1 = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-    l1.setAttribute('x1', '-10'); l1.setAttribute('y1', '0');
-    l1.setAttribute('x2', '10'); l1.setAttribute('y2', '0');
-    l1.setAttribute('stroke', '#ffbc00'); l1.setAttribute('stroke-width', '2');
-    group.appendChild(l1);
-    var l2 = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-    l2.setAttribute('x1', '0'); l2.setAttribute('y1', '-10');
-    l2.setAttribute('x2', '0'); l2.setAttribute('y2', '10');
-    l2.setAttribute('stroke', '#ffbc00'); l2.setAttribute('stroke-width', '2');
-    group.appendChild(l2);
-    var c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-    c.setAttribute('r', '8');
-    c.setAttribute('fill', 'none');
-    c.setAttribute('stroke', '#ffbc00');
-    c.setAttribute('stroke-width', '1.5');
-    group.appendChild(c);
-
-    g.appendChild(group);
-
-    if (draggable) {
-      setupRefDragging(group);
+      var handle = pointHandle(pos, 4, px);
+      handle.dataset.refHandle = '1';
+      handle.setAttribute('aria-label', 'Reference Point');
+      g.appendChild(handle);
+      // Drawn again under a keyboard nudge: keep the focus so the next arrow moves it too.
+      if (hadFocus) handle.focus({ preventScroll: true });
+    } else {
+      g.appendChild(pointMarker(pos, { r: 4 * px }));
     }
   }
 
+  // The Lens step's point, used for every point the wizard drags: the dot, a
+  // focus ring and a 44 px grab area around it, sized in CSS pixels by ``px``
+  // (``overlayPx``) so a phone's finger finds it.
+  function pointHandle(pos, r, px) {
+    var g = svgEl('g', { class: 'handle wizard-point', tabindex: '0', transform: 'translate(' + pos[0] + ',' + pos[1] + ')' });
+    g.appendChild(svgEl('rect', { x: -22 * px, y: -22 * px, width: 44 * px, height: 44 * px, fill: 'transparent' }));
+    g.appendChild(svgEl('circle', { r: 9 * px, class: 'handle-ring' }));
+    g.appendChild(svgEl('circle', { r: r * px, class: 'dot' }));
+    return g;
+  }
+
+  // The same dot where nothing drags it: the Review step, the Fine adjust views.
+  function pointMarker(pos, attrs) {
+    var g = svgEl('g', { class: 'wizard-point', transform: 'translate(' + pos[0] + ',' + pos[1] + ')' });
+    g.appendChild(svgEl('circle', Object.assign({ r: 7, class: 'dot' }, attrs)));
+    return g;
+  }
+
+  // ---- loupe ----
+  // The snapshot at full resolution, for the loupe and the Lens step.
+  var snapshotCanvas = null;
+  var LOUPE_ZOOM = 4;
+
+  // A 4x look at the snapshot under a point being dragged, beside the finger so
+  // it never hides what it shows.
+  function showLoupe(containerId, overlayId, pos) {
+    var container = document.getElementById(containerId);
+    var loupe = container && container.querySelector('.wizard-loupe');
+    if (!loupe || !snapshotCanvas) return;
+    var canvas = loupe.querySelector('canvas'), ctx = canvas.getContext('2d');
+    var src = canvas.width / LOUPE_ZOOM / 2;
+    ctx.imageSmoothingEnabled = false;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(snapshotCanvas, pos[0] - src / 2, pos[1] - src / 2, src, src, 0, 0, canvas.width, canvas.height);
+    ctx.strokeStyle = '#ffbc00';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(canvas.width / 2, 0); ctx.lineTo(canvas.width / 2, canvas.height);
+    ctx.moveTo(0, canvas.height / 2); ctx.lineTo(canvas.width, canvas.height / 2);
+    ctx.stroke();
+    var overlay = document.getElementById(overlayId);
+    var box = overlay.getBoundingClientRect(), cont = container.getBoundingClientRect();
+    var sx = box.left - cont.left + pos[0] / imageWidth * box.width;
+    var sy = box.top - cont.top + pos[1] / imageHeight * box.height;
+    var at = loupePlace(sx, sy, loupe.offsetWidth || 120, cont.width, cont.height);
+    loupe.style.left = at[0] + 'px';
+    loupe.style.top = at[1] + 'px';
+    loupe.style.display = 'block';
+  }
+
+  // Offset from the finger: above and to the right, flipped when it would leave the image.
+  // A short preview fits the loupe neither above nor below the finger: keep it inside, beside the finger.
+  function loupePlace(sx, sy, size, width, height) {
+    var lx = sx + 30, ly = sy - size - 30;
+    if (lx + size > width) lx = sx - size - 30;
+    if (ly < 0) ly = sy + 30;
+    return [Math.max(0, Math.min(lx, width - size)), Math.max(0, Math.min(ly, height - size))];
+  }
+
+  function hideLoupe(containerId) {
+    var loupe = document.querySelector('#' + containerId + ' .wizard-loupe');
+    if (loupe) loupe.style.display = 'none';
+  }
+
   // ---------------------------------------------------------------
-  // Reference Point Dragging (Step 6 - Coarse Calibration)
+  // Reference Point dragging (Reference Mapping)
   // ---------------------------------------------------------------
-  function setupRefDragging(handle) {
+  // Bound once to the Reference Point's group: the handle in it is drawn again
+  // on every projection, so each event finds it afresh.
+  function setupRefDragging(container) {
     var svg = document.getElementById('coarse-overlay');
     var dragging = false;
     var startScreen = null;
     var startPos = null;
     var startCornerPositions = null;
 
+    function refHandle() { return container.querySelector('[data-ref-handle]'); }
+
     function getPos() {
-      var t = handle.getAttribute('transform');
+      var handle = refHandle();
+      var t = handle ? handle.getAttribute('transform') : '';
       var m = t.match(/translate\(([\d.e+-]+),([\d.e+-]+)\)/);
       return m ? [parseFloat(m[1]), parseFloat(m[2])] : [0,0];
     }
@@ -2519,17 +2869,19 @@
     }
 
     function onDown(e) {
+      if (!e.target.closest('[data-ref-handle]')) return;
       e.preventDefault();
       dragging = true;
       var cx = e.touches ? e.touches[0].clientX : e.clientX;
       var cy = e.touches ? e.touches[0].clientY : e.clientY;
       startScreen = svgPoint(cx, cy);
       startPos = getPos();
+      showLoupe('coarse-container', 'coarse-overlay', startPos);
       startCornerPositions = {};
       CORNER_NAMES.forEach(function(k) {
         startCornerPositions[k] = cornerPositions[k].slice();
       });
-      handle.style.cursor = 'grabbing';
+      refHandle().style.cursor = 'grabbing';
     }
 
     function onMove(e) {
@@ -2542,19 +2894,9 @@
       var dy = cur[1] - startScreen[1];
       var nx = startPos[0] + dx;
       var ny = startPos[1] + dy;
-      handle.setAttribute('transform', 'translate('+nx+','+ny+')');
-      // Move all corner markers and quad along with the ref point
-      var corners = document.getElementById('coarse-corners').querySelectorAll('g');
-      var keys = CORNER_NAMES;
-      var quadParts = [];
-      corners.forEach(function(g, i) {
-        var cp = startCornerPositions[keys[i]];
-        var cnx = cp[0] + dx;
-        var cny = cp[1] + dy;
-        g.setAttribute('transform', 'translate('+cnx+','+cny+')');
-        quadParts.push(cnx+','+cny);
-      });
-      document.getElementById('coarse-quad').setAttribute('points', quadParts.join(' '));
+      refHandle().setAttribute('transform', 'translate('+nx+','+ny+')');
+      showLoupe('coarse-container', 'coarse-overlay', [nx, ny]);
+      shiftCoarseCorners(dx, dy, startCornerPositions);
       // Move z-offset group along with everything else
       document.getElementById('coarse-zoff').setAttribute('transform', 'translate('+dx+','+dy+')');
     }
@@ -2562,20 +2904,23 @@
     function onUp() {
       if (!dragging) return;
       dragging = false;
-      handle.style.cursor = '';
+      hideLoupe('coarse-container');
+      refHandle().style.cursor = '';
       document.getElementById('coarse-zoff').removeAttribute('transform');
       applyCoarseOffset(startPos, getPos(), startCornerPositions);
     }
 
-    handle.addEventListener('mousedown', onDown);
-    handle.addEventListener('touchstart', onDown, { passive: false });
+    container.addEventListener('mousedown', onDown);
+    container.addEventListener('touchstart', onDown, { passive: false });
     window.addEventListener('mousemove', onMove);
     window.addEventListener('touchmove', onMove, { passive: false });
     window.addEventListener('mouseup', onUp);
     window.addEventListener('touchend', onUp);
 
     // Keyboard arrow support
-    handle.addEventListener('keydown', function(e) {
+    container.addEventListener('keydown', function(e) {
+      var handle = e.target.closest('[data-ref-handle]');
+      if (!handle) return;
       var step = e.shiftKey ? 10 : 1;
       var pos = getPos();
       var moved = false;
@@ -2593,19 +2938,7 @@
           });
         }
         handle.setAttribute('transform', 'translate('+pos[0]+','+pos[1]+')');
-        // Visually move corners along with the ref point
-        var dx = pos[0] - startPos[0];
-        var dy = pos[1] - startPos[1];
-        var corners = document.getElementById('coarse-corners').querySelectorAll('g');
-        var quadParts = [];
-        corners.forEach(function(g, i) {
-          var cp = startCornerPositions[CORNER_NAMES[i]];
-          var cnx = cp[0] + dx;
-          var cny = cp[1] + dy;
-          g.setAttribute('transform', 'translate('+cnx+','+cny+')');
-          quadParts.push(cnx+','+cny);
-        });
-        document.getElementById('coarse-quad').setAttribute('points', quadParts.join(' '));
+        shiftCoarseCorners(pos[0] - startPos[0], pos[1] - startPos[1], startCornerPositions);
         clearTimeout(arrowDebounceTimer);
         var sp = startPos.slice();
         var scp = {};
@@ -2617,13 +2950,179 @@
         }, 300);
       }
     });
-    // Initialize startPos for keyboard on focus
-    handle.addEventListener('focus', function() {
+    // Initialize startPos for keyboard on focus, the focus kept across a redraw included
+    container.addEventListener('focusin', function(e) {
+      if (!e.target.closest('[data-ref-handle]')) return;
       startPos = getPos();
       startCornerPositions = {};
       CORNER_NAMES.forEach(function(k) {
         startCornerPositions[k] = cornerPositions[k].slice();
       });
+    });
+  }
+
+  // Move the full-view corners and grid outline with the Reference Point while
+  // it is dragged; the solve that follows redraws them from the new camera.
+  function shiftCoarseCorners(dx, dy, startCorners) {
+    var quadParts = [];
+    document.getElementById('coarse-corners').querySelectorAll('g').forEach(function(g, i) {
+      var cp = startCorners[CORNER_NAMES[i]];
+      g.setAttribute('transform', 'translate(' + (cp[0] + dx) + ',' + (cp[1] + dy) + ')');
+      quadParts.push((cp[0] + dx) + ',' + (cp[1] + dy));
+    });
+    document.getElementById('coarse-quad').setAttribute('points', quadParts.join(' '));
+  }
+
+  // ---------------------------------------------------------------
+  // Reference Point fine-adjust view
+  // ---------------------------------------------------------------
+  // One crop of the snapshot, FINE_ZOOM_FACTOR× zoomed around the Reference
+  // Point, dragged and nudged like a Corner Pinning box. The full-view handle
+  // stays the position's source of truth.
+  var coarseZoomMode = false;
+  var coarseZoomViewBox = null;  // [x, y, w, h] in image pixels; null re-centres
+
+  function coarseRefPos() {
+    var handle = document.querySelector('#coarse-ref .handle');
+    var m = handle && handle.getAttribute('transform').match(/translate\(([\d.e+-]+),([\d.e+-]+)\)/);
+    return m ? [parseFloat(m[1]), parseFloat(m[2])] : null;
+  }
+
+  function coarseZoomReady() {
+    return fineZoomReady() && !!coarseRefPos();
+  }
+
+  function updateCoarseZoomToggleEnabled() {
+    document.getElementById('coarse-zoom-toggle').disabled = !coarseZoomReady();
+  }
+
+  // Re-centre the crop once the point sits in its outer fifth, as the corner boxes do.
+  function recenterCoarseZoomIfNeeded() {
+    var vb = coarseZoomViewBox, pos = coarseRefPos();
+    if (!vb || !pos) return;
+    var nx = (pos[0] - vb[0]) / vb[2], ny = (pos[1] - vb[1]) / vb[3];
+    if (nx < 0.2 || nx > 0.8 || ny < 0.2 || ny > 0.8) coarseZoomViewBox = null;
+  }
+
+  function renderCoarseZoom() {
+    if (!coarseZoomMode || !coarseZoomReady()) return;
+    var pos = coarseRefPos();
+    if (!coarseZoomViewBox) {
+      var w = imageWidth / FINE_ZOOM_FACTOR, h = imageHeight / FINE_ZOOM_FACTOR;
+      coarseZoomViewBox = [pos[0] - w / 2, pos[1] - h / 2, w, h];
+    }
+    var svg = document.getElementById('coarse-zoom-svg');
+    svg.setAttribute('viewBox', coarseZoomViewBox.join(' '));
+    var image = svg.querySelector('[data-fine-zoom-image]');
+    image.setAttribute('width', imageWidth);
+    image.setAttribute('height', imageHeight);
+    document.getElementById('coarse-zoom-quad').setAttribute('points', document.getElementById('coarse-quad').getAttribute('points'));
+    var g = document.getElementById('coarse-zoom-ref');
+    g.innerHTML = '';
+    g.appendChild(pointMarker(pos, { 'vector-effect': 'non-scaling-stroke' }));
+  }
+
+  function setCoarseZoomMode(on) {
+    if (on && !coarseZoomReady()) return;
+    coarseZoomMode = !!on;
+    var zoomView = document.getElementById('coarse-zoom-view');
+    document.getElementById('coarse-full-view').style.display = coarseZoomMode ? 'none' : '';
+    zoomView.style.display = coarseZoomMode ? '' : 'none';
+    document.getElementById('coarse-zoom-toggle').textContent = coarseZoomMode ? 'Show full image' : 'Fine adjust';
+    if (coarseZoomMode) {
+      zoomView.style.aspectRatio = imageWidth + ' / ' + imageHeight;
+      coarseZoomViewBox = null;
+      renderCoarseZoom();
+    }
+  }
+
+  window.toggleCoarseZoomMode = function() {
+    setCoarseZoomMode(!coarseZoomMode);
+  };
+
+  function setupCoarseZoomDragging() {
+    var svg = document.getElementById('coarse-zoom-svg');
+    var activePointerId = null;
+    var startPos = null;
+    var startCorners = null;
+
+    function pointFromEvent(e) {
+      var ctm = svg.getScreenCTM();
+      if (!ctm) return null;
+      var pt = svg.createSVGPoint();
+      pt.x = e.clientX;
+      pt.y = e.clientY;
+      var p = pt.matrixTransform(ctm.inverse());
+      return [p.x, p.y];
+    }
+
+    // A pointer drag that starts while a nudge is still pending carries on from
+    // the nudge's start, so the solve gets the whole move.
+    function begin() {
+      clearTimeout(arrowDebounceTimer);
+      if (startPos) return;
+      startPos = coarseRefPos();
+      startCorners = {};
+      CORNER_NAMES.forEach(function(k) { startCorners[k] = cornerPositions[k].slice(); });
+    }
+
+    function moveTo(p) {
+      document.querySelector('#coarse-ref .handle').setAttribute('transform', 'translate(' + p[0] + ',' + p[1] + ')');
+      shiftCoarseCorners(p[0] - startPos[0], p[1] - startPos[1], startCorners);
+      renderCoarseZoom();
+    }
+
+    function finish() {
+      var from = startPos, corners = startCorners;
+      startPos = null;
+      startCorners = null;
+      applyCoarseOffset(from, coarseRefPos(), corners);
+    }
+
+    // As in the corner boxes, the crop stays put during a drag and re-centres
+    // on release: moving it mid-drag would change the pointer mapping.
+    function endDrag(e) {
+      if (activePointerId === null || e.pointerId !== activePointerId) return;
+      activePointerId = null;
+      recenterCoarseZoomIfNeeded();
+      renderCoarseZoom();
+      finish();
+    }
+
+    svg.addEventListener('pointerdown', function(e) {
+      if (!coarseZoomReady()) return;
+      e.preventDefault();
+      activePointerId = e.pointerId;
+      try {
+        svg.setPointerCapture(e.pointerId);
+      } catch (_err) {
+        // Capture can be refused; the drag still works while over the view.
+      }
+      begin();
+      var p = pointFromEvent(e);
+      if (p) moveTo(p);
+    });
+    svg.addEventListener('pointermove', function(e) {
+      if (e.pointerId !== activePointerId) return;
+      e.preventDefault();
+      var p = pointFromEvent(e);
+      if (p) moveTo(p);
+    });
+    svg.addEventListener('pointerup', endDrag);
+    svg.addEventListener('pointercancel', endDrag);
+
+    svg.addEventListener('keydown', function(e) {
+      if (!coarseZoomReady() || activePointerId !== null) return;
+      var step = e.shiftKey ? 10 : 1;
+      var d = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[e.key];
+      if (!d) return;
+      e.preventDefault();
+      begin();
+      var pos = coarseRefPos();
+      moveTo([pos[0] + d[0], pos[1] + d[1]]);
+      recenterCoarseZoomIfNeeded();
+      renderCoarseZoom();
+      arrowDebounceTimer = setTimeout(finish, 300);
     });
   }
 
@@ -2642,67 +3141,120 @@
       return;
     }
 
-    var state = getState();
-    var g = state.grid;
+    var screenCorners = wizSolveCorners(cornerPositions);
+
+    var seq = ++poseSeq;
+    // A rigid shift is no perspective image: the points would be judged against its error.
+    var body = wizardSolveBody(screenCorners, false);
+    fetch('/api/wizard/solve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (seq !== poseSeq || data.error) return;
+      applySolvedPose(data.camera, screenCorners, body, data.calibration_points);
+      projectAndOverlay();
+    });
+  }
+
+  // The grid's four corners in world space. Stage convention: +X is stage
+  // left, so DSL/USL are at +hw and DSR/USR at -hw, in the order DSL, DSR,
+  // USR, USL that every screen-corner list follows.
+  function wizardWorldCorners() {
+    var g = getState().grid;
     var hw = g.width / 2, hd = g.depth / 2;
     var ox = g.x_offset, oy = g.y_offset, oz = g.z_offset;
-    // Stage convention: +X is stage left, so DSL/USL are at +hw and DSR/USR
-    // at -hw. Each row pairs with the same-named screen corner below.
-    var worldCorners = [
+    return [
       [ox + hw, oy - hd, oz],
       [ox - hw, oy - hd, oz],
       [ox - hw, oy + hd, oz],
       [ox + hw, oy + hd, oz],
     ];
-    var screenCorners = [
-      cornerPositions.DSL,
-      cornerPositions.DSR,
-      cornerPositions.USR,
-      cornerPositions.USL,
-    ];
+  }
 
-    fetch('/api/wizard/solve', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        world_corners: worldCorners,
-        screen_corners: screenCorners,
-        image_width: imageWidth,
-        image_height: imageHeight,
-        camera: { lens_k1: wizReadLensCoeff('cp_lens_k1'), lens_k2: wizReadLensCoeff('cp_lens_k2') },
-      }),
-    }).then(function(r) { return r.json(); })
-    .then(function(data) {
-      if (data.error) return;
-      // Back-propagate solved camera to form fields
-      wizWriteLen('cam_pos_x', data.camera.pos_x);
-      wizWriteLen('cam_pos_y', data.camera.pos_y);
-      wizWriteLen('cam_pos_z', data.camera.pos_z);
-      document.getElementById('cam_pitch').value = data.camera.pitch;
-      document.getElementById('cam_yaw').value = data.camera.yaw;
-      document.getElementById('cam_roll').value = data.camera.roll;
-      document.getElementById('cam_fov').value = data.camera.fov;
-      saveToSession();
-      projectAndOverlay();
+  // Copies, so a nudge while the solve is out cannot change the pins it records.
+  function wizSolveCorners(positions) {
+    return CORNER_NAMES.map(function(k) { return positions[k].slice(); });
+  }
+
+  function wizardSolveBody(screenCorners, withPoints) {
+    var body = {
+      world_corners: wizardWorldCorners(),
+      screen_corners: screenCorners,
+      image_width: imageWidth,
+      image_height: imageHeight,
+      camera: { lens_k1: wizReadLensCoeff('wiz_lens_k1'), lens_k2: wizReadLensCoeff('wiz_lens_k2') },
+      solve_page: WIZ_SOLVE_PAGE,
+      solve_seq: poseSeq,
+    };
+    if (CALIB_ENABLED && withPoints !== false) {
+      var sent = calibPayload();
+      if (sent.points.length) body.calibration_points = sent.points;
+      // Which point each answer is for, and whether the pins are to be held; not enumerable, never sent.
+      // The hold is read when the answer lands, so a point added while the solve was out counts.
+      Object.defineProperty(body, 'calibIndices', { value: sent.indices });
+      Object.defineProperty(body, 'calibHold', { get: function() { return calibPoints.length > 0; } });
+    }
+    return body;
+  }
+
+  // Back-propagate a solved camera into the form fields.
+  function wizardApplySolvedCamera(cam) {
+    wizWriteLen('cam_pos_x', cam.pos_x);
+    wizWriteLen('cam_pos_y', cam.pos_y);
+    wizWriteLen('cam_pos_z', cam.pos_z);
+    document.getElementById('cam_pitch').value = cam.pitch;
+    document.getElementById('cam_yaw').value = cam.yaw;
+    document.getElementById('cam_roll').value = cam.roll;
+    document.getElementById('cam_fov').value = cam.fov;
+  }
+
+  // Every solve lands here. The form holds the pose Review shows and Apply
+  // saves; the pins and the lens pair the request undistorted them with are
+  // kept, with the snapshot size, so a later lens change solves again from them.
+  function applySolvedPose(camera, screenCorners, body, pointAnswers) {
+    wizardApplySolvedCamera(camera);
+    calibTakeAnswer(body.calibIndices || [], pointAnswers || []);
+    pinnedCorners = {
+      size: [body.image_width, body.image_height],
+      corners: screenCorners.map(function(p) { return [p[0], p[1]]; }),
+      withPoints: 'calibIndices' in body,
+    };
+    calibHeldPins = body.calibHold ? { world: body.world_corners, corners: screenCorners.map(function(p) {
+      return [p[0] / body.image_width, p[1] / body.image_height];
+    }) } : null;
+    lensSolvedWith = { k1: body.camera.lens_k1, k2: body.camera.lens_k2 };
+    if (document.getElementById('fine-solved-params').style.display !== 'none') showSolvedParams(camera);
+    saveToSession();
+    if (currentStep === WIZ.review) populateReview();
+  }
+
+  // The pose in the form, with the lens pair and pins it was solved from: what a Reset puts back.
+  function snapshotPose() {
+    return { camera: getState().camera, lensSolvedWith: lensSolvedWith, pins: pinnedCorners, held: calibHeldPins,
+             places: calibPoints.map(function(p) { return { point: p, as: calibMeasured(p), position: p.position }; }) };
+  }
+  function restorePose(pose) {
+    poseSeq++;
+    wizardApplySolvedCamera(pose.camera);
+    lensSolvedWith = pose.lensSolvedWith;
+    pinnedCorners = pose.pins;
+    calibForgetPose();
+    calibHeldPins = pose.held || null;
+    (pose.places || []).forEach(function(was) {
+      if (calibPoints.indexOf(was.point) !== -1 && calibMeasured(was.point) === was.as) was.point.position = was.position;
     });
   }
 
   window.resetCoarseCalibration = function() {
-    if (preCoarseCamera) {
-      wizWriteLen('cam_pos_x', preCoarseCamera.pos_x);
-      wizWriteLen('cam_pos_y', preCoarseCamera.pos_y);
-      wizWriteLen('cam_pos_z', preCoarseCamera.pos_z);
-      document.getElementById('cam_pitch').value = preCoarseCamera.pitch;
-      document.getElementById('cam_yaw').value = preCoarseCamera.yaw;
-      document.getElementById('cam_roll').value = preCoarseCamera.roll;
-      document.getElementById('cam_fov').value = preCoarseCamera.fov;
-    }
+    if (preCoarsePose) restorePose(preCoarsePose);
     saveToSession();
     projectAndOverlay();
   };
 
   // ---------------------------------------------------------------
-  // Corner Dragging (Step 7 - Fine Calibration)
+  // Corner dragging (Corner Pinning)
   // ---------------------------------------------------------------
   function setupCornerDragging(container) {
     var svg = document.getElementById('fine-overlay');
@@ -2735,8 +3287,13 @@
       var cy = e.touches ? e.touches[0].clientY : e.clientY;
       var startSvg = svgPoint(cx, cy);
       var startPos = cornerPositions[cornerName].slice();
+      poseSeq++;
       dragging = { handle: handle, corner: cornerName, startSvg: startSvg, startPos: startPos };
+      // A point solve still to come would read this corner half-dragged; the drag's end solves.
+      clearTimeout(calibSolveTimer);
+      calibSolveTimer = null;
       handle.style.cursor = 'grabbing';
+      showLoupe('fine-container', 'fine-overlay', startPos);
     }
 
     window.addEventListener('mousemove', function(e) {
@@ -2760,6 +3317,7 @@
       var ny = dragging.startPos[1] + dy;
       cornerPositions[dragging.corner] = [nx, ny];
       dragging.handle.setAttribute('transform', 'translate('+nx+','+ny+')');
+      showLoupe('fine-container', 'fine-overlay', [nx, ny]);
       updateFineQuad();
       // Update fine-zoom boxes as operator drags in full view.
       // Moved corner's box + neighbours' edges stay consistent.
@@ -2768,12 +3326,14 @@
 
     window.addEventListener('mouseup', function() {
       if (!dragging) return;
+      hideLoupe('fine-container');
       dragging.handle.style.cursor = '';
       dragging = null;
       solveFromCorners();
     });
     window.addEventListener('touchend', function() {
       if (!dragging) return;
+      hideLoupe('fine-container');
       dragging.handle.style.cursor = '';
       dragging = null;
       solveFromCorners();
@@ -2793,6 +3353,7 @@
       else if (e.key === 'ArrowDown') { pos[1] += step; moved = true; }
       if (moved) {
         e.preventDefault();
+        poseSeq++;
         handle.setAttribute('transform', 'translate('+pos[0]+','+pos[1]+')');
         updateFineQuad();
         // Keep zoom view in sync with arrow-key nudges.
@@ -2820,6 +3381,8 @@
       quadPts = pts.DSL[0]+','+pts.DSL[1]+' '+pts.DSR[0]+','+pts.DSR[1]+' '+pts.USR[0]+','+pts.USR[1]+' '+pts.USL[0]+','+pts.USL[1];
     }
     document.getElementById('fine-quad').setAttribute('points', quadPts);
+    renderGridLines('fine-grid', cornerPositions);
+    calibMoveGuides();
   }
 
   // ---------------------------------------------------------------
@@ -2853,8 +3416,9 @@
   // exactly like the rendered HUD and stays correct live while a corner is
   // dragged (no server round-trip needed).
   var DISTORTION_SUBDIVISIONS = 12;
-  var DISTORTION_INVERT_ITERS = 10;
-  var DISTORTION_INVERT_F_FLOOR = 0.2;
+  var DISTORTION_INVERT_ITERS = 40;
+  var DISTORTION_INVERT_SETTLED = 1e-14;
+  var DISTORTION_INVERT_R_CAP = 4;
 
   function wizApplyDistortion(pt, k1, k2) {
     if (k1 === 0 && k2 === 0) return [pt[0], pt[1]];
@@ -2867,22 +3431,35 @@
     return [cx + dx * f * halfDiag, cy + dy * f * halfDiag];
   }
 
+  // Solve r_u * f(r_u) = r_d by bracketed Newton steps, as the server does
+  // (scene.solver.invert_normalised_radius); a radius the warp never reaches
+  // lands on the fold radius.
+  function wizInvertRadius(rd, k1, k2) {
+    var rMax = Math.min(wizLensFoldRadius(k1, k2), DISTORTION_INVERT_R_CAP);
+    var lo = 0, hi = rMax, r = Math.min(rd, rMax);
+    for (var i = 0; i < DISTORTION_INVERT_ITERS; i++) {
+      var r2 = r * r;
+      var h = r * (1 + k1 * r2 + k2 * r2 * r2) - rd;
+      var slope = 1 + 3 * k1 * r2 + 5 * k2 * r2 * r2;
+      if (h < 0) lo = r; else if (h > 0) hi = r;
+      var cand = slope > 1e-12 ? r - h / slope : r;
+      var moved = (cand < lo || cand > hi || slope <= 1e-12) ? 0.5 * (lo + hi) : cand;
+      var settled = Math.abs(moved - r) <= DISTORTION_INVERT_SETTLED;
+      r = moved;
+      if (settled) break;
+    }
+    return r;
+  }
+
   function wizInvertDistortion(pt, k1, k2) {
     if (k1 === 0 && k2 === 0) return [pt[0], pt[1]];
     var cx = imageWidth / 2, cy = imageHeight / 2;
     var halfDiag = 0.5 * Math.sqrt(imageWidth * imageWidth + imageHeight * imageHeight);
     var dx = (pt[0] - cx) / halfDiag;
     var dy = (pt[1] - cy) / halfDiag;
-    var r2d = dx * dx + dy * dy;
-    var r2u = r2d;
-    for (var i = 0; i < DISTORTION_INVERT_ITERS; i++) {
-      var fi = 1 + k1 * r2u + k2 * r2u * r2u;
-      if (fi < DISTORTION_INVERT_F_FLOOR) fi = DISTORTION_INVERT_F_FLOOR;
-      r2u = r2d / (fi * fi);
-    }
-    var f = 1 + k1 * r2u + k2 * r2u * r2u;
-    if (f < DISTORTION_INVERT_F_FLOOR) f = DISTORTION_INVERT_F_FLOOR;
-    return [cx + (dx / f) * halfDiag, cy + (dy / f) * halfDiag];
+    var rd = Math.sqrt(dx * dx + dy * dy);
+    var scale = rd > 0 ? wizInvertRadius(rd, k1, k2) / rd : 1;
+    return [cx + dx * scale * halfDiag, cy + dy * scale * halfDiag];
   }
 
   // Bowed boundary edge between two corner pins, in screen space. A grid edge is
@@ -2911,9 +3488,9 @@
   // ready, so callers fall back to straight edges.
   function buildBowedEdges() {
     if (!fineZoomReady()) return null;
-    var k1 = wizReadLensCoeff('cp_lens_k1');
-    var k2 = wizReadLensCoeff('cp_lens_k2');
-    if (k1 === 0 && k2 === 0) return null;
+    var k1 = wizReadLensCoeff('wiz_lens_k1');
+    var k2 = wizReadLensCoeff('wiz_lens_k2');
+    if ((k1 === 0 && k2 === 0) || !wizLensIsValid(k1, k2)) return null;
     var edges = {};
     for (var k = 0; k < 4; k++) {
       var a = CORNER_NAMES[k];
@@ -2934,6 +3511,71 @@
       for (var j = 0; j < poly.length - 1; j++) pts.push(poly[j][0] + ',' + poly[j][1]);
     }
     return pts.join(' ');
+  }
+
+  // Mirrors runtime/overlay_draw_scene.grid_line_count: lines spread evenly
+  // over each axis, both edges included.
+  var GRID_MAX_LINES_PER_AXIS = 200;
+
+  function wizGridLineCount(length, spacing) {
+    return Math.min(Math.max(Math.floor(length / spacing) + 1, 2), GRID_MAX_LINES_PER_AXIS);
+  }
+
+  // The projective map of the unit square onto a quad:
+  // (0,0) -> p0, (1,0) -> p1, (1,1) -> p2, (0,1) -> p3.
+  function wizSquareToQuad(p0, p1, p2, p3) {
+    var dx1 = p1[0] - p2[0], dx2 = p3[0] - p2[0], sx = p0[0] - p1[0] + p2[0] - p3[0];
+    var dy1 = p1[1] - p2[1], dy2 = p3[1] - p2[1], sy = p0[1] - p1[1] + p2[1] - p3[1];
+    var den = dx1 * dy2 - dx2 * dy1;
+    var g = (sx * dy2 - dx2 * sy) / den;
+    var h = (dx1 * sy - sx * dy1) / den;
+    var a = p1[0] - p0[0] + g * p1[0], b = p3[0] - p0[0] + h * p3[0];
+    var d = p1[1] - p0[1] + g * p1[1], e = p3[1] - p0[1] + h * p3[1];
+    return function(s, t) {
+      var w = g * s + h * t + 1;
+      return [(a * s + b * t + p0[0]) / w, (d * s + e * t + p0[1]) / w];
+    };
+  }
+
+  // The grid's inner lines in screen space, from its four corners. A plane
+  // projects through a pinhole by a homography, so the undistorted corners fix
+  // every point of it; each line is then bowed by the lens like the HUD's.
+  // Built from the corners alone, so it follows a corner while it is dragged.
+  function wizGridLines(corners, grid, k1, k2) {
+    if (!(grid.spacing > 0) || !(grid.width > 0) || !(grid.depth > 0)) return [];
+    if (!CORNER_NAMES.every(function(name) { return corners[name]; })) return [];
+    if (!wizLensIsValid(k1, k2)) { k1 = 0; k2 = 0; }
+    var u = {};
+    CORNER_NAMES.forEach(function(name) { u[name] = wizInvertDistortion(corners[name], k1, k2); });
+    if (!isConvex(u)) return [];
+    // s runs across the width from DSR, t up the depth from downstage.
+    var map = wizSquareToQuad(u.DSR, u.DSL, u.USL, u.USR);
+    var chords = (k1 || k2) ? DISTORTION_SUBDIVISIONS : 1;
+    var lines = [];
+    function addLine(s0, t0, s1, t1) {
+      var line = [];
+      for (var i = 0; i <= chords; i++) {
+        var f = i / chords;
+        line.push(wizApplyDistortion(map(s0 + f * (s1 - s0), t0 + f * (t1 - t0)), k1, k2));
+      }
+      lines.push(line);
+    }
+    var across = wizGridLineCount(grid.depth, grid.spacing);
+    var along = wizGridLineCount(grid.width, grid.spacing);
+    // The outermost lines are the quad's own outline.
+    for (var i = 1; i < across - 1; i++) addLine(0, i / (across - 1), 1, i / (across - 1));
+    for (var j = 1; j < along - 1; j++) addLine(j / (along - 1), 0, j / (along - 1), 1);
+    return lines;
+  }
+
+  function renderGridLines(groupId, corners) {
+    var group = document.getElementById(groupId);
+    group.innerHTML = '';
+    var lines = wizGridLines(corners, getState().grid, wizReadLensCoeff('wiz_lens_k1'), wizReadLensCoeff('wiz_lens_k2'));
+    var d = lines.map(function(line) {
+      return 'M' + line.map(function(p) { return p[0] + ' ' + p[1]; }).join(' L');
+    }).join(' ');
+    if (d) group.appendChild(svgEl('path', { d: d, class: 'wizard-grid-line' }));
   }
   // Per-corner viewBox state. Each entry is [vbX, vbY, vbW, vbH] in
   // image-pixel coordinates. Lazily populated when zoom mode is first
@@ -3006,19 +3648,9 @@
       edgesG.appendChild(el);
     });
 
-    // Centre marker – same visual style as the full-view handle but
-    // sized in CSS pixels (non-scaling) so 4× zoom doesn't bloat it.
     var markerG = svg.querySelector('[data-fine-zoom-marker]');
     markerG.innerHTML = '';
-    var dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-    dot.setAttribute('cx', here[0]);
-    dot.setAttribute('cy', here[1]);
-    dot.setAttribute('r', '7');
-    dot.setAttribute('fill', 'rgba(255,188,0,0.85)');
-    dot.setAttribute('stroke', '#ffbc00');
-    dot.setAttribute('stroke-width', '1.5');
-    dot.setAttribute('vector-effect', 'non-scaling-stroke');
-    markerG.appendChild(dot);
+    markerG.appendChild(pointMarker(here, { 'vector-effect': 'non-scaling-stroke' }));
   }
 
   function renderAllFineZoomBoxes() {
@@ -3067,7 +3699,8 @@
   // event delegation off each SVG keeps re-renders cheap (we never
   // remove/replace the SVG element itself, only its inner groups).
   function setupFineZoomDragging() {
-    var boxes = document.querySelectorAll('.fine-zoom-box');
+    // The Reference Mapping crop shares the class; it drags the Reference Point.
+    var boxes = document.querySelectorAll('.fine-zoom-box[data-corner]');
     for (var i = 0; i < boxes.length; i++) {
       _attachFineZoomBoxHandlers(boxes[i]);
     }
@@ -3098,6 +3731,7 @@
       if (!fineZoomReady()) return;
       var p = svgPoint(e.clientX, e.clientY);
       if (!p) return;
+      poseSeq++;
       cornerPositions[corner] = [p[0], p[1]];
       // Update the moved corner's full-view marker too – the operator
       // may flip back to the full view at any time.
@@ -3186,6 +3820,7 @@
       else if (e.key === 'ArrowDown') { pos[1] += step; moved = true; }
       if (!moved) return;
       e.preventDefault();
+      poseSeq++;
       // Mirror to the full-view handle so a flip-back shows the
       // same position.
       var fullHandle = document.querySelector('#fine-corners .handle[data-corner="' + corner + '"]');
@@ -3267,6 +3902,8 @@
   }
 
   function solveFromCorners() {
+    // No projection has placed the corners yet: a calibration point can still ask for a solve.
+    if (CORNER_NAMES.some(function(n) { return !cornerPositions[n]; })) return;
     if (!isConvex(cornerPositions) || quadArea(cornerPositions) < 100) {
       showSolveStatus('Invalid perspective \u2013 adjust corners', false);
       return;
@@ -3282,83 +3919,56 @@
     // values that solveFromCorners is about to overwrite. Only takes
     // a snapshot when none exists \u2013 re-entry to the step keeps the
     // original snapshot until Reset clears it.
-    if (preCornerPinningCamera === null) {
-      preCornerPinningCamera = getState().camera;
+    if (preCornerPinningPose === null) {
+      preCornerPinningPose = snapshotPose();
     }
 
-    var state = getState();
-    var g = state.grid;
-    var hw = g.width / 2, hd = g.depth / 2;
-    var ox = g.x_offset, oy = g.y_offset, oz = g.z_offset;
-    // Stage convention: +X is stage left, so DSL/USL are at +hw and DSR/USR
-    // at -hw. Each row pairs with the same-named screen corner below.
-    var worldCorners = [
-      [ox + hw, oy - hd, oz],
-      [ox - hw, oy - hd, oz],
-      [ox - hw, oy + hd, oz],
-      [ox + hw, oy + hd, oz],
-    ];
+    var screenCorners = wizSolveCorners(cornerPositions);
 
-    var screenCorners = [
-      cornerPositions.DSL,
-      cornerPositions.DSR,
-      cornerPositions.USR,
-      cornerPositions.USL,
-    ];
-
+    var seq = ++poseSeq;
+    var body = wizardSolveBody(screenCorners);
     fetch('/api/wizard/solve', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        world_corners: worldCorners,
-        screen_corners: screenCorners,
-        image_width: imageWidth,
-        image_height: imageHeight,
-        camera: { lens_k1: wizReadLensCoeff('cp_lens_k1'), lens_k2: wizReadLensCoeff('cp_lens_k2') },
-      }),
+      body: JSON.stringify(body),
     }).then(function(r) { return r.json(); })
     .then(function(data) {
+      if (seq !== poseSeq) return;
       if (data.error) {
         showSolveStatus(data.error, false);
         return;
       }
 
-      solvedCamera = data.camera;
       showSolveStatus('Calibration valid', true);
       showSolvedParams(data.camera);
 
-      // Snap corners to reprojected positions
-      var rp = data.reprojected_corners;
-      var keys = CORNER_NAMES;
-      for (var i = 0; i < 4; i++) {
-        cornerPositions[keys[i]] = rp[i];
-      }
-      // Update handle positions
-      var handles = document.getElementById('fine-corners').querySelectorAll('.handle');
-      handles.forEach(function(h) {
-        var cn = h.dataset.corner;
-        var p = cornerPositions[cn];
-        h.setAttribute('transform', 'translate('+p[0]+','+p[1]+')');
-      });
-      updateFineQuad();
-      // Solve snapped corners to reprojected positions –
-      // refresh the zoom boxes so their markers + edges paint at the
-      // post-snap positions instead of the pre-snap drag-end ones.
-      try {
-        renderAllFineZoomBoxes();
-      } catch (err) {
-        if (typeof console !== 'undefined' && console.warn) console.warn('fine-zoom render failed:', err);
+      // Snap corners to reprojected positions. Not while there are calibration points: a fit with
+      // them is least squares, and snapped corners would be the next fit's pins.
+      if (!body.calibHold) {
+        var rp = data.reprojected_corners;
+        var keys = CORNER_NAMES;
+        for (var i = 0; i < 4; i++) {
+          cornerPositions[keys[i]] = rp[i];
+        }
+        // Update handle positions
+        var handles = document.getElementById('fine-corners').querySelectorAll('.handle');
+        handles.forEach(function(h) {
+          var cn = h.dataset.corner;
+          var p = cornerPositions[cn];
+          h.setAttribute('transform', 'translate('+p[0]+','+p[1]+')');
+        });
+        updateFineQuad();
+        // Solve snapped corners to reprojected positions –
+        // refresh the zoom boxes so their markers + edges paint at the
+        // post-snap positions instead of the pre-snap drag-end ones.
+        try {
+          renderAllFineZoomBoxes();
+        } catch (err) {
+          if (typeof console !== 'undefined' && console.warn) console.warn('fine-zoom render failed:', err);
+        }
       }
 
-      // Back-propagate to camera form fields
-      wizWriteLen('cam_pos_x', data.camera.pos_x);
-      wizWriteLen('cam_pos_y', data.camera.pos_y);
-      wizWriteLen('cam_pos_z', data.camera.pos_z);
-      document.getElementById('cam_pitch').value = data.camera.pitch;
-      document.getElementById('cam_yaw').value = data.camera.yaw;
-      document.getElementById('cam_roll').value = data.camera.roll;
-      document.getElementById('cam_fov').value = data.camera.fov;
-      saveToSession();
+      applySolvedPose(data.camera, screenCorners, body, data.calibration_points);
     });
   }
 
@@ -3388,30 +3998,20 @@
   }
 
   window.resetCornerPinning = function() {
-    solvedCamera = null;
     document.getElementById('fine-status').style.display = 'none';
     document.getElementById('fine-solved-params').style.display = 'none';
     document.getElementById('fine-container').classList.remove('valid', 'invalid');
-    // Restore the camera form from the pre-solve snapshot so the
-    // re-projection produces corners at the operator's pre-pinning
-    // positions (not the dragged-to ones, since solveFromCorners
-    // writes its result back into the form on every successful
-    // solve). Without this, Reset would re-project from the post-
-    // solve camera and the corners would visibly stay where they
-    // were – which is what the operator originally reported as
-    // "reset is broken after a corner is moved". Clearing the
+    // Restore the pose from before this session's first solve, with the lens
+    // and pins it was solved from, so the re-projection puts the corners back
+    // where the operator started, not where they were dragged to. Clearing the
     // snapshot lets the next solve session start fresh.
-    if (preCornerPinningCamera) {
-      wizWriteLen('cam_pos_x', preCornerPinningCamera.pos_x);
-      wizWriteLen('cam_pos_y', preCornerPinningCamera.pos_y);
-      wizWriteLen('cam_pos_z', preCornerPinningCamera.pos_z);
-      document.getElementById('cam_pitch').value = preCornerPinningCamera.pitch;
-      document.getElementById('cam_yaw').value = preCornerPinningCamera.yaw;
-      document.getElementById('cam_roll').value = preCornerPinningCamera.roll;
-      document.getElementById('cam_fov').value = preCornerPinningCamera.fov;
-      preCornerPinningCamera = null;
-      saveToSession();
+    if (preCornerPinningPose) {
+      restorePose(preCornerPinningPose);
+      preCornerPinningPose = null;
     }
+    // Back to where the pose projects the corners, not the pins it was solved from.
+    calibHeldPins = null;
+    saveToSession();
     // Clear cached zoom-box viewBoxes so the next
     // ``renderAllFineZoomBoxes`` re-centres each box on the freshly
     // reset corner position. Without this, a reset while the operator
@@ -3422,6 +4022,552 @@
     projectAndOverlay();
   };
 
+
+  // ---------------------------------------------------------------
+  // Calibration points
+  // ---------------------------------------------------------------
+  function calibNumber(v) { return typeof v === 'number' && isFinite(v) ? v : null; }
+
+  // Measured completely: two different corners, both distances within the config's ranges, a height,
+  // and the dot moved onto the spot (a new point's starts at the centre).
+  function calibComplete(p) {
+    return !!(p.corner_a && p.corner_b && p.corner_a !== p.corner_b && p.pinned !== false
+      && p.distance_a > 0 && p.distance_a <= 200 && p.distance_b > 0 && p.distance_b <= 200
+      && calibNumber(p.height) !== null && Math.abs(p.height) <= 10);
+  }
+
+  // A point in the shape this page keeps; one saved by another version is dropped, not trusted.
+  function calibRestored(p) {
+    if (!p || typeof p !== 'object' || !Array.isArray(p.pin) || p.pin.length !== 2) return null;
+    var x = calibNumber(p.pin[0]), y = calibNumber(p.pin[1]);
+    if (x === null || y === null || x < 0 || x > 1 || y < 0 || y > 1) return null;
+    function corner(c) { return CORNER_NAMES.indexOf(c) !== -1 ? c : null; }
+    var at = Array.isArray(p.position) && p.position.length === 3 ? p.position.map(calibNumber) : [null];
+    return {
+      corner_a: corner(p.corner_a), corner_b: corner(p.corner_b),
+      distance_a: calibNumber(p.distance_a), distance_b: calibNumber(p.distance_b),
+      height: calibNumber(p.height), pin: [x, y], pinned: p.pinned !== false,
+      position: at.indexOf(null) === -1 ? at : null,
+    };
+  }
+
+  function calibLoad(points) {
+    calibPoints = (Array.isArray(points) ? points : []).map(calibRestored).filter(Boolean).slice(0, CALIB_MAX);
+    calibAnswers = calibPoints.map(function() { return null; });
+    calibAwaiting = null;
+  }
+
+  function calibPinPx(p) { return [p.pin[0] * imageWidth, p.pin[1] * imageHeight]; }
+
+  function calibSetPin(i, pos) {
+    calibPoints[i].pin = [Math.min(Math.max(pos[0] / imageWidth, 0), 1), Math.min(Math.max(pos[1] / imageHeight, 0), 1)];
+  }
+
+  // The complete points as the solve takes them, and which point each one is.
+  function calibPayload() {
+    var points = [], indices = [];
+    if (!imageWidth) return { points: points, indices: indices };
+    calibPoints.forEach(function(p, i) {
+      if (!calibComplete(p)) return;
+      points.push({ corner_a: p.corner_a, corner_b: p.corner_b, distance_a: p.distance_a,
+                    distance_b: p.distance_b, height: p.height, pin: calibPinPx(p) });
+      indices.push(i);
+    });
+    return { points: points, indices: indices };
+  }
+
+  // The complete points as the config keeps them, each with where the solve of this pose put it.
+  function calibSaved() {
+    var saved = [];
+    calibPoints.forEach(function(p) {
+      if (!calibComplete(p)) return;
+      saved.push({ corner_a: p.corner_a, corner_b: p.corner_b, distance_a: p.distance_a, distance_b: p.distance_b,
+                   height: p.height, pin_x: p.pin[0], pin_y: p.pin[1], position: p.position || [] });
+    });
+    return saved;
+  }
+
+  // Every solve's answer, for the pose it lands with; a point it did not take has no answer and no place.
+  function calibTakeAnswer(indices, answers) {
+    calibAnswers = calibPoints.map(function() { return null; });
+    indices.forEach(function(i, j) { if (i < calibAnswers.length) calibAnswers[i] = answers[j] || null; });
+    calibPoints.forEach(function(p, i) {
+      var a = calibAnswers[i];
+      p.position = a && a.status !== 'flagged' ? a.position : null;  // a left-out place is not the solve's
+    });
+    renderCalibStatus();
+    renderCalibOverlay();
+  }
+
+  // What a point was measured as: a snapshot's place for it holds only while this is unchanged.
+  function calibMeasured(p) {
+    return JSON.stringify([p.corner_a, p.corner_b, p.distance_a, p.distance_b, p.height, p.pin]);
+  }
+
+  // The pose changed without a solve: what the last one said of the points is not about this pose.
+  function calibForgetPose() {
+    calibTakeAnswer([], []);
+    calibHeldPins = null;
+  }
+
+  // The held pins while the grid is the one they were placed on.
+  function calibHeldFor() {
+    var h = calibHeldPins;
+    return h && JSON.stringify(h.world) === JSON.stringify(wizardWorldCorners()) ? h : null;
+  }
+
+  // Those pins on this snapshot: fractions of it, so a snapshot of another resolution maps too.
+  function calibHeldCorners() {
+    var h = calibHeldFor();
+    if (!h || !imageWidth || !imageHeight) return null;
+    return h.corners.map(function(c) { return [c[0] * imageWidth, c[1] * imageHeight]; });
+  }
+
+  // Held pins in the shape this page keeps; anything else from the session or the config holds nothing.
+  function calibHeldRestored(h) {
+    function numbers(a, n) { return Array.isArray(a) && a.length === n && a.every(function(v) { return calibNumber(v) !== null; }); }
+    function rows(a, n) { return Array.isArray(a) && a.length === 4 && a.every(function(r) { return numbers(r, n); }); }
+    return h && rows(h.world, 3) && rows(h.corners, 2) ? h : null;
+  }
+
+  // A fresh run starts from the corner pins the saved pose was solved from: the server drops them
+  // whenever the grid's corners move, so they are on the saved grid.
+  function calibHoldSavedPins() {
+    calibHeldPins = calibHeldRestored({ world: wizardWorldCorners(), corners: CALIB_SAVED_CORNERS });
+  }
+
+  // Where a solve saw each point is in the pixels of the snapshot it was solved on.
+  function calibDropSeen() { calibAnswers.forEach(function(a) { if (a) a.seen = null; }); }
+
+  // Its dot moved: the first move is what places it; the list then drops the prompt to place it.
+  function calibPlaced(i) {
+    var first = calibPoints[i].pinned === false;
+    calibPoints[i].pinned = true;
+    calibEdited(i);
+    saveToSession();
+    if (first) renderCalibList();
+    else renderCalibStatus();
+  }
+
+  // A point changed: its answer and place, and any answer still on its way, are for what it was.
+  function calibEdited(i) {
+    calibAnswers[i] = null;
+    calibPoints[i].position = null;
+    poseSeq++;
+  }
+
+  function calibScheduleSolve() {
+    clearTimeout(calibSolveTimer);
+    calibSolveTimer = setTimeout(function() { calibSolveTimer = null; solveFromCorners(); }, 400);
+  }
+
+  window.calibAdd = function() {
+    if (calibPoints.length >= CALIB_MAX || !imageWidth) return;
+    calibPoints.push({ corner_a: null, corner_b: null, distance_a: null, distance_b: null, height: 0, pin: [0.5, 0.5],
+                       pinned: false, position: null });
+    calibAnswers.push(null);
+    calibAwaiting = calibPoints.length - 1;
+    setFineZoomMode(false);
+    saveToSession();
+    renderCalibList();
+    renderCalibOverlay();
+  };
+
+  window.calibDelete = function(i) {
+    // Any complete point not left out may be in the pose's fit, a saved one too (it loads without an answer).
+    var fitted = calibComplete(calibPoints[i]) && !(calibAnswers[i] && calibAnswers[i].status === 'flagged');
+    calibPoints.splice(i, 1);
+    calibAnswers.splice(i, 1);
+    if (calibAwaiting === i) calibAwaiting = null;
+    else if (calibAwaiting !== null && calibAwaiting > i) calibAwaiting--;
+    // An answer already on its way was solved with the point and maps by the old indices.
+    poseSeq++;
+    // A pose fitted with the deleted point answers for none of the rest; forgotten before the session is
+    // saved and the solve sent, so a reload or a solve that fails leaves nothing of it. The held corner
+    // pins are the operator's, not the point's: they stay. The solve's answer brings the rest back.
+    if (fitted) calibTakeAnswer([], []);
+    saveToSession();
+    renderCalibList();
+    renderCalibOverlay();
+    clearTimeout(calibSolveTimer);
+    calibSolveTimer = null;
+    solveFromCorners();
+  };
+
+  // Each distance stays with the corner it was measured from, whatever order the corners are tapped in.
+  // Kept on the point, not enumerable (never saved), until both corners are chosen.
+  function calibChooseCorners(i) {
+    var p = calibPoints[i];
+    if (!p.prior) {
+      var by = {};
+      if (p.corner_a) by[p.corner_a] = p.distance_a;
+      if (p.corner_b) by[p.corner_b] = p.distance_b;
+      Object.defineProperty(p, 'prior', { value: by, writable: true, configurable: true });
+    }
+    p.corner_a = p.corner_b = p.distance_a = p.distance_b = null;
+    calibEdited(i);
+    calibAwaiting = i;
+    setFineZoomMode(false);
+    saveToSession();
+    renderCalibList();
+    renderCalibOverlay();
+    calibScheduleSolve();
+  }
+  window.calibChooseCorners = calibChooseCorners;
+
+  function calibPickCorner(name) {
+    var p = calibPoints[calibAwaiting];
+    if (!p.corner_a) {
+      p.corner_a = name;
+    } else if (name !== p.corner_a) {
+      p.corner_b = name;
+      calibAwaiting = null;
+      if (p.prior) {
+        p.distance_a = p.prior[p.corner_a] === undefined ? null : p.prior[p.corner_a];
+        p.distance_b = p.prior[p.corner_b] === undefined ? null : p.prior[p.corner_b];
+        p.prior = null;
+      }
+    }
+    saveToSession();
+    renderCalibList();
+    renderCalibOverlay();
+    if (!calibComplete(p)) return;  // the solve Choose corners scheduled takes it out of the pose
+    clearTimeout(calibSolveTimer);
+    calibSolveTimer = null;
+    solveFromCorners();
+  }
+
+  function calibOnField(i) {
+    var p = calibPoints[i];
+    var a = wizReadLen('calib-a-' + i), b = wizReadLen('calib-b-' + i), h = wizReadLen('calib-h-' + i);
+    p.distance_a = isFinite(a) ? a : null;
+    p.distance_b = isFinite(b) ? b : null;
+    p.height = isFinite(h) ? h : null;
+    calibEdited(i);
+    saveToSession();
+    renderCalibStatus();
+    renderCalibOverlay();
+    calibScheduleSolve();
+  }
+  window.calibOnField = calibOnField;
+
+  function calibField(id, label, meters, i) {
+    var field = document.createElement('div');
+    field.className = 'field';
+    var lab = document.createElement('label');
+    lab.setAttribute('for', id);
+    lab.textContent = label + ' (' + CALIB_LEN_UNIT + ')';
+    var input = document.createElement('input');
+    input.id = id;
+    input.type = WUNIT.isImperial() ? 'text' : 'number';
+    // A laser distance meter reads in millimetres.
+    if (!WUNIT.isImperial()) input.step = '0.001';
+    input.setAttribute('oninput', 'calibOnField(' + i + ')');
+    field.appendChild(lab);
+    field.appendChild(input);
+    // Written once it is on the page: wizWriteLen finds it by id.
+    return { el: field, write: function() { if (meters !== null) wizWriteLen(id, meters); } };
+  }
+
+  // The rows: rebuilt when a point is added, removed or given its corners, never while it is typed in.
+  function renderCalibList() {
+    var list = document.getElementById('calib-list');
+    if (!list) return;
+    list.innerHTML = '';
+    var writes = [];
+    calibPoints.forEach(function(p, i) {
+      var row = document.createElement('div');
+      row.className = 'calib-row';
+      var head = document.createElement('div');
+      head.className = 'calib-row-head';
+      var title = document.createElement('strong');
+      title.textContent = 'Point ' + (i + 1);
+      var chip = document.createElement('span');
+      chip.id = 'calib-chip-' + i;
+      var change = document.createElement('button');
+      change.type = 'button';
+      change.className = 'secondary small';
+      change.textContent = 'Choose corners';
+      change.setAttribute('onclick', 'calibChooseCorners(' + i + ')');
+      var del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'secondary small calib-delete';
+      del.textContent = 'Delete';
+      del.setAttribute('aria-label', 'Delete point ' + (i + 1));
+      del.setAttribute('onclick', 'calibDelete(' + i + ')');
+      head.appendChild(title);
+      head.appendChild(chip);
+      head.appendChild(change);
+      head.appendChild(del);
+      row.appendChild(head);
+      if (calibAwaiting === i || !p.corner_a || !p.corner_b) {
+        var prompt = document.createElement('p');
+        prompt.className = 'wizard-help';
+        prompt.setAttribute('role', 'status');
+        prompt.textContent = calibAwaiting !== i ? 'Choose the two corners it was measured from.'
+          : p.corner_a ? 'Now tap the second corner; ' + p.corner_a + ' is the first.'
+          : 'Tap the two grid corners it was measured from.';
+        row.appendChild(prompt);
+      } else {
+        var fields = document.createElement('div');
+        fields.className = 'row';
+        [calibField('calib-a-' + i, 'From ' + p.corner_a, p.distance_a, i),
+         calibField('calib-b-' + i, 'From ' + p.corner_b, p.distance_b, i),
+         calibField('calib-h-' + i, 'Height above stage', p.height, i)].forEach(function(f) {
+          fields.appendChild(f.el);
+          writes.push(f.write);
+        });
+        row.appendChild(fields);
+        if (p.pinned === false) {
+          var place = document.createElement('p');
+          place.className = 'wizard-help';
+          place.setAttribute('role', 'status');
+          place.textContent = 'Drag dot ' + (i + 1) + ' onto the measured spot.';
+          row.appendChild(place);
+        }
+      }
+      var fit = document.createElement('div');
+      fit.className = 'calib-fit';
+      fit.id = 'calib-fit-' + i;
+      var reason = document.createElement('div');
+      reason.className = 'calib-reason';
+      reason.id = 'calib-reason-' + i;
+      row.appendChild(fit);
+      row.appendChild(reason);
+      list.appendChild(row);
+    });
+    writes.forEach(function(w) { w(); });
+    renderCalibStatus();
+  }
+
+  var CALIB_STATES = {
+    ok: ['stat-chip ok', 'Used'],
+    unverified: ['stat-chip warn', 'Unverified'],
+    flagged: ['stat-chip off', 'Left out'],
+  };
+
+  function calibPositionText(position) {
+    return 'X ' + WUNIT.formatLength(position[0]) + '  Y ' + WUNIT.formatLength(position[1])
+      + '  Z ' + WUNIT.formatLength(position[2]);
+  }
+
+  // The parts a solve or a keystroke changes; the inputs are left alone.
+  function renderCalibStatus() {
+    if (!document.getElementById('calib-list')) return;
+    calibPoints.forEach(function(p, i) {
+      var answer = calibAnswers[i];
+      var state = !calibComplete(p) ? ['stat-chip', 'Incomplete']
+        : answer ? CALIB_STATES[answer.status] : ['stat-chip', 'Not solved'];
+      var chip = document.getElementById('calib-chip-' + i);
+      if (chip) { chip.className = state[0]; chip.textContent = state[1]; }
+      var at = answer ? answer.position : p.position;
+      var fit = document.getElementById('calib-fit-' + i);
+      if (fit) fit.textContent = at ? calibPositionText(at) : '';
+      var reason = document.getElementById('calib-reason-' + i);
+      if (reason) reason.textContent = answer && answer.status === 'flagged' ? answer.reason : '';
+    });
+    var unverified = calibAnswers.some(function(a) { return a && a.status === 'unverified'; });
+    document.getElementById('calib-notice').style.display = unverified ? '' : 'none';
+    document.getElementById('calib-notice-step').style.display = calibPoints.length >= CALIB_MAX ? 'none' : '';
+    document.getElementById('calib-add').disabled = calibPoints.length >= CALIB_MAX || !imageWidth;
+  }
+
+  // On the Corner Pinning picture: each point's dot, a guide to each of its corners,
+  // and for a point left out, where the solved camera puts the place its distances give.
+  function renderCalibOverlay() {
+    var g = document.getElementById('fine-calib');
+    if (!g || !CALIB_ENABLED || calibDrag) return;
+    var focused = g.contains(document.activeElement) ? document.activeElement.dataset.calib : null;
+    g.innerHTML = '';
+    calibDrawn = [];
+    document.getElementById('fine-overlay').classList.toggle('calib-picking', calibPicking());
+    if (!imageWidth) return;
+    var px = overlayPx();
+    renderReviewCalib(px);
+    calibPoints.forEach(function(p, i) {
+      var pin = calibPinPx(p);
+      var lines = [], guides = {};
+      function line(cls, to) {
+        var el = svgEl('line', { class: cls, x1: pin[0], y1: pin[1], x2: to[0], y2: to[1] });
+        lines.push(el);
+        g.appendChild(el);
+        return el;
+      }
+      [p.corner_a, p.corner_b].forEach(function(name) {
+        var c = name && cornerPositions[name];
+        if (c) guides[name] = line('calib-guide', c);
+      });
+      var answer = calibAnswers[i];
+      if (answer && answer.status === 'flagged' && answer.seen) {
+        line('calib-miss', answer.seen);
+        g.appendChild(svgEl('circle', { class: 'calib-miss', cx: answer.seen[0], cy: answer.seen[1], r: 7 * px }));
+      }
+      var handle = pointHandle(pin, 4, px);
+      handle.dataset.calib = i;
+      handle.setAttribute('aria-label', 'Calibration point ' + (i + 1));
+      var label = svgEl('text', { class: 'calib-label', x: 12 * px, y: -12 * px, 'font-size': 13 * px, 'stroke-width': 3 * px });
+      label.textContent = String(i + 1);
+      handle.appendChild(label);
+      g.appendChild(handle);
+      calibDrawn[i] = { handle: handle, lines: lines, guides: guides };
+      if (String(i) === focused) handle.focus({ preventScroll: true });
+    });
+  }
+
+  // A corner move takes the guides into it along, in place.
+  function calibMoveGuides() {
+    calibDrawn.forEach(function(drawn) {
+      Object.keys(drawn.guides).forEach(function(name) {
+        drawn.guides[name].setAttribute('x2', cornerPositions[name][0]);
+        drawn.guides[name].setAttribute('y2', cornerPositions[name][1]);
+      });
+    });
+  }
+
+  // A drag moves the point's drawing in place: a touch stops reaching the page once the element it began on is gone.
+  function calibMoveDrawn(i) {
+    var drawn = calibDrawn[i];
+    if (!drawn) return;
+    var pin = calibPinPx(calibPoints[i]);
+    drawn.handle.setAttribute('transform', 'translate(' + pin[0] + ',' + pin[1] + ')');
+    drawn.lines.forEach(function(el) { el.setAttribute('x1', pin[0]); el.setAttribute('y1', pin[1]); });
+  }
+
+  // On the Review picture: where the solved camera sees each point, a ring for one left out.
+  function renderReviewCalib(px) {
+    var g = document.getElementById('review-calib-points');
+    g.innerHTML = '';
+    calibAnswers.forEach(function(answer, i) {
+      if (!answer || !answer.seen) return;
+      if (answer.status === 'flagged') {
+        g.appendChild(svgEl('circle', { class: 'calib-miss', cx: answer.seen[0], cy: answer.seen[1], r: 7 * px }));
+        return;
+      }
+      var marker = pointMarker(answer.seen, { r: 4 * px });
+      var label = svgEl('text', { class: 'calib-label', x: 8 * px, y: -8 * px, 'font-size': 13 * px, 'stroke-width': 3 * px });
+      label.textContent = String(i + 1);
+      marker.appendChild(label);
+      g.appendChild(marker);
+    });
+  }
+
+  function setupCalibDragging() {
+    var group = document.getElementById('fine-calib');
+    var svg = document.getElementById('fine-overlay');
+    function svgPoint(e) {
+      var c = e.touches ? e.touches[0] : e;
+      var pt = svg.createSVGPoint();
+      pt.x = c.clientX;
+      pt.y = c.clientY;
+      var p = pt.matrixTransform(svg.getScreenCTM().inverse());
+      return [p.x, p.y];
+    }
+    function start(e) {
+      var handle = e.target.closest('.handle');
+      if (!handle || handle.dataset.calib === undefined) return;
+      e.preventDefault();
+      var i = Number(handle.dataset.calib);
+      // A solve still to come would read the pin half-dragged: the drag's end runs it instead.
+      calibDrag = { i: i, start: svgPoint(e), pin: calibPinPx(calibPoints[i]), owed: calibSolveTimer !== null };
+      clearTimeout(calibSolveTimer);
+      calibSolveTimer = null;
+      showLoupe('fine-container', 'fine-overlay', calibDrag.pin);
+    }
+    function move(e) {
+      if (!calibDrag) return;
+      e.preventDefault();
+      var cur = svgPoint(e);
+      calibSetPin(calibDrag.i, [calibDrag.pin[0] + cur[0] - calibDrag.start[0], calibDrag.pin[1] + cur[1] - calibDrag.start[1]]);
+      showLoupe('fine-container', 'fine-overlay', calibPinPx(calibPoints[calibDrag.i]));
+      calibMoveDrawn(calibDrag.i);
+    }
+    function end() {
+      if (!calibDrag) return;
+      hideLoupe('fine-container');
+      var i = calibDrag.i, pin = calibPinPx(calibPoints[i]), owed = calibDrag.owed;
+      var moved = pin[0] !== calibDrag.pin[0] || pin[1] !== calibDrag.pin[1];
+      calibDrag = null;
+      if (moved) calibPlaced(i);
+      renderCalibOverlay();
+      if (moved || owed) solveFromCorners();
+    }
+    group.addEventListener('mousedown', start);
+    group.addEventListener('touchstart', start, { passive: false });
+    window.addEventListener('mousemove', move);
+    window.addEventListener('touchmove', move, { passive: false });
+    window.addEventListener('mouseup', end);
+    window.addEventListener('touchend', end);
+    window.addEventListener('touchcancel', end);
+    group.addEventListener('keydown', function(e) {
+      var handle = e.target.closest('.handle');
+      if (!handle || handle.dataset.calib === undefined) return;
+      var step = e.shiftKey ? 10 : 1;
+      var d = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[e.key];
+      if (!d) return;
+      e.preventDefault();
+      var i = Number(handle.dataset.calib);
+      var pin = calibPinPx(calibPoints[i]);
+      calibSetPin(i, [pin[0] + d[0], pin[1] + d[1]]);
+      calibPlaced(i);
+      renderCalibOverlay();
+      calibScheduleSolve();
+    });
+  }
+
+  // While a point waits for its corners, a tap (or Enter) on a corner chooses it instead of dragging it.
+  // Picking corners only in the full view while the section that asks for them is open; else they drag.
+  function calibPicking() {
+    var section = document.getElementById('calib-section');
+    return calibAwaiting !== null && !!section && section.open && !fineZoomMode;
+  }
+
+  function setupCalibCornerPicking() {
+    var group = document.getElementById('fine-corners');
+    document.getElementById('calib-section').addEventListener('toggle', renderCalibOverlay);
+    function pick(e) {
+      if (!calibPicking()) return;
+      var handle = e.target.closest('.handle');
+      if (!handle || !handle.dataset.corner) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      calibPickCorner(handle.dataset.corner);
+    }
+    group.addEventListener('mousedown', pick, true);
+    group.addEventListener('touchstart', pick, { capture: true, passive: false });
+    group.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter' || e.key === ' ') pick(e);
+    }, true);
+  }
+
+  function populateReviewCalib() {
+    var box = document.getElementById('review-calib');
+    if (!box) return;
+    var list = document.getElementById('review-calib-list');
+    list.innerHTML = '';
+    calibPoints.forEach(function(p, i) {
+      var answer = calibAnswers[i];
+      var row = document.createElement('div');
+      row.className = 'calib-row-head';
+      var title = document.createElement('strong');
+      title.textContent = 'Point ' + (i + 1);
+      // Apply saves complete points only: an incomplete one is listed so it is not lost unseen.
+      var state = !calibComplete(p) ? ['stat-chip', 'Incomplete']
+        : answer ? CALIB_STATES[answer.status] : ['stat-chip', 'Not solved'];
+      var chip = document.createElement('span');
+      chip.className = state[0];
+      chip.textContent = state[1];
+      var at = answer ? answer.position : p.position;
+      var fit = document.createElement('span');
+      fit.className = 'calib-fit';
+      fit.textContent = at ? calibPositionText(at) : '';
+      row.appendChild(title);
+      row.appendChild(chip);
+      row.appendChild(fit);
+      list.appendChild(row);
+    });
+    box.style.display = calibPoints.length ? '' : 'none';
+  }
+
   // ---------------------------------------------------------------
   // Finish
   // ---------------------------------------------------------------
@@ -3430,7 +4576,7 @@
   // ---------------------------------------------------------------
   function populateReview() {
     var state = getState();
-    var cam = solvedCamera || state.camera;
+    var cam = state.camera;
     var g = state.grid;
 
     document.getElementById('review-cam-pos-x').textContent = WUNIT.formatLength(Number(cam.pos_x));
@@ -3451,6 +4597,8 @@
     document.getElementById('review-grid-x-offset').textContent = WUNIT.formatLength(Number(g.x_offset));
     document.getElementById('review-grid-y-offset').textContent = WUNIT.formatLength(Number(g.y_offset));
     document.getElementById('review-grid-z-offset').textContent = WUNIT.formatLength(Number(g.z_offset));
+    populateReviewLens(state.camera);
+    populateReviewCalib();
 
     // The review overlay (viewBox, bowed quad, corners, ref, z-offset) is drawn
     // by ``loadSnapshot`` -> ``projectAndOverlay`` -> ``updateAllOverlays`` on
@@ -3462,7 +4610,7 @@
 
   window.applyAndFinish = function() {
     var saveError = window.OpenFollow.saveError;
-    var reviewBox = document.querySelector('#wizard-step-6 .section');
+    var reviewBox = document.querySelector('#wizard-step-review .section');
     var badLen = invalidLengthFields();
     if (badLen.length) {
       saveError.show(reviewBox, {
@@ -3471,8 +4619,15 @@
       }, 'Not applied.');
       return;
     }
+    if (!wizLensPairValid()) {
+      saveError.show(reviewBox, {
+        error: 'The lens pair folds the overlay inside the frame.',
+        action: 'Bring either lens value closer to 0 on the Lens step before finishing.',
+      }, 'Not applied.');
+      return;
+    }
     var state = getState();
-    var camData = solvedCamera || state.camera;
+    var camData = state.camera;
     var gridData = state.grid;
     var lensData = state.lens || {};
 
@@ -3498,24 +4653,29 @@
       sensor_width_mm: sensorWidth,
       focal_length_mm: focalLength,
       // The DLT solve is pinhole and doesn't return distortion; carry the
-      // operator's lens sliders through from the wizard state.
+      // Lens step's pair through from the wizard state.
       lens_k1: state.camera.lens_k1,
       lens_k2: state.camera.lens_k2,
     };
+    // With the pose, always: without the section they are the saved points, and a pose solved
+    // without them leaves them no place, and no corner pins.
+    cameraPayload.calibration_points = calibSaved();
+    var held = calibHeldFor();
+    cameraPayload.corner_pins = held ? held.corners : [];
 
-    Promise.all([
-      fetch('/api/config/camera', {
+    // The grid first: a grid write that moves the corners drops the saved corner pins.
+    fetch('/api/config/grid', {
+      method: 'POST', headers: headers,
+      body: JSON.stringify({
+        width: gridData.width, depth: gridData.depth, spacing: gridData.spacing,
+        x_offset: gridData.x_offset, y_offset: gridData.y_offset, z_offset: gridData.z_offset,
+      }),
+    }).then(function(grid) {
+      return fetch('/api/config/camera', {
         method: 'POST', headers: headers,
         body: JSON.stringify(cameraPayload),
-      }),
-      fetch('/api/config/grid', {
-        method: 'POST', headers: headers,
-        body: JSON.stringify({
-          width: gridData.width, depth: gridData.depth, spacing: gridData.spacing,
-          x_offset: gridData.x_offset, y_offset: gridData.y_offset, z_offset: gridData.z_offset,
-        }),
-      }),
-    ]).then(async function(responses) {
+      }).then(function(camera) { return [camera, grid]; });
+    }).then(async function(responses) {
       var labeled = [
         { name: 'camera', response: responses[0] },
         { name: 'grid', response: responses[1] },
@@ -3541,7 +4701,7 @@
   };
 
   // ---------------------------------------------------------------
-  // Video Source (Step 2)
+  // Video Source
   // ---------------------------------------------------------------
   window.saveWizardVideoSource = function() {
     var formData = new FormData();
@@ -3566,7 +4726,7 @@
     // active). Rejects on a failed save so the caller's .catch can surface it
     // without advancing.
     var saveError = window.OpenFollow.saveError;
-    var videoBox = document.querySelector('#wizard-step-2 .section');
+    var videoBox = document.querySelector('#wizard-step-video .section');
     return fetch('/section/video_source', { method: 'POST', body: formData })
     .then(async function(r) {
       if (!r.ok) {
@@ -3585,8 +4745,743 @@
   window.wizardVideoSaveFailed = function(err) {
     if (err && err.message === 'Save failed') return;
     window.OpenFollow.saveError.show(
-      document.querySelector('#wizard-step-2 .section'), window.OpenFollow.saveError.UNREACHABLE);
+      document.querySelector('#wizard-step-video .section'), window.OpenFollow.saveError.UNREACHABLE);
   };
+
+
+  // ---------------------------------------------------------------
+  // Lens: the distortion from lines that are straight in reality
+  // ---------------------------------------------------------------
+  // A line keeps its endpoints p0 / p1 (image px) and its three middle points
+  // in the line's own frame as (t, off): t along the chord, off along its
+  // perpendicular. Moving an endpoint keeps every middle point's offset; a
+  // middle point only ever moves along the perpendicular.
+  var LENS_T = [0.25, 0.5, 0.75];
+  var LENS_FIT_DEBOUNCE_MS = 300;
+  var LENS_MIN_LINE_PX = 20;
+  // Mirror lens_fit._MIN_LINE_SPAN_PX: a line spanning less carries no direction to fit.
+  var LENS_MIN_SPAN_PX = 10;
+  // CSS pixels a finger may wander before a tap counts as a drag.
+  var LENS_TAP_SLOP_PX = 6;
+  var lensFitSeq = 0;        // every fit request counts; an answer to an older one is dropped
+  var LENS_RATING_LEVEL = { low: 'caution', medium: 'caution', okay: 'info', good: 'success', excellent: 'success' };
+  var LENS_RATING_SEGMENTS = { low: 1, medium: 2, okay: 3, good: 4, excellent: 5 };
+  var LENS_RATING_LABEL = { low: 'Low', medium: 'Medium', okay: 'Okay', good: 'Good', excellent: 'Excellent' };
+  var LENS_MISFIT_TEXT = "This line doesn't fit the others – is it really straight?";
+  var LENS_DEV = {{'true' if config.ui.developer_mode else 'false'}};
+  var lensLines = [];        // [{p0, p1, mids: [{t, off, on}], snapped: [bool x5], curve, rms, misfit, candidate}]
+  var lensCandidates = [];   // suggested edges of the current snapshot: [{points, samples, used}]
+  var lensImageSize = null;  // [w, h] the lines were traced on
+  var lensPending = null;    // first click of a line being traced
+  var lensSelected = null;   // {line, point} with point 0..4
+  var lensFit = null;        // the last fit response
+  var lensCanvas = null;     // the snapshot at full resolution, for the luma band
+  var lensFitTimer = null;
+  var lensReSolveTimer = null;
+  var lensDrag = null;
+  // {size, corners, withPoints} of the last solve: the snapshot size, the four pins, whether it took the points
+  var pinnedCorners = null;
+  var lensSolvedWith = { k1: wizReadLensCoeff('wiz_lens_k1'), k2: wizReadLensCoeff('wiz_lens_k2') };
+
+  function lensFrame(line) {
+    var dx = line.p1[0] - line.p0[0], dy = line.p1[1] - line.p0[1];
+    var len = Math.sqrt(dx * dx + dy * dy) || 1;
+    return { dx: dx, dy: dy, len: len, nx: -dy / len, ny: dx / len };
+  }
+  function lensPointPos(line, j) {
+    if (j === 0) return [line.p0[0], line.p0[1]];
+    if (j === 4) return [line.p1[0], line.p1[1]];
+    var m = line.mids[j - 1], f = lensFrame(line);
+    return [line.p0[0] + m.t * f.dx + m.off * f.nx, line.p0[1] + m.t * f.dy + m.off * f.ny];
+  }
+  function lensPointIsOn(line, j) { return j === 0 || j === 4 || line.mids[j - 1].on; }
+  function lensActivePoints(line) {
+    var pts = [];
+    for (var j = 0; j < 5; j++) if (lensPointIsOn(line, j)) pts.push(lensPointPos(line, j));
+    return pts;
+  }
+  // A line counts while its ends and at least one middle point remain, spanning enough to have a direction.
+  function lensLineCounts(line) {
+    var pts = lensActivePoints(line);
+    if (pts.length < 3) return false;
+    var xs = pts.map(function(p) { return p[0]; }), ys = pts.map(function(p) { return p[1]; });
+    var span = Math.max(Math.max.apply(null, xs) - Math.min.apply(null, xs), Math.max.apply(null, ys) - Math.min.apply(null, ys));
+    return span >= LENS_MIN_SPAN_PX;
+  }
+  function lensRestoredPair(p) { return Array.isArray(p) && p.length === 2 && isFinite(p[0]) && isFinite(p[1]); }
+  function lensRestoredLine(line) {
+    return !!line && lensRestoredPair(line.p0) && lensRestoredPair(line.p1) && Array.isArray(line.mids)
+      && line.mids.length === 3 && Array.isArray(line.snapped) && line.snapped.length === 5;
+  }
+  function lensSetMidFromPos(line, j, pos) {
+    var f = lensFrame(line), m = line.mids[j - 1];
+    var bx = line.p0[0] + m.t * f.dx, by = line.p0[1] + m.t * f.dy;
+    m.off = (pos[0] - bx) * f.nx + (pos[1] - by) * f.ny;
+  }
+  function lensSetMidsFromPositions(line, positions) {
+    var f = lensFrame(line);
+    for (var j = 1; j <= 3; j++) {
+      var m = line.mids[j - 1], rx = positions[j][0] - line.p0[0], ry = positions[j][1] - line.p0[1];
+      m.t = (rx * f.dx + ry * f.dy) / (f.len * f.len);
+      m.off = rx * f.nx + ry * f.ny;
+    }
+  }
+  function lensClamp(pt) {
+    return [Math.max(0, Math.min(imageWidth - 1, pt[0])), Math.max(0, Math.min(imageHeight - 1, pt[1]))];
+  }
+  function lensSvgPoint(clientX, clientY) {
+    var svg = document.getElementById('lens-overlay');
+    var pt = svg.createSVGPoint();
+    pt.x = clientX; pt.y = clientY;
+    var p = pt.matrixTransform(svg.getScreenCTM().inverse());
+    return [p.x, p.y];
+  }
+
+  // ---- snapshot ----
+  function lensOnSnapshot() {
+    document.getElementById('lens-overlay').setAttribute('viewBox', '0 0 ' + imageWidth + ' ' + imageHeight);
+    lensCanvas = snapshotCanvas;
+    if (lensImageSize && (lensImageSize[0] !== imageWidth || lensImageSize[1] !== imageHeight) && lensLines.length) {
+      lensFitSeq++;
+      lensLines = [];
+      lensFit = null;
+      lensSelected = null;
+      lensPending = null;
+      lensShowNotice('The snapshot resolution changed, so the traced lines were cleared.');
+    }
+    lensImageSize = [imageWidth, imageHeight];
+    lensCandidates = [];
+    renderLens();
+    renderLensResult();
+    saveToSession();
+    // The suggestions are for this step: a snapshot loaded for another step is not sent.
+    if (currentStep === WIZ.lens) lensRequestEdges();
+  }
+  function lensShowNotice(text) {
+    var el = document.getElementById('lens-notice');
+    if (!el) return;
+    el.textContent = text || '';
+    el.style.display = text ? '' : 'none';
+  }
+  function lensShowStatus(msg, ok) {
+    var el = document.getElementById('lens-status');
+    if (!el) return;
+    el.style.display = msg ? 'block' : 'none';
+    el.textContent = msg || '';
+    el.className = 'wizard-status ' + (ok ? 'ok' : 'error');
+  }
+
+  // ---- tracing ----
+  function lensTraceClick(pt) {
+    pt = lensClamp(pt);
+    if (!lensPending) {
+      lensPending = pt;
+      lensSelected = null;
+      renderLens();
+      return;
+    }
+    var dx = pt[0] - lensPending[0], dy = pt[1] - lensPending[1];
+    if (Math.sqrt(dx * dx + dy * dy) < LENS_MIN_LINE_PX) return;
+    var line = {
+      p0: lensPending, p1: pt,
+      mids: LENS_T.map(function(t) { return { t: t, off: 0, on: true }; }),
+      snapped: [false, false, false, false, false],
+      curve: null, rms: null, misfit: false,
+    };
+    lensPending = null;
+    lensLines.push(line);
+    lensSelected = { line: lensLines.length - 1, point: 4 };
+    lensShowNotice('');
+    renderLens();
+    lensSnapLine(line);
+  }
+
+  // ---- suggested edges ----
+  // Mirror edge_chains.edge_map_scale: the snapshot is scaled under the map width.
+  function lensEdgeScale() { return Math.max(1, Math.min(16, Math.ceil(imageWidth / 1280))); }
+  function lensEdgeSize() {
+    var scale = lensEdgeScale();
+    return { scale: scale, width: Math.ceil(imageWidth / scale), height: Math.ceil(imageHeight / scale) };
+  }
+  function lensBase64(bytes) {
+    var bin = '';
+    for (var j = 0; j < bytes.length; j += 8192) bin += String.fromCharCode.apply(null, bytes.subarray(j, j + 8192));
+    return btoa(bin);
+  }
+  // The luma of the RGBA pixels w x h, as means of scale x scale blocks; the last
+  // row and column repeat to fill a block. A canvas scaling down by three or more
+  // samples a few pixels per block and drops one-pixel seams between them.
+  function lensScaledLuma(rgba, w, h, scale) {
+    var sw = Math.ceil(w / scale), sh = Math.ceil(h / scale), out = new Uint8Array(sw * sh);
+    for (var by = 0; by < sh; by++) {
+      for (var bx = 0; bx < sw; bx++) {
+        var sum = 0;
+        for (var dy = 0; dy < scale; dy++) {
+          var row = Math.min(by * scale + dy, h - 1) * w;
+          for (var dx = 0; dx < scale; dx++) {
+            var k = 4 * (row + Math.min(bx * scale + dx, w - 1));
+            sum += (rgba[k] * 299 + rgba[k + 1] * 587 + rgba[k + 2] * 114) / 1000;
+          }
+        }
+        out[by * sw + bx] = Math.round(sum / (scale * scale));
+      }
+    }
+    return out;
+  }
+  function lensRequestEdges() {
+    if (!lensCanvas) return;
+    var size = lensEdgeSize();
+    var rgba = lensCanvas.getContext('2d').getImageData(0, 0, imageWidth, imageHeight).data;
+    var luma = lensScaledLuma(rgba, imageWidth, imageHeight, size.scale);
+    var snapshot = lensCanvas;
+    fetch('/api/wizard/lens/edges', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        image_width: imageWidth, image_height: imageHeight, scale: size.scale,
+        width: size.width, height: size.height, data: lensBase64(luma), with_map: LENS_DEV,
+      }),
+    }).then(function(r) {
+      return r.json().then(function(data) { return { ok: r.ok, data: data }; });
+    }).then(function(res) {
+      if (snapshot !== lensCanvas || !res.ok || !Array.isArray(res.data.candidates)) return;
+      lensCandidates = res.data.candidates.map(function(c) { return { points: c.points, samples: c.samples, used: false }; });
+      lensLines.forEach(function(line) { line.candidate = lensCandidateOf(line); });
+      if (res.data.edges) lensPaintEdges(res.data.edges);
+      renderLens();
+    }).catch(function() {});
+  }
+  // The suggestion a line was taken from, by its ends, so it is offered again when the line goes.
+  function lensCandidateOf(line) {
+    for (var i = 0; i < lensCandidates.length; i++) {
+      var s = lensCandidates[i].samples;
+      var same = (Math.hypot(s[0][0] - line.p0[0], s[0][1] - line.p0[1]) < 20 && Math.hypot(s[4][0] - line.p1[0], s[4][1] - line.p1[1]) < 20)
+        || (Math.hypot(s[4][0] - line.p0[0], s[4][1] - line.p0[1]) < 20 && Math.hypot(s[0][0] - line.p1[0], s[0][1] - line.p1[1]) < 20);
+      if (same) { lensCandidates[i].used = true; return i; }
+    }
+    return undefined;
+  }
+  function lensAddCandidate(i) {
+    var cand = lensCandidates[i];
+    if (!cand || cand.used) return;
+    var pts = cand.samples;
+    var line = {
+      p0: pts[0], p1: pts[4],
+      mids: LENS_T.map(function(t) { return { t: t, off: 0, on: true }; }),
+      snapped: [false, false, false, false, false],
+      curve: null, rms: null, misfit: false, candidate: i,
+    };
+    lensSetMidsFromPositions(line, pts);
+    cand.used = true;
+    lensPending = null;
+    lensLines.push(line);
+    lensSelected = { line: lensLines.length - 1, point: 4 };
+    renderLens();
+    lensSnapLine(line);
+  }
+  function lensReleaseCandidate(line) {
+    if (line.candidate !== undefined && lensCandidates[line.candidate]) lensCandidates[line.candidate].used = false;
+  }
+  // The developer's view: every thin edge the suggestions were picked from, over the snapshot.
+  function lensPaintEdges(edges) {
+    var canvas = document.getElementById('lens-edges');
+    if (!canvas) return;
+    var bin = atob(edges.data), n = edges.width * edges.height;
+    if (bin.length !== n) return;
+    canvas.width = edges.width; canvas.height = edges.height;
+    var ctx = canvas.getContext('2d'), image = ctx.createImageData(edges.width, edges.height), px = image.data;
+    for (var i = 0, k = 0; i < n; i++, k += 4) {
+      var v = bin.charCodeAt(i);
+      px[k] = px[k + 1] = px[k + 2] = v; px[k + 3] = 255;
+    }
+    ctx.putImageData(image, 0, 0);
+  }
+  window.lensToggleEdgeView = function(show) {
+    var canvas = document.getElementById('lens-edges');
+    if (canvas) canvas.style.display = show ? 'block' : 'none';
+  };
+
+  // Mirror edge_snap.band_half_size / band_step: the band grows with the snapshot.
+  function lensBandHalf() { return Math.max(48, Math.min(256, Math.round(imageWidth / 10))); }
+  function lensBandStep() { return Math.max(1, Math.min(8, Math.round(imageWidth / 480))); }
+  // The luma along the chord p0 -> p1, rectified so the chord runs along the middle
+  // row: one column per step pixels of the chord, one row per pixel across it.
+  function lensBand(p0, p1) {
+    var dx = p1[0] - p0[0], dy = p1[1] - p0[1], len = Math.hypot(dx, dy);
+    if (!(len >= 1)) return null;
+    var step = lensBandStep(), half = lensBandHalf();
+    var tx = dx / len, ty = dy / len, nx = -ty, ny = tx;
+    var cols = Math.ceil(len / step) + 1, rows = 2 * half + 1;
+    var c = document.createElement('canvas');
+    c.width = cols; c.height = rows;
+    var ctx = c.getContext('2d');
+    ctx.imageSmoothingEnabled = true;
+    // image (x, y) -> band (u, v): u along the chord in columns, v across it in rows. A
+    // pixel's centre sits at +0.5 in canvas coordinates, in the image and in the band:
+    // both halves together put each cell's centre on the pixel position the server models.
+    var cx = p0[0] + 0.5, cy = p0[1] + 0.5;
+    ctx.setTransform(tx / step, nx, ty / step, ny, 0.5 - (cx * tx + cy * ty) / step, 0.5 - (cx * nx + cy * ny) + half);
+    ctx.drawImage(lensCanvas, 0, 0);
+    var rgba = ctx.getImageData(0, 0, cols, rows).data;
+    var luma = new Uint8Array(cols * rows);
+    for (var i = 0, k = 0; i < luma.length; i++, k += 4) {
+      luma[i] = Math.round((rgba[k] * 299 + rgba[k + 1] * 587 + rgba[k + 2] * 114) / 1000);
+    }
+    return { step: step, half: half, cols: cols, rows: rows, data: lensBase64(luma) };
+  }
+  function lensSnapLine(line) {
+    if (!lensCanvas) { lensChanged(); return; }
+    var band = lensBand(line.p0, line.p1);
+    if (!band) { lensChanged(); return; }
+    var sent = JSON.stringify([line.p0, line.p1, line.mids]);
+    fetch('/api/wizard/lens/snap', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image_width: imageWidth, image_height: imageHeight, p0: line.p0, p1: line.p1, band: band }),
+    }).then(function(r) {
+      return r.json().then(function(data) { return { ok: r.ok, data: data }; });
+    }).then(function(res) {
+      // A line deleted or moved since is the operator's, not the answer's.
+      if (lensLines.indexOf(line) === -1 || JSON.stringify([line.p0, line.p1, line.mids]) !== sent) return;
+      if (res.ok && res.data.points && res.data.points.length === 5) {
+        var pts = res.data.points.map(function(p) { return [p.x, p.y]; });
+        line.p0 = pts[0];
+        line.p1 = pts[4];
+        lensSetMidsFromPositions(line, pts);
+        line.snapped = res.data.points.map(function(p) { return !!p.snapped; });
+        // A middle point that found no edge sits on the fitted curve only: it starts switched off.
+        for (var j = 1; j <= 3; j++) line.mids[j - 1].on = line.snapped[j];
+      }
+      lensChanged();
+    }).catch(function() { lensChanged(); });
+  }
+
+  // ---- rendering ----
+  function lensHandle(line, i, j, px) {
+    var g = pointHandle(lensPointPos(line, j), j === 0 || j === 4 ? 4 : 3.5, px);
+    g.setAttribute('aria-label', 'Line ' + (i + 1) + (j === 0 ? ', start' : j === 4 ? ', end' : ', middle point ' + j));
+    var cls = 'handle lens-point';
+    if (!lensPointIsOn(line, j)) cls += ' off';
+    if (!line.snapped[j]) cls += ' unsnapped';
+    if (lensSelected && lensSelected.line === i && lensSelected.point === j) cls += ' selected';
+    g.setAttribute('class', cls);
+    g.dataset.line = i;
+    g.dataset.point = j;
+    return g;
+  }
+  function lensPointsAttr(pts) { return pts.map(function(p) { return p[0] + ',' + p[1]; }).join(' '); }
+  function renderLensCandidates() {
+    var g = document.getElementById('lens-candidates');
+    g.innerHTML = '';
+    lensCandidates.forEach(function(cand, i) {
+      if (cand.used) return;
+      var group = svgEl('g', { tabindex: '0', role: 'button', 'aria-label': 'Suggested edge ' + (i + 1) });
+      group.setAttribute('class', 'lens-candidate');
+      group.dataset.candidate = i;
+      var hit = svgEl('polyline');
+      hit.setAttribute('class', 'lens-candidate-hit');
+      hit.setAttribute('points', lensPointsAttr(cand.points));
+      group.appendChild(hit);
+      var line = svgEl('polyline');
+      line.setAttribute('class', 'lens-candidate-line');
+      line.setAttribute('points', lensPointsAttr(cand.points));
+      group.appendChild(line);
+      g.appendChild(group);
+    });
+  }
+  function renderLens() {
+    renderLensCandidates();
+    var g = document.getElementById('lens-lines');
+    // Rebuilding the handles drops a focused one, which would leave the keys dead after a click.
+    var hadFocus = g.contains(document.activeElement);
+    var px = overlayPx();
+    g.innerHTML = '';
+    lensLines.forEach(function(line, i) {
+      var group = svgEl('g');
+      group.setAttribute('class', 'lens-line' + (line.misfit ? ' misfit' : '') + (lensSelected && lensSelected.line === i ? ' selected' : ''));
+      group.dataset.line = i;
+      if (line.curve && line.curve.length) {
+        var curve = svgEl('polyline');
+        curve.setAttribute('class', 'lens-curve');
+        curve.setAttribute('points', lensPointsAttr(line.curve));
+        group.appendChild(curve);
+      }
+      var chord = svgEl('polyline');
+      chord.setAttribute('class', 'lens-chord');
+      chord.setAttribute('points', lensPointsAttr(lensActivePoints(line)));
+      group.appendChild(chord);
+      var label = svgEl('text', { class: 'lens-label', x: line.p0[0] + 8 * px, y: line.p0[1] - 8 * px, 'font-size': 11 * px });
+      label.textContent = String(i + 1);
+      group.appendChild(label);
+      for (var j = 0; j < 5; j++) group.appendChild(lensHandle(line, i, j, px));
+      g.appendChild(group);
+    });
+    var pending = document.getElementById('lens-pending');
+    pending.innerHTML = '';
+    if (lensPending) {
+      var c = svgEl('circle');
+      c.setAttribute('class', 'lens-pending');
+      c.setAttribute('cx', lensPending[0]);
+      c.setAttribute('cy', lensPending[1]);
+      c.setAttribute('r', 5 * px);
+      pending.appendChild(c);
+    }
+    renderLensToolbar();
+    renderLensMisfit();
+    if (hadFocus) lensFocusSelected();
+  }
+  function lensFocusSelected() {
+    if (!lensSelected) return;
+    var h = document.querySelector('.lens-point[data-line="' + lensSelected.line + '"][data-point="' + lensSelected.point + '"]');
+    if (h) h.focus({ preventScroll: true });
+  }
+  // Move the handles and chord of one line without rebuilding the DOM, so a
+  // drag keeps its focus and pointer capture.
+  function lensUpdateLineGeometry(i) {
+    var line = lensLines[i];
+    var group = document.querySelector('#lens-lines .lens-line[data-line="' + i + '"]');
+    if (!group) return;
+    group.querySelectorAll('.lens-point').forEach(function(h) {
+      var pos = lensPointPos(line, +h.dataset.point);
+      h.setAttribute('transform', 'translate(' + pos[0] + ',' + pos[1] + ')');
+    });
+    group.querySelector('.lens-chord').setAttribute('points', lensPointsAttr(lensActivePoints(line)));
+    var label = group.querySelector('.lens-label');
+    label.setAttribute('x', line.p0[0] + 10);
+    label.setAttribute('y', line.p0[1] - 10);
+  }
+  function renderLensToolbar() {
+    var toggle = document.getElementById('lens-toggle-point');
+    var del = document.getElementById('lens-delete-line');
+    var clear = document.getElementById('lens-clear');
+    if (!toggle) return;
+    var mid = lensSelected && lensSelected.point > 0 && lensSelected.point < 4 ? lensLines[lensSelected.line] : null;
+    toggle.disabled = !mid;
+    toggle.textContent = mid && !mid.mids[lensSelected.point - 1].on ? 'Point on' : 'Point off';
+    del.disabled = !lensSelected;
+    clear.disabled = !lensLines.length;
+  }
+  function renderLensMisfit() {
+    var el = document.getElementById('lens-misfit');
+    if (!el) return;
+    var bad = [];
+    lensLines.forEach(function(line, i) { if (line.misfit) bad.push(i + 1); });
+    el.style.display = bad.length ? '' : 'none';
+    el.textContent = bad.length ? 'Line ' + bad.join(', ') + ': ' + LENS_MISFIT_TEXT : '';
+  }
+  function renderLensMeter(meter, rating) {
+    if (!meter) return;
+    meter.dataset.level = LENS_RATING_LEVEL[rating] || 'caution';
+    var n = LENS_RATING_SEGMENTS[rating] || 0;
+    meter.querySelectorAll('.wizard-meter-seg').forEach(function(seg, i) { seg.classList.toggle('filled', i < n); });
+  }
+  function renderLensResult() {
+    var box = document.getElementById('lens-result');
+    if (!box) return;
+    if (!lensFit) { box.style.display = 'none'; return; }
+    var level = LENS_RATING_LEVEL[lensFit.rating] || 'caution';
+    box.style.display = '';
+    box.className = 'notice' + (level === 'caution' ? ' warning' : level === 'success' ? ' success' : '');
+    renderLensMeter(box.querySelector('.wizard-meter'), lensFit.rating);
+    var text = 'Coverage ' + (LENS_RATING_LABEL[lensFit.rating] || lensFit.rating).toLowerCase();
+    if (lensFitApplies(lensFit)) {
+      text += ' · Barrel / fisheye ' + Number(lensFit.k1).toFixed(3)
+        + ' · Edge fit ' + (lensFit.k2_fitted ? Number(lensFit.k2).toFixed(3) : 'not measured');
+    } else {
+      text += ' · Not applied until the coverage improves';
+    }
+    document.getElementById('lens-result-text').textContent = text;
+    document.getElementById('lens-result-hint').textContent = lensFit.hint || '';
+  }
+
+  function lensFitApplies(fit) { return fit.rating !== 'low'; }
+  // Whether the pair is the one the fit wrote.
+  function lensPairIsTheFits(k1, k2) {
+    if (!lensFit || !lensFitApplies(lensFit)) return false;
+    var shown = wizLensShownPair(Number(lensFit.k1), Number(lensFit.k2));
+    return Math.abs(k1 - Number(shown[0])) < 1e-9 && Math.abs(k2 - Number(shown[1])) < 1e-9;
+  }
+
+  // ---- edits ----
+  function lensMovePoint(line, j, pos) {
+    if (j === 0) line.p0 = pos;
+    else if (j === 4) line.p1 = pos;
+    else lensSetMidFromPos(line, j, pos);
+  }
+  function lensChanged() {
+    renderLens();
+    saveToSession();
+    scheduleLensFit();
+  }
+  window.lensToggleSelectedPoint = function() {
+    if (!lensSelected || lensSelected.point === 0 || lensSelected.point === 4) return;
+    var m = lensLines[lensSelected.line].mids[lensSelected.point - 1];
+    m.on = !m.on;
+    lensChanged();
+  };
+  window.lensDeleteSelectedLine = function() {
+    if (!lensSelected) return;
+    var hadFocus = document.getElementById('lens-lines').contains(document.activeElement);
+    lensReleaseCandidate(lensLines[lensSelected.line]);
+    lensLines.splice(lensSelected.line, 1);
+    // The keys stay on the line that took its place, or on the picture when none is left.
+    lensSelected = lensLines.length ? { line: Math.min(lensSelected.line, lensLines.length - 1), point: 0 } : null;
+    lensChanged();
+    if (hadFocus && !lensSelected) document.getElementById('lens-overlay').focus({ preventScroll: true });
+  };
+  window.lensClearLines = function() {
+    lensLines.forEach(lensReleaseCandidate);
+    lensLines = [];
+    lensSelected = null;
+    lensPending = null;
+    lensShowNotice('');
+    lensChanged();
+  };
+
+  // ---- fit ----
+  function scheduleLensFit() {
+    lensFitSeq++;
+    clearTimeout(lensFitTimer);
+    lensFitTimer = setTimeout(runLensFit, LENS_FIT_DEBOUNCE_MS);
+  }
+  function runLensFit() {
+    var seq = ++lensFitSeq;
+    var lines = lensLines.filter(lensLineCounts);
+    lensLines.forEach(function(l) { l.curve = null; l.rms = null; l.misfit = false; });
+    if (!lines.length) {
+      lensFit = null;
+      lensShowStatus('', true);
+      renderLensResult();
+      renderLens();
+      saveToSession();
+      return;
+    }
+    fetch('/api/wizard/lens/fit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        image_width: imageWidth,
+        image_height: imageHeight,
+        lines: lines.map(function(l) { return { points: lensActivePoints(l) }; }),
+      }),
+    }).then(function(r) {
+      return r.json().then(function(data) { return { ok: r.ok, data: data }; });
+    }).then(function(res) {
+      if (seq !== lensFitSeq) return;
+      if (!res.ok || !res.data || res.data.error) {
+        lensFitFailed((res.data && res.data.error) || 'Could not fit the lens.');
+        return;
+      }
+      lensShowStatus('', true);
+      lensFit = res.data;
+      lines.forEach(function(l, i) {
+        var r = res.data.lines[i];
+        l.curve = r.curve;
+        l.rms = r.rms_px;
+        l.misfit = !!r.misfit;
+      });
+      // A Low fit says what the lines cannot tell: it is shown, and the pair stays as it was.
+      if (lensFitApplies(lensFit)) {
+        var shown = wizLensShownPair(Number(res.data.k1), Number(res.data.k2));
+        wizWriteLensCoeff('wiz_lens_k1', shown[0]);
+        wizWriteLensCoeff('wiz_lens_k2', shown[1]);
+        var err = document.getElementById('wiz-lens-error');
+        if (err) err.style.display = 'none';
+      }
+      renderLensResult();
+      renderLens();
+      if (lensFitApplies(lensFit)) onLensCoeffChanged();
+      else saveToSession();
+    }).catch(function() {
+      if (seq === lensFitSeq) lensFitFailed('Could not fit the lens.');
+    });
+  }
+  // The lines have changed since the last fit, so nothing of it stays on screen.
+  function lensFitFailed(message) {
+    lensFit = null;
+    renderLensResult();
+    renderLens();
+    saveToSession();
+    lensShowStatus(message, false);
+  }
+
+  // The curve a lens pair predicts for a line: the straight line through the
+  // undistorted active points, bowed again. Drawn live while a slider moves.
+  function lensPredictCurve(line, k1, k2) {
+    var pts = lensActivePoints(line);
+    if (pts.length < 2 || !wizLensIsValid(k1, k2)) return null;
+    var u = pts.map(function(p) { return wizInvertDistortion(p, k1, k2); });
+    var cx = 0, cy = 0;
+    u.forEach(function(p) { cx += p[0]; cy += p[1]; });
+    cx /= u.length; cy /= u.length;
+    var sxx = 0, sxy = 0, syy = 0;
+    u.forEach(function(p) { var x = p[0] - cx, y = p[1] - cy; sxx += x * x; sxy += x * y; syy += y * y; });
+    var theta = 0.5 * Math.atan2(2 * sxy, sxx - syy);
+    var dx = Math.cos(theta), dy = Math.sin(theta);
+    var tMin = Infinity, tMax = -Infinity;
+    u.forEach(function(p) { var t = (p[0] - cx) * dx + (p[1] - cy) * dy; tMin = Math.min(tMin, t); tMax = Math.max(tMax, t); });
+    var out = [];
+    for (var i = 0; i < 24; i++) {
+      var t = tMin + (tMax - tMin) * i / 23;
+      out.push(wizApplyDistortion([cx + t * dx, cy + t * dy], k1, k2));
+    }
+    return out;
+  }
+  function lensRecomputeCurves() {
+    var k1 = wizReadLensCoeff('wiz_lens_k1'), k2 = wizReadLensCoeff('wiz_lens_k2');
+    lensLines.forEach(function(line) { line.curve = lensLineCounts(line) ? lensPredictCurve(line, k1, k2) : null; });
+  }
+
+  // A new lens pair, from the fit or a slider: solve the pose again from the
+  // pins when the session still has them; otherwise Review says to re-pin.
+  function onLensCoeffChanged() {
+    saveToSession();
+    if (!pinnedCorners || !wizLensPairValid()) return;
+    clearTimeout(lensReSolveTimer);
+    lensReSolveTimer = setTimeout(solveFromPinnedCorners, LENS_FIT_DEBOUNCE_MS);
+  }
+  // Pins taken on a snapshot of another size are in other pixels: they solve nothing.
+  function solveFromPinnedCorners() {
+    var pins = pinnedCorners;
+    if (!pins || pins.size[0] !== imageWidth || pins.size[1] !== imageHeight) return;
+    var seq = ++poseSeq;
+    var body = wizardSolveBody(pins.corners, pins.withPoints);
+    fetch('/api/wizard/solve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (seq !== poseSeq || data.error) return;
+      applySolvedPose(data.camera, pins.corners, body, data.calibration_points);
+      if (currentStep !== WIZ.lens) projectAndOverlay();
+    }).catch(function() {});
+  }
+  // The pose was solved through another lens pair: a solve from the pins that
+  // failed, is still running or had no pins to start from leaves Review's caution up.
+  function lensChangedSinceSolve() {
+    var k1 = wizReadLensCoeff('wiz_lens_k1'), k2 = wizReadLensCoeff('wiz_lens_k2');
+    return Math.abs(k1 - lensSolvedWith.k1) > 1e-9 || Math.abs(k2 - lensSolvedWith.k2) > 1e-9;
+  }
+  function populateReviewLens(cam) {
+    document.getElementById('review-lens-k1').textContent = Number(cam.lens_k1).toFixed(3);
+    document.getElementById('review-lens-k2').textContent = Number(cam.lens_k2).toFixed(3);
+    var meter = document.querySelector('#review-lens-rating .wizard-meter');
+    var text = document.getElementById('review-lens-rating-text');
+    // The rating describes the fit's own pair, not one fine-tuned away from it.
+    if (lensPairIsTheFits(Number(cam.lens_k1), Number(cam.lens_k2))) {
+      renderLensMeter(meter, lensFit.rating);
+      meter.style.display = '';
+      text.textContent = LENS_RATING_LABEL[lensFit.rating] || lensFit.rating;
+    } else {
+      meter.style.display = 'none';
+      text.textContent = lensFit && lensFitApplies(lensFit) ? 'Fine-tuned' : 'Not measured';
+    }
+    document.getElementById('review-lens-caution').style.display = lensChangedSinceSolve() ? '' : 'none';
+  }
+
+  // ---- pointer + keyboard ----
+  function lensInit() {
+    var overlay = document.getElementById('lens-overlay');
+    overlay.addEventListener('pointerdown', function(e) {
+      var handle = e.target.closest ? e.target.closest('.lens-point') : null;
+      var candidate = e.target.closest ? e.target.closest('.lens-candidate') : null;
+      var pt = lensSvgPoint(e.clientX, e.clientY);
+      if (candidate) {
+        e.preventDefault();
+        lensAddCandidate(+candidate.dataset.candidate);
+      } else if (handle) {
+        e.preventDefault();
+        lensSelected = { line: +handle.dataset.line, point: +handle.dataset.point };
+        lensDrag = { line: lensLines[lensSelected.line], point: lensSelected.point, client: [e.clientX, e.clientY], moved: false };
+        overlay.setPointerCapture(e.pointerId);
+        renderLens();
+        lensFocusSelected();
+        showLoupe('lens-container', 'lens-overlay', lensPointPos(lensDrag.line, lensDrag.point));
+      } else if (e.target.id === 'lens-hit') {
+        e.preventDefault();
+        lensDrag = { trace: true, client: [e.clientX, e.clientY], moved: false };
+        overlay.setPointerCapture(e.pointerId);
+      }
+    });
+    overlay.addEventListener('pointermove', function(e) {
+      if (!lensDrag) return;
+      var pt = lensSvgPoint(e.clientX, e.clientY);
+      if (Math.hypot(e.clientX - lensDrag.client[0], e.clientY - lensDrag.client[1]) > LENS_TAP_SLOP_PX) lensDrag.moved = true;
+      if (lensDrag.trace) return;
+      e.preventDefault();
+      lensMovePoint(lensDrag.line, lensDrag.point, lensClamp(pt));
+      lensUpdateLineGeometry(lensLines.indexOf(lensDrag.line));
+      showLoupe('lens-container', 'lens-overlay', lensPointPos(lensDrag.line, lensDrag.point));
+    });
+    function endDrag(e) {
+      if (!lensDrag) return;
+      var drag = lensDrag;
+      lensDrag = null;
+      hideLoupe('lens-container');
+      try { overlay.releasePointerCapture(e.pointerId); } catch (err) {}
+      if (drag.trace) {
+        if (!drag.moved && e.type !== 'pointercancel') lensTraceClick(lensSvgPoint(e.clientX, e.clientY));
+        return;
+      }
+      if (drag.moved) lensChanged(); else renderLens();
+    }
+    overlay.addEventListener('pointerup', endDrag);
+    overlay.addEventListener('pointercancel', endDrag);
+    // A point reached with Tab is the selected one, so the toolbar acts on what has the focus.
+    overlay.addEventListener('focusin', function(e) {
+      var h = e.target.closest ? e.target.closest('.lens-point') : null;
+      if (!h) return;
+      var line = +h.dataset.line, point = +h.dataset.point;
+      if (lensSelected && lensSelected.line === line && lensSelected.point === point) return;
+      lensSelected = { line: line, point: point };
+      renderLens();
+    });
+    overlay.addEventListener('keydown', function(e) {
+      var candidate = e.target.closest ? e.target.closest('.lens-candidate') : null;
+      if (candidate && (e.key === 'Enter' || e.key === ' ')) {
+        e.preventDefault();
+        lensAddCandidate(+candidate.dataset.candidate);
+        lensFocusSelected();
+        return;
+      }
+      var handle = e.target.closest ? e.target.closest('.lens-point') : null;
+      if (!handle) return;
+      var i = +handle.dataset.line, j = +handle.dataset.point, line = lensLines[i];
+      if (!line) return;
+      lensSelected = { line: i, point: j };
+      var step = e.shiftKey ? 10 : 1, dx = 0, dy = 0;
+      if (e.key === 'ArrowLeft') dx = -step;
+      else if (e.key === 'ArrowRight') dx = step;
+      else if (e.key === 'ArrowUp') dy = -step;
+      else if (e.key === 'ArrowDown') dy = step;
+      else if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); lensDeleteSelectedLine(); return; }
+      else if (e.key === ' ') { e.preventDefault(); lensToggleSelectedPoint(); return; }
+      else return;
+      e.preventDefault();
+      var pos = lensPointPos(line, j);
+      if (j === 0 || j === 4) {
+        lensMovePoint(line, j, lensClamp([pos[0] + dx, pos[1] + dy]));
+      } else {
+        // A middle point only moves across the line: keep the nudge's perpendicular part.
+        var f = lensFrame(line);
+        line.mids[j - 1].off += dx * f.nx + dy * f.ny;
+      }
+      lensUpdateLineGeometry(i);
+      saveToSession();
+      scheduleLensFit();
+    });
+    document.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape' && lensPending && currentStep === WIZ.lens) {
+        lensPending = null;
+        renderLens();
+      }
+    });
+    var err = document.getElementById('wiz-lens-error');
+    if (err) err.style.display = wizLensPairValid() ? 'none' : 'block';
+    renderLens();
+    renderLensResult();
+  }
 
   // ---------------------------------------------------------------
   // Init
@@ -3611,7 +5506,10 @@
     // If no preset+focal → helper is already stale against the server-injected
     // FOV. Don't dim on load; let the user opt in by editing the helper.
   })();
+  // The saved points, unless this session holds its own (restoreFromSession loads those).
+  calibLoad(CALIB_SAVED);
   var restored = restoreFromSession();
+  if (!restored) calibHoldSavedPins();
   // Default Y Offset to half the depth so REF sits at center of downstage edge
   if (!restored) {
     var yOff = wizReadLen('grid_y_offset') || 0;
@@ -3622,15 +5520,33 @@
       }
     }
   }
-  preCoarseCamera = getState().camera;
+  preCoarsePose = snapshotPose();
   updatePrepIllustration();
   updateGridIllustration();
   updateCamIllustration();
-  // Bind drag handlers on the four fine-zoom boxes once
-  // at page load. The SVG elements outlive every re-render (we only
-  // mutate their inner <g> children), so a one-time wiring is enough
-  // and cheaper than re-attaching per render.
+  // Bind every drag handler once at page load. The SVG groups outlive every
+  // re-render (only their children are drawn again), and a handler bound per
+  // render would act once for every projection so far.
   setupFineZoomDragging();
+  setupCoarseZoomDragging();
+  setupRefDragging(document.getElementById('coarse-ref'));
+  setupCornerDragging(document.getElementById('fine-corners'));
+  if (CALIB_ENABLED) {
+    setupCalibDragging();
+    setupCalibCornerPicking();
+    renderCalibList();
+  }
+  // Handles and labels are sized in CSS pixels of the preview's width at render time.
+  var resizeTimer = null;
+  window.addEventListener('resize', function() {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(function() {
+      if (!imageWidth) return;
+      projectAndOverlay();
+      renderLens();
+    }, 200);
+  });
+  lensInit();
   wizardGo(restored ? currentStep : 0);
 })();
 </script>

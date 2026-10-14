@@ -275,15 +275,13 @@ def test_on_key_down_digit_key_out_of_range_is_noop() -> None:
     assert app._selected_id == 1
 
 
-def test_on_key_down_ctrl_s_saves_camera(monkeypatch, tmp_path) -> None:
-    from openfollow.configuration import AppConfig, CameraConfig
+def test_on_key_down_ctrl_s_saves_the_camera_pose_only(tmp_path) -> None:
+    from openfollow.configuration import AppConfig, CameraConfig, load_config, save_config
 
-    writes: list = []
-
-    def _fake_save(cfg, path) -> None:  # noqa: ANN001
-        writes.append(path)
-
-    monkeypatch.setattr(app_modes, "save_config", _fake_save)
+    lens = {"lens_k1": -0.3, "lens_k2": 0.1, "sensor_width_mm": 6.17, "focal_length_mm": 4.0}
+    # The file holds edits the running config never took in.
+    config_path = str(tmp_path / "c.toml")
+    save_config(AppConfig(web_port=8080, ndi_source_name="Edited", camera=CameraConfig(**lens)), config_path)
 
     class _KeyboardHandler:
         keys: set[str] = {"Control"}
@@ -302,8 +300,8 @@ def test_on_key_down_ctrl_s_saves_camera(monkeypatch, tmp_path) -> None:
         _input_manager=_InputManager(),
         _controlled_ids=[],
         _selected_id=None,
-        _config=AppConfig(),
-        _config_path=str(tmp_path / "c.toml"),
+        _config=AppConfig(camera=CameraConfig(**lens)),
+        _config_path=config_path,
         _config_mtime=0,
         _camera=_Camera(),
         _url_editor_active=False,
@@ -311,11 +309,15 @@ def test_on_key_down_ctrl_s_saves_camera(monkeypatch, tmp_path) -> None:
         _browser_active=False,
     )
     app._normalize_key = app_modes.normalize_key
-    app._get_config_mtime = lambda: 1
     app_modes.on_key_down(app, {"key": "s"})
-    assert writes == [app._config_path]
     assert app._config.camera.fov == pytest.approx(42.0)
-    assert app._config_mtime == 1
+    saved = load_config(config_path)
+    assert saved.camera.fov == pytest.approx(42.0)
+    assert (saved.web_port, saved.ndi_source_name) == (8080, "Edited")
+    # The camera object carries no lens: the calibration stays, in memory and on disk.
+    for name, value in lens.items():
+        assert getattr(app._config.camera, name) == pytest.approx(value)
+        assert getattr(saved.camera, name) == pytest.approx(value)
 
 
 def test_on_key_down_without_input_manager() -> None:
@@ -362,10 +364,45 @@ def test_on_key_down_digit_gated_while_modal_open() -> None:
     assert app._selected_id == 10  # unchanged
 
 
+def test_ctrl_s_saves_the_pose_and_keeps_what_the_setup_wizard_saved(monkeypatch, tmp_path) -> None:
+    from openfollow.configuration import AppConfig, CalibrationPointConfig, CameraConfig
+
+    monkeypatch.setattr(app_modes, "save_config_fields", lambda *_args, **_kwargs: None)
+    point = CalibrationPointConfig("DSL", "DSR", 21.4, 23.9, 0.0, 0.4, 0.2, [2.5, 9.0, 0.0])
+    config = AppConfig(camera=CameraConfig(lens_k1=-0.2, lens_k2=0.05, calibration_points=[point]))
+    pose = CameraConfig(pos_x=1.0, pos_y=-9.0, pos_z=5.0, pitch=-20.0, yaw=3.0, roll=0.5, fov=42.0)
+    app = SimpleNamespace(
+        _input_manager=SimpleNamespace(keyboard_handler=SimpleNamespace(keys={"Meta"}, on_key_down=lambda e: None)),
+        _controlled_ids=[],
+        _selected_id=None,
+        _config=config,
+        _config_path=str(tmp_path / "c.toml"),
+        _config_mtime=0,
+        _camera=SimpleNamespace(to_config=lambda: pose),
+        _url_editor_active=False,
+        _field_choice_active=False,
+        _browser_active=False,
+    )
+    app._normalize_key = app_modes.normalize_key
+    app._get_config_mtime = lambda: 1
+    app_modes.on_key_down(app, {"key": "s"})
+    cam = app._config.camera
+    assert (cam.pos_x, cam.pos_y, cam.pos_z, cam.pitch, cam.yaw, cam.roll, cam.fov) == (
+        1.0,
+        -9.0,
+        5.0,
+        -20.0,
+        3.0,
+        0.5,
+        42.0,
+    )
+    assert (cam.lens_k1, cam.lens_k2, cam.calibration_points) == (-0.2, 0.05, [point])
+
+
 def test_on_key_down_ctrl_s_gated_while_modal_open(monkeypatch) -> None:
     # #551: Ctrl/Cmd+S must not write config from under a modal.
     writes: list = []
-    monkeypatch.setattr(app_modes, "save_config", lambda cfg, path: writes.append(path))
+    monkeypatch.setattr(app_modes, "save_config_fields", lambda cfg, path, names, **_kw: writes.append(path))
     app = _key_app(_about_active=True, _camera=object())
     app._input_manager.keyboard_handler.keys = {"Control"}
     app_modes.on_key_down(app, {"key": "s"})
@@ -376,10 +413,10 @@ def test_on_key_down_ctrl_s_save_failure_is_swallowed(monkeypatch, tmp_path) -> 
     # #551 Low: a save failure routes through _persist_config (logged, not raised).
     from openfollow.configuration import AppConfig, CameraConfig
 
-    def _boom(cfg, path) -> None:  # noqa: ANN001
+    def _boom(cfg, path, names, **_kw) -> None:  # noqa: ANN001
         raise OSError("read-only fs")
 
-    monkeypatch.setattr(app_modes, "save_config", _boom)
+    monkeypatch.setattr(app_modes, "save_config_fields", _boom)
 
     class _Camera:
         def to_config(self):  # noqa: ANN201
@@ -392,9 +429,8 @@ def test_on_key_down_ctrl_s_save_failure_is_swallowed(monkeypatch, tmp_path) -> 
         _camera=_Camera(),
     )
     app._input_manager.keyboard_handler.keys = {"Meta"}
-    app._get_config_mtime = lambda: 1
     app_modes.on_key_down(app, {"key": "s"})  # must not raise
-    assert app._config_mtime == 0  # mtime not advanced on failed persist
+    assert app._config.camera.fov == pytest.approx(42.0)
 
 
 def test_on_key_down_digit_gated_during_button_detection() -> None:
@@ -1006,7 +1042,7 @@ def test_process_input_prev_marker_pressed_cycles_backwards() -> None:
     assert app._selected_id == 1
 
 
-def test_toggle_zone_overlay_logs_warning_on_save_failure(tmp_path, caplog) -> None:
+def test_toggle_zone_overlay_logs_the_field_on_save_failure(tmp_path, caplog) -> None:
     import logging as _logging
 
     from openfollow.configuration import AppConfig
@@ -1019,7 +1055,7 @@ def test_toggle_zone_overlay_logs_warning_on_save_failure(tmp_path, caplog) -> N
         app_modes._toggle_zone_overlay(app)
 
     assert cfg.trigger_zones.show_overlay is True
-    assert any("Failed to persist zone overlay toggle" in rec.message for rec in caplog.records)
+    assert any("Failed to persist trigger_zones.show_overlay" in rec.message for rec in caplog.records)
 
 
 def test_process_source_selection_input_logs_on_exception(caplog) -> None:
@@ -1252,7 +1288,7 @@ def test_settings_menu_confirm_dispatches_to_correct_app_callback(
     calls: list[str] = []
     app = _make_settings_menu_app(has_controller=True, has_source=True, menu_index=menu_index)
     app._settings_menu_active = True
-    # ``_enter_url_editor`` accepts kwargs (banner / revert_type) on
+    # ``_enter_url_editor`` accepts kwargs (banner / source_type) on
     # the real app; the dispatcher invokes it with no args from the
     # menu, but the lambda captures whatever's passed via ``**kw``.
     for name in (
@@ -2146,12 +2182,14 @@ def test_enter_button_detection_handles_no_web_server() -> None:
 
 def test_process_button_detection_completion_applies_results(tmp_path) -> None:
     """When the wizard completes successfully, the result map is applied to
-    `controller.*`, `__post_init__` re-runs validation, the config is
+    `controller.*`, `__post_init__` re-runs validation, the fields it set are
     saved to disk, the gamepad handler reloads, and the web flag clears."""
-    from openfollow.configuration import AppConfig, save_config
+    from openfollow.configuration import AppConfig, load_config, save_config
 
     cfg_path = tmp_path / "cfg.toml"
-    save_config(AppConfig(), str(cfg_path))
+    on_disk = AppConfig()
+    on_disk.controller.key_reset = "y"  # edited since the running config was read
+    save_config(on_disk, str(cfg_path))
 
     apply_called: list[bool] = []
     web_flags: list[bool] = []
@@ -2178,7 +2216,7 @@ def test_process_button_detection_completion_applies_results(tmp_path) -> None:
         def cancel(self): ...
 
         def build_detection_map(self):
-            return {"map_a": "A"}
+            return {"map_a": "B"}
 
         def build_raw_index_map(self):
             return {"A": 0}
@@ -2199,7 +2237,6 @@ def test_process_button_detection_completion_applies_results(tmp_path) -> None:
         _button_detection=_Wizard(),
         _web_server=_WebServer(),
     )
-    app._get_config_mtime = lambda: 1
 
     app_modes.process_button_detection(app)
 
@@ -2207,10 +2244,14 @@ def test_process_button_detection_completion_applies_results(tmp_path) -> None:
     assert apply_called == [True]
     assert web_flags == [False]
     # Detection map was applied to the controller config.
-    assert cfg.controller.map_a == "A"
+    assert cfg.controller.map_a == "B"
     assert cfg.controller.swap_triggers is True
     assert cfg.controller.mapped_controller_name == "Test Controller"
     assert cfg.controller.mapped_controller_guid == "test-guid"
+    saved = load_config(str(cfg_path)).controller
+    assert (saved.map_a, saved.button_raw_indices, saved.swap_triggers) == ("B", {"A": 0}, True)
+    assert (saved.mapped_controller_name, saved.mapped_controller_guid) == ("Test Controller", "test-guid")
+    assert saved.key_reset == "y"
 
 
 def test_process_button_detection_completion_with_no_results_clears_wizard_only() -> None:

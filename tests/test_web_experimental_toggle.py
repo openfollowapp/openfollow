@@ -151,6 +151,14 @@ class TestBodyGate:
         # Gate CSS is present regardless.
         assert "body:not(.show-experimental) .experimental-feature" in body
 
+    def test_camera_lens_group_renders_ungated_when_off(self, live_server) -> None:
+        _, base = live_server  # default off
+        status, body = _get(base, "/")
+        assert status == 200
+        group = body.split('<h3 class="group-title">Lens distortion</h3>')[0].rsplit("<div", 1)[1]
+        assert "experimental-feature" not in group
+        assert 'id="camera-lens-k1"' in body and 'id="camera-lens-k2"' in body
+
 
 class TestPathsCutOff:
     def test_turning_off_deactivates_every_path_and_keeps_them(self, live_server) -> None:

@@ -272,7 +272,7 @@ class TestSettingsMenu:
                 self._url_editor_field_label = ""
                 self._url_editor_value = ""
                 self._url_editor_banner = ""
-                self._url_editor_revert_type = ""
+                self._url_editor_source_type = ""
                 self._browser_active = False
                 self._browser_overlay = None
                 self._source_entered = False
@@ -300,7 +300,7 @@ class TestSettingsMenu:
             def _enter_source_type_selection(self) -> None:
                 self._source_type_entered = True
 
-            def _enter_url_editor(self, *, banner: str = "", revert_type: str = "") -> None:  # noqa: ARG002
+            def _enter_url_editor(self, *, banner: str = "", source_type: str = "") -> None:  # noqa: ARG002
                 self._url_editor_entered = True
 
             def _enter_browser(self) -> None:
@@ -655,7 +655,7 @@ class TestSourceTypeSelection:
                 self._url_editor_field_label = ""
                 self._url_editor_value = ""
                 self._url_editor_banner = ""
-                self._url_editor_revert_type = ""
+                self._url_editor_source_type = ""
                 self._browser_active = False
                 self._browser_overlay = None
                 self._swap_calls = swap_calls
@@ -679,7 +679,7 @@ class TestSourceTypeSelection:
                 self,
                 *,
                 banner: str = "",
-                revert_type: str = "",
+                source_type: str = "",
             ) -> None:  # noqa: ARG002
                 self._url_editor_calls.append(True)
 
@@ -799,7 +799,7 @@ class TestSourceTypeSelection:
             "openfollow.video.inputs.get_input_class",
             lambda iid: _BlankPlugin if iid == "blank" else None,
         )
-        monkeypatch.setattr(app_modes, "save_config", lambda *a, **kw: None)
+        monkeypatch.setattr(app_modes, "save_config_fields", lambda *a, **kw: None)
         app = self._make_app(current_type="ndi")
         app._source_type_selection_active = True
         app._available_source_types = [("ndi", "NDI"), ("blank", "Blank")]
@@ -816,7 +816,7 @@ class TestSourceTypeSelection:
     ) -> None:
         from openfollow.runtime import app_modes
 
-        monkeypatch.setattr(app_modes, "save_config", lambda *a, **kw: None)
+        monkeypatch.setattr(app_modes, "save_config_fields", lambda *a, **kw: None)
         app = self._make_app(current_type="ndi")
         app._source_type_selection_active = True
         app._available_source_types = [("ndi", "NDI"), ("rtsp", "RTSP")]
@@ -847,7 +847,7 @@ class TestSourceTypeSelection:
         editor, even though NDI also has a string field)."""
         from openfollow.runtime import app_modes
 
-        monkeypatch.setattr(app_modes, "save_config", lambda *a, **kw: None)
+        monkeypatch.setattr(app_modes, "save_config_fields", lambda *a, **kw: None)
         app = self._make_app(current_type="rtsp", rtsp_url="rtsp://x")
         app._source_type_selection_active = True
         app._available_source_types = [("rtsp", "RTSP"), ("ndi", "NDI")]
@@ -855,6 +855,29 @@ class TestSourceTypeSelection:
         app_modes.confirm_source_type_selection(app)
         assert app._swap_calls == ["ndi"]
         assert app._source_selection_calls == [True]
+        assert app._url_editor_calls == []
+
+    def test_a_switch_that_runs_but_cannot_be_saved_says_so_in_settings(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from openfollow.runtime import app_modes
+
+        def _boom(*_a: object, **_k: object) -> None:
+            raise OSError("read-only file system")
+
+        monkeypatch.setattr(app_modes, "save_config_fields", _boom)
+        app = self._make_app(current_type="ndi", rtsp_url="rtsp://192.0.2.20/stream")
+        app._source_type_selection_active = True
+        app._available_source_types = [("ndi", "NDI"), ("rtsp", "RTSP")]
+        app._selected_source_type_index = 1
+        app_modes.confirm_source_type_selection(app)
+        assert app._swap_calls == ["rtsp"]
+        assert app._config.video_source_type == "rtsp"  # it runs
+        assert app._settings_menu_active is True
+        assert app._settings_menu_banner == (
+            "RTSP is live but could not be saved to config.toml. Fix the file, then switch again."
+        )
         assert app._url_editor_calls == []
 
     def test_confirm_live_swaps_and_persists(
@@ -866,8 +889,8 @@ class TestSourceTypeSelection:
         saves: list = []
         monkeypatch.setattr(
             app_modes,
-            "save_config",
-            lambda cfg, path: saves.append((cfg.video_source_type, path)),
+            "save_config_fields",
+            lambda cfg, path, names, **_kw: saves.append((tuple(names), cfg.video_source_type, path)),
         )
         app = self._make_app(current_type="ndi", rtsp_url="rtsp://1.1.1.1")
         app._source_type_selection_active = True
@@ -875,11 +898,10 @@ class TestSourceTypeSelection:
         app._selected_source_type_index = 1  # Switch to RTSP
         app_modes.confirm_source_type_selection(app)
         assert app._swap_calls == ["rtsp"]
-        assert saves == [("rtsp", "/dev/null")]
+        assert saves == [(("video_source_type",), "rtsp", "/dev/null")]
         assert app._config.video_source_type == "rtsp"
         assert app._source_type_selection_active is False
         assert app._settings_menu_active is False  # No banner on success
-        assert app._config_mtime == 1234.5
         # Success routes to URL editor for operator verification/edit.
         assert app._url_editor_calls == [True]
 
@@ -897,7 +919,7 @@ class TestSourceTypeSelection:
 
         monkeypatch.setattr(
             app_modes,
-            "save_config",
+            "save_config_fields",
             lambda *a, **kw: pytest.fail("must not save on apply failure"),
         )
         # Pre-populate rtsp_url so the failure isn't the empty-URL
@@ -952,7 +974,7 @@ class TestSourceTypeSelection:
     ) -> None:
         from openfollow.runtime import app_modes
 
-        monkeypatch.setattr(app_modes, "save_config", lambda *a, **kw: None)
+        monkeypatch.setattr(app_modes, "save_config_fields", lambda *a, **kw: None)
         app = self._make_app(current_type="ndi")
         app._source_type_selection_active = True
         app._available_source_types = [("ndi", "NDI"), ("rtsp", "RTSP")]
@@ -979,7 +1001,7 @@ class TestSourceTypeSelection:
         source-type picker just like it does for the iface picker."""
         from openfollow.runtime import app_modes
 
-        monkeypatch.setattr(app_modes, "save_config", lambda *a, **kw: None)
+        monkeypatch.setattr(app_modes, "save_config_fields", lambda *a, **kw: None)
 
         class _Inp:
             def __init__(self, *, up=False, down=False, confirm=False, cancel=False) -> None:
@@ -1137,7 +1159,7 @@ class TestSourceTypeSelection:
     ) -> None:
         from openfollow.runtime import app_modes
 
-        monkeypatch.setattr(app_modes, "save_config", lambda *a, **kw: None)
+        monkeypatch.setattr(app_modes, "save_config_fields", lambda *a, **kw: None)
 
         class _Inp:
             up_pressed = False
@@ -1205,7 +1227,7 @@ class TestUrlEditor:
                 self._url_editor_field_label = ""
                 self._url_editor_value = ""
                 self._url_editor_banner = ""
-                self._url_editor_revert_type = ""
+                self._url_editor_source_type = ""
                 self._settings_menu_active = False
                 self._settings_menu_index = 0
                 self._settings_menu_banner = ""
@@ -1285,17 +1307,18 @@ class TestUrlEditor:
         app_modes.enter_url_editor(app)
         assert app._url_editor_active is False
 
-    def test_enter_carries_banner_and_revert_type(self) -> None:
+    def test_enter_for_an_input_that_is_not_running_leaves_the_config_alone(self) -> None:
         from openfollow.runtime import app_modes
 
-        app = self._make_app(video_source_type="rtsp")
+        app = self._make_app(video_source_type="ndi")
         app_modes.enter_url_editor(
             app,
             banner="RTSP needs URL.",
-            revert_type="ndi",
+            source_type="rtsp",
         )
         assert app._url_editor_banner == "RTSP needs URL."
-        assert app._url_editor_revert_type == "ndi"
+        assert app._url_editor_field_name == "rtsp_url"
+        assert app._config.video_source_type == "ndi"
 
     def test_typing_appends_chars_to_value(self) -> None:
         from openfollow.runtime import app_modes
@@ -1339,7 +1362,7 @@ class TestUrlEditor:
 
         monkeypatch.setattr(
             app_modes,
-            "save_config",
+            "save_config_fields",
             lambda *a, **kw: pytest.fail("must not save on cancel"),
         )
         app = self._make_app(video_source_type="rtsp")
@@ -1351,6 +1374,93 @@ class TestUrlEditor:
         # Original config field stays empty (no setattr happened).
         assert app._config.rtsp_url == ""
 
+    def test_a_url_that_runs_but_cannot_be_saved_says_so_in_settings(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from openfollow.runtime import app_modes
+
+        def _boom(*_a: object, **_k: object) -> None:
+            raise OSError("read-only file system")
+
+        monkeypatch.setattr(app_modes, "save_config_fields", _boom)
+        app = self._make_app(video_source_type="rtsp")
+        app_modes.enter_url_editor(app)
+        for ch in "rtsp://192.0.2.20/stream":
+            app_modes.handle_url_editor_key(app, ch)
+        app_modes.handle_url_editor_key(app, "Enter")
+        assert app._config.rtsp_url == "rtsp://192.0.2.20/stream"
+        assert app._url_editor_active is False
+        assert app._settings_menu_active is True
+        assert app._settings_menu_banner == (
+            "RTSP URL is live but could not be saved to config.toml. Fix the file, then enter it again."
+        )
+
+    def test_an_auto_chained_switch_that_runs_but_cannot_be_saved_says_so_in_settings(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from openfollow.runtime import app_modes
+
+        def _boom(*_a: object, **_k: object) -> None:
+            raise OSError("read-only file system")
+
+        monkeypatch.setattr(app_modes, "save_config_fields", _boom)
+        app = self._make_app(video_source_type="ndi")
+        app_modes.enter_url_editor(app, source_type="rtsp")
+        for ch in "rtsp://192.0.2.20/stream":
+            app_modes.handle_url_editor_key(app, ch)
+        app_modes.handle_url_editor_key(app, "Enter")
+        assert app._swap_calls == ["rtsp"]
+        assert app._config.video_source_type == "rtsp"
+        assert app._settings_menu_banner == (
+            "RTSP is live but could not be saved to config.toml. Fix the file, then switch again."
+        )
+
+    def test_a_plain_edit_for_an_input_no_longer_running_is_saved_without_a_swap(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from openfollow.runtime import app_modes
+
+        saves: list[dict[str, object]] = []
+        monkeypatch.setattr(
+            app_modes,
+            "save_config_fields",
+            lambda cfg, _path, names, **_kw: saves.append({n: getattr(cfg, n) for n in names}),
+        )
+        app = self._make_app(video_source_type="rtsp")
+        app_modes.enter_url_editor(app)
+        app._config.video_source_type = "srt"  # a reload brought up SRT meanwhile
+        for ch in "rtsp://192.0.2.20/stream":
+            app_modes.handle_url_editor_key(app, ch)
+        app_modes.handle_url_editor_key(app, "Enter")
+        assert app._swap_calls == []
+        assert (app._config.video_source_type, app._config.rtsp_url) == ("srt", "rtsp://192.0.2.20/stream")
+        assert saves == [{"rtsp_url": "rtsp://192.0.2.20/stream"}]
+        assert app._url_editor_active is False
+        assert app._settings_menu_active is False
+
+    def test_a_plain_edit_for_an_input_no_longer_running_that_cannot_be_saved_says_so(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from openfollow.runtime import app_modes
+
+        def _boom(*_a: object, **_k: object) -> None:
+            raise OSError("read-only file system")
+
+        monkeypatch.setattr(app_modes, "save_config_fields", _boom)
+        app = self._make_app(video_source_type="rtsp")
+        app_modes.enter_url_editor(app)
+        app._config.video_source_type = "srt"
+        app_modes.handle_url_editor_key(app, "x")
+        app_modes.handle_url_editor_key(app, "Enter")
+        assert app._swap_calls == []
+        assert app._settings_menu_banner == (
+            "RTSP URL could not be saved to config.toml. Fix the file, then enter it again."
+        )
+
     def test_enter_confirms_and_persists(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -1360,8 +1470,8 @@ class TestUrlEditor:
         saves: list = []
         monkeypatch.setattr(
             app_modes,
-            "save_config",
-            lambda cfg, path: saves.append((cfg.rtsp_url, path)),
+            "save_config_fields",
+            lambda cfg, path, names, **_kw: saves.append((tuple(names), cfg.rtsp_url, path)),
         )
         app = self._make_app(video_source_type="rtsp")
         app_modes.enter_url_editor(app)
@@ -1369,9 +1479,8 @@ class TestUrlEditor:
             app_modes.handle_url_editor_key(app, ch)
         app_modes.handle_url_editor_key(app, "Enter")
         assert app._config.rtsp_url == "rtsp://1.1.1.1"
-        assert saves == [("rtsp://1.1.1.1", "/dev/null")]
+        assert saves == [(("rtsp_url",), "rtsp://1.1.1.1", "/dev/null")]
         assert app._url_editor_active is False
-        assert app._config_mtime == 1234.5
 
     def test_confirm_no_field_just_exits(
         self,
@@ -1381,7 +1490,7 @@ class TestUrlEditor:
 
         monkeypatch.setattr(
             app_modes,
-            "save_config",
+            "save_config_fields",
             lambda *a, **kw: pytest.fail("must not save without field"),
         )
         app = self._make_app(video_source_type="rtsp")
@@ -1396,35 +1505,48 @@ class TestUrlEditor:
     ) -> None:
         from openfollow.runtime import app_modes
 
-        monkeypatch.setattr(app_modes, "save_config", lambda *a, **kw: None)
-        app = self._make_app(video_source_type="rtsp")
-        app_modes.enter_url_editor(app, revert_type="ndi")
+        saves: list[dict[str, object]] = []
+        monkeypatch.setattr(
+            app_modes,
+            "save_config_fields",
+            lambda cfg, _path, names, **_kw: saves.append({n: getattr(cfg, n) for n in names}),
+        )
+        app = self._make_app(video_source_type="ndi")
+        app_modes.enter_url_editor(app, source_type="rtsp")
         for ch in "rtsp://x":
             app_modes.handle_url_editor_key(app, ch)
         app_modes.handle_url_editor_key(app, "Enter")
         assert app._swap_calls == ["rtsp"]
         assert app._url_editor_active is False
         assert app._config.video_source_type == "rtsp"
+        assert saves == [{"rtsp_url": "rtsp://x", "video_source_type": "rtsp"}]
 
-    def test_confirm_auto_chained_swap_failure_reverts_type_and_opens_settings(
+    def test_confirm_auto_chained_swap_failure_keeps_the_running_type_and_opens_settings(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Auto-chain failure path: a still-broken URL surfaces a
-        Settings-menu banner; the type rolls back to the prior plugin
-        so the operator can pick again or fix in the web UI."""
+        Settings-menu banner and the running type stays; the typed URL is
+        kept for the input that could not start, for the web UI."""
         from openfollow.runtime import app_modes
 
-        monkeypatch.setattr(app_modes, "save_config", lambda *a, **kw: None)
+        saves: list[dict[str, object]] = []
+        monkeypatch.setattr(
+            app_modes,
+            "save_config_fields",
+            lambda cfg, _path, names, **_kw: saves.append({n: getattr(cfg, n) for n in names}),
+        )
         app = self._make_app(
-            video_source_type="rtsp",
+            video_source_type="ndi",
             swap_raises=ValueError("malformed URL"),
         )
-        app_modes.enter_url_editor(app, revert_type="ndi")
+        app_modes.enter_url_editor(app, source_type="rtsp")
         for ch in "garbage":
             app_modes.handle_url_editor_key(app, ch)
         app_modes.handle_url_editor_key(app, "Enter")
         assert app._config.video_source_type == "ndi"
+        assert app._config.rtsp_url == "garbage"
+        assert saves == [{"rtsp_url": "garbage"}]
         assert app._url_editor_active is False
         assert app._settings_menu_active is True
         assert "RTSP URL" in app._settings_menu_banner
@@ -1436,32 +1558,42 @@ class TestUrlEditor:
     ) -> None:
         from openfollow.runtime import app_modes
 
-        monkeypatch.setattr(app_modes, "save_config", lambda *a, **kw: None)
+        saves: list[dict[str, object]] = []
+        monkeypatch.setattr(
+            app_modes,
+            "save_config_fields",
+            lambda cfg, _path, names, **_kw: saves.append({n: getattr(cfg, n) for n in names}),
+        )
         app = self._make_app(video_source_type="rtsp", rtsp_url="rtsp://x")
-        app_modes.enter_url_editor(app)  # no revert_type
+        app_modes.enter_url_editor(app)
         app_modes.handle_url_editor_key(app, "Enter")
         assert app._swap_calls == ["rtsp"]
         assert app._url_editor_active is False
         assert app._config.video_source_type == "rtsp"
+        assert saves == [{"rtsp_url": "rtsp://x"}]
 
     def test_confirm_plain_edit_swap_failure_keeps_type_and_opens_settings(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Plain edit path failure: a broken URL surfaces a Settings
-        banner, keeps the type (no revert_type to roll back to), and
-        rolls the URL field back so stored config matches the receiver
-        that swap_video restored – otherwise the heal loop would target
-        a URL the receiver never adopted."""
+        banner and leaves the type and URL as the receiver that swap_video
+        restored runs them – otherwise the heal loop would target a URL the
+        receiver never adopted. Nothing is saved."""
         from openfollow.runtime import app_modes
 
-        monkeypatch.setattr(app_modes, "save_config", lambda *a, **kw: None)
+        saves: list[dict[str, object]] = []
+        monkeypatch.setattr(
+            app_modes,
+            "save_config_fields",
+            lambda cfg, _path, names, **_kw: saves.append({n: getattr(cfg, n) for n in names}),
+        )
         app = self._make_app(
             video_source_type="rtsp",
             rtsp_url="rtsp://good",
             swap_raises=ValueError("malformed URL"),
         )
-        app_modes.enter_url_editor(app)  # no revert_type
+        app_modes.enter_url_editor(app)
         # Replace the URL with a value whose swap fails.
         for _ in "rtsp://good":
             app_modes.handle_url_editor_key(app, "Backspace")
@@ -1469,27 +1601,26 @@ class TestUrlEditor:
             app_modes.handle_url_editor_key(app, ch)
         app_modes.handle_url_editor_key(app, "Enter")
         assert app._config.video_source_type == "rtsp"  # kept, not reverted
-        assert app._config.rtsp_url == "rtsp://good"  # URL rolled back
+        assert app._config.rtsp_url == "rtsp://good"
+        assert saves == []
         assert app._url_editor_active is False
         assert app._settings_menu_active is True
         assert "RTSP URL" in app._settings_menu_banner
         assert "malformed URL" in app._settings_menu_banner
 
-    def test_cancel_auto_chained_reverts_type(self) -> None:
-        """Esc on the auto-chain path restores the prior type – the
-        receiver is already on the old plugin (swap_video preserves it
-        on failure), so this is a pure config restore."""
+    def test_cancel_auto_chained_leaves_the_running_type(self) -> None:
+        """Esc on the auto-chain path: the picked type never reached the
+        config, so the running one is what stays."""
         from openfollow.runtime import app_modes
 
-        app = self._make_app(video_source_type="rtsp")
-        app_modes.enter_url_editor(app, revert_type="ndi")
+        app = self._make_app(video_source_type="ndi")
+        app_modes.enter_url_editor(app, source_type="rtsp")
         app_modes.handle_url_editor_key(app, "Escape")
         assert app._config.video_source_type == "ndi"
         assert app._url_editor_active is False
 
     def test_cancel_manual_does_not_change_type(self) -> None:
-        """When opened from the Settings menu (no revert_type),
-        cancelling leaves the type alone."""
+        """When opened from the Settings menu, cancelling leaves the type alone."""
         from openfollow.runtime import app_modes
 
         app = self._make_app(video_source_type="rtsp")
@@ -1564,7 +1695,7 @@ class TestUrlEditorInputRouting:
             _source_type_selection_active=False,
             _field_choice_active=False,
             _url_editor_active=True,
-            _url_editor_revert_type="",
+            _url_editor_source_type="",
             _browser_active=False,
             _config=AppConfig(),
         )
@@ -1695,10 +1826,10 @@ class TestSourceTypeAutoChainEditor:
                 self,
                 *,
                 banner: str = "",
-                revert_type: str = "",
+                source_type: str = "",
             ) -> None:
                 self._editor_calls.append(
-                    {"banner": banner, "revert_type": revert_type},
+                    {"banner": banner, "source_type": source_type},
                 )
 
             def _enter_settings_menu(self, *, banner: str = "") -> None:
@@ -1715,15 +1846,15 @@ class TestSourceTypeAutoChainEditor:
         assert app._settings_calls == []
         assert len(app._editor_calls) == 1
         call = app._editor_calls[0]
-        assert call["revert_type"] == "ndi"
+        assert call["source_type"] == "rtsp"
         assert "RTSP URL" in call["banner"]
 
-    def test_empty_url_keeps_new_type_for_editor_to_persist(self) -> None:
+    def test_empty_url_keeps_the_running_type_until_the_editor_confirms(self) -> None:
         from openfollow.runtime import app_modes
 
         app = self._make_app(current_type="ndi", rtsp_url="")
         app_modes.confirm_source_type_selection(app)
-        assert app._config.video_source_type == "rtsp"
+        assert app._config.video_source_type == "ndi"
 
     def test_populated_url_with_other_failure_uses_settings_banner(self) -> None:
         """When URL populated but swap fails (e.g. server unreachable),
@@ -1798,7 +1929,7 @@ class TestFieldChoicePicker:
                 self._field_choice_options: list[tuple[str, str]] = []
                 self._field_choice_items: list[str] = []
                 self._field_choice_selected_index = 0
-                self._field_choice_revert_type = ""
+                self._field_choice_source_type = ""
                 self._settings_menu_active = False
                 self._settings_menu_index = 0
                 self._settings_menu_banner = ""
@@ -1813,7 +1944,7 @@ class TestFieldChoicePicker:
                 self._url_editor_field_label = ""
                 self._url_editor_value = ""
                 self._url_editor_banner = ""
-                self._url_editor_revert_type = ""
+                self._url_editor_source_type = ""
                 self._source_type_selection_active = False
                 self._available_source_types: list[tuple[str, str]] = []
                 self._selected_source_type_index = 0
@@ -1831,17 +1962,17 @@ class TestFieldChoicePicker:
                 self,
                 *,
                 banner: str = "",
-                revert_type: str = "",
+                source_type: str = "",
             ) -> None:
                 self._editor_calls.append(
-                    {"banner": banner, "revert_type": revert_type},
+                    {"banner": banner, "source_type": source_type},
                 )
 
-            def _enter_field_choice_picker(self, *, revert_type: str = "") -> None:
+            def _enter_field_choice_picker(self, *, source_type: str = "") -> None:
                 from openfollow.runtime.app_modes import enter_field_choice_picker
 
-                self._picker_calls.append({"revert_type": revert_type})
-                enter_field_choice_picker(self, revert_type=revert_type)
+                self._picker_calls.append({"source_type": source_type})
+                enter_field_choice_picker(self, source_type=source_type)
 
             def _enter_source_selection(self) -> None:
                 self._source_selection_calls.append(True)
@@ -1912,16 +2043,78 @@ class TestFieldChoicePicker:
         assert app._field_choice_field_name == ""
         assert app._field_choice_items == []
 
+    def test_a_value_that_runs_but_cannot_be_saved_says_so_in_settings(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from openfollow.runtime import app_modes
+
+        def _boom(*_a: object, **_k: object) -> None:
+            raise OSError("read-only file system")
+
+        monkeypatch.setattr(app_modes, "save_config_fields", _boom)
+        app = self._make_app(v4l2_render="native")
+        app_modes.enter_field_choice_picker(app)
+        app._field_choice_selected_index = 1
+        app_modes.confirm_field_choice_picker(app)
+        assert app._config.v4l2_render_resolution == "2160p"
+        assert app._field_choice_active is False
+        assert app._settings_menu_active is True
+        assert app._settings_menu_banner == (
+            "Render resolution is live but could not be saved to config.toml. Fix the file, then pick it again."
+        )
+
+    def test_an_auto_chained_switch_that_runs_but_cannot_be_saved_says_so_in_settings(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from openfollow.runtime import app_modes
+
+        def _boom(*_a: object, **_k: object) -> None:
+            raise OSError("read-only file system")
+
+        monkeypatch.setattr(app_modes, "save_config_fields", _boom)
+        app = self._make_app(video_source_type="ndi")
+        app_modes.enter_field_choice_picker(app, source_type="v4l2")
+        app._field_choice_selected_index = 1
+        app_modes.confirm_field_choice_picker(app)
+        assert app._swap_calls == ["v4l2"]
+        assert app._config.video_source_type == "v4l2"
+        assert app._settings_menu_banner == (
+            "USB Camera is live but could not be saved to config.toml. Fix the file, then switch again."
+        )
+
+    def test_a_plain_pick_for_an_input_no_longer_running_that_cannot_be_saved_says_so(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from openfollow.runtime import app_modes
+
+        def _boom(*_a: object, **_k: object) -> None:
+            raise OSError("read-only file system")
+
+        monkeypatch.setattr(app_modes, "save_config_fields", _boom)
+        app = self._make_app(v4l2_render="native")
+        app_modes.enter_field_choice_picker(app)
+        app._config.video_source_type = "rtsp"  # a reload brought up RTSP meanwhile
+        app._field_choice_selected_index = 1
+        app_modes.confirm_field_choice_picker(app)
+        assert app._swap_calls == []
+        assert (app._config.video_source_type, app._config.v4l2_render_resolution) == ("rtsp", "2160p")
+        assert app._settings_menu_banner == (
+            "Render resolution could not be saved to config.toml. Fix the file, then pick it again."
+        )
+
     def test_confirm_writes_selected_value_to_config(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from openfollow.runtime import app_modes
 
-        saved: list[object] = []
+        saves: list[dict[str, object]] = []
         monkeypatch.setattr(
-            "openfollow.runtime.app_modes.save_config",
-            lambda cfg, _path: saved.append(cfg),
+            "openfollow.runtime.app_modes.save_config_fields",
+            lambda cfg, _path, names, **_kw: saves.append({n: getattr(cfg, n) for n in names}),
         )
         app = self._make_app(v4l2_render="native")
         app_modes.enter_field_choice_picker(app)
@@ -1929,7 +2122,31 @@ class TestFieldChoicePicker:
         app_modes.confirm_field_choice_picker(app)
         assert app._config.v4l2_render_resolution == "2160p"
         assert app._field_choice_active is False
-        assert len(saved) == 1
+        assert saves == [{"v4l2_render_resolution": "2160p"}]
+
+    def test_a_plain_pick_for_an_input_no_longer_running_is_saved_without_a_swap(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A web save that switches the running input while the picker is open
+        is neither undone by the confirm nor rebuilt by it."""
+        from openfollow.runtime import app_modes
+
+        saves: list[dict[str, object]] = []
+        monkeypatch.setattr(
+            "openfollow.runtime.app_modes.save_config_fields",
+            lambda cfg, _path, names, **_kw: saves.append({n: getattr(cfg, n) for n in names}),
+        )
+        app = self._make_app(v4l2_render="native")
+        app_modes.enter_field_choice_picker(app)
+        app._config.video_source_type = "rtsp"  # a reload brought up RTSP meanwhile
+        app._field_choice_selected_index = 1  # 2160p
+        app_modes.confirm_field_choice_picker(app)
+        assert app._swap_calls == []
+        assert (app._config.video_source_type, app._config.v4l2_render_resolution) == ("rtsp", "2160p")
+        assert saves == [{"v4l2_render_resolution": "2160p"}]
+        assert app._field_choice_active is False
+        assert app._settings_menu_active is False
 
     def test_confirm_live_applies_via_swap_video_on_same_type_value_change(
         self,
@@ -1938,11 +2155,11 @@ class TestFieldChoicePicker:
         from openfollow.runtime import app_modes
 
         monkeypatch.setattr(
-            "openfollow.runtime.app_modes.save_config",
+            "openfollow.runtime.app_modes.save_config_fields",
             lambda *_a, **_k: None,
         )
         app = self._make_app(v4l2_render="native")
-        # No revert_type – operator is already on v4l2.
+        # Operator is already on v4l2.
         app_modes.enter_field_choice_picker(app)
         app._field_choice_selected_index = 1  # 2160p
         app_modes.confirm_field_choice_picker(app)
@@ -1952,15 +2169,16 @@ class TestFieldChoicePicker:
         assert app._swap_calls == ["v4l2"]
         assert app._config.v4l2_render_resolution == "2160p"
 
-    def test_confirm_same_type_swap_failure_reverts_field_value(
+    def test_confirm_same_type_swap_failure_keeps_the_running_value(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from openfollow.runtime import app_modes
 
+        saves: list[dict[str, object]] = []
         monkeypatch.setattr(
-            "openfollow.runtime.app_modes.save_config",
-            lambda *_a, **_k: None,
+            "openfollow.runtime.app_modes.save_config_fields",
+            lambda cfg, _path, names, **_kw: saves.append({n: getattr(cfg, n) for n in names}),
         )
         app = self._make_app(
             v4l2_render="native",
@@ -1969,8 +2187,9 @@ class TestFieldChoicePicker:
         app_modes.enter_field_choice_picker(app)
         app._field_choice_selected_index = 1  # 2160p – the failing value
         app_modes.confirm_field_choice_picker(app)
-        # Value reverted to the pre-picker state; banner in Settings.
+        # The running value stays and nothing is saved; banner in Settings.
         assert app._config.v4l2_render_resolution == "native"
+        assert saves == []
         assert app._field_choice_active is False
         assert app._settings_menu_active is True
         assert "Couldn't apply" in app._settings_menu_banner
@@ -1983,7 +2202,7 @@ class TestFieldChoicePicker:
         from openfollow.runtime import app_modes
 
         monkeypatch.setattr(
-            "openfollow.runtime.app_modes.save_config",
+            "openfollow.runtime.app_modes.save_config_fields",
             lambda *_a, **_k: None,
         )
         app = self._make_app(v4l2_render="native")
@@ -1996,38 +2215,39 @@ class TestFieldChoicePicker:
         # Lands in Settings menu (matches URL editor cancel semantics).
         assert app._settings_menu_active is True
 
-    def test_cancel_with_revert_restores_prior_source_type(
+    def test_cancel_auto_chained_leaves_the_running_type(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from openfollow.runtime import app_modes
 
         monkeypatch.setattr(
-            "openfollow.runtime.app_modes.save_config",
+            "openfollow.runtime.app_modes.save_config_fields",
             lambda *_a, **_k: None,
         )
-        app = self._make_app(v4l2_render="native")
-        app._config.video_source_type = "v4l2"
-        app_modes.enter_field_choice_picker(app, revert_type="ndi")
+        app = self._make_app(video_source_type="ndi", v4l2_render="native")
+        app_modes.enter_field_choice_picker(app, source_type="v4l2")
         app_modes.cancel_field_choice_picker(app)
         assert app._config.video_source_type == "ndi"
 
-    def test_confirm_with_revert_retries_swap(
+    def test_confirm_auto_chained_retries_swap(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from openfollow.runtime import app_modes
 
+        saves: list[dict[str, object]] = []
         monkeypatch.setattr(
-            "openfollow.runtime.app_modes.save_config",
-            lambda *_a, **_k: None,
+            "openfollow.runtime.app_modes.save_config_fields",
+            lambda cfg, _path, names, **_kw: saves.append({n: getattr(cfg, n) for n in names}),
         )
-        app = self._make_app()
-        app_modes.enter_field_choice_picker(app, revert_type="ndi")
+        app = self._make_app(video_source_type="ndi")
+        app_modes.enter_field_choice_picker(app, source_type="v4l2")
         app._field_choice_selected_index = 1
         app_modes.confirm_field_choice_picker(app)
         assert app._swap_calls == ["v4l2"]
-        assert app._config.v4l2_render_resolution == "2160p"
+        assert (app._config.video_source_type, app._config.v4l2_render_resolution) == ("v4l2", "2160p")
+        assert saves == [{"v4l2_render_resolution": "2160p", "video_source_type": "v4l2"}]
 
     def test_route_after_change_prefers_picker_over_url_editor(
         self,
@@ -2046,7 +2266,7 @@ class TestFieldChoicePicker:
         )
         app = self._make_app(video_source_type="rtsp")
         app_modes._route_after_video_source_change(app, "rtsp")
-        assert app._picker_calls == [{"revert_type": ""}]
+        assert app._picker_calls == [{"source_type": ""}]
         assert app._editor_calls == []
 
     def test_gamepad_input_navigates_and_confirms(
@@ -2057,8 +2277,8 @@ class TestFieldChoicePicker:
 
         saved: list[object] = []
         monkeypatch.setattr(
-            "openfollow.runtime.app_modes.save_config",
-            lambda cfg, _path: saved.append(cfg),
+            "openfollow.runtime.app_modes.save_config_fields",
+            lambda cfg, _path, _names, **_kw: saved.append(cfg),
         )
         app = self._make_app(v4l2_render="native")
         app_modes.enter_field_choice_picker(app)
@@ -2091,8 +2311,8 @@ class TestFieldChoicePicker:
 
         saved: list[object] = []
         monkeypatch.setattr(
-            "openfollow.runtime.app_modes.save_config",
-            lambda cfg, _path: saved.append(cfg),
+            "openfollow.runtime.app_modes.save_config_fields",
+            lambda cfg, _path, _names, **_kw: saved.append(cfg),
         )
         app = self._make_app(v4l2_render="native")
         app_modes.enter_field_choice_picker(app)
@@ -2106,19 +2326,18 @@ class TestFieldChoicePicker:
         assert app._config.v4l2_render_resolution == "2160p"
         assert app._field_choice_active is False
 
-    def test_escape_cancels_with_revert_semantics(
+    def test_escape_on_the_auto_chain_leaves_the_running_type(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from openfollow.runtime import app_modes
 
         monkeypatch.setattr(
-            "openfollow.runtime.app_modes.save_config",
+            "openfollow.runtime.app_modes.save_config_fields",
             lambda *_a, **_k: None,
         )
-        app = self._make_app()
-        app._config.video_source_type = "v4l2"
-        app_modes.enter_field_choice_picker(app, revert_type="ndi")
+        app = self._make_app(video_source_type="ndi")
+        app_modes.enter_field_choice_picker(app, source_type="v4l2")
         app_modes.handle_key_press(app, "Escape")
         assert app._field_choice_active is False
         assert app._config.video_source_type == "ndi"
@@ -2130,7 +2349,7 @@ class TestFieldChoicePicker:
         from openfollow.runtime import app_modes
 
         monkeypatch.setattr(
-            "openfollow.runtime.app_modes.save_config",
+            "openfollow.runtime.app_modes.save_config_fields",
             lambda *_a, **_k: None,
         )
         app = self._make_app()
@@ -2141,33 +2360,32 @@ class TestFieldChoicePicker:
         app_modes.confirm_field_choice_picker(app)
         assert app._field_choice_active is False
 
-    def test_confirm_with_revert_when_swap_still_fails_rolls_back_and_banners(
+    def test_confirm_auto_chained_when_swap_still_fails_keeps_the_running_type_and_banners(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Auto-chain path: operator picked a value but ``swap_video``
-        still fails (e.g., NDI library missing for the destination
-        plugin). Roll the type back to ``revert_type``, exit the
-        picker, and land in Settings with a banner explaining
-        what to fix and where."""
+        still fails. The running type stays, the chosen value is kept for
+        the input that could not start, and the picker lands in Settings
+        with a banner explaining what to fix and where."""
         from openfollow.runtime import app_modes
 
+        saves: list[dict[str, object]] = []
         monkeypatch.setattr(
-            "openfollow.runtime.app_modes.save_config",
-            lambda *_a, **_k: None,
+            "openfollow.runtime.app_modes.save_config_fields",
+            lambda cfg, _path, names, **_kw: saves.append({n: getattr(cfg, n) for n in names}),
         )
 
         def _swap_fail(_cfg):
             raise RuntimeError("ndi library missing")
 
-        app = self._make_app()
+        app = self._make_app(video_source_type="ndi")
         app._runtime_services.swap_video = _swap_fail  # type: ignore[method-assign]
-        app._config.video_source_type = "v4l2"
-        app_modes.enter_field_choice_picker(app, revert_type="ndi")
+        app_modes.enter_field_choice_picker(app, source_type="v4l2")
         app._field_choice_selected_index = 1
         app_modes.confirm_field_choice_picker(app)
-        # Reverted to the prior plugin so the running session is consistent.
         assert app._config.video_source_type == "ndi"
+        assert saves == [{"v4l2_render_resolution": "2160p"}]
         assert app._field_choice_active is False
         assert app._settings_menu_active is True
         assert "Couldn't switch" in app._settings_menu_banner
@@ -2180,7 +2398,7 @@ class TestFieldChoicePicker:
         from openfollow.runtime import app_modes
 
         monkeypatch.setattr(
-            "openfollow.runtime.app_modes.save_config",
+            "openfollow.runtime.app_modes.save_config_fields",
             lambda *_a, **_k: None,
         )
         app = self._make_app()
@@ -2197,7 +2415,7 @@ class TestFieldChoicePicker:
         from openfollow.runtime import app_modes
 
         monkeypatch.setattr(
-            "openfollow.runtime.app_modes.save_config",
+            "openfollow.runtime.app_modes.save_config_fields",
             lambda *_a, **_k: None,
         )
         app = self._make_app()
@@ -2218,7 +2436,7 @@ class TestFieldChoicePicker:
         from openfollow.runtime import app_modes
 
         monkeypatch.setattr(
-            "openfollow.runtime.app_modes.save_config",
+            "openfollow.runtime.app_modes.save_config_fields",
             lambda *_a, **_k: None,
         )
         app = self._make_app()
@@ -2254,7 +2472,7 @@ class TestFieldChoicePicker:
         from openfollow.runtime import app_modes
 
         monkeypatch.setattr(
-            "openfollow.runtime.app_modes.save_config",
+            "openfollow.runtime.app_modes.save_config_fields",
             lambda *_a, **_k: None,
         )
         app = self._make_app(v4l2_render="2160p")
@@ -2280,7 +2498,7 @@ class TestFieldChoicePicker:
         from openfollow.runtime import app_modes
 
         monkeypatch.setattr(
-            "openfollow.runtime.app_modes.save_config",
+            "openfollow.runtime.app_modes.save_config_fields",
             lambda *_a, **_k: None,
         )
         app = self._make_app()
@@ -2302,7 +2520,7 @@ class TestFieldChoicePicker:
         from openfollow.runtime import app_modes
 
         monkeypatch.setattr(
-            "openfollow.runtime.app_modes.save_config",
+            "openfollow.runtime.app_modes.save_config_fields",
             lambda *_a, **_k: None,
         )
         app = self._make_app()
@@ -2323,7 +2541,7 @@ class TestFieldChoicePicker:
         from openfollow.runtime import app_modes
 
         monkeypatch.setattr(
-            "openfollow.runtime.app_modes.save_config",
+            "openfollow.runtime.app_modes.save_config_fields",
             lambda *_a, **_k: None,
         )
         app = self._make_app(v4l2_render="native")
@@ -2343,7 +2561,7 @@ class TestFieldChoicePicker:
         from openfollow.runtime import app_modes
 
         monkeypatch.setattr(
-            "openfollow.runtime.app_modes.save_config",
+            "openfollow.runtime.app_modes.save_config_fields",
             lambda *_a, **_k: None,
         )
         app = self._make_app()
@@ -2422,7 +2640,7 @@ class TestSourceTypeConfirmAutoChainIntoPicker:
             _field_choice_active=False,
         )
         app._picker_calls = picker_calls
-        app._enter_field_choice_picker = lambda *, revert_type="": picker_calls.append({"revert_type": revert_type})
+        app._enter_field_choice_picker = lambda *, source_type="": picker_calls.append({"source_type": source_type})
         return app
 
     def test_swap_failure_with_choice_field_routes_to_picker(
@@ -2432,15 +2650,16 @@ class TestSourceTypeConfirmAutoChainIntoPicker:
         from openfollow.runtime import app_modes
 
         monkeypatch.setattr(
-            "openfollow.runtime.app_modes.save_config",
+            "openfollow.runtime.app_modes.save_config_fields",
             lambda *_a, **_k: None,
         )
         app = self._make_app()
         app_modes.confirm_source_type_selection(app)
         # Source-type picker closed; chained into the field-choice picker
-        # with the prior type captured so cancel can roll back.
+        # for the picked type, which the running config does not take yet.
         assert app._source_type_selection_active is False
-        assert app._picker_calls == [{"revert_type": "ndi"}]
+        assert app._picker_calls == [{"source_type": "v4l2"}]
+        assert app._config.video_source_type == "ndi"
 
 
 class TestLegacyShortcutsRemoved:
@@ -2477,7 +2696,7 @@ class TestLegacyShortcutsRemoved:
                 self._url_editor_field_label = ""
                 self._url_editor_value = ""
                 self._url_editor_banner = ""
-                self._url_editor_revert_type = ""
+                self._url_editor_source_type = ""
                 self._browser_active = False
                 self._browser_overlay = None
                 self._video_receiver = None
@@ -2539,7 +2758,7 @@ class TestNormalModeKeyDispatch:
                 self._url_editor_field_label = ""
                 self._url_editor_value = ""
                 self._url_editor_banner = ""
-                self._url_editor_revert_type = ""
+                self._url_editor_source_type = ""
                 self._browser_active = False
                 self._browser_overlay = None
                 self._video_receiver = None
@@ -2612,9 +2831,9 @@ class TestPersistConfigHelper:
         def _boom(*_a: object, **_k: object) -> None:
             raise RuntimeError("disk full")
 
-        monkeypatch.setattr(app_modes, "save_config", _boom)
+        monkeypatch.setattr(app_modes, "save_config_fields", _boom)
         app = SimpleNamespace(_config=object(), _config_path="x")
-        assert app_modes._persist_config(app) is False
+        assert app_modes._persist_config(app, "camera") is False
 
 
 def _idle_update_result() -> SimpleNamespace:

@@ -3852,6 +3852,38 @@ class TestSwapVideo:
             "video_input_iface": "",
         }
 
+    def test_a_successful_swap_settles_a_rebuild_a_failed_reload_left_owed(
+        self,
+        services: AppRuntimeServices,
+    ) -> None:
+        """Fixing on screen a source the reload could not build must not leave the
+        next reload to tear the restored feed down and build it again."""
+        from openfollow.configuration import AppConfig
+
+        services._app._video_receiver = _FakeReceiver(source_type="rtsp")  # type: ignore[assignment]
+        services._app._video_swap_owed = True
+
+        services.swap_video(AppConfig(video_source_type="rtsp", rtsp_url="rtsp://192.0.2.20/stream"))
+
+        assert services._app._video_swap_owed is False
+
+    def test_a_failed_swap_leaves_the_rebuild_owed(
+        self,
+        services: AppRuntimeServices,
+    ) -> None:
+        from openfollow.configuration import AppConfig
+
+        services._app._video_receiver = _FakeReceiver(  # type: ignore[assignment]
+            source_type="rtsp",
+            swap_raises=[RuntimeError("new pipeline failed"), None],
+        )
+        services._app._video_swap_owed = True
+
+        with pytest.raises(RuntimeError, match="new pipeline failed"):
+            services.swap_video(AppConfig(video_source_type="rtsp", rtsp_url="rtsp://192.0.2.20/stream"))
+
+        assert services._app._video_swap_owed is True
+
     def test_a_blank_video_pin_is_swapped_in_as_the_station_interface(
         self,
         services: AppRuntimeServices,

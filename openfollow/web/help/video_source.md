@@ -2,7 +2,7 @@
 
 Where OpenFollow receives its video feed – every detection, overlay, and position output depends on it. Saving rebuilds the pipeline within about a second; markers and PSN output keep running during the rebuild.
 
-When the last attempt failed, a red box at the top of the section names what went wrong – nothing answered, the login was rejected, no video reached this station, and so on – and below it the one thing to try. It is the same box **Live Statistics → Video** shows, and it refreshes on its own, so a failure that starts while this page is open appears without reloading. **Live Statistics → Video** lists what each reading means.
+When the last attempt failed, a red box at the top of the section names what went wrong – nothing answered, the login was rejected, no video reached this station, and so on – and below it the one thing to try. It is the same box **Live Statistics → Video** and the Setup Wizard's Video Source step show, and it refreshes on its own, so a failure that starts while this page is open appears without reloading. **Live Statistics → Video** lists what each reading means.
 
 ## Source Type
 
@@ -13,7 +13,7 @@ Pick the protocol or device for your setup; the fields below update to match.
 - **RTP** – tightly controlled local pipelines you generate yourself (FFmpeg, hardware encoder).
 - **USB Camera** – UVC webcams and USB capture cards.
 - **Pi Camera** – CSI camera modules and HDMI/SDI-to-CSI adapters on the ribbon-cable port.
-- **Media Gallery** – play a stored still image or short looping clip, or capture a frame from a live source; ships with a Stage scene and a Grey card for bench-testing calibration and detection without a camera.
+- **Media Gallery** – play a stored still image or short looping clip, or capture a frame from a live source; ships with a Stage scene, an Arena and a Grey card for bench-testing calibration, lens correction and detection without a camera.
 
 Which network interface SRT, RTSP and RTP use is set under **Network Interface Assignment**, in the Video input row. In Simple network mode they use the station interface.
 
@@ -27,7 +27,16 @@ Which network interface SRT, RTSP and RTP use is set under **Network Interface A
 - **USB Camera** – pick the **Device** (Scan to re-enumerate), then choose a **Render resolution** and **FPS** (default 30). The camera is read at its own native resolution and scaled to the render size: pick a preset (`2160p` / `1080p` / `720p`, default `1080p`) to downscale for lower CPU, or `Native size` to keep the device's full resolution. This works with any input, including capture cards that only output the incoming signal's resolution (e.g. a 4K HDMI feed) – those failed to connect when a fixed size was forced.
 - **Pi Camera** – the **Camera** row shows the camera the station uses: its Raspberry Pi module name and sensor (*Camera Module 3 (imx708)*), the connector it is named on (CAM/DISP 0 or 1, as printed on the board), or *found automatically* when the Pi recognised it by itself; *set in config.txt* marks a camera named there by hand. With more than one camera found, the row is a choice of which one to stream, saved with the section. **Width** / **Height** (default 1920×1080) and **FPS** (default 30) set the stream.
 - **Change** (Pi Camera) – names the **Camera module** and **Connector** in the Pi's boot configuration. **Automatic** leaves it to the Pi, which recognises Raspberry Pi camera modules on a regular Pi but never on a Compute Module. Raspberry Pi's own modules are listed first by name, other sensors below. A camera named while none was loaded at boot starts at once and is checked again a few seconds later; one the station booted with changes at the next restart, shown as **Takes effect after the next restart** beside what runs now, with a **Restart now** button. A camera line added to `config.txt` by hand is replaced (kept, commented out) when another camera is applied here. **No camera found on this station** opens this choice by itself.
-- **Media Gallery** – a device-local library of images and looping clips, managed entirely from the browser (the on-display menu can select this source but not change its content). Click a tile to make it the source; the selected tile has an amber border. The bundled **Stage** and **Grey** items can't be deleted; per-tile buttons download or delete your own media. **Upload** accepts JPEG/PNG/WebP images (normalised to ≤1080p JPEG) and **VP8 WebM** clips (≤1080p, ≤30 fps, ≤60 s, audio ignored); other codecs are rejected. Every other source shows a **Capture frame** button that saves the current clean frame into the gallery at its native resolution. A selection that no longer resolves (deleted media, an imported config from another station) falls back to Stage.
+- **Media Gallery** – a device-local library of images and looping clips, managed entirely from the browser (the on-display menu can select this source but not change its content). Click a tile to make it the source; the selected tile has an amber border. The bundled **Stage**, **Arena** and **Grey** items can't be deleted; per-tile buttons download or delete your own media. **Upload** accepts JPEG/PNG/WebP images (normalised to ≤1080p JPEG) and **VP8 WebM** clips (≤1080p, ≤30 fps, ≤60 s, audio ignored); other codecs are rejected. Every other source shows a **Capture frame** button that saves the current clean frame into the gallery at its native resolution. A selection that no longer resolves (deleted media, an imported config from another station) falls back to Stage.
+
+  **Arena** is an arena seen from a truss above the stage, through a lens that bows straight lines the way a wide lens does: the Lens step measures it as Barrel / fisheye `-0.15` and Edge fit `0.02`. The tape on the stage marks a 10 × 1 m grid with the Reference Point at the middle of its downstage edge. The four pink marks on mic stands in the aisles sit at stage level, for calibration points:
+
+  | Mark | From DSL | From DSR |
+  |---|---|---|
+  | Centre aisle, front | 11.449 m | 11.449 m |
+  | Cross aisle, stage left | 24.781 m | 27.461 m |
+  | Cross aisle, stage right | 27.461 m | 24.781 m |
+  | Centre aisle, back | 31.697 m | 31.697 m |
 
   Clips are not transcoded on-device – prepare a conforming VP8 WebM on a workstation, e.g.:
 

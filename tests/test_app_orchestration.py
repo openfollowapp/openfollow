@@ -360,6 +360,7 @@ class TestCheckConfigReload:
             _last_config_check=0.0,
             _get_config_mtime=lambda: 200.0,
             _config=None,
+            _config_blank_warned_mtime=None,
         )
 
     def test_throttled_within_1_second(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -434,6 +435,84 @@ class TestCheckConfigReload:
         orch.check_config_reload(app)
         assert app._config_mtime == 200.0
         assert len(applied) == 1
+
+    def test_an_empty_file_is_not_reloaded_and_the_write_after_it_is(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An editor that truncates before it writes leaves an empty file, which
+        loads as every default: the running station must not take those in."""
+        from openfollow.configuration import AppConfig, save_config
+
+        monkeypatch.setattr(orch.time, "monotonic", lambda: 10.0)
+        applied: list[object] = []
+        monkeypatch.setattr(orch, "apply_runtime_config_changes", lambda _app, cfg: applied.append(cfg) or True)
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("", encoding="utf-8")
+        app = self._app(str(config_path))
+
+        with caplog.at_level(logging.WARNING, logger=orch.logger.name):
+            orch.check_config_reload(app)
+        assert applied == []
+        assert app._config_mtime == 100.0  # kept: the write that follows may share its mtime
+        assert [r.getMessage() for r in caplog.records] == [f"{config_path} is empty – not reloaded."]
+
+        save_config(AppConfig(web_port=8080), str(config_path))
+        app._last_config_check = 0.0
+        orch.check_config_reload(app)
+        assert [cfg.web_port for cfg in applied] == [8080]
+        assert app._config_mtime == 200.0
+
+    def test_an_empty_file_is_reported_once_per_mtime(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        monkeypatch.setattr(orch.time, "monotonic", lambda: 10.0)
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("", encoding="utf-8")
+        app = self._app(str(config_path))
+
+        with caplog.at_level(logging.WARNING, logger=orch.logger.name):
+            for mtime in (200.0, 200.0, 300.0):
+                app._get_config_mtime = lambda mtime=mtime: mtime
+                app._last_config_check = 0.0
+                orch.check_config_reload(app)
+
+        expected = f"{config_path} is empty – not reloaded."
+        assert [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING] == [expected, expected]
+
+    def test_a_file_emptied_after_an_earlier_read_is_not_reloaded(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from pathlib import Path
+
+        from openfollow.configuration import AppConfig, save_config
+
+        monkeypatch.setattr(orch.time, "monotonic", lambda: 10.0)
+        applied: list[object] = []
+        monkeypatch.setattr(orch, "apply_runtime_config_changes", lambda _app, cfg: applied.append(cfg) or True)
+        config_path = tmp_path / "config.toml"
+        save_config(AppConfig(web_port=8080), str(config_path))
+        whole = config_path.read_bytes()
+        config_path.write_text("", encoding="utf-8")
+        monkeypatch.setattr(Path, "read_bytes", lambda _self: whole)
+        app = self._app(str(config_path))
+
+        orch.check_config_reload(app)
+
+        assert applied == []
+        assert app._config_mtime == 100.0
+
+    def test_a_file_renamed_away_after_its_mtime_was_read_is_not_reloaded(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(orch.time, "monotonic", lambda: 10.0)
+        applied: list[object] = []
+        monkeypatch.setattr(orch, "apply_runtime_config_changes", lambda _app, cfg: applied.append(cfg) or True)
+        app = self._app(str(tmp_path / "config.toml"))
+
+        orch.check_config_reload(app)
+
+        assert applied == []
+        assert app._config_mtime == 100.0
 
     def test_partial_apply_keeps_old_mtime_for_retry(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # A degraded _apply_with_fallback section returns False (not a raise):
@@ -831,17 +910,19 @@ class TestCheckMarkerSpeedsPersist:
     def test_flush_holds_config_write_lock(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
         """The flush must serialise on ``config_write_lock`` so it can't race a
         concurrent web section save."""
+        import openfollow.configuration as cfg_mod
+
         monkeypatch.setattr(orch.time, "monotonic", lambda: 100.0)
         app = self._app(tmp_path, {5: 2.7}, dirty=True, dirty_since=90.0)
 
         observed: list[bool] = []
-        real_save = orch.save_config
+        real_save = cfg_mod.save_config
 
         def _spy_save(cfg, path):  # noqa: ANN001
-            observed.append(orch.config_write_lock.locked())
+            observed.append(cfg_mod.config_write_lock.locked())
             return real_save(cfg, path)
 
-        monkeypatch.setattr(orch, "save_config", _spy_save)
+        monkeypatch.setattr(cfg_mod, "save_config", _spy_save)
         orch.check_marker_speeds_persist(app)
         assert observed == [True]  # lock held across the save
 
@@ -859,12 +940,14 @@ class TestCheckMarkerSpeedsPersist:
         def _boom(*_a, **_kw):
             raise OSError("disk full")
 
-        monkeypatch.setattr(orch, "save_config", _boom)
+        import openfollow.configuration as cfg_mod
+
+        monkeypatch.setattr(cfg_mod, "save_config", _boom)
         # Must not raise.
         orch.check_marker_speeds_persist(app)
         # Still dirty → retried later; the lock was released.
         assert app._marker_speeds_dirty is True
-        assert orch.config_write_lock.locked() is False
+        assert cfg_mod.config_write_lock.locked() is False
         # Backoff: the timestamp was advanced to now, so the next flush attempt
         # waits out the settle window again rather than firing every tick.
         assert app._marker_speeds_dirty_since == 100.0

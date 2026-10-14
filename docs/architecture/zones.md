@@ -51,4 +51,4 @@ The top-down plan is the shared `static/js/polygon-plan.js` (`PolygonPlan`: the 
 
 ## Keybinds
 - `key_toggle_zones` (default `z`) – flips `trigger_zones.show_overlay`
-- `btn_toggle_zones` (unbound by default) – gamepad equivalent; persisted to `config.toml` via `save_config`
+- `btn_toggle_zones` (unbound by default) – gamepad equivalent; both write only `trigger_zones.show_overlay` to `config.toml` (`save_config_fields`)

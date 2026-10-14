@@ -2757,6 +2757,8 @@ class AppRuntimeServices:
                     "video receiver rollback to prior cfg failed; leaving receiver attached in degraded state",
                 )
             raise
+        # A swap that succeeds settles a rebuild a failed reload left owed.
+        self._app._video_swap_owed = False
 
     def init_web_server(self) -> None:
         from openfollow.runtime.diagnostics_export import DiagnosticsExport

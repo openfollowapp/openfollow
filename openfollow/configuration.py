@@ -28,6 +28,7 @@ except ImportError:
 import tomli_w
 
 from openfollow.binding_conflicts import BindingMove, settle_duplicates
+from openfollow.lens_model import pull_back_to_fold
 from openfollow.net_adapters import normalize_labels
 from openfollow.station_fqdn import normalize_fqdn
 from openfollow.units import UnitSystem
@@ -43,9 +44,8 @@ logger = logging.getLogger(__name__)
 # have the later save clobber the earlier. Held by the off-GTK-thread writers
 # that run concurrently (the threaded WSGI request handlers and the
 # marker-catalog sync receiver) and by main-loop writers that write only their
-# own change (``save_config_change``, the move-speed flush). Other GTK-main-loop
-# writers (on-screen menu, receiver self-heal) do NOT take this lock and can
-# still interleave.
+# own change (``save_config_change``, ``save_config_fields``, the move-speed
+# flush). The receiver's source pick does NOT take it.
 config_write_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
@@ -395,6 +395,57 @@ def _coerce_bool(value: Any, default: bool) -> bool:
 # --- Config dataclasses --------------------------------------------------
 
 
+CALIBRATION_CORNERS = ("DSL", "DSR", "USR", "USL")
+MAX_CALIBRATION_POINTS = 6
+
+
+def _coerce_measured(value: Any) -> float:
+    """A measured number, or NaN for one that cannot be read; a boolean too (``float(True)`` is 1 m)."""
+    return math.nan if isinstance(value, bool) else _coerce_float(value, math.nan)
+
+
+@dataclass
+class CalibrationPointConfig:
+    """A far point measured with a laser from two grid corners, for the Setup Wizard's camera solve.
+
+    ``position`` is where the solve the camera pose came from put it, kept with the pose; like the
+    pose, it does not follow a later grid edit. The measurements are what the next solve reads.
+    """
+
+    # A missing corner or pin is no measurement: problem() refuses these defaults.
+    corner_a: str = ""
+    corner_b: str = ""
+    distance_a: float = 0.0  # m from corner_a's mark
+    distance_b: float = 0.0
+    height: float = 0.0  # m above stage level
+    pin_x: float = math.nan  # where it is on the snapshot, as a fraction of its width / height
+    pin_y: float = math.nan
+    position: list[float] = field(default_factory=list)  # x, y, z in m; empty when no solve placed it
+
+    def __post_init__(self) -> None:
+        self.corner_a = _coerce_choice(self.corner_a, CALIBRATION_CORNERS, "")
+        self.corner_b = _coerce_choice(self.corner_b, CALIBRATION_CORNERS, "")
+        self.distance_a = _coerce_measured(self.distance_a)
+        self.distance_b = _coerce_measured(self.distance_b)
+        self.height = _coerce_measured(self.height)
+        self.pin_x = _coerce_measured(self.pin_x)
+        self.pin_y = _coerce_measured(self.pin_y)
+        coords = [_coerce_measured(v) for v in self.position] if isinstance(self.position, list | tuple) else []
+        self.position = coords if len(coords) == 3 and all(math.isfinite(c) for c in coords) else []
+
+    def problem(self) -> str:
+        """Why the point cannot be used, or ``""``. A measurement is dropped, never clamped."""
+        if not self.corner_a or not self.corner_b or self.corner_a == self.corner_b:
+            return "needs two different grid corners"
+        if not (0.0 < self.distance_a <= 200.0 and 0.0 < self.distance_b <= 200.0):
+            return "needs both distances between 0 and 200 m"
+        if not -10.0 <= self.height <= 10.0:
+            return "needs a height within 10 m of stage level"
+        if not (0.0 <= self.pin_x <= 1.0 and 0.0 <= self.pin_y <= 1.0):
+            return "needs its pin on the snapshot"
+        return ""
+
+
 @dataclass
 class CameraConfig:
     pos_x: float = 0.0
@@ -414,6 +465,10 @@ class CameraConfig:
     # video frame is never warped. 0/0 = pinhole (no curvature).
     lens_k1: float = 0.0
     lens_k2: float = 0.0
+    calibration_points: list[CalibrationPointConfig] = field(default_factory=list)
+    # The Setup Wizard's corner pins (DSL, DSR, USR, USL) the pose was solved from with the points, as
+    # fractions of the snapshot; empty when it has none. Kept with the pose, like the points' positions.
+    corner_pins: list[list[float]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         # These feed ``project_points`` via a numpy float array. Clamp fov out
@@ -427,13 +482,82 @@ class CameraConfig:
         self.fov = _coerce_float(self.fov, 60.0, lo=1.0, hi=179.0)
         self.sensor_width_mm = _coerce_optional_float(self.sensor_width_mm, None, lo=0.0)
         self.focal_length_mm = _coerce_optional_float(self.focal_length_mm, None, lo=0.0)
-        # Bounds cover strong wide-angle / fisheye lenses. The radial map
-        # f = 1 + k1*r^2 + k2*r^4 stays positive and monotonic across the bulk
-        # of the frame; near the extreme corner a strong barrel setting can
-        # compress past monotonic, but the floored inverse (input path) stays
-        # bounded there, so control never diverges.
-        self.lens_k1 = _coerce_float(self.lens_k1, 0.0, lo=-0.4, hi=0.4)
-        self.lens_k2 = _coerce_float(self.lens_k2, 0.0, lo=-0.2, hi=0.2)
+        # The one bound on the pair is that the warp must not fold before the
+        # frame corner; a folding pair is pulled back along its own direction.
+        k1 = _coerce_float(self.lens_k1, 0.0)
+        k2 = _coerce_float(self.lens_k2, 0.0)
+        self.lens_k1, self.lens_k2 = pull_back_to_fold(k1, k2)
+        if (self.lens_k1, self.lens_k2) != (k1, k2):
+            _report_once(
+                "camera.lens",
+                f"lens_k1={k1} / lens_k2={k2} folds the overlay warp inside the frame; "
+                f"using {self.lens_k1:.6g} / {self.lens_k2:.6g}",
+            )
+        self.calibration_points = _coerce_calibration_points(self.calibration_points)
+        self.corner_pins = _coerce_corner_pins(self.corner_pins)
+
+
+# The warnings last reported, by field: every load_config builds the camera again, so a file says it once.
+_reported_drops: dict[str, str] = {}
+
+# A grid corner may sit off the snapshot, never this many snapshot widths or heights from it.
+CORNER_PIN_REACH = 10.0
+
+
+def _report_drops(name: str, said: str) -> None:
+    if _reported_drops.get(name) != said:
+        _reported_drops[name] = said
+        logger.warning("%s: %s; dropped", name, said)
+
+
+def _report_once(name: str, said: str) -> None:
+    if _reported_drops.get(name) != said:
+        _reported_drops[name] = said
+        logger.warning("%s: %s", name, said)
+
+
+def _coerce_calibration_points(value: Any) -> list[CalibrationPointConfig]:
+    """Entries as dataclasses; an entry that cannot be used is dropped with one warning, past the cap too."""
+    points: list[CalibrationPointConfig] = []
+    entries = value if isinstance(value, list) else []
+    dropped: list[str] = [] if isinstance(value, list) else ["is not a list of tables"]
+    for i, entry in enumerate(entries, start=1):
+        if len(points) == MAX_CALIBRATION_POINTS:
+            dropped.append(f"entries from {i} on, past the first {MAX_CALIBRATION_POINTS} usable")
+            break
+        if isinstance(entry, dict):
+            entry = CalibrationPointConfig(**_filter_known(CalibrationPointConfig, entry))
+        if not isinstance(entry, CalibrationPointConfig):
+            dropped.append(f"entry {i} is not a table")
+            continue
+        problem = entry.problem()
+        if problem:
+            dropped.append(f"entry {i} {problem}")
+            continue
+        points.append(entry)
+    if dropped:
+        _report_drops(
+            "camera.calibration_points",
+            "; ".join(dropped[:3]) + (f"; {len(dropped) - 3} more" if len(dropped) > 3 else ""),
+        )
+    return points
+
+
+def _coerce_corner_pins(value: Any) -> list[list[float]]:
+    """Four [x, y] fractions of the snapshot, or none; anything else is dropped with one warning."""
+    if isinstance(value, list) and not value:
+        return []
+    pins = (
+        [[_coerce_measured(v) for v in pin] if isinstance(pin, list | tuple) else [] for pin in value]
+        if isinstance(value, list | tuple)
+        else []
+    )
+    if len(pins) == 4 and all(
+        len(pin) == 2 and all(math.isfinite(c) and abs(c) <= CORNER_PIN_REACH for c in pin) for pin in pins
+    ):
+        return pins
+    _report_drops("camera.corner_pins", "needs four [x, y] pairs on or near the snapshot")
+    return []
 
 
 _GRID_COLOR_DEFAULT = "#545454"
@@ -2450,6 +2574,8 @@ class UiConfig:
     # UI-visibility gate for experimental sections; does not start/stop any
     # subsystem (the save route handles the mouse + detection cascade).
     show_experimental_features: bool = False
+    # Config-only: shows the developer's views in the web UI (the Lens step's edge view).
+    developer_mode: bool = False
 
     def __post_init__(self) -> None:
         valid = {m.value for m in UnitSystem}
@@ -2458,6 +2584,7 @@ class UiConfig:
         choice = self.unit_system.strip().lower()
         self.unit_system = choice if choice in valid else "metric"
         self.show_experimental_features = _coerce_bool(self.show_experimental_features, False)
+        self.developer_mode = _coerce_bool(self.developer_mode, False)
 
 
 NETWORK_MODE_SIMPLE = "simple"
@@ -2889,7 +3016,11 @@ def viewed_with_controlled(controlled: list[int], viewer: list[int]) -> list[int
     return list(viewer) + [mid for mid in controlled if mid not in viewer]
 
 
-def load_config(path: str = "config.toml", *, strict: bool = False) -> AppConfig:
+class ConfigFileEmptyError(ValueError):
+    """A strict load found a file holding only whitespace, which would load as every default."""
+
+
+def load_config(path: str = "config.toml", *, strict: bool = False, missing_ok: bool = True) -> AppConfig:
     """Load config from a TOML file.
 
     Args:
@@ -2897,7 +3028,10 @@ def load_config(path: str = "config.toml", *, strict: bool = False) -> AppConfig
         strict: When True, re-raise parse/read errors instead of logging and
             returning defaults; missing files still return defaults. Used by
             hot-reload, which must not replace the running config with defaults.
-            Strict also skips the ``.bak`` recovery.
+            Strict also skips the ``.bak`` recovery, and refuses an empty file
+            with ``ConfigFileEmptyError``.
+        missing_ok: With *strict*, False raises ``FileNotFoundError`` for a
+            missing file instead of returning defaults.
 
     On the non-strict path, a missing or unparseable primary file is recovered
     from the ``config.toml.bak`` snapshot, degrading to defaults when the
@@ -2908,10 +3042,14 @@ def load_config(path: str = "config.toml", *, strict: bool = False) -> AppConfig
     """
     try:
         with open(path, "rb") as f:
-            data: dict[str, Any] = tomllib.load(f)
+            raw = f.read()
+        # Blank loads as every default; an editor that truncates before it writes leaves one for a moment.
+        if strict and not raw.strip():
+            raise ConfigFileEmptyError(f"Config file {path} is empty.")
+        data: dict[str, Any] = tomllib.loads(raw.decode("utf-8"))
     except FileNotFoundError:
-        # Strict mode (hot-reload): a missing file is not an error and must not
-        # pull in a stale backup. Otherwise recover from the ``.bak``.
+        # Strict mode: a missing file must not pull in a stale backup; it reads
+        # as defaults unless *missing_ok* is off. Otherwise recover from the ``.bak``.
         if not strict:
             backup = _load_backup_data(path)
             if backup is not None:
@@ -2919,6 +3057,8 @@ def load_config(path: str = "config.toml", *, strict: bool = False) -> AppConfig
                 data = backup
             else:
                 return AppConfig()
+        elif not missing_ok:
+            raise
         else:
             return AppConfig()
     except Exception:
@@ -3272,6 +3412,40 @@ def save_config_change(path: str, running: AppConfig, change: Callable[[AppConfi
         save_config(current, path)
 
 
+def save_config_fields(
+    config: AppConfig,
+    path: str,
+    names: Iterable[str],
+    *,
+    replace_unreadable: bool = False,
+) -> None:
+    """Write the named fields of *config* onto the file at *path*; every other field keeps the file's value.
+
+    One dot addresses a sub-config field (``trigger_zones.show_overlay``). A
+    missing file is written from *config* whole. An empty or unreadable file
+    raises and is left alone, or is replaced by *config* whole with
+    *replace_unreadable*.
+    """
+    with config_write_lock:
+        try:
+            on_disk = load_config(path, strict=True, missing_ok=False)
+        except FileNotFoundError:
+            save_config(config, path)
+            return
+        except Exception:
+            if not replace_unreadable:
+                raise
+            logger.warning("Config file %s could not be read - replacing it with the running config.", path)
+            save_config(config, path)
+            return
+        for name in names:
+            parent, _, attr = name.rpartition(".")
+            source = getattr(config, parent) if parent else config
+            target = getattr(on_disk, parent) if parent else on_disk
+            setattr(target, attr, getattr(source, attr))
+        save_config(on_disk, path)
+
+
 # ---------------------------------------------------------------------------
 # Runtime Hot-Reload
 # ---------------------------------------------------------------------------
@@ -3335,6 +3509,18 @@ def _video_config_changed(old_config: AppConfig, new_config: AppConfig) -> bool:
     input_cls = get_input_class(new_config.video_source_type)
     # None only for a hand-edited config.toml naming a removed plugin.
     return input_cls is not None and input_cls.config_changed(old_config, new_config)
+
+
+def _inactive_video_field_names(running_type: str) -> set[str]:
+    """Stored video input fields that the input *running_type* does not declare."""
+    from openfollow.video.inputs import get_input_class, get_registry
+
+    stored = {f.name for f in fields(AppConfig)}
+    names = {f.name for cls in get_registry().values() for f in cls.config_fields()} & stored
+    cls = get_input_class(running_type)
+    if cls is not None:
+        names -= {f.name for f in cls.config_fields()}
+    return names
 
 
 def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> bool:
@@ -3590,6 +3776,11 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
     # no rebuild, and must not stay in the running config for a whole-config save to write back.
     if not getattr(app, "_video_swap_owed", False) and new_config.video_input_iface != app._config.video_input_iface:
         app._config.video_input_iface = new_config.video_input_iface
+
+    # The other inputs' fields drive nothing until their input runs, so they are
+    # mirrored as they are: a later switch to one is built from the file's values.
+    for name in _inactive_video_field_names(app._config.video_source_type):
+        setattr(app._config, name, getattr(new_config, name))
 
     # Grid and camera updates (no renderer needed - Cairo overlay reads from config)
     if new_config.grid != app._config.grid:

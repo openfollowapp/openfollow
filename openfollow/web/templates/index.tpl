@@ -49,6 +49,10 @@
 
 <!-- General -->
 <div class="tab-content" id="tab-general">
+    <div class="wizard-launch">
+        <a href="/wizard" class="btn-link save-btn">Open Setup Wizard</a>
+        <span class="section-note">Guided camera positioning and grid calibration</span>
+    </div>
     % include('partials/general.tpl', config=config, saved=False, local_ips=local_ips, update_status=update_status, fqdn_problems=fqdn_problems, update_available=update_available, latest_version=latest_version, update_supported=update_supported, startup_supported=startup_supported)
     %# "Send config to other stations" (send_config.tpl) is hidden –
     %# peer-broadcast is being replaced with peer-pull; partial and route

@@ -579,6 +579,7 @@ class TestZoneTestSend:
     def test_a_test_send_that_never_left_is_not_a_success(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch, egress: Any, error: str
     ) -> None:
+        services._app._config.network_mode = "advanced"
         from openfollow.configuration import OscDestinationConfig
 
         _seed_zone(services)

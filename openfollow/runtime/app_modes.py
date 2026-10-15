@@ -16,7 +16,7 @@ import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
-from openfollow.configuration import save_config_fields
+from openfollow.configuration import is_simple_mode, save_config_fields
 from openfollow.runtime import paths_runtime
 from openfollow.video.failure import SourceKind, VideoFailure, failure_sentence
 
@@ -1540,7 +1540,7 @@ def _video_disconnect_banner_text(app: OpenFollowApp) -> str:
     # classification the pipeline's own wording is all there is, and it stands
     # in for the sentence rather than sitting beside it.
     if failure not in (VideoFailure.NONE, VideoFailure.UNKNOWN):
-        return failure_sentence(failure, where=source_label, kind=kind)
+        return failure_sentence(failure, where=source_label, kind=kind, simple=is_simple_mode(app._config))
     if error:
         return error
     label = f" – {source_label}" if source_label else ""

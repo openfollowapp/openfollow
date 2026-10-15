@@ -230,13 +230,22 @@ _MOVED = "The web UI may have moved: the station's Network screen lists the addr
     [
         ("diagnostics.tpl", "Restart application?", "Video and tracking stop until the station is back.", _RELOADS),
         ("keyboard.tpl", "Restart OpenFollow?", "Outputs pause until OpenFollow is back.", _RELOADS),
-        (
-            "interface_assignment.tpl",
-            "Restart OpenFollow?",
-            "Outputs pause until OpenFollow is back. The web UI may then answer at a different address.",
-            f"{_RELOADS} If it does not, the web UI has moved - the station's Network screen lists the address"
-            " that reaches it.",
-        ),
+        *[
+            (
+                partial,
+                "Restart OpenFollow?",
+                message,
+                f"{_RELOADS} If it does not, the web UI has moved - the station's Network screen lists the address"
+                " that reaches it.",
+            )
+            for partial, message in [
+                (
+                    "interface_assignment.tpl",
+                    "Outputs pause until OpenFollow is back. The web UI may then answer at a different address.",
+                ),
+                ("network.tpl", "Outputs pause until OpenFollow is back."),
+            ]
+        ],
     ],
 )
 def test_every_restart_button_runs_the_shared_flow_with_its_own_wording(
@@ -250,10 +259,11 @@ def test_every_restart_button_runs_the_shared_flow_with_its_own_wording(
     }
 
 
-def test_the_interface_restart_names_the_network_screen_when_the_station_does_not_come_back() -> None:
-    out = _run(
-        "await press(ONCLICK); await tick(90000); out.body = shown().body;", _onclick("interface_assignment.tpl")
-    )
+@pytest.mark.parametrize("partial", ["interface_assignment.tpl", "network.tpl"])
+def test_a_restart_that_may_move_the_web_ui_names_the_network_screen_if_the_station_is_not_back(
+    partial: str,
+) -> None:
+    out = _run("await press(ONCLICK); await tick(90000); out.body = shown().body;", _onclick(partial))
     assert f'<div class="notice-sub">{_MOVED}</div>' in out["body"]
 
 

@@ -646,7 +646,11 @@ def test_the_input_tab_opens_with_the_controller_slots(slots_server) -> None:
     tab = body[body.index('id="tab-input"') :]
     assert tab.index('id="controller-slots-section"') < tab.index('id="gamepad-section"')
     assert 'data-help="controller_slots"' in tab
-    assert "this.closest('.tab-content').classList.contains('active')" in tab
+    assert 'id="controller-slots-content"' in tab
+    assert (
+        "hx-trigger=\"every 1s [pollShown(this) && !this.querySelector('select:focus')], "
+        'poll-shown[pollShown(this)] from:body"'
+    ) in tab
 
 
 def test_statistics_name_each_missing_controller(slots_server) -> None:
@@ -1076,14 +1080,14 @@ def test_overview_says_station_default_is_down_rather_than_showing_its_address(l
 
 
 def test_index_overview_section_polls_only_peer_rows(live_server) -> None:
-    # The polling element is the inner peer list (#overview-peers), gated on the
-    # enclosing section's collapsed state – not the whole #overview-section via
-    # outerHTML, which is what flickered.
+    # The polling element is the inner peer list (#overview-peers), gated on its
+    # section being shown – not the whole #overview-section via outerHTML,
+    # which is what flickered.
     _, base = live_server
     status, body = _get(base, "/")
     assert status == 200
-    assert 'id="overview-peers"' in body
-    assert "closest('.section').classList.contains('is-collapsed')" in body
+    peers = body[body.index('id="overview-peers"') :].split(">", 1)[0]
+    assert 'hx-trigger="every 5s [pollShown(this)], poll-shown[pollShown(this)] from:body"' in peers
 
 
 def test_statistics_partial_renders(live_server) -> None:
@@ -1701,7 +1705,7 @@ def test_the_interface_assignment_panel_polls_and_its_pickers_can_reload_in_plac
     _server, base = live_server
     _status, panel = _get(base, "/section/interface_assignment")
     poller = panel[panel.rindex("<div", 0, panel.index(f'hx-get="{_IA_STATUS}"')) :].split("</div>", 1)[0]
-    assert 'hx-trigger="every 5s"' in poller
+    assert 'hx-trigger="every 5s [pollShown(this)], poll-shown[pollShown(this)] from:body"' in poller
     assert 'hx-swap="none"' in poller and 'hx-target="this"' in poller
     assert 'document.getElementById("ia-options-fp").dataset.fp' in poller
     selects = re.findall(r'<select [^>]*data-options-url="([^"]+)"[^>]*hx-get="([^"]+)"', panel)
@@ -3557,7 +3561,7 @@ def test_detection_section_running_state_emits_polling_div(live_server) -> None:
         server.set_detection_install_status(state="idle")
 
     assert status == 200
-    assert 'hx-trigger="every 1s"' in body
+    assert 'hx-trigger="every 1s [!document.hidden], poll-shown from:body"' in body
     assert "Exporting `yolo11n.onnx`" in body
 
 
@@ -7738,47 +7742,71 @@ def test_validate_reuses_request_scoped_config_cache(live_server) -> None:
     assert body == ""
 
 
-def test_get_handler_parses_config_once_per_request(live_server, monkeypatch) -> None:
-    """GET handlers reuse request-scoped config cache to parse config exactly once per request."""
-    import openfollow.web.routes as routes_mod
+class _CountingCache:
+    """Stands in for the request config cache, counting the copies taken."""
 
-    calls: list[str] = []
-    real_load = routes_mod.load_config
+    def __init__(self) -> None:
+        from openfollow.web.config_cache import ParsedConfigCache
 
-    def _counting(path, *a, **k):
-        calls.append(path)
-        return real_load(path, *a, **k)
+        self._real = ParsedConfigCache()
+        self.taken = 0
 
-    monkeypatch.setattr(routes_mod, "load_config", _counting)
-    _, base = live_server
-    calls.clear()
-    status, _ = _get(base, "/")
-    assert status == 200
-    # ``_check_auth`` (before_request) parses once and caches on the request
-    # environ; ``index`` reuses that instead of a second parse.
-    assert len(calls) == 1
+    def load(self, path: str):  # noqa: ANN201 - returns the real cache's AppConfig
+        self.taken += 1
+        return self._real.load(path)
 
 
-def test_marker_catalog_parses_config_once_per_request(
-    live_server,
-    monkeypatch,
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("/", 200),
+        ("/api/markers/catalog", 200),
+        # Polled every 250 ms while a MIDI capture runs; the row lookup reads the config.
+        ("/section/osc/midi/learn/poll/no-such-row", 404),
+        ("/section/midi", 200),
+        ("/section/midi/faders/1/detail", 200),
+    ],
+)
+def test_a_request_takes_one_copy_of_the_config_and_parses_nothing_itself(
+    live_server, monkeypatch, path, expected
 ) -> None:
+    """``_check_auth`` (before_request) takes the request's copy; the handler reuses it."""
     import openfollow.web.routes as routes_mod
 
-    calls: list[str] = []
+    server, base = live_server
+    save_config(AppConfig(), server.config_path)
+    cache = _CountingCache()
+    parses: list[str] = []
     real_load = routes_mod.load_config
+    monkeypatch.setattr(routes_mod, "_CONFIG_CACHE", cache)
+    monkeypatch.setattr(routes_mod, "load_config", lambda p, *a, **k: parses.append(p) or real_load(p, *a, **k))
+    status, _ = _get(base, path)
+    assert status == expected
+    assert cache.taken == 1
+    assert parses == []
 
-    def _counting(path, *a, **k):
-        calls.append(path)
-        return real_load(path, *a, **k)
 
-    monkeypatch.setattr(routes_mod, "load_config", _counting)
-    _, base = live_server
-    calls.clear()
-    status, _ = _get(base, "/api/markers/catalog")
-    assert status == 200
-    # before_request parses + caches; the catalog handler reuses that cache.
-    assert len(calls) == 1
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("/section/osc/midi/learn/arm/no-such-row", 404),
+        ("/section/midi/faders/99", 200),
+    ],
+)
+def test_a_midi_post_that_writes_nothing_parses_nothing_itself(live_server, monkeypatch, path, expected) -> None:
+    import openfollow.web.routes as routes_mod
+
+    server, base = live_server
+    save_config(AppConfig(), server.config_path)
+    cache = _CountingCache()
+    parses: list[str] = []
+    real_load = routes_mod.load_config
+    monkeypatch.setattr(routes_mod, "_CONFIG_CACHE", cache)
+    monkeypatch.setattr(routes_mod, "load_config", lambda p, *a, **k: parses.append(p) or real_load(p, *a, **k))
+    status, _ = _post_form(base, path, {})
+    assert status == expected
+    assert cache.taken == 1
+    assert parses == []
 
 
 # ---------------------------------------------------------------------------
@@ -9292,3 +9320,21 @@ def test_restart_through_a_foreign_origin_is_refused(pin_protected_server) -> No
     status = _post_status_with_headers(base, "/api/restart", extra_headers={"Origin": "http://evil.example.com"})
     assert status == 403
     assert server.check_restart_requested() is False
+
+
+def test_requests_share_one_parse_of_an_unchanged_config(live_server, monkeypatch) -> None:
+    """Requests against an unchanged config.toml share one parse."""
+    import openfollow.web.config_cache as cache_module
+    import openfollow.web.routes as routes_module
+    from openfollow.web.config_cache import ParsedConfigCache
+
+    server, base = live_server
+    save_config(AppConfig(), server.config_path)
+    parses: list[str] = []
+    real = cache_module.load_config
+    monkeypatch.setattr(cache_module, "load_config", lambda path, **kw: parses.append(path) or real(path, **kw))
+    monkeypatch.setattr(routes_module, "_CONFIG_CACHE", ParsedConfigCache())
+    for _ in range(3):
+        status, _body = _get(base, "/api/info")
+        assert status == 200
+    assert parses == [server.config_path]

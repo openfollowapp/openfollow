@@ -75,6 +75,12 @@
             if (!document.contains(btn)) {
                 return;
             }
+            // A hidden tab asks nothing; the window keeps running.
+            if (document.hidden) {
+                if (Date.now() >= deadline) stop();
+                else setTimeout(poll, GAP_MS);
+                return;
+            }
             fetch(url, { headers: { Accept: 'application/json' }, cache: 'no-store' })
                 .then(function (resp) { return resp.ok ? resp.json() : null; })
                 .then(function (data) {

@@ -28,7 +28,7 @@
 % if di_running:
     <div role="status" aria-live="polite" aria-atomic="true" class="notice install-progress"
          hx-get="/section/detection"
-         hx-trigger="every 1s"
+         hx-trigger="every 1s [!document.hidden], poll-shown from:body"
          hx-target="#detection-section"
          hx-swap="outerHTML">
         <div>{{di.get('message') or 'Working...'}}</div>

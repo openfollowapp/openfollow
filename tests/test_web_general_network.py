@@ -30,6 +30,12 @@ from openfollow.web import server as _server_module  # noqa: F401
 
 pytestmark = pytest.mark.unit
 
+# The Network Interface card polls while no label edit is pending and its section is in view.
+_NET_POLL = (
+    'hx-trigger="every 5s [netLabelsIdle() && pollShown(this)], '
+    'poll-shown[netLabelsIdle() && pollShown(this)] from:body"'
+)
+
 
 def _render_general(**overrides):
     """Render ``partials/general`` with the minimum required context.
@@ -225,7 +231,7 @@ class TestNetworkPartialStructure:
             "partials/network",
             net={"available": True, "writable": False, "editable": False, "iface_rows": []},
         )
-        assert 'hx-trigger="every 5s [netLabelsIdle()]"' in body
+        assert _NET_POLL in body
         assert 'hx-target="#net-iface-list"' in body
 
 

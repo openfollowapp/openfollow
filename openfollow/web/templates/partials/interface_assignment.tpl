@@ -69,7 +69,7 @@
     %# Keeps the Address column current without touching the pickers, and has
     %# them reload their options once the interface list reads differently.
     <span id="ia-options-fp" data-fp="{{options_fingerprint}}" hidden></span>
-    <div hidden hx-get="/section/interface_assignment/status" hx-trigger="every 5s"
+    <div hidden hx-get="/section/interface_assignment/status" hx-trigger="every 5s [pollShown(this)], poll-shown[pollShown(this)] from:body"
          hx-vals='js:{seen: document.getElementById("ia-options-fp").dataset.fp}'
          hx-target="this" hx-swap="none"></div>
 

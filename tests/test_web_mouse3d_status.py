@@ -107,8 +107,7 @@ def test_the_poll_carries_the_key_of_what_it_shows() -> None:
     html = _render(block)
     assert f'hx-get="/section/mouse3d/status?key={status_key(block)}"' in html
     assert 'hx-swap="outerHTML"' in html
-    # Polls only while the section is open on the visible tab.
-    assert "is-collapsed" in html and "tab-content" in html
+    assert 'hx-trigger="every 1s [pollShown(this)], poll-shown[pollShown(this)] from:body"' in html
 
 
 def test_a_devices_own_product_string_is_escaped() -> None:

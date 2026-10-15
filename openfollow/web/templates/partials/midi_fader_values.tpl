@@ -1,4 +1,4 @@
-% # Live-value response for mixer-style faders (GET every 100ms).
+% # Live-value response for mixer-style faders (on load, and while Show live runs).
 % # Three OOB swaps per fader: fill bar height, handle position, numeric value
 % # + optional "(not picked up)" annotation. OOB targets by id leave click
 % # handlers and selection state on strip wrapper untouched.

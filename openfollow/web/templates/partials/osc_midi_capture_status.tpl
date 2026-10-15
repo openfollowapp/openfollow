@@ -8,7 +8,7 @@
     <span class="status-pill status-pill-info" aria-live="polite">Listening for MIDI…</span>
     <span class="field-note">Press a key, turn a knob, or move a fader.</span>
     <div hx-get="/section/osc/midi/learn/poll/{{row_id}}"
-         hx-trigger="every 250ms"
+         hx-trigger="every 250ms [!document.hidden], poll-shown from:body"
          hx-target="#osc-midi-capture-status-{{row_id}}"
          hx-swap="innerHTML"></div>
 % elif _status == 'captured':

@@ -1,6 +1,6 @@
 # Live Statistics
 
-A read-only panel on the Overview tab that refreshes every second. Use it to confirm the pipeline is healthy and to narrow down problems during a show.
+A read-only panel on the Overview tab that refreshes every second while it is open and in view. Use it to confirm the pipeline is healthy and to narrow down problems during a show.
 
 ## Video
 
@@ -38,7 +38,7 @@ System health for the station hardware.
 - **RAM** – memory usage as a percentage. Approaching 100 % on a Raspberry Pi typically causes slowdowns.
 - **Temperature** – processor temperature in degrees Celsius; `N/A` on platforms without a thermal sensor. On a Raspberry Pi, sustained values above 80 °C may trigger thermal throttling, visible as CPU spikes paired with frame-rate drops.
 - **Output resolution** – the canvas the overlay is drawn on: the real window or full screen, not the size requested under Display. If its aspect ratio differs from **Input resolution**, the overlay sits off the video – that mismatch is the only on-screen explanation for it. `N/A (no display)` with no screen attached.
-- **Overlay redraw rate** – how fast this station redraws its overlay. It follows the screen, not the feed: `0.0 fps` with no screen attached is normal and says nothing about the video. Check **Signal** for that.
+- **Overlay redraw rate** – how many Operator Screen pictures this station draws a second. It follows the screen, not the feed: at most the display's refresh rate, or a steady half, third and so on of it once pictures take longer than one, two or more refreshes; `0.0 fps` with no screen attached is normal and says nothing about the video. Check **Signal** for that.
 - **Frame clock** – the loop that reads your input and updates marker positions. `Running` is normal, and it stays running with no display attached. `Stalled` means the loop has not run for over a second: marker positions, input, and detection are frozen, while PSN, OTP, RTTrPM, and OSC keep transmitting the last known position at full rate.
 
 ## Person Detection

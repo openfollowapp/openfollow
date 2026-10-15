@@ -1023,14 +1023,10 @@
         if (IS_IMPERIAL) updateVertexEcho(vertexIdx);
     }
 
-    // Initial load + 1s polling. Tabs are hidden via CSS (not unmounted),
-    // so we must additionally gate on visibility so a background tab doesn't
-    // hammer /api/zones and re-parse the config every second.
+    // Initial load + 1s polling while the editor is in view (poll-gate.js).
     function isZoneEditorVisible() {
-        if (document.hidden) return false;
         var section = document.getElementById('zone-editor-section');
-        if (!section || !document.body.contains(section)) return false;
-        return section.getClientRects().length > 0;
+        return !!section && document.body.contains(section) && pollShown(section);
     }
 
     window.OpenFollow.viewSwitch(document.getElementById('zone-view-switch'), 'zones', applyMode);
@@ -1045,10 +1041,11 @@
         }
         if (isZoneEditorVisible()) fetchZones();
     }, 1000);
-    // Refresh immediately when the tab becomes visible again so the user
-    // doesn't have to wait up to 1s for the first paint after switching in.
-    document.addEventListener('visibilitychange', function() {
-        if (isZoneEditorVisible()) fetchZones();
-    });
+    // Catch up at once when the editor comes into view; a replaced editor lets go.
+    function onShown() {
+        if (!document.body.contains(canvas)) document.body.removeEventListener('poll-shown', onShown);
+        else if (isZoneEditorVisible()) fetchZones();
+    }
+    document.body.addEventListener('poll-shown', onShown);
 })();
 </script>

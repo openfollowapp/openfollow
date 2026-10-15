@@ -8,7 +8,7 @@ openfollow/              # Single unified package
 ├── configuration.py     # Config model, TOML I/O, hot-reload logic
 ├── services.py          # Runtime service orchestration
 ├── system_stats.py      # Runtime system stats collector
-├── runtime_metrics.py   # Frame metrics + overlay-state pooling helpers
+├── runtime_metrics.py   # Frame metrics
 ├── net_utils.py         # Local IP/network helpers
 ├── packet_chunking.py   # MTU-budgeted datagram split shared by every output
 ├── paths/               # Paths (experimental)
@@ -33,6 +33,7 @@ openfollow/              # Single unified package
 ├── video/               # Video pipeline + overlay
 │   ├── receiver.py      # Generic GStreamer orchestrator
 │   ├── overlay.py       # Cairo HUD renderer
+│   ├── hud_render.py    # HUD drawn on its own thread, paced by the display
 │   ├── detection.py     # Optional person detection
 │   ├── tracking.py      # ByteTrack tracker (Kalman + two-stage association)
 │   ├── media_store.py   # Media Gallery library (images/clips, storage, validation)
@@ -70,7 +71,7 @@ from openfollow.services import AppRuntimeServices
 - Web API → `web/routes.py`
 - Camera/calibration → `scene/camera.py`, `scene/solver.py` (calibration is the web `/wizard`)
 - Paths → `paths/`, `runtime/paths_runtime.py`, `osc/paths.py`, `runtime/overlay_draw_paths.py`
-- Ground grid → `scene/ground_grid.py`, `runtime/overlay_draw_scene.py` (`floor_z_at`, `draw_ground_grid`)
+- Ground grid → `scene/ground_grid.py`, `runtime/overlay_draw_scene.py` (`floor_z_at`, `draw_ground_grid`, `GridCache`)
 
 **Coordinates (PSN):** X=stage left, Y=upstage, Z=up
 

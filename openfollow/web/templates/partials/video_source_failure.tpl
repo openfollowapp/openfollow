@@ -16,7 +16,7 @@
 %# here to do. Only while it shows: a hidden tab or wizard step asks nothing.
 <div id="video-source-failure"
      hx-get="/section/video_source/failure"
-     hx-trigger="every 3s [this.offsetParent !== null]"
+     hx-trigger="every 3s [pollShown(this)], poll-shown[pollShown(this)] from:body"
      hx-target="this"
      hx-swap="innerHTML">
 % if show_failure:

@@ -31,6 +31,7 @@
  <script src="/assets/js/binding-steal.js?v={{_asset_v}}"></script>
  <script src="/assets/js/polygon-plan.js?v={{_asset_v}}"></script>
  <script src="/assets/js/picture-view.js?v={{_asset_v}}"></script>
+ <script src="/assets/js/poll-gate.js?v={{_asset_v}}"></script>
  <style>
  :root {
  color-scheme: dark;
@@ -1012,6 +1013,7 @@
  border-color: var(--caution-line);
  box-shadow: 0 0 0 1px var(--caution-line);
  }
+ [data-midi-live] { margin-bottom: 0.62rem; }
  /* Virtual Faders: eight vertical fader strips (horizontal layout);
  clicking a strip selects it for editing in the detail panel below. */
  .midi-fader-strips {
@@ -2674,6 +2676,7 @@
  toggle.addEventListener('click', () => {
  const nextCollapsed = !section.classList.contains('is-collapsed');
  setSectionCollapsed(section, toggle, nextCollapsed);
+ if (!nextCollapsed) announcePollsShown();
  writeStorage(
  getSectionFoldStorageKey(key),
  nextCollapsed ? 'collapsed' : 'expanded'
@@ -4201,10 +4204,13 @@
  }
  async function list() {
  let got = null;
+ // A hidden tab asks nothing; the first tick once it is shown asks again.
+ if (!document.hidden) {
  try {
  got = await _driveExportFetch('/api/diagnostics/drives');
  } catch (err) {
  got = null;
+ }
  }
  if (!open) return;
  if (got && got.res.ok) render(JSON.parse(got.text).media);
@@ -4253,10 +4259,12 @@
  }
  async function poll() {
  let got = null;
+ if (!document.hidden) {
  try {
  got = await _driveExportFetch('/api/diagnostics/export?generation=' + status.generation);
  } catch (err) {
  got = null;
+ }
  }
  if (!polling) return;
  const s = got && got.res.ok ? JSON.parse(got.text) : null;
@@ -4311,6 +4319,7 @@
  // to the owning tab first, then scroll once layout has settled.
  function goToSection(tabId, targetId) {
    switchTab(tabId);
+   announcePollsShown();
    var el = document.getElementById(targetId);
    if (!el) { return; }
    requestAnimationFrame(function () {
@@ -4331,7 +4340,10 @@
  tabId = defaultTab;
  }
  document.querySelectorAll('.tab-btn').forEach(btn => {
- btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+ btn.addEventListener('click', () => {
+ switchTab(btn.dataset.tab);
+ announcePollsShown();
+ });
  });
  switchTab(tabId);
  }
@@ -5444,7 +5456,7 @@
  <div hx-disinherit="hx-select hx-target">
      <div id="privilege-password-modal"
           hx-get="/system/privilege/password/modal"
-          hx-trigger="load, every 3s"
+          hx-trigger="load, every 3s [!document.hidden], poll-shown from:body"
           hx-target="this"
           hx-swap="innerHTML"></div>
  </div>

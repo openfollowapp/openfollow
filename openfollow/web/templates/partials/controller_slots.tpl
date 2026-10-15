@@ -7,7 +7,7 @@
     </div>
     <div id="controller-slots-content"
          hx-get="/section/controller_slots"
-         hx-trigger="every 1s [!this.closest('.section').classList.contains('is-collapsed') && this.closest('.tab-content').classList.contains('active') && !this.querySelector('select:focus')]"
+         hx-trigger="every 1s [pollShown(this) && !this.querySelector('select:focus')], poll-shown[pollShown(this)] from:body"
          hx-swap="innerHTML">
         % include('partials/controller_slots_table.tpl', controllers=controllers)
     </div>

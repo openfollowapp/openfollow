@@ -7,9 +7,11 @@ sync, guard and restore are exercised with real ``rsync`` and ``git``."""
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import signal
 import subprocess
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -35,6 +37,13 @@ done
 shift
 exec bash -c "$*"
 """
+
+# The long step marks itself running only once SIGINT is fatal to it. A marker the shell
+# touched before forking `sleep` could let the signal land before the exec and be lost.
+_LONG_STEP = (
+    "import pathlib, signal, sys, time; signal.signal(signal.SIGINT, signal.SIG_DFL); "
+    "pathlib.Path(sys.argv[1]).touch(); time.sleep(60)"
+)
 
 _FAKE_MAKE = """#!/usr/bin/env bash
 echo "make $*" >> "$FAKE_MAKE_LOG"
@@ -240,7 +249,8 @@ def test_an_interrupted_gate_still_restores_the_pi(tmp_path: Path) -> None:
     station = _station(tmp_path)
     running = tmp_path / "make.running"
 
-    proc = station.start(FAKE_MAKE_HOOK=f'touch "{running}"; sleep 60')
+    hook = f"exec {shlex.quote(sys.executable)} -I -c {shlex.quote(_LONG_STEP)} {shlex.quote(str(running))}"
+    proc = station.start(FAKE_MAKE_HOOK=hook)
     try:
         deadline = time.monotonic() + 30
         while not running.exists() and proc.poll() is None and time.monotonic() < deadline:

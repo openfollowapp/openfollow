@@ -145,6 +145,7 @@ from openfollow.units import UnitSystem, parse_length, parse_speed
 from openfollow.web import diagnostics, peer_auth
 from openfollow.web._md import render_help_markdown
 from openfollow.web.bindings import check_binding, osc_row_overlap, osc_trigger_overlap
+from openfollow.web.config_cache import ParsedConfigCache
 from openfollow.web.discovery import clean_peer_name
 from openfollow.web.keyboard_layout_view import build_keyboard_layout_view, station_catalog, variant_options
 from openfollow.web.labels import video_error_token
@@ -4525,12 +4526,13 @@ def _resolve_marker_catalog_path(config_path: str, cfg_path_field: str) -> str:
 
 
 # Request-scoped config cache key. The ``before_request`` hook in
-# ``setup_routes`` parses ``config.toml`` once per request and stashes the
-# result here on ``request.environ``. Lifting the key + accessor to module
-# scope lets route groups registered *outside* ``setup_routes`` – such as
-# ``_register_marker_catalog_routes`` below – reuse that same per-request
-# parse instead of hitting disk again.
+# ``setup_routes`` takes one copy of the config per request and stashes it
+# here on ``request.environ``. Lifting the key + accessor to module scope lets
+# route groups registered *outside* ``setup_routes`` – such as
+# ``_register_marker_catalog_routes`` below – reuse that same copy.
 _ENV_CONFIG_KEY = "openfollow.loaded_config"
+# The file is parsed again only when it changed; each request gets its own copy.
+_CONFIG_CACHE = ParsedConfigCache()
 
 
 def _port_suffix(netloc: str) -> str:
@@ -4547,16 +4549,16 @@ def _port_suffix(netloc: str) -> str:
 
 
 def _request_config(server: ConfigWebServer) -> AppConfig:
-    """Return the config parsed once for the current request.
+    """Return this request's copy of the config.
 
     Reads the ``before_request``-populated ``request.environ`` cache and
-    falls back to a fresh ``load_config`` (caching it on the environ) when
-    the hook hasn't run – e.g. a handler exercised directly in a unit test.
+    falls back to a fresh copy (caching it on the environ) when the hook
+    hasn't run – e.g. a handler exercised directly in a unit test.
     """
     cached = request.environ.get(_ENV_CONFIG_KEY)
     if cached is not None:
         return cached  # type: ignore[no-any-return]
-    cfg = load_config(server.config_path)
+    cfg = _CONFIG_CACHE.load(server.config_path)
     request.environ[_ENV_CONFIG_KEY] = cfg
     return cfg
 
@@ -4572,9 +4574,7 @@ def _register_marker_catalog_routes(
         """JSON snapshot of the catalog + each peer's broadcast selection."""
         response.content_type = "application/json"
         catalog = server.get_marker_catalog()
-        # Reuse the per-request config the ``before_request`` hook already
-        # parsed (stashed on ``request.environ``) rather than re-reading
-        # ``config.toml`` from disk a second time for this request.
+        # Reuse the request's copy the ``before_request`` hook already took.
         cfg = _request_config(server)
         if catalog is None:
             return json.dumps(
@@ -5459,10 +5459,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 headers={"Retry-After": str(retry_after)},
             )
 
-    # Request-scoped config cache. ``_check_auth`` reads ``web_pin`` on every
-    # request and the blur-validation handlers parse the same TOML again;
-    # stashing the parsed config on ``request.environ`` collapses both to one
-    # disk hit per request (the blur endpoint fires rapidly while typing).
+    # Request-scoped config: ``_check_auth`` and the handler share one copy per request.
     # Thin wrapper over module-level ``_request_config``.
     def _request_scoped_config() -> AppConfig:
         return _request_config(server)
@@ -7469,7 +7466,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     def get_midi_section() -> Any:
         """Render the full MIDI page partial. Used by the initial
         page load (via ``index.tpl``) and by direct HTMX refreshes."""
-        cfg = load_config(server.config_path)
+        cfg = _request_scoped_config()
         return _render_midi_section(cfg)
 
     def _midi_patch_device_fields(identifier: str) -> dict[str, str]:
@@ -7619,7 +7616,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
         if not 1 <= idx <= VIRTUAL_FADER_COUNT:
             idx = 1
-        cfg = load_config(server.config_path)
+        cfg = _request_scoped_config()
         fader = cfg.virtual_faders.faders[idx - 1]
         return template(
             "partials/midi_fader_detail",
@@ -7646,7 +7643,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
         if not 1 <= idx <= VIRTUAL_FADER_COUNT:
             return _render_midi_section(
-                load_config(server.config_path),
+                _request_scoped_config(),
                 saved=False,
             )
         # All faders are uniform (MIDI / unmapped); ``source_kind`` is
@@ -7709,9 +7706,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             abort(404, "No MIDI Learn for this fader")
             return ""  # pragma: no cover - abort() raises first
         poll = server.midi_capture_arm(_fader_learn_row_id(idx))
-        # Reuse the per-request parse the ``before_request`` hook already
-        # stashed rather than re-reading config.toml – this arms off the
-        # 250 ms poll loop, so a second disk read per request adds up.
+        # Arms off the 250 ms poll loop – reuse the request's copy.
         return _render_midi_fader_capture_status(
             _request_scoped_config(),
             idx,
@@ -7730,8 +7725,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             abort(404, "No MIDI Learn for this fader")
             return ""  # pragma: no cover - abort() raises first
         poll = server.midi_capture_poll(_fader_learn_row_id(idx))
-        # Fires every 250 ms while listening – read the cached per-request
-        # config instead of hitting disk on each poll.
+        # Fires every 250 ms while listening – reuse the request's copy.
         return _render_midi_fader_capture_status(
             _request_scoped_config(),
             idx,
@@ -8679,7 +8673,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     # simultaneous Capture flows on different rows can't clobber each other.
     @app.post("/section/osc/midi/learn/arm/<row_id>")
     def section_osc_midi_learn_arm(row_id: str) -> Any:
-        cfg = load_config(server.config_path)
+        cfg = _request_scoped_config()
         if _find_osc_binding(cfg, row_id) is None:
             abort(404, "Unknown binding")
             return ""  # pragma: no cover - abort() raises before we reach here
@@ -8688,7 +8682,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     @app.get("/section/osc/midi/learn/poll/<row_id>")
     def section_osc_midi_learn_poll(row_id: str) -> Any:
-        cfg = load_config(server.config_path)
+        cfg = _request_scoped_config()
         if _find_osc_binding(cfg, row_id) is None:
             abort(404, "Unknown binding")
             return ""  # pragma: no cover - abort() raises before we reach here

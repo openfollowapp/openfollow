@@ -442,6 +442,10 @@ def test_a_slot_with_a_controller_picks_from_the_controlled_markers(slots_server
     assert '<option value="10">Lead &amp; &lt;Keys&gt; (10)</option>' in connected
     assert '<option value="10" selected>' in missing
     assert "<select" not in reserved
+    # The template's line joins render nothing of their own.
+    for row in (connected, missing):
+        cell = row[row.index('<span class="slot-marker">') : row.index("<select")]
+        assert "\\" not in cell
 
 
 def test_a_slot_without_a_marker_says_so_in_its_picker(slots_server) -> None:

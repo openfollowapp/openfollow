@@ -55,9 +55,9 @@
             % if c.get('all_markers'):
             <td>All markers</td>
             % elif state in ('connected', 'missing') and choices and armed is None:
-            <td><span class="slot-marker">\
+            <td><span class="slot-marker">\\
                 % if c.get('marker_id') is not None:
-<span class="slot-marker-dot" style="--marker-color: {{c.get('marker_color', '')}}"></span>\
+<span class="slot-marker-dot" style="--marker-color: {{c.get('marker_color', '')}}"></span>\\
                 % end
 <select class="slot-marker-pick" name="marker_id" aria-label="Marker for C{{idx + 1}}" hx-post="/section/controller_slots/marker/{{idx}}" hx-trigger="change" hx-vals='{{ref}}' hx-target="#controller-slots-content" hx-swap="innerHTML">
                 % if c.get('marker_id') is None:

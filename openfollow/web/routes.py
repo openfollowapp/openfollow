@@ -62,6 +62,9 @@ from openfollow.configuration import (
     MAX_PATHS,
     MOUSE3D_AXES,
     MOUSE3D_BUTTON_FIELDS,
+    NETWORK_MODE_SIMPLE,
+    NETWORK_MODES,
+    PLANE_PIN_FIELDS,
     VALID_BUTTON_NAMES,
     AppConfig,
     CalibrationPointConfig,
@@ -73,8 +76,11 @@ from openfollow.configuration import (
     _coerce_marker_tokens,
     apply_renamed_marker_keys,
     config_write_lock,
+    enforce_network_mode,
     load_config,
     path_name_from,
+    plane_pin_key,
+    plane_pins,
     save_config,
     viewed_with_controlled,
 )
@@ -84,7 +90,13 @@ from openfollow.lens_model import pull_back_to_fold
 # Module-level so handler closures resolve ``save_catalog`` from this
 # namespace at call time (tests monkeypatch it for persist-failure paths).
 from openfollow.marker_catalog import derive_station_name, save_catalog
-from openfollow.net_utils import HOST_RESOLVER, IPV4_RESOLVER, BoundedResolver, get_local_ipv4_addresses
+from openfollow.net_utils import (
+    HOST_RESOLVER,
+    IPV4_RESOLVER,
+    BoundedResolver,
+    get_local_ipv4_addresses,
+    serves_every_interface,
+)
 from openfollow.network.adapter import (
     LOOPBACK_NAMES,
     VLAN_UNSUPPORTED_MESSAGE,
@@ -1061,7 +1073,7 @@ def get_section_data(cfg: AppConfig, section: str) -> dict[str, Any] | None:
             form_key: getattr(cfg if attr is None else getattr(cfg, attr), field_name)
             for form_key, (attr, field_name) in _INTERFACE_ASSIGNMENT_TARGETS.items()
         }
-        payload.update({_dest_pin_key(dest.id): dest.source_iface for dest in cfg.osc_destinations.destinations})
+        payload.update({plane_pin_key(dest.id): dest.source_iface for dest in cfg.osc_destinations.destinations})
         return payload
     section_attr = _SECTION_CONFIG_ATTRS.get(section)
     if section_attr is None:
@@ -1079,20 +1091,11 @@ def get_section_data(cfg: AppConfig, section: str) -> dict[str, Any] | None:
 # Network Interface Assignment form key -> (sub-config attr or None for top-level, field).
 _INTERFACE_ASSIGNMENT_TARGETS: dict[str, tuple[str | None, str]] = {
     "psn_source_iface": (None, "psn_source_iface"),
-    "otp_output.source_iface": ("otp_output", "source_iface"),
-    "rttrpm_output.source_iface": ("rttrpm_output", "source_iface"),
-    "osc.listen_iface": ("osc", "listen_iface"),
-    "video_input_iface": (None, "video_input_iface"),
-    "web_bind_iface": (None, "web_bind_iface"),
+    **{key: (owner, name) for key, owner, name, _label in PLANE_PIN_FIELDS},
 }
 
 # One more row per OSC destination, keyed ``osc_destinations.<id>.source_iface``.
-_DEST_PIN_PREFIX = "osc_destinations."
-_DEST_PIN_SUFFIX = ".source_iface"
-
-
-def _dest_pin_key(dest_id: str) -> str:
-    return f"{_DEST_PIN_PREFIX}{dest_id}{_DEST_PIN_SUFFIX}"
+_DEST_PIN_PREFIX, _DEST_PIN_SUFFIX = plane_pin_key("\0").split("\0")
 
 
 _DEVICE_LOCAL_FIELDS_BY_SECTION: dict[str, frozenset[str]] = {
@@ -1459,6 +1462,42 @@ def _video_input_row(cfg: AppConfig, wait_s: float | None, names: _PanelNames) -
     return {**row, "key": "video_input_iface", "address": address, "editable": True}
 
 
+_PLANE_PIN_LABELS = {key: label for key, _owner, _name, label in PLANE_PIN_FIELDS}
+
+
+def _plane_pin_label(cfg: AppConfig, key: str) -> str:
+    """The Assignment panel's name for a ``plane_pins`` key."""
+    if key in _PLANE_PIN_LABELS:
+        return _PLANE_PIN_LABELS[key]
+    dest = next((d for d in cfg.osc_destinations.destinations if plane_pin_key(d.id) == key), None)
+    return f"OSC Destination {(dest.name or f'{dest.host}:{dest.port}') if dest else key}"
+
+
+def _as_network_mode(raw: Any, fallback: str) -> str:
+    """A posted network mode, read case- and space-blind like the config reads it."""
+    return _as_str(raw, fallback).strip().lower()
+
+
+def simple_mode_changes(
+    cfg: AppConfig, vlans: Mapping[str, Any], station_iface: str, session_iface: str
+) -> dict[str, Any]:
+    """What switching ``cfg`` to Simple clears and removes.
+
+    ``pins``: ``(key, function, interface)`` per per-plane pin and the web UI pin.
+    ``vlans``: VLAN interfaces to remove, every one listed but the station
+    interface (``station_iface``, already resolved from Automatic) and the one
+    this session arrives on. ``kept``: ``(vlan, reason)`` for the session's.
+    """
+    pins = [(key, _plane_pin_label(cfg, key), iface) for key, iface in plane_pins(cfg)]
+    names = [str(v.get("name", "")) for v in vlans.get("vlans", [])] if vlans.get("supported") else []
+    others = [name for name in names if name and name != station_iface]
+    return {
+        "pins": pins,
+        "vlans": [name for name in others if name != session_iface],
+        "kept": [(name, "this session is connected over it") for name in others if name == session_iface],
+    }
+
+
 def build_interface_assignment_rows(cfg: AppConfig, web_bind: tuple[str, str] | None = None) -> list[dict[str, Any]]:
     """Rows for the Network Interface Assignment panel, in render order.
 
@@ -1565,7 +1604,7 @@ def _interface_assignment_rows(
         },
         *(
             {
-                "key": _dest_pin_key(dest.id),
+                "key": plane_pin_key(dest.id),
                 "label": f"OSC Destination {dest.name or f'{dest.host}:{dest.port}'}",
                 "value": dest.source_iface,
                 "address": _sender(dest.source_iface, dest.host, tcp=dest.protocol == "tcp"),
@@ -1615,9 +1654,16 @@ def _forget_corner_pins_off_grid(cfg: AppConfig, before: tuple[float, ...]) -> N
 def apply_section_data(cfg: AppConfig, section: str, data: Mapping[str, Any]) -> bool:
     """Apply section updates in-place. Returns False for unknown sections.
 
-    A grid write that moves the grid's corners drops ``camera.corner_pins``, so a write that brings
-    pins for the new grid applies the grid first.
+    A station in Simple keeps no per-plane pin, whichever section a POST names. A grid write that
+    moves the grid's corners drops ``camera.corner_pins``, so a write that brings pins for the new grid
+    applies the grid first.
     """
+    applied = _apply_section(cfg, section, data)
+    enforce_network_mode(cfg)
+    return applied
+
+
+def _apply_section(cfg: AppConfig, section: str, data: Mapping[str, Any]) -> bool:
     if section == "interface_assignment":
         _apply_interface_assignment(cfg, data)
         return True
@@ -3136,6 +3182,8 @@ def _config_dict_redacted(cfg: AppConfig) -> dict[str, Any]:
     d.pop("interface_labels", None)
     # Two stations must never claim one name through a copied config.
     d.pop("station_fqdn", None)
+    # Each station's own choice: a Simple station would clear an Advanced one's pins.
+    d.pop("network_mode", None)
     # A NIC name on this box: on a peer it would repin OTP to whatever shares it.
     d["otp_output"].pop("source_iface", None)
     # ``osc.listen_iface`` names a NIC on this box. Carried to a station that
@@ -3206,6 +3254,7 @@ _DEVICE_IDENTITY_FIELDS: tuple[str, ...] = (
     "web_bind",
     "web_bind_iface",
     "station_fqdn",
+    "network_mode",
     "station_id",
     "markers_catalog_path",
     "testpattern_selected_media",
@@ -3932,6 +3981,7 @@ def _build_diagnostics_providers(
             f"{server.local_ip} (Station default interface down)" if server.station_interface_down else server.local_ip
         ),
         interface_labels=lambda: dict(cfg.interface_labels),
+        network_mode=lambda: cfg.network_mode,
         config_redacted_toml=lambda: diagnostics.redact_config_secrets(
             _config_to_toml(cfg),
         ),
@@ -6001,13 +6051,27 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             server.rescan_network()
         cfg = server.get_network_config(iface)
         if not cfg or not cfg.get("interfaces"):
-            return {
+            mode_cfg = _request_scoped_config()
+            unavailable: dict[str, Any] = {
                 "available": False,
                 "writable": bool(cfg.get("writable")) if cfg else False,
                 "editable": editable,
                 "banner": banner,
                 "vlan_form": {},
+                "mode": mode_cfg.network_mode,
             }
+            if mode_cfg.network_mode == NETWORK_MODE_SIMPLE:
+                # The picker is the only way to move a Simple station: offered from the kernel's list.
+                from openfollow.net_utils import list_iface_ipv4, present_interfaces
+
+                addresses = dict(list_iface_ipv4())
+                _station_picker(
+                    unavailable,
+                    mode_cfg.psn_source_iface,
+                    [(name, addresses.get(name, "")) for name in sorted(present_interfaces())],
+                    mode_cfg.interface_labels,
+                )
+            return unavailable
         net: dict[str, Any] = {
             "available": True,
             "editable": editable,
@@ -6074,7 +6138,25 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # without reopening a row the operator closed.
         net["editing_iface"] = net["active_interface"] if (iface or editable) else ""
         net["vlan_form"] = dict(vlan_form) if vlan_form else {}
-        _add_adapter_fields(net, _request_scoped_config().interface_labels if labels is None else labels, label_result)
+        mode_cfg = _request_scoped_config()
+        net["mode"] = mode_cfg.network_mode
+        simple = mode_cfg.network_mode == NETWORK_MODE_SIMPLE
+        labels = mode_cfg.interface_labels if labels is None else labels
+        if simple:
+            advisory = server.get_web_bind_advisory()
+            # A pin Simple cleared still holds the listener until OpenFollow restarts.
+            net["web_restart_pending"] = (
+                bool(advisory.get("iface_at_start")) and advisory.get("status") == "iface" and not mode_cfg.web_bind
+            )
+            # What the listener holds now, not the config: a pin waiting on a restart still holds it.
+            net["web_everywhere"] = serves_every_interface(server.bind_host)
+            # Only what the backend lists as a VLAN: that is what Advanced can remove.
+            vlan_names = set(vlan_ids) if net["supports_vlans"] else set()
+            _narrow_to_station(net, mode_cfg.psn_source_iface, vlan_names, labels)
+        _add_adapter_fields(net, labels, label_result)
+        if simple:
+            # The card lists the station interface alone, so every other labelled adapter is absent from it.
+            net["absent_rows"] = []
         # The single-interface snapshot belongs to the row being configured.
         # Captured before the operator's submitted input is layered on, because
         # the row's summary line reports what the adapter holds - a rejected
@@ -6104,6 +6186,44 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                     row["entered"] = {key: net[key] for key in ("method", "address", "subnet_mask", "router", "dns")}
                 break
         return net
+
+    def _station_picker(
+        net: dict[str, Any], station: str, options: list[tuple[str, str]], labels: Mapping[str, str]
+    ) -> str:
+        """Simple's Interface picker: ``options`` as ``(name, address)``, plus a pinned one that is gone.
+
+        Returns the interface the station resolves to. ``station_names`` names each as the UI shows it.
+        """
+        from openfollow.net_adapters import display_name
+        from openfollow.net_utils import auto_station_iface
+
+        auto = auto_station_iface()
+        net["station_iface"] = station
+        net["station_auto"] = auto
+        net["station_options"] = [(name, addr) for name, addr in options if name and name not in LOOPBACK_NAMES]
+        if station and station not in [name for name, _addr in net["station_options"]]:
+            net["station_options"].append((station, ""))
+        named = {station, auto, *(name for name, _addr in net["station_options"])}
+        net["station_names"] = {name: display_name(name, labels) for name in named if name}
+        return station or auto
+
+    def _narrow_to_station(net: dict[str, Any], station: str, vlan_names: set[str], labels: Mapping[str, str]) -> None:
+        """Simple: the card shows the station interface alone, and offers the picker that moves it."""
+        from openfollow.net_adapters import display_name
+
+        rows = net["iface_rows"]
+        options = [(str(row.get("name", "")), str(row.get("address", ""))) for row in rows]
+        resolved = _station_picker(net, station, options, labels)
+        # Automatic with no address anywhere shows the first interface, as the Operator Screen edits it.
+        resolved = resolved or next((name for name, _addr in net["station_options"]), "")
+        if resolved and resolved not in [name for name, _addr in options]:
+            from openfollow.net_utils import get_iface_ipv4
+
+            # Up but not the backend's: it carries the traffic, it is just not edited here.
+            net["station_unmanaged"] = bool(get_iface_ipv4(resolved))
+        net["leftover_vlans"] = sorted(display_name(name, labels) for name in vlan_names if name and name != resolved)
+        net["iface_rows"] = [row for row in rows if str(row.get("name", "")) == resolved]
+        net["vlan_parents"] = []
 
     def _add_adapter_fields(
         net: dict[str, Any], labels: Mapping[str, str], label_result: dict[str, str] | None
@@ -6511,6 +6631,132 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 banner=banner,
             ),
         )
+
+    def _simple_changes(cfg: AppConfig) -> dict[str, Any]:
+        from openfollow.net_utils import auto_station_iface
+
+        station = cfg.psn_source_iface or auto_station_iface()
+        changes = simple_mode_changes(cfg, server.get_network_vlans(), station, request_local_iface(request.environ))
+        changes["station"] = station
+        return changes
+
+    def _simple_switch_restarts(cfg: AppConfig) -> bool:
+        """Whether switching ``cfg`` to Simple restarts OpenFollow: a web UI pin holds the listener.
+
+        It holds it when the server started on it, saved or not, unless ``web_bind``
+        outranks it or it was down and the server already serves everywhere.
+        Without a runtime to say, it is the saved pin.
+        """
+        if cfg.web_bind:
+            return False
+        advisory = server.get_web_bind_advisory()
+        if "iface_at_start" in advisory:
+            return bool(advisory["iface_at_start"]) and advisory.get("status") == "iface"
+        return bool(cfg.web_bind_iface)
+
+    @app.get("/section/network/mode/preview")
+    def network_mode_preview() -> Any:
+        """What switching to Simple would clear and remove, read when the switch is clicked."""
+        from openfollow.net_adapters import display_name
+
+        cfg = _request_scoped_config()
+        changes = _simple_changes(cfg)
+        labels = cfg.interface_labels
+        station = display_name(changes["station"], labels) if changes["station"] else ""
+        response.content_type = "application/json"
+        return json.dumps(
+            {
+                "station": f"Automatic ({station})" if station and not cfg.psn_source_iface else station or "Automatic",
+                "pins": [f"{label}: {display_name(iface, labels)}" for _key, label, iface in changes["pins"]],
+                "vlans": [display_name(name, labels) for name in changes["vlans"]],
+                # The interface names the switch posts back, matching ``vlans``.
+                "remove": list(changes["vlans"]),
+                "kept": [f"{display_name(name, labels)} – {reason}" for name, reason in changes["kept"]],
+                "restart": _simple_switch_restarts(cfg),
+            }
+        )
+
+    @app.post("/section/network/mode")
+    def network_mode_switch() -> Any:
+        """Switch the network mode. Simple clears every pin and removes the VLANs the card lists.
+
+        A VLAN that fails to go does not stop the switch: the Simple card names
+        what is left. A web UI pin in force restarts OpenFollow.
+        """
+        mode = _as_network_mode(request.forms.get("network_mode"), "")
+        if mode not in NETWORK_MODES:
+            abort(400, "Network mode must be Simple or Advanced.")
+        simple = mode == NETWORK_MODE_SIMPLE
+        # Read before the config lock (a backend read can be slow), and only
+        # the VLANs the confirm dialog listed: one added since was never shown.
+        confirmed = set(request.forms.getall("vlans"))
+        vlans = (
+            [name for name in _simple_changes(_request_scoped_config())["vlans"] if name in confirmed] if simple else []
+        )
+        with _config_write_lock:
+            cfg = _load_config_for_edit()
+            was = cfg.network_mode
+            # Only on a switch: re-posting Simple is not the way to a pending restart.
+            restart = simple and was != NETWORK_MODE_SIMPLE and _simple_switch_restarts(cfg)
+            cleared = plane_pins(cfg) if simple else []
+            cfg.network_mode = mode
+            enforce_network_mode(cfg)
+            save_config(cfg, server.config_path)
+            request.environ[_ENV_CONFIG_KEY] = cfg
+        # Outside the config lock: each removal is a privileged backend call the frame loop must not wait on.
+        removed: list[str] = []
+        for name in vlans:
+            result = server.delete_network_vlan(name)
+            if result.ok:
+                removed.append(name)
+            else:
+                logger.warning("Switching to Simple left VLAN %s: %s", name, result.message)
+        if removed:
+            # A removed VLAN's label would list it in Advanced as an adapter not plugged in.
+            with _config_write_lock:
+                cfg = _load_config_for_edit()
+                if any(name in cfg.interface_labels for name in removed):
+                    cfg.interface_labels = {n: label for n, label in cfg.interface_labels.items() if n not in removed}
+                    save_config(cfg, server.config_path)
+                    request.environ[_ENV_CONFIG_KEY] = cfg
+        logger.info(
+            "Network mode %s -> %s; pins cleared: %s; VLANs removed: %s",
+            was.capitalize(),
+            mode.capitalize(),
+            ", ".join(f"{key} ({iface})" for key, iface in cleared) or "none",
+            ", ".join(removed) or "none",
+        )
+        restarting = restart and server.request_restart_unless_updating()
+        if not restarting:
+            # The mode decides which sections the page shows. A refused restart is
+            # named on the reloaded card, which offers it again.
+            response.set_header("HX-Refresh", "true")
+        net = _build_network_form_context()
+        net.update(restarting=restarting)
+        return template("partials/network", net=net)
+
+    @app.post("/section/network/restart")
+    def network_restart() -> Any:
+        """Restart for a web UI pin Simple cleared; refused while an update runs."""
+        restarting = server.request_restart_unless_updating()
+        net = _build_network_form_context()
+        net.update(restarting=restarting, restart_refused=not restarting)
+        return template("partials/network", net=net)
+
+    @app.post("/section/network/station")
+    def network_station_iface() -> Any:
+        """Simple's Interface picker: the station interface, which every plane follows."""
+        from openfollow.net_utils import present_interfaces
+
+        iface = (request.forms.get("psn_source_iface") or "").strip()
+        with _config_write_lock:
+            cfg = _load_config_for_edit()
+            if iface and iface != cfg.psn_source_iface and iface not in present_interfaces():
+                abort(400, f"{iface[:_IFNAME_MAX]} is not present. Check the adapter, then Scan.")
+            apply_section_data(cfg, "interface_assignment", {"psn_source_iface": iface})
+            save_config(cfg, server.config_path)
+            request.environ[_ENV_CONFIG_KEY] = cfg
+        return template("partials/network", net=_build_network_form_context())
 
     # ----------------------------------------------------------------------
     # Diagnostics routes. Three endpoints, all PIN-gated through

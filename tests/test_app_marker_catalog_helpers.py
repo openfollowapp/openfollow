@@ -68,11 +68,23 @@ class TestBootstrapStationIdentity:
             "openfollow.app.save_config",
             lambda *_a, **_k: saved.append(1),
         )
-        fake = types.SimpleNamespace(_config=cfg, _config_path=str(tmp_path / "c.toml"))
+        path = tmp_path / "c.toml"
+        path.write_text('network_mode = "simple"\n')
+        fake = types.SimpleNamespace(_config=cfg, _config_path=str(path))
         OpenFollowApp._bootstrap_station_identity(fake)  # type: ignore[arg-type]
-        # No save: station_id was set and psn_system_name is operator-chosen.
+        # No save: station_id was set, psn_system_name is operator-chosen and the mode is stored.
         assert saved == []
         assert cfg.psn_system_name == "Stage Left"
+
+    def test_a_config_without_a_stored_mode_saves_the_one_it_started_in(self, tmp_path, monkeypatch) -> None:
+        cfg = AppConfig(station_id="abc", psn_system_name="Stage Left")
+        saved: list = []
+        monkeypatch.setattr("openfollow.app.save_config", lambda *_a, **_k: saved.append(1))
+        path = tmp_path / "c.toml"
+        path.write_text('psn_system_name = "Stage Left"\n')
+        fake = types.SimpleNamespace(_config=cfg, _config_path=str(path))
+        OpenFollowApp._bootstrap_station_identity(fake)  # type: ignore[arg-type]
+        assert saved == [1]
 
     def test_oserror_on_save_is_logged_not_raised(self, tmp_path, monkeypatch) -> None:
         cfg = AppConfig(station_id="", psn_system_name="")

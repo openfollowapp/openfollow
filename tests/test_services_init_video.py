@@ -452,6 +452,7 @@ class TestInitVideoPinsThroughTheStation:
         recv_factory: _RecordingReceiverFactory,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        services._app._config.network_mode = "advanced"
         import openfollow.video.detection as detection_module
         import openfollow.video.preview as preview_module
 

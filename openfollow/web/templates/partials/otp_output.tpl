@@ -48,6 +48,7 @@
                        aria-describedby="otp-output-priority-error" aria-invalid="false">
                 <span id="otp-output-priority-error" class="field-error"></span>
             </div>
+            % if config.network_mode == 'advanced':
             <div class="field">
                 <label>Source Interface</label>
                 %# Read-only pointer – the pin is edited centrally in
@@ -59,6 +60,7 @@
                        onclick="goToSection('general', 'interface-assignment'); return false;">Change in General &rsaquo; Network Interface Assignment</a>
                 </div>
             </div>
+            % end
         </div>
     </div>
 

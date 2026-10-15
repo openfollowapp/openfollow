@@ -56,6 +56,32 @@ class LeaseInfo:
     lease_seconds_remaining: int | None
 
 
+def format_lease_remaining(seconds: int | None) -> str | None:
+    """Render a DHCP lease's seconds-remaining as a compact human label.
+
+    Returns ``None`` when no lease was surfaced (DHCP not in use, or
+    backend didn't report it). Otherwise:
+
+    - ``< 60s``: ``"X s"``.
+    - ``< 3600s``: ``"Y min"``.
+    - ``< 24h``: ``"Hh Mm"`` (e.g. ``"2h 13m"``).
+    - longer: ``"Dd Hh"`` (e.g. ``"3d 04h"``).
+    """
+    if seconds is None:
+        return None
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds} s"
+    if seconds < 3600:
+        return f"{seconds // 60} min"
+    hours, rem = divmod(seconds, 3600)
+    minutes = rem // 60
+    if hours < 24:
+        return f"{hours}h {minutes:02d}m"
+    days, hours = divmod(hours, 24)
+    return f"{days}d {hours:02d}h"
+
+
 AddressSource = Literal["dhcp", "static", "link-local", "none"]
 
 

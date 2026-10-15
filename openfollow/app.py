@@ -23,6 +23,7 @@ from openfollow.configuration import (
     bootstrap_config_if_missing,
     config_write_lock,
     load_config,
+    network_mode_unsaved,
     save_config,
 )
 from openfollow.logging_setup import ThrottledExceptionLogger
@@ -369,6 +370,18 @@ class OpenFollowApp:
         # Separate from ``_pi_network_active_iface``, which says whose state is
         # loaded from the adapter and has to stay set for the static editor.
         self._pi_network_open_iface: str = ""
+        # Simple network mode: the picker open over the screen ("interface",
+        # "method"), and the interface an Automatic station resolves to.
+        self._pi_network_picker: str = ""
+        self._pi_network_auto_iface: str = ""
+        # The station interface the screen's values were read for; None when read in Advanced.
+        self._pi_network_read_station: str | None = None
+        # A re-read overran its budget and has not been answered yet.
+        self._pi_network_reading: bool = False
+        # The DNS servers as read, against which an edit is told apart.
+        self._pi_network_read_dns: tuple[str, ...] = ()
+        # Whether the operator edited a DNS server; untouched, a DHCP apply sends none.
+        self._pi_network_dns_edited: bool = False
         # Interface-address enumeration for the screen's rows, held briefly so
         # the frame loop isn't walking every NIC on every tick.
         self._pi_network_addr_cache: dict[str, str] = {}
@@ -738,7 +751,7 @@ class OpenFollowApp:
         runtime_check_config_reload(self)
 
     def _bootstrap_station_identity(self) -> None:
-        """Seed ``station_id`` (UUID) and a derived ``psn_system_name``.
+        """Seed ``station_id`` (UUID) and a derived ``psn_system_name``, and save the starting network mode.
 
         Runs once per install: only when the operator hasn't already
         configured a station name (``"OpenFollow"`` is the historical
@@ -752,6 +765,9 @@ class OpenFollowApp:
             dirty = True
         if self._config.psn_system_name in ("", "OpenFollow"):
             self._config.psn_system_name = derive_station_name(self._config.station_id)
+            dirty = True
+        # The starting network mode is decided once, then kept.
+        if network_mode_unsaved(self._config_path):
             dirty = True
         if dirty:
             try:

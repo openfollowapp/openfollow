@@ -62,7 +62,7 @@ Object.defineProperties(El.prototype, {
                 var first = this.children[0];
                 return first ? first.value : '';
             }
-            if (this.tagName === 'OPTION') return this.getAttribute('value') || this.textContent;
+            if (this.tagName === 'OPTION') return this.hasAttribute('value') ? this.getAttribute('value') : this.textContent;
             if (this._value === null && (this.type === 'checkbox' || this.type === 'radio')) return this.getAttribute('value') || 'on';
             return this._value !== null ? this._value : this.getAttribute('value') || '';
         },

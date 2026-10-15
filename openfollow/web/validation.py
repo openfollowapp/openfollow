@@ -19,6 +19,7 @@ from openfollow.configuration import (
     MOUSE3D_AXES,
     MOUSE3D_AXIS_TARGETS,
     MOUSE3D_BUTTON_FIELDS,
+    NETWORK_MODES,
     RESERVED_MOVEMENT_KEYS,
     VALID_BUTTON_NAMES,
     VALID_CURVES,
@@ -48,6 +49,7 @@ from openfollow.web.routes import (
     _as_int,
     _as_int_list,
     _as_ip_list,
+    _as_network_mode,
     _as_optional_float,
     _as_optional_int,
     _as_positive_int,
@@ -828,6 +830,9 @@ FIELD_RULES["mouse3d"] = _mouse3d_rules
 # other labels and the row's interface, so the validate route checks it.
 FIELD_RULES["network"] = {
     "label": FieldRule(_as_str, max_len=LABEL_MAX_LEN, human_error=f"A label is at most {LABEL_MAX_LEN} characters."),
+    "network_mode": FieldRule(
+        _as_network_mode, choices=NETWORK_MODES, human_error="Network mode must be 'simple' or 'advanced'."
+    ),
 }
 
 
@@ -906,11 +911,11 @@ def validate(
     if rule.pattern is not None and not re.fullmatch(rule.pattern, value):
         return rule.human_error
     if rule.choices is not None:
-        # For numeric parsers, compare the canonicalised parsed value
-        # against ``choices`` – save-time runs the parser too, so e.g.
-        # ``"010"`` (parsed → 10) must match ``"10"`` in choices to keep
-        # blur and save in lockstep.
-        canonical = str(parsed) if isinstance(parsed, (int, float)) and not isinstance(parsed, bool) else value
+        # Compare the parsed value against ``choices`` – save-time runs the
+        # parser too, so e.g. ``"010"`` (parsed → 10) must match ``"10"``, and
+        # a case-blind parser's ``"Simple"`` match ``"simple"``, to keep blur
+        # and save in lockstep.
+        canonical = str(parsed) if isinstance(parsed, (int, float, str)) and not isinstance(parsed, bool) else value
         if canonical not in rule.choices:
             return rule.human_error
     if isinstance(parsed, (int, float)) and not isinstance(parsed, bool):

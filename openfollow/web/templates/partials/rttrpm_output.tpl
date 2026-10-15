@@ -49,6 +49,7 @@
                 <span id="rttrpm-output-context-error" class="field-error"></span>
                 <span class="field-note">User-defined context value (0–4294967295)</span>
             </div>
+            % if config.network_mode == 'advanced':
             <div class="field">
                 <label>Source Interface</label>
                 %# Read-only pointer – the pin is edited centrally in
@@ -60,6 +61,7 @@
                        onclick="goToSection('general', 'interface-assignment'); return false;">Change in General &rsaquo; Network Interface Assignment</a>
                 </div>
             </div>
+            % end
         </div>
     </div>
 

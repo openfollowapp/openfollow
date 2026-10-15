@@ -1109,6 +1109,7 @@ def test_otp_save_preserves_pin_now_that_the_picker_moved(live_server) -> None:
     """Same guard for OTP: its Save posts no ``source_iface`` any more."""
     server, base = live_server
     cfg = load_config(server.config_path)
+    cfg.network_mode = "advanced"
     cfg.otp_output.source_iface = "eth1"
     save_config(cfg, server.config_path)
 
@@ -1120,6 +1121,7 @@ def test_otp_save_preserves_pin_now_that_the_picker_moved(live_server) -> None:
     assert status == 200
 
     saved = load_config(server.config_path)
+    saved.network_mode = "advanced"
     assert saved.otp_output.system_number == 3
     assert saved.otp_output.source_iface == "eth1"
 
@@ -1145,6 +1147,7 @@ def test_interface_assignment_renders_rows_with_resolved_addresses(
     )
     server, base = live_server
     cfg = load_config(server.config_path)
+    cfg.network_mode = "advanced"
     cfg.psn_source_iface = "eth0"
     cfg.otp_output.source_iface = "eth1"
     save_config(cfg, server.config_path)
@@ -1180,6 +1183,7 @@ def test_interface_assignment_shows_a_down_interface_as_an_error(
     )
     server, base = live_server
     cfg = load_config(server.config_path)
+    cfg.network_mode = "advanced"
     cfg.psn_source_iface = "eth0"
     cfg.otp_output.source_iface = "eth_gone"
     save_config(cfg, server.config_path)
@@ -1206,6 +1210,13 @@ def _patch_ifaces(monkeypatch, ifaces: dict[str, str]) -> None:
     )
 
 
+def _advanced(server) -> None:
+    """Put the live server's station in Advanced, where the per-plane pins live."""
+    cfg = load_config(server.config_path)
+    cfg.network_mode = "advanced"
+    save_config(cfg, server.config_path)
+
+
 def test_interface_assignment_has_a_web_ui_row(live_server, monkeypatch) -> None:
     """The web UI gets its own pin rather than following the station: a
     station pinned to a lighting VLAN would otherwise take its own config UI
@@ -1213,6 +1224,7 @@ def test_interface_assignment_has_a_web_ui_row(live_server, monkeypatch) -> None
     _patch_ifaces(monkeypatch, {"eth0": "192.168.178.59", "eth1": "10.0.0.9"})
     server, base = live_server
     cfg = load_config(server.config_path)
+    cfg.network_mode = "advanced"
     cfg.psn_source_iface = "eth0"
     cfg.web_bind_iface = "eth1"
     save_config(cfg, server.config_path)
@@ -1245,6 +1257,7 @@ def test_interface_assignment_web_ui_row_reads_as_the_wildcard_when_the_pin_is_d
     _patch_ifaces(monkeypatch, {"eth0": "192.168.178.59"})
     server, base = live_server
     cfg = load_config(server.config_path)
+    cfg.network_mode = "advanced"
     cfg.web_bind_iface = "eth_gone"
     save_config(cfg, server.config_path)
 
@@ -1285,6 +1298,7 @@ def test_interface_assignment_web_ui_pin_warns_with_the_surviving_url(live_serve
     _patch_ifaces(monkeypatch, {"eth0": "192.168.178.59", "eth1": "10.0.0.9"})
     server, base = live_server
     cfg = load_config(server.config_path)
+    cfg.network_mode = "advanced"
     cfg.web_bind_iface = "eth1"
     save_config(cfg, server.config_path)
 
@@ -1338,6 +1352,7 @@ def test_interface_assignment_offers_a_restart_for_a_pin_to_a_down_interface(
         raising=False,
     )
     cfg = load_config(server.config_path)
+    cfg.network_mode = "advanced"
     cfg.web_bind_iface = "eth_gone"
     save_config(cfg, server.config_path)
 
@@ -1360,6 +1375,7 @@ def test_interface_assignment_offers_no_restart_once_the_pin_is_in_force(
         raising=False,
     )
     cfg = load_config(server.config_path)
+    cfg.network_mode = "advanced"
     cfg.web_bind_iface = "eth_gone"
     save_config(cfg, server.config_path)
 
@@ -1374,6 +1390,7 @@ def test_interface_assignment_restart_notice_names_the_moved_address(live_server
     _patch_ifaces(monkeypatch, {"eth1": "10.0.0.9"})
     server, base = live_server
     cfg = load_config(server.config_path)
+    cfg.network_mode = "advanced"
     cfg.web_bind_iface = "eth1"
     save_config(cfg, server.config_path)
     status, body = _post_form(base, "/section/interface_assignment/restart", {})
@@ -1412,6 +1429,7 @@ def test_the_interface_assignment_poll_replaces_every_address_cell_and_no_picker
     _patch_ifaces(monkeypatch, {"eth0": "192.168.178.59", "eth1": "10.0.0.9"})
     server, base = live_server
     cfg = load_config(server.config_path)
+    cfg.network_mode = "advanced"
     cfg.psn_source_iface = "eth0"
     cfg.otp_output.source_iface = "eth1"
     save_config(cfg, server.config_path)
@@ -1432,6 +1450,7 @@ def test_the_interface_assignment_poll_tells_apart_ids_that_differ_by_punctuatio
     _patch_ifaces(monkeypatch, {"eth0": "192.168.178.59", "eth1": "10.0.0.9"})
     server, base = live_server
     cfg = load_config(server.config_path)
+    cfg.network_mode = "advanced"
     cfg.psn_source_iface = "eth0"
     cfg.osc_destinations.destinations = [
         OscDestinationConfig(id="media.v2", name="A", host="198.51.100.1", source_iface="eth1"),
@@ -1462,6 +1481,7 @@ def test_the_interface_assignment_poll_shows_an_outage_without_a_scan(live_serve
     _patch_ifaces(monkeypatch, {"eth0": "192.168.178.59", "eth1": "10.0.0.9"})
     server, base = live_server
     cfg = load_config(server.config_path)
+    cfg.network_mode = "advanced"
     cfg.psn_source_iface = "eth0"
     cfg.otp_output.source_iface = "eth1"
     save_config(cfg, server.config_path)
@@ -1555,6 +1575,7 @@ def test_interface_assignment_offers_no_restart_when_the_bind_already_matches(li
 def test_interface_assignment_saves_the_web_ui_pin(live_server, monkeypatch) -> None:
     _patch_ifaces(monkeypatch, {"eth0": "192.168.178.59", "eth1": "10.0.0.9"})
     server, base = live_server
+    _advanced(server)
     status, _body = _post_form(
         base,
         "/section/interface_assignment",
@@ -1605,6 +1626,7 @@ def test_interface_assignment_renders_and_saves_the_sender_rows(live_server, mon
     )
     server, base = live_server
     cfg = load_config(server.config_path)
+    cfg.network_mode = "advanced"
     cfg.rttrpm_output.source_iface = "eth1"
     save_config(cfg, server.config_path)
 
@@ -1622,6 +1644,7 @@ def test_interface_assignment_renders_and_saves_the_sender_rows(live_server, mon
     )
     assert status == 200
     saved = load_config(server.config_path)
+    saved.network_mode = "advanced"
     assert saved.osc_destinations.destinations[0].source_iface == "eth1"
     assert saved.rttrpm_output.source_iface == "eth1"
 
@@ -1647,6 +1670,7 @@ def test_sender_sections_point_to_the_panel_with_their_own_pin(live_server, path
     """Each section shows its row's pin read-only, and Station default's wording only when it is blank."""
     server, base = live_server
     cfg = load_config(server.config_path)
+    cfg.network_mode = "advanced"
     _SENDER_POINTERS[path](cfg, pin)
     save_config(cfg, server.config_path)
 
@@ -1680,7 +1704,8 @@ def test_interface_assignment_pickers_have_accessible_names(live_server) -> None
 def test_protocol_sections_link_switches_to_the_general_tab(live_server) -> None:
     """A bare href="#id" does nothing when the target sits in a display:none
     tab, so the pointer had no effect at all."""
-    _server, base = live_server
+    server, base = live_server
+    _advanced(server)
     for path in ("/section/psn", "/section/otp_output", "/section/osc"):
         _status, body = _get(base, path)
         assert "goToSection('general', 'interface-assignment')" in body
@@ -1705,6 +1730,7 @@ def test_interface_assignment_save_round_trips_to_disk(
         },
     )
     server, base = live_server
+    _advanced(server)
 
     status, body = _post_form(
         base,
@@ -1719,6 +1745,7 @@ def test_interface_assignment_save_round_trips_to_disk(
     assert "saved" in body
 
     saved = load_config(server.config_path)
+    saved.network_mode = "advanced"
     assert saved.psn_source_iface == "eth0"
     assert saved.otp_output.source_iface == "eth1"
     # The panel is the only editing surface for the OSC pin, so the dotted form
@@ -2413,6 +2440,7 @@ def test_restart_openfollow_restarts_and_saves_nothing(live_server, monkeypatch)
 def test_save_never_restarts(live_server, monkeypatch) -> None:
     _patch_ifaces(monkeypatch, {"eth1": "10.0.0.9"})
     server, base = live_server
+    _advanced(server)
     status, _body = _post_form(
         base,
         "/section/interface_assignment?restart=1",

@@ -95,6 +95,7 @@
  </select>
  </div>
  % # Read-only pointer; the pin is edited in General > Network Interface Assignment.
+ % if config.network_mode == 'advanced':
  <div class="field">
  <label>Source Interface</label>
  <div class="ia-pointer">
@@ -104,6 +105,7 @@
  onclick="goToSection('general', 'interface-assignment'); return false;">Change in General &rsaquo; Network Interface Assignment</a>
  </div>
  </div>
+ % end
  </div>
  <div class="actions osc-destination-actions">
  <button type="submit" class="save-btn">Save</button>

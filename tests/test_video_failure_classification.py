@@ -585,3 +585,36 @@ class TestANegotiationFailureNamesTheMode:
             failure_action(VideoFailure.UNSUPPORTED_MODE, kind=kind)
             == "Check the settings under Video Source, or download a diagnostics bundle."
         )
+
+
+class TestSimpleNetworkModeWording:
+    """Simple has one interface for everything: the wording names it, and a
+    camera only another interface reaches is sent to Advanced mode."""
+
+    def test_a_down_station_interface_is_named_as_such(self) -> None:
+        assert failure_sentence(VideoFailure.INTERFACE_DOWN, simple=True) == "The station interface has no address."
+        assert "Network Interface Settings" in failure_action(VideoFailure.INTERFACE_DOWN, simple=True)
+
+    @pytest.mark.parametrize("kind", [SourceKind.REMOTE, SourceKind.LISTENER])
+    def test_a_camera_off_the_station_interface_names_advanced_mode(self, kind: SourceKind) -> None:
+        assert "station interface" in failure_sentence(
+            VideoFailure.WRONG_INTERFACE, where="cam", kind=kind, simple=True
+        )
+        assert failure_action(VideoFailure.WRONG_INTERFACE, kind=kind, simple=True).endswith("in Advanced mode.")
+
+    @pytest.mark.parametrize("failure", [VideoFailure.INTERFACE_DOWN, VideoFailure.WRONG_INTERFACE])
+    def test_advanced_keeps_the_pin_wording(self, failure: VideoFailure) -> None:
+        assert "pinned for video input" in failure_sentence(failure, where="cam")
+        assert "Advanced mode" not in failure_action(failure)
+
+    @pytest.mark.parametrize("kind", [SourceKind.LISTENER, SourceKind.LOCAL])
+    @pytest.mark.parametrize("failure", [VideoFailure.UNREACHABLE, VideoFailure.NO_DATA])
+    def test_a_source_that_dials_nothing_keeps_its_wording(self, kind: SourceKind, failure: VideoFailure) -> None:
+        assert failure_sentence(failure, where="cam", kind=kind, simple=True) == failure_sentence(
+            failure, where="cam", kind=kind
+        )
+
+    @pytest.mark.parametrize("failure", [VideoFailure.UNREACHABLE, VideoFailure.STALLED, VideoFailure.REFUSED])
+    def test_other_failures_read_the_same_in_both_modes(self, failure: VideoFailure) -> None:
+        assert failure_sentence(failure, where="cam", simple=True) == failure_sentence(failure, where="cam")
+        assert failure_action(failure, simple=True) == failure_action(failure)

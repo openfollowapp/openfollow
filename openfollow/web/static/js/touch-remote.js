@@ -167,7 +167,11 @@
                     render();
                 });
             })
-            .catch(function () { if (gen === st.gen) st.checking = false; setOffline(true); });
+            .catch(function () {
+                if (gen !== st.gen) return;
+                st.checking = false;
+                setOffline(true);
+            });
     }
 
     function action(kind, extra) {

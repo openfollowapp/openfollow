@@ -86,8 +86,7 @@ function paths() { return requests.map(function (r) { return r.url.replace(/\\?.
 function settle() { return new Promise(function (r) { setTimeout(r, 0); }); }
 function tick() { timers.forEach(function (f) { f(); }); }
 var STATE = { held: null, lost: false, markers: [{ id: 1, name: 'Lead', color: '#ffbc00', pos: [0, 0, 1.6] }],
-              max_speed: 3, z_step_m: 0.05, z_notch_px: 20, unit_system: 'metric', paths_on: false,
-              recording: false, locked: [], detection_on: false };
+              z_step_m: 0.05, z_notch_px: 20, paths_on: false, recording: false, locked: [], inverted: false };
 """
 
 

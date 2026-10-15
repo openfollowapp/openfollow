@@ -41,7 +41,7 @@ from openfollow.runtime.services_detection_pin import (
 if TYPE_CHECKING:
     from openfollow.app import OpenFollowApp
     from openfollow.configuration import Mouse3DConfig
-    from openfollow.input.touch_remote import TouchRemote
+    from openfollow.input.touch_remote import RemoteFrame, TouchRemote
     from openfollow.paths.engine import PathEngine
     from openfollow.psn.marker import Marker
 
@@ -151,8 +151,8 @@ class InputManager:
         self._identify_flash: tuple[int, float] | None = None
         # Clock time of each marker's latest OSC position write.
         self._osc_last_write: dict[int, float] = {}
-        # Where each remote-held marker glides to, until it lands or the remote steers it.
-        self._remote_glides: dict[int, tuple[float, float, float]] = {}
+        # Where each remote-held marker glides to, and for which session, until it lands or is steered.
+        self._remote_glides: dict[int, tuple[str, tuple[float, float, float]]] = {}
         self._refresh_slots()
 
         osc_cfg = app._config.osc
@@ -559,43 +559,51 @@ class InputManager:
             remote.release_all()
         remote.release_uncontrolled(self.app._controlled_ids)
         frames = remote.take()
-        held = {frame.marker_id for frame in frames}
-        for marker_id in [m for m in self._remote_glides if m not in held]:
+        holders = {frame.marker_id: frame.holder for frame in frames}
+        for marker_id in [m for m, (who, _t) in self._remote_glides.items() if holders.get(m) != who]:
             del self._remote_glides[marker_id]
         # Before the presses, so they move the marker itself and not an assist anchor. Never raises.
-        if held and cfg.detection.enabled:
+        if frames and cfg.detection.enabled:
             self._switch_detection_off()
+        for frame in frames:
+            # One marker's failure never costs another marker its presses.
+            try:
+                self._apply_remote_frame(frame, dt)
+            except Exception:
+                self._remote_update_err_log.log()
+
+    def _apply_remote_frame(self, frame: RemoteFrame, dt: float) -> None:
+        cfg = self.app._config
         tuning = cfg.touch_remote
         max_speed = cfg.marker.max_speed
         paths = self._paths()
-        for frame in frames:
-            marker_id = frame.marker_id
-            marker = self._get_marker(marker_id)
-            if marker is None:
-                continue
-            for action in frame.actions:
-                self._remote_glides.pop(marker_id, None)
-                if action.target is not None:
-                    paths_runtime.release(self.app, marker_id)
-                    self._remote_glides[marker_id] = action.target
-                elif action.kind == RESET:
-                    self._reset(marker_id, marker)
-                else:
-                    self.pathfinder(marker_id, remote=True)
-            vx, vy = stick_velocity(frame.stick, tuning.stick_curve, tuning.stick_dead_zone, max_speed)
-            if vx or vy:
-                self._remote_glides.pop(marker_id, None)
-                vx, vy = _oriented(vx, vy, cfg.marker.invert_control_direction)
-                self._move(marker_id, marker, vx, vy, 0.0, dt)
-            if frame.z_notches and not (paths is not None and paths.is_locked(marker_id)):
-                self._remote_glides.pop(marker_id, None)
-                x, y, z = marker.pos
-                z = snap_z(z, frame.z_notches, tuning.z_step_m)
-                marker.set_pos(x, y, max(-MAX_REACH_M, min(MAX_REACH_M, z)))
-            # The dead-man holds a glide where it is; it carries on once drive messages arrive again.
-            target = self._remote_glides.get(marker_id) if frame.live else None
-            if target is not None:
-                self._glide(marker_id, marker, target, max_speed * dt)
+        marker_id = frame.marker_id
+        marker = self._get_marker(marker_id)
+        if marker is None:
+            return
+        for action in frame.actions:
+            self._remote_glides.pop(marker_id, None)
+            if action.target is not None:
+                paths_runtime.release(self.app, marker_id)
+                self._remote_glides[marker_id] = (frame.holder, action.target)
+            elif action.kind == RESET:
+                self._reset(marker_id, marker)
+            else:
+                self.pathfinder(marker_id, remote=True)
+        vx, vy = stick_velocity(frame.stick, tuning.stick_curve, tuning.stick_dead_zone, max_speed)
+        if vx or vy:
+            self._remote_glides.pop(marker_id, None)
+            vx, vy = _oriented(vx, vy, cfg.marker.invert_control_direction)
+            self._move(marker_id, marker, vx, vy, 0.0, dt)
+        if frame.z_notches and not (paths is not None and paths.is_locked(marker_id)):
+            self._remote_glides.pop(marker_id, None)
+            x, y, z = marker.pos
+            z = snap_z(z, frame.z_notches, tuning.z_step_m)
+            marker.set_pos(x, y, max(-MAX_REACH_M, min(MAX_REACH_M, z)))
+        # The dead-man holds a glide where it is; it carries on once drive messages arrive again.
+        glide = self._remote_glides.get(marker_id) if frame.live else None
+        if glide is not None:
+            self._glide(marker_id, marker, glide[1], max_speed * dt)
 
     def _glide(self, marker_id: int, marker: Marker, target: tuple[float, float, float], step: float) -> None:
         x, y, z = marker.pos

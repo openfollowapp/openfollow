@@ -190,7 +190,7 @@ OpenFollowApp (app.py)
 
 **Frame loop:** `_animate()` on a ~60 Hz `GLib.timeout_add`, integrating real
 elapsed time: discrete key presses → `_input_manager.update_paths(dt)` →
-`_process_input(dt)` → `update_video()` → `apply_detection_pin()` →
+`_input_manager.update_touch_remote(dt)` → `_process_input(dt)` → `update_video()` → `apply_detection_pin()` →
 `update_zone_triggers()` → `update_marker_visuals()`.
 
 **Three clocks, none of them the display.** Marker state, input, detection,

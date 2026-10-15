@@ -683,3 +683,32 @@ def test_a_failing_detector_stop_keeps_the_frame_s_presses_and_drops_the_detecto
     assert _pos(app) == pytest.approx((5.0, 6.0, 7.0))
     assert app._runtime_services._person_detector is None
     assert app._config.detection.enabled is False
+
+
+@pytest.mark.integration
+def test_a_glide_never_passes_to_the_remote_that_takes_the_marker_over(app: _App) -> None:
+    first = _held(app)
+    app._touch_remote.drive(first, 10, (0.0, 0.0), 0)
+    app._touch_remote.act(first, 10, RemoteAction(GLIDE, (10.0, 0.0, 1.6)))
+    manager = InputManager(app)
+    manager.update_touch_remote(0.5)
+    second = _held(app)
+    app._touch_remote.drive(second, 10, (0.0, 0.0), 0)
+    manager.update_touch_remote(1.0)
+    assert _pos(app) == pytest.approx((1.0, 0.0, 1.6))
+
+
+@pytest.mark.integration
+def test_one_marker_failing_never_costs_another_its_presses(app: _App, caplog) -> None:  # noqa: ANN001
+    first, second = _held(app, 10), _held(app, 11)
+    app._touch_remote.act(first, 10, RemoteAction(PATHFINDER))
+    app._touch_remote.act(second, 11, RemoteAction(RESET))
+    manager = InputManager(app)
+
+    def boom(_marker_id, *, remote: bool = False) -> None:  # noqa: ANN001
+        raise RuntimeError("boom")
+
+    manager.pathfinder = boom  # type: ignore[method-assign]
+    manager.update_touch_remote(0.02)
+    assert _pos(app, 11) == pytest.approx((5.0, 6.0, 7.0))
+    assert "Touch remote update failed this tick." in caplog.text

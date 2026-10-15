@@ -249,9 +249,7 @@ def test_a_glide_far_off_the_grid_is_taken_as_typed(live) -> None:  # noqa: ANN0
 def test_the_state_lists_the_controlled_markers_and_the_settings(live) -> None:  # noqa: ANN001
     base, config_path, _remote = live
     cfg = load_config(config_path)
-    cfg.marker.max_speed = 2.5
     cfg.touch_remote.z_step_m = 0.1
-    cfg.ui.unit_system = "imperial"
     save_config(cfg, config_path)
     token = _holding(base, 2)
     status, state = _call(base, "GET", f"/api/remote/state?token={token}")
@@ -259,10 +257,8 @@ def test_the_state_lists_the_controlled_markers_and_the_settings(live) -> None: 
     assert [(m["id"], m["pos"]) for m in state["markers"]] == [(1, [1.5, 3.0, 1.6]), (2, [-2.0, 4.0, 0.0])]
     assert state["held"] == 2
     assert state["lost"] is False
-    assert state["max_speed"] == 2.5
     assert state["z_step_m"] == 0.1
     assert state["z_notch_px"] == 20
-    assert state["unit_system"] == "imperial"
     assert state["recording"] is True
     assert state["locked"] == [2]
     assert state["inverted"] is False

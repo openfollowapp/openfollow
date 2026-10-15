@@ -29,3 +29,10 @@ def reorder_script() -> str:
     text = _BASE.read_text(encoding="utf-8")
     start = text.index("// Generic drag-reorder shared by")
     return text[start : text.index("document.addEventListener('DOMContentLoaded'", start)]
+
+
+def restart_script() -> str:
+    """The shared restart flow from base.tpl's page script: progress view, wait and Restart buttons."""
+    text = _BASE.read_text(encoding="utf-8")
+    start = text.index("// Every restart shows one locked progress view")
+    return text[start : text.index("// Save to USB storage device", start)]

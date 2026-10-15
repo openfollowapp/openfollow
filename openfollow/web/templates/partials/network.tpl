@@ -61,15 +61,6 @@
         <span class="modal-spinner" aria-hidden="true"></span><span class="net-busy-text"></span>
     </div>
 
-    % if _net.get("restarting"):
-    <div class="restart-notice"
-         hx-get="/api/info"
-         hx-trigger="every 2s"
-         hx-swap="none"
-         hx-on::after-request="if(event.detail.successful) window.location.reload()">App is restarting&hellip;
-        If this page does not come back, the web UI has moved - the station's
-        Network screen lists the address that reaches it.</div>
-    % end
 
     %# The mode decides what the rest of the page shows, so switching reloads it.
     %# Switching to Simple is confirmed when it clears a pin or removes a VLAN.
@@ -112,7 +103,7 @@
             </form>
             % end
         </div>
-        % if _simple and _net.get("web_restart_pending") and not _net.get("restarting"):
+        % if _simple and _net.get("web_restart_pending"):
         <div class="notice warning" role="status">The web UI answers on one interface until OpenFollow restarts.
             <div class="actions">
                 <button type="button" class="danger"

@@ -403,26 +403,30 @@ var requests = [];     // {method, url, body} of every request, in order
 var held = [];         // answers held back by hold(), released by release()
 var holdWhen = null;   // (request) -> true to hold its answer
 var station = null;    // (request) -> {status, body} or 'unreachable'
-function respond(status, body) {
+function respond(status, body, headers) {
     var text = typeof body === 'string' ? body : JSON.stringify(body === undefined ? {} : body);
     return {
         ok: status >= 200 && status < 300,
         status: status,
+        redirected: false,
+        headers: { get: function (k) { return (headers || {})[k] === undefined ? null : headers[k]; } },
         json: function () { return Promise.resolve().then(function () { return JSON.parse(text); }); },
         text: function () { return Promise.resolve(text); },
         blob: function () { return Promise.resolve(new Blob([text])); },
     };
 }
+// A JSON body as its value, a form body as its text.
+function readBody(body) { try { return JSON.parse(body); } catch (e) { return String(body); } }
 globalThis.fetch = function (url, opts) {
     opts = opts || {};
-    var req = { method: (opts.method || 'GET').toUpperCase(), url: url, body: opts.body ? JSON.parse(opts.body) : undefined };
+    var req = { method: (opts.method || 'GET').toUpperCase(), url: url, body: opts.body ? readBody(opts.body) : undefined };
     requests.push(req);
     // The station answers when asked; a held answer only arrives later.
     var out = station(req);
     return new Promise(function (resolve, reject) {
         var answer = function () {
             if (out === 'unreachable') reject(new TypeError('Failed to fetch'));
-            else resolve(respond(out.status || 200, out.body));
+            else resolve(respond(out.status || 200, out.body, out.headers));
         };
         if (holdWhen && holdWhen(req)) held.push(answer);
         else Promise.resolve().then(answer);

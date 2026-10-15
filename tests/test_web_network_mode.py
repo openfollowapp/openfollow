@@ -472,7 +472,9 @@ def test_a_web_ui_pin_in_force_restarts_openfollow(net_server, tmp_path, present
     assert status == 200
     assert restarts == [True]
     assert "hx-refresh" not in headers
-    assert "restart-notice" in body
+    # Names the process being restarted, so the browser waits for a new one.
+    _status, info = _get(base, "/api/info")
+    assert headers["x-openfollow-restarting"] == json.loads(info)["instance"]
     assert _saved(tmp_path).web_bind_iface == ""
 
 
@@ -508,6 +510,7 @@ def test_a_restart_refused_by_an_update_says_so(net_server, tmp_path, present, m
     _status, _body, headers = _post_headers(base, "/section/network/mode", {"network_mode": "simple"})
     # The page reloads into Simple, whose card offers the restart again.
     assert headers.get("hx-refresh") == "true"
+    assert "x-openfollow-restarting" not in headers
     _status, card = _get(base, "/section/network/status")
     assert "The web UI answers on one interface until OpenFollow restarts." in card
     assert 'onclick="openfollowRestart(' in card

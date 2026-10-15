@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""The one restart flow every Restart button runs, in node on the fake DOM."""
+"""The one restart flow every restart runs, in node on the fake DOM: the Restart buttons,
+Restore Defaults and a switch to Simple network mode that restarts OpenFollow."""
 
 from __future__ import annotations
 
@@ -13,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from tests._template_source import function_body
+from tests._template_source import function_body, restart_script
 
 pytestmark = [pytest.mark.unit, pytest.mark.skipif(shutil.which("node") is None, reason="needs node")]
 
@@ -35,14 +36,6 @@ def _onclick(partial: str) -> str:
     return calls[0]
 
 
-def _restart_script() -> str:
-    """``RESTART_WAIT_MS`` and ``openfollowRestart`` from base.tpl's page script."""
-    base = (_TEMPLATES / "base.tpl").read_text(encoding="utf-8")
-    wait = re.search(r"const RESTART_WAIT_MS = \d+;", base)
-    assert wait is not None
-    return wait.group(0) + "\nasync function openfollowRestart(opts) {" + function_body(base, "openfollowRestart") + "}"
-
-
 _KEYBOARD = _onclick("keyboard.tpl")
 _MARKUP = (
     '<form class="section" id="sec"><div class="actions">'
@@ -58,13 +51,17 @@ performance.now = function () { return now; };
 function escapeHTML(v) { return String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
 function modalConfirm(opts) { asked.push(opts); return Promise.resolve(answer); }
 function openModal(opts) {
-    modal = { title: opts.title, body: opts.bodyHTML, locked: opts.dismissable === false,
-              buttons: (opts.footerButtons || []).map(function (b) { return b.label; }) };
-    modal.close = (opts.footerButtons || []).map(function (b) { return b.onClick; })[0];
+    if (modal) closeModal();
+    var specs = opts.footerButtons || [];
+    modal = { title: opts.title, body: opts.bodyHTML, locked: opts.dismissable === false, onClose: opts.onClose,
+              buttons: specs.map(function (b) { return b.label; }) };
+    modal.press = function (label) { specs.find(function (b) { return b.label === label; }).onClick(); };
 }
-function closeModal() { modal = null; }
+function closeModal() { var was = modal; modal = null; if (was && was.onClose) was.onClose(); }
 globalThis.location = { reload: function () { reloaded++; } };
+var answers = {};
 station = function (req) {
+    if (answers[req.method + ' ' + req.url]) return answers[req.method + ' ' + req.url];
     if (req.url === '/api/restart') return restartAnswer;
     if (req.url === '/api/info') return info;
     return { status: 404 };
@@ -72,7 +69,7 @@ station = function (req) {
 var button = document.querySelector('button.danger');
 // Confirm the dialog; the station's answer to the restart waits for release().
 async function confirmHeld(onclick) {
-    holdWhen = function (r) { return r.url === '/api/restart'; };
+    holdWhen = function (r) { return r.method === 'POST'; };
     button.click();
     (0, eval)(onclick);
     await settle();
@@ -98,13 +95,14 @@ def _progress(note: str = _RELOADS) -> dict[str, Any]:
     }
 
 
-def _run(steps: str, onclick: str = _KEYBOARD) -> Any:
+def _run(steps: str, onclick: str = _KEYBOARD, markup: str = _MARKUP, script: str = "") -> Any:
     source = "\n".join(
         [
             (_TESTS / "_fake_dom.js").read_text(encoding="utf-8"),
-            f"parseHTML({json.dumps(_MARKUP)}, document.body);",
+            f"parseHTML({json.dumps(markup)}, document.body);",
             (_WEB / "static" / "js" / "save-feedback.js").read_text(encoding="utf-8"),
-            _restart_script(),
+            restart_script(),
+            script,
             _HELPERS,
             f"var ONCLICK = {json.dumps(onclick)};",
             "var out = {};",
@@ -206,7 +204,7 @@ def test_a_station_that_does_not_come_back_is_reported_after_ninety_seconds() ->
         "info = { body: { instance: 'new' } }; var polls = urls().length; await tick(2000);"
         "out.after = [urls().length - polls, reloaded];"
         # Closed, it stays closed.
-        "modal.close(); await tick(2000); out.closed = shown();"
+        "modal.press('Close'); await tick(2000); out.closed = shown();"
     )
     assert out == {
         "waiting": _progress(),
@@ -271,3 +269,147 @@ def test_no_template_restarts_by_any_other_route() -> None:
     sources = [*_TEMPLATES.rglob("*.tpl"), _WEB / "routes.py"]
     offenders = [p.name for p in sources if re.search(r"/section/\w+/restart\b", p.read_text(encoding="utf-8"))]
     assert offenders == []
+
+
+# -- Restore Defaults: the reset restarts the station ---------------------------------
+
+_TRANSFER = (_TEMPLATES / "partials" / "config_transfer.tpl").read_text(encoding="utf-8")
+_TRANSFER_MARKUP = _TRANSFER[: _TRANSFER.index("<script>")]
+_TRANSFER_SCRIPT = (
+    "var NO_BACKUP_MADE = 'No backup was made. Details in Logs.', toasts = [];"
+    "function toastOnNextLoad(message, level) { toasts.push([message, level]); return true; }"
+    + _TRANSFER[_TRANSFER.index("<script>") + len("<script>") : _TRANSFER.index("</script>")]
+)
+_RESET = {"success": True, "needs_restart": True, "restarting": True, "instance": "old"}
+
+
+def _restore(answer: str, steps: str) -> Any:
+    return _run(
+        f"answers['POST /api/config/reset'] = {answer};"
+        "holdWhen = function (r) { return r.method === 'POST'; }; restoreDefaults(); await settle();" + steps,
+        markup=_TRANSFER_MARKUP,
+        script=_TRANSFER_SCRIPT,
+    )
+
+
+def test_restore_defaults_waits_for_a_new_openfollow_like_every_restart() -> None:
+    out = _restore(
+        f"{{ body: {json.dumps(_RESET)} }}",
+        "out.asked = asked.map(function (a) { return a.title; }); out.sent = shown();"
+        "release(); await settle();"
+        "info = { body: { instance: 'old' } }; await tick(2000); out.dying = [shown(), reloaded];"
+        "info = 'unreachable'; await tick(2000); out.away = [shown(), reloaded];"
+        "info = { body: { instance: 'new' } }; await tick(2000); out.back = reloaded;"
+        "out.toasts = toasts; out.error = errorLine();",
+    )
+    assert out == {
+        "asked": ["Restore defaults?"],
+        "sent": _progress(),
+        "dying": [_progress(), 0],
+        "away": [_progress(), 0],
+        "back": 1,
+        "toasts": [],
+        "error": None,
+    }
+
+
+def test_restore_defaults_without_a_backup_says_so_after_the_reload() -> None:
+    out = _restore(
+        f"{{ body: {json.dumps({**_RESET, 'backup_error': 'disk full'})} }}",
+        "release(); await settle(); out.toasts = toasts; out.modal = shown();",
+    )
+    assert out == {
+        "toasts": [["Restored defaults. No backup was made. Details in Logs.", "caution"]],
+        "modal": _progress(),
+    }
+
+
+@pytest.mark.parametrize(
+    ("answer", "error"),
+    [
+        ("{ status: 500, body: { error: 'Disk full.' } }", "Not restored. Disk full."),
+        ("{ body: { error: 'Locked.' } }", "Not restored. Locked."),
+        (
+            "'unreachable'",
+            "Not restored. The station did not answer. Check that it is switched on and on this network, "
+            "then save again.",
+        ),
+    ],
+)
+def test_a_restore_that_fails_closes_the_progress_and_says_why(answer: str, error: str) -> None:
+    out = _restore(
+        answer,
+        "release(); await settle(); await tick(2000);out.modal = shown(); out.error = errorLine(); out.urls = urls();",
+    )
+    assert out == {"modal": None, "error": error, "urls": ["POST /api/config/reset"]}
+
+
+# -- A switch to Simple network mode that clears a web UI pin in force ---------------------
+
+_BASE = (_TEMPLATES / "base.tpl").read_text(encoding="utf-8")
+_SWITCH_SCRIPT = (
+    "function netConfirmSimple(preview) {"
+    + function_body(_BASE, "netConfirmSimple")
+    + "}\nasync function netSwitchMode(input) {"
+    + function_body(_BASE, "netSwitchMode")
+    + "}"
+)
+_SWITCH_MARKUP = (
+    '<div id="network-interface"><form class="section"><div class="seg-toggle net-mode-switch" data-mode="advanced">'
+    '<input type="radio" name="network_mode" value="simple">'
+    '<input type="radio" name="network_mode" value="advanced" checked></div>'
+    '<div class="actions"></div></form></div>'
+)
+_PREVIEW = {"station": "eth0", "pins": [], "vlans": [], "kept": [], "remove": [], "restart": True}
+
+
+def _switch(mode_answer: str, steps: str, *, restart: bool = True) -> Any:
+    return _run(
+        f"answers['GET /section/network/mode/preview'] = {{ body: {json.dumps({**_PREVIEW, 'restart': restart})} }};"
+        f"answers['POST /section/network/mode'] = {mode_answer};"
+        "holdWhen = function (r) { return r.method === 'POST'; };"
+        "var simple = document.querySelector('input[value=simple]');"
+        "netSwitchMode(simple); await settle();"
+        "if (modal && modal.title === 'Switch to Simple network mode?') modal.press('Switch to Simple');"
+        "await settle();" + steps,
+        markup=_SWITCH_MARKUP,
+        script=_SWITCH_SCRIPT,
+    )
+
+
+def test_a_switch_that_restarts_waits_for_a_new_openfollow() -> None:
+    out = _switch(
+        "{ body: '', headers: { 'X-OpenFollow-Restarting': 'old' } }",
+        "out.sent = shown(); release(); await settle(); out.answered = shown();"
+        "info = { body: { instance: 'old' } }; await tick(2000); out.dying = reloaded;"
+        "info = 'unreachable'; await tick(2000); out.away = reloaded;"
+        "info = { body: { instance: 'new' } }; await tick(2000); out.back = reloaded;",
+    )
+    assert out == {"sent": _progress(), "answered": _progress(), "dying": 0, "away": 0, "back": 1}
+
+
+def test_a_switch_whose_restart_was_refused_reloads_into_the_card_that_offers_it() -> None:
+    out = _switch(
+        "{ body: '', headers: { 'HX-Refresh': 'true' } }",
+        "release(); await settle(); out.reloaded = reloaded; await tick(2000); out.polls = urls().length;",
+    )
+    assert out == {"reloaded": 1, "polls": 2}
+
+
+def test_a_switch_that_fails_closes_the_progress_and_puts_the_mode_back() -> None:
+    out = _switch(
+        "{ status: 500, body: { error: 'Disk full.' } }",
+        "release(); await settle();"
+        "out.modal = shown(); out.error = errorLine();"
+        "out.radios = document.querySelectorAll('input').map(function (r) { return [r.disabled, r.checked]; });",
+    )
+    assert out == {"modal": None, "error": "Not switched. Disk full.", "radios": [[False, False], [False, True]]}
+
+
+def test_a_switch_that_does_not_restart_shows_no_restart() -> None:
+    out = _switch(
+        "{ body: '', headers: { 'HX-Refresh': 'true' } }",
+        "out.sent = shown(); release(); await settle(); out.reloaded = reloaded;",
+        restart=False,
+    )
+    assert out == {"sent": None, "reloaded": 1}

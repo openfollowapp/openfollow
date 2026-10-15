@@ -1014,14 +1014,11 @@ def _build_general_template_data(
     cfg: AppConfig,
     *,
     saved: bool = False,
-    restarting: bool = False,
-    update_feedback: str = "",
 ) -> dict[str, Any]:
     """Build shared template context for the General/Network section."""
     data: dict[str, Any] = {
         "config": cfg,
         "saved": saved,
-        "restarting": restarting,
         "local_ips": _get_local_ips(),
         "update_status": server.get_update_status(),
         "fqdn_problems": server.get_station_fqdn_problems(),
@@ -1029,8 +1026,6 @@ def _build_general_template_data(
         "update_supported": _deb_update_supported(),
         "startup_supported": _startup_settings_supported(),
     }
-    if update_feedback:
-        data["update_feedback"] = update_feedback
     latest = server.get_update_available()
     data["update_available"] = bool(latest)
     data["latest_version"] = latest
@@ -5655,24 +5650,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     # -- Helpers --------------------------------------------------------------
 
-    def _render_general(
-        cfg: AppConfig,
-        *,
-        saved: bool = False,
-        restarting: bool = False,
-        update_feedback: str = "",
-    ) -> Any:
+    def _render_general(cfg: AppConfig, *, saved: bool = False) -> Any:
         """Render the General section with shared context."""
-        return template(
-            "partials/general",
-            **_build_general_template_data(
-                server,
-                cfg,
-                saved=saved,
-                restarting=restarting,
-                update_feedback=update_feedback,
-            ),
-        )
+        return template("partials/general", **_build_general_template_data(server, cfg, saved=saved))
 
     def _render_video_source(
         cfg: AppConfig,
@@ -6736,14 +6716,14 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             ", ".join(f"{key} ({iface})" for key, iface in cleared) or "none",
             ", ".join(removed) or "none",
         )
-        restarting = restart and server.request_restart_unless_updating()
-        if not restarting:
+        if restart and server.request_restart_unless_updating():
+            # The process being restarted, so the browser waits for a new one.
+            response.set_header("X-OpenFollow-Restarting", server.instance_id)
+        else:
             # The mode decides which sections the page shows. A refused restart is
             # named on the reloaded card, which offers it again.
             response.set_header("HX-Refresh", "true")
-        net = _build_network_form_context()
-        net.update(restarting=restarting)
-        return template("partials/network", net=net)
+        return template("partials/network", net=_build_network_form_context())
 
     @app.post("/section/network/station")
     def network_station_iface() -> Any:
@@ -7026,14 +7006,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             apply_section_data(cfg, "video_source", form_data)
             save_config(cfg, server.config_path)
 
-        if request.query.get("restart") == "1":
-            server.request_restart()
-            return _render_general(
-                cfg,
-                saved=True,
-                restarting=True,
-            )
-
         return _render_video_source(cfg, saved=True)
 
     @app.post("/section/general")
@@ -7049,15 +7021,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             cfg = _load_config_for_edit()
             apply_section_data(cfg, "general", form_data)
             save_config(cfg, server.config_path)
-
-        if request.query.get("restart") == "1":
-            if not server.request_restart_unless_updating():
-                return _render_general(
-                    cfg,
-                    saved=True,
-                    update_feedback="Update is currently running. Restart is blocked until it finishes.",
-                )
-            return _render_general(cfg, saved=True, restarting=True)
 
         return _render_general(cfg, saved=True)
 
@@ -7281,9 +7244,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             cfg = _load_config_for_edit()
             apply_section_data(cfg, "psn", form_data)
             save_config(cfg, server.config_path)
-
-        if request.query.get("restart") == "1":
-            server.request_restart()
 
         return template(
             "partials/psn",
@@ -9890,7 +9850,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             current = load_config(server.config_path)
             save_config(reset_config_to_defaults(current), server.config_path)
         server.request_restart()
-        return json.dumps({"success": True, "needs_restart": True, "restarting": True, **backup})
+        return json.dumps(
+            {"success": True, "needs_restart": True, "restarting": True, "instance": server.instance_id, **backup}
+        )
 
     @app.post("/api/config/broadcast-all")
     def api_broadcast_all() -> Any:

@@ -2497,7 +2497,10 @@
  const radios = Array.from(group.querySelectorAll('input[name="network_mode"]'));
  const saveError = window.OpenFollow.saveError;
  const box = saveError.boxFor(group);
+ // A switch that restarts OpenFollow shows the restart's progress while it is sent.
+ let restarts = false;
  const fail = (info) => {
+ if (restarts) closeModal();
  radios.forEach((radio) => { radio.disabled = false; radio.checked = radio.value === group.dataset.mode; });
  saveError.show(box, info, 'Not switched.');
  };
@@ -2518,6 +2521,8 @@
  }
  // Only what the dialog listed is removed.
  preview.remove.forEach((name) => body.append('vlans', name));
+ restarts = preview.restart;
+ if (restarts) openfollowRestartProgress();
  }
  const resp = await fetch('/section/network/mode', {
  method: 'POST',
@@ -2526,7 +2531,15 @@
  });
  if (resp.redirected) return fail(expired);
  if (!resp.ok) return fail(await saveError.fromResponse(resp));
+ // The station names the process it is restarting, so the wait ends at a new one.
+ const restarting = resp.headers.get('X-OpenFollow-Restarting');
+ if (restarting) {
+ if (!restarts) openfollowRestartProgress();
+ openfollowAwaitRestart(restarting);
+ return;
+ }
  if (resp.headers.get('HX-Refresh') === 'true') { window.location.reload(); return; }
+ if (restarts) closeModal();
  const region = document.getElementById('network-interface');
  region.innerHTML = await resp.text();
  htmx.process(region);
@@ -4000,46 +4013,22 @@
  window.OpenFollow.clearBindingNotes(container, Object.keys(defaults));
  refreshFormGate(container.closest('form'));
  }
- // Every Restart button: the confirm turns into a locked progress view that stays until
- // /api/info answers from a new process and the page reloads. ``opts``: title and message for the
- // confirm, ``note`` for the progress view's second line, ``step`` for the next step when
- // the station does not come back within RESTART_WAIT_MS.
+ // Every restart shows one locked progress view, which stays until /api/info answers from a
+ // new process and the page reloads; ``note`` replaces its second line.
  const RESTART_WAIT_MS = 90000;
- async function openfollowRestart(opts) {
- const saveError = window.OpenFollow.saveError;
- const box = saveError.origin();
- const ok = await modalConfirm({
- title: opts.title,
- message: opts.message,
- confirmLabel: 'Restart',
- danger: true,
- });
- if (!ok) return;
+ function openfollowRestartProgress(note) {
  openModal({
  title: 'Restart OpenFollow',
  dismissable: false,
  bodyHTML: '<div class="modal-progress"><div class="modal-spinner"></div>'
  + '<p role="status" aria-live="polite" tabindex="-1">Restarting OpenFollow\u2026</p></div>'
- + '<p>' + escapeHTML(opts.note || 'This page reloads when the station is back.') + '</p>',
+ + '<p>' + escapeHTML(note || 'This page reloads when the station is back.') + '</p>',
  footerButtons: [],
  });
- let res;
- try {
- res = await fetch('/api/restart', {method: 'POST'});
- } catch (e) {
- closeModal();
- saveError.show(box, saveError.UNREACHABLE, 'Not restarted.');
- return;
  }
- if (!res.ok) {
- const info = await saveError.fromResponse(res);
- closeModal();
- saveError.show(box, info, 'Not restarted.');
- return;
- }
- // The old process keeps answering while it shuts down; only a new instance is back.
- let before = '';
- try { before = (await res.json()).instance || ''; } catch (e) { /* any instance then counts */ }
+ // Reloads once a process other than ``before`` answers; the old one keeps answering while it
+ // shuts down. After RESTART_WAIT_MS it says the station has not answered, ``step`` the next step.
+ function openfollowAwaitRestart(before, step) {
  // Elapsed time, not poll counts: a poll can hang on a station half way up.
  const began = performance.now();
  let back = false;
@@ -4050,7 +4039,7 @@
  title: 'Station not back',
  bodyHTML: '<div class="notice error">The station has not answered for '
  + Math.round(RESTART_WAIT_MS / 1000) + ' s.<div class="notice-sub">'
- + escapeHTML(opts.step || 'Check that it is switched on and on this network, then reload this page.')
+ + escapeHTML(step || 'Check that it is switched on and on this network, then reload this page.')
  + '</div></div>',
  footerButtons: [{label: 'Close', kind: 'primary', onClick: () => closeModal()}],
  });
@@ -4065,6 +4054,36 @@
  window.location.reload();
  }).catch(function() {});
  }, 2000);
+ }
+ // Every Restart button. ``opts``: title and message for the confirm, ``note`` and ``step`` as above.
+ async function openfollowRestart(opts) {
+ const saveError = window.OpenFollow.saveError;
+ const box = saveError.origin();
+ const ok = await modalConfirm({
+ title: opts.title,
+ message: opts.message,
+ confirmLabel: 'Restart',
+ danger: true,
+ });
+ if (!ok) return;
+ openfollowRestartProgress(opts.note);
+ let res;
+ try {
+ res = await fetch('/api/restart', {method: 'POST'});
+ } catch (e) {
+ closeModal();
+ saveError.show(box, saveError.UNREACHABLE, 'Not restarted.');
+ return;
+ }
+ if (!res.ok) {
+ const info = await saveError.fromResponse(res);
+ closeModal();
+ saveError.show(box, info, 'Not restarted.');
+ return;
+ }
+ let before = '';
+ try { before = (await res.json()).instance || ''; } catch (e) { /* any instance then counts */ }
+ openfollowAwaitRestart(before, opts.step);
  }
  // Save to USB storage device (a Diagnostics tools button): the Operator Screen's steps in
  // the shared modal. Pick a device, follow the export, then read what happened and the next

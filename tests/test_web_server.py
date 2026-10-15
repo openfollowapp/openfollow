@@ -2455,18 +2455,6 @@ def test_post_interface_assignment_without_restart_flag_queues_nothing(live_serv
     assert server.check_restart_requested() is False
 
 
-def test_post_general_with_restart_flag_queues_restart(live_server) -> None:
-    server, base = live_server
-    assert server.check_restart_requested() is False
-
-    status, body = _post_form(base, "/section/general?restart=1", {})
-    assert status == 200
-
-    assert server.check_restart_requested() is True
-    # consuming it should clear the flag
-    assert server.check_restart_requested() is False
-
-
 # ---------------------------------------------------------------------------
 # Peer authentication (HMAC-signed requests)
 # ---------------------------------------------------------------------------
@@ -4362,6 +4350,8 @@ def test_api_config_reset_restores_defaults_and_keeps_device_fields(live_server)
     # it only completes across a restart.
     assert body.get("needs_restart") is True
     assert body.get("restarting") is True
+    # The process the browser waits to see replaced.
+    assert body.get("instance") == server.instance_id
     assert server.check_restart_requested() is True
 
     defaults = AppConfig()
@@ -5234,8 +5224,25 @@ def test_logout_clears_cookie_and_redirects_to_login(live_server) -> None:
     assert any("max-age=0" in c.lower() or "max-age=-" in c.lower() or "expires=" in c.lower() for c in auth_cookies)
 
 
+@pytest.mark.parametrize(
+    ("path", "section_id"),
+    [
+        ("/section/general", 'id="general-network-section"'),
+        ("/section/video_source", 'id="video-source-section"'),
+        ("/section/psn", 'id="psn-section"'),
+    ],
+)
+def test_a_section_save_never_restarts(live_server, path: str, section_id: str) -> None:
+    """Restarting is the Restart buttons' own step; a save asking for one only saves."""
+    server, base = live_server
+    status, body = _post_form(base, f"{path}?restart=1", {})
+    assert status == 200
+    assert section_id in body
+    assert server.check_restart_requested() is False
+
+
 def test_update_video_source_post_renders_video_source_partial(live_server) -> None:
-    """Form POST without ?restart=1 saves and re-renders the video source partial.
+    """A form POST saves and re-renders the video source partial.
     Asserts on stable IDs to catch regressions in partial rendering."""
     server, base = live_server
     status, body = _post_form(
@@ -5250,41 +5257,6 @@ def test_update_video_source_post_renders_video_source_partial(live_server) -> N
 
     saved = load_config(server.config_path)
     assert saved.video_source_type == "rtsp"
-
-
-def test_update_video_source_post_with_restart_renders_general_partial(live_server) -> None:
-    """``?restart=1`` flips into the restart-confirmation branch, which
-    requests an app restart and renders the general partial instead of
-    the video-source one. Asserting on stable section IDs (rather than
-    just the restart flag) catches a regression where the handler
-    returns the wrong template."""
-    server, base = live_server
-    assert server.check_restart_requested() is False
-
-    status, body = _post_form(
-        base,
-        "/section/video_source?restart=1",
-        {"video_source_type": "rtsp"},
-    )
-    assert status == 200
-    assert server.check_restart_requested() is True
-    # Verify the general partial rendered (not the video-source one) via
-    # stable, platform-independent section markers. The Software Update
-    # section is gated on the host platform, so don't key on it here.
-    assert 'id="general-network-section"' in body
-    assert 'data-fold-key="general-station"' in body
-    assert 'id="video-source-section"' not in body
-
-
-def test_update_general_blocks_restart_while_update_is_running(live_server) -> None:
-    server, base = live_server
-    server.set_update_status(state="running", message="Pulling...", error="")
-
-    assert server.check_restart_requested() is False
-    status, body = _post_form(base, "/section/general?restart=1", {})
-    assert status == 200
-    assert server.check_restart_requested() is False
-    assert "Restart is blocked" in body or "currently running" in body
 
 
 def test_deb_update_dispatches_request(live_server, monkeypatch) -> None:
@@ -5646,17 +5618,6 @@ def test_update_psn_persists_and_renders_partial(live_server) -> None:
     assert saved.psn_system_name == "PSN-A"
     assert saved.psn_mcast_ip == "236.10.10.20"
     assert saved.psn_source_iface == "eth0"
-
-
-def test_update_psn_with_restart_flag_queues_restart(live_server) -> None:
-    """Same restart contract as /section/general: ``?restart=1`` triggers a
-    restart request via the command queue."""
-    server, base = live_server
-    assert server.check_restart_requested() is False
-
-    status, _ = _post_form(base, "/section/psn?restart=1", {})
-    assert status == 200
-    assert server.check_restart_requested() is True
 
 
 def test_psn_section_renders_source_advisory_when_pin_missed(

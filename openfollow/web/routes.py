@@ -5267,15 +5267,13 @@ def _register_scene_routes(app: Bottle, server: ConfigWebServer) -> None:
 
 
 _REMOTE_API = "/api/remote"
-# A glide target further than this from the origin is a typing error, and past float32 it breaks PSN.
-_REMOTE_MAX_TARGET_M = 10_000.0
 # Z notches one drive message may carry; a finger cannot turn more between two messages.
 _REMOTE_MAX_NOTCHES = 1000
 
 
 def _register_touch_remote_routes(app: Bottle, server: ConfigWebServer) -> None:
     """Register the touch remote's routes: sessions, holds, driving and the card's state."""
-    from openfollow.input.touch_remote import ACTIONS, GLIDE, LOST, OK, RemoteAction
+    from openfollow.input.touch_remote import ACTIONS, GLIDE, LOST, MAX_REACH_M, OK, RemoteAction
 
     def _gate() -> tuple[Any, AppConfig] | str:
         response.content_type = "application/json"
@@ -5375,8 +5373,8 @@ def _register_touch_remote_routes(app: Bottle, server: ConfigWebServer) -> None:
             )
         except (TypeError, ValueError):
             return _json_error(400, "marker must be a whole number, x, y and z finite numbers")
-        if target is not None and any(abs(v) > _REMOTE_MAX_TARGET_M for v in target):
-            return _json_error(400, f"x, y and z must be within ±{_REMOTE_MAX_TARGET_M:,.0f} m")
+        if target is not None and any(abs(v) > MAX_REACH_M for v in target):
+            return _json_error(400, f"x, y and z must be within ±{MAX_REACH_M:,.0f} m")
         return _answer(remote.act(token, marker_id, RemoteAction(kind, target)))
 
     @app.get(_REMOTE_API + "/state")
@@ -7658,7 +7656,11 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     @app.post("/section/touch_remote")
     def update_touch_remote() -> Any:
         """Save the Touch Remote section."""
+        was = _request_config(server).touch_remote.enabled
         cfg = _save_section_from_form("touch_remote", bool_fields=("enabled",))
+        if cfg.touch_remote.enabled != was:
+            # The launcher is part of every page: reload so it appears or goes.
+            response.set_header("HX-Refresh", "true")
         return template("partials/touch_remote", config=cfg, saved=True)
 
     @app.post("/section/operator_messages")

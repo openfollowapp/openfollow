@@ -4,7 +4,7 @@ A setup tool for focusing lights: stand on a known spot with a tablet or phone a
 
 ## Settings
 
-- **Touch remote** – allows browsers that can open this web UI to drive this station's markers. While it is off, the remote's button is hidden and the station refuses remote requests. This setting belongs to this station: it is never exported, imported or sent to other stations. Default: off.
+- **Touch remote** – allows browsers that can open this web UI to drive this station's markers. While it is off, the remote's button is hidden and the station refuses remote requests. Saving a change reloads the page so the button appears or goes. This setting belongs to this station: it is never exported, imported or sent to other stations. Default: off.
 
 The stick response, dead zone and Z wheel step live in the `[touch_remote]` section of `config.toml` (`stick_curve`, `stick_dead_zone`, `z_step_m`, `z_notch_px`).
 
@@ -23,7 +23,7 @@ Tap the round button in the bottom corner of the page to open the remote card.
 
 ## While the remote holds a marker
 
-- No other input moves that marker: gamepads, keyboard, mice, 3D mice and OSC positions and path commands are ignored for it. The Operator Screen shows a caution row naming it.
+- No other input moves that marker: gamepads, keyboard, mice, 3D mice and OSC positions and path commands are ignored for it. A gamepad's or 3D mouse's speed buttons and marker fader still work. The Operator Screen shows a caution row naming it.
 - Taking a marker while person detection is on switches detection off for the whole station; the card says so. Closing the remote leaves it off. Switching detection back on restarts OpenFollow.
 - Another tablet taking the same marker takes it over; the first card shows that it lost the marker.
 - Opening the card takes no marker; tapping a chip does. Closing the card gives the marker back.

@@ -308,3 +308,18 @@ def test_the_section_saves_the_switch_and_keeps_the_tuning(live) -> None:  # noq
     saved = load_config(config_path).touch_remote
     assert saved.enabled is False
     assert saved.stick_curve == 1.5
+
+
+@pytest.mark.parametrize(
+    ("before", "form", "refresh"), [(True, b"", "true"), (False, b"enabled=on", "true"), (True, b"enabled=on", None)]
+)
+def test_flipping_the_switch_reloads_the_page_for_the_launcher(
+    live, before: bool, form: bytes, refresh: str | None
+) -> None:  # noqa: ANN001
+    base, config_path, _remote = live
+    cfg = load_config(config_path)
+    cfg.touch_remote.enabled = before
+    save_config(cfg, config_path)
+    req = urllib.request.Request(f"{base}/section/touch_remote", data=form, method="POST")
+    with urllib.request.urlopen(req, timeout=5) as r:
+        assert r.headers.get("HX-Refresh") == refresh

@@ -133,7 +133,8 @@
         post('drive', { marker: st.marker, sx: st.stick.sx, sy: st.stick.sy, z_notches: notches },
             abort ? { signal: abort.signal } : null)
             .then(function (res) { if (gen === st.gen) { setOffline(false); handleStatus(res); } })
-            .catch(function () { if (gen === st.gen) { st.notches += notches; setOffline(true); } })
+            // Notches in a drive that failed are dropped: the station may have applied them.
+            .catch(function () { if (gen === st.gen) setOffline(true); })
             .then(function () {
                 if (timer !== null) window.clearTimeout(timer);
                 if (gen === st.gen) st.inFlight = false;
@@ -154,8 +155,8 @@
                     // The station's word on what this session holds wins over the card's, unless
                     // a chip was tapped after this poll went out.
                     if (holds === st.holds) {
-                        if (data.lost) st.lost = true;
-                        else st.marker = data.held;
+                        st.lost = !!data.lost;
+                        if (!st.lost) st.marker = data.held;
                     }
                     render();
                 });

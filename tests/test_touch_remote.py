@@ -18,6 +18,7 @@ from openfollow.input.touch_remote import (
     HOLD_STALE_S,
     LOST,
     MAX_PENDING_ACTIONS,
+    MAX_REACH_M,
     MAX_SESSIONS,
     OK,
     PATHFINDER,
@@ -651,3 +652,33 @@ def test_a_frame_says_whether_the_remote_is_still_talking(remote: TouchRemote, c
     assert remote.take()[0].live is True
     clock.now += DRIVE_STALE_S + 0.01
     assert remote.take()[0].live is False
+
+
+@pytest.mark.integration
+def test_z_stays_within_reach(app: _App) -> None:
+    app._config.touch_remote.z_step_m = 1.0
+    token = _held(app)
+    app._touch_remote.drive(token, 10, (0.0, 0.0), 1000)
+    manager = InputManager(app)
+    for _ in range(12):
+        app._touch_remote.drive(token, 10, (0.0, 0.0), 1000)
+        manager.update_touch_remote(0.02)
+    assert _pos(app)[2] == MAX_REACH_M
+
+
+@pytest.mark.integration
+def test_a_failing_detector_stop_keeps_the_frame_s_presses_and_drops_the_detector(app: _App) -> None:
+    app._config.detection.enabled = True
+    app._config.detection.pin_mode = "assist"
+    app._runtime_services._person_detector = object()
+
+    def fail(_cfg) -> None:  # noqa: ANN001
+        raise RuntimeError("stuck detector")
+
+    app._runtime_services.apply_detection_change = fail
+    token = _held(app)
+    app._touch_remote.act(token, 10, RemoteAction(RESET))
+    InputManager(app).update_touch_remote(0.02)
+    assert _pos(app) == pytest.approx((5.0, 6.0, 7.0))
+    assert app._runtime_services._person_detector is None
+    assert app._config.detection.enabled is False

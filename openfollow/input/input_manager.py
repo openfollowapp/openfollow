@@ -9,7 +9,7 @@ import math
 import time
 from typing import TYPE_CHECKING, Any
 
-from openfollow.configuration import save_config_change
+from openfollow.configuration import _apply_with_fallback, save_config_change
 from openfollow.input.controller_identity import port_label, usb_host_paths
 from openfollow.input.controller_slots import (
     CONNECTED,
@@ -25,7 +25,7 @@ from openfollow.input.gamepad import GamepadHandler, GamepadUpdate
 from openfollow.input.keyboard import KeyboardHandler
 from openfollow.input.mouse import MouseHandler
 from openfollow.input.mouse3d import MOUSE3D_NAME, Mouse3DManager, Mouse3DUpdate
-from openfollow.input.touch_remote import RESET, holds, snap_z, stick_velocity
+from openfollow.input.touch_remote import MAX_REACH_M, RESET, holds, snap_z, stick_velocity
 from openfollow.logging_setup import ThrottledExceptionLogger
 from openfollow.net_utils import plane_source_iface
 from openfollow.osc.input import OscMarkerAdapter
@@ -562,6 +562,7 @@ class InputManager:
         held = {frame.marker_id for frame in frames}
         for marker_id in [m for m in self._remote_glides if m not in held]:
             del self._remote_glides[marker_id]
+        # Before the presses, so they move the marker itself and not an assist anchor. Never raises.
         if held and cfg.detection.enabled:
             self._switch_detection_off()
         tuning = cfg.touch_remote
@@ -589,7 +590,8 @@ class InputManager:
             if frame.z_notches and not (paths is not None and paths.is_locked(marker_id)):
                 self._remote_glides.pop(marker_id, None)
                 x, y, z = marker.pos
-                marker.set_pos(x, y, snap_z(z, frame.z_notches, tuning.z_step_m))
+                z = snap_z(z, frame.z_notches, tuning.z_step_m)
+                marker.set_pos(x, y, max(-MAX_REACH_M, min(MAX_REACH_M, z)))
             if not frame.live:
                 # The dead-man stops a glide too.
                 self._remote_glides.pop(marker_id, None)
@@ -621,7 +623,12 @@ class InputManager:
         except Exception:
             # The running config is already off, so this happens once, not every frame.
             logger.exception("Failed to save person detection switched off.")
-        app._runtime_services.apply_detection_change(app._config.detection)
+        services = app._runtime_services
+        _apply_with_fallback(
+            "detection",
+            lambda: services.apply_detection_change(app._config.detection),
+            on_failure=lambda: setattr(services, "_person_detector", None),
+        )
         logger.warning("The touch remote took a marker: person detection is switched off.")
 
     def _apply_mouse3d(
@@ -658,12 +665,14 @@ class InputManager:
             gamepad_result.toggle_paths_pressed = True
 
         marker_id = self._controller_marker_id(self._mouse3d_unified_idx(local_idx, slots), slots)
-        if marker_id is None or holds(self.app, marker_id):
+        if marker_id is None:
             return
         marker = self._get_marker(marker_id)
         if marker is None:
             return
-        if m3d.reset:
+        # A remote hold blocks what moves the marker; its speed and fader stay with the puck.
+        held = holds(self.app, marker_id)
+        if m3d.reset and not held:
             self._reset(marker_id, marker)
         if m3d.pathfinder:
             self.pathfinder(marker_id)
@@ -672,7 +681,7 @@ class InputManager:
             for _ in range(abs(m3d.speed_steps)):
                 self.app.adjust_move_speed(direction, marker_id=marker_id)
         vx, vy, vz = m3d.velocity
-        if vx or vy or vz:
+        if (vx or vy or vz) and not held:
             vx, vy = _oriented(vx, vy, invert_xy)
             speed = self.app.get_marker_move_speed(marker_id)
             self._move(marker_id, marker, vx * speed, vy * speed, vz * speed, dt)

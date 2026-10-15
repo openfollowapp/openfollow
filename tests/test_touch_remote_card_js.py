@@ -318,3 +318,38 @@ out.size = els['remote-ticks'].style.backgroundSize;
 """
     )
     assert out["size"] == "100% 40px"
+
+
+def test_notches_in_a_failed_drive_are_not_sent_again() -> None:
+    out = _run(
+        _HOLDING
+        + """
+var drum = els['remote-drum'];
+drum.fire('pointerdown', { pointerId: 2, clientY: 100 });
+drum.fire('pointermove', { pointerId: 2, clientY: 60 });
+tick(); await settle();
+var first = paths().indexOf('/api/remote/drive');
+out.sent = requests[first].body.z_notches;
+requests[first].reject(new Error('aborted')); await settle();
+tick(); await settle();
+out.resent = requests[paths().lastIndexOf('/api/remote/drive')].body.z_notches;
+"""
+    )
+    assert out["sent"] == 2
+    assert out["resent"] == 0
+
+
+def test_a_later_poll_clears_a_stale_taken() -> None:
+    out = _run(
+        _HOLDING
+        + """
+tick(); await settle();
+answer(paths().lastIndexOf('/api/remote/state'), 200, Object.assign({}, STATE, { lost: true })); await settle();
+out.lostShown = !els['remote-lost'].hidden;
+tick(); await settle();
+answer(paths().lastIndexOf('/api/remote/state'), 200, Object.assign({}, STATE, { held: 1 })); await settle();
+out.lostAfter = !els['remote-lost'].hidden;
+out.heldAfter = !els['remote-held'].hidden;
+"""
+    )
+    assert out == {"lostShown": True, "lostAfter": False, "heldAfter": True}

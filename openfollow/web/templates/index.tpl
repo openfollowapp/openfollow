@@ -32,7 +32,7 @@
         </div>
         <div id="statistics-section-content"
              hx-get="/section/statistics"
-             hx-trigger="every 1s"
+             hx-trigger="every 1s [pollShown(this)], poll-shown[pollShown(this)] from:body"
              hx-swap="innerHTML">
             % include('partials/statistics.tpl', stats=stats)
         </div>

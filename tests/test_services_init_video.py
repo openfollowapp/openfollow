@@ -21,6 +21,8 @@ assertions sharp:
 
 from __future__ import annotations
 
+import threading
+from collections.abc import Iterator
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
@@ -30,6 +32,7 @@ import pytest
 import openfollow.services as services_module
 from openfollow.configuration import AppConfig, DetectionConfig
 from openfollow.services import AppRuntimeServices
+from tests._fake_cairo import FakeCairo
 from tests._fake_gtk import FakeCanvas
 
 pytestmark = pytest.mark.unit
@@ -42,9 +45,23 @@ pytestmark = pytest.mark.unit
 class _FakeOverlayRenderer:
     def __init__(self) -> None:
         self.state: Any = None
+        self.drawn: list[Any] = []
+        self.drew = threading.Event()
 
-    def draw(self, *_args: Any, **_kwargs: Any) -> None:
-        return None
+    def draw(self, cr: Any, width: int, height: int, state: Any) -> None:
+        self.drawn.append(state)
+        self.drew.set()
+
+
+def _assert_hud_drawn_on_its_thread(services: AppRuntimeServices) -> None:
+    """The display refresh hands the renderer's current state to the HUD render thread."""
+    renderer = services._overlay_renderer
+    renderer.state = sentinel = object()
+    canvas = services._app._canvas
+    canvas.hud_draw_fn(FakeCairo(), 640, 360)
+    canvas.hud_tick()  # the display refresh starts the picture
+    assert renderer.drew.wait(5.0)
+    assert renderer.drawn == [sentinel]
 
 
 class _FakeSystemStats:
@@ -194,7 +211,7 @@ def _dummy_app(cfg: AppConfig | None = None) -> SimpleNamespace:
 
 
 @pytest.fixture
-def services(monkeypatch: pytest.MonkeyPatch) -> AppRuntimeServices:
+def services(monkeypatch: pytest.MonkeyPatch) -> Iterator[AppRuntimeServices]:
     """Build an :class:`AppRuntimeServices` wired to per-test fakes."""
     monkeypatch.setattr(services_module, "gst_runtime_available", lambda: True)
     monkeypatch.setattr(
@@ -222,7 +239,7 @@ def services(monkeypatch: pytest.MonkeyPatch) -> AppRuntimeServices:
             "eth0": [SimpleNamespace(family=_socket.AF_INET, address="10.0.0.5")],
         },
     )
-    return AppRuntimeServices(_dummy_app())
+    yield AppRuntimeServices(_dummy_app())
 
 
 @pytest.fixture
@@ -230,6 +247,23 @@ def recv_factory(monkeypatch: pytest.MonkeyPatch) -> _RecordingReceiverFactory:
     factory = _RecordingReceiverFactory()
     monkeypatch.setattr(services_module, "GstNativeSinkReceiver", factory)
     return factory
+
+
+@pytest.fixture(autouse=True)
+def _hud_threads_started(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[Any]]:
+    """Every HUD render thread a test starts, stopped once it ends."""
+    started: list[Any] = []
+    real = services_module.HudRenderThread
+
+    class _Tracked(real):  # type: ignore[misc, valid-type]
+        def start(self) -> None:
+            started.append(self)
+            super().start()
+
+    monkeypatch.setattr(services_module, "HudRenderThread", _Tracked)
+    yield started
+    for thread in started:
+        thread.stop()
 
 
 @pytest.fixture(autouse=True)
@@ -302,7 +336,7 @@ class TestInitVideoDetectionDisabled:
         assert services._app._video_receiver is recv
         assert services._app._video_logged is False
         canvas = services._app._canvas
-        assert canvas.hud_draw_fn == services._overlay_renderer.draw
+        _assert_hud_drawn_on_its_thread(services)
         assert canvas.embed_widget_calls == [recv.widget]
 
     def test_widget_none_skips_embed_but_keeps_attach_hud(
@@ -316,7 +350,7 @@ class TestInitVideoDetectionDisabled:
         services.init_video()
         canvas = services._app._canvas
         assert canvas.embed_widget_calls == []
-        assert canvas.hud_draw_fn == services._overlay_renderer.draw
+        _assert_hud_drawn_on_its_thread(services)
 
 
 # --------------------------------------------------------------------------- #
@@ -361,6 +395,7 @@ class TestInitVideoDetectionEnabled:
         monkeypatch: pytest.MonkeyPatch,
         recv_factory: _RecordingReceiverFactory,
         patched_subsystems: None,
+        _hud_threads_started: list[Any],
     ) -> None:
         """If ``receiver.start()`` raises, ``init_video`` aborts before the
         detector is adopted, so the orchestrator isn't left holding a
@@ -374,6 +409,8 @@ class TestInitVideoDetectionEnabled:
         svc = self._enabled_services(monkeypatch)
         with pytest.raises(RuntimeError, match="start boom"):
             svc.init_video()
+        # The HUD render thread is started only once the receiver is up.
+        assert _hud_threads_started == []
         # Detector was constructed and handed to the receiver, but the
         # orchestrator never adopted it and never started its worker.
         assert svc._person_detector is None
@@ -491,7 +528,7 @@ class TestInitVideoPipelineFailure:
         assert recv_factory.last.started is True
         assert services._app._video_receiver is recv_factory.last
         # canvas HUD still attached (the except clause does not short-circuit)
-        assert services._app._canvas.hud_draw_fn == services._overlay_renderer.draw
+        _assert_hud_drawn_on_its_thread(services)
         assert any(
             "Failed to create video pipeline" in rec.message and "no source" in rec.message
             for rec in caplog.records
@@ -521,3 +558,5 @@ class TestInitVideoCanvasWithoutAttachHud:
         assert recv_factory.last.started is True
         # Widget embedded but no HUD hook – and no AttributeError
         assert bare.embed_widget_calls == [recv_factory.last.widget]
+        # Nothing to draw on, so no HUD render thread is started.
+        assert services._hud_render is None

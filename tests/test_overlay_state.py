@@ -1,16 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
 """Tests for :class:`openfollow.runtime.overlay_state.OverlayState`: default
-values mirror ``GridConfig`` and ``reset()`` restores the pooled state."""
+values mirror ``GridConfig``."""
 
 from __future__ import annotations
 
-import numpy as np
 import pytest
 
 from openfollow.configuration import GridConfig
-from openfollow.runtime.overlay_state import MarkerOverlayData, OverlayState
-from openfollow.units import UnitSystem
+from openfollow.runtime.overlay_state import OverlayState
 
 pytestmark = pytest.mark.unit
 
@@ -22,92 +20,3 @@ def test_overlay_state_grid_defaults_match_grid_config() -> None:
     assert state.grid_color == grid_defaults.color
     assert state.grid_thickness == grid_defaults.thickness
     assert state.grid_transparency == grid_defaults.transparency
-
-
-def test_overlay_state_reset_grid_defaults_match_grid_config() -> None:
-    # Same contract for ``reset()`` – the pooled OverlayState reused across
-    # frames must re-initialise to GridConfig's declared defaults.
-    state = OverlayState()
-    state.grid_color = "#aaaaaa"
-    state.grid_thickness = 5
-    state.grid_transparency = 0.1
-    state.reset()
-    grid_defaults = GridConfig()
-    assert state.grid_color == grid_defaults.color
-    assert state.grid_thickness == grid_defaults.thickness
-    assert state.grid_transparency == grid_defaults.transparency
-
-
-def test_overlay_state_reset_restores_defaults() -> None:
-    from openfollow.runtime.overlay_state import VirtualFaderDisplayData
-
-    state = OverlayState()
-    state.markers.append(MarkerOverlayData(marker_id=1, x=1.0, y=2.0, z=3.0, color="#ffffff"))
-    state.selected_id = 1
-    state.camera_params = np.array([1.0, 2.0, 3.0], dtype=np.float64)
-    state.lens_k1 = -0.15
-    state.lens_k2 = 0.04
-    state.grid_config = (1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
-    state.show_ball = False
-    state.marker_style = "cone"
-    state.cone_base_diameter = 1.5
-    state.cone_top_diameter = 1.0
-    state.cone_thickness = 7
-    state.cone_filled = False
-    state.cone_opacity = 0.9
-    state.cone_shaded = False
-    state.show_hud_help = False
-    state.video_source_type = "srt"
-    state.source_label = "My Source"
-    state.discovered_sources.extend(["A", "B"])
-    state.detection_show_boxes = True
-    state.detection_box_color = "#123456"
-    # virtual_faders_display must clear on reset to avoid stale entries.
-    state.virtual_faders_display.append(
-        VirtualFaderDisplayData(
-            index=1,
-            name="Master",
-            value=0.5,
-            picked_up=True,
-        )
-    )
-    # status_flags clears on reset to avoid stale frame warnings.
-    state.status_flags.append(("midi_patch_missing", "Stale warning"))
-    state.unit_system = UnitSystem.IMPERIAL
-
-    state.reset()
-
-    assert state.markers == []
-    assert state.selected_id is None
-    assert state.camera_params is None
-    assert state.lens_k1 == 0.0
-    assert state.lens_k2 == 0.0
-    assert state.grid_config is None
-    assert state.show_ball is True
-    assert state.marker_style == "crosshair"
-    assert state.cone_base_diameter == 0.6
-    assert state.cone_top_diameter == 0.3
-    assert state.cone_thickness == 2
-    assert state.cone_filled is True
-    assert state.cone_opacity == 0.4
-    assert state.cone_shaded is True
-    assert state.show_hud_help is True
-    assert state.video_source_type == "ndi"
-    assert state.source_label == ""
-    assert state.discovered_sources == []
-    assert state.detection_show_boxes is False
-    assert state.detection_box_color == "#808080"
-    assert state.unit_system is UnitSystem.METRIC
-    assert state.source_selection_title == "SELECT SOURCE"
-    assert len(state._marker_pool) == 16
-    assert state.virtual_faders_display == []
-    assert state.status_flags == []
-
-
-def test_overlay_state_reset_clears_the_paths_and_their_turns() -> None:
-    state = OverlayState()
-    state.show_paths = True
-    state.path_lines = [([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)], [], False)]
-    state.path_arrows = [((0.25, 0.0, 0.0), (0.55, 0.0, 0.0))]
-    state.reset()
-    assert (state.show_paths, state.path_lines, state.path_arrows) == (False, [], [])

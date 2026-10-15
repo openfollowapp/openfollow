@@ -1318,7 +1318,7 @@ class TestConeCache:
 
     def test_an_assist_anchor_and_its_ghost_are_each_drawn_once(self, geometry_calls) -> None:
         """AI Assisted draws a marker's anchor and its ghost under one marker id; sharing one
-        picture, each redrew the other's on every display refresh."""
+        picture, each redrew the other's in every HUD picture."""
         from openfollow.runtime.overlay_draw_scene import ConeCache
 
         cache, state = ConeCache(), self._state()
@@ -1360,3 +1360,196 @@ class TestConeCache:
             assert ("paint",) not in cr.calls
         # Nothing is kept for it, so it is worked out again once it can show.
         assert geometry_calls == ([] if where == "no-grid" else [1, 1])
+
+
+# --------------------------------------------------------------------------- #
+# GridCache – both grids as one picture, drawn again only on a change
+# --------------------------------------------------------------------------- #
+
+_GROUND = [(-2.0, 1.0), (2.0, 1.0), (2.5, 3.0), (-2.5, 3.0)]
+
+
+class TestGridCache:
+    @staticmethod
+    def _state(**overrides: object) -> OverlayState:
+        base: dict[str, object] = {"ground_grid_visible": True, "ground_grid_vertices": list(_GROUND)}
+        base["ground_grid_z"] = -0.4
+        base.update(overrides)
+        return _scene_state(**base)
+
+    @staticmethod
+    def _pixels(surface: Any) -> np.ndarray:
+        surface.flush()
+        h, stride = surface.get_height(), surface.get_stride()
+        return np.ndarray((h, stride // 4, 4), np.uint8, surface.get_data())[:, : surface.get_width()].copy()
+
+    @staticmethod
+    def _draw(cache: Any, state: OverlayState, w: int = 1920, h: int = 1080, scale: float = 1.0) -> FakeCairo:
+        from types import SimpleNamespace
+
+        cr = FakeCairo()
+        cr.get_target = lambda: SimpleNamespace(get_device_scale=lambda: (scale, scale))  # type: ignore[method-assign]
+        cache.draw(FakeRenderer(), cr, state, w, h)
+        return cr
+
+    @pytest.mark.parametrize("scale", [1.0, 2.0], ids=["screen", "hidpi"])
+    @pytest.mark.parametrize(
+        "grids",
+        [
+            {},
+            {"grid_visible": False},
+            {"ground_grid_visible": False},
+            {"lens_k1": -0.15, "lens_k2": 0.03},
+            {"grid_thickness": 3, "grid_transparency": 0.35, "grid_color": "#33aaff"},
+        ],
+        ids=["both", "ground-only", "main-only", "lens", "style"],
+    )
+    def test_a_cached_grid_looks_like_one_drawn_directly(self, scale: float, grids: dict) -> None:
+        import cairo
+
+        from openfollow.runtime.overlay_draw_scene import GridCache, draw_ground_grid
+
+        state, (w, h) = self._state(**grids), (320, 180)
+        pictures = []
+        for cached in (False, True):
+            # The Operator Screen draws the grid first, onto a cleared picture.
+            surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, int(w * scale), int(h * scale))
+            surface.set_device_scale(scale, scale)
+            cr = cairo.Context(surface)
+            if cached:
+                GridCache().draw(FakeRenderer(), cr, state, w, h)
+            else:
+                draw_grid(FakeRenderer(), cr, state, w, h)
+                draw_ground_grid(cr, state, w, h)
+            pictures.append(self._pixels(surface))
+        direct, cached_picture = pictures
+        assert direct[..., 3].any()
+        assert np.array_equal(direct, cached_picture)
+
+    def test_a_grid_that_did_not_change_is_not_drawn_again(self) -> None:
+        from openfollow.runtime.overlay_draw_scene import GridCache
+
+        cache, state = GridCache(), self._state()
+        frames = [self._draw(cache, state) for _ in range(3)]
+        assert all(("paint",) in cr.calls for cr in frames)
+        pictures = [s for cr in frames for s in cr.surfaces]
+        assert len(pictures) == 3 and all(p is pictures[0] for p in pictures)
+
+    @pytest.mark.parametrize(
+        "change",
+        [
+            {"state": {"grid_visible": False}},
+            {"state": {"ground_grid_visible": False}},
+            {"state": {"grid_config": (10.0, 6.0, 0.5, 0.0, 0.0, 0.0)}},
+            {"state": {"ground_grid_vertices": [(-2.0, 1.0), (2.0, 1.0), (2.0, 3.0), (-2.0, 3.0)]}},
+            {"state": {"ground_grid_z": 0.2}},
+            {"state": {"grid_color": "#33aaff"}},
+            {"state": {"grid_transparency": 0.9}},
+            {"state": {"grid_thickness": 4}},
+            {"state": {"camera_params": np.array([0.2, -6.0, 2.5, -15.0, 0.0, 0.0, 60.0])}},
+            {"state": {"lens_k1": 0.05}},
+            {"state": {"lens_k2": 0.02}},
+            {"size": (1280, 1080)},
+            {"size": (1920, 720)},
+            {"scale": 2.0},
+        ],
+        ids=[
+            "main-grid-shown",
+            "ground-grid-shown",
+            "grid-config",
+            "vertices",
+            "ground-z",
+            "color",
+            "transparency",
+            "thickness",
+            "camera",
+            "k1",
+            "k2",
+            "width",
+            "height",
+            "scale",
+        ],
+    )
+    def test_anything_a_grid_is_drawn_from_draws_it_again(self, change: dict) -> None:
+        from openfollow.runtime.overlay_draw_scene import GridCache
+
+        cache = GridCache()
+        before = self._pixels(self._draw(cache, self._state()).surfaces[0])
+        w, h = change.get("size", (1920, 1080))
+        changed, scale = self._state(**change.get("state", {})), change.get("scale", 1.0)
+        cr = self._draw(cache, changed, w, h, scale)
+        fresh = self._pixels(self._draw(GridCache(), changed, w, h, scale).surfaces[0])
+        assert len(cr.surfaces) == 1
+        shown = self._pixels(cr.surfaces[0])
+        assert np.array_equal(shown, fresh)
+        assert shown.shape != before.shape or not np.array_equal(shown, before)
+
+    @pytest.mark.parametrize(
+        ("size", "scale", "kept"),
+        [((1920, 1080), 1.0, True), ((1280, 1080), 1.0, False), ((1920, 720), 1.0, False), ((960, 540), 2.0, False)],
+        ids=["same-canvas", "width", "height", "same-pixels-other-scale"],
+    )
+    def test_a_redraw_on_the_same_canvas_reuses_the_picture(self, size: tuple, scale: float, kept: bool) -> None:
+        from openfollow.runtime.overlay_draw_scene import GridCache
+
+        cache = GridCache()
+        first = self._draw(cache, self._state()).surfaces[0]
+        moved = self._state(camera_params=np.array([0.2, -6.0, 2.5, -15.0, 0.0, 0.0, 60.0]))
+        again = self._draw(cache, moved, *size, scale).surfaces[0]
+        assert (again is first) is kept
+
+    @pytest.mark.parametrize(
+        ("w", "h", "scale", "size"),
+        [(1920, 1080, 1.0, (1920, 1080)), (1280, 720, 2.0, (2560, 1440)), (101, 51, 1.5, (152, 77))],
+        ids=["screen", "hidpi", "fractional"],
+    )
+    def test_the_picture_is_the_canvas_at_the_screens_device_scale(
+        self, w: int, h: int, scale: float, size: tuple[int, int]
+    ) -> None:
+        from openfollow.runtime.overlay_draw_scene import GridCache
+
+        cr = self._draw(GridCache(), self._state(), w, h, scale)
+        picture = cr.surfaces[0]
+        assert (picture.get_width(), picture.get_height()) == size
+        assert picture.get_device_scale() == (scale, scale)
+        assert ("source_surface", 0, 0) in cr.calls
+
+    @pytest.mark.parametrize(
+        "hidden",
+        [{"grid_visible": False, "ground_grid_visible": False}, {"grid_config": None}, {"camera_params": None}],
+        ids=["both-hidden", "no-grid", "no-camera"],
+    )
+    def test_the_picture_is_let_go_while_no_grid_is_drawn(self, hidden: dict) -> None:
+        from openfollow.runtime.overlay_draw_scene import GridCache
+
+        cache, state = GridCache(), self._state()
+        before = self._draw(cache, state)
+        assert self._draw(cache, self._state(**hidden)).calls == []
+        # Shown again unchanged, the grid is drawn afresh: no picture was kept meanwhile.
+        after = self._draw(cache, state)
+        assert after.surfaces[0] is not before.surfaces[0]
+
+    def test_clear_lets_the_picture_go(self) -> None:
+        from openfollow.runtime.overlay_draw_scene import GridCache
+
+        cache, state = GridCache(), self._state()
+        before = self._draw(cache, state)
+        cache.clear()
+        assert self._draw(cache, state).surfaces[0] is not before.surfaces[0]
+
+    def test_a_redraw_that_fails_keeps_no_damaged_picture(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import openfollow.runtime.overlay_draw_scene as scene
+
+        cache, state = scene.GridCache(), self._state()
+        fresh = self._pixels(self._draw(scene.GridCache(), state).surfaces[0])
+        self._draw(cache, state)
+        moved = self._state(camera_params=np.array([0.2, -6.0, 2.5, -15.0, 0.0, 0.0, 60.0]))
+
+        def fail(*_args: object) -> None:
+            raise RuntimeError("draw failed")
+
+        with monkeypatch.context() as patched:
+            patched.setattr(scene, "draw_ground_grid", fail)
+            with pytest.raises(RuntimeError):
+                self._draw(cache, moved)
+        assert np.array_equal(self._pixels(self._draw(cache, state).surfaces[0]), fresh)

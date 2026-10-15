@@ -25,7 +25,6 @@ from openfollow.runtime.services_marker_visuals import (
     sync_marker_config,
     sync_ui_config,
 )
-from openfollow.runtime_metrics import OverlayStatePool
 from openfollow.units import UnitSystem
 from openfollow.video.failure import VideoFailure
 
@@ -759,15 +758,11 @@ class TestPopulatePiNetworkOverlay:
     def _bare_app(self) -> SimpleNamespace:
         return SimpleNamespace()
 
-    def test_all_inactive_resets_target(self) -> None:
+    def test_all_inactive_leaves_the_screens_closed(self) -> None:
         state = OverlayState()
-        # Dirty the slot first so reset() is observable.
-        state.pi_network.screen_active = True
-        state.pi_network.banner = "stale"
-        state.pi_network.banner_level = "error"
         _populate_pi_network_overlay(self._bare_app(), state)
         assert state.pi_network.screen_active is False
-        assert (state.pi_network.banner, state.pi_network.banner_level) == ("", "")
+        assert state.pi_network.field_edit_active is False
 
     def test_screen_active_copies_rows_and_metadata(self, monkeypatch) -> None:
         from openfollow.runtime import app_modes_network as anm
@@ -986,7 +981,6 @@ class TestBuildMarkerVisualStateTornRead:
 
         state = build_marker_visual_state(
             app,
-            overlay_state_pool=OverlayStatePool(),
             system_stats=None,
             person_detector=None,
             cam_params_buffer=np.zeros(7),
@@ -1009,7 +1003,6 @@ class TestBuildMarkerVisualStateTornRead:
 
         state = build_marker_visual_state(
             app,
-            overlay_state_pool=OverlayStatePool(),
             system_stats=None,
             person_detector=None,
             cam_params_buffer=np.zeros(7),
@@ -1027,7 +1020,6 @@ class TestBuildMarkerVisualStateTornRead:
 
         state = build_marker_visual_state(
             app,
-            overlay_state_pool=OverlayStatePool(),
             system_stats=None,
             person_detector=None,
             cam_params_buffer=np.zeros(7),
@@ -1057,7 +1049,6 @@ class TestVideoFailureReachesTheTopRightBadge:
         app._runtime_services = SimpleNamespace(_status_flags=flags)
         build_marker_visual_state(
             app,
-            overlay_state_pool=OverlayStatePool(),
             system_stats=None,
             person_detector=None,
             cam_params_buffer=np.zeros(7),
@@ -1107,7 +1098,6 @@ class TestNetworkScreenHeadline:
 
         monkeypatch.setattr(anm, "build_pi_network_rows", lambda _app: [])
         state = OverlayState()
-        state.pi_network.title = "stale"
         _populate_pi_network_overlay(SimpleNamespace(_pi_network_active=True), state)
         assert state.pi_network.title == ""
 
@@ -1139,7 +1129,6 @@ class TestPathsOnTheOperatorScreen:
     def _state(app):  # noqa: ANN001, ANN205
         return build_marker_visual_state(
             app,
-            overlay_state_pool=OverlayStatePool(),
             system_stats=None,
             person_detector=None,
             cam_params_buffer=np.zeros(7),
@@ -1278,21 +1267,6 @@ class TestGroundGridSync:
         state = build_initial_overlay_state(self._cfg(enabled=True, visible=False, vertices=self._SQUARE))
         assert state.ground_grid_active is True
         assert state.ground_grid_visible is False
-
-    def test_reset_clears_the_ground_grid(self) -> None:
-        state = build_initial_overlay_state(self._cfg(enabled=True, z_offset=-0.9, vertices=self._SQUARE))
-        state.reset()
-        assert (
-            state.ground_grid_active,
-            state.ground_grid_visible,
-            state.ground_grid_z,
-            state.ground_grid_vertices,
-        ) == (
-            False,
-            False,
-            0.0,
-            [],
-        )
 
     def test_shim_config_without_the_section_has_no_ground_grid(self) -> None:
         from types import SimpleNamespace

@@ -1345,28 +1345,19 @@ class TestUpdateDelegators:
     # Note: ``update_controller_status`` and ``services_controller_status``
     # were removed when the binding moved to the marker cards.
 
-    def test_update_marker_visuals_swaps_overlay_state(
+    def test_update_marker_visuals_hands_the_renderer_each_new_state(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        built = object()
-        swapped_old: list[object] = []
-
-        monkeypatch.setattr(
-            services_module,
-            "build_marker_visual_state",
-            lambda app, **kw: built,
-        )
-        monkeypatch.setattr(
-            services_module,
-            "prepare_overlay_state_swap",
-            lambda **kw: swapped_old.append(kw["new_overlay_state"]),
-        )
+        first, second = object(), object()
+        built = [first, second]
+        monkeypatch.setattr(services_module, "build_marker_visual_state", lambda app, **kw: built.pop(0))
         renderer = _FakeOverlayRenderer()
         services._overlay_renderer = renderer
 
         services.update_marker_visuals(0.25)
-        assert renderer.state is built
-        assert swapped_old[0] is built
+        assert renderer.state is first
+        services.update_marker_visuals(0.25)
+        assert renderer.state is second
 
     def test_update_marker_visuals_passes_dt_to_builder(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
@@ -1380,7 +1371,6 @@ class TestUpdateDelegators:
             "build_marker_visual_state",
             lambda app, **kw: captured.append(kw) or built,
         )
-        monkeypatch.setattr(services_module, "prepare_overlay_state_swap", lambda **kw: None)
         services._overlay_renderer = _FakeOverlayRenderer()
         services.update_marker_visuals(dt=0.5)
         assert captured[0]["dt"] == 0.5
@@ -1512,9 +1502,13 @@ class TestShutdown:
         # Shutdown must stop the transmitter before draining the OSC service.
         transmitter = _FakeTransmitterManager()
         services._osc_transmitter_manager = transmitter  # type: ignore[assignment]
+        hud = SimpleNamespace(stopped=False)
+        hud.stop = lambda: setattr(hud, "stopped", True)
+        services._hud_render = hud  # type: ignore[assignment]
 
         services.shutdown()
 
+        assert hud.stopped is True
         assert services._person_detector.stopped is True
         assert app._input_manager.stopped is True
         assert app._web_server.stopped is True

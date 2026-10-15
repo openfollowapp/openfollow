@@ -122,7 +122,7 @@ def _paint_zones(renderer: Any, cr: Any, zones: list[_Zone]) -> None:
 class ZoneCache:
     """Every zone as one picture, drawn again only when a zone, its occupancy or the view changed.
 
-    The Operator Screen redraws on every display refresh; zones that did not
+    The Operator Screen draws a picture at most once per display refresh; zones that did not
     change are then one paint instead of each zone's projection, fill, outline and label.
     """
 

@@ -198,7 +198,10 @@ zones and outputs run off the frame timeout; slow web-driven housekeeping off a
 100 ms timeout; the display vsync tick (`start_hud_tick`) only redraws the HUD
 and polls the macOS pointer. A unit with no display gets no vsync tick, so
 nothing with app state may live there. Do not move per-frame state onto
-`start_hud_tick` and do not give it a callback parameter.
+`start_hud_tick` and do not give it a callback parameter. The HUD itself is
+drawn on the `HudRender` thread; the GTK draw only pastes the picture the tick
+put on screen, so the frame loop never waits for a whole HUD paint (see
+`docs/architecture/hud.md`).
 
 **One coordinate frame.** `marker.pos` is PSN-absolute world coordinates
 everywhere (X stage left, Y upstage, Z up): receiver, senders, mouse unproject,

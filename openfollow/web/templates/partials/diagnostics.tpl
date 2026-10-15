@@ -23,11 +23,10 @@
 
     %# Live cards refresh on their own every 5s. Keeping the poll target inside
     %# the section (rather than wrapping the whole section) means the head +
-    %# tools below never get rebuilt, so the section no longer flickers. The
-    %# trigger skips the poll while the section is collapsed (matches overview).
+    %# tools below never get rebuilt, so the section no longer flickers.
     <div id="diagnostics-live"
          hx-get="/section/diagnostics"
-         hx-trigger="every 5s [!this.closest('.section').classList.contains('is-collapsed')]"
+         hx-trigger="every 5s [pollShown(this)], poll-shown[pollShown(this)] from:body"
          hx-swap="innerHTML">
         % include('partials/diagnostics_cards.tpl', cards=cards)
     </div>

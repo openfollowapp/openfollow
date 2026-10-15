@@ -32,7 +32,7 @@
     </div>
     <div id="marker-catalog-root"
          hx-get="/api/markers/catalog"
-         hx-trigger="load, every 1500ms"
+         hx-trigger="load, every 1500ms [pollShown(this)], poll-shown[pollShown(this)] from:body"
          hx-target="this"
          hx-swap="none">
         Loading…

@@ -94,12 +94,8 @@
             var img = document.getElementById('video-preview');
             var hint = document.getElementById('video-preview-hint');
             var timer = null;
-            function isExpanded(){
-                var sec = document.getElementById('video-source-section');
-                return sec && !sec.classList.contains('is-collapsed');
-            }
             function refresh(){
-                if(!cb.checked || !isExpanded()) return;
+                if(!cb.checked || !pollShown(cb)) return;
                 var next = new Image();
                 next.onload = function(){
                     img.src = next.src;
@@ -125,6 +121,12 @@
                 }
             }
             cb.addEventListener('change', toggle);
+            // A re-render of the section runs this again; the replaced copy lets go.
+            function onShown(){
+                if(document.body.contains(cb)) refresh();
+                else document.body.removeEventListener('poll-shown', onShown);
+            }
+            document.body.addEventListener('poll-shown', onShown);
         })();
         </script>
     </div>

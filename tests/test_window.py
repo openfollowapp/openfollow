@@ -1202,6 +1202,36 @@ class TestHudTick:
         # attach_hud queued one draw, the tick queued another.
         assert window._hud_drawing_area.queue_draw_calls >= before + 1
 
+    @pytest.mark.parametrize(("redraw", "draws"), [(True, 1), (False, 0)])
+    def test_tick_redraws_hud_only_when_it_has_something_new(self, window, redraw: bool, draws: int) -> None:
+        window.attach_hud(lambda *_a: None, tick=lambda: redraw)
+        before = window._hud_drawing_area.queue_draw_calls
+        window.start_hud_tick()
+        window._window.tick()
+        assert window._hud_drawing_area.queue_draw_calls == before + draws
+
+    def test_a_raising_hud_tick_keeps_the_display_tick_alive(self, window, caplog) -> None:
+        import logging
+
+        outcomes = iter([RuntimeError("tick boom"), RuntimeError("tick boom"), True])
+
+        def hud_tick() -> bool:
+            outcome = next(outcomes)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        window.attach_hud(lambda *_a: None, tick=hud_tick)
+        before = window._hud_drawing_area.queue_draw_calls
+        window.start_hud_tick()
+        with caplog.at_level(logging.ERROR, logger="openfollow.window"):
+            assert window._window.tick() is True
+            assert window._window.tick() is True
+        assert [r.getMessage() for r in caplog.records if "HUD tick" in r.getMessage()] == ["HUD tick failed"]
+        assert window._hud_drawing_area.queue_draw_calls == before
+        assert window._window.tick() is True
+        assert window._hud_drawing_area.queue_draw_calls == before + 1
+
     def test_tick_regrabs_focus_when_lost(self, window) -> None:
         """If the toplevel lost focus (e.g. user clicked another app),
         the tick callback defensively regrabs it so keyboard events

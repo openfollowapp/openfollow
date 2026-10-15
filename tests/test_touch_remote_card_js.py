@@ -407,3 +407,18 @@ out.drives = paths().slice(before).filter(function (p) { return p === '/api/remo
 """
     )
     assert out["drives"] == 0
+
+
+def test_the_detection_notice_goes_once_the_card_holds_nothing() -> None:
+    out = _run(
+        _OPENED
+        + """
+els['remote-chips'].children[0].fire('click');
+answer(2, 200, { success: true, detection_off: true }); await settle();
+out.shown = !els['remote-detection-off'].hidden;
+tick(); await settle();
+answer(paths().lastIndexOf('/api/remote/state'), 200, Object.assign({}, STATE, { lost: true })); await settle();
+out.afterLost = !els['remote-detection-off'].hidden;
+"""
+    )
+    assert out == {"shown": True, "afterLost": False}

@@ -222,6 +222,7 @@
         var m = current();
         var held = st.marker !== null && !st.lost;
         $('remote-held').hidden = !held;
+        if (!held) $('remote-detection-off').hidden = true;
         $('remote-held').textContent = held ? 'Remote has ' + st.marker + (m && m.name ? ' · ' + m.name : '') : '';
         $('remote-lost').hidden = !st.lost;
         var locked = !!(s && held && s.locked.indexOf(st.marker) >= 0);

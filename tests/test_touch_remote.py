@@ -17,6 +17,7 @@ from openfollow.input.touch_remote import (
     DRIVE_STALE_S,
     GLIDE,
     HOLD_STALE_S,
+    KEPT,
     LOST,
     MAX_PENDING_ACTIONS,
     MAX_REACH_M,
@@ -92,7 +93,7 @@ def test_holding_the_same_marker_again_keeps_it(remote: TouchRemote) -> None:
     token = remote.open()
     remote.hold(token, 3)
     remote.drive(token, 3, (0.5, 0.0), 2)
-    assert remote.hold(token, 3) == OK
+    assert remote.hold(token, 3) == KEPT
     (frame,) = remote.take()
     assert (frame.stick, frame.z_notches) == ((0.5, 0.0), 2)
 

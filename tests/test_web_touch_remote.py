@@ -115,6 +115,16 @@ def test_a_hold_from_an_ended_session_is_404(live) -> None:  # noqa: ANN001
     assert remote.held_ids() == frozenset()
 
 
+def test_holding_the_held_marker_again_never_claims_detection_goes_off(live) -> None:  # noqa: ANN001
+    base, config_path, _remote = live
+    token = _holding(base)
+    cfg = load_config(config_path)
+    cfg.detection.enabled = True
+    save_config(cfg, config_path)
+    status, data = _call(base, "POST", "/api/remote/hold", {"token": token, "marker": 1})
+    assert (status, data) == (200, {"success": True, "detection_off": False})
+
+
 def test_a_marker_this_station_does_not_control_cannot_be_held(live) -> None:  # noqa: ANN001
     base, _path, remote = live
     token = _open(base)

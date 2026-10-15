@@ -29,6 +29,8 @@ MAX_REACH_M = 10_000.0
 MAX_PENDING_ACTIONS = 8
 
 OK = "ok"
+# ``hold`` of the marker the session already holds: nothing changed.
+KEPT = "kept"
 LOST = "lost"
 UNKNOWN = "unknown"
 
@@ -104,7 +106,7 @@ class TouchRemote:
                 return UNKNOWN
             session.seen_at = self._clock()
             if session.marker_id == marker_id:
-                return OK
+                return KEPT
             self._let_go(session)
             previous = self._holders.get(marker_id)
             if previous is not None:

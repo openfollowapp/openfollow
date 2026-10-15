@@ -5273,7 +5273,7 @@ _REMOTE_MAX_NOTCHES = 1000
 
 def _register_touch_remote_routes(app: Bottle, server: ConfigWebServer) -> None:
     """Register the touch remote's routes: sessions, holds, driving and the card's state."""
-    from openfollow.input.touch_remote import ACTIONS, GLIDE, LOST, MAX_REACH_M, OK, RemoteAction
+    from openfollow.input.touch_remote import ACTIONS, GLIDE, KEPT, LOST, MAX_REACH_M, OK, RemoteAction
 
     def _gate() -> tuple[Any, AppConfig] | str:
         response.content_type = "application/json"
@@ -5332,10 +5332,10 @@ def _register_touch_remote_routes(app: Bottle, server: ConfigWebServer) -> None:
         if marker_id not in cfg.controlled_marker_ids:
             return _json_error(409, f"This station does not control marker {marker_id}.")
         outcome = remote.hold(token, marker_id)
-        if outcome != OK:
+        if outcome not in (OK, KEPT):
             return _answer(outcome)
-        # The frame loop switches detection off for the hold; the card says so.
-        return json.dumps({"success": True, "detection_off": cfg.detection.enabled})
+        # The frame loop switches detection off for a new hold only; the card says so.
+        return json.dumps({"success": True, "detection_off": outcome == OK and cfg.detection.enabled})
 
     @app.post(_REMOTE_API + "/drive")
     def remote_drive() -> Any:

@@ -23,7 +23,7 @@ Tap the round button in the bottom corner of the page to open the remote card.
 
 ## While the remote holds a marker
 
-- No other input moves that marker: gamepads, keyboard, mice, 3D mice and OSC positions and path commands are ignored for it. A gamepad's or 3D mouse's speed buttons and marker fader still work. The Operator Screen shows a caution row naming it.
+- No other input moves that marker: gamepads, keyboard, mice, 3D mice, OSC positions and path commands, and Fully Automatic tracking are ignored for it. A gamepad's or 3D mouse's speed buttons and marker fader still work. The Operator Screen shows a caution row naming it.
 - Taking a marker while person detection is on switches detection off for the whole station; the card says so. Closing the remote leaves it off. You can switch it back on under Person Detection at any time, even while the remote holds a marker: only the next marker taken switches it off again.
 - Another tablet taking the same marker takes it over; the first card shows that it lost the marker.
 - Opening the card takes no marker; tapping a chip does. Closing the card gives the marker back.

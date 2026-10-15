@@ -592,10 +592,8 @@ class InputManager:
                 x, y, z = marker.pos
                 z = snap_z(z, frame.z_notches, tuning.z_step_m)
                 marker.set_pos(x, y, max(-MAX_REACH_M, min(MAX_REACH_M, z)))
-            if not frame.live:
-                # The dead-man stops a glide too.
-                self._remote_glides.pop(marker_id, None)
-            target = self._remote_glides.get(marker_id)
+            # The dead-man holds a glide where it is; it carries on once drive messages arrive again.
+            target = self._remote_glides.get(marker_id) if frame.live else None
             if target is not None:
                 self._glide(marker_id, marker, target, max_speed * dt)
 

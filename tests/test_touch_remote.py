@@ -630,7 +630,7 @@ def test_a_failing_remote_step_is_logged_and_the_frame_carries_on(app: _App, cap
 
 
 @pytest.mark.integration
-def test_the_dead_man_stops_a_glide(app: _App, clock: _Clock) -> None:
+def test_the_dead_man_holds_a_glide_until_drive_messages_return(app: _App, clock: _Clock) -> None:
     token = _held(app)
     app._touch_remote.drive(token, 10, (0.0, 0.0), 0)
     app._touch_remote.act(token, 10, RemoteAction(GLIDE, (10.0, 0.0, 1.6)))
@@ -638,9 +638,10 @@ def test_the_dead_man_stops_a_glide(app: _App, clock: _Clock) -> None:
     manager.update_touch_remote(0.5)
     clock.now += DRIVE_STALE_S + 0.01
     manager.update_touch_remote(1.0)
+    assert _pos(app) == pytest.approx((1.0, 0.0, 1.6))
     app._touch_remote.drive(token, 10, (0.0, 0.0), 0)
     manager.update_touch_remote(1.0)
-    assert _pos(app) == pytest.approx((1.0, 0.0, 1.6))
+    assert _pos(app) == pytest.approx((3.0, 0.0, 1.6))
 
 
 @pytest.mark.unit

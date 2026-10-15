@@ -23,7 +23,7 @@ DRIVE_STALE_S = 0.25
 HOLD_STALE_S = 10.0
 # Open sessions kept at most; opening one more forgets the one heard from longest ago.
 MAX_SESSIONS = 16
-# How far from the origin the remote places a marker: past float32 range PSN breaks.
+# Furthest from the origin a typed glide target or the Z wheel goes; anything past it is a typing slip.
 MAX_REACH_M = 10_000.0
 # Queued presses and glide targets per session between two frames.
 MAX_PENDING_ACTIONS = 8

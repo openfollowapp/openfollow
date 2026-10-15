@@ -103,12 +103,13 @@ def patched_passes(monkeypatch):
         "draw_pi_network_screen_overlay_pass",
         "draw_pi_network_field_edit_overlay_pass",
         "draw_detections_pass",
-        "draw_grid_pass",
         "draw_origin_pass",
         "draw_marker_pass",
         "draw_zones_pass",
     ):
         monkeypatch.setattr(overlay_module, name, _record(name))
+    grid = _record("grid_cache")
+    monkeypatch.setattr(overlay_module.GridCache, "draw", lambda self, *args: grid())
     return calls
 
 
@@ -230,7 +231,7 @@ class TestDrawDispatch:
         ]
         renderer.draw(FakeCairo(), 1280, 720)
         # Grid, origin, zones, marker, HUD – no detections (empty).
-        assert "draw_grid_pass" in patched_passes
+        assert "grid_cache" in patched_passes
         assert "draw_origin_pass" in patched_passes
         assert "draw_zones_pass" in patched_passes
         assert "draw_marker_pass" in patched_passes
@@ -843,18 +844,56 @@ def test_the_renderer_lets_its_zone_picture_go_while_the_scene_is_not_drawn(fiel
     assert after.surfaces[0] is not before.surfaces[0]
 
 
+def _grid_renderer(ground_grid_visible: bool = True) -> CairoOverlayRenderer:
+    renderer = CairoOverlayRenderer()
+    renderer.state.camera_params = np.array([0.0, -6.0, 2.5, -15.0, 0.0, 0.0, 60.0])
+    renderer.state.grid_config = (10.0, 6.0, 1.0, 0.0, 3.0, 0.0)
+    renderer.state.grid_visible = False
+    renderer.state.ground_grid_visible = ground_grid_visible
+    renderer.state.ground_grid_vertices = [(-1.0, 1.0), (1.0, 1.0), (1.0, 3.0), (-1.0, 3.0)]
+    renderer.state.ground_grid_z = -0.5
+    return renderer
+
+
 def test_the_renderer_draws_a_displayed_ground_grid() -> None:
-    def frame(visible: bool) -> RecordingCairo:
-        renderer = CairoOverlayRenderer()
-        renderer.state.camera_params = np.array([0.0, -6.0, 2.5, -15.0, 0.0, 0.0, 60.0])
-        renderer.state.grid_config = (10.0, 6.0, 1.0, 0.0, 3.0, 0.0)
-        renderer.state.ground_grid_visible = visible
-        renderer.state.ground_grid_vertices = [(-1.0, 1.0), (1.0, 1.0), (1.0, 3.0), (-1.0, 3.0)]
-        renderer.state.ground_grid_z = -0.5
-        cr = RecordingCairo()
-        renderer.draw(cr, 1920, 1080)
-        return cr
+    import cairo
+
+    def frame(visible: bool) -> np.ndarray:
+        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 480, 270)
+        _grid_renderer(visible).draw(cairo.Context(surface), 480, 270)
+        surface.flush()
+        return np.frombuffer(surface.get_data(), np.uint8).copy()
 
     hidden, shown = frame(False), frame(True)
-    assert shown.strokes == hidden.strokes + 1
-    assert len(shown.line_tos) > len(hidden.line_tos)
+    assert (shown != hidden).sum() > 100
+
+
+def test_the_renderer_keeps_its_grid_as_one_picture_between_frames() -> None:
+    renderer = _grid_renderer()
+    frames = [RecordingCairo() for _ in range(3)]
+    for cr in frames:
+        renderer.draw(cr, 1920, 1080)
+    # The grid is the scene's first picture.
+    pictures = [cr.surfaces[0] for cr in frames]
+    assert all(p is pictures[0] for p in pictures)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("settings_menu_active", True),
+        ("camera_params", None),
+        ("button_detection", ButtonDetectionState(active=True)),
+    ],
+    ids=["menu-open", "no-camera", "button-wizard"],
+)
+def test_the_renderer_lets_its_grid_picture_go_while_the_scene_is_not_drawn(field: str, value: object) -> None:
+    renderer = _grid_renderer()
+    before, after = RecordingCairo(), RecordingCairo()
+    renderer.draw(before, 1920, 1080)
+    shown = getattr(renderer.state, field)
+    setattr(renderer.state, field, value)
+    renderer.draw(RecordingCairo(), 1920, 1080)
+    setattr(renderer.state, field, shown)
+    renderer.draw(after, 1920, 1080)
+    assert after.surfaces[0] is not before.surfaces[0]

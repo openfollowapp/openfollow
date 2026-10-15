@@ -23,6 +23,8 @@ The HUD is **not** in the GStreamer chain. The video sink (`gtksink`) is wrapped
 
 Trigger zones are kept as one picture too (`runtime/overlay_draw_zones.ZoneCache`); what it is keyed on, how it is sized and why its labels are grayscale are in the [zones guide](zones.md#overlay-rendering-runtimeservices_marker_visualspy).
 
+The main grid and the ground grid are one picture (`overlay_draw_scene.GridCache`), the whole canvas at the screen's device scale, pasted at its origin as the first thing in the scene. It is let go while neither grid is drawn or no scene is (a menu screen, the Button Detection Wizard, no camera), and drawn again when either grid's visibility, the grid config, the ground grid's corners or height, the grid colour, opacity or thickness, the camera, the lens, the frame size or the device scale changes. Pasted onto the cleared picture it is pixel for pixel what drawing the grids there gives; a new input either grid is drawn from must be added to its key and to the redraw test's cases in the same change.
+
 ## Floor height and the ground grid
 
 Every element that stands on the floor under a marker (the Z line, the ground circle, the cone base, the assist ghost's ring) asks `overlay_draw_scene.floor_z_at(state, x, y)` for its height; nothing else reads `grid_config[5]` for a marker's floor. `floor_z_at` returns the ground grid's `z_offset` when it is active and `(x, y)` is inside its polygon (`zones.geometry.point_in_polygon`, even-odd, XY only, whatever the marker's own Z), else the main grid's `z_offset`. The `ConeCache` key carries that height, so a cone redraws when its floor changes.

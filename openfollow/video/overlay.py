@@ -61,15 +61,10 @@ from openfollow.runtime.overlay_draw_paths import PathCache
 from openfollow.runtime.overlay_draw_paths import draw_paths as draw_paths_pass
 from openfollow.runtime.overlay_draw_scene import (
     ConeCache,
+    GridCache,
 )
 from openfollow.runtime.overlay_draw_scene import (
     draw_detections as draw_detections_pass,
-)
-from openfollow.runtime.overlay_draw_scene import (
-    draw_grid as draw_grid_pass,
-)
-from openfollow.runtime.overlay_draw_scene import (
-    draw_ground_grid as draw_ground_grid_pass,
 )
 from openfollow.runtime.overlay_draw_scene import (
     draw_marker as draw_marker_pass,
@@ -168,6 +163,7 @@ class CairoOverlayRenderer:
         # Max 200 lines = 400 endpoints. Resized if needed.
         self._grid_pts_buf = np.zeros((400, 3), dtype=np.float64)
         self._cone_cache = ConeCache()
+        self._grid_cache = GridCache()
         self._path_cache = PathCache()
         self._zone_cache = ZoneCache()
 
@@ -287,18 +283,21 @@ class CairoOverlayRenderer:
 
             # Button detection wizard takes exclusive visual control
             if state.button_detection is not None and state.button_detection.active:
+                self._grid_cache.clear()
                 self._zone_cache.clear()
                 self._path_cache.clear()
                 self._draw_button_detection_overlay(cr, state, width, height)
                 return
 
             if self._draw_menu_screen(cr, state, width, height):
+                self._grid_cache.clear()
                 self._zone_cache.clear()
                 self._path_cache.clear()
                 draw_menu_help_pass(self, cr, state, width, height)
                 return
 
             if state.camera_params is None:
+                self._grid_cache.clear()
                 self._zone_cache.clear()
                 self._path_cache.clear()
                 self._draw_hud(cr, state, width, height)
@@ -306,8 +305,7 @@ class CairoOverlayRenderer:
 
             cr.save()
             try:
-                self._draw_grid(cr, state, width, height)
-                draw_ground_grid_pass(cr, state, width, height)
+                self._grid_cache.draw(self, cr, state, width, height)
                 self._draw_origin(cr, state, width, height)
                 self._draw_zones(cr, state, width, height)
                 draw_paths_pass(self, cr, state, width, height, self._path_cache)
@@ -420,13 +418,6 @@ class CairoOverlayRenderer:
             and np.all(scr[:, 1] > -margin)
             and np.all(scr[:, 1] < h + margin)
         )
-
-    # ------------------------------------------------------------------
-    # Grid
-    # ------------------------------------------------------------------
-
-    def _draw_grid(self, cr: Any, state: OverlayState, w: int, h: int) -> None:
-        draw_grid_pass(self, cr, state, w, h)
 
     # ------------------------------------------------------------------
     # Origin marker (RGB axis lines at world origin)

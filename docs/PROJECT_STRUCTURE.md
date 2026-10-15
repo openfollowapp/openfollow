@@ -71,7 +71,7 @@ from openfollow.services import AppRuntimeServices
 - Web API → `web/routes.py`
 - Camera/calibration → `scene/camera.py`, `scene/solver.py` (calibration is the web `/wizard`)
 - Paths → `paths/`, `runtime/paths_runtime.py`, `osc/paths.py`, `runtime/overlay_draw_paths.py`
-- Ground grid → `scene/ground_grid.py`, `runtime/overlay_draw_scene.py` (`floor_z_at`, `draw_ground_grid`)
+- Ground grid → `scene/ground_grid.py`, `runtime/overlay_draw_scene.py` (`floor_z_at`, `draw_ground_grid`, `GridCache`)
 
 **Coordinates (PSN):** X=stage left, Y=upstage, Z=up
 

@@ -217,6 +217,57 @@ def draw_ground_grid(cr: Any, state: OverlayState, w: int, h: int) -> None:
         cr.stroke()
 
 
+class GridCache:
+    """The main grid and the ground grid as one picture, drawn again only when either grid or the view changed.
+
+    The Operator Screen draws a picture at most once per display refresh; an unchanged grid is then
+    one paint instead of projecting and stroking every line. The picture is the whole canvas pasted
+    at its origin, so every line covers the same pixels as one drawn directly.
+    """
+
+    def __init__(self) -> None:
+        self._entry: tuple[tuple[Any, ...], cairo.ImageSurface] | None = None
+
+    def clear(self) -> None:
+        """Let go of the picture, which can run to a hundred megabytes on a HiDPI 4K screen."""
+        self._entry = None
+
+    def draw(self, renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
+        cam = state.camera_params
+        gc = state.grid_config
+        if cam is None or gc is None or not (state.grid_visible or state.ground_grid_visible):
+            self._entry = None
+            return
+        scale = cr.get_target().get_device_scale()
+        # Every input either grid is projected or drawn from; one missing here freezes on screen.
+        key = (
+            state.grid_visible,
+            state.ground_grid_visible,
+            tuple(gc),
+            tuple(map(tuple, state.ground_grid_vertices)),
+            state.ground_grid_z,
+            state.grid_color,
+            state.grid_transparency,
+            state.grid_thickness,
+            tuple(float(v) for v in cam),
+            state.lens_k1,
+            state.lens_k2,
+            w,
+            h,
+            scale,
+        )
+        if self._entry is None or self._entry[0] != key:
+            sx, sy = scale
+            picture = cairo.ImageSurface(cairo.FORMAT_ARGB32, math.ceil(w * sx), math.ceil(h * sy))
+            picture.set_device_scale(sx, sy)
+            ctx = cairo.Context(picture)
+            draw_grid(renderer, ctx, state, w, h)
+            draw_ground_grid(ctx, state, w, h)
+            self._entry = (key, picture)
+        cr.set_source_surface(self._entry[1], 0, 0)
+        cr.paint()
+
+
 def draw_origin(cr: Any, state: OverlayState, w: int, h: int) -> None:
     if not state.show_origin:
         return

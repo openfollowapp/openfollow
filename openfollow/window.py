@@ -158,6 +158,7 @@ class GtkNativeSinkWindow:
         # The pointer poll runs every frame; throttle its failure log so a
         # persistent error can't flood the journal at the display tick rate.
         self._poll_err_log = ThrottledExceptionLogger(logger, "Pointer poll failed")
+        self._hud_tick_err_log = ThrottledExceptionLogger(logger, "HUD tick failed")
         self._setup_events()
         self._window.show_all()
 
@@ -471,8 +472,15 @@ class GtkNativeSinkWindow:
         except Exception:
             self._poll_err_log.log()
         # Redraw HUD independent of video buffer flow.
-        if self._hud_draw_fn is not None and (self._hud_tick is None or self._hud_tick()):
-            self._hud_drawing_area.queue_draw()
+        if self._hud_draw_fn is not None:
+            # A raise escaping this callback would make GTK drop the tick for good.
+            try:
+                redraw = self._hud_tick is None or self._hud_tick()
+            except Exception:
+                self._hud_tick_err_log.log()
+                redraw = False
+            if redraw:
+                self._hud_drawing_area.queue_draw()
         # Keep window focus.
         if not self._window.has_toplevel_focus():
             self._window.grab_focus()

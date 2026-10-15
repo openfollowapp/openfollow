@@ -115,12 +115,15 @@
         var gen = st.gen;
         st.holds += 1;
         post('hold', { marker: markerId }).then(function (res) {
-            if (gen !== st.gen || res.status === 409) return;
+            if (gen !== st.gen) return;
+            // Refused (the station no longer controls it): the next state redraws the chips.
+            if (res.status === 409) { stateTick(); return; }
             if (!handleStatus(res)) return;
             return res.json().then(function (data) {
                 if (gen !== st.gen) return;
                 st.marker = markerId;
                 st.lost = false;
+                st.notches = 0;
                 $('remote-detection-off').hidden = !data.detection_off;
                 render();
             });
@@ -292,6 +295,7 @@
             post('close', null, { keepalive: true }).catch(function () { /* the station forgets it */ });
         }
         st.gen += 1;
+        st.notches = 0;
         st.opening = false;
         st.checking = false;
         st.inFlight = false;
@@ -353,7 +357,8 @@
         var r = drumNotches(drumAcc, dy, notchPx);
         drumAcc = r.acc;
         if (r.notches) {
-            st.notches += r.notches;
+            // Turned with no marker held, a notch goes nowhere: never saved up for a later hold.
+            if (st.marker !== null && !st.lost) st.notches += r.notches;
             drum.classList.add('notched');
             window.setTimeout(function () { drum.classList.remove('notched'); }, 70);
             if (navigator.vibrate) navigator.vibrate(8);

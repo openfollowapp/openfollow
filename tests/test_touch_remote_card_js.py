@@ -422,3 +422,32 @@ out.afterLost = !els['remote-detection-off'].hidden;
 """
     )
     assert out == {"shown": True, "afterLost": False}
+
+
+def test_notches_turned_with_no_marker_held_go_nowhere() -> None:
+    out = _run(
+        _OPENED
+        + """
+var drum = els['remote-drum'];
+drum.fire('pointerdown', { pointerId: 2, clientY: 100 });
+drum.fire('pointermove', { pointerId: 2, clientY: 20 });
+els['remote-chips'].children[0].fire('click');
+answer(2, 200, { success: true, detection_off: false }); await settle();
+tick(); await settle();
+out.notches = requests[paths().indexOf('/api/remote/drive')].body.z_notches;
+"""
+    )
+    assert out["notches"] == 0
+
+
+def test_a_refused_chip_tap_redraws_the_chips() -> None:
+    out = _run(
+        _OPENED
+        + """
+els['remote-chips'].children[0].fire('click');
+var before = requests.length;
+answer(2, 409, { error: 'This station does not control marker 1.' }); await settle();
+out.after = paths().slice(before);
+"""
+    )
+    assert out["after"] == ["/api/remote/state"]

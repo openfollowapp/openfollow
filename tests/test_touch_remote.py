@@ -749,3 +749,13 @@ def test_took_new_hold_reports_each_new_hold_once(remote: TouchRemote) -> None:
     assert remote.took_new_hold() is False
     remote.hold(remote.open(), 3)
     assert remote.took_new_hold() is True
+
+
+@pytest.mark.integration
+def test_a_hold_let_go_before_any_frame_leaves_detection_on(app: _App) -> None:
+    app._config.detection.enabled = True
+    _held(app, 11)
+    app._controlled_ids = [10]
+    InputManager(app).update_touch_remote(0.02)
+    assert app._config.detection.enabled is True
+    assert app.detection_applied == []

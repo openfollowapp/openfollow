@@ -2500,7 +2500,6 @@
  const box = saveError.boxFor(group);
  const busy = document.getElementById('net-busy');
  const showBusy = (on) => {
- if (!busy) return;
  busy.querySelector('.net-busy-text').textContent =
  'Switching to ' + input.value.charAt(0).toUpperCase() + input.value.slice(1) + '…';
  busy.hidden = !on;

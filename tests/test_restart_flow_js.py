@@ -466,7 +466,7 @@ def test_a_switch_whose_restart_an_update_refused_says_so_after_the_reload() -> 
     ],
     ids=["error", "unreachable", "session-expired"],
 )
-def test_a_switch_that_fails_closes_the_progress_and_puts_the_mode_back(answer: str, error: str) -> None:
+def test_a_switch_that_fails_hides_the_busy_line_and_puts_the_mode_back(answer: str, error: str) -> None:
     out = _switch(
         answer,
         f"release(); await settle(); out.modal = shown(); out.error = errorLine(); out.radios = {_radios()};"

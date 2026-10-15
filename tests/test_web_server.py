@@ -4365,6 +4365,50 @@ def test_api_config_reset_restores_defaults_and_keeps_device_fields(live_server)
     assert saved.detection.storage_path == "/mnt/nvme/openfollow/yolo"
 
 
+@pytest.mark.parametrize("state", ["queued", "running", "restarting"])
+def test_api_config_reset_waits_for_a_running_update_and_writes_nothing(live_server, state: str) -> None:
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.grid.width = 42.0
+    save_config(cfg, server.config_path)
+    server.set_update_status(state=state)
+
+    status, body = _post_json(base, "/api/config/reset", {})
+
+    assert status == 409
+    assert body == {"error": "An update is running.", "action": "Restore defaults once it has finished."}
+    assert load_config(server.config_path).grid.width == pytest.approx(42.0)
+    # No backup either: the reset wrote nothing.
+    assert not (Path(server.config_path).parent / "backups").exists()
+    assert server.check_restart_requested() is False
+
+
+def test_api_config_reset_goes_ahead_once_the_update_failed(live_server) -> None:
+    server, base = live_server
+    server.set_update_status(state="failed")
+    status, body = _post_json(base, "/api/config/reset", {})
+    assert (status, body["success"]) == (200, True)
+    assert server.check_restart_requested() is True
+
+
+def test_an_update_queued_while_defaults_are_written_is_not_cut_short(live_server, monkeypatch) -> None:
+    """The update restarts the station itself, so the reset takes effect then."""
+    import openfollow.web.routes as routes_module
+
+    server, base = live_server
+    real_save = routes_module.save_config
+
+    def save_then_queue_an_update(cfg: AppConfig, path: Any) -> None:
+        real_save(cfg, path)
+        server.set_update_status(state="queued")
+
+    monkeypatch.setattr(routes_module, "save_config", save_then_queue_an_update)
+    status, body = _post_json(base, "/api/config/reset", {})
+    assert (status, body["success"]) == (200, True)
+    assert load_config(server.config_path).grid.width == pytest.approx(AppConfig().grid.width)
+    assert server.check_restart_requested() is False
+
+
 def test_api_config_reset_backs_up_the_settings_it_replaces(live_server) -> None:
     server, base = live_server
     cfg = load_config(server.config_path)
@@ -5233,9 +5277,9 @@ def test_logout_clears_cookie_and_redirects_to_login(live_server) -> None:
     ],
 )
 def test_a_section_save_never_restarts(live_server, path: str, section_id: str) -> None:
-    """Restarting is the Restart buttons' own step; a save asking for one only saves."""
+    """Restarting is the Restart buttons' own step; a save only saves."""
     server, base = live_server
-    status, body = _post_form(base, f"{path}?restart=1", {})
+    status, body = _post_form(base, path, {})
     assert status == 200
     assert section_id in body
     assert server.check_restart_requested() is False

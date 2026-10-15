@@ -3881,6 +3881,10 @@ def _export_status(status: ExportStatus) -> dict[str, Any]:
     }
 
 
+_UPDATE_RUNNING = "An update is running."
+_RESTART_AFTER_UPDATE = "Restart once it has finished."
+
+
 def _save_failed(status: int, error: str, action: str = "") -> HTTPResponse:
     """A refused or failed save, in the ``{error, action}`` shape the save-feedback line reads."""
     body = json.dumps({"error": error, "action": action})
@@ -6716,14 +6720,14 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             ", ".join(f"{key} ({iface})" for key, iface in cleared) or "none",
             ", ".join(removed) or "none",
         )
-        if restart and server.request_restart_unless_updating():
-            # The process being restarted, so the browser waits for a new one.
-            response.set_header("X-OpenFollow-Restarting", server.instance_id)
-        else:
-            # The mode decides which sections the page shows. A refused restart is
-            # named on the reloaded card, which offers it again.
-            response.set_header("HX-Refresh", "true")
-        return template("partials/network", net=_build_network_form_context())
+        if restart:
+            if server.request_restart_unless_updating():
+                # The process being restarted, so the browser waits for a new one.
+                response.set_header("X-OpenFollow-Restarting", server.instance_id)
+            else:
+                response.set_header("X-OpenFollow-Restart-Refused", _UPDATE_RUNNING)
+        # Without a restart the browser reloads: the mode decides which sections the page shows.
+        return ""
 
     @app.post("/section/network/station")
     def network_station_iface() -> Any:
@@ -9682,7 +9686,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     def api_restart() -> Any:
         """Restart the application, unless an update is queued or running."""
         if not server.request_restart_unless_updating():
-            return _save_failed(409, "An update is running.", "Restart once it has finished.")
+            return _save_failed(409, _UPDATE_RUNNING, _RESTART_AFTER_UPDATE)
         response.content_type = "application/json"
         return json.dumps({"success": True, "instance": server.instance_id})
 
@@ -9844,12 +9848,15 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         pre-reset values, and the next move-speed change writes every old speed
         back over the reset. So the reset would silently, partially undo itself.
         """
+        if server.is_update_busy():
+            return _save_failed(409, _UPDATE_RUNNING, "Restore defaults once it has finished.")
         response.content_type = "application/json"
         backup = _backup_before(server.config_path, "defaults")
         with _config_write_lock:
             current = load_config(server.config_path)
             save_config(reset_config_to_defaults(current), server.config_path)
-        server.request_restart()
+        # An update queued since the check restarts the station itself.
+        server.request_restart_unless_updating()
         return json.dumps(
             {"success": True, "needs_restart": True, "restarting": True, "instance": server.instance_id, **backup}
         )

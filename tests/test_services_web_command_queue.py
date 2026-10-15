@@ -245,6 +245,18 @@ def test_a_restart_is_refused_while_an_update_is_busy(state: str) -> None:
     assert q.consume_restart_requested() is False
 
 
+@pytest.mark.parametrize(
+    ("state", "busy"),
+    [("idle", False), ("queued", True), ("running", True), ("restarting", True), ("failed", False), ("done", False)],
+)
+def test_an_update_is_busy_from_queued_until_its_install_ends(state: str, busy: bool) -> None:
+    q = WebCommandQueue()
+    q.set_update_status(state)
+    assert q.is_update_busy() is busy
+    # Asking requests nothing.
+    assert q.consume_restart_requested() is False
+
+
 def test_a_restart_and_an_update_cannot_both_go_ahead() -> None:
     """The check and the request happen under the lock update queueing takes,
     so an update queued at the same moment is either seen or not started."""

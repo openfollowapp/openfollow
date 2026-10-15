@@ -81,7 +81,7 @@
         %# dialog names where to find it.
         % if defined('web_bind_restart') and web_bind_restart:
         <button type="button" class="danger"
-                onclick="openfollowRestart({title: 'Restart OpenFollow?', message: 'Outputs pause until OpenFollow is back. The web UI may then answer at a different address.', note: 'This page reloads when the station is back. If it does not, the web UI has moved - the station\'s Network screen lists the address that reaches it.', step: 'The web UI may have moved: the station\'s Network screen lists the address that reaches it.'})">Restart OpenFollow</button>
+                onclick="openfollowRestart({title: 'Restart OpenFollow?', message: 'Outputs pause until OpenFollow is back. The web UI may then answer at a different address.', note: NET_MOVED_NOTE, step: NET_MOVED_STEP})">Restart OpenFollow</button>
         % end
         <button type="button" id="refresh-iface-assignment" class="secondary"
                 hx-get="/section/interface_assignment"

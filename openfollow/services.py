@@ -291,6 +291,11 @@ class WebCommandQueue:
         with self._restart_lock:
             self._restart_requested_at = self._clock()
 
+    def is_update_busy(self) -> bool:
+        """True while an update is queued or running; no restart may cut in."""
+        with self._update_lock:
+            return self._update_status.get("state", "idle") in _UPDATE_BUSY_STATES
+
     def request_restart_unless_updating(self) -> bool:
         """Request a restart unless an update is queued or running.
 

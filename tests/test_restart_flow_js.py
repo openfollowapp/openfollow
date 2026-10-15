@@ -221,6 +221,9 @@ def test_a_station_that_does_not_come_back_is_reported_after_ninety_seconds() ->
 
 
 _MOVED = "The web UI may have moved: the station's Network screen lists the address that reaches it."
+_MOVED_NOTE = (
+    f"{_RELOADS} If it does not, the web UI has moved - the station's Network screen lists the address that reaches it."
+)
 
 
 @pytest.mark.parametrize(
@@ -229,13 +232,7 @@ _MOVED = "The web UI may have moved: the station's Network screen lists the addr
         ("diagnostics.tpl", "Restart application?", "Video and tracking stop until the station is back.", _RELOADS),
         ("keyboard.tpl", "Restart OpenFollow?", "Outputs pause until OpenFollow is back.", _RELOADS),
         *[
-            (
-                partial,
-                "Restart OpenFollow?",
-                message,
-                f"{_RELOADS} If it does not, the web UI has moved - the station's Network screen lists the address"
-                " that reaches it.",
-            )
+            (partial, "Restart OpenFollow?", message, _MOVED_NOTE)
             for partial, message in [
                 (
                     "interface_assignment.tpl",
@@ -328,6 +325,11 @@ def test_restore_defaults_without_a_backup_says_so_after_the_reload() -> None:
     ("answer", "error"),
     [
         ("{ status: 500, body: { error: 'Disk full.' } }", "Not restored. Disk full."),
+        (
+            "{ status: 409, body: { error: 'An update is running.',"
+            " action: 'Restore defaults once it has finished.' } }",
+            "Not restored. An update is running. Restore defaults once it has finished.",
+        ),
         ("{ body: { error: 'Locked.' } }", "Not restored. Locked."),
         (
             "'unreachable'",
@@ -348,6 +350,7 @@ def test_a_restore_that_fails_closes_the_progress_and_says_why(answer: str, erro
 
 _BASE = (_TEMPLATES / "base.tpl").read_text(encoding="utf-8")
 _SWITCH_SCRIPT = (
+    "var toasts = []; function toastOnNextLoad(message, level) { toasts.push([message, level]); return true; }\n"
     "function netConfirmSimple(preview) {"
     + function_body(_BASE, "netConfirmSimple")
     + "}\nasync function netSwitchMode(input) {"
@@ -377,23 +380,52 @@ def _switch(mode_answer: str, steps: str, *, restart: bool = True) -> Any:
     )
 
 
-def test_a_switch_that_restarts_waits_for_a_new_openfollow() -> None:
+def _radios() -> str:
+    return "document.querySelectorAll('input').map(function (r) { return [r.disabled, r.checked]; })"
+
+
+@pytest.mark.parametrize("previewed", [True, False], ids=["preview-restarts", "preview-does-not"])
+def test_a_switch_that_restarts_shows_the_progress_once_the_station_names_its_process(previewed: bool) -> None:
     out = _switch(
         "{ body: '', headers: { 'X-OpenFollow-Restarting': 'old' } }",
-        "out.sent = shown(); release(); await settle(); out.answered = shown();"
+        # While it is sent the page stays open, so a password prompt can be answered.
+        f"out.sent = [shown(), {_radios()}];"
+        "release(); await settle(); out.answered = shown();"
         "info = { body: { instance: 'old' } }; await tick(2000); out.dying = reloaded;"
         "info = 'unreachable'; await tick(2000); out.away = reloaded;"
-        "info = { body: { instance: 'new' } }; await tick(2000); out.back = reloaded;",
+        "info = { body: { instance: 'new' } }; await tick(2000); out.back = reloaded; out.toasts = toasts;",
+        restart=previewed,
     )
-    assert out == {"sent": _progress(), "answered": _progress(), "dying": 0, "away": 0, "back": 1}
+    assert out == {
+        "sent": [None, [[True, False], [True, True]]],
+        "answered": _progress(_MOVED_NOTE),
+        "dying": 0,
+        "away": 0,
+        "back": 1,
+        "toasts": [],
+    }
 
 
-def test_a_switch_whose_restart_was_refused_reloads_into_the_card_that_offers_it() -> None:
+def test_a_switch_whose_station_does_not_come_back_names_the_network_screen() -> None:
     out = _switch(
-        "{ body: '', headers: { 'HX-Refresh': 'true' } }",
-        "release(); await settle(); out.reloaded = reloaded; await tick(2000); out.polls = urls().length;",
+        "{ body: '', headers: { 'X-OpenFollow-Restarting': 'old' } }",
+        "release(); await settle(); await tick(90000); out.body = shown().body;",
     )
-    assert out == {"reloaded": 1, "polls": 2}
+    assert f'<div class="notice-sub">{_MOVED}</div>' in out["body"]
+
+
+def test_a_switch_whose_restart_an_update_refused_says_so_after_the_reload() -> None:
+    out = _switch(
+        "{ body: '', headers: { 'X-OpenFollow-Restart-Refused': 'An update is running.' } }",
+        "release(); await settle(); out.reloaded = reloaded; out.toasts = toasts; out.modal = shown();"
+        "await tick(2000); out.polls = urls().length;",
+    )
+    assert out == {
+        "reloaded": 1,
+        "toasts": [["Not restarted. An update is running.", "caution"]],
+        "modal": None,
+        "polls": 2,
+    }
 
 
 def test_a_switch_that_fails_closes_the_progress_and_puts_the_mode_back() -> None:
@@ -406,10 +438,11 @@ def test_a_switch_that_fails_closes_the_progress_and_puts_the_mode_back() -> Non
     assert out == {"modal": None, "error": "Not switched. Disk full.", "radios": [[False, False], [False, True]]}
 
 
-def test_a_switch_that_does_not_restart_shows_no_restart() -> None:
+def test_a_switch_that_does_not_restart_reloads_into_the_new_mode() -> None:
     out = _switch(
-        "{ body: '', headers: { 'HX-Refresh': 'true' } }",
-        "out.sent = shown(); release(); await settle(); out.reloaded = reloaded;",
+        "{ body: '' }",
+        "out.sent = shown(); release(); await settle(); out.reloaded = reloaded; out.toasts = toasts;"
+        "out.modal = shown(); await tick(2000); out.polls = urls().length;",
         restart=False,
     )
-    assert out == {"sent": None, "reloaded": 1}
+    assert out == {"sent": None, "reloaded": 1, "toasts": [], "modal": None, "polls": 2}

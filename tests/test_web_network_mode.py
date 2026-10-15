@@ -56,6 +56,11 @@ def present(monkeypatch):
     monkeypatch.setattr(net_utils_module, "auto_station_iface", lambda: "eth0")
 
 
+def _restart_headers(headers: dict) -> dict:
+    """What the answer tells the browser about a restart."""
+    return {k: v for k, v in headers.items() if k.startswith("x-openfollow-restart")}
+
+
 def _post_headers(base: str, path: str, data: dict) -> tuple[int, str, dict]:
     req = urllib.request.Request(
         f"{base}{path}",
@@ -356,11 +361,11 @@ def test_switching_to_simple_clears_every_pin_and_removes_the_vlans(net_server, 
         **{"otp_output.source_iface": "eth0.20", "osc.listen_iface": "eth0.20", "video_input_iface": "eth0"},
         interface_labels={"eth0": "Show LAN", "eth0.20": "Cue", "eth0.30": "Desk"},
     )
-    status, _body, headers = _post_headers(
+    status, body, headers = _post_headers(
         base, "/section/network/mode", {"network_mode": "simple", "vlans": ["eth0.20", "eth0.30"]}
     )
-    assert status == 200
-    assert headers.get("hx-refresh") == "true"
+    # Nothing to restart: the browser reloads into the new mode.
+    assert (status, body, _restart_headers(headers)) == (200, "", {})
     saved = _saved(tmp_path)
     assert saved.network_mode == "simple"
     assert (saved.otp_output.source_iface, saved.osc.listen_iface, saved.video_input_iface) == ("", "", "")
@@ -469,12 +474,11 @@ def test_a_web_ui_pin_in_force_restarts_openfollow(net_server, tmp_path, present
     )
     _fake, base = net_server
     status, body, headers = _post_headers(base, "/section/network/mode", {"network_mode": "simple"})
-    assert status == 200
+    assert (status, body) == (200, "")
     assert restarts == [True]
-    assert "hx-refresh" not in headers
     # Names the process being restarted, so the browser waits for a new one.
     _status, info = _get(base, "/api/info")
-    assert headers["x-openfollow-restarting"] == json.loads(info)["instance"]
+    assert _restart_headers(headers) == {"x-openfollow-restarting": json.loads(info)["instance"]}
     assert _saved(tmp_path).web_bind_iface == ""
 
 
@@ -493,7 +497,7 @@ def test_reposting_simple_never_restarts_again(net_server, tmp_path, present, mo
     )
     _fake, base = net_server
     status, _body, headers = _post_headers(base, "/section/network/mode", {"network_mode": "simple"})
-    assert (status, headers.get("hx-refresh"), restarts) == (200, "true", [])
+    assert (status, _restart_headers(headers), restarts) == (200, {}, [])
 
 
 def test_a_restart_refused_by_an_update_says_so(net_server, tmp_path, present, monkeypatch) -> None:  # noqa: F811
@@ -507,10 +511,9 @@ def test_a_restart_refused_by_an_update_says_so(net_server, tmp_path, present, m
     )
     monkeypatch.setattr(server_module.ConfigWebServer, "request_restart_unless_updating", lambda self: False)
     _fake, base = net_server
-    _status, _body, headers = _post_headers(base, "/section/network/mode", {"network_mode": "simple"})
-    # The page reloads into Simple, whose card offers the restart again.
-    assert headers.get("hx-refresh") == "true"
-    assert "x-openfollow-restarting" not in headers
+    _status, body, headers = _post_headers(base, "/section/network/mode", {"network_mode": "simple"})
+    # The browser says so, then reloads into Simple, whose card offers the restart again.
+    assert (body, _restart_headers(headers)) == ("", {"x-openfollow-restart-refused": "An update is running."})
     _status, card = _get(base, "/section/network/status")
     assert "The web UI answers on one interface until OpenFollow restarts." in card
     assert 'onclick="openfollowRestart(' in card
@@ -577,8 +580,8 @@ def test_switching_to_advanced_changes_only_the_mode(net_server, tmp_path, prese
     fake, base = net_server
     fake.vlans = [{"name": "eth0.20", "parent": "eth0", "vlan_id": 20}]
     _set(tmp_path, network_mode="simple", psn_source_iface="wlan0")
-    status, _body, headers = _post_headers(base, "/section/network/mode", {"network_mode": "advanced"})
-    assert (status, headers.get("hx-refresh")) == (200, "true")
+    status, body, headers = _post_headers(base, "/section/network/mode", {"network_mode": "advanced"})
+    assert (status, body, _restart_headers(headers)) == (200, "", {})
     saved = _saved(tmp_path)
     assert (saved.network_mode, saved.psn_source_iface) == ("advanced", "wlan0")
     assert fake.vlans_deleted == []

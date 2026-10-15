@@ -61,7 +61,6 @@
         <span class="modal-spinner" aria-hidden="true"></span><span class="net-busy-text"></span>
     </div>
 
-
     %# The mode decides what the rest of the page shows, so switching reloads it.
     %# Switching to Simple is confirmed when it clears a pin or removes a VLAN.
     <div class="group">
@@ -107,7 +106,7 @@
         <div class="notice warning" role="status">The web UI answers on one interface until OpenFollow restarts.
             <div class="actions">
                 <button type="button" class="danger"
-                        onclick="openfollowRestart({title: 'Restart OpenFollow?', message: 'Outputs pause until OpenFollow is back.', note: 'This page reloads when the station is back. If it does not, the web UI has moved - the station\'s Network screen lists the address that reaches it.', step: 'The web UI may have moved: the station\'s Network screen lists the address that reaches it.'})">Restart OpenFollow</button>
+                        onclick="openfollowRestart({title: 'Restart OpenFollow?', message: 'Outputs pause until OpenFollow is back.', note: NET_MOVED_NOTE, step: NET_MOVED_STEP})">Restart OpenFollow</button>
             </div>
         </div>
         % end

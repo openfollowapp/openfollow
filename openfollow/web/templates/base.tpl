@@ -2235,7 +2235,7 @@
  /* Status language boxes (docs/STATUS_LANGUAGE.md): one look per level, shared
  by the older class names; the level's sign sits in the left padding. Last in
  the block, so it wins over each class's layout-only rule above. */
- .notice, .update-notice, .restart-notice, .modal-error, .diag-error, .gallery-error,
+ .notice, .update-notice, .modal-error, .diag-error, .gallery-error,
  .wizard-action-required, .network-banner.network-banner-error, .network-banner.network-banner-ok,
  .network-banner.network-banner-info {
  position: relative;
@@ -2249,7 +2249,7 @@
  font-weight: 600;
  line-height: 1.4;
  }
- .notice::before, .update-notice::before, .restart-notice::before, .modal-error::before, .diag-error::before,
+ .notice::before, .update-notice::before, .modal-error::before, .diag-error::before,
  .gallery-error::before, .wizard-action-required::before, .network-banner.network-banner-error::before,
  .network-banner.network-banner-ok::before, .network-banner.network-banner-info::before {
  content: "";
@@ -2497,10 +2497,7 @@
  const radios = Array.from(group.querySelectorAll('input[name="network_mode"]'));
  const saveError = window.OpenFollow.saveError;
  const box = saveError.boxFor(group);
- // A switch that restarts OpenFollow shows the restart's progress while it is sent.
- let restarts = false;
  const fail = (info) => {
- if (restarts) closeModal();
  radios.forEach((radio) => { radio.disabled = false; radio.checked = radio.value === group.dataset.mode; });
  saveError.show(box, info, 'Not switched.');
  };
@@ -2521,9 +2518,8 @@
  }
  // Only what the dialog listed is removed.
  preview.remove.forEach((name) => body.append('vlans', name));
- restarts = preview.restart;
- if (restarts) openfollowRestartProgress();
  }
+ // No progress view while it is sent: removing a VLAN may ask for the password.
  const resp = await fetch('/section/network/mode', {
  method: 'POST',
  headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -2534,15 +2530,14 @@
  // The station names the process it is restarting, so the wait ends at a new one.
  const restarting = resp.headers.get('X-OpenFollow-Restarting');
  if (restarting) {
- if (!restarts) openfollowRestartProgress();
- openfollowAwaitRestart(restarting);
+ openfollowRestartProgress(NET_MOVED_NOTE);
+ openfollowAwaitRestart(restarting, NET_MOVED_STEP);
  return;
  }
- if (resp.headers.get('HX-Refresh') === 'true') { window.location.reload(); return; }
- if (restarts) closeModal();
- const region = document.getElementById('network-interface');
- region.innerHTML = await resp.text();
- htmx.process(region);
+ const refused = resp.headers.get('X-OpenFollow-Restart-Refused');
+ if (refused) toastOnNextLoad('Not restarted. ' + refused, 'caution');
+ // The mode decides which sections the page shows.
+ window.location.reload();
  } catch (err) {
  fail(saveError.UNREACHABLE);
  }
@@ -4016,6 +4011,10 @@
  // Every restart shows one locked progress view, which stays until /api/info answers from a
  // new process and the page reloads; ``note`` replaces its second line.
  const RESTART_WAIT_MS = 90000;
+ // For a restart that may move the web UI to another address.
+ const NET_MOVED_NOTE = 'This page reloads when the station is back. If it does not, the web UI has moved'
+ + ' - the station\'s Network screen lists the address that reaches it.';
+ const NET_MOVED_STEP = 'The web UI may have moved: the station\'s Network screen lists the address that reaches it.';
  function openfollowRestartProgress(note) {
  openModal({
  title: 'Restart OpenFollow',

@@ -787,6 +787,10 @@ class ConfigWebServer:
         """Signal that app restart was requested."""
         self._command_queue.request_restart()
 
+    def is_update_busy(self) -> bool:
+        """True while an update is queued or running."""
+        return self._command_queue.is_update_busy()
+
     def request_restart_unless_updating(self) -> bool:
         """Request a restart unless an update is queued or running; False when refused."""
         return self._command_queue.request_restart_unless_updating()

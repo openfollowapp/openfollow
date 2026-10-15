@@ -30,7 +30,7 @@ _Canvas = tuple[int, int, tuple[float, float]]
 # A run of pictures spanning this many refreshes, each within this share of a shorter interval, takes the least such.
 _STEADY_REFRESHES = 120
 _STEP_DOWN_SHARE = 0.7
-# Misses within this many refreshes that lengthen the interval; fewer are shown late and change nothing.
+# Misses among the latest ceil(_MISS_REFRESHES / interval) pictures that lengthen the interval; fewer change nothing.
 _MISSES_TO_LENGTHEN = 3
 _MISS_REFRESHES = 60
 _PERIOD_SAMPLES = 16
@@ -40,11 +40,13 @@ class _Pacing:
     """How many refreshes every picture is held for, so each reaches the screen equally late."""
 
     refreshes: int
+    _floor: int
     _took: deque[float]
     _held: deque[int]
 
     def __init__(self) -> None:
         self._ticks: deque[float] = deque(maxlen=_PERIOD_SAMPLES + 1)
+        self._floor = 1
         self._set(1)
 
     def refreshed(self, now: float) -> None:
@@ -56,12 +58,16 @@ class _Pacing:
         self._took.append(took_s)
         missed = [h for h in self._held if h > self.refreshes]
         if len(missed) >= _MISSES_TO_LENGTHEN:
+            # No step down back to the interval that failed until a steady window at the one above it.
+            self._floor = self.refreshes + 1
             self._set(min(missed))
         elif self.refreshes > 1 and len(self._took) == self._took.maxlen:
+            if self.refreshes == self._floor:
+                self._floor = 1
             period = statistics.median(b - a for a, b in pairwise(self._ticks))
             longest = max(self._took)
-            # Straight to the least that fits, so the long interval after a stall recovers in one window.
-            fits = (n for n in range(1, self.refreshes) if longest <= _STEP_DOWN_SHARE * n * period)
+            # Straight to the least that fits, so the long interval after a stall recovers in two windows.
+            fits = (n for n in range(self._floor, self.refreshes) if longest <= _STEP_DOWN_SHARE * n * period)
             if (shorter := next(fits, None)) is not None:
                 self._set(shorter)
 
@@ -81,8 +87,9 @@ class HudRenderThread:
     reaches the screen equally late, whatever else repaints the HUD in between. A
     lone picture that misses its refresh is shown late; repeated misses lengthen the
     interval to what they needed, and a run of pictures with room to spare shortens
-    it to the least interval they all fit. With no display there are no refreshes,
-    and nothing is drawn.
+    it to the least interval they all fit, kept above the interval that last failed
+    until a steady run just above it. With no display there are no refreshes, and
+    nothing is drawn.
 
     ``tick`` and ``paint`` run on the GTK main thread; only the render thread calls
     the renderer's ``draw``. Two pictures take turns: a new one starts only at a

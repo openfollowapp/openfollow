@@ -430,8 +430,11 @@ def test_one_very_slow_picture_among_repeated_misses_does_not_set_the_interval(p
     assert [_refreshes_to_show(hud, clock) for _ in range(5)] == [2, 2, 2, 2, 2]
 
 
-@pytest.mark.parametrize(("draw_refreshes", "fits"), [(0.0, 1), (0.1, 1), (1.5, 3), (2.5, 4)])
-def test_two_seconds_of_quick_pictures_take_the_least_interval_they_all_fit(paced, clock, draw_refreshes, fits) -> None:
+# Lengthened from 1, so no shorter than 2 until a steady run there.
+@pytest.mark.parametrize(("draw_refreshes", "fits"), [(0.0, 2), (0.1, 2), (1.5, 3), (2.5, 4)])
+def test_two_seconds_of_quick_pictures_take_the_least_interval_they_all_fit_above_the_one_that_failed(
+    paced, clock, draw_refreshes, fits
+) -> None:
     hud, renderer = paced
     hud.tick()
     _refreshes_to_show(hud, clock)
@@ -441,15 +444,29 @@ def test_two_seconds_of_quick_pictures_take_the_least_interval_they_all_fit(pace
     assert held == [5] * 24 + [fits] * 36
 
 
-def test_the_interval_after_a_stall_comes_back_after_two_seconds_of_quick_pictures(paced, clock) -> None:
+def test_the_interval_after_a_stall_comes_back_after_four_seconds_of_quick_pictures(paced, clock) -> None:
     hud, renderer = paced
     hud.tick()
     _refreshes_to_show(hud, clock)
     renderer.draw_s = 0.5 - 29 * clock.refresh_s
     _lengthen(hud, clock, renderer, refreshes=29)  # a 1.5 s stall: three pictures of half a second each
     renderer.draw_s = 0.005
-    held = [_refreshes_to_show(hud, clock) for _ in range(10)]
-    assert held == [30] * 4 + [1] * 6
+    held = [_refreshes_to_show(hud, clock) for _ in range(70)]
+    assert held == [30] * 4 + [2] * 60 + [1] * 6
+
+
+def test_a_slow_picture_every_twentieth_settles_on_one_interval(paced, clock) -> None:
+    hud, renderer = paced
+    hud.tick()
+    _refreshes_to_show(hud, clock)
+    renderer.draw_s = 0.3 * clock.refresh_s
+    held = []
+    for _ in range(30):
+        held += [_refreshes_to_show(hud, clock) for _ in range(18)]
+        _miss_one_refresh(hud, clock, renderer, refreshes=7)  # one quick picture, then one held eight refreshes
+    intervals = [n for i, n in enumerate(held) if i == 0 or n != held[i - 1]]
+    assert intervals == [1, 8, 2], "it settles where the slow picture misses alone"
+    assert held[-300:] == [2] * 300
 
 
 def test_a_picture_missing_once_a_second_does_not_lengthen_the_interval(paced, clock) -> None:

@@ -30,7 +30,7 @@ _Canvas = tuple[int, int, tuple[float, float]]
 # A run of pictures spanning this many refreshes, each within this share of a shorter interval, takes the least such.
 _STEADY_REFRESHES = 120
 _STEP_DOWN_SHARE = 0.7
-# Misses among the latest ceil(_MISS_REFRESHES / interval) pictures that lengthen the interval; fewer change nothing.
+# This many misses among the latest max(this many, ceil(_MISS_REFRESHES / interval)) pictures lengthen the interval.
 _MISSES_TO_LENGTHEN = 3
 _MISS_REFRESHES = 60
 _PERIOD_SAMPLES = 16
@@ -75,7 +75,7 @@ class _Pacing:
         self.refreshes = refreshes
         # Every picture is held at least ``refreshes`` refreshes, so this many span each window.
         self._took = deque(maxlen=math.ceil(_STEADY_REFRESHES / refreshes))
-        self._held = deque(maxlen=math.ceil(_MISS_REFRESHES / refreshes))
+        self._held = deque(maxlen=max(_MISSES_TO_LENGTHEN, math.ceil(_MISS_REFRESHES / refreshes)))
 
 
 class HudRenderThread:

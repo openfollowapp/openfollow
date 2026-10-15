@@ -74,9 +74,10 @@ class _Renderer:
         self.draw_s = 0.0
 
     def draw(self, cr: Any, width: int, height: int, state: Any) -> None:
-        self.started.set()
-        if self.gate is not None:
-            self.gate.wait(WAIT_S)
+        gate = self.gate
+        self.started.set()  # after reading the gate, so a test may swap it once this is set
+        if gate is not None:
+            gate.wait(WAIT_S)
         if self.clock is not None:
             self.clock.now += self.draw_s
         if self.raise_next:
@@ -397,6 +398,23 @@ def _miss_one_refresh(hud: HudRenderThread, clock: _Clock, renderer: _Renderer, 
     assert _refreshes_to_show(hud, clock) == 1
 
 
+def _miss_in_a_row(hud: HudRenderThread, clock: _Clock, renderer: _Renderer, refreshes: int, count: int) -> None:
+    """Show a picture, then hold each of the next ``count`` in the drawing for ``refreshes`` refreshes."""
+    _finished(clock)
+    renderer.started.clear()
+    renderer.gate = threading.Event()
+    _count_to_show(hud, clock)  # shows the picture before and starts the first held one
+    for left in reversed(range(count)):
+        assert renderer.started.wait(WAIT_S)
+        renderer.started.clear()
+        for _ in range(refreshes):
+            assert _refresh(hud, clock) is False
+        # The refresh that shows this one starts the next, held by the gate set here.
+        gate, renderer.gate = renderer.gate, threading.Event() if left else None
+        gate.set()
+        assert _refreshes_to_show(hud, clock) == 1
+
+
 def _lengthen(hud: HudRenderThread, clock: _Clock, renderer: _Renderer, refreshes: int) -> None:
     """Three pictures in a row that each need ``refreshes + 1`` refreshes."""
     for _ in range(3):
@@ -453,6 +471,15 @@ def test_the_interval_after_a_stall_comes_back_after_four_seconds_of_quick_pictu
     renderer.draw_s = 0.005
     held = [_refreshes_to_show(hud, clock) for _ in range(70)]
     assert held == [30] * 4 + [2] * 60 + [1] * 6
+
+
+def test_pictures_that_keep_missing_a_long_interval_lengthen_it_again(paced, clock) -> None:
+    hud, renderer = paced
+    hud.tick()
+    _refreshes_to_show(hud, clock)
+    _lengthen(hud, clock, renderer, refreshes=30)
+    _miss_in_a_row(hud, clock, renderer, refreshes=39, count=3)  # at 31, each needed forty refreshes
+    assert [_refreshes_to_show(hud, clock) for _ in range(3)] == [40, 40, 40]
 
 
 def test_a_slow_picture_every_twentieth_settles_on_one_interval(paced, clock) -> None:

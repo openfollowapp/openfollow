@@ -25,7 +25,6 @@ from openfollow.runtime.overlay_state import (
 from openfollow.runtime.paths_runtime import RECORDING_FLAG, recording_row
 from openfollow.runtime.services_detection_pin import is_assist_controlled
 from openfollow.runtime.state_maps import get_or_create, prune_to_keep
-from openfollow.runtime_metrics import OverlayStatePool
 from openfollow.station_fqdn import web_ui_host
 from openfollow.units import UnitSystem
 from openfollow.video.failure import SourceKind, VideoFailure, failure_action, failure_chip, failure_sentence
@@ -334,7 +333,6 @@ _SIMPLE_NETWORK_TITLES = {
 def _populate_pi_network_overlay(app: Any, state: OverlayState) -> None:
     """Snapshot the Network screens for draw-pass consumption."""
     target = state.pi_network
-    target.reset()
     target.screen_active = bool(getattr(app, "_pi_network_active", False))
     if target.screen_active:
         from openfollow.runtime.app_modes_network import build_pi_network_rows
@@ -454,14 +452,13 @@ def build_initial_overlay_state(cfg: Any) -> OverlayState:
 def build_marker_visual_state(
     app: Any,
     *,
-    overlay_state_pool: OverlayStatePool,
     system_stats: Any,
     person_detector: Any,
     cam_params_buffer: npt.NDArray[Any],
     dt: float,
     network_alerts: list[str] | None = None,
 ) -> OverlayState:
-    """Build a complete OverlayState snapshot for atomic renderer swap.
+    """Build a new OverlayState for the renderer; it is never changed once handed over.
 
     ``dt`` is the real seconds elapsed since the previous animate frame - not
     the clamped motion step - because it divides a displacement into a rate for
@@ -504,7 +501,7 @@ def build_marker_visual_state(
     # The card an Identify has lit this frame, if any.
     flash_marker = app._input_manager.identify_flash_marker() if app._input_manager is not None else None
 
-    state = overlay_state_pool.acquire()
+    state = OverlayState()
 
     # The actually-bound port from the running web server so the HUD reflects
     # reachability, not just configuration. Falls back to the configured port
@@ -625,8 +622,6 @@ def build_marker_visual_state(
     _populate_pi_network_overlay(app, state)
 
     cfg = app._config
-    pool = state._marker_pool
-    marker_idx = 0
     # Marker-fader bus for the per-marker fader value shown on each card.
     # Same ``getattr`` boot / mid-restart guard as the fader-stack build
     # below; ``None`` → no marker-fader value on any card this frame.
@@ -701,24 +696,8 @@ def build_marker_visual_state(
             if anchor is not None:
                 px, py, pz = anchor.pos
 
-        if marker_idx < len(pool):
-            td = pool[marker_idx]
-            td.marker_id = marker_id
-            td.x = px
-            td.y = py
-            td.z = pz
-            td.color = color
-            td.radius = cfg.marker.ball_size
-            td.speed = speed
-            td.online = online
-            td.controller_idx = ctrl_idx
-            td.controller_connected = ctrl_conn
-            td.identify_flash = marker_id == flash_marker
-            td.is_controlled = is_controlled
-            td.name = name
-            td.marker_fader = marker_fader
-        else:
-            td = MarkerOverlayData(
+        state.markers.append(
+            MarkerOverlayData(
                 marker_id=marker_id,
                 x=px,
                 y=py,
@@ -734,8 +713,7 @@ def build_marker_visual_state(
                 name=name,
                 marker_fader=marker_fader,
             )
-        state.markers.append(td)
-        marker_idx += 1
+        )
 
     # The dim AI-output ghosts are scene-only (no card, filtered in the HUD loop);
     # each marks where one marker's AI-corrected output is actually broadcast while

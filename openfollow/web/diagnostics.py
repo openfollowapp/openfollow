@@ -222,6 +222,8 @@ class DiagnosticsProviders:
     # The network bind map: the Interface Assignment panel's rows, and every
     # network plane as the observer last left it.
     interface_assignment_rows: Callable[[], list[dict[str, Any]]] | None = None
+    # "simple" or "advanced": whether those rows can be set one by one.
+    network_mode: Callable[[], str] | None = None
     network_planes: Callable[[], list[dict[str, Any]]] | None = None
     # Where each interface's address came from, read now; raises when the
     # network backend cannot be read, ``None`` when it cannot say.
@@ -820,7 +822,12 @@ def collect_network_bind_map(p: DiagnosticsProviders) -> list[str]:
     the operator configured, the planes are what the runtime is doing, and a
     disagreement between them is the finding.
     """
+    mode_line: list[str] = []
+    if p.network_mode is not None:
+        mode, err = _safely_value(p.network_mode, "network_mode", "")
+        mode_line = [f"  Network mode: {err or str(mode).capitalize() or '?'}"]
     return [
+        *mode_line,
         "  Configured (as the Network Interface Assignment panel shows it):",
         *_bind_map_configured(p),
         "  Runtime (what each network plane holds now):",

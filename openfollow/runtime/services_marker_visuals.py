@@ -11,7 +11,7 @@ from typing import Any
 
 import numpy.typing as npt
 
-from openfollow.configuration import MOUSE3D_AXES, MOUSE3D_BUTTON_FIELDS, GridConfig
+from openfollow.configuration import MOUSE3D_AXES, MOUSE3D_BUTTON_FIELDS, GridConfig, is_simple_mode
 from openfollow.network.validate import is_link_local
 from openfollow.palette import AUTO_PICK_ORDER as _PALETTE_AUTO_PICK_ORDER
 from openfollow.runtime.marker_velocity import MarkerVelocityState, estimate_marker_velocity
@@ -323,6 +323,14 @@ def _populate_media_overlay(app: Any, state: OverlayState) -> None:
     )
 
 
+# Simple network mode's screens, by which picker is open: (title, subtitle).
+_SIMPLE_NETWORK_TITLES = {
+    "": ("Network", "The interface that carries this station's traffic."),
+    "interface": ("Interface", "Every function moves to the one chosen."),
+    "method": ("Configure IPv4", "How the interface gets its address."),
+}
+
+
 def _populate_pi_network_overlay(app: Any, state: OverlayState) -> None:
     """Snapshot the Network screens for draw-pass consumption."""
     target = state.pi_network
@@ -335,7 +343,10 @@ def _populate_pi_network_overlay(app: Any, state: OverlayState) -> None:
         target.selected_index = int(getattr(app, "_pi_network_index", 0))
         target.active_iface = str(getattr(app, "_pi_network_active_iface", ""))
         target.open_iface = str(getattr(app, "_pi_network_open_iface", ""))
-        if target.open_iface:
+        simple_title = _SIMPLE_NETWORK_TITLES.get(str(getattr(app, "_pi_network_picker", "") or ""))
+        if is_simple_mode(getattr(app, "_config", None)) and simple_title:
+            target.title, target.subtitle = simple_title
+        elif target.open_iface:
             from openfollow.net_adapters import display_name
 
             labels = getattr(getattr(app, "_config", None), "interface_labels", None) or {}
@@ -543,12 +554,13 @@ def build_marker_visual_state(
     state.source_label = video_receiver.source_name
     state.reconnect_attempt = status.reconnect_attempt
     state.error_message = status.error_message
+    simple = is_simple_mode(app._config)
     # UNKNOWN contributes no sentence anywhere: it would sit beside the
     # element's own wording and contradict it.
     state.video_failure_action = (
         ""
         if status.failure is VideoFailure.NONE
-        else failure_action(status.failure, kind=_receiver_kind(video_receiver))
+        else failure_action(status.failure, kind=_receiver_kind(video_receiver), simple=simple)
     )
     state.video_failure_text = (
         ""
@@ -560,6 +572,7 @@ def build_marker_visual_state(
             status.failure,
             where=status.source_name,
             kind=_receiver_kind(video_receiver),
+            simple=simple,
         )
     )
     state.source_selection_active = video_receiver.source_selection_active

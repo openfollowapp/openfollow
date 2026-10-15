@@ -243,6 +243,21 @@ def test_bind_map_lists_the_panel_rows_as_configured() -> None:
     assert configured["Odd row"].split()[-2:] == ["(blank)", "-"]
 
 
+@pytest.mark.parametrize(
+    ("provider", "line"),
+    [
+        (lambda: "simple", "  Network mode: Simple"),
+        (lambda: "advanced", "  Network mode: Advanced"),
+        (lambda: 1 / 0, "  Network mode: [unavailable: network_mode:"),
+    ],
+    ids=["simple", "advanced", "raising"],
+)
+def test_bind_map_names_the_network_mode_first(provider: Any, line: str) -> None:
+    rows = _bind_map(network_mode=provider, interface_assignment_rows=lambda: _PANEL_ROWS)
+    assert rows[0].startswith(line)
+    assert rows[1] == "  Configured (as the Network Interface Assignment panel shows it):"
+
+
 def test_bind_map_lists_every_plane_as_it_runs() -> None:
     rows = _bind_map(interface_assignment_rows=lambda: _PANEL_ROWS, network_planes=lambda: _PLANES)
     start = rows.index("  Runtime (what each network plane holds now):")

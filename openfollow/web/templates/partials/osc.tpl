@@ -35,6 +35,7 @@
                 <span id="osc-multicast-group-error" class="field-error"></span>
             </div>
         </div>
+        % if config.network_mode == 'advanced':
         <div class="row">
             <div class="field" style="flex: 1 1 100%;">
                 <label>Multicast Interface</label>
@@ -48,6 +49,7 @@
                 </div>
             </div>
         </div>
+        % end
         <div class="row">
             <div class="field" style="flex: 1 1 100%;">
                 <label>Allowed sender IPs</label>

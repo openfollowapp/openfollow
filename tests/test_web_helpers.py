@@ -149,7 +149,7 @@ def test_interface_assignment_get_matches_what_post_accepts() -> None:
     """GET used to 404 while POST silently wrote – the two must agree."""
     from openfollow.web.routes import _INTERFACE_ASSIGNMENT_TARGETS, get_section_data
 
-    cfg = AppConfig(psn_source_iface="eth0")
+    cfg = AppConfig(network_mode="advanced", psn_source_iface="eth0")
     cfg.otp_output.source_iface = "eth1"
     cfg.osc_destinations.destinations[0].source_iface = "eth2"
     data = get_section_data(cfg, "interface_assignment")
@@ -160,7 +160,7 @@ def test_interface_assignment_get_matches_what_post_accepts() -> None:
     assert data["osc_destinations.default.source_iface"] == "eth2"
 
     # Everything GET returns, POST writes back to the same place.
-    fresh = AppConfig()
+    fresh = AppConfig(network_mode="advanced")
     assert apply_section_data(fresh, "interface_assignment", data) is True
     assert get_section_data(fresh, "interface_assignment") == data
 
@@ -1193,7 +1193,7 @@ def test_apply_import_data_preserves_otp_source_iface(local_pin: str) -> None:
     station's OTP output onto whatever adapter here shares the other box's name."""
     from openfollow.web.routes import _apply_import_data
 
-    current = AppConfig()
+    current = AppConfig(network_mode="advanced")
     current.otp_output.source_iface = local_pin
 
     imported = {"otp_output": {"source_iface": "eth_foreign", "port": 5569}}
@@ -1220,7 +1220,7 @@ def test_import_keeps_this_stations_destination_pins_by_id() -> None:
     from openfollow.configuration import OscDestinationConfig, OscDestinationsConfig
     from openfollow.web.routes import _apply_import_data
 
-    current = AppConfig()
+    current = AppConfig(network_mode="advanced")
     current.osc_destinations = OscDestinationsConfig(
         destinations=[
             OscDestinationConfig(id="foh", host="198.51.100.20", source_iface="eth1"),
@@ -1245,7 +1245,7 @@ def test_import_keeps_this_stations_destination_pins_by_id() -> None:
 def test_import_keeps_this_stations_rttrpm_pin() -> None:
     from openfollow.web.routes import _apply_import_data
 
-    current = AppConfig()
+    current = AppConfig(network_mode="advanced")
     current.rttrpm_output.source_iface = "eth1"
     new = _apply_import_data(current, {"rttrpm_output": {"source_iface": "eth_foreign", "port": 36701}})
     assert new.rttrpm_output.source_iface == "eth1"
@@ -1311,7 +1311,7 @@ def test_apply_import_data_preserves_osc_listen_iface() -> None:
     subscription."""
     from openfollow.web.routes import _apply_import_data
 
-    current = AppConfig()
+    current = AppConfig(network_mode="advanced")
     current.osc.listen_iface = "eth_local"
 
     imported = {"osc": {"listen_iface": "eth_foreign", "port": 9001}}
@@ -1326,7 +1326,7 @@ def test_the_video_input_pin_never_leaves_this_station() -> None:
     move another station's camera onto whatever adapter shares the name."""
     from openfollow.web.routes import _apply_import_data
 
-    cfg = AppConfig(video_source_type="srt", video_input_iface="eth1")
+    cfg = AppConfig(network_mode="advanced", video_source_type="srt", video_input_iface="eth1")
     assert "video_input_iface" not in _config_dict_redacted(cfg)
     scrubbed = strip_device_local_fields(
         "video_source", {"srt_host": "srt://192.0.2.20:5000", "video_input_iface": "eth1"}
@@ -1615,6 +1615,7 @@ _DEVICE_IDENTITY_SAMPLES = [
     ("web_bind", "0.0.0.0"),
     ("web_bind_iface", "eth1"),
     ("station_fqdn", "of-1.stage.example.com"),
+    ("network_mode", "advanced"),
     ("station_id", "f0e1d2c3b4a59687f0e1d2c3b4a59687"),
     ("markers_catalog_path", "/mnt/nvme/openfollow/markers.toml"),
     ("testpattern_selected_media", "0123456789abcdef"),

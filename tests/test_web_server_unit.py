@@ -1449,7 +1449,7 @@ def test_a_web_bind_iface_pin_still_serves_the_on_screen_browser(tmp_path, monke
         "net_if_addrs",
         lambda: {"eth1": [SimpleNamespace(family=_socket.AF_INET, address="172.16.4.20")]},
     )
-    cfg = AppConfig(web_bind_iface="eth1")
+    cfg = AppConfig(network_mode="advanced", web_bind_iface="eth1")
     host, _status = resolve_web_bind(cfg.web_bind, cfg.web_bind_iface)
     assert host == "172.16.4.20"
     assert _make_quiet_server(tmp_path, monkeypatch, host=host)._needs_loopback_listener() is True

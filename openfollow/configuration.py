@@ -2649,6 +2649,84 @@ class UiConfig:
         self.developer_mode = _coerce_bool(self.developer_mode, False)
 
 
+NETWORK_MODE_SIMPLE = "simple"
+NETWORK_MODE_ADVANCED = "advanced"
+NETWORK_MODES = (NETWORK_MODE_SIMPLE, NETWORK_MODE_ADVANCED)
+
+
+# Every per-plane interface pin, plus the web UI's: (form key, owning section or
+# None for top level, field, the Assignment panel's name for it). Each OSC
+# destination's ``source_iface`` is one more, keyed by its id.
+PLANE_PIN_FIELDS: tuple[tuple[str, str | None, str, str], ...] = (
+    ("otp_output.source_iface", "otp_output", "source_iface", "OTP output"),
+    ("rttrpm_output.source_iface", "rttrpm_output", "source_iface", "RTTrPM output"),
+    ("osc.listen_iface", "osc", "listen_iface", "OSC input"),
+    ("video_input_iface", None, "video_input_iface", "Video input"),
+    ("web_bind_iface", None, "web_bind_iface", "Web UI"),
+)
+
+
+def plane_pin_key(dest_id: str) -> str:
+    """The form key of an OSC destination's pin."""
+    return f"osc_destinations.{dest_id}.source_iface"
+
+
+def plane_pins(cfg: AppConfig) -> list[tuple[str, str]]:
+    """Every per-plane interface pin that is set, plus ``web_bind_iface``, as ``(key, iface)``.
+
+    ``psn_source_iface`` is the station interface, not a per-plane pin, and
+    ``web_bind`` is config-only.
+    """
+    pins = [(key, getattr(getattr(cfg, owner) if owner else cfg, name)) for key, owner, name, _ in PLANE_PIN_FIELDS]
+    # In the Assignment panel's order: the destinations follow OSC input.
+    after_osc = [key for key, *_ in PLANE_PIN_FIELDS].index("osc.listen_iface") + 1
+    pins[after_osc:after_osc] = [
+        (plane_pin_key(dest.id), dest.source_iface) for dest in cfg.osc_destinations.destinations
+    ]
+    return [(key, value) for key, value in pins if isinstance(value, str) and value.strip()]
+
+
+def enforce_network_mode(cfg: AppConfig) -> None:
+    """Clear every per-plane pin and ``web_bind_iface`` in Simple: Simple never holds a hidden pin."""
+    if cfg.network_mode != NETWORK_MODE_SIMPLE:
+        return
+    for _key, owner, name, _label in PLANE_PIN_FIELDS:
+        setattr(getattr(cfg, owner) if owner else cfg, name, "")
+    for dest in cfg.osc_destinations.destinations:
+        dest.source_iface = ""
+
+
+def _coerce_network_mode(cfg: AppConfig) -> str:
+    """``network_mode`` read case- and space-blind; anything else is the mode the pins imply.
+
+    That is also how a config without the field starts: Advanced when it pins a
+    plane or the web UI (VLANs and labels do not count), else Simple. A typo
+    must never read as Simple and erase every pin.
+    """
+    raw = cfg.network_mode.strip().lower() if isinstance(cfg.network_mode, str) else None
+    if raw in NETWORK_MODES:
+        return str(raw)
+    return NETWORK_MODE_ADVANCED if plane_pins(cfg) else NETWORK_MODE_SIMPLE
+
+
+def network_mode_unsaved(path: str) -> bool:
+    """Whether the config file at ``path`` reads but records no ``network_mode``.
+
+    A file that does not read says nothing: the config may have come from the
+    backup, and saving over the original would discard what the operator wrote.
+    """
+    try:
+        with open(path, "rb") as f:
+            return "network_mode" not in tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError):
+        return False
+
+
+def is_simple_mode(cfg: Any) -> bool:
+    """Whether ``cfg`` is in Simple network mode; anything without the field reads as Advanced."""
+    return getattr(cfg, "network_mode", NETWORK_MODE_ADVANCED) == NETWORK_MODE_SIMPLE
+
+
 @dataclass
 class AppConfig:
     # Video source
@@ -2718,6 +2796,9 @@ class AppConfig:
     # This station's name on a venue's DNS. Blank = only its ``<host>.local`` name.
     # Device-local: it names this box.
     station_fqdn: str = ""
+    # "simple": the station interface carries every plane; "advanced": per-plane
+    # pins. Device-local. A config without it starts in the mode its pins imply.
+    network_mode: str = NETWORK_MODE_SIMPLE
 
     # Web-triggered update settings (signed-.deb GitHub-release installer)
     update_github_repo: str = "openfollowapp/openfollow"
@@ -2801,6 +2882,8 @@ class AppConfig:
         self.video_input_iface = self.video_input_iface.strip()
         self.interface_labels = normalize_labels(self.interface_labels)
         self.station_fqdn = normalize_fqdn(self.station_fqdn)
+        self.network_mode = _coerce_network_mode(self)
+        enforce_network_mode(self)
         # Strip ``psn_source_iface`` so whitespace doesn't look like a value
         # change each load and trigger a needless rebind cycle.
         if not isinstance(self.psn_source_iface, str):
@@ -3137,6 +3220,9 @@ def load_config(path: str = "config.toml", *, strict: bool = False, missing_ok: 
             from openfollow.net_utils import get_iface_for_ip
 
             _otp["source_iface"] = get_iface_for_ip(_legacy_otp_ip.strip())
+
+    # Missing, it is decided from the pins (``_coerce_network_mode``).
+    data.setdefault("network_mode", None)
 
     # Build sub-config instances from their TOML sections
     sub_kwargs: dict[str, Any] = {}
@@ -3639,6 +3725,14 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
     # looping on subsequent passes.
     if new_config.web_pin != app._config.web_pin:
         app._config.web_pin = new_config.web_pin
+    # Read live by the Network screen, the labels and the video wording; the
+    # pins it clears arrive through their own sections above.
+    if new_config.network_mode != app._config.network_mode:
+        app._config.network_mode = new_config.network_mode
+    # The listener moves only on a restart, but a whole-config save must not
+    # write a cleared pin back, and the Network screen reads the saved one.
+    if new_config.web_bind_iface != app._config.web_bind_iface:
+        app._config.web_bind_iface = new_config.web_bind_iface
     # Read live by the HUD's outage rows and the Network screen; nothing to rebind.
     if new_config.interface_labels != app._config.interface_labels:
         app._config.interface_labels = dict(new_config.interface_labels)
@@ -3733,6 +3827,10 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
             app._config.video_source_type = old_video_source_type
             for name, value in old_field_values.items():
                 setattr(app._config, name, value)
+    # The swap commits the video pin only for an input it rebuilds; a pin Simple cleared may need
+    # no rebuild, and must not stay in the running config for a whole-config save to write back.
+    if not getattr(app, "_video_swap_owed", False) and new_config.video_input_iface != app._config.video_input_iface:
+        app._config.video_input_iface = new_config.video_input_iface
 
     # The other inputs' fields drive nothing until their input runs, so they are
     # mirrored as they are: a later switch to one is built from the file's values.

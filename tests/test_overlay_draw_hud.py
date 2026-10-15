@@ -2335,6 +2335,15 @@ class TestTheSettingsMenuMarksWhatOpensAScreen:
 
 
 class TestDrawPiNetworkScreen:
+    def test_a_simple_screen_draws_its_own_title_and_subtitle(self) -> None:
+        state = _base_state(pi_network=_network_state(title="Network", subtitle="One interface."))
+        cr = FakeCairo()
+        draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
+        texts = cr.show_text_strings()
+        assert "NETWORK" in texts
+        assert "One interface." in texts
+        assert "NETWORK INTERFACES" not in texts
+
     def test_a_row_that_opens_a_screen_is_marked(self, chevrons: list) -> None:
         """A d-pad menu otherwise hides which rows take you somewhere until
         you have already pressed one."""

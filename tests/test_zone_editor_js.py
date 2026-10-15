@@ -117,7 +117,8 @@ def _editor(steps: str, setup: str = "") -> Any:
     )
     node = shutil.which("node")
     assert node is not None
-    done = subprocess.run([node, "-e", source], capture_output=True, text=True, timeout=20)  # nosec B603
+    # On stdin: the editor script outgrows the 128 KiB a single argv string may hold.
+    done = subprocess.run([node, "-"], input=source, capture_output=True, text=True, timeout=20)  # nosec B603
     assert done.returncode == 0, done.stderr
     return json.loads(done.stdout)
 

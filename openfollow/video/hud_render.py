@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 # Canvas size in units and its device scale.
 _Canvas = tuple[int, int, tuple[float, float]]
 
-# A run of pictures spanning this many refreshes, each within this share of a shorter interval, takes that interval.
+# A run of pictures spanning this many refreshes, each within this share of a shorter interval, takes the least such.
 _STEADY_REFRESHES = 120
 _STEP_DOWN_SHARE = 0.7
 # Misses within this many refreshes that lengthen the interval; fewer are shown late and change nothing.
@@ -59,8 +59,11 @@ class _Pacing:
             self._set(min(missed))
         elif self.refreshes > 1 and len(self._took) == self._took.maxlen:
             period = statistics.median(b - a for a, b in pairwise(self._ticks))
-            if max(self._took) <= _STEP_DOWN_SHARE * (self.refreshes - 1) * period:
-                self._set(self.refreshes - 1)
+            longest = max(self._took)
+            # Straight to the least that fits, so the long interval after a stall recovers in one window.
+            fits = (n for n in range(1, self.refreshes) if longest <= _STEP_DOWN_SHARE * n * period)
+            if (shorter := next(fits, None)) is not None:
+                self._set(shorter)
 
     def _set(self, refreshes: int) -> None:
         self.refreshes = refreshes
@@ -78,7 +81,8 @@ class HudRenderThread:
     reaches the screen equally late, whatever else repaints the HUD in between. A
     lone picture that misses its refresh is shown late; repeated misses lengthen the
     interval to what they needed, and a run of pictures with room to spare shortens
-    it by one. With no display there are no refreshes, and nothing is drawn.
+    it to the least interval they all fit. With no display there are no refreshes,
+    and nothing is drawn.
 
     ``tick`` and ``paint`` run on the GTK main thread; only the render thread calls
     the renderer's ``draw``. Two pictures take turns: a new one starts only at a

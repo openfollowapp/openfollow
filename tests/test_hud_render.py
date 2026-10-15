@@ -73,7 +73,7 @@ class _Renderer:
         self.clock = clock
         self.draw_s = 0.0
 
-    def draw(self, cr: Any, width: int, height: int, state: Any = None) -> None:
+    def draw(self, cr: Any, width: int, height: int, state: Any) -> None:
         self.started.set()
         if self.gate is not None:
             self.gate.wait(WAIT_S)
@@ -373,7 +373,7 @@ def _finished(clock: _Clock) -> None:
 
 def _count_to_show(hud: HudRenderThread, clock: _Clock) -> int:
     """Count the refreshes until one shows a picture."""
-    for count in range(1, 30):
+    for count in range(1, 60):
         if _refresh(hud, clock):
             return count
     raise AssertionError("the finished picture was never shown")
@@ -430,15 +430,26 @@ def test_one_very_slow_picture_among_repeated_misses_does_not_set_the_interval(p
     assert [_refreshes_to_show(hud, clock) for _ in range(5)] == [2, 2, 2, 2, 2]
 
 
-def test_the_interval_shortens_one_step_at_a_time_each_after_the_same_refreshes(paced, clock) -> None:
+@pytest.mark.parametrize(("draw_refreshes", "fits"), [(0.0, 1), (0.1, 1), (1.5, 3), (2.5, 4)])
+def test_two_seconds_of_quick_pictures_take_the_least_interval_they_all_fit(paced, clock, draw_refreshes, fits) -> None:
     hud, renderer = paced
     hud.tick()
     _refreshes_to_show(hud, clock)
     _lengthen(hud, clock, renderer, refreshes=4)
-    renderer.draw_s = 0.1 * clock.refresh_s
-    held = [_refreshes_to_show(hud, clock) for _ in range(160)]
-    # Two seconds of quick pictures per step, however long each one is held.
-    assert held == [5] * 24 + [4] * 30 + [3] * 40 + [2] * 60 + [1] * 6
+    renderer.draw_s = draw_refreshes * clock.refresh_s
+    held = [_refreshes_to_show(hud, clock) for _ in range(60)]
+    assert held == [5] * 24 + [fits] * 36
+
+
+def test_the_interval_after_a_stall_comes_back_after_two_seconds_of_quick_pictures(paced, clock) -> None:
+    hud, renderer = paced
+    hud.tick()
+    _refreshes_to_show(hud, clock)
+    renderer.draw_s = 0.5 - 29 * clock.refresh_s
+    _lengthen(hud, clock, renderer, refreshes=29)  # a 1.5 s stall: three pictures of half a second each
+    renderer.draw_s = 0.005
+    held = [_refreshes_to_show(hud, clock) for _ in range(10)]
+    assert held == [30] * 4 + [1] * 6
 
 
 def test_a_picture_missing_once_a_second_does_not_lengthen_the_interval(paced, clock) -> None:

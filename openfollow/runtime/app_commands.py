@@ -11,7 +11,12 @@ import sys
 import threading
 from typing import TYPE_CHECKING
 
-from openfollow.runtime.app_modes import enter_slot_pin_capture, exit_slot_pin_capture, save_slot_pins
+from openfollow.runtime.app_modes import (
+    enter_slot_pin_capture,
+    exit_slot_pin_capture,
+    save_slot_markers,
+    save_slot_pins,
+)
 
 if TYPE_CHECKING:
     from openfollow.app import OpenFollowApp
@@ -65,6 +70,14 @@ def check_controller_slot_actions(app: OpenFollowApp) -> None:
         except Exception:
             # One failed action must not drop the others already taken off the queue.
             logger.exception("Controller slot action %s on C%d failed.", action, index + 1)
+    for index, ref, marker_id in app._web_commands.consume_slot_marker_picks():
+        if input_manager is None:
+            continue
+        if input_manager.slot_ref(index) != ref:
+            logger.info("Controller slot C%d changed since its marker was picked; not applied.", index + 1)
+            continue
+        if input_manager.pick_slot_marker(index, marker_id):
+            save_slot_markers(app)
 
 
 def check_camera_setup_requests(app: OpenFollowApp) -> None:

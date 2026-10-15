@@ -1125,11 +1125,11 @@ _DEVICE_LOCAL_FIELDS_BY_SECTION: dict[str, frozenset[str]] = {
     "rttrpm_output": frozenset({"source_iface"}),
     # Whether this station draws paths; toggled on its own keyboard or pad.
     "paths": frozenset({"show_paths"}),
-    # ``slot_pins`` names this station's USB sockets; a peer's would scramble its slot order.
-    "controller": frozenset({"slot_pins"}),
-    "gamepad": frozenset({"slot_pins"}),
-    "keyboard": frozenset({"slot_pins"}),
-    "mouse": frozenset({"slot_pins"}),
+    # The pins name this station's USB sockets and the picks its slots; a peer's would scramble its slots.
+    "controller": frozenset({"slot_pins", "slot_markers"}),
+    "gamepad": frozenset({"slot_pins", "slot_markers"}),
+    "keyboard": frozenset({"slot_pins", "slot_markers"}),
+    "mouse": frozenset({"slot_pins", "slot_markers"}),
 }
 
 # Sections that are device-local as a whole. Every row of the Network Interface
@@ -2685,6 +2685,10 @@ def _controller_slots_view(server: ConfigWebServer) -> dict[str, Any]:
             )
         items.append(item)
     controllers["items"] = items
+    controllers["marker_choices"] = [
+        {"id": int(mid), "label": _catalog_marker_label(int(mid), catalog)}
+        for mid in controllers.get("marker_choices") or []
+    ]
     return controllers
 
 
@@ -3195,8 +3199,9 @@ def _config_dict_redacted(cfg: AppConfig) -> dict[str, Any]:
     # has no such adapter it reads as a pin that is down, which drops the OSC
     # multicast membership there until somebody finds the setting.
     d["osc"].pop("listen_iface", None)
-    # USB sockets on this box: a peer's slots would follow sockets it does not have.
+    # This box's USB sockets and slots: on a peer they would rearrange its controllers.
     d["controller"].pop("slot_pins", None)
+    d["controller"].pop("slot_markers", None)
     d["rttrpm_output"].pop("source_iface", None)
     for dest in d["osc_destinations"]["destinations"]:
         dest.pop("source_iface", None)
@@ -3267,6 +3272,7 @@ _DEVICE_IDENTITY_FIELDS: tuple[str, ...] = (
     "testpattern_selected_media",
     "detection.storage_path",
     "controller.slot_pins",
+    "controller.slot_markers",
 )
 
 
@@ -5964,8 +5970,17 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     @app.post("/section/controller_slots/<action:re:identify|forget|pin|unpin|cancel-pin>/<index:int>")
     def controller_slot_action(action: str, index: int) -> Any:
-        """Queue Identify / Forget for one slot; the main loop, which owns the slots, runs it."""
+        """Queue an action for one slot; the main loop, which owns the slots, runs it."""
         server.request_slot_action(action, index, request.forms.get("ref", ""))
+        return template("partials/controller_slots_table", controllers=_controller_slots_view(server))
+
+    @app.post("/section/controller_slots/marker/<index:int>")
+    def controller_slot_marker(index: int) -> Any:
+        """Queue the marker picked for one slot; the main loop checks it is one this station controls."""
+        raw = request.forms.get("marker_id", "")
+        if not raw.isdigit():
+            return _save_failed(400, "The station received no marker.", "Pick one of the controlled markers.")
+        server.request_slot_marker(index, request.forms.get("ref", ""), int(raw))
         return template("partials/controller_slots_table", controllers=_controller_slots_view(server))
 
     @app.get("/section/video_source/failure")

@@ -378,6 +378,23 @@ def _normalize_slot_pins(raw: object) -> list[SlotPinConfig]:
     return pins
 
 
+def _normalize_slot_markers(raw: object) -> list[SlotMarkerConfig]:
+    """Valid picks only, by slot; the first one wins a slot or a marker named twice."""
+    picks: list[SlotMarkerConfig] = []
+    if not isinstance(raw, list):
+        return picks
+    taken_slots: set[int] = set()
+    taken_markers: set[int] = set()
+    for entry in raw:
+        pick = SlotMarkerConfig.coerce(entry)
+        if pick is None or pick.slot in taken_slots or (pick.marker and pick.marker in taken_markers):
+            continue
+        taken_slots.add(pick.slot)
+        taken_markers.add(pick.marker)
+        picks.append(pick)
+    return sorted(picks, key=lambda pick: pick.slot)
+
+
 def _coerce_str(value: Any, default: str) -> str:
     """Return ``value`` when it's a real string, else ``default``.
 
@@ -2197,6 +2214,29 @@ class SlotPinConfig:
 
 
 @dataclass
+class SlotMarkerConfig:
+    """The marker a controller slot drives, picked by the operator; ``marker`` 0 is none."""
+
+    slot: int = 1  # 1-based: C1 is slot 1
+    marker: int = 0
+
+    @classmethod
+    def coerce(cls, raw: object) -> SlotMarkerConfig | None:
+        """A pick from a hand-edited or imported entry, or ``None`` when it names no usable pick."""
+        if isinstance(raw, SlotMarkerConfig):
+            raw = asdict(raw)
+        if not isinstance(raw, dict):
+            return None
+        slot = raw.get("slot")
+        marker = raw.get("marker")
+        if isinstance(slot, bool) or not isinstance(slot, int) or not 1 <= slot <= SLOT_PIN_MAX:
+            return None
+        if isinstance(marker, bool) or not isinstance(marker, int) or marker < 0:
+            return None
+        return cls(slot=slot, marker=marker)
+
+
+@dataclass
 class ControllerConfig:
     enabled: bool = True
     keyboard_enabled: bool = True
@@ -2308,10 +2348,13 @@ class ControllerConfig:
     key_toggle_paths: str = ""
     # USB sockets pinned to slots. Device-local: they name this station's sockets.
     slot_pins: list[SlotPinConfig] = field(default_factory=list)
+    # Markers picked per slot. Device-local, like the pins.
+    slot_markers: list[SlotMarkerConfig] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         """Validate configuration values."""
         self.slot_pins = _normalize_slot_pins(self.slot_pins)
+        self.slot_markers = _normalize_slot_markers(self.slot_markers)
         # Mouse steering refinements – coerce so a hand-edited / imported TOML
         # can't feed a string or out-of-range value into the input loop.
         self.mouse_hysteresis_px = _coerce_int(self.mouse_hysteresis_px, 0, lo=0, hi=200)
@@ -3189,6 +3232,15 @@ def load_config(path: str = "config.toml", *, strict: bool = False, missing_ok: 
         _LOGGED_UNVIEWED.add((path, tuple(_unviewed)))
         logger.info("%s: controlled markers %s are now viewed too; a controlled marker always is", path, _unviewed)
     data["viewer_marker_ids"] = viewed_with_controlled(data["controlled_marker_ids"], data["viewer_marker_ids"])
+    # A slot's pick naming a marker this station no longer controls is dropped: that slot falls back.
+    _ctrl_raw = data.get("controller")
+    if isinstance(_ctrl_raw, dict) and isinstance(_ctrl_raw.get("slot_markers"), list):
+        _controlled = set(data["controlled_marker_ids"])
+        _ctrl_raw["slot_markers"] = [
+            entry
+            for entry in _ctrl_raw["slot_markers"]
+            if isinstance(entry, dict) and (entry.get("marker") == 0 or entry.get("marker") in _controlled)
+        ]
 
     # Back-compat: map the old ``vf1_*`` keys onto their ``marker_fader_*``
     # successors (only when the new key is absent) BEFORE ``_filter_known``

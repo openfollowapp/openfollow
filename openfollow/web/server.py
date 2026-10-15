@@ -831,8 +831,12 @@ class ConfigWebServer:
         return self._command_queue.get_update_available()
 
     def request_slot_action(self, action: str, index: int, ref: str) -> None:
-        """Queue a controller-slot action (``identify`` / ``forget``) for the main loop."""
+        """Queue a Controller Slots action for the main loop."""
         self._command_queue.request_slot_action(action, index, ref)
+
+    def request_slot_marker(self, index: int, ref: str, marker_id: int) -> None:
+        """Queue a marker picked for a controller slot, for the main loop."""
+        self._command_queue.request_slot_marker(index, ref, marker_id)
 
     def whats_new_pending(self) -> bool:
         """True when the page should open the updater's What's new step."""

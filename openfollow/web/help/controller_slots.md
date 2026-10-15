@@ -4,9 +4,9 @@ Which controller holds which slot (`C1`, `C2`, …) on this station, and which m
 
 ## How slots are assigned
 
-Slots follow the **USB socket** each controller is plugged into, not the order the station happened to find them in. Controllers attached when the station starts are numbered by socket, so a station that is switched off and on again with the same cables comes back in the same order. A slot's marker is the matching entry of **Controlled Marker IDs**: `C1` drives the first, `C2` the second.
+Slots follow the **USB socket** each controller is plugged into, not the order the station happened to find them in. Controllers attached when the station starts are numbered by socket, so a station that is switched off and on again with the same cables comes back in the same order. A slot's marker is the matching entry of **Controlled Marker IDs**: `C1` drives the first, `C2` the second, unless a marker was picked for it in the Marker column.
 
-With exactly one slot, that controller drives whichever marker is selected instead, and the marker-cycle buttons switch it. Empty slots don't count towards that.
+With exactly one slot, that controller drives whichever marker is selected instead, and the marker-cycle buttons switch it; its Marker column reads **All markers**. Empty slots don't count towards that.
 
 A slot can also be **pinned** to a socket. Whatever is plugged into a pinned socket takes that slot, whatever its make or model, and keeps it across restarts. The other controllers fill the remaining slots by socket as before.
 
@@ -23,7 +23,11 @@ A slot can also be **pinned** to a socket. Whatever is plugged into a pinned soc
   - **Empty** – a slot below a pinned one that no controller fills. It drives no marker and raises no warning, and the next controller of any kind plugged in takes it.
   - **Pinned to …** in place of the socket – the slot belongs to that socket. While nothing is plugged into it, the slot is missing and shows the name of the controller that was pinned.
   - The socket is the USB host controller's number and the port path: `on USB 2, port 1` is port 1 of host controller 2, and `port 1.4` is port 4 of a hub plugged into port 1. `on Bluetooth` for a wireless pad. `no stable port` for a controller whose socket the station cannot read; it keeps its slot for the session, but after a restart it is placed after every controller that has one.
-- **Marker** – the marker this slot drives right now, by its catalog name and ID, with a dot in its colour. A marker the catalog has no entry for reads `Marker 5`.
+- **Marker** – the marker this slot drives right now, by its catalog name and ID, with a dot in its colour. A marker the catalog has no entry for reads `Marker 5`. On a connected or missing slot it is a picker that lists this station's controlled markers:
+  - Picking a marker another slot drives swaps the two. If this slot had no marker, the other slot is left without one; it drives nothing until a marker is picked for it.
+  - Every other slot keeps its marker. A marker that becomes controlled later goes to the first slot that has none and was not emptied by a pick.
+  - A picked marker that stops being controlled frees its slot, which then takes the next controlled marker no slot drives.
+  - Picks stay on this station, like pins: export and sending settings to other stations leave them out, and import and restoring defaults keep them.
 
 ## Actions
 

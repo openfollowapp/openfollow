@@ -45,7 +45,7 @@
 
     // ``gen`` counts openings and closings: an answer from an earlier one changes nothing.
     var st = {
-        gen: 0, holds: 0, opening: false, open: false, token: null, marker: null, lost: false, state: null,
+        gen: 0, holds: 0, opening: false, checking: false, open: false, token: null, marker: null, lost: false, state: null,
         stick: { sx: 0, sy: 0 }, notches: 0, inFlight: false, flip: store.get('of.remote.flip') === '1',
         left: store.get('of.remote.hand') === 'left', xyzOpen: false, driveTimer: null, stateTimer: null
     };
@@ -68,7 +68,10 @@
     function handleStatus(res) {
         if (res.status === 403) { shutDown(); return false; }
         if (res.status === 404) { reopen(); return false; }
-        if (res.status === 409) { stateTick(); return false; }
+        if (res.status === 409) {
+            if (!st.checking) { st.checking = true; stateTick(); }
+            return false;
+        }
         return res.ok;
     }
 
@@ -84,6 +87,7 @@
         st.token = null;
         st.marker = null;
         st.lost = false;
+        st.checking = false;
         render();
         startSession();
     }
@@ -124,7 +128,7 @@
     }
 
     function driveTick() {
-        if (!st.open || !st.token || st.marker === null || st.lost || st.inFlight || document.hidden) return;
+        if (!st.open || !st.token || st.marker === null || st.lost || st.checking || st.inFlight || document.hidden) return;
         var notches = st.notches, gen = st.gen;
         st.notches = 0;
         st.inFlight = true;
@@ -148,7 +152,9 @@
         var gen = st.gen, holds = st.holds;
         fetch('/api/remote/state?token=' + encodeURIComponent(st.token), { credentials: 'same-origin' })
             .then(function (res) {
-                if (gen !== st.gen || !handleStatus(res)) return;
+                if (gen !== st.gen) return;
+                st.checking = false;
+                if (!handleStatus(res)) return;
                 return res.json().then(function (data) {
                     if (gen !== st.gen) return;
                     st.state = data;
@@ -161,7 +167,7 @@
                     render();
                 });
             })
-            .catch(function () { setOffline(true); });
+            .catch(function () { if (gen === st.gen) st.checking = false; setOffline(true); });
     }
 
     function action(kind, extra) {
@@ -222,8 +228,10 @@
         pf.textContent = s && s.recording ? 'Record point' : 'Pathfinder';
         pf.classList.toggle('locked', locked);
         $('remote-flip').setAttribute('aria-pressed', String(st.flip));
-        $('remote-up').textContent = st.flip ? 'DOWNSTAGE' : 'UPSTAGE';
-        $('remote-down').textContent = st.flip ? 'UPSTAGE' : 'DOWNSTAGE';
+        // Up on the stick goes upstage unless the card or the station turns it around.
+        var turned = st.flip !== !!(s && s.inverted);
+        $('remote-up').textContent = turned ? 'DOWNSTAGE' : 'UPSTAGE';
+        $('remote-down').textContent = turned ? 'UPSTAGE' : 'DOWNSTAGE';
         $('remote-hand').textContent = st.left ? 'Left hand' : 'Right hand';
         $('remote-xyz').setAttribute('aria-pressed', String(st.xyzOpen));
         $('remote-xyz-row').hidden = !st.xyzOpen;
@@ -232,6 +240,7 @@
             // One tick line per notch of finger travel.
             $('remote-ticks').style.backgroundSize = '100% ' + s.z_notch_px + 'px';
         }
+        if (st.xyzOpen) fillXyz();
         var readout = $('remote-readout');
         readout.textContent = '';
         if (m && m.pos) {
@@ -243,12 +252,15 @@
         }
     }
 
+    // Each field follows the marker until the operator types in it; Glide hands it back.
+    var XYZ = ['remote-x', 'remote-y', 'remote-z-in'];
+    var typed = {};
+    XYZ.forEach(function (id) { $(id).addEventListener('input', function () { typed[id] = true; }); });
+
     function fillXyz() {
         var m = current();
         if (!m || !m.pos) return;
-        $('remote-x').value = length(m.pos[0]);
-        $('remote-y').value = length(m.pos[1]);
-        $('remote-z-in').value = length(m.pos[2]);
+        XYZ.forEach(function (id, i) { if (!typed[id]) $(id).value = length(m.pos[i]); });
     }
 
     function parse(raw) {
@@ -276,6 +288,7 @@
         }
         st.gen += 1;
         st.opening = false;
+        st.checking = false;
         st.inFlight = false;
         st.open = false;
         st.token = null;
@@ -350,11 +363,12 @@
     $('remote-pathfinder').addEventListener('click', function () { action('pathfinder'); });
     $('remote-xyz').addEventListener('click', function () {
         st.xyzOpen = !st.xyzOpen;
-        if (st.xyzOpen) fillXyz();
+        typed = {};
         render();
     });
     $('remote-go').addEventListener('click', function () {
         var x = parse($('remote-x').value), y = parse($('remote-y').value), z = parse($('remote-z-in').value);
+        typed = {};
         if (!isFinite(x) || !isFinite(y) || !isFinite(z)) { fillXyz(); return; }
         action('glide', { x: x, y: y, z: z });
         if (document.activeElement) document.activeElement.blur();

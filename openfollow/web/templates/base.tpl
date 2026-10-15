@@ -2310,7 +2310,7 @@
  width: min(340px, calc(100vw - 2rem)); box-sizing: border-box; max-height: calc(100vh - 7rem); overflow-y: auto;
  padding: 0.75rem; border-radius: 1.25rem; border: 1px solid var(--border); background: var(--bg-soft);
  display: flex; flex-direction: column; gap: 0.6rem; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55);
- touch-action: none; -webkit-user-select: none; user-select: none;
+ touch-action: pan-y; -webkit-user-select: none; user-select: none;
  }
  body.remote-left .remote-launcher, body.remote-left .remote-card { right: auto; left: 1rem; }
  /* Chips and buttons set their own display; ``hidden`` still wins inside the card. */

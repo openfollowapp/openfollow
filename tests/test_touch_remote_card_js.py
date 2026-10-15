@@ -353,3 +353,58 @@ out.heldAfter = !els['remote-held'].hidden;
 """
     )
     assert out == {"lostShown": True, "lostAfter": False, "heldAfter": True}
+
+
+@pytest.mark.parametrize(
+    ("inverted", "flip", "up"),
+    [(False, False, "UPSTAGE"), (True, False, "DOWNSTAGE"), (True, True, "UPSTAGE"), (False, True, "DOWNSTAGE")],
+)
+def test_the_stick_labels_say_where_it_drives(inverted: bool, flip: bool, up: str) -> None:
+    out = _run(
+        f"""
+els['remote-launcher'].fire('click');
+answer(0, 200, {{ token: 't1' }}); await settle();
+if ({str(flip).lower()}) els['remote-flip'].fire('click');
+answer(1, 200, Object.assign({{}}, STATE, {{ inverted: {str(inverted).lower()} }})); await settle();
+out.up = els['remote-up'].textContent;
+"""
+    )
+    assert out["up"] == up
+
+
+def test_the_xyz_fields_follow_the_marker_until_typed_in() -> None:
+    out = _run(
+        _HOLDING
+        + """
+els['remote-xyz'].fire('click');
+tick(); await settle();
+var moved = Object.assign({}, STATE, { held: 1, markers: [Object.assign({}, STATE.markers[0], { pos: [4, 5, 1.6] })] });
+answer(paths().lastIndexOf('/api/remote/state'), 200, moved); await settle();
+out.x = els['remote-x'].value;
+els['remote-z-in'].value = '1.8';
+els['remote-z-in'].fire('input');
+tick(); await settle();
+var again = Object.assign({}, moved, { markers: [Object.assign({}, STATE.markers[0], { pos: [4.5, 5, 1.6] })] });
+answer(paths().lastIndexOf('/api/remote/state'), 200, again); await settle();
+out.x2 = els['remote-x'].value;
+out.z = els['remote-z-in'].value;
+"""
+    )
+    assert out == {"x": "4.000 m", "x2": "4.500 m", "z": "1.8"}
+
+
+def test_a_lost_marker_asks_the_station_once_and_stops_driving_meanwhile() -> None:
+    out = _run(
+        _HOLDING
+        + """
+document.hidden = true;
+els['remote-stick'].fire('pointerdown', { pointerId: 1, clientX: 140, clientY: 92 });
+document.hidden = false;
+tick(); await settle();
+answer(paths().lastIndexOf('/api/remote/drive'), 409, {}); await settle();
+var before = requests.length;
+tick(); await settle(); tick(); await settle();
+out.drives = paths().slice(before).filter(function (p) { return p === '/api/remote/drive'; }).length;
+"""
+    )
+    assert out["drives"] == 0

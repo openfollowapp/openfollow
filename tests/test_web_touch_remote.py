@@ -265,6 +265,7 @@ def test_the_state_lists_the_controlled_markers_and_the_settings(live) -> None: 
     assert state["unit_system"] == "imperial"
     assert state["recording"] is True
     assert state["locked"] == [2]
+    assert state["inverted"] is False
 
 
 def test_without_a_registry_every_route_is_refused(tmp_path, monkeypatch) -> None:  # noqa: ANN001

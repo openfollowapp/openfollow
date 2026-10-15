@@ -5406,6 +5406,8 @@ def _register_touch_remote_routes(app: Bottle, server: ConfigWebServer) -> None:
                 **status,
                 "markers": markers,
                 "max_speed": cfg.marker.max_speed,
+                # The station turns the stick for a camera looking downstage; the card's labels follow.
+                "inverted": cfg.marker.invert_control_direction,
                 "z_step_m": cfg.touch_remote.z_step_m,
                 "z_notch_px": cfg.touch_remote.z_notch_px,
                 "unit_system": cfg.ui.unit_system,

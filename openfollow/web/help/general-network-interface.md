@@ -18,7 +18,7 @@ The mode belongs to this station: a config export leaves it out, and an import o
 
 ## Simple
 
-- **Interface** – the interface that carries every function, by its label when it has one. **Automatic** (the default) uses the one the station picks, named in brackets, such as `Automatic (eth0)`. Choosing another moves all traffic to it at once.
+- **Interface** – the interface that carries every function, by its label when it has one. **Automatic** (the default) uses the one the station picks, named in brackets, such as `Automatic (eth0)`. Choosing another first asks whether to move all traffic to it, naming the interface it leaves; **Cancel** keeps the interface in force.
 
 Below it the card shows that one interface, with the **Adapter**, **Settings** and **Buttons** described further down. A camera reached only through another interface is refused, and the message names Advanced mode, where the video input can have its own pin.
 

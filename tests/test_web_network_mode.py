@@ -81,8 +81,10 @@ def test_the_simple_card_shows_the_station_interface_alone(net_server, tmp_path,
     _set(tmp_path, network_mode="simple", interface_labels={"eth0": "Show LAN", "wlan0": "Spare"})
     _status, body = _get(base, "/section/network/status")
     assert 'name="network_mode" value="simple" checked' in body
-    assert '<option value="" selected>Automatic (Show LAN (eth0))</option>' in body
-    assert '<option value="wlan0" >Spare (wlan0) – 10.9.9.9</option>' in body
+    assert '<option value="" selected data-name="Automatic (Show LAN (eth0))">Automatic (Show LAN (eth0))<' in body
+    assert '<option value="wlan0" data-name="Spare (wlan0)">Spare (wlan0) – 10.9.9.9</option>' in body
+    # The confirm names the interface traffic leaves.
+    assert 'data-from="Show LAN (eth0)"' in body
     assert body.count('class="net-iface-row"') == 1
     assert 'data-adv-key="net-iface-eth0"' in body
     # Named and labelled as in Advanced, with its Adapter block.
@@ -103,8 +105,9 @@ def test_the_simple_card_follows_a_named_station_interface(net_server, tmp_path,
     _set(tmp_path, network_mode="simple", psn_source_iface="wlan0")
     _status, body = _get(base, "/section/network/status")
     # Automatic names what it would pick, not the interface pinned now.
-    assert '<option value="" >Automatic (eth0)</option>' in body
-    assert '<option value="wlan0" selected>wlan0 – 10.9.9.9</option>' in body
+    assert '<option value="" data-name="Automatic (eth0)">Automatic (eth0)</option>' in body
+    assert '<option value="wlan0" selected data-name="wlan0">wlan0 – 10.9.9.9</option>' in body
+    assert 'data-from="wlan0"' in body
     assert 'data-adv-key="net-iface-wlan0"' in body
     assert 'data-adv-key="net-iface-eth0"' not in body
 
@@ -114,7 +117,7 @@ def test_a_station_interface_that_is_gone_is_named(net_server, tmp_path, present
     _set(tmp_path, network_mode="simple", psn_source_iface="eth9", interface_labels={"eth9": "Old"})
     _status, body = _get(base, "/section/network/status")
     assert "Old (eth9) is not connected." in body
-    assert '<option value="eth9" selected>Old (eth9) – no address</option>' in body
+    assert '<option value="eth9" selected data-name="Old (eth9)">Old (eth9) – no address</option>' in body
 
 
 def test_a_label_is_saved_on_the_simple_card(net_server, tmp_path, present) -> None:  # noqa: F811
@@ -124,7 +127,7 @@ def test_a_label_is_saved_on_the_simple_card(net_server, tmp_path, present) -> N
     assert status == 200
     assert _saved(tmp_path).interface_labels == {"eth0": "Stage"}
     assert '<span class="net-iface-name">Stage</span>' in body
-    assert '<option value="" selected>Automatic (Stage (eth0))</option>' in body
+    assert '<option value="" selected data-name="Automatic (Stage (eth0))">Automatic (Stage (eth0))</option>' in body
 
 
 def test_a_pinned_interface_the_backend_does_not_manage_is_not_called_unplugged(
@@ -146,7 +149,7 @@ def test_automatic_with_no_address_anywhere_offers_the_first_interface(net_serve
     _fake, base = net_server
     _set(tmp_path, network_mode="simple")
     _status, body = _get(base, "/section/network/status")
-    assert '<option value="" selected>Automatic</option>' in body
+    assert '<option value="" selected data-name="Automatic">Automatic</option>' in body
     # The first interface, as the Operator Screen edits it, so it can be given an address.
     assert 'data-adv-key="net-iface-eth0"' in body
 
@@ -165,8 +168,8 @@ def test_a_simple_station_keeps_its_picker_when_the_backend_cannot_be_read(net_s
     _set(tmp_path, network_mode="simple", psn_source_iface="eth9")
     _status, body = _get(base, "/section/network/status")
     assert 'id="net-station-iface"' in body
-    assert '<option value="wlan0" >wlan0 – 10.9.9.9</option>' in body
-    assert '<option value="eth9" selected>eth9 – no address</option>' in body
+    assert '<option value="wlan0" data-name="wlan0">wlan0 – 10.9.9.9</option>' in body
+    assert '<option value="eth9" selected data-name="eth9">eth9 – no address</option>' in body
 
 
 def test_an_automatic_interface_the_card_does_not_manage_is_named(net_server, tmp_path, monkeypatch) -> None:  # noqa: F811

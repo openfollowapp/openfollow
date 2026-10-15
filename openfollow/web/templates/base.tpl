@@ -2534,6 +2534,24 @@
  fail(saveError.UNREACHABLE);
  }
  }
+ // Simple's Interface picker moves every plane, so a pick asks first. Cancel
+ // puts the picker back on the interface in force without a request.
+ function netConfirmStation(select) {
+ const inForce = select.querySelector('option[selected]');
+ const chosen = Array.from(select.querySelectorAll('option')).find((option) => option.value === select.value);
+ if (chosen === inForce) return;
+ const to = chosen.dataset.name;
+ const from = select.dataset.from ? 'from ' + select.dataset.from + ' ' : '';
+ modalConfirm({
+ title: 'Move all traffic to ' + to + '?',
+ message: 'PSN, OTP, RTTrPM, OSC and video move ' + from + 'to ' + to + '.',
+ confirmLabel: 'Move traffic',
+ danger: true,
+ }).then((ok) => {
+ if (ok) htmx.trigger(select.closest('form'), 'net-station-confirmed');
+ else select.value = inForce.value;
+ });
+ }
 
  const sectionFoldStoragePrefix = 'psnfs:section:';
  const advancedFoldStoragePrefix = 'psnfs:advanced:';

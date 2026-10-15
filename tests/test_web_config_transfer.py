@@ -142,4 +142,4 @@ class TestBackupOutcome:
         body = function_body(_page(), "restoreDefaults")
         checked = body.index("if (result.backup_error) {")
         noted = body.index("toastOnNextLoad('Restored defaults. ' + NO_BACKUP_MADE, 'caution');")
-        assert checked < noted < body.index("_showRestartingState();")
+        assert checked < noted < body.index("openfollowAwaitRestart(")

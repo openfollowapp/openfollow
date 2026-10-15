@@ -22,22 +22,6 @@
 % update_message = update_status.get('message', '') if defined('update_status') and update_status else ''
 % update_error = update_status.get('error', '') if defined('update_status') and update_status else ''
 
-% if defined('update_feedback') and update_feedback:
-<div class="update-notice">{{update_feedback}}</div>
-% end
-
-%# Restart notice lives at the top level so it doesn't get clipped
-%# when one of the inner forms swaps. Polls /section/general every
-%# 2s and reloads the page once the request succeeds – the polling
-%# response is discarded (hx-swap=none).
-% if defined('restarting') and restarting:
-<div class="restart-notice"
-     hx-get="/section/general"
-     hx-trigger="every 2s"
-     hx-swap="none"
-     hx-on::after-request="if(event.detail.successful) window.location.reload()">App is restarting... Please wait.</div>
-% end
-
 %# ------------------------------------------------------------------
 %# Station Settings – the device's identity + access in one box (web
 %# UI cleanup). Two forms share the box: the Display-units form
@@ -58,7 +42,7 @@
     %# /section/general with the FQDN joined from Advanced Settings. A save's
     %# green or red ring goes around the Station Settings box, which holds every
     %# field the Save writes.
-    <form id="general-network-section" class="{{'saved' if defined('saved') and saved else ''}} {{'restarting' if defined('restarting') and restarting else ''}}"
+    <form id="general-network-section" class="{{'saved' if defined('saved') and saved else ''}}"
           hx-post="/section/general" hx-target="#general-network-section" hx-swap="outerHTML"
           hx-select="#general-network-section" hx-select-oob="#general-station-fqdn-row" hx-trigger="submit">
         <div class="group">
@@ -318,7 +302,6 @@ window.loadAutostart();
     % if update_state == 'failed':
     <div class="update-notice error">{{update_message or 'Update failed.'}} {{update_error}}</div>
     % end
-    %# ``update_feedback`` is rendered once at the top of this partial.
 
     <div class="actions">
         <button type="button" class="update-btn" onclick="openfollowCheckUpdate(this)" {{'disabled' if update_state in ('queued', 'running', 'restarting') else ''}}>

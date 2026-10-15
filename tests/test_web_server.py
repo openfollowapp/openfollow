@@ -1324,15 +1324,11 @@ def test_interface_assignment_web_ui_pin_offers_a_restart(live_server, monkeypat
     save_config(cfg, server.config_path)
 
     _status, body = _get(base, "/section/interface_assignment")
-    # Its own red action, not a second kind of Save.
-    tag_start = body.rindex("<button", 0, body.index('hx-post="/section/interface_assignment/restart"'))
+    # Its own red action, not a second kind of Save, through the shared restart flow.
+    tag_start = body.rindex("<button", 0, body.index('onclick="openfollowRestart('))
     button = body[tag_start : body.index("</button>", tag_start)]
     assert 'type="button" class="danger"' in button
     assert button.endswith(">Restart OpenFollow")
-    # Restarting pauses every output, so it asks first, with the danger button.
-    assert 'data-confirm-label="Restart"' in button
-    assert "data-confirm-danger" in button
-    assert body.count("hx-confirm=") == 1
     assert "Save &amp; Restart" not in body
 
 
@@ -1357,7 +1353,7 @@ def test_interface_assignment_offers_a_restart_for_a_pin_to_a_down_interface(
     save_config(cfg, server.config_path)
 
     _status, body = _get(base, "/section/interface_assignment")
-    assert "/section/interface_assignment/restart" in body
+    assert "openfollowRestart(" in body
 
 
 def test_interface_assignment_offers_no_restart_once_the_pin_is_in_force(
@@ -1380,26 +1376,19 @@ def test_interface_assignment_offers_no_restart_once_the_pin_is_in_force(
     save_config(cfg, server.config_path)
 
     _status, body = _get(base, "/section/interface_assignment")
-    assert "/section/interface_assignment/restart" not in body
+    assert "openfollowRestart(" not in body
 
 
-def test_interface_assignment_restart_notice_names_the_moved_address(live_server, monkeypatch) -> None:
-    """Unlike every other restart notice, this one may come back at a
-    different address – so it has to say where to look when the reload
-    cannot reach this one."""
+def test_interface_assignment_names_the_address_a_restart_moves_the_web_ui_to(live_server, monkeypatch) -> None:
     _patch_ifaces(monkeypatch, {"eth1": "10.0.0.9"})
     server, base = live_server
     cfg = load_config(server.config_path)
     cfg.network_mode = "advanced"
     cfg.web_bind_iface = "eth1"
     save_config(cfg, server.config_path)
-    status, body = _post_form(base, "/section/interface_assignment/restart", {})
+    status, body = _get(base, "/section/interface_assignment")
     assert status == 200
-    assert "restart-notice" in body
-    assert "Network screen" in body
     assert "After a restart the web UI answers only on http://10.0.0.9" in body
-    # The notice polls for the server's return; the Address poll would only fail meanwhile.
-    assert "/section/interface_assignment/status" not in body
 
 
 _IA_STATUS = "/section/interface_assignment/status"
@@ -1569,7 +1558,7 @@ def test_interface_assignment_offers_no_restart_when_the_bind_already_matches(li
     save_config(cfg, server.config_path)
 
     _status, body = _get(base, "/section/interface_assignment")
-    assert "/section/interface_assignment/restart" not in body
+    assert "openfollowRestart(" not in body
 
 
 def test_interface_assignment_saves_the_web_ui_pin(live_server, monkeypatch) -> None:
@@ -2420,23 +2409,6 @@ def test_api_update_zone_ignores_non_list_vertices(live_server) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_restart_openfollow_restarts_and_saves_nothing(live_server, monkeypatch) -> None:
-    """Save and Restart are two actions: the restart takes whatever was
-    saved, and never the form it was pressed under."""
-    _patch_ifaces(monkeypatch, {"eth1": "10.0.0.9"})
-    server, base = live_server
-    assert server.check_restart_requested() is False
-
-    status, _body = _post_form(
-        base,
-        "/section/interface_assignment/restart",
-        {"psn_source_iface": "", "otp_output.source_iface": "", "web_bind_iface": "eth1"},
-    )
-    assert status == 200
-    assert load_config(server.config_path).web_bind_iface == ""
-    assert server.check_restart_requested() is True
-
-
 def test_save_never_restarts(live_server, monkeypatch) -> None:
     _patch_ifaces(monkeypatch, {"eth1": "10.0.0.9"})
     server, base = live_server
@@ -2452,14 +2424,21 @@ def test_save_never_restarts(live_server, monkeypatch) -> None:
 
 
 @pytest.mark.parametrize("state", ["queued", "running", "restarting"])
-def test_restart_openfollow_waits_for_a_running_update(live_server, monkeypatch, state: str) -> None:
+def test_api_restart_waits_for_a_running_update(live_server, state: str) -> None:
     server, base = live_server
     server.set_update_status(state=state)
-    status, body = _post_form(base, "/section/interface_assignment/restart", {})
-    assert status == 200
+    status, body = _post_json(base, "/api/restart", {})
+    assert status == 409
+    assert body == {"error": "An update is running.", "action": "Restart once it has finished."}
     assert server.check_restart_requested() is False
-    assert "An update is running, so OpenFollow was not restarted." in body
-    assert "restart-notice" not in body
+
+
+def test_api_restart_goes_ahead_once_the_update_failed(live_server) -> None:
+    server, base = live_server
+    server.set_update_status(state="failed")
+    status, body = _post_json(base, "/api/restart", {})
+    assert (status, body) == (200, {"success": True, "instance": server.instance_id})
+    assert server.check_restart_requested() is True
 
 
 def test_post_interface_assignment_without_restart_flag_queues_nothing(live_server, monkeypatch) -> None:
@@ -2473,18 +2452,6 @@ def test_post_interface_assignment_without_restart_flag_queues_nothing(live_serv
         {"psn_source_iface": "", "otp_output.source_iface": "eth1", "web_bind_iface": ""},
     )
     assert status == 200
-    assert server.check_restart_requested() is False
-
-
-def test_post_general_with_restart_flag_queues_restart(live_server) -> None:
-    server, base = live_server
-    assert server.check_restart_requested() is False
-
-    status, body = _post_form(base, "/section/general?restart=1", {})
-    assert status == 200
-
-    assert server.check_restart_requested() is True
-    # consuming it should clear the flag
     assert server.check_restart_requested() is False
 
 
@@ -4383,6 +4350,8 @@ def test_api_config_reset_restores_defaults_and_keeps_device_fields(live_server)
     # it only completes across a restart.
     assert body.get("needs_restart") is True
     assert body.get("restarting") is True
+    # The process the browser waits to see replaced.
+    assert body.get("instance") == server.instance_id
     assert server.check_restart_requested() is True
 
     defaults = AppConfig()
@@ -4394,6 +4363,93 @@ def test_api_config_reset_restores_defaults_and_keeps_device_fields(live_server)
     assert saved.web_port == 8123
     assert saved.psn_source_iface == "eth0"
     assert saved.detection.storage_path == "/mnt/nvme/openfollow/yolo"
+
+
+@pytest.mark.parametrize("state", ["queued", "running", "restarting"])
+def test_api_config_reset_waits_for_a_running_update_and_writes_nothing(live_server, state: str) -> None:
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.grid.width = 42.0
+    save_config(cfg, server.config_path)
+    server.set_update_status(state=state)
+
+    status, body = _post_json(base, "/api/config/reset", {})
+
+    assert status == 409
+    assert body == {"error": "An update is running.", "action": "Restore defaults once it has finished."}
+    assert load_config(server.config_path).grid.width == pytest.approx(42.0)
+    # No backup either: the reset wrote nothing.
+    assert not (Path(server.config_path).parent / "backups").exists()
+    assert server.check_restart_requested() is False
+
+
+def test_api_config_reset_goes_ahead_once_the_update_failed(live_server) -> None:
+    server, base = live_server
+    server.set_update_status(state="failed")
+    status, body = _post_json(base, "/api/config/reset", {})
+    assert (status, body["success"]) == (200, True)
+    assert server.check_restart_requested() is True
+
+
+def test_an_update_asked_for_while_defaults_are_written_waits_for_their_restart(live_server, monkeypatch) -> None:
+    """Queued between the write and the restart, the update would leave the reset file under the old config."""
+    import threading
+
+    import openfollow.services as services_module
+    import openfollow.web.routes as routes_module
+
+    server, base = live_server
+    monkeypatch.setattr(services_module, "clear_detached_update_state", lambda: None)
+    real_save = routes_module.save_config
+    queued: list[bool] = []
+    restart_seen: list[bool] = []
+    workers: list[threading.Thread] = []
+
+    def ask_for_an_update() -> None:
+        queued.append(server.request_deb_update("openfollow"))
+        # Read the moment the update went through.
+        restart_seen.append(server.check_restart_requested())
+
+    def save_while_an_update_is_asked_for(cfg: AppConfig, path: Any) -> None:
+        real_save(cfg, path)
+        worker = threading.Thread(target=ask_for_an_update)
+        worker.start()
+        worker.join(timeout=0.2)
+        assert worker.is_alive(), "an update was queued between the write and its restart"
+        workers.append(worker)
+
+    monkeypatch.setattr(routes_module, "save_config", save_while_an_update_is_asked_for)
+    status, body = _post_json(base, "/api/config/reset", {})
+    workers[0].join(timeout=5)
+
+    assert (status, body["success"], body["restarting"]) == (200, True, True)
+    assert (queued, restart_seen) == ([True], [True])
+
+
+def test_a_reset_never_answers_restarting_without_a_restart(live_server, monkeypatch) -> None:
+    """An update queued while the backup is made refuses the reset, which then writes nothing."""
+    import openfollow.services as services_module
+    import openfollow.web.routes as routes_module
+
+    server, base = live_server
+    monkeypatch.setattr(services_module, "clear_detached_update_state", lambda: None)
+    cfg = load_config(server.config_path)
+    cfg.grid.width = 42.0
+    save_config(cfg, server.config_path)
+    real_backup = routes_module._backup_before
+
+    def back_up_then_queue_an_update(config_path: str, kind: str) -> dict[str, str]:
+        fields = real_backup(config_path, kind)
+        assert server.request_deb_update("openfollow") is True
+        return fields
+
+    monkeypatch.setattr(routes_module, "_backup_before", back_up_then_queue_an_update)
+    status, body = _post_json(base, "/api/config/reset", {})
+
+    assert status == 409
+    assert body == {"error": "An update is running.", "action": "Restore defaults once it has finished."}
+    assert load_config(server.config_path).grid.width == pytest.approx(42.0)
+    assert server.check_restart_requested() is False
 
 
 def test_api_config_reset_backs_up_the_settings_it_replaces(live_server) -> None:
@@ -4882,6 +4938,46 @@ def test_auth_cookie_authenticates_subsequent_requests(pin_protected_server) -> 
         json.loads(r.read().decode())  # valid JSON body
 
 
+def _login_cookie(base: str, pin: str) -> str:
+    """The ``name=value`` auth cookie a browser gets for logging in with ``pin``."""
+
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *_a, **_kw):
+            return None
+
+    req = urllib.request.Request(
+        f"{base}/login",
+        data=urllib.parse.urlencode({"pin": pin}).encode(),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        set_cookies = urllib.request.build_opener(_NoRedirect).open(req, timeout=5).headers.get_all("Set-Cookie")
+    except urllib.error.HTTPError as e:
+        set_cookies = e.headers.get_all("Set-Cookie")
+    return next(c for c in set_cookies or [] if c.startswith("_openfollow_auth=")).split(";", 1)[0]
+
+
+def _info_with_cookie(base: str, cookie: str) -> dict:
+    req = urllib.request.Request(f"{base}/api/info", headers={"Cookie": cookie})
+    with urllib.request.urlopen(req, timeout=5) as r:
+        assert r.status == 200
+        return json.loads(r.read().decode())
+
+
+def test_a_restarted_openfollow_lets_the_logged_in_browser_ask_whether_it_is_back(pin_protected_server) -> None:
+    """The cookie is signed with the PIN, not per process, so the new process answers the
+    browser that asked the old one to restart, with a new instance."""
+    server, base, pin = pin_protected_server
+    cookie = _login_cookie(base, pin)
+    before = _info_with_cookie(base, cookie)["instance"]
+    assert before == server.instance_id
+    with live_on_free_port(
+        lambda port: ConfigWebServer(config_path=server.config_path, host="127.0.0.1", port=port)
+    ) as (_restarted, restarted_base):
+        assert _info_with_cookie(restarted_base, cookie)["instance"] not in ("", before)
+
+
 def test_auth_invalid_signature_fails_closed(pin_protected_server) -> None:
     _, base, _ = pin_protected_server
     body = b'{"pos_x": 2.5}'
@@ -5215,8 +5311,25 @@ def test_logout_clears_cookie_and_redirects_to_login(live_server) -> None:
     assert any("max-age=0" in c.lower() or "max-age=-" in c.lower() or "expires=" in c.lower() for c in auth_cookies)
 
 
+@pytest.mark.parametrize(
+    ("path", "section_id"),
+    [
+        ("/section/general", 'id="general-network-section"'),
+        ("/section/video_source", 'id="video-source-section"'),
+        ("/section/psn", 'id="psn-section"'),
+    ],
+)
+def test_a_section_save_never_restarts(live_server, path: str, section_id: str) -> None:
+    """Restarting is the Restart buttons' own step; a save only saves."""
+    server, base = live_server
+    status, body = _post_form(base, path, {})
+    assert status == 200
+    assert section_id in body
+    assert server.check_restart_requested() is False
+
+
 def test_update_video_source_post_renders_video_source_partial(live_server) -> None:
-    """Form POST without ?restart=1 saves and re-renders the video source partial.
+    """A form POST saves and re-renders the video source partial.
     Asserts on stable IDs to catch regressions in partial rendering."""
     server, base = live_server
     status, body = _post_form(
@@ -5231,41 +5344,6 @@ def test_update_video_source_post_renders_video_source_partial(live_server) -> N
 
     saved = load_config(server.config_path)
     assert saved.video_source_type == "rtsp"
-
-
-def test_update_video_source_post_with_restart_renders_general_partial(live_server) -> None:
-    """``?restart=1`` flips into the restart-confirmation branch, which
-    requests an app restart and renders the general partial instead of
-    the video-source one. Asserting on stable section IDs (rather than
-    just the restart flag) catches a regression where the handler
-    returns the wrong template."""
-    server, base = live_server
-    assert server.check_restart_requested() is False
-
-    status, body = _post_form(
-        base,
-        "/section/video_source?restart=1",
-        {"video_source_type": "rtsp"},
-    )
-    assert status == 200
-    assert server.check_restart_requested() is True
-    # Verify the general partial rendered (not the video-source one) via
-    # stable, platform-independent section markers. The Software Update
-    # section is gated on the host platform, so don't key on it here.
-    assert 'id="general-network-section"' in body
-    assert 'data-fold-key="general-station"' in body
-    assert 'id="video-source-section"' not in body
-
-
-def test_update_general_blocks_restart_while_update_is_running(live_server) -> None:
-    server, base = live_server
-    server.set_update_status(state="running", message="Pulling...", error="")
-
-    assert server.check_restart_requested() is False
-    status, body = _post_form(base, "/section/general?restart=1", {})
-    assert status == 200
-    assert server.check_restart_requested() is False
-    assert "Restart is blocked" in body or "currently running" in body
 
 
 def test_deb_update_dispatches_request(live_server, monkeypatch) -> None:
@@ -5627,17 +5705,6 @@ def test_update_psn_persists_and_renders_partial(live_server) -> None:
     assert saved.psn_system_name == "PSN-A"
     assert saved.psn_mcast_ip == "236.10.10.20"
     assert saved.psn_source_iface == "eth0"
-
-
-def test_update_psn_with_restart_flag_queues_restart(live_server) -> None:
-    """Same restart contract as /section/general: ``?restart=1`` triggers a
-    restart request via the command queue."""
-    server, base = live_server
-    assert server.check_restart_requested() is False
-
-    status, _ = _post_form(base, "/section/psn?restart=1", {})
-    assert status == 200
-    assert server.check_restart_requested() is True
 
 
 def test_psn_section_renders_source_advisory_when_pin_missed(
@@ -6192,15 +6259,31 @@ def test_api_video_snapshot_full_returns_503_when_no_full_provider(live_server) 
     assert status == 503
 
 
+def test_api_info_and_api_restart_name_the_running_process(live_server) -> None:
+    """A browser waiting out a restart tells the old process from the new one by this."""
+    server, base = live_server
+    _status, first = _get_json(base, "/api/info")
+    _status, second = _get_json(base, "/api/info")
+    status, restart = _post_json(base, "/api/restart", {})
+    assert status == 200
+    assert re.fullmatch(r"[0-9a-f]{16}", first["instance"])
+    assert first["instance"] == second["instance"] == restart["instance"] == server.instance_id
+
+
+def test_every_web_server_is_a_new_instance(tmp_path) -> None:
+    servers = [ConfigWebServer(config_path=str(tmp_path / "config.toml"), host="127.0.0.1", port=0) for _ in range(2)]
+    assert servers[0].instance_id != servers[1].instance_id
+
+
 def test_api_restart_post_requests_restart_via_command_queue(live_server) -> None:
-    """The JSON /api/restart endpoint must enqueue a restart and return
-    success – used by the web UI's "Apply & Restart" buttons."""
+    """The JSON /api/restart endpoint every Restart button calls enqueues a
+    restart and answers success."""
     server, base = live_server
     assert server.check_restart_requested() is False
 
     status, body = _post_json(base, "/api/restart", {})
     assert status == 200
-    assert body.get("success") is True
+    assert body == {"success": True, "instance": server.instance_id}
     assert server.check_restart_requested() is True
 
 
@@ -8726,3 +8809,322 @@ def test_ground_grid_section_is_experimental_on_the_settings_page(live_server) -
     assert form_tag is not None
     assert "experimental-feature" in form_tag.group(0)
     assert 'name="vertices"' in body
+
+
+# ---------------------------------------------------------------------------
+# Keyboard Layout: shown where the kiosk session resolved it, applied on restart
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def keyboard_station(tmp_path, monkeypatch):
+    """A station's xkb files, and the session environment that marks the row as usable."""
+    from tests._xkb import install_station_keyboard, start_session
+
+    install_station_keyboard(tmp_path, monkeypatch)
+    start_session(monkeypatch)
+
+
+def _save_layout(server, layout: str, variant: str = "") -> None:
+    cfg = load_config(server.config_path)
+    cfg.controller.keyboard_layout = layout
+    cfg.controller.keyboard_variant = variant
+    save_config(cfg, server.config_path)
+
+
+def _keyboard_section(body: str) -> str:
+    start = body.index('id="keyboard-section"')
+    return body[start : body.index("</form>", start)]
+
+
+@pytest.mark.parametrize("path", ["/", "/section/keyboard"])
+def test_keyboard_layout_is_hidden_outside_the_kiosk_session(live_server, monkeypatch, tmp_path, path: str) -> None:
+    from tests._xkb import install_station_keyboard, no_session
+
+    install_station_keyboard(tmp_path, monkeypatch)
+    no_session(monkeypatch)
+    _, base = live_server
+    status, body = _get(base, path)
+    assert status == 200
+    assert 'id="keyboard-section"' in body
+    assert 'name="keyboard_layout"' not in body
+    assert "openfollowRestart(" not in _keyboard_section(body)
+
+
+@pytest.mark.parametrize("path", ["/", "/section/keyboard"])
+def test_keyboard_layout_offers_the_stations_layouts(live_server, keyboard_station, path: str) -> None:
+    server, base = live_server
+    _save_layout(server, "de", "T3")
+    _status, body = _get(base, path)
+    layout = re.search(r'<select id="keyboard-layout" name="keyboard_layout".*?</select>', body, re.DOTALL)
+    assert layout is not None
+    options = re.findall(r'<option value="([^"]*)"\s*(selected)?>([^<]*)</option>', layout.group(0))
+    assert options[0] == ("", "", "System – English (UK)")
+    assert ("de", "selected", "German") in options
+    assert {value for value, _, _ in options} == {"", "al", "gb", "us", "de", "jp"}
+    variant = re.search(r'<select id="keyboard-variant" name="keyboard_variant".*?</select>', body, re.DOTALL)
+    assert variant is not None
+    assert '<option value="T3" selected>German (T3)</option>' in variant.group(0)
+    assert '<option value="" >Standard</option>' in variant.group(0)
+
+
+def test_keyboard_layout_carries_the_standard_validation_markup(live_server, keyboard_station) -> None:
+    _, base = live_server
+    _status, body = _get(base, "/section/keyboard")
+    select = re.search(r'<select id="keyboard-layout"[^>]*>', body)
+    assert select is not None
+    assert 'hx-get="/api/validate/keyboard/keyboard_layout"' in select.group(0)
+    assert 'aria-describedby="keyboard-layout-error"' in select.group(0)
+    assert '<span id="keyboard-layout-error" class="field-error"></span>' in body
+
+
+def test_keyboard_variant_carries_the_standard_validation_markup(live_server, keyboard_station) -> None:
+    _, base = live_server
+    _status, body = _get(base, "/section/keyboard")
+    select = re.search(r'<select id="keyboard-variant"[^>]*>', body)
+    assert select is not None
+    assert 'hx-get="/api/validate/keyboard/keyboard_variant"' in select.group(0)
+    assert 'hx-trigger="blur changed delay:200ms"' in select.group(0)
+    assert 'hx-target="#keyboard-variant-error"' in select.group(0)
+    assert 'hx-include="closest form"' in select.group(0)
+    assert 'aria-describedby="keyboard-variant-error" aria-invalid="false"' in select.group(0)
+    assert '<span id="keyboard-variant-error" class="field-error"></span>' in body
+
+
+def _variant_field(body: str) -> str:
+    """The element that reloads the Variant options: the field around the select."""
+    select_at = body.index('<select id="keyboard-variant"')
+    start = body.rindex('<div class="field"', 0, select_at)
+    return body[start : body.index(">", start) + 1]
+
+
+def test_keyboard_variants_reload_with_the_layout(live_server, keyboard_station) -> None:
+    _, base = live_server
+    _status, body = _get(base, "/section/keyboard")
+    field = _variant_field(body)
+    assert 'hx-get="/section/keyboard/variants"' in field
+    assert 'hx-trigger="change from:#keyboard-layout"' in field
+    assert 'hx-include="#keyboard-layout"' in field
+    assert 'hx-target="#keyboard-variant" hx-swap="innerHTML"' in field
+
+
+def test_keyboard_save_waits_out_a_variant_reload(live_server, keyboard_station) -> None:
+    """Saved mid-reload, the form would carry the previous layout's variant under the new layout."""
+    _, base = live_server
+    _status, body = _get(base, "/section/keyboard")
+    field = _variant_field(body)
+    assert 'hx-disabled-elt="#keyboard-section button[type=submit]"' in field
+    # A failed reload leaves the previous layout's variants: fall back to Standard, then gate again.
+    assert (
+        "hx-on::after-request=\"if(!event.detail.successful) document.getElementById('keyboard-variant').value='';"
+        " refreshFormGate(this.closest('form'))\""
+    ) in field
+    section = body[body.index('<form id="keyboard-section"') :]
+    assert re.findall(r"<button[^>]*type=\"submit\"[^>]*>", section) == ['<button type="submit" class="save-btn">']
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("keyboard_layout=jp", ["", "OADG109A"]),
+        ("keyboard_layout=de", ["", "nodeadkeys", "T3", "us"]),
+        ("keyboard_layout=", [""]),
+        ("keyboard_layout=xx", [""]),
+        ("", [""]),
+    ],
+)
+def test_keyboard_variants_route_lists_the_layouts_own(live_server, keyboard_station, query: str, expected) -> None:
+    _, base = live_server
+    status, body = _get(base, f"/section/keyboard/variants?{query}")
+    assert status == 200
+    assert re.findall(r'<option value="([^"]*)"', body) == expected
+    # A new layout starts on Standard: the previous layout's variant means nothing here.
+    assert re.findall(r'<option value="([^"]*)" selected>', body) == [""]
+    assert body.count("Standard") == 1
+
+
+def test_keyboard_layout_save_stores_the_choice_and_leaves_the_session_alone(live_server, keyboard_station) -> None:
+    """Save only saves: the layout in use changes on restart, which Save never requests."""
+    server, base = live_server
+    status, body = _post_form(
+        base, "/section/keyboard", {"keyboard_enabled": "on", "keyboard_layout": "de", "keyboard_variant": "nodeadkeys"}
+    )
+    assert status == 200
+    saved = load_config(server.config_path).controller
+    assert (saved.keyboard_layout, saved.keyboard_variant) == ("de", "nodeadkeys")
+    assert server.check_restart_requested() is False
+    assert "In use: English (UK) until OpenFollow restarts." in body
+
+
+def test_keyboard_save_without_the_row_keeps_the_saved_layout(live_server, monkeypatch) -> None:
+    """Outside the kiosk session the form has no layout fields; saving the rest must not clear them."""
+    from tests._xkb import no_session
+
+    no_session(monkeypatch)
+    server, base = live_server
+    _save_layout(server, "de", "nodeadkeys")
+    status, _ = _post_form(base, "/section/keyboard", {"keyboard_enabled": "on"})
+    assert status == 200
+    saved = load_config(server.config_path).controller
+    assert (saved.keyboard_layout, saved.keyboard_variant) == ("de", "nodeadkeys")
+
+
+@pytest.mark.parametrize(
+    ("form", "expected"),
+    [
+        ({"keyboard_layout": "de;reboot", "keyboard_variant": "nodeadkeys"}, ("", "")),
+        ({"keyboard_layout": "", "keyboard_variant": "nodeadkeys"}, ("", "")),
+        ({"keyboard_layout": "de", "keyboard_variant": "$(id)"}, ("de", "")),
+    ],
+)
+def test_keyboard_layout_save_refuses_a_crafted_value(live_server, keyboard_station, form, expected) -> None:
+    server, base = live_server
+    status, _ = _post_form(base, "/section/keyboard", {"keyboard_enabled": "on", **form})
+    assert status == 200
+    saved = load_config(server.config_path).controller
+    assert (saved.keyboard_layout, saved.keyboard_variant) == expected
+
+
+def test_keyboard_layout_in_use_offers_no_restart(live_server, keyboard_station) -> None:
+    server, base = live_server
+    _save_layout(server, "")
+    _status, body = _get(base, "/section/keyboard")
+    assert "until OpenFollow restarts" not in body
+    assert "openfollowRestart(" not in _keyboard_section(body)
+
+
+def test_keyboard_layout_pending_offers_a_restart(live_server, keyboard_station) -> None:
+    server, base = live_server
+    _save_layout(server, "de")
+    _status, body = _get(base, "/section/keyboard")
+    assert '<div class="field-caution-msg" role="status">In use: English (UK) until OpenFollow restarts.</div>' in body
+    tag_start = body.rindex("<button", 0, body.index('onclick="openfollowRestart('))
+    button = body[tag_start : body.index("</button>", tag_start)]
+    assert 'type="button" class="danger"' in button
+    assert button.endswith(">Restart OpenFollow")
+
+
+def test_keyboard_layout_pending_names_only_the_layout(live_server, keyboard_station) -> None:
+    server, base = live_server
+    _save_layout(server, "de")
+    _status, body = _get(base, "/section/keyboard")
+    assert "The system keyboard settings change" not in body
+
+
+def test_keyboard_settings_pending_without_a_new_layout(live_server, keyboard_station, monkeypatch) -> None:
+    """The system file changed since the session started: the layout stays, the model changes."""
+    from tests._xkb import start_session
+
+    start_session(monkeypatch, model="pc104")
+    server, base = live_server
+    _save_layout(server, "")
+    _status, body = _get(base, "/section/keyboard")
+    caution = "The system keyboard settings change when OpenFollow restarts."
+    assert f'<div class="field-caution-msg" role="status">{caution}</div>' in body
+    assert "until OpenFollow restarts" not in body
+    assert 'onclick="openfollowRestart(' in body
+
+
+@pytest.mark.parametrize(
+    ("raw", "error"),
+    [
+        ("de", None),
+        ("xx", "This station has no keyboard layout &#x27;xx&#x27;."),
+        ("DE", "A layout name is lower-case letters, digits, &#x27;_&#x27; and &#x27;-&#x27;."),
+    ],
+)
+def test_keyboard_layout_blur_validation(live_server, keyboard_station, raw: str, error: str | None) -> None:
+    _, base = live_server
+    status, body = _get(base, f"/api/validate/keyboard/keyboard_layout?keyboard_layout={raw}")
+    assert status == 200
+    if error is None:
+        assert "field-error-msg" not in body
+    else:
+        assert error in body
+
+
+@pytest.mark.parametrize(
+    ("query", "error"),
+    [
+        ("keyboard_layout=de&keyboard_variant=nodeadkeys", None),
+        ("keyboard_layout=gb&keyboard_variant=nodeadkeys", "has no variant &#x27;nodeadkeys&#x27;"),
+        ("keyboard_layout=&keyboard_variant=nodeadkeys", "System takes the system&#x27;s own variant"),
+    ],
+)
+def test_keyboard_variant_blur_validation_reads_the_layout_beside_it(
+    live_server, keyboard_station, query: str, error: str | None
+) -> None:
+    _, base = live_server
+    status, body = _get(base, f"/api/validate/keyboard/keyboard_variant?{query}")
+    assert status == 200
+    if error is None:
+        assert "field-error-msg" not in body
+    else:
+        assert error in body
+
+
+_CONTROLLER_SECTIONS = ["controller", "gamepad", "keyboard", "mouse"]
+
+
+@pytest.mark.parametrize("section", _CONTROLLER_SECTIONS)
+def test_keyboard_layout_is_never_broadcast_from_any_controller_section(live_server, monkeypatch, section) -> None:
+    """Echoing ``GET /api/config/<section>`` back as a broadcast must not set every peer's layout."""
+    from types import SimpleNamespace
+
+    from openfollow.web import routes as routes_mod
+
+    sent: list[dict] = []
+
+    def _fake_send(ip, port, section_name, data, pin="", *, expected_port, sender) -> bool:
+        sent.append(dict(data))
+        return True
+
+    monkeypatch.setattr(routes_mod, "_send_config_to_peer", _fake_send)
+    server, base = live_server
+    monkeypatch.setattr(server, "get_peers", lambda: [SimpleNamespace(name="peer", ip="10.0.0.99", web_port=80)])
+    _save_layout(server, "de", "nodeadkeys")
+    with urllib.request.urlopen(f"{base}/api/config/{section}", timeout=5) as resp:
+        echoed = json.loads(resp.read())
+    # The station's own view carries them, as it does every device-local field.
+    assert (echoed["keyboard_layout"], echoed["keyboard_variant"]) == ("de", "nodeadkeys")
+    status, body = _post_json(base, f"/api/config/{section}/broadcast", echoed)
+    assert status == 200 and body.get("success") is True
+    assert len(sent) == 1
+    assert "keyboard_layout" not in sent[0]
+    assert "keyboard_variant" not in sent[0]
+    assert sent[0]["key_reset"] == echoed["key_reset"]
+
+
+@pytest.mark.parametrize("section", _CONTROLLER_SECTIONS)
+def test_keyboard_layout_from_a_peer_is_ignored_in_any_controller_section(live_server, section) -> None:
+    server, base = live_server
+    _save_layout(server, "de", "nodeadkeys")
+    status, body = _post_json(
+        base, f"/api/config/{section}", {"keyboard_layout": "jp", "keyboard_variant": "OADG109A", "key_reset": "c"}
+    )
+    assert status == 200 and body.get("success") is True
+    saved = load_config(server.config_path).controller
+    assert (saved.keyboard_layout, saved.keyboard_variant) == ("de", "nodeadkeys")
+    assert saved.key_reset == "c"
+
+
+def test_keyboard_variants_need_the_pin(pin_protected_server) -> None:
+    _server, base, _ = pin_protected_server
+    _status, body, headers = _raw_request(
+        base, "/section/keyboard/variants?keyboard_layout=de", headers={"HX-Request": "true"}, method="GET"
+    )
+    assert {k.lower(): v for k, v in headers.items()}.get("hx-redirect") == "/login"
+    assert "option" not in body
+
+
+def test_restart_needs_the_pin(pin_protected_server) -> None:
+    server, base, _ = pin_protected_server
+    assert _post_status_with_headers(base, "/api/restart", extra_headers={}) == 401
+    assert server.check_restart_requested() is False
+
+
+def test_restart_through_a_foreign_origin_is_refused(pin_protected_server) -> None:
+    server, base, _ = pin_protected_server
+    status = _post_status_with_headers(base, "/api/restart", extra_headers={"Origin": "http://evil.example.com"})
+    assert status == 403
+    assert server.check_restart_requested() is False

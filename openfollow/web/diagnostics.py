@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
 
 import openfollow
+from openfollow import keyboard_layout
 from openfollow.logging_setup import RingBufferLogHandler
 from openfollow.net_utils import HOST_RESOLVER, read_ipv4_routes
 from openfollow.network.validate import is_link_local
@@ -1790,7 +1791,43 @@ def _collect_detection_models(p: DiagnosticsProviders | None) -> list[str]:
 # E3. Operating system ------------------------------------------------------
 
 
-def collect_os() -> list[str]:
+_XKB_NAME_RE = re.compile(r"[A-Za-z0-9_:,-]*")
+
+
+def _xkb_name(value: str) -> str:
+    """The value as is when it is a plain xkb name, else quoted with its escapes, so it stays on one row."""
+    return value if _XKB_NAME_RE.fullmatch(value) else ascii(value)
+
+
+def _layout_name(layout: str, variant: str) -> str:
+    """A layout and its variant; nothing without a layout, whose variant would describe nothing."""
+    if not layout:
+        return ""
+    return f"{_xkb_name(layout)} ({_xkb_name(variant)})" if variant else _xkb_name(layout)
+
+
+def collect_keyboard_layout(config_path: Path | None, environ: Mapping[str, str] | None = None) -> str:
+    """What the station is set to, what the system file says, and what the kiosk session started with."""
+    env = os.environ if environ is None else environ
+    if config_path is None:
+        configured = "[unknown]"
+    else:
+        configured = _layout_name(*keyboard_layout.read_configured(config_path)) or "system"
+    system = keyboard_layout.read_system_keyboard()
+    on_file = _layout_name(system.get("XKBLAYOUT", ""), system.get("XKBVARIANT", "")) or "[not set]"
+    source = env.get("OPENFOLLOW_KEYBOARD_SOURCE")
+    if source is None:
+        in_use = "[not set by the kiosk session]"
+    else:
+        layout = _layout_name(env.get("XKB_DEFAULT_LAYOUT", ""), env.get("XKB_DEFAULT_VARIANT", ""))
+        in_use = f"{layout or '[none]'} ({_xkb_name(source)})"
+        for label, name in (("model", "XKB_DEFAULT_MODEL"), ("options", "XKB_DEFAULT_OPTIONS")):
+            if env.get(name):
+                in_use += f", {label} {_xkb_name(env[name])}"
+    return f"  keyboard layout              configured {configured} | system file {on_file} | in use {in_use}"
+
+
+def collect_os(config_path: Path | None = None) -> list[str]:
     rows = [
         f"  system                       {platform.system()}",
         f"  release                      {platform.release()}",
@@ -1814,6 +1851,7 @@ def collect_os() -> list[str]:
                 rows.append(f"  {line}")
         else:
             rows.append(f"  sw_vers                      {out}")
+    rows.append(collect_keyboard_layout(config_path))
     return rows
 
 
@@ -3223,7 +3261,7 @@ def collect_bundle(
         "e1_runtime": lambda: collect_runtime_versions(repo_root, budget_s=remaining(_RUNTIME_SECTION_BUDGET_S)),
         "e1b_video": collect_video_capability,
         "e2_detection": lambda: collect_detection_stack(p),
-        "e3_os": collect_os,
+        "e3_os": lambda: collect_os(config_path),
         "e4_cpu": collect_cpu,
         "e5_memdisk": lambda: collect_memory_disk(extra_paths=extra_storage_paths),
         "e5b_storage": lambda: collect_storage_breakdown(

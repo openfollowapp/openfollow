@@ -4,34 +4,28 @@
         <span class="section-note">Export, import and restore device settings</span>
     </div>
 
-    <div id="config-restart-notice" class="restart-notice" style="display:none">
-        App is restarting&hellip; Please wait.
+    <div class="group">
+        <h3 class="group-title">Export</h3>
+        <div class="actions">
+            <button type="button" class="save-btn" onclick="exportConfig()">Export Configuration</button>
+        </div>
     </div>
 
-    <div id="config-transfer-content">
-        <div class="group">
-            <h3 class="group-title">Export</h3>
-            <div class="actions">
-                <button type="button" class="save-btn" onclick="exportConfig()">Export Configuration</button>
-            </div>
+    <div class="group">
+        <h3 class="group-title">Import</h3>
+        <input type="file" id="config-import-file" accept=".ofsettings,.openfollowsettings" style="display:none"
+               onchange="importConfig(this)">
+        <div class="actions" id="import-actions">
+            <button type="button" class="save-btn" id="import-btn"
+                    onclick="document.getElementById('config-import-file').click()">Import Configuration&hellip;</button>
         </div>
+    </div>
 
-        <div class="group">
-            <h3 class="group-title">Import</h3>
-            <input type="file" id="config-import-file" accept=".ofsettings,.openfollowsettings" style="display:none"
-                   onchange="importConfig(this)">
-            <div class="actions" id="import-actions">
-                <button type="button" class="save-btn" id="import-btn"
-                        onclick="document.getElementById('config-import-file').click()">Import Configuration&hellip;</button>
-            </div>
-        </div>
-
-        <div class="group">
-            <h3 class="group-title">Restore Defaults</h3>
-            <div class="actions" id="restore-actions">
-                <button type="button" class="btn-secondary" id="restore-defaults-btn"
-                        onclick="restoreDefaults()">Restore Defaults</button>
-            </div>
+    <div class="group">
+        <h3 class="group-title">Restore Defaults</h3>
+        <div class="actions" id="restore-actions">
+            <button type="button" class="btn-secondary" id="restore-defaults-btn"
+                    onclick="restoreDefaults()">Restore Defaults</button>
         </div>
     </div>
 </div>
@@ -137,42 +131,27 @@ async function restoreDefaults() {
     });
     if (!ok) return;
 
-    var btn = document.getElementById('restore-defaults-btn');
-    btn.disabled = true;
-    btn.textContent = 'Restoring\u2026';
-    fetch('/api/config/reset', {method: 'POST'})
-    .then(async function(res) {
-        btn.disabled = false;
-        btn.textContent = 'Restore Defaults';
-        var text = await res.text();
-        var result = {};
-        try { result = JSON.parse(text); } catch (e) { /* not JSON: reported below */ }
-        if (!res.ok || !result.success) {
-            _restoreFailed(window.OpenFollow.saveError.fromText(res.status, text));
-            return;
-        }
-        if (result.backup_error) {
-            toastOnNextLoad('Restored defaults. ' + NO_BACKUP_MADE, 'caution');
-        }
-        /* The reset restarts the station; wait for it to answer again. */
-        _showRestartingState();
-    })
-    .catch(function() {
-        btn.disabled = false;
-        btn.textContent = 'Restore Defaults';
+    /* The reset restarts the station: its progress shows from the moment it is sent. */
+    openfollowRestartProgress();
+    var res, text;
+    try {
+        res = await fetch('/api/config/reset', {method: 'POST'});
+        text = await res.text();
+    } catch (e) {
+        closeModal();
         _restoreFailed(window.OpenFollow.saveError.UNREACHABLE);
-    });
-}
-
-function _showRestartingState() {
-    document.getElementById('config-transfer-content').style.display = 'none';
-    var notice = document.getElementById('config-restart-notice');
-    notice.style.display = 'block';
-    /* Poll until the server comes back up, then reload */
-    var poll = setInterval(function() {
-        fetch('/api/info').then(function(res) {
-            if (res.ok) { clearInterval(poll); window.location.reload(); }
-        }).catch(function() { /* still restarting */ });
-    }, 2000);
+        return;
+    }
+    var result = {};
+    try { result = JSON.parse(text); } catch (e) { /* not JSON: reported below */ }
+    if (!res.ok || !result.success) {
+        closeModal();
+        _restoreFailed(window.OpenFollow.saveError.fromText(res.status, text));
+        return;
+    }
+    if (result.backup_error) {
+        toastOnNextLoad('Restored defaults. ' + NO_BACKUP_MADE, 'caution');
+    }
+    openfollowAwaitRestart(result.instance || '');
 }
 </script>

@@ -4,6 +4,12 @@ Configure how a keyboard drives markers on the Operator Screen. Keyboard input u
 
 **Keyboard** – master toggle for the movement keys. When off, the movement keys are ignored; the action keys still work. Leave on unless an operator is using a gamepad exclusively on this station.
 
+**Keyboard Layout** – the layout of the keyboard plugged into this station, so a key reads as the letter printed on it. The list holds the layouts installed on this station. **System** uses the layout set in the station's operating system; its entry names that layout. **Variant** picks a variant of the chosen layout, such as one without dead keys; **Standard** is the layout as it is. The keyboard model and options set in the operating system, such as Caps Lock as Ctrl, apply whichever layout is chosen.
+
+A new layout takes effect when OpenFollow restarts. Until then the section names the layout still in use and offers **Restart OpenFollow**; outputs pause until it is back, and it is refused while a software update is running. When only the operating system's keyboard model or options changed since OpenFollow started, the section says so instead. The layout belongs to this station: it is not exported, pushed to other stations or replaced by an import, and **Restore defaults** returns it to System.
+
+The setting appears only on a station that runs OpenFollow's own Operator Screen session. On macOS, and wherever OpenFollow runs inside another desktop, the keyboard follows that system's own layout.
+
 ## Button Mapping
 
 Expand **Button Mapping** to customise which keys perform which actions. Click **Reset to Defaults** to restore the default layout below.

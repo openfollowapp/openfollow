@@ -86,6 +86,22 @@ mmdebstrap:
     #     creating the marker file is exactly what enable-linger does.
     - mkdir -p "$1/var/lib/systemd/linger" && touch "$1/var/lib/systemd/linger/$IGconf_device_user1"
 
+    # 2b2. The kiosk session falls back to /etc/default/keyboard when the station
+    #      sets no layout, and nothing in the image installs one. Written only
+    #      when absent or without a layout, so a base that sets one keeps it.
+    - |-
+      set -eu
+      if ! grep -qs "^XKBLAYOUT=[\"']*[a-z]" "$1/etc/default/keyboard"; then
+        mkdir -p "$1/etc/default"
+        cat > "$1/etc/default/keyboard" <<'KEYBOARD'
+      XKBMODEL="pc105"
+      XKBLAYOUT="us"
+      XKBVARIANT=""
+      XKBOPTIONS=""
+      BACKSPACE="guess"
+      KEYBOARD
+      fi
+
     # 2c. Root-fs expand. The image ships a compact root partition
     #     (image.root_part_size) so the .img is small and quick to flash; this
     #     oneshot grows it to fill whatever medium it landed on (eMMC / SD / NVMe).

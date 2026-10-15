@@ -269,14 +269,22 @@ def psn_loopback_sockets(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[socke
     """Open every unpinned PSN receive socket on loopback unicast, not the multicast group.
 
     A real socket a real receive thread parks on, without depending on the
-    host's multicast routing. Yields the sockets in the order they were opened.
+    host's multicast routing. A read timeout is stretched from pypsn's 2 s to
+    a minute, so a stop that waits for the read is as slow as its join allows.
+    Stretched rather than removed: a timed read polls, and closing the socket
+    from another thread does not wake a poll, while on macOS it does wake a
+    plain blocking read. Yields the sockets in the order they were opened.
     """
     import pypsn
 
     made: list[socket.socket] = []
 
+    class _ParkedRead(socket.socket):
+        def settimeout(self, value: float | None) -> None:
+            super().settimeout(60.0 if value else value)
+
     def _socket(_ip: str, _port: int) -> socket.socket:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock = _ParkedRead(socket.AF_INET, socket.SOCK_DGRAM)
         sock.bind(("127.0.0.1", 0))
         made.append(sock)
         return sock

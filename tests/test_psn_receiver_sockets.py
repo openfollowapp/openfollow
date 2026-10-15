@@ -19,6 +19,7 @@ Covers the gaps left open by the ``_on_packet`` parsing suite:
 
 from __future__ import annotations
 
+import socket
 from dataclasses import dataclass
 from typing import Any
 
@@ -397,7 +398,8 @@ class TestPsnReceiverStart:
 class _RecordingRecvSocket:
     """A receive socket that records what a pinned ``_RobustReceiver`` does to it."""
 
-    def __init__(self, *_args: Any) -> None:
+    def __init__(self, *args: Any) -> None:
+        self.args = args
         self.options: list[tuple[int, int, int]] = []
         self.bound: tuple[str, int] | None = None
         self.timeout: float | None = None
@@ -444,6 +446,9 @@ class TestPinnedReceiveSocket:
         receiver = _RobustReceiver(callback=lambda *_: None, ip_addr="169.254.7.7", mcast_port=56565, iface="eth1")
         (sock,) = sockets
         assert receiver.socket is sock
+        assert sock.args == (socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        # Every station on the group shares the PSN port.
+        assert sock.options == [(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)]
         assert sock.bound == ("236.10.10.10", 56565)
         assert joins == [(sock, "236.10.10.10", "169.254.7.7", "eth1")]
 
@@ -473,8 +478,8 @@ class TestPinnedReceiveSocket:
             return theirs
 
         monkeypatch.setattr(pypsn, "get_socket", _get_socket)
-        receiver = _RobustReceiver(callback=lambda *_: None, ip_addr="10.0.0.5", mcast_port=56565)
-        assert opened == [("10.0.0.5", 56565)]
+        receiver = _RobustReceiver(callback=lambda *_: None, ip_addr="10.0.0.5", mcast_port=56999)
+        assert opened == [("10.0.0.5", 56999)]
         assert receiver.socket is theirs
         assert sockets == []
 

@@ -35,9 +35,7 @@ class _RobustReceiver(pypsn.Receiver):  # type: ignore[misc]
     from the main loop returns at once.
     """
 
-    def __init__(
-        self, callback: Callable[..., None], ip_addr: str = "0.0.0.0", mcast_port: int = 56565, iface: str = ""
-    ) -> None:
+    def __init__(self, callback: Callable[..., None], ip_addr: str, mcast_port: int, iface: str = "") -> None:
         if iface:
             # pypsn joins its group by address; a pinned interface is joined by index.
             threading.Thread.__init__(self)
@@ -51,16 +49,19 @@ class _RobustReceiver(pypsn.Receiver):  # type: ignore[misc]
     _JOIN_TIMEOUT_S = 1.0
 
     def start(self) -> None:
+        """Start the receive thread; on failure release the gate and the socket, then raise."""
         if self.socket is None:
             return  # pypsn opened none: there is nothing to read
-        # Read only once the gate reports data, so a read never blocks.
-        self.socket.setblocking(False)
-        gate = self._gate = ReceiveGate(self.socket)
         try:
+            # Read only once the gate reports data, so a read never blocks.
+            self.socket.setblocking(False)
+            self._gate = ReceiveGate(self.socket)
             super().start()
         except BaseException:
-            self._gate = None
-            gate.close()
+            gate, self._gate = self._gate, None
+            if gate is not None:
+                gate.close()
+            self.socket.close()
             raise
 
     def stop(self) -> None:
@@ -177,7 +178,7 @@ class PsnReceiver:
         """Begin listening for PSN packets on the multicast group."""
         generation = object()
         try:
-            self._receiver = _RobustReceiver(
+            receiver = _RobustReceiver(
                 callback=functools.partial(self._on_packet, generation=generation),
                 ip_addr=self._source_ip or "0.0.0.0",
                 mcast_port=self._port,
@@ -189,10 +190,16 @@ class PsnReceiver:
                 exc,
             )
             return
+        receiver.daemon = True
+        try:
+            receiver.start()
+        except (OSError, RuntimeError) as exc:
+            # A full fd table or thread table; the receiver has released its socket.
+            logger.error("PSN receiver could not start: %s. PSN input disabled.", exc)
+            return
         with self._lock:
             self._generation = generation
-        self._receiver.daemon = True
-        self._receiver.start()
+        self._receiver = receiver
 
     def stop(self) -> None:
         """Stop listening and release the receiver thread."""

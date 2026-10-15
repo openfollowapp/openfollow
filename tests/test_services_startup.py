@@ -2018,14 +2018,16 @@ def test_suspending_psn_stops_both_directions(monkeypatch) -> None:
     assert (server.stopped, receiver.stopped) == (1, 1)
 
 
-# Far under the PSN receiver's 2 s read timeout, far over a prompt stop.
-_MAIN_LOOP_BUDGET_S = 0.25
+# Generous, so a scheduler stall cannot flake it: the join a stop that does not
+# wake the receive thread falls back on is stretched far past it instead.
+_MAIN_LOOP_BUDGET_S = 5.0
 
 
-def _running_psn_receiver(sockets) -> object:
+def _running_psn_receiver(sockets, monkeypatch) -> object:
     """A started receiver whose thread has handled a packet and is back in its read."""
-    from openfollow.psn.receiver import PsnReceiver
+    from openfollow.psn.receiver import PsnReceiver, _RobustReceiver
 
+    monkeypatch.setattr(_RobustReceiver, "_JOIN_TIMEOUT_S", 30.0)
     receiver = PsnReceiver(source_ip="127.0.0.1")
     receiver.start()
     send_psn_tracker(sockets[-1].getsockname(), 7)
@@ -2044,7 +2046,7 @@ def test_the_observer_suspends_psn_without_holding_up_the_main_loop(monkeypatch,
     services = _build_services_with_psutil_backend(monkeypatch)
     services._app._config.psn_source_iface = "eth0"
     _fake_ifaces(monkeypatch, {})
-    receiver = _running_psn_receiver(psn_loopback_sockets)
+    receiver = _running_psn_receiver(psn_loopback_sockets, monkeypatch)
     services._app._server = None
     services._app._psn_receiver = receiver
     now = [0.0]
@@ -2068,7 +2070,7 @@ def test_the_observer_suspends_psn_without_holding_up_the_main_loop(monkeypatch,
 def test_a_station_interface_change_rebinds_psn_input_promptly(monkeypatch, psn_loopback_sockets) -> None:
     """Saving the station interface rebinds the running receiver on the main loop."""
     services = _build_services_with_psutil_backend(monkeypatch)
-    receiver = _running_psn_receiver(psn_loopback_sockets)
+    receiver = _running_psn_receiver(psn_loopback_sockets, monkeypatch)
     services._app._server = None
     services._app._psn_receiver = receiver
     try:

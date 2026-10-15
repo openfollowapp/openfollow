@@ -3105,3 +3105,55 @@ class TestPathKeys:
         app._clear_operator_messages = lambda: None
         process_input(app, 0.016)
         assert app._config.paths.show_paths is False
+
+
+class TestSourcePickSave:
+    """A source picked on screen is saved like every other on-screen save: the field alone."""
+
+    def _station(self, tmp_path):  # noqa: ANN001, ANN202
+        from openfollow.configuration import AppConfig, load_config, save_config
+
+        path = tmp_path / "config.toml"
+        save_config(AppConfig(video_source_type="ndi", ndi_source_name="OLD (A)"), str(path))
+        banners: list[str] = []
+        app = SimpleNamespace(
+            _config=load_config(str(path), strict=True),
+            _config_path=str(path),
+            _enter_settings_menu=lambda banner="": banners.append(banner),
+        )
+        return app, path, banners
+
+    def test_the_pick_is_saved_alone_and_the_reload_has_nothing_to_reconnect(self, tmp_path) -> None:  # noqa: ANN001
+        from dataclasses import replace
+
+        from openfollow.configuration import load_config, save_config
+        from openfollow.runtime.app_modes import save_source_pick
+        from openfollow.video.inputs import get_input_class
+
+        app, path, banners = self._station(tmp_path)
+        save_config(replace(load_config(str(path)), psn_system_name="Saved Elsewhere"), str(path))
+
+        save_source_pick(app, "ndi_source_name", "NEW (B)")
+
+        on_disk = load_config(str(path), strict=True)
+        assert (on_disk.ndi_source_name, on_disk.psn_system_name) == ("NEW (B)", "Saved Elsewhere")
+        assert app._config.ndi_source_name == "NEW (B)"
+        ndi = get_input_class("ndi")
+        assert ndi is not None
+        assert not ndi.config_changed(app._config, on_disk)
+        assert banners == []
+
+    @pytest.mark.parametrize("content", ["", "  \n\t\n", "not [[ toml"], ids=["empty", "whitespace", "unparseable"])
+    def test_a_broken_file_is_left_alone_and_the_operator_told(self, tmp_path, content: str) -> None:  # noqa: ANN001
+        from openfollow.runtime.app_modes import save_source_pick
+
+        app, path, banners = self._station(tmp_path)
+        path.write_text(content, encoding="utf-8")
+
+        save_source_pick(app, "ndi_source_name", "NEW (B)")
+
+        assert path.read_text(encoding="utf-8") == content
+        assert app._config.ndi_source_name == "NEW (B)"
+        assert banners == [
+            "The NDI® source is live but could not be saved to config.toml. Fix the file, then pick it again."
+        ]

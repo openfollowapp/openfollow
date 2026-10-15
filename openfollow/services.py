@@ -1006,6 +1006,7 @@ class AppRuntimeServices:
         self._snapshot_provider = SnapshotProvider()
 
         # Build input-specific config dict from the active plugin
+        from openfollow.runtime.app_modes import save_source_pick
         from openfollow.video.inputs import get_input_class
 
         input_cls = get_input_class(cfg.video_source_type)
@@ -1016,7 +1017,7 @@ class AppRuntimeServices:
             input_config=input_config,
             overlay_renderer=overlay,
             on_widget_changed=canvas.embed_widget,
-            config_path=self._app._config_path,
+            on_source_picked=lambda field, value: save_source_pick(self._app, field, value),
             detector=detector,
             preview_provider=self._preview_provider,
             snapshot_provider=self._snapshot_provider,

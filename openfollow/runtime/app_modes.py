@@ -1194,6 +1194,14 @@ def _unsaved_banner(what: str, again: str) -> str:
     return f"{what} is live but could not be saved to config.toml. Fix the file, then {again}."
 
 
+def save_source_pick(app: OpenFollowApp, field: str, value: str) -> None:
+    """Save a source picked on screen; its input is connecting to it already, so the reload swaps nothing."""
+    setattr(app._config, field, value)
+    if not _persist_config(app, field):
+        what = f"The {_input_display_name(app._config.video_source_type)} source"
+        app._enter_settings_menu(banner=_unsaved_banner(what, "pick it again"))
+
+
 def _input_display_name(source_type: str) -> str:
     from openfollow.video.inputs import get_input_class
 

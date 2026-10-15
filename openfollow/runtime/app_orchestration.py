@@ -181,6 +181,7 @@ def animate(app: OpenFollowApp) -> None:
     app._check_video_disconnect_banner()
     if app._input_manager is not None:
         app._input_manager.update_paths(dt)
+        app._input_manager.update_touch_remote(dt)
     app._process_input(dt)
 
     svc = app._runtime_services

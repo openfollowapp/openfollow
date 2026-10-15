@@ -3,7 +3,7 @@
 A setup tool in the web UI: from a tablet, drive one of this station's controlled
 markers by a virtual stick and Z wheel, so a person standing on a known spot can
 focus fixtures on themselves. Experimental paths are supported (Pathfinder).
-Built on `feat/paths-editor`, merging after it.
+Built on main, which carries paths.
 
 Feel prototype (simulated stage, no station): the artifact linked from the PR.
 
@@ -30,48 +30,49 @@ Feel prototype (simulated stage, no station): the artifact linked from the PR.
 ## Work items
 
 ### Config (`add-config-field` skill)
-- [ ] `TouchRemoteConfig` (`[touch_remote]`): `enabled` (bool, False), `stick_curve` (1.0–3.0), `stick_dead_zone` (0.0–0.5), `z_step_m` (0.001–1.0), `z_notch_px` (int, 8–80). Normalised in `__post_init__` with the `_coerce_*` helpers.
-- [ ] `enabled` in `_DEVICE_LOCAL_FIELDS_BY_SECTION` (stripped from export and broadcast). Tuning fields travel.
-- [ ] `apply_section_data` re-runs `__post_init__` for `touch_remote`.
-- [ ] `FIELD_RULES` entry and validate markup for the `enabled` checkbox only (the tuning fields have no input).
-- [ ] Tests in `tests/test_configuration.py`: wrong type, range and `None`/`"abc"`/`True` per field (parametrised), TOML round trip, device-local stripping on export and broadcast.
+- [x] `TouchRemoteConfig` (`[touch_remote]`): `enabled` (bool, False), `stick_curve` (1.0–3.0), `stick_dead_zone` (0.0–0.5), `z_step_m` (0.001–1.0), `z_notch_px` (int, 8–80). Normalised in `__post_init__` with the `_coerce_*` helpers.
+- [x] `enabled` in `_DEVICE_LOCAL_FIELDS_BY_SECTION` (stripped from export and broadcast). Tuning fields travel.
+- [x] `apply_section_data` re-runs `__post_init__` for `touch_remote`.
+- [x] `FIELD_RULES` entry and validate markup for the `enabled` checkbox only (the tuning fields have no input).
+- [x] Tests in `tests/test_configuration.py`: wrong type, range and `None`/`"abc"`/`True` per field (parametrised), TOML round trip, device-local stripping on export and broadcast.
 
-### Runtime arbitration (`runtime/touch_remote.py`)
-- [ ] `TouchRemote`: thread-safe registry. Web threads write sessions (token → held marker, stick vector, last-seen, queued Z notches, queued Reset / Pathfinder / Glide); the frame loop reads and applies. Clock injected (`time.monotonic` default) for hermetic tests.
-- [ ] `hold(token, marker_id)`: newest wins; the previous holder's next request learns it lost the marker.
-- [ ] `held_ids()` read by `InputManager` each frame; every other source skips a held marker (gamepad, keyboard, 3D mouse, 2D mouse grab, OSC `/marker/*`, OSC `/marker/<id>/path`).
-- [ ] Per-frame apply in `InputManager.update`: the velocity goes through `_move` (paths-aware), with `invert_control_direction` applied there once; Z notches via `set_pos` unless locked; Reset through `_reset`; Pathfinder through `InputManager.pathfinder`; Glide releases the lock, then steps toward the target at the station's `marker.max_speed` each frame until it arrives or the stick moves.
-- [ ] The per-frame `set_speed` freshness stamp is kept while held (never gated on movement).
-- [ ] Taking a hold with detection on saves `detection.enabled = false` through the normal config save (hot reload stops the detector, no restart) and reports it in the `hold` answer.
-- [ ] Dead-man: 250 ms stale ⇒ zero velocity; 10 s stale ⇒ release.
-- [ ] Holds released for markers that leave `controlled_marker_ids` and when `enabled` turns off (hot reload).
-- [ ] HUD caution status row "Web remote holds marker N" while any hold exists (status language).
+### Runtime arbitration (`input/touch_remote.py`)
+- [x] `TouchRemote`: thread-safe registry. Web threads write sessions (token → held marker, stick vector, last-seen, queued Z notches, queued Reset / Pathfinder / Glide); the frame loop reads and applies. Clock injected (`time.monotonic` default) for hermetic tests.
+- [x] `hold(token, marker_id)`: newest wins; the previous holder's next request learns it lost the marker.
+- [x] `held_ids()` read by `InputManager` each frame; every other source skips a held marker (gamepad, keyboard, 3D mouse, 2D mouse grab, OSC `/marker/*`, OSC `/marker/<id>/path`).
+- [x] Per-frame apply in `InputManager.update`: the velocity goes through `_move` (paths-aware), with `invert_control_direction` applied there once; Z notches via `set_pos` unless locked; Reset through `_reset`; Pathfinder through `InputManager.pathfinder`; Glide releases the lock, then steps toward the target at the station's `marker.max_speed` each frame until it arrives or the stick moves.
+- [x] The per-frame `set_speed` freshness stamp is kept while held (never gated on movement).
+- [x] Taking a hold with detection on saves `detection.enabled = false` through the normal config save (hot reload stops the detector, no restart) and reports it in the `hold` answer.
+- [x] Dead-man: 250 ms stale ⇒ zero velocity; 10 s stale ⇒ release.
+- [x] Holds released for markers that leave `controlled_marker_ids` and when `enabled` turns off (hot reload).
+- [x] HUD caution status row "Web remote holds marker N" while any hold exists (status language).
 
 ### Web routes (`web/routes.py`)
-- [ ] `POST /api/remote/open` → `{token}`; `POST /api/remote/close`.
-- [ ] `POST /api/remote/drive` `{token, marker, sx, sy, z_notches, seq}`, sent ~20 Hz while the card is open (also the heartbeat). A stale `seq` is ignored.
-- [ ] `POST /api/remote/action` `{token, marker, action: reset|pathfinder|glide, x?, y?, z?}`.
-- [ ] `GET /api/remote/state`: controlled markers (id, name, colour, pos), who holds what, the station's `marker.max_speed`, tuning values, unit system, paths running / recording / locked.
-- [ ] 403 while disabled, 400 on a malformed body or out-of-type values, 409 for a token that lost its marker. Existing PIN auth and Origin check apply.
+- [x] `POST /api/remote/open` → `{token}`; `POST /api/remote/close`.
+- [x] `POST /api/remote/hold` `{token, marker}`: take a controlled marker.
+- [x] `POST /api/remote/drive` `{token, marker, sx, sy, z_notches}`, sent ~20 Hz while the card is open (also the heartbeat), one request in flight so messages never overtake each other.
+- [x] `POST /api/remote/action` `{token, marker, action: reset|pathfinder|glide, x?, y?, z?}`.
+- [x] `GET /api/remote/state`: controlled markers (id, name, colour, pos), who holds what, the station's `marker.max_speed`, tuning values, unit system, paths running / recording / locked.
+- [x] 403 while disabled, 400 on a malformed body or out-of-type values, 404 for an ended session, 409 for a token that lost its marker or a marker this station does not control. Existing PIN auth and Origin check apply.
 
 ### Web UI
-- [ ] Launcher button and card markup in `base.tpl`, rendered only while enabled.
-- [ ] `static/js/touch-remote.js` (bundled, no CDN): pointer-event stick with spring-back, detented drum, chips, hand and flip toggles in `localStorage` (try/catch), X / Y / Z row, unit conversion, `visibilitychange` ⇒ stop sending (the dead-man takes over), close ⇒ `/api/remote/close`.
-- [ ] Status chips and banner only from `docs/STATUS_LANGUAGE.md` tokens and components (error banner, caution "Remote has …", info "On path", error "Taken by another remote").
-- [ ] "Touch remote" section with the single `enabled` checkbox (Input tab), `<label>` only; explanation in a new `openfollow/web/help/touch_remote.md`.
+- [x] Launcher button and card markup in `base.tpl`, rendered only while enabled.
+- [x] `static/js/touch-remote.js` (bundled, no CDN): pointer-event stick with spring-back, detented drum, chips, hand and flip toggles in `localStorage` (try/catch), X / Y / Z row, unit conversion, `visibilitychange` ⇒ stop sending (the dead-man takes over), close ⇒ `/api/remote/close`.
+- [x] Status chips and banner only from `docs/STATUS_LANGUAGE.md` tokens and components (error banner, caution "Remote has …", info "On path", error "Taken by another remote").
+- [x] "Touch remote" section with the single `enabled` checkbox (Input tab), `<label>` only; explanation in a new `openfollow/web/help/touch_remote.md`.
 
 ### Tests
-- [ ] `tests/test_touch_remote.py`: hold, steal, release on close / stale / uncontrolled / disabled; dead-man at 250 ms and 10 s on an injected clock; curve and dead-zone shaping; Z notch snapping; Glide arrival and cancellation; Pathfinder hand-off; a hold with detection on saves it off and leaves it off on close; held marker ignored by the other sources.
-- [ ] Route tests: each endpoint's 200 / 400 / 403 / 409, wrong-type parametrisation, PIN required.
-- [ ] Seam tests: `POST /api/remote/drive` → frame update → `marker.pos` (`tests/test_services_marker_visuals.py` style); config hot reload disabling releases holds (`tests/test_configuration.py`).
-- [ ] Template tests: launcher absent while disabled; validate markup on the checkbox (`test_template_validation_consistency.py`); status language (`test_status_language.py`).
-- [ ] JS unit tests for the stick shaping and drum notch maths, in the style of `tests/test_paths_editor_js.py`.
+- [x] `tests/test_touch_remote.py`: hold, steal, release on close / stale / uncontrolled / disabled; dead-man at 250 ms and 10 s on an injected clock; curve and dead-zone shaping; Z notch snapping; Glide arrival and cancellation; Pathfinder hand-off; a hold with detection on saves it off and leaves it off on close; held marker ignored by the other sources.
+- [x] Route tests: each endpoint's 200 / 400 / 403 / 409, wrong-type parametrisation, PIN required.
+- [x] Seam tests: `POST /api/remote/drive` → frame update → `marker.pos` (`tests/test_services_marker_visuals.py` style); config hot reload disabling releases holds (`tests/test_configuration.py`).
+- [x] Template tests: launcher absent while disabled; validate markup on the checkbox (`test_template_validation_consistency.py`); status language (`test_status_language.py`).
+- [x] JS unit tests for the stick shaping and drum notch maths, in the style of `tests/test_paths_editor_js.py`.
 
 ### Docs
-- [ ] `docs/architecture/input.md`: the remote as an input source and its hold rule.
-- [ ] `docs/architecture/web.md`: the routes and the gate.
-- [ ] Add `touch_remote` to the config guide's device-local list.
+- [x] `docs/architecture/input.md`: the remote as an input source and its hold rule.
+- [x] `docs/architecture/web.md`: the routes and the gate.
+- [x] Add `touch_remote` to the config guide's device-local list.
 
 ## Verify
-- [ ] `make ci-remote` green.
+- [ ] `make ci-remote` green (lint, typecheck, security, build and the suite on a station with GStreamer).
 - [ ] Manual on an iPad against a station: stick, drum, Reset, Pathfinder on and off a path, Glide, hand and flip toggles, Wi-Fi off mid-push (stops within 250 ms, releases after 10 s), two tablets stealing a marker.

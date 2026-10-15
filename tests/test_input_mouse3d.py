@@ -846,6 +846,18 @@ def test_enabled_mouse3d_moves_selected_marker_scaled_by_speed(wired) -> None:  
     assert app._server.get_marker(11).pos == pytest.approx((0.0, 0.0, 0.0))
 
 
+def test_mouse3d_leaves_a_marker_the_touch_remote_holds(wired) -> None:  # noqa: ANN001
+    from openfollow.input.touch_remote import TouchRemote
+
+    manager, app = wired
+    app._config.mouse3d.enabled = True
+    app._touch_remote = TouchRemote()
+    app._touch_remote.hold(app._touch_remote.open(), 10)
+    manager.mouse3d_manager.next_update = Mouse3DUpdate(velocity=(1.0, 0.0, 0.0), reset=True)
+    manager.update(1.0)
+    assert app._server.get_marker(10).pos == pytest.approx((0.0, 0.0, 0.0))
+
+
 def test_enabled_mouse3d_reset_and_speed(wired) -> None:  # noqa: ANN001
     manager, app = wired
     app._config.mouse3d.enabled = True

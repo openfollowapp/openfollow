@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from openfollow.input.touch_remote import holds
 from openfollow.runtime import paths_runtime
 from openfollow.runtime.services_detection_pin import (
     get_or_create_manual_marker,
@@ -268,7 +269,7 @@ class MouseHandler:
         space is a no-op so it can't snap a marker to the cursor.
         """
         marker_id = self._hit_test(x, y)
-        if marker_id is None:
+        if marker_id is None or holds(self._app, marker_id):
             return False
         # The mouse moves markers freely: a grab takes the marker off its path where it stands.
         paths_runtime.release(self._app, marker_id)
@@ -345,7 +346,7 @@ class MouseHandler:
         as the AI-corrected output), so mouse drag + wheel-Z move the anchor.
         """
         app = self._app
-        if app._selected_id is None:
+        if app._selected_id is None or holds(app, app._selected_id):
             return None
         if is_assist_controlled(app, app._selected_id):
             return get_or_create_manual_marker(app, app._selected_id)

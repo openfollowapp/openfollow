@@ -17,6 +17,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from openfollow.configuration import config_file_problem, config_problem_words, is_simple_mode, save_config_fields
+from openfollow.input.touch_remote import holds
 from openfollow.runtime import paths_runtime
 from openfollow.video.failure import SourceKind, VideoFailure, failure_sentence
 
@@ -831,7 +832,13 @@ def handle_key_press(app: OpenFollowApp, key: str) -> None:
         cycle_marker(app, +1)
     elif cc.key_prev_marker and key == cc.key_prev_marker:
         cycle_marker(app, -1)
-    elif cc.key_reset and key == cc.key_reset and app._selected_id is not None and app._server is not None:
+    elif (
+        cc.key_reset
+        and key == cc.key_reset
+        and app._selected_id is not None
+        and app._server is not None
+        and not holds(app, app._selected_id)
+    ):
         marker = app._server.get_marker(app._selected_id)
         # pragma: no branch – _selected_id is set only when its marker
         # is registered with the server, so get_marker(_selected_id)

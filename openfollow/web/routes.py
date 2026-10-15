@@ -254,6 +254,7 @@ VALID_SECTIONS = {
     "mouse3d",
     "osc",
     "operator_messages",
+    "touch_remote",
     "detection",
     "otp_output",
     "rttrpm_output",
@@ -372,6 +373,7 @@ _SECTION_CONFIG_ATTRS = {
     "mouse3d": "mouse3d",
     "osc": "osc",
     "operator_messages": "operator_messages",
+    "touch_remote": "touch_remote",
     "detection": "detection",
     "otp_output": "otp_output",
     "rttrpm_output": "rttrpm_output",
@@ -1129,6 +1131,8 @@ _DEVICE_LOCAL_FIELDS_BY_SECTION: dict[str, frozenset[str]] = {
     "rttrpm_output": frozenset({"source_iface"}),
     # Whether this station draws paths; toggled on its own keyboard or pad.
     "paths": frozenset({"show_paths"}),
+    # Whether this station takes remote driving from a browser at all.
+    "touch_remote": frozenset({"enabled"}),
     # The keyboard plugged into this station, in every section that writes the controller config.
     **{section: _KEYBOARD_LAYOUT_FIELDS for section, attr in _SECTION_CONFIG_ATTRS.items() if attr == "controller"},
 }
@@ -1825,6 +1829,8 @@ def _apply_section(cfg: AppConfig, section: str, data: Mapping[str, Any]) -> boo
         cfg.osc.__post_init__()
     elif section == "operator_messages":
         cfg.operator_messages.__post_init__()
+    elif section == "touch_remote":
+        cfg.touch_remote.__post_init__()
     elif section == "otp_output":
         cfg.otp_output.__post_init__()
     # pragma: no branch – exhaustive elif chain over the section keys;
@@ -2323,6 +2329,13 @@ _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
         "max_visible": _as_int,
         "route_by_marker": _as_bool,
         "scale": _as_float,
+    },
+    "touch_remote": {
+        "enabled": _as_bool,
+        "stick_curve": _as_float,
+        "stick_dead_zone": _as_float,
+        "z_step_m": _as_float,
+        "z_notch_px": _as_int,
     },
     "otp_output": {
         "enabled": _as_bool,
@@ -3199,6 +3212,7 @@ def _config_dict_redacted(cfg: AppConfig) -> dict[str, Any]:
     # multicast membership there until somebody finds the setting.
     d["osc"].pop("listen_iface", None)
     d["rttrpm_output"].pop("source_iface", None)
+    d["touch_remote"].pop("enabled", None)
     for name in _KEYBOARD_LAYOUT_FIELDS:
         d["controller"].pop(name, None)
     for dest in d["osc_destinations"]["destinations"]:
@@ -3395,6 +3409,7 @@ def _apply_import_data(current_cfg: AppConfig, data: dict[str, Any]) -> AppConfi
         "otp_output",
         "rttrpm_output",
         "detection",
+        "touch_remote",
     ):
         if section in data and isinstance(data[section], dict):
             apply_section_data(cfg, section, strip_device_local_fields(section, data[section]))
@@ -5247,6 +5262,171 @@ def _register_scene_routes(app: Bottle, server: ConfigWebServer) -> None:
                 "outline": _picture_polylines(cfg, w, h, [outline])[0],
                 "lines": _picture_polylines(cfg, w, h, [seg.tolist() for seg in lines]),
                 "corners": _picture_points(*_camera_view(cfg), w, h, corners),
+            }
+        )
+
+
+_REMOTE_API = "/api/remote"
+# Z notches one drive message may carry; a finger cannot turn more between two messages.
+_REMOTE_MAX_NOTCHES = 1000
+
+
+def _finite_number(value: Any) -> float:
+    """A JSON number as a finite float; ``ValueError`` for anything else, ``true`` included."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("not a number")
+    out = float(value)
+    if not math.isfinite(out):
+        raise ValueError("not finite")
+    return out
+
+
+def _whole_number(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("not a whole number")
+    return value
+
+
+def _register_touch_remote_routes(app: Bottle, server: ConfigWebServer) -> None:
+    """Register the touch remote's routes: sessions, holds, driving and the card's state."""
+    from openfollow.input.touch_remote import ACTIONS, GLIDE, LOST, OK, RemoteAction
+
+    def _gate() -> tuple[Any, AppConfig] | str:
+        response.content_type = "application/json"
+        cfg = _request_config(server)
+        remote = server.touch_remote
+        if remote is None or not cfg.touch_remote.enabled:
+            return _json_error(403, "The touch remote is switched off on this station.")
+        return remote, cfg
+
+    def _session_body() -> tuple[Any, AppConfig, dict[str, Any], str] | str:
+        gate = _gate()
+        if isinstance(gate, str):
+            return gate
+        data = _load_json_body()
+        if not isinstance(data, dict):
+            return _json_error(400, "Expected a JSON object")
+        token = data.get("token")
+        if not isinstance(token, str) or not token:
+            return _json_error(400, "token must be a string")
+        return gate[0], gate[1], data, token
+
+    def _answer(outcome: str) -> str:
+        if outcome == OK:
+            return json.dumps({"success": True})
+        if outcome == LOST:
+            return _json_error(409, "Another remote took this marker.")
+        return _json_error(404, "This remote session has ended.")
+
+    @app.post(_REMOTE_API + "/open")
+    def remote_open() -> Any:
+        gate = _gate()
+        if isinstance(gate, str):
+            return gate
+        return json.dumps({"token": gate[0].open()})
+
+    @app.post(_REMOTE_API + "/close")
+    def remote_close() -> Any:
+        body = _session_body()
+        if isinstance(body, str):
+            return body
+        remote, _cfg, _data, token = body
+        remote.close(token)
+        return json.dumps({"success": True})
+
+    @app.post(_REMOTE_API + "/hold")
+    def remote_hold() -> Any:
+        """Take a controlled marker for this remote, from any other remote holding it."""
+        body = _session_body()
+        if isinstance(body, str):
+            return body
+        remote, cfg, data, token = body
+        try:
+            marker_id = _whole_number(data.get("marker"))
+        except ValueError:
+            return _json_error(400, "marker must be a whole number")
+        if marker_id not in cfg.controlled_marker_ids:
+            return _json_error(409, f"This station does not control marker {marker_id}.")
+        outcome = remote.hold(token, marker_id)
+        if outcome != OK:
+            return _answer(outcome)
+        # The frame loop switches detection off for the hold; the card says so.
+        return json.dumps({"success": True, "detection_off": cfg.detection.enabled})
+
+    @app.post(_REMOTE_API + "/drive")
+    def remote_drive() -> Any:
+        """The stick and the Z notches turned since the last message; also the remote's heartbeat."""
+        body = _session_body()
+        if isinstance(body, str):
+            return body
+        remote, _cfg, data, token = body
+        try:
+            marker_id = _whole_number(data.get("marker"))
+            stick = (_finite_number(data.get("sx", 0)), _finite_number(data.get("sy", 0)))
+            notches = _whole_number(data.get("z_notches", 0))
+        except ValueError:
+            return _json_error(400, "marker and z_notches must be whole numbers, sx and sy numbers")
+        if abs(notches) > _REMOTE_MAX_NOTCHES:
+            return _json_error(400, f"z_notches must be within ±{_REMOTE_MAX_NOTCHES}")
+        return _answer(remote.drive(token, marker_id, stick, notches))
+
+    @app.post(_REMOTE_API + "/action")
+    def remote_action() -> Any:
+        """Reset, Pathfinder, or a glide to ``x`` / ``y`` / ``z`` in metres."""
+        body = _session_body()
+        if isinstance(body, str):
+            return body
+        remote, _cfg, data, token = body
+        kind = data.get("action")
+        if kind not in ACTIONS:
+            return _json_error(400, f"action must be one of: {', '.join(ACTIONS)}")
+        try:
+            marker_id = _whole_number(data.get("marker"))
+            target = (
+                (_finite_number(data.get("x")), _finite_number(data.get("y")), _finite_number(data.get("z")))
+                if kind == GLIDE
+                else None
+            )
+        except ValueError:
+            return _json_error(400, "marker must be a whole number, x, y and z finite numbers")
+        return _answer(remote.act(token, marker_id, RemoteAction(kind, target)))
+
+    @app.get(_REMOTE_API + "/state")
+    def remote_state() -> Any:
+        """What the card shows: the controlled markers, this remote's hold, the settings it works with."""
+        gate = _gate()
+        if isinstance(gate, str):
+            return gate
+        remote, cfg = gate
+        status = remote.status(request.query.get("token", ""))
+        if status is None:
+            return _json_error(404, "This remote session has ended.")
+        catalog = server.get_marker_catalog()
+        entries = {e.id: e for e in catalog.live_entries()} if catalog is not None else {}
+        markers = []
+        for marker_id in cfg.controlled_marker_ids:
+            entry = entries.get(marker_id)
+            markers.append(
+                {
+                    "id": marker_id,
+                    "name": entry.name if entry is not None else "",
+                    "color": entry.color if entry is not None else "",
+                    "pos": server.get_marker_position(marker_id),
+                }
+            )
+        paths = server.get_path_state()
+        return json.dumps(
+            {
+                **status,
+                "markers": markers,
+                "max_speed": cfg.marker.max_speed,
+                "z_step_m": cfg.touch_remote.z_step_m,
+                "z_notch_px": cfg.touch_remote.z_notch_px,
+                "unit_system": cfg.ui.unit_system,
+                "paths_on": cfg.ui.show_experimental_features,
+                "recording": paths.get("recording") is not None,
+                "locked": sorted(int(m) for m in paths.get("locks", {})),
+                "detection_on": cfg.detection.enabled,
             }
         )
 
@@ -7486,6 +7666,12 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """Update OSC settings."""
         cfg = _save_section_from_form("osc", bool_fields=("enabled",))
         return template("partials/osc", config=cfg, saved=True)
+
+    @app.post("/section/touch_remote")
+    def update_touch_remote() -> Any:
+        """Save the Touch Remote section."""
+        cfg = _save_section_from_form("touch_remote", bool_fields=("enabled",))
+        return template("partials/touch_remote", config=cfg, saved=True)
 
     @app.post("/section/operator_messages")
     def update_operator_messages() -> Any:
@@ -10813,4 +10999,5 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     _register_input_plugin_routes(app, server)
     _register_gallery_routes(app, server)
     _register_path_routes(app, server)
+    _register_touch_remote_routes(app, server)
     _register_scene_routes(app, server)

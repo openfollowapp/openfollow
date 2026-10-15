@@ -561,6 +561,29 @@ class TestWheel:
         assert handler.on_wheel(1.0) is True
         assert app._server.get_marker(1).pos[2] == pytest.approx(3.1)
 
+    def test_wheel_leaves_a_marker_the_touch_remote_holds(self) -> None:
+        from openfollow.input.touch_remote import TouchRemote
+
+        app = _DummyApp()
+        app._server.get_marker(1).set_pos(1.0, 2.0, 3.0)
+        handler = MouseHandler(app)
+        _grab(handler, app)
+        app._touch_remote = TouchRemote()
+        app._touch_remote.hold(app._touch_remote.open(), 1)
+        assert handler.on_wheel(1.0) is False
+        assert app._server.get_marker(1).pos[2] == pytest.approx(3.0)
+
+    def test_a_marker_the_touch_remote_holds_cannot_be_grabbed(self) -> None:
+        from openfollow.input.touch_remote import TouchRemote
+
+        app = _DummyApp()
+        app._touch_remote = TouchRemote()
+        app._touch_remote.hold(app._touch_remote.open(), 1)
+        handler = MouseHandler(app)
+        cx, cy = _ground_center(app, 1)
+        assert handler.on_pointer_down(cx, cy, 1) is False
+        assert handler.active is False
+
     def test_wheel_negative(self) -> None:
         app = _DummyApp()
         app._server.get_marker(1).set_pos(1.0, 2.0, 3.0)

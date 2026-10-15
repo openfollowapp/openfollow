@@ -62,6 +62,9 @@ and "manage X under Y" pointers – goes in that section's **help drawer markdow
 | `/api/paths/marker/<id>` | GET | A marker's position on the wire, for Point from |
 | `/api/paths/view` | POST | Every path, its points and ends as the saved camera sees them |
 
+## Touch remote routes (`_register_touch_remote_routes`)
+`/api/remote/open`, `close`, `hold`, `drive`, `action` (POST, JSON) and `state` (GET) back the card in `partials/touch_remote_card.tpl` and `static/js/touch-remote.js`, which base.tpl includes only while `touch_remote.enabled`. Every route answers 403 while the switch is off; 400 for a malformed body or a wrong-type field (a bool is never a number); 404 for an ended session (the card opens a new one); 409 for a marker this station does not control or another remote took. `drive` is the heartbeat, sent every 50 ms with one request in flight. Glide targets are not clamped. See [input](input.md#touch-remote-inputtouch_remotepy-inputmanagerupdate_touch_remote).
+
 ## HTMX notes
 - HTMX version: 1.9 – use `hx-on::after-request` (double colon), NOT `hx-on:htmx:after-request`
 - Overview auto-refresh: every 5s while its section is in view (see the polling rule below)

@@ -1,4 +1,4 @@
-% # Live-value response for read-only marker faders (GET every 100ms).
+% # Live-value response for read-only marker faders (while Show live runs).
 % # Three OOB swaps per marker: fill bar height, handle position, numeric value.
 % # No pickup annotation (gamepad-driven). OOB targets by marker id leave
 % # rest of strip untouched.

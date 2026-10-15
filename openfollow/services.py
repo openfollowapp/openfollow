@@ -1933,8 +1933,8 @@ class AppRuntimeServices:
     def _midi_fader_values_provider(self) -> list[dict[str, Any]]:
         """Snapshot of the eight virtual faders for the live-poll
         endpoint. Pulled from the bus's read methods rather than pushed on
-        every change, because the poll cadence (100 ms) is much coarser
-        than the bus event rate (a fader sweep is ~127 events/sec).
+        every change, because the poll cadence (500 ms while Show live runs)
+        is much coarser than the bus event rate (a fader sweep is ~127 events/sec).
         Avoids maintaining a separate snapshot cache + invalidation."""
         out: list[dict[str, Any]] = []
         for index in range(1, self._virtual_faders.fader_count + 1):

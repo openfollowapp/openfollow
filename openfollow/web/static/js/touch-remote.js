@@ -43,7 +43,7 @@
 
     // ``gen`` counts openings and closings: an answer from an earlier one changes nothing.
     var st = {
-        gen: 0, reopening: false, open: false, token: null, marker: null, lost: false, state: null,
+        gen: 0, opening: false, open: false, token: null, marker: null, lost: false, state: null,
         stick: { sx: 0, sy: 0 }, notches: 0, inFlight: false, flip: store.get('of.remote.flip') === '1',
         left: store.get('of.remote.hand') === 'left', xyzOpen: false, driveTimer: null, stateTimer: null
     };
@@ -75,21 +75,22 @@
         launcher.hidden = true;
     }
 
-    // One reopen at a time: every request that learns of the ended session lands here.
+    // The station forgot the session (asleep past its timeout, or restarted): open a new one. The
+    // marker may be someone else's by now, so taking it again is a chip tap, never automatic.
     function reopen() {
-        if (st.reopening || !st.open) return;
-        var keep = st.lost ? null : st.marker;
-        st.reopening = true;
+        if (!st.open) return;
         st.token = null;
         st.marker = null;
-        startSession().then(function () {
-            st.reopening = false;
-            if (keep !== null) hold(keep);
-        });
+        st.lost = false;
+        render();
+        startSession();
     }
 
+    // One open at a time: every request that learns of an ended session, and every retry, lands here.
     function startSession() {
+        if (st.opening) return Promise.resolve();
         var gen = st.gen;
+        st.opening = true;
         st.token = null;
         return post('open').then(function (res) {
             if (gen !== st.gen || !handleStatus(res)) return;
@@ -98,7 +99,9 @@
                 st.token = data.token;
                 setOffline(false);
             });
-        }).catch(function () { setOffline(true); });
+        }).catch(function () { setOffline(true); }).then(function () {
+            if (gen === st.gen) st.opening = false;
+        });
     }
 
     function hold(markerId) {
@@ -129,7 +132,9 @@
     }
 
     function stateTick() {
-        if (!st.open || !st.token || document.hidden) return;
+        if (!st.open || document.hidden) return;
+        // An open that failed (Wi-Fi gone for a moment) is retried here.
+        if (!st.token) { if (!st.opening) startSession(); return; }
         var gen = st.gen;
         fetch('/api/remote/state?token=' + encodeURIComponent(st.token), { credentials: 'same-origin' })
             .then(function (res) {
@@ -137,8 +142,9 @@
                 return res.json().then(function (data) {
                     if (gen !== st.gen) return;
                     st.state = data;
+                    // The station's word on what this session holds wins over the card's.
                     if (data.lost) st.lost = true;
-                    else if (data.held === null) st.marker = null;
+                    else st.marker = data.held;
                     render();
                 });
             })
@@ -248,7 +254,7 @@
     function closeCard(tellStation) {
         if (tellStation !== false && st.token) post('close').catch(function () { /* the station forgets it */ });
         st.gen += 1;
-        st.reopening = false;
+        st.opening = false;
         st.open = false;
         st.token = null;
         st.marker = null;

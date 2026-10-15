@@ -142,7 +142,7 @@ out.paths = paths();
     assert out["paths"] == ["/api/remote/open"]
 
 
-def test_two_requests_learning_the_session_ended_open_one_new_session() -> None:
+def test_two_requests_learning_the_session_ended_open_one_new_session_and_take_nothing() -> None:
     out = _run(
         _OPENED
         + """
@@ -152,12 +152,43 @@ tick(); await settle();
 var drive = paths().indexOf('/api/remote/drive'), state = paths().lastIndexOf('/api/remote/state');
 answer(drive, 404, {}); answer(state, 404, {}); await settle();
 out.opens = paths().filter(function (p) { return p === '/api/remote/open'; }).length;
+var before = requests.length;
 answer(requests.length - 1, 200, { token: 't2' }); await settle();
-out.rehold = requests[requests.length - 1].body;
+out.after = paths().slice(before);
+out.heldHidden = els['remote-held'].hidden;
 """
     )
     assert out["opens"] == 2
-    assert out["rehold"] == {"token": "t2", "marker": 1}
+    # The marker may be another tablet's by now: taking it again is a chip tap.
+    assert "/api/remote/hold" not in out["after"]
+    assert out["heldHidden"] is True
+
+
+def test_a_failed_open_is_retried_by_the_next_state_tick() -> None:
+    out = _run(
+        """
+els['remote-launcher'].fire('click');
+requests[0].reject(new Error('offline')); await settle();
+out.offline = els['remote-offline'].hidden;
+tick(); await settle();
+out.paths = paths();
+"""
+    )
+    assert out["offline"] is False
+    assert out["paths"] == ["/api/remote/open", "/api/remote/open"]
+
+
+def test_the_station_s_hold_wins_over_the_card_s() -> None:
+    out = _run(
+        _OPENED
+        + """
+tick(); await settle();
+var state = paths().lastIndexOf('/api/remote/state');
+answer(state, 200, Object.assign({}, STATE, { held: 1 })); await settle();
+out.held = els['remote-held'].textContent;
+"""
+    )
+    assert out["held"] == "Remote has 1 · Lead"
 
 
 @pytest.mark.parametrize(

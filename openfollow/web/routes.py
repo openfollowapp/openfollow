@@ -5267,6 +5267,8 @@ def _register_scene_routes(app: Bottle, server: ConfigWebServer) -> None:
 
 
 _REMOTE_API = "/api/remote"
+# A glide target further than this from the origin is a typing error, and past float32 it breaks PSN.
+_REMOTE_MAX_TARGET_M = 10_000.0
 # Z notches one drive message may carry; a finger cannot turn more between two messages.
 _REMOTE_MAX_NOTCHES = 1000
 
@@ -5373,6 +5375,8 @@ def _register_touch_remote_routes(app: Bottle, server: ConfigWebServer) -> None:
             )
         except (TypeError, ValueError):
             return _json_error(400, "marker must be a whole number, x, y and z finite numbers")
+        if target is not None and any(abs(v) > _REMOTE_MAX_TARGET_M for v in target):
+            return _json_error(400, f"x, y and z must be within ±{_REMOTE_MAX_TARGET_M:,.0f} m")
         return _answer(remote.act(token, marker_id, RemoteAction(kind, target)))
 
     @app.get(_REMOTE_API + "/state")

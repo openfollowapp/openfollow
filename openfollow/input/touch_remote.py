@@ -229,5 +229,8 @@ def stick_velocity(stick: tuple[float, float], curve: float, dead_zone: float, m
 
 
 def snap_z(z: float, notches: int, step: float) -> float:
-    """``z`` moved by ``notches`` steps and snapped onto the step grid."""
-    return round((z + notches * step) / step) * step
+    """``z`` moved ``notches`` lines along the step grid; from between two lines the first notch reaches the next."""
+    lines = z / step
+    # Within a hair of a line counts as on it, so float error never costs a notch.
+    start = math.floor(lines + 1e-9) if notches > 0 else math.ceil(lines - 1e-9)
+    return (start + notches) * step

@@ -280,9 +280,18 @@ def test_stick_velocity_shapes_past_the_dead_zone(
 @pytest.mark.unit
 @pytest.mark.parametrize(
     ("z", "notches", "step", "want"),
-    [(1.6, 1, 0.05, 1.65), (1.62, 0, 0.05, 1.6), (1.62, -2, 0.05, 1.5), (0.0, 3, 0.01, 0.03)],
+    [
+        (1.6, 1, 0.05, 1.65),  # on a line: one step
+        (1.6, -1, 0.05, 1.55),
+        (0.0, 3, 0.01, 0.03),
+        (0.075, 1, 0.05, 0.10),  # between lines: the first notch reaches the next line
+        (0.075, -1, 0.05, 0.05),
+        (0.025, 1, 0.05, 0.05),
+        (1.0, 1, 0.3, 1.2),
+        (1.62, -2, 0.05, 1.55),
+    ],
 )
-def test_snap_z_moves_by_steps_onto_the_step_grid(z: float, notches: int, step: float, want: float) -> None:
+def test_snap_z_moves_line_by_line_along_the_step_grid(z: float, notches: int, step: float, want: float) -> None:
     assert snap_z(z, notches, step) == pytest.approx(want)
 
 

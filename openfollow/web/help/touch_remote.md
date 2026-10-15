@@ -16,14 +16,15 @@ Tap the round button in the bottom corner of the page to open the remote card.
 - **Stick** – push to move the marker; the further you push, the faster it goes, up to the station's **Max Speed** (Markers & Zones › Marker Movement). Let go and it stops. Like a gamepad, it follows **Control direction**.
 - **Facing FOH** (the turning arrows) – turns the stick around for when you stand on stage facing the audience. This tablet remembers it.
 - **Hand** – moves the card to the other corner so your thumb reaches everything. This tablet remembers it.
-- **Z wheel** – drag up or down; every notch moves the marker's height one step (5 cm by default). It does nothing while the marker is on a path, whose height the path sets.
+- **Z wheel** – drag up or down; every notch moves the marker's height one step (5 cm by default) along a grid of steps, so from a height between two steps the first notch reaches the next one. It does nothing while the marker is on a path, whose height the path sets.
 - **Reset** – sends the marker to its default position.
 - **Pathfinder** – shown while paths run (experimental features on). Locks the marker onto the nearest active path, or lets it go. While a path is recording, it reads **Record point** and adds the marker's position to that path.
-- **X Y Z** – type a position and tap **Glide**: the marker leaves any path and travels there at the station's max speed. Values are in the web UI's units.
+- **X Y Z** – type a position and tap **Glide**: the marker leaves any path and travels there at the station's max speed. Values are in the web UI's units, within 10 km of the origin.
 
 ## While the remote holds a marker
 
 - No other input moves that marker: gamepads, keyboard, mice, 3D mice and OSC positions and path commands are ignored for it. The Operator Screen shows a caution row naming it.
 - Taking a marker while person detection is on switches detection off for the whole station; the card says so. Closing the remote leaves it off. Switching detection back on restarts OpenFollow.
 - Another tablet taking the same marker takes it over; the first card shows that it lost the marker.
-- Closing the card gives the marker back. If the tablet stops talking to the station (Wi-Fi drop, screen lock), the marker stops within a quarter of a second, and after 10 seconds the remote lets go of it.
+- Opening the card takes no marker; tapping a chip does. Closing the card gives the marker back.
+- If the tablet stops talking to the station (Wi-Fi drop, screen lock), the marker stops within a quarter of a second, and after 10 seconds the remote lets go of it. When the tablet comes back, tap the chip again: another tablet may have the marker by then.

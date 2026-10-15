@@ -4119,11 +4119,9 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
         if app._input_manager is not None:  # pragma: no branch
             app._input_manager.restart_operator_messages()
 
-    # Read live by the remote routes and the frame loop; switching it off ends every hold.
+    # Read live by the remote routes and the frame loop, which lets go of every hold while it is off.
     if new_config.touch_remote != app._config.touch_remote:
         app._config.touch_remote = new_config.touch_remote
-        if not new_config.touch_remote.enabled:
-            app._touch_remote.release_all()
 
     if new_config.otp_output != app._config.otp_output:
         old_otp_output = app._config.otp_output

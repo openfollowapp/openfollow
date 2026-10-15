@@ -222,7 +222,14 @@ def test_an_unknown_action_is_400(live, action: Any) -> None:  # noqa: ANN001
 
 @pytest.mark.parametrize(
     "target",
-    [{"x": 1, "y": 2}, {"x": "1", "y": 2, "z": 3}, {"x": True, "y": 2, "z": 3}, {"x": 10**400, "y": 2, "z": 3}],
+    [
+        {"x": 1, "y": 2},
+        {"x": "1", "y": 2, "z": 3},
+        {"x": True, "y": 2, "z": 3},
+        {"x": 10**400, "y": 2, "z": 3},
+        {"x": 1, "y": 2, "z": 10_000.5},
+        {"x": -1.7e308, "y": 2, "z": 3},
+    ],
 )
 def test_a_glide_without_three_numbers_is_400(live, target: dict[str, Any]) -> None:  # noqa: ANN001
     base, _path, _remote = live

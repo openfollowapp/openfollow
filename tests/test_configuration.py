@@ -1977,18 +1977,12 @@ def test_apply_runtime_operator_messages_restarts_handler() -> None:
     assert app._web_commands.restart_requested is False
 
 
-def test_apply_runtime_switching_the_touch_remote_off_lets_go_of_every_marker() -> None:
-    from openfollow.input.touch_remote import TouchRemote
-
+def test_apply_runtime_touch_remote_changes_apply_live() -> None:
     app = _DummyApp(AppConfig(touch_remote=TouchRemoteConfig(enabled=True)))
-    app._touch_remote = TouchRemote()
-    app._touch_remote.hold(app._touch_remote.open(), 1)
     apply_runtime_config_changes(app, AppConfig(touch_remote=TouchRemoteConfig(enabled=True, stick_curve=1.0)))
     assert app._config.touch_remote.stick_curve == 1.0
-    assert app._touch_remote.held_ids() == {1}
     apply_runtime_config_changes(app, AppConfig())
     assert app._config.touch_remote.enabled is False
-    assert app._touch_remote.held_ids() == frozenset()
     assert app._web_commands.restart_requested is False
 
 

@@ -2,7 +2,7 @@
 
 Live runtime health for the web server and peer discovery. Use this section to spot a sick subsystem at a glance and to download or view the information needed for a support report.
 
-The section is inside the Overview tab and refreshes every five seconds.
+The section is inside the Overview tab and refreshes every five seconds while it is open and in view.
 
 ## Live summary cards
 

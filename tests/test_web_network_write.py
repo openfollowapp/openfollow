@@ -27,6 +27,12 @@ from tests._ports import free_tcp_port, live_on_free_port
 
 pytestmark = pytest.mark.integration
 
+# The Network Interface card polls while no label edit is pending and its section is in view.
+_NET_POLL = (
+    'hx-trigger="every 5s [netLabelsIdle() && pollShown(this)], '
+    'poll-shown[netLabelsIdle() && pollShown(this)] from:body"'
+)
+
 
 @pytest.mark.parametrize(
     "netloc,expected",
@@ -1092,10 +1098,10 @@ def test_the_poll_swaps_the_interface_list_and_nothing_else(net_server) -> None:
     _fake, base = net_server
     status, body = _get(base, "/section/network/status")
     assert status == 200
-    assert 'hx-trigger="every 5s [netLabelsIdle()]"' in body
+    assert _NET_POLL in body
     assert 'hx-select="#net-iface-list" hx-target="#net-iface-list" hx-swap="outerHTML"' in body
     # Plain path: the poll names no interface, so it can't reopen a closed row.
-    assert 'hx-get="/section/network/status" hx-trigger="every 5s [netLabelsIdle()]"' in body
+    assert 'hx-get="/section/network/status" ' + _NET_POLL in body
     # The page defines the filter the trigger calls.
     _status, page = _get(base, "/")
     assert "function netLabelsIdle()" in page

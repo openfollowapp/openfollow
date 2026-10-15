@@ -55,6 +55,6 @@ Two safeguards keep a network feed alive without operator intervention. Both app
 
 > To force an immediate reconnect at any time, save the section unchanged – it rebuilds the pipeline on the spot.
 
-**Preview** – an inline snapshot of the current video input, refreshed every two seconds while the section is expanded.
+**Preview** – an inline snapshot of the current video input, refreshed every two seconds while the section is open and in view.
 
 **Save** – write and apply the settings; the pipeline restarts with the new source within about a second.

@@ -188,7 +188,7 @@
  % # runs. The response is a flat list of OOB snippets keyed by the
  % # per-strip ids above, so ``hx-swap="none"``.
  <div hx-get="/section/midi/faders/values"
- hx-trigger="load, every 500ms [midiLiveActive()], midi-live from:body"
+ hx-trigger="load, every 500ms [midiLiveActive() && pollShown(this)], midi-live from:body, poll-shown[midiLiveActive() && pollShown(this)] from:body"
  hx-swap="none"
  style="display:none"></div>
 
@@ -242,7 +242,7 @@
  % # while "Show live" does. ``hx-swap="none"`` because the OOB
  % # swaps keyed by marker id do the work.
  <div hx-get="/section/midi/marker-faders/values"
- hx-trigger="every 500ms [midiLiveActive()], midi-live from:body"
+ hx-trigger="every 500ms [midiLiveActive() && pollShown(this)], midi-live from:body, poll-shown[midiLiveActive() && pollShown(this)] from:body"
  hx-swap="none"
  style="display:none"></div>
  </div>

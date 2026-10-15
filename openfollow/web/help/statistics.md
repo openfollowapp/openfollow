@@ -1,6 +1,6 @@
 # Live Statistics
 
-A read-only panel on the Overview tab that refreshes every second. Use it to confirm the pipeline is healthy and to narrow down problems during a show.
+A read-only panel on the Overview tab that refreshes every second while it is open and in view. Use it to confirm the pipeline is healthy and to narrow down problems during a show.
 
 ## Video
 

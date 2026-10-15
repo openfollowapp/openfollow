@@ -293,7 +293,8 @@ class TestShowLive:
         _, body = _get(base, "/section/midi")
         poll = re.search(r'<div hx-get="' + re.escape(route) + r'"\s+hx-trigger="([^"]*)"', body)
         assert poll, route
-        assert poll.group(1) == on_load + "every 500ms [midiLiveActive()], midi-live from:body"
+        live = "[midiLiveActive() && pollShown(this)]"
+        assert poll.group(1) == on_load + f"every 500ms {live}, midi-live from:body, poll-shown{live} from:body"
 
     def test_no_poll_runs_on_its_own_schedule(self, live_server) -> None:
         _, base, _ = live_server

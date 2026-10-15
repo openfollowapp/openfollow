@@ -99,6 +99,7 @@ def _editor(steps: str, setup: str = "") -> Any:
         [
             (_TESTS / "_fake_dom.js").read_text(encoding="utf-8"),
             _PAGE,
+            (_STATIC / "poll-gate.js").read_text(encoding="utf-8"),
             (_STATIC / "units.js").read_text(encoding="utf-8"),
             (_STATIC / "save-feedback.js").read_text(encoding="utf-8"),
             (_STATIC / "polygon-plan.js").read_text(encoding="utf-8"),
@@ -106,6 +107,7 @@ def _editor(steps: str, setup: str = "") -> Any:
             f"parseHTML({json.dumps(markup)}, document.body);",
             _SETUP_CANVAS,
             setup,
+            f"var editorMarkup = {json.dumps(markup)}, editorScript = {json.dumps(script)};",
             script,
             "(async function () { var out = {}; await settle();",
             steps,
@@ -115,7 +117,8 @@ def _editor(steps: str, setup: str = "") -> Any:
     )
     node = shutil.which("node")
     assert node is not None
-    done = subprocess.run([node, "-e", source], capture_output=True, text=True, timeout=20)  # nosec B603
+    # On stdin: the editor script outgrows the 128 KiB a single argv string may hold.
+    done = subprocess.run([node, "-"], input=source, capture_output=True, text=True, timeout=20)  # nosec B603
     assert done.returncode == 0, done.stderr
     return json.loads(done.stdout)
 
@@ -308,3 +311,44 @@ def test_a_held_corner_follows_the_pointer_before_it_drops() -> None:
     )
     assert out["at"] == ["900", "-10"]
     assert out["puts"] == 0
+
+
+_ZONE_GETS = """
+function zoneGets() {
+    return requests.filter(function (r) { return r.method === 'GET' && r.url === '/api/zones'; }).length;
+}
+function section() { return document.getElementById('zone-editor-section'); }
+function announce() { document.body.dispatchEvent(makeEvent('poll-shown')); }
+"""
+
+
+def test_the_editor_asks_for_the_zones_every_tick_while_it_is_in_view() -> None:
+    out = _editor("var was = zoneGets(); tickIntervals(); await settle(); out.asked = zoneGets() - was;", _ZONE_GETS)
+    assert out["asked"] == 1
+
+
+@pytest.mark.parametrize(
+    "hide",
+    ["section().classList.add('is-collapsed');", "document.hidden = true;", "section().hidden = true;"],
+    ids=["folded", "browser tab hidden", "another tab"],
+)
+def test_the_editor_asks_nothing_while_it_is_out_of_view(hide: str) -> None:
+    steps = f"{hide} var was = zoneGets(); tickIntervals(); await settle(); out.asked = zoneGets() - was;"
+    assert _editor(steps, _ZONE_GETS)["asked"] == 0
+
+
+def test_coming_back_into_view_asks_at_once() -> None:
+    steps = (
+        "section().classList.add('is-collapsed'); var was = zoneGets();"
+        "section().classList.remove('is-collapsed'); announce(); await settle(); out.asked = zoneGets() - was;"
+    )
+    assert _editor(steps, _ZONE_GETS)["asked"] == 1
+
+
+def test_a_replaced_editor_stops_listening() -> None:
+    # The section is swapped: the old editor's timer lets go on its next tick, and the new one starts.
+    steps = (
+        "section().remove(); tickIntervals(); parseHTML(editorMarkup, document.body); (0, eval)(editorScript);"
+        "await settle(); var was = zoneGets(); announce(); await settle(); out.asked = zoneGets() - was;"
+    )
+    assert _editor(steps, _ZONE_GETS)["asked"] == 1

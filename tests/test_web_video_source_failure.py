@@ -160,8 +160,7 @@ class TestTheBoxAppearsWithoutAReload:
     def test_the_box_is_polled_while_it_shows(self) -> None:
         body = _render(video_failure="unreachable", video_failure_text="Nothing answered at X.")
         assert 'hx-get="/section/video_source/failure"' in body
-        # A hidden tab or wizard step has no offsetParent, and asks nothing.
-        assert 'hx-trigger="every 3s [this.offsetParent !== null]"' in body
+        assert 'hx-trigger="every 3s [pollShown(this)], poll-shown[pollShown(this)] from:body"' in body
 
     def test_the_poll_target_exists_even_while_healthy(self) -> None:
         """Nothing to swap into means the box can never appear later."""

@@ -441,8 +441,6 @@ class TestCheckConfigReload:
     ) -> None:
         """An editor that truncates before it writes leaves an empty file, which
         loads as every default: the running station must not take those in."""
-        from openfollow.configuration import AppConfig, save_config
-
         monkeypatch.setattr(orch.time, "monotonic", lambda: 10.0)
         applied: list[object] = []
         monkeypatch.setattr(orch, "apply_runtime_config_changes", lambda _app, cfg: applied.append(cfg) or True)
@@ -456,7 +454,7 @@ class TestCheckConfigReload:
         assert app._config_mtime == 100.0  # kept: the write that follows may share its mtime
         assert [r.getMessage() for r in caplog.records] == [f"{config_path} is empty – not reloaded."]
 
-        save_config(AppConfig(web_port=8080), str(config_path))
+        config_path.write_text("web_port = 8080\n", encoding="utf-8")  # the editor's write
         app._last_config_check = 0.0
         orch.check_config_reload(app)
         assert [cfg.web_port for cfg in applied] == [8080]

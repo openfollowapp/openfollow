@@ -13,6 +13,7 @@ except ImportError:
     import tomli as tomllib  # type: ignore[no-redef]
 
 import logging
+import os
 
 import pytest
 
@@ -22,6 +23,8 @@ from openfollow.configuration import (
     RESERVED_MOVEMENT_KEYS,
     AppConfig,
     CameraConfig,
+    ConfigFileEmptyError,
+    ConfigFileUnreadableError,
     ControllerConfig,
     DetectionConfig,
     GridConfig,
@@ -35,6 +38,7 @@ from openfollow.configuration import (
     config_to_toml_dict,
     config_write_lock,
     load_config,
+    load_config_for_save,
     save_config,
     save_config_fields,
     viewed_with_controlled,
@@ -889,6 +893,173 @@ def test_load_strict_ignores_bak(temp_config_path) -> None:
 
     with pytest.raises(tomllib.TOMLDecodeError):
         load_config(str(temp_config_path), strict=True)
+
+
+# An empty or unreadable file is never read as the defaults, nor written over
+
+_EMPTY = pytest.mark.parametrize("content", ["", "  \n\t\n"], ids=["empty", "whitespace"])
+_UNREADABLE = pytest.mark.parametrize(
+    "content",
+    [b"", b"  \n\t\n", b"not [[ valid toml", b"\xff\xfe = 1\n"],
+    ids=["empty", "whitespace", "unparseable", "not-utf8"],
+)
+
+
+def _good_config_with_backup(path, name: str = "Good Config") -> None:
+    save_config(AppConfig(psn_system_name=name, controlled_marker_ids=[3]), str(path))
+    save_config(AppConfig(psn_system_name=name, controlled_marker_ids=[3]), str(path))
+
+
+@_EMPTY
+def test_load_recovers_an_empty_file_from_the_backup(temp_config_path, caplog, content) -> None:
+    _good_config_with_backup(temp_config_path)
+    temp_config_path.write_text(content, encoding="utf-8")
+
+    with caplog.at_level("WARNING"):
+        loaded = load_config(str(temp_config_path))
+
+    assert (loaded.psn_system_name, loaded.controlled_marker_ids) == ("Good Config", [3])
+    assert [r.message for r in caplog.records if "is empty" in r.message] == [
+        f"Config file {temp_config_path} is empty – recovered from {temp_config_path}.bak."
+    ]
+
+
+@_EMPTY
+def test_an_empty_file_without_a_backup_loads_as_the_defaults_and_says_so(temp_config_path, caplog, content) -> None:
+    temp_config_path.write_text(content, encoding="utf-8")
+
+    with caplog.at_level("WARNING"):
+        loaded = load_config(str(temp_config_path))
+
+    assert loaded == AppConfig()
+    assert [r.message for r in caplog.records if "is empty" in r.message] == [
+        f"Config file {temp_config_path} is empty – using defaults."
+    ]
+
+
+def test_a_broken_file_is_reported_once_until_it_changes(temp_config_path, caplog) -> None:
+    """Every web request reads the file again; a broken one is logged once, not once per request."""
+    _good_config_with_backup(temp_config_path)
+    temp_config_path.write_text("", encoding="utf-8")
+
+    with caplog.at_level("WARNING"):
+        load_config(str(temp_config_path))
+        load_config(str(temp_config_path))
+        temp_config_path.write_text("not [[ valid toml", encoding="utf-8")
+        load_config(str(temp_config_path))
+        load_config(str(temp_config_path))
+
+    assert [r.message.split(" – ")[0] for r in caplog.records if "recovered" in r.message] == [
+        f"Config file {temp_config_path} is empty",
+        f"Config file {temp_config_path} could not be read/parsed",
+    ]
+
+
+def test_a_broken_file_is_reported_again_once_it_has_read_whole_in_between(temp_config_path, caplog) -> None:
+    """The same file, broken the same way twice with a whole read between, is reported twice."""
+    _good_config_with_backup(temp_config_path)
+    whole = temp_config_path.read_bytes()
+    stamp = os.stat(temp_config_path)
+
+    def _write_in_place(content: bytes) -> None:
+        temp_config_path.write_bytes(content)
+        os.utime(temp_config_path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+
+    with caplog.at_level("WARNING"):
+        _write_in_place(b"")
+        load_config(str(temp_config_path))
+        _write_in_place(whole)
+        load_config(str(temp_config_path))
+        _write_in_place(b"")
+        load_config(str(temp_config_path))
+
+    assert len([r for r in caplog.records if "is empty" in r.message]) == 2
+
+
+@_UNREADABLE
+def test_load_config_for_save_refuses_an_empty_or_unreadable_file(temp_config_path, content) -> None:
+    _good_config_with_backup(temp_config_path)
+    temp_config_path.write_bytes(content)
+
+    with pytest.raises(ConfigFileUnreadableError) as raised:
+        load_config_for_save(str(temp_config_path))
+
+    assert isinstance(raised.value, OSError)
+    assert isinstance(raised.value, ConfigFileEmptyError) == (not content.strip())
+    assert str(temp_config_path) in str(raised.value)
+    assert temp_config_path.read_bytes() == content
+
+
+def test_load_config_for_save_reads_a_whole_file(temp_config_path) -> None:
+    save_config(AppConfig(psn_system_name="On Disk"), str(temp_config_path))
+
+    assert load_config_for_save(str(temp_config_path)).psn_system_name == "On Disk"
+
+
+def test_load_config_for_save_recovers_a_missing_file_from_the_backup(temp_config_path) -> None:
+    _good_config_with_backup(temp_config_path)
+    temp_config_path.unlink()
+
+    assert load_config_for_save(str(temp_config_path)).psn_system_name == "Good Config"
+
+
+def test_load_config_for_save_reads_a_first_run_as_the_defaults(temp_config_path) -> None:
+    assert load_config_for_save(str(temp_config_path)) == AppConfig()
+
+
+@_UNREADABLE
+def test_save_config_never_writes_over_an_empty_or_unreadable_file(temp_config_path, content) -> None:
+    _good_config_with_backup(temp_config_path)
+    backup = _bak_of(temp_config_path).read_bytes()
+    temp_config_path.write_bytes(content)
+
+    with pytest.raises(ConfigFileUnreadableError):
+        save_config(AppConfig(psn_system_name="Defaults And One Change"), str(temp_config_path))
+
+    assert temp_config_path.read_bytes() == content
+    assert _bak_of(temp_config_path).read_bytes() == backup
+    assert list(temp_config_path.parent.glob("*.tmp")) == []
+
+
+@_UNREADABLE
+def test_save_config_replaces_an_unreadable_file_only_when_told_to(temp_config_path, content) -> None:
+    temp_config_path.write_bytes(content)
+
+    save_config(AppConfig(psn_system_name="Replacement"), str(temp_config_path), replace_unreadable=True)
+
+    assert load_config(str(temp_config_path), strict=True).psn_system_name == "Replacement"
+
+
+def test_a_config_path_that_cannot_be_opened_is_neither_read_for_a_save_nor_written(temp_config_path) -> None:
+    temp_config_path.mkdir()
+
+    with pytest.raises(ConfigFileUnreadableError, match="could not be read"):
+        load_config_for_save(str(temp_config_path))
+    with pytest.raises(ConfigFileUnreadableError, match="could not be read"):
+        save_config(AppConfig(), str(temp_config_path))
+
+    assert temp_config_path.is_dir()
+
+
+def test_save_config_decides_on_the_file_as_it_is_when_it_writes(temp_config_path) -> None:
+    """A config read whole before an editor truncated the file still finds it empty."""
+    save_config(AppConfig(psn_system_name="Read Whole"), str(temp_config_path))
+    cfg = load_config_for_save(str(temp_config_path))
+    temp_config_path.write_text("", encoding="utf-8")
+
+    with pytest.raises(ConfigFileEmptyError):
+        save_config(cfg, str(temp_config_path))
+
+    assert temp_config_path.read_text(encoding="utf-8") == ""
+
+
+@_EMPTY
+def test_an_empty_file_does_not_ask_for_the_network_mode_to_be_saved(temp_config_path, content) -> None:
+    from openfollow.configuration import network_mode_unsaved
+
+    temp_config_path.write_text(content, encoding="utf-8")
+
+    assert not network_mode_unsaved(str(temp_config_path))
 
 
 # Per-marker move speed (``AppConfig.marker_move_speeds``)
@@ -2492,7 +2663,7 @@ def test_a_switch_that_could_not_be_saved_is_saved_by_switching_again_once_the_f
     assert app._config.video_source_type == "rtsp"
     assert banners == ["RTSP is live but could not be saved to config.toml. Fix the file, then switch again."]
 
-    save_config(good, path)
+    save_config(good, path, replace_unreadable=True)  # the operator repairs it
     assert apply_runtime_config_changes(app, load_config(path, strict=True)) is True
     assert app._config.video_source_type == "ndi"
     app_modes.confirm_source_type_selection(app)
@@ -4589,7 +4760,7 @@ def test_save_config_fields_refuses_an_empty_file_and_leaves_it(temp_config_path
     it writes leaves one for a moment: the unnamed fields must not become defaults."""
     temp_config_path.write_text(content, encoding="utf-8")
 
-    with pytest.raises(ValueError, match="empty"):
+    with pytest.raises(ConfigFileEmptyError, match="empty"):
         save_config_fields(AppConfig(web_port=8080), str(temp_config_path), ["camera"])
 
     assert temp_config_path.read_text(encoding="utf-8") == content
@@ -4605,7 +4776,7 @@ def test_save_config_fields_decides_on_the_bytes_it_parses(temp_config_path, mon
     temp_config_path.write_text("", encoding="utf-8")
     monkeypatch.setattr(Path, "read_bytes", lambda _self: whole)
 
-    with pytest.raises(ValueError, match="empty"):
+    with pytest.raises(ConfigFileEmptyError, match="empty"):
         save_config_fields(AppConfig(web_port=9090), str(temp_config_path), ["camera"])
 
     monkeypatch.undo()
@@ -4635,7 +4806,7 @@ def test_save_config_fields_writes_whole_a_file_that_vanished_after_an_earlier_c
 def test_load_config_strict_refuses_an_empty_file(temp_config_path, content) -> None:
     temp_config_path.write_text(content, encoding="utf-8")
 
-    with pytest.raises(ValueError, match="empty"):
+    with pytest.raises(ConfigFileEmptyError, match="empty"):
         load_config(str(temp_config_path), strict=True)
     assert load_config(str(temp_config_path)) == AppConfig()
 

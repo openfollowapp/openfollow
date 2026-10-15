@@ -23,6 +23,7 @@ from openfollow.configuration import (
     bootstrap_config_if_missing,
     config_write_lock,
     load_config,
+    load_config_for_save,
     network_mode_unsaved,
     save_config,
 )
@@ -790,14 +791,14 @@ class OpenFollowApp:
         """Drop ids from persisted selection (on-disk config for race-free hot-reload)."""
         drop = set(ids)
         with config_write_lock:
-            cfg = load_config(self._config_path)
-            new_controlled = [t for t in cfg.controlled_marker_ids if t not in drop]
-            new_viewer = [t for t in cfg.viewer_marker_ids if t not in drop]
-            if new_controlled == cfg.controlled_marker_ids and new_viewer == cfg.viewer_marker_ids:
-                return  # none of the deleted ids were in our selection
-            cfg.controlled_marker_ids = new_controlled
-            cfg.viewer_marker_ids = new_viewer
             try:
+                cfg = load_config_for_save(self._config_path)
+                new_controlled = [t for t in cfg.controlled_marker_ids if t not in drop]
+                new_viewer = [t for t in cfg.viewer_marker_ids if t not in drop]
+                if new_controlled == cfg.controlled_marker_ids and new_viewer == cfg.viewer_marker_ids:
+                    return  # none of the deleted ids were in our selection
+                cfg.controlled_marker_ids = new_controlled
+                cfg.viewer_marker_ids = new_viewer
                 save_config(cfg, self._config_path)
             except OSError:
                 logger.exception(

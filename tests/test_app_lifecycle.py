@@ -182,6 +182,57 @@ class TestConstruction:
         assert app._config_mtime > 0.0
 
 
+_BROKEN = pytest.mark.parametrize(
+    "content", ["", "  \n\t\n", "not [[ toml"], ids=["empty", "whitespace", "unparseable"]
+)
+
+
+@pytest.fixture
+def real_load(monkeypatch: pytest.MonkeyPatch, tmp_path):  # noqa: ANN001, ANN201
+    """Construction that reads ``config.toml`` for real; the backup holds the station's settings."""
+    from openfollow.configuration import save_config
+
+    monkeypatch.setattr(app_module, "AppRuntimeServices", _FakeRuntimeServices)
+    path = tmp_path / "config.toml"
+    for _ in range(2):  # the second save leaves the first as the backup
+        save_config(
+            AppConfig(psn_system_name="Backup Name", station_id="abc123", network_mode="advanced"),
+            str(path),
+        )
+    return path
+
+
+class TestStartupOnABrokenConfigFile:
+    @_BROKEN
+    def test_startup_runs_on_the_backup_and_leaves_the_file(self, real_load, caplog, content: str) -> None:  # noqa: ANN001
+        real_load.write_text(content, encoding="utf-8")
+
+        with caplog.at_level("WARNING"):
+            app = OpenFollowApp(config_path=str(real_load))
+
+        assert (app._config.psn_system_name, app._config.station_id) == ("Backup Name", "abc123")
+        assert real_load.read_text(encoding="utf-8") == content
+        assert f"recovered from {real_load}.bak" in caplog.text
+        assert [r.message for r in caplog.records if r.levelname == "ERROR"] == []
+
+    @_BROKEN
+    def test_startup_without_a_backup_runs_on_the_defaults_and_writes_nothing(
+        self,
+        real_load,
+        caplog,  # noqa: ANN001
+        content: str,
+    ) -> None:
+        real_load.with_name("config.toml.bak").unlink()
+        real_load.write_text(content, encoding="utf-8")
+
+        with caplog.at_level("WARNING"):
+            app = OpenFollowApp(config_path=str(real_load))
+
+        assert app._config.station_id != "abc123"
+        assert real_load.read_text(encoding="utf-8") == content
+        assert "Failed to persist seeded station identity" in caplog.text
+
+
 # --------------------------------------------------------------------------- #
 # run()
 # --------------------------------------------------------------------------- #

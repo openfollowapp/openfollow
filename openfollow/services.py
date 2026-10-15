@@ -43,12 +43,8 @@ from openfollow.psn.server import _UNCHANGED, _Unchanged
 from openfollow.rttrpm import RttrpmServer
 from openfollow.runtime.frame_timing import NOMINAL_FRAME_DT
 from openfollow.runtime.network_observer import DOWN_POLLS_BEFORE_SUSPEND, NetworkPlaneObserver, Plane
-from openfollow.runtime.overlay_state import OverlayState
 from openfollow.runtime.services_detection_pin import (
     apply_detection_pin as apply_detection_pin_helper,
-)
-from openfollow.runtime.services_frame import (
-    prepare_overlay_state_swap,
 )
 from openfollow.runtime.services_frame import (
     update_video as update_video_helper,
@@ -57,10 +53,11 @@ from openfollow.runtime.services_marker_visuals import (
     build_initial_overlay_state,
     build_marker_visual_state,
 )
-from openfollow.runtime_metrics import FrameMetrics, OverlayStatePool
+from openfollow.runtime_metrics import FrameMetrics
 from openfollow.scene.camera import Camera
 from openfollow.system_stats import SystemStatsCollector
 from openfollow.video.failure import ConnectionPhase, VideoFailure, failure_action, failure_sentence
+from openfollow.video.hud_render import HudRenderThread
 from openfollow.video.overlay import CairoOverlayRenderer
 from openfollow.video.receiver import GstNativeSinkReceiver, gst_runtime_available
 from openfollow.window import GtkNativeSinkWindow
@@ -671,12 +668,9 @@ class AppRuntimeServices:
         self._web_bind_resolved_ip = ""
         self._web_bind_pin_at_start: tuple[str, str] = ("", "")
         self._overlay_renderer: CairoOverlayRenderer | None = None  # set in init_video
+        self._hud_render: HudRenderThread | None = None  # set in init_video when there is a screen
         self._system_stats: SystemStatsCollector | None = None  # set in init_video
         self._person_detector: PersonDetector | None = None  # set in init_video if enabled
-
-        # Object pool for OverlayState to reduce GC pressure.
-        self._overlay_state_pool = OverlayStatePool(pool_size=3)
-        self._old_overlay_state: OverlayState | None = None
 
         self._frame_metrics = FrameMetrics()
         self._frame_start_time = 0.0
@@ -1040,11 +1034,12 @@ class AppRuntimeServices:
         except Exception as e:
             logger.warning("Failed to create video pipeline: %s", e)
 
-        # Drive HUD redraws from the GTK display tick rather than from
-        # cairooverlay buffer flow so a stalled (e.g. NDI 0 fps) source
-        # cannot freeze the HUD.
+        # The display tick paces the HUD, not video buffer flow, so a stalled
+        # (e.g. NDI 0 fps) source cannot freeze it. The tick starts and shows
+        # pictures drawn on the HUD render thread; the draw callback only pastes.
         if hasattr(canvas, "attach_hud"):
-            canvas.attach_hud(overlay.draw)
+            self._hud_render = HudRenderThread(overlay)
+            canvas.attach_hud(self._hud_render.paint, tick=self._hud_render.tick)
 
         self._app._video_receiver = receiver
         # Critical phase: a raise skips shutdown(), so tear the already-started
@@ -1067,6 +1062,9 @@ class AppRuntimeServices:
             self._app._video_receiver = None
             self._person_detector = None
             raise
+        # Started only once nothing above can raise: a failed start would strand the thread.
+        if self._hud_render is not None:
+            self._hud_render.start()
 
     def _init_overlay_state(self, overlay: CairoOverlayRenderer) -> None:
         """Populate initial overlay state from config."""
@@ -3438,17 +3436,15 @@ class AppRuntimeServices:
     def update_marker_visuals(self, dt: float) -> None:
         """Push current marker + camera state to the Cairo overlay renderer.
 
-        Builds a complete new OverlayState and swaps it atomically so the
-        GStreamer rendering thread never sees partially-updated state.
-        Uses the object pool + pre-allocated camera-params buffer to
-        reduce allocation churn. ``dt`` is the real seconds since the previous
+        Builds a new OverlayState every frame and swaps it in whole: the HUD
+        render thread may still be drawing the previous one, so a state is never
+        changed or reused once handed over. ``dt`` is the real seconds since the previous
         animate frame; it feeds the velocity estimate each controlled marker
         broadcasts, so it carries no default - a wrong step silently rescales
         every velocity on the wire.
         """
         state = build_marker_visual_state(
             self._app,
-            overlay_state_pool=self._overlay_state_pool,
             system_stats=self._system_stats,
             person_detector=self._person_detector,
             cam_params_buffer=self._cam_params_buffer,
@@ -3456,14 +3452,7 @@ class AppRuntimeServices:
             network_alerts=self.network_alerts(),
         )
 
-        # Atomic swap: release old state back to pool
-        self._old_overlay_state = prepare_overlay_state_swap(
-            overlay_state_pool=self._overlay_state_pool,
-            old_overlay_state=self._old_overlay_state,
-            new_overlay_state=state,
-        )
-
-        # GIL-atomic assignment (GStreamer thread reads this snapshot).
+        # GIL-atomic assignment; the HUD render thread draws the state it was handed.
         # ``init_video`` assigns ``self._overlay_renderer`` before this path
         # runs (the frame clock is gated by canvas readiness), so the None arm is
         # unreachable at runtime.
@@ -4122,6 +4111,8 @@ class AppRuntimeServices:
         # Each step is isolated (see ``_safe_stop``) so one failing
         # teardown can't strand the rest – the OSC-service drain and MIDI
         # close at the end must always run.
+        if self._hud_render is not None:
+            self._safe_stop("HUD render", self._hud_render.stop)
         online_sync = getattr(self, "_online_sync", None)
         if online_sync is not None:
             self._safe_stop("online sync", online_sync.stop)

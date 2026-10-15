@@ -19,8 +19,6 @@ from openfollow.units import UnitSystem
 if TYPE_CHECKING:
     from openfollow.video.detection import DetectionBox
 
-_MAX_MARKERS = 16  # Pre-allocated pool size
-
 
 @dataclass
 class ButtonDetectionState:
@@ -62,22 +60,6 @@ class PiNetworkOverlayState:
     # Character offset of the d-pad cursor within ``field_value``, or -1
     # when the value is freely typed and the caret belongs at the end.
     field_caret_offset: int = -1
-
-    def reset(self) -> None:
-        self.screen_active = False
-        self.rows = []
-        self.selected_index = 0
-        self.active_iface = ""
-        self.open_iface = ""
-        self.title = ""
-        self.subtitle = ""
-        self.banner = ""
-        self.banner_level = ""
-        self.busy = False
-        self.field_edit_active = False
-        self.field_label = ""
-        self.field_value = ""
-        self.field_caret_offset = -1
 
 
 @dataclass
@@ -141,11 +123,6 @@ class OverlayState:
     """Snapshot of overlay state. Swapped atomically (GIL) between threads."""
 
     markers: list[MarkerOverlayData] = field(default_factory=list)
-    # Pre-allocated marker data objects (reuse to avoid per-frame allocation)
-    _marker_pool: list[MarkerOverlayData] = field(
-        default_factory=lambda: [MarkerOverlayData(marker_id=0, x=0, y=0, z=0, color="") for _ in range(_MAX_MARKERS)],
-        repr=False,
-    )
     selected_id: int | None = None
     # Camera: [pos_x, pos_y, pos_z, pitch, yaw, roll, fov]
     camera_params: npt.NDArray[Any] | None = None
@@ -339,126 +316,3 @@ class OverlayState:
     ] = field(default_factory=list)
     # Where a locked marker can turn at a nearby junction: a short (tail, tip) stretch along each way.
     path_arrows: list[tuple[tuple[float, float, float], tuple[float, float, float]]] = field(default_factory=list)
-
-    def reset(self) -> None:
-        """Reset state for reuse in object pool."""
-        self.markers.clear()
-        self.selected_id = None
-        self.camera_params = None
-        self.lens_k1 = 0.0
-        self.lens_k2 = 0.0
-        self.grid_config = None
-        self.grid_visible = True
-        self.grid_color = _GRID_COLOR_DEFAULT
-        self.grid_thickness = _GRID_THICKNESS_DEFAULT
-        self.grid_transparency = _GRID_TRANSPARENCY_DEFAULT
-        self.ground_grid_active = False
-        self.ground_grid_visible = False
-        self.ground_grid_z = 0.0
-        self.ground_grid_vertices = []
-        self.marker_style = "crosshair"
-        self.cone_base_diameter = 0.6
-        self.cone_top_diameter = 0.3
-        self.cone_thickness = 2
-        self.cone_filled = True
-        self.cone_opacity = 0.4
-        self.cone_shaded = True
-        self.show_ball = True
-        self.show_crosshair = True
-        self.crosshair_size = 0.3
-        self.crosshair_color = "#ffffff"
-        self.crosshair_thickness = 2
-        self.transparency = 0.5
-        self.show_z_line = True
-        self.z_line_thickness = 1
-        self.show_ground_circle = False
-        self.ground_circle_size = 0.3
-        self.ground_circle_filled = True
-        self.z_display_from_stage = False
-        self.min_speed = 0.1
-        self.max_speed = 3.0
-        self.unit_system = UnitSystem.METRIC
-        self.show_origin = False
-        self.origin_length = 1.0
-        self.origin_thickness = 3
-        self.controller_connected = False
-        self.keyboard_connected = False
-        self.unbound_controller_indices = []
-        self.mouse_enabled = False
-        self.mouse_double_click_reset = True
-        self.mouse_wheel_z_enabled = True
-        self.ip_text = ""
-        self.hostname_text = ""
-        self.ip_is_fallback = False
-        self.network_alerts = []
-        self.show_hud_help = True
-        self.cpu_percent = 0.0
-        self.ram_percent = 0.0
-        self.temperature = None
-        self.station_name = ""
-        self.video_source_type = "ndi"
-        self.video_connected = True
-        self.source_label = ""
-        self.reconnect_attempt = 0
-        self.error_message = ""
-        self.video_failure_text = ""
-        self.video_failure_action = ""
-        self.source_selection_active = False
-        self.source_selection_title = "SELECT SOURCE"
-        self.discovered_sources.clear()
-        self.selected_source_index = 0
-        self.source_type_selection_active = False
-        self.available_source_types.clear()
-        self.selected_source_type_index = 0
-        self.url_editor_active = False
-        self.url_editor_field_label = ""
-        self.url_editor_value = ""
-        self.url_editor_banner = ""
-        self.field_choice_active = False
-        self.field_choice_title = ""
-        self.field_choice_items.clear()
-        self.field_choice_selected_index = 0
-        self.settings_menu_active = False
-        self.settings_items.clear()
-        self.settings_items_enabled.clear()
-        self.settings_items_disabled_reasons.clear()
-        self.settings_items_submenu.clear()
-        self.settings_selected_index = 0
-        self.settings_menu_banner = ""
-        self.about_active = False
-        self.media_picker_active = False
-        self.media_picker_title = ""
-        self.media_picker_items.clear()
-        self.media_picker_enabled.clear()
-        self.media_picker_index = -1
-        self.media_picker_empty = ""
-        self.media_export_active = False
-        self.media_export_lines = ("", "", None)
-        self.pi_network.reset()
-        self.detections = []
-        self.detection_show_boxes = False
-        self.detection_show_labels = False
-        self.detection_box_color = "#808080"
-        self.detection_box_thickness = 2
-        self.detection_attached_colors = {}
-        self.button_detection = None
-        self.button_labels = {}
-        self.keyboard_labels = {}
-        self.mouse3d_connected = False
-        self.mouse3d_axis_map = {}
-        self.mouse3d_buttons = {}
-        self.marker_cycle_enabled = True
-        self.show_zones = False
-        self.zone_polygons = []
-        self.zone_z_offset = 0.0
-        self.show_paths = False
-        self.path_lines = []
-        self.path_arrows = []
-        # Clear fader/badge stacks on pool reuse to avoid stale entries.
-        self.virtual_faders_display = []
-        self.status_flags = []
-        # Clear operator-message cards on pool reuse.
-        self.operator_messages = []
-        self.operator_message_position = "bottom"
-        self.operator_message_overflow = 0
-        self.operator_message_scale = 1.0

@@ -1202,6 +1202,14 @@ class TestHudTick:
         # attach_hud queued one draw, the tick queued another.
         assert window._hud_drawing_area.queue_draw_calls >= before + 1
 
+    @pytest.mark.parametrize(("redraw", "draws"), [(True, 1), (False, 0)])
+    def test_tick_redraws_hud_only_when_it_has_something_new(self, window, redraw: bool, draws: int) -> None:
+        window.attach_hud(lambda *_a: None, tick=lambda: redraw)
+        before = window._hud_drawing_area.queue_draw_calls
+        window.start_hud_tick()
+        window._window.tick()
+        assert window._hud_drawing_area.queue_draw_calls == before + draws
+
     def test_tick_regrabs_focus_when_lost(self, window) -> None:
         """If the toplevel lost focus (e.g. user clicked another app),
         the tick callback defensively regrabs it so keyboard events

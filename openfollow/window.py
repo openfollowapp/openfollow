@@ -131,6 +131,7 @@ class GtkNativeSinkWindow:
         self._overlay.add_overlay(self._hud_drawing_area)
         self._overlay.set_overlay_pass_through(self._hud_drawing_area, True)
         self._hud_draw_fn: Callable[[Any, int, int], None] | None = None
+        self._hud_tick: Callable[[], bool] | None = None
 
         self._handlers: dict[str, list[Callable[[dict[str, Any]], None]]] = {}
         self._tick_callback_id: int | None = None
@@ -331,9 +332,10 @@ class GtkNativeSinkWindow:
                 return
         gdk_window.set_cursor(cursor)
 
-    def attach_hud(self, draw_fn: Callable[[Any, int, int], None]) -> None:
-        """Register HUD draw callback invoked once per display frame."""
+    def attach_hud(self, draw_fn: Callable[[Any, int, int], None], tick: Callable[[], bool] | None = None) -> None:
+        """Register the HUD draw callback; ``tick`` paces the HUD by the display and says when to redraw."""
         self._hud_draw_fn = draw_fn
+        self._hud_tick = tick
         self._hud_drawing_area.queue_draw()
 
     def _on_hud_draw(self, widget: Any, cr: Any) -> bool:
@@ -469,7 +471,7 @@ class GtkNativeSinkWindow:
         except Exception:
             self._poll_err_log.log()
         # Redraw HUD independent of video buffer flow.
-        if self._hud_draw_fn is not None:
+        if self._hud_draw_fn is not None and (self._hud_tick is None or self._hud_tick()):
             self._hud_drawing_area.queue_draw()
         # Keep window focus.
         if not self._window.has_toplevel_focus():

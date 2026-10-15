@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""Tests for ``prepare_overlay_state_swap`` and ``update_video`` in
-``runtime/services_frame`` – overlay-state pool swap and per-frame video
+"""Tests for ``update_video`` in ``runtime/services_frame`` – per-frame video
 resolution / aspect-ratio / first-video logging."""
 
 from __future__ import annotations
@@ -11,42 +10,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from openfollow.runtime.overlay_state import OverlayState
-from openfollow.runtime.services_frame import (
-    prepare_overlay_state_swap,
-    update_video,
-)
-from openfollow.runtime_metrics import OverlayStatePool
+from openfollow.runtime.services_frame import update_video
 
 pytestmark = pytest.mark.unit
-
-
-class TestPrepareOverlayStateSwap:
-    def test_returns_new_state(self) -> None:
-        pool = OverlayStatePool(pool_size=2)
-        new_state = OverlayState()
-        result = prepare_overlay_state_swap(pool, None, new_state)
-        assert result is new_state
-
-    def test_releases_old_state_to_pool(self) -> None:
-        pool = OverlayStatePool(pool_size=2)
-        # Drain pool
-        s1 = pool.acquire()
-        pool.acquire()
-        assert len(pool._pool) == 0
-
-        new_state = OverlayState()
-        prepare_overlay_state_swap(pool, s1, new_state)
-        # s1 should be back in the pool
-        assert len(pool._pool) == 1
-
-    def test_handles_none_old_state(self) -> None:
-        pool = OverlayStatePool(pool_size=2)
-        initial_pool_size = len(pool._pool)
-        new_state = OverlayState()
-        result = prepare_overlay_state_swap(pool, None, new_state)
-        assert result is new_state
-        assert len(pool._pool) == initial_pool_size  # unchanged
 
 
 # --------------------------------------------------------------------------- #

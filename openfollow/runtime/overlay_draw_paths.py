@@ -114,7 +114,7 @@ def _arrowhead(cr: Any, x: float, y: float, ux: float, uy: float) -> None:
 class PathCache:
     """Every path as one picture, and the paths with a marker on them as a second picture over it.
 
-    The Operator Screen redraws on every display refresh. The paths change only with
+    The Operator Screen draws a picture at most once per display refresh. The paths change only with
     the paths or the view; which ones carry a marker changes whenever a marker crosses
     a junction, and then only the second, smaller picture is drawn again.
     """

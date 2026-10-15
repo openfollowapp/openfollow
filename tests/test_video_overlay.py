@@ -21,6 +21,7 @@ import pytest
 from openfollow.runtime.overlay_state import (
     ButtonDetectionState,
     MarkerOverlayData,
+    OverlayState,
 )
 from openfollow.video import overlay as overlay_module
 from openfollow.video.overlay import CairoOverlayRenderer
@@ -122,6 +123,14 @@ class TestDrawDispatch:
         renderer.state.button_detection = ButtonDetectionState(active=True)
         renderer.draw(FakeCairo(), 1280, 720)
         assert patched_passes == ["draw_button_detection_overlay_pass"]
+
+    def test_a_state_handed_to_draw_is_drawn_rather_than_the_latest(self, patched_passes) -> None:
+        """The HUD render thread draws the state it was handed while the frame loop moves on."""
+        renderer = CairoOverlayRenderer()
+        handed = OverlayState()
+        handed.settings_menu_active = True
+        renderer.draw(FakeCairo(), 1280, 720, handed)
+        assert patched_passes == ["draw_settings_overlay_pass", "draw_menu_help_pass"]
 
     def test_settings_menu_active_dispatches_settings_overlay(self, patched_passes) -> None:
         renderer = CairoOverlayRenderer()
@@ -705,7 +714,7 @@ class TestModuleImportRsvgBranches:
 
 @pytest.mark.filterwarnings("ignore:Rsvg.Handle.render_cairo is deprecated:DeprecationWarning")
 def test_the_screen_reuses_a_still_cone_and_forgets_a_removed_one(monkeypatch) -> None:
-    """Drawn on every display refresh, a cone that did not change is painted from its picture."""
+    """Drawn in every HUD picture, a cone that did not change is painted from its picture."""
     import cairo
 
     from openfollow.runtime import overlay_draw_scene as scene

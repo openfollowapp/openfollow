@@ -538,8 +538,8 @@ def _draw_assist_ghost(
 class ConeCache:
     """Each marker's cone as a picture, drawn again only when something it depends on changed.
 
-    The Operator Screen redraws on every display refresh; a cone that has not
-    moved is then one paint instead of its geometry and three fills.
+    The Operator Screen draws a picture at most once per display refresh; a cone
+    that has not moved is then one paint instead of its geometry and three fills.
     """
 
     def __init__(self) -> None:

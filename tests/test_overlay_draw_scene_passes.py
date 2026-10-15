@@ -1318,7 +1318,7 @@ class TestConeCache:
 
     def test_an_assist_anchor_and_its_ghost_are_each_drawn_once(self, geometry_calls) -> None:
         """AI Assisted draws a marker's anchor and its ghost under one marker id; sharing one
-        picture, each redrew the other's on every display refresh."""
+        picture, each redrew the other's in every HUD picture."""
         from openfollow.runtime.overlay_draw_scene import ConeCache
 
         cache, state = ConeCache(), self._state()

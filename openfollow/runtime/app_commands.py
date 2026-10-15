@@ -16,12 +16,15 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Long enough for the request that asked for the restart to get its answer out.
+RESTART_GRACE_S = 0.5
+
 
 def check_restart_request(app: OpenFollowApp) -> None:
     """Check if web UI requested app restart."""
     if app._update_worker is not None and app._update_worker.is_alive():
         return
-    if app._web_commands.consume_restart_requested():
+    if app._web_commands.consume_restart_requested(grace_s=RESTART_GRACE_S):
         logger.info("Restart requested from web UI.")
         app._restart_app()
 

@@ -17,7 +17,7 @@ import os
 import sys
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -236,8 +236,10 @@ def _autostart_failure_text(exc: Exception) -> str:
 class WebCommandQueue:
     """Thread-safe command queue for web-triggered runtime commands."""
 
-    def __init__(self) -> None:
-        self._restart_requested = threading.Event()
+    def __init__(self, *, clock: Callable[[], float] = time.monotonic) -> None:
+        self._clock = clock
+        self._restart_lock = threading.Lock()
+        self._restart_requested_at: float | None = None
         self._update_requested = threading.Event()
         self._button_detection_requested = threading.Event()
         self._button_detection_cancel_requested = threading.Event()
@@ -310,7 +312,8 @@ class WebCommandQueue:
         self._update_available = ""
 
     def request_restart(self) -> None:
-        self._restart_requested.set()
+        with self._restart_lock:
+            self._restart_requested_at = self._clock()
 
     def request_restart_unless_updating(self) -> bool:
         """Request a restart unless an update is queued or running.
@@ -321,14 +324,17 @@ class WebCommandQueue:
         with self._update_lock:
             if self._update_status.get("state", "idle") in _UPDATE_BUSY_STATES:
                 return False
-            self._restart_requested.set()
+            self.request_restart()
             return True
 
-    def consume_restart_requested(self) -> bool:
-        if self._restart_requested.is_set():
-            self._restart_requested.clear()
+    def consume_restart_requested(self, *, grace_s: float = 0.0) -> bool:
+        """Take a restart request made at least ``grace_s`` ago; a newer request restarts the wait."""
+        with self._restart_lock:
+            at = self._restart_requested_at
+            if at is None or self._clock() - at < grace_s:
+                return False
+            self._restart_requested_at = None
             return True
-        return False
 
     def request_button_detection(self) -> None:
         self._button_detection_requested.set()

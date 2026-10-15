@@ -31,6 +31,26 @@ def test_restart_request_consume_once() -> None:
     assert q.consume_restart_requested() is False
 
 
+def test_a_restart_request_is_taken_only_after_its_grace() -> None:
+    now = [10.0]
+    q = WebCommandQueue(clock=lambda: now[0])
+    q.request_restart()
+    now[0] = 10.4
+    assert q.consume_restart_requested(grace_s=0.5) is False
+    now[0] = 10.5
+    assert q.consume_restart_requested(grace_s=0.5) is True
+    assert q.consume_restart_requested(grace_s=0.5) is False
+
+
+def test_a_restart_allowed_past_an_update_check_waits_its_grace_too() -> None:
+    now = [10.0]
+    q = WebCommandQueue(clock=lambda: now[0])
+    assert q.request_restart_unless_updating() is True
+    assert q.consume_restart_requested(grace_s=0.5) is False
+    now[0] = 10.5
+    assert q.consume_restart_requested(grace_s=0.5) is True
+
+
 # ---------------------------------------------------------------------------
 # update-available holder (drives the banner + footer flag)
 # ---------------------------------------------------------------------------

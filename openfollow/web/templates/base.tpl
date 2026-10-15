@@ -3916,40 +3916,41 @@
  window.OpenFollow.clearBindingNotes(container, Object.keys(defaults));
  refreshFormGate(container.closest('form'));
  }
- // Restart button (lives in the Diagnostics partial). Defined here
- // alongside the ``#top-restart-notice`` banner so the partial
- // itself stays JS-free (per its module header), and so the
- // notice element is null-guarded for the case where the
- // diagnostics partial is fetched standalone via
- // ``hx-get="/section/diagnostics"`` and the index-level banner
- // isn't in the DOM. Triggers ``/api/restart`` (which returns
- // immediately) then polls ``/api/info`` every 2 s until the
- // server comes back, at which point it reloads the page.
- async function confirmRestartApp() {
+ // Every Restart button: confirm, ask the station, then show the restarting notice and
+ // reload once /api/info answers again. ``opts``: title and message for the dialog, and
+ // an optional notice text. The notice is null-guarded for a partial fetched on its own.
+ async function openfollowRestart(opts) {
  const saveError = window.OpenFollow.saveError;
  const box = saveError.origin();
  const ok = await modalConfirm({
- title: 'Restart application?',
- message: 'Video and tracking stop until the station is back.',
+ title: opts.title,
+ message: opts.message,
  confirmLabel: 'Restart',
  danger: true,
  });
  if (!ok) return;
- fetch('/api/restart', {method: 'POST'}).then(async function(res) {
+ let res;
+ try {
+ res = await fetch('/api/restart', {method: 'POST'});
+ } catch (e) {
+ saveError.show(box, saveError.UNREACHABLE, 'Not restarted.');
+ return;
+ }
  if (!res.ok) {
  saveError.show(box, await saveError.fromResponse(res), 'Not restarted.');
  return;
  }
- var n = document.getElementById('top-restart-notice');
- if (n) n.style.display = 'block';
- var p = setInterval(function() {
+ document.querySelectorAll('button[onclick^="openfollowRestart"]').forEach(function(b) { b.disabled = true; });
+ const n = document.getElementById('top-restart-notice');
+ if (n) {
+ if (opts.notice) n.textContent = opts.notice;
+ n.style.display = 'block';
+ }
+ const p = setInterval(function() {
  fetch('/api/info').then(function(r) {
  if (r.ok) { clearInterval(p); window.location.reload(); }
  }).catch(function() {});
  }, 2000);
- }, function() {
- saveError.show(box, saveError.UNREACHABLE, 'Not restarted.');
- });
  }
  // Save to USB storage device (a Diagnostics tools button): the Operator Screen's steps in
  // the shared modal. Pick a device, follow the export, then read what happened and the next

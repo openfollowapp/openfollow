@@ -6727,16 +6727,12 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # comparing where it would bind against where it did.
         return resolved[0] != server.bind_host
 
-    def _render_interface_assignment(
-        cfg: AppConfig, *, saved: bool = False, restarting: bool = False, restart_refused: bool = False
-    ) -> Any:
+    def _render_interface_assignment(cfg: AppConfig, *, saved: bool = False) -> Any:
         resolved = resolve_web_bind_for(cfg)
         return template(
             "partials/interface_assignment",
             config=cfg,
             saved=saved,
-            restarting=restarting,
-            restart_refused=restart_refused,
             assignment_rows=build_interface_assignment_rows(cfg, resolved),
             options_fingerprint=_iface_options_fingerprint(cfg.interface_labels),
             web_bind_notice=build_web_bind_notice(cfg, resolved, server.display_port),
@@ -6782,14 +6778,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """
         cfg = _save_section_from_form("interface_assignment")
         return _render_interface_assignment(cfg, saved=True)
-
-    @app.post("/section/interface_assignment/restart")
-    def restart_for_interface_assignment() -> Any:
-        """Restart only; saving is the panel's Save. Refused while an update runs."""
-        cfg = _request_scoped_config()
-        if not server.request_restart_unless_updating():
-            return _render_interface_assignment(cfg, restart_refused=True)
-        return _render_interface_assignment(cfg, restarting=True)
 
     @app.post("/section/video_source")
     def update_video_source() -> Any:
@@ -7140,19 +7128,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             "partials/keyboard_variant_options",
             variants=variant_options(station_catalog(), request.query.get("keyboard_layout", "")),
             selected="",
-        )
-
-    @app.post("/section/keyboard/restart")
-    def restart_for_keyboard_layout() -> Any:
-        """Restart only, so the session starts in the saved layout; saving is the section's Save."""
-        cfg = _request_scoped_config()
-        refused = not server.request_restart_unless_updating()
-        return template(
-            "partials/keyboard",
-            config=cfg,
-            restarting=not refused,
-            restart_refused=refused,
-            keyboard_layout=build_keyboard_layout_view(cfg),
         )
 
     @app.post("/section/mouse")
@@ -9506,9 +9481,10 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     @app.post("/api/restart")
     def api_restart() -> Any:
-        """Trigger an application restart."""
+        """Restart the application, unless an update is queued or running."""
+        if not server.request_restart_unless_updating():
+            return _save_failed(409, "An update is running.", "Restart once it has finished.")
         response.content_type = "application/json"
-        server.request_restart()
         return json.dumps({"success": True})
 
     @app.get("/api/peers")

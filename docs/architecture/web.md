@@ -66,6 +66,7 @@ and "manage X under Y" pointers – goes in that section's **help drawer markdow
 - HTMX version: 1.9 – use `hx-on::after-request` (double colon), NOT `hx-on:htmx:after-request`
 - Overview auto-refresh: `hx-trigger="every 5s"`
 - Restart detection: polls `/section/general` every 2s; on success → `window.location.reload()`
+- Every Restart button (Diagnostics, Keyboard Input, Interface Assignment) runs `openfollowRestart({title, message, notice?})` in `base.tpl`: the modal confirm, `POST /api/restart` (409 while an update is queued or running), then `#top-restart-notice` and an `/api/info` poll every 2 s that reloads the page. A refused or unanswered restart reports through `saveError` with the lead "Not restarted."
 
 ## Setup wizard (`/wizard`)
 Guided workflow for camera positioning and grid calibration, eight steps:

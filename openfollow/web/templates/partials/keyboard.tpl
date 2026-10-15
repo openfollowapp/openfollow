@@ -2,24 +2,12 @@
 % kb_labels = dict(KEYBOARD_ACTION_FORM_LABELS)
 %# Set only where the kiosk session resolved the layout (see keyboard_layout_view).
 % kb_layout = keyboard_layout if defined('keyboard_layout') else None
-% kb_pending = kb_layout is not None and kb_layout.pending and not (defined('restarting') and restarting)
+% kb_pending = kb_layout is not None and kb_layout.pending
 <form id="keyboard-section" class="section {{'saved' if defined('saved') and saved else ''}}" data-fold-key="keyboard" data-help="keyboard"
       hx-post="/section/keyboard" hx-target="#keyboard-section" hx-swap="outerHTML" hx-trigger="submit">
     <div class="section-head">
         <h2>Keyboard Input</h2>
     </div>
-
-    % if defined('restarting') and restarting:
-    <div class="restart-notice"
-         hx-get="/api/info"
-         hx-trigger="every 2s"
-         hx-swap="none"
-         hx-on::after-request="if(event.detail.successful) window.location.reload()">App is restarting&hellip; Please wait.</div>
-    % end
-    % if defined('restart_refused') and restart_refused:
-    <div class="notice error" role="alert">An update is running, so OpenFollow was not restarted.
-        <div class="notice-sub">Restart it once the update has finished.</div></div>
-    % end
 
     <div class="group">
         <div class="row">
@@ -225,9 +213,7 @@
         <button type="submit" class="save-btn">Save</button>
         % if kb_pending:
         <button type="button" class="danger"
-                hx-post="/section/keyboard/restart"
-                hx-confirm="Outputs pause until OpenFollow is back."
-                data-confirm-title="Restart OpenFollow?" data-confirm-label="Restart" data-confirm-danger>Restart OpenFollow</button>
+                onclick="openfollowRestart({title: 'Restart OpenFollow?', message: 'Outputs pause until OpenFollow is back.'})">Restart OpenFollow</button>
         % end
     </div>
 </form>

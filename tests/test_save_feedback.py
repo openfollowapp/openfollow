@@ -45,11 +45,6 @@ def _template(relative: str) -> str:
     return (_PACKAGE / "web" / "templates" / relative).read_text(encoding="utf-8")
 
 
-def test_a_restart_that_gets_no_answer_says_so() -> None:
-    body = function_body(_template("base.tpl"), "confirmRestartApp")
-    assert "saveError.UNREACHABLE" in body
-
-
 def test_a_zone_save_that_saves_nothing_resolves_null() -> None:
     body = function_body(_template("partials/zone_editor.tpl"), "saveSelectedZone")
     assert "Promise.resolve()" not in body

@@ -41,8 +41,9 @@
         set: function (k, v) { try { window.localStorage.setItem(k, v); } catch (e) { /* blocked storage */ } }
     };
 
+    // ``gen`` counts openings and closings: an answer from an earlier one changes nothing.
     var st = {
-        open: false, token: null, marker: null, lost: false, state: null,
+        gen: 0, reopening: false, open: false, token: null, marker: null, lost: false, state: null,
         stick: { sx: 0, sy: 0 }, notches: 0, inFlight: false, flip: store.get('of.remote.flip') === '1',
         left: store.get('of.remote.hand') === 'left', xyzOpen: false, driveTimer: null, stateTimer: null
     };
@@ -60,11 +61,12 @@
 
     function setOffline(off) { $('remote-offline').hidden = !off; }
 
-    // A status the station answered with: 403 switched off, 404 session ended, 409 marker taken.
+    // A status the station answered with: 403 switched off, 404 session ended, 409 marker gone
+    // (the state says whether another remote took it or the station let go).
     function handleStatus(res) {
         if (res.status === 403) { shutDown(); return false; }
         if (res.status === 404) { reopen(); return false; }
-        if (res.status === 409) { st.lost = true; render(); return false; }
+        if (res.status === 409) { stateTick(); return false; }
         return res.ok;
     }
 
@@ -73,30 +75,42 @@
         launcher.hidden = true;
     }
 
+    // One reopen at a time: every request that learns of the ended session lands here.
     function reopen() {
-        var keep = st.marker;
+        if (st.reopening || !st.open) return;
+        var keep = st.lost ? null : st.marker;
+        st.reopening = true;
         st.token = null;
         st.marker = null;
-        startSession().then(function () { if (keep !== null) hold(keep); });
+        startSession().then(function () {
+            st.reopening = false;
+            if (keep !== null) hold(keep);
+        });
     }
 
     function startSession() {
+        var gen = st.gen;
         st.token = null;
         return post('open').then(function (res) {
-            if (!handleStatus(res)) return;
-            return res.json().then(function (data) { st.token = data.token; setOffline(false); });
+            if (gen !== st.gen || !handleStatus(res)) return;
+            return res.json().then(function (data) {
+                if (gen !== st.gen) return;
+                st.token = data.token;
+                setOffline(false);
+            });
         }).catch(function () { setOffline(true); });
     }
 
     function hold(markerId) {
-        if (!st.token) return;
+        if (!st.open || !st.token) return;
+        var gen = st.gen;
         post('hold', { marker: markerId }).then(function (res) {
-            if (res.status === 409) return;
+            if (gen !== st.gen || res.status === 409) return;
             if (!handleStatus(res)) return;
             return res.json().then(function (data) {
+                if (gen !== st.gen) return;
                 st.marker = markerId;
                 st.lost = false;
-                store.set('of.remote.marker', String(markerId));
                 $('remote-detection-off').hidden = !data.detection_off;
                 render();
             });
@@ -116,12 +130,15 @@
 
     function stateTick() {
         if (!st.open || !st.token || document.hidden) return;
+        var gen = st.gen;
         fetch('/api/remote/state?token=' + encodeURIComponent(st.token), { credentials: 'same-origin' })
             .then(function (res) {
-                if (!handleStatus(res)) return;
+                if (gen !== st.gen || !handleStatus(res)) return;
                 return res.json().then(function (data) {
+                    if (gen !== st.gen) return;
                     st.state = data;
-                    if (data.held === null && data.lost) st.lost = true;
+                    if (data.lost) st.lost = true;
+                    else if (data.held === null) st.marker = null;
                     render();
                 });
             })
@@ -216,30 +233,22 @@
         return isFinite(v) ? v : NaN;
     }
 
+    // Opening takes no marker: tapping a chip does.
     function openCard() {
+        st.gen += 1;
         st.open = true;
         card.hidden = false;
         launcher.setAttribute('aria-expanded', 'true');
         render();
-        startSession().then(function () {
-            var saved = Number(store.get('of.remote.marker'));
-            fetch('/api/remote/state?token=' + encodeURIComponent(st.token || ''), { credentials: 'same-origin' })
-                .then(function (res) { return handleStatus(res) ? res.json() : null; })
-                .then(function (data) {
-                    if (!data) return;
-                    st.state = data;
-                    var ids = data.markers.map(function (mk) { return mk.id; });
-                    if (ids.length) hold(ids.indexOf(saved) >= 0 ? saved : ids[0]);
-                    render();
-                })
-                .catch(function () { setOffline(true); });
-        });
+        startSession().then(stateTick);
         st.driveTimer = window.setInterval(driveTick, DRIVE_MS);
         st.stateTimer = window.setInterval(stateTick, STATE_MS);
     }
 
     function closeCard(tellStation) {
         if (tellStation !== false && st.token) post('close').catch(function () { /* the station forgets it */ });
+        st.gen += 1;
+        st.reopening = false;
         st.open = false;
         st.token = null;
         st.marker = null;

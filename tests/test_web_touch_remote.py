@@ -202,6 +202,8 @@ def test_a_wrong_type_marker_is_400(live, marker: Any) -> None:  # noqa: ANN001
         {"z_notches": "2"},
         {"z_notches": False},
         {"z_notches": 100000},
+        {"sx": 10**400},
+        {"z_notches": 10**400},
     ],
 )
 def test_a_wrong_type_or_out_of_range_drive_is_400(live, fields: dict[str, Any]) -> None:  # noqa: ANN001
@@ -218,7 +220,10 @@ def test_an_unknown_action_is_400(live, action: Any) -> None:  # noqa: ANN001
     assert _call(base, "POST", "/api/remote/action", {"token": token, "marker": 1, "action": action})[0] == 400
 
 
-@pytest.mark.parametrize("target", [{"x": 1, "y": 2}, {"x": "1", "y": 2, "z": 3}, {"x": True, "y": 2, "z": 3}])
+@pytest.mark.parametrize(
+    "target",
+    [{"x": 1, "y": 2}, {"x": "1", "y": 2, "z": 3}, {"x": True, "y": 2, "z": 3}, {"x": 10**400, "y": 2, "z": 3}],
+)
 def test_a_glide_without_three_numbers_is_400(live, target: dict[str, Any]) -> None:  # noqa: ANN001
     base, _path, _remote = live
     token = _holding(base)

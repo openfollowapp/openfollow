@@ -590,3 +590,25 @@ def test_detection_goes_off_even_when_the_file_cannot_be_written(app: _App, tmp_
     assert app._config.detection.enabled is False
     assert app.detection_applied == [False]
     assert "Failed to save person detection switched off." in caplog.text
+
+
+@pytest.mark.integration
+def test_a_glide_too_far_for_a_float_distance_lands_at_once(app: _App) -> None:
+    app._server.markers[10].set_pos(1e308, 0.0, 1.6)
+    token = _held(app)
+    app._touch_remote.act(token, 10, RemoteAction(GLIDE, (-1e308, 0.0, 1.6)))
+    manager = InputManager(app)
+    manager.update_touch_remote(0.02)
+    assert _pos(app) == pytest.approx((-1e308, 0.0, 1.6))
+
+
+@pytest.mark.integration
+def test_a_failing_remote_step_is_logged_and_the_frame_carries_on(app: _App, caplog) -> None:  # noqa: ANN001
+    _held(app)
+
+    def boom() -> list:  # noqa: ANN202
+        raise RuntimeError("boom")
+
+    app._touch_remote.take = boom  # type: ignore[method-assign]
+    InputManager(app).update_touch_remote(0.02)
+    assert "Touch remote update failed this tick." in caplog.text

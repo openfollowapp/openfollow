@@ -234,6 +234,12 @@ class MouseHandler:
             self._active = False
             logger.info("Mouse let go of marker %s: it is locked onto a path", app._selected_id)
             return
+        if holds(app, app._selected_id):
+            # The touch remote took the marker: drop the drag so it never glides back on release.
+            self._active = False
+            self._reset_tracking()
+            logger.info("Mouse let go of marker %s: the touch remote holds it", app._selected_id)
+            return
         marker = self._get_selected_marker()
         if marker is None or self._target_world is None:
             return

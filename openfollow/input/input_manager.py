@@ -41,6 +41,7 @@ from openfollow.runtime.services_detection_pin import (
 if TYPE_CHECKING:
     from openfollow.app import OpenFollowApp
     from openfollow.configuration import Mouse3DConfig
+    from openfollow.input.touch_remote import TouchRemote
     from openfollow.paths.engine import PathEngine
     from openfollow.psn.marker import Marker
 
@@ -140,6 +141,7 @@ class InputManager:
         self.mouse3d_manager = Mouse3DManager(app._config.mouse3d)
         self.mouse3d_manager.start()
         self._mouse3d_update_err_log = ThrottledExceptionLogger(logger, "3D Mouse update failed this tick.")
+        self._remote_update_err_log = ThrottledExceptionLogger(logger, "Touch remote update failed this tick.")
         # Which slot each controller holds for the session; refreshed on the
         # main loop only, read from any thread via ``_controller_slots``.
         self._clock = time.monotonic
@@ -546,6 +548,12 @@ class InputManager:
         remote = getattr(self.app, "_touch_remote", None)
         if remote is None:
             return
+        try:
+            self._apply_touch_remote(remote, dt)
+        except Exception:
+            self._remote_update_err_log.log()
+
+    def _apply_touch_remote(self, remote: TouchRemote, dt: float) -> None:
         cfg = self.app._config
         if not cfg.touch_remote.enabled:
             remote.release_all()
@@ -590,7 +598,8 @@ class InputManager:
         x, y, z = marker.pos
         tx, ty, tz = target
         distance = math.dist((x, y, z), target)
-        if distance <= step:
+        # A target too far for a float distance lands at once rather than never.
+        if distance <= step or not math.isfinite(distance):
             marker.set_pos(tx, ty, tz)
             del self._remote_glides[marker_id]
             return

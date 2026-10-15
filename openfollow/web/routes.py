@@ -5271,22 +5271,6 @@ _REMOTE_API = "/api/remote"
 _REMOTE_MAX_NOTCHES = 1000
 
 
-def _finite_number(value: Any) -> float:
-    """A JSON number as a finite float; ``ValueError`` for anything else, ``true`` included."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError("not a number")
-    out = float(value)
-    if not math.isfinite(out):
-        raise ValueError("not finite")
-    return out
-
-
-def _whole_number(value: Any) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError("not a whole number")
-    return value
-
-
 def _register_touch_remote_routes(app: Bottle, server: ConfigWebServer) -> None:
     """Register the touch remote's routes: sessions, holds, driving and the card's state."""
     from openfollow.input.touch_remote import ACTIONS, GLIDE, LOST, OK, RemoteAction
@@ -5342,8 +5326,8 @@ def _register_touch_remote_routes(app: Bottle, server: ConfigWebServer) -> None:
             return body
         remote, cfg, data, token = body
         try:
-            marker_id = _whole_number(data.get("marker"))
-        except ValueError:
+            marker_id = _json_int(data.get("marker"), "marker")
+        except (TypeError, ValueError):
             return _json_error(400, "marker must be a whole number")
         if marker_id not in cfg.controlled_marker_ids:
             return _json_error(409, f"This station does not control marker {marker_id}.")
@@ -5361,10 +5345,10 @@ def _register_touch_remote_routes(app: Bottle, server: ConfigWebServer) -> None:
             return body
         remote, _cfg, data, token = body
         try:
-            marker_id = _whole_number(data.get("marker"))
-            stick = (_finite_number(data.get("sx", 0)), _finite_number(data.get("sy", 0)))
-            notches = _whole_number(data.get("z_notches", 0))
-        except ValueError:
+            marker_id = _json_int(data.get("marker"), "marker")
+            stick = (_json_number(data.get("sx", 0), "sx"), _json_number(data.get("sy", 0), "sy"))
+            notches = _json_int(data.get("z_notches", 0), "z_notches")
+        except (TypeError, ValueError):
             return _json_error(400, "marker and z_notches must be whole numbers, sx and sy numbers")
         if abs(notches) > _REMOTE_MAX_NOTCHES:
             return _json_error(400, f"z_notches must be within ±{_REMOTE_MAX_NOTCHES}")
@@ -5381,13 +5365,13 @@ def _register_touch_remote_routes(app: Bottle, server: ConfigWebServer) -> None:
         if kind not in ACTIONS:
             return _json_error(400, f"action must be one of: {', '.join(ACTIONS)}")
         try:
-            marker_id = _whole_number(data.get("marker"))
+            marker_id = _json_int(data.get("marker"), "marker")
             target = (
-                (_finite_number(data.get("x")), _finite_number(data.get("y")), _finite_number(data.get("z")))
+                (_json_number(data.get("x"), "x"), _json_number(data.get("y"), "y"), _json_number(data.get("z"), "z"))
                 if kind == GLIDE
                 else None
             )
-        except ValueError:
+        except (TypeError, ValueError):
             return _json_error(400, "marker must be a whole number, x, y and z finite numbers")
         return _answer(remote.act(token, marker_id, RemoteAction(kind, target)))
 

@@ -565,7 +565,7 @@ class InputManager:
             del self._remote_glides[marker_id]
         # Once per new hold, before its presses, so they move the marker and not an assist anchor;
         # detection switched back on later while held stays on.
-        if remote.took_new_hold() and frames and cfg.detection.enabled:
+        if any(frame.new for frame in frames) and cfg.detection.enabled:
             self._switch_detection_off()
         for frame in frames:
             # One marker's failure never costs another marker its presses.

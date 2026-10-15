@@ -468,3 +468,35 @@ out.reloads = reloads;
 """
     )
     assert out == {"offline": True, "reloads": 1}
+
+
+def test_a_glide_value_that_does_not_read_is_marked_and_kept() -> None:
+    out = _run(
+        _HOLDING
+        + """
+els['remote-xyz'].fire('click');
+els['remote-x'].value = 'abc';
+els['remote-x'].fire('input');
+var before = requests.length;
+els['remote-go'].fire('click');
+out.sent = paths().slice(before);
+out.invalid = els['remote-x'].attrs['aria-invalid'];
+out.value = els['remote-x'].value;
+els['remote-x'].fire('input');
+out.cleared = els['remote-x'].attrs['aria-invalid'];
+"""
+    )
+    assert out == {"sent": [], "invalid": "true", "value": "abc", "cleared": "false"}
+
+
+def test_a_renamed_marker_s_chip_is_redrawn() -> None:
+    out = _run(
+        _OPENED
+        + """
+tick(); await settle();
+var renamed = Object.assign({}, STATE, { markers: [Object.assign({}, STATE.markers[0], { name: 'Duet' })] });
+answer(paths().lastIndexOf('/api/remote/state'), 200, renamed); await settle();
+out.label = els['remote-chips'].children[0].children[1].text;
+"""
+    )
+    assert out["label"] == "1 · Duet"

@@ -2366,6 +2366,7 @@
  .remote-xyz-row { display: flex; gap: 0.5rem; align-items: flex-end; }
  .remote-xyz-row label { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.7rem; font-weight: 700; }
  .remote-xyz-row input { width: 100%; box-sizing: border-box; height: 2.6rem; font-family: ui-monospace, monospace; -webkit-user-select: text; user-select: text; }
+ .remote-xyz-row input[aria-invalid="true"] { border-color: var(--error-line); box-shadow: 0 0 0 1px var(--error-line); }
  .remote-go { height: 2.6rem; flex: none; }
  .remote-readout { display: flex; justify-content: space-between; gap: 0.5rem; font: 600 0.75rem ui-monospace, monospace; color: var(--muted); font-variant-numeric: tabular-nums; }
  @media (prefers-reduced-motion: reduce) { .remote-knob { transition: none; } }

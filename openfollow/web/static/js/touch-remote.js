@@ -199,7 +199,8 @@
     function renderChips() {
         var chips = $('remote-chips');
         var s = st.state;
-        var ids = s ? s.markers.map(function (m) { return m.id; }).join(',') : '';
+        // Rebuilt when a marker comes, goes, or is renamed or recoloured.
+        var ids = s ? JSON.stringify(s.markers.map(function (m) { return [m.id, m.name, m.color]; })) : '';
         if (chips.dataset.ids !== ids) {
             chips.dataset.ids = ids;
             chips.textContent = '';
@@ -267,7 +268,12 @@
     // Each field follows the marker until the operator types in it; Glide hands it back.
     var XYZ = ['remote-x', 'remote-y', 'remote-z-in'];
     var typed = {};
-    XYZ.forEach(function (id) { $(id).addEventListener('input', function () { typed[id] = true; }); });
+    XYZ.forEach(function (id) {
+        $(id).addEventListener('input', function () {
+            typed[id] = true;
+            $(id).setAttribute('aria-invalid', 'false');
+        });
+    });
 
     function fillXyz() {
         var m = current();
@@ -381,10 +387,17 @@
         render();
     });
     $('remote-go').addEventListener('click', function () {
-        var x = parse($('remote-x').value), y = parse($('remote-y').value), z = parse($('remote-z-in').value);
+        var values = XYZ.map(function (id) { return parse($(id).value); });
+        var bad = false;
+        XYZ.forEach(function (id, i) {
+            var invalid = !isFinite(values[i]);
+            $(id).setAttribute('aria-invalid', String(invalid));
+            bad = bad || invalid;
+        });
+        // A value that does not read stays as typed and marked, so it can be fixed.
+        if (bad) return;
         typed = {};
-        if (!isFinite(x) || !isFinite(y) || !isFinite(z)) { fillXyz(); return; }
-        action('glide', { x: x, y: y, z: z });
+        action('glide', { x: values[0], y: values[1], z: values[2] });
         if (document.activeElement) document.activeElement.blur();
     });
     $('remote-flip').addEventListener('click', function () {

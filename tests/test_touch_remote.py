@@ -739,16 +739,15 @@ def test_switching_detection_off_never_edits_the_config_object_the_detector_hold
 
 
 @pytest.mark.unit
-def test_took_new_hold_reports_each_new_hold_once(remote: TouchRemote) -> None:
-    assert remote.took_new_hold() is False
+def test_a_frame_says_its_marker_was_newly_taken_once(remote: TouchRemote) -> None:
     token = remote.open()
     remote.hold(token, 3)
-    assert remote.took_new_hold() is True
-    assert remote.took_new_hold() is False
+    assert [f.new for f in remote.take()] == [True]
+    assert [f.new for f in remote.take()] == [False]
     remote.hold(token, 3)
-    assert remote.took_new_hold() is False
+    assert [f.new for f in remote.take()] == [False]
     remote.hold(remote.open(), 3)
-    assert remote.took_new_hold() is True
+    assert [f.new for f in remote.take()] == [True]
 
 
 @pytest.mark.integration

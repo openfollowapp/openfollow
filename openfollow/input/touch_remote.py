@@ -60,6 +60,8 @@ class RemoteFrame:
     live: bool = True
     # The session holding the marker, so state one remote left behind never passes to the next.
     holder: str = ""
+    # Taken since the previous frame.
+    new: bool = False
 
 
 @dataclass
@@ -81,7 +83,7 @@ class TouchRemote:
         self._lock = threading.Lock()
         self._sessions: dict[str, _Session] = {}
         self._holders: dict[int, str] = {}
-        self._new_hold = False
+        self._new_holds: set[int] = set()
 
     def open(self) -> str:
         """Start a session and return its token."""
@@ -116,7 +118,7 @@ class TouchRemote:
             self._holders[marker_id] = token
             session.marker_id = marker_id
             session.lost = False
-            self._new_hold = True
+            self._new_holds.add(marker_id)
             return OK
 
     def drive(self, token: str, marker_id: int, stick: tuple[float, float], z_notches: int) -> str:
@@ -153,12 +155,6 @@ class TouchRemote:
             session.seen_at = self._clock()
             return {"held": session.marker_id, "lost": session.lost}
 
-    def took_new_hold(self) -> bool:
-        """Whether a session took a marker since the last call."""
-        with self._lock:
-            new, self._new_hold = self._new_hold, False
-            return new
-
     def held_ids(self) -> frozenset[int]:
         with self._lock:
             return frozenset(self._holders)
@@ -174,9 +170,13 @@ class TouchRemote:
                 session = self._sessions[token]
                 live = now - session.driven_at <= DRIVE_STALE_S
                 stick = session.stick if live else (0.0, 0.0)
-                frames.append(RemoteFrame(marker_id, stick, session.z_notches, tuple(session.actions), live, token))
+                new = marker_id in self._new_holds
+                frames.append(
+                    RemoteFrame(marker_id, stick, session.z_notches, tuple(session.actions), live, token, new)
+                )
                 session.z_notches = 0
                 session.actions.clear()
+            self._new_holds.clear()
         return frames
 
     def release_uncontrolled(self, controlled: Iterable[int]) -> None:

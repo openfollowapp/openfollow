@@ -132,3 +132,79 @@ def test_a_short_lived_poll_pauses_only_with_the_browser_tab(template: str, url:
     tag = text[text.rindex("<", 0, text.index(url)) :]
     trigger = re.search(r'hx-trigger="([^"]*)"', tag)
     assert trigger and trigger.group(1).endswith("[!document.hidden], poll-shown from:body")
+
+
+# -- Script polls: timers that ask the station again ----------------------------------------
+
+_STATIC_JS = _TEMPLATES.parent / "static" / "js"
+_DEFINITION = re.compile(r"function\s+(\w+)\s*\(|(?:window\.)?(\w+)\s*=\s*(?:async\s+)?function\s*\(")
+_REPEATS = re.compile(
+    r"setInterval\((?:\s*(?!function\b)(\w+))?|setTimeout\(\s*(\w+)\s*,|await new Promise\(\(\w+\) => setTimeout\("
+)
+# Each poll by its file and the function it repeats, and where its gate lives: the function and the
+# expression that keeps it from asking while nobody looks. ``None``: deliberately ungated.
+_SCRIPT_POLLS: dict[tuple[str, str], tuple[str, str] | None] = {
+    # Locked views that wait for the station, with a give-up timed from their start.
+    ("base.tpl", "openfollowAwaitRestart"): None,
+    ("general.tpl", "openfollowPollUpdate"): None,
+    ("base.tpl", "pollPushedSettings"): ("pollPushedSettings", "if (document.hidden && baseline) return;"),
+    ("base.tpl", "list"): ("list", "if (!document.hidden) {"),
+    ("base.tpl", "poll"): ("poll", "if (!document.hidden) {"),
+    ("detect-input.js", "poll"): ("poll", "if (document.hidden) {"),
+    ("video_source.tpl", "refresh"): ("refresh", "pollShown(cb)"),
+    ("zone_editor.tpl", ""): ("isZoneEditorVisible", "pollShown(section)"),
+    ("ground_grid.tpl", ""): (
+        "visible",
+        "!document.hidden && document.body.contains(canvas) && canvas.getClientRects()",
+    ),
+    ("path_editor.tpl", ""): ("onScreen", "!document.hidden && q('list').getClientRects()"),
+}
+
+
+def _bodies(text: str) -> list[tuple[str, int, int]]:
+    """Every named function as (name, start, end) of its braces."""
+    found = []
+    for m in _DEFINITION.finditer(text):
+        opening = text.index("{", m.end())
+        depth = 0
+        for index in range(opening, len(text)):
+            depth += {"{": 1, "}": -1}.get(text[index], 0)
+            if depth == 0:
+                found.append((m.group(1) or m.group(2), opening, index))
+                break
+    return found
+
+
+def _enclosing(bodies: list[tuple[str, int, int]], at: int) -> str:
+    inside = [(start, name) for name, start, end in bodies if start < at < end]
+    return max(inside)[1] if inside else ""
+
+
+def _script_polls() -> set[tuple[str, str]]:
+    """Each timer that runs a function again: a ``setInterval``, a ``setTimeout`` naming the function it
+    sits in, and a loop that sleeps on ``setTimeout``. Named by the function repeated, or the one it sits in."""
+    found = set()
+    for path in [*sorted(_TEMPLATES.rglob("*.tpl")), *sorted(_STATIC_JS.glob("*.js"))]:
+        text = path.read_text(encoding="utf-8")
+        bodies = _bodies(text)
+        for m in _REPEATS.finditer(text):
+            around = _enclosing(bodies, m.start())
+            if m.group(2) is not None and m.group(2) != around:
+                continue  # a one-off delay, not a function asking again
+            found.add((path.name, m.group(1) or m.group(2) or around))
+    return found
+
+
+def test_every_script_poll_is_known() -> None:
+    # A new timer that asks the station again needs a gate, or a reason it has none.
+    assert _script_polls() == set(_SCRIPT_POLLS)
+
+
+@pytest.mark.parametrize(("site", "gate"), [(k, v) for k, v in _SCRIPT_POLLS.items() if v is not None])
+def test_a_script_poll_asks_only_while_someone_looks(site: tuple[str, str], gate: tuple[str, str]) -> None:
+    filename, _ = site
+    path = next(p for p in [*_TEMPLATES.rglob(filename), *_STATIC_JS.glob(filename)])
+    text = path.read_text(encoding="utf-8")
+    function, expression = gate
+    body = next(text[start:end] for name, start, end in _bodies(text) if name == function)
+    assert expression in body, f"{filename}: {function} no longer gates on {expression}"

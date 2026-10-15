@@ -4198,10 +4198,13 @@
  }
  async function list() {
  let got = null;
+ // A hidden tab asks nothing; the first tick once it is shown asks again.
+ if (!document.hidden) {
  try {
  got = await _driveExportFetch('/api/diagnostics/drives');
  } catch (err) {
  got = null;
+ }
  }
  if (!open) return;
  if (got && got.res.ok) render(JSON.parse(got.text).media);
@@ -4250,10 +4253,12 @@
  }
  async function poll() {
  let got = null;
+ if (!document.hidden) {
  try {
  got = await _driveExportFetch('/api/diagnostics/export?generation=' + status.generation);
  } catch (err) {
  got = null;
+ }
  }
  if (!polling) return;
  const s = got && got.res.ok ? JSON.parse(got.text) : null;

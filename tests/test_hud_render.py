@@ -48,7 +48,8 @@ REFRESH_S = 1 / 60
 class _Clock:
     """A clock the test moves; the render thread reading it marks a finished picture."""
 
-    def __init__(self) -> None:
+    def __init__(self, refresh_s: float = REFRESH_S) -> None:
+        self.refresh_s = refresh_s
         self.now = self.refreshed_at = 100.0
         self.finished = threading.Semaphore(0)
 
@@ -342,8 +343,9 @@ def test_stopping_a_thread_never_started_is_harmless(renderer) -> None:
 
 
 @pytest.fixture
-def clock() -> _Clock:
-    return _Clock()
+def clock(request: pytest.FixtureRequest) -> _Clock:
+    """A display refreshing at 60 Hz, or at the rate the test is parametrised with."""
+    return _Clock(1 / getattr(request, "param", 60))
 
 
 @pytest.fixture
@@ -360,7 +362,7 @@ def paced(clock: _Clock) -> Iterator[tuple[HudRenderThread, _Renderer]]:
 
 def _refresh(hud: HudRenderThread, clock: _Clock) -> bool:
     """The next refresh, on the display's own schedule whatever the drawing took."""
-    clock.refreshed_at += REFRESH_S
+    clock.refreshed_at += clock.refresh_s
     clock.now = clock.refreshed_at
     return hud.tick()
 
@@ -428,15 +430,26 @@ def test_one_very_slow_picture_among_repeated_misses_does_not_set_the_interval(p
     assert [_refreshes_to_show(hud, clock) for _ in range(5)] == [2, 2, 2, 2, 2]
 
 
-def test_the_interval_shortens_one_step_at_a_time(paced, clock) -> None:
+def test_the_interval_shortens_one_step_at_a_time_each_after_the_same_refreshes(paced, clock) -> None:
+    hud, renderer = paced
+    hud.tick()
+    _refreshes_to_show(hud, clock)
+    _lengthen(hud, clock, renderer, refreshes=4)
+    renderer.draw_s = 0.1 * clock.refresh_s
+    held = [_refreshes_to_show(hud, clock) for _ in range(160)]
+    # Two seconds of quick pictures per step, however long each one is held.
+    assert held == [5] * 24 + [4] * 30 + [3] * 40 + [2] * 60 + [1] * 6
+
+
+def test_a_picture_missing_once_a_second_does_not_lengthen_the_interval(paced, clock) -> None:
     hud, renderer = paced
     hud.tick()
     _refreshes_to_show(hud, clock)
     _lengthen(hud, clock, renderer, refreshes=2)
-    renderer.draw_s = 0.1 * REFRESH_S
-    held = [_refreshes_to_show(hud, clock) for _ in range(400)]
-    twos = held[held.index(2) : held.index(1)]
-    assert twos == [2] * len(twos) and len(twos) >= 10, "two steps down on one run of quick pictures"
+    renderer.draw_s = 0.1 * clock.refresh_s
+    for _ in range(6):
+        _miss_one_refresh(hud, clock, renderer, refreshes=3)  # one quick picture, then one held four refreshes
+        assert [_refreshes_to_show(hud, clock) for _ in range(18)] == [3] * 18
 
 
 def test_slow_pictures_far_apart_never_lengthen_the_interval(paced, clock) -> None:
@@ -448,21 +461,50 @@ def test_slow_pictures_far_apart_never_lengthen_the_interval(paced, clock) -> No
         assert [_refreshes_to_show(hud, clock) for _ in range(30)] == [1] * 30
 
 
+@pytest.mark.parametrize("clock", [30, 60, 120], indirect=True, ids=["30Hz", "60Hz", "120Hz"])
 def test_pictures_well_inside_a_shorter_interval_bring_it_back_down(paced, clock) -> None:
     hud, renderer = paced
     hud.tick()
     _refreshes_to_show(hud, clock)
     _lengthen(hud, clock, renderer, refreshes=1)
-    renderer.draw_s = 0.6 * REFRESH_S
-    held = [_refreshes_to_show(hud, clock) for _ in range(200)]
-    assert held[:100] == [2] * 100, "a few seconds of quick pictures are not a steady load"
-    assert held[-10:] == [1] * 10
+    renderer.draw_s = 0.6 * clock.refresh_s
+    held = [_refreshes_to_show(hud, clock) for _ in range(80)]
+    assert held == [2] * 60 + [1] * 20, "two seconds of quick pictures are a steady load, less is not"
 
 
+@pytest.mark.parametrize("clock", [30, 60, 120], indirect=True, ids=["30Hz", "60Hz", "120Hz"])
 def test_pictures_that_need_most_of_a_shorter_interval_keep_the_longer_one(paced, clock) -> None:
     hud, renderer = paced
     hud.tick()
     _refreshes_to_show(hud, clock)
     _lengthen(hud, clock, renderer, refreshes=1)
-    renderer.draw_s = 0.75 * REFRESH_S  # fits one refresh, but with too little room for the next slow one
+    renderer.draw_s = 0.75 * clock.refresh_s  # fits one refresh, but with too little room for the next slow one
     assert [_refreshes_to_show(hud, clock) for _ in range(300)] == [2] * 300
+
+
+def test_one_slow_picture_starts_the_steady_run_again(paced, clock) -> None:
+    hud, renderer = paced
+    hud.tick()
+    _refreshes_to_show(hud, clock)
+    _lengthen(hud, clock, renderer, refreshes=1)
+    renderer.draw_s = 0.1 * clock.refresh_s
+    held = [_refreshes_to_show(hud, clock) for _ in range(59)]
+    renderer.draw_s = 0.9 * clock.refresh_s  # shown on time, with too little room for a shorter interval
+    held.append(_refreshes_to_show(hud, clock))
+    renderer.draw_s = 0.1 * clock.refresh_s
+    held += [_refreshes_to_show(hud, clock) for _ in range(70)]
+    assert held == [2] * 120 + [1] * 10
+
+
+def test_one_late_refresh_does_not_stretch_the_interval_measured(paced, clock) -> None:
+    hud, renderer = paced
+    hud.tick()
+    _refreshes_to_show(hud, clock)
+    _lengthen(hud, clock, renderer, refreshes=1)
+    renderer.draw_s = 0.75 * clock.refresh_s
+    held = [_refreshes_to_show(hud, clock) for _ in range(70)]
+    _finished(clock)
+    clock.refreshed_at += 3 * clock.refresh_s  # the display skips three refreshes
+    held.append(_count_to_show(hud, clock))
+    held += [_refreshes_to_show(hud, clock) for _ in range(60)]
+    assert held == [2] * 131

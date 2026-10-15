@@ -27,23 +27,25 @@ logger = logging.getLogger(__name__)
 # Canvas size in units and its device scale.
 _Canvas = tuple[int, int, tuple[float, float]]
 
-# Pictures in a row that must finish within this share of a shorter interval before it is taken.
-_STEADY_PICTURES = 120
+# A run of pictures spanning this many refreshes, each within this share of a shorter interval, takes that interval.
+_STEADY_REFRESHES = 120
 _STEP_DOWN_SHARE = 0.7
-# Misses among the latest pictures that lengthen the interval; fewer are shown late and change nothing.
+# Misses within this many refreshes that lengthen the interval; fewer are shown late and change nothing.
 _MISSES_TO_LENGTHEN = 3
-_MISS_WINDOW = 60
+_MISS_REFRESHES = 60
 _PERIOD_SAMPLES = 16
 
 
 class _Pacing:
     """How many refreshes every picture is held for, so each reaches the screen equally late."""
 
+    refreshes: int
+    _took: deque[float]
+    _held: deque[int]
+
     def __init__(self) -> None:
-        self.refreshes = 1
-        self._took: deque[float] = deque(maxlen=_STEADY_PICTURES)
-        self._held: deque[int] = deque(maxlen=_MISS_WINDOW)
         self._ticks: deque[float] = deque(maxlen=_PERIOD_SAMPLES + 1)
+        self._set(1)
 
     def refreshed(self, now: float) -> None:
         self._ticks.append(now)
@@ -55,15 +57,16 @@ class _Pacing:
         missed = [h for h in self._held if h > self.refreshes]
         if len(missed) >= _MISSES_TO_LENGTHEN:
             self._set(min(missed))
-        elif self.refreshes > 1 and len(self._took) == _STEADY_PICTURES:
+        elif self.refreshes > 1 and len(self._took) == self._took.maxlen:
             period = statistics.median(b - a for a, b in pairwise(self._ticks))
             if max(self._took) <= _STEP_DOWN_SHARE * (self.refreshes - 1) * period:
                 self._set(self.refreshes - 1)
 
     def _set(self, refreshes: int) -> None:
         self.refreshes = refreshes
-        self._took.clear()
-        self._held.clear()
+        # Every picture is held at least ``refreshes`` refreshes, so this many span each window.
+        self._took = deque(maxlen=math.ceil(_STEADY_REFRESHES / refreshes))
+        self._held = deque(maxlen=math.ceil(_MISS_REFRESHES / refreshes))
 
 
 class HudRenderThread:

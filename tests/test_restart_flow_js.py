@@ -20,8 +20,11 @@ pytestmark = [pytest.mark.unit, pytest.mark.skipif(shutil.which("node") is None,
 _TESTS = Path(__file__).parent
 _WEB = _TESTS.parent / "openfollow" / "web"
 _TEMPLATES = _WEB / "templates"
-_DEFAULT_NOTICE = "App is restarting… Please wait."
 _REFUSAL = {"error": "An update is running.", "action": "Restart once it has finished."}
+_RELOADS = "This page reloads when the station is back."
+_UNREACHABLE = (
+    "Not restarted. The station did not answer. Check that it is switched on and on this network, then save again."
+)
 
 
 def _onclick(partial: str) -> str:
@@ -32,21 +35,33 @@ def _onclick(partial: str) -> str:
     return calls[0]
 
 
+def _restart_script() -> str:
+    """``RESTART_WAIT_MS`` and ``openfollowRestart`` from base.tpl's page script."""
+    base = (_TEMPLATES / "base.tpl").read_text(encoding="utf-8")
+    wait = re.search(r"const RESTART_WAIT_MS = \d+;", base)
+    assert wait is not None
+    return wait.group(0) + "\nasync function openfollowRestart(opts) {" + function_body(base, "openfollowRestart") + "}"
+
+
 _KEYBOARD = _onclick("keyboard.tpl")
+_MARKUP = (
+    '<form class="section" id="sec"><div class="actions">'
+    '<button type="button" class="danger">Restart OpenFollow</button></div></form>'
+)
 
-
-def _markup(onclick: str) -> str:
-    return (
-        f'<div id="top-restart-notice" class="restart-notice">{_DEFAULT_NOTICE}</div>'
-        '<form class="section" id="sec"><div class="actions">'
-        f'<button type="button" class="danger" onclick="{onclick}">Restart OpenFollow</button>'
-        "</div></form>"
-    )
-
-
+# The modal helpers stand in for base.tpl's: they record what each dialog shows.
 _HELPERS = """
 var asked = [], answer = true, reloaded = 0, info = 'unreachable', restartAnswer = { body: { success: true } };
+var modal = null, now = 0;
+performance.now = function () { return now; };
+function escapeHTML(v) { return String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
 function modalConfirm(opts) { asked.push(opts); return Promise.resolve(answer); }
+function openModal(opts) {
+    modal = { title: opts.title, body: opts.bodyHTML, locked: opts.dismissable === false,
+              buttons: (opts.footerButtons || []).map(function (b) { return b.label; }) };
+    modal.close = (opts.footerButtons || []).map(function (b) { return b.onClick; })[0];
+}
+function closeModal() { modal = null; }
 globalThis.location = { reload: function () { reloaded++; } };
 station = function (req) {
     if (req.url === '/api/restart') return restartAnswer;
@@ -54,27 +69,43 @@ station = function (req) {
     return { status: 404 };
 };
 var button = document.querySelector('button.danger');
-var notice = document.getElementById('top-restart-notice');
-async function press() {
+// Confirm the dialog; the station's answer to the restart waits for release().
+async function confirmHeld(onclick) {
+    holdWhen = function (r) { return r.url === '/api/restart'; };
     button.click();
-    (0, eval)(button.getAttribute('onclick'));
+    (0, eval)(onclick);
     await settle();
+}
+async function press(onclick) { await confirmHeld(onclick); release(); await settle(); }
+async function tick(ms) { now += ms; tickIntervals(); await settle(); }
+function shown() {
+    return modal && { title: modal.title, body: modal.body, locked: modal.locked, buttons: modal.buttons };
 }
 function urls() { return requests.map(function (r) { return r.method + ' ' + r.url; }); }
 function errorLine() { var l = document.querySelector('.save-error'); return l ? l.textContent : null; }
 """
 
 
+def _progress(note: str = _RELOADS) -> dict[str, Any]:
+    return {
+        "title": "Restart OpenFollow",
+        "body": '<div class="modal-progress"><div class="modal-spinner"></div>'
+        '<p role="status" aria-live="polite" tabindex="-1">Restarting OpenFollow…</p></div>'
+        f"<p>{note}</p>",
+        "locked": True,
+        "buttons": [],
+    }
+
+
 def _run(steps: str, onclick: str = _KEYBOARD) -> Any:
     source = "\n".join(
         [
             (_TESTS / "_fake_dom.js").read_text(encoding="utf-8"),
-            f"parseHTML({json.dumps(_markup(onclick))}, document.body);",
+            f"parseHTML({json.dumps(_MARKUP)}, document.body);",
             (_WEB / "static" / "js" / "save-feedback.js").read_text(encoding="utf-8"),
-            "async function openfollowRestart(opts) {"
-            + function_body((_TEMPLATES / "base.tpl").read_text(encoding="utf-8"), "openfollowRestart")
-            + "}",
+            _restart_script(),
             _HELPERS,
+            f"var ONCLICK = {json.dumps(onclick)};",
             "var out = {};",
             "(async function () {",
             steps,
@@ -90,86 +121,116 @@ def _run(steps: str, onclick: str = _KEYBOARD) -> Any:
 
 
 def test_a_cancelled_restart_asks_the_station_nothing() -> None:
-    out = _run("answer = false; await press(); out.urls = urls(); out.shown = notice.style.display || '';")
-    assert out == {"urls": [], "shown": ""}
+    out = _run("answer = false; await press(ONCLICK); out.urls = urls(); out.modal = shown();")
+    assert out == {"urls": [], "modal": None}
 
 
-def test_a_restart_shows_the_notice_and_reloads_once_the_station_answers_again() -> None:
+def test_the_confirmed_dialog_shows_progress_before_the_station_answers() -> None:
+    out = _run("await confirmHeld(ONCLICK); out.urls = urls(); out.modal = shown(); out.error = errorLine();")
+    assert out == {"urls": ["POST /api/restart"], "modal": _progress(), "error": None}
+
+
+def test_the_dialog_stays_until_the_station_answers_again_then_the_page_reloads() -> None:
     out = _run(
-        "await press();"
-        "out.urls = urls(); out.shown = notice.style.display; out.text = notice.textContent;"
-        "out.disabled = button.disabled; out.error = errorLine();"
-        # Away while it restarts, then answering but not ready: polled, no reload.
-        "tickIntervals(); await settle(); out.whileAway = reloaded;"
-        "info = { status: 503 }; tickIntervals(); await settle(); out.starting = reloaded;"
-        "info = { body: {} }; tickIntervals(); await settle(); out.back = reloaded;"
+        "await press(ONCLICK); out.accepted = shown();"
+        # Away while it restarts, then answering but not ready: polled, still open, no reload.
+        "await tick(2000); out.away = [shown(), reloaded];"
+        "info = { status: 503 }; await tick(2000); out.starting = [shown(), reloaded];"
+        "info = { body: {} }; await tick(2000); out.back = reloaded;"
         # Polling stops once it reloaded.
-        "var polls = urls().length; tickIntervals(); await settle(); out.after = urls().length - polls;"
+        "var polls = urls().length; await tick(2000); out.after = urls().length - polls;"
+        "out.urls = urls().slice(0, 4); out.error = errorLine();"
     )
     assert out == {
-        "urls": ["POST /api/restart"],
-        "shown": "block",
-        "text": _DEFAULT_NOTICE,
-        "disabled": True,
-        "error": None,
-        "whileAway": 0,
-        "starting": 0,
+        "accepted": _progress(),
+        "away": [_progress(), 0],
+        "starting": [_progress(), 0],
         "back": 1,
         "after": 0,
+        "urls": ["POST /api/restart", "GET /api/info", "GET /api/info", "GET /api/info"],
+        "error": None,
     }
 
 
-def test_a_refused_restart_says_an_update_is_running() -> None:
+def test_a_refused_restart_closes_the_dialog_and_says_an_update_is_running() -> None:
     out = _run(
         f"restartAnswer = {{ status: 409, body: {json.dumps(_REFUSAL)} }};"
-        "await press(); tickIntervals(); await settle();"
-        "out.error = errorLine(); out.shown = notice.style.display || ''; out.urls = urls();"
-        "out.disabled = button.disabled;"
+        "await press(ONCLICK); await tick(2000);"
+        "out.error = errorLine(); out.modal = shown(); out.urls = urls();"
     )
     assert out == {
         "error": "Not restarted. An update is running. Restart once it has finished.",
-        "shown": "",
+        "modal": None,
         "urls": ["POST /api/restart"],
-        "disabled": False,
     }
 
 
-def test_a_restart_that_gets_no_answer_says_so() -> None:
+def test_a_restart_that_gets_no_answer_closes_the_dialog_and_says_so() -> None:
     out = _run(
-        "restartAnswer = 'unreachable'; await press(); tickIntervals(); await settle();"
-        "out.error = errorLine(); out.shown = notice.style.display || ''; out.urls = urls();"
+        "restartAnswer = 'unreachable'; await press(ONCLICK); await tick(2000);"
+        "out.error = errorLine(); out.modal = shown(); out.urls = urls();"
+    )
+    assert out == {"error": _UNREACHABLE, "modal": None, "urls": ["POST /api/restart"]}
+
+
+def test_a_station_that_does_not_come_back_is_reported_after_ninety_seconds() -> None:
+    out = _run(
+        "await press(ONCLICK);"
+        "await tick(89999); out.waiting = shown();"
+        "await tick(1); out.gone = shown();"
+        # Polling ends with the wait: a station back later reloads nothing.
+        "info = { body: {} }; var polls = urls().length; await tick(2000);"
+        "out.after = [urls().length - polls, reloaded];"
+        # Closed, it stays closed.
+        "modal.close(); await tick(2000); out.closed = shown();"
     )
     assert out == {
-        "error": "Not restarted. The station did not answer. "
-        "Check that it is switched on and on this network, then save again.",
-        "shown": "",
-        "urls": ["POST /api/restart"],
+        "waiting": _progress(),
+        "gone": {
+            "title": "Station not back",
+            "body": '<div class="notice error">The station has not answered for 90 s.<div class="notice-sub">'
+            "Check that it is switched on and on this network, then reload this page.</div></div>",
+            "locked": False,
+            "buttons": ["Close"],
+        },
+        "after": [0, 0],
+        "closed": None,
     }
+
+
+_MOVED = "The web UI may have moved: the station's Network screen lists the address that reaches it."
 
 
 @pytest.mark.parametrize(
-    ("partial", "title", "message", "notice"),
+    ("partial", "title", "message", "note"),
     [
-        ("diagnostics.tpl", "Restart application?", "Video and tracking stop until the station is back.", None),
-        ("keyboard.tpl", "Restart OpenFollow?", "Outputs pause until OpenFollow is back.", None),
+        ("diagnostics.tpl", "Restart application?", "Video and tracking stop until the station is back.", _RELOADS),
+        ("keyboard.tpl", "Restart OpenFollow?", "Outputs pause until OpenFollow is back.", _RELOADS),
         (
             "interface_assignment.tpl",
             "Restart OpenFollow?",
             "Outputs pause until OpenFollow is back. The web UI may then answer at a different address.",
-            "App is restarting… If this page does not come back, the web UI has moved"
-            " - the station's Network screen lists the address that reaches it.",
+            f"{_RELOADS} If it does not, the web UI has moved - the station's Network screen lists the address"
+            " that reaches it.",
         ),
     ],
 )
 def test_every_restart_button_runs_the_shared_flow_with_its_own_wording(
-    partial: str, title: str, message: str, notice: str | None
+    partial: str, title: str, message: str, note: str
 ) -> None:
-    out = _run("await press(); out.asked = asked; out.urls = urls(); out.text = notice.textContent;", _onclick(partial))
+    out = _run("await press(ONCLICK); out.asked = asked; out.urls = urls(); out.modal = shown();", _onclick(partial))
     assert out == {
         "asked": [{"title": title, "message": message, "confirmLabel": "Restart", "danger": True}],
         "urls": ["POST /api/restart"],
-        "text": notice or _DEFAULT_NOTICE,
+        "modal": _progress(note),
     }
+
+
+def test_the_interface_restart_names_the_network_screen_when_the_station_does_not_come_back() -> None:
+    out = _run(
+        "await press(ONCLICK); await tick(90000); out.body = shown().body;", _onclick("interface_assignment.tpl")
+    )
+    assert f'<div class="notice-sub">{_MOVED}</div>' in out["body"]
 
 
 def test_no_template_restarts_by_any_other_route() -> None:

@@ -3916,9 +3916,11 @@
  window.OpenFollow.clearBindingNotes(container, Object.keys(defaults));
  refreshFormGate(container.closest('form'));
  }
- // Every Restart button: confirm, ask the station, then show the restarting notice and
- // reload once /api/info answers again. ``opts``: title and message for the dialog, and
- // an optional notice text. The notice is null-guarded for a partial fetched on its own.
+ // Every Restart button: the confirm turns into a locked progress view that stays until
+ // /api/info answers again and the page reloads. ``opts``: title and message for the
+ // confirm, ``note`` for the progress view's second line, ``step`` for the next step when
+ // the station does not come back within RESTART_WAIT_MS.
+ const RESTART_WAIT_MS = 90000;
  async function openfollowRestart(opts) {
  const saveError = window.OpenFollow.saveError;
  const box = saveError.origin();
@@ -3929,24 +3931,43 @@
  danger: true,
  });
  if (!ok) return;
+ openModal({
+ title: 'Restart OpenFollow',
+ dismissable: false,
+ bodyHTML: '<div class="modal-progress"><div class="modal-spinner"></div>'
+ + '<p role="status" aria-live="polite" tabindex="-1">Restarting OpenFollow\u2026</p></div>'
+ + '<p>' + escapeHTML(opts.note || 'This page reloads when the station is back.') + '</p>',
+ footerButtons: [],
+ });
  let res;
  try {
  res = await fetch('/api/restart', {method: 'POST'});
  } catch (e) {
+ closeModal();
  saveError.show(box, saveError.UNREACHABLE, 'Not restarted.');
  return;
  }
  if (!res.ok) {
- saveError.show(box, await saveError.fromResponse(res), 'Not restarted.');
+ const info = await saveError.fromResponse(res);
+ closeModal();
+ saveError.show(box, info, 'Not restarted.');
  return;
  }
- document.querySelectorAll('button[onclick^="openfollowRestart"]').forEach(function(b) { b.disabled = true; });
- const n = document.getElementById('top-restart-notice');
- if (n) {
- if (opts.notice) n.textContent = opts.notice;
- n.style.display = 'block';
- }
+ // Elapsed time, not poll counts: a poll can hang on a station half way up.
+ const began = performance.now();
  const p = setInterval(function() {
+ if (performance.now() - began >= RESTART_WAIT_MS) {
+ clearInterval(p);
+ openModal({
+ title: 'Station not back',
+ bodyHTML: '<div class="notice error">The station has not answered for '
+ + Math.round(RESTART_WAIT_MS / 1000) + ' s.<div class="notice-sub">'
+ + escapeHTML(opts.step || 'Check that it is switched on and on this network, then reload this page.')
+ + '</div></div>',
+ footerButtons: [{label: 'Close', kind: 'primary', onClick: () => closeModal()}],
+ });
+ return;
+ }
  fetch('/api/info').then(function(r) {
  if (r.ok) { clearInterval(p); window.location.reload(); }
  }).catch(function() {});

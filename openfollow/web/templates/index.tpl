@@ -12,9 +12,6 @@
     </form>
 </div>
 % end
-%# Restart progress banner – global (any tab can trigger the restart
-%# from Diagnostics, so the notice has to live above the tabs).
-<div id="top-restart-notice" class="restart-notice" style="display:none;margin-bottom:1rem;">App is restarting&hellip; Please wait.</div>
 
 <div class="tab-bar">
     <button type="button" class="tab-btn" data-tab="overview">Overview</button>

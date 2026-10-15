@@ -6,7 +6,7 @@
 % # Download button is plain <a> that works without JS; output in <pre>
 % # slots survives partial degradation. Restart button is operator action
 % # (confirm dialog + reload poll) through the shared ``openfollowRestart()``
-% # in ``base.tpl``, where the ``#top-restart-notice`` banner also lives.
+% # in ``base.tpl``.
 % #
 % # Only the live cards poll/swap (see ``#diagnostics-live`` below + the
 % # ``partials/diagnostics_cards`` fragment); the section shell, fold state,

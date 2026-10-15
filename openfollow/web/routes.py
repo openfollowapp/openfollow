@@ -146,6 +146,7 @@ from openfollow.web import diagnostics, peer_auth
 from openfollow.web._md import render_help_markdown
 from openfollow.web.bindings import check_binding, osc_row_overlap, osc_trigger_overlap
 from openfollow.web.discovery import clean_peer_name
+from openfollow.web.keyboard_layout_view import build_keyboard_layout_view, station_catalog, variant_options
 from openfollow.web.labels import video_error_token
 from openfollow.web.live_alerts import statistics_alerts
 from openfollow.web.login_throttle import LoginThrottle
@@ -1013,14 +1014,11 @@ def _build_general_template_data(
     cfg: AppConfig,
     *,
     saved: bool = False,
-    restarting: bool = False,
-    update_feedback: str = "",
 ) -> dict[str, Any]:
     """Build shared template context for the General/Network section."""
     data: dict[str, Any] = {
         "config": cfg,
         "saved": saved,
-        "restarting": restarting,
         "local_ips": _get_local_ips(),
         "update_status": server.get_update_status(),
         "fqdn_problems": server.get_station_fqdn_problems(),
@@ -1028,8 +1026,6 @@ def _build_general_template_data(
         "update_supported": _deb_update_supported(),
         "startup_supported": _startup_settings_supported(),
     }
-    if update_feedback:
-        data["update_feedback"] = update_feedback
     latest = server.get_update_available()
     data["update_available"] = bool(latest)
     data["latest_version"] = latest
@@ -1098,6 +1094,8 @@ _INTERFACE_ASSIGNMENT_TARGETS: dict[str, tuple[str | None, str]] = {
 _DEST_PIN_PREFIX, _DEST_PIN_SUFFIX = plane_pin_key("\0").split("\0")
 
 
+_KEYBOARD_LAYOUT_FIELDS = frozenset({"keyboard_layout", "keyboard_variant"})
+
 _DEVICE_LOCAL_FIELDS_BY_SECTION: dict[str, frozenset[str]] = {
     "psn": frozenset({"psn_source_iface"}),
     # ``web_pin`` (login credential) and ``web_port`` (local bind) are
@@ -1125,11 +1123,12 @@ _DEVICE_LOCAL_FIELDS_BY_SECTION: dict[str, frozenset[str]] = {
     "rttrpm_output": frozenset({"source_iface"}),
     # Whether this station draws paths; toggled on its own keyboard or pad.
     "paths": frozenset({"show_paths"}),
-    # ``slot_pins`` names this station's USB sockets; a peer's would scramble its slot order.
-    "controller": frozenset({"slot_pins"}),
-    "gamepad": frozenset({"slot_pins"}),
-    "keyboard": frozenset({"slot_pins"}),
-    "mouse": frozenset({"slot_pins"}),
+    # The keyboard and the USB sockets of this station, in every section that writes the controller config.
+    **{
+        section: _KEYBOARD_LAYOUT_FIELDS | {"slot_pins"}
+        for section, attr in _SECTION_CONFIG_ATTRS.items()
+        if attr == "controller"
+    },
 }
 
 # Sections that are device-local as a whole. Every row of the Network Interface
@@ -2306,6 +2305,8 @@ _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
         "key_clear_messages": _as_str,
         "key_pathfinder": _as_str,
         "key_toggle_paths": _as_str,
+        "keyboard_layout": _as_str,
+        "keyboard_variant": _as_str,
     },
     "osc": {
         "enabled": _as_bool,
@@ -3198,6 +3199,8 @@ def _config_dict_redacted(cfg: AppConfig) -> dict[str, Any]:
     # USB sockets on this box: a peer's slots would follow sockets it does not have.
     d["controller"].pop("slot_pins", None)
     d["rttrpm_output"].pop("source_iface", None)
+    for name in _KEYBOARD_LAYOUT_FIELDS:
+        d["controller"].pop(name, None)
     for dest in d["osc_destinations"]["destinations"]:
         dest.pop("source_iface", None)
     return d
@@ -3883,6 +3886,10 @@ def _export_status(status: ExportStatus) -> dict[str, Any]:
         "headline": headline,
         "next_step": next_step,
     }
+
+
+_UPDATE_RUNNING = "An update is running."
+_RESTART_AFTER_UPDATE = "Restart once it has finished."
 
 
 def _save_failed(status: int, error: str, action: str = "") -> HTTPResponse:
@@ -5654,24 +5661,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     # -- Helpers --------------------------------------------------------------
 
-    def _render_general(
-        cfg: AppConfig,
-        *,
-        saved: bool = False,
-        restarting: bool = False,
-        update_feedback: str = "",
-    ) -> Any:
+    def _render_general(cfg: AppConfig, *, saved: bool = False) -> Any:
         """Render the General section with shared context."""
-        return template(
-            "partials/general",
-            **_build_general_template_data(
-                server,
-                cfg,
-                saved=saved,
-                restarting=restarting,
-                update_feedback=update_feedback,
-            ),
-        )
+        return template("partials/general", **_build_general_template_data(server, cfg, saved=saved))
 
     def _render_video_source(
         cfg: AppConfig,
@@ -5888,6 +5880,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # gate for the Startup box has to be supplied here too.
             startup_supported=_startup_settings_supported(),
             button_names=sorted(VALID_BUTTON_NAMES),
+            keyboard_layout=build_keyboard_layout_view(config),
             detection_missing=_get_detection_missing_deps(config),
             detection_extras_installed=extras,
             detection_install=server.get_detection_install_status(),
@@ -6734,22 +6727,14 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             ", ".join(f"{key} ({iface})" for key, iface in cleared) or "none",
             ", ".join(removed) or "none",
         )
-        restarting = restart and server.request_restart_unless_updating()
-        if not restarting:
-            # The mode decides which sections the page shows. A refused restart is
-            # named on the reloaded card, which offers it again.
-            response.set_header("HX-Refresh", "true")
-        net = _build_network_form_context()
-        net.update(restarting=restarting)
-        return template("partials/network", net=net)
-
-    @app.post("/section/network/restart")
-    def network_restart() -> Any:
-        """Restart for a web UI pin Simple cleared; refused while an update runs."""
-        restarting = server.request_restart_unless_updating()
-        net = _build_network_form_context()
-        net.update(restarting=restarting, restart_refused=not restarting)
-        return template("partials/network", net=net)
+        if restart:
+            if server.request_restart_unless_updating():
+                # The process being restarted, so the browser waits for a new one.
+                response.set_header("X-OpenFollow-Restarting", server.instance_id)
+            else:
+                response.set_header("X-OpenFollow-Restart-Refused", f"{_UPDATE_RUNNING} {_RESTART_AFTER_UPDATE}")
+        # Without a restart the browser reloads: the mode decides which sections the page shows.
+        return ""
 
     @app.post("/section/network/station")
     def network_station_iface() -> Any:
@@ -6940,6 +6925,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         elif name in ("controller", "gamepad"):
             extra["button_names"] = sorted(VALID_BUTTON_NAMES)
             extra["detection_started"] = server.is_button_detection_active()
+        elif name == "keyboard":
+            extra["keyboard_layout"] = build_keyboard_layout_view(config)
         # ``detection`` is intentionally NOT handled here – it has a
         # dedicated ``@app.get("/section/detection")`` route that
         # builds the extras-status / install-job state needed by the
@@ -6969,16 +6956,12 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # comparing where it would bind against where it did.
         return resolved[0] != server.bind_host
 
-    def _render_interface_assignment(
-        cfg: AppConfig, *, saved: bool = False, restarting: bool = False, restart_refused: bool = False
-    ) -> Any:
+    def _render_interface_assignment(cfg: AppConfig, *, saved: bool = False) -> Any:
         resolved = resolve_web_bind_for(cfg)
         return template(
             "partials/interface_assignment",
             config=cfg,
             saved=saved,
-            restarting=restarting,
-            restart_refused=restart_refused,
             assignment_rows=build_interface_assignment_rows(cfg, resolved),
             options_fingerprint=_iface_options_fingerprint(cfg.interface_labels),
             web_bind_notice=build_web_bind_notice(cfg, resolved, server.display_port),
@@ -7025,14 +7008,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         cfg = _save_section_from_form("interface_assignment")
         return _render_interface_assignment(cfg, saved=True)
 
-    @app.post("/section/interface_assignment/restart")
-    def restart_for_interface_assignment() -> Any:
-        """Restart only; saving is the panel's Save. Refused while an update runs."""
-        cfg = _request_scoped_config()
-        if not server.request_restart_unless_updating():
-            return _render_interface_assignment(cfg, restart_refused=True)
-        return _render_interface_assignment(cfg, restarting=True)
-
     @app.post("/section/video_source")
     def update_video_source() -> Any:
         """Update video source settings."""
@@ -7041,14 +7016,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             cfg = _load_config_for_edit()
             apply_section_data(cfg, "video_source", form_data)
             save_config(cfg, server.config_path)
-
-        if request.query.get("restart") == "1":
-            server.request_restart()
-            return _render_general(
-                cfg,
-                saved=True,
-                restarting=True,
-            )
 
         return _render_video_source(cfg, saved=True)
 
@@ -7065,15 +7032,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             cfg = _load_config_for_edit()
             apply_section_data(cfg, "general", form_data)
             save_config(cfg, server.config_path)
-
-        if request.query.get("restart") == "1":
-            if not server.request_restart_unless_updating():
-                return _render_general(
-                    cfg,
-                    saved=True,
-                    update_feedback="Update is currently running. Restart is blocked until it finishes.",
-                )
-            return _render_general(cfg, saved=True, restarting=True)
 
         return _render_general(cfg, saved=True)
 
@@ -7298,9 +7256,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             apply_section_data(cfg, "psn", form_data)
             save_config(cfg, server.config_path)
 
-        if request.query.get("restart") == "1":
-            server.request_restart()
-
         return template(
             "partials/psn",
             config=cfg,
@@ -7373,7 +7328,16 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             bool_fields=("keyboard_enabled",),
         )
         response.set_header("HX-Trigger", "controllerBindingsSaved")
-        return template("partials/keyboard", config=cfg, saved=True)
+        return template("partials/keyboard", config=cfg, saved=True, keyboard_layout=build_keyboard_layout_view(cfg))
+
+    @app.get("/section/keyboard/variants")
+    def keyboard_variants() -> Any:
+        """The Variant picker's options for the layout just picked; only Standard for System."""
+        return template(
+            "partials/keyboard_variant_options",
+            variants=variant_options(station_catalog(), request.query.get("keyboard_layout", "")),
+            selected="",
+        )
 
     @app.post("/section/mouse")
     def update_mouse() -> Any:
@@ -9618,6 +9582,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 "ip": server.local_ip,
                 "port": server.port,
                 "version": openfollow.__version__,
+                "instance": server.instance_id,
             }
         )
 
@@ -9726,10 +9691,11 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     @app.post("/api/restart")
     def api_restart() -> Any:
-        """Trigger an application restart."""
+        """Restart the application, unless an update is queued or running."""
+        if not server.request_restart_unless_updating():
+            return _save_failed(409, _UPDATE_RUNNING, _RESTART_AFTER_UPDATE)
         response.content_type = "application/json"
-        server.request_restart()
-        return json.dumps({"success": True})
+        return json.dumps({"success": True, "instance": server.instance_id})
 
     @app.get("/api/peers")
     def api_peers() -> Any:
@@ -9889,13 +9855,23 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         pre-reset values, and the next move-speed change writes every old speed
         back over the reset. So the reset would silently, partially undo itself.
         """
-        response.content_type = "application/json"
+        after_update = "Restore defaults once it has finished."
+        if server.is_update_busy():
+            return _save_failed(409, _UPDATE_RUNNING, after_update)
         backup = _backup_before(server.config_path, "defaults")
-        with _config_write_lock:
-            current = load_config(server.config_path)
-            save_config(reset_config_to_defaults(current), server.config_path)
-        server.request_restart()
-        return json.dumps({"success": True, "needs_restart": True, "restarting": True, **backup})
+
+        def write_defaults() -> None:
+            with _config_write_lock:
+                current = load_config(server.config_path)
+                save_config(reset_config_to_defaults(current), server.config_path)
+
+        # Checked again with the write: an update queued during the backup leaves the settings as they are.
+        if not server.restart_after(write_defaults):
+            return _save_failed(409, _UPDATE_RUNNING, after_update)
+        response.content_type = "application/json"
+        return json.dumps(
+            {"success": True, "needs_restart": True, "restarting": True, "instance": server.instance_id, **backup}
+        )
 
     @app.post("/api/config/broadcast-all")
     def api_broadcast_all() -> Any:

@@ -121,6 +121,20 @@ def _no_host_adapters(tmp_path: Path) -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _no_host_keyboard(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory) -> None:
+    """No test may read the host's xkb data, keyboard file or kiosk session; one that cares installs its own."""
+    from openfollow import keyboard_layout
+    from tests._xkb import SESSION_ENV
+
+    for name in SESSION_ENV:
+        monkeypatch.delenv(name, raising=False)
+    absent = tmp_path_factory.getbasetemp() / "no-xkb"
+    monkeypatch.setattr(keyboard_layout, "XKB_ROOT", absent)
+    monkeypatch.setattr(keyboard_layout, "EVDEV_LST", absent / "rules" / "evdev.lst")
+    monkeypatch.setattr(keyboard_layout, "SYSTEM_KEYBOARD", absent / "keyboard")
+
+
+@pytest.fixture(autouse=True)
 def _no_host_cgroup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """No test may resolve the unit the test process itself runs under.
 

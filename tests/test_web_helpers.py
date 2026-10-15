@@ -3734,6 +3734,53 @@ def test_restoring_defaults_clears_the_interface_labels() -> None:
 
 
 # ---------------------------------------------------------------------------
+# The keyboard layout names the keyboard plugged into this box: it never travels, and a reset clears it.
+# ---------------------------------------------------------------------------
+
+
+def _with_keyboard_layout(layout: str = "de", variant: str = "nodeadkeys") -> AppConfig:
+    cfg = AppConfig()
+    cfg.controller.keyboard_layout = layout
+    cfg.controller.keyboard_variant = variant
+    return cfg
+
+
+def test_the_keyboard_layout_is_not_exported() -> None:
+    controller = _config_dict_redacted(_with_keyboard_layout())["controller"]
+    assert "keyboard_layout" not in controller
+    assert "keyboard_variant" not in controller
+    # The rest of the section still travels.
+    assert controller["key_reset"] == "x"
+
+
+@pytest.mark.parametrize("section", ["controller", "gamepad", "keyboard", "mouse"])
+def test_the_keyboard_layout_is_never_pushed_to_a_peer(section: str) -> None:
+    """Every section that writes the controller config takes the two fields, so each one strips them."""
+    pushed = strip_device_local_fields(
+        section, {"keyboard_layout": "de", "keyboard_variant": "nodeadkeys", "key_reset": "c"}
+    )
+    assert pushed == {"key_reset": "c"}
+
+
+def test_an_import_keeps_this_stations_keyboard_layout() -> None:
+    from openfollow.web.routes import _apply_import_data
+
+    current = _with_keyboard_layout("de", "nodeadkeys")
+    new = _apply_import_data(
+        current, {"controller": {"keyboard_layout": "jp", "keyboard_variant": "OADG109A", "key_reset": "c"}}
+    )
+    assert (new.controller.keyboard_layout, new.controller.keyboard_variant) == ("de", "nodeadkeys")
+    assert new.controller.key_reset == "c"
+
+
+def test_restoring_defaults_returns_the_keyboard_layout_to_system() -> None:
+    from openfollow.web.routes import reset_config_to_defaults
+
+    reset = reset_config_to_defaults(_with_keyboard_layout())
+    assert (reset.controller.keyboard_layout, reset.controller.keyboard_variant) == ("", "")
+
+
+# ---------------------------------------------------------------------------
 # Station FQDN: saved from the General form, accepted as a host, never carried off the box.
 # ---------------------------------------------------------------------------
 

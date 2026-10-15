@@ -28,6 +28,8 @@ except ImportError:
 import tomli_w
 
 from openfollow.binding_conflicts import BindingMove, settle_duplicates
+from openfollow.keyboard_layout import LAYOUT_RE as XKB_LAYOUT_RE
+from openfollow.keyboard_layout import VARIANT_RE as XKB_VARIANT_RE
 from openfollow.lens_model import pull_back_to_fold
 from openfollow.net_adapters import normalize_labels
 from openfollow.station_fqdn import normalize_fqdn
@@ -391,6 +393,14 @@ def _coerce_str(value: Any, default: str) -> str:
 
 _TRUTHY_STRINGS = frozenset({"1", "true", "yes", "on"})
 _FALSY_STRINGS = frozenset({"0", "false", "no", "off"})
+
+
+def _coerce_name(value: Any, pattern: re.Pattern[str]) -> str:
+    """The stripped string when it is blank or matches ``pattern`` in full, else blank."""
+    if not isinstance(value, str):
+        return ""
+    value = value.strip()
+    return value if not value or pattern.fullmatch(value) else ""
 
 
 def _coerce_bool(value: Any, default: bool) -> bool:
@@ -2308,10 +2318,15 @@ class ControllerConfig:
     key_toggle_paths: str = ""
     # USB sockets pinned to slots. Device-local: they name this station's sockets.
     slot_pins: list[SlotPinConfig] = field(default_factory=list)
+    # xkb layout / variant the kiosk session starts with; blank = the system's.
+    keyboard_layout: str = ""
+    keyboard_variant: str = ""
 
     def __post_init__(self) -> None:
         """Validate configuration values."""
         self.slot_pins = _normalize_slot_pins(self.slot_pins)
+        self.keyboard_layout = _coerce_name(self.keyboard_layout, XKB_LAYOUT_RE)
+        self.keyboard_variant = _coerce_name(self.keyboard_variant, XKB_VARIANT_RE) if self.keyboard_layout else ""
         # Mouse steering refinements – coerce so a hand-edited / imported TOML
         # can't feed a string or out-of-range value into the input loop.
         self.mouse_hysteresis_px = _coerce_int(self.mouse_hysteresis_px, 0, lo=0, hi=200)

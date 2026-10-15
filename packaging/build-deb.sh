@@ -252,6 +252,8 @@ install -m 0755 "$DEBIAN_DIR/apply-update.sh"                     "$SHARE/apply-
 install -m 0755 "$REPO_ROOT/openfollow/privilege/camera_config.py"   "$SHARE/camera-setup"
 # Root runs this stdlib-only copy with python3 -I, never the venv's.
 install -m 0755 "$REPO_ROOT/openfollow/privilege/media_writer.py" "$SHARE/write-to-media"
+# The session launcher resolves the keyboard layout with this stdlib-only copy.
+install -m 0755 "$REPO_ROOT/openfollow/keyboard_layout.py"          "$SHARE/keyboard-layout"
 # NDI is not bundled (closed-source SDK); this helper builds + installs it
 # post-install. See https://openfollow.app/docs/ndi-install.html.
 install -m 0755 "$REPO_ROOT/scripts/install-ndi.sh"               "$SHARE/install-ndi.sh"

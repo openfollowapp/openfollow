@@ -58,6 +58,7 @@ is Pi-only).
 /usr/share/openfollow/scripts/export_onnx.py   model-export script (Download Model action shells out to it)
 /usr/share/openfollow/models/{yolo26n,yolo26s,yolo26m}.onnx   pre-shipped quality tiers (Fastest/Fast/Balanced)
 /usr/share/openfollow/write-to-media         root helper: saves one file to an unmounted USB drive (media.write)
+/usr/share/openfollow/keyboard-layout        stdlib-only resolver the session runs for Cage's keyboard layout
 /var/lib/openfollow/                       service user home + WorkingDirectory (config.toml)
 /var/lib/openfollow/config.example.toml    first-boot seed; bootstrap copies it to config.toml
 /var/lib/openfollow/backups/               pre-update settings archives (*.ofbackup) + last-backup.json

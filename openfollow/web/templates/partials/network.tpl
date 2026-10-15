@@ -61,19 +61,6 @@
         <span class="modal-spinner" aria-hidden="true"></span><span class="net-busy-text"></span>
     </div>
 
-    % if _net.get("restarting"):
-    <div class="restart-notice"
-         hx-get="/api/info"
-         hx-trigger="every 2s"
-         hx-swap="none"
-         hx-on::after-request="if(event.detail.successful) window.location.reload()">App is restarting&hellip;
-        If this page does not come back, the web UI has moved - the station's
-        Network screen lists the address that reaches it.</div>
-    % elif _net.get("restart_refused"):
-    <div class="notice error" role="alert">An update is running, so OpenFollow was not restarted.
-        <div class="notice-sub">Restart it once the update has finished.</div></div>
-    % end
-
     %# The mode decides what the rest of the page shows, so switching reloads it.
     %# Switching to Simple is confirmed when it clears a pin or removes a VLAN.
     <div class="group">
@@ -115,13 +102,11 @@
             </form>
             % end
         </div>
-        % if _simple and _net.get("web_restart_pending") and not _net.get("restarting"):
+        % if _simple and _net.get("web_restart_pending"):
         <div class="notice warning" role="status">The web UI answers on one interface until OpenFollow restarts.
             <div class="actions">
                 <button type="button" class="danger"
-                        hx-post="/section/network/restart" hx-target="#network-interface" hx-swap="innerHTML"
-                        hx-confirm="Outputs pause until OpenFollow is back."
-                        data-confirm-title="Restart OpenFollow?" data-confirm-label="Restart" data-confirm-danger>Restart OpenFollow</button>
+                        onclick="openfollowRestart({title: 'Restart OpenFollow?', message: 'Outputs pause until OpenFollow is back.', note: NET_MOVED_NOTE, step: NET_MOVED_STEP})">Restart OpenFollow</button>
             </div>
         </div>
         % end

@@ -7,9 +7,10 @@ from __future__ import annotations
 import logging
 import math
 import time
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
-from openfollow.configuration import _apply_with_fallback, save_config_change
+from openfollow.configuration import _apply_with_fallback, save_config_fields
 from openfollow.input.controller_identity import port_label, usb_host_paths
 from openfollow.input.controller_slots import (
     CONNECTED,
@@ -562,8 +563,9 @@ class InputManager:
         holders = {frame.marker_id: frame.holder for frame in frames}
         for marker_id in [m for m, (who, _t) in self._remote_glides.items() if holders.get(m) != who]:
             del self._remote_glides[marker_id]
-        # Before the presses, so they move the marker itself and not an assist anchor. Never raises.
-        if frames and cfg.detection.enabled:
+        # Once per new hold, before its presses, so they move the marker and not an assist anchor;
+        # detection switched back on later while held stays on.
+        if remote.took_new_hold() and cfg.detection.enabled:
             self._switch_detection_off()
         for frame in frames:
             # One marker's failure never costs another marker its presses.
@@ -618,23 +620,26 @@ class InputManager:
         marker.set_pos(x + (tx - x) * k, y + (ty - y) * k, z + (tz - z) * k)
 
     def _switch_detection_off(self) -> None:
-        """Turn person detection off, in the running config and the file: the remote now has the marker."""
+        """Turn person detection off, live and in the file, as a hot reload would: a remote took a marker.
+
+        A new config object, never an edit of the one the detector worker holds; reverted if it fails.
+        """
         app = self.app
-
-        def off(cfg: Any) -> None:
-            cfg.detection.enabled = False
-
-        try:
-            save_config_change(app._config_path, app._config, off)
-        except Exception:
-            # The running config is already off, so this happens once, not every frame.
-            logger.exception("Failed to save person detection switched off.")
         services = app._runtime_services
-        _apply_with_fallback(
+        before = app._config.detection
+        app._config.detection = replace(before, enabled=False)
+        applied = _apply_with_fallback(
             "detection",
             lambda: services.apply_detection_change(app._config.detection),
             on_failure=lambda: setattr(services, "_person_detector", None),
         )
+        if not applied:
+            app._config.detection = before
+            return
+        try:
+            save_config_fields(app._config, app._config_path, ("detection.enabled",))
+        except Exception:
+            logger.exception("Failed to save person detection switched off.")
         logger.warning("The touch remote took a marker: person detection is switched off.")
 
     def _apply_mouse3d(

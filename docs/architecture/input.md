@@ -178,7 +178,7 @@ A setup tool in the web UI: a browser session holds one controlled marker and dr
 - **Newest wins.** A second session's `hold` takes the marker; the first learns it from `status` / a 409 and sends nothing more.
 - **Dead-man.** A stick older than `DRIVE_STALE_S` (0.25 s) reads as centred; a session quiet for `HOLD_STALE_S` (10 s) is forgotten and lets go. Closing the card lets go at once.
 - **Relative input.** `stick_velocity` shapes the deflection by `[touch_remote] stick_curve` / `stick_dead_zone` up to the station's `marker.max_speed` (never a marker's own speed), then `_oriented` applies `invert_control_direction`; the move goes through `_move`, so a locked marker walks its path. Z notches move line by line along the `z_step_m` grid (`snap_z`), within `MAX_REACH_M` of the origin, and are ignored on a path. A glide releases the path, then steps toward its target at `marker.max_speed` until it lands or the remote steers; the dead-man holds it where it is until drive messages arrive again.
-- **Detection.** A hold while `detection.enabled` saves detection off (`save_config_change`) and stops the detector live; nothing turns it back on.
+- **Detection.** A new hold (`took_new_hold`) while `detection.enabled` switches detection off as a hot reload would: a new `DetectionConfig` with `enabled=False`, `apply_detection_change` through `_apply_with_fallback` (reverted on failure), then `save_config_fields(..., ("detection.enabled",))`. Once per hold, so detection switched back on during a hold stays on.
 - `touch_remote.enabled` off, or a marker leaving `controlled_marker_ids`, lets go. The Operator Screen shows the caution row `touch_remote` while anything is held.
 
 ## macOS vs Pi differences

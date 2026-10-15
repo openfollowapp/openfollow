@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -668,21 +669,20 @@ def test_z_stays_within_reach(app: _App) -> None:
 
 
 @pytest.mark.integration
-def test_a_failing_detector_stop_keeps_the_frame_s_presses_and_drops_the_detector(app: _App) -> None:
+def test_a_failing_detector_stop_is_reverted_like_a_hot_reload(app: _App) -> None:
     app._config.detection.enabled = True
-    app._config.detection.pin_mode = "assist"
+    save_config(app._config, app._config_path)
     app._runtime_services._person_detector = object()
 
     def fail(_cfg) -> None:  # noqa: ANN001
         raise RuntimeError("stuck detector")
 
     app._runtime_services.apply_detection_change = fail
-    token = _held(app)
-    app._touch_remote.act(token, 10, RemoteAction(RESET))
+    _held(app)
     InputManager(app).update_touch_remote(0.02)
-    assert _pos(app) == pytest.approx((5.0, 6.0, 7.0))
     assert app._runtime_services._person_detector is None
-    assert app._config.detection.enabled is False
+    assert app._config.detection.enabled is True
+    assert load_config(app._config_path).detection.enabled is True
 
 
 @pytest.mark.integration
@@ -712,3 +712,39 @@ def test_one_marker_failing_never_costs_another_its_presses(app: _App, caplog) -
     manager.update_touch_remote(0.02)
     assert _pos(app, 11) == pytest.approx((5.0, 6.0, 7.0))
     assert "Touch remote update failed this tick." in caplog.text
+
+
+@pytest.mark.integration
+def test_detection_switched_back_on_during_a_hold_stays_on(app: _App) -> None:
+    app._config.detection.enabled = True
+    _held(app)
+    manager = InputManager(app)
+    manager.update_touch_remote(0.02)
+    assert app._config.detection.enabled is False
+    app._config.detection = replace(app._config.detection, enabled=True)
+    manager.update_touch_remote(0.02)
+    assert app._config.detection.enabled is True
+    assert app.detection_applied == [False]
+
+
+@pytest.mark.integration
+def test_switching_detection_off_never_edits_the_config_object_the_detector_holds(app: _App) -> None:
+    app._config.detection.enabled = True
+    held_by_detector = app._config.detection
+    _held(app)
+    InputManager(app).update_touch_remote(0.02)
+    assert held_by_detector.enabled is True
+    assert app._config.detection is not held_by_detector
+
+
+@pytest.mark.unit
+def test_took_new_hold_reports_each_new_hold_once(remote: TouchRemote) -> None:
+    assert remote.took_new_hold() is False
+    token = remote.open()
+    remote.hold(token, 3)
+    assert remote.took_new_hold() is True
+    assert remote.took_new_hold() is False
+    remote.hold(token, 3)
+    assert remote.took_new_hold() is False
+    remote.hold(remote.open(), 3)
+    assert remote.took_new_hold() is True

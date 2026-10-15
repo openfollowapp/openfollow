@@ -832,13 +832,9 @@ def handle_key_press(app: OpenFollowApp, key: str) -> None:
         cycle_marker(app, +1)
     elif cc.key_prev_marker and key == cc.key_prev_marker:
         cycle_marker(app, -1)
-    elif (
-        cc.key_reset
-        and key == cc.key_reset
-        and app._selected_id is not None
-        and app._server is not None
-        and not holds(app, app._selected_id)
-    ):
+    elif cc.key_reset and key == cc.key_reset and app._selected_id is not None and app._server is not None:
+        if holds(app, app._selected_id):
+            return
         marker = app._server.get_marker(app._selected_id)
         # pragma: no branch – _selected_id is set only when its marker
         # is registered with the server, so get_marker(_selected_id)

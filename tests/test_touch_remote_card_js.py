@@ -70,6 +70,8 @@ var window = {
 };
 var aborts = [];
 var navigator = {};
+var reloads = 0;
+window.location = { reload: function () { reloads += 1; } };
 var requests = [];
 function fetch(url, opts) {
     return new Promise(function (resolve, reject) {
@@ -451,3 +453,18 @@ out.after = paths().slice(before);
 """
     )
     assert out["after"] == ["/api/remote/state"]
+
+
+def test_signed_out_reloads_to_the_login_page_and_other_failures_show() -> None:
+    out = _run(
+        _HOLDING
+        + """
+tick(); await settle();
+answer(paths().lastIndexOf('/api/remote/drive'), 500, {}); await settle();
+out.offline = !els['remote-offline'].hidden;
+tick(); await settle();
+answer(paths().lastIndexOf('/api/remote/state'), 401, {}); await settle();
+out.reloads = reloads;
+"""
+    )
+    assert out == {"offline": True, "reloads": 1}

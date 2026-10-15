@@ -66,12 +66,16 @@
     // A status the station answered with: 403 switched off, 404 session ended, 409 marker gone
     // (the state says whether another remote took it or the station let go).
     function handleStatus(res) {
+        // Signed out (PIN cookie gone): reloading lands on the login page.
+        if (res.status === 401) { window.location.reload(); return false; }
         if (res.status === 403) { shutDown(); return false; }
         if (res.status === 404) { reopen(); return false; }
         if (res.status === 409) {
             if (!st.checking) { st.checking = true; stateTick(); }
             return false;
         }
+        // Any other failure is never silent.
+        if (!res.ok) setOffline(true);
         return res.ok;
     }
 

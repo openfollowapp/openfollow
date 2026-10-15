@@ -53,9 +53,11 @@ class _Clock:
         self.finished = threading.Semaphore(0)
 
     def __call__(self) -> float:
+        # Read before releasing: the test moves the clock to the next refresh as soon as it is released.
+        now = self.now
         if threading.current_thread().name == "HudRender":
             self.finished.release()
-        return self.now
+        return now
 
 
 class _Renderer:

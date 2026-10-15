@@ -122,7 +122,7 @@ class TestDrawDispatch:
     def test_button_detection_wizard_shortcircuits_other_passes(self, patched_passes) -> None:
         renderer = CairoOverlayRenderer()
         renderer.state.button_detection = ButtonDetectionState(active=True)
-        renderer.draw(FakeCairo(), 1280, 720)
+        renderer.draw(FakeCairo(), 1280, 720, renderer.state)
         assert patched_passes == ["draw_button_detection_overlay_pass"]
 
     def test_a_state_handed_to_draw_is_drawn_rather_than_the_latest(self, patched_passes) -> None:
@@ -136,14 +136,14 @@ class TestDrawDispatch:
     def test_settings_menu_active_dispatches_settings_overlay(self, patched_passes) -> None:
         renderer = CairoOverlayRenderer()
         renderer.state.settings_menu_active = True
-        renderer.draw(FakeCairo(), 1280, 720)
+        renderer.draw(FakeCairo(), 1280, 720, renderer.state)
         assert patched_passes == ["draw_settings_overlay_pass", "draw_menu_help_pass"]
 
     def test_about_active_dispatches_about_overlay(self, patched_passes) -> None:
         """About screen renders via its own pass in the modal-priority slot."""
         renderer = CairoOverlayRenderer()
         renderer.state.about_active = True
-        renderer.draw(FakeCairo(), 1280, 720)
+        renderer.draw(FakeCairo(), 1280, 720, renderer.state)
         assert patched_passes == ["draw_about_overlay_pass", "draw_menu_help_pass"]
 
     @pytest.mark.parametrize(
@@ -156,7 +156,7 @@ class TestDrawDispatch:
     def test_the_drive_picker_and_export_screen_take_the_modal_slot(self, patched_passes, flag, draw_pass) -> None:  # noqa: ANN001
         renderer = CairoOverlayRenderer()
         setattr(renderer.state, flag, True)
-        renderer.draw(FakeCairo(), 1280, 720)
+        renderer.draw(FakeCairo(), 1280, 720, renderer.state)
         assert patched_passes == [draw_pass, "draw_menu_help_pass"]
 
     def test_source_type_selection_dispatches_source_type_overlay(self, patched_passes) -> None:
@@ -164,7 +164,7 @@ class TestDrawDispatch:
         renderer = CairoOverlayRenderer()
         renderer.state.source_type_selection_active = True
         renderer.state.video_connected = False  # simulate prior plugin death
-        renderer.draw(FakeCairo(), 1280, 720)
+        renderer.draw(FakeCairo(), 1280, 720, renderer.state)
         assert patched_passes == ["draw_source_type_selection_overlay_pass", "draw_menu_help_pass"]
 
     def test_url_editor_dispatches_url_editor_overlay(self, patched_passes) -> None:
@@ -172,7 +172,7 @@ class TestDrawDispatch:
         renderer = CairoOverlayRenderer()
         renderer.state.url_editor_active = True
         renderer.state.video_connected = False
-        renderer.draw(FakeCairo(), 1280, 720)
+        renderer.draw(FakeCairo(), 1280, 720, renderer.state)
         assert patched_passes == ["draw_url_editor_overlay_pass", "draw_menu_help_pass"]
 
     def test_field_choice_picker_dispatches_field_choice_overlay(self, patched_passes) -> None:
@@ -183,20 +183,20 @@ class TestDrawDispatch:
         renderer = CairoOverlayRenderer()
         renderer.state.field_choice_active = True
         renderer.state.video_connected = False
-        renderer.draw(FakeCairo(), 1280, 720)
+        renderer.draw(FakeCairo(), 1280, 720, renderer.state)
         assert patched_passes == ["draw_field_choice_picker_overlay_pass", "draw_menu_help_pass"]
 
     def test_pi_network_field_edit_dispatches_field_edit_overlay(self, patched_passes) -> None:
         """Field editor takes deepest priority in Network sub-states."""
         renderer = CairoOverlayRenderer()
         renderer.state.pi_network.field_edit_active = True
-        renderer.draw(FakeCairo(), 1280, 720)
+        renderer.draw(FakeCairo(), 1280, 720, renderer.state)
         assert patched_passes == ["draw_pi_network_field_edit_overlay_pass", "draw_menu_help_pass"]
 
     def test_pi_network_screen_dispatches_screen_overlay(self, patched_passes) -> None:
         renderer = CairoOverlayRenderer()
         renderer.state.pi_network.screen_active = True
-        renderer.draw(FakeCairo(), 1280, 720)
+        renderer.draw(FakeCairo(), 1280, 720, renderer.state)
         assert patched_passes == ["draw_pi_network_screen_overlay_pass", "draw_menu_help_pass"]
 
     def test_disconnected_video_does_not_draw_no_signal_overlay(
@@ -206,20 +206,20 @@ class TestDrawDispatch:
         renderer = CairoOverlayRenderer()
         renderer.state.video_connected = False
         # No camera params → ``draw`` falls through to the bare HUD pass.
-        renderer.draw(FakeCairo(), 1280, 720)
+        renderer.draw(FakeCairo(), 1280, 720, renderer.state)
         assert "draw_no_signal_pass" not in patched_passes
         assert "draw_hud_pass" in patched_passes
 
     def test_source_selection_path_dispatches_source_overlay(self, patched_passes) -> None:
         renderer = CairoOverlayRenderer()
         renderer.state.source_selection_active = True
-        renderer.draw(FakeCairo(), 1280, 720)
+        renderer.draw(FakeCairo(), 1280, 720, renderer.state)
         assert patched_passes == ["draw_source_selection_overlay_pass", "draw_menu_help_pass"]
 
     def test_no_camera_params_draws_hud_only(self, patched_passes) -> None:
         renderer = CairoOverlayRenderer()
         renderer.state.camera_params = None
-        renderer.draw(FakeCairo(), 1280, 720)
+        renderer.draw(FakeCairo(), 1280, 720, renderer.state)
         # With no camera, HUD is drawn but scene passes are skipped
         assert patched_passes == ["draw_hud_pass"]
 
@@ -229,7 +229,7 @@ class TestDrawDispatch:
         renderer.state.markers = [
             MarkerOverlayData(marker_id=0, x=0, y=0, z=0, color="#fff"),
         ]
-        renderer.draw(FakeCairo(), 1280, 720)
+        renderer.draw(FakeCairo(), 1280, 720, renderer.state)
         # Grid, origin, zones, marker, HUD – no detections (empty).
         assert "grid_cache" in patched_passes
         assert "draw_origin_pass" in patched_passes
@@ -245,7 +245,7 @@ class TestDrawDispatch:
         renderer.state.camera_params = np.zeros(7, dtype=np.float64)
         renderer.state.detections = [object()]  # truthy triggers draw
         renderer.state.detection_show_boxes = True
-        renderer.draw(FakeCairo(), 1280, 720)
+        renderer.draw(FakeCairo(), 1280, 720, renderer.state)
         assert "draw_detections_pass" in patched_passes
 
     def test_draw_error_falls_back_to_error_text(self, monkeypatch) -> None:
@@ -257,7 +257,7 @@ class TestDrawDispatch:
         monkeypatch.setattr(overlay_module, "draw_hud_pass", _boom)
         fake = FakeCairo()
         renderer.state.camera_params = None
-        renderer.draw(fake, 1280, 720)
+        renderer.draw(fake, 1280, 720, renderer.state)
         assert any("Overlay Error" in t for t in fake.text_calls)
 
     def test_draw_error_and_fallback_error_both_fail_silently(self, monkeypatch) -> None:
@@ -296,7 +296,7 @@ class TestDrawDispatch:
 
         renderer.state.camera_params = None
         # Must not raise
-        renderer.draw(AlwaysFailingCairo(), 1280, 720)
+        renderer.draw(AlwaysFailingCairo(), 1280, 720, renderer.state)
 
 
 # --------------------------------------------------------------------------- #
@@ -357,7 +357,7 @@ class TestMenuScreensNameNoKeys:
             state.pi_network.field_label = "IP Address"
             state.pi_network.active_iface = "eth0"
         cr = RecordingCairo()
-        renderer.draw(cr, 1920, 1080)
+        renderer.draw(cr, 1920, 1080, renderer.state)
         texts = cr.show_text_strings()
         assert title in texts
         assert [t for t in texts if _KEY_HELP.search(t)] == []
@@ -740,7 +740,7 @@ def test_the_screen_reuses_a_still_cone_and_forgets_a_removed_one(monkeypatch) -
 
     def frame(*markers: MarkerOverlayData) -> None:
         state.markers = list(markers)
-        renderer.draw(cairo.Context(surface), 1280, 720)
+        renderer.draw(cairo.Context(surface), 1280, 720, renderer.state)
 
     frame(a, b)
     frame(a, b)
@@ -767,7 +767,7 @@ def test_the_renderer_keeps_its_paths_as_one_picture_between_frames(monkeypatch)
     renderer.state.path_lines = [([(-1.0, 2.0, 0.0), (1.0, 2.0, 0.0)], [], False)]
     frames = [RecordingCairo() for _ in range(3)]
     for cr in frames:
-        renderer.draw(cr, 1920, 1080)
+        renderer.draw(cr, 1920, 1080, renderer.state)
     assert calls == [1]
     assert all(("paint",) in cr.calls for cr in frames)
 
@@ -796,12 +796,12 @@ def test_the_renderer_lets_its_path_pictures_go_while_the_scene_is_not_drawn(mon
     renderer.state.camera_params = np.array([0.0, -6.0, 2.5, -15.0, 0.0, 0.0, 60.0])
     renderer.state.show_paths = True
     renderer.state.path_lines = [([(-1.0, 2.0, 0.0), (1.0, 2.0, 0.0)], [], False)]
-    renderer.draw(RecordingCairo(), 1920, 1080)
+    renderer.draw(RecordingCairo(), 1920, 1080, renderer.state)
     shown = getattr(renderer.state, field)
     setattr(renderer.state, field, value)
-    renderer.draw(RecordingCairo(), 1920, 1080)
+    renderer.draw(RecordingCairo(), 1920, 1080, renderer.state)
     setattr(renderer.state, field, shown)
-    renderer.draw(RecordingCairo(), 1920, 1080)
+    renderer.draw(RecordingCairo(), 1920, 1080, renderer.state)
     assert calls == [1, 1]
 
 
@@ -817,7 +817,7 @@ def test_the_renderer_keeps_its_zones_as_one_picture_between_frames() -> None:
     renderer = _zone_renderer()
     frames = [RecordingCairo() for _ in range(3)]
     for cr in frames:
-        renderer.draw(cr, 1920, 1080)
+        renderer.draw(cr, 1920, 1080, renderer.state)
     pictures = [s for cr in frames for s in cr.surfaces]
     assert len(pictures) == 3 and all(p is pictures[0] for p in pictures)
     assert all(("paint",) in cr.calls for cr in frames)
@@ -835,12 +835,12 @@ def test_the_renderer_keeps_its_zones_as_one_picture_between_frames() -> None:
 def test_the_renderer_lets_its_zone_picture_go_while_the_scene_is_not_drawn(field: str, value: object) -> None:
     renderer = _zone_renderer()
     before, after = RecordingCairo(), RecordingCairo()
-    renderer.draw(before, 1920, 1080)
+    renderer.draw(before, 1920, 1080, renderer.state)
     shown = getattr(renderer.state, field)
     setattr(renderer.state, field, value)
-    renderer.draw(RecordingCairo(), 1920, 1080)
+    renderer.draw(RecordingCairo(), 1920, 1080, renderer.state)
     setattr(renderer.state, field, shown)
-    renderer.draw(after, 1920, 1080)
+    renderer.draw(after, 1920, 1080, renderer.state)
     assert after.surfaces[0] is not before.surfaces[0]
 
 
@@ -860,7 +860,8 @@ def test_the_renderer_draws_a_displayed_ground_grid() -> None:
 
     def frame(visible: bool) -> np.ndarray:
         surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 480, 270)
-        _grid_renderer(visible).draw(cairo.Context(surface), 480, 270)
+        renderer = _grid_renderer(visible)
+        renderer.draw(cairo.Context(surface), 480, 270, renderer.state)
         surface.flush()
         return np.frombuffer(surface.get_data(), np.uint8).copy()
 
@@ -872,7 +873,7 @@ def test_the_renderer_keeps_its_grid_as_one_picture_between_frames() -> None:
     renderer = _grid_renderer()
     frames = [RecordingCairo() for _ in range(3)]
     for cr in frames:
-        renderer.draw(cr, 1920, 1080)
+        renderer.draw(cr, 1920, 1080, renderer.state)
     # The grid is the scene's first picture.
     pictures = [cr.surfaces[0] for cr in frames]
     assert all(p is pictures[0] for p in pictures)
@@ -890,10 +891,10 @@ def test_the_renderer_keeps_its_grid_as_one_picture_between_frames() -> None:
 def test_the_renderer_lets_its_grid_picture_go_while_the_scene_is_not_drawn(field: str, value: object) -> None:
     renderer = _grid_renderer()
     before, after = RecordingCairo(), RecordingCairo()
-    renderer.draw(before, 1920, 1080)
+    renderer.draw(before, 1920, 1080, renderer.state)
     shown = getattr(renderer.state, field)
     setattr(renderer.state, field, value)
-    renderer.draw(RecordingCairo(), 1920, 1080)
+    renderer.draw(RecordingCairo(), 1920, 1080, renderer.state)
     setattr(renderer.state, field, shown)
-    renderer.draw(after, 1920, 1080)
+    renderer.draw(after, 1920, 1080, renderer.state)
     assert after.surfaces[0] is not before.surfaces[0]

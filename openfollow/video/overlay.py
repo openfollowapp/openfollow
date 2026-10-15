@@ -152,9 +152,9 @@ class CairoOverlayRenderer:
     - Only the HUD render thread (``video.hud_render``) calls ``draw()``, with the
       state it was handed, and it alone owns the per-frame memo caches – so they
       need no locking.
-    - The frame loop replaces ``self.state`` with a new state each frame (a
-      GIL-atomic attribute swap) and never changes one it has handed over; other
-      threads read ``measured_fps`` off the timestamp deque.
+    - The frame loop replaces ``self.state`` on the main thread each frame; the
+      render thread receives a state at a refresh, and it is never changed
+      afterwards. Other threads read ``measured_fps`` off the timestamp deque.
     """
 
     def __init__(self) -> None:
@@ -276,10 +276,9 @@ class CairoOverlayRenderer:
             return 0.0
         return (len(ts) - 1) / span
 
-    def draw(self, cr: Any, width: int, height: int, state: OverlayState | None = None) -> None:
+    def draw(self, cr: Any, width: int, height: int, state: OverlayState) -> None:
         try:
             self._frame_timestamps.append(time.monotonic())
-            state = self.state if state is None else state
 
             # Button detection wizard takes exclusive visual control
             if state.button_detection is not None and state.button_detection.active:

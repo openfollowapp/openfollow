@@ -120,7 +120,7 @@ class OperatorMessageView:
 
 @dataclass
 class OverlayState:
-    """Snapshot of overlay state. Swapped atomically (GIL) between threads."""
+    """Snapshot of overlay state, built new each frame and never changed once the render thread receives it."""
 
     markers: list[MarkerOverlayData] = field(default_factory=list)
     selected_id: int | None = None

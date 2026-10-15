@@ -1348,15 +1348,16 @@ class TestUpdateDelegators:
     def test_update_marker_visuals_hands_the_renderer_each_new_state(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        built = [object(), object()]
+        first, second = object(), object()
+        built = [first, second]
         monkeypatch.setattr(services_module, "build_marker_visual_state", lambda app, **kw: built.pop(0))
         renderer = _FakeOverlayRenderer()
         services._overlay_renderer = renderer
 
         services.update_marker_visuals(0.25)
-        first = renderer.state
+        assert renderer.state is first
         services.update_marker_visuals(0.25)
-        assert renderer.state is not first
+        assert renderer.state is second
 
     def test_update_marker_visuals_passes_dt_to_builder(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch

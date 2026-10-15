@@ -1034,9 +1034,8 @@ class AppRuntimeServices:
         except Exception as e:
             logger.warning("Failed to create video pipeline: %s", e)
 
-        # The display tick paces the HUD, not video buffer flow, so a stalled
-        # (e.g. NDI 0 fps) source cannot freeze it. The tick starts and shows
-        # pictures drawn on the HUD render thread; the draw callback only pastes.
+        # The display tick, not video buffer flow, paces the HUD, so a 0 fps source cannot freeze it.
+        # The tick starts and shows pictures drawn on the HUD render thread; the draw callback only pastes.
         if hasattr(canvas, "attach_hud"):
             self._hud_render = HudRenderThread(overlay)
             canvas.attach_hud(self._hud_render.paint, tick=self._hud_render.tick)
@@ -3452,7 +3451,7 @@ class AppRuntimeServices:
             network_alerts=self.network_alerts(),
         )
 
-        # GIL-atomic assignment; the HUD render thread draws the state it was handed.
+        # Replaced on the main thread; a state the render thread received at a refresh is never changed.
         # ``init_video`` assigns ``self._overlay_renderer`` before this path
         # runs (the frame clock is gated by canvas readiness), so the None arm is
         # unreachable at runtime.

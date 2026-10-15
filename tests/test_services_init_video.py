@@ -48,7 +48,7 @@ class _FakeOverlayRenderer:
         self.drawn: list[Any] = []
         self.drew = threading.Event()
 
-    def draw(self, cr: Any, width: int, height: int, state: Any = None) -> None:
+    def draw(self, cr: Any, width: int, height: int, state: Any) -> None:
         self.drawn.append(state)
         self.drew.set()
 

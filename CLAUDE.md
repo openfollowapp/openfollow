@@ -272,8 +272,9 @@ Each of these has broken before or would break silently. The guides hold the why
 - Gamepad → marker routing goes through `_gamepad_marker_id` (or the injected
   `marker_resolver`); never index `_controlled_ids[controller_idx]`.
 - Never call `pygame.joystick.Joystick(i)` for an already-open device.
-- `invert_control_direction` is applied once in `InputManager.update`, on
-  relative input only, never on Z.
+- `invert_control_direction` is applied once per input inside `InputManager`
+  (`update`, and `update_touch_remote` for the web remote), on relative input
+  only, never on Z.
 
 **Web**
 - Save buttons are `<button type="submit" class="save-btn">`, broadcast buttons

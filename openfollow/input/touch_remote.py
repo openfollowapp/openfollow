@@ -52,6 +52,8 @@ class RemoteFrame:
     stick: tuple[float, float]
     z_notches: int
     actions: tuple[RemoteAction, ...]
+    # A drive message arrived within ``DRIVE_STALE_S``: the remote is still there.
+    live: bool = True
 
 
 @dataclass
@@ -156,8 +158,9 @@ class TouchRemote:
                 self._forget(token)
             for marker_id, token in self._holders.items():
                 session = self._sessions[token]
-                stick = session.stick if now - session.driven_at <= DRIVE_STALE_S else (0.0, 0.0)
-                frames.append(RemoteFrame(marker_id, stick, session.z_notches, tuple(session.actions)))
+                live = now - session.driven_at <= DRIVE_STALE_S
+                stick = session.stick if live else (0.0, 0.0)
+                frames.append(RemoteFrame(marker_id, stick, session.z_notches, tuple(session.actions), live))
                 session.z_notches = 0
                 session.actions.clear()
         return frames

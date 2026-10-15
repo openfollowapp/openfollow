@@ -590,6 +590,9 @@ class InputManager:
                 self._remote_glides.pop(marker_id, None)
                 x, y, z = marker.pos
                 marker.set_pos(x, y, snap_z(z, frame.z_notches, tuning.z_step_m))
+            if not frame.live:
+                # The dead-man stops a glide too.
+                self._remote_glides.pop(marker_id, None)
             target = self._remote_glides.get(marker_id)
             if target is not None:
                 self._glide(marker_id, marker, target, max_speed * dt)

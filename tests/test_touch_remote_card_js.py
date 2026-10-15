@@ -56,14 +56,25 @@ var window = {
     localStorage: { getItem: function () { return null; }, setItem: function () {} },
     setInterval: function (f) { timers.push(f); return timers.length; },
     clearInterval: function () {},
-    setTimeout: function (f) { f(); },
+    // Timeouts (a drive's give-up, the notch flash) fire only when a test says so.
+    timeouts: [],
+    setTimeout: function (f) { window.timeouts.push(f); return window.timeouts.length; },
+    clearTimeout: function () {},
+    listeners: {},
+    addEventListener: function (t, f) { (window.listeners[t] = window.listeners[t] || []).push(f); },
+    AbortController: function () {
+        var self = this;
+        this.signal = { aborted: false };
+        this.abort = function () { self.signal.aborted = true; aborts.push(true); };
+    },
 };
+var aborts = [];
 var navigator = {};
 var requests = [];
 function fetch(url, opts) {
     return new Promise(function (resolve, reject) {
         var body = opts && opts.body ? JSON.parse(opts.body) : null;
-        requests.push({ url: url, body: body, resolve: resolve, reject: reject });
+        requests.push({ url: url, body: body, opts: opts || {}, resolve: resolve, reject: reject });
     });
 }
 function answer(index, status, data) {
@@ -219,3 +230,91 @@ out.heldHidden = els['remote-held'].hidden;
     )
     assert out["lostHidden"] is taken
     assert out["heldHidden"] is held
+
+
+_HOLDING = (
+    _OPENED
+    + """
+els['remote-chips'].children[0].fire('click');
+answer(2, 200, { success: true, detection_off: false }); await settle();
+"""
+)
+
+
+def test_a_hung_drive_is_given_up_so_the_next_heartbeat_goes() -> None:
+    out = _run(
+        _HOLDING
+        + """
+tick(); await settle();
+var first = paths().indexOf('/api/remote/drive');
+tick(); await settle();
+out.whileHung = paths().filter(function (p) { return p === '/api/remote/drive'; }).length;
+window.timeouts.forEach(function (f) { f(); });
+requests[first].reject(new Error('aborted')); await settle();
+tick(); await settle();
+out.after = paths().filter(function (p) { return p === '/api/remote/drive'; }).length;
+out.aborted = aborts.length;
+"""
+    )
+    assert out["whileHung"] == 1
+    assert out["aborted"] == 1
+    assert out["after"] == 2
+
+
+def test_leaving_the_page_closes_the_session_with_keepalive() -> None:
+    out = _run(
+        _HOLDING
+        + """
+window.listeners.pagehide.forEach(function (f) { f(); });
+var close = requests[requests.length - 1];
+out.path = close.url;
+out.keepalive = close.opts.keepalive;
+out.cardHidden = els['remote-card'].hidden;
+"""
+    )
+    assert out["path"] == "/api/remote/close"
+    assert out["keepalive"] is True
+    assert out["cardHidden"] is True
+
+
+def test_a_state_poll_sent_before_a_chip_tap_does_not_undo_it() -> None:
+    out = _run(
+        _OPENED
+        + """
+tick(); await settle();
+var poll = paths().lastIndexOf('/api/remote/state');
+els['remote-chips'].children[0].fire('click');
+answer(requests.length - 1, 200, { success: true, detection_off: false }); await settle();
+answer(poll, 200, STATE); await settle();
+out.heldHidden = els['remote-held'].hidden;
+"""
+    )
+    assert out["heldHidden"] is False
+
+
+def test_an_answer_from_before_a_close_and_reopen_changes_nothing() -> None:
+    out = _run(
+        _HOLDING
+        + """
+tick(); await settle();
+var drive = paths().indexOf('/api/remote/drive');
+els['remote-close'].fire('click');
+els['remote-launcher'].fire('click');
+var before = requests.length;
+answer(drive, 404, {}); await settle();
+out.opens = paths().slice(before).filter(function (p) { return p === '/api/remote/open'; }).length;
+"""
+    )
+    assert out["opens"] == 0
+
+
+def test_the_drum_ticks_follow_the_notch_spacing() -> None:
+    out = _run(
+        """
+els['remote-launcher'].fire('click');
+answer(0, 200, { token: 't1' }); await settle();
+answer(1, 200, Object.assign({}, STATE, { z_notch_px: 40 })); await settle();
+out.size = els['remote-ticks'].style.backgroundSize;
+"""
+    )
+    assert out["size"] == "100% 40px"

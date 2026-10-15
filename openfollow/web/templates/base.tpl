@@ -2356,7 +2356,7 @@
  }
  .remote-drum-ticks {
  position: absolute; left: 0; right: 0; top: -40px; bottom: -40px; pointer-events: none;
- background: repeating-linear-gradient(180deg, var(--border) 0 2px, transparent 2px 20px);
+ background: linear-gradient(180deg, var(--border) 0 2px, transparent 2px) 0 0 / 100% 20px repeat-y;
  }
  .remote-drum-mid { position: absolute; left: 6px; right: 6px; top: 50%; height: 3px; margin-top: -1.5px; border-radius: 2px; background: var(--accent); pointer-events: none; }
  .remote-drum.notched .remote-drum-mid { background: var(--text); }

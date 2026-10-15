@@ -11,6 +11,8 @@
 
     var DRIVE_MS = 50;
     var STATE_MS = 500;
+    // A drive that hangs longer is given up, so the next heartbeat can go.
+    var DRIVE_TIMEOUT_MS = 1000;
 
     // Pure maths, exported for tests.
     function stickVector(dx, dy, travel, flip) {
@@ -43,18 +45,18 @@
 
     // ``gen`` counts openings and closings: an answer from an earlier one changes nothing.
     var st = {
-        gen: 0, opening: false, open: false, token: null, marker: null, lost: false, state: null,
+        gen: 0, holds: 0, opening: false, open: false, token: null, marker: null, lost: false, state: null,
         stick: { sx: 0, sy: 0 }, notches: 0, inFlight: false, flip: store.get('of.remote.flip') === '1',
         left: store.get('of.remote.hand') === 'left', xyzOpen: false, driveTimer: null, stateTimer: null
     };
 
-    function post(path, body) {
-        return fetch('/api/remote/' + path, {
+    function post(path, body, extra) {
+        return fetch('/api/remote/' + path, Object.assign({
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(Object.assign({ token: st.token }, body || {})),
             credentials: 'same-origin'
-        });
+        }, extra || {}));
     }
 
     function length(m) { return units ? units.formatLength(m) : m.toFixed(3) + ' m'; }
@@ -107,6 +109,7 @@
     function hold(markerId) {
         if (!st.open || !st.token) return;
         var gen = st.gen;
+        st.holds += 1;
         post('hold', { marker: markerId }).then(function (res) {
             if (gen !== st.gen || res.status === 409) return;
             if (!handleStatus(res)) return;
@@ -122,29 +125,38 @@
 
     function driveTick() {
         if (!st.open || !st.token || st.marker === null || st.lost || st.inFlight || document.hidden) return;
-        var notches = st.notches;
+        var notches = st.notches, gen = st.gen;
         st.notches = 0;
         st.inFlight = true;
-        post('drive', { marker: st.marker, sx: st.stick.sx, sy: st.stick.sy, z_notches: notches })
-            .then(function (res) { setOffline(false); handleStatus(res); })
-            .catch(function () { st.notches += notches; setOffline(true); })
-            .then(function () { st.inFlight = false; });
+        var abort = window.AbortController ? new window.AbortController() : null;
+        var timer = abort ? window.setTimeout(function () { abort.abort(); }, DRIVE_TIMEOUT_MS) : null;
+        post('drive', { marker: st.marker, sx: st.stick.sx, sy: st.stick.sy, z_notches: notches },
+            abort ? { signal: abort.signal } : null)
+            .then(function (res) { if (gen === st.gen) { setOffline(false); handleStatus(res); } })
+            .catch(function () { if (gen === st.gen) { st.notches += notches; setOffline(true); } })
+            .then(function () {
+                if (timer !== null) window.clearTimeout(timer);
+                if (gen === st.gen) st.inFlight = false;
+            });
     }
 
     function stateTick() {
         if (!st.open || document.hidden) return;
         // An open that failed (Wi-Fi gone for a moment) is retried here.
         if (!st.token) { if (!st.opening) startSession(); return; }
-        var gen = st.gen;
+        var gen = st.gen, holds = st.holds;
         fetch('/api/remote/state?token=' + encodeURIComponent(st.token), { credentials: 'same-origin' })
             .then(function (res) {
                 if (gen !== st.gen || !handleStatus(res)) return;
                 return res.json().then(function (data) {
                     if (gen !== st.gen) return;
                     st.state = data;
-                    // The station's word on what this session holds wins over the card's.
-                    if (data.lost) st.lost = true;
-                    else st.marker = data.held;
+                    // The station's word on what this session holds wins over the card's, unless
+                    // a chip was tapped after this poll went out.
+                    if (holds === st.holds) {
+                        if (data.lost) st.lost = true;
+                        else st.marker = data.held;
+                    }
                     render();
                 });
             })
@@ -153,9 +165,10 @@
 
     function action(kind, extra) {
         if (st.marker === null || st.lost) return;
+        var gen = st.gen;
         post('action', Object.assign({ marker: st.marker, action: kind }, extra || {}))
-            .then(handleStatus)
-            .catch(function () { setOffline(true); });
+            .then(function (res) { if (gen === st.gen) handleStatus(res); })
+            .catch(function () { if (gen === st.gen) setOffline(true); });
     }
 
     function current() {
@@ -213,7 +226,11 @@
         $('remote-hand').textContent = st.left ? 'Left hand' : 'Right hand';
         $('remote-xyz').setAttribute('aria-pressed', String(st.xyzOpen));
         $('remote-xyz-row').hidden = !st.xyzOpen;
-        if (s) $('remote-notch').textContent = length(s.z_step_m);
+        if (s) {
+            $('remote-notch').textContent = length(s.z_step_m);
+            // One tick line per notch of finger travel.
+            $('remote-ticks').style.backgroundSize = '100% ' + s.z_notch_px + 'px';
+        }
         var readout = $('remote-readout');
         readout.textContent = '';
         if (m && m.pos) {
@@ -252,9 +269,13 @@
     }
 
     function closeCard(tellStation) {
-        if (tellStation !== false && st.token) post('close').catch(function () { /* the station forgets it */ });
+        // ``keepalive`` lets the close outlive a page that is going away.
+        if (tellStation !== false && st.token) {
+            post('close', null, { keepalive: true }).catch(function () { /* the station forgets it */ });
+        }
         st.gen += 1;
         st.opening = false;
+        st.inFlight = false;
         st.open = false;
         st.token = null;
         st.marker = null;
@@ -307,9 +328,9 @@
         if (e.pointerId !== drumPointer) return;
         var dy = e.clientY - drumY;
         drumY = e.clientY;
-        drumOffset = (drumOffset + dy) % 20;
-        ticks.style.transform = 'translateY(' + drumOffset + 'px)';
         var notchPx = st.state ? st.state.z_notch_px : 20;
+        drumOffset = (drumOffset + dy) % notchPx;
+        ticks.style.transform = 'translateY(' + drumOffset + 'px)';
         var r = drumNotches(drumAcc, dy, notchPx);
         drumAcc = r.acc;
         if (r.notches) {
@@ -348,7 +369,9 @@
         render();
     });
 
-    // A hidden page sends nothing: the station's dead-man stops the marker.
+    // A hidden page sends nothing: the station's dead-man stops the marker. A page going away
+    // gives the marker back at once.
     document.addEventListener('visibilitychange', function () { if (document.hidden) releaseStick(); });
+    window.addEventListener('pagehide', function () { if (st.open) closeCard(); });
     document.body.classList.toggle('remote-left', st.left);
 })();

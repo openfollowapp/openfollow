@@ -426,6 +426,7 @@ def test_reset_sends_the_held_marker_home(app: _App) -> None:
 @pytest.mark.integration
 def test_a_glide_travels_at_max_speed_and_lands(app: _App) -> None:
     token = _held(app)
+    app._touch_remote.drive(token, 10, (0.0, 0.0), 0)
     app._touch_remote.act(token, 10, RemoteAction(GLIDE, (3.0, 0.0, 1.6)))
     manager = InputManager(app)
     manager.update_touch_remote(0.5)
@@ -438,6 +439,7 @@ def test_a_glide_travels_at_max_speed_and_lands(app: _App) -> None:
 @pytest.mark.integration
 def test_the_stick_cancels_a_glide(app: _App, clock: _Clock) -> None:
     token = _held(app)
+    app._touch_remote.drive(token, 10, (0.0, 0.0), 0)
     app._touch_remote.act(token, 10, RemoteAction(GLIDE, (10.0, 0.0, 1.6)))
     manager = InputManager(app)
     manager.update_touch_remote(0.5)
@@ -474,6 +476,7 @@ def test_a_glide_releases_the_path_first(app: _App) -> None:
     _cross(app)
     app._paths.press(10, (0.0, 1.0, 0.0))
     token = _held(app)
+    app._touch_remote.drive(token, 10, (0.0, 0.0), 0)
     app._touch_remote.act(token, 10, RemoteAction(GLIDE, (0.0, 0.5, 1.0)))
     InputManager(app).update_touch_remote(1.0)
     assert not app._paths.is_locked(10)
@@ -569,6 +572,7 @@ def test_an_app_without_a_registry_is_left_alone(app: _App) -> None:
 @pytest.mark.integration
 def test_a_glide_stops_when_the_remote_lets_go(app: _App) -> None:
     token = _held(app)
+    app._touch_remote.drive(token, 10, (0.0, 0.0), 0)
     app._touch_remote.act(token, 10, RemoteAction(GLIDE, (4.0, 0.0, 1.6)))
     manager = InputManager(app)
     manager.update_touch_remote(0.5)
@@ -605,6 +609,7 @@ def test_detection_goes_off_even_when_the_file_cannot_be_written(app: _App, tmp_
 def test_a_glide_too_far_for_a_float_distance_lands_at_once(app: _App) -> None:
     app._server.markers[10].set_pos(1e308, 0.0, 1.6)
     token = _held(app)
+    app._touch_remote.drive(token, 10, (0.0, 0.0), 0)
     app._touch_remote.act(token, 10, RemoteAction(GLIDE, (-1e308, 0.0, 1.6)))
     manager = InputManager(app)
     manager.update_touch_remote(0.02)
@@ -621,3 +626,28 @@ def test_a_failing_remote_step_is_logged_and_the_frame_carries_on(app: _App, cap
     app._touch_remote.take = boom  # type: ignore[method-assign]
     InputManager(app).update_touch_remote(0.02)
     assert "Touch remote update failed this tick." in caplog.text
+
+
+@pytest.mark.integration
+def test_the_dead_man_stops_a_glide(app: _App, clock: _Clock) -> None:
+    token = _held(app)
+    app._touch_remote.drive(token, 10, (0.0, 0.0), 0)
+    app._touch_remote.act(token, 10, RemoteAction(GLIDE, (10.0, 0.0, 1.6)))
+    manager = InputManager(app)
+    manager.update_touch_remote(0.5)
+    clock.now += DRIVE_STALE_S + 0.01
+    manager.update_touch_remote(1.0)
+    app._touch_remote.drive(token, 10, (0.0, 0.0), 0)
+    manager.update_touch_remote(1.0)
+    assert _pos(app) == pytest.approx((1.0, 0.0, 1.6))
+
+
+@pytest.mark.unit
+def test_a_frame_says_whether_the_remote_is_still_talking(remote: TouchRemote, clock: _Clock) -> None:
+    token = remote.open()
+    remote.hold(token, 3)
+    assert remote.take()[0].live is False
+    remote.drive(token, 3, (0.0, 0.0), 0)
+    assert remote.take()[0].live is True
+    clock.now += DRIVE_STALE_S + 0.01
+    assert remote.take()[0].live is False

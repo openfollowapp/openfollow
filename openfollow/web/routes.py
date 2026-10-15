@@ -90,7 +90,13 @@ from openfollow.lens_model import pull_back_to_fold
 # Module-level so handler closures resolve ``save_catalog`` from this
 # namespace at call time (tests monkeypatch it for persist-failure paths).
 from openfollow.marker_catalog import derive_station_name, save_catalog
-from openfollow.net_utils import HOST_RESOLVER, IPV4_RESOLVER, BoundedResolver, get_local_ipv4_addresses
+from openfollow.net_utils import (
+    HOST_RESOLVER,
+    IPV4_RESOLVER,
+    BoundedResolver,
+    get_local_ipv4_addresses,
+    serves_every_interface,
+)
 from openfollow.network.adapter import (
     LOOPBACK_NAMES,
     VLAN_UNSUPPORTED_MESSAGE,
@@ -6142,6 +6148,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             net["web_restart_pending"] = (
                 bool(advisory.get("iface_at_start")) and advisory.get("status") == "iface" and not mode_cfg.web_bind
             )
+            # What the listener holds now, not the config: a pin waiting on a restart still holds it.
+            net["web_everywhere"] = serves_every_interface(server.bind_host)
             # Only what the backend lists as a VLAN: that is what Advanced can remove.
             vlan_names = set(vlan_ids) if net["supports_vlans"] else set()
             _narrow_to_station(net, mode_cfg.psn_source_iface, vlan_names, labels)

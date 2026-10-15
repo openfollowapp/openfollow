@@ -106,7 +106,7 @@
                   hx-swap="innerHTML" hx-trigger="net-station-confirmed" data-busy-text="Moving all traffic to the chosen interface…"
                   hx-on::after-request="if (!event.detail.successful) this.reset()">
                 <select id="net-station-iface" name="psn_source_iface" onchange="netConfirmStation(this)"
-                        data-from="{{_shown.get(_from, _from)}}">
+                        data-from="{{_shown.get(_from, _from)}}" {{'data-web-everywhere' if _net.get('web_everywhere') else ''}}>
                     <option value="" {{'' if _station else 'selected '}}data-name="{{_auto_text}}">{{_auto_text}}</option>
                     % for _oname, _oaddr in _net.get("station_options", []):
                     <option value="{{_oname}}" {{'selected ' if _oname == _station else ''}}data-name="{{_shown.get(_oname, _oname)}}">{{_shown.get(_oname, _oname)}} – {{_oaddr or 'no address'}}</option>

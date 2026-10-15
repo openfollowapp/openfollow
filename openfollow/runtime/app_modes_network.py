@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any
 
 from openfollow.configuration import is_simple_mode
 from openfollow.net_adapters import Adapter, describe, display_name
-from openfollow.net_utils import WEB_BIND_ALL, auto_station_iface
+from openfollow.net_utils import auto_station_iface, serves_every_interface
 from openfollow.network.adapter import (
     ApplyResult,
     Ipv4Config,
@@ -299,8 +299,7 @@ def _served_bind_host(app: OpenFollowApp) -> str:
 
 
 def _serves_every_interface(app: OpenFollowApp) -> bool:
-    host = _served_bind_host(app)
-    return not host or host == WEB_BIND_ALL
+    return serves_every_interface(_served_bind_host(app))
 
 
 def _station_fqdn(app: OpenFollowApp) -> str:

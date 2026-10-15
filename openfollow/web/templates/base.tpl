@@ -2544,7 +2544,8 @@
  const from = select.dataset.from ? 'from ' + select.dataset.from + ' ' : '';
  modalConfirm({
  title: 'Move all traffic to ' + to + '?',
- message: 'PSN, OTP, RTTrPM, OSC and video move ' + from + 'to ' + to + '.',
+ message: 'PSN, OTP, RTTrPM, OSC and video move ' + from + 'to ' + to + '.'
+ + (select.hasAttribute('data-web-everywhere') ? ' The web UI keeps answering on every interface.' : ''),
  confirmLabel: 'Move traffic',
  danger: true,
  }).then((ok) => {

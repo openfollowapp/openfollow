@@ -39,7 +39,7 @@ async function answer(ok) { answers.shift()(ok); await settle(); }
 """
 
 
-def _picker(station: str = "", auto: str = "eth0") -> str:
+def _picker(station: str, auto: str, everywhere: bool) -> str:
     rendered = template(
         "partials/network",
         net={
@@ -50,17 +50,18 @@ def _picker(station: str = "", auto: str = "eth0") -> str:
             "station_iface": station,
             "station_auto": auto,
             "station_names": _NAMES,
+            "web_everywhere": everywhere,
         },
     )
     start = rendered.index('<form class="net-station-form"')
     return rendered[start : rendered.index("</form>", start) + len("</form>")]
 
 
-def _run(steps: str, station: str = "", auto: str = "eth0") -> Any:
+def _run(steps: str, station: str = "", auto: str = "eth0", everywhere: bool = False) -> Any:
     script = "\n".join(
         [
             (_TESTS / "_fake_dom.js").read_text(encoding="utf-8"),
-            f"parseHTML({json.dumps(_picker(station, auto))}, document.body);",
+            f"parseHTML({json.dumps(_picker(station, auto, everywhere))}, document.body);",
             "function netConfirmStation(select) {"
             + function_body(_BASE.read_text(encoding="utf-8"), "netConfirmStation")
             + "}",
@@ -121,3 +122,11 @@ def test_a_station_with_no_interface_in_force_names_only_the_new_one() -> None:
 def test_picking_the_interface_in_force_does_nothing() -> None:
     out = _run(f"pick('{_LIGHTS}'); await settle(); out.asked = asked.length; out.sent = triggered;", _LIGHTS)
     assert out == {"asked": 0, "sent": []}
+
+
+@pytest.mark.parametrize(
+    ("everywhere", "web"), [(True, " The web UI keeps answering on every interface."), (False, "")]
+)
+def test_the_web_ui_is_said_to_stay_only_where_it_listens_everywhere(everywhere: bool, web: str) -> None:
+    out = _run(f"pick('{_LIGHTS}'); await settle(); out.message = asked[0].message;", everywhere=everywhere)
+    assert out == {"message": f"PSN, OTP, RTTrPM, OSC and video move from eth0 to Lights ({_LIGHTS})." + web}

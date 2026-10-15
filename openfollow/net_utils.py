@@ -256,6 +256,11 @@ def resolve_multicast_iface(pin: str, station_iface: str = "") -> tuple[str, Res
 WEB_BIND_ALL = "0.0.0.0"
 
 
+def serves_every_interface(bind_host: str) -> bool:
+    """True when a web listener bound to ``bind_host`` answers on every interface."""
+    return not bind_host or bind_host == WEB_BIND_ALL
+
+
 def resolve_web_bind(web_bind: str, web_bind_iface: str) -> tuple[str, ResolveStatus]:
     """Resolve the web UI's listen address, failing **open**.
 

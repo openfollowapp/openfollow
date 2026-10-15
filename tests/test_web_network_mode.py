@@ -112,6 +112,26 @@ def test_the_simple_card_follows_a_named_station_interface(net_server, tmp_path,
     assert 'data-adv-key="net-iface-eth0"' not in body
 
 
+@pytest.mark.parametrize(("bind_host", "everywhere"), [("0.0.0.0", True), ("", True), ("10.0.0.5", False)])
+def test_the_picker_says_whether_the_web_ui_listens_everywhere(
+    net_server,  # noqa: F811
+    tmp_path,
+    present,
+    monkeypatch,
+    bind_host,
+    everywhere,
+) -> None:
+    import openfollow.web.server as server_module
+
+    # The listener decides, not the config: a pin waiting on a restart still holds it.
+    monkeypatch.setattr(server_module.ConfigWebServer, "bind_host", property(lambda self: bind_host))
+    _fake, base = net_server
+    _set(tmp_path, network_mode="simple")
+    _status, body = _get(base, "/section/network/status")
+    assert ('data-from="eth0" data-web-everywhere>' in body) is everywhere
+    assert ("data-web-everywhere" in body) is everywhere
+
+
 def test_a_station_interface_that_is_gone_is_named(net_server, tmp_path, present) -> None:  # noqa: F811
     _fake, base = net_server
     _set(tmp_path, network_mode="simple", psn_source_iface="eth9", interface_labels={"eth9": "Old"})

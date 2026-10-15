@@ -25,6 +25,7 @@ from openfollow.configuration import (
     load_config,
     load_config_for_save,
     network_mode_unsaved,
+    restore_empty_config,
     save_config,
 )
 from openfollow.logging_setup import ThrottledExceptionLogger
@@ -233,6 +234,7 @@ class OpenFollowApp:
         # a station that has silently respawned several times reads exactly
         # like a healthy one in every other section.
         self._crash_restarts: int = crash_restarts
+        restore_empty_config(self._config_path)
         bootstrap_config_if_missing(self._config_path)
         self._config: AppConfig = load_config(self._config_path)
         self._bootstrap_station_identity()

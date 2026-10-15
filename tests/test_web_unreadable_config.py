@@ -102,8 +102,8 @@ def test_a_save_over_a_broken_file_is_refused_and_leaves_it(
     assert status == 409
     answer = json.loads(text)
     said = "is empty" if not content.strip() else "could not be read"
-    assert answer["error"] == f"The settings file config.toml on this station {said}"
-    assert answer["action"] == "Restore it from config.toml.bak, then save again."
+    assert answer["error"] == f"The settings file on this station {said}"
+    assert answer["action"] == "Restore it from the latest available backup copy, then save again."
     assert config_path.read_bytes() == content
     assert config_path.with_name("config.toml.bak").read_bytes() == backup
 

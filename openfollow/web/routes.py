@@ -5381,32 +5381,28 @@ def _register_path_routes(app: Bottle, server: ConfigWebServer) -> None:
         return json.dumps({"paths": views, "markers": markers})
 
 
-def _refuse_over_unreadable_config(config_path: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+def _refuse_over_unreadable_config(callback: Callable[..., Any]) -> Callable[..., Any]:
     """A route plugin answering a write that found the config file empty or unreadable, for the save-feedback line."""
-    name = Path(config_path).name
 
-    def plugin(callback: Callable[..., Any]) -> Callable[..., Any]:
-        @functools.wraps(callback)
-        def wrapper(*args: Any, **kwargs: Any) -> Any:
-            try:
-                return callback(*args, **kwargs)
-            except ConfigFileUnreadableError as error:
-                logger.warning("Not saved: %s", error)
-                said = "is empty" if isinstance(error, ConfigFileEmptyError) else "could not be read"
-                return _save_failed(
-                    409,
-                    f"The settings file {name} on this station {said}",
-                    f"Restore it from {name}.bak, then save again.",
-                )
+    @functools.wraps(callback)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return callback(*args, **kwargs)
+        except ConfigFileUnreadableError as error:
+            logger.warning("Not saved: %s", error)
+            said = "is empty" if isinstance(error, ConfigFileEmptyError) else "could not be read"
+            return _save_failed(
+                409,
+                f"The settings file on this station {said}",
+                "Restore it from the latest available backup copy, then save again.",
+            )
 
-        return wrapper
-
-    return plugin
+    return wrapper
 
 
 def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     """Register all routes on the Bottle app."""
-    app.install(_refuse_over_unreadable_config(server.config_path))
+    app.install(_refuse_over_unreadable_config)
 
     # Mirror bundled system templates into the operator's templates folder
     # on every start. Idempotent overwrite enforces the "system templates

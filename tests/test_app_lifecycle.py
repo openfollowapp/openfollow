@@ -182,9 +182,7 @@ class TestConstruction:
         assert app._config_mtime > 0.0
 
 
-_BROKEN = pytest.mark.parametrize(
-    "content", ["", "  \n\t\n", "not [[ toml"], ids=["empty", "whitespace", "unparseable"]
-)
+_EMPTY = pytest.mark.parametrize("content", ["", "  \n\t\n"], ids=["empty", "whitespace"])
 
 
 @pytest.fixture
@@ -203,33 +201,75 @@ def real_load(monkeypatch: pytest.MonkeyPatch, tmp_path):  # noqa: ANN001, ANN20
 
 
 class TestStartupOnABrokenConfigFile:
-    @_BROKEN
-    def test_startup_runs_on_the_backup_and_leaves_the_file(self, real_load, caplog, content: str) -> None:  # noqa: ANN001
+    @_EMPTY
+    def test_an_empty_file_is_restored_from_the_backup_and_saves_work_again(
+        self,
+        real_load,
+        caplog,  # noqa: ANN001
+        content: str,
+    ) -> None:
+        from openfollow.configuration import load_config, save_config
+
+        backup = real_load.with_name("config.toml.bak").read_bytes()
         real_load.write_text(content, encoding="utf-8")
 
         with caplog.at_level("WARNING"):
             app = OpenFollowApp(config_path=str(real_load))
 
         assert (app._config.psn_system_name, app._config.station_id) == ("Backup Name", "abc123")
-        assert real_load.read_text(encoding="utf-8") == content
+        assert real_load.read_bytes() == backup
+        assert real_load.with_name("config.toml.bak").read_bytes() == backup
+        assert f"is empty – restored it from {real_load}.bak" in caplog.text
+        assert [r.message for r in caplog.records if r.levelname == "ERROR"] == []
+        save_config(app._config, str(real_load))
+        assert load_config(str(real_load), strict=True).station_id == "abc123"
+
+    def test_an_unreadable_file_runs_on_the_backup_and_is_left_alone(self, real_load, caplog) -> None:  # noqa: ANN001
+        real_load.write_text("not [[ toml", encoding="utf-8")
+
+        with caplog.at_level("WARNING"):
+            app = OpenFollowApp(config_path=str(real_load))
+
+        assert (app._config.psn_system_name, app._config.station_id) == ("Backup Name", "abc123")
+        assert real_load.read_text(encoding="utf-8") == "not [[ toml"
         assert f"recovered from {real_load}.bak" in caplog.text
         assert [r.message for r in caplog.records if r.levelname == "ERROR"] == []
 
-    @_BROKEN
-    def test_startup_without_a_backup_runs_on_the_defaults_and_writes_nothing(
+    @_EMPTY
+    @pytest.mark.parametrize("example", [False, True], ids=["bare", "with-example"])
+    def test_an_empty_file_without_a_backup_starts_as_a_first_run(
+        self,
+        real_load,  # noqa: ANN001
+        content: str,
+        example: bool,
+    ) -> None:
+        from openfollow.configuration import load_config
+
+        real_load.with_name("config.toml.bak").unlink()
+        real_load.write_text(content, encoding="utf-8")
+        if example:
+            real_load.with_name("config.example.toml").write_text('psn_source_iface = "eth9"\n', encoding="utf-8")
+
+        app = OpenFollowApp(config_path=str(real_load))
+
+        saved = load_config(str(real_load), strict=True)
+        assert app._config.station_id not in ("", "abc123")
+        assert saved.station_id == app._config.station_id
+        assert saved.psn_source_iface == ("eth9" if example else "")
+
+    def test_an_unreadable_file_without_a_backup_runs_on_the_defaults_and_writes_nothing(
         self,
         real_load,
         caplog,  # noqa: ANN001
-        content: str,
     ) -> None:
         real_load.with_name("config.toml.bak").unlink()
-        real_load.write_text(content, encoding="utf-8")
+        real_load.write_text("not [[ toml", encoding="utf-8")
 
         with caplog.at_level("WARNING"):
             app = OpenFollowApp(config_path=str(real_load))
 
         assert app._config.station_id != "abc123"
-        assert real_load.read_text(encoding="utf-8") == content
+        assert real_load.read_text(encoding="utf-8") == "not [[ toml"
         assert "Failed to persist seeded station identity" in caplog.text
 
 

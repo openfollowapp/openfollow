@@ -1189,9 +1189,12 @@ def confirm_source_type_selection(app: OpenFollowApp) -> None:
     _route_after_video_source_change(app, new_type)
 
 
+_RESTORE_THE_SETTINGS = "Restore the settings from the latest available backup copy"
+
+
 def _unsaved_banner(what: str, again: str) -> str:
     # A repaired file is reloaded at once and brings its own value back.
-    return f"{what} is live but could not be saved to config.toml. Fix the file, then {again}."
+    return f"{what} is live but could not be saved. {_RESTORE_THE_SETTINGS}, then {again}."
 
 
 def save_source_pick(app: OpenFollowApp, field: str, value: str) -> None:
@@ -1222,7 +1225,7 @@ def _save_for_input_not_running(app: OpenFollowApp, field: str, value: str, labe
     if _persist_config(app, field):
         logger.info("Set %s to %r; its input is not running.", field, value)
         return
-    app._enter_settings_menu(banner=f"{label} could not be saved to config.toml. Fix the file, then {again}.")
+    app._enter_settings_menu(banner=f"{label} could not be saved. {_RESTORE_THE_SETTINGS}, then {again}.")
 
 
 # ---------------------------------------------------------------------------

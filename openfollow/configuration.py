@@ -3001,6 +3001,63 @@ def bootstrap_config_if_missing(config_path: str) -> bool:
     return True
 
 
+def restore_empty_config(path: str) -> None:
+    """At startup, put the backup in place of an empty config file, or remove it for a first run.
+
+    An empty file holds nothing to keep, unlike an unreadable one, which may
+    hold hand edits and is left alone. The backup is copied byte for byte and
+    stays: ``save_config`` would snapshot the empty file over it.
+    """
+    with config_write_lock:
+        try:
+            with open(path, "rb") as f:
+                if f.read().strip():
+                    return
+        except OSError:
+            return
+        backup = _readable_backup_bytes(path)
+        try:
+            if backup is None:
+                os.unlink(path)
+            else:
+                _replace_file(Path(path), backup)
+        except OSError:
+            logger.exception("Config file %s is empty and could not be restored.", path)
+            return
+    if backup is None:
+        logger.warning("Config file %s is empty and has no readable backup – starting as a first run.", path)
+    else:
+        logger.warning("Config file %s is empty – restored it from %s.bak.", path, path)
+
+
+def _readable_backup_bytes(path: str) -> bytes | None:
+    try:
+        with open(path + ".bak", "rb") as f:
+            raw = f.read()
+        if raw.strip():
+            tomllib.loads(raw.decode("utf-8"))
+            return raw
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        pass
+    return None
+
+
+def _replace_file(target: Path, data: bytes) -> None:
+    """Write *data* to a 0o600 temp file beside *target*, fsync it and rename it into place."""
+    directory = target.parent
+    fd, tmp_path = tempfile.mkstemp(prefix=target.name + ".", suffix=".tmp", dir=str(directory))
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, target)
+    except OSError:
+        os.unlink(tmp_path)
+        raise
+    _fsync_dir(directory)
+
+
 def _load_backup_data(path: str) -> dict[str, Any] | None:
     """Parse the ``<path>.bak`` snapshot ``save_config`` writes, or ``None``.
 

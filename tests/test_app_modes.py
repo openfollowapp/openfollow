@@ -876,7 +876,8 @@ class TestSourceTypeSelection:
         assert app._config.video_source_type == "rtsp"  # it runs
         assert app._settings_menu_active is True
         assert app._settings_menu_banner == (
-            "RTSP is live but could not be saved to config.toml. Fix the file, then switch again."
+            "RTSP is live but could not be saved. "
+            "Restore the settings from the latest available backup copy, then switch again."
         )
         assert app._url_editor_calls == []
 
@@ -1393,7 +1394,8 @@ class TestUrlEditor:
         assert app._url_editor_active is False
         assert app._settings_menu_active is True
         assert app._settings_menu_banner == (
-            "RTSP URL is live but could not be saved to config.toml. Fix the file, then enter it again."
+            "RTSP URL is live but could not be saved. "
+            "Restore the settings from the latest available backup copy, then enter it again."
         )
 
     def test_an_auto_chained_switch_that_runs_but_cannot_be_saved_says_so_in_settings(
@@ -1414,7 +1416,8 @@ class TestUrlEditor:
         assert app._swap_calls == ["rtsp"]
         assert app._config.video_source_type == "rtsp"
         assert app._settings_menu_banner == (
-            "RTSP is live but could not be saved to config.toml. Fix the file, then switch again."
+            "RTSP is live but could not be saved. "
+            "Restore the settings from the latest available backup copy, then switch again."
         )
 
     def test_a_plain_edit_for_an_input_no_longer_running_is_saved_without_a_swap(
@@ -1458,7 +1461,8 @@ class TestUrlEditor:
         app_modes.handle_url_editor_key(app, "Enter")
         assert app._swap_calls == []
         assert app._settings_menu_banner == (
-            "RTSP URL could not be saved to config.toml. Fix the file, then enter it again."
+            "RTSP URL could not be saved. "
+            "Restore the settings from the latest available backup copy, then enter it again."
         )
 
     def test_enter_confirms_and_persists(
@@ -2061,7 +2065,8 @@ class TestFieldChoicePicker:
         assert app._field_choice_active is False
         assert app._settings_menu_active is True
         assert app._settings_menu_banner == (
-            "Render resolution is live but could not be saved to config.toml. Fix the file, then pick it again."
+            "Render resolution is live but could not be saved. "
+            "Restore the settings from the latest available backup copy, then pick it again."
         )
 
     def test_an_auto_chained_switch_that_runs_but_cannot_be_saved_says_so_in_settings(
@@ -2081,7 +2086,8 @@ class TestFieldChoicePicker:
         assert app._swap_calls == ["v4l2"]
         assert app._config.video_source_type == "v4l2"
         assert app._settings_menu_banner == (
-            "USB Camera is live but could not be saved to config.toml. Fix the file, then switch again."
+            "USB Camera is live but could not be saved. "
+            "Restore the settings from the latest available backup copy, then switch again."
         )
 
     def test_a_plain_pick_for_an_input_no_longer_running_that_cannot_be_saved_says_so(
@@ -2102,7 +2108,8 @@ class TestFieldChoicePicker:
         assert app._swap_calls == []
         assert (app._config.video_source_type, app._config.v4l2_render_resolution) == ("rtsp", "2160p")
         assert app._settings_menu_banner == (
-            "Render resolution could not be saved to config.toml. Fix the file, then pick it again."
+            "Render resolution could not be saved. "
+            "Restore the settings from the latest available backup copy, then pick it again."
         )
 
     def test_confirm_writes_selected_value_to_config(
@@ -3155,5 +3162,6 @@ class TestSourcePickSave:
         assert path.read_text(encoding="utf-8") == content
         assert app._config.ndi_source_name == "NEW (B)"
         assert banners == [
-            "The NDI® source is live but could not be saved to config.toml. Fix the file, then pick it again."
+            "The NDI® source is live but could not be saved. "
+            "Restore the settings from the latest available backup copy, then pick it again."
         ]

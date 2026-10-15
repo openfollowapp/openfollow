@@ -1062,6 +1062,85 @@ def test_an_empty_file_does_not_ask_for_the_network_mode_to_be_saved(temp_config
     assert not network_mode_unsaved(str(temp_config_path))
 
 
+@_EMPTY
+def test_an_empty_file_is_restored_from_its_backup_which_stays(temp_config_path, caplog, content) -> None:
+    import stat
+
+    from openfollow.configuration import restore_empty_config
+
+    _good_config_with_backup(temp_config_path)
+    backup = _bak_of(temp_config_path).read_bytes()
+    temp_config_path.write_text(content, encoding="utf-8")
+
+    with caplog.at_level("WARNING"):
+        restore_empty_config(str(temp_config_path))
+
+    assert temp_config_path.read_bytes() == backup
+    assert _bak_of(temp_config_path).read_bytes() == backup
+    assert stat.S_IMODE(os.stat(temp_config_path).st_mode) == 0o600
+    assert list(temp_config_path.parent.glob("*.tmp")) == []
+    assert caplog.messages == [f"Config file {temp_config_path} is empty – restored it from {temp_config_path}.bak."]
+    save_config(AppConfig(psn_system_name="Saved Again"), str(temp_config_path))
+    assert load_config(str(temp_config_path), strict=True).psn_system_name == "Saved Again"
+
+
+@pytest.mark.parametrize("backup", [None, b"", b"  \n", b"not [[ toml", b"\xff\xfe = 1\n"])
+@_EMPTY
+def test_an_empty_file_without_a_readable_backup_is_removed_for_a_first_run(
+    temp_config_path, caplog, content, backup
+) -> None:
+    from openfollow.configuration import restore_empty_config
+
+    temp_config_path.write_text(content, encoding="utf-8")
+    if backup is not None:
+        _bak_of(temp_config_path).write_bytes(backup)
+
+    with caplog.at_level("WARNING"):
+        restore_empty_config(str(temp_config_path))
+
+    assert not temp_config_path.exists()
+    assert backup is None or _bak_of(temp_config_path).read_bytes() == backup
+    assert caplog.messages == [
+        f"Config file {temp_config_path} is empty and has no readable backup – starting as a first run."
+    ]
+
+
+@pytest.mark.parametrize("content", [None, b"not [[ toml", b'psn_system_name = "Kept"\n'])
+def test_restore_leaves_a_missing_unreadable_or_whole_file_alone(temp_config_path, caplog, content) -> None:
+    from openfollow.configuration import restore_empty_config
+
+    _good_config_with_backup(temp_config_path)
+    if content is None:
+        temp_config_path.unlink()
+    else:
+        temp_config_path.write_bytes(content)
+
+    with caplog.at_level("WARNING"):
+        restore_empty_config(str(temp_config_path))
+
+    assert (temp_config_path.read_bytes() if temp_config_path.exists() else None) == content
+    assert caplog.messages == []
+
+
+def test_an_empty_file_that_cannot_be_restored_is_left_and_logged(temp_config_path, caplog, monkeypatch) -> None:
+    import openfollow.configuration as cfg_mod
+
+    _good_config_with_backup(temp_config_path)
+    temp_config_path.write_text("", encoding="utf-8")
+
+    def _refuse(*_a: object) -> None:
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(cfg_mod.os, "replace", _refuse)
+    with caplog.at_level("WARNING"):
+        cfg_mod.restore_empty_config(str(temp_config_path))
+    monkeypatch.undo()
+
+    assert temp_config_path.read_text(encoding="utf-8") == ""
+    assert list(temp_config_path.parent.glob("*.tmp")) == []
+    assert caplog.messages == [f"Config file {temp_config_path} is empty and could not be restored."]
+
+
 # Per-marker move speed (``AppConfig.marker_move_speeds``)
 
 
@@ -2661,7 +2740,10 @@ def test_a_switch_that_could_not_be_saved_is_saved_by_switching_again_once_the_f
 
     app_modes.confirm_source_type_selection(app)
     assert app._config.video_source_type == "rtsp"
-    assert banners == ["RTSP is live but could not be saved to config.toml. Fix the file, then switch again."]
+    assert banners == [
+        "RTSP is live but could not be saved. "
+        "Restore the settings from the latest available backup copy, then switch again."
+    ]
 
     save_config(good, path, replace_unreadable=True)  # the operator repairs it
     assert apply_runtime_config_changes(app, load_config(path, strict=True)) is True

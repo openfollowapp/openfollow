@@ -257,15 +257,27 @@ class GridCache:
             scale,
         )
         if self._entry is None or self._entry[0] != key:
-            sx, sy = scale
-            picture = cairo.ImageSurface(cairo.FORMAT_ARGB32, math.ceil(w * sx), math.ceil(h * sy))
-            picture.set_device_scale(sx, sy)
+            picture = _blank_canvas(self._entry[1] if self._entry is not None else None, w, h, scale)
             ctx = cairo.Context(picture)
             draw_grid(renderer, ctx, state, w, h)
             draw_ground_grid(ctx, state, w, h)
             self._entry = (key, picture)
         cr.set_source_surface(self._entry[1], 0, 0)
         cr.paint()
+
+
+def _blank_canvas(kept: cairo.ImageSurface | None, w: int, h: int, scale: tuple[float, float]) -> cairo.ImageSurface:
+    """An empty picture of the canvas at ``scale``: ``kept`` cleared when it already is one, else a new one."""
+    sx, sy = scale
+    size = (math.ceil(w * sx), math.ceil(h * sy))
+    if kept is not None and (kept.get_width(), kept.get_height(), kept.get_device_scale()) == (*size, scale):
+        clear = cairo.Context(kept)
+        clear.set_operator(cairo.OPERATOR_CLEAR)
+        clear.paint()
+        return kept
+    picture = cairo.ImageSurface(cairo.FORMAT_ARGB32, *size)
+    picture.set_device_scale(sx, sy)
+    return picture
 
 
 def draw_origin(cr: Any, state: OverlayState, w: int, h: int) -> None:

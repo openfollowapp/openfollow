@@ -1474,10 +1474,29 @@ class TestGridCache:
         from openfollow.runtime.overlay_draw_scene import GridCache
 
         cache = GridCache()
-        first = self._draw(cache, self._state())
+        before = self._pixels(self._draw(cache, self._state()).surfaces[0])
         w, h = change.get("size", (1920, 1080))
-        cr = self._draw(cache, self._state(**change.get("state", {})), w, h, change.get("scale", 1.0))
-        assert len(cr.surfaces) == 1 and cr.surfaces[0] is not first.surfaces[0]
+        changed, scale = self._state(**change.get("state", {})), change.get("scale", 1.0)
+        cr = self._draw(cache, changed, w, h, scale)
+        fresh = self._pixels(self._draw(GridCache(), changed, w, h, scale).surfaces[0])
+        assert len(cr.surfaces) == 1
+        shown = self._pixels(cr.surfaces[0])
+        assert np.array_equal(shown, fresh)
+        assert shown.shape != before.shape or not np.array_equal(shown, before)
+
+    @pytest.mark.parametrize(
+        ("size", "scale", "kept"),
+        [((1920, 1080), 1.0, True), ((1280, 1080), 1.0, False), ((1920, 720), 1.0, False), ((960, 540), 2.0, False)],
+        ids=["same-canvas", "width", "height", "same-pixels-other-scale"],
+    )
+    def test_a_redraw_on_the_same_canvas_reuses_the_picture(self, size: tuple, scale: float, kept: bool) -> None:
+        from openfollow.runtime.overlay_draw_scene import GridCache
+
+        cache = GridCache()
+        first = self._draw(cache, self._state()).surfaces[0]
+        moved = self._state(camera_params=np.array([0.2, -6.0, 2.5, -15.0, 0.0, 0.0, 60.0]))
+        again = self._draw(cache, moved, *size, scale).surfaces[0]
+        assert (again is first) is kept
 
     @pytest.mark.parametrize(
         ("w", "h", "scale", "size"),

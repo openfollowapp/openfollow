@@ -9,6 +9,7 @@ vanish from both ``-m unit`` and ``-m "integration or smoke"`` selections.
 """
 
 import os
+import socket
 import warnings
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -261,3 +262,46 @@ def psn_packet_clock(first: float, rest: float) -> Callable[[], float]:
     """
     seq = iter([first])
     return lambda: next(seq, rest)
+
+
+@pytest.fixture
+def psn_loopback_sockets(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[socket.socket]]:
+    """Open every unpinned PSN receive socket on loopback unicast, not the multicast group.
+
+    A real socket a real receive thread parks on, without depending on the
+    host's multicast routing. Yields the sockets in the order they were opened.
+    """
+    import pypsn
+
+    made: list[socket.socket] = []
+
+    def _socket(_ip: str, _port: int) -> socket.socket:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind(("127.0.0.1", 0))
+        made.append(sock)
+        return sock
+
+    monkeypatch.setattr(pypsn, "get_socket", _socket)
+    yield made
+    for sock in made:
+        sock.close()
+
+
+def send_psn_tracker(dest: tuple[str, int], tracker_id: int) -> None:
+    """Send one PSN data packet carrying *tracker_id* to *dest*."""
+    import pypsn
+
+    info = pypsn.PsnInfo(timestamp=0, version_high=2, version_low=0, frame_id=0, packet_count=1)
+    zero = pypsn.PsnVector3(0.0, 0.0, 0.0)
+    tracker = pypsn.PsnTracker(
+        tracker_id=tracker_id,
+        pos=pypsn.PsnVector3(1.0, 2.0, 3.0),
+        speed=zero,
+        ori=zero,
+        accel=zero,
+        trgtpos=zero,
+        status=1,
+    )
+    data = pypsn.prepare_psn_data_packet_bytes(pypsn.PsnDataPacket(info=info, trackers=[tracker]))
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as tx:
+        tx.sendto(data, dest)

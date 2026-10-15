@@ -482,7 +482,8 @@ def test_the_input_tab_opens_with_the_controller_slots(slots_server) -> None:
     tab = body[body.index('id="tab-input"') :]
     assert tab.index('id="controller-slots-section"') < tab.index('id="gamepad-section"')
     assert 'data-help="controller_slots"' in tab
-    assert "this.closest('.tab-content').classList.contains('active')" in tab
+    assert 'id="controller-slots-content"' in tab
+    assert 'hx-trigger="every 1s [pollShown(this)], poll-shown[pollShown(this)] from:body"' in tab
 
 
 def test_statistics_name_each_missing_controller(slots_server) -> None:
@@ -912,14 +913,14 @@ def test_overview_says_station_default_is_down_rather_than_showing_its_address(l
 
 
 def test_index_overview_section_polls_only_peer_rows(live_server) -> None:
-    # The polling element is the inner peer list (#overview-peers), gated on the
-    # enclosing section's collapsed state – not the whole #overview-section via
-    # outerHTML, which is what flickered.
+    # The polling element is the inner peer list (#overview-peers), gated on its
+    # section being shown – not the whole #overview-section via outerHTML,
+    # which is what flickered.
     _, base = live_server
     status, body = _get(base, "/")
     assert status == 200
-    assert 'id="overview-peers"' in body
-    assert "closest('.section').classList.contains('is-collapsed')" in body
+    peers = body[body.index('id="overview-peers"') :].split(">", 1)[0]
+    assert 'hx-trigger="every 5s [pollShown(this)], poll-shown[pollShown(this)] from:body"' in peers
 
 
 def test_statistics_partial_renders(live_server) -> None:
@@ -1537,7 +1538,7 @@ def test_the_interface_assignment_panel_polls_and_its_pickers_can_reload_in_plac
     _server, base = live_server
     _status, panel = _get(base, "/section/interface_assignment")
     poller = panel[panel.rindex("<div", 0, panel.index(f'hx-get="{_IA_STATUS}"')) :].split("</div>", 1)[0]
-    assert 'hx-trigger="every 5s"' in poller
+    assert 'hx-trigger="every 5s [pollShown(this)], poll-shown[pollShown(this)] from:body"' in poller
     assert 'hx-swap="none"' in poller and 'hx-target="this"' in poller
     assert 'document.getElementById("ia-options-fp").dataset.fp' in poller
     selects = re.findall(r'<select [^>]*data-options-url="([^"]+)"[^>]*hx-get="([^"]+)"', panel)
@@ -3393,7 +3394,7 @@ def test_detection_section_running_state_emits_polling_div(live_server) -> None:
         server.set_detection_install_status(state="idle")
 
     assert status == 200
-    assert 'hx-trigger="every 1s"' in body
+    assert 'hx-trigger="every 1s [!document.hidden], poll-shown from:body"' in body
     assert "Exporting `yolo11n.onnx`" in body
 
 

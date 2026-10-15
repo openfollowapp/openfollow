@@ -45,7 +45,7 @@
 % _keep = ".net-iface-row[data-mode='edit'] .net-iface-form [name]:not([name='iface']), #net-vlan-add:not([hidden]) [name]"
 <div id="network-config-section" class="network-config"
 % if _polls:
-     hx-get="/section/network/status" hx-trigger="every 5s [netLabelsIdle()]"
+     hx-get="/section/network/status" hx-trigger="every 5s [netLabelsIdle() && pollShown(this)], poll-shown[netLabelsIdle() && pollShown(this)] from:body"
      hx-select="#net-iface-list" hx-target="#net-iface-list" hx-swap="outerHTML"
      %# Kept to the poll: inherited, ``hx-select`` cut every control's response
      %# down to the list, which then replaced the whole card.

@@ -31,6 +31,7 @@
  <script src="/assets/js/binding-steal.js?v={{_asset_v}}"></script>
  <script src="/assets/js/polygon-plan.js?v={{_asset_v}}"></script>
  <script src="/assets/js/picture-view.js?v={{_asset_v}}"></script>
+ <script src="/assets/js/poll-gate.js?v={{_asset_v}}"></script>
  <style>
  :root {
  color-scheme: dark;
@@ -2669,6 +2670,7 @@
  toggle.addEventListener('click', () => {
  const nextCollapsed = !section.classList.contains('is-collapsed');
  setSectionCollapsed(section, toggle, nextCollapsed);
+ if (!nextCollapsed) announcePollsShown();
  writeStorage(
  getSectionFoldStorageKey(key),
  nextCollapsed ? 'collapsed' : 'expanded'
@@ -4306,6 +4308,7 @@
  // to the owning tab first, then scroll once layout has settled.
  function goToSection(tabId, targetId) {
    switchTab(tabId);
+   announcePollsShown();
    var el = document.getElementById(targetId);
    if (!el) { return; }
    requestAnimationFrame(function () {
@@ -4326,7 +4329,10 @@
  tabId = defaultTab;
  }
  document.querySelectorAll('.tab-btn').forEach(btn => {
- btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+ btn.addEventListener('click', () => {
+ switchTab(btn.dataset.tab);
+ announcePollsShown();
+ });
  });
  switchTab(tabId);
  }
@@ -5439,7 +5445,7 @@
  <div hx-disinherit="hx-select hx-target">
      <div id="privilege-password-modal"
           hx-get="/system/privilege/password/modal"
-          hx-trigger="load, every 3s"
+          hx-trigger="load, every 3s [!document.hidden], poll-shown from:body"
           hx-target="this"
           hx-swap="innerHTML"></div>
  </div>

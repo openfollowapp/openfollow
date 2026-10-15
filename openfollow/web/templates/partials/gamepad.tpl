@@ -57,7 +57,7 @@
                     % if defined('detection_started') and detection_started:
                     <span style="color:var(--accent);font-size:0.8em;margin-left:0.5rem;"
                           hx-get="/section/gamepad" hx-target="#gamepad-section"
-                          hx-swap="outerHTML" hx-trigger="every 2s">Wizard running on app display</span>
+                          hx-swap="outerHTML" hx-trigger="every 2s [!document.hidden], poll-shown from:body">Wizard running on app display</span>
                     %# Allow web UI cancellation so keyboardless operator
                     %# isn't stranded after wizard grabs exclusive input.
                     <button type="button" class="secondary small"

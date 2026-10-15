@@ -31,6 +31,7 @@ from openfollow.binding_conflicts import BindingMove, settle_duplicates
 from openfollow.lens_model import pull_back_to_fold
 from openfollow.net_adapters import normalize_labels
 from openfollow.station_fqdn import normalize_fqdn
+from openfollow.text_hygiene import CONTROL_CHARS_RE
 from openfollow.units import UnitSystem
 
 if TYPE_CHECKING:
@@ -358,6 +359,23 @@ def _coerce_optional_int(
     if not lo <= out <= hi:
         return None
     return out
+
+
+def _normalize_slot_pins(raw: object) -> list[SlotPinConfig]:
+    """Valid pins only, the first one winning a slot or a socket named twice."""
+    pins: list[SlotPinConfig] = []
+    if not isinstance(raw, list):
+        return pins
+    taken_slots: set[int] = set()
+    taken_keys: set[str] = set()
+    for entry in raw:
+        pin = SlotPinConfig.coerce(entry)
+        if pin is None or pin.slot in taken_slots or pin.key in taken_keys:
+            continue
+        taken_slots.add(pin.slot)
+        taken_keys.add(pin.key)
+        pins.append(pin)
+    return pins
 
 
 def _coerce_str(value: Any, default: str) -> str:
@@ -2136,6 +2154,47 @@ CONTROLLER_BINDING_FIELDS = (
     "marker_fader_stick",
 )
 
+# Controller slots a USB socket can be pinned to (C1..C16).
+SLOT_PIN_MAX = 16
+SLOT_PIN_KINDS = ("gamepad", "mouse3d")
+# The two socket key forms ``input.controller_identity.resolve_key`` produces.
+_SLOT_PIN_KEY_PREFIXES = ("usb:", "bt:")
+_SLOT_PIN_LABEL_MAX = 128
+
+
+@dataclass
+class SlotPinConfig:
+    """A USB socket pinned to a controller slot.
+
+    ``key`` is the socket, and whatever is plugged into it takes the slot.
+    ``kind`` and ``label`` record what was pinned, shown while the socket is empty.
+    """
+
+    slot: int = 1  # 1-based: C1 is slot 1
+    key: str = ""
+    kind: str = "gamepad"
+    label: str = ""
+
+    @classmethod
+    def coerce(cls, raw: object) -> SlotPinConfig | None:
+        """A pin from a hand-edited or imported entry, or ``None`` when it names no usable pin."""
+        if isinstance(raw, SlotPinConfig):
+            raw = asdict(raw)
+        if not isinstance(raw, dict):
+            return None
+        slot = raw.get("slot")
+        key = raw.get("key")
+        kind = raw.get("kind")
+        label = raw.get("label", "")
+        if isinstance(slot, bool) or not isinstance(slot, int) or not 1 <= slot <= SLOT_PIN_MAX:
+            return None
+        if kind not in SLOT_PIN_KINDS:
+            return None
+        if not isinstance(key, str) or not key.startswith(_SLOT_PIN_KEY_PREFIXES) or key in _SLOT_PIN_KEY_PREFIXES:
+            return None
+        label = CONTROL_CHARS_RE.sub("", label).strip()[:_SLOT_PIN_LABEL_MAX] if isinstance(label, str) else ""
+        return cls(slot=slot, key=key, kind=kind, label=label)
+
 
 @dataclass
 class ControllerConfig:
@@ -2247,9 +2306,12 @@ class ControllerConfig:
     key_clear_messages: str = ""
     key_pathfinder: str = ""
     key_toggle_paths: str = ""
+    # USB sockets pinned to slots. Device-local: they name this station's sockets.
+    slot_pins: list[SlotPinConfig] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         """Validate configuration values."""
+        self.slot_pins = _normalize_slot_pins(self.slot_pins)
         # Mouse steering refinements – coerce so a hand-edited / imported TOML
         # can't feed a string or out-of-range value into the input loop.
         self.mouse_hysteresis_px = _coerce_int(self.mouse_hysteresis_px, 0, lo=0, hi=200)
@@ -3815,6 +3877,7 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
 
     if new_config.controller != app._config.controller:
         mouse_was_enabled = app._config.controller.mouse_enabled
+        pins_changed = new_config.controller.slot_pins != app._config.controller.slot_pins
         app._config.controller = new_config.controller
         # pragma: no branch – controller live-reload only fires while
         # the app is running, so ``_input_manager`` is always
@@ -3828,6 +3891,8 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
             # the first pointer event after it's re-enabled.
             if mouse_was_enabled and not new_config.controller.mouse_enabled:
                 app._input_manager.mouse_handler.deactivate()
+            if pins_changed:
+                app._input_manager.apply_slot_pins(new_config.controller.slot_pins)
         # Reflect a mouse_enabled toggle in the live pointer visibility:
         # turning mouse input off hides the cursor immediately, turning it
         # on brings the arrow back. Idempotent on the window side, so an

@@ -122,7 +122,7 @@ never a row pill. The footer's "Update available: v0.4.4" is one too, in the
 info chip colours.
 
 The one state word that is a row pill is the Controller Slots state, which
-shares a line with the controller's kind: "Connected" and "Reserved" in the
+shares a line with the controller's kind: "Connected", "Reserved" and "Empty" in the
 neutral chip colours, "Missing" in the error chip colours. The notes under a
 controller's name are caution row pills where they affect control ("Buttons not
 recognised", "Button map is for another model"); "Can't identify" is a fact,
@@ -229,6 +229,11 @@ text on the field that took it, error text (`.field-warn-msg`, which leaves Save
 open) on the field that lost it, whose action does nothing until it is bound
 again. A caution under an OSC trigger (`.field-caution-msg`) names the action
 that fires on the same press.
+
+How the latest Pin here ended is a line under the Controller Slots table: a
+pin is an inline confirmation, a controller that can't be pinned is error
+text, a timeout is plain `--muted` text. While it waits, the armed row's
+countdown is info text.
 
 A failed save is a red line under the form's actions, what the station
 observed plus one next step, next to the red ring. It is not a box and never a

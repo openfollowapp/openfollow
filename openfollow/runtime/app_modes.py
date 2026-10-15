@@ -17,11 +17,13 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from openfollow.configuration import save_config_fields
+from openfollow.input.slot_pin_capture import CAPTURE_TIMEOUT_S, PINNED
 from openfollow.runtime import paths_runtime
 from openfollow.video.failure import SourceKind, VideoFailure, failure_sentence
 
 if TYPE_CHECKING:
     from openfollow.app import OpenFollowApp
+    from openfollow.input.input_manager import InputManager
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +148,12 @@ def process_input(app: OpenFollowApp, dt: float) -> None:
     # otherwise swallow the press.
     if modal_active and _settings_button_closes(app, app._input_manager.keyboard_handler.keys):
         close_all_screens(app)
+        return
+
+    # Pin here takes every controller for up to its timeout; nothing moves a marker meanwhile.
+    if getattr(app._input_manager, "pin_capture_active", False):
+        app._marker_control_suspended = True
+        process_slot_pin_capture(app, app._input_manager)
         return
 
     # Button detection wizard takes exclusive control of input.
@@ -1760,7 +1768,8 @@ def _exclusive_mode_active(app: OpenFollowApp) -> bool:
     if receiver is not None and receiver.source_selection_active:
         return True
     return bool(
-        getattr(app, "_button_detection", None) is not None
+        getattr(getattr(app, "_input_manager", None), "pin_capture_active", False)
+        or getattr(app, "_button_detection", None) is not None
         or getattr(app, "_settings_menu_active", False)
         or getattr(app, "_about_active", False)
         or getattr(app, "_media_picker_active", False)
@@ -1864,3 +1873,59 @@ def exit_button_detection(app: OpenFollowApp) -> None:
         app._button_detection = None
         if app._web_server is not None:
             app._web_server.set_button_detection_active(False)
+
+
+# ---------------------------------------------------------------------------
+# Pin here (Controller Slots)
+# ---------------------------------------------------------------------------
+
+
+def enter_slot_pin_capture(app: OpenFollowApp, index: int) -> bool:
+    """Arm Pin here for slot ``index`` and prompt for the press on the Operator Screen."""
+    manager = app._input_manager
+    # The web request is queued blindly; a screen that owns input keeps it.
+    if manager is None or _exclusive_mode_active(app):
+        logger.warning("Pin here for C%d ignored – another mode is active.", index + 1)
+        return False
+    if not manager.start_pin_capture(index):
+        return False
+    app._slot_pin_prompt = app._runtime_services._operator_message_store.add(
+        f"Press a button on the controller for C{index + 1}",
+        duration_s=CAPTURE_TIMEOUT_S,
+        from_app=True,
+    )
+    return True
+
+
+def process_slot_pin_capture(app: OpenFollowApp, manager: InputManager) -> None:
+    """Advance an armed Pin here; Escape cancels. Saves the pins once one is made."""
+    if "Escape" in manager.keyboard_handler.keys:
+        result = manager.cancel_pin_capture()
+    else:
+        result = manager.poll_pin_capture()
+    if result is not None:
+        _end_slot_pin_capture(app, result.outcome == PINNED)
+
+
+def exit_slot_pin_capture(app: OpenFollowApp) -> None:
+    """Cancel an armed Pin here, from the web's Cancel."""
+    manager = app._input_manager
+    if manager is not None and manager.cancel_pin_capture() is not None:
+        _end_slot_pin_capture(app, False)
+
+
+def save_slot_pins(app: OpenFollowApp) -> bool:
+    """Write the slot table's pins to config.toml, and to the running config so the reload sees no change."""
+    manager = app._input_manager
+    if manager is None:
+        return False
+    app._config.controller.slot_pins = manager.slot_pins()
+    return _persist_config(app, "controller.slot_pins")
+
+
+def _end_slot_pin_capture(app: OpenFollowApp, pinned: bool) -> None:
+    if app._slot_pin_prompt is not None:
+        app._runtime_services._operator_message_store.remove(app._slot_pin_prompt)
+        app._slot_pin_prompt = None
+    if pinned:
+        save_slot_pins(app)

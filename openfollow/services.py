@@ -96,6 +96,9 @@ logger = logging.getLogger(__name__)
 # full per-row ring.
 _RECENT_OSC_SENDS_LIMIT = 100
 
+# The controllers block's Pin here state before an InputManager exists.
+_IDLE_PIN_CAPTURE: dict[str, Any] = {"slot": None, "seconds_left": 0.0, "result": None}
+
 # Per-request budget for the web 3D-Mouse button-detect poll. Kept short so a
 # Detect click never pins its request thread for seconds; the browser widget
 # (detect-input.js) re-polls until the operator presses a button or gives up.
@@ -3814,6 +3817,7 @@ class AppRuntimeServices:
                 "missing_count": 0,
                 "mapped_count": 0,
                 "items": [],
+                "pin_capture": dict(_IDLE_PIN_CAPTURE),
             },
             "mouse3d": idle_mouse3d_status(cfg.mouse3d.enabled).to_dict(),
             "playback": self._frame_metrics.snapshot(),
@@ -3969,6 +3973,7 @@ class AppRuntimeServices:
 
         controller_items: list[dict[str, Any]] = []
         input_manager = getattr(app, "_input_manager", None)
+        pin_capture = input_manager.pin_capture_status() if input_manager is not None else dict(_IDLE_PIN_CAPTURE)
         mouse3d_status = (
             input_manager.mouse3d_manager.status()
             if input_manager is not None
@@ -3989,6 +3994,7 @@ class AppRuntimeServices:
                         "backend": str(item["backend"]),
                         "port_label": str(item.get("port_label", "")),
                         "port_key": item.get("port_key"),
+                        "pinned": bool(item.get("pinned", False)),
                         "slot_ref": str(item.get("slot_ref", "")),
                         "seconds_since_input": None if since is None else float(since),
                         "notes": [str(note) for note in item.get("notes") or ()],
@@ -4044,6 +4050,7 @@ class AppRuntimeServices:
                     sum(1 for item in controller_items if item["connected"] and item["marker_id"] is not None)
                 ),
                 "items": controller_items,
+                "pin_capture": pin_capture,
             },
             "mouse3d": mouse3d_status.to_dict(),
             "playback": playback_snapshot,

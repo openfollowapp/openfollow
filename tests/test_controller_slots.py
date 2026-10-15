@@ -10,12 +10,14 @@ from hypothesis import strategies as st
 
 from openfollow.input.controller_slots import (
     CONNECTED,
+    EMPTY,
     MISSING,
     NOTE_BUTTON_MAP_OTHER_MODEL,
     NOTE_CANNOT_IDENTIFY,
     RESERVED,
     ControllerSlotTable,
     LiveController,
+    SlotPin,
     slot_ref,
 )
 
@@ -265,6 +267,220 @@ def test_a_slot_ref_changes_with_whatever_the_row_shows() -> None:
     assert slot_ref(table.slots[0]) not in (connected, missing)
 
 
+# -- pins --------------------------------------------------------------------
+
+
+def pinned_table(pins: dict[int, SlotPin], *live: LiveController) -> ControllerSlotTable:
+    table = ControllerSlotTable(clock=_Clock(), pins=pins)
+    table.update(live, settled=True)
+    return table
+
+
+def pinned_layout(table: ControllerSlotTable) -> list[tuple[str, int | None, str, bool]]:
+    return [(s.kind, s.local_id, s.state, s.pinned) for s in table.slots]
+
+
+_SOCKET_9 = SlotPin(key="usb:h:9", kind="gamepad", label="Xbox Pad")
+
+
+def test_a_pinned_socket_takes_its_slot_whatever_the_port_order() -> None:
+    table = pinned_table({0: _SOCKET_9}, pad(0, "usb:h:1"), pad(1, "usb:h:9"))
+    assert pinned_layout(table) == [("gamepad", 1, CONNECTED, True), ("gamepad", 0, CONNECTED, False)]
+
+
+def test_without_pins_the_order_is_the_port_order() -> None:
+    table = pinned_table({}, pad(0, "usb:h:9"), pad(1, "usb:h:1"))
+    assert pinned_layout(table) == [("gamepad", 1, CONNECTED, False), ("gamepad", 0, CONNECTED, False)]
+
+
+def test_a_pin_whose_socket_is_empty_shows_missing_without_shifting_the_others() -> None:
+    table = pinned_table({0: _SOCKET_9}, pad(0, "usb:h:1"), pad(1, "usb:h:2"))
+    assert pinned_layout(table) == [
+        ("gamepad", None, MISSING, True),
+        ("gamepad", 0, CONNECTED, False),
+        ("gamepad", 1, CONNECTED, False),
+    ]
+    assert table.slots[0].name == "Xbox Pad"
+    assert table.slots[0].key == "usb:h:9"
+
+
+def test_a_pin_above_the_controllers_leaves_empty_slots_below_it() -> None:
+    table = pinned_table({2: _SOCKET_9}, pad(0, "usb:h:9"))
+    assert pinned_layout(table) == [
+        ("", None, EMPTY, False),
+        ("", None, EMPTY, False),
+        ("gamepad", 0, CONNECTED, True),
+    ]
+
+
+def test_other_hardware_in_a_pinned_socket_takes_the_slot() -> None:
+    table = pinned_table({0: _SOCKET_9}, pad(0, "usb:h:1"), puck(4, "usb:h:9"))
+    assert pinned_layout(table)[0] == ("mouse3d", 4, CONNECTED, True)
+
+
+def test_a_controller_back_in_its_pinned_socket_reclaims_the_slot() -> None:
+    table = pinned_table({1: _SOCKET_9}, pad(0, "usb:h:1"), pad(1, "usb:h:9"))
+    table.update([pad(0, "usb:h:1")], settled=True)
+    assert pinned_layout(table)[1] == ("gamepad", None, MISSING, True)
+    table.update([pad(0, "usb:h:1"), puck(7, "usb:h:9")], settled=True)
+    assert pinned_layout(table)[1] == ("mouse3d", 7, CONNECTED, True)
+
+
+def test_a_pinned_slot_never_goes_to_another_socket() -> None:
+    table = pinned_table({0: _SOCKET_9})
+    table.update([pad(3, "usb:h:2")], settled=True)
+    assert pinned_layout(table) == [("gamepad", None, MISSING, True), ("gamepad", 3, CONNECTED, False)]
+
+
+def test_an_empty_slot_takes_a_controller_of_any_kind() -> None:
+    table = pinned_table({1: _SOCKET_9}, pad(0, "usb:h:9"))
+    table.update([pad(0, "usb:h:9"), puck(2, "usb:h:3")], settled=True)
+    assert pinned_layout(table) == [("mouse3d", 2, CONNECTED, False), ("gamepad", 0, CONNECTED, True)]
+
+
+def test_pinning_moves_the_controller_and_swaps_with_the_one_there() -> None:
+    table = frozen(pad(0, "usb:h:1"), pad(1, "usb:h:2"))
+    assert table.pin(0, "gamepad", 1)
+    assert pinned_layout(table) == [("gamepad", 1, CONNECTED, True), ("gamepad", 0, CONNECTED, False)]
+    assert table.pins == {0: SlotPin(key="usb:h:2", kind="gamepad", label="Pad")}
+
+
+def test_the_displaced_controller_takes_its_pin_along() -> None:
+    table = pinned_table({0: SlotPin("usb:h:1", "gamepad", "Pad")}, pad(0, "usb:h:1"), pad(1, "usb:h:2"))
+    assert table.pin(0, "gamepad", 1)
+    assert pinned_layout(table) == [("gamepad", 1, CONNECTED, True), ("gamepad", 0, CONNECTED, True)]
+    assert {i: pin.key for i, pin in table.pins.items()} == {0: "usb:h:2", 1: "usb:h:1"}
+
+
+def test_a_pinned_controller_pinned_elsewhere_leaves_its_old_pin() -> None:
+    table = pinned_table({1: SlotPin("usb:h:2", "gamepad", "Pad")}, pad(0, "usb:h:1"), pad(1, "usb:h:2"))
+    assert table.pin(0, "gamepad", 1)
+    assert {i: pin.key for i, pin in table.pins.items()} == {0: "usb:h:2"}
+    assert pinned_layout(table) == [("gamepad", 1, CONNECTED, True), ("gamepad", 0, CONNECTED, False)]
+
+
+def test_pinning_in_place_moves_nothing() -> None:
+    table = frozen(pad(0, "usb:h:1"), pad(1, "usb:h:2"))
+    assert table.pin(1, "gamepad", 1)
+    assert pinned_layout(table) == [("gamepad", 0, CONNECTED, False), ("gamepad", 1, CONNECTED, True)]
+
+
+def test_pinning_past_the_last_slot_leaves_empty_slots() -> None:
+    table = frozen(pad(0, "usb:h:1"))
+    assert table.pin(2, "gamepad", 0)
+    assert pinned_layout(table) == [("", None, EMPTY, False), ("", None, EMPTY, False), ("gamepad", 0, CONNECTED, True)]
+
+
+def test_moving_a_pin_down_drops_the_empty_slots_it_no_longer_needs() -> None:
+    table = pinned_table({2: _SOCKET_9}, pad(0, "usb:h:9"))
+    assert table.pin(0, "gamepad", 0)
+    assert pinned_layout(table) == [("gamepad", 0, CONNECTED, True)]
+
+
+@pytest.mark.parametrize(("kind", "local_id"), [("gamepad", 0), ("mouse3d", 1)])
+def test_a_pad_and_a_puck_pin_in_either_order(kind: str, local_id: int) -> None:
+    table = frozen(pad(0, "usb:h:1"), puck(1, "usb:h:2"))
+    assert table.pin(1, kind, local_id) and table.pin(0, kind, local_id)
+    assert (table.slots[0].kind, table.slots[0].local_id) == (kind, local_id)
+
+
+@pytest.mark.parametrize(
+    ("controllers", "kind", "local_id"),
+    [((pad(0, None),), "gamepad", 0), ((pad(0, "usb:h:1"),), "gamepad", 9), ((pad(0, "usb:h:1"),), "mouse3d", 0)],
+    ids=["no stable port", "not in a slot", "another kind"],
+)
+def test_a_controller_without_a_socket_or_a_slot_cannot_be_pinned(
+    controllers: tuple[LiveController, ...], kind: str, local_id: int
+) -> None:
+    table = frozen(*controllers)
+    before = table.slots
+    assert table.pin(0, kind, local_id) is False
+    assert table.slots == before
+    assert table.pins == {}
+
+
+def test_a_negative_slot_cannot_be_pinned() -> None:
+    table = frozen(pad(0, "usb:h:1"))
+    assert table.pin(-1, "gamepad", 0) is False
+
+
+def test_unpinning_moves_nothing() -> None:
+    table = pinned_table({0: _SOCKET_9}, pad(0, "usb:h:1"), pad(1, "usb:h:9"))
+    assert table.unpin(0)
+    assert pinned_layout(table) == [("gamepad", 1, CONNECTED, False), ("gamepad", 0, CONNECTED, False)]
+    assert table.pins == {}
+    assert table.unpin(0) is False
+
+
+def test_an_unpinned_missing_slot_is_an_ordinary_missing_slot() -> None:
+    table = pinned_table({0: _SOCKET_9}, pad(0, "usb:h:1"))
+    table.unpin(0)
+    table.update([pad(0, "usb:h:1"), pad(5, "usb:h:4")], settled=True)
+    assert pinned_layout(table)[0] == ("gamepad", 5, CONNECTED, False)
+
+
+def test_forgetting_a_pinned_missing_slot_keeps_its_pin() -> None:
+    table = pinned_table({0: _SOCKET_9}, pad(0, "usb:h:1"))
+    assert table.forget(0)
+    assert pinned_layout(table)[0] == ("gamepad", None, RESERVED, True)
+    assert table.pins == {0: _SOCKET_9}
+
+
+def test_new_pins_from_the_configuration_move_their_controllers() -> None:
+    table = frozen(pad(0, "usb:h:1"), pad(1, "usb:h:2"))
+    table.set_pins({0: SlotPin("usb:h:2", "gamepad", "Pad")})
+    assert pinned_layout(table) == [("gamepad", 1, CONNECTED, True), ("gamepad", 0, CONNECTED, False)]
+
+
+def test_a_new_pin_for_an_empty_socket_moves_the_slot_holder_to_the_end() -> None:
+    table = frozen(pad(0, "usb:h:1"), pad(1, "usb:h:2"))
+    table.set_pins({0: _SOCKET_9})
+    assert pinned_layout(table) == [
+        ("gamepad", None, MISSING, True),
+        ("gamepad", 1, CONNECTED, False),
+        ("gamepad", 0, CONNECTED, False),
+    ]
+
+
+def test_a_socket_repinned_to_another_slot_leaves_the_old_one() -> None:
+    table = pinned_table({0: _SOCKET_9}, pad(0, "usb:h:1"))
+    table.set_pins({2: _SOCKET_9})
+    assert pinned_layout(table) == [
+        ("gamepad", None, MISSING, False),
+        ("gamepad", 0, CONNECTED, False),
+        ("gamepad", None, MISSING, True),
+    ]
+    assert table.pins == {2: _SOCKET_9}
+
+
+def test_removing_every_pin_from_the_configuration_moves_nothing() -> None:
+    table = pinned_table({0: _SOCKET_9}, pad(0, "usb:h:1"), pad(1, "usb:h:9"))
+    table.set_pins({})
+    assert pinned_layout(table) == [("gamepad", 1, CONNECTED, False), ("gamepad", 0, CONNECTED, False)]
+
+
+def test_unchanged_pins_from_the_configuration_change_nothing() -> None:
+    table = pinned_table({0: _SOCKET_9}, pad(0, "usb:h:1"), pad(1, "usb:h:9"))
+    before = table.slots
+    table.set_pins({0: _SOCKET_9})
+    assert table.slots == before
+
+
+def test_pins_set_while_seeding_seed_the_next_frame() -> None:
+    table = ControllerSlotTable(clock=_Clock())
+    table.update([pad(0, "usb:h:1"), pad(1, "usb:h:9")], settled=False)
+    table.set_pins({0: _SOCKET_9})
+    table.update([pad(0, "usb:h:1"), pad(1, "usb:h:9")], settled=True)
+    assert pinned_layout(table) == [("gamepad", 1, CONNECTED, True), ("gamepad", 0, CONNECTED, False)]
+
+
+def test_a_slot_ref_changes_when_the_slot_is_pinned() -> None:
+    table = frozen(pad(0, "usb:h:1"))
+    before = slot_ref(table.slots[0])
+    table.pin(0, "gamepad", 0)
+    assert slot_ref(table.slots[0]) != before
+
+
 # -- property ----------------------------------------------------------------
 
 _DEVICES = [pad(i, f"usb:h:{i + 1}") for i in range(4)] + [puck(0, "usb:h:9"), pad(10, None)]
@@ -283,3 +499,30 @@ def test_a_controller_that_stays_attached_never_changes_slot(frames: list[set[in
                 assert previous[ident] == index
         assert len(now) == len(live)
         previous = now
+
+
+@given(frames=st.lists(st.sets(st.sampled_from(range(len(_DEVICES)))), min_size=1, max_size=12))
+def test_with_pins_a_controller_that_stays_attached_never_changes_slot(frames: list[set[int]]) -> None:
+    pins = {0: SlotPin("usb:h:4", "gamepad", "Pad"), 3: SlotPin("usb:h:9", "mouse3d", "3D Mouse")}
+    table = ControllerSlotTable(clock=_Clock(), pins=pins)
+    table.update(_DEVICES, settled=True)
+    previous = {(s.kind, s.local_id): i for i, s in enumerate(table.slots) if s.state == CONNECTED}
+    for frame in frames:
+        live = [_DEVICES[i] for i in sorted(frame)]
+        table.update(live, settled=True)
+        now = {(s.kind, s.local_id): i for i, s in enumerate(table.slots) if s.state == CONNECTED}
+        for ident, index in now.items():
+            if ident in previous:
+                assert previous[ident] == index
+        assert len(now) == len(live)
+        for index, pin in pins.items():
+            assert table.slots[index].key == pin.key
+        previous = now
+
+
+def test_a_pin_dropped_before_the_first_seed_moves_nothing() -> None:
+    table = ControllerSlotTable(clock=lambda: 0.0)
+    table.set_pins({2: SlotPin(key="usb:h:1", kind="gamepad", label="Pad")})
+    assert table.unpin(2) is True
+    assert table.pins == {}
+    assert table.slots == ()

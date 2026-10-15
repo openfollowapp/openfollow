@@ -3917,7 +3917,7 @@
  refreshFormGate(container.closest('form'));
  }
  // Every Restart button: the confirm turns into a locked progress view that stays until
- // /api/info answers again and the page reloads. ``opts``: title and message for the
+ // /api/info answers from a new process and the page reloads. ``opts``: title and message for the
  // confirm, ``note`` for the progress view's second line, ``step`` for the next step when
  // the station does not come back within RESTART_WAIT_MS.
  const RESTART_WAIT_MS = 90000;
@@ -3953,8 +3953,12 @@
  saveError.show(box, info, 'Not restarted.');
  return;
  }
+ // The old process keeps answering while it shuts down; only a new instance is back.
+ let before = '';
+ try { before = (await res.json()).instance || ''; } catch (e) { /* any instance then counts */ }
  // Elapsed time, not poll counts: a poll can hang on a station half way up.
  const began = performance.now();
+ let back = false;
  const p = setInterval(function() {
  if (performance.now() - began >= RESTART_WAIT_MS) {
  clearInterval(p);
@@ -3968,8 +3972,13 @@
  });
  return;
  }
- fetch('/api/info').then(function(r) {
- if (r.ok) { clearInterval(p); window.location.reload(); }
+ fetch('/api/info', {cache: 'no-store'}).then(function(r) {
+ return r.ok ? r.json() : null;
+ }).then(function(info) {
+ if (back || !info || info.instance === before) return;
+ back = true;
+ clearInterval(p);
+ window.location.reload();
  }).catch(function() {});
  }, 2000);
  }

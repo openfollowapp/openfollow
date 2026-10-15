@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 import socket
 import threading
 import time
@@ -282,6 +283,8 @@ class ConfigWebServer:
         # rather than showing a number whose meaning changed silently.
         self._station_interface_down = False
         self._command_queue = command_queue or WebCommandQueue()
+        # Tells a browser waiting out a restart this process from the one it asked to restart.
+        self.instance_id = secrets.token_hex(8)
         self.pushed_settings = PushedSettings()
         self._runtime_stats_provider = runtime_stats_provider
         self.crash_restarts_provider = crash_restarts_provider

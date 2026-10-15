@@ -2409,7 +2409,7 @@ def test_api_restart_goes_ahead_once_the_update_failed(live_server) -> None:
     server, base = live_server
     server.set_update_status(state="failed")
     status, body = _post_json(base, "/api/restart", {})
-    assert (status, body) == (200, {"success": True})
+    assert (status, body) == (200, {"success": True, "instance": server.instance_id})
     assert server.check_restart_requested() is True
 
 
@@ -4833,6 +4833,46 @@ def test_auth_cookie_authenticates_subsequent_requests(pin_protected_server) -> 
         json.loads(r.read().decode())  # valid JSON body
 
 
+def _login_cookie(base: str, pin: str) -> str:
+    """The ``name=value`` auth cookie a browser gets for logging in with ``pin``."""
+
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *_a, **_kw):
+            return None
+
+    req = urllib.request.Request(
+        f"{base}/login",
+        data=urllib.parse.urlencode({"pin": pin}).encode(),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        set_cookies = urllib.request.build_opener(_NoRedirect).open(req, timeout=5).headers.get_all("Set-Cookie")
+    except urllib.error.HTTPError as e:
+        set_cookies = e.headers.get_all("Set-Cookie")
+    return next(c for c in set_cookies or [] if c.startswith("_openfollow_auth=")).split(";", 1)[0]
+
+
+def _info_with_cookie(base: str, cookie: str) -> dict:
+    req = urllib.request.Request(f"{base}/api/info", headers={"Cookie": cookie})
+    with urllib.request.urlopen(req, timeout=5) as r:
+        assert r.status == 200
+        return json.loads(r.read().decode())
+
+
+def test_a_restarted_openfollow_lets_the_logged_in_browser_ask_whether_it_is_back(pin_protected_server) -> None:
+    """The cookie is signed with the PIN, not per process, so the new process answers the
+    browser that asked the old one to restart, with a new instance."""
+    server, base, pin = pin_protected_server
+    cookie = _login_cookie(base, pin)
+    before = _info_with_cookie(base, cookie)["instance"]
+    assert before == server.instance_id
+    with live_on_free_port(
+        lambda port: ConfigWebServer(config_path=server.config_path, host="127.0.0.1", port=port)
+    ) as (_restarted, restarted_base):
+        assert _info_with_cookie(restarted_base, cookie)["instance"] not in ("", before)
+
+
 def test_auth_invalid_signature_fails_closed(pin_protected_server) -> None:
     _, base, _ = pin_protected_server
     body = b'{"pos_x": 2.5}'
@@ -6143,6 +6183,22 @@ def test_api_video_snapshot_full_returns_503_when_no_full_provider(live_server) 
     assert status == 503
 
 
+def test_api_info_and_api_restart_name_the_running_process(live_server) -> None:
+    """A browser waiting out a restart tells the old process from the new one by this."""
+    server, base = live_server
+    _status, first = _get_json(base, "/api/info")
+    _status, second = _get_json(base, "/api/info")
+    status, restart = _post_json(base, "/api/restart", {})
+    assert status == 200
+    assert re.fullmatch(r"[0-9a-f]{16}", first["instance"])
+    assert first["instance"] == second["instance"] == restart["instance"] == server.instance_id
+
+
+def test_every_web_server_is_a_new_instance(tmp_path) -> None:
+    servers = [ConfigWebServer(config_path=str(tmp_path / "config.toml"), host="127.0.0.1", port=0) for _ in range(2)]
+    assert servers[0].instance_id != servers[1].instance_id
+
+
 def test_api_restart_post_requests_restart_via_command_queue(live_server) -> None:
     """The JSON /api/restart endpoint every Restart button calls enqueues a
     restart and answers success."""
@@ -6151,7 +6207,7 @@ def test_api_restart_post_requests_restart_via_command_queue(live_server) -> Non
 
     status, body = _post_json(base, "/api/restart", {})
     assert status == 200
-    assert body.get("success") is True
+    assert body == {"success": True, "instance": server.instance_id}
     assert server.check_restart_requested() is True
 
 

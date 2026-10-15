@@ -51,7 +51,8 @@ _MARKUP = (
 
 # The modal helpers stand in for base.tpl's: they record what each dialog shows.
 _HELPERS = """
-var asked = [], answer = true, reloaded = 0, info = 'unreachable', restartAnswer = { body: { success: true } };
+var asked = [], answer = true, reloaded = 0, info = 'unreachable';
+var restartAnswer = { body: { success: true, instance: 'old' } };
 var modal = null, now = 0;
 performance.now = function () { return now; };
 function escapeHTML(v) { return String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
@@ -130,26 +131,49 @@ def test_the_confirmed_dialog_shows_progress_before_the_station_answers() -> Non
     assert out == {"urls": ["POST /api/restart"], "modal": _progress(), "error": None}
 
 
-def test_the_dialog_stays_until_the_station_answers_again_then_the_page_reloads() -> None:
+def test_the_dialog_stays_until_a_new_openfollow_answers_then_the_page_reloads() -> None:
     out = _run(
         "await press(ONCLICK); out.accepted = shown();"
-        # Away while it restarts, then answering but not ready: polled, still open, no reload.
-        "await tick(2000); out.away = [shown(), reloaded];"
-        "info = { status: 503 }; await tick(2000); out.starting = [shown(), reloaded];"
-        "info = { body: {} }; await tick(2000); out.back = reloaded;"
+        # The old process still answers while it shuts down, then it is gone: still open, no reload.
+        "info = { body: { instance: 'old' } }; await tick(2000); out.dying = [shown(), reloaded];"
+        "info = 'unreachable'; await tick(2000); await tick(2000); out.away = [shown(), reloaded];"
+        # Up but not serving yet, or not letting this browser in: still not back.
+        "for (var st of [401, 403, 503]) { info = { status: st }; await tick(2000); }"
+        "out.starting = [shown(), reloaded];"
+        "info = { body: { instance: 'new' } }; await tick(2000); out.back = reloaded;"
         # Polling stops once it reloaded.
         "var polls = urls().length; await tick(2000); out.after = urls().length - polls;"
-        "out.urls = urls().slice(0, 4); out.error = errorLine();"
+        "out.polls = urls().length; out.error = errorLine();"
     )
     assert out == {
         "accepted": _progress(),
+        "dying": [_progress(), 0],
         "away": [_progress(), 0],
         "starting": [_progress(), 0],
         "back": 1,
         "after": 0,
-        "urls": ["POST /api/restart", "GET /api/info", "GET /api/info", "GET /api/info"],
+        "polls": 1 + 7,
         "error": None,
     }
+
+
+def test_two_polls_that_find_the_new_openfollow_reload_once() -> None:
+    out = _run(
+        "await press(ONCLICK); info = { body: { instance: 'new' } };"
+        "holdWhen = function (r) { return r.url === '/api/info'; };"
+        "now += 2000; tickIntervals(); now += 2000; tickIntervals(); await settle();"
+        "release(); await settle(); out.reloaded = reloaded;"
+    )
+    assert out == {"reloaded": 1}
+
+
+def test_a_restart_answer_without_an_identity_still_waits_for_the_station() -> None:
+    out = _run(
+        "restartAnswer = { body: 'restarting' }; await press(ONCLICK);"
+        "await tick(2000); out.away = reloaded;"
+        "info = { body: { instance: 'new' } }; await tick(2000); out.back = reloaded;"
+    )
+    assert out == {"away": 0, "back": 1}
 
 
 def test_a_refused_restart_closes_the_dialog_and_says_an_update_is_running() -> None:
@@ -179,7 +203,7 @@ def test_a_station_that_does_not_come_back_is_reported_after_ninety_seconds() ->
         "await tick(89999); out.waiting = shown();"
         "await tick(1); out.gone = shown();"
         # Polling ends with the wait: a station back later reloads nothing.
-        "info = { body: {} }; var polls = urls().length; await tick(2000);"
+        "info = { body: { instance: 'new' } }; var polls = urls().length; await tick(2000);"
         "out.after = [urls().length - polls, reloaded];"
         # Closed, it stays closed.
         "modal.close(); await tick(2000); out.closed = shown();"

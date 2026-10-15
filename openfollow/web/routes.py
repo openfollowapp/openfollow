@@ -9373,6 +9373,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 "ip": server.local_ip,
                 "port": server.port,
                 "version": openfollow.__version__,
+                "instance": server.instance_id,
             }
         )
 
@@ -9485,7 +9486,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         if not server.request_restart_unless_updating():
             return _save_failed(409, "An update is running.", "Restart once it has finished.")
         response.content_type = "application/json"
-        return json.dumps({"success": True})
+        return json.dumps({"success": True, "instance": server.instance_id})
 
     @app.get("/api/peers")
     def api_peers() -> Any:

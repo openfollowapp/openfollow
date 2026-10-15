@@ -4391,21 +4391,64 @@ def test_api_config_reset_goes_ahead_once_the_update_failed(live_server) -> None
     assert server.check_restart_requested() is True
 
 
-def test_an_update_queued_while_defaults_are_written_is_not_cut_short(live_server, monkeypatch) -> None:
-    """The update restarts the station itself, so the reset takes effect then."""
+def test_an_update_asked_for_while_defaults_are_written_waits_for_their_restart(live_server, monkeypatch) -> None:
+    """Queued between the write and the restart, the update would leave the reset file under the old config."""
+    import threading
+
+    import openfollow.services as services_module
     import openfollow.web.routes as routes_module
 
     server, base = live_server
+    monkeypatch.setattr(services_module, "clear_detached_update_state", lambda: None)
     real_save = routes_module.save_config
+    queued: list[bool] = []
+    restart_seen: list[bool] = []
+    workers: list[threading.Thread] = []
 
-    def save_then_queue_an_update(cfg: AppConfig, path: Any) -> None:
+    def ask_for_an_update() -> None:
+        queued.append(server.request_deb_update("openfollow"))
+        # Read the moment the update went through.
+        restart_seen.append(server.check_restart_requested())
+
+    def save_while_an_update_is_asked_for(cfg: AppConfig, path: Any) -> None:
         real_save(cfg, path)
-        server.set_update_status(state="queued")
+        worker = threading.Thread(target=ask_for_an_update)
+        worker.start()
+        worker.join(timeout=0.2)
+        assert worker.is_alive(), "an update was queued between the write and its restart"
+        workers.append(worker)
 
-    monkeypatch.setattr(routes_module, "save_config", save_then_queue_an_update)
+    monkeypatch.setattr(routes_module, "save_config", save_while_an_update_is_asked_for)
     status, body = _post_json(base, "/api/config/reset", {})
-    assert (status, body["success"]) == (200, True)
-    assert load_config(server.config_path).grid.width == pytest.approx(AppConfig().grid.width)
+    workers[0].join(timeout=5)
+
+    assert (status, body["success"], body["restarting"]) == (200, True, True)
+    assert (queued, restart_seen) == ([True], [True])
+
+
+def test_a_reset_never_answers_restarting_without_a_restart(live_server, monkeypatch) -> None:
+    """An update queued while the backup is made refuses the reset, which then writes nothing."""
+    import openfollow.services as services_module
+    import openfollow.web.routes as routes_module
+
+    server, base = live_server
+    monkeypatch.setattr(services_module, "clear_detached_update_state", lambda: None)
+    cfg = load_config(server.config_path)
+    cfg.grid.width = 42.0
+    save_config(cfg, server.config_path)
+    real_backup = routes_module._backup_before
+
+    def back_up_then_queue_an_update(config_path: str, kind: str) -> dict[str, str]:
+        fields = real_backup(config_path, kind)
+        assert server.request_deb_update("openfollow") is True
+        return fields
+
+    monkeypatch.setattr(routes_module, "_backup_before", back_up_then_queue_an_update)
+    status, body = _post_json(base, "/api/config/reset", {})
+
+    assert status == 409
+    assert body == {"error": "An update is running.", "action": "Restore defaults once it has finished."}
+    assert load_config(server.config_path).grid.width == pytest.approx(42.0)
     assert server.check_restart_requested() is False
 
 

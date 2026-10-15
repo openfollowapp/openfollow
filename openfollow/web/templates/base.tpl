@@ -2470,8 +2470,9 @@
  if (box && netBusyText(evt.detail.elt) !== null) box.hidden = true;
  });
  // Network mode switch. Simple first reads what it would clear and remove, and
- // asks only when that is something; the answer reloads the page, because the
- // mode decides which sections it shows, or carries the restart notice.
+ // asks only when that is something. The answer reloads the page, because the
+ // mode decides which sections it shows, or names the process it restarts and
+ // the page waits for a new one.
  function netConfirmSimple(preview) {
  const list = (items) => '<ul>' + items.map((item) => '<li>' + escapeHTML(item) + '</li>').join('') + '</ul>';
  let html = '<p>All traffic moves to the station interface, ' + escapeHTML(preview.station) + '.</p>';
@@ -2497,7 +2498,15 @@
  const radios = Array.from(group.querySelectorAll('input[name="network_mode"]'));
  const saveError = window.OpenFollow.saveError;
  const box = saveError.boxFor(group);
+ const busy = document.getElementById('net-busy');
+ const showBusy = (on) => {
+ if (!busy) return;
+ busy.querySelector('.net-busy-text').textContent =
+ 'Switching to ' + input.value.charAt(0).toUpperCase() + input.value.slice(1) + '…';
+ busy.hidden = !on;
+ };
  const fail = (info) => {
+ showBusy(false);
  radios.forEach((radio) => { radio.disabled = false; radio.checked = radio.value === group.dataset.mode; });
  saveError.show(box, info, 'Not switched.');
  };
@@ -2519,7 +2528,8 @@
  // Only what the dialog listed is removed.
  preview.remove.forEach((name) => body.append('vlans', name));
  }
- // No progress view while it is sent: removing a VLAN may ask for the password.
+ // A busy line, not the locked progress view: removing a VLAN may ask for the password.
+ showBusy(true);
  const resp = await fetch('/section/network/mode', {
  method: 'POST',
  headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -2527,6 +2537,7 @@
  });
  if (resp.redirected) return fail(expired);
  if (!resp.ok) return fail(await saveError.fromResponse(resp));
+ showBusy(false);
  // The station names the process it is restarting, so the wait ends at a new one.
  const restarting = resp.headers.get('X-OpenFollow-Restarting');
  if (restarting) {
@@ -2535,8 +2546,11 @@
  return;
  }
  const refused = resp.headers.get('X-OpenFollow-Restart-Refused');
- if (refused) toastOnNextLoad('Not restarted. ' + refused, 'caution');
- // The mode decides which sections the page shows.
+ // The mode decides which sections the page shows. A toast the reload cannot carry is read first.
+ if (refused && !toastOnNextLoad('Not restarted. ' + refused, 'caution')) {
+ setTimeout(() => window.location.reload(), TOAST_MS);
+ return;
+ }
  window.location.reload();
  } catch (err) {
  fail(saveError.UNREACHABLE);

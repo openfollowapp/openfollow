@@ -6725,7 +6725,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 # The process being restarted, so the browser waits for a new one.
                 response.set_header("X-OpenFollow-Restarting", server.instance_id)
             else:
-                response.set_header("X-OpenFollow-Restart-Refused", _UPDATE_RUNNING)
+                response.set_header("X-OpenFollow-Restart-Refused", f"{_UPDATE_RUNNING} {_RESTART_AFTER_UPDATE}")
         # Without a restart the browser reloads: the mode decides which sections the page shows.
         return ""
 
@@ -9848,15 +9848,20 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         pre-reset values, and the next move-speed change writes every old speed
         back over the reset. So the reset would silently, partially undo itself.
         """
+        after_update = "Restore defaults once it has finished."
         if server.is_update_busy():
-            return _save_failed(409, _UPDATE_RUNNING, "Restore defaults once it has finished.")
-        response.content_type = "application/json"
+            return _save_failed(409, _UPDATE_RUNNING, after_update)
         backup = _backup_before(server.config_path, "defaults")
-        with _config_write_lock:
-            current = load_config(server.config_path)
-            save_config(reset_config_to_defaults(current), server.config_path)
-        # An update queued since the check restarts the station itself.
-        server.request_restart_unless_updating()
+
+        def write_defaults() -> None:
+            with _config_write_lock:
+                current = load_config(server.config_path)
+                save_config(reset_config_to_defaults(current), server.config_path)
+
+        # Checked again with the write: an update queued during the backup leaves the settings as they are.
+        if not server.restart_after(write_defaults):
+            return _save_failed(409, _UPDATE_RUNNING, after_update)
+        response.content_type = "application/json"
         return json.dumps(
             {"success": True, "needs_restart": True, "restarting": True, "instance": server.instance_id, **backup}
         )

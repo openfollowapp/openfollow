@@ -274,3 +274,59 @@ def test_a_restart_and_an_update_cannot_both_go_ahead() -> None:
     worker.join(timeout=5)
     assert result == [False]
     assert q.consume_restart_requested() is False
+
+
+def test_a_change_runs_then_its_restart_is_requested() -> None:
+    q = WebCommandQueue()
+    ran: list[bool] = []
+    assert q.restart_after(lambda: ran.append(q.consume_restart_requested())) is True
+    # Requested after the change, never before it.
+    assert ran == [False]
+    assert q.consume_restart_requested() is True
+
+
+@pytest.mark.parametrize("state", ["queued", "running", "restarting"])
+def test_a_change_waiting_on_a_restart_is_not_made_while_an_update_is_busy(state: str) -> None:
+    q = WebCommandQueue()
+    q.set_update_status(state)
+    ran: list[bool] = []
+    assert q.restart_after(lambda: ran.append(True)) is False
+    assert ran == []
+    assert q.consume_restart_requested() is False
+
+
+def test_a_change_that_fails_requests_no_restart() -> None:
+    q = WebCommandQueue()
+
+    def fail() -> None:
+        raise OSError("disk full")
+
+    with pytest.raises(OSError):
+        q.restart_after(fail)
+    assert q.consume_restart_requested() is False
+    # The lock is free again.
+    assert q.request_deb_update("openfollow") is True
+
+
+def test_an_update_queued_during_a_change_waits_for_its_restart(monkeypatch) -> None:
+    import threading
+
+    import openfollow.services as services_module
+
+    monkeypatch.setattr(services_module, "clear_detached_update_state", lambda: None)
+    q = WebCommandQueue()
+    seen: list[tuple[bool, bool]] = []
+    workers: list[threading.Thread] = []
+
+    def change() -> None:
+        worker = threading.Thread(
+            target=lambda: seen.append((q.request_deb_update("x"), q.consume_restart_requested()))
+        )
+        worker.start()
+        worker.join(timeout=0.2)
+        assert worker.is_alive(), "an update was queued during the change"
+        workers.append(worker)
+
+    assert q.restart_after(change) is True
+    workers[0].join(timeout=5)
+    assert seen == [(True, True)]

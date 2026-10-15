@@ -336,7 +336,13 @@ def test_restore_defaults_without_a_backup_says_so_after_the_reload() -> None:
             "Not restored. The station did not answer. Check that it is switched on and on this network, "
             "then save again.",
         ),
+        (
+            f"{{ body: {json.dumps(_RESET)}, unreadable: true }}",
+            "Not restored. The station did not answer. Check that it is switched on and on this network, "
+            "then save again.",
+        ),
     ],
+    ids=["error", "update", "unsuccessful", "unreachable", "answer-cut-off"],
 )
 def test_a_restore_that_fails_closes_the_progress_and_says_why(answer: str, error: str) -> None:
     out = _restore(
@@ -349,39 +355,59 @@ def test_a_restore_that_fails_closes_the_progress_and_says_why(answer: str, erro
 # -- A switch to Simple network mode that clears a web UI pin in force ---------------------
 
 _BASE = (_TEMPLATES / "base.tpl").read_text(encoding="utf-8")
+_TOAST_MS = int(re.search(r"const TOAST_MS = (\d+);", _BASE).group(1))
 _SWITCH_SCRIPT = (
-    "var toasts = []; function toastOnNextLoad(message, level) { toasts.push([message, level]); return true; }\n"
+    f"var TOAST_MS = {_TOAST_MS}, storable = true, toasts = [], delays = [];\n"
+    "function toastOnNextLoad(message, level) { toasts.push([message, level]); return storable; }\n"
+    "var queueTimeout = setTimeout;\n"
+    "setTimeout = function (fn, ms) { delays.push(ms); return queueTimeout(fn); };\n"
     "function netConfirmSimple(preview) {"
     + function_body(_BASE, "netConfirmSimple")
     + "}\nasync function netSwitchMode(input) {"
     + function_body(_BASE, "netSwitchMode")
     + "}"
 )
-_SWITCH_MARKUP = (
-    '<div id="network-interface"><form class="section"><div class="seg-toggle net-mode-switch" data-mode="advanced">'
-    '<input type="radio" name="network_mode" value="simple">'
-    '<input type="radio" name="network_mode" value="advanced" checked></div>'
-    '<div class="actions"></div></form></div>'
-)
+
+
+def _switch_markup(mode: str) -> str:
+    return (
+        '<div id="network-interface"><form class="section">'
+        '<div id="net-busy" class="network-banner network-banner-info network-banner-busy" role="status" hidden>'
+        '<span class="modal-spinner" aria-hidden="true"></span><span class="net-busy-text"></span></div>'
+        f'<div class="seg-toggle net-mode-switch" data-mode="{mode}">'
+        f'<input type="radio" name="network_mode" value="simple"{" checked" if mode == "simple" else ""}>'
+        f'<input type="radio" name="network_mode" value="advanced"{" checked" if mode == "advanced" else ""}></div>'
+        '<div class="actions"></div></form></div>'
+    )
+
+
 _PREVIEW = {"station": "eth0", "pins": [], "vlans": [], "kept": [], "remove": [], "restart": True}
 
 
-def _switch(mode_answer: str, steps: str, *, restart: bool = True) -> Any:
+def _switch(mode_answer: str, steps: str, *, restart: bool = True, to: str = "simple") -> Any:
     return _run(
         f"answers['GET /section/network/mode/preview'] = {{ body: {json.dumps({**_PREVIEW, 'restart': restart})} }};"
         f"answers['POST /section/network/mode'] = {mode_answer};"
         "holdWhen = function (r) { return r.method === 'POST'; };"
-        "var simple = document.querySelector('input[value=simple]');"
-        "netSwitchMode(simple); await settle();"
+        f"netSwitchMode(document.querySelector('input[value={to}]')); await settle();"
         "if (modal && modal.title === 'Switch to Simple network mode?') modal.press('Switch to Simple');"
         "await settle();" + steps,
-        markup=_SWITCH_MARKUP,
+        markup=_switch_markup("advanced" if to == "simple" else "simple"),
         script=_SWITCH_SCRIPT,
     )
 
 
+_REFUSED_ANSWER = (
+    "{ body: '', headers: { 'X-OpenFollow-Restart-Refused': 'An update is running. Restart once it has finished.' } }"
+)
+
+
 def _radios() -> str:
     return "document.querySelectorAll('input').map(function (r) { return [r.disabled, r.checked]; })"
+
+
+def _busy() -> str:
+    return "[document.getElementById('net-busy').hidden, document.querySelector('.net-busy-text').textContent]"
 
 
 @pytest.mark.parametrize("previewed", [True, False], ids=["preview-restarts", "preview-does-not"])
@@ -416,26 +442,66 @@ def test_a_switch_whose_station_does_not_come_back_names_the_network_screen() ->
 
 def test_a_switch_whose_restart_an_update_refused_says_so_after_the_reload() -> None:
     out = _switch(
-        "{ body: '', headers: { 'X-OpenFollow-Restart-Refused': 'An update is running.' } }",
+        _REFUSED_ANSWER,
         "release(); await settle(); out.reloaded = reloaded; out.toasts = toasts; out.modal = shown();"
         "await tick(2000); out.polls = urls().length;",
     )
     assert out == {
         "reloaded": 1,
-        "toasts": [["Not restarted. An update is running.", "caution"]],
+        "toasts": [["Not restarted. An update is running. Restart once it has finished.", "caution"]],
         "modal": None,
         "polls": 2,
     }
 
 
-def test_a_switch_that_fails_closes_the_progress_and_puts_the_mode_back() -> None:
+@pytest.mark.parametrize(
+    ("answer", "error"),
+    [
+        ("{ status: 500, body: { error: 'Disk full.' } }", "Not switched. Disk full."),
+        ("'unreachable'", _UNREACHABLE.replace("Not restarted.", "Not switched.")),
+        (
+            "{ body: '', redirected: true }",
+            "Not switched. Your session has expired. Reload the page and sign in again.",
+        ),
+    ],
+    ids=["error", "unreachable", "session-expired"],
+)
+def test_a_switch_that_fails_closes_the_progress_and_puts_the_mode_back(answer: str, error: str) -> None:
     out = _switch(
-        "{ status: 500, body: { error: 'Disk full.' } }",
-        "release(); await settle();"
-        "out.modal = shown(); out.error = errorLine();"
-        "out.radios = document.querySelectorAll('input').map(function (r) { return [r.disabled, r.checked]; });",
+        answer,
+        f"release(); await settle(); out.modal = shown(); out.error = errorLine(); out.radios = {_radios()};"
+        f"out.busy = {_busy()}; out.reloaded = reloaded;",
     )
-    assert out == {"modal": None, "error": "Not switched. Disk full.", "radios": [[False, False], [False, True]]}
+    assert out == {
+        "modal": None,
+        "error": error,
+        "radios": [[False, False], [False, True]],
+        "busy": [True, "Switching to Simple…"],
+        "reloaded": 0,
+    }
+
+
+@pytest.mark.parametrize("to", ["simple", "advanced"])
+def test_a_switch_shows_it_is_busy_until_the_station_answers(to: str) -> None:
+    out = _switch(
+        "{ body: '' }",
+        f"out.sent = {_busy()}; release(); await settle(); out.answered = {_busy()};",
+        restart=False,
+        to=to,
+    )
+    assert out == {
+        "sent": [False, f"Switching to {to.capitalize()}…"],
+        "answered": [True, f"Switching to {to.capitalize()}…"],
+    }
+
+
+def test_a_refused_restart_the_reload_cannot_carry_is_shown_before_the_reload() -> None:
+    out = _switch(
+        _REFUSED_ANSWER,
+        "storable = false; release(); await settle(); out.reloaded = reloaded; out.delays = delays;"
+        "timeouts[timeouts.length - 1](); out.later = reloaded;",
+    )
+    assert out == {"reloaded": 0, "delays": [_TOAST_MS], "later": 1}
 
 
 def test_a_switch_that_does_not_restart_reloads_into_the_new_mode() -> None:

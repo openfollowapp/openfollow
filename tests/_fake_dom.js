@@ -402,7 +402,7 @@ async function settle() {
 var requests = [];     // {method, url, body} of every request, in order
 var held = [];         // answers held back by hold(), released by release()
 var holdWhen = null;   // (request) -> true to hold its answer
-var station = null;    // (request) -> {status, body} or 'unreachable'
+var station = null;    // (request) -> {status, body, headers, redirected, unreadable} or 'unreachable'
 function respond(status, body, headers) {
     var text = typeof body === 'string' ? body : JSON.stringify(body === undefined ? {} : body);
     return {
@@ -426,7 +426,13 @@ globalThis.fetch = function (url, opts) {
     return new Promise(function (resolve, reject) {
         var answer = function () {
             if (out === 'unreachable') reject(new TypeError('Failed to fetch'));
-            else resolve(respond(out.status || 200, out.body, out.headers));
+            else {
+                var res = respond(out.status || 200, out.body, out.headers);
+                res.redirected = !!out.redirected;
+                // The connection drops after the headers.
+                if (out.unreadable) res.text = res.json = function () { return Promise.reject(new TypeError('network error')); };
+                resolve(res);
+            }
         };
         if (holdWhen && holdWhen(req)) held.push(answer);
         else Promise.resolve().then(answer);

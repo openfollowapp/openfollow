@@ -513,7 +513,10 @@ def test_a_restart_refused_by_an_update_says_so(net_server, tmp_path, present, m
     _fake, base = net_server
     _status, body, headers = _post_headers(base, "/section/network/mode", {"network_mode": "simple"})
     # The browser says so, then reloads into Simple, whose card offers the restart again.
-    assert (body, _restart_headers(headers)) == ("", {"x-openfollow-restart-refused": "An update is running."})
+    assert (body, _restart_headers(headers)) == (
+        "",
+        {"x-openfollow-restart-refused": "An update is running. Restart once it has finished."},
+    )
     _status, card = _get(base, "/section/network/status")
     assert "The web UI answers on one interface until OpenFollow restarts." in card
     assert 'onclick="openfollowRestart(' in card

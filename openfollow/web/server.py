@@ -795,6 +795,10 @@ class ConfigWebServer:
         """Request a restart unless an update is queued or running; False when refused."""
         return self._command_queue.request_restart_unless_updating()
 
+    def restart_after(self, change: Callable[[], None]) -> bool:
+        """Run ``change`` and request a restart unless an update is queued or running; False when refused."""
+        return self._command_queue.restart_after(change)
+
     def request_button_detection(self) -> None:
         """Signal that button detection wizard was requested."""
         self._command_queue.request_button_detection()

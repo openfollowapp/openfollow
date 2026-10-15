@@ -133,15 +133,15 @@ async function restoreDefaults() {
 
     /* The reset restarts the station: its progress shows from the moment it is sent. */
     openfollowRestartProgress();
-    var res;
+    var res, text;
     try {
         res = await fetch('/api/config/reset', {method: 'POST'});
+        text = await res.text();
     } catch (e) {
         closeModal();
         _restoreFailed(window.OpenFollow.saveError.UNREACHABLE);
         return;
     }
-    var text = await res.text();
     var result = {};
     try { result = JSON.parse(text); } catch (e) { /* not JSON: reported below */ }
     if (!res.ok || !result.success) {

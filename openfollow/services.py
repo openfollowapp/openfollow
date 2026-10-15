@@ -308,6 +308,20 @@ class WebCommandQueue:
             self.request_restart()
             return True
 
+    def restart_after(self, change: Callable[[], None]) -> bool:
+        """Run ``change`` and request a restart, unless an update is queued or running.
+
+        One decision under the update lock, so an update queued meanwhile waits
+        for both and never lands between the change and its restart. The main
+        loop takes this lock too: keep ``change`` short.
+        """
+        with self._update_lock:
+            if self._update_status.get("state", "idle") in _UPDATE_BUSY_STATES:
+                return False
+            change()
+            self.request_restart()
+            return True
+
     def consume_restart_requested(self, *, grace_s: float = 0.0) -> bool:
         """Take a restart request made at least ``grace_s`` ago; a newer request restarts the wait."""
         with self._restart_lock:

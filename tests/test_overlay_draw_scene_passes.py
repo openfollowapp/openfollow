@@ -1536,3 +1536,20 @@ class TestGridCache:
         before = self._draw(cache, state)
         cache.clear()
         assert self._draw(cache, state).surfaces[0] is not before.surfaces[0]
+
+    def test_a_redraw_that_fails_keeps_no_damaged_picture(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import openfollow.runtime.overlay_draw_scene as scene
+
+        cache, state = scene.GridCache(), self._state()
+        fresh = self._pixels(self._draw(scene.GridCache(), state).surfaces[0])
+        self._draw(cache, state)
+        moved = self._state(camera_params=np.array([0.2, -6.0, 2.5, -15.0, 0.0, 0.0, 60.0]))
+
+        def fail(*_args: object) -> None:
+            raise RuntimeError("draw failed")
+
+        with monkeypatch.context() as patched:
+            patched.setattr(scene, "draw_ground_grid", fail)
+            with pytest.raises(RuntimeError):
+                self._draw(cache, moved)
+        assert np.array_equal(self._pixels(self._draw(cache, state).surfaces[0]), fresh)

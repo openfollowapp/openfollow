@@ -258,6 +258,8 @@ class GridCache:
         )
         if self._entry is None or self._entry[0] != key:
             picture = _blank_canvas(self._entry[1] if self._entry is not None else None, w, h, scale)
+            # Filed again only once drawn, so a failed draw leaves no picture under the old key.
+            self._entry = None
             ctx = cairo.Context(picture)
             draw_grid(renderer, ctx, state, w, h)
             draw_ground_grid(ctx, state, w, h)

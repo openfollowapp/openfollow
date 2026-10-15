@@ -41,7 +41,7 @@ and "manage X under Y" pointers – goes in that section's **help drawer markdow
 | `/section/network/apply` | POST | Validate + write IPv4 config via the privileged adapter |
 | `/section/network/renew` | POST | Renew DHCP lease via the privileged adapter |
 | `/section/general/startup` | GET/POST | Start-at-boot switch; reads `systemctl is-enabled`, writes via the `service.enable` / `service.disable` grants |
-| `/api/info` | GET | JSON: system_name, ip, port |
+| `/api/info` | GET | JSON: name, ip, port, version, and `instance`, this process's id |
 | `/api/peers` | GET | JSON: discovered peers |
 | `/api/config/export` | GET | Download full config as JSON file |
 | `/api/config/import` | POST | Import config JSON (preserves device identity); every section applies live |
@@ -65,7 +65,7 @@ and "manage X under Y" pointers – goes in that section's **help drawer markdow
 ## HTMX notes
 - HTMX version: 1.9 – use `hx-on::after-request` (double colon), NOT `hx-on:htmx:after-request`
 - Overview auto-refresh: `hx-trigger="every 5s"`
-- Restart detection: polls `/section/general` every 2s; on success → `window.location.reload()`
+- Every restart runs one flow in `base.tpl`: `openfollowRestartProgress(note?)` opens a locked progress view (`.modal-progress`, like the updater's), and `openfollowAwaitRestart(before, step?)` polls `/api/info` every 2 s and reloads the page once it answers with an `instance` other than `before`. That id (`ConfigWebServer.instance_id`, random per process) is what tells the new process from the old one, which keeps answering for the several seconds it takes to shut down; reloading on its answer lands on a station that is about to stop listening. Unreachable, 401, 403 and 503 all read as not back yet. The auth cookie is signed with the PIN, not per process, so the new process accepts the logged-in browser's cookie. A station that has not answered after 90 s gets a dismissable dialog saying so, with one next step. Every request that restarts names the process it restarts: `POST /api/restart` and `POST /api/config/reset` in their JSON (`instance`), a switch to Simple network mode that restarts in an `X-OpenFollow-Restarting` header. The Restart buttons (Diagnostics, Keyboard Input, Interface Assignment, the Simple card) run `openfollowRestart({title, message, note?, step?})`: the confirm, the progress view, `POST /api/restart` (409 while an update is queued or running, as is `POST /api/config/reset`, before it changes any setting). Restore Defaults keeps its own confirm and shows the progress view from the moment it sends. The mode switch shows it only once the answer names the process restarting: removing a VLAN may ask for the password while the request runs, and the locked view would leave the prompt unanswerable. A switch whose restart an update refused reloads with a caution toast saying so (`X-OpenFollow-Restart-Refused`). A refused or unanswered request closes the progress view (the mode switch hides its busy line) and reports through `saveError` with the action's own lead ("Not restarted.", "Not restored.", "Not switched."). A section save never restarts.
 
 ## Setup wizard (`/wizard`)
 Guided workflow for camera positioning and grid calibration, eight steps:

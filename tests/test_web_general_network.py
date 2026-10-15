@@ -43,7 +43,6 @@ def _render_general(**overrides):
     ctx = {
         "config": cfg,
         "saved": False,
-        "restarting": False,
         "local_ips": ["127.0.0.1"],
         "update_status": {"state": "idle", "message": "", "error": ""},
         "network_state": None,

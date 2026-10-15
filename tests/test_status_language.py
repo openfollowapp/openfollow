@@ -19,7 +19,7 @@ _LEVELS = ("error", "caution", "info", "success")
 
 # Every class that shows a state; a rule for any of them must take its colours from the tokens.
 _STATUS_CLASS = re.compile(
-    r"\.(notice|update-notice|restart-notice|modal-error|diag-error|gallery-error|wizard-action-required|"
+    r"\.(notice|update-notice|modal-error|diag-error|gallery-error|wizard-action-required|"
     r"network-banner(?:-error|-ok|-info)?|net-iface-method-badge|stat-chip|diag-status-pill|diag-event-status|badge-experimental|"
     r"modal-list-item-badge|slot-row|slot-missing|slot-state|slot-note|slot-activity|osc-binding-fault|"
     r"osc-binding-row|osc-binding-enabled-dot|osc-binding-nested-row|osc-pill|peer-item|peer-status|toast|"

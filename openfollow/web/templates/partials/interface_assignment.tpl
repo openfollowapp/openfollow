@@ -17,23 +17,6 @@
         <h2>Network Interface Assignment</h2>
     </div>
 
-    %# Poll until the server answers again, then reload. Unlike every other
-    %# restart notice this one may come back at a DIFFERENT address, so it
-    %# names the one to try when the reload cannot reach this one.
-    % if defined('restarting') and restarting:
-    <div class="restart-notice"
-         hx-get="/api/info"
-         hx-trigger="every 2s"
-         hx-swap="none"
-         hx-on::after-request="if(event.detail.successful) window.location.reload()">App is restarting&hellip;
-        If this page does not come back, the web UI has moved - the station's
-        Network screen lists the address that reaches it.</div>
-    % end
-    % if defined('restart_refused') and restart_refused:
-    <div class="notice error" role="alert">An update is running, so OpenFollow was not restarted.
-        <div class="notice-sub">Restart it once the update has finished.</div></div>
-    % end
-
     %# The web UI is the surface this panel is edited from, so a pin that
     %# misses is a lockout rather than a silent plane. Both notices name the
     %# way back: the URL that will work, and the on-screen escape.
@@ -85,22 +68,20 @@
 
     %# Keeps the Address column current without touching the pickers, and has
     %# them reload their options once the interface list reads differently.
-    % if not (defined('restarting') and restarting):
     <span id="ia-options-fp" data-fp="{{options_fingerprint}}" hidden></span>
     <div hidden hx-get="/section/interface_assignment/status" hx-trigger="every 5s"
          hx-vals='js:{seen: document.getElementById("ia-options-fp").dataset.fp}'
          hx-target="this" hx-swap="none"></div>
-    % end
 
     <div class="actions">
         <button type="submit" class="save-btn">Save</button>
         %# Pinning the web UI moves the listening socket, which the running
-        %# server cannot do under itself while serving this request.
+        %# server cannot do under itself while serving this request. Unlike every
+        %# other restart this one may come back at a different address, so its
+        %# dialog names where to find it.
         % if defined('web_bind_restart') and web_bind_restart:
         <button type="button" class="danger"
-                hx-post="/section/interface_assignment/restart"
-                hx-confirm="Outputs pause until OpenFollow is back. The web UI may then answer at a different address."
-                data-confirm-title="Restart OpenFollow?" data-confirm-label="Restart" data-confirm-danger>Restart OpenFollow</button>
+                onclick="openfollowRestart({title: 'Restart OpenFollow?', message: 'Outputs pause until OpenFollow is back. The web UI may then answer at a different address.', note: NET_MOVED_NOTE, step: NET_MOVED_STEP})">Restart OpenFollow</button>
         % end
         <button type="button" id="refresh-iface-assignment" class="secondary"
                 hx-get="/section/interface_assignment"

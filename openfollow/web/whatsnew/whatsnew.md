@@ -12,3 +12,7 @@ Controllers now keep their slot by the USB socket they are plugged into, so one 
 ## Controlled markers are always shown
 
 A marker this station controls now always appears on the Operator Screen and counts in the trigger zones, even if it was hidden before.
+
+## The Operator Screen follows the keyboard layout
+
+The Operator Screen now uses the keyboard layout set in the station's system, where it used to assume a US keyboard. Choose another under **Input → Keyboard Input**.

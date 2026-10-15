@@ -2241,7 +2241,7 @@
  /* Status language boxes (docs/STATUS_LANGUAGE.md): one look per level, shared
  by the older class names; the level's sign sits in the left padding. Last in
  the block, so it wins over each class's layout-only rule above. */
- .notice, .update-notice, .restart-notice, .modal-error, .diag-error, .gallery-error,
+ .notice, .update-notice, .modal-error, .diag-error, .gallery-error,
  .wizard-action-required, .network-banner.network-banner-error, .network-banner.network-banner-ok,
  .network-banner.network-banner-info {
  position: relative;
@@ -2255,7 +2255,7 @@
  font-weight: 600;
  line-height: 1.4;
  }
- .notice::before, .update-notice::before, .restart-notice::before, .modal-error::before, .diag-error::before,
+ .notice::before, .update-notice::before, .modal-error::before, .diag-error::before,
  .gallery-error::before, .wizard-action-required::before, .network-banner.network-banner-error::before,
  .network-banner.network-banner-ok::before, .network-banner.network-banner-info::before {
  content: "";
@@ -2476,8 +2476,9 @@
  if (box && netBusyText(evt.detail.elt) !== null) box.hidden = true;
  });
  // Network mode switch. Simple first reads what it would clear and remove, and
- // asks only when that is something; the answer reloads the page, because the
- // mode decides which sections it shows, or carries the restart notice.
+ // asks only when that is something. The answer reloads the page, because the
+ // mode decides which sections it shows, or names the process it restarts and
+ // the page waits for a new one.
  function netConfirmSimple(preview) {
  const list = (items) => '<ul>' + items.map((item) => '<li>' + escapeHTML(item) + '</li>').join('') + '</ul>';
  let html = '<p>All traffic moves to the station interface, ' + escapeHTML(preview.station) + '.</p>';
@@ -2503,7 +2504,14 @@
  const radios = Array.from(group.querySelectorAll('input[name="network_mode"]'));
  const saveError = window.OpenFollow.saveError;
  const box = saveError.boxFor(group);
+ const busy = document.getElementById('net-busy');
+ const showBusy = (on) => {
+ busy.querySelector('.net-busy-text').textContent =
+ 'Switching to ' + input.value.charAt(0).toUpperCase() + input.value.slice(1) + '…';
+ busy.hidden = !on;
+ };
  const fail = (info) => {
+ showBusy(false);
  radios.forEach((radio) => { radio.disabled = false; radio.checked = radio.value === group.dataset.mode; });
  saveError.show(box, info, 'Not switched.');
  };
@@ -2525,6 +2533,8 @@
  // Only what the dialog listed is removed.
  preview.remove.forEach((name) => body.append('vlans', name));
  }
+ // A busy line, not the locked progress view: removing a VLAN may ask for the password.
+ showBusy(true);
  const resp = await fetch('/section/network/mode', {
  method: 'POST',
  headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -2532,10 +2542,21 @@
  });
  if (resp.redirected) return fail(expired);
  if (!resp.ok) return fail(await saveError.fromResponse(resp));
- if (resp.headers.get('HX-Refresh') === 'true') { window.location.reload(); return; }
- const region = document.getElementById('network-interface');
- region.innerHTML = await resp.text();
- htmx.process(region);
+ showBusy(false);
+ // The station names the process it is restarting, so the wait ends at a new one.
+ const restarting = resp.headers.get('X-OpenFollow-Restarting');
+ if (restarting) {
+ openfollowRestartProgress(NET_MOVED_NOTE);
+ openfollowAwaitRestart(restarting, NET_MOVED_STEP);
+ return;
+ }
+ const refused = resp.headers.get('X-OpenFollow-Restart-Refused');
+ // The mode decides which sections the page shows. A toast the reload cannot carry is read first.
+ if (refused && !toastOnNextLoad('Not restarted. ' + refused, 'caution')) {
+ setTimeout(() => window.location.reload(), TOAST_MS);
+ return;
+ }
+ window.location.reload();
  } catch (err) {
  fail(saveError.UNREACHABLE);
  }
@@ -4006,40 +4027,81 @@
  window.OpenFollow.clearBindingNotes(container, Object.keys(defaults));
  refreshFormGate(container.closest('form'));
  }
- // Restart button (lives in the Diagnostics partial). Defined here
- // alongside the ``#top-restart-notice`` banner so the partial
- // itself stays JS-free (per its module header), and so the
- // notice element is null-guarded for the case where the
- // diagnostics partial is fetched standalone via
- // ``hx-get="/section/diagnostics"`` and the index-level banner
- // isn't in the DOM. Triggers ``/api/restart`` (which returns
- // immediately) then polls ``/api/info`` every 2 s until the
- // server comes back, at which point it reloads the page.
- async function confirmRestartApp() {
+ // Every restart shows one locked progress view, which stays until /api/info answers from a
+ // new process and the page reloads; ``note`` replaces its second line.
+ const RESTART_WAIT_MS = 90000;
+ // For a restart that may move the web UI to another address.
+ const NET_MOVED_NOTE = 'This page reloads when the station is back. If it does not, the web UI has moved'
+ + ' - the station\'s Network screen lists the address that reaches it.';
+ const NET_MOVED_STEP = 'The web UI may have moved: the station\'s Network screen lists the address that reaches it.';
+ function openfollowRestartProgress(note) {
+ openModal({
+ title: 'Restart OpenFollow',
+ dismissable: false,
+ bodyHTML: '<div class="modal-progress"><div class="modal-spinner"></div>'
+ + '<p role="status" aria-live="polite" tabindex="-1">Restarting OpenFollow\u2026</p></div>'
+ + '<p>' + escapeHTML(note || 'This page reloads when the station is back.') + '</p>',
+ footerButtons: [],
+ });
+ }
+ // Reloads once a process other than ``before`` answers; the old one keeps answering while it
+ // shuts down. After RESTART_WAIT_MS it says the station has not answered, ``step`` the next step.
+ function openfollowAwaitRestart(before, step) {
+ // Elapsed time, not poll counts: a poll can hang on a station half way up.
+ const began = performance.now();
+ let back = false;
+ const p = setInterval(function() {
+ if (performance.now() - began >= RESTART_WAIT_MS) {
+ clearInterval(p);
+ openModal({
+ title: 'Station not back',
+ bodyHTML: '<div class="notice error">The station has not answered for '
+ + Math.round(RESTART_WAIT_MS / 1000) + ' s.<div class="notice-sub">'
+ + escapeHTML(step || 'Check that it is switched on and on this network, then reload this page.')
+ + '</div></div>',
+ footerButtons: [{label: 'Close', kind: 'primary', onClick: () => closeModal()}],
+ });
+ return;
+ }
+ fetch('/api/info', {cache: 'no-store'}).then(function(r) {
+ return r.ok ? r.json() : null;
+ }).then(function(info) {
+ if (back || !info || info.instance === before) return;
+ back = true;
+ clearInterval(p);
+ window.location.reload();
+ }).catch(function() {});
+ }, 2000);
+ }
+ // Every Restart button. ``opts``: title and message for the confirm, ``note`` and ``step`` as above.
+ async function openfollowRestart(opts) {
  const saveError = window.OpenFollow.saveError;
  const box = saveError.origin();
  const ok = await modalConfirm({
- title: 'Restart application?',
- message: 'Video and tracking stop until the station is back.',
+ title: opts.title,
+ message: opts.message,
  confirmLabel: 'Restart',
  danger: true,
  });
  if (!ok) return;
- fetch('/api/restart', {method: 'POST'}).then(async function(res) {
- if (!res.ok) {
- saveError.show(box, await saveError.fromResponse(res), 'Not restarted.');
+ openfollowRestartProgress(opts.note);
+ let res;
+ try {
+ res = await fetch('/api/restart', {method: 'POST'});
+ } catch (e) {
+ closeModal();
+ saveError.show(box, saveError.UNREACHABLE, 'Not restarted.');
  return;
  }
- var n = document.getElementById('top-restart-notice');
- if (n) n.style.display = 'block';
- var p = setInterval(function() {
- fetch('/api/info').then(function(r) {
- if (r.ok) { clearInterval(p); window.location.reload(); }
- }).catch(function() {});
- }, 2000);
- }, function() {
- saveError.show(box, saveError.UNREACHABLE, 'Not restarted.');
- });
+ if (!res.ok) {
+ const info = await saveError.fromResponse(res);
+ closeModal();
+ saveError.show(box, info, 'Not restarted.');
+ return;
+ }
+ let before = '';
+ try { before = (await res.json()).instance || ''; } catch (e) { /* any instance then counts */ }
+ openfollowAwaitRestart(before, opts.step);
  }
  // Save to USB storage device (a Diagnostics tools button): the Operator Screen's steps in
  // the shared modal. Pick a device, follow the export, then read what happened and the next

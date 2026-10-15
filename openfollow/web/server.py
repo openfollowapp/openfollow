@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 import socket
 import threading
 import time
@@ -282,6 +283,8 @@ class ConfigWebServer:
         # rather than showing a number whose meaning changed silently.
         self._station_interface_down = False
         self._command_queue = command_queue or WebCommandQueue()
+        # Tells a browser waiting out a restart this process from the one it asked to restart.
+        self.instance_id = secrets.token_hex(8)
         self.pushed_settings = PushedSettings()
         self._runtime_stats_provider = runtime_stats_provider
         self.crash_restarts_provider = crash_restarts_provider
@@ -780,13 +783,17 @@ class ConfigWebServer:
             last_seen=time.time(),
         )
 
-    def request_restart(self) -> None:
-        """Signal that app restart was requested."""
-        self._command_queue.request_restart()
+    def is_update_busy(self) -> bool:
+        """True while an update is queued or running."""
+        return self._command_queue.is_update_busy()
 
     def request_restart_unless_updating(self) -> bool:
         """Request a restart unless an update is queued or running; False when refused."""
         return self._command_queue.request_restart_unless_updating()
+
+    def restart_after(self, change: Callable[[], None]) -> bool:
+        """Run ``change`` and request a restart unless an update is queued or running; False when refused."""
+        return self._command_queue.restart_after(change)
 
     def request_button_detection(self) -> None:
         """Signal that button detection wizard was requested."""

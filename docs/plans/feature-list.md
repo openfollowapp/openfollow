@@ -126,12 +126,17 @@ Own PR from `main`.
 - [x] Commit: `feat(web): replace the experimental toggle with a per-feature list`.
 
 ### 5. Verify
-- [ ] `make ci-remote` green (local suite, lint, mypy, bandit green; no testing Pi reachable from the cloud session); manual: untick each feature, confirm its UI is
-      gone and it stops (MIDI device closed, zones not sent, paths released,
-      ground grid not dropping, PSN receiver thread gone and other
-      stations' markers not drawn, lens overlay straight and the wizard
-      without its Lens step, touch remote card gone and routes 403), tick
-      again and confirm settings came back.
+- [x] `make ci-remote` green on a testing Pi. Manual on a station, every
+      feature switched off and on again through the Save: zones and paths
+      sections hidden and back with their zones and paths unchanged, the zone
+      outline gone from the Operator Screen; MIDI patches group hidden; lens
+      overlay straight with the pair kept; PSN receiver socket closed and
+      reopened; Person Detection tab hidden; RTTrPM packets stop at the
+      receiver and resume; ground grid not drawn with its settings kept;
+      calibration points hidden with the saved points kept; touch remote
+      launcher gone and its routes 403. Not covered: a MIDI device closing
+      (none attached), zone OSC sends, a marker let go off a path, the ground
+      grid's drop, and the wizard without its Lens step.
 
 ### 6. Placement: a table under Station Settings › Advanced Settings
 The list sits in the Station Settings box, inside its Advanced Settings
@@ -147,7 +152,7 @@ one-line description per row. The separate Features section goes.
       label, description from `FEATURE_LABELS`, checked state from
       `feature_on`, the table inside the Advanced Settings disclosure, no
       Features section left.
-- [ ] `make ci-remote` green.
+- [x] `make ci-remote` green.
 
 ### 7. Applied on Save, with a warning, never broadcast
 A change to the list waits for the Station Settings **Save**: switching a
@@ -168,7 +173,7 @@ feature off mid-show must be deliberate.
       marker keeps it, a crafted value, the refresh header, the modal's
       per-feature lines, the broadcast refused, no broadcast button, the
       removed route.
-- [ ] `make ci-remote` green.
+- [x] `make ci-remote` green.
 
 ## Open risks
 - Upgrading a station that uses detection but had experimental shown is

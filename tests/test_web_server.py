@@ -8090,9 +8090,9 @@ def test_the_station_settings_box_draws_one_rule_before_the_features(live_server
     start = body.index('data-fold-key="general-station"')
     box = body[start : body.index('data-fold-key="general-network-interface"', start)]
     assert box.count('class="group"') == 4
-    assert box.count('<form id="features-section" class="group"') == 1
+    assert box.count('<div id="features-section" class="group"') == 1
     advanced = box[box.index('<details class="inline-advanced">') : box.index("</details>")]
-    assert advanced.index('class="group"') < advanced.index('<form id="features-section" class="group"')
+    assert advanced.index('class="group"') < advanced.index('<div id="features-section" class="group"')
     assert "group--divider" not in box
 
 

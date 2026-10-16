@@ -20,11 +20,11 @@ This station's name, web access and display units, plus the settings you set onc
 
 > Off, this web UI is gone after the next reboot too, and switching it back on takes SSH or a keyboard on the station. Absent on macOS and where OpenFollow is not a system service.
 
-**Save** – saves the station name, PIN and custom domain name. No restart is needed.
+**Save** – saves the station name, PIN, custom domain name and features. No restart is needed.
 
 ## Features
 
-The table at the end of **Advanced Settings** lists what this station uses: one row per feature, with its title and a short description. Each box applies as soon as it changes, without **Save**. A feature that is off is hidden in the web UI and does not run, but its settings are kept: ticking it again brings it back as it was. Its own switch (such as **Enabled** under RTTrPM Output) still applies on top. Those marked *Experimental* are off on a new station.
+The table at the end of **Advanced Settings** lists what this station uses: one row per feature, with its title and a short description. A change applies on **Save**, with the station name. A Save that switches a feature off first lists what stops with each one: **Turn off** saves, **Cancel** saves nothing. A feature that is off is hidden in the web UI and does not run, but its settings are kept: ticking it again brings it back as it was. Its own switch (such as **Enabled** under RTTrPM Output) still applies on top. Those marked *Experimental* are off on a new station.
 
 - **Trigger zones** – the Trigger Zones and Zone Editor sections and the Toggle Zones bindings. Off, zones neither fire nor show on the Operator Screen.
 - **MIDI** – the MIDI patches and each virtual fader's MIDI source. Off, no MIDI device is opened.
@@ -36,5 +36,3 @@ The table at the end of **Advanced Settings** lists what this station uses: one 
 - **Ground grid** – the Ground Grid section. Off, it is neither drawn nor drops markers onto its height.
 - **Calibration points** – the Camera tab's calibration points and the Setup Wizard's Advanced section in Corner Pinning. Off, they are only hidden: the saved points still count.
 - **Touch remote** – the Touch Remote section and its launcher. Off, every remote lets go of its marker.
-
-**Apply to all stations** – sends this list to every station on the network.

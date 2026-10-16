@@ -28,6 +28,7 @@
  <script src="/assets/js/units.js?v={{_asset_v}}"></script>
  <script src="/assets/js/detect-input.js?v={{_asset_v}}"></script>
  <script src="/assets/js/save-feedback.js?v={{_asset_v}}"></script>
+ <script src="/assets/js/feature-save.js?v={{_asset_v}}"></script>
  <script src="/assets/js/binding-steal.js?v={{_asset_v}}"></script>
  <script src="/assets/js/polygon-plan.js?v={{_asset_v}}"></script>
  <script src="/assets/js/picture-view.js?v={{_asset_v}}"></script>
@@ -1323,7 +1324,7 @@
  .feature-table th[scope="row"] label { margin: 0; cursor: pointer; }
  .feature-table th[scope="row"] .badge-experimental { margin-left: 0.4rem; }
  .feature-table td.feature-description { color: var(--muted); }
- .feature-actions { display: flex; justify-content: flex-end; margin-top: 0.6rem; }
+ .feature-off-list { margin: 0.4rem 0 0; padding-left: 1.2rem; }
  /* Controller Slots table (Input tab). */
  .slot-row.slot-missing { background: var(--error-row); }
  /* Grey while the slot needs nothing, red when its controller is missing. */
@@ -4366,10 +4367,6 @@
  {label: 'Done', kind: 'primary', onClick: () => closeModal()},
  ],
  });
- }
- // Show or hide a feature's data-feature elements as its box flips; the form saves it.
- function onFeatureToggle(cb) {
- document.body.classList.toggle('feature-' + cb.name, cb.checked);
  }
  function switchTab(tabId) {
  // help docs are section-specific; dismiss the drawer when

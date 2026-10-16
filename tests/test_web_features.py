@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""The Features list against a live ``ConfigWebServer``: ``/section/features``
-saves the list and writes nothing else, imports and pushes carry it (an older
+"""The Features list against a live ``ConfigWebServer``: the Station Settings
+Save (``/section/general``) saves the list and writes nothing else, the list is
+never section-broadcast, imports and pushes carry it (an older
 station's ``show_experimental_features`` included), and the page renders one
 ``feature-<key>`` body class per feature that is on."""
 
@@ -59,13 +60,11 @@ def _post(base: str, path: str, data: bytes, content_type: str) -> tuple[int, di
         return e.code, {k.lower(): v for k, v in e.headers.items()}, e.read().decode()
 
 
-def _save_features(base: str, *on: str) -> tuple[int, dict[str, str]]:
-    # An unchecked checkbox submits no field.
+def _save_features(base: str, *on: str, marker: bool = True) -> tuple[int, dict[str, str]]:
+    # An unchecked checkbox submits no field; the marker says the table was on the page.
+    fields = dict.fromkeys(on, "on") | ({"features_submitted": "1"} if marker else {})
     status, headers, _ = _post(
-        base,
-        "/section/features",
-        urllib.parse.urlencode(dict.fromkeys(on, "on")).encode(),
-        "application/x-www-form-urlencoded",
+        base, "/section/general", urllib.parse.urlencode(fields).encode(), "application/x-www-form-urlencoded"
     )
     return status, headers
 
@@ -85,6 +84,20 @@ class TestSave:
         assert load_config(server.config_path).ui.shown_features == ["midi", "paths"]
         assert _save_features(base)[0] == 200
         assert load_config(server.config_path).ui.shown_features == []
+
+    def test_a_save_without_the_table_keeps_the_list(self, live_server) -> None:
+        server, base = live_server
+        assert _save_features(base, "paths", marker=False)[0] == 200
+        assert load_config(server.config_path).ui.shown_features == list(DEFAULT_SHOWN_FEATURES)
+
+    def test_there_is_no_route_that_applies_a_box_on_its_own(self, live_server) -> None:
+        _, base = live_server
+        status, _, _ = _post(base, "/section/features", b"paths=on", "application/x-www-form-urlencoded")
+        assert status in (404, 405)
+
+    def test_the_list_is_never_section_broadcast(self, live_server) -> None:
+        _, base = live_server
+        assert _post_json(base, "/api/config/features/broadcast", {"paths": True}) == 403
 
     def test_unknown_fields_are_ignored(self, live_server) -> None:
         server, base = live_server
@@ -183,8 +196,8 @@ class TestPage:
         _, base = live_server
         _save_features(base, "detection")
         _, body = _get(base, "/")
-        form = body[body.index('<form id="features-section"') :]
-        form = form[: form.index("</form>")]
+        form = body[body.index('<div id="features-section"') :]
+        form = form[: form.index("</table>")]
         assert re.search(r'name="detection"[^>]*\s+checked', form)
         assert not re.search(r'name="zones"[^>]*\s+checked', form)
         assert form.count('class="badge-experimental"') == 6
@@ -192,16 +205,22 @@ class TestPage:
     def test_the_table_has_one_row_per_feature_with_its_title_and_description(self, live_server) -> None:
         _, base = live_server
         _, body = _get(base, "/")
-        form = body[body.index('<form id="features-section"') :]
-        form = form[: form.index("</form>")]
+        form = body[body.index('<div id="features-section"') :]
+        form = form[: form.index("</table>")]
+        assert '<input type="hidden" name="features_submitted" value="1" form="general-network-section">' in form
+        assert "broadcastSection" not in form
         rows = re.findall(r"<tr>\s*<td class=\"feature-check\">(.*?)</tr>", form, re.S)
         assert len(rows) == len(FEATURE_KEYS)
         for key, row in zip(FEATURE_KEYS, rows, strict=True):
             box_id = "features-" + key.replace("_", "-")
-            title, description = FEATURE_LABELS[key]
-            assert f'id="{box_id}" name="{key}" aria-describedby="{box_id}-description"' in row
-            assert f'<label for="{box_id}">{html_escape(title)}</label>' in row
-            assert f'<td id="{box_id}-description" class="feature-description">{html_escape(description)}</td>' in row
+            label = FEATURE_LABELS[key]
+            assert f'id="{box_id}" name="{key}" form="general-network-section"' in row
+            stored = "1" if key in DEFAULT_SHOWN_FEATURES else "0"
+            assert f'aria-describedby="{box_id}-description" data-saved="{stored}"' in row
+            assert f'data-title="{html_escape(label.title)}" data-off="{html_escape(label.when_off)}"' in row
+            assert f'<label for="{box_id}">{html_escape(label.title)}</label>' in row
+            description = html_escape(label.description)
+            assert f'<td id="{box_id}-description" class="feature-description">{description}</td>' in row
 
 
 class TestWizard:

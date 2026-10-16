@@ -152,19 +152,19 @@ one-line description per row. The separate Features section goes.
 ### 7. Applied on Save, with a warning, never broadcast
 A change to the list waits for the Station Settings **Save**: switching a
 feature off mid-show must be deliberate.
-- [ ] The checkboxes join the Save's form (`form="general-network-section"`
+- [x] The checkboxes join the Save's form (`form="general-network-section"`
       plus a `features_submitted` marker); `/section/general` applies the list
       in the same locked write and refreshes the page when the touch remote's
       launcher appears or goes. A POST without the marker leaves the list alone.
-- [ ] `/section/features` removed: nothing posts to it.
-- [ ] Saving with a box switched off opens a modal naming each such feature
+- [x] `/section/features` removed: nothing posts to it.
+- [x] Saving with a box switched off opens a modal naming each such feature
       and what stops with it (`FEATURE_LABELS` gains the line); Cancel sends
       nothing, the red **Turn off** saves.
-- [ ] The page flips its `feature-<key>` classes after a successful save only.
-- [ ] **Apply to all stations** removed; `features` joins
+- [x] The page flips its `feature-<key>` classes after a successful save only.
+- [x] **Apply to all stations** removed; `features` joins
       `_BROADCAST_EXCLUDED_SECTIONS`.
-- [ ] Help, `docs/architecture/web.md` and this plan describe the Save.
-- [ ] Tests: the general save applies the list on and off, a POST without the
+- [x] Help, `docs/architecture/web.md` and this plan describe the Save.
+- [x] Tests: the general save applies the list on and off, a POST without the
       marker keeps it, a crafted value, the refresh header, the modal's
       per-feature lines, the broadcast refused, no broadcast button, the
       removed route.

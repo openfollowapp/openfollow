@@ -109,7 +109,6 @@ _WRITES: dict[tuple[str, str], tuple[str, str, Any]] = {
     ),
     ("POST", "/section/osc_destinations/add"): ("/section/osc_destinations/add", "form", {}),
     ("POST", "/section/osc_destinations/reorder"): ("/section/osc_destinations/reorder", "form", {"order": "d1"}),
-    ("POST", "/section/features"): ("/section/features", "form", {"paths": "on"}),
     ("POST", "/section/otp_output"): ("/section/otp_output", "form", {}),
     ("POST", "/section/paths"): ("/section/paths", "form", {}),
     ("POST", "/section/psn"): ("/section/psn", "form", {}),

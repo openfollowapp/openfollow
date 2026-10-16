@@ -124,17 +124,17 @@ def test_base_tpl_hides_each_feature_off_its_body_class() -> None:
     base = _read("base.tpl")
     assert 'body:not(.feature-{{_fkey}}) [data-feature="{{_fkey}}"] { display: none !important; }' in base
     assert "'feature-' + k for k in config.ui.shown_features" in base
-    assert "function onFeatureToggle(cb)" in base
+    assert '<script src="/assets/js/feature-save.js?v={{_asset_v}}"></script>' in base
 
 
-def test_general_features_form_saves_on_change_and_broadcasts() -> None:
+def test_the_features_table_saves_with_the_station_settings_save() -> None:
     general = _read("partials/general.tpl")
-    form = general[general.index('<form id="features-section"') :]
-    form = form[: form.index("</form>")]
-    assert 'hx-post="/section/features"' in form
-    assert 'hx-trigger="change"' in form
-    assert 'onchange="onFeatureToggle(this)"' in form
-    assert "broadcastSection('features', this.form)" in form
+    table = general[general.index('<div id="features-section"') :]
+    table = table[: table.index("</table>")]
+    assert 'form="general-network-section"' in table
+    assert 'name="features_submitted"' in table
+    assert "hx-post" not in table and "onchange" not in table
+    assert "broadcastSection" not in table
 
 
 def test_every_feature_box_has_a_bool_rule() -> None:

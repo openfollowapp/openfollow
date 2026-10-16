@@ -4,22 +4,69 @@
 
 from __future__ import annotations
 
-# The Features table: (title, description) per feature key.
-FEATURE_LABELS: dict[str, tuple[str, str]] = {
-    "zones": ("Trigger zones", "Fires OSC cues when a marker enters or leaves a zone on stage."),
-    "midi": ("MIDI", "Opens MIDI devices for virtual faders and button bindings."),
-    "lens_distortion": ("Lens distortion", "Bows the overlay to match a wide or fisheye lens."),
-    "psn_input": ("PSN input", "Shows the markers other stations send over PSN."),
-    "detection": (
+from typing import NamedTuple
+
+
+class FeatureLabel(NamedTuple):
+    """A Features table row's title and description, and what stops when the box is switched off."""
+
+    title: str
+    description: str
+    when_off: str
+
+
+FEATURE_LABELS: dict[str, FeatureLabel] = {
+    "zones": FeatureLabel(
+        "Trigger zones",
+        "Fires OSC cues when a marker enters or leaves a zone on stage.",
+        "zones stop firing and disappear from the Operator Screen.",
+    ),
+    "midi": FeatureLabel(
+        "MIDI",
+        "Opens MIDI devices for virtual faders and button bindings.",
+        "MIDI devices are closed, so nothing played on them reaches this station.",
+    ),
+    "lens_distortion": FeatureLabel(
+        "Lens distortion",
+        "Bows the overlay to match a wide or fisheye lens.",
+        "the overlay, mouse, person detection and zones work as if the lens were straight.",
+    ),
+    "psn_input": FeatureLabel(
+        "PSN input",
+        "Shows the markers other stations send over PSN.",
+        "other stations' markers disappear and no longer count for zones.",
+    ),
+    "detection": FeatureLabel(
         "Person detection",
         "Uses a local AI Vision model to detect people on the video stream. "
         "Markers can get magnetically pulled towards these people.",
+        "detection stops, and markers are no longer pulled towards people.",
     ),
-    "rttrpm": ("RTTrPM output", "Sends marker positions as RTTrPM, next to PSN and OTP."),
-    "paths": ("Paths", "Locks a marker to a drawn path, so a stick moves it along the path."),
-    "ground_grid": ("Ground grid", "Lets markers follow raised floor areas such as risers and stairs."),
-    "calibration_points": ("Calibration points", "Adds measured points to the Setup Wizard's camera calibration."),
-    "touch_remote": ("Touch remote", "Drives a marker from a tablet or phone in the web UI."),
+    "rttrpm": FeatureLabel(
+        "RTTrPM output",
+        "Sends marker positions as RTTrPM, next to PSN and OTP.",
+        "RTTrPM output stops sending.",
+    ),
+    "paths": FeatureLabel(
+        "Paths",
+        "Locks a marker to a drawn path, so a stick moves it along the path.",
+        "every marker on a path is let go.",
+    ),
+    "ground_grid": FeatureLabel(
+        "Ground grid",
+        "Lets markers follow raised floor areas such as risers and stairs.",
+        "markers no longer follow raised floor areas.",
+    ),
+    "calibration_points": FeatureLabel(
+        "Calibration points",
+        "Adds measured points to the Setup Wizard's camera calibration.",
+        "the calibration points are hidden; the saved points still count.",
+    ),
+    "touch_remote": FeatureLabel(
+        "Touch remote",
+        "Drives a marker from a tablet or phone in the web UI.",
+        "every touch remote lets go of its marker, and its launcher disappears.",
+    ),
 }
 
 # Tokens that must keep their canonical casing rather than Title-case.

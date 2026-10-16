@@ -133,42 +133,42 @@
                 </div>
                 % end
             </div>
-            %# Features: each box saves on change; the page flips its feature-<key> body class.
+            %# Features: the boxes save with the box's Save (``form=``); feature-save.js asks
+            %# before a Save switches one off. ``data-saved`` is the stored state.
             % from openfollow.configuration import EXPERIMENTAL_FEATURES, FEATURE_KEYS
             % from openfollow.web.labels import FEATURE_LABELS
-            <form id="features-section" class="group" hx-post="/section/features" hx-swap="none" hx-trigger="change">
-                <h3 class="group-title">Features</h3>
-                <div class="feature-table-wrap">
+            <div id="features-section" class="group">
+                <h3 class="group-title" id="features-heading">Features</h3>
+                <input type="hidden" name="features_submitted" value="1" form="general-network-section">
+                <div class="feature-table-wrap" role="group" aria-labelledby="features-heading">
                     <table class="data-table feature-table" aria-label="Features">
                         <thead>
                             <tr><th scope="col"><span class="visually-hidden">On</span></th><th scope="col">Feature</th><th scope="col">Description</th></tr>
                         </thead>
                         <tbody>
                             % for _key in FEATURE_KEYS:
-                            % _title, _description = FEATURE_LABELS[_key]
+                            % _label = FEATURE_LABELS[_key]
                             % _id = 'features-' + _key.replace('_', '-')
+                            % _on = config.ui.feature_on(_key)
                             <tr>
                                 <td class="feature-check">
-                                    <input type="checkbox" id="{{_id}}" name="{{_key}}" aria-describedby="{{_id}}-description"
-                                           {{'checked' if config.ui.feature_on(_key) else ''}}
-                                           onchange="onFeatureToggle(this)">
+                                    <input type="checkbox" id="{{_id}}" name="{{_key}}" form="general-network-section"
+                                           aria-describedby="{{_id}}-description" data-saved="{{'1' if _on else '0'}}"
+                                           data-title="{{_label.title}}" data-off="{{_label.when_off}}" {{'checked' if _on else ''}}>
                                 </td>
-                                <th scope="row"><label for="{{_id}}">{{_title}}</label>{{!' <span class="badge-experimental">Experimental</span>' if _key in EXPERIMENTAL_FEATURES else ''}}</th>
-                                <td id="{{_id}}-description" class="feature-description">{{_description}}</td>
+                                <th scope="row"><label for="{{_id}}">{{_label.title}}</label>{{!' <span class="badge-experimental">Experimental</span>' if _key in EXPERIMENTAL_FEATURES else ''}}</th>
+                                <td id="{{_id}}-description" class="feature-description">{{_label.description}}</td>
                             </tr>
                             % end
                         </tbody>
                     </table>
                 </div>
-                <div class="feature-actions">
-                    <button type="button" class="broadcast-btn" onclick="broadcastSection('features', this.form)">Apply to all stations</button>
-                </div>
-            </form>
+            </div>
         </div>
     </details>
 
     %# Save sits at the box bottom (the display-units and autostart toggles
-    %# above live-apply on change, so only the station name, PIN and FQDN need it).
+    %# above live-apply on change, so only the station name, PIN, FQDN and features need it).
     %# ``form=`` keeps it submitting the network form from outside it.
     <div class="actions">
         <button type="submit" form="general-network-section" class="save-btn">Save</button>

@@ -3249,7 +3249,8 @@ def _config_dict_redacted(cfg: AppConfig) -> dict[str, Any]:
 _BROADCAST_EXCLUDED_SECTIONS = frozenset(
     # ``interface_assignment`` names NICs on this box; copying it to a peer
     # would repin that peer's PSN and OTP to an interface it may not have.
-    {"osc_destinations", "osc_transmitters", "trigger_zones", "interface_assignment"},
+    # ``features`` is set on each station by its own Save, never by a section broadcast.
+    {"osc_destinations", "osc_transmitters", "trigger_zones", "interface_assignment", "features"},
 )
 
 
@@ -7282,9 +7283,17 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             return _save_failed(422, f"Custom domain name: {fqdn_refusal}")
         with _config_write_lock:
             cfg = _load_config_for_edit()
+            launcher_was = feature_gated(cfg.touch_remote, cfg, "touch_remote").enabled
             apply_section_data(cfg, "general", form_data)
+            # The Features boxes save with this form; unticked boxes send nothing, so the
+            # marker says the list was on the page and an absent key means off.
+            if "features_submitted" in form_data:
+                apply_section_data(cfg, "features", {key: key in form_data for key in FEATURE_KEYS})
             save_config(cfg, server.config_path)
 
+        if feature_gated(cfg.touch_remote, cfg, "touch_remote").enabled != launcher_was:
+            # The launcher is part of every page: reload so it appears or goes.
+            response.set_header("HX-Refresh", "true")
         return _render_general(cfg, saved=True)
 
     def _persist_ui_change(mutate: Callable[[AppConfig], None]) -> AppConfig:
@@ -7310,19 +7319,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         choice = _as_str(request.forms.get("unit_system", ""), "").strip().lower()
         cfg = _persist_ui_change(lambda c: setattr(c.ui, "unit_system", choice))
         return _render_general(cfg, saved=True)
-
-    @app.post("/section/features")
-    def update_features() -> Any:
-        """Save the Features list. The page flips its ``feature-<key>`` body
-        classes itself; hot reload starts and stops what the list gates.
-        Responds empty (hx-swap="none")."""
-        before = _request_config(server)
-        was = feature_gated(before.touch_remote, before, "touch_remote").enabled
-        cfg = _save_section_from_form("features", bool_fields=FEATURE_KEYS)
-        if feature_gated(cfg.touch_remote, cfg, "touch_remote").enabled != was:
-            # The launcher is part of every page: reload so it appears or goes.
-            response.set_header("HX-Refresh", "true")
-        return ""
 
     def _render_startup(startup: dict[str, Any]) -> Any:
         return template("partials/startup", startup=startup)

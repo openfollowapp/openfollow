@@ -1871,6 +1871,11 @@ def _coerce_timer(value: Any, default: float) -> float:
     return max(0.0, out)
 
 
+def _as_heading(value: Any, default: float) -> float:
+    # A bool passes through so MarkerConfig reads it as config.toml does, not as float(True).
+    return value if isinstance(value, bool) else _as_float(value, default)
+
+
 def _as_float_or_zero(value: Any, default: float) -> float:
     """Variant of ``_as_float`` where **empty** input means "unset/disable"
     (collapse to ``0.0``) rather than "preserve current".
@@ -2232,7 +2237,7 @@ _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
         "default_pos_y": _as_float,
         "default_pos_z": _as_float,
         "control_frame": _as_str,
-        "control_heading": _as_float,
+        "control_heading": _as_heading,
     },
     "marker": {
         "marker_style": _as_str,

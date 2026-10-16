@@ -270,10 +270,11 @@ def test_movement_form_control_frame_reaches_the_input_mapping() -> None:
         ({"control_frame": "camera", "control_heading": "abc"}, "camera", 0.0),
         ({"control_frame": "heading", "control_heading": "-90"}, "heading", 270.0),
         ({"control_frame": "heading", "control_heading": "1e400"}, "heading", 0.0),
+        ({"control_frame": "heading", "control_heading": True}, "heading", 0.0),
     ],
 )
 def test_apply_section_data_movement_normalises_a_crafted_control_frame(
-    posted: dict[str, str], frame: str, heading: float
+    posted: dict[str, object], frame: str, heading: float
 ) -> None:
     config = AppConfig()
 
@@ -1193,7 +1194,7 @@ def test_apply_import_data_preserves_psn_source_iface() -> None:
 
 
 def test_apply_import_data_reads_the_control_direction_flip_as_heading_180() -> None:
-    """A config exported before the control frame existed keeps its turned controls."""
+    """An exported config carrying ``invert_control_direction = true`` imports as Fixed heading 180."""
     from openfollow.web.routes import _apply_import_data
 
     new = _apply_import_data(AppConfig(), {"marker": {"invert_control_direction": True}})

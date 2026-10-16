@@ -49,6 +49,7 @@ from openfollow.web.routes import (
     _as_button_index,
     _as_float,
     _as_float_or_zero,
+    _as_heading,
     _as_int,
     _as_int_list,
     _as_ip_list,
@@ -471,7 +472,7 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
             choices=CONTROL_FRAMES,
             human_error="Control frame must be 'stage', 'heading', 'camera' or 'screen'.",
         ),
-        "control_heading": FieldRule(_as_float, human_error="Heading must be a number of degrees."),
+        "control_heading": FieldRule(_as_heading, human_error="Heading must be a number of degrees."),
     },
     "marker": {
         "marker_style": FieldRule(

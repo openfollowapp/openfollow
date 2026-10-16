@@ -1315,6 +1315,15 @@
  .data-table input, .data-table select { font-size: inherit; }
  .data-table td.row-actions { white-space: nowrap; text-align: right; }
  .data-table td.row-actions > * + * { margin-left: 0.4rem; }
+ /* Features table: checkbox, title, description. */
+ .feature-table-wrap { overflow-x: auto; }
+ .feature-table td.feature-check { width: 2.2rem; }
+ .feature-table td.feature-check input { margin: 0; }
+ .feature-table th[scope="row"] { font-weight: 600; white-space: nowrap; }
+ .feature-table th[scope="row"] label { margin: 0; cursor: pointer; }
+ .feature-table th[scope="row"] .badge-experimental { margin-left: 0.4rem; }
+ .feature-table td.feature-description { color: var(--muted); }
+ .feature-actions { display: flex; justify-content: flex-end; margin-top: 0.6rem; }
  /* Controller Slots table (Input tab). */
  .slot-row.slot-missing { background: var(--error-row); }
  /* Grey while the slot needs nothing, red when its controller is missing. */

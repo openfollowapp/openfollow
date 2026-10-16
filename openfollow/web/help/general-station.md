@@ -24,7 +24,7 @@ This station's name, web access and display units, plus the settings you set onc
 
 ## Features
 
-What this station uses. Each box applies as soon as it changes. A feature that is off is hidden in the web UI and does not run, but its settings are kept: ticking it again brings it back as it was. Its own switch (such as **Enabled** under RTTrPM Output) still applies on top. Those marked *Experimental* are off on a new station.
+The table at the end of **Advanced Settings** lists what this station uses: one row per feature, with its title and a short description. Each box applies as soon as it changes, without **Save**. A feature that is off is hidden in the web UI and does not run, but its settings are kept: ticking it again brings it back as it was. Its own switch (such as **Enabled** under RTTrPM Output) still applies on top. Those marked *Experimental* are off on a new station.
 
 - **Trigger zones** – the Trigger Zones and Zone Editor sections and the Toggle Zones bindings. Off, zones neither fire nor show on the Operator Screen.
 - **MIDI** – the MIDI patches and each virtual fader's MIDI source. Off, no MIDI device is opened.

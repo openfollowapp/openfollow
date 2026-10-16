@@ -1,6 +1,6 @@
 %# General tab content. Top-level sections: Station Settings (identity,
 %# display units, web access PIN, and an Advanced Settings disclosure
-%# holding the start-at-boot switch), Features (what this station uses),
+%# holding the domain name, the start-at-boot switch and the Features table),
 %# Network (live interface state), and Software Update (signed-.deb installer).
 %#
 %# Each form posts to ``/section/general`` (or the appropriate sub-
@@ -91,9 +91,8 @@
     <details class="inline-advanced">
         <summary>Advanced Settings</summary>
         <div class="inline-advanced-content">
-            %# One group, so no rule inside the disclosure. The FQDN is saved with the
-            %# station name: ``form=`` joins that form from here, and its
-            %# ``hx-select-oob`` re-renders this row with the stored name.
+            %# The FQDN is saved with the station name: ``form=`` joins that form from
+            %# here, and its ``hx-select-oob`` re-renders this row with the stored name.
             % from openfollow.station_fqdn import mdns_name
             <div class="group">
                 <div class="row" id="general-station-fqdn-row">
@@ -134,6 +133,37 @@
                 </div>
                 % end
             </div>
+            %# Features: each box saves on change; the page flips its feature-<key> body class.
+            % from openfollow.configuration import EXPERIMENTAL_FEATURES, FEATURE_KEYS
+            % from openfollow.web.labels import FEATURE_LABELS
+            <form id="features-section" class="group" hx-post="/section/features" hx-swap="none" hx-trigger="change">
+                <h3 class="group-title">Features</h3>
+                <div class="feature-table-wrap">
+                    <table class="data-table feature-table" aria-label="Features">
+                        <thead>
+                            <tr><th scope="col"><span class="visually-hidden">On</span></th><th scope="col">Feature</th><th scope="col">Description</th></tr>
+                        </thead>
+                        <tbody>
+                            % for _key in FEATURE_KEYS:
+                            % _title, _description = FEATURE_LABELS[_key]
+                            % _id = 'features-' + _key.replace('_', '-')
+                            <tr>
+                                <td class="feature-check">
+                                    <input type="checkbox" id="{{_id}}" name="{{_key}}" aria-describedby="{{_id}}-description"
+                                           {{'checked' if config.ui.feature_on(_key) else ''}}
+                                           onchange="onFeatureToggle(this)">
+                                </td>
+                                <th scope="row"><label for="{{_id}}">{{_title}}</label>{{!' <span class="badge-experimental">Experimental</span>' if _key in EXPERIMENTAL_FEATURES else ''}}</th>
+                                <td id="{{_id}}-description" class="feature-description">{{_description}}</td>
+                            </tr>
+                            % end
+                        </tbody>
+                    </table>
+                </div>
+                <div class="feature-actions">
+                    <button type="button" class="broadcast-btn" onclick="broadcastSection('features', this.form)">Apply to all stations</button>
+                </div>
+            </form>
         </div>
     </details>
 
@@ -145,36 +175,6 @@
     </div>
 </div>
 
-%# Features: each box saves on change; the page flips its feature-<key> body class.
-% from openfollow.configuration import EXPERIMENTAL_FEATURES, FEATURE_KEYS
-% from openfollow.web.labels import FEATURE_LABELS
-<form id="features-section" class="section" data-fold-key="features" data-help="general-station"
-      hx-post="/section/features" hx-swap="none" hx-trigger="change">
-    <div class="section-head">
-        <h2>Features</h2>
-    </div>
-    <div class="group">
-        % for _i in range(0, len(FEATURE_KEYS), 2):
-        <div class="row">
-            % for _key in FEATURE_KEYS[_i:_i + 2]:
-            % _label, _action = FEATURE_LABELS[_key]
-            <div class="field checkbox-field">
-                <label for="features-{{_key.replace('_', '-')}}">{{_label}}{{!' <span class="badge-experimental">Experimental</span>' if _key in EXPERIMENTAL_FEATURES else ''}}</label>
-                <div class="checkbox-wrap checkbox-field inline">
-                    <input type="checkbox" id="features-{{_key.replace('_', '-')}}" name="{{_key}}"
-                           {{'checked' if config.ui.feature_on(_key) else ''}}
-                           onchange="onFeatureToggle(this)">
-                    <label for="features-{{_key.replace('_', '-')}}">{{_action}}</label>
-                </div>
-            </div>
-            % end
-        </div>
-        % end
-    </div>
-    <div class="actions">
-        <button type="button" class="broadcast-btn" onclick="broadcastSection('features', this.form)">Apply to all stations</button>
-    </div>
-</form>
 
 % if defined('startup_supported') and startup_supported:
 <script>

@@ -4,18 +4,22 @@
 
 from __future__ import annotations
 
-# The Features list: (field label, checkbox label) per feature key.
+# The Features table: (title, description) per feature key.
 FEATURE_LABELS: dict[str, tuple[str, str]] = {
-    "zones": ("Trigger zones", "Use trigger zones"),
-    "midi": ("MIDI", "Use MIDI devices"),
-    "lens_distortion": ("Lens distortion", "Use lens distortion"),
-    "psn_input": ("PSN input", "Receive other stations' markers"),
-    "detection": ("Person detection", "Use person detection"),
-    "rttrpm": ("RTTrPM output", "Use RTTrPM output"),
-    "paths": ("Paths", "Use paths"),
-    "ground_grid": ("Ground grid", "Use the ground grid"),
-    "calibration_points": ("Calibration points", "Use calibration points"),
-    "touch_remote": ("Touch remote", "Use the touch remote"),
+    "zones": ("Trigger zones", "Fires OSC cues when a marker enters or leaves a zone on stage."),
+    "midi": ("MIDI", "Opens MIDI devices for virtual faders and button bindings."),
+    "lens_distortion": ("Lens distortion", "Bows the overlay to match a wide or fisheye lens."),
+    "psn_input": ("PSN input", "Shows the markers other stations send over PSN."),
+    "detection": (
+        "Person detection",
+        "Uses a local AI Vision model to detect people on the video stream. "
+        "Markers can get magnetically pulled towards these people.",
+    ),
+    "rttrpm": ("RTTrPM output", "Sends marker positions as RTTrPM, next to PSN and OTP."),
+    "paths": ("Paths", "Locks a marker to a drawn path, so a stick moves it along the path."),
+    "ground_grid": ("Ground grid", "Lets markers follow raised floor areas such as risers and stairs."),
+    "calibration_points": ("Calibration points", "Adds measured points to the Setup Wizard's camera calibration."),
+    "touch_remote": ("Touch remote", "Drives a marker from a tablet or phone in the web UI."),
 }
 
 # Tokens that must keep their canonical casing rather than Title-case.

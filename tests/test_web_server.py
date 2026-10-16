@@ -8081,14 +8081,18 @@ def test_the_mdns_address_is_shown_beside_the_custom_domain_name(
     assert "disabled" in field.group(0) and "name=" not in field.group(0)
 
 
-def test_the_station_settings_box_draws_no_rules_inside(live_server) -> None:
-    """A ``.group`` draws a rule under itself unless it is the last in its container, so each
-    of the box's three containers (name and PIN, display units, Advanced Settings) holds one."""
+def test_the_station_settings_box_draws_one_rule_before_the_features(live_server) -> None:
+    """A ``.group`` draws a rule under itself unless it is the last in its container: name and
+    PIN and display units hold one group each, and Advanced Settings two, ruled off before the
+    Features table."""
     _, base = live_server
     _, body = _get(base, "/")
     start = body.index('data-fold-key="general-station"')
-    box = body[start : body.find('<form id="features-section"', start)]
-    assert box.count('class="group"') == 3
+    box = body[start : body.index('data-fold-key="general-network-interface"', start)]
+    assert box.count('class="group"') == 4
+    assert box.count('<form id="features-section" class="group"') == 1
+    advanced = box[box.index('<details class="inline-advanced">') : box.index("</details>")]
+    assert advanced.index('class="group"') < advanced.index('<form id="features-section" class="group"')
     assert "group--divider" not in box
 
 

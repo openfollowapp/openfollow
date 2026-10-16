@@ -137,13 +137,13 @@ Own PR from `main`.
 The list sits in the Station Settings box, inside its Advanced Settings
 disclosure, as a `data-table` with a checkbox, the feature's title and a
 one-line description per row. The separate Features section goes.
-- [ ] `labels.py`: `FEATURE_LABELS` holds (title, description) per key.
-- [ ] `partials/general.tpl`: the Features group and its table inside Advanced
+- [x] `labels.py`: `FEATURE_LABELS` holds (title, description) per key.
+- [x] `partials/general.tpl`: the Features group and its table inside Advanced
       Settings; the box keeps saving on change, `onFeatureToggle` and
       **Apply to all stations** unchanged; the Features section removed.
-- [ ] `base.tpl`: table styles from the theme tokens only.
-- [ ] Help `general-station.md`: the Features entry names its new place.
-- [ ] Tests: one row per `FEATURE_KEYS` in order, title as the checkbox's
+- [x] `base.tpl`: table styles from the theme tokens only.
+- [x] Help `general-station.md`: the Features entry names its new place.
+- [x] Tests: one row per `FEATURE_KEYS` in order, title as the checkbox's
       label, description from `FEATURE_LABELS`, checked state from
       `feature_on`, the table inside the Advanced Settings disclosure, no
       Features section left.

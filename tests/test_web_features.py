@@ -14,9 +14,11 @@ import urllib.parse
 import urllib.request
 
 import pytest
+from bottle import html_escape
 
 import openfollow.web.discovery as discovery_module
 from openfollow.configuration import DEFAULT_SHOWN_FEATURES, FEATURE_KEYS, PathConfig, load_config, save_config
+from openfollow.web.labels import FEATURE_LABELS
 from openfollow.web.server import ConfigWebServer
 from tests._ports import live_on_free_port
 
@@ -183,9 +185,23 @@ class TestPage:
         _, body = _get(base, "/")
         form = body[body.index('<form id="features-section"') :]
         form = form[: form.index("</form>")]
-        assert re.search(r'name="detection"\s+checked', form)
-        assert not re.search(r'name="zones"\s+checked', form)
+        assert re.search(r'name="detection"[^>]*\s+checked', form)
+        assert not re.search(r'name="zones"[^>]*\s+checked', form)
         assert form.count('class="badge-experimental"') == 6
+
+    def test_the_table_has_one_row_per_feature_with_its_title_and_description(self, live_server) -> None:
+        _, base = live_server
+        _, body = _get(base, "/")
+        form = body[body.index('<form id="features-section"') :]
+        form = form[: form.index("</form>")]
+        rows = re.findall(r"<tr>\s*<td class=\"feature-check\">(.*?)</tr>", form, re.S)
+        assert len(rows) == len(FEATURE_KEYS)
+        for key, row in zip(FEATURE_KEYS, rows, strict=True):
+            box_id = "features-" + key.replace("_", "-")
+            title, description = FEATURE_LABELS[key]
+            assert f'id="{box_id}" name="{key}" aria-describedby="{box_id}-description"' in row
+            assert f'<label for="{box_id}">{html_escape(title)}</label>' in row
+            assert f'<td id="{box_id}-description" class="feature-description">{html_escape(description)}</td>' in row
 
 
 class TestWizard:

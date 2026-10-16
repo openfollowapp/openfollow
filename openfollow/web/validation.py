@@ -15,6 +15,7 @@ from typing import Any
 from openfollow.configuration import (
     _DEFAULT_PSN_MCAST_IP,
     _DEFAULT_PSN_SYSTEM_NAME,
+    CONTROL_FRAMES,
     MENU_RESERVED_BUTTONS,
     MOUSE3D_AXES,
     MOUSE3D_AXIS_TARGETS,
@@ -48,6 +49,7 @@ from openfollow.web.routes import (
     _as_button_index,
     _as_float,
     _as_float_or_zero,
+    _as_heading,
     _as_int,
     _as_int_list,
     _as_ip_list,
@@ -465,7 +467,12 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
         "default_pos_x": FieldRule(_as_float, human_error="Must be a number."),
         "default_pos_y": FieldRule(_as_float, human_error="Must be a number."),
         "default_pos_z": FieldRule(_as_float, human_error="Must be a number."),
-        "invert_control_direction": FieldRule(_as_bool),
+        "control_frame": FieldRule(
+            _as_str,
+            choices=CONTROL_FRAMES,
+            human_error="Control frame must be 'stage', 'heading', 'camera' or 'screen'.",
+        ),
+        "control_heading": FieldRule(_as_heading, human_error="Heading must be a number of degrees."),
     },
     "marker": {
         "marker_style": FieldRule(

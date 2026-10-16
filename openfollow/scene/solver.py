@@ -533,6 +533,96 @@ def unproject_to_plane(
     return result
 
 
+# A flattened camera axis shorter than this is (near) vertical and carries no bearing.
+_FLAT_AXIS_EPS = 1e-6
+# The picture step ``screen_axes_at`` measures over, as a fraction of the canvas height.
+_SCREEN_STEP_FRACTION = 0.01
+
+PlanarAxes = tuple[tuple[float, float], tuple[float, float]]
+
+
+def camera_params(cam: CameraConfig) -> npt.NDArray[np.float64]:
+    """The 7-float ``[pos_x, pos_y, pos_z, pitch, yaw, roll, fov]`` the projection functions take."""
+    return np.array([cam.pos_x, cam.pos_y, cam.pos_z, cam.pitch, cam.yaw, cam.roll, cam.fov], dtype=np.float64)
+
+
+def bearing_axes(yaw_deg: float) -> PlanarAxes:
+    """(right, forward) of a camera with ``yaw_deg`` and no roll, as unit PSN XY vectors."""
+    rad = math.radians(yaw_deg)
+    c, s = math.cos(rad), math.sin(rad)
+    return (c, -s), (s, c)
+
+
+def ground_axes(params: npt.NDArray[Any]) -> PlanarAxes:
+    """The camera's (right, forward) on the floor, as unit PSN XY vectors.
+
+    Right is the camera's right axis flattened onto the floor, forward a
+    quarter turn left of it, so a camera with no roll keeps its yaw bearing at
+    any pitch. As roll stands the right axis up, the flattened view axis takes
+    over forward by the share the right axis lost, so a level camera keeps its
+    bearing up to 120 degrees of roll; an upside-down one steers as its picture
+    shows.
+    """
+    _, _, _, pitch, yaw, roll, _ = params
+    R = _rotation_matrix(math.radians(pitch), math.radians(yaw), math.radians(roll))
+    # Columns are the camera's axes in pygfx (x, y, z), looking along -z; PSN XY is (x, -z).
+    rx, ry = float(R[0, 0]), float(-R[2, 0])
+    lost = 1.0 - math.hypot(rx, ry)
+    fx, fy = -ry - lost * float(R[0, 2]), rx + lost * float(R[2, 2])
+    norm = math.hypot(fx, fy)
+    if norm <= _FLAT_AXIS_EPS:
+        # Only an upside-down camera cancels the two (level, rolled about 120 degrees). Some
+        # upside-down pose must: level, forward is its view; looking down, its picture's up.
+        fx, fy = float(-R[0, 2]), float(R[2, 2])
+        norm = math.hypot(fx, fy)
+    fx, fy = fx / norm, fy / norm
+    return (fy, -fx), (fx, fy)
+
+
+def screen_axes_at(
+    params: npt.NDArray[Any],
+    point_psn: tuple[float, float, float],
+    canvas_w: float,
+    canvas_h: float,
+    k1: float = 0.0,
+    k2: float = 0.0,
+) -> PlanarAxes | None:
+    """The stage directions that move ``point_psn`` right and up the picture, at its own height.
+
+    Unit PSN XY vectors, measured over a small step on the lens-distorted
+    picture. ``None`` when the point is behind the camera or off the picture,
+    a step leaves the plane (the horizon), or the plane is not below the
+    camera, where up the picture turns back towards it.
+    """
+    if float(params[2]) <= float(point_psn[2]):
+        return None
+    pt = np.array([point_psn], dtype=np.float64)
+    pinhole_pt = project_points(params, pt, canvas_w, canvas_h)
+    seen = apply_overlay_distortion(pinhole_pt, canvas_w, canvas_h, k1, k2)
+    sx, sy = float(seen[0, 0]), float(seen[0, 1])
+    if not (math.isfinite(sx) and math.isfinite(sy) and 0.0 <= sx <= canvas_w and 0.0 <= sy <= canvas_h):
+        return None
+    step = _SCREEN_STEP_FRACTION * canvas_h
+    picture = np.array([[sx, sy], [sx + step, sy], [sx, sy - step]], dtype=np.float64)
+    pinhole = invert_overlay_distortion(picture, canvas_w, canvas_h, k1, k2)
+    # Past a barrel lens's fold the picture folds back and its inverse clamps: neither the
+    # point nor its steps would be where they are drawn.
+    redistorted = apply_overlay_distortion(pinhole, canvas_w, canvas_h, k1, k2)
+    tol = 0.01 * step
+    if not (np.allclose(redistorted, picture, atol=tol) and np.allclose(pinhole[0], pinhole_pt[0], atol=tol)):
+        return None
+    world = unproject_to_plane(params, pinhole, canvas_w, canvas_h, float(point_psn[2]))
+    if not np.all(np.isfinite(world)):
+        return None
+    axes = []
+    for row in (1, 2):
+        dx, dy = float(world[row, 0] - world[0, 0]), float(world[row, 1] - world[0, 1])
+        # A plane homography keeps the three picture points distinct.
+        norm = math.hypot(dx, dy)
+        axes.append((dx / norm, dy / norm))
+    return axes[0], axes[1]
+
+
 # ---------------------------------------------------------------------------
 # DLT Homography + Camera Decomposition
 # ---------------------------------------------------------------------------

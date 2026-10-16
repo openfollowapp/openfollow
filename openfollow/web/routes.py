@@ -1793,7 +1793,7 @@ def _apply_section(cfg: AppConfig, section: str, data: Mapping[str, Any]) -> boo
         tz.__post_init__()
         return True
 
-    if section == "marker":
+    if section in ("marker", "movement"):
         marker_data = dict(data)
         apply_renamed_marker_keys(marker_data)
         data = marker_data
@@ -1873,6 +1873,11 @@ def _coerce_timer(value: Any, default: float) -> float:
     if not math.isfinite(out):
         return default
     return max(0.0, out)
+
+
+def _as_heading(value: Any, default: float) -> float:
+    # A bool passes through so MarkerConfig reads it as config.toml does, not as float(True).
+    return value if isinstance(value, bool) else _as_float(value, default)
 
 
 def _as_float_or_zero(value: Any, default: float) -> float:
@@ -2235,7 +2240,8 @@ _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
         "default_pos_x": _as_float,
         "default_pos_y": _as_float,
         "default_pos_z": _as_float,
-        "invert_control_direction": _as_bool,
+        "control_frame": _as_str,
+        "control_heading": _as_heading,
     },
     "marker": {
         "marker_style": _as_str,
@@ -5099,11 +5105,10 @@ def _json_error(status: int, message: str) -> str:
 
 def _camera_view(cfg: AppConfig) -> tuple[Any, float, float]:
     """The saved camera as the solver's parameter vector, with its lens."""
-    import numpy as np
+    from openfollow.scene.solver import camera_params
 
     cam = cfg.camera
-    params = np.array([cam.pos_x, cam.pos_y, cam.pos_z, cam.pitch, cam.yaw, cam.roll, cam.fov], dtype=np.float64)
-    return params, cam.lens_k1, cam.lens_k2
+    return camera_params(cam), cam.lens_k1, cam.lens_k2
 
 
 # Chords per straight world segment when the lens bows it, as on the Operator Screen.
@@ -5418,8 +5423,6 @@ def _register_touch_remote_routes(app: Bottle, server: ConfigWebServer) -> None:
             {
                 **status,
                 "markers": markers,
-                # The station turns the stick for a camera looking downstage; the card's labels follow.
-                "inverted": cfg.marker.invert_control_direction,
                 "z_step_m": cfg.touch_remote.z_step_m,
                 "z_notch_px": cfg.touch_remote.z_notch_px,
                 "paths_on": cfg.ui.show_experimental_features,

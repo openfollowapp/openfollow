@@ -418,12 +418,14 @@ def test_the_stick_moves_the_held_marker_at_the_station_s_max_speed(app: _App) -
 
 
 @pytest.mark.integration
-def test_the_stick_follows_the_control_direction(app: _App) -> None:
-    app._config.marker.invert_control_direction = True
+@pytest.mark.parametrize("frame", ["heading", "camera", "screen"])
+def test_the_stick_steers_in_stage_directions_whatever_the_control_frame(app: _App, frame: str) -> None:
+    app._config.marker.control_frame = frame
+    app._config.marker.control_heading = 180.0
     token = _held(app)
     app._touch_remote.drive(token, 10, (0.0, 1.0), 0)
     InputManager(app).update_touch_remote(0.5)
-    assert _pos(app) == pytest.approx((0.0, -1.0, 1.6))
+    assert _pos(app) == pytest.approx((0.0, 1.0, 1.6))
 
 
 @pytest.mark.integration

@@ -10,6 +10,7 @@ test pattern is: grab → move → ``update()`` → assert.
 from __future__ import annotations
 
 import math
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -309,18 +310,15 @@ class TestPosition:
         assert x == pytest.approx(wx)
         assert y == pytest.approx(wy)
 
-    def test_invert_control_direction_leaves_mouse_absolute(self) -> None:
+    @pytest.mark.parametrize("frame", ["heading", "camera", "screen"])
+    def test_control_frame_leaves_mouse_absolute(self, frame: str) -> None:
         """Mouse control positions the marker where the cursor is, so it is
-        correct from any camera angle by construction and must NOT be flipped by
-        ``invert_control_direction`` – which only reverses relative input
-        (keyboard, gamepad, 3D mouse).
-
-        Pins the invariant the flip's docstrings and the help drawer assert, so
-        a later refactor that pushes the sign down into ``Marker.set_pos`` or a
-        shared delta helper can't silently reverse dragging with a green suite.
+        correct from any camera angle by construction; the control frame turns
+        relative input (keyboard, gamepad, 3D mouse) only.
         """
         app = _DummyApp()
-        app._config.marker.invert_control_direction = True
+        app._config.marker.control_frame = frame
+        app._config.marker.control_heading = 180.0
         handler = MouseHandler(app)
         cx, cy = _ground_center(app, 1)
         handler.on_pointer_down(cx, cy, 1)
@@ -1297,3 +1295,19 @@ class TestGrabOnTheGroundGrid:
         app = _DummyApp()
         self._pit(app, experimental=False)
         assert MouseHandler(app).on_pointer_down(*self._seen(app, 0.0), 1) is True
+
+
+def test_an_unreadable_operator_screen_size_ignores_the_click_instead_of_raising() -> None:
+    """The frame loop must survive a GTK size read that raises; the click just does nothing."""
+
+    def broken() -> tuple[int, int]:
+        raise RuntimeError("no allocation")
+
+    app = _DummyApp()
+    cx, cy = _ground_center(app, 1)
+    app._canvas = SimpleNamespace(get_canvas_size=broken)
+    handler = MouseHandler(app)
+
+    handler.on_pointer_down(cx, cy, 1)
+
+    assert handler.active is False

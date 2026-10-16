@@ -2611,11 +2611,13 @@ def test_process_input_routes_to_about_when_active() -> None:
 
 def test_process_input_clears_keyboard_on_return_from_modal() -> None:
     """Returning to direct marker control after a modal drops any key still
-    tracked as held (one-shot clear) so it can't drift the marker now."""
+    tracked as held (one-shot clear) so it can't drift the marker now, and
+    every held control-frame direction, so a frame saved meanwhile applies."""
     from openfollow.configuration import AppConfig
     from openfollow.input.gamepad import GamepadUpdate
 
     cleared: list[bool] = []
+    released: list[bool] = []
 
     class _KB:
         keys: set[str] = set()
@@ -2623,8 +2625,13 @@ def test_process_input_clears_keyboard_on_return_from_modal() -> None:
         def clear(self) -> None:
             cleared.append(True)
 
+    class _CF:
+        def release_all(self) -> None:
+            released.append(True)
+
     class _IM:
         keyboard_handler = _KB()
+        control_frame = _CF()
 
         def update(self, _dt):  # noqa: ANN001
             return GamepadUpdate()
@@ -2648,6 +2655,7 @@ def test_process_input_clears_keyboard_on_return_from_modal() -> None:
     )
     app_modes.process_input(app, 0.016)
     assert cleared == [True]
+    assert released == [True]
     assert app._marker_control_suspended is False
 
 

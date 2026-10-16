@@ -12,6 +12,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from openfollow.configuration import SlotMarkerConfig, SlotPinConfig, _apply_with_fallback, save_config_fields
+from openfollow.input.control_frame import ControlFrame
 from openfollow.input.controller_identity import port_label, usb_host_paths
 from openfollow.input.controller_slots import (
     CONNECTED,
@@ -101,16 +102,6 @@ def resolve_osc_multicast_iface(listen_iface: str, station_iface: str) -> str | 
     return None if status == "down" else address
 
 
-def _oriented(vx: float, vy: float, invert: bool) -> tuple[float, float]:
-    """Flip X/Y for an upstage camera, whose view is 180° from the stage axes.
-
-    Relative input only. The 2D mouse (cursor unprojection) and OSC are
-    absolute, so they already follow the picture and must not be flipped. Z is
-    never touched.
-    """
-    return (-vx, -vy) if invert else (vx, vy)
-
-
 class InputManager:
     """Coordinates input from keyboard, gamepads, and OSC.
 
@@ -163,6 +154,7 @@ class InputManager:
             marker_resolver=self._gamepad_marker_id,
         )
         self.mouse_handler = MouseHandler(app)
+        self.control_frame = ControlFrame(app)
         # The mouse glide runs every frame; a persistent failure must not flood
         # the log at the frame rate.
         self._mouse_update_err_log = ThrottledExceptionLogger(logger, "Mouse update failed this tick.")
@@ -173,6 +165,7 @@ class InputManager:
         self.mouse3d_manager.start()
         self._mouse3d_update_err_log = ThrottledExceptionLogger(logger, "3D Mouse update failed this tick.")
         self._remote_update_err_log = ThrottledExceptionLogger(logger, "Touch remote update failed this tick.")
+        self._gamepad_move_err_log = ThrottledExceptionLogger(logger, "Gamepad move failed this tick.")
         # Which slot each controller holds for the session; refreshed on the
         # main loop only, read from any thread via ``_controller_slots``.
         self._clock = time.monotonic
@@ -447,8 +440,7 @@ class InputManager:
             gamepad_result.next_marker_pressed = False
             gamepad_result.prev_marker_pressed = False
 
-        # Read live (applies without a restart) and shared, so the three devices agree.
-        invert_xy = self.app._config.marker.invert_control_direction
+        self.control_frame.begin_frame()
 
         # 3D Mouse (6DOF): consume the latest device snapshot. Button edges fold
         # into the shared action flags; movement/reset/speed route to the marker
@@ -456,7 +448,7 @@ class InputManager:
         if self.app._config.mouse3d.enabled:
             try:
                 for local_idx, m3d in self.mouse3d_manager.update(dt).items():
-                    self._apply_mouse3d(m3d, local_idx, dt, gamepad_result, slots, invert_xy)
+                    self._apply_mouse3d(m3d, local_idx, dt, gamepad_result, slots)
             except Exception:
                 self._mouse3d_update_err_log.log()
 
@@ -500,7 +492,7 @@ class InputManager:
                 marker = self._get_marker(self.app._selected_id)
                 if marker:
                     vx, vy, vz = keyboard_velocity
-                    vx, vy = _oriented(vx, vy, invert_xy)
+                    vx, vy = self.control_frame.orient(("keyboard", self.app._selected_id), vx, vy, marker.pos)
                     self._move(self.app._selected_id, marker, vx, vy, vz, dt)
         except Exception:
             logger.exception("Keyboard update failed this tick.")
@@ -530,8 +522,12 @@ class InputManager:
                 continue
             marker = self._get_marker(marker_id)
             if marker:
-                ovx, ovy = _oriented(vx, vy, invert_xy)
-                self._move(marker_id, marker, ovx, ovy, vz, dt)
+                # One pad's failure never costs the rest of the frame (other pads, OSC, paths).
+                try:
+                    ovx, ovy = self.control_frame.orient(("gamepad", controller_idx, marker_id), vx, vy, marker.pos)
+                    self._move(marker_id, marker, ovx, ovy, vz, dt)
+                except Exception:
+                    self._gamepad_move_err_log.log()
 
         for controller_idx in gamepad_result.pathfinder_presses:
             self.pathfinder(self._gamepad_marker_id(controller_idx, slots))
@@ -657,7 +653,7 @@ class InputManager:
         vx, vy = stick_velocity(frame.stick, tuning.stick_curve, tuning.stick_dead_zone, max_speed)
         if vx or vy:
             self._remote_glides.pop(marker_id, None)
-            vx, vy = _oriented(vx, vy, cfg.marker.invert_control_direction)
+            # Stage directions: a tablet operator need not be watching the camera's picture.
             self._move(marker_id, marker, vx, vy, 0.0, dt)
         if frame.z_notches and not (paths is not None and paths.is_locked(marker_id)):
             self._remote_glides.pop(marker_id, None)
@@ -711,7 +707,6 @@ class InputManager:
         dt: float,
         gamepad_result: GamepadUpdate,
         slots: tuple[SlotEntry, ...],
-        invert_xy: bool,
     ) -> None:
         """Apply one connected 3D Mouse's frame (``local_idx`` = its instance id).
 
@@ -722,8 +717,7 @@ class InputManager:
         marker this puck's unified slot drives (the selected marker when it's the
         only controller, its fixed slot otherwise); the velocity is a unit rate
         scaled here by the marker's move-speed. ``slots`` is the frame's
-        unified-controller snapshot, and ``invert_xy`` the frame's shared
-        control-direction flag.
+        unified-controller snapshot.
         """
         if self.marker_cycle_active(slots):
             if m3d.next_marker:
@@ -755,7 +749,7 @@ class InputManager:
                 self.app.adjust_move_speed(direction, marker_id=marker_id)
         vx, vy, vz = m3d.velocity
         if (vx or vy or vz) and not held:
-            vx, vy = _oriented(vx, vy, invert_xy)
+            vx, vy = self.control_frame.orient(("mouse3d", local_idx, marker_id), vx, vy, marker.pos)
             speed = self.app.get_marker_move_speed(marker_id)
             self._move(marker_id, marker, vx * speed, vy * speed, vz * speed, dt)
         if m3d.fader_signal:

@@ -2448,12 +2448,6 @@ _TRUE_FALSE_DROPDOWNS = [
     pytest.param(
         "/section/mouse", "mouse_wheel_invert", lambda c: c.controller.mouse_wheel_invert, id="wheel-direction"
     ),
-    pytest.param(
-        "/section/movement",
-        "invert_control_direction",
-        lambda c: c.marker.invert_control_direction,
-        id="control-direction",
-    ),
     pytest.param("/section/gamepad", "invert_y", lambda c: c.controller.invert_y, id="stick-y-axis"),
     pytest.param("/section/mouse3d", "invert_pan_x", lambda c: c.mouse3d.invert_pan_x, id="3d-mouse-direction"),
     pytest.param(
@@ -7271,19 +7265,44 @@ def test_marker_form_accepts_the_former_z_line_checkbox_name(live_server) -> Non
     assert saved.marker.z_line_thickness == 7
 
 
-def test_marker_save_preserves_invert_control_direction(live_server) -> None:
-    """``invert_control_direction`` lives on MarkerConfig but is rendered by the
-    *movement* section, so the marker (visuals) form never posts it. It must not
-    appear in this route's bool fields, or saving a visual toggle would silently
-    reverse the operator's controls."""
+def test_marker_save_preserves_the_control_frame(live_server) -> None:
+    """The control frame lives on MarkerConfig but is rendered by the *movement*
+    section, so saving a visual toggle must not reset the operator's controls."""
     server, base = live_server
     cfg = load_config(server.config_path)
-    cfg.marker.invert_control_direction = True
+    cfg.marker.control_frame = "heading"
+    cfg.marker.control_heading = 90.0
     save_config(cfg, server.config_path)
 
     status, _ = _post_form(base, "/section/marker", {"ball_visible": "on"})
     assert status == 200
-    assert load_config(server.config_path).marker.invert_control_direction is True
+    saved = load_config(server.config_path).marker
+    assert (saved.control_frame, saved.control_heading) == ("heading", pytest.approx(90.0))
+
+
+@pytest.mark.parametrize("frame", ["stage", "heading", "camera", "screen"])
+def test_movement_form_saves_the_control_frame(live_server, frame) -> None:  # noqa: ANN001
+    server, base = live_server
+    status, _ = _post_form(base, "/section/movement", {"control_frame": frame, "control_heading": "45"})
+    assert status == 200
+    saved = load_config(server.config_path).marker
+    assert saved.control_frame == frame
+    assert saved.control_heading == pytest.approx(45.0)
+
+
+@pytest.mark.parametrize(("frame", "hidden"), [("heading", False), ("stage", True), ("screen", True)])
+def test_movement_form_shows_the_heading_for_a_fixed_heading_only(live_server, frame, hidden) -> None:  # noqa: ANN001
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.marker.control_frame = frame
+    save_config(cfg, server.config_path)
+
+    status, body = _post_form(base, "/section/movement", {"control_frame": frame})
+    assert status == 200
+    field = re.search(r'<div class="field" id="movement-control-heading-field"([^>]*)>', body)
+    assert field is not None
+    assert ("hidden" in field.group(1)) is hidden
+    assert re.search(rf'<option value="{frame}"\s+selected>', body)
 
 
 def test_api_video_snapshot_returns_jpeg_when_provider_yields_bytes(

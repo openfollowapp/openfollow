@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import asdict
+from types import SimpleNamespace
 
 import pytest
 
@@ -21,6 +22,7 @@ from openfollow.configuration import (
     SlotMarkerConfig,
     SlotPinConfig,
 )
+from openfollow.input.control_frame import ControlFrame
 from openfollow.lens_model import lens_warp_is_valid
 from openfollow.web.routes import (
     _as_int_list,
@@ -253,6 +255,59 @@ def test_apply_section_data_marker_prefers_the_current_z_line_names() -> None:
 
     assert config.marker.z_line is True
     assert config.marker.z_line_thickness == 4
+
+
+def test_apply_section_data_reads_the_control_direction_flip_from_an_older_peer() -> None:
+    """An older station broadcasts the flip; dropping it would silently un-turn this station's controls."""
+    config = AppConfig()
+
+    assert apply_section_data(config, "movement", {"invert_control_direction": "true"}) is True
+
+    assert config.marker.control_frame == "heading"
+    assert config.marker.control_heading == pytest.approx(180.0)
+
+
+def test_apply_section_data_reads_an_older_peers_unset_flip_as_stage_axes() -> None:
+    """The flip off meant stage axes, so an older peer's push still turns a station back to them."""
+    config = AppConfig()
+    config.marker.control_frame = "heading"
+    config.marker.control_heading = 180.0
+
+    apply_section_data(config, "movement", {"invert_control_direction": "false"})
+
+    assert config.marker.control_frame == "stage"
+
+
+def test_movement_form_control_frame_reaches_the_input_mapping() -> None:
+    """Form → config → the direction a stick push takes."""
+    config = AppConfig()
+    apply_section_data(config, "movement", {"control_frame": "heading", "control_heading": "90"})
+    app = SimpleNamespace(_config=config, _camera=None, _canvas=None)
+
+    vx, vy = ControlFrame(app).orient("keyboard", 0.0, 1.0, (0.0, 0.0, 0.0))  # type: ignore[arg-type]
+
+    assert (vx, vy) == pytest.approx((1.0, 0.0))
+
+
+@pytest.mark.parametrize(
+    ("posted", "frame", "heading"),
+    [
+        ({"control_frame": "picture"}, "stage", 0.0),
+        ({"control_frame": "camera", "control_heading": "abc"}, "camera", 0.0),
+        ({"control_frame": "heading", "control_heading": "-90"}, "heading", 270.0),
+        ({"control_frame": "heading", "control_heading": "1e400"}, "heading", 0.0),
+        ({"control_frame": "heading", "control_heading": True}, "heading", 0.0),
+    ],
+)
+def test_apply_section_data_movement_normalises_a_crafted_control_frame(
+    posted: dict[str, object], frame: str, heading: float
+) -> None:
+    config = AppConfig()
+
+    apply_section_data(config, "movement", posted)
+
+    assert config.marker.control_frame == frame
+    assert config.marker.control_heading == pytest.approx(heading)
 
 
 def test_apply_section_data_camera_lens_distortion_roundtrips() -> None:
@@ -1162,6 +1217,16 @@ def test_apply_import_data_preserves_psn_source_iface() -> None:
 
     assert new.psn_source_iface == "eth0"  # device iface preserved
     assert new.psn_system_name == "Imported"
+
+
+def test_apply_import_data_reads_the_control_direction_flip_as_heading_180() -> None:
+    """An exported config carrying ``invert_control_direction = true`` imports as Fixed heading 180."""
+    from openfollow.web.routes import _apply_import_data
+
+    new = _apply_import_data(AppConfig(), {"marker": {"invert_control_direction": True}})
+
+    assert new.marker.control_frame == "heading"
+    assert new.marker.control_heading == pytest.approx(180.0)
 
 
 def test_import_cannot_move_this_stations_web_ui() -> None:

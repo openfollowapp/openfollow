@@ -4118,7 +4118,6 @@ def test_marker_config_coerces_all_boolean_flags() -> None:
         ground_circle="true",  # type: ignore[arg-type]
         ground_circle_filled="false",  # type: ignore[arg-type]
         z_display_from_stage="yes",  # type: ignore[arg-type]
-        invert_control_direction="true",  # type: ignore[arg-type]
         cone_filled="off",  # type: ignore[arg-type]
         cone_shaded="no",  # type: ignore[arg-type]
     )
@@ -4130,36 +4129,44 @@ def test_marker_config_coerces_all_boolean_flags() -> None:
     assert cfg.ground_circle is True
     assert cfg.ground_circle_filled is False
     assert cfg.z_display_from_stage is True
-    assert cfg.invert_control_direction is True
+
+
+def test_marker_config_control_frame_defaults_to_stage_axes() -> None:
+    """Any other default would turn every operator's controls on upgrade."""
+    cfg = MarkerConfig()
+    assert cfg.control_frame == "stage"
+    assert cfg.control_heading == 0.0
+
+
+@pytest.mark.parametrize("frame", ["stage", "heading", "camera", "screen"])
+def test_marker_config_accepts_every_control_frame(frame: str) -> None:
+    assert MarkerConfig(control_frame=frame).control_frame == frame
+
+
+@pytest.mark.parametrize("raw", ["Screen", "picture", "", None, 1, True, ["camera"]])
+def test_marker_config_unknown_control_frame_falls_back_to_stage(raw: object) -> None:
+    assert MarkerConfig(control_frame=raw).control_frame == "stage"  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(
-    "raw,expected",
+    ("raw", "expected"),
     [
-        (True, True),
-        (False, False),
-        ("on", True),
-        ("off", False),
-        ("true", True),
-        # Unrecognised input falls back to the default rather than guessing.
-        # Notably an int: ``_coerce_bool`` accepts only real bools and known
-        # string forms, so ``1`` is not "truthy" here - same as every sibling flag.
-        (1, False),
-        (None, False),
-        ("banana", False),
+        (90.0, 90.0),
+        ("180", 180.0),
+        (360.0, 0.0),
+        (-90.0, 270.0),
+        (450, 90.0),
+        (-1e-15, 0.0),
     ],
 )
-def test_marker_config_coerces_invert_control_direction(raw: object, expected: bool) -> None:
-    """The flag reaches the input loop's sign arithmetic every frame, so a
-    hand-edited TOML must never leave a non-bool there."""
-    cfg = MarkerConfig(invert_control_direction=raw)  # type: ignore[arg-type]
-    assert cfg.invert_control_direction is expected
+def test_marker_config_control_heading_wraps_to_one_turn(raw: object, expected: float) -> None:
+    """A bearing outside one turn names the same direction as its wrap, e.g. a yaw of -90."""
+    assert MarkerConfig(control_heading=raw).control_heading == pytest.approx(expected)  # type: ignore[arg-type]
 
 
-def test_marker_config_control_direction_defaults_off() -> None:
-    """Default must be off: enabling it for an existing install would reverse
-    every operator's controls on upgrade."""
-    assert MarkerConfig().invert_control_direction is False
+@pytest.mark.parametrize("raw", ["abc", None, True, float("nan"), float("inf"), [90.0]])
+def test_marker_config_bad_control_heading_falls_back_to_zero(raw: object) -> None:
+    assert MarkerConfig(control_heading=raw).control_heading == 0.0  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize("bad_value", ["abc", "", [1.0]])
@@ -4565,6 +4572,73 @@ def test_load_config_warns_once_per_legacy_marker_key(temp_config_path, caplog, 
     renamed = [r for r in caplog.records if "has been renamed" in r.getMessage()]
     assert len(renamed) == 2
     assert {"drop_line", "drop_line_thickness"} == {r.args[0] for r in renamed}
+
+
+@pytest.mark.parametrize("flag", ["true", '"on"'])
+def test_load_config_reads_the_control_direction_flip_as_heading_180(temp_config_path, flag) -> None:  # noqa: ANN001
+    """The flip was a camera looking downstage, which is a 180-degree heading."""
+    temp_config_path.write_text(f"[marker]\ninvert_control_direction = {flag}\n", encoding="utf-8")
+
+    cfg = load_config(str(temp_config_path))
+
+    assert cfg.marker.control_frame == "heading"
+    assert cfg.marker.control_heading == pytest.approx(180.0)
+
+
+@pytest.mark.parametrize("flag", ["false", '"banana"', "1"])
+def test_load_config_reads_an_unset_control_direction_flip_as_stage_axes(temp_config_path, flag) -> None:  # noqa: ANN001
+    temp_config_path.write_text(f"[marker]\ninvert_control_direction = {flag}\n", encoding="utf-8")
+
+    assert load_config(str(temp_config_path)).marker.control_frame == "stage"
+
+
+def test_load_config_ignores_the_flip_beside_a_control_frame_without_warning(
+    temp_config_path, caplog, monkeypatch
+) -> None:  # noqa: ANN001
+    import openfollow.configuration as configuration
+
+    monkeypatch.setattr(configuration, "_DEPRECATED_WARNED", set())
+    temp_config_path.write_text(
+        '[marker]\ninvert_control_direction = false\ncontrol_frame = "camera"\n', encoding="utf-8"
+    )
+
+    with caplog.at_level("WARNING"):
+        cfg = load_config(str(temp_config_path))
+
+    assert cfg.marker.control_frame == "camera"
+    assert not [r for r in caplog.records if "has been renamed" in r.getMessage()]
+
+
+def test_load_config_prefers_the_control_frame_over_the_flip(temp_config_path) -> None:
+    temp_config_path.write_text(
+        '[marker]\ninvert_control_direction = true\ncontrol_frame = "screen"\n',
+        encoding="utf-8",
+    )
+
+    assert load_config(str(temp_config_path)).marker.control_frame == "screen"
+
+
+def test_load_config_keeps_a_heading_set_beside_the_flip(temp_config_path) -> None:
+    temp_config_path.write_text("[marker]\ninvert_control_direction = true\ncontrol_heading = 90.0\n", encoding="utf-8")
+
+    cfg = load_config(str(temp_config_path))
+
+    assert cfg.marker.control_frame == "heading"
+    assert cfg.marker.control_heading == pytest.approx(90.0)
+
+
+def test_load_config_warns_once_about_the_control_direction_flip(temp_config_path, caplog, monkeypatch) -> None:
+    import openfollow.configuration as configuration
+
+    monkeypatch.setattr(configuration, "_DEPRECATED_WARNED", set())
+    temp_config_path.write_text("[marker]\ninvert_control_direction = false\n", encoding="utf-8")
+
+    with caplog.at_level("WARNING"):
+        load_config(str(temp_config_path))
+        load_config(str(temp_config_path))
+
+    renamed = [r for r in caplog.records if "has been renamed" in r.getMessage()]
+    assert [(r.args[0], r.args[1]) for r in renamed] == [("invert_control_direction", "control_frame")]
 
 
 def test_load_config_migrates_legacy_otp_source_ip_to_iface(temp_config_path, monkeypatch) -> None:

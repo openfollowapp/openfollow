@@ -8307,7 +8307,8 @@ def test_gallery_list_shows_defaults(gallery_server) -> None:
     status, body = _get(base, f"{_GP}/list")
     assert status == 200
     assert 'id="gallery-grid"' in body
-    assert re.findall(r'class="gallery-select" type="button" title="([^"]+)"', body) == ["Stage", "Arena", "Grey"]
+    titles = re.findall(r'class="gallery-select" type="button" title="([^"]+)"', body)
+    assert titles == ["Stage", "Arena", "Concert", "Grey"]
     assert "gallery-label" not in body  # no visible per-tile labels
     assert 'title="Stage"' in body  # name kept as hover/aria name only
 
@@ -8412,13 +8413,16 @@ def test_gallery_thumb_stage_serves_asset(gallery_server) -> None:
     assert body[:3] == b"\xff\xd8\xff"  # JPEG
 
 
-def test_gallery_thumb_arena_serves_its_picture(gallery_server) -> None:
+@pytest.mark.parametrize(
+    ("media_id", "asset"), [("default:arena", "ARENA_ASSET_JPG"), ("default:concert", "CONCERT_ASSET_JPG")]
+)
+def test_gallery_thumb_of_a_bundled_picture_serves_it(gallery_server, media_id: str, asset: str) -> None:
     from openfollow.video import media_store
 
     _, base, _ = gallery_server
-    status, body = _get_raw(base, f"{_GP}/thumb/default:arena")
+    status, body = _get_raw(base, f"{_GP}/thumb/{media_id}")
     assert status == 200
-    assert body == media_store.ARENA_ASSET_JPG.read_bytes()
+    assert body == getattr(media_store, asset).read_bytes()
 
 
 def test_gallery_thumb_grey_has_none(gallery_server) -> None:
@@ -8427,12 +8431,13 @@ def test_gallery_thumb_grey_has_none(gallery_server) -> None:
     assert status == 404
 
 
-def test_gallery_select_arena_persists(gallery_server) -> None:
+@pytest.mark.parametrize(("media_id", "label"), [("default:arena", "Arena"), ("default:concert", "Concert")])
+def test_gallery_select_a_bundled_picture_persists(gallery_server, media_id: str, label: str) -> None:
     server, base, _ = gallery_server
-    status, body = _post_form(base, f"{_GP}/select", {"media_id": "default:arena"})
+    status, body = _post_form(base, f"{_GP}/select", {"media_id": media_id})
     assert status == 200
-    assert load_config(server.config_path).testpattern_selected_media == "default:arena"
-    assert '<div class="gallery-tile selected"><button class="gallery-select" type="button" title="Arena"' in body
+    assert load_config(server.config_path).testpattern_selected_media == media_id
+    assert f'<div class="gallery-tile selected"><button class="gallery-select" type="button" title="{label}"' in body
 
 
 def test_video_source_section_hides_capture_for_gallery(live_server) -> None:

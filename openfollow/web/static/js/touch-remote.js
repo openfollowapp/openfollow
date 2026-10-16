@@ -242,9 +242,8 @@
         pf.classList.toggle('locked', locked);
         $('remote-flip').setAttribute('aria-pressed', String(st.flip));
         // Up on the stick goes upstage unless the card turns it around.
-        var turned = st.flip;
-        $('remote-up').textContent = turned ? 'DOWNSTAGE' : 'UPSTAGE';
-        $('remote-down').textContent = turned ? 'UPSTAGE' : 'DOWNSTAGE';
+        $('remote-up').textContent = st.flip ? 'DOWNSTAGE' : 'UPSTAGE';
+        $('remote-down').textContent = st.flip ? 'UPSTAGE' : 'DOWNSTAGE';
         $('remote-hand').textContent = st.left ? 'Left hand' : 'Right hand';
         $('remote-xyz').setAttribute('aria-pressed', String(st.xyzOpen));
         $('remote-xyz-row').hidden = !st.xyzOpen;

@@ -59,7 +59,7 @@ Geometry:
 ### Web (`movement` section)
 - [x] `partials/movement.tpl`: replace the Control direction select with **Control frame** (four options) and a **Heading (°)** number input with the standard validate markup, shown for Fixed heading only.
 - [x] `routes.py` parsing and a `FIELD_RULES` entry for each field in `web/validation.py`, matching the server bounds.
-- [x] Tests: form → config → mapper in `tests/test_web_helpers.py`; a crafted `POST /section/movement` with bad values; `tests/test_template_validation_consistency.py` passes; update the existing tests in `tests/test_web_server.py`, `tests/test_input_mouse.py` and `tests/test_input_mouse3d.py` that set the removed field.
+- [x] Tests: form → config → mapper in `tests/test_web_helpers.py`; a crafted `POST /section/movement` with bad values; `tests/test_template_validation_consistency.py` passes; update the existing tests in `tests/test_web_server.py`, `tests/test_input_mouse.py` and `tests/test_input_mouse3d.py` that set `invert_control_direction`.
 
 ### Docs and copy
 - [x] `openfollow/web/help/movement.md`: rewrite the Control direction section as Control frame (the four modes, when to pick each, the latch, the `screen` fallback).

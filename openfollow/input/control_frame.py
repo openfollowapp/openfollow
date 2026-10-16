@@ -19,7 +19,6 @@ progress. The output keeps the input's magnitude; Z is never touched.
 
 from __future__ import annotations
 
-import logging
 import math
 from collections.abc import Hashable
 from typing import TYPE_CHECKING
@@ -27,32 +26,14 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from openfollow.scene.solver import PlanarAxes, bearing_axes, camera_params, ground_axes, screen_axes_at
+from openfollow.window import operator_screen_size
 
 if TYPE_CHECKING:
     import numpy.typing as npt
 
     from openfollow.app import OpenFollowApp
 
-logger = logging.getLogger(__name__)
-
 STAGE_AXES: PlanarAxes = ((1.0, 0.0), (0.0, 1.0))
-
-
-def operator_screen_size(app: OpenFollowApp) -> tuple[int, int]:
-    """The Operator Screen's size in pixels, the space pointer events and the picture share.
-
-    The window's allocation where there is one, else the requested window size;
-    ``(0, 0)`` when GTK cannot read it, so a caller skips the picture rather than
-    stopping the frame loop.
-    """
-    canvas = app._canvas
-    if canvas is None:
-        return app._config.window_width, app._config.window_height
-    try:
-        return canvas.get_canvas_size()
-    except Exception:
-        logger.debug("Operator Screen size unavailable", exc_info=True)
-        return 0, 0
 
 
 class ControlFrame:

@@ -955,11 +955,12 @@ def build_marker_visual_state(
     # guards windows where services or the store aren't wired yet.
     op_store = getattr(runtime_services, "_operator_message_store", None) if runtime_services is not None else None
     op_cfg = app._config.operator_messages
-    if op_store is not None and op_cfg.enabled:
+    if op_store is not None:
         state.operator_message_position = op_cfg.position
         state.operator_message_scale = op_cfg.scale
         now = time.monotonic()
-        messages = op_store.snapshot(now)
+        # Switching operator messages off gates OSC ingest, not the app's own prompts.
+        messages = [m for m in op_store.snapshot(now) if op_cfg.enabled or m.from_app]
         max_visible = op_cfg.max_visible
         state.operator_message_overflow = max(0, len(messages) - max_visible)
         for msg in messages[:max_visible]:

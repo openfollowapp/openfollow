@@ -134,6 +134,25 @@ def test_clear_all_empties_store() -> None:
     assert store.snapshot() == []
 
 
+def test_add_numbers_each_message_and_remove_takes_only_that_one() -> None:
+    store, _ = _store()
+    first = store.add("a")
+    second = store.add("b")
+    assert second == first + 1
+    store.remove(first)
+    assert [m.message for m in store.snapshot()] == ["b"]
+    # A message that already went is no error.
+    store.remove(first)
+    assert [m.message for m in store.snapshot()] == ["b"]
+
+
+def test_a_message_the_app_raised_says_so() -> None:
+    store, _ = _store()
+    store.add("osc")
+    store.add("prompt", from_app=True)
+    assert [(m.message, m.from_app) for m in store.snapshot()] == [("prompt", True), ("osc", False)]
+
+
 def test_clear_marker_removes_only_that_marker() -> None:
     store, _ = _store()
     store.add("bcast", marker_id=0)

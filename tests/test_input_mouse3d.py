@@ -2948,3 +2948,35 @@ def test_mouse3d_reset_releases_and_toggle_paths_folds_into_the_result(wired) ->
     assert not app._paths.is_locked(10)
     assert result.toggle_paths_pressed is True
     assert app._server.get_marker(10).pos == pytest.approx((5.0, 6.0, 7.0))
+
+
+def test_taken_presses_include_a_tap_between_frames_and_a_fresh_press() -> None:
+    h = _handler(_cfg(btn_reset=1), snapshot=_state(buttons=[0, 1]))
+    h._pending_edges = {3}
+    assert h.take_presses() == {1, 3}
+    # Taken here, the press does not fire its action on the next frame.
+    assert h.update(0.016).reset is False
+    assert h.take_presses() == set()
+
+
+def test_a_puck_with_no_reading_has_no_presses_and_holds_nothing() -> None:
+    h = _handler()
+    assert h.take_presses() == set()
+    assert h.held_buttons() == frozenset()
+
+
+def test_held_buttons_follow_the_latest_reading() -> None:
+    h = _handler(snapshot=_state(buttons=[1, 0, 1]))
+    assert h.held_buttons() == frozenset({0, 2})
+
+
+def test_the_manager_reports_presses_and_held_buttons_by_instance_id() -> None:
+    mgr = Mouse3DManager(_cfg(enabled=True), backend=_FakeBackend([], {}))
+    pressed = _connected_handler(buttons=(0, 1), path="/dev/hidraw2")
+    pressed.instance_id = 4
+    idle = _connected_handler(path="/dev/hidraw3")
+    idle.instance_id = 5
+    _seed_manager(mgr, {"/dev/hidraw2": pressed, "/dev/hidraw3": idle})
+    assert mgr.held_buttons() == {4: frozenset({1}), 5: frozenset()}
+    assert mgr.take_presses() == {4: {1}, 5: set()}
+    assert mgr.take_presses() == {4: set(), 5: set()}

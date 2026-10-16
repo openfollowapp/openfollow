@@ -425,6 +425,8 @@ class OpenFollowApp:
         self._marker_speeds_dirty_since: float = 0.0
 
         self._button_detection: ButtonDetectionWizard | None = None
+        # ``seq`` of the HUD prompt an armed Pin here shows.
+        self._slot_pin_prompt: int | None = None
 
         self._update_worker: threading.Thread | None = None
 

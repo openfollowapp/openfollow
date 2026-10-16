@@ -40,6 +40,8 @@ class OperatorMessage:
     means "forever". ``created_monotonic`` is the ``time.monotonic()`` value
     at ingest; ``seq`` is a per-store monotonic counter giving a stable
     newest-first ordering and a unique identity for stacked broadcasts.
+    ``from_app`` marks a prompt the app raised itself, drawn even while OSC
+    operator messages are switched off.
     """
 
     message: str
@@ -48,6 +50,7 @@ class OperatorMessage:
     created_monotonic: float
     duration_s: float
     seq: int
+    from_app: bool = False
 
     def is_expired(self, now: float) -> bool:
         """True when a timed message has passed its display window."""
@@ -87,8 +90,10 @@ class OperatorMessageStore:
         info: str = "",
         marker_id: int = 0,
         duration_s: float = 0.0,
-    ) -> None:
-        """Add a message, applying replace-by-marker / broadcast-stack rules.
+        *,
+        from_app: bool = False,
+    ) -> int:
+        """Add a message, applying replace-by-marker / broadcast-stack rules; return its ``seq``.
 
         Inputs are coerced: ``message`` / ``info`` to ``str``, ``marker_id`` to
         a non-negative ``int``, ``duration_s`` to a non-negative ``float``.
@@ -112,12 +117,14 @@ class OperatorMessageStore:
                 created_monotonic=entry.created_monotonic,
                 duration_s=entry.duration_s,
                 seq=self._seq,
+                from_app=from_app,
             )
             if entry.marker_id >= 1:
                 # Keyed: latest cue per marker wins – drop the prior card.
                 self._messages = [m for m in self._messages if m.marker_id != entry.marker_id]
             self._messages.append(entry)
             self._prune_locked(now)
+            return entry.seq
 
     def snapshot(self, now: float | None = None) -> list[OperatorMessage]:
         """Return non-expired messages newest-first as a copy. ``now`` defaults
@@ -133,6 +140,11 @@ class OperatorMessageStore:
         """Remove every message."""
         with self._lock:
             self._messages.clear()
+
+    def remove(self, seq: int) -> None:
+        """Remove the message :meth:`add` numbered ``seq``, if it is still held."""
+        with self._lock:
+            self._messages = [m for m in self._messages if m.seq != seq]
 
     def clear_marker(self, marker_id: int) -> None:
         """Remove messages tied to ``marker_id`` (``0`` clears broadcasts)."""

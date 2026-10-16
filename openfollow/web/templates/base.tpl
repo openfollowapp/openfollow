@@ -1343,6 +1343,12 @@
  }
  .slot-note-fact { color: var(--muted); white-space: nowrap; }
  .slot-empty { color: var(--muted); }
+ .slot-waiting { color: var(--info-text); white-space: nowrap; }
+ /* How the latest Pin here ended: a confirmation, an error, or a plain fact. */
+ .slot-result { margin: 0.5rem 0 0; color: var(--muted); }
+ .slot-result.ok { color: var(--success-text); display: flex; align-items: center; gap: 0.4rem; }
+ .slot-result.ok::before { content: ""; flex: none; width: 14px; height: 14px; background: var(--success-sign-green) no-repeat center / contain; }
+ .slot-result.error { color: var(--error-text); }
  .m3d-empty { margin: 0 0 12px; color: var(--muted); }
  .slot-activity { display: inline-block; width: 0.55rem; height: 0.55rem; border-radius: 50%; background: var(--muted); margin: 0 0 0 7px; vertical-align: middle; }
  .slot-activity.is-active {

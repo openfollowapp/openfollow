@@ -78,6 +78,16 @@ def test_config_dict_redacted_drops_slot_pins() -> None:
     assert d["controller"]["deadzone"] == cfg.controller.deadzone
 
 
+def test_the_touch_remote_switch_never_leaves_the_station_but_its_tuning_does() -> None:
+    cfg = AppConfig()
+    cfg.touch_remote.enabled = True
+    cfg.touch_remote.stick_curve = 1.5
+    exported = _config_dict_redacted(cfg)["touch_remote"]
+    assert "enabled" not in exported
+    assert exported["stick_curve"] == 1.5
+    assert strip_device_local_fields("touch_remote", {"enabled": True, "z_step_m": 0.1}) == {"z_step_m": 0.1}
+
+
 def test_config_dict_redacted_keeps_stream_credentials() -> None:
     """A deliberate split from ``web_pin``.
 

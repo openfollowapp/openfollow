@@ -227,6 +227,15 @@ position = "bottom"   # "bottom" | "top"
 max_visible = 5       # cap on stacked cards; overflow shows "+N more"
 scale = 1.0           # window + text scale: 1.0 | 1.25 | 1.5 | 1.75 | 2.0
 
+# Touch remote: a setup tool in the web UI that drives a controlled marker
+# from a tablet. `enabled` belongs to this station and never travels.
+[touch_remote]
+enabled = false
+stick_curve = 2.0      # stick response exponent, 1 (linear) to 3
+stick_dead_zone = 0.08 # fraction of full deflection ignored, 0 to 0.5
+z_step_m = 0.05        # metres per Z wheel notch
+z_notch_px = 20        # finger travel per Z wheel notch
+
 [otp_output]
 enabled = false
 # Multicast addresses are derived from `system_number` per ANSI E1.59

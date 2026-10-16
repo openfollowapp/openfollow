@@ -36,6 +36,7 @@ from openfollow.configuration import (
     RttrpmOutputConfig,
     apply_runtime_config_changes,
 )
+from openfollow.input.touch_remote import TouchRemote
 from openfollow.net_egress import Egress
 from openfollow.net_utils import resolve_plane_source_ip as _REAL_RESOLVE_PLANE_SOURCE_IP
 from openfollow.psn.server import _UNCHANGED as _UNCHANGED_SENTINEL
@@ -338,6 +339,7 @@ def _dummy_app(cfg: AppConfig | None = None) -> SimpleNamespace:
         _selected_id=None,
         _web_commands=SimpleNamespace(),
         _log_ring=None,
+        _touch_remote=TouchRemote(),
     )
 
 
@@ -1094,6 +1096,8 @@ class TestInitWebServer:
         # Snapshot provider hooks wired through.  Bound-method identity
         # isn't stable across attribute lookups, so compare by __func__.
         assert srv.kwargs["runtime_stats_provider"].__func__ is AppRuntimeServices.get_runtime_stats_snapshot
+        # The touch remote's routes reach the app's one registry.
+        assert srv.kwargs["touch_remote"] is services._app._touch_remote
         # The beacons select the station interface by name.
         services._app._config = replace(services._app._config, psn_source_iface="eth3")
         assert srv.kwargs["station_iface_provider"]() == "eth3"

@@ -12,6 +12,8 @@ from typing import Any
 import numpy.typing as npt
 
 from openfollow.configuration import MOUSE3D_AXES, MOUSE3D_BUTTON_FIELDS, GridConfig, is_simple_mode
+from openfollow.input.touch_remote import STATUS_FLAG as REMOTE_FLAG
+from openfollow.input.touch_remote import status_row as remote_row
 from openfollow.network.validate import is_link_local
 from openfollow.palette import AUTO_PICK_ORDER as _PALETTE_AUTO_PICK_ORDER
 from openfollow.runtime.marker_velocity import MarkerVelocityState, estimate_marker_velocity
@@ -888,6 +890,7 @@ def build_marker_visual_state(
             else None
         )
         flags_dict[RECORDING_FLAG] = recording_row(app) if paths_on else None
+        flags_dict[REMOTE_FLAG] = remote_row(app)
     if flags_dict:
         # ``dict`` insertion order preserves the order subsystems
         # registered their slots; surface flags in that order so

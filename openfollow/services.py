@@ -2793,6 +2793,7 @@ class AppRuntimeServices:
             path_state_provider=self._path_state,
             path_recorder=self._record_path,
             path_renamer=self._stage_path_rename,
+            touch_remote=self._app._touch_remote,
             # Live per-marker move speeds; the ``dict(...)`` copy is the
             # mutation-isolation boundary so the web thread never holds the live dict.
             marker_move_speeds_provider=lambda: dict(self._app._config.marker_move_speeds),

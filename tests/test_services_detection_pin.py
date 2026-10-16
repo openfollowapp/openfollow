@@ -992,6 +992,22 @@ def test_replace_records_attached_track_and_marker(monkeypatch) -> None:
     assert state.attached_marker_id == 0  # _StubMarker default id
 
 
+def test_replace_leaves_a_marker_the_touch_remote_holds(monkeypatch) -> None:
+    from openfollow.input.touch_remote import TouchRemote
+
+    cfg = DetectionConfig(enabled=True, pin_mode="replace", smoothing=1.0)
+    app = _make_app(detection_cfg=cfg, resolution=(1000, 1000))
+    marker = app._server.get_marker(0)
+    before = marker.pos
+    app._touch_remote = TouchRemote()
+    app._touch_remote.hold(app._touch_remote.open(), 0)
+
+    _run(app, _StubDetector(_det(0.5, 4)), monkeypatch, unproject=_linear_unproject)
+
+    assert marker.pos == before
+    assert app._detection_pin_states == {}
+
+
 def test_replace_clears_attached_track_when_detection_lost(monkeypatch) -> None:
     cfg = DetectionConfig(enabled=True, pin_mode="replace", smoothing=1.0)
     app = _make_app(detection_cfg=cfg, resolution=(1000, 1000))

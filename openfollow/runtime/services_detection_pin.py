@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import numpy.typing as npt
 
+from openfollow.input.touch_remote import holds
 from openfollow.runtime.frame_timing import NOMINAL_FRAME_DT, dt_steps, ema_factor
 from openfollow.runtime.state_maps import get_or_create, prune_to_keep
 from openfollow.scene.solver import invert_overlay_distortion, unproject_to_plane
@@ -310,7 +311,8 @@ def apply_detection_pin(
     # ghosts are unused here, so drop them all.
     _prune_manual_markers(app, keep=set())
     marker = _resolve_pinned_marker(app, cfg)
-    if marker is None:
+    # A marker the touch remote holds is the remote's alone.
+    if marker is None or holds(app, marker.marker_id):
         _prune_pin_states(app, keep=set())
         return
     _prune_pin_states(app, keep={marker.marker_id})

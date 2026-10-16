@@ -3100,6 +3100,16 @@ class TestPathKeys:
         assert not app._paths.is_locked(10)
         assert marker.pos == (5.0, 6.0, 7.0)
 
+    def test_the_reset_key_leaves_a_marker_the_touch_remote_holds(self, tmp_path) -> None:  # noqa: ANN001
+        from openfollow.input.touch_remote import TouchRemote
+
+        app, _, marker = self._app(tmp_path)
+        marker.set_pos(1.0, 1.0, 1.0)
+        app._touch_remote = TouchRemote()
+        app._touch_remote.hold(app._touch_remote.open(), 10)
+        handle_key_press(app, app._config.controller.key_reset)
+        assert marker.pos == (1.0, 1.0, 1.0)
+
     def test_unbound_path_keys_do_nothing(self, tmp_path) -> None:  # noqa: ANN001
         app, presses, _ = self._app(tmp_path)
         handle_key_press(app, "p")

@@ -91,6 +91,7 @@ _WRITES: dict[tuple[str, str], tuple[str, str, Any]] = {
     ("POST", "/section/network/mode"): ("/section/network/mode", "form", {"network_mode": "advanced"}),
     ("POST", "/section/network/station"): ("/section/network/station", "form", {"psn_source_iface": ""}),
     ("POST", "/section/operator_messages"): ("/section/operator_messages", "form", {}),
+    ("POST", "/section/touch_remote"): ("/section/touch_remote", "form", {"enabled": "1"}),
     ("POST", "/section/osc"): ("/section/osc", "form", {}),
     ("POST", "/section/osc_binding/<row_id>"): ("/section/osc_binding/row1", "form", {}),
     ("POST", "/section/osc_binding/<row_id>/delete"): ("/section/osc_binding/row1/delete", "form", {}),

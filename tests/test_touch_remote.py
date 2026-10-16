@@ -204,6 +204,22 @@ def test_a_quiet_session_lets_go_after_the_hold_timeout(remote: TouchRemote, clo
 
 
 @pytest.mark.unit
+def test_a_lapsed_hold_is_logged_with_its_marker(
+    remote: TouchRemote, clock: _Clock, caplog: pytest.LogCaptureFixture
+) -> None:
+    holding, idle = remote.open(), remote.open()
+    remote.hold(holding, 3)
+    clock.now += HOLD_STALE_S
+    with caplog.at_level("INFO", logger="openfollow.input.touch_remote"):
+        remote.take()
+        assert caplog.messages == []
+        clock.now += 0.01
+        remote.take()
+    assert caplog.messages == ["Web remote sent nothing for 10 s – released marker 3."]
+    assert remote.status(idle) is None
+
+
+@pytest.mark.unit
 def test_a_status_poll_keeps_the_session_alive(remote: TouchRemote, clock: _Clock) -> None:
     token = remote.open()
     remote.hold(token, 3)

@@ -9,6 +9,7 @@ marker, every other input source leaves that marker alone (:func:`holds`).
 
 from __future__ import annotations
 
+import logging
 import math
 import secrets
 import threading
@@ -16,6 +17,8 @@ import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 # A held marker stops when no drive message arrived for this long.
 DRIVE_STALE_S = 0.25
@@ -163,8 +166,11 @@ class TouchRemote:
         """One frame per held marker, draining what its session queued; forgets sessions gone quiet."""
         now = self._clock()
         frames: list[RemoteFrame] = []
+        lapsed: list[int] = []
         with self._lock:
             for token in [t for t, s in self._sessions.items() if now - s.seen_at > HOLD_STALE_S]:
+                if (marker_id := self._sessions[token].marker_id) is not None:
+                    lapsed.append(marker_id)
                 self._forget(token)
             for marker_id, token in self._holders.items():
                 session = self._sessions[token]
@@ -177,6 +183,8 @@ class TouchRemote:
                 session.z_notches = 0
                 session.actions.clear()
             self._new_holds.clear()
+        for marker_id in lapsed:
+            logger.info("Web remote sent nothing for %.0f s – released marker %d.", HOLD_STALE_S, marker_id)
         return frames
 
     def release_uncontrolled(self, controlled: Iterable[int]) -> None:

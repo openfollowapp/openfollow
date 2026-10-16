@@ -1,4 +1,4 @@
-<form id="paths-section" class="section experimental-feature {{'saved' if defined('saved') and saved else ''}}" data-fold-key="paths" data-help="paths"
+<form id="paths-section" data-feature="paths" class="section {{'saved' if defined('saved') and saved else ''}}" data-fold-key="paths" data-help="paths"
       hx-post="/section/paths" hx-target="#paths-section" hx-swap="outerHTML" hx-trigger="submit">
     <div class="section-head">
         <h2>Paths <span class="badge-experimental">Experimental</span></h2>

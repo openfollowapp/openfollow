@@ -148,6 +148,7 @@ class PsnReceiver:
     *source_ip* binds the multicast socket to a specific network interface.
     Leave empty to listen on all interfaces (default behaviour). *source_iface*
     names that interface, so the membership is taken on it by index.
+    While not *enabled* (the PSN input feature is off) it never binds.
     """
 
     def __init__(
@@ -156,8 +157,11 @@ class PsnReceiver:
         ignore_ids: list[int] | None = None,
         source_ip: str = "",
         source_iface: str = "",
+        *,
+        enabled: bool = True,
     ) -> None:
         self._port = port
+        self._enabled = enabled
         # Strip whitespace; empty/whitespace-only → listen on all interfaces.
         self._source_ip = source_ip.strip()
         self._source_iface = source_iface.strip()
@@ -174,8 +178,27 @@ class PsnReceiver:
         # The running receive thread's token; a packet carrying any other is dropped.
         self._generation: object | None = None
 
+    @property
+    def enabled(self) -> bool:
+        """Whether the receiver may listen at all."""
+        return self._enabled
+
+    def set_enabled(self, enabled: bool) -> None:
+        """Allow or forbid listening; forbidding stops it and forgets every received marker."""
+        self._enabled = enabled
+        if enabled:
+            return
+        self.stop()
+        with self._lock:
+            self._markers.clear()
+            self._last_seen.clear()
+            self._last_pos.clear()
+            self._wire_speed_sender.clear()
+
     def start(self) -> None:
-        """Begin listening for PSN packets on the multicast group."""
+        """Begin listening for PSN packets on the multicast group; a no-op while not enabled."""
+        if not self._enabled:
+            return
         generation = object()
         try:
             receiver = _RobustReceiver(
@@ -216,12 +239,17 @@ class PsnReceiver:
         return self._source_ip
 
     def rebind(self, source_ip: str, *, source_iface: str | None = None) -> None:
-        """Recreate socket bound to new interface; raises on failure. ``source_iface=None`` keeps the name."""
+        """Recreate socket bound to new interface; raises on failure. ``source_iface=None`` keeps the name.
+
+        While not enabled it only records the interface.
+        """
         self.stop()
         # Strip whitespace same as __init__.
         self._source_ip = source_ip.strip()
         if source_iface is not None:
             self._source_iface = source_iface.strip()
+        if not self._enabled:
+            return
         self.start()
         if self._receiver is None:
             raise OSError(

@@ -1396,7 +1396,8 @@ def test_apply_saves_the_grid_before_the_camera_that_brings_the_corner_pins() ->
         "(function() { window.applyAndFinish(); return order; })()",
         functions=("calibNumber", "calibComplete", "calibSaved", "calibHeldFor"),
         prelude=_APPLY_PAGE
-        + "var CALIB_ENABLED = true, calibHeldPins = null; function wizardWorldCorners() { return []; }"
+        + "var CALIB_ENABLED = true, LENS_ENABLED = true, calibHeldPins = null;"
+        + "function wizardWorldCorners() { return []; }"
         + wizard_function("applyAndFinish", prefix="window."),
         calibPoints=[],
     )
@@ -1408,7 +1409,8 @@ def test_apply_sends_the_camera_only_once_the_grid_is_answered() -> None:
         "(function() { window.applyAndFinish(); return order; })()",
         functions=("calibNumber", "calibComplete", "calibSaved", "calibHeldFor"),
         prelude=_APPLY_PAGE
-        + "var CALIB_ENABLED = true, calibHeldPins = null; function wizardWorldCorners() { return []; }"
+        + "var CALIB_ENABLED = true, LENS_ENABLED = true, calibHeldPins = null;"
+        + "function wizardWorldCorners() { return []; }"
         + "fetch = function(url) { order.push(url); return { then: function() { return this; }, catch: Object }; };"
         + wizard_function("applyAndFinish", prefix="window."),
         calibPoints=[],
@@ -1430,7 +1432,8 @@ def test_apply_saves_the_points_with_the_pose_with_or_without_the_section(enable
         functions=("calibNumber", "calibComplete", "calibSaved", "calibHeldFor"),
         prelude=_APPLY_PAGE
         + f"""
-var CALIB_ENABLED = {json.dumps(enabled)}, calibHeldPins = {json.dumps(_GOOD_HELD if held else None)};
+var CALIB_ENABLED = {json.dumps(enabled)}, LENS_ENABLED = true;
+var calibHeldPins = {json.dumps(_GOOD_HELD if held else None)};
 function wizardWorldCorners() {{ return {json.dumps(world)}; }}
 """
         + wizard_function("applyAndFinish", prefix="window."),
@@ -1439,6 +1442,21 @@ function wizardWorldCorners() {{ return {json.dumps(world)}; }}
     common = {"corner_a": "DSR", "corner_b": "DSL", "distance_a": 18.5, "distance_b": 19.25, "height": 0.0}
     assert payload["calibration_points"] == [{**common, "pin_x": 0.25, "pin_y": 0.5, "position": [2.5, 9.0, 0.0]}]
     assert payload["corner_pins"] == pins
+
+
+@pytest.mark.parametrize(("lens_on", "sent"), [(True, {"lens_k1": -0.2, "lens_k2": 0.05}), (False, {})])
+def test_apply_sends_the_lens_pair_only_with_the_lens_step(lens_on, sent) -> None:  # noqa: ANN001
+    """With Lens distortion off the saved pair stays: Apply leaves it out of the camera write."""
+    payload = run_wizard_js(
+        "(function() { window.applyAndFinish(); return sent['/api/config/camera']; })()",
+        functions=("calibNumber", "calibComplete", "calibSaved", "calibHeldFor"),
+        prelude=_APPLY_PAGE.replace("lens_k1: 0, lens_k2: 0", "lens_k1: -0.2, lens_k2: 0.05")
+        + f"var CALIB_ENABLED = true, LENS_ENABLED = {json.dumps(lens_on)}, calibHeldPins = null;"
+        + "function wizardWorldCorners() { return []; }"
+        + wizard_function("applyAndFinish", prefix="window."),
+        calibPoints=[],
+    )
+    assert {key: payload[key] for key in ("lens_k1", "lens_k2") if key in payload} == sent
 
 
 _CHANGE_PAGE = """

@@ -1,5 +1,7 @@
 # Touch Remote
 
+> Experimental. Shown only with the **Touch remote** feature on (General tab, Features).
+
 A setup tool for focusing lights: stand on a known spot with a tablet or phone and drive a marker onto yourself. **Don't keep it open during a show.**
 
 ## Settings
@@ -18,7 +20,7 @@ Tap the round button in the bottom corner of the page to open the remote card.
 - **Hand** – moves the card to the other corner so your thumb reaches everything. This tablet remembers it.
 - **Z wheel** – drag up or down; every notch moves the marker's height one step (5 cm by default) along a grid of steps, so from a height between two steps the first notch reaches the next one. It does nothing while the marker is on a path, whose height the path sets.
 - **Reset** – sends the marker to its default position.
-- **Pathfinder** – shown while paths run (experimental features on). Locks the marker onto the nearest active path, or lets it go. While a path is recording, it reads **Record point** and adds the marker's position to that path.
+- **Pathfinder** – shown while paths run (the **Paths** feature on). Locks the marker onto the nearest active path, or lets it go. While a path is recording, it reads **Record point** and adds the marker's position to that path.
 - **X Y Z** – the fields show where the marker is until you type in one; type a position and tap **Glide**: the marker leaves any path and travels there at the station's max speed. Values are in the web UI's units, within 10 km of the origin.
 
 ## While the remote holds a marker

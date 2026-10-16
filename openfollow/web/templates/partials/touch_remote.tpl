@@ -1,4 +1,4 @@
-<form id="touch-remote-section" class="section {{'saved' if defined('saved') and saved else ''}}" data-fold-key="touch_remote" data-help="touch_remote"
+<form id="touch-remote-section" data-feature="touch_remote" class="section {{'saved' if defined('saved') and saved else ''}}" data-fold-key="touch_remote" data-help="touch_remote"
       hx-post="/section/touch_remote" hx-target="#touch-remote-section" hx-swap="outerHTML" hx-trigger="submit">
     <div class="section-head">
         <h2>Touch Remote</h2>

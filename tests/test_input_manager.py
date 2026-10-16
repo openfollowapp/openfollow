@@ -751,6 +751,25 @@ def test_screen_axes_that_cancel_a_diagonal_leave_the_marker_still(monkeypatch) 
     assert app._server.get_marker(10).pos == pytest.approx((0.0, 0.0, 0.5))
 
 
+@pytest.mark.parametrize(("shown", "lens"), [(["lens_distortion"], (-0.2, 0.05)), ([], (0.0, 0.0))])
+def test_screen_frame_reads_the_lens_only_with_its_feature(monkeypatch, shown, lens) -> None:  # noqa: ANN001
+    import openfollow.input.control_frame as control_frame_module
+
+    seen: list[tuple[float, float]] = []
+
+    def _spy(params, pos, w, h, k1, k2):  # noqa: ANN001, ANN202
+        seen.append((k1, k2))
+        return ((1.0, 0.0), (0.0, 1.0))
+
+    monkeypatch.setattr(control_frame_module, "screen_axes_at", _spy)
+    app = _with_camera(_DummyApp())
+    app._config.marker.control_frame = "screen"
+    app._config.camera.lens_k1, app._config.camera.lens_k2 = -0.2, 0.05
+    app._config.ui.shown_features = shown
+    _keyboard_step(monkeypatch, app, (0.0, 1.0, 0.0))
+    assert seen and set(seen) == {lens}
+
+
 _PICTURE_CAMERAS = [
     pytest.param({}, id="front-of-house"),
     pytest.param({"pos_x": 0.0, "pos_y": 11.0, "yaw": 180.0}, id="upstage-looking-downstage"),
@@ -1070,7 +1089,7 @@ def test_a_station_controlling_no_marker_still_switches_paths(path_app, tmp_path
 
     app = path_app
     app._controlled_ids = []
-    app._config.ui.show_experimental_features = True
+    app._config.ui.shown_features = ["paths"]
     app._config.paths = PathsConfig(
         slide_time=0.0,
         paths=[PathConfig(name="cross", active=True, points=[PathPointConfig(-5, 0, 0), PathPointConfig(5, 0, 0)])],

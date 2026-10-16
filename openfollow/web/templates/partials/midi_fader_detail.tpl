@@ -47,7 +47,7 @@
     % # Patch + Type carry ``data-midi-source-detail`` so the kind toggle
     % # (base.tpl JS) hides just those two when "No source" is chosen,
     % # leaving Source kind in place.
-    <div class="row mf-source-row" data-midi-source-kind-row>
+    <div class="row mf-source-row" data-midi-source-kind-row data-feature="midi">
         <div class="field mf-kind">
             <label>Source Type</label>
             <select name="source_kind" data-midi-source-kind-select>

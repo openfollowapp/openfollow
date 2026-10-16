@@ -1,6 +1,6 @@
 % from openfollow.web.routes import osc_destinations_script_json
 % _osc_dests_json = osc_destinations_script_json(config)
-<div id="zone-editor-section" class="section" data-fold-key="zone_editor" data-help="zone_editor" data-template-form="1">
+<div id="zone-editor-section" class="section" data-feature="zones" data-fold-key="zone_editor" data-help="zone_editor" data-template-form="1">
     <div class="section-head">
         <h2>Zone Editor</h2>
     </div>

@@ -1,4 +1,4 @@
-<form id="rttrpm-output-section" class="section experimental-feature {{'saved' if defined('saved') and saved else ''}}" data-fold-key="rttrpm_output" data-help="rttrpm_output"
+<form id="rttrpm-output-section" data-feature="rttrpm" class="section {{'saved' if defined('saved') and saved else ''}}" data-fold-key="rttrpm_output" data-help="rttrpm_output"
       hx-post="/section/rttrpm_output" hx-target="#rttrpm-output-section" hx-swap="outerHTML" hx-trigger="submit">
     <div class="section-head">
         <h2>RTTrPM Output <span class="badge-experimental">Experimental</span></h2>

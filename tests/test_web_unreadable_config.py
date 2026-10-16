@@ -115,7 +115,6 @@ _WRITES: dict[tuple[str, str], tuple[str, str, Any]] = {
     ("POST", "/section/rttrpm_output"): ("/section/rttrpm_output", "form", {}),
     ("POST", "/section/trigger_zones"): ("/section/trigger_zones", "form", {}),
     ("POST", "/section/video_source"): ("/section/video_source", "form", {"video_source_type": "testpattern"}),
-    ("POST", "/settings/experimental"): ("/settings/experimental", "form", {"show_experimental_features": "on"}),
     ("POST", "/settings/unit-system"): ("/settings/unit-system", "form", {"unit_system": "imperial"}),
     ("POST", "/video-input/testpattern/select"): (
         "/video-input/testpattern/select",

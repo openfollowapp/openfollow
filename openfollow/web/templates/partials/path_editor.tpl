@@ -1,4 +1,4 @@
-<div id="path-editor-section" class="section experimental-feature" data-fold-key="path_editor" data-help="path_editor">
+<div id="path-editor-section" class="section" data-feature="paths" data-fold-key="path_editor" data-help="path_editor">
     <div class="section-head">
         <h2>Path Editor <span class="badge-experimental">Experimental</span></h2>
         <span class="section-note">Each path's points and options, over the camera picture</span>

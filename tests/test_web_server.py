@@ -1792,7 +1792,7 @@ def test_interface_assignment_renders_and_saves_the_sender_rows(live_server, mon
     assert 'name="rttrpm_output.source_iface"' in body
     assert 'name="osc_destinations.default.source_iface"' in body
     assert "OSC Destination Default" in body
-    assert "experimental-feature" in body
+    assert 'data-feature="rttrpm"' in body
 
     status, _ = _post_form(
         base,
@@ -8248,14 +8248,18 @@ def test_the_mdns_address_is_shown_beside_the_custom_domain_name(
     assert "disabled" in field.group(0) and "name=" not in field.group(0)
 
 
-def test_the_station_settings_box_draws_no_rules_inside(live_server) -> None:
-    """A ``.group`` draws a rule under itself unless it is the last in its container, so each
-    of the box's three containers (name and PIN, display units, Advanced Settings) holds one."""
+def test_the_station_settings_box_draws_one_rule_before_the_features(live_server) -> None:
+    """A ``.group`` draws a rule under itself unless it is the last in its container: name and
+    PIN and display units hold one group each, and Advanced Settings two, ruled off before the
+    Features table."""
     _, base = live_server
     _, body = _get(base, "/")
     start = body.index('data-fold-key="general-station"')
-    box = body[start : body.find('<div class="section"', start)]
-    assert box.count('class="group"') == 3
+    box = body[start : body.index('data-fold-key="general-network-interface"', start)]
+    assert box.count('class="group"') == 4
+    assert box.count('<div id="features-section" class="group"') == 1
+    advanced = box[box.index('<details class="inline-advanced">') : box.index("</details>")]
+    assert advanced.index('class="group"') < advanced.index('<div id="features-section" class="group"')
     assert "group--divider" not in box
 
 
@@ -8474,7 +8478,8 @@ def test_gallery_list_shows_defaults(gallery_server) -> None:
     status, body = _get(base, f"{_GP}/list")
     assert status == 200
     assert 'id="gallery-grid"' in body
-    assert re.findall(r'class="gallery-select" type="button" title="([^"]+)"', body) == ["Stage", "Arena", "Grey"]
+    titles = re.findall(r'class="gallery-select" type="button" title="([^"]+)"', body)
+    assert titles == ["Stage", "Arena", "Concert", "Grey"]
     assert "gallery-label" not in body  # no visible per-tile labels
     assert 'title="Stage"' in body  # name kept as hover/aria name only
 
@@ -8579,13 +8584,16 @@ def test_gallery_thumb_stage_serves_asset(gallery_server) -> None:
     assert body[:3] == b"\xff\xd8\xff"  # JPEG
 
 
-def test_gallery_thumb_arena_serves_its_picture(gallery_server) -> None:
+@pytest.mark.parametrize(
+    ("media_id", "asset"), [("default:arena", "ARENA_ASSET_JPG"), ("default:concert", "CONCERT_ASSET_JPG")]
+)
+def test_gallery_thumb_of_a_bundled_picture_serves_it(gallery_server, media_id: str, asset: str) -> None:
     from openfollow.video import media_store
 
     _, base, _ = gallery_server
-    status, body = _get_raw(base, f"{_GP}/thumb/default:arena")
+    status, body = _get_raw(base, f"{_GP}/thumb/{media_id}")
     assert status == 200
-    assert body == media_store.ARENA_ASSET_JPG.read_bytes()
+    assert body == getattr(media_store, asset).read_bytes()
 
 
 def test_gallery_thumb_grey_has_none(gallery_server) -> None:
@@ -8594,12 +8602,13 @@ def test_gallery_thumb_grey_has_none(gallery_server) -> None:
     assert status == 404
 
 
-def test_gallery_select_arena_persists(gallery_server) -> None:
+@pytest.mark.parametrize(("media_id", "label"), [("default:arena", "Arena"), ("default:concert", "Concert")])
+def test_gallery_select_a_bundled_picture_persists(gallery_server, media_id: str, label: str) -> None:
     server, base, _ = gallery_server
-    status, body = _post_form(base, f"{_GP}/select", {"media_id": "default:arena"})
+    status, body = _post_form(base, f"{_GP}/select", {"media_id": media_id})
     assert status == 200
-    assert load_config(server.config_path).testpattern_selected_media == "default:arena"
-    assert '<div class="gallery-tile selected"><button class="gallery-select" type="button" title="Arena"' in body
+    assert load_config(server.config_path).testpattern_selected_media == media_id
+    assert f'<div class="gallery-tile selected"><button class="gallery-select" type="button" title="{label}"' in body
 
 
 def test_video_source_section_hides_capture_for_gallery(live_server) -> None:
@@ -8997,7 +9006,7 @@ def test_ground_grid_broadcast_saves_the_polygon_locally(live_server) -> None:
 def test_ground_grid_travels_through_export_and_import(live_server) -> None:
     server, base = live_server
     cfg = load_config(server.config_path)
-    cfg.ui.show_experimental_features = True
+    cfg.ui.shown_features = ["ground_grid"]
     save_config(cfg, server.config_path)
     _post_form(base, "/section/ground_grid", {"enabled": "on", "z_offset": "-0.6", "vertices": json.dumps(_GG_SQUARE)})
     with urllib.request.urlopen(f"{base}/api/config/export", timeout=5) as resp:
@@ -9011,13 +9020,13 @@ def test_ground_grid_travels_through_export_and_import(live_server) -> None:
     assert (gg.enabled, gg.z_offset, gg.vertices) == (True, -0.6, _GG_SQUARE)
 
 
-def test_ground_grid_section_is_experimental_on_the_settings_page(live_server) -> None:
+def test_ground_grid_section_belongs_to_its_feature_on_the_settings_page(live_server) -> None:
     _, base = live_server
     status, body = _get(base, "/")
     assert status == 200
     form_tag = re.search(r'<form id="ground-grid-section"[^>]*>', body)
     assert form_tag is not None
-    assert "experimental-feature" in form_tag.group(0)
+    assert 'data-feature="ground_grid"' in form_tag.group(0)
     assert 'name="vertices"' in body
 
 

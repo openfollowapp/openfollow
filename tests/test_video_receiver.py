@@ -604,7 +604,7 @@ def _make_receiver(
     input_config: dict[str, Any] | None = None,
     on_widget_changed: Callable | None = None,
     overlay_renderer: Any = None,
-    config_path: str = "config.toml",
+    on_source_picked: Callable[[str, str], None] | None = None,
 ) -> receiver_mod.GstNativeSinkReceiver:
     return receiver_mod.GstNativeSinkReceiver(
         source_type="fake",
@@ -612,7 +612,7 @@ def _make_receiver(
         reconnect_delay=0.2,
         overlay_renderer=overlay_renderer,
         on_widget_changed=on_widget_changed,
-        config_path=config_path,
+        on_source_picked=on_source_picked,
     )
 
 
@@ -1258,13 +1258,6 @@ class TestSourceSelectionNavigation:
             lambda _s: None,
             raising=True,
         )
-        monkeypatch.setattr(
-            selection_receiver,
-            "_save_source_to_config",
-            lambda _s: None,
-            raising=True,
-        )
-
         assert selection_receiver.confirm_source_selection() is True
 
         # Empty discovered list → False.
@@ -1378,48 +1371,57 @@ class TestSetSource:
 # --------------------------------------------------------------------------- #
 
 
-class TestSaveSourceToConfig:
-    def test_save_source_invokes_configuration_roundtrip(
-        self, fake_gst, fake_glib, fake_input_cls, monkeypatch, tmp_path
-    ) -> None:
-        loaded: list[str] = []
-        saved: list[tuple[Any, str]] = []
+class TestSourcePickIsReported:
+    """The receiver connects a picked source and hands it to whoever saves it; it writes no file."""
 
-        class FakeCfg:
-            fake_source: str = ""
-
-        def fake_load(path: str) -> FakeCfg:
-            loaded.append(path)
-            return FakeCfg()
-
-        def fake_save(cfg: FakeCfg, path: str) -> None:
-            saved.append((cfg, path))
-
-        import openfollow.configuration as configuration_mod
-
-        monkeypatch.setattr(configuration_mod, "load_config", fake_load)
-        monkeypatch.setattr(configuration_mod, "save_config", fake_save)
-
-        cfg_path = str(tmp_path / "config.toml")
-        r = _make_receiver(config_path=cfg_path)
-        r._save_source_to_config("cam-42")
-
-        assert loaded == [cfg_path]
-        assert len(saved) == 1
-        assert saved[0][0].fake_source == "cam-42"
-        assert saved[0][1] == cfg_path
-
-    def test_save_source_swallows_errors(self, fake_gst, fake_glib, fake_input_cls, monkeypatch) -> None:
-        """A failing save must not crash the GLib main-thread handler."""
-        import openfollow.configuration as configuration_mod
-
+    @pytest.fixture
+    def picking(self, fake_gst, fake_glib, fake_input_cls, monkeypatch):  # noqa: ANN001, ANN201
         monkeypatch.setattr(
-            configuration_mod,
-            "load_config",
-            lambda _p: (_ for _ in ()).throw(RuntimeError("disk full")),
+            FakeInput, "_capabilities", InputCapabilities(has_source_selection=True, has_source_discovery=True)
         )
+        FakeInput.create_pipeline_result = FakePipeline()
+        picked: list[tuple[str, str]] = []
+        r = _make_receiver(on_source_picked=lambda field, value: picked.append((field, value)))
+        r._discovered_sources = ["  CAM-1 (Stage)  ", "CAM-2 (Stage)"]
+        r._state.activate_source_selection()
+        return r, picked
+
+    def test_the_picked_source_is_connected_and_reported_once(self, picking) -> None:  # noqa: ANN001
+        r, picked = picking
+
+        assert r.confirm_source_selection() is True
+
+        assert picked == [("fake_source", "CAM-1 (Stage)")]
+        assert r._input_config["fake_source"] == "CAM-1 (Stage)"
+
+    def test_nothing_is_reported_when_nothing_was_picked(self, picking) -> None:  # noqa: ANN001
+        r, picked = picking
+        r._state.deactivate_source_selection()
+
+        assert r.confirm_source_selection() is False
+
+        assert picked == []
+
+    def test_an_input_without_a_source_field_reports_nothing(self, picking, monkeypatch) -> None:  # noqa: ANN001
+        r, picked = picking
+        monkeypatch.setattr(FakeInput, "_config_fields", [])
+        monkeypatch.setattr(r, "set_source", lambda _source: None)
+
+        assert r.confirm_source_selection() is True
+
+        assert picked == []
+
+    def test_a_pick_without_a_listener_still_connects(self, fake_gst, fake_glib, fake_input_cls, monkeypatch) -> None:
+        monkeypatch.setattr(
+            FakeInput, "_capabilities", InputCapabilities(has_source_selection=True, has_source_discovery=True)
+        )
+        FakeInput.create_pipeline_result = FakePipeline()
         r = _make_receiver()
-        r._save_source_to_config("cam-1")  # must not raise
+        r._discovered_sources = ["CAM-1 (Stage)"]
+        r._state.activate_source_selection()
+
+        assert r.confirm_source_selection() is True
+        assert r._input_config["fake_source"] == "CAM-1 (Stage)"
 
 
 # --------------------------------------------------------------------------- #
@@ -2846,46 +2848,6 @@ class TestSetSourceWithoutConfigFields:
         r.set_source("new-cam")
         # The primary field key was NOT touched (still the original value).
         assert r._input_config["fake_source"] == "old"
-
-
-class TestSaveSourceWithoutConfigFields:
-    """``_save_source_to_config`` must short-circuit silently when the
-    plugin has no config fields – branch 529→532."""
-
-    def test_save_source_no_config_fields_writes_no_attr(
-        self,
-        fake_gst,
-        fake_glib,
-        fake_input_cls,
-        monkeypatch,
-        tmp_path,
-    ) -> None:
-        monkeypatch.setattr(FakeInput, "_config_fields", [])
-
-        attrs_set: list[tuple[str, Any]] = []
-
-        class FakeCfg:
-            def __setattr__(self, key: str, value: Any) -> None:  # noqa: ANN401
-                attrs_set.append((key, value))
-
-        saved: list[tuple[Any, str]] = []
-
-        import openfollow.configuration as configuration_mod
-
-        monkeypatch.setattr(configuration_mod, "load_config", lambda _p: FakeCfg())
-        monkeypatch.setattr(
-            configuration_mod,
-            "save_config",
-            lambda cfg, path: saved.append((cfg, path)),
-        )
-
-        cfg_path = str(tmp_path / "c.toml")
-        r = _make_receiver(config_path=cfg_path)
-        r._save_source_to_config("anything")
-
-        # Save still happened, but no setattr was performed on the cfg.
-        assert saved and saved[0][1] == cfg_path
-        assert attrs_set == []
 
 
 class TestExitSourceSelectionCancelled:

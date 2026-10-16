@@ -9,6 +9,7 @@ dispatcher that subscribers attach patterns to.
 
 from __future__ import annotations
 
+import errno
 import logging
 import socket
 import threading
@@ -21,8 +22,12 @@ from openfollow.configuration import VALID_OSC_FRAMINGS as _VALID_OSC_FRAMINGS_T
 from openfollow.net_egress import Egress, pin_socket_egress
 from openfollow.net_utils import IPV4_RESOLVER, join_multicast_group_on_iface
 from openfollow.osc.transport import TcpOscSender
+from openfollow.receive_gate import ReceiveGate
 
 logger = logging.getLogger(__name__)
+
+# Only a handler that hangs can hold this up: shutdown ends the wait itself.
+_LISTENER_JOIN_TIMEOUT_S = 1.0
 
 try:
     from pythonosc.dispatcher import Dispatcher
@@ -242,6 +247,9 @@ if _PYTHONOSC_AVAILABLE:  # pragma: no branch
 
         ``verify_request`` runs before dispatch; returning False drops the
         packet with no handler invoked. An empty allowlist accepts everything.
+
+        Serves through a :class:`ReceiveGate`, so ``shutdown`` ends the loop at
+        once rather than after socketserver's 0.5 s poll, and never blocks.
         """
 
         def __init__(
@@ -252,6 +260,37 @@ if _PYTHONOSC_AVAILABLE:  # pragma: no branch
         ) -> None:
             super().__init__(server_address, dispatcher)
             self._allowed_ips = allowed_ips
+            try:
+                # Read only once the gate reports data, so a read never blocks.
+                self.socket.setblocking(False)
+                self._gate = ReceiveGate(self.socket)
+            except OSError:
+                self.server_close()
+                raise
+
+        def serve_forever(self, poll_interval: float = 0.5) -> None:
+            try:
+                while self._gate.wait():
+                    self._handle_request_noblock()  # type: ignore[attr-defined]  # socketserver, untyped in typeshed
+            finally:
+                self._gate.close()
+
+        def shutdown(self) -> None:
+            """End ``serve_forever``; the caller joins the serving thread."""
+            self._gate.stop()
+
+        def server_close(self) -> None:
+            """Close the socket and stop the loop; the serving thread closes its own gate."""
+            super().server_close()
+            # Absent when the bind or the gate failed: the constructor closes before it returns.
+            gate: ReceiveGate | None = getattr(self, "_gate", None)
+            if gate is not None:
+                gate.stop()
+
+        def discard(self) -> None:
+            """Release a listener whose ``serve_forever`` never ran."""
+            self.server_close()
+            self._gate.close()
 
         def verify_request(
             self,
@@ -576,9 +615,10 @@ class OscService:
             self._listener_multicast_iface_name = ""
         if listener is not None:
             listener.shutdown()
-            listener.server_close()
         if thread is not None:
-            thread.join(timeout=1.0)
+            thread.join(timeout=_LISTENER_JOIN_TIMEOUT_S)
+        if listener is not None:
+            listener.server_close()
 
     def restart_listener(
         self,
@@ -619,11 +659,11 @@ class OscService:
                 self._dispatcher,
                 normalised_ips,
             )
-        except OSError:
-            logger.error(
-                "Cannot start OSC listener on port %d – port likely in use.",
-                port,
-            )
+        except OSError as exc:
+            if exc.errno == errno.EADDRINUSE:
+                logger.error("Cannot start OSC listener on port %d – port likely in use.", port)
+            else:
+                logger.error("Cannot start OSC listener on port %d: %s", port, exc)
             raise
         joined_group = (
             _join_multicast_group(listener.socket, group, port, iface_ip=multicast_iface, iface=multicast_iface_name)
@@ -635,11 +675,8 @@ class OscService:
             daemon=True,
             name="OscService-Listener",
         )
-        # Start the thread inside the lock so a concurrent ``stop_listener``
-        # can't see the listener before its serve loop runs: ``shutdown()``
-        # before ``serve_forever()`` enters its loop deadlocks, and
-        # ``join()`` on an unstarted thread raises ``RuntimeError``.
-        # ``Thread.start()`` only blocks until the thread is scheduled.
+        # Started inside the lock: a concurrent ``stop_listener`` joining an
+        # unstarted thread would raise ``RuntimeError``.
         with self._listener_lock:
             self._listener = listener
             self._listener_thread = thread
@@ -662,7 +699,7 @@ class OscService:
                 self._listener_multicast_group = ""
                 self._listener_multicast_joined = False
                 self._listener_multicast_iface = ""
-                listener.server_close()
+                listener.discard()
                 raise
         group_note = ""
         if group:

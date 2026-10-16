@@ -23,7 +23,9 @@ from openfollow.configuration import (
     bootstrap_config_if_missing,
     config_write_lock,
     load_config,
+    load_config_for_save,
     network_mode_unsaved,
+    restore_empty_config,
     save_config,
 )
 from openfollow.logging_setup import ThrottledExceptionLogger
@@ -232,6 +234,7 @@ class OpenFollowApp:
         # a station that has silently respawned several times reads exactly
         # like a healthy one in every other section.
         self._crash_restarts: int = crash_restarts
+        restore_empty_config(self._config_path)
         bootstrap_config_if_missing(self._config_path)
         self._config: AppConfig = load_config(self._config_path)
         self._bootstrap_station_identity()
@@ -792,14 +795,14 @@ class OpenFollowApp:
         """Drop ids from persisted selection (on-disk config for race-free hot-reload)."""
         drop = set(ids)
         with config_write_lock:
-            cfg = load_config(self._config_path)
-            new_controlled = [t for t in cfg.controlled_marker_ids if t not in drop]
-            new_viewer = [t for t in cfg.viewer_marker_ids if t not in drop]
-            if new_controlled == cfg.controlled_marker_ids and new_viewer == cfg.viewer_marker_ids:
-                return  # none of the deleted ids were in our selection
-            cfg.controlled_marker_ids = new_controlled
-            cfg.viewer_marker_ids = new_viewer
             try:
+                cfg = load_config_for_save(self._config_path)
+                new_controlled = [t for t in cfg.controlled_marker_ids if t not in drop]
+                new_viewer = [t for t in cfg.viewer_marker_ids if t not in drop]
+                if new_controlled == cfg.controlled_marker_ids and new_viewer == cfg.viewer_marker_ids:
+                    return  # none of the deleted ids were in our selection
+                cfg.controlled_marker_ids = new_controlled
+                cfg.viewer_marker_ids = new_viewer
                 save_config(cfg, self._config_path)
             except OSError:
                 logger.exception(

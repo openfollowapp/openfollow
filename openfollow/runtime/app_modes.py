@@ -16,7 +16,7 @@ import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
-from openfollow.configuration import is_simple_mode, save_config_fields
+from openfollow.configuration import config_file_problem, config_problem_words, is_simple_mode, save_config_fields
 from openfollow.input.slot_pin_capture import CAPTURE_TIMEOUT_S, PINNED
 from openfollow.runtime import paths_runtime
 from openfollow.video.failure import SourceKind, VideoFailure, failure_sentence
@@ -1190,16 +1190,33 @@ def confirm_source_type_selection(app: OpenFollowApp) -> None:
         logger.info("Video source type set to: %s (live)", new_type)
         if not saved:
             exit_source_type_selection(app)
-            app._enter_settings_menu(banner=_unsaved_banner(display, "switch again"))
+            app._enter_settings_menu(banner=_unsaved_banner(app, display, "switch again"))
             return
 
     exit_source_type_selection(app)
     _route_after_video_source_change(app, new_type)
 
 
-def _unsaved_banner(what: str, again: str) -> str:
+def _why_unsaved(app: OpenFollowApp, again: str) -> str:
+    """Why a save did not reach the settings file, and the one step before the operator tries *again*."""
+    problem = config_file_problem(app._config_path)
+    if problem is None:
+        return f"Check the station's storage, then {again}."
+    said, step = config_problem_words(problem)
+    return f"The settings file {said}. {step}, then {again}."
+
+
+def _unsaved_banner(app: OpenFollowApp, what: str, again: str) -> str:
     # A repaired file is reloaded at once and brings its own value back.
-    return f"{what} is live but could not be saved to config.toml. Fix the file, then {again}."
+    return f"{what} is live but could not be saved. {_why_unsaved(app, again)}"
+
+
+def save_source_pick(app: OpenFollowApp, field: str, value: str) -> None:
+    """Save a source picked on screen; its input is connecting to it already, so the reload swaps nothing."""
+    setattr(app._config, field, value)
+    if not _persist_config(app, field):
+        what = f"The {_input_display_name(app._config.video_source_type)} source"
+        app._enter_settings_menu(banner=_unsaved_banner(app, what, "pick it again"))
 
 
 def _input_display_name(source_type: str) -> str:
@@ -1222,7 +1239,7 @@ def _save_for_input_not_running(app: OpenFollowApp, field: str, value: str, labe
     if _persist_config(app, field):
         logger.info("Set %s to %r; its input is not running.", field, value)
         return
-    app._enter_settings_menu(banner=f"{label} could not be saved to config.toml. Fix the file, then {again}.")
+    app._enter_settings_menu(banner=f"{label} could not be saved. {_why_unsaved(app, again)}")
 
 
 # ---------------------------------------------------------------------------
@@ -1329,7 +1346,7 @@ def confirm_url_editor(app: OpenFollowApp) -> None:
     exit_url_editor(app)
     if not saved:
         what, again = (_input_display_name(source_type), "switch again") if switching else (label, "enter it again")
-        app._enter_settings_menu(banner=_unsaved_banner(what, again))
+        app._enter_settings_menu(banner=_unsaved_banner(app, what, again))
 
 
 def process_url_editor_input(app: OpenFollowApp) -> None:
@@ -1484,7 +1501,7 @@ def confirm_field_choice_picker(app: OpenFollowApp) -> None:
     exit_field_choice_picker(app)
     if not saved:
         what, again = (_input_display_name(source_type), "switch again") if switching else (label, "pick it again")
-        app._enter_settings_menu(banner=_unsaved_banner(what, again))
+        app._enter_settings_menu(banner=_unsaved_banner(app, what, again))
 
 
 def process_field_choice_picker_input(app: OpenFollowApp) -> None:

@@ -512,3 +512,41 @@ def test_a_switch_that_does_not_restart_reloads_into_the_new_mode() -> None:
         restart=False,
     )
     assert out == {"sent": None, "reloaded": 1, "toasts": [], "modal": None, "polls": 2}
+
+
+# -- Export: a refusal is reported on the page, a file is downloaded ------------------
+
+
+def _export(answer: str) -> Any:
+    return _run(
+        f"answers['GET /api/config/export'] = {answer};"
+        "var made = [], create = document.createElement.bind(document);"
+        "document.createElement = function (tag) { var el = create(tag); made.push(el); return el; };"
+        "await exportConfig(); await settle();"
+        "out.error = errorLine();"
+        "out.links = made.filter(function (el) { return el.tagName === 'A'; })"
+        ".map(function (el) { return [el.download, String(el.href).slice(0, 5)]; });",
+        markup=_TRANSFER_MARKUP,
+        script=_TRANSFER_SCRIPT,
+    )
+
+
+def test_an_export_the_station_refused_says_why_and_downloads_nothing() -> None:
+    refusal = {"error": "The settings file on this station is empty", "action": "Restart OpenFollow."}
+    out = _export(json.dumps({"status": 409, "body": refusal}))
+    assert out == {
+        "error": "Not exported. The settings file on this station is empty. Restart OpenFollow.",
+        "links": [],
+    }
+
+
+def test_an_export_downloads_the_file_under_the_name_the_station_gave() -> None:
+    out = _export(
+        json.dumps(
+            {
+                "body": {"psn_system_name": "Stage"},
+                "headers": {"Content-Disposition": 'attachment; filename="Stage.ofsettings"'},
+            }
+        )
+    )
+    assert out == {"error": None, "links": [["Stage.ofsettings", "blob:"]]}

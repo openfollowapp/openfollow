@@ -577,6 +577,22 @@ class TestPruneSelectionIds:
         # Must not raise even though persisting the prune fails.
         OpenFollowApp._prune_selection_ids(fake, [2])  # type: ignore[arg-type]
 
+    @pytest.mark.parametrize("content", ["", "  \n\t\n", "not [[ toml"], ids=["empty", "whitespace", "unparseable"])
+    def test_a_broken_file_is_left_alone_and_logged(self, tmp_path, caplog, content: str) -> None:
+        from openfollow.configuration import save_config
+
+        config_path = tmp_path / "config.toml"
+        for _ in range(2):
+            save_config(AppConfig(controlled_marker_ids=[1, 2], viewer_marker_ids=[2]), str(config_path))
+        config_path.write_text(content, encoding="utf-8")
+        fake = types.SimpleNamespace(_config=AppConfig(), _config_path=str(config_path))
+
+        with caplog.at_level("ERROR"):
+            OpenFollowApp._prune_selection_ids(fake, [2])  # type: ignore[arg-type]
+
+        assert config_path.read_text(encoding="utf-8") == content
+        assert "Failed to persist selection" in caplog.text
+
 
 class TestInitMarkerCatalogSyncIfaceResolution:
     """Regression for the one-way-multicast bug: without resolving the iface

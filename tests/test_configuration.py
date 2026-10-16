@@ -13,6 +13,7 @@ except ImportError:
     import tomli as tomllib  # type: ignore[no-redef]
 
 import logging
+import os
 
 import pytest
 
@@ -22,6 +23,8 @@ from openfollow.configuration import (
     RESERVED_MOVEMENT_KEYS,
     AppConfig,
     CameraConfig,
+    ConfigFileEmptyError,
+    ConfigFileUnreadableError,
     ControllerConfig,
     DetectionConfig,
     GridConfig,
@@ -36,6 +39,7 @@ from openfollow.configuration import (
     config_to_toml_dict,
     config_write_lock,
     load_config,
+    load_config_for_save,
     save_config,
     save_config_fields,
     viewed_with_controlled,
@@ -624,8 +628,9 @@ def test_load_config_malformed_toml_returns_defaults(temp_config_path, caplog) -
 def test_load_config_malformed_toml_strict_raises(temp_config_path) -> None:
     temp_config_path.write_text("this = is not valid toml [[\n", encoding="utf-8")
 
-    with pytest.raises(tomllib.TOMLDecodeError):
+    with pytest.raises(ConfigFileUnreadableError) as raised:
         load_config(str(temp_config_path), strict=True)
+    assert isinstance(raised.value.__cause__, tomllib.TOMLDecodeError)
 
 
 def test_load_config_missing_file_strict_still_returns_defaults(
@@ -808,14 +813,26 @@ def test_save_succeeds_despite_leftover_temp_from_prior_crash(
     assert load_config(str(temp_config_path)).psn_system_name == "Fresh"
 
 
+def _fail_the_first_fsync(monkeypatch, error: Exception | None = None) -> None:
+    import openfollow.configuration as cfg_mod
+
+    real = cfg_mod.os.fsync
+    calls: list[int] = []
+
+    def _fsync(fd: int) -> None:
+        calls.append(fd)
+        if len(calls) == 1:
+            raise error or OSError("disk full")
+        real(fd)
+
+    monkeypatch.setattr(cfg_mod.os, "fsync", _fsync)
+
+
 def test_save_continues_when_bak_copy_fails(temp_config_path, monkeypatch, caplog) -> None:
     """A failed backup copy must not abort the primary save."""
     save_config(AppConfig(psn_system_name="V1"), str(temp_config_path))
 
-    def _boom(*_a, **_k):
-        raise OSError("disk full")
-
-    monkeypatch.setattr("openfollow.configuration.shutil.copy2", _boom)
+    _fail_the_first_fsync(monkeypatch)  # the snapshot's
     with caplog.at_level("WARNING"):
         save_config(AppConfig(psn_system_name="V2"), str(temp_config_path))
 
@@ -831,10 +848,7 @@ def test_save_bak_failure_preserves_previous_bak(temp_config_path, monkeypatch) 
     bak = _bak_of(temp_config_path)
     assert tomllib.loads(bak.read_text(encoding="utf-8"))["psn_system_name"] == "V1"
 
-    def _boom(*_a, **_k):
-        raise OSError("disk full")
-
-    monkeypatch.setattr("openfollow.configuration.shutil.copy2", _boom)
+    _fail_the_first_fsync(monkeypatch)  # the snapshot's
     save_config(AppConfig(psn_system_name="V3"), str(temp_config_path))
 
     # Primary advanced; the previous good .bak (V1) is untouched, not clobbered
@@ -892,8 +906,432 @@ def test_load_strict_ignores_bak(temp_config_path) -> None:
     save_config(good, str(temp_config_path))  # .bak present
     temp_config_path.write_text("bad [[", encoding="utf-8")
 
-    with pytest.raises(tomllib.TOMLDecodeError):
+    with pytest.raises(ConfigFileUnreadableError):
         load_config(str(temp_config_path), strict=True)
+
+
+# An empty or unreadable file is never read as the defaults, nor written over
+
+_EMPTY = pytest.mark.parametrize("content", ["", "  \n\t\n"], ids=["empty", "whitespace"])
+# Valid TOML that is not a config: each of these makes building the config raise.
+_WRONG_SHAPES = [
+    b"grid = 5\n",
+    b'camera = "x"\n',
+    b"paths = [1]\n",
+    b"osc_destinations = 3\n",
+    b'midi = {patches="x"}\n',
+]
+_WRONG_SHAPE_IDS = ["grid-int", "camera-str", "paths-list", "osc-destinations-int", "midi-patches-str"]
+_UNREADABLE = pytest.mark.parametrize(
+    "content",
+    [b"", b"  \n\t\n", b"not [[ valid toml", b"\xff\xfe = 1\n", *_WRONG_SHAPES],
+    ids=["empty", "whitespace", "unparseable", "not-utf8", *_WRONG_SHAPE_IDS],
+)
+
+
+def _good_config_with_backup(path, name: str = "Good Config") -> None:
+    save_config(AppConfig(psn_system_name=name, controlled_marker_ids=[3]), str(path))
+    save_config(AppConfig(psn_system_name=name, controlled_marker_ids=[3]), str(path))
+
+
+@_EMPTY
+def test_load_recovers_an_empty_file_from_the_backup(temp_config_path, caplog, content) -> None:
+    _good_config_with_backup(temp_config_path)
+    temp_config_path.write_text(content, encoding="utf-8")
+
+    with caplog.at_level("WARNING"):
+        loaded = load_config(str(temp_config_path))
+
+    assert (loaded.psn_system_name, loaded.controlled_marker_ids) == ("Good Config", [3])
+    assert [r.message for r in caplog.records if "is empty" in r.message] == [
+        f"Config file {temp_config_path} is empty – recovered from {temp_config_path}.bak."
+    ]
+
+
+@_EMPTY
+def test_an_empty_file_without_a_backup_loads_as_the_defaults_and_says_so(temp_config_path, caplog, content) -> None:
+    temp_config_path.write_text(content, encoding="utf-8")
+
+    with caplog.at_level("WARNING"):
+        loaded = load_config(str(temp_config_path))
+
+    assert loaded == AppConfig()
+    assert [r.message for r in caplog.records if "is empty" in r.message] == [
+        f"Config file {temp_config_path} is empty – using defaults."
+    ]
+
+
+def test_a_broken_file_is_reported_once_until_it_changes(temp_config_path, caplog) -> None:
+    """Every web request reads the file again; a broken one is logged once, not once per request."""
+    _good_config_with_backup(temp_config_path)
+    temp_config_path.write_text("", encoding="utf-8")
+
+    with caplog.at_level("WARNING"):
+        load_config(str(temp_config_path))
+        load_config(str(temp_config_path))
+        temp_config_path.write_text("not [[ valid toml", encoding="utf-8")
+        load_config(str(temp_config_path))
+        load_config(str(temp_config_path))
+
+    assert [r.message.split(" – ")[0] for r in caplog.records if "recovered" in r.message] == [
+        f"Config file {temp_config_path} is empty",
+        f"Config file {temp_config_path} could not be read/parsed",
+    ]
+
+
+def test_a_broken_file_is_reported_again_once_it_has_read_whole_in_between(temp_config_path, caplog) -> None:
+    """The same file, broken the same way twice with a whole read between, is reported twice."""
+    _good_config_with_backup(temp_config_path)
+    whole = temp_config_path.read_bytes()
+    stamp = os.stat(temp_config_path)
+
+    def _write_in_place(content: bytes) -> None:
+        temp_config_path.write_bytes(content)
+        os.utime(temp_config_path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+
+    with caplog.at_level("WARNING"):
+        _write_in_place(b"")
+        load_config(str(temp_config_path))
+        _write_in_place(whole)
+        load_config(str(temp_config_path))
+        _write_in_place(b"")
+        load_config(str(temp_config_path))
+
+    assert len([r for r in caplog.records if "is empty" in r.message]) == 2
+
+
+@_UNREADABLE
+def test_load_config_for_save_refuses_an_empty_or_unreadable_file(temp_config_path, content) -> None:
+    _good_config_with_backup(temp_config_path)
+    temp_config_path.write_bytes(content)
+
+    with pytest.raises(ConfigFileUnreadableError) as raised:
+        load_config_for_save(str(temp_config_path))
+
+    assert isinstance(raised.value, OSError)
+    assert isinstance(raised.value, ConfigFileEmptyError) == (not content.strip())
+    assert str(temp_config_path) in str(raised.value)
+    assert temp_config_path.read_bytes() == content
+
+
+def test_load_config_for_save_reads_a_whole_file(temp_config_path) -> None:
+    save_config(AppConfig(psn_system_name="On Disk"), str(temp_config_path))
+
+    assert load_config_for_save(str(temp_config_path)).psn_system_name == "On Disk"
+
+
+def test_load_config_for_save_recovers_a_missing_file_from_the_backup(temp_config_path) -> None:
+    _good_config_with_backup(temp_config_path)
+    temp_config_path.unlink()
+
+    assert load_config_for_save(str(temp_config_path)).psn_system_name == "Good Config"
+
+
+def test_load_config_for_save_reads_a_first_run_as_the_defaults(temp_config_path) -> None:
+    assert load_config_for_save(str(temp_config_path)) == AppConfig()
+
+
+@_UNREADABLE
+def test_save_config_never_writes_over_an_empty_or_unreadable_file(temp_config_path, content) -> None:
+    _good_config_with_backup(temp_config_path)
+    backup = _bak_of(temp_config_path).read_bytes()
+    temp_config_path.write_bytes(content)
+
+    with pytest.raises(ConfigFileUnreadableError):
+        save_config(AppConfig(psn_system_name="Defaults And One Change"), str(temp_config_path))
+
+    assert temp_config_path.read_bytes() == content
+    assert _bak_of(temp_config_path).read_bytes() == backup
+    assert list(temp_config_path.parent.glob("*.tmp")) == []
+
+
+@_UNREADABLE
+def test_save_config_replaces_an_unreadable_file_only_when_told_to(temp_config_path, content) -> None:
+    temp_config_path.write_bytes(content)
+
+    save_config(AppConfig(psn_system_name="Replacement"), str(temp_config_path), replace_unreadable=True)
+
+    assert load_config(str(temp_config_path), strict=True).psn_system_name == "Replacement"
+
+
+def test_a_config_path_that_cannot_be_opened_is_neither_read_for_a_save_nor_written(temp_config_path) -> None:
+    temp_config_path.mkdir()
+
+    with pytest.raises(ConfigFileUnreadableError, match="could not be read"):
+        load_config_for_save(str(temp_config_path))
+    with pytest.raises(ConfigFileUnreadableError, match="could not be read"):
+        save_config(AppConfig(), str(temp_config_path))
+
+    assert temp_config_path.is_dir()
+
+
+def test_save_config_decides_on_the_file_as_it_is_when_it_writes(temp_config_path) -> None:
+    """A config read whole before an editor truncated the file still finds it empty."""
+    save_config(AppConfig(psn_system_name="Read Whole"), str(temp_config_path))
+    cfg = load_config_for_save(str(temp_config_path))
+    temp_config_path.write_text("", encoding="utf-8")
+
+    with pytest.raises(ConfigFileEmptyError):
+        save_config(cfg, str(temp_config_path))
+
+    assert temp_config_path.read_text(encoding="utf-8") == ""
+
+
+@_EMPTY
+def test_an_empty_file_does_not_ask_for_the_network_mode_to_be_saved(temp_config_path, content) -> None:
+    from openfollow.configuration import network_mode_unsaved
+
+    temp_config_path.write_text(content, encoding="utf-8")
+
+    assert not network_mode_unsaved(str(temp_config_path))
+
+
+@_EMPTY
+def test_an_empty_file_is_restored_from_its_backup_which_stays(temp_config_path, caplog, content) -> None:
+    import stat
+
+    from openfollow.configuration import restore_empty_config
+
+    _good_config_with_backup(temp_config_path)
+    backup = _bak_of(temp_config_path).read_bytes()
+    temp_config_path.write_text(content, encoding="utf-8")
+
+    with caplog.at_level("WARNING"):
+        restore_empty_config(str(temp_config_path))
+
+    assert temp_config_path.read_bytes() == backup
+    assert _bak_of(temp_config_path).read_bytes() == backup
+    assert stat.S_IMODE(os.stat(temp_config_path).st_mode) == 0o600
+    assert list(temp_config_path.parent.glob("*.tmp")) == []
+    assert caplog.messages == [f"Config file {temp_config_path} is empty – restored it from {temp_config_path}.bak."]
+    save_config(AppConfig(psn_system_name="Saved Again"), str(temp_config_path))
+    assert load_config(str(temp_config_path), strict=True).psn_system_name == "Saved Again"
+
+
+@pytest.mark.parametrize("backup", [None, b"", b"  \n", b"not [[ toml", b"\xff\xfe = 1\n", *_WRONG_SHAPES])
+@_EMPTY
+def test_an_empty_file_without_a_readable_backup_is_removed_for_a_first_run(
+    temp_config_path, caplog, content, backup
+) -> None:
+    from openfollow.configuration import restore_empty_config
+
+    temp_config_path.write_text(content, encoding="utf-8")
+    if backup is not None:
+        _bak_of(temp_config_path).write_bytes(backup)
+
+    with caplog.at_level("WARNING"):
+        restore_empty_config(str(temp_config_path))
+
+    assert not temp_config_path.exists()
+    assert backup is None or _bak_of(temp_config_path).read_bytes() == backup
+    assert [m for m in caplog.messages if "is empty" in m] == [
+        f"Config file {temp_config_path} is empty and has no readable backup – starting as a first run."
+    ]
+
+
+@pytest.mark.parametrize("content", [None, b"not [[ toml", b'psn_system_name = "Kept"\n'])
+def test_restore_leaves_a_missing_unreadable_or_whole_file_alone(temp_config_path, caplog, content) -> None:
+    from openfollow.configuration import restore_empty_config
+
+    _good_config_with_backup(temp_config_path)
+    if content is None:
+        temp_config_path.unlink()
+    else:
+        temp_config_path.write_bytes(content)
+
+    with caplog.at_level("WARNING"):
+        restore_empty_config(str(temp_config_path))
+
+    assert (temp_config_path.read_bytes() if temp_config_path.exists() else None) == content
+    assert caplog.messages == []
+
+
+def test_an_empty_file_that_cannot_be_restored_is_left_and_logged(temp_config_path, caplog, monkeypatch) -> None:
+    import openfollow.configuration as cfg_mod
+
+    _good_config_with_backup(temp_config_path)
+    temp_config_path.write_text("", encoding="utf-8")
+
+    def _refuse(*_a: object) -> None:
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(cfg_mod.os, "replace", _refuse)
+    with caplog.at_level("WARNING"):
+        cfg_mod.restore_empty_config(str(temp_config_path))
+    monkeypatch.undo()
+
+    assert temp_config_path.read_text(encoding="utf-8") == ""
+    assert list(temp_config_path.parent.glob("*.tmp")) == []
+    assert caplog.messages == [f"Config file {temp_config_path} is empty and could not be restored."]
+
+
+@pytest.mark.parametrize("primary", [None, b"", b"not [[ toml"], ids=["missing", "empty", "unparseable"])
+def test_a_backup_that_is_not_utf8_reads_as_no_backup(temp_config_path, primary) -> None:
+    _bak_of(temp_config_path).write_bytes(b'psn_system_name = "\xff\xfe"\n')
+    if primary is not None:
+        temp_config_path.write_bytes(primary)
+
+    assert load_config(str(temp_config_path)) == AppConfig()
+
+
+@_UNREADABLE
+def test_replacing_an_unreadable_file_keeps_the_good_backup(temp_config_path, content) -> None:
+    _good_config_with_backup(temp_config_path)
+    backup = _bak_of(temp_config_path).read_bytes()
+    temp_config_path.write_bytes(content)
+
+    save_config(AppConfig(psn_system_name="Replacement"), str(temp_config_path), replace_unreadable=True)
+
+    assert _bak_of(temp_config_path).read_bytes() == backup
+    assert load_config(str(temp_config_path), strict=True).psn_system_name == "Replacement"
+
+
+def test_the_backup_holds_the_bytes_the_save_checked(temp_config_path, monkeypatch) -> None:
+    """An editor emptying the file just after the check must not reach the backup."""
+    import openfollow.configuration as cfg_mod
+
+    save_config(AppConfig(psn_system_name="Checked"), str(temp_config_path))
+    checked = temp_config_path.read_bytes()
+    real_loads = cfg_mod.tomllib.loads
+
+    def _loads_then_truncate(text: str) -> object:
+        parsed = real_loads(text)
+        temp_config_path.write_bytes(b"")
+        return parsed
+
+    monkeypatch.setattr(cfg_mod.tomllib, "loads", _loads_then_truncate)
+    save_config(AppConfig(psn_system_name="Next"), str(temp_config_path))
+    monkeypatch.undo()
+
+    assert _bak_of(temp_config_path).read_bytes() == checked
+
+
+def test_save_config_change_writes_the_running_config_when_the_file_vanished_after_the_check(
+    temp_config_path, monkeypatch
+) -> None:
+    import openfollow.configuration as cfg_mod
+    from openfollow.configuration import save_config_change
+
+    monkeypatch.setattr(cfg_mod.os.path, "exists", lambda _p: True)
+    running = AppConfig(web_port=8080, psn_system_name="Stage Left")
+
+    save_config_change(str(temp_config_path), running, lambda cfg: setattr(cfg, "web_port", 9090))
+
+    monkeypatch.undo()
+    saved = load_config(str(temp_config_path), strict=True)
+    assert (saved.web_port, saved.psn_system_name) == (9090, "Stage Left")
+
+
+@_UNREADABLE
+def test_save_config_change_refuses_an_empty_or_unreadable_file(temp_config_path, content) -> None:
+    from openfollow.configuration import save_config_change
+
+    temp_config_path.write_bytes(content)
+    running = AppConfig(psn_system_name="Running")
+
+    with pytest.raises(ConfigFileUnreadableError):
+        save_config_change(str(temp_config_path), running, lambda cfg: setattr(cfg, "web_port", 9090))
+
+    assert temp_config_path.read_bytes() == content
+
+
+@pytest.mark.parametrize("content", _WRONG_SHAPES, ids=_WRONG_SHAPE_IDS)
+def test_a_file_that_parses_but_is_no_config_is_recovered_from_the_backup(temp_config_path, content) -> None:
+    _good_config_with_backup(temp_config_path)
+    temp_config_path.write_bytes(content)
+
+    assert load_config(str(temp_config_path)).psn_system_name == "Good Config"
+
+
+@pytest.mark.parametrize("backup", _WRONG_SHAPES, ids=_WRONG_SHAPE_IDS)
+@pytest.mark.parametrize(
+    "primary", [None, b"", b"not [[ toml", b"grid = 5\n"], ids=["missing", "empty", "unparseable", "shape"]
+)
+def test_a_backup_that_is_no_config_reads_as_no_backup(temp_config_path, primary, backup) -> None:
+    _bak_of(temp_config_path).write_bytes(backup)
+    if primary is not None:
+        temp_config_path.write_bytes(primary)
+
+    assert load_config(str(temp_config_path)) == AppConfig()
+
+
+@pytest.mark.parametrize("content", _WRONG_SHAPES, ids=_WRONG_SHAPE_IDS)
+def test_a_file_that_parses_but_is_no_config_is_a_problem_for_saving(temp_config_path, content) -> None:
+    from openfollow.configuration import config_file_problem
+
+    temp_config_path.write_bytes(content)
+
+    problem = config_file_problem(str(temp_config_path))
+    assert isinstance(problem, ConfigFileUnreadableError)
+    assert not isinstance(problem, ConfigFileEmptyError)
+
+
+@pytest.mark.parametrize(
+    ("backup", "step"),
+    [
+        (True, "Restart OpenFollow to restore the settings from the latest backup copy"),
+        (None, "Restart OpenFollow to start again with default settings"),
+        (b"grid = 5\n", "Restart OpenFollow to start again with default settings"),
+    ],
+    ids=["readable-backup", "no-backup", "backup-no-config"],
+)
+def test_an_empty_file_is_mended_by_what_a_restart_will_do(temp_config_path, backup, step) -> None:
+    from openfollow.configuration import config_file_problem, config_problem_words
+
+    if backup is True:
+        _good_config_with_backup(temp_config_path)
+    elif backup is not None:
+        _bak_of(temp_config_path).write_bytes(backup)
+    temp_config_path.write_bytes(b"")
+
+    problem = config_file_problem(str(temp_config_path))
+    assert problem is not None
+    assert config_problem_words(problem) == ("is empty", step)
+
+
+def test_an_unreadable_file_is_replaced_by_an_import(temp_config_path) -> None:
+    from openfollow.configuration import config_file_problem, config_problem_words
+
+    _good_config_with_backup(temp_config_path)
+    temp_config_path.write_bytes(b"grid = 5\n")
+
+    problem = config_file_problem(str(temp_config_path))
+    assert problem is not None
+    assert config_problem_words(problem) == ("could not be read", "Import a settings file to replace it")
+
+
+@pytest.mark.parametrize(
+    ("primary", "backup", "health"),
+    [
+        ("good", "good", "reads whole; backup reads whole"),
+        (b"", "good", "is empty; backup reads whole"),
+        (b"not [[ toml", None, "could not be read; no readable backup"),
+        (b"grid = 5\n", b"camera = 1\n", "could not be read; no readable backup"),
+        (None, "good", "missing; backup reads whole"),
+    ],
+)
+def test_the_health_of_the_config_file_names_no_contents(temp_config_path, primary, backup, health) -> None:
+    from openfollow.configuration import config_file_health
+
+    save_config(AppConfig(psn_system_name="secret-ish", web_pin="4321"), str(temp_config_path))
+    good = temp_config_path.read_bytes()
+    if backup is not None:
+        _bak_of(temp_config_path).write_bytes(good if backup == "good" else backup)
+    if primary is None:
+        temp_config_path.unlink()
+    elif primary != "good":
+        temp_config_path.write_bytes(primary)
+
+    assert config_file_health(str(temp_config_path)) == health
+
+
+def test_a_save_read_of_a_missing_file_takes_the_fallback_it_is_given(temp_config_path) -> None:
+    _good_config_with_backup(temp_config_path)
+    temp_config_path.unlink()
+
+    newer = AppConfig(psn_system_name="Last Whole Read")
+    assert load_config_for_save(str(temp_config_path), missing=lambda: newer) is newer
+    assert load_config_for_save(str(temp_config_path)).psn_system_name == "Good Config"
 
 
 # Per-marker move speed (``AppConfig.marker_move_speeds``)
@@ -2580,9 +3018,12 @@ def test_a_switch_that_could_not_be_saved_is_saved_by_switching_again_once_the_f
 
     app_modes.confirm_source_type_selection(app)
     assert app._config.video_source_type == "rtsp"
-    assert banners == ["RTSP is live but could not be saved to config.toml. Fix the file, then switch again."]
+    assert banners == [
+        "RTSP is live but could not be saved. The settings file could not be read. "
+        "Import a settings file to replace it, then switch again."
+    ]
 
-    save_config(good, path)
+    save_config(good, path, replace_unreadable=True)  # the operator repairs it
     assert apply_runtime_config_changes(app, load_config(path, strict=True)) is True
     assert app._config.video_source_type == "ndi"
     app_modes.confirm_source_type_selection(app)
@@ -4590,10 +5031,7 @@ def test_save_config_unlinks_temp_file_on_write_error(
     class _BoomError(RuntimeError):
         pass
 
-    def boom_dump(_data, _fp):
-        raise _BoomError("simulated disk failure")
-
-    monkeypatch.setattr(cfg_mod.tomli_w, "dump", boom_dump)
+    _fail_the_first_fsync(monkeypatch, _BoomError("simulated disk failure"))
 
     with pytest.raises(_BoomError):
         cfg_mod.save_config(AppConfig(), str(temp_config_path))
@@ -4610,13 +5048,10 @@ def test_save_config_swallows_unlink_oserror_and_reraises_original(
 ) -> None:
     import openfollow.configuration as cfg_mod
 
-    def boom_dump(_data, _fp):
-        raise RuntimeError("primary failure")
-
     def boom_unlink(_path):
         raise OSError("cleanup also failed")
 
-    monkeypatch.setattr(cfg_mod.tomli_w, "dump", boom_dump)
+    _fail_the_first_fsync(monkeypatch, RuntimeError("primary failure"))
     monkeypatch.setattr(cfg_mod.os, "unlink", boom_unlink)
 
     with pytest.raises(RuntimeError, match="primary failure"):
@@ -4679,7 +5114,7 @@ def test_save_config_fields_refuses_an_empty_file_and_leaves_it(temp_config_path
     it writes leaves one for a moment: the unnamed fields must not become defaults."""
     temp_config_path.write_text(content, encoding="utf-8")
 
-    with pytest.raises(ValueError, match="empty"):
+    with pytest.raises(ConfigFileEmptyError, match="empty"):
         save_config_fields(AppConfig(web_port=8080), str(temp_config_path), ["camera"])
 
     assert temp_config_path.read_text(encoding="utf-8") == content
@@ -4695,7 +5130,7 @@ def test_save_config_fields_decides_on_the_bytes_it_parses(temp_config_path, mon
     temp_config_path.write_text("", encoding="utf-8")
     monkeypatch.setattr(Path, "read_bytes", lambda _self: whole)
 
-    with pytest.raises(ValueError, match="empty"):
+    with pytest.raises(ConfigFileEmptyError, match="empty"):
         save_config_fields(AppConfig(web_port=9090), str(temp_config_path), ["camera"])
 
     monkeypatch.undo()
@@ -4725,7 +5160,7 @@ def test_save_config_fields_writes_whole_a_file_that_vanished_after_an_earlier_c
 def test_load_config_strict_refuses_an_empty_file(temp_config_path, content) -> None:
     temp_config_path.write_text(content, encoding="utf-8")
 
-    with pytest.raises(ValueError, match="empty"):
+    with pytest.raises(ConfigFileEmptyError, match="empty"):
         load_config(str(temp_config_path), strict=True)
     assert load_config(str(temp_config_path)) == AppConfig()
 
@@ -4764,7 +5199,7 @@ def test_save_config_fields_treats_a_file_it_may_not_read_as_unreadable(temp_con
     monkeypatch.setattr(Path, "read_bytes", _read_bytes)
     monkeypatch.setattr(cfg_mod, "open", _open, raising=False)
 
-    with pytest.raises(PermissionError):
+    with pytest.raises(ConfigFileUnreadableError, match="Permission denied"):
         save_config_fields(AppConfig(), target, ["camera"])
     save_config_fields(AppConfig(web_port=9090), target, ["camera"], replace_unreadable=True)
 
@@ -4775,7 +5210,7 @@ def test_save_config_fields_treats_a_file_it_may_not_read_as_unreadable(temp_con
 def test_save_config_fields_leaves_an_unreadable_file_alone(temp_config_path) -> None:
     temp_config_path.write_text("web_port = [unclosed", encoding="utf-8")
 
-    with pytest.raises(tomllib.TOMLDecodeError):
+    with pytest.raises(ConfigFileUnreadableError):
         save_config_fields(AppConfig(), str(temp_config_path), ["camera"])
 
     assert temp_config_path.read_text(encoding="utf-8") == "web_port = [unclosed"
@@ -4786,7 +5221,7 @@ def test_save_config_fields_holds_the_write_lock_across_load_and_save(temp_confi
 
     save_config(AppConfig(), str(temp_config_path))
     held: list[bool] = []
-    real_load, real_save = cfg_mod.load_config, cfg_mod.save_config
+    real_load, real_save = cfg_mod.read_config_whole, cfg_mod.save_config
 
     def _load(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
         held.append(config_write_lock.locked())
@@ -4796,7 +5231,7 @@ def test_save_config_fields_holds_the_write_lock_across_load_and_save(temp_confi
         held.append(config_write_lock.locked())
         real_save(*args, **kwargs)
 
-    monkeypatch.setattr(cfg_mod, "load_config", _load)
+    monkeypatch.setattr(cfg_mod, "read_config_whole", _load)
     monkeypatch.setattr(cfg_mod, "save_config", _save)
 
     save_config_fields(AppConfig(), str(temp_config_path), ["camera"])

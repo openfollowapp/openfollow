@@ -1914,6 +1914,91 @@ def test_send_config_to_peer_returns_false_on_urlerror(monkeypatch) -> None:
     assert _send_config_to_peer("10.0.0.5", 80, "camera", {}, pin="", expected_port=80, sender="Stage Left") is False
 
 
+def _peer_answering(monkeypatch, status: int, body: bytes) -> None:
+    import io
+    import urllib.error
+
+    import openfollow.web.routes as routes_mod
+
+    def _answer(req, timeout):
+        raise urllib.error.HTTPError(req.full_url, status, "refused", {}, io.BytesIO(body))  # type: ignore[arg-type]
+
+    monkeypatch.setattr(routes_mod.urllib.request, "urlopen", _answer)
+
+
+_PEER_REASON = {"error": "The settings file on this station is empty", "action": "Restart OpenFollow."}
+
+
+@pytest.mark.parametrize("send", ["section", "import"])
+def test_a_peer_that_said_why_it_did_not_apply_is_reported_with_its_reason(monkeypatch, send: str) -> None:
+    from openfollow.web.discovery import PeerInfo
+    from openfollow.web.routes import _broadcast_to_peers, _send_config_import_to_peer, _send_config_to_peer
+
+    _peer_answering(monkeypatch, 409, json.dumps(_PEER_REASON).encode())
+    peer = PeerInfo(name="Stage Right", ip="10.0.0.5", web_port=80, version="", last_seen=0.0)
+
+    def _send(p: PeerInfo) -> bool:
+        if send == "section":
+            return _send_config_to_peer(p.ip, p.web_port, "grid", {}, expected_port=80, sender="Stage Left")
+        return _send_config_import_to_peer(p.ip, p.web_port, {}, expected_port=80, sender="Stage Left")
+
+    results = _broadcast_to_peers([peer], _send, 5.0)
+
+    assert results == [
+        {
+            "name": "Stage Right",
+            "ip": "10.0.0.5",
+            "success": False,
+            "reason": "The settings file on this station is empty. Restart OpenFollow.",
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("kind", "reason"),
+    [
+        (
+            "empty-restorable",
+            "its settings file is empty; restart it to restore the settings from its latest backup copy",
+        ),
+        ("empty", "its settings file is empty; restart it to start again with default settings"),
+        ("unreadable", "its settings file could not be read; import a settings file there to replace it"),
+    ],
+)
+def test_a_peer_s_settings_file_is_named_as_its_own_not_the_sender_s(monkeypatch, kind: str, reason: str) -> None:
+    from openfollow.web.routes import _PeerRefused, _send_config_to_peer
+
+    answer = {
+        "error": "The settings file on this station is empty",
+        "action": "Restart OpenFollow.",
+        "settings_file": kind,
+    }
+    _peer_answering(monkeypatch, 409, json.dumps(answer).encode())
+
+    with pytest.raises(_PeerRefused) as refused:
+        _send_config_to_peer("10.0.0.5", 80, "grid", {}, expected_port=80, sender="Stage Left")
+
+    assert str(refused.value) == reason
+
+
+@pytest.mark.parametrize("body", [b"", b"<html>no</html>", b"[1]", b'{"error": ""}', b'{"error": 3}'])
+def test_a_peer_answer_without_a_reason_is_only_a_failure(monkeypatch, body: bytes) -> None:
+    from openfollow.web.routes import _send_config_to_peer
+
+    _peer_answering(monkeypatch, 500, body)
+
+    assert _send_config_to_peer("10.0.0.5", 80, "grid", {}, expected_port=80, sender="Stage Left") is False
+
+
+def test_a_peer_reason_without_a_usable_action_is_the_reason_alone(monkeypatch) -> None:
+    from openfollow.web.routes import _PeerRefused, _send_config_to_peer
+
+    _peer_answering(monkeypatch, 409, b'{"error": "Bad", "action": 7}')
+
+    with pytest.raises(_PeerRefused, match=r"^Bad\.$"):
+        _send_config_to_peer("10.0.0.5", 80, "grid", {}, expected_port=80, sender="Stage Left")
+
+
 def test_send_config_import_to_peer_returns_false_on_timeout(monkeypatch) -> None:
     import openfollow.web.routes as routes_mod
     from openfollow.web.routes import _send_config_import_to_peer

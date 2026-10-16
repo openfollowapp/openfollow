@@ -62,7 +62,15 @@ function save(formId) {{
     return ev;
 }}
 function saved(ok) {{
+    // htmx's order: beforeSwap on the form, the response replaces it, then afterRequest on the detached form.
     var form = document.getElementById('general-network-section');
+    form.dispatchEvent(makeEvent('htmx:beforeSwap', {{ detail: {{ elt: form, isError: !ok }} }}));
+    if (ok) {{
+        var fresh = document.createElement('form');
+        fresh.setAttribute('id', 'general-network-section');
+        form.parentNode.insertBefore(fresh, form);
+        form.remove();
+    }}
     form.dispatchEvent(makeEvent('htmx:afterRequest', {{ detail: {{ elt: form, successful: ok }} }}));
 }}
 function button(label) {{
@@ -145,6 +153,14 @@ def test_turn_off_is_the_danger_button_and_saves() -> None:
 def test_a_successful_save_flips_the_classes_and_records_the_stored_state() -> None:
     out = _run("box('zones').checked = false; box('midi').checked = true; saved(true); out.after = state();")
     assert out["after"] == {"body": ["feature-midi", "feature-paths"], "saved": ["0", "1", "1"]}
+
+
+def test_a_feature_switched_off_by_an_earlier_save_is_not_asked_about_again() -> None:
+    out = _run(
+        "box('zones').checked = false; save(); button('Turn off').click(); saved(true);"
+        "var ev = save(); out.prevented = ev.defaultPrevented; out.modal = modal !== null;"
+    )
+    assert out == {"prevented": False, "modal": False}
 
 
 def test_nothing_changes_before_the_save_or_after_a_failed_one() -> None:

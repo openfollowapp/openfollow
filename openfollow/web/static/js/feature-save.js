@@ -6,7 +6,9 @@
  * modal, naming each such feature and what stops with it (``data-title``,
  * ``data-off``); Cancel sends nothing. Once a save has gone through, the page
  * flips its ``feature-<key>`` body classes and records the new stored state
- * (``data-saved``).
+ * (``data-saved``). That happens on ``htmx:beforeSwap``: the response replaces
+ * the form, so ``htmx:afterRequest`` fires on a detached element and never
+ * reaches ``document``.
  */
 (function () {
     'use strict';
@@ -39,8 +41,8 @@
         });
     });
 
-    document.addEventListener('htmx:afterRequest', function (evt) {
-        if (!fromSave(evt) || !evt.detail.successful) return;
+    document.addEventListener('htmx:beforeSwap', function (evt) {
+        if (!fromSave(evt) || evt.detail.isError) return;
         boxes().forEach(function (cb) {
             document.body.classList.toggle('feature-' + cb.getAttribute('name'), cb.checked);
             cb.dataset.saved = cb.checked ? '1' : '0';

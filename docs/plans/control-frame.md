@@ -69,6 +69,7 @@ Geometry:
 
 ### Verify
 - [x] `make ci-remote` green (run locally; no testing Pi reachable).
+- [x] Direction checked on the projected picture (`test_the_stick_moves_the_marker_that_way_on_the_picture`): front of house, upstage, both wings, a box boom and an overhead camera, in `camera` and `screen`.
 - [ ] Run the app with a side camera (yaw 90) and a downstage camera (yaw 180) on the Media Gallery source: in `camera` and `screen`, stick right moves the marker right on the picture; in `stage` nothing changed.
 
 ## Out of scope

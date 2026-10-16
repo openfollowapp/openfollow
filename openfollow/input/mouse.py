@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from openfollow.input.control_frame import operator_screen_size
 from openfollow.runtime import paths_runtime
 from openfollow.runtime.services_detection_pin import (
     get_or_create_manual_marker,
@@ -363,10 +364,7 @@ class MouseHandler:
             return None
         # Canvas size must match the coordinate space of pointer events
         # (window client pixels), not the video's native resolution.
-        if app._canvas is not None:
-            w, h = app._canvas.get_canvas_size()
-        else:
-            w, h = app._config.window_width, app._config.window_height
+        w, h = operator_screen_size(app)
         if w <= 0 or h <= 0:
             return None
         cam_cfg = app._camera.to_config()

@@ -546,6 +546,13 @@ def camera_params(cam: CameraConfig) -> npt.NDArray[np.float64]:
     return np.array([cam.pos_x, cam.pos_y, cam.pos_z, cam.pitch, cam.yaw, cam.roll, cam.fov], dtype=np.float64)
 
 
+def bearing_axes(yaw_deg: float) -> PlanarAxes:
+    """(right, forward) of a camera with ``yaw_deg`` and no roll, as unit PSN XY vectors."""
+    rad = math.radians(yaw_deg)
+    c, s = math.cos(rad), math.sin(rad)
+    return (c, -s), (s, c)
+
+
 def ground_axes(params: npt.NDArray[Any]) -> PlanarAxes:
     """The camera's (right, forward) on the floor, as unit PSN XY vectors.
 
@@ -563,7 +570,8 @@ def ground_axes(params: npt.NDArray[Any]) -> PlanarAxes:
     fx, fy = -ry - lost * float(R[0, 2]), rx + lost * float(R[2, 2])
     norm = math.hypot(fx, fy)
     if norm <= _FLAT_AXIS_EPS:
-        # An upside-down camera rolled about 120 degrees can cancel the two; its view decides.
+        # Only an upside-down camera cancels the two (level, rolled about 120 degrees). Some
+        # upside-down pose must: level, forward is its view; looking down, its picture's up.
         fx, fy = float(-R[0, 2]), float(R[2, 2])
         norm = math.hypot(fx, fy)
     fx, fy = fx / norm, fy / norm

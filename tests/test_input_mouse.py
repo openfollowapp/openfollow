@@ -10,6 +10,7 @@ test pattern is: grab → move → ``update()`` → assert.
 from __future__ import annotations
 
 import math
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -1252,3 +1253,19 @@ class TestGrabOnTheGroundGrid:
         app = _DummyApp()
         self._pit(app, experimental=False)
         assert MouseHandler(app).on_pointer_down(*self._seen(app, 0.0), 1) is True
+
+
+def test_an_unreadable_operator_screen_size_ignores_the_click_instead_of_raising() -> None:
+    """The frame loop must survive a GTK size read that raises; the click just does nothing."""
+
+    def broken() -> tuple[int, int]:
+        raise RuntimeError("no allocation")
+
+    app = _DummyApp()
+    cx, cy = _ground_center(app, 1)
+    app._canvas = SimpleNamespace(get_canvas_size=broken)
+    handler = MouseHandler(app)
+
+    handler.on_pointer_down(cx, cy, 1)
+
+    assert handler.active is False

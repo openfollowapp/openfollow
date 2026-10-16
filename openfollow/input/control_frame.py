@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from openfollow.scene.solver import PlanarAxes, camera_params, ground_axes, screen_axes_at
+from openfollow.scene.solver import PlanarAxes, bearing_axes, camera_params, ground_axes, screen_axes_at
 
 if TYPE_CHECKING:
     import numpy.typing as npt
@@ -38,11 +38,21 @@ logger = logging.getLogger(__name__)
 STAGE_AXES: PlanarAxes = ((1.0, 0.0), (0.0, 1.0))
 
 
-def heading_axes(heading_deg: float) -> PlanarAxes:
-    """Stage axes turned to ``heading_deg``, the bearing a camera with that yaw faces."""
-    rad = math.radians(heading_deg)
-    c, s = math.cos(rad), math.sin(rad)
-    return (c, -s), (s, c)
+def operator_screen_size(app: OpenFollowApp) -> tuple[int, int]:
+    """The Operator Screen's size in pixels, the space pointer events and the picture share.
+
+    The window's allocation where there is one, else the requested window size;
+    ``(0, 0)`` when GTK cannot read it, so a caller skips the picture rather than
+    stopping the frame loop.
+    """
+    canvas = app._canvas
+    if canvas is None:
+        return app._config.window_width, app._config.window_height
+    try:
+        return canvas.get_canvas_size()
+    except Exception:
+        logger.debug("Operator Screen size unavailable", exc_info=True)
+        return 0, 0
 
 
 class ControlFrame:
@@ -78,19 +88,22 @@ class ControlFrame:
         (rx, ry), (ux, uy) = axes
         ox, oy = vx * rx + vy * ux, vx * ry + vy * uy
         # Screen axes need not be perpendicular, so a diagonal can change length.
-        scale = math.hypot(vx, vy) / math.hypot(ox, oy)
+        length = math.hypot(ox, oy)
+        if length == 0.0:
+            return 0.0, 0.0
+        scale = math.hypot(vx, vy) / length
         return ox * scale, oy * scale
 
     def _axes(self, marker_pos: tuple[float, float, float]) -> PlanarAxes:
         marker_cfg = self._app._config.marker
         frame = marker_cfg.control_frame
         if frame == "heading":
-            return heading_axes(marker_cfg.control_heading)
+            return bearing_axes(marker_cfg.control_heading)
         params = self._camera_params() if frame in ("camera", "screen") else None
         if params is None:
             return STAGE_AXES
         if frame == "screen":
-            w, h = self._canvas_size()
+            w, h = operator_screen_size(self._app)
             if w > 0 and h > 0:
                 cam = self._app._config.camera
                 axes = screen_axes_at(params, marker_pos, float(w), float(h), cam.lens_k1, cam.lens_k2)
@@ -101,15 +114,3 @@ class ControlFrame:
     def _camera_params(self) -> npt.NDArray[np.float64] | None:
         camera = self._app._camera
         return None if camera is None else camera_params(camera.to_config())
-
-    def _canvas_size(self) -> tuple[int, int]:
-        """The Operator Screen's size, which the picture the operator steers by fills."""
-        canvas = self._app._canvas
-        if canvas is None:
-            return self._app._config.window_width, self._app._config.window_height
-        try:
-            return canvas.get_canvas_size()
-        except Exception:
-            # A raising GTK read must not stop the frame loop; the move takes the camera heading.
-            logger.debug("Canvas size unavailable for screen steering", exc_info=True)
-            return 0, 0

@@ -19,7 +19,7 @@ from openfollow.input.gamepad import GamepadUpdate
 from openfollow.input.input_manager import InputManager
 from openfollow.operator_messages import OperatorMessageStore
 from openfollow.psn.marker import Marker
-from openfollow.scene.solver import project_points
+from openfollow.scene.solver import camera_params, project_points
 
 pytestmark = pytest.mark.integration
 
@@ -737,6 +737,47 @@ def test_screen_frame_with_the_ball_above_the_camera_uses_the_camera_heading(mon
     app._server.get_marker(10).set_pos(0.0, 0.0, 1.6)
     _keyboard_step(monkeypatch, app, (0.0, 1.0, 0.0))
     assert app._server.get_marker(10).pos == pytest.approx((0.0, 1.0, 1.6))
+
+
+def test_screen_axes_that_cancel_a_diagonal_leave_the_marker_still(monkeypatch) -> None:
+    import openfollow.input.control_frame as control_frame_module
+
+    monkeypatch.setattr(control_frame_module, "screen_axes_at", lambda *_a, **_k: ((1.0, 0.0), (-1.0, 0.0)))
+    app = _with_camera(_DummyApp())
+    app._config.marker.control_frame = "screen"
+    _keyboard_step(monkeypatch, app, (1.0, 1.0, 0.5))
+    assert app._server.get_marker(10).pos == pytest.approx((0.0, 0.0, 0.5))
+
+
+_PICTURE_CAMERAS = [
+    pytest.param({}, id="front-of-house"),
+    pytest.param({"pos_x": 0.0, "pos_y": 11.0, "yaw": 180.0}, id="upstage-looking-downstage"),
+    pytest.param({"pos_x": -11.0, "pos_y": 0.0, "yaw": 90.0}, id="stage-right-wing"),
+    pytest.param({"pos_x": 11.0, "pos_y": 0.0, "yaw": -90.0}, id="stage-left-wing"),
+    pytest.param({"pos_x": -8.0, "pos_y": -8.0, "yaw": 45.0, "roll": 4.0}, id="box-boom"),
+    pytest.param({"pos_y": 0.0, "pos_z": 9.0, "pitch": -89.0, "yaw": 30.0}, id="overhead"),
+]
+
+
+@pytest.mark.parametrize("frame", ["camera", "screen"])
+@pytest.mark.parametrize("pose", _PICTURE_CAMERAS)
+@pytest.mark.parametrize(("stick", "picture"), [((1.0, 0.0), (1.0, 0.0)), ((0.0, 1.0), (0.0, -1.0))])
+def test_the_stick_moves_the_marker_that_way_on_the_picture(monkeypatch, frame, pose, stick, picture) -> None:  # noqa: ANN001
+    """Checked on the projected picture, not against the mapping's own formulas: stick
+    right moves the ball right on the Operator Screen and stick up moves it up."""
+    app = _with_camera(_DummyApp(), **pose)
+    app._config.marker.control_frame = frame
+    marker = app._server.get_marker(10)
+    marker.set_pos(0.5, 0.5, 1.0)
+    params = camera_params(CameraConfig(**pose))
+    before = project_points(params, np.array([marker.pos]), 1920, 1080)[0]
+
+    _keyboard_step(monkeypatch, app, (stick[0] * 0.05, stick[1] * 0.05, 0.0))
+
+    after = project_points(params, np.array([marker.pos]), 1920, 1080)[0]
+    moved = after - before
+    # Mostly along the expected picture direction (camera mode follows the floor, so a box-boom bends a little).
+    assert float(np.dot(moved, picture)) > 0.9 * float(np.linalg.norm(moved))
 
 
 def test_control_frame_turns_every_gamepad(monkeypatch) -> None:

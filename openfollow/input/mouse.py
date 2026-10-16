@@ -42,11 +42,13 @@ from openfollow.scene.solver import (
     CONE_RING_SEGMENTS,
     GROUND_RING_SEGMENTS,
     apply_overlay_distortion,
+    camera_params,
     ground_circle_world_ring,
     invert_overlay_distortion,
     project_points,
     unproject_to_plane,
 )
+from openfollow.window import operator_screen_size
 from openfollow.zones.geometry import point_in_polygon
 
 if TYPE_CHECKING:
@@ -113,8 +115,7 @@ class MouseHandler:
         self._clock = time.monotonic
         self._wheel_budget = _WHEEL_BURST_CLICKS
         self._wheel_refilled_at: float | None = None
-        # Pre-allocated NumPy buffers (same pattern as services_detection_pin)
-        self._cam_buffer = np.zeros(7, dtype=np.float64)
+        # Pre-allocated NumPy buffer (same pattern as services_detection_pin)
         self._screen_buffer = np.zeros((1, 2), dtype=np.float64)
 
     @property
@@ -371,22 +372,10 @@ class MouseHandler:
             return None
         # Canvas size must match the coordinate space of pointer events
         # (window client pixels), not the video's native resolution.
-        if app._canvas is not None:
-            w, h = app._canvas.get_canvas_size()
-        else:
-            w, h = app._config.window_width, app._config.window_height
+        w, h = operator_screen_size(app)
         if w <= 0 or h <= 0:
             return None
-        cam_cfg = app._camera.to_config()
-        buf = self._cam_buffer
-        buf[0] = cam_cfg.pos_x
-        buf[1] = cam_cfg.pos_y
-        buf[2] = cam_cfg.pos_z
-        buf[3] = cam_cfg.pitch
-        buf[4] = cam_cfg.yaw
-        buf[5] = cam_cfg.roll
-        buf[6] = cam_cfg.fov
-        return buf, w, h
+        return camera_params(app._camera.to_config()), w, h
 
     def _unproject(self, x: float, y: float) -> tuple[float, float] | None:
         """Unproject a screen point onto the stage plane; None if off-plane."""

@@ -139,6 +139,8 @@ def process_input(app: OpenFollowApp, dt: float) -> None:
         app._marker_control_suspended = True
     elif getattr(app, "_marker_control_suspended", False):
         app._input_manager.keyboard_handler.clear()
+        # A direction held from before the modal must not outlive a frame or calibration saved during it.
+        app._input_manager.control_frame.release_all()
         app._marker_control_suspended = False
 
     # The button that opens the menus also closes them, from any depth. Before

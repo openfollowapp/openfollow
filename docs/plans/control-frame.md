@@ -28,7 +28,7 @@ Shared rules:
 
 Geometry:
 
-- `camera`: right `r` = the camera's right axis (column of `_rotation_matrix`) converted to PSN and projected onto XY, normalised; forward `f = (-r.y, r.x)`. Well defined at any pitch, including a top-down camera. On the default pose (yaw 0) this is the identity, the same as `stage`.
+- `camera`: right `r` = the camera's right axis (column of `_rotation_matrix`) converted to PSN and projected onto XY; forward `f = (-r.y, r.x)`, plus the flattened view axis weighted by the length `r` lost to roll. Well defined at any pitch, including a top-down camera, and continuous through roll. On the default pose (yaw 0) this is the identity, the same as `stage`.
 - `screen`: project the ball `(x, y, z)` to the picture (with lens distortion), offset by a small step along screen +x and screen −y, undo the distortion, unproject both onto the plane at the marker's Z, and normalise the two world directions. Use the canvas size the mouse uses (`MouseHandler._view_inputs`).
 - `screen` with no answer (ball behind the camera or off the picture, unprojection NaN, plane seen edge-on): that latch uses the `camera` mapping. The help drawer documents this.
 
@@ -36,7 +36,7 @@ Geometry:
 
 - `MarkerConfig.control_frame: str = "stage"`, `_coerce_choice` over the four values.
 - `MarkerConfig.control_heading: float = 0.0` degrees in the camera-yaw convention, finite, wrapped into `[0, 360)` (`-90` is stored as `270`); a bool falls back to `0`.
-- `invert_control_direction` is removed. A config file, config-API body or older peer that still carries it is read through `apply_renamed_marker_keys`: `true` with no `control_frame` becomes `heading` / `180`, `false` is dropped; one warning per key. The current keys win when both are present.
+- `invert_control_direction` is removed. A config file, config-API body or older peer that still carries it is read through `apply_renamed_marker_keys`: `true` with no `control_frame` becomes `heading` / `180`, `false` becomes `stage`; one warning per key, only when it applies. The current keys win when both are present.
 - Both fields stay live: they are read per frame like the flag is today, with no restart.
 
 ## Checklist

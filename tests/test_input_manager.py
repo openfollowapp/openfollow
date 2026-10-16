@@ -642,7 +642,6 @@ def _keyboard_step(monkeypatch, app: _DummyApp, velocity: tuple[float, float, fl
     monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
     _FakeKeyboardHandler.next_velocity = velocity
     manager = InputManager(app)
-    manager._clock = lambda: 0.0
     manager.update(1.0)
     return manager
 
@@ -817,14 +816,14 @@ def test_a_source_that_stops_reporting_drops_its_held_direction(monkeypatch) -> 
     assert app._server.get_marker(10).pos == pytest.approx((0.0, 0.0, 0.0))
 
 
-def test_a_gap_in_input_updates_drops_the_held_direction(monkeypatch) -> None:
-    """A menu or editor holds input updates off; the frame saved meanwhile applies after it."""
+def test_releasing_every_latch_applies_the_current_frame_to_a_held_input(monkeypatch) -> None:
+    """Input coming back from a menu or editor takes the frame saved meanwhile, even if still held."""
     app = _DummyApp()
     manager = _keyboard_step(monkeypatch, app, (1.0, 0.0, 0.0))
 
     app._config.marker.control_frame = "heading"
     app._config.marker.control_heading = 180.0
-    manager._clock = lambda: 1.0
+    manager.control_frame.release_all()
     manager.update(1.0)
 
     assert app._server.get_marker(10).pos == pytest.approx((0.0, 0.0, 0.0))
@@ -862,7 +861,6 @@ def test_each_source_latches_its_own_direction(monkeypatch) -> None:
     _FakeGamepadHandler.next_update = GamepadUpdate(movements={0: (1.0, 0.0, 0.0)})
     app = _DummyApp()
     manager = InputManager(app)
-    manager._clock = lambda: 0.0
     manager.update(1.0)
 
     app._config.marker.control_frame = "heading"

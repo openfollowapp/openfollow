@@ -35,9 +35,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Input updates further apart than this (a menu or editor held them off) drop every latch.
-_LATCH_GAP_S = 0.25
-
 STAGE_AXES: PlanarAxes = ((1.0, 0.0), (0.0, 1.0))
 
 
@@ -55,17 +52,14 @@ class ControlFrame:
         self._app = app
         self._latched: dict[Hashable, PlanarAxes] = {}
         self._used: set[Hashable] = set()
-        self._last_frame: float | None = None
 
-    def begin_frame(self, now: float) -> None:
-        """Drop the latch of every source that gave no input last frame.
+    def release_all(self) -> None:
+        """Drop every latch, for input coming back from a mode that held it."""
+        self._latched.clear()
+        self._used.clear()
 
-        ``now`` is a monotonic clock; after a gap no source reported through,
-        every latch goes.
-        """
-        if self._last_frame is not None and now - self._last_frame > _LATCH_GAP_S:
-            self._used.clear()
-        self._last_frame = now
+    def begin_frame(self) -> None:
+        """Drop the latch of every source that gave no input last frame."""
         for source in self._latched.keys() - self._used:
             del self._latched[source]
         self._used.clear()

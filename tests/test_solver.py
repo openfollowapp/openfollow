@@ -855,8 +855,15 @@ def _pose(**kw: float) -> np.ndarray:
         ({"pitch": -90.0}, (1.0, 0.0), (0.0, 1.0)),
         ({"pitch": -90.0, "yaw": 90.0}, (0.0, -1.0), (1.0, 0.0)),
         ({"pitch": 0.0}, (1.0, 0.0), (0.0, 1.0)),
-        # Upside down, tilted so its view and picture-up cancel: its own right axis decides.
-        ({"pitch": -45.0, "roll": 180.0}, (-1.0, 0.0), (0.0, -1.0)),
+        ({"pitch": 46.0}, (1.0, 0.0), (0.0, 1.0)),
+        # A level camera keeps its bearing however it is rolled.
+        ({"pitch": 0.0, "roll": 30.0}, (1.0, 0.0), (0.0, 1.0)),
+        ({"pitch": 0.0, "roll": 90.0}, (1.0, 0.0), (0.0, 1.0)),
+        # Upside down: right is the picture's right, whatever the tilt.
+        ({"pitch": -44.0, "roll": 180.0}, (-1.0, 0.0), (0.0, -1.0)),
+        ({"pitch": -46.0, "roll": 180.0}, (-1.0, 0.0), (0.0, -1.0)),
+        # Rolled so far the two cancel: the view decides.
+        ({"pitch": 0.0, "roll": 120.0}, (1.0, 0.0), (0.0, 1.0)),
     ],
 )
 def test_ground_axes_is_the_camera_heading_on_the_floor(pose, right, forward) -> None:  # noqa: ANN001

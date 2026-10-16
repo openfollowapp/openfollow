@@ -2884,6 +2884,7 @@ class TestTheSettingsButtonClosesEverything:
             _config=AppConfig(),
             _input_manager=SimpleNamespace(
                 keyboard_handler=SimpleNamespace(keys=keys, clear=lambda: None),
+                control_frame=SimpleNamespace(release_all=lambda: None),
                 gamepad_handler=SimpleNamespace(read_settings_toggle=lambda: pad_edge),
                 update=lambda _dt: pytest.fail("must not run main-mode update while a screen is open"),
             ),

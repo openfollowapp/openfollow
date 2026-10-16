@@ -5072,11 +5072,10 @@ def _json_error(status: int, message: str) -> str:
 
 def _camera_view(cfg: AppConfig) -> tuple[Any, float, float]:
     """The saved camera as the solver's parameter vector, with its lens."""
-    import numpy as np
+    from openfollow.scene.solver import camera_params
 
     cam = cfg.camera
-    params = np.array([cam.pos_x, cam.pos_y, cam.pos_z, cam.pitch, cam.yaw, cam.roll, cam.fov], dtype=np.float64)
-    return params, cam.lens_k1, cam.lens_k2
+    return camera_params(cam), cam.lens_k1, cam.lens_k2
 
 
 # Chords per straight world segment when the lens bows it, as on the Operator Screen.

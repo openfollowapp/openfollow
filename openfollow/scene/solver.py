@@ -549,19 +549,22 @@ def camera_params(cam: CameraConfig) -> npt.NDArray[np.float64]:
 def ground_axes(params: npt.NDArray[Any]) -> PlanarAxes:
     """The camera's (right, forward) on the floor, as unit PSN XY vectors.
 
-    Forward is the view axis plus the picture's up axis, both flattened: the
-    view carries a level camera, the picture's up a camera looking straight
-    down, and the sum turns smoothly between them at any roll. Right is forward
-    turned a quarter. Only an upside-down camera can cancel the two; it takes
-    forward from its right axis instead.
+    Right is the camera's right axis flattened onto the floor, forward a
+    quarter turn left of it, so a camera with no roll keeps its yaw bearing at
+    any pitch. As roll stands the right axis up, the flattened view axis takes
+    over forward by the share the right axis lost, so a camera on its side
+    still faces its bearing.
     """
     _, _, _, pitch, yaw, roll, _ = params
     R = _rotation_matrix(math.radians(pitch), math.radians(yaw), math.radians(roll))
     # Columns are the camera's axes in pygfx (x, y, z), looking along -z; PSN XY is (x, -z).
-    fx, fy = float(R[0, 1] - R[0, 2]), float(R[2, 2] - R[2, 1])
+    rx, ry = float(R[0, 0]), float(-R[2, 0])
+    lost = 1.0 - math.hypot(rx, ry)
+    fx, fy = -ry - lost * float(R[0, 2]), rx + lost * float(R[2, 2])
     norm = math.hypot(fx, fy)
     if norm <= _FLAT_AXIS_EPS:
-        fx, fy = float(R[2, 0]), float(R[0, 0])
+        # An upside-down camera rolled about 120 degrees can cancel the two; its view decides.
+        fx, fy = float(-R[0, 2]), float(R[2, 2])
         norm = math.hypot(fx, fy)
     fx, fy = fx / norm, fy / norm
     return (fy, -fx), (fx, fy)

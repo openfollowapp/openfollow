@@ -27,6 +27,8 @@ import numpy as np
 from openfollow.configuration import (
     ControllerButtonTrigger,
     HotkeyTrigger,
+    effective_lens,
+    feature_gated,
     is_simple_mode,
     viewed_with_controlled,
 )
@@ -69,10 +71,12 @@ if TYPE_CHECKING:
     from openfollow.configuration import (
         AppConfig,
         DetectionConfig,
+        MidiPatch,
         OscDestinationsConfig,
         OscTransmittersConfig,
         OtpOutputConfig,
         RttrpmOutputConfig,
+        TriggerZonesConfig,
     )
     from openfollow.input.midi import StatusFlagValue
     from openfollow.network.adapter import (  # noqa: F401
@@ -986,7 +990,7 @@ class AppRuntimeServices:
 
         # Optional person detection (lazy import, zero cost when disabled)
         detector = None
-        if cfg.detection.enabled:
+        if self.detection_config().enabled:
             from openfollow.video.detection import (
                 PersonDetector,
                 check_detection_dependencies,
@@ -1173,7 +1177,7 @@ class AppRuntimeServices:
                 self._app._otp_server.stop()
 
         def _apply_rttrpm(_address: str) -> None:
-            self.apply_rttrpm_output_change(self._app._config.rttrpm_output)
+            self.apply_rttrpm_output_change(self.rttrpm_config())
 
         def _current_rttrpm() -> str | None:
             server = self._app._rttrpm_server
@@ -1227,7 +1231,7 @@ class AppRuntimeServices:
         def _rttrpm_pinned() -> bool:
             # Unpinned, the OS routes it: no interface to follow, and the
             # auto-detected address would never match its unbound socket.
-            cfg = self._app._config.rttrpm_output
+            cfg = self.rttrpm_config()
             if not cfg.enabled or is_loopback_host(cfg.host):
                 return False
             return bool(plane_source_iface(cfg.source_iface, self._app._config.psn_source_iface))
@@ -1656,8 +1660,24 @@ class AppRuntimeServices:
             )
         return egress
 
+    def midi_patches(self) -> list[MidiPatch]:
+        """The MIDI patches to open: none while the MIDI feature is off."""
+        return self._app._config.midi.patches if self._app._config.ui.feature_on("midi") else []
+
+    def detection_config(self) -> DetectionConfig:
+        """``detection`` as the detector runs it: off while the Person detection feature is off."""
+        return feature_gated(self._app._config.detection, self._app._config, "detection")
+
+    def rttrpm_config(self) -> RttrpmOutputConfig:
+        """``rttrpm_output`` as the sender runs it: off while the RTTrPM feature is off."""
+        return feature_gated(self._app._config.rttrpm_output, self._app._config, "rttrpm")
+
+    def zones_config(self) -> TriggerZonesConfig:
+        """``trigger_zones`` as the engine runs it: off while the Zones feature is off."""
+        return feature_gated(self._app._config.trigger_zones, self._app._config, "zones")
+
     def init_rttrpm(self) -> None:
-        cfg = self._app._config.rttrpm_output
+        cfg = self.rttrpm_config()
         if not cfg.enabled:
             return
         egress = self._rttrpm_egress(cfg)
@@ -1690,12 +1710,26 @@ class AppRuntimeServices:
             ignore_ids=self._app._controlled_ids,
             source_ip=source_ip or "",
             source_iface=self._app._config.psn_source_iface,
+            enabled=self._app._config.ui.feature_on("psn_input"),
         )
         # Built either way, started only with an address, for the same reason
         # as the server: the recovery path can only rebind one that exists.
         if source_ip is not None:
             receiver.start()
         self._app._psn_receiver = receiver
+
+    def apply_psn_input_change(self) -> None:
+        """Start or stop the PSN receiver for the PSN input feature; raises when it cannot bind."""
+        receiver = self._app._psn_receiver
+        if receiver is None:
+            return
+        on = self._app._config.ui.feature_on("psn_input")
+        receiver.set_enabled(on)
+        if not on or receiver.bound_source_ip() is not None:
+            return
+        source_ip = self.station_source_ip_or_none()
+        if source_ip is not None:
+            receiver.rebind(source_ip, source_iface=self._app._config.psn_source_iface)
 
     def init_virtual_faders(self) -> None:
         """Re-apply the persisted virtual-fader config and provision the
@@ -1723,7 +1757,7 @@ class AppRuntimeServices:
         Re-callable on hot-reload (``apply_config`` is idempotent – same
         patch on the same port is a no-op).
         """
-        self._midi.apply_config(self._app._config.midi.patches)
+        self._midi.apply_config(self.midi_patches())
         # (Re)subscribe the MIDI → fader dispatcher. ``attach`` drops any
         # previous subscription first, so reload passes can't leak
         # duplicate callbacks.
@@ -2186,7 +2220,7 @@ class AppRuntimeServices:
     def _follow_station_rttrpm(self) -> None:
         # Unlike OTP it may not be running: a station interface that was down
         # at boot left nothing to restart.
-        cfg = self._app._config.rttrpm_output
+        cfg = self.rttrpm_config()
         if cfg.enabled and not cfg.source_iface:
             self.apply_rttrpm_output_change(cfg)
 
@@ -2214,7 +2248,7 @@ class AppRuntimeServices:
 
         cfg = self._app._config
         ids = {row.destination_id for row in cfg.osc_transmitters.transmitters if row.enabled}
-        if cfg.trigger_zones.enabled:
+        if self.zones_config().enabled:
             ids |= {zone.destination_id for zone in cfg.trigger_zones.zones if zone.enabled}
         by_id = cfg.osc_destinations.by_id()
         in_use = [by_id[dest_id] for dest_id in ids if dest_id in by_id]
@@ -3481,7 +3515,7 @@ class AppRuntimeServices:
         """Create the zone engine from config, wired to the shared OSC service."""
         from openfollow.zones import ZoneEngine
 
-        cfg = self._app._config.trigger_zones
+        cfg = self.zones_config()
         self._restage_osc_egress(self._app._config.osc_destinations)
         self._zone_engine = ZoneEngine(
             cfg,
@@ -3494,8 +3528,7 @@ class AppRuntimeServices:
         """Evaluate zone membership and emit OSC, throttled by ``eval_fps``."""
         if self._zone_engine is None:
             return
-        app = self._app
-        cfg = app._config.trigger_zones
+        cfg = self.zones_config()
         if not cfg.enabled:
             return
 
@@ -3563,7 +3596,7 @@ class AppRuntimeServices:
         cam_cfg = app._camera.to_config()
         # Lens-distortion coefficients live on the config (the pinhole Camera
         # doesn't carry them), so read them straight from there.
-        lens = app._config.camera
+        lens = effective_lens(app._config)
         params = self._zone_cam_buffer
         params[0] = cam_cfg.pos_x
         params[1] = cam_cfg.pos_y
@@ -3582,7 +3615,7 @@ class AppRuntimeServices:
             # The detection sits on the (lens-distorted) video, so undistort the
             # foot point back to the pinhole frame before unprojecting. Identity
             # when no lens distortion is configured.
-            undistorted = invert_overlay_distortion(screen_pt, float(w), float(h), lens.lens_k1, lens.lens_k2)
+            undistorted = invert_overlay_distortion(screen_pt, float(w), float(h), *lens)
             world = unproject_to_plane(params, undistorted, float(w), float(h), plane_z)
             if not np.all(np.isfinite(world[0])):
                 continue
@@ -3817,7 +3850,7 @@ class AppRuntimeServices:
             "mouse3d": idle_mouse3d_status(cfg.mouse3d.enabled).to_dict(),
             "playback": self._frame_metrics.snapshot(),
             "tracking": {
-                "enabled": bool(cfg.detection.enabled),
+                "enabled": bool(self.detection_config().enabled),
                 "available": False,
                 "running": False,
                 "model": cfg.detection.model,
@@ -4002,7 +4035,7 @@ class AppRuntimeServices:
         playback_snapshot = self._frame_metrics.snapshot()
 
         detection_snapshot: dict[str, Any] = {
-            "enabled": bool(cfg.detection.enabled),
+            "enabled": bool(self.detection_config().enabled),
             "available": False,
             "running": False,
             "model": cfg.detection.model,

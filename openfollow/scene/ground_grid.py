@@ -105,10 +105,11 @@ def outline_segments(vertices: Sequence[Sequence[float]], z: float) -> npt.NDArr
 
 def floor_height(cfg: Any, x: float, y: float) -> float:
     """The floor under world ``(x, y)`` from config: the ground grid's height inside its polygon when it
-    drops markers (experimental features on, three corners, Ground grid on), else the main grid's."""
+    drops markers (Ground grid feature on, three corners, Ground grid on), else the main grid's."""
+    from openfollow.configuration import feature_on
+
     gg = getattr(cfg, "ground_grid", None)
-    experimental = bool(getattr(getattr(cfg, "ui", None), "show_experimental_features", False))
-    if gg is not None and experimental and gg.enabled and len(gg.vertices) >= 3:
+    if gg is not None and feature_on(cfg, "ground_grid") and gg.enabled and len(gg.vertices) >= 3:
         from openfollow.zones.geometry import point_in_polygon
 
         if point_in_polygon(x, y, gg.vertices):

@@ -279,7 +279,7 @@ class TestFloorHeight:
         from openfollow.configuration import AppConfig, GroundGridConfig
 
         cfg = AppConfig()
-        cfg.ui.show_experimental_features = experimental
+        cfg.ui.shown_features = ["ground_grid"] if experimental else []
         cfg.grid.z_offset = 0.2
         cfg.ground_grid = GroundGridConfig(
             enabled=enabled, z_offset=-1.5, vertices=vertices or [list(v) for v in _SQUARE]

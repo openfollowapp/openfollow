@@ -85,11 +85,11 @@ def test_zone_overlay_paths_and_pathfinder_share_a_row_of_their_own() -> None:
     assert names == ["btn_toggle_zones", "btn_toggle_paths", "btn_pathfinder"]
 
 
-def test_only_the_path_bindings_hide_with_the_experimental_features() -> None:
+def test_the_zone_and_path_bindings_hide_with_their_features() -> None:
     html, _ = _gamepad()
-    experimental = re.findall(r'<div class="field experimental-feature">\s*<label for="gamepad-([a-z-]+)"', html)
-    assert experimental == ["btn-toggle-paths", "btn-pathfinder"]
-    assert 'class="row experimental-feature"' not in html
+    gated = re.findall(r'<div class="field" data-feature="([a-z_]+)">\s*<label for="gamepad-([a-z-]+)"', html)
+    assert gated == [("zones", "btn-toggle-zones"), ("paths", "btn-toggle-paths"), ("paths", "btn-pathfinder")]
+    assert '<div class="row" data-feature=' not in html
 
 
 def test_gamepad_labels_are_the_ones_the_notes_name() -> None:

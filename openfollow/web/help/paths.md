@@ -17,4 +17,4 @@ Where two active paths cross, or one ends within 20 cm of another, and their hei
 
 `/path/{name}/active 1` / `0` switches a path, and `/marker/{id}/path {name}` locks a marker onto a path (no name releases it). See OSC Input.
 
-While experimental features are off, paths do nothing, and turning them off switches every path off.
+While the **Paths** feature is off (General tab, Features), paths do nothing and every marker on one is let go; each path keeps its Active setting.

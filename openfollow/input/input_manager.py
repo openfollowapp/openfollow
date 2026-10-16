@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
-from openfollow.configuration import SlotPinConfig, _apply_with_fallback, save_config_fields
+from openfollow.configuration import SlotPinConfig, _apply_with_fallback, feature_gated, feature_on, save_config_fields
 from openfollow.input.control_frame import ControlFrame
 from openfollow.input.controller_identity import port_label, usb_host_paths
 from openfollow.input.controller_slots import (
@@ -436,7 +436,7 @@ class InputManager:
         # ``poll_hotplug`` so this per-tick call stays cheap.
         # Isolate later subsystems so one raising can't drop the gamepad result.
         midi = getattr(getattr(self.app, "_runtime_services", None), "_midi", None)
-        if midi is not None:
+        if midi is not None and feature_on(self.app._config, "midi"):
             try:
                 midi.poll_hotplug()
             except Exception:
@@ -582,7 +582,7 @@ class InputManager:
 
     def _apply_touch_remote(self, remote: TouchRemote, dt: float) -> None:
         cfg = self.app._config
-        if not cfg.touch_remote.enabled:
+        if not feature_gated(cfg.touch_remote, cfg, "touch_remote").enabled:
             remote.release_all()
         remote.release_uncontrolled(self.app._controlled_ids)
         frames = remote.take()
@@ -591,7 +591,7 @@ class InputManager:
             del self._remote_glides[marker_id]
         # Once per new hold, before its presses, so they move the marker and not an assist anchor;
         # detection switched back on later while held stays on.
-        if any(frame.new for frame in frames) and cfg.detection.enabled:
+        if any(frame.new for frame in frames) and cfg.detection.enabled and cfg.ui.feature_on("detection"):
             self._switch_detection_off()
         for frame in frames:
             # One marker's failure never costs another marker its presses.

@@ -16,6 +16,7 @@ from openfollow.configuration import (
     _DEFAULT_PSN_MCAST_IP,
     _DEFAULT_PSN_SYSTEM_NAME,
     CONTROL_FRAMES,
+    FEATURE_KEYS,
     MENU_RESERVED_BUTTONS,
     MOUSE3D_AXES,
     MOUSE3D_AXIS_TARGETS,
@@ -614,6 +615,8 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
             human_error="Multicast IPv4 address (224.0.0.0–239.255.255.255) or blank.",
         ),
     },
+    # The Features list: one checkbox per feature key.
+    "features": {key: FieldRule(_as_bool) for key in FEATURE_KEYS},
     # Touch remote: only ``enabled`` has a form input; the tuning fields come from config.toml or the JSON API.
     "touch_remote": {
         "enabled": FieldRule(_as_bool),

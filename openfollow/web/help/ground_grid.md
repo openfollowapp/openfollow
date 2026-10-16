@@ -1,8 +1,8 @@
 # Ground Grid
 
-> Experimental. Shown only with **Experimental features** on (General tab);
-> turning those off hides the ground grid and switches **Ground grid** off; the
-> polygon and **Display** are kept.
+> Experimental. Shown only with the **Ground grid** feature on (General tab,
+> Features); turning it off hides the ground grid and stops it, and every
+> setting here is kept.
 
 A second floor at its own height, for an area that is lower or higher than the
 main grid: a pit, a riser, a ramp's landing. It is one polygon drawn on the

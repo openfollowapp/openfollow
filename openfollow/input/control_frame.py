@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from openfollow.configuration import effective_lens
 from openfollow.scene.solver import PlanarAxes, bearing_axes, camera_params, ground_axes, screen_axes_at
 from openfollow.window import operator_screen_size
 
@@ -86,8 +87,7 @@ class ControlFrame:
         if frame == "screen":
             w, h = operator_screen_size(self._app)
             if w > 0 and h > 0:
-                cam = self._app._config.camera
-                axes = screen_axes_at(params, marker_pos, float(w), float(h), cam.lens_k1, cam.lens_k2)
+                axes = screen_axes_at(params, marker_pos, float(w), float(h), *effective_lens(self._app._config))
                 if axes is not None:
                     return axes
         return ground_axes(params)

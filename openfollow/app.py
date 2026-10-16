@@ -246,9 +246,9 @@ class OpenFollowApp:
         self._config_blank_warned_mtime: float | None = None
         self._web_commands: WebCommandQueue = WebCommandQueue()
         self._runtime_services: AppRuntimeServices = AppRuntimeServices(self)
-        # Markers locked onto paths; rebuilt whenever the paths or the experimental switch change.
+        # Markers locked onto paths; rebuilt whenever the paths or the Paths feature change.
         self._paths: PathEngine = PathEngine()
-        self._paths.reload(self._config.paths, enabled=self._config.ui.show_experimental_features)
+        self._paths.reload(self._config.paths, enabled=self._config.ui.feature_on("paths"))
         # Browser sessions of the web touch remote and the markers they hold.
         self._touch_remote: TouchRemote = TouchRemote()
 

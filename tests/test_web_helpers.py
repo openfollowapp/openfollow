@@ -1575,25 +1575,14 @@ def test_apply_import_data_window_dims_and_pin_pass_through() -> None:
 
 
 def test_apply_import_data_applies_ui_section() -> None:
-    """The exported ``[ui]`` block (unit_system + show_experimental_features)
-    must round-trip on import. Regression: the importer skipped the ``ui``
-    section, so an exported "experimental on" / imperial config silently
-    reverted to the importing device's values."""
+    """The exported ``[ui]`` block (unit_system + shown_features) round-trips on import."""
     from openfollow.web.routes import _apply_import_data
 
     current = AppConfig()
-    assert current.ui.show_experimental_features is False
-    assert current.ui.unit_system == "metric"
-
-    imported = {
-        "ui": {
-            "show_experimental_features": True,
-            "unit_system": "imperial",
-        },
-    }
+    imported = {"ui": {"shown_features": ["paths", "zones"], "unit_system": "imperial"}}
     new = _apply_import_data(current, imported)
 
-    assert new.ui.show_experimental_features is True
+    assert new.ui.shown_features == ["zones", "paths"]
     assert new.ui.unit_system == "imperial"
 
 
@@ -1603,63 +1592,82 @@ def test_apply_import_data_ui_round_trips_through_export_dict() -> None:
     from openfollow.web.routes import _apply_import_data
 
     source = AppConfig()
-    source.ui.show_experimental_features = True
+    source.ui.shown_features = ["detection", "touch_remote"]
     source.ui.unit_system = "imperial"
 
     new = _apply_import_data(AppConfig(), _config_dict_redacted(source))
 
-    assert new.ui.show_experimental_features is True
+    assert new.ui.shown_features == ["detection", "touch_remote"]
     assert new.ui.unit_system == "imperial"
 
 
 @pytest.mark.parametrize(
     "ui_payload",
     [
-        {"show_experimental_features": "garbage", "unit_system": "furlongs"},
-        {"show_experimental_features": None, "unit_system": None},
-        {"show_experimental_features": 1234, "unit_system": 5678},
+        {"shown_features": "garbage", "unit_system": "furlongs"},
+        {"shown_features": None, "unit_system": None},
+        {"shown_features": 1234, "unit_system": 5678},
     ],
 )
 def test_apply_import_data_ui_section_bad_values_reset_to_defaults(
     ui_payload,  # noqa: ANN001
 ) -> None:
     """A present-but-invalid ``ui`` field coerces to the *declared* defaults
-    (metric / False) via __post_init__ – exactly like a TOML load. Starting
-    from non-default ui values proves the importer does NOT silently preserve
-    the current setting when the imported value is bad."""
+    via __post_init__ – exactly like a TOML load. Starting from non-default ui
+    values proves the importer does NOT silently preserve the current setting
+    when the imported value is bad."""
+    from openfollow.configuration import DEFAULT_SHOWN_FEATURES
     from openfollow.web.routes import _apply_import_data
 
     current = AppConfig()
     current.ui.unit_system = "imperial"
-    current.ui.show_experimental_features = True
+    current.ui.shown_features = ["paths"]
 
     new = _apply_import_data(current, {"ui": ui_payload})
 
-    assert new.ui.show_experimental_features is False
+    assert new.ui.shown_features == list(DEFAULT_SHOWN_FEATURES)
     assert new.ui.unit_system == "metric"
 
 
 def test_apply_import_data_ui_section_absent_field_preserves_current() -> None:
     """A field omitted from the ``ui`` payload preserves the device's current
-    value; only fields actually present are applied. Covers both single-field
-    payloads (unit_system-only and experimental-only)."""
+    value; only fields actually present are applied."""
     from openfollow.web.routes import _apply_import_data
 
     def _current() -> AppConfig:
         cfg = AppConfig()
         cfg.ui.unit_system = "imperial"
-        cfg.ui.show_experimental_features = True
+        cfg.ui.shown_features = ["paths"]
         return cfg
 
-    # Only unit_system present (and valid); the experimental flag is kept.
     new = _apply_import_data(_current(), {"ui": {"unit_system": "metric"}})
     assert new.ui.unit_system == "metric"
-    assert new.ui.show_experimental_features is True
+    assert new.ui.shown_features == ["paths"]
 
-    # Inverse: only the experimental flag present; unit_system is kept.
-    new = _apply_import_data(_current(), {"ui": {"show_experimental_features": False}})
-    assert new.ui.show_experimental_features is False
+    new = _apply_import_data(_current(), {"ui": {"shown_features": []}})
+    assert new.ui.shown_features == []
     assert new.ui.unit_system == "imperial"
+
+
+@pytest.mark.parametrize(
+    ("ui_payload", "expected"),
+    [
+        ({"show_experimental_features": True}, "all"),
+        ({"show_experimental_features": "on"}, "all"),
+        ({"show_experimental_features": False}, ["paths"]),
+        ({"show_experimental_features": True, "shown_features": ["midi"]}, ["midi"]),
+    ],
+)
+def test_apply_import_data_migrates_an_older_station_s_experimental_flag(ui_payload, expected) -> None:  # noqa: ANN001
+    """An older station exports ``show_experimental_features``: true turns every feature on, false keeps
+    this station's list, and a ``shown_features`` beside it wins."""
+    from openfollow.configuration import FEATURE_KEYS
+    from openfollow.web.routes import _apply_import_data
+
+    current = AppConfig()
+    current.ui.shown_features = ["paths"]
+    new = _apply_import_data(current, {"ui": ui_payload})
+    assert new.ui.shown_features == (list(FEATURE_KEYS) if expected == "all" else expected)
 
 
 def test_apply_import_data_non_dict_ui_section_preserves_current() -> None:
@@ -1669,12 +1677,12 @@ def test_apply_import_data_non_dict_ui_section_preserves_current() -> None:
 
     current = AppConfig()
     current.ui.unit_system = "imperial"
-    current.ui.show_experimental_features = True
+    current.ui.shown_features = ["paths"]
 
     new = _apply_import_data(current, {"ui": "not-a-dict"})
 
     assert new.ui.unit_system == "imperial"
-    assert new.ui.show_experimental_features is True
+    assert new.ui.shown_features == ["paths"]
 
 
 # ---------------------------------------------------------------------------

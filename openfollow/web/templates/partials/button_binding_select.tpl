@@ -1,6 +1,6 @@
 % from openfollow.web.labels import pretty_label
 % field_id = 'gamepad-' + name.replace('_', '-')
-<div class="field{{' ' + get('field_class', '') if get('field_class', '') else ''}}">
+<div class="field"{{!' data-feature="%s"' % get('feature') if get('feature', '') else ''}}>
     <label for="{{field_id}}">{{label}}</label>
     <select id="{{field_id}}" name="{{name}}"
             hx-get="/api/validate/gamepad/{{name}}" hx-trigger="change"

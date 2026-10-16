@@ -395,6 +395,39 @@ class TestPsnReceiverStart:
         assert any("PSN receiver socket failed" in rec.message for rec in caplog.records if rec.levelname == "ERROR")
 
 
+class TestPsnReceiverEnabled:
+    """The PSN input feature: a receiver that is not enabled never binds, on any path."""
+
+    def test_a_disabled_receiver_never_binds(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(receiver_module, "_RobustReceiver", _FakeRecvThread)
+        recv = PsnReceiver(source_ip="192.0.2.5", enabled=False)
+        recv.start()
+        recv.rebind("192.0.2.6", source_iface="eth1")
+        assert _FakeRecvThread.instances == []
+        assert recv.bound_source_ip() is None
+        assert (recv._source_ip, recv._source_iface) == ("192.0.2.6", "eth1")
+
+    def test_disabling_stops_it_and_forgets_every_marker(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(receiver_module, "_RobustReceiver", _FakeRecvThread)
+        recv = PsnReceiver(source_ip="192.0.2.5")
+        recv.start()
+        recv._markers[7] = object()  # type: ignore[assignment]
+        recv._last_seen[7] = 1.0
+        recv.set_enabled(False)
+        assert _FakeRecvThread.instances[0].stopped is True
+        assert recv.bound_source_ip() is None
+        assert recv.get_marker(7) is None
+        assert recv.is_marker_online(7) is False
+        assert recv.enabled is False
+
+    def test_enabling_again_lets_a_rebind_bind(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(receiver_module, "_RobustReceiver", _FakeRecvThread)
+        recv = PsnReceiver(source_ip="192.0.2.5", enabled=False)
+        recv.set_enabled(True)
+        recv.rebind("192.0.2.5")
+        assert recv.bound_source_ip() == "192.0.2.5"
+
+
 class _RecordingRecvSocket:
     """A receive socket that records what a pinned ``_RobustReceiver`` does to it."""
 

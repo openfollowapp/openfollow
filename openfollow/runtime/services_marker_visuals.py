@@ -11,7 +11,14 @@ from typing import Any
 
 import numpy.typing as npt
 
-from openfollow.configuration import MOUSE3D_AXES, MOUSE3D_BUTTON_FIELDS, GridConfig, is_simple_mode
+from openfollow.configuration import (
+    MOUSE3D_AXES,
+    MOUSE3D_BUTTON_FIELDS,
+    GridConfig,
+    effective_lens,
+    feature_on,
+    is_simple_mode,
+)
 from openfollow.input.touch_remote import STATUS_FLAG as REMOTE_FLAG
 from openfollow.input.touch_remote import status_row as remote_row
 from openfollow.network.validate import is_link_local
@@ -260,7 +267,7 @@ def sync_grid_config(state: OverlayState, cfg: Any) -> None:
 
 def sync_ground_grid_config(state: OverlayState, cfg: Any) -> None:
     """Copy the ground grid into the overlay state: ``enabled`` drops markers inside it onto its height
-    and ``visible`` draws it, each on its own; neither without experimental features or three corners."""
+    and ``visible`` draws it, each on its own; neither without the Ground grid feature or three corners."""
     # getattr: a shim config without the section draws no ground grid.
     gg = getattr(cfg, "ground_grid", None)
     if gg is None:
@@ -270,8 +277,7 @@ def sync_ground_grid_config(state: OverlayState, cfg: Any) -> None:
         return
     state.ground_grid_vertices = [(float(v[0]), float(v[1])) for v in gg.vertices]
     state.ground_grid_z = _soft_float(gg.z_offset, 0.0)
-    experimental = _soft_bool(getattr(getattr(cfg, "ui", None), "show_experimental_features", False), False)
-    usable = experimental and len(state.ground_grid_vertices) >= 3
+    usable = feature_on(cfg, "ground_grid") and len(state.ground_grid_vertices) >= 3
     state.ground_grid_active = usable and _soft_bool(gg.enabled, False)
     state.ground_grid_visible = usable and _soft_bool(gg.visible, True)
 
@@ -398,7 +404,7 @@ def _populate_zone_overlay(state: OverlayState, cfg: Any, app: Any) -> None:
     # arms the trigger engine, the latter controls visualisation. The overlay
     # hotkey only flips ``show_overlay``, so gating rendering on ``enabled``
     # would make the hotkey a silent no-op whenever triggers are off.
-    state.show_zones = bool(tz.show_overlay)
+    state.show_zones = bool(tz.show_overlay) and feature_on(cfg, "zones")
     state.zone_z_offset = float(cfg.grid.z_offset)
     if not state.show_zones:
         state.zone_polygons = []
@@ -734,8 +740,7 @@ def build_marker_visual_state(
     # Lens-distortion coefficients live on the app config (the Camera object is
     # pinhole and doesn't carry them); read them straight from the live config so
     # slider edits hot-reload onto the HUD.
-    state.lens_k1 = cfg.camera.lens_k1
-    state.lens_k2 = cfg.camera.lens_k2
+    state.lens_k1, state.lens_k2 = effective_lens(cfg)
 
     state.selected_id = app._selected_id
 
@@ -773,7 +778,7 @@ def build_marker_visual_state(
     # and 3D mouse help so neither promises a no-op control. Read the same
     # predicate the action gate uses so the help and the action can't drift.
     state.marker_cycle_enabled = app._input_manager is None or app._input_manager.marker_cycle_active()
-    # Paths are experimental: while they are off their bindings do nothing, so help names none.
+    # While paths are off their bindings do nothing, so help names none.
     paths_engine = getattr(app, "_paths", None)
     paths_on = paths_engine is not None and paths_engine.enabled
     state.button_labels = {

@@ -5,7 +5,10 @@
 % _len = unit_suffix_length(_us)
 % import json
 % from openfollow.configuration import MAX_CALIBRATION_POINTS
-% _show_calib = bool(config.ui.show_experimental_features)
+% _show_calib = config.ui.feature_on('calibration_points')
+% # With Lens distortion off the wizard solves pinhole, skips the Lens step and never writes the saved pair.
+% _lens_on = config.ui.feature_on('lens_distortion')
+% _lens_k1, _lens_k2 = (config.camera.lens_k1, config.camera.lens_k2) if _lens_on else (0.0, 0.0)
 % _calib_corners = config.camera.corner_pins
 % _calib_saved = [{'corner_a': c.corner_a, 'corner_b': c.corner_b, 'distance_a': c.distance_a, 'distance_b': c.distance_b, 'height': c.height, 'pin': [c.pin_x, c.pin_y], 'position': c.position} for c in config.camera.calibration_points]
 
@@ -290,6 +293,7 @@
 % # The order is published to the page script as WIZ (key -> index), so no
 % # button or script carries a step number.
 % _steps = [('prep', 'Preparation'), ('grid', 'Grid Setup'), ('video', 'Video Source'), ('lens', 'Lens'), ('camera', 'Camera Position'), ('ref', 'Reference Mapping'), ('corners', 'Corner Pinning'), ('review', 'Review')]
+% _steps = [step for step in _steps if _lens_on or step[0] != 'lens']
 % _keys_js = ', '.join("'" + k + "'" for k, _ in _steps)
 <script>
   window.WIZ = {
@@ -636,20 +640,20 @@
           <label for="wiz_lens_k1">Barrel / fisheye</label>
           <div style="display:flex;gap:0.5rem;align-items:center;">
             <input type="range" id="wiz_lens_k1_range" min="-0.6" max="0.6" step="0.005"
-                   value="{{config.camera.lens_k1}}" style="flex:1;" oninput="onWizardLensInput('k1', 'range')"
+                   value="{{_lens_k1}}" style="flex:1;" oninput="onWizardLensInput('k1', 'range')"
                    aria-label="Barrel / fisheye slider">
             <input type="number" id="wiz_lens_k1" step="0.005"
-                   value="{{config.camera.lens_k1}}" style="width:6rem;" oninput="onWizardLensInput('k1', 'number')">
+                   value="{{_lens_k1}}" style="width:6rem;" oninput="onWizardLensInput('k1', 'number')">
           </div>
         </div>
         <div class="field" style="flex:1;min-width:200px;">
           <label for="wiz_lens_k2">Edge fit</label>
           <div style="display:flex;gap:0.5rem;align-items:center;">
             <input type="range" id="wiz_lens_k2_range" min="-0.4" max="0.4" step="0.005"
-                   value="{{config.camera.lens_k2}}" style="flex:1;" oninput="onWizardLensInput('k2', 'range')"
+                   value="{{_lens_k2}}" style="flex:1;" oninput="onWizardLensInput('k2', 'range')"
                    aria-label="Edge fit slider">
             <input type="number" id="wiz_lens_k2" step="0.005"
-                   value="{{config.camera.lens_k2}}" style="width:6rem;" oninput="onWizardLensInput('k2', 'number')">
+                   value="{{_lens_k2}}" style="width:6rem;" oninput="onWizardLensInput('k2', 'number')">
           </div>
         </div>
       </div>
@@ -951,7 +955,7 @@
     </div>
 
 % if _show_calib:
-    <details class="inline-advanced experimental-feature" id="calib-section">
+    <details class="inline-advanced" id="calib-section" data-feature="calibration_points">
       <summary>Advanced <span class="badge-experimental">Experimental</span></summary>
       <div class="inline-advanced-content">
         <div id="calib-list"></div>
@@ -1003,7 +1007,7 @@
     <div id="review-lens-caution" class="notice warning" style="display:none;">Lens changed &ndash; redo Corner Pinning so the position matches.</div>
 
 % if _show_calib:
-    <div class="group experimental-feature" id="review-calib" style="display:none;">
+    <div class="group" id="review-calib" data-feature="calibration_points" style="display:none;">
       <div class="group-title">Calibration points</div>
       <div id="review-calib-list"></div>
     </div>
@@ -1019,9 +1023,9 @@
         <div class="wizard-solved-param"><span class="param-label">Yaw</span><span class="param-value" id="review-cam-yaw">-</span></div>
         <div class="wizard-solved-param"><span class="param-label">Roll</span><span class="param-value" id="review-cam-roll">-</span></div>
         <div class="wizard-solved-param"><span class="param-label">FOV</span><span class="param-value" id="review-cam-fov">-</span></div>
-        <div class="wizard-solved-param"><span class="param-label">Barrel / fisheye</span><span class="param-value" id="review-lens-k1">-</span></div>
-        <div class="wizard-solved-param"><span class="param-label">Edge fit</span><span class="param-value" id="review-lens-k2">-</span></div>
-        <div class="wizard-solved-param"><span class="param-label">Lens coverage</span><span class="param-value" id="review-lens-rating"><span class="wizard-meter" aria-hidden="true"><span class="wizard-meter-seg"></span><span class="wizard-meter-seg"></span><span class="wizard-meter-seg"></span><span class="wizard-meter-seg"></span><span class="wizard-meter-seg"></span></span> <span id="review-lens-rating-text">-</span></span></div>
+        <div class="wizard-solved-param" data-feature="lens_distortion"><span class="param-label">Barrel / fisheye</span><span class="param-value" id="review-lens-k1">-</span></div>
+        <div class="wizard-solved-param" data-feature="lens_distortion"><span class="param-label">Edge fit</span><span class="param-value" id="review-lens-k2">-</span></div>
+        <div class="wizard-solved-param" data-feature="lens_distortion"><span class="param-label">Lens coverage</span><span class="param-value" id="review-lens-rating"><span class="wizard-meter" aria-hidden="true"><span class="wizard-meter-seg"></span><span class="wizard-meter-seg"></span><span class="wizard-meter-seg"></span><span class="wizard-meter-seg"></span><span class="wizard-meter-seg"></span></span> <span id="review-lens-rating-text">-</span></span></div>
       </div>
     </div>
 
@@ -1060,6 +1064,7 @@
   // snapshot of another size keeps it on its mark; ``position`` is where this pose's solve put it.
   // ---------------------------------------------------------------
   var CALIB_ENABLED = {{'true' if _show_calib else 'false'}};
+  var LENS_ENABLED = {{'true' if _lens_on else 'false'}};
   // Names this page to the solve route, which stops a fit once the page asks for a newer one.
   var WIZ_SOLVE_PAGE = Math.random().toString(36).slice(2, 12) || 'page';
   var CALIB_MAX = {{MAX_CALIBRATION_POINTS}};
@@ -1316,8 +1321,8 @@
         document.getElementById('cam_yaw').value = state.camera.yaw;
         document.getElementById('cam_roll').value = state.camera.roll;
         document.getElementById('cam_fov').value = state.camera.fov;
-        if (state.camera.lens_k1 !== undefined) wizWriteLensCoeff('wiz_lens_k1', state.camera.lens_k1);
-        if (state.camera.lens_k2 !== undefined) wizWriteLensCoeff('wiz_lens_k2', state.camera.lens_k2);
+        if (LENS_ENABLED && state.camera.lens_k1 !== undefined) wizWriteLensCoeff('wiz_lens_k1', state.camera.lens_k1);
+        if (LENS_ENABLED && state.camera.lens_k2 !== undefined) wizWriteLensCoeff('wiz_lens_k2', state.camera.lens_k2);
       }
       if (state.grid) {
         wizWriteLen('grid_width', state.grid.width);
@@ -4675,11 +4680,13 @@
       pitch: camData.pitch, yaw: camData.yaw, roll: camData.roll, fov: camData.fov,
       sensor_width_mm: sensorWidth,
       focal_length_mm: focalLength,
-      // The DLT solve is pinhole and doesn't return distortion; carry the
-      // Lens step's pair through from the wizard state.
-      lens_k1: state.camera.lens_k1,
-      lens_k2: state.camera.lens_k2,
     };
+    // The DLT solve is pinhole and doesn't return distortion; carry the
+    // Lens step's pair through from the wizard state, never while the step is off.
+    if (LENS_ENABLED) {
+      cameraPayload.lens_k1 = state.camera.lens_k1;
+      cameraPayload.lens_k2 = state.camera.lens_k2;
+    }
     // With the pose, always: without the section they are the saved points, and a pose solved
     // without them leaves them no place, and no corner pins.
     cameraPayload.calibration_points = calibSaved();

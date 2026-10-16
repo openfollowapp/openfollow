@@ -533,6 +533,20 @@ class TestPopulateZoneOverlay:
         assert is_occupied is False
         assert count == 0
 
+    def test_zones_are_not_drawn_while_their_feature_is_off(self) -> None:
+        from openfollow.configuration import UiConfig
+
+        square = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+        cfg = _make_cfg(enabled=True, show_overlay=True, zones=[_make_zone(square)])
+        cfg.ui = UiConfig(shown_features=[])
+        app = SimpleNamespace(_runtime_services=SimpleNamespace(_zone_engine=None))
+        state = OverlayState()
+
+        _populate_zone_overlay(state, cfg, app)
+
+        assert state.show_zones is False
+        assert state.zone_polygons == []
+
     def test_hides_overlay_only_when_show_overlay_is_false(self) -> None:
         square = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
         cfg = _make_cfg(enabled=True, show_overlay=False, zones=[_make_zone(square)])
@@ -1215,7 +1229,7 @@ class TestGroundGridSync:
         from openfollow.configuration import AppConfig, GroundGridConfig
 
         cfg = AppConfig()
-        cfg.ui.show_experimental_features = experimental
+        cfg.ui.shown_features = ["ground_grid"] if experimental else []
         cfg.ground_grid = GroundGridConfig(**gg)
         return cfg
 
@@ -1254,12 +1268,12 @@ class TestGroundGridSync:
         assert state.ground_grid_active is False
         assert floor_z_at(state, 1.0, 1.0) == 0.0
 
-    def test_turning_experimental_features_off_hides_it_at_once(self) -> None:
+    def test_turning_the_ground_grid_feature_off_hides_it_at_once(self) -> None:
         from openfollow.runtime.services_marker_visuals import sync_ground_grid_config
 
         cfg = self._cfg(enabled=True, vertices=self._SQUARE)
         state = build_initial_overlay_state(cfg)
-        cfg.ui.show_experimental_features = False
+        cfg.ui.shown_features = []
         sync_ground_grid_config(state, cfg)
         assert (state.ground_grid_active, state.ground_grid_visible) == (False, False)
 

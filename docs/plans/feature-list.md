@@ -9,14 +9,15 @@ Own PR from `main`.
 
 | Topic | Decision |
 |---|---|
-| Entries | `zones` (Trigger zones + Zone editor), `midi` (MIDI section + virtual faders' MIDI source), `lens_distortion` (Camera "Lens distortion" group + the wizard's Lens step), `detection` (whole Person Detection tab: model, tracking, masks), `rttrpm` (RTTrPM output + its interface row), `paths` (Paths, Path editor, Pathfinder / Toggle Paths bindings, OSC path commands, the touch remote's Pathfinder button), `ground_grid` (Ground Grid section), `calibration_points` (Camera group + the wizard's Corner Pinning Advanced section and Review group), `touch_remote` (Touch remote section, launcher and card) |
-| Experimental | `detection`, `rttrpm`, `paths`, `ground_grid`, `calibration_points`, `touch_remote` carry the badge, default off. `zones`, `midi`, `lens_distortion` are not experimental, default on |
+| Entries | `zones` (Trigger zones + Zone editor), `midi` (MIDI section + virtual faders' MIDI source), `lens_distortion` (Camera "Lens distortion" group + the wizard's Lens step), `psn_input` (markers received from other stations; no UI is hidden), `detection` (whole Person Detection tab: model, tracking, masks), `rttrpm` (RTTrPM output + its interface row), `paths` (Paths, Path editor, Pathfinder / Toggle Paths bindings, OSC path commands, the touch remote's Pathfinder button), `ground_grid` (Ground Grid section), `calibration_points` (Camera group + the wizard's Corner Pinning Advanced section and Review group), `touch_remote` (Touch remote section, launcher and card) |
+| Experimental | `detection`, `rttrpm`, `paths`, `ground_grid`, `calibration_points`, `touch_remote` carry the badge, default off. `zones`, `midi`, `lens_distortion`, `psn_input` are not experimental, default on |
 | Zones | No longer experimental: the warning in `help/trigger_zones.md` goes |
 | Lens distortion | Not experimental, default on. Off: the Camera group is hidden, the wizard skips its Lens step (Video Source → Camera Position) and Apply leaves the saved k1/k2 untouched, and every reader treats k1 = k2 = 0 |
 | OTP | Not in the list; unchanged (its help still says experimental) |
-| Config | `[ui] shown_features: list[str]`, entries from a fixed enum, unknown / duplicate / non-string entries dropped. Missing key ⇒ default (`["zones", "midi", "lens_distortion"]`) |
+| Config | `[ui] shown_features: list[str]`, entries from a fixed enum, unknown / duplicate / non-string entries dropped. Missing key ⇒ default (`["zones", "midi", "lens_distortion", "psn_input"]`) |
 | Migration | Old `show_experimental_features = true` with no `shown_features` ⇒ defaults + every experiment; `false` or missing ⇒ defaults. The old key is read once on load and never written again. `touch_remote` needs no special case: no release with it has shipped |
-| Off means | Hidden in UI + runtime gate: subsystems ask `cfg.ui.feature_on(key)`; no cascade writes. Lens k1/k2 treated as 0, MIDI devices not opened, faders' MIDI source inert, detection / zones / RTTrPM not running, the paths engine disabled, the ground grid neither drawn nor dropping markers, every touch remote route answers 403 |
+| Off means | Hidden in UI + runtime gate: subsystems ask `cfg.ui.feature_on(key)`; no cascade writes. Lens k1/k2 treated as 0, the PSN receiver not started, MIDI devices not opened, faders' MIDI source inert, detection / zones / RTTrPM not running, the paths engine disabled, the ground grid neither drawn nor dropping markers, every touch remote route answers 403 |
+| PSN input | Off stops the receiver: other stations' markers are neither drawn, nor counted by zones, nor reported online. The viewed-markers setting stays visible and is kept |
 | Calibration points | Off hides them only: the saved points stay in the config and the solver keeps using them, as today |
 | Two-level gates | `detection`, `rttrpm`, `ground_grid`, `touch_remote` keep their own `enabled` switch; a subsystem runs only when its entry is on **and** its switch is on |
 | Transfer | Travels with export / import and peer push; the Features group gets "Apply to all stations" |
@@ -48,6 +49,11 @@ Own PR from `main`.
       `runtime/overlay_draw_scene.py`, `overlay_draw_paths.py`,
       `overlay_draw_zones.py`, the scene / wizard routes). Validation of the
       saved pair is unchanged.
+- [ ] PSN input: `init_psn_receiver` starts the receiver only when
+      `feature_on("psn_input")`, and hot reload starts / stops it through
+      the same path as an interface change. Consumers (HUD viewer markers,
+      zones, marker online state) already handle a receiver with no
+      markers; none reads the feature itself.
 - [ ] Detection: detector started / kept only when `feature_on("detection")`
       and `detection.enabled`.
 - [ ] Zones: zone engine evaluates, sends and draws only when `zones` is on.
@@ -96,8 +102,8 @@ Own PR from `main`.
 - [ ] Tests (`tests/test_web_helpers.py`, replacing
       `test_web_experimental_toggle.py` / `test_web_experimental_gate.py`):
       route saves list, rejects junk, renders body classes; every
-      `data-feature` value in templates is a known key and every key wraps
-      at least one element (template scan); `tests/test_status_language.py`
+      `data-feature` value in templates is a known key and every key except
+      `psn_input` wraps at least one element (template scan); `tests/test_status_language.py`
       still passes; checkbox label rule.
 - [ ] Help: `general-station.md` "Features" section (what each one is, that
       off also stops it, settings kept, calibration points are only hidden,
@@ -123,7 +129,8 @@ Own PR from `main`.
 ### 5. Verify
 - [ ] `make ci-remote` green; manual: untick each feature, confirm its UI is
       gone and it stops (MIDI device closed, zones not sent, paths released,
-      ground grid not dropping, lens overlay straight and the wizard
+      ground grid not dropping, PSN receiver thread gone and other
+      stations' markers not drawn, lens overlay straight and the wizard
       without its Lens step, touch remote card gone and routes 403), tick
       again and confirm settings came back.
 

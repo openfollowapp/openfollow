@@ -533,12 +533,17 @@ def unproject_to_plane(
     return result
 
 
-# A flattened axis shorter than this is (near) vertical and carries no bearing.
+# A flattened camera axis shorter than this is (near) vertical and carries no bearing.
 _FLAT_AXIS_EPS = 1e-6
 # The picture step ``screen_axes_at`` measures over, as a fraction of the canvas height.
 _SCREEN_STEP_FRACTION = 0.01
 
 PlanarAxes = tuple[tuple[float, float], tuple[float, float]]
+
+
+def camera_params(cam: CameraConfig) -> npt.NDArray[np.float64]:
+    """The 7-float ``[pos_x, pos_y, pos_z, pitch, yaw, roll, fov]`` the projection functions take."""
+    return np.array([cam.pos_x, cam.pos_y, cam.pos_z, cam.pitch, cam.yaw, cam.roll, cam.fov], dtype=np.float64)
 
 
 def ground_axes(params: npt.NDArray[Any]) -> PlanarAxes:
@@ -575,8 +580,11 @@ def screen_axes_at(
 
     Unit PSN XY vectors, measured over a small step on the lens-distorted
     picture. ``None`` when the point is behind the camera or off the picture,
-    or a step leaves the plane (the horizon).
+    a step leaves the plane (the horizon), or the plane is not below the
+    camera, where up the picture turns back towards it.
     """
+    if float(params[2]) <= float(point_psn[2]):
+        return None
     pt = np.array([point_psn], dtype=np.float64)
     seen = apply_overlay_distortion(project_points(params, pt, canvas_w, canvas_h), canvas_w, canvas_h, k1, k2)
     sx, sy = float(seen[0, 0]), float(seen[0, 1])
@@ -588,12 +596,11 @@ def screen_axes_at(
     world = unproject_to_plane(params, pinhole, canvas_w, canvas_h, float(point_psn[2]))
     if not np.all(np.isfinite(world)):
         return None
+    # A plane homography keeps the three picture points distinct and not collinear.
     axes = []
     for row in (1, 2):
         dx, dy = float(world[row, 0] - world[0, 0]), float(world[row, 1] - world[0, 1])
         norm = math.hypot(dx, dy)
-        if norm <= _FLAT_AXIS_EPS:  # pragma: no cover - a finite hit a step away is always a distinct point
-            return None
         axes.append((dx / norm, dy / norm))
     return axes[0], axes[1]
 

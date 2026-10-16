@@ -725,7 +725,9 @@ class MarkerConfig:
         self.default_pos_z = _coerce_float(self.default_pos_z, 1.6)
         self.control_frame = _coerce_choice(self.control_frame, CONTROL_FRAMES, "stage")
         heading = 0.0 if isinstance(self.control_heading, bool) else _coerce_float(self.control_heading, 0.0)
-        self.control_heading = heading % 360.0
+        wrapped = heading % 360.0
+        # A tiny negative wraps to exactly 360.0 in float arithmetic.
+        self.control_heading = 0.0 if wrapped == 360.0 else wrapped
         self.marker_style = _coerce_choice(self.marker_style, _MARKER_STYLES, "crosshair")
         self.cone_base_diameter = _coerce_float(self.cone_base_diameter, 0.6, lo=0.0)
         self.cone_top_diameter = _coerce_float(self.cone_top_diameter, 0.3, lo=0.0)
@@ -3308,13 +3310,14 @@ def apply_renamed_marker_keys(marker_data: dict[str, Any]) -> None:
         if old in marker_data and new not in marker_data:
             marker_data[new] = marker_data[old]
             _warn_renamed_marker_key(old, new)
-    # The 180-degree control-direction flip is the heading of a camera looking downstage.
+    # The control-direction flip was stage axes, or the heading of a camera looking downstage.
     if "invert_control_direction" in marker_data:
         inverted = _coerce_bool(marker_data.pop("invert_control_direction"), False)
-        if inverted and "control_frame" not in marker_data:
-            marker_data["control_frame"] = "heading"
-            marker_data.setdefault("control_heading", 180.0)
-        _warn_renamed_marker_key("invert_control_direction", "control_frame")
+        if "control_frame" not in marker_data:
+            marker_data["control_frame"] = "heading" if inverted else "stage"
+            if inverted:
+                marker_data.setdefault("control_heading", 180.0)
+            _warn_renamed_marker_key("invert_control_direction", "control_frame")
 
 
 def _warn_renamed_marker_key(old: str, new: str) -> None:

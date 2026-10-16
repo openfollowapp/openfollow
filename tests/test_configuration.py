@@ -3915,6 +3915,7 @@ def test_marker_config_unknown_control_frame_falls_back_to_stage(raw: object) ->
         (360.0, 0.0),
         (-90.0, 270.0),
         (450, 90.0),
+        (-1e-15, 0.0),
     ],
 )
 def test_marker_config_control_heading_wraps_to_one_turn(raw: object, expected: float) -> None:
@@ -4348,6 +4349,23 @@ def test_load_config_reads_an_unset_control_direction_flip_as_stage_axes(temp_co
     temp_config_path.write_text(f"[marker]\ninvert_control_direction = {flag}\n", encoding="utf-8")
 
     assert load_config(str(temp_config_path)).marker.control_frame == "stage"
+
+
+def test_load_config_ignores_the_flip_beside_a_control_frame_without_warning(
+    temp_config_path, caplog, monkeypatch
+) -> None:  # noqa: ANN001
+    import openfollow.configuration as configuration
+
+    monkeypatch.setattr(configuration, "_DEPRECATED_WARNED", set())
+    temp_config_path.write_text(
+        '[marker]\ninvert_control_direction = false\ncontrol_frame = "camera"\n', encoding="utf-8"
+    )
+
+    with caplog.at_level("WARNING"):
+        cfg = load_config(str(temp_config_path))
+
+    assert cfg.marker.control_frame == "camera"
+    assert not [r for r in caplog.records if "has been renamed" in r.getMessage()]
 
 
 def test_load_config_prefers_the_control_frame_over_the_flip(temp_config_path) -> None:

@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from openfollow.configuration import CONTROL_FRAMES
-from openfollow.scene.solver import PlanarAxes, ground_axes, screen_axes_at
+from openfollow.scene.solver import PlanarAxes, camera_params, ground_axes, screen_axes_at
 
 if TYPE_CHECKING:
     import numpy.typing as npt
@@ -95,10 +95,7 @@ class ControlFrame:
 
     def _camera_params(self) -> npt.NDArray[np.float64] | None:
         camera = self._app._camera
-        if camera is None:
-            return None
-        cfg = camera.to_config()
-        return np.array([cfg.pos_x, cfg.pos_y, cfg.pos_z, cfg.pitch, cfg.yaw, cfg.roll, cfg.fov], dtype=np.float64)
+        return None if camera is None else camera_params(camera.to_config())
 
     def _canvas_size(self) -> tuple[int, int]:
         """The Operator Screen's size, which the picture the operator steers by fills."""

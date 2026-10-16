@@ -902,6 +902,9 @@ def test_screen_axes_move_the_point_up_its_picture_column(k1: float, k2: float) 
         ({}, (0.0, -20.0, 0.0)),  # behind the camera
         ({}, (40.0, 0.0, 0.0)),  # off the side of the picture
         ({"pitch": -10.0}, (0.0, 4000.0, 0.0)),  # on the picture, a step up is past the horizon
+        # A tripod lower than the ball: up the picture would run back towards the camera.
+        ({"z": 1.5, "pitch": -5.0}, (0.0, 0.0, 1.6)),
+        ({"z": 1.6, "pitch": -5.0}, (0.0, 0.0, 1.6)),
     ],
 )
 def test_screen_axes_at_give_no_answer_off_the_usable_picture(pose, point) -> None:  # noqa: ANN001

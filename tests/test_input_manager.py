@@ -730,6 +730,15 @@ def test_screen_frame_with_no_canvas_size_uses_the_camera_heading(monkeypatch) -
     assert app._server.get_marker(10).pos == pytest.approx((1.0, 0.0, 0.0))
 
 
+def test_screen_frame_with_the_ball_above_the_camera_uses_the_camera_heading(monkeypatch) -> None:
+    """Up the picture runs towards a camera lower than the ball; forward stays away from it."""
+    app = _with_camera(_DummyApp(), pos_z=1.5, pitch=-5.0)
+    app._config.marker.control_frame = "screen"
+    app._server.get_marker(10).set_pos(0.0, 0.0, 1.6)
+    _keyboard_step(monkeypatch, app, (0.0, 1.0, 0.0))
+    assert app._server.get_marker(10).pos == pytest.approx((0.0, 1.0, 1.6))
+
+
 def test_control_frame_turns_every_gamepad(monkeypatch) -> None:
     """The frame belongs to the shared camera view, so every pad turns, not just the selected one."""
     monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
@@ -805,6 +814,19 @@ def test_a_source_that_stops_reporting_drops_its_held_direction(monkeypatch) -> 
     _FakeKeyboardHandler.next_velocity = (1.0, 0.0, 0.0)
     manager.update(1.0)
     assert app._server.get_marker(10).pos == pytest.approx((0.0, 0.0, 0.0))
+
+
+def test_a_held_key_takes_the_current_frame_for_a_newly_selected_marker(monkeypatch) -> None:
+    """The held direction belongs to the marker it was measured for, not to the key."""
+    app = _DummyApp()
+    manager = _keyboard_step(monkeypatch, app, (1.0, 0.0, 0.0))
+
+    app._config.marker.control_frame = "heading"
+    app._config.marker.control_heading = 180.0
+    app._selected_id = 11
+    manager.update(1.0)
+
+    assert app._server.get_marker(11).pos == pytest.approx((-1.0, 0.0, 0.0))
 
 
 def test_each_source_latches_its_own_direction(monkeypatch) -> None:

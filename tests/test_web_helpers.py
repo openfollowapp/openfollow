@@ -231,6 +231,17 @@ def test_apply_section_data_reads_the_control_direction_flip_from_an_older_peer(
     assert config.marker.control_heading == pytest.approx(180.0)
 
 
+def test_apply_section_data_reads_an_older_peers_unset_flip_as_stage_axes() -> None:
+    """The flip off meant stage axes, so an older peer's push still turns a station back to them."""
+    config = AppConfig()
+    config.marker.control_frame = "heading"
+    config.marker.control_heading = 180.0
+
+    apply_section_data(config, "movement", {"invert_control_direction": "false"})
+
+    assert config.marker.control_frame == "stage"
+
+
 def test_movement_form_control_frame_reaches_the_input_mapping() -> None:
     """Form → config → the direction a stick push takes."""
     config = AppConfig()

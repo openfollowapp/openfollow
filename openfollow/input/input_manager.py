@@ -418,7 +418,7 @@ class InputManager:
                 marker = self._get_marker(self.app._selected_id)
                 if marker:
                     vx, vy, vz = keyboard_velocity
-                    vx, vy = self.control_frame.orient("keyboard", vx, vy, marker.pos)
+                    vx, vy = self.control_frame.orient(("keyboard", self.app._selected_id), vx, vy, marker.pos)
                     self._move(self.app._selected_id, marker, vx, vy, vz, dt)
         except Exception:
             logger.exception("Keyboard update failed this tick.")
@@ -448,7 +448,7 @@ class InputManager:
                 continue
             marker = self._get_marker(marker_id)
             if marker:
-                ovx, ovy = self.control_frame.orient(("gamepad", controller_idx), vx, vy, marker.pos)
+                ovx, ovy = self.control_frame.orient(("gamepad", controller_idx, marker_id), vx, vy, marker.pos)
                 self._move(marker_id, marker, ovx, ovy, vz, dt)
 
         for controller_idx in gamepad_result.pathfinder_presses:
@@ -564,7 +564,7 @@ class InputManager:
                 self.app.adjust_move_speed(direction, marker_id=marker_id)
         vx, vy, vz = m3d.velocity
         if vx or vy or vz:
-            vx, vy = self.control_frame.orient(("mouse3d", local_idx), vx, vy, marker.pos)
+            vx, vy = self.control_frame.orient(("mouse3d", local_idx, marker_id), vx, vy, marker.pos)
             speed = self.app.get_marker_move_speed(marker_id)
             self._move(marker_id, marker, vx * speed, vy * speed, vz * speed, dt)
         if m3d.fader_signal:

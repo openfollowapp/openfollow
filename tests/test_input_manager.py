@@ -780,6 +780,28 @@ def test_the_stick_moves_the_marker_that_way_on_the_picture(monkeypatch, frame, 
     assert float(np.dot(moved, picture)) > 0.9 * float(np.linalg.norm(moved))
 
 
+def test_a_failing_gamepad_move_spares_the_other_pads_and_the_rest_of_the_frame(monkeypatch) -> None:
+    monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
+    monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
+    _FakeGamepadHandler.joystick_indices = (0, 1)
+    _FakeGamepadHandler.next_update = GamepadUpdate(movements={0: (1.0, 0.0, 0.0), 1: (0.0, 2.0, 0.0)})
+    app = _DummyApp()
+    manager = InputManager(app)
+    orient = manager.control_frame.orient
+
+    def flaky(source, vx, vy, pos):  # noqa: ANN001, ANN202
+        if source[1] == 0:
+            raise ValueError("bad camera")
+        return orient(source, vx, vy, pos)
+
+    manager.control_frame.orient = flaky  # type: ignore[method-assign]
+    manager.osc_handler = SimpleNamespace(flush_updates=lambda: {10: {"z": 4.0}})
+    manager.update(1.0)
+
+    assert app._server.get_marker(11).pos == pytest.approx((0.0, 2.0, 0.0))
+    assert app._server.get_marker(10).pos == pytest.approx((0.0, 0.0, 4.0))
+
+
 def test_control_frame_turns_every_gamepad(monkeypatch) -> None:
     """The frame belongs to the shared camera view, so every pad turns, not just the selected one."""
     monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)

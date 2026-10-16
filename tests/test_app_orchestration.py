@@ -50,6 +50,9 @@ class _FakeInputManager:
     def update_paths(self, dt: float) -> None:
         self.path_frames.append(dt)
 
+    def update_touch_remote(self, dt: float) -> None:
+        self.path_frames.append(dt)
+
 
 class _FakeCanvas:
     def __init__(self) -> None:
@@ -248,6 +251,18 @@ class TestAnimate:
         orch.animate(app)
         assert [name for name, _ in order] == ["paths", "input", "paths", "input"]
         assert order[0][1] == order[1][1] == pytest.approx(orch._DEFAULT_FRAME_DT)
+
+    def test_the_touch_remote_runs_every_frame_after_the_paths_before_input(self) -> None:
+        """Outside input processing too, so an open on-screen menu never stops a held marker's dead-man."""
+        mgr = _FakeInputManager()
+        app = _make_fake_app(input_manager=mgr)
+        order: list[str] = []
+        mgr.update_paths = lambda dt: order.append("paths")  # type: ignore[method-assign]
+        mgr.update_touch_remote = lambda dt: order.append("remote")  # type: ignore[method-assign]
+        app._process_input = lambda dt: order.append("input")
+        orch.animate(app)
+        orch.animate(app)
+        assert order == ["paths", "remote", "input", "paths", "remote", "input"]
 
     def test_runs_display_bound_checks(self) -> None:
         app = _make_fake_app()

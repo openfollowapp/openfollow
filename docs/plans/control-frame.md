@@ -36,7 +36,7 @@ Geometry:
 
 - `MarkerConfig.control_frame: str = "stage"`, `_coerce_choice` over the four values.
 - `MarkerConfig.control_heading: float = 0.0` degrees in the camera-yaw convention, finite, wrapped into `[0, 360)` (`-90` is stored as `270`); a bool falls back to `0`.
-- `invert_control_direction` is removed. A config file, config-API body or older peer that still carries it is read through `apply_renamed_marker_keys`: `true` with no `control_frame` becomes `heading` / `180`, `false` becomes `stage`; one warning per key, only when it applies. The current keys win when both are present.
+- A config file, config-API body or older peer that still carries it is read through `apply_renamed_marker_keys`: `true` with no `control_frame` becomes `heading` / `180`, `false` becomes `stage`; one warning per key, only when it applies. The current keys win when both are present.
 - Both fields stay live: they are read per frame like the flag is today, with no restart.
 
 ## Checklist

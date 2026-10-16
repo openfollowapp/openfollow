@@ -559,8 +559,9 @@ def ground_axes(params: npt.NDArray[Any]) -> PlanarAxes:
     Right is the camera's right axis flattened onto the floor, forward a
     quarter turn left of it, so a camera with no roll keeps its yaw bearing at
     any pitch. As roll stands the right axis up, the flattened view axis takes
-    over forward by the share the right axis lost, so a camera on its side
-    still faces its bearing.
+    over forward by the share the right axis lost, so a level camera keeps its
+    bearing up to 120 degrees of roll; an upside-down one steers as its picture
+    shows.
     """
     _, _, _, pitch, yaw, roll, _ = params
     R = _rotation_matrix(math.radians(pitch), math.radians(yaw), math.radians(roll))
@@ -596,20 +597,27 @@ def screen_axes_at(
     if float(params[2]) <= float(point_psn[2]):
         return None
     pt = np.array([point_psn], dtype=np.float64)
-    seen = apply_overlay_distortion(project_points(params, pt, canvas_w, canvas_h), canvas_w, canvas_h, k1, k2)
+    pinhole_pt = project_points(params, pt, canvas_w, canvas_h)
+    seen = apply_overlay_distortion(pinhole_pt, canvas_w, canvas_h, k1, k2)
     sx, sy = float(seen[0, 0]), float(seen[0, 1])
     if not (math.isfinite(sx) and math.isfinite(sy) and 0.0 <= sx <= canvas_w and 0.0 <= sy <= canvas_h):
         return None
     step = _SCREEN_STEP_FRACTION * canvas_h
     picture = np.array([[sx, sy], [sx + step, sy], [sx, sy - step]], dtype=np.float64)
     pinhole = invert_overlay_distortion(picture, canvas_w, canvas_h, k1, k2)
+    # Past a barrel lens's fold the picture folds back and its inverse clamps: neither the
+    # point nor its steps would be where they are drawn.
+    redistorted = apply_overlay_distortion(pinhole, canvas_w, canvas_h, k1, k2)
+    tol = 0.01 * step
+    if not (np.allclose(redistorted, picture, atol=tol) and np.allclose(pinhole[0], pinhole_pt[0], atol=tol)):
+        return None
     world = unproject_to_plane(params, pinhole, canvas_w, canvas_h, float(point_psn[2]))
     if not np.all(np.isfinite(world)):
         return None
-    # A plane homography keeps the three picture points distinct and not collinear.
     axes = []
     for row in (1, 2):
         dx, dy = float(world[row, 0] - world[0, 0]), float(world[row, 1] - world[0, 1])
+        # A plane homography keeps the three picture points distinct.
         norm = math.hypot(dx, dy)
         axes.append((dx / norm, dy / norm))
     return axes[0], axes[1]

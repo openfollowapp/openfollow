@@ -613,6 +613,14 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
             human_error="Multicast IPv4 address (224.0.0.0–239.255.255.255) or blank.",
         ),
     },
+    # Touch remote: only ``enabled`` has a form input; the tuning fields come from config.toml or the JSON API.
+    "touch_remote": {
+        "enabled": FieldRule(_as_bool),
+        "stick_curve": FieldRule(_as_float, lo=1.0, hi=3.0, human_error="Stick curve must be between 1 and 3."),
+        "stick_dead_zone": FieldRule(_as_float, lo=0.0, hi=0.5, human_error="Dead zone must be between 0 and 0.5."),
+        "z_step_m": FieldRule(_as_float, lo=0.001, hi=1.0, human_error="Z step must be between 0.001 and 1 m."),
+        "z_notch_px": FieldRule(_as_int, lo=8, hi=80, human_error="Notch spacing must be between 8 and 80 px."),
+    },
     # OSC operator / next-cue overlay.
     "operator_messages": {
         "enabled": FieldRule(_as_bool),

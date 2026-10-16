@@ -122,6 +122,11 @@ def _coerce_int(
     return out
 
 
+def _not_bool(value: Any) -> Any:
+    """``None`` for a bool, so a coercer falls back to its default; ``value`` otherwise."""
+    return None if isinstance(value, bool) else value
+
+
 def _coerce_hex_color(value: Any, default: str) -> str:
     """Return a lowercase ``#rrggbb`` string, or ``default`` on invalid input."""
     if isinstance(value, str) and _HEX_COLOR_RE.match(value):
@@ -945,6 +950,30 @@ class OperatorMessagesConfig:
             scale = min(VALID_OPERATOR_MESSAGE_SCALES, key=lambda v: abs(v - scale))
         self.scale = scale
         self.route_by_marker = _coerce_bool(self.route_by_marker, True)
+
+
+@dataclass
+class TouchRemoteConfig:
+    """`[touch_remote]` – the web UI's touch remote, a setup tool that drives a controlled marker.
+
+    ``enabled`` (device-local, default off) shows the launcher and opens the remote routes. The
+    rest shape the controls: the stick response curve (exponent) and dead zone (fraction of full
+    deflection), and the Z wheel's step per notch and finger travel per notch.
+    """
+
+    enabled: bool = False
+    stick_curve: float = 2.0
+    stick_dead_zone: float = 0.08
+    z_step_m: float = 0.05
+    z_notch_px: int = 20
+
+    def __post_init__(self) -> None:
+        self.enabled = _coerce_bool(self.enabled, False)
+        # A TOML ``true`` is not a number here, though ``float(True)`` is 1.0.
+        self.stick_curve = _coerce_float(_not_bool(self.stick_curve), 2.0, lo=1.0, hi=3.0)
+        self.stick_dead_zone = _coerce_float(_not_bool(self.stick_dead_zone), 0.08, lo=0.0, hi=0.5)
+        self.z_step_m = _coerce_float(_not_bool(self.z_step_m), 0.05, lo=0.001, hi=1.0)
+        self.z_notch_px = _coerce_int(self.z_notch_px, 20, lo=8, hi=80)
 
 
 VALID_TRIGGER_SOURCES = ("markers", "detection", "both")
@@ -2804,6 +2833,7 @@ class AppConfig:
     mouse3d: Mouse3DConfig = field(default_factory=Mouse3DConfig)
     osc: OscConfig = field(default_factory=OscConfig)
     operator_messages: OperatorMessagesConfig = field(default_factory=OperatorMessagesConfig)
+    touch_remote: TouchRemoteConfig = field(default_factory=TouchRemoteConfig)
     otp_output: OtpOutputConfig = field(default_factory=OtpOutputConfig)
     rttrpm_output: RttrpmOutputConfig = field(default_factory=RttrpmOutputConfig)
     osc_transmitters: OscTransmittersConfig = field(default_factory=OscTransmittersConfig)
@@ -2947,6 +2977,7 @@ _SUB_CONFIG_MAP: dict[str, type] = {
     "mouse3d": Mouse3DConfig,
     "osc": OscConfig,
     "operator_messages": OperatorMessagesConfig,
+    "touch_remote": TouchRemoteConfig,
     "otp_output": OtpOutputConfig,
     "rttrpm_output": RttrpmOutputConfig,
     "osc_transmitters": OscTransmittersConfig,
@@ -4101,6 +4132,10 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
         app._config.operator_messages = new_config.operator_messages
         if app._input_manager is not None:  # pragma: no branch
             app._input_manager.restart_operator_messages()
+
+    # Read live by the remote routes and the frame loop, which lets go of every hold while it is off.
+    if new_config.touch_remote != app._config.touch_remote:
+        app._config.touch_remote = new_config.touch_remote
 
     if new_config.otp_output != app._config.otp_output:
         old_otp_output = app._config.otp_output

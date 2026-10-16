@@ -924,3 +924,24 @@ def test_screen_axes_move_the_point_up_its_picture_column(k1: float, k2: float) 
 )
 def test_screen_axes_at_give_no_answer_off_the_usable_picture(pose, point) -> None:  # noqa: ANN001
     assert screen_axes_at(_pose(**pose), point, 1920.0, 1080.0) is None
+
+
+@pytest.mark.parametrize(
+    "point",
+    [
+        (6.0, -6.0, 0.0),  # a step crosses the fold
+        (12.0, -6.0, 0.0),  # past the fold: drawn folded back into the picture
+        (12.0, 0.0, 0.0),
+    ],
+)
+def test_screen_axes_give_no_answer_past_a_barrel_lens_fold(point) -> None:  # noqa: ANN001
+    params = _pose(fov=90.0)
+    assert screen_axes_at(params, point, 1920.0, 1080.0, -0.5, 0.0) is None
+    # Inside the fold the same lens still answers.
+    assert screen_axes_at(params, (4.0, 0.0, 0.0), 1920.0, 1080.0, -0.5, 0.0) is not None
+
+
+@pytest.mark.parametrize("roll", [100.0, 115.0, -115.0])
+def test_ground_axes_keeps_a_level_cameras_bearing_short_of_upside_down(roll: float) -> None:
+    _, forward = ground_axes(_pose(pitch=0.0, roll=roll))
+    assert forward == pytest.approx((0.0, 1.0), abs=1e-9)

@@ -33,6 +33,7 @@ from openfollow.configuration import (
     OscConfig,
     OtpOutputConfig,
     RttrpmOutputConfig,
+    TouchRemoteConfig,
     _apply_with_fallback,
     apply_runtime_config_changes,
     config_to_toml_dict,
@@ -1974,6 +1975,85 @@ def test_apply_runtime_operator_messages_restarts_handler() -> None:
     assert app._config.operator_messages.enabled is True
     assert app._input_manager.operator_message_restarts == 1
     assert app._web_commands.restart_requested is False
+
+
+def test_apply_runtime_touch_remote_changes_apply_live() -> None:
+    app = _DummyApp(AppConfig(touch_remote=TouchRemoteConfig(enabled=True)))
+    apply_runtime_config_changes(app, AppConfig(touch_remote=TouchRemoteConfig(enabled=True, stick_curve=1.0)))
+    assert app._config.touch_remote.stick_curve == 1.0
+    apply_runtime_config_changes(app, AppConfig())
+    assert app._config.touch_remote.enabled is False
+    assert app._web_commands.restart_requested is False
+
+
+def test_touch_remote_defaults() -> None:
+    cfg = TouchRemoteConfig()
+    assert (cfg.enabled, cfg.stick_curve, cfg.stick_dead_zone, cfg.z_step_m, cfg.z_notch_px) == (
+        False,
+        2.0,
+        0.08,
+        0.05,
+        20,
+    )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value", "want"),
+    [
+        ("stick_curve", "abc", 2.0),
+        ("stick_curve", None, 2.0),
+        ("stick_curve", True, 2.0),
+        ("stick_dead_zone", "abc", 0.08),
+        ("stick_dead_zone", None, 0.08),
+        ("stick_dead_zone", True, 0.08),
+        ("z_step_m", "abc", 0.05),
+        ("z_step_m", None, 0.05),
+        ("z_step_m", False, 0.05),
+        ("z_notch_px", "abc", 20),
+        ("z_notch_px", None, 20),
+        ("z_notch_px", True, 20),
+        ("enabled", None, False),
+        ("enabled", [1], False),
+    ],
+)
+def test_touch_remote_wrong_types_fall_back_to_defaults(field_name: str, value: object, want: object) -> None:
+    assert getattr(TouchRemoteConfig(**{field_name: value}), field_name) == want
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value", "want"),
+    [
+        ("stick_curve", 0.2, 1.0),
+        ("stick_curve", 9.0, 3.0),
+        ("stick_curve", float("nan"), 2.0),
+        ("stick_dead_zone", -0.1, 0.0),
+        ("stick_dead_zone", 0.9, 0.5),
+        ("z_step_m", 0.0, 0.001),
+        ("z_step_m", 5.0, 1.0),
+        ("z_step_m", float("inf"), 0.05),
+        ("z_notch_px", 1, 8),
+        ("z_notch_px", 500, 80),
+    ],
+)
+def test_touch_remote_out_of_range_is_clamped(field_name: str, value: object, want: float) -> None:
+    assert getattr(TouchRemoteConfig(**{field_name: value}), field_name) == pytest.approx(want)
+
+
+def test_touch_remote_survives_a_hand_edited_config_toml(tmp_path) -> None:  # noqa: ANN001
+    path = tmp_path / "config.toml"
+    path.write_text('[touch_remote]\nenabled = true\nstick_curve = "steep"\nz_notch_px = 1000\nstale_key = 1\n')
+    cfg = load_config(str(path)).touch_remote
+    assert (cfg.enabled, cfg.stick_curve, cfg.z_notch_px) == (True, 2.0, 80)
+
+
+def test_touch_remote_crafted_section_post_is_normalised() -> None:
+    from openfollow.web.routes import apply_section_data
+
+    cfg = AppConfig()
+    apply_section_data(cfg, "touch_remote", {"enabled": "on", "stick_dead_zone": "0.9", "z_notch_px": "-4"})
+    assert cfg.touch_remote.enabled is True
+    assert cfg.touch_remote.stick_dead_zone == 0.5
+    assert cfg.touch_remote.z_notch_px == 8
 
 
 def test_apply_runtime_updates_system_name_without_restart() -> None:

@@ -68,6 +68,8 @@ from openfollow.configuration import (
     VALID_BUTTON_NAMES,
     AppConfig,
     CalibrationPointConfig,
+    ConfigFileEmptyError,
+    ConfigFileUnreadableError,
     DetectionMaskConfig,
     OscDestinationConfig,
     OscTransmitterConfig,
@@ -75,9 +77,12 @@ from openfollow.configuration import (
     TriggerZoneConfig,
     _coerce_marker_tokens,
     apply_renamed_marker_keys,
+    config_file_health,
+    config_problem_kind,
+    config_problem_words,
     config_write_lock,
     enforce_network_mode,
-    load_config,
+    load_config_for_save,
     path_name_from,
     plane_pin_key,
     plane_pins,
@@ -3339,14 +3344,18 @@ def _section_label(section: str) -> str:
     return _SECTION_LABELS.get(section) or section.replace("_", " ").capitalize()
 
 
-def _backup_before(config_path: str, kind: str) -> dict[str, str]:
+def _backup_before(config_path: str, kind: str, named_by: AppConfig | None = None) -> dict[str, str]:
     """Archive the settings ``kind`` is about to replace; the response fields reporting it.
 
+    *named_by* names the archive and finds the catalog when the file does not read.
     A failed backup never blocks the change: the operator is told, and it is logged.
     Call it before taking ``_config_write_lock``: the main loop takes that lock too,
     and writing an archive to an SD card can take a while.
     """
-    result = settings_backup.run_web_backup(Path(config_path), openfollow.__version__, kind)
+    settings: dict[str, object] | None = None
+    if named_by is not None:
+        settings = {"psn_system_name": named_by.psn_system_name, "markers_catalog_path": named_by.markers_catalog_path}
+    result = settings_backup.run_web_backup(Path(config_path), openfollow.__version__, kind, settings=settings)
     if result.error:
         logger.warning("Settings backup before %s failed, continuing: %s", kind, result.error)
         return {"backup_error": result.error}
@@ -3886,9 +3895,9 @@ _UPDATE_RUNNING = "An update is running."
 _RESTART_AFTER_UPDATE = "Restart once it has finished."
 
 
-def _save_failed(status: int, error: str, action: str = "") -> HTTPResponse:
+def _save_failed(status: int, error: str, action: str = "", **detail: str) -> HTTPResponse:
     """A refused or failed save, in the ``{error, action}`` shape the save-feedback line reads."""
-    body = json.dumps({"error": error, "action": action})
+    body = json.dumps({"error": error, "action": action, **detail})
     return HTTPResponse(body=body, status=status, headers={"Content-Type": "application/json"})
 
 
@@ -3899,7 +3908,7 @@ def build_diagnostics_bundle(server: ConfigWebServer, cfg: AppConfig | None = No
     copy carries the same content and name. Off a request the config is read
     from disk.
     """
-    cfg = cfg or load_config(server.config_path)
+    cfg = cfg or _last_whole_config(server)
     # Size the operator's configured detection model store alongside
     # the SD card so the storage breakdown shows where models live
     # (NVMe vs. an SD-card fallback). Expand ``~`` first – the
@@ -3998,6 +4007,7 @@ def _build_diagnostics_providers(
         online_sync_status=server.online_sync_status_provider,
         source_endpoint=lambda: _active_source_endpoint(cfg),
         config_file_paths=lambda: _config_file_paths(server, cfg),
+        config_file_health=lambda: config_file_health(server.config_path),
         detection_models_dir=lambda: _detection_models_dir(cfg),
         config_diff_from_defaults=lambda: _config_diff_from_defaults(cfg),
         request_semaphore_rejections=(lambda: server.request_semaphore_rejections),
@@ -4274,6 +4284,37 @@ def _push_path(path: str, sender: str) -> str:
     return f"{path}?{PUSHED_FROM_PARAM}={quote(sender, safe='')}"
 
 
+# A peer's own words about its settings file are in the first person; the sender names the peer.
+_PEER_SETTINGS_FILE: dict[object, str] = {
+    "empty-restorable": "its settings file is empty; restart it to restore the settings from its latest backup copy",
+    "empty": "its settings file is empty; restart it to start again with default settings",
+    "unreadable": "its settings file could not be read; import a settings file there to replace it",
+}
+
+
+class _PeerRefused(Exception):
+    """A peer answered with the reason it did not apply what was sent."""
+
+
+def _peer_refusal(error: urllib.error.HTTPError) -> _PeerRefused | None:
+    """The reason in a peer's ``{error, action}`` answer, or ``None`` when it gave none."""
+    try:
+        answer = json.loads(error.read(4096).decode("utf-8"))
+    except (OSError, ValueError):
+        return None
+    said = answer.get("error") if isinstance(answer, dict) else None
+    if not isinstance(said, str) or not said.strip():
+        return None
+    about_its_file = _PEER_SETTINGS_FILE.get(answer.get("settings_file"))
+    if about_its_file is not None:
+        return _PeerRefused(about_its_file)
+    action = answer.get("action")
+    reason = said.strip().rstrip(".") + "."
+    if isinstance(action, str) and action.strip():
+        reason += " " + action.strip()
+    return _PeerRefused(reason[:300])
+
+
 def _send_config_to_peer(
     ip: str, port: int, section: str, data: dict[str, Any], pin: str = "", *, expected_port: int, sender: str
 ) -> bool:
@@ -4293,7 +4334,12 @@ def _send_config_to_peer(
         req = urllib.request.Request(url, data=body, headers=headers, method="POST")
         with urllib.request.urlopen(req, timeout=5) as resp:  # nosec B310
             return bool(resp.status == 200)
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError):
+    except urllib.error.HTTPError as error:
+        refusal = _peer_refusal(error)
+        if refusal is not None:
+            raise refusal from error
+        return False
+    except (urllib.error.URLError, TimeoutError):
         return False
 
 
@@ -4316,7 +4362,12 @@ def _send_config_import_to_peer(
         req = urllib.request.Request(url, data=body, headers=headers, method="POST")
         with urllib.request.urlopen(req, timeout=10) as resp:  # nosec B310
             return bool(resp.status == 200)
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError):
+    except urllib.error.HTTPError as error:
+        refusal = _peer_refusal(error)
+        if refusal is not None:
+            raise refusal from error
+        return False
+    except (urllib.error.URLError, TimeoutError):
         return False
 
 
@@ -4398,22 +4449,25 @@ def _broadcast_to_peers(
     results_lock = threading.Lock()
     pending = threading.Semaphore(0)
 
-    def _record(peer: PeerInfo, ok: bool) -> None:
+    def _record(peer: PeerInfo, ok: bool, reason: str = "") -> None:
+        result: dict[str, Any] = {"name": peer.name, "ip": peer.ip, "success": ok}
+        if reason:
+            result["reason"] = reason
         with results_lock:
-            results_by_key[f"{peer.ip}:{peer.web_port}"] = {
-                "name": peer.name,
-                "ip": peer.ip,
-                "success": ok,
-            }
+            results_by_key[f"{peer.ip}:{peer.web_port}"] = result
 
     def _run(peer: PeerInfo) -> None:
         try:
+            reason = ""
             try:
                 ok = bool(send(peer))
+            except _PeerRefused as refusal:
+                logger.warning("Peer %s did not apply the broadcast: %s", peer.ip, refusal)
+                ok, reason = False, str(refusal)
             except Exception:
                 logger.exception("Peer broadcast to %s raised", peer.ip)
                 ok = False
-            _record(peer, ok)
+            _record(peer, ok, reason)
         finally:
             _broadcast_semaphore.release()
             pending.release()
@@ -4535,6 +4589,20 @@ def _port_suffix(netloc: str) -> str:
     return f":{port}" if sep else ""
 
 
+def _last_whole_config(server: ConfigWebServer) -> AppConfig:
+    """The config as the file last read whole, read again once it changes.
+
+    For a read that only shows the config. Unlike the request's copy it sees a
+    save the same request made, and it works off a request too.
+    """
+    return _CONFIG_CACHE.load(server.config_path)
+
+
+def _config_for_save(server: ConfigWebServer) -> AppConfig:
+    """The config file, read whole for a write; a missing one starts from its last whole read."""
+    return load_config_for_save(server.config_path, missing=lambda: _last_whole_config(server))
+
+
 def _request_config(server: ConfigWebServer) -> AppConfig:
     """Return this request's copy of the config.
 
@@ -4624,7 +4692,7 @@ def _register_marker_catalog_routes(
         if catalog is None:
             response.status = 503
             return json.dumps({"error": "catalog unavailable"})
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         with _marker_catalog_lock:
             # Snapshot the prior entry (tombstones included) so we can
             # roll back the in-memory upsert if persistence fails –
@@ -4685,7 +4753,7 @@ def _register_marker_catalog_routes(
         if catalog is None:
             response.status = 503
             return json.dumps({"error": "catalog unavailable"})
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         with _marker_catalog_lock:
             # Snapshot the pre-tombstone entry so we can restore it
             # if persistence fails – without the rollback the UI / poll
@@ -4724,22 +4792,22 @@ def _register_marker_catalog_routes(
         # still leaves the marker gone from the catalog UI, and the
         # startup selection-prune reconciles it on the next restart.
         with _config_write_lock:
-            fresh = load_config(server.config_path)
-            new_controlled = [t for t in fresh.controlled_marker_ids if t != marker_id]
-            new_viewer = [t for t in fresh.viewer_marker_ids if t != marker_id]
-            if new_controlled != fresh.controlled_marker_ids or new_viewer != fresh.viewer_marker_ids:
-                fresh.controlled_marker_ids = new_controlled
-                fresh.viewer_marker_ids = new_viewer
-                try:
+            try:
+                fresh = _config_for_save(server)
+                new_controlled = [t for t in fresh.controlled_marker_ids if t != marker_id]
+                new_viewer = [t for t in fresh.viewer_marker_ids if t != marker_id]
+                if new_controlled != fresh.controlled_marker_ids or new_viewer != fresh.viewer_marker_ids:
+                    fresh.controlled_marker_ids = new_controlled
+                    fresh.viewer_marker_ids = new_viewer
                     save_config(fresh, server.config_path)
-                except OSError:
-                    logger.exception(
-                        "Marker %s tombstoned but failed to prune it from "
-                        "the selection in %s; live marker will persist "
-                        "until the next restart reconciles it",
-                        marker_id,
-                        server.config_path,
-                    )
+            except OSError:
+                logger.exception(
+                    "Marker %s tombstoned but failed to prune it from "
+                    "the selection in %s; live marker will persist "
+                    "until the next restart reconciles it",
+                    marker_id,
+                    server.config_path,
+                )
         sync = server.get_marker_catalog_sync()
         if sync is not None:
             sync.request_delta([marker_id])
@@ -4800,7 +4868,7 @@ def _register_marker_catalog_routes(
             return kept + [mid for mid in posted if mid not in kept]
 
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             cfg.controlled_marker_ids = _keep_order(cfg.controlled_marker_ids, controlled)
             cfg.viewer_marker_ids = viewed_with_controlled(
                 cfg.controlled_marker_ids, _keep_order(cfg.viewer_marker_ids, viewer)
@@ -4836,7 +4904,7 @@ def _register_input_plugin_routes(
                 input_cls: type[VideoInputBase],
             ) -> Callable[[], Any]:
                 def _handler() -> Any:
-                    cfg = load_config(server.config_path)
+                    cfg = _last_whole_config(server)
                     config = input_cls.get_config_field_values(
                         cfg,
                     )
@@ -4871,7 +4939,7 @@ def _render_gallery_grid(server: ConfigWebServer, *, error: str = "") -> str:
     # Highlight the *effective* selection: an unresolvable / deleted id plays the
     # Stage default at runtime, so the grid must mark Stage too rather than leave
     # no tile selected (which would disagree with the active source).
-    raw_selected = load_config(server.config_path).testpattern_selected_media
+    raw_selected = _last_whole_config(server).testpattern_selected_media
     selected = raw_selected if media_store.resolve(raw_selected) is not None else media_store.DEFAULT_STAGE_ID
     tiles: list[str] = []
     for item in media_store.list_media():
@@ -4937,7 +5005,7 @@ def _register_gallery_routes(app: Bottle, server: ConfigWebServer) -> None:
             response.status = 400
             return _render_gallery_grid(server, error="Unknown media.")
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             cfg.testpattern_selected_media = media_id
             save_config(cfg, server.config_path)
         return _render_gallery_grid(server)
@@ -5116,7 +5184,7 @@ def _register_scene_routes(app: Bottle, server: ConfigWebServer) -> None:
             (points,) = _world_polylines([data.get("points", [])], 3)
         except ValueError as exc:
             return _json_error(400, str(exc))
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         return json.dumps(
             {
                 "polylines": _picture_polylines(cfg, w, h, lines),
@@ -5140,7 +5208,7 @@ def _register_scene_routes(app: Bottle, server: ConfigWebServer) -> None:
                 raise ValueError("not finite")
         except (KeyError, TypeError, ValueError, OverflowError):
             return _json_error(400, "x, y, z, w and h must be numbers")
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         params, k1, k2 = _camera_view(cfg)
         pinhole = invert_overlay_distortion(np.array([[x, y]], dtype=np.float64), w, h, k1, k2)
         world = unproject_to_plane(params, pinhole, w, h, z)[0]
@@ -5165,7 +5233,7 @@ def _register_scene_routes(app: Bottle, server: ConfigWebServer) -> None:
                 raise ValueError("z must be finite")
         except (KeyError, TypeError, ValueError, OverflowError):
             return _json_error(400, "vertices, z, w and h must be numbers")
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         g = cfg.grid
         verts = verts[:GROUND_GRID_MAX_VERTICES]
         corners = [[*v, z] for v in verts]
@@ -5190,7 +5258,7 @@ def _register_path_routes(app: Bottle, server: ConfigWebServer) -> None:
     from openfollow.paths.network import extend_to_corners
 
     def _snapshot() -> dict[str, Any]:
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         state = server.get_path_state()
         return {
             "show_paths": cfg.paths.show_paths,
@@ -5230,7 +5298,7 @@ def _register_path_routes(app: Bottle, server: ConfigWebServer) -> None:
         if isinstance(data, str):
             return data
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             if len(cfg.paths.paths) >= MAX_PATHS:
                 return _json_error(409, f"Paths are limited to {MAX_PATHS}.")
             name = path_name_from(data.get("name", "")) if data.get("name") else ""
@@ -5250,7 +5318,7 @@ def _register_path_routes(app: Bottle, server: ConfigWebServer) -> None:
         if isinstance(data, str):
             return data
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             path = cfg.paths.find(name)
             if path is None:
                 return _json_error(404, f"No path called {name}.")
@@ -5280,7 +5348,7 @@ def _register_path_routes(app: Bottle, server: ConfigWebServer) -> None:
         if isinstance(data, str):
             return data
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             path = cfg.paths.find(name)
             if path is None:
                 return _json_error(404, f"No path called {name}.")
@@ -5292,7 +5360,7 @@ def _register_path_routes(app: Bottle, server: ConfigWebServer) -> None:
     def paths_delete(name: str) -> Any:
         response.content_type = "application/json"
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             path = cfg.paths.find(name)
             if path is None:
                 return _json_error(404, f"No path called {name}.")
@@ -5308,7 +5376,7 @@ def _register_path_routes(app: Bottle, server: ConfigWebServer) -> None:
         if isinstance(data, str):
             return data
         on = _as_bool(data.get("on"), False)
-        if load_config(server.config_path).paths.find(name) is None:
+        if _last_whole_config(server).paths.find(name) is None:
             return _json_error(404, f"No path called {name}.")
         if not server.record_path(name if on else None):
             return _json_error(409, "Paths are switched off.")
@@ -5336,7 +5404,7 @@ def _register_path_routes(app: Bottle, server: ConfigWebServer) -> None:
             _require_wizard_canvas(w, h)
         except (KeyError, TypeError, ValueError):
             return _json_error(400, "w and h must be the picture's size in pixels")
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         params, k1, k2 = _camera_view(cfg)
 
         def seen(points: list[tuple[float, float, float]]) -> list[list[float] | None]:
@@ -5378,8 +5446,28 @@ def _register_path_routes(app: Bottle, server: ConfigWebServer) -> None:
         return json.dumps({"paths": views, "markers": markers})
 
 
+def _refuse_over_unreadable_config(callback: Callable[..., Any]) -> Callable[..., Any]:
+    """A route plugin answering a write that found the config file empty or unreadable, for the save-feedback line."""
+
+    @functools.wraps(callback)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return callback(*args, **kwargs)
+        except ConfigFileUnreadableError as error:
+            logger.warning("%s: %s", "Not exported" if request.method == "GET" else "Not saved", error)
+            said, step = config_problem_words(error)
+            return _save_failed(
+                409, f"The settings file on this station {said}", f"{step}.", settings_file=config_problem_kind(error)
+            )
+
+    return wrapper
+
+
 def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     """Register all routes on the Bottle app."""
+    app.install(_refuse_over_unreadable_config)
+    # A file that breaks before the first request is then served as it read here, not as its backup.
+    _CONFIG_CACHE.load(server.config_path)
 
     # Mirror bundled system templates into the operator's templates folder
     # on every start. Idempotent overwrite enforces the "system templates
@@ -5602,7 +5690,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     @app.post("/login")
     def login_submit() -> Any:
-        cfg = load_config(server.config_path)
+        cfg = _request_scoped_config()
         pin = cfg.web_pin
         if not pin:
             redirect("/")
@@ -5683,7 +5771,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         the live values makes the write faithful and the subsequent hot-reload a
         no-op for that (device-local, runtime-authoritative) field.
         """
-        cfg = load_config(server.config_path)
+        cfg = _config_for_save(server)
         speeds = server.get_marker_move_speeds()
         if speeds:
             cfg.marker_move_speeds = dict(speeds)
@@ -7031,7 +7119,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         sets the [ui] fields the route owns; ``UiConfig.__post_init__``
         coerces raw form values."""
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             mutate(cfg)
             cfg.ui.__post_init__()  # coerce raw [ui] form values
             save_config(cfg, server.config_path)
@@ -7071,7 +7159,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         return template("partials/startup", startup=startup)
 
     def _render_camera_setup(setup: dict[str, Any], *, mode: str = "view", banner: dict[str, str] | None = None) -> Any:
-        camera_name = str(load_config(server.config_path).picam_camera_name)
+        camera_name = str(_last_whole_config(server).picam_camera_name)
         return template("partials/camera_setup", setup=setup, mode=mode, banner=banner, camera_name=camera_name)
 
     @app.get("/section/video_source/camera-setup")
@@ -7146,7 +7234,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         actually queued – a rejected request (another update in flight) must
         not leave the operator polling a locked progress modal.
         """
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         response.content_type = "application/json"
         service_name = _service_unit_name(cfg)
         if not server.request_deb_update(service_name=service_name):
@@ -7163,7 +7251,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """
         from openfollow.runtime.deb_update import check_for_update
 
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         response.content_type = "application/json"
         try:
             info = check_for_update(
@@ -7210,7 +7298,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         if total > _MAX_UPLOAD_BYTES:
             return json.dumps({"ok": False, "error": f"File too large (max {_MAX_UPLOAD_BYTES // (1024 * 1024)} MB)."})
 
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         service_name = _service_unit_name(cfg)
 
         staged_path = f"/tmp/{DEB_UPDATE_TMP_PREFIX}{secrets.token_hex(8)}.ofupdate"  # nosec B108
@@ -7366,7 +7454,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     def start_button_detection() -> Any:
         """Trigger the in-app button detection wizard."""
         server.request_button_detection()
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         return template(
             "partials/gamepad",
             config=cfg,
@@ -7384,7 +7472,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         main-loop tick), so ``detection_started`` may still read "running"
         for one poll until the flag clears."""
         server.cancel_button_detection()
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         return template(
             "partials/gamepad",
             config=cfg,
@@ -7468,7 +7556,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         from openfollow.configuration import MidiPatch
 
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             cfg.midi.patches.append(MidiPatch(id=cfg.midi.next_patch_id()))
             save_config(cfg, server.config_path)
         return _render_midi_section(cfg, saved=True)
@@ -7479,7 +7567,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         ``apply_config`` opens / closes the listener port on the next
         hot-reload tick. No-op when the id is unknown (concurrent delete)."""
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             patch = cfg.midi.patch_by_id(patch_id)
             if patch is not None:
                 patch.alias = _as_str(request.forms.get("alias", ""), "").strip()
@@ -7504,7 +7592,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """Remove a patch by id. Bindings/faders that referenced it fall
         back to their "(missing)" dropdown option until re-pointed."""
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             cfg.midi.patches = [p for p in cfg.midi.patches if p.id != patch_id]
             save_config(cfg, server.config_path)
         return _render_midi_section(cfg, saved=True)
@@ -7575,7 +7663,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 )
             )
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             cfg.virtual_faders = VirtualFadersConfig(faders=new_faders)
             save_config(cfg, server.config_path)
         return _render_midi_section(cfg, saved=True)
@@ -7628,7 +7716,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # coerced to a valid choice by ``VirtualFaderConfig.__post_init__``.
         posted_kind = _as_str(request.forms.get("source_kind", ""), "")
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             existing = list(cfg.virtual_faders.faders)
             existing[idx - 1] = VirtualFaderConfig(
                 name=_as_str(request.forms.get("name", ""), ""),
@@ -7873,7 +7961,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         crafted ``../`` traversal or unknown name can't reach outside the
         models directory.
         """
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         name = (request.forms.get("model", "") or "").strip()
         on_disk = _discover_storage_models(cfg.detection.storage_path)
         if not name or name != Path(name).name or name not in on_disk:
@@ -7903,7 +7991,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         and the model-export tools (ultralytics + onnx, installed by
         ``install-detection.sh``). It writes ``<storage>/models/<model>``.
         """
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         # ``export_model`` (not ``model``) so the export dropdown can't clobber
         # the active-model selector when the whole form is saved.
         model = (request.forms.get("export_model", "") or "").strip()
@@ -8142,7 +8230,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """
         template_id = _as_str(request.forms.get("template_id", ""), "").strip()
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             row = OscTransmitterConfig(name="New transmitter")
             if template_id:
                 # Both system and user templates flow through one
@@ -8216,7 +8304,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 response.status = 400
                 return message_error
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             found = _find_osc_binding(cfg, row_id)
             if found is None:
                 abort(404, "Unknown binding")
@@ -8243,7 +8331,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         ``name`` are changed (name suffixed with ``" (copy)"`` so the
         list view tells the two apart)."""
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             found = _find_osc_binding(cfg, row_id)
             if found is None:
                 abort(404, "Unknown binding")
@@ -8263,7 +8351,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         row was already gone – keeps the UI stable in the face of
         concurrent edits across tabs."""
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             found = _find_osc_binding(cfg, row_id)
             if found is not None:
                 idx, _ = found
@@ -8284,7 +8372,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """
         direction = _as_str(request.forms.get("direction", ""), "")
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             found = _find_osc_binding(cfg, row_id)
             if found is None:
                 abort(404, "Unknown binding")
@@ -8321,7 +8409,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # already on disk.
         saved = bool(wanted_ids)
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             transmitters = cfg.osc_transmitters.transmitters
             current = {row.id: row for row in transmitters}
             if wanted_ids:
@@ -8388,7 +8476,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     @app.post("/section/osc_destinations/add")
     def add_osc_destination() -> Any:
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             dest = OscDestinationConfig(name="New destination")
             cfg.osc_destinations.destinations.append(dest)
             save_config(cfg, server.config_path)
@@ -8398,7 +8486,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     def save_osc_destination(dest_id: str) -> Any:
         form_data: dict[str, Any] = dict(request.forms)
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             found = _find_osc_destination(cfg, dest_id)
             if found is None:
                 abort(404, "Unknown destination")
@@ -8411,7 +8499,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     @app.post("/section/osc_destination/<dest_id>/duplicate")
     def duplicate_osc_destination(dest_id: str) -> Any:
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             found = _find_osc_destination(cfg, dest_id)
             if found is None:
                 abort(404, "Unknown destination")
@@ -8428,7 +8516,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     @app.post("/section/osc_destination/<dest_id>/delete")
     def delete_osc_destination(dest_id: str) -> Any:
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             found = _find_osc_destination(cfg, dest_id)
             if found is not None:
                 idx, _ = found
@@ -8440,7 +8528,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     def move_osc_destination(dest_id: str) -> Any:
         direction = _as_str(request.forms.get("direction", ""), "")
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             found = _find_osc_destination(cfg, dest_id)
             if found is None:
                 abort(404, "Unknown destination")
@@ -8466,7 +8554,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         wanted_ids = [s for s in (s.strip() for s in raw_order.split(",")) if s]
         saved = bool(wanted_ids)
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             dests = cfg.osc_destinations.destinations
             current = {d.id: d for d in dests}
             if wanted_ids:
@@ -8595,7 +8683,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         which feed back into the ring buffer. Returns the manager's
         report dict (``sent`` / ``error`` / ``address`` / ``args``)."""
         response.content_type = "application/json"
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         if _find_osc_binding(cfg, row_id) is None:
             response.status = 404
             return json.dumps({"available": False, "error": "Unknown binding"})
@@ -8863,7 +8951,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # Save response, so the JS button can reuse the section
         # ``hx-swap`` plumbing without a one-off content-type
         # negotiation.
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         return _render_osc_bindings_section(cfg, saved=True)
 
     # ---- File-based template system ---------------------------------------
@@ -9023,7 +9111,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             payload = dict(payload_raw)
         elif template_type == "camera_grid":
             with _config_write_lock:
-                cfg = load_config(server.config_path)
+                cfg = _config_for_save(server)
                 payload = {
                     "camera": asdict(cfg.camera),
                     "grid": asdict(cfg.grid),
@@ -9031,14 +9119,14 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 }
         elif template_type == "paths":
             with _config_write_lock:
-                cfg = load_config(server.config_path)
+                cfg = _config_for_save(server)
                 paths = [asdict(path) for path in cfg.paths.paths]
                 for path in paths:
                     path.pop("active")
                 payload = {"slide_time": cfg.paths.slide_time, "paths": paths}
         else:  # zones – the only remaining option per the early gate
             with _config_write_lock:
-                cfg = load_config(server.config_path)
+                cfg = _config_for_save(server)
                 payload = asdict(cfg.trigger_zones)
         try:
             written_path = write_user_template(
@@ -9112,7 +9200,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # marker. ``name`` falls back to the envelope name so a minimal
             # ``{address, args}`` template still gets a readable label.
             with _config_write_lock:
-                cfg = load_config(server.config_path)
+                cfg = _config_for_save(server)
                 kwargs: dict[str, Any] = {
                     "name": tpl.payload.get("name", tpl.name),
                     "address": tpl.payload.get("address", ""),
@@ -9145,7 +9233,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             from openfollow.configuration import CameraConfig, GridConfig, GroundGridConfig
 
             with _config_write_lock:
-                cfg = load_config(server.config_path)
+                cfg = _config_for_save(server)
                 cfg.camera = CameraConfig(**tpl.payload["camera"])
                 cfg.grid = GridConfig(**tpl.payload["grid"])
                 if "ground_grid" in tpl.payload:
@@ -9154,7 +9242,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             return json.dumps({"ok": True})
         if tpl.type == "paths":
             with _config_write_lock:
-                cfg = load_config(server.config_path)
+                cfg = _config_for_save(server)
                 apply_section_data(cfg, "paths", strip_device_local_fields("paths", tpl.payload))
                 save_config(cfg, server.config_path)
             return json.dumps({"ok": True})
@@ -9163,7 +9251,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         from openfollow.configuration import TriggerZonesConfig
 
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             cfg.trigger_zones = TriggerZonesConfig(**tpl.payload)
             save_config(cfg, server.config_path)
         return json.dumps({"ok": True})
@@ -9734,7 +9822,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         disallowed character to ``-`` rather than dropping it, so
         ``safe_name`` is never empty (no bare ``.ofsettings``).
         """
-        cfg = _request_scoped_config()
+        cfg = _config_for_save(server)
         safe_name = _safe_content_disposition_name(cfg.psn_system_name)
         response.content_type = "application/json"
         response.set_header(
@@ -9789,6 +9877,21 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         server.pushed_settings.remove(upto)
         return json.dumps({"success": True})
 
+    def _import_base(*, may_replace: bool) -> tuple[AppConfig, bool]:
+        """The config an import builds on, and whether it replaces a file that does not read.
+
+        Only an Import from a file replaces one, keeping the device identity of the file's last
+        whole read (else the backup's). An empty file is restored by a restart instead.
+        """
+        try:
+            return _config_for_save(server), False
+        except ConfigFileEmptyError:
+            raise
+        except ConfigFileUnreadableError:
+            if not may_replace:
+                raise
+            return _last_whole_config(server), True
+
     @app.post("/api/config/import")
     def api_import_config() -> Any:
         """Import a config from JSON, preserving this station's identity.
@@ -9806,9 +9909,13 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             return json.dumps({"error": "Expected a JSON object"})
 
         pushed_by = _pushed_by()
-        backup = _backup_before(server.config_path, "import" if pushed_by is None else "push")
+        # Read before the archive: a refused import leaves none.
+        base, replacing = _import_base(may_replace=pushed_by is None)
+        backup = _backup_before(
+            server.config_path, "import" if pushed_by is None else "push", base if replacing else None
+        )
         with _config_write_lock:
-            current = load_config(server.config_path)
+            current, replacing = _import_base(may_replace=pushed_by is None)
             # Per-marker move speeds are device-local + runtime-authoritative:
             # preserve THIS station's live speeds and ignore any that rode along in
             # the imported payload. Overlay them onto ``current`` so the deepcopy
@@ -9819,7 +9926,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             if speeds:
                 current.marker_move_speeds = dict(speeds)
             full_cfg = _apply_import_data(current, data if pushed_by is None else _without_station_name(data))
-            save_config(full_cfg, server.config_path)
+            save_config(full_cfg, server.config_path, replace_unreadable=replacing)
         if pushed_by is not None:
             _record_push(pushed_by, "every shared setting", backup)
         return json.dumps({"success": True, **backup})
@@ -9845,11 +9952,12 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         after_update = "Restore defaults once it has finished."
         if server.is_update_busy():
             return _save_failed(409, _UPDATE_RUNNING, after_update)
+        _config_for_save(server)  # before the archive: a refused reset leaves none
         backup = _backup_before(server.config_path, "defaults")
 
         def write_defaults() -> None:
             with _config_write_lock:
-                current = load_config(server.config_path)
+                current = _config_for_save(server)
                 save_config(reset_config_to_defaults(current), server.config_path)
 
         # Checked again with the write: an update queued during the backup leaves the settings as they are.
@@ -9864,7 +9972,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     def api_broadcast_all() -> Any:
         """Broadcast full config to all peers via their import endpoint."""
         response.content_type = "application/json"
-        cfg = load_config(server.config_path)
+        cfg = _config_for_save(server)
         # web_pin/web_port are device-local and stripped on receive; also drop
         # the PIN here so the credential never travels in the broadcast body
         # (peer auth still carries it in the signed header via ``pin=``).
@@ -9931,7 +10039,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 pushed_by = None
         if pushed_by is not None:
             # A known section before archiving, and the archive before the lock.
-            if not apply_section_data(load_config(server.config_path), section, scrubbed):
+            if not apply_section_data(_config_for_save(server), section, scrubbed):
                 response.status = 404
                 return json.dumps({"error": "Unknown section"})
             backup = _backup_before(server.config_path, "push")
@@ -9941,7 +10049,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # applies never touch top-level ``marker_move_speeds`` (device-local,
             # runtime-authoritative), and Part 0 keeps the ensuing reload from
             # clobbering the live dict, so a plain disk load is correct here.
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             if not apply_section_data(cfg, section, scrubbed):
                 response.status = 404
                 return json.dumps({"error": "Unknown section"})
@@ -10092,7 +10200,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             response.status = 400
             return json.dumps({"error": "Expected a JSON object"})
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             zone = TriggerZoneConfig()
             _apply_zone_fields(zone, data)
             cfg.trigger_zones.zones.append(zone)
@@ -10110,7 +10218,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             response.status = 400
             return json.dumps({"error": "Expected a JSON object"})
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             zones = cfg.trigger_zones.zones
             if index < 0 or index >= len(zones):
                 response.status = 404
@@ -10125,7 +10233,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     def api_duplicate_zone(index: int) -> Any:
         response.content_type = "application/json"
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             zones = cfg.trigger_zones.zones
             if index < 0 or index >= len(zones):
                 response.status = 404
@@ -10195,7 +10303,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """Remove zone at ``index``."""
         response.content_type = "application/json"
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             zones = cfg.trigger_zones.zones
             if index < 0 or index >= len(zones):
                 response.status = 404
@@ -10232,7 +10340,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             response.status = 400
             return json.dumps({"error": "Expected a JSON object"})
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             cfg.detection.masks_enabled = _as_bool(data.get("enabled"), cfg.detection.masks_enabled)
             save_config(cfg, server.config_path)
         return json.dumps({"success": True, "masks_enabled": cfg.detection.masks_enabled})
@@ -10248,7 +10356,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             response.status = 400
             return json.dumps({"error": "Expected a JSON object"})
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             mask = DetectionMaskConfig()
             _apply_mask_fields(mask, data)
             cfg.detection.masks.append(mask)
@@ -10266,7 +10374,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             response.status = 400
             return json.dumps({"error": "Expected a JSON object"})
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             masks = cfg.detection.masks
             if index < 0 or index >= len(masks):
                 response.status = 404
@@ -10280,7 +10388,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """Remove the mask at ``index``."""
         response.content_type = "application/json"
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             masks = cfg.detection.masks
             if index < 0 or index >= len(masks):
                 response.status = 404

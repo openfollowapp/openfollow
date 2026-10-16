@@ -6,7 +6,7 @@
 
     <div class="group">
         <h3 class="group-title">Export</h3>
-        <div class="actions">
+        <div class="actions" id="export-actions">
             <button type="button" class="save-btn" onclick="exportConfig()">Export Configuration</button>
         </div>
     </div>
@@ -40,8 +40,29 @@ function _importFailed(info) {
     _transferFailed(info, 'Not imported.', 'import-actions');
 }
 
-function exportConfig() {
-    window.location.href = '/api/config/export';
+/* Fetched rather than navigated to, so a refusal shows its reason here instead of replacing the page. */
+async function exportConfig() {
+    var saveError = window.OpenFollow.saveError;
+    saveError.clear(document.getElementById('config-transfer-section'));
+    var res;
+    try {
+        res = await fetch('/api/config/export');
+    } catch (e) {
+        _transferFailed(saveError.UNREACHABLE, 'Not exported.', 'export-actions');
+        return;
+    }
+    if (!res.ok) {
+        _transferFailed(await saveError.fromResponse(res), 'Not exported.', 'export-actions');
+        return;
+    }
+    var named = /filename="([^"]+)"/.exec(res.headers.get('Content-Disposition') || '');
+    var link = document.createElement('a');
+    link.href = URL.createObjectURL(await res.blob());
+    link.download = named ? named[1] : 'settings.ofsettings';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(function() { URL.revokeObjectURL(link.href); }, 10000);
 }
 
 var _IMPORT_LABEL = 'Import Configuration\u2026';

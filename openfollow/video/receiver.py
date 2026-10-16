@@ -82,7 +82,7 @@ class GstNativeSinkReceiver:
         reconnect_delay: float = 1.0,
         overlay_renderer: CairoOverlayRenderer | None = None,
         on_widget_changed: Callable[..., Any] | None = None,
-        config_path: str = "config.toml",
+        on_source_picked: Callable[[str, str], None] | None = None,
         detector: PersonDetector | None = None,
         preview_provider: PreviewProvider | None = None,
         snapshot_provider: SnapshotProvider | None = None,
@@ -108,7 +108,7 @@ class GstNativeSinkReceiver:
         self._source_type = source_type
         self._input_config: dict[str, Any] = input_config or {}
 
-        self._config_path = config_path
+        self._on_source_picked = on_source_picked
         self._reconnect_delay = max(0.1, reconnect_delay)
         self._state = ReceiverStateMachine(reconnect_delay=self._reconnect_delay)
         self._overlay_renderer = overlay_renderer
@@ -908,27 +908,11 @@ class GstNativeSinkReceiver:
                 return False
         logger.info("User selected %s source: %s", self._input.display_name, source)
         self.set_source(source)
-        self._save_source_to_config(source)
+        fields = self._input.config_fields()
+        if fields and self._on_source_picked is not None:
+            primary_field = fields[0].name
+            self._on_source_picked(primary_field, self._input_config[primary_field])
         return True
-
-    def _save_source_to_config(self, source_name: str) -> None:
-        """Persist the selected source name back to the config file."""
-        try:
-            from openfollow.configuration import load_config, save_config
-
-            cfg = load_config(self._config_path)
-            if self._input.config_fields():
-                primary_field = self._input.config_fields()[0].name
-                setattr(cfg, primary_field, source_name)
-            save_config(cfg, self._config_path)
-            logger.info(
-                "Saved %s source '%s' to %s",
-                self._input.display_name,
-                source_name,
-                self._config_path,
-            )
-        except Exception as e:
-            logger.warning("Failed to save source to config: %s", e)
 
     def enter_source_selection(self) -> None:
         """Enter source selection mode (only for inputs with discovery)."""

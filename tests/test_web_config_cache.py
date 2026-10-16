@@ -158,3 +158,76 @@ def test_a_file_on_another_device_with_the_same_inode_is_read_again(
 
     monkeypatch.setattr(cache_module.os, "stat", _other_device)
     assert cache.load(config_file).psn_system_name == "Moved!"
+
+
+@pytest.mark.parametrize(
+    "broken", [b"", b"  \n", b"not [[ toml", None], ids=["empty", "whitespace", "unparseable", "missing"]
+)
+def test_a_file_that_broke_is_served_as_it_last_read_whole(tmp_path: Path, broken: bytes | None) -> None:
+    """The backup is one save behind: a PIN set in the last save must not be dropped with the file."""
+    path = tmp_path / "config.toml"
+    save_config(AppConfig(psn_system_name="Backup"), str(path))
+    save_config(AppConfig(psn_system_name="Latest", web_pin="4711"), str(path))
+    cache = ParsedConfigCache()
+    cache.load(str(path))
+    if broken is None:
+        path.unlink()
+    else:
+        path.write_bytes(broken)
+
+    served = cache.load(str(path))
+
+    assert (served.psn_system_name, served.web_pin) == ("Latest", "4711")
+
+
+def test_a_file_broken_since_the_first_read_is_served_from_the_backup(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    save_config(AppConfig(psn_system_name="Backup"), str(path))
+    save_config(AppConfig(psn_system_name="Latest"), str(path))
+    path.write_bytes(b"")
+
+    assert ParsedConfigCache().load(str(path)).psn_system_name == "Backup"
+
+
+def test_a_backup_that_is_not_utf8_is_no_backup(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_bytes(b"")
+    Path(str(path) + ".bak").write_bytes(b'psn_system_name = "\xff\xfe"\n')
+
+    assert ParsedConfigCache().load(str(path)) == AppConfig()
+
+
+@pytest.mark.parametrize("backup", [None, b"grid = 5\n"], ids=["no-backup", "backup-no-config"])
+def test_a_file_that_is_no_config_before_any_whole_read_is_served_without_raising(tmp_path: Path, backup) -> None:
+    path = tmp_path / "config.toml"
+    path.write_bytes(b'camera = "x"\n')
+    if backup is not None:
+        Path(str(path) + ".bak").write_bytes(backup)
+
+    assert ParsedConfigCache().load(str(path)) == AppConfig()
+
+
+def test_an_older_parse_finishing_last_never_replaces_a_newer_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The last whole read is what a broken file is served as: it must be the newest, not the slowest."""
+    path = tmp_path / "config.toml"
+    save_config(AppConfig(psn_system_name="Older", web_pin="1111"), str(path))
+    cache = ParsedConfigCache()
+    real_key = cache_module._key
+    calls: list[int] = []
+
+    def _key(p: str) -> Any:
+        key = real_key(p)
+        calls.append(1)
+        if len(calls) == 2:  # the first request has read the file whole; before it keeps it, another one runs
+            save_config(AppConfig(psn_system_name="Newer", web_pin="2222"), str(path))
+            assert cache.load(str(path)).web_pin == "2222"
+        return key
+
+    monkeypatch.setattr(cache_module, "_key", _key)
+    assert cache.load(str(path)).web_pin == "1111"
+    monkeypatch.setattr(cache_module, "_key", real_key)
+    path.write_bytes(b"")
+
+    assert cache.load(str(path)).web_pin == "2222"

@@ -1006,6 +1006,7 @@ class AppRuntimeServices:
         self._snapshot_provider = SnapshotProvider()
 
         # Build input-specific config dict from the active plugin
+        from openfollow.runtime.app_modes import save_source_pick
         from openfollow.video.inputs import get_input_class
 
         input_cls = get_input_class(cfg.video_source_type)
@@ -1016,7 +1017,7 @@ class AppRuntimeServices:
             input_config=input_config,
             overlay_renderer=overlay,
             on_widget_changed=canvas.embed_widget,
-            config_path=self._app._config_path,
+            on_source_picked=lambda field, value: save_source_pick(self._app, field, value),
             detector=detector,
             preview_provider=self._preview_provider,
             snapshot_provider=self._snapshot_provider,
@@ -3704,10 +3705,14 @@ class AppRuntimeServices:
         return {"recording": recording, "locks": locks}
 
     def _record_path(self, name: str | None) -> bool:
-        from openfollow.configuration import load_config
+        from openfollow.configuration import ConfigFileUnreadableError, read_config_whole
 
         # The web UI may have created the path a moment ago; the file is ahead of the running config.
-        return bool(self._app._paths.record(name, load_config(self._app._config_path).paths))
+        try:
+            on_disk = read_config_whole(self._app._config_path)
+        except ConfigFileUnreadableError:
+            on_disk = None
+        return bool(self._app._paths.record(name, (on_disk or self._app._config).paths))
 
     def _stage_path_rename(self, old: str, new: str) -> None:
         self._app._paths.stage_rename(old, new)

@@ -3873,11 +3873,7 @@
  showToast(`Saved and applied to ${peers.length} station(s)`);
  return;
  }
- saveError.show(form, {
- error: `Saved here, but not applied on ${failed.length} of ${peers.length} stations: `
- + failed.map((peer) => peer.name || peer.ip).join(', ') + '.',
- action: 'Check that they are switched on, then apply again.',
- }, '');
+ saveError.show(form, saveError.peerFailure(peers, 'Saved here, but not applied on', 'apply again'), '');
  }).catch(() => saveError.show(form, saveError.UNREACHABLE));
  }
  // Disable Save/Broadcast buttons when form has aria-invalid inputs.

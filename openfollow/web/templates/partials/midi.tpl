@@ -28,7 +28,7 @@
  % # bound device is unplugged keeps its binding (shown as "(not
  % # connected)") and re-submitting the row preserves it.
  % # ----------------------------------------------------------------
- <div class="group">
+ <div class="group" data-feature="midi">
  <h3 class="group-title">MIDI Patches</h3>
  % if config.midi.patches:
  <div class="row">

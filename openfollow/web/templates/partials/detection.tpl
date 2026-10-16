@@ -3,7 +3,7 @@
 %#   seg-toggle--N  -> a mode (2-4 options) that changes what the form shows (Tracking).
 %#   tier-list      -> an ordered ladder of 5+ ranked tiers where order is information (Quality).
 %#   <select>       -> plain enumerated values with no per-option descriptor (Detection rate).
-<div id="detection-section" class="experimental-feature detection-cards {{'saved' if saved_section else ''}}">
+<div id="detection-section" data-feature="detection" class="detection-cards {{'saved' if saved_section else ''}}">
 
 % missing = defined('detection_missing') and detection_missing or []
 % install_feedback = defined('install_feedback') and install_feedback or ''

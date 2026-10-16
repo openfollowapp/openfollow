@@ -37,6 +37,8 @@ from openfollow.operator_messages import OperatorMessageStore
 from openfollow.paths.engine import PathEngine
 from openfollow.psn.marker import Marker
 
+pytestmark = pytest.mark.usefixtures("every_feature_on")
+
 
 class _Clock:
     def __init__(self) -> None:

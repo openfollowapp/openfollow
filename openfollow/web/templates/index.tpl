@@ -20,7 +20,7 @@
     <button type="button" class="tab-btn" data-tab="marker-and-zones">Markers & Zones</button>
     <button type="button" class="tab-btn" data-tab="input">Input</button>
     <button type="button" class="tab-btn" data-tab="output">Output</button>
-    <button type="button" class="tab-btn experimental-feature" data-tab="detection">Person Detection</button>
+    <button type="button" class="tab-btn" data-tab="detection" data-feature="detection">Person Detection</button>
 </div>
 
 <!-- Overview -->
@@ -147,6 +147,6 @@
 </div>
 
 <!-- Person Detection -->
-<div class="tab-content experimental-feature" id="tab-detection">
+<div class="tab-content" id="tab-detection" data-feature="detection">
     % include('partials/detection.tpl', config=config, saved=False)
 </div>

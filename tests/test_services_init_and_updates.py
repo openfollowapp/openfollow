@@ -43,7 +43,7 @@ from openfollow.psn.server import _UNCHANGED as _UNCHANGED_SENTINEL
 from openfollow.runtime.services_marker_visuals import _resolve_marker_color
 from openfollow.services import AppRuntimeServices
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("every_feature_on")]
 
 # --------------------------------------------------------------------------- #
 # Fakes
@@ -938,6 +938,119 @@ class TestInitPsnReceiver:
         assert recv.kwargs["ignore_ids"] == [1, 2, 7]
         assert recv.kwargs["source_ip"] == "10.0.0.1"
         assert recv.kwargs["source_iface"] == "eth0"
+
+
+class _GateReceiver:
+    """A receiver that records the PSN input gate the way ``PsnReceiver`` applies it."""
+
+    def __init__(self, *, bound: str | None) -> None:
+        self.enabled_calls: list[bool] = []
+        self.rebinds: list[tuple[str, str | None]] = []
+        self._bound = bound
+
+    def set_enabled(self, enabled: bool) -> None:
+        self.enabled_calls.append(enabled)
+        if not enabled:
+            self._bound = None
+
+    def bound_source_ip(self) -> str | None:
+        return self._bound
+
+    def rebind(self, source_ip: str, *, source_iface: str | None = None) -> None:
+        self.rebinds.append((source_ip, source_iface))
+        self._bound = source_ip
+
+
+def _with_features(services: AppRuntimeServices, *keys: str) -> None:
+    from openfollow.configuration import UiConfig
+
+    services._app._config = replace(services._app._config, ui=UiConfig(shown_features=list(keys)))
+
+
+class TestFeatureGates:
+    """Each gated subsystem reads its config through the Features list; the config itself is never written."""
+
+    def test_the_receiver_is_built_disabled_while_psn_input_is_off(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _with_features(services)
+        monkeypatch.setattr(services_module, "PsnReceiver", _FakePsnReceiver)
+        services.init_psn_receiver()
+        assert services._app._psn_receiver.kwargs["enabled"] is False
+
+    def test_psn_input_off_disables_the_receiver(self, services: AppRuntimeServices) -> None:
+        receiver = _GateReceiver(bound="192.0.2.1")
+        services._app._psn_receiver = receiver
+        _with_features(services)
+        services.apply_psn_input_change()
+        assert receiver.enabled_calls == [False]
+        assert receiver.rebinds == []
+
+    def test_psn_input_on_binds_on_the_station_interface(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _fake_ifaces(monkeypatch, {"eth0": "192.0.2.1"})
+        receiver = _GateReceiver(bound=None)
+        services._app._psn_receiver = receiver
+        _with_features(services, "psn_input")
+        services._app._config = replace(services._app._config, psn_source_iface="eth0")
+        services.apply_psn_input_change()
+        assert receiver.enabled_calls == [True]
+        assert receiver.rebinds == [("192.0.2.1", "eth0")]
+
+    def test_psn_input_on_leaves_a_bound_receiver_alone(self, services: AppRuntimeServices) -> None:
+        receiver = _GateReceiver(bound="192.0.2.1")
+        services._app._psn_receiver = receiver
+        _with_features(services, "psn_input")
+        services.apply_psn_input_change()
+        assert receiver.rebinds == []
+
+    def test_psn_input_without_a_receiver_does_nothing(self, services: AppRuntimeServices) -> None:
+        services._app._psn_receiver = None
+        services.apply_psn_input_change()
+
+    @pytest.mark.parametrize("on", [True, False])
+    def test_midi_patches_follow_the_midi_feature(self, services: AppRuntimeServices, on: bool) -> None:
+        from openfollow.configuration import MidiConfig, MidiPatch
+
+        patch = MidiPatch(id=1, alias="Faders")
+        services._app._config = replace(services._app._config, midi=MidiConfig(patches=[patch]))
+        _with_features(services, *(["midi"] if on else []))
+        assert services.midi_patches() == ([patch] if on else [])
+        assert services._app._config.midi.patches == [patch]
+
+    @pytest.mark.parametrize(
+        ("section", "key", "getter"),
+        [
+            ("rttrpm_output", "rttrpm", "rttrpm_config"),
+            ("trigger_zones", "zones", "zones_config"),
+            ("detection", "detection", "detection_config"),
+        ],
+    )
+    @pytest.mark.parametrize("on", [True, False])
+    def test_a_section_runs_only_with_its_feature(
+        self, services: AppRuntimeServices, section: str, key: str, getter: str, on: bool
+    ) -> None:
+        cfg = services._app._config
+        services._app._config = replace(cfg, **{section: replace(getattr(cfg, section), enabled=True)})
+        _with_features(services, *([key] if on else []))
+        assert getattr(services, getter)().enabled is on
+        assert getattr(services._app._config, section).enabled is True
+
+    def test_zones_are_not_evaluated_while_their_feature_is_off(self, services: AppRuntimeServices) -> None:
+        from openfollow.configuration import TriggerZonesConfig
+
+        class _Engine:
+            updates = 0
+
+            def update(self, *_args: object) -> None:
+                _Engine.updates += 1
+
+        services._zone_engine = _Engine()
+        services._app._config = replace(services._app._config, trigger_zones=TriggerZonesConfig(enabled=True))
+        _with_features(services)
+        services.update_zone_triggers()
+        assert _Engine.updates == 0
 
 
 def _fake_ifaces(monkeypatch, ifaces: dict[str, str]) -> None:

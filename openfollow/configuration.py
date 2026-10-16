@@ -18,7 +18,7 @@ import time
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
 try:
     import tomllib
@@ -2604,6 +2604,72 @@ class NetworkConfig:
         self.backend = choice
 
 
+# The General tab's Features list, in display order. A feature that is off is
+# hidden in the web UI and does not run; its own settings are kept.
+FEATURE_KEYS: tuple[str, ...] = (
+    "zones",
+    "midi",
+    "lens_distortion",
+    "psn_input",
+    "detection",
+    "rttrpm",
+    "paths",
+    "ground_grid",
+    "calibration_points",
+    "touch_remote",
+)
+EXPERIMENTAL_FEATURES: frozenset[str] = frozenset(
+    {"detection", "rttrpm", "paths", "ground_grid", "calibration_points", "touch_remote"}
+)
+DEFAULT_SHOWN_FEATURES: tuple[str, ...] = tuple(key for key in FEATURE_KEYS if key not in EXPERIMENTAL_FEATURES)
+
+
+def _coerce_feature_list(value: Any) -> list[str]:
+    """Known feature keys from ``value`` in ``FEATURE_KEYS`` order; anything but a list is the default."""
+    if not isinstance(value, (list, tuple)):
+        return list(DEFAULT_SHOWN_FEATURES)
+    named = {entry.strip().lower() for entry in value if isinstance(entry, str)}
+    return [key for key in FEATURE_KEYS if key in named]
+
+
+def migrate_ui_keys(ui_data: dict[str, Any]) -> None:
+    """Map ``show_experimental_features`` onto ``shown_features`` when that is absent; drop the old key."""
+    if "show_experimental_features" not in ui_data:
+        return
+    shown_all = _coerce_bool(ui_data.pop("show_experimental_features"), False)
+    if shown_all and "shown_features" not in ui_data:
+        ui_data["shown_features"] = list(FEATURE_KEYS)
+
+
+def feature_on(cfg: Any, key: str) -> bool:
+    """Whether ``cfg`` has feature ``key`` on; a config without ``[ui]`` reads the defaults."""
+    shown = getattr(getattr(cfg, "ui", None), "shown_features", DEFAULT_SHOWN_FEATURES)
+    return key in shown
+
+
+class _Switched(Protocol):
+    enabled: bool
+
+
+_SwitchedT = TypeVar("_SwitchedT", bound=_Switched)
+
+
+def feature_gated(section: _SwitchedT, cfg: Any, key: str) -> _SwitchedT:
+    """``section`` as its subsystem runs it: switched off (``enabled``) while feature ``key`` is off."""
+    if not section.enabled or feature_on(cfg, key):
+        return section
+    gated = copy.copy(section)
+    gated.enabled = False
+    return gated
+
+
+def effective_lens(cfg: Any) -> tuple[float, float]:
+    """The lens pair everything draws and maps with: none while Lens distortion is off."""
+    if not feature_on(cfg, "lens_distortion"):
+        return 0.0, 0.0
+    return cfg.camera.lens_k1, cfg.camera.lens_k2
+
+
 @dataclass
 class UiConfig:
     """Optional ``[ui]`` section – operator display preferences.
@@ -2616,9 +2682,8 @@ class UiConfig:
 
     unit_system: str = "metric"  # "metric" | "imperial"
 
-    # UI-visibility gate for experimental sections; does not start/stop any
-    # subsystem (the save route handles the mouse + detection cascade).
-    show_experimental_features: bool = False
+    # Features that are on; every subsystem gated by one asks ``feature_on``.
+    shown_features: list[str] = field(default_factory=lambda: list(DEFAULT_SHOWN_FEATURES))
     # Config-only: shows the developer's views in the web UI (the Lens step's edge view).
     developer_mode: bool = False
 
@@ -2628,8 +2693,12 @@ class UiConfig:
             self.unit_system = "metric"
         choice = self.unit_system.strip().lower()
         self.unit_system = choice if choice in valid else "metric"
-        self.show_experimental_features = _coerce_bool(self.show_experimental_features, False)
+        self.shown_features = _coerce_feature_list(self.shown_features)
         self.developer_mode = _coerce_bool(self.developer_mode, False)
+
+    def feature_on(self, key: str) -> bool:
+        """Whether feature ``key`` is on."""
+        return key in self.shown_features
 
 
 NETWORK_MODE_SIMPLE = "simple"
@@ -3267,6 +3336,10 @@ def _config_from_data(path: str, data: dict[str, Any]) -> AppConfig:
     _marker = data.get("marker")
     if isinstance(_marker, dict):
         apply_renamed_marker_keys(_marker)
+
+    _ui = data.get("ui")
+    if isinstance(_ui, dict):
+        migrate_ui_keys(_ui)
 
     # Back-compat: OTP output used to pin a raw ``source_ip``; it now pins the
     # interface by name (``source_iface``), like PSN. Convert an existing IP to
@@ -3952,11 +4025,18 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
     # web section save, the debounced self-persist, an import) must never overwrite it.
     # Startup ``load_config`` seeds the initial value from disk; it is not reloaded after.
 
-    # ``unit_system`` is read live every frame by ``sync_ui_config`` and
-    # ``show_experimental_features`` gates the web UI off ``app._config``; a
-    # direct swap is enough (the save routes own the mouse/detection cascade).
+    # ``unit_system`` is read live every frame by ``sync_ui_config``; the
+    # Features list is read live too, and the services it gates are re-applied
+    # by their blocks below.
+    old_ui = app._config.ui
     if new_config.ui != app._config.ui:
         app._config.ui = new_config.ui
+
+    def _flipped(key: str) -> bool:
+        return old_ui.feature_on(key) != app._config.ui.feature_on(key)
+
+    if _flipped("psn_input"):
+        _apply("psn_input", app._runtime_services.apply_psn_input_change)
 
     # Network backend selection happens once at startup, so a change only
     # takes effect on restart. Mirror it in-memory so the web UI re-render and
@@ -4138,7 +4218,7 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
         ):
             app._config.otp_output = old_otp_output
 
-    if new_config.rttrpm_output != app._config.rttrpm_output:
+    if new_config.rttrpm_output != app._config.rttrpm_output or _flipped("rttrpm"):
         old_rttrpm_output = app._config.rttrpm_output
         app._config.rttrpm_output = new_config.rttrpm_output
         # Same lifecycle ownership as OTP: orchestrator nulls the
@@ -4146,7 +4226,7 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
         if not _apply(
             "rttrpm_output",
             lambda: app._runtime_services.apply_rttrpm_output_change(
-                new_config.rttrpm_output,
+                feature_gated(new_config.rttrpm_output, app._config, "rttrpm"),
             ),
         ):
             app._config.rttrpm_output = old_rttrpm_output
@@ -4164,7 +4244,7 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
     # The trigger_zones block below reloads the zone engine too; when zones also
     # changed, let that block own the single reload so a combined edit doesn't
     # reload the engine twice in one pass.
-    trigger_zones_changed = new_config.trigger_zones != app._config.trigger_zones
+    trigger_zones_changed = new_config.trigger_zones != app._config.trigger_zones or _flipped("zones")
     if osc_transmitters_changed or osc_destinations_changed:
         old_osc_transmitters = app._config.osc_transmitters
         old_osc_destinations = app._config.osc_destinations
@@ -4174,7 +4254,7 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
         def _reload_zone_destinations(destinations: OscDestinationsConfig) -> None:
             zone_engine = getattr(app._runtime_services, "_zone_engine", None)
             if zone_engine is not None:
-                zone_engine.reload_config(app._config.trigger_zones, destinations)
+                zone_engine.reload_config(feature_gated(app._config.trigger_zones, app._config, "zones"), destinations)
 
         def _revert_osc_routing() -> None:
             # Restore config first, then re-stage the old routing into the
@@ -4202,9 +4282,11 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
             if not trigger_zones_changed:
                 _reload_zone_destinations(new_config.osc_destinations)
 
-    if new_config.detection != app._config.detection:
+    if new_config.detection != app._config.detection or _flipped("detection"):
         old_detection = app._config.detection
-        new_enabled = new_config.detection.enabled
+        # What the detector runs: off while the Person detection feature is off.
+        new_detection = feature_gated(new_config.detection, app._config, "detection")
+        new_enabled = new_detection.enabled
         # Two live-apply paths:
         #   - ``apply_detection_change`` for on→on reload, on→off, off→off –
         #     served by the in-process worker's staged-config drain.
@@ -4227,9 +4309,7 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
             # orchestrator-side rollback.
             if not _apply(
                 "detection_swap",
-                lambda: app._runtime_services.swap_detector(
-                    new_config.detection,
-                ),
+                lambda: app._runtime_services.swap_detector(new_detection),
             ):
                 app._config.detection = old_detection
         else:
@@ -4241,9 +4321,7 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
             # nothing else reads.
             if not _apply(
                 "detection",
-                lambda: app._runtime_services.apply_detection_change(
-                    new_config.detection,
-                ),
+                lambda: app._runtime_services.apply_detection_change(new_detection),
                 on_failure=lambda: setattr(
                     app._runtime_services,
                     "_person_detector",
@@ -4252,14 +4330,14 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
             ):
                 app._config.detection = old_detection
 
-    if new_config.trigger_zones != app._config.trigger_zones:
+    if trigger_zones_changed:
         app._config.trigger_zones = new_config.trigger_zones
         zone_engine = getattr(app._runtime_services, "_zone_engine", None)
         if zone_engine is not None:
             # Use the committed destinations (``app._config``) so a zones edit
             # stays coherent with an OSC-routing apply that was reverted above.
             zone_engine.reload_config(
-                new_config.trigger_zones,
+                feature_gated(new_config.trigger_zones, app._config, "zones"),
                 app._config.osc_destinations,
             )
         # The endpoint is resolved from ``osc_destinations`` at send time.
@@ -4272,16 +4350,17 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
     if paths_changed:
         app._config.paths = new_config.paths
     engine = getattr(app, "_paths", None)
-    if engine is not None and (paths_changed or engine.enabled != app._config.ui.show_experimental_features):
-        engine.reload(app._config.paths, enabled=app._config.ui.show_experimental_features)
+    paths_on = app._config.ui.feature_on("paths")
+    if engine is not None and (paths_changed or engine.enabled != paths_on):
+        engine.reload(app._config.paths, enabled=paths_on)
 
     # The MIDI ``apply_config`` is idempotent (same device on same patch is a
     # no-op), so re-applying on every reload pass is safe.
-    if new_config.midi != app._config.midi:
+    if new_config.midi != app._config.midi or _flipped("midi"):
         app._config.midi = new_config.midi
         midi = getattr(app._runtime_services, "_midi", None)
         if midi is not None:
-            midi.apply_config(new_config.midi.patches)
+            midi.apply_config(new_config.midi.patches if app._config.ui.feature_on("midi") else [])
 
     # The bus's ``apply_config`` preserves current runtime values (only startup
     # resets to defaults) and resets pickup state for any fader whose source

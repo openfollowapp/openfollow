@@ -17,7 +17,7 @@ from openfollow.input.touch_remote import GLIDE, PATHFINDER, RESET, RemoteAction
 from openfollow.web.server import ConfigWebServer
 from tests._ports import live_on_free_port
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("every_feature_on")]
 
 POSITIONS = {1: (1.5, 3.0, 1.6), 2: (-2.0, 4.0, 0.0)}
 
@@ -82,10 +82,14 @@ def _holding(base: str, marker: int = 1) -> str:
         ("GET", "/api/remote/state?token=x"),
     ],
 )
-def test_every_route_is_refused_while_the_remote_is_switched_off(live, method: str, path: str) -> None:  # noqa: ANN001
+@pytest.mark.parametrize("off", ["switch", "feature"])
+def test_every_route_is_refused_while_the_remote_is_switched_off(live, method: str, path: str, off: str) -> None:  # noqa: ANN001
     base, config_path, _remote = live
     cfg = load_config(config_path)
-    cfg.touch_remote.enabled = False
+    if off == "switch":
+        cfg.touch_remote.enabled = False
+    else:
+        cfg.ui.shown_features = []
     save_config(cfg, config_path)
     status, data = _call(base, method, path, {"token": "x", "marker": 1} if method == "POST" else None)
     assert status == 403

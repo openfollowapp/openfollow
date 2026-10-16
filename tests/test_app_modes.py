@@ -3049,7 +3049,7 @@ class TestPathKeys:
         from openfollow.paths.engine import PathEngine
 
         cfg = AppConfig()
-        cfg.ui.show_experimental_features = True
+        cfg.ui.shown_features = ["paths"]
         cfg.paths = PathsConfig(
             slide_time=0.0,
             paths=[PathConfig(name="cross", active=True, points=[PathPointConfig(-5, 0, 0), PathPointConfig(5, 0, 0)])],

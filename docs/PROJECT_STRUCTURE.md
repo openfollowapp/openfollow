@@ -11,7 +11,7 @@ openfollow/              # Single unified package
 ├── runtime_metrics.py   # Frame metrics
 ├── net_utils.py         # Local IP/network helpers
 ├── packet_chunking.py   # MTU-budgeted datagram split shared by every output
-├── paths/               # Paths (experimental)
+├── paths/               # Paths (the experimental `paths` feature)
 │   ├── geometry.py      # A path's curve: straight runs, rounded corners
 │   ├── network.py       # Junctions between active paths, walking a locked marker
 │   └── engine.py        # Locked markers: pull, slide, switch, record

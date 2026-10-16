@@ -307,7 +307,8 @@ hysteresis = 0.05
 # metric – only display formatting and form-input parsing change.
 unit_system = "metric"
 
-# Reveal experimental web-UI sections (Person Detection, RTTrPM Output,
-# Device Permissions). Toggled from Station Settings.
-# Turning it off also disables person detection.
-show_experimental_features = false
+# Features this station uses (General tab, Features). One that is left out is
+# hidden in the web UI and does not run; its settings are kept. Also:
+# "detection", "rttrpm", "paths", "ground_grid", "calibration_points",
+# "touch_remote" (experimental).
+shown_features = ["zones", "midi", "lens_distortion", "psn_input"]

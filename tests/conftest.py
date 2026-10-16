@@ -59,6 +59,14 @@ class UnmarkedTestWarning(UserWarning):
     """A test was collected without a suite marker and defaulted to ``unit``."""
 
 
+@pytest.fixture
+def every_feature_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Configs built in the test start with every feature on, so a test of a gated subsystem runs it."""
+    import openfollow.configuration as configuration
+
+    monkeypatch.setattr(configuration, "DEFAULT_SHOWN_FEATURES", configuration.FEATURE_KEYS)
+
+
 @pytest.fixture(autouse=True)
 def _restore_os_environ() -> Iterator[None]:
     """Snapshot ``os.environ`` and restore it after every test.

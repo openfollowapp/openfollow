@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from openfollow.configuration import effective_lens
 from openfollow.input.touch_remote import holds
 from openfollow.runtime import paths_runtime
 from openfollow.runtime.services_detection_pin import (
@@ -398,8 +399,8 @@ class MouseHandler:
         # The cursor lands on the (lens-distorted) video, so undistort it back to
         # the pinhole frame before unprojecting. Identity when no lens distortion
         # is configured. k1/k2 live on the config (the Camera object is pinhole).
-        cam = self._app._config.camera
-        screen = invert_overlay_distortion(self._screen_buffer, float(w), float(h), cam.lens_k1, cam.lens_k2)
+        k1, k2 = effective_lens(self._app._config)
+        screen = invert_overlay_distortion(self._screen_buffer, float(w), float(h), k1, k2)
         plane_z = self._app._config.grid.z_offset if self._drag_floor_z is None else self._drag_floor_z
         world = unproject_to_plane(buf, screen, float(w), float(h), plane_z)
         if not np.all(np.isfinite(world[0])):
@@ -435,7 +436,7 @@ class MouseHandler:
         # by the lens coefficients, so the hit-test projects through the same
         # warp (identity when no lens is configured) or the clickable region
         # would drift from what the operator sees.
-        k1, k2 = cfg.camera.lens_k1, cfg.camera.lens_k2
+        k1, k2 = effective_lens(cfg)
         best_marker_id: int | None = None
         best_dist = float("inf")
         for marker_id in app._controlled_ids:

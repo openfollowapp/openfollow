@@ -882,7 +882,7 @@ def test_a_station_controlling_no_marker_still_switches_paths(path_app, tmp_path
 
     app = path_app
     app._controlled_ids = []
-    app._config.ui.show_experimental_features = True
+    app._config.ui.shown_features = ["paths"]
     app._config.paths = PathsConfig(
         slide_time=0.0,
         paths=[PathConfig(name="cross", active=True, points=[PathPointConfig(-5, 0, 0), PathPointConfig(5, 0, 0)])],

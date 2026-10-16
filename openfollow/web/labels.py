@@ -4,6 +4,20 @@
 
 from __future__ import annotations
 
+# The Features list: (field label, checkbox label) per feature key.
+FEATURE_LABELS: dict[str, tuple[str, str]] = {
+    "zones": ("Trigger zones", "Use trigger zones"),
+    "midi": ("MIDI", "Use MIDI devices"),
+    "lens_distortion": ("Lens distortion", "Use lens distortion"),
+    "psn_input": ("PSN input", "Receive other stations' markers"),
+    "detection": ("Person detection", "Use person detection"),
+    "rttrpm": ("RTTrPM output", "Use RTTrPM output"),
+    "paths": ("Paths", "Use paths"),
+    "ground_grid": ("Ground grid", "Use the ground grid"),
+    "calibration_points": ("Calibration points", "Use calibration points"),
+    "touch_remote": ("Touch remote", "Use the touch remote"),
+}
+
 # Tokens that must keep their canonical casing rather than Title-case.
 _ACRONYMS: dict[str, str] = {
     "midi": "MIDI",

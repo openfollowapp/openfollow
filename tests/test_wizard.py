@@ -1649,7 +1649,8 @@ def _lens_station(
     # Its own file, so a test holding several fixtures keeps the plain station plain.
     config_path = tmp_path / ("config_lens_dev.toml" if developer_mode else "config_lens.toml")
     cfg = AppConfig()
-    cfg.ui.show_experimental_features = experimental
+    # ``experimental`` turns the calibration points on; lens distortion is on by default.
+    cfg.ui.shown_features = [*cfg.ui.shown_features, "calibration_points"] if experimental else cfg.ui.shown_features
     cfg.ui.developer_mode = developer_mode
     cfg.camera.lens_k1 = -0.21
     cfg.camera.lens_k2 = 0.03
@@ -2121,12 +2122,13 @@ class TestLensChangeAfterPinning:
 @integration
 class TestWizardLensStepPage:
     @pytest.mark.parametrize("experimental", [False, True])
-    def test_the_lens_step_ignores_the_experimental_toggle(self, tmp_path, monkeypatch, experimental: bool) -> None:
+    def test_the_lens_step_ignores_the_calibration_points_feature(
+        self, tmp_path, monkeypatch, experimental: bool
+    ) -> None:
         with _lens_station(tmp_path, monkeypatch, experimental=experimental) as (_, base):
             status, body = _get(base, "/wizard")
         assert status == 200
         assert body.count('class="wizard-step-btn') == 8
-        assert 'class="wizard-step-btn experimental-feature' not in body
         assert 'id="wizard-step-lens"' in body
         assert "lens: 3" in body.split("window.WIZ = {")[1].split("};")[0]
         assert 'type="hidden" id="wiz_lens_k1"' not in body
@@ -2755,7 +2757,7 @@ class TestCalibrationPointsPages:
 
     @staticmethod
     def _rows(camera: str) -> list[list[str]]:
-        start = camera.index('<div class="group experimental-feature" id="camera-calibration-points">')
+        start = camera.index('<div class="group" id="camera-calibration-points" data-feature="calibration_points">')
         group = camera[start : camera.index("</table>", start)]
         assert "<input" not in group and "<select" not in group
         assert re.findall(r'<th scope="col">(.*?)</th>', group) == [

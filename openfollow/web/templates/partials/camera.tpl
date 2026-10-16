@@ -120,7 +120,7 @@
         </p>
     </div>
 
-    <div class="group">
+    <div class="group" data-feature="lens_distortion">
         <h3 class="group-title">Lens distortion</h3>
         <div class="row">
             <div class="field">
@@ -153,7 +153,7 @@
     </div>
 
     % if config.camera.calibration_points:
-    <div class="group experimental-feature" id="camera-calibration-points">
+    <div class="group" id="camera-calibration-points" data-feature="calibration_points">
         <h3 class="group-title">Calibration points <span class="badge-experimental">Experimental</span></h3>
         <table class="data-table">
             <thead>

@@ -579,31 +579,29 @@ class TestApplyImportData:
 
     @staticmethod
     def _experimental_station() -> AppConfig:
-        from openfollow.configuration import DetectionConfig, GroundGridConfig, PathConfig, PathsConfig, UiConfig
+        from openfollow.configuration import (
+            FEATURE_KEYS,
+            DetectionConfig,
+            GroundGridConfig,
+            PathConfig,
+            PathsConfig,
+            UiConfig,
+        )
 
         return AppConfig(
-            ui=UiConfig(show_experimental_features=True),
+            ui=UiConfig(shown_features=list(FEATURE_KEYS)),
             detection=DetectionConfig(enabled=True),
             ground_grid=GroundGridConfig(enabled=True),
             paths=PathsConfig(paths=[PathConfig(name="cross", active=True), PathConfig(name="loop", active=True)]),
         )
 
-    @pytest.mark.parametrize("with_paths", [True, False])
-    def test_an_import_turning_experimental_features_off_turns_them_off_as_the_toggle_does(
-        self, with_paths: bool
-    ) -> None:
-        data: dict[str, Any] = {"ui": {"show_experimental_features": False}, "detection": {"enabled": True}}
-        if with_paths:
-            data["paths"] = {"paths": [{"name": "cross", "active": True}, {"name": "loop"}]}
-        out = _apply_import_data(self._experimental_station(), data)
-        assert out.ui.show_experimental_features is False
-        assert [p.active for p in out.paths.paths] == [False, False]
-        assert out.detection.enabled is False
-        assert out.ground_grid.enabled is False
-
-    @pytest.mark.parametrize("ui", [{"show_experimental_features": True}, {"unit_system": "imperial"}, None])
-    def test_an_import_leaving_experimental_features_on_keeps_them(self, ui: dict[str, Any] | None) -> None:
-        data: dict[str, Any] = {"paths": {"paths": [{"name": "cross"}, {"name": "loop"}]}}
+    @pytest.mark.parametrize(
+        "ui", [{"shown_features": []}, {"show_experimental_features": False}, {"unit_system": "imperial"}, None]
+    )
+    def test_an_import_never_switches_off_what_the_features_gate(self, ui: dict[str, Any] | None) -> None:
+        data: dict[str, Any] = {
+            "paths": {"paths": [{"name": "cross", "active": True}, {"name": "loop", "active": True}]}
+        }
         if ui is not None:
             data["ui"] = ui
         out = _apply_import_data(self._experimental_station(), data)
@@ -1535,8 +1533,8 @@ class TestInterfaceAssignmentRows:
         cfg.rttrpm_output.host = "198.51.100.20"
         row = self._row(cfg, "RTTrPM output")
         assert (row["key"], row["blank"], row["address"]) == ("rttrpm_output.source_iface", "station", "192.168.1.5")
-        # Hidden with its section while experimental features are.
-        assert row["experimental"] is True
+        # Hidden with its section while the RTTrPM feature is off.
+        assert row["feature"] == "rttrpm"
 
         cfg.rttrpm_output.source_iface = "eth1"
         assert self._row(cfg, "RTTrPM output")["address"] == "10.0.0.9"

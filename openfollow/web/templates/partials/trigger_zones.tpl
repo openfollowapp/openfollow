@@ -2,7 +2,7 @@
 % _us = UnitSystem(config.ui.unit_system)
 % _imp = _us is UnitSystem.IMPERIAL
 % _len = unit_suffix_length(_us)
-<form id="trigger-zones-section" class="section {{'saved' if defined('saved') and saved else ''}}" data-fold-key="trigger_zones" data-help="trigger_zones"
+<form id="trigger-zones-section" data-feature="zones" class="section {{'saved' if defined('saved') and saved else ''}}" data-fold-key="trigger_zones" data-help="trigger_zones"
       data-template-form="1"
       hx-post="/section/trigger_zones" hx-target="#trigger-zones-section" hx-swap="outerHTML" hx-trigger="submit">
     <div class="section-head">

@@ -1,7 +1,5 @@
 # Trigger Zones
 
-> Zone Occupancy Detection is an experimental feature. The wire format and field names may change between releases.
-
 Polygon regions on the stage plane that fire OSC messages whenever a marker or detection crosses in or out. Use them to drive cue-style automation the moment a performer enters or leaves an area – without a continuous positional stream.
 
 ## Global

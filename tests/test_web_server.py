@@ -1625,7 +1625,7 @@ def test_interface_assignment_renders_and_saves_the_sender_rows(live_server, mon
     assert 'name="rttrpm_output.source_iface"' in body
     assert 'name="osc_destinations.default.source_iface"' in body
     assert "OSC Destination Default" in body
-    assert "experimental-feature" in body
+    assert 'data-feature="rttrpm"' in body
 
     status, _ = _post_form(
         base,
@@ -8068,7 +8068,7 @@ def test_the_station_settings_box_draws_no_rules_inside(live_server) -> None:
     _, base = live_server
     _, body = _get(base, "/")
     start = body.index('data-fold-key="general-station"')
-    box = body[start : body.find('<div class="section"', start)]
+    box = body[start : body.find('<form id="features-section"', start)]
     assert box.count('class="group"') == 3
     assert "group--divider" not in box
 
@@ -8811,7 +8811,7 @@ def test_ground_grid_broadcast_saves_the_polygon_locally(live_server) -> None:
 def test_ground_grid_travels_through_export_and_import(live_server) -> None:
     server, base = live_server
     cfg = load_config(server.config_path)
-    cfg.ui.show_experimental_features = True
+    cfg.ui.shown_features = ["ground_grid"]
     save_config(cfg, server.config_path)
     _post_form(base, "/section/ground_grid", {"enabled": "on", "z_offset": "-0.6", "vertices": json.dumps(_GG_SQUARE)})
     with urllib.request.urlopen(f"{base}/api/config/export", timeout=5) as resp:
@@ -8825,13 +8825,13 @@ def test_ground_grid_travels_through_export_and_import(live_server) -> None:
     assert (gg.enabled, gg.z_offset, gg.vertices) == (True, -0.6, _GG_SQUARE)
 
 
-def test_ground_grid_section_is_experimental_on_the_settings_page(live_server) -> None:
+def test_ground_grid_section_belongs_to_its_feature_on_the_settings_page(live_server) -> None:
     _, base = live_server
     status, body = _get(base, "/")
     assert status == 200
     form_tag = re.search(r'<form id="ground-grid-section"[^>]*>', body)
     assert form_tag is not None
-    assert "experimental-feature" in form_tag.group(0)
+    assert 'data-feature="ground_grid"' in form_tag.group(0)
     assert 'name="vertices"' in body
 
 

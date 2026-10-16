@@ -20,6 +20,21 @@ This station's name, web access and display units, plus the settings you set onc
 
 > Off, this web UI is gone after the next reboot too, and switching it back on takes SSH or a keyboard on the station. Absent on macOS and where OpenFollow is not a system service.
 
-**Experimental features** – shows Person Detection, RTTrPM Output, Paths, the Ground Grid and the Setup Wizard's calibration points, each marked *Experimental*. Turning it off also switches person detection and the ground grid off and deactivates every path; turning it back on does not.
-
 **Save** – saves the station name, PIN and custom domain name. No restart is needed.
+
+## Features
+
+What this station uses. Each box applies as soon as it changes. A feature that is off is hidden in the web UI and does not run, but its settings are kept: ticking it again brings it back as it was. Its own switch (such as **Enabled** under RTTrPM Output) still applies on top. Those marked *Experimental* are off on a new station.
+
+- **Trigger zones** – the Trigger Zones and Zone Editor sections and the Toggle Zones bindings. Off, zones neither fire nor show on the Operator Screen.
+- **MIDI** – the MIDI patches and each virtual fader's MIDI source. Off, no MIDI device is opened.
+- **Lens distortion** – the Camera tab's Lens distortion values and the Setup Wizard's Lens step. Off, the Operator Screen, mouse, person detection and zones all work as if the lens were straight, and the wizard leaves the saved values alone. A camera pinned with a lens needs its corners pinned again before a show.
+- **PSN input** – receiving other stations' markers. Off, they are neither shown nor counted by zones. Nothing is hidden.
+- **Person detection** – the Person Detection tab. Off, detection does not run.
+- **RTTrPM output** – the RTTrPM Output section and its Interface Assignment row. Off, nothing is sent.
+- **Paths** – the Paths and Path Editor sections, the Pathfinder and Toggle Paths bindings and OSC path commands. Off, every marker on a path is let go; each path keeps its Active setting.
+- **Ground grid** – the Ground Grid section. Off, it is neither drawn nor drops markers onto its height.
+- **Calibration points** – the Camera tab's calibration points and the Setup Wizard's Advanced section in Corner Pinning. Off, they are only hidden: the saved points still count.
+- **Touch remote** – the Touch Remote section and its launcher. Off, every remote lets go of its marker.
+
+**Apply to all stations** – sends this list to every station on the network.

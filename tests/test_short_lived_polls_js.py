@@ -78,7 +78,7 @@ _EXPORT = "/api/diagnostics/export?generation=3"
 def _drive_script() -> str:
     text = (_WEB / "templates" / "base.tpl").read_text(encoding="utf-8")
     start = text.index("// Save to USB storage device")
-    return text[start : text.index("// Toggle the <body> gate class", start)]
+    return text[start : text.index("// Show or hide a feature's data-feature elements", start)]
 
 
 def _drive(steps: str) -> Any:

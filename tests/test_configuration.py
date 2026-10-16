@@ -29,11 +29,14 @@ from openfollow.configuration import (
     DetectionConfig,
     GridConfig,
     MarkerConfig,
+    MidiConfig,
+    MidiPatch,
     Mouse3DConfig,
     OscConfig,
     OtpOutputConfig,
     RttrpmOutputConfig,
     TouchRemoteConfig,
+    TriggerZonesConfig,
     _apply_with_fallback,
     apply_runtime_config_changes,
     config_to_toml_dict,
@@ -79,6 +82,10 @@ class _DummyRuntimeServices:
         self.window_size_changes: list[tuple[int, int]] = []
         self.video_swaps: list[AppConfig] = []
         self.station_fqdn_changes: list[str] = []
+        self.psn_input_changes = 0
+
+    def apply_psn_input_change(self) -> None:
+        self.psn_input_changes += 1
 
     def apply_station_fqdn_change(self, fqdn: str) -> None:
         self.station_fqdn_changes.append(fqdn)
@@ -1865,18 +1872,109 @@ def test_apply_runtime_ui_unit_system_propagates_to_config() -> None:
     assert app._web_commands.restart_requested is False
 
 
-def test_apply_runtime_ui_show_experimental_propagates_to_config() -> None:
-    """``show_experimental_features`` is gated off ``app._config`` for the web
-    body class, so a change must propagate live without a restart."""
+def test_apply_runtime_ui_shown_features_propagates_to_config() -> None:
+    """The Features list is read off ``app._config``, so a change applies live without a restart."""
     app = _DummyApp(AppConfig())
-    assert app._config.ui.show_experimental_features is False
+    assert not app._config.ui.feature_on("paths")
     new_config = AppConfig()
-    new_config.ui.show_experimental_features = True
+    new_config.ui.shown_features = ["paths"]
 
     apply_runtime_config_changes(app, new_config)
 
-    assert app._config.ui.show_experimental_features is True
+    assert app._config.ui.shown_features == ["paths"]
     assert app._web_commands.restart_requested is False
+
+
+class _RecordingZoneEngine:
+    def __init__(self) -> None:
+        self.reloads: list[TriggerZonesConfig] = []
+
+    def reload_config(self, config: TriggerZonesConfig, destinations: object = None) -> None:
+        self.reloads.append(config)
+
+
+class _RecordingMidi:
+    def __init__(self) -> None:
+        self.applied: list[list[object]] = []
+
+    def apply_config(self, patches: list[object]) -> None:
+        self.applied.append(list(patches))
+
+
+def _with_features(cfg: AppConfig, *keys: str) -> AppConfig:
+    cfg.ui.shown_features = list(keys)
+    cfg.ui.__post_init__()
+    return cfg
+
+
+class TestFeatureGatesHotReload:
+    """A Features change re-applies exactly the services whose entry flipped, with the gated config."""
+
+    def test_psn_input_flip_reapplies_the_receiver_once(self) -> None:
+        app = _DummyApp(AppConfig())
+        apply_runtime_config_changes(app, _with_features(AppConfig(), "zones", "midi"))
+        assert app._runtime_services.psn_input_changes == 1
+        apply_runtime_config_changes(app, _with_features(AppConfig(), "zones", "midi", "paths"))
+        assert app._runtime_services.psn_input_changes == 1
+
+    @pytest.mark.parametrize("feature_on", [True, False])
+    def test_rttrpm_runs_only_with_its_entry(self, feature_on) -> None:  # noqa: ANN001
+        app = _DummyApp(AppConfig())
+        new = AppConfig(rttrpm_output=RttrpmOutputConfig(enabled=True))
+        _with_features(new, *(["rttrpm"] if feature_on else []))
+        apply_runtime_config_changes(app, new)
+        assert app._runtime_services.rttrpm_changes[-1].enabled is feature_on
+        assert app._config.rttrpm_output.enabled is True
+
+    def test_rttrpm_entry_flip_alone_reapplies_the_sender(self) -> None:
+        app = _DummyApp(_with_features(AppConfig(rttrpm_output=RttrpmOutputConfig(enabled=True)), "rttrpm"))
+        new = _with_features(AppConfig(rttrpm_output=RttrpmOutputConfig(enabled=True)))
+        apply_runtime_config_changes(app, new)
+        assert [cfg.enabled for cfg in app._runtime_services.rttrpm_changes] == [False]
+
+    def test_detection_entry_off_stops_the_detector_and_keeps_its_switch(self) -> None:
+        app = _DummyApp(_with_features(AppConfig(detection=DetectionConfig(enabled=True)), "detection"))
+        apply_runtime_config_changes(app, _with_features(AppConfig(detection=DetectionConfig(enabled=True))))
+        assert [cfg.enabled for cfg in app._runtime_services.detection_changes] == [False]
+        assert app._config.detection.enabled is True
+
+    def test_detection_entry_on_starts_the_detector(self) -> None:
+        app = _DummyApp(AppConfig(detection=DetectionConfig(enabled=True)))
+        app._runtime_services._person_detector = None
+        apply_runtime_config_changes(
+            app, _with_features(AppConfig(detection=DetectionConfig(enabled=True)), "detection")
+        )
+        assert [cfg.enabled for cfg in app._runtime_services.detection_swaps] == [True]
+
+    def test_zones_entry_flip_reloads_the_engine_with_the_gated_config(self) -> None:
+        app = _DummyApp(AppConfig(trigger_zones=TriggerZonesConfig(enabled=True)))
+        engine = _RecordingZoneEngine()
+        app._runtime_services._zone_engine = engine
+        apply_runtime_config_changes(app, _with_features(AppConfig(trigger_zones=TriggerZonesConfig(enabled=True))))
+        apply_runtime_config_changes(
+            app, _with_features(AppConfig(trigger_zones=TriggerZonesConfig(enabled=True)), "zones")
+        )
+        assert [cfg.enabled for cfg in engine.reloads] == [False, True]
+        assert app._config.trigger_zones.enabled is True
+
+    def test_midi_entry_off_closes_every_patch_and_keeps_them(self) -> None:
+        patch = MidiPatch(id=1, alias="Fader box")
+        app = _DummyApp(AppConfig(midi=MidiConfig(patches=[patch])))
+        midi = _RecordingMidi()
+        app._runtime_services._midi = midi
+        apply_runtime_config_changes(app, _with_features(AppConfig(midi=MidiConfig(patches=[patch]))))
+        apply_runtime_config_changes(app, _with_features(AppConfig(midi=MidiConfig(patches=[patch])), "midi"))
+        assert midi.applied == [[], [patch]]
+        assert app._config.midi.patches == [patch]
+
+    def test_unchanged_features_reapply_nothing(self) -> None:
+        app = _DummyApp(AppConfig(rttrpm_output=RttrpmOutputConfig(enabled=True)))
+        midi = _RecordingMidi()
+        app._runtime_services._midi = midi
+        apply_runtime_config_changes(app, AppConfig(rttrpm_output=RttrpmOutputConfig(enabled=True)))
+        assert app._runtime_services.rttrpm_changes == []
+        assert app._runtime_services.psn_input_changes == 0
+        assert midi.applied == []
 
 
 def test_apply_runtime_network_backend_propagates_to_config() -> None:
@@ -5579,6 +5677,7 @@ def test_apply_runtime_applies_otp_output_change_live() -> None:
     assert app._web_commands.restart_requested is False
 
 
+@pytest.mark.usefixtures("every_feature_on")
 def test_apply_runtime_applies_rttrpm_output_change_live() -> None:
     """RTTRPM output changes apply live without restart."""
     app = _app_with()
@@ -5784,6 +5883,7 @@ def test_apply_runtime_osc_transmitters_failure_reverts_config() -> None:
     assert app._config.viewer_marker_ids == [9]
 
 
+@pytest.mark.usefixtures("every_feature_on")
 def test_apply_runtime_detection_off_to_on_routes_through_swap_detector() -> None:
     """Detection off→on transition routes through swap_detector without restart."""
     # Default config has detection.enabled=False; new config enables it.
@@ -5806,6 +5906,7 @@ def test_apply_runtime_detection_off_to_on_routes_through_swap_detector() -> Non
     assert app._runtime_services.detection_changes == []
 
 
+@pytest.mark.usefixtures("every_feature_on")
 def test_apply_runtime_applies_detection_change_live_when_already_enabled() -> None:
     """on→on with new cfg: the orchestrator stages the swap on the
     running detector; no process restart."""
@@ -5871,6 +5972,7 @@ def test_apply_runtime_detection_failure_clears_detector_reference_and_reverts()
     assert app._web_commands.restart_requested is False
 
 
+@pytest.mark.usefixtures("every_feature_on")
 def test_apply_runtime_detection_phantom_detector_routes_through_swap_detector() -> None:
     """Phantom detector (unavailable backend) routes through swap_detector."""
     app = _app_with(detection=DetectionConfig(enabled=True, confidence=0.40))
@@ -5886,6 +5988,7 @@ def test_apply_runtime_detection_phantom_detector_routes_through_swap_detector()
     assert app._runtime_services.detection_changes == []
 
 
+@pytest.mark.usefixtures("every_feature_on")
 def test_apply_runtime_detection_no_detector_runnable_routes_through_swap_detector() -> None:
     """Null detector (backend missing at startup) routes through swap_detector."""
     app = _app_with(detection=DetectionConfig(enabled=True, confidence=0.40))
@@ -5900,6 +6003,7 @@ def test_apply_runtime_detection_no_detector_runnable_routes_through_swap_detect
     assert app._runtime_services.detection_changes == []
 
 
+@pytest.mark.usefixtures("every_feature_on")
 def test_apply_runtime_detection_inference_size_change_routes_through_swap_detector() -> None:
     """Inference size changes apply live via swap_detector."""
     app = _app_with(
@@ -5915,6 +6019,7 @@ def test_apply_runtime_detection_inference_size_change_routes_through_swap_detec
     assert app._runtime_services.detection_changes == []
 
 
+@pytest.mark.usefixtures("every_feature_on")
 def test_apply_runtime_detection_swap_failure_reverts_stored_config() -> None:
     """swap_detector failure reverts config for retry."""
 
@@ -7912,47 +8017,113 @@ class TestUiConfig:
         )
         assert load_config(str(temp_config_path)).ui.unit_system == "imperial"
 
-    # show_experimental_features opt-in.
-    def test_show_experimental_default_is_false(self) -> None:
+    # The Features list.
+    def test_shown_features_default_is_every_non_experimental_feature(self) -> None:
+        from openfollow.configuration import EXPERIMENTAL_FEATURES, FEATURE_KEYS, UiConfig
+
+        assert UiConfig().shown_features == [key for key in FEATURE_KEYS if key not in EXPERIMENTAL_FEATURES]
+        assert UiConfig().shown_features == ["zones", "midi", "lens_distortion", "psn_input"]
+
+    def test_shown_features_keeps_known_keys_in_list_order(self) -> None:
         from openfollow.configuration import UiConfig
 
-        assert UiConfig().show_experimental_features is False
+        ui = UiConfig(shown_features=["touch_remote", "zones", "detection"])
+        assert ui.shown_features == ["zones", "detection", "touch_remote"]
+        assert ui.feature_on("detection")
+        assert not ui.feature_on("midi")
+
+    def test_shown_features_empty_list_turns_everything_off(self) -> None:
+        from openfollow.configuration import FEATURE_KEYS, UiConfig
+
+        ui = UiConfig(shown_features=[])
+        assert ui.shown_features == []
+        assert not any(ui.feature_on(key) for key in FEATURE_KEYS)
+
+    @pytest.mark.parametrize("value", [None, "abc", "zones", True, 42, {"zones": True}])
+    def test_shown_features_wrong_type_falls_back_to_default(self, value) -> None:  # noqa: ANN001
+        from openfollow.configuration import DEFAULT_SHOWN_FEATURES, UiConfig
+
+        assert UiConfig(shown_features=value).shown_features == list(DEFAULT_SHOWN_FEATURES)  # type: ignore[arg-type]
 
     @pytest.mark.parametrize(
-        "value,expected",
+        "entries,expected",
         [
-            (True, True),
-            (False, False),
-            ("true", True),
-            ("on", True),
-            ("1", True),
-            ("false", False),
-            ("off", False),
-            ("0", False),
-            # Unrecognised / wrong-type input falls back to the default (False).
-            ("maybe", False),
-            (42, False),
-            (None, False),
+            (["zones", "warp_drive"], ["zones"]),
+            (["zones", "zones", "midi"], ["zones", "midi"]),
+            (["zones", None, 3, True, ["midi"]], ["zones"]),
+            ([" Zones ", "MIDI"], ["zones", "midi"]),
         ],
     )
-    def test_show_experimental_coercion(self, value, expected) -> None:  # noqa: ANN001
+    def test_shown_features_drops_unknown_duplicate_and_non_string_entries(self, entries, expected) -> None:  # noqa: ANN001
         from openfollow.configuration import UiConfig
 
-        assert UiConfig(show_experimental_features=value).show_experimental_features is expected  # type: ignore[arg-type]
+        assert UiConfig(shown_features=entries).shown_features == expected
 
-    def test_show_experimental_toml_round_trip(self, temp_config_path) -> None:  # noqa: ANN001
-        from openfollow.configuration import (
-            AppConfig,
-            UiConfig,
-            load_config,
-            save_config,
-        )
+    def test_shown_features_toml_round_trip(self, temp_config_path) -> None:  # noqa: ANN001
+        from openfollow.configuration import AppConfig, UiConfig, load_config, save_config
 
-        save_config(
-            AppConfig(ui=UiConfig(show_experimental_features=True)),
-            str(temp_config_path),
+        save_config(AppConfig(ui=UiConfig(shown_features=["paths", "midi"])), str(temp_config_path))
+        assert load_config(str(temp_config_path)).ui.shown_features == ["midi", "paths"]
+
+    def test_shown_features_missing_from_toml_reads_the_default(self, temp_config_path) -> None:  # noqa: ANN001
+        from openfollow.configuration import DEFAULT_SHOWN_FEATURES, load_config
+
+        temp_config_path.write_text('[ui]\nunit_system = "metric"\n')
+        assert load_config(str(temp_config_path)).ui.shown_features == list(DEFAULT_SHOWN_FEATURES)
+
+    @pytest.mark.parametrize(
+        "ui_toml,expected",
+        [
+            ("show_experimental_features = true\n", "all"),
+            ('show_experimental_features = "on"\n', "all"),
+            ("show_experimental_features = false\n", "default"),
+            ('show_experimental_features = "maybe"\n', "default"),
+            ('unit_system = "metric"\n', "default"),
+            ('show_experimental_features = true\nshown_features = ["midi"]\n', ["midi"]),
+            ('show_experimental_features = false\nshown_features = ["paths"]\n', ["paths"]),
+        ],
+    )
+    def test_show_experimental_features_migrates_on_load(self, temp_config_path, ui_toml, expected) -> None:  # noqa: ANN001
+        from openfollow.configuration import DEFAULT_SHOWN_FEATURES, FEATURE_KEYS, load_config, save_config
+
+        temp_config_path.write_text("[ui]\n" + ui_toml)
+        loaded = load_config(str(temp_config_path))
+        want = (
+            {"all": list(FEATURE_KEYS), "default": list(DEFAULT_SHOWN_FEATURES)}.get(expected)
+            if isinstance(expected, str)
+            else expected
         )
-        assert load_config(str(temp_config_path)).ui.show_experimental_features is True
+        assert loaded.ui.shown_features == want
+        save_config(loaded, str(temp_config_path))
+        assert "show_experimental_features" not in temp_config_path.read_text()
+
+    @pytest.mark.parametrize("features_on", [["zones", "detection", "paths"], ["detection", "paths", "ground_grid"]])
+    def test_feature_on_reads_the_list(self, features_on) -> None:  # noqa: ANN001
+        from openfollow.configuration import AppConfig, UiConfig, feature_on
+
+        cfg = AppConfig(ui=UiConfig(shown_features=features_on))
+        for key in features_on:
+            assert feature_on(cfg, key)
+        assert feature_on(cfg, "midi") is False
+
+    def test_feature_on_without_a_ui_section_reads_the_defaults(self) -> None:
+        from types import SimpleNamespace
+
+        from openfollow.configuration import feature_on
+
+        assert feature_on(SimpleNamespace(), "zones")
+        assert not feature_on(SimpleNamespace(), "paths")
+
+    @pytest.mark.parametrize(
+        "shown,expected",
+        [(["lens_distortion"], (0.12, -0.03)), ([], (0.0, 0.0))],
+    )
+    def test_effective_lens_follows_lens_distortion(self, shown, expected) -> None:  # noqa: ANN001
+        from openfollow.configuration import AppConfig, CameraConfig, UiConfig, effective_lens
+
+        cfg = AppConfig(camera=CameraConfig(lens_k1=0.12, lens_k2=-0.03), ui=UiConfig(shown_features=shown))
+        assert effective_lens(cfg) == expected
+        assert (cfg.camera.lens_k1, cfg.camera.lens_k2) == (0.12, -0.03)
 
     # developer_mode: config-only, shows the developer's views in the web UI.
     def test_developer_mode_default_is_false(self) -> None:
@@ -7984,7 +8155,7 @@ class TestUiConfig:
         save_config(AppConfig(ui=UiConfig(developer_mode=True)), str(temp_config_path))
         loaded = load_config(str(temp_config_path))
         assert loaded.ui.developer_mode is True
-        assert loaded.ui.show_experimental_features is False
+        assert loaded.ui.shown_features == ["zones", "midi", "lens_distortion", "psn_input"]
 
 
 class TestTriggerZonesConfigDropsNonObjectZones:
@@ -8471,11 +8642,11 @@ class TestPathsHotReload:
         return app
 
     @staticmethod
-    def _config(*, experimental: bool, active: bool = True) -> AppConfig:
+    def _config(*, paths_on: bool, active: bool = True) -> AppConfig:
         from openfollow.configuration import PathConfig, PathPointConfig, PathsConfig
 
         cfg = AppConfig()
-        cfg.ui.show_experimental_features = experimental
+        cfg.ui.shown_features = ["paths"] if paths_on else []
         cfg.paths = PathsConfig(
             paths=[PathConfig(name="cross", active=active, points=[PathPointConfig(0, 0, 0), PathPointConfig(1, 0, 0)])]
         )
@@ -8483,23 +8654,23 @@ class TestPathsHotReload:
 
     def test_new_paths_reach_the_engine(self) -> None:
         app = self._app()
-        apply_runtime_config_changes(app, self._config(experimental=True))
+        apply_runtime_config_changes(app, self._config(paths_on=True))
         assert app._paths.enabled
         assert app._paths.lock_onto(1, "cross", (0.5, 0.5, 0.0))
 
-    def test_switching_experimental_features_off_releases_everyone(self) -> None:
+    def test_switching_paths_off_releases_everyone(self) -> None:
         app = self._app()
-        apply_runtime_config_changes(app, self._config(experimental=True))
+        apply_runtime_config_changes(app, self._config(paths_on=True))
         app._paths.press(1, (0.5, 0.5, 0.0))
-        apply_runtime_config_changes(app, self._config(experimental=False))
+        apply_runtime_config_changes(app, self._config(paths_on=False))
         assert not app._paths.enabled
         assert not app._paths.is_locked(1)
 
     def test_an_unrelated_change_keeps_the_locks(self) -> None:
         app = self._app()
-        apply_runtime_config_changes(app, self._config(experimental=True))
+        apply_runtime_config_changes(app, self._config(paths_on=True))
         app._paths.press(1, (0.5, 0.5, 0.0))
-        changed = self._config(experimental=True)
+        changed = self._config(paths_on=True)
         changed.grid.width = 12.0
         apply_runtime_config_changes(app, changed)
         assert app._paths.is_locked(1)

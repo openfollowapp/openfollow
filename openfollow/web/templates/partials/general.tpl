@@ -1,7 +1,7 @@
 %# General tab content. Top-level sections: Station Settings (identity,
 %# display units, web access PIN, and an Advanced Settings disclosure
-%# holding the start-at-boot switch + the experimental opt-in), Network
-%# (live interface state), and Software Update (signed-.deb installer).
+%# holding the start-at-boot switch), Features (what this station uses),
+%# Network (live interface state), and Software Update (signed-.deb installer).
 %#
 %# Each form posts to ``/section/general`` (or the appropriate sub-
 %# route) with its own ``id``, ``hx-target=#its-id`` and
@@ -122,39 +122,59 @@
                         % end
                     </div>
                 </div>
-                %# Autostart and the experimental opt-in share a row; each applies on change.
+                % if _startup_here:
+                %# Autostart applies on change.
                 <div class="row">
-                    % if _startup_here:
                     %# Fetched on its own so the ``systemctl`` read stays off the
                     %# General render path, and so the switch reports the host's state
                     %# rather than a stored flag.
                     <div id="startup-settings" class="field checkbox-field">
                         <p class="muted">Loading startup settings…</p>
                     </div>
-                    % end
-                    %# A separate form so its change does not also trigger the units form.
-                    <form id="general-experimental-section" class="field checkbox-field"
-                          hx-post="/settings/experimental" hx-swap="none" hx-trigger="change">
-                        <label for="general-show-experimental">Experimental features</label>
-                        <div class="checkbox-wrap checkbox-field inline">
-                            <input type="checkbox" id="general-show-experimental" name="show_experimental_features"
-                                   {{'checked' if config.ui.show_experimental_features else ''}}
-                                   onchange="onExperimentalToggle(this)">
-                            <label for="general-show-experimental">Show experimental features</label>
-                        </div>
-                    </form>
                 </div>
+                % end
             </div>
         </div>
     </details>
 
-    %# Save sits at the box bottom (the display-units and experimental toggles
+    %# Save sits at the box bottom (the display-units and autostart toggles
     %# above live-apply on change, so only the station name, PIN and FQDN need it).
     %# ``form=`` keeps it submitting the network form from outside it.
     <div class="actions">
         <button type="submit" form="general-network-section" class="save-btn">Save</button>
     </div>
 </div>
+
+%# Features: each box saves on change; the page flips its feature-<key> body class.
+% from openfollow.configuration import EXPERIMENTAL_FEATURES, FEATURE_KEYS
+% from openfollow.web.labels import FEATURE_LABELS
+<form id="features-section" class="section" data-fold-key="features" data-help="general-station"
+      hx-post="/section/features" hx-swap="none" hx-trigger="change">
+    <div class="section-head">
+        <h2>Features</h2>
+    </div>
+    <div class="group">
+        % for _i in range(0, len(FEATURE_KEYS), 2):
+        <div class="row">
+            % for _key in FEATURE_KEYS[_i:_i + 2]:
+            % _label, _action = FEATURE_LABELS[_key]
+            <div class="field checkbox-field">
+                <label for="features-{{_key.replace('_', '-')}}">{{_label}}{{!' <span class="badge-experimental">Experimental</span>' if _key in EXPERIMENTAL_FEATURES else ''}}</label>
+                <div class="checkbox-wrap checkbox-field inline">
+                    <input type="checkbox" id="features-{{_key.replace('_', '-')}}" name="{{_key}}"
+                           {{'checked' if config.ui.feature_on(_key) else ''}}
+                           onchange="onFeatureToggle(this)">
+                    <label for="features-{{_key.replace('_', '-')}}">{{_action}}</label>
+                </div>
+            </div>
+            % end
+        </div>
+        % end
+    </div>
+    <div class="actions">
+        <button type="button" class="broadcast-btn" onclick="broadcastSection('features', this.form)">Apply to all stations</button>
+    </div>
+</form>
 
 % if defined('startup_supported') and startup_supported:
 <script>

@@ -1923,8 +1923,11 @@
  vertical-align: middle;
  margin-left: 0.3rem;
  }
- /* Hide experimental sections unless <body> carries .show-experimental. */
- body:not(.show-experimental) .experimental-feature { display: none !important; }
+ /* A data-feature element shows only while <body> carries feature-<key>. */
+ % from openfollow.configuration import FEATURE_KEYS
+ % for _fkey in FEATURE_KEYS:
+ body:not(.feature-{{_fkey}}) [data-feature="{{_fkey}}"] { display: none !important; }
+ % end
  @media (max-width: 680px) {
  body { padding: 12px 0; }
  .hero-panel { padding: 1rem; margin-bottom: 0.8rem; }
@@ -2372,7 +2375,7 @@
  @media (prefers-reduced-motion: reduce) { .remote-knob { transition: none; } }
  </style>
 </head>
-<body class="{{'show-experimental' if defined('config') and config and config.ui.show_experimental_features else ''}}">
+<body class="{{' '.join('feature-' + k for k in config.ui.shown_features) if defined('config') and config else ''}}">
  <div class="container">
  <header class="hero-panel">
  <a class="hero-logo-link" href="/" aria-label="OpenFollow – back to overview">
@@ -4354,15 +4357,9 @@
  ],
  });
  }
- // Toggle the <body> gate class. When turning off, uncheck the detection
- // Enabled box to mirror the server-side cascade; the selector must match
- // the route's cascade fields.
- function onExperimentalToggle(cb) {
- document.body.classList.toggle('show-experimental', cb.checked);
- if (cb.checked) return;
- document.querySelectorAll(
- '#detection-section input[name="enabled"], #ground-grid-section input[name="enabled"]'
- ).forEach(function (el) { el.checked = false; });
+ // Show or hide a feature's data-feature elements as its box flips; the form saves it.
+ function onFeatureToggle(cb) {
+ document.body.classList.toggle('feature-' + cb.name, cb.checked);
  }
  function switchTab(tabId) {
  // help docs are section-specific; dismiss the drawer when
@@ -4393,12 +4390,12 @@
  var first = document.querySelector('.tab-btn');
  var defaultTab = first ? first.dataset.tab : 'overview';
  var tabId = stored || defaultTab;
- // Fall back to the default tab if the stored tab is missing or is a
- // hidden experimental tab.
+ // Fall back to the default tab if the stored tab is missing or its
+ // feature is off.
  var el = document.getElementById('tab-' + tabId);
  if (!el
- || (el.classList.contains('experimental-feature')
- && !document.body.classList.contains('show-experimental'))) {
+ || (el.dataset.feature
+ && !document.body.classList.contains('feature-' + el.dataset.feature))) {
  tabId = defaultTab;
  }
  document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -5522,7 +5519,8 @@
           hx-target="this"
           hx-swap="innerHTML"></div>
  </div>
- % if defined('config') and config and config.touch_remote.enabled:
+ % from openfollow.configuration import feature_gated
+ % if defined('config') and config and feature_gated(config.touch_remote, config, 'touch_remote').enabled:
  % include('partials/touch_remote_card.tpl')
  <script src="/assets/js/touch-remote.js?v={{_asset_v}}"></script>
  % end

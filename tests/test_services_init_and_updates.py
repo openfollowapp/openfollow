@@ -998,6 +998,18 @@ class TestFeatureGates:
         assert receiver.enabled_calls == [True]
         assert receiver.rebinds == [("192.0.2.1", "eth0")]
 
+    def test_psn_input_on_with_no_station_address_stays_unbound(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _fake_ifaces(monkeypatch, {})
+        receiver = _GateReceiver(bound=None)
+        services._app._psn_receiver = receiver
+        _with_features(services, "psn_input")
+        services._app._config = replace(services._app._config, psn_source_iface="eth0")
+        services.apply_psn_input_change()
+        assert receiver.enabled_calls == [True]
+        assert receiver.rebinds == []
+
     def test_psn_input_on_leaves_a_bound_receiver_alone(self, services: AppRuntimeServices) -> None:
         receiver = _GateReceiver(bound="192.0.2.1")
         services._app._psn_receiver = receiver

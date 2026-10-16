@@ -80,7 +80,6 @@ from openfollow.configuration import (
     config_problem_words,
     config_write_lock,
     enforce_network_mode,
-    load_config,
     load_config_for_save,
     path_name_from,
     plane_pin_key,
@@ -3903,7 +3902,7 @@ def build_diagnostics_bundle(server: ConfigWebServer, cfg: AppConfig | None = No
     copy carries the same content and name. Off a request the config is read
     from disk.
     """
-    cfg = cfg or load_config(server.config_path)
+    cfg = cfg or _last_whole_config(server)
     # Size the operator's configured detection model store alongside
     # the SD card so the storage breakdown shows where models live
     # (NVMe vs. an SD-card fallback). Expand ``~`` first – the
@@ -4572,6 +4571,15 @@ def _port_suffix(netloc: str) -> str:
     return f":{port}" if sep else ""
 
 
+def _last_whole_config(server: ConfigWebServer) -> AppConfig:
+    """The config as the file last read whole, read again once it changes.
+
+    For a read that only shows the config. Unlike the request's copy it sees a
+    save the same request made, and it works off a request too.
+    """
+    return _CONFIG_CACHE.load(server.config_path)
+
+
 def _request_config(server: ConfigWebServer) -> AppConfig:
     """Return this request's copy of the config.
 
@@ -4661,7 +4669,7 @@ def _register_marker_catalog_routes(
         if catalog is None:
             response.status = 503
             return json.dumps({"error": "catalog unavailable"})
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         with _marker_catalog_lock:
             # Snapshot the prior entry (tombstones included) so we can
             # roll back the in-memory upsert if persistence fails –
@@ -4722,7 +4730,7 @@ def _register_marker_catalog_routes(
         if catalog is None:
             response.status = 503
             return json.dumps({"error": "catalog unavailable"})
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         with _marker_catalog_lock:
             # Snapshot the pre-tombstone entry so we can restore it
             # if persistence fails – without the rollback the UI / poll
@@ -4873,7 +4881,7 @@ def _register_input_plugin_routes(
                 input_cls: type[VideoInputBase],
             ) -> Callable[[], Any]:
                 def _handler() -> Any:
-                    cfg = load_config(server.config_path)
+                    cfg = _last_whole_config(server)
                     config = input_cls.get_config_field_values(
                         cfg,
                     )
@@ -4908,7 +4916,7 @@ def _render_gallery_grid(server: ConfigWebServer, *, error: str = "") -> str:
     # Highlight the *effective* selection: an unresolvable / deleted id plays the
     # Stage default at runtime, so the grid must mark Stage too rather than leave
     # no tile selected (which would disagree with the active source).
-    raw_selected = load_config(server.config_path).testpattern_selected_media
+    raw_selected = _last_whole_config(server).testpattern_selected_media
     selected = raw_selected if media_store.resolve(raw_selected) is not None else media_store.DEFAULT_STAGE_ID
     tiles: list[str] = []
     for item in media_store.list_media():
@@ -5153,7 +5161,7 @@ def _register_scene_routes(app: Bottle, server: ConfigWebServer) -> None:
             (points,) = _world_polylines([data.get("points", [])], 3)
         except ValueError as exc:
             return _json_error(400, str(exc))
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         return json.dumps(
             {
                 "polylines": _picture_polylines(cfg, w, h, lines),
@@ -5177,7 +5185,7 @@ def _register_scene_routes(app: Bottle, server: ConfigWebServer) -> None:
                 raise ValueError("not finite")
         except (KeyError, TypeError, ValueError, OverflowError):
             return _json_error(400, "x, y, z, w and h must be numbers")
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         params, k1, k2 = _camera_view(cfg)
         pinhole = invert_overlay_distortion(np.array([[x, y]], dtype=np.float64), w, h, k1, k2)
         world = unproject_to_plane(params, pinhole, w, h, z)[0]
@@ -5202,7 +5210,7 @@ def _register_scene_routes(app: Bottle, server: ConfigWebServer) -> None:
                 raise ValueError("z must be finite")
         except (KeyError, TypeError, ValueError, OverflowError):
             return _json_error(400, "vertices, z, w and h must be numbers")
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         g = cfg.grid
         verts = verts[:GROUND_GRID_MAX_VERTICES]
         corners = [[*v, z] for v in verts]
@@ -5227,7 +5235,7 @@ def _register_path_routes(app: Bottle, server: ConfigWebServer) -> None:
     from openfollow.paths.network import extend_to_corners
 
     def _snapshot() -> dict[str, Any]:
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         state = server.get_path_state()
         return {
             "show_paths": cfg.paths.show_paths,
@@ -5345,7 +5353,7 @@ def _register_path_routes(app: Bottle, server: ConfigWebServer) -> None:
         if isinstance(data, str):
             return data
         on = _as_bool(data.get("on"), False)
-        if load_config(server.config_path).paths.find(name) is None:
+        if _last_whole_config(server).paths.find(name) is None:
             return _json_error(404, f"No path called {name}.")
         if not server.record_path(name if on else None):
             return _json_error(409, "Paths are switched off.")
@@ -5373,7 +5381,7 @@ def _register_path_routes(app: Bottle, server: ConfigWebServer) -> None:
             _require_wizard_canvas(w, h)
         except (KeyError, TypeError, ValueError):
             return _json_error(400, "w and h must be the picture's size in pixels")
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         params, k1, k2 = _camera_view(cfg)
 
         def seen(points: list[tuple[float, float, float]]) -> list[list[float] | None]:
@@ -7124,7 +7132,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         return template("partials/startup", startup=startup)
 
     def _render_camera_setup(setup: dict[str, Any], *, mode: str = "view", banner: dict[str, str] | None = None) -> Any:
-        camera_name = str(load_config(server.config_path).picam_camera_name)
+        camera_name = str(_last_whole_config(server).picam_camera_name)
         return template("partials/camera_setup", setup=setup, mode=mode, banner=banner, camera_name=camera_name)
 
     @app.get("/section/video_source/camera-setup")
@@ -7199,7 +7207,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         actually queued – a rejected request (another update in flight) must
         not leave the operator polling a locked progress modal.
         """
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         response.content_type = "application/json"
         service_name = _service_unit_name(cfg)
         if not server.request_deb_update(service_name=service_name):
@@ -7216,7 +7224,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """
         from openfollow.runtime.deb_update import check_for_update
 
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         response.content_type = "application/json"
         try:
             info = check_for_update(
@@ -7263,7 +7271,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         if total > _MAX_UPLOAD_BYTES:
             return json.dumps({"ok": False, "error": f"File too large (max {_MAX_UPLOAD_BYTES // (1024 * 1024)} MB)."})
 
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         service_name = _service_unit_name(cfg)
 
         staged_path = f"/tmp/{DEB_UPDATE_TMP_PREFIX}{secrets.token_hex(8)}.ofupdate"  # nosec B108
@@ -7419,7 +7427,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     def start_button_detection() -> Any:
         """Trigger the in-app button detection wizard."""
         server.request_button_detection()
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         return template(
             "partials/gamepad",
             config=cfg,
@@ -7437,7 +7445,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         main-loop tick), so ``detection_started`` may still read "running"
         for one poll until the flag clears."""
         server.cancel_button_detection()
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         return template(
             "partials/gamepad",
             config=cfg,
@@ -7926,7 +7934,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         crafted ``../`` traversal or unknown name can't reach outside the
         models directory.
         """
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         name = (request.forms.get("model", "") or "").strip()
         on_disk = _discover_storage_models(cfg.detection.storage_path)
         if not name or name != Path(name).name or name not in on_disk:
@@ -7956,7 +7964,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         and the model-export tools (ultralytics + onnx, installed by
         ``install-detection.sh``). It writes ``<storage>/models/<model>``.
         """
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         # ``export_model`` (not ``model``) so the export dropdown can't clobber
         # the active-model selector when the whole form is saved.
         model = (request.forms.get("export_model", "") or "").strip()
@@ -8648,7 +8656,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         which feed back into the ring buffer. Returns the manager's
         report dict (``sent`` / ``error`` / ``address`` / ``args``)."""
         response.content_type = "application/json"
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         if _find_osc_binding(cfg, row_id) is None:
             response.status = 404
             return json.dumps({"available": False, "error": "Unknown binding"})
@@ -8916,7 +8924,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # Save response, so the JS button can reuse the section
         # ``hx-swap`` plumbing without a one-off content-type
         # negotiation.
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         return _render_osc_bindings_section(cfg, saved=True)
 
     # ---- File-based template system ---------------------------------------

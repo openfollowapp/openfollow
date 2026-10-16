@@ -3456,7 +3456,7 @@ def config_problem_words(error: ConfigFileUnreadableError) -> tuple[str, str]:
     """An operator's words for *error*: what is wrong with the settings file, and the one step that mends it."""
     if isinstance(error, ConfigFileEmptyError):
         return "is empty", "Restart OpenFollow to restore the settings from the latest backup copy"
-    return "could not be read", "Import a settings file or a backup copy to replace it"
+    return "could not be read", "Import a settings file to replace it"
 
 
 def save_config(config: AppConfig, path: str = "config.toml", *, replace_unreadable: bool = False) -> None:

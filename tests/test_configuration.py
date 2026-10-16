@@ -2821,7 +2821,7 @@ def test_a_switch_that_could_not_be_saved_is_saved_by_switching_again_once_the_f
     assert app._config.video_source_type == "rtsp"
     assert banners == [
         "RTSP is live but could not be saved. The settings file could not be read. "
-        "Import a settings file or a backup copy to replace it, then switch again."
+        "Import a settings file to replace it, then switch again."
     ]
 
     save_config(good, path, replace_unreadable=True)  # the operator repairs it

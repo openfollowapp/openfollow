@@ -33,7 +33,7 @@ pytestmark = pytest.mark.integration
 _EMPTY_ERROR = "The settings file on this station is empty"
 _EMPTY_ACTION = "Restart OpenFollow to restore the settings from the latest backup copy."
 _UNREADABLE_ERROR = "The settings file on this station could not be read"
-_UNREADABLE_ACTION = "Import a settings file or a backup copy to replace it."
+_UNREADABLE_ACTION = "Import a settings file to replace it."
 
 _BROKEN = pytest.mark.parametrize(
     "content", [b"", b"  \n\t\n", b"not [[ valid toml"], ids=["empty", "whitespace", "unparseable"]
@@ -369,3 +369,53 @@ def test_the_login_asks_for_the_pin_of_the_last_whole_read(station, content: byt
     assert _login(base, "4321").startswith("_openfollow_auth=")
     status, page = _request(base, "POST", "/login", "form", {"pin": "0000"})
     assert (status, "Incorrect PIN" in page) == (200, True)
+
+
+def test_every_read_in_the_routes_goes_through_the_cache_or_reads_for_save() -> None:
+    """A bare ``load_config`` there falls back to the backup on a broken file, a save behind the page."""
+    import re
+
+    source = Path(routes_module.__file__).read_text(encoding="utf-8")
+    assert re.findall(r"\bload_config\(", source) == []
+
+
+def _whole_then_broken(config_path: Path, content: bytes, read: Any) -> tuple[Any, Any]:
+    from openfollow.configuration import PathConfig, PathsConfig
+
+    latest = AppConfig(
+        psn_system_name="Latest Name",
+        markers_catalog_path="latest-markers.toml",
+        testpattern_selected_media="default:grey",
+        paths=PathsConfig(paths=[PathConfig(name="LatestRoute")]),
+    )
+    save_config(latest, str(config_path))  # the backup is the save before, without any of these
+    whole = read()
+    config_path.write_bytes(content)
+    return whole, read()
+
+
+@_BROKEN
+def test_the_gallery_marks_the_selection_of_the_last_whole_read(station, content: bytes) -> None:
+    config_path, base = station
+    whole, broken = _whole_then_broken(config_path, content, lambda: _get(base, "/video-input/testpattern/list")[1])
+    assert '<div class="gallery-tile selected"><button class="gallery-select" type="button" title="Grey"' in whole
+    assert broken == whole
+
+
+@_BROKEN
+def test_the_path_list_is_that_of_the_last_whole_read(station, content: bytes) -> None:
+    config_path, base = station
+    whole, broken = _whole_then_broken(config_path, content, lambda: _get(base, "/api/paths")[1])
+    assert "LatestRoute" in whole
+    assert broken == whole
+
+
+@_BROKEN
+def test_a_catalog_edit_lands_in_the_catalog_of_the_last_whole_read(station, content: bytes) -> None:
+    config_path, base = station
+    _whole_then_broken(config_path, content, lambda: _get(base, "/api/paths"))
+
+    status, _ = _request(base, "PUT", "/api/markers/catalog/2", "json", {"name": "Two", "color": "#00ff00"})
+
+    assert status == 200
+    assert config_path.with_name("latest-markers.toml").is_file()

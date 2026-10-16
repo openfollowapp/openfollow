@@ -88,7 +88,7 @@ function paths() { return requests.map(function (r) { return r.url.replace(/\\?.
 function settle() { return new Promise(function (r) { setTimeout(r, 0); }); }
 function tick() { timers.forEach(function (f) { f(); }); }
 var STATE = { held: null, lost: false, markers: [{ id: 1, name: 'Lead', color: '#ffbc00', pos: [0, 0, 1.6] }],
-              z_step_m: 0.05, z_notch_px: 20, paths_on: false, recording: false, locked: [], inverted: false };
+              z_step_m: 0.05, z_notch_px: 20, paths_on: false, recording: false, locked: [] };
 """
 
 
@@ -356,17 +356,14 @@ out.heldAfter = !els['remote-held'].hidden;
     assert out == {"lostShown": True, "lostAfter": False, "heldAfter": True}
 
 
-@pytest.mark.parametrize(
-    ("inverted", "flip", "up"),
-    [(False, False, "UPSTAGE"), (True, False, "DOWNSTAGE"), (True, True, "UPSTAGE"), (False, True, "DOWNSTAGE")],
-)
-def test_the_stick_labels_say_where_it_drives(inverted: bool, flip: bool, up: str) -> None:
+@pytest.mark.parametrize(("flip", "up"), [(False, "UPSTAGE"), (True, "DOWNSTAGE")])
+def test_the_stick_labels_say_where_it_drives(flip: bool, up: str) -> None:
     out = _run(
         f"""
 els['remote-launcher'].fire('click');
 answer(0, 200, {{ token: 't1' }}); await settle();
 if ({str(flip).lower()}) els['remote-flip'].fire('click');
-answer(1, 200, Object.assign({{}}, STATE, {{ inverted: {str(inverted).lower()} }})); await settle();
+answer(1, 200, STATE); await settle();
 out.up = els['remote-up'].textContent;
 """
     )

@@ -271,7 +271,7 @@ def test_the_state_lists_the_controlled_markers_and_the_settings(live) -> None: 
     assert state["z_notch_px"] == 20
     assert state["recording"] is True
     assert state["locked"] == [2]
-    assert state["inverted"] is False
+    assert "inverted" not in state
 
 
 def test_without_a_registry_every_route_is_refused(tmp_path, monkeypatch) -> None:  # noqa: ANN001

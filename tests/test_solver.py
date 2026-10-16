@@ -14,15 +14,18 @@ import pytest
 
 from openfollow.scene.solver import (
     CONE_RING_SEGMENTS,
+    apply_overlay_distortion,
     compute_homography,
     cone_ring_angles,
     cone_silhouette_angles,
     decompose_homography,
+    ground_axes,
     ground_circle_world_ring,
     hfov_to_vfov,
     project_points,
     ring_silhouette_edges,
     ring_silhouette_indices,
+    screen_axes_at,
     solve_camera_dlt,
     unproject_to_plane,
     vfov_to_hfov,
@@ -833,3 +836,112 @@ class TestConeRingAngles:
         assert len(angles) == CONE_RING_SEGMENTS + 2
         assert np.all(np.diff(angles) >= 0)
         assert [angles[i] for i in at] == [5.0, 1.0]
+
+
+def _pose(**kw: float) -> np.ndarray:
+    base = {"x": 0.0, "y": -11.0, "z": 6.0, "pitch": -22.0, "yaw": 0.0, "roll": 0.0, "fov": 60.0}
+    base.update(kw)
+    return np.array([base[k] for k in ("x", "y", "z", "pitch", "yaw", "roll", "fov")], dtype=np.float64)
+
+
+@pytest.mark.parametrize(
+    ("pose", "right", "forward"),
+    [
+        ({}, (1.0, 0.0), (0.0, 1.0)),
+        ({"yaw": 90.0}, (0.0, -1.0), (1.0, 0.0)),
+        ({"yaw": 180.0}, (-1.0, 0.0), (0.0, -1.0)),
+        ({"yaw": -90.0}, (0.0, 1.0), (-1.0, 0.0)),
+        # Straight down still has a heading: its picture's up.
+        ({"pitch": -90.0}, (1.0, 0.0), (0.0, 1.0)),
+        ({"pitch": -90.0, "yaw": 90.0}, (0.0, -1.0), (1.0, 0.0)),
+        ({"pitch": 0.0}, (1.0, 0.0), (0.0, 1.0)),
+        ({"pitch": 46.0}, (1.0, 0.0), (0.0, 1.0)),
+        # A level camera keeps its bearing however it is rolled.
+        ({"pitch": 0.0, "roll": 30.0}, (1.0, 0.0), (0.0, 1.0)),
+        ({"pitch": 0.0, "roll": 90.0}, (1.0, 0.0), (0.0, 1.0)),
+        # Upside down: right is the picture's right, whatever the tilt.
+        ({"pitch": -44.0, "roll": 180.0}, (-1.0, 0.0), (0.0, -1.0)),
+        ({"pitch": -46.0, "roll": 180.0}, (-1.0, 0.0), (0.0, -1.0)),
+        # Rolled so far the two cancel: the view decides.
+        ({"pitch": 0.0, "roll": 120.0}, (1.0, 0.0), (0.0, 1.0)),
+    ],
+)
+def test_ground_axes_is_the_camera_heading_on_the_floor(pose, right, forward) -> None:  # noqa: ANN001
+    got_right, got_forward = ground_axes(_pose(**pose))
+    assert got_right == pytest.approx(right, abs=1e-9)
+    assert got_forward == pytest.approx(forward, abs=1e-9)
+
+
+@pytest.mark.parametrize("roll", [90.0, -90.0, 180.0])
+def test_ground_axes_turns_smoothly_through_a_level_camera(roll: float) -> None:
+    """A camera solved at about 0 degrees pitch must not steer a different way after each recalibration."""
+    above, below = ground_axes(_pose(pitch=0.001, roll=roll)), ground_axes(_pose(pitch=-0.001, roll=roll))
+    assert above[0] == pytest.approx(below[0], abs=1e-3)
+    assert above[1] == pytest.approx(below[1], abs=1e-3)
+
+
+def test_ground_axes_follows_a_rolled_picture() -> None:
+    (rx, ry), (fx, fy) = ground_axes(_pose(roll=30.0))
+    assert math.hypot(rx, ry) == pytest.approx(1.0)
+    assert rx * fx + ry * fy == pytest.approx(0.0, abs=1e-12)
+    assert ry != pytest.approx(0.0)
+
+
+def test_screen_axes_at_the_picture_centre_line_match_the_camera_heading() -> None:
+    params = _pose()
+    axes = screen_axes_at(params, (0.0, 0.0, 0.0), 1920.0, 1080.0)
+    assert axes is not None
+    right, up = axes
+    assert right == pytest.approx((1.0, 0.0), abs=1e-6)
+    assert up == pytest.approx((0.0, 1.0), abs=1e-6)
+
+
+@pytest.mark.parametrize(("k1", "k2"), [(0.0, 0.0), (-0.2, 0.05)])
+def test_screen_axes_move_the_point_up_its_picture_column(k1: float, k2: float) -> None:
+    params = _pose()
+    point = (4.0, 2.0, 1.6)
+    axes = screen_axes_at(params, point, 1920.0, 1080.0, k1, k2)
+    assert axes is not None
+    _, (ux, uy) = axes
+    step = np.array([point, (point[0] + 0.01 * ux, point[1] + 0.01 * uy, point[2])])
+    seen = apply_overlay_distortion(project_points(params, step, 1920.0, 1080.0), 1920.0, 1080.0, k1, k2)
+    assert seen[1, 0] == pytest.approx(seen[0, 0], abs=0.05)
+    assert seen[1, 1] < seen[0, 1]
+    # Off the centre line the column leans away from the camera.
+    assert ux > 0.0
+
+
+@pytest.mark.parametrize(
+    ("pose", "point"),
+    [
+        ({}, (0.0, -20.0, 0.0)),  # behind the camera
+        ({}, (40.0, 0.0, 0.0)),  # off the side of the picture
+        ({"pitch": -10.0}, (0.0, 4000.0, 0.0)),  # on the picture, a step up is past the horizon
+        # A tripod lower than the ball: up the picture would run back towards the camera.
+        ({"z": 1.5, "pitch": -5.0}, (0.0, 0.0, 1.6)),
+        ({"z": 1.6, "pitch": -5.0}, (0.0, 0.0, 1.6)),
+    ],
+)
+def test_screen_axes_at_give_no_answer_off_the_usable_picture(pose, point) -> None:  # noqa: ANN001
+    assert screen_axes_at(_pose(**pose), point, 1920.0, 1080.0) is None
+
+
+@pytest.mark.parametrize(
+    "point",
+    [
+        (6.0, -6.0, 0.0),  # a step crosses the fold
+        (12.0, -6.0, 0.0),  # past the fold: drawn folded back into the picture
+        (12.0, 0.0, 0.0),
+    ],
+)
+def test_screen_axes_give_no_answer_past_a_barrel_lens_fold(point) -> None:  # noqa: ANN001
+    params = _pose(fov=90.0)
+    assert screen_axes_at(params, point, 1920.0, 1080.0, -0.5, 0.0) is None
+    # Inside the fold the same lens still answers.
+    assert screen_axes_at(params, (4.0, 0.0, 0.0), 1920.0, 1080.0, -0.5, 0.0) is not None
+
+
+@pytest.mark.parametrize("roll", [100.0, 115.0, -115.0])
+def test_ground_axes_keeps_a_level_cameras_bearing_short_of_upside_down(roll: float) -> None:
+    _, forward = ground_axes(_pose(pitch=0.0, roll=roll))
+    assert forward == pytest.approx((0.0, 1.0), abs=1e-9)

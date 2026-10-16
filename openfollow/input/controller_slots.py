@@ -23,6 +23,9 @@ RESERVED = "reserved"
 # A slot below a pin that nothing fills: silent, drives no marker, any kind takes it.
 EMPTY = "empty"
 
+# A slot's pick that leaves it without a marker.
+NO_MARKER = 0
+
 # What a slot's controller can't do. Published through /api/stats, so the
 # values are a wire interface.
 NOTE_BUTTONS_UNRECOGNISED = "buttons_unrecognised"
@@ -112,6 +115,46 @@ def _trimmed(slots: list[SlotEntry]) -> tuple[SlotEntry, ...]:
     while slots and slots[-1].state == EMPTY:
         slots.pop()
     return tuple(slots)
+
+
+def _valid_picks(picks: Mapping[int, int], controlled: Sequence[int]) -> dict[int, int]:
+    """The picks that still name a controlled marker, or ``NO_MARKER``."""
+    allowed = set(controlled)
+    return {index: marker for index, marker in picks.items() if marker == NO_MARKER or marker in allowed}
+
+
+def slot_markers(slot_count: int, controlled: Sequence[int], picks: Mapping[int, int]) -> list[int | None]:
+    """Each slot's marker: its pick, else the next controlled marker no slot picked, in list order.
+
+    ``picks`` maps a 0-based slot to a marker, ``NO_MARKER`` for a slot left without one. A pick
+    naming a marker that is not controlled counts as no pick. Without picks this is
+    ``controlled[slot]``.
+    """
+    valid = _valid_picks(picks, controlled)
+    picked = set(valid.values())
+    spare = iter([marker for marker in controlled if marker not in picked])
+    return [(valid[index] or None) if index in valid else next(spare, None) for index in range(slot_count)]
+
+
+def pick_marker(
+    slot_count: int, controlled: Sequence[int], picks: Mapping[int, int], index: int, marker: int
+) -> dict[int, int] | None:
+    """The picks after giving slot ``index`` the controlled ``marker``; ``None`` when it can't have it.
+
+    Every slot that drives a marker keeps it as a pick, so only the slot that held ``marker``
+    changes: it takes ``index``'s previous marker, or none.
+    """
+    if marker not in controlled or not 0 <= index < slot_count:
+        return None
+    current = slot_markers(slot_count, controlled, picks)
+    valid = _valid_picks(picks, controlled)
+    new = {i: m for i, m in valid.items() if i >= slot_count or m == NO_MARKER}
+    new.update({i: m for i, m in enumerate(current) if m is not None})
+    holder = next((i for i, m in new.items() if m == marker and i != index), None)
+    if holder is not None:
+        new[holder] = current[index] or NO_MARKER
+    new[index] = marker
+    return new
 
 
 def slot_ref(slot: SlotEntry) -> str:

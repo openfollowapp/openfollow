@@ -14,7 +14,14 @@ from types import SimpleNamespace
 import pytest
 
 import openfollow.video.inputs as inputs_module
-from openfollow.configuration import AppConfig, CameraConfig, OscDestinationConfig, OscDestinationsConfig, SlotPinConfig
+from openfollow.configuration import (
+    AppConfig,
+    CameraConfig,
+    OscDestinationConfig,
+    OscDestinationsConfig,
+    SlotMarkerConfig,
+    SlotPinConfig,
+)
 from openfollow.input.control_frame import ControlFrame
 from openfollow.lens_model import lens_warp_is_valid
 from openfollow.web.routes import (
@@ -71,12 +78,14 @@ def test_config_dict_redacted_drops_device_local_fields() -> None:
     assert d["web_port"] == 8080  # non-secret fields preserved
 
 
-def test_config_dict_redacted_drops_slot_pins() -> None:
-    """A pin names a USB socket on this box; a peer's slots would follow sockets it lacks."""
+def test_config_dict_redacted_drops_slot_pins_and_markers() -> None:
+    """A pin names a USB socket on this box and a pick one of its slots; a peer has neither."""
     cfg = AppConfig()
     cfg.controller.slot_pins = [SlotPinConfig(slot=2, key="usb:platform/xhci-hcd.1:1.4", label="Pad")]
+    cfg.controller.slot_markers = [SlotMarkerConfig(slot=1, marker=4)]
     d = _config_dict_redacted(cfg)
     assert "slot_pins" not in d["controller"]
+    assert "slot_markers" not in d["controller"]
     assert d["controller"]["deadzone"] == cfg.controller.deadzone
 
 
@@ -138,7 +147,8 @@ def test_strip_device_local_fields_drops_detection_storage_path() -> None:
 @pytest.mark.parametrize("section", ["controller", "gamepad", "keyboard", "mouse"])
 def test_strip_device_local_fields_drops_slot_pins(section: str) -> None:
     pin = {"slot": 2, "key": "usb:platform/xhci-hcd.1:1.4", "kind": "gamepad", "label": "Pad"}
-    scrubbed = strip_device_local_fields(section, {"slot_pins": [pin], "deadzone": 0.2})
+    pick = {"slot": 1, "marker": 4}
+    scrubbed = strip_device_local_fields(section, {"slot_pins": [pin], "slot_markers": [pick], "deadzone": 0.2})
     assert scrubbed == {"deadzone": 0.2}
 
 
@@ -1704,6 +1714,7 @@ _DEVICE_IDENTITY_SAMPLES = [
     ("testpattern_selected_media", "0123456789abcdef"),
     ("detection.storage_path", "/mnt/nvme/openfollow/yolo"),
     ("controller.slot_pins", [SlotPinConfig(slot=2, key="usb:platform/xhci-hcd.1:1.4", label="Pad")]),
+    ("controller.slot_markers", [SlotMarkerConfig(slot=2, marker=5)]),
 ]
 
 

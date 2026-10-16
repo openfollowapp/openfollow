@@ -12,12 +12,15 @@ from openfollow.input.controller_slots import (
     CONNECTED,
     EMPTY,
     MISSING,
+    NO_MARKER,
     NOTE_BUTTON_MAP_OTHER_MODEL,
     NOTE_CANNOT_IDENTIFY,
     RESERVED,
     ControllerSlotTable,
     LiveController,
     SlotPin,
+    pick_marker,
+    slot_markers,
     slot_ref,
 )
 
@@ -526,3 +529,95 @@ def test_a_pin_dropped_before_the_first_seed_moves_nothing() -> None:
     assert table.unpin(2) is True
     assert table.pins == {}
     assert table.slots == ()
+
+
+# --- the marker each slot drives -------------------------------------------
+
+
+def test_without_picks_each_slot_drives_its_place_in_the_list() -> None:
+    assert slot_markers(4, [10, 11, 12], {}) == [10, 11, 12, None]
+
+
+def test_slots_without_a_pick_take_the_markers_no_slot_picked() -> None:
+    assert slot_markers(3, [10, 11, 12], {0: 12}) == [12, 10, 11]
+
+
+def test_a_slot_can_be_left_without_a_marker() -> None:
+    assert slot_markers(3, [10, 11, 12], {0: NO_MARKER}) == [None, 10, 11]
+
+
+def test_a_pick_for_a_marker_that_is_not_controlled_counts_as_none() -> None:
+    assert slot_markers(2, [10, 11], {0: 99}) == [10, 11]
+
+
+def test_a_pick_for_a_slot_not_there_yet_keeps_its_marker_aside() -> None:
+    assert slot_markers(2, [10, 11, 12], {3: 10}) == [11, 12]
+
+
+def test_picking_another_slots_marker_swaps_the_two() -> None:
+    picks = pick_marker(3, [10, 11, 12], {}, 0, 12)
+    assert picks == {0: 12, 1: 11, 2: 10}
+    assert slot_markers(3, [10, 11, 12], picks) == [12, 11, 10]
+
+
+def test_picking_for_a_slot_without_a_marker_leaves_the_other_slot_without_one() -> None:
+    picks = pick_marker(3, [10, 11], {}, 2, 10)
+    assert slot_markers(3, [10, 11], picks) == [None, 11, 10]
+
+
+def test_picking_an_unassigned_marker_moves_no_other_slot() -> None:
+    picks = pick_marker(2, [10, 11, 12], {}, 0, 12)
+    assert slot_markers(2, [10, 11, 12], picks) == [12, 11]
+    # The marker set free goes to the next slot that has none, not to one that has.
+    assert slot_markers(3, [10, 11, 12], picks) == [12, 11, 10]
+
+
+def test_picking_a_slots_own_marker_changes_nothing() -> None:
+    picks = pick_marker(2, [10, 11], {}, 1, 11)
+    assert slot_markers(2, [10, 11], picks) == [10, 11]
+
+
+def test_a_marker_picked_for_a_slot_not_there_yet_comes_back_to_the_picker() -> None:
+    picks = pick_marker(2, [10, 11, 12], {3: 12}, 0, 12)
+    assert picks is not None
+    assert slot_markers(4, [10, 11, 12], picks) == [12, 11, None, 10]
+
+
+def test_a_slot_left_without_a_marker_stays_without_one() -> None:
+    assert slot_markers(3, [10, 11, 12], {1: NO_MARKER}) == [10, None, 11]
+    picks = pick_marker(3, [10, 11, 12], {1: NO_MARKER}, 0, 12)
+    assert slot_markers(3, [10, 11, 12], picks) == [12, None, 11]
+
+
+@pytest.mark.parametrize(("index", "marker"), [(0, 99), (-1, 10), (2, 10)])
+def test_a_pick_needs_a_slot_and_a_controlled_marker(index: int, marker: int) -> None:
+    assert pick_marker(2, [10, 11], {}, index, marker) is None
+
+
+@given(
+    st.integers(1, 5),
+    st.lists(st.integers(1, 8), unique=True, max_size=6),
+    st.dictionaries(st.integers(0, 6), st.integers(0, 8), max_size=6),
+    st.data(),
+)
+def test_a_pick_moves_at_most_two_slots_and_never_doubles_a_marker(slot_count, controlled, raw, data) -> None:
+    seen: set[int] = set()
+    picks = {}
+    for index, marker in raw.items():
+        if marker and marker in seen:
+            continue
+        seen.add(marker)
+        picks[index] = marker
+    if not controlled:
+        return
+    index = data.draw(st.integers(0, slot_count - 1))
+    marker = data.draw(st.sampled_from(controlled))
+    before = slot_markers(slot_count, controlled, picks)
+    new = pick_marker(slot_count, controlled, picks, index, marker)
+    assert new is not None
+    after = slot_markers(slot_count, controlled, new)
+    assert after[index] == marker
+    held = [m for m in after if m is not None]
+    assert len(held) == len(set(held))
+    changed = [i for i in range(slot_count) if before[i] != after[i]]
+    assert len(changed) <= 2

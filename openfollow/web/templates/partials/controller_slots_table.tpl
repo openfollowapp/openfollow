@@ -4,6 +4,7 @@
 % capture = (controllers or {}).get('pin_capture') or {}
 % armed = capture.get('slot')
 % result = capture.get('result')
+% choices = (controllers or {}).get('marker_choices') or []
 % if not items:
 <p class="slot-empty">No controller connected.</p>
 % else:
@@ -51,7 +52,22 @@
                 % end
             % end
             </td>
-            % if c.get('marker_id') is not None:
+            % if c.get('all_markers'):
+            <td>All markers</td>
+            % elif state in ('connected', 'missing') and choices and armed is None:
+            <td><span class="slot-marker">\\
+                % if c.get('marker_id') is not None:
+<span class="slot-marker-dot" style="--marker-color: {{c.get('marker_color', '')}}"></span>\\
+                % end
+<select class="slot-marker-pick" name="marker_id" aria-label="Marker for C{{idx + 1}}" hx-post="/section/controller_slots/marker/{{idx}}" hx-trigger="change" hx-vals='{{ref}}' hx-target="#controller-slots-content" hx-swap="innerHTML">
+                % if c.get('marker_id') is None:
+                <option value="" selected disabled>No marker</option>
+                % end
+                % for choice in choices:
+                <option value="{{choice['id']}}"{{' selected' if choice['id'] == c.get('marker_id') else ''}}>{{choice['label']}}</option>
+                % end
+            </select></span></td>
+            % elif c.get('marker_id') is not None:
             <td><span class="slot-marker"><span class="slot-marker-dot" style="--marker-color: {{c.get('marker_color', '')}}"></span>{{c.get('marker_label') or c['marker_id']}}</span></td>
             % else:
             <td>-</td>

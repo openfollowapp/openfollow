@@ -68,7 +68,7 @@ Geometry:
 - [x] `CLAUDE.md` Input invariant: the control frame is applied once in `InputManager.update`, on relative input only, never on Z.
 
 ### Verify
-- [ ] `make ci-remote` green.
+- [x] `make ci-remote` green (run locally; no testing Pi reachable).
 - [ ] Run the app with a side camera (yaw 90) and a downstage camera (yaw 180) on the Media Gallery source: in `camera` and `screen`, stick right moves the marker right on the picture; in `stage` nothing changed.
 
 ## Out of scope

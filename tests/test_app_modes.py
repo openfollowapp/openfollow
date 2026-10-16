@@ -877,7 +877,8 @@ class TestSourceTypeSelection:
         assert app._settings_menu_active is True
         assert app._settings_menu_banner == (
             "RTSP is live but could not be saved. "
-            "Restore the settings from the latest available backup copy, then switch again."
+            "The settings file is empty. "
+            "Restart OpenFollow to restore the settings from the latest backup copy, then switch again."
         )
         assert app._url_editor_calls == []
 
@@ -1395,7 +1396,8 @@ class TestUrlEditor:
         assert app._settings_menu_active is True
         assert app._settings_menu_banner == (
             "RTSP URL is live but could not be saved. "
-            "Restore the settings from the latest available backup copy, then enter it again."
+            "The settings file is empty. "
+            "Restart OpenFollow to restore the settings from the latest backup copy, then enter it again."
         )
 
     def test_an_auto_chained_switch_that_runs_but_cannot_be_saved_says_so_in_settings(
@@ -1417,7 +1419,8 @@ class TestUrlEditor:
         assert app._config.video_source_type == "rtsp"
         assert app._settings_menu_banner == (
             "RTSP is live but could not be saved. "
-            "Restore the settings from the latest available backup copy, then switch again."
+            "The settings file is empty. "
+            "Restart OpenFollow to restore the settings from the latest backup copy, then switch again."
         )
 
     def test_a_plain_edit_for_an_input_no_longer_running_is_saved_without_a_swap(
@@ -1462,7 +1465,8 @@ class TestUrlEditor:
         assert app._swap_calls == []
         assert app._settings_menu_banner == (
             "RTSP URL could not be saved. "
-            "Restore the settings from the latest available backup copy, then enter it again."
+            "The settings file is empty. "
+            "Restart OpenFollow to restore the settings from the latest backup copy, then enter it again."
         )
 
     def test_enter_confirms_and_persists(
@@ -2066,7 +2070,8 @@ class TestFieldChoicePicker:
         assert app._settings_menu_active is True
         assert app._settings_menu_banner == (
             "Render resolution is live but could not be saved. "
-            "Restore the settings from the latest available backup copy, then pick it again."
+            "The settings file is empty. "
+            "Restart OpenFollow to restore the settings from the latest backup copy, then pick it again."
         )
 
     def test_an_auto_chained_switch_that_runs_but_cannot_be_saved_says_so_in_settings(
@@ -2087,7 +2092,8 @@ class TestFieldChoicePicker:
         assert app._config.video_source_type == "v4l2"
         assert app._settings_menu_banner == (
             "USB Camera is live but could not be saved. "
-            "Restore the settings from the latest available backup copy, then switch again."
+            "The settings file is empty. "
+            "Restart OpenFollow to restore the settings from the latest backup copy, then switch again."
         )
 
     def test_a_plain_pick_for_an_input_no_longer_running_that_cannot_be_saved_says_so(
@@ -2109,7 +2115,8 @@ class TestFieldChoicePicker:
         assert (app._config.video_source_type, app._config.v4l2_render_resolution) == ("rtsp", "2160p")
         assert app._settings_menu_banner == (
             "Render resolution could not be saved. "
-            "Restore the settings from the latest available backup copy, then pick it again."
+            "The settings file is empty. "
+            "Restart OpenFollow to restore the settings from the latest backup copy, then pick it again."
         )
 
     def test_confirm_writes_selected_value_to_config(
@@ -3150,8 +3157,16 @@ class TestSourcePickSave:
         assert not ndi.config_changed(app._config, on_disk)
         assert banners == []
 
-    @pytest.mark.parametrize("content", ["", "  \n\t\n", "not [[ toml"], ids=["empty", "whitespace", "unparseable"])
-    def test_a_broken_file_is_left_alone_and_the_operator_told(self, tmp_path, content: str) -> None:  # noqa: ANN001
+    @pytest.mark.parametrize(
+        ("content", "why"),
+        [
+            ("", "is empty. Restart OpenFollow to restore the settings from the latest backup copy"),
+            ("  \n\t\n", "is empty. Restart OpenFollow to restore the settings from the latest backup copy"),
+            ("not [[ toml", "could not be read. Import a settings file or a backup copy to replace it"),
+        ],
+        ids=["empty", "whitespace", "unparseable"],
+    )
+    def test_a_broken_file_is_left_alone_and_the_operator_told(self, tmp_path, content: str, why: str) -> None:  # noqa: ANN001
         from openfollow.runtime.app_modes import save_source_pick
 
         app, path, banners = self._station(tmp_path)
@@ -3162,6 +3177,17 @@ class TestSourcePickSave:
         assert path.read_text(encoding="utf-8") == content
         assert app._config.ndi_source_name == "NEW (B)"
         assert banners == [
-            "The NDI® source is live but could not be saved. "
-            "Restore the settings from the latest available backup copy, then pick it again."
+            f"The NDI® source is live but could not be saved. The settings file {why}, then pick it again."
+        ]
+
+    def test_a_save_that_failed_for_another_reason_points_at_the_storage(self, tmp_path) -> None:  # noqa: ANN001
+        from openfollow.runtime.app_modes import save_source_pick
+
+        app, _path, banners = self._station(tmp_path)
+        app._config_path = str(tmp_path / "gone" / "config.toml")
+
+        save_source_pick(app, "ndi_source_name", "NEW (B)")
+
+        assert banners == [
+            "The NDI® source is live but could not be saved. Check the station's storage, then pick it again."
         ]

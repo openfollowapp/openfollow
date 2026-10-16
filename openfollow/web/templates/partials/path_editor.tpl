@@ -533,11 +533,7 @@ function peArrowhead(x, y, ux, uy, half, side) {
             }).then(function(json) {
                 var peers = json.peer_results, missed = peers.filter(function(peer) { return !peer.success; });
                 if (!missed.length) { showToast('Applied to ' + peers.length + ' station(s)'); return; }
-                failed({
-                    error: 'Not applied on ' + missed.length + ' of ' + peers.length + ' stations: ' + missed.map(function(peer) { return peer.name || peer.ip; }).join(', ') + '.',
-                    action: 'Check that they are switched on, then apply again.',
-                    href: ''
-                }, '');
+                failed(window.OpenFollow.saveError.peerFailure(peers, 'Not applied on', 'apply again'), '');
             }, function(info) { failed(info, 'Not applied.'); });
         });
     });

@@ -732,6 +732,17 @@ class TestApplyToAllStations:
             "toasts": [],
         }
 
+    def test_a_station_that_said_why_it_did_not_apply_is_named_with_its_reason(self) -> None:
+        out = self._push(
+            "{ body: { peer_results: [{ name: 'A', success: false, reason: 'The settings file on this station is"
+            " empty. Restart OpenFollow.' }, { name: 'B', success: true }] } }"
+        )
+        assert out == {
+            "line": "Not applied on 1 of 2 stations: "
+            "A (The settings file on this station is empty. Restart OpenFollow).",
+            "toasts": [],
+        }
+
     def test_a_push_the_station_refused_is_not_applied(self) -> None:
         out = self._push("{ status: 403, body: { error: 'Refused' } }")
         assert out == {"line": "Not applied. Refused.", "toasts": []}

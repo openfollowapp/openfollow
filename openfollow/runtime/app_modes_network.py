@@ -848,8 +848,6 @@ def _pick_station_iface(app: OpenFollowApp, name: str) -> None:
     The file is written as it is on disk and applied at once, so the running
     config never gets ahead of what was saved.
     """
-    import os
-
     from openfollow.configuration import config_write_lock, load_config, save_config
 
     _close_picker(app)
@@ -858,9 +856,7 @@ def _pick_station_iface(app: OpenFollowApp, name: str) -> None:
     try:
         with config_write_lock:
             # A missing file would load as defaults and be saved as such over everything else.
-            if not os.path.exists(app._config_path):
-                raise FileNotFoundError(app._config_path)
-            cfg = load_config(app._config_path, strict=True)
+            cfg = load_config(app._config_path, strict=True, missing_ok=False)
             cfg.psn_source_iface = name
             save_config(cfg, app._config_path)
     except Exception:  # noqa: BLE001 - a failed save is reported on the screen

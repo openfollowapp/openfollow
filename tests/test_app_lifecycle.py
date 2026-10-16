@@ -257,6 +257,15 @@ class TestStartupOnABrokenConfigFile:
         assert saved.station_id == app._config.station_id
         assert saved.psn_source_iface == ("eth9" if example else "")
 
+    @pytest.mark.parametrize("content", ["", "not [[ toml"], ids=["empty", "unparseable"])
+    def test_a_backup_that_is_not_utf8_counts_as_no_backup(self, real_load, content: str) -> None:  # noqa: ANN001
+        real_load.with_name("config.toml.bak").write_bytes(b'psn_system_name = "\xff\xfe"\n')
+        real_load.write_text(content, encoding="utf-8")
+
+        app = OpenFollowApp(config_path=str(real_load))
+
+        assert app._config.station_id not in ("", "abc123")
+
     def test_an_unreadable_file_without_a_backup_runs_on_the_defaults_and_writes_nothing(
         self,
         real_load,

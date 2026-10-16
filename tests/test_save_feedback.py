@@ -120,3 +120,46 @@ def test_a_confirm_that_stops_or_loses_something_takes_the_danger_button() -> No
             if label and label.group(1) in _DESTRUCTIVE_LABELS and "danger: true" not in match.group(1):
                 offenders.append(f"{path.name}: {label.group(1)}")
     assert offenders == []
+
+
+def test_every_broadcast_names_the_stations_it_missed_through_the_shared_helper() -> None:
+    readers = [path for path in _sources_with_scripts() if "peer_results" in path.read_text(encoding="utf-8")]
+    assert len(readers) >= 3, "the scan no longer finds the broadcasts"
+    unshared = [path.name for path in readers if "saveError.peerFailure(" not in path.read_text(encoding="utf-8")]
+    assert unshared == []
+
+
+def _peer_failure(peers: list[dict[str, object]]) -> object:
+    import json
+    import shutil
+    import subprocess  # nosec B404 - runs the local node binary on a fixed script
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("needs node")
+    script = (
+        "var window = {}, document = { addEventListener: function () {} };\n"
+        + (_PACKAGE / "web" / "static" / "js" / "save-feedback.js").read_text(encoding="utf-8")
+        + f"\nprocess.stdout.write(JSON.stringify(window.OpenFollow.saveError.peerFailure({json.dumps(peers)},"
+        " 'Not sent to', 'send again')));"
+    )
+    done = subprocess.run([node], input=script, capture_output=True, text=True, timeout=10, check=True)  # nosec B603
+    return json.loads(done.stdout)
+
+
+def test_a_station_that_gave_no_reason_is_asked_to_be_checked() -> None:
+    peers = [{"name": "A", "success": False}, {"ip": "192.0.2.7", "success": False}, {"name": "C", "success": True}]
+    assert _peer_failure(peers) == {
+        "error": "Not sent to 2 of 3 stations: A, 192.0.2.7.",
+        "action": "Check that they are switched on, then send again.",
+        "href": "",
+    }
+
+
+def test_a_station_that_said_why_is_named_with_its_reason_and_nothing_else_is_asked() -> None:
+    peers = [{"name": "A", "success": False, "reason": "The file is empty. Restart OpenFollow."}]
+    assert _peer_failure(peers) == {
+        "error": "Not sent to 1 of 1 stations: A (The file is empty. Restart OpenFollow).",
+        "action": "",
+        "href": "",
+    }

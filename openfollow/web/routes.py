@@ -77,6 +77,7 @@ from openfollow.configuration import (
     TriggerZoneConfig,
     _coerce_marker_tokens,
     apply_renamed_marker_keys,
+    config_problem_words,
     config_write_lock,
     enforce_network_mode,
     load_config,
@@ -4277,6 +4278,26 @@ def _push_path(path: str, sender: str) -> str:
     return f"{path}?{PUSHED_FROM_PARAM}={quote(sender, safe='')}"
 
 
+class _PeerRefused(Exception):
+    """A peer answered with the reason it did not apply what was sent."""
+
+
+def _peer_refusal(error: urllib.error.HTTPError) -> _PeerRefused | None:
+    """The reason in a peer's ``{error, action}`` answer, or ``None`` when it gave none."""
+    try:
+        answer = json.loads(error.read(4096).decode("utf-8"))
+    except (OSError, ValueError):
+        return None
+    said = answer.get("error") if isinstance(answer, dict) else None
+    if not isinstance(said, str) or not said.strip():
+        return None
+    action = answer.get("action")
+    reason = said.strip().rstrip(".") + "."
+    if isinstance(action, str) and action.strip():
+        reason += " " + action.strip()
+    return _PeerRefused(reason[:300])
+
+
 def _send_config_to_peer(
     ip: str, port: int, section: str, data: dict[str, Any], pin: str = "", *, expected_port: int, sender: str
 ) -> bool:
@@ -4296,7 +4317,12 @@ def _send_config_to_peer(
         req = urllib.request.Request(url, data=body, headers=headers, method="POST")
         with urllib.request.urlopen(req, timeout=5) as resp:  # nosec B310
             return bool(resp.status == 200)
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError):
+    except urllib.error.HTTPError as error:
+        refusal = _peer_refusal(error)
+        if refusal is not None:
+            raise refusal from error
+        return False
+    except (urllib.error.URLError, TimeoutError):
         return False
 
 
@@ -4319,7 +4345,12 @@ def _send_config_import_to_peer(
         req = urllib.request.Request(url, data=body, headers=headers, method="POST")
         with urllib.request.urlopen(req, timeout=10) as resp:  # nosec B310
             return bool(resp.status == 200)
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError):
+    except urllib.error.HTTPError as error:
+        refusal = _peer_refusal(error)
+        if refusal is not None:
+            raise refusal from error
+        return False
+    except (urllib.error.URLError, TimeoutError):
         return False
 
 
@@ -4401,22 +4432,25 @@ def _broadcast_to_peers(
     results_lock = threading.Lock()
     pending = threading.Semaphore(0)
 
-    def _record(peer: PeerInfo, ok: bool) -> None:
+    def _record(peer: PeerInfo, ok: bool, reason: str = "") -> None:
+        result: dict[str, Any] = {"name": peer.name, "ip": peer.ip, "success": ok}
+        if reason:
+            result["reason"] = reason
         with results_lock:
-            results_by_key[f"{peer.ip}:{peer.web_port}"] = {
-                "name": peer.name,
-                "ip": peer.ip,
-                "success": ok,
-            }
+            results_by_key[f"{peer.ip}:{peer.web_port}"] = result
 
     def _run(peer: PeerInfo) -> None:
         try:
+            reason = ""
             try:
                 ok = bool(send(peer))
+            except _PeerRefused as refusal:
+                logger.warning("Peer %s did not apply the broadcast: %s", peer.ip, refusal)
+                ok, reason = False, str(refusal)
             except Exception:
                 logger.exception("Peer broadcast to %s raised", peer.ip)
                 ok = False
-            _record(peer, ok)
+            _record(peer, ok, reason)
         finally:
             _broadcast_semaphore.release()
             pending.release()
@@ -5390,12 +5424,8 @@ def _refuse_over_unreadable_config(callback: Callable[..., Any]) -> Callable[...
             return callback(*args, **kwargs)
         except ConfigFileUnreadableError as error:
             logger.warning("Not saved: %s", error)
-            said = "is empty" if isinstance(error, ConfigFileEmptyError) else "could not be read"
-            return _save_failed(
-                409,
-                f"The settings file on this station {said}",
-                "Restore it from the latest available backup copy, then save again.",
-            )
+            said, step = config_problem_words(error)
+            return _save_failed(409, f"The settings file on this station {said}", f"{step}.")
 
     return wrapper
 
@@ -5625,7 +5655,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     @app.post("/login")
     def login_submit() -> Any:
-        cfg = load_config(server.config_path)
+        cfg = _request_scoped_config()
         pin = cfg.web_pin
         if not pin:
             redirect("/")
@@ -9046,7 +9076,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             payload = dict(payload_raw)
         elif template_type == "camera_grid":
             with _config_write_lock:
-                cfg = load_config(server.config_path)
+                cfg = load_config_for_save(server.config_path)
                 payload = {
                     "camera": asdict(cfg.camera),
                     "grid": asdict(cfg.grid),
@@ -9054,14 +9084,14 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 }
         elif template_type == "paths":
             with _config_write_lock:
-                cfg = load_config(server.config_path)
+                cfg = load_config_for_save(server.config_path)
                 paths = [asdict(path) for path in cfg.paths.paths]
                 for path in paths:
                     path.pop("active")
                 payload = {"slide_time": cfg.paths.slide_time, "paths": paths}
         else:  # zones – the only remaining option per the early gate
             with _config_write_lock:
-                cfg = load_config(server.config_path)
+                cfg = load_config_for_save(server.config_path)
                 payload = asdict(cfg.trigger_zones)
         try:
             written_path = write_user_template(
@@ -9757,7 +9787,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         disallowed character to ``-`` rather than dropping it, so
         ``safe_name`` is never empty (no bare ``.ofsettings``).
         """
-        cfg = _request_scoped_config()
+        cfg = load_config_for_save(server.config_path)
         safe_name = _safe_content_disposition_name(cfg.psn_system_name)
         response.content_type = "application/json"
         response.set_header(
@@ -9812,6 +9842,21 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         server.pushed_settings.remove(upto)
         return json.dumps({"success": True})
 
+    def _import_base(*, may_replace: bool) -> tuple[AppConfig, bool]:
+        """The config an import builds on, and whether it replaces a file that does not read.
+
+        Only an Import from a file replaces one, keeping the device identity of the file's last
+        whole read (else the backup's). An empty file is restored by a restart instead.
+        """
+        try:
+            return load_config_for_save(server.config_path), False
+        except ConfigFileEmptyError:
+            raise
+        except ConfigFileUnreadableError:
+            if not may_replace:
+                raise
+            return copy.deepcopy(_request_scoped_config()), True
+
     @app.post("/api/config/import")
     def api_import_config() -> Any:
         """Import a config from JSON, preserving this station's identity.
@@ -9829,9 +9874,11 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             return json.dumps({"error": "Expected a JSON object"})
 
         pushed_by = _pushed_by()
+        # Read before the archive: a refused import leaves none.
+        _import_base(may_replace=pushed_by is None)
         backup = _backup_before(server.config_path, "import" if pushed_by is None else "push")
         with _config_write_lock:
-            current = load_config_for_save(server.config_path)
+            current, replacing = _import_base(may_replace=pushed_by is None)
             # Per-marker move speeds are device-local + runtime-authoritative:
             # preserve THIS station's live speeds and ignore any that rode along in
             # the imported payload. Overlay them onto ``current`` so the deepcopy
@@ -9842,7 +9889,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             if speeds:
                 current.marker_move_speeds = dict(speeds)
             full_cfg = _apply_import_data(current, data if pushed_by is None else _without_station_name(data))
-            save_config(full_cfg, server.config_path)
+            save_config(full_cfg, server.config_path, replace_unreadable=replacing)
         if pushed_by is not None:
             _record_push(pushed_by, "every shared setting", backup)
         return json.dumps({"success": True, **backup})
@@ -9868,6 +9915,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         after_update = "Restore defaults once it has finished."
         if server.is_update_busy():
             return _save_failed(409, _UPDATE_RUNNING, after_update)
+        load_config_for_save(server.config_path)  # before the archive: a refused reset leaves none
         backup = _backup_before(server.config_path, "defaults")
 
         def write_defaults() -> None:
@@ -9887,7 +9935,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     def api_broadcast_all() -> Any:
         """Broadcast full config to all peers via their import endpoint."""
         response.content_type = "application/json"
-        cfg = load_config(server.config_path)
+        cfg = load_config_for_save(server.config_path)
         # web_pin/web_port are device-local and stripped on receive; also drop
         # the PIN here so the credential never travels in the broadcast body
         # (peer auth still carries it in the signed header via ``pin=``).

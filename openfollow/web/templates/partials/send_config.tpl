@@ -38,11 +38,7 @@ function broadcastAllConfig() {
             var total = data.peer_results.length;
             var failed = data.peer_results.filter(function(p) { return !p.success; });
             if (failed.length > 0) {
-                saveError.show(section, {
-                    error: 'Not sent to ' + failed.length + ' of ' + total + ' stations: '
-                        + failed.map(function(p) { return p.name || p.ip; }).join(', ') + '.',
-                    action: 'Check that they are switched on, then send again.',
-                }, '');
+                saveError.show(section, saveError.peerFailure(data.peer_results, 'Not sent to', 'send again'), '');
                 return;
             }
             result.textContent = total === 0

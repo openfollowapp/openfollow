@@ -4,13 +4,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import ipaddress
 import logging
 import math
 import os
 import re
-import shutil
 import tempfile
 import threading
 import time
@@ -3032,19 +3032,14 @@ def restore_empty_config(path: str) -> None:
 
 def _readable_backup_bytes(path: str) -> bytes | None:
     try:
-        with open(path + ".bak", "rb") as f:
-            raw = f.read()
-        if raw.strip():
-            tomllib.loads(raw.decode("utf-8"))
-            return raw
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
-        pass
-    return None
+        return _read_whole(path + ".bak")
+    except ConfigFileUnreadableError:
+        return None
 
 
 def _replace_file(target: Path, data: bytes) -> None:
     """Write *data* to a 0o600 temp file beside *target*, fsync it and rename it into place."""
-    directory = target.parent
+    directory = target.parent if str(target.parent) else Path(".")
     fd, tmp_path = tempfile.mkstemp(prefix=target.name + ".", suffix=".tmp", dir=str(directory))
     try:
         with os.fdopen(fd, "wb") as f:
@@ -3052,8 +3047,9 @@ def _replace_file(target: Path, data: bytes) -> None:
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_path, target)
-    except OSError:
-        os.unlink(tmp_path)
+    except Exception:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_path)
         raise
     _fsync_dir(directory)
 
@@ -3061,14 +3057,11 @@ def _replace_file(target: Path, data: bytes) -> None:
 def _load_backup_data(path: str) -> dict[str, Any] | None:
     """Parse the ``<path>.bak`` snapshot ``save_config`` writes, or ``None``.
 
-    Returns ``None`` when the backup is absent, unreadable, or unparseable so
+    Returns ``None`` when the backup is absent, empty or does not read, so
     recovery degrades to defaults rather than raising.
     """
-    try:
-        with open(path + ".bak", "rb") as f:
-            return tomllib.load(f)
-    except (OSError, tomllib.TOMLDecodeError):
-        return None
+    raw = _readable_backup_bytes(path)
+    return None if raw is None else tomllib.loads(raw.decode("utf-8"))
 
 
 # Which (config path, marker ids) have been logged as newly viewed, so a config reloaded on every
@@ -3290,20 +3283,14 @@ def load_config(path: str = "config.toml", *, strict: bool = False, missing_ok: 
 
 
 def load_config_for_save(path: str) -> AppConfig:
-    """The config file as it is on disk, for a caller that writes it back.
+    """The config file as it is on disk, for a caller that writes it back or hands it on.
 
     An empty or unreadable file raises ``ConfigFileUnreadableError``: read as
     the backup or the defaults, it would be written over with them. A missing
     one reads as ``load_config`` reads it.
     """
-    try:
-        return load_config(path, strict=True, missing_ok=False)
-    except FileNotFoundError:
-        return load_config(path)
-    except ConfigFileUnreadableError:
-        raise
-    except Exception as error:
-        raise ConfigFileUnreadableError(f"Config file {path} could not be read: {error}") from error
+    on_disk = _read_on_disk(path)
+    return load_config(path) if on_disk is None else on_disk
 
 
 _DEPRECATED_WARNED: set[str] = set()
@@ -3434,13 +3421,17 @@ def config_to_toml_dict(config: AppConfig) -> dict[str, Any]:
     return data
 
 
-def _refuse_unreadable(path: str) -> None:
-    """Raise ``ConfigFileUnreadableError`` when the file at *path* exists but is empty or does not read."""
+def _read_whole(path: str) -> bytes | None:
+    """The bytes of the config file at *path*, which parse; ``None`` when there is no file.
+
+    An empty file raises ``ConfigFileEmptyError``, one that cannot be read or
+    does not parse ``ConfigFileUnreadableError``.
+    """
     try:
         with open(path, "rb") as f:
             raw = f.read()
     except FileNotFoundError:
-        return
+        return None
     except OSError as error:
         raise ConfigFileUnreadableError(f"Config file {path} could not be read: {error}") from error
     if not raw.strip():
@@ -3449,6 +3440,23 @@ def _refuse_unreadable(path: str) -> None:
         tomllib.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
         raise ConfigFileUnreadableError(f"Config file {path} could not be read: {error}") from error
+    return raw
+
+
+def config_file_problem(path: str) -> ConfigFileUnreadableError | None:
+    """What keeps the config file at *path* from taking a save, or ``None``."""
+    try:
+        _read_whole(path)
+    except ConfigFileUnreadableError as error:
+        return error
+    return None
+
+
+def config_problem_words(error: ConfigFileUnreadableError) -> tuple[str, str]:
+    """An operator's words for *error*: what is wrong with the settings file, and the one step that mends it."""
+    if isinstance(error, ConfigFileEmptyError):
+        return "is empty", "Restart OpenFollow to restore the settings from the latest backup copy"
+    return "could not be read", "Import a settings file or a backup copy to replace it"
 
 
 def save_config(config: AppConfig, path: str = "config.toml", *, replace_unreadable: bool = False) -> None:
@@ -3456,87 +3464,45 @@ def save_config(config: AppConfig, path: str = "config.toml", *, replace_unreada
 
     A file that is there but empty or unreadable is left alone and raises
     ``ConfigFileUnreadableError``, unless *replace_unreadable*: the config
-    written was not read from it, and its snapshot would replace the last good
-    ``.bak``.
+    written was not read from it. Replacing one takes no snapshot, so the last
+    good ``.bak`` stays.
 
     Durable, atomic write: content is streamed to a temp file in the same
     directory, ``fsync``-ed, ``os.replace``-d into place, then the parent
     directory is ``fsync``-ed so the rename survives power loss. A crash leaves
-    either the old or new file intact, never a truncated one. The previous
-    config is snapshotted to ``config.toml.bak`` best-effort (a copy failure is
-    logged and swallowed); ``load_config`` recovers from it when the primary is
-    missing or unreadable.
+    either the old or new file intact, never a truncated one. The bytes the
+    check read are snapshotted to ``config.toml.bak`` the same way, best-effort
+    (a failure is logged and swallowed); ``load_config`` recovers from it when
+    the primary is missing or unreadable.
     """
-    if not replace_unreadable:
-        _refuse_unreadable(path)
-    data = config_to_toml_dict(config)
-    target = Path(path)
-    directory = target.parent if str(target.parent) else Path(".")
-    fd, tmp_path = tempfile.mkstemp(
-        prefix=target.name + ".",
-        suffix=".tmp",
-        dir=str(directory),
-    )
     try:
-        with os.fdopen(fd, "wb") as f:
-            tomli_w.dump(data, f)
-            f.flush()
-            os.fsync(f.fileno())
-        # Snapshot the current good config to ``<name>.bak`` before the swap
-        # so an unparseable primary can be recovered. Written atomically (temp
-        # + ``os.replace``) so a partial snapshot can't truncate the last
-        # recovery point. A backup failure is logged and swallowed.
-        if target.exists():
-            backup_path = target.with_name(target.name + ".bak")
-            try:
-                bak_fd, bak_tmp = tempfile.mkstemp(
-                    prefix=backup_path.name + ".",
-                    suffix=".tmp",
-                    dir=str(directory),
-                )
-                os.close(bak_fd)
-                try:
-                    shutil.copy2(target, bak_tmp)
-                    # copy2 copies the source's mode onto bak_tmp, so a
-                    # world-readable primary would yield a world-readable .bak
-                    # despite mkstemp's 0o600. Re-tighten – the .bak holds the
-                    # same web_pin secret as the primary.
-                    os.chmod(bak_tmp, 0o600)
-                    # fsync the snapshot's contents before the rename so power
-                    # loss can't leave an empty/truncated ``.bak``.
-                    tmp_fd = os.open(bak_tmp, os.O_RDONLY)
-                    try:
-                        os.fsync(tmp_fd)
-                    finally:
-                        os.close(tmp_fd)
-                    os.replace(bak_tmp, backup_path)
-                    _fsync_dir(directory)
-                except OSError:
-                    # Drop the partial temp so a failed backup doesn't litter
-                    # ``<name>.bak.*.tmp`` next to the config, then re-raise to
-                    # the best-effort handler below.
-                    try:
-                        os.unlink(bak_tmp)
-                    except OSError:  # pragma: no cover - unlink of our own temp
-                        pass
-                    raise
-            except OSError:
-                # Swallowed (the save itself is fine) but log with the full
-                # path + traceback – the cause (permissions, disk full, …) is
-                # exactly what's needed to diagnose a missing .bak later.
-                logger.warning(
-                    "Could not write config backup %s; continuing",
-                    backup_path,
-                    exc_info=True,
-                )
-        os.replace(tmp_path, path)
-        _fsync_dir(directory)
-    except Exception:
+        current = _read_whole(path)
+    except ConfigFileUnreadableError:
+        if not replace_unreadable:
+            raise
+        current = None
+    data = tomli_w.dumps(config_to_toml_dict(config)).encode("utf-8")
+    target = Path(path)
+    if current is not None:
+        backup_path = target.with_name(target.name + ".bak")
         try:
-            os.unlink(tmp_path)
+            _replace_file(backup_path, current)
         except OSError:
-            pass
+            # The save itself is fine; the cause is what a missing .bak is later diagnosed from.
+            logger.warning("Could not write config backup %s; continuing", backup_path, exc_info=True)
+    _replace_file(target, data)
+
+
+def _read_on_disk(path: str) -> AppConfig | None:
+    """The config file as it is on disk, ``None`` when there is none; an empty or unreadable one raises."""
+    try:
+        return load_config(path, strict=True, missing_ok=False)
+    except FileNotFoundError:
+        return None
+    except ConfigFileUnreadableError:
         raise
+    except Exception as error:
+        raise ConfigFileUnreadableError(f"Config file {path} could not be read: {error}") from error
 
 
 def save_config_change(path: str, running: AppConfig, change: Callable[[AppConfig], None]) -> None:
@@ -3548,10 +3514,10 @@ def save_config_change(path: str, running: AppConfig, change: Callable[[AppConfi
     """
     change(running)
     with config_write_lock:
-        if not os.path.exists(path):
+        current = _read_on_disk(path)
+        if current is None:
             save_config(running, path)
             return
-        current = load_config(path, strict=True)
         change(current)
         save_config(current, path)
 
@@ -3572,15 +3538,15 @@ def save_config_fields(
     """
     with config_write_lock:
         try:
-            on_disk = load_config(path, strict=True, missing_ok=False)
-        except FileNotFoundError:
-            save_config(config, path)
-            return
-        except Exception:
+            on_disk = _read_on_disk(path)
+        except ConfigFileUnreadableError:
             if not replace_unreadable:
                 raise
             logger.warning("Config file %s could not be read - replacing it with the running config.", path)
             save_config(config, path, replace_unreadable=True)
+            return
+        if on_disk is None:
+            save_config(config, path)
             return
         for name in names:
             parent, _, attr = name.rpartition(".")

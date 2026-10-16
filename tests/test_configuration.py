@@ -807,14 +807,26 @@ def test_save_succeeds_despite_leftover_temp_from_prior_crash(
     assert load_config(str(temp_config_path)).psn_system_name == "Fresh"
 
 
+def _fail_the_first_fsync(monkeypatch, error: Exception | None = None) -> None:
+    import openfollow.configuration as cfg_mod
+
+    real = cfg_mod.os.fsync
+    calls: list[int] = []
+
+    def _fsync(fd: int) -> None:
+        calls.append(fd)
+        if len(calls) == 1:
+            raise error or OSError("disk full")
+        real(fd)
+
+    monkeypatch.setattr(cfg_mod.os, "fsync", _fsync)
+
+
 def test_save_continues_when_bak_copy_fails(temp_config_path, monkeypatch, caplog) -> None:
     """A failed backup copy must not abort the primary save."""
     save_config(AppConfig(psn_system_name="V1"), str(temp_config_path))
 
-    def _boom(*_a, **_k):
-        raise OSError("disk full")
-
-    monkeypatch.setattr("openfollow.configuration.shutil.copy2", _boom)
+    _fail_the_first_fsync(monkeypatch)  # the snapshot's
     with caplog.at_level("WARNING"):
         save_config(AppConfig(psn_system_name="V2"), str(temp_config_path))
 
@@ -830,10 +842,7 @@ def test_save_bak_failure_preserves_previous_bak(temp_config_path, monkeypatch) 
     bak = _bak_of(temp_config_path)
     assert tomllib.loads(bak.read_text(encoding="utf-8"))["psn_system_name"] == "V1"
 
-    def _boom(*_a, **_k):
-        raise OSError("disk full")
-
-    monkeypatch.setattr("openfollow.configuration.shutil.copy2", _boom)
+    _fail_the_first_fsync(monkeypatch)  # the snapshot's
     save_config(AppConfig(psn_system_name="V3"), str(temp_config_path))
 
     # Primary advanced; the previous good .bak (V1) is untouched, not clobbered
@@ -1139,6 +1148,76 @@ def test_an_empty_file_that_cannot_be_restored_is_left_and_logged(temp_config_pa
     assert temp_config_path.read_text(encoding="utf-8") == ""
     assert list(temp_config_path.parent.glob("*.tmp")) == []
     assert caplog.messages == [f"Config file {temp_config_path} is empty and could not be restored."]
+
+
+@pytest.mark.parametrize("primary", [None, b"", b"not [[ toml"], ids=["missing", "empty", "unparseable"])
+def test_a_backup_that_is_not_utf8_reads_as_no_backup(temp_config_path, primary) -> None:
+    _bak_of(temp_config_path).write_bytes(b'psn_system_name = "\xff\xfe"\n')
+    if primary is not None:
+        temp_config_path.write_bytes(primary)
+
+    assert load_config(str(temp_config_path)) == AppConfig()
+
+
+@_UNREADABLE
+def test_replacing_an_unreadable_file_keeps_the_good_backup(temp_config_path, content) -> None:
+    _good_config_with_backup(temp_config_path)
+    backup = _bak_of(temp_config_path).read_bytes()
+    temp_config_path.write_bytes(content)
+
+    save_config(AppConfig(psn_system_name="Replacement"), str(temp_config_path), replace_unreadable=True)
+
+    assert _bak_of(temp_config_path).read_bytes() == backup
+    assert load_config(str(temp_config_path), strict=True).psn_system_name == "Replacement"
+
+
+def test_the_backup_holds_the_bytes_the_save_checked(temp_config_path, monkeypatch) -> None:
+    """An editor emptying the file just after the check must not reach the backup."""
+    import openfollow.configuration as cfg_mod
+
+    save_config(AppConfig(psn_system_name="Checked"), str(temp_config_path))
+    checked = temp_config_path.read_bytes()
+    real_loads = cfg_mod.tomllib.loads
+
+    def _loads_then_truncate(text: str) -> object:
+        parsed = real_loads(text)
+        temp_config_path.write_bytes(b"")
+        return parsed
+
+    monkeypatch.setattr(cfg_mod.tomllib, "loads", _loads_then_truncate)
+    save_config(AppConfig(psn_system_name="Next"), str(temp_config_path))
+    monkeypatch.undo()
+
+    assert _bak_of(temp_config_path).read_bytes() == checked
+
+
+def test_save_config_change_writes_the_running_config_when_the_file_vanished_after_the_check(
+    temp_config_path, monkeypatch
+) -> None:
+    import openfollow.configuration as cfg_mod
+    from openfollow.configuration import save_config_change
+
+    monkeypatch.setattr(cfg_mod.os.path, "exists", lambda _p: True)
+    running = AppConfig(web_port=8080, psn_system_name="Stage Left")
+
+    save_config_change(str(temp_config_path), running, lambda cfg: setattr(cfg, "web_port", 9090))
+
+    monkeypatch.undo()
+    saved = load_config(str(temp_config_path), strict=True)
+    assert (saved.web_port, saved.psn_system_name) == (9090, "Stage Left")
+
+
+@_UNREADABLE
+def test_save_config_change_refuses_an_empty_or_unreadable_file(temp_config_path, content) -> None:
+    from openfollow.configuration import save_config_change
+
+    temp_config_path.write_bytes(content)
+    running = AppConfig(psn_system_name="Running")
+
+    with pytest.raises(ConfigFileUnreadableError):
+        save_config_change(str(temp_config_path), running, lambda cfg: setattr(cfg, "web_port", 9090))
+
+    assert temp_config_path.read_bytes() == content
 
 
 # Per-marker move speed (``AppConfig.marker_move_speeds``)
@@ -2741,8 +2820,8 @@ def test_a_switch_that_could_not_be_saved_is_saved_by_switching_again_once_the_f
     app_modes.confirm_source_type_selection(app)
     assert app._config.video_source_type == "rtsp"
     assert banners == [
-        "RTSP is live but could not be saved. "
-        "Restore the settings from the latest available backup copy, then switch again."
+        "RTSP is live but could not be saved. The settings file could not be read. "
+        "Import a settings file or a backup copy to replace it, then switch again."
     ]
 
     save_config(good, path, replace_unreadable=True)  # the operator repairs it
@@ -4753,10 +4832,7 @@ def test_save_config_unlinks_temp_file_on_write_error(
     class _BoomError(RuntimeError):
         pass
 
-    def boom_dump(_data, _fp):
-        raise _BoomError("simulated disk failure")
-
-    monkeypatch.setattr(cfg_mod.tomli_w, "dump", boom_dump)
+    _fail_the_first_fsync(monkeypatch, _BoomError("simulated disk failure"))
 
     with pytest.raises(_BoomError):
         cfg_mod.save_config(AppConfig(), str(temp_config_path))
@@ -4773,13 +4849,10 @@ def test_save_config_swallows_unlink_oserror_and_reraises_original(
 ) -> None:
     import openfollow.configuration as cfg_mod
 
-    def boom_dump(_data, _fp):
-        raise RuntimeError("primary failure")
-
     def boom_unlink(_path):
         raise OSError("cleanup also failed")
 
-    monkeypatch.setattr(cfg_mod.tomli_w, "dump", boom_dump)
+    _fail_the_first_fsync(monkeypatch, RuntimeError("primary failure"))
     monkeypatch.setattr(cfg_mod.os, "unlink", boom_unlink)
 
     with pytest.raises(RuntimeError, match="primary failure"):
@@ -4927,7 +5000,7 @@ def test_save_config_fields_treats_a_file_it_may_not_read_as_unreadable(temp_con
     monkeypatch.setattr(Path, "read_bytes", _read_bytes)
     monkeypatch.setattr(cfg_mod, "open", _open, raising=False)
 
-    with pytest.raises(PermissionError):
+    with pytest.raises(ConfigFileUnreadableError, match="Permission denied"):
         save_config_fields(AppConfig(), target, ["camera"])
     save_config_fields(AppConfig(web_port=9090), target, ["camera"], replace_unreadable=True)
 
@@ -4938,7 +5011,7 @@ def test_save_config_fields_treats_a_file_it_may_not_read_as_unreadable(temp_con
 def test_save_config_fields_leaves_an_unreadable_file_alone(temp_config_path) -> None:
     temp_config_path.write_text("web_port = [unclosed", encoding="utf-8")
 
-    with pytest.raises(tomllib.TOMLDecodeError):
+    with pytest.raises(ConfigFileUnreadableError):
         save_config_fields(AppConfig(), str(temp_config_path), ["camera"])
 
     assert temp_config_path.read_text(encoding="utf-8") == "web_port = [unclosed"

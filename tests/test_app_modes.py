@@ -878,7 +878,7 @@ class TestSourceTypeSelection:
         assert app._settings_menu_banner == (
             "RTSP is live but could not be saved. "
             "The settings file is empty. "
-            "Restart OpenFollow to restore the settings from the latest backup copy, then switch again."
+            "Restart OpenFollow to start again with default settings, then switch again."
         )
         assert app._url_editor_calls == []
 
@@ -1397,7 +1397,7 @@ class TestUrlEditor:
         assert app._settings_menu_banner == (
             "RTSP URL is live but could not be saved. "
             "The settings file is empty. "
-            "Restart OpenFollow to restore the settings from the latest backup copy, then enter it again."
+            "Restart OpenFollow to start again with default settings, then enter it again."
         )
 
     def test_an_auto_chained_switch_that_runs_but_cannot_be_saved_says_so_in_settings(
@@ -1420,7 +1420,7 @@ class TestUrlEditor:
         assert app._settings_menu_banner == (
             "RTSP is live but could not be saved. "
             "The settings file is empty. "
-            "Restart OpenFollow to restore the settings from the latest backup copy, then switch again."
+            "Restart OpenFollow to start again with default settings, then switch again."
         )
 
     def test_a_plain_edit_for_an_input_no_longer_running_is_saved_without_a_swap(
@@ -1466,7 +1466,7 @@ class TestUrlEditor:
         assert app._settings_menu_banner == (
             "RTSP URL could not be saved. "
             "The settings file is empty. "
-            "Restart OpenFollow to restore the settings from the latest backup copy, then enter it again."
+            "Restart OpenFollow to start again with default settings, then enter it again."
         )
 
     def test_enter_confirms_and_persists(
@@ -2071,7 +2071,7 @@ class TestFieldChoicePicker:
         assert app._settings_menu_banner == (
             "Render resolution is live but could not be saved. "
             "The settings file is empty. "
-            "Restart OpenFollow to restore the settings from the latest backup copy, then pick it again."
+            "Restart OpenFollow to start again with default settings, then pick it again."
         )
 
     def test_an_auto_chained_switch_that_runs_but_cannot_be_saved_says_so_in_settings(
@@ -2093,7 +2093,7 @@ class TestFieldChoicePicker:
         assert app._settings_menu_banner == (
             "USB Camera is live but could not be saved. "
             "The settings file is empty. "
-            "Restart OpenFollow to restore the settings from the latest backup copy, then switch again."
+            "Restart OpenFollow to start again with default settings, then switch again."
         )
 
     def test_a_plain_pick_for_an_input_no_longer_running_that_cannot_be_saved_says_so(
@@ -2116,7 +2116,7 @@ class TestFieldChoicePicker:
         assert app._settings_menu_banner == (
             "Render resolution could not be saved. "
             "The settings file is empty. "
-            "Restart OpenFollow to restore the settings from the latest backup copy, then pick it again."
+            "Restart OpenFollow to start again with default settings, then pick it again."
         )
 
     def test_confirm_writes_selected_value_to_config(
@@ -3128,7 +3128,8 @@ class TestSourcePickSave:
         from openfollow.configuration import AppConfig, load_config, save_config
 
         path = tmp_path / "config.toml"
-        save_config(AppConfig(video_source_type="ndi", ndi_source_name="OLD (A)"), str(path))
+        for _ in range(2):  # the second save leaves the first as the backup
+            save_config(AppConfig(video_source_type="ndi", ndi_source_name="OLD (A)"), str(path))
         banners: list[str] = []
         app = SimpleNamespace(
             _config=load_config(str(path), strict=True),

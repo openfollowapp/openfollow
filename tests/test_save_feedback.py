@@ -163,3 +163,8 @@ def test_a_station_that_said_why_is_named_with_its_reason_and_nothing_else_is_as
         "action": "",
         "href": "",
     }
+
+
+def test_send_all_settings_says_which_stations_did_not_apply_them() -> None:
+    body = function_body(_template("partials/send_config.tpl"), "broadcastAllConfig")
+    assert "saveError.peerFailure(data.peer_results, 'Not applied on', 'send again')" in body

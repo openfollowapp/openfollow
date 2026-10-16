@@ -626,6 +626,36 @@ def test_collect_config_streams_provider_text() -> None:
     assert "web_port: 80" in joined
 
 
+def test_collect_config_says_how_the_config_file_and_its_backup_read() -> None:
+    p = diag.DiagnosticsProviders(
+        config_redacted_toml=lambda: 'system = "rig"',
+        config_file_health=lambda: "is empty; backup reads whole",
+    )
+    rows = diag.collect_config(p)
+    assert "  Config file health:  is empty; backup reads whole" in rows
+
+
+def test_collect_config_reports_a_health_read_that_failed() -> None:
+    def boom() -> str:
+        raise RuntimeError("nope")
+
+    p = diag.DiagnosticsProviders(config_redacted_toml=lambda: 'system = "rig"', config_file_health=boom)
+    joined = "\n".join(diag.collect_config(p))
+    assert "Config file health:  [unavailable: config_file_health:" in joined
+
+
+def test_the_bundle_reads_the_health_of_the_station_s_own_config_file(tmp_path) -> None:
+    from openfollow.configuration import AppConfig, save_config
+    from openfollow.web.routes import _build_diagnostics_providers
+
+    path = tmp_path / "config.toml"
+    save_config(AppConfig(web_pin="4321"), str(path))
+    path.write_bytes(b"grid = 5\n")
+    providers = _build_diagnostics_providers(_io_server(config_path=str(path)), AppConfig())
+    assert providers.config_file_health is not None
+    assert providers.config_file_health() == "could not be read; no readable backup"
+
+
 def test_collect_config_renders_unavailable_when_diff_provider_raises() -> None:
 
     def boom() -> Any:

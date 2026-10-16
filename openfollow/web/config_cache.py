@@ -23,10 +23,12 @@ class ParsedConfigCache:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._entry: tuple[tuple[str, int, int, int, int], bytes] | None = None
+        # Counts stored entries: a parse keeps its entry only if none was stored since it began.
+        self._generation = 0
 
     def load(self, path: str) -> AppConfig:
         with self._lock:
-            entry = self._entry
+            entry, generation = self._entry, self._generation
         try:
             key = _key(path)
         except OSError:
@@ -41,7 +43,9 @@ class ParsedConfigCache:
                 return self._last_whole(entry, path)
             entry = (key, pickle.dumps(parsed))
             with self._lock:
-                self._entry = entry
+                if self._generation == generation:
+                    self._entry = entry
+                    self._generation += 1
         return pickle.loads(entry[1])  # type: ignore[no-any-return]  # nosec B301 - our own bytes
 
     @staticmethod

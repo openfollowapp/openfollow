@@ -36,7 +36,9 @@ _UNREADABLE_ERROR = "The settings file on this station could not be read"
 _UNREADABLE_ACTION = "Import a settings file to replace it."
 
 _BROKEN = pytest.mark.parametrize(
-    "content", [b"", b"  \n\t\n", b"not [[ valid toml"], ids=["empty", "whitespace", "unparseable"]
+    "content",
+    [b"", b"  \n\t\n", b"not [[ valid toml", b"grid = 5\n"],
+    ids=["empty", "whitespace", "unparseable", "not-a-config"],
 )
 
 _GRID = {"width": 12.0}
@@ -218,11 +220,43 @@ def station(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):  # noqa: ANN201
         yield config_path, base
 
 
+@pytest.fixture(scope="module")
+def matrix_server(tmp_path_factory: pytest.TempPathFactory):  # noqa: ANN201
+    """One live server for the whole matrix; ``repaired_before_any_write`` puts its files back for each case."""
+    config_path = tmp_path_factory.mktemp("matrix") / "config.toml"
+    for name in ("Backup Name", "Latest Name"):
+        save_config(AppConfig(psn_system_name=name, station_id="abc123", controlled_marker_ids=[1]), str(config_path))
+    files = {path: path.read_bytes() for path in (config_path, config_path.with_name("config.toml.bak"))}
+    catalogs = [MarkerCatalog()]
+    with pytest.MonkeyPatch.context() as patch:
+        for cls in (discovery_module.BeaconSender, discovery_module.BeaconReceiver):
+            patch.setattr(cls, "start", lambda self: None)
+            patch.setattr(cls, "stop", lambda self: None)
+        with live_on_free_port(
+            lambda port: ConfigWebServer(
+                config_path=str(config_path),
+                host="127.0.0.1",
+                port=port,
+                system_name="T",
+                marker_catalog_provider=lambda: catalogs[0],
+                network_interfaces_provider=lambda: [{"name": "eth0"}],
+            )
+        ) as (_server, base):
+            yield config_path, base, files, catalogs
+
+
 @pytest.fixture()
-def repaired_before_any_write(station, monkeypatch: pytest.MonkeyPatch):  # noqa: ANN001, ANN201
+def repaired_before_any_write(matrix_server, monkeypatch: pytest.MonkeyPatch):  # noqa: ANN001, ANN201
     """The file is repaired just before a route writes it: a route that read the backup would write it over."""
-    config_path, _ = station
-    whole = config_path.read_bytes()
+    import shutil
+
+    config_path, base, files, catalogs = matrix_server
+    for path, data in files.items():
+        path.write_bytes(data)
+    shutil.rmtree(config_path.parent / "backups", ignore_errors=True)
+    catalogs[0] = MarkerCatalog()
+    catalogs[0].upsert(1, "One", "#ffffff", origin="abc123")
+    whole = files[config_path]
     real = routes_module.save_config
 
     def _repaired_then_saved(cfg: AppConfig, path: str, **kwargs: Any) -> None:
@@ -230,7 +264,7 @@ def repaired_before_any_write(station, monkeypatch: pytest.MonkeyPatch):  # noqa
         real(cfg, path, **kwargs)
 
     monkeypatch.setattr(routes_module, "save_config", _repaired_then_saved)
-    return station
+    return config_path, base
 
 
 @_BROKEN
@@ -252,6 +286,7 @@ def test_a_write_over_a_broken_file_is_refused_at_its_read_and_leaves_everything
         empty = not content.strip()
         assert answer["error"] == (_EMPTY_ERROR if empty else _UNREADABLE_ERROR)
         assert answer["action"] == (_EMPTY_ACTION if empty else _UNREADABLE_ACTION)
+        assert answer["settings_file"] == ("empty-restorable" if empty else "unreadable")
     assert config_path.read_bytes() == content
     assert config_path.with_name("config.toml.bak").read_bytes() == backup
     assert _archives(config_path) == []
@@ -323,7 +358,7 @@ def test_an_import_does_not_replace_an_empty_file(station, content: bytes) -> No
     assert _archives(config_path) == []
 
 
-def test_a_save_over_a_missing_file_starts_from_the_backup(station) -> None:
+def test_a_save_over_a_missing_file_starts_from_the_last_whole_read(station) -> None:
     config_path, base = station
     config_path.unlink()
 
@@ -331,7 +366,69 @@ def test_a_save_over_a_missing_file_starts_from_the_backup(station) -> None:
 
     assert status == 200
     saved = load_config(str(config_path), strict=True)
-    assert (saved.psn_system_name, saved.grid.width) == ("Backup Name", 12.0)
+    assert (saved.psn_system_name, saved.grid.width) == ("Latest Name", 12.0)
+
+
+def test_an_import_over_a_missing_file_keeps_the_identity_of_the_last_whole_read(station) -> None:
+    config_path, base = station
+    save_config(AppConfig(psn_system_name="Latest Name", station_id="abc123", web_pin="4321"), str(config_path))
+    assert _get(base, "/")[0] == 303
+    config_path.unlink()
+
+    cookie = _login(base, "4321")
+    status, text = _authed(base, "POST", "/api/config/import", {"grid": _GRID, "web_pin": ""}, cookie)
+
+    assert status == 200, text
+    assert load_config(str(config_path), strict=True).web_pin == "4321"
+
+
+def test_a_file_broken_before_any_request_is_served_as_the_server_read_it_at_start(station) -> None:
+    config_path, base = station
+    config_path.write_bytes(b"")
+
+    status, page, _ = _get(base, "/section/general")
+
+    assert status == 200
+    assert 'value="Latest Name"' in page
+
+
+def test_an_empty_file_with_no_readable_backup_is_mended_by_starting_again(station) -> None:
+    config_path, base = station
+    config_path.with_name("config.toml.bak").write_bytes(b"grid = 5\n")
+    config_path.write_bytes(b"")
+
+    status, text = _request(base, "POST", "/api/config/grid", "json", _GRID)
+
+    assert (status, json.loads(text)["action"]) == (409, "Restart OpenFollow to start again with default settings.")
+
+
+def test_a_refused_export_is_logged_as_not_exported(station, caplog: pytest.LogCaptureFixture) -> None:
+    config_path, base = station
+    config_path.write_bytes(b"")
+
+    with caplog.at_level("WARNING", logger="openfollow.web.routes"):
+        assert _get(base, "/api/config/export")[0] == 409
+
+    assert f"Not exported: Config file {config_path} is empty." in caplog.messages
+
+
+def test_the_archive_before_an_import_over_an_unreadable_file_is_the_last_whole_read_s(station) -> None:
+    import tarfile
+
+    config_path, base = station
+    config_path.with_name("latest-markers.toml").write_text("# the catalog of the last whole read\n")
+    save_config(AppConfig(psn_system_name="Latest Name", markers_catalog_path="latest-markers.toml"), str(config_path))
+    assert _get(base, "/")[0] == 200
+    config_path.write_bytes(b"grid = 5\n")
+
+    assert _request(base, "POST", "/api/config/import", "json", {"grid": _GRID})[0] == 200
+
+    (archive,) = _archives(config_path)
+    assert archive.name.startswith("Latest-Name-")
+    with tarfile.open(archive) as tar:
+        catalog = tar.extractfile("markers.toml")
+        assert catalog is not None
+        assert catalog.read() == b"# the catalog of the last whole read\n"
 
 
 @_BROKEN
@@ -371,12 +468,32 @@ def test_the_login_asks_for_the_pin_of_the_last_whole_read(station, content: byt
     assert (status, "Incorrect PIN" in page) == (200, True)
 
 
-def test_every_read_in_the_routes_goes_through_the_cache_or_reads_for_save() -> None:
-    """A bare ``load_config`` there falls back to the backup on a broken file, a save behind the page."""
-    import re
+# The reads that may take the backup or the defaults: startup, which recovers on purpose, and the
+# fallbacks of the readers that handle a file that does not read.
+_NON_STRICT_READS = {
+    ("openfollow/app.py", "__init__"),
+    ("openfollow/web/config_cache.py", "_last_whole"),
+    ("openfollow/configuration.py", "load_config_for_save"),
+}
 
-    source = Path(routes_module.__file__).read_text(encoding="utf-8")
-    assert re.findall(r"\bload_config\(", source) == []
+
+def test_no_code_reads_the_config_file_as_its_backup_but_the_reads_meant_to() -> None:
+    """A bare ``load_config`` falls back to the backup on a broken file, a save behind the running station."""
+    package = Path(routes_module.__file__).parents[1]
+    found = set()
+    for source in sorted(package.rglob("*.py")):
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        for func in ast.walk(tree):
+            if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for call in ast.walk(func):
+                if (
+                    isinstance(call, ast.Call)
+                    and getattr(call.func, "id", getattr(call.func, "attr", None)) == "load_config"
+                    and not any(k.arg == "strict" for k in call.keywords)
+                ):
+                    found.add((source.relative_to(package.parent).as_posix(), func.name))
+    assert found == _NON_STRICT_READS
 
 
 def _whole_then_broken(config_path: Path, content: bytes, read: Any) -> tuple[Any, Any]:

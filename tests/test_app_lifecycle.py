@@ -266,6 +266,26 @@ class TestStartupOnABrokenConfigFile:
 
         assert app._config.station_id not in ("", "abc123")
 
+    def test_a_file_that_is_no_config_runs_on_the_backup_and_is_left_alone(self, real_load) -> None:  # noqa: ANN001
+        real_load.write_text("grid = 5\n", encoding="utf-8")
+
+        app = OpenFollowApp(config_path=str(real_load))
+
+        assert (app._config.psn_system_name, app._config.station_id) == ("Backup Name", "abc123")
+        assert real_load.read_text(encoding="utf-8") == "grid = 5\n"
+
+    def test_an_empty_file_whose_backup_is_no_config_starts_as_a_first_run(self, real_load) -> None:  # noqa: ANN001
+        from openfollow.configuration import load_config
+
+        real_load.with_name("config.toml.bak").write_text('camera = "x"\n', encoding="utf-8")
+        real_load.write_text("", encoding="utf-8")
+
+        app = OpenFollowApp(config_path=str(real_load))
+
+        assert app._config.station_id not in ("", "abc123")
+        assert load_config(str(real_load), strict=True).station_id == app._config.station_id
+        assert real_load.with_name("config.toml.bak").read_text(encoding="utf-8") == 'camera = "x"\n'
+
     def test_an_unreadable_file_without_a_backup_runs_on_the_defaults_and_writes_nothing(
         self,
         real_load,

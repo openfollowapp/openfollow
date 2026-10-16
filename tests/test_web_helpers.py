@@ -1937,6 +1937,33 @@ def test_a_peer_that_said_why_it_did_not_apply_is_reported_with_its_reason(monke
     ]
 
 
+@pytest.mark.parametrize(
+    ("kind", "reason"),
+    [
+        (
+            "empty-restorable",
+            "its settings file is empty; restart it to restore the settings from its latest backup copy",
+        ),
+        ("empty", "its settings file is empty; restart it to start again with default settings"),
+        ("unreadable", "its settings file could not be read; import a settings file there to replace it"),
+    ],
+)
+def test_a_peer_s_settings_file_is_named_as_its_own_not_the_sender_s(monkeypatch, kind: str, reason: str) -> None:
+    from openfollow.web.routes import _PeerRefused, _send_config_to_peer
+
+    answer = {
+        "error": "The settings file on this station is empty",
+        "action": "Restart OpenFollow.",
+        "settings_file": kind,
+    }
+    _peer_answering(monkeypatch, 409, json.dumps(answer).encode())
+
+    with pytest.raises(_PeerRefused) as refused:
+        _send_config_to_peer("10.0.0.5", 80, "grid", {}, expected_port=80, sender="Stage Left")
+
+    assert str(refused.value) == reason
+
+
 @pytest.mark.parametrize("body", [b"", b"<html>no</html>", b"[1]", b'{"error": ""}', b'{"error": 3}'])
 def test_a_peer_answer_without_a_reason_is_only_a_failure(monkeypatch, body: bytes) -> None:
     from openfollow.web.routes import _send_config_to_peer

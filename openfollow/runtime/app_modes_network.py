@@ -860,8 +860,10 @@ def _pick_station_iface(app: OpenFollowApp, name: str) -> None:
             cfg.psn_source_iface = name
             save_config(cfg, app._config_path)
     except Exception:  # noqa: BLE001 - a failed save is reported on the screen
+        from openfollow.runtime.app_modes import _why_unsaved
+
         logger.exception("Could not save the station interface")
-        _set_banner(app, "Could not save - the interface is unchanged.")
+        _set_banner(app, f"Could not save - the interface is unchanged. {_why_unsaved(app, 'pick it again')}")
         return
     # Applied now, not on the next one-second poll: the screen re-reads from the running config.
     app._last_config_check = 0.0

@@ -3411,6 +3411,23 @@ class TestTheSimpleInterfacePicker:
         assert not os.path.exists(app._config_path)
         assert app._pi_network_banner_level == "error"
 
+    @pytest.mark.parametrize(
+        ("content", "why"),
+        [
+            (b"", "The settings file is empty. Restart OpenFollow to start again with default settings"),
+            (b"grid = 5\n", "The settings file could not be read. Import a settings file to replace it"),
+        ],
+        ids=["empty", "not-a-config"],
+    )
+    def test_a_save_refused_by_the_settings_file_says_why(self, monkeypatch, tmp_path, content, why) -> None:
+        app = _simple_app(monkeypatch, tmp_path)
+        with open(app._config_path, "wb") as f:
+            f.write(content)
+        _confirm_key(app, "interface")
+        _confirm_key(app, "pick:wlan0")
+        assert app._pi_network_banner == f"Could not save - the interface is unchanged. {why}, then pick it again."
+        assert app._pi_network_banner_level == "error"
+
     def test_a_failed_save_says_so_and_moves_nothing(self, monkeypatch, tmp_path) -> None:
         import openfollow.configuration as configuration
 

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import errno
 import ipaddress
 import logging
 import math
@@ -3015,12 +3016,12 @@ def restore_empty_config(path: str) -> None:
                     return
         except OSError:
             return
-        backup = _readable_backup_bytes(path)
+        backup = _readable_backup(path)
         try:
             if backup is None:
                 os.unlink(path)
             else:
-                _replace_file(Path(path), backup)
+                _replace_file(Path(path), backup[0])
         except OSError:
             logger.exception("Config file %s is empty and could not be restored.", path)
             return
@@ -3030,7 +3031,8 @@ def restore_empty_config(path: str) -> None:
         logger.warning("Config file %s is empty – restored it from %s.bak.", path, path)
 
 
-def _readable_backup_bytes(path: str) -> bytes | None:
+def _readable_backup(path: str) -> tuple[bytes, AppConfig] | None:
+    """The ``<path>.bak`` snapshot ``save_config`` writes, when it reads whole."""
     try:
         return _read_whole(path + ".bak")
     except ConfigFileUnreadableError:
@@ -3054,16 +3056,6 @@ def _replace_file(target: Path, data: bytes) -> None:
     _fsync_dir(directory)
 
 
-def _load_backup_data(path: str) -> dict[str, Any] | None:
-    """Parse the ``<path>.bak`` snapshot ``save_config`` writes, or ``None``.
-
-    Returns ``None`` when the backup is absent, empty or does not read, so
-    recovery degrades to defaults rather than raising.
-    """
-    raw = _readable_backup_bytes(path)
-    return None if raw is None else tomllib.loads(raw.decode("utf-8"))
-
-
 # Which (config path, marker ids) have been logged as newly viewed, so a config reloaded on every
 # request says it once per process.
 _LOGGED_UNVIEWED: set[tuple[str, tuple[int, ...]]] = set()
@@ -3077,6 +3069,10 @@ def viewed_with_controlled(controlled: list[int], viewer: list[int]) -> list[int
 
 class ConfigFileUnreadableError(OSError):
     """The config file exists but is empty or does not read: nothing may be written over it."""
+
+    def __init__(self, message: str, path: str) -> None:
+        super().__init__(message)
+        self.path = path
 
 
 class ConfigFileEmptyError(ConfigFileUnreadableError):
@@ -3095,7 +3091,7 @@ def _file_state(path: str) -> tuple[int, ...]:
     return (st.st_ino, st.st_mtime_ns, st.st_size)
 
 
-def _log_recovery(path: str, level: int, message: str, *args: object, exc_info: bool = False) -> None:
+def _log_recovery(path: str, level: int, message: str, *args: object, exc_info: BaseException | None = None) -> None:
     """Log how a file that did not read was recovered, once until the file changes."""
     state = _file_state(path)
     if _RECOVERY_LOGGED.get(path) == state:
@@ -3109,72 +3105,64 @@ def load_config(path: str = "config.toml", *, strict: bool = False, missing_ok: 
 
     Args:
         path: Path to the TOML file.
-        strict: When True, re-raise parse/read errors instead of logging and
-            returning defaults; missing files still return defaults. Used by
-            hot-reload, which must not replace the running config with defaults.
-            Strict also skips the ``.bak`` recovery, and refuses an empty file
-            with ``ConfigFileEmptyError``.
+        strict: When True, a file that does not read whole raises
+            ``ConfigFileUnreadableError`` (``ConfigFileEmptyError`` for an empty
+            one) instead of being recovered; missing files still return
+            defaults. Used by hot-reload, which must not replace the running
+            config with defaults.
         missing_ok: With *strict*, False raises ``FileNotFoundError`` for a
             missing file instead of returning defaults.
 
-    On the non-strict path, a missing, empty or unparseable primary file is
-    recovered from the ``config.toml.bak`` snapshot, degrading to defaults when
-    the backup is also absent or unparseable. A caller that writes the config
-    back reads it with :func:`load_config_for_save` instead.
+    On the non-strict path, a missing file or one that does not read whole (see
+    ``_read_whole``) is recovered from the ``config.toml.bak`` snapshot,
+    degrading to defaults when the backup does not read whole either; it never
+    raises. A caller that writes the config back reads it with
+    :func:`load_config_for_save` instead.
 
     Returns:
         Populated ``AppConfig``; defaults for any missing fields.
     """
     try:
-        with open(path, "rb") as f:
-            raw = f.read()
-        # Blank loads as every default; an editor that truncates before it writes leaves one for a moment.
-        if not raw.strip():
-            raise ConfigFileEmptyError(f"Config file {path} is empty.")
-        data: dict[str, Any] = tomllib.loads(raw.decode("utf-8"))
-    except FileNotFoundError:
-        # Strict mode: a missing file must not pull in a stale backup; it reads
-        # as defaults unless *missing_ok* is off. Otherwise recover from the ``.bak``.
-        if not strict:
-            backup = _load_backup_data(path)
-            if backup is not None:
-                _log_recovery(path, logging.WARNING, "Config file %s is missing – recovered from %s.bak.", path)
-                data = backup
-            else:
-                return AppConfig()
-        elif not missing_ok:
-            raise
-        else:
-            return AppConfig()
-    except ConfigFileEmptyError:
+        whole = _read_whole(path)
+    except ConfigFileUnreadableError as error:
         if strict:
             raise
-        backup = _load_backup_data(path)
+        return _recovered(path, error)
+    if whole is None:
+        if not strict:
+            return _recovered(path, None)
+        if not missing_ok:
+            raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), path)
+        return AppConfig()
+    _RECOVERY_LOGGED.pop(path, None)
+    return whole[1]
+
+
+def _recovered(path: str, error: ConfigFileUnreadableError | None) -> AppConfig:
+    """The config for a file that is missing (*error* ``None``) or does not read: the backup, else defaults."""
+    backup = _readable_backup(path)
+    if error is None:
+        if backup is not None:
+            _log_recovery(path, logging.WARNING, "Config file %s is missing – recovered from %s.bak.", path)
+            return backup[1]
+        return AppConfig()
+    if isinstance(error, ConfigFileEmptyError):
         if backup is None:
             _log_recovery(path, logging.WARNING, "Config file %s is empty – using defaults.")
             return AppConfig()
         _log_recovery(path, logging.WARNING, "Config file %s is empty – recovered from %s.bak.", path)
-        data = backup
-    except Exception:
-        if strict:
-            raise
-        # Catches any read/parse failure (TOML decode, permissions, …);
-        # recover from the ``.bak`` snapshot.
-        backup = _load_backup_data(path)
-        if backup is None:
-            _log_recovery(path, logging.ERROR, "Failed to read/parse config file %s – using defaults.", exc_info=True)
-            return AppConfig()
-        _log_recovery(
-            path,
-            logging.WARNING,
-            "Config file %s could not be read/parsed – recovered from %s.bak.",
-            path,
-            exc_info=True,
-        )
-        data = backup
-    else:
-        _RECOVERY_LOGGED.pop(path, None)
+        return backup[1]
+    if backup is None:
+        _log_recovery(path, logging.ERROR, "Failed to read/parse config file %s – using defaults.", exc_info=error)
+        return AppConfig()
+    _log_recovery(
+        path, logging.WARNING, "Config file %s could not be read/parsed – recovered from %s.bak.", path, exc_info=error
+    )
+    return backup[1]
 
+
+def _config_from_data(path: str, data: dict[str, Any]) -> AppConfig:
+    """Build the config a parsed config file holds; *path* only names it in what is logged."""
     # Backward compatibility: fall back to num_markers if new fields absent.
     # Coerce the raw TOML types – this is the legacy-upgrade path, so a
     # hand-edited / old config can carry a non-int ``num_markers`` (range()
@@ -3282,15 +3270,17 @@ def load_config(path: str = "config.toml", *, strict: bool = False, missing_ok: 
     return config
 
 
-def load_config_for_save(path: str) -> AppConfig:
+def load_config_for_save(path: str, *, missing: Callable[[], AppConfig] | None = None) -> AppConfig:
     """The config file as it is on disk, for a caller that writes it back or hands it on.
 
     An empty or unreadable file raises ``ConfigFileUnreadableError``: read as
     the backup or the defaults, it would be written over with them. A missing
-    one reads as ``load_config`` reads it.
+    one reads as *missing* says, else as ``load_config`` reads it.
     """
-    on_disk = _read_on_disk(path)
-    return load_config(path) if on_disk is None else on_disk
+    on_disk = read_config_whole(path)
+    if on_disk is not None:
+        return on_disk
+    return missing() if missing is not None else load_config(path)
 
 
 _DEPRECATED_WARNED: set[str] = set()
@@ -3421,11 +3411,12 @@ def config_to_toml_dict(config: AppConfig) -> dict[str, Any]:
     return data
 
 
-def _read_whole(path: str) -> bytes | None:
-    """The bytes of the config file at *path*, which parse; ``None`` when there is no file.
+def _read_whole(path: str) -> tuple[bytes, AppConfig] | None:
+    """The bytes of the config file at *path* and the config they hold; ``None`` when there is no file.
 
-    An empty file raises ``ConfigFileEmptyError``, one that cannot be read or
-    does not parse ``ConfigFileUnreadableError``.
+    This is the one test of a file that reads whole: its bytes build a config.
+    An empty file raises ``ConfigFileEmptyError``, one that cannot be read,
+    does not parse or does not build ``ConfigFileUnreadableError``.
     """
     try:
         with open(path, "rb") as f:
@@ -3433,14 +3424,20 @@ def _read_whole(path: str) -> bytes | None:
     except FileNotFoundError:
         return None
     except OSError as error:
-        raise ConfigFileUnreadableError(f"Config file {path} could not be read: {error}") from error
+        raise ConfigFileUnreadableError(f"Config file {path} could not be read: {error}", path) from error
+    # Blank loads as every default; an editor that truncates before it writes leaves one for a moment.
     if not raw.strip():
-        raise ConfigFileEmptyError(f"Config file {path} is empty.")
+        raise ConfigFileEmptyError(f"Config file {path} is empty.", path)
     try:
-        tomllib.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
-        raise ConfigFileUnreadableError(f"Config file {path} could not be read: {error}") from error
-    return raw
+        return raw, _config_from_data(path, tomllib.loads(raw.decode("utf-8")))
+    except Exception as error:
+        raise ConfigFileUnreadableError(f"Config file {path} could not be read: {error}", path) from error
+
+
+def read_config_whole(path: str) -> AppConfig | None:
+    """The config file at *path* as it reads whole, ``None`` when there is none; an empty or unreadable one raises."""
+    whole = _read_whole(path)
+    return None if whole is None else whole[1]
 
 
 def config_file_problem(path: str) -> ConfigFileUnreadableError | None:
@@ -3452,11 +3449,34 @@ def config_file_problem(path: str) -> ConfigFileUnreadableError | None:
     return None
 
 
+def config_problem_kind(error: ConfigFileUnreadableError) -> str:
+    """``empty-restorable`` (a restart restores the backup), ``empty`` (a restart starts afresh) or ``unreadable``."""
+    if not isinstance(error, ConfigFileEmptyError):
+        return "unreadable"
+    return "empty" if _readable_backup(error.path) is None else "empty-restorable"
+
+
+_PROBLEM_WORDS = {
+    "empty-restorable": ("is empty", "Restart OpenFollow to restore the settings from the latest backup copy"),
+    "empty": ("is empty", "Restart OpenFollow to start again with default settings"),
+    "unreadable": ("could not be read", "Import a settings file to replace it"),
+}
+
+
 def config_problem_words(error: ConfigFileUnreadableError) -> tuple[str, str]:
     """An operator's words for *error*: what is wrong with the settings file, and the one step that mends it."""
-    if isinstance(error, ConfigFileEmptyError):
-        return "is empty", "Restart OpenFollow to restore the settings from the latest backup copy"
-    return "could not be read", "Import a settings file to replace it"
+    return _PROBLEM_WORDS[config_problem_kind(error)]
+
+
+def config_file_health(path: str) -> str:
+    """How the config file at *path* and its backup read, naming nothing they hold."""
+    problem = config_file_problem(path)
+    if problem is not None:
+        state = config_problem_words(problem)[0]
+    else:
+        state = "reads whole" if os.path.exists(path) else "missing"
+    backup = "backup reads whole" if _readable_backup(path) is not None else "no readable backup"
+    return f"{state}; {backup}"
 
 
 def save_config(config: AppConfig, path: str = "config.toml", *, replace_unreadable: bool = False) -> None:
@@ -3476,11 +3496,12 @@ def save_config(config: AppConfig, path: str = "config.toml", *, replace_unreada
     the primary is missing or unreadable.
     """
     try:
-        current = _read_whole(path)
+        whole = _read_whole(path)
     except ConfigFileUnreadableError:
         if not replace_unreadable:
             raise
-        current = None
+        whole = None
+    current = None if whole is None else whole[0]
     data = tomli_w.dumps(config_to_toml_dict(config)).encode("utf-8")
     target = Path(path)
     if current is not None:
@@ -3493,18 +3514,6 @@ def save_config(config: AppConfig, path: str = "config.toml", *, replace_unreada
     _replace_file(target, data)
 
 
-def _read_on_disk(path: str) -> AppConfig | None:
-    """The config file as it is on disk, ``None`` when there is none; an empty or unreadable one raises."""
-    try:
-        return load_config(path, strict=True, missing_ok=False)
-    except FileNotFoundError:
-        return None
-    except ConfigFileUnreadableError:
-        raise
-    except Exception as error:
-        raise ConfigFileUnreadableError(f"Config file {path} could not be read: {error}") from error
-
-
 def save_config_change(path: str, running: AppConfig, change: Callable[[AppConfig], None]) -> None:
     """Make ``change`` in ``running`` and in the config file as it is on disk now.
 
@@ -3514,7 +3523,7 @@ def save_config_change(path: str, running: AppConfig, change: Callable[[AppConfi
     """
     change(running)
     with config_write_lock:
-        current = _read_on_disk(path)
+        current = read_config_whole(path)
         if current is None:
             save_config(running, path)
             return
@@ -3538,7 +3547,7 @@ def save_config_fields(
     """
     with config_write_lock:
         try:
-            on_disk = _read_on_disk(path)
+            on_disk = read_config_whole(path)
         except ConfigFileUnreadableError:
             if not replace_unreadable:
                 raise

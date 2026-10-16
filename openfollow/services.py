@@ -3705,10 +3705,14 @@ class AppRuntimeServices:
         return {"recording": recording, "locks": locks}
 
     def _record_path(self, name: str | None) -> bool:
-        from openfollow.configuration import load_config
+        from openfollow.configuration import ConfigFileUnreadableError, read_config_whole
 
         # The web UI may have created the path a moment ago; the file is ahead of the running config.
-        return bool(self._app._paths.record(name, load_config(self._app._config_path).paths))
+        try:
+            on_disk = read_config_whole(self._app._config_path)
+        except ConfigFileUnreadableError:
+            on_disk = None
+        return bool(self._app._paths.record(name, (on_disk or self._app._config).paths))
 
     def _stage_path_rename(self, old: str, new: str) -> None:
         self._app._paths.stage_rename(old, new)

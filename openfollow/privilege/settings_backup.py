@@ -346,15 +346,18 @@ def run_web_backup(
     now: datetime | None = None,
     keep: int = KEEP,
     write: Callable[[Path, list[tuple[str, Path]], dict[str, object]], None] = _write_archive,
+    settings: dict[str, object] | None = None,
 ) -> WebBackup:
     """Archive the settings before the web UI's ``kind`` of change replaces them.
 
-    Leaves :data:`RECORD_NAME` alone: it describes the last update's backup.
+    The station name and catalog path come from *settings* when given, for a
+    config file that does not read. Leaves :data:`RECORD_NAME` alone: it
+    describes the last update's backup.
     """
     moment = now or datetime.now(timezone.utc)
     ts = moment.astimezone(timezone.utc).isoformat(timespec="seconds")
     backup_dir = web_backup_dir(config_path)
-    config = _load_config(config_path)
+    config = _load_config(config_path) if settings is None else settings
     manifest: dict[str, object] = {"kind": kind, "version": version, "created": ts}
     with _WEB_BACKUP_LOCK:
         name = archive_name(config.get("psn_system_name"), version, moment, kind)

@@ -623,8 +623,9 @@ def test_load_config_malformed_toml_returns_defaults(temp_config_path, caplog) -
 def test_load_config_malformed_toml_strict_raises(temp_config_path) -> None:
     temp_config_path.write_text("this = is not valid toml [[\n", encoding="utf-8")
 
-    with pytest.raises(tomllib.TOMLDecodeError):
+    with pytest.raises(ConfigFileUnreadableError) as raised:
         load_config(str(temp_config_path), strict=True)
+    assert isinstance(raised.value.__cause__, tomllib.TOMLDecodeError)
 
 
 def test_load_config_missing_file_strict_still_returns_defaults(
@@ -900,17 +901,26 @@ def test_load_strict_ignores_bak(temp_config_path) -> None:
     save_config(good, str(temp_config_path))  # .bak present
     temp_config_path.write_text("bad [[", encoding="utf-8")
 
-    with pytest.raises(tomllib.TOMLDecodeError):
+    with pytest.raises(ConfigFileUnreadableError):
         load_config(str(temp_config_path), strict=True)
 
 
 # An empty or unreadable file is never read as the defaults, nor written over
 
 _EMPTY = pytest.mark.parametrize("content", ["", "  \n\t\n"], ids=["empty", "whitespace"])
+# Valid TOML that is not a config: each of these makes building the config raise.
+_WRONG_SHAPES = [
+    b"grid = 5\n",
+    b'camera = "x"\n',
+    b"paths = [1]\n",
+    b"osc_destinations = 3\n",
+    b'midi = {patches="x"}\n',
+]
+_WRONG_SHAPE_IDS = ["grid-int", "camera-str", "paths-list", "osc-destinations-int", "midi-patches-str"]
 _UNREADABLE = pytest.mark.parametrize(
     "content",
-    [b"", b"  \n\t\n", b"not [[ valid toml", b"\xff\xfe = 1\n"],
-    ids=["empty", "whitespace", "unparseable", "not-utf8"],
+    [b"", b"  \n\t\n", b"not [[ valid toml", b"\xff\xfe = 1\n", *_WRONG_SHAPES],
+    ids=["empty", "whitespace", "unparseable", "not-utf8", *_WRONG_SHAPE_IDS],
 )
 
 
@@ -1093,7 +1103,7 @@ def test_an_empty_file_is_restored_from_its_backup_which_stays(temp_config_path,
     assert load_config(str(temp_config_path), strict=True).psn_system_name == "Saved Again"
 
 
-@pytest.mark.parametrize("backup", [None, b"", b"  \n", b"not [[ toml", b"\xff\xfe = 1\n"])
+@pytest.mark.parametrize("backup", [None, b"", b"  \n", b"not [[ toml", b"\xff\xfe = 1\n", *_WRONG_SHAPES])
 @_EMPTY
 def test_an_empty_file_without_a_readable_backup_is_removed_for_a_first_run(
     temp_config_path, caplog, content, backup
@@ -1109,7 +1119,7 @@ def test_an_empty_file_without_a_readable_backup_is_removed_for_a_first_run(
 
     assert not temp_config_path.exists()
     assert backup is None or _bak_of(temp_config_path).read_bytes() == backup
-    assert caplog.messages == [
+    assert [m for m in caplog.messages if "is empty" in m] == [
         f"Config file {temp_config_path} is empty and has no readable backup – starting as a first run."
     ]
 
@@ -1218,6 +1228,105 @@ def test_save_config_change_refuses_an_empty_or_unreadable_file(temp_config_path
         save_config_change(str(temp_config_path), running, lambda cfg: setattr(cfg, "web_port", 9090))
 
     assert temp_config_path.read_bytes() == content
+
+
+@pytest.mark.parametrize("content", _WRONG_SHAPES, ids=_WRONG_SHAPE_IDS)
+def test_a_file_that_parses_but_is_no_config_is_recovered_from_the_backup(temp_config_path, content) -> None:
+    _good_config_with_backup(temp_config_path)
+    temp_config_path.write_bytes(content)
+
+    assert load_config(str(temp_config_path)).psn_system_name == "Good Config"
+
+
+@pytest.mark.parametrize("backup", _WRONG_SHAPES, ids=_WRONG_SHAPE_IDS)
+@pytest.mark.parametrize(
+    "primary", [None, b"", b"not [[ toml", b"grid = 5\n"], ids=["missing", "empty", "unparseable", "shape"]
+)
+def test_a_backup_that_is_no_config_reads_as_no_backup(temp_config_path, primary, backup) -> None:
+    _bak_of(temp_config_path).write_bytes(backup)
+    if primary is not None:
+        temp_config_path.write_bytes(primary)
+
+    assert load_config(str(temp_config_path)) == AppConfig()
+
+
+@pytest.mark.parametrize("content", _WRONG_SHAPES, ids=_WRONG_SHAPE_IDS)
+def test_a_file_that_parses_but_is_no_config_is_a_problem_for_saving(temp_config_path, content) -> None:
+    from openfollow.configuration import config_file_problem
+
+    temp_config_path.write_bytes(content)
+
+    problem = config_file_problem(str(temp_config_path))
+    assert isinstance(problem, ConfigFileUnreadableError)
+    assert not isinstance(problem, ConfigFileEmptyError)
+
+
+@pytest.mark.parametrize(
+    ("backup", "step"),
+    [
+        (True, "Restart OpenFollow to restore the settings from the latest backup copy"),
+        (None, "Restart OpenFollow to start again with default settings"),
+        (b"grid = 5\n", "Restart OpenFollow to start again with default settings"),
+    ],
+    ids=["readable-backup", "no-backup", "backup-no-config"],
+)
+def test_an_empty_file_is_mended_by_what_a_restart_will_do(temp_config_path, backup, step) -> None:
+    from openfollow.configuration import config_file_problem, config_problem_words
+
+    if backup is True:
+        _good_config_with_backup(temp_config_path)
+    elif backup is not None:
+        _bak_of(temp_config_path).write_bytes(backup)
+    temp_config_path.write_bytes(b"")
+
+    problem = config_file_problem(str(temp_config_path))
+    assert problem is not None
+    assert config_problem_words(problem) == ("is empty", step)
+
+
+def test_an_unreadable_file_is_replaced_by_an_import(temp_config_path) -> None:
+    from openfollow.configuration import config_file_problem, config_problem_words
+
+    _good_config_with_backup(temp_config_path)
+    temp_config_path.write_bytes(b"grid = 5\n")
+
+    problem = config_file_problem(str(temp_config_path))
+    assert problem is not None
+    assert config_problem_words(problem) == ("could not be read", "Import a settings file to replace it")
+
+
+@pytest.mark.parametrize(
+    ("primary", "backup", "health"),
+    [
+        ("good", "good", "reads whole; backup reads whole"),
+        (b"", "good", "is empty; backup reads whole"),
+        (b"not [[ toml", None, "could not be read; no readable backup"),
+        (b"grid = 5\n", b"camera = 1\n", "could not be read; no readable backup"),
+        (None, "good", "missing; backup reads whole"),
+    ],
+)
+def test_the_health_of_the_config_file_names_no_contents(temp_config_path, primary, backup, health) -> None:
+    from openfollow.configuration import config_file_health
+
+    save_config(AppConfig(psn_system_name="secret-ish", web_pin="4321"), str(temp_config_path))
+    good = temp_config_path.read_bytes()
+    if backup is not None:
+        _bak_of(temp_config_path).write_bytes(good if backup == "good" else backup)
+    if primary is None:
+        temp_config_path.unlink()
+    elif primary != "good":
+        temp_config_path.write_bytes(primary)
+
+    assert config_file_health(str(temp_config_path)) == health
+
+
+def test_a_save_read_of_a_missing_file_takes_the_fallback_it_is_given(temp_config_path) -> None:
+    _good_config_with_backup(temp_config_path)
+    temp_config_path.unlink()
+
+    newer = AppConfig(psn_system_name="Last Whole Read")
+    assert load_config_for_save(str(temp_config_path), missing=lambda: newer) is newer
+    assert load_config_for_save(str(temp_config_path)).psn_system_name == "Good Config"
 
 
 # Per-marker move speed (``AppConfig.marker_move_speeds``)
@@ -5022,7 +5131,7 @@ def test_save_config_fields_holds_the_write_lock_across_load_and_save(temp_confi
 
     save_config(AppConfig(), str(temp_config_path))
     held: list[bool] = []
-    real_load, real_save = cfg_mod.load_config, cfg_mod.save_config
+    real_load, real_save = cfg_mod.read_config_whole, cfg_mod.save_config
 
     def _load(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
         held.append(config_write_lock.locked())
@@ -5032,7 +5141,7 @@ def test_save_config_fields_holds_the_write_lock_across_load_and_save(temp_confi
         held.append(config_write_lock.locked())
         real_save(*args, **kwargs)
 
-    monkeypatch.setattr(cfg_mod, "load_config", _load)
+    monkeypatch.setattr(cfg_mod, "read_config_whole", _load)
     monkeypatch.setattr(cfg_mod, "save_config", _save)
 
     save_config_fields(AppConfig(), str(temp_config_path), ["camera"])

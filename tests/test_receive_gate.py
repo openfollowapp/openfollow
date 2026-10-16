@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import errno
 import selectors
 import socket
 import threading
@@ -144,5 +145,34 @@ def test_a_gate_that_cannot_be_built_releases_what_it_opened(monkeypatch: pytest
     with pytest.raises(ValueError):
         ReceiveGate(closed)
 
+    assert [s.fileno() for s in opened.pairs] == [-1, -1]
+    assert all(sel.get_map() is None for sel in opened.selectors)
+
+
+def test_a_wake_that_cannot_be_written_still_stops_and_releases(
+    sock: socket.socket, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A send refused by the kernel must not skip the caller's join or the close."""
+    opened = _record_opened(monkeypatch)
+    real_pair = receive_gate.socket.socketpair
+
+    class _RefusingSend(socket.socket):
+        def send(self, *_args: object) -> int:
+            raise OSError(errno.ENOBUFS, "No buffer space available")
+
+    def _pair() -> tuple[socket.socket, socket.socket]:
+        r, w = real_pair()
+        refusing = _RefusingSend(fileno=w.detach())
+        opened.pairs[-1] = refusing
+        return r, refusing
+
+    monkeypatch.setattr(receive_gate.socket, "socketpair", _pair)
+    gate = ReceiveGate(sock)
+
+    gate.stop()
+    assert gate.wait() is False
+    gate.close()
+
+    assert gate.closed
     assert [s.fileno() for s in opened.pairs] == [-1, -1]
     assert all(sel.get_map() is None for sel in opened.selectors)

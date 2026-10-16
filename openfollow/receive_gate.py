@@ -59,8 +59,9 @@ class ReceiveGate:
             if self._stopped.is_set():
                 return
             self._stopped.set()
-            # One byte into a private, never-drained pair: it cannot fill.
-            self._wake_w.send(b"\0")
+            # Already stopped either way; a failed wake must not cost the caller its join or close.
+            with contextlib.suppress(OSError):
+                self._wake_w.send(b"\0")
 
     def close(self) -> None:
         """Stop, then release the wake pair and the selector; the socket stays the caller's."""

@@ -675,10 +675,8 @@ class OscService:
             daemon=True,
             name="OscService-Listener",
         )
-        # Start the thread inside the lock so a concurrent ``stop_listener``
-        # can't see it unstarted: ``join()`` on an unstarted thread raises
-        # ``RuntimeError``. ``Thread.start()`` only blocks until the thread is
-        # scheduled.
+        # Started inside the lock: a concurrent ``stop_listener`` joining an
+        # unstarted thread would raise ``RuntimeError``.
         with self._listener_lock:
             self._listener = listener
             self._listener_thread = thread

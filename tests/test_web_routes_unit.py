@@ -547,6 +547,14 @@ class TestApplyImportData:
         )
         assert out.psn_source_iface == "eth0"
 
+    def test_touch_remote_import_takes_the_tuning_and_keeps_this_station_s_switch(self) -> None:
+        current = AppConfig()
+        current.touch_remote.enabled = True
+        out = _apply_import_data(current, {"touch_remote": {"enabled": False, "stick_curve": 1.5, "z_notch_px": 30}})
+        assert out.touch_remote.enabled is True
+        assert out.touch_remote.stick_curve == 1.5
+        assert out.touch_remote.z_notch_px == 30
+
     def test_paths_import_with_this_station_s_active_flags_and_visibility(self) -> None:
         from openfollow.configuration import PathConfig, PathsConfig
 

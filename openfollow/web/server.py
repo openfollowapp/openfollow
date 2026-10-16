@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 from wsgiref.simple_server import WSGIRequestHandler, WSGIServer
 
 if TYPE_CHECKING:
+    from openfollow.input.touch_remote import TouchRemote
     from openfollow.logging_setup import RingBufferLogHandler
     from openfollow.network.adapter import ApplyResult
     from openfollow.runtime.diagnostics_export import DiagnosticsExport
@@ -177,6 +178,8 @@ class ConfigWebServer:
         path_state_provider: Callable[[], dict[str, Any]] | None = None,
         path_recorder: Callable[[str | None], bool] | None = None,
         path_renamer: Callable[[str, str], None] | None = None,
+        # The touch remote's sessions and holds; the routes answer 403 without it.
+        touch_remote: TouchRemote | None = None,
         # Live per-marker move speeds (R/T + gamepad bumpers). Device-local and
         # runtime-authoritative; the section-save path overlays them onto the fresh
         # disk load so a save can't clobber a speed the operator just ramped.
@@ -298,6 +301,7 @@ class ConfigWebServer:
         self._path_state_provider = path_state_provider
         self._path_recorder = path_recorder
         self._path_renamer = path_renamer
+        self.touch_remote = touch_remote
         self._marker_move_speeds_provider = marker_move_speeds_provider
         self._full_snapshot_provider = full_snapshot_provider
         self._mouse3d_button_provider = mouse3d_button_provider

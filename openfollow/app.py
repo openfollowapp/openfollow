@@ -28,6 +28,7 @@ from openfollow.configuration import (
     restore_empty_config,
     save_config,
 )
+from openfollow.input.touch_remote import TouchRemote
 from openfollow.logging_setup import ThrottledExceptionLogger
 from openfollow.marker_catalog import (
     MarkerCatalog,
@@ -248,6 +249,8 @@ class OpenFollowApp:
         # Markers locked onto paths; rebuilt whenever the paths or the experimental switch change.
         self._paths: PathEngine = PathEngine()
         self._paths.reload(self._config.paths, enabled=self._config.ui.show_experimental_features)
+        # Browser sessions of the web touch remote and the markers they hold.
+        self._touch_remote: TouchRemote = TouchRemote()
 
         self._canvas: GtkNativeSinkWindow | None = None
         self._camera: Camera | None = None

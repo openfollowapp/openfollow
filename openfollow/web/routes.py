@@ -1785,7 +1785,7 @@ def _apply_section(cfg: AppConfig, section: str, data: Mapping[str, Any]) -> boo
         tz.__post_init__()
         return True
 
-    if section == "marker":
+    if section in ("marker", "movement"):
         marker_data = dict(data)
         apply_renamed_marker_keys(marker_data)
         data = marker_data
@@ -2225,7 +2225,8 @@ _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
         "default_pos_x": _as_float,
         "default_pos_y": _as_float,
         "default_pos_z": _as_float,
-        "invert_control_direction": _as_bool,
+        "control_frame": _as_str,
+        "control_heading": _as_float,
     },
     "marker": {
         "marker_style": _as_str,

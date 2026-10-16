@@ -533,6 +533,71 @@ def unproject_to_plane(
     return result
 
 
+# A flattened axis shorter than this is (near) vertical and carries no bearing.
+_FLAT_AXIS_EPS = 1e-6
+# The picture step ``screen_axes_at`` measures over, as a fraction of the canvas height.
+_SCREEN_STEP_FRACTION = 0.01
+
+PlanarAxes = tuple[tuple[float, float], tuple[float, float]]
+
+
+def ground_axes(params: npt.NDArray[Any]) -> PlanarAxes:
+    """The camera's (right, forward) flattened onto the floor, as unit PSN XY vectors.
+
+    Forward is right turned a quarter to the left, so a camera looking straight
+    down still has one; a camera rolled onto its side takes forward from its
+    view axis instead.
+    """
+    _, _, _, pitch, yaw, roll, _ = params
+    R = _rotation_matrix(math.radians(pitch), math.radians(yaw), math.radians(roll))
+    # Columns are the camera's axes in pygfx (x, y, z); PSN XY is (x, -z).
+    rx, ry = float(R[0, 0]), float(-R[2, 0])
+    norm = math.hypot(rx, ry)
+    if norm > _FLAT_AXIS_EPS:
+        rx, ry = rx / norm, ry / norm
+        return (rx, ry), (-ry, rx)
+    # The camera looks along its -Z.
+    fx, fy = float(-R[0, 2]), float(R[2, 2])
+    norm = math.hypot(fx, fy)
+    fx, fy = fx / norm, fy / norm
+    return (fy, -fx), (fx, fy)
+
+
+def screen_axes_at(
+    params: npt.NDArray[Any],
+    point_psn: tuple[float, float, float],
+    canvas_w: float,
+    canvas_h: float,
+    k1: float = 0.0,
+    k2: float = 0.0,
+) -> PlanarAxes | None:
+    """The stage directions that move ``point_psn`` right and up the picture, at its own height.
+
+    Unit PSN XY vectors, measured over a small step on the lens-distorted
+    picture. ``None`` when the point is behind the camera or off the picture,
+    or a step leaves the plane (the horizon).
+    """
+    pt = np.array([point_psn], dtype=np.float64)
+    seen = apply_overlay_distortion(project_points(params, pt, canvas_w, canvas_h), canvas_w, canvas_h, k1, k2)
+    sx, sy = float(seen[0, 0]), float(seen[0, 1])
+    if not (math.isfinite(sx) and math.isfinite(sy) and 0.0 <= sx <= canvas_w and 0.0 <= sy <= canvas_h):
+        return None
+    step = _SCREEN_STEP_FRACTION * canvas_h
+    picture = np.array([[sx, sy], [sx + step, sy], [sx, sy - step]], dtype=np.float64)
+    pinhole = invert_overlay_distortion(picture, canvas_w, canvas_h, k1, k2)
+    world = unproject_to_plane(params, pinhole, canvas_w, canvas_h, float(point_psn[2]))
+    if not np.all(np.isfinite(world)):
+        return None
+    axes = []
+    for row in (1, 2):
+        dx, dy = float(world[row, 0] - world[0, 0]), float(world[row, 1] - world[0, 1])
+        norm = math.hypot(dx, dy)
+        if norm <= _FLAT_AXIS_EPS:  # pragma: no cover - a finite hit a step away is always a distinct point
+            return None
+        axes.append((dx / norm, dy / norm))
+    return axes[0], axes[1]
+
+
 # ---------------------------------------------------------------------------
 # DLT Homography + Camera Decomposition
 # ---------------------------------------------------------------------------

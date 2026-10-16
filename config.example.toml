@@ -80,11 +80,14 @@ move_speed = 2.0
 default_pos_x = 0.0
 default_pos_y = 0.0
 default_pos_z = 1.6
-# Reverse left/right and forward/back for keyboard, gamepad and 3D mouse.
-# For a camera placed upstage looking downstage, whose picture is rotated
-# 180 degrees from the stage axes. Height is never affected; the mouse and
-# OSC set absolute positions and are unaffected.
-invert_control_direction = false
+# Which way keyboard, gamepad and 3D mouse steer: "stage" (stage axes),
+# "heading" (stage axes turned to control_heading degrees, measured like the
+# camera yaw; 180 for a camera upstage looking downstage), "camera" (the
+# calibrated camera's view, flattened onto the floor) or "screen" (up the
+# picture at the marker ball). Height is never affected; the mouse and OSC set
+# absolute positions and are unaffected.
+control_frame = "stage"
+control_heading = 0.0
 # "crosshair" (ball, crosshair, Z line, ground circle) or "cone" (a truncated
 # cone between the stage plane and the marker's Z).
 marker_style = "crosshair"

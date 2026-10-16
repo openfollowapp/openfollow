@@ -2298,6 +2298,78 @@
  padding-block: calc((1lh - 1cap) / 2 + var(--pill-pad-y));
  }
  }
+ /* Touch remote: launcher and a compact card on the thumb's side (.remote-left mirrors it). */
+ .remote-launcher {
+ position: fixed; right: 1rem; bottom: calc(env(safe-area-inset-bottom, 0px) + 1rem); z-index: 60;
+ width: 3.5rem; height: 3.5rem; border-radius: 50%; border: none;
+ background: var(--accent); color: var(--btn-ink-dark);
+ display: flex; align-items: center; justify-content: center; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+ }
+ .remote-card {
+ position: fixed; right: 1rem; bottom: calc(env(safe-area-inset-bottom, 0px) + 5.25rem); z-index: 61;
+ width: min(340px, calc(100vw - 2rem)); box-sizing: border-box; max-height: calc(100vh - 7rem); overflow-y: auto;
+ padding: 0.75rem; border-radius: 1.25rem; border: 1px solid var(--border); background: var(--bg-soft);
+ display: flex; flex-direction: column; gap: 0.6rem; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55);
+ touch-action: pan-y; -webkit-user-select: none; user-select: none;
+ }
+ body.remote-left .remote-launcher, body.remote-left .remote-card { right: auto; left: 1rem; }
+ /* Chips and buttons set their own display; ``hidden`` still wins inside the card. */
+ .remote-launcher[hidden], .remote-card[hidden], .remote-card [hidden] { display: none !important; }
+ .remote-card .notice { margin: 0; font-size: 0.8rem; }
+ .remote-chips { display: flex; gap: 0.5rem; overflow-x: auto; touch-action: pan-x; scrollbar-width: none; }
+ .remote-chip {
+ display: flex; align-items: center; gap: 0.4rem; flex: none; height: 2.5rem; padding: 0 0.75rem;
+ border-radius: var(--btn-radius); border: 2px solid transparent; background: var(--surface-strong);
+ color: var(--muted); font: inherit; font-size: 0.82rem; font-weight: 700; white-space: nowrap;
+ }
+ .remote-chip[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
+ .remote-chip-dot { width: 0.75rem; height: 0.75rem; border-radius: 50%; background: var(--muted); }
+ .remote-status { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+ .remote-spacer { flex: 1; }
+ .remote-round, .remote-hand {
+ height: 2.5rem; border-radius: var(--btn-radius); border: 1px solid var(--border); background: var(--surface-strong);
+ color: var(--text); display: flex; align-items: center; justify-content: center; flex: none;
+ }
+ .remote-round { width: 2.5rem; padding: 0; }
+ .remote-hand { padding: 0 0.65rem; font: inherit; font-size: 0.78rem; font-weight: 700; }
+ .remote-round[aria-pressed="true"] { border: 2px solid var(--accent); background: var(--accent-soft); color: var(--accent); }
+ .remote-drive { display: flex; gap: 0.75rem; align-items: stretch; justify-content: space-between; }
+ body.remote-left .remote-drive, body.remote-left .remote-status, body.remote-left .remote-chips { flex-direction: row-reverse; }
+ .remote-stick {
+ position: relative; width: 184px; height: 184px; flex: none; border-radius: 50%;
+ border: 2px solid var(--border); background: var(--surface); touch-action: none;
+ }
+ .remote-stick-label { position: absolute; left: 50%; transform: translateX(-50%); font-size: 0.62rem; font-weight: 700; letter-spacing: 0.06em; color: var(--muted); pointer-events: none; }
+ .remote-stick-up { top: 0.45rem; }
+ .remote-stick-down { bottom: 0.45rem; }
+ .remote-knob {
+ position: absolute; left: 50%; top: 50%; width: 72px; height: 72px; margin: -36px 0 0 -36px; border-radius: 50%;
+ background: var(--accent); pointer-events: none; transition: transform 0.14s ease-out;
+ }
+ .remote-stick.active .remote-knob { transition: none; }
+ .remote-z { width: 64px; display: flex; flex-direction: column; align-items: center; gap: 0.25rem; }
+ .remote-z.off { opacity: 0.35; }
+ .remote-z-cap { font-size: 0.68rem; font-weight: 700; color: var(--muted); white-space: nowrap; }
+ .remote-drum {
+ position: relative; flex: 1; width: 100%; min-height: 150px; border-radius: 26px; overflow: hidden;
+ border: 2px solid var(--border); background: var(--bg-deep); touch-action: none;
+ }
+ .remote-drum-ticks {
+ position: absolute; left: 0; right: 0; top: -40px; bottom: -40px; pointer-events: none;
+ background: linear-gradient(180deg, var(--border) 0 2px, transparent 2px) 0 0 / 100% 20px repeat-y;
+ }
+ .remote-drum-mid { position: absolute; left: 6px; right: 6px; top: 50%; height: 3px; margin-top: -1.5px; border-radius: 2px; background: var(--accent); pointer-events: none; }
+ .remote-drum.notched .remote-drum-mid { background: var(--text); }
+ .remote-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); gap: 0.5rem; }
+ .remote-act { height: 2.9rem; padding: 0 0.4rem; }
+ .remote-act[aria-pressed="true"], .remote-act.locked { border: 2px solid var(--accent); }
+ .remote-xyz-row { display: flex; gap: 0.5rem; align-items: flex-end; }
+ .remote-xyz-row label { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.7rem; font-weight: 700; }
+ .remote-xyz-row input { width: 100%; box-sizing: border-box; height: 2.6rem; font-family: ui-monospace, monospace; -webkit-user-select: text; user-select: text; }
+ .remote-xyz-row input[aria-invalid="true"] { border-color: var(--error-line); box-shadow: 0 0 0 1px var(--error-line); }
+ .remote-go { height: 2.6rem; flex: none; }
+ .remote-readout { display: flex; justify-content: space-between; gap: 0.5rem; font: 600 0.75rem ui-monospace, monospace; color: var(--muted); font-variant-numeric: tabular-nums; }
+ @media (prefers-reduced-motion: reduce) { .remote-knob { transition: none; } }
  </style>
 </head>
 <body class="{{'show-experimental' if defined('config') and config and config.ui.show_experimental_features else ''}}">
@@ -5450,5 +5522,9 @@
           hx-target="this"
           hx-swap="innerHTML"></div>
  </div>
+ % if defined('config') and config and config.touch_remote.enabled:
+ % include('partials/touch_remote_card.tpl')
+ <script src="/assets/js/touch-remote.js?v={{_asset_v}}"></script>
+ % end
 </body>
 </html>

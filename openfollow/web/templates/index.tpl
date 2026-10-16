@@ -89,6 +89,7 @@
     % include('partials/mouse3d.tpl', config=config, saved=False, mouse3d_status=stats.get('mouse3d') or {})
     % include('partials/osc.tpl', config=config, saved=False)
     % include('partials/operator_messages.tpl', config=config, saved=False)
+    % include('partials/touch_remote.tpl', config=config, saved=False)
     % # MIDI page: Devices and Virtual Faders sections. Config constants
     % # imported here keep partial dropdowns / fader count in sync with
     % # running ``MidiSubsystem``.

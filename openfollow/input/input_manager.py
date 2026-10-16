@@ -5,9 +5,12 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
+from openfollow.configuration import _apply_with_fallback, save_config_fields
 from openfollow.input.controller_identity import port_label, usb_host_paths
 from openfollow.input.controller_slots import (
     CONNECTED,
@@ -23,6 +26,7 @@ from openfollow.input.gamepad import GamepadHandler, GamepadUpdate
 from openfollow.input.keyboard import KeyboardHandler
 from openfollow.input.mouse import MouseHandler
 from openfollow.input.mouse3d import MOUSE3D_NAME, Mouse3DManager, Mouse3DUpdate
+from openfollow.input.touch_remote import MAX_REACH_M, RESET, holds, snap_z, stick_velocity
 from openfollow.logging_setup import ThrottledExceptionLogger
 from openfollow.net_utils import plane_source_iface
 from openfollow.osc.input import OscMarkerAdapter
@@ -38,6 +42,7 @@ from openfollow.runtime.services_detection_pin import (
 if TYPE_CHECKING:
     from openfollow.app import OpenFollowApp
     from openfollow.configuration import Mouse3DConfig
+    from openfollow.input.touch_remote import RemoteFrame, TouchRemote
     from openfollow.paths.engine import PathEngine
     from openfollow.psn.marker import Marker
 
@@ -137,6 +142,7 @@ class InputManager:
         self.mouse3d_manager = Mouse3DManager(app._config.mouse3d)
         self.mouse3d_manager.start()
         self._mouse3d_update_err_log = ThrottledExceptionLogger(logger, "3D Mouse update failed this tick.")
+        self._remote_update_err_log = ThrottledExceptionLogger(logger, "Touch remote update failed this tick.")
         # Which slot each controller holds for the session; refreshed on the
         # main loop only, read from any thread via ``_controller_slots``.
         self._clock = time.monotonic
@@ -146,6 +152,8 @@ class InputManager:
         self._identify_flash: tuple[int, float] | None = None
         # Clock time of each marker's latest OSC position write.
         self._osc_last_write: dict[int, float] = {}
+        # Where each remote-held marker glides to, and for which session, until it lands or is steered.
+        self._remote_glides: dict[int, tuple[str, tuple[float, float, float]]] = {}
         self._refresh_slots()
 
         osc_cfg = app._config.osc
@@ -238,8 +246,10 @@ class InputManager:
             paths.release(marker_id)
         marker.set_pos(*self.app._get_default_marker_position())
 
-    def pathfinder(self, marker_id: int | None) -> None:
-        """A Pathfinder press for ``marker_id``: the keyboard's selected marker or a controller's own."""
+    def pathfinder(self, marker_id: int | None, *, remote: bool = False) -> None:
+        """A Pathfinder press for ``marker_id``: the keyboard's selected marker, a controller's own, or the remote's."""
+        if not remote and holds(self.app, marker_id):
+            return
         marker = self._get_marker(marker_id) if marker_id is not None else None
         if marker_id is not None and marker is not None and self._paths() is not None:
             paths_runtime.pathfinder(self.app, marker_id, marker)
@@ -423,6 +433,7 @@ class InputManager:
                 keyboard_velocity is not None
                 and self.app._selected_id is not None
                 and self.app._config.controller.keyboard_enabled
+                and not holds(self.app, self.app._selected_id)
             ):
                 marker = self._get_marker(self.app._selected_id)
                 if marker:
@@ -435,7 +446,7 @@ class InputManager:
         # Apply gamepad resets (X button -> configurable default position)
         for controller_idx in gamepad_result.resets:
             marker_id = self._gamepad_marker_id(controller_idx, slots)
-            if marker_id is None:
+            if marker_id is None or holds(self.app, marker_id):
                 continue
             marker = self._get_marker(marker_id)
             if marker:
@@ -453,7 +464,7 @@ class InputManager:
         # Apply gamepad movements to corresponding markers
         for controller_idx, (vx, vy, vz) in gamepad_result.movements.items():
             marker_id = self._gamepad_marker_id(controller_idx, slots)
-            if marker_id is None:
+            if marker_id is None or holds(self.app, marker_id):
                 continue
             marker = self._get_marker(marker_id)
             if marker:
@@ -469,7 +480,7 @@ class InputManager:
         if self.osc_handler is not None:
             try:
                 for marker_id, axes in self.osc_handler.flush_updates().items():
-                    if marker_id not in self.app._controlled_ids:
+                    if marker_id not in self.app._controlled_ids or holds(self.app, marker_id):
                         continue
                     marker = self._get_marker(marker_id)
                     if not marker:
@@ -520,11 +531,116 @@ class InputManager:
             return
         hand_over_anchors(self.app)
         paths.release_all(keep=self.app._controlled_ids)
-        paths_runtime.apply_commands(self.app, commands, self.app._controlled_ids, self._get_marker)
+        # An OSC lock or release never reaches a marker a remote holds.
+        steerable = [m for m in self.app._controlled_ids if not holds(self.app, m)]
+        paths_runtime.apply_commands(self.app, commands, steerable, self._get_marker)
         for slid_id, slid_to in paths.tick(dt).items():
             slid = self._get_marker(slid_id)
             if slid:
                 slid.set_pos(*slid_to)
+
+    def update_touch_remote(self, dt: float) -> None:
+        """Apply what the web touch remote asks of each marker it holds, whatever the menus do.
+
+        ``animate`` calls it every frame after :meth:`update_paths`. The stick is relative input:
+        shaped by ``[touch_remote]``, scaled to the station's ``marker.max_speed`` and oriented like
+        every other relative input. A hold with person detection on switches detection off.
+        """
+        remote = getattr(self.app, "_touch_remote", None)
+        if remote is None:
+            return
+        try:
+            self._apply_touch_remote(remote, dt)
+        except Exception:
+            self._remote_update_err_log.log()
+
+    def _apply_touch_remote(self, remote: TouchRemote, dt: float) -> None:
+        cfg = self.app._config
+        if not cfg.touch_remote.enabled:
+            remote.release_all()
+        remote.release_uncontrolled(self.app._controlled_ids)
+        frames = remote.take()
+        holders = {frame.marker_id: frame.holder for frame in frames}
+        for marker_id in [m for m, (who, _t) in self._remote_glides.items() if holders.get(m) != who]:
+            del self._remote_glides[marker_id]
+        # Once per new hold, before its presses, so they move the marker and not an assist anchor;
+        # detection switched back on later while held stays on.
+        if any(frame.new for frame in frames) and cfg.detection.enabled:
+            self._switch_detection_off()
+        for frame in frames:
+            # One marker's failure never costs another marker its presses.
+            try:
+                self._apply_remote_frame(frame, dt)
+            except Exception:
+                self._remote_update_err_log.log()
+
+    def _apply_remote_frame(self, frame: RemoteFrame, dt: float) -> None:
+        cfg = self.app._config
+        tuning = cfg.touch_remote
+        max_speed = cfg.marker.max_speed
+        paths = self._paths()
+        marker_id = frame.marker_id
+        marker = self._get_marker(marker_id)
+        if marker is None:
+            return
+        for action in frame.actions:
+            self._remote_glides.pop(marker_id, None)
+            if action.target is not None:
+                paths_runtime.release(self.app, marker_id)
+                self._remote_glides[marker_id] = (frame.holder, action.target)
+            elif action.kind == RESET:
+                self._reset(marker_id, marker)
+            else:
+                self.pathfinder(marker_id, remote=True)
+        vx, vy = stick_velocity(frame.stick, tuning.stick_curve, tuning.stick_dead_zone, max_speed)
+        if vx or vy:
+            self._remote_glides.pop(marker_id, None)
+            vx, vy = _oriented(vx, vy, cfg.marker.invert_control_direction)
+            self._move(marker_id, marker, vx, vy, 0.0, dt)
+        if frame.z_notches and not (paths is not None and paths.is_locked(marker_id)):
+            self._remote_glides.pop(marker_id, None)
+            x, y, z = marker.pos
+            z = snap_z(z, frame.z_notches, tuning.z_step_m)
+            marker.set_pos(x, y, max(-MAX_REACH_M, min(MAX_REACH_M, z)))
+        # The dead-man holds a glide where it is; it carries on once drive messages arrive again.
+        glide = self._remote_glides.get(marker_id) if frame.live else None
+        if glide is not None:
+            self._glide(marker_id, marker, glide[1], max_speed * dt)
+
+    def _glide(self, marker_id: int, marker: Marker, target: tuple[float, float, float], step: float) -> None:
+        x, y, z = marker.pos
+        tx, ty, tz = target
+        distance = math.dist((x, y, z), target)
+        # A target too far for a float distance lands at once rather than never.
+        if distance <= step or not math.isfinite(distance):
+            marker.set_pos(tx, ty, tz)
+            del self._remote_glides[marker_id]
+            return
+        k = step / distance
+        marker.set_pos(x + (tx - x) * k, y + (ty - y) * k, z + (tz - z) * k)
+
+    def _switch_detection_off(self) -> None:
+        """Turn person detection off, live and in the file, as a hot reload would: a remote took a marker.
+
+        A new config object, never an edit of the one the detector worker holds; reverted if it fails.
+        """
+        app = self.app
+        services = app._runtime_services
+        before = app._config.detection
+        app._config.detection = replace(before, enabled=False)
+        applied = _apply_with_fallback(
+            "detection",
+            lambda: services.apply_detection_change(app._config.detection),
+            on_failure=lambda: setattr(services, "_person_detector", None),
+        )
+        if not applied:
+            app._config.detection = before
+            return
+        try:
+            save_config_fields(app._config, app._config_path, ("detection.enabled",))
+        except Exception:
+            logger.exception("Failed to save person detection switched off.")
+        logger.warning("The touch remote took a marker: person detection is switched off.")
 
     def _apply_mouse3d(
         self,
@@ -565,7 +681,9 @@ class InputManager:
         marker = self._get_marker(marker_id)
         if marker is None:
             return
-        if m3d.reset:
+        # A remote hold blocks what moves the marker; its speed and fader stay with the puck.
+        held = holds(self.app, marker_id)
+        if m3d.reset and not held:
             self._reset(marker_id, marker)
         if m3d.pathfinder:
             self.pathfinder(marker_id)
@@ -574,7 +692,7 @@ class InputManager:
             for _ in range(abs(m3d.speed_steps)):
                 self.app.adjust_move_speed(direction, marker_id=marker_id)
         vx, vy, vz = m3d.velocity
-        if vx or vy or vz:
+        if (vx or vy or vz) and not held:
             vx, vy = _oriented(vx, vy, invert_xy)
             speed = self.app.get_marker_move_speed(marker_id)
             self._move(marker_id, marker, vx * speed, vy * speed, vz * speed, dt)

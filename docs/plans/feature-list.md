@@ -15,7 +15,7 @@ Own PR from `main`.
 | Lens distortion | Not experimental, default on. Off: the Camera group is hidden, the wizard skips its Lens step (Video Source → Camera Position) and Apply leaves the saved k1/k2 untouched, and every reader treats k1 = k2 = 0 |
 | OTP | Not in the list; unchanged (its help still says experimental) |
 | Config | `[ui] shown_features: list[str]`, entries from a fixed enum, unknown / duplicate / non-string entries dropped. Missing key ⇒ default (`["zones", "midi", "lens_distortion"]`) |
-| Migration | Old `show_experimental_features = true` with no `shown_features` ⇒ defaults + every experiment; `false` or missing ⇒ defaults. The old key is read once on load and never written again |
+| Migration | Old `show_experimental_features = true` with no `shown_features` ⇒ defaults + every experiment; `false` or missing ⇒ defaults. The old key is read once on load and never written again. `touch_remote` needs no special case: no release with it has shipped |
 | Off means | Hidden in UI + runtime gate: subsystems ask `cfg.ui.feature_on(key)`; no cascade writes. Lens k1/k2 treated as 0, MIDI devices not opened, faders' MIDI source inert, detection / zones / RTTrPM not running, the paths engine disabled, the ground grid neither drawn nor dropping markers, every touch remote route answers 403 |
 | Calibration points | Off hides them only: the saved points stay in the config and the solver keeps using them, as today |
 | Two-level gates | `detection`, `rttrpm`, `ground_grid`, `touch_remote` keep their own `enabled` switch; a subsystem runs only when its entry is on **and** its switch is on |
@@ -132,10 +132,6 @@ Own PR from `main`.
   covered by the migration. One with RTTrPM enabled but experimental hidden
   will now have it gated off at runtime (before: it kept sending while
   hidden).
-- The touch remote has no experimental gate today. A station with
-  `touch_remote.enabled` and experimental hidden loses the remote after the
-  upgrade until someone ticks the entry. Open: should the migration also
-  tick `touch_remote` when `touch_remote.enabled` is set?
 - Turning experimental off today deactivates every path and switches
   detection and the ground grid off. With no cascade, a station upgraded
   with those flags set keeps them, and they run again once their entry is

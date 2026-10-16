@@ -35,7 +35,7 @@ from openfollow.services import AppRuntimeServices
 from tests._fake_cairo import FakeCairo
 from tests._fake_gtk import FakeCanvas
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("every_feature_on")]
 
 # --------------------------------------------------------------------------- #
 # Fakes

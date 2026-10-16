@@ -167,6 +167,8 @@ hot reload and live-apply are in the [config guide](docs/architecture/config.md)
   is the whole inline copy. Explanations go in the section's help drawer,
   `openfollow/web/help/<section>.md`. A new `field-note` or explanatory `title`
   is a review blocker. Update the help `.md` when a control changes.
+  The one exception: the Features table (Station Settings › Advanced Settings)
+  gives each feature a one-line description beside its title.
 - **Status language:** every state surface (web and HUD) uses the four levels,
   tokens and components in [`docs/STATUS_LANGUAGE.md`](docs/STATUS_LANGUAGE.md).
   No literal colours, alphas, radii or icons; extend the document if nothing

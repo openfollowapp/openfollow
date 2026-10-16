@@ -117,7 +117,7 @@
                        aria-describedby="keyboard-key-toggle-help-error" aria-invalid="false">
                 <span id="keyboard-key-toggle-help-error" class="field-error"></span>
                         </div>
-                        <div class="field">
+                        <div class="field" data-feature="zones">
                             <label for="keyboard-key-toggle-zones">{{kb_labels['key_toggle_zones']}}</label>
                             <input id="keyboard-key-toggle-zones" type="text" name="key_toggle_zones"
                                    value="{{config.controller.key_toggle_zones}}"
@@ -184,7 +184,7 @@
                 <span id="keyboard-key-prev-marker-error" class="field-error"></span>
                         </div>
                     </div>
-                    <div class="row experimental-feature">
+                    <div class="row" data-feature="paths">
                         <div class="field">
                             <label for="keyboard-key-pathfinder">{{kb_labels['key_pathfinder']}}</label>
                             <input id="keyboard-key-pathfinder" type="text" name="key_pathfinder"

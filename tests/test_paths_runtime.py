@@ -35,7 +35,7 @@ class _Marker:
 class _App:
     def __init__(self, tmp_path: Path, *paths: PathConfig, experimental: bool = True) -> None:
         self._config = AppConfig(paths=PathsConfig(slide_time=0.0, paths=list(paths)))
-        self._config.ui.show_experimental_features = experimental
+        self._config.ui.shown_features = ["paths"] if experimental else []
         self._config_path = str(tmp_path / "config.toml")
         self._config_mtime = 0.0
         self._paths = PathEngine()

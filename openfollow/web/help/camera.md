@@ -31,6 +31,8 @@ OpenFollow only needs the **horizontal** field of view; the sensor and focal-len
 
 ## Lens distortion
 
+Shown with the **Lens distortion** feature on (General tab, Features); off, everything works as if the lens were straight and these values are kept.
+
 Wide-angle and fisheye lenses bow straight lines, so the pinhole overlay (grid, markers, zones) no longer sits on top of the curved video. Two values bow the **overlay** to match the lens. The video frame itself is never warped (warping every pixel would be too slow on a Pi), so there is no performance cost when both are `0`.
 
 - **Barrel / fisheye** – the main correction. Negative hugs a wide-angle / fisheye image (lines curve inward); positive corrects a pincushion lens (lines curve outward).
@@ -46,7 +48,7 @@ The one limit on the pair is that the overlay must not fold anywhere out to the 
 
 The four grid corners pin the camera well on and near the marked rectangle. When the camera sees only a narrow strip of the stage from far away (a back-truss camera looking across a deep auditorium), the corners leave the far field loose, and a position 30 m out can land metres off. A **calibration point** is a spot in the far field whose distances from two grid corners were measured with a laser distance meter: two distances and a dot on the picture tie the camera down where the corners cannot.
 
-With experimental features on, the **Setup Wizard**'s Corner Pinning step has an **Advanced** section for them, up to six. Each point has a dot placed on the spot in the picture (a new point's dot starts in the middle and counts once it is moved), the two corners it was measured from, the two distances (from each corner mark on the stage floor to the spot) and the spot's **height above stage**: how far it sits above the corner marks' level, `0` for a mark on the same floor. Corners far apart give the clearest answer. The solve weighs every pin and distance together, so the corners are refined too: it takes a corner pin to be good to about 3 px of the snapshot, a point's pin to about 1 px and a laser distance to about 4 cm.
+With the **Calibration points** feature on (General tab, Features), the **Setup Wizard**'s Corner Pinning step has an **Advanced** section for them, up to six. Each point has a dot placed on the spot in the picture (a new point's dot starts in the middle and counts once it is moved), the two corners it was measured from, the two distances (from each corner mark on the stage floor to the spot) and the spot's **height above stage**: how far it sits above the corner marks' level, `0` for a mark on the same floor. Corners far apart give the clearest answer. The solve weighs every pin and distance together, so the corners are refined too: it takes a corner pin to be good to about 3 px of the snapshot, a point's pin to about 1 px and a laser distance to about 4 cm.
 
 Each point carries a chip:
 

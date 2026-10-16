@@ -20,7 +20,7 @@ from openfollow.configuration import AppConfig
 from openfollow.net_egress import Egress
 from openfollow.network.adapter import ApplyResult, NetworkAdapter
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("every_feature_on")]
 
 
 class _ReadOnlyAdapter(NetworkAdapter):

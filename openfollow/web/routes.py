@@ -55,6 +55,7 @@ from openfollow.configuration import (
     CALIBRATION_CORNERS,
     CONTROLLER_BINDING_FIELDS,
     DEFAULT_UPDATE_SERVICE_NAME,
+    FEATURE_KEYS,
     GROUND_GRID_MAX_VERTICES,
     MARKER_TOKEN_ALL,
     MAX_CALIBRATION_POINTS,
@@ -81,8 +82,11 @@ from openfollow.configuration import (
     config_problem_kind,
     config_problem_words,
     config_write_lock,
+    effective_lens,
     enforce_network_mode,
+    feature_gated,
     load_config_for_save,
+    migrate_ui_keys,
     path_name_from,
     plane_pin_key,
     plane_pins,
@@ -1597,7 +1601,7 @@ def _interface_assignment_rows(
             "address": _sender(cfg.rttrpm_output.source_iface, cfg.rttrpm_output.host),
             "editable": True,
             "blank": "station",
-            "experimental": True,
+            "feature": "rttrpm",
         },
         {
             # The pin moves the multicast membership only. The socket binds
@@ -1753,6 +1757,19 @@ def _apply_section(cfg: AppConfig, section: str, data: Mapping[str, Any]) -> boo
                 cfg.update_service_name = service_name
         # ``controlled_marker_ids`` + ``viewer_marker_ids`` are handled by
         # the ``marker`` section; the web UI no longer POSTs them here.
+        return True
+
+    if section == "features":
+        # One bool per feature key; a key left out keeps its current state.
+        shown = set(cfg.ui.shown_features)
+        for key in FEATURE_KEYS:
+            if key in data:
+                if _as_bool(data[key], key in shown):
+                    shown.add(key)
+                else:
+                    shown.discard(key)
+        cfg.ui.shown_features = list(shown)
+        cfg.ui.__post_init__()
         return True
 
     section_attr = _SECTION_CONFIG_ATTRS.get(section)
@@ -3232,7 +3249,8 @@ def _config_dict_redacted(cfg: AppConfig) -> dict[str, Any]:
 _BROADCAST_EXCLUDED_SECTIONS = frozenset(
     # ``interface_assignment`` names NICs on this box; copying it to a peer
     # would repin that peer's PSN and OTP to an interface it may not have.
-    {"osc_destinations", "osc_transmitters", "trigger_zones", "interface_assignment"},
+    # ``features`` is set on each station by its own Save, never by a section broadcast.
+    {"osc_destinations", "osc_transmitters", "trigger_zones", "interface_assignment", "features"},
 )
 
 
@@ -3382,15 +3400,6 @@ def _backup_before(config_path: str, kind: str, named_by: AppConfig | None = Non
     return {"backup": result.archive}
 
 
-def _turn_off_experimental_features(cfg: AppConfig) -> None:
-    """What turning experimental features off turns off with them: detection, the ground grid's drop, and every
-    path's Active flag."""
-    cfg.detection.enabled = False
-    cfg.ground_grid.enabled = False
-    for path in cfg.paths.paths:
-        path.active = False
-
-
 def _apply_import_data(current_cfg: AppConfig, data: dict[str, Any]) -> AppConfig:
     """Build a new config from import data, preserving this device's identity.
 
@@ -3467,24 +3476,22 @@ def _apply_import_data(current_cfg: AppConfig, data: dict[str, Any]) -> AppConfi
         apply_section_data(cfg, "marker", data["marker"])
         apply_section_data(cfg, "movement", data["marker"])
 
-    # UI preferences (unit system + experimental-features visibility gate).
-    # Not device-local, so they round-trip on import. ``ui`` is not a routable
-    # /section/<name> form (it is saved via /settings/units + /settings/experimental),
-    # so it has no apply_section_data branch – apply it inline here, then re-run
-    # __post_init__ so a crafted/legacy payload is coerced like a TOML load.
+    # UI preferences (unit system + the Features list). Not device-local, so
+    # they round-trip on import. ``ui`` is not a routable /section/<name> form,
+    # so it is applied inline here, then __post_init__ coerces a crafted or
+    # older station's payload like a TOML load.
     if "ui" in data and isinstance(data["ui"], dict):
-        ui_data = data["ui"]
+        ui_data = dict(data["ui"])
+        migrate_ui_keys(ui_data)
         # Assign the raw imported values and let __post_init__ coerce, so a
         # present-but-invalid field falls back to the *declared* default
-        # (metric / False) exactly like a TOML load – not to this device's
-        # current value. Absent fields are skipped, preserving the current.
+        # exactly like a TOML load – not to this device's current value.
+        # Absent fields are skipped, preserving the current.
         if "unit_system" in ui_data:
             cfg.ui.unit_system = ui_data["unit_system"]
-        if "show_experimental_features" in ui_data:
-            cfg.ui.show_experimental_features = ui_data["show_experimental_features"]
+        if "shown_features" in ui_data:
+            cfg.ui.shown_features = ui_data["shown_features"]
         cfg.ui.__post_init__()
-        if "show_experimental_features" in ui_data and not cfg.ui.show_experimental_features:
-            _turn_off_experimental_features(cfg)
 
     # Fields not covered by any section
     if "window_width" in data:
@@ -5091,11 +5098,10 @@ def _json_error(status: int, message: str) -> str:
 
 
 def _camera_view(cfg: AppConfig) -> tuple[Any, float, float]:
-    """The saved camera as the solver's parameter vector, with its lens."""
+    """The saved camera as the solver's parameter vector, with the lens it is drawn with."""
     from openfollow.scene.solver import camera_params
 
-    cam = cfg.camera
-    return camera_params(cam), cam.lens_k1, cam.lens_k2
+    return camera_params(cfg.camera), *effective_lens(cfg)
 
 
 # Chords per straight world segment when the lens bows it, as on the Operator Screen.
@@ -5284,7 +5290,7 @@ def _register_touch_remote_routes(app: Bottle, server: ConfigWebServer) -> None:
         response.content_type = "application/json"
         cfg = _request_config(server)
         remote = server.touch_remote
-        if remote is None or not cfg.touch_remote.enabled:
+        if remote is None or not feature_gated(cfg.touch_remote, cfg, "touch_remote").enabled:
             return _json_error(403, "The touch remote is switched off on this station.")
         return remote, cfg
 
@@ -5340,7 +5346,8 @@ def _register_touch_remote_routes(app: Bottle, server: ConfigWebServer) -> None:
         if outcome not in (OK, KEPT):
             return _answer(outcome)
         # The frame loop switches detection off for a new hold only; the card says so.
-        return json.dumps({"success": True, "detection_off": outcome == OK and cfg.detection.enabled})
+        detection_on = cfg.detection.enabled and cfg.ui.feature_on("detection")
+        return json.dumps({"success": True, "detection_off": outcome == OK and detection_on})
 
     @app.post(_REMOTE_API + "/drive")
     def remote_drive() -> Any:
@@ -5412,7 +5419,7 @@ def _register_touch_remote_routes(app: Bottle, server: ConfigWebServer) -> None:
                 "markers": markers,
                 "z_step_m": cfg.touch_remote.z_step_m,
                 "z_notch_px": cfg.touch_remote.z_notch_px,
-                "paths_on": cfg.ui.show_experimental_features,
+                "paths_on": cfg.ui.feature_on("paths"),
                 "recording": paths.get("recording") is not None,
                 "locked": sorted(int(m) for m in paths.get("locks", {})),
             }
@@ -7276,9 +7283,17 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             return _save_failed(422, f"Custom domain name: {fqdn_refusal}")
         with _config_write_lock:
             cfg = _load_config_for_edit()
+            launcher_was = feature_gated(cfg.touch_remote, cfg, "touch_remote").enabled
             apply_section_data(cfg, "general", form_data)
+            # The Features boxes save with this form; unticked boxes send nothing, so the
+            # marker says the list was on the page and an absent key means off.
+            if "features_submitted" in form_data:
+                apply_section_data(cfg, "features", {key: key in form_data for key in FEATURE_KEYS})
             save_config(cfg, server.config_path)
 
+        if feature_gated(cfg.touch_remote, cfg, "touch_remote").enabled != launcher_was:
+            # The launcher is part of every page: reload so it appears or goes.
+            response.set_header("HX-Refresh", "true")
         return _render_general(cfg, saved=True)
 
     def _persist_ui_change(mutate: Callable[[AppConfig], None]) -> AppConfig:
@@ -7304,24 +7319,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         choice = _as_str(request.forms.get("unit_system", ""), "").strip().lower()
         cfg = _persist_ui_change(lambda c: setattr(c.ui, "unit_system", choice))
         return _render_general(cfg, saved=True)
-
-    @app.post("/settings/experimental")
-    def update_experimental() -> Any:
-        """Persist ``[ui] show_experimental_features``. Turning it off also
-        disables ``detection.enabled`` and ``ground_grid.enabled`` and
-        deactivates every path (all still experimental); the config-reload
-        watcher applies that at runtime. The
-        body-class show/hide flip is done client-side. Responds empty
-        (hx-swap="none")."""
-        show = _as_bool(request.forms.get("show_experimental_features"), False)
-
-        def _mutate(cfg: AppConfig) -> None:
-            cfg.ui.show_experimental_features = show
-            if not show:
-                _turn_off_experimental_features(cfg)
-
-        _persist_ui_change(_mutate)
-        return ""
 
     def _render_startup(startup: dict[str, Any]) -> Any:
         return template("partials/startup", startup=startup)

@@ -65,7 +65,7 @@
         % for i in range(0, len(MOUSE3D_BUTTON_FORM_LABELS), 2):
         <div class="row">
             % for field, label in MOUSE3D_BUTTON_FORM_LABELS[i:i + 2]:
-            <div class="field{{' experimental-feature' if field in ('btn_pathfinder', 'btn_toggle_paths') else ''}}">
+            <div class="field"{{!' data-feature="paths"' if field in ('btn_pathfinder', 'btn_toggle_paths') else (' data-feature="zones"' if field == 'btn_toggle_zones' else '')}}>
                 <label for="m3d-{{field}}">{{label}}</label>
                 <div class="detect-input">
                     <input id="m3d-{{field}}" type="number" name="{{field}}" value="{{getattr(m, field) if getattr(m, field) >= 0 else ''}}" min="0" step="1" placeholder="none"

@@ -1134,6 +1134,24 @@ class TestLensDistortionInput:
         # Undistorting a barrel-distorted click pushes it outward.
         assert r_undist > r_cursor
 
+    def test_a_lens_with_its_feature_off_leaves_the_cursor_alone(self, monkeypatch) -> None:
+        from openfollow.input import mouse as mouse_module
+
+        captured: dict[str, np.ndarray] = {}
+
+        def _spy(params, screen_pts, w, h, plane_z):  # noqa: ANN001, ANN202
+            captured["screen"] = np.array(screen_pts, dtype=float).copy()
+            return np.array([[1.0, 2.0, 0.0]])
+
+        app = _DummyApp()
+        handler = MouseHandler(app)
+        _grab(handler, app)
+        app._config.camera.lens_k1 = -0.2
+        app._config.ui.shown_features = []
+        monkeypatch.setattr(mouse_module, "unproject_to_plane", _spy)
+        handler.on_pointer_move(1200, 600)
+        assert (captured["screen"][0, 0], captured["screen"][0, 1]) == (1200.0, 600.0)
+
 
 class TestHitTestLensDistortion:
     """The grab hit-test projects through the same lens warp the overlay draws,
@@ -1257,7 +1275,7 @@ class TestGrabOnTheGroundGrid:
     def _pit(app: _DummyApp, *, experimental: bool = True) -> None:
         from openfollow.configuration import GroundGridConfig
 
-        app._config.ui.show_experimental_features = experimental
+        app._config.ui.shown_features = ["ground_grid"] if experimental else []
         app._config.ground_grid = GroundGridConfig(
             enabled=True, z_offset=-1.5, vertices=[[-2.0, -2.0], [2.0, -2.0], [2.0, 2.0], [-2.0, 2.0]]
         )

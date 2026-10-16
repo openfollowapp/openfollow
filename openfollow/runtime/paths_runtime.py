@@ -20,7 +20,7 @@ RECORDING_FLAG = "path_recording"
 
 def reload_paths(app: Any) -> None:
     """Rebuild the engine from the running config."""
-    app._paths.reload(app._config.paths, enabled=app._config.ui.show_experimental_features)
+    app._paths.reload(app._config.paths, enabled=app._config.ui.feature_on("paths"))
 
 
 def release(app: Any, marker_id: int | None) -> None:

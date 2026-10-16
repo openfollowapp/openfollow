@@ -29,7 +29,7 @@ class _Markers:
 
 def _services(tmp_path, *, server=None, receiver=None, controlled=()) -> AppRuntimeServices:  # noqa: ANN001
     cfg = AppConfig(psn_system_name="X")
-    cfg.ui.show_experimental_features = True
+    cfg.ui.shown_features = ["paths"]
     cfg.paths = PathsConfig(
         paths=[PathConfig(name="cross", active=True, points=[PathPointConfig(0, 0, 0), PathPointConfig(4, 0, 0)])]
     )

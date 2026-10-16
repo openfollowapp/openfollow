@@ -30,6 +30,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import numpy as np  # noqa: E402
+from gallery_calibration import camera_from, write_calibration  # noqa: E402
 from PIL import Image, ImageFilter  # noqa: E402
 
 from openfollow.lens_model import pull_back_to_fold  # noqa: E402
@@ -50,7 +51,7 @@ FLOOR_Z = -1.8  # house floor below the deck
 PIT_Y = LIP_Y - 2.7  # barricade
 TOWER_ROWS = (LIP_Y + 0.6, 4.0, 9.0)  # the front pair at the stage edge
 LEG_TOP, LEG_KNOT = 9.5, 3.4  # leg height and tie-back height
-GRID_W, GRID_D = 12.0, 8.0
+GRID_W, GRID_D, GRID_SPACING = 12.0, 8.0, 2.0  # grid lines on every second deck seam
 CORNERS = {
     "DSL": (GRID_W / 2, 0.0, 0.0),
     "DSR": (-GRID_W / 2, 0.0, 0.0),
@@ -417,6 +418,10 @@ def main() -> None:
         x, y = lens(pinhole([corner]))[0]
         print(f"  {name}: ({x:.1f}, {y:.1f})")
     print(f"Wrote: {ASSET.relative_to(ROOT)} ({ASSET.stat().st_size // 1024} kB)")
+    grid = {"width": GRID_W, "depth": GRID_D, "spacing": GRID_SPACING}
+    grid |= {"x_offset": 0.0, "y_offset": GRID_D / 2, "z_offset": 0.0}
+    cal = write_calibration(ASSET, "scripts/gen_concert_default.py", camera_from(CAMERA, K1, K2), grid)
+    print(f"Wrote: {cal.relative_to(ROOT)}")
 
 
 if __name__ == "__main__":

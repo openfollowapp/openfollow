@@ -27,6 +27,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import numpy as np  # noqa: E402
+from gallery_calibration import camera_from, write_calibration  # noqa: E402
 from PIL import Image  # noqa: E402
 
 from openfollow.scene.solver import apply_overlay_distortion, project_points  # noqa: E402
@@ -41,7 +42,7 @@ CLIP = (-0.25 * W, -0.25 * H, 1.25 * W, 1.25 * H)
 STEP_PX = 6.0  # edges are split this finely, so a straight edge bows like the lens bows it
 
 LIP_Y = -0.3  # stage front, 0.3 m downstage of the grid
-GRID_W, GRID_D = 10.0, 1.0
+GRID_W, GRID_D, GRID_SPACING = 10.0, 1.0, 1.0
 CORNERS = {
     "DSL": (GRID_W / 2, 0.0, 0.0),
     "DSR": (-GRID_W / 2, 0.0, 0.0),
@@ -363,6 +364,10 @@ def main() -> None:
         px, py = lens(pinhole([mark]))[0]
         print(f"  {n}: {where:28s} DSL {da:7.3f} m  DSR {db:7.3f} m  pixel ({px:.0f}, {py:.0f})")
     print(f"Wrote: {ASSET.relative_to(ROOT)} ({ASSET.stat().st_size // 1024} kB)")
+    grid = {"width": GRID_W, "depth": GRID_D, "spacing": GRID_SPACING}
+    grid |= {"x_offset": 0.0, "y_offset": GRID_D / 2, "z_offset": 0.0}
+    cal = write_calibration(ASSET, "scripts/gen_arena_default.py", camera_from(CAMERA, K1, K2), grid)
+    print(f"Wrote: {cal.relative_to(ROOT)}")
 
 
 if __name__ == "__main__":

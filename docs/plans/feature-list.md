@@ -9,14 +9,14 @@ Own PR from `main`.
 
 | Topic | Decision |
 |---|---|
-| Entries | `zones` (Trigger zones + Zone editor), `midi` (MIDI section + virtual faders' MIDI source), `detection` (whole Person Detection tab: model, tracking, masks), `rttrpm` (RTTrPM output + its interface row), `paths` (Paths, Path editor, Pathfinder / Toggle Paths bindings, OSC path commands, the touch remote's Pathfinder button), `ground_grid` (Ground Grid section), `calibration_points` (Camera group + the wizard's Corner Pinning Advanced section and Review group), `touch_remote` (Touch remote section, launcher and card) |
-| Experimental | `detection`, `rttrpm`, `paths`, `ground_grid`, `calibration_points`, `touch_remote` carry the badge, default off. `zones`, `midi` are not experimental, default on |
+| Entries | `zones` (Trigger zones + Zone editor), `midi` (MIDI section + virtual faders' MIDI source), `lens_distortion` (Camera "Lens distortion" group + the wizard's Lens step), `detection` (whole Person Detection tab: model, tracking, masks), `rttrpm` (RTTrPM output + its interface row), `paths` (Paths, Path editor, Pathfinder / Toggle Paths bindings, OSC path commands, the touch remote's Pathfinder button), `ground_grid` (Ground Grid section), `calibration_points` (Camera group + the wizard's Corner Pinning Advanced section and Review group), `touch_remote` (Touch remote section, launcher and card) |
+| Experimental | `detection`, `rttrpm`, `paths`, `ground_grid`, `calibration_points`, `touch_remote` carry the badge, default off. `zones`, `midi`, `lens_distortion` are not experimental, default on |
 | Zones | No longer experimental: the warning in `help/trigger_zones.md` goes |
-| Lens distortion | Not experimental and not in the list: always shown, always applied, no badge |
+| Lens distortion | Not experimental, default on. Off: the Camera group is hidden, the wizard skips its Lens step (Video Source → Camera Position) and Apply leaves the saved k1/k2 untouched, and every reader treats k1 = k2 = 0 |
 | OTP | Not in the list; unchanged (its help still says experimental) |
-| Config | `[ui] shown_features: list[str]`, entries from a fixed enum, unknown / duplicate / non-string entries dropped. Missing key ⇒ default (`["zones", "midi"]`) |
+| Config | `[ui] shown_features: list[str]`, entries from a fixed enum, unknown / duplicate / non-string entries dropped. Missing key ⇒ default (`["zones", "midi", "lens_distortion"]`) |
 | Migration | Old `show_experimental_features = true` with no `shown_features` ⇒ defaults + every experiment; `false` or missing ⇒ defaults. The old key is read once on load and never written again |
-| Off means | Hidden in UI + runtime gate: subsystems ask `cfg.ui.feature_on(key)`; no cascade writes. MIDI devices not opened, faders' MIDI source inert, detection / zones / RTTrPM not running, the paths engine disabled, the ground grid neither drawn nor dropping markers, every touch remote route answers 403 |
+| Off means | Hidden in UI + runtime gate: subsystems ask `cfg.ui.feature_on(key)`; no cascade writes. Lens k1/k2 treated as 0, MIDI devices not opened, faders' MIDI source inert, detection / zones / RTTrPM not running, the paths engine disabled, the ground grid neither drawn nor dropping markers, every touch remote route answers 403 |
 | Calibration points | Off hides them only: the saved points stay in the config and the solver keeps using them, as today |
 | Two-level gates | `detection`, `rttrpm`, `ground_grid`, `touch_remote` keep their own `enabled` switch; a subsystem runs only when its entry is on **and** its switch is on |
 | Transfer | Travels with export / import and peer push; the Features group gets "Apply to all stations" |
@@ -41,6 +41,13 @@ Own PR from `main`.
       (new key wins), TOML round trip, export / import / push carry it.
 
 ### 2. Runtime gates (one check per subsystem, no scattered checks)
+- [ ] Lens: one `effective_lens(cfg) -> (k1, k2)` returning `(0, 0)` when
+      `lens_distortion` is off; every `lens_k1/k2` reader goes through it
+      (`services.py`, `input/mouse.py`, `runtime/services_marker_visuals.py`,
+      `runtime/services_detection_pin.py`, `runtime/overlay_state.py`,
+      `runtime/overlay_draw_scene.py`, `overlay_draw_paths.py`,
+      `overlay_draw_zones.py`, the scene / wizard routes). Validation of the
+      saved pair is unchanged.
 - [ ] Detection: detector started / kept only when `feature_on("detection")`
       and `detection.enabled`.
 - [ ] Zones: zone engine evaluates, sends and draws only when `zones` is on.
@@ -62,7 +69,8 @@ Own PR from `main`.
       through hot reload.
 - [ ] Remove `_turn_off_experimental_features` and its call sites.
 - [ ] Tests: config → hot-reload per gate (`tests/test_configuration.py`),
-      gate → overlay (`tests/test_services_marker_visuals.py`: zones and
+      gate → overlay (`tests/test_services_marker_visuals.py`: lens 0 when
+      off, zones and
       ground grid not drawn, paths not drawn), detection restart rule, RTTrPM
       `uses_interface`, touch remote routes 403 with the entry off, settings
       untouched after off → on.
@@ -76,11 +84,14 @@ Own PR from `main`.
       CSS rule per key generated from `FEATURE_KEYS`; tab fallback in
       `initTabs` checks the owning tab's feature. Wrap: Detection tab and
       its sections, RTTrPM section and interface row, Trigger zones + Zone
-      editor, MIDI section, fader MIDI source option, Paths and Path editor
+      editor, MIDI section, fader MIDI source option, Camera "Lens distortion"
+      group, Paths and Path editor
       sections, Pathfinder / Toggle Paths rows in keyboard, gamepad and 3D
       mouse, Ground Grid section, Camera calibration points group, wizard
       `calib-section` and `review-calib`, Touch remote section.
-- [ ] `wizard.tpl`: `_show_calib` reads `feature_on("calibration_points")`.
+- [ ] `wizard.tpl`: `_show_calib` reads `feature_on("calibration_points")`;
+      `_steps` drops `lens` when `lens_distortion` is off, and Apply then
+      sends no lens pair (the saved one stays).
 - [ ] Client toggle flips the body class immediately (no reload), as today.
 - [ ] Tests (`tests/test_web_helpers.py`, replacing
       `test_web_experimental_toggle.py` / `test_web_experimental_gate.py`):
@@ -89,7 +100,8 @@ Own PR from `main`.
       at least one element (template scan); `tests/test_status_language.py`
       still passes; checkbox label rule.
 - [ ] Help: `general-station.md` "Features" section (what each one is, that
-      off also stops it, settings kept, calibration points are only hidden);
+      off also stops it, settings kept, calibration points are only hidden,
+      lens off draws and maps with no lens);
       replace "experimental features on/off" wording in `paths.md`,
       `path_editor.md`, `ground_grid.md`, `osc.md`, `keyboard.md`,
       `gamepad.md`, `mouse3d.md`, `camera.md`, `touch_remote.md`; drop the
@@ -111,7 +123,8 @@ Own PR from `main`.
 ### 5. Verify
 - [ ] `make ci-remote` green; manual: untick each feature, confirm its UI is
       gone and it stops (MIDI device closed, zones not sent, paths released,
-      ground grid not dropping, touch remote card gone and routes 403), tick
+      ground grid not dropping, lens overlay straight and the wizard
+      without its Lens step, touch remote card gone and routes 403), tick
       again and confirm settings came back.
 
 ## Open risks
@@ -127,4 +140,7 @@ Own PR from `main`.
   detection and the ground grid off. With no cascade, a station upgraded
   with those flags set keeps them, and they run again once their entry is
   ticked.
+- Lens off changes the picture-to-stage mapping (mouse, detection pin,
+  zone feet), not just the overlay; a station that unticks it needs its
+  corners pinned again before a show.
 - Gating MIDI touches the fader dispatch path; regression tests needed.

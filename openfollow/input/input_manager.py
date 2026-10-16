@@ -367,7 +367,7 @@ class InputManager:
             gamepad_result.next_marker_pressed = False
             gamepad_result.prev_marker_pressed = False
 
-        self.control_frame.begin_frame()
+        self.control_frame.begin_frame(self._clock())
 
         # 3D Mouse (6DOF): consume the latest device snapshot. Button edges fold
         # into the shared action flags; movement/reset/speed route to the marker

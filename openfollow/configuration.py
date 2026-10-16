@@ -3310,7 +3310,7 @@ def apply_renamed_marker_keys(marker_data: dict[str, Any]) -> None:
         if old in marker_data and new not in marker_data:
             marker_data[new] = marker_data[old]
             _warn_renamed_marker_key(old, new)
-    # The control-direction flip was stage axes, or the heading of a camera looking downstage.
+    # invert_control_direction is stage axes, or when true the heading of a camera looking downstage.
     if "invert_control_direction" in marker_data:
         inverted = _coerce_bool(marker_data.pop("invert_control_direction"), False)
         if "control_frame" not in marker_data:

@@ -855,14 +855,22 @@ def _pose(**kw: float) -> np.ndarray:
         ({"pitch": -90.0}, (1.0, 0.0), (0.0, 1.0)),
         ({"pitch": -90.0, "yaw": 90.0}, (0.0, -1.0), (1.0, 0.0)),
         ({"pitch": 0.0}, (1.0, 0.0), (0.0, 1.0)),
-        # Rolled onto its side: the right axis is vertical, so forward comes from the view.
-        ({"pitch": 0.0, "roll": 90.0}, (1.0, 0.0), (0.0, 1.0)),
+        # Upside down, tilted so its view and picture-up cancel: its own right axis decides.
+        ({"pitch": -45.0, "roll": 180.0}, (-1.0, 0.0), (0.0, -1.0)),
     ],
 )
 def test_ground_axes_is_the_camera_heading_on_the_floor(pose, right, forward) -> None:  # noqa: ANN001
     got_right, got_forward = ground_axes(_pose(**pose))
     assert got_right == pytest.approx(right, abs=1e-9)
     assert got_forward == pytest.approx(forward, abs=1e-9)
+
+
+@pytest.mark.parametrize("roll", [90.0, -90.0, 180.0])
+def test_ground_axes_turns_smoothly_through_a_level_camera(roll: float) -> None:
+    """A camera solved at about 0 degrees pitch must not steer a different way after each recalibration."""
+    above, below = ground_axes(_pose(pitch=0.001, roll=roll)), ground_axes(_pose(pitch=-0.001, roll=roll))
+    assert above[0] == pytest.approx(below[0], abs=1e-3)
+    assert above[1] == pytest.approx(below[1], abs=1e-3)
 
 
 def test_ground_axes_follows_a_rolled_picture() -> None:

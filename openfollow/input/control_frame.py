@@ -19,13 +19,13 @@ progress. The output keeps the input's magnitude; Z is never touched.
 
 from __future__ import annotations
 
+import logging
 import math
 from collections.abc import Hashable
 from typing import TYPE_CHECKING
 
 import numpy as np
 
-from openfollow.configuration import CONTROL_FRAMES
 from openfollow.scene.solver import PlanarAxes, camera_params, ground_axes, screen_axes_at
 
 if TYPE_CHECKING:
@@ -33,7 +33,10 @@ if TYPE_CHECKING:
 
     from openfollow.app import OpenFollowApp
 
-__all__ = ["CONTROL_FRAMES", "STAGE_AXES", "ControlFrame", "heading_axes"]
+logger = logging.getLogger(__name__)
+
+# Input updates further apart than this (a menu or editor held them off) drop every latch.
+_LATCH_GAP_S = 0.25
 
 STAGE_AXES: PlanarAxes = ((1.0, 0.0), (0.0, 1.0))
 
@@ -52,9 +55,17 @@ class ControlFrame:
         self._app = app
         self._latched: dict[Hashable, PlanarAxes] = {}
         self._used: set[Hashable] = set()
+        self._last_frame: float | None = None
 
-    def begin_frame(self) -> None:
-        """Drop the latch of every source that gave no input last frame."""
+    def begin_frame(self, now: float) -> None:
+        """Drop the latch of every source that gave no input last frame.
+
+        ``now`` is a monotonic clock; after a gap no source reported through,
+        every latch goes.
+        """
+        if self._last_frame is not None and now - self._last_frame > _LATCH_GAP_S:
+            self._used.clear()
+        self._last_frame = now
         for source in self._latched.keys() - self._used:
             del self._latched[source]
         self._used.clear()
@@ -100,6 +111,11 @@ class ControlFrame:
     def _canvas_size(self) -> tuple[int, int]:
         """The Operator Screen's size, which the picture the operator steers by fills."""
         canvas = self._app._canvas
-        if canvas is not None:
+        if canvas is None:
+            return self._app._config.window_width, self._app._config.window_height
+        try:
             return canvas.get_canvas_size()
-        return self._app._config.window_width, self._app._config.window_height
+        except Exception:
+            # A raising GTK read must not stop the frame loop; the move takes the camera heading.
+            logger.debug("Canvas size unavailable for screen steering", exc_info=True)
+            return 0, 0

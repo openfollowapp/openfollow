@@ -13,7 +13,7 @@ This plan replaces the flip with a station-wide **control frame** of four modes.
 | Value | UI label | Stick right / stick up mean |
 |---|---|---|
 | `stage` (default) | Stage axes | +X (stage left) / +Y (upstage) |
-| `heading` | Fixed heading | The floor heading of a camera whose yaw is `control_heading`, so a heading equal to the camera's yaw matches `camera` |
+| `heading` | Fixed heading | The floor heading of a camera whose yaw is `control_heading`, so for a level camera a heading equal to its yaw matches `camera` |
 | `camera` | Camera heading | The calibrated camera's right axis / its view direction, both flattened onto the floor |
 | `screen` | Screen | Right / up **in the picture at the marker ball**, at the marker's current Z |
 

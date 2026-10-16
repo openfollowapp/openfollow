@@ -642,6 +642,7 @@ def _keyboard_step(monkeypatch, app: _DummyApp, velocity: tuple[float, float, fl
     monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
     _FakeKeyboardHandler.next_velocity = velocity
     manager = InputManager(app)
+    manager._clock = lambda: 0.0
     manager.update(1.0)
     return manager
 
@@ -816,6 +817,30 @@ def test_a_source_that_stops_reporting_drops_its_held_direction(monkeypatch) -> 
     assert app._server.get_marker(10).pos == pytest.approx((0.0, 0.0, 0.0))
 
 
+def test_a_gap_in_input_updates_drops_the_held_direction(monkeypatch) -> None:
+    """A menu or editor holds input updates off; the frame saved meanwhile applies after it."""
+    app = _DummyApp()
+    manager = _keyboard_step(monkeypatch, app, (1.0, 0.0, 0.0))
+
+    app._config.marker.control_frame = "heading"
+    app._config.marker.control_heading = 180.0
+    manager._clock = lambda: 1.0
+    manager.update(1.0)
+
+    assert app._server.get_marker(10).pos == pytest.approx((0.0, 0.0, 0.0))
+
+
+def test_screen_frame_with_an_unreadable_canvas_uses_the_camera_heading(monkeypatch) -> None:
+    def broken() -> tuple[int, int]:
+        raise RuntimeError("no allocation")
+
+    app = _with_camera(_DummyApp(), yaw=90.0, pos_x=-12.0, pos_y=0.0)
+    app._canvas = SimpleNamespace(get_canvas_size=broken)
+    app._config.marker.control_frame = "screen"
+    _keyboard_step(monkeypatch, app, (0.0, 1.0, 0.0))
+    assert app._server.get_marker(10).pos == pytest.approx((1.0, 0.0, 0.0))
+
+
 def test_a_held_key_takes_the_current_frame_for_a_newly_selected_marker(monkeypatch) -> None:
     """The held direction belongs to the marker it was measured for, not to the key."""
     app = _DummyApp()
@@ -837,6 +862,7 @@ def test_each_source_latches_its_own_direction(monkeypatch) -> None:
     _FakeGamepadHandler.next_update = GamepadUpdate(movements={0: (1.0, 0.0, 0.0)})
     app = _DummyApp()
     manager = InputManager(app)
+    manager._clock = lambda: 0.0
     manager.update(1.0)
 
     app._config.marker.control_frame = "heading"

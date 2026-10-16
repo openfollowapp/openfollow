@@ -193,6 +193,8 @@ class DiagnosticsProviders:
 
     # Absolute paths of the files the station's configuration is read from.
     config_file_paths: Callable[[], list[str]] | None = None
+    # How config.toml and its backup read, in words that carry none of their contents.
+    config_file_health: Callable[[], str] | None = None
     # ``{"dir": <resolved <storage>/models>, "configured": <model filename>}``.
     detection_models_dir: Callable[[], dict[str, str]] | None = None
 
@@ -1062,6 +1064,9 @@ def collect_config(p: DiagnosticsProviders) -> list[str]:
         rows.append(f"  {line}")
     rows.append("  ----- end effective config -----")
     rows.extend(_collect_config_provenance(p))
+    if p.config_file_health is not None:
+        health, err = _safely_value(p.config_file_health, "config_file_health", "")
+        rows.append(f"  Config file health:  {err if err is not None else health}")
     if p.config_diff_from_defaults is not None:
         rows.append("")
         rows.append("  Diff vs defaults:")

@@ -16,6 +16,9 @@
  *   fromResponse(res)          -> Promise<info> for a failed fetch Response
  *   fromText(status, text)     -> info for a body already read
  *   UNREACHABLE                info for a request that got no answer
+ *   peerFailure(peers, notDone, again)
+ *                              -> info naming the stations a broadcast did not
+ *                              reach, each with the reason it gave
  *
  * ``info`` is ``{error, action, href}``, the shape the station answers a
  * refused change with; ``lead`` defaults to "Not saved.". A ``box`` that is
@@ -63,6 +66,20 @@
             function (text) { return fromText(res.status, text); },
             function () { return fromText(res.status, ''); }
         );
+    }
+
+    function peerFailure(peers, notDone, again) {
+        var failed = peers.filter(function (peer) { return !peer.success; });
+        var names = failed.map(function (peer) {
+            var name = peer.name || peer.ip;
+            return peer.reason ? name + ' (' + String(peer.reason).replace(/\.$/, '') + ')' : name;
+        });
+        var unexplained = failed.some(function (peer) { return !peer.reason; });
+        return {
+            error: notDone + ' ' + failed.length + ' of ' + peers.length + ' stations: ' + names.join(', ') + '.',
+            action: unexplained ? 'Check that they are switched on, then ' + again + '.' : '',
+            href: '',
+        };
     }
 
     function clear(box) {
@@ -143,6 +160,7 @@
         origin: function () { return lastOrigin; },
         fromResponse: fromResponse,
         fromText: fromText,
+        peerFailure: peerFailure,
         UNREACHABLE: UNREACHABLE,
     };
 })();

@@ -876,7 +876,9 @@ class TestSourceTypeSelection:
         assert app._config.video_source_type == "rtsp"  # it runs
         assert app._settings_menu_active is True
         assert app._settings_menu_banner == (
-            "RTSP is live but could not be saved to config.toml. Fix the file, then switch again."
+            "RTSP is live but could not be saved. "
+            "The settings file is empty. "
+            "Restart OpenFollow to start again with default settings, then switch again."
         )
         assert app._url_editor_calls == []
 
@@ -1393,7 +1395,9 @@ class TestUrlEditor:
         assert app._url_editor_active is False
         assert app._settings_menu_active is True
         assert app._settings_menu_banner == (
-            "RTSP URL is live but could not be saved to config.toml. Fix the file, then enter it again."
+            "RTSP URL is live but could not be saved. "
+            "The settings file is empty. "
+            "Restart OpenFollow to start again with default settings, then enter it again."
         )
 
     def test_an_auto_chained_switch_that_runs_but_cannot_be_saved_says_so_in_settings(
@@ -1414,7 +1418,9 @@ class TestUrlEditor:
         assert app._swap_calls == ["rtsp"]
         assert app._config.video_source_type == "rtsp"
         assert app._settings_menu_banner == (
-            "RTSP is live but could not be saved to config.toml. Fix the file, then switch again."
+            "RTSP is live but could not be saved. "
+            "The settings file is empty. "
+            "Restart OpenFollow to start again with default settings, then switch again."
         )
 
     def test_a_plain_edit_for_an_input_no_longer_running_is_saved_without_a_swap(
@@ -1458,7 +1464,9 @@ class TestUrlEditor:
         app_modes.handle_url_editor_key(app, "Enter")
         assert app._swap_calls == []
         assert app._settings_menu_banner == (
-            "RTSP URL could not be saved to config.toml. Fix the file, then enter it again."
+            "RTSP URL could not be saved. "
+            "The settings file is empty. "
+            "Restart OpenFollow to start again with default settings, then enter it again."
         )
 
     def test_enter_confirms_and_persists(
@@ -2061,7 +2069,9 @@ class TestFieldChoicePicker:
         assert app._field_choice_active is False
         assert app._settings_menu_active is True
         assert app._settings_menu_banner == (
-            "Render resolution is live but could not be saved to config.toml. Fix the file, then pick it again."
+            "Render resolution is live but could not be saved. "
+            "The settings file is empty. "
+            "Restart OpenFollow to start again with default settings, then pick it again."
         )
 
     def test_an_auto_chained_switch_that_runs_but_cannot_be_saved_says_so_in_settings(
@@ -2081,7 +2091,9 @@ class TestFieldChoicePicker:
         assert app._swap_calls == ["v4l2"]
         assert app._config.video_source_type == "v4l2"
         assert app._settings_menu_banner == (
-            "USB Camera is live but could not be saved to config.toml. Fix the file, then switch again."
+            "USB Camera is live but could not be saved. "
+            "The settings file is empty. "
+            "Restart OpenFollow to start again with default settings, then switch again."
         )
 
     def test_a_plain_pick_for_an_input_no_longer_running_that_cannot_be_saved_says_so(
@@ -2102,7 +2114,9 @@ class TestFieldChoicePicker:
         assert app._swap_calls == []
         assert (app._config.video_source_type, app._config.v4l2_render_resolution) == ("rtsp", "2160p")
         assert app._settings_menu_banner == (
-            "Render resolution could not be saved to config.toml. Fix the file, then pick it again."
+            "Render resolution could not be saved. "
+            "The settings file is empty. "
+            "Restart OpenFollow to start again with default settings, then pick it again."
         )
 
     def test_confirm_writes_selected_value_to_config(
@@ -3105,3 +3119,76 @@ class TestPathKeys:
         app._clear_operator_messages = lambda: None
         process_input(app, 0.016)
         assert app._config.paths.show_paths is False
+
+
+class TestSourcePickSave:
+    """A source picked on screen is saved like every other on-screen save: the field alone."""
+
+    def _station(self, tmp_path):  # noqa: ANN001, ANN202
+        from openfollow.configuration import AppConfig, load_config, save_config
+
+        path = tmp_path / "config.toml"
+        for _ in range(2):  # the second save leaves the first as the backup
+            save_config(AppConfig(video_source_type="ndi", ndi_source_name="OLD (A)"), str(path))
+        banners: list[str] = []
+        app = SimpleNamespace(
+            _config=load_config(str(path), strict=True),
+            _config_path=str(path),
+            _enter_settings_menu=lambda banner="": banners.append(banner),
+        )
+        return app, path, banners
+
+    def test_the_pick_is_saved_alone_and_the_reload_has_nothing_to_reconnect(self, tmp_path) -> None:  # noqa: ANN001
+        from dataclasses import replace
+
+        from openfollow.configuration import load_config, save_config
+        from openfollow.runtime.app_modes import save_source_pick
+        from openfollow.video.inputs import get_input_class
+
+        app, path, banners = self._station(tmp_path)
+        save_config(replace(load_config(str(path)), psn_system_name="Saved Elsewhere"), str(path))
+
+        save_source_pick(app, "ndi_source_name", "NEW (B)")
+
+        on_disk = load_config(str(path), strict=True)
+        assert (on_disk.ndi_source_name, on_disk.psn_system_name) == ("NEW (B)", "Saved Elsewhere")
+        assert app._config.ndi_source_name == "NEW (B)"
+        ndi = get_input_class("ndi")
+        assert ndi is not None
+        assert not ndi.config_changed(app._config, on_disk)
+        assert banners == []
+
+    @pytest.mark.parametrize(
+        ("content", "why"),
+        [
+            ("", "is empty. Restart OpenFollow to restore the settings from the latest backup copy"),
+            ("  \n\t\n", "is empty. Restart OpenFollow to restore the settings from the latest backup copy"),
+            ("not [[ toml", "could not be read. Import a settings file to replace it"),
+        ],
+        ids=["empty", "whitespace", "unparseable"],
+    )
+    def test_a_broken_file_is_left_alone_and_the_operator_told(self, tmp_path, content: str, why: str) -> None:  # noqa: ANN001
+        from openfollow.runtime.app_modes import save_source_pick
+
+        app, path, banners = self._station(tmp_path)
+        path.write_text(content, encoding="utf-8")
+
+        save_source_pick(app, "ndi_source_name", "NEW (B)")
+
+        assert path.read_text(encoding="utf-8") == content
+        assert app._config.ndi_source_name == "NEW (B)"
+        assert banners == [
+            f"The NDI® source is live but could not be saved. The settings file {why}, then pick it again."
+        ]
+
+    def test_a_save_that_failed_for_another_reason_points_at_the_storage(self, tmp_path) -> None:  # noqa: ANN001
+        from openfollow.runtime.app_modes import save_source_pick
+
+        app, _path, banners = self._station(tmp_path)
+        app._config_path = str(tmp_path / "gone" / "config.toml")
+
+        save_source_pick(app, "ndi_source_name", "NEW (B)")
+
+        assert banners == [
+            "The NDI® source is live but could not be saved. Check the station's storage, then pick it again."
+        ]

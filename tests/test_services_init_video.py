@@ -116,7 +116,7 @@ class _FakeReceiver:
         input_config: dict[str, Any],
         overlay_renderer: Any,
         on_widget_changed: Any,
-        config_path: str,
+        on_source_picked: Any,
         detector: Any,
         preview_provider: Any,
         snapshot_provider: Any,
@@ -129,7 +129,7 @@ class _FakeReceiver:
         self.input_config = input_config
         self.overlay_renderer = overlay_renderer
         self.on_widget_changed = on_widget_changed
-        self.config_path = config_path
+        self.on_source_picked = on_source_picked
         self.detector = detector
         self.preview_provider = preview_provider
         self.snapshot_provider = snapshot_provider
@@ -327,7 +327,6 @@ class TestInitVideoDetectionDisabled:
         assert recv.detector is None
         assert recv.preview_provider is _FakePreviewProvider.instances[0]
         assert recv.snapshot_provider is _FakeSnapshotProvider.instances[0]
-        assert recv.config_path == "/tmp/openfollow-phase8.toml"
         assert recv.on_widget_changed == services._app._canvas.embed_widget
 
         # pipeline brought up + widget embedded + HUD attached + receiver started
@@ -338,6 +337,26 @@ class TestInitVideoDetectionDisabled:
         canvas = services._app._canvas
         _assert_hud_drawn_on_its_thread(services)
         assert canvas.embed_widget_calls == [recv.widget]
+
+    def test_a_source_picked_on_screen_is_saved_as_that_field_alone(
+        self,
+        services: AppRuntimeServices,
+        recv_factory: _RecordingReceiverFactory,
+        patched_subsystems: None,
+        tmp_path,  # noqa: ANN001
+    ) -> None:
+        from openfollow.configuration import load_config, save_config
+
+        path = tmp_path / "config.toml"
+        save_config(AppConfig(psn_system_name="On Disk", ndi_source_name="OLD (A)"), str(path))
+        services._app._config_path = str(path)
+        services.init_video()
+
+        recv_factory.last.on_source_picked("ndi_source_name", "NEW (B)")
+
+        saved = load_config(str(path), strict=True)
+        assert (saved.ndi_source_name, saved.psn_system_name) == ("NEW (B)", "On Disk")
+        assert services._app._config.ndi_source_name == "NEW (B)"
 
     def test_widget_none_skips_embed_but_keeps_attach_hud(
         self,

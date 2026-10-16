@@ -3681,7 +3681,7 @@ def _stub_export_script(monkeypatch, tmp_path):
     storage.mkdir()
     monkeypatch.setattr(routes_mod, "_export_tools_available", lambda: True)
     monkeypatch.setattr(routes_mod, "_detection_export_script", lambda: script)
-    monkeypatch.setattr(routes_mod, "load_config", lambda _p: _config_with_storage(str(storage)))
+    save_config(_config_with_storage(str(storage)), str(tmp_path / "config.toml"))
     return script, storage
 
 
@@ -3819,14 +3819,13 @@ def test_export_rejected_while_another_export_in_progress(live_server, monkeypat
 
 
 def _seed_storage_model(monkeypatch, tmp_path, name: str = "yolo11n.onnx"):
-    """Create <tmp>/store/models/<name> and point load_config at that storage."""
-    from openfollow.web import routes as routes_mod
+    """Create <tmp>/store/models/<name> and point the station's config at that storage."""
 
     storage = tmp_path / "store"
     (storage / "models").mkdir(parents=True)
     model = storage / "models" / name
     model.write_bytes(b"stub-onnx")
-    monkeypatch.setattr(routes_mod, "load_config", lambda _p: _config_with_storage(str(storage)))
+    save_config(_config_with_storage(str(storage)), str(tmp_path / "config.toml"))
     return model
 
 
@@ -7777,9 +7776,9 @@ def test_a_request_takes_one_copy_of_the_config_and_parses_nothing_itself(
     save_config(AppConfig(), server.config_path)
     cache = _CountingCache()
     parses: list[str] = []
-    real_load = routes_mod.load_config
+    real_load = routes_mod.load_config_for_save
     monkeypatch.setattr(routes_mod, "_CONFIG_CACHE", cache)
-    monkeypatch.setattr(routes_mod, "load_config", lambda p, *a, **k: parses.append(p) or real_load(p, *a, **k))
+    monkeypatch.setattr(routes_mod, "load_config_for_save", lambda p: parses.append(p) or real_load(p))
     status, _ = _get(base, path)
     assert status == expected
     assert cache.taken == 1
@@ -7800,9 +7799,9 @@ def test_a_midi_post_that_writes_nothing_parses_nothing_itself(live_server, monk
     save_config(AppConfig(), server.config_path)
     cache = _CountingCache()
     parses: list[str] = []
-    real_load = routes_mod.load_config
+    real_load = routes_mod.load_config_for_save
     monkeypatch.setattr(routes_mod, "_CONFIG_CACHE", cache)
-    monkeypatch.setattr(routes_mod, "load_config", lambda p, *a, **k: parses.append(p) or real_load(p, *a, **k))
+    monkeypatch.setattr(routes_mod, "load_config_for_save", lambda p: parses.append(p) or real_load(p))
     status, _ = _post_form(base, path, {})
     assert status == expected
     assert cache.taken == 1

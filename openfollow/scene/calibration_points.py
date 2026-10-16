@@ -24,6 +24,7 @@ from openfollow.configuration import CameraConfig
 from openfollow.scene.solver import (
     POSE_FOV_RANGE_DEG,
     POSE_PITCH_LIMIT_DEG,
+    camera_params,
     project_points,
     solve_camera_dlt,
     unproject_to_plane,
@@ -136,10 +137,6 @@ def trilaterate(
 def _wrap_degrees(angle: float) -> float:
     """``angle`` in (-180, 180], the corner solve's range: the fit moves freely across +/-180."""
     return 180.0 - (180.0 - angle) % 360.0
-
-
-def _camera_params(cam: CameraConfig) -> npt.NDArray[np.float64]:
-    return np.array([cam.pos_x, cam.pos_y, cam.pos_z, cam.pitch, cam.yaw, cam.roll, cam.fov], dtype=np.float64)
 
 
 def _pick_by_pin(
@@ -319,7 +316,7 @@ def solve_with_points(
     seed = solve_camera_dlt([tuple(p) for p in world], [(float(p[0]), float(p[1])) for p in screen], canvas_w, canvas_h)
     if seed is None:
         return None
-    seed_params = _camera_params(seed)
+    seed_params = camera_params(seed)
 
     fits: list[PointFit | None] = [None] * len(points)
     places: dict[int, npt.NDArray[np.float64]] = {}

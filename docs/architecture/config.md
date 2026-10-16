@@ -25,7 +25,7 @@ All config lives in `config.toml` (auto-reloaded when file changes on disk).
 
 ## Sub-config notes
 
-- **`MarkerConfig.invert_control_direction`** flips X **and** Y together for *relative* input (keyboard, gamepad, 3D mouse) so an upstage camera's picture matches the controls. It is applied once in `InputManager.update` via `_oriented`, never on Z, and never on the absolute paths: 2D mouse unprojection and OSC writes.
+- **`MarkerConfig.control_frame`** (`stage` / `heading` / `camera` / `screen`) and **`control_heading`** (degrees, wrapped into one turn, the camera-yaw convention) pick the stage directions *relative* input (keyboard, gamepad, 3D mouse) steers in; see [input](input.md#control-frame-inputcontrol_framepy). A file, API body or peer carrying `invert_control_direction` is read through `apply_renamed_marker_keys`: `true` as `heading` / `180`, `false` as `stage`, unless it also carries `control_frame`.
 - **`MarkerConfig.marker_style = "cone"`**: see [hud](hud.md#cone-markers).
 - **`DetectionConfig`**: see [detection](detection.md#config).
 - **`PathsConfig`**: show_paths, slide_time (s, 0-10, default 1), paths (`list[PathConfig]`: name, active, closed, release_at_start, release_at_end, points `list[PathPointConfig]` of x / y / z / radius). See [paths](paths.md).

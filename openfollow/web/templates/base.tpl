@@ -699,6 +699,7 @@
  [data-input-type] > .row:last-child { margin-bottom: 0.72rem; }
  .field { display: flex; flex-direction: column; flex: 1; min-width: 130px; }
  .field.wide { flex: 2; min-width: 230px; }
+ .field[hidden] { display: none; }
  /* Inline "press to capture" widget: an input with a Detect button beside it
     (detect-input.js). The button keeps its .secondary.small styling. */
  .detect-input { display: flex; gap: 0.4rem; align-items: stretch; }

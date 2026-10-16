@@ -13,7 +13,7 @@ The stick response, dead zone and Z wheel step live in the `[touch_remote]` sect
 Tap the round button in the bottom corner of the page to open the remote card.
 
 - **Marker chips** – the markers this station controls. Tapping one gives the remote that marker.
-- **Stick** – push to move the marker; the further you push, the faster it goes, up to the station's **Max Speed** (Markers & Zones › Marker Movement). Let go and it stops. Like a gamepad, it follows **Control direction**; the UPSTAGE / DOWNSTAGE labels on the stick always show where it drives.
+- **Stick** – push to move the marker; the further you push, the faster it goes, up to the station's **Max Speed** (Markers & Zones › Marker Movement). Let go and it stops. It always steers in stage directions, whatever the station's **Control frame**, since you may not be watching the camera's picture; the UPSTAGE / DOWNSTAGE labels on the stick show where it drives.
 - **Facing FOH** (the turning arrows) – turns the stick around for when you stand on stage facing the audience. This tablet remembers it.
 - **Hand** – moves the card to the other corner so your thumb reaches everything. This tablet remembers it.
 - **Z wheel** – drag up or down; every notch moves the marker's height one step (5 cm by default) along a grid of steps, so from a height between two steps the first notch reaches the next one. It does nothing while the marker is on a path, whose height the path sets.

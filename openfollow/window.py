@@ -12,11 +12,32 @@ from __future__ import annotations
 import logging
 import sys
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from openfollow.logging_setup import ThrottledExceptionLogger
 
+if TYPE_CHECKING:
+    from openfollow.app import OpenFollowApp
+
 logger = logging.getLogger(__name__)
+
+
+def operator_screen_size(app: OpenFollowApp) -> tuple[int, int]:
+    """The Operator Screen's size in pixels, the space pointer events and the picture share.
+
+    The window's allocation where there is one, else the requested window size;
+    ``(0, 0)`` when GTK cannot read it, so a caller skips the picture rather than
+    stopping the frame loop.
+    """
+    canvas = app._canvas
+    if canvas is None:
+        return app._config.window_width, app._config.window_height
+    try:
+        return canvas.get_canvas_size()
+    except Exception:
+        logger.debug("Operator Screen size unavailable", exc_info=True)
+        return 0, 0
+
 
 # GDK key name → rendercanvas-style key name
 _GDK_KEY_MAP: dict[str, str] = {

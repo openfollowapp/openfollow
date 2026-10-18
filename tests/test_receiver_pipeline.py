@@ -567,8 +567,8 @@ class TestLinkFailures:
             assembler.build_overlay_tail(pipeline, convert, sink)
 
     def test_snapshot_chain_link_failure_inside_loop_raises(self) -> None:
-        """Inside the snapshot branch's chain (queue → convert → enc →
-        appsink), a refused link surfaces a precise error."""
+        """Inside the snapshot branch's chain (valve → queue → convert →
+        enc → appsink), a refused link surfaces a precise error."""
         gst = _make_fake_gst(
             element_factory_overrides={
                 "snapshot_convert": FakeElement(
@@ -654,6 +654,6 @@ class TestCombinedBranches:
         assert detector.appsink is not None
         assert preview.appsink is not None
         assert snapshot.appsink is not None
-        # Each branch allocates its own queue off the shared tee
+        # Each branch allocates its own queue
         for name in ("detection_queue", "preview_queue", "snapshot_queue"):
             assert pipeline.get_by_name(name) is not None

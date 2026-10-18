@@ -876,7 +876,7 @@ class TestSourceAddress:
 
         monkeypatch.setattr(_FakeMcastSocket, "getsockname", _unnamed)
         monkeypatch.setattr(server_module.threading, "Thread", _DummyThread)
-        srv = PsnServer(mcast_ip="236.10.10.10")
+        srv = PsnServer(source_ip="10.0.0.5", mcast_ip="236.10.10.10")
         srv.start()
         assert srv.source_address() is None
         assert _FakeMcastSocket.instances[0].closed is True

@@ -945,6 +945,7 @@ class TestInitPsnReceiver:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setattr(services_module, "PsnReceiver", _FakePsnReceiver)
+        monkeypatch.setattr(services, "station_source_ip_or_none", lambda: "10.0.0.1")
         current: dict[str, tuple[str, int] | None] = {"address": ("192.0.2.10", 50000)}
         services._app._server = SimpleNamespace(source_address=lambda: current["address"])
         services.init_psn_receiver()
@@ -960,6 +961,7 @@ class TestInitPsnReceiver:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setattr(services_module, "PsnReceiver", _FakePsnReceiver)
+        monkeypatch.setattr(services, "station_source_ip_or_none", lambda: "10.0.0.1")
         services._app._server = None
         services.init_psn_receiver()
         assert services._app._psn_receiver.kwargs["own_source"]() is None

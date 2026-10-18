@@ -46,6 +46,13 @@ _LONG_STEP = (
 )
 
 _FAKE_MAKE = """#!/usr/bin/env bash
+case " $* " in
+  *" perf-ab "*)
+    for arg in "$@"; do case "$arg" in PERF_BASE=*) base="${arg#PERF_BASE=}" ;; esac; done
+    echo "perf-ab against: $(cat "$base/openfollow/video/overlay.py")" >> "$FAKE_MAKE_LOG"
+    echo "$base" > "$FAKE_MAKE_LOG.base"
+    exit "${FAKE_PERF_STATUS:-0}" ;;
+esac
 echo "make $*" >> "$FAKE_MAKE_LOG"
 if [ -n "${FAKE_MAKE_HOOK:-}" ]; then eval "$FAKE_MAKE_HOOK"; fi
 exit "${FAKE_MAKE_STATUS:-0}"
@@ -89,6 +96,19 @@ class _Station:
     def make_ran(self) -> bool:
         return self.make_log.exists()
 
+    def made(self) -> list[str]:
+        return self.make_log.read_text(encoding="utf-8").splitlines() if self.make_log.exists() else []
+
+    def perf_base(self) -> Path:
+        return Path(Path(f"{self.make_log}.base").read_text(encoding="utf-8").strip())
+
+    def commit(self, path: str, text: str) -> None:
+        """Commit ``text`` to ``path`` on the local branch."""
+        (self.local / path).parent.mkdir(parents=True, exist_ok=True)
+        (self.local / path).write_text(text, encoding="utf-8")
+        for args in (("add", path), ("commit", "-q", "-m", path)):
+            subprocess.run(["git", "-C", str(self.local), *args], env=self.env, check=True, capture_output=True)
+
 
 def _station(tmp_path: Path, *, local_git: str = "directory") -> _Station:
     if shutil.which("rsync") is None:
@@ -126,7 +146,20 @@ def _station(tmp_path: Path, *, local_git: str = "directory") -> _Station:
     (local / "scripts").mkdir(parents=True)
     shutil.copy(_SCRIPT, local / "scripts" / "ci-remote.sh")
     (local / "branch_only.txt").write_text("branch\n", encoding="utf-8")
-    if local_git == "worktree":
+    if local_git == "repo":
+        # A real branch: the drawing code and a doc as on origin/main, then the branch's own commits.
+        (local / "openfollow" / "video").mkdir(parents=True)
+        (local / "openfollow" / "video" / "overlay.py").write_text("base", encoding="utf-8")
+        (local / "docs").mkdir()
+        (local / "docs" / "guide.md").write_text("base\n", encoding="utf-8")
+        for args in (
+            ("init", "-q"),
+            ("add", "-A"),
+            ("commit", "-q", "-m", "base"),
+            ("update-ref", "refs/remotes/origin/main", "HEAD"),
+        ):
+            subprocess.run(["git", "-C", str(local), *args], env=env, check=True, capture_output=True)
+    elif local_git == "worktree":
         (local / ".git").write_text(f"gitdir: {tmp_path}/main/.git/worktrees/wt\n", encoding="utf-8")
     else:
         (local / ".git").mkdir()
@@ -267,3 +300,115 @@ def test_an_interrupted_gate_still_restores_the_pi(tmp_path: Path) -> None:
     assert "CI PASSED" not in stderr
     assert station.git("rev-parse", "HEAD") == station.orig_ref
     assert station.git("status", "--porcelain") == ""
+
+
+# --------------------------------------------------------------------------- #
+# Operator Screen drawing A/B against the merge-base
+# --------------------------------------------------------------------------- #
+
+
+def test_a_drawing_change_is_timed_against_the_merge_base_s_package_after_a_green_gate(tmp_path: Path) -> None:
+    station = _station(tmp_path, local_git="repo")
+    station.commit("openfollow/video/overlay.py", "branch")
+
+    result = station.run()
+
+    assert result.returncode == 0, result.stderr
+    assert station.made() == ["make ci", "perf-ab against: base"]
+    assert "CI PASSED" in result.stderr
+    assert not station.perf_base().exists()
+    assert station.git("status", "--porcelain") == ""
+
+
+@pytest.mark.parametrize(
+    ("path", "committed"),
+    [("openfollow/runtime/overlay_draw_new.py", False), ("tests/_hud_scenes.py", True), ("openfollow/window.py", True)],
+)
+def test_a_change_to_any_drawing_path_committed_or_not_is_timed(tmp_path: Path, path: str, committed: bool) -> None:
+    station = _station(tmp_path, local_git="repo")
+    if committed:
+        station.commit(path, "branch")
+    else:
+        (station.local / path).parent.mkdir(parents=True, exist_ok=True)
+        (station.local / path).write_text("new", encoding="utf-8")
+
+    result = station.run()
+
+    assert result.returncode == 0, result.stderr
+    assert "perf-ab against: base" in station.made()
+
+
+def test_a_change_off_the_drawing_paths_is_not_timed(tmp_path: Path) -> None:
+    station = _station(tmp_path, local_git="repo")
+    station.commit("docs/guide.md", "branch\n")
+
+    result = station.run()
+
+    assert result.returncode == 0, result.stderr
+    assert station.made() == ["make ci"]
+
+
+@pytest.mark.parametrize(
+    ("perf_status", "message"),
+    [("1", "more than 15 % slower"), ("2", "comparison could not run")],
+)
+def test_a_slower_or_unrunnable_comparison_fails_the_gate_and_the_pi_is_restored(
+    tmp_path: Path, perf_status: str, message: str
+) -> None:
+    station = _station(tmp_path, local_git="repo")
+    station.commit("openfollow/video/overlay.py", "branch")
+
+    result = station.run(FAKE_PERF_STATUS=perf_status)
+
+    assert result.returncode == int(perf_status)
+    assert message in result.stderr
+    assert "CI PASSED" not in result.stderr
+    assert not station.perf_base().exists()
+    assert station.git("rev-parse", "HEAD") == station.orig_ref
+    assert station.git("status", "--porcelain") == ""
+
+
+def test_a_red_gate_is_not_timed(tmp_path: Path) -> None:
+    station = _station(tmp_path, local_git="repo")
+    station.commit("openfollow/video/overlay.py", "branch")
+
+    result = station.run(FAKE_MAKE_STATUS="2")
+
+    assert result.returncode == 2
+    assert station.made() == ["make ci"]
+
+
+@pytest.mark.parametrize(
+    ("mode", "path", "timed"),
+    [("0", "openfollow/video/overlay.py", False), ("1", "docs/guide.md", True)],
+)
+def test_the_comparison_can_be_forced_off_or_on(tmp_path: Path, mode: str, path: str, timed: bool) -> None:
+    station = _station(tmp_path, local_git="repo")
+    station.commit(path, "branch")
+
+    result = station.run(OPENFOLLOW_CI_PERF=mode)
+
+    assert result.returncode == 0, result.stderr
+    assert ("perf-ab against: base" in station.made()) is timed
+
+
+def test_without_a_merge_base_the_comparison_is_skipped_and_said_so(tmp_path: Path) -> None:
+    station = _station(tmp_path)
+
+    result = station.run(OPENFOLLOW_CI_PERF="1")
+
+    assert result.returncode == 0, result.stderr
+    assert "skipping the Operator Screen drawing comparison" in result.stderr
+    assert not any(line.startswith("perf-ab") for line in station.made())
+
+
+@pytest.mark.parametrize(("perf_status", "expected"), [("0", 0), ("1", 1)])
+def test_the_local_fallback_times_a_drawing_change_too(tmp_path: Path, perf_status: str, expected: int) -> None:
+    station = _station(tmp_path, local_git="repo")
+    station.commit("openfollow/video/overlay.py", "branch")
+
+    result = station.run(OPENFOLLOW_CI_LOCAL="1", FAKE_PERF_STATUS=perf_status)
+
+    assert result.returncode == expected, result.stderr
+    assert station.made() == [f"make -C {station.local} ci", "perf-ab against: base"]
+    assert not station.perf_base().exists()

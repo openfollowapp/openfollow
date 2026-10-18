@@ -3,7 +3,7 @@
 # Local CI gate and developer task runner: mirrors the CI workflow's
 # lint / typecheck / security / test / build steps plus coverage and mutation.
 
-.PHONY: ci ci-remote lint format typecheck security audit test test-unit test-integration test-smoke-e2e build dmg coverage coverage-html coverage-xml install-hooks \
+.PHONY: ci ci-remote perf-ab lint format typecheck security audit test test-unit test-integration test-smoke-e2e build dmg coverage coverage-html coverage-xml install-hooks \
         mutation mutation-deps mutation-module mutation-results mutation-show mutation-clean
 
 # Combined line + branch coverage floor – ratchet up with every PR.
@@ -66,6 +66,14 @@ ci: lint typecheck security test test-smoke-e2e build
 # Use this – not bare `make ci` – before every `git push`.
 ci-remote:
 	@bash scripts/ci-remote.sh
+
+# Operator Screen drawing against another checkout's renderer: PERF_BASE is a
+# directory holding its openfollow/ package. Fails when a bench scene is more
+# than 15 % slower; ci-remote runs it against the merge-base when a change
+# touches the drawing paths (scripts/hw_validation/hud_bench.py).
+perf-ab:
+	@test -n "$(PERF_BASE)" || { echo "perf-ab needs PERF_BASE=<dir holding openfollow/>" >&2; exit 2; }
+	poetry run python scripts/hw_validation/hud_bench.py --compare "$(PERF_BASE)"
 
 # Lint. `ruff check` replaces `flake8`; `ruff format --check` replaces
 # autopep8/black. Config in `[tool.ruff]` block of pyproject.toml.

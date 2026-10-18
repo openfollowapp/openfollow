@@ -234,9 +234,8 @@ class ReceiverPipelineAssembler:
             self._gst.Caps.from_string("image/jpeg"),
         )
 
-        # Valve gates the branch so preview encoding only runs when polled. It sits
-        # ahead of the queue: closed, it drops each frame on the tee's thread and
-        # the queue's thread stays asleep. Degrade if missing.
+        # Closed valve ahead of the queue: an idle branch drops frames on the tee's
+        # thread and wakes no streaming thread. Degrade if missing.
         valve = self._gst.ElementFactory.make("valve", "preview_valve")
         if valve is not None:
             valve.set_property("drop", True)
@@ -298,10 +297,8 @@ class ReceiverPipelineAssembler:
             self._gst.Caps.from_string("image/jpeg"),
         )
 
-        # Gate the full-res videoconvert/jpegenc behind a valve so they only
-        # run on request. Full-resolution encode is the largest avoidable cost
-        # when idle. Ahead of the queue, like the preview's; ``drop=True`` starts
-        # closed and ``SnapshotProvider`` opens it per request. Degrade if missing.
+        # Closed valve ahead of the queue, like the preview's; ``SnapshotProvider``
+        # opens it per request. Degrade if missing.
         valve = self._gst.ElementFactory.make("valve", "snapshot_valve")
         if valve is not None:
             valve.set_property("drop", True)

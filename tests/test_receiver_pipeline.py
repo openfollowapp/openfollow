@@ -33,8 +33,9 @@ pytestmark = pytest.mark.unit
 
 
 class FakePad:
-    def __init__(self, *, link_returns_ok: bool = True) -> None:
+    def __init__(self, *, link_returns_ok: bool = True, element: FakeElement | None = None) -> None:
         self._link_returns_ok = link_returns_ok
+        self.element = element
         self.linked_to: FakePad | None = None
 
     def link(self, other: FakePad) -> str:
@@ -50,6 +51,7 @@ class FakeElement:
         self.properties: dict[str, object] = {}
         self.links: list[FakeElement] = []
         self.pads_requested: list[str] = []
+        self.request_pads: list[FakePad] = []
         self._link_ok = link_ok
         self._pad_link_ok = pad_link_ok
 
@@ -64,11 +66,13 @@ class FakeElement:
         return self._link_ok
 
     def get_static_pad(self, name: str) -> FakePad:
-        return FakePad(link_returns_ok=self._pad_link_ok)
+        return FakePad(link_returns_ok=self._pad_link_ok, element=self)
 
     def request_pad_simple(self, template: str) -> FakePad:
         self.pads_requested.append(template)
-        return FakePad(link_returns_ok=self._pad_link_ok)
+        pad = FakePad(link_returns_ok=self._pad_link_ok)
+        self.request_pads.append(pad)
+        return pad
 
 
 class FakePipeline:
@@ -171,6 +175,13 @@ class FakeSnapshotProvider:
 def _build_convert_sink():
     """Return (convert, sink) pair wired with the standard element fakes."""
     return FakeElement("videoconvert"), FakeElement("videosink")
+
+
+def _tee_targets(pipeline: FakePipeline) -> list[FakeElement | None]:
+    """Elements the shared tee's request pads feed, in request order."""
+    tee = pipeline.get_by_name("detection_tee")
+    assert tee is not None
+    return [pad.linked_to.element if pad.linked_to is not None else None for pad in tee.request_pads]
 
 
 def _make_assembler(
@@ -407,6 +418,8 @@ class TestIdleBranches:
         convert, sink = _build_convert_sink()
         assembler.build_overlay_tail(pipeline, convert, sink)
         valve, queue = pipeline.get_by_name(f"{prefix}_valve"), pipeline.get_by_name(f"{prefix}_queue")
+        assert valve in _tee_targets(pipeline)
+        assert queue not in _tee_targets(pipeline)
         assert valve.properties["drop"] is True
         assert valve.links == [queue]
         assert queue.links == [pipeline.get_by_name(after_queue)]
@@ -425,8 +438,10 @@ class TestIdleBranches:
         pipeline = FakePipeline()
         convert, sink = _build_convert_sink()
         assembler.build_overlay_tail(pipeline, convert, sink)
+        queue = pipeline.get_by_name(f"{prefix}_queue")
         assert pipeline.get_by_name(f"{prefix}_valve") is None
-        assert pipeline.get_by_name(f"{prefix}_queue").links == [pipeline.get_by_name(after_queue)]
+        assert queue in _tee_targets(pipeline)
+        assert queue.links == [pipeline.get_by_name(after_queue)]
 
 
 class TestLinkFailures:

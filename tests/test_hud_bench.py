@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import importlib.util
 import io
 import json
@@ -139,7 +140,8 @@ def test_the_split_times_a_wrapped_pass(monkeypatch: pytest.MonkeyPatch) -> None
     split = bench.Split(_Clock(0.001))
     split.install()
     try:
-        assert hud.draw_system_stats(21) == 42
+        wrapped: Any = hud.draw_system_stats
+        assert wrapped(21) == 42
     finally:
         split.remove()
     assert split.ms == {"stats": pytest.approx(1.0)}
@@ -284,6 +286,14 @@ def test_zero_frames_or_rounds_are_refused(arg: list[str]) -> None:
     assert _main(arg)[0] == 2
 
 
+@pytest.mark.parametrize("value", ["-0.1", "nan"])
+def test_a_negative_or_nan_slowdown_is_refused(value: str, capsys: pytest.CaptureFixture[str]) -> None:
+    code, workers = _main(["--max-slowdown", value])
+    assert code == 2
+    assert workers == []
+    assert "--max-slowdown" in capsys.readouterr().err
+
+
 def test_a_compare_directory_without_the_package_is_refused(tmp_path: Path) -> None:
     assert _main(["--compare", str(tmp_path)])[0] == 2
 
@@ -346,6 +356,32 @@ def test_a_worker_answers_each_request_with_one_line() -> None:
     # Two clock reads per frame, 1 ms apart.
     assert plain == {"ms": pytest.approx(1.0), "split": {}, "errors": [], "dropped": []}
     assert "markers" in split["split"]
+
+
+def test_a_worker_names_only_the_fields_the_scene_itself_sets(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openfollow.runtime.overlay_state import OverlayState
+
+    older = dataclasses.make_dataclass(
+        "OverlayState",
+        [
+            (f.name, Any, dataclasses.field(default=None))
+            for f in dataclasses.fields(OverlayState)
+            if f.name != "show_paths"
+        ],
+    )
+    load = bench.load_scenes
+
+    def load_against_older() -> Any:
+        scenes = load()
+        scenes.OverlayState = older
+        return scenes
+
+    monkeypatch.setattr(bench, "load_scenes", load_against_older)
+    stdin = io.StringIO("".join(json.dumps({"scene": s, "frames": 1}) + "\n" for s in ("full", "light", "full")))
+    stdout = io.StringIO()
+    bench.worker(bench.REPO, stdin=stdin, stdout=stdout, clock=_Clock(0.001))
+    dropped = [json.loads(line)["dropped"] for line in stdout.getvalue().splitlines()]
+    assert dropped == [["OverlayState.show_paths"], [], ["OverlayState.show_paths"]]
 
 
 def test_every_split_pass_is_timed_in_some_scene() -> None:

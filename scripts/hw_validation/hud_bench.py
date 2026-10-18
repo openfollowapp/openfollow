@@ -154,13 +154,16 @@ def worker(
     overlay_logger.addHandler(errors)
     surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, scenes.WIDTH, scenes.HEIGHT)
     renderers: dict[str, Any] = {}
-    built: dict[tuple[str, int], Any] = {}
+    built: dict[tuple[str, int], tuple[Any, list[str]]] = {}
     try:
         for line in stdin:
             request = json.loads(line)
             key = (request["scene"], int(request["frames"]))
             if key not in built:
-                built[key] = scenes.frames(*key)
+                # DROPPED collects across builds; each scene reports only its own.
+                scenes.DROPPED.clear()
+                built[key] = (scenes.frames(*key), sorted(scenes.DROPPED))
+            scene_frames, dropped = built[key]
             if request["scene"] not in renderers:
                 renderers[request["scene"]] = CairoOverlayRenderer()
             errors.messages.clear()
@@ -168,16 +171,16 @@ def worker(
             if split is not None:
                 split.install()
             try:
-                ms = time_round(renderers[request["scene"]].draw, surface, built[key], clock, cairo)
+                ms = time_round(renderers[request["scene"]].draw, surface, scene_frames, clock, cairo)
             finally:
                 if split is not None:
                     split.remove()
-            frames = len(built[key])
+            frames = len(scene_frames)
             reply = {
                 "ms": ms,
                 "split": {k: v / frames for k, v in split.ms.items()} if split else {},
                 "errors": errors.messages[:1],
-                "dropped": sorted(scenes.DROPPED),
+                "dropped": dropped,
             }
             stdout.write(json.dumps(reply) + "\n")
             stdout.flush()
@@ -255,7 +258,7 @@ class SceneResult:
 
 def _run(side: Any, scene: str, frames: int, split: bool = False) -> dict[str, Any]:
     """One round on ``side``; a frame the renderer failed to draw stops the run."""
-    reply = side.run(scene, frames, split)
+    reply: dict[str, Any] = side.run(scene, frames, split)
     if reply.get("errors"):
         raise RuntimeError(f"{scene}: the renderer failed to draw a frame: {reply['errors'][0]}")
     return reply
@@ -340,6 +343,10 @@ def main(argv: Sequence[str] | None = None, make_worker: Callable[[Path], Any] =
         return 2
     if args.frames < 1 or args.rounds < 1:
         print("--frames and --rounds must be 1 or more", file=sys.stderr)
+        return 2
+    # Written so NaN is refused too: no slowdown is ever greater than NaN.
+    if not args.max_slowdown >= 0.0:
+        print("--max-slowdown must be 0 or more", file=sys.stderr)
         return 2
     if args.compare is not None and not (args.compare / "openfollow").is_dir():
         print(f"{args.compare} holds no openfollow package", file=sys.stderr)

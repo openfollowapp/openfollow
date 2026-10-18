@@ -25,6 +25,7 @@ from openfollow.runtime.overlay_state import (
 )
 from openfollow.video import overlay as overlay_module
 from openfollow.video.overlay import CairoOverlayRenderer
+from tests._fake_cairo import DirectPanels
 from tests._fake_cairo import FakeCairo as RecordingCairo
 
 pytestmark = pytest.mark.unit
@@ -815,12 +816,13 @@ def _zone_renderer() -> CairoOverlayRenderer:
 
 def test_the_renderer_keeps_its_zones_as_one_picture_between_frames() -> None:
     renderer = _zone_renderer()
+    # The HUD's panels drawn directly, so the zones are the only picture pasted.
+    renderer._panel_cache = DirectPanels()
     frames = [RecordingCairo() for _ in range(3)]
     for cr in frames:
         renderer.draw(cr, 1920, 1080, renderer.state)
-    # Zones paste before the HUD's panels.
-    pictures = [cr.surfaces[0] for cr in frames]
-    assert all(p is pictures[0] for p in pictures)
+    pictures = [s for cr in frames for s in cr.surfaces]
+    assert len(pictures) == 3 and all(p is pictures[0] for p in pictures)
     assert all(("paint",) in cr.calls for cr in frames)
 
 

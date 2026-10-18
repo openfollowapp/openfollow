@@ -1929,10 +1929,10 @@ class TestConstruction:
 
 class TestPygameSubsystemInitOnConstruct:
     def test_starts_the_display_and_joystick_subsystems_when_not_running(self, monkeypatch) -> None:
-        called = {"pygame": False, "joystick": False}
+        called = {"display": False, "joystick": False}
 
         monkeypatch.setattr(pygame.display, "get_init", lambda: False)
-        monkeypatch.setattr(pygame.display, "init", lambda: called.__setitem__("pygame", True))
+        monkeypatch.setattr(pygame.display, "init", lambda: called.__setitem__("display", True))
         monkeypatch.setattr(pygame.joystick, "get_init", lambda: False)
         monkeypatch.setattr(
             pygame.joystick,
@@ -1947,7 +1947,7 @@ class TestPygameSubsystemInitOnConstruct:
         monkeypatch.setattr(gp, "sdl2_controller", None)
 
         GamepadHandler(FakeApp())
-        assert called["pygame"] is True
+        assert called["display"] is True
         assert called["joystick"] is True
 
     def test_starts_no_sound(self, monkeypatch) -> None:

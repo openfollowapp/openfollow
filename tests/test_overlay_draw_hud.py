@@ -1816,7 +1816,7 @@ class TestMarkerCardRendering:
         import numpy as np
 
         class _Unclipped(cairo.Context):
-            """Ignores clips: the card's group then covers the whole surface, as it did unclipped."""
+            """Ignores clips, so the card's group covers the whole surface."""
 
             def clip(self) -> None:
                 self.new_path()

@@ -37,10 +37,9 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 log() { printf '\033[1;36m[ci-remote]\033[0m %s\n' "$*" >&2; }
 
-# After a green `make ci`, `make perf-ab` draws the bench scenes with this tree's
-# renderer and with the merge-base's, and fails when a scene got more than 15 %
-# slower (scripts/hw_validation/hud_bench.py). It runs only when the change, the
-# uncommitted part included, touches a path the drawing or the bench depends on.
+# A change (uncommitted part included) to these paths is timed against the merge-base
+# after a green `make ci`. The bench runs bare: make turns its exit 1 (slower) into 2.
+PERF_AB="poetry run python scripts/hw_validation/hud_bench.py --compare"
 HUD_PATHS='^(openfollow/(video/(overlay|hud_render)\.py|runtime/overlay_[a-z_]+\.py|scene/(solver|ground_grid|camera)\.py|zones/geometry\.py|window\.py)|tests/_hud_scenes\.py|scripts/hw_validation/hud_bench\.py)$'
 perf_base=""
 perf_dir=""
@@ -81,7 +80,7 @@ run_local() {
   git -C "$REPO_ROOT" archive "$perf_base" openfollow | tar -x -C "$perf_dir"
   log "Timing the Operator Screen drawing against ${perf_base:0:9}"
   local status=0
-  make -C "$REPO_ROOT" perf-ab PERF_BASE="$perf_dir" || status=$?
+  (cd "$REPO_ROOT" && $PERF_AB "$perf_dir") || status=$?
   perf_verdict "$status" || exit "$status"
   exit 0
 }
@@ -185,7 +184,7 @@ status=$?
 perf_status=0
 if [ "$status" -eq 0 ] && [ "$PERF" = 1 ]; then
   log "Timing the Operator Screen drawing against ${perf_base:0:9} on ${HOST}"
-  remote "export PATH=\$HOME/.local/bin:\$PATH; cd '$REMOTE_DIR' && make perf-ab PERF_BASE='$perf_dir'"
+  remote "export PATH=\$HOME/.local/bin:\$PATH; cd '$REMOTE_DIR' && $PERF_AB '$perf_dir'"
   perf_status=$?
 fi
 set -e

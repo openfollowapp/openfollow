@@ -82,10 +82,7 @@ def test_thread_shares_name_the_main_and_render_threads_and_add_up_the_rest_by_n
     assert shares == {"main": 50.0, "hud_render": 30.0, "display_queue": 20.0, "python": 20.0}
 
 
-@pytest.mark.parametrize(("stdout", "expected"), [("4321\n99\n", 4321), ("", None)])
-def test_the_app_and_the_compositor_are_found_by_name(
-    monkeypatch: pytest.MonkeyPatch, stdout: str, expected: int | None
-) -> None:
+def _pgrep(monkeypatch: pytest.MonkeyPatch, stdout: str) -> list[list[str]]:
     calls: list[list[str]] = []
 
     def fake_run(args: list[str], **_: Any) -> subprocess.CompletedProcess[str]:
@@ -93,9 +90,33 @@ def test_the_app_and_the_compositor_are_found_by_name(
         return subprocess.CompletedProcess(args, 0, stdout=stdout)
 
     monkeypatch.setattr(probe.subprocess, "run", fake_run)
-    assert probe.find_pid() == expected
+    return calls
+
+
+def test_the_app_is_the_python_process_not_the_compositor_carrying_its_command(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The session's cage and its shell carry "python -m openfollow.main" in their own command lines.
+    for pid, name in (("822", "cage"), ("824", "sh"), ("830", "python3.13")):
+        (tmp_path / pid).mkdir()
+        (tmp_path / pid / "comm").write_text(name + "\n")
+    calls = _pgrep(monkeypatch, "822\n824\n999\n830\n")
+    assert probe.find_pid(proc=tmp_path) == 830
+    assert calls == [["pgrep", "-f", probe.APP_PATTERN]]
+
+
+def test_no_python_process_means_no_app(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    (tmp_path / "822").mkdir()
+    (tmp_path / "822" / "comm").write_text("cage\n")
+    _pgrep(monkeypatch, "822\n")
+    assert probe.find_pid(proc=tmp_path) is None
+
+
+@pytest.mark.parametrize(("stdout", "expected"), [("4321\n99\n", 4321), ("", None)])
+def test_the_compositor_is_found_by_name(monkeypatch: pytest.MonkeyPatch, stdout: str, expected: int | None) -> None:
+    calls = _pgrep(monkeypatch, stdout)
     assert probe.find_compositor() == expected
-    assert calls == [["pgrep", "-f", probe.APP_PATTERN], ["pgrep", "-x", "cage"]]
+    assert calls == [["pgrep", "-x", "cage"]]
 
 
 # --------------------------------------------------------------------------- #

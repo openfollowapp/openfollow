@@ -93,9 +93,17 @@ def thread_shares(
     return {k: round(v, 1) for k, v in sorted(shares.items(), key=lambda kv: -kv[1])}
 
 
-def find_pid(pattern: str = APP_PATTERN) -> int | None:
+def find_pid(pattern: str = APP_PATTERN, proc: Path = PROC) -> int | None:
+    """The Python process running OpenFollow; the session's compositor carries the same command in its own."""
     found = subprocess.run(["pgrep", "-f", pattern], capture_output=True, text=True, check=False).stdout.split()
-    return int(found[0]) if found else None
+    for pid in found:
+        try:
+            name = (proc / pid / "comm").read_text().strip()
+        except OSError:
+            continue
+        if name.startswith("python"):
+            return int(pid)
+    return None
 
 
 def find_compositor() -> int | None:

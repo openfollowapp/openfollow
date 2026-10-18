@@ -61,6 +61,7 @@ from openfollow.runtime.overlay_layout import (
     virtual_fader_card_y,
 )
 from openfollow.runtime.overlay_links import LINKS, LinkCode, draw_link_qr
+from openfollow.runtime.overlay_picture import target_font_options
 from openfollow.runtime.overlay_state import (
     MarkerOverlayData,
     OverlayState,
@@ -1156,25 +1157,44 @@ def _draw_corner_help(renderer: Any, cr: Any, sections: HelpSections, panel_w: f
     draw_help_block(renderer, cr, panel_x + 12.0, panel_y + 18.0, panel_w - 24.0, sections)
 
 
+def _draw_corner_icon(renderer: Any, cr: Any, w: int, h: int) -> None:
+    renderer._panel_cache.draw(
+        cr,
+        "icon",
+        None,
+        lambda ctx: renderer._draw_icon(ctx, _CORNER_ICON_X, _CORNER_ICON_Y, _CORNER_ICON_SIZE),
+        w,
+        h,
+    )
+
+
+def _draw_kept_corner_help(renderer: Any, cr: Any, sections: HelpSections, panel_w: float, w: int, h: int) -> None:
+    key = (tuple((title, tuple(lines)) for title, lines in sections), panel_w)
+    renderer._panel_cache.draw(cr, "help", key, lambda ctx: _draw_corner_help(renderer, ctx, sections, panel_w), w, h)
+
+
 def draw_menu_help(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
     """The menus' one key list, in the HUD help's corner, while any menu screen is open."""
-    renderer._draw_icon(cr, _CORNER_ICON_X, _CORNER_ICON_Y, _CORNER_ICON_SIZE)
+    _draw_corner_icon(renderer, cr, w, h)
     # Clear of the centred menu, which starts nearer the edge on a narrower window.
     menu_x = (w - panel_width(w)) / 2.0
     panel_w = min(_MENU_HELP_W, menu_x - 10.0 - _MENU_HELP_GAP)
-    _draw_corner_help(renderer, cr, _help_sections_for(renderer, "menus", state), panel_w)
+    _draw_kept_corner_help(renderer, cr, _help_sections_for(renderer, "menus", state), panel_w, w, h)
 
 
 def draw_hud(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
     # Controller badges render per-marker card; unbound pads in Settings menu.
-    draw_bottom_left_info_panel(renderer, cr, state, w, h)
+    panels = renderer._panel_cache
+    info_key = (tuple(build_info_panel_rows(state)), info_panel_in_error(state))
+    panels.draw(cr, "info", info_key, lambda ctx: draw_bottom_left_info_panel(renderer, ctx, state, w, h), w, h)
 
     icon_size = _CORNER_ICON_SIZE
     icon_x, icon_y = _CORNER_ICON_X, _CORNER_ICON_Y
-    renderer._draw_icon(cr, icon_x, icon_y, icon_size)
+    _draw_corner_icon(renderer, cr, w, h)
 
     if state.show_hud_help:
-        _draw_corner_help(renderer, cr, _help_sections_for(renderer, "normal", state), max(160.0, min(220.0, w - 20.0)))
+        sections = _help_sections_for(renderer, "normal", state)
+        _draw_kept_corner_help(renderer, cr, sections, max(160.0, min(220.0, w - 20.0)), w, h)
     else:
         renderer._set_ui_font(cr, 9)
         cr.set_source_rgba(*COLOR_TEXT_MUTED)
@@ -1186,7 +1206,8 @@ def draw_hud(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> Non
             cr.move_to(icon_x + icon_size + 4.0, icon_y + icon_size * 0.7)
             cr.show_text(hint)
 
-    draw_system_stats(renderer, cr, state, w)
+    stats_text = build_system_stats_text(state.cpu_percent, state.ram_percent, state.temperature)
+    panels.draw(cr, "stats", stats_text, lambda ctx: draw_system_stats(renderer, ctx, state, w), w, h)
 
     # card_h 67 (was 64): the speed number (top-anchored at y+47) and the
     # bottom-anchored speed bar (y + h - 14) were only ~3px apart; the extra
@@ -1234,6 +1255,11 @@ def build_info_panel_rows(state: OverlayState, *, source_max_len: int = 38) -> l
     return rows
 
 
+def info_panel_in_error(state: OverlayState) -> bool:
+    """The info panel turns red: a Settings banner, a receiver error, a video failure or an output down."""
+    return bool(state.settings_menu_banner or state.error_message or state.video_failure_text or state.network_alerts)
+
+
 def draw_bottom_left_info_panel(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
     rows = build_info_panel_rows(state)
 
@@ -1245,8 +1271,9 @@ def draw_bottom_left_info_panel(renderer: Any, cr: Any, state: OverlayState, w: 
     # name, and the fader stack above reserves this same height.
     panel_h = info_panel_height(len(rows))
 
-    # Memoize layout + truncated values so unchanged panel skips measurement.
-    cache_key = (tuple(rows), w, h)
+    # Memoize layout + truncated values so unchanged panel skips measurement;
+    # hinted text measures differently at another device scale or font options.
+    cache_key = (tuple(rows), w, h, cr.get_target().get_device_scale(), target_font_options(cr))
     cached = renderer._info_panel_cache
     if cached is not None and cached[0] == cache_key:
         layout, rows = cached[1]
@@ -1279,10 +1306,7 @@ def draw_bottom_left_info_panel(renderer: Any, cr: Any, state: OverlayState, w: 
     # condition for the Settings menu's red-bordered error box. An output
     # that is down or failing turns it red too; the sentence is a top-right
     # status row.
-    in_error = bool(
-        state.settings_menu_banner or state.error_message or state.video_failure_text or state.network_alerts
-    )
-    if in_error:
+    if info_panel_in_error(state):
         draw_level_box(cr, "error", panel_x, panel_y, panel_w, panel_h, radius=PANEL_RADIUS, line_width=1.6)
     else:
         draw_panel_background(renderer, cr, panel_x, panel_y, panel_w, panel_h, radius=PANEL_RADIUS)
@@ -1351,6 +1375,8 @@ def _draw_offline_mark(cr: Any, cx: float, cy: float, r: float) -> None:
 
 _CARD_BORDER_W = 3.5
 _CARD_BORDER_W_SELECTED = 4.0
+# Past the card's edge: half the widest border (the 5 px Identify flash) plus antialiasing.
+_CARD_GROUP_MARGIN = 4.0
 
 
 def draw_marker_card(
@@ -1369,6 +1395,12 @@ def draw_marker_card(
     # Viewer-only markers: use Cairo group for uniform alpha; skip grouping for controlled markers (hot path).
     use_group = not t.is_controlled
     if use_group:
+        # A group is the size of the clip: unclipped, it is the whole canvas.
+        cr.save()
+        cr.rectangle(
+            x - _CARD_GROUP_MARGIN, y - _CARD_GROUP_MARGIN, w + 2 * _CARD_GROUP_MARGIN, h + 2 * _CARD_GROUP_MARGIN
+        )
+        cr.clip()
         cr.push_group()
     try:
         # Solid background; border uses marker color for per-card identity. A
@@ -1521,6 +1553,7 @@ def draw_marker_card(
         if use_group:
             cr.pop_group_to_source()
             cr.paint_with_alpha(0.6)
+            cr.restore()
 
 
 def draw_virtual_faders(

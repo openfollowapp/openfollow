@@ -279,22 +279,15 @@ class TestMidiSectionRender:
 class TestShowLive:
     """The fader strips poll the station only after Show live, and only for a while."""
 
-    @pytest.mark.parametrize(
-        ("route", "on_load"),
-        [
-            # The virtual strips render each fader's default, so they fetch the live values once.
-            ("/section/midi/faders/values", "load, "),
-            # The marker strips render with the live values already.
-            ("/section/midi/marker-faders/values", ""),
-        ],
-    )
-    def test_a_value_poll_runs_only_while_show_live_does(self, live_server, route: str, on_load: str) -> None:
+    # Both kinds of strip render with the live values already, so neither fetches them on load.
+    @pytest.mark.parametrize("route", ["/section/midi/faders/values", "/section/midi/marker-faders/values"])
+    def test_a_value_poll_runs_only_while_show_live_does(self, live_server, route: str) -> None:
         _, base, _ = live_server
         _, body = _get(base, "/section/midi")
         poll = re.search(r'<div hx-get="' + re.escape(route) + r'"\s+hx-trigger="([^"]*)"', body)
         assert poll, route
         live = "[midiLiveActive() && pollShown(this)]"
-        assert poll.group(1) == on_load + f"every 500ms {live}, midi-live from:body, poll-shown{live} from:body"
+        assert poll.group(1) == f"every 500ms {live}, midi-live from:body, poll-shown{live} from:body"
 
     def test_no_poll_runs_on_its_own_schedule(self, live_server) -> None:
         _, base, _ = live_server
@@ -1152,6 +1145,29 @@ class TestMarkerFaderSectionRender:
             assert 'data-marker-id="3"' in body
             # Initial fill reflects the seed value (25%).
             assert 'style="height:25%"' in body
+
+
+class TestVirtualFadersFirstPaint:
+    def test_the_strips_render_the_live_values(self, tmp_path, monkeypatch) -> None:
+        """No fetch on load: the page arrives with each fader where it is, the default only for one unreported."""
+        with _live_server_with_midi_providers(
+            tmp_path,
+            monkeypatch,
+            fader_values=[
+                {"index": 1, "name": "Master", "value": 0.42, "picked_up": True, "show_on_display": True},
+                {"index": 2, "name": "Aux", "value": 0.17, "picked_up": False, "show_on_display": False},
+            ],
+        ) as (_, base, _cfg):
+            status, body = _get(base, "/section/midi")
+        assert status == 200
+        strip = {
+            n: re.search(rf'id="midi-fader-strip-value-{n}"[^>]*>(.*?)</span>\s*</button>', body, re.S)
+            for n in (1, 2, 3)
+        }
+        assert strip[1] and strip[1].group(1) == "0.42"
+        assert strip[2] and strip[2].group(1).startswith("0.17") and "not picked up" in strip[2].group(1)
+        assert strip[3] and strip[3].group(1) == "0.00"
+        assert re.search(r'id="midi-fader-strip-fill-1"\s+class="midi-fader-strip-fill"\s+style="height:42%"', body)
 
 
 class TestMarkerFaderValuesPoll:

@@ -6158,6 +6158,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # Per-controlled-marker fader snapshot so the MIDI page's
             # read-only Marker Faders strips render populated at first paint.
             marker_fader_values=server.marker_fader_values(),
+            fader_values=server.midi_fader_values(),
             # Fader / device-alias names so the OSC bindings partial pre-fills
             # its dropdowns at first render.
             **_osc_binding_form_sources(config),
@@ -7701,6 +7702,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             midi_patches=_midi_patches_for_form(cfg),
             valid_fader_midi_types=VALID_FADER_MIDI_TYPES,
             marker_fader_values=server.marker_fader_values(),
+            fader_values=server.midi_fader_values(),
         )
 
     @app.get("/section/midi")

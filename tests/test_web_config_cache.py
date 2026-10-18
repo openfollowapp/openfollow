@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -35,22 +36,34 @@ def parses(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 def config_file(tmp_path: Path) -> str:
     path = str(tmp_path / "config.toml")
     save_config(AppConfig(psn_system_name="Before"), path)
+    _age(path)
     return path
 
 
+def _cache() -> ParsedConfigCache:
+    """A cache whose clock runs an hour ahead, so every file it reads is old enough to keep."""
+    return ParsedConfigCache(now=lambda: time.time() + 3600)
+
+
+def _age(path: str, seconds: float = 10.0) -> None:
+    """Date the file ``seconds`` back, past the window in which a parse is not kept."""
+    stat = os.stat(path)
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns - int(seconds * 1e9)))
+
+
 def test_what_it_hands_out_is_the_config_in_the_file(config_file: str) -> None:
-    assert ParsedConfigCache().load(config_file) == load_config(config_file)
+    assert _cache().load(config_file) == load_config(config_file)
 
 
 def test_an_unchanged_file_is_parsed_once(config_file: str, parses: list[str]) -> None:
-    cache = ParsedConfigCache()
+    cache = _cache()
     for _ in range(3):
         cache.load(config_file)
     assert parses == [config_file]
 
 
 def test_a_save_is_seen_even_within_the_same_mtime(config_file: str, parses: list[str]) -> None:
-    cache = ParsedConfigCache()
+    cache = _cache()
     cache.load(config_file)
     before = os.stat(config_file)
     save_config(AppConfig(psn_system_name="Behind"), config_file)  # the same length as "Before"
@@ -61,7 +74,7 @@ def test_a_save_is_seen_even_within_the_same_mtime(config_file: str, parses: lis
 
 
 def test_an_edit_in_place_of_another_length_is_seen_within_the_same_mtime(config_file: str) -> None:
-    cache = ParsedConfigCache()
+    cache = _cache()
     cache.load(config_file)
     before = os.stat(config_file)
     text = Path(config_file).read_text().replace('psn_system_name = "Before"', 'psn_system_name = "Much longer"')
@@ -78,7 +91,7 @@ def test_a_read_that_failed_is_served_but_never_kept(tmp_path: Path) -> None:
     Path(str(path) + ".bak").unlink(missing_ok=True)
     good = path.read_bytes()
     before = os.stat(path)
-    cache = ParsedConfigCache()
+    cache = _cache()
     # Same inode, mtime and size: only the parse can tell the broken file apart.
     path.write_bytes(b"[" * len(good))
     os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
@@ -89,7 +102,7 @@ def test_a_read_that_failed_is_served_but_never_kept(tmp_path: Path) -> None:
 
 
 def test_an_edit_in_place_is_seen(config_file: str) -> None:
-    cache = ParsedConfigCache()
+    cache = _cache()
     cache.load(config_file)
     text = Path(config_file).read_text().replace('psn_system_name = "Before"', 'psn_system_name = "Edited"')
     with open(config_file, "w") as handle:  # same file, same inode
@@ -100,7 +113,7 @@ def test_an_edit_in_place_is_seen(config_file: str) -> None:
 
 
 def test_each_caller_gets_its_own_copy(config_file: str) -> None:
-    cache = ParsedConfigCache()
+    cache = _cache()
     first = cache.load(config_file)
     first.psn_system_name = "Changed in one request"
     first.trigger_zones.zones.append(None)  # type: ignore[arg-type]
@@ -112,7 +125,7 @@ def test_each_caller_gets_its_own_copy(config_file: str) -> None:
 
 def test_a_missing_file_is_read_through_every_time(tmp_path: Path, parses: list[str]) -> None:
     missing = str(tmp_path / "absent.toml")
-    cache = ParsedConfigCache()
+    cache = _cache()
     assert cache.load(missing) == load_config(missing)
     cache.load(missing)
     assert parses == [missing, missing]
@@ -130,7 +143,7 @@ def test_a_file_that_went_away_while_it_was_read_is_never_kept(tmp_path: Path, m
             path.rename(aside)  # between the stat and the read; a strict read of no file is defaults
         return real(p, **kwargs)
 
-    cache = ParsedConfigCache()
+    cache = _cache()
     monkeypatch.setattr(cache_module, "load_config", _vanishing)
     cache.load(str(path))
     monkeypatch.setattr(cache_module, "load_config", real)
@@ -141,7 +154,7 @@ def test_a_file_that_went_away_while_it_was_read_is_never_kept(tmp_path: Path, m
 def test_a_file_on_another_device_with_the_same_inode_is_read_again(
     config_file: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cache = ParsedConfigCache()
+    cache = _cache()
     cache.load(config_file)
     before = os.stat(config_file)
     text = Path(config_file).read_text().replace('psn_system_name = "Before"', 'psn_system_name = "Moved!"')
@@ -168,7 +181,7 @@ def test_a_file_that_broke_is_served_as_it_last_read_whole(tmp_path: Path, broke
     path = tmp_path / "config.toml"
     save_config(AppConfig(psn_system_name="Backup"), str(path))
     save_config(AppConfig(psn_system_name="Latest", web_pin="4711"), str(path))
-    cache = ParsedConfigCache()
+    cache = _cache()
     cache.load(str(path))
     if broken is None:
         path.unlink()
@@ -186,7 +199,7 @@ def test_a_file_broken_since_the_first_read_is_served_from_the_backup(tmp_path: 
     save_config(AppConfig(psn_system_name="Latest"), str(path))
     path.write_bytes(b"")
 
-    assert ParsedConfigCache().load(str(path)).psn_system_name == "Backup"
+    assert _cache().load(str(path)).psn_system_name == "Backup"
 
 
 def test_a_backup_that_is_not_utf8_is_no_backup(tmp_path: Path) -> None:
@@ -194,7 +207,7 @@ def test_a_backup_that_is_not_utf8_is_no_backup(tmp_path: Path) -> None:
     path.write_bytes(b"")
     Path(str(path) + ".bak").write_bytes(b'psn_system_name = "\xff\xfe"\n')
 
-    assert ParsedConfigCache().load(str(path)) == AppConfig()
+    assert _cache().load(str(path)) == AppConfig()
 
 
 @pytest.mark.parametrize("backup", [None, b"grid = 5\n"], ids=["no-backup", "backup-no-config"])
@@ -204,7 +217,7 @@ def test_a_file_that_is_no_config_before_any_whole_read_is_served_without_raisin
     if backup is not None:
         Path(str(path) + ".bak").write_bytes(backup)
 
-    assert ParsedConfigCache().load(str(path)) == AppConfig()
+    assert _cache().load(str(path)) == AppConfig()
 
 
 def test_an_older_parse_finishing_last_never_replaces_a_newer_one(
@@ -213,7 +226,7 @@ def test_an_older_parse_finishing_last_never_replaces_a_newer_one(
     """The last whole read is what a broken file is served as: it must be the newest, not the slowest."""
     path = tmp_path / "config.toml"
     save_config(AppConfig(psn_system_name="Older", web_pin="1111"), str(path))
-    cache = ParsedConfigCache()
+    cache = _cache()
     real_key = cache_module._key
     calls: list[int] = []
 
@@ -231,3 +244,39 @@ def test_an_older_parse_finishing_last_never_replaces_a_newer_one(
     path.write_bytes(b"")
 
     assert cache.load(str(path)).web_pin == "2222"
+
+
+def test_a_file_younger_than_a_second_is_parsed_again(config_file: str, parses: list[str]) -> None:
+    """An edit in place within one mtime tick, of the same length, would not show in the key."""
+    written = os.stat(config_file).st_mtime_ns / 1e9
+    clock = {"now": written + 0.5}
+    cache = ParsedConfigCache(now=lambda: clock["now"])
+    cache.load(config_file)
+    cache.load(config_file)
+    assert len(parses) == 2
+    clock["now"] = written + 1.5
+    cache.load(config_file)
+    cache.load(config_file)
+    assert len(parses) == 3
+
+
+@pytest.mark.parametrize(
+    ("otp", "kept"),
+    [
+        ('[otp_output]\nsource_ip = "192.0.2.10"\n', False),
+        ('[otp_output]\nsource_ip = "192.0.2.10"\nsource_iface = "eth0"\n', True),
+        ('[otp_output]\nsource_iface = "eth0"\n', True),
+    ],
+    ids=["legacy-ip", "ip-and-iface", "iface"],
+)
+def test_a_legacy_otp_address_is_resolved_again_on_each_read(
+    tmp_path: Path, parses: list[str], otp: str, kept: bool
+) -> None:
+    """The parse resolves it against live interfaces, which may get their address only later."""
+    path = tmp_path / "config.toml"
+    path.write_text(otp)
+    _age(str(path))
+    cache = ParsedConfigCache()
+    cache.load(str(path))
+    cache.load(str(path))
+    assert len(parses) == (1 if kept else 2)

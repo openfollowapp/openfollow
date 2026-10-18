@@ -32,7 +32,6 @@ The table at the end of **Advanced Settings** lists what this station uses: one 
 - **PSN input** – receiving other stations' markers. Off, they are neither shown nor counted by zones. Nothing is hidden.
 - **Person detection** – the Person Detection tab. Off, detection does not run.
 - **RTTrPM output** – the RTTrPM Output section and its Interface Assignment row. Off, nothing is sent.
-- **Paths** – the Paths and Path Editor sections, the Pathfinder and Toggle Paths bindings and OSC path commands. Off, every marker on a path is let go; each path keeps its Active setting.
 - **Ground grid** – the Ground Grid section. Off, it is neither drawn nor drops markers onto its height.
 - **Calibration points** – the Camera tab's calibration points and the Setup Wizard's Advanced section in Corner Pinning. Off, they are only hidden: the saved points still count.
 - **Touch remote** – the Touch Remote section and its launcher. Off, every remote lets go of its marker.

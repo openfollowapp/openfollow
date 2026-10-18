@@ -8158,12 +8158,12 @@ class TestUiConfig:
         ],
     )
     def test_show_experimental_features_migrates_on_load(self, temp_config_path, ui_toml, expected) -> None:  # noqa: ANN001
-        from openfollow.configuration import DEFAULT_SHOWN_FEATURES, FEATURE_KEYS, load_config, save_config
+        from openfollow.configuration import DEFAULT_SHOWN_FEATURES, OFFERED_FEATURES, load_config, save_config
 
         temp_config_path.write_text("[ui]\n" + ui_toml)
         loaded = load_config(str(temp_config_path))
         want = (
-            {"all": list(FEATURE_KEYS), "default": list(DEFAULT_SHOWN_FEATURES)}.get(expected)
+            {"all": list(OFFERED_FEATURES), "default": list(DEFAULT_SHOWN_FEATURES)}.get(expected)
             if isinstance(expected, str)
             else expected
         )
@@ -8739,6 +8739,14 @@ class TestPathsHotReload:
         apply_runtime_config_changes(app, self._config(paths_on=False))
         assert not app._paths.enabled
         assert not app._paths.is_locked(1)
+
+    def test_switching_paths_off_and_on_keeps_each_path_active(self) -> None:
+        app = self._app()
+        apply_runtime_config_changes(app, self._config(paths_on=True))
+        apply_runtime_config_changes(app, self._config(paths_on=False))
+        assert [(p.name, p.active) for p in app._config.paths.paths] == [("cross", True)]
+        apply_runtime_config_changes(app, self._config(paths_on=True))
+        assert app._paths.lock_onto(1, "cross", (0.5, 0.5, 0.0))
 
     def test_an_unrelated_change_keeps_the_locks(self) -> None:
         app = self._app()

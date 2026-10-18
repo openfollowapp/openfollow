@@ -61,6 +61,7 @@ from openfollow.runtime.overlay_layout import (
     virtual_fader_card_y,
 )
 from openfollow.runtime.overlay_links import LINKS, LinkCode, draw_link_qr
+from openfollow.runtime.overlay_picture import target_font_options
 from openfollow.runtime.overlay_state import (
     MarkerOverlayData,
     OverlayState,
@@ -1270,8 +1271,9 @@ def draw_bottom_left_info_panel(renderer: Any, cr: Any, state: OverlayState, w: 
     # name, and the fader stack above reserves this same height.
     panel_h = info_panel_height(len(rows))
 
-    # Memoize layout + truncated values so unchanged panel skips measurement.
-    cache_key = (tuple(rows), w, h)
+    # Memoize layout + truncated values so unchanged panel skips measurement;
+    # hinted text measures differently at another device scale or font options.
+    cache_key = (tuple(rows), w, h, cr.get_target().get_device_scale(), target_font_options(cr))
     cached = renderer._info_panel_cache
     if cached is not None and cached[0] == cache_key:
         layout, rows = cached[1]

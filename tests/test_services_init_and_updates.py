@@ -939,6 +939,22 @@ class TestInitPsnReceiver:
         assert recv.kwargs["source_ip"] == "10.0.0.1"
         assert recv.kwargs["source_iface"] == "eth0"
 
+    def test_the_receiver_knows_this_station_s_own_output_from_the_current_server(
+        self,
+        services: AppRuntimeServices,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(services_module, "PsnReceiver", _FakePsnReceiver)
+        services._app._server = None
+        services.init_psn_receiver()
+        own_source = services._app._psn_receiver.kwargs["own_source"]
+        assert own_source() is None
+        # Read at each packet, so a server rebuilt for recovery or a reload is followed.
+        services._app._server = SimpleNamespace(source_address=lambda: ("192.0.2.10", 50000))
+        assert own_source() == ("192.0.2.10", 50000)
+        services._app._server = SimpleNamespace(source_address=lambda: ("192.0.2.10", 50002))
+        assert own_source() == ("192.0.2.10", 50002)
+
 
 class _GateReceiver:
     """A receiver that records the PSN input gate the way ``PsnReceiver`` applies it."""

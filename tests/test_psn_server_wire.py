@@ -67,6 +67,9 @@ class _FakeMcastSocket:
         self.closed = False
         _FakeMcastSocket.instances.append(self)
 
+    def getsockname(self) -> tuple[str, int]:
+        return ("192.0.2.10", 50000)
+
     def sendto(self, data: bytes, dest: tuple[str, int]) -> None:
         self.sendto_calls.append((data, dest))
         if _FakeMcastSocket.sendto_raises is not None:
@@ -836,3 +839,33 @@ class TestThreadGenerations:
         retry = next(t for t in _DummyThread.instances if t.name == "PSN-SocketRetry")
         assert retry.args == (srv._stop_event,)
         srv.stop()
+
+
+# --------------------------------------------------------------------------- #
+# source_address – what this server's packets carry when they loop back
+# --------------------------------------------------------------------------- #
+
+
+class TestSourceAddress:
+    def _opened(self) -> PsnServer:
+        srv = PsnServer(source_ip="10.0.0.5", mcast_ip="236.10.10.10")
+        srv._exit_stack = contextlib.ExitStack()
+        assert srv._try_open_multicast_socket_once(attempt=1) is True
+        return srv
+
+    def test_an_open_multicast_socket_names_its_address_and_port(self) -> None:
+        assert self._opened().source_address() == ("192.0.2.10", 50000)
+
+    def test_stop_forgets_it(self) -> None:
+        srv = self._opened()
+        srv.stop()
+        assert srv.source_address() is None
+
+    def test_a_socket_torn_down_after_a_send_error_forgets_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(server_module.threading, "Thread", _DummyThread)
+        srv = self._opened()
+        srv._handle_send_error(OSError(errno.ENETUNREACH, "network down"))
+        assert srv.source_address() is None
+
+    def test_unicast_has_none(self) -> None:
+        assert PsnServer(mcast_ip=None).source_address() is None

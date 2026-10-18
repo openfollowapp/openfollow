@@ -93,6 +93,8 @@ class PsnServer:
         self._data_frame_id: int = 0
         self._info_frame_id: int = 0
         self._socket: multicast_expert.McastTxSocket | socket.socket | None = None
+        # The multicast socket's (address, port): what this server's own packets carry when they loop back.
+        self._source_address: tuple[str, int] | None = None
         self._exit_stack: contextlib.ExitStack = contextlib.ExitStack()
         self._data_thread: threading.Thread | None = None
         self._info_thread: threading.Thread | None = None
@@ -163,6 +165,10 @@ class PsnServer:
             return None
         return self._source_ip
 
+    def source_address(self) -> tuple[str, int] | None:
+        """The (address, port) this server's multicast packets come from, ``None`` without a multicast socket."""
+        return self._source_address
+
     def stop(self) -> None:
         """Signal threads to stop, wait for them, then close the socket."""
         self._stop_event.set()
@@ -191,6 +197,7 @@ class PsnServer:
         # lock to avoid stalling a send loop on the FD close.
         with self._lock:
             self._socket = None
+            self._source_address = None
             stack = self._exit_stack
         stack.close()
 
@@ -289,6 +296,7 @@ class PsnServer:
         with self._lock:
             if not self._resolve_stop(stop_event).is_set():
                 self._socket = opened
+                self._source_address = opened.getsockname()[:2]
                 self._exit_stack.push(staging.pop_all())
                 return True
             stale = staging.pop_all()
@@ -355,6 +363,7 @@ class PsnServer:
             # Tear down broken socket before spawning recovery thread.
             old_stack = self._exit_stack
             self._socket = None
+            self._source_address = None
             self._exit_stack = contextlib.ExitStack()
             self._socket_thread = threading.Thread(
                 target=self._recover_multicast_socket_background,

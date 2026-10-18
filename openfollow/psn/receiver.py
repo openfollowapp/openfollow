@@ -35,7 +35,15 @@ class _RobustReceiver(pypsn.Receiver):  # type: ignore[misc]
     from the main loop returns at once.
     """
 
-    def __init__(self, callback: Callable[..., None], ip_addr: str, mcast_port: int, iface: str = "") -> None:
+    def __init__(
+        self,
+        callback: Callable[..., None],
+        ip_addr: str,
+        mcast_port: int,
+        iface: str = "",
+        own_source: Callable[[], tuple[str, int] | None] = lambda: None,
+    ) -> None:
+        self._own_source = own_source
         if iface:
             # pypsn joins its group by address; a pinned interface is joined by index.
             threading.Thread.__init__(self)
@@ -101,6 +109,9 @@ class _RobustReceiver(pypsn.Receiver):  # type: ignore[misc]
             except Exception:
                 logger.debug("PSN recv unexpected error", exc_info=True)
                 continue
+            # This station's own output, looped back: dropped before it is decoded.
+            if addr[:2] == self._own_source():
+                continue
 
             try:
                 psn_data = pypsn.parse_psn_packet(data)
@@ -159,8 +170,11 @@ class PsnReceiver:
         source_iface: str = "",
         *,
         enabled: bool = True,
+        own_source: Callable[[], tuple[str, int] | None] = lambda: None,
     ) -> None:
         self._port = port
+        # Where this station's own PSN output comes from, read per packet.
+        self._own_source = own_source
         self._enabled = enabled
         # Strip whitespace; empty/whitespace-only → listen on all interfaces.
         self._source_ip = source_ip.strip()
@@ -206,6 +220,7 @@ class PsnReceiver:
                 ip_addr=self._source_ip or "0.0.0.0",
                 mcast_port=self._port,
                 iface=self._source_iface,
+                own_source=self._own_source,
             )
         except OSError as exc:
             logger.error(

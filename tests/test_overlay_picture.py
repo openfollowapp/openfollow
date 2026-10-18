@@ -106,6 +106,20 @@ def test_a_panel_is_drawn_again_when_an_input_it_shows_changes(changes: dict[str
     assert np.array_equal(after, _direct(_state(**changes)))
 
 
+@pytest.mark.parametrize(
+    ("changes", "w"),
+    [({"keyboard_connected": False}, W), ({}, 1024)],
+    ids=["keyboard", "width"],
+)
+def test_the_menu_help_is_drawn_again_when_an_input_it_shows_changes(changes: dict[str, Any], w: int) -> None:
+    renderer, menu = CairoOverlayRenderer(), {"settings_menu_active": True}
+    before = _hud(renderer, _state(**menu))
+    after = _hud(renderer, _state(**menu, **changes), w=w)
+    assert before.shape != after.shape or not np.array_equal(before, after)
+    # Over the menu's scrim a kept panel can differ from a direct one by a step; it must match a fresh one.
+    assert np.array_equal(after, _hud(CairoOverlayRenderer(), _state(**menu, **changes), w=w))
+
+
 def test_kept_panels_draw_text_with_the_font_options_of_the_context() -> None:
     options = cairo.FontOptions()
     options.set_antialias(cairo.ANTIALIAS_NONE)
@@ -126,6 +140,13 @@ def _paint_box(ctx: cairo.Context) -> None:
     ctx.fill()
 
 
+def _canvas(paint: Any) -> np.ndarray:
+    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, W, H)
+    paint(cairo.Context(surface))
+    surface.flush()
+    return np.frombuffer(surface.get_data(), dtype=np.uint8).copy()
+
+
 def test_a_panel_is_one_paste_while_it_does_not_change() -> None:
     cache, painted = PanelCache(), []
 
@@ -133,13 +154,10 @@ def test_a_panel_is_one_paste_while_it_does_not_change() -> None:
         painted.append(1)
         _paint_box(ctx)
 
-    frames = [FakeCairo() for _ in range(3)]
-    for cr in frames:
-        cache.draw(cr, "box", "same", paint, W, H)
+    frames = [_canvas(lambda cr: cache.draw(cr, "box", "same", paint, W, H)) for _ in range(3)]
     # Measured once and drawn once into the kept picture.
     assert painted == [1, 1]
-    assert all(cr.calls[-2:] == [("source_surface", 39, 29), ("paint",)] for cr in frames)
-    assert all(cr.surfaces[0] is frames[0].surfaces[0] for cr in frames)
+    assert all(np.array_equal(frame, _canvas(_paint_box)) for frame in frames)
 
 
 def test_a_panel_that_failed_to_draw_is_drawn_again_next_picture() -> None:

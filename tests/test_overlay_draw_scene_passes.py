@@ -1480,6 +1480,20 @@ class TestGridCache:
         assert np.array_equal(shown, fresh)
         assert shown.shape != before.shape or not np.array_equal(shown, before)
 
+    def test_a_redraw_holds_no_second_copy_of_the_canvas(self) -> None:
+        import tracemalloc
+
+        from openfollow.runtime.overlay_draw_scene import GridCache
+
+        tracemalloc.start()
+        try:
+            self._draw(GridCache(), self._state())
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        # Finding the inked tiles must not cost another canvas-sized buffer.
+        assert peak < 1920 * 1080, peak
+
     @pytest.mark.parametrize(
         ("size", "scale", "kept"),
         [((1920, 1080), 1.0, True), ((1280, 1080), 1.0, False), ((1920, 720), 1.0, False), ((960, 540), 2.0, False)],

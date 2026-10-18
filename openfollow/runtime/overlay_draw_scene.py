@@ -293,9 +293,11 @@ def _inked_tiles(picture: cairo.ImageSurface) -> list[tuple[float, float, float,
         (ph, picture.get_stride() // 4), dtype=np.uint32, buffer=picture.get_data()
     )[:, :pw]
     rows, cols = -(-ph // _TILE), -(-pw // _TILE)
-    padded = np.zeros((rows * _TILE, cols * _TILE), dtype=np.uint32)
-    padded[:ph, :pw] = pixels
-    inked: npt.NDArray[np.bool_] = np.any(padded.reshape(rows, _TILE, cols, _TILE), axis=(1, 3))
+    # One band of rows at a time: a padded copy of the canvas costs more than the paste it saves.
+    bands = np.zeros((rows, cols * _TILE), dtype=np.bool_)
+    for r in range(rows):
+        bands[r, :pw] = pixels[r * _TILE : (r + 1) * _TILE].any(axis=0)
+    inked: npt.NDArray[np.bool_] = np.any(bands.reshape(rows, cols, _TILE), axis=2)
     sx, sy = picture.get_device_scale()
     tiles = []
     for r, row in enumerate(inked.tolist()):

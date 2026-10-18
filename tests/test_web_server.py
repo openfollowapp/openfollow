@@ -9190,13 +9190,11 @@ def test_requests_share_one_parse_of_an_unchanged_config(live_server, monkeypatc
 
     server, base = live_server
     save_config(AppConfig(), server.config_path)
-    # Older than the second in which an in-place edit could still follow unseen.
-    stat = os.stat(server.config_path)
-    os.utime(server.config_path, ns=(stat.st_atime_ns, stat.st_mtime_ns - 10_000_000_000))
     parses: list[str] = []
     real = cache_module.load_config
     monkeypatch.setattr(cache_module, "load_config", lambda path, **kw: parses.append(path) or real(path, **kw))
-    monkeypatch.setattr(routes_module, "_CONFIG_CACHE", ParsedConfigCache())
+    # A clock in the year 2100, long past the file's mtime, so its parse may be kept.
+    monkeypatch.setattr(routes_module, "_CONFIG_CACHE", ParsedConfigCache(now=lambda: 4_102_444_800.0))
     for _ in range(3):
         status, _body = _get(base, "/api/info")
         assert status == 200

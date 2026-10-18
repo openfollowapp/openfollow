@@ -108,8 +108,8 @@
  % # Virtual Faders – visual mixer-style strip row + detail panel.
  % # Each strip is a vertical fader graphic the operator can click
  % # to load that fader's editable config into the detail panel
- % # below. Live values arrive via HTMX out-of-band swaps, once on
- % # load and while "Show live" runs: the strip's fill bar + handle + numeric
+ % # below. The strips render the live values; while "Show live"
+ % # runs, HTMX out-of-band swaps refresh them: the strip's fill bar + handle + numeric
  % # value are id-keyed so the poll response targets each one
  % # without re-rendering the click handler / selection state.
  % # ----------------------------------------------------------------

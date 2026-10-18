@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import os
-import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -36,19 +35,12 @@ def parses(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 def config_file(tmp_path: Path) -> str:
     path = str(tmp_path / "config.toml")
     save_config(AppConfig(psn_system_name="Before"), path)
-    _age(path)
     return path
 
 
 def _cache() -> ParsedConfigCache:
-    """A cache whose clock runs an hour ahead, so every file it reads is old enough to keep."""
-    return ParsedConfigCache(now=lambda: time.time() + 3600)
-
-
-def _age(path: str, seconds: float = 10.0) -> None:
-    """Date the file ``seconds`` back, past the window in which a parse is not kept."""
-    stat = os.stat(path)
-    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns - int(seconds * 1e9)))
+    """A cache whose clock reads the year 2100, so every file it reads is old enough to keep."""
+    return ParsedConfigCache(now=lambda: 4_102_444_800.0)
 
 
 def test_what_it_hands_out_is_the_config_in_the_file(config_file: str) -> None:
@@ -260,23 +252,52 @@ def test_a_file_younger_than_a_second_is_parsed_again(config_file: str, parses: 
     assert len(parses) == 3
 
 
+def test_a_clock_set_behind_the_file_still_keeps_the_parse(config_file: str, parses: list[str]) -> None:
+    """A station that boots with its clock behind the last save, as a Pi with no RTC does after a power cut."""
+    written = os.stat(config_file).st_mtime_ns / 1e9
+    cache = ParsedConfigCache(now=lambda: written - 3600)
+    for _ in range(3):
+        cache.load(config_file)
+    assert len(parses) == 1
+
+
+def test_a_file_that_is_no_text_by_the_second_look_is_served_as_parsed(
+    config_file: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = cache_module.load_config
+
+    def _then_garbled(p: str, **kwargs: Any) -> AppConfig:
+        parsed = real(p, **kwargs)
+        before = os.stat(p)
+        with open(p, "r+b") as handle:  # same inode, size and mtime: the key still holds
+            handle.write(b"\xff" * before.st_size)
+        os.utime(p, ns=(before.st_atime_ns, before.st_mtime_ns))
+        return parsed
+
+    monkeypatch.setattr(cache_module, "load_config", _then_garbled)
+    assert _cache().load(config_file).psn_system_name == "Before"
+
+
 @pytest.mark.parametrize(
     ("otp", "kept"),
     [
         ('[otp_output]\nsource_ip = "192.0.2.10"\n', False),
         ('[otp_output]\nsource_ip = "192.0.2.10"\nsource_iface = "eth0"\n', True),
         ('[otp_output]\nsource_iface = "eth0"\n', True),
+        ('[otp_output]\nsource_ip = " "\n', True),
+        ("[otp_output]\nsource_ip = 5\n", True),
+        ('psn_system_name = "Elsewhere"\n', True),
     ],
-    ids=["legacy-ip", "ip-and-iface", "iface"],
+    ids=["ip", "ip-and-iface", "iface", "blank-ip", "ip-not-text", "no-otp"],
 )
-def test_a_legacy_otp_address_is_resolved_again_on_each_read(
-    tmp_path: Path, parses: list[str], otp: str, kept: bool
+def test_an_otp_address_is_resolved_again_on_each_read(
+    tmp_path: Path, parses: list[str], monkeypatch: pytest.MonkeyPatch, otp: str, kept: bool
 ) -> None:
     """The parse resolves it against live interfaces, which may get their address only later."""
+    monkeypatch.setattr("openfollow.net_utils.get_iface_for_ip", lambda ip: "eth0")
     path = tmp_path / "config.toml"
     path.write_text(otp)
-    _age(str(path))
-    cache = ParsedConfigCache()
+    cache = _cache()
     cache.load(str(path))
     cache.load(str(path))
     assert len(parses) == (1 if kept else 2)

@@ -23,10 +23,8 @@ class ParsedConfigCache:
     as it last read whole: the backup is a save behind, and could hand out an older PIN, or none.
     Before any whole read, it is read as ``load_config`` reads it.
 
-    A parse is not reused while the file is younger than ``_RACY_S`` (an edit in place within one
-    mtime tick would not show in the key: git's "racily clean" rule) or still holds a legacy OTP
-    ``source_ip``, which the parse resolves against interfaces that may not have their address yet;
-    it is still what a file that broke since is served as.
+    A parse is not reused while the file's mtime is within ``_RACY_S`` of the clock, nor while the
+    parse resolves an OTP ``source_ip`` against live interfaces; it still backs a file that broke.
     """
 
     def __init__(self, now: Callable[[], float] = time.time) -> None:
@@ -52,7 +50,7 @@ class ParsedConfigCache:
                 read_whole = False
             if not read_whole:
                 return self._last_whole(entry, path)
-            reusable = self._now() - key[3] / 1e9 >= _RACY_S and not _holds_legacy_otp_ip(path)
+            reusable = abs(self._now() - key[3] / 1e9) >= _RACY_S and not _resolves_otp_ip(path)
             entry = (key, pickle.dumps(parsed), reusable)
             with self._lock:
                 if self._generation == generation:
@@ -67,18 +65,21 @@ class ParsedConfigCache:
         return load_config(path)
 
 
-# Younger than this, an edit in place within one mtime tick could still follow unseen.
+# An mtime this close to the clock could still take an edit in place within the same tick, unseen.
 _RACY_S = 1.0
 
 
-def _holds_legacy_otp_ip(path: str) -> bool:
-    """Whether ``[otp_output]`` pins a ``source_ip`` with no ``source_iface``, resolved anew on each read."""
+def _resolves_otp_ip(path: str) -> bool:
+    """Whether ``load_config`` turns ``[otp_output]``'s ``source_ip`` into an interface on each read."""
     try:
         with open(path, "rb") as f:
             otp = tomllib.load(f).get("otp_output")
-    except (OSError, tomllib.TOMLDecodeError):
+    except (OSError, ValueError):
         return False
-    return isinstance(otp, dict) and "source_ip" in otp and "source_iface" not in otp
+    if not isinstance(otp, dict) or "source_iface" in otp:
+        return False
+    ip = otp.get("source_ip")
+    return isinstance(ip, str) and bool(ip.strip())
 
 
 def _key(path: str) -> tuple[str, int, int, int, int]:

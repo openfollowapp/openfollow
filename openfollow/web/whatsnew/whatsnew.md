@@ -19,7 +19,7 @@ The Operator Screen now uses the keyboard layout set in the station's system, wh
 
 ## Features replace Show experimental features
 
-The **Show experimental features** switch is now a **Features** table under **General → Station Settings → Advanced Settings**, and a change there applies on **Save**. A feature that is off is hidden and no longer runs. A station that showed experimental features starts with every feature on. On any other station, check **RTTrPM output** before the next show: it starts off, so it no longer sends, even where **Send marker positions over RTTrPM** is ticked.
+The **Show experimental features** switch is now a **Features** table under **General → Station Settings → Advanced Settings**, and a change there applies on **Save**. A feature that is off is hidden and no longer runs. On any other station, check **RTTrPM output** before the next show: it starts off, so it no longer sends, even where **Send marker positions over RTTrPM** is ticked.
 
 ## Control frame replaces Invert control direction
 

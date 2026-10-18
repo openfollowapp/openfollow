@@ -1643,15 +1643,15 @@ def test_apply_import_data_ui_section_absent_field_preserves_current() -> None:
     ],
 )
 def test_apply_import_data_migrates_an_older_station_s_experimental_flag(ui_payload, expected) -> None:  # noqa: ANN001
-    """An older station exports ``show_experimental_features``: true turns every feature on, false keeps
-    this station's list, and a ``shown_features`` beside it wins."""
-    from openfollow.configuration import FEATURE_KEYS
+    """An older station exports ``show_experimental_features``: true turns every offered feature on, false
+    keeps this station's list, and a ``shown_features`` beside it wins."""
+    from openfollow.configuration import OFFERED_FEATURES
     from openfollow.web.routes import _apply_import_data
 
     current = AppConfig()
     current.ui.shown_features = ["paths"]
     new = _apply_import_data(current, {"ui": ui_payload})
-    assert new.ui.shown_features == (list(FEATURE_KEYS) if expected == "all" else expected)
+    assert new.ui.shown_features == (list(OFFERED_FEATURES) if expected == "all" else expected)
 
 
 def test_apply_import_data_non_dict_ui_section_preserves_current() -> None:

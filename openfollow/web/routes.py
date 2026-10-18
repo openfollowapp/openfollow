@@ -55,7 +55,6 @@ from openfollow.configuration import (
     CALIBRATION_CORNERS,
     CONTROLLER_BINDING_FIELDS,
     DEFAULT_UPDATE_SERVICE_NAME,
-    FEATURE_KEYS,
     GROUND_GRID_MAX_VERTICES,
     MARKER_TOKEN_ALL,
     MAX_CALIBRATION_POINTS,
@@ -65,6 +64,7 @@ from openfollow.configuration import (
     MOUSE3D_BUTTON_FIELDS,
     NETWORK_MODE_SIMPLE,
     NETWORK_MODES,
+    OFFERED_FEATURES,
     PLANE_PIN_FIELDS,
     VALID_BUTTON_NAMES,
     AppConfig,
@@ -1760,9 +1760,9 @@ def _apply_section(cfg: AppConfig, section: str, data: Mapping[str, Any]) -> boo
         return True
 
     if section == "features":
-        # One bool per feature key; a key left out keeps its current state.
+        # One bool per offered feature; a key left out, or config-only, keeps its state.
         shown = set(cfg.ui.shown_features)
-        for key in FEATURE_KEYS:
+        for key in OFFERED_FEATURES:
             if key in data:
                 if _as_bool(data[key], key in shown):
                     shown.add(key)
@@ -7288,7 +7288,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # The Features boxes save with this form; unticked boxes send nothing, so the
             # marker says the list was on the page and an absent key means off.
             if "features_submitted" in form_data:
-                apply_section_data(cfg, "features", {key: key in form_data for key in FEATURE_KEYS})
+                apply_section_data(cfg, "features", {key: key in form_data for key in OFFERED_FEATURES})
             save_config(cfg, server.config_path)
 
         if feature_gated(cfg.touch_remote, cfg, "touch_remote").enabled != launcher_was:

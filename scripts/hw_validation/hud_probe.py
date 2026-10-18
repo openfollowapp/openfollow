@@ -131,12 +131,18 @@ def stats_reader(base_url: str, pin: str) -> Callable[[], dict[str, Any]]:
     return read
 
 
-def average_hud(samples: Sequence[dict[str, Any] | None]) -> dict[str, Any] | None:
-    """Numbers averaged, refresh counts added up, over the distinct windows among ``samples``."""
+def distinct_windows(samples: Sequence[dict[str, Any] | None]) -> list[dict[str, Any]]:
+    """Each window among ``samples`` once, in order; empty samples left out."""
     windows: list[dict[str, Any]] = []
     for sample in samples:
         if sample and sample not in windows:
             windows.append(sample)
+    return windows
+
+
+def average_hud(samples: Sequence[dict[str, Any] | None]) -> dict[str, Any] | None:
+    """Numbers averaged, refresh counts added up, over the distinct windows among ``samples``."""
+    windows = distinct_windows(samples)
     if not windows:
         return None
     out: dict[str, Any] = {"windows": len(windows)}
@@ -155,10 +161,14 @@ def average_hud(samples: Sequence[dict[str, Any] | None]) -> dict[str, Any] | No
     return out
 
 
-def on_time(counts: dict[str, int], refreshes: int) -> float | None:
-    """Share of entries that stayed exactly ``refreshes`` refreshes on screen."""
-    total = sum(counts.values())
-    return round(counts.get(str(refreshes), 0) / total, 3) if total else None
+def on_time(windows: Sequence[dict[str, Any]]) -> float | None:
+    """Share of pictures held exactly the pacing interval of the window they were shown in."""
+    held = total = 0
+    for window in windows:
+        counts = window.get("picture_refreshes") or {}
+        total += sum(counts.values())
+        held += counts.get(str(window.get("interval_refreshes", 1)), 0)
+    return round(held / total, 3) if total else None
 
 
 # --------------------------------------------------------------------------- #
@@ -192,7 +202,8 @@ def measure(
     proc_after = read_ticks(proc / str(pid) / "stat") or proc_before
     comp_after = read_ticks(proc / str(compositor) / "stat") if compositor else None
     # The window closed before the run counts only when none closed during it.
-    hud = average_hud([s for s in samples if s != before_run]) or average_hud([before_run])
+    windows = distinct_windows([s for s in samples if s != before_run]) or distinct_windows([before_run])
+    hud = average_hud(windows)
     render = (hud or {}).get("render_thread_id")
     result: dict[str, Any] = {
         "seconds": round(seconds, 1),
@@ -206,8 +217,7 @@ def measure(
         "hud": hud,
     }
     if hud:
-        interval = int(round(hud.get("interval_refreshes", 1)))
-        result["pictures_on_time"] = on_time(hud.get("picture_refreshes", {}), interval)
+        result["pictures_on_time"] = on_time(windows)
     return result
 
 

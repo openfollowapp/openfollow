@@ -165,9 +165,24 @@ def test_no_hud_windows_average_to_nothing() -> None:
     assert probe.average_hud([None, {}]) is None
 
 
-@pytest.mark.parametrize(("counts", "expected"), [({"2": 3, "3": 1}, 0.75), ({}, None)])
-def test_on_time_is_the_share_held_exactly_the_interval(counts: dict[str, int], expected: float | None) -> None:
-    assert probe.on_time(counts, 2) == expected
+@pytest.mark.parametrize(
+    ("windows", "expected"),
+    [
+        ([{"interval_refreshes": 2, "picture_refreshes": {"2": 3, "3": 1}}], 0.75),
+        # Each window against its own interval, not their average.
+        (
+            [
+                {"interval_refreshes": 2, "picture_refreshes": {"2": 30}},
+                {"interval_refreshes": 3, "picture_refreshes": {"3": 20}},
+            ],
+            1.0,
+        ),
+        ([{"interval_refreshes": 2, "picture_refreshes": {}}], None),
+        ([], None),
+    ],
+)
+def test_on_time_is_the_share_held_exactly_the_interval(windows: list[dict[str, Any]], expected: float | None) -> None:
+    assert probe.on_time(windows) == expected
 
 
 # --------------------------------------------------------------------------- #

@@ -39,6 +39,7 @@ import statistics
 import subprocess
 import sys
 import time
+import traceback
 from collections import defaultdict
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -389,5 +390,14 @@ def main(argv: Sequence[str] | None = None, make_worker: Callable[[Path], Any] =
     return verdict(results, args.max_slowdown)
 
 
+def run(argv: Sequence[str] | None = None) -> int:
+    """``main``, an unexpected error read as a side that could not run (2), never as a slower scene (1)."""
+    try:
+        return main(argv)
+    except Exception:
+        traceback.print_exc()
+        return 2
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run())

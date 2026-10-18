@@ -512,3 +512,20 @@ def test_a_worker_process_answers_a_round_over_its_pipes() -> None:
     assert reply["errors"] == [] and reply["dropped"] == [] and reply["split"] == {}
     assert isinstance(reply["ms"], float)
     assert worker.proc.returncode == 0
+
+
+def test_an_unexpected_error_is_a_side_that_could_not_run_not_a_slower_scene(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def boom(argv: Any = None) -> int:
+        raise ValueError("a bug in the bench")
+
+    monkeypatch.setattr(bench, "main", boom)
+    assert bench.run([]) == 2
+    assert "a bug in the bench" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("code", [0, 1, 2])
+def test_run_passes_main_s_own_answer_through(monkeypatch: pytest.MonkeyPatch, code: int) -> None:
+    monkeypatch.setattr(bench, "main", lambda argv=None: code)
+    assert bench.run([]) == code

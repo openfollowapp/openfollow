@@ -8,6 +8,7 @@ import importlib.util
 import io
 import json
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -32,10 +33,12 @@ bench = _load()
 
 
 @pytest.fixture(autouse=True)
-def _restore_import_state(monkeypatch: pytest.MonkeyPatch) -> None:
+def _restore_import_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """``main`` and ``worker`` put a checkout on ``sys.path`` and register the scenes module."""
     monkeypatch.setattr(sys, "path", list(sys.path))
-    monkeypatch.delitem(sys.modules, "_hud_scenes", raising=False)
+    sys.modules.pop("_hud_scenes", None)
+    yield
+    sys.modules.pop("_hud_scenes", None)
 
 
 class _Clock:
@@ -68,13 +71,20 @@ class _FakeWorker:
     """Answers each run with the next of ``ms``; records what it was asked."""
 
     def __init__(
-        self, name: str, ms: list[float], log: list[tuple[str, str, bool]], fail: bool = False, errors: bool = False
+        self,
+        name: str,
+        ms: list[float],
+        log: list[tuple[str, str, bool]],
+        fail: bool = False,
+        errors: bool = False,
+        dropped: list[str] | None = None,
     ) -> None:
         self.name = name
         self.ms = list(ms)
         self.log = log
         self.fail = fail
         self.errors = ["Cairo overlay draw error: boom"] if errors else []
+        self.dropped = dropped or []
         self.closed = False
 
     def run(self, scene: str, frames: int, split: bool = False) -> dict[str, Any]:
@@ -85,6 +95,7 @@ class _FakeWorker:
             "ms": self.ms.pop(0) if self.ms else 1.0,
             "split": {"markers": 0.5} if split else {},
             "errors": self.errors,
+            "dropped": self.dropped,
         }
 
     def close(self) -> None:
@@ -111,7 +122,7 @@ def test_the_split_wraps_the_passes_and_puts_them_back() -> None:
     import openfollow.runtime.overlay_draw_hud as hud
 
     original = hud.draw_system_stats
-    split = bench._Split(_Clock(0.001))
+    split = bench.Split(_Clock(0.001))
     split.install()
     try:
         assert hud.draw_system_stats is not original
@@ -120,18 +131,39 @@ def test_the_split_wraps_the_passes_and_puts_them_back() -> None:
     assert hud.draw_system_stats is original
 
 
-def test_the_split_times_a_wrapped_pass() -> None:
-    split = bench._Split(_Clock(0.001))
-    wrapped = split._wrap(lambda x: x * 2, "double")
-    assert wrapped(21) == 42
-    assert split.ms["double"] == pytest.approx(1.0)
+def test_the_split_times_a_wrapped_pass(monkeypatch: pytest.MonkeyPatch) -> None:
+    import openfollow.runtime.overlay_draw_hud as hud
+
+    monkeypatch.setattr(bench, "SPLIT_PASSES", (("openfollow.runtime.overlay_draw_hud", "draw_system_stats", "stats"),))
+    monkeypatch.setattr(hud, "draw_system_stats", lambda x: x * 2)
+    split = bench.Split(_Clock(0.001))
+    split.install()
+    try:
+        assert hud.draw_system_stats(21) == 42
+    finally:
+        split.remove()
+    assert split.ms == {"stats": pytest.approx(1.0)}
 
 
 def test_the_split_skips_a_pass_the_checkout_does_not_have(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(bench, "SPLIT_PASSES", (("openfollow.video.overlay", "NoSuchClass.draw", "gone"),))
-    split = bench._Split(_Clock(0.001))
+    import openfollow.runtime.overlay_draw_hud as hud
+
+    original = hud.draw_system_stats
+    monkeypatch.setattr(
+        bench,
+        "SPLIT_PASSES",
+        (
+            ("openfollow.video.overlay", "NoSuchClass.draw", "gone"),
+            ("openfollow.runtime.overlay_draw_hud", "draw_system_stats", "stats"),
+        ),
+    )
+    split = bench.Split(_Clock(0.001))
     split.install()
-    assert split._undo == []
+    try:
+        assert hud.draw_system_stats is not original
+    finally:
+        split.remove()
+    assert hud.draw_system_stats is original
 
 
 # --------------------------------------------------------------------------- #
@@ -166,6 +198,15 @@ def test_the_verdict_fails_only_beyond_the_allowed_slowdown(
 ) -> None:
     result = bench.SceneResult("full", head_ms=head, base_ms=base)
     assert bench.verdict([result], 0.15) == expected
+
+
+def test_the_report_names_the_scene_fields_the_base_lacks() -> None:
+    log: list[tuple[str, str, bool]] = []
+    head = _FakeWorker("head", [], log)
+    base = _FakeWorker("base", [], log, dropped=["OverlayState.show_paths"])
+    (result,) = bench.measure(["full"], 10, 1, head, base, split=False)
+    assert result.base_lacks == ["OverlayState.show_paths"]
+    assert bench.report([result], 0.15)[1].split() == ["base", "lacks", "OverlayState.show_paths"]
 
 
 def test_a_frame_the_renderer_could_not_draw_stops_the_run() -> None:
@@ -223,7 +264,7 @@ def _main(
     def make(root: Path) -> Any:
         name = "head" if root == bench.REPO else "base"
         if name == no_start:
-            raise RuntimeError(f"the worker for {name} did not start")
+            raise FileNotFoundError(f"the worker for {name} did not start")
         worker = _FakeWorker(name, (ms or {}).get(name, []), log, fail=name == fail)
         workers.append(worker)
         return worker
@@ -261,6 +302,13 @@ def test_a_side_that_does_not_start_closes_the_other(tmp_path: Path) -> None:
     assert [w.closed for w in workers] == [True]
 
 
+def test_a_worker_of_this_checkout_that_does_not_start_is_reported(capsys: pytest.CaptureFixture[str]) -> None:
+    code, workers = _main(["--scenes", "light"], no_start="head")
+    assert code == 2
+    assert workers == []
+    assert "did not start" in capsys.readouterr().err
+
+
 def test_a_slower_checkout_fails_the_comparison(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     (tmp_path / "openfollow").mkdir()
     code, _ = _main(
@@ -293,10 +341,19 @@ def test_a_worker_answers_each_request_with_one_line() -> None:
         + "\n"
     )
     stdout = io.StringIO()
-    assert bench.worker(bench.REPO, stdin=stdin, stdout=stdout) == 0
+    assert bench.worker(bench.REPO, stdin=stdin, stdout=stdout, clock=_Clock(0.001)) == 0
     plain, split = (json.loads(line) for line in stdout.getvalue().splitlines())
-    assert plain["ms"] > 0 and plain["split"] == {} and plain["errors"] == []
-    assert split["ms"] > 0 and "markers" in split["split"]
+    # Two clock reads per frame, 1 ms apart.
+    assert plain == {"ms": pytest.approx(1.0), "split": {}, "errors": [], "dropped": []}
+    assert "markers" in split["split"]
+
+
+def test_every_split_pass_is_timed_in_some_scene() -> None:
+    stdin = io.StringIO("".join(json.dumps({"scene": s, "frames": 1, "split": True}) + "\n" for s in ("full", "menu")))
+    stdout = io.StringIO()
+    bench.worker(bench.REPO, stdin=stdin, stdout=stdout, clock=_Clock(0.001))
+    timed = {label for line in stdout.getvalue().splitlines() for label in json.loads(line)["split"]}
+    assert timed == {label for _module, _path, label in bench.SPLIT_PASSES}
 
 
 def test_a_worker_reports_a_frame_the_renderer_could_not_draw(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -307,7 +364,12 @@ def test_a_worker_reports_a_frame_the_renderer_could_not_draw(monkeypatch: pytes
 
     monkeypatch.setattr(overlay, "draw_paths_pass", broken)
     stdout = io.StringIO()
-    bench.worker(bench.REPO, stdin=io.StringIO(json.dumps({"scene": "light", "frames": 1}) + "\n"), stdout=stdout)
+    bench.worker(
+        bench.REPO,
+        stdin=io.StringIO(json.dumps({"scene": "light", "frames": 1}) + "\n"),
+        stdout=stdout,
+        clock=_Clock(0.001),
+    )
     assert json.loads(stdout.getvalue())["errors"] == ["Cairo overlay draw error: boom"]
 
 

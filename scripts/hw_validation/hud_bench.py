@@ -20,7 +20,8 @@ scene only warms the caches::
     poetry run python scripts/hw_validation/hud_bench.py --compare /tmp/of-base
 
 Each side runs in a worker process of its own, with the renderer from its
-checkout and the scenes from this one, so both draw the same frames.
+checkout and the scenes from this one, so both draw the same frames, less any
+scene field the other checkout lacks (the report names those).
 
 Exit ``0`` = done (with ``--compare``: no scene more than ``--max-slowdown``
 slower), ``1`` = a scene is slower than that, ``2`` = a side could not run or
@@ -53,6 +54,7 @@ SPLIT_PASSES = (
     ("openfollow.video.overlay", "draw_marker_pass", "markers"),
     ("openfollow.video.overlay", "draw_zones_pass", "zones"),
     ("openfollow.video.overlay", "draw_operator_messages_pass", "operator messages"),
+    ("openfollow.video.overlay", "draw_settings_overlay_pass", "settings menu"),
     ("openfollow.runtime.overlay_draw_hud", "draw_bottom_left_info_panel", "info panel"),
     ("openfollow.runtime.overlay_draw_hud", "_draw_corner_help", "help"),
     ("openfollow.runtime.overlay_draw_hud", "draw_system_stats", "system stats"),
@@ -86,7 +88,7 @@ def time_round(
     return 1000.0 * total / max(1, len(frames))
 
 
-class _Split:
+class Split:
     """Wraps the drawing passes and adds up the CPU time spent in each."""
 
     def __init__(self, clock: Callable[[], float]) -> None:
@@ -133,8 +135,10 @@ class _DrawErrors(logging.Handler):
         self.messages.append(record.getMessage())
 
 
-def worker(package_root: Path, stdin: Any = sys.stdin, stdout: Any = sys.stdout) -> int:
-    """Answer ``{"scene", "frames", "split"}`` lines with ``{"ms", "split", "errors"}`` lines.
+def worker(
+    package_root: Path, stdin: Any = sys.stdin, stdout: Any = sys.stdout, clock: Callable[[], float] = time.thread_time
+) -> int:
+    """Answer ``{"scene", "frames", "split"}`` lines with ``{"ms", "split", "errors", "dropped"}`` lines.
 
     The renderer comes from ``package_root``.
     """
@@ -160,11 +164,11 @@ def worker(package_root: Path, stdin: Any = sys.stdin, stdout: Any = sys.stdout)
             if request["scene"] not in renderers:
                 renderers[request["scene"]] = CairoOverlayRenderer()
             errors.messages.clear()
-            split = _Split(time.thread_time) if request.get("split") else None
+            split = Split(clock) if request.get("split") else None
             if split is not None:
                 split.install()
             try:
-                ms = time_round(renderers[request["scene"]].draw, surface, built[key], time.thread_time, cairo)
+                ms = time_round(renderers[request["scene"]].draw, surface, built[key], clock, cairo)
             finally:
                 if split is not None:
                     split.remove()
@@ -173,6 +177,7 @@ def worker(package_root: Path, stdin: Any = sys.stdin, stdout: Any = sys.stdout)
                 "ms": ms,
                 "split": {k: v / frames for k, v in split.ms.items()} if split else {},
                 "errors": errors.messages[:1],
+                "dropped": sorted(scenes.DROPPED),
             }
             stdout.write(json.dumps(reply) + "\n")
             stdout.flush()
@@ -230,6 +235,8 @@ class SceneResult:
     head_ms: list[float] = field(default_factory=list)
     base_ms: list[float] = field(default_factory=list)
     split: dict[str, float] = field(default_factory=dict)
+    # Scene fields the other checkout lacks, so its frames hold less than this one's.
+    base_lacks: list[str] = field(default_factory=list)
 
     @property
     def head(self) -> float:
@@ -263,7 +270,9 @@ def measure(
         result = SceneResult(scene)
         sides = [(head, result.head_ms)] + ([(base, result.base_ms)] if base is not None else [])
         for side, _ in sides:
-            _run(side, scene, frames)
+            warm = _run(side, scene, frames)
+            if side is base:
+                result.base_lacks = list(warm.get("dropped", []))
         for r in range(rounds):
             # Alternate which side goes first, so a load change hits both alike.
             for side, out in sides if r % 2 == 0 else sides[::-1]:
@@ -288,6 +297,8 @@ def report(results: Sequence[SceneResult], max_slowdown: float) -> list[str]:
         else:
             flag = "  SLOWER" if r.slowdown > max_slowdown else ""
             lines.append(f"{r.scene:14} {r.head:7.2f} ms/picture  base {r.base:7.2f}  {r.slowdown:+6.1%}{flag}")
+        if r.base_lacks:
+            lines.append(f"    base lacks {', '.join(r.base_lacks)}")
         for label, ms in sorted(r.split.items(), key=lambda kv: -kv[1]):
             lines.append(f"    {label:18} {ms:6.2f} ms")
     return lines
@@ -333,13 +344,13 @@ def main(argv: Sequence[str] | None = None, make_worker: Callable[[Path], Any] =
     if args.compare is not None and not (args.compare / "openfollow").is_dir():
         print(f"{args.compare} holds no openfollow package", file=sys.stderr)
         return 2
-    head = make_worker(REPO)
-    base = None
+    head = base = None
     try:
+        head = make_worker(REPO)
         if args.compare is not None:
             base = make_worker(args.compare)
         results = measure(scenes, args.frames, args.rounds, head, base, args.split)
-    except RuntimeError as exc:
+    except (RuntimeError, OSError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
     finally:
@@ -350,7 +361,14 @@ def main(argv: Sequence[str] | None = None, make_worker: Callable[[Path], Any] =
         for r in results:
             print(
                 json.dumps(
-                    {"scene": r.scene, "ms": r.head, "base_ms": r.base, "slowdown": r.slowdown, "split": r.split}
+                    {
+                        "scene": r.scene,
+                        "ms": r.head,
+                        "base_ms": r.base,
+                        "slowdown": r.slowdown,
+                        "split": r.split,
+                        "base_lacks": r.base_lacks,
+                    }
                 )
             )
     else:

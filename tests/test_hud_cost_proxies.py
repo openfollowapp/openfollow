@@ -14,6 +14,7 @@ from openfollow.runtime import overlay_draw_paths, overlay_draw_scene
 from openfollow.runtime.overlay_draw_scene import ConeCache
 from openfollow.runtime.overlay_draw_zones import ZoneCache
 from openfollow.video.overlay import CairoOverlayRenderer
+from tests import _hud_scenes
 from tests._hud_cost import count_calls
 from tests._hud_scenes import SCENES, frames
 
@@ -33,6 +34,12 @@ def _draw(name: str) -> cairo.ImageSurface:
         renderer.draw(cairo.Context(surface), width, height, state)
     surface.flush()
     return surface
+
+
+def test_this_checkout_has_every_field_the_scenes_set() -> None:
+    for name in SCENES:
+        frames(name, 1)
+    assert not _hud_scenes.DROPPED
 
 
 @pytest.mark.parametrize("name", sorted(SCENES))

@@ -5,7 +5,8 @@
 Each scene is a list of frames ``(width, height, OverlayState)`` with markers on
 fixed curves, so marker cards, zone occupancy and the caches change from frame
 to frame as on a running station. Only fields the imported ``OverlayState``
-has are set, so the bench can build the same scenes against an older checkout.
+has are set, so the bench can build the same scenes against an older checkout;
+``DROPPED`` names the ones left out.
 """
 
 from __future__ import annotations
@@ -45,9 +46,14 @@ PATHS = [
 COLORS = ["#22CC55", "#EA2027", "#833471", "#1E90FF", "#FFA500", "#9B59B6", "#00CED1", "#F1C40F"]
 
 
+# Scene fields the imported checkout's dataclasses lack, as ``Class.field``.
+DROPPED: set[str] = set()
+
+
 def _make(cls: type, **values: Any) -> Any:
-    """``cls(**values)`` with only the fields ``cls`` has."""
+    """``cls(**values)`` with only the fields ``cls`` has; the others go to ``DROPPED``."""
     names = {f.name for f in dataclasses.fields(cls)}
+    DROPPED.update(f"{cls.__name__}.{k}" for k in values if k not in names)
     return cls(**{k: v for k, v in values.items() if k in names})
 
 

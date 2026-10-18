@@ -321,6 +321,10 @@ rm -rf /tmp/of-base && mkdir -p /tmp/of-base && git archive "$(git merge-base or
 poetry run python scripts/hw_validation/hud_bench.py --compare /tmp/of-base
 ```
 
+With `--compare`, a scene field the other checkout's `OverlayState` lacks is
+left out of its frames, so it draws less; the report names those fields under
+the scene.
+
 The timing is CPU time of the drawing thread alone. On a running station the
 same picture costs more, since decoding, the GTK main thread and the drawing
 thread share the cores and the memory bus.

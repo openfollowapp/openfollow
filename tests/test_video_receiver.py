@@ -1788,6 +1788,25 @@ class TestSourceLabel:
         r.create_pipeline()
         assert r.source_name == "Concert"
 
+    def test_a_rebuild_while_the_label_is_worked_out_is_not_hidden(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        # The stats route reads the label on the web thread while the GTK thread rebuilds.
+        playing = {"name": "Stage"}
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+
+        def label(cls: type, config: dict[str, Any]) -> str:
+            name = playing["name"]
+            if name == "Stage":
+                playing["name"] = "Concert"
+                r.create_pipeline()
+            return name
+
+        monkeypatch.setattr(FakeInput, "get_source_label", classmethod(label))
+        monkeypatch.setattr(FakeInput, "create_pipeline_result", FakePipeline())
+        assert r.source_name == "Stage"
+        assert r.source_name == "Concert"
+
 
 # --------------------------------------------------------------------------- #
 # Bus handling

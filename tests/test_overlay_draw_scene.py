@@ -214,13 +214,13 @@ class TestAssistGhost:
         ghost = MarkerOverlayData(marker_id=1, x=1.0, y=1.0, z=0.0, color="#33ff99", is_assist_ghost=True)
 
         def _fake_project(_cam, pts, _w, _h, _k1=0.0, _k2=0.0):
-            # The marker's own position (2 points) stays finite so draw_marker
-            # reaches the ghost path; the crosshair (6) and ground ring (24)
-            # project to non-finite, so their segments are skipped and the ring
-            # is degenerate (<3 finite points).
-            if len(pts) == 2:
-                return np.array([[100.0, 100.0], [110.0, 100.0]])
-            return np.full((len(pts), 2), np.nan)
+            # Only the marker's own position lands on screen, so draw_marker reaches
+            # the ghost path; the crosshair and ground ring project to non-finite,
+            # so their segments are skipped and the ring is degenerate.
+            arr = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
+            out = np.full((len(arr), 2), np.nan)
+            out[np.all(arr == (ghost.x, ghost.y, ghost.z), axis=1)] = (100.0, 100.0)
+            return out
 
         monkeypatch.setattr(mod, "project", _fake_project)
         cr = FakeCairo()

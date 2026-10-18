@@ -15,12 +15,13 @@ from collections.abc import Callable
 import cairo
 import pytest
 
-from openfollow.runtime import overlay_draw_paths, overlay_draw_scene
-from openfollow.runtime.overlay_draw_scene import ConeCache
+from openfollow.runtime import overlay_draw_hud, overlay_draw_paths, overlay_draw_scene
+from openfollow.runtime.overlay_draw_scene import ConeCache, GridCache
 from openfollow.runtime.overlay_draw_zones import ZoneCache
 from openfollow.runtime.overlay_state import OverlayState
 from openfollow.video.overlay import CairoOverlayRenderer
 from tests import _hud_scenes
+from tests._fake_cairo import FakeCairo, FakeRenderer
 from tests._hud_cost import CountingContext, area, count_calls
 from tests._hud_scenes import SCENES, frames
 
@@ -118,3 +119,32 @@ def test_a_viewer_only_card_s_group_covers_the_card_not_the_canvas() -> None:
     assert len(groups) == 2 * viewers
     # A card is 180 x 67 px; its border and antialiasing reach a few pixels past it.
     assert max(area(g) for g in groups) <= (180 + 8) * (67 + 8)
+
+
+def test_the_hud_panels_are_drawn_once_while_they_do_not_change() -> None:
+    with (
+        count_calls(overlay_draw_hud, "draw_bottom_left_info_panel") as info,
+        count_calls(overlay_draw_hud, "draw_system_stats") as stats,
+        count_calls(overlay_draw_hud, "_draw_corner_help") as help_panel,
+    ):
+        _draw("light")
+    # Each is measured, then drawn into its picture, once.
+    assert (info[0], stats[0], help_panel[0]) == (2, 2, 2)
+
+
+def test_a_crosshair_marker_is_projected_once() -> None:
+    ((width, height, state),) = frames("eight_markers", 1)
+    state = dataclasses.replace(state, show_crosshair=True, show_z_line=True, show_ground_circle=True)
+    cr = cairo.Context(cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height))
+    with count_calls(overlay_draw_scene, "project") as projected:
+        for marker in state.markers:
+            overlay_draw_scene.draw_marker(cr, state, marker, width, height)
+    assert projected[0] == len(state.markers)
+
+
+def test_the_grid_is_pasted_only_where_its_lines_run() -> None:
+    ((width, height, state),) = frames("full", 1)
+    cr = FakeCairo()
+    GridCache().draw(FakeRenderer(), cr, state, width, height)
+    covered = sum(w * h for _x, _y, w, h in cr.rects)
+    assert 0 < covered < 0.5 * width * height

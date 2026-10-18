@@ -818,8 +818,9 @@ def test_the_renderer_keeps_its_zones_as_one_picture_between_frames() -> None:
     frames = [RecordingCairo() for _ in range(3)]
     for cr in frames:
         renderer.draw(cr, 1920, 1080, renderer.state)
-    pictures = [s for cr in frames for s in cr.surfaces]
-    assert len(pictures) == 3 and all(p is pictures[0] for p in pictures)
+    # Zones paste before the HUD's panels.
+    pictures = [cr.surfaces[0] for cr in frames]
+    assert all(p is pictures[0] for p in pictures)
     assert all(("paint",) in cr.calls for cr in frames)
 
 

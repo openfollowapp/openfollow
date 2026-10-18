@@ -77,6 +77,7 @@ from openfollow.runtime.overlay_draw_scene import (
 )
 from openfollow.runtime.overlay_draw_zones import ZoneCache
 from openfollow.runtime.overlay_draw_zones import draw_zones as draw_zones_pass
+from openfollow.runtime.overlay_picture import PanelCache
 from openfollow.runtime.overlay_state import MarkerOverlayData, OverlayState
 
 logger = logging.getLogger(__name__)
@@ -166,6 +167,7 @@ class CairoOverlayRenderer:
         self._grid_cache = GridCache()
         self._path_cache = PathCache()
         self._zone_cache = ZoneCache()
+        self._panel_cache = PanelCache()
 
         # Rolling timestamps of recent pictures for FPS measurement.
         # Appended by the HUD render thread (``draw``); read on the stats

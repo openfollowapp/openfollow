@@ -297,6 +297,13 @@ class FakeCairo:
         return [t.text for t in self.texts]
 
 
+class DirectPanels:
+    """``PanelCache`` stand-in that draws each panel straight onto the context it is given."""
+
+    def draw(self, cr: Any, slot: str, key: Any, paint: Any, w: int, h: int) -> None:
+        paint(cr)
+
+
 class FakeRenderer:
     """Stand-in for ``CairoOverlayRenderer`` used by draw-pass tests.
 
@@ -316,6 +323,7 @@ class FakeRenderer:
         # Cache per-frame HUD memoization, mirroring CairoOverlayRenderer.
         self._info_panel_cache: tuple[object, object] | None = None
         self._help_sections_cache: tuple[object, object] | None = None
+        self._panel_cache = DirectPanels()
 
     _set_ui_font = staticmethod(CairoOverlayRenderer._set_ui_font)
     _truncate_text_to_width = staticmethod(CairoOverlayRenderer._truncate_text_to_width)

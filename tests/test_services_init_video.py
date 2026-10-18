@@ -138,6 +138,7 @@ class _FakeReceiver:
         self.create_called = False
         self.started = False
         self.widget: Any = object()
+        self.display_frame_listener: Any = None
         self._raise_on_create: Exception | None = None
 
     def set_pipeline_failure(self, exc: Exception) -> None:
@@ -156,6 +157,9 @@ class _FakeReceiver:
 
     def start(self) -> None:
         self.started = True
+
+    def set_display_frame_listener(self, listener: Any) -> None:
+        self.display_frame_listener = listener
 
 
 class _RecordingReceiverFactory:
@@ -370,6 +374,17 @@ class TestInitVideoDetectionDisabled:
         canvas = services._app._canvas
         assert canvas.embed_widget_calls == []
         _assert_hud_drawn_on_its_thread(services)
+
+    def test_each_frame_reaching_the_display_is_counted_by_the_hud(
+        self,
+        services: AppRuntimeServices,
+        recv_factory: _RecordingReceiverFactory,
+        patched_subsystems: None,
+    ) -> None:
+        services.init_video()
+        assert recv_factory.last is not None
+        assert services._hud_render is not None
+        assert recv_factory.last.display_frame_listener == services._hud_render.video_frame
 
 
 # --------------------------------------------------------------------------- #

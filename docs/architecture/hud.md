@@ -30,3 +30,19 @@ The main grid and the ground grid are one picture (`overlay_draw_scene.GridCache
 Every element that stands on the floor under a marker (the Z line, the ground circle, the cone base, the assist ghost's ring) asks `overlay_draw_scene.floor_z_at(state, x, y)` for its height; nothing else reads `grid_config[5]` for a marker's floor. `floor_z_at` returns the ground grid's `z_offset` when it is active and `(x, y)` is inside its polygon (`zones.geometry.point_in_polygon`, even-odd, XY only, whatever the marker's own Z), else the main grid's `z_offset`. The `ConeCache` key carries that height, so a cone redraws when its floor changes.
 
 The ground grid (`GroundGridConfig`, the experimental `ground_grid` feature) is one polygon of up to 64 PSN-absolute `[x, y]` corners at an absolute `z_offset`. With the `ground_grid` feature on and at least three corners, `enabled` makes it active (the floor redirect) and `visible` draws it, each on its own; the feature off hides it at once, since `sync_ground_grid_config` reads the list every tick. `sync_ground_grid_config` copies it into `OverlayState.ground_grid_*` every tick. `draw_ground_grid` runs right after `draw_grid`: the main grid's lines as it draws them (`scene/ground_grid.main_grid_steps`: spread edge to edge, so a gap is the spacing only for a whole multiple of it, and continued past the rectangle; past the 200-line cap an even share of them) clipped to the polygon by `scene/ground_grid.grid_segments_in_polygon` and kept until the polygon, the grid or the height changes, plus the outline, at the ground grid's height and in the main grid's colour, thickness and opacity, through `_draw_world_lines` so the lens bows them. The main grid still draws across the polygon. The mouse grabs a marker by its ring on that same floor (`scene/ground_grid.floor_height`, the config-side twin of `floor_z_at`) and reads the cursor on the floor the marker was grabbed on for the whole drag, so the grab never jumps; the detection pin, the OSC height placeholders and the marker card stay on the main grid.
+
+## What the Operator Screen costs (`/api/stats` → `hud`)
+
+`HudRenderThread` feeds `video/hud_metrics.HudMetrics` where the work happens: the render thread reports each picture's CPU time for clearing and drawing (`time.thread_time`), the GTK draw each repaint's (the paste), the display tick each refresh and whether it showed a new picture, and a buffer probe on the shared display sink each video frame (`GstNativeSinkReceiver.set_display_frame_listener`). `/api/stats` publishes the last closed window of about two seconds as `hud`, `null` until the first window closes and on a station without a display:
+
+| Field | Meaning |
+|---|---|
+| `picture_ms`, `clear_ms`, `draw_ms` | CPU per picture on the render thread: clearing (or allocating) plus drawing |
+| `paint_ms`, `repaints_per_s` | CPU per repaint on the GTK main thread (the paste) and how many repaints a second; every video frame repaints the HUD too |
+| `pictures_per_s`, `refreshes_per_s` | New pictures shown and display ticks a second |
+| `interval_refreshes` | The pacing interval: refreshes each picture is held |
+| `picture_refreshes` | How many refreshes each picture stayed on screen, as counts (`{"2": 59, "3": 1}`); everything at `interval_refreshes` is an even HUD |
+| `video_frames_per_s`, `video_refreshes`, `video_replaced` | Frames reaching the display sink, how many refreshes each stayed on screen (2 for 30 fps on 60 Hz), and frames replaced before a refresh showed them |
+| `render_thread_id` | The render thread's native id, to read its CPU time from `/proc` (Python 3.13 gives threads no OS name) |
+
+GTK can run the tick a little faster than the display refreshes, so a refresh count is approximate by one now and then. `scripts/hw_validation/hud_probe.py` reads these with the CPU per thread on a running station; see its [README section](../../scripts/hw_validation/README.md#operator-screen-on-a-running-station).

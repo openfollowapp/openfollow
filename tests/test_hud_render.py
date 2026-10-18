@@ -578,3 +578,61 @@ def test_one_late_refresh_does_not_stretch_the_interval_measured(paced, clock, l
     held.append(late + _count_to_show(hud, clock))
     held += [_refreshes_to_show(hud, clock) for _ in range(60)]
     assert held == [2] * 131
+
+
+class _CpuClock:
+    """Each thread's own CPU time, one millisecond further on every read."""
+
+    def __init__(self) -> None:
+        self._spent: dict[int, float] = {}
+        self._lock = threading.Lock()
+
+    def __call__(self) -> float:
+        with self._lock:
+            key = threading.get_ident()
+            self._spent[key] = self._spent.get(key, 0.0) + 0.001
+            return self._spent[key]
+
+
+@pytest.fixture
+def measured(clock: _Clock) -> Iterator[tuple[HudRenderThread, _Renderer]]:
+    renderer = _Renderer(clock)
+    thread = HudRenderThread(renderer, clock=clock, cpu_clock=_CpuClock())
+    thread.start()
+    yield thread, renderer
+    thread.stop()
+
+
+def test_nothing_is_reported_before_the_first_window(measured, clock) -> None:
+    hud, _ = measured
+    assert hud.stats() is None
+
+
+def test_what_a_picture_and_a_repaint_cost_and_how_long_pictures_stay_are_reported(measured, clock) -> None:
+    hud, _ = measured
+    hud.paint(FakeCairo(), 64, 36)
+    _refresh(hud, clock)  # starts the first picture
+    assert _refreshes_to_show(hud, clock) == 1
+    assert _refreshes_to_show(hud, clock) == 1
+    clock.now = 100.0 + 2.0
+    stats = hud.stats()
+    assert stats is not None
+    # One millisecond per read: the clear, then the draw, then the repaint.
+    assert stats["clear_ms"] == pytest.approx(1.0)
+    assert stats["draw_ms"] == pytest.approx(1.0)
+    assert stats["paint_ms"] == pytest.approx(1.0)
+    assert stats["picture_refreshes"] == {"1": 1}
+    assert stats["interval_refreshes"] == 1
+    assert stats["render_thread_id"] == next(t.native_id for t in _hud_threads() if t.native_id is not None)
+
+
+def test_a_video_frame_is_counted_at_the_next_refresh(measured, clock) -> None:
+    hud, _ = measured
+    hud.video_frame()
+    hud.video_frame()
+    hud.tick()
+    clock.now = 100.0 + 2.0
+    stats = hud.stats()
+    assert stats is not None
+    assert stats["video_frames_per_s"] == pytest.approx(1.0)
+    assert stats["video_replaced"] == 1

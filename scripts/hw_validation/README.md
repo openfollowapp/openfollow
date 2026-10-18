@@ -18,6 +18,7 @@ to grow into a fuller two-Pi validation suite (see the tracking issue).
 | `output_protocol_driver.py` | DUT | Drives N moving markers out of the deployed PSN / OTP / RTTrPM servers so real consumer software (PSNView, OTPAnalyzer, OTPView) can be pointed at the live output. `--markers 40` splits every stream; `--markers 13` is the control where nothing splits. Classifies datagrams by their own header bytes and reports per-stream counts and largest size. |
 | `output_datagram_size_probe.py` | DUT | Drives the deployed PSN / OTP / RTTrPM send paths at 4-100 markers and asserts no stream emits a datagram past the 1472 B MTU budget - the size at which IP fragments and a loaded show network starts dropping frames. Exits `0` (PASS) / `1` (FAIL). |
 | `lens_edge_benchmark.py` | DUT | Times the Lens step's edge suggestions (`find_edge_candidates`, as `/api/wizard/lens/edges` runs it) on synthetic stages and on snapshot JPEGs passed with `--image`, and reports the longest gap a 60 Hz ticker thread sees meanwhile, the stall the frame loop would take. Exits `0` (PASS) / `1` (a scene over `--budget`, default 1 s). |
+| `hud_probe.py` | DUT | Measures the Operator Screen on a running station: CPU of the OpenFollow process, its main and HUD render threads and the compositor from `/proc`, and the `hud` section of `/api/stats` (CPU per picture and repaint, how many refreshes each picture and video frame stayed on screen), one JSON line per run. Exits `0` (measured) / `2` (no process, or no display drawing). |
 | `osc_socket_options_probe.py` | DUT | Builds clients via the deployed `OscService._make_client` and asserts the broadcast/multicast socket options (#482). |
 | `eos_console_probe.py` | workstation | Drives the deployed `OscTransmitterManager` at an Eos console / ETCnomad. `verify` reads Eos's own parameter values back and asserts the bundled ETC Eos templates' X/Y/Z mapping, exiting `0` (mapping correct) / `1` (mismatch or setup fault). `test` / `sweep` / `stream` drive the console for an operator to watch; their exit code reports only whether the sends reached the socket. |
 | `marker_catalog_two_station.py` | workstation | Reproduces the clock-skew marker-rename revert across two stations: steps station B's clock ahead, renames on A, asserts the rename holds on both. Exits `0` (PASS) / `1` (FAIL). |
@@ -303,3 +304,18 @@ VLAN name already exists, so cleanup can never remove one you rely on.
 
 `--other-nic` and `--companion` are optional; both skip loudly when absent
 rather than passing vacuously.
+
+## Operator Screen on a running station
+
+`hud_probe.py` runs on the station next to the app, with the station's venv,
+while the scene you want to measure plays (moving markers: `osc_marker_paths.py`):
+
+```sh
+/opt/openfollow/venv/bin/python scripts/hw_validation/hud_probe.py --pin <PIN> --runs 3 --window 20 --label before
+```
+
+Each line holds the process and compositor CPU (% of one core), the CPU per
+thread (`main`, `hud_render`, GStreamer threads by name), the averaged `hud`
+figures and `pictures_on_time`, the share of pictures held exactly the pacing
+interval. Repeat runs: the main thread's share moves with how often video and
+HUD repaints fall on the same refresh.

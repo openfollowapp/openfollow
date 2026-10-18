@@ -731,6 +731,24 @@ class TestSharedSink:
         assert same is sink
         assert fake_gst.init_calls == 1
 
+    def test_each_frame_reaching_the_display_tells_the_listener_and_passes_on(
+        self, fake_gst, fake_glib, fake_input_cls
+    ) -> None:
+        r = _make_receiver()
+        sink = r._get_shared_sink()
+        ((kind, probe),) = sink.get_static_pad("sink").probes
+        assert kind == FakePadProbeType.BUFFER
+        # No listener yet: the frame passes on.
+        assert probe(None, None) == FakePadProbeReturn.OK
+        frames: list[None] = []
+        r.set_display_frame_listener(lambda: frames.append(None))
+        assert probe(None, None) == FakePadProbeReturn.OK
+        assert probe(None, None) == FakePadProbeReturn.OK
+        assert len(frames) == 2
+        r.set_display_frame_listener(None)
+        probe(None, None)
+        assert len(frames) == 2
+
     def test_shared_sink_returns_none_when_no_embeddable_sink(self, fake_gst, fake_glib, fake_input_cls) -> None:
         fake_gst.ElementFactory = FakeElementFactory(available_elements=set())
         r = _make_receiver()

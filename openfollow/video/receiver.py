@@ -151,6 +151,8 @@ class GstNativeSinkReceiver:
 
         # Shared sink created lazily
         self._shared_sink = None
+        # Told of every frame that reaches the display sink, from its streaming thread.
+        self._display_frame_listener: Callable[[], None] | None = None
         # The gtksink is shared across pipeline rebuilds, and pad probes live
         # on its (persistent) sink pad – so attach them exactly once. Without
         # this guard every reconnect/heal rebuild would stack another pair of
@@ -214,9 +216,20 @@ class GstNativeSinkReceiver:
             sink.set_property("sync", False)
         except Exception:
             pass
+        sink.get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, self._on_display_frame)
 
         logger.info("Created shared %s element for all pipelines", sink_name)
         return sink
+
+    def set_display_frame_listener(self, listener: Callable[[], None] | None) -> None:
+        """Call ``listener`` (from the sink's streaming thread) for each frame that reaches the display."""
+        self._display_frame_listener = listener
+
+    def _on_display_frame(self, _pad: Any, _info: Any) -> Any:
+        listener = self._display_frame_listener
+        if listener is not None:
+            listener()
+        return Gst.PadProbeReturn.OK
 
     def _get_shared_sink(self) -> Any:
         """Get the shared sink, creating it if needed."""

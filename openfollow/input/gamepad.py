@@ -445,7 +445,7 @@ class GamepadHandler:
         # SDL's own SIGINT/SIGTERM handler turns a stop into a quit event nothing
         # reads, until the GLib main loop takes the signals over.
         os.environ.setdefault("SDL_NO_SIGNAL_HANDLERS", "1")
-        # Not pygame.init(): its mixer keeps an SDL audio and timer thread running.
+        # Not pygame.init(): it starts SDL's timer and, through the mixer, audio, each a thread.
         if not pygame.display.get_init():
             pygame.display.init()
         if not getattr(pygame, "IS_CE", False):

@@ -1951,7 +1951,7 @@ class TestPygameSubsystemInitOnConstruct:
         assert called["joystick"] is True
 
     def test_starts_no_sound(self, monkeypatch) -> None:
-        """No pygame.init(): its mixer keeps an SDL audio and a timer thread running for the whole show."""
+        """No pygame.init(): it keeps an SDL timer and, through the mixer, an audio thread running all show."""
         started: list[str] = []
         monkeypatch.setattr(pygame, "init", lambda: started.append("pygame.init"))
         monkeypatch.setattr(pygame.mixer, "init", lambda *a, **k: started.append("mixer"))
@@ -2075,7 +2075,7 @@ class TestPygameSubsystemInitOnConstruct:
 
         GamepadHandler(FakeApp())
         # Read at init time, not after: SDL takes the driver when the subsystem
-        # comes up, so a setdefault below pygame.init() would be a silent no-op.
+        # comes up, so a setdefault below pygame.display.init() would be a silent no-op.
         assert seen["driver"] == "dummy"
 
     def test_keeps_explicit_video_driver_override(self, monkeypatch) -> None:

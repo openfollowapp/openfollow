@@ -73,8 +73,8 @@ def _restore_os_environ() -> Iterator[None]:
 
     Some production code legitimately mutates the process environment directly
     rather than through ``monkeypatch`` – e.g. ``GamepadHandler.__init__`` does
-    ``os.environ.setdefault("SDL_AUDIODRIVER", "dummy")`` so SDL never opens the
-    ALSA device. ``monkeypatch`` only unwinds the changes it made itself,
+    ``os.environ.setdefault("SDL_VIDEODRIVER", "dummy")`` so SDL never opens a
+    window. ``monkeypatch`` only unwinds the changes it made itself,
     so without this such a write would leak into every later test in the worker
     (a hidden ordering dependency). Restoring the original mapping keeps each
     test hermetic. Cheap: a dict copy plus an equality check, and the restore

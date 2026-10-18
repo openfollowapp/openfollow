@@ -2612,9 +2612,8 @@ class AppRuntimeServices:
             # An inference in flight finishes off the frame loop.
             detector.stop(wait=False)
             self._person_detector = None
-        # else: detector is None – caller (dispatcher) handles the
-        # off→on case via request_restart and the off→off case is a
-        # genuine no-op.
+        # else: detector is None – the dispatcher routes off→on to
+        # ``swap_detector``; off→off is a genuine no-op.
 
     def swap_detector(self, new_cfg: DetectionConfig, on_failure: Callable[[], None] | None = None) -> None:
         """Apply a ``detection`` config change live for the three

@@ -179,20 +179,21 @@ def measure(
     poll: float = 0.5,
 ) -> dict[str, Any]:
     """One window: CPU per thread and of the compositor, and the averaged ``hud`` figures."""
-    first = read_stats()
-    render = (first.get("hud") or {}).get("render_thread_id")
+    before_run = read_stats().get("hud")
     proc_before = read_ticks(proc / str(pid) / "stat") or 0
     comp_before = read_ticks(proc / str(compositor) / "stat") if compositor else None
     threads_before = thread_ticks(pid, proc)
     start = now()
-    samples = [first.get("hud")]
+    samples: list[dict[str, Any] | None] = []
     while now() - start < window:
         sleep(poll)
         samples.append(read_stats().get("hud"))
     seconds = max(now() - start, 1e-9)
     proc_after = read_ticks(proc / str(pid) / "stat") or proc_before
     comp_after = read_ticks(proc / str(compositor) / "stat") if compositor else None
-    hud = average_hud(samples)
+    # The window closed before the run counts only when none closed during it.
+    hud = average_hud([s for s in samples if s != before_run]) or average_hud([before_run])
+    render = (hud or {}).get("render_thread_id")
     result: dict[str, Any] = {
         "seconds": round(seconds, 1),
         "process_pct": round(100.0 * (proc_after - proc_before) / hz / seconds, 1),

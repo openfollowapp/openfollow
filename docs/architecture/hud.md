@@ -37,6 +37,7 @@ The ground grid (`GroundGridConfig`, the experimental `ground_grid` feature) is 
 
 | Field | Meaning |
 |---|---|
+| `window_s` | How long the window ran, in seconds |
 | `picture_ms`, `clear_ms`, `draw_ms` | CPU per picture on the render thread: clearing (or allocating) plus drawing |
 | `paint_ms`, `repaints_per_s` | CPU per repaint on the GTK main thread (the paste) and how many repaints a second; every video frame repaints the HUD too |
 | `pictures_per_s`, `refreshes_per_s` | New pictures shown and display ticks a second |

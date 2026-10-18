@@ -207,6 +207,40 @@ def test_a_run_reports_process_compositor_threads_and_the_hud(tmp_path: Path) ->
     assert result["pictures_on_time"] == 0.9
 
 
+def test_a_window_closed_before_the_run_is_left_out_once_one_closes_during_it(tmp_path: Path) -> None:
+    _proc(tmp_path, 10, 100, {10: ("python", 40), 11: ("python", 20)})
+    stale = {"picture_ms": 50.0, "picture_refreshes": {"5": 6}, "render_thread_id": 11}
+    fresh = {"picture_ms": 8.0, "picture_refreshes": {"2": 30}, "render_thread_id": 11}
+    clock = _Time()
+    result = probe.measure(
+        10,
+        None,
+        lambda: {"hud": stale if clock.t < 1.0 else fresh},
+        2.0,
+        hz=100,
+        proc=tmp_path,
+        sleep=clock.sleep,
+        now=clock.now,
+    )
+    assert result["hud"]["windows"] == 1
+    assert result["hud"]["picture_ms"] == 8.0
+    assert result["hud"]["picture_refreshes"] == {"2": 30}
+
+
+def test_the_render_thread_is_named_when_the_first_window_closes_during_the_run(tmp_path: Path) -> None:
+    _proc(tmp_path, 10, 100, {10: ("python", 40), 11: ("python", 20)})
+    clock = _Time()
+
+    def read_stats() -> dict[str, Any]:
+        if clock.t < 1.0:
+            return {"hud": None}
+        _proc(tmp_path, 10, 300, {10: ("python", 140), 11: ("python", 120)})
+        return {"hud": {"picture_ms": 8.0, "render_thread_id": 11}}
+
+    result = probe.measure(10, None, read_stats, 2.0, hz=100, proc=tmp_path, sleep=clock.sleep, now=clock.now)
+    assert result["threads"] == {"main": 50.0, "hud_render": 50.0}
+
+
 def test_a_run_without_a_compositor_or_hud_reports_none_for_them(tmp_path: Path) -> None:
     _proc(tmp_path, 10, 100, {10: ("python", 40)})
     clock = _Time()

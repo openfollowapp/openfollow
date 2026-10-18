@@ -390,6 +390,45 @@ class TestOverlayTailSnapshot:
         assert snapshot.valve is None  # stale reference explicitly cleared
 
 
+class TestIdleBranches:
+    """A closed valve sits ahead of its branch's queue, so an idle branch wakes no streaming thread."""
+
+    @pytest.mark.parametrize(
+        ("prefix", "after_queue", "providers"),
+        [
+            ("preview", "preview_scale", {"preview": FakePreviewProvider()}),
+            ("snapshot", "snapshot_convert", {"snapshot": FakeSnapshotProvider()}),
+        ],
+        ids=["preview", "snapshot"],
+    )
+    def test_each_branch_runs_tee_closed_valve_queue(self, prefix: str, after_queue: str, providers: dict) -> None:
+        assembler = _make_assembler(**providers)
+        pipeline = FakePipeline()
+        convert, sink = _build_convert_sink()
+        assembler.build_overlay_tail(pipeline, convert, sink)
+        valve, queue = pipeline.get_by_name(f"{prefix}_valve"), pipeline.get_by_name(f"{prefix}_queue")
+        assert valve.properties["drop"] is True
+        assert valve.links == [queue]
+        assert queue.links == [pipeline.get_by_name(after_queue)]
+
+    @pytest.mark.parametrize(
+        ("prefix", "after_queue", "providers"),
+        [
+            ("preview", "preview_scale", {"preview": FakePreviewProvider()}),
+            ("snapshot", "snapshot_convert", {"snapshot": FakeSnapshotProvider()}),
+        ],
+        ids=["preview", "snapshot"],
+    )
+    def test_without_a_valve_the_tee_feeds_the_queue(self, prefix: str, after_queue: str, providers: dict) -> None:
+        gst = _make_fake_gst(element_factory_overrides={f"{prefix}_valve": None})
+        assembler = _make_assembler(gst=gst, **providers)
+        pipeline = FakePipeline()
+        convert, sink = _build_convert_sink()
+        assembler.build_overlay_tail(pipeline, convert, sink)
+        assert pipeline.get_by_name(f"{prefix}_valve") is None
+        assert pipeline.get_by_name(f"{prefix}_queue").links == [pipeline.get_by_name(after_queue)]
+
+
 class TestLinkFailures:
     def test_convert_to_tee_link_failure_raises(self) -> None:
         assembler = _make_assembler(detector=FakeDetector())
@@ -481,7 +520,7 @@ class TestLinkFailures:
         assembler = _make_assembler(gst=gst, preview=FakePreviewProvider())
         pipeline = FakePipeline()
         convert, sink = _build_convert_sink()
-        with pytest.raises(RuntimeError, match="tee → preview_queue"):
+        with pytest.raises(RuntimeError, match="tee → preview_valve"):
             assembler.build_overlay_tail(pipeline, convert, sink)
 
     def test_preview_chain_link_failure_inside_loop_raises(self) -> None:
@@ -509,7 +548,7 @@ class TestLinkFailures:
         assembler = _make_assembler(gst=gst, snapshot=FakeSnapshotProvider())
         pipeline = FakePipeline()
         convert, sink = _build_convert_sink()
-        with pytest.raises(RuntimeError, match="tee → snapshot_queue"):
+        with pytest.raises(RuntimeError, match="tee → snapshot_valve"):
             assembler.build_overlay_tail(pipeline, convert, sink)
 
     def test_snapshot_chain_link_failure_inside_loop_raises(self) -> None:

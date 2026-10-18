@@ -234,29 +234,14 @@ class ReceiverPipelineAssembler:
             self._gst.Caps.from_string("image/jpeg"),
         )
 
-        # Valve gates the videoscale/videoconvert/jpegenc so preview encoding
-        # only runs when polled. Sits after the queue; degrade if missing.
+        # Valve gates the branch so preview encoding only runs when polled. It sits
+        # ahead of the queue: closed, it drops each frame on the tee's thread and
+        # the queue's thread stays asleep. Degrade if missing.
         valve = self._gst.ElementFactory.make("valve", "preview_valve")
         if valve is not None:
             valve.set_property("drop", True)
 
-        post_queue = [el for el in (valve, scale, caps, conv, enc, appsink) if el is not None]
-        for el in (q, *post_queue):
-            pipeline.add(el)
-
-        tee_pad = request_pad("src_%u")
-        sink_pad = q.get_static_pad("sink")
-        if tee_pad.link(sink_pad) != self._gst.PadLinkReturn.OK:
-            raise RuntimeError(
-                "Failed to link tee → preview_queue",
-            )
-        prev = q
-        for el in post_queue:
-            if not prev.link(el):
-                raise RuntimeError(
-                    f"Failed to link {prev.get_name()} → {el.get_name()}",
-                )
-            prev = el
+        self._link_branch(pipeline, request_pad, [valve, q, scale, caps, conv, enc, appsink])
 
         self._preview_provider.set_appsink(appsink)
         # Pass valve unconditionally to clear stale cached reference.
@@ -264,10 +249,21 @@ class ReceiverPipelineAssembler:
         self._preview_provider.start()
         self._logger.info("Preview appsink branch added to pipeline")
 
+    def _link_branch(self, pipeline: Any, request_pad: Any, elements: list[Any]) -> None:
+        """Add ``elements`` (``None`` entries skipped) to ``pipeline`` and link a new tee pad through them."""
+        chain = [el for el in elements if el is not None]
+        for el in chain:
+            pipeline.add(el)
+        if request_pad("src_%u").link(chain[0].get_static_pad("sink")) != self._gst.PadLinkReturn.OK:
+            raise RuntimeError(f"Failed to link tee → {chain[0].get_name()}")
+        for prev, el in zip(chain, chain[1:], strict=False):
+            if not prev.link(el):
+                raise RuntimeError(f"Failed to link {prev.get_name()} → {el.get_name()}")
+
     def _add_snapshot_branch(self, pipeline: Any, tee: Any, request_pad: Any) -> None:
         """Wire a full-resolution snapshot appsink branch off the shared tee.
 
-        Pipeline: queue(leaky) → videoconvert → jpegenc(quality=92) → appsink
+        Pipeline: valve → queue(leaky) → videoconvert → jpegenc(quality=92) → appsink
         No videoscale – frames pass through at source resolution. Caller
         (``build_overlay_tail``) gates this on
         ``self._snapshot_provider is not None``; assertion documents
@@ -304,25 +300,13 @@ class ReceiverPipelineAssembler:
 
         # Gate the full-res videoconvert/jpegenc behind a valve so they only
         # run on request. Full-resolution encode is the largest avoidable cost
-        # when idle. Sits after the queue; ``drop=True`` starts closed and
-        # ``SnapshotProvider`` opens it per request. Degrade if missing.
+        # when idle. Ahead of the queue, like the preview's; ``drop=True`` starts
+        # closed and ``SnapshotProvider`` opens it per request. Degrade if missing.
         valve = self._gst.ElementFactory.make("valve", "snapshot_valve")
         if valve is not None:
             valve.set_property("drop", True)
 
-        post_queue = [el for el in (valve, conv, enc, appsink) if el is not None]
-        for el in (q, *post_queue):
-            pipeline.add(el)
-
-        tee_pad = request_pad("src_%u")
-        sink_pad = q.get_static_pad("sink")
-        if tee_pad.link(sink_pad) != self._gst.PadLinkReturn.OK:
-            raise RuntimeError("Failed to link tee → snapshot_queue")
-        prev = q
-        for el in post_queue:
-            if not prev.link(el):
-                raise RuntimeError(f"Failed to link {prev.get_name()} → {el.get_name()}")
-            prev = el
+        self._link_branch(pipeline, request_pad, [valve, q, conv, enc, appsink])
 
         self._snapshot_provider.set_appsink(appsink)
         # Unconditional like the preview branch: ``None`` clears a cached valve

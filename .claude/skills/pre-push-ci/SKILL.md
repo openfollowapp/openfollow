@@ -45,7 +45,7 @@ When the change (uncommitted files included) touches the Operator Screen
 drawing paths (`video/overlay.py`, `video/hud_render.py`, `runtime/overlay_*.py`,
 `scene/solver.py` / `ground_grid.py` / `camera.py`, `zones/geometry.py`,
 `window.py`, the bench scenes or the bench itself), a green `make ci` is
-followed by `make perf-ab`: the bench scenes drawn with this tree's renderer
+followed by the comparison `make perf-ab` runs by hand: the bench scenes drawn with this tree's renderer
 and with the merge-base's (against `origin/main`), rounds alternating, about a
 minute on a Pi 5. It fails the gate when a scene is more than 15 % slower
 ("Operator Screen drawing is more than 15 % slower") or when the comparison

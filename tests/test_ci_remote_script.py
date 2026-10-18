@@ -45,14 +45,15 @@ _LONG_STEP = (
     "pathlib.Path(sys.argv[1]).touch(); time.sleep(60)"
 )
 
+# Stands in for hud_bench.py --compare: the bench's own exit code, which make would turn into 2.
+_FAKE_POETRY = """#!/usr/bin/env bash
+[ "$3 $4" = "scripts/hw_validation/hud_bench.py --compare" ] || exit 99
+echo "bench against: $(cat "$5/openfollow/video/overlay.py")" >> "$FAKE_MAKE_LOG"
+echo "$5" > "$FAKE_MAKE_LOG.base"
+exit "${FAKE_PERF_STATUS:-0}"
+"""
+
 _FAKE_MAKE = """#!/usr/bin/env bash
-case " $* " in
-  *" perf-ab "*)
-    for arg in "$@"; do case "$arg" in PERF_BASE=*) base="${arg#PERF_BASE=}" ;; esac; done
-    echo "perf-ab against: $(cat "$base/openfollow/video/overlay.py")" >> "$FAKE_MAKE_LOG"
-    echo "$base" > "$FAKE_MAKE_LOG.base"
-    exit "${FAKE_PERF_STATUS:-0}" ;;
-esac
 echo "make $*" >> "$FAKE_MAKE_LOG"
 if [ -n "${FAKE_MAKE_HOOK:-}" ]; then eval "$FAKE_MAKE_HOOK"; fi
 exit "${FAKE_MAKE_STATUS:-0}"
@@ -117,7 +118,7 @@ def _station(tmp_path: Path, *, local_git: str = "directory") -> _Station:
     home.mkdir()
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    for name, body in (("ssh", _FAKE_SSH), ("make", _FAKE_MAKE)):
+    for name, body in (("ssh", _FAKE_SSH), ("make", _FAKE_MAKE), ("poetry", _FAKE_POETRY)):
         (bin_dir / name).write_text(body, encoding="utf-8")
         (bin_dir / name).chmod(0o755)
 
@@ -314,7 +315,7 @@ def test_a_drawing_change_is_timed_against_the_merge_base_s_package_after_a_gree
     result = station.run()
 
     assert result.returncode == 0, result.stderr
-    assert station.made() == ["make ci", "perf-ab against: base"]
+    assert station.made() == ["make ci", "bench against: base"]
     assert "CI PASSED" in result.stderr
     assert not station.perf_base().exists()
     assert station.git("status", "--porcelain") == ""
@@ -335,7 +336,7 @@ def test_a_change_to_any_drawing_path_committed_or_not_is_timed(tmp_path: Path, 
     result = station.run()
 
     assert result.returncode == 0, result.stderr
-    assert "perf-ab against: base" in station.made()
+    assert "bench against: base" in station.made()
 
 
 def test_a_change_off_the_drawing_paths_is_not_timed(tmp_path: Path) -> None:
@@ -389,7 +390,7 @@ def test_the_comparison_can_be_forced_off_or_on(tmp_path: Path, mode: str, path:
     result = station.run(OPENFOLLOW_CI_PERF=mode)
 
     assert result.returncode == 0, result.stderr
-    assert ("perf-ab against: base" in station.made()) is timed
+    assert ("bench against: base" in station.made()) is timed
 
 
 def test_without_a_merge_base_the_comparison_is_skipped_and_said_so(tmp_path: Path) -> None:
@@ -399,7 +400,7 @@ def test_without_a_merge_base_the_comparison_is_skipped_and_said_so(tmp_path: Pa
 
     assert result.returncode == 0, result.stderr
     assert "skipping the Operator Screen drawing comparison" in result.stderr
-    assert not any(line.startswith("perf-ab") for line in station.made())
+    assert not any(line.startswith("bench") for line in station.made())
 
 
 @pytest.mark.parametrize(("perf_status", "expected"), [("0", 0), ("1", 1)])
@@ -410,5 +411,5 @@ def test_the_local_fallback_times_a_drawing_change_too(tmp_path: Path, perf_stat
     result = station.run(OPENFOLLOW_CI_LOCAL="1", FAKE_PERF_STATUS=perf_status)
 
     assert result.returncode == expected, result.stderr
-    assert station.made() == [f"make -C {station.local} ci", "perf-ab against: base"]
+    assert station.made() == [f"make -C {station.local} ci", "bench against: base"]
     assert not station.perf_base().exists()

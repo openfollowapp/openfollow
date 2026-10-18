@@ -67,10 +67,8 @@ ci: lint typecheck security test test-smoke-e2e build
 ci-remote:
 	@bash scripts/ci-remote.sh
 
-# Operator Screen drawing against another checkout's renderer: PERF_BASE is a
-# directory holding its openfollow/ package. Fails when a bench scene is more
-# than 15 % slower; ci-remote runs it against the merge-base when a change
-# touches the drawing paths (scripts/hw_validation/hud_bench.py).
+# Operator Screen drawing against the renderer in PERF_BASE (a directory holding
+# openfollow/); fails when a bench scene is more than 15 % slower.
 perf-ab:
 	@test -n "$(PERF_BASE)" || { echo "perf-ab needs PERF_BASE=<dir holding openfollow/>" >&2; exit 2; }
 	poetry run python scripts/hw_validation/hud_bench.py --compare "$(PERF_BASE)"

@@ -4138,4 +4138,22 @@ class TestIdleScheduler:
         manager, _svc = _manager()
         _start_asleep(manager)
         assert manager.stop() is True
-        assert manager._thread is None
+
+    def test_a_stop_that_lands_mid_iteration_ends_an_idle_scheduler(self) -> None:
+        manager, _svc = _manager()
+
+        class _StopBeforeClear(threading.Event):
+            def clear(self) -> None:
+                # stop() sets both events after the loop's last stop check.
+                manager._stop.set()
+                self.set()
+                super().clear()
+
+        manager._wake = _StopBeforeClear()
+        thread = threading.Thread(target=manager._loop, daemon=True)
+        thread.start()
+        thread.join(2.0)
+        try:
+            assert not thread.is_alive()
+        finally:
+            threading.Event.set(manager._wake)

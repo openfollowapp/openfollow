@@ -786,12 +786,12 @@ class OscTransmitterManager:
     # ------------------------------------------------------------------
 
     def _loop(self) -> None:
-        # Each iteration ticks every row whose down-sample counter fires and
-        # sends the queued event plans. While a Stream row is enabled it sleeps
-        # to the next beat; otherwise until it is woken, so a station sending
-        # no stream never wakes. ``stop()`` ends either wait.
-        while not self._stop.is_set():
+        # Ticks every beat while a Stream row is enabled, otherwise sleeps until woken.
+        while True:
             self._wake.clear()
+            # Checked after the clear, so a stop() landing mid-iteration is never lost.
+            if self._stop.is_set():
+                return
             self._tick_once()
             if self._streaming():
                 self._stop.wait(_TICK_INTERVAL_S)

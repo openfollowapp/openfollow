@@ -38,17 +38,17 @@ Which network interface SRT, RTSP and RTP use is set under **Network Interface A
   | Cross aisle, stage right | 27.461 m | 24.781 m |
   | Centre aisle, back | 31.697 m | 31.697 m |
 
-  **Concert** is a concert stage seen from a camera on the upstage back truss, looking down over the stage into the crowd through a wide barrel lens. It was drawn with this camera, which puts the grid on the deck seams. The tape on the stage marks a 12 × 8 m grid with the Reference Point at the middle of its downstage edge; the stage decks are 1 m across and 2 m deep.
+  **Concert** is a concert stage seen from a camera on the upstage back truss, looking down over the stage into the crowd through a wide barrel lens. It was drawn with this camera, which puts the grid on the deck seams. The tape on the stage marks a 12 × 6 m grid with the Reference Point at the middle of its downstage edge; the stage decks are 1 m across and 2 m deep.
 
   | Camera setting | Value |
   |---|---|
-  | Position X / Y / Z | 0 / 15 / 12.5 m |
-  | Pitch | -44° |
+  | Position X / Y / Z | 0 / 13 / 12 m |
+  | Pitch | -48° |
   | Yaw | 180° |
   | Roll | 0° |
-  | Horizontal Field of View | 78° |
-  | Barrel / fisheye | -0.25 |
-  | Edge fit | 0.04 |
+  | Horizontal Field of View | 70° |
+  | Barrel / fisheye | -0.2 |
+  | Edge fit | 0.03 |
 
   Clips are not transcoded on-device – prepare a conforming VP8 WebM on a workstation, e.g.:
 

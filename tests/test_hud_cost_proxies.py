@@ -21,7 +21,7 @@ from openfollow.runtime.overlay_draw_zones import ZoneCache
 from openfollow.runtime.overlay_state import OverlayState
 from openfollow.video.overlay import CairoOverlayRenderer
 from tests import _hud_scenes
-from tests._hud_cost import count_calls
+from tests._hud_cost import CountingContext, area, count_calls
 from tests._hud_scenes import SCENES, frames
 
 pytestmark = pytest.mark.unit
@@ -104,3 +104,17 @@ def test_a_cone_is_drawn_again_only_when_its_marker_moves() -> None:
     with count_calls(ConeCache, "_render") as drawn:
         _draw("cones")
     assert drawn[0] == len(states[0].markers) + moving
+
+
+def test_a_viewer_only_card_s_group_covers_the_card_not_the_canvas() -> None:
+    renderer = CairoOverlayRenderer()
+    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 1920, 1080)
+    groups: list[tuple[float, float, float, float]] = []
+    for width, height, state in frames("eight_markers", 2):
+        cr = CountingContext(surface)
+        renderer.draw(cr, width, height, state)
+        groups += cr.groups
+    viewers = sum(not m.is_controlled for m in frames("eight_markers", 1)[0][2].markers)
+    assert len(groups) == 2 * viewers
+    # A card is 180 x 67 px; its border and antialiasing reach a few pixels past it.
+    assert max(area(g) for g in groups) <= (180 + 8) * (67 + 8)

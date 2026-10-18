@@ -2,7 +2,10 @@
 # Copyright (C) 2026 OpenFollow Project
 """Counting what an Operator Screen picture costs, for tests that must not depend on timing.
 
-``count_calls`` counts calls to a module function or method while a block runs.
+``CountingContext`` is a real Cairo context on a real surface (the pixels are
+real) that also records the groups it pushes with the clip in effect, whose
+cost grows with the area they cover. ``count_calls`` counts calls to a module
+function or method while a block runs.
 """
 
 from __future__ import annotations
@@ -10,6 +13,28 @@ from __future__ import annotations
 import contextlib
 from collections.abc import Iterator
 from typing import Any
+
+import cairo
+
+
+class CountingContext(cairo.Context):
+    """A Cairo context that records each group it pushes with the clip extents in effect."""
+
+    def __init__(self, target: cairo.Surface) -> None:
+        super().__init__()
+        self.groups: list[tuple[float, float, float, float]] = []
+
+    def __new__(cls, target: cairo.Surface) -> CountingContext:
+        return super().__new__(cls, target)
+
+    def push_group(self) -> None:
+        self.groups.append(self.clip_extents())
+        super().push_group()
+
+
+def area(extents: tuple[float, float, float, float]) -> float:
+    x0, y0, x1, y1 = extents
+    return max(0.0, x1 - x0) * max(0.0, y1 - y0)
 
 
 @contextlib.contextmanager

@@ -5,17 +5,17 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Hashable
-from typing import Any
+from collections.abc import Callable
+from typing import Any, TypeAlias
 
 import cairo
 
-Paint = Callable[[cairo.Context], None]
+Paint: TypeAlias = "Callable[[cairo.Context[Any]], None]"
 
 
 def target_font_options(cr: Any) -> cairo.FontOptions:
     """The font options text on ``cr`` is drawn with: its target's, overridden by its own."""
-    options = cr.get_target().get_font_options()
+    options: cairo.FontOptions = cr.get_target().get_font_options()
     options.merge(cr.get_font_options())
     return options
 
@@ -69,9 +69,9 @@ class PanelCache:
     """
 
     def __init__(self) -> None:
-        self._entries: dict[str, tuple[Hashable, cairo.ImageSurface | None, int, int]] = {}
+        self._entries: dict[str, tuple[object, cairo.ImageSurface | None, int, int]] = {}
 
-    def draw(self, cr: Any, slot: str, key: Hashable, paint: Paint, w: int, h: int) -> None:
+    def draw(self, cr: Any, slot: str, key: object, paint: Paint, w: int, h: int) -> None:
         """Paste the panel in ``slot``; ``key`` holds every input ``paint`` draws it from, or it freezes on screen."""
         scale = cr.get_target().get_device_scale()
         options = target_font_options(cr)

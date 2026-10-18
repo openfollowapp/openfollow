@@ -228,6 +228,16 @@ class TestAssistGhost:
         # Reached the ghost path, but nothing fillable was drawn.
         assert cr.fills == 0
 
+    def test_ghost_behind_the_camera_draws_nothing(self) -> None:
+        state = _state_with_grid_offset(0.0, 0.0, 0.0)
+        state.show_ground_circle = True
+        state.ground_circle_size = 3.0
+        # Behind the camera at y = -6, its ground ring reaching in front of it.
+        ghost = MarkerOverlayData(marker_id=1, x=0.0, y=-9.0, z=0.0, color="#33ff99", is_assist_ghost=True)
+        cr = FakeCairo()
+        draw_marker(cr, state, ghost, 1920, 1080)
+        assert cr.strokes == 0
+
 
 def _marker_state(k1: float = 0.0, k2: float = 0.0) -> OverlayState:
     """Camera + grid with every marker glyph enabled, lens distortion configurable."""

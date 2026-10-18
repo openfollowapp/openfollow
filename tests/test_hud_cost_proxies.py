@@ -4,7 +4,9 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
+from typing import Any
 
 import cairo
 import numpy as np
@@ -13,6 +15,7 @@ import pytest
 from openfollow.runtime import overlay_draw_paths, overlay_draw_scene
 from openfollow.runtime.overlay_draw_scene import ConeCache
 from openfollow.runtime.overlay_draw_zones import ZoneCache
+from openfollow.runtime.overlay_state import OverlayState
 from openfollow.video.overlay import CairoOverlayRenderer
 from tests import _hud_scenes
 from tests._hud_cost import count_calls
@@ -40,6 +43,22 @@ def test_this_checkout_has_every_field_the_scenes_set() -> None:
     for name in SCENES:
         frames(name, 1)
     assert not _hud_scenes.DROPPED
+
+
+def test_a_scene_field_the_checkout_lacks_is_named(monkeypatch: pytest.MonkeyPatch) -> None:
+    older = dataclasses.make_dataclass(
+        "OverlayState",
+        [
+            (f.name, Any, dataclasses.field(default=None))
+            for f in dataclasses.fields(OverlayState)
+            if f.name != "show_paths"
+        ],
+    )
+    monkeypatch.setattr(_hud_scenes, "OverlayState", older)
+    monkeypatch.setattr(_hud_scenes, "DROPPED", set())
+    ((_, _, state),) = frames("full", 1)
+    assert not hasattr(state, "show_paths")
+    assert sorted(_hud_scenes.DROPPED) == ["OverlayState.show_paths"]
 
 
 @pytest.mark.parametrize("name", sorted(SCENES))

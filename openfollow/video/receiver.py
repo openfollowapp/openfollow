@@ -107,6 +107,8 @@ class GstNativeSinkReceiver:
         self._apply_policy_overrides()
         self._source_type = source_type
         self._input_config: dict[str, Any] = input_config or {}
+        # (input class, config it was worked out from, label); see source_name.
+        self._source_label: tuple[type, dict[str, Any], str] | None = None
 
         self._on_source_picked = on_source_picked
         self._reconnect_delay = max(0.1, reconnect_delay)
@@ -271,8 +273,16 @@ class GstNativeSinkReceiver:
 
     @property
     def source_name(self) -> str:
-        """Return the active source label."""
-        return self._input.get_source_label(self._input_config)
+        """The active source's label, worked out again only when the input, its config or the pipeline changes.
+
+        Read every frame; an input may look on disk for it (the Media Gallery its
+        selection), which must not run on the frame loop each time.
+        """
+        cached = self._source_label
+        if cached is None or cached[0] is not type(self._input) or cached[1] != self._input_config:
+            label = self._input.get_source_label(self._input_config)
+            cached = self._source_label = (type(self._input), dict(self._input_config), label)
+        return cached[2]
 
     @property
     def source_kind(self) -> SourceKind:
@@ -573,6 +583,8 @@ class GstNativeSinkReceiver:
     def create_pipeline(self) -> None:
         """Build the GStreamer pipeline via the active input plugin."""
         Gst.init(None)
+        # The input resolves what it plays as it builds; the label follows it.
+        self._source_label = None
         self._reset_video_flow_state()
         self._note_pin()
         available, reason = self._input.__class__.is_available()

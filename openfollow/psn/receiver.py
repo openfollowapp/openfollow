@@ -272,8 +272,11 @@ class PsnReceiver:
             )
 
     def get_marker(self, marker_id: int) -> Marker | None:
-        """Return a received marker by ID, or ``None``."""
+        """Return a received marker by ID, or ``None`` once it has been silent past the TTL."""
         with self._lock:
+            # Swept on read too: this station's own packets are never decoded,
+            # so with no peer left sending, no packet would ever sweep.
+            self._sweep_if_due_locked(time.monotonic())
             return self._markers.get(marker_id)
 
     def is_marker_online(self, marker_id: int, timeout: float = 2.0) -> bool:
@@ -310,9 +313,7 @@ class PsnReceiver:
                 # together, so they share an arrival time. Local and monotonic -
                 # not comparable to the sender-timed stamp the marker carries.
                 now = time.monotonic()
-                if now - self._last_evict_sweep >= _EVICT_SWEEP_INTERVAL_S:
-                    self._last_evict_sweep = now
-                    self._evict_stale_markers_locked(now)
+                self._sweep_if_due_locked(now)
                 for t in data.trackers:
                     # tracker_id 0 is the reserved "ignored" id on the PSN wire;
                     # Marker(0) raises, which would abort the loop and drop every
@@ -369,6 +370,12 @@ class PsnReceiver:
                     self._last_seen[tid] = now
         except Exception:
             logger.debug("Malformed PSN packet ignored", exc_info=True)
+
+    def _sweep_if_due_locked(self, now: float) -> None:
+        """Evict stale markers at most every ``_EVICT_SWEEP_INTERVAL_S``. Caller holds ``_lock``."""
+        if now - self._last_evict_sweep >= _EVICT_SWEEP_INTERVAL_S:
+            self._last_evict_sweep = now
+            self._evict_stale_markers_locked(now)
 
     def _evict_stale_markers_locked(self, now: float) -> None:
         """Drop markers silent longer than ``_MARKER_TTL_S``. Caller holds ``_lock``."""

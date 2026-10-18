@@ -819,3 +819,27 @@ class TestPsnReceiverHandsOwnSourceToItsReceiveThread:
         thread._gate = _ReadsThenStops(2)
         thread.run()
         assert decoded == [b"peer"]
+
+    def test_a_departed_peer_is_forgotten_while_only_its_own_packets_arrive(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        clock = {"now": 0.0}
+        monkeypatch.setattr(receiver_module.time, "monotonic", lambda: clock["now"])
+        monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
+        packets = {b"peer": _FakeDataPacket([_PacketTracker(7, _Vec(1.0, 2.0, 3.0), _Vec(0.0, 0.0, 0.0))])}
+        monkeypatch.setattr(receiver_module.pypsn, "parse_psn_packet", packets.__getitem__)
+        sock = _AddressedSocket([(b"peer", _PEER), (b"own", _OWN)])
+        monkeypatch.setattr(receiver_module.pypsn, "get_socket", lambda *_args: sock)
+        started: list[_RobustReceiver] = []
+        monkeypatch.setattr(_RobustReceiver, "start", lambda self: started.append(self))
+
+        recv = PsnReceiver(source_ip="10.0.0.5", own_source=lambda: _OWN)
+        recv.start()
+        (thread,) = started
+        thread._gate = _ReadsThenStops(1)
+        thread.run()
+        assert recv.get_marker(7) is not None
+        clock["now"] = 100.0  # past the TTL; from here on only this station's own output arrives
+        thread._gate = _ReadsThenStops(1)
+        thread.run()
+        assert recv.get_marker(7) is None

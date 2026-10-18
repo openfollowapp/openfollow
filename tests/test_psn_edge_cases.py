@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import pytest
+from conftest import psn_packet_clock as _packet_clock
 
 import openfollow.psn.receiver as receiver_module
 from openfollow.psn.receiver import PsnReceiver
@@ -73,8 +74,7 @@ def test_receiver_drops_update_when_dt_too_small(monkeypatch) -> None:
     last known value (zero here)."""
     monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
     # Two timestamps 0.0005 s apart.
-    times = iter([1000.0, 1000.0005])
-    monkeypatch.setattr(receiver_module.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(receiver_module.time, "monotonic", _packet_clock(1000.0, 1000.0005))
 
     receiver = PsnReceiver()
     receiver._on_packet(
@@ -109,8 +109,7 @@ def test_receiver_drops_update_when_dt_too_large(monkeypatch) -> None:
     """Two packets >1 s apart → treat as a re-connect, not a motion
     update. Otherwise a long gap would produce a tiny bogus velocity."""
     monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
-    times = iter([1000.0, 1005.0])  # 5 s gap
-    monkeypatch.setattr(receiver_module.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(receiver_module.time, "monotonic", _packet_clock(1000.0, 1005.0))  # 5 s gap
 
     receiver = PsnReceiver()
     receiver._on_packet(
@@ -144,8 +143,7 @@ def test_receiver_skips_derivation_when_position_unchanged(monkeypatch) -> None:
     """A stationary marker with zero protocol speed stays at zero –
     the helper must not update speed when dx == dy == dz == 0."""
     monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
-    times = iter([1.0, 1.5])
-    monkeypatch.setattr(receiver_module.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(receiver_module.time, "monotonic", _packet_clock(1.0, 1.5))
 
     receiver = PsnReceiver()
     for _ in range(2):

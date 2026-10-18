@@ -71,7 +71,7 @@ Every marker-carrying output grows its datagram with the marker count, and **147
 
 ## PsnReceiver (`psn/receiver.py`)
 - Receives PSN multicast in background thread
-- `own_source`: this station's own output, looped back, is dropped before it is decoded – a datagram whose source `(address, port)` equals `PsnServer.source_address()` (the multicast socket's `getsockname()`, `None` while it has none). A peer always differs: another host has another address, another socket on this host another port
+- `own_source`: this station's own output, looped back, is dropped before it is decoded – a datagram whose source `(address, port)` equals `PsnServer.source_address()` (the multicast socket's `getsockname()`, `None` while it has none). A peer always differs: another host has another address, another socket on this host another port. Own packets therefore never reach `_on_packet`, so the stale-marker sweep (`_MARKER_TTL_S`) runs on `get_marker` too: a departed peer is forgotten even when nothing else is sending
 - `ignore_ids`: controlled_marker_ids – prevents loopback overwriting own markers (the backstop for own packets `own_source` cannot name: unicast output, or a datagram from a socket the server already replaced)
 - `_last_seen[tid]`: monotonic timestamp of last received packet
 - `_last_pos[tid]`: previous position for speed derivation

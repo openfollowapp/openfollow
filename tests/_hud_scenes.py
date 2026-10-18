@@ -57,6 +57,12 @@ def _make(cls: type, **values: Any) -> Any:
     return cls(**{k: v for k, v in values.items() if k in names})
 
 
+def overlay_state_without(*missing: str) -> type:
+    """An ``OverlayState`` lacking ``missing``, as an older checkout's; every field defaults to ``None``."""
+    kept = [f.name for f in dataclasses.fields(OverlayState) if f.name not in missing]
+    return dataclasses.make_dataclass("OverlayState", [(name, Any, dataclasses.field(default=None)) for name in kept])
+
+
 def _marker_path(index: int, t: float) -> tuple[float, float]:
     """Where marker ``index`` stands at ``t`` (0..1 over the scene); the first two move."""
     a = 2.0 * math.pi * t

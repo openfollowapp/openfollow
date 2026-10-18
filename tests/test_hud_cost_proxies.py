@@ -11,7 +11,6 @@ from __future__ import annotations
 import dataclasses
 import logging
 from collections.abc import Callable
-from typing import Any
 
 import cairo
 import pytest
@@ -51,15 +50,7 @@ def test_this_checkout_has_every_field_the_scenes_set() -> None:
 
 
 def test_a_scene_field_the_checkout_lacks_is_named(monkeypatch: pytest.MonkeyPatch) -> None:
-    older = dataclasses.make_dataclass(
-        "OverlayState",
-        [
-            (f.name, Any, dataclasses.field(default=None))
-            for f in dataclasses.fields(OverlayState)
-            if f.name != "show_paths"
-        ],
-    )
-    monkeypatch.setattr(_hud_scenes, "OverlayState", older)
+    monkeypatch.setattr(_hud_scenes, "OverlayState", _hud_scenes.overlay_state_without("show_paths"))
     monkeypatch.setattr(_hud_scenes, "DROPPED", set())
     ((_, _, state),) = frames("full", 1)
     assert not hasattr(state, "show_paths")

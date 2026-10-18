@@ -4,10 +4,10 @@
 
 from __future__ import annotations
 
-import dataclasses
 import importlib.util
 import io
 import json
+import subprocess
 import sys
 from collections.abc import Iterator
 from pathlib import Path
@@ -359,16 +359,9 @@ def test_a_worker_answers_each_request_with_one_line() -> None:
 
 
 def test_a_worker_names_only_the_fields_the_scene_itself_sets(monkeypatch: pytest.MonkeyPatch) -> None:
-    from openfollow.runtime.overlay_state import OverlayState
+    from tests._hud_scenes import overlay_state_without
 
-    older = dataclasses.make_dataclass(
-        "OverlayState",
-        [
-            (f.name, Any, dataclasses.field(default=None))
-            for f in dataclasses.fields(OverlayState)
-            if f.name != "show_paths"
-        ],
-    )
+    older = overlay_state_without("show_paths")
     load = bench.load_scenes
 
     def load_against_older() -> Any:
@@ -454,3 +447,48 @@ def test_closing_a_worker_whose_pipe_is_gone_still_waits_for_it() -> None:
     proc = _Proc(_DeadPipe(), "")
     _worker_with(proc).close()
     assert proc.waited
+
+
+class _HungProc(_Proc):
+    """A worker that does not exit until killed."""
+
+    def __init__(self) -> None:
+        super().__init__(io.StringIO(), "")
+        self.killed = False
+
+    def wait(self, timeout: float | None = None) -> int:
+        if timeout is not None and not self.killed:
+            raise subprocess.TimeoutExpired("worker", timeout)
+        return super().wait(timeout)
+
+    def kill(self) -> None:
+        self.killed = True
+
+
+def test_closing_a_worker_that_does_not_exit_kills_it() -> None:
+    proc = _HungProc()
+    _worker_with(proc).close()
+    assert proc.killed and proc.waited
+
+
+def test_the_worker_flag_runs_a_worker_for_that_checkout(monkeypatch: pytest.MonkeyPatch) -> None:
+    roots: list[Path] = []
+
+    def worker(root: Path) -> int:
+        roots.append(root)
+        return 0
+
+    monkeypatch.setattr(bench, "worker", worker)
+    assert bench.main(["--worker", "/base"]) == 0
+    assert roots == [Path("/base")]
+
+
+def test_a_worker_process_answers_a_round_over_its_pipes() -> None:
+    worker = bench.Worker(bench.REPO)
+    try:
+        reply = worker.run("light", 1)
+    finally:
+        worker.close()
+    assert reply["errors"] == [] and reply["dropped"] == [] and reply["split"] == {}
+    assert isinstance(reply["ms"], float)
+    assert worker.proc.returncode == 0

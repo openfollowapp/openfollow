@@ -280,8 +280,9 @@ class GstNativeSinkReceiver:
         """
         cached = self._source_label
         if cached is None or cached[0] is not type(self._input) or cached[1] != self._input_config:
-            label = self._input.get_source_label(self._input_config)
-            cached = self._source_label = (type(self._input), dict(self._input_config), label)
+            # Key and label from one snapshot: the GTK thread may swap or edit the config meanwhile.
+            input_cls, config = type(self._input), dict(self._input_config)
+            cached = self._source_label = (input_cls, config, input_cls.get_source_label(config))
         return cached[2]
 
     @property

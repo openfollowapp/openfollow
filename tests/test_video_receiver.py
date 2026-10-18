@@ -1759,6 +1759,21 @@ class TestSourceLabel:
         r.swap_input("fake_alt", {})
         assert r.source_name == "alt"
 
+    def test_a_source_picked_while_the_label_is_worked_out_is_not_hidden(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        # The stats route reads the label on the web thread while the GTK thread picks a source.
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+
+        def label(cls: type, config: dict[str, Any]) -> str:
+            name = config["fake_source"]
+            r._input_config["fake_source"] = "cam-2"
+            return name
+
+        monkeypatch.setattr(FakeInput, "get_source_label", classmethod(label))
+        assert r.source_name == "cam-1"
+        assert r.source_name == "cam-2"
+
     def test_a_rebuilt_pipeline_works_the_label_out_again(
         self, fake_gst, fake_glib, fake_input_cls, monkeypatch
     ) -> None:

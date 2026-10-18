@@ -217,9 +217,11 @@ class Worker:
         if not line:
             raise RuntimeError(f"the worker for {self.root} stopped")
         try:
-            return dict(json.loads(line))
-        except ValueError as exc:
+            reply = json.loads(line)
+            float(reply["ms"])
+        except (ValueError, TypeError, KeyError) as exc:
             raise RuntimeError(f"the worker for {self.root} answered {line.strip()!r}") from exc
+        return dict(reply)
 
     def close(self) -> None:
         with contextlib.suppress(OSError):
@@ -335,7 +337,11 @@ def main(argv: Sequence[str] | None = None, make_worker: Callable[[Path], Any] =
     if args.worker is not None:
         return worker(args.worker)
     sys.path.insert(0, str(REPO))
-    known = list(load_scenes().SCENES)
+    try:
+        known = list(load_scenes().SCENES)
+    except ImportError as exc:
+        print(f"the scenes do not load in this checkout: {exc}", file=sys.stderr)
+        return 2
     scenes = [s for s in args.scenes.split(",") if s] or known
     unknown = [s for s in scenes if s not in known]
     if unknown:

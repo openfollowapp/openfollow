@@ -294,6 +294,19 @@ def test_a_negative_or_nan_slowdown_is_refused(value: str, capsys: pytest.Captur
     assert "--max-slowdown" in capsys.readouterr().err
 
 
+def test_scenes_that_do_not_load_here_are_a_side_that_cannot_run(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def broken() -> Any:
+        raise ModuleNotFoundError("No module named 'openfollow.zones'")
+
+    monkeypatch.setattr(bench, "load_scenes", broken)
+    code, workers = _main(["--scenes", "light"])
+    assert code == 2
+    assert workers == []
+    assert "openfollow.zones" in capsys.readouterr().err
+
+
 def test_a_compare_directory_without_the_package_is_refused(tmp_path: Path) -> None:
     assert _main(["--compare", str(tmp_path)])[0] == 2
 
@@ -435,8 +448,15 @@ def _worker_with(proc: _Proc) -> Any:
 
 @pytest.mark.parametrize(
     ("stdin", "stdout"),
-    [(_DeadPipe(), ""), (io.StringIO(), ""), (io.StringIO(), "Traceback (most recent call last):\n")],
-    ids=["broken-pipe", "eof", "not-json"],
+    [
+        (_DeadPipe(), ""),
+        (io.StringIO(), ""),
+        (io.StringIO(), "Traceback (most recent call last):\n"),
+        (io.StringIO(), "42\n"),
+        (io.StringIO(), "{}\n"),
+        (io.StringIO(), '{"ms": null}\n'),
+    ],
+    ids=["broken-pipe", "eof", "not-json", "not-an-object", "no-ms", "ms-not-a-number"],
 )
 def test_a_worker_that_stopped_or_garbled_its_answer_is_a_runtime_error(stdin: Any, stdout: str) -> None:
     with pytest.raises(RuntimeError, match="/base"):

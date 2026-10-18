@@ -651,6 +651,21 @@ class WebCommandQueue:
 # ---------------------------------------------------------------------------
 
 
+def _start_daemon(work: Callable[[], None]) -> None:
+    threading.Thread(target=work, daemon=True, name="PersonDetector-Build").start()
+
+
+def _idle_add_once(work: Callable[[], None]) -> None:
+    """Run ``work`` once on the GTK main loop."""
+    from gi.repository import GLib
+
+    def run() -> bool:
+        work()
+        return False
+
+    GLib.idle_add(run)
+
+
 class AppRuntimeServices:
     """Grouped startup and per-frame services for OpenFollowApp."""
 
@@ -675,6 +690,11 @@ class AppRuntimeServices:
         self._hud_render: HudRenderThread | None = None  # set in init_video when there is a screen
         self._system_stats: SystemStatsCollector | None = None  # set in init_video
         self._person_detector: PersonDetector | None = None  # set in init_video if enabled
+        # A detector is built off the frame loop and wired back on it; tests run both in place.
+        self._off_main_thread: Callable[[Callable[[], None]], None] = _start_daemon
+        self._on_main_thread: Callable[[Callable[[], None]], None] = _idle_add_once
+        # Bumped by every detection change, so a build a later change overtook is dropped.
+        self._detector_builds = 0
 
         self._frame_metrics = FrameMetrics()
         self._frame_start_time = 0.0
@@ -2581,16 +2601,20 @@ class AppRuntimeServices:
         production while still passing ``SimpleNamespace`` tests.
         """
         detector = self._person_detector
+        if not new_cfg.enabled:
+            # A detector still being built for an earlier change is dropped when it lands.
+            self._detector_builds += 1
         if detector is not None and new_cfg.enabled:
             detector.reload_config(new_cfg)
         elif detector is not None and not new_cfg.enabled:
-            detector.stop()
+            # An inference in flight finishes off the frame loop.
+            detector.stop(wait=False)
             self._person_detector = None
         # else: detector is None – caller (dispatcher) handles the
         # off→on case via request_restart and the off→off case is a
         # genuine no-op.
 
-    def swap_detector(self, new_cfg: DetectionConfig) -> None:
+    def swap_detector(self, new_cfg: DetectionConfig, on_failure: Callable[[], None] | None = None) -> None:
         """Apply a ``detection`` config change live for the three
         transitions ``apply_detection_change`` cannot serve: off→on,
         unavailable→on (re-probed backend), and ``inference_size``
@@ -2598,11 +2622,56 @@ class AppRuntimeServices:
 
         Each case reduces to the same primitive: rebuild the receiver
         pipeline so the detection branch matches the new detector's
-        appsink caps. ``PersonDetector`` construction is cheap once the
-        model file is cached – ``_load_backend`` is the only heavy step,
-        accepted as a brief GTK-thread stall on save. Backend-init
-        failures land as ``available=False`` (swallowed in ``__init__``);
-        the reason surfaces via runtime-stats ``missing_deps``, not a raise.
+        appsink caps. Building the detector loads its ONNX session, which
+        takes seconds on a large model, so it runs off the frame loop and
+        the branch is wired back on it (``_install_detector``); a build a
+        later detection change overtook is dropped. A wiring failure calls
+        ``on_failure``, as the dispatcher reverts the stored config on a
+        raise. Backend-init failures land as ``available=False``; the
+        reason surfaces via runtime-stats ``missing_deps``.
+
+        Raises at once only without a video receiver, so the dispatcher
+        reverts rather than committing the new cfg against a missing runtime.
+        """
+        from openfollow.video.detection import PersonDetector
+
+        if self._app._video_receiver is None:
+            raise RuntimeError(
+                "swap_detector: no video receiver to swap – runtime is not initialised",
+            )
+        self._detector_builds += 1
+        build = self._detector_builds
+
+        def construct() -> None:
+            try:
+                detector = PersonDetector(new_cfg)
+            except Exception:
+                logger.exception("detection: the person detector could not be built")
+                self._on_main_thread(lambda: self._detector_swap_failed(build, on_failure))
+                return
+            self._on_main_thread(lambda: self._install_detector(detector, build, on_failure))
+
+        self._off_main_thread(construct)
+
+    def _detector_swap_failed(self, build: int, on_failure: Callable[[], None] | None) -> None:
+        if build == self._detector_builds and on_failure is not None:
+            on_failure()
+
+    def _install_detector(
+        self, new_detector: PersonDetector, build: int, on_failure: Callable[[], None] | None
+    ) -> None:
+        """Wire a built detector into the pipeline on the main thread, unless a later change overtook it."""
+        if build != self._detector_builds:
+            new_detector.stop(wait=False)
+            return
+        try:
+            self._wire_detector(new_detector)
+        except Exception:
+            logger.exception("detection: the new person detector could not be wired in")
+            self._detector_swap_failed(build, on_failure)
+
+    def _wire_detector(self, new_detector: PersonDetector) -> None:
+        """Rebuild the pipeline around ``new_detector``.
 
         Skip-rebuild fast path: when **both** old and new detector are
         unavailable (or there's no old detector) the prior pipeline never
@@ -2611,22 +2680,17 @@ class AppRuntimeServices:
 
         **Transactional rollback** mirrors ``swap_video``: on
         ``swap_detection_branch`` failure, rebuild against the
-        prior detector so the receiver stays consistent with the
-        dispatcher's reverted ``app._config.detection``. Receiver
-        reference stays attached across every failure mode –
-        runtime / UI paths read ``app._video_receiver.<x>`` every
-        frame. ``PipelineStuckError`` is the one failure mode where
-        rollback is unsafe (the rollback would re-attach the shared
-        sink to a new pipeline while the old one is still alive);
-        re-raise WITHOUT a rollback attempt.
+        prior detector, then raise. Receiver reference stays attached
+        across every failure mode – runtime / UI paths read
+        ``app._video_receiver.<x>`` every frame. ``PipelineStuckError``
+        is the one failure mode where rollback is unsafe (the rollback
+        would re-attach the shared sink to a new pipeline while the old
+        one is still alive); re-raise WITHOUT a rollback attempt.
         """
-        from openfollow.video.detection import PersonDetector
         from openfollow.video.receiver import PipelineStuckError
 
         receiver = self._app._video_receiver
-        # A missing receiver means the runtime isn't initialised; raise so
-        # ``_apply_with_fallback`` reverts rather than committing the new
-        # cfg against a missing runtime.
+        # The runtime went away while the detector was built.
         if receiver is None:
             raise RuntimeError(
                 "swap_detector: no video receiver to swap – runtime is not initialised",
@@ -2647,13 +2711,6 @@ class AppRuntimeServices:
         if receiver_detector is not None and getattr(receiver_detector, "available", False):
             old_was_available = True
 
-        # ``PersonDetector.__init__`` self-gates on ``config.enabled``
-        # (returns early without touching cv2 / the backend when
-        # disabled). The dispatcher only routes here when ``new_cfg.enabled``
-        # is True, so the unavailable branch below covers genuine
-        # backend-init failures.
-        new_detector = PersonDetector(new_cfg)
-
         if not new_detector.available and not old_was_available:
             # Both ends unavailable: neither pipeline has a detection
             # branch. Skip the NULL transition and just refresh the
@@ -2661,7 +2718,7 @@ class AppRuntimeServices:
             # ``stop()`` is no-op-safe when the outgoing detector never
             # started (its worker thread was never created).
             if old_detector is not None:
-                old_detector.stop()
+                old_detector.stop(wait=False)
             self._person_detector = new_detector
             return
 
@@ -2673,7 +2730,7 @@ class AppRuntimeServices:
             receiver.swap_detection_branch(new_detector)
         except PipelineStuckError:
             # ``logger.error`` (not ``logger.exception``): the caller
-            # ``_apply_with_fallback`` already runs ``logger.exception``,
+            # ``_install_detector`` already runs ``logger.exception``,
             # so a traceback here would just duplicate the stack frame.
             # The new detector was never wired, so there's nothing to
             # clean up – its backend session is alive in the unreferenced

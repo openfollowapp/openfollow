@@ -14,6 +14,7 @@ except ImportError:
 
 import logging
 import os
+from collections.abc import Callable
 
 import pytest
 
@@ -128,8 +129,9 @@ class _DummyRuntimeServices:
     def apply_detection_change(self, new_cfg: DetectionConfig) -> None:
         self.detection_changes.append(new_cfg)
 
-    def swap_detector(self, new_cfg: DetectionConfig) -> None:
+    def swap_detector(self, new_cfg: DetectionConfig, on_failure: Callable[[], None] | None = None) -> None:
         self.detection_swaps.append(new_cfg)
+        self.detection_swap_on_failure = on_failure
 
     def apply_window_size_change(self, width: int, height: int) -> None:
         self.window_size_changes.append((width, height))
@@ -5981,6 +5983,21 @@ def test_apply_runtime_detection_off_to_on_routes_through_swap_detector() -> Non
 
 
 @pytest.mark.usefixtures("every_feature_on")
+def test_a_detector_that_fails_after_the_swap_returned_reverts_the_stored_config() -> None:
+    """The detector is built off the frame loop: a failure reported later reverts like a raise does."""
+    app = _app_with()
+    app._runtime_services._person_detector = None
+    old_detection = app._config.detection
+    new_det = DetectionConfig(enabled=True, confidence=0.75)
+
+    apply_runtime_config_changes(app, AppConfig(detection=new_det))
+    assert app._config.detection == new_det
+    app._runtime_services.detection_swap_on_failure()
+
+    assert app._config.detection == old_detection
+
+
+@pytest.mark.usefixtures("every_feature_on")
 def test_apply_runtime_applies_detection_change_live_when_already_enabled() -> None:
     """on→on with new cfg: the orchestrator stages the swap on the
     running detector; no process restart."""
@@ -6098,7 +6115,7 @@ def test_apply_runtime_detection_swap_failure_reverts_stored_config() -> None:
     """swap_detector failure reverts config for retry."""
 
     class _FailingRuntimeServices(_DummyRuntimeServices):
-        def swap_detector(self, new_cfg: DetectionConfig) -> None:
+        def swap_detector(self, new_cfg: DetectionConfig, on_failure: Callable[[], None] | None = None) -> None:
             raise OSError("simulated swap_detector failure")
 
     app = _app_with()

@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import socket
+import threading
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
@@ -297,8 +298,9 @@ class _FakeDetector:
         # detection branch to drop on a rebuild.
         self.available = available
 
-    def stop(self) -> None:
+    def stop(self, *, wait: bool = True) -> None:
         self.stopped = True
+        self.waited = wait
 
     def reload_config(self, new_cfg: Any) -> None:
         self.reload_calls.append(new_cfg)
@@ -3660,6 +3662,8 @@ class TestApplyDetectionChange:
         services.apply_detection_change(new_cfg)
 
         assert detector.stopped is True
+        # An inference in flight finishes off the frame loop.
+        assert detector.waited is False
         assert services._person_detector is None
 
     def test_off_to_off_is_noop(self, services: AppRuntimeServices) -> None:
@@ -4219,8 +4223,32 @@ class _FakePersonDetector:
         self.stop_calls = 0
         type(self).instances.append(self)
 
-    def stop(self) -> None:
+    def stop(self, *, wait: bool = True) -> None:
         self.stop_calls += 1
+
+
+class TestDetectorHandOff:
+    def test_the_build_runs_on_a_thread_of_its_own(self) -> None:
+        ran: list[str] = []
+        done = threading.Event()
+
+        def work() -> None:
+            ran.append(threading.current_thread().name)
+            done.set()
+
+        services_module._start_daemon(work)
+        assert done.wait(2.0)
+        assert ran == ["PersonDetector-Build"]
+
+    def test_the_hand_back_runs_once_on_the_main_loop(self) -> None:
+        from gi.repository import GLib
+
+        ran: list[int] = []
+        services_module._idle_add_once(lambda: ran.append(1))
+        context = GLib.MainContext.default()
+        for _ in range(5):
+            context.iteration(False)
+        assert ran == [1]
 
 
 class TestSwapDetector:
@@ -4241,6 +4269,7 @@ class TestSwapDetector:
         _FakePersonDetector.instances = []
         _FakePersonDetector.available_default = available
         monkeypatch.setattr(detection_mod, "PersonDetector", _FakePersonDetector)
+        services._off_main_thread = services._on_main_thread = lambda work: work()
         return receiver, _FakePersonDetector
 
     def test_off_to_on_constructs_and_swaps(
@@ -4400,7 +4429,7 @@ class TestSwapDetector:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """On forward swap failure, orchestrator rebuilds against prior
-        detector and re-raises to revert config."""
+        detector and reports the failure so the config is reverted."""
         old_detector = _FakeDetector()
         # Forward swap raises; rollback succeeds.
         receiver = _RecordingReceiver(
@@ -4413,10 +4442,11 @@ class TestSwapDetector:
             existing_detector=old_detector,
         )
         new_cfg = DetectionConfig(enabled=True, confidence=0.95)
+        failed: list[bool] = []
 
-        with pytest.raises(RuntimeError, match="new pipeline failed"):
-            services.swap_detector(new_cfg)
+        services.swap_detector(new_cfg, on_failure=lambda: failed.append(True))
 
+        assert failed == [True]
         new_detector = detector_cls.instances[0]
         # First call: forward swap with the new detector.
         assert receiver.swap_detector_calls[0] is new_detector
@@ -4451,9 +4481,12 @@ class TestSwapDetector:
         )
         new_cfg = DetectionConfig(enabled=True, confidence=0.95)
 
+        failed: list[bool] = []
         with caplog.at_level("ERROR", logger="openfollow.services"):
-            with pytest.raises(RuntimeError, match="primary failure"):
-                services.swap_detector(new_cfg)
+            services.swap_detector(new_cfg, on_failure=lambda: failed.append(True))
+
+        assert failed == [True]
+        assert any("primary failure" in str(r.exc_info[1]) for r in caplog.records if r.exc_info)
 
         # Rollback was attempted – both swap calls happened.
         assert len(receiver.swap_detector_calls) == 2
@@ -4461,6 +4494,119 @@ class TestSwapDetector:
         # fresh through the off→on branch.
         assert services._person_detector is None
         assert any("rollback to prior detector failed" in r.message for r in caplog.records)
+
+    @staticmethod
+    def _deferred(services: AppRuntimeServices) -> tuple[list[Any], list[Any]]:
+        """Hold work handed off and back instead of running it, to run in an order a test picks."""
+        off_main: list[Any] = []
+        on_main: list[Any] = []
+        services._off_main_thread = off_main.append
+        services._on_main_thread = on_main.append
+        return off_main, on_main
+
+    def test_the_detector_is_not_built_on_the_calling_thread(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        receiver, detector_cls = self._setup(services, monkeypatch)
+        off_main, on_main = self._deferred(services)
+
+        services.swap_detector(DetectionConfig(enabled=True))
+
+        assert detector_cls.instances == []
+        off_main.pop()()
+        assert len(detector_cls.instances) == 1
+        assert receiver.swap_detector_calls == []
+        on_main.pop()()
+        assert receiver.swap_detector_calls == detector_cls.instances
+        assert services._person_detector is detector_cls.instances[0]
+
+    def test_a_build_a_later_change_overtook_is_dropped(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        receiver, detector_cls = self._setup(services, monkeypatch)
+        off_main, on_main = self._deferred(services)
+
+        services.swap_detector(DetectionConfig(enabled=True, confidence=0.5))
+        services.swap_detector(DetectionConfig(enabled=True, confidence=0.7))
+        for build in off_main:
+            build()
+        for install in on_main:
+            install()
+
+        first, second = detector_cls.instances
+        assert first.stop_calls == 1
+        assert receiver.swap_detector_calls == [second]
+        assert services._person_detector is second
+
+    def test_switching_off_drops_a_detector_still_being_built(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        receiver, detector_cls = self._setup(services, monkeypatch)
+        off_main, on_main = self._deferred(services)
+        failed: list[bool] = []
+
+        services.swap_detector(DetectionConfig(enabled=True), on_failure=lambda: failed.append(True))
+        services.apply_detection_change(DetectionConfig(enabled=False))
+        off_main.pop()()
+        on_main.pop()()
+
+        assert detector_cls.instances[0].stop_calls == 1
+        assert receiver.swap_detector_calls == []
+        assert services._person_detector is None
+        assert failed == []
+
+    def test_a_detector_that_cannot_be_built_reverts_the_change(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        receiver, _ = self._setup(services, monkeypatch)
+        from openfollow.video import detection as detection_mod
+
+        def broken(_cfg: Any) -> Any:
+            raise RuntimeError("cv2 missing")
+
+        monkeypatch.setattr(detection_mod, "PersonDetector", broken)
+        failed: list[bool] = []
+
+        services.swap_detector(DetectionConfig(enabled=True), on_failure=lambda: failed.append(True))
+
+        assert failed == [True]
+        assert receiver.swap_detector_calls == []
+
+    def test_an_overtaken_build_that_fails_reverts_nothing(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._setup(services, monkeypatch)
+        from openfollow.video import detection as detection_mod
+
+        def broken(_cfg: Any) -> Any:
+            raise RuntimeError("cv2 missing")
+
+        monkeypatch.setattr(detection_mod, "PersonDetector", broken)
+        off_main, on_main = self._deferred(services)
+        failed: list[str] = []
+
+        services.swap_detector(DetectionConfig(enabled=True), on_failure=lambda: failed.append("first"))
+        services.swap_detector(DetectionConfig(enabled=True), on_failure=lambda: failed.append("second"))
+        for build in off_main:
+            build()
+        for hand_back in on_main:
+            hand_back()
+
+        assert failed == ["second"]
+
+    def test_a_receiver_gone_while_the_detector_was_built_reverts_the_change(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._setup(services, monkeypatch)
+        off_main, on_main = self._deferred(services)
+        failed: list[bool] = []
+
+        services.swap_detector(DetectionConfig(enabled=True), on_failure=lambda: failed.append(True))
+        services._app._video_receiver = None
+        off_main.pop()()
+        on_main.pop()()
+
+        assert failed == [True]
 
     def test_skip_rebuild_blocked_when_receiver_still_has_available_branch(
         self,
@@ -4486,11 +4632,13 @@ class TestSwapDetector:
         # clears ``self._person_detector`` while the receiver retains
         # an available detector reference (assignment happens inside
         # ``swap_detection_branch`` before the raise).
+        failed: list[bool] = []
         with caplog.at_level("ERROR", logger="openfollow.services"):
-            with pytest.raises(RuntimeError, match="primary failure"):
-                services.swap_detector(
-                    DetectionConfig(enabled=True, confidence=0.9),
-                )
+            services.swap_detector(
+                DetectionConfig(enabled=True, confidence=0.9),
+                on_failure=lambda: failed.append(True),
+            )
+        assert failed == [True]
 
         assert services._person_detector is None
         assert receiver._detector is not None
@@ -4537,10 +4685,11 @@ class TestSwapDetector:
         )
         new_cfg = DetectionConfig(enabled=True, confidence=0.95)
 
+        failed: list[bool] = []
         with caplog.at_level("ERROR", logger="openfollow.services"):
-            with pytest.raises(PipelineStuckError, match="prior pipeline stuck"):
-                services.swap_detector(new_cfg)
+            services.swap_detector(new_cfg, on_failure=lambda: failed.append(True))
 
+        assert failed == [True]
         # Forward swap attempted exactly once – no rollback call.
         assert len(receiver.swap_detector_calls) == 1
         # Detector reference NOT mutated – the swap never reached the

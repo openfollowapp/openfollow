@@ -3900,8 +3900,9 @@ class _FakeDetector:
     def start(self) -> None:
         self.start_calls += 1
 
-    def stop(self) -> None:
+    def stop(self, *, wait: bool = True) -> None:
         self.stop_calls += 1
+        self.waited = wait
 
     def set_appsink(self, appsink: Any) -> None:
         self.set_appsink_calls.append(appsink)
@@ -3947,6 +3948,8 @@ class TestSwapDetectionBranch:
         assert r._pipeline_assembler._detector is new_detector
         # OLD detector stopped; NEW detector started after rebuild.
         assert old_detector.stop_calls == 1
+        # Detached by the NULL transition; an inference in flight finishes off the main thread.
+        assert old_detector.waited is False
         assert new_detector.start_calls == 1
         # The widget callback was NOT called with None – canvas keeps
         # the shared sink across the swap.

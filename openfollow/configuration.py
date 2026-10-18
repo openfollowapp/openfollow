@@ -4325,9 +4325,13 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
             # also fails). The dispatcher only reverts stored config;
             # an ``on_failure`` clear here would erase a successful
             # orchestrator-side rollback.
+            # The detector is built off the frame loop; a wiring failure after
+            # this returns reverts through ``on_failure``.
             if not _apply(
                 "detection_swap",
-                lambda: app._runtime_services.swap_detector(new_detection),
+                lambda: app._runtime_services.swap_detector(
+                    new_detection, on_failure=lambda: setattr(app._config, "detection", old_detection)
+                ),
             ):
                 app._config.detection = old_detection
         else:

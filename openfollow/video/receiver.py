@@ -567,7 +567,7 @@ class GstNativeSinkReceiver:
 
         old_detector = self._detector
         if old_detector is not None:
-            old_detector.stop()
+            old_detector.stop(wait=False)
 
         self._detector = new_detector
         self._pipeline_assembler.set_detector(new_detector)

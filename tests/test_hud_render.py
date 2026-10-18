@@ -636,3 +636,16 @@ def test_a_video_frame_is_counted_at_the_next_refresh(measured, clock) -> None:
     assert stats is not None
     assert stats["video_frames_per_s"] == pytest.approx(1.0)
     assert stats["video_replaced"] == 1
+
+
+def test_a_closed_window_keeps_the_interval_it_closed_with(paced, clock) -> None:
+    hud, renderer = paced
+    hud.tick()
+    _refreshes_to_show(hud, clock)
+    clock.now = clock.refreshed_at = 100.0 + 2.0
+    closed = hud.stats()
+    assert closed is not None
+    assert closed["interval_refreshes"] == 1
+    _lengthen(hud, clock, renderer, refreshes=2)
+    assert _refreshes_to_show(hud, clock) == 3
+    assert hud.stats() == closed

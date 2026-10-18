@@ -179,10 +179,9 @@ class HudRenderThread:
 
     def stats(self) -> dict[str, Any] | None:
         """``HudMetrics.summary`` with the pacing interval and the render thread's id; None before the first window."""
-        summary = self.metrics.summary(self._clock())
+        summary = self.metrics.summary(self._clock(), self._pacing.refreshes)
         if summary is None:
             return None
-        summary["interval_refreshes"] = self._pacing.refreshes
         summary["render_thread_id"] = self._thread_id
         return summary
 

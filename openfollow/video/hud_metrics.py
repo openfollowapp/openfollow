@@ -93,14 +93,18 @@ class HudMetrics:
                     w.video_held[self._since_video] = w.video_held.get(self._since_video, 0) + 1
                 self._since_video = 0
 
-    def summary(self, now: float) -> dict[str, Any] | None:
-        """The last closed window, closing the current one once it is ``window_s`` old; None before the first."""
+    def summary(self, now: float, interval_refreshes: int = 1) -> dict[str, Any] | None:
+        """The last closed window, closing the current one once it is ``window_s`` old; None before the first.
+
+        ``interval_refreshes`` is the pacing interval, recorded when a window closes.
+        """
         with self._lock:
             w = self._current
             span = now - w.start
             if span >= self._window_s:
                 self._last = {
                     "window_s": span,
+                    "interval_refreshes": interval_refreshes,
                     "pictures_per_s": w.shown / span,
                     "picture_ms": _ms(w.clear_s + w.draw_s, w.pictures),
                     "draw_ms": _ms(w.draw_s, w.pictures),

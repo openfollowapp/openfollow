@@ -100,3 +100,15 @@ def test_a_summary_is_a_copy() -> None:
     summary = _closed(metrics)
     summary["picture_ms"] = 99.0
     assert metrics.summary(START + 2.5)["picture_ms"] == 0.0
+
+
+def test_the_pacing_interval_is_the_one_the_window_closed_with() -> None:
+    metrics = HudMetrics(START)
+    first = metrics.summary(START + 2.0, 2)
+    assert first is not None
+    assert first["interval_refreshes"] == 2
+    # The interval changing later never alters a window already closed.
+    assert metrics.summary(START + 2.5, 3) == first
+    second = metrics.summary(START + 4.0, 3)
+    assert second is not None
+    assert second["interval_refreshes"] == 3

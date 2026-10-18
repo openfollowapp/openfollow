@@ -41,7 +41,7 @@ The ground grid (`GroundGridConfig`, the experimental `ground_grid` feature) is 
 | `picture_ms`, `clear_ms`, `draw_ms` | CPU per picture on the render thread: clearing (or allocating) plus drawing |
 | `paint_ms`, `repaints_per_s` | CPU per repaint on the GTK main thread (the paste) and how many repaints a second; every video frame repaints the HUD too |
 | `pictures_per_s`, `refreshes_per_s` | New pictures shown and display ticks a second |
-| `interval_refreshes` | The pacing interval: refreshes each picture is held |
+| `interval_refreshes` | The pacing interval when the window closed: refreshes each picture is held |
 | `picture_refreshes` | How many refreshes each picture stayed on screen, as counts (`{"2": 59, "3": 1}`); everything at `interval_refreshes` is an even HUD |
 | `video_frames_per_s`, `video_refreshes`, `video_replaced` | Frames reaching the display sink, how many refreshes each stayed on screen (2 for 30 fps on 60 Hz), and frames replaced before a refresh showed them |
 | `render_thread_id` | The render thread's native id, to read its CPU time from `/proc` (Python 3.13 gives threads no OS name) |

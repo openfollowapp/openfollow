@@ -1,0 +1,261 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 OpenFollow Project
+"""scripts/hw_validation/hud_bench.py: timing, the A/B verdict and the worker protocol."""
+
+from __future__ import annotations
+
+import importlib.util
+import io
+import json
+import sys
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+pytestmark = pytest.mark.unit
+
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "hw_validation" / "hud_bench.py"
+
+
+def _load() -> Any:
+    spec = importlib.util.spec_from_file_location("hud_bench", SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    # Registered first: @dataclass resolves annotations through sys.modules.
+    sys.modules["hud_bench"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+bench = _load()
+
+
+class _Clock:
+    """Advances by ``step`` seconds on each read."""
+
+    def __init__(self, step: float) -> None:
+        self.t = 0.0
+        self.step = step
+
+    def __call__(self) -> float:
+        self.t += self.step
+        return self.t
+
+
+class _FakeCairo:
+    OPERATOR_CLEAR = "clear"
+
+    class Context:
+        def __init__(self, surface: Any) -> None:
+            self.surface = surface
+
+        def set_operator(self, op: Any) -> None:
+            pass
+
+        def paint(self) -> None:
+            self.surface.append("clear")
+
+
+class _FakeWorker:
+    """Answers each run with the next of ``ms``; records what it was asked."""
+
+    def __init__(self, name: str, ms: list[float], log: list[tuple[str, str, bool]], fail: bool = False) -> None:
+        self.name = name
+        self.ms = list(ms)
+        self.log = log
+        self.fail = fail
+        self.closed = False
+
+    def run(self, scene: str, frames: int, split: bool = False) -> dict[str, Any]:
+        if self.fail:
+            raise RuntimeError(f"the worker for {self.name} stopped")
+        self.log.append((self.name, scene, split))
+        return {"ms": self.ms.pop(0) if self.ms else 1.0, "split": {"markers": 0.5} if split else {}}
+
+    def close(self) -> None:
+        self.closed = True
+
+
+# --------------------------------------------------------------------------- #
+# Timing
+# --------------------------------------------------------------------------- #
+
+
+def test_a_round_is_cpu_ms_per_picture_with_the_clear_counted() -> None:
+    drawn: list[Any] = []
+    surface: list[str] = []
+    frames = [(1920, 1080, "a"), (1920, 1080, "b")]
+    ms = bench.time_round(lambda cr, w, h, s: drawn.append(s), surface, frames, _Clock(0.002), _FakeCairo)
+    # Two clock reads per frame, 2 ms apart.
+    assert ms == pytest.approx(2.0)
+    assert drawn == ["a", "b"]
+    assert surface == ["clear", "clear"]
+
+
+def test_the_split_wraps_the_passes_and_puts_them_back() -> None:
+    import openfollow.runtime.overlay_draw_hud as hud
+
+    original = hud.draw_system_stats
+    split = bench._Split(_Clock(0.001))
+    split.install()
+    try:
+        assert hud.draw_system_stats is not original
+    finally:
+        split.remove()
+    assert hud.draw_system_stats is original
+
+
+def test_the_split_times_a_wrapped_pass() -> None:
+    split = bench._Split(_Clock(0.001))
+    wrapped = split._wrap(lambda x: x * 2, "double")
+    assert wrapped(21) == 42
+    assert split.ms["double"] == pytest.approx(1.0)
+
+
+def test_the_split_skips_a_pass_the_checkout_does_not_have(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(bench, "SPLIT_PASSES", (("openfollow.video.overlay", "NoSuchClass.draw", "gone"),))
+    split = bench._Split(_Clock(0.001))
+    split.install()
+    assert split._undo == []
+
+
+# --------------------------------------------------------------------------- #
+# Measuring and judging
+# --------------------------------------------------------------------------- #
+
+
+def test_rounds_alternate_which_side_goes_first_and_the_warm_up_is_not_counted() -> None:
+    log: list[tuple[str, str, bool]] = []
+    head = _FakeWorker("head", [9.0, 1.0, 2.0, 3.0], log)
+    base = _FakeWorker("base", [9.0, 1.0, 2.0, 3.0], log)
+    (result,) = bench.measure(["full"], 10, 3, head, base, split=False)
+    assert [name for name, _, _ in log] == ["head", "base", "head", "base", "base", "head", "head", "base"]
+    assert result.head_ms == [1.0, 2.0, 3.0]
+    assert result.base_ms == [1.0, 2.0, 3.0]
+
+
+def test_split_runs_once_more_on_this_checkout_only() -> None:
+    log: list[tuple[str, str, bool]] = []
+    head = _FakeWorker("head", [], log)
+    (result,) = bench.measure(["light"], 10, 1, head, None, split=True)
+    assert log[-1] == ("head", "light", True)
+    assert result.split == {"markers": 0.5}
+
+
+@pytest.mark.parametrize(
+    ("head", "base", "expected"),
+    [([1.15], [1.0], 0), ([1.16], [1.0], 1), ([0.5], [1.0], 0)],
+)
+def test_the_verdict_fails_only_beyond_the_allowed_slowdown(
+    head: list[float], base: list[float], expected: int
+) -> None:
+    result = bench.SceneResult("full", head_ms=head, base_ms=base)
+    assert bench.verdict([result], 0.15) == expected
+
+
+def test_one_slower_scene_fails_the_comparison() -> None:
+    results = [
+        bench.SceneResult("light", head_ms=[1.0], base_ms=[1.0]),
+        bench.SceneResult("full", head_ms=[2.0], base_ms=[1.0]),
+    ]
+    assert bench.verdict(results, 0.15) == 1
+
+
+def test_without_a_base_nothing_is_judged() -> None:
+    result = bench.SceneResult("full", head_ms=[3.0, 1.0, 2.0])
+    assert result.head == 2.0
+    assert result.base is None
+    assert result.slowdown is None
+    assert bench.verdict([result], 0.15) == 0
+
+
+def test_the_report_flags_a_slower_scene_and_lists_the_split() -> None:
+    results = [
+        bench.SceneResult("full", head_ms=[2.0], base_ms=[1.0], split={"markers": 0.5, "zones": 0.25}),
+        bench.SceneResult("light", head_ms=[1.0]),
+    ]
+    lines = bench.report(results, 0.15)
+    assert "SLOWER" in lines[0] and "+100.0%" in lines[0]
+    assert lines[1].split() == ["markers", "0.50", "ms"]
+    assert lines[2].split() == ["zones", "0.25", "ms"]
+    assert lines[3].startswith("light") and "base" not in lines[3]
+
+
+# --------------------------------------------------------------------------- #
+# The command line
+# --------------------------------------------------------------------------- #
+
+
+def _main(argv: list[str], ms: dict[str, list[float]] | None = None, fail: str = "") -> tuple[int, list[Any]]:
+    workers: list[Any] = []
+    log: list[tuple[str, str, bool]] = []
+
+    def make(root: Path) -> Any:
+        name = "head" if root == bench.REPO else "base"
+        worker = _FakeWorker(name, (ms or {}).get(name, []), log, fail=name == fail)
+        workers.append(worker)
+        return worker
+
+    return bench.main(argv, make_worker=make), workers
+
+
+def test_an_unknown_scene_is_refused(capsys: pytest.CaptureFixture[str]) -> None:
+    code, workers = _main(["--scenes", "full,nope"])
+    assert code == 2
+    assert workers == []
+    assert "nope" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("arg", [["--frames", "0"], ["--rounds", "0"]])
+def test_zero_frames_or_rounds_are_refused(arg: list[str]) -> None:
+    assert _main(arg)[0] == 2
+
+
+def test_a_compare_directory_without_the_package_is_refused(tmp_path: Path) -> None:
+    assert _main(["--compare", str(tmp_path)])[0] == 2
+
+
+def test_a_side_that_stops_is_reported_and_both_workers_are_closed(tmp_path: Path) -> None:
+    (tmp_path / "openfollow").mkdir()
+    code, workers = _main(["--scenes", "light", "--compare", str(tmp_path)], fail="base")
+    assert code == 2
+    assert all(w.closed for w in workers)
+
+
+def test_a_slower_checkout_fails_the_comparison(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    (tmp_path / "openfollow").mkdir()
+    code, _ = _main(
+        ["--scenes", "light", "--rounds", "1", "--compare", str(tmp_path)],
+        ms={"head": [0.0, 2.0], "base": [0.0, 1.0]},
+    )
+    assert code == 1
+    assert "SLOWER" in capsys.readouterr().out
+
+
+def test_without_compare_the_run_succeeds_and_json_has_one_line_per_scene(capsys: pytest.CaptureFixture[str]) -> None:
+    code, _ = _main(["--scenes", "light,full", "--rounds", "1", "--json"])
+    assert code == 0
+    rows = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert [r["scene"] for r in rows] == ["light", "full"]
+    assert all(r["base_ms"] is None for r in rows)
+
+
+def test_every_scene_runs_when_none_is_named() -> None:
+    _, workers = _main(["--rounds", "1"])
+    scenes = {scene for _, scene, _ in workers[0].log}
+    assert scenes == set(bench.load_scenes().SCENES)
+
+
+def test_a_worker_answers_each_request_with_one_line() -> None:
+    stdin = io.StringIO(
+        json.dumps({"scene": "light", "frames": 2})
+        + "\n"
+        + json.dumps({"scene": "light", "frames": 2, "split": True})
+        + "\n"
+    )
+    stdout = io.StringIO()
+    assert bench.worker(bench.REPO, stdin=stdin, stdout=stdout) == 0
+    plain, split = (json.loads(line) for line in stdout.getvalue().splitlines())
+    assert plain["ms"] > 0 and plain["split"] == {}
+    assert split["ms"] > 0 and "markers" in split["split"]

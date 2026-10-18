@@ -1,0 +1,312 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 OpenFollow Project
+"""Time the Operator Screen's drawing on the bench scenes, or compare two checkouts.
+
+Each scene (``tests/_hud_scenes.py``) is a run of frames with moving markers,
+drawn by ``CairoOverlayRenderer.draw`` into a real 1920x1080 picture, cleared
+before each frame as the HUD render thread does. The result is CPU time per
+picture (``time.thread_time``), the median over rounds; the first round of each
+scene only warms the caches::
+
+    # every scene, this checkout
+    poetry run python scripts/hw_validation/hud_bench.py
+
+    # where the time goes, per drawing pass
+    poetry run python scripts/hw_validation/hud_bench.py --scenes full --split
+
+    # this checkout against another one (e.g. ``git archive <base> openfollow``
+    # unpacked into /tmp/of-base); rounds alternate between the two
+    poetry run python scripts/hw_validation/hud_bench.py --compare /tmp/of-base
+
+Each side runs in a worker process of its own, with the renderer from its
+checkout and the scenes from this one, so both draw the same frames.
+
+Exit ``0`` = done (with ``--compare``: no scene more than ``--max-slowdown``
+slower), ``1`` = a scene is slower than that, ``2`` = a side could not run.
+"""
+
+from __future__ import annotations
+
+import argparse
+import importlib.util
+import json
+import statistics
+import subprocess
+import sys
+import time
+from collections import defaultdict
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+REPO = Path(__file__).resolve().parents[2]
+SCENES_FILE = REPO / "tests" / "_hud_scenes.py"
+
+# Drawing passes timed by --split: (module, attribute or Class.method, label).
+SPLIT_PASSES = (
+    ("openfollow.video.overlay", "draw_paths_pass", "paths"),
+    ("openfollow.video.overlay", "draw_marker_pass", "markers"),
+    ("openfollow.video.overlay", "draw_zones_pass", "zones"),
+    ("openfollow.video.overlay", "draw_operator_messages_pass", "operator messages"),
+    ("openfollow.runtime.overlay_draw_hud", "draw_bottom_left_info_panel", "info panel"),
+    ("openfollow.runtime.overlay_draw_hud", "_draw_corner_help", "help"),
+    ("openfollow.runtime.overlay_draw_hud", "draw_system_stats", "system stats"),
+    ("openfollow.runtime.overlay_draw_hud", "draw_marker_card", "marker cards"),
+    ("openfollow.runtime.overlay_draw_hud", "draw_status_badge", "status badge"),
+    ("openfollow.runtime.overlay_draw_scene", "GridCache.draw", "grid"),
+)
+
+
+# --------------------------------------------------------------------------- #
+# Timing (the worker side)
+# --------------------------------------------------------------------------- #
+
+
+def time_round(
+    draw: Callable[[Any, int, int, Any], None],
+    surface: Any,
+    frames: Sequence[Any],
+    clock: Callable[[], float],
+    cairo: Any,
+) -> float:
+    """CPU ms per picture for one pass over ``frames``, each drawn onto ``surface`` after clearing it."""
+    total = 0.0
+    for width, height, state in frames:
+        start = clock()
+        clear = cairo.Context(surface)
+        clear.set_operator(cairo.OPERATOR_CLEAR)
+        clear.paint()
+        draw(cairo.Context(surface), width, height, state)
+        total += clock() - start
+    return 1000.0 * total / max(1, len(frames))
+
+
+class _Split:
+    """Wraps the drawing passes and adds up the CPU time spent in each."""
+
+    def __init__(self, clock: Callable[[], float]) -> None:
+        self.clock = clock
+        self.ms: dict[str, float] = defaultdict(float)
+        self._undo: list[tuple[Any, str, Any]] = []
+
+    def install(self) -> None:
+        for module_name, path, label in SPLIT_PASSES:
+            owner: Any = sys.modules.get(module_name) or importlib.import_module(module_name)
+            *outer, attr = path.split(".")
+            for name in outer:
+                owner = getattr(owner, name, None)
+            original = getattr(owner, attr, None) if owner is not None else None
+            if original is None:
+                continue
+            setattr(owner, attr, self._wrap(original, label))
+            self._undo.append((owner, attr, original))
+
+    def remove(self) -> None:
+        for module, attr, original in reversed(self._undo):
+            setattr(module, attr, original)
+        self._undo.clear()
+
+    def _wrap(self, func: Callable[..., Any], label: str) -> Callable[..., Any]:
+        def timed(*args: Any, **kwargs: Any) -> Any:
+            start = self.clock()
+            try:
+                return func(*args, **kwargs)
+            finally:
+                self.ms[label] += 1000.0 * (self.clock() - start)
+
+        return timed
+
+
+def worker(package_root: Path, stdin: Any = sys.stdin, stdout: Any = sys.stdout) -> int:
+    """Answer ``{"scene", "frames", "split"}`` lines with ``{"ms", "split"}`` lines, renderer from ``package_root``."""
+    sys.path.insert(0, str(package_root))
+    import cairo
+
+    from openfollow.video.overlay import CairoOverlayRenderer
+
+    scenes = load_scenes()
+
+    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, scenes.WIDTH, scenes.HEIGHT)
+    renderers: dict[str, Any] = {}
+    built: dict[tuple[str, int], Any] = {}
+    for line in stdin:
+        request = json.loads(line)
+        key = (request["scene"], int(request["frames"]))
+        if key not in built:
+            built[key] = scenes.frames(*key)
+        renderer = renderers.setdefault(request["scene"], CairoOverlayRenderer())
+        split = _Split(time.thread_time) if request.get("split") else None
+        if split is not None:
+            split.install()
+        try:
+            ms = time_round(renderer.draw, surface, built[key], time.thread_time, cairo)
+        finally:
+            if split is not None:
+                split.remove()
+        frames = len(built[key])
+        reply = {"ms": ms, "split": {k: v / frames for k, v in split.ms.items()} if split else {}}
+        stdout.write(json.dumps(reply) + "\n")
+        stdout.flush()
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# Driving the workers and judging (the parent side)
+# --------------------------------------------------------------------------- #
+
+
+class Worker:
+    """A worker process drawing with the renderer of one checkout."""
+
+    def __init__(self, package_root: Path, python: str = sys.executable) -> None:
+        self.root = package_root
+        self.proc = subprocess.Popen(  # noqa: S603 - our own script, fixed arguments
+            [python, str(Path(__file__).resolve()), "--worker", str(package_root)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+
+    def run(self, scene: str, frames: int, split: bool = False) -> dict[str, Any]:
+        assert self.proc.stdin is not None and self.proc.stdout is not None
+        self.proc.stdin.write(json.dumps({"scene": scene, "frames": frames, "split": split}) + "\n")
+        self.proc.stdin.flush()
+        line = self.proc.stdout.readline()
+        if not line:
+            raise RuntimeError(f"the worker for {self.root} stopped")
+        return dict(json.loads(line))
+
+    def close(self) -> None:
+        if self.proc.stdin is not None:
+            self.proc.stdin.close()
+        self.proc.wait(timeout=30)
+
+
+@dataclass
+class SceneResult:
+    scene: str
+    head_ms: list[float] = field(default_factory=list)
+    base_ms: list[float] = field(default_factory=list)
+    split: dict[str, float] = field(default_factory=dict)
+
+    @property
+    def head(self) -> float:
+        return statistics.median(self.head_ms)
+
+    @property
+    def base(self) -> float | None:
+        return statistics.median(self.base_ms) if self.base_ms else None
+
+    @property
+    def slowdown(self) -> float | None:
+        """How much slower this checkout is than the other one (0.15 = 15 % slower)."""
+        base = self.base
+        return None if not base else self.head / base - 1.0
+
+
+def measure(
+    scenes: Sequence[str], frames: int, rounds: int, head: Any, base: Any | None, split: bool
+) -> list[SceneResult]:
+    """Warm each scene up once per side, then time ``rounds`` rounds, alternating the sides."""
+    results = []
+    for scene in scenes:
+        result = SceneResult(scene)
+        sides = [(head, result.head_ms)] + ([(base, result.base_ms)] if base is not None else [])
+        for side, _ in sides:
+            side.run(scene, frames)
+        for r in range(rounds):
+            # Alternate which side goes first, so a load change hits both alike.
+            for side, out in sides if r % 2 == 0 else sides[::-1]:
+                out.append(float(side.run(scene, frames)["ms"]))
+        if split:
+            result.split = dict(head.run(scene, frames, split=True)["split"])
+        results.append(result)
+    return results
+
+
+def verdict(results: Sequence[SceneResult], max_slowdown: float) -> int:
+    """``1`` when any compared scene is more than ``max_slowdown`` slower, else ``0``."""
+    slower = [r for r in results if r.slowdown is not None and r.slowdown > max_slowdown]
+    return 1 if slower else 0
+
+
+def report(results: Sequence[SceneResult], max_slowdown: float) -> list[str]:
+    lines = []
+    for r in results:
+        if r.base is None:
+            lines.append(f"{r.scene:14} {r.head:7.2f} ms/picture")
+        else:
+            flag = "  SLOWER" if r.slowdown is not None and r.slowdown > max_slowdown else ""
+            lines.append(f"{r.scene:14} {r.head:7.2f} ms/picture  base {r.base:7.2f}  {r.slowdown:+6.1%}{flag}")
+        for label, ms in sorted(r.split.items(), key=lambda kv: -kv[1]):
+            lines.append(f"    {label:18} {ms:6.2f} ms")
+    return lines
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--scenes", default="", help="comma-separated scene names (default: all)")
+    parser.add_argument("--frames", type=int, default=60, help="frames per scene")
+    parser.add_argument("--rounds", type=int, default=5, help="timed rounds per scene and side")
+    parser.add_argument("--split", action="store_true", help="also time each drawing pass (this checkout)")
+    parser.add_argument("--compare", type=Path, help="another checkout's root (holding openfollow/) to compare with")
+    parser.add_argument("--max-slowdown", type=float, default=0.15, help="slowdown that fails --compare (0.15 = 15 %%)")
+    parser.add_argument("--json", action="store_true", help="one JSON line per scene instead of the table")
+    parser.add_argument("--worker", type=Path, help=argparse.SUPPRESS)
+    return parser
+
+
+def load_scenes() -> Any:
+    """``tests/_hud_scenes.py`` as a module, with ``openfollow`` from whatever is first on ``sys.path``."""
+    spec = importlib.util.spec_from_file_location("_hud_scenes", SCENES_FILE)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["_hud_scenes"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def main(argv: Sequence[str] | None = None, make_worker: Callable[[Path], Any] = Worker) -> int:
+    args = build_parser().parse_args(argv)
+    if args.worker is not None:
+        return worker(args.worker)
+    sys.path.insert(0, str(REPO))
+    known = list(load_scenes().SCENES)
+    scenes = [s for s in args.scenes.split(",") if s] or known
+    unknown = [s for s in scenes if s not in known]
+    if unknown:
+        print(f"unknown scene(s): {', '.join(unknown)}; known: {', '.join(known)}", file=sys.stderr)
+        return 2
+    if args.frames < 1 or args.rounds < 1:
+        print("--frames and --rounds must be 1 or more", file=sys.stderr)
+        return 2
+    if args.compare is not None and not (args.compare / "openfollow").is_dir():
+        print(f"{args.compare} holds no openfollow package", file=sys.stderr)
+        return 2
+    head = make_worker(REPO)
+    base = make_worker(args.compare) if args.compare is not None else None
+    try:
+        results = measure(scenes, args.frames, args.rounds, head, base, args.split)
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    finally:
+        for side in (head, base):
+            if side is not None:
+                side.close()
+    if args.json:
+        for r in results:
+            print(
+                json.dumps(
+                    {"scene": r.scene, "ms": r.head, "base_ms": r.base, "slowdown": r.slowdown, "split": r.split}
+                )
+            )
+    else:
+        print("\n".join(report(results, args.max_slowdown)))
+    return verdict(results, args.max_slowdown) if base is not None else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

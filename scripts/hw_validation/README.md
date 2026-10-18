@@ -18,6 +18,7 @@ to grow into a fuller two-Pi validation suite (see the tracking issue).
 | `output_protocol_driver.py` | DUT | Drives N moving markers out of the deployed PSN / OTP / RTTrPM servers so real consumer software (PSNView, OTPAnalyzer, OTPView) can be pointed at the live output. `--markers 40` splits every stream; `--markers 13` is the control where nothing splits. Classifies datagrams by their own header bytes and reports per-stream counts and largest size. |
 | `output_datagram_size_probe.py` | DUT | Drives the deployed PSN / OTP / RTTrPM send paths at 4-100 markers and asserts no stream emits a datagram past the 1472 B MTU budget - the size at which IP fragments and a loaded show network starts dropping frames. Exits `0` (PASS) / `1` (FAIL). |
 | `lens_edge_benchmark.py` | DUT | Times the Lens step's edge suggestions (`find_edge_candidates`, as `/api/wizard/lens/edges` runs it) on synthetic stages and on snapshot JPEGs passed with `--image`, and reports the longest gap a 60 Hz ticker thread sees meanwhile, the stall the frame loop would take. Exits `0` (PASS) / `1` (a scene over `--budget`, default 1 s). |
+| `hud_bench.py` | DUT / anywhere | Times the Operator Screen drawing (`CairoOverlayRenderer.draw`) on the bench scenes in `tests/_hud_scenes.py`, per picture and with `--split` per drawing pass. `--compare <dir>` draws the same scenes with another checkout's renderer, rounds alternating, and exits `1` when a scene is more than `--max-slowdown` (default 15 %) slower; `0` otherwise, `2` when a side cannot run. |
 | `osc_socket_options_probe.py` | DUT | Builds clients via the deployed `OscService._make_client` and asserts the broadcast/multicast socket options (#482). |
 | `eos_console_probe.py` | workstation | Drives the deployed `OscTransmitterManager` at an Eos console / ETCnomad. `verify` reads Eos's own parameter values back and asserts the bundled ETC Eos templates' X/Y/Z mapping, exiting `0` (mapping correct) / `1` (mismatch or setup fault). `test` / `sweep` / `stream` drive the console for an operator to watch; their exit code reports only whether the sends reached the socket. |
 | `marker_catalog_two_station.py` | workstation | Reproduces the clock-skew marker-rename revert across two stations: steps station B's clock ahead, renames on A, asserts the rename holds on both. Exits `0` (PASS) / `1` (FAIL). |
@@ -303,3 +304,23 @@ VLAN name already exists, so cleanup can never remove one you rely on.
 
 `--other-nic` and `--companion` are optional; both skip loudly when absent
 rather than passing vacuously.
+
+## Operator Screen drawing cost
+
+`hud_bench.py` draws each bench scene (light, full scene with grid, ground grid,
+zones, paths and lens, eight markers, cones, a menu screen) frame by frame into
+a 1920x1080 picture and reports the CPU time per picture, the median over
+rounds. Run it on a Pi 5 for numbers that mean something for a station; a
+desktop is faster by a large factor.
+
+```sh
+poetry run python scripts/hw_validation/hud_bench.py
+poetry run python scripts/hw_validation/hud_bench.py --scenes full --split
+# against the merge-base: unpack its package next to the checkout
+mkdir -p /tmp/of-base && git archive "$(git merge-base origin/main HEAD)" openfollow | tar x -C /tmp/of-base
+poetry run python scripts/hw_validation/hud_bench.py --compare /tmp/of-base
+```
+
+The timing is CPU time of the drawing thread alone. On a running station the
+same picture costs more, since decoding, the GTK main thread and the drawing
+thread share the cores and the memory bus.

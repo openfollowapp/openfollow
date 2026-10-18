@@ -31,6 +31,7 @@ from openfollow.configuration import (
 )
 from openfollow.net_egress import Egress
 from openfollow.osc.transmitter import (
+    _TICK_INTERVAL_S,
     BindingRingBuffer,
     OscTransmitter,
     OscTransmitterManager,
@@ -4046,3 +4047,95 @@ class TestEgressPin:
         state["address"] = ""
         manager._tick_once()
         assert manager.ring_buffer_for("row-1")[-1].error == "interface eth1 is down"
+
+
+# ---------------------------------------------------------------------------
+# Idle scheduler
+# ---------------------------------------------------------------------------
+
+
+def _first_wait(manager: OscTransmitterManager) -> float | None:
+    """Run one scheduler iteration on this thread; the timeout of the wait it ends in (``None``: until woken)."""
+    waits: list[float | None] = []
+
+    class _Recorded(threading.Event):
+        def wait(self, timeout: float | None = None) -> bool:
+            waits.append(timeout)
+            manager._stop.set()
+            return True
+
+    manager._wake, manager._stop = _Recorded(), _Recorded()
+    manager._loop()
+    return waits[0]
+
+
+def _start_asleep(manager: OscTransmitterManager) -> None:
+    """Start the scheduler and return once it sleeps waiting for work."""
+    asleep = threading.Event()
+
+    class _Watched(threading.Event):
+        def wait(self, timeout: float | None = None) -> bool:
+            asleep.set()
+            return super().wait(timeout)
+
+    manager._wake = _Watched()
+    manager.start()
+    assert asleep.wait(2.0), "scheduler never went to sleep"
+
+
+def _sent_within(svc: _FakeOscService, seconds: float = 2.0) -> bool:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline and not svc.calls:
+        time.sleep(0.01)
+    return bool(svc.calls)
+
+
+class TestIdleScheduler:
+    """The scheduler ticks only while a Stream row is enabled; otherwise it sleeps until there is work."""
+
+    @pytest.mark.parametrize(
+        "rows",
+        [
+            [],
+            [_row(enabled=False)],
+            [_row(trigger=HotkeyTrigger(key="F1"))],
+        ],
+        ids=["no-rows", "stream-row-disabled", "event-row-only"],
+    )
+    def test_without_an_enabled_stream_row_it_sleeps_until_woken(self, rows: list[OscTransmitterConfig]) -> None:
+        manager, _svc = _manager(markers={0: _FakeMarker((1.0, 2.0, 3.0))})
+        manager.restart(OscTransmittersConfig(transmitters=rows))
+        assert _first_wait(manager) is None
+
+    def test_an_enabled_stream_row_keeps_it_ticking(self) -> None:
+        manager, _svc = _manager(markers={0: _FakeMarker((1.0, 2.0, 3.0))})
+        manager.restart(OscTransmittersConfig(transmitters=[_row(trigger=HotkeyTrigger(key="F1")), _row(id="row-2")]))
+        assert _first_wait(manager) == _TICK_INTERVAL_S
+
+    def test_a_queued_event_wakes_an_idle_scheduler(self) -> None:
+        manager, svc = _manager(markers={0: _FakeMarker((1.0, 2.0, 3.0))})
+        manager.restart(OscTransmittersConfig(transmitters=[_row(trigger=HotkeyTrigger(key="F1"))]))
+        bus = InputEventBus()
+        manager.attach_event_bus(bus)
+        _start_asleep(manager)
+        try:
+            bus.emit_key(KeyEvent(key="F1", edge="press"))
+            assert _sent_within(svc)
+        finally:
+            manager.stop()
+
+    def test_enabling_a_stream_row_wakes_an_idle_scheduler(self) -> None:
+        manager, svc = _manager(markers={0: _FakeMarker((1.0, 2.0, 3.0))})
+        manager.restart(OscTransmittersConfig(transmitters=[_row(enabled=False)]))
+        _start_asleep(manager)
+        try:
+            manager.restart(OscTransmittersConfig(transmitters=[_row()]))
+            assert _sent_within(svc)
+        finally:
+            manager.stop()
+
+    def test_stop_ends_an_idle_scheduler(self) -> None:
+        manager, _svc = _manager()
+        _start_asleep(manager)
+        assert manager.stop() is True
+        assert manager._thread is None

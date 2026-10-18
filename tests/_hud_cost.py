@@ -2,10 +2,7 @@
 # Copyright (C) 2026 OpenFollow Project
 """Counting what an Operator Screen picture costs, for tests that must not depend on timing.
 
-``CountingContext`` is a real Cairo context on a real surface (the pixels are
-real) that also records the operations whose cost grows with the area they
-cover. ``count_calls`` counts calls to a module function or method while a
-block runs.
+``count_calls`` counts calls to a module function or method while a block runs.
 """
 
 from __future__ import annotations
@@ -13,39 +10,6 @@ from __future__ import annotations
 import contextlib
 from collections.abc import Iterator
 from typing import Any
-
-import cairo
-
-
-class CountingContext(cairo.Context):
-    """A Cairo context that records groups and pastes with the area they cover."""
-
-    def __init__(self, target: cairo.Surface) -> None:
-        super().__init__()
-        # Each group: the clip extents (x0, y0, x1, y1) in effect when it was pushed.
-        self.groups: list[tuple[float, float, float, float]] = []
-        # Each paint: the clip extents in effect, which bound the area it composites.
-        self.paints: list[tuple[float, float, float, float]] = []
-
-    def __new__(cls, target: cairo.Surface) -> CountingContext:
-        return super().__new__(cls, target)
-
-    def push_group(self) -> None:
-        self.groups.append(self.clip_extents())
-        super().push_group()
-
-    def paint(self) -> None:
-        self.paints.append(self.clip_extents())
-        super().paint()
-
-    def paint_with_alpha(self, alpha: float) -> None:
-        self.paints.append(self.clip_extents())
-        super().paint_with_alpha(alpha)
-
-
-def area(extents: tuple[float, float, float, float]) -> float:
-    x0, y0, x1, y1 = extents
-    return max(0.0, x1 - x0) * max(0.0, y1 - y0)
 
 
 @contextlib.contextmanager

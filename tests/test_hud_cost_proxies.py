@@ -14,7 +14,7 @@ from openfollow.runtime import overlay_draw_paths, overlay_draw_scene
 from openfollow.runtime.overlay_draw_scene import ConeCache
 from openfollow.runtime.overlay_draw_zones import ZoneCache
 from openfollow.video.overlay import CairoOverlayRenderer
-from tests._hud_cost import CountingContext, count_calls
+from tests._hud_cost import count_calls
 from tests._hud_scenes import SCENES, frames
 
 pytestmark = pytest.mark.unit
@@ -30,7 +30,7 @@ def _draw(name: str) -> cairo.ImageSurface:
         clear = cairo.Context(surface)
         clear.set_operator(cairo.OPERATOR_CLEAR)
         clear.paint()
-        renderer.draw(CountingContext(surface), width, height, state)
+        renderer.draw(cairo.Context(surface), width, height, state)
     surface.flush()
     return surface
 

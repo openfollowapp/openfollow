@@ -18,6 +18,7 @@ from typing import Any
 import numpy as np
 
 from openfollow.runtime.overlay_state import MarkerOverlayData, OverlayState
+from openfollow.zones.geometry import point_in_polygon
 
 WIDTH, HEIGHT = 1920, 1080
 FRAMES = 60
@@ -48,15 +49,6 @@ def _make(cls: type, **values: Any) -> Any:
     """``cls(**values)`` with only the fields ``cls`` has."""
     names = {f.name for f in dataclasses.fields(cls)}
     return cls(**{k: v for k, v in values.items() if k in names})
-
-
-def _inside(point: tuple[float, float], polygon: list[tuple[float, float]]) -> bool:
-    x, y = point
-    inside = False
-    for (x1, y1), (x2, y2) in zip(polygon, polygon[1:] + polygon[:1], strict=True):
-        if (y1 > y) != (y2 > y) and x < (x2 - x1) * (y - y1) / (y2 - y1) + x1:
-            inside = not inside
-    return inside
 
 
 def _marker_path(index: int, t: float) -> tuple[float, float]:
@@ -116,7 +108,7 @@ def _base(t: float, *, markers: int, controlled: int, zones: int, **extra: Any) 
     marker_list = _markers(markers, controlled, t)
     polygons = []
     for name, verts, color in ZONES[:zones]:
-        count = sum(_inside((m.x, m.y), verts) for m in marker_list)
+        count = sum(point_in_polygon(m.x, m.y, verts) for m in marker_list)
         polygons.append((verts, color, name, count > 0, count))
     values: dict[str, Any] = {
         "markers": marker_list,

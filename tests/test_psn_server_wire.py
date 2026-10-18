@@ -869,3 +869,16 @@ class TestSourceAddress:
 
     def test_unicast_has_none(self) -> None:
         assert PsnServer(mcast_ip=None).source_address() is None
+
+    def test_a_socket_that_cannot_name_its_address_is_closed_and_retried(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _unnamed(_self: _FakeMcastSocket) -> tuple[str, int]:
+            raise OSError(errno.EBADF, "bad file descriptor")
+
+        monkeypatch.setattr(_FakeMcastSocket, "getsockname", _unnamed)
+        monkeypatch.setattr(server_module.threading, "Thread", _DummyThread)
+        srv = PsnServer(mcast_ip="236.10.10.10")
+        srv.start()
+        assert srv.source_address() is None
+        assert _FakeMcastSocket.instances[0].closed is True
+        assert any(t.name == "PSN-SocketRetry" for t in _DummyThread.instances)
+        srv.stop()

@@ -281,7 +281,9 @@ class PsnServer:
                     enable_external_loopback=True,
                 )
             opened = staging.enter_context(sock)
+            source_address = opened.getsockname()[:2]
         except Exception as exc:
+            staging.close()
             logger.warning(
                 "PSN multicast socket failed (attempt %d/%d): %s",
                 attempt,
@@ -296,7 +298,7 @@ class PsnServer:
         with self._lock:
             if not self._resolve_stop(stop_event).is_set():
                 self._socket = opened
-                self._source_address = opened.getsockname()[:2]
+                self._source_address = source_address
                 self._exit_stack.push(staging.pop_all())
                 return True
             stale = staging.pop_all()

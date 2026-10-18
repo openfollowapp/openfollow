@@ -1696,11 +1696,6 @@ class AppRuntimeServices:
                     self._app._rttrpm_server.register_marker(marker)
         self._app._rttrpm_server.start()
 
-    def _psn_own_source(self) -> tuple[str, int] | None:
-        """Where this station's PSN output comes from now; the server is rebuilt on recovery and reload."""
-        server = self._app._server
-        return server.source_address() if server is not None else None
-
     def init_psn_receiver(self) -> None:
         # Same resolution as ``init_psn`` so input and output land on the same
         # interface, and the same refusal: a configured station interface with
@@ -1708,12 +1703,14 @@ class AppRuntimeServices:
         # group on whatever interface the OS picks, so the station would answer
         # on a network the operator did not choose while its output was stopped.
         source_ip = self.station_source_ip_or_none()
+        # No server when PSN output failed to start.
+        server = self._app._server
         receiver = PsnReceiver(
             ignore_ids=self._app._controlled_ids,
             source_ip=source_ip or "",
             source_iface=self._app._config.psn_source_iface,
             enabled=self._app._config.ui.feature_on("psn_input"),
-            own_source=self._psn_own_source,
+            own_source=server.source_address if server is not None else lambda: None,
         )
         # Built either way, started only with an address, for the same reason
         # as the server: the recovery path can only rebind one that exists.

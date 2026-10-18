@@ -733,6 +733,9 @@ class _AddressedSocket:
     def recvfrom(self, _size: int) -> tuple[bytes, tuple[str, int]]:
         return self._script.pop(0)
 
+    def settimeout(self, _timeout: float) -> None:
+        pass
+
 
 _OWN = ("192.0.2.10", 50000)
 _PEER = ("198.51.100.1", 56565)
@@ -786,3 +789,33 @@ class TestOwnOutputIsNotDecoded:
         script = [(b"old-before", _OWN), (b"rebuild", _PEER), (b"old-after", _OWN), (b"new", new)]
         decoded = self._run(monkeypatch, script, lambda: current["own"], rebuild)
         assert decoded == [b"rebuild", b"old-after", b"last"]
+
+
+class _ReadsThenStops(_ScriptedGate):
+    """Reports the socket readable ``reads`` times, then stops."""
+
+    def __init__(self, reads: int) -> None:
+        super().__init__()
+        self._reads = reads
+
+    def wait(self) -> bool:
+        self._reads -= 1
+        return self._reads >= 0
+
+
+class TestPsnReceiverHandsOwnSourceToItsReceiveThread:
+    @pytest.mark.parametrize("iface", ["", "eth1"], ids=["unpinned", "pinned"])
+    def test_its_station_s_own_packets_are_dropped(self, monkeypatch: pytest.MonkeyPatch, iface: str) -> None:
+        sock = _AddressedSocket([(b"own", _OWN), (b"peer", _PEER)])
+        monkeypatch.setattr(receiver_module.pypsn, "get_socket", lambda *_args: sock)
+        monkeypatch.setattr(receiver_module, "_pinned_socket", lambda *_args: sock)
+        started: list[_RobustReceiver] = []
+        monkeypatch.setattr(_RobustReceiver, "start", lambda self: started.append(self))
+        decoded: list[bytes] = []
+        monkeypatch.setattr(receiver_module.pypsn, "parse_psn_packet", lambda data: decoded.append(data) or data)
+
+        PsnReceiver(source_ip="10.0.0.5", source_iface=iface, own_source=lambda: _OWN).start()
+        (thread,) = started
+        thread._gate = _ReadsThenStops(2)
+        thread.run()
+        assert decoded == [b"peer"]

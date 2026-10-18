@@ -252,6 +252,25 @@ def test_a_file_younger_than_a_second_is_parsed_again(config_file: str, parses: 
     assert len(parses) == 3
 
 
+def test_a_file_young_when_its_read_began_is_parsed_again_however_long_the_parse(
+    config_file: str, monkeypatch: pytest.MonkeyPatch, parses: list[str]
+) -> None:
+    """The edit that could follow unseen is one made while the parse ran, so the clock is read before it."""
+    written = os.stat(config_file).st_mtime_ns / 1e9
+    clock = {"now": written + 0.5}
+    counting = cache_module.load_config
+
+    def _slow(p: str, **kwargs: Any) -> AppConfig:
+        clock["now"] = written + 1.5
+        return counting(p, **kwargs)
+
+    monkeypatch.setattr(cache_module, "load_config", _slow)
+    cache = ParsedConfigCache(now=lambda: clock["now"])
+    cache.load(config_file)
+    cache.load(config_file)
+    assert len(parses) == 2
+
+
 def test_a_clock_set_behind_the_file_still_keeps_the_parse(config_file: str, parses: list[str]) -> None:
     """A station that boots with its clock behind the last save, as a Pi with no RTC does after a power cut."""
     written = os.stat(config_file).st_mtime_ns / 1e9

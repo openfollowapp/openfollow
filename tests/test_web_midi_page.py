@@ -1148,7 +1148,8 @@ class TestMarkerFaderSectionRender:
 
 
 class TestVirtualFadersFirstPaint:
-    def test_the_strips_render_the_live_values(self, tmp_path, monkeypatch) -> None:
+    @pytest.mark.parametrize("route", ["/", "/section/midi"], ids=["page", "section"])
+    def test_the_strips_render_the_live_values(self, tmp_path, monkeypatch, route: str) -> None:
         """No fetch on load: the page arrives with each fader where it is, the default only for one unreported."""
         with _live_server_with_midi_providers(
             tmp_path,
@@ -1158,7 +1159,7 @@ class TestVirtualFadersFirstPaint:
                 {"index": 2, "name": "Aux", "value": 0.17, "picked_up": False, "show_on_display": False},
             ],
         ) as (_, base, _cfg):
-            status, body = _get(base, "/section/midi")
+            status, body = _get(base, route)
         assert status == 200
         strip = {
             n: re.search(rf'id="midi-fader-strip-value-{n}"[^>]*>(.*?)</span>\s*</button>', body, re.S)

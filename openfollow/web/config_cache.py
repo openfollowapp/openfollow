@@ -23,8 +23,8 @@ class ParsedConfigCache:
     as it last read whole: the backup is a save behind, and could hand out an older PIN, or none.
     Before any whole read, it is read as ``load_config`` reads it.
 
-    A parse is not reused while the file's mtime is within ``_RACY_S`` of the clock, nor while the
-    parse resolves an OTP ``source_ip`` against live interfaces; it still backs a file that broke.
+    A parse is not reused when its read began within ``_RACY_S`` of the file's mtime, nor while it
+    resolves an OTP ``source_ip`` against live interfaces; it still backs a file that broke.
     """
 
     def __init__(self, now: Callable[[], float] = time.time) -> None:
@@ -43,6 +43,7 @@ class ParsedConfigCache:
         except OSError:
             return self._last_whole(entry, path)
         if entry is None or entry[0] != key or not entry[2]:
+            started = self._now()
             try:
                 parsed = load_config(path, strict=True, missing_ok=False)
                 read_whole = _key(path) == key
@@ -50,7 +51,7 @@ class ParsedConfigCache:
                 read_whole = False
             if not read_whole:
                 return self._last_whole(entry, path)
-            reusable = abs(self._now() - key[3] / 1e9) >= _RACY_S and not _resolves_otp_ip(path)
+            reusable = abs(started - key[3] / 1e9) >= _RACY_S and not _resolves_otp_ip(path)
             entry = (key, pickle.dumps(parsed), reusable)
             with self._lock:
                 if self._generation == generation:

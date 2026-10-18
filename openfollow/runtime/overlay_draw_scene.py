@@ -293,7 +293,7 @@ def _inked_tiles(picture: cairo.ImageSurface) -> list[tuple[float, float, float,
         (ph, picture.get_stride() // 4), dtype=np.uint32, buffer=picture.get_data()
     )[:, :pw]
     rows, cols = -(-ph // _TILE), -(-pw // _TILE)
-    # One band of rows at a time: a padded copy of the canvas costs more than the paste it saves.
+    # Scanned one band of rows at a time: no canvas-sized copy.
     bands = np.zeros((rows, cols * _TILE), dtype=np.bool_)
     for r in range(rows):
         bands[r, :pw] = pixels[r * _TILE : (r + 1) * _TILE].any(axis=0)

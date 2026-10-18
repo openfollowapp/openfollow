@@ -4196,6 +4196,9 @@ class _RecordingReceiver:
         # so failures leave the new reference attached.
         self._detector: Any = initial_detector
 
+    def stop(self) -> None:
+        pass
+
     def swap_detection_branch(self, new_detector: Any) -> None:
         self.swap_detector_calls.append(new_detector)
         self._detector = new_detector
@@ -4221,34 +4224,11 @@ class _FakePersonDetector:
         self.cfg = cfg
         self.available = type(self).available_default
         self.stop_calls = 0
+        self.built_on = threading.current_thread()
         type(self).instances.append(self)
 
     def stop(self, *, wait: bool = True) -> None:
         self.stop_calls += 1
-
-
-class TestDetectorHandOff:
-    def test_the_build_runs_on_a_thread_of_its_own(self) -> None:
-        ran: list[str] = []
-        done = threading.Event()
-
-        def work() -> None:
-            ran.append(threading.current_thread().name)
-            done.set()
-
-        services_module._start_daemon(work)
-        assert done.wait(2.0)
-        assert ran == ["PersonDetector-Build"]
-
-    def test_the_hand_back_runs_once_on_the_main_loop(self) -> None:
-        from gi.repository import GLib
-
-        ran: list[int] = []
-        services_module._idle_add_once(lambda: ran.append(1))
-        context = GLib.MainContext.default()
-        for _ in range(5):
-            context.iteration(False)
-        assert ran == [1]
 
 
 class TestSwapDetector:
@@ -4260,6 +4240,7 @@ class TestSwapDetector:
         receiver: _RecordingReceiver | None = None,
         existing_detector: Any = None,
         available: bool = True,
+        in_place: bool = True,
     ) -> tuple[_RecordingReceiver, type[_FakePersonDetector]]:
         receiver = receiver or _RecordingReceiver()
         services._app._video_receiver = receiver  # type: ignore[assignment]
@@ -4269,8 +4250,33 @@ class TestSwapDetector:
         _FakePersonDetector.instances = []
         _FakePersonDetector.available_default = available
         monkeypatch.setattr(detection_mod, "PersonDetector", _FakePersonDetector)
-        services._off_main_thread = services._on_main_thread = lambda work: work()
+        if in_place:
+            services._off_main_thread = services._on_main_thread = lambda work: work()
         return receiver, _FakePersonDetector
+
+    def test_the_detector_is_built_off_the_main_thread_and_wired_on_a_busy_main_loop(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from gi.repository import GLib
+
+        receiver, detector_cls = self._setup(services, monkeypatch, in_place=False)
+
+        services.swap_detector(DetectionConfig(enabled=True))
+        for thread in threading.enumerate():
+            if thread.name == "PersonDetector-Build":
+                thread.join(2.0)
+        # A frame clock that never leaves the main loop idle.
+        busy = GLib.timeout_add(0, lambda: True)
+        try:
+            context = GLib.MainContext.default()
+            for _ in range(20):
+                context.iteration(False)
+        finally:
+            GLib.source_remove(busy)
+
+        (detector,) = detector_cls.instances
+        assert detector.built_on is not threading.main_thread()
+        assert receiver.swap_detector_calls == [detector]
 
     def test_off_to_on_constructs_and_swaps(
         self,
@@ -4504,6 +4510,12 @@ class TestSwapDetector:
         services._on_main_thread = on_main.append
         return off_main, on_main
 
+    @staticmethod
+    def _run_held(off_main: list[Any], on_main: list[Any]) -> None:
+        """Run held work in hand-off order until none is left."""
+        while off_main or on_main:
+            (off_main or on_main).pop(0)()
+
     def test_the_detector_is_not_built_on_the_calling_thread(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -4528,10 +4540,7 @@ class TestSwapDetector:
 
         services.swap_detector(DetectionConfig(enabled=True, confidence=0.5))
         services.swap_detector(DetectionConfig(enabled=True, confidence=0.7))
-        for build in off_main:
-            build()
-        for install in on_main:
-            install()
+        self._run_held(off_main, on_main)
 
         first, second = detector_cls.instances
         assert first.stop_calls == 1
@@ -4587,10 +4596,7 @@ class TestSwapDetector:
 
         services.swap_detector(DetectionConfig(enabled=True), on_failure=lambda: failed.append("first"))
         services.swap_detector(DetectionConfig(enabled=True), on_failure=lambda: failed.append("second"))
-        for build in off_main:
-            build()
-        for hand_back in on_main:
-            hand_back()
+        self._run_held(off_main, on_main)
 
         assert failed == ["second"]
 
@@ -4607,6 +4613,80 @@ class TestSwapDetector:
         on_main.pop()()
 
         assert failed == [True]
+
+    def test_one_detector_is_built_at_a_time_and_the_newest_change_is_built_next(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        receiver, detector_cls = self._setup(services, monkeypatch)
+        off_main, on_main = self._deferred(services)
+        newest = DetectionConfig(enabled=True, confidence=0.9)
+
+        services.swap_detector(DetectionConfig(enabled=True, confidence=0.5))
+        services.swap_detector(DetectionConfig(enabled=True, confidence=0.7))
+        services.swap_detector(newest)
+        assert len(off_main) == 1
+        off_main.pop()()
+        on_main.pop()()
+        assert len(off_main) == 1
+        off_main.pop()()
+        on_main.pop()()
+
+        first, last = detector_cls.instances
+        assert first.stop_calls == 1
+        assert last.cfg is newest
+        assert receiver.swap_detector_calls == [last]
+        assert off_main == on_main == []
+
+    def test_switching_off_drops_a_build_still_waiting_its_turn(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        receiver, detector_cls = self._setup(services, monkeypatch)
+        off_main, on_main = self._deferred(services)
+
+        services.swap_detector(DetectionConfig(enabled=True, confidence=0.5))
+        services.swap_detector(DetectionConfig(enabled=True, confidence=0.7))
+        services.apply_detection_change(DetectionConfig(enabled=False))
+        off_main.pop()()
+        on_main.pop()()
+
+        assert len(detector_cls.instances) == 1
+        assert off_main == []
+        assert receiver.swap_detector_calls == []
+
+    def test_a_build_is_pending_until_it_lands_or_detection_is_switched_off(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._setup(services, monkeypatch)
+        off_main, on_main = self._deferred(services)
+        assert services.detector_build_pending is False
+
+        services.swap_detector(DetectionConfig(enabled=True))
+        assert services.detector_build_pending is True
+        off_main.pop()()
+        assert services.detector_build_pending is True
+        on_main.pop()()
+        assert services.detector_build_pending is False
+
+        services.swap_detector(DetectionConfig(enabled=True, confidence=0.6))
+        services.swap_detector(DetectionConfig(enabled=True, confidence=0.7))
+        assert services.detector_build_pending is True
+        services.apply_detection_change(DetectionConfig(enabled=False))
+        assert services.detector_build_pending is False
+
+    def test_shutdown_drops_a_detector_still_being_built(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        receiver, detector_cls = self._setup(services, monkeypatch)
+        off_main, on_main = self._deferred(services)
+
+        services.swap_detector(DetectionConfig(enabled=True))
+        services.shutdown()
+        off_main.pop()()
+        on_main.pop()()
+
+        assert detector_cls.instances[0].stop_calls == 1
+        assert receiver.swap_detector_calls == []
+        assert services._person_detector is None
 
     def test_skip_rebuild_blocked_when_receiver_still_has_available_branch(
         self,

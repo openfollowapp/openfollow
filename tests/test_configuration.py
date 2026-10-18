@@ -80,6 +80,7 @@ class _DummyRuntimeServices:
         self.psn_system_name_changes: list[str] = []
         self.detection_changes: list[DetectionConfig] = []
         self.detection_swaps: list[DetectionConfig] = []
+        self.detector_build_pending = False
         self.window_size_changes: list[tuple[int, int]] = []
         self.video_swaps: list[AppConfig] = []
         self.station_fqdn_changes: list[str] = []
@@ -239,6 +240,7 @@ class _DummyInputManager:
 class _DummyApp:
     def __init__(self, config: AppConfig) -> None:
         self._config = config
+        self._config_mtime = 0.0
         self._runtime_services = _DummyRuntimeServices()
         self._web_server = _DummyWebServer()
         self._web_commands = _DummyWebCommands()
@@ -5995,6 +5997,46 @@ def test_a_detector_that_fails_after_the_swap_returned_reverts_the_stored_config
     app._runtime_services.detection_swap_on_failure()
 
     assert app._config.detection == old_detection
+
+
+@pytest.mark.usefixtures("every_feature_on")
+def test_an_edit_saved_while_a_detector_is_being_built_is_built_rather_than_reloaded() -> None:
+    """The running detector is about to be replaced: an edit staged on it would be lost."""
+    app = _app_with(detection=DetectionConfig(enabled=True, confidence=0.40))
+    app._runtime_services.detector_build_pending = True
+    new_det = DetectionConfig(enabled=True, confidence=0.85)
+
+    apply_runtime_config_changes(app, AppConfig(detection=new_det))
+
+    assert app._runtime_services.detection_swaps == [new_det]
+    assert app._runtime_services.detection_changes == []
+
+
+@pytest.mark.usefixtures("every_feature_on")
+def test_a_detector_swap_that_fails_after_the_reload_is_retried_on_the_next_poll(tmp_path) -> None:
+    import os
+
+    from openfollow.runtime import app_orchestration as orch
+
+    path = str(tmp_path / "config.toml")
+    save_config(AppConfig(), path)
+    os.utime(path, (100.0, 100.0))
+    app = _app_on_file(path)
+    app._runtime_services._person_detector = None
+    app._config_mtime = 100.0
+    app._last_config_check = float("-inf")
+    app._get_config_mtime = lambda: orch.get_config_mtime(app)
+    save_config(AppConfig(detection=DetectionConfig(enabled=True)), path)
+    os.utime(path, (200.0, 200.0))
+
+    orch.check_config_reload(app)
+    app._runtime_services.detection_swap_on_failure()
+    assert app._config.detection.enabled is False
+    app._last_config_check = float("-inf")
+    orch.check_config_reload(app)
+
+    assert [cfg.enabled for cfg in app._runtime_services.detection_swaps] == [True, True]
+    assert app._config.detection.enabled is True
 
 
 @pytest.mark.usefixtures("every_feature_on")

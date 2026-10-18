@@ -656,14 +656,14 @@ def _start_daemon(work: Callable[[], None]) -> None:
 
 
 def _idle_add_once(work: Callable[[], None]) -> None:
-    """Run ``work`` once on the GTK main loop."""
+    """Run ``work`` once on the GTK main loop, at the frame timeout's priority so a busy loop still runs it."""
     from gi.repository import GLib
 
     def run() -> bool:
         work()
         return False
 
-    GLib.idle_add(run)
+    GLib.idle_add(run, priority=GLib.PRIORITY_DEFAULT)
 
 
 class AppRuntimeServices:
@@ -695,6 +695,9 @@ class AppRuntimeServices:
         self._on_main_thread: Callable[[Callable[[], None]], None] = _idle_add_once
         # Bumped by every detection change, so a build a later change overtook is dropped.
         self._detector_builds = 0
+        # One build at a time: the one in flight, and the newest request waiting for it.
+        self._detector_building: int | None = None
+        self._queued_detector_build: tuple[int, DetectionConfig, Callable[[], None] | None] | None = None
 
         self._frame_metrics = FrameMetrics()
         self._frame_start_time = 0.0
@@ -2624,8 +2627,9 @@ class AppRuntimeServices:
         pipeline so the detection branch matches the new detector's
         appsink caps. Building the detector loads its ONNX session, which
         takes seconds on a large model, so it runs off the frame loop and
-        the branch is wired back on it (``_install_detector``); a build a
-        later detection change overtook is dropped. A wiring failure calls
+        the branch is wired back on it (``_install_detector``). One build
+        runs at a time; the newest change waiting for it is built next, and
+        a build a later detection change overtook is dropped. A wiring failure calls
         ``on_failure``, as the dispatcher reverts the stored config on a
         raise. Backend-init failures land as ``available=False``; the
         reason surfaces via runtime-stats ``missing_deps``.
@@ -2633,25 +2637,52 @@ class AppRuntimeServices:
         Raises at once only without a video receiver, so the dispatcher
         reverts rather than committing the new cfg against a missing runtime.
         """
-        from openfollow.video.detection import PersonDetector
-
         if self._app._video_receiver is None:
             raise RuntimeError(
                 "swap_detector: no video receiver to swap – runtime is not initialised",
             )
         self._detector_builds += 1
-        build = self._detector_builds
+        self._queued_detector_build = (self._detector_builds, new_cfg, on_failure)
+        if self._detector_building is None:
+            self._build_next_detector()
+
+    @property
+    def detector_build_pending(self) -> bool:
+        """Whether the newest detection change is a detector still to be built and wired."""
+        queued = self._queued_detector_build
+        return self._detector_builds in (self._detector_building, queued[0] if queued else None)
+
+    def _build_next_detector(self) -> None:
+        from openfollow.video.detection import PersonDetector
+
+        queued, self._queued_detector_build = self._queued_detector_build, None
+        if queued is None or queued[0] != self._detector_builds:
+            return
+        build, new_cfg, on_failure = queued
+        self._detector_building = build
 
         def construct() -> None:
             try:
                 detector = PersonDetector(new_cfg)
             except Exception:
                 logger.exception("detection: the person detector could not be built")
-                self._on_main_thread(lambda: self._detector_swap_failed(build, on_failure))
+                self._on_main_thread(lambda: self._detector_built(None, build, on_failure))
                 return
-            self._on_main_thread(lambda: self._install_detector(detector, build, on_failure))
+            self._on_main_thread(lambda: self._detector_built(detector, build, on_failure))
 
         self._off_main_thread(construct)
+
+    def _detector_built(
+        self, detector: PersonDetector | None, build: int, on_failure: Callable[[], None] | None
+    ) -> None:
+        self._detector_building = None
+        try:
+            if detector is None:
+                self._detector_swap_failed(build, on_failure)
+            else:
+                self._install_detector(detector, build, on_failure)
+        finally:
+            self._build_next_detector()
 
     def _detector_swap_failed(self, build: int, on_failure: Callable[[], None] | None) -> None:
         if build == self._detector_builds and on_failure is not None:
@@ -4206,6 +4237,8 @@ class AppRuntimeServices:
             return
         self._shutdown_in_progress = True
         app = self._app
+        # A detector still being built is dropped when it lands.
+        self._detector_builds += 1
         # Each step is isolated (see ``_safe_stop``) so one failing
         # teardown can't strand the rest – the OSC-service drain and MIDI
         # close at the end must always run.

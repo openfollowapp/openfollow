@@ -4312,11 +4312,14 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
         #     (the detection appsink caps are pinned at build time from
         #     ``PersonDetector.input_resolution``): off→on, unavailable→on
         #     (re-probe a backend that failed to load), and ``inference_size``
-        #     change while enabled.
+        #     change while enabled. An edit while a detector is still being
+        #     built goes to a new build: the running detector is about to go.
         detector_ref = getattr(app._runtime_services, "_person_detector", None)
         detector_runnable = detector_ref is not None and getattr(detector_ref, "available", True)
         inference_size_changed = old_detection.inference_size != new_config.detection.inference_size
-        needs_swap = new_enabled and (not detector_runnable or inference_size_changed)
+        needs_swap = new_enabled and (
+            not detector_runnable or inference_size_changed or app._runtime_services.detector_build_pending
+        )
         app._config.detection = new_config.detection
         if needs_swap:
             # Rebuild path. ``swap_detector`` owns its own rollback –
@@ -4325,13 +4328,17 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
             # also fails). The dispatcher only reverts stored config;
             # an ``on_failure`` clear here would erase a successful
             # orchestrator-side rollback.
-            # The detector is built off the frame loop; a wiring failure after
-            # this returns reverts through ``on_failure``.
+            # The detector is built off the frame loop; a failure after this
+            # returns reverts and is retried on the next poll, as a raise is.
+            retry_from = app._config_mtime
+
+            def _swap_failed() -> None:
+                app._config.detection = old_detection
+                app._config_mtime = min(app._config_mtime, retry_from)
+
             if not _apply(
                 "detection_swap",
-                lambda: app._runtime_services.swap_detector(
-                    new_detection, on_failure=lambda: setattr(app._config, "detection", old_detection)
-                ),
+                lambda: app._runtime_services.swap_detector(new_detection, on_failure=_swap_failed),
             ):
                 app._config.detection = old_detection
         else:

@@ -601,11 +601,11 @@ class TestSetAppsinkAndStart:
 
         det.stop(wait=False)
 
-        assert det._running is False
+        assert det.performance_stats["running"] is False
         assert not closed.is_set()
         inference_ends.set()
         assert closed.wait(2.0)
-        assert det._backend is None
+        assert det.available is False
 
     def test_stop_tolerates_backend_without_close(self) -> None:
         det = _detector_without_backend()

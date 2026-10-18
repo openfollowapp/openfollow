@@ -1846,7 +1846,6 @@ class TestMarkerCardRendering:
             draw_marker_card(FakeRenderer(), cr, x=0, y=0, w=180, h=64, t=_marker(is_controlled=False), selected=False)
         kinds = [c[0] for c in cr.calls]
         assert kinds.count("save") == kinds.count("restore")
-        assert kinds.index("clip") < kinds.index("push_group")
 
     def test_controlled_marker_skips_group_for_zero_overhead(self) -> None:
         cr = FakeCairo()

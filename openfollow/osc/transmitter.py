@@ -10,9 +10,9 @@ address + arg templates against the current marker state, and hands the
 result to :class:`OscService` for transport.
 
 - One shared scheduler thread, not one per row. Stream rows down-sample
-  via a per-tick counter (``60 / trigger.rate_hz`` ticks per send), so
-  rates of 1 / 5 / 10 / 20 / 30 / 60 Hz fire on cleanly-divisible
-  cadences.
+  by counting beats (``60 / trigger.rate_hz`` per send) from the beat a
+  row is enabled on, so rates of 1 / 5 / 10 / 20 / 30 / 60 Hz fire on
+  cleanly-divisible cadences and a row's first send is not delayed.
 - Every row carries a ``trigger`` describing when to send. Stream is the
   rate-based behaviour above; Hotkey and ControllerButton triggers fire
   via the :class:`InputEventBus` path (handlers enqueue plans; the
@@ -403,6 +403,11 @@ class OscTransmitterManager:
         self._wake = threading.Event()
         self._thread: threading.Thread | None = None
         self._tick: int = 0
+        # The beat each Stream row counts its rate from: the first it was due on, so it is due at once.
+        self._stream_start: dict[str, int] = {}
+        # Whether an enabled Stream row needs the beat; worked out where the rows change.
+        self._streams = False
+        self._clock: Callable[[], float] = time.monotonic
         # Last-sent default-marker position for ``mode == "on_change"``.
         # Keyed by ``(row_id, marker_id)`` so a row fanned out across several
         # markers tracks each marker's movement independently (one marker
@@ -515,6 +520,7 @@ class OscTransmitterManager:
                 self._dest_index = destinations.by_id()
             new_rows: dict[str, OscTransmitter] = {}
             invalidate_cache: set[str] = set()
+            restart_phase: set[str] = set()
             for row_cfg in cfg.transmitters:
                 existing = self._rows.get(row_cfg.id)
                 if existing is not None:
@@ -531,6 +537,8 @@ class OscTransmitterManager:
                     new_kind = type(row_cfg.trigger).__name__
                     if old_cfg.markers != row_cfg.markers or old_kind != new_kind:
                         invalidate_cache.add(row_cfg.id)
+                    if old_cfg.enabled != row_cfg.enabled or old_cfg.trigger != row_cfg.trigger:
+                        restart_phase.add(row_cfg.id)
                     existing.update_config(row_cfg)
                     new_rows[row_cfg.id] = existing
                 else:
@@ -555,6 +563,13 @@ class OscTransmitterManager:
                 for rid, ts in self._last_event_fire_ts.items()
                 if rid in new_rows and rid not in invalidate_cache
             }
+            # A row enabled again or given another trigger is due on the next beat.
+            self._stream_start = {
+                rid: start for rid, start in self._stream_start.items() if rid in new_rows and rid not in restart_phase
+            }
+            self._streams = any(
+                row.cfg.enabled and isinstance(row.cfg.trigger, StreamTrigger) for row in new_rows.values()
+            )
         # An idle scheduler sees whether a Stream row is enabled now.
         self._wake.set()
 
@@ -786,22 +801,24 @@ class OscTransmitterManager:
     # ------------------------------------------------------------------
 
     def _loop(self) -> None:
-        # Ticks every beat while a Stream row is enabled, otherwise sleeps until woken.
+        # Ticks every beat while a Stream row is enabled, otherwise sleeps until woken. Beats fall on deadlines:
+        # one up to an interval late is caught up at once, after a longer stall the next falls an interval later.
+        deadline = self._clock()
         while True:
             self._wake.clear()
             # Checked after the clear, so a stop() landing mid-iteration is never lost.
             if self._stop.is_set():
                 return
             self._tick_once()
-            if self._streaming():
-                self._stop.wait(_TICK_INTERVAL_S)
+            if self._streams:
+                now = self._clock()
+                deadline += _TICK_INTERVAL_S
+                if deadline < now - _TICK_INTERVAL_S:
+                    deadline = now + _TICK_INTERVAL_S
+                self._stop.wait(max(0.0, deadline - now))
             else:
                 self._wake.wait()
-
-    def _streaming(self) -> bool:
-        """Whether an enabled row fires on the scheduler tick."""
-        with self._lock:
-            return any(row.cfg.enabled and isinstance(row.cfg.trigger, StreamTrigger) for row in self._rows.values())
+                deadline = self._clock()
 
     def _queue(self, plans: list[_TickPlan]) -> None:
         """Queue event plans for the scheduler and wake it. Caller holds the manager lock."""
@@ -844,7 +861,8 @@ class OscTransmitterManager:
                 # so this divides exact; ``max(1, ...)`` guards the
                 # hand-edited TOML path.
                 ticks_per_send = max(1, _SCHEDULER_HZ // trigger.rate_hz)
-                if tick % ticks_per_send != 0:
+                start = self._stream_start.setdefault(cfg.id, tick)
+                if (tick - start) % ticks_per_send != 0:
                     continue
                 plans.extend(self._plans_for_row(row))
             # Drain queued event-driven plans onto this tick so they

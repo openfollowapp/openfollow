@@ -4325,9 +4325,7 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
             # Rebuild path. ``swap_detector`` owns its own rollback –
             # on failure it restores the prior detector against a
             # rebuilt pipeline (or clears the reference if rollback
-            # also fails). The dispatcher only reverts stored config;
-            # an ``on_failure`` clear here would erase a successful
-            # orchestrator-side rollback.
+            # also fails), so the dispatcher only reverts stored config.
             # The detector is built off the frame loop; a failure after this
             # returns reverts and is retried on the next poll, as a raise is.
             retry_from = app._config_mtime

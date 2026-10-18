@@ -4614,6 +4614,33 @@ class TestSwapDetector:
 
         assert failed == [True]
 
+    def test_the_detection_module_is_not_loaded_on_the_calling_thread(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Its first import loads cv2 and onnxruntime, which takes long enough to stall the frame clock."""
+        import sys
+        import types
+
+        receiver, detector_cls = self._setup(services, monkeypatch)
+        loaded_on: list[threading.Thread] = []
+
+        class _DetectionModule(types.ModuleType):
+            def __getattr__(self, name: str) -> Any:
+                if name != "PersonDetector":
+                    raise AttributeError(name)
+                loaded_on.append(threading.current_thread())
+                return detector_cls
+
+        monkeypatch.setitem(sys.modules, "openfollow.video.detection", _DetectionModule("openfollow.video.detection"))
+        off_main, on_main = self._deferred(services)
+
+        services.swap_detector(DetectionConfig(enabled=True))
+        assert loaded_on == []
+        self._run_held(off_main, on_main)
+
+        assert len(loaded_on) == 1
+        assert receiver.swap_detector_calls == detector_cls.instances
+
     def test_one_detector_is_built_at_a_time_and_the_newest_change_is_built_next(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
     ) -> None:

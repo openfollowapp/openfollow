@@ -2593,9 +2593,8 @@ class AppRuntimeServices:
         - off → off                 : no-op.
 
         The fourth state – ``off → on`` – needs the receiver pipeline to
-        wire the appsink into a freshly-constructed detector, which
-        ``init_video`` only does at startup; the dispatcher catches that
-        case and falls back to ``request_restart()``.
+        wire the appsink into a freshly-constructed detector; the
+        dispatcher routes it to ``swap_detector``.
 
         The detector reference lives on ``AppRuntimeServices`` (set in
         ``init_video``), not on ``OpenFollowApp``, so read/write
@@ -2653,8 +2652,6 @@ class AppRuntimeServices:
         return self._detector_builds in (self._detector_building, queued[0] if queued else None)
 
     def _build_next_detector(self) -> None:
-        from openfollow.video.detection import PersonDetector
-
         queued, self._queued_detector_build = self._queued_detector_build, None
         if queued is None or queued[0] != self._detector_builds:
             return
@@ -2663,6 +2660,9 @@ class AppRuntimeServices:
 
         def construct() -> None:
             try:
+                # Its first import loads cv2 and onnxruntime, too slow for the frame loop.
+                from openfollow.video.detection import PersonDetector
+
                 detector = PersonDetector(new_cfg)
             except Exception:
                 logger.exception("detection: the person detector could not be built")

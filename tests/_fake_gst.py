@@ -169,6 +169,7 @@ def make_fake_gst(
     link_fail = set(link_fail_kinds or set())
 
     class _Rank:
+        NONE = 0
         MARGINAL = 64
         SECONDARY = 128
         PRIMARY = 256

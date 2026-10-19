@@ -20,6 +20,7 @@ from openfollow.video.inputs._base import (
     VideoInputBase,
     video_input_pin_field,
 )
+from openfollow.video.inputs._hevc_guard import guard_hevc_decoder
 from openfollow.video.inputs._pin import PinRefusal, check_listen_address, check_video_pin, config_pin
 
 logger = logging.getLogger(__name__)
@@ -168,6 +169,7 @@ class RtpInput(VideoInputBase):
         if factory:
             factory.set_rank(Gst.Rank.MARGINAL)
             logger.info("Decoder priority: openh264dec → MARGINAL")
+        guard_hevc_decoder(Gst)
 
     def create_pipeline(
         self,

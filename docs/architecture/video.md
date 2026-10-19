@@ -65,6 +65,7 @@ srtsrc → pre_queue → decodebin → post_queue → videoconvert → shared_vi
 - `srtsrc`: `mode=caller`, `wait-for-connection=True`, `latency=125ms`, **`auto-reconnect=False`** (left on, it retries internally and the failure never reaches the bus)
 - `srt_passphrase`, when set, drives the `passphrase` property and the URL's own `?passphrase=` is stripped first, so one field answers "which key is this stream encrypted with". Blank leaves the URL path untouched
 - Hardware decoder priority boosting (V4L2 > avdec > openh264)
+- HEVC stays off the Pi 5 hardware decoder (`v4l2slh265dec`, ranked out) on kernels before 6.18.48: there `rpi_hevc_dec` blocks `VIDIOC_STREAMOFF` forever once a decode stalls (a missing reference after packet loss), the process goes to D state and only a reboot recovers (raspberrypi/linux #7609, fixed by #7583). `avdec_h265` decodes 1080p30 for about 0.6 of a Pi 5 core. Same guard in RTSP and RTP (`inputs/_hevc_guard.py`)
 - Preserves decoder latency on ASYNC_DONE (do NOT force 0)
 - `pad-added` on decodebin: **do NOT filter by pad name** (uses `src_0`, not `video_0`)
 - Reconnect: 3 retries with 8s first-frame timeout, then no-signal placeholder fallback

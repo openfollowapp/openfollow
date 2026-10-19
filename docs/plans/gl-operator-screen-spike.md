@@ -28,14 +28,20 @@ and reported on the tracking issue.
   go away. Markers stay Cairo sprites: their lens bending costs about 0.23 ms
   per marker, and with the HUD at 60 fps every picture is on time, so GL
   markers are not needed for the go criteria.
-- [ ] **4. No CPU copy of the video.** Decoded frames reach a texture through
+- [x] **4. No CPU copy of the video.** H.264 decodes into memory on a Pi 5, so one
+  copy stays; it costs about 3 to 5 ms of the main thread per frame. The
+  copy-free path is step 5's. Originally: Decoded frames reach a texture through
   GStreamer's GL support in the context GTK shares, without a CPU copy;
   measured against step 1's upload.
-- [ ] **5. HEVC.** The same clip as HEVC through the Pi 5's hardware decoder,
+- [x] **5. HEVC.** Imported as an EGLImage without a copy: whole Pi 72 %. The
+  Pi 5 HEVC driver blocks in the kernel when stopped after a timed-out decode
+  or with frames held. Originally: The same clip as HEVC through the Pi 5's hardware decoder,
   against H.264 in software.
-- [ ] **6. macOS.** The same path through GTK3's GL on macOS, at least as good as
+- [x] **6. macOS.** GTK3's GL area never draws on macOS; macOS keeps the Cairo
+  HUD. Originally: The same path through GTK3's GL on macOS, at least as good as
   today, or its own track.
-- [ ] **7. Decision.** All go criteria measured in the running app against
+- [x] **7. Decision.** Measured and reported on the tracking issue; the call
+  is the maintainer's. Originally: All go criteria measured in the running app against
   0.5.0~rc2 and phase 2; a go / no-go report on the tracking issue.
 
 ## Go criteria (from the issue)

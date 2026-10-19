@@ -650,3 +650,17 @@ def test_a_layered_hud_lays_text_out_as_on_a_canvas_sized_picture() -> None:
         hud.stop()
 
     assert renderer.options[0] == cairo.ImageSurface(cairo.FORMAT_ARGB32, 1, 1).get_font_options()
+
+
+def test_a_layered_hud_set_back_draws_canvas_sized_pictures(renderer) -> None:
+    hud = HudRenderThread(renderer, layered=True)
+    hud.start()
+    try:
+        hud.set_canvas(64, 36, (1.0, 1.0))
+        hud.tick()
+        _show(hud)
+        hud.set_layered(False)
+        _until(lambda: hud.tick() and isinstance(hud.shown_picture()[0], cairo.ImageSurface), "a canvas-sized picture")
+        assert _pixel(_painted(hud), 10, 10) == RED
+    finally:
+        hud.stop()

@@ -18,19 +18,58 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.mark.parametrize(
-    ("env", "flag", "on"),
-    [("1", False, True), ("", True, True), ("", False, False), ("0", False, False), ("yes", False, False)],
-    ids=["env", "flag-file", "neither", "env-0", "env-not-1"],
+    ("platform", "env", "flag", "pyopengl", "reason"),
+    [
+        ("linux", "", False, True, None),
+        ("linux", "1", False, True, None),
+        ("darwin", "", False, True, "no GL display on darwin"),
+        ("win32", "", False, True, "no GL display on win32"),
+        ("linux", "0", False, True, "Cairo asked for"),
+        ("linux", "", True, True, "Cairo asked for"),
+        ("linux", "", False, False, "PyOpenGL is not installed"),
+    ],
+    ids=["linux", "linux-env-1", "macos", "windows", "env-0", "cairo-flag", "no-pyopengl"],
 )
-def test_the_switch_is_the_environment_or_the_flag_file(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, env: str, flag: bool, on: bool
+def test_only_linux_with_pyopengl_runs_the_gl_display_unless_cairo_is_asked_for(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    platform: str,
+    env: str,
+    flag: bool,
+    pyopengl: bool,
+    reason: str | None,
 ) -> None:
     monkeypatch.setenv(gl_display.ENV_SWITCH, env)
-    flag_file = tmp_path / "flag"
+    flag_file = tmp_path / "cairo"
     if flag:
         flag_file.touch()
-    monkeypatch.setattr(gl_display, "FLAG_FILE", str(flag_file))
-    assert gl_display.gl_display_requested() is on
+    monkeypatch.setattr(gl_display, "CAIRO_FLAG", str(flag_file))
+
+    assert gl_display.gl_display_blocker(platform, pyopengl=pyopengl) == reason
+
+
+@pytest.mark.parametrize("installed", [True, False], ids=["installed", "missing"])
+def test_pyopengl_is_looked_up_when_not_given(monkeypatch: pytest.MonkeyPatch, installed: bool) -> None:
+    monkeypatch.delenv(gl_display.ENV_SWITCH, raising=False)
+    monkeypatch.setattr(gl_display, "CAIRO_FLAG", "/nonexistent/cairo-flag")
+    monkeypatch.setattr(gl_display.importlib.util, "find_spec", lambda name: object() if installed else None)
+
+    assert (gl_display.gl_display_blocker("linux") is None) is installed
+
+
+@pytest.mark.parametrize(
+    ("version", "expected"),
+    [
+        (b"OpenGL ES 3.1 Mesa 26.2.2", True),
+        ("OpenGL ES 3.0", True),
+        ("OpenGL ES 2.0 Mesa", False),
+        (b"4.1 Metal - 89.4", False),
+        ("OpenGL ES x", False),
+    ],
+    ids=["mesa-3.1", "es-3.0", "es-2.0", "desktop", "garbled"],
+)
+def test_only_opengl_es_3_or_later_counts(version: str | bytes, expected: bool) -> None:
+    assert gl_display.is_gles(version) is expected
 
 
 def test_i420_planes_halve_the_chroma_rounding_up() -> None:

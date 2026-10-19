@@ -981,6 +981,33 @@ class AppRuntimeServices:
         storage_root = Path(resolve_detection_storage_path(cfg.detection.storage_path))
         seed_bundled_models(source, storage_root / "models")
 
+    @staticmethod
+    def _choose_gl_display(canvas: Any) -> Any:
+        """The GL Operator Screen where the platform supports it, else None for the Cairo one."""
+        if not hasattr(canvas, "attach_gl_display"):
+            return None
+        from openfollow.video import gl_display
+
+        reason = gl_display.gl_display_blocker() or gl_display.probe_gl_context(canvas.gdk_window())
+        if reason is not None:
+            logger.info("Operator Screen: Cairo (%s)", reason)
+            return None
+        logger.info("Operator Screen: GL display")
+        return gl_display.GlDisplay()
+
+    def _fall_back_to_cairo(self, reason: str) -> None:
+        """The GL display failed while running: hand the Operator Screen to Cairo without a restart."""
+        logger.warning("GL display unavailable (%s): the Operator Screen falls back to Cairo", reason)
+        canvas, hud = self._app._canvas, self._hud_render
+        if canvas is None or hud is None:
+            return
+        canvas.detach_gl_display()
+        hud.set_layered(False)
+        canvas.attach_hud(hud.paint, tick=hud.tick)
+        receiver = self._app._video_receiver
+        if receiver is not None:
+            receiver.drop_display()
+
     def init_video(self) -> None:
         overlay = CairoOverlayRenderer()
         self._overlay_renderer = overlay
@@ -1039,9 +1066,7 @@ class AppRuntimeServices:
         input_cls = get_input_class(cfg.video_source_type)
         input_config = input_cls.runtime_config(cfg) if input_cls else {}
 
-        from openfollow.video.gl_display import GlDisplay, gl_display_requested
-
-        gl_display = GlDisplay() if gl_display_requested() and hasattr(canvas, "attach_gl_display") else None
+        gl_display = self._choose_gl_display(canvas)
         receiver = GstNativeSinkReceiver(
             display=gl_display,
             source_type=cfg.video_source_type,
@@ -1072,6 +1097,7 @@ class AppRuntimeServices:
             self._hud_render = HudRenderThread(overlay, layered=gl_display is not None)
             if gl_display is not None:
                 gl_display.set_hud(self._hud_render)
+                gl_display.on_unavailable = self._fall_back_to_cairo
                 canvas.attach_gl_display(gl_display, tick=self._hud_render.tick)
             else:
                 canvas.attach_hud(self._hud_render.paint, tick=self._hud_render.tick)

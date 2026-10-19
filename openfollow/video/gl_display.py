@@ -10,6 +10,7 @@ pasting the HUD with Cairo. PyOpenGL is imported only when the area is realized.
 from __future__ import annotations
 
 import ctypes
+import importlib.util
 import logging
 import os
 import sys
@@ -24,11 +25,12 @@ from openfollow.video.gl_cadence import MAX_QUEUED, Cadence, Durations
 
 logger = logging.getLogger(__name__)
 
+# "0" forces the Cairo Operator Screen where the GL display would run, for an A/B.
 ENV_SWITCH = "OPENFOLLOW_GL_DISPLAY"
-
-
-# Spike switch on a station, where the service's environment lives under /etc.
-FLAG_FILE = os.path.join(os.path.expanduser("~"), ".openfollow-gl-display")
+# The same on a station, where the service's environment lives under /etc.
+CAIRO_FLAG = os.path.join(os.path.expanduser("~"), ".openfollow-cairo-display")
+# Renders failing in a row, about 2 s at 60 Hz, before the GL display gives way to Cairo.
+FAILED_RENDERS_TO_FALL_BACK = 120
 # How video frames meet the refresh, for an A/B: "locked" holds them to an even cadence covering the
 # arrival spread, "capped" covers it up to a refresh past the median arrival; anything else shows each as it arrives.
 CADENCE_FLAG = os.path.join(os.path.expanduser("~"), ".openfollow-gl-cadence")
@@ -36,8 +38,72 @@ DEFAULT_REFRESH_US = 16_667
 REPORT_EVERY_US = 10_000_000
 
 
-def gl_display_requested() -> bool:
-    return os.environ.get(ENV_SWITCH, "") == "1" or os.path.exists(FLAG_FILE)
+def gl_display_blocker(platform: str = sys.platform, *, pyopengl: bool | None = None) -> str | None:
+    """Why the Operator Screen must stay on Cairo here, or None when the GL display may run.
+
+    The GL area only renders through GTK on Linux (on macOS GTK3's never draws).
+    """
+    if not platform.startswith("linux"):
+        return f"no GL display on {platform}"
+    if os.environ.get(ENV_SWITCH, "") == "0" or os.path.exists(CAIRO_FLAG):
+        return "Cairo asked for"
+    if pyopengl is None:
+        pyopengl = importlib.util.find_spec("OpenGL") is not None
+    if not pyopengl:
+        return "PyOpenGL is not installed"
+    return None
+
+
+def is_gles(version: str | bytes) -> bool:
+    """Whether a ``GL_VERSION`` string names OpenGL ES 3.0 or later."""
+    text = version.decode() if isinstance(version, bytes) else version
+    if not text.startswith("OpenGL ES "):
+        return False
+    major = text.removeprefix("OpenGL ES ").split(".")[0]
+    return major.isdigit() and int(major) >= 3
+
+
+def probe_gl_context(gdk_window: Any) -> str | None:  # pragma: no cover - needs a display and a GPU
+    """Why ``gdk_window`` cannot give the GL display its context and shaders, or None when it can."""
+    if gdk_window is None:
+        return "no window to make a GL context on"
+    from gi.repository import Gdk
+
+    try:
+        context = gdk_window.create_gl_context()
+        context.set_use_es(True)
+        context.set_required_version(3, 0)
+        context.realize()
+        context.make_current()
+        os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
+        import OpenGL  # type: ignore[import-not-found]
+
+        OpenGL.ERROR_CHECKING = False
+        from OpenGL import GL
+
+        version = GL.glGetString(GL.GL_VERSION)
+        if not is_gles(version):
+            return f"no OpenGL ES context ({version!r})"
+        for fragment in (_FS_YUV, _FS_NV12, _FS_HUD):
+            program = GL.glCreateProgram()
+            for kind, source in ((GL.GL_VERTEX_SHADER, _VS), (GL.GL_FRAGMENT_SHADER, fragment)):
+                shader = GL.glCreateShader(kind)
+                GL.glShaderSource(shader, source)
+                GL.glCompileShader(shader)
+                if not GL.glGetShaderiv(shader, GL.GL_COMPILE_STATUS):
+                    return f"a display shader does not compile: {GL.glGetShaderInfoLog(shader)!r}"
+                GL.glAttachShader(program, shader)
+                GL.glDeleteShader(shader)
+            GL.glLinkProgram(program)
+            linked = GL.glGetProgramiv(program, GL.GL_LINK_STATUS)
+            GL.glDeleteProgram(program)
+            if not linked:
+                return "a display shader program does not link"
+        return None
+    except Exception as exc:
+        return f"no GL context: {exc}"
+    finally:
+        Gdk.GLContext.clear_current()
 
 
 def cadence_for_mode() -> Cadence[Any]:
@@ -336,6 +402,10 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
             "sprite upload": Durations(),
         }
         self._render_err_log = ThrottledExceptionLogger(logger, "GL display render failed")
+        # Told once, on the GTK main thread, why the display cannot go on; the app falls back to Cairo.
+        self.on_unavailable: Any = None
+        self._failed_renders = 0
+        self._gave_up = False
 
     def release_frames(self) -> None:
         """Hand every held frame back before the pipeline stops, and take none until the next stream starts.
@@ -382,8 +452,18 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
     def _on_realize(self, area: Any) -> None:
         try:
             self._realize(area)
-        except Exception:
+        except Exception as exc:
             logger.exception("GL display could not start")
+            self._give_up(f"the GL area could not start: {exc}")
+
+    def _give_up(self, reason: str) -> None:
+        if self._gave_up or self.on_unavailable is None:
+            return
+        self._gave_up = True
+        from gi.repository import GLib
+
+        # Not from inside a GTK signal handler of the area the fallback removes.
+        GLib.idle_add(lambda: self.on_unavailable(reason) and False)
 
     def _on_unrealize(self, area: Any) -> None:
         # The area's context shares objects with the window's, so they outlive it unless deleted here.
@@ -420,7 +500,7 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
             raise RuntimeError(area.get_error())
         if sys.platform.startswith("linux"):
             os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
-        import OpenGL  # type: ignore[import-not-found]  # spike: installed on the test station only
+        import OpenGL
 
         # A glGetError after every call costs more than the calls on a Pi.
         OpenGL.ERROR_CHECKING = False
@@ -518,8 +598,12 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
             return True
         try:
             self._render(area)
+            self._failed_renders = 0
         except Exception:
             self._render_err_log.log()
+            self._failed_renders += 1
+            if self._failed_renders >= FAILED_RENDERS_TO_FALL_BACK:
+                self._give_up(f"{self._failed_renders} renders in a row failed")
         return True
 
     def _render(self, area: Any) -> None:

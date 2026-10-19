@@ -1780,6 +1780,36 @@ class TestGlDisplay:
         assert order[0] == "release"
         assert f"set_state {FakeState.NULL}" in order
 
+    def test_dropping_the_display_rebuilds_the_pipeline_on_the_platform_sink(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        sinks: list[Any] = []
+        released: list[int] = []
+
+        def create_pipeline(_self: Any, config: Any, sink: Any, build_overlay_tail: Any, prepare_sink: Any) -> Any:
+            sinks.append(sink)
+            return FakePipeline()
+
+        monkeypatch.setattr(FakeInput, "create_pipeline", create_pipeline)
+        display = SimpleNamespace(
+            sink=FakeElement("shared_videosink"), widget=object(), release_frames=lambda: released.append(1)
+        )
+        r = receiver_mod.GstNativeSinkReceiver(source_type="fake", input_config={}, display=display)
+        r.create_pipeline()
+        monkeypatch.setattr(r, "_select_sink_name", lambda: "fakesink")
+        monkeypatch.setattr(r, "play", r.create_pipeline)
+        r.drop_display()
+
+        assert released == [1]
+        assert sinks[0] is display.sink and sinks[-1] is not display.sink
+        assert r.get_sink_widget() is not display.widget
+
+    def test_dropping_no_display_changes_nothing(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = receiver_mod.GstNativeSinkReceiver(source_type="fake", input_config={})
+        pipeline = r._pipeline
+        r.drop_display()
+        assert r._pipeline is pipeline
+
 
 class TestSourceLabel:
     """The label the Operator Screen reads every frame, worked out only when what it names changes."""

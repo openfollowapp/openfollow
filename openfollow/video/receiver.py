@@ -553,6 +553,25 @@ class GstNativeSinkReceiver:
         # same shared sink.
         self.play()
 
+    def drop_display(self) -> None:
+        """Fall back from the GL display to the platform sink: rebuild the pipeline on it.
+
+        GTK main thread only, like ``swap_input``.
+        """
+        if self._display is None:
+            return
+        self._cancel_connection_timeout()
+        self._cancel_reconnect()
+        self._cancel_heal()
+        self._cancel_watchdog()
+        self._null_transition_current_pipeline(swap_label="drop_display")
+        self._reset_video_flow_state()
+        self._display = None
+        self._shared_sink = None
+        # The flow probes sit on the old sink's pad; the new sink gets its own.
+        self._sink_probes_added = False
+        self.play()
+
     def swap_detection_branch(
         self,
         new_detector: PersonDetector | None,

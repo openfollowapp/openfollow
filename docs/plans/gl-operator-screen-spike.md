@@ -12,20 +12,22 @@ and reported on the tracking issue.
 
 ## Steps
 
-- [ ] **1. GL display.** A `Gtk.GLArea` replaces the gtksink widget and the HUD
+- [x] **1. GL display.** A `Gtk.GLArea` replaces the gtksink widget and the HUD
   drawing area. The receiver ends in an `appsink` (I420); each new frame's
   planes go up as textures and a shader converts them. The HUD render
   thread's picture goes up as one texture when it changes and is blended over
   the video. Every display refresh renders once.
-- [ ] **2. Video cadence.** Frames are shown on a cadence locked to the display
+- [x] **2. Video cadence.** Frames are shown on a cadence locked to the display
   refresh (every second refresh for 30 fps on 60 Hz), paced by their
   timestamps, at most one refresh of extra delay. Measured: share of frames
   shown for exactly two refreshes.
-- [ ] **3. Layers and GL markers.** The HUD's kept pictures (grid and ground
-  grid, zones, paths, panels) go up as their own textures, only when they
-  change; marker cards as small textures; markers (ball, crosshair, Z line,
-  ground circle) drawn by GL, projection and lens bending in the vertex
-  shader. The full-canvas HUD picture and its upload go away.
+- [x] **3. Layers.** The HUD's kept pictures (grid and ground grid, zones,
+  paths, cones, panels, the menu scrim) go up as their own textures, only when
+  they change; what is drawn between them (each marker, card, hint, badge,
+  message) goes up cut to its ink. The full-canvas HUD picture and its upload
+  go away. Markers stay Cairo sprites: their lens bending costs about 0.23 ms
+  per marker, and with the HUD at 60 fps every picture is on time, so GL
+  markers are not needed for the go criteria.
 - [ ] **4. No CPU copy of the video.** Decoded frames reach a texture through
   GStreamer's GL support in the context GTK shares, without a CPU copy;
   measured against step 1's upload.

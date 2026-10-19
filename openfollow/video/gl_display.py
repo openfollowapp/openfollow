@@ -13,12 +13,13 @@ import ctypes
 import logging
 import os
 import sys
+import time
 from dataclasses import dataclass
 from typing import Any
 
 from openfollow.logging_setup import ThrottledExceptionLogger
 from openfollow.runtime.overlay_layers import Layers, Sprite
-from openfollow.video.gl_cadence import Cadence
+from openfollow.video.gl_cadence import Cadence, Durations
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,11 @@ def sprite_quad(
         -1.0 + 2.0 * (px + pw) / area_w,
         1.0 - 2.0 * py / area_h,
     )
+
+
+def describe_durations(name: str, taken: tuple[int, float, float]) -> str:
+    count, p50, p99 = taken
+    return f"{name} {count}, p50 {p50:.2f} ms p99 {p99:.2f} ms"
 
 
 def letterbox(frame_w: int, frame_h: int, area_w: int, area_h: int) -> tuple[float, float, float, float]:
@@ -167,6 +173,8 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
         self._drawn_tex: list[int] = []
         self._spare_tex: list[int] = []
         self._colour = yuv_to_rgb(1080)
+        # GTK main thread time per render, per video frame upload and per new sprite list upload.
+        self._took = {"render": Durations(), "video upload": Durations(), "sprite upload": Durations()}
         self._render_err_log = ThrottledExceptionLogger(logger, "GL display render failed")
 
     def set_hud(self, hud: Any) -> None:
@@ -323,6 +331,11 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
         return True
 
     def _render(self, area: Any) -> None:
+        started = time.perf_counter_ns()
+        self._draw(area)
+        self._took["render"].add((time.perf_counter_ns() - started) // 1000)
+
+    def _draw(self, area: Any) -> None:
         GL = self._gl
         scale = area.get_scale_factor()
         alloc = area.get_allocation()
@@ -361,7 +374,9 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
 
         GL = self._gl
         if serial != self._hud_serial:
+            started = time.perf_counter_ns()
             self._upload_layers(layers)
+            self._took["sprite upload"].add((time.perf_counter_ns() - started) // 1000)
             self._hud_serial = serial
         if not layers.sprites:
             return
@@ -432,6 +447,10 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
                 held,
             )
         if self._report_at:
+            logger.info(
+                "GL main thread: %s",
+                ", ".join(describe_durations(name, d.take()) for name, d in self._took.items()),
+            )
             r = self._cadence.report()
             logger.info(
                 "GL video cadence: %d shown, %.1f %% for two refreshes, refreshes %s, %d skipped, %d late,"
@@ -472,7 +491,9 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
                 (info.offset[0], info.offset[1], info.offset[2]),
                 (info.stride[0], info.stride[1], info.stride[2]),
             )
+            started = time.perf_counter_ns()
             self._upload_planes(mapinfo.data, planes, (info.width, info.height))
+            self._took["video upload"].add((time.perf_counter_ns() - started) // 1000)
         finally:
             buf.unmap(mapinfo)
 

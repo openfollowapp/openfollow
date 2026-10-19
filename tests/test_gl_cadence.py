@@ -15,6 +15,7 @@ from openfollow.video.gl_cadence import (
     WINDOW_FRAMES,
     Cadence,
     CadenceReport,
+    Durations,
 )
 
 pytestmark = pytest.mark.unit
@@ -335,3 +336,12 @@ def test_a_timestamp_step_starts_the_spread_over() -> None:
         cadence.push(i, i * FRAME + step, i * FRAME + 5_000)
 
     assert cadence.report().spread_ms_p98 == 0.0
+
+
+def test_durations_report_count_median_and_99th_percentile_then_start_over() -> None:
+    durations = Durations(limit=150)
+    for us in range(200):
+        durations.add(us * 10)
+
+    assert durations.take() == (150, 1.25, 1.98)
+    assert durations.take() == (0, 0.0, 0.0)

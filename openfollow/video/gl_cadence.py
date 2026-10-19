@@ -61,6 +61,22 @@ def _percentile(values: list[int], q: float) -> float:
     return ordered[min(len(ordered) - 1, int(q * len(ordered)))] / 1000.0
 
 
+class Durations:
+    """How long something took over a report period, in µs; reports its count, median and 99th percentile in ms."""
+
+    def __init__(self, limit: int = 3600) -> None:
+        self._values: deque[int] = deque(maxlen=limit)
+
+    def add(self, us: int) -> None:
+        self._values.append(us)
+
+    def take(self) -> tuple[int, float, float]:
+        """The count, median and 99th percentile since the last take; starts the next period."""
+        values = list(self._values)
+        self._values.clear()
+        return len(values), _percentile(values, 0.5), _percentile(values, 0.99)
+
+
 class Cadence(Generic[T]):
     """Frames in from the streaming thread, one pick per display refresh on the GTK main thread.
 

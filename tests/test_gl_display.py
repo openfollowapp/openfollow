@@ -119,3 +119,7 @@ def test_a_sprite_lands_where_its_corner_and_size_put_it_in_clip_space(
     sprite = Sprite(cairo.ImageSurface(cairo.FORMAT_ARGB32, *size), x, y, kept=False)
 
     assert sprite_quad(sprite, scale, 1000, 500) == pytest.approx(expected)
+
+
+def test_durations_read_as_count_median_and_99th_percentile() -> None:
+    assert gl_display.describe_durations("render", (600, 1.234, 5.0)) == "render 600, p50 1.23 ms p99 5.00 ms"

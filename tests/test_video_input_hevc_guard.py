@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -32,6 +33,13 @@ def _fresh_log(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(_hevc_guard, "_logged", False)
 
 
+@pytest.fixture
+def pi_model(tmp_path: Path) -> Path:
+    model = tmp_path / "model"
+    model.write_bytes(b"Raspberry Pi 5 Model B Rev 1.0\x00")
+    return model
+
+
 @pytest.mark.parametrize(
     ("release", "expected"),
     [
@@ -51,48 +59,81 @@ def test_a_kernel_release_reads_as_its_version(release: str, expected: tuple[int
     ("release", "safe"),
     [
         ("6.18.39+rpt-rpi-2712", False),
-        ("6.18.47+rpt-rpi-2712", False),
-        ("6.18.48-v8-16k+", True),
+        ("6.18.48-v8-16k+", False),
+        ("6.18.49-v8-16k+", True),
         ("6.18.50+rpt-rpi-2712", True),
         ("6.12.47+rpt-rpi-2712", False),
-        ("6.19.1", True),
+        ("6.19.14-v8-16k+", False),
+        ("7.0.20-v8-16k+", False),
+        ("7.2.11-v8-16k+", False),
+        ("7.3.0-v8-16k+", True),
         ("unknown", False),
     ],
-    ids=["before-fix", "last-unfixed", "fix", "packaged-after-fix", "older-branch", "newer-branch", "unreadable"],
+    ids=[
+        "packaged-before-fix",
+        "built-before-and-after-fix",
+        "fix",
+        "packaged-after-fix",
+        "older-branch",
+        "6.19-never-fixed",
+        "7.0-never-fixed",
+        "7.2-fixed-partway",
+        "first-fixed-branch",
+        "unreadable",
+    ],
 )
 def test_only_kernels_with_the_stop_fix_keep_the_hevc_hardware_decoder(release: str, safe: bool) -> None:
     assert hevc_hardware_decoder_safe(release) is safe
 
 
 @pytest.mark.parametrize(("release", "ranked_out"), [("6.18.39+rpt-rpi-2712", True), ("6.18.50+rpt-rpi-2712", False)])
-def test_the_hevc_hardware_decoder_is_ranked_out_only_on_an_unsafe_kernel(release: str, ranked_out: bool) -> None:
+def test_the_hevc_hardware_decoder_is_ranked_out_only_on_an_unsafe_kernel(
+    release: str, ranked_out: bool, pi_model: Path
+) -> None:
     factory = _Factory()
     gst = make_fake_gst(known_factories={"v4l2slh265dec": factory})
 
-    guard_hevc_decoder(gst, release)
+    guard_hevc_decoder(gst, release, pi_model)
 
     assert factory.ranks == ([gst.Rank.NONE] if ranked_out else [])
 
 
-def test_an_unsafe_kernel_without_the_hardware_decoder_changes_nothing() -> None:
-    guard_hevc_decoder(make_fake_gst(), "6.18.39+rpt-rpi-2712")
+@pytest.mark.parametrize("model", [b"Radxa ROCK 5B\x00", None], ids=["other-board", "no-device-tree"])
+def test_another_board_keeps_its_hevc_hardware_decoder(tmp_path: Path, model: bytes | None) -> None:
+    model_path = tmp_path / "model"
+    if model is not None:
+        model_path.write_bytes(model)
+    factory = _Factory()
+
+    guard_hevc_decoder(make_fake_gst(known_factories={"v4l2slh265dec": factory}), "6.12.47", model_path)
+
+    assert factory.ranks == []
 
 
-def test_the_software_fallback_is_logged_once(caplog: pytest.LogCaptureFixture) -> None:
+def test_an_unsafe_kernel_without_the_hardware_decoder_changes_nothing(
+    pi_model: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level(logging.WARNING, logger=_hevc_guard.__name__):
+        guard_hevc_decoder(make_fake_gst(), "6.18.39+rpt-rpi-2712", pi_model)
+
+    assert caplog.records == []
+
+
+def test_the_software_fallback_is_logged_once(caplog: pytest.LogCaptureFixture, pi_model: Path) -> None:
     gst = make_fake_gst(known_factories={"v4l2slh265dec": _Factory()})
     with caplog.at_level(logging.WARNING, logger=_hevc_guard.__name__):
-        guard_hevc_decoder(gst, "6.18.39+rpt-rpi-2712")
-        guard_hevc_decoder(gst, "6.18.39+rpt-rpi-2712")
+        guard_hevc_decoder(gst, "6.18.39+rpt-rpi-2712", pi_model)
+        guard_hevc_decoder(gst, "6.18.39+rpt-rpi-2712", pi_model)
 
     messages = [r.getMessage() for r in caplog.records]
-    assert len(messages) == 1 and "6.18.39" in messages[0] and "6.18.48" in messages[0]
+    assert len(messages) == 1 and "6.18.39" in messages[0] and "6.18.49" in messages[0]
 
 
-def test_the_running_kernel_is_read_when_none_is_given(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_running_kernel_is_read_when_none_is_given(monkeypatch: pytest.MonkeyPatch, pi_model: Path) -> None:
     factory = _Factory()
     monkeypatch.setattr("platform.release", lambda: "6.18.39+rpt-rpi-2712")
 
-    guard_hevc_decoder(make_fake_gst(known_factories={"v4l2slh265dec": factory}))
+    guard_hevc_decoder(make_fake_gst(known_factories={"v4l2slh265dec": factory}), model_path=pi_model)
 
     assert factory.ranks
 

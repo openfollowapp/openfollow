@@ -63,6 +63,7 @@ ndisrc → ndisrcdemux → ndi_video_queue (leaky) → videoconvert → shared_v
 srtsrc → pre_queue → decodebin → post_queue → videoconvert → shared_videosink
 ```
 - `srtsrc`: `mode=caller`, `wait-for-connection=True`, `latency=125ms`, **`auto-reconnect=False`** (left on, it retries internally and the failure never reaches the bus)
+- `pre_queue` (RTP's too, `configure_pre_decode_queue`) is leaky and bounded by **time**, 300 ms, never by a buffer count: its buffers are packet-sized, so a count holds milliseconds and a decoder hiccup drops compressed data, which breaks the picture into blocks until the next keyframe. A byte bound (8 MiB) holds it where buffer timestamps cannot (none, or a step back). It fills only while the decoder is behind, and the picture then runs up to 300 ms late until the decoder catches up, since the sink does not sync. On RTP a decoder stall piles up in the `rtpjitterbuffer` behind it instead (`latency` 0 leaves its queue unbounded)
 - `srt_passphrase`, when set, drives the `passphrase` property and the URL's own `?passphrase=` is stripped first, so one field answers "which key is this stream encrypted with". Blank leaves the URL path untouched
 - Hardware decoder priority boosting (V4L2 > avdec > openh264)
 - Preserves decoder latency on ASYNC_DONE (do NOT force 0)

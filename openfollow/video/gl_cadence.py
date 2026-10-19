@@ -99,10 +99,13 @@ class Cadence(Generic[T]):
         self._skipped = 0
         self._late = 0
         self._waits: list[int] = []
+        self._closed = False
 
     def push(self, frame: T, pts_us: int | None, arrival_us: int, max_queued: int = MAX_QUEUED) -> None:
         """Queue a frame; ``max_queued`` lower for frames that hold a decoder's own buffers, which it has few of."""
         with self._lock:
+            if self._closed:
+                return
             if pts_us is not None:
                 if self._last_pts is not None and abs(pts_us - self._last_pts) > MAX_PTS_STEP_US:
                     # The queued frames belong to the old timeline.
@@ -139,12 +142,18 @@ class Cadence(Generic[T]):
         self._offset = target
         self._lower_run = 0
 
-    def clear(self) -> None:
-        """Drop the queued frames, as their pipeline stops; the next frame anchors anew."""
+    def close(self) -> None:
+        """Drop the queued frames and refuse new ones until ``open``: their pipeline is stopping."""
         with self._lock:
+            self._closed = True
             self._queue.clear()
             self._offset = None
             self._recent.clear()
+
+    def open(self) -> None:
+        """Take frames again, from a new stream; the first anchors anew."""
+        with self._lock:
+            self._closed = False
 
     def pick(self, refresh_us: int, interval_us: int) -> T | None:
         """The frame to show at the refresh at ``refresh_us``; None keeps the frame on screen.

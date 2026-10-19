@@ -236,7 +236,9 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
             True,
         )
         sink.set_name("shared_videosink")
-        sink.get_by_name("frames").connect("handoff", self._on_handoff)
+        frames = sink.get_by_name("frames")
+        frames.connect("handoff", self._on_handoff)
+        frames.get_static_pad("sink").add_probe(Gst.PadProbeType.EVENT_DOWNSTREAM, self._on_event)
         self.sink = sink
         self._cadence: Cadence[Any] = Cadence(locked=not os.path.exists(LATEST_FRAME_FLAG))
         self._refresh = (0, DEFAULT_REFRESH_US)
@@ -276,12 +278,13 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
         self._render_err_log = ThrottledExceptionLogger(logger, "GL display render failed")
 
     def release_frames(self) -> None:
-        """Hand every held frame back before the pipeline stops.
+        """Hand every held frame back before the pipeline stops, and take none until the next stream starts.
 
         A Pi 5 HEVC decoder stopping while frames it decoded are still held waits for them forever,
         in the kernel. The image on screen keeps its own reference to the memory, not to the frame.
+        GTK main thread, like the render that holds the frame on screen.
         """
-        self._cadence.clear()
+        self._cadence.close()
         self._image_sample = None
 
     def set_hud(self, hud: Any) -> None:
@@ -293,6 +296,12 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
         interval, _presentation = frame_clock.get_refresh_info(now)
         self._refresh = (now, interval or DEFAULT_REFRESH_US)
         self.widget.queue_render()
+
+    def _on_event(self, _pad: Any, info: Any) -> Any:
+        # A new pipeline's first event: its frames may be held again.
+        if info.get_event().type == self._Gst.EventType.STREAM_START:
+            self._cadence.open()
+        return self._Gst.PadProbeReturn.OK
 
     def _on_handoff(self, _sink: Any, buf: Any, pad: Any) -> None:
         # Streaming thread: stamp the arrival, the GTK main thread picks per refresh.

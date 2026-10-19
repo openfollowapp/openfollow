@@ -230,14 +230,28 @@ def test_a_lower_limit_drops_the_oldest_frames_down_to_it() -> None:
     assert [cadence.pick(5 * FRAME + k * REFRESH, REFRESH) for k in range(2)] == [3, 4]
 
 
-def test_clearing_drops_the_queue_and_the_next_frame_anchors_anew() -> None:
+def test_closing_drops_the_queue_and_after_opening_the_next_frame_anchors_anew() -> None:
     cadence: Cadence[int] = Cadence()
     for i in range(3):
         cadence.push(i, i * FRAME, i * FRAME)
-    cadence.clear()
+    cadence.close()
+    cadence.open()
     cadence.push(3, 3 * FRAME, 3 * FRAME)
 
     assert [cadence.pick(3 * FRAME + k * REFRESH, REFRESH) for k in range(2)] == [None, 3]
+
+
+def test_a_closed_cadence_refuses_frames_until_opened() -> None:
+    cadence: Cadence[int] = Cadence(locked=False)
+    cadence.close()
+    cadence.push(0, 0, 0)
+
+    assert cadence.pick(REFRESH, REFRESH) is None
+
+    cadence.open()
+    cadence.push(1, FRAME, FRAME)
+
+    assert cadence.pick(2 * REFRESH, REFRESH) == 1
 
 
 def test_a_missed_refresh_counts_toward_the_time_on_screen() -> None:

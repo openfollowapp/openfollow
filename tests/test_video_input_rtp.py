@@ -134,7 +134,7 @@ class TestCreatePipelineUnicast:
 def test_the_queue_before_the_decoder_holds_300_ms_of_stream() -> None:
     q = _build().get_by_name("pre_queue")
     assert q is not None
-    assert (q.properties["max-size-buffers"], q.properties["max-size-bytes"]) == (0, 0)
+    assert (q.properties["max-size-buffers"], q.properties["max-size-bytes"]) == (0, 8 * 1024 * 1024)
     assert (q.properties["max-size-time"], q.properties["leaky"]) == (300_000_000, 2)
 
 

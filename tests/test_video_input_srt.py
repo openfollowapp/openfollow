@@ -170,7 +170,7 @@ class TestCreatePipeline:
     def test_the_queue_before_the_decoder_holds_300_ms_of_stream(self) -> None:
         q = self._build().get_by_name("pre_queue")
         assert q is not None
-        assert (q.properties["max-size-buffers"], q.properties["max-size-bytes"]) == (0, 0)
+        assert (q.properties["max-size-buffers"], q.properties["max-size-bytes"]) == (0, 8 * 1024 * 1024)
         assert q.properties["max-size-time"] == 300_000_000
 
     def test_queues_are_leaky_downstream(self) -> None:

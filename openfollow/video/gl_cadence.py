@@ -28,7 +28,7 @@ WINDOW_FRAMES = 150
 COVER = 0.98
 # The offset drops only after this many frames in a row would have allowed it.
 LOWER_AFTER_FRAMES = 60
-# The arrival spread covers at most this many latest frames, so a display that stops reporting holds no more.
+# The arrival spread covers at most this many latest frames, so a display that stops rendering holds no more.
 SPREAD_FRAMES = 3600
 
 

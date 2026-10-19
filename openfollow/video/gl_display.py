@@ -209,10 +209,8 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
             if area.get_error() is not None:
                 return
             GL = self._gl
-            GL.glDeleteTextures([*self._t_yuv, self._t_hud, *self._spare_tex, *self._drawn_tex])
-            if self._kept_tex:
-                GL.glDeleteTextures([tex for _, tex in self._kept_tex.values()])
-            self._kept_tex, self._drawn_tex, self._spare_tex = {}, [], []
+            kept = {tex for _, tex in self._kept_tex.values()}
+            GL.glDeleteTextures([*self._t_yuv, self._t_hud, *self._spare_tex, *set(self._drawn_tex) - kept, *kept])
             GL.glDeleteBuffers(1, [self._quad[1]])
             GL.glDeleteVertexArrays(1, [self._quad[0]])
             GL.glDeleteProgram(self._p_yuv)
@@ -224,6 +222,7 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
         # A new context starts with empty textures: the next frame and HUD picture allocate them again.
         self._frame = (0, 0)
         self._hud_serial = -1
+        self._kept_tex, self._drawn_tex, self._spare_tex = {}, [], []
         area.make_current()
         if area.get_error() is not None:
             raise RuntimeError(area.get_error())

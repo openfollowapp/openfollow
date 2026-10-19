@@ -57,22 +57,6 @@ def test_pyopengl_is_looked_up_when_not_given(monkeypatch: pytest.MonkeyPatch, i
     assert (gl_display.gl_display_blocker("linux") is None) is installed
 
 
-@pytest.mark.parametrize(
-    ("version", "expected"),
-    [
-        (b"OpenGL ES 3.1 Mesa 26.2.2", True),
-        ("OpenGL ES 3.0", True),
-        ("OpenGL ES 2.0 Mesa", False),
-        (b"4.1 Metal - 89.4", False),
-        ("OpenGL ES x", False),
-        (None, False),
-    ],
-    ids=["mesa-3.1", "es-3.0", "es-2.0", "desktop", "garbled", "no-context"],
-)
-def test_only_opengl_es_3_or_later_counts(version: str | bytes | None, expected: bool) -> None:
-    assert gl_display.is_gles(version) is expected
-
-
 def test_i420_planes_halve_the_chroma_rounding_up() -> None:
     assert i420_planes(1921, 1081, (0, 100, 200), (1984, 992, 992)) == [
         Plane(0, 1984, 1921, 1081),

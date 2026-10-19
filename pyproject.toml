@@ -175,6 +175,8 @@ module = [
     "mido",
     "pyspacemouse",
     "easyhid",
+    "OpenGL",
+    "OpenGL.*",
 ]
 ignore_missing_imports = true
 

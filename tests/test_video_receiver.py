@@ -1793,7 +1793,8 @@ class TestGlDisplay:
 
         def create_pipeline(_self: Any, config: Any, sink: Any, build_overlay_tail: Any, prepare_sink: Any) -> Any:
             sinks.append(sink)
-            return _StuckPipeline() if stuck and len(sinks) == 1 else FakePipeline()
+            elements = {"shared_videosink": sink} if sink is not None else {}
+            return _StuckPipeline(elements=elements) if stuck and len(sinks) == 1 else FakePipeline(elements=elements)
 
         def make(kind: str, name: str) -> FakeElement:
             element = FakeElement(name=name)
@@ -1828,6 +1829,8 @@ class TestGlDisplay:
         # The window shows the platform sink's widget in place of the GL area.
         assert embedded == ["GL area", "gtksink widget"]
         assert FakeState.PLAYING in r._pipeline.state_changes
+        # The new sink is watched for frames like the display's was.
+        assert len(sinks[-1].get_static_pad("sink").probes) == len(display.sink.get_static_pad("sink").probes) == 2
 
     def test_a_stuck_pipeline_still_hands_the_window_and_the_next_build_to_the_platform_sink(
         self, fake_gst, fake_glib, fake_input_cls, monkeypatch

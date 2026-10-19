@@ -43,7 +43,8 @@ and reported on the tracking issue.
   measured against step 1's upload.
 - [x] **5. HEVC.** Imported as an EGLImage without a copy: whole Pi 72 %. The
   Pi 5 HEVC driver blocks in the kernel when stopped after a timed-out decode
-  or with frames held. Originally: The same clip as HEVC through the Pi 5's hardware decoder,
+  or with frames held. Opt-in through `~/.openfollow-gl-zero-copy`: its chain
+  has no tee, so detection, the web preview and snapshots get no frames. Originally: The same clip as HEVC through the Pi 5's hardware decoder,
   against H.264 in software.
 - [x] **6. macOS.** GTK3's GL area never draws on macOS; macOS keeps the Cairo
   HUD. Originally: The same path through GTK3's GL on macOS, at least as good as

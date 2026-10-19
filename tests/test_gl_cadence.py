@@ -6,7 +6,15 @@ import random
 
 import pytest
 
-from openfollow.video.gl_cadence import MAX_PTS_STEP_US, MAX_QUEUED, SETTLE_FRAMES, Cadence, CadenceReport
+from openfollow.video.gl_cadence import (
+    COVER,
+    LOWER_AFTER_FRAMES,
+    MAX_PTS_STEP_US,
+    MAX_QUEUED,
+    WINDOW_FRAMES,
+    Cadence,
+    CadenceReport,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -14,6 +22,8 @@ REFRESH = 16_667
 FRAME = 33_333
 # Arrivals around a refresh boundary, the worst case for showing frames as they arrive.
 ON_A_REFRESH = 3 * REFRESH
+# Frames a full window may hold above the offset it covers.
+UNCOVERED = WINDOW_FRAMES - 1 - int(COVER * WINDOW_FRAMES)
 
 
 def _play(
@@ -96,7 +106,7 @@ def test_waits_report_their_median_and_99th_percentile() -> None:
     assert (report.wait_ms_p50, report.wait_ms_p99) == (5.0, 9.9)
 
 
-def test_a_latency_step_costs_one_late_frame_then_the_cadence_holds() -> None:
+def test_a_latency_step_raises_the_offset_once_more_than_the_uncovered_share_is_late() -> None:
     later = _stream(300, latency=30_000, jitter=5_000, seed=2)[150:]
     frames = _stream(150, latency=10_000) + later
     cadence: Cadence[int] = Cadence()
@@ -104,62 +114,58 @@ def test_a_latency_step_costs_one_late_frame_then_the_cadence_holds() -> None:
 
     report = cadence.report()
     assert [f for f in picked if f is not None] == list(range(300))
-    assert report.late <= 2
-    assert report.refreshes[2] >= 296
+    assert 1 <= report.late <= UNCOVERED + 1
+    assert report.refreshes[2] >= 290
 
 
-def test_a_latency_jump_of_several_refreshes_costs_one_late_frame() -> None:
+def test_a_latency_jump_of_several_refreshes_costs_only_the_uncovered_share() -> None:
     frames = _stream(100, latency=10_000) + _stream(200, latency=60_000)[100:]
     cadence: Cadence[int] = Cadence()
     picked = _play(cadence, frames, refreshes=610)
+    delays = _delays(picked, frames)
 
-    report = cadence.report()
     assert [f for f in picked if f is not None] == list(range(200))
-    assert report.late == 1
+    assert 1 <= cadence.report().late <= UNCOVERED + 1
+    assert delays[199] == pytest.approx(delays[90] + 3 * REFRESH, abs=1_000)
 
 
-def test_the_settle_move_keeps_due_times_between_refreshes() -> None:
-    count = SETTLE_FRAMES + 100
-    frames = _stream(20, latency=30_000) + [(i * FRAME, i * FRAME + 10_000) for i in range(20, count)]
-    cadence: Cadence[int] = Cadence()
-    _play(cadence, frames, refreshes=2 * count + 10, refresh_jitter=3_000)
-
-    assert cadence.report().refreshes == {2: count - 2, 1: 1}
-
-
-def test_a_late_frame_starts_the_settle_run_over() -> None:
-    # The first frame anchors the cadence; the rest arrive a refresh early, but one.
-    spike = SETTLE_FRAMES - 1
-    latency = {0: 40_000, spike: 60_000}
-    frames = [(i * FRAME, i * FRAME + latency.get(i, 30_000)) for i in range(SETTLE_FRAMES + 150)]
+def test_a_lone_late_frame_is_shown_late_and_moves_nothing() -> None:
+    latency = {0: 40_000, 200: 90_000}
+    frames = [(i * FRAME, i * FRAME + latency.get(i, 30_000)) for i in range(300)]
     cadence: Cadence[int] = Cadence()
     delays = _delays(_play(cadence, frames, refreshes=2 * len(frames) + 10), frames)
 
     assert cadence.report().late == 1
-    assert delays[spike + 100] == pytest.approx(delays[spike + 1], abs=1_000)
-    assert delays[spike + 1] == pytest.approx(delays[spike - 1] + REFRESH, abs=1_000)
+    assert delays[290] == pytest.approx(delays[190], abs=1_000)
 
 
-def test_a_latency_drop_lowers_the_wait_after_the_settle_run() -> None:
-    count = SETTLE_FRAMES + 100
+def test_lowering_waits_for_a_run_and_keeps_due_times_between_refreshes() -> None:
+    lowered = 20 + WINDOW_FRAMES + LOWER_AFTER_FRAMES
+    count = lowered + 60
     frames = _stream(20, latency=30_000) + [(i * FRAME, i * FRAME + 10_000) for i in range(20, count)]
     cadence: Cadence[int] = Cadence()
-    picked = _play(cadence, frames, refreshes=2 * count + 10)
-    wait = {f: k * REFRESH - frames[f][1] for k, f in enumerate(picked) if f is not None}
+    delays = _delays(_play(cadence, frames, refreshes=2 * count + 10, refresh_jitter=3_000), frames)
 
-    assert wait[count - 1] < wait[30] - REFRESH // 2
-    assert all(w >= 0 for w in wait.values())
+    report = cadence.report()
+    assert report.late == 0
+    assert sum(n for k, n in report.refreshes.items() if k != 2) <= 2
+    assert delays[lowered - 5] == pytest.approx(delays[30], abs=1_000)
+    assert delays[count - 1] < delays[30] - REFRESH // 2
 
 
-def test_an_occasional_slow_frame_keeps_the_wait_where_it_is() -> None:
-    count = SETTLE_FRAMES + 100
-    frames = [(i * FRAME, i * FRAME + (30_000 if i < 20 or i % 50 == 0 else 10_000)) for i in range(count)]
+def test_an_interrupted_lowering_run_starts_over() -> None:
+    spike = 20 + WINDOW_FRAMES + LOWER_AFTER_FRAMES // 2
+    count = spike + WINDOW_FRAMES + 2 * LOWER_AFTER_FRAMES
+    frames = [
+        (i * FRAME, i * FRAME + (30_000 if i < 20 or spike <= i < spike + UNCOVERED + 1 else 10_000))
+        for i in range(count)
+    ]
     cadence: Cadence[int] = Cadence()
-    picked = _play(cadence, frames, refreshes=2 * count + 10)
-    wait = {f: k * REFRESH - frames[f][1] for k, f in enumerate(picked) if f is not None}
+    delays = _delays(_play(cadence, frames, refreshes=2 * count + 10), frames)
 
-    assert cadence.report().late == 0
-    assert wait[count - 1] == pytest.approx(wait[31], abs=1_000)
+    # The run starts again once the slow frames leave the window, not where it stopped.
+    assert delays[spike + WINDOW_FRAMES + LOWER_AFTER_FRAMES - 5] == pytest.approx(delays[30], abs=1_000)
+    assert delays[count - 1] < delays[30] - REFRESH // 2
 
 
 def test_frames_without_timestamps_show_as_they_arrive() -> None:
@@ -179,6 +185,16 @@ def test_a_timestamp_jump_re_anchors_instead_of_waiting_for_it() -> None:
 
     assert cadence.pick(restart + REFRESH, REFRESH) is None
     assert cadence.pick(restart + 2 * REFRESH, REFRESH) == 99
+
+
+def test_after_a_timestamp_step_the_old_timelines_lateness_sets_no_delay() -> None:
+    step = 3 * MAX_PTS_STEP_US // 2
+    frames = [(i * FRAME + (step if i >= 20 else 0), i * FRAME + 10_000) for i in range(100)]
+    cadence: Cadence[int] = Cadence()
+    picked = _play(cadence, frames, refreshes=210)
+    shown_at = {f: k * REFRESH for k, f in enumerate(picked) if f is not None}
+
+    assert all(shown_at[i] - frames[i][1] < 3 * REFRESH for i in range(25, 100))
 
 
 def test_a_timestamp_step_drops_the_frames_queued_before_it() -> None:
@@ -264,3 +280,14 @@ def test_share_of_frames_by_refreshes_on_screen(refreshes: dict[int, int], count
     report = CadenceReport(refreshes=refreshes, skipped=0, late=0, wait_ms_p50=0.0, wait_ms_p99=0.0)
 
     assert report.share(count) == share
+
+
+def test_the_spread_is_how_much_later_than_the_earliest_frame_the_others_arrived() -> None:
+    cadence: Cadence[int] = Cadence()
+    for i in range(100):
+        cadence.push(i, i * FRAME, i * FRAME + 5_000 + i * 100)
+    first = cadence.report()
+    cadence.push(100, 100 * FRAME, 100 * FRAME)
+
+    assert (first.spread_ms_p50, first.spread_ms_p98) == (5.0, 9.8)
+    assert cadence.report().spread_ms_p98 == 0.0

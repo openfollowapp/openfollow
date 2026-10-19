@@ -5,11 +5,13 @@
 A frame is due at its timestamp plus one offset, so frames keep the spacing
 they were captured with. The offset puts due times halfway between two
 refreshes, where neither arrival jitter nor refresh jitter can move a frame to
-the neighbouring refresh.
+the neighbouring refresh, and moves by whole refreshes to cover how late the
+recent frames arrived, all but the latest few.
 """
 
 from __future__ import annotations
 
+import math
 import threading
 from collections import Counter, deque
 from dataclasses import dataclass
@@ -21,8 +23,11 @@ T = TypeVar("T")
 MAX_QUEUED = 6
 # A timestamp step larger than this starts a new stream.
 MAX_PTS_STEP_US = 1_000_000
-# The offset drops by a refresh when this many frames in a row arrived a refresh early.
-SETTLE_FRAMES = 300
+# The recent frames the offset covers, all but the latest share of them.
+WINDOW_FRAMES = 150
+COVER = 0.98
+# The offset drops only after this many frames in a row would have allowed it.
+LOWER_AFTER_FRAMES = 60
 
 
 @dataclass(frozen=True)
@@ -34,6 +39,9 @@ class CadenceReport:
     late: int
     wait_ms_p50: float
     wait_ms_p99: float
+    # How much later than the earliest frame of the period the median and the 98th percentile arrived.
+    spread_ms_p50: float = 0.0
+    spread_ms_p98: float = 0.0
 
     @property
     def shown(self) -> int:
@@ -64,7 +72,9 @@ class Cadence(Generic[T]):
         self._offset: int | None = None
         self._last_pts: int | None = None
         self._interval = 0
-        self._early_run = 0
+        self._recent: deque[int] = deque(maxlen=WINDOW_FRAMES)
+        self._lower_run = 0
+        self._lateness: list[int] = []
         self._last_refresh: int | None = None
         self._shown_at: int | None = None
         self._refreshes: Counter[int] = Counter()
@@ -80,29 +90,34 @@ class Cadence(Generic[T]):
                     self._skipped += len(self._queue)
                     self._queue.clear()
                     self._offset = None
+                    self._recent.clear()
                 self._last_pts = pts_us
+                self._recent.append(arrival_us - pts_us)
+                self._lateness.append(arrival_us - pts_us)
             self._queue.append((frame, pts_us, arrival_us))
             if len(self._queue) > MAX_QUEUED:
                 self._queue.popleft()
                 self._skipped += 1
                 self._offset = None
             if self._offset is not None and pts_us is not None:
-                self._track_slack(self._offset, pts_us + self._offset - arrival_us)
+                self._late += pts_us + self._offset < arrival_us
+                self._steer(self._offset)
 
-    def _track_slack(self, offset: int, slack: int) -> None:
+    def _steer(self, offset: int) -> None:
+        """Move the offset by whole refreshes to the least covering the recent frames: up at once, down after a run."""
+        recent = sorted(self._recent)
+        need = recent[min(len(recent) - 1, int(COVER * len(recent)))]
         interval = self._interval
-        if slack < 0:
-            # Late: move every due time back by whole refreshes, keeping the phase.
-            self._late += 1
-            self._offset = offset - (slack // interval) * interval
-            self._early_run = 0
-        elif slack >= interval:
-            self._early_run += 1
-            if self._early_run >= SETTLE_FRAMES:
-                self._offset = offset - interval
-                self._early_run = 0
+        target = offset + math.ceil((need - offset) / interval) * interval
+        # The next frame finds the moved offset on target, which ends any run.
+        if target > offset:
+            self._offset = target
+        elif target < offset:
+            self._lower_run += 1
+            if self._lower_run >= LOWER_AFTER_FRAMES:
+                self._offset = target
         else:
-            self._early_run = 0
+            self._lower_run = 0
 
     def pick(self, refresh_us: int, interval_us: int) -> T | None:
         """The frame to show at the refresh at ``refresh_us``; None keeps the frame on screen.
@@ -132,7 +147,7 @@ class Cadence(Generic[T]):
         if self._offset is None:
             # Due half a refresh after this one, so the newest frame shows at the next.
             self._offset = refresh_us + interval_us // 2 - newest_pts
-            self._early_run = 0
+            self._lower_run = 0
         due = sum(1 for _, pts, _ in queue if pts is not None and pts + self._offset <= refresh_us)
         return self._take(due, refresh_us) if due else None
 
@@ -154,8 +169,11 @@ class Cadence(Generic[T]):
                 late=self._late,
                 wait_ms_p50=_percentile(waits, 0.5),
                 wait_ms_p99=_percentile(waits, 0.99),
+                spread_ms_p50=_percentile(spread := [v - min(self._lateness, default=0) for v in self._lateness], 0.5),
+                spread_ms_p98=_percentile(spread, 0.98),
             )
             self._refreshes = Counter()
             self._skipped = self._late = 0
             self._waits = []
+            self._lateness = []
             return report

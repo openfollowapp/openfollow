@@ -436,7 +436,7 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
             r = self._cadence.report()
             logger.info(
                 "GL video cadence: %d shown, %.1f %% for two refreshes, refreshes %s, %d skipped, %d late,"
-                " wait p50 %.1f ms p99 %.1f ms",
+                " wait p50 %.1f ms p99 %.1f ms, arrival spread p50 %.1f ms p98 %.1f ms",
                 r.shown,
                 100.0 * r.share(2),
                 dict(sorted(r.refreshes.items())),
@@ -444,6 +444,8 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
                 r.late,
                 r.wait_ms_p50,
                 r.wait_ms_p99,
+                r.spread_ms_p50,
+                r.spread_ms_p98,
             )
         self._report_at = now
 

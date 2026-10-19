@@ -110,6 +110,15 @@ def test_another_board_keeps_its_hevc_hardware_decoder(tmp_path: Path, model: by
     assert factory.ranks == []
 
 
+def test_the_board_is_read_from_the_device_tree_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    read: list[Path] = []
+    monkeypatch.setattr(_hevc_guard, "is_raspberry_pi", lambda path: read.append(path) or False)
+
+    guard_hevc_decoder(make_fake_gst(), "6.18.39+rpt-rpi-2712")
+
+    assert read == [Path("/proc/device-tree/model")]
+
+
 def test_an_unsafe_kernel_without_the_hardware_decoder_changes_nothing(
     pi_model: Path, caplog: pytest.LogCaptureFixture
 ) -> None:

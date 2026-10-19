@@ -129,13 +129,16 @@ def test_the_software_fallback_is_logged_once(caplog: pytest.LogCaptureFixture, 
     assert len(messages) == 1 and "6.18.39" in messages[0] and "6.18.49" in messages[0]
 
 
-def test_the_running_kernel_is_read_when_none_is_given(monkeypatch: pytest.MonkeyPatch, pi_model: Path) -> None:
+@pytest.mark.parametrize(("release", "ranked_out"), [("6.18.39+rpt-rpi-2712", True), ("6.18.50+rpt-rpi-2712", False)])
+def test_the_running_kernel_is_read_when_none_is_given(
+    monkeypatch: pytest.MonkeyPatch, pi_model: Path, release: str, ranked_out: bool
+) -> None:
     factory = _Factory()
-    monkeypatch.setattr("platform.release", lambda: "6.18.39+rpt-rpi-2712")
+    monkeypatch.setattr("platform.release", lambda: release)
 
     guard_hevc_decoder(make_fake_gst(known_factories={"v4l2slh265dec": factory}), model_path=pi_model)
 
-    assert factory.ranks
+    assert bool(factory.ranks) is ranked_out
 
 
 @pytest.mark.parametrize("input_cls", [SrtInput, RtpInput, RtspInput], ids=["srt", "rtp", "rtsp"])

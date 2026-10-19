@@ -187,12 +187,14 @@ def test_the_real_context_is_the_current_segments_on_a_layered_canvas_and_itself
     cut(plain)
 
 
+@pytest.mark.parametrize("scale", [1.0, 2.0])
 @pytest.mark.parametrize("scene", sorted(SCENES))
-def test_a_layered_picture_composites_to_the_canvas_sized_one(scene: str) -> None:
-    for w, h, state in frames(scene, count=3):
-        whole = cairo.ImageSurface(cairo.FORMAT_ARGB32, w, h)
+def test_a_layered_picture_composites_to_the_canvas_sized_one(scene: str, scale: float) -> None:
+    for w, h, state in frames(scene, count=3 if scale == 1.0 else 1):
+        whole = cairo.ImageSurface(cairo.FORMAT_ARGB32, round(w * scale), round(h * scale))
+        whole.set_device_scale(scale, scale)
         CairoOverlayRenderer().draw(cairo.Context(whole), w, h, state)
-        layered = LayerContext(w, h, SCALE, whole.get_font_options())
+        layered = LayerContext(w, h, (scale, scale), whole.get_font_options())
         CairoOverlayRenderer().draw(layered, w, h, state)
         layers = layered.finish()
 

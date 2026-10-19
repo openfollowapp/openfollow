@@ -131,6 +131,13 @@ class TestCreatePipelineUnicast:
         assert "clock-rate=(int)90000" in str(caps.to_string())
 
 
+def test_the_queue_before_the_decoder_holds_300_ms_of_stream() -> None:
+    q = _build().get_by_name("pre_queue")
+    assert q is not None
+    assert (q.properties["max-size-buffers"], q.properties["max-size-bytes"]) == (0, 0)
+    assert (q.properties["max-size-time"], q.properties["leaky"]) == (300_000_000, 2)
+
+
 class TestCreatePipelineMulticast:
     def test_sets_multicast_group_and_auto_multicast(self) -> None:
         pipeline = _build({"rtp_url": "rtp://232.255.255.255:4000"})

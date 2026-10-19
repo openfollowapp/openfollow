@@ -167,6 +167,12 @@ class TestCreatePipeline:
         assert pipeline.get_by_name("post_queue") is not None
         assert pipeline.get_by_name("convert") is not None
 
+    def test_the_queue_before_the_decoder_holds_300_ms_of_stream(self) -> None:
+        q = self._build().get_by_name("pre_queue")
+        assert q is not None
+        assert (q.properties["max-size-buffers"], q.properties["max-size-bytes"]) == (0, 0)
+        assert q.properties["max-size-time"] == 300_000_000
+
     def test_queues_are_leaky_downstream(self) -> None:
         pipeline = self._build()
         for name in ("pre_queue", "post_queue"):

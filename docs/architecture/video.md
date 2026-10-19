@@ -63,12 +63,18 @@ ndisrc → ndisrcdemux → ndi_video_queue (leaky) → videoconvert → shared_v
 srtsrc → pre_queue → decodebin → post_queue → videoconvert → shared_videosink
 ```
 - `srtsrc`: `mode=caller`, `wait-for-connection=True`, `latency=125ms`, **`auto-reconnect=False`** (left on, it retries internally and the failure never reaches the bus)
-- `pre_queue` (RTP's too, `configure_pre_decode_queue`) is leaky and bounded by **time**, 300 ms, never by a buffer count: its buffers are packet-sized, so a count holds milliseconds and a decoder hiccup drops compressed data, which breaks the picture into blocks until the next keyframe. A byte bound (8 MiB) holds it where buffer timestamps cannot (none, or a step back). It fills only while the decoder is behind, and the picture then runs up to 300 ms late until the decoder catches up, since the sink does not sync. On RTP it sits after the `rtpjitterbuffer`, which `latency` 0 leaves unbounded, so a decoder stall fills the bounded queue and never the jitterbuffer.
+- `pre_queue` (RTP's too, `configure_pre_decode_queue`) is leaky and bounded by **time**, 300 ms, never by a buffer count: its buffers are packet-sized, so a count holds milliseconds and a decoder hiccup drops compressed data, which breaks the picture into blocks until the next keyframe. A byte bound (8 MiB) holds it where buffer timestamps cannot (none, or a step back). It fills only while the decoder is behind, and the picture then runs up to 300 ms late until the decoder catches up, since the sink does not sync.
 - `srt_passphrase`, when set, drives the `passphrase` property and the URL's own `?passphrase=` is stripped first, so one field answers "which key is this stream encrypted with". Blank leaves the URL path untouched
 - Hardware decoder priority boosting (V4L2 > avdec > openh264)
 - Preserves decoder latency on ASYNC_DONE (do NOT force 0)
 - `pad-added` on decodebin: **do NOT filter by pad name** (uses `src_0`, not `video_0`)
 - Reconnect: 3 retries with 8s first-frame timeout, then no-signal placeholder fallback
+
+## RTP plugin (`video/inputs/rtp.py`)
+```
+udpsrc → rtpjitterbuffer → pre_queue → decodebin → post_queue → videoconvert → shared_videosink
+```
+- `rtpjitterbuffer`: `latency` 0, `drop-on-latency`; left out when the element is missing. `latency` 0 leaves its queue unbounded, so the bounded `pre_queue` (as on SRT) sits **after** it: a decoder stall fills `pre_queue`, which drops the oldest, and never piles up in the jitterbuffer to come out late. The jitterbuffer pushes from its own thread, so `udpsrc` keeps reading the socket through a stall
 
 ## RTSP plugin (`video/inputs/rtsp.py`)
 ```

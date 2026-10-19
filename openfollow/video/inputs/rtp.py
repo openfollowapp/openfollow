@@ -179,7 +179,7 @@ class RtpInput(VideoInputBase):
     ) -> Any:
         """Build an RTP receive pipeline.
 
-        ``udpsrc(caps) → queue → rtpjitterbuffer → decodebin
+        ``udpsrc(caps) → rtpjitterbuffer → queue → decodebin
           → queue → videoconvert → [overlay tail] → sink``
 
         For multicast addresses (224.x–239.x) the ``multicast-group``

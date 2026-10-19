@@ -419,20 +419,16 @@ class TestRtpCreatePipelineLinkFailures:
         with pytest.raises(RuntimeError, match="pre_queue → decodebin"):
             self._build_with({"queue"})
 
-    def test_pre_decode_to_decodebin_link_failure_raises(self) -> None:
-        # Without jitterbuf in the chain, pre_queue links directly to
-        # decodebin. Failing rtpjitterbuffer's element factory drops it
-        # from the chain; failing all queues then targets pre_queue →
-        # decodebin specifically.
+    def test_udpsrc_to_pre_queue_link_failure_without_jitterbuf_raises(self) -> None:
         from gi.repository import Gst  # noqa: F401
 
         fake = make_fake_gst(
             missing_elements={"rtpjitterbuffer"},
-            link_fail_kinds={"queue"},
+            link_fail_kinds={"udpsrc"},
         )
         sink = FakeElement("shared_videosink")
         with patch("gi.repository.Gst", fake):
-            with pytest.raises(RuntimeError, match="decodebin"):
+            with pytest.raises(RuntimeError, match="udpsrc → pre_queue"):
                 RtpInput().create_pipeline(
                     config={},
                     sink=sink,

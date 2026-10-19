@@ -2,9 +2,9 @@
 # Copyright (C) 2026 OpenFollow Project
 """Video and HUD on one ``Gtk.GLArea``: decoded frames and the HUD picture go up as textures, composited each refresh.
 
-Spike (``OPENFOLLOW_GL_DISPLAY=1``): the receiver ends in this display's sink instead of
-gtksink, and the window renders this area once per display refresh instead of
-pasting the HUD with Cairo. PyOpenGL is imported only when the area is realized.
+Spike, run where ``gl_display_blocker`` and ``probe_gl_context`` allow it: the receiver ends in this
+display's sink instead of gtksink, and the window renders this area once per display refresh instead of
+pasting the HUD with Cairo. PyOpenGL is imported only by the probe and when the area is realized.
 """
 
 from __future__ import annotations

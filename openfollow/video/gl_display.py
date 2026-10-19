@@ -59,26 +59,40 @@ def letterbox(frame_w: int, frame_h: int, area_w: int, area_h: int) -> tuple[flo
 _VS = """#version 300 es
 in vec2 pos; in vec2 uv; out vec2 v_uv;
 void main() { v_uv = uv; gl_Position = vec4(pos, 0.0, 1.0); }"""
-# Limited-range YUV to RGB; ``m`` holds the matrix's V->R, U->G, V->G, U->B terms.
+# ``yr`` is luma's black level and scale; ``m`` holds the V->R, U->G, V->G, U->B terms.
 _FS_YUV = """#version 300 es
 precision mediump float;
-in vec2 v_uv; out vec4 o; uniform sampler2D ty, tu, tv; uniform vec4 m;
+in vec2 v_uv; out vec4 o; uniform sampler2D ty, tu, tv; uniform vec2 yr; uniform vec4 m;
 void main() {
-  float y = 1.1643 * (texture(ty, v_uv).r - 0.0625);
-  float u = texture(tu, v_uv).r - 0.5, v = texture(tv, v_uv).r - 0.5;
+  float y = yr.y * (texture(ty, v_uv).r - yr.x);
+  float u = texture(tu, v_uv).r - 128.0 / 255.0, v = texture(tv, v_uv).r - 128.0 / 255.0;
   o = vec4(y + m.x * v, y - m.y * u - m.z * v, y + m.w * u, 1.0);
 }"""
-BT601 = (1.5958, 0.39173, 0.81290, 2.017)
-BT709 = (1.7927, 0.21325, 0.53291, 2.1124)
+# Luma weights (Kr, Kb) of the matrices GStreamer names.
+LUMA_WEIGHTS = {
+    "bt709": (0.2126, 0.0722),
+    "bt601": (0.299, 0.114),
+    "bt2020": (0.2627, 0.0593),
+    "smpte240m": (0.212, 0.087),
+    "fcc": (0.30, 0.11),
+}
 
 
-def yuv_matrix(height: int, matrix: str = "") -> tuple[float, float, float, float]:
-    """BT.709 when the caps say so or, unspecified, for HD; else BT.601."""
-    if matrix in ("bt709", "bt2020"):
-        return BT709
-    if matrix in ("bt601", "smpte240m", "fcc"):
-        return BT601
-    return BT709 if height >= 720 else BT601
+@dataclass(frozen=True)
+class YuvToRgb:
+    y_black: float
+    y_scale: float
+    m: tuple[float, float, float, float]
+
+
+def yuv_to_rgb(height: int, matrix: str = "", color_range: str = "") -> YuvToRgb:
+    """The caps' matrix and range; an unnamed matrix is BT.709 above SD, BT.601 else, an unnamed range limited."""
+    kr, kb = LUMA_WEIGHTS.get(matrix) or LUMA_WEIGHTS["bt709" if height > 576 else "bt601"]
+    kg = 1.0 - kr - kb
+    full = color_range == "0-255"
+    c = 1.0 if full else 255 / 224
+    m = (2 * (1 - kr) * c, 2 * kb * (1 - kb) / kg * c, 2 * kr * (1 - kr) / kg * c, 2 * (1 - kb) * c)
+    return YuvToRgb(0.0, 1.0, m) if full else YuvToRgb(16 / 255, 255 / 219, m)
 
 
 # Cairo ARGB32 is premultiplied BGRA in memory.
@@ -115,12 +129,13 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
         area.set_auto_render(False)
         area.connect("realize", self._on_realize)
         area.connect("render", self._on_render)
+        area.connect("unrealize", self._on_unrealize)
         self.widget = area
         self._gl: Any = None
         self._ready = False
         self._frame: tuple[int, int] = (0, 0)
         self._hud_serial = -1
-        self._matrix = BT709
+        self._colour = yuv_to_rgb(1080)
 
     def set_hud(self, hud: Any) -> None:
         self._hud = hud
@@ -136,7 +151,13 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
         except Exception:
             logger.exception("GL display could not start")
 
+    def _on_unrealize(self, _area: Any) -> None:
+        self._ready = False
+
     def _realize(self, area: Any) -> None:
+        # A new context starts with empty textures: the next frame and HUD picture allocate them again.
+        self._frame = (0, 0)
+        self._hud_serial = -1
         area.make_current()
         if area.get_error() is not None:
             raise RuntimeError(area.get_error())
@@ -238,7 +259,9 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
         if self._frame != (0, 0):
             GL.glDisable(GL.GL_BLEND)
             GL.glUseProgram(self._p_yuv)
-            GL.glUniform4f(GL.glGetUniformLocation(self._p_yuv, "m"), *self._matrix)
+            c = self._colour
+            GL.glUniform2f(GL.glGetUniformLocation(self._p_yuv, "yr"), c.y_black, c.y_scale)
+            GL.glUniform4f(GL.glGetUniformLocation(self._p_yuv, "m"), *c.m)
             for unit, tex in enumerate(self._t_yuv):
                 GL.glActiveTexture(GL.GL_TEXTURE0 + unit)
                 GL.glBindTexture(GL.GL_TEXTURE_2D, tex)
@@ -266,7 +289,8 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
         from gi.repository import GstVideo
 
         info = GstVideo.VideoInfo.new_from_caps(sample.get_caps())
-        self._matrix = yuv_matrix(info.height, info.colorimetry.matrix.value_nick)
+        cm = info.colorimetry
+        self._colour = yuv_to_rgb(info.height, cm.matrix.value_nick, cm.range.value_nick)
         buf = sample.get_buffer()
         ok, mapinfo = buf.map(Gst.MapFlags.READ)
         if not ok:

@@ -1721,10 +1721,20 @@ class TestReconnect:
 class TestGlDisplay:
     """A GL display (spike) brings the sink the pipeline ends in and the widget the window shows."""
 
-    def test_the_display_s_sink_and_widget_replace_gtksink(self, fake_gst, fake_glib, fake_input_cls) -> None:
+    def test_the_display_s_sink_and_widget_replace_gtksink(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        sinks: list[Any] = []
+
+        def create_pipeline(_self: Any, config: Any, sink: Any, build_overlay_tail: Any, prepare_sink: Any) -> Any:
+            sinks.append(sink)
+            return FakePipeline()
+
+        monkeypatch.setattr(FakeInput, "create_pipeline", create_pipeline)
         display = SimpleNamespace(sink=FakeElement("shared_videosink"), widget=object())
         r = receiver_mod.GstNativeSinkReceiver(source_type="fake", input_config={}, display=display)
-        assert r._get_shared_sink() is display.sink
+        r.create_pipeline()
+        assert sinks == [display.sink]
         assert r.get_sink_widget() is display.widget
 
 

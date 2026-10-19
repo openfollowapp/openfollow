@@ -243,6 +243,12 @@ class FakeDrawingArea:
     def show(self) -> None:  # for widgets reparented into FakeOverlay
         return None
 
+    def hide(self) -> None:
+        self.hidden = True
+
+    def set_no_show_all(self, value: bool) -> None:
+        self.no_show_all = value
+
 
 class FakeWindow:
     def __init__(self, title: str = "") -> None:
@@ -1231,6 +1237,29 @@ class TestHudTick:
         assert window._hud_drawing_area.queue_draw_calls == before
         assert window._window.tick() is True
         assert window._hud_drawing_area.queue_draw_calls == before + 1
+
+    def test_a_gl_display_renders_every_refresh_and_hides_the_cairo_hud(self, window) -> None:
+        renders: list[int] = []
+        ticks: list[int] = []
+        display = SimpleNamespace(queue_render=lambda: renders.append(1))
+        window.attach_gl_display(display, tick=lambda: ticks.append(1) or False)
+        window.start_hud_tick()
+        for _ in range(3):
+            window._window.tick()
+        assert len(renders) == 3 and len(ticks) == 3
+        assert window._hud_drawing_area.hidden is True
+        assert window._hud_drawing_area.no_show_all is True
+
+    def test_a_raising_hud_tick_still_renders_the_gl_display(self, window) -> None:
+        renders: list[int] = []
+
+        def hud_tick() -> bool:
+            raise RuntimeError("tick boom")
+
+        window.attach_gl_display(SimpleNamespace(queue_render=lambda: renders.append(1)), tick=hud_tick)
+        window.start_hud_tick()
+        assert window._window.tick() is True
+        assert renders == [1]
 
     def test_tick_regrabs_focus_when_lost(self, window) -> None:
         """If the toplevel lost focus (e.g. user clicked another app),

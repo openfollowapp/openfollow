@@ -578,3 +578,25 @@ def test_one_late_refresh_does_not_stretch_the_interval_measured(paced, clock, l
     held.append(late + _count_to_show(hud, clock))
     held += [_refreshes_to_show(hud, clock) for _ in range(60)]
     assert held == [2] * 131
+
+
+def test_a_canvas_set_without_a_paint_gets_pictures(hud, renderer) -> None:
+    """A GL display gives the canvas directly; the GTK draw never runs."""
+    hud.set_canvas(64, 36, (2.0, 2.0))
+    hud.tick()
+    _until(lambda: renderer.drawn, "a picture")
+    assert [(d.width, d.height, d.scale) for d in renderer.drawn] == [(64, 36, (2.0, 2.0))]
+
+
+def test_each_picture_put_on_screen_has_a_new_serial(hud, renderer) -> None:
+    """The two pictures take turns, so the same surface returns with new content and a new serial."""
+    assert hud.shown_picture() == (None, 0)
+    hud.set_canvas(64, 36, (1.0, 1.0))
+    hud.tick()
+    seen = []
+    for _ in range(3):
+        _show(hud)
+        seen.append(hud.shown_picture())
+    surfaces, serials = zip(*seen, strict=True)
+    assert serials == (1, 2, 3)
+    assert surfaces[0] is surfaces[2] and surfaces[0] is not surfaces[1]

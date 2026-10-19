@@ -89,7 +89,10 @@ class GstNativeSinkReceiver:
         stall_timeout: float | None = None,
         heal_interval: float | None = None,
         iface_name: Callable[[str], str] | None = None,
+        display: Any = None,
     ) -> None:
+        # A GL display (spike) brings its own sink and widget in place of gtksink.
+        self._display = display
         # Resolve the active video input plugin
         input_cls = get_input_class(source_type)
         if input_cls is None:
@@ -202,6 +205,8 @@ class GstNativeSinkReceiver:
     def _create_shared_sink(self) -> Any:
         """Create a single gtksink that will be reused across all pipelines."""
         Gst.init(None)
+        if self._display is not None:
+            return self._display.sink
 
         sink_name = self._select_sink_name()
         if sink_name is None:
@@ -740,6 +745,8 @@ class GstNativeSinkReceiver:
 
     def get_sink_widget(self) -> Any:
         """Return the GTK widget from shared gtksink."""
+        if self._display is not None:
+            return self._display.widget
         sink = self._get_shared_sink()
         if sink is None:
             return None

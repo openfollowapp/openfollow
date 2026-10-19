@@ -1039,7 +1039,11 @@ class AppRuntimeServices:
         input_cls = get_input_class(cfg.video_source_type)
         input_config = input_cls.runtime_config(cfg) if input_cls else {}
 
+        from openfollow.video.gl_display import GlDisplay, gl_display_requested
+
+        gl_display = GlDisplay() if gl_display_requested() and hasattr(canvas, "attach_gl_display") else None
         receiver = GstNativeSinkReceiver(
+            display=gl_display,
             source_type=cfg.video_source_type,
             input_config=input_config,
             overlay_renderer=overlay,
@@ -1066,7 +1070,11 @@ class AppRuntimeServices:
         # The tick starts and shows pictures drawn on the HUD render thread; the draw callback only pastes.
         if hasattr(canvas, "attach_hud"):
             self._hud_render = HudRenderThread(overlay)
-            canvas.attach_hud(self._hud_render.paint, tick=self._hud_render.tick)
+            if gl_display is not None:
+                gl_display.set_hud(self._hud_render)
+                canvas.attach_gl_display(gl_display, tick=self._hud_render.tick)
+            else:
+                canvas.attach_hud(self._hud_render.paint, tick=self._hud_render.tick)
 
         self._app._video_receiver = receiver
         # Critical phase: a raise skips shutdown(), so tear the already-started

@@ -1718,6 +1718,16 @@ class TestReconnect:
         assert result is False
 
 
+class TestGlDisplay:
+    """A GL display (spike) brings the sink the pipeline ends in and the widget the window shows."""
+
+    def test_the_display_s_sink_and_widget_replace_gtksink(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        display = SimpleNamespace(sink=FakeElement("shared_videosink"), widget=object())
+        r = receiver_mod.GstNativeSinkReceiver(source_type="fake", input_config={}, display=display)
+        assert r._get_shared_sink() is display.sink
+        assert r.get_sink_widget() is display.widget
+
+
 class TestSourceLabel:
     """The label the Operator Screen reads every frame, worked out only when what it names changes."""
 

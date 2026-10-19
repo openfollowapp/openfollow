@@ -1,0 +1,323 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 OpenFollow Project
+"""Video and HUD on one ``Gtk.GLArea``: decoded frames and the HUD picture go up as textures, composited each refresh.
+
+Spike (``OPENFOLLOW_GL_DISPLAY=1``): the receiver ends in an ``appsink`` instead of
+gtksink, and the window renders this area once per display refresh instead of
+pasting the HUD with Cairo. PyOpenGL is imported only when the area is realized.
+"""
+
+from __future__ import annotations
+
+import ctypes
+import logging
+import os
+import sys
+from dataclasses import dataclass
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+ENV_SWITCH = "OPENFOLLOW_GL_DISPLAY"
+
+
+# Spike switch on a station, where the service's environment lives under /etc.
+FLAG_FILE = os.path.join(os.path.expanduser("~"), ".openfollow-gl-display")
+
+
+def gl_display_requested() -> bool:
+    return os.environ.get(ENV_SWITCH, "") == "1" or os.path.exists(FLAG_FILE)
+
+
+@dataclass(frozen=True)
+class Plane:
+    offset: int
+    stride: int
+    width: int
+    height: int
+
+
+def i420_planes(width: int, height: int, offsets: tuple[int, int, int], strides: tuple[int, int, int]) -> list[Plane]:
+    """The Y, U and V planes of an I420 frame; chroma is half size, rounded up."""
+    cw, ch = (width + 1) // 2, (height + 1) // 2
+    return [
+        Plane(offsets[0], strides[0], width, height),
+        Plane(offsets[1], strides[1], cw, ch),
+        Plane(offsets[2], strides[2], cw, ch),
+    ]
+
+
+def letterbox(frame_w: int, frame_h: int, area_w: int, area_h: int) -> tuple[float, float, float, float]:
+    """Where a frame lands in the area keeping its aspect, as (x0, y0, x1, y1) in clip space (-1..1, y up)."""
+    if frame_w <= 0 or frame_h <= 0 or area_w <= 0 or area_h <= 0:
+        return (-1.0, -1.0, 1.0, 1.0)
+    scale = min(area_w / frame_w, area_h / frame_h)
+    sx, sy = frame_w * scale / area_w, frame_h * scale / area_h
+    return (-sx, -sy, sx, sy)
+
+
+_VS = """#version 300 es
+in vec2 pos; in vec2 uv; out vec2 v_uv;
+void main() { v_uv = uv; gl_Position = vec4(pos, 0.0, 1.0); }"""
+# Limited-range YUV to RGB; ``m`` holds the matrix's V->R, U->G, V->G, U->B terms.
+_FS_YUV = """#version 300 es
+precision mediump float;
+in vec2 v_uv; out vec4 o; uniform sampler2D ty, tu, tv; uniform vec4 m;
+void main() {
+  float y = 1.1643 * (texture(ty, v_uv).r - 0.0625);
+  float u = texture(tu, v_uv).r - 0.5, v = texture(tv, v_uv).r - 0.5;
+  o = vec4(y + m.x * v, y - m.y * u - m.z * v, y + m.w * u, 1.0);
+}"""
+BT601 = (1.5958, 0.39173, 0.81290, 2.017)
+BT709 = (1.7927, 0.21325, 0.53291, 2.1124)
+
+
+def yuv_matrix(height: int, matrix: str = "") -> tuple[float, float, float, float]:
+    """BT.709 when the caps say so or, unspecified, for HD; else BT.601."""
+    if matrix in ("bt709", "bt2020"):
+        return BT709
+    if matrix in ("bt601", "smpte240m", "fcc"):
+        return BT601
+    return BT709 if height >= 720 else BT601
+
+
+# Cairo ARGB32 is premultiplied BGRA in memory.
+_FS_HUD = """#version 300 es
+precision mediump float;
+in vec2 v_uv; out vec4 o; uniform sampler2D t;
+void main() { o = texture(t, v_uv).bgra; }"""
+
+
+class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the station
+    """The receiver's video sink and the window's main widget, in one."""
+
+    def __init__(self, hud: Any = None) -> None:
+        import gi
+
+        gi.require_version("Gst", "1.0")
+        gi.require_version("Gtk", "3.0")
+        from gi.repository import Gst, Gtk
+
+        self._Gst = Gst
+        self._hud = hud
+        Gst.init(None)
+        sink = Gst.ElementFactory.make("appsink", "shared_videosink")
+        sink.set_property("caps", Gst.Caps.from_string("video/x-raw,format=I420"))
+        sink.set_property("max-buffers", 2)
+        sink.set_property("drop", True)
+        sink.set_property("sync", False)
+        sink.set_property("emit-signals", False)
+        self.sink = sink
+        area = Gtk.GLArea()
+        area.set_use_es(True)
+        area.set_required_version(3, 0)
+        area.set_has_alpha(False)
+        area.set_auto_render(False)
+        area.connect("realize", self._on_realize)
+        area.connect("render", self._on_render)
+        self.widget = area
+        self._gl: Any = None
+        self._ready = False
+        self._frame: tuple[int, int] = (0, 0)
+        self._hud_serial = -1
+        self._matrix = BT709
+
+    def set_hud(self, hud: Any) -> None:
+        self._hud = hud
+
+    def queue_render(self) -> None:
+        self.widget.queue_render()
+
+    # -- GL ---------------------------------------------------------------
+
+    def _on_realize(self, area: Any) -> None:
+        try:
+            self._realize(area)
+        except Exception:
+            logger.exception("GL display could not start")
+
+    def _realize(self, area: Any) -> None:
+        area.make_current()
+        if area.get_error() is not None:
+            raise RuntimeError(area.get_error())
+        if sys.platform.startswith("linux"):
+            os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
+        from OpenGL import GL  # type: ignore[import-not-found]  # spike: installed on the test station only
+
+        self._gl = GL
+        logger.info("GL display: %s on %s", GL.glGetString(GL.GL_VERSION), GL.glGetString(GL.GL_RENDERER))
+        self._p_yuv = self._program(_VS, _FS_YUV)
+        self._p_hud = self._program(_VS, _FS_HUD)
+        self._quad = self._make_quad()
+        GL.glPixelStorei(GL.GL_UNPACK_ALIGNMENT, 1)
+        self._t_yuv = [self._texture() for _ in range(3)]
+        self._t_hud = self._texture()
+        self._hud_size: tuple[int, int] = (0, 0)
+        GL.glUseProgram(self._p_yuv)
+        for unit, name in enumerate(("ty", "tu", "tv")):
+            GL.glUniform1i(GL.glGetUniformLocation(self._p_yuv, name), unit)
+        GL.glUseProgram(self._p_hud)
+        GL.glUniform1i(GL.glGetUniformLocation(self._p_hud, "t"), 0)
+        self._ready = True
+
+    def _program(self, vs: str, fs: str) -> int:
+        GL = self._gl
+
+        def shader(src: str, kind: int) -> int:
+            s = GL.glCreateShader(kind)
+            GL.glShaderSource(s, src)
+            GL.glCompileShader(s)
+            if not GL.glGetShaderiv(s, GL.GL_COMPILE_STATUS):
+                raise RuntimeError(GL.glGetShaderInfoLog(s))
+            return int(s)
+
+        p = GL.glCreateProgram()
+        GL.glAttachShader(p, shader(vs, GL.GL_VERTEX_SHADER))
+        GL.glAttachShader(p, shader(fs, GL.GL_FRAGMENT_SHADER))
+        GL.glBindAttribLocation(p, 0, "pos")
+        GL.glBindAttribLocation(p, 1, "uv")
+        GL.glLinkProgram(p)
+        if not GL.glGetProgramiv(p, GL.GL_LINK_STATUS):
+            raise RuntimeError(GL.glGetProgramInfoLog(p))
+        return int(p)
+
+    def _texture(self) -> int:
+        GL = self._gl
+        t = GL.glGenTextures(1)
+        GL.glBindTexture(GL.GL_TEXTURE_2D, t)
+        for k in (GL.GL_TEXTURE_MIN_FILTER, GL.GL_TEXTURE_MAG_FILTER):
+            GL.glTexParameteri(GL.GL_TEXTURE_2D, k, GL.GL_LINEAR)
+        for k in (GL.GL_TEXTURE_WRAP_S, GL.GL_TEXTURE_WRAP_T):
+            GL.glTexParameteri(GL.GL_TEXTURE_2D, k, GL.GL_CLAMP_TO_EDGE)
+        return int(t)
+
+    def _make_quad(self) -> tuple[int, int]:
+        GL = self._gl
+        vao = GL.glGenVertexArrays(1)
+        GL.glBindVertexArray(vao)
+        vbo = GL.glGenBuffers(1)
+        GL.glBindBuffer(GL.GL_ARRAY_BUFFER, vbo)
+        GL.glBufferData(GL.GL_ARRAY_BUFFER, 16 * 4, None, GL.GL_DYNAMIC_DRAW)
+        GL.glEnableVertexAttribArray(0)
+        GL.glVertexAttribPointer(0, 2, GL.GL_FLOAT, False, 16, ctypes.c_void_p(0))
+        GL.glEnableVertexAttribArray(1)
+        GL.glVertexAttribPointer(1, 2, GL.GL_FLOAT, False, 16, ctypes.c_void_p(8))
+        return int(vao), int(vbo)
+
+    def _draw_quad(self, x0: float, y0: float, x1: float, y1: float) -> None:
+        import numpy as np
+
+        GL = self._gl
+        vao, vbo = self._quad
+        # Texture rows run top-down; clip space y runs up.
+        data = np.array([x0, y1, 0, 0, x1, y1, 1, 0, x0, y0, 0, 1, x1, y0, 1, 1], dtype=np.float32)
+        GL.glBindVertexArray(vao)
+        GL.glBindBuffer(GL.GL_ARRAY_BUFFER, vbo)
+        GL.glBufferSubData(GL.GL_ARRAY_BUFFER, 0, data.nbytes, data)
+        GL.glDrawArrays(GL.GL_TRIANGLE_STRIP, 0, 4)
+
+    # -- per refresh --------------------------------------------------------
+
+    def _on_render(self, area: Any, _context: Any) -> bool:
+        if not self._ready:
+            return True
+        try:
+            self._render(area)
+        except Exception:
+            logger.exception("GL display render failed")
+        return True
+
+    def _render(self, area: Any) -> None:
+        GL = self._gl
+        scale = area.get_scale_factor()
+        alloc = area.get_allocation()
+        aw, ah = alloc.width * scale, alloc.height * scale
+        self._upload_latest_frame()
+        GL.glClearColor(0.0, 0.0, 0.0, 1.0)
+        GL.glClear(GL.GL_COLOR_BUFFER_BIT)
+        if self._frame != (0, 0):
+            GL.glDisable(GL.GL_BLEND)
+            GL.glUseProgram(self._p_yuv)
+            GL.glUniform4f(GL.glGetUniformLocation(self._p_yuv, "m"), *self._matrix)
+            for unit, tex in enumerate(self._t_yuv):
+                GL.glActiveTexture(GL.GL_TEXTURE0 + unit)
+                GL.glBindTexture(GL.GL_TEXTURE_2D, tex)
+            self._draw_quad(*letterbox(*self._frame, aw, ah))
+        hud = self._hud
+        if hud is not None:
+            hud.set_canvas(alloc.width, alloc.height, (float(scale), float(scale)))
+            picture, serial = hud.shown_picture()
+            if picture is not None:
+                self._upload_hud(picture, serial)
+                GL.glEnable(GL.GL_BLEND)
+                GL.glBlendFunc(GL.GL_ONE, GL.GL_ONE_MINUS_SRC_ALPHA)
+                GL.glUseProgram(self._p_hud)
+                GL.glActiveTexture(GL.GL_TEXTURE0)
+                GL.glBindTexture(GL.GL_TEXTURE_2D, self._t_hud)
+                self._draw_quad(-1.0, -1.0, 1.0, 1.0)
+
+    def _upload_latest_frame(self) -> None:
+        Gst = self._Gst
+        sample = None
+        while (pulled := self.sink.try_pull_sample(0)) is not None:
+            sample = pulled
+        if sample is None:
+            return
+        from gi.repository import GstVideo
+
+        info = GstVideo.VideoInfo.new_from_caps(sample.get_caps())
+        self._matrix = yuv_matrix(info.height, info.colorimetry.matrix.value_nick)
+        buf = sample.get_buffer()
+        ok, mapinfo = buf.map(Gst.MapFlags.READ)
+        if not ok:
+            return
+        try:
+            planes = i420_planes(
+                info.width,
+                info.height,
+                (info.offset[0], info.offset[1], info.offset[2]),
+                (info.stride[0], info.stride[1], info.stride[2]),
+            )
+            self._upload_planes(mapinfo.data, planes, (info.width, info.height))
+        finally:
+            buf.unmap(mapinfo)
+
+    def _upload_planes(self, data: Any, planes: list[Plane], size: tuple[int, int]) -> None:
+        GL = self._gl
+        realloc = size != self._frame
+        for unit, (tex, plane) in enumerate(zip(self._t_yuv, planes, strict=True)):
+            GL.glActiveTexture(GL.GL_TEXTURE0 + unit)
+            GL.glBindTexture(GL.GL_TEXTURE_2D, tex)
+            GL.glPixelStorei(GL.GL_UNPACK_ROW_LENGTH, plane.stride)
+            chunk = data[plane.offset : plane.offset + plane.stride * plane.height]
+            if realloc:
+                GL.glTexImage2D(
+                    GL.GL_TEXTURE_2D, 0, GL.GL_R8, plane.width, plane.height, 0, GL.GL_RED, GL.GL_UNSIGNED_BYTE, chunk
+                )
+            else:
+                GL.glTexSubImage2D(
+                    GL.GL_TEXTURE_2D, 0, 0, 0, plane.width, plane.height, GL.GL_RED, GL.GL_UNSIGNED_BYTE, chunk
+                )
+        GL.glPixelStorei(GL.GL_UNPACK_ROW_LENGTH, 0)
+        self._frame = size
+
+    def _upload_hud(self, picture: Any, serial: int) -> None:
+        # The HUD's two pictures take turns, so a picture is new when its serial is.
+        if serial == self._hud_serial:
+            return
+        import numpy as np
+
+        GL = self._gl
+        picture.flush()
+        w, h, stride = picture.get_width(), picture.get_height(), picture.get_stride()
+        data = np.frombuffer(picture.get_data(), dtype=np.uint8)
+        GL.glActiveTexture(GL.GL_TEXTURE0)
+        GL.glBindTexture(GL.GL_TEXTURE_2D, self._t_hud)
+        GL.glPixelStorei(GL.GL_UNPACK_ROW_LENGTH, stride // 4)
+        if (w, h) != self._hud_size:
+            GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_RGBA8, w, h, 0, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, data)
+            self._hud_size = (w, h)
+        else:
+            GL.glTexSubImage2D(GL.GL_TEXTURE_2D, 0, 0, 0, w, h, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, data)
+        GL.glPixelStorei(GL.GL_UNPACK_ROW_LENGTH, 0)
+        self._hud_serial = serial

@@ -16,6 +16,8 @@ import sys
 from dataclasses import dataclass
 from typing import Any
 
+from openfollow.logging_setup import ThrottledExceptionLogger
+
 logger = logging.getLogger(__name__)
 
 ENV_SWITCH = "OPENFOLLOW_GL_DISPLAY"
@@ -61,7 +63,7 @@ in vec2 pos; in vec2 uv; out vec2 v_uv;
 void main() { v_uv = uv; gl_Position = vec4(pos, 0.0, 1.0); }"""
 # ``yr`` is luma's black level and scale; ``m`` holds the V->R, U->G, V->G, U->B terms.
 _FS_YUV = """#version 300 es
-precision mediump float;
+precision highp float;
 in vec2 v_uv; out vec4 o; uniform sampler2D ty, tu, tv; uniform vec2 yr; uniform vec4 m;
 void main() {
   float y = yr.y * (texture(ty, v_uv).r - yr.x);
@@ -97,7 +99,7 @@ def yuv_to_rgb(height: int, matrix: str = "", color_range: str = "") -> YuvToRgb
 
 # Cairo ARGB32 is premultiplied BGRA in memory.
 _FS_HUD = """#version 300 es
-precision mediump float;
+precision highp float;
 in vec2 v_uv; out vec4 o; uniform sampler2D t;
 void main() { o = texture(t, v_uv).bgra; }"""
 
@@ -136,6 +138,7 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
         self._frame: tuple[int, int] = (0, 0)
         self._hud_serial = -1
         self._colour = yuv_to_rgb(1080)
+        self._render_err_log = ThrottledExceptionLogger(logger, "GL display render failed")
 
     def set_hud(self, hud: Any) -> None:
         self._hud = hud
@@ -151,8 +154,23 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
         except Exception:
             logger.exception("GL display could not start")
 
-    def _on_unrealize(self, _area: Any) -> None:
+    def _on_unrealize(self, area: Any) -> None:
+        # The area's context shares objects with the window's, so they outlive it unless deleted here.
+        if not self._ready:
+            return
         self._ready = False
+        try:
+            area.make_current()
+            if area.get_error() is not None:
+                return
+            GL = self._gl
+            GL.glDeleteTextures([*self._t_yuv, self._t_hud])
+            GL.glDeleteBuffers(1, [self._quad[1]])
+            GL.glDeleteVertexArrays(1, [self._quad[0]])
+            GL.glDeleteProgram(self._p_yuv)
+            GL.glDeleteProgram(self._p_hud)
+        except Exception:
+            logger.exception("GL display could not free its objects")
 
     def _realize(self, area: Any) -> None:
         # A new context starts with empty textures: the next frame and HUD picture allocate them again.
@@ -193,11 +211,15 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
             return int(s)
 
         p = GL.glCreateProgram()
-        GL.glAttachShader(p, shader(vs, GL.GL_VERTEX_SHADER))
-        GL.glAttachShader(p, shader(fs, GL.GL_FRAGMENT_SHADER))
+        shaders = (shader(vs, GL.GL_VERTEX_SHADER), shader(fs, GL.GL_FRAGMENT_SHADER))
+        for s in shaders:
+            GL.glAttachShader(p, s)
         GL.glBindAttribLocation(p, 0, "pos")
         GL.glBindAttribLocation(p, 1, "uv")
         GL.glLinkProgram(p)
+        # Freed with the program.
+        for s in shaders:
+            GL.glDeleteShader(s)
         if not GL.glGetProgramiv(p, GL.GL_LINK_STATUS):
             raise RuntimeError(GL.glGetProgramInfoLog(p))
         return int(p)
@@ -245,7 +267,7 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
         try:
             self._render(area)
         except Exception:
-            logger.exception("GL display render failed")
+            self._render_err_log.log()
         return True
 
     def _render(self, area: Any) -> None:

@@ -308,7 +308,8 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
         data = np.array([x0, y1, 0, 0, x1, y1, 1, 0, x0, y0, 0, 1, x1, y0, 1, 1], dtype=np.float32)
         GL.glBindVertexArray(vao)
         GL.glBindBuffer(GL.GL_ARRAY_BUFFER, vbo)
-        GL.glBufferSubData(GL.GL_ARRAY_BUFFER, 0, data.nbytes, data)
+        # New storage per draw: writing into storage an earlier draw still reads waits for that draw.
+        GL.glBufferData(GL.GL_ARRAY_BUFFER, data.nbytes, data, GL.GL_STREAM_DRAW)
         GL.glDrawArrays(GL.GL_TRIANGLE_STRIP, 0, 4)
 
     # -- per refresh --------------------------------------------------------
@@ -412,7 +413,6 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
         import numpy as np
 
         GL = self._gl
-        picture.flush()
         w, h, stride = picture.get_width(), picture.get_height(), picture.get_stride()
         GL.glBindTexture(GL.GL_TEXTURE_2D, tex)
         GL.glPixelStorei(GL.GL_UNPACK_ROW_LENGTH, stride // 4)

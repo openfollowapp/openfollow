@@ -22,7 +22,8 @@ class Sprite:
     """A picture and where its top-left corner goes, in canvas units.
 
     A kept picture is the same object for as long as its drawing holds and is never
-    drawn into again, so a compositor may keep what it made of it by identity.
+    drawn into again, so a compositor may keep what it made of it by identity. Every
+    picture is flushed before it is listed, so a compositor on another thread only reads it.
     """
 
     picture: cairo.ImageSurface
@@ -115,12 +116,13 @@ class LayerContext:
         if not self._at_top():
             return False
         self._flush()
+        picture.flush()
         self._sprites.append(Sprite(picture, x, y, kept=True))
         return True
 
     def keep_fill(self, rgba: tuple[float, float, float, float]) -> bool:
         """Put the whole canvas in one colour in the list as a kept picture; False below the top level."""
-        return self._at_top() and self.keep(_filled(*self._size, self._scale, rgba), 0, 0)
+        return self.keep(_filled(*self._size, self._scale, rgba), 0, 0)
 
     def finish(self) -> Layers:
         self._flush()
@@ -148,6 +150,7 @@ class LayerContext:
         ctx = cairo.Context(picture)
         ctx.set_source_surface(recording, -x0, -y0)
         ctx.paint()
+        picture.flush()
         self._sprites.append(Sprite(picture, x0, y0, kept=False))
 
 

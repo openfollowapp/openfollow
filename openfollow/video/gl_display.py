@@ -195,14 +195,22 @@ def passes_dmabuf(head: Any) -> bool:
 _DRM_VENDOR_BROADCOM, _BROADCOM_SAND128 = 0x07, 4
 
 
+def _is_sand128(modifier: int) -> bool:
+    return modifier >> 56 == _DRM_VENDOR_BROADCOM and modifier & 0xFF == _BROADCOM_SAND128
+
+
+def dmabuf_pitch(modifier: int, stride: int, width: int) -> int:
+    """A plane's pitch for EGL: its meta stride, or the frame width for SAND128, whose stride packs tile counts."""
+    return width if _is_sand128(modifier) else stride
+
+
 def sand_column_height_modifier(modifier: int, luma_stride: int) -> int:
     """A Broadcom SAND128 modifier with its column height filled in from GStreamer's tiled luma stride.
 
     The decoder's caps leave the height out; GStreamer's stride for a column format packs
     the 8-line tile rows in its upper half. Any other modifier passes unchanged.
     """
-    sand = modifier >> 56 == _DRM_VENDOR_BROADCOM and modifier & 0xFF == _BROADCOM_SAND128
-    if not sand or (modifier >> 8) & 0xFFFFFFFFFFFF:
+    if not _is_sand128(modifier) or (modifier >> 8) & 0xFFFFFFFFFFFF:
         return modifier
     return modifier | ((luma_stride >> 16) * 8) << 8
 
@@ -704,7 +712,8 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
             if not found:
                 raise RuntimeError(f"dmabuf plane {i} lies outside the buffer")
             memory = buf.get_memory(index)
-            planes.append((GstAllocators.dmabuf_memory_get_fd(memory), memory.offset + skip, width))
+            pitch = dmabuf_pitch(modifier, meta.stride[i], width)
+            planes.append((GstAllocators.dmabuf_memory_get_fd(memory), memory.offset + skip, pitch))
         attrs = dmabuf_image_attributes(
             width,
             height,

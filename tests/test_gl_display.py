@@ -283,3 +283,16 @@ def test_a_buffer_must_reach_the_end_of_its_furthest_plane() -> None:
     planes = [Plane(4096, 2048, 1920, 1080), Plane(0, 2048, 960, 2)]
 
     assert gl_display.planes_end(planes) == 4096 + 2048 * 1080
+
+
+@pytest.mark.parametrize(
+    ("modifier", "expected"),
+    [
+        (0x0700000000044004, 1920),
+        (0, 2048),
+        (gl_display.DRM_FORMAT_MOD_INVALID, 2048),
+    ],
+    ids=["sand128-width", "linear-stride", "implicit-stride"],
+)
+def test_a_dmabuf_plane_pitch_is_its_stride_except_for_sand128(modifier: int, expected: int) -> None:
+    assert gl_display.dmabuf_pitch(modifier, 2048, 1920) == expected

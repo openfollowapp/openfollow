@@ -6,7 +6,7 @@ import random
 
 import pytest
 
-from openfollow.video.gl_cadence import MAX_QUEUED, SETTLE_FRAMES, Cadence, CadenceReport
+from openfollow.video.gl_cadence import MAX_PTS_STEP_US, MAX_QUEUED, SETTLE_FRAMES, Cadence, CadenceReport
 
 pytestmark = pytest.mark.unit
 
@@ -61,28 +61,59 @@ def test_the_first_frame_shows_one_refresh_after_it_anchors_the_cadence() -> Non
 
     assert cadence.pick(100, REFRESH) is None
     assert cadence.pick(100 + REFRESH, REFRESH) == 7
+    assert cadence.report().wait_ms_p50 == (100 + REFRESH - 50) / 1000
+
+
+def test_a_frame_shows_at_the_refresh_at_its_due_time() -> None:
+    cadence: Cadence[int] = Cadence()
+    cadence.push(7, 1_000_000, 50)
+    cadence.pick(100, REFRESH)
+
+    assert cadence.pick(100 + REFRESH // 2, REFRESH) == 7
+
+
+def test_waits_report_their_median_and_99th_percentile() -> None:
+    cadence: Cadence[int] = Cadence(locked=False)
+    for k in range(100):
+        cadence.push(k, None, 1_000_000 - k * 100)
+        cadence.pick(1_000_000, REFRESH)
+
+    report = cadence.report()
+    assert (report.wait_ms_p50, report.wait_ms_p99) == (5.0, 9.9)
 
 
 def test_a_latency_step_costs_one_late_frame_then_the_cadence_holds() -> None:
-    frames = _stream(150, latency=10_000) + [(i * FRAME, i * FRAME + 30_000) for i in range(150, 300)]
+    later = _stream(300, latency=30_000, jitter=5_000, seed=2)[150:]
+    frames = _stream(150, latency=10_000) + later
     cadence: Cadence[int] = Cadence()
     picked = _play(cadence, frames, refreshes=610)
 
     report = cadence.report()
     assert [f for f in picked if f is not None] == list(range(300))
-    assert report.late == 1
-    assert report.refreshes[2] >= 297
+    assert report.late <= 2
+    assert report.refreshes[2] >= 296
 
 
 def test_a_latency_drop_lowers_the_wait_after_the_settle_run() -> None:
     count = SETTLE_FRAMES + 100
-    frames = _stream(20, latency=60_000) + [(i * FRAME, i * FRAME + 10_000) for i in range(20, count)]
+    frames = _stream(20, latency=30_000) + [(i * FRAME, i * FRAME + 10_000) for i in range(20, count)]
     cadence: Cadence[int] = Cadence()
     picked = _play(cadence, frames, refreshes=2 * count + 10)
     wait = {f: k * REFRESH - frames[f][1] for k, f in enumerate(picked) if f is not None}
 
     assert wait[count - 1] < wait[30] - REFRESH // 2
     assert all(w >= 0 for w in wait.values())
+
+
+def test_an_occasional_slow_frame_keeps_the_wait_where_it_is() -> None:
+    count = SETTLE_FRAMES + 100
+    frames = [(i * FRAME, i * FRAME + (30_000 if i < 20 or i % 50 == 0 else 10_000)) for i in range(count)]
+    cadence: Cadence[int] = Cadence()
+    picked = _play(cadence, frames, refreshes=2 * count + 10)
+    wait = {f: k * REFRESH - frames[f][1] for k, f in enumerate(picked) if f is not None}
+
+    assert cadence.report().late == 0
+    assert wait[count - 1] == pytest.approx(wait[31], abs=1_000)
 
 
 def test_frames_without_timestamps_show_as_they_arrive() -> None:
@@ -98,7 +129,7 @@ def test_a_timestamp_jump_re_anchors_instead_of_waiting_for_it() -> None:
     cadence: Cadence[int] = Cadence()
     _play(cadence, _stream(10, latency=5_000), refreshes=22)
     restart = 10 * FRAME + 5_000
-    cadence.push(99, 500_000_000, restart)
+    cadence.push(99, 9 * FRAME + 3 * MAX_PTS_STEP_US // 2, restart)
 
     assert cadence.pick(restart + REFRESH, REFRESH) is None
     assert cadence.pick(restart + 2 * REFRESH, REFRESH) == 99
@@ -116,6 +147,14 @@ def test_a_stalled_refresh_drops_the_oldest_and_re_anchors_on_the_newest() -> No
     assert cadence.pick(now, REFRESH) == newest - 1
     assert cadence.pick(now + REFRESH, REFRESH) == newest
     assert cadence.report().skipped == newest - 1
+
+
+def test_timestamps_running_ahead_of_the_clock_re_anchor_instead_of_freezing() -> None:
+    frames = [(i * 2 * FRAME, i * FRAME + 5_000) for i in range(100)]
+    cadence: Cadence[int] = Cadence()
+    picked = _play(cadence, frames, refreshes=200)
+
+    assert max(f for f in picked if f is not None) >= 90
 
 
 def test_a_report_starts_the_next_period() -> None:

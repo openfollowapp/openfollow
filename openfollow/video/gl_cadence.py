@@ -73,9 +73,10 @@ class Cadence(Generic[T]):
 
     def push(self, frame: T, pts_us: int | None, arrival_us: int) -> None:
         with self._lock:
-            if pts_us is None or (self._last_pts is not None and abs(pts_us - self._last_pts) > MAX_PTS_STEP_US):
-                self._offset = None
-            self._last_pts = pts_us
+            if pts_us is not None:
+                if self._last_pts is not None and abs(pts_us - self._last_pts) > MAX_PTS_STEP_US:
+                    self._offset = None
+                self._last_pts = pts_us
             self._queue.append((frame, pts_us, arrival_us))
             if len(self._queue) > MAX_QUEUED:
                 self._queue.popleft()

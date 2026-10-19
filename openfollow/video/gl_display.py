@@ -239,8 +239,19 @@ _FS_EXTERNAL = """#version 300 es
 precision highp float;
 in vec2 v_uv; out vec4 o; uniform samplerExternalOES t;
 void main() { o = vec4(texture(t, v_uv).rgb, 1.0); }"""
-# Video caps the GL display takes: a decoder's dmabuf as it is, else I420 in memory.
-SINK_CAPS = "video/x-raw(memory:DMABuf),format=DMA_DRM; video/x-raw,format=I420"
+# Video caps the GL display takes: I420 in memory, and with zero copy a decoder's dmabuf as it is. Zero copy is
+# opt-in: its chain has no tee, so detection, the web preview and snapshots get no frames, and a Pi 5 HEVC
+# decoder stopped with its frames held hangs in the kernel.
+ZERO_COPY_FLAG = os.path.join(os.path.expanduser("~"), ".openfollow-gl-zero-copy")
+MEMORY_CAPS = "video/x-raw,format=I420"
+DMABUF_CAPS = f"video/x-raw(memory:DMABuf),format=DMA_DRM; {MEMORY_CAPS}"
+
+
+def sink_caps() -> str:
+    """The caps the GL display's sink asks for: a decoder's dmabuf only when zero copy is asked for."""
+    return DMABUF_CAPS if os.path.exists(ZERO_COPY_FLAG) else MEMORY_CAPS
+
+
 DRM_FORMAT_MOD_INVALID = 0x00FFFFFFFFFFFFFF
 # A hardware decoder's frames queued at most: it has a few buffers beyond its references, and a decode
 # waiting too long for one fails; on a Pi 5 stopping the decoder after that hangs the driver.
@@ -357,7 +368,7 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
         # fakevideosink, not appsink: a decoder hands out its dmabufs only to a sink announcing GstVideoMeta,
         # and appsink's allocation query cannot be answered from Python.
         sink = Gst.parse_bin_from_description(
-            f'capsfilter caps="{SINK_CAPS}" ! fakevideosink name=frames sync=false enable-last-sample=false'
+            f'capsfilter caps="{sink_caps()}" ! fakevideosink name=frames sync=false enable-last-sample=false'
             " signal-handoffs=true",
             True,
         )

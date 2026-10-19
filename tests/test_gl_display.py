@@ -197,10 +197,10 @@ class _CapsSink:
 @pytest.mark.parametrize(
     ("sink", "expected"),
     [
-        (_CapsSink(gl_display.SINK_CAPS), True),
+        (_CapsSink(gl_display.DMABUF_CAPS), True),
         (_CapsSink("video/x-raw,format=I420"), False),
         (_CapsSink(None), False),
-        (_CapsSink(gl_display.SINK_CAPS, pad="src"), False),
+        (_CapsSink(gl_display.DMABUF_CAPS, pad="src"), False),
         (_CapsSink(None, raises=True), False),
     ],
     ids=["gl-display", "memory-only", "no-caps", "no-pad", "query-fails"],
@@ -213,7 +213,7 @@ def test_only_a_sink_asking_for_dmabuf_takes_it(sink: _CapsSink, expected: bool)
     ("head", "expected"),
     [
         (_CapsSink("ANY", pad="src"), True),
-        (_CapsSink(gl_display.SINK_CAPS, pad="src"), True),
+        (_CapsSink(gl_display.DMABUF_CAPS, pad="src"), True),
         (_CapsSink("video/x-raw, format=(string)I420; video/x-raw(ANY), format=(string)I420", pad="src"), False),
         (_CapsSink("ANY", pad="sink"), False),
     ],
@@ -398,3 +398,17 @@ def test_the_flag_file_picks_how_video_frames_meet_the_refresh(
         "capped": 15 <= report.wait_ms_p50 <= 40,
     }
     assert waits[expected], (expected, report)
+
+
+@pytest.mark.parametrize("flag", [True, False], ids=["zero-copy", "default"])
+def test_the_display_asks_for_dmabuf_only_when_zero_copy_is_asked_for(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flag: bool
+) -> None:
+    flag_file = tmp_path / "zero-copy"
+    if flag:
+        flag_file.touch()
+    monkeypatch.setattr(gl_display, "ZERO_COPY_FLAG", str(flag_file))
+
+    caps = gl_display.sink_caps()
+    assert ("memory:DMABuf" in caps) is flag
+    assert caps.endswith(gl_display.MEMORY_CAPS)

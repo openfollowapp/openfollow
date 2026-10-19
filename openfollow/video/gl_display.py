@@ -29,14 +29,20 @@ ENV_SWITCH = "OPENFOLLOW_GL_DISPLAY"
 
 # Spike switch on a station, where the service's environment lives under /etc.
 FLAG_FILE = os.path.join(os.path.expanduser("~"), ".openfollow-gl-display")
-# Shows the newest frame each refresh instead of the locked cadence, for an A/B.
-LATEST_FRAME_FLAG = os.path.join(os.path.expanduser("~"), ".openfollow-gl-latest-frame")
+# Holds video frames to a cadence locked to the refresh instead of showing each as it arrives:
+# even motion, at the cost of the arrival spread in delay. For an A/B.
+LOCKED_CADENCE_FLAG = os.path.join(os.path.expanduser("~"), ".openfollow-gl-locked-cadence")
 DEFAULT_REFRESH_US = 16_667
 REPORT_EVERY_US = 10_000_000
 
 
 def gl_display_requested() -> bool:
     return os.environ.get(ENV_SWITCH, "") == "1" or os.path.exists(FLAG_FILE)
+
+
+def locked_cadence_requested() -> bool:
+    """Whether video frames wait for a locked cadence; by default each shows at the refresh after it arrives."""
+    return os.path.exists(LOCKED_CADENCE_FLAG)
 
 
 @dataclass(frozen=True)
@@ -285,7 +291,7 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
         frames.connect("handoff", self._on_handoff)
         frames.get_static_pad("sink").add_probe(Gst.PadProbeType.EVENT_DOWNSTREAM, self._on_event)
         self.sink = sink
-        self._cadence: Cadence[Any] = Cadence(locked=not os.path.exists(LATEST_FRAME_FLAG))
+        self._cadence: Cadence[Any] = Cadence(locked=locked_cadence_requested())
         self._refresh = (0, DEFAULT_REFRESH_US)
         self._report_at = 0
         area = Gtk.GLArea()

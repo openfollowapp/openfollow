@@ -17,7 +17,10 @@ and reported on the tracking issue.
   planes go up as textures and a shader converts them. The HUD render
   thread's picture goes up as one texture when it changes and is blended over
   the video. Every display refresh renders once.
-- [x] **2. Video cadence.** Frames are shown on a cadence locked to the display
+- [x] **2. Video cadence.** Built and measured, then made opt-in: held to a locked
+  cadence every frame waits 50 to 70 ms, and for a followspot latency beats
+  even motion, so frames show at the refresh after they arrive unless
+  `~/.openfollow-gl-locked-cadence` exists. Originally: Frames are shown on a cadence locked to the display
   refresh (every second refresh for 30 fps on 60 Hz), paced by their
   timestamps, at most one refresh of extra delay. Measured: share of frames
   shown for exactly two refreshes.

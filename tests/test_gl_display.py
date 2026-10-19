@@ -317,3 +317,15 @@ def test_a_frame_is_laid_out_by_its_video_meta_else_by_its_caps(
     meta: SimpleNamespace | None, expected: tuple[tuple[int, ...], tuple[int, ...]]
 ) -> None:
     assert gl_display.frame_layout(meta, _CAPS_LAYOUT, 3) == expected
+
+
+@pytest.mark.parametrize("flag", [True, False], ids=["flag-file", "no-flag-file"])
+def test_video_frames_show_as_they_arrive_unless_the_locked_cadence_is_asked_for(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flag: bool
+) -> None:
+    flag_file = tmp_path / "locked"
+    if flag:
+        flag_file.touch()
+    monkeypatch.setattr(gl_display, "LOCKED_CADENCE_FLAG", str(flag_file))
+
+    assert gl_display.locked_cadence_requested() is flag

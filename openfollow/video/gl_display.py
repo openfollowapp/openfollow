@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from openfollow.logging_setup import ThrottledExceptionLogger
+from openfollow.runtime.overlay_layers import Layers, Sprite
 from openfollow.video.gl_cadence import Cadence
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,20 @@ def i420_planes(width: int, height: int, offsets: tuple[int, int, int], strides:
         Plane(offsets[1], strides[1], cw, ch),
         Plane(offsets[2], strides[2], cw, ch),
     ]
+
+
+def sprite_quad(
+    sprite: Sprite, scale: tuple[float, float], area_w: int, area_h: int
+) -> tuple[float, float, float, float]:
+    """Where a sprite lands in an area of ``area_w`` x ``area_h`` device pixels, as (x0, y0, x1, y1) in clip space."""
+    px, py = sprite.x * scale[0], sprite.y * scale[1]
+    pw, ph = sprite.picture.get_width(), sprite.picture.get_height()
+    return (
+        -1.0 + 2.0 * px / area_w,
+        1.0 - 2.0 * (py + ph) / area_h,
+        -1.0 + 2.0 * (px + pw) / area_w,
+        1.0 - 2.0 * py / area_h,
+    )
 
 
 def letterbox(frame_w: int, frame_h: int, area_w: int, area_h: int) -> tuple[float, float, float, float]:
@@ -147,6 +162,10 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
         self._ready = False
         self._frame: tuple[int, int] = (0, 0)
         self._hud_serial = -1
+        # Kept sprites' textures by picture identity, holding the picture so the identity stays unique.
+        self._kept_tex: dict[int, tuple[Any, int]] = {}
+        self._drawn_tex: list[int] = []
+        self._spare_tex: list[int] = []
         self._colour = yuv_to_rgb(1080)
         self._render_err_log = ThrottledExceptionLogger(logger, "GL display render failed")
 
@@ -190,7 +209,10 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
             if area.get_error() is not None:
                 return
             GL = self._gl
-            GL.glDeleteTextures([*self._t_yuv, self._t_hud])
+            GL.glDeleteTextures([*self._t_yuv, self._t_hud, *self._spare_tex, *self._drawn_tex])
+            if self._kept_tex:
+                GL.glDeleteTextures([tex for _, tex in self._kept_tex.values()])
+            self._kept_tex, self._drawn_tex, self._spare_tex = {}, [], []
             GL.glDeleteBuffers(1, [self._quad[1]])
             GL.glDeleteVertexArrays(1, [self._quad[0]])
             GL.glDeleteProgram(self._p_yuv)
@@ -207,7 +229,11 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
             raise RuntimeError(area.get_error())
         if sys.platform.startswith("linux"):
             os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
-        from OpenGL import GL  # type: ignore[import-not-found]  # spike: installed on the test station only
+        import OpenGL  # type: ignore[import-not-found]  # spike: installed on the test station only
+
+        # A glGetError after every call costs more than the calls on a Pi.
+        OpenGL.ERROR_CHECKING = False
+        from OpenGL import GL
 
         self._gl = GL
         logger.info("GL display: %s on %s", GL.glGetString(GL.GL_VERSION), GL.glGetString(GL.GL_RENDERER))
@@ -319,7 +345,9 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
         if hud is not None:
             hud.set_canvas(alloc.width, alloc.height, (float(scale), float(scale)))
             picture, serial = hud.shown_picture()
-            if picture is not None:
+            if isinstance(picture, Layers):
+                self._draw_layers(picture, serial, aw, ah)
+            elif picture is not None:
                 self._upload_hud(picture, serial)
                 GL.glEnable(GL.GL_BLEND)
                 GL.glBlendFunc(GL.GL_ONE, GL.GL_ONE_MINUS_SRC_ALPHA)
@@ -328,10 +356,82 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
                 GL.glBindTexture(GL.GL_TEXTURE_2D, self._t_hud)
                 self._draw_quad(-1.0, -1.0, 1.0, 1.0)
 
+    def _draw_layers(self, layers: Layers, serial: int, aw: int, ah: int) -> None:
+        import numpy as np
+
+        GL = self._gl
+        if serial != self._hud_serial:
+            self._upload_layers(layers)
+            self._hud_serial = serial
+        if not layers.sprites:
+            return
+        quads = [sprite_quad(s, layers.scale, aw, ah) for s in layers.sprites]
+        # Texture rows run top-down; clip space y runs up.
+        data = np.array(
+            [v for x0, y0, x1, y1 in quads for v in (x0, y1, 0, 0, x1, y1, 1, 0, x0, y0, 0, 1, x1, y0, 1, 1)],
+            dtype=np.float32,
+        )
+        vao, vbo = self._quad
+        GL.glBindVertexArray(vao)
+        GL.glBindBuffer(GL.GL_ARRAY_BUFFER, vbo)
+        GL.glBufferData(GL.GL_ARRAY_BUFFER, data.nbytes, data, GL.GL_STREAM_DRAW)
+        GL.glEnable(GL.GL_BLEND)
+        GL.glBlendFunc(GL.GL_ONE, GL.GL_ONE_MINUS_SRC_ALPHA)
+        GL.glUseProgram(self._p_hud)
+        GL.glActiveTexture(GL.GL_TEXTURE0)
+        for i, tex in enumerate(self._drawn_tex):
+            GL.glBindTexture(GL.GL_TEXTURE_2D, tex)
+            GL.glDrawArrays(GL.GL_TRIANGLE_STRIP, 4 * i, 4)
+
+    def _upload_layers(self, layers: Layers) -> None:
+        """Textures for a new list: kept sprites only when new, the others into reused textures."""
+        GL = self._gl
+        kept_before = {tex for _, tex in self._kept_tex.values()}
+        pool = self._spare_tex + [t for t in self._drawn_tex if t not in kept_before]
+        kept = {id(s.picture) for s in layers.sprites if s.kept}
+        gone = [k for k in self._kept_tex if k not in kept]
+        if gone:
+            GL.glDeleteTextures([self._kept_tex.pop(k)[1] for k in gone])
+        drawn: list[int] = []
+        for s in layers.sprites:
+            if s.kept:
+                entry = self._kept_tex.get(id(s.picture))
+                if entry is None:
+                    entry = (s.picture, self._texture())
+                    self._upload_texture(entry[1], s.picture)
+                    self._kept_tex[id(s.picture)] = entry
+                drawn.append(entry[1])
+            else:
+                tex = pool.pop() if pool else self._texture()
+                self._upload_texture(tex, s.picture)
+                drawn.append(tex)
+        self._drawn_tex = drawn
+        self._spare_tex = pool
+
+    def _upload_texture(self, tex: int, picture: Any) -> None:
+        import numpy as np
+
+        GL = self._gl
+        picture.flush()
+        w, h, stride = picture.get_width(), picture.get_height(), picture.get_stride()
+        GL.glBindTexture(GL.GL_TEXTURE_2D, tex)
+        GL.glPixelStorei(GL.GL_UNPACK_ROW_LENGTH, stride // 4)
+        data = np.frombuffer(picture.get_data(), dtype=np.uint8)
+        GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_RGBA8, w, h, 0, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, data)
+        GL.glPixelStorei(GL.GL_UNPACK_ROW_LENGTH, 0)
+
     def _log_cadence(self) -> None:
         now = self._refresh[0]
         if now - self._report_at < REPORT_EVERY_US:
             return
+        if self._report_at and (pacing := getattr(self._hud, "pacing_report", None)) is not None:
+            shown, late, held = pacing()
+            logger.info(
+                "GL HUD: %d pictures, %.1f %% on time, held %d refreshes",
+                shown,
+                100.0 * (shown - late) / shown if shown else 0.0,
+                held,
+            )
         if self._report_at:
             r = self._cadence.report()
             logger.info(

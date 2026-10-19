@@ -1069,7 +1069,7 @@ class AppRuntimeServices:
         # The display tick, not video buffer flow, paces the HUD, so a 0 fps source cannot freeze it.
         # The tick starts and shows pictures drawn on the HUD render thread; the draw callback only pastes.
         if hasattr(canvas, "attach_hud"):
-            self._hud_render = HudRenderThread(overlay)
+            self._hud_render = HudRenderThread(overlay, layered=gl_display is not None)
             if gl_display is not None:
                 gl_display.set_hud(self._hud_render)
                 canvas.attach_gl_display(gl_display, tick=self._hud_render.tick)

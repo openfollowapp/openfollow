@@ -6,10 +6,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import cairo
 import pytest
 
+from openfollow.runtime.overlay_layers import Sprite
 from openfollow.video import gl_display
-from openfollow.video.gl_display import Plane, i420_planes, letterbox, yuv_to_rgb
+from openfollow.video.gl_display import Plane, i420_planes, letterbox, sprite_quad, yuv_to_rgb
 
 pytestmark = pytest.mark.unit
 
@@ -100,3 +102,20 @@ def test_a_full_range_frame_keeps_its_black_and_white(
     colour = yuv_to_rgb(1080, matrix, color_range)
     assert (colour.y_black, colour.y_scale) == pytest.approx((y_black, y_scale))
     assert colour.m == pytest.approx(terms, abs=1e-4)
+
+
+@pytest.mark.parametrize(
+    ("x", "y", "size", "scale", "expected"),
+    [
+        (0, 0, (100, 50), (1.0, 1.0), (-1.0, 0.8, -0.8, 1.0)),
+        (900, 450, (100, 50), (1.0, 1.0), (0.8, -1.0, 1.0, -0.8)),
+        (450, 225, (100, 50), (2.0, 2.0), (0.8, -1.0, 1.0, -0.8)),
+    ],
+    ids=["top-left", "bottom-right", "hidpi"],
+)
+def test_a_sprite_lands_where_its_corner_and_size_put_it_in_clip_space(
+    x: int, y: int, size: tuple[int, int], scale: tuple[float, float], expected: tuple[float, ...]
+) -> None:
+    sprite = Sprite(cairo.ImageSurface(cairo.FORMAT_ARGB32, *size), x, y, kept=False)
+
+    assert sprite_quad(sprite, scale, 1000, 500) == pytest.approx(expected)

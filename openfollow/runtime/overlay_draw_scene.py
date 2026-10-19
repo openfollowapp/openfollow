@@ -14,6 +14,7 @@ import numpy as np
 import numpy.typing as npt
 
 from openfollow.runtime.overlay_draw_style import parse_hex
+from openfollow.runtime.overlay_layers import LayerContext, keep
 from openfollow.runtime.overlay_state import MarkerOverlayData, OverlayState
 from openfollow.scene.ground_grid import grid_segments_in_polygon, main_grid_steps, outline_segments
 from openfollow.scene.solver import (
@@ -264,7 +265,9 @@ class GridCache:
             scale,
         )
         if self._entry is None or self._entry[0] != key:
-            picture = _blank_canvas(self._entry[1] if self._entry is not None else None, w, h, scale)
+            # A layered canvas may still be showing the kept picture, so it gets a new one.
+            reuse = self._entry[1] if self._entry is not None and not isinstance(cr, LayerContext) else None
+            picture = _blank_canvas(reuse, w, h, scale)
             # Filed again only once drawn, so a failed draw leaves no picture under the old key.
             self._entry = None
             ctx = cairo.Context(picture)
@@ -272,6 +275,8 @@ class GridCache:
             draw_ground_grid(ctx, state, w, h)
             self._entry = (key, picture, _inked_tiles(picture))
         _, picture, tiles = self._entry
+        if keep(cr, picture, 0, 0):
+            return
         cr.set_source_surface(picture, 0, 0)
         for rect in tiles:
             cr.rectangle(*rect)
@@ -714,8 +719,9 @@ class ConeCache:
                 return
             self._entries[slot] = entry
         _, picture, x0, y0 = entry
-        cr.set_source_surface(picture, x0, y0)
-        cr.paint()
+        if not keep(cr, picture, x0, y0):
+            cr.set_source_surface(picture, x0, y0)
+            cr.paint()
 
     @staticmethod
     def _render(

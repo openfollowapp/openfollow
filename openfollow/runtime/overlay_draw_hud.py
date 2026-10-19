@@ -43,6 +43,7 @@ from openfollow.runtime.overlay_draw_style import (
     speed_color,
     status_level,
 )
+from openfollow.runtime.overlay_layers import cut
 from openfollow.runtime.overlay_layout import (
     INFO_PANEL_ROW_H,
     HelpSections,
@@ -1191,6 +1192,7 @@ def draw_hud(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> Non
     icon_size = _CORNER_ICON_SIZE
     icon_x, icon_y = _CORNER_ICON_X, _CORNER_ICON_Y
     _draw_corner_icon(renderer, cr, w, h)
+    cut(cr)
 
     if state.show_hud_help:
         sections = _help_sections_for(renderer, "normal", state)
@@ -1205,6 +1207,7 @@ def draw_hud(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> Non
             hint = f"{' / '.join(parts)}: help"
             cr.move_to(icon_x + icon_size + 4.0, icon_y + icon_size * 0.7)
             cr.show_text(hint)
+    cut(cr)
 
     stats_text = build_system_stats_text(state.cpu_percent, state.ram_percent, state.temperature)
     panels.draw(cr, "stats", stats_text, lambda ctx: draw_system_stats(renderer, ctx, state, w), w, h)
@@ -1219,9 +1222,11 @@ def draw_hud(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> Non
     for i, t in enumerate(card_markers):
         card_y = marker_card_y(i, h, card_h=card_h, card_margin=card_m, bottom_padding=14.0)
         draw_marker_card(renderer, cr, card_x, card_y, card_w, card_h, t, t.marker_id == state.selected_id, state)
+        cut(cr)
 
     # Virtual fader stack mirroring marker-card visual weight on bottom-left.
     draw_virtual_faders(renderer, cr, state, h)
+    cut(cr)
 
     # Top-right status badge; rendered last so modals sit on top.
     draw_status_badge(renderer, cr, state, w, h)

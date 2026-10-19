@@ -15,6 +15,7 @@ import cairo
 import numpy as np
 import pytest
 
+from openfollow.runtime.overlay_layers import Layers
 from openfollow.video.hud_render import HudRenderThread
 from tests._fake_cairo import FakeCairo
 
@@ -600,3 +601,28 @@ def test_each_picture_put_on_screen_has_a_new_serial(hud, renderer) -> None:
     surfaces, serials = zip(*seen, strict=True)
     assert serials == (1, 2, 3)
     assert surfaces[0] is surfaces[2] and surfaces[0] is not surfaces[1]
+
+
+def test_a_layered_hud_hands_over_sprites_and_pastes_nothing_itself(renderer) -> None:
+    hud = HudRenderThread(renderer, layered=True)
+    hud.start()
+    try:
+        hud.set_canvas(64, 36, (1.0, 1.0))
+        hud.tick()
+        _show(hud)
+        layers, serial = hud.shown_picture()
+        assert isinstance(layers, Layers) and serial == 1
+        assert [(s.x, s.y, s.kept) for s in layers.sprites] == [(4, 4, False)]
+        assert _pixel(_painted(hud), 10, 10) == CLEAR
+    finally:
+        hud.stop()
+
+
+def test_the_pacing_report_counts_pictures_and_the_late_ones_since_the_last(paced, clock) -> None:
+    hud, renderer = paced
+    hud.tick()
+    assert _refreshes_to_show(hud, clock) == 1
+    _miss_one_refresh(hud, clock, renderer, refreshes=2)
+
+    assert hud.pacing_report() == (3, 1, 1)
+    assert hud.pacing_report() == (0, 0, 1)

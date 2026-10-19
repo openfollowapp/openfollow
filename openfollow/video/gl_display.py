@@ -152,14 +152,24 @@ _EGL_ITU = {"bt601": 0x327F, "bt709": 0x3280, "bt2020": 0x3281}
 _EGL_YUV_FULL_RANGE_EXT, _EGL_YUV_NARROW_RANGE_EXT = 0x3282, 0x3283
 
 
-def accepts_dmabuf(sink: Any) -> bool:
-    """Whether ``sink`` takes a decoder's dmabuf frames as they are, so nothing may convert them on the way."""
+def _pad_caps(element: Any, pad_name: str) -> str:
     try:
-        pad = sink.get_static_pad("sink")
+        pad = element.get_static_pad(pad_name)
         caps = pad.query_caps(None) if pad is not None else None
     except Exception:
-        return False
-    return caps is not None and "memory:DMABuf" in caps.to_string()
+        return ""
+    return caps.to_string() if caps is not None else ""
+
+
+def accepts_dmabuf(sink: Any) -> bool:
+    """Whether ``sink`` takes a decoder's dmabuf frames as they are, so nothing may convert them on the way."""
+    return "memory:DMABuf" in _pad_caps(sink, "sink")
+
+
+def passes_dmabuf(head: Any) -> bool:
+    """Whether ``head`` may hand a decoder's dmabuf frames on: it converts nothing, or names that memory."""
+    caps = _pad_caps(head, "src")
+    return caps == "ANY" or "memory:DMABuf" in caps
 
 
 _DRM_VENDOR_BROADCOM, _BROADCOM_SAND128 = 0x07, 4

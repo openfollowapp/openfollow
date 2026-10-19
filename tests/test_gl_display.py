@@ -169,6 +169,20 @@ def test_only_a_sink_asking_for_dmabuf_takes_it(sink: _CapsSink, expected: bool)
 
 
 @pytest.mark.parametrize(
+    ("head", "expected"),
+    [
+        (_CapsSink("ANY"), True),
+        (_CapsSink(gl_display.SINK_CAPS), True),
+        (_CapsSink("video/x-raw, format=(string)I420; video/x-raw(ANY), format=(string)I420"), False),
+        (_CapsSink(None, pad=False), False),
+    ],
+    ids=["passthrough", "dmabuf", "converter", "no-pad"],
+)
+def test_only_a_head_that_converts_nothing_or_names_dmabuf_passes_it(head: _CapsSink, expected: bool) -> None:
+    assert gl_display.passes_dmabuf(head) is expected
+
+
+@pytest.mark.parametrize(
     ("modifier", "stride", "expected"),
     [
         (0x0700000000000004, 136 << 16 | 15, 0x0700000000044004),

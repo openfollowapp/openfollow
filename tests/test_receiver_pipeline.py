@@ -659,27 +659,51 @@ class TestCombinedBranches:
             assert pipeline.get_by_name(name) is not None
 
 
-class _DmabufCaps:
+class _Caps:
+    def __init__(self, caps: str) -> None:
+        self._caps = caps
+
     def to_string(self) -> str:
-        return "video/x-raw(memory:DMABuf),format=DMA_DRM"
+        return self._caps
 
 
-class _DmabufPad:
-    def query_caps(self, _filter: object) -> _DmabufCaps:
-        return _DmabufCaps()
+class _CapsPad(FakePad):
+    def __init__(self, caps: str) -> None:
+        super().__init__()
+        self._caps = caps
+
+    def query_caps(self, _filter: object) -> _Caps:
+        return _Caps(self._caps)
 
 
-class _DmabufSink(FakeElement):
-    def get_static_pad(self, name: str) -> _DmabufPad:
-        return _DmabufPad()
+class _CapsElement(FakeElement):
+    def __init__(self, name: str, caps: str) -> None:
+        super().__init__(name)
+        self._caps = caps
+
+    def get_static_pad(self, name: str) -> _CapsPad:
+        return _CapsPad(self._caps)
 
 
-def test_a_dmabuf_sink_gets_the_video_without_a_tee() -> None:
+def test_a_dmabuf_sink_behind_a_passthrough_gets_the_video_without_a_tee() -> None:
     assembler = _make_assembler(preview=FakePreviewProvider(), snapshot=FakeSnapshotProvider())
     pipeline = FakePipeline()
-    convert, sink = FakeElement("videoconvert"), _DmabufSink("shared_videosink")
+    convert = _CapsElement("convert", "ANY")
+    sink = _CapsElement("shared_videosink", "video/x-raw(memory:DMABuf),format=DMA_DRM")
 
     assembler.build_overlay_tail(pipeline, convert, sink)
 
     assert pipeline.get_by_name("detection_tee") is None
     assert convert.links == [sink]
+
+
+def test_a_dmabuf_sink_behind_a_converter_keeps_the_tee() -> None:
+    assembler = _make_assembler(preview=FakePreviewProvider(), snapshot=FakeSnapshotProvider())
+    pipeline = FakePipeline()
+    convert = _CapsElement("convert", "video/x-raw, format=(string)I420")
+    sink = _CapsElement("shared_videosink", "video/x-raw(memory:DMABuf),format=DMA_DRM")
+
+    assembler.build_overlay_tail(pipeline, convert, sink)
+
+    assert pipeline.get_by_name("detection_tee") is not None
+    assert pipeline.get_by_name("preview_queue") is not None

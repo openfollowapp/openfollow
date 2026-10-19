@@ -507,7 +507,7 @@ class GtkNativeSinkWindow:
                 self._hud_tick()  # type: ignore[misc]
             except Exception:
                 self._hud_tick_err_log.log()
-            self._gl_display.queue_render()
+            self._gl_display.queue_render(frame_clock)
         elif self._hud_draw_fn is not None:
             # A raise escaping this callback would make GTK drop the tick for good.
             try:

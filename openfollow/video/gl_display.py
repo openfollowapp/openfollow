@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from openfollow.logging_setup import ThrottledExceptionLogger
+from openfollow.video.gl_cadence import Cadence
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,10 @@ ENV_SWITCH = "OPENFOLLOW_GL_DISPLAY"
 
 # Spike switch on a station, where the service's environment lives under /etc.
 FLAG_FILE = os.path.join(os.path.expanduser("~"), ".openfollow-gl-display")
+# Shows the newest frame each refresh instead of the locked cadence, for an A/B.
+LATEST_FRAME_FLAG = os.path.join(os.path.expanduser("~"), ".openfollow-gl-latest-frame")
+DEFAULT_REFRESH_US = 16_667
+REPORT_EVERY_US = 10_000_000
 
 
 def gl_display_requested() -> bool:
@@ -122,8 +127,12 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
         sink.set_property("max-buffers", 2)
         sink.set_property("drop", True)
         sink.set_property("sync", False)
-        sink.set_property("emit-signals", False)
+        sink.set_property("emit-signals", True)
+        sink.connect("new-sample", self._on_new_sample)
         self.sink = sink
+        self._cadence: Cadence[Any] = Cadence(locked=not os.path.exists(LATEST_FRAME_FLAG))
+        self._refresh = (0, DEFAULT_REFRESH_US)
+        self._report_at = 0
         area = Gtk.GLArea()
         area.set_use_es(True)
         area.set_required_version(3, 0)
@@ -143,8 +152,22 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
     def set_hud(self, hud: Any) -> None:
         self._hud = hud
 
-    def queue_render(self) -> None:
+    def queue_render(self, frame_clock: Any) -> None:
+        """Render at the refresh ``frame_clock`` is drawing."""
+        interval, _presentation = frame_clock.get_refresh_info(frame_clock.get_frame_time())
+        self._refresh = (frame_clock.get_frame_time(), interval or DEFAULT_REFRESH_US)
         self.widget.queue_render()
+
+    def _on_new_sample(self, sink: Any) -> Any:
+        # Streaming thread: stamp the arrival, the GTK main thread picks per refresh.
+        from gi.repository import GLib
+
+        Gst = self._Gst
+        sample = sink.try_pull_sample(0)
+        if sample is not None:
+            pts = sample.get_buffer().pts
+            self._cadence.push(sample, None if pts == Gst.CLOCK_TIME_NONE else pts // 1000, GLib.get_monotonic_time())
+        return Gst.FlowReturn.OK
 
     # -- GL ---------------------------------------------------------------
 
@@ -275,7 +298,8 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
         scale = area.get_scale_factor()
         alloc = area.get_allocation()
         aw, ah = alloc.width * scale, alloc.height * scale
-        self._upload_latest_frame()
+        self._upload_due_frame()
+        self._log_cadence()
         GL.glClearColor(0.0, 0.0, 0.0, 1.0)
         GL.glClear(GL.GL_COLOR_BUFFER_BIT)
         if self._frame != (0, 0):
@@ -301,11 +325,26 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
                 GL.glBindTexture(GL.GL_TEXTURE_2D, self._t_hud)
                 self._draw_quad(-1.0, -1.0, 1.0, 1.0)
 
-    def _upload_latest_frame(self) -> None:
+    def _log_cadence(self) -> None:
+        now = self._refresh[0]
+        if now - self._report_at < REPORT_EVERY_US:
+            return
+        if self._report_at:
+            r = self._cadence.report()
+            logger.info(
+                "GL video cadence: %d shown, refreshes %s, %d skipped, %d late, wait p50 %.1f ms p99 %.1f ms",
+                r.shown,
+                dict(sorted(r.refreshes.items())),
+                r.skipped,
+                r.late,
+                r.wait_ms_p50,
+                r.wait_ms_p99,
+            )
+        self._report_at = now
+
+    def _upload_due_frame(self) -> None:
         Gst = self._Gst
-        sample = None
-        while (pulled := self.sink.try_pull_sample(0)) is not None:
-            sample = pulled
+        sample = self._cadence.pick(*self._refresh)
         if sample is None:
             return
         from gi.repository import GstVideo

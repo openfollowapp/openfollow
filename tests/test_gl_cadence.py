@@ -246,11 +246,12 @@ def test_timestamps_running_ahead_of_the_clock_re_anchor_instead_of_freezing() -
 
 
 def test_a_report_starts_the_next_period() -> None:
+    frames = _stream(20, latency=5_000) + _stream(40, latency=60_000)[20:]
     cadence: Cadence[int] = Cadence()
-    _play(cadence, _stream(20, latency=5_000), refreshes=42)
+    _play(cadence, frames, refreshes=90, missed=frozenset({11, 12, 13}))
     first = cadence.report()
 
-    assert first.shown == 19
+    assert (first.shown, first.skipped, first.late) == (38, 1, 1)
     assert cadence.report() == CadenceReport(refreshes={}, skipped=0, late=0, wait_ms_p50=0.0, wait_ms_p99=0.0)
 
 

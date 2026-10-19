@@ -626,3 +626,27 @@ def test_the_pacing_report_counts_pictures_and_the_late_ones_since_the_last(pace
 
     assert hud.pacing_report() == (3, 1, 1)
     assert hud.pacing_report() == (0, 0, 1)
+
+
+class _FontOptionsRecorder(_Renderer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.options: list[cairo.FontOptions] = []
+
+    def draw(self, cr: Any, width: int, height: int, state: Any) -> None:
+        self.options.append(cr.get_font_options())
+        super().draw(cr, width, height, state)
+
+
+def test_a_layered_hud_lays_text_out_as_on_a_canvas_sized_picture() -> None:
+    renderer = _FontOptionsRecorder()
+    hud = HudRenderThread(renderer, layered=True)
+    hud.start()
+    try:
+        hud.set_canvas(64, 36, (1.0, 1.0))
+        hud.tick()
+        _show(hud)
+    finally:
+        hud.stop()
+
+    assert renderer.options[0] == cairo.ImageSurface(cairo.FORMAT_ARGB32, 1, 1).get_font_options()

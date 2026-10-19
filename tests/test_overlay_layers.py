@@ -22,7 +22,7 @@ from openfollow.runtime.overlay_layers import (
     keep_fill,
     mark_top,
 )
-from openfollow.runtime.overlay_state import OperatorMessageView, OverlayState
+from openfollow.runtime.overlay_state import OperatorMessageView, OverlayState, VirtualFaderDisplayData
 from openfollow.video.detection import DetectionBox
 from openfollow.video.overlay import CairoOverlayRenderer
 from tests._hud_scenes import SCENES, frames
@@ -315,3 +315,36 @@ def test_a_fill_below_the_top_level_or_off_a_layered_canvas_is_left_to_the_calle
 
     assert keep_fill(cr, (0.0, 0.0, 0.0, 0.5)) is False
     assert keep_fill(plain, (0.0, 0.0, 0.0, 0.5)) is False
+
+
+def _sprites(w: int, h: int, state: OverlayState, *, kept: bool) -> int:
+    layered = LayerContext(w, h, SCALE, cairo.FontOptions())
+    CairoOverlayRenderer().draw(layered, w, h, state)
+    return sum(s.kept == kept for s in layered.finish().sprites)
+
+
+def test_each_cone_is_a_kept_picture() -> None:
+    w, h, state = frames("cones", count=1)[0]
+    crosshairs = dataclasses.replace(state, marker_style="crosshair")
+
+    assert _sprites(w, h, state, kept=True) == _sprites(w, h, crosshairs, kept=True) + len(state.markers)
+
+
+def test_the_origin_is_a_sprite_of_its_own_without_zones_or_paths() -> None:
+    w, h, state = frames("light", count=1)[0]
+    bare = dataclasses.replace(state, show_zones=False)
+
+    assert (
+        _sprites(w, h, dataclasses.replace(bare, show_origin=True), kept=False) == _sprites(w, h, bare, kept=False) + 1
+    )
+
+
+def test_the_faders_and_the_status_badge_are_separate_sprites() -> None:
+    w, h, state = frames("light", count=1)[0]
+    shown = dataclasses.replace(
+        state,
+        virtual_faders_display=[VirtualFaderDisplayData(1, "Dimmer", 0.5, True)],
+        status_flags=[("video", "Video stalled", "warning")],
+    )
+
+    assert _largest_drawn(_drawn_like_the_whole_canvas(w, h, shown)) < 40_000

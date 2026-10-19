@@ -1194,7 +1194,6 @@ def draw_hud(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> Non
     icon_size = _CORNER_ICON_SIZE
     icon_x, icon_y = _CORNER_ICON_X, _CORNER_ICON_Y
     _draw_corner_icon(renderer, cr, w, h)
-    cut(cr)
 
     if state.show_hud_help:
         sections = _help_sections_for(renderer, "normal", state)
@@ -1209,7 +1208,6 @@ def draw_hud(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> Non
             hint = f"{' / '.join(parts)}: help"
             cr.move_to(icon_x + icon_size + 4.0, icon_y + icon_size * 0.7)
             cr.show_text(hint)
-    cut(cr)
 
     stats_text = build_system_stats_text(state.cpu_percent, state.ram_percent, state.temperature)
     panels.draw(cr, "stats", stats_text, lambda ctx: draw_system_stats(renderer, ctx, state, w), w, h)

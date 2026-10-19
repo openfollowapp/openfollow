@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import cairo
 import pytest
@@ -296,3 +297,23 @@ def test_a_buffer_must_reach_the_end_of_its_furthest_plane() -> None:
 )
 def test_a_dmabuf_plane_pitch_is_its_stride_except_for_sand128(modifier: int, expected: int) -> None:
     assert gl_display.dmabuf_pitch(modifier, 2048, 1920) == expected
+
+
+_CAPS_LAYOUT = SimpleNamespace(offset=[0, 2_073_600, 2_592_000, 0], stride=[1920, 960, 960, 0])
+
+
+@pytest.mark.parametrize(
+    ("meta", "expected"),
+    [
+        (None, ((0, 2_073_600, 2_592_000), (1920, 960, 960))),
+        (
+            SimpleNamespace(offset=[0, 2_088_960, 2_611_200, 0], stride=[1984, 992, 992, 0]),
+            ((0, 2_088_960, 2_611_200), (1984, 992, 992)),
+        ),
+    ],
+    ids=["caps-layout", "padded-meta"],
+)
+def test_a_frame_is_laid_out_by_its_video_meta_else_by_its_caps(
+    meta: SimpleNamespace | None, expected: tuple[tuple[int, ...], tuple[int, ...]]
+) -> None:
+    assert gl_display.frame_layout(meta, _CAPS_LAYOUT, 3) == expected

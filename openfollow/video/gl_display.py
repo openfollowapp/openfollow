@@ -14,6 +14,7 @@ import logging
 import os
 import sys
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -46,7 +47,7 @@ class Plane:
     height: int
 
 
-def i420_planes(width: int, height: int, offsets: tuple[int, int, int], strides: tuple[int, int, int]) -> list[Plane]:
+def i420_planes(width: int, height: int, offsets: Sequence[int], strides: Sequence[int]) -> list[Plane]:
     """The Y, U and V planes of an I420 frame; chroma is half size, rounded up."""
     cw, ch = (width + 1) // 2, (height + 1) // 2
     return [
@@ -54,6 +55,12 @@ def i420_planes(width: int, height: int, offsets: tuple[int, int, int], strides:
         Plane(offsets[1], strides[1], cw, ch),
         Plane(offsets[2], strides[2], cw, ch),
     ]
+
+
+def frame_layout(meta: Any, info: Any, n_planes: int) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    """A frame's plane offsets and strides: its buffer's video meta when it has one, else its caps' layout."""
+    source = info if meta is None else meta
+    return tuple(source.offset[:n_planes]), tuple(source.stride[:n_planes])
 
 
 def nv12_planes(width: int, height: int, layout: tuple[tuple[int, int], tuple[int, int]] | None = None) -> list[Plane]:
@@ -669,16 +676,13 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
         cm = info.colorimetry
         self._colour = yuv_to_rgb(info.height, cm.matrix.value_nick, cm.range.value_nick)
         buf = sample.get_buffer()
+        # A decoder writing straight into a sink that announces the meta pads its planes past the caps' layout.
+        offsets, strides = frame_layout(GstVideo.buffer_get_video_meta(buf), info, 3)
         ok, mapinfo = buf.map(Gst.MapFlags.READ)
         if not ok:
             return
         try:
-            planes = i420_planes(
-                info.width,
-                info.height,
-                (info.offset[0], info.offset[1], info.offset[2]),
-                (info.stride[0], info.stride[1], info.stride[2]),
-            )
+            planes = i420_planes(info.width, info.height, offsets, strides)
             started = time.perf_counter_ns()
             self._upload_planes(mapinfo.data, planes, (info.width, info.height))
             self._took["video upload"].add((time.perf_counter_ns() - started) // 1000)

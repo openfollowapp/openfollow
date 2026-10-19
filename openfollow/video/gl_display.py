@@ -683,6 +683,8 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
             return
         try:
             planes = i420_planes(info.width, info.height, offsets, strides)
+            if mapinfo.size < planes_end(planes):
+                raise RuntimeError(f"{mapinfo.size} bytes cannot hold a {info.width}x{info.height} I420 frame")
             started = time.perf_counter_ns()
             self._upload_planes(mapinfo.data, planes, (info.width, info.height))
             self._took["video upload"].add((time.perf_counter_ns() - started) // 1000)

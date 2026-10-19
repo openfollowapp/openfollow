@@ -28,6 +28,8 @@ WINDOW_FRAMES = 150
 COVER = 0.98
 # The offset drops only after this many frames in a row would have allowed it.
 LOWER_AFTER_FRAMES = 60
+# The arrival spread covers at most this many latest frames, so a display that stops reporting holds no more.
+SPREAD_FRAMES = 3600
 
 
 @dataclass(frozen=True)
@@ -74,7 +76,7 @@ class Cadence(Generic[T]):
         self._interval = 0
         self._recent: deque[int] = deque(maxlen=WINDOW_FRAMES)
         self._lower_run = 0
-        self._lateness: list[int] = []
+        self._lateness: deque[int] = deque(maxlen=SPREAD_FRAMES)
         self._last_refresh: int | None = None
         self._shown_at: int | None = None
         self._refreshes: Counter[int] = Counter()
@@ -99,6 +101,8 @@ class Cadence(Generic[T]):
                 self._queue.popleft()
                 self._skipped += 1
                 self._offset = None
+                # The lateness that overfilled the queue would raise the new offset past what it holds again.
+                self._recent.clear()
             if self._offset is not None and pts_us is not None:
                 self._late += pts_us + self._offset < arrival_us
                 self._steer(self._offset)
@@ -163,17 +167,19 @@ class Cadence(Generic[T]):
         """The counts since the last report; starts the next period."""
         with self._lock:
             waits = self._waits
+            earliest = min(self._lateness, default=0)
+            spread = [v - earliest for v in self._lateness]
             report = CadenceReport(
                 refreshes=dict(self._refreshes),
                 skipped=self._skipped,
                 late=self._late,
                 wait_ms_p50=_percentile(waits, 0.5),
                 wait_ms_p99=_percentile(waits, 0.99),
-                spread_ms_p50=_percentile(spread := [v - min(self._lateness, default=0) for v in self._lateness], 0.5),
+                spread_ms_p50=_percentile(spread, 0.5),
                 spread_ms_p98=_percentile(spread, 0.98),
             )
             self._refreshes = Counter()
             self._skipped = self._late = 0
             self._waits = []
-            self._lateness = []
+            self._lateness.clear()
             return report

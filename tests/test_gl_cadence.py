@@ -11,6 +11,7 @@ from openfollow.video.gl_cadence import (
     LOWER_AFTER_FRAMES,
     MAX_PTS_STEP_US,
     MAX_QUEUED,
+    SPREAD_FRAMES,
     WINDOW_FRAMES,
     Cadence,
     CadenceReport,
@@ -291,3 +292,25 @@ def test_the_spread_is_how_much_later_than_the_earliest_frame_the_others_arrived
 
     assert (first.spread_ms_p50, first.spread_ms_p98) == (5.0, 9.8)
     assert cadence.report().spread_ms_p98 == 0.0
+
+
+def test_a_stall_longer_than_the_queue_holds_re_anchors_once_instead_of_stuttering() -> None:
+    stall_at, stall = 100, 300_000
+    frames = [
+        (i * FRAME, max(i * FRAME, stall_at * FRAME + stall if i >= stall_at else 0) + 40_000) for i in range(300)
+    ]
+    cadence: Cadence[int] = Cadence()
+    delays = _delays(_play(cadence, frames, refreshes=610), frames)
+
+    report = cadence.report()
+    assert report.skipped < 2 * MAX_QUEUED
+    assert sum(n for k, n in report.refreshes.items() if k > 3) <= 1
+    assert delays[299] == pytest.approx(delays[90], abs=1_000)
+
+
+def test_the_spread_covers_only_the_latest_frames_when_no_report_comes() -> None:
+    cadence: Cadence[int] = Cadence()
+    for i in range(SPREAD_FRAMES + 100):
+        cadence.push(i, i * FRAME, i * FRAME + (0 if i < 100 else 5_000))
+
+    assert cadence.report().spread_ms_p50 == 0.0

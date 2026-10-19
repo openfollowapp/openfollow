@@ -321,14 +321,23 @@ def test_a_frame_is_laid_out_by_its_video_meta_else_by_its_caps(
 
 @pytest.mark.parametrize(
     ("content", "expected"),
-    [(None, "arrival"), ("", "arrival"), ("locked\n", "locked"), ("capped", "capped"), ("smooth", "arrival")],
-    ids=["no-file", "empty", "locked", "capped", "unknown"],
+    [
+        (None, "arrival"),
+        ("", "arrival"),
+        ("locked\n", "locked"),
+        ("capped", "capped"),
+        ("smooth", "arrival"),
+        (b"\xffcapped", "arrival"),
+    ],
+    ids=["no-file", "empty", "locked", "capped", "unknown", "not-utf-8"],
 )
 def test_the_flag_file_picks_how_video_frames_meet_the_refresh(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: str | None, expected: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: str | bytes | None, expected: str
 ) -> None:
     flag_file = tmp_path / "cadence"
-    if content is not None:
+    if isinstance(content, bytes):
+        flag_file.write_bytes(content)
+    elif content is not None:
         flag_file.write_text(content)
     monkeypatch.setattr(gl_display, "CADENCE_FLAG", str(flag_file))
     # 30 fps picked at every 60 Hz refresh; a decoder stall releases the last three of every twelve at once.

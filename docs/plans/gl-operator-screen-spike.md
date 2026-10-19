@@ -20,7 +20,8 @@ and reported on the tracking issue.
 - [x] **2. Video cadence.** Built and measured, then made opt-in: held to a locked
   cadence every frame waits 50 to 70 ms, and for a followspot latency beats
   even motion, so frames show at the refresh after they arrive unless
-  `~/.openfollow-gl-locked-cadence` exists. Originally: Frames are shown on a cadence locked to the display
+  `~/.openfollow-gl-cadence` reads `locked`, or `capped`: the locked cadence
+  holding a frame at most one refresh past the median arrival. Originally: Frames are shown on a cadence locked to the display
   refresh (every second refresh for 30 fps on 60 Hz), paced by their
   timestamps, at most one refresh of extra delay. Measured: share of frames
   shown for exactly two refreshes.

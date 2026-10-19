@@ -43,7 +43,7 @@ def gl_display_requested() -> bool:
 def cadence_for_mode() -> Cadence[Any]:
     """The cadence the flag file asks for; by default each frame shows at the refresh after it arrives."""
     try:
-        with open(CADENCE_FLAG, encoding="utf-8") as flag:
+        with open(CADENCE_FLAG, encoding="utf-8", errors="replace") as flag:
             mode = flag.read().strip()
     except OSError:
         mode = ""

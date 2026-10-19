@@ -392,6 +392,13 @@ def test_a_capped_cadence_holds_a_frame_at_most_a_refresh_past_the_median_arriva
     assert capped.wait_ms_p50 < uncapped.wait_ms_p50 - 2 * REFRESH / 1000
 
 
+def test_a_capped_cadence_shows_the_frames_up_to_the_median_arrival_on_time() -> None:
+    cadence: Cadence[int] = Cadence(max_hold_refreshes=1)
+    _play(cadence, _stream(600, latency=40_000, jitter=50_000, seed=4), refreshes=1210)
+
+    assert 0 < cadence.report().late < 600 // 2
+
+
 def test_with_little_jitter_a_capped_cadence_is_as_even_as_the_locked_one() -> None:
     cadence: Cadence[int] = Cadence(max_hold_refreshes=1)
     _play(cadence, _stream(300, latency=ON_A_REFRESH, jitter=4_000), refreshes=610)

@@ -83,8 +83,10 @@ class Cadence(Generic[T]):
     Unlocked, each refresh shows the newest frame that arrived.
     """
 
-    def __init__(self, locked: bool = True) -> None:
+    def __init__(self, locked: bool = True, max_hold_refreshes: int | None = None) -> None:
         self._locked = locked
+        # Capped: a frame is held at most this many refreshes past the median arrival; later ones show late.
+        self._max_hold = max_hold_refreshes
         self._lock = threading.Lock()
         self._queue: deque[tuple[T, int | None, int]] = deque()
         self._offset: int | None = None
@@ -135,6 +137,9 @@ class Cadence(Generic[T]):
         need = recent[min(len(recent) - 1, int(COVER * len(recent)))]
         interval = self._interval
         target = offset + math.ceil((need - offset) / interval) * interval
+        if self._max_hold is not None:
+            bound = recent[len(recent) // 2] + self._max_hold * interval
+            target = min(target, offset + math.floor((bound - offset) / interval) * interval)
         if target < offset:
             self._lower_run += 1
             if self._lower_run < LOWER_AFTER_FRAMES:

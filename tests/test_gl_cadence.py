@@ -379,3 +379,21 @@ def test_durations_report_count_median_and_99th_percentile_then_start_over() -> 
 
     assert durations.take() == (150, 1.25, 1.98)
     assert durations.take() == (0, 0.0, 0.0)
+
+
+def test_a_capped_cadence_holds_a_frame_at_most_a_refresh_past_the_median_arrival() -> None:
+    frames = _stream(600, latency=40_000, jitter=50_000, seed=4)
+    held = [Cadence[int](), Cadence[int](max_hold_refreshes=1)]
+    for cadence in held:
+        _play(cadence, frames, refreshes=1210)
+    uncapped, capped = (cadence.report() for cadence in held)
+
+    assert capped.wait_ms_p50 <= 2 * REFRESH / 1000
+    assert capped.wait_ms_p50 < uncapped.wait_ms_p50 - 2 * REFRESH / 1000
+
+
+def test_with_little_jitter_a_capped_cadence_is_as_even_as_the_locked_one() -> None:
+    cadence: Cadence[int] = Cadence(max_hold_refreshes=1)
+    _play(cadence, _stream(300, latency=ON_A_REFRESH, jitter=4_000), refreshes=610)
+
+    assert cadence.report().share(2) >= 0.99

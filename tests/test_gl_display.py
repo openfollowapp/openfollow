@@ -319,13 +319,33 @@ def test_a_frame_is_laid_out_by_its_video_meta_else_by_its_caps(
     assert gl_display.frame_layout(meta, _CAPS_LAYOUT, 3) == expected
 
 
-@pytest.mark.parametrize("flag", [True, False], ids=["flag-file", "no-flag-file"])
-def test_video_frames_show_as_they_arrive_unless_the_locked_cadence_is_asked_for(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flag: bool
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [(None, "arrival"), ("", "arrival"), ("locked\n", "locked"), ("capped", "capped"), ("smooth", "arrival")],
+    ids=["no-file", "empty", "locked", "capped", "unknown"],
+)
+def test_the_flag_file_picks_how_video_frames_meet_the_refresh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: str | None, expected: str
 ) -> None:
-    flag_file = tmp_path / "locked"
-    if flag:
-        flag_file.touch()
-    monkeypatch.setattr(gl_display, "LOCKED_CADENCE_FLAG", str(flag_file))
+    flag_file = tmp_path / "cadence"
+    if content is not None:
+        flag_file.write_text(content)
+    monkeypatch.setattr(gl_display, "CADENCE_FLAG", str(flag_file))
+    # 30 fps picked at every 60 Hz refresh; a decoder stall releases the last three of every twelve at once.
+    frames = [(i * 33_333, (i // 12 * 12 + 11 if i % 12 >= 9 else i) * 33_333 + 10_000) for i in range(300)]
+    cadence = gl_display.cadence_for_mode()
+    pending = 0
+    for k in range(610):
+        now = k * 16_667
+        while pending < len(frames) and frames[pending][1] <= now:
+            cadence.push(pending, *frames[pending])
+            pending += 1
+        cadence.pick(now, 16_667)
 
-    assert gl_display.locked_cadence_requested() is flag
+    report = cadence.report()
+    waits = {
+        "arrival": report.wait_ms_p50 < 10,
+        "locked": report.wait_ms_p50 > 60,
+        "capped": 15 <= report.wait_ms_p50 <= 40,
+    }
+    assert waits[expected], (expected, report)

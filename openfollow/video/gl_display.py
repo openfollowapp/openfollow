@@ -56,6 +56,26 @@ def i420_planes(width: int, height: int, offsets: tuple[int, int, int], strides:
     ]
 
 
+def nv12_planes(width: int, height: int, layout: tuple[tuple[int, int], tuple[int, int]] | None = None) -> list[Plane]:
+    """The Y and interleaved UV planes of an NV12 frame, at ``layout``'s (offsets, strides) or GStreamer's default.
+
+    A UV plane's width counts sample pairs; its stride stays in bytes.
+    """
+    if layout is None:
+        stride = (width + 3) // 4 * 4
+        layout = ((0, stride * ((height + 1) // 2 * 2)), (stride, stride))
+    (y_offset, uv_offset), (y_stride, uv_stride) = layout
+    return [
+        Plane(y_offset, y_stride, width, height),
+        Plane(uv_offset, uv_stride, (width + 1) // 2, (height + 1) // 2),
+    ]
+
+
+def planes_end(planes: list[Plane]) -> int:
+    """The bytes a buffer needs to hold every plane."""
+    return max(p.offset + p.stride * p.height for p in planes)
+
+
 def sprite_quad(
     sprite: Sprite, scale: tuple[float, float], area_w: int, area_h: int
 ) -> tuple[float, float, float, float]:
@@ -675,7 +695,7 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
         # get_memory, not peek_memory: PyGObject copies a borrowed memory into system memory.
         if meta is None or not GstAllocators.is_dmabuf_memory(buf.get_memory(0)):
             # The decoder cropped the frame into a linear NV12 copy in memory (coded size above the shown one).
-            self._upload_cropped_nv12(buf, width, height, colorimetry)
+            self._upload_cropped_nv12(buf, width, height, colorimetry, meta)
             return
         modifier = sand_column_height_modifier(modifier, meta.stride[0])
         planes = []
@@ -710,29 +730,27 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
         self._frame = (width, height)
         self._external = True
 
-    def _upload_cropped_nv12(self, buf: Any, width: int, height: int, colorimetry: Any) -> None:
+    def _upload_cropped_nv12(self, buf: Any, width: int, height: int, colorimetry: Any, meta: Any) -> None:
         Gst, GL = self._Gst, self._gl
+        layout = None if meta is None else ((meta.offset[0], meta.offset[1]), (meta.stride[0], meta.stride[1]))
+        planes = nv12_planes(width, height, layout)
         ok, mapinfo = buf.map(Gst.MapFlags.READ)
         if not ok:
             return
         try:
-            if mapinfo.size < width * height * 3 // 2:
+            if mapinfo.size < planes_end(planes):
                 raise RuntimeError(f"{mapinfo.size} bytes cannot hold a {width}x{height} NV12 frame")
             data = mapinfo.data
             started = time.perf_counter_ns()
             realloc = (width, height) != self._frame or not self._nv12
-            chroma = (width + 1) // 2, (height + 1) // 2
-            for unit, (fmt, size, offset, row) in enumerate(
-                (
-                    (GL.GL_R8, (width, height), 0, width),
-                    (GL.GL_RG8, chroma, width * height, chroma[0]),
-                )
+            for unit, (plane, fmt, channels, pixel) in enumerate(
+                zip(planes, (GL.GL_R8, GL.GL_RG8), (GL.GL_RED, GL.GL_RG), (1, 2), strict=True)
             ):
-                channels = GL.GL_RED if fmt == GL.GL_R8 else GL.GL_RG
-                chunk = data[offset : offset + size[1] * row * (1 if fmt == GL.GL_R8 else 2)]
+                chunk = data[plane.offset : plane.offset + plane.stride * plane.height]
+                size = (plane.width, plane.height)
                 GL.glActiveTexture(GL.GL_TEXTURE0 + unit)
                 GL.glBindTexture(GL.GL_TEXTURE_2D, self._t_yuv[unit])
-                GL.glPixelStorei(GL.GL_UNPACK_ROW_LENGTH, row)
+                GL.glPixelStorei(GL.GL_UNPACK_ROW_LENGTH, plane.stride // pixel)
                 if realloc:
                     GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, fmt, *size, 0, channels, GL.GL_UNSIGNED_BYTE, chunk)
                 else:

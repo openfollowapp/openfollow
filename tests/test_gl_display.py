@@ -250,3 +250,36 @@ def test_dmabuf_colour_hints_follow_the_caps_and_size(
     pairs = dict(zip(attrs[:-1:2], attrs[1::2], strict=True))
 
     assert (pairs[0x327B], pairs[0x327C]) == expected
+
+
+@pytest.mark.parametrize(
+    ("size", "layout", "expected"),
+    [
+        (
+            (1920, 1080),
+            None,
+            [Plane(0, 1920, 1920, 1080), Plane(1920 * 1080, 1920, 960, 540)],
+        ),
+        (
+            (854, 481),
+            None,
+            [Plane(0, 856, 854, 481), Plane(856 * 482, 856, 427, 241)],
+        ),
+        (
+            (1920, 1080),
+            ((64, 2_200_000), (2048, 2048)),
+            [Plane(64, 2048, 1920, 1080), Plane(2_200_000, 2048, 960, 540)],
+        ),
+    ],
+    ids=["default-hd", "default-odd-size", "from-meta"],
+)
+def test_nv12_planes_follow_the_meta_else_gstreamers_default_layout(
+    size: tuple[int, int], layout: tuple[tuple[int, int], tuple[int, int]] | None, expected: list[Plane]
+) -> None:
+    assert gl_display.nv12_planes(*size, layout) == expected
+
+
+def test_a_buffer_must_reach_the_end_of_its_furthest_plane() -> None:
+    planes = [Plane(4096, 2048, 1920, 1080), Plane(0, 2048, 960, 2)]
+
+    assert gl_display.planes_end(planes) == 4096 + 2048 * 1080

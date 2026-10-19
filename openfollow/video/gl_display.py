@@ -117,9 +117,10 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
 
         gi.require_version("Gst", "1.0")
         gi.require_version("Gtk", "3.0")
-        from gi.repository import Gst, Gtk
+        from gi.repository import GLib, Gst, Gtk
 
         self._Gst = Gst
+        self._monotonic_us = GLib.get_monotonic_time
         self._hud = hud
         Gst.init(None)
         sink = Gst.ElementFactory.make("appsink", "shared_videosink")
@@ -161,8 +162,6 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
 
     def _on_new_sample(self, sink: Any) -> Any:
         # Streaming thread: stamp the arrival, the GTK main thread picks per refresh.
-        from gi.repository import GLib
-
         Gst = self._Gst
         sample = sink.try_pull_sample(0)
         if sample is not None:
@@ -170,7 +169,7 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
             pts = sample.get_buffer().pts
             none = Gst.CLOCK_TIME_NONE
             ts = none if pts == none else sample.get_segment().to_running_time(Gst.Format.TIME, pts)
-            self._cadence.push(sample, None if ts == none else ts // 1000, GLib.get_monotonic_time())
+            self._cadence.push(sample, None if ts == none else ts // 1000, self._monotonic_us())
         return Gst.FlowReturn.OK
 
     # -- GL ---------------------------------------------------------------
@@ -350,6 +349,9 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
 
     def _upload_due_frame(self) -> None:
         Gst = self._Gst
+        # A render before the first tick has no refresh time to anchor the cadence on.
+        if not self._refresh[0]:
+            return
         sample = self._cadence.pick(*self._refresh)
         if sample is None:
             return

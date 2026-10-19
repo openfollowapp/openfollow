@@ -54,6 +54,12 @@ class ReceiverPipelineAssembler:
         need_preview = self._preview_provider is not None
         need_snapshot = self._snapshot_provider is not None
         need_tee = need_detection or need_preview or need_snapshot
+        from openfollow.video.gl_display import accepts_dmabuf
+
+        if need_tee and accepts_dmabuf(sink):
+            # Their branches convert in memory, so a tee could never pass a decoder's dmabuf on to the display.
+            self._logger.warning("GL display spike: detection, the web preview and snapshots get no frames")
+            need_tee = False
 
         if need_tee:
             tee = self._gst.ElementFactory.make("tee", "detection_tee")

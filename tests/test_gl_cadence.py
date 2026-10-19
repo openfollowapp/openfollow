@@ -220,6 +220,26 @@ def test_the_queue_holds_at_most_max_queued_frames() -> None:
     assert cadence.report().skipped == 3
 
 
+def test_a_lower_limit_drops_the_oldest_frames_down_to_it() -> None:
+    cadence: Cadence[int] = Cadence()
+    for i in range(4):
+        cadence.push(i, i * FRAME, i * FRAME)
+    cadence.push(4, 4 * FRAME, 4 * FRAME, max_queued=2)
+
+    assert cadence.report().skipped == 3
+    assert [cadence.pick(5 * FRAME + k * REFRESH, REFRESH) for k in range(2)] == [3, 4]
+
+
+def test_clearing_drops_the_queue_and_the_next_frame_anchors_anew() -> None:
+    cadence: Cadence[int] = Cadence()
+    for i in range(3):
+        cadence.push(i, i * FRAME, i * FRAME)
+    cadence.clear()
+    cadence.push(3, 3 * FRAME, 3 * FRAME)
+
+    assert [cadence.pick(3 * FRAME + k * REFRESH, REFRESH) for k in range(2)] == [None, 3]
+
+
 def test_a_missed_refresh_counts_toward_the_time_on_screen() -> None:
     cadence: Cadence[int] = Cadence()
     _play(cadence, _stream(20, latency=5_000), refreshes=42, missed=frozenset({22}))

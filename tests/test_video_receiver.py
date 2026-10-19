@@ -1737,6 +1737,49 @@ class TestGlDisplay:
         assert sinks == [display.sink]
         assert r.get_sink_widget() is display.widget
 
+    @pytest.mark.parametrize("teardown", ["stop", "swap", "reconnect", "error"])
+    def test_the_display_hands_its_frames_back_before_the_pipeline_stops(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch, teardown: str
+    ) -> None:
+        order: list[str] = []
+
+        class _Pipeline(FakePipeline):
+            def set_state(self, state: str) -> str:
+                order.append(f"set_state {state}")
+                return super().set_state(state)
+
+        class _SyncThread:
+            def __init__(self, target, daemon=False, name=""):  # noqa: ANN001
+                self._target = target
+
+            def start(self) -> None:
+                self._target()
+
+            def join(self, timeout: float = 0.0) -> None:
+                return None
+
+            def is_alive(self) -> bool:
+                return False
+
+        monkeypatch.setattr(threading, "Thread", _SyncThread)
+        display = SimpleNamespace(
+            sink=FakeElement("shared_videosink"), widget=object(), release_frames=lambda: order.append("release")
+        )
+        r = receiver_mod.GstNativeSinkReceiver(source_type="fake", input_config={}, display=display)
+        r._pipeline = _Pipeline()
+        if teardown == "stop":
+            r.stop()
+        elif teardown == "swap":
+            r._null_transition_current_pipeline(swap_label="test")
+        elif teardown == "reconnect":
+            monkeypatch.setattr(r, "play", lambda: None)
+            r._do_reconnect()
+        else:
+            r._schedule_reconnect("boom")
+
+        assert order[0] == "release"
+        assert f"set_state {FakeState.NULL}" in order
+
 
 class TestSourceLabel:
     """The label the Operator Screen reads every frame, worked out only when what it names changes."""

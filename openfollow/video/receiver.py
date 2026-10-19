@@ -335,6 +335,11 @@ class GstNativeSinkReceiver:
     def start(self) -> None:
         self.play()
 
+    def _release_display_frames(self) -> None:
+        """Before a NULL transition: a decoder may not stop while the display holds its frames."""
+        if self._display is not None:
+            self._display.release_frames()
+
     def stop(self) -> None:
         self._cancel_connection_timeout()
         self._cancel_reconnect()
@@ -352,6 +357,7 @@ class GstNativeSinkReceiver:
             # Drop the bus signal watch so the pipeline (and its sockets) is
             # freed once NULL completes – otherwise stop() leaks fds.
             self._bus_handler.teardown_bus(pipeline)
+            self._release_display_frames()
             # set_state(NULL) can block indefinitely on network pipelines (RTSP/SRT)
             # when the remote end is unresponsive. Run in a daemon thread with a
             # timeout so shutdown never enters an uninterruptible kernel wait.
@@ -391,6 +397,7 @@ class GstNativeSinkReceiver:
         if self._pipeline is None:
             return
         pipeline = self._pipeline
+        self._release_display_frames()
 
         confirmed: list[bool] = []
 
@@ -1104,6 +1111,7 @@ class GstNativeSinkReceiver:
         if self._pipeline is not None:
             try:
                 self._bus_handler.teardown_bus(self._pipeline)
+                self._release_display_frames()
                 self._pipeline.set_state(Gst.State.NULL)
             except Exception:
                 logger.exception("Error setting pipeline to NULL during reconnect")
@@ -1159,6 +1167,7 @@ class GstNativeSinkReceiver:
 
         if self._pipeline is not None:
             self._bus_handler.teardown_bus(self._pipeline)
+            self._release_display_frames()
             self._pipeline.set_state(Gst.State.NULL)
             self._pipeline = None
 

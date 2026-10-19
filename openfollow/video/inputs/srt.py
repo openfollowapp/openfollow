@@ -11,6 +11,7 @@ from urllib.parse import quote
 
 from openfollow.uri_redaction import redact_uri, set_uri_query_key, strip_uri_query_key
 from openfollow.video.failure import SourceKind
+from openfollow.video.gl_display import accepts_dmabuf
 from openfollow.video.inputs._base import (
     ConfigField,
     InputCapabilities,
@@ -158,19 +159,20 @@ class SrtInput(VideoInputBase):
         pre_queue.set_property("max-size-time", 0)
         pre_queue.set_property("leaky", 2)
 
-        decodebin = Gst.ElementFactory.make("decodebin", "decodebin")
-
         post_queue = Gst.ElementFactory.make("queue", "post_queue")
         post_queue.set_property("max-size-buffers", 2)
         post_queue.set_property("max-size-bytes", 0)
         post_queue.set_property("max-size-time", 0)
         post_queue.set_property("leaky", 2)
 
-        convert = Gst.ElementFactory.make("videoconvert", "convert")
-
         sink = prepare_sink()
         if sink is None:
             raise RuntimeError("No video sink available for SRT pipeline")
+        # A sink taking a decoder's dmabuf gets it untouched: decodebin cannot negotiate one, and
+        # videoconvert would copy it into memory.
+        dmabuf = accepts_dmabuf(sink)
+        decodebin = Gst.ElementFactory.make("decodebin3" if dmabuf else "decodebin", "decodebin")
+        convert = Gst.ElementFactory.make("identity" if dmabuf else "videoconvert", "convert")
 
         for elem in (srtsrc, pre_queue, decodebin, post_queue, convert, sink):
             pipeline.add(elem)

@@ -100,7 +100,8 @@ class Cadence(Generic[T]):
         self._late = 0
         self._waits: list[int] = []
 
-    def push(self, frame: T, pts_us: int | None, arrival_us: int) -> None:
+    def push(self, frame: T, pts_us: int | None, arrival_us: int, max_queued: int = MAX_QUEUED) -> None:
+        """Queue a frame; ``max_queued`` lower for frames that hold a decoder's own buffers, which it has few of."""
         with self._lock:
             if pts_us is not None:
                 if self._last_pts is not None and abs(pts_us - self._last_pts) > MAX_PTS_STEP_US:
@@ -114,9 +115,10 @@ class Cadence(Generic[T]):
                 self._recent.append(arrival_us - pts_us)
                 self._lateness.append(arrival_us - pts_us)
             self._queue.append((frame, pts_us, arrival_us))
-            if len(self._queue) > MAX_QUEUED:
-                self._queue.popleft()
-                self._skipped += 1
+            if len(self._queue) > max_queued:
+                while len(self._queue) > max_queued:
+                    self._queue.popleft()
+                    self._skipped += 1
                 self._offset = None
                 # The lateness that overfilled the queue would raise the new offset past what it holds again.
                 self._recent.clear()
@@ -136,6 +138,13 @@ class Cadence(Generic[T]):
                 return
         self._offset = target
         self._lower_run = 0
+
+    def clear(self) -> None:
+        """Drop the queued frames, as their pipeline stops; the next frame anchors anew."""
+        with self._lock:
+            self._queue.clear()
+            self._offset = None
+            self._recent.clear()
 
     def pick(self, refresh_us: int, interval_us: int) -> T | None:
         """The frame to show at the refresh at ``refresh_us``; None keeps the frame on screen.

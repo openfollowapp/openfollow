@@ -119,6 +119,40 @@ class TestCreatePipeline:
         assert overlay.calls, "build_overlay_tail was never called"
         return pipeline
 
+    @pytest.mark.parametrize(
+        ("sink_caps", "missing"),
+        [
+            ("video/x-raw(memory:DMABuf),format=DMA_DRM; video/x-raw,format=I420", {"videoconvert", "decodebin"}),
+            (None, {"identity", "decodebin3"}),
+        ],
+        ids=["dmabuf-sink", "memory-sink"],
+    )
+    def test_only_a_sink_taking_dmabuf_gets_decodebin3_and_no_videoconvert(
+        self, sink_caps: str | None, missing: set[str]
+    ) -> None:
+        from gi.repository import Gst  # noqa: F401
+
+        class _Caps:
+            def to_string(self) -> str:
+                return sink_caps or ""
+
+        class _Pad:
+            def query_caps(self, _filter: object) -> object:
+                return _Caps() if sink_caps is not None else None
+
+        class _Sink(FakeElement):
+            def get_static_pad(self, name: str) -> object:
+                return _Pad()
+
+        sink = _Sink("shared_videosink")
+        with patch("gi.repository.Gst", make_fake_gst(missing_elements=missing)):
+            pipeline = SrtInput().create_pipeline(
+                config={}, sink=sink, build_overlay_tail=_OverlayCapture(), prepare_sink=lambda: sink
+            )
+
+        assert pipeline.get_by_name("convert") is not None
+        assert pipeline.get_by_name("decodebin") is not None
+
     def test_builds_srt_chain_with_expected_elements(self) -> None:
         pipeline = self._build({"srt_host": "10.0.0.5:5000"})
         srtsrc = pipeline.get_by_name("srtsrc")

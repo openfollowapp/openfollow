@@ -657,3 +657,29 @@ class TestCombinedBranches:
         # Each branch allocates its own queue
         for name in ("detection_queue", "preview_queue", "snapshot_queue"):
             assert pipeline.get_by_name(name) is not None
+
+
+class _DmabufCaps:
+    def to_string(self) -> str:
+        return "video/x-raw(memory:DMABuf),format=DMA_DRM"
+
+
+class _DmabufPad:
+    def query_caps(self, _filter: object) -> _DmabufCaps:
+        return _DmabufCaps()
+
+
+class _DmabufSink(FakeElement):
+    def get_static_pad(self, name: str) -> _DmabufPad:
+        return _DmabufPad()
+
+
+def test_a_dmabuf_sink_gets_the_video_without_a_tee() -> None:
+    assembler = _make_assembler(preview=FakePreviewProvider(), snapshot=FakeSnapshotProvider())
+    pipeline = FakePipeline()
+    convert, sink = FakeElement("videoconvert"), _DmabufSink("shared_videosink")
+
+    assembler.build_overlay_tail(pipeline, convert, sink)
+
+    assert pipeline.get_by_name("detection_tee") is None
+    assert convert.links == [sink]

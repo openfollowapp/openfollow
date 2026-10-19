@@ -19,7 +19,7 @@ from typing import Any
 
 from openfollow.logging_setup import ThrottledExceptionLogger
 from openfollow.runtime.overlay_layers import Layers, Sprite
-from openfollow.video.gl_cadence import Cadence, Durations
+from openfollow.video.gl_cadence import MAX_QUEUED, Cadence, Durations
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +96,8 @@ void main() {
   float u = texture(tu, v_uv).r - 128.0 / 255.0, v = texture(tv, v_uv).r - 128.0 / 255.0;
   o = vec4(y + m.x * v, y - m.y * u - m.z * v, y + m.w * u, 1.0);
 }"""
+# NV12: chroma interleaved in one two-channel plane.
+_FS_NV12 = _FS_YUV.replace("texture(tv, v_uv).r", "texture(tu, v_uv).g")
 # Luma weights (Kr, Kb) of the matrices GStreamer names.
 LUMA_WEIGHTS = {
     "bt709": (0.2126, 0.0722),
@@ -123,6 +125,88 @@ def yuv_to_rgb(height: int, matrix: str = "", color_range: str = "") -> YuvToRgb
     return YuvToRgb(0.0, 1.0, m) if full else YuvToRgb(16 / 255, 255 / 219, m)
 
 
+# A decoder's dmabuf frame, sampled through an EGLImage: the driver converts YUV to RGB.
+_FS_EXTERNAL = """#version 300 es
+#extension GL_OES_EGL_image_external_essl3 : require
+precision highp float;
+in vec2 v_uv; out vec4 o; uniform samplerExternalOES t;
+void main() { o = vec4(texture(t, v_uv).rgb, 1.0); }"""
+# Video caps the GL display takes: a decoder's dmabuf as it is, else I420 in memory.
+SINK_CAPS = "video/x-raw(memory:DMABuf),format=DMA_DRM; video/x-raw,format=I420"
+DRM_FORMAT_MOD_INVALID = 0x00FFFFFFFFFFFFFF
+# A hardware decoder's frames queued at most: it has a few buffers beyond its references, and a decode
+# waiting too long for one fails; on a Pi 5 stopping the decoder after that hangs the driver.
+DMABUF_QUEUED = 2
+_EGL_WIDTH, _EGL_HEIGHT, _EGL_NONE = 0x3057, 0x3056, 0x3038
+_EGL_LINUX_DMA_BUF_EXT = 0x3270
+_GL_TEXTURE_2D, _GL_TEXTURE_EXTERNAL_OES = 0x0DE1, 0x8D65
+_EGL_LINUX_DRM_FOURCC_EXT = 0x3271
+# Per plane: fd, offset, pitch, modifier low and high words.
+_EGL_PLANE_ATTRS = (
+    (0x3272, 0x3273, 0x3274, 0x3443, 0x3444),
+    (0x3275, 0x3276, 0x3277, 0x3445, 0x3446),
+    (0x3278, 0x3279, 0x327A, 0x3447, 0x3448),
+)
+_EGL_YUV_COLOR_SPACE_HINT_EXT, _EGL_SAMPLE_RANGE_HINT_EXT = 0x327B, 0x327C
+_EGL_ITU = {"bt601": 0x327F, "bt709": 0x3280, "bt2020": 0x3281}
+_EGL_YUV_FULL_RANGE_EXT, _EGL_YUV_NARROW_RANGE_EXT = 0x3282, 0x3283
+
+
+def accepts_dmabuf(sink: Any) -> bool:
+    """Whether ``sink`` takes a decoder's dmabuf frames as they are, so nothing may convert them on the way."""
+    try:
+        pad = sink.get_static_pad("sink")
+        caps = pad.query_caps(None) if pad is not None else None
+    except Exception:
+        return False
+    return caps is not None and "memory:DMABuf" in caps.to_string()
+
+
+_DRM_VENDOR_BROADCOM, _BROADCOM_SAND128 = 0x07, 4
+
+
+def sand_column_height_modifier(modifier: int, luma_stride: int) -> int:
+    """A Broadcom SAND128 modifier with its column height filled in from GStreamer's tiled luma stride.
+
+    The decoder's caps leave the height out; GStreamer's stride for a column format packs
+    the 8-line tile rows in its upper half. Any other modifier passes unchanged.
+    """
+    sand = modifier >> 56 == _DRM_VENDOR_BROADCOM and modifier & 0xFF == _BROADCOM_SAND128
+    if not sand or (modifier >> 8) & 0xFFFFFFFFFFFF:
+        return modifier
+    return modifier | ((luma_stride >> 16) * 8) << 8
+
+
+def parse_drm_format(drm_format: str) -> tuple[int, int]:
+    """A caps ``drm-format`` such as ``NV12:0x0700000000044004`` as its DRM fourcc and modifier."""
+    name, _, modifier = drm_format.partition(":")
+    code = name.ljust(4)[:4].encode("ascii")
+    fourcc = code[0] | code[1] << 8 | code[2] << 16 | code[3] << 24
+    return fourcc, int(modifier, 16) if modifier else 0
+
+
+def dmabuf_image_attributes(
+    width: int,
+    height: int,
+    fourcc: int,
+    modifier: int,
+    planes: list[tuple[int, int, int]],
+    matrix: str = "",
+    color_range: str = "",
+) -> list[int]:
+    """The ``eglCreateImageKHR`` attributes importing a dmabuf frame of (fd, offset, pitch) planes."""
+    attrs = [_EGL_WIDTH, width, _EGL_HEIGHT, height, _EGL_LINUX_DRM_FOURCC_EXT, fourcc]
+    for (fd, offset, pitch), (a_fd, a_offset, a_pitch, a_lo, a_hi) in zip(planes, _EGL_PLANE_ATTRS, strict=False):
+        attrs += [a_fd, fd, a_offset, offset, a_pitch, pitch]
+        if modifier != DRM_FORMAT_MOD_INVALID:
+            attrs += [a_lo, modifier & 0xFFFFFFFF, a_hi, modifier >> 32]
+    itu = _EGL_ITU.get("bt709" if matrix not in _EGL_ITU and height > 576 else matrix, _EGL_ITU["bt601"])
+    full = color_range == "0-255"
+    attrs += [_EGL_YUV_COLOR_SPACE_HINT_EXT, itu]
+    attrs += [_EGL_SAMPLE_RANGE_HINT_EXT, _EGL_YUV_FULL_RANGE_EXT if full else _EGL_YUV_NARROW_RANGE_EXT]
+    return [*attrs, _EGL_NONE]
+
+
 # Cairo ARGB32 is premultiplied BGRA in memory.
 _FS_HUD = """#version 300 es
 precision highp float;
@@ -144,13 +228,15 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
         self._monotonic_us = GLib.get_monotonic_time
         self._hud = hud
         Gst.init(None)
-        sink = Gst.ElementFactory.make("appsink", "shared_videosink")
-        sink.set_property("caps", Gst.Caps.from_string("video/x-raw,format=I420"))
-        sink.set_property("max-buffers", 2)
-        sink.set_property("drop", True)
-        sink.set_property("sync", False)
-        sink.set_property("emit-signals", True)
-        sink.connect("new-sample", self._on_new_sample)
+        # fakevideosink, not appsink: a decoder hands out its dmabufs only to a sink announcing GstVideoMeta,
+        # and appsink's allocation query cannot be answered from Python.
+        sink = Gst.parse_bin_from_description(
+            f'capsfilter caps="{SINK_CAPS}" ! fakevideosink name=frames sync=false enable-last-sample=false'
+            " signal-handoffs=true",
+            True,
+        )
+        sink.set_name("shared_videosink")
+        sink.get_by_name("frames").connect("handoff", self._on_handoff)
         self.sink = sink
         self._cadence: Cadence[Any] = Cadence(locked=not os.path.exists(LATEST_FRAME_FLAG))
         self._refresh = (0, DEFAULT_REFRESH_US)
@@ -173,9 +259,30 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
         self._drawn_tex: list[int] = []
         self._spare_tex: list[int] = []
         self._colour = yuv_to_rgb(1080)
+        # The dmabuf frame on screen: its EGLImage and the sample that keeps its buffer from the decoder.
+        self._image: Any = None
+        self._image_sample: Any = None
+        self._egl: Any = None
+        self._external = False
+        # A memory frame in NV12 (the decoder's cropped copy) rather than I420.
+        self._nv12 = False
         # GTK main thread time per render, per video frame upload and per new sprite list upload.
-        self._took = {"render": Durations(), "video upload": Durations(), "sprite upload": Durations()}
+        self._took = {
+            "render": Durations(),
+            "video upload": Durations(),
+            "video import": Durations(),
+            "sprite upload": Durations(),
+        }
         self._render_err_log = ThrottledExceptionLogger(logger, "GL display render failed")
+
+    def release_frames(self) -> None:
+        """Hand every held frame back before the pipeline stops.
+
+        A Pi 5 HEVC decoder stopping while frames it decoded are still held waits for them forever,
+        in the kernel. The image on screen keeps its own reference to the memory, not to the frame.
+        """
+        self._cadence.clear()
+        self._image_sample = None
 
     def set_hud(self, hud: Any) -> None:
         self._hud = hud
@@ -187,17 +294,19 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
         self._refresh = (now, interval or DEFAULT_REFRESH_US)
         self.widget.queue_render()
 
-    def _on_new_sample(self, sink: Any) -> Any:
+    def _on_handoff(self, _sink: Any, buf: Any, pad: Any) -> None:
         # Streaming thread: stamp the arrival, the GTK main thread picks per refresh.
         Gst = self._Gst
-        sample = sink.try_pull_sample(0)
-        if sample is not None:
-            # Running time, not pts: a looping clip's pts restart each pass, its running time runs on.
-            pts = sample.get_buffer().pts
-            none = Gst.CLOCK_TIME_NONE
-            ts = none if pts == none else sample.get_segment().to_running_time(Gst.Format.TIME, pts)
-            self._cadence.push(sample, None if ts == none else ts // 1000, self._monotonic_us())
-        return Gst.FlowReturn.OK
+        arrival = self._monotonic_us()
+        event = pad.get_sticky_event(Gst.EventType.SEGMENT, 0)
+        segment = event.parse_segment() if event is not None else None
+        sample = Gst.Sample.new(buf, pad.get_current_caps(), segment, None)
+        # Running time, not pts: a looping clip's pts restart each pass, its running time runs on.
+        pts = buf.pts
+        none = Gst.CLOCK_TIME_NONE
+        ts = none if pts == none or segment is None else segment.to_running_time(Gst.Format.TIME, pts)
+        dmabuf = sample.get_caps().get_features(0).contains("memory:DMABuf")
+        self._cadence.push(sample, None if ts == none else ts // 1000, arrival, DMABUF_QUEUED if dmabuf else MAX_QUEUED)
 
     # -- GL ---------------------------------------------------------------
 
@@ -223,6 +332,10 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
             GL.glDeleteVertexArrays(1, [self._quad[0]])
             GL.glDeleteProgram(self._p_yuv)
             GL.glDeleteProgram(self._p_hud)
+            GL.glDeleteTextures([self._t_ext])
+            GL.glDeleteProgram(self._p_ext)
+            GL.glDeleteProgram(self._p_nv12)
+            self._release_image()
         except Exception:
             logger.exception("GL display could not free its objects")
 
@@ -231,6 +344,8 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
         self._frame = (0, 0)
         self._hud_serial = -1
         self._kept_tex, self._drawn_tex, self._spare_tex = {}, [], []
+        self._image = self._image_sample = None
+        self._external = False
         area.make_current()
         if area.get_error() is not None:
             raise RuntimeError(area.get_error())
@@ -246,6 +361,9 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
         logger.info("GL display: %s on %s", GL.glGetString(GL.GL_VERSION), GL.glGetString(GL.GL_RENDERER))
         self._p_yuv = self._program(_VS, _FS_YUV)
         self._p_hud = self._program(_VS, _FS_HUD)
+        self._p_ext = self._program(_VS, _FS_EXTERNAL)
+        self._p_nv12 = self._program(_VS, _FS_NV12)
+        self._t_ext = self._texture(_GL_TEXTURE_EXTERNAL_OES)
         self._quad = self._make_quad()
         GL.glPixelStorei(GL.GL_UNPACK_ALIGNMENT, 1)
         self._t_yuv = [self._texture() for _ in range(3)]
@@ -256,6 +374,11 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
             GL.glUniform1i(GL.glGetUniformLocation(self._p_yuv, name), unit)
         GL.glUseProgram(self._p_hud)
         GL.glUniform1i(GL.glGetUniformLocation(self._p_hud, "t"), 0)
+        GL.glUseProgram(self._p_ext)
+        GL.glUniform1i(GL.glGetUniformLocation(self._p_ext, "t"), 0)
+        GL.glUseProgram(self._p_nv12)
+        for unit, name in enumerate(("ty", "tu")):
+            GL.glUniform1i(GL.glGetUniformLocation(self._p_nv12, name), unit)
         self._ready = True
 
     def _program(self, vs: str, fs: str) -> int:
@@ -283,14 +406,14 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
             raise RuntimeError(GL.glGetProgramInfoLog(p))
         return int(p)
 
-    def _texture(self) -> int:
+    def _texture(self, target: int = _GL_TEXTURE_2D) -> int:
         GL = self._gl
         t = GL.glGenTextures(1)
-        GL.glBindTexture(GL.GL_TEXTURE_2D, t)
+        GL.glBindTexture(target, t)
         for k in (GL.GL_TEXTURE_MIN_FILTER, GL.GL_TEXTURE_MAG_FILTER):
-            GL.glTexParameteri(GL.GL_TEXTURE_2D, k, GL.GL_LINEAR)
+            GL.glTexParameteri(target, k, GL.GL_LINEAR)
         for k in (GL.GL_TEXTURE_WRAP_S, GL.GL_TEXTURE_WRAP_T):
-            GL.glTexParameteri(GL.GL_TEXTURE_2D, k, GL.GL_CLAMP_TO_EDGE)
+            GL.glTexParameteri(target, k, GL.GL_CLAMP_TO_EDGE)
         return int(t)
 
     def _make_quad(self) -> tuple[int, int]:
@@ -344,12 +467,19 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
         self._log_cadence()
         GL.glClearColor(0.0, 0.0, 0.0, 1.0)
         GL.glClear(GL.GL_COLOR_BUFFER_BIT)
-        if self._frame != (0, 0):
+        if self._frame != (0, 0) and self._external:
             GL.glDisable(GL.GL_BLEND)
-            GL.glUseProgram(self._p_yuv)
+            GL.glUseProgram(self._p_ext)
+            GL.glActiveTexture(GL.GL_TEXTURE0)
+            GL.glBindTexture(_GL_TEXTURE_EXTERNAL_OES, self._t_ext)
+            self._draw_quad(*letterbox(*self._frame, aw, ah))
+        elif self._frame != (0, 0):
+            GL.glDisable(GL.GL_BLEND)
+            program = self._p_nv12 if self._nv12 else self._p_yuv
+            GL.glUseProgram(program)
             c = self._colour
-            GL.glUniform2f(GL.glGetUniformLocation(self._p_yuv, "yr"), c.y_black, c.y_scale)
-            GL.glUniform4f(GL.glGetUniformLocation(self._p_yuv, "m"), *c.m)
+            GL.glUniform2f(GL.glGetUniformLocation(program, "yr"), c.y_black, c.y_scale)
+            GL.glUniform4f(GL.glGetUniformLocation(program, "m"), *c.m)
             for unit, tex in enumerate(self._t_yuv):
                 GL.glActiveTexture(GL.GL_TEXTURE0 + unit)
                 GL.glBindTexture(GL.GL_TEXTURE_2D, tex)
@@ -475,9 +605,19 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
         sample = self._cadence.pick(*self._refresh)
         if sample is None:
             return
+        caps = sample.get_caps()
+        if caps.get_features(0).contains("memory:DMABuf"):
+            started = time.perf_counter_ns()
+            self._import_dmabuf(sample)
+            self._took["video import"].add((time.perf_counter_ns() - started) // 1000)
+            return
         from gi.repository import GstVideo
 
-        info = GstVideo.VideoInfo.new_from_caps(sample.get_caps())
+        if self._external or self._nv12:
+            # The plane textures were last given another layout, or none.
+            self._frame = (0, 0)
+        self._external = self._nv12 = False
+        info = GstVideo.VideoInfo.new_from_caps(caps)
         cm = info.colorimetry
         self._colour = yuv_to_rgb(info.height, cm.matrix.value_nick, cm.range.value_nick)
         buf = sample.get_buffer()
@@ -496,6 +636,128 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
             self._took["video upload"].add((time.perf_counter_ns() - started) // 1000)
         finally:
             buf.unmap(mapinfo)
+
+    def _import_dmabuf(self, sample: Any) -> None:
+        """Bind a decoder's dmabuf frame to the external texture through an EGLImage: no copy, no CPU conversion."""
+        import gi
+
+        gi.require_version("GstAllocators", "1.0")
+        gi.require_version("GstVideo", "1.0")
+        from gi.repository import GstAllocators, GstVideo
+
+        structure = sample.get_caps().get_structure(0)
+        fourcc, modifier = parse_drm_format(structure.get_string("drm-format") or "")
+        width, height = structure.get_int("width")[1], structure.get_int("height")[1]
+        colorimetry = GstVideo.VideoColorimetry()
+        colorimetry.from_string(structure.get_string("colorimetry") or "")
+        buf = sample.get_buffer()
+        meta = GstVideo.buffer_get_video_meta(buf)
+        # get_memory, not peek_memory: PyGObject copies a borrowed memory into system memory.
+        if meta is None or not GstAllocators.is_dmabuf_memory(buf.get_memory(0)):
+            # The decoder cropped the frame into a linear NV12 copy in memory (coded size above the shown one).
+            self._upload_cropped_nv12(buf, width, height, colorimetry)
+            return
+        modifier = sand_column_height_modifier(modifier, meta.stride[0])
+        planes = []
+        for i in range(meta.n_planes):
+            found, index, _length, skip = buf.find_memory(meta.offset[i], 1)
+            if not found:
+                raise RuntimeError(f"dmabuf plane {i} lies outside the buffer")
+            memory = buf.get_memory(index)
+            planes.append((GstAllocators.dmabuf_memory_get_fd(memory), memory.offset + skip, width))
+        attrs = dmabuf_image_attributes(
+            width,
+            height,
+            fourcc,
+            modifier,
+            planes,
+            colorimetry.matrix.value_nick,
+            colorimetry.range.value_nick,
+        )
+        egl = self._egl_calls()
+        image = egl.create_image(
+            egl.current_display(), None, _EGL_LINUX_DMA_BUF_EXT, None, (ctypes.c_int32 * len(attrs))(*attrs)
+        )
+        if not image:
+            raise RuntimeError(f"EGL refused the dmabuf frame (error 0x{egl.get_error():x})")
+        GL = self._gl
+        GL.glActiveTexture(GL.GL_TEXTURE0)
+        GL.glBindTexture(_GL_TEXTURE_EXTERNAL_OES, self._t_ext)
+        egl.target_texture(_GL_TEXTURE_EXTERNAL_OES, image)
+        # The previous frame's image and buffer are free once the texture names the new one.
+        self._release_image()
+        self._image, self._image_sample = image, sample
+        self._frame = (width, height)
+        self._external = True
+
+    def _upload_cropped_nv12(self, buf: Any, width: int, height: int, colorimetry: Any) -> None:
+        Gst, GL = self._Gst, self._gl
+        ok, mapinfo = buf.map(Gst.MapFlags.READ)
+        if not ok:
+            return
+        try:
+            if mapinfo.size < width * height * 3 // 2:
+                raise RuntimeError(f"{mapinfo.size} bytes cannot hold a {width}x{height} NV12 frame")
+            data = mapinfo.data
+            started = time.perf_counter_ns()
+            realloc = (width, height) != self._frame or not self._nv12
+            chroma = (width + 1) // 2, (height + 1) // 2
+            for unit, (fmt, size, offset, row) in enumerate(
+                (
+                    (GL.GL_R8, (width, height), 0, width),
+                    (GL.GL_RG8, chroma, width * height, chroma[0]),
+                )
+            ):
+                channels = GL.GL_RED if fmt == GL.GL_R8 else GL.GL_RG
+                chunk = data[offset : offset + size[1] * row * (1 if fmt == GL.GL_R8 else 2)]
+                GL.glActiveTexture(GL.GL_TEXTURE0 + unit)
+                GL.glBindTexture(GL.GL_TEXTURE_2D, self._t_yuv[unit])
+                GL.glPixelStorei(GL.GL_UNPACK_ROW_LENGTH, row)
+                if realloc:
+                    GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, fmt, *size, 0, channels, GL.GL_UNSIGNED_BYTE, chunk)
+                else:
+                    GL.glTexSubImage2D(GL.GL_TEXTURE_2D, 0, 0, 0, *size, channels, GL.GL_UNSIGNED_BYTE, chunk)
+            GL.glPixelStorei(GL.GL_UNPACK_ROW_LENGTH, 0)
+            self._took["video upload"].add((time.perf_counter_ns() - started) // 1000)
+        finally:
+            buf.unmap(mapinfo)
+        self._colour = yuv_to_rgb(height, colorimetry.matrix.value_nick, colorimetry.range.value_nick)
+        self._release_image()
+        self._frame = (width, height)
+        self._external, self._nv12 = False, True
+
+    def _release_image(self) -> None:
+        if self._image is not None:
+            egl = self._egl_calls()
+            egl.destroy_image(egl.current_display(), self._image)
+        self._image = self._image_sample = None
+
+    def _egl_calls(self) -> Any:
+        """The EGL image calls, straight from libEGL: PyOpenGL's EGL module cannot load with error checking off."""
+        if self._egl is None:
+            from types import SimpleNamespace
+
+            lib = ctypes.CDLL("libEGL.so.1")
+            lib.eglGetProcAddress.restype = ctypes.c_void_p
+            lib.eglGetProcAddress.argtypes = [ctypes.c_char_p]
+            lib.eglGetCurrentDisplay.restype = ctypes.c_void_p
+            lib.eglGetError.restype = ctypes.c_int32
+            vp, u32 = ctypes.c_void_p, ctypes.c_uint32
+
+            def proc(name: str, *signature: Any) -> Any:
+                address = lib.eglGetProcAddress(name.encode())
+                if not address:
+                    raise RuntimeError(f"EGL has no {name}")
+                return ctypes.CFUNCTYPE(*signature)(address)
+
+            self._egl = SimpleNamespace(
+                current_display=lib.eglGetCurrentDisplay,
+                get_error=lib.eglGetError,
+                create_image=proc("eglCreateImageKHR", vp, vp, vp, u32, vp, ctypes.POINTER(ctypes.c_int32)),
+                destroy_image=proc("eglDestroyImageKHR", u32, vp, vp),
+                target_texture=proc("glEGLImageTargetTexture2DOES", None, u32, vp),
+            )
+        return self._egl
 
     def _upload_planes(self, data: Any, planes: list[Plane], size: tuple[int, int]) -> None:
         GL = self._gl

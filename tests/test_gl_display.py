@@ -123,3 +123,116 @@ def test_a_sprite_lands_where_its_corner_and_size_put_it_in_clip_space(
 
 def test_durations_read_as_count_median_and_99th_percentile() -> None:
     assert gl_display.describe_durations("render", (600, 1.234, 5.0)) == "render 600, p50 1.23 ms p99 5.00 ms"
+
+
+class _CapsSink:
+    """A sink whose sink pad answers a caps query with ``caps``, or has no pad, or fails the query."""
+
+    def __init__(self, caps: str | None, *, pad: bool = True, raises: bool = False) -> None:
+        self._caps, self._pad, self._raises = caps, pad, raises
+
+    def get_static_pad(self, name: str) -> object:
+        if not self._pad:
+            return None
+        sink = self
+
+        class _Pad:
+            def query_caps(self, _filter: object) -> object:
+                if sink._raises:
+                    raise TypeError(name)
+                if sink._caps is None:
+                    return None
+                caps = sink._caps
+
+                class _Caps:
+                    def to_string(self) -> str:
+                        return caps
+
+                return _Caps()
+
+        return _Pad()
+
+
+@pytest.mark.parametrize(
+    ("sink", "expected"),
+    [
+        (_CapsSink(gl_display.SINK_CAPS), True),
+        (_CapsSink("video/x-raw,format=I420"), False),
+        (_CapsSink(None), False),
+        (_CapsSink(None, pad=False), False),
+        (_CapsSink(None, raises=True), False),
+    ],
+    ids=["gl-display", "memory-only", "no-caps", "no-pad", "query-fails"],
+)
+def test_only_a_sink_asking_for_dmabuf_takes_it(sink: _CapsSink, expected: bool) -> None:
+    assert gl_display.accepts_dmabuf(sink) is expected
+
+
+@pytest.mark.parametrize(
+    ("modifier", "stride", "expected"),
+    [
+        (0x0700000000000004, 136 << 16 | 15, 0x0700000000044004),
+        (0x0700000000044004, 68 << 16 | 15, 0x0700000000044004),
+        (0x0700000000000003, 136 << 16 | 15, 0x0700000000000003),
+        (0x0100000000000001, 136 << 16 | 15, 0x0100000000000001),
+        (0, 1920, 0),
+    ],
+    ids=["sand128-no-height", "sand128-with-height", "sand64", "other-vendor", "linear"],
+)
+def test_a_sand128_modifier_gets_its_column_height_from_the_tiled_stride(
+    modifier: int, stride: int, expected: int
+) -> None:
+    assert gl_display.sand_column_height_modifier(modifier, stride) == expected
+
+
+@pytest.mark.parametrize(
+    ("drm_format", "expected"),
+    [
+        ("NV12:0x0700000000044004", (0x3231564E, 0x0700000000044004)),
+        ("NV12", (0x3231564E, 0)),
+        ("R8", (0x20203852, 0)),
+    ],
+    ids=["sand128", "linear", "short-name"],
+)
+def test_a_drm_format_reads_as_fourcc_and_modifier(drm_format: str, expected: tuple[int, int]) -> None:
+    assert gl_display.parse_drm_format(drm_format) == expected
+
+
+def test_dmabuf_attributes_name_each_plane_with_its_modifier_and_the_colour_hints() -> None:
+    attrs = gl_display.dmabuf_image_attributes(
+        1920, 1080, 0x3231564E, 0x0700000000044004, [(7, 0, 1920), (7, 4096, 1920)], "bt709", "16-235"
+    )
+
+    pairs = dict(zip(attrs[:-1:2], attrs[1::2], strict=True))
+    assert attrs[-1] == 0x3038
+    assert pairs[0x3057] == 1920 and pairs[0x3056] == 1080 and pairs[0x3271] == 0x3231564E
+    assert (pairs[0x3272], pairs[0x3273], pairs[0x3274]) == (7, 0, 1920)
+    assert (pairs[0x3275], pairs[0x3276], pairs[0x3277]) == (7, 4096, 1920)
+    assert (pairs[0x3443], pairs[0x3444]) == (0x00044004, 0x07000000)
+    assert (pairs[0x3445], pairs[0x3446]) == (0x00044004, 0x07000000)
+    assert (pairs[0x327B], pairs[0x327C]) == (0x3280, 0x3283)
+
+
+def test_dmabuf_attributes_leave_out_an_invalid_modifier() -> None:
+    attrs = gl_display.dmabuf_image_attributes(64, 32, 0x3231564E, gl_display.DRM_FORMAT_MOD_INVALID, [(3, 0, 64)])
+
+    assert 0x3443 not in attrs[::2]
+
+
+@pytest.mark.parametrize(
+    ("height", "matrix", "color_range", "expected"),
+    [
+        (1080, "", "", (0x3280, 0x3283)),
+        (480, "", "", (0x327F, 0x3283)),
+        (1080, "bt601", "0-255", (0x327F, 0x3282)),
+        (480, "bt2020", "", (0x3281, 0x3283)),
+    ],
+    ids=["hd-unnamed", "sd-unnamed", "named-601-full", "named-2020"],
+)
+def test_dmabuf_colour_hints_follow_the_caps_and_size(
+    height: int, matrix: str, color_range: str, expected: tuple[int, int]
+) -> None:
+    attrs = gl_display.dmabuf_image_attributes(64, height, 0x3231564E, 0, [(3, 0, 64)], matrix, color_range)
+    pairs = dict(zip(attrs[:-1:2], attrs[1::2], strict=True))
+
+    assert (pairs[0x327B], pairs[0x327C]) == expected

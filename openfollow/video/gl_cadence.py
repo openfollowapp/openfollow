@@ -93,6 +93,7 @@ class Cadence(Generic[T]):
                     self._queue.clear()
                     self._offset = None
                     self._recent.clear()
+                    self._lateness.clear()
                 self._last_pts = pts_us
                 self._recent.append(arrival_us - pts_us)
                 self._lateness.append(arrival_us - pts_us)
@@ -113,15 +114,12 @@ class Cadence(Generic[T]):
         need = recent[min(len(recent) - 1, int(COVER * len(recent)))]
         interval = self._interval
         target = offset + math.ceil((need - offset) / interval) * interval
-        # The next frame finds the moved offset on target, which ends any run.
-        if target > offset:
-            self._offset = target
-        elif target < offset:
+        if target < offset:
             self._lower_run += 1
-            if self._lower_run >= LOWER_AFTER_FRAMES:
-                self._offset = target
-        else:
-            self._lower_run = 0
+            if self._lower_run < LOWER_AFTER_FRAMES:
+                return
+        self._offset = target
+        self._lower_run = 0
 
     def pick(self, refresh_us: int, interval_us: int) -> T | None:
         """The frame to show at the refresh at ``refresh_us``; None keeps the frame on screen.

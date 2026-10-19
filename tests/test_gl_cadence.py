@@ -314,3 +314,24 @@ def test_the_spread_covers_only_the_latest_frames_when_no_report_comes() -> None
         cadence.push(i, i * FRAME, i * FRAME + (0 if i < 100 else 5_000))
 
     assert cadence.report().spread_ms_p50 == 0.0
+
+
+def test_a_raise_starts_a_lowering_run_over() -> None:
+    raised = 20 + WINDOW_FRAMES + LOWER_AFTER_FRAMES - 15
+    # The third slow frame raises the offset just before the first two leave the window.
+    slow = {raised - WINDOW_FRAMES + 2, raised - WINDOW_FRAMES + 3, raised}
+    count = raised + WINDOW_FRAMES
+    frames = [(i * FRAME, i * FRAME + (30_000 if i < 20 else 60_000 if i in slow else 10_000)) for i in range(count)]
+    delays = _delays(_play(Cadence(), frames, refreshes=2 * count + 10), frames)
+
+    assert delays[raised + LOWER_AFTER_FRAMES // 2] > delays[raised - 5] + REFRESH
+    assert delays[count - 1] < delays[raised - 5]
+
+
+def test_a_timestamp_step_starts_the_spread_over() -> None:
+    cadence: Cadence[int] = Cadence()
+    for i in range(40):
+        step = 3 * MAX_PTS_STEP_US // 2 if i >= 20 else 0
+        cadence.push(i, i * FRAME + step, i * FRAME + 5_000)
+
+    assert cadence.report().spread_ms_p98 == 0.0

@@ -385,6 +385,19 @@ class VideoInputBase(ABC):
         return "" if value is None else html.escape(str(value))
 
 
+# A network input's queue before the decoder holds this much stream: packet-sized buffers counted in
+# fours held only milliseconds, so any decoder hiccup dropped compressed data and broke the picture.
+PRE_DECODE_QUEUE_NS = 300_000_000
+
+
+def configure_pre_decode_queue(queue: Any) -> None:
+    """Make ``queue`` hold ``PRE_DECODE_QUEUE_NS`` of stream, dropping the oldest only past that."""
+    queue.set_property("max-size-buffers", 0)
+    queue.set_property("max-size-bytes", 0)
+    queue.set_property("max-size-time", PRE_DECODE_QUEUE_NS)
+    queue.set_property("leaky", 2)
+
+
 def video_input_pin_field() -> ConfigField:
     """The interface pin, shared by every network input; edited only in the panel.
 

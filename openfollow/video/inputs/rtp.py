@@ -18,6 +18,7 @@ from openfollow.video.inputs._base import (
     InputCapabilities,
     ReconnectPolicy,
     VideoInputBase,
+    configure_pre_decode_queue,
     video_input_pin_field,
 )
 from openfollow.video.inputs._pin import PinRefusal, check_listen_address, check_video_pin, config_pin
@@ -228,10 +229,7 @@ class RtpInput(VideoInputBase):
 
         # --- Pre-decode leaky queue ---
         pre_queue = Gst.ElementFactory.make("queue", "pre_queue")
-        pre_queue.set_property("max-size-buffers", 4)
-        pre_queue.set_property("max-size-bytes", 0)
-        pre_queue.set_property("max-size-time", 0)
-        pre_queue.set_property("leaky", 2)  # downstream – drop old data
+        configure_pre_decode_queue(pre_queue)
 
         # --- RTP jitter buffer ---
         jitterbuf = Gst.ElementFactory.make("rtpjitterbuffer", "jitterbuf")

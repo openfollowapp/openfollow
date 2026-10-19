@@ -126,13 +126,13 @@ def test_durations_read_as_count_median_and_99th_percentile() -> None:
 
 
 class _CapsSink:
-    """A sink whose sink pad answers a caps query with ``caps``, or has no pad, or fails the query."""
+    """An element whose ``pad`` answers a caps query with ``caps``, or that has no such pad, or fails the query."""
 
-    def __init__(self, caps: str | None, *, pad: bool = True, raises: bool = False) -> None:
+    def __init__(self, caps: str | None, *, pad: str | None = "sink", raises: bool = False) -> None:
         self._caps, self._pad, self._raises = caps, pad, raises
 
     def get_static_pad(self, name: str) -> object:
-        if not self._pad:
+        if name != self._pad:
             return None
         sink = self
 
@@ -159,7 +159,7 @@ class _CapsSink:
         (_CapsSink(gl_display.SINK_CAPS), True),
         (_CapsSink("video/x-raw,format=I420"), False),
         (_CapsSink(None), False),
-        (_CapsSink(None, pad=False), False),
+        (_CapsSink(gl_display.SINK_CAPS, pad="src"), False),
         (_CapsSink(None, raises=True), False),
     ],
     ids=["gl-display", "memory-only", "no-caps", "no-pad", "query-fails"],
@@ -171,10 +171,10 @@ def test_only_a_sink_asking_for_dmabuf_takes_it(sink: _CapsSink, expected: bool)
 @pytest.mark.parametrize(
     ("head", "expected"),
     [
-        (_CapsSink("ANY"), True),
-        (_CapsSink(gl_display.SINK_CAPS), True),
-        (_CapsSink("video/x-raw, format=(string)I420; video/x-raw(ANY), format=(string)I420"), False),
-        (_CapsSink(None, pad=False), False),
+        (_CapsSink("ANY", pad="src"), True),
+        (_CapsSink(gl_display.SINK_CAPS, pad="src"), True),
+        (_CapsSink("video/x-raw, format=(string)I420; video/x-raw(ANY), format=(string)I420", pad="src"), False),
+        (_CapsSink("ANY", pad="sink"), False),
     ],
     ids=["passthrough", "dmabuf", "converter", "no-pad"],
 )

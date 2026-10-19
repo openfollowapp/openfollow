@@ -54,10 +54,10 @@ def gl_display_blocker(platform: str = sys.platform, *, pyopengl: bool | None = 
     return None
 
 
-def is_gles(version: str | bytes) -> bool:
-    """Whether a ``GL_VERSION`` string names OpenGL ES 3.0 or later."""
+def is_gles(version: str | bytes | None) -> bool:
+    """Whether a ``GL_VERSION`` string names OpenGL ES 3.0 or later; None when no context is current."""
     text = version.decode() if isinstance(version, bytes) else version
-    if not text.startswith("OpenGL ES "):
+    if text is None or not text.startswith("OpenGL ES "):
         return False
     major = text.removeprefix("OpenGL ES ").split(".")[0]
     return major.isdigit() and int(major) >= 3
@@ -84,7 +84,7 @@ def probe_gl_context(gdk_window: Any) -> str | None:  # pragma: no cover - needs
         version = GL.glGetString(GL.GL_VERSION)
         if not is_gles(version):
             return f"no OpenGL ES context ({version!r})"
-        for fragment in (_FS_YUV, _FS_NV12, _FS_HUD):
+        for fragment in (_FS_YUV, _FS_NV12, _FS_EXTERNAL, _FS_HUD):
             program = GL.glCreateProgram()
             for kind, source in ((GL.GL_VERTEX_SHADER, _VS), (GL.GL_FRAGMENT_SHADER, fragment)):
                 shader = GL.glCreateShader(kind)

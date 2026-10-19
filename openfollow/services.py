@@ -108,6 +108,9 @@ _MOUSE3D_WEB_DETECT_BUDGET_S = 0.35
 # every section one render asks for shares it.
 _NETWORK_READING_MAX_AGE_S = 1.0
 
+# What a canvas needs to show the GL display and to fall back to the Cairo HUD.
+_GL_CANVAS_HOOKS = ("attach_gl_display", "detach_gl_display", "attach_hud", "gdk_window")
+
 
 # ---------------------------------------------------------------------------
 # Web Command Queue
@@ -981,10 +984,9 @@ class AppRuntimeServices:
         storage_root = Path(resolve_detection_storage_path(cfg.detection.storage_path))
         seed_bundled_models(source, storage_root / "models")
 
-    @staticmethod
-    def _choose_gl_display(canvas: Any) -> Any:
+    def _choose_gl_display(self, canvas: Any) -> Any:
         """The GL Operator Screen where the platform supports it, else None for the Cairo one."""
-        if not hasattr(canvas, "attach_gl_display"):
+        if not all(hasattr(canvas, name) for name in _GL_CANVAS_HOOKS):
             return None
         from openfollow.video import gl_display
 
@@ -993,10 +995,15 @@ class AppRuntimeServices:
             logger.info("Operator Screen: Cairo (%s)", reason)
             return None
         logger.info("Operator Screen: GL display")
-        return gl_display.GlDisplay()
+        display = gl_display.GlDisplay()
+        # Before the area is embedded: embedding a widget in the shown window realizes it there and then.
+        display.on_unavailable = self._fall_back_to_cairo
+        return display
 
     def _fall_back_to_cairo(self, reason: str) -> None:
         """The GL display failed while running: hand the Operator Screen to Cairo without a restart."""
+        from openfollow.video.receiver import PipelineStuckError
+
         logger.warning("GL display unavailable (%s): the Operator Screen falls back to Cairo", reason)
         canvas, hud = self._app._canvas, self._hud_render
         if canvas is None or hud is None:
@@ -1005,8 +1012,14 @@ class AppRuntimeServices:
         hud.set_layered(False)
         canvas.attach_hud(hud.paint, tick=hud.tick)
         receiver = self._app._video_receiver
-        if receiver is not None:
+        if receiver is None:
+            return
+        try:
             receiver.drop_display()
+        except PipelineStuckError:
+            logger.error(
+                "GL display fallback: the video pipeline did not stop; its next rebuild uses the platform sink"
+            )
 
     def init_video(self) -> None:
         overlay = CairoOverlayRenderer()
@@ -1097,7 +1110,6 @@ class AppRuntimeServices:
             self._hud_render = HudRenderThread(overlay, layered=gl_display is not None)
             if gl_display is not None:
                 gl_display.set_hud(self._hud_render)
-                gl_display.on_unavailable = self._fall_back_to_cairo
                 canvas.attach_gl_display(gl_display, tick=self._hud_render.tick)
             else:
                 canvas.attach_hud(self._hud_render.paint, tick=self._hud_render.tick)

@@ -65,10 +65,11 @@ def test_pyopengl_is_looked_up_when_not_given(monkeypatch: pytest.MonkeyPatch, i
         ("OpenGL ES 2.0 Mesa", False),
         (b"4.1 Metal - 89.4", False),
         ("OpenGL ES x", False),
+        (None, False),
     ],
-    ids=["mesa-3.1", "es-3.0", "es-2.0", "desktop", "garbled"],
+    ids=["mesa-3.1", "es-3.0", "es-2.0", "desktop", "garbled", "no-context"],
 )
-def test_only_opengl_es_3_or_later_counts(version: str | bytes, expected: bool) -> None:
+def test_only_opengl_es_3_or_later_counts(version: str | bytes | None, expected: bool) -> None:
     assert gl_display.is_gles(version) is expected
 
 

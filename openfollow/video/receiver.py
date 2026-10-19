@@ -556,7 +556,9 @@ class GstNativeSinkReceiver:
     def drop_display(self) -> None:
         """Fall back from the GL display to the platform sink: rebuild the pipeline on it.
 
-        GTK main thread only, like ``swap_input``.
+        The platform sink's widget replaces the display's in the window even when
+        the old pipeline does not stop (``PipelineStuckError``); the next rebuild
+        then lands on the platform sink. GTK main thread only, like ``swap_input``.
         """
         if self._display is None:
             return
@@ -564,12 +566,19 @@ class GstNativeSinkReceiver:
         self._cancel_reconnect()
         self._cancel_heal()
         self._cancel_watchdog()
-        self._null_transition_current_pipeline(swap_label="drop_display")
-        self._reset_video_flow_state()
+        self._release_display_frames()
         self._display = None
         self._shared_sink = None
         # The flow probes sit on the old sink's pad; the new sink gets its own.
         self._sink_probes_added = False
+        try:
+            self._null_transition_current_pipeline(swap_label="drop_display")
+        finally:
+            # ``play`` embeds a widget only for a placeholder; a configured source keeps the display's.
+            widget = self.get_sink_widget()
+            if self._on_widget_changed is not None and widget is not None:
+                self._on_widget_changed(widget)
+        self._reset_video_flow_state()
         self.play()
 
     def swap_detection_branch(

@@ -21,6 +21,7 @@ assertions sharp:
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections.abc import Iterator
 from dataclasses import replace
@@ -620,6 +621,69 @@ class TestInitVideoCanvasWithoutAttachHud:
             assert display is None
             assert not [c for c in calls if c[0] == "attach_gl"]
             _assert_hud_drawn_on_its_thread(services)
+
+    def test_the_gl_display_can_fall_back_from_the_moment_its_area_is_embedded(
+        self,
+        services: AppRuntimeServices,
+        recv_factory: _RecordingReceiverFactory,
+        patched_subsystems: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        canvas = services._app._canvas
+        self._gl_world(monkeypatch, canvas, blocker=None, probe=None)
+        # Embedding the GL area in the shown window realizes it, and a failed realize reports at once.
+        told: list[Any] = []
+        canvas.embed_widget = lambda widget: told.append(recv_factory.last.display.on_unavailable)
+        services.init_video()
+
+        assert told == [services._fall_back_to_cairo]
+
+    @pytest.mark.parametrize("missing", ["gdk_window", "detach_gl_display", "attach_hud"])
+    def test_a_canvas_that_cannot_fall_back_stays_on_cairo(
+        self,
+        services: AppRuntimeServices,
+        recv_factory: _RecordingReceiverFactory,
+        patched_subsystems: None,
+        monkeypatch: pytest.MonkeyPatch,
+        missing: str,
+    ) -> None:
+        canvas = services._app._canvas
+        calls = self._gl_world(monkeypatch, canvas, blocker=None, probe=None)
+        if missing == "attach_hud":
+            monkeypatch.delattr(type(canvas), missing)
+        else:
+            delattr(canvas, missing)
+        services.init_video()
+
+        assert recv_factory.last.display is None
+        assert calls == []
+
+    def test_a_pipeline_that_does_not_stop_still_leaves_the_operator_screen_on_cairo(
+        self,
+        services: AppRuntimeServices,
+        recv_factory: _RecordingReceiverFactory,
+        patched_subsystems: None,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        from openfollow.video.receiver import PipelineStuckError
+
+        canvas = services._app._canvas
+        calls = self._gl_world(monkeypatch, canvas, blocker=None, probe=None)
+        services.init_video()
+        receiver = recv_factory.last
+        services._app._video_receiver = receiver
+
+        def stuck() -> None:
+            raise PipelineStuckError("prior pipeline wedged")
+
+        receiver.drop_display = stuck
+        with caplog.at_level(logging.ERROR, logger="openfollow.services"):
+            receiver.display.on_unavailable("120 renders in a row failed")
+
+        assert calls[-1] == ("detach_gl",)
+        assert "did not stop" in caplog.text
+        _assert_hud_drawn_on_its_thread(services)
 
     def test_a_fallback_before_the_operator_screen_exists_does_nothing(self, services: AppRuntimeServices) -> None:
         assert services._hud_render is None

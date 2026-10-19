@@ -2,8 +2,12 @@
 
 Branch `spike/gl-operator-screen`, on top of every phase 2 PR. Not merged: it
 answers whether to build it, against the go criteria in the issue (#440).
-Switched on per run with `OPENFOLLOW_GL_DISPLAY=1`; without it the app is
-unchanged.
+It runs where the platform supports it: Linux, PyOpenGL installed, and an
+OpenGL ES 3.0 context on the window that compiles the display's shaders.
+Everywhere else the Operator Screen stays on Cairo, and a GL display that fails
+while running (its area does not realize, or renders keep failing) hands over
+to Cairo without a restart. `OPENFOLLOW_GL_DISPLAY=0` or
+`~/.openfollow-cairo-display` keeps Cairo for an A/B.
 
 Each step is built, reviewed and fixed (at least three rounds), measured on the
 Pi 5 test station in the full scene (1080p30 H.264 over RTSP, grid, ground

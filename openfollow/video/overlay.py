@@ -319,7 +319,6 @@ class CairoOverlayRenderer:
                 self._cone_cache.retain(state.markers)
                 if state.detections and state.detection_show_boxes:
                     self._draw_detections(cr, state, width, height)
-                    cut(cr)
                 self._draw_hud(cr, state, width, height)
             finally:
                 # Balance the save even if a draw raised, so the "Overlay
@@ -528,5 +527,6 @@ class CairoOverlayRenderer:
 
     def _draw_hud(self, cr: Any, state: OverlayState, w: int, h: int) -> None:
         draw_hud_pass(self, cr, state, w, h)
+        cut(cr)
         # Operator-message cards on the normal-HUD layer.
         draw_operator_messages_pass(self, cr, state, w, h)

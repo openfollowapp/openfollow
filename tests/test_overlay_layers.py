@@ -12,7 +12,18 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
-from openfollow.runtime.overlay_layers import LayerContext, Layers, Sprite, cairo_context, cut, keep, mark_top
+from openfollow.runtime.overlay_layers import (
+    LayerContext,
+    Layers,
+    Sprite,
+    cairo_context,
+    cut,
+    keep,
+    keep_fill,
+    mark_top,
+)
+from openfollow.runtime.overlay_state import OperatorMessageView, OverlayState
+from openfollow.video.detection import DetectionBox
 from openfollow.video.overlay import CairoOverlayRenderer
 from tests._hud_scenes import SCENES, frames
 
@@ -190,7 +201,7 @@ def test_a_layered_picture_composites_to_the_canvas_sized_one(scene: str) -> Non
         assert len(layers.sprites) > 1
 
 
-def _grid(layers: Layers) -> Sprite:
+def _canvas_sized(layers: Layers) -> Sprite:
     return next(s for s in layers.sprites if s.kept and s.picture.get_width() == layers.width)
 
 
@@ -199,7 +210,7 @@ def test_a_new_grid_on_a_layered_canvas_is_a_new_picture_leaving_the_shown_one_a
     w, h, state = frames("full", count=1)[0]
     first = LayerContext(w, h, SCALE, cairo.FontOptions())
     renderer.draw(first, w, h, state)
-    shown = _grid(first.finish()).picture
+    shown = _canvas_sized(first.finish()).picture
     before = _pixels(shown).copy()
     assert state.grid_config is not None
     moved = dataclasses.replace(state, grid_config=(13.0, *state.grid_config[1:]))
@@ -207,7 +218,7 @@ def test_a_new_grid_on_a_layered_canvas_is_a_new_picture_leaving_the_shown_one_a
     again = LayerContext(w, h, SCALE, cairo.FontOptions())
     renderer.draw(again, w, h, moved)
 
-    assert _grid(again.finish()).picture is not shown
+    assert _canvas_sized(again.finish()).picture is not shown
     assert np.array_equal(_pixels(shown), before)
 
 
@@ -246,3 +257,61 @@ def test_the_about_screen_keeps_its_logo_on_a_layered_canvas() -> None:
 
     diff = np.abs(_pixels(_composite(layered.finish())).astype(int) - _pixels(whole).astype(int))
     assert (diff > 8).sum() < 50
+
+
+def _drawn_like_the_whole_canvas(w: int, h: int, state: OverlayState) -> Layers:
+    """The layered picture of ``state``, after checking it composites to the canvas-sized one."""
+    whole = cairo.ImageSurface(cairo.FORMAT_ARGB32, w, h)
+    CairoOverlayRenderer().draw(cairo.Context(whole), w, h, state)
+    layered = LayerContext(w, h, SCALE, whole.get_font_options())
+    CairoOverlayRenderer().draw(layered, w, h, state)
+    layers = layered.finish()
+    diff = np.abs(_pixels(_composite(layers)).astype(int) - _pixels(whole).astype(int))
+    assert (diff > 8).sum() < 50
+    return layers
+
+
+def _largest_drawn(layers: Layers) -> int:
+    return max(s.picture.get_width() * s.picture.get_height() for s in layers.sprites if not s.kept)
+
+
+def test_each_detection_box_is_its_own_sprite() -> None:
+    w, h, state = frames("light", count=1)[0]
+    boxes = [DetectionBox(0.1, 0.3, 0.15, 0.4, 0.9), DetectionBox(0.8, 0.6, 0.85, 0.7, 0.8)]
+    shown = dataclasses.replace(
+        state, detections=boxes, detection_show_boxes=True, detection_show_labels=True, detection_box_thickness=6
+    )
+
+    assert _largest_drawn(_drawn_like_the_whole_canvas(w, h, shown)) < 40_000
+
+
+def test_the_status_badge_and_an_operator_message_are_separate_sprites() -> None:
+    w, h, state = frames("light", count=1)[0]
+    message = OperatorMessageView("Go stage left", "", 1, "Marker 1", "#22CC55", True, 1.0)
+    shown = dataclasses.replace(
+        state, status_flags=[("video", "Video stalled", "warning")], operator_messages=[message]
+    )
+
+    assert _largest_drawn(_drawn_like_the_whole_canvas(w, h, shown)) < 60_000
+
+
+def test_a_menu_scrim_is_one_kept_picture_for_as_long_as_the_menu_is_open() -> None:
+    renderer = CairoOverlayRenderer()
+    scrims = []
+    for w, h, state in frames("menu", count=2):
+        layered = LayerContext(w, h, SCALE, cairo.FontOptions())
+        renderer.draw(layered, w, h, state)
+        layers = layered.finish()
+        scrims.append(_canvas_sized(layers).picture)
+        assert _largest_drawn(layers) < w * h // 2
+
+    assert scrims[0] is scrims[1]
+
+
+def test_a_fill_below_the_top_level_or_off_a_layered_canvas_is_left_to_the_caller() -> None:
+    cr = _layers()
+    cr.save()
+    plain = cairo.Context(cairo.ImageSurface(cairo.FORMAT_ARGB32, 1, 1))
+
+    assert keep_fill(cr, (0.0, 0.0, 0.0, 0.5)) is False
+    assert keep_fill(plain, (0.0, 0.0, 0.0, 0.5)) is False

@@ -9,6 +9,7 @@ list on screen in order, uploading a kept picture only when it is a new one.
 
 from __future__ import annotations
 
+import functools
 import math
 from dataclasses import dataclass
 from typing import Any
@@ -117,6 +118,10 @@ class LayerContext:
         self._sprites.append(Sprite(picture, x, y, kept=True))
         return True
 
+    def keep_fill(self, rgba: tuple[float, float, float, float]) -> bool:
+        """Put the whole canvas in one colour in the list as a kept picture; False below the top level."""
+        return self._at_top() and self.keep(_filled(*self._size, self._scale, rgba), 0, 0)
+
     def finish(self) -> Layers:
         self._flush()
         return Layers(*self._size, self._scale, tuple(self._sprites))
@@ -146,9 +151,27 @@ class LayerContext:
         self._sprites.append(Sprite(picture, x0, y0, kept=False))
 
 
+# One: a canvas-sized picture is megabytes, and a screen shows one fill at a time.
+@functools.lru_cache(maxsize=1)
+def _filled(
+    width: int, height: int, scale: tuple[float, float], rgba: tuple[float, float, float, float]
+) -> cairo.ImageSurface:
+    picture = cairo.ImageSurface(cairo.FORMAT_ARGB32, math.ceil(width * scale[0]), math.ceil(height * scale[1]))
+    picture.set_device_scale(*scale)
+    ctx = cairo.Context(picture)
+    ctx.set_source_rgba(*rgba)
+    ctx.paint()
+    return picture
+
+
 def keep(cr: Any, picture: cairo.ImageSurface, x: int, y: int) -> bool:
     """On a layered canvas, put a kept picture in the list; False where the caller pastes it."""
     return isinstance(cr, LayerContext) and cr.keep(picture, x, y)
+
+
+def keep_fill(cr: Any, rgba: tuple[float, float, float, float]) -> bool:
+    """On a layered canvas, put the whole canvas in one colour in the list; False where the caller fills it."""
+    return isinstance(cr, LayerContext) and cr.keep_fill(rgba)
 
 
 def mark_top(cr: Any) -> None:

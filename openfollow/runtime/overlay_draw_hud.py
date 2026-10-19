@@ -43,7 +43,7 @@ from openfollow.runtime.overlay_draw_style import (
     speed_color,
     status_level,
 )
-from openfollow.runtime.overlay_layers import cut
+from openfollow.runtime.overlay_layers import cut, keep_fill
 from openfollow.runtime.overlay_layout import (
     INFO_PANEL_ROW_H,
     HelpSections,
@@ -165,6 +165,8 @@ def draw_help_block(
 
 
 def draw_modal_scrim(cr: Any, w: int, h: int, alpha: float = 0.62) -> None:
+    if keep_fill(cr, (0.0, 0.0, 0.0, alpha)):
+        return
     cr.set_source_rgba(0.0, 0.0, 0.0, alpha)
     cr.rectangle(0, 0, w, h)
     cr.fill()

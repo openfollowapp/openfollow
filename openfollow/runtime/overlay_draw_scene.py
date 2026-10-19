@@ -14,7 +14,7 @@ import numpy as np
 import numpy.typing as npt
 
 from openfollow.runtime.overlay_draw_style import parse_hex
-from openfollow.runtime.overlay_layers import LayerContext, keep
+from openfollow.runtime.overlay_layers import LayerContext, cut, keep
 from openfollow.runtime.overlay_state import MarkerOverlayData, OverlayState
 from openfollow.scene.ground_grid import grid_segments_in_polygon, main_grid_steps, outline_segments
 from openfollow.scene.solver import (
@@ -357,9 +357,8 @@ def draw_origin(cr: Any, state: OverlayState, w: int, h: int) -> None:
 def draw_detections(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
     default_rgb = parse_hex(state.detection_box_color)
     attached_colors = state.detection_attached_colors
-    cr.set_line_width(state.detection_box_thickness)
-
     for det in state.detections:
+        cr.set_line_width(state.detection_box_thickness)
         x1 = det.x1 * w
         y1 = det.y1 * h
         x2 = det.x2 * w
@@ -387,6 +386,7 @@ def draw_detections(renderer: Any, cr: Any, state: OverlayState, w: int, h: int)
             cr.set_source_rgba(0, 0, 0, 1.0)
             cr.move_to(x1 + 4, y1 - 3)
             cr.show_text(label)
+        cut(cr)
 
 
 # Alpha for the assist-mode ghost – dim so the AI-corrected PSN output reads as

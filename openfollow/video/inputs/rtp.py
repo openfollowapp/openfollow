@@ -255,24 +255,25 @@ class RtpInput(VideoInputBase):
             raise RuntimeError("No video sink available for RTP pipeline")
 
         # Build element chain (skip jitterbuf if unavailable)
-        elements = [udpsrc, pre_queue]
+        elements = [udpsrc]
         if jitterbuf is not None:
             elements.append(jitterbuf)
-        elements.extend([decodebin, post_queue, convert, sink])
+        elements.extend([pre_queue, decodebin, post_queue, convert, sink])
 
         for elem in elements:
             pipeline.add(elem)
 
-        # Static links: udpsrc → queue → [jitterbuf →] decodebin
-        if not udpsrc.link(pre_queue):
-            raise RuntimeError("Failed to link udpsrc → pre_queue")
-        pre_decode = pre_queue
+        # Static links: udpsrc → [jitterbuf →] queue → decodebin. The bounded queue sits after the
+        # jitterbuffer, so a decoder stall fills the queue, never the jitterbuffer (unbounded at latency 0).
+        head = udpsrc
         if jitterbuf is not None:
-            if not pre_queue.link(jitterbuf):
-                raise RuntimeError("Failed to link pre_queue → rtpjitterbuffer")
-            pre_decode = jitterbuf
-        if not pre_decode.link(decodebin):
-            raise RuntimeError("Failed to link → decodebin")
+            if not udpsrc.link(jitterbuf):
+                raise RuntimeError("Failed to link udpsrc → rtpjitterbuffer")
+            head = jitterbuf
+        if not head.link(pre_queue):
+            raise RuntimeError(f"Failed to link {head.get_name()} → pre_queue")
+        if not pre_queue.link(decodebin):
+            raise RuntimeError("Failed to link pre_queue → decodebin")
         if not post_queue.link(convert):
             raise RuntimeError("Failed to link post_queue → videoconvert")
 

@@ -162,8 +162,16 @@ class TestCreatePipelineJitterbuffer:
         pipeline = _build(fake=fake)
         # If jitterbuf is missing the element is never added
         assert pipeline.get_by_name("jitterbuf") is None
-        # udpsrc → pre_queue still present
-        assert pipeline.get_by_name("pre_queue") is not None
+        # udpsrc feeds the queue before the decoder directly
+        udpsrc, pre_queue = pipeline.get_by_name("udpsrc"), pipeline.get_by_name("pre_queue")
+        assert udpsrc is not None and udpsrc.links == [pre_queue]
+
+    def test_the_bounded_queue_sits_after_the_jitterbuffer(self) -> None:
+        pipeline = _build()
+        udpsrc, jitter = pipeline.get_by_name("udpsrc"), pipeline.get_by_name("jitterbuf")
+        pre_queue, decodebin = pipeline.get_by_name("pre_queue"), pipeline.get_by_name("decodebin")
+        assert udpsrc is not None and jitter is not None and pre_queue is not None
+        assert (udpsrc.links, jitter.links, pre_queue.links) == ([jitter], [pre_queue], [decodebin])
 
 
 class TestCreatePipelineFailures:
@@ -403,9 +411,12 @@ class TestRtpCreatePipelineLinkFailures:
         with pytest.raises(RuntimeError, match="udpsrc"):
             self._build_with({"udpsrc"})
 
-    def test_pre_queue_to_jitterbuf_link_failure_raises(self) -> None:
-        # Failing all queue kinds breaks pre_queue → jitterbuf first.
-        with pytest.raises(RuntimeError, match="rtpjitterbuffer"):
+    def test_jitterbuf_to_pre_queue_link_failure_raises(self) -> None:
+        with pytest.raises(RuntimeError, match="jitterbuf → pre_queue"):
+            self._build_with({"rtpjitterbuffer"})
+
+    def test_pre_queue_to_decodebin_link_failure_raises(self) -> None:
+        with pytest.raises(RuntimeError, match="pre_queue → decodebin"):
             self._build_with({"queue"})
 
     def test_pre_decode_to_decodebin_link_failure_raises(self) -> None:

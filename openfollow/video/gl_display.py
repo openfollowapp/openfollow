@@ -30,7 +30,7 @@ ENV_SWITCH = "OPENFOLLOW_GL_DISPLAY"
 # Spike switch on a station, where the service's environment lives under /etc.
 FLAG_FILE = os.path.join(os.path.expanduser("~"), ".openfollow-gl-display")
 # How video frames meet the refresh, for an A/B: "locked" holds them to an even cadence covering the
-# arrival spread, "capped" does so holding a frame at most a refresh; anything else shows each as it arrives.
+# arrival spread, "capped" covers it up to a refresh past the median arrival; anything else shows each as it arrives.
 CADENCE_FLAG = os.path.join(os.path.expanduser("~"), ".openfollow-gl-cadence")
 DEFAULT_REFRESH_US = 16_667
 REPORT_EVERY_US = 10_000_000

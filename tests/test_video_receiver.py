@@ -1846,6 +1846,17 @@ class TestGlDisplay:
         r.create_pipeline()
         assert sinks[-1] is not display.sink and sinks[-1].get_property("widget") == "gtksink widget"
 
+    def test_a_retry_pending_when_the_display_drops_does_not_build_a_second_pipeline(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        r, _display, _sinks, _embedded, _released = self._receiver_on_a_display(fake_gst, monkeypatch)
+        r._schedule_reconnect("lost link")
+        pending = set(fake_glib.timers)
+        assert pending
+        r.drop_display()
+
+        assert not pending & set(fake_glib.timers)
+
     def test_dropping_the_display_with_no_platform_sink_embeds_nothing(
         self, fake_gst, fake_glib, fake_input_cls, monkeypatch
     ) -> None:

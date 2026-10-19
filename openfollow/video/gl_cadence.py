@@ -65,7 +65,8 @@ class Cadence(Generic[T]):
         self._last_pts: int | None = None
         self._interval = 0
         self._early_run = 0
-        self._on_screen = 0
+        self._last_refresh: int | None = None
+        self._shown_at: int | None = None
         self._refreshes: Counter[int] = Counter()
         self._skipped = 0
         self._late = 0
@@ -75,6 +76,9 @@ class Cadence(Generic[T]):
         with self._lock:
             if pts_us is not None:
                 if self._last_pts is not None and abs(pts_us - self._last_pts) > MAX_PTS_STEP_US:
+                    # The queued frames belong to the old timeline.
+                    self._skipped += len(self._queue)
+                    self._queue.clear()
                     self._offset = None
                 self._last_pts = pts_us
             self._queue.append((frame, pts_us, arrival_us))
@@ -101,17 +105,21 @@ class Cadence(Generic[T]):
             self._early_run = 0
 
     def pick(self, refresh_us: int, interval_us: int) -> T | None:
-        """The frame to show at the refresh at ``refresh_us``; None keeps the frame on screen."""
+        """The frame to show at the refresh at ``refresh_us``; None keeps the frame on screen.
+
+        Time on screen counts the refreshes elapsed, a missed one included; a repeated refresh picks nothing.
+        """
         with self._lock:
+            if refresh_us == self._last_refresh:
+                return None
+            self._last_refresh = refresh_us
             self._interval = interval_us
             frame = self._pick(refresh_us, interval_us)
             if frame is None:
-                if self._on_screen:
-                    self._on_screen += 1
                 return None
-            if self._on_screen:
-                self._refreshes[self._on_screen] += 1
-            self._on_screen = 1
+            if self._shown_at is not None:
+                self._refreshes[max(1, round((refresh_us - self._shown_at) / interval_us))] += 1
+            self._shown_at = refresh_us
             return frame
 
     def _pick(self, refresh_us: int, interval_us: int) -> T | None:

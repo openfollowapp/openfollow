@@ -17,18 +17,32 @@ ON_A_REFRESH = 3 * REFRESH
 
 
 def _play(
-    cadence: Cadence[int], frames: list[tuple[int | None, int]], refreshes: int, start: int = 0
+    cadence: Cadence[int],
+    frames: list[tuple[int | None, int]],
+    refreshes: int,
+    start: int = 0,
+    missed: frozenset[int] = frozenset(),
+    refresh_jitter: int = 0,
 ) -> list[int | None]:
-    """Push each (pts, arrival) frame once its arrival passed, pick once per refresh; what each refresh picked."""
+    """Push each (pts, arrival) frame once its arrival passed, pick once per refresh; what each refresh picked.
+
+    ``missed`` refreshes pick nothing, as when the display skips one.
+    """
+    rng = random.Random(3)
     picked: list[int | None] = []
     pending = sorted(enumerate(frames), key=lambda f: f[1][1])
     for k in range(refreshes):
-        now = start + k * REFRESH
+        now = start + k * REFRESH + rng.randint(-refresh_jitter, refresh_jitter)
         while pending and pending[0][1][1] <= now:
             index, (pts, arrival) = pending.pop(0)
             cadence.push(index, pts, arrival)
-        picked.append(cadence.pick(now, REFRESH))
+        picked.append(None if k in missed else cadence.pick(now, REFRESH))
     return picked
+
+
+def _delays(picked: list[int | None], frames: list[tuple[int | None, int]]) -> dict[int, int]:
+    """Each shown frame's refresh time minus its timestamp."""
+    return {f: k * REFRESH - (frames[f][0] or 0) for k, f in enumerate(picked) if f is not None}
 
 
 def _stream(count: int, latency: int, jitter: int = 0, seed: int = 1) -> list[tuple[int | None, int]]:
@@ -75,8 +89,8 @@ def test_a_frame_shows_at_the_refresh_at_its_due_time() -> None:
 def test_waits_report_their_median_and_99th_percentile() -> None:
     cadence: Cadence[int] = Cadence(locked=False)
     for k in range(100):
-        cadence.push(k, None, 1_000_000 - k * 100)
-        cadence.pick(1_000_000, REFRESH)
+        cadence.push(k, None, k * REFRESH - k * 100)
+        cadence.pick(k * REFRESH, REFRESH)
 
     report = cadence.report()
     assert (report.wait_ms_p50, report.wait_ms_p99) == (5.0, 9.9)
@@ -92,6 +106,38 @@ def test_a_latency_step_costs_one_late_frame_then_the_cadence_holds() -> None:
     assert [f for f in picked if f is not None] == list(range(300))
     assert report.late <= 2
     assert report.refreshes[2] >= 296
+
+
+def test_a_latency_jump_of_several_refreshes_costs_one_late_frame() -> None:
+    frames = _stream(100, latency=10_000) + _stream(200, latency=60_000)[100:]
+    cadence: Cadence[int] = Cadence()
+    picked = _play(cadence, frames, refreshes=610)
+
+    report = cadence.report()
+    assert [f for f in picked if f is not None] == list(range(200))
+    assert report.late == 1
+
+
+def test_the_settle_move_keeps_due_times_between_refreshes() -> None:
+    count = SETTLE_FRAMES + 100
+    frames = _stream(20, latency=30_000) + [(i * FRAME, i * FRAME + 10_000) for i in range(20, count)]
+    cadence: Cadence[int] = Cadence()
+    _play(cadence, frames, refreshes=2 * count + 10, refresh_jitter=3_000)
+
+    assert cadence.report().refreshes == {2: count - 2, 1: 1}
+
+
+def test_a_late_frame_starts_the_settle_run_over() -> None:
+    # The first frame anchors the cadence; the rest arrive a refresh early, but one.
+    spike = SETTLE_FRAMES - 1
+    latency = {0: 40_000, spike: 60_000}
+    frames = [(i * FRAME, i * FRAME + latency.get(i, 30_000)) for i in range(SETTLE_FRAMES + 150)]
+    cadence: Cadence[int] = Cadence()
+    delays = _delays(_play(cadence, frames, refreshes=2 * len(frames) + 10), frames)
+
+    assert cadence.report().late == 1
+    assert delays[spike + 100] == pytest.approx(delays[spike + 1], abs=1_000)
+    assert delays[spike + 1] == pytest.approx(delays[spike - 1] + REFRESH, abs=1_000)
 
 
 def test_a_latency_drop_lowers_the_wait_after_the_settle_run() -> None:
@@ -133,6 +179,48 @@ def test_a_timestamp_jump_re_anchors_instead_of_waiting_for_it() -> None:
 
     assert cadence.pick(restart + REFRESH, REFRESH) is None
     assert cadence.pick(restart + 2 * REFRESH, REFRESH) == 99
+
+
+def test_a_timestamp_step_drops_the_frames_queued_before_it() -> None:
+    cadence: Cadence[int] = Cadence()
+    cadence.push(0, 0, 0)
+    cadence.pick(0, REFRESH)
+    cadence.pick(REFRESH, REFRESH)
+    cadence.push(1, FRAME, FRAME)
+    cadence.pick(2 * REFRESH, REFRESH)
+    cadence.push(99, FRAME - 5 * MAX_PTS_STEP_US, FRAME + 100)
+
+    assert [cadence.pick(k * REFRESH, REFRESH) for k in (3, 4)] == [None, 99]
+    assert cadence.report().skipped == 1
+
+
+def test_the_queue_holds_at_most_max_queued_frames() -> None:
+    cadence: Cadence[int] = Cadence()
+    for i in range(MAX_QUEUED + 3):
+        cadence.push(i, i * FRAME, i * FRAME)
+
+    assert cadence.report().skipped == 3
+
+
+def test_a_missed_refresh_counts_toward_the_time_on_screen() -> None:
+    cadence: Cadence[int] = Cadence()
+    _play(cadence, _stream(20, latency=5_000), refreshes=42, missed=frozenset({22}))
+
+    assert cadence.report().refreshes == {2: 17, 3: 1, 1: 1}
+
+
+def test_a_second_render_at_one_refresh_shows_nothing_new_and_counts_nothing() -> None:
+    cadence: Cadence[int] = Cadence(locked=False)
+    cadence.push(1, None, 0)
+    shown = [cadence.pick(0, REFRESH)]
+    cadence.push(2, None, 5)
+    shown.append(cadence.pick(0, REFRESH))
+    shown.append(cadence.pick(REFRESH, REFRESH))
+    cadence.push(3, None, REFRESH + 5)
+    shown.append(cadence.pick(2 * REFRESH, REFRESH))
+
+    assert shown == [1, None, 2, 3]
+    assert cadence.report().refreshes == {1: 2}
 
 
 def test_a_stalled_refresh_drops_the_oldest_and_re_anchors_on_the_newest() -> None:

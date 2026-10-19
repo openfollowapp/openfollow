@@ -154,8 +154,9 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
 
     def queue_render(self, frame_clock: Any) -> None:
         """Render at the refresh ``frame_clock`` is drawing."""
-        interval, _presentation = frame_clock.get_refresh_info(frame_clock.get_frame_time())
-        self._refresh = (frame_clock.get_frame_time(), interval or DEFAULT_REFRESH_US)
+        now = frame_clock.get_frame_time()
+        interval, _presentation = frame_clock.get_refresh_info(now)
+        self._refresh = (now, interval or DEFAULT_REFRESH_US)
         self.widget.queue_render()
 
     def _on_new_sample(self, sink: Any) -> Any:
@@ -165,8 +166,11 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
         Gst = self._Gst
         sample = sink.try_pull_sample(0)
         if sample is not None:
+            # Running time, not pts: a looping clip's pts restart each pass, its running time runs on.
             pts = sample.get_buffer().pts
-            self._cadence.push(sample, None if pts == Gst.CLOCK_TIME_NONE else pts // 1000, GLib.get_monotonic_time())
+            none = Gst.CLOCK_TIME_NONE
+            ts = none if pts == none else sample.get_segment().to_running_time(Gst.Format.TIME, pts)
+            self._cadence.push(sample, None if ts == none else ts // 1000, GLib.get_monotonic_time())
         return Gst.FlowReturn.OK
 
     # -- GL ---------------------------------------------------------------
@@ -332,8 +336,10 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
         if self._report_at:
             r = self._cadence.report()
             logger.info(
-                "GL video cadence: %d shown, refreshes %s, %d skipped, %d late, wait p50 %.1f ms p99 %.1f ms",
+                "GL video cadence: %d shown, %.1f %% for two refreshes, refreshes %s, %d skipped, %d late,"
+                " wait p50 %.1f ms p99 %.1f ms",
                 r.shown,
+                100.0 * r.share(2),
                 dict(sorted(r.refreshes.items())),
                 r.skipped,
                 r.late,

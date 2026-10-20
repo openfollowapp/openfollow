@@ -203,6 +203,7 @@ class TestDefaultRuntimeStatsSnapshot:
             "mapped_count": 0,
             "items": [],
             "pin_capture": {"slot": None, "seconds_left": 0.0, "result": None},
+            "marker_choices": [],
         }
         assert snap["video"]["source_format"] == ""
         # Nothing scanned yet, so the 3D Mouse section claims neither a fault nor "none connected".
@@ -569,6 +570,21 @@ class TestPublishRuntimeStats:
         c = services.get_runtime_stats_snapshot()["controllers"]
         assert c["items"][0]["pinned"] is True
         assert c["pin_capture"] == {"slot": 0, "seconds_left": 6.5, "result": None}
+
+    def test_controller_slots_offer_the_controlled_markers_to_pick(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        item = {"name": "Pad", "connected": True, "marker_id": None, "effective_speed": 0.0, "backend": "joystick"}
+        self._prime(services, input_manager=_FakeInputManager([{**item, "controller_index": 0, "all_markers": True}]))
+        services._app._controlled_ids = [4, 2]
+        import openfollow.video.detection as det
+
+        monkeypatch.setattr(det, "check_detection_dependencies", lambda cfg: [])
+
+        services.publish_runtime_stats(force=True)
+        c = services.get_runtime_stats_snapshot()["controllers"]
+        assert c["marker_choices"] == [4, 2]
+        assert c["items"][0]["all_markers"] is True
 
     def test_controller_items_publish_what_each_controller_cannot_do(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch

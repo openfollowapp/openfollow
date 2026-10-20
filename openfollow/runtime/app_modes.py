@@ -1945,6 +1945,11 @@ def save_slot_pins(app: OpenFollowApp) -> bool:
     return _persist_config(app, "controller.slot_pins")
 
 
+def save_slot_markers(app: OpenFollowApp) -> bool:
+    """Write the running config's marker picks to config.toml."""
+    return _persist_config(app, "controller.slot_markers")
+
+
 def _end_slot_pin_capture(app: OpenFollowApp, pinned: bool) -> None:
     if app._slot_pin_prompt is not None:
         app._runtime_services._operator_message_store.remove(app._slot_pin_prompt)

@@ -461,6 +461,7 @@ def test_single_gamepad_controller_info_reports_selected_marker(monkeypatch) -> 
             "port_key": None,
             "port_label": "no stable port",
             "pinned": False,
+            "all_markers": True,
             "slot_ref": "gamepad||Solo|connected|",
             "seconds_since_input": None,
             "notes": [],

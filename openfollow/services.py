@@ -231,6 +231,7 @@ class WebCommandQueue:
         # loop, which owns the slots.
         self._slot_actions_lock = threading.Lock()
         self._slot_actions: list[tuple[str, int, str]] = []
+        self._slot_marker_picks: list[tuple[int, str, int]] = []
         # The web camera setup changes a Pi camera live: the main loop stops the
         # Pi Camera pipeline before an overlay is unloaded, and rebuilds it after.
         self._camera_release_requested = threading.Event()
@@ -341,7 +342,7 @@ class WebCommandQueue:
         self._button_detection_requested.set()
 
     def request_slot_action(self, action: str, index: int, ref: str) -> None:
-        """Queue ``identify`` or ``forget`` for the slot at ``index`` that showed ``ref``."""
+        """Queue a Controller Slots action for the slot at ``index`` that showed ``ref``."""
         with self._slot_actions_lock:
             self._slot_actions.append((action, index, ref))
 
@@ -350,6 +351,17 @@ class WebCommandQueue:
         with self._slot_actions_lock:
             actions, self._slot_actions = self._slot_actions, []
         return actions
+
+    def request_slot_marker(self, index: int, ref: str, marker_id: int) -> None:
+        """Queue a marker picked for the slot at ``index`` that showed ``ref``."""
+        with self._slot_actions_lock:
+            self._slot_marker_picks.append((index, ref, marker_id))
+
+    def consume_slot_marker_picks(self) -> list[tuple[int, str, int]]:
+        """Take every queued marker pick, oldest first."""
+        with self._slot_actions_lock:
+            picks, self._slot_marker_picks = self._slot_marker_picks, []
+        return picks
 
     def release_camera(self, timeout: float) -> bool:
         """Web thread: have the main loop stop the Pi Camera pipeline; ``True`` once it has.
@@ -3897,6 +3909,7 @@ class AppRuntimeServices:
                 "mapped_count": 0,
                 "items": [],
                 "pin_capture": dict(_IDLE_PIN_CAPTURE),
+                "marker_choices": [],
             },
             "mouse3d": idle_mouse3d_status(cfg.mouse3d.enabled).to_dict(),
             "playback": self._frame_metrics.snapshot(),
@@ -4077,6 +4090,7 @@ class AppRuntimeServices:
                         "port_label": str(item.get("port_label", "")),
                         "port_key": item.get("port_key"),
                         "pinned": bool(item.get("pinned", False)),
+                        "all_markers": bool(item.get("all_markers", False)),
                         "slot_ref": str(item.get("slot_ref", "")),
                         "seconds_since_input": None if since is None else float(since),
                         "notes": [str(note) for note in item.get("notes") or ()],
@@ -4133,6 +4147,8 @@ class AppRuntimeServices:
                 ),
                 "items": controller_items,
                 "pin_capture": pin_capture,
+                # What a slot's marker picker offers: this station's controlled markers.
+                "marker_choices": [int(mid) for mid in getattr(app, "_controlled_ids", ())],
             },
             "mouse3d": mouse3d_status.to_dict(),
             "playback": playback_snapshot,

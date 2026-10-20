@@ -11,18 +11,28 @@ from collections.abc import Sequence
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
-from openfollow.configuration import SlotPinConfig, _apply_with_fallback, feature_gated, feature_on, save_config_fields
+from openfollow.configuration import (
+    SlotMarkerConfig,
+    SlotPinConfig,
+    _apply_with_fallback,
+    feature_gated,
+    feature_on,
+    save_config_fields,
+)
 from openfollow.input.control_frame import ControlFrame
 from openfollow.input.controller_identity import port_label, usb_host_paths
 from openfollow.input.controller_slots import (
     CONNECTED,
     EMPTY,
+    MISSING,
     NOTE_CANNOT_IDENTIFY,
     RESERVED,
     ControllerSlotTable,
     LiveController,
     SlotEntry,
     SlotPin,
+    pick_marker,
+    slot_markers,
     slot_ref,
 )
 from openfollow.input.events import InputEventBus
@@ -322,8 +332,9 @@ class InputManager:
 
         Exactly one slot (a lone controller; empty slots below a pin don't count) and a marker selected: route to
         ``app._selected_id`` so next/prev cycling switches what the operator
-        moves. Otherwise the fixed slot ``app._controlled_ids[unified_idx]``, so
-        per-operator assignments stay stable while a controller is missing too.
+        moves. Otherwise the slot's own marker: the one picked for it, else its
+        place among the controlled markers no slot picked, so per-operator
+        assignments stay stable while a controller is missing too.
         ``None`` for a reserved or empty slot, an index out of range, or no marker.
 
         Pass ``slots`` to reuse a single per-frame snapshot.
@@ -336,10 +347,38 @@ class InputManager:
             return None
         if _occupied(slots) == 1 and self.app._selected_id is not None:
             return self.app._selected_id
-        controlled = self.app._controlled_ids
-        if unified_idx < len(controlled):
-            return controlled[unified_idx]
-        return None
+        return slot_markers(len(slots), self.app._controlled_ids, self._marker_picks())[unified_idx]
+
+    def _marker_picks(self) -> dict[int, int]:
+        """The configuration's 1-based marker picks as 0-based slot -> marker."""
+        return {pick.slot - 1: pick.marker for pick in self.app._config.controller.slot_markers}
+
+    def pick_slot_marker(self, unified_idx: int, marker_id: int) -> bool:
+        """Give a slot one of the controlled markers; the slot that drove it takes this slot's old one. Main loop only.
+
+        Updates ``app._config.controller.slot_markers``; saving it is the caller's. False on a reserved or
+        empty slot, a station with one slot (it follows the selection), or a marker this station does not control.
+        """
+        slots = self._controller_slots()
+        if not 0 <= unified_idx < len(slots) or slots[unified_idx].state not in (CONNECTED, MISSING):
+            return False
+        if _occupied(slots) == 1:
+            return False
+        picks = pick_marker(len(slots), self.app._controlled_ids, self._marker_picks(), unified_idx, marker_id)
+        if picks is None:
+            return False
+        self.app._config.controller.slot_markers = [
+            SlotMarkerConfig(slot=index + 1, marker=marker) for index, marker in sorted(picks.items())
+        ]
+        logger.info("Controller slots: C%d drives marker %d; %s", unified_idx + 1, marker_id, self._describe_markers())
+        return True
+
+    def _describe_markers(self) -> str:
+        slots = self._controller_slots()
+        return ", ".join(
+            f"C{index + 1} {'-' if marker is None else marker}"
+            for index, marker in enumerate(slot_markers(len(slots), self.app._controlled_ids, self._marker_picks()))
+        )
 
     @staticmethod
     def _unified_idx(kind: str, local_id: int, slots: tuple[SlotEntry, ...]) -> int | None:
@@ -777,6 +816,8 @@ class InputManager:
                 "port_key": slot.key,
                 "port_label": port_label(slot.key, self._usb_hosts),
                 "pinned": slot.pinned,
+                # One slot follows the selection: it drives whichever marker is selected.
+                "all_markers": _occupied(slots) == 1 and slot.state not in (RESERVED, EMPTY),
                 "slot_ref": slot_ref(slot),
                 "seconds_since_input": None if used is None else max(0.0, now - used),
                 "notes": list(slot.notes),

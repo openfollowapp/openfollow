@@ -1095,6 +1095,7 @@ class AppRuntimeServices:
                 canvas.attach_gl_display(gl_display, tick=self._hud_render.tick)
             else:
                 canvas.attach_hud(self._hud_render.paint, tick=self._hud_render.tick)
+            receiver.set_display_frame_listener(self._hud_render.video_frame)
 
         self._app._video_receiver = receiver
         # Critical phase: a raise skips shutdown(), so tear the already-started
@@ -3919,6 +3920,8 @@ class AppRuntimeServices:
                 "last_inference_age_ms": None,
                 "missing_deps": [],
             },
+            # Filled once the Operator Screen has drawn for a window (``HudMetrics``); None headless.
+            "hud": None,
         }
 
     def _detection_pin_status(self) -> float | None:
@@ -4130,6 +4133,7 @@ class AppRuntimeServices:
             "mouse3d": mouse3d_status.to_dict(),
             "playback": playback_snapshot,
             "tracking": detection_snapshot,
+            "hud": self._hud_render.stats() if self._hud_render is not None else None,
         }
 
         with self._runtime_stats_lock:

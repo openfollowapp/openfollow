@@ -157,6 +157,8 @@ class GstNativeSinkReceiver:
 
         # Shared sink created lazily
         self._shared_sink = None
+        # Told of every frame that reaches the display sink, from its streaming thread.
+        self._display_frame_listener: Callable[[], None] | None = None
         # The gtksink is shared across pipeline rebuilds, and pad probes live
         # on its (persistent) sink pad – so attach them exactly once. Without
         # this guard every reconnect/heal rebuild would stack another pair of
@@ -203,11 +205,14 @@ class GstNativeSinkReceiver:
     # -- Shared sink management -----------------------------------------------
 
     def _create_shared_sink(self) -> Any:
-        """Create a single gtksink that will be reused across all pipelines."""
+        """The sink every pipeline ends in, the GL display's or a gtksink, watched for the frames reaching it."""
         Gst.init(None)
-        if self._display is not None:
-            return self._display.sink
+        sink = self._display.sink if self._display is not None else self._create_platform_sink()
+        if sink is not None:
+            sink.get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, self._on_display_frame)
+        return sink
 
+    def _create_platform_sink(self) -> Any:
         sink_name = self._select_sink_name()
         if sink_name is None:
             logger.error("No embeddable video sink available")
@@ -225,6 +230,16 @@ class GstNativeSinkReceiver:
 
         logger.info("Created shared %s element for all pipelines", sink_name)
         return sink
+
+    def set_display_frame_listener(self, listener: Callable[[], None] | None) -> None:
+        """Call ``listener`` (from the sink's streaming thread) for each frame that reaches the display."""
+        self._display_frame_listener = listener
+
+    def _on_display_frame(self, _pad: Any, _info: Any) -> Any:
+        listener = self._display_frame_listener
+        if listener is not None:
+            listener()
+        return Gst.PadProbeReturn.OK
 
     def _get_shared_sink(self) -> Any:
         """Get the shared sink, creating it if needed."""

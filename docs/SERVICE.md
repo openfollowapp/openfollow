@@ -49,7 +49,7 @@ anything is installed as root, both update paths verify the **signature** (again
 on-device public key) and the **`.deb`'s SHA-256**, and fail closed on any mismatch –
 so a tampered, truncated, or unsigned package cannot install.
 
-**Check & Install Latest:**
+**Install Latest Version Online:**
 
 1. Queries the GitHub Releases API for the newest published (incl. pre-release) tag of
    the repo in `update_github_repo` (default `openfollowapp/openfollow`).
@@ -59,7 +59,7 @@ so a tampered, truncated, or unsigned package cannot install.
    package identity + architecture, then installs it via `apt-get install`.
 4. Restarts the `openfollow` service onto the new version.
 
-**Offline install** (collapsed by default) uploads an operator-supplied `.ofupdate`
+**Install .ofupdate File** uploads an operator-supplied `.ofupdate`
 bundle over the LAN and installs it the same way – same verification, but no GitHub
 fetch and no version gate (downgrades and reinstalls are allowed for a properly signed
 bundle).

@@ -18,7 +18,7 @@ All config lives in `config.toml` (auto-reloaded when file changes on disk).
 | `network_mode` | `"simple"` | Device-local, device identity. Simple clears every per-plane pin. See [network](network.md#network-mode-network_mode) |
 | `video_input_iface` | `""` | Device-local. See [network](network.md#video_input_iface) |
 | `web_pin` | `""` | Auth PIN; when non-empty, browser routes require login + cookie (`SameSite=Strict`), peer-to-peer routes require HMAC-signed headers |
-| `update_include_prereleases` | `False` | Hidden (config-only): offer pre-release builds, not just stable, in both the auto-check and `Check & Install Latest` |
+| `update_include_prereleases` | `False` | Hidden (config-only): offer pre-release builds, not just stable, in both the auto-check and `Install Latest Version Online` |
 | `auto_update_check` | `True` | Auto-query GitHub on startup / IP change (drives the update banner + footer flag); fail-silent offline |
 | `auto_time_sync` | `True` | Auto-sync the system clock from `time_sync_server` on startup / IP change (Pi has no RTC); needs the `system.set_clock` grant |
 | `viewer_marker_ids` | `[]` | Markers shown in overlay (incl. remote); always holds every controlled id (`viewed_with_controlled`: on load, in the selection route and in `init_markers`) |

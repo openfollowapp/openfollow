@@ -22,6 +22,8 @@ Pinned contracts:
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from bottle import template
 
@@ -283,6 +285,67 @@ def _update_script_function(name: str) -> str:
     return match.group(1)
 
 
+def _software_update_section(**overrides) -> str:
+    body = _render_general(**overrides)
+    start = body.index('id="general-software-update-section"')
+    return body[start : body.index("<script>", start)]
+
+
+_UPDATE_STATES = [
+    pytest.param({}, id="nothing-known"),
+    pytest.param({"update_available": True, "latest_version": "0.5.1"}, id="update-available"),
+    pytest.param(
+        {"update_status": {"state": "failed", "message": "Update failed.", "error": "Bad signature."}},
+        id="last-install-failed",
+    ),
+]
+
+
+class TestSoftwareUpdateLayout:
+    """One layout in every state: the online install and the offline bundle side by side."""
+
+    @pytest.mark.parametrize("ctx", _UPDATE_STATES)
+    def test_both_installs_are_one_click_away_in_every_state(self, ctx: dict) -> None:
+        section = _software_update_section(**ctx)
+        assert section.count('onclick="openfollowCheckUpdate(this)"') == 1
+        assert "Install Latest Version Online" in section
+        assert "document.getElementById('general-update-file').click()" in section
+        assert "Install .ofupdate File" in section
+        assert "<details" not in section
+
+    def test_an_available_release_is_an_info_box_naming_it(self) -> None:
+        section = _software_update_section(update_available=True, latest_version="0.5.1", current_version="0.5.0")
+        assert '<div class="notice" role="status">' in section
+        assert "Version 0.5.1 is available." in section
+        assert "Installed: v0.5.0" in section
+        assert "style=" not in section.replace('style="display:none"', "")
+
+    def test_no_box_while_no_release_is_known(self) -> None:
+        assert 'class="notice"' not in _software_update_section()
+
+    def test_a_failed_install_shows_its_error(self) -> None:
+        section = _software_update_section(
+            update_status={"state": "failed", "message": "Update failed.", "error": "Bad signature."}
+        )
+        assert '<div class="update-notice error">Update failed. Bad signature.</div>' in section
+
+    @pytest.mark.parametrize("state", ["queued", "running", "restarting"])
+    def test_both_installs_are_disabled_while_one_runs(self, state: str) -> None:
+        section = _software_update_section(
+            update_available=True, latest_version="0.5.1", update_status={"state": state, "message": "", "error": ""}
+        )
+        controls = re.findall(r"<(?:button|input)\b[^>]*>", section.split('<div class="actions">', 1)[1])
+        assert len(controls) == 3
+        assert all(" disabled" in c for c in controls)
+
+    @pytest.mark.parametrize("state", ["idle", "failed", ""])
+    def test_both_installs_are_enabled_otherwise(self, state: str) -> None:
+        section = _software_update_section(update_status={"state": state, "message": "", "error": ""})
+        controls = re.findall(r"<(?:button|input)\b[^>]*>", section.split('<div class="actions">', 1)[1])
+        assert len(controls) == 3
+        assert not any(" disabled" in c for c in controls)
+
+
 class TestSoftwareUpdateProgressModal:
     """Once the operator confirms an install, the page stays locked and says
     which step is running until the device restarts."""
@@ -293,7 +356,7 @@ class TestSoftwareUpdateProgressModal:
         body = _render_general(update_supported=True)
         assert "document.getElementById('general-update-file').click()" in body
         assert 'onchange="openfollowUploadUpdate(this)"' in body
-        assert "Choose Update &amp; Install" in body
+        assert "Install .ofupdate File" in body
         assert "modalConfirm" not in _update_script_function("openfollowUploadUpdate")
 
     def test_upload_locks_the_page_before_the_bundle_is_sent(self) -> None:

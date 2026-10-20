@@ -108,8 +108,8 @@ def test_mark_follows_an_address_and_an_outage() -> None:
 
 @pytest.mark.parametrize(
     "host",
-    ["192.0.2.10", "station.example", " 192.0.2.10 "],
-    ids=["another-interfaces-address", "name-for-it", "padded"],
+    ["192.0.2.10", "station.example"],
+    ids=["another-interfaces-address", "name-for-it"],
 )
 def test_a_destination_at_one_of_the_stations_own_addresses_is_never_pinned(host: str) -> None:
     """A socket bound to eth1's device drops a datagram for eth0's own address

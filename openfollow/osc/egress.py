@@ -47,7 +47,7 @@ def reaches_station(
     The client sends to the first address a name resolves to; a name not
     resolved yet is not this station.
     """
-    addresses = addresses_of(host.strip()) if host.strip() else ()
+    addresses = addresses_of(host) if host else ()
     return bool(addresses) and addresses[0] in station_addresses
 
 

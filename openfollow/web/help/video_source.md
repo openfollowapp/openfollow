@@ -66,6 +66,8 @@ Two safeguards keep a network feed alive without operator intervention. Both app
 - **Stall Timeout (s)** – the *silent-stall* watchdog, for a stream that is still "connected" but has quietly stopped delivering frames with no error to signal it. This is common on UDP, multicast, and some RTSP cameras: the last frame just freezes on screen and nothing recovers on its own. If no new frame arrives within this many seconds, OpenFollow tears the pipeline down and reconnects. Default `3.0`. Raise it if a healthy source has long legitimate gaps (very low frame rate, sparse keyframes) and is being reconnected unnecessarily; lower it to react to freezes faster. `0` disables the watchdog.
 - **Heal Interval (s)** – the *self-healing* re-probe, for a feed that is already down and showing the "No Signal" placeholder (source unplugged, encoder rebooting, network blip). OpenFollow retries the URL this often until the source returns, so the picture comes back by itself with no one re-saving. Default `5.0`. Shorter intervals recover faster but probe the network more often; `0` disables auto-recovery, and the feed then stays on the placeholder until you save the section again.
 
+NDI and the cameras (USB, Pi Camera, macOS) recover differently. When their source is lost, the station shows the source picker and keeps looking for that source every few seconds. Once it is announced again, video returns to it by itself, whether the picker is still open or was closed with BACK. Picking another source in the picker ends the wait.
+
 > To force an immediate reconnect at any time, save the section unchanged – it rebuilds the pipeline on the spot.
 
 **Preview** – an inline snapshot of the current video input, refreshed every two seconds while the section is open and in view.

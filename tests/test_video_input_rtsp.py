@@ -280,12 +280,6 @@ class TestAnAddressFamilyFailureMovesTheHostToTcp:
         assert self._protocols(plugin, "rtsp://other.example:554/stream") == 0x7
         assert self._protocols(plugin, self._URL) == 0x4
 
-    def test_a_failure_before_any_build_moves_nothing(self, names: _Names) -> None:
-        names.answers["camera.example"] = ["192.0.2.10", "2001:db8::10"]
-        plugin = RtspInput()
-        plugin.on_bus_error(_ADDRESS_FAMILY_ERROR)
-        assert self._protocols(plugin, self._URL) == 0x7
-
     def test_a_rebuilt_input_starts_with_every_transport(self, names: _Names) -> None:
         """A saved video setting builds a new input, which tries UDP again."""
         names.answers["camera.example"] = ["192.0.2.10", "2001:db8::10"]

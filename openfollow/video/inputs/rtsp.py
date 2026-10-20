@@ -302,7 +302,7 @@ class RtspInput(VideoInputBase):
 
     def on_bus_error(self, error: BusError) -> None:
         """Keep the dialled host on TCP interleaved once its UDP ports met an address of the other family."""
-        if self._dialled_host and address_family_mismatch(error.debug):
+        if address_family_mismatch(error.debug):
             self._interleaved_host = self._dialled_host
             logger.warning("RTSP UDP ports did not match the server's IP family; using TCP interleaved from now on")
 

@@ -378,13 +378,13 @@ class TestAnAddressFamilyMismatchIsNotUnknown:
             domain=RESOURCE_DOMAIN,
             code=RESOURCE_SETTINGS,
             message=self._MESSAGE,
-            debug="invalid address family (got 30)",
+            debug="INVALID ADDRESS FAMILY (got 30)",
         )
         assert verdict == VideoFailure.NO_DATA
 
     @pytest.mark.parametrize(
         ("domain", "code"),
-        [(STREAM_DOMAIN, STREAM_FAILED), ("some-other-quark", RESOURCE_SETTINGS)],
+        [(STREAM_DOMAIN, STREAM_FAILED), ("some-other-quark", RESOURCE_SETTINGS), (RESOURCE_DOMAIN, 1)],
     )
     def test_the_wording_under_another_code_is_not_claimed(self, domain: str, code: int) -> None:
         verdict = classify_failure(

@@ -4063,7 +4063,7 @@ class AppRuntimeServices:
         }
 
     def _find_control_conflicts(self) -> tuple[ControlConflict, ...]:
-        """Markers this station or its peers control more than once, from the peers' catalog-sync beacons."""
+        """Markers two or more stations control, this one included, from the peers' catalog-sync beacons."""
         sync = getattr(self._app, "_marker_catalog_sync", None)
         if sync is None:
             return ()

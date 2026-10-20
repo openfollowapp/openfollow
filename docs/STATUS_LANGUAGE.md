@@ -108,11 +108,12 @@ or no modifier for neutral. Pill-shaped, uppercase, `--<level>-chip` fill,
 solid `--<level>-line` border, off-white text, **no icon**. "Starting" and
 "Idle" are info; "Off" is neutral. The OSC diagnostics health pill and the
 Experimental badge (caution) are chips too, and so are the state words in a
-table row: "Conflict" (error) and "Not controlled" (caution) in the marker catalog, and
-"Not connected" / "Interface down" (error) in the Network Interface Assignment
-Address column for a function that cannot send; a labelled adapter that is not
-plugged in reads "Not connected" in the neutral chip on the Network Interface
-card, where nothing is failing. A row places a chip, it never restyles one.
+table row: "Conflict" (error) and "Not controlled" (caution) in the marker
+catalog, and "Not connected" / "Interface down" (error) in the Network
+Interface Assignment Address column for a function that cannot send; a
+labelled adapter that is not plugged in reads "Not connected" in the neutral
+chip on the Network Interface card, where nothing is failing. A row places a
+chip, it never restyles one.
 
 ### Small row pills
 

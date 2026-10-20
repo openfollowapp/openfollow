@@ -87,8 +87,8 @@ logger = logging.getLogger(__name__)
 # down-sample counters fire on integer-tick boundaries.
 _SCHEDULER_HZ = 60
 _TICK_INTERVAL_S = 1.0 / _SCHEDULER_HZ
-# Shutdown join bound. Small because the scheduler's only blocking call
-# is ``stop_event.wait(_TICK_INTERVAL_S)`` (~16 ms).
+# Shutdown join bound. Small because the scheduler only blocks in a wait
+# that ``stop()`` ends.
 _SHUTDOWN_JOIN_S = 2.0
 
 
@@ -329,8 +329,9 @@ class _RenderResult:
 
 
 class OscTransmitterManager:
-    """Owns the row list, the 60 Hz scheduler thread, and the event-bus
-    subscriptions for Hotkey / ControllerButton trigger dispatch.
+    """Owns the row list, the scheduler thread (60 Hz while a Stream row is
+    enabled, asleep otherwise), and the event-bus subscriptions for Hotkey /
+    ControllerButton trigger dispatch.
 
     Lifecycle: ``start()`` spins the thread (idempotent), ``stop()``
     sets the stop event, joins, and unsubscribes from the event bus.
@@ -351,10 +352,10 @@ class OscTransmitterManager:
       events.
     - Event handlers do not render + send synchronously – they build a
       :class:`_TickPlan` and enqueue it; the scheduler drains the queue
-      on its next tick. This keeps the input thread off the network: a
-      TCP target's ~250 ms connect timeout cannot stall keyboard /
-      gamepad polling. Event-send latency is bounded by one tick
-      interval (~16 ms).
+      on its next tick, or at once when no Stream row keeps it ticking.
+      This keeps the input thread off the network: a TCP target's ~250 ms
+      connect timeout cannot stall keyboard / gamepad polling. Event-send
+      latency is bounded by one tick interval (~16 ms).
     - Both paths render through ``_fire_plan``, so ring-buffer logging
       and skip-on-missing-placeholder behaviour are identical.
     """
@@ -398,6 +399,8 @@ class OscTransmitterManager:
         self._destinations = OscDestinationsConfig(destinations=[])
         self._dest_index: dict[str, OscDestinationConfig] = {}
         self._stop = threading.Event()
+        # Wakes an idle scheduler (no Stream row enabled): a queued event plan, new rows or stop().
+        self._wake = threading.Event()
         self._thread: threading.Thread | None = None
         self._tick: int = 0
         # Last-sent default-marker position for ``mode == "on_change"``.
@@ -552,6 +555,8 @@ class OscTransmitterManager:
                 for rid, ts in self._last_event_fire_ts.items()
                 if rid in new_rows and rid not in invalidate_cache
             }
+        # An idle scheduler sees whether a Stream row is enabled now.
+        self._wake.set()
 
     def row_ids(self) -> list[str]:
         """Snapshot of currently-configured row ids. Order is not stable
@@ -729,6 +734,7 @@ class OscTransmitterManager:
         # flag and short-circuits before queueing a plan – unsubscribe is
         # best-effort under the bus's snapshot-then-call dispatch.
         self._stop.set()
+        self._wake.set()
         if self._unsub_key is not None:
             self._unsub_key()
             self._unsub_key = None
@@ -780,12 +786,27 @@ class OscTransmitterManager:
     # ------------------------------------------------------------------
 
     def _loop(self) -> None:
-        # Each iteration ticks every row whose down-sample counter fires,
-        # then sleeps to the next beat. ``stop.wait`` returns early on
-        # ``stop()``, so shutdown latency is bounded by one iteration.
-        while not self._stop.is_set():
+        # Ticks every beat while a Stream row is enabled, otherwise sleeps until woken.
+        while True:
+            self._wake.clear()
+            # Checked after the clear, so a stop() landing mid-iteration is never lost.
+            if self._stop.is_set():
+                return
             self._tick_once()
-            self._stop.wait(_TICK_INTERVAL_S)
+            if self._streaming():
+                self._stop.wait(_TICK_INTERVAL_S)
+            else:
+                self._wake.wait()
+
+    def _streaming(self) -> bool:
+        """Whether an enabled row fires on the scheduler tick."""
+        with self._lock:
+            return any(row.cfg.enabled and isinstance(row.cfg.trigger, StreamTrigger) for row in self._rows.values())
+
+    def _queue(self, plans: list[_TickPlan]) -> None:
+        """Queue event plans for the scheduler and wake it. Caller holds the manager lock."""
+        self._event_plans.extend(plans)
+        self._wake.set()
 
     def _tick_once(self) -> None:
         """Run one scheduler beat. Snapshots an immutable
@@ -1027,7 +1048,7 @@ class OscTransmitterManager:
                     continue
                 if frozenset(trigger.modifiers) != event.modifiers:
                     continue
-                self._event_plans.extend(self._plans_for_row(row))
+                self._queue(self._plans_for_row(row))
 
     def _handle_button_event(self, event: ButtonEvent) -> None:
         """Enqueue a plan for every :class:`ControllerButtonTrigger` row
@@ -1050,7 +1071,7 @@ class OscTransmitterManager:
                     continue
                 if trigger.edge != event.edge:
                     continue
-                self._event_plans.extend(self._plans_for_row(row))
+                self._queue(self._plans_for_row(row))
 
     # ------------------------------------------------------------------
     # MIDI / fader event dispatch
@@ -1108,7 +1129,7 @@ class OscTransmitterManager:
                 # ``[note]`` = ``event.number``, ``[velocity]`` =
                 # ``event.value``; both ``None`` for non-note events.
                 is_note = event.type in ("note_on", "note_off")
-                self._event_plans.extend(
+                self._queue(
                     self._plans_for_row(
                         row,
                         event_value=event.value,
@@ -1161,7 +1182,7 @@ class OscTransmitterManager:
                 if now - last < 1.0 / trigger.rate_hz:
                     continue
                 self._last_event_fire_ts[cfg.id] = now
-                self._event_plans.extend(self._plans_for_row(row))
+                self._queue(self._plans_for_row(row))
 
     def _handle_marker_fader_change(
         self,
@@ -1195,7 +1216,7 @@ class OscTransmitterManager:
                 if now - last < 1.0 / trigger.rate_hz:
                     continue
                 self._last_event_fire_ts[cfg.id] = now
-                self._event_plans.extend(self._plans_for_row(row))
+                self._queue(self._plans_for_row(row))
 
     def _explicit_marker_resolver(
         self,

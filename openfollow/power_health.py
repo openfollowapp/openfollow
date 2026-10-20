@@ -16,7 +16,7 @@ import shutil
 import subprocess
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -61,9 +61,10 @@ def parse_throttled(raw: str | None) -> int | None:
     if not sep or key != "throttled":
         return None
     try:
-        return int(value, 16)
+        bits = int(value, 16)
     except ValueError:
         return None
+    return bits if bits >= 0 else None
 
 
 def run_vcgencmd_throttled(timeout_s: float = VCGENCMD_TIMEOUT_S) -> str | None:
@@ -185,10 +186,9 @@ class ThrottlePoller:
         self._stop.set()
 
     def _loop(self) -> None:
-        while True:
+        while not self._stop.is_set():
             self.latest = parse_throttled(self._run())
-            if self._stop.wait(self._interval_s):
-                return
+            self._stop.wait(self._interval_s)
 
 
 class PowerMonitor:
@@ -205,6 +205,8 @@ class PowerMonitor:
         self._looked_up = False
         self._under_voltage = False
         self._throttled = False
+        self._under_voltage_since_boot = False
+        self._throttled_since_boot = False
 
     def read(self) -> PowerState:
         if not self._looked_up:
@@ -215,6 +217,14 @@ class PowerMonitor:
         alarm = read_alarm(self._alarm_path) if self._alarm_path is not None else None
         bits = self._throttle.latest if self._throttle is not None else None
         state = power_state(alarm, bits)
+        # The firmware clears its since-boot flags only on a reboot, so one seen survives an unknown reading.
+        self._under_voltage_since_boot |= state.under_voltage_since_boot is True
+        self._throttled_since_boot |= state.throttled_since_boot is True
+        state = replace(
+            state,
+            under_voltage_since_boot=self._under_voltage_since_boot or state.under_voltage_since_boot,
+            throttled_since_boot=self._throttled_since_boot or state.throttled_since_boot,
+        )
         self._under_voltage = _log_edge(
             self._under_voltage, state.under_voltage, "Power supply under voltage", "Power supply voltage normal"
         )

@@ -76,8 +76,8 @@ def test_a_reading_parses_to_its_bits(raw: str, expected: int) -> None:
 
 @pytest.mark.parametrize(
     "raw",
-    [None, "", "garbage", "throttled=", "throttled=0xzz", "temp=0x1", "VCHI initialization failed"],
-    ids=["none", "empty", "garbage", "no-value", "not-hex", "other-key", "error-text"],
+    [None, "", "garbage", "throttled=", "throttled=0xzz", "temp=0x1", "VCHI initialization failed", "throttled=-0x1"],
+    ids=["none", "empty", "garbage", "no-value", "not-hex", "other-key", "error-text", "negative"],
 )
 def test_anything_else_is_not_a_reading(raw: str | None) -> None:
     assert parse_throttled(raw) is None
@@ -397,18 +397,32 @@ def test_the_monitor_starts_the_poller_on_its_first_read_and_stops_it(tmp_path: 
 
 def test_a_stopped_poller_stays_stopped() -> None:
     runs: list[int] = []
+    first = threading.Event()
 
     def run() -> str:
         runs.append(1)
+        first.set()
         return "throttled=0x0"
 
     poller = ThrottlePoller(run=run)
     thread = poller.start()
+    assert first.wait(timeout=5.0)
     poller.stop()
     thread.join(timeout=5.0)
     assert poller.start() is thread
     assert not thread.is_alive()
     assert runs == [1]
+
+
+def test_a_poller_stopped_before_it_starts_never_runs_vcgencmd() -> None:
+    runs: list[int] = []
+    poller = ThrottlePoller(run=lambda: runs.append(1) or "throttled=0x0")
+    poller.stop()
+    thread = poller.start()
+    thread.join(timeout=5.0)
+    assert not thread.is_alive()
+    assert runs == []
+    assert poller.latest is None
 
 
 def test_a_monitor_without_a_poller_stops_cleanly(tmp_path: Path) -> None:
@@ -485,3 +499,22 @@ def test_a_failed_poll_neither_ends_nor_restarts_throttling(tmp_path: Path, capl
     poller.latest = 0x4
     monitor.read()
     assert [(r.levelno, r.getMessage()) for r in caplog.records] == [(logging.WARNING, "CPU throttled")]
+
+
+@pytest.mark.parametrize("failure", [None, 0x0], ids=["failed-poll", "zero-reading"])
+def test_a_since_boot_flag_once_seen_stays_until_the_pi_reboots(tmp_path: Path, failure: int | None) -> None:
+    poller = _polled("throttled=0x50000")
+    monitor = PowerMonitor(hwmon_root=tmp_path, throttle=poller)
+    assert monitor.read().under_voltage_since_boot is True
+    poller.latest = failure
+    state = monitor.read()
+    assert (state.under_voltage_since_boot, state.throttled_since_boot) == (True, True)
+
+
+def test_a_failed_poll_before_any_since_boot_flag_stays_unknown(tmp_path: Path) -> None:
+    poller = _polled("throttled=0x0")
+    monitor = PowerMonitor(hwmon_root=tmp_path, throttle=poller)
+    assert monitor.read().throttled_since_boot is False
+    poller.latest = None
+    state = monitor.read()
+    assert (state.under_voltage_since_boot, state.throttled_since_boot) == (None, None)

@@ -277,12 +277,12 @@ mmdebstrap:
           >> "$CONFIG"
       fi
 
-    # 5. Network-online wait on a cable-less boot is already bounded: the kiosk
-    #    unit waits on network-online.target (so it binds a real IP, not loopback),
-    #    and the .deb ships a NetworkManager-wait-online timeout drop-in
-    #    (10-openfollow-timeout.conf) that caps the wait at ~15s. Now that NM is
-    #    the active stack, that drop-in applies as-is – no networkd-specific
-    #    override is needed here.
+    # 5. Network-online wait is already bounded: the kiosk unit waits on
+    #    network-online.target (so it binds a real IP, not loopback), and the .deb
+    #    ships a NetworkManager-wait-online drop-in (10-openfollow-timeout.conf)
+    #    that passes once every activating device has an address and caps the
+    #    wait at 20s. Now that NM is the active stack, that drop-in applies as-is –
+    #    no networkd-specific override is needed here.
 
     # 6. The kiosk owns the display – keep a login getty off tty1.
     - chroot "$1" systemctl mask getty@tty1.service

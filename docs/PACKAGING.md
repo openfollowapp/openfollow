@@ -253,7 +253,8 @@ NetworkManager must own the links – on a `systemd-networkd` image the `nmcli` 
 is absent, the privilege broker's `network.nm.*` rows read as `unavailable`, and the
 Network page silently falls back to a read-only view. This also matches the Ansible
 deploy path, which already assumes NetworkManager. The `.deb`'s
-`NetworkManager-wait-online` timeout drop-in bounds a cable-less boot to ~15 s.
+`NetworkManager-wait-online` drop-in replaces its wait (see **Boot wait for the
+network** below).
 
 NetworkManager also owns tagged-VLAN sub-interfaces, which the Network page creates
 and removes via two sudoers grants beside the existing `nmcli con mod` / `up` / `down`
@@ -321,6 +322,32 @@ at `<hostname>.local` or at the address on the on-screen HUD;
 against each other and asserts nothing in the app sets these properties at
 runtime; `tests/test_image_layer.py` fails if the image writes any file the
 `.deb` declares a conffile.
+
+**Boot wait for the network.** `openfollow.service` is ordered after
+`network-online.target`, so the app starts with a LAN address rather than
+loopback. The stock `NetworkManager-wait-online` runs `nm-online -s`, which
+waits for NetworkManager's *startup* to complete: every auto-activated profile
+activated or given up on. The infinite `dhcp-timeout` above means an unanswered
+DHCP activation never gives up, so on a LAN without DHCP startup never
+completes; the wait ran out on every boot, failed the unit and left
+`systemctl is-system-running` at `degraded`, though the fallback address was up
+within seconds. Plain `nm-online` (without `-s`) does not help: it waits for an
+activated connection, and that profile stays activating.
+
+The `.deb`'s drop-in
+(`/usr/lib/systemd/system/NetworkManager-wait-online.service.d/10-openfollow-timeout.conf`)
+runs `/usr/share/openfollow/nm-wait-online.sh 20` instead. Once a second it
+succeeds when `nm-online -s` does, or when at least one device is activating
+and every activating device (loopback aside) holds an IPv4 address, a lease or
+the link-local fallback. Requiring an activating device keeps the start of a
+boot, before any carrier, waiting for startup as before, so a NIC that will get
+a lease is not raced. After 20 s with a device still addressless the unit
+fails, as it should: the station has no address there. A cable-less boot
+completes startup with nothing to activate and passes at once.
+
+On a LAN whose DHCP answers slower than the fallback appears, the wait can pass
+on the 169.254 address; the app's own ~10 s address wait and its per-plane
+rebind on an address change cover the lease that follows.
 
 **Single account.** `rpi-image-gen`'s `rpi-user-credentials` layer creates the
 `openfollow` login user (password `openfollow`, **passwordless sudo**, in the

@@ -219,3 +219,161 @@ def test_help_does_not_promise_the_station_name_resolves() -> None:
         encoding="utf-8"
     )
     assert "<station-name>.local" not in help_text
+
+
+# --- network-online.target on a station whose DHCP may go unanswered ----------
+
+_WAIT_SCRIPT = _REPO_ROOT / "packaging" / "debian" / "nm-wait-online.sh"
+_WAIT_DROPIN = _REPO_ROOT / "packaging" / "debian" / "nm-wait-online-timeout.conf"
+_WAIT_INSTALLED = "/usr/share/openfollow/nm-wait-online.sh"
+_IP_CONFIG = "connecting (getting IP configuration)"
+_FALLBACK = "169.254.7.9/16"
+_LEASE = "192.0.2.10/24"
+
+# One poll's view: is NetworkManager's startup complete, and each device's
+# (type, state, IPv4 addresses). ``None`` for devices: NetworkManager not running.
+_Poll = tuple[bool, dict[str, tuple[str, str, list[str]]] | None]
+
+
+def _run_wait(tmp_path: Path, polls: list[_Poll], cap: int = 3) -> tuple[int, int]:
+    """Run the packaged wait with ``nm-online``, ``nmcli`` and ``ip`` stubbed.
+
+    Poll *n* sees ``polls[n]``, the last one repeating. Returns the exit code
+    and how many times it polled.
+    """
+    if not _WAIT_SCRIPT.is_file():
+        pytest.skip("no packaging/debian/nm-wait-online.sh in this tree")
+    for n, (started, devices) in enumerate(polls):
+        poll = tmp_path / f"p{n}"
+        poll.mkdir()
+        (poll / "startup").write_text("0" if started else "1", encoding="utf-8")
+        if devices is None:
+            continue
+        rows = [f"{name}:{kind}:{state}" for name, (kind, state, _) in devices.items()]
+        (poll / "devices").write_text("".join(f"{row}\n" for row in rows), encoding="utf-8")
+        for name, (_, _, addresses) in devices.items():
+            lines = [f"2: {name}    inet {a} scope global {name}\\       valid_lft forever" for a in addresses]
+            (poll / f"addr_{name}").write_text("".join(f"{line}\n" for line in lines), encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    state = f'cur="$(cat "{tmp_path}/cur")"; dir="{tmp_path}/p$cur"'
+    stubs = {
+        "nm-online": (
+            f'n="$(cat "{tmp_path}/count" 2>/dev/null || echo 0)"\n'
+            f'echo "$((n + 1))" > "{tmp_path}/count"\n'
+            f'[ "$n" -lt {len(polls)} ] && cur="$n" || cur={len(polls) - 1}\n'
+            f'echo "$cur" > "{tmp_path}/cur"\n'
+            f'exit "$(cat "{tmp_path}/p$cur/startup")"\n'
+        ),
+        "nmcli": f'{state}\n[ -f "$dir/devices" ] || exit 8\ncat "$dir/devices"\n',
+        # ip -4 -o addr show dev <name>
+        "ip": f'{state}\neval "dev=\\${{$#}}"\ncat "$dir/addr_$dev" 2>/dev/null\nexit 0\n',
+    }
+    for name, body in stubs.items():
+        stub = bin_dir / name
+        stub.write_text("#!/bin/sh\n" + body, encoding="utf-8")
+        stub.chmod(0o755)
+    result = subprocess.run(
+        ["/bin/sh", str(_WAIT_SCRIPT), str(cap)],
+        env={"PATH": f"{bin_dir}:/usr/bin:/bin"},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    return result.returncode, int((tmp_path / "count").read_text(encoding="utf-8"))
+
+
+def test_wait_online_dropin_runs_the_station_wait() -> None:
+    """``nm-online -s`` alone waits for NetworkManager's startup to complete,
+    which a DHCP activation with an infinite timeout never reaches: every boot
+    on a LAN without DHCP ran out the cap and left the system degraded."""
+    if not _WAIT_DROPIN.is_file():
+        pytest.skip("no packaging/debian/nm-wait-online-timeout.conf in this tree")
+    exec_lines = re.findall(r"^ExecStart=(.*)$", _WAIT_DROPIN.read_text(encoding="utf-8"), re.MULTILINE)
+    assert exec_lines == ["", f"{_WAIT_INSTALLED} 20"]
+
+
+def test_deb_installs_the_station_wait_executable() -> None:
+    text = _read("deb build script")
+    assert re.search(rf'install -m 0755 "\$DEBIAN_DIR/nm-wait-online\.sh"\s+"\$SHARE/{_WAIT_SCRIPT.name}"', text)
+
+
+@pytest.mark.parametrize(
+    ("polls", "expected_polls"),
+    [
+        pytest.param([(True, {"eth0": ("ethernet", "connected", [_LEASE])})], 1, id="startup-complete"),
+        pytest.param([(False, {"eth0": ("ethernet", _IP_CONFIG, [_FALLBACK])})], 1, id="only-nic-on-its-fallback"),
+        pytest.param(
+            [
+                (
+                    False,
+                    {
+                        "eth0": ("ethernet", "connected", [_LEASE]),
+                        "eth0.20": ("vlan", _IP_CONFIG, [_FALLBACK]),
+                    },
+                )
+            ],
+            1,
+            id="lease-on-one-fallback-on-the-vlan",
+        ),
+        pytest.param(
+            [
+                (
+                    False,
+                    {
+                        "lo": ("loopback", "connecting (externally)", []),
+                        "eth0": ("ethernet", _IP_CONFIG, [_FALLBACK]),
+                    },
+                )
+            ],
+            1,
+            id="loopback-is-not-waited-for",
+        ),
+        pytest.param(
+            [
+                (False, {"eth0": ("ethernet", "unavailable", [])}),
+                (False, {"eth0": ("ethernet", _IP_CONFIG, [])}),
+                (False, {"eth0": ("ethernet", _IP_CONFIG, [_FALLBACK])}),
+            ],
+            3,
+            id="address-arrives-on-the-third-poll",
+        ),
+    ],
+)
+def test_wait_online_succeeds_once_every_activating_device_has_an_address(
+    tmp_path: Path, polls: list[_Poll], expected_polls: int
+) -> None:
+    """A DHCP profile with no server stays activating beside its link-local
+    fallback; the station is reachable there, so network-online is reached."""
+    assert _run_wait(tmp_path, polls) == (0, expected_polls)
+
+
+@pytest.mark.parametrize(
+    "devices",
+    [
+        pytest.param({"eth0": ("ethernet", _IP_CONFIG, [])}, id="activating-with-no-address-yet"),
+        pytest.param(
+            {
+                "eth0": ("ethernet", _IP_CONFIG, [_FALLBACK]),
+                "eth1": ("ethernet", "connecting (configuring)", []),
+            },
+            id="one-addressed-one-not",
+        ),
+        # Before carrier, nothing is activating yet: passing here would race the lease.
+        pytest.param({"eth0": ("ethernet", "unavailable", [])}, id="nothing-activating-yet"),
+        pytest.param(
+            {
+                "lo": ("loopback", "connecting (externally)", ["127.0.0.1/8"]),
+                "eth0": ("ethernet", "unavailable", []),
+            },
+            id="only-loopback-activating",
+        ),
+        pytest.param({"eth0": ("ethernet", _IP_CONFIG, ["127.0.0.2/8"])}, id="only-a-loopback-address"),
+        pytest.param(None, id="networkmanager-not-running"),
+    ],
+)
+def test_wait_online_fails_at_the_cap_while_a_device_has_no_address(
+    tmp_path: Path, devices: dict[str, tuple[str, str, list[str]]] | None
+) -> None:
+    assert _run_wait(tmp_path, [(False, devices)], cap=3) == (1, 3)

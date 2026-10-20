@@ -5583,8 +5583,8 @@ class TestReturningSource:
         r._state.reconnect_attempt = 1
         r._input.discover_results = [list(listed)]
         r._do_reconnect()
-        glib.run_idles()
         assert r._state.is_placeholder_pipeline and r.source_selection_active and r._input_config["fake_source"] == ""
+        glib.run_idles()
 
     @staticmethod
     def _announce(r, glib, *sources: str) -> None:
@@ -5674,6 +5674,14 @@ class TestReturningSource:
         self._give_up(lost, fake_glib)
         self._announce(lost, fake_glib, "cam-1")
         assert lost.source_name == "cam-1"
+
+    def test_a_source_back_before_the_give_up_returns_on_the_first_pass(self, lost, fake_glib) -> None:
+        FakeInput.create_pipeline_result = FakePipeline()
+        self._announce(lost, fake_glib, "cam-1")
+        lost._state.note_phase(ConnectionPhase.DECODING)
+        self._give_up(lost, fake_glib, "cam-1")
+        assert lost.source_name == "cam-1"
+        assert lost.source_selection_active is False
 
     def test_a_source_that_never_sent_video_returns_only_once_it_was_gone(self, lost, fake_glib) -> None:
         FakeInput.create_pipeline_result = FakePipeline()

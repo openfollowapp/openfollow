@@ -1121,19 +1121,21 @@ class TestAwaitInstaller:
 
 class TestInstallerRunning:
     @pytest.mark.parametrize(
-        ("active_state", "running"),
+        ("active_state", "returncode", "running"),
         [
-            ("active", True),
-            ("activating", True),
-            ("deactivating", True),
-            ("reloading", True),
-            ("inactive", False),
-            ("failed", False),
-            ("", False),
+            ("active", 0, True),
+            ("activating", 0, True),
+            ("deactivating", 0, True),
+            ("reloading", 0, True),
+            ("inactive", 0, False),
+            ("failed", 0, False),
+            ("", 0, True),
+            ("", 1, True),
+            ("inactive", 1, True),
         ],
     )
     def test_reads_the_transient_unit_state(
-        self, monkeypatch: pytest.MonkeyPatch, active_state: str, running: bool
+        self, monkeypatch: pytest.MonkeyPatch, active_state: str, returncode: int, running: bool
     ) -> None:
         import openfollow.runtime.deb_update as mod
 
@@ -1141,7 +1143,7 @@ class TestInstallerRunning:
 
         def fake_run(argv: list[str], **kw: Any) -> Any:
             calls.append(argv)
-            return SimpleNamespace(returncode=0, stdout=active_state + "\n", stderr="")
+            return SimpleNamespace(returncode=returncode, stdout=active_state + "\n", stderr="")
 
         monkeypatch.setattr(mod.subprocess, "run", fake_run)
         assert mod.installer_running() is running

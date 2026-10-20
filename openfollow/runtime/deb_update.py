@@ -67,7 +67,7 @@ _DOWNLOAD_TIMEOUT_S = 300
 _INSTALL_TIMEOUT_S = 300
 # How often the worker looks whether the detached installer has ended.
 _INSTALLER_POLL_S = 2.0
-_INSTALLER_ACTIVE_STATES = frozenset({"active", "activating", "deactivating", "reloading"})
+_INSTALLER_ENDED_STATES = frozenset({"inactive", "failed"})
 
 # Single signed update artifact. One file carries the .deb + checksum + signature.
 _BUNDLE_SUFFIX = ".ofupdate"
@@ -186,8 +186,8 @@ def _apply_update(
     ``openfollow.service`` – the package's prerm stops that service mid-install,
     which would kill an in-process ``apt-get`` and leave the package
     half-configured. The wrapper script installs, restarts the service onto the
-    new version, and removes the spec; this call returns as soon as the unit is
-    started.
+    new version, and removes the spec. A successful install stops this process
+    first; otherwise this call returns once the unit has ended.
 
     On success the staged ``spec`` is left in place for the (now-running)
     detached installer to consume – the caller must NOT clean it up.
@@ -234,7 +234,7 @@ def installer_running() -> bool:
         return False
     except (OSError, subprocess.SubprocessError):
         return True
-    return out.stdout.strip() in _INSTALLER_ACTIVE_STATES
+    return out.returncode != 0 or out.stdout.strip() not in _INSTALLER_ENDED_STATES
 
 
 def _await_installer(app: OpenFollowApp) -> None:

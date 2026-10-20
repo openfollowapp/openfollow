@@ -119,6 +119,8 @@ class HudRenderThread:
         # Counts pictures put on screen, so a reader can tell a new one in a reused surface.
         self._shown_serial = 0
         self._spare: cairo.ImageSurface | Layers | None = None
+        # Pictures shown and those shown after their refresh, since the last pacing report.
+        self._report = [0, 0]
         # Refreshes since the current picture started, when it started and when it finished.
         self._pacing = _Pacing()
         self._held = 0
@@ -152,6 +154,8 @@ class HudRenderThread:
                 self._ready = None
                 self._spare, self._shown = self._shown, ready
                 self._shown_serial += 1
+                self._report[0] += 1
+                self._report[1] += self._held > self._pacing.refreshes
                 self._pacing.shown(self._held, self._finished_at - self._started_at)
             if not self._busy and self._ready is None and self._target is not None:
                 self._job = (self._target, self._renderer.state)
@@ -176,6 +180,15 @@ class HudRenderThread:
     def shown_picture(self) -> tuple[cairo.ImageSurface | Layers | None, int]:
         """The picture on screen and its serial; GTK main thread only, like ``tick``."""
         return self._shown, self._shown_serial
+
+    def pacing_report(self) -> tuple[int, int, int]:
+        """Pictures shown and how many of them late since the last report, and the refreshes each is held.
+
+        GTK main thread only, like ``tick``.
+        """
+        shown, late = self._report
+        self._report = [0, 0]
+        return shown, late, self._pacing.refreshes
 
     def _run(self) -> None:
         while (taken := self._take()) is not None:

@@ -4,9 +4,9 @@
 
 Asked for with ``OPENFOLLOW_GL_DISPLAY=1`` or the flag file: the receiver ends in this display's sink
 instead of gtksink, and the window renders this area once per display refresh instead of pasting the
-HUD with Cairo. Each refresh shows the newest frame that arrived, and the HUD as ``Layers``: a kept
-picture is uploaded once, the pictures drawn between them each time the HUD changes. PyOpenGL is
-imported only when the area is realized.
+HUD with Cairo. Video frames meet the refresh through a ``Cadence``, by default each at the refresh
+after it arrives; the HUD shows as ``Layers``: a kept picture is uploaded once, the pictures drawn
+between them each time the HUD changes. PyOpenGL is imported only when the area is realized.
 """
 
 from __future__ import annotations
@@ -15,13 +15,14 @@ import ctypes
 import logging
 import os
 import sys
-import threading
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 from openfollow.logging_setup import ThrottledExceptionLogger
 from openfollow.runtime.overlay_layers import Layers, Sprite
+from openfollow.video.gl_cadence import Cadence, CadenceReport, Durations
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,76 @@ ENV_SWITCH = "OPENFOLLOW_GL_DISPLAY"
 
 # The same on a station, where the service's environment lives under /etc.
 FLAG_FILE = os.path.join(os.path.expanduser("~"), ".openfollow-gl-display")
+
+
+# How video frames meet the refresh, for an A/B: "locked" holds them to an even cadence covering the
+# arrival spread, "capped" covers it up to a refresh past the median arrival; anything else shows each as it arrives.
+CADENCE_FLAG = os.path.join(os.path.expanduser("~"), ".openfollow-gl-cadence")
+DEFAULT_REFRESH_US = 16_667
+REPORT_EVERY_US = 10_000_000
+
+
+def cadence_for_mode() -> Cadence[Any]:
+    """The cadence the flag file asks for; by default each frame shows at the refresh after it arrives."""
+    try:
+        with open(CADENCE_FLAG, encoding="utf-8", errors="replace") as flag:
+            mode = flag.read().strip()
+    except OSError:
+        mode = ""
+    if mode == "locked":
+        return Cadence()
+    if mode == "capped":
+        return Cadence(max_hold_refreshes=1)
+    return Cadence(locked=False)
+
+
+def describe_durations(name: str, taken: tuple[int, float, float]) -> str:
+    count, p50, p99 = taken
+    return f"{name} {count}, p50 {p50:.2f} ms p99 {p99:.2f} ms"
+
+
+def describe_pacing(shown: int, late: int, held: int) -> str:
+    on_time = 100.0 * (shown - late) / shown if shown else 0.0
+    return f"{shown} pictures, {on_time:.1f} % on time, held {held} refreshes"
+
+
+def describe_cadence(r: CadenceReport) -> str:
+    return (
+        f"{r.shown} shown, {100.0 * r.share(2):.1f} % for two refreshes, refreshes {dict(sorted(r.refreshes.items()))},"
+        f" {r.skipped} skipped, {r.late} late, wait p50 {r.wait_ms_p50:.1f} ms p99 {r.wait_ms_p99:.1f} ms,"
+        f" arrival spread p50 {r.spread_ms_p50:.1f} ms p98 {r.spread_ms_p98:.1f} ms"
+    )
+
+
+class ReportClock:
+    """Due every ``REPORT_EVERY_US`` of refresh time; the first refresh only starts the first period."""
+
+    def __init__(self) -> None:
+        self._at = 0
+
+    def due(self, now_us: int) -> bool:
+        if now_us - self._at < REPORT_EVERY_US:
+            return False
+        first, self._at = not self._at, now_us
+        return not first
+
+
+def running_time_us(gst: Any, segment: Any, pts: int) -> int | None:
+    """The running time of ``pts`` in µs, None without one.
+
+    Running time, not pts: a looping clip's pts restart each pass, its running time runs on.
+    """
+    if segment is None or segment.format != gst.Format.TIME:
+        return None
+    ts = segment.to_running_time(gst.Format.TIME, pts)
+    return None if ts == gst.CLOCK_TIME_NONE else ts // 1000
+
+
+def refresh_of(frame_clock: Any) -> tuple[int, int]:
+    """The refresh ``frame_clock`` is drawing and the refresh interval, in µs; an unknown interval is 60 Hz."""
+    now = frame_clock.get_frame_time()
+    interval, _presentation = frame_clock.get_refresh_info(now)
+    return now, interval or DEFAULT_REFRESH_US
 
 
 def gl_display_requested() -> bool:
@@ -64,39 +135,6 @@ def frame_layout(meta: Any, info: Any, n_planes: int) -> tuple[tuple[int, ...], 
 def planes_end(planes: list[Plane]) -> int:
     """The bytes a buffer needs to hold every plane."""
     return max(p.offset + p.stride * p.height for p in planes)
-
-
-class LatestFrame:
-    """The newest frame from the streaming thread, taken by the GTK main thread at its next render.
-
-    Closed, it holds nothing and takes nothing: a decoder may not stop while frames it decoded are
-    held, so the display closes before every NULL transition and opens at the next stream's start.
-    """
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._frame: Any = None
-        self._open = True
-
-    def put(self, frame: Any) -> None:
-        with self._lock:
-            if self._open:
-                self._frame = frame
-
-    def take(self) -> Any:
-        """The frame put since the last take, or None."""
-        with self._lock:
-            frame, self._frame = self._frame, None
-            return frame
-
-    def close(self) -> None:
-        with self._lock:
-            self._open = False
-            self._frame = None
-
-    def open(self) -> None:
-        with self._lock:
-            self._open = True
 
 
 class SpriteTextures:
@@ -223,9 +261,10 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
         gi.require_version("Gst", "1.0")
         gi.require_version("GstVideo", "1.0")
         gi.require_version("Gtk", "3.0")
-        from gi.repository import Gst, Gtk
+        from gi.repository import GLib, Gst, Gtk
 
         self._Gst = Gst
+        self._monotonic_us = GLib.get_monotonic_time
         self._hud = hud
         Gst.init(None)
         # fakevideosink, not appsink: it announces GstVideoMeta, so a decoder writes into it without a copy.
@@ -239,7 +278,9 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
         frames.connect("handoff", self._on_handoff)
         frames.get_static_pad("sink").add_probe(Gst.PadProbeType.EVENT_DOWNSTREAM, self._on_event)
         self.sink = sink
-        self._latest = LatestFrame()
+        self._cadence: Cadence[Any] = cadence_for_mode()
+        self._refresh = (0, DEFAULT_REFRESH_US)
+        self._report_clock = ReportClock()
         area = Gtk.GLArea()
         area.set_use_es(True)
         area.set_required_version(3, 0)
@@ -254,6 +295,8 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
         self._frame: tuple[int, int] = (0, 0)
         self._hud_serial = -1
         self._colour = yuv_to_rgb(1080)
+        # GTK main thread time per render, per video frame upload and per new sprite list upload.
+        self._took = {"render": Durations(), "video upload": Durations(), "sprite upload": Durations()}
         self._render_err_log = ThrottledExceptionLogger(logger, "GL display render failed")
 
     def release_frames(self) -> None:
@@ -261,23 +304,30 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
 
         GTK main thread, like the render that takes the frame.
         """
-        self._latest.close()
+        self._cadence.close()
 
     def set_hud(self, hud: Any) -> None:
         self._hud = hud
 
-    def queue_render(self) -> None:
+    def queue_render(self, frame_clock: Any) -> None:
+        """Render at the refresh ``frame_clock`` is drawing."""
+        self._refresh = refresh_of(frame_clock)
         self.widget.queue_render()
 
     def _on_event(self, _pad: Any, info: Any) -> Any:
         # A new pipeline's first event: its frames may be held again.
         if info.get_event().type == self._Gst.EventType.STREAM_START:
-            self._latest.open()
+            self._cadence.open()
         return self._Gst.PadProbeReturn.OK
 
     def _on_handoff(self, _sink: Any, buf: Any, pad: Any) -> None:
-        # Streaming thread: the GTK main thread takes the newest at its next render.
-        self._latest.put(self._Gst.Sample.new(buf, pad.get_current_caps(), None, None))
+        # Streaming thread: stamp the arrival, the GTK main thread picks per refresh.
+        Gst = self._Gst
+        arrival = self._monotonic_us()
+        event = pad.get_sticky_event(Gst.EventType.SEGMENT, 0)
+        segment = event.parse_segment() if event is not None else None
+        sample = Gst.Sample.new(buf, pad.get_current_caps(), segment, None)
+        self._cadence.push(sample, running_time_us(Gst, segment, buf.pts), arrival)
 
     # -- GL ---------------------------------------------------------------
 
@@ -410,11 +460,17 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
         return True
 
     def _render(self, area: Any) -> None:
+        started = time.perf_counter_ns()
+        self._draw(area)
+        self._took["render"].add((time.perf_counter_ns() - started) // 1000)
+
+    def _draw(self, area: Any) -> None:
         GL = self._gl
         scale = area.get_scale_factor()
         alloc = area.get_allocation()
         aw, ah = alloc.width * scale, alloc.height * scale
-        self._upload_latest_frame()
+        self._upload_due_frame()
+        self._log_cadence()
         GL.glClearColor(0.0, 0.0, 0.0, 1.0)
         GL.glClear(GL.GL_COLOR_BUFFER_BIT)
         if self._frame != (0, 0):
@@ -447,7 +503,9 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
 
         GL = self._gl
         if serial != self._hud_serial:
+            started = time.perf_counter_ns()
             self._sprite_tex.update(layers.sprites)
+            self._took["sprite upload"].add((time.perf_counter_ns() - started) // 1000)
             self._hud_serial = serial
         if not layers.sprites:
             return
@@ -480,9 +538,21 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
         GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_RGBA8, w, h, 0, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, data)
         GL.glPixelStorei(GL.GL_UNPACK_ROW_LENGTH, 0)
 
-    def _upload_latest_frame(self) -> None:
+    def _log_cadence(self) -> None:
+        if not self._report_clock.due(self._refresh[0]):
+            return
+        if (pacing := getattr(self._hud, "pacing_report", None)) is not None:
+            logger.info("GL HUD: %s", describe_pacing(*pacing()))
+        took = ", ".join(describe_durations(name, d.take()) for name, d in self._took.items())
+        logger.info("GL main thread: %s", took)
+        logger.info("GL video cadence: %s", describe_cadence(self._cadence.report()))
+
+    def _upload_due_frame(self) -> None:
         Gst = self._Gst
-        sample = self._latest.take()
+        # A render before the first tick has no refresh time to anchor the cadence on.
+        if not self._refresh[0]:
+            return
+        sample = self._cadence.pick(*self._refresh)
         if sample is None:
             return
         from gi.repository import GstVideo
@@ -500,7 +570,9 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
             planes = i420_planes(info.width, info.height, offsets, strides)
             if mapinfo.size < planes_end(planes):
                 raise RuntimeError(f"{mapinfo.size} bytes cannot hold a {info.width}x{info.height} I420 frame")
+            started = time.perf_counter_ns()
             self._upload_planes(mapinfo.data, planes, (info.width, info.height))
+            self._took["video upload"].add((time.perf_counter_ns() - started) // 1000)
         finally:
             buf.unmap(mapinfo)
 

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""The GL display's plain parts: switch, frame slot, plane layout, letterbox, sprites and colour terms."""
+"""The GL display's plain parts: switches, plane layout, letterbox, sprites, colour terms and log lines."""
 
 from __future__ import annotations
 
@@ -12,7 +12,8 @@ import pytest
 
 from openfollow.runtime.overlay_layers import Sprite
 from openfollow.video import gl_display
-from openfollow.video.gl_display import LatestFrame, Plane, i420_planes, letterbox, sprite_quad, yuv_to_rgb
+from openfollow.video.gl_cadence import CadenceReport
+from openfollow.video.gl_display import Plane, i420_planes, letterbox, sprite_quad, yuv_to_rgb
 
 pytestmark = pytest.mark.unit
 
@@ -31,27 +32,6 @@ def test_the_switch_is_the_environment_or_the_flag_file(
         flag_file.touch()
     monkeypatch.setattr(gl_display, "FLAG_FILE", str(flag_file))
     assert gl_display.gl_display_requested() is on
-
-
-def test_a_render_takes_the_newest_frame_once() -> None:
-    latest = LatestFrame()
-    latest.put("first")
-    latest.put("second")
-
-    assert latest.take() == "second"
-    assert latest.take() is None
-
-
-def test_a_closed_slot_lets_go_of_its_frame_and_takes_none_until_opened() -> None:
-    latest = LatestFrame()
-    latest.put("held")
-    latest.close()
-    latest.put("late")
-
-    assert latest.take() is None
-    latest.open()
-    latest.put("next stream")
-    assert latest.take() == "next stream"
 
 
 def test_i420_planes_halve_the_chroma_rounding_up() -> None:
@@ -263,3 +243,136 @@ def test_every_texture_held_is_named_once_for_the_context_to_free() -> None:
     textures.update([scrim, _sprite(kept=False)])
 
     assert sorted(textures.held()) == [1, 2, 3, 4]
+
+
+def test_durations_read_as_count_median_and_99th_percentile() -> None:
+    assert gl_display.describe_durations("render", (600, 1.234, 5.0)) == "render 600, p50 1.23 ms p99 5.00 ms"
+
+
+@pytest.mark.parametrize(
+    ("pacing", "line"),
+    [
+        ((300, 3, 2), "300 pictures, 99.0 % on time, held 2 refreshes"),
+        ((0, 0, 1), "0 pictures, 0.0 % on time, held 1 refreshes"),
+    ],
+    ids=["shown", "none-shown"],
+)
+def test_hud_pacing_reads_as_pictures_share_on_time_and_refreshes_held(pacing: tuple[int, int, int], line: str) -> None:
+    assert gl_display.describe_pacing(*pacing) == line
+
+
+def test_the_video_cadence_reads_as_frames_shown_skipped_late_waits_and_spread() -> None:
+    report = CadenceReport(
+        refreshes={3: 1, 2: 3},
+        skipped=4,
+        late=5,
+        wait_ms_p50=1.25,
+        wait_ms_p99=9.0,
+        spread_ms_p50=2.0,
+        spread_ms_p98=7.5,
+    )
+
+    assert gl_display.describe_cadence(report) == (
+        "4 shown, 75.0 % for two refreshes, refreshes {2: 3, 3: 1}, 4 skipped, 5 late,"
+        " wait p50 1.2 ms p99 9.0 ms, arrival spread p50 2.0 ms p98 7.5 ms"
+    )
+
+
+def test_a_report_is_due_every_period_after_the_first_refresh_starts_one() -> None:
+    clock = gl_display.ReportClock()
+    period = gl_display.REPORT_EVERY_US
+    start = 7_000_000_000
+
+    due = [clock.due(now) for now in (0, start, start + period - 1, start + period, start + period + 1)]
+    # A display that stopped for a while reports once when it renders again, then a period later.
+    due += [clock.due(now) for now in (start + 5 * period, start + 6 * period - 1, start + 6 * period)]
+
+    assert due == [False, False, False, True, False, True, False, True]
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        (None, "arrival"),
+        ("", "arrival"),
+        ("locked\n", "locked"),
+        ("capped", "capped"),
+        ("smooth", "arrival"),
+        (b"\xffcapped", "arrival"),
+    ],
+    ids=["no-file", "empty", "locked", "capped", "unknown", "not-utf-8"],
+)
+def test_the_flag_file_picks_how_video_frames_meet_the_refresh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: str | bytes | None, expected: str
+) -> None:
+    flag_file = tmp_path / "cadence"
+    if isinstance(content, bytes):
+        flag_file.write_bytes(content)
+    elif content is not None:
+        flag_file.write_text(content)
+    monkeypatch.setattr(gl_display, "CADENCE_FLAG", str(flag_file))
+    # 30 fps picked at every 60 Hz refresh; a decoder stall releases the last three of every twelve at once.
+    frames = [(i * 33_333, (i // 12 * 12 + 11 if i % 12 >= 9 else i) * 33_333 + 10_000) for i in range(300)]
+    cadence = gl_display.cadence_for_mode()
+    pending = 0
+    for k in range(610):
+        now = k * 16_667
+        while pending < len(frames) and frames[pending][1] <= now:
+            cadence.push(pending, *frames[pending])
+            pending += 1
+        cadence.pick(now, 16_667)
+
+    report = cadence.report()
+    waits = {
+        "arrival": report.wait_ms_p50 < 10,
+        "locked": report.wait_ms_p50 > 60,
+        "capped": 15 <= report.wait_ms_p50 <= 40,
+    }
+    assert waits[expected], (expected, report)
+
+
+_NONE = 2**64 - 1
+_GST = SimpleNamespace(CLOCK_TIME_NONE=_NONE, Format=SimpleNamespace(TIME="time", BYTES="bytes"))
+
+
+class _Segment:
+    """A segment starting at ``start`` ns; no pts and a pts before it have no running time, as in GStreamer."""
+
+    def __init__(self, start: int, base: int = 0, fmt: str = "time") -> None:
+        self.format = fmt
+        self._start = start
+        self._base = base
+
+    def to_running_time(self, fmt: str, pts: int) -> int:
+        assert fmt == self.format, "GStreamer logs a critical for a format other than the segment's"
+        return _NONE if pts == _NONE or pts < self._start else pts - self._start + self._base
+
+
+def test_a_frames_timestamp_is_its_running_time_in_microseconds() -> None:
+    # A looping clip's second pass: pts start over at the segment start, the running time runs on from the base.
+    assert gl_display.running_time_us(_GST, _Segment(start=0, base=10_000_000_000), 40_000_999) == 10_040_000
+
+
+@pytest.mark.parametrize(
+    ("segment", "pts"),
+    [
+        (_Segment(start=0), _NONE),
+        (None, 40_000_000),
+        (_Segment(start=0, fmt="bytes"), 40_000_000),
+        (_Segment(start=50_000_000), 40_000_000),
+    ],
+    ids=["no-pts", "no-segment", "segment-in-bytes", "before-the-segment"],
+)
+def test_a_frame_without_a_running_time_has_no_timestamp(segment: _Segment | None, pts: int) -> None:
+    assert gl_display.running_time_us(_GST, segment, pts) is None
+
+
+@pytest.mark.parametrize(
+    ("interval", "expected"),
+    [(20_000, 20_000), (0, gl_display.DEFAULT_REFRESH_US)],
+    ids=["50-hz", "unknown"],
+)
+def test_a_render_knows_its_refresh_time_and_interval_from_the_frame_clock(interval: int, expected: int) -> None:
+    clock = SimpleNamespace(get_frame_time=lambda: 5_000_000, get_refresh_info=lambda base: (interval, base + 1))
+
+    assert gl_display.refresh_of(clock) == (5_000_000, expected)

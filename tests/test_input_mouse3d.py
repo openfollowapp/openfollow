@@ -8,6 +8,7 @@ snapshots – so the suite never imports real ``pyspacemouse`` or touches HID.
 
 from __future__ import annotations
 
+import itertools
 import logging
 import sys
 import threading
@@ -64,21 +65,36 @@ def _stub_backend_profiles(monkeypatch):  # noqa: ANN001, ANN201
 # --------------------------------------------------------------------------- #
 
 
-def _state(*, x=0.0, y=0.0, z=0.0, roll=0.0, pitch=0.0, yaw=0.0, buttons=()):  # noqa: ANN001, ANN201
-    return SimpleNamespace(x=x, y=y, z=z, roll=roll, pitch=pitch, yaw=yaw, buttons=list(buttons))
+_REPORT_STAMPS = itertools.count(1)
+
+
+def _state(*, x=0.0, y=0.0, z=0.0, roll=0.0, pitch=0.0, yaw=0.0, buttons=(), t=None):  # noqa: ANN001, ANN201
+    """A pyspacemouse state as one report leaves it: stamped ``t`` (fresh unless given)."""
+    stamp = next(_REPORT_STAMPS) * 0.008 if t is None else t
+    return SimpleNamespace(x=x, y=y, z=z, roll=roll, pitch=pitch, yaw=yaw, buttons=list(buttons), t=stamp)
+
+
+def _never_reported():  # noqa: ANN202
+    """The state pyspacemouse returns before the puck's first report."""
+    return _state(t=-1.0)
 
 
 class FakeDevice:
-    """Minimal pyspacemouse device: replays scripted states, then ``None``."""
+    """pyspacemouse 2.x read contract: every read returns the current state.
+
+    Each scripted state is one report; once they are spent every read is silent
+    and returns the last state again, its stamp unchanged.
+    """
 
     def __init__(self, states: list[object] | None = None) -> None:
         self._states = list(states or [])
+        self._current: object = _never_reported()
         self.closed = False
 
-    def read(self) -> object | None:
+    def read(self) -> object:
         if self._states:
-            return self._states.pop(0)
-        return None
+            self._current = self._states.pop(0)
+        return self._current
 
     def close(self) -> None:
         self.closed = True
@@ -296,14 +312,15 @@ def test_button_tap_between_frames_still_fires() -> None:
             self._stop = stop
             self.n = 0
 
-        def read(self) -> object | None:
+        def read(self) -> object:
             self.n += 1
             if self.n == 1:
-                return _state(buttons=[1])  # press
-            if self.n == 2:
-                return _state(buttons=[0])  # release – still before any frame samples
-            self._stop.set()
-            return None
+                self.last = _state(buttons=[1])  # press
+            elif self.n == 2:
+                self.last = _state(buttons=[0])  # release – still before any frame samples
+            else:
+                self._stop.set()
+            return self.last
 
         def close(self) -> None:
             pass
@@ -360,7 +377,7 @@ def test_detect_pressed_button_one_shot_when_not_running() -> None:
 
 
 def test_detect_pressed_button_times_out_to_none() -> None:
-    dev = FakeDevice([_state(buttons=[0, 0])])  # no press, then read() -> None
+    dev = FakeDevice([_state(buttons=[0, 0])])  # one report with no press, then silence
     h = Mouse3DHandler(Mouse3DConfig(enabled=False), device_factory=lambda: dev)
     assert h.detect_pressed_button(timeout=0.05) is None
 
@@ -545,13 +562,13 @@ def test_reconnect_does_not_replay_stale_deflection() -> None:
             self.closed = True
 
     class _Idle:
-        """Connected but silent – a real puck only reports on change."""
+        """Connected but silent – a real puck only reports while deflected."""
 
         def __init__(self) -> None:
             self.closed = False
 
-        def read(self) -> object | None:
-            return None
+        def read(self) -> object:
+            return _never_reported()
 
         def close(self) -> None:
             self.closed = True
@@ -593,12 +610,13 @@ def test_pump_reports_read_after_delivering_state() -> None:
             self._stop = stop
             self.n = 0
 
-        def read(self) -> object | None:
+        def read(self) -> object:
             self.n += 1
             if self.n == 1:
-                return _state(x=0.3)
-            self._stop.set()  # end the pump loop after the first reading
-            return None
+                self.last = _state(x=0.3)
+            else:
+                self._stop.set()  # end the pump loop after the first reading
+            return self.last
 
         def close(self) -> None:
             pass
@@ -619,13 +637,13 @@ def test_pump_recenters_latched_deflection_when_device_goes_silent(monkeypatch) 
             self._stop = stop
             self.n = 0
 
-        def read(self) -> object | None:
+        def read(self) -> object:
             self.n += 1
             if self.n == 1:
-                return _state(x=0.9, buttons=[1])  # full +X deflection, button held
+                self.last = _state(x=0.9, buttons=[1])  # full +X deflection, button held
             if self.n >= 4:
                 self._stop.set()  # end the loop after a few silent reads
-            return None  # device silent: no return-to-center report arrived
+            return self.last  # silent: same state, no return-to-center report arrived
 
         def close(self) -> None:
             pass
@@ -634,6 +652,78 @@ def test_pump_recenters_latched_deflection_when_device_goes_silent(monkeypatch) 
     assert h._snapshot is not None
     assert h._snapshot.is_centered()  # latched deflection re-zeroed
     assert h._snapshot.buttons == (1,)  # button state preserved
+
+
+class _Script:
+    """Reads a scripted sequence (a state is a report, ``None`` a silent read), then stops."""
+
+    def __init__(self, stop: threading.Event, script: list[object | None]) -> None:
+        self._stop = stop
+        self._script = list(script)
+        self._current: object = _never_reported()
+
+    def read(self) -> object:
+        if not self._script:
+            self._stop.set()
+        else:
+            step = self._script.pop(0)
+            if step is not None:
+                self._current = step
+        return self._current
+
+    def close(self) -> None:
+        pass
+
+
+def test_a_held_deflection_that_keeps_reporting_is_never_re_zeroed(monkeypatch) -> None:  # noqa: ANN001
+    # Held off-centre, a puck reports about every 8 ms even when the values do not change.
+    # Two silent polls re-zero; the one silent read that ends the script does not.
+    monkeypatch.setattr(mouse3d_module, "_RECENTER_AFTER_IDLE_S", 2 * mouse3d_module._IDLE_POLL_S)
+    h = _handler()
+    h._pump(_Script(h._stop, [_state(x=0.9) for _ in range(8)]), h._stop)
+    assert h._snapshot is not None
+    assert h._snapshot.x == 0.9
+
+
+def test_a_report_after_a_recenter_is_published_again(monkeypatch) -> None:  # noqa: ANN001
+    # Two silent polls re-zero; the one silent read that ends the script does not.
+    monkeypatch.setattr(mouse3d_module, "_RECENTER_AFTER_IDLE_S", 2 * mouse3d_module._IDLE_POLL_S)
+    h = _handler()
+    h._pump(_Script(h._stop, [_state(x=0.9), None, None, None, _state(x=0.4)]), h._stop)
+    assert h._snapshot is not None
+    assert h._snapshot.x == 0.4
+
+
+def test_a_button_report_after_a_recenter_keeps_the_axes_at_rest(monkeypatch) -> None:  # noqa: ANN001
+    # The backend still holds the dropped deflection; a button report restamps it.
+    monkeypatch.setattr(mouse3d_module, "_RECENTER_AFTER_IDLE_S", 2 * mouse3d_module._IDLE_POLL_S)
+    h = _handler()
+    h._pump(_Script(h._stop, [_state(x=0.9, yaw=0.3), None, None, None, _state(x=0.9, yaw=0.3, buttons=[1])]), h._stop)
+    assert h._snapshot == mouse3d_module._Snapshot(buttons=(1,))
+
+
+def test_an_axis_that_moves_after_a_recenter_is_published_again(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setattr(mouse3d_module, "_RECENTER_AFTER_IDLE_S", 2 * mouse3d_module._IDLE_POLL_S)
+    h = _handler()
+    script = [_state(x=0.9, yaw=0.3), None, None, None, _state(x=0.85, yaw=0.3), _state(x=0.9, yaw=0.3)]
+    h._pump(_Script(h._stop, script), h._stop)
+    assert h._snapshot == mouse3d_module._Snapshot(x=0.9)  # yaw has not reported since
+
+
+def test_a_second_recenter_keeps_the_axes_the_first_one_zeroed(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setattr(mouse3d_module, "_RECENTER_AFTER_IDLE_S", 2 * mouse3d_module._IDLE_POLL_S)
+    h = _handler()
+    silence = [None, None, None]
+    # A translation report moves x while yaw stays stale; then x's own return-to-center is lost too.
+    script = [_state(x=0.9, yaw=0.3), *silence, _state(x=0.4, yaw=0.3), *silence, _state(x=0.4, yaw=0.3, buttons=[1])]
+    h._pump(_Script(h._stop, script), h._stop)
+    assert h._snapshot == mouse3d_module._Snapshot(buttons=(1,))
+
+
+def test_a_puck_that_never_reported_publishes_nothing() -> None:
+    h = _handler()
+    assert h._pump(_Script(h._stop, [None, None, None]), h._stop) is True
+    assert h._snapshot is None
 
 
 def test_concurrent_detect_is_serialized() -> None:
@@ -1171,9 +1261,10 @@ def test_pump_publishes_snapshot_then_exits() -> None:
         def read(self):  # noqa: ANN202
             self.n += 1
             if self.n == 1:
-                return _state(x=0.5, buttons=[1])
-            h._stop.set()  # end the loop on the idle pass
-            return None
+                self.last = _state(x=0.5, buttons=[1])
+            else:
+                h._stop.set()  # end the loop on the idle pass
+            return self.last
 
     assert h._pump(_Dev(), h._stop) is True  # synchronous; delivered a reading
     assert h._snapshot is not None
@@ -1288,9 +1379,10 @@ def test_run_opens_pumps_and_closes(monkeypatch) -> None:  # noqa: ANN001
         def read(self):  # noqa: ANN202
             self.n += 1
             if self.n == 1:
-                return _state(x=0.5)
-            h._stop.set()  # end the pump (and the run loop) on the idle pass
-            return None
+                self.last = _state(x=0.5)
+            else:
+                h._stop.set()  # end the pump (and the run loop) on the idle pass
+            return self.last
 
         def close(self) -> None:
             closed.append(1)
@@ -1971,8 +2063,7 @@ class _AlwaysReads:
         pass
 
 
-def test_manager_detect_devices_ignore_none_reads_until_timeout() -> None:
-    # ``read`` returning ``None`` (no fresh report) is skipped, not treated as a press.
+def test_manager_detect_devices_treat_a_puck_that_never_reported_as_unpressed() -> None:
     backend = _FakeBackend([Mouse3DDeviceInfo(path="/dev/hidraw2")], {"/dev/hidraw2": lambda: FakeDevice([])})
     mgr = Mouse3DManager(_cfg(enabled=True), backend=backend)
     assert mgr.detect_pressed_button(timeout=0.03) is None

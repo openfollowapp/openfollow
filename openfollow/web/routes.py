@@ -3236,6 +3236,8 @@ def _config_dict_redacted(cfg: AppConfig) -> dict[str, Any]:
     d["osc"].pop("listen_iface", None)
     d["rttrpm_output"].pop("source_iface", None)
     d["touch_remote"].pop("enabled", None)
+    # Set for this station's GPU and driver: on another station it would hide a working GL display.
+    d["display"].pop("operator_screen", None)
     for name in _KEYBOARD_LAYOUT_FIELDS:
         d["controller"].pop(name, None)
     for dest in d["osc_destinations"]["destinations"]:
@@ -3307,6 +3309,8 @@ _DEVICE_IDENTITY_FIELDS: tuple[str, ...] = (
     "markers_catalog_path",
     "testpattern_selected_media",
     "detection.storage_path",
+    # Set for this station's GPU and driver.
+    "display.operator_screen",
 )
 
 

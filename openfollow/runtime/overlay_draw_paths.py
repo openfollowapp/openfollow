@@ -22,6 +22,7 @@ from openfollow.runtime.overlay_draw_style import (
     PATH_LOCKED_LINE_WIDTH,
     PATH_POINT_RADIUS,
 )
+from openfollow.runtime.overlay_layers import keep
 from openfollow.runtime.overlay_state import OverlayState
 
 
@@ -148,7 +149,7 @@ class PathCache:
             entry = (key, *_render(state, lines, w, h, view[-1], locked=locked))
             self._layers[locked] = entry
         _, picture, x0, y0 = entry
-        if picture is not None:
+        if picture is not None and not keep(cr, picture, x0, y0):
             cr.set_source_surface(picture, x0, y0)
             cr.paint()
 

@@ -173,6 +173,13 @@ class TestMarkerFloorElements:
         assert cr.move_tos == [pytest.approx(tuple(start))]
         assert cr.line_tos == [pytest.approx(tuple(end))]
 
+    def test_dropline_drawn_with_the_crosshair_still_ends_on_the_floor(self) -> None:
+        state = _state(show_z_line=True, show_crosshair=True, crosshair_size=0.3)
+        cr = FakeCairo()
+        draw_marker(cr, state, _marker(), _W, _H)
+        floor = _expected(state, [(1.0, 1.0, -0.8)])[0]
+        assert any(end == pytest.approx(tuple(floor)) for end in cr.line_tos)
+
     def test_dropline_reaches_up_to_a_ground_grid_above_the_marker(self) -> None:
         state = _state(show_z_line=True, ground_grid_z=2.0)
         cr = FakeCairo()

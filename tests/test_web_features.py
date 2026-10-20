@@ -3,8 +3,9 @@
 """The Features list against a live ``ConfigWebServer``: the Station Settings
 Save (``/section/general``) saves the list and writes nothing else, the list is
 never section-broadcast, imports and pushes carry it (an older
-station's ``show_experimental_features`` included), and the page renders one
-``feature-<key>`` body class per feature that is on."""
+station's ``show_experimental_features`` included), the page renders one
+``feature-<key>`` body class per feature that is on, and no web route turns a
+config-only feature on or off."""
 
 from __future__ import annotations
 
@@ -18,7 +19,14 @@ import pytest
 from bottle import html_escape
 
 import openfollow.web.discovery as discovery_module
-from openfollow.configuration import DEFAULT_SHOWN_FEATURES, FEATURE_KEYS, PathConfig, load_config, save_config
+from openfollow.configuration import (
+    DEFAULT_SHOWN_FEATURES,
+    FEATURE_KEYS,
+    OFFERED_FEATURES,
+    PathConfig,
+    load_config,
+    save_config,
+)
 from openfollow.web.labels import FEATURE_LABELS
 from openfollow.web.server import ConfigWebServer
 from tests._ports import live_on_free_port
@@ -80,14 +88,14 @@ class TestSave:
 
     def test_the_form_saves_exactly_the_ticked_features(self, live_server) -> None:
         server, base = live_server
-        assert _save_features(base, "paths", "midi")[0] == 200
-        assert load_config(server.config_path).ui.shown_features == ["midi", "paths"]
+        assert _save_features(base, "detection", "midi")[0] == 200
+        assert load_config(server.config_path).ui.shown_features == ["midi", "detection"]
         assert _save_features(base)[0] == 200
         assert load_config(server.config_path).ui.shown_features == []
 
     def test_a_save_without_the_table_keeps_the_list(self, live_server) -> None:
         server, base = live_server
-        assert _save_features(base, "paths", marker=False)[0] == 200
+        assert _save_features(base, "detection", marker=False)[0] == 200
         assert load_config(server.config_path).ui.shown_features == list(DEFAULT_SHOWN_FEATURES)
 
     def test_there_is_no_route_that_applies_a_box_on_its_own(self, live_server) -> None:
@@ -119,7 +127,7 @@ class TestSave:
         assert _save_features(base)[0] == 200
 
         out = load_config(server.config_path)
-        assert out.ui.shown_features == []
+        assert out.ui.shown_features == ["paths"]
         assert (out.detection.enabled, out.rttrpm_output.enabled, out.ground_grid.enabled) == (True, True, True)
         assert out.touch_remote.enabled is True
         assert [(p.name, p.active) for p in out.paths.paths] == [("cross", True)]
@@ -139,7 +147,7 @@ class TestTransfer:
         ("ui", "expected"),
         [
             ({"shown_features": ["paths", "zones", "nope"]}, ["zones", "paths"]),
-            ({"show_experimental_features": True}, list(FEATURE_KEYS)),
+            ({"show_experimental_features": True}, list(OFFERED_FEATURES)),
             ({"show_experimental_features": False}, None),
             ({"show_experimental_features": True, "shown_features": ["midi"]}, ["midi"]),
             ({"shown_features": "zones"}, list(DEFAULT_SHOWN_FEATURES)),
@@ -168,7 +176,7 @@ class TestTransfer:
     @pytest.mark.parametrize(
         ("body", "expected"),
         [
-            ({"paths": True, "zones": False}, ["midi", "lens_distortion", "psn_input", "paths"]),
+            ({"rttrpm": True, "zones": False}, ["midi", "lens_distortion", "psn_input", "rttrpm"]),
             ({"detection": "on", "midi": "off"}, ["zones", "lens_distortion", "psn_input", "detection"]),
             ({"warp_drive": True}, list(DEFAULT_SHOWN_FEATURES)),
         ],
@@ -182,9 +190,9 @@ class TestTransfer:
 class TestPage:
     def test_the_body_names_every_feature_that_is_on(self, live_server) -> None:
         _, base = live_server
-        _save_features(base, "zones", "paths")
+        _save_features(base, "zones", "detection")
         _, body = _get(base, "/")
-        assert re.search(r'<body class="feature-zones feature-paths">', body)
+        assert re.search(r'<body class="feature-zones feature-detection">', body)
 
     def test_every_feature_has_its_hide_rule(self, live_server) -> None:
         _, base = live_server
@@ -200,7 +208,7 @@ class TestPage:
         form = form[: form.index("</table>")]
         assert re.search(r'name="detection"[^>]*\s+checked', form)
         assert not re.search(r'name="zones"[^>]*\s+checked', form)
-        assert form.count('class="badge-experimental"') == 6
+        assert form.count('class="badge-experimental"') == 5
 
     def test_the_table_has_one_row_per_feature_with_its_title_and_description(self, live_server) -> None:
         _, base = live_server
@@ -210,8 +218,8 @@ class TestPage:
         assert '<input type="hidden" name="features_submitted" value="1" form="general-network-section">' in form
         assert "broadcastSection" not in form
         rows = re.findall(r"<tr>\s*<td class=\"feature-check\">(.*?)</tr>", form, re.S)
-        assert len(rows) == len(FEATURE_KEYS)
-        for key, row in zip(FEATURE_KEYS, rows, strict=True):
+        assert len(rows) == len(OFFERED_FEATURES)
+        for key, row in zip(OFFERED_FEATURES, rows, strict=True):
             box_id = "features-" + key.replace("_", "-")
             label = FEATURE_LABELS[key]
             assert f'id="{box_id}" name="{key}" form="general-network-section"' in row
@@ -221,6 +229,71 @@ class TestPage:
             assert f'<label for="{box_id}">{html_escape(label.title)}</label>' in row
             description = html_escape(label.description)
             assert f'<td id="{box_id}-description" class="feature-description">{description}</td>' in row
+
+
+class TestConfigOnly:
+    @staticmethod
+    def _paths_on_by_hand(server) -> None:  # noqa: ANN001
+        # A tester's edit of the saved file, spelt as typed rather than as saved.
+        save_config(load_config(server.config_path), server.config_path)
+        with open(server.config_path, encoding="utf-8") as f:
+            text, count = re.subn(r"shown_features = \[.*?\]", 'shown_features = [ "Paths" ]', f.read(), flags=re.S)
+        assert count == 1
+        with open(server.config_path, "w", encoding="utf-8") as f:
+            f.write(text)
+
+    @staticmethod
+    def _features_table(base: str) -> str:
+        _, body = _get(base, "/")
+        form = body[body.index('<div id="features-section"') :]
+        return form[: form.index("</table>")]
+
+    @pytest.mark.parametrize("paths_on", [False, True], ids=["paths-off", "paths-on"])
+    def test_the_table_has_no_paths_row(self, live_server, paths_on) -> None:  # noqa: ANN001
+        server, base = live_server
+        if paths_on:
+            self._paths_on_by_hand(server)
+        form = self._features_table(base)
+        assert 'name="detection"' in form
+        assert 'name="paths"' not in form
+        assert FEATURE_LABELS["paths"].title not in form
+
+    @pytest.mark.parametrize(
+        "send",
+        [
+            lambda base: _save_features(base, "detection", "paths")[0],
+            lambda base: _post_json(base, "/api/config/features", {"detection": True, "paths": True}),
+        ],
+        ids=["station-settings-save", "section-api"],
+    )
+    def test_no_web_route_turns_paths_on(self, live_server, send) -> None:  # noqa: ANN001
+        server, base = live_server
+        assert send(base) == 200
+        ui = load_config(server.config_path).ui
+        assert ui.feature_on("detection")
+        assert not ui.feature_on("paths")
+
+    @pytest.mark.parametrize(
+        ("send", "expected"),
+        [
+            (lambda base: _save_features(base, "zones")[0], ["zones", "paths"]),
+            (lambda base: _save_features(base)[0], ["paths"]),
+            (lambda base: _post_json(base, "/api/config/features", {"paths": False, "midi": True}), ["midi", "paths"]),
+        ],
+        ids=["save-with-a-box", "save-with-none", "section-api-off"],
+    )
+    def test_a_save_keeps_paths_turned_on_in_config_toml(self, live_server, send, expected) -> None:  # noqa: ANN001
+        server, base = live_server
+        self._paths_on_by_hand(server)
+        assert send(base) == 200
+        assert load_config(server.config_path).ui.shown_features == expected
+
+    def test_paths_turned_on_in_config_toml_shows_its_sections(self, live_server) -> None:
+        server, base = live_server
+        body_class = re.compile(r'<body class="([^"]*)">')
+        assert "feature-paths" not in body_class.search(_get(base, "/")[1]).group(1).split()
+        self._paths_on_by_hand(server)
+        assert body_class.search(_get(base, "/")[1]).group(1).split() == ["feature-paths"]
 
 
 class TestWizard:

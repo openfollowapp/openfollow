@@ -6889,6 +6889,61 @@ class TestNetworkConfig:
         assert cfg.network.backend == "psutil"
 
 
+class TestDisplayConfig:
+    """The Operator Screen override, set by hand in config.toml."""
+
+    def test_default_is_auto(self) -> None:
+        from openfollow.configuration import AppConfig
+
+        assert AppConfig().display.operator_screen == "auto"
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [("auto", "auto"), ("cairo", "cairo"), ("  Cairo ", "cairo"), ("AUTO", "auto")],
+        ids=["auto", "cairo", "padded-mixed-case", "upper-case"],
+    )
+    def test_a_known_choice_is_kept_normalised(self, value: str, expected: str) -> None:
+        from openfollow.configuration import DisplayConfig
+
+        assert DisplayConfig(operator_screen=value).operator_screen == expected
+
+    @pytest.mark.parametrize("value", ["gl", "", "opengl"], ids=["gl", "empty", "unknown"])
+    def test_an_unknown_choice_is_auto(self, value: str) -> None:
+        from openfollow.configuration import DisplayConfig
+
+        assert DisplayConfig(operator_screen=value).operator_screen == "auto"
+
+    @pytest.mark.parametrize("value", [None, 1, True, ["cairo"]], ids=["none", "int", "bool", "list"])
+    def test_a_wrong_type_is_auto(self, value: object) -> None:
+        from openfollow.configuration import DisplayConfig
+
+        assert DisplayConfig(operator_screen=value).operator_screen == "auto"  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize(
+        ("toml", "expected"),
+        [
+            ('[display]\noperator_screen = "cairo"\n', "cairo"),
+            ("[display]\noperator_screen = 3\n", "auto"),
+            ('[display]\noperator_screen = "metal"\n', "auto"),
+            ("", "auto"),
+        ],
+        ids=["cairo", "wrong-type", "unknown", "no-section"],
+    )
+    def test_a_hand_edited_file_is_read_and_normalised(self, temp_config_path, toml: str, expected: str) -> None:
+        temp_config_path.write_text(toml, encoding="utf-8")
+
+        assert load_config(str(temp_config_path)).display.operator_screen == expected
+
+    def test_the_choice_survives_a_save(self, temp_config_path) -> None:
+        from openfollow.configuration import AppConfig
+
+        cfg = AppConfig()
+        cfg.display.operator_screen = "cairo"
+        save_config(cfg, str(temp_config_path))
+
+        assert load_config(str(temp_config_path)).display.operator_screen == "cairo"
+
+
 # _apply_with_fallback transactional helper tests
 
 
@@ -8334,12 +8389,12 @@ class TestUiConfig:
         ],
     )
     def test_show_experimental_features_migrates_on_load(self, temp_config_path, ui_toml, expected) -> None:  # noqa: ANN001
-        from openfollow.configuration import DEFAULT_SHOWN_FEATURES, FEATURE_KEYS, load_config, save_config
+        from openfollow.configuration import DEFAULT_SHOWN_FEATURES, OFFERED_FEATURES, load_config, save_config
 
         temp_config_path.write_text("[ui]\n" + ui_toml)
         loaded = load_config(str(temp_config_path))
         want = (
-            {"all": list(FEATURE_KEYS), "default": list(DEFAULT_SHOWN_FEATURES)}.get(expected)
+            {"all": list(OFFERED_FEATURES), "default": list(DEFAULT_SHOWN_FEATURES)}.get(expected)
             if isinstance(expected, str)
             else expected
         )
@@ -8915,6 +8970,14 @@ class TestPathsHotReload:
         apply_runtime_config_changes(app, self._config(paths_on=False))
         assert not app._paths.enabled
         assert not app._paths.is_locked(1)
+
+    def test_switching_paths_off_and_on_keeps_each_path_active(self) -> None:
+        app = self._app()
+        apply_runtime_config_changes(app, self._config(paths_on=True))
+        apply_runtime_config_changes(app, self._config(paths_on=False))
+        assert [(p.name, p.active) for p in app._config.paths.paths] == [("cross", True)]
+        apply_runtime_config_changes(app, self._config(paths_on=True))
+        assert app._paths.lock_onto(1, "cross", (0.5, 0.5, 0.0))
 
     def test_an_unrelated_change_keeps_the_locks(self) -> None:
         app = self._app()

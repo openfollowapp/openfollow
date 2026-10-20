@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from openfollow.configuration import FEATURE_KEYS
+from openfollow.configuration import FEATURE_KEYS, OFFERED_FEATURES
 
 pytestmark = pytest.mark.unit
 
@@ -141,5 +141,5 @@ def test_every_feature_box_has_a_bool_rule() -> None:
     from openfollow.web.routes import _as_bool
     from openfollow.web.validation import FIELD_RULES
 
-    assert set(FIELD_RULES["features"]) == set(FEATURE_KEYS)
+    assert set(FIELD_RULES["features"]) == set(OFFERED_FEATURES)
     assert all(rule.parser is _as_bool for rule in FIELD_RULES["features"].values())

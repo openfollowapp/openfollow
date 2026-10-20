@@ -2,19 +2,19 @@
 
 [camera]
 pos_x = 0.0
-pos_y = 15.0
-pos_z = 12.5
-pitch = -44.0
+pos_y = 13.0
+pos_z = 12.0
+pitch = -48.0
 yaw = 180.0
 roll = 0.0
-fov = 78.0
-lens_k1 = -0.25
-lens_k2 = 0.04
+fov = 70.0
+lens_k1 = -0.2
+lens_k2 = 0.03
 
 [grid]
 width = 12.0
-depth = 8.0
+depth = 6.0
 spacing = 2.0
 x_offset = 0.0
-y_offset = 4.0
+y_offset = 3.0
 z_offset = 0.0

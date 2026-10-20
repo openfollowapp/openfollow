@@ -2715,6 +2715,24 @@ class NetworkConfig:
         self.backend = choice
 
 
+OPERATOR_SCREENS: tuple[str, ...] = ("auto", "cairo")
+
+
+@dataclass
+class DisplayConfig:
+    """Optional ``[display]`` section, set in ``config.toml`` only.
+
+    ``operator_screen`` "auto" runs the GL Operator Screen where the platform supports it and Cairo
+    elsewhere; "cairo" keeps Cairo on this station. Read at startup.
+    """
+
+    operator_screen: str = "auto"
+
+    def __post_init__(self) -> None:
+        choice = self.operator_screen.strip().lower() if isinstance(self.operator_screen, str) else ""
+        self.operator_screen = _coerce_choice(choice, OPERATOR_SCREENS, "auto")
+
+
 # The General tab's Features list, in display order. A feature that is off is
 # hidden in the web UI and does not run; its own settings are kept.
 FEATURE_KEYS: tuple[str, ...] = (
@@ -2733,6 +2751,10 @@ EXPERIMENTAL_FEATURES: frozenset[str] = frozenset(
     {"detection", "rttrpm", "paths", "ground_grid", "calibration_points", "touch_remote"}
 )
 DEFAULT_SHOWN_FEATURES: tuple[str, ...] = tuple(key for key in FEATURE_KEYS if key not in EXPERIMENTAL_FEATURES)
+# Gated like any feature but not offered: no Features row, no web route turns one on.
+# Only ``shown_features`` in config.toml (or an import or push carrying it) does.
+CONFIG_ONLY_FEATURES: frozenset[str] = frozenset({"paths"})
+OFFERED_FEATURES: tuple[str, ...] = tuple(key for key in FEATURE_KEYS if key not in CONFIG_ONLY_FEATURES)
 
 
 def _coerce_feature_list(value: Any) -> list[str]:
@@ -2749,7 +2771,7 @@ def migrate_ui_keys(ui_data: dict[str, Any]) -> None:
         return
     shown_all = _coerce_bool(ui_data.pop("show_experimental_features"), False)
     if shown_all and "shown_features" not in ui_data:
-        ui_data["shown_features"] = list(FEATURE_KEYS)
+        ui_data["shown_features"] = list(OFFERED_FEATURES)
 
 
 def feature_on(cfg: Any, key: str) -> bool:
@@ -3020,6 +3042,7 @@ class AppConfig:
         default_factory=VirtualFadersConfig,
     )
     network: NetworkConfig = field(default_factory=NetworkConfig)
+    display: DisplayConfig = field(default_factory=DisplayConfig)
     ui: UiConfig = field(default_factory=UiConfig)
 
     def __post_init__(self) -> None:
@@ -3162,6 +3185,7 @@ _SUB_CONFIG_MAP: dict[str, type] = {
     "midi": MidiConfig,
     "virtual_faders": VirtualFadersConfig,
     "network": NetworkConfig,
+    "display": DisplayConfig,
     "ui": UiConfig,
 }
 

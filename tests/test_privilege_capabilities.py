@@ -362,6 +362,15 @@ def test_the_words_before_a_rules_regex_are_plain(cap: Capability) -> None:
 
 
 @pytest.mark.parametrize("cap", _regex_rules(), ids=lambda c: c.name)
+def test_a_regex_rules_alternation_stays_grouped(cap: Capability) -> None:
+    """A top-level ``|`` would split the rule into ``^<words> a`` or ``b$``."""
+    depth = 0
+    for char in _rule_args(cap):
+        depth += {"(": 1, ")": -1}.get(char, 0)
+        assert not (char == "|" and depth == 0)
+
+
+@pytest.mark.parametrize("cap", _regex_rules(), ids=lambda c: c.name)
 def test_a_regex_rule_admits_its_own_probe(cap: Capability) -> None:
     assert _sudo_admits(cap, " ".join(cap.probe_command()[1:]))
 

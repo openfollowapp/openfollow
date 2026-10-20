@@ -939,6 +939,33 @@ class TestInitPsnReceiver:
         assert recv.kwargs["source_ip"] == "10.0.0.1"
         assert recv.kwargs["source_iface"] == "eth0"
 
+    def test_the_receiver_knows_where_this_station_s_output_comes_from(
+        self,
+        services: AppRuntimeServices,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(services_module, "PsnReceiver", _FakePsnReceiver)
+        monkeypatch.setattr(services, "station_source_ip_or_none", lambda: "10.0.0.1")
+        current: dict[str, tuple[str, int] | None] = {"address": ("192.0.2.10", 50000)}
+        services._app._server = SimpleNamespace(source_address=lambda: current["address"])
+        services.init_psn_receiver()
+        own_source = services._app._psn_receiver.kwargs["own_source"]
+        assert own_source() == ("192.0.2.10", 50000)
+        # The server's socket is rebuilt on recovery and rebind; the receiver follows it.
+        current["address"] = ("192.0.2.10", 50002)
+        assert own_source() == ("192.0.2.10", 50002)
+
+    def test_without_psn_output_the_receiver_drops_nothing(
+        self,
+        services: AppRuntimeServices,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(services_module, "PsnReceiver", _FakePsnReceiver)
+        monkeypatch.setattr(services, "station_source_ip_or_none", lambda: "10.0.0.1")
+        services._app._server = None
+        services.init_psn_receiver()
+        assert services._app._psn_receiver.kwargs["own_source"]() is None
+
 
 class _GateReceiver:
     """A receiver that records the PSN input gate the way ``PsnReceiver`` applies it."""

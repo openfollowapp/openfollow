@@ -2765,7 +2765,7 @@ def render_usb_table(
             gamepad_names.append(name)
     # A camera found under a USB device is matched there; only one found under none is matched by name.
     listed_cameras = set(cameras or [])
-    placed = {c for d in devices for c in d.cameras if c in listed_cameras}
+    placed = {c for d in devices for c in d.cameras}
     unplaced_cameras = [c for c in cameras or [] if c not in placed]
     for d in devices:
         if d.is_hub:

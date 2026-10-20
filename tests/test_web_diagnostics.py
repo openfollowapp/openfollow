@@ -1529,6 +1529,7 @@ def test_collect_usb_linux_reads_the_hosts_disks_only_with_the_hosts_sysfs(tmp_p
     bus, block = _usb_sysfs(tmp_path)
     monkeypatch.setattr(diag, "_USB_SYSFS", bus)
     monkeypatch.setattr(diag, "_BLOCK_SYSFS", block)
+    monkeypatch.setattr(diag, "_V4L_SYSFS", tmp_path / "no-video4linux")
     by_default = {d.pid: d.disks for d in diag.collect_usb_devices_linux()}
     # A caller's own tree (a test's) reads no disks unless it names them, so the host's never leak in.
     own_tree = {d.pid: d.disks for d in diag.collect_usb_devices_linux(sysfs_root=bus)}

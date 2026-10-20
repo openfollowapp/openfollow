@@ -214,19 +214,29 @@ class TestAssistGhost:
         ghost = MarkerOverlayData(marker_id=1, x=1.0, y=1.0, z=0.0, color="#33ff99", is_assist_ghost=True)
 
         def _fake_project(_cam, pts, _w, _h, _k1=0.0, _k2=0.0):
-            # The marker's own position (2 points) stays finite so draw_marker
-            # reaches the ghost path; the crosshair (6) and ground ring (24)
-            # project to non-finite, so their segments are skipped and the ring
-            # is degenerate (<3 finite points).
-            if len(pts) == 2:
-                return np.array([[100.0, 100.0], [110.0, 100.0]])
-            return np.full((len(pts), 2), np.nan)
+            # Only the marker's own position lands on screen, so draw_marker reaches
+            # the ghost path; the crosshair and ground ring project to non-finite,
+            # so their segments are skipped and the ring is degenerate.
+            arr = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
+            out = np.full((len(arr), 2), np.nan)
+            out[np.all(arr == (ghost.x, ghost.y, ghost.z), axis=1)] = (100.0, 100.0)
+            return out
 
         monkeypatch.setattr(mod, "project", _fake_project)
         cr = FakeCairo()
         draw_marker(cr, state, ghost, 1920, 1080)
         # Reached the ghost path, but nothing fillable was drawn.
         assert cr.fills == 0
+
+    def test_ghost_behind_the_camera_draws_nothing(self) -> None:
+        state = _state_with_grid_offset(0.0, 0.0, 0.0)
+        state.show_ground_circle = True
+        state.ground_circle_size = 3.0
+        # Behind the camera at y = -6, its ground ring reaching in front of it.
+        ghost = MarkerOverlayData(marker_id=1, x=0.0, y=-9.0, z=0.0, color="#33ff99", is_assist_ghost=True)
+        cr = FakeCairo()
+        draw_marker(cr, state, ghost, 1920, 1080)
+        assert cr.strokes == 0
 
 
 def _marker_state(k1: float = 0.0, k2: float = 0.0) -> OverlayState:

@@ -81,6 +81,13 @@ def test_the_touch_remote_switch_never_leaves_the_station_but_its_tuning_does() 
     assert strip_device_local_fields("touch_remote", {"enabled": True, "z_step_m": 0.1}) == {"z_step_m": 0.1}
 
 
+def test_the_operator_screen_override_never_leaves_the_station() -> None:
+    cfg = AppConfig()
+    cfg.display.operator_screen = "cairo"
+
+    assert "operator_screen" not in _config_dict_redacted(cfg)["display"]
+
+
 def test_config_dict_redacted_keeps_stream_credentials() -> None:
     """A deliberate split from ``web_pin``.
 
@@ -1687,6 +1694,7 @@ _DEVICE_IDENTITY_SAMPLES = [
     ("markers_catalog_path", "/mnt/nvme/openfollow/markers.toml"),
     ("testpattern_selected_media", "0123456789abcdef"),
     ("detection.storage_path", "/mnt/nvme/openfollow/yolo"),
+    ("display.operator_screen", "cairo"),
 ]
 
 

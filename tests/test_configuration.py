@@ -6772,6 +6772,61 @@ class TestNetworkConfig:
         assert cfg.network.backend == "psutil"
 
 
+class TestDisplayConfig:
+    """The Operator Screen override, set by hand in config.toml."""
+
+    def test_default_is_auto(self) -> None:
+        from openfollow.configuration import AppConfig
+
+        assert AppConfig().display.operator_screen == "auto"
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [("auto", "auto"), ("cairo", "cairo"), ("  Cairo ", "cairo"), ("AUTO", "auto")],
+        ids=["auto", "cairo", "padded-mixed-case", "upper-case"],
+    )
+    def test_a_known_choice_is_kept_normalised(self, value: str, expected: str) -> None:
+        from openfollow.configuration import DisplayConfig
+
+        assert DisplayConfig(operator_screen=value).operator_screen == expected
+
+    @pytest.mark.parametrize("value", ["gl", "", "opengl"], ids=["gl", "empty", "unknown"])
+    def test_an_unknown_choice_is_auto(self, value: str) -> None:
+        from openfollow.configuration import DisplayConfig
+
+        assert DisplayConfig(operator_screen=value).operator_screen == "auto"
+
+    @pytest.mark.parametrize("value", [None, 1, True, ["cairo"]], ids=["none", "int", "bool", "list"])
+    def test_a_wrong_type_is_auto(self, value: object) -> None:
+        from openfollow.configuration import DisplayConfig
+
+        assert DisplayConfig(operator_screen=value).operator_screen == "auto"  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize(
+        ("toml", "expected"),
+        [
+            ('[display]\noperator_screen = "cairo"\n', "cairo"),
+            ("[display]\noperator_screen = 3\n", "auto"),
+            ('[display]\noperator_screen = "metal"\n', "auto"),
+            ("", "auto"),
+        ],
+        ids=["cairo", "wrong-type", "unknown", "no-section"],
+    )
+    def test_a_hand_edited_file_is_read_and_normalised(self, temp_config_path, toml: str, expected: str) -> None:
+        temp_config_path.write_text(toml, encoding="utf-8")
+
+        assert load_config(str(temp_config_path)).display.operator_screen == expected
+
+    def test_the_choice_survives_a_save(self, temp_config_path) -> None:
+        from openfollow.configuration import AppConfig
+
+        cfg = AppConfig()
+        cfg.display.operator_screen = "cairo"
+        save_config(cfg, str(temp_config_path))
+
+        assert load_config(str(temp_config_path)).display.operator_screen == "cairo"
+
+
 # _apply_with_fallback transactional helper tests
 
 

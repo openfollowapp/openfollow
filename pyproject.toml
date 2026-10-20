@@ -45,6 +45,9 @@ dependencies = [
     # ``openfollow/web/_md.py``) keeps the rendered fragment inert, so no HTML
     # sanitiser dependency is needed.
     "mistune>=3.3.4",
+    # The GL Operator Screen's OpenGL ES calls. Pure Python over the system libEGL and
+    # libGLESv2 (both .deb Depends); imported only when the GL display starts.
+    "PyOpenGL>=3.1.7",
 ]
 
 [project.optional-dependencies]
@@ -172,6 +175,7 @@ module = [
     "mido",
     "pyspacemouse",
     "easyhid",
+    "OpenGL",
 ]
 ignore_missing_imports = true
 

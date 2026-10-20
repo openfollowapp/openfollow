@@ -22,6 +22,10 @@
 #   OPENFOLLOW_CI_DIR    repo path on the Pi         (default: /home/openfollow/openfollow)
 #   OPENFOLLOW_CI_FORCE  =1 to overwrite a Pi with a dirty checkout
 #   OPENFOLLOW_CI_LOCAL  =1 to skip the Pi entirely and run locally
+#   OPENFOLLOW_CI_PERF   auto (default): time the Operator Screen drawing against
+#                        the merge-base when the change touches the drawing paths;
+#                        1 always, 0 never
+#   OPENFOLLOW_CI_PERF_BASE  ref the merge-base is taken against (default: origin/main)
 set -euo pipefail
 
 HOSTS="${OPENFOLLOW_CI_HOSTS:-192.168.178.66 192.168.178.59}"
@@ -33,9 +37,52 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 log() { printf '\033[1;36m[ci-remote]\033[0m %s\n' "$*" >&2; }
 
+# A change (uncommitted part included) to these paths is timed against the merge-base
+# after a green `make ci`. The bench runs bare: make turns its exit 1 (slower) into 2.
+PERF_AB="poetry run python scripts/hw_validation/hud_bench.py --compare"
+HUD_PATHS='^(openfollow/(video/(overlay|hud_render)\.py|runtime/overlay_[a-z_]+\.py|scene/(solver|ground_grid|camera)\.py|zones/geometry\.py|window\.py)|tests/_hud_scenes\.py|scripts/hw_validation/hud_bench\.py)$'
+perf_base=""
+perf_dir=""
+
+perf_wanted() {
+  local mode="${OPENFOLLOW_CI_PERF:-auto}" ref="${OPENFOLLOW_CI_PERF_BASE:-origin/main}"
+  [ "$mode" = "0" ] && return 1
+  if ! perf_base="$(git -C "$REPO_ROOT" merge-base "$ref" HEAD 2>/dev/null)"; then
+    log "No merge-base with ${ref}: skipping the Operator Screen drawing comparison."
+    return 1
+  fi
+  [ "$mode" = "1" ] && return 0
+  # grep reads all of its input: an early exit would fail the pipe under pipefail.
+  { git -C "$REPO_ROOT" diff --name-only "$perf_base"; git -C "$REPO_ROOT" ls-files --others --exclude-standard; } \
+    | grep -E "$HUD_PATHS" >/dev/null
+}
+
+perf_verdict() {
+  case "$1" in
+    0) return 0 ;;
+    1) log "Operator Screen drawing is more than 15 % slower than ${perf_base:0:9} on a bench scene (table above)." ;;
+    *) log "The Operator Screen drawing comparison could not run (exit $1)." ;;
+  esac
+  return "$1"
+}
+
+PERF=0
+if perf_wanted; then
+  PERF=1
+fi
+
 run_local() {
   log "Running 'make ci' locally on this machine."
-  exec make -C "$REPO_ROOT" ci
+  [ "$PERF" = 1 ] || exec make -C "$REPO_ROOT" ci
+  make -C "$REPO_ROOT" ci
+  perf_dir="$(mktemp -d)"
+  trap 'rm -rf "$perf_dir"' EXIT
+  git -C "$REPO_ROOT" archive "$perf_base" openfollow | tar -x -C "$perf_dir"
+  log "Timing the Operator Screen drawing against ${perf_base:0:9}"
+  local status=0
+  (cd "$REPO_ROOT" && $PERF_AB "$perf_dir") || status=$?
+  perf_verdict "$status" || exit "$status"
+  exit 0
 }
 
 [ "${OPENFOLLOW_CI_LOCAL:-0}" = "1" ] && run_local
@@ -109,6 +156,7 @@ rsync -az --delete \
 
 restore() {
   trap - EXIT
+  [ -z "$perf_dir" ] || remote "rm -rf '$perf_dir'" || log "Could not remove ${HOST}:${perf_dir}."
   log "Restoring ${HOST}:${REMOTE_DIR} to ${orig_ref:0:9}"
   # `git clean -e models -e config.toml`: drop the files our sync added, but
   # keep the device-local state the rsync also excluded. config.toml is
@@ -123,10 +171,22 @@ restore() {
 # Covers an interrupted run; the normal path restores before the verdict.
 trap 'restore || exit 3' EXIT
 
+if [ "$PERF" = 1 ]; then
+  perf_dir="$(remote mktemp -d)"
+  log "Copying the merge-base's package (${perf_base:0:9}) -> ${HOST}:${perf_dir}"
+  git -C "$REPO_ROOT" archive "$perf_base" openfollow | remote "tar -x -C '$perf_dir'"
+fi
+
 log "Running 'make ci' on ${HOST} (real aarch64 / py3.13 target)"
 set +e
 remote "export PATH=\$HOME/.local/bin:\$PATH; cd '$REMOTE_DIR' && make ci"
 status=$?
+perf_status=0
+if [ "$status" -eq 0 ] && [ "$PERF" = 1 ]; then
+  log "Timing the Operator Screen drawing against ${perf_base:0:9} on ${HOST}"
+  remote "export PATH=\$HOME/.local/bin:\$PATH; cd '$REMOTE_DIR' && $PERF_AB '$perf_dir'"
+  perf_status=$?
+fi
 set -e
 
 # The next gate runs on this checkout, so leaving it broken fails this one.
@@ -134,9 +194,12 @@ if ! restore; then
   log "CI FAILED on ${HOST}: make ci exited ${status}, but the Pi was left in an unknown state."
   exit 3
 fi
-if [ "$status" -eq 0 ]; then
-  log "CI PASSED on ${HOST}."
-else
+if [ "$status" -ne 0 ]; then
   log "CI FAILED on ${HOST} (exit ${status})."
+  exit "$status"
 fi
-exit "$status"
+if ! perf_verdict "$perf_status"; then
+  log "CI FAILED on ${HOST}."
+  exit "$perf_status"
+fi
+log "CI PASSED on ${HOST}."

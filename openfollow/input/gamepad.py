@@ -429,9 +429,8 @@ class GamepadHandler:
         # place, so a single-map reader always holds a complete one.
         self._capabilities_lock = threading.Lock()
 
-        # pygame.init() requires video subsystem; it also initializes SDL audio/mixer
-        # which OpenFollow doesn't use. On Linux, SDL audio opens the default ALSA
-        # device and floods the log. Point SDL audio at the dummy driver before init.
+        # Only the subsystems pads need start below; the dummy audio driver keeps a
+        # pygame.init() elsewhere from opening the default ALSA device.
         os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
         # The video subsystem is what pygame's event API needs, not joystick
         # init, and SDL's real backend pumps the same run loop GTK drives.
@@ -446,8 +445,9 @@ class GamepadHandler:
         # SDL's own SIGINT/SIGTERM handler turns a stop into a quit event nothing
         # reads, until the GLib main loop takes the signals over.
         os.environ.setdefault("SDL_NO_SIGNAL_HANDLERS", "1")
-        if not pygame.get_init():
-            pygame.init()
+        # Not pygame.init(): it starts SDL's timer and, through the mixer, audio, each a thread.
+        if not pygame.display.get_init():
+            pygame.display.init()
         if not getattr(pygame, "IS_CE", False):
             logger.warning(
                 "Gamepad input is running on classic pygame %s (SDL %s), not pygame-ce: "
@@ -1879,5 +1879,5 @@ class GamepadHandler:
         # arms are the normal teardown the rest of the suite exercises.
         if pygame.joystick.get_init():  # pragma: no branch
             pygame.joystick.quit()
-        if pygame.get_init():  # pragma: no branch
-            pygame.quit()
+        if pygame.display.get_init():  # pragma: no branch
+            pygame.display.quit()

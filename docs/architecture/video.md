@@ -45,9 +45,11 @@ Delegates protocol-specific work to the active plugin. Retains shared infrastruc
 - Shared sink management (detach/reattach across pipeline switches, `_prepare_sink`). The shared sink is `gtksink`, or with the GL display the display's own sink bin, whose widget is the GL area (see [hud](hud.md#the-gl-display)): the receiver calls `release_frames` before every NULL transition, `accept_frames` in `_prepare_sink`, and falls back to `gtksink` through `drop_display`
 - Connection timeout, reconnection scheduling (driven by plugin's `ReconnectPolicy`)
 - First-frame / caps detection via downstream pad probes (`_on_pad_event` for the caps event, `_on_sink_buffer` → `_handle_video_connected` on the first buffer)
+- Display-frame count: `_create_shared_sink` puts a buffer probe on the new shared sink's `sink` pad (`gtksink`'s, or the ghost pad of the GL display's sink bin) that tells the `set_display_frame_listener` listener of every frame, the placeholder's included, for the Operator Screen metrics (see [hud](hud.md#what-the-operator-screen-costs-apistats--hud)). It only counts, never drives drawing. The listener belongs to the receiver, so the platform sink `drop_display` builds is counted too
 - Source-byte observation: `_attach_source_probe()` puts a one-shot buffer probe on the plugin's `source_element_name`. Attached **per pipeline** (the source element is rebuilt on every reconnect), unlike the sink probes which attach once for the shared sink's lifetime. A source with no static `src` pad (`rtspsrc`) is followed via `pad-added`. The same first buffer records `source_format` from that pad's caps (a pixel format for raw video, else the media type), read from the caps **string** because the structure getters are what GStreamer 1.26.2 broke; the sink probe sits after `videoconvert` and never sees it. It is logged once per connection and published as `video.source_format`
 - Source discovery scheduling (calls plugin's `discover_sources()`)
 - Source selection state management (generic, checks `InputCapabilities.has_source_selection`)
+- `source_name`, read every frame for the Operator Screen, keeps the plugin's `get_source_label` until the input, its config or the pipeline changes; `create_pipeline` drops it, since an input resolves what it plays as it builds (the Media Gallery its selection, on disk)
 
 ## NDI plugin (`video/inputs/ndi.py`)
 ```
@@ -63,11 +65,19 @@ ndisrc → ndisrcdemux → ndi_video_queue (leaky) → videoconvert → shared_v
 srtsrc → pre_queue → decodebin → post_queue → videoconvert → shared_videosink
 ```
 - `srtsrc`: `mode=caller`, `wait-for-connection=True`, `latency=125ms`, **`auto-reconnect=False`** (left on, it retries internally and the failure never reaches the bus)
+- `pre_queue` (RTP's too, `configure_pre_decode_queue`) is leaky and bounded by **time**, 300 ms, never by a buffer count: its buffers are packet-sized, so a count holds milliseconds and a decoder hiccup drops compressed data, which breaks the picture into blocks until the next keyframe. A byte bound (8 MiB) holds it where buffer timestamps cannot (none, or a step back). It fills only while the decoder is behind, and the picture then runs up to 300 ms late until the decoder catches up, since the sink does not sync.
 - `srt_passphrase`, when set, drives the `passphrase` property and the URL's own `?passphrase=` is stripped first, so one field answers "which key is this stream encrypted with". Blank leaves the URL path untouched
 - Hardware decoder priority boosting (V4L2 > avdec > openh264)
+- HEVC stays off the Raspberry Pi hardware decoder (`v4l2slh265dec`, ranked out on every Pi): when a reference picture is missing (packet loss, a stream joined between keyframes) `rpi_hevc_dec` rejects the slice parameters, and stopping the pipeline after that error crashes the process (raspberrypi/linux #7612; still so on kernel 6.18.56 with GStreamer 1.26.2-3+rpt4). Kernels before 6.18.49 can instead block `VIDIOC_STREAMOFF` in D state until a reboot (raspberrypi/linux #7609). Only a Raspberry Pi (`/proc/device-tree/model`) is guarded: another board's stateless HEVC decoder is a different driver. `avdec_h265` decodes 1080p30 for about 0.6 of a Pi 5 core and conceals lost references. The rank change is process-wide and is applied before each SRT, RTSP and RTP decodebin (`inputs/_hevc_guard.py`); no other input decodes HEVC (NDI decodes in its SDK, USB and Pi Camera are raw, the Media Gallery plays VP8 only)
 - Preserves decoder latency on ASYNC_DONE (do NOT force 0)
 - `pad-added` on decodebin: **do NOT filter by pad name** (uses `src_0`, not `video_0`)
 - Reconnect: 3 retries with 8s first-frame timeout, then no-signal placeholder fallback
+
+## RTP plugin (`video/inputs/rtp.py`)
+```
+udpsrc → rtpjitterbuffer → pre_queue → decodebin → post_queue → videoconvert → shared_videosink
+```
+- `rtpjitterbuffer`: `latency` 0, `drop-on-latency`; left out when the element is missing. `latency` 0 leaves its queue unbounded, so the bounded `pre_queue` (as on SRT) sits **after** it: a decoder stall fills `pre_queue`, which drops the oldest, and never piles up in the jitterbuffer to come out late. The jitterbuffer pushes from its own thread, so `udpsrc` keeps reading the socket through a stall
 
 ## RTSP plugin (`video/inputs/rtsp.py`)
 ```
@@ -258,7 +268,7 @@ The "No Signal" placeholder is a black `videotestsrc` pinned at 1920x1080 @ 30 t
 `update_video` applies the aspect-ratio hint whenever the real resolution changes (tracked in `app._video_aspect`), **not** once per session: the HUD projects across the canvas while calibration is solved against the input, so a window left at a previous source's aspect ratio slides the overlay off the video with nothing in the UI to explain it. `app._video_logged` stays a one-shot latch for its log line only.
 
 ## Snapshot provider (`video/preview.py`)
-`SnapshotProvider` captures on-demand full-resolution JPEG frames for the setup wizard. It connects to a `tee` → `queue` → `videoconvert` → `jpegenc` → `appsink` branch in the receiver pipeline (no downscale). The snapshot is pulled lazily – no background polling. The last captured frame is cached so repeated requests don't block on GStreamer. Wired via `full_snapshot_provider` callback on `ConfigWebServer`.
+`SnapshotProvider` captures on-demand full-resolution JPEG frames for the setup wizard. It connects to a `tee` → `valve` → `queue` → `videoconvert` → `jpegenc` → `appsink` branch in the receiver pipeline (no downscale). The valve sits **ahead of** the queue in this branch and the preview's: closed, it drops frames on the tee's thread, so an idle branch wakes no streaming thread. The snapshot is pulled lazily – no background polling. The last captured frame is cached so repeated requests don't block on GStreamer. Wired via `full_snapshot_provider` callback on `ConfigWebServer`.
 - `get_snapshot()` **serialises the blocking `try_pull_sample` → extract under a dedicated `_pull_lock`** so concurrent HTTP requests can't race on the single appsink. The `_valve` / `_jpeg_bytes` references are guarded by a separate short-lived `_state_lock` (also taken by `set_valve`), which is **not** held across the ~500 ms pull – so a source-swap / pipeline rebuild's `set_valve` never blocks on an in-flight encode. Keep the pull serialised, but don't move it under `_state_lock`.
 
 ## Connection lifecycle

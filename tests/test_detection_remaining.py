@@ -583,6 +583,30 @@ class TestSetAppsinkAndStart:
         assert det.available is False
         assert det.performance_stats["backend"] == "none"
 
+    def test_stop_without_waiting_leaves_an_inference_in_flight_to_finish(self) -> None:
+        """The caller returns at once; the session is released only once the inference it runs has ended."""
+        det = _detector_without_backend()
+        closed = threading.Event()
+
+        class _ClosableBackend:
+            def close(self) -> None:
+                closed.set()
+
+        det._backend = _ClosableBackend()  # type: ignore[assignment]
+        det._backend_name = "onnx"
+        inference_ends = threading.Event()
+        worker = threading.Thread(target=inference_ends.wait, daemon=True)
+        worker.start()
+        det._running, det._thread = True, worker
+
+        det.stop(wait=False)
+
+        assert det.performance_stats["running"] is False
+        assert not closed.is_set()
+        inference_ends.set()
+        assert closed.wait(2.0)
+        assert det.available is False
+
     def test_stop_tolerates_backend_without_close(self) -> None:
         det = _detector_without_backend()
         det._backend = object()  # type: ignore[assignment]  # no close()

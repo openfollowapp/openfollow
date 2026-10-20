@@ -5406,6 +5406,15 @@ def test_deb_update_reports_when_already_running(live_server, monkeypatch) -> No
     assert "already running" in body
 
 
+def test_an_update_asked_for_while_a_restart_is_pending_is_refused_and_says_why(live_server) -> None:
+    server, base = live_server
+    server._command_queue.request_restart()
+    status, body = _post_form(base, "/section/general/deb-update", {})
+    assert status == 200
+    assert json.loads(body) == {"ok": False, "error": "OpenFollow is restarting. Start the update once it is back."}
+    assert server._command_queue.get_update_status()["state"] == "idle"
+
+
 def test_deb_update_check_returns_json_available(live_server, monkeypatch) -> None:
     """GET /section/general/deb-update/check returns JSON the General-tab
     modal uses to decide whether to offer the install."""

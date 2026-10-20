@@ -36,6 +36,7 @@ import re
 import shutil
 import subprocess  # nosec B404
 import tarfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -64,6 +65,9 @@ logger = logging.getLogger(__name__)
 _GITHUB_API_RELEASES = "https://api.github.com/repos/{repo}/releases?per_page=20"
 _DOWNLOAD_TIMEOUT_S = 300
 _INSTALL_TIMEOUT_S = 300
+# How often the worker looks whether the detached installer has ended.
+_INSTALLER_POLL_S = 2.0
+_INSTALLER_ACTIVE_STATES = frozenset({"active", "activating", "deactivating", "reloading"})
 
 # Single signed update artifact. One file carries the .deb + checksum + signature.
 _BUNDLE_SUFFIX = ".ofupdate"
@@ -213,6 +217,36 @@ def _apply_update(
     # be stopped shortly when the package's prerm cycles the unit. The new
     # version clears the status on startup.
     set_status("restarting", f"Installing version {version_label} – the device will restart automatically…")
+    _await_installer(app)
+
+
+def installer_running() -> bool:
+    """Whether the detached installer's transient unit has not ended yet (unknown counts as running)."""
+    try:
+        out = subprocess.run(  # nosec B603 B607 - fixed argv, read-only query
+            ["systemctl", "show", "--property=ActiveState", "--value", SELF_UPDATE_UNIT],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except FileNotFoundError:
+        return False
+    except (OSError, subprocess.SubprocessError):
+        return True
+    return out.stdout.strip() in _INSTALLER_ACTIVE_STATES
+
+
+def _await_installer(app: OpenFollowApp) -> None:
+    """Return once the installer has ended without stopping this process, its outcome published.
+
+    A successful install stops this process first, so returning means it did not.
+    The worker stays alive until then: a held restart waits for it.
+    """
+    while installer_running():
+        time.sleep(_INSTALLER_POLL_S)
+    outcome = app._web_commands.settle_finished_install()
+    logger.warning("Update installer ended without restarting OpenFollow: %s %s", outcome["message"], outcome["error"])
 
 
 def verify_and_extract_bundle(

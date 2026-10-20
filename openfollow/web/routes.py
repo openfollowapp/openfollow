@@ -3927,6 +3927,13 @@ _UPDATE_RUNNING = "An update is running."
 _RESTART_AFTER_UPDATE = "Restart once it has finished."
 
 
+def _update_refused(server: Any) -> str:
+    """Why an update was not queued: a restart under way, or another update."""
+    if server.is_restart_pending():
+        return "OpenFollow is restarting. Start the update once it is back."
+    return "An update is already running. Please wait for it to finish."
+
+
 def _save_failed(status: int, error: str, action: str = "", **detail: str) -> HTTPResponse:
     """A refused or failed save, in the ``{error, action}`` shape the save-feedback line reads."""
     body = json.dumps({"error": error, "action": action, **detail})
@@ -7408,7 +7415,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         response.content_type = "application/json"
         service_name = _service_unit_name(cfg)
         if not server.request_deb_update(service_name=service_name):
-            return json.dumps({"ok": False, "error": "An update is already running. Please wait for it to finish."})
+            return json.dumps({"ok": False, "error": _update_refused(server)})
         return json.dumps({"ok": True})
 
     @app.get("/section/general/deb-update/check")
@@ -7478,7 +7485,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             fields = validate_uploaded_deb(deb_path, _deb_arch())
             if not server.request_local_update(service_name, deb_path=staged_path):
                 _discard_staged(staged_path)
-                return json.dumps({"ok": False, "error": "An update is already running. Please wait for it to finish."})
+                return json.dumps({"ok": False, "error": _update_refused(server)})
             version = fields.get("Version", "?")
             # The control Version is the Debian form (e.g. ``0.2.5~rc8``); drop
             # the pre-release tilde so packaging.Version can parse it for the

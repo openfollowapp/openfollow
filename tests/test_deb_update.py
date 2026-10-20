@@ -720,9 +720,14 @@ def _make_app(
     def set_update_status(state: str, message: str = "", error: str = "") -> None:
         statuses.append((state, message))
 
+    def settle_finished_install() -> dict[str, str]:
+        statuses.append(("settled", ""))
+        return {"state": "failed", "message": "Update failed.", "error": "The installer ended without a result."}
+
     commands = SimpleNamespace(
         set_update_status=set_update_status,
         get_update_status=lambda: {"state": "idle", "message": "", "error": ""},
+        settle_finished_install=settle_finished_install,
     )
     config = SimpleNamespace(
         update_github_repo=github_repo,
@@ -762,6 +767,18 @@ def _patch_online_io(monkeypatch: pytest.MonkeyPatch, *, inner_deb: str) -> None
     monkeypatch.setattr("openfollow.runtime.deb_update._cleanup_temp_debs", lambda: None)
 
 
+@pytest.fixture
+def installer_ends(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """The detached installer ends at once without stopping this process; returns the sleeps."""
+    import openfollow.runtime.deb_update as mod
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(mod, "installer_running", lambda: False)
+    monkeypatch.setattr(mod.time, "sleep", sleeps.append)
+    return sleeps
+
+
+@pytest.mark.usefixtures("installer_ends")
 class TestRunDebUpdate:
     def test_already_up_to_date_sets_idle(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
@@ -941,6 +958,7 @@ class TestValidateUploadedDeb:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("installer_ends")
 class TestRunLocalUpdate:
     def test_verified_bundle_installs_without_version_gate(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Older version than installed – must STILL install (downgrade allowed).
@@ -962,7 +980,7 @@ class TestRunLocalUpdate:
         )
 
         states = [s for s, _ in app._statuses]
-        assert states[-1] == "restarting"
+        assert states[-2:] == ["restarting", "settled"]
         broker = app._runtime_services.privilege_broker
         assert broker.run.call_count == 1
         argv = broker.run.call_args_list[0].args[1]
@@ -1051,3 +1069,103 @@ class TestRemoveStaged:
 
     def test_tolerates_missing(self, tmp_path: Any) -> None:
         _remove_staged(str(tmp_path / "openfollow-update-nope.ofupdate"))
+
+
+# ---------------------------------------------------------------------------
+# Waiting for the detached installer
+# ---------------------------------------------------------------------------
+
+
+class TestAwaitInstaller:
+    def test_the_worker_stays_until_the_installer_ends_then_settles(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import openfollow.runtime.deb_update as mod
+
+        inner = "/tmp/openfollow-update-abc.ofupdate.d/openfollow_0.5.1_arm64.deb"
+        monkeypatch.setattr(mod, "verify_and_extract_bundle", lambda bundle, staging: inner)
+        monkeypatch.setattr(mod, "validate_uploaded_deb", lambda path: {"Package": "openfollow"})
+        monkeypatch.setattr(mod, "read_deb_control", lambda path: {"Version": "0.5.1"})
+        app = _make_app()
+        polls = iter([True, True, False])
+        seen: list[list[str]] = []
+
+        def running() -> bool:
+            seen.append([s for s, _ in app._statuses])
+            return next(polls)
+
+        sleeps: list[float] = []
+        monkeypatch.setattr(mod, "installer_running", running)
+        monkeypatch.setattr(mod.time, "sleep", sleeps.append)
+        run_local_update(
+            app, {"kind": "deb-local", "service_name": "openfollow", "deb_path": "/tmp/openfollow-update-abc.ofupdate"}
+        )
+        # Polled only once the installer was launched, every poll interval, then settled once.
+        assert all(states[-1] == "restarting" for states in seen)
+        assert sleeps == [mod._INSTALLER_POLL_S, mod._INSTALLER_POLL_S]
+        assert [s for s, _ in app._statuses][-2:] == ["restarting", "settled"]
+
+    def test_a_refused_launch_never_waits(self, monkeypatch: pytest.MonkeyPatch, installer_ends: list[float]) -> None:
+        import openfollow.runtime.deb_update as mod
+        from openfollow.privilege.broker import PrivilegeError
+
+        monkeypatch.setattr(mod, "verify_and_extract_bundle", lambda bundle, staging: "/tmp/x.deb")
+        monkeypatch.setattr(mod, "validate_uploaded_deb", lambda path: {"Package": "openfollow"})
+        monkeypatch.setattr(mod, "read_deb_control", lambda path: {"Version": "0.5.1"})
+        app = _make_app()
+        app._runtime_services.privilege_broker.run.side_effect = PrivilegeError("no rule")
+        run_local_update(
+            app, {"kind": "deb-local", "service_name": "openfollow", "deb_path": "/tmp/openfollow-update-x.ofupdate"}
+        )
+        assert [s for s, _ in app._statuses][-1] == "failed"
+        assert "settled" not in [s for s, _ in app._statuses]
+
+
+class TestInstallerRunning:
+    @pytest.mark.parametrize(
+        ("active_state", "running"),
+        [
+            ("active", True),
+            ("activating", True),
+            ("deactivating", True),
+            ("reloading", True),
+            ("inactive", False),
+            ("failed", False),
+            ("", False),
+        ],
+    )
+    def test_reads_the_transient_unit_state(
+        self, monkeypatch: pytest.MonkeyPatch, active_state: str, running: bool
+    ) -> None:
+        import openfollow.runtime.deb_update as mod
+
+        calls: list[list[str]] = []
+
+        def fake_run(argv: list[str], **kw: Any) -> Any:
+            calls.append(argv)
+            return SimpleNamespace(returncode=0, stdout=active_state + "\n", stderr="")
+
+        monkeypatch.setattr(mod.subprocess, "run", fake_run)
+        assert mod.installer_running() is running
+        assert calls == [["systemctl", "show", "--property=ActiveState", "--value", "openfollow-self-update"]]
+
+    def test_no_systemctl_means_no_installer(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import openfollow.runtime.deb_update as mod
+
+        def missing(*a: Any, **kw: Any) -> Any:
+            raise FileNotFoundError("systemctl")
+
+        monkeypatch.setattr(mod.subprocess, "run", missing)
+        assert mod.installer_running() is False
+
+    @pytest.mark.parametrize(
+        "exc",
+        [subprocess.TimeoutExpired(["systemctl"], 5), PermissionError("denied")],
+        ids=["timeout", "os-error"],
+    )
+    def test_an_unanswered_query_counts_as_still_running(self, monkeypatch: pytest.MonkeyPatch, exc: Exception) -> None:
+        import openfollow.runtime.deb_update as mod
+
+        def fail(*a: Any, **kw: Any) -> Any:
+            raise exc
+
+        monkeypatch.setattr(mod.subprocess, "run", fail)
+        assert mod.installer_running() is True

@@ -52,7 +52,8 @@ _LONG_STEP = (
     "    pathlib.Path(sys.argv[2]).write_text(str(os.path.exists('branch_only.txt')))\n"
     "    sys.exit(143)\n"
     "signal.signal(signal.SIGTERM, stop)\n"
-    "pathlib.Path(sys.argv[1]).write_text(str(os.getpid()))\n"
+    "pathlib.Path(sys.argv[1] + '.tmp').write_text(str(os.getpid()))\n"
+    "os.replace(sys.argv[1] + '.tmp', sys.argv[1])\n"
     "time.sleep(60)\n"
 )
 

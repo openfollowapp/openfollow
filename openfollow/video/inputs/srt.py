@@ -17,6 +17,7 @@ from openfollow.video.inputs._base import (
     ReconnectPolicy,
     SourceEndpoint,
     VideoInputBase,
+    configure_pre_decode_queue,
     video_input_pin_field,
 )
 from openfollow.video.inputs._hevc_guard import guard_hevc_decoder
@@ -155,10 +156,7 @@ class SrtInput(VideoInputBase):
         )
 
         pre_queue = Gst.ElementFactory.make("queue", "pre_queue")
-        pre_queue.set_property("max-size-buffers", 4)
-        pre_queue.set_property("max-size-bytes", 0)
-        pre_queue.set_property("max-size-time", 0)
-        pre_queue.set_property("leaky", 2)
+        configure_pre_decode_queue(pre_queue)
 
         decodebin = Gst.ElementFactory.make("decodebin", "decodebin")
 

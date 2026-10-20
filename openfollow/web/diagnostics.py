@@ -2483,6 +2483,8 @@ class UsbDevice:
     is_hub: bool = False
     # Kernel names of the disks it carries (``sda``, ``disk4``), never a partition's.
     disks: tuple[str, ...] = ()
+    # Names of the V4L2 devices it carries (Linux only).
+    cameras: tuple[str, ...] = ()
 
 
 # macOS speed enum → human; covers what ``system_profiler`` emits.
@@ -2551,25 +2553,35 @@ def collect_usb_devices_macos() -> list[UsbDevice]:
     return devices
 
 
-def _usb_disk_owners(block_root: Path) -> dict[str, list[str]]:
-    """``{usb device: [disk, ...]}``: each disk in ``/sys/block`` resolved up to the USB device above it."""
+def _usb_owners(class_root: Path | None, label: Callable[[Path], str]) -> dict[str, list[str]]:
+    """``{usb device: [label, ...]}``: each entry of a sysfs class directory resolved up to the USB device above it."""
     owners: dict[str, list[str]] = {}
+    if class_root is None:
+        return owners
     try:
-        disks = sorted(block_root.iterdir())
+        entries = sorted(class_root.iterdir())
     except OSError:
         return owners
-    for disk in disks:
-        owner = next((d for d in disk.resolve().parents if (d / "idVendor").is_file()), None)
+    for entry in entries:
+        owner = next((d for d in entry.resolve().parents if (d / "idVendor").is_file()), None)
         if owner is not None:
-            owners.setdefault(owner.name, []).append(disk.name)
+            owners.setdefault(owner.name, []).append(label(entry))
     return owners
+
+
+def _v4l2_name(node: Path) -> str:
+    # As the USB Camera input names it.
+    return _read_sysfs(node, "name") or node.name
 
 
 _USB_SYSFS = Path("/sys/bus/usb/devices")
 _BLOCK_SYSFS = Path("/sys/block")
+_V4L_SYSFS = Path("/sys/class/video4linux")
 
 
-def collect_usb_devices_linux(sysfs_root: Path | None = None, block_root: Path | None = None) -> list[UsbDevice]:
+def collect_usb_devices_linux(
+    sysfs_root: Path | None = None, block_root: Path | None = None, v4l_root: Path | None = None
+) -> list[UsbDevice]:
     """Read ``/sys/bus/usb/devices/*/{idVendor,idProduct,product,
     manufacturer,serial,speed,bDeviceClass}`` directly. No
     subprocess, no parser fragility – the kernel's exposing
@@ -2577,9 +2589,10 @@ def collect_usb_devices_linux(sysfs_root: Path | None = None, block_root: Path |
     root = sysfs_root or _USB_SYSFS
     if not root.exists():
         return []
-    # The host's disks only beside the host's sysfs: a caller's own tree reads none unless it names block_root.
-    block = block_root if block_root is not None else (_BLOCK_SYSFS if sysfs_root is None else None)
-    owners = _usb_disk_owners(block) if block is not None else {}
+    # The host's disks and cameras only beside the host's sysfs: a caller's own tree reads none unless it names them.
+    host = sysfs_root is None
+    owners = _usb_owners(block_root if block_root is not None else (_BLOCK_SYSFS if host else None), lambda d: d.name)
+    cameras = _usb_owners(v4l_root if v4l_root is not None else (_V4L_SYSFS if host else None), _v4l2_name)
     devices: list[UsbDevice] = []
     # Guard against ``OSError`` / ``PermissionError`` from
     # ``iterdir()`` – sysfs can exist but be unreadable on
@@ -2616,6 +2629,7 @@ def collect_usb_devices_linux(sysfs_root: Path | None = None, block_root: Path |
                 serial=_read_sysfs(entry, "serial") or "",
                 is_hub=is_hub,
                 disks=tuple(owners.get(entry.name, ())),
+                cameras=tuple(dict.fromkeys(cameras.get(entry.name, ()))),
             )
         )
     return devices
@@ -2722,8 +2736,8 @@ def render_usb_table(
     device gets a "visibility" cell that cross-references the
     device against each input subsystem's enumeration: gamepads by
     the USB ids in their SDL GUID, 3D mice by the USB ids their status
-    reports, storage by the disks it carries, everything else by product /
-    manufacturer string. Operator question this answers in one
+    reports, storage by the disks it carries, a camera by the V4L2 devices it
+    carries, everything else by product / manufacturer string. Operator question this answers in one
     glance: "is the kernel seeing this device, and is OpenFollow
     picking it up?"
     """
@@ -2749,6 +2763,10 @@ def render_usb_table(
             gamepad_by_usb_id.setdefault(usb_id, name or usb_id)
         elif name:
             gamepad_names.append(name)
+    # A camera found under a USB device is matched there; only one found under none is matched by name.
+    listed_cameras = set(cameras or [])
+    placed = {c for d in devices for c in d.cameras if c in listed_cameras}
+    unplaced_cameras = [c for c in cameras or [] if c not in placed]
     for d in devices:
         if d.is_hub:
             vis = "(hub)"
@@ -2774,6 +2792,9 @@ def render_usb_table(
             elif d.disks:
                 vis = f"storage: {_storage_state(d.disks, media)}"
                 counts["storage"] += 1
+            elif own := [c for c in d.cameras if c in listed_cameras]:
+                vis = f"camera: {', '.join(own)}"
+                counts["camera"] += 1
             if not vis:
                 raw = _best_usb_match(haystack, midi_ports or [])
                 if raw:
@@ -2785,7 +2806,7 @@ def render_usb_table(
                     vis = f"gamepad: {raw}"
                     counts["gamepad"] += 1
             if not vis:
-                raw = _best_usb_match(haystack, cameras or [])
+                raw = _best_usb_match(haystack, unplaced_cameras)
                 if raw:
                     vis = f"camera: {raw}"
                     counts["camera"] += 1

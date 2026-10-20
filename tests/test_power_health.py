@@ -336,12 +336,12 @@ def test_the_poller_waits_between_readings_until_stopped() -> None:
 
 
 def test_a_host_without_either_source_reads_not_available(tmp_path: Path) -> None:
-    assert PowerMonitor(hwmon_root=tmp_path / "absent").read().available is False
+    assert PowerMonitor(hwmon_root=tmp_path / "absent").read(0.0).available is False
 
 
 def test_the_monitor_combines_the_alarm_with_the_poller(tmp_path: Path) -> None:
     _hwmon(tmp_path, 0, "rpi_volt", "1")
-    state = PowerMonitor(hwmon_root=tmp_path, throttle=_polled("throttled=0x40000")).read()
+    state = PowerMonitor(hwmon_root=tmp_path, throttle=_polled("throttled=0x40000")).read(0.0)
     assert state == PowerState(
         under_voltage=True, throttled=False, under_voltage_since_boot=True, throttled_since_boot=True
     )
@@ -350,9 +350,9 @@ def test_the_monitor_combines_the_alarm_with_the_poller(tmp_path: Path) -> None:
 def test_the_monitor_follows_the_alarm(tmp_path: Path) -> None:
     entry = _hwmon(tmp_path, 0, "rpi_volt", "1")
     monitor = PowerMonitor(hwmon_root=tmp_path)
-    assert monitor.read().under_voltage is True
+    assert monitor.read(0.0).under_voltage is True
     (entry / "in0_lcrit_alarm").write_text("0\n")
-    assert monitor.read().under_voltage is False
+    assert monitor.read(0.0).under_voltage is False
 
 
 def test_the_hwmon_is_scanned_once_not_every_second(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -365,16 +365,16 @@ def test_the_hwmon_is_scanned_once_not_every_second(tmp_path: Path, monkeypatch:
 
     monkeypatch.setattr(ph, "find_rpi_volt_alarm", counting)
     monitor = PowerMonitor(hwmon_root=tmp_path)
-    assert [monitor.read().under_voltage for _ in range(3)] == [True, True, True]
+    assert [monitor.read(0.0).under_voltage for _ in range(3)] == [True, True, True]
     assert scans == [tmp_path]
 
 
 def test_an_alarm_that_becomes_unreadable_is_unknown(tmp_path: Path) -> None:
     entry = _hwmon(tmp_path, 0, "rpi_volt", "1")
     monitor = PowerMonitor(hwmon_root=tmp_path)
-    monitor.read()
+    monitor.read(0.0)
     (entry / "in0_lcrit_alarm").unlink()
-    assert monitor.read().under_voltage is None
+    assert monitor.read(0.0).under_voltage is None
 
 
 def test_the_monitor_starts_the_poller_on_its_first_read_and_stops_it(tmp_path: Path) -> None:
@@ -387,7 +387,7 @@ def test_the_monitor_starts_the_poller_on_its_first_read_and_stops_it(tmp_path: 
     poller = ThrottlePoller(run=run)
     monitor = PowerMonitor(hwmon_root=tmp_path, throttle=poller)
     assert not started.is_set()
-    monitor.read()
+    monitor.read(0.0)
     assert started.wait(timeout=5.0)
     monitor.stop()
     thread = poller.start()
@@ -434,25 +434,39 @@ def test_a_state_is_logged_when_it_starts_and_when_it_ends(tmp_path: Path, caplo
     alarm = entry / "in0_lcrit_alarm"
     monitor = PowerMonitor(hwmon_root=tmp_path)
     caplog.set_level(logging.INFO, logger=ph.__name__)
-    monitor.read()
-    monitor.read()
+    monitor.read(0.0)
+    monitor.read(1.0)
     alarm.write_text("0\n")
-    monitor.read()
-    monitor.read()
+    monitor.read(2.0)
+    monitor.read(1.0 + WARNING_HOLD_S - 0.1)
+    assert [r.getMessage() for r in caplog.records] == ["Power supply under voltage"]
+    monitor.read(1.0 + WARNING_HOLD_S)
+    monitor.read(1.0 + 2 * WARNING_HOLD_S)
     assert [(r.levelno, r.getMessage()) for r in caplog.records] == [
         (logging.WARNING, "Power supply under voltage"),
         (logging.INFO, "Power supply voltage normal"),
     ]
 
 
+def test_a_burst_of_dips_is_logged_as_one(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    alarm = _hwmon(tmp_path, 0, "rpi_volt", "0") / "in0_lcrit_alarm"
+    monitor = PowerMonitor(hwmon_root=tmp_path)
+    caplog.set_level(logging.INFO, logger=ph.__name__)
+    for t in range(30):
+        alarm.write_text("1\n" if t % 4 == 0 else "0\n")
+        monitor.read(float(t))
+    monitor.read(28.0 + WARNING_HOLD_S)
+    assert [r.getMessage() for r in caplog.records] == ["Power supply under voltage", "Power supply voltage normal"]
+
+
 def test_throttling_is_logged_when_it_starts_and_when_it_ends(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.INFO, logger=ph.__name__)
     poller = _polled("throttled=0x4")
     monitor = PowerMonitor(hwmon_root=tmp_path, throttle=poller)
-    monitor.read()
-    monitor.read()
+    monitor.read(0.0)
+    monitor.read(1.0)
     poller.latest = 0x40000
-    monitor.read()
+    monitor.read(1.0 + WARNING_HOLD_S)
     assert [(r.levelno, r.getMessage()) for r in caplog.records] == [
         (logging.WARNING, "CPU throttled"),
         (logging.INFO, "CPU throttling ended"),
@@ -481,11 +495,11 @@ def test_an_unreadable_alarm_neither_ends_nor_restarts_under_voltage(
     caplog.set_level(logging.INFO, logger=ph.__name__)
     alarm = _hwmon(tmp_path, 0, "rpi_volt", "1") / "in0_lcrit_alarm"
     monitor = PowerMonitor(hwmon_root=tmp_path)
-    monitor.read()
+    monitor.read(0.0)
     alarm.write_text("abc")
-    monitor.read()
+    monitor.read(2 * WARNING_HOLD_S)
     alarm.write_text("1\n")
-    monitor.read()
+    monitor.read(3 * WARNING_HOLD_S)
     assert [(r.levelno, r.getMessage()) for r in caplog.records] == [(logging.WARNING, "Power supply under voltage")]
 
 
@@ -493,11 +507,11 @@ def test_a_failed_poll_neither_ends_nor_restarts_throttling(tmp_path: Path, capl
     caplog.set_level(logging.INFO, logger=ph.__name__)
     poller = _polled("throttled=0x4")
     monitor = PowerMonitor(hwmon_root=tmp_path, throttle=poller)
-    monitor.read()
+    monitor.read(0.0)
     poller.latest = None
-    monitor.read()
+    monitor.read(2 * WARNING_HOLD_S)
     poller.latest = 0x4
-    monitor.read()
+    monitor.read(3 * WARNING_HOLD_S)
     assert [(r.levelno, r.getMessage()) for r in caplog.records] == [(logging.WARNING, "CPU throttled")]
 
 
@@ -505,42 +519,42 @@ def test_a_failed_poll_neither_ends_nor_restarts_throttling(tmp_path: Path, capl
 def test_a_since_boot_flag_once_seen_stays_until_the_pi_reboots(tmp_path: Path, failure: int | None) -> None:
     poller = _polled("throttled=0x50000")
     monitor = PowerMonitor(hwmon_root=tmp_path, throttle=poller)
-    assert monitor.read().under_voltage_since_boot is True
+    assert monitor.read(0.0).under_voltage_since_boot is True
     poller.latest = failure
-    state = monitor.read()
+    state = monitor.read(0.0)
     assert (state.under_voltage_since_boot, state.throttled_since_boot) == (True, True)
 
 
 def test_a_failed_poll_before_any_since_boot_flag_stays_unknown(tmp_path: Path) -> None:
     poller = _polled("throttled=0x0")
     monitor = PowerMonitor(hwmon_root=tmp_path, throttle=poller)
-    assert monitor.read().throttled_since_boot is False
+    assert monitor.read(0.0).throttled_since_boot is False
     poller.latest = None
-    state = monitor.read()
+    state = monitor.read(0.0)
     assert (state.under_voltage_since_boot, state.throttled_since_boot) == (None, None)
 
 
 def test_a_live_dip_is_a_since_boot_one_before_the_next_poll(tmp_path: Path) -> None:
     alarm = _hwmon(tmp_path, 0, "rpi_volt", "1") / "in0_lcrit_alarm"
     monitor = PowerMonitor(hwmon_root=tmp_path, throttle=_polled("throttled=0x0"))
-    assert monitor.read().under_voltage is True
+    assert monitor.read(0.0).under_voltage is True
     alarm.write_text("0\n")
-    state = monitor.read()
+    state = monitor.read(0.0)
     assert (state.under_voltage, state.under_voltage_since_boot) == (False, True)
 
 
 def test_live_throttling_is_a_since_boot_one_before_the_next_poll(tmp_path: Path) -> None:
     poller = _polled("throttled=0x4")
     monitor = PowerMonitor(hwmon_root=tmp_path, throttle=poller)
-    assert monitor.read().throttled_since_boot is True
+    assert monitor.read(0.0).throttled_since_boot is True
     poller.latest = None
-    assert monitor.read().throttled_since_boot is True
+    assert monitor.read(0.0).throttled_since_boot is True
 
 
 def test_without_vcgencmd_a_dip_still_leaves_its_since_boot_flag(tmp_path: Path) -> None:
     alarm = _hwmon(tmp_path, 0, "rpi_volt", "1") / "in0_lcrit_alarm"
     monitor = PowerMonitor(hwmon_root=tmp_path)
-    monitor.read()
+    monitor.read(0.0)
     alarm.write_text("0\n")
-    state = monitor.read()
+    state = monitor.read(0.0)
     assert state == PowerState(under_voltage=False, under_voltage_since_boot=True)

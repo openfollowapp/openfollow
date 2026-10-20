@@ -142,7 +142,7 @@ class SystemStatsCollector:
         # Reverse-lookup iface name for display; refresh every tick.
         iface = get_iface_for_ip(ip)
 
-        power = self._power.read() if self._power is not None else PowerState()
+        power = self._power.read(now) if self._power is not None else PowerState()
 
         self._stats = SystemStats(
             cpu_percent=cpu,

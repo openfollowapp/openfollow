@@ -47,7 +47,7 @@ _ALARM_FILE = "in0_lcrit_alarm"
 THROTTLE_POLL_S = 5.0
 VCGENCMD_TIMEOUT_S = 2.0
 
-# How long the Operator Screen keeps the warning after the last active reading.
+# How long a live state outlasts its last active reading, on the Operator Screen and in the log.
 WARNING_HOLD_S = 10.0
 UNDER_VOLTAGE_WARNING = "Power supply under voltage"
 THROTTLED_WARNING = "CPU throttled (too hot)"
@@ -194,6 +194,9 @@ class ThrottlePoller:
 class PowerMonitor:
     """Reads the power state; logs once when a live state starts and once when it ends.
 
+    A state ends ``WARNING_HOLD_S`` after its last active reading, as on the
+    Operator Screen, so a burst of dips logs as one.
+
     Nothing is touched until the first :meth:`read`: the hwmon is looked up and
     the poller started there, so building one has no side effect.
     """
@@ -203,12 +206,13 @@ class PowerMonitor:
         self._throttle = throttle
         self._alarm_path: Path | None = None
         self._looked_up = False
-        self._under_voltage = False
-        self._throttled = False
+        self._under_voltage = _LoggedState("Power supply under voltage", "Power supply voltage normal")
+        self._throttled = _LoggedState("CPU throttled", "CPU throttling ended")
         self._under_voltage_since_boot = False
         self._throttled_since_boot = False
 
-    def read(self) -> PowerState:
+    def read(self, now: float) -> PowerState:
+        """The reading at ``now``, in monotonic seconds."""
         if not self._looked_up:
             self._looked_up = True
             self._alarm_path = find_rpi_volt_alarm(self._hwmon_root)
@@ -226,10 +230,8 @@ class PowerMonitor:
             under_voltage_since_boot=self._under_voltage_since_boot or state.under_voltage_since_boot,
             throttled_since_boot=self._throttled_since_boot or state.throttled_since_boot,
         )
-        self._under_voltage = _log_edge(
-            self._under_voltage, state.under_voltage, "Power supply under voltage", "Power supply voltage normal"
-        )
-        self._throttled = _log_edge(self._throttled, state.throttled, "CPU throttled", "CPU throttling ended")
+        self._under_voltage.update(state.under_voltage, now)
+        self._throttled.update(state.throttled, now)
         return state
 
     def stop(self) -> None:
@@ -237,15 +239,23 @@ class PowerMonitor:
             self._throttle.stop()
 
 
-def _log_edge(was: bool, now: bool | None, started: str, ended: str) -> bool:
-    # An unknown reading neither starts nor ends a state.
-    if now is None:
-        return was
-    if now and not was:
-        logger.warning(started)
-    elif was and not now:
-        logger.info(ended)
-    return now
+class _LoggedState:
+    def __init__(self, started: str, ended: str) -> None:
+        self._started = started
+        self._ended = ended
+        self._active = False
+        self._last_active = 0.0
+
+    def update(self, flag: bool | None, now: float) -> None:
+        # An unknown reading neither starts nor ends a state.
+        if flag:
+            self._last_active = now
+            if not self._active:
+                self._active = True
+                logger.warning(self._started)
+        elif flag is False and self._active and now - self._last_active >= WARNING_HOLD_S:
+            self._active = False
+            logger.info(self._ended)
 
 
 def system_power_monitor() -> PowerMonitor:

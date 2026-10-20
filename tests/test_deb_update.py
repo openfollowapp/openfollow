@@ -1149,6 +1149,18 @@ class TestInstallerRunning:
         assert mod.installer_running() is running
         assert calls == [["systemctl", "show", "--property=ActiveState", "--value", "openfollow-self-update"]]
 
+    def test_undecodable_output_reads_as_running_and_never_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import openfollow.runtime.deb_update as mod
+
+        raw = b"inact\xffive\n"
+
+        def decoding_run(argv: list[str], **kw: Any) -> Any:
+            # Decodes as subprocess.run does for the text arguments it is given.
+            return SimpleNamespace(returncode=0, stdout=raw.decode(errors=kw.get("errors", "strict")), stderr="")
+
+        monkeypatch.setattr(mod.subprocess, "run", decoding_run)
+        assert mod.installer_running() is True
+
     def test_no_systemctl_means_no_installer(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import openfollow.runtime.deb_update as mod
 

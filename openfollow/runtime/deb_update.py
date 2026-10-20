@@ -227,6 +227,7 @@ def installer_running() -> bool:
             ["systemctl", "show", "--property=ActiveState", "--value", SELF_UPDATE_UNIT],
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=5,
             check=False,
         )

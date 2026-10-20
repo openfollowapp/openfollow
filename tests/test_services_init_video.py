@@ -31,6 +31,7 @@ import pytest
 
 import openfollow.services as services_module
 from openfollow.configuration import AppConfig, DetectionConfig
+from openfollow.runtime.overlay_layers import LayerContext
 from openfollow.services import AppRuntimeServices
 from tests._fake_cairo import FakeCairo
 from tests._fake_gtk import FakeCanvas
@@ -46,10 +47,12 @@ class _FakeOverlayRenderer:
     def __init__(self) -> None:
         self.state: Any = None
         self.drawn: list[Any] = []
+        self.contexts: list[Any] = []
         self.drew = threading.Event()
 
     def draw(self, cr: Any, width: int, height: int, state: Any) -> None:
         self.drawn.append(state)
+        self.contexts.append(cr)
         self.drew.set()
 
 
@@ -595,10 +598,16 @@ class TestInitVideoCanvasWithoutAttachHud:
             assert display.hud is services._hud_render
             assert attached == [(display, services._hud_render.tick)]
             assert canvas.hud_draw_fn is None
+            # The GL display composites the HUD from sprites.
+            services._hud_render.set_canvas(640, 360, (1.0, 1.0))
+            services._hud_render.tick()
+            assert services._overlay_renderer.drew.wait(5.0)
+            assert isinstance(services._overlay_renderer.contexts[0], LayerContext)
         else:
             assert display is None
             assert attached == []
             _assert_hud_drawn_on_its_thread(services)
+            assert not isinstance(services._overlay_renderer.contexts[0], LayerContext)
 
     def test_canvas_missing_attach_hud_is_silently_tolerated(
         self,

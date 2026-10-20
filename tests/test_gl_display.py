@@ -1,16 +1,18 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""The GL display's plain parts: the switch, the frame slot, the plane layout, the letterbox and the colour terms."""
+"""The GL display's plain parts: switch, frame slot, plane layout, letterbox, sprites and colour terms."""
 
 from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
 
+import cairo
 import pytest
 
+from openfollow.runtime.overlay_layers import Sprite
 from openfollow.video import gl_display
-from openfollow.video.gl_display import LatestFrame, Plane, i420_planes, letterbox, yuv_to_rgb
+from openfollow.video.gl_display import LatestFrame, Plane, i420_planes, letterbox, sprite_quad, yuv_to_rgb
 
 pytestmark = pytest.mark.unit
 
@@ -148,3 +150,116 @@ def test_a_frame_is_laid_out_by_its_video_meta_else_by_its_caps(
     meta: SimpleNamespace | None, expected: tuple[tuple[int, ...], tuple[int, ...]]
 ) -> None:
     assert gl_display.frame_layout(meta, _CAPS_LAYOUT, 3) == expected
+
+
+@pytest.mark.parametrize(
+    ("x", "y", "size", "scale", "expected"),
+    [
+        (0, 0, (100, 50), (1.0, 1.0), (-1.0, 0.8, -0.8, 1.0)),
+        (900, 450, (100, 50), (1.0, 1.0), (0.8, -1.0, 1.0, -0.8)),
+        (450, 225, (100, 50), (2.0, 2.0), (0.8, -1.0, 1.0, -0.8)),
+    ],
+    ids=["top-left", "bottom-right", "hidpi"],
+)
+def test_a_sprite_lands_where_its_corner_and_size_put_it_in_clip_space(
+    x: int, y: int, size: tuple[int, int], scale: tuple[float, float], expected: tuple[float, ...]
+) -> None:
+    sprite = Sprite(cairo.ImageSurface(cairo.FORMAT_ARGB32, *size), x, y, kept=False)
+
+    assert sprite_quad(sprite, scale, 1000, 500) == pytest.approx(expected)
+
+
+class _FakeGl:
+    """Texture names in creation order, with what each was filled from and which were deleted."""
+
+    def __init__(self) -> None:
+        self.made = 0
+        self.uploads: list[tuple[int, cairo.ImageSurface]] = []
+        self.deleted: list[int] = []
+
+    def new(self) -> int:
+        self.made += 1
+        return self.made
+
+    def upload(self, tex: int, picture: cairo.ImageSurface) -> None:
+        self.uploads.append((tex, picture))
+
+    def delete(self, textures: list[int]) -> None:
+        self.deleted.extend(textures)
+
+
+def _sprite(*, kept: bool, picture: cairo.ImageSurface | None = None) -> Sprite:
+    return Sprite(picture or cairo.ImageSurface(cairo.FORMAT_ARGB32, 4, 4), 0, 0, kept=kept)
+
+
+def _textures() -> tuple[gl_display.SpriteTextures, _FakeGl]:
+    gl = _FakeGl()
+    return gl_display.SpriteTextures(gl.new, gl.upload, gl.delete), gl
+
+
+def test_a_kept_picture_is_uploaded_once_for_as_long_as_lists_show_it() -> None:
+    textures, gl = _textures()
+    grid = _sprite(kept=True)
+
+    textures.update([grid, _sprite(kept=False)])
+    textures.update([grid, _sprite(kept=False)])
+
+    assert [tex for tex, picture in gl.uploads if picture is grid.picture] == [1]
+    assert textures.drawn[0] == 1
+    assert gl.deleted == []
+
+
+def test_a_kept_picture_no_list_shows_has_its_texture_deleted() -> None:
+    textures, gl = _textures()
+    textures.update([_sprite(kept=True), _sprite(kept=True)])
+
+    textures.update([_sprite(kept=False)])
+
+    assert gl.deleted == [1, 2]
+    assert textures.drawn == [3]
+
+
+def test_drawn_sprites_reuse_the_last_lists_textures_and_never_a_kept_one() -> None:
+    textures, gl = _textures()
+    grid = _sprite(kept=True)
+    textures.update([_sprite(kept=False), grid, _sprite(kept=False)])
+
+    gl.uploads.clear()
+    sprites = [grid, *(_sprite(kept=False) for _ in range(3))]
+
+    textures.update(sprites)
+
+    assert textures.drawn[0] == 2
+    assert sorted(textures.drawn[1:]) == [1, 3, 4]
+    assert gl.uploads == [(tex, s.picture) for tex, s in zip(textures.drawn[1:], sprites[1:], strict=True)]
+    assert gl.deleted == []
+
+
+def test_textures_a_shorter_list_leaves_over_are_kept_for_the_next() -> None:
+    textures, gl = _textures()
+    textures.update([_sprite(kept=False) for _ in range(3)])
+    textures.update([_sprite(kept=False)])
+
+    textures.update([_sprite(kept=False) for _ in range(3)])
+
+    assert sorted(textures.drawn) == [1, 2, 3]
+    assert gl.made == 3
+
+
+def test_a_kept_picture_listed_twice_shares_one_texture() -> None:
+    textures, gl = _textures()
+    scrim = _sprite(kept=True)
+
+    textures.update([scrim, _sprite(kept=False), scrim])
+
+    assert textures.drawn == [1, 2, 1]
+    assert gl.made == 2
+
+
+def test_every_texture_held_is_named_once_for_the_context_to_free() -> None:
+    textures, _gl = _textures()
+    scrim = _sprite(kept=True)
+    textures.update([scrim, *(_sprite(kept=False) for _ in range(3)), scrim])
+    textures.update([scrim, _sprite(kept=False)])
+
+    assert sorted(textures.held()) == [1, 2, 3, 4]

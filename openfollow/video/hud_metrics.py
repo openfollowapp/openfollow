@@ -6,7 +6,8 @@ Fed by the HUD render thread (a picture drawn), the Cairo Operator Screen's GTK
 draw (a window repaint) or the GL display's render (a refresh composited), the
 display tick (a refresh, and whether it showed a new picture) and the display
 sink's streaming thread (a video frame arrived). Read as a summary of the last
-closed window of about two seconds; a cost nothing reported in it is None.
+closed window of about two seconds; a cost nothing reported in it is None, and
+so is a window without a display refresh.
 """
 
 from __future__ import annotations
@@ -42,6 +43,26 @@ def _ms(total_s: float, count: int) -> float | None:
 
 def _histogram(counts: dict[int, int]) -> dict[str, int]:
     return {str(k): counts[k] for k in sorted(counts)}
+
+
+def _summary(w: _Window, span: float, interval_refreshes: int) -> dict[str, Any]:
+    return {
+        "window_s": span,
+        "interval_refreshes": interval_refreshes,
+        "pictures_per_s": w.shown / span,
+        "picture_ms": _ms(w.clear_s + w.draw_s, w.pictures),
+        "draw_ms": _ms(w.draw_s, w.pictures),
+        "clear_ms": _ms(w.clear_s, w.cleared),
+        "paint_ms": _ms(w.paint_s, w.paints),
+        "repaints_per_s": w.paints / span if w.paints else None,
+        "gl_render_ms": _ms(w.gl_render_s, w.gl_renders),
+        "gl_renders_per_s": w.gl_renders / span if w.gl_renders else None,
+        "refreshes_per_s": w.refreshes / span,
+        "picture_refreshes": _histogram(w.held),
+        "video_frames_per_s": w.video_frames / span,
+        "video_refreshes": _histogram(w.video_held),
+        "video_replaced": w.video_replaced,
+    }
 
 
 class HudMetrics:
@@ -106,7 +127,9 @@ class HudMetrics:
                 self._since_video = 0
 
     def summary(self, now: float, interval_refreshes: int = 1) -> dict[str, Any] | None:
-        """The last closed window, closing the current one once it is ``window_s`` old; None before the first.
+        """The last closed window, closing the current one once it is ``window_s`` old.
+
+        None before the first, and for a window without a refresh: no display drew in it.
 
         ``interval_refreshes`` is the pacing interval, recorded when a window closes.
         """
@@ -114,22 +137,6 @@ class HudMetrics:
             w = self._current
             span = now - w.start
             if span >= self._window_s:
-                self._last = {
-                    "window_s": span,
-                    "interval_refreshes": interval_refreshes,
-                    "pictures_per_s": w.shown / span,
-                    "picture_ms": _ms(w.clear_s + w.draw_s, w.pictures),
-                    "draw_ms": _ms(w.draw_s, w.pictures),
-                    "clear_ms": _ms(w.clear_s, w.cleared),
-                    "paint_ms": _ms(w.paint_s, w.paints),
-                    "repaints_per_s": w.paints / span if w.paints else None,
-                    "gl_render_ms": _ms(w.gl_render_s, w.gl_renders),
-                    "gl_renders_per_s": w.gl_renders / span if w.gl_renders else None,
-                    "refreshes_per_s": w.refreshes / span,
-                    "picture_refreshes": _histogram(w.held),
-                    "video_frames_per_s": w.video_frames / span,
-                    "video_refreshes": _histogram(w.video_held),
-                    "video_replaced": w.video_replaced,
-                }
+                self._last = _summary(w, span, interval_refreshes) if w.refreshes else None
                 self._current = _Window(now)
             return None if self._last is None else dict(self._last)

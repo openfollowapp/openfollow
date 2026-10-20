@@ -881,8 +881,20 @@ class PersonDetector:
             self._config.interval_ms,
         )
 
-    def stop(self) -> None:
+    def stop(self, *, wait: bool = True) -> None:
+        """End the worker and release the backend; terminal for this instance.
+
+        A worker in the middle of an inference finishes it first. ``wait=False``
+        returns at once and finishes on a thread of its own, so the frame loop
+        never waits for an inference in flight.
+        """
         self._running = False
+        if wait:
+            self._finish_stop()
+        else:
+            threading.Thread(target=self._finish_stop, daemon=True, name="PersonDetector-Stop").start()
+
+    def _finish_stop(self) -> None:
         if self._thread is not None:
             self._thread.join(timeout=3.0)
             self._thread = None

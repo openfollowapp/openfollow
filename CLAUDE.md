@@ -214,9 +214,10 @@ rectangle only and is **never** added to or subtracted from a marker, detection
 point or zone vertex. `tests/test_coordinate_system_invariants.py` guards it.
 
 **Hot reload.** Saved config is applied live by `apply_runtime_config_changes`
-unless it can't be: enabling detection, changing `detection.inference_size`,
-any detection edit with no running detector, `web_port` and `web_bind_iface`
-restart the app. A video source or plugin field change live-swaps the input.
+unless it can't be: `web_port` and `web_bind_iface` restart the app. A video
+source or plugin field change live-swaps the input; switching detection on, an
+`inference_size` change or a detection edit with no running detector builds a
+detector off the frame loop and wires it back on it (`swap_detector`).
 
 ## Load-bearing invariants
 

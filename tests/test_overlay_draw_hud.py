@@ -3060,7 +3060,7 @@ class TestVideoFailureReachesTheDeviceSurfaces:
         assert step.rgba == COLOR_TEXT_MUTED
         assert step.y > cr.find_texts("RTSP is live")[0].y
 
-    def test_a_banner_without_a_step_draws_no_second_line(self) -> None:
+    def test_a_banner_without_a_step_does_not_borrow_the_videos(self) -> None:
         state = self._state(sentence="Nothing answered at X.", action="Check the camera is powered.")
         state.settings_menu_banner = "Pinned network interface 'eth1' is not available."
         drawn = self._drawn(state)

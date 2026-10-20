@@ -313,9 +313,8 @@ attributes, so it spells the token's value.
   (`draw_warning_sign`).
 - The Settings ERROR box says what was observed on its main line (off-white,
   bold) and one next step under it (muted), as the web's box. A banner the
-  menu opened with brings its own step (`enter_settings_menu(banner=,
-  action=)`) or none; the video failure's step stands only under the video
-  failure.
+  menu opened with brings its own step (`action=` beside `banner=`) or none;
+  the video failure's step stands only under the video failure.
 - A fault's sentence is a top-right status row, whatever raised it (a video
   failure, a missing controller, an output whose interface has no address).
   The bottom-left panel only turns red; it never carries the sentence.

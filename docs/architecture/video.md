@@ -36,6 +36,7 @@ Each plugin declares:
 - `is_available()` → `(bool, reason)`; defaults to `(True, "")`. Override when the plugin needs an OS or GStreamer element that isn't universally present (e.g. `v4l2src` on Linux, `avfvideosrc` on macOS, the `ndisrc` plugin from gst-plugin-ndi).
 - `source_element_name` → the **instance name** of the element that first produces bytes from the source (`"rtspsrc"`, `"udpsrc"`, `"media_source"`, …), or `None` for an input with no such boundary. The receiver probes it for the first buffer → `DATA_ARRIVING`. `TestSourceElementDeclaration` in [`tests/test_video_input_plugins.py`](../../tests/test_video_input_plugins.py) builds each plugin's pipeline and asserts the name resolves, so a rename inside `create_pipeline` can't silently detach the probe
 - `source_kind` → `SourceKind.REMOTE` (dials a host: rtsp, srt), `NAMED` (finds a source by name: ndi), `LISTENER` (waits at an address: rtp) or `LOCAL` (hardware or a file on this box). It picks the **wording** of the sentence and the action, so an NDI source is not told to check an address and port it does not have, and a USB camera is not told to check a sender. Defaults to `LOCAL`, which names no address, port or sender - a plugin that forgets is vague, never wrong
+- `on_bus_error(error)` → optional; the failed attempt's `BusError`, handed over in `_schedule_reconnect` before the next attempt is built. RTSP reads it to change the transport the retry asks for
 - `observe_progress(pipeline, report)` → optional; report protocol progress only that plugin can see. RTSP wires `rtspsrc::on-sdp` → `TRANSPORT_UP` + `STREAM_DESCRIBED`. The receiver keeps the furthest phase reported, so a duplicate or out-of-order report is harmless
 
 ## Receiver (`video/receiver.py`) – generic orchestrator
@@ -83,7 +84,9 @@ udpsrc → rtpjitterbuffer → pre_queue → decodebin → post_queue → videoc
 ```
 rtspsrc → decodebin → post_queue (leaky) → videoconvert → shared_videosink
 ```
-- `protocols` allows TCP + UDP + multicast, **except for a name dialled over IPv6, which gets TCP interleaved only**. `rtspsrc` opens its UDP ports for the family of the literal in the URL, so a name reads as IPv4 even when the control connection lands on IPv6 (a dual-stack server, `localhost`), and `udpsink` then refuses the server's address with `Invalid address family`. `_pin.dials_ipv6` asks the bounded resolver (`_RESOLVE_WAIT_S`) and reads the family of its first answer, the one the system's address selection (RFC 6724, against its own routes) puts first and the connection dials, so a dual-stack camera reached over IPv4 keeps UDP and multicast; a name still resolving keeps every transport this attempt and the next attempt reads the answer. An IPv6 literal is left to the element, which reads its family itself
+- `protocols` allows TCP + UDP + multicast, **except for a name dialled over IPv6 and a host whose attempt failed on the address family, which get TCP interleaved only**. `rtspsrc` opens a stream's UDP ports for the address type of the server's session description (`c=IN IP4` / `IP6`, IPv4 when there is none), not for the family the control connection reached the server on, so a server reached over IPv6 that describes IPv4 (or nothing) gets IPv4 ports, and the RTCP `udpsink` then refuses its address: `gst-resource-error-quark:13`, `Invalid address family` in the debug string, posted as a pipeline error after `on-sdp`. Verified against 1.28.7 on loopback with a stub server, for a name and an IPv6 literal alike; the 1.26 source picks the family the same way (`gst_rtspsrc_do_stream_connection`)
+  - **Up front:** `_pin.dials_ipv6` asks the bounded resolver (`_RESOLVE_WAIT_S`) and reads the family of its first answer, the one the system's address selection (RFC 6724, against its own routes) puts first and the connection dials, so a dual-stack camera reached over IPv4 keeps UDP and multicast; a name still resolving keeps every transport this attempt and the next attempt reads the answer. An address literal is not looked up
+  - **After the fact:** the connection can land on the other family anyway (the first address refused or unreachable, the next one dialled; an IPv6 literal whose server describes IPv4). `on_bus_error` reads `Invalid address family` in the failed attempt's debug string and keeps that host on TCP interleaved for every later attempt and heal of this input; a changed URL host or a rebuilt input (any saved video setting) tries every transport again
 - `tcp-timeout` 10 s so the element gives up before the connection timeout, `latency` 0, `drop-on-latency`, `buffer-mode` none; only the video track is linked into `decodebin`, since an NVR may list its audio track first
 
 ## Stream credentials (RTSP / SRT)
@@ -179,7 +182,10 @@ against.
 bad RTSP path comes back as
 `gst-resource-error-quark:13` with `SDP contains no streams`, not
 `RESOURCE_NOT_FOUND`. Check what the element actually emits before adding a
-mapping - a code that looks obvious from the enum may never be sent.
+mapping - a code that looks obvious from the enum may never be sent. RTSP's
+UDP address-family mismatch is that same code with `Invalid address family` in
+the debug string; it reads by the phase like an open failure (after `on-sdp`,
+`NO_DATA`), and the retry runs over TCP interleaved (see the RTSP plugin).
 
 **`INTERFACE_DOWN` and `WRONG_INTERFACE` never come from the bus.** Only the
 video input pin's preflight produces them, before anything is dialled, so

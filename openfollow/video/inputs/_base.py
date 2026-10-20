@@ -20,6 +20,7 @@ from typing import Any
 
 from openfollow.net_egress import is_loopback_host
 from openfollow.net_utils import plane_source_iface
+from openfollow.runtime.receiver_bus import BusError
 from openfollow.video.failure import ConnectionPhase, SourceKind
 from openfollow.video.inputs._pin import PinRefusal
 
@@ -242,6 +243,9 @@ class VideoInputBase(ABC):
         segment seek). Return ``True`` if the input handled it by queuing the
         next iteration of a seamless loop. The default reports it unhandled."""
         return False
+
+    def on_bus_error(self, error: BusError) -> None:  # noqa: B027 – intentional optional hook
+        """Called with a failed attempt's error before the next attempt is built."""
 
     def on_caps_changed(self, width: int, height: int) -> None:  # noqa: B027 – intentional optional hook
         """Called when video resolution is detected from caps-changed."""

@@ -186,6 +186,14 @@ assert origin and os.path.realpath(origin).startswith(prefix + os.sep), (
     f"pyspacemouse not bundled in venv: {origin}"
 )
 
+# The GL Operator Screen's PyOpenGL ships in the venv too; find_spec, as importing it
+# picks a GL platform the build host need not have.
+spec = importlib.util.find_spec("OpenGL")
+origin = spec.origin if spec else None
+assert origin and os.path.realpath(origin).startswith(prefix + os.sep), (
+    f"PyOpenGL not bundled in venv: {origin}"
+)
+
 # Detection backend must be bundled (import from the venv prefix); the AGPL
 # export toolchain (torch / ultralytics) must not be – the SBOM gate's boundary,
 # verified here at build time.

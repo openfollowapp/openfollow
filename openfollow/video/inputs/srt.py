@@ -17,8 +17,10 @@ from openfollow.video.inputs._base import (
     ReconnectPolicy,
     SourceEndpoint,
     VideoInputBase,
+    configure_pre_decode_queue,
     video_input_pin_field,
 )
+from openfollow.video.inputs._hevc_guard import guard_hevc_decoder
 from openfollow.video.inputs._pin import (
     FORCES_DEVICE,
     PinRefusal,
@@ -101,6 +103,7 @@ class SrtInput(VideoInputBase):
         if factory:
             factory.set_rank(Gst.Rank.MARGINAL)
             logger.info("Decoder priority: openh264dec → MARGINAL")
+        guard_hevc_decoder(Gst)
 
     def create_pipeline(
         self,
@@ -153,10 +156,7 @@ class SrtInput(VideoInputBase):
         )
 
         pre_queue = Gst.ElementFactory.make("queue", "pre_queue")
-        pre_queue.set_property("max-size-buffers", 4)
-        pre_queue.set_property("max-size-bytes", 0)
-        pre_queue.set_property("max-size-time", 0)
-        pre_queue.set_property("leaky", 2)
+        configure_pre_decode_queue(pre_queue)
 
         decodebin = Gst.ElementFactory.make("decodebin", "decodebin")
 

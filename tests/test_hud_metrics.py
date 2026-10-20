@@ -39,11 +39,37 @@ def test_a_window_reports_what_pictures_and_repaints_cost_on_average() -> None:
     assert summary["paint_ms"] == pytest.approx(4.0)
     assert summary["repaints_per_s"] == pytest.approx(1.5)
     assert summary["window_s"] == pytest.approx(2.0)
+    assert (summary["gl_render_ms"], summary["gl_renders_per_s"]) == (None, None)
 
 
-def test_a_window_with_nothing_drawn_reports_zero_cost() -> None:
+def test_a_window_reports_what_gl_renders_cost_on_average() -> None:
+    metrics = HudMetrics(START)
+    metrics.gl_rendered(0.002)
+    metrics.gl_rendered(0.004)
+    summary = _closed(metrics, 2.0)
+    assert summary["gl_render_ms"] == pytest.approx(3.0)
+    assert summary["gl_renders_per_s"] == pytest.approx(1.0)
+    assert (summary["paint_ms"], summary["repaints_per_s"]) == (None, None)
+
+
+def test_a_picture_with_nothing_to_clear_leaves_the_clear_cost_to_those_that_had() -> None:
+    metrics = HudMetrics(START)
+    metrics.picture(None, 0.004)
+    assert _closed(metrics, 2.0)["clear_ms"] is None
+    metrics.picture(0.002, 0.004)
+    metrics.picture(None, 0.008)
+    summary = metrics.summary(START + 4.0)
+    assert summary is not None
+    assert summary["clear_ms"] == pytest.approx(2.0)
+    assert summary["draw_ms"] == pytest.approx(6.0)
+    assert summary["picture_ms"] == pytest.approx(7.0)
+
+
+def test_a_window_with_nothing_drawn_reports_no_cost_rather_than_zero() -> None:
     summary = _closed(HudMetrics(START))
-    assert (summary["picture_ms"], summary["paint_ms"], summary["pictures_per_s"]) == (0.0, 0.0, 0.0)
+    costs = ("picture_ms", "clear_ms", "draw_ms", "paint_ms", "repaints_per_s", "gl_render_ms", "gl_renders_per_s")
+    assert [summary[k] for k in costs] == [None] * len(costs)
+    assert summary["pictures_per_s"] == 0.0
 
 
 def test_each_shown_picture_counts_the_refreshes_since_the_one_before() -> None:
@@ -99,7 +125,7 @@ def test_a_summary_is_a_copy() -> None:
     metrics = HudMetrics(START)
     summary = _closed(metrics)
     summary["picture_ms"] = 99.0
-    assert metrics.summary(START + 2.5)["picture_ms"] == 0.0
+    assert metrics.summary(START + 2.5)["picture_ms"] is None
 
 
 def test_the_pacing_interval_is_the_one_the_window_closed_with() -> None:

@@ -24,6 +24,7 @@ Which network interface SRT, RTSP and RTP use is set under **Network Interface A
 - **SRT URL** – `srt://0.0.0.0:5000` to listen (listener mode) or `srt://203.0.113.10:5000` to connect (caller mode); a bare `host:port` also works.
 - **Passphrase (optional)** – the SRT stream's encryption key, when the sender encrypts. Same precedence as the RTSP login: filling it in overrides a `?passphrase=` carried in the URL.
 - **RTP URL** + **Encoding** – receive address, e.g. `rtp://0.0.0.0:5004` (unicast) or a `224.x–239.x` multicast address; set **Encoding** (`H264`, `H265`, `MP2T`) to match the sender.
+- **H.265 (HEVC)** over RTSP, SRT or RTP decodes in software on a Raspberry Pi: the Pi's hardware HEVC decoder can take the station down when a stream loses packets or is joined between keyframes. At 1080p30 that takes about 0.6 of a Pi 5 core.
 - **USB Camera** – pick the **Device** (Scan to re-enumerate), then choose a **Render resolution** and **FPS** (default 30). The camera is read at its own native resolution and scaled to the render size: pick a preset (`2160p` / `1080p` / `720p`, default `1080p`) to downscale for lower CPU, or `Native size` to keep the device's full resolution. This works with any input, including capture cards that only output the incoming signal's resolution (e.g. a 4K HDMI feed) – those failed to connect when a fixed size was forced.
 - **Pi Camera** – the **Camera** row shows the camera the station uses: its Raspberry Pi module name and sensor (*Camera Module 3 (imx708)*), the connector it is named on (CAM/DISP 0 or 1, as printed on the board), or *found automatically* when the Pi recognised it by itself; *set in config.txt* marks a camera named there by hand. With more than one camera found, the row is a choice of which one to stream, saved with the section. **Width** / **Height** (default 1920×1080) and **FPS** (default 30) set the stream.
 - **Change** (Pi Camera) – names the **Camera module** and **Connector** in the Pi's boot configuration. **Automatic** leaves it to the Pi, which recognises Raspberry Pi camera modules on a regular Pi but never on a Compute Module. Raspberry Pi's own modules are listed first by name, other sensors below. A camera named while none was loaded at boot starts at once and is checked again a few seconds later; one the station booted with changes at the next restart, shown as **Takes effect after the next restart** beside what runs now, with a **Restart now** button. A camera line added to `config.txt` by hand is replaced (kept, commented out) when another camera is applied here. **No camera found on this station** opens this choice by itself.
@@ -38,17 +39,17 @@ Which network interface SRT, RTSP and RTP use is set under **Network Interface A
   | Cross aisle, stage right | 27.461 m | 24.781 m |
   | Centre aisle, back | 31.697 m | 31.697 m |
 
-  **Concert** is a concert stage seen from a camera on the upstage back truss, looking down over the stage into the crowd through a wide barrel lens. It was drawn with this camera, which puts the grid on the deck seams. The tape on the stage marks a 12 × 8 m grid with the Reference Point at the middle of its downstage edge; the stage decks are 1 m across and 2 m deep.
+  **Concert** is a concert stage seen from a camera on the upstage back truss, looking down over the stage into the crowd through a wide barrel lens. It was drawn with this camera, which puts the grid on the deck seams. The tape on the stage marks a 12 × 6 m grid with the Reference Point at the middle of its downstage edge; the stage decks are 1 m across and 2 m deep.
 
   | Camera setting | Value |
   |---|---|
-  | Position X / Y / Z | 0 / 15 / 12.5 m |
-  | Pitch | -44° |
+  | Position X / Y / Z | 0 / 13 / 12 m |
+  | Pitch | -48° |
   | Yaw | 180° |
   | Roll | 0° |
-  | Horizontal Field of View | 78° |
-  | Barrel / fisheye | -0.25 |
-  | Edge fit | 0.04 |
+  | Horizontal Field of View | 70° |
+  | Barrel / fisheye | -0.2 |
+  | Edge fit | 0.03 |
 
   Clips are not transcoded on-device – prepare a conforming VP8 WebM on a workstation, e.g.:
 

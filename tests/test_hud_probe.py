@@ -161,6 +161,13 @@ def test_hud_windows_are_averaged_once_each_with_refresh_counts_added_up() -> No
     }
 
 
+def test_a_cost_the_operator_screen_does_not_report_is_left_out_not_averaged_as_zero() -> None:
+    # The GL display: no Cairo paste, a render per refresh instead.
+    first = {"paint_ms": None, "gl_render_ms": 2.0}
+    second = {"paint_ms": None, "gl_render_ms": 4.0}
+    assert probe.average_hud([first, second]) == {"windows": 2, "gl_render_ms": 3.0}
+
+
 def test_no_hud_windows_average_to_nothing() -> None:
     assert probe.average_hud([None, {}]) is None
 

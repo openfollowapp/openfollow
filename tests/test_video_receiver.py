@@ -1734,6 +1734,213 @@ class TestReconnect:
         assert result is False
 
 
+class TestGlDisplay:
+    """A GL display brings the sink the pipeline ends in and the widget the window shows."""
+
+    def test_the_display_s_sink_and_widget_replace_gtksink(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        sinks: list[Any] = []
+
+        def create_pipeline(_self: Any, config: Any, sink: Any, build_overlay_tail: Any, prepare_sink: Any) -> Any:
+            sinks.append(sink)
+            return FakePipeline()
+
+        monkeypatch.setattr(FakeInput, "create_pipeline", create_pipeline)
+        display = SimpleNamespace(sink=FakeElement("shared_videosink"), widget=object())
+        r = receiver_mod.GstNativeSinkReceiver(source_type="fake", input_config={}, display=display)
+        r.create_pipeline()
+        assert sinks == [display.sink]
+        assert r.get_sink_widget() is display.widget
+
+    def test_each_frame_reaching_the_display_s_sink_tells_the_listener(
+        self, fake_gst, fake_glib, fake_input_cls
+    ) -> None:
+        display = SimpleNamespace(sink=FakeElement("shared_videosink"), widget=object())
+        r = receiver_mod.GstNativeSinkReceiver(source_type="fake", input_config={}, display=display)
+        frames: list[None] = []
+        r.set_display_frame_listener(lambda: frames.append(None))
+        assert r._get_shared_sink() is display.sink
+        ((kind, probe),) = display.sink.get_static_pad("sink").probes
+        assert kind == FakePadProbeType.BUFFER
+        assert probe(None, None) == FakePadProbeReturn.OK
+        assert frames == [None]
+
+    @pytest.mark.parametrize("teardown", ["stop", "swap", "reconnect", "error"])
+    def test_the_display_hands_its_frames_back_before_the_pipeline_stops(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch, teardown: str
+    ) -> None:
+        order: list[str] = []
+
+        class _Pipeline(FakePipeline):
+            def set_state(self, state: str) -> str:
+                order.append(f"set_state {state}")
+                return super().set_state(state)
+
+        class _SyncThread:
+            def __init__(self, target, daemon=False, name=""):  # noqa: ANN001
+                self._target = target
+
+            def start(self) -> None:
+                self._target()
+
+            def join(self, timeout: float = 0.0) -> None:
+                return None
+
+            def is_alive(self) -> bool:
+                return False
+
+        monkeypatch.setattr(threading, "Thread", _SyncThread)
+        display = SimpleNamespace(
+            sink=FakeElement("shared_videosink"), widget=object(), release_frames=lambda: order.append("release")
+        )
+        r = receiver_mod.GstNativeSinkReceiver(source_type="fake", input_config={}, display=display)
+        r._pipeline = _Pipeline()
+        if teardown == "stop":
+            r.stop()
+        elif teardown == "swap":
+            r._null_transition_current_pipeline(swap_label="test")
+        elif teardown == "reconnect":
+            monkeypatch.setattr(r, "play", lambda: None)
+            r._do_reconnect()
+        else:
+            r._schedule_reconnect("boom")
+
+        assert order[0] == "release"
+        assert f"set_state {FakeState.NULL}" in order
+
+    @staticmethod
+    def _receiver_on_a_display(fake_gst, monkeypatch, *, stuck: bool = False) -> tuple[Any, Any, list, list, list]:
+        """A configured source playing on a GL display; returns it, the display, sinks, embeds and releases."""
+        sinks: list[Any] = []
+        embedded: list[Any] = []
+        released: list[int] = []
+
+        class _StuckPipeline(FakePipeline):
+            def get_state(self, timeout_ns: int = 0) -> tuple[str, str, str]:
+                return (FakeStateChangeReturn.ASYNC, FakeState.PLAYING, FakeState.NULL)
+
+        def create_pipeline(_self: Any, config: Any, sink: Any, build_overlay_tail: Any, prepare_sink: Any) -> Any:
+            sinks.append(sink)
+            elements = {"shared_videosink": sink} if sink is not None else {}
+            return _StuckPipeline(elements=elements) if stuck and len(sinks) == 1 else FakePipeline(elements=elements)
+
+        def make(kind: str, name: str) -> FakeElement:
+            element = FakeElement(name=name)
+            element.set_property("widget", f"{kind} widget")
+            return element
+
+        monkeypatch.setattr(FakeInput, "create_pipeline", create_pipeline)
+        monkeypatch.setattr(fake_gst.ElementFactory, "make", make)
+        display = SimpleNamespace(
+            sink=FakeElement("shared_videosink"),
+            widget="GL area",
+            release_frames=lambda: released.append(1),
+            accept_frames=lambda: None,
+        )
+        r = receiver_mod.GstNativeSinkReceiver(
+            source_type="fake",
+            input_config={"fake_source": "cam-1"},
+            on_widget_changed=embedded.append,
+            display=display,
+        )
+        monkeypatch.setattr(r, "_select_sink_name", lambda: "gtksink")
+        r.create_pipeline()
+        embedded.append(r.get_sink_widget())
+        r.play()
+        return r, display, sinks, embedded, released
+
+    def test_dropping_the_display_rebuilds_the_pipeline_on_the_platform_sink(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        r, display, sinks, embedded, released = self._receiver_on_a_display(fake_gst, monkeypatch)
+        r.drop_display()
+
+        assert released == [1]
+        assert sinks[0] is display.sink and sinks[-1] is not display.sink
+        # The window shows the platform sink's widget in place of the GL area.
+        assert embedded == ["GL area", "gtksink widget"]
+        assert FakeState.PLAYING in r._pipeline.state_changes
+        # The new sink is watched for frames like the display's was.
+        watched = ["_on_display_frame", "_on_pad_event", "_on_sink_buffer"]
+        assert [cb.__name__ for _t, cb in sinks[-1].get_static_pad("sink").probes] == watched
+        assert [cb.__name__ for _t, cb in display.sink.get_static_pad("sink").probes] == watched
+
+    def test_a_stuck_pipeline_still_hands_the_window_and_the_next_build_to_the_platform_sink(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        r, display, sinks, embedded, released = self._receiver_on_a_display(fake_gst, monkeypatch, stuck=True)
+
+        with pytest.raises(receiver_mod.PipelineStuckError):
+            r.drop_display()
+        assert released == [1]
+        assert embedded == ["GL area", "gtksink widget"]
+
+        r._pipeline = None  # the stuck pipeline stopped at last
+        r.create_pipeline()
+        assert sinks[-1] is not display.sink and sinks[-1].get_property("widget") == "gtksink widget"
+
+    @pytest.mark.parametrize("timer", ["reconnect", "heal", "watchdog"])
+    def test_a_recovery_timer_pending_when_the_display_drops_never_acts_on_the_new_pipeline(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch, timer: str
+    ) -> None:
+        r, _display, _sinks, _embedded, _released = self._receiver_on_a_display(fake_gst, monkeypatch)
+        r.set_recovery_timers(stall_timeout=6.0, heal_interval=5.0)
+        arm = {
+            "reconnect": lambda: r._schedule_reconnect("lost link"),
+            "heal": r._schedule_heal,
+            "watchdog": r._start_watchdog,
+        }
+        arm[timer]()
+        pending = set(fake_glib.timers)
+        assert pending
+        r.drop_display()
+
+        assert not pending & set(fake_glib.timers)
+
+    def test_dropping_the_display_with_no_platform_sink_embeds_nothing(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        r, display, sinks, embedded, released = self._receiver_on_a_display(fake_gst, monkeypatch)
+        monkeypatch.setattr(r, "_select_sink_name", lambda: None)
+        r.drop_display()
+
+        assert embedded == ["GL area"]
+        assert sinks[-1] is None
+
+    def test_dropping_no_display_changes_nothing(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = receiver_mod.GstNativeSinkReceiver(source_type="fake", input_config={})
+        pipeline = r._pipeline
+        r.drop_display()
+        assert r._pipeline is pipeline
+
+    def test_the_display_takes_frames_again_only_when_its_sink_joins_the_next_pipeline(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        order: list[str] = []
+
+        def create_pipeline(_self: Any, config: Any, sink: Any, build_overlay_tail: Any, prepare_sink: Any) -> Any:
+            prepared = prepare_sink()
+            order.append("build")
+            return FakePipeline(elements={"shared_videosink": prepared})
+
+        monkeypatch.setattr(FakeInput, "create_pipeline", create_pipeline)
+        display = SimpleNamespace(
+            sink=FakeElement("shared_videosink"),
+            widget=object(),
+            release_frames=lambda: order.append("release"),
+            accept_frames=lambda: order.append("accept"),
+        )
+        r = receiver_mod.GstNativeSinkReceiver(
+            source_type="fake", input_config={"fake_source": "cam-1"}, display=display
+        )
+        r.create_pipeline()
+        r._do_reconnect()
+
+        assert order[:2] == ["accept", "build"]
+        assert order.index("release") < order.index("accept", 2) < order.index("build", 2)
+
+
 # --------------------------------------------------------------------------- #
 # Bus handling
 # --------------------------------------------------------------------------- #

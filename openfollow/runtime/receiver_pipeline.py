@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from openfollow.video.overlay import CairoOverlayRenderer
     from openfollow.video.preview import PreviewProvider, SnapshotProvider
 
-# prepare_sink returns gtksink element or None if unavailable.
+# prepare_sink returns the shared video sink (gtksink or the GL display's) or None if unavailable.
 PrepareSinkCallback = Callable[[], "Any | None"]
 
 

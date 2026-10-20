@@ -1804,6 +1804,49 @@ class TestMarkerCardRendering:
         assert "push_group" in ops
         assert "pop_group_to_source" in ops
 
+    @pytest.mark.parametrize(
+        ("selected", "flash"), [(False, False), (True, False), (False, True)], ids=["plain", "selected", "identify"]
+    )
+    def test_a_viewer_only_card_looks_the_same_with_its_group_clipped_to_the_card(
+        self, selected: bool, flash: bool
+    ) -> None:
+        import dataclasses
+
+        import cairo
+        import numpy as np
+
+        class _Unclipped(cairo.Context):
+            """Ignores clips, so the card's group covers the whole surface."""
+
+            def clip(self) -> None:
+                self.new_path()
+
+        def card(context: type) -> Any:
+            surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 400, 200)
+            cr = context(surface)
+            # A background with texture, so a difference in how the group is composited shows.
+            cr.set_source(cairo.LinearGradient(0, 0, 400, 200))
+            cr.get_source().add_color_stop_rgba(0, 0.9, 0.2, 0.1, 0.8)
+            cr.get_source().add_color_stop_rgba(1, 0.1, 0.4, 0.9, 0.4)
+            cr.paint()
+            marker = dataclasses.replace(_marker(is_controlled=False), identify_flash=flash)
+            draw_marker_card(FakeRenderer(), cr, 110, 60, 180, 67, marker, selected, None)
+            surface.flush()
+            return np.frombuffer(surface.get_data(), dtype=np.uint8).astype(int)
+
+        assert np.abs(card(cairo.Context) - card(_Unclipped)).max() <= 1
+
+    def test_a_viewer_only_card_restores_its_clip_even_when_a_draw_call_raises(self) -> None:
+        class _BoomCairo(FakeCairo):
+            def show_text(self, text: str) -> None:
+                raise RuntimeError("draw boom")
+
+        cr = _BoomCairo()
+        with pytest.raises(RuntimeError, match="draw boom"):
+            draw_marker_card(FakeRenderer(), cr, x=0, y=0, w=180, h=64, t=_marker(is_controlled=False), selected=False)
+        kinds = [c[0] for c in cr.calls]
+        assert kinds.count("save") == kinds.count("restore")
+
     def test_controlled_marker_skips_group_for_zero_overhead(self) -> None:
         cr = FakeCairo()
         draw_marker_card(

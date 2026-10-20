@@ -188,7 +188,7 @@ def services(monkeypatch: pytest.MonkeyPatch) -> AppRuntimeServices:
 class TestDefaultRuntimeStatsSnapshot:
     def test_payload_shape(self, services: AppRuntimeServices) -> None:
         snap = services._default_runtime_stats_snapshot()
-        assert set(snap) == {"timestamp", "system", "video", "controllers", "mouse3d", "playback", "tracking"}
+        assert set(snap) == {"timestamp", "system", "video", "controllers", "mouse3d", "playback", "tracking", "hud"}
         assert snap["system"]["cpu_percent"] == 0.0
         assert snap["video"]["connected"] is False
         assert snap["controllers"]["items"] == []
@@ -932,6 +932,26 @@ class TestDeviceFigures:
         monkeypatch.setattr(det, "check_detection_dependencies", lambda cfg: [])
         services.publish_runtime_stats(force=True)
         return services.get_runtime_stats_snapshot()
+
+    def test_without_an_operator_screen_there_are_no_hud_figures(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._prime(services, hud_fps=0.0, canvas=None)
+        services._hud_render = None
+        assert self._publish(services, monkeypatch)["hud"] is None
+
+    def test_the_operator_screen_s_figures_are_published_as_it_reports_them(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        figures = {"picture_ms": 9.5, "paint_ms": 1.25, "picture_refreshes": {"2": 60}, "render_thread_id": 4321}
+
+        class _Hud:
+            def stats(self) -> dict[str, Any]:
+                return dict(figures)
+
+        self._prime(services, hud_fps=30.0, canvas=_FakeSizedCanvas((1920, 1080)))
+        services._hud_render = _Hud()  # type: ignore[assignment]
+        assert self._publish(services, monkeypatch)["hud"] == figures
 
     def test_publishes_redraw_rate_and_live_canvas_under_device(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch

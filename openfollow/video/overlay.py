@@ -77,6 +77,8 @@ from openfollow.runtime.overlay_draw_scene import (
 )
 from openfollow.runtime.overlay_draw_zones import ZoneCache
 from openfollow.runtime.overlay_draw_zones import draw_zones as draw_zones_pass
+from openfollow.runtime.overlay_layers import cairo_context, cut, mark_top
+from openfollow.runtime.overlay_picture import PanelCache
 from openfollow.runtime.overlay_state import MarkerOverlayData, OverlayState
 
 logger = logging.getLogger(__name__)
@@ -166,6 +168,7 @@ class CairoOverlayRenderer:
         self._grid_cache = GridCache()
         self._path_cache = PathCache()
         self._zone_cache = ZoneCache()
+        self._panel_cache = PanelCache()
 
         # Rolling timestamps of recent pictures for FPS measurement.
         # Appended by the HUD render thread (``draw``); read on the stats
@@ -230,7 +233,7 @@ class CairoOverlayRenderer:
             cr.save()
             cr.translate(x, y)
             cr.scale(scale, scale)
-            self._logo_handle.render_cairo(cr)
+            self._logo_handle.render_cairo(cairo_context(cr))
         except Exception:
             return 0.0
         finally:
@@ -303,13 +306,16 @@ class CairoOverlayRenderer:
                 return
 
             cr.save()
+            mark_top(cr)
             try:
                 self._grid_cache.draw(self, cr, state, width, height)
                 self._draw_origin(cr, state, width, height)
                 self._draw_zones(cr, state, width, height)
                 draw_paths_pass(self, cr, state, width, height, self._path_cache)
+                cut(cr)
                 for t in state.markers:
                     self._draw_marker(cr, state, t, width, height)
+                    cut(cr)
                 self._cone_cache.retain(state.markers)
                 if state.detections and state.detection_show_boxes:
                     self._draw_detections(cr, state, width, height)
@@ -521,5 +527,6 @@ class CairoOverlayRenderer:
 
     def _draw_hud(self, cr: Any, state: OverlayState, w: int, h: int) -> None:
         draw_hud_pass(self, cr, state, w, h)
+        cut(cr)
         # Operator-message cards on the normal-HUD layer.
         draw_operator_messages_pass(self, cr, state, w, h)

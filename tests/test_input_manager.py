@@ -552,6 +552,23 @@ def test_update_isolates_keyboard_failure(monkeypatch) -> None:
     assert app._server.get_marker(10).pos == pytest.approx((1.0, 0.0, 0.0))
 
 
+def test_a_repeating_keyboard_failure_is_logged_throttled(monkeypatch, caplog) -> None:
+    monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
+    monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
+    app = _DummyApp()
+    manager = InputManager(app)
+
+    def _boom(_dt: float) -> None:
+        raise RuntimeError("kbd boom")
+
+    manager.keyboard_handler.update = _boom
+    with caplog.at_level("ERROR", logger="openfollow.input.input_manager"):
+        for _ in range(60):
+            manager.update(1 / 60)
+
+    assert [r.getMessage() for r in caplog.records].count("Keyboard update failed this tick.") == 1
+
+
 def test_update_isolates_osc_flush_failure(monkeypatch) -> None:
     """A raising OSC flush must not drop the gamepad result."""
     monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)

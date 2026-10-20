@@ -135,6 +135,7 @@ class InputManager:
         self.mouse3d_manager.start()
         self._mouse3d_update_err_log = ThrottledExceptionLogger(logger, "3D Mouse update failed this tick.")
         self._remote_update_err_log = ThrottledExceptionLogger(logger, "Touch remote update failed this tick.")
+        self._keyboard_update_err_log = ThrottledExceptionLogger(logger, "Keyboard update failed this tick.")
         self._gamepad_move_err_log = ThrottledExceptionLogger(logger, "Gamepad move failed this tick.")
         # Which slot each controller holds for the session; refreshed on the
         # main loop only, read from any thread via ``_controller_slots``.
@@ -385,10 +386,16 @@ class InputManager:
         # the mouse's unified controller slot drives. Gated on the live enabled flag.
         if self.app._config.mouse3d.enabled:
             try:
-                for local_idx, m3d in self.mouse3d_manager.update(dt).items():
-                    self._apply_mouse3d(m3d, local_idx, dt, gamepad_result, slots)
+                pucks = self.mouse3d_manager.update(dt)
             except Exception:
                 self._mouse3d_update_err_log.log()
+                pucks = {}
+            for local_idx, m3d in pucks.items():
+                # One puck's failure never costs the other pucks their frame.
+                try:
+                    self._apply_mouse3d(m3d, local_idx, dt, gamepad_result, slots)
+                except Exception:
+                    self._mouse3d_update_err_log.log()
 
         # Mouse marker control glides toward the cursor target every frame so
         # smoothing is independent of pointer-event rate. The handler no-ops
@@ -433,7 +440,7 @@ class InputManager:
                     vx, vy = self.control_frame.orient(("keyboard", self.app._selected_id), vx, vy, marker.pos)
                     self._move(self.app._selected_id, marker, vx, vy, vz, dt)
         except Exception:
-            logger.exception("Keyboard update failed this tick.")
+            self._keyboard_update_err_log.log()
 
         # Apply gamepad resets (X button -> configurable default position)
         for controller_idx in gamepad_result.resets:

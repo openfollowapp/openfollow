@@ -1351,6 +1351,8 @@ def _draw_offline_mark(cr: Any, cx: float, cy: float, r: float) -> None:
 
 _CARD_BORDER_W = 3.5
 _CARD_BORDER_W_SELECTED = 4.0
+# Past the card's edge: half the widest border (the 5 px Identify flash) plus antialiasing.
+_CARD_GROUP_MARGIN = 4.0
 
 
 def draw_marker_card(
@@ -1369,6 +1371,12 @@ def draw_marker_card(
     # Viewer-only markers: use Cairo group for uniform alpha; skip grouping for controlled markers (hot path).
     use_group = not t.is_controlled
     if use_group:
+        # A group is the size of the clip: unclipped, it is the whole canvas.
+        cr.save()
+        cr.rectangle(
+            x - _CARD_GROUP_MARGIN, y - _CARD_GROUP_MARGIN, w + 2 * _CARD_GROUP_MARGIN, h + 2 * _CARD_GROUP_MARGIN
+        )
+        cr.clip()
         cr.push_group()
     try:
         # Solid background; border uses marker color for per-card identity. A
@@ -1521,6 +1529,7 @@ def draw_marker_card(
         if use_group:
             cr.pop_group_to_source()
             cr.paint_with_alpha(0.6)
+            cr.restore()
 
 
 def draw_virtual_faders(

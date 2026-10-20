@@ -477,7 +477,7 @@ class TestRun:
         monkeypatch.setattr(
             app_module,
             "runtime_enter_settings_menu",
-            lambda a, *, banner="": banners.append(banner),
+            lambda a, *, banner="", action="": banners.append(banner),
         )
         app.run()
         assert len(banners) == 1
@@ -515,7 +515,7 @@ class TestRun:
         monkeypatch.setattr(
             app_module,
             "runtime_enter_settings_menu",
-            lambda a, *, banner="": banners.append(banner),
+            lambda a, *, banner="", action="": banners.append(banner),
         )
         app.run()
         assert banners == []
@@ -536,7 +536,7 @@ class TestRun:
         monkeypatch.setattr(
             app_module,
             "runtime_enter_settings_menu",
-            lambda a, *, banner="": banners.append(banner),
+            lambda a, *, banner="", action="": banners.append(banner),
         )
         app.run()
         assert banners == []
@@ -568,7 +568,7 @@ class TestRun:
         monkeypatch.setattr(
             app_module,
             "runtime_enter_settings_menu",
-            lambda a, *, banner="": banners.append(banner),
+            lambda a, *, banner="", action="": banners.append(banner),
         )
         app.run()
         assert banners == []  # zero candidates → no Settings prompt
@@ -608,7 +608,7 @@ class TestRun:
         monkeypatch.setattr(
             app_module,
             "runtime_enter_settings_menu",
-            lambda a, *, banner="": banners.append(banner),
+            lambda a, *, banner="", action="": banners.append(banner),
         )
         app.run()
         assert banners == []
@@ -791,6 +791,18 @@ class TestDelegators:
         assert len(hits) == 1
         # All helpers take ``app`` as first arg.
         assert hits[0][0] is app
+
+    def test_enter_settings_menu_forwards_the_banner_and_its_step(
+        self,
+        patched_ctor,
+        monkeypatch: pytest.MonkeyPatch,  # noqa: ANN001
+    ) -> None:
+        hits: list[dict[str, str]] = []
+        monkeypatch.setattr(app_module, "runtime_enter_settings_menu", lambda _app, **kw: hits.append(kw))
+
+        app = OpenFollowApp(config_path=patched_ctor.cfg_path)
+        app._enter_settings_menu(banner="Seen.", action="Do this.")
+        assert hits == [{"banner": "Seen.", "action": "Do this."}]
 
     @pytest.mark.parametrize("verdict", [True, False])
     def test_run_frame_forwards_the_helpers_verdict(

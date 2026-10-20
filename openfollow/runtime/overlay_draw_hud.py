@@ -715,14 +715,15 @@ def draw_settings_menu(renderer: Any, cr: Any, state: OverlayState, w: int, h: i
     # structured message including source + GStreamer error). Opening Settings
     # manually falls back to the same pair the web UI shows - the sentence
     # naming what failed, then the element's own wording - because the raw
-    # message alone was half of what the browser was reporting.
+    # message alone was half of what the browser was reporting. A banner
+    # brings its own next step; the video's goes only under the video failure.
     error_text = state.settings_menu_banner or state.video_failure_text or state.error_message
     if error_text:
         cursor_y = _draw_settings_error_box(
             renderer,
             cr,
             error_text,
-            state.video_failure_action,
+            state.settings_menu_banner_action if state.settings_menu_banner else state.video_failure_action,
             content_x,
             cursor_y,
             content_w,

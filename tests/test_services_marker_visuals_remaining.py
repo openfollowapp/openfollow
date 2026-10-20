@@ -199,6 +199,7 @@ def _build_app(
         _settings_menu_active=settings_menu_active,
         _settings_menu_index=0,
         _settings_menu_banner="",
+        _settings_menu_banner_action="",
         _source_type_selection_active=False,
         _available_source_types=[],
         _selected_source_type_index=0,
@@ -570,6 +571,7 @@ class TestVideoAndMenuState:
     def test_settings_menu_banner_passes_through_to_state(self, monkeypatch: pytest.MonkeyPatch) -> None:
         app = _build_app(settings_menu_active=True)
         app._settings_menu_banner = "Configured IP unavailable."
+        app._settings_menu_banner_action = "Pick another interface."
 
         from openfollow.runtime import app_modes
 
@@ -580,12 +582,15 @@ class TestVideoAndMenuState:
         )
         state = _build(app)
         assert state.settings_menu_banner == "Configured IP unavailable."
+        assert state.settings_menu_banner_action == "Pick another interface."
 
     def test_settings_menu_inactive_clears_banner(self) -> None:
         app = _build_app(settings_menu_active=False)
         app._settings_menu_banner = "stale"
+        app._settings_menu_banner_action = "stale step"
         state = _build(app)
         assert state.settings_menu_banner == ""
+        assert state.settings_menu_banner_action == ""
 
     def test_url_editor_passes_through_to_state(
         self,

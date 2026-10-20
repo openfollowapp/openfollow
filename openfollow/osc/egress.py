@@ -75,6 +75,8 @@ class OscEgressTable:
         self._clock = clock
         # (when read, addresses); swapped whole, so a reader needs no lock.
         self._station_addresses: tuple[float, frozenset[str]] | None = None
+        # Each destination name's last answer, swapped whole like the snapshot.
+        self._answers: Mapping[str, tuple[str, ...]] = MappingProxyType({})
 
     def for_destination(self, dest: OscDestinationConfig) -> Egress | None:
         """Where *dest* must leave from; None lets the OS route it."""
@@ -82,10 +84,20 @@ class OscEgressTable:
         iface = plane_source_iface(dest.source_iface, snapshot.station)
         if not iface or is_loopback_host(dest.host):
             return None
-        if reaches_station(dest.host, self._current_station_addresses(), addresses_of=self._addresses_of):
+        if reaches_station(dest.host, self._current_station_addresses(), addresses_of=self._last_answer):
             return None
         # An interface not staged yet reads as down: unpinned would be the leak.
         return Egress(iface, snapshot.addresses.get(iface, ""))
+
+    def _last_answer(self, host: str) -> tuple[str, ...]:
+        """*host*'s addresses; while it is looked up again, its last answer, which its cached client still uses."""
+        addresses = self._addresses_of(host)
+        if not addresses:
+            return self._answers.get(host, ())
+        if self._answers.get(host) != addresses:
+            with self._write_lock:
+                self._answers = MappingProxyType({**self._answers, host: addresses})
+        return addresses
 
     def _current_station_addresses(self) -> frozenset[str]:
         now = self._clock()
@@ -111,6 +123,7 @@ class OscEgressTable:
         resolve: Callable[[str], str] = get_iface_ipv4,
     ) -> None:
         """Resolve every interface *destinations* send from. Config time only."""
+        destinations = list(destinations)
         wanted = {
             plane_source_iface(dest.source_iface, station_iface)
             for dest in destinations
@@ -119,6 +132,8 @@ class OscEgressTable:
         addresses = {iface: resolve(iface) for iface in sorted(wanted) if iface}
         with self._write_lock:
             self._snapshot = _Snapshot(station_iface, MappingProxyType(addresses))
+            hosts = {dest.host for dest in destinations}
+            self._answers = MappingProxyType({host: found for host, found in self._answers.items() if host in hosts})
 
     def mark(self, iface: str, address: str) -> None:
         """Record *iface*'s current address; "" while it has none."""

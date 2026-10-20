@@ -170,3 +170,26 @@ def test_reaches_station_goes_by_the_address_the_client_sends_to() -> None:
     assert reaches_station("multi.example", {"192.0.2.10"}, addresses_of=lambda _h: ("192.0.2.10", "203.0.113.5"))
     assert not reaches_station("multi.example", {"192.0.2.10"}, addresses_of=lambda _h: ("203.0.113.5", "192.0.2.10"))
     assert not reaches_station("", {"192.0.2.10"}, addresses_of=lambda _h: ("192.0.2.10",))
+
+
+def test_a_name_looked_up_again_keeps_its_last_answer() -> None:
+    """Its cached client still sends to that answer; going by "not resolved"
+    meanwhile would switch it to a pinned client that drops every datagram."""
+    answers = [("192.0.2.10",)]
+    dest = _dest(host="station.example", source_iface="eth1")
+    table = OscEgressTable(station_addresses=lambda: {"192.0.2.10"}, addresses_of=lambda _h: answers[0])
+    table.restage("", [dest], resolve=lambda iface: _ADDRESSES.get(iface, ""))
+    assert table.for_destination(dest) is None
+    answers[0] = ()
+    assert table.for_destination(dest) is None
+
+
+def test_restage_forgets_the_answers_of_names_no_destination_uses() -> None:
+    answers = [("192.0.2.10",)]
+    dest = _dest(host="station.example", source_iface="eth1")
+    table = OscEgressTable(station_addresses=lambda: {"192.0.2.10"}, addresses_of=lambda _h: answers[0])
+    table.restage("", [dest], resolve=lambda iface: _ADDRESSES.get(iface, ""))
+    assert table.for_destination(dest) is None
+    answers[0] = ()
+    table.restage("", [_dest(source_iface="eth1")], resolve=lambda iface: _ADDRESSES.get(iface, ""))
+    assert table.for_destination(dest) == Egress("eth1", "198.51.100.10")

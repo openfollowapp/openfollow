@@ -108,7 +108,7 @@ or no modifier for neutral. Pill-shaped, uppercase, `--<level>-chip` fill,
 solid `--<level>-line` border, off-white text, **no icon**. "Starting" and
 "Idle" are info; "Off" is neutral. The OSC diagnostics health pill and the
 Experimental badge (caution) are chips too, and so are the state words in a
-table row: "Conflict" and "Not controlled" (caution) in the marker catalog, and
+table row: "Conflict" (error) and "Not controlled" (caution) in the marker catalog, and
 "Not connected" / "Interface down" (error) in the Network Interface Assignment
 Address column for a function that cannot send; a labelled adapter that is not
 plugged in reads "Not connected" in the neutral chip on the Network Interface
@@ -307,12 +307,14 @@ attributes, so it spells the token's value.
 ### HUD
 
 - Error status rows, the Settings ERROR box, the bottom-left panel in a failure
-  state and a missing controller's marker card use the error fill and border.
-  The marker card keeps its marker-coloured border.
+  state and the marker card of a missing controller, or of a marker another
+  station controls too, use the error fill and border. The marker card keeps
+  its marker-coloured border.
 - Error status rows and the ERROR box lead with the off-white warning sign
   (`draw_warning_sign`).
 - A fault's sentence is a top-right status row, whatever raised it (a video
-  failure, a missing controller, an output whose interface has no address).
+  failure, a missing controller, an output whose interface has no address, a
+  marker another station controls too).
   The bottom-left panel only turns red; it never carries the sentence.
 - A status row takes its level's chip colours from `STATUS_LEVEL_COLORS`,
   led by its level's off-white sign (`draw_level_sign`): the warning sign for

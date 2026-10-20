@@ -7,6 +7,7 @@ from __future__ import annotations
 import math
 import re
 import time
+from collections.abc import Sequence
 from typing import Any
 
 import numpy.typing as npt
@@ -21,6 +22,7 @@ from openfollow.configuration import (
 )
 from openfollow.input.touch_remote import STATUS_FLAG as REMOTE_FLAG
 from openfollow.input.touch_remote import status_row as remote_row
+from openfollow.marker_catalog.control_conflicts import ControlConflict
 from openfollow.network.validate import is_link_local
 from openfollow.palette import AUTO_PICK_ORDER as _PALETTE_AUTO_PICK_ORDER
 from openfollow.runtime.marker_velocity import MarkerVelocityState, estimate_marker_velocity
@@ -64,6 +66,9 @@ _HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 # ``GridConfig.__post_init__`` still fall back to whatever the dataclass
 # currently declares – no silent desync if GridConfig defaults change later.
 _GRID_DEFAULTS = GridConfig()
+
+# The status row for a marker this station and another one both control.
+CONTROL_CONFLICT_ROW = "Marker {marker} also controlled by {stations}"
 
 
 def _soft_int(value: Any, default: int, *, lo: int | None = None) -> int:
@@ -465,6 +470,7 @@ def build_marker_visual_state(
     cam_params_buffer: npt.NDArray[Any],
     dt: float,
     network_alerts: list[str] | None = None,
+    control_conflicts: Sequence[ControlConflict] = (),
 ) -> OverlayState:
     """Build a new OverlayState for the renderer; it is never changed once handed over.
 
@@ -473,6 +479,8 @@ def build_marker_visual_state(
     the velocity each controlled marker broadcasts.
     """
     controlled_set = set(app._controlled_ids)
+    own_conflicts = [conflict for conflict in control_conflicts if conflict.this_station]
+    conflict_ids = {conflict.marker_id for conflict in own_conflicts}
     marker_speeds = app._input_manager.get_marker_gamepad_speeds() if app._input_manager is not None else {}
 
     # Every controlled marker is broadcast on PSN, so every controlled marker
@@ -720,6 +728,7 @@ def build_marker_visual_state(
                 controller_connected=ctrl_conn,
                 identify_flash=marker_id == flash_marker,
                 is_controlled=is_controlled,
+                control_conflict=marker_id in conflict_ids,
                 name=name,
                 marker_fader=marker_fader,
             )
@@ -936,6 +945,11 @@ def build_marker_visual_state(
     # data, and the rows past the badge's visible few collapse into "+N more".
     for i, alert in enumerate(state.network_alerts):
         state.status_flags.append((f"network_down_{i}", alert, "error"))
+
+    # Every output carries a controlled marker, so another station's sends make it jump at every receiver.
+    for conflict in own_conflicts:
+        row = CONTROL_CONFLICT_ROW.format(marker=conflict.marker_id, stations=", ".join(conflict.stations))
+        state.status_flags.append((f"control_conflict_{conflict.marker_id}", row, "error"))
 
     # One row per missing controller, so it is seen even for a marker with no card.
     for info in controller_info:

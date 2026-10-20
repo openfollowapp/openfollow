@@ -30,10 +30,12 @@ import pypsn
 import pytest
 
 from openfollow.configuration import AppConfig
+from openfollow.marker_catalog.control_conflicts import ControlConflict
 from openfollow.psn.marker import Marker
 from openfollow.psn.receiver import PsnReceiver
 from openfollow.runtime.marker_velocity import _MAX_REPORTED_SPEED_MPS
 from openfollow.runtime.overlay_draw_hud import draw_marker_card
+from openfollow.runtime.overlay_draw_style import COLOR_BG_BASE, COLOR_WARNING_FILL
 from openfollow.runtime.overlay_state import OverlayState
 from openfollow.runtime.overlay_status_badge import draw_status_badge
 from openfollow.runtime.services_detection_pin import get_or_create_manual_marker
@@ -229,6 +231,7 @@ def _build(
     person_detector: Any = None,
     dt: float = _FRAME_DT,
     network_alerts: list[str] | None = None,
+    control_conflicts: tuple[ControlConflict, ...] = (),
 ) -> OverlayState:
     # Controller badge is stamped from InputManager.get_controller_info.
     return build_marker_visual_state(
@@ -238,6 +241,7 @@ def _build(
         cam_params_buffer=np.zeros(7, dtype=np.float64),
         dt=dt,
         network_alerts=network_alerts,
+        control_conflicts=control_conflicts,
     )
 
 
@@ -1972,3 +1976,68 @@ class TestMissingControllerSurfaces:
         )
         state = _build(app)
         assert state.markers[0].identify_flash is False
+
+
+class TestControlConflictSurfaces:
+    """A marker another station controls too: a red status row naming both, and a red card."""
+
+    @staticmethod
+    def _app(controlled: list[int]) -> SimpleNamespace:
+        return _build_app(
+            controlled=controlled,
+            viewer=controlled,
+            server_markers={mid: _FakeMarker(mid) for mid in controlled},
+            input_manager=_FakeInputManager(),
+        )
+
+    def test_the_row_names_the_marker_and_the_other_station(self) -> None:
+        conflict = ControlConflict(marker_id=3, stations=("Stage Left",), this_station=True)
+        state = _build(self._app([3]), control_conflicts=(conflict,))
+        assert ("control_conflict_3", "Marker 3 also controlled by Stage Left", "error") in state.status_flags
+        cr = FakeCairo()
+        draw_status_badge(FakeRenderer(state=state), cr, state, 1920, 1080)
+        assert "Marker 3 also controlled by Stage Left" in " ".join(cr.show_text_strings())
+
+    def test_the_row_names_every_other_station(self) -> None:
+        conflict = ControlConflict(marker_id=3, stations=("FOH", "Stage Left"), this_station=True)
+        state = _build(self._app([3]), control_conflicts=(conflict,))
+        assert ("control_conflict_3", "Marker 3 also controlled by FOH, Stage Left", "error") in state.status_flags
+
+    def test_a_conflict_between_two_other_stations_raises_no_row_here(self) -> None:
+        conflict = ControlConflict(marker_id=3, stations=("FOH", "Stage Left"), this_station=False)
+        state = _build(self._app([3]), control_conflicts=(conflict,))
+        assert state.status_flags == []
+        assert state.markers[0].control_conflict is False
+
+    def test_the_card_of_the_conflicting_marker_turns_red(self) -> None:
+        conflict = ControlConflict(marker_id=3, stations=("Stage Left",), this_station=True)
+        state = _build(self._app([3, 4]), control_conflicts=(conflict,))
+        fills: dict[int, bool] = {}
+        for marker in state.markers:
+            cr = FakeCairo()
+            draw_marker_card(FakeRenderer(state=state), cr, x=0, y=0, w=180, h=64, t=marker, selected=False)
+            fills[marker.marker_id] = ("rgba", *COLOR_WARNING_FILL) in cr.calls
+            assert (("rgb", *COLOR_BG_BASE) in cr.calls) is not fills[marker.marker_id]
+        assert fills == {3: True, 4: False}
+
+    def test_a_conflict_row_comes_after_network_outages_and_before_missing_controllers(self) -> None:
+        missing = {
+            "controller_index": 0,
+            "name": "",
+            "state": "missing",
+            "connected": False,
+            "marker_id": 3,
+            "effective_speed": 1.0,
+            "backend": "joystick",
+        }
+        app = self._app([3])
+        app._input_manager = _FakeInputManager(controller_info=[missing])
+        app._runtime_services = SimpleNamespace(_status_flags={"midi_unavailable": ("info", "MIDI off")})
+        conflict = ControlConflict(marker_id=3, stations=("Stage Left",), this_station=True)
+        state = _build(app, network_alerts=["PSN: eth0 is down"], control_conflicts=(conflict,))
+        assert [key for key, _message, _level in state.status_flags] == [
+            "network_down_0",
+            "control_conflict_3",
+            "controller_missing_0",
+            "midi_unavailable",
+        ]

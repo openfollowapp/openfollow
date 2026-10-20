@@ -1,6 +1,6 @@
 # Diagnostics and drives
 
-Covers `uri_redaction.py`, `web/diagnostics.py`, `runtime/removable_media.py`, `runtime/diagnostics_export.py`, `privilege/media_writer.py`. The rules that apply everywhere are in [CLAUDE.md](../../CLAUDE.md).
+Covers `uri_redaction.py`, `power_health.py`, `web/diagnostics.py`, `runtime/removable_media.py`, `runtime/diagnostics_export.py`, `privilege/media_writer.py`. The rules that apply everywhere are in [CLAUDE.md](../../CLAUDE.md).
 
 ## Credential redaction (`uri_redaction.py`)
 Stream URLs carry credentials inline (RTSP userinfo, the SRT `?passphrase=`), so [`openfollow/uri_redaction.py`](../../openfollow/uri_redaction.py) is the one home for stripping them. It sits outside both the video and web packages because both reach for it, and it depends on nothing but the stdlib.
@@ -25,3 +25,19 @@ The diagnostics bundle (and later settings / templates) can be saved to the top 
 ## Video-source reachability probe (A5)
 
 Section A5 of the bundle ([`web/diagnostics.py`](../../openfollow/web/diagnostics.py)) makes a single bounded TCP connect to the host the *operator's own* video input is configured to dial, plus a bounded DNS lookup for it. It answers the most common support question there is, whether the station can reach its camera at all, which no amount of local state can. It is one of the four outbound exceptions to the offline runtime contract: operator-click-gated (a bundle download, or a save of the bundle to a drive from the web UI or the Operator Screen), sends no stream data and reads nothing back, is capped at ~2.5 s total, is never scheduled and never runs at startup or on the render path. When the resolved address is public rather than LAN, the section says so in the output.
+
+## Power supply and throttling (`power_health.py`)
+
+A Raspberry Pi on a weak supply freezes and drops USB devices; one that runs hot slows its CPU. Both are read by `PowerMonitor`, owned by the `SystemStatsCollector` and read with the other system stats once a second:
+
+- **Live under voltage:** the `in0_lcrit_alarm` of the hwmon whose `name` is `rpi_volt` (1 = under voltage now), a sysfs read on the collector's thread. The hwmon is looked up on the first read.
+- **Throttling and the since-boot flags:** `vcgencmd get_throttled` only; a Pi 5 has no sysfs file for them. `ThrottlePoller` runs it every 5 s with a 2 s timeout on its own daemon thread, started on the first read and only where `vcgencmd` is on the path, so no subprocess runs on the GTK thread. Bits 1 to 3 (frequency capped, throttled, soft temperature limit) all count as throttled; bits 16 to 19 are the same since boot. A failed or malformed reading is unknown, not zero. `parse_throttled` and `THROTTLE_BIT_LABELS` are also what the bundle's throttling row decodes.
+- **Not available is never healthy:** a flag this host cannot read is `None`. macOS and other boards report every flag `None`; a Pi whose service user cannot run `vcgencmd` still reports the live under voltage.
+- **Logs:** one warning when under voltage or throttling starts, one info line when it ends; never per poll.
+
+`/api/stats` publishes the reading as `system.power` (a wire interface): `available` (any flag readable), `under_voltage` and `throttled` (now), `under_voltage_since_boot` and `throttled_since_boot` (the firmware's latched flags, cleared only by a reboot), each `true`, `false` or `null` for not available.
+
+Two surfaces show it, and neither shows anything without a reading:
+
+- **Live Statistics** (`web/live_alerts.py`): in the Device panel, an error box while under voltage or throttled now, a caution box once only the since-boot flag is left. While under voltage, throttling is not named: an under voltage caps the CPU too.
+- **Operator Screen:** live only, a top-right error row (`_status_flags["power"]`), "Power supply under voltage" or "CPU throttled (too hot)", held `WARNING_HOLD_S` (10 s) after the last active reading by `PowerWarningHold`, on the collector's injectable clock.

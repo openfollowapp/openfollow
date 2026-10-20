@@ -258,7 +258,9 @@ def _run_wait(tmp_path: Path, polls: list[_Poll], cap: int = 3) -> tuple[int, in
     bin_dir.mkdir()
     state = f'cur="$(cat "{tmp_path}/cur")"; dir="{tmp_path}/p$cur"'
     stubs = {
+        # Answers only the startup question (-s); any other use is an error.
         "nm-online": (
+            'case " $* " in *" -s "*) ;; *) exit 2 ;; esac\n'
             f'n="$(cat "{tmp_path}/count" 2>/dev/null || echo 0)"\n'
             f'echo "$((n + 1))" > "{tmp_path}/count"\n'
             f'[ "$n" -lt {len(polls)} ] && cur="$n" || cur={len(polls) - 1}\n'

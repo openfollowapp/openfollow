@@ -318,7 +318,14 @@ _SHARED_GST_ELEMENTS: tuple[tuple[str, str], ...] = (
 
 # Decoders, in the order the pipeline prefers them. Absence is not a fault -
 # which one is present is the answer to "why is this Pi dropping frames".
-_DECODER_ELEMENTS: tuple[str, ...] = ("v4l2h264dec", "v4l2h265dec", "avdec_h264", "openh264dec")
+_DECODER_ELEMENTS: tuple[str, ...] = (
+    "v4l2h264dec",
+    "v4l2h265dec",
+    "v4l2slh265dec",
+    "avdec_h264",
+    "avdec_h265",
+    "openh264dec",
+)
 
 # ``vcgencmd get_throttled`` bit meanings. The low bits are live, the high
 # ones latch since boot - an operator chasing an intermittent freeze needs the
@@ -1705,7 +1712,11 @@ def collect_video_capability() -> list[str]:
     for name, used_for in _SHARED_GST_ELEMENTS:
         present = "present" if Gst.ElementFactory.find(name) else "MISSING"
         rows.append(f"    {name:<18}{present:<9}({used_for})")
-    found = [name for name in _DECODER_ELEMENTS if Gst.ElementFactory.find(name)]
+    found = []
+    for name in _DECODER_ELEMENTS:
+        factory = Gst.ElementFactory.find(name)
+        if factory:
+            found.append(f"{name} (ranked out)" if factory.get_rank() == Gst.Rank.NONE else name)
     rows.append(f"  Video decoders:       {', '.join(found) if found else 'none of the expected decoders'}")
     return rows
 

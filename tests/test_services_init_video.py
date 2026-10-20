@@ -21,6 +21,7 @@ assertions sharp:
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections.abc import Iterator
 from dataclasses import replace
@@ -31,6 +32,7 @@ import pytest
 
 import openfollow.services as services_module
 from openfollow.configuration import AppConfig, DetectionConfig
+from openfollow.runtime.overlay_layers import LayerContext
 from openfollow.services import AppRuntimeServices
 from tests._fake_cairo import FakeCairo
 from tests._fake_gtk import FakeCanvas
@@ -46,10 +48,12 @@ class _FakeOverlayRenderer:
     def __init__(self) -> None:
         self.state: Any = None
         self.drawn: list[Any] = []
+        self.contexts: list[Any] = []
         self.drew = threading.Event()
 
     def draw(self, cr: Any, width: int, height: int, state: Any) -> None:
         self.drawn.append(state)
+        self.contexts.append(cr)
         self.drew.set()
 
 
@@ -117,6 +121,7 @@ class _FakeReceiver:
         overlay_renderer: Any,
         on_widget_changed: Any,
         on_source_picked: Any,
+        display: Any = None,
         detector: Any,
         preview_provider: Any,
         snapshot_provider: Any,
@@ -125,6 +130,7 @@ class _FakeReceiver:
         iface_name: Any = None,
     ) -> None:
         self.iface_name = iface_name
+        self.display = display
         self.source_type = source_type
         self.input_config = input_config
         self.overlay_renderer = overlay_renderer
@@ -138,6 +144,7 @@ class _FakeReceiver:
         self.create_called = False
         self.started = False
         self.widget: Any = object()
+        self.display_frame_listener: Any = None
         self._raise_on_create: Exception | None = None
 
     def set_pipeline_failure(self, exc: Exception) -> None:
@@ -156,6 +163,13 @@ class _FakeReceiver:
 
     def start(self) -> None:
         self.started = True
+
+    def set_display_frame_listener(self, listener: Any) -> None:
+        self.display_frame_listener = listener
+
+    def drop_display(self) -> None:
+        self.display = None
+        self.dropped_display = True
 
 
 class _RecordingReceiverFactory:
@@ -371,6 +385,17 @@ class TestInitVideoDetectionDisabled:
         assert canvas.embed_widget_calls == []
         _assert_hud_drawn_on_its_thread(services)
 
+    def test_each_frame_reaching_the_display_is_counted_by_the_hud(
+        self,
+        services: AppRuntimeServices,
+        recv_factory: _RecordingReceiverFactory,
+        patched_subsystems: None,
+    ) -> None:
+        services.init_video()
+        assert recv_factory.last is not None
+        assert services._hud_render is not None
+        assert recv_factory.last.display_frame_listener == services._hud_render.video_frame
+
 
 # --------------------------------------------------------------------------- #
 # init_video – detection enabled
@@ -556,6 +581,218 @@ class TestInitVideoPipelineFailure:
 
 
 class TestInitVideoCanvasWithoutAttachHud:
+    @staticmethod
+    def _gl_world(monkeypatch: pytest.MonkeyPatch, canvas: Any, *, blocker: str | None, probe: str | None) -> list:
+        from openfollow.video import gl_display
+
+        class _FakeGlDisplay:
+            def __init__(self) -> None:
+                self.hud: Any = None
+                self.on_unavailable: Any = None
+
+            def set_hud(self, hud: Any) -> None:
+                self.hud = hud
+
+        calls: list[Any] = []
+        monkeypatch.setattr(gl_display, "gl_display_blocker", lambda setting: blocker)
+        monkeypatch.setattr(gl_display, "probe_gl_context", lambda window: calls.append(("probe", window)) or probe)
+        monkeypatch.setattr(gl_display, "GlDisplay", _FakeGlDisplay)
+        canvas.gdk_window = lambda: "gdk-window"
+        canvas.attach_gl_display = lambda display, tick: calls.append(("attach_gl", display, tick))
+        canvas.detach_gl_display = lambda: calls.append(("detach_gl",))
+        return calls
+
+    @pytest.mark.parametrize(
+        ("blocker", "probe", "gl"),
+        [(None, None, True), ("no GL display on darwin", None, False), (None, "no GL context: refused", False)],
+        ids=["supported", "platform-blocks", "probe-fails"],
+    )
+    def test_the_gl_display_runs_only_where_the_platform_supports_it(
+        self,
+        services: AppRuntimeServices,
+        recv_factory: _RecordingReceiverFactory,
+        patched_subsystems: None,
+        monkeypatch: pytest.MonkeyPatch,
+        blocker: str | None,
+        probe: str | None,
+        gl: bool,
+    ) -> None:
+        canvas = services._app._canvas
+        calls = self._gl_world(monkeypatch, canvas, blocker=blocker, probe=probe)
+        services.init_video()
+
+        display = recv_factory.last.display
+        if gl:
+            assert calls[0] == ("probe", "gdk-window")
+            assert display.hud is services._hud_render
+            assert calls[1] == ("attach_gl", display, services._hud_render.tick)
+            assert canvas.hud_draw_fn is None
+            # The GL display composites the HUD from sprites.
+            services._hud_render.set_canvas(640, 360, (1.0, 1.0))
+            services._hud_render.tick()
+            assert services._overlay_renderer.drew.wait(5.0)
+            assert isinstance(services._overlay_renderer.contexts[0], LayerContext)
+        else:
+            assert display is None
+            assert not [c for c in calls if c[0] == "attach_gl"]
+            _assert_hud_drawn_on_its_thread(services)
+        # Either Operator Screen counts the video frames reaching its sink.
+        assert recv_factory.last.display_frame_listener == services._hud_render.video_frame
+
+    def test_the_gl_display_can_fall_back_from_the_moment_its_area_is_embedded(
+        self,
+        services: AppRuntimeServices,
+        recv_factory: _RecordingReceiverFactory,
+        patched_subsystems: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        canvas = services._app._canvas
+        self._gl_world(monkeypatch, canvas, blocker=None, probe=None)
+        # Embedding the GL area in the shown window realizes it, and a failed realize reports at once.
+        told: list[Any] = []
+        canvas.embed_widget = lambda widget: told.append(recv_factory.last.display.on_unavailable)
+        services.init_video()
+
+        assert told == [services._fall_back_to_cairo]
+
+    @pytest.mark.parametrize("missing", ["gdk_window", "detach_gl_display", "attach_hud"])
+    def test_a_canvas_that_cannot_fall_back_stays_on_cairo(
+        self,
+        services: AppRuntimeServices,
+        recv_factory: _RecordingReceiverFactory,
+        patched_subsystems: None,
+        monkeypatch: pytest.MonkeyPatch,
+        missing: str,
+    ) -> None:
+        canvas = services._app._canvas
+        calls = self._gl_world(monkeypatch, canvas, blocker=None, probe=None)
+        if missing == "attach_hud":
+            monkeypatch.delattr(type(canvas), missing)
+        else:
+            delattr(canvas, missing)
+        services.init_video()
+
+        assert recv_factory.last.display is None
+        assert calls == []
+
+    def test_a_pipeline_that_does_not_stop_still_leaves_the_operator_screen_on_cairo(
+        self,
+        services: AppRuntimeServices,
+        recv_factory: _RecordingReceiverFactory,
+        patched_subsystems: None,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        from openfollow.video.receiver import PipelineStuckError
+
+        canvas = services._app._canvas
+        calls = self._gl_world(monkeypatch, canvas, blocker=None, probe=None)
+        services.init_video()
+        receiver = recv_factory.last
+        services._app._video_receiver = receiver
+
+        def stuck() -> None:
+            raise PipelineStuckError("prior pipeline wedged")
+
+        receiver.drop_display = stuck
+        with caplog.at_level(logging.ERROR, logger="openfollow.services"):
+            receiver.display.on_unavailable("120 renders in a row failed")
+
+        assert calls[-1] == ("detach_gl",)
+        assert "did not stop" in caplog.text
+        _assert_hud_drawn_on_its_thread(services)
+
+    @pytest.mark.parametrize(("setting", "gl"), [("auto", True), ("cairo", False)], ids=["auto", "cairo"])
+    def test_the_operator_screen_setting_decides_before_any_probe(
+        self,
+        services: AppRuntimeServices,
+        recv_factory: _RecordingReceiverFactory,
+        patched_subsystems: None,
+        monkeypatch: pytest.MonkeyPatch,
+        setting: str,
+        gl: bool,
+    ) -> None:
+        from openfollow.video import gl_display
+
+        blocker = gl_display.gl_display_blocker
+        canvas = services._app._canvas
+        calls = self._gl_world(monkeypatch, canvas, blocker=None, probe=None)
+        # The real blocker on a Linux station with PyOpenGL: only the setting is left to decide.
+        monkeypatch.setattr(gl_display, "gl_display_blocker", lambda setting: blocker(setting, "linux", pyopengl=True))
+        services._app._config.display.operator_screen = setting
+        services.init_video()
+
+        assert (recv_factory.last.display is not None) is gl
+        assert (("probe", "gdk-window") in calls) is gl
+
+    def test_a_gl_display_that_cannot_be_built_leaves_the_operator_screen_on_cairo(
+        self,
+        services: AppRuntimeServices,
+        recv_factory: _RecordingReceiverFactory,
+        patched_subsystems: None,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        from openfollow.video import gl_display
+
+        canvas = services._app._canvas
+        calls = self._gl_world(monkeypatch, canvas, blocker=None, probe=None)
+
+        def no_fakevideosink() -> None:
+            raise RuntimeError('no element "fakevideosink"')
+
+        monkeypatch.setattr(gl_display, "GlDisplay", no_fakevideosink)
+        with caplog.at_level(logging.WARNING, logger="openfollow.services"):
+            services.init_video()
+
+        assert recv_factory.last.display is None
+        assert not [c for c in calls if c[0] == "attach_gl"]
+        assert "fakevideosink" in caplog.text
+        _assert_hud_drawn_on_its_thread(services)
+
+    def test_a_fallback_before_the_operator_screen_exists_does_nothing(self, services: AppRuntimeServices) -> None:
+        assert services._hud_render is None
+        services._fall_back_to_cairo("too early")
+
+    def test_a_canvas_without_a_gl_display_stays_on_cairo_without_probing(
+        self,
+        services: AppRuntimeServices,
+        recv_factory: _RecordingReceiverFactory,
+        patched_subsystems: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from openfollow.video import gl_display
+
+        monkeypatch.setattr(gl_display, "gl_display_blocker", lambda setting: None)
+        monkeypatch.setattr(gl_display, "probe_gl_context", lambda window: pytest.fail("probed"))
+        services.init_video()
+
+        assert recv_factory.last.display is None
+        _assert_hud_drawn_on_its_thread(services)
+
+    @pytest.mark.parametrize("with_receiver", [True, False], ids=["receiver", "no-receiver"])
+    def test_a_gl_display_that_fails_hands_the_operator_screen_to_cairo(
+        self,
+        services: AppRuntimeServices,
+        recv_factory: _RecordingReceiverFactory,
+        patched_subsystems: None,
+        monkeypatch: pytest.MonkeyPatch,
+        with_receiver: bool,
+    ) -> None:
+        canvas = services._app._canvas
+        calls = self._gl_world(monkeypatch, canvas, blocker=None, probe=None)
+        services.init_video()
+        display, receiver = recv_factory.last.display, recv_factory.last
+        services._app._video_receiver = receiver if with_receiver else None
+
+        display.on_unavailable("the GL area could not start")
+
+        assert calls[-1] == ("detach_gl",)
+        assert (receiver.display is None) is with_receiver
+        # The HUD is pasted by Cairo again, drawn as one picture.
+        _assert_hud_drawn_on_its_thread(services)
+        assert not isinstance(services._overlay_renderer.contexts[-1], LayerContext)
+
     def test_canvas_missing_attach_hud_is_silently_tolerated(
         self,
         services: AppRuntimeServices,

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""GStreamer native sink receiver with HUD overlay via gtksink."""
+"""GStreamer receiver ending in a shared video sink: gtksink, or the GL display's own."""
 
 from __future__ import annotations
 
@@ -89,7 +89,10 @@ class GstNativeSinkReceiver:
         stall_timeout: float | None = None,
         heal_interval: float | None = None,
         iface_name: Callable[[str], str] | None = None,
+        display: Any = None,
     ) -> None:
+        # A GL display brings its own sink and widget in place of gtksink.
+        self._display = display
         # Resolve the active video input plugin
         input_cls = get_input_class(source_type)
         if input_cls is None:
@@ -107,6 +110,9 @@ class GstNativeSinkReceiver:
         self._apply_policy_overrides()
         self._source_type = source_type
         self._input_config: dict[str, Any] = input_config or {}
+        # source_name's label, keyed on (pipeline builds, input class, config copy).
+        self._pipeline_builds = 0
+        self._source_label: tuple[tuple[int, type, dict[str, Any]], str] | None = None
 
         self._on_source_picked = on_source_picked
         self._reconnect_delay = max(0.1, reconnect_delay)
@@ -151,6 +157,8 @@ class GstNativeSinkReceiver:
 
         # Shared sink created lazily
         self._shared_sink = None
+        # Told of every frame that reaches the display sink, from its streaming thread.
+        self._display_frame_listener: Callable[[], None] | None = None
         # The gtksink is shared across pipeline rebuilds, and pad probes live
         # on its (persistent) sink pad – so attach them exactly once. Without
         # this guard every reconnect/heal rebuild would stack another pair of
@@ -197,9 +205,14 @@ class GstNativeSinkReceiver:
     # -- Shared sink management -----------------------------------------------
 
     def _create_shared_sink(self) -> Any:
-        """Create a single gtksink that will be reused across all pipelines."""
+        """The sink every pipeline ends in, the GL display's or a gtksink, watched for the frames reaching it."""
         Gst.init(None)
+        sink = self._display.sink if self._display is not None else self._create_platform_sink()
+        if sink is not None:
+            sink.get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, self._on_display_frame)
+        return sink
 
+    def _create_platform_sink(self) -> Any:
         sink_name = self._select_sink_name()
         if sink_name is None:
             logger.error("No embeddable video sink available")
@@ -218,6 +231,16 @@ class GstNativeSinkReceiver:
         logger.info("Created shared %s element for all pipelines", sink_name)
         return sink
 
+    def set_display_frame_listener(self, listener: Callable[[], None] | None) -> None:
+        """Call ``listener`` (from the sink's streaming thread) for each frame that reaches the display."""
+        self._display_frame_listener = listener
+
+    def _on_display_frame(self, _pad: Any, _info: Any) -> Any:
+        listener = self._display_frame_listener
+        if listener is not None:
+            listener()
+        return Gst.PadProbeReturn.OK
+
     def _get_shared_sink(self) -> Any:
         """Get the shared sink, creating it if needed."""
         if self._shared_sink is None:
@@ -232,6 +255,9 @@ class GstNativeSinkReceiver:
         parent = sink.get_parent()
         if parent is not None:
             parent.remove(sink)
+        # Every build passes here after its old pipeline stopped, so none of that pipeline's frames are shown.
+        if self._display is not None:
+            self._display.accept_frames()
         try:
             sink.set_property("sync", False)
         except Exception:
@@ -271,8 +297,14 @@ class GstNativeSinkReceiver:
 
     @property
     def source_name(self) -> str:
-        """Return the active source label."""
-        return self._input.get_source_label(self._input_config)
+        """The active source's label; read every frame, so worked out only when input, config or pipeline change."""
+        current = (self._pipeline_builds, type(self._input), self._input_config)
+        cached = self._source_label
+        if cached is None or cached[0] != current:
+            # Key and label from one snapshot: the GTK thread may rebuild, swap or edit the config meanwhile.
+            builds, input_cls, config = current[0], current[1], dict(current[2])
+            cached = self._source_label = ((builds, input_cls, config), input_cls.get_source_label(config))
+        return cached[1]
 
     @property
     def source_kind(self) -> SourceKind:
@@ -321,6 +353,11 @@ class GstNativeSinkReceiver:
     def start(self) -> None:
         self.play()
 
+    def _release_display_frames(self) -> None:
+        """Before a NULL transition: a decoder may not stop while the display holds its frames."""
+        if self._display is not None:
+            self._display.release_frames()
+
     def stop(self) -> None:
         self._cancel_connection_timeout()
         self._cancel_reconnect()
@@ -338,6 +375,7 @@ class GstNativeSinkReceiver:
             # Drop the bus signal watch so the pipeline (and its sockets) is
             # freed once NULL completes – otherwise stop() leaks fds.
             self._bus_handler.teardown_bus(pipeline)
+            self._release_display_frames()
             # set_state(NULL) can block indefinitely on network pipelines (RTSP/SRT)
             # when the remote end is unresponsive. Run in a daemon thread with a
             # timeout so shutdown never enters an uninterruptible kernel wait.
@@ -377,6 +415,7 @@ class GstNativeSinkReceiver:
         if self._pipeline is None:
             return
         pipeline = self._pipeline
+        self._release_display_frames()
 
         confirmed: list[bool] = []
 
@@ -532,6 +571,34 @@ class GstNativeSinkReceiver:
         # same shared sink.
         self.play()
 
+    def drop_display(self) -> None:
+        """Fall back from the GL display to the platform sink: rebuild the pipeline on it.
+
+        The platform sink's widget replaces the display's in the window even when
+        the old pipeline does not stop (``PipelineStuckError``); the next rebuild
+        then lands on the platform sink. GTK main thread only, like ``swap_input``.
+        """
+        if self._display is None:
+            return
+        self._cancel_connection_timeout()
+        self._cancel_reconnect()
+        self._cancel_heal()
+        self._cancel_watchdog()
+        self._release_display_frames()
+        self._display = None
+        self._shared_sink = None
+        # The flow probes sit on the old sink's pad; the new sink gets its own.
+        self._sink_probes_added = False
+        try:
+            self._null_transition_current_pipeline(swap_label="drop_display")
+        finally:
+            # ``play`` embeds a widget only for a placeholder; a configured source keeps the display's.
+            widget = self.get_sink_widget()
+            if self._on_widget_changed is not None and widget is not None:
+                self._on_widget_changed(widget)
+        self._reset_video_flow_state()
+        self.play()
+
     def swap_detection_branch(
         self,
         new_detector: PersonDetector | None,
@@ -558,7 +625,7 @@ class GstNativeSinkReceiver:
 
         old_detector = self._detector
         if old_detector is not None:
-            old_detector.stop()
+            old_detector.stop(wait=False)
 
         self._detector = new_detector
         self._pipeline_assembler.set_detector(new_detector)
@@ -573,6 +640,8 @@ class GstNativeSinkReceiver:
     def create_pipeline(self) -> None:
         """Build the GStreamer pipeline via the active input plugin."""
         Gst.init(None)
+        # The input resolves what it plays as it builds; the label follows it.
+        self._pipeline_builds += 1
         self._reset_video_flow_state()
         self._note_pin()
         available, reason = self._input.__class__.is_available()
@@ -729,6 +798,8 @@ class GstNativeSinkReceiver:
 
     def get_sink_widget(self) -> Any:
         """Return the GTK widget from shared gtksink."""
+        if self._display is not None:
+            return self._display.widget
         sink = self._get_shared_sink()
         if sink is None:
             return None
@@ -1086,6 +1157,7 @@ class GstNativeSinkReceiver:
         if self._pipeline is not None:
             try:
                 self._bus_handler.teardown_bus(self._pipeline)
+                self._release_display_frames()
                 self._pipeline.set_state(Gst.State.NULL)
             except Exception:
                 logger.exception("Error setting pipeline to NULL during reconnect")
@@ -1141,6 +1213,7 @@ class GstNativeSinkReceiver:
 
         if self._pipeline is not None:
             self._bus_handler.teardown_bus(self._pipeline)
+            self._release_display_frames()
             self._pipeline.set_state(Gst.State.NULL)
             self._pipeline = None
 

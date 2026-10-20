@@ -456,16 +456,12 @@ class TestDrawMarkerBranches:
     def test_z_line_skipped_when_projection_nonfinite(self) -> None:
         from openfollow.runtime import overlay_draw_scene as mod
 
-        call = [0]
-
         def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0):
+            # The marker's point and radius end land on screen; the Z line is behind the camera.
             arr = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
-            call[0] += 1
-            # First call (center radius pair) – return finite.
-            if call[0] == 1:
-                return np.array([[500.0, 400.0], [510.0, 400.0]], dtype=np.float64)
-            # Z line call – NaN.
-            return np.full((len(arr), 2), np.nan, dtype=np.float64)
+            out = np.full((len(arr), 2), np.nan, dtype=np.float64)
+            out[:2] = [[500.0, 400.0], [510.0, 400.0]]
+            return out
 
         state = _scene_state(
             show_z_line=True,
@@ -1431,7 +1427,7 @@ class TestGridCache:
 
         cache, state = GridCache(), self._state()
         frames = [self._draw(cache, state) for _ in range(3)]
-        assert all(("paint",) in cr.calls for cr in frames)
+        assert all(("fill",) in cr.calls for cr in frames)
         pictures = [s for cr in frames for s in cr.surfaces]
         assert len(pictures) == 3 and all(p is pictures[0] for p in pictures)
 
@@ -1483,6 +1479,20 @@ class TestGridCache:
         shown = self._pixels(cr.surfaces[0])
         assert np.array_equal(shown, fresh)
         assert shown.shape != before.shape or not np.array_equal(shown, before)
+
+    def test_a_redraw_holds_no_second_copy_of_the_canvas(self) -> None:
+        import tracemalloc
+
+        from openfollow.runtime.overlay_draw_scene import GridCache
+
+        tracemalloc.start()
+        try:
+            self._draw(GridCache(), self._state())
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        # Finding the inked tiles must not cost another canvas-sized buffer.
+        assert peak < 1920 * 1080, peak
 
     @pytest.mark.parametrize(
         ("size", "scale", "kept"),

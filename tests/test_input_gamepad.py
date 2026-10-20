@@ -227,8 +227,8 @@ def stubbed_pygame(monkeypatch):
         "rumble": {},
     }
 
-    monkeypatch.setattr(pygame, "get_init", lambda: True)
-    monkeypatch.setattr(pygame, "init", lambda: None)
+    monkeypatch.setattr(pygame.display, "get_init", lambda: True)
+    monkeypatch.setattr(pygame.display, "init", lambda: None)
     monkeypatch.setattr(pygame.joystick, "get_init", lambda: True)
     monkeypatch.setattr(pygame.joystick, "init", lambda: None)
     monkeypatch.setattr(pygame.joystick, "quit", lambda: None)
@@ -1928,11 +1928,11 @@ class TestConstruction:
 
 
 class TestPygameSubsystemInitOnConstruct:
-    def test_calls_pygame_init_when_not_already_initialized(self, monkeypatch) -> None:
-        called = {"pygame": False, "joystick": False}
+    def test_starts_the_display_and_joystick_subsystems_when_not_running(self, monkeypatch) -> None:
+        called = {"display": False, "joystick": False}
 
-        monkeypatch.setattr(pygame, "get_init", lambda: False)
-        monkeypatch.setattr(pygame, "init", lambda: called.__setitem__("pygame", True))
+        monkeypatch.setattr(pygame.display, "get_init", lambda: False)
+        monkeypatch.setattr(pygame.display, "init", lambda: called.__setitem__("display", True))
         monkeypatch.setattr(pygame.joystick, "get_init", lambda: False)
         monkeypatch.setattr(
             pygame.joystick,
@@ -1947,8 +1947,26 @@ class TestPygameSubsystemInitOnConstruct:
         monkeypatch.setattr(gp, "sdl2_controller", None)
 
         GamepadHandler(FakeApp())
-        assert called["pygame"] is True
+        assert called["display"] is True
         assert called["joystick"] is True
+
+    def test_starts_no_sound(self, monkeypatch) -> None:
+        """No pygame.init(): it keeps an SDL timer and, through the mixer, an audio thread running all show."""
+        started: list[str] = []
+        monkeypatch.setattr(pygame, "init", lambda: started.append("pygame.init"))
+        monkeypatch.setattr(pygame.mixer, "init", lambda *a, **k: started.append("mixer"))
+        monkeypatch.setattr(pygame.display, "get_init", lambda: False)
+        monkeypatch.setattr(pygame.display, "init", lambda: None)
+        monkeypatch.setattr(pygame.joystick, "get_init", lambda: False)
+        monkeypatch.setattr(pygame.joystick, "init", lambda: None)
+        monkeypatch.setattr(pygame.joystick, "quit", lambda: None)
+        monkeypatch.setattr(pygame.joystick, "get_count", lambda: 0)
+        monkeypatch.setattr(pygame.event, "get", lambda: [])
+        monkeypatch.setattr(pygame.event, "post", lambda e: None)
+        monkeypatch.setattr(gp, "sdl2_controller", None)
+
+        GamepadHandler(FakeApp())
+        assert started == []
 
     @pytest.mark.parametrize(("is_ce", "warns"), [(True, False), (False, True)], ids=["pygame-ce", "classic"])
     def test_warns_when_classic_pygame_loaded(self, stubbed_pygame, monkeypatch, caplog, is_ce, warns) -> None:
@@ -1961,9 +1979,9 @@ class TestPygameSubsystemInitOnConstruct:
         monkeypatch.delenv("SDL_JOYSTICK_BLACKLIST_DEVICES", raising=False)
         seen: dict[str, str | None] = {}
 
-        monkeypatch.setattr(pygame, "get_init", lambda: False)
+        monkeypatch.setattr(pygame.display, "get_init", lambda: False)
         monkeypatch.setattr(
-            pygame,
+            pygame.display,
             "init",
             lambda: seen.__setitem__("blacklist", os.environ.get("SDL_JOYSTICK_BLACKLIST_DEVICES")),
         )
@@ -1984,8 +2002,8 @@ class TestPygameSubsystemInitOnConstruct:
     def test_keeps_an_explicit_blacklist(self, monkeypatch) -> None:
         monkeypatch.setenv("SDL_JOYSTICK_BLACKLIST_DEVICES", "0x1234/0x5678")
 
-        monkeypatch.setattr(pygame, "get_init", lambda: False)
-        monkeypatch.setattr(pygame, "init", lambda: None)
+        monkeypatch.setattr(pygame.display, "get_init", lambda: False)
+        monkeypatch.setattr(pygame.display, "init", lambda: None)
         monkeypatch.setattr(pygame.joystick, "get_init", lambda: False)
         monkeypatch.setattr(pygame.joystick, "init", lambda: None)
         monkeypatch.setattr(pygame.joystick, "quit", lambda: None)
@@ -2001,9 +2019,9 @@ class TestPygameSubsystemInitOnConstruct:
         monkeypatch.delenv("SDL_AUDIODRIVER", raising=False)
         seen: dict[str, str | None] = {}
 
-        monkeypatch.setattr(pygame, "get_init", lambda: False)
+        monkeypatch.setattr(pygame.display, "get_init", lambda: False)
         monkeypatch.setattr(
-            pygame,
+            pygame.display,
             "init",
             lambda: seen.__setitem__("driver", os.environ.get("SDL_AUDIODRIVER")),
         )
@@ -2022,8 +2040,8 @@ class TestPygameSubsystemInitOnConstruct:
     def test_keeps_explicit_audio_driver_override(self, monkeypatch) -> None:
         monkeypatch.setenv("SDL_AUDIODRIVER", "alsa")
 
-        monkeypatch.setattr(pygame, "get_init", lambda: False)
-        monkeypatch.setattr(pygame, "init", lambda: None)
+        monkeypatch.setattr(pygame.display, "get_init", lambda: False)
+        monkeypatch.setattr(pygame.display, "init", lambda: None)
         monkeypatch.setattr(pygame.joystick, "get_init", lambda: False)
         monkeypatch.setattr(pygame.joystick, "init", lambda: None)
         monkeypatch.setattr(pygame.joystick, "quit", lambda: None)
@@ -2040,9 +2058,9 @@ class TestPygameSubsystemInitOnConstruct:
         monkeypatch.delenv("SDL_VIDEODRIVER", raising=False)
         seen: dict[str, str | None] = {}
 
-        monkeypatch.setattr(pygame, "get_init", lambda: False)
+        monkeypatch.setattr(pygame.display, "get_init", lambda: False)
         monkeypatch.setattr(
-            pygame,
+            pygame.display,
             "init",
             lambda: seen.__setitem__("driver", os.environ.get("SDL_VIDEODRIVER")),
         )
@@ -2057,14 +2075,14 @@ class TestPygameSubsystemInitOnConstruct:
 
         GamepadHandler(FakeApp())
         # Read at init time, not after: SDL takes the driver when the subsystem
-        # comes up, so a setdefault below pygame.init() would be a silent no-op.
+        # comes up, so a setdefault below pygame.display.init() would be a silent no-op.
         assert seen["driver"] == "dummy"
 
     def test_keeps_explicit_video_driver_override(self, monkeypatch) -> None:
         monkeypatch.setenv("SDL_VIDEODRIVER", "x11")
 
-        monkeypatch.setattr(pygame, "get_init", lambda: False)
-        monkeypatch.setattr(pygame, "init", lambda: None)
+        monkeypatch.setattr(pygame.display, "get_init", lambda: False)
+        monkeypatch.setattr(pygame.display, "init", lambda: None)
         monkeypatch.setattr(pygame.joystick, "get_init", lambda: False)
         monkeypatch.setattr(pygame.joystick, "init", lambda: None)
         monkeypatch.setattr(pygame.joystick, "quit", lambda: None)
@@ -2083,9 +2101,9 @@ class TestPygameSubsystemInitOnConstruct:
         monkeypatch.setattr("sys.platform", platform)
         seen: dict[str, str | None] = {}
 
-        monkeypatch.setattr(pygame, "get_init", lambda: False)
+        monkeypatch.setattr(pygame.display, "get_init", lambda: False)
         monkeypatch.setattr(
-            pygame,
+            pygame.display,
             "init",
             lambda: seen.__setitem__("hidapi", os.environ.get("SDL_JOYSTICK_HIDAPI")),
         )
@@ -2105,8 +2123,8 @@ class TestPygameSubsystemInitOnConstruct:
         monkeypatch.setenv("SDL_JOYSTICK_HIDAPI", "1")
         monkeypatch.setattr("sys.platform", "darwin")
 
-        monkeypatch.setattr(pygame, "get_init", lambda: False)
-        monkeypatch.setattr(pygame, "init", lambda: None)
+        monkeypatch.setattr(pygame.display, "get_init", lambda: False)
+        monkeypatch.setattr(pygame.display, "init", lambda: None)
         monkeypatch.setattr(pygame.joystick, "get_init", lambda: False)
         monkeypatch.setattr(pygame.joystick, "init", lambda: None)
         monkeypatch.setattr(pygame.joystick, "quit", lambda: None)
@@ -2148,8 +2166,8 @@ class TestPygameSubsystemInitOnConstruct:
     def test_keeps_explicit_sdl_signal_handler_override(self, monkeypatch) -> None:
         monkeypatch.setenv("SDL_NO_SIGNAL_HANDLERS", "0")
 
-        monkeypatch.setattr(pygame, "get_init", lambda: False)
-        monkeypatch.setattr(pygame, "init", lambda: None)
+        monkeypatch.setattr(pygame.display, "get_init", lambda: False)
+        monkeypatch.setattr(pygame.display, "init", lambda: None)
         monkeypatch.setattr(pygame.joystick, "get_init", lambda: False)
         monkeypatch.setattr(pygame.joystick, "init", lambda: None)
         monkeypatch.setattr(pygame.joystick, "quit", lambda: None)
@@ -2181,7 +2199,7 @@ class TestPygameSubsystemInitOnConstruct:
             def is_controller(_idx):
                 return False
 
-        monkeypatch.setattr(pygame, "get_init", lambda: True)
+        monkeypatch.setattr(pygame.display, "get_init", lambda: True)
         monkeypatch.setattr(pygame.joystick, "get_init", lambda: True)
         monkeypatch.setattr(pygame.joystick, "quit", lambda: None)
         monkeypatch.setattr(pygame.joystick, "get_count", lambda: 0)
@@ -2229,7 +2247,7 @@ class TestSdl2ControllerOpenSuccess:
 
             Controller = _Sdl2Ctrl
 
-        monkeypatch.setattr(pygame, "get_init", lambda: True)
+        monkeypatch.setattr(pygame.display, "get_init", lambda: True)
         monkeypatch.setattr(pygame.joystick, "get_init", lambda: True)
         monkeypatch.setattr(pygame.joystick, "quit", lambda: None)
         monkeypatch.setattr(pygame.joystick, "get_count", lambda: 1)
@@ -2269,7 +2287,7 @@ class TestSdl2ControllerOpenFailure:
             def Controller(_idx):
                 raise pygame.error("sdl2 open failed")
 
-        monkeypatch.setattr(pygame, "get_init", lambda: True)
+        monkeypatch.setattr(pygame.display, "get_init", lambda: True)
         monkeypatch.setattr(pygame.joystick, "get_init", lambda: True)
         monkeypatch.setattr(pygame.joystick, "quit", lambda: None)
         monkeypatch.setattr(pygame.joystick, "get_count", lambda: 1)
@@ -2618,8 +2636,8 @@ class TestUpdateStartupRetry:
             def is_controller(_idx):
                 return False
 
-        monkeypatch.setattr(pygame, "get_init", lambda: True)
-        monkeypatch.setattr(pygame, "init", lambda: None)
+        monkeypatch.setattr(pygame.display, "get_init", lambda: True)
+        monkeypatch.setattr(pygame.display, "init", lambda: None)
         monkeypatch.setattr(pygame.joystick, "get_init", lambda: True)
         monkeypatch.setattr(pygame.joystick, "init", lambda: None)
         monkeypatch.setattr(pygame.joystick, "quit", lambda: None)
@@ -2810,10 +2828,10 @@ class TestStopErrorSwallowing:
 
         # Construct phase: pretend everything is already initialised so
         # the handler doesn't toggle our flags.
-        monkeypatch.setattr(pygame, "get_init", lambda: True)
-        monkeypatch.setattr(pygame, "init", lambda: None)
+        monkeypatch.setattr(pygame.display, "get_init", lambda: True)
+        monkeypatch.setattr(pygame.display, "init", lambda: None)
         monkeypatch.setattr(
-            pygame,
+            pygame.display,
             "quit",
             lambda: called.__setitem__("pyg_quit", True),
         )

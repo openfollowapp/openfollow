@@ -68,9 +68,9 @@ The ground grid (`GroundGridConfig`, the experimental `ground_grid` feature) is 
 | Field | Meaning |
 |---|---|
 | `window_s` | How long the window ran, in seconds |
-| `picture_ms`, `clear_ms`, `draw_ms` | CPU per picture on the render thread: clearing (or allocating) plus drawing. A layered picture for the GL display starts empty, so `clear_ms` is `null` there |
+| `picture_ms`, `clear_ms`, `draw_ms` | CPU per picture on the render thread: clearing (or allocating) plus drawing. A layered picture for the GL display starts empty, so `clear_ms` is `null` there and `draw_ms` includes cutting it into layers |
 | `paint_ms`, `repaints_per_s` | Cairo Operator Screen: CPU per repaint on the GTK main thread (the paste) and how many repaints a second; every video frame repaints the HUD too |
-| `gl_render_ms`, `gl_renders_per_s` | GL display: CPU per render on the GTK main thread (video and HUD uploads, compositing) and how many renders a second, one per refresh |
+| `gl_render_ms`, `gl_renders_per_s` | GL display: CPU per render on the GTK main thread (video and HUD uploads, compositing) and how many renders a second, one per refresh. CPU only: time the thread waits on the driver is in the `GL main thread` log's wall time |
 | `pictures_per_s`, `refreshes_per_s` | New pictures shown and display ticks a second |
 | `interval_refreshes` | The pacing interval when the window closed: refreshes each picture is held |
 | `picture_refreshes` | How many refreshes each picture stayed on screen, as counts (`{"2": 59, "3": 1}`); everything at `interval_refreshes` is an even HUD |

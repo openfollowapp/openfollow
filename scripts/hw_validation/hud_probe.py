@@ -7,8 +7,8 @@ Runs on the station, next to the app. Over each window it reads the CPU time of
 the OpenFollow process and its threads from ``/proc`` (the main thread, the HUD
 render thread named by ``/api/stats``, the GStreamer threads) and of the
 compositor, and averages the ``hud`` section of ``/api/stats``: CPU per picture
-and per repaint, pictures and repaints a second, and how many refreshes each
-picture and each video frame stayed on screen::
+and per repaint (Cairo) or render (GL), how many a second, and how many
+refreshes each picture and each video frame stayed on screen::
 
     /opt/openfollow/venv/bin/python scripts/hw_validation/hud_probe.py --pin 0000
     /opt/openfollow/venv/bin/python scripts/hw_validation/hud_probe.py --runs 3 --window 20 --label after

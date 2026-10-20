@@ -1258,8 +1258,17 @@ class AppRuntimeServices:
             self.apply_psn_source_ip_change(address)
 
         def _current_psn() -> str | None:
+            # The output's address; the input's alone when the output never started.
             server = self._app._server
-            return server.bound_source_ip() if server is not None else None
+            if server is not None:
+                return server.bound_source_ip()
+            receiver = self._app._psn_receiver
+            return receiver.bound_source_ip() if receiver is not None and receiver.enabled else None
+
+        def _psn_complete() -> bool:
+            # PSN input belongs to the plane: one that did not bind beside the output is a failure to retry.
+            receiver = self._app._psn_receiver
+            return receiver is None or not receiver.enabled or receiver.bound_source_ip() == _current_psn()
 
         def _suspend_psn() -> None:
             # Both directions, and both attempted even if the first raises:
@@ -1350,6 +1359,11 @@ class AppRuntimeServices:
                 return False
             return bool(plane_source_iface(cfg.source_iface, self._app._config.psn_source_iface))
 
+        def _start_osc_listener() -> None:
+            # A failed restart leaves no listener: rebuild it from the config, raising while it cannot bind.
+            if self._osc_service.listener_status()["port"] is None and self._app._input_manager is not None:
+                self._app._input_manager.resume_osc()
+
         def _apply_osc_input(address: str) -> None:
             # Rebinds the listener so the group follows the interface. The
             # membership cannot be dropped once the address it was taken on is
@@ -1360,6 +1374,7 @@ class AppRuntimeServices:
             # as success - it clears the outage, logs that the output resumed
             # and starts the poll again with no backoff - so swallowing the
             # False would retry once a second forever while reporting health.
+            _start_osc_listener()
             cfg = self._app._config
             if not self._osc_service.set_multicast_iface(
                 address, plane_source_iface(cfg.osc.listen_iface, cfg.psn_source_iface)
@@ -1374,19 +1389,18 @@ class AppRuntimeServices:
             return None if iface is None else str(iface)
 
         def _suspend_osc_input() -> None:
+            # Unicast and broadcast keep arriving without the membership.
+            _start_osc_listener()
             self._osc_service.set_multicast_iface(None)
 
         def _osc_input_pinned() -> bool:
-            # Three things have to be true before this is a plane. Unpinned, the
-            # membership is the routing table's to choose and there is no
-            # interface to follow; with no group configured the pin governs
-            # nothing; and with no listener running there is no socket to move a
-            # membership on, so polling would retry once a second forever
-            # against a port that is in use.
+            # Config only. Unpinned, the membership is the routing table's to
+            # choose and there is no interface to follow; with no group
+            # configured the pin governs nothing. A listener that is not running
+            # stays a plane, so its failure is reported and retried.
             cfg = self._app._config.osc
             pinned = plane_source_iface(cfg.listen_iface, self._app._config.psn_source_iface)
-            listening = self._osc_service.listener_status()["port"] is not None
-            return bool(cfg.enabled and cfg.multicast_group and pinned and listening)
+            return bool(cfg.enabled and cfg.multicast_group and pinned)
 
         return [
             Plane(
@@ -1395,6 +1409,7 @@ class AppRuntimeServices:
                 current=_current_psn,
                 apply=_apply_psn,
                 suspend=_suspend_psn,
+                complete=_psn_complete,
             ),
             Plane(
                 label="OTP output",

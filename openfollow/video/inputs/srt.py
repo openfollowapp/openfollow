@@ -20,6 +20,7 @@ from openfollow.video.inputs._base import (
     configure_pre_decode_queue,
     video_input_pin_field,
 )
+from openfollow.video.inputs._hevc_guard import guard_hevc_decoder
 from openfollow.video.inputs._pin import (
     FORCES_DEVICE,
     PinRefusal,
@@ -102,6 +103,7 @@ class SrtInput(VideoInputBase):
         if factory:
             factory.set_rank(Gst.Rank.MARGINAL)
             logger.info("Decoder priority: openh264dec → MARGINAL")
+        guard_hevc_decoder(Gst)
 
     def create_pipeline(
         self,

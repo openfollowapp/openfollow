@@ -5352,6 +5352,27 @@ def test_collect_video_capability_reports_an_unreadable_registry(monkeypatch: py
     assert "input registry" in diag.collect_video_capability()[0]
 
 
+def test_collect_video_capability_marks_a_ranked_out_decoder(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A decoder the station ranked out is present but never picked, which is the answer to "why software"."""
+    from types import SimpleNamespace
+
+    import gi.repository
+
+    ranks = {"v4l2slh265dec": 0, "avdec_h265": 256}
+    fake = SimpleNamespace(
+        init=lambda _args: None,
+        Rank=SimpleNamespace(NONE=0),
+        ElementFactory=SimpleNamespace(
+            find=lambda name: SimpleNamespace(get_rank=lambda: ranks[name]) if name in ranks else None
+        ),
+    )
+    monkeypatch.setattr(gi.repository, "Gst", fake, raising=False)
+
+    rows = diag.collect_video_capability()
+
+    assert rows[-1] == "  Video decoders:       v4l2slh265dec (ranked out), avdec_h265"
+
+
 def test_collect_detection_models_lists_what_is_on_disk(tmp_path: Path) -> None:
     """The storage breakdown reports the directory's size; "detection will not
     start" is a question about which model is in it."""

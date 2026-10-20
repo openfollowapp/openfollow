@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""Video and HUD on one ``Gtk.GLArea``: decoded frames and the HUD picture go up as textures, composited each refresh.
+"""Video and HUD on one ``Gtk.GLArea``: decoded frames and HUD pictures go up as textures, composited each refresh.
 
 Asked for with ``OPENFOLLOW_GL_DISPLAY=1`` or the flag file: the receiver ends in this display's sink
 instead of gtksink, and the window renders this area once per display refresh instead of pasting the
-HUD with Cairo. Each refresh shows the newest frame that arrived. PyOpenGL is imported only when the
-area is realized.
+HUD with Cairo. Each refresh shows the newest frame that arrived, and the HUD as ``Layers``: a kept
+picture is uploaded once, the pictures drawn between them each time the HUD changes. PyOpenGL is
+imported only when the area is realized.
 """
 
 from __future__ import annotations
@@ -15,11 +16,12 @@ import logging
 import os
 import sys
 import threading
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 from openfollow.logging_setup import ThrottledExceptionLogger
+from openfollow.runtime.overlay_layers import Layers, Sprite
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +97,64 @@ class LatestFrame:
     def open(self) -> None:
         with self._lock:
             self._open = True
+
+
+class SpriteTextures:
+    """The textures a sprite list is drawn from, in one GL context: a kept sprite's made once, the others reused.
+
+    ``new`` makes a texture, ``upload`` fills one from a picture, ``delete`` frees a list of them.
+    """
+
+    def __init__(
+        self, new: Callable[[], int], upload: Callable[[int, Any], None], delete: Callable[[list[int]], None]
+    ) -> None:
+        self._new, self._upload, self._delete = new, upload, delete
+        # Kept sprites' textures by picture identity, holding the picture so the identity stays unique.
+        self._kept: dict[int, tuple[Any, int]] = {}
+        self._spare: list[int] = []
+        self.drawn: list[int] = []
+
+    def update(self, sprites: Sequence[Sprite]) -> None:
+        """Textures for a new list, one per sprite in ``drawn``; a kept texture no sprite shows is deleted."""
+        kept_before = {tex for _, tex in self._kept.values()}
+        pool = self._spare + [t for t in self.drawn if t not in kept_before]
+        kept = {id(s.picture) for s in sprites if s.kept}
+        if gone := [k for k in self._kept if k not in kept]:
+            self._delete([self._kept.pop(k)[1] for k in gone])
+        drawn: list[int] = []
+        for s in sprites:
+            if s.kept:
+                entry = self._kept.get(id(s.picture))
+                if entry is None:
+                    entry = (s.picture, self._new())
+                    self._upload(entry[1], s.picture)
+                    self._kept[id(s.picture)] = entry
+                drawn.append(entry[1])
+            else:
+                tex = pool.pop() if pool else self._new()
+                self._upload(tex, s.picture)
+                drawn.append(tex)
+        self.drawn = drawn
+        self._spare = pool
+
+    def held(self) -> list[int]:
+        """Every texture made and not deleted, each once."""
+        kept = {tex for _, tex in self._kept.values()}
+        return [*self._spare, *(set(self.drawn) - kept), *kept]
+
+
+def sprite_quad(
+    sprite: Sprite, scale: tuple[float, float], area_w: int, area_h: int
+) -> tuple[float, float, float, float]:
+    """Where a sprite lands in an area of ``area_w`` x ``area_h`` device pixels, as (x0, y0, x1, y1) in clip space."""
+    px, py = sprite.x * scale[0], sprite.y * scale[1]
+    pw, ph = sprite.picture.get_width(), sprite.picture.get_height()
+    return (
+        -1.0 + 2.0 * px / area_w,
+        1.0 - 2.0 * (py + ph) / area_h,
+        -1.0 + 2.0 * (px + pw) / area_w,
+        1.0 - 2.0 * py / area_h,
+    )
 
 
 def letterbox(frame_w: int, frame_h: int, area_w: int, area_h: int) -> tuple[float, float, float, float]:
@@ -237,7 +297,7 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
             if area.get_error() is not None:
                 return
             GL = self._gl
-            GL.glDeleteTextures([*self._t_yuv, self._t_hud])
+            GL.glDeleteTextures([*self._t_yuv, self._t_hud, *self._sprite_tex.held()])
             GL.glDeleteBuffers(1, [self._quad[1]])
             GL.glDeleteVertexArrays(1, [self._quad[0]])
             GL.glDeleteProgram(self._p_yuv)
@@ -269,6 +329,7 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
         self._t_yuv = [self._texture() for _ in range(3)]
         self._t_hud = self._texture()
         self._hud_size: tuple[int, int] = (0, 0)
+        self._sprite_tex = SpriteTextures(self._texture, self._upload_texture, GL.glDeleteTextures)
         GL.glUseProgram(self._p_yuv)
         for unit, name in enumerate(("ty", "tu", "tv")):
             GL.glUniform1i(GL.glGetUniformLocation(self._p_yuv, name), unit)
@@ -370,7 +431,9 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
         if hud is not None:
             hud.set_canvas(alloc.width, alloc.height, (float(scale), float(scale)))
             picture, serial = hud.shown_picture()
-            if picture is not None:
+            if isinstance(picture, Layers):
+                self._draw_layers(picture, serial, aw, ah)
+            elif picture is not None:
                 self._upload_hud(picture, serial)
                 GL.glEnable(GL.GL_BLEND)
                 GL.glBlendFunc(GL.GL_ONE, GL.GL_ONE_MINUS_SRC_ALPHA)
@@ -378,6 +441,44 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
                 GL.glActiveTexture(GL.GL_TEXTURE0)
                 GL.glBindTexture(GL.GL_TEXTURE_2D, self._t_hud)
                 self._draw_quad(-1.0, -1.0, 1.0, 1.0)
+
+    def _draw_layers(self, layers: Layers, serial: int, aw: int, ah: int) -> None:
+        import numpy as np
+
+        GL = self._gl
+        if serial != self._hud_serial:
+            self._sprite_tex.update(layers.sprites)
+            self._hud_serial = serial
+        if not layers.sprites:
+            return
+        quads = [sprite_quad(s, layers.scale, aw, ah) for s in layers.sprites]
+        # Texture rows run top-down; clip space y runs up.
+        data = np.array(
+            [v for x0, y0, x1, y1 in quads for v in (x0, y1, 0, 0, x1, y1, 1, 0, x0, y0, 0, 1, x1, y0, 1, 1)],
+            dtype=np.float32,
+        )
+        vao, vbo = self._quad
+        GL.glBindVertexArray(vao)
+        GL.glBindBuffer(GL.GL_ARRAY_BUFFER, vbo)
+        GL.glBufferData(GL.GL_ARRAY_BUFFER, data.nbytes, data, GL.GL_STREAM_DRAW)
+        GL.glEnable(GL.GL_BLEND)
+        GL.glBlendFunc(GL.GL_ONE, GL.GL_ONE_MINUS_SRC_ALPHA)
+        GL.glUseProgram(self._p_hud)
+        GL.glActiveTexture(GL.GL_TEXTURE0)
+        for i, tex in enumerate(self._sprite_tex.drawn):
+            GL.glBindTexture(GL.GL_TEXTURE_2D, tex)
+            GL.glDrawArrays(GL.GL_TRIANGLE_STRIP, 4 * i, 4)
+
+    def _upload_texture(self, tex: int, picture: Any) -> None:
+        import numpy as np
+
+        GL = self._gl
+        w, h, stride = picture.get_width(), picture.get_height(), picture.get_stride()
+        GL.glBindTexture(GL.GL_TEXTURE_2D, tex)
+        GL.glPixelStorei(GL.GL_UNPACK_ROW_LENGTH, stride // 4)
+        data = np.frombuffer(picture.get_data(), dtype=np.uint8)
+        GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_RGBA8, w, h, 0, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, data)
+        GL.glPixelStorei(GL.GL_UNPACK_ROW_LENGTH, 0)
 
     def _upload_latest_frame(self) -> None:
         Gst = self._Gst

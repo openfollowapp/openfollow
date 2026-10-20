@@ -10,6 +10,8 @@ from typing import Any, TypeAlias
 
 import cairo
 
+from openfollow.runtime.overlay_layers import keep
+
 Paint: TypeAlias = "Callable[[cairo.Context[Any]], None]"
 
 
@@ -81,6 +83,6 @@ class PanelCache:
             entry = (full_key, *ink_picture(paint, w, h, scale, options))
             self._entries[slot] = entry
         _, picture, x0, y0 = entry
-        if picture is not None:
+        if picture is not None and not keep(cr, picture, x0, y0):
             cr.set_source_surface(picture, x0, y0)
             cr.paint()

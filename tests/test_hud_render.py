@@ -15,6 +15,7 @@ import cairo
 import numpy as np
 import pytest
 
+from openfollow.runtime.overlay_layers import Layers
 from openfollow.video.hud_render import HudRenderThread
 from tests._fake_cairo import FakeCairo
 
@@ -600,3 +601,42 @@ def test_each_picture_put_on_screen_has_a_new_serial(hud, renderer) -> None:
     surfaces, serials = zip(*seen, strict=True)
     assert serials == (1, 2, 3)
     assert surfaces[0] is surfaces[2] and surfaces[0] is not surfaces[1]
+
+
+def test_a_layered_hud_hands_over_sprites_and_pastes_nothing_itself(renderer) -> None:
+    hud = HudRenderThread(renderer, layered=True)
+    hud.start()
+    try:
+        hud.set_canvas(64, 36, (1.0, 1.0))
+        hud.tick()
+        _show(hud)
+        layers, serial = hud.shown_picture()
+        assert isinstance(layers, Layers) and serial == 1
+        assert [(s.x, s.y, s.kept) for s in layers.sprites] == [(4, 4, False)]
+        assert _pixel(_painted(hud), 10, 10) == CLEAR
+    finally:
+        hud.stop()
+
+
+class _FontOptionsRecorder(_Renderer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.options: list[cairo.FontOptions] = []
+
+    def draw(self, cr: Any, width: int, height: int, state: Any) -> None:
+        self.options.append(cr.get_font_options())
+        super().draw(cr, width, height, state)
+
+
+def test_a_layered_hud_lays_text_out_as_on_a_canvas_sized_picture() -> None:
+    renderer = _FontOptionsRecorder()
+    hud = HudRenderThread(renderer, layered=True)
+    hud.start()
+    try:
+        hud.set_canvas(64, 36, (1.0, 1.0))
+        hud.tick()
+        _show(hud)
+    finally:
+        hud.stop()
+
+    assert renderer.options[0] == cairo.ImageSurface(cairo.FORMAT_ARGB32, 1, 1).get_font_options()

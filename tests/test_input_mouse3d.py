@@ -2169,6 +2169,26 @@ def test_a_locally_profiled_node_reporting_no_usage_is_kept_and_opened(monkeypat
     assert (path, kwargs["device_spec"].product_id) == ("/dev/hidraw4", 0xC636)
 
 
+@dataclass(frozen=True)
+class _NamelessSpec:
+    """A built-in spec with no ``name`` field, so a local copy cannot be made of it."""
+
+    vendor_id: int
+    product_id: int
+
+
+def test_a_spec_that_cannot_be_copied_leaves_only_its_local_model_unprofiled(monkeypatch) -> None:  # noqa: ANN001
+    _use_real_profiles(monkeypatch, {"SpaceMouseCompact": _NamelessSpec(0x256F, 0xC635)})
+    backend = _enumerate_with(
+        monkeypatch,
+        [
+            _fake_hid_device(0x256F, 0xC635, "/dev/hidraw3", name="Compact"),
+            _fake_hid_device(0x256F, 0xC636, "/dev/hidraw4", name="Module"),
+        ],
+    )
+    assert [(i.path, i.profiled) for i in backend.enumerate()] == [("/dev/hidraw3", True), ("/dev/hidraw4", False)]
+
+
 def test_a_local_model_without_its_sibling_has_no_profile(monkeypatch) -> None:  # noqa: ANN001
     specs = {k: v for k, v in _SIBLING_SPECS.items() if k != "SpaceMouseCompact"}
     _use_real_profiles(monkeypatch, specs)
@@ -2181,7 +2201,9 @@ def test_a_local_model_without_its_sibling_has_no_profile(monkeypatch) -> None: 
 # --------------------------------------------------------------------------- #
 
 
-def _enumerate_with(monkeypatch, devices):  # noqa: ANN001, ANN202
+def _install_fake_easyhid(monkeypatch, devices):  # noqa: ANN001, ANN202
+    """An ``easyhid`` listing ``devices``; the list is read again on every enumeration."""
+
     class _Enum:
         def find(self):  # noqa: ANN202
             return list(devices)
@@ -2189,6 +2211,10 @@ def _enumerate_with(monkeypatch, devices):  # noqa: ANN001, ANN202
     fake_easyhid = types.ModuleType("easyhid")
     fake_easyhid.Enumeration = _Enum
     monkeypatch.setitem(sys.modules, "easyhid", fake_easyhid)
+
+
+def _enumerate_with(monkeypatch, devices):  # noqa: ANN001, ANN202
+    _install_fake_easyhid(monkeypatch, devices)
     return _PySpaceMouseBackend()
 
 
@@ -3136,7 +3162,7 @@ def _install_open_by_path(monkeypatch, open_by_path):  # noqa: ANN001, ANN202
     fake = types.ModuleType("pyspacemouse")
     fake.open_by_path = open_by_path
     monkeypatch.setitem(sys.modules, "pyspacemouse", fake)
-    _enumerate_with(monkeypatch, [])
+    _install_fake_easyhid(monkeypatch, [])
 
 
 def test_open_names_a_node_this_process_may_not_use(monkeypatch, tmp_path) -> None:  # noqa: ANN001

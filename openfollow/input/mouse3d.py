@@ -140,15 +140,19 @@ def _device_profiles() -> dict[tuple[int, int], Any] | None:
         return None
     try:
         builtin = {(int(spec.vendor_id), int(spec.product_id)): spec for spec in get_device_specs().values()}
-        profiles: dict[tuple[int, int], Any] = dict.fromkeys(builtin)
-        for ids, (name, sibling) in _LOCAL_PROFILES.items():
-            # A built-in profile wins. Built-in specs are in the LEGACY axis
-            # convention the built-in open applies, so a copy reads like its sibling.
-            if ids not in profiles and sibling in builtin:
-                profiles[ids] = replace(builtin[sibling], name=name, vendor_id=ids[0], product_id=ids[1])
     except Exception as exc:  # noqa: BLE001 - an unreadable table must not stop enumeration
         logger.debug("3D Mouse device profiles unreadable: %s", exc)
         return None
+    profiles: dict[tuple[int, int], Any] = dict.fromkeys(builtin)
+    for ids, (name, sibling) in _LOCAL_PROFILES.items():
+        # A built-in profile wins. Built-in specs are in the LEGACY axis
+        # convention the built-in open applies, so a copy reads like its sibling.
+        if ids in profiles or sibling not in builtin:
+            continue
+        try:
+            profiles[ids] = replace(builtin[sibling], name=name, vendor_id=ids[0], product_id=ids[1])
+        except Exception as exc:  # noqa: BLE001 - a spec this code can't copy leaves that model unprofiled
+            logger.debug("3D Mouse local profile %s not built: %s", name, exc)
     return profiles
 
 

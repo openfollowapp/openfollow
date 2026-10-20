@@ -1263,7 +1263,7 @@ class AppRuntimeServices:
             if server is not None:
                 return server.bound_source_ip()
             receiver = self._app._psn_receiver
-            return receiver.bound_source_ip() if receiver is not None and receiver.enabled else None
+            return receiver.bound_source_ip() if receiver is not None else None
 
         def _psn_complete() -> bool:
             # PSN input belongs to the plane: one that did not bind beside the output is a failure to retry.

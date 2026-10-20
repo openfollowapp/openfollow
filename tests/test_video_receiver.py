@@ -5573,11 +5573,18 @@ class TestReturningSource:
         monkeypatch.setattr(threading, "Thread", _SyncSwapThread)
         r = _make_receiver(input_config={"fake_source": "cam-1"})
         r._pipeline_assembler.create_placeholder_pipeline = lambda: FakePipeline()
-        r._state.reconnect_attempt = 1
-        r._input.discover_results = [[]]
-        r._do_reconnect()
-        assert r._state.is_placeholder_pipeline and r.source_selection_active and r.source_name == ""
+        r._state.note_phase(ConnectionPhase.DECODING)  # it was showing video when it went away
+        self._give_up(r, fake_glib)
         return r
+
+    @staticmethod
+    def _give_up(r, glib, *listed: str) -> None:
+        """Run out of attempts; the discovery pass that follows lists *listed*."""
+        r._state.reconnect_attempt = 1
+        r._input.discover_results = [list(listed)]
+        r._do_reconnect()
+        glib.run_idles()
+        assert r._state.is_placeholder_pipeline and r.source_selection_active and r._input_config["fake_source"] == ""
 
     @staticmethod
     def _announce(r, glib, *sources: str) -> None:
@@ -5652,3 +5659,49 @@ class TestReturningSource:
         r._do_reconnect()
         r.exit_source_selection()
         assert r._status_marker.snapshot().error_message == "Source selection cancelled"
+
+    def test_closing_a_camera_picker_keeps_the_wait(self, lost, fake_glib, monkeypatch) -> None:
+        # A camera names its default device when none is set, so its label is never empty.
+        monkeypatch.setattr(FakeInput, "get_source_label", classmethod(lambda cls, config: "Camera (1080p@30)"))
+        before = lost._status_marker.snapshot()
+        lost.exit_source_selection()
+        assert lost._state.reconnect_source_id is None
+        assert lost._status_marker.snapshot().error_message == before.error_message
+        self._announce(lost, fake_glib, "cam-1")
+        assert lost._input_config["fake_source"] == "cam-1"
+
+    def test_giving_up_again_keeps_the_name(self, lost, fake_glib) -> None:
+        self._give_up(lost, fake_glib)
+        self._announce(lost, fake_glib, "cam-1")
+        assert lost.source_name == "cam-1"
+
+    def test_a_source_that_never_sent_video_returns_only_once_it_was_gone(self, lost, fake_glib) -> None:
+        FakeInput.create_pipeline_result = FakePipeline()
+        self._announce(lost, fake_glib, "cam-1")
+        assert lost.source_name == "cam-1"
+        # Announced but sending nothing: it is not retried while it stays announced.
+        self._give_up(lost, fake_glib, "cam-1")
+        self._announce(lost, fake_glib, "cam-1")
+        assert lost.source_name == ""
+        assert lost.source_selection_active is True
+        self._announce(lost, fake_glib, "cam-2")
+        self._announce(lost, fake_glib, "cam-1")
+        assert lost.source_name == "cam-1"
+
+    @pytest.mark.parametrize(
+        "end",
+        [
+            pytest.param(lambda r: r.release_source("Camera released"), id="release_source"),
+            pytest.param(lambda r: r.stop(), id="stop"),
+        ],
+    )
+    def test_a_return_queued_before_the_source_was_released_is_dropped(self, lost, fake_glib, end) -> None:
+        lost._input.discover_results = [["cam-1"]]
+        lost._do_discovery()
+        assert len(fake_glib.idles) == 1
+        end(lost)
+        lost._state.set_placeholder_pipeline(True)
+        builds = FakeInput.create_pipeline_call_count
+        fake_glib.run_idles()
+        assert FakeInput.create_pipeline_call_count == builds
+        assert lost._input_config["fake_source"] == ""

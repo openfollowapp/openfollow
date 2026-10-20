@@ -140,6 +140,8 @@ class GstNativeSinkReceiver:
         # The configured source an input with a picker gave up on: reconnected
         # by itself once discovery announces it again, until another is picked.
         self._awaited_source = ""
+        # Whether a pass that lists it reconnects: one that sent no video since it was set must drop out first.
+        self._return_when_listed = False
         # Why the last build was refused under the interface pin, if it was.
         self._pin_refusal: PinRefusal | None = None
         # How a refusal names the pinned interface: "Lighting (eth1)" when labelled.
@@ -362,6 +364,7 @@ class GstNativeSinkReceiver:
             self._display.release_frames()
 
     def stop(self) -> None:
+        self._awaited_source = ""
         self._cancel_connection_timeout()
         self._cancel_reconnect()
         self._cancel_heal()
@@ -469,6 +472,7 @@ class GstNativeSinkReceiver:
         reach NULL. Raises ``PipelineStuckError`` when this one does not.
         Only runs on GTK main thread.
         """
+        self._awaited_source = ""
         self._cancel_connection_timeout()
         self._cancel_reconnect()
         self._cancel_heal()
@@ -1008,6 +1012,9 @@ class GstNativeSinkReceiver:
         source_label = self._input.get_source_label(self._input_config)
         if self._state.restore_connection_after_selection():
             self._status_marker.set_connected(source_label)
+        elif self._awaited_source:
+            # Closing the picker keeps the wait for the lost source, and its verdict.
+            self._schedule_discovery()
         elif source_label:
             # No message and no verdict: this is progress, not a failure.
             # A message would be stored as the error, and an input with
@@ -1017,9 +1024,6 @@ class GstNativeSinkReceiver:
             # classification would be just as wrong: nothing has been tried yet,
             # so there is nothing to diagnose.
             self._schedule_reconnect(failure=VideoFailure.NONE)
-        elif self._awaited_source:
-            # Closing the picker keeps the wait for the lost source, and its verdict.
-            self._schedule_discovery()
         else:
             self._status_marker.set_disconnected("Source selection cancelled")
 
@@ -1252,8 +1256,10 @@ class GstNativeSinkReceiver:
                 # Clear primary config field for selection-based inputs.
                 if self._input.config_fields():
                     primary_field = self._input.config_fields()[0].name
-                    if self._input_caps.has_source_discovery:
-                        self._awaited_source = str(self._input_config.get(primary_field) or "")
+                    lost = str(self._input_config.get(primary_field) or "")
+                    if self._input_caps.has_source_discovery and lost:
+                        self._awaited_source = lost
+                        self._return_when_listed = self._state.phase >= ConnectionPhase.DECODING
                     self._input_config[primary_field] = ""
                 self._state.activate_source_selection()
             else:
@@ -1508,18 +1514,21 @@ class GstNativeSinkReceiver:
             else:
                 logger.debug("No sources discovered")
             awaited = self._awaited_source
-            if awaited and awaited in sources:
-                GLib.idle_add(self._return_to_awaited_source, awaited)
+            if awaited:
+                GLib.idle_add(self._on_awaited_pass, awaited, awaited in sources)
         finally:
             with self._discovery_lock:
                 self._discovery_running = False
 
-    def _return_to_awaited_source(self, source: str) -> bool:
-        """Main loop: reconnect to the source this input gave up on, now that it is announced again."""
-        if self._awaited_source != source or not self._state.is_placeholder_pipeline:
+    def _on_awaited_pass(self, source: str, listed: bool) -> bool:
+        """Main loop: a discovery pass while *source* is awaited; reconnects once it is announced again."""
+        if self._awaited_source != source:
             return False
-        logger.info("%s source '%s' is back – reconnecting", self._input.display_name, source)
-        self.set_source(source)
+        if not listed:
+            self._return_when_listed = True
+        elif self._return_when_listed and self._state.is_placeholder_pipeline:
+            logger.info("%s source '%s' is back – reconnecting", self._input.display_name, source)
+            self.set_source(source)
         return False
 
 

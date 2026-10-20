@@ -141,8 +141,8 @@ web UI at `http://<host-ip>/`.
 ## Settings backups
 
 Every upgrade, reinstall and downgrade through the package manager archives the
-station's settings first, whichever route started it: *Check & Install
-Latest*, an offline `.ofupdate`, or a hand-run `apt` / `dpkg`. The package's
+station's settings first, whichever route started it: *Install Latest
+Version Online*, *Install .ofupdate File*, or a hand-run `apt` / `dpkg`. The package's
 `preinst` does it on `upgrade`, before the new files are unpacked, so it covers
 the release that introduces it.
 

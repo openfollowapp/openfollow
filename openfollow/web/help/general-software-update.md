@@ -4,13 +4,13 @@ Install a newer OpenFollow release and restart the service – no SSH session ne
 
 **Installed** shows the version currently running on this device.
 
-**Version … is available** appears when the station's own background check, at startup and when its address changes, found a newer release on GitHub. The section then opens by itself. Without an internet uplink the check finds nothing and the box stays away.
+**Version … is available** appears when the station's own background check, at startup and when its address changes, found a newer release on GitHub. The section then starts unfolded, unless this browser remembers it folded. Without an internet uplink the check finds nothing and no box appears. After a failed install, the failure shows in its place.
 
 **Install Latest Version Online** queries GitHub for the newest published release. If it is newer than the installed version, a confirmation dialog appears; confirming downloads the signed update bundle (`.ofupdate`) for this device's architecture, verifies it, and installs it. Progress is shown in a locked dialog and the page reloads automatically once the new version is up. The reloaded page then opens **What's new**: the installed release's notes, or a pointer to the full release notes when the package carries none. It appears once per update on this station, and closing it marks it seen; **(What's new)** after the version at the foot of the page opens it again at any time. It also names the settings backup the update made, or why it couldn't make one. Beside **Continue**, a **Support OpenFollow** card links to how to support the project, with a QR code to scan from a phone when the station has no internet. If the device is already current, you'll see an "already up to date" message and nothing is changed.
 
 The install runs detached from the running service (the package restarts the service itself), so the device briefly goes away and comes back on the new version. If the updater is missing the privilege it needs, install fails with a hint to run **Apply Permissions** on the Device page first.
 
-> **Needs internet.** This option reaches `api.github.com` and the release download. On an isolated show LAN with no uplink, use **Install .ofupdate File** instead.
+> **Needs internet.** This option reaches `api.github.com` and the release download. On an isolated show LAN with no uplink, **Install .ofupdate File** is the path that works.
 
 ## Settings backup
 

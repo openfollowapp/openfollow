@@ -280,16 +280,46 @@ def test_update_banner_and_footer_hidden_on_unsupported_platform(live_server, mo
     assert "Version 0.4.0 is available." not in section
 
 
-def test_update_banner_hidden_when_up_to_date(live_server) -> None:
+def _software_update_section(body: str) -> str:
+    start = body.index('id="general-software-update-section"')
+    return body[start : body.index("<script>", start)]
+
+
+def test_update_banner_hidden_when_up_to_date(live_server, monkeypatch) -> None:
+    from openfollow.web import routes
+
+    monkeypatch.setattr(routes.sys, "platform", "linux")
+
     server, base = live_server
     server._command_queue.set_update_available("")  # default / up to date
 
     status, body = _get(base, "/")
     assert status == 200
-    # Banner copy and the rendered footer flag are both absent (the ``.update-flag``
-    # class also appears in base.tpl's CSS, so assert on the element).
-    assert "Version 0.4.0 is available." not in body
+    # The ``.update-flag`` class also appears in base.tpl's CSS, so assert on the element.
     assert '<span class="update-flag">' not in body
+    for page in (body, _get(base, "/section/general")[1]):
+        section = _software_update_section(page)
+        assert 'class="notice"' not in section
+        assert "Install Latest Version Online" in section
+        assert "Install .ofupdate File" in section
+
+
+@pytest.mark.parametrize("path", ["/", "/section/general"])
+def test_update_actions_disabled_through_the_routes_while_an_install_runs(live_server, monkeypatch, path) -> None:
+    from openfollow.web import routes
+
+    monkeypatch.setattr(routes.sys, "platform", "linux")
+
+    server, base = live_server
+    server._command_queue.set_update_available("0.4.0")
+    server.set_update_status("running", message="Installing")
+
+    status, body = _get(base, path)
+    assert status == 200
+    actions = _software_update_section(body).split('<div class="actions">', 1)[1]
+    controls = re.findall(r"<(?:button|input)\b[^>]*>", actions)
+    assert len(controls) == 3
+    assert all(" disabled" in c for c in controls)
 
 
 _SLOT_ITEMS = [

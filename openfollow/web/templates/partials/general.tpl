@@ -305,16 +305,14 @@ window.loadAutostart();
 
     <p class="field-note">Installed: v{{current_version}}</p>
 
-    %# Shown when the background online-sync check has found a newer release on GitHub.
-    % if defined('update_available') and update_available:
+    %# At most one box: a failed install outranks the release online sync found.
+    % if update_state == 'failed':
+    <div class="update-notice error">{{update_message or 'Update failed.'}} {{update_error}}</div>
+    % elif defined('update_available') and update_available:
     <div class="notice" role="status">
         <div>Version {{latest_version}} is available.</div>
         <div class="notice-sub">Install it online, or install an .ofupdate file.</div>
     </div>
-    % end
-
-    % if update_state == 'failed':
-    <div class="update-notice error">{{update_message or 'Update failed.'}} {{update_error}}</div>
     % end
 
     %# The same two actions in every state: online first, the offline bundle beside it.

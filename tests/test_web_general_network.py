@@ -108,7 +108,7 @@ class TestGeneralStructure:
 
     def test_software_update_shows_current_version(self) -> None:
         """The update section must display the installed version so the
-        operator can see what's running before clicking Check & Install."""
+        operator can see what's running before installing."""
         body = _render_general(current_version="0.2.3rc6")
         assert "v0.2.3rc6" in body
 
@@ -328,6 +328,15 @@ class TestSoftwareUpdateLayout:
             update_status={"state": "failed", "message": "Update failed.", "error": "Bad signature."}
         )
         assert '<div class="update-notice error">Update failed. Bad signature.</div>' in section
+
+    def test_a_failed_install_outranks_an_available_release(self) -> None:
+        section = _software_update_section(
+            update_available=True,
+            latest_version="0.5.1",
+            update_status={"state": "failed", "message": "Update failed.", "error": "Bad signature."},
+        )
+        assert '<div class="update-notice error">Update failed. Bad signature.</div>' in section
+        assert 'class="notice"' not in section
 
     @pytest.mark.parametrize("state", ["queued", "running", "restarting"])
     def test_both_installs_are_disabled_while_one_runs(self, state: str) -> None:

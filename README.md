@@ -133,10 +133,10 @@ A built-in **Setup Wizard** (accessible from the Camera & Grid tab) guides you t
 
 Update from the **General → Software Update** page of the Web UI:
 
-- **Check & Install Latest** downloads, verifies, and installs the newest release
-  (needs internet on the device).
-- **Offline install** installs a signed `.ofupdate` bundle you upload over the LAN
-  (no internet).
+- **Install Latest Version Online** downloads, verifies, and installs the newest
+  release (needs internet on the device).
+- **Install .ofupdate File** installs a signed `.ofupdate` bundle you upload over
+  the LAN (no internet).
 
 See the [Software Update help](openfollow/web/help/general-software-update.md) for
 details.

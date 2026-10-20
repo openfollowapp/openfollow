@@ -342,8 +342,8 @@ and every activating device (loopback aside) holds an IPv4 address, a lease or
 the link-local fallback. Requiring an activating device keeps the start of a
 boot, before any carrier, waiting for startup as before, so a NIC that will get
 a lease is not raced. After 20 s with a device still addressless the unit
-fails, as it should: the station has no address there. A cable-less boot
-completes startup with nothing to activate and passes at once.
+fails, as it should: the station has no address there. On a cable-less boot
+nothing activates, and the wait passes as soon as startup completes.
 
 On a LAN whose DHCP answers slower than the fallback appears, the wait can pass
 on the 169.254 address. The app rebinds each plane when its address changes,

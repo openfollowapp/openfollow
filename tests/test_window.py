@@ -241,7 +241,7 @@ class FakeDrawingArea:
         return self.allocation
 
     def show(self) -> None:  # for widgets reparented into FakeOverlay
-        return None
+        self.hidden = False
 
     def hide(self) -> None:
         self.hidden = True
@@ -303,6 +303,9 @@ class FakeWindow:
 
     def get_window(self) -> Any:
         return self._gdk_window
+
+    def realize(self) -> None:
+        self.realized = True
 
     def get_display(self) -> Any:
         return self._display
@@ -1250,6 +1253,25 @@ class TestHudTick:
         assert renders == clocks and len(ticks) == 3
         assert window._hud_drawing_area.hidden is True
         assert window._hud_drawing_area.no_show_all is True
+
+    def test_a_detached_gl_display_stops_rendering_and_the_cairo_hud_comes_back(self, window) -> None:
+        renders: list[Any] = []
+        window.attach_gl_display(SimpleNamespace(queue_render=renders.append), tick=lambda: True)
+        window.start_hud_tick()
+        window.detach_gl_display()
+        window.attach_hud(lambda cr, w, h: None, tick=lambda: True)
+        before = window._hud_drawing_area.queue_draw_calls
+        window._window.tick(object())
+
+        assert renders == []
+        assert window._hud_drawing_area.hidden is False and window._hud_drawing_area.no_show_all is False
+        assert window._hud_drawing_area.queue_draw_calls == before + 1
+
+    def test_the_gdk_window_for_a_gl_probe_is_the_realized_toplevel_s(self, window) -> None:
+        gdk = window.gdk_window()
+
+        assert window._window.realized is True
+        assert gdk is window._window.get_window()
 
     def test_a_raising_hud_tick_still_renders_the_gl_display(self, window) -> None:
         renders: list[int] = []

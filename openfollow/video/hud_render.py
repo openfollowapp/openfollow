@@ -181,6 +181,11 @@ class HudRenderThread:
         """The picture on screen and its serial; GTK main thread only, like ``tick``."""
         return self._shown, self._shown_serial
 
+    def set_layered(self, layered: bool) -> None:
+        """Draw the next pictures as ``Layers`` for a compositor, or as one canvas-sized picture to paste."""
+        with self._cond:
+            self._layered = layered
+
     def pacing_report(self) -> tuple[int, int, int]:
         """Pictures shown and how many of them late since the last report, and the refreshes each is held.
 
@@ -194,8 +199,10 @@ class HudRenderThread:
         while (taken := self._take()) is not None:
             (canvas, state), picture = taken
             try:
+                with self._cond:
+                    layered = self._layered
                 ready: cairo.ImageSurface | Layers | None = (
-                    self._render_layers(canvas, state) if self._layered else self._render(picture, canvas, state)
+                    self._render_layers(canvas, state) if layered else self._render(picture, canvas, state)
                 )
             except Exception:
                 self._err_log.log()

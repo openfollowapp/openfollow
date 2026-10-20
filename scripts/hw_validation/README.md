@@ -345,5 +345,6 @@ figures and `pictures_on_time`, the share of pictures held exactly the pacing
 interval. Repeat runs: the main thread's share moves with how often video and
 HUD repaints fall on the same refresh. On the GL display the main thread's cost
 per refresh is `gl_render_ms`; the fields that do not apply there (`paint_ms`,
-`repaints_per_s`, `clear_ms`) are `null` and left out of the average (see
+`repaints_per_s`, `clear_ms`) are `null`. A field is averaged over the windows
+that report it and left out when none does (see
 [hud](../../docs/architecture/hud.md#what-the-operator-screen-costs-apistats--hud)).

@@ -168,6 +168,18 @@ def test_a_cost_the_operator_screen_does_not_report_is_left_out_not_averaged_as_
     assert probe.average_hud([first, second]) == {"windows": 2, "gl_render_ms": 3.0}
 
 
+def test_a_cost_missing_from_some_windows_is_averaged_over_those_that_report_it() -> None:
+    # The GL display gave way to Cairo during the run: the paste is reported from then on.
+    gl = {"paint_ms": None, "gl_render_ms": 2.0, "picture_ms": 4.0}
+    cairo = {"paint_ms": 1.0, "gl_render_ms": None, "picture_ms": 6.0}
+    assert probe.average_hud([gl, cairo, {**cairo, "paint_ms": 3.0}]) == {
+        "windows": 3,
+        "paint_ms": 2.0,
+        "gl_render_ms": 2.0,
+        "picture_ms": 5.333,
+    }
+
+
 def test_no_hud_windows_average_to_nothing() -> None:
     assert probe.average_hud([None, {}]) is None
 

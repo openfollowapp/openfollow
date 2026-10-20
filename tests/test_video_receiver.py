@@ -1854,6 +1854,8 @@ class TestGlDisplay:
         self, fake_gst, fake_glib, fake_input_cls, monkeypatch
     ) -> None:
         r, display, sinks, embedded, released = self._receiver_on_a_display(fake_gst, monkeypatch)
+        frames: list[None] = []
+        r.set_display_frame_listener(lambda: frames.append(None))
         r.drop_display()
 
         assert released == [1]
@@ -1861,10 +1863,13 @@ class TestGlDisplay:
         # The window shows the platform sink's widget in place of the GL area.
         assert embedded == ["GL area", "gtksink widget"]
         assert FakeState.PLAYING in r._pipeline.state_changes
-        # The new sink is watched for frames like the display's was.
-        watched = ["_on_display_frame", "_on_pad_event", "_on_sink_buffer"]
-        assert [cb.__name__ for _t, cb in sinks[-1].get_static_pad("sink").probes] == watched
-        assert [cb.__name__ for _t, cb in display.sink.get_static_pad("sink").probes] == watched
+        # The new sink is watched like the display's was, and its frames still reach the listener.
+        pad = sinks[-1].get_static_pad("sink")
+        assert len(pad.probes) == len(display.sink.get_static_pad("sink").probes) == 3
+        for kind, probe in pad.probes:
+            if kind == FakePadProbeType.BUFFER:
+                probe(pad, None)
+        assert frames == [None]
 
     def test_a_stuck_pipeline_still_hands_the_window_and_the_next_build_to_the_platform_sink(
         self, fake_gst, fake_glib, fake_input_cls, monkeypatch

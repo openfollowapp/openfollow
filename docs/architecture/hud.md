@@ -74,7 +74,7 @@ The ground grid (`GroundGridConfig`, the experimental `ground_grid` feature) is 
 | `pictures_per_s`, `refreshes_per_s` | New pictures shown and display ticks a second |
 | `interval_refreshes` | The pacing interval when the window closed: refreshes each picture is held |
 | `picture_refreshes` | How many refreshes each picture stayed on screen, as counts (`{"2": 59, "3": 1}`); everything at `interval_refreshes` is an even HUD |
-| `video_frames_per_s`, `video_refreshes`, `video_replaced` | Frames reaching the display sink, how many refreshes each stayed on screen (2 for 30 fps on 60 Hz), and frames replaced before a refresh showed them. Counted as each frame showing at the refresh after it arrives, as `gtksink` and the GL display's default cadence show it; under a `locked` or `capped` cadence the `GL video cadence` log is the measure |
+| `video_frames_per_s`, `video_refreshes`, `video_replaced` | Frames reaching the display sink (the No Signal placeholder's included), how many refreshes each stayed on screen (2 for 30 fps on 60 Hz), and frames replaced before a refresh showed them. Counted as each frame showing at the refresh after it arrives, as `gtksink` and the GL display's default cadence show it; under a `locked` or `capped` cadence the `GL video cadence` log is the measure |
 | `render_thread_id` | The render thread's native id, to read its CPU time from `/proc` (Python 3.13 gives threads no OS name) |
 
 GTK can run the tick a little faster than the display refreshes, so a refresh count is approximate by one now and then. `scripts/hw_validation/hud_probe.py` reads these with the CPU per thread on a running station; see its [README section](../../scripts/hw_validation/README.md#operator-screen-on-a-running-station).

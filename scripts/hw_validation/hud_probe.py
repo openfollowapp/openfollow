@@ -147,7 +147,10 @@ def average_hud(samples: Sequence[dict[str, Any] | None]) -> dict[str, Any] | No
         return None
     out: dict[str, Any] = {"windows": len(windows)}
     for key in windows[-1]:
-        values = [w[key] for w in windows if key in w]
+        # A cost a window has nothing for is None there and averages over the windows that have one.
+        values = [w[key] for w in windows if w.get(key) is not None]
+        if not values:
+            continue
         if key == "render_thread_id":
             out[key] = values[-1]
         elif all(isinstance(v, dict) for v in values):

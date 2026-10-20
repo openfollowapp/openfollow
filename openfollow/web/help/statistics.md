@@ -32,6 +32,12 @@ The first line is the station's reading of how far the connection got before it 
 
 System health for the station hardware.
 
+A red box above the list means the Raspberry Pi is short of power or slowed down right now: **under voltage** when the power supply cannot hold 5 V, which leads to freezes and USB devices dropping out, or **CPU throttled** when the Pi has slowed its processor because it is too hot. An under voltage slows the processor too, so while one lasts only the power supply is named. The second line is the usual fix.
+
+Once it passes, a yellow box says it happened since the Pi last started. It stays until the Pi restarts, because that is how long the Pi itself keeps the record, so an intermittent fault is still visible after the moment has gone. The Operator Screen shows the live state only, as a red row in the top right that stays 10 s after the last reading, so a run of short dips reads as one warning.
+
+A station that is not a Raspberry Pi, or cannot read these, shows neither box; `/api/stats` reports them as not available.
+
 - **IP** – the network address this station is reachable on. Useful for pointing another tool or peer at it.
 - **Controllers** – gamepads and 3D mice connected, and how many are missing. A red warning above the list names each missing controller, the marker its slot drives and the port it was in; the Controller Slots section on the Input tab shows the rest.
 - **CPU** – processor load as a percentage. Sustained values above roughly 80–90 % can cause frame drops or tracking lag.

@@ -32,8 +32,8 @@ UNDER_VOLTAGE_NOW = PowerAlert(
     "error", "Power supply under voltage now.", "Use a 5 V 5 A supply or unplug bus-powered USB devices."
 )
 THROTTLED_NOW = PowerAlert("error", "CPU throttled now: the Pi is too hot.", "Check the fan and airflow.")
-UNDER_VOLTAGE_SINCE_BOOT = PowerAlert("caution", "Power supply was under voltage since the last start of the Pi.")
-THROTTLED_SINCE_BOOT = PowerAlert("caution", "CPU was throttled since the last start of the Pi.")
+UNDER_VOLTAGE_SINCE_BOOT = PowerAlert("caution", "Under voltage reported since the station last started.")
+THROTTLED_SINCE_BOOT = PowerAlert("caution", "CPU throttling reported since the station last started.")
 
 
 @dataclass(frozen=True)

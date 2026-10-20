@@ -141,8 +141,8 @@ _UV_NOW = (
     "Use a 5 V 5 A supply or unplug bus-powered USB devices.",
 )
 _HOT_NOW = ("error", "CPU throttled now: the Pi is too hot.", "Check the fan and airflow.")
-_UV_PAST = ("caution", "Power supply was under voltage since the last start of the Pi.", "")
-_HOT_PAST = ("caution", "CPU was throttled since the last start of the Pi.", "")
+_UV_PAST = ("caution", "Under voltage reported since the station last started.", "")
+_HOT_PAST = ("caution", "CPU throttling reported since the station last started.", "")
 
 
 @pytest.mark.parametrize(
@@ -209,7 +209,9 @@ def test_the_power_boxes_take_their_level_component() -> None:
         '            <div class="notice-sub">Use a 5 V 5 A supply or unplug bus-powered USB devices.</div>'
     ) in html
     caution = html[html.index('class="notice warning"') :]
-    assert caution.split("</div>\n        </div>")[0].endswith("<div>CPU was throttled since the last start of the Pi.")
+    assert caution.split("</div>\n        </div>")[0].endswith(
+        "<div>CPU throttling reported since the station last started."
+    )
     assert "role=" not in html
 
 
@@ -219,10 +221,10 @@ def test_the_announcer_speaks_the_power_alerts_after_the_controllers() -> None:
     assert statistics_alerts(stats).spoken() == [
         "C2 missing · marker 5 · Xbox Wireless Controller (USB 2, port 2)",
         "Power supply under voltage now. Use a 5 V 5 A supply or unplug bus-powered USB devices.",
-        "CPU was throttled since the last start of the Pi.",
+        "CPU throttling reported since the station last started.",
     ]
     html = template("partials/statistics_alerts", stats=stats)
-    assert "<p>CPU was throttled since the last start of the Pi.</p>" in html
+    assert "<p>CPU throttling reported since the station last started.</p>" in html
 
 
 def test_the_key_changes_when_a_power_alert_ends() -> None:

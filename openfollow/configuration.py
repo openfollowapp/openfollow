@@ -2610,6 +2610,24 @@ class NetworkConfig:
         self.backend = choice
 
 
+OPERATOR_SCREENS: tuple[str, ...] = ("auto", "cairo")
+
+
+@dataclass
+class DisplayConfig:
+    """Optional ``[display]`` section, set in ``config.toml`` only.
+
+    ``operator_screen`` "auto" runs the GL Operator Screen where the platform supports it and Cairo
+    elsewhere; "cairo" keeps Cairo on this station. Read at startup.
+    """
+
+    operator_screen: str = "auto"
+
+    def __post_init__(self) -> None:
+        choice = self.operator_screen.strip().lower() if isinstance(self.operator_screen, str) else ""
+        self.operator_screen = _coerce_choice(choice, OPERATOR_SCREENS, "auto")
+
+
 # The General tab's Features list, in display order. A feature that is off is
 # hidden in the web UI and does not run; its own settings are kept.
 FEATURE_KEYS: tuple[str, ...] = (
@@ -2919,6 +2937,7 @@ class AppConfig:
         default_factory=VirtualFadersConfig,
     )
     network: NetworkConfig = field(default_factory=NetworkConfig)
+    display: DisplayConfig = field(default_factory=DisplayConfig)
     ui: UiConfig = field(default_factory=UiConfig)
 
     def __post_init__(self) -> None:
@@ -3061,6 +3080,7 @@ _SUB_CONFIG_MAP: dict[str, type] = {
     "midi": MidiConfig,
     "virtual_faders": VirtualFadersConfig,
     "network": NetworkConfig,
+    "display": DisplayConfig,
     "ui": UiConfig,
 }
 

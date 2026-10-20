@@ -34,6 +34,8 @@ openfollow/              # Single unified package
 │   ├── receiver.py      # Generic GStreamer orchestrator
 │   ├── overlay.py       # Cairo HUD renderer
 │   ├── hud_render.py    # HUD drawn on its own thread, paced by the display
+│   ├── gl_display.py    # GL Operator Screen: video and HUD in one GL area, the checks it runs behind
+│   ├── gl_cadence.py    # When GL video frames meet the refresh, and what that did to them
 │   ├── detection.py     # Optional person detection
 │   ├── tracking.py      # ByteTrack tracker (Kalman + two-stage association)
 │   ├── media_store.py   # Media Gallery library (images/clips, storage, validation)

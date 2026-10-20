@@ -45,8 +45,8 @@ logger = logging.getLogger(__name__)
 # ``swap_input`` raises ``PipelineStuckError``.
 _NULL_CONFIRM_TIMEOUT_NS: int = 2_000_000_000  # 2 s in nanoseconds
 
-# Discovery passes an awaited source that sent no video stays listed before it
-# is tried again: about 30 s at the 5 s interval, so the picker stays usable.
+# How many discovery passes may list an awaited source that sent no video before
+# it is tried again: about 30 s at the 5 s interval, so the picker stays usable.
 _LISTED_RETRY_PASSES = 6
 
 

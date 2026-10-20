@@ -2889,7 +2889,7 @@ class AppConfig:
     update_include_prereleases: bool = False
 
     # On startup and whenever the device IP changes, if the LAN has internet:
-    # auto-check GitHub for a newer release (drives the update banner) and
+    # auto-check GitHub for a newer release (drives the Software Update box) and
     # sync the system clock from a trusted NTP server (Pis have no RTC and
     # drift). Both are gated, fail silently offline, and default on.
     auto_update_check: bool = True

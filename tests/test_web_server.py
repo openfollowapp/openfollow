@@ -566,7 +566,9 @@ def test_a_failed_install_is_reported_by_the_station_it_restarted(after_a_failed
     status, data = _get_json(base, "/api/update-status")
     assert (status, data) == (200, {"state": "failed", "message": "Update failed.", "error": "E: dpkg error"})
     _, body = _get(base, "/")
-    assert '<div class="update-notice error">Update failed. E: dpkg error</div>' in body
+    assert '<div class="notice error">' in body
+    assert "<div>Update failed.</div>" in body
+    assert '<div class="notice-sub">E: dpkg error</div>' in body
     assert _WHATS_NEW_TRIGGER not in body
 
 

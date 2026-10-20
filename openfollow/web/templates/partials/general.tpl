@@ -305,10 +305,16 @@ window.loadAutostart();
 
     <p class="field-note">Installed: v{{current_version}}</p>
 
-    %# At most one box: a failed install outranks the release online sync found.
+    %# At most one box: a failed install outranks the release online sync found,
+    %# which is not offered while an install is under way.
     % if update_state == 'failed':
-    <div class="update-notice error">{{update_message or 'Update failed.'}} {{update_error}}</div>
-    % elif defined('update_available') and update_available:
+    <div class="notice error">
+        <div>{{update_message or 'Update failed.'}}</div>
+        % if update_error:
+        <div class="notice-sub">{{update_error}}</div>
+        % end
+    </div>
+    % elif defined('update_available') and update_available and not busy:
     <div class="notice" role="status">
         <div>Version {{latest_version}} is available.</div>
         <div class="notice-sub">Install it online, or install an .ofupdate file.</div>

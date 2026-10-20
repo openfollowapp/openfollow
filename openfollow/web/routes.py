@@ -986,7 +986,7 @@ def _deb_update_supported() -> bool:
     """Whether the in-app signed-.deb updater can run on this host.
 
     The updater installs via dpkg/systemd, which only exist on the Linux (Pi)
-    target, so the Software Update section, banner, and footer flag are hidden
+    target, so the Software Update section, its box, and the footer flag are hidden
     everywhere else. Single source of truth for the index and section-reload
     render paths so their platform gate can't drift.
     """
@@ -6129,7 +6129,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # index.tpl includes the General partial directly, so the initial
             # render must supply the Software Update section's version label.
             current_version=openfollow.__version__,
-            # Update-available banner (General section) + footer flag (base.tpl);
+            # Update-available box (General section) + footer flag (base.tpl);
             # read once so the flag and version label can't disagree mid-render.
             **_page_update_context(server),
             **_page_host_context(config),

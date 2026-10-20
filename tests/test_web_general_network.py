@@ -291,6 +291,16 @@ def _software_update_section(**overrides) -> str:
     return body[start : body.index("<script>", start)]
 
 
+def _failed_box(section: str) -> tuple[str, str | None]:
+    """The error box's main line and its second line (``None`` without one)."""
+    box = re.search(r'<div class="notice error">(.*?)\n    </div>', section, re.DOTALL)
+    assert box is not None, "no error box"
+    main = re.search(r"<div>(.*?)</div>", box.group(1))
+    sub = re.search(r'<div class="notice-sub">(.*?)</div>', box.group(1))
+    assert main is not None
+    return main.group(1), sub.group(1) if sub else None
+
+
 _UPDATE_STATES = [
     pytest.param({}, id="nothing-known"),
     pytest.param({"update_available": True, "latest_version": "0.5.1"}, id="update-available"),
@@ -327,7 +337,11 @@ class TestSoftwareUpdateLayout:
         section = _software_update_section(
             update_status={"state": "failed", "message": "Update failed.", "error": "Bad signature."}
         )
-        assert '<div class="update-notice error">Update failed. Bad signature.</div>' in section
+        assert _failed_box(section) == ("Update failed.", "Bad signature.")
+
+    def test_a_failed_install_without_a_reason_has_one_line(self) -> None:
+        section = _software_update_section(update_status={"state": "failed", "message": "", "error": ""})
+        assert _failed_box(section) == ("Update failed.", None)
 
     def test_a_failed_install_outranks_an_available_release(self) -> None:
         section = _software_update_section(
@@ -335,8 +349,15 @@ class TestSoftwareUpdateLayout:
             latest_version="0.5.1",
             update_status={"state": "failed", "message": "Update failed.", "error": "Bad signature."},
         )
-        assert '<div class="update-notice error">Update failed. Bad signature.</div>' in section
+        assert _failed_box(section) == ("Update failed.", "Bad signature.")
         assert 'class="notice"' not in section
+
+    @pytest.mark.parametrize("state", ["queued", "running", "restarting"])
+    def test_a_release_is_not_offered_while_an_install_runs(self, state: str) -> None:
+        section = _software_update_section(
+            update_available=True, latest_version="0.5.1", update_status={"state": state, "message": "", "error": ""}
+        )
+        assert "is available" not in section
 
     @pytest.mark.parametrize("state", ["queued", "running", "restarting"])
     def test_both_installs_are_disabled_while_one_runs(self, state: str) -> None:

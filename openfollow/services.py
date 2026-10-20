@@ -284,7 +284,7 @@ class WebCommandQueue:
         }
         # Latest newer release the background online-sync worker has found
         # (version tag without the ``v`` prefix), or "" when none / up to date.
-        # Drives the update banner + footer flag; independent of the install
+        # Drives the Software Update box + footer flag; independent of the install
         # state machine above so a published release shows even while no
         # install is running.
         self._update_available_lock = threading.Lock()
@@ -474,7 +474,7 @@ class WebCommandQueue:
         return status
 
     def set_update_available(self, latest: str | None) -> None:
-        """Record the newest available release tag ("" / None clears the banner)."""
+        """Record the newest available release tag ("" / None clears the box)."""
         with self._update_available_lock:
             self._update_available = (latest or "").strip()
 

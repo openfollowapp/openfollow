@@ -25,7 +25,7 @@ dependencies = [
     "multicast-expert>=1.4",
     # Floor is what Debian Trixie's python3-gi ships: a packaged install runs the
     # OS bindings, not the pip build (packaging/build-deb.sh drops the pip copy).
-    "PyGObject>=3.50",
+    "PyGObject>=3.58.1",
     "psutil>=5.9",
     "python-osc>=1.10.2",
     # USB MIDI support. mido is pure Python; python-rtmidi is C++ extension
@@ -93,12 +93,12 @@ include = [
 # This is the only ruff version in the repo: the pre-commit hook runs it out of
 # the poetry env rather than fetching its own at a ``rev``, so a second pin
 # cannot drift from this one.
-ruff = "0.16.9"
+ruff = "0.17.1"
 pytest = "^9.1.1"
 pytest-cov = "^7.1"
 coverage = { extras = ["toml"], version = "^7.16" }
 pre-commit = "^4.6.2"
-mypy = "^2.3"
+mypy = "^2.4"
 
 # Static type checking: mypy --strict for all openfollow.* modules.
 # Third-party stubs without type info use ignore_missing_imports.

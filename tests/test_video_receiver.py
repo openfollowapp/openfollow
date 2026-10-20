@@ -5683,16 +5683,25 @@ class TestReturningSource:
         assert lost.source_name == "cam-1"
         assert lost.source_selection_active is False
 
-    def test_a_source_that_never_sent_video_returns_only_once_it_was_gone(self, lost, fake_glib) -> None:
+    def test_a_listed_source_that_sent_no_video_is_tried_again_after_a_hold(self, lost, fake_glib) -> None:
         FakeInput.create_pipeline_result = FakePipeline()
         self._announce(lost, fake_glib, "cam-1")
         assert lost.source_name == "cam-1"
-        # Announced but sending nothing: it is not retried while it stays announced.
+        # Announced but sending nothing: the picker stays up for a while before the next try.
         self._give_up(lost, fake_glib, "cam-1")
-        self._announce(lost, fake_glib, "cam-1")
+        for _ in range(receiver_mod._LISTED_RETRY_PASSES - 1):
+            self._announce(lost, fake_glib, "cam-1")
         assert lost.source_name == ""
         assert lost.source_selection_active is True
+        self._announce(lost, fake_glib, "cam-1")
+        assert lost.source_name == "cam-1"
+
+    def test_a_source_that_sent_no_video_returns_once_announced_again(self, lost, fake_glib) -> None:
+        FakeInput.create_pipeline_result = FakePipeline()
+        self._announce(lost, fake_glib, "cam-1")
+        self._give_up(lost, fake_glib, "cam-1")
         self._announce(lost, fake_glib, "cam-2")
+        assert lost.source_name == ""
         self._announce(lost, fake_glib, "cam-1")
         assert lost.source_name == "cam-1"
 

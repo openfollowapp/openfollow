@@ -219,6 +219,8 @@ class WebCommandQueue:
         self._clock = clock
         self._restart_lock = threading.Lock()
         self._restart_requested_at: float | None = None
+        # Set once a restart is taken: the process is going down, so no update may start.
+        self._restart_taken = False
         self._update_requested = threading.Event()
         self._button_detection_requested = threading.Event()
         self._button_detection_cancel_requested = threading.Event()
@@ -325,13 +327,24 @@ class WebCommandQueue:
             self.request_restart()
             return True
 
-    def consume_restart_requested(self, *, grace_s: float = 0.0) -> bool:
-        """Take a restart request made at least ``grace_s`` ago; a newer request restarts the wait."""
+    def is_restart_pending(self) -> bool:
+        """True from a restart request until the process goes down; no update may start."""
         with self._restart_lock:
+            return self._restart_requested_at is not None or self._restart_taken
+
+    def consume_restart_requested(self, *, grace_s: float = 0.0) -> bool:
+        """Take a restart request made at least ``grace_s`` ago; a newer request restarts the wait.
+
+        Held while an update is queued or running, so a restart never cuts into one.
+        """
+        with self._update_lock, self._restart_lock:
             at = self._restart_requested_at
             if at is None or self._clock() - at < grace_s:
                 return False
+            if self._update_status.get("state", "idle") in _UPDATE_BUSY_STATES:
+                return False
             self._restart_requested_at = None
+            self._restart_taken = True
             return True
 
     def request_button_detection(self) -> None:
@@ -406,13 +419,13 @@ class WebCommandQueue:
         return self._button_detection_active.is_set()
 
     def request_deb_update(self, service_name: str) -> bool:
-        """Queue a GitHub-release .deb update. Returns False if another update is running."""
+        """Queue a GitHub-release .deb update. Returns False if another update is running or a restart is pending."""
         return self._queue_update_request("deb", service_name=service_name)
 
     def request_local_update(self, service_name: str, *, deb_path: str | None = None) -> bool:
         """Queue an offline install of an operator-uploaded ``.deb``.
 
-        Returns False if another update is running (same in-progress guard as
+        Returns False if another update is running or a restart is pending (same guard as
         :meth:`request_deb_update`).
         """
         return self._queue_update_request("deb-local", service_name=service_name, deb_path=deb_path or "")
@@ -421,6 +434,8 @@ class WebCommandQueue:
         """Shared guard and enqueue logic for all update kinds."""
         with self._update_lock:
             if self._update_status.get("state", "idle") in _UPDATE_BUSY_STATES:
+                return False
+            if self.is_restart_pending():
                 return False
             # Clear the detached installer's status file only once we've
             # committed to queueing – a rejected duplicate must not wipe a
@@ -455,6 +470,31 @@ class WebCommandQueue:
                 "message": message,
                 "error": error,
             }
+
+    def settle_finished_install(self) -> dict[str, str]:
+        """The detached installer ended without stopping this process: end the busy state.
+
+        Its own ``failed`` record is kept; otherwise the install either finished
+        without restarting this process or ended before it reported anything.
+        Returns the status now shown.
+        """
+        detached = _read_detached_update_state()
+        state = detached["state"] if detached else ""
+        if detached is not None and state == "failed":
+            settled = detached
+        elif state == "restarting":
+            settled = {
+                "state": "failed",
+                "message": "Update installed, but OpenFollow was not restarted.",
+                "error": "Restart OpenFollow to run it.",
+            }
+        else:
+            settled = {"state": "failed", "message": "Update failed.", "error": "The installer ended without a result."}
+        with self._update_lock:
+            # Only the install it waited for: a status set since then stands.
+            if self._update_status.get("state") == "restarting":
+                self._update_status = dict(settled)
+            return dict(self._update_status)
 
     def get_update_status(self) -> dict[str, str]:
         """Return update status.

@@ -4385,7 +4385,7 @@ def test_api_config_reset_goes_ahead_once_the_update_failed(live_server) -> None
     assert server.check_restart_requested() is True
 
 
-def test_an_update_asked_for_while_defaults_are_written_waits_for_their_restart(live_server, monkeypatch) -> None:
+def test_an_update_asked_for_while_defaults_are_written_is_refused_for_their_restart(live_server, monkeypatch) -> None:
     """Queued between the write and the restart, the update would leave the reset file under the old config."""
     import threading
 
@@ -4417,7 +4417,9 @@ def test_an_update_asked_for_while_defaults_are_written_waits_for_their_restart(
     workers[0].join(timeout=5)
 
     assert (status, body["success"], body["restarting"]) == (200, True, True)
-    assert (queued, restart_seen) == ([True], [True])
+    # It waited for the write, then found the restart pending.
+    assert (queued, restart_seen) == ([False], [True])
+    assert server.get_update_status()["state"] == "idle"
 
 
 def test_a_reset_never_answers_restarting_without_a_restart(live_server, monkeypatch) -> None:
@@ -5406,6 +5408,15 @@ def test_deb_update_reports_when_already_running(live_server, monkeypatch) -> No
     assert "already running" in body
 
 
+def test_an_update_asked_for_while_a_restart_is_pending_is_refused_and_says_why(live_server) -> None:
+    server, base = live_server
+    server._command_queue.request_restart()
+    status, body = _post_form(base, "/section/general/deb-update", {})
+    assert status == 200
+    assert json.loads(body) == {"ok": False, "error": "OpenFollow is restarting. Start the update once it is back."}
+    assert server._command_queue.get_update_status()["state"] == "idle"
+
+
 def test_deb_update_check_returns_json_available(live_server, monkeypatch) -> None:
     """GET /section/general/deb-update/check returns JSON the General-tab
     modal uses to decide whether to offer the install."""
@@ -5637,6 +5648,27 @@ def test_deb_upload_reports_when_already_running(live_server, monkeypatch) -> No
     assert status == 200
     assert body["ok"] is False
     assert "already running" in body["error"]
+
+
+def test_an_upload_while_a_restart_is_pending_is_refused_and_says_why(live_server, monkeypatch) -> None:
+    import openfollow.runtime.deb_update as deb_update_mod
+
+    server, base = live_server
+    monkeypatch.setattr(
+        deb_update_mod,
+        "verify_and_extract_bundle",
+        lambda bundle, staging: bundle + ".d/openfollow_0.2.4_arm64.deb",
+    )
+    monkeypatch.setattr(
+        deb_update_mod,
+        "validate_uploaded_deb",
+        lambda path, arch: {"Package": "openfollow", "Version": "99.0.0", "Architecture": arch},
+    )
+    server._command_queue.request_restart()
+    status, body = _post_upload(base, "/section/general/deb-upload")
+    assert status == 200
+    assert body == {"ok": False, "error": "OpenFollow is restarting. Start the update once it is back."}
+    assert server._command_queue.get_update_status()["state"] == "idle"
 
 
 def test_deb_upload_falls_back_to_default_service_name(live_server, monkeypatch) -> None:

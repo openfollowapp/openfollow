@@ -279,7 +279,7 @@ def test_a_restart_and_an_update_cannot_both_go_ahead() -> None:
 def test_a_change_runs_then_its_restart_is_requested() -> None:
     q = WebCommandQueue()
     ran: list[bool] = []
-    assert q.restart_after(lambda: ran.append(q.consume_restart_requested())) is True
+    assert q.restart_after(lambda: ran.append(q.is_restart_pending())) is True
     # Requested after the change, never before it.
     assert ran == [False]
     assert q.consume_restart_requested() is True
@@ -308,7 +308,7 @@ def test_a_change_that_fails_requests_no_restart() -> None:
     assert q.request_deb_update("openfollow") is True
 
 
-def test_an_update_queued_during_a_change_waits_for_its_restart(monkeypatch) -> None:
+def test_an_update_asked_for_during_a_change_is_refused_for_its_restart(monkeypatch) -> None:
     import threading
 
     import openfollow.services as services_module
@@ -329,4 +329,118 @@ def test_an_update_queued_during_a_change_waits_for_its_restart(monkeypatch) -> 
 
     assert q.restart_after(change) is True
     workers[0].join(timeout=5)
-    assert seen == [(True, True)]
+    # It waited for the change, then found the restart pending.
+    assert seen == [(False, True)]
+    assert q.get_update_status()["state"] == "idle"
+
+
+# ---------------------------------------------------------------------------
+# A pending restart and an update never both act
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def no_state_file(monkeypatch, tmp_path):
+    import openfollow.services as services_module
+
+    path = tmp_path / "update-state.json"
+    monkeypatch.setattr(services_module, "_DETACHED_UPDATE_STATE_FILE", str(path))
+    return path
+
+
+@pytest.mark.parametrize("queue", ["deb", "local"])
+def test_an_update_is_refused_while_a_restart_waits_its_grace(queue: str, no_state_file) -> None:
+    now = [10.0]
+    q = WebCommandQueue(clock=lambda: now[0])
+    q.request_restart()
+    queued = q.request_deb_update("x") if queue == "deb" else q.request_local_update("x", deb_path="/tmp/b")
+    assert queued is False
+    assert q.get_update_status()["state"] == "idle"
+    assert q.consume_update_requested() is None
+    now[0] = 10.5
+    assert q.consume_restart_requested(grace_s=0.5) is True
+
+
+def test_an_update_is_refused_once_a_restart_is_taken(no_state_file) -> None:
+    q = WebCommandQueue()
+    q.request_restart()
+    assert q.consume_restart_requested() is True
+    assert q.is_restart_pending() is True
+    assert q.request_deb_update("x") is False
+
+
+def test_a_restart_is_pending_from_its_request() -> None:
+    q = WebCommandQueue()
+    assert q.is_restart_pending() is False
+    q.request_restart()
+    assert q.is_restart_pending() is True
+
+
+@pytest.mark.parametrize("state", ["queued", "running", "restarting"])
+def test_a_pending_restart_is_held_while_an_update_is_busy(state: str) -> None:
+    q = WebCommandQueue()
+    q.request_restart()
+    q.set_update_status(state)
+    assert q.consume_restart_requested() is False
+    # Held, not dropped: it goes ahead once the update has ended without restarting.
+    q.set_update_status("failed")
+    assert q.consume_restart_requested() is True
+
+
+# ---------------------------------------------------------------------------
+# An installer that ends without stopping this process
+# ---------------------------------------------------------------------------
+
+
+def _write_state(path, state: str, message: str = "", error: str = "") -> None:
+    import json
+
+    path.write_text(json.dumps({"state": state, "message": message, "error": error, "ts": 1}))
+
+
+def test_a_failed_install_ends_the_busy_state_with_its_reason(no_state_file) -> None:
+    q = WebCommandQueue()
+    q.set_update_status("restarting", "Installing version 0.5.1")
+    _write_state(no_state_file, "failed", "Update failed.", "E: unmet dependencies")
+    assert q.settle_finished_install() == {
+        "state": "failed",
+        "message": "Update failed.",
+        "error": "E: unmet dependencies",
+    }
+    assert q.is_update_busy() is False
+    assert q.request_restart_unless_updating() is True
+
+
+def test_an_install_that_did_not_restart_this_process_says_so(no_state_file) -> None:
+    q = WebCommandQueue()
+    q.set_update_status("restarting")
+    _write_state(no_state_file, "restarting", "Update installed. Restarting…")
+    settled = q.settle_finished_install()
+    assert settled["state"] == "failed"
+    assert settled["message"] == "Update installed, but OpenFollow was not restarted."
+    assert q.is_update_busy() is False
+
+
+@pytest.mark.parametrize("written", [None, "running", "garbage"], ids=["no-file", "running", "unreadable"])
+def test_an_installer_that_ended_without_a_result_ends_the_busy_state(written, no_state_file) -> None:
+    q = WebCommandQueue()
+    q.set_update_status("restarting")
+    if written == "running":
+        _write_state(no_state_file, "running", "Installing update…")
+    elif written == "garbage":
+        no_state_file.write_text("{not json")
+    assert q.settle_finished_install() == {
+        "state": "failed",
+        "message": "Update failed.",
+        "error": "The installer ended without a result.",
+    }
+    assert q.is_update_busy() is False
+
+
+@pytest.mark.parametrize("state", ["idle", "queued", "running", "failed"])
+def test_settling_leaves_a_status_set_since_the_install_alone(state: str, no_state_file) -> None:
+    q = WebCommandQueue()
+    q.set_update_status(state, "since")
+    _write_state(no_state_file, "failed", "Update failed.", "old")
+    assert q.settle_finished_install()["message"] == "since"
+    assert q.get_update_status()["state"] == state

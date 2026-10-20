@@ -791,6 +791,10 @@ class ConfigWebServer:
         """True while an update is queued or running."""
         return self._command_queue.is_update_busy()
 
+    def is_restart_pending(self) -> bool:
+        """True from a restart request until the process goes down."""
+        return self._command_queue.is_restart_pending()
+
     def request_restart_unless_updating(self) -> bool:
         """Request a restart unless an update is queued or running; False when refused."""
         return self._command_queue.request_restart_unless_updating()

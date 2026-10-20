@@ -107,6 +107,8 @@ _MOUSE3D_WEB_DETECT_BUDGET_S = 0.35
 # How long one network backend reading serves the web UI after it completes, so
 # every section one render asks for shares it.
 _NETWORK_READING_MAX_AGE_S = 1.0
+# The window hooks the GL Operator Screen needs: one to show it, the rest to fall back to Cairo.
+_GL_CANVAS_HOOKS = ("attach_gl_display", "detach_gl_display", "attach_hud", "gdk_window")
 
 
 # ---------------------------------------------------------------------------
@@ -958,6 +960,49 @@ class AppRuntimeServices:
         storage_root = Path(resolve_detection_storage_path(cfg.detection.storage_path))
         seed_bundled_models(source, storage_root / "models")
 
+    def _choose_gl_display(self, canvas: Any) -> Any:
+        """The GL Operator Screen where the platform supports it, else None for the Cairo one."""
+        if not all(hasattr(canvas, name) for name in _GL_CANVAS_HOOKS):
+            return None
+        from openfollow.video import gl_display
+
+        setting = self._app._config.display.operator_screen
+        reason = gl_display.gl_display_blocker(setting) or gl_display.probe_gl_context(canvas.gdk_window())
+        if reason is not None:
+            logger.info("Operator Screen: Cairo (%s)", reason)
+            return None
+        try:
+            display = gl_display.GlDisplay()
+        except Exception as exc:
+            # Say a desktop GStreamer without plugins-bad, which has the display's fakevideosink.
+            logger.warning("Operator Screen: Cairo (the GL display could not be built: %s)", exc)
+            return None
+        logger.info("Operator Screen: GL display")
+        # Before the area is embedded: embedding a widget in the shown window realizes it there and then.
+        display.on_unavailable = self._fall_back_to_cairo
+        return display
+
+    def _fall_back_to_cairo(self, reason: str) -> None:
+        """The GL display failed while running: hand the Operator Screen to Cairo without a restart."""
+        from openfollow.video.receiver import PipelineStuckError
+
+        logger.warning("GL display unavailable (%s): the Operator Screen falls back to Cairo", reason)
+        canvas, hud = self._app._canvas, self._hud_render
+        if canvas is None or hud is None:
+            return
+        canvas.detach_gl_display()
+        hud.set_layered(False)
+        canvas.attach_hud(hud.paint, tick=hud.tick)
+        receiver = self._app._video_receiver
+        if receiver is None:
+            return
+        try:
+            receiver.drop_display()
+        except PipelineStuckError:
+            logger.error(
+                "GL display fallback: the video pipeline did not stop; its next rebuild uses the platform sink"
+            )
+
     def init_video(self) -> None:
         overlay = CairoOverlayRenderer()
         self._overlay_renderer = overlay
@@ -1016,9 +1061,7 @@ class AppRuntimeServices:
         input_cls = get_input_class(cfg.video_source_type)
         input_config = input_cls.runtime_config(cfg) if input_cls else {}
 
-        from openfollow.video.gl_display import GlDisplay, gl_display_requested
-
-        gl_display = GlDisplay() if gl_display_requested() and hasattr(canvas, "attach_gl_display") else None
+        gl_display = self._choose_gl_display(canvas)
         receiver = GstNativeSinkReceiver(
             display=gl_display,
             source_type=cfg.video_source_type,

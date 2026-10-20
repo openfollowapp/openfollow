@@ -11,6 +11,17 @@ The HUD is **not** in the GStreamer chain. The video sink (`gtksink`) is wrapped
 - `CairoOverlayRenderer.measured_fps()` reports how many HUD pictures the render thread draws a second (at most the display refresh rate), **not** source buffer rate. Use `receiver.source_framerate` (parsed from caps) for actual source FPS.
 - **Don't re-couple the HUD to buffer flow** (e.g. by reintroducing `cairooverlay` or a videorate-driven redraw).
 
+## GL or Cairo Operator Screen
+At startup `AppRuntimeServices._choose_gl_display` picks how the Operator Screen is drawn. The GL display (`video/gl_display.py`) runs when all of these hold; otherwise the Cairo Operator Screen above runs, and the log says which and why:
+- `display.operator_screen` is `"auto"` (the default). `"cairo"` keeps Cairo; it is set in `config.toml` only, has no web control and stays on its station (see [config](config.md)). It is for a driver that renders GL wrong without an error, and for a support comparison.
+- `gl_display_blocker`: Linux (GTK3's GL area never draws on macOS) and PyOpenGL installed.
+- `probe_gl_context`: GDK makes a GL context on the window whose renderer is not a software one (llvmpipe, softpipe, swrast draw on the CPU, slower than Cairo), and the display's shaders compile and link in it.
+- `GlDisplay` builds: its sink needs GStreamer's `fakevideosink` (plugins-bad).
+
+If the GL area then fails to start, or 120 renders in a row fail, `GlDisplay.on_unavailable` hands over without a restart (`_fall_back_to_cairo`): the window brings the Cairo HUD layer back, the HUD thread draws canvas-sized pictures again, and the receiver rebuilds its pipeline on the platform sink (`drop_display`).
+
+The GL display takes video frames only between `accept_frames` and `release_frames`. The receiver releases them before every NULL transition, and accepts again in `_prepare_sink`, when the shared sink joins the next pipeline after the old one stopped; so every input plugin and the placeholder build through `prepare_sink`, and nothing the old pipeline still pushes while it stops can reach the screen.
+
 ## HUD layout
 - **Top-left:** the help panel (`key_toggle_help`), or its key hint while closed. While any menu screen is open, the menus' one key list instead (`build_help_sections(mode="menus")`), the same on every screen: `CairoOverlayRenderer.draw` draws it after `_draw_menu_screen`, never a screen itself, and no screen names its own keys. The Button Detection Wizard is not a menu here (every pad button is the input it records) and names only `Esc` itself
 - **Top-right:** system stats (`draw_system_stats`) and the status badge (`overlay_status_badge.py`, one row per `_status_flags` entry), drawn last so modals sit on top

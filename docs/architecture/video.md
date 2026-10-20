@@ -40,9 +40,9 @@ Each plugin declares:
 
 ## Receiver (`video/receiver.py`) – generic orchestrator
 Delegates protocol-specific work to the active plugin. Retains shared infrastructure:
-- `_build_overlay_tail()` – links the plugin tail directly to `shared_videosink` (no `cairooverlay`; HUD is drawn on a `Gtk.DrawingArea` above the gtksink widget – see [hud](hud.md#hud-rendering-decoupled-from-buffer-flow))
+- `_build_overlay_tail()` – links the plugin tail directly to `shared_videosink` (no `cairooverlay`; the HUD is drawn apart from the pipeline – see [hud](hud.md#hud-rendering-decoupled-from-buffer-flow))
 - `_create_placeholder_pipeline()` – black-frame "No Signal" fallback
-- Shared gtksink management (detach/reattach across pipeline switches)
+- Shared sink management (detach/reattach across pipeline switches, `_prepare_sink`). The shared sink is `gtksink`, or with the GL display the display's own sink bin, whose widget is the GL area (see [hud](hud.md#the-gl-display)): the receiver calls `release_frames` before every NULL transition, `accept_frames` in `_prepare_sink`, and falls back to `gtksink` through `drop_display`
 - Connection timeout, reconnection scheduling (driven by plugin's `ReconnectPolicy`)
 - First-frame / caps detection via downstream pad probes (`_on_pad_event` for the caps event, `_on_sink_buffer` → `_handle_video_connected` on the first buffer)
 - Source-byte observation: `_attach_source_probe()` puts a one-shot buffer probe on the plugin's `source_element_name`. Attached **per pipeline** (the source element is rebuilt on every reconnect), unlike the sink probes which attach once for the shared sink's lifetime. A source with no static `src` pad (`rtspsrc`) is followed via `pad-added`. The same first buffer records `source_format` from that pad's caps (a pixel format for raw video, else the media type), read from the caps **string** because the structure getters are what GStreamer 1.26.2 broke; the sink probe sits after `videoconvert` and never sees it. It is logged once per connection and published as `video.source_format`

@@ -15,6 +15,7 @@ import cairo
 import numpy as np
 import pytest
 
+from openfollow.runtime.overlay_layers import Layers
 from openfollow.video.hud_render import HudRenderThread
 from tests._fake_cairo import FakeCairo
 
@@ -578,3 +579,97 @@ def test_one_late_refresh_does_not_stretch_the_interval_measured(paced, clock, l
     held.append(late + _count_to_show(hud, clock))
     held += [_refreshes_to_show(hud, clock) for _ in range(60)]
     assert held == [2] * 131
+
+
+def test_a_canvas_set_without_a_paint_gets_pictures(hud, renderer) -> None:
+    """A GL display gives the canvas directly; the GTK draw never runs."""
+    hud.set_canvas(64, 36, (2.0, 2.0))
+    hud.tick()
+    _until(lambda: renderer.drawn, "a picture")
+    assert [(d.width, d.height, d.scale) for d in renderer.drawn] == [(64, 36, (2.0, 2.0))]
+
+
+def test_each_picture_put_on_screen_has_a_new_serial(hud, renderer) -> None:
+    """The two pictures take turns, so the same surface returns with new content and a new serial."""
+    assert hud.shown_picture() == (None, 0)
+    hud.set_canvas(64, 36, (1.0, 1.0))
+    hud.tick()
+    seen = []
+    for _ in range(3):
+        _show(hud)
+        seen.append(hud.shown_picture())
+    surfaces, serials = zip(*seen, strict=True)
+    assert serials == (1, 2, 3)
+    assert surfaces[0] is surfaces[2] and surfaces[0] is not surfaces[1]
+
+
+def test_a_layered_hud_hands_over_sprites_and_pastes_nothing_itself(renderer) -> None:
+    hud = HudRenderThread(renderer, layered=True)
+    hud.start()
+    try:
+        hud.set_canvas(64, 36, (1.0, 1.0))
+        hud.tick()
+        _show(hud)
+        layers, serial = hud.shown_picture()
+        assert isinstance(layers, Layers) and serial == 1
+        assert [(s.x, s.y, s.kept) for s in layers.sprites] == [(4, 4, False)]
+        assert _pixel(_painted(hud), 10, 10) == CLEAR
+    finally:
+        hud.stop()
+
+
+def test_the_pacing_report_counts_pictures_and_the_late_ones_since_the_last(paced, clock) -> None:
+    hud, renderer = paced
+    hud.tick()
+    assert _refreshes_to_show(hud, clock) == 1
+    _miss_one_refresh(hud, clock, renderer, refreshes=2)
+
+    assert hud.pacing_report() == (3, 1, 1)
+    assert hud.pacing_report() == (0, 0, 1)
+
+
+def test_the_pacing_report_holds_each_picture_as_long_as_repeated_misses_lengthened_it(paced, clock) -> None:
+    hud, renderer = paced
+    hud.tick()
+    _refreshes_to_show(hud, clock)
+    _lengthen(hud, clock, renderer, refreshes=2)
+
+    assert hud.pacing_report() == (7, 3, 3)
+
+
+class _FontOptionsRecorder(_Renderer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.options: list[cairo.FontOptions] = []
+
+    def draw(self, cr: Any, width: int, height: int, state: Any) -> None:
+        self.options.append(cr.get_font_options())
+        super().draw(cr, width, height, state)
+
+
+def test_a_layered_hud_lays_text_out_as_on_a_canvas_sized_picture() -> None:
+    renderer = _FontOptionsRecorder()
+    hud = HudRenderThread(renderer, layered=True)
+    hud.start()
+    try:
+        hud.set_canvas(64, 36, (1.0, 1.0))
+        hud.tick()
+        _show(hud)
+    finally:
+        hud.stop()
+
+    assert renderer.options[0] == cairo.ImageSurface(cairo.FORMAT_ARGB32, 1, 1).get_font_options()
+
+
+def test_a_layered_hud_set_back_draws_canvas_sized_pictures(renderer) -> None:
+    hud = HudRenderThread(renderer, layered=True)
+    hud.start()
+    try:
+        hud.set_canvas(64, 36, (1.0, 1.0))
+        hud.tick()
+        _show(hud)
+        hud.set_layered(False)
+        _until(lambda: hud.tick() and isinstance(hud.shown_picture()[0], cairo.ImageSurface), "a canvas-sized picture")
+        assert _pixel(_painted(hud), 10, 10) == RED
+    finally:
+        hud.stop()

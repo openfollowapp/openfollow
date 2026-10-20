@@ -2,7 +2,7 @@
 # Copyright (C) 2026 OpenFollow Project
 """GitHub Releases-based update installer.
 
-Implements the on-demand "Check & Install Latest" flow:
+Implements the on-demand "Install Latest Version Online" flow:
 
 1. Query the GitHub Releases API for the latest published release.
 2. Compare the remote version with the currently-installed version.

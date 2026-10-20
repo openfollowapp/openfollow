@@ -299,53 +299,41 @@ window.loadAutostart();
      data-fold-default="{{'expanded' if (defined('update_available') and update_available) else 'collapsed'}}">
     <div class="section-head">
         <h2>Software Update</h2>
-        <span class="section-note">Install the latest release from GitHub</span>
+        <span class="section-note">Online from GitHub, or from an .ofupdate file</span>
     </div>
-
-    %# Update-available banner – shown when the background online-sync check has
-    %# found a newer release on GitHub. Reuses the informational ``.notice``
-    %# style; the button hands off to the existing check+install confirm flow.
-    % if defined('update_available') and update_available:
-    <div class="notice" role="status" aria-live="polite"
-         style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
-        <span><strong>Update available:</strong> version {{latest_version}} is ready to install (installed v{{current_version}}).</span>
-        <button type="button" class="update-btn" style="margin:0"
-                onclick="openfollowCheckUpdate(this)"
-                {{'disabled' if update_state in ('queued', 'running', 'restarting') else ''}}>
-            Install now
-        </button>
-    </div>
-    % end
+    % busy = 'disabled' if update_state in ('queued', 'running', 'restarting') else ''
 
     <p class="field-note">Installed: v{{current_version}}</p>
 
+    %# At most one box: a failed install outranks the release online sync found,
+    %# which is not offered while an install is under way.
     % if update_state == 'failed':
-    <div class="update-notice error">{{update_message or 'Update failed.'}} {{update_error}}</div>
+    <div class="notice error">
+        <div>{{update_message or 'Update failed.'}}</div>
+        % if update_error:
+        <div class="notice-sub">{{update_error}}</div>
+        % end
+    </div>
+    % elif defined('update_available') and update_available and not busy:
+    <div class="notice" role="status">
+        <div>Version {{latest_version}} is available.</div>
+        <div class="notice-sub">Install it online, or install an .ofupdate file.</div>
+    </div>
     % end
 
+    %# The same two actions in every state: online first, the offline bundle beside it.
     <div class="actions">
-        <button type="button" class="update-btn" onclick="openfollowCheckUpdate(this)" {{'disabled' if update_state in ('queued', 'running', 'restarting') else ''}}>
-            Check &amp; Install Latest
+        <button type="button" class="update-btn" onclick="openfollowCheckUpdate(this)" {{busy}}>
+            Install Latest Version Online
+        </button>
+        <input type="file" id="general-update-file" style="display:none"
+               accept=".ofupdate" {{busy}}
+               onchange="openfollowUploadUpdate(this)">
+        <button type="button" class="btn-secondary"
+                onclick="document.getElementById('general-update-file').click()" {{busy}}>
+            Install .ofupdate File
         </button>
     </div>
-
-    %# Offline install – collapsed by default; venues without internet expand this.
-    <details class="inline-advanced" data-adv-key="general-offline-install">
-        <summary>Offline install</summary>
-        <div class="inline-advanced-content">
-            <input type="file" id="general-update-file" style="display:none"
-                   accept=".ofupdate"
-                   {{'disabled' if update_state in ('queued', 'running', 'restarting') else ''}}
-                   onchange="openfollowUploadUpdate(this)">
-            <div class="actions">
-                <button type="button" class="update-btn"
-                        onclick="document.getElementById('general-update-file').click()"
-                        {{'disabled' if update_state in ('queued', 'running', 'restarting') else ''}}>
-                    Choose Update &amp; Install
-                </button>
-            </div>
-        </div>
-    </details>
 </div>
 
 <script>

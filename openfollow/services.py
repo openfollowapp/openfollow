@@ -4169,6 +4169,8 @@ class AppRuntimeServices:
             self._safe_stop("online sync", online_sync.stop)
         if self._person_detector is not None:
             self._safe_stop("person detector", self._person_detector.stop)
+        if self._system_stats is not None:
+            self._safe_stop("system stats", self._system_stats.stop)
         if app._input_manager is not None:
             self._safe_stop("input manager", app._input_manager.stop)
         # Stop catalog sync before the web server so the receive

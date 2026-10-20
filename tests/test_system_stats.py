@@ -264,3 +264,16 @@ def test_the_power_warning_is_held_after_the_last_dip(monkeypatch, tmp_path: Pat
 
     now[0] = 50.0 + WARNING_HOLD_S
     assert collector.update().power_warning == ""
+
+
+def test_stopping_the_collector_stops_its_power_monitor(monkeypatch) -> None:
+    _stub_psutil(monkeypatch)
+    stopped: list[bool] = []
+    monitor = SimpleNamespace(stop=lambda: stopped.append(True))
+    SystemStatsCollector(power=monitor).stop()  # type: ignore[arg-type]
+    assert stopped == [True]
+
+
+def test_a_collector_without_a_power_monitor_stops_cleanly(monkeypatch) -> None:
+    _stub_psutil(monkeypatch)
+    SystemStatsCollector().stop()

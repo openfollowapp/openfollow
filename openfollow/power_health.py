@@ -158,7 +158,7 @@ class ThrottlePoller:
     """Runs ``vcgencmd get_throttled`` every few seconds on its own thread.
 
     ``latest`` is the last reading's bits, ``None`` until one succeeds or after
-    one fails. The thread is a daemon that lives as long as the process.
+    one fails. One thread per poller: it runs from :meth:`start` to :meth:`stop`.
     """
 
     def __init__(
@@ -166,11 +166,10 @@ class ThrottlePoller:
         *,
         run: Callable[[], str | None] = run_vcgencmd_throttled,
         interval_s: float = THROTTLE_POLL_S,
-        stop: threading.Event | None = None,
     ) -> None:
         self._run = run
         self._interval_s = interval_s
-        self._stop = stop if stop is not None else threading.Event()
+        self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self.latest: int | None = None
 
@@ -180,6 +179,10 @@ class ThrottlePoller:
             self._thread = threading.Thread(target=self._loop, name="PowerThrottle", daemon=True)
             self._thread.start()
         return self._thread
+
+    def stop(self) -> None:
+        """End the thread after its current reading, without waiting for it."""
+        self._stop.set()
 
     def _loop(self) -> None:
         while True:
@@ -207,17 +210,20 @@ class PowerMonitor:
         if not self._looked_up:
             self._looked_up = True
             self._alarm_path = find_rpi_volt_alarm(self._hwmon_root)
+            if self._throttle is not None:
+                self._throttle.start()
         alarm = read_alarm(self._alarm_path) if self._alarm_path is not None else None
-        bits = None
-        if self._throttle is not None:
-            self._throttle.start()
-            bits = self._throttle.latest
+        bits = self._throttle.latest if self._throttle is not None else None
         state = power_state(alarm, bits)
         self._under_voltage = _log_edge(
             self._under_voltage, state.under_voltage, "Power supply under voltage", "Power supply voltage normal"
         )
         self._throttled = _log_edge(self._throttled, state.throttled, "CPU throttled", "CPU throttling ended")
         return state
+
+    def stop(self) -> None:
+        if self._throttle is not None:
+            self._throttle.stop()
 
 
 def _log_edge(was: bool, now: bool | None, started: str, ended: str) -> bool:

@@ -105,6 +105,11 @@ class SystemStatsCollector:
         """Get the most recent statistics snapshot."""
         return self._stats
 
+    def stop(self) -> None:
+        """Stop the power monitor's thread."""
+        if self._power is not None:
+            self._power.stop()
+
     def update(self) -> SystemStats:
         """Update statistics if enough time has passed.
 

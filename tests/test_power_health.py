@@ -44,16 +44,15 @@ def _hwmon(root: Path, index: int, name: str, alarm: str | None = None) -> Path:
 
 def _polled(*readings: str | None) -> ThrottlePoller:
     """A poller that has already taken ``readings`` in order, on its own thread."""
-    stop = threading.Event()
     queue = list(readings)
 
     def run() -> str | None:
         reading = queue.pop(0)
         if not queue:
-            stop.set()
+            poller.stop()
         return reading
 
-    poller = ThrottlePoller(run=run, interval_s=0.0, stop=stop)
+    poller = ThrottlePoller(run=run, interval_s=0.0)
     poller.start().join(timeout=5.0)
     return poller
 
@@ -302,25 +301,33 @@ def test_a_failed_poll_after_a_good_one_is_unknown(failure: str | None) -> None:
 
 
 def test_the_poller_starts_one_thread() -> None:
-    poller = _polled("throttled=0x0")
-    assert poller.start() is poller.start()
+    poller = ThrottlePoller(run=lambda: "throttled=0x0")
+    try:
+        assert poller.start() is poller.start()
+    finally:
+        poller.stop()
 
 
 def test_a_poller_has_nothing_before_its_first_reading() -> None:
     assert ThrottlePoller(run=lambda: "throttled=0x1").latest is None
 
 
-def test_the_poller_waits_between_readings() -> None:
-    waits: list[float] = []
+def test_the_poller_waits_between_readings_until_stopped() -> None:
+    readings: list[int] = []
+    first = threading.Event()
 
-    class _Stop:
-        def wait(self, timeout: float) -> bool:
-            waits.append(timeout)
-            return True
+    def run() -> str:
+        readings.append(1)
+        first.set()
+        return "throttled=0x0"
 
-    poller = ThrottlePoller(run=lambda: "throttled=0x0", stop=_Stop())  # type: ignore[arg-type]
-    poller.start().join(timeout=5.0)
-    assert waits == [ph.THROTTLE_POLL_S]
+    poller = ThrottlePoller(run=run)
+    thread = poller.start()
+    assert first.wait(timeout=5.0)
+    poller.stop()
+    thread.join(timeout=5.0)
+    assert not thread.is_alive()
+    assert readings == [1]
 
 
 # --------------------------------------------------------------------------- #
@@ -370,19 +377,42 @@ def test_an_alarm_that_becomes_unreadable_is_unknown(tmp_path: Path) -> None:
     assert monitor.read().under_voltage is None
 
 
-def test_the_monitor_starts_the_poller_on_its_first_read(tmp_path: Path) -> None:
+def test_the_monitor_starts_the_poller_on_its_first_read_and_stops_it(tmp_path: Path) -> None:
     started = threading.Event()
-    stop = threading.Event()
-    stop.set()
 
     def run() -> str:
         started.set()
         return "throttled=0x0"
 
-    PowerMonitor(hwmon_root=tmp_path, throttle=ThrottlePoller(run=run, stop=stop))
+    poller = ThrottlePoller(run=run)
+    monitor = PowerMonitor(hwmon_root=tmp_path, throttle=poller)
     assert not started.is_set()
-    PowerMonitor(hwmon_root=tmp_path, throttle=ThrottlePoller(run=run, stop=stop)).read()
+    monitor.read()
     assert started.wait(timeout=5.0)
+    monitor.stop()
+    thread = poller.start()
+    thread.join(timeout=5.0)
+    assert not thread.is_alive()
+
+
+def test_a_stopped_poller_stays_stopped() -> None:
+    runs: list[int] = []
+
+    def run() -> str:
+        runs.append(1)
+        return "throttled=0x0"
+
+    poller = ThrottlePoller(run=run)
+    thread = poller.start()
+    poller.stop()
+    thread.join(timeout=5.0)
+    assert poller.start() is thread
+    assert not thread.is_alive()
+    assert runs == [1]
+
+
+def test_a_monitor_without_a_poller_stops_cleanly(tmp_path: Path) -> None:
+    PowerMonitor(hwmon_root=tmp_path).stop()
 
 
 def test_a_state_is_logged_when_it_starts_and_when_it_ends(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:

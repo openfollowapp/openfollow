@@ -117,6 +117,7 @@ class _FakeReceiver:
         overlay_renderer: Any,
         on_widget_changed: Any,
         on_source_picked: Any,
+        display: Any = None,
         detector: Any,
         preview_provider: Any,
         snapshot_provider: Any,
@@ -125,6 +126,7 @@ class _FakeReceiver:
         iface_name: Any = None,
     ) -> None:
         self.iface_name = iface_name
+        self.display = display
         self.source_type = source_type
         self.input_config = input_config
         self.overlay_renderer = overlay_renderer
@@ -556,6 +558,48 @@ class TestInitVideoPipelineFailure:
 
 
 class TestInitVideoCanvasWithoutAttachHud:
+    @pytest.mark.parametrize(
+        ("requested", "canvas_has_gl"),
+        [(True, True), (True, False), (False, True)],
+        ids=["gl-canvas", "canvas-without-gl", "not-asked-for"],
+    )
+    def test_the_gl_display_switch_routes_video_and_hud_through_it(
+        self,
+        services: AppRuntimeServices,
+        recv_factory: _RecordingReceiverFactory,
+        patched_subsystems: None,
+        monkeypatch: pytest.MonkeyPatch,
+        requested: bool,
+        canvas_has_gl: bool,
+    ) -> None:
+        from openfollow.video import gl_display
+
+        class _FakeGlDisplay:
+            def __init__(self) -> None:
+                self.hud: Any = None
+
+            def set_hud(self, hud: Any) -> None:
+                self.hud = hud
+
+        attached: list[tuple[Any, Any]] = []
+        monkeypatch.setattr(gl_display, "gl_display_requested", lambda: requested)
+        monkeypatch.setattr(gl_display, "GlDisplay", _FakeGlDisplay)
+        canvas = services._app._canvas
+        if canvas_has_gl:
+            canvas.attach_gl_display = lambda display, tick: attached.append((display, tick))
+        services.init_video()
+
+        display = recv_factory.last.display
+        if requested and canvas_has_gl:
+            assert isinstance(display, _FakeGlDisplay)
+            assert display.hud is services._hud_render
+            assert attached == [(display, services._hud_render.tick)]
+            assert canvas.hud_draw_fn is None
+        else:
+            assert display is None
+            assert attached == []
+            _assert_hud_drawn_on_its_thread(services)
+
     def test_canvas_missing_attach_hud_is_silently_tolerated(
         self,
         services: AppRuntimeServices,

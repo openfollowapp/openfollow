@@ -109,6 +109,8 @@ class HudRenderThread:
         self._ready: cairo.ImageSurface | None = None
         # Only the GTK main thread (tick and paint) touches the shown picture.
         self._shown: cairo.ImageSurface | None = None
+        # Counts pictures put on screen, so a reader can tell a new one in a reused surface.
+        self._shown_serial = 0
         self._spare: cairo.ImageSurface | None = None
         # Refreshes since the current picture started, when it started and when it finished.
         self._pacing = _Pacing()
@@ -142,6 +144,7 @@ class HudRenderThread:
             if ready is not None:
                 self._ready = None
                 self._spare, self._shown = self._shown, ready
+                self._shown_serial += 1
                 self._pacing.shown(self._held, self._finished_at - self._started_at)
             if not self._busy and self._ready is None and self._target is not None:
                 self._job = (self._target, self._renderer.state)
@@ -156,9 +159,16 @@ class HudRenderThread:
         if self._shown is not None:
             cr.set_source_surface(self._shown, 0, 0)
             cr.paint()
-        scale = cr.get_target().get_device_scale()
+        self.set_canvas(width, height, cr.get_target().get_device_scale())
+
+    def set_canvas(self, width: int, height: int, scale: tuple[float, float]) -> None:
+        """The canvas the next picture is drawn for."""
         with self._cond:
             self._target = (width, height, scale)
+
+    def shown_picture(self) -> tuple[cairo.ImageSurface | None, int]:
+        """The picture on screen and its serial; GTK main thread only, like ``tick``."""
+        return self._shown, self._shown_serial
 
     def _run(self) -> None:
         while (taken := self._take()) is not None:

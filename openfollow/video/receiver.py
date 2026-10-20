@@ -89,7 +89,10 @@ class GstNativeSinkReceiver:
         stall_timeout: float | None = None,
         heal_interval: float | None = None,
         iface_name: Callable[[str], str] | None = None,
+        display: Any = None,
     ) -> None:
+        # A GL display brings its own sink and widget in place of gtksink.
+        self._display = display
         # Resolve the active video input plugin
         input_cls = get_input_class(source_type)
         if input_cls is None:
@@ -199,6 +202,8 @@ class GstNativeSinkReceiver:
     def _create_shared_sink(self) -> Any:
         """Create a single gtksink that will be reused across all pipelines."""
         Gst.init(None)
+        if self._display is not None:
+            return self._display.sink
 
         sink_name = self._select_sink_name()
         if sink_name is None:
@@ -321,6 +326,11 @@ class GstNativeSinkReceiver:
     def start(self) -> None:
         self.play()
 
+    def _release_display_frames(self) -> None:
+        """Before a NULL transition: a decoder may not stop while the display holds its frames."""
+        if self._display is not None:
+            self._display.release_frames()
+
     def stop(self) -> None:
         self._cancel_connection_timeout()
         self._cancel_reconnect()
@@ -338,6 +348,7 @@ class GstNativeSinkReceiver:
             # Drop the bus signal watch so the pipeline (and its sockets) is
             # freed once NULL completes – otherwise stop() leaks fds.
             self._bus_handler.teardown_bus(pipeline)
+            self._release_display_frames()
             # set_state(NULL) can block indefinitely on network pipelines (RTSP/SRT)
             # when the remote end is unresponsive. Run in a daemon thread with a
             # timeout so shutdown never enters an uninterruptible kernel wait.
@@ -377,6 +388,7 @@ class GstNativeSinkReceiver:
         if self._pipeline is None:
             return
         pipeline = self._pipeline
+        self._release_display_frames()
 
         confirmed: list[bool] = []
 
@@ -729,6 +741,8 @@ class GstNativeSinkReceiver:
 
     def get_sink_widget(self) -> Any:
         """Return the GTK widget from shared gtksink."""
+        if self._display is not None:
+            return self._display.widget
         sink = self._get_shared_sink()
         if sink is None:
             return None
@@ -1086,6 +1100,7 @@ class GstNativeSinkReceiver:
         if self._pipeline is not None:
             try:
                 self._bus_handler.teardown_bus(self._pipeline)
+                self._release_display_frames()
                 self._pipeline.set_state(Gst.State.NULL)
             except Exception:
                 logger.exception("Error setting pipeline to NULL during reconnect")
@@ -1141,6 +1156,7 @@ class GstNativeSinkReceiver:
 
         if self._pipeline is not None:
             self._bus_handler.teardown_bus(self._pipeline)
+            self._release_display_frames()
             self._pipeline.set_state(Gst.State.NULL)
             self._pipeline = None
 

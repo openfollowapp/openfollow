@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""GStreamer native sink receiver with HUD overlay via gtksink."""
+"""GStreamer receiver ending in a shared video sink: gtksink, or the GL display's own."""
 
 from __future__ import annotations
 

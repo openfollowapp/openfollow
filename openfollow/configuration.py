@@ -190,6 +190,15 @@ def _coerce_multicast_ipv4(value: Any, default: str = "") -> str:
     return addr
 
 
+def is_ipv4_literal(value: str) -> bool:
+    """Whether *value* is an IPv4 address in the dotted form a socket reports a sender in."""
+    try:
+        ipaddress.IPv4Address(value)
+    except ValueError:
+        return False
+    return True
+
+
 def _coerce_optional_float(
     value: Any,
     default: float | None,
@@ -881,7 +890,7 @@ class OscConfig:
     port: int = 8765
     # Source-IP allowlist for the ``/marker/{id} x y z`` receiver. Empty =
     # allow-all (the handler logs a startup warning). Each entry is a literal
-    # IPv4/IPv6 address; CIDR blocks are not supported.
+    # IPv4 address, the listener's only family; CIDR blocks are not supported.
     allowed_sender_ips: list[str] = field(default_factory=list)
     # IPv4 multicast group the listener joins; empty = off. Validated to
     # 224.0.0.0–239.255.255.255, else coerced to "".
@@ -905,7 +914,10 @@ class OscConfig:
             candidates = list(raw)
         else:
             candidates = []
-        self.allowed_sender_ips = [entry.strip() for entry in candidates if isinstance(entry, str) and entry.strip()]
+        entries = [entry.strip() for entry in candidates if isinstance(entry, str) and entry.strip()]
+        # Only an IPv4 entry can match a sender. A list with none stays as written,
+        # so it admits nobody rather than reading as empty, which admits everybody.
+        self.allowed_sender_ips = [entry for entry in entries if is_ipv4_literal(entry)] or entries
         self.multicast_group = _coerce_multicast_ipv4(self.multicast_group)
 
 

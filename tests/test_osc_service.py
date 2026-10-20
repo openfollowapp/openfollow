@@ -822,6 +822,21 @@ def test_listener_with_allowlist_logs_info(
 
 @pytest.mark.integration
 @pytest.mark.skipif(not _PYTHONOSC_AVAILABLE, reason="python-osc not installed")
+def test_listener_with_no_ipv4_allowlist_entry_warns_that_it_accepts_nothing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    svc = OscService()
+    with caplog.at_level(logging.INFO):
+        bind_free_udp_port(lambda p: svc.start_listener(p, allowed_ips=["2001:db8::1"]))
+    svc.shutdown()
+    records = [r for r in caplog.records if "OSC input listening" in r.message]
+    assert [r.levelno for r in records] == [logging.WARNING]
+    assert "accepting no packets" in records[0].message
+    assert "2001:db8::1" in records[0].message
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not _PYTHONOSC_AVAILABLE, reason="python-osc not installed")
 def test_listener_without_allowlist_warns_about_exposure(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

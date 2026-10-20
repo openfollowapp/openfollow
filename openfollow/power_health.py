@@ -217,9 +217,10 @@ class PowerMonitor:
         alarm = read_alarm(self._alarm_path) if self._alarm_path is not None else None
         bits = self._throttle.latest if self._throttle is not None else None
         state = power_state(alarm, bits)
-        # The firmware clears its since-boot flags only on a reboot, so one seen survives an unknown reading.
-        self._under_voltage_since_boot |= state.under_voltage_since_boot is True
-        self._throttled_since_boot |= state.throttled_since_boot is True
+        # The firmware latches a live state into its since-boot flag and clears that only on a
+        # reboot, so a live state or a since-boot flag seen survives later readings, unknown ones too.
+        self._under_voltage_since_boot |= state.under_voltage is True or state.under_voltage_since_boot is True
+        self._throttled_since_boot |= state.throttled is True or state.throttled_since_boot is True
         state = replace(
             state,
             under_voltage_since_boot=self._under_voltage_since_boot or state.under_voltage_since_boot,

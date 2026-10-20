@@ -343,7 +343,7 @@ def test_the_monitor_combines_the_alarm_with_the_poller(tmp_path: Path) -> None:
     _hwmon(tmp_path, 0, "rpi_volt", "1")
     state = PowerMonitor(hwmon_root=tmp_path, throttle=_polled("throttled=0x40000")).read()
     assert state == PowerState(
-        under_voltage=True, throttled=False, under_voltage_since_boot=False, throttled_since_boot=True
+        under_voltage=True, throttled=False, under_voltage_since_boot=True, throttled_since_boot=True
     )
 
 
@@ -518,3 +518,29 @@ def test_a_failed_poll_before_any_since_boot_flag_stays_unknown(tmp_path: Path) 
     poller.latest = None
     state = monitor.read()
     assert (state.under_voltage_since_boot, state.throttled_since_boot) == (None, None)
+
+
+def test_a_live_dip_is_a_since_boot_one_before_the_next_poll(tmp_path: Path) -> None:
+    alarm = _hwmon(tmp_path, 0, "rpi_volt", "1") / "in0_lcrit_alarm"
+    monitor = PowerMonitor(hwmon_root=tmp_path, throttle=_polled("throttled=0x0"))
+    assert monitor.read().under_voltage is True
+    alarm.write_text("0\n")
+    state = monitor.read()
+    assert (state.under_voltage, state.under_voltage_since_boot) == (False, True)
+
+
+def test_live_throttling_is_a_since_boot_one_before_the_next_poll(tmp_path: Path) -> None:
+    poller = _polled("throttled=0x4")
+    monitor = PowerMonitor(hwmon_root=tmp_path, throttle=poller)
+    assert monitor.read().throttled_since_boot is True
+    poller.latest = None
+    assert monitor.read().throttled_since_boot is True
+
+
+def test_without_vcgencmd_a_dip_still_leaves_its_since_boot_flag(tmp_path: Path) -> None:
+    alarm = _hwmon(tmp_path, 0, "rpi_volt", "1") / "in0_lcrit_alarm"
+    monitor = PowerMonitor(hwmon_root=tmp_path)
+    monitor.read()
+    alarm.write_text("0\n")
+    state = monitor.read()
+    assert state == PowerState(under_voltage=False, under_voltage_since_boot=True)

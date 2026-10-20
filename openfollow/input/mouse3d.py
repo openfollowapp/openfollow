@@ -111,7 +111,7 @@ def _platform_supported() -> bool:
 
 @functools.cache
 def _backend_version() -> str:
-    """The installed pyspacemouse, which decides the models that have a profile."""
+    """The installed pyspacemouse version, reported in the status."""
     try:
         return metadata.version("pyspacemouse")
     except metadata.PackageNotFoundError:
@@ -187,8 +187,6 @@ class _PySpaceMouseBackend:
         # Devices already reported as undrivable, so a puck with no profile is
         # named once rather than on every enumeration pass.
         self._unprofiled_warned: set[tuple[int, int]] = set()
-        # Path -> local spec for a model read with a sibling's profile.
-        self._local_specs: dict[str, Any] = {}
 
     def enumerate(self) -> list[Mouse3DDeviceInfo]:
         """Every attached puck, profiled or not, one per hidraw node.
@@ -207,14 +205,11 @@ class _PySpaceMouseBackend:
 
         nodes: dict[str, list[Any]] = {}
         for dev in Enumeration().find():
-            path = getattr(dev, "path", None)
-            if isinstance(path, bytes):
-                path = path.decode("utf-8", "replace")
+            path = _hid_path(dev)
             if path:
                 nodes.setdefault(path, []).append(dev)
         profiles = _device_profiles()
         infos: list[Mouse3DDeviceInfo] = []
-        local_specs: dict[str, Any] = {}
         for path in sorted(nodes):
             dev = _puck_entry(nodes[path], profiles)
             if dev is None:
@@ -223,9 +218,6 @@ class _PySpaceMouseBackend:
             profiled = profiles is None or (vid, pid) in profiles
             if not profiled:
                 self._note_unprofiled(vid, pid, dev)
-            local_spec = None if profiles is None else profiles.get((vid, pid))
-            if local_spec is not None:
-                local_specs[path] = local_spec
             infos.append(
                 Mouse3DDeviceInfo(
                     path=path,
@@ -237,7 +229,6 @@ class _PySpaceMouseBackend:
                     profiled=profiled,
                 )
             )
-        self._local_specs = local_specs
         return infos
 
     def _note_unprofiled(self, vendor_id: int, product_id: int, dev: Any) -> None:
@@ -261,7 +252,7 @@ class _PySpaceMouseBackend:
         """
         import pyspacemouse  # lazy
 
-        local_spec = self._local_specs.get(path)
+        local_spec = _local_spec_at(path)
         try:
             # ``open_by_path`` prints to stdout on success; keep the log clean.
             with contextlib.redirect_stdout(io.StringIO()):
@@ -272,6 +263,31 @@ class _PySpaceMouseBackend:
             if os.path.exists(path) and not os.access(path, os.R_OK | os.W_OK):
                 raise PermissionError(f"{path} is not readable and writable by this process") from exc
             raise
+
+
+def _local_spec_at(path: str) -> Any | None:
+    """The local spec for the device at ``path`` now, ``None`` for any other.
+
+    Read from the node's current IDs, never remembered from an enumeration:
+    a custom spec skips pyspacemouse's own ID check, and a hidraw node can be
+    handed to another device between two passes.
+    """
+    profiles = _device_profiles()
+    if profiles is None:
+        return None
+    from easyhid import Enumeration  # lazy: dlopens libhidapi
+
+    for dev in Enumeration().find():
+        if _hid_path(dev) == path:
+            return profiles.get(_hid_ids(dev))
+    return None
+
+
+def _hid_path(dev: Any) -> str | None:
+    path = getattr(dev, "path", None)
+    if isinstance(path, bytes):
+        return path.decode("utf-8", "replace")
+    return path
 
 
 def _hid_ids(dev: Any) -> tuple[int, int]:

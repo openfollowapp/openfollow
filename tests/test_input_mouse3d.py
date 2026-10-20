@@ -1823,7 +1823,8 @@ def test_pyspacemouse_backend_open_delegates_to_open_by_path(monkeypatch) -> Non
     fake_ps = types.ModuleType("pyspacemouse")
     fake_ps.open_by_path = _open_by_path
     monkeypatch.setitem(sys.modules, "pyspacemouse", fake_ps)
-    assert _PySpaceMouseBackend().open("/dev/hidraw2") == "DEVICE"
+    backend = _enumerate_with(monkeypatch, [_fake_hid_device(0x046D, 0xC626, "/dev/hidraw2")])
+    assert backend.open("/dev/hidraw2") == "DEVICE"
     assert opened["path"] == "/dev/hidraw2"
 
 
@@ -2141,6 +2142,33 @@ def test_a_built_in_profile_wins_over_a_local_one(monkeypatch) -> None:  # noqa:
     assert opened == [("/dev/hidraw4", {})]
 
 
+def test_open_reads_the_spec_from_the_device_at_the_node_now(monkeypatch) -> None:  # noqa: ANN001
+    # A hidraw node handed to another model between two passes opens as that model.
+    opened: list = []
+    _use_real_profiles(monkeypatch, dict(_SIBLING_SPECS), opened)
+    devices = [_fake_hid_device(0x256F, 0xC636, "/dev/hidraw4", name="Module")]
+    backend = _enumerate_with(monkeypatch, devices)
+    backend.enumerate()
+    devices[:] = [
+        _fake_hid_device(0x256F, 0xC636, "/dev/hidraw3", name="Module"),
+        _fake_hid_device(0x256F, 0xC635, "/dev/hidraw4", name="Compact"),
+    ]
+    backend.open("/dev/hidraw4")
+    devices[:] = []
+    backend.open("/dev/hidraw4")
+    assert opened == [("/dev/hidraw4", {}), ("/dev/hidraw4", {})]
+
+
+def test_a_locally_profiled_node_reporting_no_usage_is_kept_and_opened(monkeypatch) -> None:  # noqa: ANN001
+    opened: list = []
+    _use_real_profiles(monkeypatch, dict(_SIBLING_SPECS), opened)
+    backend = _enumerate_with(monkeypatch, [_fake_hid_device(0x256F, 0xC636, b"/dev/hidraw4", usage=(0, 0))])
+    assert [(i.path, i.profiled) for i in backend.enumerate()] == [("/dev/hidraw4", True)]
+    backend.open("/dev/hidraw4")
+    ((path, kwargs),) = opened
+    assert (path, kwargs["device_spec"].product_id) == ("/dev/hidraw4", 0xC636)
+
+
 def test_a_local_model_without_its_sibling_has_no_profile(monkeypatch) -> None:  # noqa: ANN001
     specs = {k: v for k, v in _SIBLING_SPECS.items() if k != "SpaceMouseCompact"}
     _use_real_profiles(monkeypatch, specs)
@@ -2168,42 +2196,47 @@ _VENDOR_DEFINED = (0xFF00, 0x01)
 
 
 @pytest.mark.parametrize(
-    "vid,pid,usage,puck",
+    "usage,puck",
     [
-        (0x256F, 0xC635, (0x01, 0x08), True),
-        (0x046D, 0xC626, (0x01, 0x08), True),
-        (0x046D, 0xC600, (0x01, 0x08), True),
-        (0x046D, 0xC6FF, (0x01, 0x08), True),
-        (0x256F, 0xC635, (0x01, 0x02), False),
-        (0x256F, 0xC635, (0x01, 0x06), False),
-        (0x256F, 0xC635, (0x01, 0x05), False),
-        (0x256F, 0xC635, (0x02, 0x08), False),
-        (0x256F, 0xC635, _VENDOR_DEFINED, False),
-        (0x256F, 0xC650, (0x01, 0x02), False),
-        (0x256F, 0xC664, (0x01, 0x06), False),
-        (0x1234, 0xC626, (0x01, 0x08), False),
-        (0x046D, 0xC5FF, (0x01, 0x08), False),
-        (0x046D, 0xC700, (0x01, 0x08), False),
+        ((0x01, 0x08), True),
+        ((0x01, 0x02), False),
+        ((0x01, 0x06), False),
+        ((0x01, 0x05), False),
+        ((0x02, 0x08), False),
+        (_VENDOR_DEFINED, False),
+    ],
+    ids=["multi-axis", "mouse", "keyboard", "game-pad", "multi-axis-on-another-page", "vendor-defined-only"],
+)
+def test_a_3dconnexion_node_is_a_puck_only_by_its_declared_usage(monkeypatch, usage, puck) -> None:  # noqa: ANN001
+    backend = _enumerate_with(monkeypatch, [_fake_hid_device(0x256F, 0xC635, "/dev/hidraw4", usage=usage)])
+    assert [i.path for i in backend.enumerate()] == (["/dev/hidraw4"] if puck else [])
+
+
+@pytest.mark.parametrize(
+    "vid,pid,puck",
+    [
+        (0x256F, 0xC635, True),
+        (0x256F, 0xC650, True),
+        (0x046D, 0xC626, True),
+        (0x046D, 0xC600, True),
+        (0x046D, 0xC6FF, True),
+        (0x1234, 0xC626, False),
+        (0x046D, 0xC5FF, False),
+        (0x046D, 0xC700, False),
     ],
     ids=[
-        "3dconnexion-multi-axis",
-        "logitech-era-multi-axis",
+        "3dconnexion",
+        "3dconnexion-unlisted-pid",
+        "logitech-era",
         "logitech-range-low-end",
         "logitech-range-high-end",
-        "mouse-usage",
-        "keyboard-usage",
-        "game-pad-usage",
-        "multi-axis-usage-on-another-page",
-        "vendor-defined-only",
-        "cadmouse",
-        "keyboard-pro",
-        "another-vendor-multi-axis",
+        "another-vendor",
         "logitech-below-the-range",
         "logitech-above-the-range",
     ],
 )
-def test_enumerate_keeps_a_node_only_when_it_declares_a_puck(monkeypatch, vid, pid, usage, puck) -> None:  # noqa: ANN001
-    backend = _enumerate_with(monkeypatch, [_fake_hid_device(vid, pid, "/dev/hidraw4", usage=usage)])
+def test_a_declared_puck_counts_only_under_a_3dconnexion_id(monkeypatch, vid, pid, puck) -> None:  # noqa: ANN001
+    backend = _enumerate_with(monkeypatch, [_fake_hid_device(vid, pid, "/dev/hidraw4")])
     assert [i.path for i in backend.enumerate()] == (["/dev/hidraw4"] if puck else [])
 
 
@@ -2305,8 +2338,9 @@ def test_enumerate_names_an_unprofiled_puck_once(monkeypatch, caplog) -> None:  
     [
         _fake_hid_device(0x1234, 0x0001, "/dev/hidraw9", name="Keyboard", usage=(0x01, 0x06)),
         _fake_hid_device(0x256F, 0xC650, "/dev/hidraw9", name="CadMouse", usage=(0x01, 0x02)),
+        _fake_hid_device(0x256F, 0xC650, "/dev/hidraw9", name="Unreported", usage=(0, 0)),
     ],
-    ids=["another-vendor", "3dconnexion-mouse"],
+    ids=["another-vendor", "3dconnexion-mouse", "3dconnexion-unreported-usage"],
 )
 def test_enumerate_stays_quiet_about_devices_that_are_not_pucks(monkeypatch, caplog, dev) -> None:  # noqa: ANN001
     # Every HID device on the host comes past this filter; only a puck that
@@ -3102,6 +3136,7 @@ def _install_open_by_path(monkeypatch, open_by_path):  # noqa: ANN001, ANN202
     fake = types.ModuleType("pyspacemouse")
     fake.open_by_path = open_by_path
     monkeypatch.setitem(sys.modules, "pyspacemouse", fake)
+    _enumerate_with(monkeypatch, [])
 
 
 def test_open_names_a_node_this_process_may_not_use(monkeypatch, tmp_path) -> None:  # noqa: ANN001

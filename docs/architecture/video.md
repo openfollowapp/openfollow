@@ -48,6 +48,7 @@ Delegates protocol-specific work to the active plugin. Retains shared infrastruc
 - Source-byte observation: `_attach_source_probe()` puts a one-shot buffer probe on the plugin's `source_element_name`. Attached **per pipeline** (the source element is rebuilt on every reconnect), unlike the sink probes which attach once for the shared sink's lifetime. A source with no static `src` pad (`rtspsrc`) is followed via `pad-added`. The same first buffer records `source_format` from that pad's caps (a pixel format for raw video, else the media type), read from the caps **string** because the structure getters are what GStreamer 1.26.2 broke; the sink probe sits after `videoconvert` and never sees it. It is logged once per connection and published as `video.source_format`
 - Source discovery scheduling (calls plugin's `discover_sources()`)
 - Source selection state management (generic, checks `InputCapabilities.has_source_selection`)
+- `source_name`, read every frame for the Operator Screen, keeps the plugin's `get_source_label` until the input, its config or the pipeline changes; `create_pipeline` drops it, since an input resolves what it plays as it builds (the Media Gallery its selection, on disk)
 
 ## NDI plugin (`video/inputs/ndi.py`)
 ```

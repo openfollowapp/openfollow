@@ -30,7 +30,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from importlib import metadata
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -807,20 +807,21 @@ class Mouse3DHandler:
                 continue
             last_stamp = stamp
             idle_s = 0.0
-            snapshot = _Snapshot(
-                x=_finite_axis(getattr(state, "x", 0.0)),
-                y=_finite_axis(getattr(state, "y", 0.0)),
-                z=_finite_axis(getattr(state, "z", 0.0)),
-                roll=_finite_axis(getattr(state, "roll", 0.0)),
-                pitch=_finite_axis(getattr(state, "pitch", 0.0)),
-                yaw=_finite_axis(getattr(state, "yaw", 0.0)),
-                buttons=tuple(int(bool(b)) for b in (getattr(state, "buttons", None) or ())),
-            )
+            axes = {axis: _finite_axis(getattr(state, axis, 0.0)) for axis in _AXIS_SOURCE.values()}
             for axis, held in list(zeroed.items()):
-                if getattr(snapshot, axis) == held:
-                    snapshot = replace(snapshot, **{axis: 0.0})
+                if axes[axis] == held:
+                    axes[axis] = 0.0
                 else:
                     del zeroed[axis]
+            snapshot = _Snapshot(
+                x=axes["x"],
+                y=axes["y"],
+                z=axes["z"],
+                roll=axes["roll"],
+                pitch=axes["pitch"],
+                yaw=axes["yaw"],
+                buttons=tuple(int(bool(b)) for b in (getattr(state, "buttons", None) or ())),
+            )
             # Detect button presses at read rate so a tap between two frames is
             # latched rather than lost (prev-state map is worker-thread-only).
             edges = self._observe_button_edges(snapshot.buttons)

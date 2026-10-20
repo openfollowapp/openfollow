@@ -263,6 +263,7 @@ class TestSystemStatsFlow:
             temperature=58.0,
             ip_address="10.0.0.7",
             iface_name="",
+            power_warning="",
         )
         collector = SimpleNamespace(update=lambda: stats)
         state = _build(app, system_stats=collector)
@@ -282,6 +283,7 @@ class TestSystemStatsFlow:
             temperature=None,
             ip_address="10.0.0.7",
             iface_name="",
+            power_warning="",
         )
         collector = SimpleNamespace(update=lambda: stats)
         state = _build(app, system_stats=collector)
@@ -296,6 +298,7 @@ class TestSystemStatsFlow:
             temperature=None,
             ip_address="10.0.0.7",
             iface_name="",
+            power_warning="",
         )
         collector = SimpleNamespace(update=lambda: stats)
         state = _build(app, system_stats=collector)
@@ -309,6 +312,7 @@ class TestSystemStatsFlow:
             temperature=None,
             ip_address="N/A",
             iface_name="",
+            power_warning="",
         )
         collector = SimpleNamespace(update=lambda: stats)
         state = _build(app, system_stats=collector)
@@ -323,6 +327,7 @@ class TestSystemStatsFlow:
             temperature=None,
             ip_address="192.168.178.61",
             iface_name="eth0",
+            power_warning="",
         )
         collector = SimpleNamespace(update=lambda: stats)
         state = _build(app, system_stats=collector)
@@ -341,6 +346,7 @@ class TestSystemStatsFlow:
             temperature=None,
             ip_address="10.0.0.7",
             iface_name="wlan0",
+            power_warning="",
         )
         collector = SimpleNamespace(update=lambda: stats)
         state = _build(app, system_stats=collector)
@@ -364,6 +370,7 @@ class TestSystemStatsFlow:
             temperature=None,
             ip_address=ip,
             iface_name="eth0",
+            power_warning="",
         )
         collector = SimpleNamespace(update=lambda: stats)
         state = _build(app, system_stats=collector)

@@ -561,11 +561,15 @@ class TestResumeOsc:
                 raise OSError("port 9001 already in use")
 
         monkeypatch.setattr(input_manager_module, "OscMarkerAdapter", _FailingOscHandler)
+        store = app._runtime_services._operator_message_store
+        store.add("Standby")
         with pytest.raises(OSError, match="already in use"):
             manager.resume_osc()
         assert manager.osc_handler is None
         assert manager.path_osc_handler is None
         assert manager.operator_message_handler is None
+        # No listener, so no card it brought in stays on screen.
+        assert store.snapshot() == []
 
 
 # --------------------------------------------------------------------------- #

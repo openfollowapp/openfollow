@@ -15,7 +15,7 @@ from openfollow.video.inputs._hevc_guard import guard_hevc_decoder
 from openfollow.video.inputs.rtp import RtpInput
 from openfollow.video.inputs.rtsp import RtspInput
 from openfollow.video.inputs.srt import SrtInput
-from tests._fake_gst import make_fake_gst
+from tests._fake_gst import FakeElement, make_fake_gst
 
 pytestmark = pytest.mark.unit
 
@@ -88,13 +88,18 @@ def test_the_software_fallback_is_logged_once(caplog: pytest.LogCaptureFixture, 
 
 
 @pytest.mark.parametrize("input_cls", [SrtInput, RtpInput, RtspInput], ids=["srt", "rtp", "rtsp"])
-def test_every_network_input_guards_the_hevc_decoder(input_cls: type[SrtInput | RtpInput | RtspInput]) -> None:
+def test_every_network_pipeline_decodes_hevc_in_software_on_a_pi(
+    monkeypatch: pytest.MonkeyPatch, input_cls: type[SrtInput | RtpInput | RtspInput]
+) -> None:
     from gi.repository import Gst  # noqa: F401
 
-    fake = make_fake_gst()
-    seen: list[object] = []
-    module = input_cls.__module__
-    with patch("gi.repository.Gst", fake), patch(f"{module}.guard_hevc_decoder", seen.append):
-        input_cls._prefer_hardware_decoders()
+    monkeypatch.setattr(_hevc_guard, "is_raspberry_pi", lambda _path: True)
+    factory = _Factory()
+    fake = make_fake_gst(known_factories={"v4l2slh265dec": factory})
+    sink = FakeElement("shared_videosink")
+    with patch("gi.repository.Gst", fake):
+        input_cls().create_pipeline(
+            config={}, sink=sink, build_overlay_tail=lambda *_a: None, prepare_sink=lambda: sink
+        )
 
-    assert seen == [fake]
+    assert factory.ranks == [fake.Rank.NONE]

@@ -1647,6 +1647,12 @@ class TestShutdown:
         services.shutdown()
         assert stopped == [True]
 
+    def test_stops_the_system_stats_collector(self, services: AppRuntimeServices) -> None:
+        stopped: list[bool] = []
+        services._system_stats = SimpleNamespace(stop=lambda: stopped.append(True))  # type: ignore[assignment]
+        services.shutdown()
+        assert stopped == [True]
+
     def test_happy_path_stops_every_subsystem(self, services: AppRuntimeServices) -> None:
         app = services._app
         app._input_manager = _FakeInputManager(app)

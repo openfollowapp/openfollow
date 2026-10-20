@@ -517,8 +517,10 @@ def build_marker_visual_state(
     web_server = getattr(app, "_web_server", None)
     web_port = web_server.display_port if web_server is not None else app._config.web_port
 
+    power_warning = ""
     if system_stats is not None:
         stats = system_stats.update()
+        power_warning = stats.power_warning
         state.cpu_percent = stats.cpu_percent
         state.ram_percent = stats.ram_percent
         state.temperature = stats.temperature
@@ -896,6 +898,7 @@ def build_marker_visual_state(
         )
         flags_dict[RECORDING_FLAG] = recording_row(app) if paths_on else None
         flags_dict[REMOTE_FLAG] = remote_row(app)
+        flags_dict["power"] = ("error", power_warning) if power_warning else None
     if flags_dict:
         # ``dict`` insertion order preserves the order subsystems
         # registered their slots; surface flags in that order so

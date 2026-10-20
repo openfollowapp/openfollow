@@ -13,8 +13,8 @@ with the reasoning, before adding the variant.
 
 | Level | Means | Examples |
 |---|---|---|
-| **Error** | It does not work, and will not until someone acts | Video unreachable, a refused save, a missing controller, an OSC binding that can never fire, a marker two stations control, detection or 3D Mouse support unavailable |
-| **Caution** | It works, with a limitation worth knowing | A feature marked experimental, a marker no station controls, a web UI pin that missed and serves on every interface |
+| **Error** | It does not work, and will not until someone acts | Video unreachable, a refused save, a missing controller, an OSC binding that can never fire, a marker two stations control, detection or 3D Mouse support unavailable, a power supply under voltage now |
+| **Caution** | It works, with a limitation worth knowing | A feature marked experimental, a marker no station controls, a web UI pin that missed and serves on every interface, an under voltage or throttling since the Pi last started |
 | **Info** | Nothing is wrong; progress or a fact | Starting, idle, restarting, an update is available, a value Save will correct |
 | **Success** | Something just worked, or is healthy | Saved, connected, running, marker added |
 

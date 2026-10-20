@@ -1237,6 +1237,85 @@ def test_interface_assignment_web_ui_pin_is_device_local() -> None:
     assert scrubbed == {}
 
 
+@pytest.mark.parametrize("raw", [None, "abc", 3, True, {"1": 1}])
+def test_an_imported_marker_selection_that_is_not_a_list_reads_as_none(raw: object) -> None:
+    from openfollow.web.routes import _apply_import_data
+
+    new = _apply_import_data(AppConfig(controlled_marker_ids=[1]), {"controlled_marker_ids": raw})
+
+    assert new.controlled_marker_ids == []
+
+
+def test_an_imported_marker_selection_keeps_positive_ids_once() -> None:
+    from openfollow.web.routes import _apply_import_data
+
+    new = _apply_import_data(AppConfig(), {"controlled_marker_ids": [0, -1, True, "2", 2.0, 3, 3, 5]})
+
+    assert new.controlled_marker_ids == [3, 5]
+
+
+def test_an_imported_controlled_marker_is_viewed_too() -> None:
+    from openfollow.web.routes import _apply_import_data
+
+    new = _apply_import_data(AppConfig(), {"controlled_marker_ids": [2], "viewer_marker_ids": [4]})
+
+    assert new.viewer_marker_ids == [4, 2]
+
+
+def test_an_import_without_a_marker_selection_keeps_this_stations() -> None:
+    from openfollow.web.routes import _apply_import_data
+
+    new = _apply_import_data(AppConfig(controlled_marker_ids=[1], viewer_marker_ids=[1, 6]), {"camera": {"fov": 50.0}})
+
+    assert (new.controlled_marker_ids, new.viewer_marker_ids) == ([1], [1, 6])
+
+
+@pytest.mark.parametrize(
+    ("section", "field", "raw", "read_as"),
+    [
+        ("detection", "masks", "abc", []),
+        ("detection", "masks_enabled", "abc", False),
+        ("midi", "patches", 3, []),
+        ("controller", "button_raw_indices", "abc", {}),
+        ("controller", "swap_triggers", None, False),
+        ("controller", "mapped_controller_guid", 3, ""),
+        ("ui", "developer_mode", "abc", False),
+    ],
+)
+def test_an_imported_station_setting_of_the_wrong_type_reads_as_a_load_reads_it(
+    section: str, field: str, raw: object, read_as: object
+) -> None:
+    from openfollow.web.routes import _apply_import_data
+
+    new = _apply_import_data(AppConfig(), {section: {field: raw}})
+
+    assert getattr(getattr(new, section), field) == read_as
+
+
+def test_imported_virtual_faders_of_the_wrong_type_read_as_unmapped() -> None:
+    from openfollow.configuration import VirtualFadersConfig
+    from openfollow.web.routes import _apply_import_data
+
+    current = AppConfig()
+    current.virtual_faders.faders[0].name = "Iris"
+
+    new = _apply_import_data(current, {"virtual_faders": {"faders": "abc"}})
+
+    assert new.virtual_faders == VirtualFadersConfig()
+
+
+def test_an_imported_input_that_is_not_running_keeps_its_fields() -> None:
+    from openfollow.web.routes import _apply_import_data
+
+    new = _apply_import_data(
+        AppConfig(video_source_type="testpattern"),
+        {"video_source_type": "testpattern", "ndi_source_name": "CAM-HOST (Camera 2)", "picam_width": "abc"},
+    )
+
+    assert new.ndi_source_name == "CAM-HOST (Camera 2)"
+    assert new.picam_width == 1920
+
+
 def test_apply_import_data_preserves_detection_storage_path() -> None:
     from openfollow.web.routes import _apply_import_data
 
@@ -1342,7 +1421,7 @@ def test_full_config_round_trip_leaves_the_receivers_otp_pin_alone() -> None:
     sender.otp_output.enabled = True
     receiver = AppConfig()
 
-    new = _apply_import_data(receiver, _config_dict_redacted(sender))
+    new = _apply_import_data(receiver, _config_dict_redacted(sender), pushed=True)
 
     assert new.otp_output.source_iface == ""
     assert new.otp_output.enabled is True
@@ -1363,7 +1442,7 @@ def test_broadcast_all_carries_paths_to_a_peer_that_keeps_its_own_active_flags()
     )
     receiver = AppConfig(paths=PathsConfig(paths=[PathConfig(name="cross", active=False)]))
 
-    new = _apply_import_data(receiver, _strip_broadcast_excluded(_config_dict_redacted(sender)))
+    new = _apply_import_data(receiver, _strip_broadcast_excluded(_config_dict_redacted(sender)), pushed=True)
 
     assert [p.x for p in new.paths.paths[0].points] == [0.0, 4.0]
     assert new.paths.slide_time == 1.5

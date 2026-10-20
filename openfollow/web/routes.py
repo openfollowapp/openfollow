@@ -86,6 +86,7 @@ from openfollow.configuration import (
     enforce_network_mode,
     feature_gated,
     load_config_for_save,
+    marker_id_list,
     migrate_ui_keys,
     path_name_from,
     plane_pin_key,
@@ -3404,13 +3405,58 @@ def _backup_before(config_path: str, kind: str, named_by: AppConfig | None = Non
     return {"backup": result.archive}
 
 
-def _apply_import_data(current_cfg: AppConfig, data: dict[str, Any]) -> AppConfig:
+# Sub-config fields only a file import restores, normalised by the sub-config's ``__post_init__``
+# as a config.toml load does: none of them has a section form that applies it.
+_FILE_IMPORT_FIELDS: dict[str, tuple[str, ...]] = {
+    "detection": ("masks", "masks_enabled"),
+    "controller": ("button_raw_indices", "swap_triggers", "mapped_controller_name", "mapped_controller_guid"),
+    "midi": ("patches",),
+    "virtual_faders": ("faders",),
+    "ui": ("developer_mode",),
+}
+
+
+def _apply_file_import_data(cfg: AppConfig, data: dict[str, Any]) -> None:
+    """Apply what a file import restores and a push leaves as it is.
+
+    That is this station's own setup: its marker selection, detection masks, the
+    fields of every video input rather than only the running one's, its 3D Mouse,
+    operator messages, MIDI patches, virtual faders and gamepad mapping.
+    """
+    for name in ("controlled_marker_ids", "viewer_marker_ids"):
+        if name in data:
+            setattr(cfg, name, marker_id_list(data[name], path="imported settings", field_name=name))
+    cfg.viewer_marker_ids = viewed_with_controlled(cfg.controlled_marker_ids, cfg.viewer_marker_ids)
+
+    from openfollow.video.inputs import get_registry
+
+    video_fields = strip_device_local_fields("video_source", data)
+    for input_cls in get_registry().values():
+        input_cls.apply_config_fields(cfg, video_fields)
+
+    for section in ("mouse3d", "operator_messages"):
+        if isinstance(data.get(section), dict):
+            apply_section_data(cfg, section, data[section])
+
+    for section, names in _FILE_IMPORT_FIELDS.items():
+        raw = data.get(section)
+        if not isinstance(raw, dict) or not any(name in raw for name in names):
+            continue
+        target = getattr(cfg, section)
+        for name in names:
+            if name in raw:
+                setattr(target, name, raw[name])
+        target.__post_init__()
+
+
+def _apply_import_data(current_cfg: AppConfig, data: dict[str, Any], *, pushed: bool = False) -> AppConfig:
     """Build a new config from import data, preserving this device's identity.
 
     Each section is applied without its ``_DEVICE_LOCAL_FIELDS_BY_SECTION``,
     and the ``_DEVICE_IDENTITY_FIELDS`` are snapshotted before the section
     applies and written back after – a config from another box must not
-    rewrite this station's interface, login or host paths.
+    rewrite this station's interface, login or host paths. A file import
+    (not *pushed*) also restores what ``_apply_file_import_data`` applies.
     """
     cfg = copy.deepcopy(current_cfg)
     device_identity = capture_device_identity(cfg)
@@ -3502,6 +3548,9 @@ def _apply_import_data(current_cfg: AppConfig, data: dict[str, Any]) -> AppConfi
         cfg.window_width = _as_int(data["window_width"], cfg.window_width)
     if "window_height" in data:
         cfg.window_height = _as_int(data["window_height"], cfg.window_height)
+
+    if not pushed:
+        _apply_file_import_data(cfg, data)
 
     restore_device_identity(cfg, device_identity)
     return cfg
@@ -10113,7 +10162,10 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             speeds = server.get_marker_move_speeds()
             if speeds:
                 current.marker_move_speeds = dict(speeds)
-            full_cfg = _apply_import_data(current, data if pushed_by is None else _without_station_name(data))
+            if pushed_by is None:
+                full_cfg = _apply_import_data(current, data)
+            else:
+                full_cfg = _apply_import_data(current, _without_station_name(data), pushed=True)
             save_config(full_cfg, server.config_path, replace_unreadable=replacing)
         if pushed_by is not None:
             _record_push(pushed_by, "every shared setting", backup)

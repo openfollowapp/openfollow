@@ -926,9 +926,9 @@ _WRONG_SHAPES = [
     b'camera = "x"\n',
     b"paths = [1]\n",
     b"osc_destinations = 3\n",
-    b'midi = {patches="x"}\n',
+    b"osc_transmitters = {transmitters = 3}\n",
 ]
-_WRONG_SHAPE_IDS = ["grid-int", "camera-str", "paths-list", "osc-destinations-int", "midi-patches-str"]
+_WRONG_SHAPE_IDS = ["grid-int", "camera-str", "paths-list", "osc-destinations-int", "osc-transmitters-int"]
 _UNREADABLE = pytest.mark.parametrize(
     "content",
     [b"", b"  \n\t\n", b"not [[ valid toml", b"\xff\xfe = 1\n", *_WRONG_SHAPES],
@@ -1537,6 +1537,17 @@ def test_controller_keyboard_layout_is_what_the_session_helper_reads(tmp_path) -
     cfg.controller.keyboard_variant = "OADG109A"
     save_config(cfg, str(path))
     assert read_configured(path) == ("jp", "OADG109A")
+
+
+@pytest.mark.parametrize("raw", [None, "abc", 1, [True]])
+def test_controller_swap_triggers_that_is_no_bool_reads_as_not_swapped(raw: object) -> None:
+    assert ControllerConfig(swap_triggers=raw).swap_triggers is False  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("raw", [None, 3, True, ["Pad"]])
+@pytest.mark.parametrize("name", ["mapped_controller_name", "mapped_controller_guid"])
+def test_controller_mapped_pad_that_is_no_string_reads_as_none(name: str, raw: object) -> None:
+    assert getattr(ControllerConfig(**{name: raw}), name) == ""
 
 
 def test_controller_button_raw_indices_coerced_to_int() -> None:
@@ -4397,6 +4408,31 @@ def test_detection_config_default_values() -> None:
     assert cfg.prediction == pytest.approx(8.0)
 
 
+@pytest.mark.parametrize("patches", [None, "abc", 3, True, {"id": 1}])
+def test_midi_patches_that_are_not_a_list_read_as_none(patches: object) -> None:
+    assert MidiConfig(patches=patches).patches == []  # type: ignore[arg-type]
+
+
+def test_midi_patches_keep_only_their_patch_entries() -> None:
+    kept = MidiPatch(id=4, alias="Wing")
+    config = MidiConfig(patches=[{"id": 2, "alias": "Desk"}, "Desk", 7, None, kept])  # type: ignore[list-item]
+    assert [(patch.id, patch.alias) for patch in config.patches] == [(2, "Desk"), (4, "Wing")]
+
+
+@pytest.mark.parametrize("faders", [None, "abc", 3, True, {"name": "Iris"}])
+def test_virtual_faders_that_are_not_a_list_read_as_unmapped(faders: object) -> None:
+    from openfollow.configuration import VIRTUAL_FADER_COUNT, VirtualFaderConfig, VirtualFadersConfig
+
+    assert VirtualFadersConfig(faders=faders).faders == [VirtualFaderConfig()] * VIRTUAL_FADER_COUNT  # type: ignore[arg-type]
+
+
+def test_virtual_faders_keep_only_their_fader_entries() -> None:
+    from openfollow.configuration import VirtualFaderConfig, VirtualFadersConfig
+
+    config = VirtualFadersConfig(faders=["Iris", {"name": "Zoom"}, 2, VirtualFaderConfig(name="Focus")])  # type: ignore[list-item]
+    assert [fader.name for fader in config.faders[:3]] == ["Zoom", "Focus", ""]
+
+
 def test_detection_config_masks_enabled_defaults_off() -> None:
     """The masking master switch ships off so drawn masks never restrict
     detection until the operator turns them on."""
@@ -4867,6 +4903,11 @@ def test_detection_config_converts_dict_masks_to_dataclasses() -> None:
     assert isinstance(cfg.masks[0], DetectionMaskConfig)
     assert cfg.masks[0].name == "stage"
     assert cfg.masks[0].vertices == [[0.1, 0.1], [0.9, 0.1], [0.5, 0.9]]
+
+
+@pytest.mark.parametrize("masks", [None, "abc", 3, True, {"name": "stage"}])
+def test_detection_config_masks_that_are_not_a_list_read_as_none(masks: object) -> None:
+    assert DetectionConfig(masks=masks).masks == []  # type: ignore[arg-type]
 
 
 def test_detection_config_preserves_already_built_masks() -> None:

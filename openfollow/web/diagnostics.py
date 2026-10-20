@@ -39,6 +39,7 @@ from openfollow import keyboard_layout
 from openfollow.logging_setup import RingBufferLogHandler
 from openfollow.net_utils import HOST_RESOLVER, read_ipv4_routes
 from openfollow.network.validate import is_link_local
+from openfollow.power_health import THROTTLE_BIT_LABELS, parse_throttled
 from openfollow.privilege import settings_backup
 from openfollow.privilege.device_repair import full_hostname
 from openfollow.uri_redaction import redact_uri, redact_uris_in_text
@@ -320,20 +321,6 @@ _SHARED_GST_ELEMENTS: tuple[tuple[str, str], ...] = (
 # which one is present is the answer to "why is this Pi dropping frames".
 _DECODER_ELEMENTS: tuple[str, ...] = ("v4l2h264dec", "v4l2h265dec", "avdec_h264", "openh264dec")
 
-# ``vcgencmd get_throttled`` bit meanings. The low bits are live, the high
-# ones latch since boot - an operator chasing an intermittent freeze needs the
-# latched ones, which is the whole reason to read this.
-_THROTTLE_BITS: tuple[tuple[int, str], ...] = (
-    (0, "under-voltage NOW"),
-    (1, "ARM frequency capped NOW"),
-    (2, "currently throttled"),
-    (3, "soft temperature limit active"),
-    (16, "under-voltage has occurred since boot"),
-    (17, "ARM frequency capping has occurred since boot"),
-    (18, "throttling has occurred since boot"),
-    (19, "soft temperature limit has occurred since boot"),
-)
-
 
 def describe_file(path: Path) -> str:
     """``<size> B, modified <when>`` for a file, or why it cannot be read."""
@@ -352,15 +339,14 @@ def decode_throttled(raw: str) -> str:
     answer to the freezes and dropped USB devices that an undervolted supply
     causes.
     """
-    _, _, value = raw.strip().partition("=")
-    try:
-        bits = int(value, 16)
-    except ValueError:
+    bits = parse_throttled(raw)
+    if bits is None:
         return f"[unavailable: unrecognised reading {raw.strip()!r}]"
     if bits == 0:
         return "none (no under-voltage or throttling, now or since boot)"
-    flags = [label for bit, label in _THROTTLE_BITS if bits & (1 << bit)]
-    return f"{value} - {'; '.join(flags)}" if flags else f"{value} - no known flag set"
+    # The latched since-boot bits are what an intermittent freeze leaves behind.
+    flags = [label for bit, label in THROTTLE_BIT_LABELS if bits & (1 << bit)]
+    return f"{bits:#x} - {'; '.join(flags)}" if flags else f"{bits:#x} - no known flag set"
 
 
 # ---------------------------------------------------------------------------

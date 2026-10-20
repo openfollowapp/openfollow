@@ -40,6 +40,7 @@ from openfollow.net_utils import ResolveStatus, interface_present, plane_source_
 from openfollow.network.adapter import format_lease_remaining
 from openfollow.osc.egress import OscEgressTable
 from openfollow.otp import OtpServer
+from openfollow.power_health import PowerState, system_power_monitor
 from openfollow.psn import MARKER_STALE_AFTER_S, PsnReceiver, PsnServer
 from openfollow.psn.server import _UNCHANGED, _Unchanged
 from openfollow.rttrpm import RttrpmServer
@@ -972,6 +973,7 @@ class AppRuntimeServices:
         self._system_stats = SystemStatsCollector(
             update_interval=1.0,
             preferred_ip=self._resolved_source_ip,
+            power=system_power_monitor(),
         )
 
         canvas = self._app._canvas
@@ -3832,6 +3834,7 @@ class AppRuntimeServices:
                 "ip": "N/A",
                 "hud_fps": 0.0,
                 "output_resolution": None,
+                "power": PowerState().to_dict(),
             },
             "video": {
                 "source_type": cfg.video_source_type,
@@ -3935,6 +3938,7 @@ class AppRuntimeServices:
             else None
         )
         ip_address = system_stats.ip_address if system_stats is not None else "N/A"
+        power = system_stats.power if system_stats is not None else PowerState()
 
         hud_fps = 0.0
         if self._overlay_renderer is not None:
@@ -4074,6 +4078,7 @@ class AppRuntimeServices:
                 "ip": ip_address,
                 "hud_fps": hud_fps,
                 "output_resolution": self._canvas_resolution(hud_fps),
+                "power": power.to_dict(),
             },
             "video": video_snapshot,
             "controllers": {

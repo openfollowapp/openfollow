@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 import openfollow.system_stats as stats_module
+from openfollow.power_health import WARNING_HOLD_S, PowerMonitor
 from openfollow.system_stats import SystemStatsCollector
 
 pytestmark = pytest.mark.unit
@@ -225,3 +226,41 @@ def test_stats_collector_provider_exception_falls_back_to_primary(monkeypatch) -
     stats = collector.update()
 
     assert stats.ip_address == "10.0.0.1"
+
+
+def _stub_host(monkeypatch) -> None:
+    _stub_psutil(monkeypatch)
+    monkeypatch.setattr(stats_module, "get_local_ipv4_addresses", lambda: set())
+    monkeypatch.setattr(stats_module, "get_primary_local_ipv4", lambda default="N/A": "10.0.0.1")
+    monkeypatch.setattr(stats_module, "get_iface_for_ip", lambda _ip: "")
+
+
+def test_without_a_power_monitor_power_is_not_available(monkeypatch) -> None:
+    _stub_host(monkeypatch)
+    stats = SystemStatsCollector(update_interval=0.0).update()
+    assert stats.power.available is False
+    assert stats.power_warning == ""
+
+
+def test_the_power_warning_is_held_after_the_last_dip(monkeypatch, tmp_path: Path) -> None:
+    _stub_host(monkeypatch)
+    hwmon = tmp_path / "hwmon0"
+    hwmon.mkdir()
+    (hwmon / "name").write_text("rpi_volt\n")
+    alarm = hwmon / "in0_lcrit_alarm"
+    alarm.write_text("1\n")
+    now = [50.0]
+    collector = SystemStatsCollector(update_interval=1.0, power=PowerMonitor(hwmon_root=tmp_path), clock=lambda: now[0])
+
+    first = collector.update()
+    assert first.power.under_voltage is True
+    assert first.power_warning == "Power supply under voltage"
+
+    alarm.write_text("0\n")
+    now[0] = 50.0 + WARNING_HOLD_S - 1.0
+    held = collector.update()
+    assert held.power.under_voltage is False
+    assert held.power_warning == "Power supply under voltage"
+
+    now[0] = 50.0 + WARNING_HOLD_S
+    assert collector.update().power_warning == ""

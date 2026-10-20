@@ -27,6 +27,7 @@ import openfollow.input.mouse3d as mouse3d_module
 import openfollow.services as services_module
 from openfollow.configuration import AppConfig
 from openfollow.input.mouse3d_status import DeviceState, Mouse3DDeviceStatus, Mouse3DStatus
+from openfollow.power_health import PowerState
 from openfollow.services import AppRuntimeServices
 from openfollow.video.failure import ConnectionPhase, SourceKind, VideoFailure
 
@@ -55,6 +56,7 @@ class _SystemStats:
     ram_percent: float = 42.0
     temperature: float | None = 55.5
     ip_address: str = "10.0.0.7"
+    power: PowerState = field(default_factory=PowerState)
 
 
 class _FakeSystemStatsCollector:
@@ -199,6 +201,9 @@ class TestDefaultRuntimeStatsSnapshot:
         assert snap["mouse3d"]["scanned"] is False
         assert snap["mouse3d"]["devices"] == []
         assert snap["tracking"]["enabled"] is False
+        # Nothing read yet: not available, never healthy.
+        assert snap["system"]["power"]["available"] is False
+        assert snap["system"]["power"]["under_voltage"] is None
 
     def test_reflects_video_source_type_from_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(services_module, "gst_runtime_available", lambda: True)
@@ -698,6 +703,27 @@ class TestPublishRuntimeStats:
         assert snap["system"]["hud_fps"] == 0.0
         # No overlay renderer ⇒ nothing is drawing ⇒ no canvas to report.
         assert snap["system"]["output_resolution"] is None
+        assert snap["system"]["power"] == PowerState().to_dict()
+
+    def test_the_power_reading_is_published(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        reading = PowerState(
+            under_voltage=False, throttled=True, under_voltage_since_boot=True, throttled_since_boot=True
+        )
+        services._system_stats = _FakeSystemStatsCollector(_SystemStats(power=reading))
+        import openfollow.video.detection as det
+
+        monkeypatch.setattr(det, "check_detection_dependencies", lambda cfg: [])
+
+        services.publish_runtime_stats(force=True)
+        assert services.get_runtime_stats_snapshot()["system"]["power"] == {
+            "available": True,
+            "under_voltage": False,
+            "throttled": True,
+            "under_voltage_since_boot": True,
+            "throttled_since_boot": True,
+        }
 
     def test_system_stats_with_none_temperature(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch

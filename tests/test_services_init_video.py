@@ -31,6 +31,7 @@ import pytest
 
 import openfollow.services as services_module
 from openfollow.configuration import AppConfig, DetectionConfig
+from openfollow.power_health import PowerMonitor
 from openfollow.runtime.overlay_layers import LayerContext
 from openfollow.services import AppRuntimeServices
 from tests._fake_cairo import FakeCairo
@@ -70,9 +71,10 @@ def _assert_hud_drawn_on_its_thread(services: AppRuntimeServices) -> None:
 class _FakeSystemStats:
     instances: list[_FakeSystemStats] = []
 
-    def __init__(self, *, update_interval: float, preferred_ip: str) -> None:
+    def __init__(self, *, update_interval: float, preferred_ip: str, power: PowerMonitor) -> None:
         self.update_interval = update_interval
         self.preferred_ip = preferred_ip
+        self.power = power
         _FakeSystemStats.instances.append(self)
 
 
@@ -317,6 +319,8 @@ class TestInitVideoDetectionDisabled:
         assert callable(provider)
         assert provider() == "10.0.0.5"
         assert _FakeSystemStats.instances[0].update_interval == 1.0
+        # The station reads its own supply and throttling.
+        assert isinstance(_FakeSystemStats.instances[0].power, PowerMonitor)
         # detection disabled – no detector instantiated
         assert services._person_detector is None
         assert _FakePersonDetector.instances == []

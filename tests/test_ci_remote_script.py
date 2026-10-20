@@ -313,13 +313,15 @@ def _gone(pid: int, *, group: bool = False) -> bool:
     return False
 
 
-def _end(proc: subprocess.Popen[str], *pids: int) -> None:
+def _end(proc: subprocess.Popen[str], step_pid: int, stopped: Path) -> None:
+    """Kill what this test started and is still running: the script's own process group,
+    and a long step that never got its SIGTERM (it exits on one, so its pid is not reused)."""
     if proc.poll() is None:
         os.killpg(proc.pid, signal.SIGKILL)
         proc.wait()
-    for pid in pids:
+    if step_pid and not stopped.exists():
         with contextlib.suppress(ProcessLookupError):
-            os.kill(pid, signal.SIGKILL)
+            os.kill(step_pid, signal.SIGKILL)
 
 
 @pytest.mark.parametrize("step", ["make ci", "drawing comparison"])
@@ -346,7 +348,8 @@ def test_an_interrupted_gate_is_stopped_on_the_pi_before_its_checkout_is_restore
         _, stderr = proc.communicate(timeout=30)
         other_survived = other.poll() is None
     finally:
-        _end(proc, pid, other.pid)
+        _end(proc, pid, stopped)
+        other.kill()
         other.wait()
 
     assert proc.returncode != 0
@@ -360,8 +363,8 @@ def test_an_interrupted_gate_is_stopped_on_the_pi_before_its_checkout_is_restore
 
 def test_a_gate_left_running_on_the_pi_holds_off_the_next_until_it_ends(tmp_path: Path) -> None:
     station = _station(tmp_path)
-    running = tmp_path / "step.running"
-    first = station.start(FAKE_MAKE_HOOK=_long_step(running, tmp_path / "step.stopped"))
+    running, stopped = tmp_path / "step.running", tmp_path / "step.stopped"
+    first = station.start(FAKE_MAKE_HOOK=_long_step(running, stopped))
     pid = 0
     try:
         pid = _await(running, first)
@@ -370,14 +373,15 @@ def test_a_gate_left_running_on_the_pi_holds_off_the_next_until_it_ends(tmp_path
         first.wait()
         refused = station.run(OPENFOLLOW_CI_FORCE="1")
         survived = not _gone(pid)
+        # The run ends on its own: TERM lets the long step say it was stopped.
         group = os.getpgid(pid)
-        os.killpg(group, signal.SIGKILL)
+        os.killpg(group, signal.SIGTERM)
         deadline = time.monotonic() + 30
         while not _gone(group, group=True) and time.monotonic() < deadline:
             time.sleep(0.02)
         after = station.run(OPENFOLLOW_CI_FORCE="1")
     finally:
-        _end(first, pid)
+        _end(first, pid, stopped)
         if first.stderr is not None:
             first.stderr.close()
 

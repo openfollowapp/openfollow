@@ -98,6 +98,7 @@ AGPLv3-compatible.
 | [PyGObject](https://gitlab.gnome.org/GNOME/pygobject) | ≥3.42 | LGPL-2.1-or-later |
 | [psutil](https://github.com/giampaolo/psutil) | ≥5.9 | BSD-3-Clause |
 | [python-osc](https://github.com/attwad/python-osc) | ≥1.8 | Unlicense (public-domain dedication) |
+| [PyOpenGL](https://github.com/mcfletch/pyopengl) | ≥3.1.7 | BSD |
 
 `tomli` is only installed on Python < 3.11; on 3.11+ the standard-library
 `tomllib` is used instead.

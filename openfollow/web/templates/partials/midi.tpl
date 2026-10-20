@@ -108,8 +108,8 @@
  % # Virtual Faders – visual mixer-style strip row + detail panel.
  % # Each strip is a vertical fader graphic the operator can click
  % # to load that fader's editable config into the detail panel
- % # below. Live values arrive via HTMX out-of-band swaps, once on
- % # load and while "Show live" runs: the strip's fill bar + handle + numeric
+ % # below. The strips render the live values; while "Show live"
+ % # runs, HTMX out-of-band swaps refresh them: the strip's fill bar + handle + numeric
  % # value are id-keyed so the poll response targets each one
  % # without re-rendering the click handler / selection state.
  % # ----------------------------------------------------------------
@@ -129,12 +129,15 @@
  % # Treated as plain toggle buttons with aria-pressed (more accurate
  % # than tabs): buttons swap one shared content panel.
  <div class="midi-fader-strips" role="group" aria-label="Virtual faders">
+ % live_faders = {entry['index']: entry for entry in (fader_values if defined('fader_values') else [])}
  % for idx, fader in enumerate(config.virtual_faders.faders, start=1):
  % # Selection indicator: ``selected_fader`` controls
  % # which strip starts selected. The browser-side
  % # click handler toggles ``data-selected``; HTMX
  % # swaps the detail panel via the ``hx-get`` below.
- % fill_pct = '%g' % (max(0.0, min(1.0, fader.default_value)) * 100)
+ % live = live_faders.get(idx)
+ % value = live['value'] if live else fader.default_value
+ % fill_pct = '%g' % (max(0.0, min(1.0, value)) * 100)
  % display_name = fader.name or 'Fader %d' % idx
  % is_selected = (idx == selected_fader)
  % # Tint the strip with the fader's assigned colour. Driven
@@ -165,7 +168,7 @@
  style="bottom:{{fill_pct}}%"></div>
  </div>
  <span class="midi-fader-strip-name">{{display_name}}</span>
- <span id="midi-fader-strip-value-{{idx}}" class="midi-fader-strip-value">{{'%.2f' % fader.default_value}}</span>
+ <span id="midi-fader-strip-value-{{idx}}" class="midi-fader-strip-value">{{'%.2f' % value}}{{!'<span class="midi-fader-strip-not-picked-up">not picked up</span>' if live and not live['picked_up'] else ''}}</span>
  </button>
  % end
  </div>
@@ -183,12 +186,11 @@
  % valid_fader_midi_types=valid_fader_midi_types)
  </div>
 
- % # Polling driver for the live fader values: once on load (the
- % # strips render each fader's default), then only while "Show live"
- % # runs. The response is a flat list of OOB snippets keyed by the
- % # per-strip ids above, so ``hx-swap="none"``.
+ % # Polling driver for the live fader values while "Show live" runs (the
+ % # strips render the live values server-side). The response is a flat
+ % # list of OOB snippets keyed by the per-strip ids above, so ``hx-swap="none"``.
  <div hx-get="/section/midi/faders/values"
- hx-trigger="load, every 500ms [midiLiveActive() && pollShown(this)], midi-live from:body, poll-shown[midiLiveActive() && pollShown(this)] from:body"
+ hx-trigger="every 500ms [midiLiveActive() && pollShown(this)], midi-live from:body, poll-shown[midiLiveActive() && pollShown(this)] from:body"
  hx-swap="none"
  style="display:none"></div>
 

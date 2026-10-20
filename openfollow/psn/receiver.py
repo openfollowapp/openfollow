@@ -35,7 +35,15 @@ class _RobustReceiver(pypsn.Receiver):  # type: ignore[misc]
     from the main loop returns at once.
     """
 
-    def __init__(self, callback: Callable[..., None], ip_addr: str, mcast_port: int, iface: str = "") -> None:
+    def __init__(
+        self,
+        callback: Callable[..., None],
+        ip_addr: str,
+        mcast_port: int,
+        iface: str = "",
+        own_source: Callable[[], tuple[str, int] | None] = lambda: None,
+    ) -> None:
+        self._own_source = own_source
         if iface:
             # pypsn joins its group by address; a pinned interface is joined by index.
             threading.Thread.__init__(self)
@@ -101,6 +109,9 @@ class _RobustReceiver(pypsn.Receiver):  # type: ignore[misc]
             except Exception:
                 logger.debug("PSN recv unexpected error", exc_info=True)
                 continue
+            # This station's own output, looped back: dropped before it is decoded.
+            if addr[:2] == self._own_source():
+                continue
 
             try:
                 psn_data = pypsn.parse_psn_packet(data)
@@ -159,8 +170,11 @@ class PsnReceiver:
         source_iface: str = "",
         *,
         enabled: bool = True,
+        own_source: Callable[[], tuple[str, int] | None] = lambda: None,
     ) -> None:
         self._port = port
+        # Where this station's own PSN output comes from, read per packet.
+        self._own_source = own_source
         self._enabled = enabled
         # Strip whitespace; empty/whitespace-only → listen on all interfaces.
         self._source_ip = source_ip.strip()
@@ -206,6 +220,7 @@ class PsnReceiver:
                 ip_addr=self._source_ip or "0.0.0.0",
                 mcast_port=self._port,
                 iface=self._source_iface,
+                own_source=self._own_source,
             )
         except OSError as exc:
             logger.error(
@@ -257,8 +272,11 @@ class PsnReceiver:
             )
 
     def get_marker(self, marker_id: int) -> Marker | None:
-        """Return a received marker by ID, or ``None``."""
+        """Return a received marker by ID, or ``None`` once it has been silent past the TTL."""
         with self._lock:
+            # Swept on read too: this station's own packets are never decoded,
+            # so with no peer left sending, no packet would ever sweep.
+            self._sweep_if_due_locked(time.monotonic())
             return self._markers.get(marker_id)
 
     def is_marker_online(self, marker_id: int, timeout: float = 2.0) -> bool:
@@ -295,9 +313,7 @@ class PsnReceiver:
                 # together, so they share an arrival time. Local and monotonic -
                 # not comparable to the sender-timed stamp the marker carries.
                 now = time.monotonic()
-                if now - self._last_evict_sweep >= _EVICT_SWEEP_INTERVAL_S:
-                    self._last_evict_sweep = now
-                    self._evict_stale_markers_locked(now)
+                self._sweep_if_due_locked(now)
                 for t in data.trackers:
                     # tracker_id 0 is the reserved "ignored" id on the PSN wire;
                     # Marker(0) raises, which would abort the loop and drop every
@@ -354,6 +370,12 @@ class PsnReceiver:
                     self._last_seen[tid] = now
         except Exception:
             logger.debug("Malformed PSN packet ignored", exc_info=True)
+
+    def _sweep_if_due_locked(self, now: float) -> None:
+        """Evict stale markers at most every ``_EVICT_SWEEP_INTERVAL_S``. Caller holds ``_lock``."""
+        if now - self._last_evict_sweep >= _EVICT_SWEEP_INTERVAL_S:
+            self._last_evict_sweep = now
+            self._evict_stale_markers_locked(now)
 
     def _evict_stale_markers_locked(self, now: float) -> None:
         """Drop markers silent longer than ``_MARKER_TTL_S``. Caller holds ``_lock``."""

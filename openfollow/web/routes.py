@@ -3236,6 +3236,8 @@ def _config_dict_redacted(cfg: AppConfig) -> dict[str, Any]:
     d["osc"].pop("listen_iface", None)
     d["rttrpm_output"].pop("source_iface", None)
     d["touch_remote"].pop("enabled", None)
+    # Set for this station's GPU and driver: on another station it would hide a working GL display.
+    d["display"].pop("operator_screen", None)
     for name in _KEYBOARD_LAYOUT_FIELDS:
         d["controller"].pop(name, None)
     for dest in d["osc_destinations"]["destinations"]:
@@ -3307,6 +3309,8 @@ _DEVICE_IDENTITY_FIELDS: tuple[str, ...] = (
     "markers_catalog_path",
     "testpattern_selected_media",
     "detection.storage_path",
+    # Set for this station's GPU and driver.
+    "display.operator_screen",
 )
 
 
@@ -6158,6 +6162,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # Per-controlled-marker fader snapshot so the MIDI page's
             # read-only Marker Faders strips render populated at first paint.
             marker_fader_values=server.marker_fader_values(),
+            fader_values=server.midi_fader_values(),
             # Fader / device-alias names so the OSC bindings partial pre-fills
             # its dropdowns at first render.
             **_osc_binding_form_sources(config),
@@ -7701,6 +7706,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             midi_patches=_midi_patches_for_form(cfg),
             valid_fader_midi_types=VALID_FADER_MIDI_TYPES,
             marker_fader_values=server.marker_fader_values(),
+            fader_values=server.midi_fader_values(),
         )
 
     @app.get("/section/midi")

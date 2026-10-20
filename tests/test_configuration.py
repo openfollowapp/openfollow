@@ -14,6 +14,7 @@ except ImportError:
 
 import logging
 import os
+from collections.abc import Callable
 
 import pytest
 
@@ -79,6 +80,7 @@ class _DummyRuntimeServices:
         self.psn_system_name_changes: list[str] = []
         self.detection_changes: list[DetectionConfig] = []
         self.detection_swaps: list[DetectionConfig] = []
+        self.detector_build_pending = False
         self.window_size_changes: list[tuple[int, int]] = []
         self.video_swaps: list[AppConfig] = []
         self.station_fqdn_changes: list[str] = []
@@ -128,8 +130,9 @@ class _DummyRuntimeServices:
     def apply_detection_change(self, new_cfg: DetectionConfig) -> None:
         self.detection_changes.append(new_cfg)
 
-    def swap_detector(self, new_cfg: DetectionConfig) -> None:
+    def swap_detector(self, new_cfg: DetectionConfig, on_failure: Callable[[], None] | None = None) -> None:
         self.detection_swaps.append(new_cfg)
+        self.detection_swap_on_failure = on_failure
 
     def apply_window_size_change(self, width: int, height: int) -> None:
         self.window_size_changes.append((width, height))
@@ -237,6 +240,7 @@ class _DummyInputManager:
 class _DummyApp:
     def __init__(self, config: AppConfig) -> None:
         self._config = config
+        self._config_mtime = 0.0
         self._runtime_services = _DummyRuntimeServices()
         self._web_server = _DummyWebServer()
         self._web_commands = _DummyWebCommands()
@@ -5981,6 +5985,61 @@ def test_apply_runtime_detection_off_to_on_routes_through_swap_detector() -> Non
 
 
 @pytest.mark.usefixtures("every_feature_on")
+def test_a_detector_that_fails_after_the_swap_returned_reverts_the_stored_config() -> None:
+    """The detector is built off the frame loop: a failure reported later reverts like a raise does."""
+    app = _app_with()
+    app._runtime_services._person_detector = None
+    old_detection = app._config.detection
+    new_det = DetectionConfig(enabled=True, confidence=0.75)
+
+    apply_runtime_config_changes(app, AppConfig(detection=new_det))
+    assert app._config.detection == new_det
+    app._runtime_services.detection_swap_on_failure()
+
+    assert app._config.detection == old_detection
+
+
+@pytest.mark.usefixtures("every_feature_on")
+def test_an_edit_saved_while_a_detector_is_being_built_is_built_rather_than_reloaded() -> None:
+    """The running detector is about to be replaced: an edit staged on it would be lost."""
+    app = _app_with(detection=DetectionConfig(enabled=True, confidence=0.40))
+    app._runtime_services.detector_build_pending = True
+    new_det = DetectionConfig(enabled=True, confidence=0.85)
+
+    apply_runtime_config_changes(app, AppConfig(detection=new_det))
+
+    assert app._runtime_services.detection_swaps == [new_det]
+    assert app._runtime_services.detection_changes == []
+
+
+@pytest.mark.usefixtures("every_feature_on")
+def test_a_detector_swap_that_fails_after_the_reload_is_retried_on_the_next_poll(tmp_path) -> None:
+    import os
+
+    from openfollow.runtime import app_orchestration as orch
+
+    path = str(tmp_path / "config.toml")
+    save_config(AppConfig(), path)
+    os.utime(path, (100.0, 100.0))
+    app = _app_on_file(path)
+    app._runtime_services._person_detector = None
+    app._config_mtime = 100.0
+    app._last_config_check = float("-inf")
+    app._get_config_mtime = lambda: orch.get_config_mtime(app)
+    save_config(AppConfig(detection=DetectionConfig(enabled=True)), path)
+    os.utime(path, (200.0, 200.0))
+
+    orch.check_config_reload(app)
+    app._runtime_services.detection_swap_on_failure()
+    assert app._config.detection.enabled is False
+    app._last_config_check = float("-inf")
+    orch.check_config_reload(app)
+
+    assert [cfg.enabled for cfg in app._runtime_services.detection_swaps] == [True, True]
+    assert app._config.detection.enabled is True
+
+
+@pytest.mark.usefixtures("every_feature_on")
 def test_apply_runtime_applies_detection_change_live_when_already_enabled() -> None:
     """on→on with new cfg: the orchestrator stages the swap on the
     running detector; no process restart."""
@@ -6098,7 +6157,7 @@ def test_apply_runtime_detection_swap_failure_reverts_stored_config() -> None:
     """swap_detector failure reverts config for retry."""
 
     class _FailingRuntimeServices(_DummyRuntimeServices):
-        def swap_detector(self, new_cfg: DetectionConfig) -> None:
+        def swap_detector(self, new_cfg: DetectionConfig, on_failure: Callable[[], None] | None = None) -> None:
             raise OSError("simulated swap_detector failure")
 
     app = _app_with()
@@ -6711,6 +6770,61 @@ class TestNetworkConfig:
         )
         cfg = load_config(str(temp_config_path))
         assert cfg.network.backend == "psutil"
+
+
+class TestDisplayConfig:
+    """The Operator Screen override, set by hand in config.toml."""
+
+    def test_default_is_auto(self) -> None:
+        from openfollow.configuration import AppConfig
+
+        assert AppConfig().display.operator_screen == "auto"
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [("auto", "auto"), ("cairo", "cairo"), ("  Cairo ", "cairo"), ("AUTO", "auto")],
+        ids=["auto", "cairo", "padded-mixed-case", "upper-case"],
+    )
+    def test_a_known_choice_is_kept_normalised(self, value: str, expected: str) -> None:
+        from openfollow.configuration import DisplayConfig
+
+        assert DisplayConfig(operator_screen=value).operator_screen == expected
+
+    @pytest.mark.parametrize("value", ["gl", "", "opengl"], ids=["gl", "empty", "unknown"])
+    def test_an_unknown_choice_is_auto(self, value: str) -> None:
+        from openfollow.configuration import DisplayConfig
+
+        assert DisplayConfig(operator_screen=value).operator_screen == "auto"
+
+    @pytest.mark.parametrize("value", [None, 1, True, ["cairo"]], ids=["none", "int", "bool", "list"])
+    def test_a_wrong_type_is_auto(self, value: object) -> None:
+        from openfollow.configuration import DisplayConfig
+
+        assert DisplayConfig(operator_screen=value).operator_screen == "auto"  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize(
+        ("toml", "expected"),
+        [
+            ('[display]\noperator_screen = "cairo"\n', "cairo"),
+            ("[display]\noperator_screen = 3\n", "auto"),
+            ('[display]\noperator_screen = "metal"\n', "auto"),
+            ("", "auto"),
+        ],
+        ids=["cairo", "wrong-type", "unknown", "no-section"],
+    )
+    def test_a_hand_edited_file_is_read_and_normalised(self, temp_config_path, toml: str, expected: str) -> None:
+        temp_config_path.write_text(toml, encoding="utf-8")
+
+        assert load_config(str(temp_config_path)).display.operator_screen == expected
+
+    def test_the_choice_survives_a_save(self, temp_config_path) -> None:
+        from openfollow.configuration import AppConfig
+
+        cfg = AppConfig()
+        cfg.display.operator_screen = "cairo"
+        save_config(cfg, str(temp_config_path))
+
+        assert load_config(str(temp_config_path)).display.operator_screen == "cairo"
 
 
 # _apply_with_fallback transactional helper tests

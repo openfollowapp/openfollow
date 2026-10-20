@@ -2610,6 +2610,24 @@ class NetworkConfig:
         self.backend = choice
 
 
+OPERATOR_SCREENS: tuple[str, ...] = ("auto", "cairo")
+
+
+@dataclass
+class DisplayConfig:
+    """Optional ``[display]`` section, set in ``config.toml`` only.
+
+    ``operator_screen`` "auto" runs the GL Operator Screen where the platform supports it and Cairo
+    elsewhere; "cairo" keeps Cairo on this station. Read at startup.
+    """
+
+    operator_screen: str = "auto"
+
+    def __post_init__(self) -> None:
+        choice = self.operator_screen.strip().lower() if isinstance(self.operator_screen, str) else ""
+        self.operator_screen = _coerce_choice(choice, OPERATOR_SCREENS, "auto")
+
+
 # The General tab's Features list, in display order. A feature that is off is
 # hidden in the web UI and does not run; its own settings are kept.
 FEATURE_KEYS: tuple[str, ...] = (
@@ -2919,6 +2937,7 @@ class AppConfig:
         default_factory=VirtualFadersConfig,
     )
     network: NetworkConfig = field(default_factory=NetworkConfig)
+    display: DisplayConfig = field(default_factory=DisplayConfig)
     ui: UiConfig = field(default_factory=UiConfig)
 
     def __post_init__(self) -> None:
@@ -3061,6 +3080,7 @@ _SUB_CONFIG_MAP: dict[str, type] = {
     "midi": MidiConfig,
     "virtual_faders": VirtualFadersConfig,
     "network": NetworkConfig,
+    "display": DisplayConfig,
     "ui": UiConfig,
 }
 
@@ -4312,22 +4332,31 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
         #     (the detection appsink caps are pinned at build time from
         #     ``PersonDetector.input_resolution``): off→on, unavailable→on
         #     (re-probe a backend that failed to load), and ``inference_size``
-        #     change while enabled.
+        #     change while enabled. An edit while a detector is still being
+        #     built goes to a new build: the running detector is about to go.
         detector_ref = getattr(app._runtime_services, "_person_detector", None)
         detector_runnable = detector_ref is not None and getattr(detector_ref, "available", True)
         inference_size_changed = old_detection.inference_size != new_config.detection.inference_size
-        needs_swap = new_enabled and (not detector_runnable or inference_size_changed)
+        needs_swap = new_enabled and (
+            not detector_runnable or inference_size_changed or app._runtime_services.detector_build_pending
+        )
         app._config.detection = new_config.detection
         if needs_swap:
             # Rebuild path. ``swap_detector`` owns its own rollback –
             # on failure it restores the prior detector against a
             # rebuilt pipeline (or clears the reference if rollback
-            # also fails). The dispatcher only reverts stored config;
-            # an ``on_failure`` clear here would erase a successful
-            # orchestrator-side rollback.
+            # also fails), so the dispatcher only reverts stored config.
+            # The detector is built off the frame loop; a failure after this
+            # returns reverts and is retried on the next poll, as a raise is.
+            retry_from = app._config_mtime
+
+            def _swap_failed() -> None:
+                app._config.detection = old_detection
+                app._config_mtime = min(app._config_mtime, retry_from)
+
             if not _apply(
                 "detection_swap",
-                lambda: app._runtime_services.swap_detector(new_detection),
+                lambda: app._runtime_services.swap_detector(new_detection, on_failure=_swap_failed),
             ):
                 app._config.detection = old_detection
         else:

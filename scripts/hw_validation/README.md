@@ -326,6 +326,10 @@ With `--compare`, a scene field the other checkout's `OverlayState` lacks is
 left out of its frames, so it draws less; the report names those fields under
 the scene.
 
+`make ci-remote` runs the comparison against the merge-base by itself after a
+green `make ci` when a change touches the drawing paths (`make perf-ab
+PERF_BASE=<dir>` is the same step by hand); see the `pre-push-ci` skill.
+
 The timing is CPU time of the drawing thread alone. On a running station the
 same picture costs more, since decoding, the GTK main thread and the drawing
 thread share the cores and the memory bus.

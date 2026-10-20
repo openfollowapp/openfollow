@@ -1716,12 +1716,14 @@ class TestReconnect:
         placeholder = FakePipeline()
         r._pipeline_assembler.create_placeholder_pipeline = lambda: placeholder
         r._state.reconnect_attempt = 1  # hit the limit
+        assert r.source_name == "cam-1"
 
         result = r._do_reconnect()
         assert result is False
         assert r._state.is_placeholder_pipeline is True
         # Primary config field cleared so selection UI is empty.
         assert r._input_config["fake_source"] == ""
+        assert r.source_name == ""
         assert r.source_selection_active is True
         assert FakeState.PLAYING in placeholder.state_changes
 
@@ -1732,6 +1734,96 @@ class TestReconnect:
         r._state.reconnect_attempt = 1
         result = r._do_reconnect()
         assert result is False
+
+
+class TestSourceLabel:
+    """The label the Operator Screen reads every frame, worked out only when what it names changes."""
+
+    @pytest.fixture
+    def label_calls(self, monkeypatch) -> list[dict[str, Any]]:
+        calls: list[dict[str, Any]] = []
+        label = FakeInput.get_source_label.__func__
+
+        def counted(cls: type, config: dict[str, Any]) -> str:
+            calls.append(dict(config))
+            return label(cls, config)
+
+        monkeypatch.setattr(FakeInput, "get_source_label", classmethod(counted))
+        return calls
+
+    def test_the_label_is_worked_out_once_while_nothing_changes(
+        self, fake_gst, fake_glib, fake_input_cls, label_calls
+    ) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        label_calls.clear()
+        assert [r.source_name for _ in range(3)] == ["cam-1"] * 3
+        assert len(label_calls) == 1
+
+    def test_a_picked_source_renames_the_label(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        assert r.source_name == "cam-1"
+        r.set_source("cam-2")
+        assert r.source_name == "cam-2"
+
+    def test_a_swapped_input_names_the_label_before_it_builds(
+        self, fake_gst, fake_glib, fake_input_pair, monkeypatch
+    ) -> None:
+        # No source configured: play() starts a placeholder, not the new input's pipeline.
+        monkeypatch.setattr(FakeInputAlt, "get_source_label", classmethod(lambda cls, config: "alt"))
+        monkeypatch.setattr(threading, "Thread", _SyncSwapThread)
+        r = _make_receiver()
+        r._pipeline_assembler.create_placeholder_pipeline = lambda: FakePipeline()
+        assert r.source_name == ""
+        r.swap_input("fake_alt", {})
+        assert r.source_name == "alt"
+
+    def test_a_source_picked_while_the_label_is_worked_out_is_not_hidden(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        # The stats route reads the label on the web thread while the GTK thread picks a source.
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+
+        def label(cls: type, config: dict[str, Any]) -> str:
+            name = config["fake_source"]
+            r._input_config["fake_source"] = "cam-2"
+            return name
+
+        monkeypatch.setattr(FakeInput, "get_source_label", classmethod(label))
+        assert r.source_name == "cam-1"
+        assert r.source_name == "cam-2"
+
+    def test_a_rebuilt_pipeline_works_the_label_out_again(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        # An input resolves what it plays as it builds, as the Media Gallery its selection on disk.
+        playing = {"name": "Stage"}
+        monkeypatch.setattr(FakeInput, "get_source_label", classmethod(lambda cls, config: playing["name"]))
+        monkeypatch.setattr(FakeInput, "create_pipeline_result", FakePipeline())
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        assert r.source_name == "Stage"
+        playing["name"] = "Concert"
+        assert r.source_name == "Stage"
+        r.create_pipeline()
+        assert r.source_name == "Concert"
+
+    def test_a_rebuild_while_the_label_is_worked_out_is_not_hidden(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        # The stats route reads the label on the web thread while the GTK thread rebuilds.
+        playing = {"name": "Stage"}
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+
+        def label(cls: type, config: dict[str, Any]) -> str:
+            name = playing["name"]
+            if name == "Stage":
+                playing["name"] = "Concert"
+                r.create_pipeline()
+            return name
+
+        monkeypatch.setattr(FakeInput, "get_source_label", classmethod(label))
+        monkeypatch.setattr(FakeInput, "create_pipeline_result", FakePipeline())
+        assert r.source_name == "Stage"
+        assert r.source_name == "Concert"
 
 
 class TestGlDisplay:

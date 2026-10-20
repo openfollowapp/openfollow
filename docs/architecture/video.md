@@ -49,6 +49,7 @@ Delegates protocol-specific work to the active plugin. Retains shared infrastruc
 - Source-byte observation: `_attach_source_probe()` puts a one-shot buffer probe on the plugin's `source_element_name`. Attached **per pipeline** (the source element is rebuilt on every reconnect), unlike the sink probes which attach once for the shared sink's lifetime. A source with no static `src` pad (`rtspsrc`) is followed via `pad-added`. The same first buffer records `source_format` from that pad's caps (a pixel format for raw video, else the media type), read from the caps **string** because the structure getters are what GStreamer 1.26.2 broke; the sink probe sits after `videoconvert` and never sees it. It is logged once per connection and published as `video.source_format`
 - Source discovery scheduling (calls plugin's `discover_sources()`)
 - Source selection state management (generic, checks `InputCapabilities.has_source_selection`)
+- `source_name`, read every frame for the Operator Screen, keeps the plugin's `get_source_label` until the input, its config or the pipeline changes; `create_pipeline` drops it, since an input resolves what it plays as it builds (the Media Gallery its selection, on disk)
 
 ## NDI plugin (`video/inputs/ndi.py`)
 ```
@@ -267,7 +268,7 @@ The "No Signal" placeholder is a black `videotestsrc` pinned at 1920x1080 @ 30 t
 `update_video` applies the aspect-ratio hint whenever the real resolution changes (tracked in `app._video_aspect`), **not** once per session: the HUD projects across the canvas while calibration is solved against the input, so a window left at a previous source's aspect ratio slides the overlay off the video with nothing in the UI to explain it. `app._video_logged` stays a one-shot latch for its log line only.
 
 ## Snapshot provider (`video/preview.py`)
-`SnapshotProvider` captures on-demand full-resolution JPEG frames for the setup wizard. It connects to a `tee` → `queue` → `videoconvert` → `jpegenc` → `appsink` branch in the receiver pipeline (no downscale). The snapshot is pulled lazily – no background polling. The last captured frame is cached so repeated requests don't block on GStreamer. Wired via `full_snapshot_provider` callback on `ConfigWebServer`.
+`SnapshotProvider` captures on-demand full-resolution JPEG frames for the setup wizard. It connects to a `tee` → `valve` → `queue` → `videoconvert` → `jpegenc` → `appsink` branch in the receiver pipeline (no downscale). The valve sits **ahead of** the queue in this branch and the preview's: closed, it drops frames on the tee's thread, so an idle branch wakes no streaming thread. The snapshot is pulled lazily – no background polling. The last captured frame is cached so repeated requests don't block on GStreamer. Wired via `full_snapshot_provider` callback on `ConfigWebServer`.
 - `get_snapshot()` **serialises the blocking `try_pull_sample` → extract under a dedicated `_pull_lock`** so concurrent HTTP requests can't race on the single appsink. The `_valve` / `_jpeg_bytes` references are guarded by a separate short-lived `_state_lock` (also taken by `set_valve`), which is **not** held across the ~500 ms pull – so a source-swap / pipeline rebuild's `set_valve` never blocks on an in-flight encode. Keep the pull serialised, but don't move it under `_state_lock`.
 
 ## Connection lifecycle

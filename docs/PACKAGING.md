@@ -141,8 +141,8 @@ web UI at `http://<host-ip>/`.
 ## Settings backups
 
 Every upgrade, reinstall and downgrade through the package manager archives the
-station's settings first, whichever route started it: *Install Latest
-Version Online*, *Install .ofupdate File*, or a hand-run `apt` / `dpkg`. The package's
+station's settings first, whichever route started it: *Install Latest Version
+Online*, *Install .ofupdate File*, or a hand-run `apt` / `dpkg`. The package's
 `preinst` does it on `upgrade`, before the new files are unpacked, so it covers
 the release that introduces it.
 
@@ -470,11 +470,11 @@ is not a git checkout.)
 
 The in-app updater is the **GitHub Releases signed-bundle installer**
 ([`openfollow/runtime/deb_update.py`](../openfollow/runtime/deb_update.py)): the
-General → **Software Update** section's *Install Latest Version Online* downloads the
-newest release's `openfollow_<version>_<arch>.ofupdate` bundle, and *Install
-.ofupdate File* takes an operator-supplied `.ofupdate` over the LAN. Both paths verify
-the bundle's signature (against the on-device public key) and the `.deb`'s
-SHA-256 before installing, and fail closed otherwise. See
+General → **Software Update** section's *Install Latest Version Online*
+downloads the newest release's `openfollow_<version>_<arch>.ofupdate` bundle,
+and *Install .ofupdate File* takes an operator-supplied `.ofupdate` over the
+LAN. Both paths verify the bundle's signature (against the on-device public
+key) and the `.deb`'s SHA-256 before installing, and fail closed otherwise. See
 [`SERVICE.md`](./SERVICE.md#web-update-button) for the install/privilege details.
 
 ## macOS `.dmg` (developer build)

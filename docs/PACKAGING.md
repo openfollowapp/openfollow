@@ -329,8 +329,8 @@ loopback. The stock `NetworkManager-wait-online` runs `nm-online -s`, which
 waits for NetworkManager's *startup* to complete: every auto-activated profile
 activated or given up on. The infinite `dhcp-timeout` above means an unanswered
 DHCP activation never gives up, so on a LAN without DHCP startup never
-completes; the wait ran out on every boot, failed the unit and left
-`systemctl is-system-running` at `degraded`, though the fallback address was up
+completes: that wait would run out on every boot, fail the unit and leave
+`systemctl is-system-running` at `degraded`, though the fallback address is up
 within seconds. Plain `nm-online` (without `-s`) does not help: it waits for an
 activated connection, and that profile stays activating.
 
@@ -346,8 +346,8 @@ fails, as it should: the station has no address there. A cable-less boot
 completes startup with nothing to activate and passes at once.
 
 On a LAN whose DHCP answers slower than the fallback appears, the wait can pass
-on the 169.254 address; the app's own ~10 s address wait and its per-plane
-rebind on an address change cover the lease that follows.
+on the 169.254 address. The app rebinds each plane when its address changes,
+so the lease that follows is picked up as on any replug.
 
 **Single account.** `rpi-image-gen`'s `rpi-user-credentials` layer creates the
 `openfollow` login user (password `openfollow`, **passwordless sudo**, in the

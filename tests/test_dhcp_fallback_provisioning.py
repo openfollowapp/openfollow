@@ -287,7 +287,7 @@ def _run_wait(tmp_path: Path, polls: list[_Poll], cap: int = 3) -> tuple[int, in
 def test_wait_online_dropin_runs_the_station_wait() -> None:
     """``nm-online -s`` alone waits for NetworkManager's startup to complete,
     which a DHCP activation with an infinite timeout never reaches: every boot
-    on a LAN without DHCP ran out the cap and left the system degraded."""
+    on a LAN without DHCP would run out the cap and leave the system degraded."""
     if not _WAIT_DROPIN.is_file():
         pytest.skip("no packaging/debian/nm-wait-online-timeout.conf in this tree")
     exec_lines = re.findall(r"^ExecStart=(.*)$", _WAIT_DROPIN.read_text(encoding="utf-8"), re.MULTILINE)

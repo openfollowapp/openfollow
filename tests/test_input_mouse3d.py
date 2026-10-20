@@ -377,7 +377,7 @@ def test_detect_pressed_button_one_shot_when_not_running() -> None:
 
 
 def test_detect_pressed_button_times_out_to_none() -> None:
-    dev = FakeDevice([_state(buttons=[0, 0])])  # no press, then read() -> None
+    dev = FakeDevice([_state(buttons=[0, 0])])  # one report with no press, then silence
     h = Mouse3DHandler(Mouse3DConfig(enabled=False), device_factory=lambda: dev)
     assert h.detect_pressed_button(timeout=0.05) is None
 
@@ -692,6 +692,32 @@ def test_a_report_after_a_recenter_is_published_again(monkeypatch) -> None:  # n
     h._pump(_Script(h._stop, [_state(x=0.9), None, None, None, _state(x=0.4)]), h._stop)
     assert h._snapshot is not None
     assert h._snapshot.x == 0.4
+
+
+def test_a_button_report_after_a_recenter_keeps_the_axes_at_rest(monkeypatch) -> None:  # noqa: ANN001
+    # The backend still holds the dropped deflection; a button report restamps it.
+    monkeypatch.setattr(mouse3d_module, "_RECENTER_AFTER_IDLE_S", 2 * mouse3d_module._IDLE_POLL_S)
+    h = _handler()
+    h._pump(_Script(h._stop, [_state(x=0.9, yaw=0.3), None, None, None, _state(x=0.9, yaw=0.3, buttons=[1])]), h._stop)
+    assert h._snapshot == mouse3d_module._Snapshot(buttons=(1,))
+
+
+def test_an_axis_that_moves_after_a_recenter_is_published_again(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setattr(mouse3d_module, "_RECENTER_AFTER_IDLE_S", 2 * mouse3d_module._IDLE_POLL_S)
+    h = _handler()
+    script = [_state(x=0.9, yaw=0.3), None, None, None, _state(x=0.85, yaw=0.3), _state(x=0.9, yaw=0.3)]
+    h._pump(_Script(h._stop, script), h._stop)
+    assert h._snapshot == mouse3d_module._Snapshot(x=0.9)  # yaw has not reported since
+
+
+def test_a_second_recenter_keeps_the_axes_the_first_one_zeroed(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setattr(mouse3d_module, "_RECENTER_AFTER_IDLE_S", 2 * mouse3d_module._IDLE_POLL_S)
+    h = _handler()
+    silence = [None, None, None]
+    # A translation report moves x while yaw stays stale; then x's own return-to-center is lost too.
+    script = [_state(x=0.9, yaw=0.3), *silence, _state(x=0.4, yaw=0.3), *silence, _state(x=0.4, yaw=0.3, buttons=[1])]
+    h._pump(_Script(h._stop, script), h._stop)
+    assert h._snapshot == mouse3d_module._Snapshot(buttons=(1,))
 
 
 def test_a_puck_that_never_reported_publishes_nothing() -> None:
@@ -2037,8 +2063,7 @@ class _AlwaysReads:
         pass
 
 
-def test_manager_detect_devices_ignore_none_reads_until_timeout() -> None:
-    # ``read`` returning ``None`` (no fresh report) is skipped, not treated as a press.
+def test_manager_detect_devices_treat_a_puck_that_never_reported_as_unpressed() -> None:
     backend = _FakeBackend([Mouse3DDeviceInfo(path="/dev/hidraw2")], {"/dev/hidraw2": lambda: FakeDevice([])})
     mgr = Mouse3DManager(_cfg(enabled=True), backend=backend)
     assert mgr.detect_pressed_button(timeout=0.03) is None

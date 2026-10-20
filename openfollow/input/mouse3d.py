@@ -30,7 +30,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib import metadata
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -504,11 +504,10 @@ class Mouse3DHandler:
                     state = device.read()
                 except Exception:  # noqa: BLE001 - easyhid's HIDException is not an OSError
                     return None
-                if state is not None:
-                    buttons = tuple(int(bool(b)) for b in (getattr(state, "buttons", None) or ()))
-                    for idx, pressed in enumerate(buttons):
-                        if pressed:
-                            return idx
+                buttons = tuple(int(bool(b)) for b in (getattr(state, "buttons", None) or ()))
+                for idx, pressed in enumerate(buttons):
+                    if pressed:
+                        return idx
                 time.sleep(_DETECT_POLL_S)
             return None
         finally:
@@ -696,9 +695,9 @@ class Mouse3DHandler:
                 if stop.is_set() and self._has_led:
                     _set_led_quietly(device, False)
                 _safe_close(device)
-            # Reset the backoff only once a connection actually delivered a
-            # reading; an open that never reads (immediate read error) backs off
-            # like a failed open so a flaky device can't drive a tight reopen loop.
+            # Reset the backoff only once a read succeeded; an open whose first
+            # read fails backs off like a failed open, so a flaky device can't
+            # drive a tight reopen loop.
             if read_any:
                 backoff = _RECONNECT_MIN_S
             elif stop.wait(backoff):
@@ -777,6 +776,10 @@ class Mouse3DHandler:
         # pyspacemouse returns the same state on every read and stamps ``t`` only
         # when a report arrives, so an unchanged stamp is a silent read.
         last_stamp: object = _NO_REPORT_STAMP
+        # Axes a recenter zeroed, by the value the backend still holds: it keeps
+        # an axis until a report of that axis's own channel, so a button report
+        # must not bring the dropped deflection back.
+        zeroed: dict[str, float] = {}
         while not stop.is_set():
             self._drive_identify(device)
             try:
@@ -797,6 +800,7 @@ class Mouse3DHandler:
                     with self._lock:
                         latched = self._snapshot
                         if latched is not None and not latched.is_centered():
+                            zeroed.update((axis, v) for axis in _AXIS_SOURCE.values() if (v := getattr(latched, axis)))
                             self._snapshot = _Snapshot(buttons=latched.buttons)
                 if stop.wait(_IDLE_POLL_S):
                     return read_any
@@ -812,6 +816,11 @@ class Mouse3DHandler:
                 yaw=_finite_axis(getattr(state, "yaw", 0.0)),
                 buttons=tuple(int(bool(b)) for b in (getattr(state, "buttons", None) or ())),
             )
+            for axis, held in list(zeroed.items()):
+                if getattr(snapshot, axis) == held:
+                    snapshot = replace(snapshot, **{axis: 0.0})
+                else:
+                    del zeroed[axis]
             # Detect button presses at read rate so a tap between two frames is
             # latched rather than lost (prev-state map is worker-thread-only).
             edges = self._observe_button_edges(snapshot.buttons)
@@ -1145,11 +1154,10 @@ class Mouse3DManager:
                         state = device.read()
                     except Exception:  # noqa: BLE001 - easyhid's HIDException is not an OSError
                         continue
-                    if state is not None:
-                        buttons = tuple(int(bool(b)) for b in (getattr(state, "buttons", None) or ()))
-                        for idx, pressed in enumerate(buttons):
-                            if pressed:
-                                return idx
+                    buttons = tuple(int(bool(b)) for b in (getattr(state, "buttons", None) or ()))
+                    for idx, pressed in enumerate(buttons):
+                        if pressed:
+                            return idx
                 time.sleep(_DETECT_POLL_S)
             return None
         finally:

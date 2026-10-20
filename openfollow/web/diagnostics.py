@@ -2737,9 +2737,9 @@ def render_usb_table(
     device against each input subsystem's enumeration: gamepads by
     the USB ids in their SDL GUID, 3D mice by the USB ids their status
     reports, storage by the disks it carries, a camera by the V4L2 devices it
-    carries, everything else by product / manufacturer string. Operator question this answers in one
-    glance: "is the kernel seeing this device, and is OpenFollow
-    picking it up?"
+    carries, everything else by product / manufacturer string. Operator
+    question this answers in one glance: "is the kernel seeing this device,
+    and is OpenFollow picking it up?"
     """
     # Header rendered as a tuple of column titles + separators so
     # the line-length lint stays happy without sacrificing the

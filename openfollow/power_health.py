@@ -214,13 +214,16 @@ class PowerMonitor:
             bits = self._throttle.latest
         state = power_state(alarm, bits)
         self._under_voltage = _log_edge(
-            self._under_voltage, bool(state.under_voltage), "Power supply under voltage", "Power supply voltage normal"
+            self._under_voltage, state.under_voltage, "Power supply under voltage", "Power supply voltage normal"
         )
-        self._throttled = _log_edge(self._throttled, bool(state.throttled), "CPU throttled", "CPU throttling ended")
+        self._throttled = _log_edge(self._throttled, state.throttled, "CPU throttled", "CPU throttling ended")
         return state
 
 
-def _log_edge(was: bool, now: bool, started: str, ended: str) -> bool:
+def _log_edge(was: bool, now: bool | None, started: str, ended: str) -> bool:
+    # An unknown reading neither starts nor ends a state.
+    if now is None:
+        return was
     if now and not was:
         logger.warning(started)
     elif was and not now:

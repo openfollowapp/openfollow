@@ -429,3 +429,29 @@ def test_the_station_polls_vcgencmd_only_where_it_exists(
     monkeypatch.setattr(ph, "ThrottlePoller", _Poller)
     assert isinstance(system_power_monitor(), PowerMonitor)
     assert bool(built) is polls
+
+
+def test_an_unreadable_alarm_neither_ends_nor_restarts_under_voltage(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger=ph.__name__)
+    alarm = _hwmon(tmp_path, 0, "rpi_volt", "1") / "in0_lcrit_alarm"
+    monitor = PowerMonitor(hwmon_root=tmp_path)
+    monitor.read()
+    alarm.write_text("abc")
+    monitor.read()
+    alarm.write_text("1\n")
+    monitor.read()
+    assert [(r.levelno, r.getMessage()) for r in caplog.records] == [(logging.WARNING, "Power supply under voltage")]
+
+
+def test_a_failed_poll_neither_ends_nor_restarts_throttling(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO, logger=ph.__name__)
+    poller = _polled("throttled=0x4")
+    monitor = PowerMonitor(hwmon_root=tmp_path, throttle=poller)
+    monitor.read()
+    poller.latest = None
+    monitor.read()
+    poller.latest = 0x4
+    monitor.read()
+    assert [(r.levelno, r.getMessage()) for r in caplog.records] == [(logging.WARNING, "CPU throttled")]

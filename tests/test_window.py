@@ -1239,14 +1239,15 @@ class TestHudTick:
         assert window._hud_drawing_area.queue_draw_calls == before + 1
 
     def test_a_gl_display_renders_every_refresh_and_hides_the_cairo_hud(self, window) -> None:
-        renders: list[int] = []
+        renders: list[Any] = []
         ticks: list[int] = []
-        display = SimpleNamespace(queue_render=lambda: renders.append(1))
+        display = SimpleNamespace(queue_render=renders.append)
         window.attach_gl_display(display, tick=lambda: ticks.append(1) or False)
         window.start_hud_tick()
-        for _ in range(3):
-            window._window.tick()
-        assert len(renders) == 3 and len(ticks) == 3
+        clocks = [object() for _ in range(3)]
+        for clock in clocks:
+            window._window.tick(clock)
+        assert renders == clocks and len(ticks) == 3
         assert window._hud_drawing_area.hidden is True
         assert window._hud_drawing_area.no_show_all is True
 
@@ -1256,7 +1257,7 @@ class TestHudTick:
         def hud_tick() -> bool:
             raise RuntimeError("tick boom")
 
-        window.attach_gl_display(SimpleNamespace(queue_render=lambda: renders.append(1)), tick=hud_tick)
+        window.attach_gl_display(SimpleNamespace(queue_render=lambda clock: renders.append(1)), tick=hud_tick)
         window.start_hud_tick()
         assert window._window.tick() is True
         assert renders == [1]

@@ -618,6 +618,25 @@ def test_a_layered_hud_hands_over_sprites_and_pastes_nothing_itself(renderer) ->
         hud.stop()
 
 
+def test_the_pacing_report_counts_pictures_and_the_late_ones_since_the_last(paced, clock) -> None:
+    hud, renderer = paced
+    hud.tick()
+    assert _refreshes_to_show(hud, clock) == 1
+    _miss_one_refresh(hud, clock, renderer, refreshes=2)
+
+    assert hud.pacing_report() == (3, 1, 1)
+    assert hud.pacing_report() == (0, 0, 1)
+
+
+def test_the_pacing_report_holds_each_picture_as_long_as_repeated_misses_lengthened_it(paced, clock) -> None:
+    hud, renderer = paced
+    hud.tick()
+    _refreshes_to_show(hud, clock)
+    _lengthen(hud, clock, renderer, refreshes=2)
+
+    assert hud.pacing_report() == (7, 3, 3)
+
+
 class _FontOptionsRecorder(_Renderer):
     def __init__(self) -> None:
         super().__init__()

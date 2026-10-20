@@ -336,6 +336,11 @@ def _rule_args(cap: Capability) -> str:
     return cap.sudoers_pattern.split(" ", 1)[1]
 
 
+def _sudo_admits(cap: Capability, args: str) -> bool:
+    # sudo searches the space-joined arguments (regexec): only the rule's own ``^`` and ``$`` anchor it.
+    return re.search(_rule_args(cap), args) is not None
+
+
 def test_the_registry_has_regex_rules() -> None:
     assert len(_regex_rules()) == 7
 
@@ -358,8 +363,7 @@ def test_the_words_before_a_rules_regex_are_plain(cap: Capability) -> None:
 
 @pytest.mark.parametrize("cap", _regex_rules(), ids=lambda c: c.name)
 def test_a_regex_rule_admits_its_own_probe(cap: Capability) -> None:
-    """sudo matches the regex against the arguments joined by spaces, as the probe sends them."""
-    assert re.fullmatch(_rule_args(cap), " ".join(cap.probe_command()[1:]))
+    assert _sudo_admits(cap, " ".join(cap.probe_command()[1:]))
 
 
 @pytest.mark.parametrize(
@@ -387,4 +391,4 @@ def test_a_regex_rule_admits_its_own_probe(cap: Capability) -> None:
     ],
 )
 def test_a_regex_rule_admits_only_its_calls(cap: Capability, args: str, admitted: bool) -> None:
-    assert (re.fullmatch(_rule_args(cap), args) is not None) is admitted
+    assert _sudo_admits(cap, args) is admitted

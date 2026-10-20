@@ -1041,8 +1041,8 @@
           # ----- legacy update grants -----
           {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/bin/systemctl restart {{ openfollow_service_name }}, /bin/systemctl restart {{ openfollow_service_name }}, /bin/bash {{ openfollow_repo_dir }}/scripts/install-system-deps.sh
           # ----- generated from ALL_CAPABILITIES (do not edit by hand) -----
-          {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/sbin/usermod -aG systemd-journal ^[a-z_][a-z0-9_-]*$
-          {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/sbin/usermod -aG video\,render\,input\,plugdev\,netdev\,dialout ^[a-z_][a-z0-9_-]*$
+          {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/sbin/usermod ^-aG systemd-journal [a-z_][a-z0-9_-]*$
+          {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/sbin/usermod ^-aG video,render,input,plugdev,netdev,dialout [a-z_][a-z0-9_-]*$
           {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/bin/loginctl enable-linger *
           {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/bin/hostnamectl set-hostname *
           {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/bin/tee /etc/hosts
@@ -1068,12 +1068,12 @@
           {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/bin/systemctl reload dhcpcd
           {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/bin/journalctl -u *
           {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/bin/systemd-run --collect --unit=openfollow-self-update /usr/share/openfollow/apply-update.sh /tmp/openfollow-update-*
-          {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/bin/date -s ^@[0-9]+$
-          {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/share/openfollow/camera-setup write ^(automatic|(imx|ov|arducam|irs)[a-z0-9_-]*\,cam[01])$
-          {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/share/openfollow/camera-setup load ^(imx|ov|arducam|irs)[a-z0-9_-]*\,cam[01]$
-          {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/share/openfollow/camera-setup unload ^(imx|ov|arducam|irs)[a-z0-9_-]*\,cam[01]$
+          {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/bin/date ^-s @[0-9]+$
+          {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/share/openfollow/camera-setup ^write (automatic|(imx|ov|arducam|irs)[a-z0-9_-]*,cam[01])$
+          {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/share/openfollow/camera-setup ^load (imx|ov|arducam|irs)[a-z0-9_-]*,cam[01]$
+          {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/share/openfollow/camera-setup ^unload (imx|ov|arducam|irs)[a-z0-9_-]*,cam[01]$
           {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/bin/systemctl reboot
-          {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/share/openfollow/write-to-media write ^/dev/sd[a-z]+[0-9]*$
+          {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/share/openfollow/write-to-media ^write /dev/sd[a-z]+[0-9]*$
 
     - name: Remove legacy openfollow-update sudoers drop-in
       ansible.builtin.file:

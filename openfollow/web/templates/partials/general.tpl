@@ -135,7 +135,7 @@
             </div>
             %# Features: the boxes save with the box's Save (``form=``); feature-save.js asks
             %# before a Save switches one off. ``data-saved`` is the stored state.
-            % from openfollow.configuration import EXPERIMENTAL_FEATURES, FEATURE_KEYS
+            % from openfollow.configuration import EXPERIMENTAL_FEATURES, OFFERED_FEATURES
             % from openfollow.web.labels import FEATURE_LABELS
             <div id="features-section" class="group">
                 <h3 class="group-title" id="features-heading">Features</h3>
@@ -146,7 +146,7 @@
                             <tr><th scope="col"><span class="visually-hidden">On</span></th><th scope="col">Feature</th><th scope="col">Description</th></tr>
                         </thead>
                         <tbody>
-                            % for _key in FEATURE_KEYS:
+                            % for _key in OFFERED_FEATURES:
                             % _label = FEATURE_LABELS[_key]
                             % _id = 'features-' + _key.replace('_', '-')
                             % _on = config.ui.feature_on(_key)

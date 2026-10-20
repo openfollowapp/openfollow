@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 import cairo
 
 from openfollow.logging_setup import ThrottledExceptionLogger
+from openfollow.runtime.overlay_layers import LayerContext, Layers
 from openfollow.runtime.overlay_state import OverlayState
 
 if TYPE_CHECKING:
@@ -34,6 +35,8 @@ _STEP_DOWN_SHARE = 0.7
 _MISSES_TO_LENGTHEN = 3
 _MISS_REFRESHES = 60
 _PERIOD_SAMPLES = 16
+# Text on a layered canvas is laid out as on the canvas-sized picture it replaces.
+_IMAGE_FONT_OPTIONS = cairo.ImageSurface(cairo.FORMAT_ARGB32, 1, 1).get_font_options()
 
 
 class _Pacing:
@@ -97,19 +100,27 @@ class HudRenderThread:
     shown before.
     """
 
-    def __init__(self, renderer: CairoOverlayRenderer, clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(
+        self, renderer: CairoOverlayRenderer, clock: Callable[[], float] = time.monotonic, *, layered: bool = False
+    ) -> None:
         self._renderer = renderer
         self._clock = clock
+        # Layered: each picture is a ``Layers`` list for a compositor instead of one canvas-sized picture.
+        self._layered = layered
         self._cond = threading.Condition()
         # The canvas the last paint showed; the picture asked for; asked for or being drawn.
         self._target: _Canvas | None = None
         self._job: tuple[_Canvas, OverlayState] | None = None
         self._busy = False
         # Finished and waiting for the refresh that shows it; on screen; free to draw into.
-        self._ready: cairo.ImageSurface | None = None
+        self._ready: cairo.ImageSurface | Layers | None = None
         # Only the GTK main thread (tick and paint) touches the shown picture.
-        self._shown: cairo.ImageSurface | None = None
-        self._spare: cairo.ImageSurface | None = None
+        self._shown: cairo.ImageSurface | Layers | None = None
+        # Counts pictures put on screen, so a reader can tell a new one in a reused surface.
+        self._shown_serial = 0
+        self._spare: cairo.ImageSurface | Layers | None = None
+        # Pictures shown and those shown after their refresh, since the last pacing report.
+        self._report = [0, 0]
         # Refreshes since the current picture started, when it started and when it finished.
         self._pacing = _Pacing()
         self._held = 0
@@ -142,6 +153,9 @@ class HudRenderThread:
             if ready is not None:
                 self._ready = None
                 self._spare, self._shown = self._shown, ready
+                self._shown_serial += 1
+                self._report[0] += 1
+                self._report[1] += self._held > self._pacing.refreshes
                 self._pacing.shown(self._held, self._finished_at - self._started_at)
             if not self._busy and self._ready is None and self._target is not None:
                 self._job = (self._target, self._renderer.state)
@@ -153,18 +167,43 @@ class HudRenderThread:
 
     def paint(self, cr: Any, width: int, height: int) -> None:
         """GTK draw callback: paste the shown picture, and remember the canvas for the next one."""
-        if self._shown is not None:
+        if isinstance(self._shown, cairo.ImageSurface):
             cr.set_source_surface(self._shown, 0, 0)
             cr.paint()
-        scale = cr.get_target().get_device_scale()
+        self.set_canvas(width, height, cr.get_target().get_device_scale())
+
+    def set_canvas(self, width: int, height: int, scale: tuple[float, float]) -> None:
+        """The canvas the next picture is drawn for."""
         with self._cond:
             self._target = (width, height, scale)
+
+    def shown_picture(self) -> tuple[cairo.ImageSurface | Layers | None, int]:
+        """The picture on screen and its serial; GTK main thread only, like ``tick``."""
+        return self._shown, self._shown_serial
+
+    def set_layered(self, layered: bool) -> None:
+        """Draw the next pictures as ``Layers`` for a compositor, or as one canvas-sized picture to paste."""
+        with self._cond:
+            self._layered = layered
+
+    def pacing_report(self) -> tuple[int, int, int]:
+        """Pictures shown and how many of them late since the last report, and the refreshes each is held.
+
+        GTK main thread only, like ``tick``.
+        """
+        shown, late = self._report
+        self._report = [0, 0]
+        return shown, late, self._pacing.refreshes
 
     def _run(self) -> None:
         while (taken := self._take()) is not None:
             (canvas, state), picture = taken
             try:
-                ready: cairo.ImageSurface | None = self._render(picture, canvas, state)
+                with self._cond:
+                    layered = self._layered
+                ready: cairo.ImageSurface | Layers | None = (
+                    self._render_layers(canvas, state) if layered else self._render(picture, canvas, state)
+                )
             except Exception:
                 self._err_log.log()
                 ready = None
@@ -173,7 +212,7 @@ class HudRenderThread:
                 self._ready = ready
                 self._finished_at = self._clock()
 
-    def _take(self) -> tuple[tuple[_Canvas, OverlayState], cairo.ImageSurface | None] | None:
+    def _take(self) -> tuple[tuple[_Canvas, OverlayState], cairo.ImageSurface | Layers | None] | None:
         """Wait for the picture asked for, with the spare to draw it into; None once stopped."""
         with self._cond:
             while not self._stopped:
@@ -183,10 +222,18 @@ class HudRenderThread:
                 self._cond.wait()
             return None
 
-    def _render(self, picture: cairo.ImageSurface | None, canvas: _Canvas, state: OverlayState) -> cairo.ImageSurface:
+    def _render_layers(self, canvas: _Canvas, state: OverlayState) -> Layers:
+        width, height, scale = canvas
+        cr = LayerContext(width, height, scale, _IMAGE_FONT_OPTIONS)
+        self._renderer.draw(cr, width, height, state)
+        return cr.finish()
+
+    def _render(
+        self, picture: cairo.ImageSurface | Layers | None, canvas: _Canvas, state: OverlayState
+    ) -> cairo.ImageSurface:
         width, height, (sx, sy) = canvas
         size = (math.ceil(width * sx), math.ceil(height * sy))
-        if picture is not None and _fits(picture, size, (sx, sy)):
+        if isinstance(picture, cairo.ImageSurface) and _fits(picture, size, (sx, sy)):
             clear = cairo.Context(picture)
             clear.set_operator(cairo.OPERATOR_CLEAR)
             clear.paint()

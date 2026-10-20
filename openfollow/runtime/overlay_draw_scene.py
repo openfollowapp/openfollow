@@ -14,6 +14,7 @@ import numpy as np
 import numpy.typing as npt
 
 from openfollow.runtime.overlay_draw_style import parse_hex
+from openfollow.runtime.overlay_layers import LayerContext, cut, keep
 from openfollow.runtime.overlay_state import MarkerOverlayData, OverlayState
 from openfollow.scene.ground_grid import grid_segments_in_polygon, main_grid_steps, outline_segments
 from openfollow.scene.solver import (
@@ -79,13 +80,18 @@ def _project_segments(
     endpoint is warped individually – that is what bows a straight world line
     on screen to match the lens.
     """
+    world = _subdivided(segments, n)
+    scr = project(cam, world.reshape(-1, 3), w, h, k1, k2)
+    return scr.reshape(world.shape[0], n + 1, 2)
+
+
+def _subdivided(segments: npt.NDArray[Any] | list[Any], n: int) -> npt.NDArray[Any]:
+    """``segments`` (M, 2, 3) as ``n``-chord world polylines, (M, n+1, 3)."""
     segs = np.asarray(segments, dtype=np.float64).reshape(-1, 2, 3)
     ts = np.linspace(0.0, 1.0, n + 1)
     p0 = segs[:, 0:1, :]
     p1 = segs[:, 1:2, :]
-    world = p0 + ts[None, :, None] * (p1 - p0)
-    scr = project(cam, world.reshape(-1, 3), w, h, k1, k2)
-    return scr.reshape(segs.shape[0], ts.shape[0], 2)
+    return p0 + ts[None, :, None] * (p1 - p0)
 
 
 def _stroke_polyline(cr: Any, poly: npt.NDArray[Any]) -> bool:
@@ -100,7 +106,8 @@ def _stroke_polyline(cr: Any, poly: npt.NDArray[Any]) -> bool:
     pen_down = False
     drew = False
     run_start: tuple[float, float] | None = None
-    for x, y in poly:
+    # Python floats: walking numpy rows costs a scalar object per coordinate.
+    for x, y in poly.tolist():
         if math.isfinite(x) and math.isfinite(y):
             if pen_down:
                 cr.line_to(x, y)
@@ -221,12 +228,13 @@ class GridCache:
     """The main grid and the ground grid as one picture, drawn again only when either grid or the view changed.
 
     The Operator Screen draws a picture at most once per display refresh; an unchanged grid is then
-    one paint instead of projecting and stroking every line. The picture is the whole canvas pasted
-    at its origin, so every line covers the same pixels as one drawn directly.
+    one paste instead of projecting and stroking every line. The picture is the whole canvas pasted
+    at its origin, so every line covers the same pixels as one drawn directly; the paste covers only
+    the tiles its lines run through, as the rest of the picture is clear.
     """
 
     def __init__(self) -> None:
-        self._entry: tuple[tuple[Any, ...], cairo.ImageSurface] | None = None
+        self._entry: tuple[tuple[Any, ...], cairo.ImageSurface, list[tuple[float, float, float, float]]] | None = None
 
     def clear(self) -> None:
         """Let go of the picture, which can run to a hundred megabytes on a HiDPI 4K screen."""
@@ -257,15 +265,59 @@ class GridCache:
             scale,
         )
         if self._entry is None or self._entry[0] != key:
-            picture = _blank_canvas(self._entry[1] if self._entry is not None else None, w, h, scale)
+            # A layered canvas may still be showing the kept picture, so it gets a new one.
+            reuse = self._entry[1] if self._entry is not None and not isinstance(cr, LayerContext) else None
+            picture = _blank_canvas(reuse, w, h, scale)
             # Filed again only once drawn, so a failed draw leaves no picture under the old key.
             self._entry = None
             ctx = cairo.Context(picture)
             draw_grid(renderer, ctx, state, w, h)
             draw_ground_grid(ctx, state, w, h)
-            self._entry = (key, picture)
-        cr.set_source_surface(self._entry[1], 0, 0)
-        cr.paint()
+            self._entry = (key, picture, _inked_tiles(picture))
+        _, picture, tiles = self._entry
+        if keep(cr, picture, 0, 0):
+            return
+        cr.set_source_surface(picture, 0, 0)
+        for rect in tiles:
+            cr.rectangle(*rect)
+        cr.fill()
+
+
+_TILE = 32
+
+
+def _inked_tiles(picture: cairo.ImageSurface) -> list[tuple[float, float, float, float]]:
+    """The ``_TILE``-pixel tiles of ``picture`` holding any ink, as rectangles in its user space.
+
+    Neighbouring inked tiles in a row join into one rectangle; edges fall on whole device pixels,
+    so filling them with the picture is pixel for pixel a paint of it.
+    """
+    picture.flush()
+    pw, ph = picture.get_width(), picture.get_height()
+    pixels: npt.NDArray[np.uint32] = np.ndarray(
+        (ph, picture.get_stride() // 4), dtype=np.uint32, buffer=picture.get_data()
+    )[:, :pw]
+    rows, cols = -(-ph // _TILE), -(-pw // _TILE)
+    # Scanned one band of rows at a time: no canvas-sized copy.
+    bands = np.zeros((rows, cols * _TILE), dtype=np.bool_)
+    for r in range(rows):
+        bands[r, :pw] = pixels[r * _TILE : (r + 1) * _TILE].any(axis=0)
+    inked: npt.NDArray[np.bool_] = np.any(bands.reshape(rows, cols, _TILE), axis=2)
+    sx, sy = picture.get_device_scale()
+    tiles = []
+    for r, row in enumerate(inked.tolist()):
+        c = 0
+        while c < cols:
+            if not row[c]:
+                c += 1
+                continue
+            start = c
+            while c < cols and row[c]:
+                c += 1
+            x0, y0 = start * _TILE, r * _TILE
+            x1, y1 = min(c * _TILE, pw), min(y0 + _TILE, ph)
+            tiles.append((x0 / sx, y0 / sy, (x1 - x0) / sx, (y1 - y0) / sy))
+    return tiles
 
 
 def _blank_canvas(kept: cairo.ImageSurface | None, w: int, h: int, scale: tuple[float, float]) -> cairo.ImageSurface:
@@ -305,9 +357,8 @@ def draw_origin(cr: Any, state: OverlayState, w: int, h: int) -> None:
 def draw_detections(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
     default_rgb = parse_hex(state.detection_box_color)
     attached_colors = state.detection_attached_colors
-    cr.set_line_width(state.detection_box_thickness)
-
     for det in state.detections:
+        cr.set_line_width(state.detection_box_thickness)
         x1 = det.x1 * w
         y1 = det.y1 * h
         x2 = det.x2 * w
@@ -335,6 +386,7 @@ def draw_detections(renderer: Any, cr: Any, state: OverlayState, w: int, h: int)
             cr.set_source_rgba(0, 0, 0, 1.0)
             cr.move_to(x1 + 4, y1 - 3)
             cr.show_text(label)
+        cut(cr)
 
 
 # Alpha for the assist-mode ghost – dim so the AI-corrected PSN output reads as
@@ -667,8 +719,9 @@ class ConeCache:
                 return
             self._entries[slot] = entry
         _, picture, x0, y0 = entry
-        cr.set_source_surface(picture, x0, y0)
-        cr.paint()
+        if not keep(cr, picture, x0, y0):
+            cr.set_source_surface(picture, x0, y0)
+            cr.paint()
 
     @staticmethod
     def _render(
@@ -734,20 +787,39 @@ def draw_marker(
         draw(cr, state, t, w, h, (r, g, b), _CONE_ALPHA, lw, fill_alpha, state.cone_shaded)
         return
 
-    pts = [
-        (tx, ty, tz),
-        (tx + t.radius, ty, tz),
-    ]
-    scr = project(cam, pts, w, h, state.lens_k1, state.lens_k2)
+    k1, k2 = state.lens_k1, state.lens_k2
+    if t.is_assist_ghost:
+        if np.all(np.isfinite(project(cam, [(tx, ty, tz)], w, h, k1, k2)[0])):
+            _draw_assist_ghost(cr, state, t, w, h, (r, g, b))
+        return
+
+    # Every point the marker is drawn from goes through one projection.
+    z_line = bool(state.show_z_line and state.grid_config)
+    ground_circle = bool(state.show_ground_circle and state.grid_config)
+    floor = floor_z_at(state, tx, ty) if z_line or ground_circle else 0.0
+    lines = []
+    if state.show_crosshair:
+        cs = state.crosshair_size
+        lines += [
+            ((tx - cs, ty, tz), (tx + cs, ty, tz)),
+            ((tx, ty - cs, tz), (tx, ty + cs, tz)),
+            ((tx, ty, tz - cs), (tx, ty, tz + cs)),
+        ]
+    if z_line:
+        lines.append(((tx, ty, tz), (tx, ty, floor)))
+    n = _DISTORTION_SUBDIVISIONS if (k1 or k2) else 1
+    world: list[npt.ArrayLike] = [np.array([(tx, ty, tz), (tx + t.radius, ty, tz)], dtype=np.float64)]
+    if lines:
+        world.append(_subdivided(lines, n).reshape(-1, 3))
+    if ground_circle:
+        world.append(ground_circle_world_ring(tx, ty, floor, state.ground_circle_size))
+    scr = project(cam, np.concatenate(world), w, h, k1, k2)
     if not np.all(np.isfinite(scr[0])):
         return
+    polys = scr[2 : 2 + len(lines) * (n + 1)].reshape(len(lines), n + 1, 2)
+    ring = scr[2 + len(lines) * (n + 1) :]
 
     sx, sy = float(scr[0, 0]), float(scr[0, 1])
-
-    if t.is_assist_ghost:
-        _draw_assist_ghost(cr, state, t, w, h, (r, g, b))
-        return
-
     if np.all(np.isfinite(scr[1])):
         # Full 2D distance to the projected radius endpoint, not the X delta
         # alone – at camera angles where world-X maps near-vertically on screen
@@ -768,30 +840,21 @@ def draw_marker(
         cr.stroke()
 
     if state.show_crosshair:
-        cs = state.crosshair_size
         ch_r, ch_g, ch_b = parse_hex(state.crosshair_color)
         cr.set_source_rgba(ch_r, ch_g, ch_b, 1.0)
         cr.set_line_width(state.crosshair_thickness)
-        axis_segments = [
-            ((tx - cs, ty, tz), (tx + cs, ty, tz)),
-            ((tx, ty - cs, tz), (tx, ty + cs, tz)),
-            ((tx, ty, tz - cs), (tx, ty, tz + cs)),
-        ]
-        _draw_world_lines(cr, cam, axis_segments, w, h, state.lens_k1, state.lens_k2)
+        for poly in polys[:3]:
+            _stroke_polyline(cr, poly)
         cr.stroke()
 
-    if state.show_z_line and state.grid_config:
-        z_off = floor_z_at(state, tx, ty)
+    if z_line:
         cr.set_source_rgba(r, g, b, 0.8)
         cr.set_line_width(state.z_line_thickness)
-        if _draw_world_lines(cr, cam, [((tx, ty, tz), (tx, ty, z_off))], w, h, state.lens_k1, state.lens_k2):
+        if _stroke_polyline(cr, polys[-1]):
             cr.stroke()
 
-    if state.show_ground_circle and state.grid_config:
-        z_off = floor_z_at(state, tx, ty)
-        gc_pts = ground_circle_world_ring(tx, ty, z_off, state.ground_circle_size)
-        gc_scr = project(cam, gc_pts, w, h, state.lens_k1, state.lens_k2)
-        if _path_ring(cr, gc_scr[np.all(np.isfinite(gc_scr), axis=1)]):
+    if ground_circle:
+        if _path_ring(cr, ring[np.all(np.isfinite(ring), axis=1)]):
             if state.ground_circle_filled:
                 cr.set_source_rgba(r, g, b, 0.4)
                 cr.fill()

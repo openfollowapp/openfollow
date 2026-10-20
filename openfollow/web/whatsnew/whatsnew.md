@@ -16,3 +16,11 @@ A marker this station controls now always appears on the Operator Screen and cou
 ## The Operator Screen follows the keyboard layout
 
 The Operator Screen now uses the keyboard layout set in the station's system, where it used to assume a US keyboard. Choose another under **Input → Keyboard Input**.
+
+## Features replace Show experimental features
+
+The **Show experimental features** switch is now a **Features** table under **General → Station Settings → Advanced Settings**, and a change there applies on **Save**. A feature that is off is hidden and no longer runs. On any other station, check **RTTrPM output** before the next show: it starts off, so it no longer sends, even where **Send marker positions over RTTrPM** is ticked.
+
+## Control frame replaces Invert control direction
+
+Under **Markers & Zones → Marker Movement**, **Invert control direction** is now **Control frame**. A station with it ticked keeps its inverted controls as **Fixed heading** 180°; every other station steers in **Stage axes**, as before.

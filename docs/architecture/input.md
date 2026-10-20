@@ -37,6 +37,9 @@ Relative input (keyboard, each gamepad, each 3D mouse) arrives as (right, up) an
 
 **Latch.** Each source, keyed with the marker it steers (`("keyboard", marker_id)`, `("gamepad", idx, marker_id)`, `("mouse3d", idx, marker_id)`), keeps the axes it took when its XY input left zero until that input returns to zero, or the source stops reporting for a frame (`begin_frame` prunes it at the top of `InputManager.update`); input returning from a modal (the same transition that clears held keys in `app_modes.process_input`) drops every latch via `release_all`. So a recalibration, a source swap or a web save never bends a move in progress, a marker newly taken over mid-hold gets its own directions, and in `screen` mode a held direction is a straight stage line. The setting is read per latch, so it applies live with no restart.
 
+## Failure isolation (`InputManager.update`)
+Each subsystem in `InputManager.update` runs under its own guard, so one that raises never drops the gamepad result or the subsystems after it, and each device or marker inside one has its own: each gamepad's move, each 3D Mouse puck's `_apply_mouse3d`, each OSC marker's write and each touch-remote marker. A failure that repeats every frame logs through a `ThrottledExceptionLogger` (one traceback per interval, with a count of the rest), never a bare `logger.exception`. A step that raises keeps what it already applied (a puck's button edges folded into `GamepadUpdate`, speed steps taken) and loses the rest of that device's frame; nothing is retried.
+
 ## Gamepad → marker routing (`InputManager._gamepad_marker_id`)
 Gamepad movement, reset, speed readout, and controller-info all go through
 `_gamepad_marker_id(controller_idx)` so every routing surface stays

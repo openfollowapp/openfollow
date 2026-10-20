@@ -137,6 +137,7 @@ class InputManager:
         self._remote_update_err_log = ThrottledExceptionLogger(logger, "Touch remote update failed this tick.")
         self._keyboard_update_err_log = ThrottledExceptionLogger(logger, "Keyboard update failed this tick.")
         self._gamepad_move_err_log = ThrottledExceptionLogger(logger, "Gamepad move failed this tick.")
+        self._osc_apply_err_log = ThrottledExceptionLogger(logger, "OSC flush/apply failed this tick.")
         # Which slot each controller holds for the session; refreshed on the
         # main loop only, read from any thread via ``_controller_slots``.
         self._clock = time.monotonic
@@ -482,43 +483,52 @@ class InputManager:
         # current position so the un-set axes stay where they were).
         if self.osc_handler is not None:
             try:
-                for marker_id, axes in self.osc_handler.flush_updates().items():
-                    if marker_id not in self.app._controlled_ids or holds(self.app, marker_id):
-                        continue
-                    marker = self._get_marker(marker_id)
-                    if not marker:
-                        continue
-                    # While pulled onto a path, the axes left out come from where it would be without the path.
-                    free = paths.free_position(marker_id) if paths is not None else None
-                    cur_x, cur_y, cur_z = free if free is not None else marker.pos
-                    x = axes.get("x", cur_x)
-                    y = axes.get("y", cur_y)
-                    z = axes.get("z", cur_z)
-                    landed = paths.project(marker_id, x, y) if paths is not None else None
-                    x, y, z = landed if landed is not None else (x, y, z)
-                    marker.set_pos(x, y, z)
-                    now = self._clock()
-                    last = self._osc_last_write.get(marker_id)
-                    self._osc_last_write[marker_id] = now
-                    if last is None or now - last >= _OSC_STREAM_GAP_S:
-                        logger.info(
-                            "OSC positions arriving for marker %d, first at (%.3f, %.3f, %.3f)",
-                            marker_id,
-                            x,
-                            y,
-                            z,
-                        )
-                    logger.debug(
-                        "OSC jump: marker %d → (%.3f, %.3f, %.3f)",
-                        marker_id,
-                        x,
-                        y,
-                        z,
-                    )
+                osc_updates = self.osc_handler.flush_updates()
             except Exception:
-                logger.exception("OSC flush/apply failed this tick.")
+                self._osc_apply_err_log.log()
+                osc_updates = {}
+            for marker_id, axes in osc_updates.items():
+                # One marker's failure never costs another marker its write.
+                try:
+                    self._apply_osc_position(marker_id, axes, paths)
+                except Exception:
+                    self._osc_apply_err_log.log()
 
         return gamepad_result
+
+    def _apply_osc_position(self, marker_id: int, axes: dict[str, float], paths: PathEngine | None) -> None:
+        if marker_id not in self.app._controlled_ids or holds(self.app, marker_id):
+            return
+        marker = self._get_marker(marker_id)
+        if not marker:
+            return
+        # While pulled onto a path, the axes left out come from where it would be without the path.
+        free = paths.free_position(marker_id) if paths is not None else None
+        cur_x, cur_y, cur_z = free if free is not None else marker.pos
+        x = axes.get("x", cur_x)
+        y = axes.get("y", cur_y)
+        z = axes.get("z", cur_z)
+        landed = paths.project(marker_id, x, y) if paths is not None else None
+        x, y, z = landed if landed is not None else (x, y, z)
+        marker.set_pos(x, y, z)
+        now = self._clock()
+        last = self._osc_last_write.get(marker_id)
+        self._osc_last_write[marker_id] = now
+        if last is None or now - last >= _OSC_STREAM_GAP_S:
+            logger.info(
+                "OSC positions arriving for marker %d, first at (%.3f, %.3f, %.3f)",
+                marker_id,
+                x,
+                y,
+                z,
+            )
+        logger.debug(
+            "OSC jump: marker %d → (%.3f, %.3f, %.3f)",
+            marker_id,
+            x,
+            y,
+            z,
+        )
 
     def update_paths(self, dt: float) -> None:
         """Run the path engine for one frame, whatever input does: menus open or no marker controlled.

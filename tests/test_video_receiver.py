@@ -5236,7 +5236,7 @@ class TestAnRtspAddressFamilyFailureRetriesOverTcp:
 
         assert receiver.status_marker.failure == VideoFailure.NO_DATA
 
-    def test_a_failed_tcp_retry_is_classified_too(self, receiver, fake_glib) -> None:
+    def test_a_failed_tcp_retry_is_classified_and_the_next_stays_on_tcp(self, receiver, fake_glib) -> None:
         receiver.play()
         self._describe(receiver)
         receiver._handle_bus_error(self._ERROR)

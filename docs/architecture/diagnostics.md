@@ -30,10 +30,10 @@ Section A5 of the bundle ([`web/diagnostics.py`](../../openfollow/web/diagnostic
 
 A Raspberry Pi on a weak supply freezes and drops USB devices; one that runs hot slows its CPU. Both are read by `PowerMonitor`, owned by the `SystemStatsCollector` and read with the other system stats once a second:
 
-- **Live under voltage:** the `in0_lcrit_alarm` of the hwmon whose `name` is `rpi_volt` (1 = under voltage now), a sysfs read on the collector's thread. The hwmon is looked up on the first read.
+- **Live under voltage:** the `in0_lcrit_alarm` of the hwmon whose `name` is `rpi_volt` (1 = under voltage now), a sysfs read in the collector's update on the frame loop. The hwmon is looked up on the first read.
 - **Throttling and the since-boot flags:** `vcgencmd get_throttled` only; a Pi 5 has no sysfs file for them. `ThrottlePoller` runs it every 5 s with a 2 s timeout on its own daemon thread, started on the first read and only where `vcgencmd` is on the path, so no subprocess runs on the GTK thread. `AppRuntimeServices.shutdown` stops it through `SystemStatsCollector.stop`; a stopped poller never starts again. Bits 1 to 3 (frequency capped, throttled, soft temperature limit) all count as throttled; bits 16 to 19 are the same since boot. A failed or malformed reading is unknown, not zero. `parse_throttled` and `THROTTLE_BIT_LABELS` are also what the bundle's throttling row decodes.
 - **Not available is never healthy:** a flag this host cannot read is `None`. macOS and other boards report every flag `None`; a Pi whose service user cannot run `vcgencmd` still reports the live under voltage.
-- **Logs:** one warning when under voltage or throttling starts, one info line when it ends; never per poll.
+- **Logs:** one warning when under voltage or throttling starts, one info line when it ends; never per poll, and an unknown reading neither starts nor ends one.
 
 `/api/stats` publishes the reading as `system.power` (a wire interface): `available` (any flag readable), `under_voltage` and `throttled` (now), `under_voltage_since_boot` and `throttled_since_boot` (the firmware's latched flags, cleared only by a reboot), each `true`, `false` or `null` for not available.
 

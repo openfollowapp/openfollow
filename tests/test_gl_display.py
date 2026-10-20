@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""The GL display's plain parts: switches, plane layout, letterbox, sprites, colour terms and log lines."""
+"""The GL display's plain parts: platform choice, giving way to Cairo, plane layout, sprites, colours and log lines."""
 
 from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import cairo
 import pytest
@@ -19,19 +20,45 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.mark.parametrize(
-    ("env", "flag", "on"),
-    [("1", False, True), ("", True, True), ("", False, False), ("0", False, False), ("yes", False, False)],
-    ids=["env", "flag-file", "neither", "env-0", "env-not-1"],
+    ("setting", "platform", "pyopengl", "reason"),
+    [
+        ("auto", "linux", True, None),
+        ("auto", "darwin", True, "no GL display on darwin"),
+        ("auto", "win32", True, "no GL display on win32"),
+        ("auto", "linux", False, "PyOpenGL is not installed"),
+        ("cairo", "linux", True, "operator_screen is set to cairo"),
+        ("cairo", "darwin", True, "operator_screen is set to cairo"),
+    ],
+    ids=["linux", "macos", "windows", "no-pyopengl", "cairo-setting", "cairo-setting-macos"],
 )
-def test_the_switch_is_the_environment_or_the_flag_file(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, env: str, flag: bool, on: bool
+def test_only_linux_with_pyopengl_runs_the_gl_display_unless_the_setting_keeps_cairo(
+    setting: str, platform: str, pyopengl: bool, reason: str | None
 ) -> None:
-    monkeypatch.setenv(gl_display.ENV_SWITCH, env)
-    flag_file = tmp_path / "flag"
-    if flag:
-        flag_file.touch()
-    monkeypatch.setattr(gl_display, "FLAG_FILE", str(flag_file))
-    assert gl_display.gl_display_requested() is on
+    assert gl_display.gl_display_blocker(setting, platform, pyopengl=pyopengl) == reason
+
+
+@pytest.mark.parametrize("installed", [True, False], ids=["installed", "missing"])
+def test_pyopengl_is_looked_up_when_not_given(monkeypatch: pytest.MonkeyPatch, installed: bool) -> None:
+    monkeypatch.setattr(gl_display.importlib.util, "find_spec", lambda name: object() if installed else None)
+
+    assert (gl_display.gl_display_blocker("auto", "linux") is None) is installed
+
+
+@pytest.mark.parametrize(
+    ("renderer", "software"),
+    [
+        ("V3D 7.1.10.2", False),
+        ("Mesa Intel(R) UHD Graphics 620 (KBL GT2)", False),
+        ("llvmpipe (LLVM 19.1.7, 256 bits)", True),
+        ("LLVMPIPE", True),
+        ("softpipe", True),
+        ("Mesa X11 (swrast)", True),
+        ("", False),
+    ],
+    ids=["pi5-v3d", "intel", "llvmpipe", "upper-case", "softpipe", "swrast", "empty"],
+)
+def test_a_driver_that_draws_on_the_cpu_is_a_software_renderer(renderer: str, software: bool) -> None:
+    assert gl_display.software_renderer(renderer) is software
 
 
 def test_i420_planes_halve_the_chroma_rounding_up() -> None:
@@ -376,3 +403,67 @@ def test_a_render_knows_its_refresh_time_and_interval_from_the_frame_clock(inter
     clock = SimpleNamespace(get_frame_time=lambda: 5_000_000, get_refresh_info=lambda base: (interval, base + 1))
 
     assert gl_display.refresh_of(clock) == (5_000_000, expected)
+
+
+class _Idle:
+    """Holds what ``GiveWay`` leaves for the main loop until the test runs it."""
+
+    def __init__(self) -> None:
+        self.queued: list[Any] = []
+
+    def __call__(self, callback: Any) -> int:
+        self.queued.append(callback)
+        return len(self.queued)
+
+    def run(self) -> list[bool]:
+        queued, self.queued = self.queued, []
+        return [callback() for callback in queued]
+
+
+def _give_way() -> tuple[gl_display.GiveWay, _Idle, list[str]]:
+    idle = _Idle()
+    told: list[str] = []
+    give_way = gl_display.GiveWay(idle)
+    give_way.on_unavailable = told.append
+    return give_way, idle, told
+
+
+def test_a_failed_start_is_told_from_the_main_loop_once() -> None:
+    give_way, idle, told = _give_way()
+    give_way.give_up("the GL area could not start")
+    give_way.give_up("again")
+
+    assert told == []
+    # Run once, then removed from the main loop.
+    assert idle.run() == [False]
+    assert told == ["the GL area could not start"]
+    give_way.render_failed()
+    assert idle.queued == []
+
+
+def test_the_display_gives_way_only_after_renders_fail_in_a_row() -> None:
+    give_way, idle, told = _give_way()
+    for _ in range(gl_display.FAILED_RENDERS_TO_FALL_BACK - 1):
+        give_way.render_failed()
+    give_way.rendered()
+    for _ in range(gl_display.FAILED_RENDERS_TO_FALL_BACK - 1):
+        give_way.render_failed()
+    idle.run()
+    assert told == []
+
+    give_way.render_failed()
+    idle.run()
+    assert told == [f"{gl_display.FAILED_RENDERS_TO_FALL_BACK} renders in a row failed"]
+
+
+def test_with_no_one_to_tell_nothing_is_queued_and_a_later_listener_still_hears() -> None:
+    idle = _Idle()
+    give_way = gl_display.GiveWay(idle)
+    give_way.give_up("too early")
+    assert idle.queued == []
+
+    told: list[str] = []
+    give_way.on_unavailable = told.append
+    give_way.give_up("the GL area could not start")
+    idle.run()
+    assert told == ["the GL area could not start"]

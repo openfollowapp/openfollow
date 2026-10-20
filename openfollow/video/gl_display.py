@@ -2,16 +2,19 @@
 # Copyright (C) 2026 OpenFollow Project
 """Video and HUD on one ``Gtk.GLArea``: decoded frames and HUD pictures go up as textures, composited each refresh.
 
-Asked for with ``OPENFOLLOW_GL_DISPLAY=1`` or the flag file: the receiver ends in this display's sink
-instead of gtksink, and the window renders this area once per display refresh instead of pasting the
+Run where ``gl_display_blocker`` and ``probe_gl_context`` allow it: the receiver ends in this display's
+sink instead of gtksink, and the window renders this area once per display refresh instead of pasting the
 HUD with Cairo. Video frames meet the refresh through a ``Cadence``, by default each at the refresh
 after it arrives; the HUD shows as ``Layers``: a kept picture is uploaded once, the pictures drawn
-between them each time the HUD changes. PyOpenGL is imported only when the area is realized.
+between them each time the HUD changes. If the area fails to start or keeps failing to render, it
+says so through ``on_unavailable`` and the app hands the Operator Screen back to Cairo. PyOpenGL is
+imported only by the probe and when the area is realized.
 """
 
 from __future__ import annotations
 
 import ctypes
+import importlib.util
 import logging
 import os
 import sys
@@ -26,11 +29,10 @@ from openfollow.video.gl_cadence import Cadence, CadenceReport, Durations
 
 logger = logging.getLogger(__name__)
 
-ENV_SWITCH = "OPENFOLLOW_GL_DISPLAY"
-
-
-# The same on a station, where the service's environment lives under /etc.
-FLAG_FILE = os.path.join(os.path.expanduser("~"), ".openfollow-gl-display")
+# Renders failing in a row, about 2 s at 60 Hz, before the GL display gives way to Cairo.
+FAILED_RENDERS_TO_FALL_BACK = 120
+# GL drivers that draw on the CPU: slower than the Cairo Operator Screen they would replace.
+SOFTWARE_RENDERERS = ("llvmpipe", "softpipe", "swrast")
 
 
 # How video frames meet the refresh, for an A/B: "locked" holds them to an even cadence covering the
@@ -103,9 +105,104 @@ def refresh_of(frame_clock: Any) -> tuple[int, int]:
     return now, interval or DEFAULT_REFRESH_US
 
 
-def gl_display_requested() -> bool:
-    """Whether the GL display is asked for here."""
-    return os.environ.get(ENV_SWITCH, "") == "1" or os.path.exists(FLAG_FILE)
+def gl_display_blocker(setting: str, platform: str = sys.platform, *, pyopengl: bool | None = None) -> str | None:
+    """Why the Operator Screen must stay on Cairo here, or None when the GL display may run.
+
+    ``setting`` is ``display.operator_screen``. The GL area only renders through GTK on Linux (on macOS
+    GTK3's never draws).
+    """
+    if setting == "cairo":
+        return "operator_screen is set to cairo"
+    if not platform.startswith("linux"):
+        return f"no GL display on {platform}"
+    if pyopengl is None:
+        pyopengl = importlib.util.find_spec("OpenGL") is not None
+    if not pyopengl:
+        return "PyOpenGL is not installed"
+    return None
+
+
+def software_renderer(renderer: str) -> bool:
+    """Whether a ``GL_RENDERER`` string names a driver that draws on the CPU."""
+    name = renderer.lower()
+    return any(software in name for software in SOFTWARE_RENDERERS)
+
+
+class GiveWay:
+    """Tells ``on_unavailable`` once why the GL display cannot go on: a failed start, or renders failing in a row.
+
+    Told from the main loop, never inside a GTK signal handler of the area the fallback removes.
+    """
+
+    def __init__(self, idle_add: Callable[[Callable[[], bool]], Any]) -> None:
+        self.on_unavailable: Callable[[str], None] | None = None
+        self._idle_add = idle_add
+        self._failed_renders = 0
+        self._told = False
+
+    def rendered(self) -> None:
+        self._failed_renders = 0
+
+    def render_failed(self) -> None:
+        self._failed_renders += 1
+        if self._failed_renders >= FAILED_RENDERS_TO_FALL_BACK:
+            self.give_up(f"{self._failed_renders} renders in a row failed")
+
+    def give_up(self, reason: str) -> None:
+        on_unavailable = self.on_unavailable
+        if self._told or on_unavailable is None:
+            return
+        self._told = True
+
+        def tell() -> bool:
+            on_unavailable(reason)
+            return False
+
+        self._idle_add(tell)
+
+
+def probe_gl_context(gdk_window: Any) -> str | None:  # pragma: no cover - needs a display and a GPU
+    """Why ``gdk_window`` cannot give the GL display a hardware context and its shaders, or None when it can."""
+    if gdk_window is None:
+        return "no window to make a GL context on"
+    from gi.repository import Gdk
+
+    try:
+        context = gdk_window.create_gl_context()
+        context.set_use_es(True)
+        context.set_required_version(3, 0)
+        context.realize()
+        context.make_current()
+        os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
+        import OpenGL
+
+        OpenGL.ERROR_CHECKING = False
+        from OpenGL import GL
+
+        renderer = (GL.glGetString(GL.GL_RENDERER) or b"").decode(errors="replace")
+        if software_renderer(renderer):
+            return f"software GL renderer {renderer}"
+        # Mesa's V3D gives GTK a desktop 3.1 context that compiles the ES 3.0 shaders: the shaders decide.
+        for fragment in (_FS_YUV, _FS_HUD):
+            program = GL.glCreateProgram()
+            for kind, source in ((GL.GL_VERTEX_SHADER, _VS), (GL.GL_FRAGMENT_SHADER, fragment)):
+                shader = GL.glCreateShader(kind)
+                GL.glShaderSource(shader, source)
+                GL.glCompileShader(shader)
+                if not GL.glGetShaderiv(shader, GL.GL_COMPILE_STATUS):
+                    return f"a display shader does not compile: {GL.glGetShaderInfoLog(shader)!r}"
+                GL.glAttachShader(program, shader)
+                GL.glDeleteShader(shader)
+            GL.glLinkProgram(program)
+            linked = GL.glGetProgramiv(program, GL.GL_LINK_STATUS)
+            GL.glDeleteProgram(program)
+            if not linked:
+                return "a display shader program does not link"
+        return None
+    except Exception as exc:
+        return f"no GL context: {exc}"
+    finally:
+        Gdk.GLContext.clear_current()
 
 
 @dataclass(frozen=True)
@@ -276,7 +373,6 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
         sink.set_name("shared_videosink")
         frames = sink.get_by_name("frames")
         frames.connect("handoff", self._on_handoff)
-        frames.get_static_pad("sink").add_probe(Gst.PadProbeType.EVENT_DOWNSTREAM, self._on_event)
         self.sink = sink
         self._cadence: Cadence[Any] = cadence_for_mode()
         self._refresh = (0, DEFAULT_REFRESH_US)
@@ -298,13 +394,27 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
         # GTK main thread time per render, per video frame upload and per new sprite list upload.
         self._took = {"render": Durations(), "video upload": Durations(), "sprite upload": Durations()}
         self._render_err_log = ThrottledExceptionLogger(logger, "GL display render failed")
+        self._give_way = GiveWay(GLib.idle_add)
 
     def release_frames(self) -> None:
-        """Hand every held frame back before the pipeline stops, and take none until the next stream starts.
+        """Hand every held frame back before the pipeline stops, and take none until ``accept_frames``.
 
         GTK main thread, like the render that takes the frame.
         """
         self._cadence.close()
+
+    @property
+    def on_unavailable(self) -> Callable[[str], None] | None:
+        """Told once, on the GTK main thread, why the display cannot go on; the app falls back to Cairo."""
+        return self._give_way.on_unavailable
+
+    @on_unavailable.setter
+    def on_unavailable(self, callback: Callable[[str], None] | None) -> None:
+        self._give_way.on_unavailable = callback
+
+    def accept_frames(self) -> None:
+        """Take frames again: the sink joins a new pipeline. GTK main thread, after the old one stopped."""
+        self._cadence.open()
 
     def set_hud(self, hud: Any) -> None:
         self._hud = hud
@@ -313,12 +423,6 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
         """Render at the refresh ``frame_clock`` is drawing."""
         self._refresh = refresh_of(frame_clock)
         self.widget.queue_render()
-
-    def _on_event(self, _pad: Any, info: Any) -> Any:
-        # A new pipeline's first event: its frames may be held again.
-        if info.get_event().type == self._Gst.EventType.STREAM_START:
-            self._cadence.open()
-        return self._Gst.PadProbeReturn.OK
 
     def _on_handoff(self, _sink: Any, buf: Any, pad: Any) -> None:
         # Streaming thread: stamp the arrival, the GTK main thread picks per refresh.
@@ -334,8 +438,9 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
     def _on_realize(self, area: Any) -> None:
         try:
             self._realize(area)
-        except Exception:
+        except Exception as exc:
             logger.exception("GL display could not start")
+            self._give_way.give_up(f"the GL area could not start: {exc}")
 
     def _on_unrealize(self, area: Any) -> None:
         # The area's context shares objects with the window's, so they outlive it unless deleted here.
@@ -455,8 +560,10 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
             return True
         try:
             self._render(area)
+            self._give_way.rendered()
         except Exception:
             self._render_err_log.log()
+            self._give_way.render_failed()
         return True
 
     def _render(self, area: Any) -> None:

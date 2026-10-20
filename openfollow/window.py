@@ -369,6 +369,17 @@ class GtkNativeSinkWindow:
         self._hud_drawing_area.hide()
         self._hud_drawing_area.set_no_show_all(True)
 
+    def detach_gl_display(self) -> None:
+        """Stop rendering the GL display and bring the Cairo HUD layer back; ``attach_hud`` gives it pictures."""
+        self._gl_display = None
+        self._hud_drawing_area.set_no_show_all(False)
+        self._hud_drawing_area.show()
+
+    def gdk_window(self) -> Any:
+        """The realized toplevel's GDK window, for probing a GL context before the GL display is chosen."""
+        self._window.realize()
+        return self._window.get_window()
+
     def _on_hud_draw(self, widget: Any, cr: Any) -> bool:
         if self._hud_draw_fn is None:
             return False

@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -264,6 +265,23 @@ def test_the_power_warning_is_held_after_the_last_dip(monkeypatch, tmp_path: Pat
 
     now[0] = 50.0 + WARNING_HOLD_S
     assert collector.update().power_warning == ""
+
+
+def test_the_power_log_runs_on_the_collectors_clock(monkeypatch, tmp_path: Path, caplog) -> None:
+    _stub_host(monkeypatch)
+    hwmon = tmp_path / "hwmon0"
+    hwmon.mkdir()
+    (hwmon / "name").write_text("rpi_volt\n")
+    alarm = hwmon / "in0_lcrit_alarm"
+    alarm.write_text("1\n")
+    now = [50.0]
+    collector = SystemStatsCollector(update_interval=1.0, power=PowerMonitor(hwmon_root=tmp_path), clock=lambda: now[0])
+    caplog.set_level(logging.INFO, logger="openfollow.power_health")
+    collector.update()
+    alarm.write_text("0\n")
+    now[0] = 50.0 + WARNING_HOLD_S
+    collector.update()
+    assert [r.getMessage() for r in caplog.records] == ["Power supply under voltage", "Power supply voltage normal"]
 
 
 def test_stopping_the_collector_stops_its_power_monitor(monkeypatch) -> None:

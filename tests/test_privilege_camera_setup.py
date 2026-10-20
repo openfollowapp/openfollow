@@ -167,14 +167,14 @@ class TestGrants:
             assert capability in ALL_CAPABILITIES
         rendered = render_drop_in("openfollow")
         assert (
-            "NOPASSWD: /usr/share/openfollow/camera-setup write "
-            "^(automatic|(imx|ov|arducam|irs)[a-z0-9_-]*\\,cam[01])$" in rendered
+            "NOPASSWD: /usr/share/openfollow/camera-setup ^write "
+            "(automatic|(imx|ov|arducam|irs)[a-z0-9_-]*,cam[01])$\n" in rendered
         )
         assert (
-            "NOPASSWD: /usr/share/openfollow/camera-setup load ^(imx|ov|arducam|irs)[a-z0-9_-]*\\,cam[01]$" in rendered
+            "NOPASSWD: /usr/share/openfollow/camera-setup ^load (imx|ov|arducam|irs)[a-z0-9_-]*,cam[01]$\n" in rendered
         )
         assert (
-            "NOPASSWD: /usr/share/openfollow/camera-setup unload ^(imx|ov|arducam|irs)[a-z0-9_-]*\\,cam[01]$"
+            "NOPASSWD: /usr/share/openfollow/camera-setup ^unload (imx|ov|arducam|irs)[a-z0-9_-]*,cam[01]$\n"
             in rendered
         )
         assert "NOPASSWD: /usr/bin/systemctl reboot\n" in rendered

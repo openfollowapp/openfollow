@@ -1279,7 +1279,8 @@ class TestWizardLensTemplate:
         assert body.index("g.contains(document.activeElement)") < body.index("g.innerHTML = ''")
         assert body.index("g.innerHTML = ''") < body.index("if (hadFocus) lensFocusSelected();")
         focus = re.search(r"function lensFocusSelected\(\) \{(.*?)\n  \}\n", src, re.S)
-        assert focus is not None and "focus({ preventScroll: true })" in focus.group(1)
+        assert focus is not None and "lensFocusEl(h);" in focus.group(1)
+        assert "el.focus({ preventScroll: true });" in wizard_function("lensFocusEl")
         # The handler that selects a point by pointer relies on the same helper.
         down = re.search(r"overlay\.addEventListener\('pointerdown', function\(e\) \{(.*?)\n    \}\);", src, re.S)
         assert down is not None and "lensFocusSelected();" in down.group(1)
@@ -1334,9 +1335,9 @@ class TestWizardLensTemplate:
         assert "tabindex" not in wizard_function("renderLensCandidates")
         # Every point says what it is.
         assert "'Line ' + (i + 1) + (j === 0 ? ', start' : j === 4 ? ', end' : ', middle point ' + j)" in src
-        # A point reached with Tab is the selected one, so the toolbar acts on what has the focus.
-        focus = re.search(r"overlay\.addEventListener\('focusin', function\(e\) \{(.*?)\n    \}\);", src, re.S)
-        assert focus and "lensSelected = { line: line, point: point };" in focus.group(1)
+        # A point reached with Tab is selected and held, so the toolbar acts on what has the focus.
+        assert "overlay.addEventListener('focusin', lensPointFocusIn);" in src
+        assert "document.addEventListener('focusin', lensFocusElsewhere);" in src
         # Delete leaves the keys on the picture.
         delete = wizard_window_function("lensDeleteSelectedLine")
         assert "document.getElementById('lens-overlay').focus({ preventScroll: true })" in delete

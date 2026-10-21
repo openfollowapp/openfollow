@@ -1750,6 +1750,86 @@ def test_after_a_choice_by_keyboard_the_next_bubble_takes_the_focus(open_ids: li
     assert run_wizard_js("lensFocusTarget(o, k)", functions=("lensFocusTarget",), o=open_ids, k=keep) == focused
 
 
+# The bubbles drawn on a page that records the order they enter it and what takes the focus.
+_BUBBLE_PAGE = r"""
+var imageWidth = 1080, imageHeight = 608, lensHot = -1, lensFocusAfter = null, lensRefocus = false;
+var lensCandidates = [], lensSelected = null, focused = null, refocusing = null, bubbles = [];
+function lensOpenCandidates() { return open; }
+function el(name) { return { focus: function() { focused = name; refocusing = lensRefocus; } }; }
+var box = { innerHTML: '', contains: function() { return false; },
+  insertAdjacentHTML: function(where, html) { bubbles.push(+/data-candidate="(\d+)"/.exec(html)[1]); },
+  querySelector: function(sel) {
+    var m = /data-candidate="(\d+)"\] \.(lb-\w+)/.exec(sel);
+    return m && bubbles.indexOf(+m[1]) >= 0 ? el('bubble ' + m[1] + ' ' + m[2]) : null;
+  } };
+var shapes = { innerHTML: '', setAttribute: function() {}, classList: { toggle: function() {} },
+  insertAdjacentHTML: function() {} };
+var els = { 'lens-container': { getBoundingClientRect: function() { return { width: 1080, height: 608 }; } },
+  'lens-bubbles': box, 'lens-tails': shapes, 'lens-overlay': el('the picture') };
+function $(id) { return els[id]; }
+var document = { activeElement: null, querySelector: function(sel) {
+  var m = /\[data-line="(\d+)"\]\[data-point="(\d+)"\]/.exec(sel);
+  return m && +m[1] < traced ? el('line ' + m[1] + ' point ' + m[2]) : null;
+} };
+"""
+_BUBBLE_DOM = (
+    "renderLensBubbles",
+    "lensFocusTarget",
+    "lensFocusLineOrPicture",
+    "lensFocusEl",
+    "lensPlaceBubbles",
+    "lensPolyAt",
+    "lensBubbleOutline",
+)
+# Numbered short, long, middling: placed longest first.
+_THREE = [_segment((100.0, 500.0), (260.0, 500.0)), _FLAT, _segment((150.0, 120.0), (500.0, 130.0))]
+
+
+def _bubbles(open_ids: list, keep: dict | None = None, selected: dict | None = None, traced: int = 0) -> dict:
+    return run_wizard_js(
+        "(function() { lensFocusAfter = keep; lensSelected = selected;"
+        " lensCandidates = cands.map(function(c) { return { points: c }; });"
+        " renderLensBubbles(); return { bubbles: bubbles, focused: focused, refocusing: refocusing,"
+        " placed: lensPlaceBubbles(cands.map(function(c) { return c; }), open, 1080, 608).map(function(b) {"
+        " return b.i; }), refocus: lensRefocus }; })()",
+        functions=_BUBBLE_DOM,
+        variables=("LENS_BUBBLE", "LENS_CHECK_SVG", "LENS_CROSS_SVG"),
+        prelude=f"var traced = {traced};" + _BUBBLE_PAGE,
+        cands=_THREE,
+        open=open_ids,
+        keep=keep,
+        selected=selected,
+    )
+
+
+def test_bubbles_enter_the_page_in_suggestion_order_while_the_longest_line_is_placed_first() -> None:
+    out = _bubbles([0, 1, 2])
+    assert out["placed"] == [1, 2, 0]
+    # Tab walks the bubbles by number, as the focus does after a choice.
+    assert out["bubbles"] == [0, 1, 2]
+
+
+@pytest.mark.parametrize(
+    ("open_ids", "keep", "selected", "focused"),
+    [
+        ([0, 2], {"i": 0, "cls": "lb-use"}, {"line": 0, "point": None}, "bubble 2 lb-use"),
+        ([], {"i": 1, "cls": "lb-use"}, {"line": 0, "point": None}, "line 0 point 0"),
+        ([], {"i": 1, "cls": "lb-reject"}, {"line": 0, "point": None}, "the picture"),
+        ([], {"i": 1, "cls": "lb-reject"}, None, "the picture"),
+        ([], None, {"line": 0, "point": None}, None),
+    ],
+    ids=["the next bubble", "the last used", "the last rejected", "the last rejected, nothing selected", "no choice"],
+)
+def test_the_last_suggestion_decided_by_keyboard_leaves_the_focus_on_the_page(
+    open_ids: list, keep: dict | None, selected: dict | None, focused: str | None
+) -> None:
+    out = _bubbles(open_ids, keep, selected, traced=1)
+    assert out["focused"] == focused
+    # Giving the focus to a point is not a new selection of it; the flag never stays up.
+    assert out["refocusing"] is (None if focused is None else not focused.startswith("bubble"))
+    assert out["refocus"] is False
+
+
 _REJECT_PAGE = """
 var lensCandidates = [], lensRejected = [], lensHot = 3, saved = 0, rendered = 0, loaded = 0;
 function renderLens() { rendered++; } function saveToSession() { saved++; } function loadSnapshot() { loaded++; }
@@ -1809,6 +1889,97 @@ def test_the_lens_tab_key_steps_through_the_points_of_its_line() -> None:
     assert out == [[3, 4, 0, 4, 3, 2, 1, 1], 7]
 
 
+_POINT_FOCUS_PAGE = """
+var els = {};
+function $(id) { if (!els[id]) els[id] = { innerHTML: '' }; return els[id]; }
+var lensHintText = '', lensHintHtml = '', S = { lensLoaded: null }, lensPending = null, lensFit = null;
+var lensLines = [{}, {}];
+function lensFitApplies() { return true; } function lensOpenCandidates() { return []; }
+var currentStep = 1, WIZ = { lens: 1 }, renders = 0;
+function renderLens() { renders++; renderLensHint(); }
+var handle = { dataset: { line: '1', point: '2' } };
+var focusEvent = { target: { closest: function() { return handle; } } };
+"""
+
+
+@pytest.mark.parametrize(
+    ("before", "selected", "held", "renders", "steps"),
+    [
+        ("", {"line": 1, "point": 2}, True, 1, [3, 4, 0, 4]),
+        ("lensSelected = { line: 1, point: 2 };", {"line": 1, "point": 2}, True, 1, [3, 4, 0, 4]),
+        ("lensSelected = { line: 1, point: 2 }; lensHold = true;", {"line": 1, "point": 2}, True, 0, [3, 4, 0, 4]),
+        ("lensSelected = { line: 1, point: null }; lensRefocus = true;", {"line": 1, "point": None}, False, 0, []),
+        ("lensDrag = {};", None, False, 0, []),
+    ],
+    ids=["reached with Tab", "its hold ended", "already held", "a redraw giving the focus back", "a press"],
+)
+def test_a_point_reached_with_tab_is_selected_and_held(
+    before: str, selected: dict | None, held: bool, renders: int, steps: list
+) -> None:
+    out = run_wizard_js(
+        "(function() { " + before + " lensPointFocusIn(focusEvent); lensRefocus = false;"
+        " var got = [lensSelected, lensHold, renders, lensHintText], seq = [];"
+        " if (lensHold) [false, false, false, true].forEach(function(shift) {"
+        " lensTabKey({ key: 'Tab', shiftKey: shift, preventDefault: function() {}, stopPropagation: function() {} });"
+        " seq.push(lensSelected.point); });"
+        " return got.concat([seq]); })()",
+        functions=("esc", "renderLensHint", "lensPointFocusIn", "lensTabKey"),
+        prelude="var lensSelected = null, lensHold = false, lensRefocus = false, lensDrag = null;" + _POINT_FOCUS_PAGE,
+    )
+    hint = "Move the point exactly onto the edge." if held else ""
+    # Held as one clicked: the loupe and the hint are on it, and Tab steps along its line, round to the start.
+    assert out == [selected, held, renders, hint if renders else "", steps]
+
+
+@pytest.mark.parametrize(
+    ("held", "connected", "on_point", "dropped"),
+    [
+        (True, True, False, 1),
+        (True, False, False, 0),
+        (True, True, True, 0),
+        (False, True, False, 0),
+    ],
+    ids=["focus elsewhere", "the old handle of a redraw", "another point", "nothing held"],
+)
+def test_a_held_point_is_dropped_by_a_focus_elsewhere_only(
+    held: bool, connected: bool, on_point: bool, dropped: int
+) -> None:
+    out = run_wizard_js(
+        "(function() { lensFocusElsewhere({ target: { isConnected: connected,"
+        " closest: function() { return onPoint ? {} : null; } } }); return drops; })()",
+        functions=("lensFocusElsewhere",),
+        prelude=f"var lensHold = {json.dumps(held)}, drops = 0; function dropLensPoint() {{ drops++; }}",
+        connected=connected,
+        onPoint=on_point,
+    )
+    assert out == dropped
+
+
+_REFOCUS_PAGE = r"""
+var document = { querySelector: function(sel) {
+  var m = /data-line="(\d+)"\]\[data-point="(\d+)"/.exec(sel);
+  return m && { focus: function() { focused = 'line ' + m[1] + ' point ' + m[2]; refocusing = lensRefocus; } };
+} };
+"""
+
+
+@pytest.mark.parametrize(
+    ("selected", "focused"),
+    [({"line": 1, "point": 3}, "line 1 point 3"), ({"line": 1, "point": None}, "line 1 point 0"), (None, None)],
+    ids=["a point", "a whole line", "nothing"],
+)
+def test_a_redraw_gives_the_focus_back_to_the_selection_without_selecting_anew(
+    selected: dict | None, focused: str | None
+) -> None:
+    out = run_wizard_js(
+        "(function() { lensSelected = selected; lensFocusSelected(); return [focused, refocusing, lensRefocus]; })()",
+        functions=("lensFocusSelected", "lensFocusEl"),
+        prelude="var lensSelected = null, lensRefocus = false, focused = null, refocusing = null;" + _REFOCUS_PAGE,
+        selected=selected,
+    )
+    assert out == [focused, None if focused is None else True, False]
+
+
 # ---------------------------------------------------------------------------
 # Lens: the hint box
 # ---------------------------------------------------------------------------
@@ -1816,7 +1987,7 @@ def test_the_lens_tab_key_steps_through_the_points_of_its_line() -> None:
 _HINT_PAGE = """
 var els = {};
 function $(id) { if (!els[id]) els[id] = { innerHTML: '' }; return els[id]; }
-var lensHintText = '';
+var lensHintText = '', lensHintHtml = '';
 function lensFitApplies(fit) { return fit.rating !== 'low'; }
 function lensOpenCandidates() { return state.open; }
 var S = { lensLoaded: state.loaded }, lensPending = state.pending, lensHold = state.hold, lensSelected = state.sel;
@@ -1925,6 +2096,59 @@ def test_the_lens_hint_names_the_one_next_thing_to_do(state: dict, heading: str,
     assert out == [f'{heading}<div class="notice-sub">{sub}</div>', heading]
 
 
+# The hint box and the full-screen bar, on a page that counts every write to their words.
+_LIVE_PAGE = """
+var els = {}, writes = {};
+function $(id) {
+  if (!els[id]) {
+    var words = { innerHTML: '', textContent: '' };
+    els[id] = { classList: { toggle: function() {} } };
+    ['innerHTML', 'textContent'].forEach(function(k) {
+      Object.defineProperty(els[id], k, { get: function() { return words[k]; },
+        set: function(v) { words[k] = v; writes[id] = (writes[id] || 0) + 1; } });
+    });
+  }
+  return els[id];
+}
+var lensHintText = '', lensHintHtml = '', FS = { key: 'lens' }, loupe = 'shown';
+function lensFitApplies(fit) { return fit.rating !== 'low'; }
+function lensOpenCandidates() { return []; }
+function hideLoupe() { loupe = 'hidden'; }
+var S = { lensLoaded: null }, lensPending = null, lensHold = true, lensSelected = { line: 0, point: 2 };
+var lensLines = [{ misfit: false }], lensFit = null;
+"""
+_LIVE = ("esc", "renderLensHint", "renderFsBar", "dropLensPoint")
+
+
+@pytest.mark.parametrize("full_screen", [True, False], ids=["full screen", "on the page"])
+def test_ending_a_hold_moves_the_hint_and_the_full_screen_bar_on(full_screen: bool) -> None:
+    out = run_wizard_js(
+        "(function() { if (!fs) FS = null; renderLensHint(); renderFsBar(); var before = $('fs-hint').textContent;"
+        " dropLensPoint(); return [before, $('lens-hint').innerHTML, $('fs-hint').textContent, loupe]; })()",
+        functions=_LIVE,
+        prelude=_LIVE_PAGE,
+        fs=full_screen,
+    )
+    before, hint, bar, loupe = out
+    # A click or a focus elsewhere ends the hold without a redraw of the lines: the words still follow it.
+    assert before == ("Move the point exactly onto the edge." if full_screen else "")
+    assert hint.startswith("Draw more straight lines.<div")
+    assert bar == ("Draw more straight lines." if full_screen else "")
+    assert loupe == "hidden"
+
+
+def test_the_hint_and_the_full_screen_bar_are_only_rewritten_when_their_words_change() -> None:
+    out = run_wizard_js(
+        "(function() { var seen = [];"
+        " function draw() { renderLensHint(); renderFsBar(); seen.push([writes['lens-hint'], writes['fs-hint']]); }"
+        " draw(); draw(); lensHold = false; draw(); draw(); return seen; })()",
+        functions=_LIVE,
+        prelude=_LIVE_PAGE,
+    )
+    # Both are polite live regions: a redraw with the same words is not read out again.
+    assert out == [[1, 1], [1, 1], [2, 2], [2, 2]]
+
+
 @pytest.mark.parametrize(
     ("rating", "label"),
     [("excellent", "Excellent"), ("good", "Good"), ("okay", "Fair"), ("medium", "Poor"), ("low", "Not usable")],
@@ -2001,13 +2225,25 @@ def test_simples_steps_open_in_order(rect: dict, loc: str, open_upto: int) -> No
     assert (out["tip"], out["refresh"]) == (not picture, not picture)
 
 
+_READY = {**_EMPTY, "w": "12", "d": "6", "origin": "dsc"}
+
+
 @pytest.mark.parametrize(
-    ("moved", "reset_shown", "next_on"),
-    [((False,) * 4, False, False), ((True, False, False, False), True, False), ((True,) * 4, True, True)],
-    ids=["none placed", "one placed", "all placed"],
+    ("rect", "moved", "reset_shown", "next_on"),
+    [
+        (_READY, (False,) * 4, False, False),
+        (_READY, (True, False, False, False), True, False),
+        (_READY, (True,) * 4, True, True),
+        ({**_READY, "origin": ""}, (True,) * 4, False, False),
+        ({**_READY, "d": "300"}, (True,) * 4, False, False),
+        ({**_READY, "w": ""}, (True, False, False, False), False, False),
+    ],
+    ids=["none placed", "one placed", "all placed", "no origin again", "a size out of range again", "no size again"],
 )
-def test_reset_corners_and_next_wait_for_the_corners(moved: tuple, reset_shown: bool, next_on: bool) -> None:
-    out = _locks("simple", {**_EMPTY, "w": "12", "d": "6", "origin": "dsc"}, moved=moved)
+def test_reset_corners_and_next_wait_for_the_corners(
+    rect: dict, moved: tuple, reset_shown: bool, next_on: bool
+) -> None:
+    out = _locks("simple", rect, loc="back", moved=moved)
     assert (out["reset"], out["next"]) == (not reset_shown, not next_on)
 
 

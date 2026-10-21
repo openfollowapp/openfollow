@@ -427,7 +427,7 @@ def test_twelve_marks_are_accepted(base: str) -> None:
 def test_a_solve_older_than_one_already_asked_for_is_dropped(base: str) -> None:
     page, other = _page(), _page()
     assert _solve(base, _body(solve_page=page, solve_seq=7))[0] == 200
-    assert _solve(base, _body(solve_page=page, solve_seq=6)) == (409, {"error": "A newer solve was asked for."})
+    assert _solve(base, _body(solve_page=page, solve_seq=6)) == (409, {"error": "A newer calculation was requested."})
     assert _solve(base, _body(solve_page=other, solve_seq=1))[0] == 200
     assert _solve(base, _body(solve_page=page, solve_seq=7))[0] == 200
 
@@ -453,7 +453,7 @@ def test_a_fit_overtaken_while_it_runs_is_dropped(base: str, monkeypatch: pytest
         return real(*args, **kwargs)
 
     monkeypatch.setattr(cp, "solve_marks", overtaken)
-    assert _solve(base, _body(solve_page=page, solve_seq=7)) == (409, {"error": "A newer solve was asked for."})
+    assert _solve(base, _body(solve_page=page, solve_seq=7)) == (409, {"error": "A newer calculation was requested."})
     assert newer == [200]
 
 

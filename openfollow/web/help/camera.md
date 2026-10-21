@@ -2,7 +2,7 @@
 
 Where the real camera sits in the venue and which lens it uses. OpenFollow uses these to project tracked points into stage coordinates, so they must match the physical rig.
 
-The easiest way to set them is the **Setup Wizard** (the Open Setup Wizard button on the General or Camera & Grid tab), which solves position, orientation, and field of view from marks on the stage pinned on the picture: the four corners of a measured rectangle (**Simple**), or known points and distance points (**Advanced**). The fields here are for direct edits and fine-tuning.
+The easiest way to set them is the **Setup Wizard** (the Open Setup Wizard button on the General or Camera & Grid tab), which calculates position, orientation, and field of view from marks on the stage pinned on the picture: the four corners of a measured rectangle (**Simple**), or known points and distance points (**Advanced**). The fields here are for entering or adjusting the values by hand.
 
 Positions are in **metres**, relative to the **Reference Point** – the single physical point on stage that is the (0, 0, 0) of your show (see Core Concepts). Orientation is in **degrees**.
 
@@ -20,7 +20,7 @@ Think of the camera on a pan-and-tilt head: yaw swings it round to face the stag
 - **Yaw** – which way the camera faces, as a compass bearing on the stage floor. `0` looks straight upstage, `180` is a camera hung upstage looking back towards the audience, and `−90` / `90` are box-boom positions looking across the stage.
 - **Roll** – rotation around the lens axis. Leave at `0` unless the camera is physically canted.
 
-If the overlay doesn't sit on the video on a camera whose yaw isn't `0`, re-run the **Setup Wizard** – it resolves the orientation from the pinned marks rather than from the stored angles.
+If the overlay doesn't sit on the video on a camera whose yaw isn't `0`, re-run the **Setup Wizard** – it calculates the orientation from the pinned marks rather than from the stored angles.
 
 ## Lens
 
@@ -42,7 +42,7 @@ Wide-angle and fisheye lenses bow straight lines, so the pinhole overlay (grid, 
 
 The correction is centred on the middle of the image. Mouse placement and AI tracking are corrected to match, so clicking a point in the video still lands the marker there. `0` / `0` disables the correction (plain pinhole).
 
-The one limit on the pair is that the overlay must not fold anywhere out to the frame corner. The form checks the pair whenever either value or its slider changes and keeps **Save** disabled while it folds; a pair from a hand-edited file, an earlier release or a request that skips the form is pulled back along its own direction to just short of the fold, so it keeps most of its correction, and the log says which pair it became. There is no fixed range: a lens with about 100° horizontal field of view on 16:9 lands around `-0.47` barrel / fisheye and `0.25` corner correction, and the sliders cover the common span while the number fields accept any pair that does not fold. The Setup Wizard's camera solve undistorts the pins with the current pair, so a lens changed after pinning is solved again from the same pins.
+The one limit on the pair is that the overlay must not fold anywhere out to the frame corner. The form checks the pair whenever either value or its slider changes and keeps **Save** disabled while it folds; a pair from a hand-edited file, an earlier release or a request that skips the form is pulled back along its own direction to just short of the fold, so it keeps most of its correction, and the log says which pair it became. There is no fixed range: a lens with about 100° horizontal field of view on 16:9 lands around `-0.47` barrel / fisheye and `0.25` corner correction, and the sliders cover the common span while the number fields accept any pair that does not fold. The Setup Wizard corrects the pins for the current pair when it calculates the camera, so after a lens change the camera is calculated again from the same pins.
 
 ## Calibration
 

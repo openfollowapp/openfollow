@@ -1431,6 +1431,8 @@
   var lensHot = -1;          // the suggestion pointed at, by its bubble or its line
   var lensFocusAfter = null; // after a choice by keyboard: {i, cls} of the bubble button that had the focus
   var lensHintText = '';
+  var lensHintHtml = '';
+  var lensRefocus = false;   // a redraw is giving the focus back: no new selection
   var lensImageSize = null;  // [w, h] the lines were traced on
   var lensPending = null;    // first click of a line being traced
   var lensSelected = null;   // {line, point} with point 0..4
@@ -1879,7 +1881,8 @@
     var sx = r.width / imageWidth, sy = r.height / imageHeight, open = lensOpenCandidates();
     var lines = lensCandidates.map(function(c) { return c.points.map(function(q) { return [q[0] * sx, q[1] * sy]; }); });
     shapes.classList.toggle('has-hot', lensHot >= 0);
-    lensPlaceBubbles(lines, open, r.width, r.height).forEach(function(b) {
+    // Placed longest line first, entered in suggestion order: Tab and the focus after a choice go the same way.
+    lensPlaceBubbles(lines, open, r.width, r.height).sort(function(a, b) { return a.i - b.i; }).forEach(function(b) {
       var hot = lensHot === b.i ? ' hot' : '';
       shapes.insertAdjacentHTML('beforeend', '<path class="lens-tail' + hot + '" data-candidate="' + b.i + '" d="' + lensBubbleOutline(b.x, b.y, b.side, b.at) + '"/>');
       box.insertAdjacentHTML('beforeend', '<div class="lens-bubble' + hot + '" role="group" aria-label="Suggested line ' + (b.i + 1) + '" data-candidate="' + b.i + '" style="left:' + b.x.toFixed(1) + 'px;top:' + b.y.toFixed(1) + 'px;">' +
@@ -1889,6 +1892,12 @@
     var to = lensFocusTarget(open, keep);
     var btn = to != null && box.querySelector('[data-candidate="' + to + '"] .' + keep.cls);
     if (btn) btn.focus({ preventScroll: true });
+    else if (keep && keep.same == null) lensFocusLineOrPicture(keep.cls === 'lb-use');
+  }
+  // The last suggestion decided by keyboard: the focus goes to the start of the line just used, else to the picture.
+  function lensFocusLineOrPicture(used) {
+    var h = used && lensSelected && document.querySelector('#lens-lines .lens-point[data-line="' + lensSelected.line + '"][data-point="0"]');
+    lensFocusEl(h || $('lens-overlay'));
   }
   // The suggestion whose bubble takes the focus back: the same one after a redraw, else after a choice the next
   // open one, round to the first.
@@ -1922,13 +1931,14 @@
     else if (applied && agree.test(hint)) { h = 'The result may already be good.'; sub = hint.replace(agree, '') + ' Or press Next.'; }
     else if (applied) { h = 'Improve the lines, or add more.'; sub = 'Select a point and move it exactly onto the edge. Lines near the edges and corners of the picture help the most.' + cov; }
     else { h = 'Draw more straight lines.'; sub = 'Click the start and the end of a straight edge. Then move its points exactly onto the edge.' + cov; }
-    $('lens-hint').innerHTML = esc(h) + '<div class="notice-sub">' + esc(sub) + '</div>';
+    // A polite live region: rewritten only when its words change, so a redraw is not read out again.
+    var html = esc(h) + '<div class="notice-sub">' + esc(sub) + '</div>';
+    if (html !== lensHintHtml) { $('lens-hint').innerHTML = html; lensHintHtml = html; }
     lensHintText = h;
   }
 
   function renderLens() {
     renderLensCandidates();
-    renderLensBubbles();
     var g = document.getElementById('lens-lines');
     // Rebuilding the handles drops a focused one, which would leave the keys dead after a click.
     var hadFocus = g.contains(document.activeElement);
@@ -1960,6 +1970,7 @@
       for (var j = 0; j < 5; j++) group.appendChild(lensHandle(line, i, j, px));
       g.appendChild(group);
     });
+    renderLensBubbles();
     var pending = document.getElementById('lens-pending');
     pending.innerHTML = '';
     if (lensPending) {
@@ -1983,14 +1994,19 @@
     var sel = lensSelected, line = sel && sel.point != null && lensLines[sel.line];
     var el = line && document.querySelector('#lens-lines .lens-point[data-line="' + sel.line + '"][data-point="' + sel.point + '"]');
     if (!el) { dropLensPoint(); return; }
-    if (document.activeElement !== el) el.focus({ preventScroll: true });
+    if (document.activeElement !== el) lensFocusEl(el);
     showLoupe('lens-container', 'lens-overlay', lensPointPos(line, sel.point));
   }
-  function dropLensPoint() { if (!lensHold) return; lensHold = false; hideLoupe('lens-container'); }
+  function dropLensPoint() { if (!lensHold) return; lensHold = false; hideLoupe('lens-container'); renderLensHint(); renderFsBar(); }
+  // A selected line without a point keeps the focus on its start.
   function lensFocusSelected() {
     if (!lensSelected) return;
-    var h = document.querySelector('.lens-point[data-line="' + lensSelected.line + '"][data-point="' + lensSelected.point + '"]');
-    if (h) h.focus({ preventScroll: true });
+    var h = document.querySelector('#lens-lines .lens-point[data-line="' + lensSelected.line + '"][data-point="' + (lensSelected.point == null ? 0 : lensSelected.point) + '"]');
+    if (h) lensFocusEl(h);
+  }
+  function lensFocusEl(el) {
+    lensRefocus = true;
+    try { el.focus({ preventScroll: true }); } finally { lensRefocus = false; }
   }
   // Move the handles and chord of one line without rebuilding the DOM, so a
   // drag keeps its focus and pointer capture.
@@ -2218,6 +2234,20 @@
     lensSelected = { line: lensSelected.line, point: (lensSelected.point + (e.shiftKey ? 4 : 1)) % 5 };
     renderLens();
   }
+  // A point reached with Tab is selected and held, as one clicked: the loupe shows it, and Tab steps along its line.
+  function lensPointFocusIn(e) {
+    var h = e.target.closest ? e.target.closest('.lens-point') : null;
+    if (!h || lensRefocus || lensDrag) return;
+    var line = +h.dataset.line, point = +h.dataset.point;
+    if (lensHold && lensSelected && lensSelected.line === line && lensSelected.point === point) return;
+    lensSelected = { line: line, point: point };
+    lensHold = true;
+    renderLens();
+  }
+  // A focus that held a point redrew the points: its event still reaches here from the old, detached handle.
+  function lensFocusElsewhere(e) {
+    if (lensHold && e.target.isConnected && !e.target.closest('#lens-lines .lens-point')) dropLensPoint();
+  }
   function lensInit() {
     var overlay = document.getElementById('lens-overlay');
     overlay.addEventListener('pointerdown', function(e) {
@@ -2277,15 +2307,7 @@
     }
     overlay.addEventListener('pointerup', endDrag);
     overlay.addEventListener('pointercancel', endDrag);
-    // A point reached with Tab is the selected one, so the toolbar acts on what has the focus.
-    overlay.addEventListener('focusin', function(e) {
-      var h = e.target.closest ? e.target.closest('.lens-point') : null;
-      if (!h) return;
-      var line = +h.dataset.line, point = +h.dataset.point;
-      if (lensSelected && lensSelected.line === line && lensSelected.point === point) return;
-      lensSelected = { line: line, point: point };
-      renderLens();
-    });
+    overlay.addEventListener('focusin', lensPointFocusIn);
     overlay.addEventListener('keydown', function(e) {
       var handle = e.target.closest ? e.target.closest('.lens-point') : null;
       if (!handle) return;
@@ -2348,7 +2370,7 @@
     });
     document.addEventListener('keydown', lensTabKey, true);
     document.addEventListener('pointerdown', function(e) { if (lensHold && !e.target.closest('#lens-lines .lens-point')) dropLensPoint(); }, true);
-    document.addEventListener('focusin', function(e) { if (lensHold && !e.target.closest('#lens-lines .lens-point')) dropLensPoint(); });
+    document.addEventListener('focusin', lensFocusElsewhere);
     // The bubbles: the check uses its suggestion, the cross rejects it; pointing at one lights up its line.
     var bubbles = $('lens-bubbles'), cands = $('lens-candidates');
     bubbles.addEventListener('click', function(e) {
@@ -2725,10 +2747,10 @@
     });
     document.querySelectorAll('#step-calib .wizard-tip.only-simple').forEach(function(el) { el.classList.toggle('step-locked', simple && !done3); });
     $('cal-refresh').disabled = simple && !done3;
-    // Reset Corners only once a corner has been moved.
-    $('cal-reset').hidden = simple && !CORNERS.some(function(c) { return S.cornerMoved[c]; });
-    // Simple's Next waits for every corner to be placed: dragged, moved with the keys, or confirmed with Enter.
-    $('cal-next').disabled = simple && !CORNERS.every(function(c) { return S.cornerMoved[c]; });
+    // Reset Corners only on an open step 4, once a corner has been moved.
+    $('cal-reset').hidden = simple && (!done3 || !CORNERS.some(function(c) { return S.cornerMoved[c]; }));
+    // Simple's Next waits for an open step 4 and every corner placed: dragged, moved with the keys, or confirmed with Enter.
+    $('cal-next').disabled = simple && (!done3 || !CORNERS.every(function(c) { return S.cornerMoved[c]; }));
   }
   function renderSimpleReq() {
     var rv0 = rectVals(), diagOk = !isNaN(rv0.w) && !isNaN(rv0.d) && rv0.w > 0 && rv0.d > 0;
@@ -3489,7 +3511,8 @@
       title = 'Review';
       hint = S.solve && S.solve.cam ? 'The green grid is the one the Operator Screen will draw.' : 'The camera is not calculated yet.';
     }
-    $('fs-title').textContent = title; $('fs-hint').textContent = hint;
+    $('fs-title').textContent = title;
+    if ($('fs-hint').textContent !== hint) $('fs-hint').textContent = hint;
     $('fs-status').textContent = status; $('fs-status').classList.toggle('warn', warn);
     $('fs-actions').innerHTML = actions;
   }

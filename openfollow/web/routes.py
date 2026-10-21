@@ -3711,7 +3711,7 @@ def _wizard_marks(
     return marks
 
 
-_SUPERSEDED = json.dumps({"error": "A newer solve was asked for."})
+_SUPERSEDED = json.dumps({"error": "A newer calculation was requested."})
 
 
 class _WizardSolveTurns:

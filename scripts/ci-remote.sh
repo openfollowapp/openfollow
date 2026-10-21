@@ -13,7 +13,8 @@
 # `make ci` in its already-installed poetry env (no fresh install – a fresh
 # trixie venv would recompile rtmidi/pycairo from source), then restore the Pi
 # to its exact pre-run commit. Device-local ignored files (config.toml, models)
-# are excluded from the sync, so they are neither overwritten nor deleted.
+# are excluded from the sync, so they are neither overwritten nor deleted. An
+# interrupted gate stops its own run on the Pi before that restore.
 #
 # Env overrides:
 #   OPENFOLLOW_CI_HOSTS  space-separated candidate hosts, first reachable wins
@@ -105,11 +106,45 @@ log "Testing Pi reachable at ${HOST}."
 
 remote() { ssh "${SSH_OPTS[@]}" "${SSH_USER}@${HOST}" "$@"; }
 
+# A gate step runs as its own process group on the Pi, recorded so an interrupted gate
+# (Ctrl-C, a dropped connection) stops exactly that run before restoring the checkout,
+# and so the next gate refuses while it is still running. sshd starts each command as
+# a session leader, so the remote shell's pid is the group id.
+RUN_FILE=".git/ci-remote.pid"
+# Sets pid to the recorded group; never 0 or 1, which kill reads as "every process".
+READ_RUN="pid=\$(cat $RUN_FILE 2>/dev/null) && case \$pid in ''|*[!0-9]*|0*|1) false ;; esac"
+
+remote_run() {
+  remote "export PATH=\$HOME/.local/bin:\$PATH; cd '$REMOTE_DIR' && echo \$\$ > $RUN_FILE && $1"
+}
+
+# Ends the recorded run, TERM then KILL; fails only while it is still running.
+stop_run() {
+  remote "cd '$REMOTE_DIR' || exit 1
+    $READ_RUN || { rm -f $RUN_FILE; exit 0; }
+    for sig in TERM KILL; do
+      kill -\$sig -\$pid 2>/dev/null
+      n=0
+      while [ \$n -lt 50 ]; do
+        kill -0 -\$pid 2>/dev/null || { rm -f $RUN_FILE; exit 0; }
+        sleep 0.2
+        n=\$((n + 1))
+      done
+    done
+    exit 1"
+}
+
 # Guard: a missing repo, or a dirty Pi checkout we'd silently clobber. Queried
 # separately: packed into one string, an empty HEAD takes the dirty count's place.
 orig_ref="$(remote "cd '$REMOTE_DIR' 2>/dev/null && test -d .git && git rev-parse --verify -q HEAD" || true)"
 if [ -z "$orig_ref" ]; then
   log "ERROR: no git checkout with a commit at ${HOST}:${REMOTE_DIR} (.git must be a directory)."
+  exit 2
+fi
+running="$(remote "cd '$REMOTE_DIR' && if $READ_RUN && kill -0 -\$pid 2>/dev/null; then echo \$pid; else rm -f $RUN_FILE; fi" || true)"
+if [ -n "$running" ]; then
+  log "ERROR: an earlier gate is still running on ${HOST}:${REMOTE_DIR} (process group ${running})."
+  log "Wait for it to end, or stop it on the Pi."
   exit 2
 fi
 if ! porcelain="$(remote "cd '$REMOTE_DIR' && git status --porcelain")"; then
@@ -156,6 +191,10 @@ rsync -az --delete \
 
 restore() {
   trap - EXIT
+  if ! stop_run; then
+    log "ERROR: the gate on ${HOST} could not be stopped, so ${REMOTE_DIR} was not restored – check it by hand."
+    return 1
+  fi
   [ -z "$perf_dir" ] || remote "rm -rf '$perf_dir'" || log "Could not remove ${HOST}:${perf_dir}."
   log "Restoring ${HOST}:${REMOTE_DIR} to ${orig_ref:0:9}"
   # `git clean -e models -e config.toml`: drop the files our sync added, but
@@ -179,12 +218,12 @@ fi
 
 log "Running 'make ci' on ${HOST} (real aarch64 / py3.13 target)"
 set +e
-remote "export PATH=\$HOME/.local/bin:\$PATH; cd '$REMOTE_DIR' && make ci"
+remote_run "make ci"
 status=$?
 perf_status=0
 if [ "$status" -eq 0 ] && [ "$PERF" = 1 ]; then
   log "Timing the Operator Screen drawing against ${perf_base:0:9} on ${HOST}"
-  remote "export PATH=\$HOME/.local/bin:\$PATH; cd '$REMOTE_DIR' && $PERF_AB '$perf_dir'"
+  remote_run "$PERF_AB '$perf_dir'"
   perf_status=$?
 fi
 set -e

@@ -33,7 +33,10 @@ make ci-remote   # Pi if reachable, else local
 
 It rsyncs the working tree onto the Pi, runs `make ci` in the Pi's poetry env,
 then restores the Pi to its pre-run commit. Device-local files (`config.toml`,
-detection `models/`) are excluded from the sync. Overrides in
+detection `models/`) are excluded from the sync. An interrupted gate (Ctrl-C, a
+dropped connection) stops its own run on the Pi before restoring, and a gate
+refuses to start while an earlier one is still running there ("an earlier gate
+is still running"). Overrides in
 `scripts/ci-remote.sh`: `OPENFOLLOW_CI_HOSTS` (default
 `192.168.178.66 192.168.178.59`), `OPENFOLLOW_CI_USER`, `OPENFOLLOW_CI_DIR`,
 `OPENFOLLOW_CI_FORCE=1` (overwrite a dirty Pi), `OPENFOLLOW_CI_LOCAL=1` (force

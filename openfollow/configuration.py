@@ -656,6 +656,12 @@ def migrate_calibration_keys(camera: dict[str, Any], grid: Any) -> None:
     pins = camera.pop("corner_pins", None)
     if "calibration_marks" in camera or not (points or pins):
         return
+    # Keys that do not read as a calibration leave the station's marks alone.
+    pins_read = isinstance(pins, list) and len(pins) == 4 and all(_coerce_fixed_list(p, 2) for p in pins)
+    points_read = isinstance(points, list) and any(isinstance(e, dict) for e in points)
+    if not (pins_read or points_read):
+        _report_drops("camera.corner_pins", "the former calibration does not read; nothing taken from it")
+        return
     clamped = GridConfig(**_filter_known(GridConfig, grid if isinstance(grid, dict) else {}))
     size = [getattr(clamped, k) for k in _GRID_PLACEMENT]
     corners = grid_corner_positions(*size)

@@ -21,6 +21,7 @@ from bottle import html_escape
 import openfollow.web.discovery as discovery_module
 from openfollow.configuration import (
     DEFAULT_SHOWN_FEATURES,
+    EXPERIMENTAL_FEATURES,
     FEATURE_KEYS,
     OFFERED_FEATURES,
     PathConfig,
@@ -208,7 +209,7 @@ class TestPage:
         form = form[: form.index("</table>")]
         assert re.search(r'name="detection"[^>]*\s+checked', form)
         assert not re.search(r'name="zones"[^>]*\s+checked', form)
-        assert form.count('class="badge-experimental"') == 5
+        assert form.count('class="badge-experimental"') == len(EXPERIMENTAL_FEATURES & set(OFFERED_FEATURES)) == 4
 
     def test_the_table_has_one_row_per_feature_with_its_title_and_description(self, live_server) -> None:
         _, base = live_server

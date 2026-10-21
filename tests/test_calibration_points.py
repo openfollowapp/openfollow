@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""Calibration points: the trilateration seed, the joint adjustment and its plausibility rules,
-on the rig they exist for (an audience camera on the back truss that sees a 10 x 1.5 m stage strip)."""
+"""The Setup Wizard's camera solve from marks: trilateration, the joint fit and its plausibility,
+against a known camera so every pose assert is absolute."""
 
 from __future__ import annotations
 
@@ -10,481 +10,381 @@ import math
 import numpy as np
 import pytest
 
+from openfollow.configuration import CameraConfig
 from openfollow.scene import calibration_points as cp
-from openfollow.scene.calibration_points import CalibrationPoint, solve_with_points, trilaterate
-from openfollow.scene.solver import project_points, solve_camera_dlt, unproject_to_plane
+from openfollow.scene.calibration_points import (
+    Mark,
+    MarkFit,
+    SolveSuperseded,
+    look_at,
+    plausibility,
+    solve_marks,
+    trilaterate,
+)
+from openfollow.scene.solver import project_points
 
 pytestmark = pytest.mark.unit
 
 W, H = 1920.0, 1080.0
-# Back truss, 10 m upstage of the strip's downstage edge, 8 m up, looking downstage into the audience.
-TRUE = np.array([0.4, 10.0, 8.0, -24.0, 180.0, 0.0, 55.0])
-CORNERS = np.array([[-5.0, 0.0, 0.0], [5.0, 0.0, 0.0], [5.0, 1.5, 0.0], [-5.0, 1.5, 0.0]])  # DSL DSR USR USL
-DSL, DSR, USR, USL = (tuple(c) for c in CORNERS)
-AUDIENCE = np.array([[x, y, 0.0] for x in (-6.0, 0.0, 6.0) for y in (-5.0, -10.0, -20.0, -30.0, -40.0)])
+# Upstage on a truss, 12 m up, looking downstage at a 12 x 6 m rectangle.
+TRUE = np.array([0.0, 13.0, 12.0, -48.0, 180.0, 0.0, 70.0])
+DSL, DSR, USR, USL = (6.0, 0.0, 0.0), (-6.0, 0.0, 0.0), (-6.0, 6.0, 0.0), (6.0, 6.0, 0.0)
 
 
-def _pins(points: np.ndarray) -> np.ndarray:
-    return project_points(TRUE, points, W, H)
+def _pin(place, camera=TRUE) -> tuple[float, float]:
+    x, y = project_points(camera, np.array([place], dtype=np.float64), W, H)[0]
+    return float(x), float(y)
 
 
-def _point(where, a=DSL, b=DSR, *, height=0.0, err_a=0.0, err_b=0.0, pin_err=(0.0, 0.0)) -> CalibrationPoint:
-    place = np.array([where[0], where[1], height])
-    pin = _pins(place[None])[0] + np.array(pin_err)
-    return CalibrationPoint(
-        corner_a=a,
-        corner_b=b,
-        distance_a=float(np.linalg.norm(place - np.array(a))) + err_a,
-        distance_b=float(np.linalg.norm(place - np.array(b))) + err_b,
-        height=height,
-        pin=(float(pin[0]), float(pin[1])),
+def _known(mark_id: int, place, *, pinned: bool = True, typed=None) -> Mark:
+    """A known mark at ``place``, typed as ``typed`` when that differs (a typing slip)."""
+    x, y, z = typed if typed is not None else place
+    return Mark(mark_id, "known", z, (x, y), pin=_pin(place) if pinned else None)
+
+
+def _triangulated(mark_id: int, place, a: tuple[int, tuple], b: tuple[int, tuple], err_a: float = 0.0) -> Mark:
+    (from_a, at_a), (from_b, at_b) = a, b
+    return Mark(
+        mark_id,
+        "triangulated",
+        place[2],
+        from_a=from_a,
+        from_b=from_b,
+        distance_a=math.dist(place, at_a) + err_a,
+        distance_b=math.dist(place, at_b),
+        pin=_pin(place),
     )
 
 
-def _params(cam) -> np.ndarray:
-    return np.array([cam.pos_x, cam.pos_y, cam.pos_z, cam.pitch, cam.yaw, cam.roll, cam.fov])
+def _pose(camera: CameraConfig) -> np.ndarray:
+    return np.array([camera.pos_x, camera.pos_y, camera.pos_z, camera.pitch, camera.yaw, camera.roll, camera.fov])
 
 
-def _far_error(params: np.ndarray) -> np.ndarray:
-    """Metres between each audience spot and where ``params`` puts its true pixel on the floor."""
-    back = unproject_to_plane(params, _pins(AUDIENCE), W, H, 0.0)
-    return np.linalg.norm(back[:, :2] - AUDIENCE[:, :2], axis=1)
+def _assert_true_camera(camera: CameraConfig | None, tol: float = 1e-4) -> None:
+    assert camera is not None
+    np.testing.assert_allclose(_pose(camera), TRUE, atol=tol)
+
+
+def _simple(*, off_px: tuple[float, float] = (0.0, 0.0)) -> list[Mark]:
+    marks = [_known(i, place) for i, place in enumerate((DSL, DSR, USR, USL), start=1)]
+    pin = marks[0].pin
+    assert pin is not None
+    marks[0] = Mark(1, "known", 0.0, (DSL[0], DSL[1]), pin=(pin[0] + off_px[0], pin[1] + off_px[1]))
+    return marks
+
+
+# Advanced: a reference point and DSL known, two points measured from them, the second from the first.
+REF = (0.0, 0.0, 0.0)
+P3, P4 = (2.0, 4.0, 0.0), (-3.0, 5.0, 0.5)
+
+
+def _advanced(err_a: float = 0.0) -> list[Mark]:
+    return [
+        _known(1, REF),
+        _known(2, DSL),
+        _triangulated(3, P3, (1, REF), (2, DSL)),
+        _triangulated(4, P4, (3, P3), (1, REF), err_a=err_a),
+    ]
 
 
 class TestTrilaterate:
-    def test_the_two_places_are_mirror_images_across_the_corners(self) -> None:
-        first, second = trilaterate(DSL, DSR, math.hypot(1.0, 3.0), math.hypot(9.0, 3.0), 0.0)
-        assert sorted([tuple(np.round(first, 9)), tuple(np.round(second, 9))]) == [(-4.0, -3.0, 0.0), (-4.0, 3.0, 0.0)]
+    def test_two_circles_meet_at_mirror_images_across_the_line_between_their_points(self) -> None:
+        first, second = trilaterate(REF, DSL, 5.0, 5.0, 0.0)
+        assert {tuple(np.round(p, 9)) for p in (first, second)} == {(3.0, 4.0, 0.0), (3.0, -4.0, 0.0)}
 
-    def test_two_corners_at_one_place_give_a_reason_not_a_division_by_zero(self) -> None:
-        assert trilaterate(DSL, DSL, 5.0, 5.0, 0.0) == cp.REASON_SAME_PLACE
-
-    def test_a_point_above_stage_level_takes_its_height(self) -> None:
-        places = trilaterate(DSL, DSR, math.sqrt(1 + 9 + 4), math.sqrt(81 + 9 + 4), 2.0)
-        assert {tuple(np.round(p, 9)) for p in places} == {(-4.0, -3.0, 2.0), (-4.0, 3.0, 2.0)}
-
-    @pytest.mark.parametrize(
-        ("distance_a", "distance_b", "height", "reason"),
-        [
-            (1.0, 30.0, 0.0, cp.REASON_DIFFER),
-            (3.0, 3.0, 0.0, cp.REASON_SHORT),
-            (1.0, 12.0, 1.5, cp.REASON_HEIGHT),
-        ],
-    )
-    def test_distances_that_place_it_nowhere_say_why(self, distance_a, distance_b, height, reason) -> None:
-        assert trilaterate(DSL, DSR, distance_a, distance_b, height) == reason
+    def test_a_point_above_its_two_points_takes_its_height(self) -> None:
+        places = trilaterate(REF, DSL, math.sqrt(25 + 4), math.sqrt(25 + 4), 2.0)
+        assert not isinstance(places, str)
+        assert {tuple(np.round(p, 9)) for p in places} == {(3.0, 4.0, 2.0), (3.0, -4.0, 2.0)}
 
     @pytest.mark.parametrize(
         ("distance_a", "distance_b", "x"),
         [
-            (15.1, 5.0, 10.05),  # b's circle inside a's, beyond b
-            (5.0, 15.1, -10.05),  # a's circle inside b's, beyond a
-            (4.95, 4.95, 0.0),  # apart, between the corners
+            (2.95, 2.95, 3.0),  # 10 cm apart: midway between the facing edges
+            (9.1, 3.0, 9.05),  # b's circle 10 cm inside a's: midway between the far edges
+            (3.0, 9.1, -3.05),  # a's circle inside b's
         ],
     )
-    def test_circles_that_just_miss_meet_midway_across_the_gap(self, distance_a, distance_b, x) -> None:
-        """A point on the line through both corners: noise makes the circles miss by a few cm."""
-        first, second = trilaterate(DSL, DSR, distance_a, distance_b, 0.0)
-        assert first == pytest.approx((x, 0.0, 0.0))
-        assert second == pytest.approx((x, 0.0, 0.0))
-
-
-class TestTheJointAdjustment:
-    def test_exact_measurements_give_back_the_camera_and_the_points(self) -> None:
-        points = [_point((-4.0, -20.0)), _point((5.0, -35.0))]
-        solved = solve_with_points(CORNERS, _pins(CORNERS), points, W, H)
-        assert solved is not None
-        assert np.allclose(_params(solved.camera), TRUE, atol=1e-6)
-        assert [p.status for p in solved.points] == ["ok", "ok"]
-        assert np.allclose([p.position for p in solved.points], [(-4.0, -20.0, 0.0), (5.0, -35.0, 0.0)], atol=1e-6)
-
-    def test_a_point_above_stage_level_is_fitted_at_its_height(self) -> None:
-        points = [_point((-4.0, -20.0), height=1.2), _point((5.0, -35.0), height=-0.8)]
-        solved = solve_with_points(CORNERS, _pins(CORNERS), points, W, H)
-        assert solved is not None
-        assert np.allclose(_params(solved.camera), TRUE, atol=1e-6)
-        assert np.allclose([p.position for p in solved.points], [(-4.0, -20.0, 1.2), (5.0, -35.0, -0.8)], atol=1e-6)
-
-    @pytest.mark.parametrize("where", [(3.0, -25.0), (-13.0, -25.0)])
-    def test_the_pin_decides_between_the_mirror_images(self, where) -> None:
-        """Measured from DSL and USL the two places are mirror images across x = -5; only the pin tells."""
-        solved = solve_with_points(CORNERS, _pins(CORNERS), [_point(where, DSL, USL)], W, H)
-        assert solved is not None
-        assert solved.points[0].position == pytest.approx((*where, 0.0), abs=1e-6)
-
-    def test_two_points_cut_the_far_field_error_from_noisy_pins(self) -> None:
-        rng = np.random.default_rng(7)
-        corners_only, with_points = [], []
-        for _ in range(30):
-            pins = _pins(CORNERS) + rng.normal(0.0, 1.0, (4, 2))
-            seed = solve_camera_dlt([tuple(c) for c in CORNERS], [tuple(p) for p in pins], W, H)
-            points = [
-                _point(
-                    where,
-                    err_a=rng.normal(0.0, 0.04),
-                    err_b=rng.normal(0.0, 0.04),
-                    pin_err=rng.normal(0.0, 1.0, 2),
-                )
-                for where in ((-4.0, -20.0), (5.0, -35.0))
-            ]
-            solved = solve_with_points(CORNERS, pins, points, W, H)
-            assert seed is not None and solved is not None
-            corners_only.append(np.median(_far_error(_params(seed))))
-            with_points.append(np.median(_far_error(_params(solved.camera))))
-        assert np.median(with_points) < np.median(corners_only) / 3.0
-        assert np.median(with_points) < 0.15
-
-    def test_a_single_point_cannot_be_cross_checked(self) -> None:
-        solved = solve_with_points(CORNERS, _pins(CORNERS), [_point((-4.0, -20.0))], W, H)
-        assert solved is not None
-        assert solved.points[0].status == "unverified"
-
-    def test_without_points_it_is_the_corner_solve(self) -> None:
-        solved = solve_with_points(CORNERS, _pins(CORNERS), [], W, H)
-        assert solved is not None
-        assert solved.points == ()
-        assert np.allclose(_params(solved.camera), TRUE, atol=1e-6)
-
-
-class TestPlausibility:
-    def test_a_wrong_distance_is_flagged_when_another_point_cross_checks_it(self) -> None:
-        points = [_point((-4.0, -20.0), err_a=2.0, err_b=2.0), _point((5.0, -35.0)), _point((0.0, -28.0))]
-        solved = solve_with_points(CORNERS, _pins(CORNERS), points, W, H)
-        assert solved is not None
-        assert [p.status for p in solved.points] == ["flagged", "ok", "ok"]
-        assert solved.points[0].reason == cp.REASON_DISAGREES
-        assert np.allclose(_params(solved.camera), TRUE, atol=1e-6)
-
-    def test_of_three_the_one_whose_removal_fits_best_is_left_out(self) -> None:
-        """In a row 10 m out with the left one 1 m off, the joint fit's worst residual lands on the good
-        centre point; leaving out the left one is what makes the other two fit."""
-        points = [_point((-6.0, -10.0), err_a=1.0, err_b=1.0), _point((0.0, -10.0)), _point((6.0, -10.0))]
-        solved = solve_with_points(CORNERS, _pins(CORNERS), points, W, H)
-        assert solved is not None
-        assert [p.status for p in solved.points] == ["flagged", "ok", "ok"]
-        assert np.allclose(_params(solved.camera), TRUE, atol=1e-6)
-
-    def test_two_points_that_disagree_are_both_left_out(self) -> None:
-        """From a narrow strip neither can show the other wrong, and guessing is worse than the corners."""
-        points = [_point((-4.0, -20.0), err_a=2.0, err_b=2.0), _point((5.0, -35.0))]
-        solved = solve_with_points(CORNERS, _pins(CORNERS), points, W, H)
-        assert solved is not None
-        assert [(p.status, p.reason) for p in solved.points] == [("flagged", cp.REASON_PAIR)] * 2
-        assert np.allclose(_params(solved.camera), TRUE, atol=1e-6)
-
-    def test_a_lone_point_that_disagrees_with_the_corners_is_left_out(self) -> None:
-        """Pinned on the wrong mark: no camera puts the measured place there and the corners where they are."""
-        solved = solve_with_points(CORNERS, _pins(CORNERS), [_point((-4.0, -20.0), pin_err=(0.0, 160.0))], W, H)
-        assert solved is not None
-        assert (solved.points[0].status, solved.points[0].reason) == ("flagged", cp.REASON_DISAGREES_CORNERS)
-        assert np.allclose(_params(solved.camera), TRUE, atol=1e-6)
-
-    def test_a_lone_point_that_bends_the_camera_off_the_corners_is_left_out(self) -> None:
-        """Pinned 200 px low 30 m out, the fit meets the pin and the distances by moving the camera off
-        the corner pins: the point's own residuals stay small, the corners' do not."""
-        solved = solve_with_points(CORNERS, _pins(CORNERS), [_point((0.0, -30.0), pin_err=(0.0, 200.0))], W, H)
-        assert solved is not None
-        assert (solved.points[0].status, solved.points[0].reason) == ("flagged", cp.REASON_DISAGREES_CORNERS)
-        assert solved.points[0].residual < cp.FLAG_SIGMA
-        assert np.allclose(_params(solved.camera), TRUE, atol=1e-6)
-
-    def test_a_perfect_lone_point_is_used_beside_corners_pinned_to_their_own_accuracy(self) -> None:
-        """Corner marks on a stage floor are pinned to about 3 px; weighed like a 1 px pin, corners that far
-        off read as the lone point bending the camera, and the measurement was thrown away. The floor guard
-        lets it through too."""
-        pins = _pins(CORNERS) + np.array([[0.6, -1.6], [-1.2, -7.3], [5.4, 3.4], [-1.0, 2.3]])  # 3 px noise
-        solved = solve_with_points(CORNERS, pins, [_point((0.0, -30.0))], W, H)
-        corners_only = solve_camera_dlt([tuple(c) for c in CORNERS], [tuple(p) for p in pins], W, H)
-        assert solved is not None and corners_only is not None
-        assert solved.points[0].status == "unverified"
-        assert solved.corner_residual < cp.FLAG_SIGMA
-        assert np.median(_far_error(_params(solved.camera))) < np.median(_far_error(_params(corners_only))) / 3.0
-
-    def test_two_points_are_used_beside_corner_pins_well_off(self) -> None:
-        """They check each other; the corners' residual would only throw away what rescues the far field."""
-        pins = _pins(CORNERS) + np.array([[16.3, -20.4], [3.3, -4.5], [-3.6, -1.7], [-16.2, -1.9]])
-        points = [_point((-4.0, -20.0)), _point((5.0, -35.0))]
-        solved = solve_with_points(CORNERS, pins, points, W, H)
-        corners_only = solve_camera_dlt([tuple(c) for c in CORNERS], [tuple(p) for p in pins], W, H)
-        assert solved is not None and corners_only is not None
-        assert [p.status for p in solved.points] == ["ok", "ok"]
-        assert solved.corner_residual > cp.FLAG_SIGMA
-        assert np.median(_far_error(_params(solved.camera))) < np.median(_far_error(_params(corners_only))) / 3.0
-
-    def test_a_lone_point_that_moves_the_far_floor_is_left_out(self) -> None:
-        """Pinned 100 px low 30 m out, it fits within its sigmas, but only by putting the floor across the
-        picture more than twice as far as the corners do: the far field would land metres off."""
-        point = _point((0.0, -30.0), pin_err=(0.0, 100.0))
-        solved = solve_with_points(CORNERS, _pins(CORNERS), [point], W, H)
-        assert solved is not None
-        assert (solved.points[0].status, solved.points[0].reason) == ("flagged", cp.REASON_FLOOR)
-        assert solved.points[0].residual < cp.FLAG_SIGMA and solved.corner_residual < cp.FLAG_SIGMA
-        assert np.allclose(_params(solved.camera), TRUE, atol=1e-6)
-
-    def test_a_correct_lone_point_passes_the_floor_check_near_the_horizon(self) -> None:
-        """Tilted up, the picture's top reaches floor far beyond the points, which the corners alone put
-        anywhere: only floor within reach of the points is asked about, or good points would be left out."""
-        true = TRUE.copy()
-        true[3] = -17.0
-        pins = project_points(true, CORNERS, W, H) + np.array([[0.4, -0.4], [1.9, 0.3], [-1.6, 1.1], [3.9, 2.8]])
-        place = np.array([0.0, -30.0, 0.0])
-        pin = project_points(true, place[None], W, H)[0]
-        point = CalibrationPoint(
-            DSL, DSR, *(float(np.linalg.norm(place - np.array(c))) for c in (DSL, DSR)), 0.0, (pin[0], pin[1])
-        )
-        solved = solve_with_points(CORNERS, pins, [point], W, H)
-        assert solved is not None and solved.points[0].status == "unverified"
-
-    @pytest.mark.parametrize("n", [2, 3])
-    def test_points_that_agree_and_move_the_far_floor_are_left_out(self, n: int) -> None:
-        """Pinned 120 px low the same way, they check each other fine: only the floor shows the bend."""
-        spots = [(0.0, -40.0), (6.0, -40.0), (-6.0, -40.0)][:n]
-        solved = solve_with_points(CORNERS, _pins(CORNERS), [_point(w, pin_err=(0.0, 120.0)) for w in spots], W, H)
-        assert solved is not None
-        assert [(p.status, p.reason) for p in solved.points] == [("flagged", cp.REASON_FLOOR)] * n
-        assert np.allclose(_params(solved.camera), TRUE, atol=1e-6)
-
-    @pytest.mark.parametrize("where", [(3.0, -25.0), (-13.0, -25.0)])
-    def test_a_flagged_point_shows_where_its_distances_put_it_on_the_pinned_side(self, where) -> None:
-        """Measured from DSL and USL its distances allow two mirror places; the one shown is the pinned side."""
-        wrong = _point(where, DSL, USL, err_a=2.5, err_b=2.5)
-        solved = solve_with_points(CORNERS, _pins(CORNERS), [wrong, _point((5.0, -35.0)), _point((0.0, -28.0))], W, H)
-        assert solved is not None
-        assert solved.points[0].status == "flagged"
-        assert solved.points[0].position is not None
-        assert np.sign(solved.points[0].position[0] + 5.0) == np.sign(where[0] + 5.0)
+    def test_circles_that_miss_by_the_tolerance_meet_on_the_line(self, distance_a, distance_b, x) -> None:
+        places = trilaterate(REF, DSL, distance_a, distance_b, 0.0)
+        assert not isinstance(places, str)
+        for place in places:
+            assert tuple(np.round(place, 9)) == (x, 0.0, 0.0)
 
     @pytest.mark.parametrize(
-        "point",
+        ("a", "b", "distance_a", "distance_b", "z", "reason"),
         [
-            CalibrationPoint(DSL, DSR, 1.0, 30.0, 0.0, (900.0, 700.0)),  # distances that cannot meet
-            _point((0.0, -30.0), pin_err=(0.0, 200.0)),  # disagrees with the corners
-            _point((0.0, -30.0), pin_err=(0.0, 100.0)),  # moves the far floor
+            (REF, DSL, 1.0, 6.0, 2.0, cp.REASON_HEIGHT),
+            (REF, DSL, 6.0, 1.0, -2.0, cp.REASON_HEIGHT),
+            (REF, (0.01, 0.0, 0.0), 5.0, 5.0, 0.0, cp.REASON_SAME_PLACE),
+            (REF, DSL, 10.0, 3.0, 0.0, cp.REASON_DIFFER),
+            (REF, DSL, 2.9, 2.9, 0.0, cp.REASON_SHORT),
         ],
     )
-    def test_a_point_left_out_does_not_move_the_pose(self, point) -> None:
-        """'Left out' means not used: the camera is the one the corners give without it, to the digit."""
-        pins = _pins(CORNERS) + np.random.default_rng(3).normal(0.0, 1.0, (4, 2))
-        solved = solve_with_points(CORNERS, pins, [point], W, H)
-        corners_only = solve_camera_dlt([tuple(c) for c in CORNERS], [tuple(p) for p in pins], W, H)
-        assert solved is not None and solved.points[0].status == "flagged"
-        assert solved.camera == corners_only
-        reprojected = project_points(_params(corners_only), CORNERS, W, H)
-        assert solved.corner_residual == pytest.approx(float(np.abs(reprojected - pins).max()) / cp.CORNER_SIGMA)
+    def test_distances_that_place_it_nowhere_say_why(self, a, b, distance_a, distance_b, z, reason) -> None:
+        assert trilaterate(a, b, distance_a, distance_b, z) == reason
 
-    def test_distances_that_place_a_point_nowhere_leave_it_out(self) -> None:
-        points = [
-            CalibrationPoint(DSL, DSR, 1.0, 30.0, 0.0, (900.0, 700.0)),
-            _point((5.0, -35.0)),
-            _point((0.0, -28.0)),
-        ]
-        solved = solve_with_points(CORNERS, _pins(CORNERS), points, W, H)
-        assert solved is not None
-        assert (solved.points[0].status, solved.points[0].reason, solved.points[0].position) == (
-            "flagged",
-            cp.REASON_DIFFER,
-            None,
-        )
-        assert [p.status for p in solved.points[1:]] == ["ok", "ok"]
-        assert np.allclose(_params(solved.camera), TRUE, atol=1e-6)
-
-    def test_a_point_neither_mirror_puts_in_front_of_the_camera(self) -> None:
-        """Measured along the strip's side to a place behind the camera, both mirrors are behind it."""
-        behind = _point((0.0, 14.0), DSL, USL)
-        flagged = CalibrationPoint(
-            behind.corner_a, behind.corner_b, behind.distance_a, behind.distance_b, 0.0, (960.0, 540.0)
-        )
-        solved = solve_with_points(CORNERS, _pins(CORNERS), [flagged, _point((5.0, -35.0))], W, H)
-        assert solved is not None
-        assert (solved.points[0].status, solved.points[0].reason) == ("flagged", cp.REASON_BEHIND)
-        assert solved.points[1].status == "unverified"
-
-    @pytest.mark.parametrize("second_pair", [(DSL, DSR), (DSL, USL)])
-    def test_one_spot_entered_twice_is_a_lone_point(self, second_pair) -> None:
-        """Pinned 30 px off, the same spot agrees with itself however often it is entered: it is not a
-        cross-check, so it reads as a lone point does."""
-        wrong = [_point((0.0, -30.0), pin_err=(0.0, 30.0)), _point((0.0, -30.0), *second_pair, pin_err=(0.0, 30.0))]
-        solved = solve_with_points(CORNERS, _pins(CORNERS), wrong, W, H)
-        alone = solve_with_points(CORNERS, _pins(CORNERS), wrong[:1], W, H)
-        assert solved is not None and alone is not None
-        assert [p.status for p in solved.points] == ["unverified"] * 2 == [alone.points[0].status] * 2
-
-    def test_a_spot_entered_twice_does_not_outvote_a_correct_point(self) -> None:
-        """Two entries of one wrong spot beside one correct point are two spots that disagree."""
-        wrong = _point((0.0, -30.0), pin_err=(0.0, 30.0))
-        solved = solve_with_points(CORNERS, _pins(CORNERS), [wrong, wrong, _point((5.0, -35.0))], W, H)
-        assert solved is not None
-        assert [(p.status, p.reason) for p in solved.points] == [("flagged", cp.REASON_PAIR)] * 3
-        assert np.allclose(_params(solved.camera), TRUE, atol=1e-6)
-
-    def test_of_three_spots_a_wrong_one_entered_twice_is_left_out_whole(self) -> None:
-        wrong = [_point((0.0, -30.0), pin_err=(0.0, 30.0)), _point((0.0, -30.0), DSL, USL, pin_err=(0.0, 30.0))]
-        solved = solve_with_points(CORNERS, _pins(CORNERS), [*wrong, _point((5.0, -35.0)), _point((-4.0, -20.0))], W, H)
-        assert solved is not None
-        assert [p.status for p in solved.points] == ["flagged", "flagged", "ok", "ok"]
-        assert np.allclose(_params(solved.camera), TRUE, atol=1e-6)
-
-    def test_points_placed_within_a_few_cm_are_one_spot_however_they_are_pinned(self) -> None:
-        """Pins apart but places together: the same spot pinned twice, which checks nothing either."""
-        first = _point((0.0, -30.0))
-        second = _point((0.0, -30.0), DSL, USL, pin_err=(cp.SAME_SPOT_PX + 2.0, 0.0))
-        solved = solve_with_points(CORNERS, _pins(CORNERS), [first, second], W, H)
-        assert solved is not None
-        assert [p.status for p in solved.points] == ["unverified"] * 2
-
-    def test_distinct_spots_still_check_each_other(self) -> None:
-        """Spots pinned just past the same-spot distance count as two."""
-        near = _point((-4.0, -20.0))
-        beside = _point((-3.9, -20.0))
-        assert math.dist(near.pin, beside.pin) > cp.SAME_SPOT_PX
-        solved = solve_with_points(CORNERS, _pins(CORNERS), [near, beside], W, H)
-        assert solved is not None
-        assert [p.status for p in solved.points] == ["ok", "ok"]
-
-    def test_corners_that_give_no_camera_give_no_solve(self) -> None:
-        line = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
-        assert solve_with_points(line, _pins(CORNERS), [_point((5.0, -35.0))], W, H) is None
+    def test_the_tolerance_is_the_noise_of_two_distances(self) -> None:
+        assert math.isclose(cp.MEET_TOLERANCE, 3.0 * math.sqrt(2.0) * 0.04)
+        gap = cp.MEET_TOLERANCE
+        assert not isinstance(trilaterate(REF, DSL, 3.0 - gap / 2 + 1e-6, 3.0 - gap / 2 + 1e-6, 0.0), str)
+        assert trilaterate(REF, DSL, 3.0 - gap / 2 - 1e-3, 3.0 - gap / 2 - 1e-3, 0.0) == cp.REASON_SHORT
 
 
-def _angle_gap(a: float, b: float) -> float:
-    return abs((a - b + 180.0) % 360.0 - 180.0)
+class TestLookAt:
+    def test_a_camera_upstage_looking_at_the_origin_faces_downstage_and_down(self) -> None:
+        pitch, yaw = look_at((0.0, 13.0, 12.0), (0.0, 0.0, 0.0))
+        assert yaw == pytest.approx(180.0)
+        assert pitch == pytest.approx(-math.degrees(math.atan2(12.0, 13.0)))
+        assert pitch < 0.0
 
-
-@pytest.mark.parametrize("roll", [0.0, 180.0])  # hung upright, and upside down
-def test_the_solved_angles_are_in_the_corner_solves_range(roll: float) -> None:
-    """Facing straight downstage the fit's yaw crosses +/-180 freely, an inverted camera's roll too."""
-    true = TRUE.copy()
-    true[5] = roll
-    rng = np.random.default_rng(7)
-    angles = []
-    for _ in range(20):
-        pins = project_points(true, CORNERS, W, H) + rng.normal(0.0, 1.0, (4, 2))
-        points = []
-        for where in ((-4.0, -20.0), (5.0, -35.0)):
-            place = np.array([where[0], where[1], 0.0])
-            pin = project_points(true, place[None], W, H)[0] + rng.normal(0.0, 1.0, 2)
-            to_a, to_b = (float(np.linalg.norm(place - np.array(c))) + rng.normal(0.0, 0.04) for c in (DSL, DSR))
-            points.append(CalibrationPoint(DSL, DSR, to_a, to_b, 0.0, (float(pin[0]), float(pin[1]))))
-        solved = solve_with_points(CORNERS, pins, points, W, H)
-        assert solved is not None
-        angles.append((solved.camera.yaw, solved.camera.roll))
-    assert all(-180.0 < a <= 180.0 for pair in angles for a in pair)
-    assert max(max(_angle_gap(yaw, 180.0), _angle_gap(r, roll)) for yaw, r in angles) < 1.0
-
-
-class TestTheFloorCheck:
-    """Cameras the solve cannot produce from good data, to hold each bound of the check."""
-
-    def _holds(self, camera: np.ndarray) -> bool:
-        return cp._floor_holds(TRUE, camera, 0.0, np.array([[0.0, -30.0, 0.0]]), W, H)
-
-    def test_the_corners_own_camera_holds(self) -> None:
-        assert self._holds(TRUE.copy())
+    def test_a_target_stage_left_turns_the_camera_to_a_positive_yaw(self) -> None:
+        pitch, yaw = look_at((0.0, -10.0, 5.0), (5.0, 0.0, 0.0))
+        assert yaw == pytest.approx(math.degrees(math.atan2(5.0, 10.0)))
+        assert yaw > 0.0
 
     @pytest.mark.parametrize(
-        ("pitch", "why"),
-        [(-50.0, "the floor comes more than twice as near"), (-12.0, "the far floor goes more than twice as far")],
+        ("position", "target"),
+        [
+            ((0.0, 13.0, 12.0), (0.0, 0.0, 0.0)),
+            ((4.0, -12.0, 6.0), (-2.0, 3.0, 1.0)),
+            ((-8.0, 2.0, 9.0), (3.0, 1.0, 0.0)),
+        ],
     )
-    def test_a_camera_that_moves_the_floor_too_far_fails(self, pitch: float, why: str) -> None:
-        camera = TRUE.copy()
-        camera[3] = pitch
-        assert not self._holds(camera), why
-
-    def test_a_camera_that_takes_the_far_floor_off_the_picture_fails(self) -> None:
-        """Tilted 3.5 degrees up, the top row goes past the horizon while the rows below move less than 2x."""
-        reference, camera = TRUE.copy(), TRUE.copy()
-        reference[3], camera[3] = -19.5, -16.0
-        place = np.array([[0.0, -80.0, 0.0]])
-        assert cp._floor_holds(reference, reference, 0.0, place, W, H)
-        assert not cp._floor_holds(reference, camera, 0.0, place, W, H)
+    def test_the_target_lands_in_the_middle_of_the_picture(self, position, target) -> None:
+        pitch, yaw = look_at(position, target)
+        assert _pin(target, np.array([*position, pitch, yaw, 0.0, 60.0])) == pytest.approx((W / 2, H / 2))
 
 
-class TestTheFitsGuards:
-    """What the public solve never reaches: its seed is valid by construction."""
+class TestSimple:
+    def test_four_level_corners_without_a_camera_position_give_the_camera(self) -> None:
+        solved = solve_marks(_simple(), W, H)
+        _assert_true_camera(solved.camera)
+        assert solved.error == ""
 
-    def _problem(self) -> cp._Problem:
-        return cp._Problem(CORNERS, _pins(CORNERS), [], W, H)
+    @pytest.mark.parametrize("hint", [(0.0, 13.0, 12.0), (5.0, 9.0, 9.0), (0.0, -13.0, 12.0)])
+    def test_a_camera_position_good_or_far_off_still_gives_the_camera(self, hint) -> None:
+        _assert_true_camera(solve_marks(_simple(), W, H, hint=hint).camera)
 
-    def test_a_camera_off_the_valid_range_has_no_residuals_and_no_fit(self) -> None:
-        x0 = TRUE.copy()
-        x0[6] = 200.0
-        assert self._problem().residuals(x0) is None
-        assert cp._fit(self._problem(), x0) is None
+    def test_each_corner_is_seen_where_it_is_pinned(self) -> None:
+        marks = _simple()
+        solved = solve_marks(marks, W, H)
+        for mark, fit in zip(marks, solved.marks, strict=True):
+            assert fit.id == mark.id
+            assert fit.seen == pytest.approx(mark.pin, abs=1e-3)
+            assert fit.distance_error is None
+            assert fit.reason == ""
 
-    def test_a_derivative_probe_off_the_valid_range_ends_the_fit(self) -> None:
-        x0 = TRUE.copy()
-        x0[6] = 179.0 - 1e-6
-        assert self._problem().residuals(x0) is not None
-        assert cp._fit(self._problem(), x0) is None
-
-    def test_the_iteration_cap_returns_the_best_fit_so_far(self) -> None:
-        x0 = TRUE.copy()
-        x0[3] += 2.0
-        start = self._problem().residuals(x0)
-        capped = cp._fit(self._problem(), x0, iterations=1)
-        full = cp._fit(self._problem(), x0)
-        assert start is not None and capped is not None and full is not None
-        assert float(full[1] @ full[1]) < float(capped[1] @ capped[1]) < float(start @ start)
-
-    def test_points_no_fit_can_take_are_left_out_and_the_corners_solve(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        fit = cp._fit
-        monkeypatch.setattr(cp, "_fit", lambda problem, x0, **kw: None if problem.n else fit(problem, x0, **kw))
-        solved = solve_with_points(CORNERS, _pins(CORNERS), [_point((0.0, -20.0)), _point((5.0, -35.0))], W, H)
-        assert solved is not None
-        assert [(p.status, p.reason) for p in solved.points] == [("flagged", cp.REASON_DISAGREES_CORNERS)] * 2
-        assert all(math.isnan(p.residual) for p in solved.points)
-        assert solved.points[0].position == pytest.approx((0.0, -20.0, 0.0))
-        assert solved.camera == solve_camera_dlt([tuple(c) for c in CORNERS], [tuple(p) for p in _pins(CORNERS)], W, H)
+    def test_a_corner_pinned_40_px_off_still_solves_without_a_camera_position(self) -> None:
+        marks = _simple(off_px=(40.0, 0.0))
+        solved = solve_marks(marks, W, H)
+        assert solved.camera is not None
+        assert solved.camera.pos_z > 0.0 and solved.camera.pitch < 0.0
+        np.testing.assert_allclose(_pose(solved.camera)[:3], TRUE[:3], atol=2.0)
 
 
-class TestTheCornerSolversRange:
-    """A fit with points may not leave the range the corners' own solve keeps a camera in."""
+class TestAdvanced:
+    def test_two_known_and_chained_triangulated_marks_give_the_camera_and_the_places(self) -> None:
+        solved = solve_marks(_advanced(), W, H, hint=(0.0, 13.0, 12.0))
+        _assert_true_camera(solved.camera)
+        by_id = {f.id: f for f in solved.marks}
+        assert by_id[3].position == pytest.approx(P3, abs=1e-6)
+        assert by_id[4].position == pytest.approx(P4, abs=1e-6)
+        assert by_id[3].distance_error == pytest.approx(0.0, abs=1e-6)
+        assert by_id[1].distance_error is None
 
-    def test_a_fit_past_the_narrowest_lens_leaves_the_points_out_for_the_corners_camera(self) -> None:
-        # A long lens from far out, its distances a metre long: the fit narrows the lens past 10 degrees.
-        true = np.array([0.0, -70.0, 10.0, -8.0, 0.0, 0.0, 10.1])
-        corners = np.array([[-5.0, 0.0, 0.0], [5.0, 0.0, 0.0], [5.0, 6.0, 0.0], [-5.0, 6.0, 0.0]])
-        pins = project_points(true, corners, W, H)
-        points = []
-        for where in ((2.0, 30.0), (-3.0, 40.0)):
-            place = np.array([where[0], where[1], 0.0])
-            pin = project_points(true, place[None], W, H)[0]
-            points.append(
-                CalibrationPoint(
-                    corner_a=tuple(corners[0]),
-                    corner_b=tuple(corners[1]),
-                    distance_a=float(np.linalg.norm(place - corners[0])) + 1.0,
-                    distance_b=float(np.linalg.norm(place - corners[1])) + 1.0,
-                    height=0.0,
-                    pin=(float(pin[0]), float(pin[1])),
-                )
-            )
-        solved = solve_with_points(corners, pins, points, W, H)
-        assert solved is not None
-        assert [(p.status, p.reason) for p in solved.points] == [("flagged", cp.REASON_RANGE)] * 2
-        assert solved.camera == solve_camera_dlt([tuple(c) for c in corners], [tuple(p) for p in pins], W, H)
+    def test_a_known_mark_outside_the_picture_needs_no_pin(self) -> None:
+        behind = (0.0, 12.0, 0.0)
+        assert _pin(behind)[1] > H  # below the picture
+        marks = [
+            _known(1, behind, pinned=False),
+            _known(2, DSL),
+            _known(3, DSR),
+            _triangulated(4, P3, (1, behind), (2, DSL)),
+            _triangulated(5, P4, (1, behind), (3, DSR)),
+        ]
+        solved = solve_marks(marks, W, H, hint=(0.0, 13.0, 12.0))
+        _assert_true_camera(solved.camera)
+        outside = solved.marks[0]
+        assert outside.position == pytest.approx(behind)
+        assert outside.seen == pytest.approx(_pin(behind), abs=1e-3)
+
+    def test_a_camera_position_6_m_off_still_puts_the_marks_on_their_side(self) -> None:
+        """From there the pins pick the mirror places; the other side is fitted as well and wins."""
+        solved = solve_marks(_advanced(), W, H, hint=(6.0, 7.0, 12.0))
+        _assert_true_camera(solved.camera)
+        assert solved.camera is not None and solved.camera.pos_z > 0.0
+        assert {f.id: f.position for f in solved.marks}[3] == pytest.approx(P3, abs=1e-6)
+
+    def test_a_mistyped_distance_shows_in_the_distance_error_and_the_caution(self) -> None:
+        """Four pinned corners hold the camera, so a distance 30 cm long cannot hide in it."""
+        marks = [*_simple(), _triangulated(5, (1.0, 3.0, 1.0), (1, DSL), (2, DSR), err_a=0.3)]
+        solved = solve_marks(marks, W, H, hint=(0.0, 13.0, 12.0))
+        _assert_true_camera(solved.camera, tol=0.5)
+        assert solved.camera is not None
+        fit = {f.id: f for f in solved.marks}[5]
+        assert fit.distance_error == pytest.approx(0.26, abs=0.02)
+        reasons = plausibility(solved.camera, solved.marks, {}, (0.0, 13.0, 12.0), per_axis=True)
+        assert [r["id"] for r in reasons if r["kind"] == "distance"] == [5]
+
+    def test_a_mistyped_known_coordinate_moves_the_camera_off_its_position(self) -> None:
+        hint = (0.0, 13.0, 12.0)
+        marks = [
+            _known(1, REF, typed=(0.5, 0.0, 0.0)),
+            _known(2, DSL),
+            _triangulated(3, P3, (1, REF), (2, DSL)),
+            _triangulated(4, P4, (3, P3), (1, REF)),
+        ]
+        solved = solve_marks(marks, W, H, hint=hint)
+        assert solved.camera is not None
+        (offset,) = [
+            r for r in plausibility(solved.camera, solved.marks, {}, hint, per_axis=True) if r["kind"] == "offset"
+        ]
+        assert offset["per_axis"] is True
+        assert max(abs(v) for v in offset["delta"]) > offset["allowed"] >= 2.5
+
+    def test_a_mark_its_distances_place_nowhere_carries_the_reason_and_the_rest_solve(self) -> None:
+        nowhere = Mark(5, "triangulated", 0.0, from_a=1, from_b=2, distance_a=1.0, distance_b=1.0, pin=(900.0, 500.0))
+        marks = [*_advanced(), _known(6, DSR), nowhere]
+        solved = solve_marks(marks, W, H, hint=(0.0, 13.0, 12.0))
+        _assert_true_camera(solved.camera)
+        fit = {f.id: f for f in solved.marks}[5]
+        assert (fit.position, fit.reason, fit.seen) == (None, cp.REASON_SHORT, None)
+
+    def test_a_mark_measured_from_one_placed_nowhere_says_so(self) -> None:
+        nowhere = Mark(5, "triangulated", 0.0, from_a=1, from_b=2, distance_a=1.0, distance_b=1.0, pin=(900.0, 500.0))
+        after = Mark(7, "triangulated", 0.0, from_a=5, from_b=1, distance_a=3.0, distance_b=3.0, pin=(800.0, 500.0))
+        marks = [*_advanced(), _known(6, DSR), nowhere, after]
+        fit = {f.id: f for f in solve_marks(marks, W, H, hint=(0.0, 13.0, 12.0)).marks}[7]
+        assert (fit.position, fit.reason) == (None, cp.REASON_UNPLACED_FROM)
 
 
-class TestASupersededSolve:
-    def test_it_stops_and_says_so(self) -> None:
-        with pytest.raises(cp.SolveSuperseded):
-            solve_with_points(CORNERS, _pins(CORNERS), [_point((0.0, -20.0))], W, H, stale=lambda: True)
+class TestNoCamera:
+    def test_without_a_camera_position_or_four_level_known_marks_nothing_seeds_the_fit(self) -> None:
+        solved = solve_marks(_advanced(), W, H)
+        assert (solved.camera, solved.error) == (None, cp.NO_FIT)
+        assert [(f.id, f.position) for f in solved.marks] == [(1, None), (2, None), (3, None), (4, None)]
 
-    def test_it_stops_once_a_newer_one_arrives_while_it_runs(self) -> None:
+    def test_four_known_marks_at_different_heights_seed_nothing_without_a_camera_position(self) -> None:
+        """Only a level four seeds through a homography; a tilted one would seed a wrong camera."""
+        marks = [_known(1, DSL), _known(2, DSR), _known(3, USR), _known(4, (6.0, 6.0, 1.0))]
+        assert solve_marks(marks, W, H).error == cp.NO_FIT
+        _assert_true_camera(solve_marks(marks, W, H, hint=(0.0, 13.0, 12.0)).camera)
+
+    def test_fewer_than_four_pins_fit_no_camera(self) -> None:
+        marks = [*_simple()[:3], _known(4, USL, pinned=False)]
+        solved = solve_marks(marks, W, H, hint=(0.0, 13.0, 12.0))
+        assert (solved.camera, solved.error) == (None, cp.NO_FIT)
+
+    def test_a_mark_placed_nowhere_counts_no_pin(self) -> None:
+        nowhere = Mark(4, "triangulated", 0.0, from_a=1, from_b=2, distance_a=1.0, distance_b=1.0, pin=(900.0, 500.0))
+        solved = solve_marks([*_simple()[:3], nowhere], W, H, hint=(0.0, 13.0, 12.0))
+        assert (solved.camera, solved.error) == (None, cp.NO_FIT)
+        assert {f.id: f.reason for f in solved.marks}[4] == cp.REASON_SHORT
+
+    def test_a_newer_solve_supersedes_this_one(self) -> None:
+        with pytest.raises(SolveSuperseded):
+            solve_marks(_simple(), W, H, stale=lambda: True)
+
+    def test_a_solve_nobody_superseded_asks_and_finishes(self) -> None:
         asked = []
+        solved = solve_marks(_simple(), W, H, stale=lambda: asked.append(1) is not None)
+        _assert_true_camera(solved.camera)
+        assert asked
 
-        def stale() -> bool:  # current when the solve starts, superseded while it runs
-            asked.append(1)
-            return len(asked) > 1
 
-        # Distances off by 30 cm keep the fit iterating; current throughout, it solves.
-        points = [_point((0.0, -20.0), err_a=0.3), _point((5.0, -35.0), err_b=-0.3)]
-        assert solve_with_points(CORNERS, _pins(CORNERS), points, W, H) is not None
-        with pytest.raises(cp.SolveSuperseded):
-            solve_with_points(CORNERS, _pins(CORNERS), points, W, H, stale=stale)
+# One mark at 0/0/0: the camera's distance to the marks is its distance to the origin.
+_AT_ORIGIN = (MarkFit(1, (0.0, 0.0, 0.0)),)
 
-    def test_a_current_one_solves_as_without_the_check(self) -> None:
-        points = [_point((0.0, -20.0)), _point((5.0, -35.0))]
-        assert solve_with_points(CORNERS, _pins(CORNERS), points, W, H, stale=lambda: False) == solve_with_points(
-            CORNERS, _pins(CORNERS), points, W, H
-        )
+
+def _camera(**changes: float) -> CameraConfig:
+    pose = dict(zip(("pos_x", "pos_y", "pos_z", "pitch", "yaw", "roll", "fov"), TRUE.tolist(), strict=True))
+    return CameraConfig(**{**pose, **changes})
+
+
+def _kinds(reasons: list[dict]) -> list[str]:
+    return [r["kind"] for r in reasons]
+
+
+def test_a_camera_that_matches_everything_raises_nothing() -> None:
+    assert plausibility(_camera(), _AT_ORIGIN, {1: 0.5}, (0.0, 13.0, 12.0), per_axis=True) == []
+
+
+@pytest.mark.parametrize(
+    ("off", "fires"),
+    [((2.4, 0.0, 0.0), False), ((2.6, 0.0, 0.0), True), ((0.0, 0.0, -2.6), True), ((2.0, 2.0, 2.0), False)],
+)
+def test_advanced_checks_each_axis_against_2_5_m_near_the_marks(off, fires) -> None:
+    hint = (TRUE[0] - off[0], TRUE[1] - off[1], TRUE[2] - off[2])
+    reasons = plausibility(_camera(), _AT_ORIGIN, {}, hint, per_axis=True)
+    assert ("offset" in _kinds(reasons)) is fires
+    if fires:
+        (offset,) = reasons
+        assert offset["delta"] == pytest.approx(list(off))
+        assert offset["allowed"] == 2.5
+        assert offset["per_axis"] is True
+
+
+@pytest.mark.parametrize(("off", "fires"), [(4.9, False), (5.1, True)])
+def test_advanced_allows_a_tenth_of_the_distance_on_a_far_camera(off, fires) -> None:
+    far = _camera(pos_x=0.0, pos_y=40.0, pos_z=30.0)  # 50 m from the marks
+    reasons = plausibility(far, _AT_ORIGIN, {}, (off, 40.0, 30.0), per_axis=True)
+    assert ("offset" in _kinds(reasons)) is fires
+    if fires:
+        assert reasons[0]["allowed"] == pytest.approx(5.0)
+
+
+@pytest.mark.parametrize(("off", "fires"), [((0.5, 0.5, 0.5), False), ((0.6, 0.6, 0.6), True)])
+def test_simple_checks_the_whole_gap_against_1_m_near_the_marks(off, fires) -> None:
+    near = _camera(pos_x=0.0, pos_y=3.0, pos_z=5.0)  # under 10 m from the marks
+    hint = (-off[0], 3.0 - off[1], 5.0 - off[2])
+    reasons = plausibility(near, _AT_ORIGIN, {}, hint, per_axis=False)
+    assert ("offset" in _kinds(reasons)) is fires
+    if fires:
+        assert reasons[0]["off"] == pytest.approx(math.sqrt(3 * 0.36))
+        assert (reasons[0]["allowed"], reasons[0]["per_axis"]) == (1.0, False)
+    assert "offset" not in _kinds(plausibility(near, _AT_ORIGIN, {}, hint, per_axis=True))
+
+
+@pytest.mark.parametrize(("off", "fires"), [(1.7, False), (1.8, True)])
+def test_simple_allows_a_tenth_of_the_distance_on_a_far_camera(off, fires) -> None:
+    span = math.hypot(13.0, 12.0)
+    reasons = plausibility(_camera(), _AT_ORIGIN, {}, (off, 13.0, 12.0), per_axis=False)
+    assert ("offset" in _kinds(reasons)) is fires
+    if fires:
+        assert reasons[0]["allowed"] == pytest.approx(0.1 * span)
+
+
+def test_without_a_camera_position_the_offset_is_not_checked() -> None:
+    assert plausibility(_camera(pos_x=40.0), _AT_ORIGIN, {}, None, per_axis=True) == []
+
+
+@pytest.mark.parametrize(("fov", "fires"), [(19.9, True), (20.0, False), (120.0, False), (120.1, True)])
+def test_a_field_of_view_outside_20_to_120_degrees_is_named(fov, fires) -> None:
+    reasons = plausibility(_camera(fov=fov), _AT_ORIGIN, {}, None, per_axis=True)
+    assert reasons == ([{"kind": "fov", "fov": fov}] if fires else [])
+
+
+@pytest.mark.parametrize(("pos_z", "fires"), [(-0.01, True), (0.0, False)])
+def test_a_camera_below_the_lowest_mark_is_named(pos_z, fires) -> None:
+    reasons = plausibility(_camera(pos_z=pos_z), _AT_ORIGIN, {}, None, per_axis=True)
+    assert ("below" in _kinds(reasons)) is fires
+
+
+@pytest.mark.parametrize(("pitch", "fires"), [(0.5, True), (0.0, False)])
+def test_a_camera_looking_up_is_named(pitch, fires) -> None:
+    reasons = plausibility(_camera(pitch=pitch), _AT_ORIGIN, {}, None, per_axis=True)
+    assert ("up" in _kinds(reasons)) is fires
+
+
+@pytest.mark.parametrize(("px", "fires"), [(5.0, False), (5.01, True)])
+def test_a_pin_more_than_5_px_off_is_named(px, fires) -> None:
+    reasons = plausibility(_camera(), _AT_ORIGIN, {1: px}, None, per_axis=True)
+    assert reasons == ([{"kind": "pixel", "id": 1, "px": px}] if fires else [])
+
+
+@pytest.mark.parametrize(("error", "fires"), [(0.119, False), (0.121, True)])
+def test_distances_more_than_12_cm_off_are_named(error, fires) -> None:
+    fits = (MarkFit(3, (1.0, 2.0, 0.0), distance_error=error),)
+    reasons = plausibility(_camera(), fits, {}, None, per_axis=True)
+    assert reasons == ([{"kind": "distance", "id": 3, "m": error}] if fires else [])

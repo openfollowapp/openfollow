@@ -39,9 +39,6 @@ _GATED_ROOTS = [
     # The detection partial gates itself so it hides even outside its tab.
     ("partials/detection.tpl", 'id="detection-section"', "detection"),
     ("partials/rttrpm_output.tpl", 'id="rttrpm-output-section"', "rttrpm"),
-    ("partials/camera.tpl", 'id="camera-calibration-points"', "calibration_points"),
-    ("wizard.tpl", 'id="calib-section"', "calibration_points"),
-    ("wizard.tpl", 'id="review-calib"', "calibration_points"),
     ("partials/trigger_zones.tpl", 'id="trigger-zones-section"', "zones"),
     ("partials/zone_editor.tpl", 'id="zone-editor-section"', "zones"),
     ("partials/paths.tpl", 'id="paths-section"', "paths"),
@@ -73,15 +70,13 @@ def test_group_above_its_heading_carries_its_feature(rel: str, heading: str, fea
 
 # Each experimental section's header carries the Experimental badge. The
 # Person Detection page has no single header: every collapsible box carries its
-# own badge. Review's calibration-point list has none: it lists what the badged Advanced section edits.
+# own badge.
 _BADGED_HEADERS = [
     ("partials/detection.tpl", "<h2>Tracking"),
     ("partials/detection.tpl", "<h2>Detection Model"),
     ("partials/detection.tpl", "<h2>Sensitivity &amp; Overlay"),
     ("partials/detection_mask_editor.tpl", "<h2>Detection Masks"),
     ("partials/rttrpm_output.tpl", "<h2>RTTrPM Output"),
-    ("partials/camera.tpl", '<h3 class="group-title">Calibration points'),
-    ("wizard.tpl", "<summary>Advanced"),
 ]
 
 
@@ -98,6 +93,13 @@ def _template_texts() -> list[str]:
 def test_every_data_feature_names_a_known_feature() -> None:
     named = {value for text in _template_texts() for value in re.findall(r'data-feature="([a-z_]+)"', text)}
     assert named <= set(FEATURE_KEYS)
+
+
+def test_the_camera_tabs_calibration_marks_are_not_gated() -> None:
+    """Advanced calibration is always available, so the marks it saved always show."""
+    line = _line_with(_read("partials/camera.tpl"), 'id="camera-calibration-marks"')
+    assert "data-feature" not in line
+    assert "badge-experimental" not in _line_with(_read("partials/camera.tpl"), "Calibration (")
 
 
 def test_every_feature_but_psn_input_hides_something() -> None:

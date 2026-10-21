@@ -52,6 +52,7 @@ if TYPE_CHECKING:
     from openfollow.web.server import ConfigWebServer
 
 from openfollow.configuration import (
+    CALIBRATION_CORNERS,
     CALIBRATION_MODES,
     CONTROLLER_BINDING_FIELDS,
     DEFAULT_UPDATE_SERVICE_NAME,
@@ -3688,7 +3689,9 @@ def _json_canvas(data: dict[str, Any]) -> tuple[float, float]:
     return img_w, img_h
 
 
-def _wizard_marks(raw: Any, img_w: float, img_h: float) -> list[tuple[CalibrationMarkConfig, list[float] | None]]:
+def _wizard_marks(
+    raw: Any, img_w: float, img_h: float, mode: str
+) -> list[tuple[CalibrationMarkConfig, list[float] | None]]:
     """The posted marks with their pins in snapshot pixels (None when not pinned); malformed raises.
 
     The rules are the config's own, so a mark the Setup Wizard can solve with is one it can save.
@@ -3719,6 +3722,8 @@ def _wizard_marks(raw: Any, img_w: float, img_h: float) -> list[tuple[Calibratio
                 fields[key] = _json_number(entry.get(key), f"mark {n} {key}")
         mark = CalibrationMarkConfig(**fields)
         problem = mark.problem() or ("repeats an id" if any(m.id == mark.id for m, _ in marks) else "")
+        if not problem and mode == "simple" and (mark.kind != "known" or mark.id > len(CALIBRATION_CORNERS)):
+            problem = "is not one of Simple's four corners"
         if problem:
             raise ValueError(f"mark {n} {problem}")
         marks.append((mark, pin))
@@ -10610,7 +10615,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             saved_fov = _json_number(data.get("saved_fov", 60.0), "saved_fov")
             if not 1.0 <= saved_fov <= 179.0:
                 raise ValueError("saved_fov must be between 1 and 179")
-            marks = _wizard_marks(data.get("marks"), img_w, img_h)
+            marks = _wizard_marks(data.get("marks"), img_w, img_h, mode)
             k1, k2 = _wizard_lens_coeffs(data.get("camera"))
         except (KeyError, TypeError, ValueError, OverflowError) as exc:
             response.status = 400

@@ -2069,19 +2069,52 @@ def test_form_post_camera_renders_saved_partial(live_server) -> None:
     assert len(body) > 50
 
 
-def test_a_camera_form_save_keeps_the_calibration_points(live_server) -> None:
-    """The form carries no points or corner pins; saving it must not drop what the Setup Wizard saved."""
+_HELD_PINS = [[0.8, 0.9], [0.2, 0.9], [0.3, 0.6], [0.7, 0.6]]
+# The default grid's corners: DSL, DSR, USR, USL.
+_DEFAULT_CORNERS = [(5.0, 0.0, 0.0), (-5.0, 0.0, 0.0), (-5.0, 6.0, 0.0), (5.0, 6.0, 0.0)]
+
+
+def _corner_marks(pins=_HELD_PINS, corners=_DEFAULT_CORNERS) -> list[dict]:
+    return [
+        {"id": n, "name": name, "kind": "known", "x": x, "y": y, "z": z, "pin": pin}
+        for n, (name, (x, y, z), pin) in enumerate(zip(("DSL", "DSR", "USR", "USL"), corners, pins, strict=True), 1)
+    ]
+
+
+def _held_camera(mode: str = "simple") -> CameraConfig:
+    marks = _corner_marks()
+    if mode == "advanced":
+        marks.append(
+            {
+                "id": 5,
+                "kind": "triangulated",
+                "from_a": 1,
+                "from_b": 2,
+                "distance_a": 21.4,
+                "distance_b": 23.9,
+                "z": 0.0,
+                "pin": [0.4, 0.2],
+            }
+        )
+    return CameraConfig(calibration_mode=mode, calibration_marks=marks)  # type: ignore[arg-type]
+
+
+def _held(cfg_camera) -> list[tuple]:
+    return [(m.id, m.x, m.y, m.z, m.pin) for m in cfg_camera.calibration_marks]
+
+
+def test_a_camera_form_save_keeps_the_calibration_marks(live_server) -> None:
+    """The form carries no marks; saving it must not drop what the Setup Wizard saved."""
     server, base = live_server
-    point = {"corner_a": "DSL", "corner_b": "DSR", "distance_a": 21.4, "distance_b": 23.9, "pin_x": 0.4, "pin_y": 0.2}
-    pins = [[0.8, 0.9], [0.2, 0.9], [0.3, 0.6], [0.7, 0.6]]
-    save_config(AppConfig(camera=CameraConfig(calibration_points=[point], corner_pins=pins)), server.config_path)
+    save_config(AppConfig(camera=_held_camera("advanced")), server.config_path)
     status, _body = _post_form(base, "/section/camera", {"pos_x": "1.5", "pos_y": "-5.0", "pos_z": "4.0"})
     assert status == 200
     saved = load_config(server.config_path).camera
-    assert (saved.pos_x, [p.distance_a for p in saved.calibration_points], saved.corner_pins) == (1.5, [21.4], pins)
-
-
-_HELD_PINS = [[0.8, 0.9], [0.2, 0.9], [0.3, 0.6], [0.7, 0.6]]
+    assert (saved.pos_x, saved.calibration_mode, [m.id for m in saved.calibration_marks]) == (
+        1.5,
+        "advanced",
+        [1, 2, 3, 4, 5],
+    )
 
 
 def _post_grid(base: str, how: str, fields: dict) -> int:
@@ -2094,12 +2127,29 @@ def _post_grid(base: str, how: str, fields: dict) -> int:
 @pytest.mark.parametrize(
     "moved", [{"width": 12.0}, {"depth": 8.0}, {"x_offset": 0.5}, {"y_offset": 2.0}, {"z_offset": 0.3}]
 )
-def test_a_grid_write_that_moves_the_corners_forgets_the_corner_pins(live_server, how: str, moved: dict) -> None:
-    """The Setup Wizard's corner pins were placed on the grid's corners; held against others they are wrong."""
+def test_a_grid_write_that_moves_the_corners_moves_and_unpins_simples_corners(live_server, how: str, moved) -> None:
+    """Simple's corners are the grid's: they move with it, and their pins were placed on the old ones."""
+    from openfollow.configuration import grid_corner_positions
+
     server, base = live_server
-    save_config(AppConfig(camera=CameraConfig(corner_pins=_HELD_PINS)), server.config_path)
+    save_config(AppConfig(camera=_held_camera()), server.config_path)
     assert _post_grid(base, how, moved) == 200
-    assert load_config(server.config_path).camera.corner_pins == []
+    cfg = load_config(server.config_path)
+    g = cfg.grid
+    corners = grid_corner_positions(g.width, g.depth, g.x_offset, g.y_offset, g.z_offset)
+    assert corners != [list(c) for c in _DEFAULT_CORNERS]
+    assert cfg.camera.calibration_mode == "simple"
+    assert _held(cfg.camera) == [(n, *corner, []) for n, corner in enumerate(corners, start=1)]
+
+
+@pytest.mark.parametrize("how", ["form", "api"])
+def test_a_grid_write_in_advanced_leaves_the_marks_as_they_are(live_server, how: str) -> None:
+    """Advanced's marks are the operator's own measurements, not the grid's corners."""
+    server, base = live_server
+    save_config(AppConfig(camera=_held_camera("advanced")), server.config_path)
+    before = _held(load_config(server.config_path).camera)
+    assert _post_grid(base, how, {"width": 12.0, "z_offset": 0.3}) == 200
+    assert _held(load_config(server.config_path).camera) == before
 
 
 @pytest.mark.parametrize("how", ["form", "api", "broadcast"])
@@ -2108,9 +2158,9 @@ def test_a_grid_write_that_moves_the_corners_forgets_the_corner_pins(live_server
 )
 def test_a_grid_write_that_leaves_the_corners_keeps_the_corner_pins(live_server, how: str, kept: dict) -> None:
     server, base = live_server
-    save_config(AppConfig(camera=CameraConfig(corner_pins=_HELD_PINS)), server.config_path)
+    save_config(AppConfig(camera=_held_camera()), server.config_path)
     assert _post_grid(base, how, kept) == 200
-    assert load_config(server.config_path).camera.corner_pins == _HELD_PINS
+    assert [m.pin for m in load_config(server.config_path).camera.calibration_marks] == _HELD_PINS
 
 
 def test_an_imperial_grid_form_save_of_the_same_grid_keeps_the_corner_pins(live_server) -> None:
@@ -2119,7 +2169,7 @@ def test_an_imperial_grid_form_save_of_the_same_grid_keeps_the_corner_pins(live_
     from openfollow.units import UnitSystem, format_length
 
     server, base = live_server
-    cfg = AppConfig(camera=CameraConfig(corner_pins=_HELD_PINS), grid=GridConfig(width=10.37, y_offset=2.91))
+    cfg = AppConfig(camera=_held_camera(), grid=GridConfig(width=10.37, y_offset=2.91))
     cfg.ui.unit_system = "imperial"
     save_config(cfg, server.config_path)
     shown = {
@@ -2127,24 +2177,129 @@ def test_an_imperial_grid_form_save_of_the_same_grid_keeps_the_corner_pins(live_
         for name in ("width", "depth", "x_offset", "y_offset", "z_offset")
     }
     assert _post_grid(base, "form", shown) == 200
-    assert load_config(server.config_path).camera.corner_pins == _HELD_PINS
+    assert [m.pin for m in load_config(server.config_path).camera.calibration_marks] == _HELD_PINS
+
+
+_ITS_PINS = [[0.1, 0.9], [0.9, 0.9], [0.8, 0.5], [0.2, 0.5]]
+_WIDE_CORNERS = [(6.0, 0.0, 0.0), (-6.0, 0.0, 0.0), (-6.0, 6.0, 0.0), (6.0, 6.0, 0.0)]
 
 
 @pytest.mark.parametrize(
-    ("camera", "grid", "pins"),
+    ("camera", "grid", "marks"),
     [
-        ({"pos_x": 1.0}, {"width": 12.0}, []),  # another grid, and no pins of its own
-        ({"corner_pins": [[0.1, 0.9], [0.9, 0.9], [0.8, 0.5], [0.2, 0.5]]}, {"width": 12.0}, None),  # its own pins
-        ({"pos_x": 1.0}, {"spacing": 0.5}, _HELD_PINS),  # the same corners
+        # another grid and no marks of its own: this station's corners move and lose their pins
+        ({"pos_x": 1.0}, {"width": 12.0}, _corner_marks([[]] * 4, _WIDE_CORNERS)),
+        # its own marks, on its own grid
+        (
+            {"calibration_marks": _corner_marks(_ITS_PINS, _WIDE_CORNERS)},
+            {"width": 12.0},
+            _corner_marks(_ITS_PINS, _WIDE_CORNERS),
+        ),
+        # its own pins in the former key, read on its grid
+        ({"corner_pins": _ITS_PINS}, {"width": 12.0}, _corner_marks(_ITS_PINS, _WIDE_CORNERS)),
+        # the same corners
+        ({"pos_x": 1.0}, {"spacing": 0.5}, _corner_marks()),
     ],
 )
-def test_an_import_keeps_corner_pins_only_on_the_grid_they_belong_to(live_server, camera, grid, pins) -> None:
+def test_an_import_applies_the_grid_before_the_camera(live_server, camera, grid, marks) -> None:
     server, base = live_server
-    save_config(AppConfig(camera=CameraConfig(corner_pins=_HELD_PINS)), server.config_path)
+    save_config(AppConfig(camera=_held_camera()), server.config_path)
     status, _ = _post_json(base, "/api/config/import", {"camera": camera, "grid": grid})
     assert status == 200
-    expected = camera["corner_pins"] if pins is None else pins
-    assert load_config(server.config_path).camera.corner_pins == expected
+    assert _held(load_config(server.config_path).camera) == [(m["id"], m["x"], m["y"], m["z"], m["pin"]) for m in marks]
+
+
+@pytest.mark.parametrize(
+    ("old", "mode", "count"),
+    [
+        ({"corner_pins": _ITS_PINS}, "simple", 4),
+        (
+            {
+                "corner_pins": _ITS_PINS,
+                "calibration_points": [
+                    {
+                        "corner_a": "DSL",
+                        "corner_b": "DSR",
+                        "distance_a": 21.4,
+                        "distance_b": 23.9,
+                        "height": 0.0,
+                        "pin_x": 0.4,
+                        "pin_y": 0.2,
+                    }
+                ],
+            },
+            "advanced",
+            5,
+        ),
+    ],
+)
+def test_a_camera_push_in_the_former_keys_reads_as_marks_on_this_stations_grid(live_server, old, mode, count) -> None:
+    """A station on an earlier release pushes the former keys; the corners are where this station has them."""
+    from openfollow.configuration import GridConfig
+
+    server, base = live_server
+    save_config(AppConfig(camera=_held_camera(), grid=GridConfig(width=12.0)), server.config_path)
+    status, _ = _post_json(base, "/api/config/camera", old)
+    assert status == 200
+    camera = load_config(server.config_path).camera
+    assert (camera.calibration_mode, len(camera.calibration_marks)) == (mode, count)
+    assert _held(camera)[:4] == [
+        (m["id"], m["x"], m["y"], m["z"], m["pin"]) for m in _corner_marks(_ITS_PINS, _WIDE_CORNERS)
+    ]
+    text = Path(server.config_path).read_text(encoding="utf-8")
+    assert "corner_pins" not in text and "calibration_points" not in text
+
+
+def _calibration_rows(camera_html: str) -> tuple[str, list[list[str]]]:
+    start = camera_html.index('<div class="group" id="camera-calibration-marks">')
+    group = camera_html[start : camera_html.index("</table>", start)]
+    assert "<input" not in group and "<select" not in group
+    title = re.search(r'<h3 class="group-title">(.*?)</h3>', group)
+    assert title is not None
+    body = group[group.index("<tbody>") :]
+    rows = [re.findall(r"<t[hd][^>]*>(.*?)</t[hd]>", row) for row in re.findall(r"<tr>(.*?)</tr>", body, re.S)]
+    return title.group(1), rows
+
+
+@pytest.mark.parametrize(
+    ("mode", "title"), [("simple", "Calibration (Simple)"), ("advanced", "Calibration (Advanced)")]
+)
+def test_the_camera_tab_lists_the_calibration_marks_read_only(live_server, mode: str, title: str) -> None:
+    server, base = live_server
+    camera = _held_camera(mode)
+    camera.calibration_marks[1].pin = []
+    if mode == "advanced":
+        camera.calibration_marks[4].position = [2.5, 9.0, 0.0]
+    save_config(AppConfig(camera=camera), server.config_path)
+    status, html_text = _get(base, "/section/camera")
+    assert status == 200
+    shown_title, rows = _calibration_rows(html_text)
+    assert shown_title == title
+    assert rows[0] == ["DSL", "Known", "X = 5.000 m<br>Y = 0.000 m<br>Z = 0.000 m", "–", "Yes"]
+    assert rows[1] == ["DSR", "Known", "X = -5.000 m<br>Y = 0.000 m<br>Z = 0.000 m", "–", "No"]
+    assert len(rows) == (4 if mode == "simple" else 5)
+    if mode == "advanced":
+        assert rows[4] == [
+            "P5",
+            "Triangulated",
+            "X = 2.500 m<br>Y = 9.000 m<br>Z = 0.000 m",
+            "DSL 21.400 m<br>DSR 23.900 m",
+            "Yes",
+        ]
+
+
+def test_the_camera_tab_shows_a_triangulated_mark_no_solve_placed_without_a_position(live_server) -> None:
+    server, base = live_server
+    save_config(AppConfig(camera=_held_camera("advanced")), server.config_path)
+    _, rows = _calibration_rows(_get(base, "/section/camera")[1])
+    assert rows[4][2] == "–"
+
+
+def test_without_marks_the_camera_tab_has_no_calibration_group(live_server) -> None:
+    _, base = live_server
+    status, html_text = _get(base, "/section/camera")
+    assert status == 200
+    assert "camera-calibration-marks" not in html_text
 
 
 def test_form_post_osc_renders_saved_partial(live_server) -> None:
@@ -4544,264 +4699,6 @@ def test_api_config_reset_refuses_a_cross_origin_form_post(live_server) -> None:
     # Nothing was written, so the station is untouched.
     assert load_config(server.config_path).camera.pos_x == pytest.approx(7.5)
     assert server.check_restart_requested() is False
-
-
-# ---------------------------------------------------------------------------
-# Wizard endpoints – error-path coverage
-# ---------------------------------------------------------------------------
-
-
-def _wizard_camera_payload(**overrides) -> dict[str, object]:
-    base = {
-        "pos_x": 0.0,
-        "pos_y": -5.0,
-        "pos_z": 3.0,
-        "pitch": 10.0,
-        "yaw": 0.0,
-        "roll": 0.0,
-        "fov": 45.0,
-    }
-    base.update(overrides)
-    return base
-
-
-def test_api_wizard_project_happy_path(live_server) -> None:
-    _, base = live_server
-    status, body = _post_json(
-        base,
-        "/api/wizard/project",
-        {
-            "camera": _wizard_camera_payload(),
-            "grid": {"width": 10.0, "depth": 8.0},
-            "image_width": 1920,
-            "image_height": 1080,
-        },
-    )
-    assert status == 200
-    assert "corners" in body
-    for key in ("DSL", "DSR", "USR", "USL"):
-        assert key in body["corners"]
-    # With z_offset=0 there should not be an elevated reference point.
-    assert "reference_elevated" not in body
-    assert "reference" in body
-
-
-def test_api_wizard_project_includes_elevated_ref_when_z_offset(live_server) -> None:
-    _, base = live_server
-    status, body = _post_json(
-        base,
-        "/api/wizard/project",
-        {
-            "camera": _wizard_camera_payload(),
-            "grid": {"width": 10.0, "depth": 8.0, "z_offset": 1.5},
-            "image_width": 1920,
-            "image_height": 1080,
-        },
-    )
-    assert status == 200
-    assert "reference_elevated" in body
-    assert body.get("z_offset") == pytest.approx(1.5)
-
-
-def test_api_wizard_project_rejects_non_dict_camera(live_server) -> None:
-    _, base = live_server
-    status, body = _post_json(
-        base,
-        "/api/wizard/project",
-        {
-            "camera": [1, 2, 3],  # not a dict
-            "grid": {"width": 10.0, "depth": 8.0},
-            "image_width": 1920,
-            "image_height": 1080,
-        },
-    )
-    assert status == 400
-    assert "error" in body
-
-
-def test_api_wizard_project_rejects_missing_camera_fields(live_server) -> None:
-    _, base = live_server
-    cam = _wizard_camera_payload()
-    cam.pop("fov")  # omit a required field
-
-    status, body = _post_json(
-        base,
-        "/api/wizard/project",
-        {
-            "camera": cam,
-            "grid": {"width": 10.0, "depth": 8.0},
-            "image_width": 1920,
-            "image_height": 1080,
-        },
-    )
-    assert status == 400
-    assert "error" in body
-
-
-def test_api_wizard_project_rejects_malformed_json(live_server) -> None:
-    _, base = live_server
-    req = urllib.request.Request(
-        f"{base}/api/wizard/project",
-        data=b"{not json",
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=5) as r:
-            status = r.status
-    except urllib.error.HTTPError as e:
-        status = e.code
-    assert status == 400
-
-
-def test_api_wizard_unproject_rejects_empty_screen_points(live_server) -> None:
-    _, base = live_server
-    status, body = _post_json(
-        base,
-        "/api/wizard/unproject",
-        {
-            "camera": _wizard_camera_payload(),
-            "screen_points": [],  # empty list -> 400
-            "image_width": 1920,
-            "image_height": 1080,
-        },
-    )
-    assert status == 400
-    assert "non-empty" in str(body.get("error", ""))
-
-
-def test_api_wizard_unproject_rejects_non_list_screen_points(live_server) -> None:
-    _, base = live_server
-    status, body = _post_json(
-        base,
-        "/api/wizard/unproject",
-        {
-            "camera": _wizard_camera_payload(),
-            "screen_points": "not a list",
-            "image_width": 1920,
-            "image_height": 1080,
-        },
-    )
-    assert status == 400
-    assert "error" in body
-
-
-def test_api_wizard_unproject_rejects_wrong_point_shape(live_server) -> None:
-    _, base = live_server
-    status, body = _post_json(
-        base,
-        "/api/wizard/unproject",
-        {
-            "camera": _wizard_camera_payload(),
-            "screen_points": [[1.0, 2.0, 3.0]],  # 3-tuple instead of [x, y]
-            "image_width": 1920,
-            "image_height": 1080,
-        },
-    )
-    assert status == 400
-    assert "[x, y]" in str(body.get("error", ""))
-
-
-def test_api_wizard_unproject_rejects_non_numeric_coord(live_server) -> None:
-    _, base = live_server
-    status, body = _post_json(
-        base,
-        "/api/wizard/unproject",
-        {
-            "camera": _wizard_camera_payload(),
-            "screen_points": [["a", "b"]],
-            "image_width": 1920,
-            "image_height": 1080,
-        },
-    )
-    assert status == 400
-    assert "error" in body
-
-
-def test_api_wizard_unproject_returns_delta_for_two_points(live_server) -> None:
-    _, base = live_server
-    # Camera looking down (pitch=-30) from 5 m high – both screen points
-    # project onto the ground plane, so the endpoint produces a real delta.
-    # The default _wizard_camera_payload() pitches up and would yield NaN.
-    status, body = _post_json(
-        base,
-        "/api/wizard/unproject",
-        {
-            "camera": _wizard_camera_payload(pos_z=5.0, pitch=-30.0),
-            "screen_points": [[960.0, 540.0], [1000.0, 540.0]],
-            "image_width": 1920,
-            "image_height": 1080,
-        },
-    )
-    assert status == 200
-    assert "world_points" in body
-    # Two points must produce a delta payload (x/y distances).
-    assert "delta" in body
-    assert "x" in body["delta"] and "y" in body["delta"]
-
-
-def test_api_wizard_solve_rejects_wrong_corner_counts(live_server) -> None:
-    _, base = live_server
-    status, body = _post_json(
-        base,
-        "/api/wizard/solve",
-        {
-            "world_corners": [[0, 0, 0]],  # only 1, expected 4
-            "screen_corners": [[0, 0], [1, 0], [1, 1], [0, 1]],
-            "image_width": 1920,
-            "image_height": 1080,
-        },
-    )
-    assert status == 400
-    assert "exactly 4" in str(body.get("error", ""))
-
-
-def test_api_wizard_solve_rejects_non_list_screen_corners(live_server) -> None:
-    _, base = live_server
-    status, body = _post_json(
-        base,
-        "/api/wizard/solve",
-        {
-            "world_corners": [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]],
-            "screen_corners": "not a list",
-            "image_width": 1920,
-            "image_height": 1080,
-        },
-    )
-    assert status == 400
-    assert "error" in body
-
-
-def test_api_wizard_solve_rejects_malformed_world_corner(live_server) -> None:
-    _, base = live_server
-    status, body = _post_json(
-        base,
-        "/api/wizard/solve",
-        {
-            "world_corners": [[0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]],  # missing z on first
-            "screen_corners": [[0, 0], [1, 0], [1, 1], [0, 1]],
-            "image_width": 1920,
-            "image_height": 1080,
-        },
-    )
-    assert status == 400
-    assert "[x, y, z]" in str(body.get("error", ""))
-
-
-def test_api_wizard_solve_rejects_non_numeric_screen_coord(live_server) -> None:
-    _, base = live_server
-    status, body = _post_json(
-        base,
-        "/api/wizard/solve",
-        {
-            "world_corners": [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]],
-            "screen_corners": [[0, 0], [1, 0], [1, 1], [0, "not-a-number"]],
-            "image_width": 1920,
-            "image_height": 1080,
-        },
-    )
-    assert status == 400
-    assert "error" in body
 
 
 # ---------------------------------------------------------------------------
@@ -7238,100 +7135,6 @@ def test_api_video_snapshot_returns_jpeg_when_provider_yields_bytes(
             assert r.read() == b"\xff\xd8\xff\xe0fulljpeg"
 
 
-def test_api_wizard_solve_returns_camera_and_reprojected_corners(live_server) -> None:
-    """Happy-path DLT solve: four well-conditioned corner correspondences
-    yield a camera dict (pos/rot/fov) plus a reprojected corner array of
-    the same shape. Generate the screen corners by projecting through a
-    known camera pose so the DLT is guaranteed to succeed (a hand-picked
-    trapezoid can fall into the degenerate branch and return 422)."""
-    import numpy as np
-
-    from openfollow.scene.solver import project_points
-
-    _, base = live_server
-
-    img_w, img_h = 1280.0, 720.0
-    params = np.array([0.0, -10.0, 5.0, -28.0, 8.0, 1.0, 65.0], dtype=np.float64)
-    world = np.array(
-        [
-            [-5.0, -5.0, 0.0],
-            [5.0, -5.0, 0.0],
-            [5.0, 5.0, 0.0],
-            [-5.0, 5.0, 0.0],
-        ],
-        dtype=np.float64,
-    )
-    screen = project_points(params, world, img_w, img_h)
-
-    status, body = _post_json(
-        base,
-        "/api/wizard/solve",
-        {
-            "world_corners": [list(p) for p in world],
-            "screen_corners": [list(p) for p in screen],
-            "image_width": img_w,
-            "image_height": img_h,
-        },
-    )
-    assert status == 200
-    assert "camera" in body
-    assert {"pos_x", "pos_y", "pos_z", "pitch", "yaw", "roll", "fov"}.issubset(set(body["camera"].keys()))
-    reprojected = body.get("reprojected_corners")
-    assert isinstance(reprojected, list)
-    assert len(reprojected) == 4
-
-
-def test_api_wizard_solve_returns_422_for_degenerate_corners(live_server) -> None:
-    """When the four screen corners can't be matched to a valid camera pose,
-    the route returns 422 with an "Invalid perspective" hint instead of
-    serving a NaN-laced camera dict the editor would render as garbage."""
-    _, base = live_server
-    # All four screen corners collapsed to a single point – the DLT
-    # has no perspective to fit.
-    status, body = _post_json(
-        base,
-        "/api/wizard/solve",
-        {
-            "world_corners": [
-                [-5.0, -5.0, 0.0],
-                [5.0, -5.0, 0.0],
-                [5.0, 5.0, 0.0],
-                [-5.0, 5.0, 0.0],
-            ],
-            "screen_corners": [
-                [640.0, 360.0],
-                [640.0, 360.0],
-                [640.0, 360.0],
-                [640.0, 360.0],
-            ],
-            "image_width": 1280,
-            "image_height": 720,
-        },
-    )
-    assert status == 422
-    assert "Invalid perspective" in str(body.get("error", ""))
-
-
-def test_api_wizard_unproject_single_point_returns_world_only(live_server) -> None:
-    """When only one screen point is sent, the route returns ``world_points``
-    but no ``delta`` (delta is meaningless for a single point). This is
-    the fall-through arm at the bottom of api_wizard_unproject."""
-    _, base = live_server
-    status, body = _post_json(
-        base,
-        "/api/wizard/unproject",
-        {
-            "camera": _wizard_camera_payload(pos_z=5.0, pitch=-30.0),
-            "screen_points": [[960.0, 540.0]],
-            "image_width": 1920,
-            "image_height": 1080,
-        },
-    )
-    assert status == 200
-    assert "world_points" in body
-    assert "delta" not in body
-
-
 def test_get_wizard_page_renders(live_server) -> None:
     _, base = live_server
     status, body = _get(base, "/wizard")
@@ -7356,65 +7159,6 @@ def test_api_broadcast_section_rejects_malformed_json(live_server) -> None:
         body = json.loads(e.read().decode() or "{}")
     assert status == 400
     assert "error" in body
-
-
-def test_api_wizard_unproject_rejects_malformed_json(live_server) -> None:
-    """Same _load_json_body short-circuit on the unproject route – without
-    this guard the route would 500 on the next ``data["camera"]`` deref."""
-    _, base = live_server
-    req = urllib.request.Request(
-        f"{base}/api/wizard/unproject",
-        data=b"\x00garbage",
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=5) as r:
-            status = r.status
-    except urllib.error.HTTPError as e:
-        status = e.code
-    assert status == 400
-
-
-def test_api_wizard_solve_rejects_malformed_json(live_server) -> None:
-    """Same _load_json_body short-circuit on the solve route."""
-    _, base = live_server
-    req = urllib.request.Request(
-        f"{base}/api/wizard/solve",
-        data=b"not json at all",
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=5) as r:
-            status = r.status
-    except urllib.error.HTTPError as e:
-        status = e.code
-    assert status == 400
-
-
-def test_api_wizard_solve_rejects_screen_corner_with_wrong_shape(live_server) -> None:
-    """A screen_corner that isn't [x, y] (e.g. [x, y, z]) must surface as
-    400 with an ``[x, y]`` hint – the world_corner-shape check fires
-    first only if both are malformed in the same payload."""
-    _, base = live_server
-    status, body = _post_json(
-        base,
-        "/api/wizard/solve",
-        {
-            "world_corners": [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]],
-            "screen_corners": [
-                [0, 0, 999],  # extra coord – must be rejected
-                [1, 0],
-                [1, 1],
-                [0, 1],
-            ],
-            "image_width": 1920,
-            "image_height": 1080,
-        },
-    )
-    assert status == 400
-    assert "[x, y]" in str(body.get("error", ""))
 
 
 def test_ndi_video_input_plugin_route_is_registered_and_callable(live_server) -> None:

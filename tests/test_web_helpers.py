@@ -1138,48 +1138,6 @@ def test_apply_zone_fields_preserves_vertices_when_key_absent() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _wizard_camera_params
-# ---------------------------------------------------------------------------
-
-
-def test_wizard_camera_params_builds_vector_in_field_order() -> None:
-    from openfollow.web.routes import _WIZARD_CAMERA_FIELDS, _wizard_camera_params
-
-    cam = {f: i + 1 for i, f in enumerate(_WIZARD_CAMERA_FIELDS)}
-    params = _wizard_camera_params(cam)
-    assert params.shape == (len(_WIZARD_CAMERA_FIELDS),)
-    # Order must match _WIZARD_CAMERA_FIELDS verbatim – downstream
-    # project_points/solver reads positional slots, not a dict.
-    for i, _ in enumerate(_WIZARD_CAMERA_FIELDS):
-        assert params[i] == float(i + 1)
-
-
-def test_wizard_camera_params_rejects_non_dict() -> None:
-    from openfollow.web.routes import _wizard_camera_params
-
-    with pytest.raises(TypeError):
-        _wizard_camera_params([1, 2, 3])
-
-
-def test_wizard_camera_params_raises_keyerror_for_missing_field() -> None:
-    from openfollow.web.routes import _WIZARD_CAMERA_FIELDS, _wizard_camera_params
-
-    cam = dict.fromkeys(_WIZARD_CAMERA_FIELDS, 0.0)
-    cam.pop("fov")  # omit one required field
-    with pytest.raises(KeyError):
-        _wizard_camera_params(cam)
-
-
-def test_wizard_camera_params_raises_valueerror_on_non_numeric() -> None:
-    from openfollow.web.routes import _WIZARD_CAMERA_FIELDS, _wizard_camera_params
-
-    cam = dict.fromkeys(_WIZARD_CAMERA_FIELDS, 0.0)
-    cam["yaw"] = "not a number"
-    with pytest.raises(ValueError):
-        _wizard_camera_params(cam)
-
-
-# ---------------------------------------------------------------------------
 # _apply_import_data
 # ---------------------------------------------------------------------------
 
@@ -4013,47 +3971,138 @@ def test_an_import_never_gives_this_station_another_stations_fqdn(current: str) 
     assert new.station_fqdn == current
 
 
-def test_calibration_points_arrive_through_the_camera_section() -> None:
-    cfg = AppConfig()
-    good = {"corner_a": "DSL", "corner_b": "DSR", "distance_a": 21.4, "distance_b": 23.9, "pin_x": 0.4, "pin_y": 0.2}
-    assert apply_section_data(cfg, "camera", {"calibration_points": [good, {**good, "corner_b": "DSL"}, "junk"]})
-    assert [(p.corner_a, p.corner_b, p.distance_a) for p in cfg.camera.calibration_points] == [("DSL", "DSR", 21.4)]
+_GOOD_MARKS = [
+    {"id": 1, "kind": "known", "x": 5.0, "y": 0.0, "z": 0.0, "pin": [0.81, 0.94]},
+    {"id": 2, "kind": "known", "x": -5.0, "y": 0.0, "z": 0.0, "pin": [0.14, 0.95]},
+    {
+        "id": 3,
+        "kind": "triangulated",
+        "from_a": 1,
+        "from_b": 2,
+        "distance_a": 21.4,
+        "distance_b": 23.9,
+        "z": 0.0,
+        "pin": [0.4, 0.2],
+    },
+]
 
 
-@pytest.mark.parametrize("raw", ["DSL", 3, None, {"corner_a": "DSL"}])
-def test_calibration_points_that_are_not_a_list_keep_the_saved_ones(raw: object) -> None:
-    good = {"corner_a": "DSL", "corner_b": "DSR", "distance_a": 21.4, "distance_b": 23.9, "pin_x": 0.4, "pin_y": 0.2}
+def test_calibration_marks_arrive_through_the_camera_section() -> None:
     cfg = AppConfig()
-    apply_section_data(cfg, "camera", {"calibration_points": [good]})
-    apply_section_data(cfg, "camera", {"calibration_points": raw, "pos_x": 1.0})
-    assert [p.distance_a for p in cfg.camera.calibration_points] == [21.4]
+    data = {"calibration_mode": "advanced", "calibration_marks": [*_GOOD_MARKS, {**_GOOD_MARKS[0], "id": 4, "x": None}]}
+    assert apply_section_data(cfg, "camera", data)
+    assert cfg.camera.calibration_mode == "advanced"
+    assert [(m.id, m.kind) for m in cfg.camera.calibration_marks] == [(1, "known"), (2, "known"), (3, "triangulated")]
+
+
+@pytest.mark.parametrize("raw", ["DSL", 3, None, {"id": 1}])
+def test_calibration_marks_that_are_not_a_list_keep_the_saved_ones(raw: object) -> None:
+    cfg = AppConfig()
+    apply_section_data(cfg, "camera", {"calibration_mode": "advanced", "calibration_marks": _GOOD_MARKS})
+    apply_section_data(cfg, "camera", {"calibration_marks": raw, "pos_x": 1.0})
+    assert [m.id for m in cfg.camera.calibration_marks] == [1, 2, 3]
     assert cfg.camera.pos_x == 1.0
 
 
+def test_a_calibration_mode_of_none_keeps_the_saved_one() -> None:
+    cfg = AppConfig()
+    apply_section_data(cfg, "camera", {"calibration_mode": "advanced", "calibration_marks": _GOOD_MARKS})
+    apply_section_data(cfg, "camera", {"calibration_mode": None})
+    assert (cfg.camera.calibration_mode, len(cfg.camera.calibration_marks)) == ("advanced", 3)
+
+
+@pytest.mark.parametrize("raw", ["expert", "Advanced", "", 3, True])
+def test_a_calibration_mode_off_the_list_reads_as_simple_and_keeps_only_corners(raw: object) -> None:
+    cfg = AppConfig()
+    apply_section_data(cfg, "camera", {"calibration_mode": "advanced", "calibration_marks": _GOOD_MARKS})
+    apply_section_data(cfg, "camera", {"calibration_mode": raw})
+    assert cfg.camera.calibration_mode == "simple"
+    assert [m.id for m in cfg.camera.calibration_marks] == [1, 2]
+
+
 _CORNER_PINS = [[0.81, 0.94], [0.14, 0.95], [0.37, 0.61], [0.66, 0.6]]
+_OLD_POINT = {
+    "corner_a": "DSL",
+    "corner_b": "DSR",
+    "distance_a": 21.4,
+    "distance_b": 23.9,
+    "height": 1.0,
+    "pin_x": 0.4,
+    "pin_y": 0.2,
+}
 
 
-def test_corner_pins_arrive_through_the_camera_section() -> None:
+def _station(width: float = 12.0, z_offset: float = 0.5) -> AppConfig:
     cfg = AppConfig()
-    assert apply_section_data(cfg, "camera", {"corner_pins": _CORNER_PINS})
-    assert cfg.camera.corner_pins == _CORNER_PINS
-    apply_section_data(cfg, "camera", {"corner_pins": [[0.1, 0.2]] * 3})
-    assert cfg.camera.corner_pins == []
+    cfg.grid.width, cfg.grid.depth, cfg.grid.x_offset, cfg.grid.y_offset = width, 6.0, 1.0, 4.0
+    cfg.grid.z_offset = z_offset
+    return cfg
 
 
-@pytest.mark.parametrize("raw", ["DSL", 3, None, {"DSL": [0.1, 0.2]}])
-def test_corner_pins_that_are_not_a_list_keep_the_saved_ones(raw: object) -> None:
-    cfg = AppConfig()
-    apply_section_data(cfg, "camera", {"corner_pins": _CORNER_PINS})
-    apply_section_data(cfg, "camera", {"corner_pins": raw, "pos_x": 1.0})
-    assert (cfg.camera.corner_pins, cfg.camera.pos_x) == (_CORNER_PINS, 1.0)
+@pytest.mark.parametrize(
+    ("old", "mode", "count"),
+    [
+        ({"corner_pins": _CORNER_PINS}, "simple", 4),
+        ({"corner_pins": _CORNER_PINS, "calibration_points": [_OLD_POINT]}, "advanced", 5),
+    ],
+)
+def test_a_camera_write_in_the_former_keys_reads_as_marks_on_this_stations_grid(old, mode, count) -> None:
+    """A station on an earlier release sends the former keys; its corners are where this grid has them."""
+    cfg = _station()
+    assert apply_section_data(cfg, "camera", old)
+    marks = cfg.camera.calibration_marks
+    assert (cfg.camera.calibration_mode, len(marks)) == (mode, count)
+    assert [(m.name, m.x, m.y, m.z, m.pin) for m in marks[:4]] == [
+        ("DSL", 7.0, 1.0, 0.5, _CORNER_PINS[0]),
+        ("DSR", -5.0, 1.0, 0.5, _CORNER_PINS[1]),
+        ("USR", -5.0, 7.0, 0.5, _CORNER_PINS[2]),
+        ("USL", 7.0, 7.0, 0.5, _CORNER_PINS[3]),
+    ]
+    if count == 5:
+        assert (marks[4].kind, marks[4].from_a, marks[4].from_b, marks[4].z) == ("triangulated", 1, 2, 1.5)
 
 
-def test_corner_pins_travel_with_an_export_and_an_import() -> None:
-    """Not device-local: like the calibration points, they describe the show's camera."""
+def test_calibration_marks_travel_with_an_export_and_an_import() -> None:
+    """Not device-local: they describe the show's camera."""
     from openfollow.web.routes import _apply_import_data
 
-    exported = _config_dict_redacted(AppConfig(camera=CameraConfig(corner_pins=_CORNER_PINS)))
-    assert exported["camera"]["corner_pins"] == _CORNER_PINS
+    camera = CameraConfig(calibration_mode="advanced", calibration_marks=_GOOD_MARKS)  # type: ignore[arg-type]
+    exported = _config_dict_redacted(AppConfig(camera=camera))
+    assert [m["id"] for m in exported["camera"]["calibration_marks"]] == [1, 2, 3]
     imported = _apply_import_data(AppConfig(), json.loads(json.dumps(exported)))
-    assert imported.camera.corner_pins == _CORNER_PINS
+    assert imported.camera.calibration_mode == "advanced"
+    assert imported.camera.calibration_marks == camera.calibration_marks
+
+
+def test_an_import_in_the_former_keys_reads_as_marks_on_the_imports_grid() -> None:
+    from openfollow.web.routes import _apply_import_data
+
+    data = {
+        "camera": {"corner_pins": _CORNER_PINS},
+        "grid": {"width": 8.0, "depth": 4.0, "x_offset": 0.0, "y_offset": 2.0, "z_offset": 0.0},
+    }
+    imported = _apply_import_data(_station(), data)
+    assert (imported.grid.width, imported.grid.depth) == (8.0, 4.0)
+    assert imported.camera.calibration_mode == "simple"
+    assert [(m.x, m.y, m.z, m.pin) for m in imported.camera.calibration_marks] == [
+        (4.0, 0.0, 0.0, _CORNER_PINS[0]),
+        (-4.0, 0.0, 0.0, _CORNER_PINS[1]),
+        (-4.0, 4.0, 0.0, _CORNER_PINS[2]),
+        (4.0, 4.0, 0.0, _CORNER_PINS[3]),
+    ]
+
+
+def test_an_import_in_the_former_keys_without_a_grid_reads_on_this_stations_grid() -> None:
+    from openfollow.web.routes import _apply_import_data
+
+    imported = _apply_import_data(_station(), {"camera": {"corner_pins": _CORNER_PINS}})
+    assert [(m.x, m.y, m.z, m.pin) for m in imported.camera.calibration_marks][0] == (7.0, 1.0, 0.5, _CORNER_PINS[0])
+
+
+def test_an_import_never_writes_the_former_keys_back() -> None:
+    from openfollow.web.routes import _apply_import_data
+
+    imported = _apply_import_data(AppConfig(), {"camera": {"corner_pins": _CORNER_PINS, "calibration_points": []}})
+    exported = _config_dict_redacted(imported)
+    assert "corner_pins" not in exported["camera"]
+    assert "calibration_points" not in exported["camera"]

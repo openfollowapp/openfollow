@@ -335,7 +335,9 @@ def test_an_interrupted_gate_is_stopped_on_the_pi_before_its_checkout_is_restore
     running, stopped = tmp_path / "step.running", tmp_path / "step.stopped"
     hook = _long_step(running, stopped)
     if interrupt == "dropped connection":
-        hook = f'kill -KILL "$FAKE_SSH_PID"; {hook}'
+        # Dropped once the step runs: dropping it first can stop the step before it starts.
+        wait = f"while [ ! -e {shlex.quote(str(running))} ]; do sleep 0.05; done"
+        hook = f'( {wait}; kill -KILL "$FAKE_SSH_PID" ) & {hook}'
     # Another gate on the same Pi, in its own session: never this run's to stop.
     other = subprocess.Popen(
         [sys.executable, "-I", "-c", "import time; time.sleep(60)", "make", "ci"], start_new_session=True

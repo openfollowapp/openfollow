@@ -304,6 +304,24 @@ measured value.
 | Answer | Camera, per point: status, reason, pixel error, distance error, position; largest error; the caution reasons |
 | Unsolvable | No finite fit or a FOV outside 10-170°: "No camera fits these points. Check the pins and the measurements." (Simple: "No camera fits these corners. Check the corners and the measurements.") |
 
+### Camera height (both modes)
+
+From straight above, a flat set of points cannot separate the camera's height
+from its field of view: a camera steeper than about -85° can come out metres
+off with nothing in the errors. So whenever the calculated camera is steeper
+than -82.5°, its own blue instruction box appears under the warning, "Enter
+the exact height of the camera's lens" / "The camera looks almost straight down
+– its height and its field of view cannot be told apart.",
+with a **Camera height** field (in the active units, "(Z from the point of
+origin)") under it. It is not a warning reason. An entered height holds the fit (a residual on the camera's Z with
+`HEIGHT_SIGMA` 0.01 m, and every seed starts at that height); the blue box then gives way to
+the note "The camera height is fixed at 9.80 m." The field stays
+while a value is in it. A missing height only warns; it never blocks Save and
+finish. The height is stored with the calibration (`camera.calibration_height`,
+m, empty when not entered), so a reopened Setup Wizard calculates the same
+camera, and Review lists "Camera height: Fixed at 9.80 m" or "Not entered"
+when the camera is that steep.
+
 ### Something might be wrong
 
 One caution (`.notice.warning`) in Camera Calibration and Review, headed

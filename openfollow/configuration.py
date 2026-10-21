@@ -870,7 +870,7 @@ class DetectionConfig:
         # dereference ``mask.vertices`` without an AttributeError.
         self.masks = [
             DetectionMaskConfig(**_filter_known(DetectionMaskConfig, m)) if isinstance(m, dict) else m
-            for m in self.masks
+            for m in (self.masks if isinstance(self.masks, list) else [])
             if isinstance(m, (dict, DetectionMaskConfig))
         ]
 
@@ -1249,7 +1249,12 @@ class MidiConfig:
     patches: list[MidiPatch] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        self.patches = [MidiPatch(**_filter_known(MidiPatch, p)) if isinstance(p, dict) else p for p in self.patches]
+        patches = self.patches if isinstance(self.patches, list) else []
+        self.patches = [
+            MidiPatch(**_filter_known(MidiPatch, p)) if isinstance(p, dict) else p
+            for p in patches
+            if isinstance(p, (dict, MidiPatch))
+        ]
         # Guarantee every patch has a unique id >= 1 (id 0 / duplicates get the
         # next free sequential id) so binding foreign keys always resolve.
         seen: set[int] = set()
@@ -1365,9 +1370,11 @@ class VirtualFadersConfig:
     def __post_init__(self) -> None:
         # Coerce dicts to typed entries before padding so pad/trim sees
         # uniform values.
+        faders = self.faders if isinstance(self.faders, list) else []
         self.faders = [
             VirtualFaderConfig(**_filter_known(VirtualFaderConfig, f)) if isinstance(f, dict) else f
-            for f in self.faders
+            for f in faders
+            if isinstance(f, (dict, VirtualFaderConfig))
         ]
         while len(self.faders) < VIRTUAL_FADER_COUNT:
             self.faders.append(VirtualFaderConfig())
@@ -2412,6 +2419,9 @@ class ControllerConfig:
                 continue
             coerced_indices[str(raw_name)] = idx
         self.button_raw_indices = coerced_indices
+        self.swap_triggers = _coerce_bool(self.swap_triggers, False)
+        self.mapped_controller_name = _coerce_str(self.mapped_controller_name, "")
+        self.mapped_controller_guid = _coerce_str(self.mapped_controller_guid, "")
         for move in self.settle_bindings():
             _log_settled_binding("controller", move)
 
@@ -3007,12 +3017,7 @@ class AppConfig:
             self.rtsp_password = ""
         if not isinstance(self.srt_passphrase, str):
             self.srt_passphrase = ""
-        # Auto online-sync knobs: normalise so a hand-edited TOML can't feed a
-        # non-bool / non-string into the worker.
-        self.update_include_prereleases = _coerce_bool(self.update_include_prereleases, False)
-        self.auto_update_check = _coerce_bool(self.auto_update_check, True)
-        self.auto_time_sync = _coerce_bool(self.auto_time_sync, True)
-        self.time_sync_server = _coerce_str(self.time_sync_server, "ptbtime1.ptb.de").strip() or "ptbtime1.ptb.de"
+        self.normalise_startup_settings()
         # TOML produces ``dict[str, Any]``; the runtime contract is
         # ``dict[int, float]`` keyed by marker_id. Drop pairs with a non-int
         # key or non-finite/negative value.
@@ -3047,6 +3052,14 @@ class AppConfig:
                 continue
             coerced[key] = value
         self.marker_move_speeds = coerced
+
+    def normalise_startup_settings(self) -> None:
+        """Coerce the update and time-sync settings read at startup, so a hand-edited TOML or an
+        import can't feed a non-bool / non-string into the updater or the online-sync worker."""
+        self.update_include_prereleases = _coerce_bool(self.update_include_prereleases, False)
+        self.auto_update_check = _coerce_bool(self.auto_update_check, True)
+        self.auto_time_sync = _coerce_bool(self.auto_time_sync, True)
+        self.time_sync_server = _coerce_str(self.time_sync_server, "ptbtime1.ptb.de").strip() or "ptbtime1.ptb.de"
 
 
 # ---------------------------------------------------------------------------
@@ -3191,6 +3204,28 @@ def _replace_file(target: Path, data: bytes) -> None:
 _LOGGED_UNVIEWED: set[tuple[str, tuple[int, ...]]] = set()
 
 
+def marker_id_list(raw: Any, *, path: str, field_name: str) -> list[int]:
+    """A selection list as it is kept: positive int marker ids in first-seen order.
+
+    Marker id 0 is reserved as "ignored" on the PSN wire, so it never gets past ``Marker.__init__``. A
+    duplicate would render two marker cards and register the marker twice with PSN / RTTrPM. Anything
+    but a list reads as ``[]``: ``init_markers`` iterates it. *path* names the source in the log.
+    """
+    if not isinstance(raw, list):
+        logger.warning("%s: %s is %s, not a list – coercing to []", path, field_name, type(raw).__name__)
+        return []
+    kept: list[int] = []
+    for value in raw:
+        if isinstance(value, bool) or not isinstance(value, int):
+            continue
+        if value < 1:
+            logger.warning("%s: dropping reserved marker id %r from %s", path, value, field_name)
+            continue
+        if value not in kept:
+            kept.append(value)
+    return kept
+
+
 def viewed_with_controlled(controlled: list[int], viewer: list[int]) -> list[int]:
     """The viewed markers with every controlled one added: a marker this station controls is always
     one it views, so it keeps its HUD card and counts in the trigger zones."""
@@ -3306,43 +3341,9 @@ def _config_from_data(path: str, data: dict[str, Any]) -> AppConfig:
         raw_controlled = data["controlled_marker_ids"]
         data["viewer_marker_ids"] = list(raw_controlled) if isinstance(raw_controlled, list) else []
 
-    # Marker id 0 is reserved as "ignored" on the PSN wire; strip it from the
-    # selection lists so a hand-edited config can't smuggle a 0 past
-    # ``Marker.__init__``. A non-list value coerces to ``[]`` (``init_markers``
-    # expects an iterable of ints). The backcompat block above guarantees both
-    # keys are present, so there's no missing-key case to guard.
+    # The backcompat block above guarantees both keys are present.
     for _field_name in ("controlled_marker_ids", "viewer_marker_ids"):
-        _raw = data[_field_name]
-        if not isinstance(_raw, list):
-            logger.warning(
-                "%s: %s is %s, not a list – coercing to [] so selection-list iteration can't crash startup",
-                path,
-                _field_name,
-                type(_raw).__name__,
-            )
-            data[_field_name] = []
-            continue
-        # Dedup, preserving first-seen order: a duplicate id would render two
-        # marker cards and double-register the marker with PSN / RTTrPM on hot
-        # reload.
-        _seen: set[int] = set()
-        _filtered: list[int] = []
-        for _v in _raw:
-            if isinstance(_v, bool) or not isinstance(_v, int):
-                continue
-            if _v < 1:
-                logger.warning(
-                    "%s: dropping reserved marker id %r from %s",
-                    path,
-                    _v,
-                    _field_name,
-                )
-                continue
-            if _v in _seen:
-                continue
-            _seen.add(_v)
-            _filtered.append(_v)
-        data[_field_name] = _filtered
+        data[_field_name] = marker_id_list(data[_field_name], path=path, field_name=_field_name)
     _unviewed = [mid for mid in data["controlled_marker_ids"] if mid not in data["viewer_marker_ids"]]
     if _unviewed and (path, tuple(_unviewed)) not in _LOGGED_UNVIEWED:
         _LOGGED_UNVIEWED.add((path, tuple(_unviewed)))

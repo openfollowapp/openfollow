@@ -106,8 +106,9 @@ five-step rating, Refresh Image, Clear lines. Changed:
 | Topic | Decision |
 |---|---|
 | Suggestions | Each dashed suggestion carries a bubble beside it with a pointer to a dot on the line: a circle with a check (**Use this line**) and a circle with a cross (**Reject this line**). The bubble is a 72 × 38 px rectangle with 8 px corners; bubble and pointer are one outline. The pointer is an equilateral triangle, 18 px high, with a 3 px rounded tip that stops 4 px short of the line's centre, so it points at the line without touching it. Placement follows tooltip and map-popup libraries: the anchor sits off the line's middle (from 38 % or 62 % of its length outwards); the bubble goes above or below a flat line and beside a steep one, may slide along that side with the pointer kept on the straight part of the edge, and flips to the other side when there is no room. It never covers its own line and avoids other suggestions, the frame's edge and other bubbles. Its buttons do not move on hover. Pointing at a bubble (hover or Tab) lights up its line and pointer and dims the others; pointing at a line lights up its bubble. A used line loses its bubble and becomes a traced line (select it, Delete removes it); a rejected line disappears with its bubble, from the picture and the fit, until **Refresh Image** suggests the lines again. After a choice by keyboard the focus moves on to the next bubble. A click on a dashed line still uses it. Lines traced by hand get no bubble |
-| Hint box | One blue `.notice` above the picture, always the one next thing to do (heading, then the sub-line), mirrored in the full-screen toolbar: a line started: "Click the other end of the straight edge." / "Esc cancels the line."; a point selected: "Move the point exactly onto the edge." / "Drag it, or use the arrow keys while the loupe shows the edge. Press Enter when it is in the right place."; suggestions left: "Check the suggested lines." / "Use each one that is straight in reality. Reject the others, such as a curtain, a cloth or a cable. N left to check. Or load a saved lens calibration."; a loaded calibration and no lines: "A saved lens calibration is loaded." / "Press Next, or draw straight lines to measure the lens again."; no lines: "Draw straight lines on the picture." / "Click the start and the end of an edge that is straight in reality, such as a stage edge, a tape line or a truss. Then move its points exactly onto the edge. Or load a saved lens calibration."; a misfit: "Check the line that does not fit." / "It is drawn in the warning colour. Move its points onto the edge, or delete it if it is not straight in reality."; rated Good or better: "The lens is measured." / "Press Next, or add lines near the edges of the picture to confirm it."; lines that already agree (Rating hint): "The result may already be good." / "Add a line near the top edge to confirm it. Or press Next."; applied otherwise: "Improve the lines, or add more." / "Select a point and move it exactly onto the edge. Lines near the edges and corners of the picture help the most." plus the rating hint; Not usable: "Draw more straight lines." / "Click the start and the end of a straight edge. Then move its points exactly onto the edge." plus the rating hint. It replaces the explanatory paragraph under Adjust by hand; the tip stays |
-| Rating hint | When an edge band is still empty but the lines already agree (at least 4 lines, none flagged, the points within 2 px RMS of their fitted curves, the corner correction measured and rated Fair or better: lines that never reach a corner agree with a wrong lens just as well): "The result may already be good. Add a line near the top edge to confirm it." Otherwise the station's hint as today ("Add a line near the top edge.") |
+| Hint box | One blue `.notice` above the picture, always the one next thing to do (heading, then the sub-line), mirrored in the full-screen toolbar: a line started: "Click the other end of the straight edge." / "Esc cancels the line."; a point selected: "Move the point exactly onto the edge." / "Drag it, or use the arrow keys while the loupe shows the edge. Press Enter when it is in the right place."; suggestions left: "Check the suggested lines." / "Use each one that is straight in reality. Reject the others, such as a curtain, a cloth or a cable. N left to check. Or load a saved lens calibration."; a loaded calibration and no lines: "A saved lens calibration is loaded." / "Press Next, or draw straight lines to measure the lens again."; no lines: "Draw straight lines on the picture." / "Click the start and the end of an edge that is straight in reality, such as a stage edge, a tape line or a truss. Then move its points exactly onto the edge. Or load a saved lens calibration."; a misfit: "Check the line that does not fit." / "It is drawn in the warning colour. Move its points onto the edge, or delete it if it is not straight in reality."; rated Good or better: "The lens is measured." / "Press Next." followed by the weak edges, if any ("If possible, add lines near the top and left edges to confirm it."), the same sentence the result box shows; lines that already agree (Rating hint): "The result may already be good." / "If possible, add a line near the top edge to confirm it. Or press Next."; applied otherwise: "Improve the lines, or add more." / "Select a point and move it exactly onto the edge. Lines near the edges and corners of the picture help the most." plus the rating hint; Not usable: "Draw more straight lines." / "Click the start and the end of a straight edge. Then move its points exactly onto the edge." plus the rating hint. It replaces the explanatory paragraph under Adjust by hand; the tip stays |
+| Weak edges | The hint names every edge whose outer band (15 % of that side) holds fewer than 5 points, weakest first: "Add a line near the top edge.", "Add lines near the top and bottom edges.", "Add lines near the top, left and bottom edges.", all four: "Add lines near all edges of the picture." (`lens_fit.coverage_hint` names only the weakest today) |
+| Rating hint | When an edge band is still weak but the lines already agree (at least 4 lines, none flagged, the points within 2 px RMS of their fitted curves, the corner correction measured and rated Fair or better: lines that never reach a corner agree with a wrong lens just as well): "The result may already be good. If possible, add a line near the top edge to confirm it." With several weak edges it names them all ("If possible, add lines near the top and bottom edges to confirm it."). Otherwise the weak-edges hint |
 | Selecting a line | A click anywhere along a traced line selects the whole line, drawn in the text colour. A line just added (a tapped suggestion or a traced edge) is selected |
 | Deleting | **Delete** or **Backspace** removes the selected line wherever the focus is, except in a field or with a dialog open; with a line started, the key cancels it instead. **Delete line** does the same |
 | Points | As [Selecting a point](#selecting-a-point), and with a point selected **Tab** moves on to the next point of the same line, **Shift+Tab** back, round from the last to the first (the loupe follows). **Point off** and **Space** switch a middle point off or on, as today: a middle point that found no edge starts off |
@@ -167,26 +168,31 @@ to Imperial** / **Metric** (small, left of the **?**), **?**.
 
 Top to bottom:
 
-1. The location group: **Where is your camera located?**, a dropdown
-   (Choose…, Front of House (balcony railing / ceiling), Front Truss, Back
-   Truss, Stage Left, Stage Right), and a collapsed box **Optional: enter a
-   rough camera position to check the result**, holding the Camera Position
-   fields (below).
-2. "Mark the four corners of the **largest rectangle** that fits on the
-   floor of the performance area. The camera must see all four corners. Only
-   the corners need a mark, such as a tape cross. Enter the size of the
-   rectangle. The Setup Wizard draws it on the picture, as a camera at your
-   chosen location would see it. Then drag each corner onto its tape mark.
-   Positions outside the rectangle are less accurate."
-3. **Rectangle**: Width and Depth (placeholders 12 and 6 m), and the
+Four numbered steps, each headed by a question in the same bold style, so it is clear where to start. They open in order: a step is greyed out (`step-locked`, `inert`) until the one before it is done. Step 2 opens with a location chosen, step 3 with a valid width and depth, step 4 (the heading, the picture, the corner list and the tip) with the point of origin chosen and, for Custom, its centre complete. A rectangle already entered (a reopened Setup Wizard) counts as step 1 done. Refresh Image is disabled with step 4; Reset Corners only appears once a corner has been moved (and goes again after a reset). **Next** stays disabled until all four corners have been placed (dragged, moved with the arrow keys, or confirmed with Enter); the hint names the next corner. Advanced locks nothing and always shows Reset Pins.
+
+- **1. Where is your camera?** A dropdown (Choose…, Front of House (balcony
+   railing / ceiling), Front Truss, Back Truss, Stage Left, Stage Right), and a
+   collapsed box **Optional: enter a rough camera position to check the
+   result**, holding the Camera Position fields (below).
+- **2. What is the size of your rectangle?** Under the heading: "Mark the
+   four corners of the **largest rectangle** that fits on the floor of the
+   performance area. The camera must see all four corners. Only the corners
+   need a mark, such as a tape cross. Enter the size of the rectangle." Then Width and Depth, empty with no
+   placeholder (an example number read as a value already entered), and the
    diagonals note.
-4. **Point of Origin**: **Point of origin for all position data (0/0/0)**,
-   "Centred between DSL and DSR" (default; the rectangle's centre at X 0,
-   Y depth / 2, Z 0) or "Custom", which asks **Where is the centre of the
-   rectangle, measured from the point of origin?** with X (stage left +),
-   Y (upstage +), Z (up +), filled with the default on switching.
-5. The picture, Refresh Image and Reset Corners, the tip, **Corners**, the
-   status, the caution, the solved values. Simple has no Distances to check.
+- **3. Where is the point of origin?** **Point of origin for all position
+   data (0/0/0)**, an active choice: it starts at "Choose…", and the
+   operator picks "Default: centred between DSL and DSR" (the rectangle's centre at
+   X 0, Y depth / 2, Z 0) or "Custom". Until then the hint above the step
+   reads "Choose the point of origin." / "All position data that the
+   station sends is measured from this point (0/0/0). It must match the
+   point of origin of your console or tracking system." "Custom" which asks **Where is the
+   centre of the rectangle, measured from the point of origin?** with X
+   (stage left +), Y (upstage +), Z (up +), filled with the default on
+   switching.
+- **4. Place the corners on the picture** above the picture, Refresh Image
+   and Reset Corners, the tip, **Corners**, the status, the caution, the
+   solved values. Simple has no Distances to check.
 
 | Topic | Decision |
 |---|---|
@@ -207,7 +213,7 @@ The Simple hint, first match wins:
 | When | Above | Heading | Sub-line |
 |---|---|---|---|
 | No location and no width / depth | the location | Choose where your camera is located. | The location decides on which side of the picture each corner of the rectangle starts. |
-| Nothing of the rectangle entered | the rectangle text | Mark the four corners of the largest rectangle that fits on the floor of the performance area and that the camera can see. Then enter its width and depth. | Only the corners need a mark, such as a tape cross. The Setup Wizard then draws the rectangle on the picture. |
+| Nothing of the rectangle entered | the rectangle text | Enter the size of the rectangle you marked on stage. | Only the corners need a mark, such as a tape cross. The Setup Wizard then draws the rectangle on the picture. |
 | Something missing | the rectangle text, or the custom-centre question when only the centre is missing | "Enter the rectangle's width / depth / width and depth.", "Enter the X, Y and Z of the rectangle's centre, measured from the point of origin." (naming exactly the missing ones), "Width and depth must be between 0 and 200 m." | as above |
 | A corner not placed | the picture | Drag DSL onto its tape mark. | Downstage left. N of 4 corners are on their marks. Click a corner to select it and move it with the arrow keys. Press Enter when the crosshair is in the right place. |
 | Solved | the picture | Check the result. | The grid on the picture should match the tape marks. Then press Next. |

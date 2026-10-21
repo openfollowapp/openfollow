@@ -252,14 +252,14 @@ class TestClientCreationFailure:
 
     @staticmethod
     def _send_for(svc: OscService, now: list[float], seconds: float, *, step: float = 0.25) -> list[bool]:
-        """Send to the unresolvable target every *step* seconds for *seconds*."""
+        """Send to console.invalid every *step* seconds for *seconds*."""
         sent = []
         for _ in range(round(seconds / step)):
             sent.append(svc.send("/x", host="console.invalid", port=8000))
             now[0] += step
         return sent
 
-    def test_a_name_that_does_not_resolve_is_tried_and_logged_once_per_retry(
+    def test_a_name_that_does_not_resolve_is_tried_once_per_retry_and_logged_once(
         self,
         unresolvable: tuple[OscService, list[float], list[str], list[bool]],
         caplog: pytest.LogCaptureFixture,

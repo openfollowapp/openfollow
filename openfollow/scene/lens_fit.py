@@ -74,7 +74,7 @@ _EDGE_BAND_POINTS = 5
 _CORNER_RADIUS = 0.8
 # Lines that already agree: at least this many, none misfit, their points this close (RMS px) to the fit.
 _AGREE_MIN_LINES = 4
-_AGREE_RMS_PX = 2.0
+_AGREE_RMS_PX = 1.5
 
 # Predicted corner uncertainty (px) below which each rating applies, best first.
 RATING_THRESHOLDS_PX: tuple[tuple[float, str], ...] = (

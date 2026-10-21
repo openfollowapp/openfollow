@@ -393,7 +393,8 @@ def solve_marks(
     fitted briefly twice: with each triangulated mark on the side its pin picks as the
     seed sees it, and with all of them on the other side. An upright camera (at or above the lowest mark, not
     looking up) beats one that is not, then the one that placed more marks, then the lower cost. The fitted
-    camera of the winner places again what its seed could not, and only that one is fitted to the end.
+    camera of the winner places again what its seed could not, and only that one is fitted to the end; when that
+    fit fails or ranks lower, the winner's brief fit answers.
     ``stale`` is asked before every iteration; once it answers True the solve raises :class:`SolveSuperseded`.
     """
     canvas = (canvas_w, canvas_h)
@@ -463,7 +464,7 @@ def solve_marks(
         # Chained from the seed a child inherits its parent's error; from the fitted places it may meet.
         placed = dict(best["places"])
         refined = fitted(best["x"], placed, place_marks(placed, best["x"][:7], False), FIT_ITERATIONS)
-        if refined is not None:
+        if refined is not None and rank(refined) >= rank(best):
             best = refined
     if best is None:
         return MarkSolve(None, tuple(MarkFit(m.id, None, reasons.get(m.id, "")) for m in marks), NO_FIT)

@@ -197,6 +197,25 @@ class TestSimple:
         solved = solve_marks(marks, W, H, hint=tuple(tele[:3]))
         assert (solved.camera, solved.error) == (None, cp.NO_FIT)
 
+    @pytest.mark.parametrize("full_fit", ["fails", "sinks below the floor"])
+    def test_the_brief_fit_answers_when_the_full_fit_ranks_lower(
+        self, full_fit: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fit = cp._fit
+
+        def full_fit_goes_wrong(problem, x0, stale, iterations):
+            result = fit(problem, x0, stale, iterations)
+            if iterations < cp.FIT_ITERATIONS:
+                return result
+            if full_fit == "fails" or result is None:
+                return None
+            below = result[0].copy()
+            below[2] = -below[2]
+            return below, result[1]
+
+        monkeypatch.setattr(cp, "_fit", full_fit_goes_wrong)
+        _assert_true_camera(solve_marks(_simple(), W, H).camera, tol=1e-3)
+
     def test_a_corner_pinned_40_px_off_still_solves_without_a_camera_position(self) -> None:
         marks = _simple(off_px=(40.0, 0.0))
         solved = solve_marks(marks, W, H)
@@ -291,8 +310,9 @@ class TestAdvanced:
         assert fit.position == pytest.approx(t6, abs=0.05)
 
     def test_a_chain_its_seed_places_too_far_off_is_placed_from_the_fit(self) -> None:
-        """2 cm per distance moves 8 enough that 9's circles miss; from the fitted 8 they meet."""
-        p7, p8, p9 = (4.6, 1.9, 0.0), (-0.2, 6.4, 0.0), (-0.8, 4.5, 0.0)
+        """2 cm per distance moves 8 enough that 9's circles miss; from the fitted 8 they meet, and 10, measured
+        from 9, lands on the side its pin picks."""
+        p7, p8, p9, p10 = (4.6, 1.9, 0.0), (-0.2, 6.4, 0.0), (-0.8, 4.5, 0.0), (-4.0, 3.0, 0.0)
         marks = [
             _known(1, REF),
             _known(2, DSL),
@@ -300,16 +320,20 @@ class TestAdvanced:
             _triangulated(7, p7, (1, REF), (2, DSL), err_a=0.02, err_b=-0.02),
             _triangulated(8, p8, (7, p7), (2, DSL), err_a=-0.02, err_b=0.02),
             _triangulated(9, p9, (8, p8), (1, REF), err_a=-0.02, err_b=0.02),
+            _triangulated(10, p10, (9, p9), (3, DSR)),
         ]
         solved = solve_marks(marks, W, H, hint=(0.0, 13.0, 12.0))
         assert solved.camera is not None
         np.testing.assert_allclose(_pose(solved.camera)[:3], TRUE[:3], atol=0.5)
-        fit = {f.id: f for f in solved.marks}[9]
-        assert fit.reason == ""
-        assert fit.position == pytest.approx(p9, abs=0.05)
+        by_id = {f.id: f for f in solved.marks}
+        for mark_id, place in ((9, p9), (10, p10)):
+            assert by_id[mark_id].reason == ""
+            assert by_id[mark_id].position == pytest.approx(place, abs=0.05)
 
-    def test_an_upright_camera_beats_a_cheaper_one_below_the_floor(self) -> None:
-        """Pinned from under the stage looking up, the same pins fit a camera above it as well."""
+    @pytest.mark.parametrize("hint", [(0.0, 0.0, 10.0), (0.0, -13.0, 10.0)], ids=["above", "above the pinning camera"])
+    def test_an_upright_camera_beats_a_cheaper_one_below_the_floor(self, hint: tuple[float, float, float]) -> None:
+        """Pinned from under the stage looking up, the same pins fit a camera above it as well; from straight above
+        the pinning camera the fit reaches both."""
         below = np.array([0.0, -13.0, -12.0, 48.0, 0.0, 180.0, 70.0])
         p3, p4 = (2.0, -4.0, 0.0), (-3.0, -5.0, 0.4)
         marks = [
@@ -318,12 +342,34 @@ class TestAdvanced:
             _triangulated(3, p3, (1, REF), (2, DSL), camera=below),
             _triangulated(4, p4, (3, p3), (1, REF), camera=below),
         ]
-        camera = solve_marks(marks, W, H, hint=(0.0, 0.0, 10.0)).camera
+        camera = solve_marks(marks, W, H, hint=hint).camera
         assert camera is not None
         assert camera.pos_z >= 0.0 and camera.pitch <= 0.0
 
-    def test_a_fit_turned_past_straight_down_answers_the_same_view_upright(self) -> None:
-        """From straight above the origin the fit can pass -90° of pitch: -132° is -48° turned half round."""
+    def test_an_upright_camera_that_places_fewer_marks_beats_one_far_under_the_floor(self) -> None:
+        """From where the seed puts 4, 5's circles cannot meet; the other side places every mark, but only for a
+        camera some 30 m under the floor looking up. From the upright fit 5 meets."""
+        truth = (-5.33, 8.36, 3.17)
+        marks = [
+            Mark(1, "known", 0.0, (0.0, 0.0), pin=(1267.1, 458.5)),
+            Mark(2, "known", 0.0, (1.6, 0.5), pin=(1115.4, 436.2)),
+            Mark(3, "triangulated", 0.3, from_a=2, from_b=1, distance_a=6.27, distance_b=6.53, pin=(664.6, 635.2)),
+            Mark(4, "triangulated", 0.3, from_a=2, from_b=3, distance_a=8.19, distance_b=6.05, pin=(315.2, 447.9)),
+            Mark(5, "triangulated", 0.0, from_a=1, from_b=4, distance_a=3.31, distance_b=11.28, pin=(1572.3, 586.1)),
+            Mark(6, "triangulated", 0.2, from_a=3, from_b=1, distance_a=2.55, distance_b=7.13, pin=(810.1, 898.1)),
+        ]
+        solved = solve_marks(marks, W, H, hint=(-3.8, 7.5, 2.7))
+        assert solved.camera is not None
+        np.testing.assert_allclose(_pose(solved.camera)[:3], truth, atol=0.1)
+        assert all(f.position is not None for f in solved.marks)
+
+    @pytest.mark.parametrize("turns", [cp.STEEP_TURNS, (0.0,)], ids=["quarter turns", "one seed"])
+    def test_a_fit_turned_past_straight_down_answers_the_same_view_upright(
+        self, turns: tuple[float, ...], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """From straight above the origin, seeded once, the fit passes -90° of pitch: -132° is -48° turned half
+        round."""
+        monkeypatch.setattr(cp, "STEEP_TURNS", turns)
         marks = [
             _known(1, REF),
             _known(2, DSL),
@@ -332,8 +378,12 @@ class TestAdvanced:
         ]
         _assert_true_camera(solve_marks(marks, W, H, hint=(0.0, 0.0, 10.0)).camera)
 
-    def test_a_fit_just_past_straight_down_answers_the_same_view_upright(self) -> None:
-        """From above the origin this camera fits at -98° of pitch first: -82° turned half round."""
+    @pytest.mark.parametrize("turns", [cp.STEEP_TURNS, (0.0,)], ids=["quarter turns", "one seed"])
+    def test_a_fit_just_past_straight_down_answers_the_same_view_upright(
+        self, turns: tuple[float, ...], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """From above the origin, seeded once, this camera fits at -98° of pitch: -82° turned half round."""
+        monkeypatch.setattr(cp, "STEEP_TURNS", turns)
         steep = np.array([0.0, 2.0, 12.0, -82.0, 180.0, 0.0, 70.0])
         p3, p4 = (2.0, 4.0, 0.0), (-3.0, 2.0, 0.0)
         marks = [

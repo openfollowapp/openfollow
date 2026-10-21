@@ -276,8 +276,9 @@ class TestHint:
             == "If possible, add lines near the top and left edges to confirm it."
         )
 
-    def test_lines_that_already_agree_may_be_good(self) -> None:
-        assert _hint(_all_but("top"), rating="okay", rms_px=2.0) == (
+    def test_four_lines_that_already_agree_may_be_good(self) -> None:
+        four = (_BAND["bottom"], _BAND["left"], _BAND["right"], MID_H)
+        assert _hint(four, rating="okay", rms_px=1.5) == (
             "The result may already be good. If possible, add a line near the top edge to confirm it."
         )
 
@@ -286,7 +287,7 @@ class TestHint:
         [
             ((_BAND["bottom"], _BAND["left"], _BAND["right"]), {}),
             (_all_but("top"), {"misfit": True}),
-            (_all_but("top"), {"rms_px": 2.01}),
+            (_all_but("top"), {"rms_px": 1.51}),
             (_all_but("top") + (_CORNER_REACH,), {"k2_fitted": False}),
             (_all_but("top"), {"rating": "medium"}),
         ],
@@ -297,11 +298,33 @@ class TestHint:
         assert _hint(segments, **kw) == "Add a line near the top edge."
 
     def test_the_fit_hands_its_own_rms_to_the_hint(self) -> None:
-        # Rated fair with the corner correction measured, but the points scatter more than 2 px about their curves.
-        result = fit_lens_from_lines(lines_for(-0.2, 0.03, (BOTTOM, LEFT, RIGHT, MID_H), noise=2.0, seed=1), W, H)
+        # Rated fair with the corner correction measured, but the points scatter more than 1.5 px about their curves
+        # though one line alone stays within it.
+        result = fit_lens_from_lines(lines_for(-0.2, 0.03, (BOTTOM, LEFT, RIGHT, MID_H), noise=2.0, seed=2), W, H)
         assert (result.rating, result.k2_fitted) == ("okay", True)
-        assert result.rms_px > 2.0 and not any(line.misfit for line in result.lines)
+        assert min(line.rms_px for line in result.lines) <= 1.5 < result.rms_px
+        assert not any(line.misfit for line in result.lines)
         assert result.hint == "Add a line near the top edge."
+
+    def test_four_fitted_lines_that_agree_may_be_good_though_one_scatters_more(self) -> None:
+        # The whole fit's RMS decides, not the line that scatters the most.
+        segments = (BOTTOM, MID_H, MID_V, _BAND["left"])
+        result = fit_lens_from_lines(lines_for(-0.2, 0.03, segments, noise=1.0, seed=3), W, H)
+        assert (result.rating, result.k2_fitted, len(result.lines)) == ("okay", True, 4)
+        assert result.rms_px <= 1.5 < max(line.rms_px for line in result.lines)
+        assert not any(line.misfit for line in result.lines)
+        assert result.hint == (
+            "The result may already be good. If possible, add lines near the top and right edges to confirm it."
+        )
+
+    def test_a_fitted_line_that_does_not_fit_is_asked_for_more(self) -> None:
+        rng = np.random.default_rng(0)
+        lines = [make_line(*s, -0.2, 0.03, noise=0.3, rng=rng) for s in (BOTTOM, MID_H, MID_V, _BAND["left"])]
+        lines.append(make_line(*DIAGONAL, -0.2, 0.03, noise=0.3, rng=rng, sag=8.0))
+        result = fit_lens_from_lines(lines, W, H)
+        assert (result.rating, result.k2_fitted, result.rms_px <= 1.5) == ("okay", True, True)
+        assert [line.misfit for line in result.lines] == [False, False, False, False, True]
+        assert result.hint == "Add lines near the top and right edges."
 
 
 class TestMisfit:

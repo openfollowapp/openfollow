@@ -15,6 +15,7 @@ __all__ = [
     "ConnectionPhase",
     "SourceKind",
     "VideoFailure",
+    "address_family_mismatch",
     "classify_failure",
     "failure_action",
     "failure_chip",
@@ -106,6 +107,11 @@ _REFUSED_MARKERS = ("connection refused", "econnrefused")
 # description listing no media rather than a 404, which reaches us as a generic
 # settings failure. The wording is gstrtspsrc's own, not a camera's.
 _EMPTY_SDP_MARKERS = ("sdp contains no streams", "no streams in sdp")
+
+# A UDP sink refusing a destination of the other IP family than its socket's:
+# rtspsrc opened its ports for the family the server's session description gave,
+# and the connection reached the server on the other.
+_ADDRESS_FAMILY_MARKERS = ("invalid address family",)
 
 # A source asked for a format, size or frame rate it cannot deliver stops with
 # the generic stream failure; only the flow return in the debug string says so.
@@ -292,6 +298,12 @@ def failure_action(failure: VideoFailure, *, kind: SourceKind = SourceKind.REMOT
     return _ACTIONS.get(failure, _ACTIONS[VideoFailure.UNKNOWN])
 
 
+def address_family_mismatch(text: str) -> bool:
+    """Whether an error's *text* (message or debug string) names a UDP address-family mismatch."""
+    lowered = text.lower()
+    return any(marker in lowered for marker in _ADDRESS_FAMILY_MARKERS)
+
+
 def classify_failure(
     *,
     phase: ConnectionPhase,
@@ -326,6 +338,8 @@ def classify_failure(
             return VideoFailure.DEVICE_UNAVAILABLE
         if code == RESOURCE_SETTINGS and any(marker in text for marker in _EMPTY_SDP_MARKERS):
             return VideoFailure.STREAM_NOT_FOUND
+        if code == RESOURCE_SETTINGS and address_family_mismatch(text):
+            return _silence_verdict(phase, saw_video)
         if code in _OPEN_CODES:
             if any(marker in text for marker in _REFUSED_MARKERS):
                 return VideoFailure.REFUSED

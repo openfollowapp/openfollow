@@ -85,9 +85,9 @@ def dials_ipv6(host: str) -> bool:
 
     The connection dials the resolver's first answer, which the system orders
     against its own routes, so a dual-stack name preferred over IPv4 is not one.
-    An IP literal is never one: the element reads a literal's family itself. A
-    name whose lookup is still running reads as not one this attempt; the answer
-    serves the next one.
+    An IP literal is never one: it is not looked up, and the RTSP input moves a
+    host to TCP once an attempt fails on the address family. A name whose lookup
+    is still running reads as not one this attempt; the answer serves the next one.
     """
     if not host:
         return False

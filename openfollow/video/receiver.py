@@ -1149,6 +1149,11 @@ class GstNativeSinkReceiver:
         # reason, and published with the verdict it explains.
         failure = self._classify(error) if failure is None else failure
         phase = self._state.phase
+        if error is not None:
+            try:
+                self._input.on_bus_error(error)
+            except Exception:
+                logger.exception("Error handing the failure to the %s input", self._input.display_name)
         self._cancel_connection_timeout()
         self._cancel_reconnect()
         self._cancel_heal()

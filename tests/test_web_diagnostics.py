@@ -4381,6 +4381,26 @@ def test_collect_runtime_state_names_what_each_controller_cannot_do() -> None:
     assert "notes" not in rows[second + 1]
 
 
+def test_collect_runtime_state_lists_every_marker_conflict() -> None:
+    stats = _stats()
+    stats["marker_conflicts"] = [
+        {"marker_id": 3, "stations": ["Stage Left"], "this_station": True},
+        {"marker_id": 12, "stations": ["Booth", "FOH"], "this_station": False},
+    ]
+    rows = diag.collect_runtime_state(diag.DiagnosticsProviders(runtime_stats=lambda: stats))
+    first = rows.index("  Marker conflicts:       2")
+    assert rows[first + 1 : first + 3] == [
+        "    marker 3    controlled by this station, Stage Left",
+        "    marker 12   controlled by Booth, FOH",
+    ]
+
+
+def test_collect_runtime_state_says_when_no_marker_conflicts() -> None:
+    assert "  Marker conflicts:       (none)" in diag.collect_runtime_state(
+        diag.DiagnosticsProviders(runtime_stats=_stats)
+    )
+
+
 def test_collect_runtime_state_reports_not_wired() -> None:
     assert "not wired" in diag.collect_runtime_state(diag.DiagnosticsProviders())[0]
 

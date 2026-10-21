@@ -81,6 +81,8 @@ class MarkerOverlayData:
     # On/off phase of an Identify flash on this card, set per frame.
     identify_flash: bool = False
     is_controlled: bool = False
+    # Another station controls this marker too.
+    control_conflict: bool = False
     # Per-controlled-marker gamepad fader value (0..1) or None.
     marker_fader: float | None = None
     # Detection assist-mode "ghost": the AI-corrected PSN output, drawn as a dim

@@ -244,7 +244,7 @@
   .reproj { fill: none; stroke: var(--success-mark); stroke-width: 1.5; vector-effect: non-scaling-stroke; pointer-events: none; }
   .origin-mark { fill: none; stroke: var(--info-text); stroke-width: 2.5; vector-effect: non-scaling-stroke; pointer-events: none; }
   .origin-label { fill: var(--info-text); stroke: var(--bg-deep); font-weight: 700; paint-order: stroke; pointer-events: none; }
-  .start-quad { fill: rgba(255, 188, 0, 0.06); stroke: rgba(255, 188, 0, 0.5); stroke-width: 2; stroke-dasharray: 8 6; vector-effect: non-scaling-stroke; pointer-events: none; }
+  .start-quad { fill: var(--accent); fill-opacity: 0.06; stroke: var(--accent); stroke-opacity: 0.5; stroke-width: 2; stroke-dasharray: 8 6; vector-effect: non-scaling-stroke; pointer-events: none; }
   .dist-line { fill: none; stroke: var(--info-text); stroke-width: 2; stroke-dasharray: 8 5; vector-effect: non-scaling-stroke; pointer-events: none; }
   .dist-line.on { stroke: var(--text); stroke-width: 3; stroke-dasharray: none; }
   .dist-label { fill: var(--text); stroke: var(--bg-deep); font-weight: 700; paint-order: stroke; pointer-events: none; }
@@ -265,6 +265,7 @@
   .calib-reason { color: var(--error-text); margin-top: 0.35rem; }
   .corner-xyz { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--text); font-size: 0.88rem; }
   .caution-list { margin: 0.3rem 0 0; padding-left: 1.1rem; }
+  .caution-text { color: var(--caution-text); }
   .mode-field { margin-bottom: 0.9rem; }
   .axis-note { font-weight: 400; text-transform: none; letter-spacing: 0; }
   #step-calib.mode-simple .only-advanced, #step-calib.mode-advanced .only-simple { display: none; }
@@ -288,10 +289,10 @@
   .pm-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
   .pm-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 0.2rem; }
   /* The full-screen picture with its one-line toolbar. */
-  .fs-btn { position: absolute; top: 8px; right: 8px; z-index: 4; width: 2.2rem; height: 2.2rem; padding: 0; display: flex; align-items: center; justify-content: center; border-radius: 0.5rem; background: rgba(3, 16, 10, 0.72); border: 1px solid var(--border); color: var(--text); }
+  .fs-btn { position: absolute; top: 8px; right: 8px; z-index: 4; width: 2.2rem; height: 2.2rem; padding: 0; display: flex; align-items: center; justify-content: center; border-radius: 0.5rem; background: color-mix(in srgb, var(--bg-deep) 72%, transparent); border: 1px solid var(--border); color: var(--text); }
   .fs-btn:hover, .fs-btn:focus-visible { background: var(--bg-soft); border-color: var(--accent); transform: none; }
   .fs-btn svg { width: 1.15rem; height: 1.15rem; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-  .fs-shell { position: fixed; inset: 0; z-index: 50; display: flex; flex-direction: column; background: #000; }
+  .fs-shell { position: fixed; inset: 0; z-index: 50; display: flex; flex-direction: column; background: var(--bg-deep); }
   .fs-shell[hidden] { display: none; }
   .fs-bar { display: flex; align-items: center; gap: 0.75rem; min-height: 2.6rem; padding: 0.35rem 0.6rem 0.35rem 0.9rem; background: var(--bg-soft); border-bottom: 1px solid var(--border); font-size: 0.86rem; line-height: 1.3; }
   .fs-title { font-size: 0.68rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
@@ -807,7 +808,6 @@
     onLensCoeffChanged();
   };
 
-
   // The overlay warp and its inverse (mirror scene/solver apply_overlay_distortion / invert_overlay_distortion).
   var DISTORTION_INVERT_ITERS = 40;
   var DISTORTION_INVERT_SETTLED = 1e-14;
@@ -854,7 +854,6 @@
     var scale = rd > 0 ? wizInvertRadius(rd, k1, k2) / rd : 1;
     return [cx + dx * scale * halfDiag, cy + dy * scale * halfDiag];
   }
-
 
   // ---------------------------------------------------------------
   // Projection: mirrors scene/solver.project_points, so the page draws what the station solved.
@@ -948,7 +947,7 @@
     ['sr', 'Stage Right', [-10, 4, 6]]
   ];
   var PIN_PROBLEM = 'Pin it on the picture: its two distances allow two places, mirrored across the line between its points.';
-  var DISTANCE_SIGMA = 0.04, MEET_TOL = 3 * Math.SQRT2 * DISTANCE_SIGMA, FLAG_PX = 5;
+  var DISTANCE_SIGMA = 0.04, MEET_TOL = 3 * Math.SQRT2 * DISTANCE_SIGMA, FLAG_PX = 5, MARK_REACH_M = 10000;
   var S = {
     mode: 'simple', simpleLoc: '',
     rect: { w: '', d: '', origin: 'dsc', cx: '', cy: '', z: '' },
@@ -960,7 +959,7 @@
     solve: null, selPin: null, selCorner: null, pinMenu: null, pair: 0,
     lensTouched: false, lensLoaded: null
   };
-  var solveSeq = 0, solveTimer = null;
+  var solveSeq = 0, solveTimer = null, solvePending = false;
 
   function rectVals() {
     var w = len(S.rect.w), d = len(S.rect.d);
@@ -994,13 +993,15 @@
       var m = { id: p.id, name: p.name || ('P' + p.id), kind: p.kind, pin: p.pin, problem: '' };
       if (p.kind === 'known') {
         var x = len(p.x), y = len(p.y), z = len(p.z);
-        if ([x, y, z].some(isNaN)) m.problem = 'Enter its X, Y and Z.'; else m.pos = [x, y, z];
+        if ([x, y, z].some(isNaN)) m.problem = 'Enter its X, Y and Z.';
+        else if ([x, y, z].some(function(v) { return Math.abs(v) > MARK_REACH_M; })) m.problem = 'Enter X, Y and Z within ' + lenRough(MARK_REACH_M) + ' of the point of origin.';
+        else m.pos = [x, y, z];
       } else {
         m.a = p.a; m.b = p.b; m.da = len(p.da); m.db = len(p.db); m.z = p.z === '' ? 0 : len(p.z);
         if (!m.a || !m.b) m.problem = 'Choose the two points its distances are measured from.';
         else if (m.a === m.b) m.problem = 'Choose two different points.';
         else if (!(m.da > 0 && m.da <= 200) || !(m.db > 0 && m.db <= 200)) m.problem = 'Enter both distances, between 0 and ' + lenLimit() + '.';
-        else if (isNaN(m.z)) m.problem = 'Enter its Z.';
+        else if (isNaN(m.z) || Math.abs(m.z) > MARK_REACH_M) m.problem = 'Enter its Z.';
         else if (!m.pin) m.problem = PIN_PROBLEM;
       }
       return m;
@@ -1108,10 +1109,14 @@
     clearTimeout(solveTimer);
     var seq = ++solveSeq, st = solveState();
     if (!st.usable || !imageWidth) {
-      S.solve = st;
+      S.solve = st.usable ? { marks: st.marks, waiting: 'The camera solves once the snapshot has loaded.' } : st;
+      solvePending = false;
       afterSolve(then);
       return;
     }
+    // Until this answer lands, Apply would save the previous one.
+    solvePending = true;
+    $('btn-apply-finish').disabled = true;
     fetch('/api/wizard/solve', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(solveBody(st.usable, seq)),
@@ -1119,10 +1124,12 @@
       return r.json().then(function(data) { return { status: r.status, data: data }; });
     }).then(function(res) {
       if (seq !== solveSeq || res.status === 409) return;
+      solvePending = false;
       S.solve = solveFromAnswer(st.marks, res.status, res.data);
       afterSolve(then);
     }).catch(function() {
       if (seq !== solveSeq) return;
+      solvePending = false;
       S.solve = { marks: st.marks, error: 'The station did not answer. Check the connection, then change a pin to solve again.' };
       afterSolve(then);
     });
@@ -1132,6 +1139,7 @@
     marks.forEach(function(m) { byId[m.id] = m; });
     (data.marks || []).forEach(function(a) { if (a.reason && byId[a.id] && !byId[a.id].problem) byId[a.id].problem = a.reason; });
     if (status === 422 && Array.isArray(data.need)) return { marks: marks, need: data.need };
+    if (status === 400) return { marks: marks, error: 'The station refused these points. Check their values.' };
     if (status !== 200 || !data.camera) return { marks: marks, error: data.error || 'No camera fits these points. Check the pins and the measurements.' };
     var positions = {}, res = {};
     data.marks.forEach(function(a) {
@@ -1184,9 +1192,6 @@
   // ---------------------------------------------------------------
   // Picture helpers: snapshot, handles, loupe
   // ---------------------------------------------------------------
-  // ---------------------------------------------------------------
-  // Snapshot Loading
-  // ---------------------------------------------------------------
   function revokeSnapshotUrl(url) {
     if (url) {
       try { URL.revokeObjectURL(url); } catch (e) {}
@@ -1194,16 +1199,21 @@
   }
 
   // ``notice``: say so on Camera Calibration, where the pins stay where they are.
-  window.loadSnapshot = function(attempt, notice) {
+  var snapshotSeq = 0;
+  // Only the newest request lands: an older answer or retry arriving late is dropped.
+  window.loadSnapshot = function(attempt, notice, seq) {
     attempt = attempt || 0;
+    if (!attempt) seq = ++snapshotSeq;
     fetch('/api/video/snapshot/full?t=' + Date.now()).then(function(r) {
       if (!r.ok) throw new Error('No feed');
       return r.blob();
     }).then(function(blob) {
+      if (seq !== snapshotSeq) return;
       var previousUrl = snapshotUrl;
       var nextUrl = URL.createObjectURL(blob);
       var img = new Image();
       img.onload = function() {
+        if (seq !== snapshotSeq) { revokeSnapshotUrl(nextUrl); return; }
         imageWidth = img.naturalWidth;
         imageHeight = img.naturalHeight;
         snapshotUrl = nextUrl;
@@ -1213,14 +1223,15 @@
       };
       img.onerror = function() {
         revokeSnapshotUrl(nextUrl);
-        showNoFeed();
+        if (seq === snapshotSeq) showNoFeed();
       };
       img.src = nextUrl;
     }).catch(function() {
       // A just-changed source may still be connecting – retry briefly so the
       // new feed appears on its own, without a manual Refresh Image.
+      if (seq !== snapshotSeq) return;
       if (attempt < 6) {
-        setTimeout(function() { loadSnapshot(attempt + 1, notice); }, 700);
+        setTimeout(function() { loadSnapshot(attempt + 1, notice, seq); }, 700);
       } else {
         showNoFeed();
       }
@@ -1256,7 +1267,6 @@
     refreshedTimer = setTimeout(function() { $('cal-refreshed').hidden = true; }, 4000);
   }
 
-
   function svgEl(tag, attrs) {
     var el = document.createElementNS('http://www.w3.org/2000/svg', tag);
     Object.keys(attrs || {}).forEach(function(k) { el.setAttribute(k, attrs[k]); });
@@ -1287,7 +1297,6 @@
     return g;
   }
 
-
   // The snapshot at full resolution, for the loupe and the Lens step.
   var snapshotCanvas = null;
   // The loupe sits beside the point: close to a mouse pointer, a finger's width away from a touch.
@@ -1302,13 +1311,14 @@
     loupe.style.left = at[0] + 'px'; loupe.style.top = at[1] + 'px'; loupe.style.display = 'block';
     var cv = loupe.querySelector('canvas'), ctx = cv.getContext('2d'), src = 120 / (4 * s);
     ctx.imageSmoothingEnabled = false;
-    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, cv.width, cv.height);
+    ctx.clearRect(0, 0, cv.width, cv.height);
     ctx.drawImage(snapshotCanvas, pos[0] - src / 2, pos[1] - src / 2, src, src, 0, 0, cv.width, cv.height);
     // Yellow on a wider black line: readable on a white floor and on a dark one.
     var c = cv.width / 2, arm = cv.width * 28 / 240;
     ctx.beginPath(); ctx.moveTo(c, c - arm); ctx.lineTo(c, c + arm); ctx.moveTo(c - arm, c); ctx.lineTo(c + arm, c);
-    ctx.strokeStyle = '#000'; ctx.lineWidth = 6; ctx.stroke();
-    ctx.strokeStyle = '#ffbc00'; ctx.lineWidth = 2; ctx.stroke();
+    var tokens = getComputedStyle(document.documentElement);
+    ctx.strokeStyle = tokens.getPropertyValue('--bg-deep').trim() || 'black'; ctx.lineWidth = 6; ctx.stroke();
+    ctx.strokeStyle = tokens.getPropertyValue('--accent').trim() || 'orange'; ctx.lineWidth = 2; ctx.stroke();
   }
   // The round loupe's top left, its edge ``gap`` from the point (sx, sy): up-right first, then the other
   // corners; a spot that leaves the picture or covers ``avoid`` ({l, t, r, b}) is skipped.
@@ -1745,8 +1755,8 @@
     group.querySelector('.lens-chord').setAttribute('points', lensPointsAttr(lensActivePoints(line)));
     group.querySelector('.lens-line-hit').setAttribute('points', lensPointsAttr(lensActivePoints(line)));
     var label = group.querySelector('.lens-label');
-    label.setAttribute('x', line.p0[0] + 10);
-    label.setAttribute('y', line.p0[1] - 10);
+    label.setAttribute('x', line.p0[0] + 8 * overlayPx());
+    label.setAttribute('y', line.p0[1] - 8 * overlayPx());
   }
   function renderLensToolbar() {
     var toggle = document.getElementById('lens-toggle-point');
@@ -1801,7 +1811,8 @@
       text += ' · Not applied until the coverage improves';
     }
     document.getElementById('lens-result-text').textContent = text;
-    document.getElementById('lens-result-hint').textContent = lensFit.hint || '';
+    var tuned = lensFitApplies(lensFit) && !lensPairIsTheFits(wizReadLensCoeff('wiz_lens_k1'), wizReadLensCoeff('wiz_lens_k2'));
+    document.getElementById('lens-result-hint').textContent = (tuned ? 'Fine-tuned after the fit. ' : '') + (lensFit.hint || '');
   }
 
   function lensFitApplies(fit) { return fit.rating !== 'low'; }
@@ -1987,8 +1998,11 @@
     overlay.addEventListener('pointermove', function(e) {
       if (!lensDrag) return;
       var pt = lensSvgPoint(e.clientX, e.clientY);
-      if (Math.hypot(e.clientX - lensDrag.client[0], e.clientY - lensDrag.client[1]) > LENS_TAP_SLOP_PX) lensDrag.moved = true;
-      if (lensDrag.trace) return;
+      var far = Math.hypot(e.clientX - lensDrag.client[0], e.clientY - lensDrag.client[1]);
+      if (lensDrag.trace) { if (far > LENS_TAP_SLOP_PX) lensDrag.moved = true; return; }
+      // A press that moves less than 3 CSS px is a click: it selects the point and moves nothing.
+      if (!lensDrag.moved && far < 3) return;
+      lensDrag.moved = true;
       e.preventDefault();
       lensMovePoint(lensDrag.line, lensDrag.point, lensClamp(pt));
       lensUpdateLineGeometry(lensLines.indexOf(lensDrag.line));
@@ -2036,7 +2050,11 @@
       else if (e.key === 'ArrowRight') dx = step;
       else if (e.key === 'ArrowUp') dy = -step;
       else if (e.key === 'ArrowDown') dy = step;
-      else if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); lensDeleteSelectedLine(); return; }
+      else if (e.key === 'Delete' || e.key === 'Backspace') {
+        e.preventDefault();
+        if (lensPending) { lensPending = null; renderLens(); } else lensDeleteSelectedLine();
+        return;
+      }
       else if (e.key === ' ') { e.preventDefault(); lensToggleSelectedPoint(); return; }
       else return;
       e.preventDefault();
@@ -2089,7 +2107,6 @@
     renderLensResult();
   }
 
-
   // ---------------------------------------------------------------
   // Lens calibrations saved on this station, and a settings file's lens values
   // ---------------------------------------------------------------
@@ -2129,17 +2146,17 @@
   window.lensLoadDialog = function() {
     var fromFile = null, saved = [];
     function render() {
-      var lines = S.lensLines || lensLines;
-      return '<div class="lens-dlg-title">Saved on this station</div>' +
+      var lines = lensLines;
+      return '<div id="ll-body"><div class="lens-dlg-title">Saved on this station</div>' +
         (saved.length ? '<div class="tier-list" role="radiogroup" aria-label="Saved lens calibrations">' + saved.map(function(c, i) { return lensOption(i, c.name, lensVals(c.k1, c.k2) + ' · ' + c.saved); }).join('') + '</div>'
           : '<p>No lens calibrations are saved on this station.</p>') +
         '<div class="lens-dlg-sep"></div><div class="lens-dlg-title">From a settings file</div>' +
         '<p>Only the lens values of an exported <code>.ofsettings</code> file are loaded.</p>' +
         '<div class="tier-list" id="ll-file-opt" hidden></div>' +
-        '<input type="file" id="ll-file" accept=".ofsettings,.openfollowsettings" hidden>' +
         '<button type="button" class="secondary" id="ll-file-btn">Choose settings file&hellip;</button>' +
+        '<input type="file" id="ll-file" accept=".ofsettings,.openfollowsettings" hidden>' +
         '<div class="wizard-field-error" id="ll-file-error" role="alert" hidden></div>' +
-        (lines.length ? '<p style="margin-top:0.8rem;">Loading removes the ' + lines.length + ' traced line' + (lines.length === 1 ? '' : 's') + '.</p>' : '');
+        (lines.length ? '<p style="margin-top:0.8rem;">Loading removes the ' + lines.length + ' traced line' + (lines.length === 1 ? '' : 's') + '.</p>' : '') + '</div>';
     }
     function open() {
       openModal({
@@ -2159,7 +2176,7 @@
       var ok = $('modal-footer').lastChild;
       function sync() { ok.disabled = !document.querySelector('input[name="lens_src"]:checked'); }
       sync();
-      $('modal-body').onchange = function(e) {
+      $('ll-body').onchange = function(e) {
         if (e.target.id !== 'll-file') { sync(); return; }
         var f = e.target.files[0]; if (!f) return;
         var rd = new FileReader();
@@ -2183,7 +2200,7 @@
   };
   window.lensSaveDialog = function() {
     if (!lensMeasured() || !wizLensPairValid()) return;
-    var k1 = wizReadLensCoeff('wiz_lens_k1'), k2 = wizReadLensCoeff('wiz_lens_k2'), saved = [];
+    var k1 = wizReadLensCoeff('wiz_lens_k1'), k2 = wizReadLensCoeff('wiz_lens_k2'), saved = [], saving = false;
     function open() {
       openModal({
         title: 'Save Lens Calibration',
@@ -2194,26 +2211,27 @@
         footerButtons: [
           { label: 'Cancel', onClick: function() { closeModal(); } },
           { label: 'Save', kind: 'primary', onClick: function(btn) {
-            var name = $('ls-name').value.trim(); if (!name) return;
-            btn.disabled = true;
+            var name = $('ls-name').value.trim(); if (!name || saving) return;
+            saving = true; btn.disabled = true;
             var saveError = window.OpenFollow.saveError, card = document.querySelector('#modal-root .modal-card');
             fetch('/api/wizard/lens/calibrations', {
               method: 'POST', headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ name: name, k1: k1, k2: k2 }),
             }).then(async function(r) {
+              saving = false;
               if (!r.ok) { btn.disabled = false; saveError.show(card, await saveError.fromResponse(r), 'Not saved.'); return; }
               closeModal();
               var note = $('lens-saved');
               note.textContent = 'Saved “' + name + '” on this station.';
               note.style.display = '';
-            }).catch(function() { btn.disabled = false; saveError.show(card, saveError.UNREACHABLE, 'Not saved.'); });
+            }).catch(function() { saving = false; btn.disabled = false; saveError.show(card, saveError.UNREACHABLE, 'Not saved.'); });
           } }
         ],
       });
       var ok = $('modal-footer').lastChild, inp = $('ls-name');
       function sync() {
         var n = inp.value.trim().toLowerCase();
-        ok.disabled = !n;
+        ok.disabled = !n || saving;
         $('ls-exists').hidden = !saved.some(function(c) { return c.name.toLowerCase() === n; });
       }
       sync();
@@ -2230,7 +2248,7 @@
   // ---------------------------------------------------------------
   function readCam() {
     var x = len($('cam_pos_x').value), y = len($('cam_pos_y').value), z = len($('cam_pos_z').value);
-    S.cam = [x, y, z].some(isNaN) ? null : { x: x, y: y, z: z };
+    S.cam = [x, y, z].some(function(v) { return isNaN(v) || Math.abs(v) > MARK_REACH_M; }) ? null : { x: x, y: y, z: z };
     S.camPartial = !S.cam && ['x', 'y', 'z'].some(function(k) { return $('cam_pos_' + k).value.trim() !== ''; });
   }
   window.calibNext = function() {
@@ -2358,6 +2376,8 @@
     var solve = S.solve, marks = currentMarks(), byId = {}, pre = triPlaced(currentMarks());
     marks.forEach(function(m) { byId[m.id] = m; });
     if (solve && solve.marks) solve.marks.forEach(function(m) { if (byId[m.id]) byId[m.id].problem = m.problem; });
+    // Rebuilding the rows drops the focused field: put the focus back on the field of that id.
+    var focused = document.activeElement && $('adv-rows').contains(document.activeElement) ? document.activeElement.id : '';
     $('adv-rows').innerHTML = S.points.length ? S.points.map(function(p) {
       var m = byId[p.id], id = p.id;
       var head = '<div class="calib-row-head"><strong>' + esc(p.name || ('P' + id)) + '</strong><span class="stat-chip">' + (p.kind === 'known' ? 'Known' : 'Triangulated') + '</span><span id="chip-' + id + '">' + chipFor(m, solve) + '</span>' +
@@ -2380,6 +2400,7 @@
       return '<div class="calib-row" data-row="' + id + '">' + head + f + reason + '</div>';
     }).join('') : '<p class="wizard-help" style="margin:0.5rem 0;">No points yet.</p>';
     $('adv-add-known').disabled = S.points.length >= SAVED.max_marks;
+    if (focused && $(focused)) $(focused).focus({ preventScroll: true });
     renderReq();
   }
   function updateAdvChips() {
@@ -2479,7 +2500,7 @@
     var ok = !!s.cam;
     $('cal-solved').hidden = !ok;
     if (ok) $('cal-solved').innerHTML = solvedParamsHtml(s.cam) + (LENS_ENABLED ? '<div class="wizard-solved-param"><span class="param-label">Lens</span><span class="param-value"' +
-      (lensMeasured() ? '>' + fmt(wizReadLensCoeff('wiz_lens_k1'), 3) + ' / ' + fmt(wizReadLensCoeff('wiz_lens_k2'), 3) : ' style="color:var(--caution-text)">Not measured') + '</span></div>' : '');
+      (lensMeasured() ? '>' + fmt(wizReadLensCoeff('wiz_lens_k1'), 3) + ' / ' + fmt(wizReadLensCoeff('wiz_lens_k2'), 3) : ' class="caution-text">Not measured') + '</span></div>' : '');
     $('cal-caution').hidden = !(ok && s.reasons.length);
     if (ok && s.reasons.length) $('cal-caution').innerHTML = cautionHtml(s.reasons);
     var pairs = pairsFor(s);
@@ -2532,7 +2553,7 @@
       if (!m.pin) return '';
       var r = s && s.res && s.res[m.id], at = r && r.at, flag = r && r.px > FLAG_PX;
       var rep = at ? '<circle class="reproj" cx="' + at[0] + '" cy="' + at[1] + '" r="' + (3 * u) + '"/>' : '';
-      return '<g class="pin-handle' + (S.selPin === key(m) ? ' active' : '') + (flag ? ' flag' : '') + (m.unmoved ? ' unmoved' : '') + '" tabindex="0" data-mark="' + esc(key(m)) + '" aria-label="' + esc(m.name) + ' pin">' +
+      return '<g class="pin-handle' + (S.selPin === key(m) ? ' active' : '') + (flag ? ' flag' : '') + (m.unmoved ? ' unmoved' : '') + '" tabindex="0" role="button" data-mark="' + esc(key(m)) + '" aria-label="' + esc(m.name) + ' pin">' +
         '<circle class="pin-dot" cx="' + m.pin[0] + '" cy="' + m.pin[1] + '" r="' + (9 * u) + '"/>' +
         '<line class="pin-cross" x1="' + (m.pin[0] - 5 * u) + '" y1="' + m.pin[1] + '" x2="' + (m.pin[0] + 5 * u) + '" y2="' + m.pin[1] + '"/><line class="pin-cross" x1="' + m.pin[0] + '" y1="' + (m.pin[1] - 5 * u) + '" x2="' + m.pin[0] + '" y2="' + (m.pin[1] + 5 * u) + '"/>' +
         '<circle cx="' + m.pin[0] + '" cy="' + m.pin[1] + '" r="' + (18 * u) + '" fill="transparent"/>' + rep +
@@ -2715,8 +2736,8 @@
     renderAdvRows(); solveSoon(); saveToSession();
   }
   function deletePoint(id) {
+    // A point measured from it keeps the id, so its row says "One of its points was deleted."
     S.points = S.points.filter(function(q) { return q.id !== id; });
-    S.points.forEach(function(q) { if (q.a === id) q.a = ''; if (q.b === id) q.b = ''; });
   }
   window.calibAddPoint = function(kind) {
     if (S.points.length >= SAVED.max_marks) return;
@@ -2788,6 +2809,7 @@
       var h = e.target.closest('.pin-handle'); if (!h) return;
       var step = e.shiftKey ? 10 : 1, d = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[e.key];
       if (d) { e.preventDefault(); opts.nudge(h, d); }
+      else if (e.key === 'Enter' && opts.enter && opts.enter(h)) e.preventDefault();
     });
   }
   function calibInit() {
@@ -2855,6 +2877,7 @@
       // Advanced: the loupe follows the pointer over the picture, not only while dragging.
       hover: function(p) { if (S.mode === 'advanced' && !S.pinMenu) showLoupe('cal-container', 'cal-overlay', p); },
       leave: function() { if (!S.pinMenu && S.selCorner == null) hideLoupe('cal-container'); },
+      enter: function(h) { if (S.mode !== 'advanced') return false; openPointMenu(+h.dataset.mark); return true; },
       nudge: function(h, d) {
         var id = S.mode === 'simple' ? h.dataset.mark : +h.dataset.mark, q = getPin(id); S.selPin = id;
         if (S.mode === 'simple') S.selCorner = id;
@@ -2866,6 +2889,13 @@
     document.addEventListener('pointerdown', function(e) { pointerIsMouse = e.pointerType === 'mouse'; }, true);
     document.addEventListener('pointerdown', function(e) { if (S.selCorner != null && !e.target.closest('#cal-pins .pin-handle')) dropCorner(); }, true);
     document.addEventListener('focusin', function(e) { if (S.selCorner != null && !e.target.closest('#cal-pins .pin-handle')) dropCorner(); });
+    // A corner reached with Tab is selected, as one clicked.
+    $('cal-pins').addEventListener('focusin', function(e) {
+      var h = e.target.closest('.pin-handle');
+      if (S.mode === 'simple' && h && S.selCorner !== h.dataset.mark) selectCorner(h.dataset.mark);
+    });
+    // A menu left by Tab closes, so the arrow keys never move a spot nobody is looking at.
+    document.addEventListener('focusin', function(e) { if (S.pinMenu && !e.target.closest('#pin-menu') && !e.target.closest('#cal-overlay')) closePinMenu(); });
     document.addEventListener('keydown', function(e) {
       if (e.key !== 'Enter' || S.selCorner == null) return;
       e.preventDefault();
@@ -2946,13 +2976,14 @@
       return 'Loaded: ' + esc(S.lensLoaded.name) + (same ? '' : ', fine-tuned');
     }
     if (lensFit && lensFitApplies(lensFit)) return 'Fine-tuned';
-    return S.lensTouched ? 'Fine-tuned' : 'Not measured';
+    if (S.lensTouched) return 'Fine-tuned';
+    return lensMeasured() ? 'The station\'s lens' : 'Not measured';
   }
   // Apply writes Simple's rectangle as the grid first: a grid write that moves the corners unpins the saved corners.
   window.applyAndFinish = function() {
     var saveError = window.OpenFollow.saveError, reviewBox = document.querySelector('#wizard-step-review .section');
     var s = S.solve;
-    if (!s || !s.cam) return;
+    if (!s || !s.cam || solvePending) return;
     if (LENS_ENABLED && !wizLensPairValid()) {
       saveError.show(reviewBox, { error: 'The lens pair folds the overlay inside the frame.', action: 'Bring either lens value closer to 0 on the Lens step before finishing.' }, 'Not applied.');
       return;
@@ -3042,8 +3073,6 @@
       document.querySelector('#wizard-step-video .section'), window.OpenFollow.saveError.UNREACHABLE);
   };
 
-
-
   // ---------------------------------------------------------------
   // Full screen: the step's picture in a shell with a one-line toolbar, and back on exit. Where the
   // browser refuses full screen (an iPhone, a framed page), the shell fills the window.
@@ -3052,6 +3081,7 @@
   function fsContainer(key) { return $(key + '-container'); }
   function openFull(key) {
     if (FS) return;
+    closeHelp();
     var cont = fsContainer(key), ph = document.createComment('fs');
     cont.parentNode.insertBefore(ph, cont);
     dropCorner(); dropLensPoint();
@@ -3154,6 +3184,15 @@
     $('fs-actions').addEventListener('click', function(e) {
       var b = e.target.closest('[data-fs-act]'); if (!b) return;
       if (b.dataset.fsAct === 'delete-line') lensDeleteSelectedLine(); else lensToggleSelectedPoint();
+    });
+    // Tab stays inside the full-screen view: the page behind it is not reachable.
+    $('fs-shell').addEventListener('keydown', function(e) {
+      if (e.key !== 'Tab') return;
+      var all = Array.prototype.filter.call($('fs-shell').querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'), function(el) { return el.offsetParent !== null; });
+      if (!all.length) return;
+      var first = all[0], last = all[all.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
     });
     // ? toggles the help, unless a field is being typed in.
     document.addEventListener('keydown', function(e) {
@@ -3286,6 +3325,8 @@
     var modal = $('modal-root');
     if (modal && !modal.hidden) return;
     if (FS) { closeFull(); return; }
+    // An open help drawer takes this Esc (base.tpl closes it).
+    if (document.body.classList.contains('help-open')) return;
     if (S.pinMenu) closePinMenu();
     else if (S.selCorner != null) { dropCorner(); document.activeElement.blur(); }
     else if (lensHold) { dropLensPoint(); lensSelected = null; document.activeElement.blur(); renderLens(); }
@@ -3318,7 +3359,6 @@
     }, 200);
   });
   wizardGo(restored ? currentStep : 0);
-
 
 })();
 </script>

@@ -2171,7 +2171,11 @@ def test_an_imperial_grid_form_save_of_the_same_grid_keeps_the_corner_pins(live_
     server, base = live_server
     cfg = AppConfig(camera=_held_camera(), grid=GridConfig(width=10.37, y_offset=2.91))
     cfg.ui.unit_system = "imperial"
+    # Pinned on this grid's own corners.
+    for mark, pin in zip(cfg.camera.calibration_marks, _HELD_PINS, strict=True):
+        mark.pin = list(pin)
     save_config(cfg, server.config_path)
+    assert [m.pin for m in load_config(server.config_path).camera.calibration_marks] == _HELD_PINS
     shown = {
         name: format_length(getattr(cfg.grid, name), UnitSystem.IMPERIAL)
         for name in ("width", "depth", "x_offset", "y_offset", "z_offset")

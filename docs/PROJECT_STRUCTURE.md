@@ -26,8 +26,9 @@ openfollow/              # Single unified package
 ├── scene/               # Camera model + calibration math
 │   ├── camera.py
 │   ├── ground_grid.py   # Grid lines clipped to the ground-grid polygon (HUD + web)
-│   ├── solver.py        # DLT camera solve + the radial overlay warp and its inverse
-│   ├── lens_fit.py      # k1 / k2 from traced straight lines (the wizard's Lens step)
+│   ├── solver.py        # Projection, homography, DLT camera solve + the radial overlay warp and its inverse
+│   ├── calibration_points.py # The Setup Wizard's camera solve from known and triangulated marks
+│   ├── lens_fit.py      # k1 / k2 from traced straight lines (the Setup Wizard's Lens step)
 │   ├── edge_snap.py     # Snap a traced line's points onto a brightness edge
 │   └── edge_chains.py   # Edge suggestions: line-like edges found in a scaled snapshot
 ├── video/               # Video pipeline + overlay
@@ -51,6 +52,7 @@ openfollow/              # Single unified package
     ├── routes.py
     ├── discovery.py
     ├── peer_auth.py     # HMAC-signed peer request auth (no PIN on the wire)
+    ├── lens_calibrations.py # Lens calibrations saved on this station, one JSON file each
     ├── static/js/       # polygon-plan.js (top-down plan), picture-view.js (camera picture), ...
     └── templates/
 ```
@@ -71,7 +73,7 @@ from openfollow.services import AppRuntimeServices
 - Config → `configuration.py`, `config.toml`
 - PSN protocol → `psn/server.py`, `psn/receiver.py`
 - Web API → `web/routes.py`
-- Camera/calibration → `scene/camera.py`, `scene/solver.py` (calibration is the web `/wizard`)
+- Camera/calibration → `scene/camera.py`, `scene/solver.py`, `scene/calibration_points.py` (calibration is the web `/wizard`)
 - Paths → `paths/`, `runtime/paths_runtime.py`, `osc/paths.py`, `runtime/overlay_draw_paths.py`
 - Ground grid → `scene/ground_grid.py`, `runtime/overlay_draw_scene.py` (`floor_z_at`, `draw_ground_grid`, `GridCache`)
 

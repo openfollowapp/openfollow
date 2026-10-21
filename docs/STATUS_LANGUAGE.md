@@ -191,9 +191,8 @@ holds the line.
 
 | Element | Look |
 |---|---|
-| Invalid / valid preview (Setup Wizard) | 1px `--error-line` / `--success-line` |
 | A traced Lens line that does not fit the others (Setup Wizard) | `--caution-line` stroke; a fitting one is the accent, its predicted curve `--success-line` |
-| A calibration point left out (Setup Wizard) | `--error-mark` ring where its distances put it, and an `--error-mark` line to it from the point's dot |
+| A pin that disagrees with the other points (Setup Wizard) | `--caution-line` stroke on its dot; where the solved camera sees each point, a `--success-mark` ring |
 | Failed / successful save | 2px ring for 0.55 s in `--error-line` / `--success-line` |
 | Invalid field, a control marked unresolved, or a binding another field took | `--error-line` border plus a 1px `--error-line` shadow |
 | An OSC trigger on an input a gamepad or keyboard action also uses | `--caution-line` border plus a 1px `--caution-line` shadow |

@@ -127,7 +127,7 @@ browser on the same network. Use it to select your video source, set PSN/network
 and manage markers/controllers. Changes apply live when possible; settings that require a
 restart will prompt you in the UI.
 
-A built-in **Setup Wizard** (accessible from the Camera & Grid tab) guides you through camera positioning and grid calibration step by step – including a live preview overlay, draggable reference and corner points, and automatic DLT camera solve.
+A built-in **Setup Wizard** (accessible from the Camera & Grid tab) guides you through the video source, the lens and the camera calibration step by step – the camera is solved from the four corners of a measured rectangle or from known and triangulated points pinned on the picture, with a live preview overlay.
 
 ### Updating OpenFollow
 

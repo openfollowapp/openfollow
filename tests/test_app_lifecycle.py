@@ -473,15 +473,45 @@ class TestRun:
             lambda default="": "10.0.0.1",
         )
 
-        banners: list[str] = []
+        opened: list[tuple[str, str]] = []
         monkeypatch.setattr(
             app_module,
             "runtime_enter_settings_menu",
-            lambda a, *, banner="", action="": banners.append(banner),
+            lambda a, *, banner="", action="": opened.append((banner, action)),
         )
         app.run()
-        assert len(banners) == 1
-        assert "ghost0" in banners[0]
+        assert opened == [("Pinned network interface 'ghost0' is not available. Using auto-detected 10.0.0.1.", "")]
+
+    def test_stale_pin_without_a_usable_interface_opens_settings_with_its_step(
+        self,
+        patched_ctor,
+        monkeypatch: pytest.MonkeyPatch,  # noqa: ANN001
+    ) -> None:
+        app = OpenFollowApp(config_path=patched_ctor.cfg_path)
+        from dataclasses import replace
+
+        app._config = replace(app._config, psn_source_iface="ghost0")
+
+        from openfollow import net_utils
+
+        monkeypatch.setattr(net_utils.psutil, "net_if_addrs", lambda: {})
+        monkeypatch.setattr(
+            net_utils,
+            "list_iface_ipv4",
+            lambda: [("eth0", "192.0.2.10"), ("wlan0", "198.51.100.10")],
+        )
+        monkeypatch.setattr(net_utils, "get_primary_local_ipv4", lambda default="": "")
+
+        opened: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            app_module,
+            "runtime_enter_settings_menu",
+            lambda a, *, banner="", action="": opened.append((banner, action)),
+        )
+        app.run()
+        assert opened == [
+            ("Pinned network interface 'ghost0' is not available. No usable interface.", "Pick one to continue.")
+        ]
 
     def test_stale_pin_with_single_nic_proceeds_silently(
         self,
@@ -573,7 +603,8 @@ class TestRun:
         app.run()
         assert banners == []  # zero candidates → no Settings prompt
         assert app._psn_source_status == "none"
-        assert "No usable interface" in app._psn_source_banner
+        assert app._psn_source_banner == "Pinned network interface 'eth0' is not available. No usable interface."
+        assert app._psn_source_step == "Pick one to continue."
 
     def test_iface_pin_resolves_and_skips_settings(
         self,
@@ -646,7 +677,8 @@ class TestRefreshPsnSourceAdvisory:
         # Simulate the startup state after a missed pin.
         app._psn_source_status = "primary"
         app._psn_source_resolved_ip = "10.0.0.1"
-        app._psn_source_banner = "Pinned network interface 'ghost0' is not available."
+        app._psn_source_banner = "Pinned network interface 'ghost0' is not available. No usable interface."
+        app._psn_source_step = "Pick one to continue."
         # Operator picked a live iface; config now reflects it.
         from dataclasses import replace
 
@@ -659,6 +691,7 @@ class TestRefreshPsnSourceAdvisory:
         assert app._psn_source_status == "iface"
         assert app._psn_source_resolved_ip == "192.168.1.5"
         assert app._psn_source_banner == ""
+        assert app._psn_source_step == ""
 
     def test_arms_banner_when_pin_goes_stale(
         self,
@@ -666,8 +699,9 @@ class TestRefreshPsnSourceAdvisory:
         monkeypatch: pytest.MonkeyPatch,  # noqa: ANN001
     ) -> None:
         app = OpenFollowApp(config_path=patched_ctor.cfg_path)
-        app._psn_source_status = "iface"
-        app._psn_source_banner = ""
+        app._psn_source_status = "none"
+        app._psn_source_banner = "Pinned network interface 'ghost0' is not available. No usable interface."
+        app._psn_source_step = "Pick one to continue."
         from dataclasses import replace
 
         app._config = replace(app._config, psn_source_iface="ghost0")
@@ -683,10 +717,11 @@ class TestRefreshPsnSourceAdvisory:
 
         banner = app._refresh_psn_source_advisory()
 
-        assert "ghost0" in banner
+        assert banner == "Pinned network interface 'ghost0' is not available. Using auto-detected 10.0.0.7."
         assert app._psn_source_status == "primary"
         assert app._psn_source_resolved_ip == "10.0.0.7"
-        assert "ghost0" in app._psn_source_banner
+        assert app._psn_source_banner == banner
+        assert app._psn_source_step == ""
 
     def test_clears_everything_when_pin_removed(
         self,
@@ -697,7 +732,8 @@ class TestRefreshPsnSourceAdvisory:
         app = OpenFollowApp(config_path=patched_ctor.cfg_path)
         app._psn_source_status = "primary"
         app._psn_source_resolved_ip = "10.0.0.1"
-        app._psn_source_banner = "Pinned network interface 'ghost0' is not available."
+        app._psn_source_banner = "Pinned network interface 'ghost0' is not available. No usable interface."
+        app._psn_source_step = "Pick one to continue."
         # Default config leaves psn_source_iface="".
 
         banner = app._refresh_psn_source_advisory()
@@ -706,6 +742,7 @@ class TestRefreshPsnSourceAdvisory:
         assert app._psn_source_status == ""
         assert app._psn_source_resolved_ip == ""
         assert app._psn_source_banner == ""
+        assert app._psn_source_step == ""
 
 
 # --------------------------------------------------------------------------- #

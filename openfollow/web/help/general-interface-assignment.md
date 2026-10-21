@@ -46,7 +46,7 @@ This row does **not** change which addresses OSC is accepted at. Ordinary OSC se
 
 A pinned row sends only on that interface. A destination the interface cannot reach gets nothing rather than being sent over another adapter. Multicast and broadcast destinations go out on the pinned interface, and TCP destinations connect and reconnect over it.
 
-A destination on this station itself (`127.0.0.1` or `localhost`) never leaves the box, so it is never pinned and its Address column reads `Loopback`.
+A destination on this station itself (`127.0.0.1` or `localhost`) never leaves the box, so it is never pinned and its Address column reads `Loopback`. An OSC destination at one of this station's own network addresses never leaves it either: it is delivered on the station whatever its row is set to, and its Address column reads `This station`.
 
 If the pinned interface has no address, those messages stop. An OSC Output row's Diagnostics and a zone's test send say `interface eth1 is down`, and the on-screen display shows `OSC output` or `RTTrPM output` as a red row in the top-right corner. They resume when the interface comes back. A zone crossing that happened while its interface was down is not sent late.
 

@@ -1582,6 +1582,16 @@ class TestInterfaceAssignmentRows:
         assert self._row(cfg, "RTTrPM output")["address"] == "Loopback"
         assert self._row(cfg, "OSC Destination Default")["address"] == "Loopback"
 
+    def test_an_osc_destination_at_the_stations_own_address_reads_this_station(self, monkeypatch) -> None:
+        """Never pinned: the sender leaves it to the kernel, which delivers it on this station."""
+        self._ifaces(monkeypatch, {"eth0": "192.168.1.5", "eth1": "10.0.0.9"})
+        cfg = AppConfig(network_mode="advanced", psn_source_iface="eth0")
+        dest = cfg.osc_destinations.destinations[0]
+        dest.host, dest.source_iface = "192.168.1.5", "eth1"
+        assert self._row(cfg, "OSC Destination Default")["address"] == "This station"
+        dest.host = "198.51.100.20"
+        assert self._row(cfg, "OSC Destination Default")["address"] == "10.0.0.9"
+
     def test_each_osc_destination_gets_a_row(self, monkeypatch) -> None:
         from openfollow.configuration import OscDestinationConfig, OscDestinationsConfig
 

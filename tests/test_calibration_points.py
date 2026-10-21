@@ -364,6 +364,49 @@ class TestAdvanced:
         assert (fit.position, fit.reason) == (None, cp.REASON_UNPLACED_FROM)
 
 
+def _turned(place: tuple[float, float, float], turn: float) -> tuple[float, float, float]:
+    """``place`` turned about 0/0/0 so that its bearing turns by ``turn`` degrees."""
+    c, s = math.cos(math.radians(turn)), math.sin(math.radians(turn))
+    return (c * place[0] + s * place[1], -s * place[0] + c * place[1], place[2])
+
+
+# Raked: USL stands 50 cm up, so no four corners seed through a homography.
+_STEEP_CORNERS = ((4.0, -3.0, 0.0), (-4.0, -3.0, 0.0), (-4.0, 2.0, 0.0), (4.0, 2.0, 0.5))
+_STEEP_POINTS = ((0.0, 0.0, 0.0), (-3.0, 1.5, 0.0), (2.5, 1.0, 0.0), (-1.0, -2.5, 0.3), (2.0, -1.5, 0.8))
+
+
+class TestSteepCamera:
+    """1 m upstage of 0/0/0, 12 m up, 5° off straight down; the camera position 30 cm past 0/0/0, so looking
+    at 0/0/0 from there faces the opposite way. The whole stage is turned with the camera's yaw."""
+
+    @pytest.mark.parametrize("yaw", [180.0, 0.0, 90.0, -90.0])
+    @pytest.mark.parametrize("mode", ["simple", "advanced"])
+    def test_a_camera_position_above_the_marks_gives_the_camera_at_any_bearing(self, yaw: float, mode: str) -> None:
+        turn = yaw - 180.0
+        steep = np.array([*_turned((0.0, 1.0, 12.0), turn), -85.0, yaw, 0.0, 60.0])
+        if mode == "simple":
+            places = [_turned(p, turn) for p in _STEEP_CORNERS]
+            marks = [Mark(i, "known", p[2], (p[0], p[1]), pin=_pin(p, steep)) for i, p in enumerate(places, 1)]
+        else:
+            ref, k2, p3, p4, p5 = (_turned(p, turn) for p in _STEEP_POINTS)
+            marks = [
+                Mark(1, "known", 0.0, (ref[0], ref[1]), pin=_pin(ref, steep)),
+                Mark(2, "known", 0.0, (k2[0], k2[1]), pin=_pin(k2, steep)),
+                _triangulated(3, p3, (1, ref), (2, k2), camera=steep),
+                _triangulated(4, p4, (3, p3), (1, ref), camera=steep),
+                _triangulated(5, p5, (4, p4), (1, ref), camera=steep),
+            ]
+        assert all(0.0 < m.pin[0] < W and 0.0 < m.pin[1] < H for m in marks if m.pin)
+        solved = solve_marks(marks, W, H, hint=_turned((0.0, -0.3, 10.0), turn))
+        assert solved.camera is not None
+        pose = _pose(solved.camera)
+        np.testing.assert_allclose(pose[:3], steep[:3], atol=0.01)
+        assert pose[3] == pytest.approx(-85.0, abs=0.1)
+        assert (pose[4] - yaw + 180.0) % 360.0 - 180.0 == pytest.approx(0.0, abs=1.0)
+        for mark, fit in zip(marks, solved.marks, strict=True):
+            assert fit.seen == pytest.approx(mark.pin, abs=0.1)
+
+
 class TestFloorReach:
     """A mark typed at the wrong height bends the camera; four level corners alone put the floor elsewhere."""
 

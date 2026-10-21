@@ -32,6 +32,10 @@ DISTANCE_SIGMA = 0.04  # m: a hand-held laser or tape on a mark
 FLAG_PX = 5.0  # a pin further than this from where the camera sees its mark is named
 FLAG_DISTANCE_M = 3.0 * DISTANCE_SIGMA
 SEED_FOVS = (40.0, 90.0)  # tried beside the saved FOV from a camera position
+# Looking at 0/0/0 steeper than this, a camera position 2 m off turns the bearing 20° or more from 10 m up, and
+# straight down there is none: the seed at the saved FOV is tried a quarter turn apart as well.
+STEEP_SEED_PITCH = -60.0
+STEEP_TURNS = (0.0, 90.0, 180.0, 270.0)
 # Every seed and mirror side gets this many iterations; only the best goes on to the full fit.
 SCOUT_ITERATIONS = 25
 FIT_ITERATIONS = 300
@@ -216,8 +220,10 @@ def _seeds(
     seeds = []
     if hint is not None:
         pitch, yaw = look_at(hint, (0.0, 0.0, 0.0))
+        turns = STEEP_TURNS if pitch < STEEP_SEED_PITCH else (0.0,)
         for fov in (saved_fov, *SEED_FOVS):
-            seeds.append(np.array([hint[0], hint[1], hint[2], pitch, yaw, 0.0, fov], dtype=np.float64))
+            for turn in turns if fov == saved_fov else (0.0,):
+                seeds.append(np.array([hint[0], hint[1], hint[2], pitch, yaw + turn, 0.0, fov], dtype=np.float64))
     if level is not None:
         seeds.append(level)
     return seeds
@@ -382,8 +388,9 @@ def solve_marks(
 ) -> MarkSolve:
     """The camera from the marks; ``hint`` is the camera position the operator estimated, or None.
 
-    Every seed (the hint at the saved FOV, 40° and 90°, looking at 0/0/0; the homography of four pinned known
-    marks at one height) is fitted briefly twice: with each triangulated mark on the side its pin picks as the
+    Every seed (the hint at the saved FOV, 40° and 90°, looking at 0/0/0, at the saved FOV also turned a
+    quarter at a time when that look is steep; the homography of four pinned known marks at one height) is
+    fitted briefly twice: with each triangulated mark on the side its pin picks as the
     seed sees it, and with all of them on the other side. An upright camera (at or above the lowest mark, not
     looking up) beats one that is not, then the one that placed more marks, then the lower cost. The fitted
     camera of the winner places again what its seed could not, and only that one is fitted to the end.

@@ -457,6 +457,94 @@ class TestSteepCamera:
             assert fit.seen == pytest.approx(mark.pin, abs=0.1)
 
 
+# 12 m up, 2° off straight down: four level corners whose pins are each about half a pixel off.
+_STRAIGHT_DOWN = np.array([0.0, 1.0, 12.0, -88.0, 180.0, 0.0, 70.0])
+_UNDER_IT = ((6.0, -1.0, 0.0), (-6.0, -1.0, 0.0), (-6.0, 3.0, 0.0), (6.0, 3.0, 0.0))
+_HALF_PX = ((0.6, -0.4), (-0.5, 0.5), (0.4, 0.6), (-0.6, -0.3))
+
+
+def _straight_down_corners() -> list[Mark]:
+    pins = [_pin(p, _STRAIGHT_DOWN) for p in _UNDER_IT]
+    return [
+        Mark(i, "known", p[2], (p[0], p[1]), pin=(pin[0] + dx, pin[1] + dy))
+        for i, (p, pin, (dx, dy)) in enumerate(zip(_UNDER_IT, pins, _HALF_PX, strict=True), start=1)
+    ]
+
+
+class TestCameraHeight:
+    @pytest.mark.parametrize("hint", [None, (0.0, 2.0, 10.0)], ids=["no position", "position 2 m off"])
+    def test_straight_down_half_a_pixel_moves_the_camera_metres_without_the_height(self, hint) -> None:
+        camera = solve_marks(_straight_down_corners(), W, H, hint=hint).camera
+        assert camera is not None
+        assert abs(camera.pos_z - 12.0) > 1.0
+
+    @pytest.mark.parametrize("hint", [None, (0.0, 2.0, 10.0)], ids=["no position", "position 2 m off"])
+    def test_straight_down_the_entered_height_holds_the_camera_within_centimetres(self, hint) -> None:
+        camera = solve_marks(_straight_down_corners(), W, H, hint=hint, height=12.0).camera
+        assert camera is not None
+        np.testing.assert_allclose(_pose(camera)[:3], _STRAIGHT_DOWN[:3], atol=0.08)
+        assert camera.pos_z == pytest.approx(12.0, abs=0.01)
+        assert camera.fov == pytest.approx(70.0, abs=0.5)
+
+    def test_the_entered_height_is_weighed_at_a_centimetre(self) -> None:
+        """Four exact corners hold the camera's height loosely: one entered 20 cm higher moves it nearly all the way."""
+        camera = solve_marks(_simple(), W, H, hint=(0.0, 13.0, 12.0), height=12.2).camera
+        assert camera is not None
+        assert camera.pos_z == pytest.approx(12.2, abs=0.01)
+
+    @pytest.mark.parametrize(("hint", "level"), [((0.0, 2.0, 10.0), True), ((0.0, 2.0, 10.0), False), (None, True)])
+    def test_every_seed_starts_at_the_entered_height(self, monkeypatch: pytest.MonkeyPatch, hint, level) -> None:
+        starts: list[np.ndarray] = []
+        fit = cp._fit
+        monkeypatch.setattr(cp, "_fit", lambda problem, x0, *a: starts.append(x0.copy()) or fit(problem, x0, *a))
+        marks = _straight_down_corners()
+        if not level:
+            marks[3] = Mark(4, "known", 0.5, marks[3].position, pin=marks[3].pin)
+        solve_marks(marks, W, H, hint=hint, height=11.0)
+        assert len(starts) > 1
+        # The full fit starts where the best brief fit ended.
+        assert {float(x0[2]) for x0 in starts[:-1]} == {11.0}
+        if hint is not None:
+            # From the position at that height, looking at 0/0/0.
+            assert starts[0][3] == pytest.approx(look_at((hint[0], hint[1], 11.0), (0.0, 0.0, 0.0))[0])
+
+    @pytest.mark.parametrize(("pitch", "steep"), [(-88.0, True), (-83.0, True), (-82.0, False), (-48.0, False)])
+    def test_the_solve_says_whether_the_camera_looks_almost_straight_down(self, pitch: float, steep: bool) -> None:
+        camera = np.array([0.0, 1.0, 12.0, pitch, 180.0, 0.0, 70.0])
+        marks = [Mark(i, "known", 0.0, (p[0], p[1]), pin=_pin(p, camera)) for i, p in enumerate(_UNDER_IT, 1)]
+        solved = solve_marks(marks, W, H, hint=(0.0, 1.0, 12.0))
+        assert solved.camera is not None and solved.camera.pitch == pytest.approx(pitch, abs=1e-3)
+        assert solved.steep is steep
+
+    def test_the_steep_line_is_82_and_a_half_degrees(self) -> None:
+        assert (cp.STEEP_PITCH, cp.HEIGHT_SIGMA) == (-82.5, 0.01)
+
+    @pytest.mark.parametrize("height", [None, 11.5])
+    def test_the_jacobian_is_the_residuals_derivative(self, height: float | None) -> None:
+        marks = _advanced()
+        known = {m.id: np.array([*m.position, m.z]) for m in marks if m.position is not None}
+        live = [m for m in marks if m.kind == "triangulated"]
+        places = [np.array(P3), np.array(P4)]
+        problem = cp._Problem(known, live, marks, (W, H), height)
+        x = np.concatenate([TRUE + np.array([0.3, -0.2, 0.4, 1.0, -1.5, 0.5, 2.0]), *[p[:2] + 0.1 for p in places]])
+        jac = problem.jacobian(x)
+        assert jac is not None
+        numeric = np.zeros_like(jac)
+        for k in range(x.size):
+            step = 1e-5 * (1.0 + abs(x[k]))
+            up, down = x.copy(), x.copy()
+            up[k] += step
+            down[k] -= step
+            numeric[:, k] = (problem.residuals(up) - problem.residuals(down)) / (2.0 * step)
+        np.testing.assert_allclose(jac, numeric, rtol=1e-4, atol=1e-3)
+        rows = 2 * len(marks) + 2 * len(live) + (height is not None)
+        assert jac.shape == (rows, 7 + 2 * len(live))
+        if height is not None:
+            expected = np.zeros(jac.shape[1])
+            expected[2] = 1.0 / cp.HEIGHT_SIGMA
+            np.testing.assert_allclose(jac[-1], expected, atol=1e-6)
+
+
 class TestFloorReach:
     """A mark typed at the wrong height bends the camera; four level corners alone put the floor elsewhere."""
 

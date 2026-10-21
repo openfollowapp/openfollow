@@ -2106,7 +2106,9 @@ def _held(cfg_camera) -> list[tuple]:
 def test_a_camera_form_save_keeps_the_calibration_marks(live_server) -> None:
     """The form carries no marks; saving it must not drop what the Setup Wizard saved."""
     server, base = live_server
-    save_config(AppConfig(camera=_held_camera("advanced")), server.config_path)
+    camera = _held_camera("advanced")
+    camera.calibration_height = 9.8
+    save_config(AppConfig(camera=camera), server.config_path)
     status, _body = _post_form(base, "/section/camera", {"pos_x": "1.5", "pos_y": "-5.0", "pos_z": "4.0"})
     assert status == 200
     saved = load_config(server.config_path).camera
@@ -2115,6 +2117,7 @@ def test_a_camera_form_save_keeps_the_calibration_marks(live_server) -> None:
         "advanced",
         [1, 2, 3, 4, 5],
     )
+    assert saved.calibration_height == 9.8
 
 
 def _post_grid(base: str, how: str, fields: dict) -> int:
@@ -2297,6 +2300,19 @@ def test_the_camera_tab_shows_a_distance_point_no_solve_placed_without_a_positio
     save_config(AppConfig(camera=_held_camera("advanced")), server.config_path)
     _, rows = _calibration_rows(_get(base, "/section/camera")[1])
     assert rows[4][2] == "–"
+
+
+@pytest.mark.parametrize(("height", "shown"), [(9.8, "Camera height: Fixed at 9.800 m"), (None, None)])
+def test_the_camera_tab_shows_the_calibrations_camera_height_read_only(live_server, height, shown) -> None:
+    server, base = live_server
+    camera = _held_camera("advanced")
+    camera.calibration_height = height
+    save_config(AppConfig(camera=camera), server.config_path)
+    html_text = _get(base, "/section/camera")[1]
+    group = html_text[html_text.index('id="camera-calibration-marks"') :]
+    group = group[: group.index("</div>")]
+    found = re.search(r'<p id="camera-calibration-height">(.*?)</p>', group)
+    assert (found.group(1) if found else None) == shown
 
 
 def test_without_marks_the_camera_tab_has_no_calibration_group(live_server) -> None:

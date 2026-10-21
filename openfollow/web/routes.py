@@ -1937,6 +1937,13 @@ def _as_optional_float(value: Any, default: float | None) -> float | None:
         return default
 
 
+def _as_optional_measured(value: Any, current: float | None) -> float | None:
+    """A JSON number or None as sent, else *current*; the dataclass drops one out of reach."""
+    if value is None or (isinstance(value, int | float) and not isinstance(value, bool)):
+        return value
+    return current
+
+
 # Per-section form fields carrying a physical length/speed (need
 # imperial→metric parsing in imperial mode). Enumerated, NOT "every float
 # field": px thicknesses, transparencies, FOV, framerates stay unitless.
@@ -2218,6 +2225,7 @@ _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
         "lens_k2": _as_float,
         "calibration_mode": _as_str,
         "calibration_marks": _as_json_list,
+        "calibration_height": _as_optional_measured,
     },
     "grid": {
         "visible": _as_bool,
@@ -10596,6 +10604,11 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             saved_fov = _json_number(data.get("saved_fov", 60.0), "saved_fov")
             if not 1.0 <= saved_fov <= 179.0:
                 raise ValueError("saved_fov must be between 1 and 179")
+            height = data.get("camera_height")
+            if height is not None:
+                height = _json_number(height, "camera_height")
+                if abs(height) > MARK_REACH_M:
+                    raise ValueError(f"camera_height must be within {MARK_REACH_M:g} m of the origin")
             marks = _wizard_marks(data.get("marks"), img_w, img_h, mode)
             k1, k2 = _wizard_lens_coeffs(data.get("camera"))
         except (KeyError, TypeError, ValueError, OverflowError) as exc:
@@ -10647,7 +10660,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             for m, _ in marks
         ]
         try:
-            solved = solve_marks(solve_input, img_w, img_h, hint, saved_fov, stale=stale)
+            solved = solve_marks(solve_input, img_w, img_h, hint, saved_fov, stale=stale, height=height)
         except SolveSuperseded:
             response.status = 409
             return _SUPERSEDED
@@ -10687,6 +10700,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 "marks": answers,
                 "count": len(errors),
                 "largest_error": max(errors.values(), default=0.0),
+                "steep": solved.steep,
                 "reasons": plausibility(
                     cam, solved.marks, errors, hint, mode == "advanced", floor_off=solved.floor_off
                 ),

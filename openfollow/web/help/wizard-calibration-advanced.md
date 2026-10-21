@@ -16,6 +16,10 @@ Over the picture, the loupe follows the pointer. A click on the picture opens **
 
 To calculate the camera, the Setup Wizard needs the camera position, two known points and four pinned points. More points give a better result. The blue hint shows the next thing to do. It is placed above the part of the page it is about: Camera Position or the picture. Advanced never changes the grid.
 
+## Camera height
+
+From almost straight above, the camera's height and its field of view cannot be told apart: a higher camera with a narrower lens sees flat points the same way as a lower camera with a wider lens. A calculated camera that looks down steeper than -82.5° can be metres too high or too low, without a larger error on any point. So then a blue box asks for the exact height of the camera's lens, measured as Z from the point of origin. The calculation then keeps the camera at this height, and a note shows the height. A missing height is not a warning, and **Save and finish** stays on without it. The height is saved with the calibration, so the Setup Wizard starts from it the next time.
+
 ## Units
 
 **Switch units** changes the unit system of the station. It is the same setting as in General. You type and see every length in the Setup Wizard in these units. Switching converts the values you already entered. In Imperial, type a length in feet and inches (`26' 3"` or `26 ft 3 in`). A number without a unit counts as feet. The stored metric value is shown below each field.

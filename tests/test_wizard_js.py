@@ -2411,3 +2411,211 @@ def test_switching_a_point_off_needs_a_middle_point_selected() -> None:
         + wizard_window_function("lensToggleSelectedPoint"),
     )
     assert out is False
+
+
+# ---------------------------------------------------------------------------
+# Camera height: asked while the camera looks almost straight down
+# ---------------------------------------------------------------------------
+
+_HEIGHT_RESULT = (
+    "(function() { renderCalibResult(); return [$('cal-height').hidden, $('cal-height-ask').hidden,"
+    " $('cal-height-note').hidden, $('cal-height-note').textContent]; })()"
+)
+
+
+@pytest.mark.parametrize(
+    ("solve", "typed", "height", "shown"),
+    [
+        ({"cam": {"fov": 60}, "steep": False}, "", None, [True, False, True, ""]),
+        ({"cam": {"fov": 60}, "steep": True}, "", None, [False, False, True, ""]),
+        (
+            {"cam": {"fov": 60}, "steep": True},
+            "9.8",
+            9.8,
+            [False, True, False, "The camera height is fixed at 9.80 m."],
+        ),
+        (
+            {"cam": {"fov": 60}, "steep": False},
+            "9.8",
+            9.8,
+            [False, True, False, "The camera height is fixed at 9.80 m."],
+        ),
+        ({"error": "No camera fits."}, "9.8", 9.8, [False, True, False, "The camera height is fixed at 9.80 m."]),
+        ({"cam": {"fov": 60}, "steep": False}, "9.", None, [False, False, True, ""]),
+        ({"error": "No camera fits.", "steep": True}, "", None, [True, False, True, ""]),
+    ],
+    ids=["not steep", "steep", "steep, entered", "no longer steep", "no solve", "half typed", "no camera"],
+)
+def test_the_height_is_asked_while_steep_and_noted_once_entered(solve: dict, typed: str, height, shown: list) -> None:
+    out = run_wizard_js(
+        _HEIGHT_RESULT,
+        functions=("renderCalibResult", "lenText", "fmt"),
+        prelude=length_page("metric", {})
+        + _DOM
+        + _REVIEW_STUBS
+        + "function lensMeasured() { return true; }"
+        + f" var S = {{ mode: 'simple', pair: 0, height: {json.dumps(height)} }};"
+        + f" S.solve = Object.assign({{ worst: 0.4, pinned: 4, reasons: [], marks: [] }}, {json.dumps(solve)});"
+        + f" $('cam_height').value = {json.dumps(typed)};",
+    )
+    assert out == shown
+
+
+def test_the_note_is_in_the_active_unit() -> None:
+    out = run_wizard_js(
+        _HEIGHT_RESULT,
+        functions=("renderCalibResult", "lenText", "fmt"),
+        prelude=length_page("imperial", {})
+        + _DOM
+        + _REVIEW_STUBS
+        + "function lensMeasured() { return true; }"
+        + " var S = { mode: 'simple', pair: 0, height: 9.8 };"
+        + " S.solve = { cam: { fov: 60 }, steep: true, worst: 0.4, pinned: 4, reasons: [], marks: [] };"
+        + " $('cam_height').value = 'x';",
+    )
+    assert out[3] == f"The camera height is fixed at {format_length(9.8, 'imperial')}."
+
+
+@pytest.mark.parametrize(
+    ("system", "typed", "height"),
+    [
+        ("metric", "9.8", 9.8),
+        ("metric", "-1.5", -1.5),
+        ("metric", "", None),
+        ("metric", "abc", None),
+        ("metric", "10000", 10000.0),
+        ("metric", "10000.5", None),
+        ("imperial", "32 ft 2 in", 32 * 0.3048 + 2 * 0.0254),
+        ("imperial", "32", 32 * 0.3048),
+    ],
+)
+def test_the_field_reads_as_metres_or_none(system: str, typed: str, height) -> None:
+    out = run_wizard_js(
+        f"(function() {{ $('cam_height').value = {json.dumps(typed)}; readHeight(); return S.height; }})()",
+        functions=("len", "readHeight"),
+        variables=("exactLen", "DISTANCE_SIGMA"),
+        prelude=length_page(system, {}) + _DOM + "var S = { height: 'before' };",
+    )
+    assert out == (None if height is None else pytest.approx(height))
+
+
+@pytest.mark.parametrize("height", [9.8, None])
+def test_the_solve_carries_the_height_or_null(height) -> None:
+    out = run_wizard_js(
+        "solveBody([], 7)",
+        functions=("solveBody",),
+        prelude=f"var S = {{ mode: 'simple', height: {json.dumps(height)} }}, SAVED = {{ fov: 60 }};"
+        " var imageWidth = 1920, imageHeight = 1080, WIZ_SOLVE_PAGE = 'p';"
+        " function hintPos() { return null; } function wizReadLensCoeff() { return 0; }",
+    )
+    assert "camera_height" in out and out["camera_height"] == height
+
+
+@pytest.mark.parametrize(("answered", "steep"), [({"steep": True}, True), ({"steep": False}, False), ({}, False)])
+def test_the_solve_takes_the_stations_word_on_whether_the_camera_is_steep(answered: dict, steep: bool) -> None:
+    out = run_wizard_js(
+        "solveFromAnswer(marks, 200, data).steep",
+        functions=(*_REASON_FUNCTIONS, "solveFromAnswer"),
+        prelude=_reason_page(),
+        marks=_ANSWER_MARKS[:4],
+        data={**_ANSWER, "marks": _ANSWER["marks"][:4], **answered},
+    )
+    assert out is steep
+
+
+def _review_height(height, steep: bool, *, ok: bool = True, system: str = "metric") -> str:
+    solve = {"worst": 0.4, "reasons": [], "positions": {}, "marks": _COMPLETE, "steep": steep}
+    if ok:
+        solve["cam"] = {"fov": 60}
+    return run_wizard_js(
+        "(function() { renderReview(); return $('review-calib').innerHTML; })()",
+        functions=(*_REVIEW_FUNCTIONS, "lenText", "fmt"),
+        variables=("APPLY_MAX_PX",),
+        prelude=length_page(system, {}) + _DOM + _REVIEW_STUBS,
+        S={"mode": "advanced", "cam": None, "solve": solve, "height": height},
+        solvePending=False,
+    )
+
+
+_HEIGHT_ROW = '<span class="param-label">Camera height</span><span class="param-value">{}</span>'
+
+
+@pytest.mark.parametrize(
+    ("height", "steep", "row"),
+    [
+        (None, True, "Not entered"),
+        (9.8, True, "Fixed at 9.80 m"),
+        (9.8, False, "Fixed at 9.80 m"),
+        (None, False, None),
+    ],
+    ids=["steep, not entered", "steep, entered", "entered", "neither"],
+)
+def test_review_lists_the_camera_height_when_steep_or_entered(height, steep: bool, row) -> None:
+    calib = _review_height(height, steep)
+    assert (_HEIGHT_ROW.format(row) in calib) if row else ("Camera height" not in calib)
+
+
+def test_review_lists_no_camera_height_for_a_steep_answer_without_a_camera() -> None:
+    assert "Camera height" not in _review_height(None, True, ok=False)
+
+
+def test_review_lists_the_camera_height_in_the_active_unit() -> None:
+    calib = _review_height(9.8, True, system="imperial")
+    assert _HEIGHT_ROW.format("Fixed at " + format_length(9.8, "imperial").replace('"', "&quot;")) in calib
+
+
+def test_a_unit_switch_keeps_the_height_it_converts() -> None:
+    out = run_wizard_js(
+        "(function() { $('cam_height').value = '9.8'; readHeight(); setUnitSystem('imperial');"
+        " var shown = $('cam_height').value; setUnitSystem('metric');"
+        " return [shown, $('cam_height').value, S.height]; })()",
+        functions=("len", "lenField", "readCam", "readHeight", "setUnitSystem"),
+        variables=("exactLen", "DISTANCE_SIGMA"),
+        prelude=length_page("metric", {}) + _DOM + "var S = { rect: {}, points: [], height: null };"
+        " function applyUnitMarkup() {} function refreshEchoes() {} function renderCalibPanels() {}"
+        " function solveSoon() {} function saveToSession() {}",
+    )
+    assert out[0] == format_length(9.8, "imperial")
+    assert out[1:] == ["9.8", pytest.approx(9.8)]
+
+
+@pytest.mark.parametrize(("units", "kept"), [("metric", "9.8"), ("imperial", "")], ids=["same units", "other units"])
+def test_the_session_keeps_the_typed_height_in_its_units(units: str, kept: str) -> None:
+    raw = {"units": units, "mode": "simple", "stepKey": "calib", "rect": {}, "height": "9.8"}
+    out = run_wizard_js(
+        "(function() { saveToSession(); var saved = stored.height; restoreFromSession();"
+        " return [saved, $('cam_height').value]; })()",
+        functions=("pairOk", "fracPinOk", "saveToSession", "restoreFromSession"),
+        variables=("CORNERS",),
+        prelude=length_page("metric", {}) + _DOM + _SESSION_PAGE + f"var raw = {json.dumps(json.dumps(raw))};"
+        " var S = { mode: 'simple', simpleLoc: '', rect: { origin: '' }, pinSize: null, nextId: 1, points: [],"
+        " cornerPins: { DSL: null, DSR: null, USR: null, USL: null },"
+        " cornerMoved: { DSL: false, DSR: false, USR: false, USL: false }, lensTouched: false, lensLoaded: null };"
+        " $('cam_height').value = 'typed';",
+    )
+    assert out == ["typed", kept or "typed"]
+
+
+@pytest.mark.parametrize(
+    ("system", "marks", "height", "field"),
+    [
+        ("metric", [{"id": 1, "pin": [0.2, 0.4]}], 9.8, "9.8"),
+        ("imperial", [{"id": 1, "pin": [0.2, 0.4]}], 9.8, format_length(9.8, "imperial")),
+        ("metric", [{"id": 1, "pin": [0.2, 0.4]}], None, ""),
+        ("metric", [], 9.8, ""),
+    ],
+    ids=["metric", "imperial", "not entered", "no calibration"],
+)
+def test_a_reopened_wizard_fills_in_the_saved_height(system: str, marks: list, height, field: str) -> None:
+    out = run_wizard_js(
+        "(function() { loadSaved(); return $('cam_height').value; })()",
+        functions=("len", "lenField", "loadSaved"),
+        variables=("exactLen", "CORNERS"),
+        prelude=length_page(system, {})
+        + _DOM
+        + "var S = { mode: 'simple', rect: { w: '', d: '', origin: '', cx: '', cy: '', z: '' },"
+        " cornerPins: {}, cornerMoved: {}, points: [] };"
+        + f" var SAVED = {{ mode: 'simple', marks: {json.dumps(marks)}, height: {json.dumps(height)},"
+        " grid: { width: 12, depth: 6, x_offset: 0, y_offset: 3, z_offset: 0 } };",
+    )
+    assert out == field

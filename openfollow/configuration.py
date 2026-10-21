@@ -528,6 +528,7 @@ class CameraConfig:
     # The Setup Wizard's last calibration: Simple's four corners or Advanced's points, with their pins.
     calibration_mode: str = "simple"
     calibration_marks: list[CalibrationMarkConfig] = field(default_factory=list)
+    calibration_height: float | None = None  # m: the camera's exact height the solve held; None when not entered
 
     def __post_init__(self) -> None:
         # These feed ``project_points`` via a numpy float array. Clamp fov out
@@ -554,6 +555,18 @@ class CameraConfig:
             )
         self.calibration_mode = _coerce_choice(self.calibration_mode, CALIBRATION_MODES, "simple")
         self.calibration_marks = _coerce_calibration_marks(self.calibration_marks, self.calibration_mode)
+        self.calibration_height = _coerce_calibration_height(self.calibration_height)
+
+
+def _coerce_calibration_height(value: Any) -> float | None:
+    """A measured height within MARK_REACH_M, else None; an unreadable one is dropped, never clamped."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    height = _coerce_measured(value)
+    if abs(height) <= MARK_REACH_M:
+        return height
+    _report_drops("camera.calibration_height", f"{value!r} is not a height within {MARK_REACH_M:g} m")
+    return None
 
 
 # The warnings last reported, by field: every load_config builds the camera again, so a file says it once.

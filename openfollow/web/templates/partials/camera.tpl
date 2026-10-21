@@ -187,6 +187,9 @@
             % end
             </tbody>
         </table>
+        % if config.camera.calibration_height is not None:
+        <p id="camera-calibration-height">Camera height: Fixed at {{format_length(config.camera.calibration_height, _us)}}</p>
+        % end
     </div>
     % end
 

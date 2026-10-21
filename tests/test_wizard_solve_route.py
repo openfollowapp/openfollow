@@ -150,7 +150,7 @@ def test_simple_pins_on_a_curved_lens_give_the_camera_and_the_seen_places_on_the
     status, data = _solve(base, _body(lens=LENS))
     assert status == 200
     np.testing.assert_allclose(_camera_vector(data["camera"]), TRUE, atol=1e-3)
-    assert set(data) == {"camera", "marks", "count", "largest_error", "reasons"}
+    assert set(data) == {"camera", "marks", "count", "largest_error", "steep", "reasons"}
     assert (data["count"], data["reasons"]) == (4, [])
     assert data["largest_error"] == pytest.approx(0.0, abs=1e-3)
     pins = [m["pin"] for m in _simple_marks(LENS)]
@@ -193,6 +193,47 @@ def test_advanced_gives_the_camera_and_each_triangulated_place(base: str) -> Non
     assert by_id[6]["distance_error"] == pytest.approx(0.0, abs=1e-3)
     assert by_id[1]["distance_error"] is None
     assert data["count"] == 4
+
+
+# 12 m up, 2° off straight down; each corner pinned about half a pixel off.
+_STRAIGHT_DOWN = np.array([0.0, 1.0, 12.0, -88.0, 180.0, 0.0, 70.0])
+_UNDER_IT = [(6.0, -1.0, 0.0), (-6.0, -1.0, 0.0), (-6.0, 3.0, 0.0), (6.0, 3.0, 0.0)]
+_HALF_PX = [(0.6, -0.4), (-0.5, 0.5), (0.4, 0.6), (-0.6, -0.3)]
+
+
+def _straight_down_marks() -> list[dict[str, Any]]:
+    seen = project_points(_STRAIGHT_DOWN, np.array(_UNDER_IT), W, H)
+    return [
+        {"id": i, "kind": "known", "x": p[0], "y": p[1], "z": p[2], "pin": [float(q[0]) + d[0], float(q[1]) + d[1]]}
+        for i, (p, q, d) in enumerate(zip(_UNDER_IT, seen, _HALF_PX, strict=True), start=1)
+    ]
+
+
+_ABSENT = object()
+
+
+@pytest.mark.parametrize("height", [_ABSENT, None], ids=["absent", "null"])
+def test_without_a_camera_height_a_camera_straight_down_drifts_and_says_it_is_steep(base: str, height: Any) -> None:
+    body = _body(marks=_straight_down_marks())
+    if height is not _ABSENT:
+        body["camera_height"] = height
+    status, data = _solve(base, body)
+    assert status == 200
+    assert data["steep"] is True
+    assert abs(data["camera"]["pos_z"] - 12.0) > 1.0
+
+
+def test_the_camera_height_holds_a_camera_straight_down(base: str) -> None:
+    status, data = _solve(base, _body(marks=_straight_down_marks(), camera_height=12.0))
+    assert status == 200
+    assert data["steep"] is True
+    assert data["camera"]["pos_z"] == pytest.approx(12.0, abs=0.01)
+    np.testing.assert_allclose(_camera_vector(data["camera"])[:3], _STRAIGHT_DOWN[:3], atol=0.08)
+
+
+def test_a_camera_looking_at_the_stage_is_not_steep(base: str) -> None:
+    status, data = _solve(base, _body())
+    assert (status, data["steep"]) == (200, False)
 
 
 def test_a_known_mark_without_a_pin_has_no_error_and_is_not_counted(base: str) -> None:
@@ -330,6 +371,14 @@ _MALFORMED_TOP = {
     "saved_fov above 179": {"saved_fov": 180.0},
     "saved_fov text": {"saved_fov": "60"},
     "saved_fov bool": {"saved_fov": True},
+    "camera_height text": {"camera_height": "12"},
+    "camera_height bool": {"camera_height": True},
+    "camera_height list": {"camera_height": [12.0]},
+    "camera_height nan": {"camera_height": math.nan},
+    "camera_height infinite": {"camera_height": math.inf},
+    "camera_height huge": {"camera_height": 10**400},
+    "camera_height beyond reach": {"camera_height": 10_000.5},
+    "camera_height beyond reach below": {"camera_height": -10_000.5},
     "image_width zero": {"image_width": 0},
     "image_width text": {"image_width": "1920"},
     "image_height missing": {"image_height": _DROP},

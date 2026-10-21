@@ -131,6 +131,7 @@ def _lens_station(
     unit_system: str = "metric",
     mode: str = "simple",
     marks: tuple = (),
+    height: float | None = None,
 ):
     """A station with a stored lens pair and, when given, a saved calibration."""
     from openfollow.configuration import AppConfig, save_config
@@ -146,6 +147,7 @@ def _lens_station(
     cfg.camera.lens_k2 = 0.03
     cfg.camera.calibration_mode = mode
     cfg.camera.calibration_marks = list(marks)
+    cfg.camera.calibration_height = height
     cfg.ui.unit_system = unit_system
     save_config(cfg, str(config_path))
     return live_on_free_port(
@@ -537,7 +539,33 @@ class TestWizardSavedCalibration:
     def test_without_a_calibration_the_page_starts_empty(self, live_server) -> None:
         _, body = _get(live_server[1], "/wizard")
         saved = _saved(body)
-        assert (saved["mode"], saved["marks"], saved["lens"]) == ("simple", [], [0.0, 0.0])
+        assert (saved["mode"], saved["marks"], saved["lens"], saved["height"]) == ("simple", [], [0.0, 0.0], None)
+
+    def test_the_page_starts_from_the_stations_camera_height(self, tmp_path, monkeypatch) -> None:
+        with _lens_station(tmp_path, monkeypatch, marks=_SIMPLE_MARKS, height=9.8) as (_, base):
+            _, body = _get(base, "/wizard")
+        assert _saved(body)["height"] == 9.8
+
+    @pytest.mark.parametrize(("units", "suffix"), [("metric", "m"), ("imperial", "ft / in")])
+    def test_camera_calibration_asks_for_the_height_in_its_own_box(self, tmp_path, monkeypatch, units, suffix) -> None:
+        with _lens_station(tmp_path, monkeypatch, unit_system=units) as (_, base):
+            _, body = _get(base, "/wizard")
+        step = _wizard_step(body, "calib")
+        box = step[step.index('<div class="group" id="cal-height" hidden') :]
+        assert step.index('id="cal-caution"') < step.index('id="cal-height"')
+        ask = re.search(r'<div class="notice" id="cal-height-ask" role="status">(.*?)</div></div>', box)
+        assert ask is not None and ask.group(1) == (
+            'Enter the exact height of the camera\'s lens<div class="notice-sub">The camera looks almost straight'
+            " down – its height and its field of view cannot be told apart."
+        )
+        label = re.search(r'<label for="cam_height">(.*?)</label>', box)
+        assert label is not None and label.group(1) == (
+            f'Camera height (<span class="u-len">{suffix}</span>)'
+            ' <span class="axis-note">(Z from the point of origin)</span>'
+        )
+        assert re.search(r'<input type="(text|number)"[^>]* id="cam_height" data-len>', box)
+        assert '<small class="metric-echo" data-echo="cam_height" hidden></small>' in box
+        assert '<div class="notice" id="cal-height-note" role="status" hidden></div>' in box
 
     def test_with_lens_distortion_off_the_page_starts_pinhole(self, tmp_path, monkeypatch) -> None:
         with _lens_station(tmp_path, monkeypatch, lens=False) as (_, base):
@@ -644,6 +672,14 @@ class TestWizardApply:
             )
         ]
         assert (out["shown"], out["removed"], out["href"]) == ([], ["openfollow:wizard"], "/")
+
+    @pytest.mark.parametrize("height", [9.8, None])
+    @pytest.mark.parametrize("state", [_SIMPLE_STATE, _ADVANCED_STATE], ids=["simple", "advanced"])
+    def test_the_camera_height_is_saved_with_the_calibration_or_cleared(self, state: dict, height) -> None:
+        out = _apply({**state, "height": height})
+        camera = out["calls"][-1][1]
+        assert "calibration_height" in camera and camera["calibration_height"] == height
+        assert out["href"] == "/"
 
     def test_advanced_leaves_the_grid_and_saves_every_mark(self) -> None:
         out = _apply(_ADVANCED_STATE)

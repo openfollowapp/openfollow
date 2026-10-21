@@ -468,7 +468,7 @@ class TestSaveCameraGrid:
         assert entry.template.payload["ground_grid"]["z_offset"] == -1.2
         assert entry.template.payload["ground_grid"]["vertices"] == [[0.0, 0.0], [2.0, 0.0], [2.0, 2.0]]
 
-    def test_the_calibration_marks_travel_with_the_camera(self, live_server) -> None:
+    def test_the_calibration_travels_with_the_camera(self, live_server) -> None:
         _, base, cfg_path = live_server
         marks = [
             {"id": 1, "kind": "known", "x": 5.0, "y": 0.0, "z": 0.0, "pin": [0.81, 0.94]},
@@ -485,19 +485,20 @@ class TestSaveCameraGrid:
             },
         ]
         cfg = load_config(cfg_path)
-        cfg.camera = CameraConfig(calibration_mode="advanced", calibration_marks=marks)  # type: ignore[arg-type]
+        cfg.camera = CameraConfig(calibration_mode="advanced", calibration_marks=marks, calibration_height=9.8)  # type: ignore[arg-type]
         expected = cfg.camera.calibration_marks
         save_config(cfg, cfg_path)
         status, body = _post_json(base, "/api/templates/camera_grid/save", {"name": "Far Field"})
         assert status == 200
         filename = json.loads(body)["filename"]
         cfg = load_config(cfg_path)
-        cfg.camera.calibration_mode, cfg.camera.calibration_marks = "simple", []
+        cfg.camera.calibration_mode, cfg.camera.calibration_marks, cfg.camera.calibration_height = "simple", [], None
         save_config(cfg, cfg_path)
         status, _ = _post_empty(base, f"/api/templates/{filename}/apply?confirm=1")
         assert status == 200
         applied = load_config(cfg_path).camera
         assert (applied.calibration_mode, applied.calibration_marks) == ("advanced", expected)
+        assert applied.calibration_height == 9.8
 
 
 class TestSaveZones:

@@ -9524,6 +9524,69 @@ def test_calibration_marks_survive_a_toml_round_trip_with_finite_numbers_only(tm
     json.dumps(asdict(loaded), allow_nan=False)  # raises on any NaN or inf
 
 
+# CameraConfig.calibration_height: the camera's exact height the Setup Wizard's solve held
+
+
+def _height_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.getMessage().startswith("camera.calibration_height")]
+
+
+@pytest.mark.parametrize("raw", [None, "", "  "], ids=["none", "empty", "blank"])
+def test_a_calibration_height_not_entered_reads_as_none_and_says_nothing(raw, caplog, fresh_drop_reports) -> None:
+    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
+        assert CameraConfig(calibration_height=raw).calibration_height is None  # type: ignore[arg-type]
+        assert CameraConfig().calibration_height is None
+    assert caplog.records == []
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [(9.8, 9.8), (12, 12.0), (0.0, 0.0), (-2.5, -2.5), ("9.8", 9.8), (10_000.0, 10_000.0), (-10_000.0, -10_000.0)],
+)
+def test_a_calibration_height_within_reach_is_kept_as_metres(raw, expected: float) -> None:
+    height = CameraConfig(calibration_height=raw).calibration_height
+    assert height == expected and isinstance(height, float)
+
+
+@pytest.mark.parametrize(
+    "raw", [True, False, "abc", [12.0], {"z": 12.0}], ids=["true", "false", "text", "list", "table"]
+)
+def test_a_calibration_height_of_the_wrong_type_is_dropped_and_said(raw, caplog, fresh_drop_reports) -> None:
+    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
+        assert CameraConfig(calibration_height=raw).calibration_height is None
+    assert len(_height_warnings(caplog)) == 1
+
+
+@pytest.mark.parametrize("raw", [10_000.5, -10_000.5, 1e300], ids=["above", "below", "huge"])
+def test_a_calibration_height_out_of_reach_is_dropped_not_clamped(raw: float, caplog, fresh_drop_reports) -> None:
+    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
+        assert CameraConfig(calibration_height=raw).calibration_height is None
+    assert _height_warnings(caplog) == [f"camera.calibration_height: {raw!r} is not a height within 10000 m; dropped"]
+
+
+@pytest.mark.parametrize("raw", [float("nan"), float("inf"), float("-inf"), "nan", "inf"])
+def test_a_calibration_height_that_is_not_finite_is_dropped(raw, fresh_drop_reports) -> None:
+    assert CameraConfig(calibration_height=raw).calibration_height is None
+
+
+@pytest.mark.parametrize("height", [9.8, None])
+def test_a_calibration_height_survives_a_toml_round_trip(tmp_path, height: float | None) -> None:
+    path = tmp_path / "config.toml"
+    marks = [_DSL, _DSR]
+    camera = CameraConfig(calibration_mode="advanced", calibration_marks=marks, calibration_height=height)  # type: ignore[arg-type]
+    save_config(AppConfig(camera=camera), path)
+    assert load_config(str(path)).camera.calibration_height == height
+    assert ("calibration_height" in path.read_text(encoding="utf-8")) is (height is not None)
+
+
+def test_a_hand_edited_calibration_height_is_read_through_load_config(tmp_path, fresh_drop_reports) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text('[camera]\ncalibration_height = "abc"\n', encoding="utf-8")
+    assert load_config(str(path)).camera.calibration_height is None
+    path.write_text("[camera]\ncalibration_height = 7.25\n", encoding="utf-8")
+    assert load_config(str(path)).camera.calibration_height == 7.25
+
+
 # ---------------------------------------------------------------------------
 # The Setup Wizard's former calibration_points / corner_pins read as marks
 # ---------------------------------------------------------------------------

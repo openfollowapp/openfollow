@@ -16,6 +16,7 @@
 %   'marks': [{'id': m.id, 'name': m.name, 'kind': m.kind, 'x': m.x, 'y': m.y, 'z': m.z, 'from_a': m.from_a, 'from_b': m.from_b, 'distance_a': m.distance_a, 'distance_b': m.distance_b, 'pin': m.pin, 'position': m.position} for m in config.camera.calibration_marks],
 %   'grid': {'width': _g.width, 'depth': _g.depth, 'spacing': _g.spacing, 'x_offset': _g.x_offset, 'y_offset': _g.y_offset, 'z_offset': _g.z_offset},
 %   'fov': config.camera.fov,
+%   'height': config.camera.calibration_height,
 %   'lens': [_lens_k1, _lens_k2],
 %   'max_marks': MAX_CALIBRATION_MARKS,
 % }
@@ -647,6 +648,17 @@
     </div>
     <div id="cal-status" class="wizard-status" role="status" hidden></div>
     <div id="cal-caution" class="notice warning" role="status" hidden style="margin-top:0.72rem;"></div>
+    <div class="group" id="cal-height" hidden style="margin-top:0.72rem;">
+      <div class="notice" id="cal-height-ask" role="status">Enter the exact height of the camera's lens<div class="notice-sub">The camera looks almost straight down – its height and its field of view cannot be told apart.</div></div>
+      <div class="row">
+        <div class="field">
+          <label for="cam_height">Camera height (<span class="u-len">{{_len}}</span>) <span class="axis-note">(Z from the point of origin)</span></label>
+          <input type="{{_len_type}}"{{!_len_step}} id="cam_height" data-len>
+          <small class="metric-echo" data-echo="cam_height" hidden></small>
+        </div>
+      </div>
+      <div class="notice" id="cal-height-note" role="status" hidden></div>
+    </div>
     <div id="cal-lens-note" class="notice" role="status" hidden style="margin-top:0.72rem;">Using the station's lens. It was not measured in this run.</div>
     <div id="cal-solved" class="wizard-solved-params" hidden></div>
 
@@ -984,7 +996,7 @@
     cornerMoved: { DSL: false, DSR: false, USR: false, USL: false },
     points: [], nextId: 1,
     pinSize: null,  // the snapshot size the pins are in; null while they are fractions of it
-    cam: null, camPartial: false,
+    cam: null, camPartial: false, height: null,
     solve: null, selPin: null, selCorner: null, pinMenu: null, pair: 0,
     lensTouched: false, lensLoaded: null
   };
@@ -1125,7 +1137,7 @@
   }
   function solveBody(usable, seq) {
     return {
-      image_width: imageWidth, image_height: imageHeight, mode: S.mode, hint: hintPos(), saved_fov: SAVED.fov,
+      image_width: imageWidth, image_height: imageHeight, mode: S.mode, hint: hintPos(), saved_fov: SAVED.fov, camera_height: S.height,
       camera: { lens_k1: wizReadLensCoeff('wiz_lens_k1'), lens_k2: wizReadLensCoeff('wiz_lens_k2') },
       solve_page: WIZ_SOLVE_PAGE, solve_seq: seq,
       marks: usable.map(function(m) {
@@ -1187,7 +1199,7 @@
     var behind = marks.filter(function(m) { return m.pin && !m.problem && res[m.id] && res[m.id].px == null; }).map(function(m) { return { kind: 'behind', id: m.id }; });
     var behindIds = {};
     behind.forEach(function(b) { behindIds[b.id] = true; });
-    return { marks: marks, cam: data.camera, positions: positions, res: res, worst: data.largest_error, pinned: sent, behind: behind.length, behindIds: behindIds,
+    return { marks: marks, cam: data.camera, steep: data.steep === true, positions: positions, res: res, worst: data.largest_error, pinned: sent, behind: behind.length, behindIds: behindIds,
       reasons: wordReasons((data.reasons || []).concat(behind), marks) };
   }
   function afterSolve(then) {
@@ -2560,6 +2572,10 @@
     S.cam = [x, y, z].some(function(v) { return isNaN(v) || Math.abs(v) > MARK_REACH_M; }) ? null : { x: x, y: y, z: z };
     S.camPartial = !S.cam && ['x', 'y', 'z'].some(function(k) { return $('cam_pos_' + k).value.trim() !== ''; });
   }
+  function readHeight() {
+    var v = len($('cam_height').value);
+    S.height = isNaN(v) || Math.abs(v) > MARK_REACH_M ? null : v;
+  }
   window.calibNext = function() {
     if ($('cal-next').disabled) return;
     readCam();
@@ -2601,6 +2617,7 @@
   // The station's unit system, as in General; every length already typed is converted, not cleared.
   function setUnitSystem(sys) {
     var cam = ['x', 'y', 'z'].map(function(k) { return len($('cam_pos_' + k).value); });
+    var height = len($('cam_height').value);
     var rect = {}; ['w', 'd', 'cx', 'cy', 'z'].forEach(function(k) { rect[k] = len(S.rect[k]); });
     var pts = S.points.map(function(p) { var o = {}; ['x', 'y', 'z', 'da', 'db'].forEach(function(k) { o[k] = p[k] == null ? NaN : len(p[k]); }); return o; });
     WUNIT.setSystem(sys);
@@ -2608,10 +2625,11 @@
     // Retype the inputs first: a number input drops a ft / in value.
     applyUnitMarkup();
     ['x', 'y', 'z'].forEach(function(k, i) { if (!isNaN(cam[i])) $('cam_pos_' + k).value = lenField(cam[i]); });
+    if (!isNaN(height)) $('cam_height').value = lenField(height);
     ['w', 'd', 'cx', 'cy', 'z'].forEach(function(k) { if (!isNaN(rect[k])) { S.rect[k] = lenField(rect[k]); $('rect_' + k).value = S.rect[k]; } });
     S.points.forEach(function(p, i) { ['x', 'y', 'z', 'da', 'db'].forEach(function(k) { if (!isNaN(pts[i][k])) p[k] = lenField(pts[i][k]); }); });
     refreshEchoes();
-    readCam();
+    readCam(); readHeight();
     renderCalibPanels(); solveSoon(); saveToSession();
   }
   // One Camera Position group: in Simple, optional, inside the box under the location question; in
@@ -2835,6 +2853,11 @@
     $('cal-caution').hidden = !(ok && s.reasons.length);
     if (ok && s.reasons.length) $('cal-caution').innerHTML = cautionHtml(s);
     $('cal-lens-note').hidden = !(ok && stationLensOnly());
+    // Asked while the camera looks almost straight down; the field stays while it holds text.
+    $('cal-height').hidden = !((ok && s.steep) || $('cam_height').value.trim() !== '');
+    $('cal-height-ask').hidden = S.height != null;
+    $('cal-height-note').hidden = S.height == null;
+    if (S.height != null) $('cal-height-note').textContent = 'The camera height is fixed at ' + lenText(S.height, 2) + '.';
     var pairs = pairsFor(s);
     if (S.pair >= pairs.length) S.pair = 0;
     $('cal-dist-group').hidden = !pairs.length;
@@ -3149,6 +3172,7 @@
     renderSimpleLoc();
     $('simple-loc').addEventListener('change', function(e) { S.simpleLoc = e.target.value; placeStartQuad(); renderReq(); solveSoon(); saveToSession(); });
     ['cam_pos_x', 'cam_pos_y', 'cam_pos_z'].forEach(function(id) { $(id).addEventListener('input', camChanged); });
+    $('cam_height').addEventListener('input', function() { readHeight(); renderCalibResult(); solveSoon(); saveToSession(); });
     $('unit-switch').addEventListener('click', function() {
       var to = WUNIT.isImperial() ? 'metric' : 'imperial', box = document.querySelector('#wizard-step-calib .section');
       var body = new FormData(); body.append('unit_system', to);
@@ -3295,7 +3319,8 @@
     $('review-lens').innerHTML = paramRows([['Barrel / fisheye', fmt(k1, 3)], ['Corner correction', fmt(k2, 3)], ['Lens rating', reviewLensCoverage(k1, k2)]]);
     var marks = s.marks || [], pinnedN = marks.filter(function(m) { return m.pin; }).length;
     $('review-calib').innerHTML = paramRows([['Mode', S.mode === 'simple' ? 'Simple' : 'Advanced'], ['Points', String(marks.length)], ['Pinned', String(pinnedN)], ['Largest error (px)', ok ? s.worst.toFixed(1) : '–'],
-      ['Your camera position', S.cam ? esc(lenText(S.cam.x, 2) + ' / ' + lenText(S.cam.y, 2) + ' / ' + lenText(S.cam.z, 2)) : 'Not entered']].concat(S.mode === 'simple'
+      ['Your camera position', S.cam ? esc(lenText(S.cam.x, 2) + ' / ' + lenText(S.cam.y, 2) + ' / ' + lenText(S.cam.z, 2)) : 'Not entered']].concat(S.height != null || (ok && s.steep)
+        ? [['Camera height', S.height != null ? esc('Fixed at ' + lenText(S.height, 2)) : 'Not entered']] : []).concat(S.mode === 'simple'
         ? [['Camera location', esc((CAM_PRESETS.filter(function(q) { return q[0] === S.simpleLoc; })[0] || [0, 'Not chosen'])[1])]] : []));
     var pairs = pairsFor(s);
     $('review-dist-group').hidden = !pairs.length;
@@ -3334,7 +3359,7 @@
       return out;
     });
     var camera = { pos_x: s.cam.pos_x, pos_y: s.cam.pos_y, pos_z: s.cam.pos_z, pitch: s.cam.pitch, yaw: s.cam.yaw, roll: s.cam.roll, fov: s.cam.fov,
-      calibration_mode: S.mode, calibration_marks: marks };
+      calibration_mode: S.mode, calibration_marks: marks, calibration_height: S.height };
     if (LENS_ENABLED) { camera.lens_k1 = wizReadLensCoeff('wiz_lens_k1'); camera.lens_k2 = wizReadLensCoeff('wiz_lens_k2'); }
     var g = calibGrid();
     var gridWrite = S.mode === 'simple'
@@ -3561,7 +3586,7 @@
         k1: wizReadLensCoeff('wiz_lens_k1'), k2: wizReadLensCoeff('wiz_lens_k2'),
         mode: S.mode, simpleLoc: S.simpleLoc, rect: S.rect, cornerPins: corners, cornerMoved: S.cornerMoved,
         points: S.points.map(function(p) { return Object.assign({}, p, { pin: keepPins ? p.pin : frac(p.pin) }); }), nextId: S.nextId,
-        cam: ['x', 'y', 'z'].map(function(k) { return $('cam_pos_' + k).value; }), units: WUNIT.isImperial() ? 'imperial' : 'metric',
+        cam: ['x', 'y', 'z'].map(function(k) { return $('cam_pos_' + k).value; }), height: $('cam_height').value, units: WUNIT.isImperial() ? 'imperial' : 'metric',
         lensTouched: S.lensTouched, lensLoaded: S.lensLoaded
       }));
     } catch (e) {}
@@ -3598,6 +3623,7 @@
         });
         S.nextId = Math.max(isFinite(raw.nextId) ? raw.nextId : 1, 1 + Math.max.apply(null, [0].concat(S.points.map(function(p) { return p.id; }))));
         if (Array.isArray(raw.cam)) ['x', 'y', 'z'].forEach(function(k, i) { if (typeof raw.cam[i] === 'string') $('cam_pos_' + k).value = raw.cam[i]; });
+        if (typeof raw.height === 'string') $('cam_height').value = raw.height;
       }
       if (typeof raw.stepKey === 'string' && WIZ[raw.stepKey] !== undefined) currentStep = WIZ[raw.stepKey];
       return true;
@@ -3608,6 +3634,7 @@
     var marks = SAVED.marks || [];
     if (!marks.length) return;
     S.mode = SAVED.mode === 'advanced' ? 'advanced' : 'simple';
+    if (typeof SAVED.height === 'number') $('cam_height').value = lenField(SAVED.height);
     if (S.mode === 'simple') {
       var g = SAVED.grid;
       S.rect.w = lenField(g.width); S.rect.d = lenField(g.depth);
@@ -3687,7 +3714,7 @@
   $('rect_origin').value = S.rect.origin;
   $('rect-custom').hidden = S.rect.origin !== 'custom';
   refreshEchoes();
-  readCam();
+  readCam(); readHeight();
   calibInit();
   fsInit();
   lensInit();

@@ -4020,6 +4020,48 @@ def test_a_calibration_mode_off_the_list_reads_as_simple_and_keeps_only_corners(
     assert [m.id for m in cfg.camera.calibration_marks] == [1, 2]
 
 
+@pytest.mark.parametrize(("raw", "expected"), [(9.8, 9.8), (12, 12.0), (-1.5, -1.5)])
+def test_a_calibration_height_arrives_through_the_camera_section(raw: object, expected: float) -> None:
+    cfg = AppConfig()
+    assert apply_section_data(cfg, "camera", {"calibration_height": raw})
+    assert cfg.camera.calibration_height == expected
+
+
+def test_a_calibration_height_of_none_clears_the_saved_one() -> None:
+    cfg = AppConfig()
+    apply_section_data(cfg, "camera", {"calibration_height": 9.8})
+    apply_section_data(cfg, "camera", {"calibration_height": None})
+    assert cfg.camera.calibration_height is None
+
+
+@pytest.mark.parametrize(
+    "raw", [True, "abc", "12", [12.0], {"z": 1}], ids=["bool", "text", "numeric text", "list", "table"]
+)
+def test_a_calibration_height_that_is_no_number_keeps_the_saved_one(raw: object) -> None:
+    cfg = AppConfig()
+    apply_section_data(cfg, "camera", {"calibration_height": 9.8})
+    apply_section_data(cfg, "camera", {"calibration_height": raw, "pos_x": 1.0})
+    assert (cfg.camera.calibration_height, cfg.camera.pos_x) == (9.8, 1.0)
+
+
+@pytest.mark.parametrize("raw", [10_000.5, -10_000.5, float("nan"), float("inf")], ids=["above", "below", "nan", "inf"])
+def test_a_calibration_height_out_of_reach_is_dropped_by_the_section_write(raw: float) -> None:
+    cfg = AppConfig()
+    apply_section_data(cfg, "camera", {"calibration_height": 9.8})
+    apply_section_data(cfg, "camera", {"calibration_height": raw})
+    assert cfg.camera.calibration_height is None
+
+
+def test_a_calibration_height_travels_with_an_export_and_an_import() -> None:
+    from openfollow.web.routes import _apply_import_data
+
+    camera = CameraConfig(calibration_mode="advanced", calibration_marks=_GOOD_MARKS, calibration_height=9.8)  # type: ignore[arg-type]
+    exported = _config_dict_redacted(AppConfig(camera=camera))
+    assert exported["camera"]["calibration_height"] == 9.8
+    imported = _apply_import_data(AppConfig(), json.loads(json.dumps(exported)))
+    assert imported.camera.calibration_height == 9.8
+
+
 _CORNER_PINS = [[0.81, 0.94], [0.14, 0.95], [0.37, 0.61], [0.66, 0.6]]
 _OLD_POINT = {
     "corner_a": "DSL",

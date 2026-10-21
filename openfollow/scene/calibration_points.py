@@ -3,9 +3,9 @@
 """The Setup Wizard's camera solve from marks: known points with a typed position, and triangulated points
 measured by their distances to two other marks plus their height.
 
-One fit adjusts the 7 camera values and every triangulated point's x, y against the pins and the
-distances, each residual in its own expected error. Every pin counts the same, and no mark is left out:
-one that disagrees shows in its error and in :func:`plausibility`.
+One fit adjusts the 7 camera values and every triangulated point's x, y against the pins, the distances and
+an entered camera height, each residual in its own expected error. Every pin counts the same, and no mark is
+left out: one that disagrees shows in its error and in :func:`plausibility`.
 """
 
 from __future__ import annotations
@@ -29,6 +29,9 @@ from openfollow.scene.solver import (
 
 PIXEL_SIGMA = 1.0  # px: a careful pin on a mark, native snapshot pixels
 DISTANCE_SIGMA = 0.04  # m: a hand-held laser or tape on a mark
+HEIGHT_SIGMA = 0.01  # m: an entered camera height, measured to the lens
+# Steeper than this, flat marks cannot tell the camera's height from its field of view.
+STEEP_PITCH = -82.5
 FLAG_PX = 5.0  # a pin further than this from where the camera sees its mark is named
 FLAG_DISTANCE_M = 3.0 * DISTANCE_SIGMA
 SEED_FOVS = (40.0, 90.0)  # tried beside the saved FOV from a camera position
@@ -95,6 +98,7 @@ class MarkSolve:
     marks: tuple[MarkFit, ...]
     error: str = ""
     floor_off: bool = False  # the fit's floor fails :func:`_floor_holds` against the level marks' camera
+    steep: bool = False  # pitch below STEEP_PITCH, where flat marks cannot tell the height from the FOV
 
 
 def trilaterate(
@@ -215,17 +219,22 @@ def _level_camera(
 
 
 def _seeds(
-    hint: Sequence[float] | None, saved_fov: float, level: npt.NDArray[np.float64] | None
+    hint: Sequence[float] | None,
+    saved_fov: float,
+    level: npt.NDArray[np.float64] | None,
+    height: float | None = None,
 ) -> list[npt.NDArray[np.float64]]:
+    """Every seed at ``height`` when one is entered."""
     seeds = []
     if hint is not None:
-        pitch, yaw = look_at(hint, (0.0, 0.0, 0.0))
+        at = (hint[0], hint[1], hint[2] if height is None else height)
+        pitch, yaw = look_at(at, (0.0, 0.0, 0.0))
         turns = STEEP_TURNS if pitch < STEEP_SEED_PITCH else (0.0,)
         for fov in (saved_fov, *SEED_FOVS):
             for turn in turns if fov == saved_fov else (0.0,):
-                seeds.append(np.array([hint[0], hint[1], hint[2], pitch, yaw + turn, 0.0, fov], dtype=np.float64))
+                seeds.append(np.array([*at, pitch, yaw + turn, 0.0, fov], dtype=np.float64))
     if level is not None:
-        seeds.append(level)
+        seeds.append(level if height is None else np.concatenate([level[:2], [height], level[3:]]))
     return seeds
 
 
@@ -262,11 +271,13 @@ class _Problem:
         live: Sequence[Mark],
         pinned: Sequence[Mark],
         canvas: tuple[float, float],
+        height: float | None = None,
     ) -> None:
         self.known = known
         self.live = list(live)
         self.pinned = list(pinned)
         self.canvas = canvas
+        self.height = height
         self.pins = np.array([m.pin for m in self.pinned], dtype=np.float64).reshape(len(self.pinned), 2)
 
     def places(self, x: npt.NDArray[np.float64]) -> dict[int, npt.NDArray[np.float64]]:
@@ -276,7 +287,8 @@ class _Problem:
         return placed
 
     def jacobian(self, x: npt.NDArray[np.float64]) -> npt.NDArray[np.float64] | None:
-        """Camera columns by central differences; each mark's x, y in closed form beside one projection call."""
+        """Camera columns by central differences, the height row's too; each mark's x, y in closed form beside one
+        projection call."""
         r0 = self.residuals(x)
         if r0 is None:
             return None
@@ -325,7 +337,8 @@ class _Problem:
         return jac if bool(np.isfinite(jac).all()) else None
 
     def residuals(self, x: npt.NDArray[np.float64]) -> npt.NDArray[np.float64] | None:
-        """Per pin (2), then per triangulated mark its two distances; None off the valid range."""
+        """Per pin (2), then per triangulated mark its two distances, then the entered height; None off the valid
+        range."""
         placed = self.places(x)
         world = np.array([placed[m.id] for m in self.pinned])
         try:
@@ -338,6 +351,8 @@ class _Problem:
             for m in self.live
             for parent, measured in ((m.from_a, m.distance_a), (m.from_b, m.distance_b))
         ]
+        if self.height is not None:
+            lengths.append((float(x[2]) - self.height) / HEIGHT_SIGMA)
         r = np.concatenate([pins, np.array(lengths, dtype=np.float64)])
         return r if bool(np.isfinite(r).all()) else None
 
@@ -385,8 +400,10 @@ def solve_marks(
     hint: Sequence[float] | None = None,
     saved_fov: float = 60.0,
     stale: Callable[[], bool] | None = None,
+    height: float | None = None,
 ) -> MarkSolve:
-    """The camera from the marks; ``hint`` is the camera position the operator estimated, or None.
+    """The camera from the marks; ``hint`` is the camera position the operator estimated, or None; ``height``
+    is the camera's exact height in m, or None: every seed starts at it, and the fit holds it.
 
     Every seed (the hint at the saved FOV, 40° and 90°, looking at 0/0/0, at the saved FOV also turned a
     quarter at a time when that look is steep; the homography of four pinned known marks at one height) is
@@ -402,7 +419,7 @@ def solve_marks(
     triangulated = [m for m in ordered if m.kind == "triangulated"]
     known = {m.id: np.array([m.position[0], m.position[1], m.z]) for m in ordered if m.position is not None}
     level = _level_camera(ordered, canvas_w, canvas_h)
-    seeds = _seeds(hint, saved_fov, None if level is None else level[0])
+    seeds = _seeds(hint, saved_fov, None if level is None else level[0], height)
 
     def place_marks(
         placed: dict[int, npt.NDArray[np.float64]], params: npt.NDArray[np.float64], flip: bool
@@ -435,7 +452,7 @@ def solve_marks(
         pinned = [m for m in ordered if m.pin is not None and m.id in placed]
         if len(pinned) < 4:
             return None
-        problem = _Problem(known, live, pinned, canvas)
+        problem = _Problem(known, live, pinned, canvas, height)
         result = _fit(problem, np.concatenate([camera[:7], *[placed[m.id][:2] for m in live]]), stale, iterations)
         if result is None or not 10.0 < float(result[0][6]) < 170.0:
             return None
@@ -501,7 +518,7 @@ def solve_marks(
                 distance_error,
             )
         )
-    return MarkSolve(camera, tuple(fits), floor_off=floor_off)
+    return MarkSolve(camera, tuple(fits), floor_off=floor_off, steep=pitch < STEEP_PITCH)
 
 
 def plausibility(

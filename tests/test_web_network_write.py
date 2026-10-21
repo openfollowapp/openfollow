@@ -21,7 +21,6 @@ import openfollow.web.discovery as discovery_module
 from openfollow.configuration import config_write_lock
 from openfollow.network.adapter import ApplyResult, Ipv4Method
 from openfollow.network.validate import vlan_interface_name
-from openfollow.web.routes import _port_suffix
 from openfollow.web.server import ConfigWebServer
 from tests._ports import free_tcp_port, live_on_free_port
 
@@ -32,20 +31,6 @@ _NET_POLL = (
     'hx-trigger="every 5s [netLabelsIdle() && pollShown(this)], '
     'poll-shown[netLabelsIdle() && pollShown(this)] from:body"'
 )
-
-
-@pytest.mark.parametrize(
-    "netloc,expected",
-    [
-        ("192.168.1.5:8080", ":8080"),  # IPv4 + port
-        ("192.168.1.5", ""),  # IPv4, no port
-        ("host.local:9", ":9"),  # hostname + port
-        ("[fe80::1]:8080", ":8080"),  # IPv6 literal + port
-        ("[fe80::1]", ""),  # IPv6 literal, no port (was misread as :1)
-    ],
-)
-def test_port_suffix(netloc: str, expected: str) -> None:
-    assert _port_suffix(netloc) == expected
 
 
 # --------------------------------------------------------------------------- #
@@ -231,13 +216,13 @@ def _outer_html(body: str, marker: str, tag: str = "div") -> str:
             return body[at:pos]
 
 
-def _post_resp(base: str, path: str, data: dict) -> tuple[int, str, dict]:
+def _post_resp(base: str, path: str, data: dict, headers: dict | None = None) -> tuple[int, str, dict]:
     """POST that also returns lower-cased response headers (for HX-Redirect)."""
     body = urllib.parse.urlencode(data, doseq=True).encode()
     req = urllib.request.Request(
         f"{base}{path}",
         data=body,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        headers={"Content-Type": "application/x-www-form-urlencoded", **(headers or {})},
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=5) as r:
@@ -1250,6 +1235,21 @@ def test_a_clean_apply_still_redirects(net_server) -> None:
         },
     )
     assert "hx-redirect" in headers
+
+
+def test_the_new_address_redirect_ignores_forwarded_headers(net_server) -> None:
+    """The reload URL keeps this connection's scheme and port; client-set
+    X-Forwarded-Host / -Proto never steer it to another host, port or scheme."""
+    fake, base = net_server
+    fake.session_iface = "eth0"
+    _status, _body, headers = _post_resp(
+        base,
+        "/section/network/apply",
+        {"iface": "eth0", "method": "static", "address": "192.168.9.9", "subnet_mask": "255.255.255.0"},
+        headers={"X-Forwarded-Host": "attacker.example:4444", "X-Forwarded-Proto": "https"},
+    )
+    port = urllib.parse.urlsplit(base).port
+    assert headers["hx-redirect"] == f"http://192.168.9.9:{port}/"
 
 
 def test_a_pending_apply_still_shows_its_warnings(net_server) -> None:

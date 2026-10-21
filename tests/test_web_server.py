@@ -5135,6 +5135,64 @@ def test_login_submit_redirects_when_no_pin_configured(live_server) -> None:
     assert location.endswith("/")
 
 
+# Any LAN client can send these; a station is never behind a proxy that sets them.
+_FORGED_FORWARDED = {"X-Forwarded-Host": "attacker.example", "X-Forwarded-Proto": "https"}
+
+
+def _redirect_with_forged_forwarded(
+    base: str, method: str, path: str, form: dict | None = None, cookie: str = ""
+) -> tuple[int, str]:
+    """``(status, Location)`` of a request carrying attacker-set X-Forwarded-* headers."""
+    data = urllib.parse.urlencode(form).encode() if form is not None else None
+    headers = dict(_FORGED_FORWARDED)
+    if cookie:
+        headers["Cookie"] = cookie
+    if data is not None:
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
+    req = urllib.request.Request(f"{base}{path}", data=data, headers=headers, method=method)
+    try:
+        with _no_redirect_opener().open(req, timeout=5) as resp:
+            return resp.status, resp.headers.get("Location", "")
+    except urllib.error.HTTPError as e:
+        return e.code, e.headers.get("Location", "")
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "form", "expected"),
+    [
+        ("GET", "/", None, "/login"),
+        ("POST", "/login", {"pin": "sekret"}, "/"),
+    ],
+)
+def test_pin_redirects_ignore_forwarded_headers(pin_protected_server, method, path, form, expected) -> None:
+    """An attacker-set X-Forwarded-Host / -Proto never reaches a Location header."""
+    _, base, _ = pin_protected_server
+    assert _redirect_with_forged_forwarded(base, method, path, form) == (303, expected)
+
+
+def test_logout_redirect_ignores_forwarded_headers(pin_protected_server) -> None:
+    _, base, pin = pin_protected_server
+    cookie = _login_cookie(base, pin)
+    assert _redirect_with_forged_forwarded(base, "POST", "/logout", {}, cookie) == (303, "/login")
+
+
+@pytest.mark.parametrize(("method", "form"), [("GET", None), ("POST", {"pin": "anything"})])
+def test_login_without_pin_redirect_ignores_forwarded_headers(live_server, method, form) -> None:
+    _, base = live_server
+    assert _redirect_with_forged_forwarded(base, method, "/login", form) == (303, "/")
+
+
+def test_license_redirect_ignores_forwarded_headers(live_server, monkeypatch) -> None:
+    import openfollow.web.routes as routes_module
+
+    _, base = live_server
+    monkeypatch.setattr(routes_module, "_license_file_path", lambda: None)
+    assert _redirect_with_forged_forwarded(base, "GET", "/about/license.txt") == (
+        303,
+        "https://www.gnu.org/licenses/agpl-3.0.txt",
+    )
+
+
 def test_login_submit_renders_error_template_on_invalid_pin(pin_protected_server) -> None:
     _, base, _ = pin_protected_server
 

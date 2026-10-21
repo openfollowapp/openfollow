@@ -321,6 +321,29 @@ class TestClientCreationFailure:
             started,
         ]
 
+    def test_an_eviction_retries_at_once_but_keeps_the_streak(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An address change is no new failure, so it is not announced again."""
+        attempts: list[str] = []
+
+        def _fail(host: str, *_a: Any, **_k: Any) -> Any:
+            attempts.append(host)
+            raise InterfaceUnavailable("cannot send via eth1")
+
+        monkeypatch.setattr(service_module, "time", SimpleNamespace(monotonic=lambda: 100.0))
+        monkeypatch.setattr(service_module, "_make_client", _fail)
+        egress = Egress("eth1", "198.51.100.10")
+        svc = OscService(close_async=lambda _clients: None)
+        with caplog.at_level(logging.INFO, logger="openfollow"):
+            svc.send("/x", host="198.51.100.20", port=9000, egress=egress)
+            svc.evict_egress("eth1")
+            svc.send("/x", host="198.51.100.20", port=9000, egress=egress)
+        assert len(attempts) == 2
+        assert [r.getMessage() for r in caplog.records] == [
+            "Cannot create OSC client for udp://198.51.100.20:9000, retrying every 1s: cannot send via eth1"
+        ]
+
     @pytest.mark.parametrize(
         ("failure", "egress"),
         [

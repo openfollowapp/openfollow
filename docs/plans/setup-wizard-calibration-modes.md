@@ -108,6 +108,7 @@ five-step rating, Refresh Image, Clear lines. Changed:
 | Deleting | **Delete** or **Backspace** removes the selected line wherever the focus is, except in a field or with a dialog open; with a line started, the key cancels it instead. **Delete line** does the same |
 | Points | As [Selecting a point](#selecting-a-point). **Point off** and **Space** switch a middle point off or on, as today: a middle point that found no edge starts off |
 | Buttons | **Refresh Image**, **Point off**, **Delete line**, **Clear lines**, **Load lens calibration…**, **Save lens calibration…** in one row under the picture |
+| Result line | A fit: "Okay – barrel / fisheye −0.200, edge fit 0.029" (the rating, then the pair), as the loaded line below reads |
 | Tip | "Click a point or use Tab to select it; the loupe stays on it and the arrow keys nudge it (Shift for bigger steps). Press Enter when the crosshair is in the right spot; Esc or a click elsewhere ends the selection. Space switches a middle point off or on, Delete or Backspace removes the selected line, Esc cancels a started line. Skipping this step keeps the current values." |
 
 ### Load lens calibration
@@ -117,7 +118,8 @@ the same zoom. A dialog, **Load Lens Calibration**:
 
 | Part | Decision |
 |---|---|
-| Saved on this station | A radio list (`.tier-list`): the name, then "Barrel / fisheye −0.118 · Edge fit 0.021 · 2026-09-12". Empty: "No lens calibrations are saved on this station." |
+| Saved on this station | A radio list (`.tier-list`): the name, then "Barrel / fisheye −0.118 · Edge fit 0.021 · 2026-09-12 · 1920 × 1080". Empty: "No lens calibrations are saved on this station." |
+| Other picture shape | An entry measured on a snapshot of another aspect ratio (over 1 % apart) carries a caution line: "Measured on a 1920 × 1080 picture, this one is 1280 × 1024. The values only carry over at the same picture shape." It can still be loaded. A settings file records no size, so it never warns |
 | From a settings file | "Only the lens values of an exported `.ofsettings` file are loaded." and **Choose settings file…** (accepts `.ofsettings` and `.openfollowsettings`). The file is read in the browser; only `camera.lens_k1` / `camera.lens_k2` are used |
 | A good file | Becomes an entry under the button, selected: the file name and its values. The button then reads **Choose another file…** |
 | A bad file | A field error under the button: "This is not an OpenFollow settings file." (not JSON, or no `camera` object), "This settings file has no lens calibration." (either value missing or not a finite number), "This file's lens values fold the overlay inside the frame." (fails the fold check) |
@@ -127,8 +129,9 @@ the same zoom. A dialog, **Load Lens Calibration**:
 
 ### Save lens calibration
 
-A dialog, **Save Lens Calibration**, enabled once the lens has values in this
-run (fitted, loaded or fine-tuned):
+A dialog, **Save Lens Calibration**, enabled once the lens has values: fitted,
+loaded or fine-tuned in this run, or the pair the station already had (so an
+upgraded station can name the lens it has):
 
 | Part | Decision |
 |---|---|
@@ -136,7 +139,7 @@ run (fitted, loaded or fine-tuned):
 | Values | "Barrel / fisheye x · Edge fit y" under the field |
 | Same name | A name already saved (trimmed, ignoring case) shows the warning "A calibration with this name is saved on this station. Saving replaces it." |
 | Buttons | **Cancel**, **Save** (disabled while the name is empty); **Enter** in the field saves |
-| Saving | Stored on the station at once as its own file (see [Config](#config)), with the OpenFollow version that saved it, independent of Apply & Finish. A success notice under the buttons: "Saved “name” on this station." |
+| Saving | Stored on the station at once as its own file (see [Config](#config)), with the OpenFollow version that saved it and the snapshot's size, independent of Apply & Finish. A success notice under the buttons: "Saved “name” on this station." |
 
 ## Camera Calibration
 
@@ -294,18 +297,20 @@ measured value.
 
 One caution (`.notice.warning`) in Camera Calibration and Review, headed
 "Something might be wrong", listing every reason that applies and ending
-"The camera still applies. Check the measurements, then pin again." It never
-blocks Apply.
+"The camera still applies. Check the measurements, then pin again." It blocks
+Apply only while a pin is more than 20 px off (see Point far off).
 
 | Reason | Fires when | Text |
 |---|---|---|
-| Lens not measured | Simple, `lens_distortion` on, and the lens has no values from this run (not fitted, loaded or fine-tuned) | The lens was not measured. Four corners fit any lens, so a missing lens does not show in their errors. Measure it in the Lens step unless straight lines in the picture are straight. |
+| Lens not measured | Simple, `lens_distortion` on, the lens has no values from this run (not fitted, loaded or fine-tuned) and the station had no pair | The lens was not measured. Four corners fit any lens, so a missing lens does not show in their errors. Measure it in the Lens step unless straight lines in the picture are straight. |
 | Camera far from the position (Simple) | A position was entered and the camera is further from it than max(1 m, 10 % of its distance to the points' centre) | The solved camera is 2.5 m above the camera position you entered (… in all, allowed 1.6 m). Each axis carrying at least a quarter of the gap, in stage words, in the active units. With a Custom origin it adds: Was the camera measured from the same point of origin as the rectangle's centre? |
 | Camera far from the position (Advanced) | Any axis off by more than max(2.5 m, 10 % of that distance), headroom over the promised 2 m | As above, "allowed 2.5 m per axis" |
 | Field of view | Outside 20-120° | The solved field of view, N°, is outside what cameras usually have. |
 | Floor | Camera below the lowest point | The solved camera is below the floor. |
 | Up | Pitch above 0 | The solved camera looks upward. |
 | Point disagrees | A pin's error over 5 px | P2 disagrees with the other points by N px. |
+| Point far off | A pin's error over 20 px (`APPLY_MAX_PX`): Apply & Finish is disabled, as 0.4.3 refused such a solve; the closing line reads "Apply stays off while a point is more than 20 px off. Check the measurements, then pin again." | P2 disagrees with the other points by N px. |
+| Floor reach | Four or more pinned known points at one height and another point: across the picture, within reach of the points, the fit puts the floor more than twice as far or as near (`FLOOR_REACH` 2) as those points' homography alone | The solved camera puts the far floor more than twice as far, or as near, as the floor points alone do. |
 | Distances | A triangulated point's distance error over 3 σ (12 cm) | P4's distances disagree with the picture by N cm (in in Imperial). |
 
 ## Review
@@ -316,7 +321,8 @@ blocks Apply.
 | No solve | A red `.notice.error`: "No camera solve yet." with "To solve the camera, add … Go back to Camera Calibration to finish it.", or the solve's error. **Apply & Finish** is disabled |
 | Caution | As above |
 | Camera | Pos X / Y / Z, Pitch, Yaw, Roll, FOV |
-| Lens | Barrel / fisheye, Edge fit, Lens coverage: the meter and its rating, "Fine-tuned", "Loaded: name" (", fine-tuned" after a change), or "Not measured" |
+| Lens | Barrel / fisheye, Edge fit, Lens coverage: the meter and its rating, "Fine-tuned", "Loaded: name" (", fine-tuned" after a change), "The station's lens" or "Not measured" |
+| Station's lens | Simple, the station's pair kept, nothing measured in this run: an info `.notice` in Camera Calibration and Review, "Using the station's lens. It was not measured in this run." It is not a caution reason |
 | Calibration | Mode, Points, Pinned, Largest error, Entered position (or "Not entered"), and in Simple the Camera location (or "Not chosen") |
 | Distances to check | Advanced only, the same table, not clickable |
 | Grid | Width, Depth, Spacing, X / Y / Z Offset, and Change: "From the rectangle" (Simple) or "Unchanged" (Advanced) |
@@ -359,8 +365,8 @@ What the mockup cannot show, decided here:
 
 | Topic | Decision |
 |---|---|
-| Mode and marks | `camera.calibration_mode` (`"simple"` / `"advanced"`) and `camera.calibration_marks`: `id`, `name`, `kind` (`known` / `triangulated`), `x`, `y`, `z`, `from_a`, `from_b` (ids), `distance_a`, `distance_b`, `pin_x`, `pin_y` (fractions of the snapshot, NaN = not pinned), `position` (solved, triangulated only). At most 12 marks |
-| Saved lens calibrations | Not in `config.toml`: one small JSON file per calibration in a `lens-calibrations` directory beside it (as the web backups sit in `backups/web`), so they stay on the station and are never exported, imported or pushed. Each file holds `name` (1-60 characters, unique ignoring case), `k1`, `k2` (the fold check), `saved` (date) and `openfollow_version` (the `__version__` that wrote it), so a later version can tell old calibrations apart and warn about them. Saving a name that exists rewrites its file. No limit on the number of files. The list is filled only by **Save lens calibration**: a new station has none, and nothing ships or imports any A file that does not parse or fails the checks is left out of the list with one WARNING, never deleted |
+| Mode and marks | `camera.calibration_mode` (`"simple"` / `"advanced"`) and `camera.calibration_marks`: `id`, `name`, `kind` (`known` / `triangulated`), `x`, `y`, `z`, `from_a`, `from_b` (ids), `distance_a`, `distance_b`, `pin` (`[x, y]` as fractions of the snapshot, `[]` = not pinned), `position` (solved, triangulated only). At most 12 marks |
+| Saved lens calibrations | Not in `config.toml`: one small JSON file per calibration in a `lens-calibrations` directory beside it (as the web backups sit in `backups/web`), so they stay on the station and are never exported, imported or pushed. Each file holds `name` (1-60 characters, unique ignoring case), `k1`, `k2` (the fold check), `saved` (date), `width` / `height` (the snapshot it was measured on) and `openfollow_version` (the `__version__` that wrote it), so a later version can tell old calibrations apart and warn about them. Saving a name that exists rewrites its file. No limit on the number of files. The list is filled only by **Save lens calibration**: a new station has none, and nothing ships or imports any A file that does not parse or fails the checks is left out of the list with one WARNING, never deleted. The on-station settings backup (`privilege/settings_backup.py`) holds the directory beside `config.toml` |
 | Calibration points feature | Retired: `calibration_points` leaves `FEATURE_KEYS` and the experimental set; Advanced is always available. A stored `shown_features` entry is dropped as unknown |
 | Migration | Old `camera.calibration_points` with entries ⇒ Advanced: the four grid corners become known points with `camera.corner_pins` as their pins, each old point a triangulated point measured from its two corners, `height` as its Z. Otherwise ⇒ Simple with `corner_pins` as the corner pins. The old keys are read once on load and never written |
 

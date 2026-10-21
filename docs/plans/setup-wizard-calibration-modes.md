@@ -75,7 +75,7 @@ For screens where the picture is too small to work on.
 | Toolbar | Step title (Calibration adds "· Simple" / "· Advanced"), the current hint, a status, the step's action, **?**, **Exit full screen**. On a phone (≤ 640 px) only the hint and the buttons |
 | Hint | Lens: "Tap a dashed suggestion, or click the start and the end of a straight edge." with no lines, "Click the other end of the straight edge." with a line started, else the lens result. Calibration: the hint box's heading. Review: "The green grid is the one the Operator Screen will draw." or "No camera solve yet." |
 | Status | Calibration: "Largest error N px", plus "· Something might be wrong" in the caution colour when the caution has reasons. Lens: "A line does not fit the others" in the caution colour |
-| Action | Lens only: **Delete line**, disabled without a selected line |
+| Action | Lens only: **Point off** and **Delete line**, each disabled without a selected point or line |
 | Inside | Everything works as on the page: dragging, selecting, the Advanced menus and forms, the loupe |
 | Esc | Ends full screen and cancels whatever is active: a selection, an open menu, a started line, the help panel. The browser's own exit (Esc, a gesture) ends it the same way. Exit puts the picture back and focuses its full-screen button |
 | **?** | The **?** button, or the **?** key unless a field has the focus, toggles a non-modal panel under the toolbar's right end; it stays open while the picture is used and closes with its ×, **?** or full screen ending |
@@ -85,7 +85,7 @@ for the picture, each ending with "**?** Show or hide this help":
 
 | Picture | Sentences | Keys |
 |---|---|---|
-| Lens | "Tap a dashed suggestion that is straight in reality, or click the start and the end of a straight edge. Click a line to select it; drag a point to correct it." | Tab: Select the next point · Arrows: Nudge the selected point 1 px · Shift + arrow: Nudge it 10 px · Enter: Confirm the point · Delete or Backspace: Remove the selected line, or cancel a started one · Esc: End full screen (cancels active selection) |
+| Lens | "Tap a dashed suggestion that is straight in reality, or click the start and the end of a straight edge. Click a line to select it; drag a point to correct it." | Tab: Select the next point · Arrows: Nudge the selected point 1 px · Shift + arrow: Nudge it 10 px · Enter: Confirm the point · Space: Switch a middle point off or on · Delete or Backspace: Remove the selected line, or cancel a started one · Esc: End full screen (cancels active selection) |
 | Calibration, Simple | "Drag each corner onto its tape mark; the loupe shows the picture at 4×. Click a corner to select it." | Tab: Select the next corner · Arrows: Nudge the selected corner 1 px · Shift + arrow: Nudge it 10 px · Enter: Place the corner where the crosshair is · Esc: End full screen (cancels active selection) |
 | Calibration, Advanced | "Click the picture where a point is and choose it from the menu, or make a New point or New triangulated point there. Click a pin to remove it or delete the point; drag a pin to correct it." | Arrows: With the menu open: move its spot 1 px. On a pin: nudge it · Shift + arrow: 10 px · Tab: Next menu item, field or pin · Enter: Choose the menu item, or place the new point · Esc: End full screen (cancels active selection) |
 | Review | "The picture shows the solved grid, the points and 0/0/0, as the Operator Screen will draw them. Nothing can be changed here." | Esc: End full screen |
@@ -106,9 +106,9 @@ five-step rating, Refresh Image, Clear lines. Changed:
 |---|---|
 | Selecting a line | A click anywhere along a traced line selects the whole line, drawn in the text colour. A line just added (a tapped suggestion or a traced edge) is selected |
 | Deleting | **Delete** or **Backspace** removes the selected line wherever the focus is, except in a field or with a dialog open; with a line started, the key cancels it instead. **Delete line** does the same |
-| Points | As [Selecting a point](#selecting-a-point) |
-| Buttons | **Refresh Image**, **Delete line**, **Clear lines**, **Load lens calibration…**, **Save lens calibration…** in one row under the picture |
-| Tip | "Click a point or use Tab to select it; the loupe stays on it and the arrow keys nudge it (Shift for bigger steps). Press Enter when the crosshair is in the right spot; Esc or a click elsewhere ends the selection. Delete or Backspace removes the selected line, Esc cancels a started line. Skipping this step keeps the current values." |
+| Points | As [Selecting a point](#selecting-a-point). **Point off** and **Space** switch a middle point off or on, as today: a middle point that found no edge starts off |
+| Buttons | **Refresh Image**, **Point off**, **Delete line**, **Clear lines**, **Load lens calibration…**, **Save lens calibration…** in one row under the picture |
+| Tip | "Click a point or use Tab to select it; the loupe stays on it and the arrow keys nudge it (Shift for bigger steps). Press Enter when the crosshair is in the right spot; Esc or a click elsewhere ends the selection. Space switches a middle point off or on, Delete or Backspace removes the selected line, Esc cancels a started line. Skipping this step keeps the current values." |
 
 ### Load lens calibration
 
@@ -282,7 +282,7 @@ measured value.
 
 | Topic | Decision |
 |---|---|
-| One fit | Both modes go through one Levenberg-Marquardt fit: the 7 camera values plus each triangulated point's X / Y, against the pins (`PIXEL_SIGMA` 1 px) and the triangulated distances (`DISTANCE_SIGMA` 0.04 m). Pins are undistorted with the lens pair first |
+| One fit | Both modes go through one Levenberg-Marquardt fit: the 7 camera values plus each triangulated point's X / Y, against the pins (`PIXEL_SIGMA` 1 px) and the triangulated distances (`DISTANCE_SIGMA` 0.04 m). Pins are undistorted with the lens pair first. Every pin counts the same, and no point is left out automatically: one that disagrees is named in the caution |
 | Needs | Four pinned points: 7 camera unknowns, 2 equations per pin; a triangulated point's two distances fix its own X / Y |
 | Seeds | With a camera position: that position looking at 0/0/0, roll 0, at the saved FOV, 40° and 90°. With four pinned known points at one height (within 1 cm, no three in a line): the homography decomposition. Simple always has the second; Advanced always has the first |
 | Triangulated points | Start at their trilateration, chained after the points they are measured from, the mirror place picked by the pin as seen from the seed. Two distances that miss by up to `3 √2 · DISTANCE_SIGMA` meet halfway; more leaves the point unplaced with its reason |

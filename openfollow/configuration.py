@@ -1253,7 +1253,7 @@ class MidiConfig:
         self.patches = [
             MidiPatch(**_filter_known(MidiPatch, p)) if isinstance(p, dict) else p
             for p in patches
-            if isinstance(p, dict | MidiPatch)
+            if isinstance(p, (dict, MidiPatch))
         ]
         # Guarantee every patch has a unique id >= 1 (id 0 / duplicates get the
         # next free sequential id) so binding foreign keys always resolve.
@@ -1374,7 +1374,7 @@ class VirtualFadersConfig:
         self.faders = [
             VirtualFaderConfig(**_filter_known(VirtualFaderConfig, f)) if isinstance(f, dict) else f
             for f in faders
-            if isinstance(f, dict | VirtualFaderConfig)
+            if isinstance(f, (dict, VirtualFaderConfig))
         ]
         while len(self.faders) < VIRTUAL_FADER_COUNT:
             self.faders.append(VirtualFaderConfig())
@@ -3212,12 +3212,7 @@ def marker_id_list(raw: Any, *, path: str, field_name: str) -> list[int]:
     but a list reads as ``[]``: ``init_markers`` iterates it. *path* names the source in the log.
     """
     if not isinstance(raw, list):
-        logger.warning(
-            "%s: %s is %s, not a list – coercing to [] so selection-list iteration can't crash startup",
-            path,
-            field_name,
-            type(raw).__name__,
-        )
+        logger.warning("%s: %s is %s, not a list – coercing to []", path, field_name, type(raw).__name__)
         return []
     kept: list[int] = []
     for value in raw:

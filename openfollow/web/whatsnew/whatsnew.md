@@ -27,4 +27,4 @@ Under **Markers & Zones → Marker Movement**, **Invert control direction** is n
 
 ## The Setup Wizard has four steps
 
-The **Setup Wizard** now runs Video Source, Lens, **Camera Calibration** and Review, and solves the camera from marks pinned on the picture: **Simple** uses the four corners of a measured rectangle, **Advanced** known and triangulated points. In Simple, **Apply & Finish** also saves the rectangle as the grid, with the point of origin midway between DSL and DSR unless set to **Custom**: check that it matches the console's origin before applying.
+The **Setup Wizard** now runs Video Source, Lens, **Camera Calibration** and Review, and solves the camera from marks pinned on the picture: **Simple** uses the four corners of a measured rectangle, **Advanced** known points and distance points. In Simple, **Save and finish** also saves the rectangle as the grid, with the point of origin you choose: midway between DSL and DSR, or **Custom**. Check that it matches the console's origin before saving.

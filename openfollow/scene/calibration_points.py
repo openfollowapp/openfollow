@@ -49,10 +49,10 @@ _MIN_TRIANGLE_M2 = 0.05
 FLOOR_REACH = 2.0
 _FLOOR_PROBES = np.array([[x, y] for y in np.linspace(0.0, 1.0, 7) for x in np.linspace(0.0, 1.0, 9)])
 
-REASON_HEIGHT = "A distance is shorter than the height between the two points."
+REASON_HEIGHT = "A distance is shorter than the height difference between the points."
 REASON_SAME_PLACE = "Its two points are at the same place."
-REASON_DIFFER = "The two distances differ by more than their points are apart."
-REASON_SHORT = "The two distances add up to less than their points are apart."
+REASON_DIFFER = "The difference between the two distances is larger than the distance between its two points."
+REASON_SHORT = "The two distances together are shorter than the distance between its two points."
 REASON_UNPLACED_FROM = "It is measured from a point that cannot be placed."
 NO_FIT = "No camera fits these points. Check the pins and the measurements."
 

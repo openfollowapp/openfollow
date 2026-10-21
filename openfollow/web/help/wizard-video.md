@@ -1,3 +1,3 @@
 # Video Source
 
-The Setup Wizard uses a snapshot of this input in every later step. Pick the camera the operator will steer markers on.
+The Setup Wizard uses a snapshot of this input in all later steps. Choose the camera that the operator will use to steer markers.

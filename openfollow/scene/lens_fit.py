@@ -66,10 +66,15 @@ MAX_POINTS_PER_LINE = 16
 _MIN_LINES_FOR_MISFIT = 3
 _MIN_LINE_SPAN_PX = 10.0
 _CURVE_SAMPLES = 24
-# Outer band of the frame, as a fraction of the half extent, for the coverage hint.
+# Outer band of the frame, as a fraction of the half extent, for the coverage hint: the outer 15 % of each side.
 _EDGE_BAND = 0.7
 # Points an outer band needs before the hint stops asking for a line there.
 _EDGE_BAND_POINTS = 5
+# A point this far out (normalised to the half-diagonal) is near a corner of the picture.
+_CORNER_RADIUS = 0.8
+# Lines that already agree: at least this many, none misfit, their points this close (RMS px) to the fit.
+_AGREE_MIN_LINES = 4
+_AGREE_RMS_PX = 2.0
 
 # Predicted corner uncertainty (px) below which each rating applies, best first.
 RATING_THRESHOLDS_PX: tuple[tuple[float, str], ...] = (
@@ -410,17 +415,8 @@ def _misfits(lines: _Lines, k: FloatArray) -> list[bool]:
     return flags
 
 
-def coverage_hint(
-    lines: Sequence[Sequence[Sequence[float]]], canvas_w: float, canvas_h: float, *, rating: str, k2_fitted: bool
-) -> str:
-    """One sentence naming the weakest area, empty when nothing is missing."""
-    if rating == RATINGS[-1]:
-        return ""
-    if len(lines) < 2:
-        return "Add a second line in another part of the image."
-    if not k2_fitted:
-        return "The edge fit needs a line near a corner."
-    pts = np.asarray([p for line in lines for p in line], dtype=np.float64)
+def _weak_edges(pts: FloatArray, canvas_w: float, canvas_h: float) -> list[str]:
+    """Every edge whose outer band holds too few points, weakest first."""
     cx, cy = canvas_w / 2.0, canvas_h / 2.0
     bands = {
         "top": int(np.sum(pts[:, 1] < cy - _EDGE_BAND * cy)),
@@ -428,10 +424,58 @@ def coverage_hint(
         "left": int(np.sum(pts[:, 0] < cx - _EDGE_BAND * cx)),
         "right": int(np.sum(pts[:, 0] > cx + _EDGE_BAND * cx)),
     }
-    weakest = min(bands, key=lambda name: (bands[name], name))
-    if bands[weakest] < _EDGE_BAND_POINTS:
-        return f"Add a line near the {weakest} edge."
-    return "Add more lines near the edges, or place the points more precisely."
+    order = list(bands)
+    weak = [name for name in order if bands[name] < _EDGE_BAND_POINTS]
+    return sorted(weak, key=lambda name: (bands[name], order.index(name)))
+
+
+def _edges_phrase(weak: Sequence[str]) -> str:
+    if len(weak) == 4:
+        return "lines near all edges of the picture"
+    if len(weak) == 1:
+        return f"a line near the {weak[0]} edge"
+    return f"lines near the {', '.join(weak[:-1])} and {weak[-1]} edges"
+
+
+def coverage_hint(
+    lines: Sequence[Sequence[Sequence[float]]],
+    canvas_w: float,
+    canvas_h: float,
+    *,
+    rating: str,
+    k2_fitted: bool,
+    rms_px: float,
+    misfit: bool,
+) -> str:
+    """One sentence naming what would improve or confirm the fit, empty when nothing is missing.
+
+    Rated good or better the weak edges only confirm it. Below that, lines that
+    already agree may be right; a corner line is required for that, because
+    lines that never reach a corner agree with a wrong lens just as well.
+    """
+    if len(lines) < 2:
+        return "Add a second line in another part of the picture."
+    pts = np.asarray([p for line in lines for p in line], dtype=np.float64)
+    radius = np.hypot(pts[:, 0] - canvas_w / 2.0, pts[:, 1] - canvas_h / 2.0) / (0.5 * math.hypot(canvas_w, canvas_h))
+    if not k2_fitted and not bool(np.any(radius > _CORNER_RADIUS)):
+        return "Corner correction needs a line that reaches a corner of the picture."
+    weak = _weak_edges(pts, canvas_w, canvas_h)
+    if not weak:
+        return ""
+    where = _edges_phrase(weak)
+    rank = RATINGS.index(rating) if rating in RATINGS else 0
+    if rank >= RATINGS.index("good"):
+        return f"If possible, add {where} to confirm it."
+    agree = (
+        len(lines) >= _AGREE_MIN_LINES
+        and not misfit
+        and rms_px <= _AGREE_RMS_PX
+        and k2_fitted
+        and rank >= RATINGS.index("okay")
+    )
+    if agree:
+        return f"The result may already be good. If possible, add {where} to confirm it."
+    return f"Add {where}."
 
 
 def fit_lens_from_lines(lines: Sequence[Sequence[Sequence[float]]], canvas_w: float, canvas_h: float) -> LensFitResult:
@@ -452,14 +496,17 @@ def fit_lens_from_lines(lines: Sequence[Sequence[Sequence[float]]], canvas_w: fl
     uncertainty = max(_corner_uncertainty_px(solution.cov, data.half_diag), _rival_spread_px(data, solution))
     rating = rate_uncertainty(uncertainty)
     flags = _misfits(data, k)
+    rms_all = float(np.sqrt(np.mean(res**2)))
     return LensFitResult(
         k1=float(k[0]),
         k2=float(k[1]),
         k2_fitted=k2_fitted,
-        rms_px=float(np.sqrt(np.mean(res**2))),
+        rms_px=rms_all,
         uncertainty_px=uncertainty,
         rating=rating,
-        hint=coverage_hint(lines, canvas_w, canvas_h, rating=rating, k2_fitted=k2_fitted),
+        hint=coverage_hint(
+            lines, canvas_w, canvas_h, rating=rating, k2_fitted=k2_fitted, rms_px=rms_all, misfit=any(flags)
+        ),
         lines=tuple(LensLineFit(rms_px=rms[i], misfit=flags[i], curve=data.curve(k, i)) for i in range(data.count)),
     )
 

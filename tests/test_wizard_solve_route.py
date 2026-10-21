@@ -269,7 +269,7 @@ def test_a_solve_that_lacks_something_says_what(base: str, mode, marks, hint, ne
     }[marks]
     status, data = _solve(base, _body(mode, chosen, hint=hint))
     assert status == 422
-    assert data == {"error": "The camera cannot be solved yet.", "need": need}
+    assert data == {"error": "The camera cannot be calculated yet.", "need": need}
 
 
 def test_marks_their_distances_place_nowhere_fit_no_camera_and_say_why(base: str) -> None:

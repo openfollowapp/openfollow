@@ -215,9 +215,25 @@
   /* Suggested edges: faint and dashed until tapped, with a wide invisible stroke to tap. */
   .lens-candidate-line { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-opacity: 0.6; stroke-dasharray: 8 6; pointer-events: none; }
   .lens-candidate-hit { fill: none; stroke: transparent; stroke-width: 24; pointer-events: stroke; cursor: pointer; }
-  .lens-candidate:hover .lens-candidate-line, .lens-candidate:focus .lens-candidate-line { stroke-opacity: 1; }
-  .lens-candidate:focus { outline: none; }
-  .lens-candidate:focus .lens-candidate-line { stroke-width: 4; }
+  .lens-candidate:hover .lens-candidate-line, .lens-candidate.hot .lens-candidate-line { stroke-opacity: 1; stroke-width: 5; filter: drop-shadow(0 0 3px var(--bg-deep)); }
+  #lens-candidates.has-hot .lens-candidate:not(.hot) .lens-candidate-line { stroke-opacity: 0.2; }
+  /* One use / reject bubble per suggestion, pointing at its line; in CSS pixels over the picture. */
+  .lens-tails, .lens-bubbles { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  .lens-tail { fill: var(--bg-soft); stroke: var(--border); stroke-width: 1; stroke-linejoin: round; filter: drop-shadow(0 5px 8px rgba(0, 0, 0, 0.45)); }
+  .lens-tail.hot { stroke: var(--accent); }
+  /* The outline is drawn in the SVG layer below; this only holds the two buttons over it. */
+  .lens-bubble { position: absolute; width: 72px; height: 38px; box-sizing: border-box; display: flex; gap: 4px; padding: 4px; pointer-events: auto; }
+  .lens-bubble button { width: 30px; height: 30px; min-height: 0; padding: 0; border: 0; border-radius: 50%; background: transparent; display: grid; place-items: center; cursor: pointer; color: var(--muted); }
+  .lens-bubble svg { width: 26px; height: 26px; display: block; }
+  .lens-bubble .ring { fill: none; stroke: currentColor; stroke-width: 1.8; }
+  .lens-bubble .mark { fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+  .lens-bubble .lb-use { color: var(--success-text); }
+  .lens-bubble .lb-use:hover .ring, .lens-bubble .lb-use:focus-visible .ring { fill: var(--success-chip); }
+  .lens-bubble .lb-reject:hover, .lens-bubble .lb-reject:focus-visible { color: var(--error-text); }
+  .lens-bubble .lb-reject:hover .ring, .lens-bubble .lb-reject:focus-visible .ring { fill: var(--error-chip); }
+  .lens-bubble button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  /* The app's buttons lift by 1 px on hover; these must not move in any state, in any browser. */
+  .lens-bubble button, .lens-bubble button:hover, .lens-bubble button:active, .lens-bubble button:focus, .lens-bubble button:focus-visible { transform: none !important; filter: none !important; transition: color 120ms ease; }
   .lens-edges { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: none; pointer-events: none; }
   .lens-dev { margin-top: 0.72rem; }
   /* Graded meter (docs/STATUS_LANGUAGE.md): five segments, filled in the level's line colour. */
@@ -268,7 +284,10 @@
   .mode-field { margin-bottom: 0.9rem; }
   .axis-note { font-weight: 400; text-transform: none; letter-spacing: 0; }
   #step-calib.mode-simple .only-advanced, #step-calib.mode-advanced .only-simple { display: none; }
-  #wiz-hint { margin: 0.2rem 0 0.9rem; }
+  #wiz-hint, #lens-hint { margin: 0.2rem 0 0.9rem; }
+  /* Simple: a step is greyed out and cannot be used until the step before it is done. */
+  .step-locked { opacity: 0.4; filter: grayscale(0.6); transition: opacity 150ms; }
+  @media (prefers-reduced-motion: reduce) { .step-locked { transition: none; } }
   /* The menu a click on the picture opens in Advanced. */
   .pin-menu { position: absolute; z-index: 5; min-width: 13rem; max-width: 18rem; padding: 0.35rem; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 0.6rem; box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45); line-height: 1.3; }
   .pin-menu-head { display: flex; align-items: center; justify-content: space-between; gap: 0.4rem; }
@@ -335,7 +354,7 @@
   };
   window.WIZ_STEPS = [{{!_keys_js}}];
 </script>
-<nav class="wizard-steps" aria-label="Setup wizard steps">
+<nav class="wizard-steps" aria-label="Setup Wizard steps">
 % for _i, (_key, _label) in enumerate(_steps):
   <button type="button" class="wizard-step-btn" data-step="{{_i}}" onclick="wizardGo({{_i}})">{{_i + 1}}. {{_label}}</button>
 % end
@@ -375,7 +394,7 @@
     </div>
 
     <p class="wizard-help">
-      Choose the video input that matches your camera setup. The change applies live – the new pipeline starts within ~1 s of saving.
+      Choose the video input that matches your camera setup. The change is applied at once. The new video input starts about 1 s after you save.
     </p>
 
     <div id="wizard-video-saved" class="notice success" role="status" style="display:none"></div>
@@ -397,6 +416,7 @@
       <div class="section-actions"><button type="button" class="section-help-btn" data-help-open="wizard-lens" aria-label="Open help for this section">?</button></div>
     </div>
 
+    <div class="notice" id="lens-hint" role="status" aria-live="polite" hidden></div>
     <div id="lens-container" class="wizard-preview-container" style="display:none;">
       <img id="lens-image" alt="Camera snapshot">
       <canvas id="lens-edges" class="lens-edges" aria-hidden="true"></canvas>
@@ -406,6 +426,8 @@
         <g id="lens-lines"></g>
         <g id="lens-pending"></g>
       </svg>
+      <svg id="lens-tails" class="lens-tails" aria-hidden="true"></svg>
+      <div id="lens-bubbles" class="lens-bubbles"></div>
       <div class="wizard-loupe" aria-hidden="true"><canvas width="240" height="240"></canvas></div>
       <button type="button" class="fs-btn" data-fs="lens" aria-label="Full screen">{{!_fs_icon}}</button>
     </div>
@@ -416,7 +438,7 @@
     <div id="lens-misfit" class="notice warning" role="status" style="display:none;"></div>
 
     <div style="margin-top:0.72rem;display:flex;gap:0.5rem;flex-wrap:wrap;">
-      <button type="button" class="secondary" onclick="loadSnapshot()">Refresh Image</button>
+      <button type="button" class="secondary" onclick="lensRefreshImage()">Refresh Image</button>
       <button type="button" class="secondary" id="lens-toggle-point" onclick="lensToggleSelectedPoint()" disabled>Point off</button>
       <button type="button" class="secondary" id="lens-delete-line" onclick="lensDeleteSelectedLine()" disabled>Delete line</button>
       <button type="button" class="secondary" id="lens-clear" onclick="lensClearLines()" disabled>Clear lines</button>
@@ -443,7 +465,7 @@
     </div>
 
     <div class="group" style="margin-top:0.72rem;">
-      <div class="group-title">Fine-tune</div>
+      <div class="group-title">Adjust by hand</div>
       <div class="row">
         <div class="field" style="flex:1;min-width:200px;">
           <label for="wiz_lens_k1">Barrel / fisheye</label>
@@ -456,23 +478,20 @@
           </div>
         </div>
         <div class="field" style="flex:1;min-width:200px;">
-          <label for="wiz_lens_k2">Edge fit</label>
+          <label for="wiz_lens_k2">Corner correction</label>
           <div style="display:flex;gap:0.5rem;align-items:center;">
             <input type="range" id="wiz_lens_k2_range" min="-0.4" max="0.4" step="0.005"
                    value="{{_lens_k2}}" style="flex:1;" oninput="onWizardLensInput('k2', 'range')"
-                   aria-label="Edge fit slider">
+                   aria-label="Corner correction slider">
             <input type="number" id="wiz_lens_k2" step="0.005"
                    value="{{_lens_k2}}" style="width:6rem;" oninput="onWizardLensInput('k2', 'number')">
           </div>
         </div>
       </div>
-      <div id="wiz-lens-error" class="wizard-field-error" style="display:none;">This pair folds the overlay inside the frame. Bring either value closer to 0.</div>
+      <div id="wiz-lens-error" class="wizard-field-error" style="display:none;">With these two values, the overlay folds over itself inside the picture. Set one of the values closer to 0.</div>
     </div>
 
-    <p class="wizard-help" style="margin-top:0.72rem;">
-      <strong>Tap a dashed suggestion</strong> that is straight in reality, or click the start and the end of a straight edge yourself: a stage edge, a tape line, a truss. Click a line to select it, drag a point to correct it. Lines near the picture's edges and corners tell the most.
-    </p>
-    <p class="wizard-tip">Click a point or use <strong>Tab</strong> to select it; the loupe stays on it and the <strong>arrow keys</strong> nudge it (<strong>Shift</strong> for bigger steps). Press <strong>Enter</strong> when the crosshair is in the right spot; <strong>Esc</strong> or a click elsewhere ends the selection. <strong>Space</strong> switches a middle point off or on, <strong>Delete</strong> or <strong>Backspace</strong> removes the selected line, <strong>Esc</strong> cancels a started line. Skipping this step keeps the current values.</p>
+    <p class="wizard-tip">Click a point or press <strong>Tab</strong> to select it. The loupe stays on it, and the <strong>arrow keys</strong> move it by one pixel. <strong>Tab</strong> selects the next point of the same line. Press <strong>Enter</strong> when the crosshair is in the right place. <strong>Esc</strong> or a click somewhere else ends the selection. <strong>Space</strong> switches a middle point off or on. <strong>Delete</strong> or <strong>Backspace</strong> removes the selected line. <strong>Esc</strong> cancels a line you have started. If you skip this step, the current lens values stay.</p>
 
     <div class="wizard-nav">
       <button type="button" class="secondary" onclick="wizardPrev()">Back</button>
@@ -499,7 +518,7 @@
         </label>
         <label class="seg-option">
           <input type="radio" name="cal_mode" value="advanced">
-          <span><strong>Advanced</strong><small>Known and triangulated points</small></span>
+          <span><strong>Advanced</strong><small>Known points and distance points</small></span>
         </label>
       </div>
     </div>
@@ -507,33 +526,40 @@
     <!-- Simple -->
     <div id="cal-simple">
       <div id="hint-slot-sloc"></div>
-      <div class="group">
-        <p class="wizard-help" id="simple-loc-q"><strong>Where is your camera located?</strong></p>
-        <div class="row">
-          <div class="field wide"><select id="simple-loc" aria-labelledby="simple-loc-q"></select></div>
+      <div class="simple-step" id="sstep-1">
+        <div class="group">
+          <p class="wizard-help" id="simple-loc-q"><strong>1. Where is your camera?</strong></p>
+          <div class="row">
+            <div class="field wide"><select id="simple-loc" aria-labelledby="simple-loc-q"></select></div>
+          </div>
+          <details class="inline-advanced" id="simple-cam-box">
+            <summary>Optional: enter a rough camera position to check the result</summary>
+            <div class="inline-advanced-content" id="cam-slot-simple"></div>
+          </details>
         </div>
-        <details class="inline-advanced" id="simple-cam-box">
-          <summary>Optional: enter a rough camera position to check the result</summary>
-          <div class="inline-advanced-content" id="cam-slot-simple"></div>
-        </details>
       </div>
       <div id="hint-slot-rect"></div>
-      <p class="wizard-help">Mark the four corners of the <strong>largest rectangle</strong> you can fit on the floor of the performance area, all visible to the camera; only the corners need a mark, such as a tape cross. Enter its size: the wizard draws it on the picture as a camera there would see it, and you drag each corner onto its tape mark. Positions outside the rectangle are less accurate.</p>
-      <div class="group">
-        <div class="group-title">Rectangle</div>
-        <div class="row">
-          <div class="field"><label for="rect_w">Width (<span class="u-len">{{_len}}</span>)</label><input type="{{_len_type}}"{{!_len_step}} min="0" id="rect_w" data-len data-ph="12"><small class="metric-echo" data-echo="rect_w" hidden></small></div>
-          <div class="field"><label for="rect_d">Depth (<span class="u-len">{{_len}}</span>)</label><input type="{{_len_type}}"{{!_len_step}} min="0" id="rect_d" data-len data-ph="6"><small class="metric-echo" data-echo="rect_d" hidden></small></div>
+      <div class="simple-step" id="sstep-2">
+        <p class="wizard-help" id="rect-q"><strong>2. What is the size of your rectangle?</strong></p>
+        <p class="wizard-help">Mark the four corners of the <strong>largest rectangle</strong> that fits on the floor of the performance area. The camera must see all four corners. Only the corners need a mark, such as a tape cross. Enter the size of the rectangle.</p>
+        <div class="group">
+          <div class="row" role="group" aria-labelledby="rect-q">
+            <div class="field"><label for="rect_w">Width (<span class="u-len">{{_len}}</span>)</label><input type="{{_len_type}}"{{!_len_step}} min="0" id="rect_w" data-len><small class="metric-echo" data-echo="rect_w" hidden></small></div>
+            <div class="field"><label for="rect_d">Depth (<span class="u-len">{{_len}}</span>)</label><input type="{{_len_type}}"{{!_len_step}} min="0" id="rect_d" data-len><small class="metric-echo" data-echo="rect_d" hidden></small></div>
+          </div>
+          <p class="wizard-help" id="rect-diag"></p>
         </div>
-        <p class="wizard-help" id="rect-diag"></p>
       </div>
+      <div id="hint-slot-origin-q"></div>
+      <div class="simple-step" id="sstep-3">
+      <p class="wizard-help" id="origin-q"><strong>3. Where is the point of origin?</strong></p>
       <div class="group">
-        <div class="group-title">Point of Origin</div>
         <div class="row">
           <div class="field wide">
             <label for="rect_origin">Point of origin for all position data (0/0/0)</label>
             <select id="rect_origin">
-              <option value="dsc" selected>Centred between DSL and DSR</option>
+              <option value="" selected>Choose…</option>
+              <option value="dsc">Default: centred between DSL and DSR</option>
               <option value="custom">Custom</option>
             </select>
           </div>
@@ -546,6 +572,7 @@
             <div class="field"><label for="rect_z">Z (<span class="u-len">{{_len}}</span>) <span class="axis-note">(up +)</span></label><input type="{{_len_type}}"{{!_len_step}} id="rect_z" data-len data-ph="0"><small class="metric-echo" data-echo="rect_z" hidden></small></div>
           </div>
         </div>
+      </div>
       </div>
     </div>
 
@@ -578,6 +605,7 @@
       </div>
     </div>
 
+    <p class="wizard-help only-simple" id="corners-q"><strong>4. Place the corners on the picture</strong></p>
     <div id="hint-slot-image"></div>
     <div id="cal-container" class="wizard-preview-container" style="display:none;">
       <img id="cal-image" alt="Camera snapshot">
@@ -588,18 +616,18 @@
         <g id="cal-pins"></g>
       </svg>
       <div class="wizard-loupe" aria-hidden="true"><canvas width="240" height="240"></canvas></div>
-      <div class="pin-menu" id="pin-menu" role="group" aria-label="Place here" hidden></div>
+      <div class="pin-menu" id="pin-menu" role="group" aria-label="Which point is here?" hidden></div>
       <button type="button" class="fs-btn" data-fs="cal" aria-label="Full screen">{{!_fs_icon}}</button>
     </div>
     <div id="cal-no-feed" class="wizard-no-feed" style="display:none;">No video feed available. Configure a video source in the Video Source step, then return here and press <strong>Refresh Image</strong>.</div>
     <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
-      <button type="button" class="secondary" onclick="loadSnapshot(0, true)">Refresh Image</button>
-      <button type="button" class="secondary" onclick="calibResetPins()">Reset Pins</button>
+      <button type="button" class="secondary" id="cal-refresh" onclick="loadSnapshot(0, true)">Refresh Image</button>
+      <button type="button" class="secondary" id="cal-reset" onclick="calibResetPins()"><span class="only-simple">Reset Corners</span><span class="only-advanced">Reset Pins</span></button>
     </div>
     <div id="adv-need" class="wizard-status waiting" role="status" hidden style="margin-top:0.72rem;"></div>
-    <div id="cal-refreshed" class="notice success" role="status" hidden style="margin-top:0.72rem;">New snapshot loaded. The pins stay where they are.</div>
-    <p class="wizard-tip only-simple">Drag each corner onto its tape mark; the loupe shows the picture at 4×. Click a corner or use <strong>Tab</strong> to select it; the loupe stays on it and the <strong>arrow keys</strong> nudge it (<strong>Shift</strong> for bigger steps). Press <strong>Enter</strong> when the crosshair is in the right spot; <strong>Esc</strong> or a click elsewhere ends the selection.</p>
-    <p class="wizard-tip only-advanced">Click the picture where a point is and choose it from the menu, or make a <strong>New point</strong> or <strong>New triangulated point</strong> there. Click a pin to remove it or delete the point. While a menu is open, the loupe stays on its spot and the <strong>arrow keys</strong> move it (<strong>Shift</strong> for bigger steps). Drag a pin to correct it.</p>
+    <div id="cal-refreshed" class="notice success" role="status" hidden style="margin-top:0.72rem;">New snapshot loaded. The <span class="only-simple">corners stay</span><span class="only-advanced">pins stay</span> where they are.</div>
+    <p class="wizard-tip only-simple">Drag each corner onto its tape mark. The loupe shows the picture 4× larger. Click a corner or press <strong>Tab</strong> to select it. The loupe stays on it, and the <strong>arrow keys</strong> move it by one pixel. Press <strong>Enter</strong> when the crosshair is in the right place. <strong>Esc</strong> or a click somewhere else ends the selection.</p>
+    <p class="wizard-tip only-advanced">Click the picture where a point is, and choose the point from the menu. Or create a <strong>New known point</strong> or a <strong>New distance point</strong> there. Click a pin to remove the pin or delete the point. While a menu is open, the loupe stays on the spot, and the <strong>arrow keys</strong> move the spot by one pixel. Drag a pin to correct it.</p>
 
     <div id="cal-advanced-points" hidden>
       <div class="group">
@@ -607,7 +635,7 @@
         <div id="adv-rows"></div>
         <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.6rem;">
           <button type="button" class="secondary" id="adv-add-known" onclick="calibAddPoint('known')">Add known point</button>
-          <button type="button" class="secondary" id="adv-add-tri" onclick="calibAddPoint('triangulated')" hidden>Add triangulated point</button>
+          <button type="button" class="secondary" id="adv-add-tri" onclick="calibAddPoint('triangulated')" hidden>Add distance point</button>
         </div>
       </div>
     </div>
@@ -624,23 +652,23 @@
 
     <div class="group" id="cal-dist-group" hidden style="margin-top:0.9rem;">
       <div class="group-title">Distances to check</div>
-      <p class="wizard-help">Measure these between the marks. A distance that differs means a typed or measured value is wrong. Pairs a triangulated point was measured from are left out.</p>
+      <p class="wizard-help">Measure these distances between the marks on the stage. If a distance is different, a typed or measured value is wrong. The distances from a distance point to the two points it is measured from are not listed.</p>
       <div class="dist-wrap"><table class="data-table dist-table" id="cal-dist-table"></table></div>
     </div>
 
     <div class="wizard-nav">
       <button type="button" class="secondary" onclick="wizardPrev()">Back</button>
-      <button type="button" class="save-btn" onclick="calibNext()">Next</button>
+      <button type="button" class="save-btn" id="cal-next" onclick="calibNext()">Next</button>
     </div>
   </div>
 </div>
 
-<!-- Review & Apply -->
+<!-- Review -->
 <div class="wizard-content" id="wizard-step-review">
   <div class="section">
     <div class="section-head">
       <h2>Review</h2>
-      <span class="section-note">Verify all values before applying</span>
+      <span class="section-note">Check all values before saving</span>
       <div class="section-actions"><button type="button" class="section-help-btn" data-help-open="wizard-review" aria-label="Open help for this section">?</button></div>
     </div>
 
@@ -682,8 +710,8 @@
     <div class="wizard-nav">
       <button type="button" class="secondary" onclick="wizardPrev()">Back</button>
       <span class="spacer"></span>
-      <button type="button" class="btn-danger" onclick="discardAndLeave()">Discard &amp; Leave</button>
-      <button type="button" class="save-btn" onclick="applyAndFinish()" id="btn-apply-finish">Apply &amp; Finish</button>
+      <button type="button" class="btn-danger" onclick="discardAndLeave()">Leave without saving</button>
+      <button type="button" class="save-btn" onclick="applyAndFinish()" id="btn-apply-finish">Save and finish</button>
     </div>
   </div>
 </div>
@@ -947,11 +975,11 @@
     ['sl', 'Stage Left', [10, 4, 6]],
     ['sr', 'Stage Right', [-10, 4, 6]]
   ];
-  var PIN_PROBLEM = 'Pin it on the picture: its two distances allow two places, mirrored across the line between its points.';
+  var PIN_PROBLEM = 'Pin it on the picture. Its two distances allow two places, mirrored across the line between its two points.';
   var DISTANCE_SIGMA = 0.04, MEET_TOL = 3 * Math.SQRT2 * DISTANCE_SIGMA, FLAG_PX = 5, MARK_REACH_M = 10000;
   var S = {
     mode: 'simple', simpleLoc: '',
-    rect: { w: '', d: '', origin: 'dsc', cx: '', cy: '', z: '' },
+    rect: { w: '', d: '', origin: '', cx: '', cy: '', z: '' },
     cornerPins: { DSL: null, DSR: null, USR: null, USL: null },
     cornerMoved: { DSL: false, DSR: false, USR: false, USL: false },
     points: [], nextId: 1,
@@ -962,10 +990,12 @@
   };
   var solveSeq = 0, solveTimer = null, solvePending = false;
 
+  // The point of origin is an active choice: until it is made, the rectangle has no centre.
   function rectVals() {
     var w = len(S.rect.w), d = len(S.rect.d);
     if (S.rect.origin === 'custom') return { w: w, d: d, cx: len(S.rect.cx), cy: len(S.rect.cy), z: len(S.rect.z) };
-    return { w: w, d: d, cx: 0, cy: d / 2, z: 0 };
+    if (S.rect.origin === 'dsc') return { w: w, d: d, cx: 0, cy: d / 2, z: 0 };
+    return { w: w, d: d, cx: NaN, cy: NaN, z: NaN };
   }
   function andList(l) { return l.length > 1 ? l.slice(0, -1).join(', ') + ' and ' + l[l.length - 1] : l[0]; }
   // Names exactly what is missing; the Simple hint shows it.
@@ -973,6 +1003,7 @@
     var r = rectVals();
     var size = [['width', r.w], ['depth', r.d]].filter(function(q) { return isNaN(q[1]); }).map(function(q) { return q[0]; });
     if (size.length) return 'Enter the rectangle\'s ' + andList(size) + '.';
+    if (!S.rect.origin) return 'Choose the point of origin.';
     var at = [['X', r.cx], ['Y', r.cy], ['Z', r.z]].filter(function(q) { return isNaN(q[1]); }).map(function(q) { return q[0]; });
     if (at.length) return 'Enter the ' + andList(at) + ' of the rectangle\'s centre, measured from the point of origin.';
     if (r.w <= 0 || r.d <= 0 || r.w > 200 || r.d > 200) return 'Width and depth must be between 0 and ' + lenLimit() + '.';
@@ -1015,7 +1046,7 @@
     marks.forEach(function(m) { byId[m.id] = m; });
     function visit(m, depth) {
       if (state[m.id] === 2) return !m.problem;
-      if (state[m.id] === 1 || depth > 40) { m.problem = m.problem || 'Its distances lead back to itself.'; return false; }
+      if (state[m.id] === 1 || depth > 40) { m.problem = m.problem || 'It is measured from itself, through other points.'; return false; }
       state[m.id] = 1;
       var ok = !m.problem;
       if (ok && m.kind === 'triangulated') {
@@ -1040,12 +1071,12 @@
   // The two places at height z at the measured distances from A and B: c1 on the right of A to B seen from above.
   function wizTrilaterate(A, dA, B, dB, z) {
     var ra2 = dA * dA - Math.pow(z - A[2], 2), rb2 = dB * dB - Math.pow(z - B[2], 2);
-    if (ra2 < 0 || rb2 < 0) return { reason: 'A distance is shorter than the height between the two points.' };
+    if (ra2 < 0 || rb2 < 0) return { reason: 'A distance is shorter than the height difference between the points.' };
     var ra = Math.sqrt(ra2), rb = Math.sqrt(rb2), dx = B[0] - A[0], dy = B[1] - A[1], d = Math.hypot(dx, dy);
     if (d < 0.05) return { reason: 'Its two points are at the same place.' };
     var miss = 0, aa, hh;
-    if (Math.abs(ra - rb) > d) { miss = Math.abs(ra - rb) - d; if (miss > MEET_TOL) return { reason: 'The two distances differ by more than their points are apart.' }; }
-    else if (ra + rb < d) { miss = d - ra - rb; if (miss > MEET_TOL) return { reason: 'The two distances add up to less than their points are apart.' }; }
+    if (Math.abs(ra - rb) > d) { miss = Math.abs(ra - rb) - d; if (miss > MEET_TOL) return { reason: 'The difference between the two distances is larger than the distance between its two points.' }; }
+    else if (ra + rb < d) { miss = d - ra - rb; if (miss > MEET_TOL) return { reason: 'The two distances together are shorter than the distance between its two points.' }; }
     if (miss > 0) { hh = 0; aa = ra + rb < d ? ra + miss / 2 : ra > rb ? ra - miss / 2 : -(ra + miss / 2); }
     else { aa = (ra * ra - rb * rb + d * d) / (2 * d); hh = Math.sqrt(Math.max(0, ra * ra - aa * aa)); }
     var mx = A[0] + aa * dx / d, my = A[1] + aa * dy / d;
@@ -1083,7 +1114,7 @@
     if (S.mode === 'simple') {
       if (rectProblem()) return { marks: marks, waiting: rectProblem() + ' Then the rectangle is drawn on the picture.' };
       var left = CORNERS.filter(function(c) { return !S.cornerMoved[c]; }).length;
-      if (left) return { marks: marks, waiting: 'Drag each corner onto its tape mark. The camera solves once all four are moved: ' + left + ' to go.' };
+      if (left) return { marks: marks, waiting: 'Drag each corner onto its tape mark. The camera is calculated when all four corners are moved. ' + left + ' left.' };
     } else {
       if (!S.cam) need.push('the camera position');
       if (knownN < 2) need.push((2 - knownN) + ' more known point' + (2 - knownN === 1 ? '' : 's'));
@@ -1112,12 +1143,12 @@
     clearTimeout(solveTimer);
     var seq = ++solveSeq, st = solveState();
     if (!st.usable || !imageWidth) {
-      S.solve = st.usable ? { marks: st.marks, waiting: 'The camera solves once the snapshot has loaded.' } : st;
+      S.solve = st.usable ? { marks: st.marks, waiting: 'The camera is calculated when the snapshot has loaded.' } : st;
       solvePending = false;
       afterSolve(then);
       return;
     }
-    // Until this answer lands, Apply would save the previous one.
+    // Until this answer lands, Save and finish would save the previous one.
     solvePending = true;
     $('btn-apply-finish').disabled = true;
     fetch('/api/wizard/solve', {
@@ -1133,7 +1164,7 @@
     }).catch(function() {
       if (seq !== solveSeq) return;
       solvePending = false;
-      S.solve = { marks: st.marks, error: 'The station did not answer. Check the connection, then change a pin to solve again.' };
+      S.solve = { marks: st.marks, error: 'The station did not answer. Check the connection, then move a pin to calculate again.' };
       afterSolve(then);
     });
   }
@@ -1143,7 +1174,10 @@
     (data.marks || []).forEach(function(a) { if (a.reason && byId[a.id] && !byId[a.id].problem) byId[a.id].problem = a.reason; });
     if (status === 422 && Array.isArray(data.need)) return { marks: marks, need: data.need };
     if (status === 400) return { marks: marks, error: 'The station refused these points. Check their values.' };
-    if (status !== 200 || !data.camera) return { marks: marks, error: data.error || 'No camera fits these points. Check the pins and the measurements.' };
+    if (status !== 200 || !data.camera) {
+      var noFit = 'No camera fits these points. Check the pins and the measurements.';
+      return { marks: marks, error: S.mode === 'simple' && (!data.error || data.error === noFit) ? 'No camera fits these corners. Check the corners and the measurements.' : data.error || noFit };
+    }
     var positions = {}, res = {};
     data.marks.forEach(function(a) {
       if (a.position) positions[a.id] = a.position;
@@ -1174,37 +1208,38 @@
     for (var i = 0; i < 3; i++) if (Math.abs(d[i]) >= 0.25 * off) parts.push(lenRough(Math.abs(d[i])) + ' ' + words[i][d[i] > 0 ? 0 : 1]);
     var last = parts.length && !/above|below/.test(parts[parts.length - 1]);
     var list = parts.length > 1 ? parts.slice(0, -1).join(', ') + ' and ' + parts[parts.length - 1] : parts[0];
-    var total = parts.length === 1 && parts[0].indexOf(lenRough(off)) === 0 ? '' : lenRough(off) + ' in all, ';
-    var text = 'The solved camera is ' + list + (last ? ' of' : '') + ' the camera position you entered (' + total + 'allowed ' + lenRough(tol) + (perAxis ? ' per axis' : '') + ').';
+    var total = parts.length === 1 && parts[0].indexOf(lenRough(off)) === 0 ? '' : lenRough(off) + ' in total, ';
+    var text = 'The calculated camera is ' + list + (last ? ' of' : '') + ' the camera position you entered (' + total + 'limit ' + lenRough(tol) + (perAxis ? ' per axis' : '') + ').';
     if (S.mode === 'simple' && S.rect.origin === 'custom') text += ' Was the camera measured from the same point of origin as the rectangle\'s centre?';
     return text;
   }
   function wordReasons(reasons, marks) {
     var names = {}, out = [];
     marks.forEach(function(m) { names[m.id] = m.name; });
-    if (S.mode === 'simple' && LENS_ENABLED && !lensMeasured()) out.push('The lens was not measured. Four corners fit any lens, so a missing lens does not show in their errors. Measure it in the Lens step unless straight lines in the picture are straight.');
+    if (S.mode === 'simple' && LENS_ENABLED && !lensMeasured()) out.push('The lens was not measured. Four corners fit with any lens, so a missing lens measurement does not show in their errors. Measure the lens in the Lens step, unless straight lines in the picture already look straight.');
     (reasons || []).forEach(function(r) {
       if (r.kind === 'offset') out.push(offsetReason(r.delta, r.off, r.allowed, r.per_axis));
-      else if (r.kind === 'fov') out.push('The solved field of view, ' + r.fov.toFixed(1) + '°, is outside what cameras usually have.');
-      else if (r.kind === 'below') out.push('The solved camera is below the floor.');
-      else if (r.kind === 'up') out.push('The solved camera looks upward.');
-      else if (r.kind === 'reach') out.push('The solved camera puts the far floor more than twice as far, or as near, as the floor points alone do.');
+      else if (r.kind === 'fov') out.push('The calculated field of view, ' + r.fov.toFixed(1) + '°, is outside the usual range for cameras.');
+      else if (r.kind === 'below') out.push('The calculated camera is below the floor.');
+      else if (r.kind === 'up') out.push('The calculated camera points upwards.');
+      else if (r.kind === 'reach') out.push('The calculated camera puts the far floor more than twice as far, or as near, as the floor points alone do.');
       else if (r.kind === 'pixel') out.push(names[r.id] + ' disagrees with the other points by ' + r.px.toFixed(1) + ' px.');
-      else if (r.kind === 'behind') out.push(names[r.id] + ' lies behind the solved camera.');
+      else if (r.kind === 'behind') out.push(names[r.id] + ' lies behind the calculated camera.');
       else if (r.kind === 'distance') out.push(names[r.id] + '\'s distances disagree with the picture by ' + lenSmall(r.m) + '.');
     });
     return out;
   }
   function cautionHtml(s) {
     return 'Something might be wrong<div class="notice-sub"><ul class="caution-list">' + s.reasons.map(function(r) { return '<li>' + esc(r) + '</li>'; }).join('') + '</ul>' +
-      (applyBlocked(s) ? 'Apply stays off while a point is more than ' + APPLY_MAX_PX + ' px off or behind the camera.' : 'The camera still applies.') + ' Check the measurements, then pin again.</div>';
+      (applyBlocked(s) ? 'Save and finish stays off while a point is more than ' + APPLY_MAX_PX + ' px off or behind the camera.' : 'You can still save the camera.') +
+      ' Check the measurements, then ' + (S.mode === 'simple' ? 'place the corners again.' : 'pin the points again.') + '</div>';
   }
-  // As 0.4.3 refused such a solve, a pin this far off keeps Apply off.
+  // As 0.4.3 refused such a solve, a pin this far off keeps Save and finish off.
   var APPLY_MAX_PX = 20;
   function applyBlocked(s) { return !!(s && s.cam && (s.worst > APPLY_MAX_PX || s.behind > 0)); }
   function pinBehind(s, id) { return !!(s && s.cam && s.behindIds && s.behindIds[id]); }
   function pinFlagged(s, id) { var r = s && s.res && s.res[id]; return !!(r && r.px > FLAG_PX) || pinBehind(s, id); }
-  // Apply writes every point, so a point with a problem keeps it off; Simple's rectangle problem leaves no solve to apply.
+  // Save and finish writes every point, so a point with a problem keeps it off; Simple's rectangle problem leaves no solve to save.
   function marksIncomplete(s) { return !!(s && s.marks && s.marks.some(function(m) { return m.problem; })); }
   function incompleteLines(s) {
     return (s && s.marks || []).filter(function(m) { return m.problem && m.problem !== 'rect'; }).map(function(m) {
@@ -1273,6 +1308,7 @@
       $(pair[0]).style.display = visible ? 'block' : 'none';
       $(pair[1]).style.display = visible ? 'none' : 'block';
     });
+    $('lens-hint').hidden = !visible;
   }
   function showNoFeed() { setPreviewVisibility(false); }
   function showSnapshotOnCurrentStep(url, img) {
@@ -1387,11 +1423,14 @@
   var lensFitSeq = 0;        // every fit request counts; an answer to an older one is dropped
   var LENS_RATING_LEVEL = { low: 'caution', medium: 'caution', okay: 'info', good: 'success', excellent: 'success' };
   var LENS_RATING_SEGMENTS = { low: 1, medium: 2, okay: 3, good: 4, excellent: 5 };
-  var LENS_RATING_LABEL = { low: 'Low', medium: 'Medium', okay: 'Okay', good: 'Good', excellent: 'Excellent' };
-  var LENS_MISFIT_TEXT = "This line doesn't fit the others – is it really straight?";
+  var LENS_RATING_LABEL = { low: 'Not usable', medium: 'Poor', okay: 'Fair', good: 'Good', excellent: 'Excellent' };
   var LENS_DEV = {{'true' if config.ui.developer_mode else 'false'}};
   var lensLines = [];        // [{p0, p1, mids: [{t, off, on}], snapped: [bool x5], curve, rms, misfit, candidate}]
-  var lensCandidates = [];   // suggested edges of the current snapshot: [{points, samples, used}]
+  var lensCandidates = [];   // suggested edges of the current snapshot: [{points, samples, used, rejected}]
+  var lensRejected = [];     // the ends of every rejected suggestion, until Refresh Image: [[x, y], [x, y]]
+  var lensHot = -1;          // the suggestion pointed at, by its bubble or its line
+  var lensFocusAfter = null; // after a choice by keyboard: {i, cls} of the bubble button that had the focus
+  var lensHintText = '';
   var lensImageSize = null;  // [w, h] the lines were traced on
   var lensPending = null;    // first click of a line being traced
   var lensSelected = null;   // {line, point} with point 0..4
@@ -1466,8 +1505,9 @@
       lensFit = null;
       lensSelected = null;
       lensPending = null;
-      lensShowNotice('The snapshot resolution changed, so the traced lines were cleared.');
+      lensShowNotice('The snapshot resolution changed, so the lines on the picture were removed.');
     }
+    if (lensImageSize && (lensImageSize[0] !== imageWidth || lensImageSize[1] !== imageHeight)) lensRejected = [];
     lensImageSize = [imageWidth, imageHeight];
     lensCandidates = [];
     renderLens();
@@ -1564,25 +1604,30 @@
       return r.json().then(function(data) { return { ok: r.ok, data: data }; });
     }).then(function(res) {
       if (snapshot !== lensCanvas || !res.ok || !Array.isArray(res.data.candidates)) return;
-      lensCandidates = res.data.candidates.map(function(c) { return { points: c.points, samples: c.samples, used: false }; });
+      lensCandidates = res.data.candidates.map(function(c) {
+        return { points: c.points, samples: c.samples, used: false, rejected: lensRejected.some(function(r) { return lensSameEnds(c.samples, r[0], r[1]); }) };
+      });
       lensLines.forEach(function(line) { line.candidate = lensCandidateOf(line); });
       if (res.data.edges) lensPaintEdges(res.data.edges);
       renderLens();
     }).catch(function() {});
   }
+  // Whether a suggestion's five samples run between the two ends, either way round.
+  function lensSameEnds(s, a, b) {
+    return (Math.hypot(s[0][0] - a[0], s[0][1] - a[1]) < 20 && Math.hypot(s[4][0] - b[0], s[4][1] - b[1]) < 20)
+      || (Math.hypot(s[4][0] - a[0], s[4][1] - a[1]) < 20 && Math.hypot(s[0][0] - b[0], s[0][1] - b[1]) < 20);
+  }
   // The suggestion a line was taken from, by its ends, so it is offered again when the line goes.
   function lensCandidateOf(line) {
     for (var i = 0; i < lensCandidates.length; i++) {
-      var s = lensCandidates[i].samples;
-      var same = (Math.hypot(s[0][0] - line.p0[0], s[0][1] - line.p0[1]) < 20 && Math.hypot(s[4][0] - line.p1[0], s[4][1] - line.p1[1]) < 20)
-        || (Math.hypot(s[4][0] - line.p0[0], s[4][1] - line.p0[1]) < 20 && Math.hypot(s[0][0] - line.p1[0], s[0][1] - line.p1[1]) < 20);
-      if (same) { lensCandidates[i].used = true; return i; }
+      if (lensSameEnds(lensCandidates[i].samples, line.p0, line.p1)) { lensCandidates[i].used = true; return i; }
     }
     return undefined;
   }
   function lensAddCandidate(i) {
     var cand = lensCandidates[i];
-    if (!cand || cand.used) return;
+    if (!cand || cand.used || cand.rejected) return;
+    lensHotCand(-1);
     var pts = cand.samples;
     var line = {
       p0: pts[0], p1: pts[4],
@@ -1600,6 +1645,28 @@
   }
   function lensReleaseCandidate(line) {
     if (line.candidate !== undefined && lensCandidates[line.candidate]) lensCandidates[line.candidate].used = false;
+  }
+  // A rejected suggestion leaves the picture and the fit until Refresh Image suggests the lines again.
+  function lensRejectCandidate(i) {
+    var cand = lensCandidates[i];
+    if (!cand || cand.used || cand.rejected) return;
+    lensHotCand(-1);
+    cand.rejected = true;
+    lensRejected.push([cand.samples[0], cand.samples[4]]);
+    renderLens();
+    saveToSession();
+  }
+  // The Lens step's Refresh Image: a new snapshot, and every suggestion offered again.
+  window.lensRefreshImage = function() {
+    lensRejected = [];
+    lensCandidates.forEach(function(c) { c.rejected = false; });
+    saveToSession();
+    loadSnapshot();
+  };
+  function lensOpenCandidates() {
+    var out = [];
+    lensCandidates.forEach(function(c, i) { if (!c.used && !c.rejected) out.push(i); });
+    return out;
   }
   // The developer's view: every thin edge the suggestions were picked from, over the snapshot.
   function lensPaintEdges(edges) {
@@ -1692,10 +1759,13 @@
   function renderLensCandidates() {
     var g = document.getElementById('lens-candidates');
     g.innerHTML = '';
+    if (lensHot >= 0 && lensOpenCandidates().indexOf(lensHot) < 0) lensHot = -1;
+    g.classList.toggle('has-hot', lensHot >= 0);
+    // The keyboard reaches a suggestion through its bubble; a click on the line still uses it.
     lensCandidates.forEach(function(cand, i) {
-      if (cand.used) return;
-      var group = svgEl('g', { tabindex: '0', role: 'button', 'aria-label': 'Suggested edge ' + (i + 1) });
-      group.setAttribute('class', 'lens-candidate');
+      if (cand.used || cand.rejected) return;
+      var group = svgEl('g');
+      group.setAttribute('class', 'lens-candidate' + (lensHot === i ? ' hot' : ''));
       group.dataset.candidate = i;
       var hit = svgEl('polyline');
       hit.setAttribute('class', 'lens-candidate-hit');
@@ -1708,8 +1778,157 @@
       g.appendChild(group);
     });
   }
+  // ---- suggestion bubbles ----
+  // A bubble with its pointer: 72 x 38 px, 8 px corners, an equilateral pointer as high as the gap (18 px) with a
+  // 3 px rounded tip. CSS pixels over the picture.
+  var LENS_BUBBLE = { w: 72, h: 38, r: 8, gap: 18, tip: 3, half: 18 / Math.sqrt(3) };
+  // The point a fraction t along a polyline's length, with the unit tangent there and the whole length.
+  function lensPolyAt(p, t) {
+    var acc = [0];
+    for (var i = 1; i < p.length; i++) acc.push(acc[i - 1] + Math.hypot(p[i][0] - p[i - 1][0], p[i][1] - p[i - 1][1]));
+    var target = t * acc[acc.length - 1];
+    for (var k = 1; k < p.length; k++) {
+      if (acc[k] >= target) {
+        var f = (target - acc[k - 1]) / Math.max(acc[k] - acc[k - 1], 1e-9), dx = p[k][0] - p[k - 1][0], dy = p[k][1] - p[k - 1][1], n = Math.hypot(dx, dy) || 1;
+        return { x: p[k - 1][0] + dx * f, y: p[k - 1][1] + dy * f, tx: dx / n, ty: dy / n, len: acc[acc.length - 1] };
+      }
+    }
+    return { x: p[p.length - 1][0], y: p[p.length - 1][1], tx: 1, ty: 0, len: acc[acc.length - 1] };
+  }
+  // Bubble and pointer as one closed path: the bubble's top left (x, y), the side the pointer leaves from
+  // (the side of the line the bubble is on: 'top' points down), and where along that side it sits.
+  function lensBubbleOutline(x, y, side, at) {
+    var B = LENS_BUBBLE, w = B.w, h = B.h, r = B.r, hb = B.half, f = function(px, py) { return px.toFixed(1) + ' ' + py.toFixed(1); };
+    function notch(b1, apex, b2) {
+      var cut = B.tip * Math.sqrt(3) / Math.hypot(apex[0] - b1[0], apex[1] - b1[1]);
+      var p1 = [apex[0] + (b1[0] - apex[0]) * cut, apex[1] + (b1[1] - apex[1]) * cut], p2 = [apex[0] + (b2[0] - apex[0]) * cut, apex[1] + (b2[1] - apex[1]) * cut];
+      return ' L' + f(b1[0], b1[1]) + ' L' + f(p1[0], p1[1]) + ' A' + B.tip + ' ' + B.tip + ' 0 0 1 ' + f(p2[0], p2[1]) + ' L' + f(b2[0], b2[1]);
+    }
+    var d = 'M' + f(x + r, y);
+    if (side === 'bottom') d += notch([at - hb, y], [at, y - B.gap], [at + hb, y]);
+    d += ' L' + f(x + w - r, y) + ' A' + r + ' ' + r + ' 0 0 1 ' + f(x + w, y + r);
+    if (side === 'left') d += notch([x + w, at - hb], [x + w + B.gap, at], [x + w, at + hb]);
+    d += ' L' + f(x + w, y + h - r) + ' A' + r + ' ' + r + ' 0 0 1 ' + f(x + w - r, y + h);
+    if (side === 'top') d += notch([at + hb, y + h], [at, y + h + B.gap], [at - hb, y + h]);
+    d += ' L' + f(x + r, y + h) + ' A' + r + ' ' + r + ' 0 0 1 ' + f(x, y + h - r);
+    if (side === 'right') d += notch([x, at + hb], [x - B.gap, at], [x, at - hb]);
+    return d + ' L' + f(x, y + r) + ' A' + r + ' ' + r + ' 0 0 1 ' + f(x + r, y) + ' Z';
+  }
+  // Where each open suggestion's bubble goes, as tooltip and map-popup libraries place theirs: anchored off the
+  // line's middle, on a side (above or below a flat line, beside a steep one), slid along it with the pointer kept
+  // on the flat edge, flipped when there is no room. Never over its own line; clear of the other suggestions, the
+  // frame's edge and the bubbles already placed, longest line first. ``lines``: screen polylines by index.
+  function lensPlaceBubbles(lines, open, width, height) {
+    var B = LENS_BUBBLE, pad = B.r + B.half, placed = [], out = [];
+    function hits(line, b) {
+      var n = 0;
+      for (var k = 1; k < line.length; k++) {
+        var steps = Math.max(1, Math.ceil(Math.hypot(line[k][0] - line[k - 1][0], line[k][1] - line[k - 1][1]) / 4));
+        for (var s = 0; s <= steps; s++) {
+          var px = line[k - 1][0] + (line[k][0] - line[k - 1][0]) * s / steps, py = line[k - 1][1] + (line[k][1] - line[k - 1][1]) * s / steps;
+          if (px > b.l && px < b.r && py > b.t && py < b.b) n++;
+        }
+      }
+      return n;
+    }
+    open.slice().sort(function(a, b) { return lensPolyAt(lines[b], 1).len - lensPolyAt(lines[a], 1).len; }).forEach(function(i) {
+      var best = null, bestScore = Infinity;
+      [0.38, 0.62, 0.3, 0.7, 0.22, 0.78, 0.15, 0.85].forEach(function(t, rank) {
+        var a = lensPolyAt(lines[i], t), flat = Math.abs(a.tx) >= Math.abs(a.ty);
+        var sides = flat ? ['top', 'bottom', 'left', 'right'] : ['left', 'right', 'top', 'bottom'];
+        sides.forEach(function(side, k) {
+          // The bubble's edge a pointer's height and 1 px from the anchor: the rounded tip stops 4 px short of it.
+          var edge = B.gap + 1, opts = [];
+          if (side === 'top' || side === 'bottom') {
+            var y = side === 'top' ? a.y - edge - B.h : a.y + edge;
+            [B.w / 2, pad, B.w - pad].forEach(function(off, si) { opts.push({ x: a.x - off, y: y, at: a.x, shift: si }); });
+          } else {
+            opts.push({ x: side === 'left' ? a.x - edge - B.w : a.x + edge, y: a.y - B.h / 2, at: a.y, shift: 0 });
+          }
+          opts.forEach(function(o) {
+            var b = { l: o.x, r: o.x + B.w, t: o.y, b: o.y + B.h }, grown = { l: b.l - 4, r: b.r + 4, t: b.t - 4, b: b.b + 4 };
+            var score = rank * 2 + (k >= 2 ? 12 : k) + o.shift * 3;
+            if (b.l < 6 || b.t < 6 || b.r > width - 6 || b.b > height - 6) score += 100;
+            if (hits(lines[i], grown)) score += 200;
+            open.forEach(function(j) { if (j !== i && hits(lines[j], b)) score += 15; });
+            placed.forEach(function(q) {
+              var ox = Math.min(b.r, q.r) - Math.max(b.l, q.l), oy = Math.min(b.b, q.b) - Math.max(b.t, q.t);
+              if (ox > -6 && oy > -6) score += 50;
+              else if (ox > -30 && oy > -30) score += 6;
+            });
+            if (score < bestScore) { bestScore = score; best = { i: i, x: o.x, y: o.y, at: o.at, side: side, box: b }; }
+          });
+        });
+      });
+      placed.push(best.box);
+      out.push(best);
+    });
+    return out;
+  }
+  var LENS_CHECK_SVG = '<svg viewBox="0 0 26 26" aria-hidden="true"><circle class="ring" cx="13" cy="13" r="11"/><path class="mark" d="M8.2 13.4 L11.6 16.7 L17.8 9.6"/></svg>';
+  var LENS_CROSS_SVG = '<svg viewBox="0 0 26 26" aria-hidden="true"><circle class="ring" cx="13" cy="13" r="11"/><path class="mark" d="M9.3 9.3 L16.7 16.7 M16.7 9.3 L9.3 16.7"/></svg>';
+  function renderLensBubbles() {
+    var cont = $('lens-container'), box = $('lens-bubbles'), shapes = $('lens-tails'), r = cont.getBoundingClientRect();
+    // Rebuilding drops a focused button: the same button of the same suggestion takes the focus back.
+    var had = box.contains(document.activeElement) && document.activeElement.closest('[data-candidate]');
+    var keep = lensFocusAfter || (had ? { same: +had.dataset.candidate, cls: document.activeElement.classList.contains('lb-use') ? 'lb-use' : 'lb-reject' } : null);
+    lensFocusAfter = null;
+    box.innerHTML = ''; shapes.innerHTML = '';
+    if (!r.width || !r.height || !imageWidth) return;
+    shapes.setAttribute('viewBox', '0 0 ' + r.width + ' ' + r.height);
+    var sx = r.width / imageWidth, sy = r.height / imageHeight, open = lensOpenCandidates();
+    var lines = lensCandidates.map(function(c) { return c.points.map(function(q) { return [q[0] * sx, q[1] * sy]; }); });
+    shapes.classList.toggle('has-hot', lensHot >= 0);
+    lensPlaceBubbles(lines, open, r.width, r.height).forEach(function(b) {
+      var hot = lensHot === b.i ? ' hot' : '';
+      shapes.insertAdjacentHTML('beforeend', '<path class="lens-tail' + hot + '" data-candidate="' + b.i + '" d="' + lensBubbleOutline(b.x, b.y, b.side, b.at) + '"/>');
+      box.insertAdjacentHTML('beforeend', '<div class="lens-bubble' + hot + '" role="group" aria-label="Suggested line ' + (b.i + 1) + '" data-candidate="' + b.i + '" style="left:' + b.x.toFixed(1) + 'px;top:' + b.y.toFixed(1) + 'px;">' +
+        '<button type="button" class="lb-use" aria-label="Use this line" title="Use this line">' + LENS_CHECK_SVG + '</button>' +
+        '<button type="button" class="lb-reject" aria-label="Reject this line" title="Reject this line">' + LENS_CROSS_SVG + '</button></div>');
+    });
+    var to = lensFocusTarget(open, keep);
+    var btn = to != null && box.querySelector('[data-candidate="' + to + '"] .' + keep.cls);
+    if (btn) btn.focus({ preventScroll: true });
+  }
+  // The suggestion whose bubble takes the focus back: the same one after a redraw, else after a choice the next
+  // open one, round to the first.
+  function lensFocusTarget(open, keep) {
+    if (!keep) return null;
+    if (keep.same != null) return open.indexOf(keep.same) >= 0 ? keep.same : null;
+    var to = open.filter(function(i) { return i > keep.i; })[0];
+    return to != null ? to : open.length ? open[0] : null;
+  }
+  // Pointing at a bubble or a suggestion lights up that line and its pointer and dims the others.
+  function lensHotCand(i) {
+    if (lensHot === i) return;
+    lensHot = i;
+    $('lens-candidates').classList.toggle('has-hot', i >= 0);
+    $('lens-tails').classList.toggle('has-hot', i >= 0);
+    document.querySelectorAll('#lens-container [data-candidate]').forEach(function(e) { e.classList.toggle('hot', +e.dataset.candidate === i); });
+  }
+
+  // ---- the hint: always the one next thing to do, above the picture ----
+  function renderLensHint() {
+    var fit = lensFit, open = lensOpenCandidates().length, lines = lensLines.length, h, sub;
+    var applied = fit && lensFitApplies(fit), hint = fit && fit.hint || '', cov = hint ? ' ' + hint : '';
+    var agree = /^The result may already be good\. /;
+    if (lensPending) { h = 'Click the other end of the straight edge.'; sub = 'Esc cancels the line.'; }
+    else if (lensHold && lensSelected && lensSelected.point != null) { h = 'Move the point exactly onto the edge.'; sub = 'Drag it, or use the arrow keys while the loupe shows the edge. Press Enter when it is in the right place.'; }
+    else if (open) { h = 'Check the suggested lines.'; sub = 'Use each one that is straight in reality. Reject the others, such as a curtain, a cloth or a cable. ' + open + ' left to check. Or load a saved lens calibration.'; }
+    else if (!lines && S.lensLoaded) { h = 'A saved lens calibration is loaded.'; sub = 'Press Next, or draw straight lines to measure the lens again.'; }
+    else if (!lines) { h = 'Draw straight lines on the picture.'; sub = 'Click the start and the end of an edge that is straight in reality, such as a stage edge, a tape line or a truss. Then move its points exactly onto the edge. Or load a saved lens calibration.'; }
+    else if (lensLines.some(function(l) { return l.misfit; })) { h = 'Check the line that does not fit.'; sub = 'It is drawn in the warning colour. Move its points onto the edge, or delete it if it is not straight in reality.'; }
+    else if (fit && (fit.rating === 'good' || fit.rating === 'excellent')) { h = 'The lens is measured.'; sub = /^If possible/.test(hint) ? 'Press Next. ' + hint : 'Press Next.'; }
+    else if (applied && agree.test(hint)) { h = 'The result may already be good.'; sub = hint.replace(agree, '') + ' Or press Next.'; }
+    else if (applied) { h = 'Improve the lines, or add more.'; sub = 'Select a point and move it exactly onto the edge. Lines near the edges and corners of the picture help the most.' + cov; }
+    else { h = 'Draw more straight lines.'; sub = 'Click the start and the end of a straight edge. Then move its points exactly onto the edge.' + cov; }
+    $('lens-hint').innerHTML = esc(h) + '<div class="notice-sub">' + esc(sub) + '</div>';
+    lensHintText = h;
+  }
+
   function renderLens() {
     renderLensCandidates();
+    renderLensBubbles();
     var g = document.getElementById('lens-lines');
     // Rebuilding the handles drops a focused one, which would leave the keys dead after a click.
     var hadFocus = g.contains(document.activeElement);
@@ -1753,6 +1972,7 @@
     }
     renderLensToolbar();
     renderLensMisfit();
+    renderLensHint();
     if (hadFocus) lensFocusSelected();
     if (lensHold) holdLensPoint();
     renderFsBar();
@@ -1806,7 +2026,8 @@
     var bad = [];
     lensLines.forEach(function(line, i) { if (line.misfit) bad.push(i + 1); });
     el.style.display = bad.length ? '' : 'none';
-    el.textContent = bad.length ? 'Line ' + bad.join(', ') + ': ' + LENS_MISFIT_TEXT : '';
+    el.innerHTML = bad.length ? esc((bad.length === 1 ? 'Line ' + bad[0] + ' does not' : 'Lines ' + andList(bad) + ' do not') + ' fit the others.') +
+      '<div class="notice-sub">Check that ' + (bad.length === 1 ? 'it is' : 'they are') + ' straight in reality, or delete ' + (bad.length === 1 ? 'it' : 'them') + '.</div>' : '';
   }
   function renderLensMeter(meter, rating) {
     if (!meter) return;
@@ -1823,8 +2044,8 @@
       var k1 = wizReadLensCoeff('wiz_lens_k1'), k2 = wizReadLensCoeff('wiz_lens_k2');
       var tuned = Math.abs(k1 - S.lensLoaded.k1) > 1e-9 || Math.abs(k2 - S.lensLoaded.k2) > 1e-9;
       box.style.display = ''; box.className = 'notice'; meter.style.display = 'none';
-      $('lens-result-text').textContent = 'Loaded \u201c' + S.lensLoaded.name + '\u201d \u2013 barrel / fisheye ' + fmt(k1, 3) + ', edge fit ' + fmt(k2, 3);
-      $('lens-result-hint').textContent = (tuned ? 'Fine-tuned after loading. ' : '') + S.lensLoaded.src + '.';
+      $('lens-result-text').textContent = 'Loaded \u201c' + S.lensLoaded.name + '\u201d \u2013 barrel / fisheye ' + fmt(k1, 3) + ', corner correction ' + fmt(k2, 3);
+      $('lens-result-hint').textContent = (tuned ? 'Adjusted by hand after loading. ' : '') + S.lensLoaded.src + '.';
       return;
     }
     meter.style.display = '';
@@ -1834,10 +2055,11 @@
     box.className = 'notice' + (level === 'caution' ? ' warning' : level === 'success' ? ' success' : '');
     renderLensMeter(box.querySelector('.wizard-meter'), lensFit.rating);
     var text = (LENS_RATING_LABEL[lensFit.rating] || lensFit.rating) + ' \u2013 barrel / fisheye ' + fmt(Number(lensFit.k1), 3)
-      + ', edge fit ' + (lensFit.k2_fitted ? fmt(Number(lensFit.k2), 3) : '0 (not measured)') + (lensFitApplies(lensFit) ? '' : ' \u2013 not applied');
+      + ', corner correction ' + (lensFit.k2_fitted ? fmt(Number(lensFit.k2), 3) : '0 (not measured)') + (lensFitApplies(lensFit) ? '' : ' \u2013 not applied');
     document.getElementById('lens-result-text').textContent = text;
     var tuned = lensFitApplies(lensFit) && !lensPairIsTheFits(wizReadLensCoeff('wiz_lens_k1'), wizReadLensCoeff('wiz_lens_k2'));
-    document.getElementById('lens-result-hint').textContent = (tuned ? 'Fine-tuned after the fit. ' : '') + (lensFit.hint || '');
+    document.getElementById('lens-result-hint').textContent = (tuned ? 'Adjusted by hand after the calculation. ' : '') +
+      (lensFit.hint || (lensFitApplies(lensFit) ? '' : 'More lines near the edges give a better rating.'));
   }
 
   function lensFitApplies(fit) { return fit.rating !== 'low'; }
@@ -1928,7 +2150,7 @@
         l.rms = r.rms_px;
         l.misfit = !!r.misfit;
       });
-      // A Low fit says what the lines cannot tell: it is shown, and the pair stays as it was.
+      // A Not usable fit says what the lines cannot tell: it is shown, and the pair stays as it was.
       if (lensFitApplies(lensFit)) {
         S.lensTouched = true;
         S.lensLoaded = null;
@@ -1989,6 +2211,13 @@
   }
 
   // ---- pointer + keyboard ----
+  // With a point selected, Tab and Shift+Tab step through the points of its own line, round from the last to the first.
+  function lensTabKey(e) {
+    if (e.key !== 'Tab' || !lensHold || !lensSelected || lensSelected.point == null || currentStep !== WIZ.lens || !lensLines[lensSelected.line]) return;
+    e.preventDefault(); e.stopPropagation();
+    lensSelected = { line: lensSelected.line, point: (lensSelected.point + (e.shiftKey ? 4 : 1)) % 5 };
+    renderLens();
+  }
   function lensInit() {
     var overlay = document.getElementById('lens-overlay');
     overlay.addEventListener('pointerdown', function(e) {
@@ -2058,13 +2287,6 @@
       renderLens();
     });
     overlay.addEventListener('keydown', function(e) {
-      var candidate = e.target.closest ? e.target.closest('.lens-candidate') : null;
-      if (candidate && (e.key === 'Enter' || e.key === ' ')) {
-        e.preventDefault();
-        lensAddCandidate(+candidate.dataset.candidate);
-        lensFocusSelected();
-        return;
-      }
       var handle = e.target.closest ? e.target.closest('.lens-point') : null;
       if (!handle) return;
       var i = +handle.dataset.line, j = +handle.dataset.point, line = lensLines[i];
@@ -2087,7 +2309,7 @@
       if (j === 0 || j === 4) {
         lensMovePoint(line, j, lensClamp([pos[0] + dx, pos[1] + dy]));
       } else {
-        // A middle point only moves across the line: keep the nudge's perpendicular part.
+        // A middle point only moves across the line: keep the move's perpendicular part.
         var f = lensFrame(line);
         line.mids[j - 1].off += dx * f.nx + dy * f.ny;
       }
@@ -2124,8 +2346,25 @@
       if (!t) return;
       e.preventDefault(); dropLensPoint(); lensSelected = null; t.blur(); renderLens();
     });
+    document.addEventListener('keydown', lensTabKey, true);
     document.addEventListener('pointerdown', function(e) { if (lensHold && !e.target.closest('#lens-lines .lens-point')) dropLensPoint(); }, true);
     document.addEventListener('focusin', function(e) { if (lensHold && !e.target.closest('#lens-lines .lens-point')) dropLensPoint(); });
+    // The bubbles: the check uses its suggestion, the cross rejects it; pointing at one lights up its line.
+    var bubbles = $('lens-bubbles'), cands = $('lens-candidates');
+    bubbles.addEventListener('click', function(e) {
+      var b = e.target.closest('button'), g = b && b.closest('[data-candidate]'); if (!g) return;
+      var i = +g.dataset.candidate, use = b.classList.contains('lb-use');
+      if (e.detail === 0) lensFocusAfter = { i: i, cls: use ? 'lb-use' : 'lb-reject' };
+      if (use) lensAddCandidate(i); else lensRejectCandidate(i);
+    });
+    bubbles.addEventListener('mouseover', function(e) { var g = e.target.closest('[data-candidate]'); lensHotCand(g ? +g.dataset.candidate : -1); });
+    bubbles.addEventListener('mouseleave', function() { lensHotCand(-1); });
+    bubbles.addEventListener('focusin', function(e) { var g = e.target.closest('[data-candidate]'); if (g) lensHotCand(+g.dataset.candidate); });
+    bubbles.addEventListener('focusout', function(e) { if (!e.relatedTarget || !bubbles.contains(e.relatedTarget)) lensHotCand(-1); });
+    cands.addEventListener('mouseover', function(e) { var g = e.target.closest('[data-candidate]'); if (g) lensHotCand(+g.dataset.candidate); });
+    cands.addEventListener('mouseout', function(e) { if (!e.relatedTarget || !e.relatedTarget.closest || !e.relatedTarget.closest('#lens-candidates [data-candidate]')) lensHotCand(-1); });
+    // The bubbles are placed in CSS pixels of the picture as shown, known once it has its size.
+    $('lens-image').addEventListener('load', renderLensBubbles);
     var err = document.getElementById('wiz-lens-error');
     if (err) err.style.display = wizLensPairValid() ? 'none' : 'block';
     renderLens();
@@ -2135,11 +2374,11 @@
   // ---------------------------------------------------------------
   // Lens calibrations saved on this station, and a settings file's lens values
   // ---------------------------------------------------------------
-  // Whether the lens has values worth trusting: measured, loaded or fine-tuned in this run, or a pair the station already had.
+  // Whether the lens has values worth trusting: measured, loaded or adjusted by hand in this run, or a pair the station already had.
   function lensMeasured() {
     return S.lensTouched || SAVED.lens[0] !== 0 || SAVED.lens[1] !== 0;
   }
-  function lensVals(k1, k2) { return 'Barrel / fisheye ' + fmt(k1, 3) + ' · Edge fit ' + fmt(k2, 3); }
+  function lensVals(k1, k2) { return 'Barrel / fisheye ' + fmt(k1, 3) + ' · Corner correction ' + fmt(k2, 3); }
   function lensSize(w, h) { return w + ' \u00d7 ' + h; }
   function lensSized(c) { return c.width > 0 && c.height > 0; }
   // The pair is relative to the half-diagonal, so it carries over to another size of the same picture shape only.
@@ -2157,7 +2396,7 @@
     if (!cam || typeof cam !== 'object') return { error: 'This is not an OpenFollow settings file.' };
     var k1 = cam.lens_k1, k2 = cam.lens_k2;
     if (typeof k1 !== 'number' || typeof k2 !== 'number' || !isFinite(k1) || !isFinite(k2)) return { error: 'This settings file has no lens calibration.' };
-    if (!wizLensIsValid(k1, k2)) return { error: 'This file\'s lens values fold the overlay inside the frame.' };
+    if (!wizLensIsValid(k1, k2)) return { error: 'With the lens values of this file, the overlay folds over itself inside the picture.' };
     return { k1: k1, k2: k2 };
   }
   function lensOption(i, name, sub, checked, warn) {
@@ -2205,7 +2444,7 @@
         '<button type="button" class="secondary" id="ll-file-btn">Choose settings file&hellip;</button>' +
         '<input type="file" id="ll-file" accept=".ofsettings,.openfollowsettings" hidden>' +
         '<div class="wizard-field-error" id="ll-file-error" role="alert" hidden></div>' +
-        (lines.length ? '<p style="margin-top:0.8rem;">Loading removes the ' + lines.length + ' traced line' + (lines.length === 1 ? '' : 's') + '.</p>' : '') + '</div>';
+        (lines.length ? '<p style="margin-top:0.8rem;">Loading removes the ' + lines.length + ' line' + (lines.length === 1 ? '' : 's') + ' on the picture.</p>' : '') + '</div>';
     }
     function open() {
       openModal({
@@ -2300,6 +2539,7 @@
     S.camPartial = !S.cam && ['x', 'y', 'z'].some(function(k) { return $('cam_pos_' + k).value.trim() !== ''; });
   }
   window.calibNext = function() {
+    if ($('cal-next').disabled) return;
     readCam();
     var partial = S.camPartial;
     $('cam-error').hidden = !partial;
@@ -2328,10 +2568,10 @@
   function applyUnitMarkup() {
     var imp = WUNIT.isImperial();
     document.querySelectorAll('.u-len').forEach(function(el) { el.textContent = lenSuffix(); });
-    document.querySelectorAll('#wizard-step-calib input[data-len][data-ph]').forEach(function(el) {
+    document.querySelectorAll('#wizard-step-calib input[data-len]').forEach(function(el) {
       el.type = imp ? 'text' : 'number';
       if (imp) el.removeAttribute('step'); else el.step = '0.01';
-      el.placeholder = lenField(Number(el.dataset.ph));
+      if (el.dataset.ph != null) el.placeholder = lenField(Number(el.dataset.ph));
     });
     $('unit-switch').textContent = 'Switch units to ' + (imp ? 'Metric' : 'Imperial');
     refreshEchoes();
@@ -2361,8 +2601,8 @@
     if (simple && (S.cam || S.camPartial)) $('simple-cam-box').open = true;
     $('cam-title').hidden = simple;
     $('cam-intro').innerHTML = simple
-      ? 'Estimate where the camera\'s lens is from the point of origin, in <span class="u-len">' + esc(lenSuffix()) + '</span>: X = stage left, Y = upstage, Z = up. About ' + esc(lenRough(1)) + ' off is close enough. The solved camera is checked against it, which catches a skipped lens step or a wrong rectangle size.'
-      : '<strong>Where is your camera?</strong> Its lens, from the point of origin, in <span class="u-len">' + esc(lenSuffix()) + '</span>: X = stage left, Y = upstage, Z = up. An estimate within roughly ' + esc(lenRough(2)) + ' per axis is good enough.';
+      ? 'Estimate the position of the camera\'s lens, measured from the point of origin, in <span class="u-len">' + esc(lenSuffix()) + '</span>: X = stage left, Y = upstage, Z = up. An estimate within about ' + esc(lenRough(1)) + ' is good enough. The calculated camera is checked against this position. This finds a skipped lens step or a wrong rectangle size.'
+      : '<strong>Where is your camera?</strong> Enter the position of its lens, measured from the point of origin, in <span class="u-len">' + esc(lenSuffix()) + '</span>: X = stage left, Y = upstage, Z = up. An estimate within about ' + esc(lenRough(2)) + ' per axis is good enough.';
     $('cam-error').textContent = simple ? 'Enter all three values, or leave all three empty.' : 'Enter all three values.';
   }
   function renderCalibPanels() {
@@ -2397,7 +2637,7 @@
   function renderCornerRows() {
     var solve = S.solve, marks = currentMarks();
     $('corner-rows').innerHTML = CORNERS.map(function(c, i) {
-      var chip = !S.cornerPins[c] ? '<span class="stat-chip">Not drawn</span>' : !S.cornerMoved[c] ? '<span class="stat-chip">Not placed</span>' : chipFor(marks[i], solve).replace('>Pinned<', '>Placed<');
+      var chip = !S.cornerPins[c] ? '<span class="stat-chip">Waiting for size</span>' : !S.cornerMoved[c] ? '<span class="stat-chip">Not placed</span>' : chipFor(marks[i], solve).replace('>Pinned<', '>Placed<');
       var P = rectProblem() ? null : cornerXYZ(c, rectVals());
       var xyz = P ? 'X ' + lenText(P[0], 2) + ' · Y ' + lenText(P[1], 2) + ' · Z ' + lenText(P[2], 2) : 'X – · Y – · Z –';
       return '<div class="calib-row"><div class="calib-row-head"><strong>' + c + '</strong><span class="calib-fit">' + CORNER_TITLES[c] + '</span>' + chip +
@@ -2416,7 +2656,7 @@
       return '<option value="' + p.id + '"' + (String(sel) === String(p.id) ? ' selected' : '') + '>' + esc(p.name || ('P' + p.id)) + '</option>';
     }).join('');
   }
-  // A triangulated point's position: as the solve placed it, else from its measurements; dashes until either.
+  // A distance point's position: as the solve placed it, else from its measurements; dashes until either.
   function triXYZ(id, pre) {
     var P = S.solve && S.solve.cam && S.solve.positions && S.solve.positions[id] || pre[id];
     return P ? 'X ' + lenText(P[0], 2) + ' · Y ' + lenText(P[1], 2) + ' · Z ' + lenText(P[2], 2) : 'X – · Y – · Z –';
@@ -2429,7 +2669,7 @@
     var focused = document.activeElement && $('adv-rows').contains(document.activeElement) ? document.activeElement.id : '';
     $('adv-rows').innerHTML = S.points.length ? S.points.map(function(p) {
       var m = byId[p.id], id = p.id;
-      var head = '<div class="calib-row-head"><strong>' + esc(p.name || ('P' + id)) + '</strong><span class="stat-chip">' + (p.kind === 'known' ? 'Known' : 'Triangulated') + '</span><span id="chip-' + id + '">' + chipFor(m, solve) + '</span>' +
+      var head = '<div class="calib-row-head"><strong>' + esc(p.name || ('P' + id)) + '</strong><span class="stat-chip">' + (p.kind === 'known' ? 'Known point' : 'Distance point') + '</span><span id="chip-' + id + '">' + chipFor(m, solve) + '</span>' +
         (p.kind === 'known' ? '' : '<span class="corner-xyz" id="xyz-' + id + '">' + triXYZ(id, pre) + '</span>') +
         '<span style="margin-left:' + (p.kind === 'known' ? 'auto' : '0.6rem') + ';display:flex;gap:0.4rem;flex-wrap:wrap;">' +
         (p.pin ? '<button type="button" class="secondary small" data-unpin="' + id + '">Remove pin</button>' : '') +
@@ -2440,9 +2680,9 @@
         f += '</div>';
       } else {
         f += '<div class="field"><label for="pz-' + id + '">Z (' + esc(lenSuffix()) + ')' + AXIS_NOTE.z + '</label>' + lenInput('pz-' + id, 'z', id, p.z, 0) + '</div></div>';
-        f += '<div class="row"><div class="field"><label for="pa-' + id + '">From</label><select id="pa-' + id + '" data-f="a" data-id="' + id + '">' + pointOptions(id, p.a, p.b) + '</select></div>' +
+        f += '<div class="row"><div class="field"><label for="pa-' + id + '">Measured from</label><select id="pa-' + id + '" data-f="a" data-id="' + id + '">' + pointOptions(id, p.a, p.b) + '</select></div>' +
           '<div class="field"><label for="pda-' + id + '">Distance (' + esc(lenSuffix()) + ')</label>' + lenInput('pda-' + id, 'da', id, p.da) + '</div>' +
-          '<div class="field"><label for="pb-' + id + '">From</label><select id="pb-' + id + '" data-f="b" data-id="' + id + '">' + pointOptions(id, p.b, p.a) + '</select></div>' +
+          '<div class="field"><label for="pb-' + id + '">Measured from</label><select id="pb-' + id + '" data-f="b" data-id="' + id + '">' + pointOptions(id, p.b, p.a) + '</select></div>' +
           '<div class="field"><label for="pdb-' + id + '">Distance (' + esc(lenSuffix()) + ')</label>' + lenInput('pdb-' + id, 'db', id, p.db) + '</div></div>';
       }
       var reason = m && m.problem && m.problem !== 'rect' ? '<div class="calib-reason" id="reason-' + id + '">' + esc(m.problem) + '</div>' : '<div class="calib-reason" id="reason-' + id + '" hidden></div>';
@@ -2472,24 +2712,44 @@
     hintText = h;
     renderFsBar();
   }
+  // Simple's four steps open in order: the location, the rectangle's size, the point of origin, the corners. A
+  // rectangle already entered (a reopened Setup Wizard) counts as the first step done.
+  function lockSimpleSteps() {
+    var simple = S.mode === 'simple', rv = rectVals(), anyRect = ['w', 'd'].some(function(k) { return S.rect[k] !== ''; });
+    var sized = rv.w > 0 && rv.d > 0 && rv.w <= 200 && rv.d <= 200;
+    var done1 = !!S.simpleLoc || anyRect, done2 = done1 && sized, done3 = done2 && !rectProblem();
+    [['sstep-2', !done1], ['sstep-3', !done2], ['corners-q', !done3], ['cal-container', !done3], ['cal-simple-corners', !done3]].forEach(function(e) {
+      var el = $(e[0]), locked = simple && e[1];
+      el.classList.toggle('step-locked', locked);
+      el.inert = locked;
+    });
+    document.querySelectorAll('#step-calib .wizard-tip.only-simple').forEach(function(el) { el.classList.toggle('step-locked', simple && !done3); });
+    $('cal-refresh').disabled = simple && !done3;
+    // Reset Corners only once a corner has been moved.
+    $('cal-reset').hidden = simple && !CORNERS.some(function(c) { return S.cornerMoved[c]; });
+    // Simple's Next waits for every corner to be placed: dragged, moved with the keys, or confirmed with Enter.
+    $('cal-next').disabled = simple && !CORNERS.every(function(c) { return S.cornerMoved[c]; });
+  }
   function renderSimpleReq() {
     var rv0 = rectVals(), diagOk = !isNaN(rv0.w) && !isNaN(rv0.d) && rv0.w > 0 && rv0.d > 0;
     // Before both sizes are in, the two diagonals only need to match; after, they must also be this long.
-    $('rect-diag').innerHTML = '<strong>Optional:</strong> measure the two diagonals between opposite corner marks. ' + (diagOk
-      ? 'If both are ' + esc(lenText(Math.hypot(rv0.w, rv0.d), 2)) + ', the marks are right and form a true rectangle.'
+    $('rect-diag').innerHTML = '<strong>Optional:</strong> measure the two diagonals between opposite tape marks. ' + (diagOk
+      ? 'If both are ' + esc(lenText(Math.hypot(rv0.w, rv0.d), 2)) + ', the marks are correct and form a true rectangle.'
       : 'If both are the same, you have a true rectangle.') + ' Skip this for a rectangle you know is true, such as the edges of stage decks.';
     var sized = !rectProblem(), anyRect = ['w', 'd'].some(function(k) { return S.rect[k] !== ''; });
     var todo = CORNERS.filter(function(c) { return !S.cornerMoved[c]; }), s = S.solve;
-    if (!S.simpleLoc && !anyRect) showHint('sloc', 'Choose where your camera is located.', 'It decides on which side of the picture each corner of the rectangle starts.');
+    if (!S.simpleLoc && !anyRect) showHint('sloc', 'Choose where your camera is located.', 'The location decides on which side of the picture each corner of the rectangle starts.');
     else if (!sized) {
-      var rv = rectVals(), atCentre = !isNaN(rv.w) && !isNaN(rv.d) && [rv.cx, rv.cy, rv.z].some(isNaN);
-      showHint(atCentre ? 'origin' : 'rect', anyRect ? rectProblem() : 'Mark the four corners of the largest rectangle you can fit on the floor of the performance area, all visible to the camera, and enter its width and depth.', 'Only the corners need a mark, such as a tape cross. The wizard then draws the rectangle on the picture.');
+      var rv = rectVals(), hasSize = !isNaN(rv.w) && !isNaN(rv.d), atCentre = hasSize && S.rect.origin === 'custom' && [rv.cx, rv.cy, rv.z].some(isNaN);
+      if (hasSize && !S.rect.origin) showHint('origin-q', 'Choose the point of origin.', 'All position data that the station sends is measured from this point (0/0/0). It must match the point of origin of your console or tracking system.');
+      else showHint(atCentre ? 'origin' : 'rect', anyRect ? rectProblem() : 'Enter the size of the rectangle you marked on stage.', 'Only the corners need a mark, such as a tape cross. The Setup Wizard then draws the rectangle on the picture.');
     }
-    else if (todo.length) showHint('image', 'Drag ' + todo[0] + ' onto its tape mark.', CORNER_TITLES[todo[0]] + '. ' + (4 - todo.length) + ' of 4 corners on their marks. Click a corner to select it, nudge it with the arrow keys, and press Enter when the crosshair is in the right spot.');
-    else if (s && s.cam) showHint('image', 'Check the result.', 'The grid on the picture should meet the corner marks. Then press Next.');
-    else showHint('image', 'The camera does not solve with these corners.', 'Check the rectangle\'s size and that each corner sits on its tape mark.');
+    else if (todo.length) showHint('image', 'Drag ' + todo[0] + ' onto its tape mark.', CORNER_TITLES[todo[0]] + '. ' + (4 - todo.length) + ' of 4 corners are on their marks. Click a corner to select it and move it with the arrow keys. Press Enter when the crosshair is in the right place.');
+    else if (s && s.cam) showHint('image', 'Check the result.', 'The grid on the picture should match the tape marks. Then press Next.');
+    else showHint('image', 'The camera cannot be calculated from these corners.', 'Check the size of the rectangle, and check that each corner is on its tape mark.');
   }
   function renderReq() {
+    lockSimpleSteps();
     if (S.mode === 'simple') { renderSimpleReq(); return; }
     var marks = currentMarks(), solved = !!(S.solve && S.solve.cam);
     var known = marks.filter(function(m) { return m.kind === 'known' && !m.problem; });
@@ -2497,22 +2757,22 @@
     var points = known.concat(tri), pinned = points.filter(function(m) { return m.pin; }).length;
     $('adv-add-tri').hidden = known.length < 2;
     $('adv-add-tri').disabled = S.points.length >= SAVED.max_marks;
-    // A triangulated point always needs its pin; a known point only until four points are pinned.
+    // A distance point always needs its pin; a known point only until four points are pinned.
     var toPin = points.filter(function(m) { return !m.pin && (m.kind === 'triangulated' || pinned < 4); })[0];
     var h, sub, area = 'image';
-    if (!S.cam) { h = 'Enter the rough camera position first.'; sub = 'Roughly ' + lenRough(2) + ' per axis is good enough.'; area = 'cam'; }
-    else if (known.length < 2) { h = 'Enter two points with known coordinates far apart, like the DSL and DSR corners.'; sub = 'Click where one is on the picture, choose New point and type its X/Y/Z. ' + known.length + ' of 2 entered.'; }
+    if (!S.cam) { h = 'Enter the rough camera position first.'; sub = 'An estimate within about ' + lenRough(2) + ' per axis is good enough.'; area = 'cam'; }
+    else if (known.length < 2) { h = 'Enter two known points that are far apart, such as the DSL and DSR corners.'; sub = 'Click where one of them is on the picture, choose New known point and type its X/Y/Z. ' + known.length + ' of 2 entered.'; }
     else if (points.length < 4) {
-      h = points.length === 3 ? 'Enter one more known point or triangulated point.' : 'Enter two more known points or triangulated points.';
-      sub = 'Click where it is on the picture and choose New point or New triangulated point.';
+      h = points.length === 3 ? 'Enter one more known point or distance point.' : 'Enter two more known points or distance points.';
+      sub = 'Click where it is on the picture and choose New known point or New distance point.';
     }
     else if (toPin) { h = 'Pin ' + toPin.name + ' on the picture.'; sub = 'Click where it is on the picture, then choose it from the menu. ' + pinned + ' of at least 4 pinned.'; }
-    else if (solved) { h = 'Check the result.'; sub = 'Check the grid on the picture and the distances to check, then press Next. More known or triangulated points give a better result.'; }
-    else { h = 'The camera does not solve with these points.'; sub = 'Check the pins and the measurements.'; }
+    else if (solved) { h = 'Check the result.'; sub = 'Check the grid on the picture and the Distances to check. Then press Next. More known points or distance points give a better result.'; }
+    else { h = 'The camera cannot be calculated from these points.'; sub = 'Check the pins and the measurements.'; }
     showHint(area, h, sub);
   }
 
-  // Every pair of placed points but the ones a triangulated point was measured from (Advanced only).
+  // Every pair of placed points but the ones a distance point is measured from (Advanced only).
   function pairsFor(solve) {
     if (!solve || !solve.cam || S.mode === 'simple') return [];
     var marks = solve.marks.filter(function(m) { return solve.positions[m.id]; }), out = [], measured = {};
@@ -2526,7 +2786,7 @@
   }
   function dist3(A, B) { return Math.hypot(A[0] - B[0], A[1] - B[1], A[2] - B[2]); }
   function distTable(pairs, interactive) {
-    return '<thead><tr><th>Between</th><th style="text-align:right">Distance</th></tr></thead><tbody>' + pairs.map(function(p, i) {
+    return '<thead><tr><th>Points</th><th style="text-align:right">Distance</th></tr></thead><tbody>' + pairs.map(function(p, i) {
       return '<tr class="' + (interactive ? 'pair' : '') + (interactive && i === S.pair ? ' on' : '') + '"' + (interactive ? ' data-pair="' + i + '" tabindex="0"' : '') + '><td>' + esc(p.label) + '</td><td class="num">' + lenText(dist3(p.A, p.B), 2) + '</td></tr>';
     }).join('') + '</tbody>';
   }
@@ -2541,11 +2801,11 @@
     st.hidden = false;
     // Advanced says what the solve still needs right under the picture, where the points are placed.
     $('adv-need').hidden = !(S.mode === 'advanced' && s.need);
-    if (S.mode === 'advanced' && s.need) $('adv-need').textContent = 'To solve the camera, add ' + s.need.join(' and ') + '.';
+    if (S.mode === 'advanced' && s.need) $('adv-need').textContent = 'To calculate the camera, add ' + s.need.join(' and ') + '.';
     if (s.waiting) { st.className = 'wizard-status waiting'; st.textContent = s.waiting; }
-    else if (s.need) { st.className = 'wizard-status waiting'; st.textContent = 'To solve the camera, add ' + s.need.join(' and ') + '.'; st.hidden = S.mode === 'advanced'; }
+    else if (s.need) { st.className = 'wizard-status waiting'; st.textContent = 'To calculate the camera, add ' + s.need.join(' and ') + '.'; st.hidden = S.mode === 'advanced'; }
     else if (s.error) { st.className = 'wizard-status error'; st.textContent = s.error; }
-    else { st.className = 'wizard-status ok'; st.textContent = 'Solved from ' + s.pinned + ' pinned points, largest error ' + s.worst.toFixed(1) + ' px.'; }
+    else { st.className = 'wizard-status ok'; st.textContent = 'Calculated from ' + s.pinned + (S.mode === 'simple' ? ' corners' : ' pinned points') + ', largest error ' + s.worst.toFixed(1) + ' px.'; }
     var ok = !!s.cam;
     $('cal-solved').hidden = !ok;
     if (ok) $('cal-solved').innerHTML = solvedParamsHtml(s.cam) + (LENS_ENABLED ? '<div class="wizard-solved-param"><span class="param-label">Lens</span><span class="param-value"' +
@@ -2687,11 +2947,11 @@
     var open = S.points.filter(function(q) { return !q.pin; }), full = S.points.length >= SAVED.max_marks;
     var m = $('pin-menu');
     m.classList.remove('form');
-    m.innerHTML = pinMenuHead('Place here') + open.map(function(q) {
-      return '<button type="button" class="pm-item" data-place="' + q.id + '"><span>' + esc(q.name || ('P' + q.id)) + '</span><span class="kind">' + (q.kind === 'known' ? 'Known' : 'Triangulated') + '</span></button>';
+    m.innerHTML = pinMenuHead('Which point is here?') + open.map(function(q) {
+      return '<button type="button" class="pm-item" data-place="' + q.id + '"><span>' + esc(q.name || ('P' + q.id)) + '</span><span class="kind">' + (q.kind === 'known' ? 'Known point' : 'Distance point') + '</span></button>';
     }).join('') + (open.length ? '<hr>' : '') +
-      '<button type="button" class="pm-item" data-place="new-known"' + (full ? ' disabled' : '') + '><span>New point</span><span class="kind">X/Y/Z</span></button>' +
-      '<button type="button" class="pm-item" data-place="new-tri"' + (knownN < 2 || full ? ' disabled' : '') + '><span>New triangulated point</span>' + (knownN < 2 ? '<span class="kind">Needs two known points</span>' : '') + '</button>';
+      '<button type="button" class="pm-item" data-place="new-known"' + (full ? ' disabled' : '') + '><span>New known point</span><span class="kind">X/Y/Z</span></button>' +
+      '<button type="button" class="pm-item" data-place="new-tri"' + (knownN < 2 || full ? ' disabled' : '') + '><span>New distance point</span>' + (knownN < 2 ? '<span class="kind">Needs two known points</span>' : '') + '</button>';
     m.hidden = false;
     positionPinMenu();
     renderCalibOverlay();
@@ -2703,7 +2963,7 @@
     S.pinMenu = { p: q.pin, form: null, pin: id };
     var m = $('pin-menu');
     m.classList.remove('form');
-    m.innerHTML = pinMenuHead((q.name || ('P' + id)) + (q.kind === 'known' ? ' · Known' : ' · Triangulated')) +
+    m.innerHTML = pinMenuHead((q.name || ('P' + id)) + (q.kind === 'known' ? ' · Known point' : ' · Distance point')) +
       '<button type="button" class="pm-item" data-pm="unpin"><span>Remove pin</span><span class="kind">Keeps the point</span></button>' +
       '<button type="button" class="pm-item danger" data-pm="delete"><span>Delete point</span></button>';
     m.hidden = false;
@@ -2736,12 +2996,12 @@
       }).join('');
     } else {
       f = ['a', 'b'].map(function(k) {
-        return '<div class="pm-pair"><div class="field"><label for="pm-' + k + '">From</label><select id="pm-' + k + '">' + pointOptions(null, '') + '</select></div>' +
+        return '<div class="pm-pair"><div class="field"><label for="pm-' + k + '">Measured from</label><select id="pm-' + k + '">' + pointOptions(null, '') + '</select></div>' +
           '<div class="field"><label for="pm-d' + k + '">Distance (' + u + ')</label>' + lenInput('pm-d' + k, 'd' + k, 'new', '') + '</div></div>';
       }).join('') + '<div class="field"><label for="pm-z">Z (' + u + ')' + AXIS_NOTE.z + '</label>' + lenInput('pm-z', 'z', 'new', '', 0) + '</div>';
     }
     m.classList.add('form');
-    m.innerHTML = pinMenuHead(kind === 'known' ? 'New point' : 'New triangulated point') +
+    m.innerHTML = pinMenuHead(kind === 'known' ? 'New known point' : 'New distance point') +
       '<form class="pm-form" novalidate><div class="field"><label for="pm-point">Point</label><input type="text" id="pm-point" maxlength="60" autocomplete="off" data-1p-ignore data-lpignore="true" value="' + esc(name) + '"></div>' + f +
       '<div class="pm-actions"><button type="button" class="secondary small" data-pm="back">Back</button><button type="submit" class="primary small" id="pm-ok" disabled>Place point</button></div></form>';
     positionPinMenu();
@@ -2939,7 +3199,8 @@
     });
     document.addEventListener('pointerdown', function(e) { pointerIsMouse = e.pointerType === 'mouse'; }, true);
     document.addEventListener('pointerdown', function(e) { if (S.selCorner != null && !e.target.closest('#cal-pins .pin-handle')) dropCorner(); }, true);
-    document.addEventListener('focusin', function(e) { if (S.selCorner != null && !e.target.closest('#cal-pins .pin-handle')) dropCorner(); });
+    // A focus that selected a corner redrew the pins: its event still reaches here from the old, detached handle.
+    document.addEventListener('focusin', function(e) { if (S.selCorner != null && e.target.isConnected && !e.target.closest('#cal-pins .pin-handle')) dropCorner(); });
     // A corner reached with Tab is selected, as one clicked.
     $('cal-pins').addEventListener('focusin', function(e) {
       var h = e.target.closest('.pin-handle');
@@ -2991,7 +3252,7 @@
     var s = S.solve || {}, svg = $('review-overlay'), u = overlayUnit(svg);
     var ok = !!s.cam;
     $('review-status').hidden = ok;
-    if (!ok) $('review-status').innerHTML = 'No camera solve yet.<div class="notice-sub">' + esc(s.need ? 'To solve the camera, add ' + s.need.join(' and ') + '. Go back to Camera Calibration to finish it.' : s.waiting ? s.waiting : s.error ? s.error : 'Pin the points in Camera Calibration.') + '</div>';
+    if (!ok) $('review-status').innerHTML = 'The camera is not calculated yet.<div class="notice-sub">' + esc(s.need ? 'To calculate the camera, add ' + s.need.join(' and ') + '. Go back to Camera Calibration to finish it.' : s.waiting ? s.waiting : s.error ? s.error : 'Pin the points in Camera Calibration.') + '</div>';
     var incomplete = incompleteLines(s);
     $('review-incomplete').hidden = !incomplete.length;
     if (incomplete.length) $('review-incomplete').innerHTML = incompleteHtml(incomplete);
@@ -3009,18 +3270,18 @@
     }).join('') : '';
     $('review-camera').innerHTML = ok ? solvedParamsHtml(s.cam) : paramRows([['Camera', '–']]);
     var k1 = wizReadLensCoeff('wiz_lens_k1'), k2 = wizReadLensCoeff('wiz_lens_k2');
-    $('review-lens').innerHTML = paramRows([['Barrel / fisheye', fmt(k1, 3)], ['Edge fit', fmt(k2, 3)], ['Lens coverage', reviewLensCoverage(k1, k2)]]);
+    $('review-lens').innerHTML = paramRows([['Barrel / fisheye', fmt(k1, 3)], ['Corner correction', fmt(k2, 3)], ['Lens rating', reviewLensCoverage(k1, k2)]]);
     var marks = s.marks || [], pinnedN = marks.filter(function(m) { return m.pin; }).length;
-    $('review-calib').innerHTML = paramRows([['Mode', S.mode === 'simple' ? 'Simple' : 'Advanced'], ['Points', String(marks.length)], ['Pinned', String(pinnedN)], ['Largest error', ok ? s.worst.toFixed(1) + ' px' : '–'],
-      ['Entered position', S.cam ? esc(lenText(S.cam.x, 2) + ' / ' + lenText(S.cam.y, 2) + ' / ' + lenText(S.cam.z, 2)) : 'Not entered']].concat(S.mode === 'simple'
+    $('review-calib').innerHTML = paramRows([['Mode', S.mode === 'simple' ? 'Simple' : 'Advanced'], ['Points', String(marks.length)], ['Pinned', String(pinnedN)], ['Largest error (px)', ok ? s.worst.toFixed(1) : '–'],
+      ['Your camera position', S.cam ? esc(lenText(S.cam.x, 2) + ' / ' + lenText(S.cam.y, 2) + ' / ' + lenText(S.cam.z, 2)) : 'Not entered']].concat(S.mode === 'simple'
         ? [['Camera location', esc((CAM_PRESETS.filter(function(q) { return q[0] === S.simpleLoc; })[0] || [0, 'Not chosen'])[1])]] : []));
     var pairs = pairsFor(s);
     $('review-dist-group').hidden = !pairs.length;
     $('review-dist-table').innerHTML = distTable(pairs, false);
-    $('review-grid-params').innerHTML = paramRows([['Width', lenText(grid.w, 2)], ['Depth', lenText(grid.d, 2)], ['Spacing', lenText(grid.spacing, 2)], ['X Offset', lenText(grid.cx, 2)], ['Y Offset', lenText(grid.cy, 2)], ['Z Offset', lenText(grid.z, 2)], ['Change', S.mode === 'simple' ? 'From the rectangle' : 'Unchanged']]);
+    $('review-grid-params').innerHTML = paramRows([['Width', lenText(grid.w, 2)], ['Depth', lenText(grid.d, 2)], ['Spacing', lenText(grid.spacing, 2)], ['X Offset', lenText(grid.cx, 2)], ['Y Offset', lenText(grid.cy, 2)], ['Z Offset', lenText(grid.z, 2)], ['Grid', S.mode === 'simple' ? 'From the rectangle' : 'Kept']]);
     renderFsBar();
   }
-  // The rating while the pair is the fit's own; a loaded calibration by its name; else whether it was fine-tuned.
+  // The rating while the pair is the fit's own; a loaded calibration by its name; else whether it was adjusted by hand.
   function reviewLensCoverage(k1, k2) {
     if (lensPairIsTheFits(k1, k2)) {
       var level = LENS_RATING_LEVEL[lensFit.rating] || 'caution', n = LENS_RATING_SEGMENTS[lensFit.rating] || 0;
@@ -3028,19 +3289,19 @@
     }
     if (S.lensLoaded) {
       var same = Math.abs(k1 - S.lensLoaded.k1) < 1e-9 && Math.abs(k2 - S.lensLoaded.k2) < 1e-9;
-      return 'Loaded: ' + esc(S.lensLoaded.name) + (same ? '' : ', fine-tuned');
+      return 'Loaded: ' + esc(S.lensLoaded.name) + (same ? '' : ', adjusted by hand');
     }
-    if (lensFit && lensFitApplies(lensFit)) return 'Fine-tuned';
-    if (S.lensTouched) return 'Fine-tuned';
+    if (lensFit && lensFitApplies(lensFit)) return 'Adjusted by hand';
+    if (S.lensTouched) return 'Adjusted by hand';
     return lensMeasured() ? 'The station\'s lens' : 'Not measured';
   }
-  // Apply writes Simple's rectangle as the grid first: a grid write that moves the corners unpins the saved corners.
+  // Save and finish writes Simple's rectangle as the grid first: a grid write that moves the corners unpins the saved corners.
   window.applyAndFinish = function() {
     var saveError = window.OpenFollow.saveError, reviewBox = document.querySelector('#wizard-step-review .section');
     var s = S.solve;
     if (!s || !s.cam || solvePending || applyBlocked(s) || marksIncomplete(s)) return;
     if (LENS_ENABLED && !wizLensPairValid()) {
-      saveError.show(reviewBox, { error: 'The lens pair folds the overlay inside the frame.', action: 'Bring either lens value closer to 0 on the Lens step before finishing.' }, 'Not applied.');
+      saveError.show(reviewBox, { error: 'With these lens values, the overlay folds over itself inside the picture.', action: 'Set one of the lens values closer to 0 in the Lens step before you finish.' }, 'Not saved.');
       return;
     }
     var headers = { 'Content-Type': 'application/json' }, frac = function(p) { return p ? [p[0] / imageWidth, p[1] / imageHeight] : []; };
@@ -3058,20 +3319,20 @@
       ? fetch('/api/config/grid', { method: 'POST', headers: headers, body: JSON.stringify({ width: g.w, depth: g.d, x_offset: g.cx, y_offset: g.cy, z_offset: g.z }) })
       : Promise.resolve(null);
     gridWrite.then(async function(grid) {
-      if (grid && !grid.ok) { saveError.show(reviewBox, await saveError.fromResponse(grid), 'The grid settings were not applied.'); return; }
+      if (grid && !grid.ok) { saveError.show(reviewBox, await saveError.fromResponse(grid), 'The grid settings were not saved.'); return; }
       var cam = await fetch('/api/config/camera', { method: 'POST', headers: headers, body: JSON.stringify(camera) });
-      if (!cam.ok) { saveError.show(reviewBox, await saveError.fromResponse(cam), 'The camera settings were not applied.'); return; }
+      if (!cam.ok) { saveError.show(reviewBox, await saveError.fromResponse(cam), 'The camera settings were not saved.'); return; }
       try { sessionStorage.removeItem(STORAGE_KEY); } catch (e) {}
       window.location.href = '/';
-    }).catch(function() { saveError.show(reviewBox, saveError.UNREACHABLE, 'Not applied.'); });
+    }).catch(function() { saveError.show(reviewBox, saveError.UNREACHABLE, 'Not saved.'); });
   };
   window.discardAndLeave = function() {
     openModal({
-      title: 'Discard the Setup Wizard?',
-      bodyHTML: '<p>Nothing from this run is saved. The station keeps its current camera, lens and grid.</p>',
+      title: 'Leave without saving?',
+      bodyHTML: '<p>None of your changes in the Setup Wizard are saved. The station keeps its current camera, lens and grid.</p>',
       footerButtons: [
         { label: 'Cancel', onClick: function() { closeModal(); } },
-        { label: 'Discard & Leave', kind: 'danger', onClick: function() {
+        { label: 'Leave without saving', kind: 'danger', onClick: function() {
           closeModal();
           try { sessionStorage.removeItem(STORAGE_KEY); } catch (e) {}
           window.location.href = '/';
@@ -3179,22 +3440,23 @@
     }).join('') + '</tbody></table>';
   }
   var ARROWS = ['&larr;', '&rarr;', '&uarr;', '&darr;'];
-  var FS_ESC = [['Esc'], 'End full screen (cancels active selection)'];
+  var FS_ESC = [['Esc'], 'End full screen (also cancels the selection)'];
   // How this picture works, and its keys. The panel stays open while the picture is used.
   function fsHelpHtml() {
     var k = FS.key, intro, rows;
     if (k === 'lens') {
-      intro = '<strong>Tap a dashed suggestion</strong> that is straight in reality, or click the start and the end of a straight edge. Click a line to select it; drag a point to correct it.';
-      rows = [[['Tab'], 'Select the next point'], [ARROWS, 'Nudge the selected point 1&nbsp;px'], ['<kbd>Shift</kbd> + arrow', 'Nudge it 10&nbsp;px'], [['Enter'], 'Confirm the point'],
-        [['Space'], 'Switch a middle point off or on'], ['<kbd>Delete</kbd> or <kbd>Backspace</kbd>', 'Remove the selected line, or cancel a started one'], FS_ESC];
+      intro = '<strong>Check each dashed suggested line</strong>: the check mark uses it, the cross removes it. Or click the start and the end of a straight edge. Click a line to select it. Drag a point to correct it.';
+      rows = [[['Tab'], 'Next suggestion bubble or point. With a point selected: the next point on its line'], ['<kbd>Shift</kbd> + <kbd>Tab</kbd>', 'The previous point on its line'],
+        [ARROWS, 'Move the selected point 1&nbsp;px'], [['Enter'], 'Confirm the point'], [['Space'], 'Switch a middle point off or on'],
+        ['<kbd>Delete</kbd> or <kbd>Backspace</kbd>', 'Remove the selected line, or cancel a line you started'], FS_ESC];
     } else if (k === 'cal' && S.mode === 'simple') {
-      intro = '<strong>Drag each corner</strong> onto its tape mark; the loupe shows the picture at 4&times;. Click a corner to select it.';
-      rows = [[['Tab'], 'Select the next corner'], [ARROWS, 'Nudge the selected corner 1&nbsp;px'], ['<kbd>Shift</kbd> + arrow', 'Nudge it 10&nbsp;px'], [['Enter'], 'Place the corner where the crosshair is'], FS_ESC];
+      intro = '<strong>Drag each corner</strong> onto its tape mark. The loupe shows the picture 4&times; larger. Click a corner to select it.';
+      rows = [[['Tab'], 'Select the next corner'], [ARROWS, 'Move the selected corner 1&nbsp;px'], [['Enter'], 'Place the corner where the crosshair is'], FS_ESC];
     } else if (k === 'cal') {
-      intro = '<strong>Click the picture</strong> where a point is and choose it from the menu, or make a <strong>New point</strong> or <strong>New triangulated point</strong> there. Click a pin to remove it or delete the point; drag a pin to correct it.';
-      rows = [[ARROWS, 'With the menu open: move its spot 1&nbsp;px. On a pin: nudge it'], ['<kbd>Shift</kbd> + arrow', '10&nbsp;px'], [['Tab'], 'Next menu item, field or pin'], [['Enter'], 'Choose the menu item, or place the new point'], FS_ESC];
+      intro = '<strong>Click the picture</strong> where a point is, and choose the point from the menu. Or create a <strong>New known point</strong> or a <strong>New distance point</strong> there. Click a pin to remove the pin or delete the point. Drag a pin to correct it.';
+      rows = [[ARROWS, 'Menu open: move the spot 1&nbsp;px. Pin selected: move the pin 1&nbsp;px'], [['Tab'], 'Next menu item, field or pin'], [['Enter'], 'Choose the menu item, or place the new point'], FS_ESC];
     } else {
-      intro = 'The picture shows the solved grid, the points and 0/0/0, as the Operator Screen will draw them. Nothing can be changed here.';
+      intro = 'The picture shows the calculated grid, the points and 0/0/0, as the Operator Screen will draw them. You cannot change anything here.';
       rows = [[['Esc'], 'End full screen']];
     }
     rows.push([['?'], 'Show or hide this help']);
@@ -3213,7 +3475,7 @@
     var title, hint = '', status = '', warn = false, actions = '';
     if (FS.key === 'lens') {
       title = 'Lens';
-      hint = lensPending ? 'Click the other end of the straight edge.' : !lensLines.length ? 'Tap a dashed suggestion, or click the start and the end of a straight edge.' : $('lens-result-text').textContent;
+      hint = lensHintText;
       if (lensLines.some(function(l) { return l.misfit; })) { status = 'A line does not fit the others'; warn = true; }
       var mid = lensSelected && lensSelected.point > 0 && lensSelected.point < 4;
       actions = '<button type="button" class="secondary small" data-fs-act="point-off"' + (mid ? '' : ' disabled') + '>' + esc($('lens-toggle-point').textContent) + '</button>' +
@@ -3225,7 +3487,7 @@
       if (s && s.cam) { status = 'Largest error ' + s.worst.toFixed(1) + ' px'; if (s.reasons.length) { status += ' · Something might be wrong'; warn = true; } }
     } else {
       title = 'Review';
-      hint = S.solve && S.solve.cam ? 'The green grid is the one the Operator Screen will draw.' : 'No camera solve yet.';
+      hint = S.solve && S.solve.cam ? 'The green grid is the one the Operator Screen will draw.' : 'The camera is not calculated yet.';
     }
     $('fs-title').textContent = title; $('fs-hint').textContent = hint;
     $('fs-status').textContent = status; $('fs-status').classList.toggle('warn', warn);
@@ -3272,7 +3534,7 @@
       CORNERS.forEach(function(c) { corners[c] = keepPins ? S.cornerPins[c] : frac(S.cornerPins[c]); });
       sessionStorage.setItem(STORAGE_KEY, JSON.stringify({
         stepKey: WIZ_STEPS[currentStep],
-        lensLines: lensLines, lensImage: lensImageSize, lensFit: lensFit,
+        lensLines: lensLines, lensImage: lensImageSize, lensFit: lensFit, lensRejected: lensRejected,
         k1: wizReadLensCoeff('wiz_lens_k1'), k2: wizReadLensCoeff('wiz_lens_k2'),
         mode: S.mode, simpleLoc: S.simpleLoc, rect: S.rect, cornerPins: corners, cornerMoved: S.cornerMoved,
         points: S.points.map(function(p) { return Object.assign({}, p, { pin: keepPins ? p.pin : frac(p.pin) }); }), nextId: S.nextId,
@@ -3294,6 +3556,7 @@
       var sameUnits = raw.units === (WUNIT.isImperial() ? 'imperial' : 'metric');
       if (Array.isArray(raw.lensLines)) lensLines = raw.lensLines.filter(lensRestoredLine);
       if (lensRestoredPair(raw.lensImage)) lensImageSize = raw.lensImage;
+      if (Array.isArray(raw.lensRejected)) lensRejected = raw.lensRejected.filter(function(r) { return Array.isArray(r) && r.length === 2 && lensRestoredPair(r[0]) && lensRestoredPair(r[1]); });
       if (raw.lensFit && typeof raw.lensFit.rating === 'string' && isFinite(raw.lensFit.k1) && isFinite(raw.lensFit.k2)) lensFit = raw.lensFit;
       if (LENS_ENABLED && isFinite(raw.k1) && isFinite(raw.k2)) { wizWriteLensCoeff('wiz_lens_k1', raw.k1); wizWriteLensCoeff('wiz_lens_k2', raw.k2); }
       S.lensTouched = raw.lensTouched === true;
@@ -3302,7 +3565,7 @@
         S.mode = raw.mode;
         S.simpleLoc = CAM_PRESETS.some(function(p) { return p[0] === raw.simpleLoc; }) ? raw.simpleLoc : '';
         if (raw.rect && typeof raw.rect === 'object') ['w', 'd', 'cx', 'cy', 'z'].forEach(function(k) { if (typeof raw.rect[k] === 'string') S.rect[k] = raw.rect[k]; });
-        if (raw.rect && (raw.rect.origin === 'dsc' || raw.rect.origin === 'custom')) S.rect.origin = raw.rect.origin;
+        if (raw.rect && (raw.rect.origin === '' || raw.rect.origin === 'dsc' || raw.rect.origin === 'custom')) S.rect.origin = raw.rect.origin;
         CORNERS.forEach(function(c) {
           S.cornerPins[c] = raw.cornerPins && fracPinOk(raw.cornerPins[c]) ? raw.cornerPins[c] : null;
           S.cornerMoved[c] = !!(raw.cornerMoved && raw.cornerMoved[c] && S.cornerPins[c]);

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 
 import numpy as np
 import pytest
@@ -317,7 +318,7 @@ def test_a_slider_edit_counts_as_a_measured_lens(saved: list[float], before: boo
 _LENS_FILE_FUNCTIONS = ("wizLensFoldRadius", "wizLensIsValid", "lensFromSettings")
 _NOT_SETTINGS = "This is not an OpenFollow settings file."
 _NO_LENS = "This settings file has no lens calibration."
-_FOLDS = "This file's lens values fold the overlay inside the frame."
+_FOLDS = "With the lens values of this file, the overlay folds over itself inside the picture."
 
 
 def _settings(k1: object, k2: object) -> str:
@@ -806,21 +807,21 @@ def _reason_page(system: str = "metric", *, mode: str = "advanced", origin: str 
 @pytest.mark.parametrize(
     ("delta", "allowed", "per_axis", "said"),
     [
-        ([0.0, -3.0, 0.0], 2.0, False, "3.0 m downstage of the camera position you entered (allowed 2.0 m)."),
+        ([0.0, -3.0, 0.0], 2.0, False, "3.0 m downstage of the camera position you entered (limit 2.0 m)."),
         (
             [2.0, -3.0, 0.5],
             2.5,
             True,
             "2.0 m stage left and 3.0 m downstage of the camera position you entered"
-            " (3.6 m in all, allowed 2.5 m per axis).",
+            " (3.6 m in total, limit 2.5 m per axis).",
         ),
         (
             [-1.0, 0.0, 2.5],
             1.0,
             False,
-            "1.0 m stage right and 2.5 m above the camera position you entered (2.7 m in all, allowed 1.0 m).",
+            "1.0 m stage right and 2.5 m above the camera position you entered (2.7 m in total, limit 1.0 m).",
         ),
-        ([0.2, 4.0, -0.3], 1.0, False, "4.0 m upstage of the camera position you entered (allowed 1.0 m)."),
+        ([0.2, 4.0, -0.3], 1.0, False, "4.0 m upstage of the camera position you entered (limit 1.0 m)."),
     ],
     ids=["one axis", "two axes", "ending on height", "one axis carries it"],
 )
@@ -834,14 +835,14 @@ def test_a_camera_off_its_entered_position_names_the_axes(delta, allowed, per_ax
         tol=allowed,
         perAxis=per_axis,
     )
-    assert out == "The solved camera is " + said
+    assert out == "The calculated camera is " + said
 
 
 def test_the_offset_is_worded_in_feet_on_an_imperial_station() -> None:
     out = run_wizard_js(
         "offsetReason([0, -3, 0], 3, 2, false)", functions=_REASON_FUNCTIONS, prelude=_reason_page("imperial")
     )
-    assert out == "The solved camera is 9.8 ft downstage of the camera position you entered (allowed 6.6 ft)."
+    assert out == "The calculated camera is 9.8 ft downstage of the camera position you entered (limit 6.6 ft)."
 
 
 @pytest.mark.parametrize(
@@ -869,19 +870,19 @@ def test_every_reason_the_station_sends_is_worded() -> None:
         marks=[{"id": 1, "name": "DSL"}, {"id": 2, "name": "DSR"}, {"id": 3, "name": "P3"}],
     )
     assert out == [
-        "The solved camera is 10.0 m upstage and 8.5 m below the camera position you entered"
-        " (13.1 m in all, allowed 2.5 m per axis).",
-        "The solved field of view, 150.0°, is outside what cameras usually have.",
-        "The solved camera is below the floor.",
-        "The solved camera looks upward.",
+        "The calculated camera is 10.0 m upstage and 8.5 m below the camera position you entered"
+        " (13.1 m in total, limit 2.5 m per axis).",
+        "The calculated field of view, 150.0°, is outside the usual range for cameras.",
+        "The calculated camera is below the floor.",
+        "The calculated camera points upwards.",
         "DSL disagrees with the other points by 7.5 px.",
         "P3's distances disagree with the picture by 30 cm.",
     ]
 
 
 _UNMEASURED = (
-    "The lens was not measured. Four corners fit any lens, so a missing lens does not show in their errors."
-    " Measure it in the Lens step unless straight lines in the picture are straight."
+    "The lens was not measured. Four corners fit with any lens, so a missing lens measurement does not show in their"
+    " errors. Measure the lens in the Lens step, unless straight lines in the picture already look straight."
 )
 
 
@@ -923,20 +924,24 @@ def test_simple_notes_the_stations_lens_kept_without_measuring(page: dict, noted
 
 
 @pytest.mark.parametrize(("worst", "blocked"), [(20.0, False), (20.1, True), (60.0, True)])
-def test_a_pin_over_twenty_pixels_off_keeps_apply_off(worst: float, blocked: bool) -> None:
+@pytest.mark.parametrize(
+    ("mode", "again"), [("simple", "place the corners again."), ("advanced", "pin the points again.")]
+)
+def test_a_pin_over_twenty_pixels_off_keeps_apply_off(worst: float, blocked: bool, mode: str, again: str) -> None:
     out = run_wizard_js(
         "[applyBlocked(s), cautionHtml(s)]",
         functions=("esc", "applyBlocked", "cautionHtml"),
         variables=("APPLY_MAX_PX",),
+        prelude=f"var S = {{ mode: '{mode}' }};",
         s={"cam": {"fov": 60}, "worst": worst, "reasons": ["P2 disagrees with the other points by 9.0 px."]},
     )
     assert out[0] is blocked
     closing = (
-        "Apply stays off while a point is more than 20 px off or behind the camera."
+        "Save and finish stays off while a point is more than 20 px off or behind the camera."
         if blocked
-        else "The camera still applies."
+        else "You can still save the camera."
     )
-    assert out[1].endswith(closing + " Check the measurements, then pin again.</div>")
+    assert out[1].endswith(closing + " Check the measurements, then " + again + "</div>")
 
 
 def test_no_solve_never_blocks_apply_by_its_error() -> None:
@@ -980,7 +985,7 @@ def test_a_pin_behind_the_solved_camera_keeps_apply_off() -> None:
         prelude=_reason_page(),
         s={"cam": {"fov": 60}, "worst": 0.4, "behind": 1},
     )
-    assert out == [True, ["P2 lies behind the solved camera."]]
+    assert out == [True, ["P2 lies behind the calculated camera."]]
 
 
 # ---------------------------------------------------------------------------
@@ -1120,11 +1125,11 @@ def test_the_stations_reason_for_a_point_is_listed_by_name() -> None:
             "largest_error": 0.4,
             "marks": [
                 {"id": 1, "error": 0.4},
-                {"id": 5, "reason": "A distance is shorter than the height between the two points."},
+                {"id": 5, "reason": "A distance is shorter than the height difference between the points."},
             ],
         },
     )
-    assert out == ["P5: A distance is shorter than the height between the two points."]
+    assert out == ["P5: A distance is shorter than the height difference between the points."]
 
 
 _REVIEW_STUBS = """
@@ -1224,7 +1229,7 @@ def test_the_solve_counts_the_pins_the_page_sent_and_names_the_one_behind() -> N
         data=_ANSWER,
     )
     # P7 was not sent; P5 was, and the camera puts it behind itself: Review's Pinned counts it too.
-    assert out == [5, 1, {"5": True}, ["P5 lies behind the solved camera."]]
+    assert out == [5, 1, {"5": True}, ["P5 lies behind the calculated camera."]]
 
 
 _CHIP_FUNCTIONS = ("lenSmall", "pinBehind", "pinFlagged", "chipFor")
@@ -1277,7 +1282,7 @@ def test_the_status_line_names_the_pins_the_page_sent() -> None:
         prelude=_DOM + _REVIEW_STUBS + "var S = { mode: 'advanced', pair: 0 }; function lensMeasured() { return true; }"
         " S.solve = { cam: { fov: 60 }, worst: 0.6, pinned: 5, count: 4, reasons: [], marks: [] };",
     )
-    assert out == "Solved from 5 pinned points, largest error 0.6 px."
+    assert out == "Calculated from 5 pinned points, largest error 0.6 px."
 
 
 # ---------------------------------------------------------------------------
@@ -1311,7 +1316,8 @@ var stored = null;
 var sessionStorage = { setItem: function(k, v) { stored = JSON.parse(v); }, getItem: function() { return raw; } };
 var STORAGE_KEY = 'openfollow:wizard', WIZ_STEPS = ['video', 'lens', 'calib', 'review'];
 var WIZ = { video: 0, lens: 1, calib: 2, review: 3 };
-var currentStep = 2, lensLines = [], lensImageSize = null, lensFit = null, LENS_ENABLED = false, CAM_PRESETS = [];
+var currentStep = 2, lensLines = [], lensImageSize = null, lensFit = null, lensRejected = [], LENS_ENABLED = false;
+var CAM_PRESETS = [];
 function wizReadLensCoeff() { return 0; } function wizWriteLensCoeff() {}
 function lensRestoredLine() { return true; } function lensRestoredPair() { return false; }
 """
@@ -1494,8 +1500,18 @@ def test_the_save_dialog_warns_that_it_may_replace_when_the_list_could_not_be_re
 @pytest.mark.parametrize(
     ("system", "simple", "advanced", "hint"),
     [
-        ("metric", "About 1.0 m off", "within roughly 2.0 m per axis", "Roughly 2.0 m per axis is good enough."),
-        ("imperial", "About 3.3 ft off", "within roughly 6.6 ft per axis", "Roughly 6.6 ft per axis is good enough."),
+        (
+            "metric",
+            "An estimate within about 1.0 m is good enough.",
+            "An estimate within about 2.0 m per axis is good enough.",
+            "An estimate within about 2.0 m per axis is good enough.",
+        ),
+        (
+            "imperial",
+            "An estimate within about 3.3 ft is good enough.",
+            "An estimate within about 6.6 ft per axis is good enough.",
+            "An estimate within about 6.6 ft per axis is good enough.",
+        ),
     ],
 )
 def test_the_camera_estimate_is_worded_in_the_active_unit(system: str, simple: str, advanced: str, hint: str) -> None:
@@ -1510,7 +1526,7 @@ def test_the_camera_estimate_is_worded_in_the_active_unit(system: str, simple: s
         + _DOM
         + "var S = { mode: 'simple', cam: null, camPartial: false, points: [], rect: {} };"
         " var SAVED = { max_marks: 12 }, shown = null;"
-        " function showHint(area, h, sub) { shown = sub; }",
+        " function showHint(area, h, sub) { shown = sub; } function lockSimpleSteps() {}",
     )
     assert simple in out[0] and advanced in out[1] and out[2] == hint
 
@@ -1562,3 +1578,541 @@ def test_a_rectangle_that_does_not_read_leaves_the_corners_to_complete(rect: dic
     # Placed corners keep their pins; the others are points to pin.
     assert [p[4] for p in points] == [[100, 900], None, None, None]
     assert lines == [f"{c} needs {need}." for c in ("DSL", "DSR", "USR", "USL")]
+
+
+# ---------------------------------------------------------------------------
+# Lens: the use / reject bubble beside each suggestion
+# ---------------------------------------------------------------------------
+
+_BUBBLE = ("lensPolyAt", "lensPlaceBubbles")
+_BW, _BH, _GAP = 72, 38, 18
+# A picture shown 1080 x 608 CSS px, as on a laptop.
+_SW, _SH = 1080.0, 608.0
+
+
+def _segment(a: tuple[float, float], b: tuple[float, float], n: int = 6) -> list[list[float]]:
+    return [[a[0] + (b[0] - a[0]) * t / (n - 1), a[1] + (b[1] - a[1]) * t / (n - 1)] for t in range(n)]
+
+
+_FLAT = _segment((300.0, 300.0), (800.0, 310.0))
+_STEEP = _segment((540.0, 120.0), (560.0, 520.0))
+_TOP = _segment((300.0, 22.0), (800.0, 24.0))
+_LEFT = _segment((18.0, 120.0), (20.0, 500.0))
+_FAN = [_segment((200.0, 380.0 + 14 * i), (880.0, 380.0 + 14 * i)) for i in range(4)]
+# Bends up just past its anchor, like a curtain's edge: a bubble straight above would cover it.
+_BENT = [[300.0, 300.0], [420.0, 300.0], [440.0, 160.0]]
+# Short and against the right edge: a centred bubble would leave the picture, so it slides along its side.
+_EDGE_SHORT = _segment((1040.0, 300.0), (1078.0, 300.0))
+
+
+def _place(lines: list) -> list[dict]:
+    return run_wizard_js(
+        "lensPlaceBubbles(lines, lines.map(function(_, i) { return i; }), w, h)",
+        functions=_BUBBLE,
+        variables=("LENS_BUBBLE",),
+        lines=lines,
+        w=_SW,
+        h=_SH,
+    )
+
+
+def _dist_to_line(p: tuple[float, float], line: list) -> float:
+    return _distance_to_polyline(np.array(p, dtype=float), np.array(line, dtype=float))
+
+
+def _distance_to_polyline(point: np.ndarray, polyline: np.ndarray) -> float:
+    a, b = polyline[:-1], polyline[1:]
+    ab = b - a
+    t = np.clip(np.einsum("ij,ij->i", point - a, ab) / np.einsum("ij,ij->i", ab, ab), 0.0, 1.0)
+    return float(np.min(np.hypot(*(a + t[:, None] * ab - point).T)))
+
+
+def _anchor(b: dict) -> tuple[float, float]:
+    """The point the pointer aims at: one pointer height and 1 px off the bubble's side."""
+    edge = _GAP + 1
+    return {
+        "top": (b["at"], b["y"] + _BH + edge),
+        "bottom": (b["at"], b["y"] - edge),
+        "left": (b["x"] + _BW + edge, b["at"]),
+        "right": (b["x"] - edge, b["at"]),
+    }[b["side"]]
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [[_FLAT], [_STEEP], [_TOP], [_LEFT], [_BENT], [_EDGE_SHORT], _FAN, [_FLAT, _STEEP, _TOP, _LEFT]],
+    ids=["flat", "steep", "at the top", "at the left", "bent", "short at the edge", "a fan", "four"],
+)
+def test_a_bubble_points_at_its_line_from_inside_the_picture_and_never_covers_it(lines: list) -> None:
+    placed = _place(lines)
+    assert sorted(b["i"] for b in placed) == list(range(len(lines)))
+    for b in placed:
+        line = lines[b["i"]]
+        assert b["x"] >= 6 and b["y"] >= 6 and b["x"] + _BW <= _SW - 6 and b["y"] + _BH <= _SH - 6, b
+        # The anchor sits on the line, so the rounded tip stops 4 px short of it.
+        assert _dist_to_line(_anchor(b), line) < 0.5, b
+        # Nothing of its own line under the bubble, nor within 4 px of it.
+        grown = np.array([b["x"] - 4, b["y"] - 4, b["x"] + _BW + 4, b["y"] + _BH + 4])
+        pts = np.array(_segment(tuple(line[0]), tuple(line[-1]), 400))
+        inside = (pts[:, 0] > grown[0]) & (pts[:, 0] < grown[2]) & (pts[:, 1] > grown[1]) & (pts[:, 1] < grown[3])
+        assert not inside.any(), b
+        # The pointer leaves from the flat part of the side, clear of the rounded corners.
+        lo, hi = (b["x"], b["x"] + _BW) if b["side"] in ("top", "bottom") else (b["y"], b["y"] + _BH)
+        half = _GAP / math.sqrt(3)
+        assert lo + 8 + half - 1e-6 <= b["at"] <= hi - 8 - half + 1e-6, b
+
+
+def test_bubbles_never_overlap_each_other() -> None:
+    placed = _place(_FAN + [_FLAT, _STEEP])
+    boxes = [(b["x"], b["y"], b["x"] + _BW, b["y"] + _BH) for b in placed]
+    for i, a in enumerate(boxes):
+        for b in boxes[i + 1 :]:
+            assert min(a[2], b[2]) - max(a[0], b[0]) <= 0 or min(a[3], b[3]) - max(a[1], b[1]) <= 0, (a, b)
+
+
+@pytest.mark.parametrize(
+    ("line", "sides"),
+    [
+        (_FLAT, {"top", "bottom"}),
+        # Too short to reach a bubble beside it: the side still follows the line's direction.
+        (_segment((500.0, 300.0), (540.0, 300.0)), {"top", "bottom"}),
+        (_STEEP, {"left", "right"}),
+        (_TOP, {"bottom"}),
+        (_LEFT, {"right"}),
+    ],
+    ids=[
+        "flat above or below",
+        "short and flat above or below",
+        "steep beside",
+        "flat at the top flips below",
+        "steep at the left flips right",
+    ],
+)
+def test_a_bubble_takes_the_side_its_line_leaves_room_on(line: list, sides: set) -> None:
+    assert _place([line])[0]["side"] in sides
+
+
+def test_a_bubble_anchors_off_the_middle_of_its_line() -> None:
+    b = _place([_FLAT])[0]
+    along = (_anchor(b)[0] - _FLAT[0][0]) / (_FLAT[-1][0] - _FLAT[0][0])
+    # Where the line's centre point sits once used stays visible.
+    assert along == pytest.approx(0.38, abs=0.01)
+
+
+def _outline_numbers(d: str) -> list[float]:
+    return [float(v) for v in re.findall(r"-?\d+(?:\.\d+)?", d)]
+
+
+@pytest.mark.parametrize("side", ["top", "bottom", "left", "right"])
+def test_the_pointer_is_equilateral_with_a_rounded_tip_four_pixels_short(side: str) -> None:
+    x, y, at = 100.0, 200.0, 136.0 if side in ("top", "bottom") else 219.0
+    d = run_wizard_js(
+        "lensBubbleOutline(x, y, side, at)",
+        functions=("lensBubbleOutline",),
+        variables=("LENS_BUBBLE",),
+        x=x,
+        y=y,
+        side=side,
+        at=at,
+    )
+    # One closed path: the bubble's four 8 px corners and the pointer's one 3 px tip.
+    assert d.startswith("M") and d.endswith(" Z")
+    assert d.count("A8 8 0 0 1") == 4 and d.count("A3 3 0 0 1") == 1
+    tip = re.search(r"L(-?[\d.]+) (-?[\d.]+) A3 3 0 0 1 (-?[\d.]+) (-?[\d.]+)", d)
+    assert tip
+    p1, p2 = np.array(_outline_numbers(tip.group(0))[:2]), np.array(_outline_numbers(tip.group(0))[-2:])
+    # An equilateral pointer 18 px high: its apex 18 px off the side, the rounding cut 3 * sqrt(3) px back
+    # along each flank. The arc then reaches 3 px short of the apex: 4 px short of the line at 19 px.
+    normal = {"top": (0, 1), "bottom": (0, -1), "left": (1, 0), "right": (-1, 0)}[side]
+    edge = {"top": (at, y + _BH), "bottom": (at, y), "left": (x + _BW, at), "right": (x, at)}[side]
+    apex = np.array(edge) + _GAP * np.array(normal)
+    cut = 3 * math.sqrt(3)
+    for p in (p1, p2):
+        assert np.hypot(*(p - apex)) == pytest.approx(cut, abs=0.11)
+        assert float(np.dot(apex - p, normal)) == pytest.approx(cut * math.cos(math.radians(30)), abs=0.11)
+    centre_to_apex = 3 / math.sin(math.radians(30))
+    assert _GAP - (centre_to_apex - 3) + 4 == pytest.approx(_GAP + 1)
+
+
+@pytest.mark.parametrize(
+    ("open_ids", "keep", "focused"),
+    [
+        ([0, 2, 5], {"i": 1, "cls": "lb-use"}, 2),
+        ([0, 2, 5], {"i": 5, "cls": "lb-reject"}, 0),
+        ([], {"i": 3, "cls": "lb-use"}, None),
+        ([0, 2, 5], {"same": 2, "cls": "lb-use"}, 2),
+        ([0, 5], {"same": 2, "cls": "lb-use"}, None),
+        ([0, 2], None, None),
+    ],
+    ids=["next", "round to the first", "none left", "the same after a redraw", "the same is gone", "no choice"],
+)
+def test_after_a_choice_by_keyboard_the_next_bubble_takes_the_focus(open_ids: list, keep: dict, focused) -> None:  # noqa: ANN001
+    assert run_wizard_js("lensFocusTarget(o, k)", functions=("lensFocusTarget",), o=open_ids, k=keep) == focused
+
+
+_REJECT_PAGE = """
+var lensCandidates = [], lensRejected = [], lensHot = 3, saved = 0, rendered = 0, loaded = 0;
+function renderLens() { rendered++; } function saveToSession() { saved++; } function loadSnapshot() { loaded++; }
+function lensHotCand(i) { lensHot = i; } var window = {};
+"""
+_CANDS = [
+    {"samples": [[10, 10], [20, 10], [30, 10], [40, 10], [50, 10]], "used": False, "rejected": False},
+    {"samples": [[10, 90], [20, 90], [30, 90], [40, 90], [50, 90]], "used": True, "rejected": False},
+    {"samples": [[90, 10], [90, 20], [90, 30], [90, 40], [90, 50]], "used": False, "rejected": False},
+]
+
+
+def test_a_rejected_suggestion_leaves_the_picture_until_refresh_image() -> None:
+    out = run_wizard_js(
+        "(function() { lensCandidates = cands; var before = lensOpenCandidates();"
+        " lensRejectCandidate(0); lensRejectCandidate(1);"
+        " var after = lensOpenCandidates(), ends = JSON.parse(JSON.stringify(lensRejected)); window.lensRefreshImage();"
+        " return [before, after, ends, lensHot, saved, lensOpenCandidates(), lensRejected, loaded]; })()",
+        functions=("lensOpenCandidates", "lensRejectCandidate"),
+        prelude=_REJECT_PAGE + wizard_window_function("lensRefreshImage"),
+        cands=_CANDS,
+    )
+    before, after, ends, hot, saved, refreshed, kept, loaded = out
+    assert before == [0, 2] and after == [2]
+    # A used line is not rejected; the rejected one is kept by its ends for the next snapshot.
+    assert ends == [[[10, 10], [50, 10]]]
+    assert (hot, saved) == (-1, 2)
+    assert (refreshed, kept, loaded) == ([0, 2], [], 1)
+
+
+@pytest.mark.parametrize(
+    ("samples", "same"),
+    [
+        ([[12, 8], [0, 0], [0, 0], [0, 0], [48, 14]], True),
+        ([[48, 14], [0, 0], [0, 0], [0, 0], [12, 8]], True),
+        ([[35, 10], [0, 0], [0, 0], [0, 0], [50, 10]], False),
+    ],
+    ids=["same ends", "reversed", "one end moved"],
+)
+def test_a_new_snapshots_suggestion_is_matched_to_a_rejection_by_its_ends(samples: list, same: bool) -> None:
+    out = run_wizard_js("lensSameEnds(s, [10, 10], [50, 10])", functions=("lensSameEnds",), s=samples)
+    assert out is same
+
+
+def test_the_lens_tab_key_steps_through_the_points_of_its_line() -> None:
+    out = run_wizard_js(
+        "(function() { var seen = [], stops = 0;"
+        " function press(shift) { var e = { key: 'Tab', shiftKey: shift, preventDefault: function() { stops++; },"
+        " stopPropagation: function() {} }; lensTabKey(e); seen.push(lensSelected.point); }"
+        " [false, false, false, true, true, true, true].forEach(press);"
+        " lensHold = false; press(false); return [seen, stops]; })()",
+        functions=("lensTabKey",),
+        prelude="var lensHold = true, lensSelected = { line: 1, point: 2 }, currentStep = 1, WIZ = { lens: 1 };"
+        " var lensLines = [{}, {}]; function renderLens() {}",
+    )
+    # Round from the last point to the first and back; without a held point Tab is the browser's.
+    assert out == [[3, 4, 0, 4, 3, 2, 1, 1], 7]
+
+
+# ---------------------------------------------------------------------------
+# Lens: the hint box
+# ---------------------------------------------------------------------------
+
+_HINT_PAGE = """
+var els = {};
+function $(id) { if (!els[id]) els[id] = { innerHTML: '' }; return els[id]; }
+var lensHintText = '';
+function lensFitApplies(fit) { return fit.rating !== 'low'; }
+function lensOpenCandidates() { return state.open; }
+var S = { lensLoaded: state.loaded }, lensPending = state.pending, lensHold = state.hold, lensSelected = state.sel;
+var lensLines = state.lines, lensFit = state.fit;
+"""
+_LINE = {"misfit": False}
+_AGREE = "The result may already be good. If possible, add a line near the top edge to confirm it."
+
+
+def _hint_state(**kw: object) -> dict:
+    return {"open": [], "loaded": None, "pending": None, "hold": False, "sel": None, "lines": [], "fit": None, **kw}
+
+
+@pytest.mark.parametrize(
+    ("state", "heading", "sub"),
+    [
+        (_hint_state(pending=[1, 2], open=[1]), "Click the other end of the straight edge.", "Esc cancels the line."),
+        (
+            _hint_state(hold=True, sel={"line": 0, "point": 2}, lines=[_LINE], open=[1]),
+            "Move the point exactly onto the edge.",
+            "Drag it, or use the arrow keys while the loupe shows the edge. Press Enter when it is in the right place.",
+        ),
+        (
+            _hint_state(sel={"line": 0, "point": 2}, lines=[_LINE], open=[1]),
+            "Check the suggested lines.",
+            "Use each one that is straight in reality. Reject the others, such as a curtain, a cloth or a cable."
+            " 1 left to check. Or load a saved lens calibration.",
+        ),
+        (
+            _hint_state(open=[1, 4, 7]),
+            "Check the suggested lines.",
+            "Use each one that is straight in reality. Reject the others, such as a curtain, a cloth or a cable."
+            " 3 left to check. Or load a saved lens calibration.",
+        ),
+        (
+            _hint_state(loaded={"name": "FOH"}),
+            "A saved lens calibration is loaded.",
+            "Press Next, or draw straight lines to measure the lens again.",
+        ),
+        (
+            _hint_state(),
+            "Draw straight lines on the picture.",
+            "Click the start and the end of an edge that is straight in reality, such as a stage edge, a tape line"
+            " or a truss. Then move its points exactly onto the edge. Or load a saved lens calibration.",
+        ),
+        (
+            _hint_state(lines=[_LINE, {"misfit": True}], fit={"rating": "good", "hint": ""}),
+            "Check the line that does not fit.",
+            "It is drawn in the warning colour. Move its points onto the edge, or delete it if it is not straight"
+            " in reality.",
+        ),
+        (
+            _hint_state(lines=[_LINE] * 4, fit={"rating": "excellent", "hint": ""}),
+            "The lens is measured.",
+            "Press Next.",
+        ),
+        (
+            _hint_state(
+                lines=[_LINE] * 4,
+                fit={"rating": "good", "hint": "If possible, add lines near the top and left edges to confirm it."},
+            ),
+            "The lens is measured.",
+            "Press Next. If possible, add lines near the top and left edges to confirm it.",
+        ),
+        (
+            _hint_state(lines=[_LINE] * 4, fit={"rating": "okay", "hint": _AGREE}),
+            "The result may already be good.",
+            "If possible, add a line near the top edge to confirm it. Or press Next.",
+        ),
+        (
+            _hint_state(lines=[_LINE] * 3, fit={"rating": "okay", "hint": "Add a line near the top edge."}),
+            "Improve the lines, or add more.",
+            "Select a point and move it exactly onto the edge. Lines near the edges and corners of the picture help"
+            " the most. Add a line near the top edge.",
+        ),
+        (
+            _hint_state(
+                lines=[_LINE], fit={"rating": "low", "hint": "Add a second line in another part of the picture."}
+            ),
+            "Draw more straight lines.",
+            "Click the start and the end of a straight edge. Then move its points exactly onto the edge. Add a second"
+            " line in another part of the picture.",
+        ),
+    ],
+    ids=[
+        "line started",
+        "point selected",
+        "point focused, not held",
+        "suggestions left",
+        "loaded",
+        "no lines",
+        "misfit",
+        "measured",
+        "measured with weak edges",
+        "lines agree",
+        "applied",
+        "not usable",
+    ],  # fmt: skip
+)
+def test_the_lens_hint_names_the_one_next_thing_to_do(state: dict, heading: str, sub: str) -> None:
+    out = run_wizard_js(
+        "(function() { renderLensHint(); return [$('lens-hint').innerHTML, lensHintText]; })()",
+        functions=("esc", "renderLensHint"),
+        prelude="var state = " + json.dumps(state) + ";" + _HINT_PAGE,
+    )
+    assert out == [f'{heading}<div class="notice-sub">{sub}</div>', heading]
+
+
+@pytest.mark.parametrize(
+    ("rating", "label"),
+    [("excellent", "Excellent"), ("good", "Good"), ("okay", "Fair"), ("medium", "Poor"), ("low", "Not usable")],
+)
+def test_the_lens_ratings_are_named_for_the_operator(rating: str, label: str) -> None:
+    assert run_wizard_js(f"LENS_RATING_LABEL['{rating}']", variables=("LENS_RATING_LABEL",)) == label
+
+
+# ---------------------------------------------------------------------------
+# Simple: the four steps open in order, the point of origin is chosen
+# ---------------------------------------------------------------------------
+
+_LOCK_PAGE = """
+var els = {};
+function $(id) {
+  if (!els[id]) els[id] = { hidden: false, disabled: false, inert: false, cls: {},
+    classList: { toggle: function(c, on) { els[id].cls[c] = !!on; } } };
+  return els[id];
+}
+var tips = [$('tip-simple')];
+var document = { querySelectorAll: function() { return tips; } };
+"""
+_LOCKED = ["sstep-2", "sstep-3", "corners-q", "cal-container", "cal-simple-corners"]
+
+
+def _locks(mode: str, rect: dict, loc: str = "", moved: tuple[bool, ...] = (False,) * 4) -> dict:
+    corners = dict(zip(("DSL", "DSR", "USR", "USL"), moved, strict=True))
+    return run_wizard_js(
+        "(function() { lockSimpleSteps(); var ids = " + json.dumps(_LOCKED) + ";"
+        " return { locked: ids.filter(function(id) { return els[id].cls['step-locked'] && els[id].inert; }),"
+        " open: ids.filter(function(id) { return !els[id].cls['step-locked'] && !els[id].inert; }),"
+        " tip: !!els['tip-simple'].cls['step-locked'], refresh: $('cal-refresh').disabled,"
+        " reset: $('cal-reset').hidden, next: $('cal-next').disabled }; })()",
+        functions=(*_MARK_FUNCTIONS, "lockSimpleSteps"),
+        variables=_MARK_VARS,
+        prelude=length_page("metric", {})
+        + _LOCK_PAGE
+        + f"var S = {{ mode: '{mode}', simpleLoc: '{loc}', rect: {json.dumps(rect)},"
+        f" cornerMoved: {json.dumps(corners)} }};",
+    )
+
+
+_EMPTY = {"w": "", "d": "", "origin": "", "cx": "", "cy": "", "z": ""}
+
+
+@pytest.mark.parametrize(
+    ("rect", "loc", "open_upto"),
+    [
+        (_EMPTY, "", 0),
+        (_EMPTY, "back", 1),
+        ({**_EMPTY, "w": "12"}, "", 1),
+        ({**_EMPTY, "w": "12", "d": "6"}, "", 2),
+        ({**_EMPTY, "w": "12", "d": "300"}, "back", 1),
+        ({**_EMPTY, "w": "12", "d": "6", "origin": "dsc"}, "", 5),
+        ({**_EMPTY, "w": "12", "d": "6", "origin": "custom", "cx": "0", "cy": "3"}, "", 2),
+        ({**_EMPTY, "w": "12", "d": "6", "origin": "custom", "cx": "0", "cy": "3", "z": "0"}, "", 5),
+    ],
+    ids=[
+        "nothing",
+        "a location",
+        "a rectangle begun",
+        "a size",
+        "a size out of range",
+        "the default origin",
+        "a custom centre without Z",
+        "a custom centre",
+    ],  # fmt: skip
+)
+def test_simples_steps_open_in_order(rect: dict, loc: str, open_upto: int) -> None:
+    out = _locks("simple", rect, loc)
+    # Step 2 opens with step 1 done, step 3 with a valid size, step 4 (heading, picture, corners) with an origin.
+    assert out["open"] == _LOCKED[:open_upto] and out["locked"] == _LOCKED[open_upto:]
+    picture = open_upto == len(_LOCKED)
+    assert (out["tip"], out["refresh"]) == (not picture, not picture)
+
+
+@pytest.mark.parametrize(
+    ("moved", "reset_shown", "next_on"),
+    [((False,) * 4, False, False), ((True, False, False, False), True, False), ((True,) * 4, True, True)],
+    ids=["none placed", "one placed", "all placed"],
+)
+def test_reset_corners_and_next_wait_for_the_corners(moved: tuple, reset_shown: bool, next_on: bool) -> None:
+    out = _locks("simple", {**_EMPTY, "w": "12", "d": "6", "origin": "dsc"}, moved=moved)
+    assert (out["reset"], out["next"]) == (not reset_shown, not next_on)
+
+
+def test_advanced_locks_nothing_and_always_shows_reset_pins() -> None:
+    out = _locks("advanced", _EMPTY)
+    assert out == {"locked": [], "open": _LOCKED, "tip": False, "refresh": False, "reset": False, "next": False}
+
+
+@pytest.mark.parametrize(
+    ("rect", "problem"),
+    [
+        ({**_EMPTY, "w": "12"}, "Enter the rectangle's depth."),
+        ({**_EMPTY, "w": "12", "d": "6"}, "Choose the point of origin."),
+        (
+            {**_EMPTY, "w": "12", "d": "6", "origin": "custom", "cx": "1"},
+            "Enter the Y and Z of the rectangle's centre, measured from the point of origin.",
+        ),
+        ({**_EMPTY, "w": "12", "d": "6", "origin": "dsc"}, ""),
+    ],
+    ids=["size first", "then the origin", "then a custom centre", "complete"],
+)
+def test_the_point_of_origin_is_an_active_choice(rect: dict, problem: str) -> None:
+    out = run_wizard_js(
+        "[rectProblem(), rectVals()]",
+        functions=_MARK_FUNCTIONS,
+        variables=_MARK_VARS,
+        prelude=length_page("metric", {}) + f"var S = {{ rect: {json.dumps(rect)} }};",
+    )
+    assert out[0] == problem
+    if not rect["origin"]:
+        # Without a chosen origin the rectangle has no centre, so no corner has a position yet.
+        assert (out[1]["cx"], out[1]["cy"], out[1]["z"]) == (None, None, None)
+
+
+@pytest.mark.parametrize(
+    ("marks", "grid", "origin"),
+    [
+        ([], {"width": 12, "depth": 6, "x_offset": 0, "y_offset": 3, "z_offset": 0}, ""),
+        ([{"id": 1, "pin": [0.2, 0.4]}], {"width": 12, "depth": 6, "x_offset": 0, "y_offset": 3, "z_offset": 0}, "dsc"),
+        (
+            [{"id": 1, "pin": [0.2, 0.4]}],
+            {"width": 12, "depth": 6, "x_offset": 1, "y_offset": 3, "z_offset": 0},
+            "custom",
+        ),
+    ],
+    ids=["no calibration: choose", "a saved default origin", "a saved custom origin"],
+)
+def test_a_station_keeps_the_origin_its_saved_rectangle_gives(marks: list, grid: dict, origin: str) -> None:
+    out = run_wizard_js(
+        "(function() { loadSaved(); return S.rect.origin; })()",
+        functions=("len", "lenField", "loadSaved"),
+        variables=("exactLen", "CORNERS"),
+        prelude=length_page("metric", {})
+        + "var S = { mode: 'simple', rect: { w: '', d: '', origin: '', cx: '', cy: '', z: '' },"
+        " cornerPins: {}, cornerMoved: {}, points: [] };"
+        f" var SAVED = {{ mode: 'simple', marks: {json.dumps(marks)}, grid: {json.dumps(grid)} }};",
+    )
+    assert out == origin
+
+
+def _simple_hint(rect: dict, loc: str = "") -> list:
+    return run_wizard_js(
+        "(function() { renderSimpleReq(); return shown; })()",
+        functions=(*_MARK_FUNCTIONS, "esc", "lenText", "fmt", "renderSimpleReq"),
+        variables=(*_MARK_VARS, "CORNER_TITLES"),
+        prelude=length_page("metric", {})
+        + _DOM
+        + "var shown = null; function showHint(area, h, sub) { shown = [area, h, sub]; }"
+        f" var S = {{ simpleLoc: '{loc}', rect: {json.dumps(rect)}, solve: null,"
+        " cornerMoved: { DSL: false, DSR: false, USR: false, USL: false } };",
+    )
+
+
+@pytest.mark.parametrize(
+    ("rect", "loc", "shown"),
+    [
+        (
+            _EMPTY,
+            "",
+            ["sloc", "Choose where your camera is located.",
+             "The location decides on which side of the picture each corner of the rectangle starts."],
+        ),
+        (
+            _EMPTY,
+            "back",
+            ["rect", "Enter the size of the rectangle you marked on stage.",
+             "Only the corners need a mark, such as a tape cross. The Setup Wizard then draws the rectangle on the"
+             " picture."],
+        ),
+        (
+            {**_EMPTY, "w": "12", "d": "6"},
+            "back",
+            ["origin-q", "Choose the point of origin.",
+             "All position data that the station sends is measured from this point (0/0/0). It must match the point"
+             " of origin of your console or tracking system."],
+        ),
+        (
+            {**_EMPTY, "w": "12", "d": "6", "origin": "dsc"},
+            "",
+            ["image", "Drag DSL onto its tape mark.",
+             "Downstage left. 0 of 4 corners are on their marks. Click a corner to select it and move it with the"
+             " arrow keys. Press Enter when the crosshair is in the right place."],
+        ),
+    ],
+    ids=["nothing", "the size", "the origin", "the corners"],
+)  # fmt: skip
+def test_the_simple_hint_sits_above_the_step_it_is_about(rect: dict, loc: str, shown: list) -> None:
+    assert _simple_hint(rect, loc) == shown

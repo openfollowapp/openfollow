@@ -10621,7 +10621,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             need.append(f"{4 - pinned} more pinned point" + ("" if pinned == 3 else "s"))
         if need:
             response.status = 422
-            return json.dumps({"error": "The camera cannot be solved yet.", "need": need})
+            return json.dumps({"error": "The camera cannot be calculated yet.", "need": need})
 
         # The pins were placed on the distorted snapshot; the solve is pinhole.
         raw_pins = {m.id: pin for m, pin in marks if pin is not None}

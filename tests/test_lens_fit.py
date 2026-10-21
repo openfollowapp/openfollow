@@ -191,7 +191,7 @@ class TestRating:
             off = HALF_DIAG * np.abs((result.k1 - truth[0]) * r**3 + (result.k2 - truth[1]) * r**5).max()
             assert result.rating == RATING_LOW, seed
             assert off <= 3.0 * result.uncertainty_px, seed
-            assert result.hint == "Add a line near the left edge."
+            assert result.hint == "Add lines near the left and right edges."
         # The side edges the hint asks for rule the other lens out.
         result = fit_lens_from_lines(lines_for(*truth, EDGES, noise=1.0, seed=0), W, H)
         assert result.rating in ("good", "excellent")
@@ -203,25 +203,105 @@ class TestRating:
         assert RATINGS.index(sloppy.rating) <= RATINGS.index(precise.rating)
 
 
+# A short line in each outer band: (x0, y0), (x1, y1) inside the outer 15 % of that side.
+_BAND = {
+    "top": ((700.0, 40.0), (1200.0, 45.0)),
+    "bottom": ((700.0, H - 40.0), (1200.0, H - 45.0)),
+    "left": ((40.0, 400.0), (45.0, 700.0)),
+    "right": ((W - 40.0, 400.0), (W - 45.0, 700.0)),
+}
+# Reaches a corner of the picture (beyond 0.8 of the half-diagonal) and no outer band of its own.
+_CORNER_REACH = ((150.0, 120.0), (420.0, 300.0))
+# Clear of every outer band.
+_CENTRE = (MID_H, ((960.0, 200.0), (980.0, 880.0)))
+
+
+def _hint(segments, *, rating: str = "okay", k2_fitted: bool = True, rms_px: float = 1.0, misfit: bool = False) -> str:
+    return coverage_hint(
+        lines_for(0.0, 0.0, segments), W, H, rating=rating, k2_fitted=k2_fitted, rms_px=rms_px, misfit=misfit
+    )
+
+
+def _all_but(*weak: str):
+    return tuple(_BAND[name] for name in _BAND if name not in weak) + _CENTRE
+
+
 class TestHint:
-    def test_excellent_has_no_hint(self) -> None:
-        assert coverage_hint(lines_for(0.0, 0.0, EDGES), W, H, rating="excellent", k2_fitted=True) == ""
+    def test_every_band_full_needs_nothing(self) -> None:
+        assert _hint(EDGES + (MID_H,), rating="okay") == ""
 
-    def test_single_line_asks_for_a_second(self) -> None:
-        assert "second line" in coverage_hint(lines_for(0.0, 0.0, (TOP,)), W, H, rating="low", k2_fitted=True)
+    @pytest.mark.parametrize("rating", ["low", "medium", "okay", "good", "excellent"])
+    def test_a_single_line_asks_for_a_second_at_any_rating(self, rating: str) -> None:
+        assert _hint((TOP,), rating=rating) == "Add a second line in another part of the picture."
 
-    def test_unfitted_k2_asks_for_a_corner(self) -> None:
-        assert coverage_hint(lines_for(0.0, 0.0, (MID_H, MID_V)), W, H, rating="low", k2_fitted=False) == (
-            "The edge fit needs a line near a corner."
+    def test_unfitted_corner_correction_asks_for_a_corner_line(self) -> None:
+        assert _hint(_CENTRE, rating="low", k2_fitted=False) == (
+            "Corner correction needs a line that reaches a corner of the picture."
         )
 
-    def test_names_the_empty_edge_band(self) -> None:
-        hint = coverage_hint(lines_for(0.0, 0.0, (TOP, LEFT, RIGHT)), W, H, rating="okay", k2_fitted=True)
-        assert hint == "Add a line near the bottom edge."
+    def test_a_line_into_a_corner_moves_on_to_the_edges(self) -> None:
+        hint = _hint((*_CENTRE, _CORNER_REACH), rating="low", k2_fitted=False)
+        assert hint.startswith("Add lines near")
 
-    def test_balanced_coverage_asks_for_more_or_better_points(self) -> None:
-        hint = coverage_hint(lines_for(0.0, 0.0, EDGES), W, H, rating="good", k2_fitted=True)
-        assert "more lines" in hint and "precisely" in hint
+    @pytest.mark.parametrize(
+        ("weak", "said"),
+        [
+            (("bottom",), "Add a line near the bottom edge."),
+            (("top", "bottom"), "Add lines near the top and bottom edges."),
+            (("top", "left", "bottom"), "Add lines near the top, bottom and left edges."),
+            (("top", "bottom", "left", "right"), "Add lines near all edges of the picture."),
+        ],
+        ids=["one", "two", "three", "four"],
+    )
+    def test_names_every_weak_edge(self, weak: tuple[str, ...], said: str) -> None:
+        assert _hint(_all_but(*weak), rating="medium") == said
+
+    def test_the_weakest_edge_comes_first(self) -> None:
+        # The top band holds three points of a short line, the left none: both weak, the left first.
+        top_few = ((700.0, 40.0), (1200.0, 45.0))
+        lines = [*lines_for(0.0, 0.0, _all_but("top", "left")), make_line(*top_few, 0.0, 0.0, n=3)]
+        hint = coverage_hint(lines, W, H, rating="medium", k2_fitted=True, rms_px=1.0, misfit=False)
+        assert hint == "Add lines near the left and top edges."
+
+    @pytest.mark.parametrize("points", [4, 5])
+    def test_a_band_needs_five_points(self, points: int) -> None:
+        lines = [*lines_for(0.0, 0.0, _all_but("bottom")), make_line(*_BAND["bottom"], 0.0, 0.0, n=points)]
+        hint = coverage_hint(lines, W, H, rating="medium", k2_fitted=True, rms_px=1.0, misfit=False)
+        assert hint == ("Add a line near the bottom edge." if points < 5 else "")
+
+    @pytest.mark.parametrize("rating", ["good", "excellent"])
+    def test_good_or_better_asks_only_to_confirm(self, rating: str) -> None:
+        assert (
+            _hint(_all_but("top", "left"), rating=rating)
+            == "If possible, add lines near the top and left edges to confirm it."
+        )
+
+    def test_lines_that_already_agree_may_be_good(self) -> None:
+        assert _hint(_all_but("top"), rating="okay", rms_px=2.0) == (
+            "The result may already be good. If possible, add a line near the top edge to confirm it."
+        )
+
+    @pytest.mark.parametrize(
+        ("segments", "change"),
+        [
+            ((_BAND["bottom"], _BAND["left"], _BAND["right"]), {}),
+            (_all_but("top"), {"misfit": True}),
+            (_all_but("top"), {"rms_px": 2.01}),
+            (_all_but("top") + (_CORNER_REACH,), {"k2_fitted": False}),
+            (_all_but("top"), {"rating": "medium"}),
+        ],
+        ids=["three lines", "a misfit", "points off their curves", "no corner correction", "rated poor"],
+    )
+    def test_lines_that_do_not_agree_are_asked_for_more(self, segments, change: dict) -> None:  # noqa: ANN001
+        kw = {"rating": "okay", "rms_px": 1.0, **change}
+        assert _hint(segments, **kw) == "Add a line near the top edge."
+
+    def test_the_fit_hands_its_own_rms_to_the_hint(self) -> None:
+        # Rated fair with the corner correction measured, but the points scatter more than 2 px about their curves.
+        result = fit_lens_from_lines(lines_for(-0.2, 0.03, (BOTTOM, LEFT, RIGHT, MID_H), noise=2.0, seed=1), W, H)
+        assert (result.rating, result.k2_fitted) == ("okay", True)
+        assert result.rms_px > 2.0 and not any(line.misfit for line in result.lines)
+        assert result.hint == "Add a line near the top edge."
 
 
 class TestMisfit:

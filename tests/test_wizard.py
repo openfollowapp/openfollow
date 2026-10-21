@@ -297,7 +297,7 @@ class TestWizardPage:
             status, body = _get(base, "/wizard")
         assert status == 200
         titles = {"video": "Video Source", "lens": "Lens", "calib": "Camera Calibration", "review": "Review"}
-        nav = re.search(r'<nav class="wizard-steps" aria-label="Setup wizard steps">(.*?)</nav>', body, re.S)
+        nav = re.search(r'<nav class="wizard-steps" aria-label="Setup Wizard steps">(.*?)</nav>', body, re.S)
         assert nav is not None
         buttons = re.findall(
             r'<button type="button" class="wizard-step-btn" data-step="(\d)" onclick="wizardGo\((\d)\)">'
@@ -416,7 +416,9 @@ class TestWizardReviewPage:
     def test_the_pin_menu_is_a_group_of_buttons_not_a_menu(self, live_server) -> None:
         # The arrow keys move the menu's spot, so it promises no menu keys between its items.
         _, body = _get(live_server[1], "/wizard")
-        assert '<div class="pin-menu" id="pin-menu" role="group" aria-label="Place here" hidden></div>' in body
+        assert (
+            '<div class="pin-menu" id="pin-menu" role="group" aria-label="Which point is here?" hidden></div>' in body
+        )
         assert 'role="menu' not in body
 
     def test_review_lists_incomplete_points_in_an_error_notice(self, live_server) -> None:
@@ -445,15 +447,15 @@ class TestWizardHelpCopy:
 
     def test_simple_starts_the_rectangle_from_the_entered_position_first(self) -> None:
         text = self._help("wizard-calibration-simple")
-        order = ("**Camera Position**", "**Where is your camera located?**", "in front of the stage")
+        order = ("**Camera Position**", "**1. Where is your camera?**", "in front of the stage")
         assert [text.index(s) for s in order] == sorted(text.index(s) for s in order)
 
     def test_simple_says_every_corner_becomes_a_point_in_advanced(self) -> None:
-        assert "All four corners become known points" in self._help("wizard-calibration-simple")
+        assert "The corners become known points" in self._help("wizard-calibration-simple")
 
     def test_the_advanced_caution_list_names_the_distances(self) -> None:
         caution = self._help("wizard-calibration-advanced").split("## Something might be wrong")[1]
-        assert "a triangulated point whose distances disagree with the picture" in caution
+        assert "a distance point whose distances disagree with the picture" in caution
 
     def test_review_says_apply_waits_for_incomplete_points(self) -> None:
         assert "stays off while a point is not complete" in self._help("wizard-review")
@@ -545,7 +547,7 @@ class TestWizardSavedCalibration:
 
 
 # ---------------------------------------------------------------------------
-# Apply & Finish: the grid, then the camera, and only then leave
+# Save and finish: the grid, then the camera, and only then leave
 # ---------------------------------------------------------------------------
 
 _SOLVED = {"pos_x": 0.4, "pos_y": -11.2, "pos_z": 6.1, "pitch": -22.5, "yaw": 0.3, "roll": 0.1, "fov": 61.0}
@@ -658,14 +660,14 @@ class TestWizardApply:
     @pytest.mark.parametrize(
         ("answers", "sent", "said"),
         [
-            ({"grid": 400}, ["/api/config/grid"], ["Refused with 400.", "The grid settings were not applied."]),
+            ({"grid": 400}, ["/api/config/grid"], ["Refused with 400.", "The grid settings were not saved."]),
             (
                 {"camera": 400},
                 ["/api/config/grid", "/api/config/camera"],
-                ["Refused with 400.", "The camera settings were not applied."],
+                ["Refused with 400.", "The camera settings were not saved."],
             ),
-            ({"grid": "down"}, ["/api/config/grid"], ["Unreachable.", "Not applied."]),
-            ({"camera": "down"}, ["/api/config/grid", "/api/config/camera"], ["Unreachable.", "Not applied."]),
+            ({"grid": "down"}, ["/api/config/grid"], ["Unreachable.", "Not saved."]),
+            ({"camera": "down"}, ["/api/config/grid", "/api/config/camera"], ["Unreachable.", "Not saved."]),
         ],
         ids=["grid refused", "camera refused", "grid unreachable", "camera unreachable"],
     )
@@ -679,7 +681,9 @@ class TestWizardApply:
     def test_a_folding_lens_pair_sends_nothing(self) -> None:
         out = _apply(_SIMPLE_STATE, pair_valid=False)
         assert out["calls"] == [] and out["href"] == "/wizard"
-        assert out["shown"] == [["The lens pair folds the overlay inside the frame.", "Not applied."]]
+        assert out["shown"] == [
+            ["With these lens values, the overlay folds over itself inside the picture.", "Not saved."]
+        ]
 
     def test_with_lens_distortion_off_no_lens_pair_is_sent(self) -> None:
         out = _apply(_SIMPLE_STATE, lens=False, pair_valid=False)
@@ -700,7 +704,7 @@ class TestWizardApply:
         [
             (_ADVANCED_STATE, "Enter its X, Y and Z."),
             (_ADVANCED_STATE, "Pin it on the picture: its two distances allow two places, mirrored across the line."),
-            (_ADVANCED_STATE, "A distance is shorter than the height between the two points."),
+            (_ADVANCED_STATE, "A distance is shorter than the height difference between the points."),
             (_SIMPLE_STATE, "rect"),
         ],
         ids=["a value missing", "no pin", "the station's reason", "simple rectangle"],
@@ -1167,35 +1171,36 @@ class TestWizardScriptParses:
 
 @integration
 class TestWizardLensStepPage:
-    def test_the_lens_step_carries_the_stored_pair_under_fine_tune(self, live_server_lens) -> None:
+    def test_the_lens_step_carries_the_stored_pair_under_adjust_by_hand(self, live_server_lens) -> None:
         _, base = live_server_lens
         status, body = _get(base, "/wizard")
         assert status == 200
         assert 'id="wiz_lens_k1"' in body and 'type="hidden" id="wiz_lens_k1"' not in body
-        # The sliders carry the stored pair and sit under the result as Fine-tune.
+        # The sliders carry the stored pair and sit under the result as Adjust by hand.
         assert 'id="wiz_lens_k1" step="0.005"' in body
         assert 'value="-0.21"' in body and 'value="0.03"' in body
-        assert "Fine-tune" in body
+        assert '<div class="group-title">Adjust by hand</div>' in body and "Fine-tune" not in body
         # No step is referred to by number anywhere, since the Lens step shifts the numbering.
         assert re.search(r"Step \d", body) is None
 
     def test_the_operator_never_sees_a_coefficient_name(self, live_server_lens) -> None:
-        """The pair is Barrel / fisheye and Edge fit everywhere an operator reads: never k1 or k2."""
+        """The pair is Barrel / fisheye and Corner correction everywhere an operator reads: never k1 or k2."""
         _, base = live_server_lens
         _, page = _get(base, "/wizard")
         # The script keeps the coefficient names; what the page shows and says must not.
         wizard = re.sub(r"<script.*?</script>", "", page, flags=re.S)
-        assert "Barrel / fisheye" in wizard and "Edge fit" in wizard
-        for leak in ("(k1)", "(k2)", "Lens k1", "Lens k2", "k1 or k2", "k2 not"):
+        assert "Barrel / fisheye" in wizard and "Corner correction" in wizard
+        for leak in ("(k1)", "(k2)", "Lens k1", "Lens k2", "k1 or k2", "k2 not", "Edge fit", "edge fit"):
             assert leak not in wizard, leak
         for text in (
-            "'Barrel / fisheye ' + fmt(k1, 3) + ' · Edge fit '",
+            "'Barrel / fisheye ' + fmt(k1, 3) + ' · Corner correction '",
             "' \\u2013 barrel / fisheye '",
-            "', edge fit '",
+            "', corner correction '",
             "'0 (not measured)'",
-            "Bring either lens value closer to 0",
+            "Set one of the lens values closer to 0",
         ):
             assert text in page, text
+        assert "edge fit" not in page.lower()
         _, camera = _get(base, "/section/camera")
         assert "<label>Barrel / fisheye</label>" in camera and "<label>Edge fit</label>" in camera
         assert "(k1)" not in camera and "(k2)" not in camera
@@ -1301,7 +1306,7 @@ class TestWizardLensTemplate:
         assert "(lensFitApplies(lensFit) ? '' : ' \\u2013 not applied')" in src
         # Review rates the pair only while it is the fit's own.
         review = wizard_function("reviewLensCoverage")
-        assert "if (lensPairIsTheFits(k1, k2)) {" in review and "'Fine-tuned'" in review
+        assert "if (lensPairIsTheFits(k1, k2)) {" in review and "'Adjusted by hand'" in review
 
     def test_a_tap_is_judged_in_screen_pixels_and_a_cancel_traces_nothing(self) -> None:
         src = self._src()
@@ -1322,11 +1327,10 @@ class TestWizardLensTemplate:
 
     def test_suggestions_and_points_work_from_the_keyboard(self) -> None:
         src = self._src()
-        assert "svgEl('g', { tabindex: '0', role: 'button', 'aria-label': 'Suggested edge ' + (i + 1) })" in src
-        keys = re.search(r"overlay\.addEventListener\('keydown', function\(e\) \{(.*?)\n    \}\);", src, re.S)
-        assert keys
-        candidate = keys.group(1).split("var handle =")[0]
-        assert "e.key === 'Enter' || e.key === ' '" in candidate and "lensAddCandidate(" in candidate
+        # A suggestion is reached by its bubble's two buttons; the dashed line itself is no tab stop.
+        assert '\'<button type="button" class="lb-use" aria-label="Use this line"' in src
+        assert '\'<button type="button" class="lb-reject" aria-label="Reject this line"' in src
+        assert "tabindex" not in wizard_function("renderLensCandidates")
         # Every point says what it is.
         assert "'Line ' + (i + 1) + (j === 0 ? ', start' : j === 4 ? ', end' : ', middle point ' + j)" in src
         # A point reached with Tab is the selected one, so the toolbar acts on what has the focus.
@@ -1367,4 +1371,88 @@ class TestWizardLensTemplate:
         levels = "{ low: 'caution', medium: 'caution', okay: 'info', good: 'success', excellent: 'success' }"
         assert "LENS_RATING_LEVEL = " + levels in src
         assert "LENS_RATING_SEGMENTS = { low: 1, medium: 2, okay: 3, good: 4, excellent: 5 }" in src
-        assert "This line doesn't fit the others – is it really straight?" in src
+        assert "' fit the others.'" in wizard_function("renderLensMisfit")
+
+
+@integration
+class TestWizardSimpleSteps:
+    def test_simple_asks_four_numbered_questions_in_order(self, live_server) -> None:
+        _, body = _get(live_server[1], "/wizard")
+        calib = _wizard_step(body, "calib")
+        questions = [
+            "<strong>1. Where is your camera?</strong>",
+            "<strong>2. What is the size of your rectangle?</strong>",
+            "<strong>3. Where is the point of origin?</strong>",
+            "<strong>4. Place the corners on the picture</strong>",
+        ]
+        assert [calib.index(q) for q in questions] == sorted(calib.index(q) for q in questions)
+        # Steps 2 and 3 sit in their own lockable blocks; step 4 is the picture with its heading and corners.
+        assert calib.index('id="sstep-2"') < calib.index(questions[1]) < calib.index('id="sstep-3"')
+        assert calib.index('id="sstep-3"') < calib.index(questions[2])
+
+    def test_the_size_starts_empty_with_no_example_value(self, live_server) -> None:
+        _, body = _get(live_server[1], "/wizard")
+        for field in ("rect_w", "rect_d"):
+            tag = re.search(rf'<input [^>]*id="{field}"[^>]*>', body)
+            assert tag and "placeholder" not in tag.group(0) and "data-ph" not in tag.group(0), field
+
+    def test_the_point_of_origin_starts_at_choose(self, live_server) -> None:
+        _, body = _get(live_server[1], "/wizard")
+        select = re.search(r'<select id="rect_origin">(.*?)</select>', body, re.S)
+        assert select
+        options = re.findall(r'<option value="([^"]*)"( selected)?>([^<]*)</option>', select.group(1))
+        assert options == [
+            ("", " selected", "Choose…"),
+            ("dsc", "", "Default: centred between DSL and DSR"),
+            ("custom", "", "Custom"),
+        ]
+
+    def test_reset_and_refresh_are_named_and_ided_for_their_rules(self, live_server) -> None:
+        _, body = _get(live_server[1], "/wizard")
+        calib = _wizard_step(body, "calib")
+        assert '<span class="only-simple">Reset Corners</span><span class="only-advanced">Reset Pins</span>' in calib
+        assert 'id="cal-refresh"' in calib and 'id="cal-next"' in calib
+
+
+@unit
+class TestWizardLensTemplateBubbles:
+    @staticmethod
+    def _src() -> str:
+        return WIZARD_TEMPLATE.read_text(encoding="utf-8")
+
+    def test_the_bubble_buttons_never_move(self) -> None:
+        # The app's buttons lift on hover; a bubble's two buttons stay put in every state.
+        assert (
+            ".lens-bubble button, .lens-bubble button:hover, .lens-bubble button:active, .lens-bubble button:focus,"
+            " .lens-bubble button:focus-visible { transform: none !important; filter: none !important;"
+        ) in self._src()
+
+    def test_the_hint_box_sits_above_the_picture(self) -> None:
+        src = self._src()
+        assert src.index('id="lens-hint"') < src.index('<div id="lens-container"')
+        assert '<p class="wizard-help" style="margin-top:0.72rem;">' not in src
+        # Full screen mirrors it.
+        assert "hint = lensHintText;" in wizard_function("renderFsBar")
+
+    def test_a_click_on_a_dashed_line_still_uses_it(self) -> None:
+        down = re.search(
+            r"overlay\.addEventListener\('pointerdown', function\(e\) \{(.*?)\n    \}\);", self._src(), re.S
+        )
+        assert down and "lensAddCandidate(+candidate.dataset.candidate);" in down.group(1)
+
+    def test_a_corner_selected_by_its_focus_is_not_dropped_by_the_redraw(self) -> None:
+        # Selecting redraws the pins, so the focus event that selected reaches the document from a detached handle.
+        assert (
+            "S.selCorner != null && e.target.isConnected && !e.target.closest('#cal-pins .pin-handle')" in self._src()
+        )
+
+    def test_the_copy_never_says_nudge_or_mentions_shift_for_ten_pixels(self) -> None:
+        help_dir = WIZARD_TEMPLATE.parent.parent / "help"
+        texts = [self._src()] + [p.read_text(encoding="utf-8") for p in help_dir.glob("wizard-*.md")]
+        for text in texts:
+            # Identifiers may keep the word; nothing an operator reads says it.
+            assert "nudge" not in re.sub(r"\bnudge(MenuSpot\(|: function|\()", "", text).lower()
+            assert (
+                "Shift</kbd> + arrow" not in text and "**Shift** for" not in text and "Shift</strong> for" not in text
+            )
+            assert "\u2014" not in text

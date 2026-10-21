@@ -4248,3 +4248,46 @@ class TestReadSettingsToggle:
         handler.joysticks[0] = _Failing()
         assert handler.read_settings_toggle() is False
         assert 0 not in handler.joysticks
+
+
+class _BrokenJoystick(FakeJoystick):
+    def get_button(self, idx: int) -> int:
+        raise pygame.error("Invalid joystick button")
+
+
+class TestPinCaptureReads:
+    """Pin here reads the pads itself while ``update()`` is paused."""
+
+    def test_held_inputs_name_every_button_and_hat_direction(self, stubbed_pygame) -> None:
+        handler, _ = make_handler(stubbed_pygame)
+        joy = _attach_fake_joystick(handler, 3)
+        joy.press(11)
+        joy.set_hat((1, 1))
+        _attach_fake_joystick(handler, 4)
+        assert handler.held_inputs() == {3: frozenset({11, HAT_RIGHT, HAT_UP}), 4: frozenset()}
+
+    @pytest.mark.parametrize("read", ["held_inputs", "resync_edges"])
+    def test_a_pad_that_fails_a_read_is_closed(self, stubbed_pygame, read: str) -> None:
+        handler, _ = make_handler(stubbed_pygame)
+        handler.joysticks[0] = _BrokenJoystick()
+        handler.capabilities[0] = ControllerCapabilities(backend="joystick")
+        result = getattr(handler, read)()
+        assert 0 not in handler.joysticks
+        assert result in ({}, None)
+
+    def test_a_press_made_while_paused_fires_nothing_once_resynced(self, stubbed_pygame) -> None:
+        bus = InputEventBus()
+        seen: list[ButtonEvent] = []
+        bus.subscribe_button(seen.append)
+        handler = GamepadHandler(FakeApp(), event_bus=bus)
+        joy = _attach_fake_joystick(handler)
+        joy.press(CONTROLLER_BUTTON_Y)
+        handler.resync_edges()
+        result = handler.update(0.016)
+        assert result.toggle_help_pressed is False
+        assert [e for e in seen if e.edge == "press"] == []
+        # Let go and pressed again, it is a press as ever.
+        joy.release(CONTROLLER_BUTTON_Y)
+        handler.update(0.016)
+        joy.press(CONTROLLER_BUTTON_Y)
+        assert handler.update(0.016).toggle_help_pressed is True

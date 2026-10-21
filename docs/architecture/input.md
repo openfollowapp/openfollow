@@ -93,13 +93,43 @@ or 3 s), then frozen:
 - an arrival reclaims a missing / reserved slot of its kind with its key,
   else takes the lowest one of its kind (any kind when there is exactly one
   slot), else appends;
+- an arrival in a pinned socket takes the pinned slot first;
 - **Forget** (web) makes a missing slot **reserved**: it keeps its place,
   drives no marker, raises no warning;
 - switching gamepads or the 3D mouse off leaves that kind's slots missing,
   alarms included, and nobody else moves; switched back on, each device
   reclaims its own slot. A kind that is off at startup holds no slots.
 
-Nothing persists: every start numbers by socket again. 3D mice carry
+**Pins** (`ControllerConfig.slot_pins`, 1-based `SlotPinConfig(slot, key,
+kind, label)`) bind a socket to a slot: whatever is plugged into it takes the
+slot, matched by key only; `kind` and `label` are what was pinned, shown while
+the socket is empty (the slot is then missing). Seeding places pinned sockets
+first and fills the rest in port order around them. A pin above the occupied
+slots leaves **empty** placeholders below it: silent, no marker, taken by an
+arrival of any kind, trailing ones trimmed, and not counted by the
+single-controller rule. `_vacant_for` never hands a pinned index to another
+socket. `pin()` swaps: the displaced entry takes the pressed controller's old
+index and its pin along; `unpin()` moves nothing. A hand-edited change reaches
+`set_pins` through the controller block of `apply_runtime_config_changes`.
+
+**Pin here** is an exclusive mode like Button Detection: while
+`InputManager.pin_capture_active`, `process_input` runs only
+`process_slot_pin_capture` (`update()` is skipped, the key and pointer
+handlers stand down), for up to `CAPTURE_TIMEOUT_S`. `PinCapture`
+(`input/slot_pin_capture.py`) reads pads as raw buttons + hats against a
+baseline taken at arm (a held button is not a press) and pucks as latched
+presses drained at arm, then waits for the release, so the press reaches no
+other consumer; on end the pads' edge state is resynced and puck presses
+drained. The result (`pinned` / `no_port` / `no_slot` / `timeout` /
+`cancelled`, a wire interface in `/api/stats` `controllers.pin_capture`) is
+saved through `save_slot_pins` into `config.toml` and `app._config`, so the
+reload watcher sees no change. The HUD prompt is an operator message raised
+with `from_app=True`, drawn even with `[operator_messages] enabled = false`
+(that switch gates OSC ingest), and retracted by its `seq` when the capture
+ends. Pins are device-local: in `_DEVICE_IDENTITY_FIELDS`, stripped from
+export and section broadcast.
+
+Without pins, every start numbers by socket again. 3D mice carry
 session-unique instance ids (like SDL's), so a puck keeps its id while a
 sibling comes and goes. `identify_slot` rumbles a pad (main loop) or blinks a
 puck's LED (its read thread, scheduled between reads) and flashes the slot's

@@ -529,6 +529,22 @@ class Mouse3DHandler:
         """Clock time of this puck's latest deflection or held button."""
         return self._last_input_at
 
+    def take_presses(self) -> set[int]:
+        """Buttons pressed since the last frame, consumed here so ``update`` does not see them again."""
+        with self._lock:
+            snap = self._snapshot
+            pending = self._pending_edges
+            self._pending_edges = set()
+        return pending | (self._button_edges(snap.buttons) if snap is not None else set())
+
+    def held_buttons(self) -> frozenset[int]:
+        """Buttons held in the latest reading."""
+        with self._lock:
+            snap = self._snapshot
+        if snap is None:
+            return frozenset()
+        return frozenset(idx for idx, pressed in enumerate(snap.buttons) if pressed)
+
     def request_identify(self) -> bool:
         """Blink the puck's LED so it can be picked out; False if it has none."""
         with self._lock:
@@ -1068,6 +1084,14 @@ class Mouse3DManager:
             for _info, handler in self._connected_ordered()
             if handler.last_input_at is not None
         }
+
+    def take_presses(self) -> dict[int, set[int]]:
+        """Instance id -> buttons each open puck had pressed since the last frame; consumes them."""
+        return {handler.instance_id: handler.take_presses() for _info, handler in self._connected_ordered()}
+
+    def held_buttons(self) -> dict[int, frozenset[int]]:
+        """Instance id -> buttons each open puck holds now."""
+        return {handler.instance_id: handler.held_buttons() for _info, handler in self._connected_ordered()}
 
     def identify(self, instance_id: int) -> bool:
         """Blink one puck's LED; False if it is not open or has no LED."""

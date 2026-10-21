@@ -21,6 +21,7 @@ from openfollow.input.gamepad import (
     LT_AXIS_INDICES,
     RT_AXIS_INDICES,
 )
+from openfollow.input.gamepad import read_hat_directions as _read_hat_directions
 from openfollow.runtime.overlay_state import ButtonDetectionState
 
 if TYPE_CHECKING:
@@ -81,22 +82,6 @@ _WIZARD_START_GRACE_S = 0.5
 
 # Delay trigger button commit to allow analog axis to catch up first.
 _TRIGGER_BUTTON_DEFER_S = 0.3
-
-
-def _read_hat_directions(joystick: JoystickProtocol) -> set[int]:
-    """Return the set of hat sentinel IDs currently active."""
-    active: set[int] = set()
-    for hat_idx in range(joystick.get_numhats()):
-        hx, hy = joystick.get_hat(hat_idx)
-        if hy > 0:
-            active.add(HAT_UP)
-        if hy < 0:
-            active.add(HAT_DOWN)
-        if hx < 0:
-            active.add(HAT_LEFT)
-        if hx > 0:
-            active.add(HAT_RIGHT)
-    return active
 
 
 @dataclass

@@ -233,6 +233,23 @@ HAT_DOWN = -2
 HAT_LEFT = -3
 HAT_RIGHT = -4
 
+
+def read_hat_directions(joystick: JoystickProtocol) -> set[int]:
+    """Return the set of hat sentinel IDs currently active."""
+    active: set[int] = set()
+    for hat_idx in range(joystick.get_numhats()):
+        hx, hy = joystick.get_hat(hat_idx)
+        if hy > 0:
+            active.add(HAT_UP)
+        if hy < 0:
+            active.add(HAT_DOWN)
+        if hx < 0:
+            active.add(HAT_LEFT)
+        if hx > 0:
+            active.add(HAT_RIGHT)
+    return active
+
+
 # String name → SDL2 button ID, used by configurable mappings.
 BUTTON_NAME_TO_ID: dict[str, int] = {
     "A": CONTROLLER_BUTTON_A,
@@ -1824,6 +1841,35 @@ class GamepadHandler:
             return bool(joystick.rumble(_IDENTIFY_STRENGTH, _IDENTIFY_STRENGTH, _IDENTIFY_MS))
         except Exception:  # noqa: BLE001 - Identify is best-effort; any backend failure means "no pulse"
             return False
+
+    def held_inputs(self) -> dict[int, frozenset[int]]:
+        """Instance id -> every raw button and hat direction held on that pad now."""
+        self._pump_events()
+        held: dict[int, frozenset[int]] = {}
+        to_remove: list[int] = []
+        for idx, joystick in tuple(self.joysticks.items()):
+            try:
+                buttons = {b for b in range(joystick.get_numbuttons()) if joystick.get_button(b)}
+                held[idx] = frozenset(buttons | read_hat_directions(joystick))
+            except pygame.error as e:
+                logger.warning("Error reading buttons from gamepad instance %s: %s", idx, e)
+                to_remove.append(idx)
+        self._cleanup_failed(to_remove)
+        return held
+
+    def resync_edges(self) -> None:
+        """Take every pad's buttons as already seen, so input made while ``update`` was paused fires nothing."""
+        to_remove: list[int] = []
+        for idx in tuple(self.joysticks):
+            try:
+                self._sync_normal_mode_button_prev(idx)
+                bus_prev = self._button_bus_prev.setdefault(idx, {})
+                for button_id in BUTTON_NAME_TO_ID.values():
+                    bus_prev[button_id] = self._get_button(idx, button_id)
+            except pygame.error as e:
+                logger.warning("Error reading buttons from gamepad instance %s: %s", idx, e)
+                to_remove.append(idx)
+        self._cleanup_failed(to_remove)
 
     def get_controller_info(self) -> list[dict[str, Any]]:
         """Get info about connected controllers for HUD display.

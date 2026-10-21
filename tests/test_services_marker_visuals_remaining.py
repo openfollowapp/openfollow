@@ -1683,6 +1683,20 @@ class TestOperatorMessageViews:
         assert state.operator_message_position == "bottom"
         assert state.operator_message_overflow == 0
 
+    def test_switched_off_messages_still_show_the_apps_own_prompts(self) -> None:
+        from openfollow.operator_messages import OperatorMessageStore
+
+        app = _build_app()
+        store = OperatorMessageStore(clock=lambda: 0.0)
+        store.add("from OSC")
+        store.add("Press a button on the controller for C2", from_app=True)
+        _attach_store(app, store)
+        app._config.operator_messages.enabled = False
+
+        state = _build(app)
+        assert [v.message for v in state.operator_messages] == ["Press a button on the controller for C2"]
+        assert state.operator_message_overflow == 0
+
     def test_keyed_without_catalog_entry_uses_palette_fallback(self) -> None:
         from openfollow.operator_messages import OperatorMessageStore
 

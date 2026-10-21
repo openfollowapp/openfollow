@@ -25,7 +25,7 @@ from hypothesis import strategies as st
 
 from openfollow.configuration import AppConfig
 from openfollow.video.inputs import get_available_input_ids
-from openfollow.web.routes import apply_section_data
+from openfollow.web.routes import _SECTION_CONFIG_ATTRS, apply_section_data
 
 pytestmark = pytest.mark.unit
 
@@ -49,7 +49,14 @@ _POSTINIT_SECTIONS = [
 # ``psn`` / ``general`` are string/int handlers (also safe to fuzz for crashes).
 # ``video_source`` delegates coercion to plugin code and is out of scope here.
 _SAFE_SECTIONS = _POSTINIT_SECTIONS + ["psn", "general"]
-_ALL_KNOWN_SECTIONS = frozenset(_SAFE_SECTIONS + ["video_source"])
+# Every section the apply path answers: each sub-config it maps, plus the ones it handles itself.
+_ALL_KNOWN_SECTIONS = frozenset(_SECTION_CONFIG_ATTRS) | {
+    "interface_assignment",
+    "video_source",
+    "psn",
+    "general",
+    "features",
+}
 
 # Real field names sampled across sections so the per-section field parsers are
 # actually exercised (unknown keys are ignored by ``_apply_parsed_updates``).
@@ -158,6 +165,12 @@ def test_apply_section_data_unknown_section_returns_false(
 ) -> None:
     assume(name not in _ALL_KNOWN_SECTIONS)
     assert apply_section_data(AppConfig(), name, data) is False
+
+
+@pytest.mark.parametrize("name", sorted(_ALL_KNOWN_SECTIONS))
+def test_every_known_section_is_applied(name: str) -> None:
+    """The list above is the apply path's own: a name on it that the path rejects is stale."""
+    assert apply_section_data(AppConfig(), name, {}) is True
 
 
 # The ``video_source`` section dispatches into per-plugin ``apply_config_fields``

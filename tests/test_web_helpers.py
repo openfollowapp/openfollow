@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 import openfollow.video.inputs as inputs_module
-from openfollow.configuration import AppConfig, CameraConfig, OscDestinationConfig, OscDestinationsConfig
+from openfollow.configuration import AppConfig, CameraConfig, OscDestinationConfig, OscDestinationsConfig, SlotPinConfig
 from openfollow.input.control_frame import ControlFrame
 from openfollow.lens_model import lens_warp_is_valid
 from openfollow.web.routes import (
@@ -69,6 +69,15 @@ def test_config_dict_redacted_drops_device_local_fields() -> None:
     # names this box: two stations must never claim one name through a copied config.
     assert "station_fqdn" not in d
     assert d["web_port"] == 8080  # non-secret fields preserved
+
+
+def test_config_dict_redacted_drops_slot_pins() -> None:
+    """A pin names a USB socket on this box; a peer's slots would follow sockets it lacks."""
+    cfg = AppConfig()
+    cfg.controller.slot_pins = [SlotPinConfig(slot=2, key="usb:platform/xhci-hcd.1:1.4", label="Pad")]
+    d = _config_dict_redacted(cfg)
+    assert "slot_pins" not in d["controller"]
+    assert d["controller"]["deadzone"] == cfg.controller.deadzone
 
 
 def test_the_touch_remote_switch_never_leaves_the_station_but_its_tuning_does() -> None:
@@ -131,6 +140,13 @@ def test_strip_device_local_fields_drops_detection_storage_path() -> None:
     )
     assert "storage_path" not in scrubbed
     assert scrubbed["model"] == "yolov8n.onnx"  # non-local fields kept
+
+
+@pytest.mark.parametrize("section", ["controller", "gamepad", "keyboard", "mouse"])
+def test_strip_device_local_fields_drops_slot_pins(section: str) -> None:
+    pin = {"slot": 2, "key": "usb:platform/xhci-hcd.1:1.4", "kind": "gamepad", "label": "Pad"}
+    scrubbed = strip_device_local_fields(section, {"slot_pins": [pin], "deadzone": 0.2})
+    assert scrubbed == {"deadzone": 0.2}
 
 
 def test_interface_assignment_is_device_local_in_full() -> None:
@@ -1694,6 +1710,7 @@ _DEVICE_IDENTITY_SAMPLES = [
     ("markers_catalog_path", "/mnt/nvme/openfollow/markers.toml"),
     ("testpattern_selected_media", "0123456789abcdef"),
     ("detection.storage_path", "/mnt/nvme/openfollow/yolo"),
+    ("controller.slot_pins", [SlotPinConfig(slot=2, key="usb:platform/xhci-hcd.1:1.4", label="Pad")]),
     ("display.operator_screen", "cairo"),
 ]
 

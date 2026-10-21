@@ -116,6 +116,20 @@ a pad SDL can't rumble, read once at open with `SDL_JoystickHasRumble`, or a
 puck without an LED). Notes follow the controller while connected, never count
 as a slot-table change, stay on a missing slot and are cleared by `forget()`.
 
+## 3D Mouse recognition (`input/mouse3d.py`)
+A puck is recognised by the HID usage it declares, not by an ID list. hidapi (0.14, as Debian trixie ships it) lists one entry per top-level collection, so one hidraw node shows up several times (a SpaceNavigator: Generic Desktop / Multi-axis Controller, usage 1/8, plus two vendor-defined collections). `_PySpaceMouseBackend.enumerate` groups the entries by node and keeps a node when **any** of its entries declares 1/8 under a 3Dconnexion VID/PID: vendor `0x256f`, or Logitech `0x046d` within `0xc600`-`0xc6ff`. A CadMouse (Mouse, 1/2), the 3Dconnexion keyboards and numpads (Keyboard, 1/6) and another vendor's multi-axis device are dropped without an exclusion list, and the Universal Receiver's mouse interface, its own node, is skipped while its multi-axis node is kept. A node whose every entry reports usage 0/0 (older hidapi builds) is kept only when its VID/PID has a device profile; a vendor range never admits a device on its own. A node that is not a puck is never logged.
+
+Readable is a separate question (`Mouse3DDeviceInfo.profiled`). A puck is opened only when it has a device profile: pyspacemouse's built-in table, or a local profile `_device_profiles` builds for a model pyspacemouse lacks by copying a sibling's spec under the model's own IDs and name (siblings from Blender's NDOF table and spacenavd: the same internals in a different housing):
+
+| Model | VID/PID | Read with the profile of |
+|---|---|---|
+| SpaceNavigator for Notebooks | `046d:c628` | SpaceNavigator `046d:c626` |
+| SpaceMouse Wireless receiver | `256f:c62f` | SpaceMouse Wireless `256f:c62e` |
+| SpaceMouse Pro Wireless, cabled | `256f:c631` | SpaceMouse Pro Wireless `256f:c632` |
+| SpaceMouse Module | `256f:c636` | SpaceMouse Compact `256f:c635` |
+
+A built-in profile for the same ID always wins. Built-in specs are in pyspacemouse's LEGACY axis convention, which its built-in open applies unchanged, so `open` passes a copied spec as `open_by_path(path, device_spec=...)` and it reads exactly like its sibling; a built-in model is opened without `device_spec`. `open` picks the spec from the IDs of the device at the node at that moment, never from an earlier enumeration: a custom spec skips pyspacemouse's own ID check, and a hidraw node can pass to another device between two passes. A puck with no profile is named once in the log (`_note_unprofiled`) and reported as `no_profile`, never opened. When the built-in table cannot be read, every declared puck counts as profiled and is tried, so a broken table shows as an open error rather than a missing puck.
+
 ## 3D Mouse status (`input/mouse3d_status.py`)
 `Mouse3DManager.status()` reports what the supervisor already holds and never enumerates or imports: the backend is `ok`, `not_installed`, or `could_not_start` (enumeration raised; easyhid without libhidapi binds the interpreter and raises `AttributeError`), and every attached puck is `open`, `opening`, `no_profile`, `not_permitted` or `open_failed`. Unprofiled pucks are enumerated and reported but never opened. hidapi drops the errno of a refused open, so `_PySpaceMouseBackend.open` checks `os.access` on the node and raises `PermissionError`. `/api/stats` publishes the block as `mouse3d` (its values are a wire interface), the bundle renders it as E10, and the web section shows only faults: its poll answers 204 while `status_key` is unchanged, so a `role="alert"` box is inserted once per change. **macOS is unsupported by platform** (`_platform_supported`): the real backend never starts there and the section shows one Info line; an injected backend bypasses the gate, as it bypasses the dependency check. Lift the gate with the pyspacemouse release whose `open_by_path` accepts macOS hidapi paths.
 

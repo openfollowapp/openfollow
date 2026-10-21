@@ -415,6 +415,7 @@ CALIBRATION_CORNERS = ("DSL", "DSR", "USR", "USL")
 CALIBRATION_MODES = ("simple", "advanced")
 MARK_KINDS = ("known", "triangulated")
 MAX_CALIBRATION_MARKS = 12
+MAX_MARK_ID = 999
 MAX_MARK_NAME = 60
 MARK_REACH_M = 10_000.0  # a typed coordinate further out is a typing slip
 MAX_MARK_DISTANCE_M = 200.0
@@ -426,11 +427,11 @@ def _coerce_measured(value: Any) -> float:
 
 
 def _coerce_mark_id(value: Any) -> int:
-    """A whole number of 1 or more, else 0, which no mark may carry."""
+    """A whole number from 1 to MAX_MARK_ID, else 0, which no mark may carry."""
     if isinstance(value, bool):
         return 0
     number = _coerce_float(value, 0.0)
-    return int(number) if number.is_integer() and number >= 1 else 0
+    return int(number) if number.is_integer() and 1 <= number <= MAX_MARK_ID else 0
 
 
 @dataclass
@@ -469,14 +470,17 @@ class CalibrationMarkConfig:
         self.from_b = 0 if known else _coerce_mark_id(self.from_b)
         self.distance_a = 0.0 if known else _coerce_measured(self.distance_a)
         self.distance_b = 0.0 if known else _coerce_measured(self.distance_b)
+        given = isinstance(self.pin, list | tuple) and len(self.pin) > 0
         self.pin = _coerce_fixed_list(self.pin, 2)
+        self._unread_pin = given and not self.pin
         position = _coerce_fixed_list(self.position, 3)
-        self.position = position if not known else []
+        reached = all(abs(c) <= MARK_REACH_M for c in position)
+        self.position = position if not known and reached else []
 
     def problem(self) -> str:
         """Why the mark cannot be used, or ``""``. A measurement is dropped, never clamped."""
         if not self.id:
-            return "needs an id of 1 or more"
+            return f"needs an id between 1 and {MAX_MARK_ID}"
         if not self.kind:
             return "needs a kind of known or triangulated"
         if not -MARK_REACH_M <= self.z <= MARK_REACH_M:
@@ -491,7 +495,7 @@ class CalibrationMarkConfig:
                 return f"needs both distances between 0 and {MAX_MARK_DISTANCE_M:g} m"
             if not self.pin:
                 return "needs its pin: two distances allow two places"
-        if self.pin and not all(0.0 <= c <= 1.0 for c in self.pin):
+        if getattr(self, "_unread_pin", False) or (self.pin and not all(0.0 <= c <= 1.0 for c in self.pin)):
             return "needs its pin on the snapshot"
         return ""
 
@@ -549,7 +553,7 @@ class CameraConfig:
                 f"using {self.lens_k1:.6g} / {self.lens_k2:.6g}",
             )
         self.calibration_mode = _coerce_choice(self.calibration_mode, CALIBRATION_MODES, "simple")
-        self.calibration_marks = _coerce_calibration_marks(self.calibration_marks)
+        self.calibration_marks = _coerce_calibration_marks(self.calibration_marks, self.calibration_mode)
 
 
 # The warnings last reported, by field: every load_config builds the camera again, so a file says it once.
@@ -576,7 +580,7 @@ def calibration_mark_drops(marks: list[CalibrationMarkConfig]) -> tuple[list[Cal
         orphans = [m for m in marks if m.kind == "triangulated" and not (m.from_a in by_id and m.from_b in by_id)]
         if not orphans:
             break
-        dropped += [f"mark {m.id} is measured from a mark that is not there" for m in orphans]
+        dropped += [f"mark id {m.id} is measured from a mark that is not kept" for m in orphans]
         marks = [m for m in marks if m not in orphans]
     by_id = {m.id: m for m in marks}
     looping: set[int] = set()
@@ -592,15 +596,18 @@ def calibration_mark_drops(marks: list[CalibrationMarkConfig]) -> tuple[list[Cal
                 elif parent not in seen:
                     seen.add(parent)
                     todo.append(parent)
-    dropped += [f"mark {i} is measured from itself through others" for i in sorted(looping)]
+    dropped += [f"mark id {i} is measured from itself through others" for i in sorted(looping)]
     if not looping:
         return marks, dropped
     kept, more = calibration_mark_drops([m for m in marks if m.id not in looping])
     return kept, dropped + more
 
 
-def _coerce_calibration_marks(value: Any) -> list[CalibrationMarkConfig]:
-    """Entries as dataclasses; one that cannot be used is dropped with one warning, past the cap too."""
+def _coerce_calibration_marks(value: Any, mode: str = "advanced") -> list[CalibrationMarkConfig]:
+    """Entries as dataclasses; one that cannot be used is dropped with one warning, past the cap too.
+
+    Simple's marks are the rectangle's four corners: known marks with ids 1 to 4, in CALIBRATION_CORNERS order.
+    """
     marks: list[CalibrationMarkConfig] = []
     entries = value if isinstance(value, list) else []
     dropped: list[str] = [] if isinstance(value, list) else ["is not a list of tables"]
@@ -616,6 +623,8 @@ def _coerce_calibration_marks(value: Any) -> list[CalibrationMarkConfig]:
         problem = entry.problem()
         if not problem and any(m.id == entry.id for m in marks):
             problem = f"repeats id {entry.id}"
+        if not problem and mode == "simple" and (entry.kind != "known" or entry.id > len(CALIBRATION_CORNERS)):
+            problem = "is not one of Simple's four corners"
         if problem:
             dropped.append(f"entry {i} {problem}")
             continue
@@ -647,16 +656,18 @@ def migrate_calibration_keys(camera: dict[str, Any], grid: Any) -> None:
     pins = camera.pop("corner_pins", None)
     if "calibration_marks" in camera or not (points or pins):
         return
-    g = grid if isinstance(grid, dict) else {}
-    defaults = GridConfig()
-    size = [_coerce_float(g.get(k, getattr(defaults, k)), getattr(defaults, k)) for k in _GRID_PLACEMENT]
+    clamped = GridConfig(**_filter_known(GridConfig, grid if isinstance(grid, dict) else {}))
+    size = [getattr(clamped, k) for k in _GRID_PLACEMENT]
     corners = grid_corner_positions(*size)
+    off: list[str] = []
     pin_list = pins if isinstance(pins, list) and len(pins) == 4 else [None] * 4
     marks: list[dict[str, Any]] = []
     for n, (name, place, pin) in enumerate(zip(CALIBRATION_CORNERS, corners, pin_list, strict=True), start=1):
-        # A corner pinned off the snapshot (the former pins could be) is left to pin again.
+        # A corner pinned off the snapshot is left to pin again.
         xy = _coerce_fixed_list(pin, 2)
         on = bool(xy) and all(0.0 <= c <= 1.0 for c in xy)
+        if xy and not on:
+            off.append(name)
         marks.append(
             {
                 "id": n,
@@ -686,6 +697,8 @@ def migrate_calibration_keys(camera: dict[str, Any], grid: Any) -> None:
                 "position": entry.get("position", []),
             }
         )
+    if off:
+        _report_drops("camera.corner_pins", f"{', '.join(off)} pinned off the snapshot, to be pinned again")
     camera["calibration_mode"] = "advanced" if len(marks) > 4 else "simple"
     camera["calibration_marks"] = marks
 

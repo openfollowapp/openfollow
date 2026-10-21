@@ -19,13 +19,16 @@ import numpy as np
 import numpy.typing as npt
 
 from openfollow.configuration import CameraConfig
-from openfollow.scene.solver import camera_params, project_points, solve_camera_dlt
+from openfollow.scene.solver import camera_params, compute_homography, decompose_homography, project_points
 
 PIXEL_SIGMA = 1.0  # px: a careful pin on a mark, native snapshot pixels
 DISTANCE_SIGMA = 0.04  # m: a hand-held laser or tape on a mark
 FLAG_PX = 5.0  # a pin further than this from where the camera sees its mark is named
 FLAG_DISTANCE_M = 3.0 * DISTANCE_SIGMA
 SEED_FOVS = (40.0, 90.0)  # tried beside the saved FOV from a camera position
+# Every seed and mirror side gets this many iterations; only the best goes on to the full fit.
+SCOUT_ITERATIONS = 25
+FIT_ITERATIONS = 300
 # Two measured circles may miss each other by this much and still be one point: the noise of two distances.
 MEET_TOLERANCE = 3.0 * math.sqrt(2.0) * DISTANCE_SIGMA
 # Four pinned known marks within this of one height, every triangle of them at least this large, seed the solve.
@@ -180,9 +183,10 @@ def _seeds(
             seeds.append(np.array([hint[0], hint[1], hint[2], pitch, yaw, 0.0, fov], dtype=np.float64))
     quad = _level_quad([m for m in marks if m.kind == "known" and m.pin is not None])
     if quad is not None:
-        world = [(q.position[0], q.position[1], q.z) for q in quad if q.position]
-        screen = [q.pin for q in quad if q.pin]
-        seeded = solve_camera_dlt(world, screen, canvas_w, canvas_h)
+        # No reprojection gate here: a corner pinned a little off still seeds, and the fit judges it.
+        plane = np.array([q.position for q in quad if q.position], dtype=np.float64)
+        screen = np.array([q.pin for q in quad if q.pin], dtype=np.float64)
+        seeded = decompose_homography(compute_homography(plane, screen), canvas_w, canvas_h, quad[0].z)
         if seeded is not None:
             seeds.append(camera_params(seeded))
     return seeds
@@ -210,6 +214,55 @@ class _Problem:
             placed[mark.id] = np.array([x[7 + 2 * i], x[8 + 2 * i], mark.z])
         return placed
 
+    def jacobian(self, x: npt.NDArray[np.float64]) -> npt.NDArray[np.float64] | None:
+        """Camera columns by central differences; each mark's x, y in closed form beside one projection call."""
+        r0 = self.residuals(x)
+        if r0 is None:
+            return None
+        jac = np.zeros((r0.size, x.size))
+        for k in range(7):
+            step = 1e-6 * (1.0 + abs(x[k]))
+            up, down = x.copy(), x.copy()
+            up[k] += step
+            down[k] -= step
+            r_up, r_down = self.residuals(up), self.residuals(down)
+            if r_up is None or r_down is None:
+                return None
+            jac[:, k] = (r_up - r_down) / (2.0 * step)
+        if not self.live:
+            return jac
+        placed = self.places(x)
+        column = {m.id: 7 + 2 * i for i, m in enumerate(self.live)}
+        steps, probes = [], []
+        for mark in self.live:
+            at = placed[mark.id]
+            hx, hy = 1e-6 * (1.0 + abs(at[0])), 1e-6 * (1.0 + abs(at[1]))
+            steps.append((hx, hy))
+            probes += [at + (hx, 0, 0), at - (hx, 0, 0), at + (0, hy, 0), at - (0, hy, 0)]
+        try:
+            seen = project_points(x[:7], np.array(probes), *self.canvas)
+        except ValueError:
+            return None
+        pin_row = {m.id: 2 * i for i, m in enumerate(self.pinned)}
+        for i, mark in enumerate(self.live):
+            if mark.id in pin_row:
+                row, (hx, hy), d = pin_row[mark.id], steps[i], seen[4 * i : 4 * i + 4]
+                jac[row : row + 2, column[mark.id]] = (d[0] - d[1]) / (2.0 * hx * PIXEL_SIGMA)
+                jac[row : row + 2, column[mark.id] + 1] = (d[2] - d[3]) / (2.0 * hy * PIXEL_SIGMA)
+        base = 2 * len(self.pinned)
+        for i, mark in enumerate(self.live):
+            for k, parent in enumerate((mark.from_a, mark.from_b)):
+                diff = placed[mark.id] - placed[parent]
+                length = float(np.linalg.norm(diff))
+                if length == 0.0:
+                    continue
+                grad = diff[:2] / (length * DISTANCE_SIGMA)
+                row = base + 2 * i + k
+                jac[row, column[mark.id] : column[mark.id] + 2] += grad
+                if parent in column:
+                    jac[row, column[parent] : column[parent] + 2] -= grad
+        return jac if bool(np.isfinite(jac).all()) else None
+
     def residuals(self, x: npt.NDArray[np.float64]) -> npt.NDArray[np.float64] | None:
         """Per pin (2), then per triangulated mark its two distances; None off the valid range."""
         placed = self.places(x)
@@ -229,28 +282,22 @@ class _Problem:
 
 
 def _fit(
-    problem: _Problem, x0: npt.NDArray[np.float64], stale: Callable[[], bool] | None, iterations: int = 300
+    problem: _Problem, x0: npt.NDArray[np.float64], stale: Callable[[], bool] | None, iterations: int
 ) -> tuple[npt.NDArray[np.float64], float] | None:
-    """Levenberg-Marquardt from ``x0``; None when the start or a derivative probe is off the valid range.
+    """Levenberg-Marquardt from ``x0``. None when the start or its first derivatives are off the valid range;
+    once a step was taken, a later failed derivative ends the fit where it is.
     ``stale`` is asked before every iteration and raises :class:`SolveSuperseded` once it answers True."""
     x = x0.copy()
     r = problem.residuals(x)
     if r is None:
         return None
     damping = 1e-3
-    for _ in range(iterations):
+    for iteration in range(iterations):
         if stale is not None and stale():
             raise SolveSuperseded
-        jac = np.empty((r.size, x.size))
-        for k in range(x.size):
-            step = 1e-6 * (1.0 + abs(x[k]))
-            up, down = x.copy(), x.copy()
-            up[k] += step
-            down[k] -= step
-            r_up, r_down = problem.residuals(up), problem.residuals(down)
-            if r_up is None or r_down is None:
-                return x, float(r @ r)
-            jac[:, k] = (r_up - r_down) / (2.0 * step)
+        jac = problem.jacobian(x)
+        if jac is None:
+            return None if iteration == 0 else (x, float(r @ r))
         normal = jac.T @ jac
         gradient = jac.T @ r
         cost = float(r @ r)
@@ -281,18 +328,27 @@ def solve_marks(
     """The camera from the marks; ``hint`` is the camera position the operator estimated, or None.
 
     Every seed (the hint at the saved FOV, 40° and 90°, looking at 0/0/0; the homography of four pinned known
-    marks at one height) is fitted twice: with each triangulated mark on the side its pin picks as the seed
-    sees it, and with all of them on the other side. An upright camera (at or above the lowest mark, not
-    looking up) beats one that is not, then the lower cost wins. ``stale`` is asked before every iteration;
-    once it answers True the solve raises :class:`SolveSuperseded`.
+    marks at one height) is fitted briefly twice: with each triangulated mark on the side its pin picks as the
+    seed sees it, and with all of them on the other side. An upright camera (at or above the lowest mark, not
+    looking up) beats one that is not, then the lower cost wins, and only that one is fitted to the end.
+    ``stale`` is asked before every iteration; once it answers True the solve raises :class:`SolveSuperseded`.
     """
     canvas = (canvas_w, canvas_h)
     ordered = _order(marks)
     triangulated = [m for m in ordered if m.kind == "triangulated"]
     known = {m.id: np.array([m.position[0], m.position[1], m.z]) for m in ordered if m.position is not None}
     seeds = _seeds(ordered, hint, saved_fov, canvas_w, canvas_h)
-    if not seeds:
-        return MarkSolve(None, (), "the camera position")
+
+    def judged(problem: _Problem, fitted: tuple[npt.NDArray[np.float64], float] | None) -> dict[str, Any] | None:
+        if fitted is None or not 10.0 < float(fitted[0][6]) < 170.0:
+            return None
+        x, cost = fitted
+        places = problem.places(x)
+        floor = min(float(p[2]) for p in places.values())
+        return {"x": x, "cost": cost, "upright": bool(x[2] >= floor and x[3] <= 0.0), "places": places}
+
+    def rank(c: dict[str, Any]) -> tuple[bool, float]:
+        return c["upright"], -c["cost"]
 
     best: dict[str, Any] | None = None
     reasons: dict[int, str] = {}
@@ -312,29 +368,25 @@ def solve_marks(
                 gaps = np.linalg.norm(seen - np.array(mark.pin, dtype=np.float64), axis=1)
                 nearer = 1 if np.isfinite(gaps).any() and np.nanargmin(gaps) == 1 else 0
                 placed[mark.id] = found[1 - nearer if flip else nearer]
-            reasons = reasons or failed
+            for mark_id, reason in failed.items():
+                reasons.setdefault(mark_id, reason)
             live = [m for m in triangulated if m.id not in failed]
             pinned = [m for m in ordered if m.pin is not None and m.id not in failed]
             if len(pinned) < 4:
                 continue
             problem = _Problem(known, live, pinned, canvas)
             x0 = np.concatenate([seed, *[placed[m.id][:2] for m in live]])
-            fitted = _fit(problem, x0, stale)
-            if fitted is None:
-                continue
-            x, cost = fitted
-            places = problem.places(x)
-            floor = min(float(p[2]) for p in places.values())
-            upright = bool(x[2] >= floor and x[3] <= 0.0)
-            if best is None or (upright, -cost) > (best["upright"], -best["cost"]):
-                best = {"x": x, "cost": cost, "upright": upright, "places": places, "failed": failed, "live": live}
+            scout = judged(problem, _fit(problem, x0, stale, SCOUT_ITERATIONS))
+            if scout is not None and (best is None or rank(scout) > rank(best)):
+                best = {**scout, "problem": problem, "failed": failed, "live": live}
 
+    if best is not None:
+        refined = judged(best["problem"], _fit(best["problem"], best["x"], stale, FIT_ITERATIONS))
+        if refined is not None:
+            best.update(refined)
     if best is None:
-        fits = tuple(MarkFit(m.id, None, reasons.get(m.id, "")) for m in marks)
-        return MarkSolve(None, fits, NO_FIT)
+        return MarkSolve(None, tuple(MarkFit(m.id, None, reasons.get(m.id, "")) for m in marks), NO_FIT)
     x = best["x"]
-    if not 10.0 < float(x[6]) < 170.0:
-        return MarkSolve(None, tuple(MarkFit(m.id, None, best["failed"].get(m.id, "")) for m in marks), NO_FIT)
     camera = CameraConfig(
         pos_x=float(x[0]),
         pos_y=float(x[1]),

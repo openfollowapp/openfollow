@@ -57,6 +57,7 @@ from openfollow.configuration import (
     DEFAULT_UPDATE_SERVICE_NAME,
     GROUND_GRID_MAX_VERTICES,
     MARK_KINDS,
+    MARK_REACH_M,
     MARKER_TOKEN_ALL,
     MAX_CALIBRATION_MARKS,
     MAX_PATH_POINTS,
@@ -87,6 +88,7 @@ from openfollow.configuration import (
     effective_lens,
     enforce_network_mode,
     feature_gated,
+    grid_corner_positions,
     load_config_for_save,
     migrate_calibration_keys,
     migrate_ui_keys,
@@ -1662,7 +1664,7 @@ def _grid_corner_placement(cfg: AppConfig) -> tuple[float, ...]:
 
 
 def _forget_corner_pins_off_grid(cfg: AppConfig, before: tuple[float, ...]) -> None:
-    """In Simple, unpin the corner marks once the grid's corners moved from ``before``: they were pinned on those.
+    """In Simple, move the corner marks with the grid and unpin them once its corners moved from ``before``.
 
     Simple's corners are the grid's, so their pins stop meaning anything; Advanced's marks are the operator's own.
     """
@@ -1670,7 +1672,9 @@ def _forget_corner_pins_off_grid(cfg: AppConfig, before: tuple[float, ...]) -> N
     if cfg.camera.calibration_mode != "simple":
         return
     if any(abs(a - b) > _GRID_CORNER_TOLERANCE_M for a, b in zip(before, after, strict=True)):
+        corners = grid_corner_positions(*after)
         for mark in cfg.camera.calibration_marks:
+            mark.x, mark.y, mark.z = corners[mark.id - 1]
             mark.pin = []
 
 
@@ -3434,7 +3438,8 @@ def _apply_import_data(current_cfg: AppConfig, data: dict[str, Any]) -> AppConfi
     # A file from an earlier release names its calibration in the former keys, on its own grid.
     if isinstance(data.get("camera"), dict):
         data = {**data, "camera": dict(data["camera"])}
-        migrate_calibration_keys(data["camera"], data.get("grid"))
+        own = {name: getattr(cfg.grid, name) for name in _GRID_CORNER_FIELDS}
+        migrate_calibration_keys(data["camera"], data["grid"] if isinstance(data.get("grid"), dict) else own)
 
     # Sections that are always live-reloadable. The grid goes before the camera, whose Simple pins it drops.
     for section in (
@@ -3548,30 +3553,19 @@ def _load_json_body() -> Any:
     return data
 
 
-# The wizard solves the pinhole pose; lens distortion (lens_k1/lens_k2) is kept
-# separate from this vector because the DLT solve is pinhole. The wizard applies
-# the distortion warp around the pinhole projection instead (see the project /
-# unproject / solve endpoints), so the corner-pinning overlay bows to match a
-# fisheye snapshot and the solve undistorts the pinned corners first.
-_WIZARD_CAMERA_FIELDS = ("pos_x", "pos_y", "pos_z", "pitch", "yaw", "roll", "fov")
-
-
 def _wizard_lens_coeffs(cam: Any) -> tuple[float, float]:
-    """Extract the lens-distortion coefficients from a wizard camera dict.
+    """The lens pair a wizard request names; absent reads as pinhole, a value that is no number raises.
 
-    Absent or unparseable values fall back to ``0.0`` (pinhole), so an older
-    client that posts no coefficients keeps the previous behaviour. A pair
-    that folds the warp inside the frame is pulled back toward the fold, as
+    A pair that folds the warp inside the frame is pulled back toward the fold, as
     ``CameraConfig.__post_init__`` does.
     """
-
-    def _as_coeff(value: Any) -> float:
-        f = _as_float(value, 0.0)
-        return f if math.isfinite(f) else 0.0
-
-    if not isinstance(cam, dict):
+    if cam is None:
         return 0.0, 0.0
-    return pull_back_to_fold(_as_coeff(cam.get("lens_k1", 0.0)), _as_coeff(cam.get("lens_k2", 0.0)))
+    if not isinstance(cam, dict):
+        raise TypeError("camera must be an object")
+    k1 = _json_number(cam["lens_k1"], "lens_k1") if "lens_k1" in cam else 0.0
+    k2 = _json_number(cam["lens_k2"], "lens_k2") if "lens_k2" in cam else 0.0
+    return pull_back_to_fold(k1, k2)
 
 
 # A band column per chord pixel at most, on a snapshot no wider than the wizard accepts.
@@ -3637,30 +3631,6 @@ def _parse_lens_edges_body(data: Any) -> tuple[float, float, int, Any, bool]:
         raise ValueError("the scaled luma is too large")
     luma = _json_luma(data["data"], height, width, "data")
     return img_w, img_h, scale, luma, data.get("with_map") is True
-
-
-def _wizard_camera_params(cam: Any) -> Any:
-    """Coerce a wizard camera dict into the np.float64 parameter vector.
-
-    Raises ``KeyError``/``TypeError``/``ValueError``/``OverflowError`` on bad input
-    so the endpoints can convert any failure into a uniform HTTP 400 response.
-    Imported lazily to keep numpy off the import path of routes that
-    don't use it.
-    """
-    import numpy as np
-
-    if not isinstance(cam, dict):
-        raise TypeError("camera must be an object")
-    params = np.array(
-        [float(cam[k]) for k in _WIZARD_CAMERA_FIELDS],
-        dtype=np.float64,
-    )
-    # Reject a degenerate fov here so the endpoint returns 400, not a 500 from
-    # the divide-by-zero in the solver. Bounds mirror CameraConfig.__post_init__.
-    fov = float(params[6])
-    if not 1.0 <= fov <= 179.0:
-        raise ValueError(f"fov must be within [1, 179] degrees, got {fov}")
-    return params
 
 
 # The widest snapshot side the wizard takes: an 8K frame, twice over.
@@ -10635,6 +10605,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 if not isinstance(hint, list) or len(hint) != 3:
                     raise ValueError("hint must be [x, y, z]")
                 hint = [_json_number(v, "hint") for v in hint]
+                if any(abs(v) > MARK_REACH_M for v in hint):
+                    raise ValueError(f"hint must be within {MARK_REACH_M:g} m of the origin")
             saved_fov = _json_number(data.get("saved_fov", 60.0), "saved_fov")
             if not 1.0 <= saved_fov <= 179.0:
                 raise ValueError("saved_fov must be between 1 and 179")

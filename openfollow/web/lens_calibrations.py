@@ -59,10 +59,15 @@ def name_problem(name: Any) -> str:
 
 def pair_problem(k1: Any, k2: Any) -> str:
     """Why ``k1`` / ``k2`` are no lens pair to save, or ``""``."""
-    numbers = all(isinstance(v, int | float) and not isinstance(v, bool) for v in (k1, k2))
-    if not numbers or not all(math.isfinite(float(v)) for v in (k1, k2)):
+    if not all(isinstance(v, int | float) and not isinstance(v, bool) for v in (k1, k2)):
         return "The lens values must be numbers."
-    if not lens_warp_is_valid(float(k1), float(k2)):
+    try:
+        pair = (float(k1), float(k2))
+    except OverflowError:  # a JSON integer of hundreds of digits
+        return "The lens values must be numbers."
+    if not all(math.isfinite(v) for v in pair):
+        return "The lens values must be numbers."
+    if not lens_warp_is_valid(*pair):
         return "These lens values fold the overlay inside the frame."
     return ""
 

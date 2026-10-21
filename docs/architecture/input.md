@@ -172,8 +172,9 @@ of the global golden accent, so each card is identifiable at a glance.
 `OscConfig.allowed_sender_ips` drives a `verify_request` filter in `_FilteredOSCUDPServer`:
 - Empty allowlist = allow-all + loud WARNING at `start()`.
 - Non-empty allowlist = drop packets from non-listed IPs (DEBUG-level drop log, rate-limit-friendly).
-- `__post_init__` on `OscConfig` normalises the field to `list[str]` so a hand-edited TOML can't feed a bare string or non-string entries into the runtime filter / web UI / HMAC flow.
-- `_as_ip_list` parser **fails closed**: a submission of `"192.168.1.999"` (all-invalid) preserves the existing value rather than becoming `[]` and silently disabling the filter. Explicit empty (`""`, `[]`, whitespace-only CSV) still clears.
+- **IPv4 only**, the listener's one family: an IPv6 entry could never match a sender. The form refuses one (`_validate_ip_list`, with its own message) and `_as_ip_list` drops it.
+- `__post_init__` on `OscConfig` normalises the field to `list[str]` so a hand-edited TOML can't feed a bare string or non-string entries into the runtime filter / web UI / HMAC flow, and keeps only the IPv4 entries. A list with none is kept as written, so it admits nobody; the listener logs that as a WARNING.
+- `_as_ip_list` parser **fails closed**: a submission with no IPv4 entry (`"192.168.1.999"`, `"2001:db8::1"`) preserves the existing value rather than becoming `[]` and silently disabling the filter. Explicit empty (`""`, `[]`, whitespace-only CSV) still clears.
 
 ## OSC position write logging (`InputManager.update`, `restart_osc`)
 `OscMarkerAdapter.flush_updates` merges every message since the last frame, so each frame applies at most one write per marker, traced at DEBUG only. One INFO line per marker marks the start of a stream: its first applied write, and the first after `_OSC_STREAM_GAP_S` without one. `restart_osc` resets the per-marker times, so a stream on a rebuilt listener logs its start again. A write for a marker the station does not control, or cannot resolve, is dropped before either line.

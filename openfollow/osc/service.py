@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from openfollow.configuration import VALID_OSC_FRAMINGS as _VALID_OSC_FRAMINGS_TUPLE
+from openfollow.configuration import is_ipv4_literal
 from openfollow.net_egress import Egress, pin_socket_egress
 from openfollow.net_utils import IPV4_RESOLVER, join_multicast_group_on_iface
 from openfollow.osc.transport import TcpOscSender
@@ -709,7 +710,15 @@ class OscService:
                 if joined_group
                 else f"; NOT subscribed to multicast group {group}"
             )
-        if normalised_ips:
+        if normalised_ips and not any(is_ipv4_literal(ip) for ip in normalised_ips):
+            logger.warning(
+                "OSC input listening on UDP port %d; accepting no packets: the sender allowlist (%s) "
+                "holds no IPv4 address, and OSC input is IPv4 only%s",
+                port,
+                ", ".join(sorted(normalised_ips)),
+                group_note,
+            )
+        elif normalised_ips:
             logger.info(
                 "OSC input listening on UDP port %d; accepting packets only from %s%s",
                 port,

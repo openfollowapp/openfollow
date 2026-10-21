@@ -3613,8 +3613,7 @@ def _parse_lens_edges_body(data: Any) -> tuple[float, float, int, Any, bool]:
     return img_w, img_h, scale, luma, data.get("with_map") is True
 
 
-# The widest snapshot side the wizard takes: an 8K frame, twice over.
-_WIZARD_MAX_CANVAS = 16384.0
+_WIZARD_MAX_CANVAS = float(lens_calibrations.MAX_SIDE)
 
 
 def _require_wizard_canvas(img_w: float, img_h: float) -> None:
@@ -3677,7 +3676,7 @@ def _wizard_marks(
     """
     if not isinstance(raw, list) or len(raw) > MAX_CALIBRATION_MARKS:
         raise ValueError(f"marks must be a list of at most {MAX_CALIBRATION_MARKS}")
-    marks = []
+    marks: list[tuple[CalibrationMarkConfig, list[float] | None]] = []
     for n, entry in enumerate(raw, start=1):
         if not isinstance(entry, dict):
             raise ValueError(f"mark {n} must be an object")
@@ -10688,7 +10687,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 "marks": answers,
                 "count": len(errors),
                 "largest_error": max(errors.values(), default=0.0),
-                "reasons": plausibility(cam, solved.marks, errors, hint, mode == "advanced"),
+                "reasons": plausibility(
+                    cam, solved.marks, errors, hint, mode == "advanced", floor_off=solved.floor_off
+                ),
             }
         )
 
@@ -10707,8 +10708,13 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         if not isinstance(data, dict):
             response.status = 400
             return json.dumps({"error": "the body must be a JSON object"})
-        problem = lens_calibrations.name_problem(data.get("name")) or lens_calibrations.pair_problem(
-            data.get("k1"), data.get("k2")
+        # The size is optional (no snapshot yet), but sent as both sides or neither.
+        sized = "width" in data or "height" in data
+        width, height = data.get("width"), data.get("height")
+        problem = (
+            lens_calibrations.name_problem(data.get("name"))
+            or lens_calibrations.pair_problem(data.get("k1"), data.get("k2"))
+            or (lens_calibrations.size_problem(width, height) if sized else "")
         )
         if problem:
             response.status = 400
@@ -10716,7 +10722,14 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         directory = lens_calibrations.calibrations_dir(server.config_path)
         try:
             saved = lens_calibrations.save_calibration(
-                directory, data["name"], data["k1"], data["k2"], openfollow.__version__, datetime.now().date()
+                directory,
+                data["name"],
+                data["k1"],
+                data["k2"],
+                openfollow.__version__,
+                datetime.now().date(),
+                width=width,
+                height=height,
             )
         except OSError as exc:
             logger.warning("saving lens calibration failed: %s", exc)

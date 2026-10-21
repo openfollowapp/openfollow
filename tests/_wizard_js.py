@@ -72,12 +72,13 @@ def run_wizard_js(
 
     ``prelude`` runs first: the globals a function reads from the page (``document``, ``WUNIT``).
     ``Infinity`` and ``NaN`` inputs survive (``json.dumps`` writes them as JS literals); the
-    result comes back through ``JSON.stringify``, where they read as ``null``.
+    result comes back through ``JSON.stringify``, where they read as ``null``. An expression
+    that is a promise is read once it settles.
     """
     assert NODE is not None
     parts = [prelude] + [wizard_var(v) for v in variables] + [wizard_function(f) for f in functions]
     parts += [f"var {key} = {json.dumps(value)};" for key, value in inputs.items()]
-    parts.append(f"process.stdout.write(JSON.stringify({expression}));")
+    parts.append(f"Promise.resolve({expression}).then(function(v) {{ process.stdout.write(JSON.stringify(v)); }});")
     done = subprocess.run([NODE, "-e", "\n".join(parts)], capture_output=True, text=True, timeout=60, check=True)
     return json.loads(done.stdout)
 

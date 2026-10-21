@@ -470,7 +470,7 @@ class CalibrationMarkConfig:
         self.from_b = 0 if known else _coerce_mark_id(self.from_b)
         self.distance_a = 0.0 if known else _coerce_measured(self.distance_a)
         self.distance_b = 0.0 if known else _coerce_measured(self.distance_b)
-        given = not (isinstance(self.pin, list | tuple) and not self.pin)
+        given = self.pin is not None and not (isinstance(self.pin, list | tuple) and not self.pin)
         self.pin = _coerce_fixed_list(self.pin, 2)
         self._unread_pin = given and not self.pin
         position = _coerce_fixed_list(self.position, 3)

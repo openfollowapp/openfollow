@@ -19,7 +19,13 @@ import numpy as np
 import numpy.typing as npt
 
 from openfollow.configuration import CameraConfig
-from openfollow.scene.solver import camera_params, compute_homography, decompose_homography, project_points
+from openfollow.scene.solver import (
+    camera_params,
+    compute_homography,
+    decompose_homography,
+    project_points,
+    unproject_to_plane,
+)
 
 PIXEL_SIGMA = 1.0  # px: a careful pin on a mark, native snapshot pixels
 DISTANCE_SIGMA = 0.04  # m: a hand-held laser or tape on a mark
@@ -34,6 +40,10 @@ MEET_TOLERANCE = 3.0 * math.sqrt(2.0) * DISTANCE_SIGMA
 # Four pinned known marks within this of one height, every triangle of them at least this large, seed the solve.
 _LEVEL_M = 0.01
 _MIN_TRIANGLE_M2 = 0.05
+# Over the picture, within reach of the marks, the fit may put the floor at most this many times as far, or as
+# near, as the homography of four level marks alone.
+FLOOR_REACH = 2.0
+_FLOOR_PROBES = np.array([[x, y] for y in np.linspace(0.0, 1.0, 7) for x in np.linspace(0.0, 1.0, 9)])
 
 REASON_HEIGHT = "A distance is shorter than the height between the two points."
 REASON_SAME_PLACE = "Its two points are at the same place."
@@ -80,10 +90,15 @@ class MarkSolve:
     camera: CameraConfig | None
     marks: tuple[MarkFit, ...]
     error: str = ""
+    floor_off: bool = False  # the fit's floor fails :func:`_floor_holds` against the level marks' camera
 
 
 def trilaterate(
-    a: Sequence[float], b: Sequence[float], distance_a: float, distance_b: float, z: float
+    a: Sequence[float] | npt.NDArray[np.float64],
+    b: Sequence[float] | npt.NDArray[np.float64],
+    distance_a: float,
+    distance_b: float,
+    z: float,
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]] | str:
     """The two places at height ``z`` that lie at the measured distances from ``a`` and ``b``, mirror
     images across the line between them; or the reason there are none.
@@ -131,6 +146,15 @@ def _wrap_degrees(angle: float) -> float:
     return 180.0 - (180.0 - angle) % 360.0
 
 
+def _upright_angles(pitch: float, yaw: float, roll: float) -> tuple[float, float, float]:
+    """The same view with pitch in [-90, 90] and yaw, roll in (-180, 180]: a pitch past 90 is the view turned
+    half round in yaw and roll."""
+    pitch = _wrap_degrees(pitch)
+    if abs(pitch) > 90.0:
+        pitch, yaw, roll = math.copysign(180.0, pitch) - pitch, yaw + 180.0, roll + 180.0
+    return pitch, _wrap_degrees(yaw), _wrap_degrees(roll)
+
+
 def _order(marks: Sequence[Mark]) -> list[Mark]:
     """Triangulated marks after the marks they are measured from; the caller has checked there is no loop."""
     by_id = {m.id: m for m in marks}
@@ -173,23 +197,54 @@ def _level_quad(known: Sequence[Mark]) -> list[Mark] | None:
     return None
 
 
+def _level_camera(
+    marks: Sequence[Mark], canvas_w: float, canvas_h: float
+) -> tuple[npt.NDArray[np.float64], list[Mark]] | None:
+    """The camera of four pinned known marks at one height alone, through their homography, and those marks."""
+    quad = _level_quad([m for m in marks if m.kind == "known" and m.pin is not None])
+    if quad is None:
+        return None
+    plane = np.array([q.position for q in quad if q.position], dtype=np.float64)
+    screen = np.array([q.pin for q in quad if q.pin], dtype=np.float64)
+    seeded = decompose_homography(compute_homography(plane, screen), canvas_w, canvas_h, quad[0].z)
+    return None if seeded is None else (camera_params(seeded), quad)
+
+
 def _seeds(
-    marks: Sequence[Mark], hint: Sequence[float] | None, saved_fov: float, canvas_w: float, canvas_h: float
+    hint: Sequence[float] | None, saved_fov: float, level: npt.NDArray[np.float64] | None
 ) -> list[npt.NDArray[np.float64]]:
     seeds = []
     if hint is not None:
         pitch, yaw = look_at(hint, (0.0, 0.0, 0.0))
         for fov in (saved_fov, *SEED_FOVS):
             seeds.append(np.array([hint[0], hint[1], hint[2], pitch, yaw, 0.0, fov], dtype=np.float64))
-    quad = _level_quad([m for m in marks if m.kind == "known" and m.pin is not None])
-    if quad is not None:
-        # No reprojection gate here: a corner pinned a little off still seeds, and the fit judges it.
-        plane = np.array([q.position for q in quad if q.position], dtype=np.float64)
-        screen = np.array([q.pin for q in quad if q.pin], dtype=np.float64)
-        seeded = decompose_homography(compute_homography(plane, screen), canvas_w, canvas_h, quad[0].z)
-        if seeded is not None:
-            seeds.append(camera_params(seeded))
+    if level is not None:
+        seeds.append(level)
     return seeds
+
+
+def _floor_holds(
+    reference: npt.NDArray[np.float64],
+    camera: npt.NDArray[np.float64],
+    plane_z: float,
+    places: npt.NDArray[np.float64],
+    canvas_w: float,
+    canvas_h: float,
+) -> bool:
+    """Whether ``camera`` puts the floor where ``reference`` does, within FLOOR_REACH.
+
+    Only the picture the reference puts on the floor within reach of the marks is asked about, so a horizon in
+    the picture, or floor far beyond the marks, decides nothing.
+    """
+    probes = _FLOOR_PROBES * np.array([canvas_w, canvas_h])
+    ref = unproject_to_plane(reference, probes, canvas_w, canvas_h, plane_z)
+    got = unproject_to_plane(camera, probes, canvas_w, canvas_h, plane_z)
+    ref_far = np.hypot(ref[:, 0] - reference[0], ref[:, 1] - reference[1])
+    got_far = np.hypot(got[:, 0] - camera[0], got[:, 1] - camera[1])
+    reach = FLOOR_REACH * float(np.hypot(places[:, 0] - reference[0], places[:, 1] - reference[1]).max())
+    asked = np.isfinite(ref_far) & (ref_far <= reach)
+    ratio = got_far[asked] / ref_far[asked]  # NaN where the camera does not put that pixel on the floor
+    return bool(np.all((ratio <= FLOOR_REACH) & (ratio >= 1.0 / FLOOR_REACH)))
 
 
 class _Problem:
@@ -330,74 +385,92 @@ def solve_marks(
     Every seed (the hint at the saved FOV, 40° and 90°, looking at 0/0/0; the homography of four pinned known
     marks at one height) is fitted briefly twice: with each triangulated mark on the side its pin picks as the
     seed sees it, and with all of them on the other side. An upright camera (at or above the lowest mark, not
-    looking up) beats one that is not, then the lower cost wins, and only that one is fitted to the end.
+    looking up) beats one that is not, then the one that placed more marks, then the lower cost. The fitted
+    camera of the winner places again what its seed could not, and only that one is fitted to the end.
     ``stale`` is asked before every iteration; once it answers True the solve raises :class:`SolveSuperseded`.
     """
     canvas = (canvas_w, canvas_h)
     ordered = _order(marks)
     triangulated = [m for m in ordered if m.kind == "triangulated"]
     known = {m.id: np.array([m.position[0], m.position[1], m.z]) for m in ordered if m.position is not None}
-    seeds = _seeds(ordered, hint, saved_fov, canvas_w, canvas_h)
+    level = _level_camera(ordered, canvas_w, canvas_h)
+    seeds = _seeds(hint, saved_fov, None if level is None else level[0])
 
-    def judged(problem: _Problem, fitted: tuple[npt.NDArray[np.float64], float] | None) -> dict[str, Any] | None:
-        if fitted is None or not 10.0 < float(fitted[0][6]) < 170.0:
+    def place_marks(
+        placed: dict[int, npt.NDArray[np.float64]], params: npt.NDArray[np.float64], flip: bool
+    ) -> dict[int, str]:
+        """Trilaterates into ``placed`` each triangulated mark not in it yet; answers the reasons of the rest."""
+        failed: dict[int, str] = {}
+        for mark in triangulated:
+            if mark.id in placed:
+                continue
+            if mark.from_a not in placed or mark.from_b not in placed:
+                failed[mark.id] = REASON_UNPLACED_FROM
+                continue
+            found = trilaterate(placed[mark.from_a], placed[mark.from_b], mark.distance_a, mark.distance_b, mark.z)
+            if isinstance(found, str):
+                failed[mark.id] = found
+                continue
+            seen = project_points(params, np.array(found), canvas_w, canvas_h)
+            gaps = np.linalg.norm(seen - np.array(mark.pin, dtype=np.float64), axis=1)
+            nearer = 1 if np.isfinite(gaps).any() and np.nanargmin(gaps) == 1 else 0
+            placed[mark.id] = found[1 - nearer if flip else nearer]
+        return failed
+
+    def fitted(
+        camera: npt.NDArray[np.float64],
+        placed: dict[int, npt.NDArray[np.float64]],
+        failed: dict[int, str],
+        iterations: int,
+    ) -> dict[str, Any] | None:
+        live = [m for m in triangulated if m.id in placed]
+        pinned = [m for m in ordered if m.pin is not None and m.id in placed]
+        if len(pinned) < 4:
             return None
-        x, cost = fitted
+        problem = _Problem(known, live, pinned, canvas)
+        result = _fit(problem, np.concatenate([camera[:7], *[placed[m.id][:2] for m in live]]), stale, iterations)
+        if result is None or not 10.0 < float(result[0][6]) < 170.0:
+            return None
+        x, cost = result
         places = problem.places(x)
         floor = min(float(p[2]) for p in places.values())
-        return {"x": x, "cost": cost, "upright": bool(x[2] >= floor and x[3] <= 0.0), "places": places}
+        upright = bool(x[2] >= floor and _upright_angles(x[3], x[4], x[5])[0] <= 0.0)
+        return {"x": x, "cost": cost, "upright": upright, "places": places, "failed": failed}
 
-    def rank(c: dict[str, Any]) -> tuple[bool, float]:
-        return c["upright"], -c["cost"]
+    def rank(c: dict[str, Any]) -> tuple[bool, int, float]:
+        return c["upright"], -len(c["failed"]), -c["cost"]
 
     best: dict[str, Any] | None = None
     reasons: dict[int, str] = {}
     for seed in seeds:
         for flip in (False, True) if triangulated else (False,):
             placed = dict(known)
-            failed: dict[int, str] = {}
-            for mark in triangulated:
-                if mark.from_a not in placed or mark.from_b not in placed:
-                    failed[mark.id] = REASON_UNPLACED_FROM
-                    continue
-                found = trilaterate(placed[mark.from_a], placed[mark.from_b], mark.distance_a, mark.distance_b, mark.z)
-                if isinstance(found, str):
-                    failed[mark.id] = found
-                    continue
-                seen = project_points(seed, np.array(found), canvas_w, canvas_h)
-                gaps = np.linalg.norm(seen - np.array(mark.pin, dtype=np.float64), axis=1)
-                nearer = 1 if np.isfinite(gaps).any() and np.nanargmin(gaps) == 1 else 0
-                placed[mark.id] = found[1 - nearer if flip else nearer]
+            failed = place_marks(placed, seed, flip)
             for mark_id, reason in failed.items():
                 reasons.setdefault(mark_id, reason)
-            live = [m for m in triangulated if m.id not in failed]
-            pinned = [m for m in ordered if m.pin is not None and m.id not in failed]
-            if len(pinned) < 4:
-                continue
-            problem = _Problem(known, live, pinned, canvas)
-            x0 = np.concatenate([seed, *[placed[m.id][:2] for m in live]])
-            scout = judged(problem, _fit(problem, x0, stale, SCOUT_ITERATIONS))
+            scout = fitted(seed, placed, failed, SCOUT_ITERATIONS)
             if scout is not None and (best is None or rank(scout) > rank(best)):
-                best = {**scout, "problem": problem, "failed": failed, "live": live}
+                best = scout
 
     if best is not None:
-        refined = judged(best["problem"], _fit(best["problem"], best["x"], stale, FIT_ITERATIONS))
+        # Chained from the seed a child inherits its parent's error; from the fitted places it may meet.
+        placed = dict(best["places"])
+        refined = fitted(best["x"], placed, place_marks(placed, best["x"][:7], False), FIT_ITERATIONS)
         if refined is not None:
-            best.update(refined)
+            best = refined
     if best is None:
         return MarkSolve(None, tuple(MarkFit(m.id, None, reasons.get(m.id, "")) for m in marks), NO_FIT)
     x = best["x"]
+    pitch, yaw, roll = _upright_angles(float(x[3]), float(x[4]), float(x[5]))
     camera = CameraConfig(
-        pos_x=float(x[0]),
-        pos_y=float(x[1]),
-        pos_z=float(x[2]),
-        pitch=float(x[3]),
-        yaw=_wrap_degrees(float(x[4])),
-        roll=_wrap_degrees(float(x[5])),
-        fov=float(x[6]),
+        pos_x=float(x[0]), pos_y=float(x[1]), pos_z=float(x[2]), pitch=pitch, yaw=yaw, roll=roll, fov=float(x[6])
     )
     params = camera_params(camera)
     places = best["places"]
+    floor_off = False
+    if level is not None and any(mark_id not in {m.id for m in level[1]} for mark_id in places):
+        plane_z = float(np.mean([m.z for m in level[1]]))
+        floor_off = not _floor_holds(level[0], params, plane_z, np.array(list(places.values())), *canvas)
     fits = []
     for mark in marks:
         if mark.id not in places:
@@ -420,7 +493,7 @@ def solve_marks(
                 distance_error,
             )
         )
-    return MarkSolve(camera, tuple(fits))
+    return MarkSolve(camera, tuple(fits), floor_off=floor_off)
 
 
 def plausibility(
@@ -429,12 +502,15 @@ def plausibility(
     errors: dict[int, float],
     hint: Sequence[float] | None,
     per_axis: bool,
+    *,
+    floor_off: bool = False,
 ) -> list[dict[str, Any]]:
     """What looks implausible about a solve, as data for the page to word in its units.
 
     ``errors`` is each pinned mark's distance from where the camera sees it, on the snapshot as shown.
     ``per_axis`` is Advanced's check of the camera position: any axis off by more than max(2.5 m, 10 % of the
     camera's distance to the marks); Simple checks the whole gap against max(1 m, 10 %).
+    ``floor_off`` is :attr:`MarkSolve.floor_off`.
     """
     placed = [f.position for f in fits if f.position is not None]
     cam = np.array([camera.pos_x, camera.pos_y, camera.pos_z])
@@ -460,6 +536,8 @@ def plausibility(
         out.append({"kind": "below"})
     if camera.pitch > 0.0:
         out.append({"kind": "up"})
+    if floor_off:
+        out.append({"kind": "reach"})
     for fit in fits:
         if errors.get(fit.id, 0.0) > FLAG_PX:
             out.append({"kind": "pixel", "id": fit.id, "px": errors[fit.id]})

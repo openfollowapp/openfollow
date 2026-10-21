@@ -9324,6 +9324,9 @@ _UNUSABLE_MARKS = {
     "pin with none": (_mark(_DSL, pin=[None, 0.5]), "needs its pin on the snapshot"),
     "pin with text": (_mark(_DSL, pin=["abc", 0.5]), "needs its pin on the snapshot"),
     "pin with nan": (_mark(_DSL, pin=[float("nan"), 0.5]), "needs its pin on the snapshot"),
+    "pin text": (_mark(_DSL, pin="abc"), "needs its pin on the snapshot"),
+    "pin a number": (_mark(_DSL, pin=0.5), "needs its pin on the snapshot"),
+    "pin a bool": (_mark(_DSL, pin=True), "needs its pin on the snapshot"),
     "not a table": ("DSL 5 0 0", "is not a table"),
     "a number": (42, "is not a table"),
 }

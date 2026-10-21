@@ -14,7 +14,7 @@ The install runs detached from the running service (the package restarts the ser
 
 ## Settings backup
 
-Before an update installs, the station saves its settings: the configuration, the marker catalog and your own templates. The Media Gallery and the detection models are not included. Backups are kept in `/var/lib/openfollow/backups/`, one per install, named after the station, the version it came from and the time, for example `brave-otter-v0.4.3-20260929T180000Z.ofbackup`. The ten newest are kept.
+Before an update installs, the station saves its settings: the configuration, the marker catalog, your own templates and the saved lens calibrations. The Media Gallery and the detection models are not included. Backups are kept in `/var/lib/openfollow/backups/`, one per install, named after the station, the version it came from and the time, for example `brave-otter-v0.4.3-20260929T180000Z.ofbackup`. The ten newest are kept.
 
 The backup holds the web PIN and stream passwords, so only the OpenFollow service user can read it.
 

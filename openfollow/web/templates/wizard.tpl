@@ -251,9 +251,8 @@
   .cal-hit { pointer-events: all; cursor: crosshair; }
   .cal-hit.idle { cursor: default; }
   .dist-wrap { overflow-x: auto; }
-  .dist-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
-  .dist-table th { text-align: left; font-size: 0.68rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); font-weight: 600; padding: 0.3rem 0.5rem; border-bottom: 1px solid var(--border-soft); }
-  .dist-table td { padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-soft); }
+  .dist-table { font-variant-numeric: tabular-nums; }
+  .dist-table th { text-align: left; font-size: 0.68rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); font-weight: 600; padding: 0.3rem 0.5rem; }
   .dist-table tr.pair { cursor: pointer; }
   .dist-table tr.pair:hover td, .dist-table tr.pair.on td { background: var(--surface-strong); }
   .dist-table td.num { text-align: right; font-weight: 700; }
@@ -293,7 +292,7 @@
   .fs-btn:hover, .fs-btn:focus-visible { background: var(--bg-soft); border-color: var(--accent); transform: none; }
   .fs-btn svg { width: 1.15rem; height: 1.15rem; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
   .fs-shell { position: fixed; inset: 0; z-index: 50; display: flex; flex-direction: column; background: var(--bg-deep); }
-  .fs-shell[hidden] { display: none; }
+  .fs-shell[hidden], .wizard-solved-params[hidden], .metric-echo[hidden], .tier-list[hidden], button[hidden] { display: none; }
   .fs-bar { display: flex; align-items: center; gap: 0.75rem; min-height: 2.6rem; padding: 0.35rem 0.6rem 0.35rem 0.9rem; background: var(--bg-soft); border-bottom: 1px solid var(--border); font-size: 0.86rem; line-height: 1.3; }
   .fs-title { font-size: 0.68rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
   .fs-hint { flex: 1; min-width: 0; color: var(--text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -309,8 +308,7 @@
   .fs-help-head h3 { margin: 0.35rem 0; font-size: 0.95rem; }
   .fs-help p { margin: 0 0 0.6rem; color: var(--muted); }
   .fs-help p strong { color: var(--text); }
-  .fs-keys { width: 100%; border-collapse: collapse; }
-  .fs-keys td { padding: 0.3rem 0; border-top: 1px solid var(--border-soft); vertical-align: top; }
+  .fs-keys td { padding: 0.3rem 0; border-top: 1px solid var(--border-soft); border-bottom: 0; vertical-align: top; }
   .fs-keys td:first-child { white-space: nowrap; padding-right: 0.75rem; }
   .fs-keys kbd { display: inline-block; min-width: 1.4rem; padding: 0 0.35rem; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 0.35rem; background: var(--bg-deep); font: inherit; font-size: 0.8rem; text-align: center; }
   @media (max-width: 680px) {
@@ -621,12 +619,13 @@
     </div>
     <div id="cal-status" class="wizard-status" role="status" hidden></div>
     <div id="cal-caution" class="notice warning" role="status" hidden style="margin-top:0.72rem;"></div>
+    <div id="cal-lens-note" class="notice" role="status" hidden style="margin-top:0.72rem;">Using the station's lens. It was not measured in this run.</div>
     <div id="cal-solved" class="wizard-solved-params" hidden></div>
 
     <div class="group" id="cal-dist-group" hidden style="margin-top:0.9rem;">
       <div class="group-title">Distances to check</div>
       <p class="wizard-help">Measure these between the marks. A distance that differs means a typed or measured value is wrong. Pairs a triangulated point was measured from are left out.</p>
-      <div class="dist-wrap"><table class="dist-table" id="cal-dist-table"></table></div>
+      <div class="dist-wrap"><table class="data-table dist-table" id="cal-dist-table"></table></div>
     </div>
 
     <div class="wizard-nav">
@@ -657,6 +656,7 @@
 
     <div id="review-status" class="notice error" role="alert" hidden></div>
     <div id="review-caution" class="notice warning" role="status" hidden></div>
+    <div id="review-lens-note" class="notice" role="status" hidden>Using the station's lens. It was not measured in this run.</div>
     <div class="group">
       <div class="group-title">Camera</div>
       <div class="wizard-solved-params" id="review-camera"></div>
@@ -671,7 +671,7 @@
     </div>
     <div class="group" id="review-dist-group" hidden>
       <div class="group-title">Distances to check</div>
-      <div class="dist-wrap"><table class="dist-table" id="review-dist-table"></table></div>
+      <div class="dist-wrap"><table class="data-table dist-table" id="review-dist-table"></table></div>
     </div>
     <div class="group">
       <div class="group-title">Grid</div>
@@ -1146,7 +1146,10 @@
       if (a.position) positions[a.id] = a.position;
       res[a.id] = { px: a.error, at: a.seen, dist: a.distance_error };
     });
-    return { marks: marks, cam: data.camera, positions: positions, res: res, worst: data.largest_error, count: data.count, reasons: wordReasons(data.reasons, marks) };
+    // A pin the camera puts behind itself has no error to measure, and is as wrong as one far off.
+    var behind = marks.filter(function(m) { return m.pin && !m.problem && res[m.id] && res[m.id].px == null; }).map(function(m) { return { kind: 'behind', id: m.id }; });
+    return { marks: marks, cam: data.camera, positions: positions, res: res, worst: data.largest_error, count: data.count, behind: behind.length,
+      reasons: wordReasons((data.reasons || []).concat(behind), marks) };
   }
   function afterSolve(then) {
     if (S.mode === 'simple') renderCornerRows(); else updateAdvChips();
@@ -1180,13 +1183,23 @@
       else if (r.kind === 'fov') out.push('The solved field of view, ' + r.fov.toFixed(1) + '°, is outside what cameras usually have.');
       else if (r.kind === 'below') out.push('The solved camera is below the floor.');
       else if (r.kind === 'up') out.push('The solved camera looks upward.');
+      else if (r.kind === 'reach') out.push('The solved camera puts the far floor more than twice as far, or as near, as the floor points alone do.');
       else if (r.kind === 'pixel') out.push(names[r.id] + ' disagrees with the other points by ' + r.px.toFixed(1) + ' px.');
+      else if (r.kind === 'behind') out.push(names[r.id] + ' lies behind the solved camera.');
       else if (r.kind === 'distance') out.push(names[r.id] + '\'s distances disagree with the picture by ' + lenSmall(r.m) + '.');
     });
     return out;
   }
-  function cautionHtml(reasons) {
-    return 'Something might be wrong<div class="notice-sub"><ul class="caution-list">' + reasons.map(function(r) { return '<li>' + esc(r) + '</li>'; }).join('') + '</ul>The camera still applies. Check the measurements, then pin again.</div>';
+  function cautionHtml(s) {
+    return 'Something might be wrong<div class="notice-sub"><ul class="caution-list">' + s.reasons.map(function(r) { return '<li>' + esc(r) + '</li>'; }).join('') + '</ul>' +
+      (applyBlocked(s) ? 'Apply stays off while a point is more than ' + APPLY_MAX_PX + ' px off or behind the camera.' : 'The camera still applies.') + ' Check the measurements, then pin again.</div>';
+  }
+  // As 0.4.3 refused such a solve, a pin this far off keeps Apply off.
+  var APPLY_MAX_PX = 20;
+  function applyBlocked(s) { return !!(s && s.cam && (s.worst > APPLY_MAX_PX || s.behind > 0)); }
+  // Simple keeps the station's pair without measuring one: said, but not a caution.
+  function stationLensOnly() {
+    return S.mode === 'simple' && LENS_ENABLED && !S.lensTouched && (SAVED.lens[0] !== 0 || SAVED.lens[1] !== 0);
   }
 
   // ---------------------------------------------------------------
@@ -1803,13 +1816,8 @@
     box.style.display = '';
     box.className = 'notice' + (level === 'caution' ? ' warning' : level === 'success' ? ' success' : '');
     renderLensMeter(box.querySelector('.wizard-meter'), lensFit.rating);
-    var text = 'Coverage ' + (LENS_RATING_LABEL[lensFit.rating] || lensFit.rating).toLowerCase();
-    if (lensFitApplies(lensFit)) {
-      text += ' · Barrel / fisheye ' + Number(lensFit.k1).toFixed(3)
-        + ' · Edge fit ' + (lensFit.k2_fitted ? Number(lensFit.k2).toFixed(3) : 'not measured');
-    } else {
-      text += ' · Not applied until the coverage improves';
-    }
+    var text = (LENS_RATING_LABEL[lensFit.rating] || lensFit.rating) + ' \u2013 barrel / fisheye ' + fmt(Number(lensFit.k1), 3)
+      + ', edge fit ' + (lensFit.k2_fitted ? fmt(Number(lensFit.k2), 3) : '0 (not measured)') + (lensFitApplies(lensFit) ? '' : ' \u2013 not applied');
     document.getElementById('lens-result-text').textContent = text;
     var tuned = lensFitApplies(lensFit) && !lensPairIsTheFits(wizReadLensCoeff('wiz_lens_k1'), wizReadLensCoeff('wiz_lens_k2'));
     document.getElementById('lens-result-hint').textContent = (tuned ? 'Fine-tuned after the fit. ' : '') + (lensFit.hint || '');
@@ -2115,6 +2123,15 @@
     return S.lensTouched || SAVED.lens[0] !== 0 || SAVED.lens[1] !== 0;
   }
   function lensVals(k1, k2) { return 'Barrel / fisheye ' + fmt(k1, 3) + ' · Edge fit ' + fmt(k2, 3); }
+  function lensSize(w, h) { return w + ' \u00d7 ' + h; }
+  function lensSized(c) { return c.width > 0 && c.height > 0; }
+  // The pair is relative to the half-diagonal, so it carries over to another size of the same picture shape only.
+  function lensShapeWarning(c) {
+    if (!lensSized(c) || !imageWidth || !imageHeight) return '';
+    var here = imageWidth / imageHeight;
+    if (Math.abs(c.width / c.height - here) <= 0.01 * here) return '';
+    return 'Measured on a ' + lensSize(c.width, c.height) + ' picture, this one is ' + lensSize(imageWidth, imageHeight) + '. The values only carry over at the same picture shape.';
+  }
   // Only camera.lens_k1 / lens_k2 of an exported settings file are read.
   function lensFromSettings(text) {
     var cfg;
@@ -2126,8 +2143,9 @@
     if (!wizLensIsValid(k1, k2)) return { error: 'This file\'s lens values fold the overlay inside the frame.' };
     return { k1: k1, k2: k2 };
   }
-  function lensOption(i, name, sub, checked) {
-    return '<label class="tier-option"><input type="radio" name="lens_src" value="' + i + '"' + (checked ? ' checked' : '') + '><span><strong>' + esc(name) + '</strong><small>' + esc(sub) + '</small></span></label>';
+  function lensOption(i, name, sub, checked, warn) {
+    return '<label class="tier-option"><input type="radio" name="lens_src" value="' + i + '"' + (checked ? ' checked' : '') + '><span><strong>' + esc(name) + '</strong><small>' + esc(sub) + '</small>' +
+      (warn ? '<small class="caution-text">' + esc(warn) + '</small>' : '') + '</span></label>';
   }
   function lensApplyLoaded(c, src) {
     lensLines.forEach(lensReleaseCandidate);
@@ -2148,7 +2166,7 @@
     function render() {
       var lines = lensLines;
       return '<div id="ll-body"><div class="lens-dlg-title">Saved on this station</div>' +
-        (saved.length ? '<div class="tier-list" role="radiogroup" aria-label="Saved lens calibrations">' + saved.map(function(c, i) { return lensOption(i, c.name, lensVals(c.k1, c.k2) + ' · ' + c.saved); }).join('') + '</div>'
+        (saved.length ? '<div class="tier-list" role="radiogroup" aria-label="Saved lens calibrations">' + saved.map(function(c, i) { return lensOption(i, c.name, lensVals(c.k1, c.k2) + ' · ' + c.saved + (lensSized(c) ? ' · ' + lensSize(c.width, c.height) : ''), false, lensShapeWarning(c)); }).join('') + '</div>'
           : '<p>No lens calibrations are saved on this station.</p>') +
         '<div class="lens-dlg-sep"></div><div class="lens-dlg-title">From a settings file</div>' +
         '<p>Only the lens values of an exported <code>.ofsettings</code> file are loaded.</p>' +
@@ -2216,7 +2234,7 @@
             var saveError = window.OpenFollow.saveError, card = document.querySelector('#modal-root .modal-card');
             fetch('/api/wizard/lens/calibrations', {
               method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ name: name, k1: k1, k2: k2 }),
+              body: JSON.stringify(imageWidth && imageHeight ? { name: name, k1: k1, k2: k2, width: imageWidth, height: imageHeight } : { name: name, k1: k1, k2: k2 }),
             }).then(async function(r) {
               saving = false;
               if (!r.ok) { btn.disabled = false; saveError.show(card, await saveError.fromResponse(r), 'Not saved.'); return; }
@@ -2502,7 +2520,8 @@
     if (ok) $('cal-solved').innerHTML = solvedParamsHtml(s.cam) + (LENS_ENABLED ? '<div class="wizard-solved-param"><span class="param-label">Lens</span><span class="param-value"' +
       (lensMeasured() ? '>' + fmt(wizReadLensCoeff('wiz_lens_k1'), 3) + ' / ' + fmt(wizReadLensCoeff('wiz_lens_k2'), 3) : ' class="caution-text">Not measured') + '</span></div>' : '');
     $('cal-caution').hidden = !(ok && s.reasons.length);
-    if (ok && s.reasons.length) $('cal-caution').innerHTML = cautionHtml(s.reasons);
+    if (ok && s.reasons.length) $('cal-caution').innerHTML = cautionHtml(s);
+    $('cal-lens-note').hidden = !(ok && stationLensOnly());
     var pairs = pairsFor(s);
     if (S.pair >= pairs.length) S.pair = 0;
     $('cal-dist-group').hidden = !pairs.length;
@@ -2941,9 +2960,10 @@
     var ok = !!s.cam;
     $('review-status').hidden = ok;
     if (!ok) $('review-status').innerHTML = 'No camera solve yet.<div class="notice-sub">' + esc(s.need ? 'To solve the camera, add ' + s.need.join(' and ') + '. Go back to Camera Calibration to finish it.' : s.waiting ? s.waiting : s.error ? s.error : 'Pin the points in Camera Calibration.') + '</div>';
-    $('btn-apply-finish').disabled = !ok;
+    $('btn-apply-finish').disabled = !ok || applyBlocked(s);
     $('review-caution').hidden = !(ok && s.reasons.length);
-    if (ok && s.reasons.length) $('review-caution').innerHTML = cautionHtml(s.reasons);
+    if (ok && s.reasons.length) $('review-caution').innerHTML = cautionHtml(s);
+    $('review-lens-note').hidden = !(ok && stationLensOnly());
     var grid = calibGrid();
     if (imageWidth) svg.setAttribute('viewBox', '0 0 ' + imageWidth + ' ' + imageHeight);
     $('review-grid').innerHTML = ok && imageWidth ? gridLines(s.cam, grid).map(function(l) { return '<polyline class="wizard-grid-line" points="' + poly(l) + '"/>'; }).join('') : '';
@@ -2983,7 +3003,7 @@
   window.applyAndFinish = function() {
     var saveError = window.OpenFollow.saveError, reviewBox = document.querySelector('#wizard-step-review .section');
     var s = S.solve;
-    if (!s || !s.cam || solvePending) return;
+    if (!s || !s.cam || solvePending || applyBlocked(s)) return;
     if (LENS_ENABLED && !wizLensPairValid()) {
       saveError.show(reviewBox, { error: 'The lens pair folds the overlay inside the frame.', action: 'Bring either lens value closer to 0 on the Lens step before finishing.' }, 'Not applied.');
       return;
@@ -3119,7 +3139,7 @@
     else if (key === 'review') renderReview();
   }
   function fsKeys(rows) {
-    return '<table class="fs-keys"><tbody>' + rows.map(function(k) {
+    return '<table class="data-table fs-keys"><tbody>' + rows.map(function(k) {
       return '<tr><td>' + (typeof k[0] === 'string' ? k[0] : k[0].map(function(x) { return '<kbd>' + x + '</kbd>'; }).join(' ')) + '</td><td>' + k[1] + '</td></tr>';
     }).join('') + '</tbody></table>';
   }

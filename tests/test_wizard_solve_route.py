@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import re
 import urllib.error
 import urllib.request
@@ -145,7 +146,7 @@ def _page() -> str:
 # ---------------------------------------------------------------------------
 
 
-def test_simple_pins_on_a_curved_lens_give_the_camera_and_errors_on_the_snapshot_as_shown(base: str) -> None:
+def test_simple_pins_on_a_curved_lens_give_the_camera_and_the_seen_places_on_the_snapshot_as_shown(base: str) -> None:
     status, data = _solve(base, _body(lens=LENS))
     assert status == 200
     np.testing.assert_allclose(_camera_vector(data["camera"]), TRUE, atol=1e-3)
@@ -159,6 +160,20 @@ def test_simple_pins_on_a_curved_lens_give_the_camera_and_errors_on_the_snapshot
         assert answer["error"] == pytest.approx(0.0, abs=1e-3)
         assert answer["position"] == pytest.approx(list(place))
         assert (answer["reason"], answer["distance_error"]) == ("", None)
+
+
+def test_errors_are_measured_on_the_curved_snapshot_as_shown(base: str) -> None:
+    """Near the edge the curve shrinks distances, so a pinhole error would read larger than the one shown."""
+    edge = (7.5, 3.0, 0.0)
+    marks = [*_simple_marks(LENS), _known(5, edge, LENS), _known(6, (0.0, 3.0, 0.0), LENS)]
+    marks[4]["pin"] = [marks[4]["pin"][0] - 40.0, marks[4]["pin"][1]]
+    status, data = _solve(base, _body("advanced", marks, hint=HINT, lens=LENS))
+    assert status == 200
+    pins = {m["id"]: m["pin"] for m in marks}
+    for answer in data["marks"]:
+        assert answer["error"] == pytest.approx(math.dist(answer["seen"], pins[answer["id"]]))
+    assert {m["id"]: m for m in data["marks"]}[5]["error"] > cp.FLAG_PX
+    assert data["largest_error"] == max(m["error"] for m in data["marks"])
 
 
 def test_simple_pins_on_a_curved_lens_read_as_pinhole_miss_the_camera(base: str) -> None:
@@ -205,6 +220,23 @@ def test_a_camera_position_far_from_the_solve_is_named_in_the_reasons(base: str)
     (offset,) = [r for r in data["reasons"] if r["kind"] == "offset"]
     assert offset["per_axis"] is True
     assert offset["delta"] == pytest.approx([0.0, 0.0, 8.0], abs=1e-3)
+
+
+def test_simple_checks_the_whole_gap_to_the_camera_position(base: str) -> None:
+    """2 m off in height alone is past Simple's 1.6 m in all, though inside Advanced's 2.5 m per axis."""
+    status, data = _solve(base, _body("simple", hint=[0.0, 13.0, 14.0]))
+    assert status == 200
+    (offset,) = [r for r in data["reasons"] if r["kind"] == "offset"]
+    assert offset["per_axis"] is False
+    assert offset["off"] == pytest.approx(2.0, abs=1e-3)
+
+
+def test_a_floor_moved_off_the_level_corners_is_named_in_the_reasons(base: str) -> None:
+    """A mark 2 m up typed at 4 m bends the camera until the floor beyond the corners is twice as far."""
+    mistyped = {**_known(5, (0.0, 6.0, 2.0)), "z": 4.0}
+    status, data = _solve(base, _body("advanced", [*_simple_marks(), mistyped], hint=HINT))
+    assert status == 200
+    assert {"kind": "reach"} in data["reasons"]
 
 
 # ---------------------------------------------------------------------------
@@ -362,8 +394,12 @@ _MALFORMED_MARKS = {
 
 @pytest.mark.parametrize(
     "marks",
-    [[*_simple_marks()[:3], _known(5, (6.0, 6.0, 0.0))], [*_simple_marks(), *_advanced_marks()[2:3]]],
-    ids=["a fifth corner", "a triangulated mark"],
+    [
+        [*_simple_marks()[:3], _known(5, (6.0, 6.0, 0.0))],
+        [*_simple_marks(), *_advanced_marks()[2:3]],
+        [*_simple_marks()[:3], _triangulated(4, CORNERS[3], (1, CORNERS[0]), (2, CORNERS[1]))],
+    ],
+    ids=["a fifth corner", "a triangulated mark", "a triangulated fourth corner"],
 )
 def test_simple_takes_its_four_corners_only(base: str, marks: list[Any]) -> None:
     status, data = _solve(base, _body("simple", marks))

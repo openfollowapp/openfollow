@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""Tests for the setup wizard – API endpoints and configuration defaults.
+"""Tests for the Setup Wizard page: its steps and markup, the saved calibration it starts from, Apply,
+and the Lens step's routes.
 
-Covers /api/wizard/project, /api/wizard/unproject, /api/wizard/solve,
-the /wizard page rendering, and the updated camera/grid default values.
+The solve route is covered in ``tests/test_wizard_solve_route.py``, the page's maths in
+``tests/test_wizard_js.py``.
 """
 
 from __future__ import annotations
@@ -12,19 +13,25 @@ import base64
 import json
 import re
 import urllib.error
-import urllib.parse
 import urllib.request
-import uuid
+from html.parser import HTMLParser
 
 import numpy as np
 import pytest
 
 import openfollow.web.discovery as discovery_module
-from openfollow.configuration import CameraConfig, GridConfig
-from openfollow.scene.solver import apply_overlay_distortion, project_points, solve_camera_dlt
+from openfollow.configuration import CalibrationMarkConfig, CameraConfig, GridConfig, load_config
+from openfollow.scene.solver import apply_overlay_distortion, project_points
 from openfollow.web.server import ConfigWebServer
 from tests._ports import live_on_free_port
-from tests._wizard_js import assert_script_parses, needs_node
+from tests._wizard_js import (
+    WIZARD_TEMPLATE,
+    assert_script_parses,
+    needs_node,
+    run_wizard_js,
+    wizard_function,
+    wizard_window_function,
+)
 
 # ---------------------------------------------------------------------------
 # Markers
@@ -35,39 +42,19 @@ unit = pytest.mark.unit
 # Integration tests (live HTTP server)
 integration = pytest.mark.integration
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-_CAM = {
-    "pos_x": 0.0,
-    "pos_y": -10.0,
-    "pos_z": 8.0,
-    "pitch": -30.0,
-    "yaw": 0.0,
-    "roll": 0.0,
-    "fov": 60.0,
-}
-
-_GRID = {
-    "width": 10.0,
-    "depth": 6.0,
-    "spacing": 1.0,
-    "x_offset": 0.0,
-    "y_offset": 3.0,
-    "z_offset": 0.0,
-}
-
 IMG_W, IMG_H = 1920.0, 1080.0
 
 
-@pytest.fixture()
-def live_server(tmp_path, monkeypatch):
+def _quiet_discovery(monkeypatch) -> None:
     monkeypatch.setattr(discovery_module.BeaconSender, "start", lambda self: None)
     monkeypatch.setattr(discovery_module.BeaconSender, "stop", lambda self: None)
     monkeypatch.setattr(discovery_module.BeaconReceiver, "start", lambda self: None)
     monkeypatch.setattr(discovery_module.BeaconReceiver, "stop", lambda self: None)
 
+
+@pytest.fixture()
+def live_server(tmp_path, monkeypatch):
+    _quiet_discovery(monkeypatch)
     config_path = tmp_path / "config.toml"
     with live_on_free_port(
         lambda port: ConfigWebServer(
@@ -107,70 +94,81 @@ def _post_json(base: str, path: str, data: dict) -> tuple[int, dict]:
         return e.code, json.loads(e.read().decode() or "{}")
 
 
-def _post_raw(base: str, path: str, data: dict) -> tuple[int, str]:
-    """POST JSON and return the raw response body (un-parsed).
-
-    ``json.loads`` tolerates ``NaN``/``Infinity`` tokens, but the browser's
-    ``JSON.parse`` does not – so a response that round-trips through
-    ``_post_json`` can still be invalid JSON that breaks the wizard. This
-    helper hands back the raw bytes so a test can assert strict validity.
-    """
-    req = urllib.request.Request(
-        f"{base}{path}",
-        data=json.dumps(data).encode(),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=5) as r:
-            return r.status, r.read().decode()
-    except urllib.error.HTTPError as e:
-        return e.code, e.read().decode()
-
-
 def _wizard_step(body: str, key: str) -> str:
-    """One step's markup, up to whichever step follows it (Lens is optional)."""
+    """One step's markup, up to whichever step follows it."""
     start = body.index(f'id="wizard-step-{key}"')
     end = body.find('<div class="wizard-content', start)
     return body[start : end if end != -1 else len(body)]
 
 
-def _reject_non_finite(_token: str) -> float:
-    raise ValueError("non-finite JSON token (NaN/Infinity) – browsers reject this")
+def _without_scripts(page: str) -> str:
+    return re.sub(r"<script.*?</script>", "", page, flags=re.S)
 
 
-def _cam_params(cam: dict | None = None) -> np.ndarray:
-    c = cam or _CAM
-    return np.array(
-        [
-            c["pos_x"],
-            c["pos_y"],
-            c["pos_z"],
-            c["pitch"],
-            c["yaw"],
-            c["roll"],
-            c["fov"],
-        ],
-        dtype=np.float64,
+def _wizard_script(page: str) -> str:
+    """The page's own script: the inline one that runs the wizard."""
+    (script,) = [s for s in re.findall(r"<script>(.*?)</script>", page, re.S) if "var WUNIT" in s]
+    return script
+
+
+def _saved(page: str) -> dict:
+    """``window.WIZ_SAVED`` as the page carries it, read as strict JSON (a NaN would stop the page)."""
+    match = re.search(r"window\.WIZ_SAVED = (.*);\n", page)
+    assert match is not None
+
+    def refuse(token: str) -> float:
+        raise ValueError(f"{token} is no JSON a browser reads")
+
+    return json.loads(match.group(1), parse_constant=refuse)
+
+
+def _lens_station(
+    tmp_path,
+    monkeypatch,
+    *,
+    developer_mode: bool = False,
+    lens: bool = True,
+    unit_system: str = "metric",
+    mode: str = "simple",
+    marks: tuple = (),
+):
+    """A station with a stored lens pair and, when given, a saved calibration."""
+    from openfollow.configuration import AppConfig, save_config
+
+    _quiet_discovery(monkeypatch)
+    # Its own file, so a test holding several fixtures keeps the plain station plain.
+    config_path = tmp_path / ("config_lens_dev.toml" if developer_mode else "config_lens.toml")
+    cfg = AppConfig()
+    if not lens:
+        cfg.ui.shown_features = [f for f in cfg.ui.shown_features if f != "lens_distortion"]
+    cfg.ui.developer_mode = developer_mode
+    cfg.camera.lens_k1 = -0.21
+    cfg.camera.lens_k2 = 0.03
+    cfg.camera.calibration_mode = mode
+    cfg.camera.calibration_marks = list(marks)
+    cfg.ui.unit_system = unit_system
+    save_config(cfg, str(config_path))
+    return live_on_free_port(
+        lambda port: ConfigWebServer(
+            config_path=str(config_path),
+            host="127.0.0.1",
+            port=port,
+            system_name="WizardLensTest",
+        )
     )
 
 
-def _world_corners(grid: dict | None = None) -> np.ndarray:
-    g = grid or _GRID
-    hw = g["width"] / 2
-    hd = g["depth"] / 2
-    ox = g.get("x_offset", 0) or 0
-    oy = g.get("y_offset", 0) or 0
-    oz = g.get("z_offset", 0) or 0
-    return np.array(
-        [
-            [ox - hw, oy - hd, oz],
-            [ox + hw, oy - hd, oz],
-            [ox + hw, oy + hd, oz],
-            [ox - hw, oy + hd, oz],
-        ],
-        dtype=np.float64,
-    )
+@pytest.fixture()
+def live_server_lens(tmp_path, monkeypatch):
+    with _lens_station(tmp_path, monkeypatch) as (server, base):
+        yield server, base
+
+
+@pytest.fixture()
+def live_server_lens_dev(tmp_path, monkeypatch):
+    """The Lens station in developer mode, which adds the edge view."""
+    with _lens_station(tmp_path, monkeypatch, developer_mode=True) as (server, base):
+        yield server, base
 
 
 # ===========================================================================
@@ -232,107 +230,7 @@ class TestConfigDefaults:
 
 
 # ===========================================================================
-# Unit tests – projection logic
-# ===========================================================================
-
-
-@unit
-class TestProjectionLogic:
-    """Verify the projection math that the wizard endpoints rely on."""
-
-    def test_reference_at_ground_level(self) -> None:
-        """Reference point should be at [0, 0, 0], not at grid z_offset."""
-        params = _cam_params()
-        ref_ground = np.array([[0, 0, 0]], dtype=np.float64)
-        ref_elevated = np.array([[0, 0, 1.0]], dtype=np.float64)
-
-        screen_ground = project_points(params, ref_ground, IMG_W, IMG_H)
-        screen_elevated = project_points(params, ref_elevated, IMG_W, IMG_H)
-
-        # Ground and elevated should project to different screen positions
-        assert not np.allclose(screen_ground, screen_elevated, atol=1.0)
-
-    def test_corners_at_z_offset(self) -> None:
-        """Grid corners should be at z = z_offset."""
-        grid = {**_GRID, "z_offset": 0.9}
-        corners = _world_corners(grid)
-        assert all(c[2] == 0.9 for c in corners)
-
-    def test_grid_offsets_shift_corners(self) -> None:
-        """Non-zero x/y offsets should shift all corners."""
-        grid_centered = {**_GRID, "x_offset": 0, "y_offset": 0}
-        grid_offset = {**_GRID, "x_offset": 2.0, "y_offset": 5.0}
-        c1 = _world_corners(grid_centered)
-        c2 = _world_corners(grid_offset)
-
-        # All corners should be shifted by (2, 5)
-        diff = c2 - c1
-        assert np.allclose(diff[:, 0], 2.0)
-        assert np.allclose(diff[:, 1], 5.0)
-
-    def test_solve_roundtrip_with_z_offset(self) -> None:
-        """DLT solve should work correctly when grid has non-zero z_offset."""
-        grid = {**_GRID, "z_offset": 0.9}
-        params = _cam_params()
-        world = _world_corners(grid)
-        screen = project_points(params, world, IMG_W, IMG_H)
-
-        solved = solve_camera_dlt(
-            [tuple(p) for p in world],
-            [tuple(p) for p in screen],
-            IMG_W,
-            IMG_H,
-        )
-        assert solved is not None
-
-        solved_params = np.array(
-            [
-                solved.pos_x,
-                solved.pos_y,
-                solved.pos_z,
-                solved.pitch,
-                solved.yaw,
-                solved.roll,
-                solved.fov,
-            ],
-            dtype=np.float64,
-        )
-        reprojected = project_points(solved_params, world, IMG_W, IMG_H)
-        assert float(np.max(np.abs(reprojected - screen))) < 2.0
-
-    def test_solve_roundtrip_with_offsets(self) -> None:
-        """DLT solve should work with non-zero grid offsets."""
-        grid = {**_GRID, "x_offset": 1.5, "y_offset": 4.0}
-        params = _cam_params()
-        world = _world_corners(grid)
-        screen = project_points(params, world, IMG_W, IMG_H)
-
-        solved = solve_camera_dlt(
-            [tuple(p) for p in world],
-            [tuple(p) for p in screen],
-            IMG_W,
-            IMG_H,
-        )
-        assert solved is not None
-
-        solved_params = np.array(
-            [
-                solved.pos_x,
-                solved.pos_y,
-                solved.pos_z,
-                solved.pitch,
-                solved.yaw,
-                solved.roll,
-                solved.fov,
-            ],
-            dtype=np.float64,
-        )
-        reprojected = project_points(solved_params, world, IMG_W, IMG_H)
-        assert float(np.max(np.abs(reprojected - screen))) < 2.0
-
-
-# ===========================================================================
-# Integration tests – wizard HTTP endpoints
+# The page
 # ===========================================================================
 
 
@@ -386,1299 +284,418 @@ class TestWizardPage:
         assert poll
         assert 'hx-get="/section/video_source/failure"' in poll.group(0)
 
-    def test_reference_mapping_offers_fine_adjust_once_there_is_a_snapshot(self, live_server) -> None:
-        """Like Corner Pinning: off until the snapshot and the projection are in,
-        and the page opens on the full image."""
-        _, base = live_server
-        status, body = _get(base, "/wizard")
+    @pytest.mark.parametrize(
+        ("lens", "steps"),
+        [
+            (True, ["video", "lens", "calib", "review"]),
+            (False, ["video", "calib", "review"]),
+        ],
+        ids=["lens on", "lens off"],
+    )
+    def test_the_steps_in_order(self, tmp_path, monkeypatch, lens: bool, steps: list[str]) -> None:
+        with _lens_station(tmp_path, monkeypatch, lens=lens) as (_, base):
+            status, body = _get(base, "/wizard")
         assert status == 200
-
-        step = _wizard_step(body, "ref")
-        toggle = re.search(r'<button[^>]*id="coarse-zoom-toggle"[^>]*>([^<]*)</button>', step)
-        assert toggle
-        assert toggle.group(1) == "Fine adjust"
-        assert "disabled" in toggle.group(0)
-        assert 'onclick="toggleCoarseZoomMode()"' in toggle.group(0)
-        assert re.search(r'<div id="coarse-zoom-view"[^>]*style="display:none;"', step)
-        assert re.search(r'<svg id="coarse-zoom-svg"[^>]*tabindex="0"', step)
-
-    def test_wizard_page_contains_all_steps(self, live_server) -> None:
-        _, base = live_server
-        status, body = _get(base, "/wizard")
-        assert status == 200
-        for step_name in [
-            "Preparation",
-            "Grid Setup",
-            "Video Source",
-            "Camera Position",
-            "Reference Mapping",
-            "Corner Pinning",
-            "Review",
-        ]:
-            assert step_name in body, f"Missing step: {step_name}"
-
-    def test_wizard_page_renders_corner_pinning_zoom_view(self, live_server) -> None:
-        """Verify Corner Pinning renders 4-box fine-adjust view with
-        toggle; zoom hidden initially, enabled after snapshot loads."""
-        _, base = live_server
-        status, body = _get(base, "/wizard")
-        assert status == 200
-        # Toggle button exists and starts disabled (snapshot not yet
-        # loaded). The render-time markup carries the disabled
-        # attribute and the initial label.
-        toggle_idx = body.find('id="fine-zoom-toggle"')
-        assert toggle_idx != -1
-        # Walk back to the enclosing <button ...> and check it carries
-        # disabled + the right onclick. Walk forward to the > to grab
-        # the inner-text label that immediately follows.
-        button_open = body.rfind("<button", 0, toggle_idx)
-        assert button_open != -1
-        button_close = body.find(">", toggle_idx)
-        assert button_close != -1
-        button_tag = body[button_open : button_close + 1]
-        assert "disabled" in button_tag
-        assert 'onclick="toggleFineZoomMode()"' in button_tag
-        # Initial label text is rendered between the opening tag and
-        # the matching </button>.
-        end_tag = body.find("</button>", button_close)
-        assert end_tag != -1
-        assert "Fine adjust" in body[button_close + 1 : end_tag]
-        # Both views exist; zoom view starts hidden.
-        assert 'id="fine-full-view"' in body
-        assert 'id="fine-zoom-view" style="display:none;"' in body
-        # All four corners get a dedicated box with the right
-        # ``data-corner`` hook for the drag wiring.
-        for corner in ("USL", "USR", "DSL", "DSR"):
-            assert f'class="fine-zoom-box" data-corner="{corner}"' in body
-
-    def test_fine_zoom_view_has_bowed_edge_wiring(self, live_server) -> None:
-        """The fine-adjust zoom view must curve its edges to match the lens
-        (same bowed boundary the full overlay / HUD draws), not draw straight
-        chords between corners."""
-        _, base = live_server
-        status, body = _get(base, "/wizard")
-        assert status == 200
-        # The bow is computed client-side from the pin positions via the
-        # distortion mirror of scene/solver.py, so it never needs a server round
-        # trip and the helpers must be present.
-        assert "fineBowedEdges" in body
-        assert "function buildBowedEdges(" in body
-        assert "function wizApplyDistortion(" in body
-        assert "function wizInvertDistortion(" in body
-        assert "function wizBowEdge(" in body
-
-    def test_manual_corner_move_keeps_distortion_bow(self, live_server) -> None:
-        """Dragging a corner must NOT snap the preview back to straight edges.
-
-        ``updateFineQuad`` runs on every manual corner move (drag, zoom-drag,
-        arrow nudge). It must rebuild the bowed edges from the moved pins, never
-        null them out – the regression where a corner move dropped the curve.
-        """
-        _, base = live_server
-        status, body = _get(base, "/wizard")
-        assert status == 200
-        # Isolate the updateFineQuad body so the assertion is about the move path.
-        start = body.index("function updateFineQuad(")
-        end = body.index("\n  }", start)
-        fn = body[start:end]
-        assert "buildBowedEdges()" in fn  # rebuilds from the moved pins
-        assert "fineBowedEdges = null" not in fn  # never drops the curve on move
-
-    def test_review_step_does_not_double_project_overlay(self, live_server) -> None:
-        """Review must not flash a straight, lens-free grid before the bow lands.
-
-        The review overlay is drawn once by loadSnapshot -> projectAndOverlay ->
-        updateAllOverlays (live form values + the server's bowed outline).
-        ``populateReview`` must only fill the text summary; a second projection
-        there raced that path and briefly painted a straight quad – the flash the
-        operator saw on entering Review.
-        """
-        _, base = live_server
-        status, body = _get(base, "/wizard")
-        assert status == 200
-        start = body.index("function populateReview(")
-        end = body.index("\n  }", start)
-        fn = body[start:end]
-        assert "/api/wizard/project" not in fn  # no second projection fetch
-        assert "review-quad" not in fn  # overlay drawing is delegated
-
-    def test_overlay_bow_gated_on_server_outline(self, live_server) -> None:
-        """The fine-zoom bow must follow the server's bowed outline.
-
-        The server omits ``outline`` when a grid edge projects behind the camera,
-        and the main quad falls back to a straight 4-corner quad. ``updateAllOverlays``
-        must gate ``fineBowedEdges`` on that same ``data.outline`` signal, otherwise
-        the corner zoom boxes curve while the full quad stays straight – the preview
-        disagreeing with itself in the behind-camera fallback.
-        """
-        _, base = live_server
-        status, body = _get(base, "/wizard")
-        assert status == 200
-        start = body.index("function updateAllOverlays(")
-        end = body.index("\n  }", start)
-        fn = body[start:end]
-        assert "fineBowedEdges = (data.outline" in fn  # built only with a server outline
-        assert "fineBowedEdges = buildBowedEdges();" not in fn  # not unconditional
-
-    def test_manual_corner_move_does_not_re_enable_dropped_bow(self, live_server) -> None:
-        """A drag must refresh an active bow, never re-enable a dropped one.
-
-        When the behind-camera fallback leaves ``fineBowedEdges`` null,
-        ``updateFineQuad`` must not rebuild it from the pins – that would curve the
-        fine view while the full quad is straight. The rebuild is guarded on
-        ``fineBowedEdges`` already being set.
-        """
-        _, base = live_server
-        status, body = _get(base, "/wizard")
-        assert status == 200
-        start = body.index("function updateFineQuad(")
-        end = body.index("\n  }", start)
-        fn = body[start:end]
-        assert "if (fineBowedEdges) fineBowedEdges = buildBowedEdges()" in fn
-
-    def test_corner_pinning_and_review_show_the_grid_lines(self, live_server) -> None:
-        """Corner Pinning and Review draw the grid's own lines inside the quad, under the corners."""
-        _, base = live_server
-        status, body = _get(base, "/wizard")
-        assert status == 200
-        fine = body.index('id="fine-quad"')
-        assert fine < body.index('<g id="fine-grid"></g>') < body.index('<g id="fine-corners"></g>')
-        review = body.index('id="review-quad"')
-        assert review < body.index('<g id="review-grid"></g>') < body.index('<g id="review-corners"></g>')
-        start = body.index("function updateAllOverlays(")
-        fn = body[start : body.index("\n  }", start)]
-        assert "renderGridLines('fine-grid', c);" in fn
-        assert "renderGridLines('review-grid', c);" in fn
-
-    def test_the_grid_follows_a_moved_corner(self, live_server) -> None:
-        """A drag, a nudge and the snap after a solve all run updateFineQuad, which redraws the grid from the pins."""
-        _, base = live_server
-        status, body = _get(base, "/wizard")
-        assert status == 200
-        start = body.index("function updateFineQuad(")
-        fn = body[start : body.index("\n  }", start)]
-        assert "renderGridLines('fine-grid', cornerPositions);" in fn
-
-    def test_every_overlay_step_has_a_projection_status_surface(self, live_server) -> None:
-        """Each step that renders the projected overlay can show a projection error.
-
-        ``projectAndOverlay`` runs on Reference Mapping, Corner Pinning, and
-        Review. A degenerate camera makes the server reject the projection; if a
-        step lacks a ``*-status`` element, ``showProjectionError`` has nowhere to
-        write and the overlay silently vanishes there – the exact failure this
-        fix removes. Pin that every overlay step exposes a status surface.
-        """
-        _, base = live_server
-        status, body = _get(base, "/wizard")
-        assert status == 200
-        for step in ("coarse", "fine", "review"):
-            assert f'id="{step}-container"' in body, f"missing {step}-container"
-            assert f'id="{step}-status"' in body, (
-                f"{step} step renders the overlay but has no status surface for a projection error"
-            )
-
-
-@integration
-class TestWizardProjectEndpoint:
-    def test_project_returns_corners_and_reference(self, live_server) -> None:
-        _, base = live_server
-        status, data = _post_json(
-            base,
-            "/api/wizard/project",
-            {
-                "camera": _CAM,
-                "grid": _GRID,
-                "image_width": IMG_W,
-                "image_height": IMG_H,
-            },
+        titles = {"video": "Video Source", "lens": "Lens", "calib": "Camera Calibration", "review": "Review"}
+        nav = re.search(r'<nav class="wizard-steps" aria-label="Setup wizard steps">(.*?)</nav>', body, re.S)
+        assert nav is not None
+        buttons = re.findall(
+            r'<button type="button" class="wizard-step-btn" data-step="(\d)" onclick="wizardGo\((\d)\)">'
+            r"([^<]*)</button>",
+            nav.group(1),
         )
-        assert status == 200
-        assert "corners" in data
-        assert "reference" in data
-        for name in ["DSL", "DSR", "USR", "USL"]:
-            assert name in data["corners"]
-            assert len(data["corners"][name]) == 2
-        assert len(data["reference"]) == 2
-
-    def test_project_reference_at_ground_not_grid_height(self, live_server) -> None:
-        """Reference should project from [0,0,0] regardless of z_offset."""
-        _, base = live_server
-        grid_flat = {**_GRID, "z_offset": 0.0}
-        grid_raised = {**_GRID, "z_offset": 2.0}
-
-        _, data_flat = _post_json(
-            base,
-            "/api/wizard/project",
-            {
-                "camera": _CAM,
-                "grid": grid_flat,
-                "image_width": IMG_W,
-                "image_height": IMG_H,
-            },
-        )
-        _, data_raised = _post_json(
-            base,
-            "/api/wizard/project",
-            {
-                "camera": _CAM,
-                "grid": grid_raised,
-                "image_width": IMG_W,
-                "image_height": IMG_H,
-            },
-        )
-
-        # Reference point should be the same (both at ground [0,0,0])
-        assert data_flat["reference"] == pytest.approx(data_raised["reference"], abs=0.1)
-
-    def test_project_includes_elevated_when_z_offset(self, live_server) -> None:
-        _, base = live_server
-        grid = {**_GRID, "z_offset": 0.9}
-        status, data = _post_json(
-            base,
-            "/api/wizard/project",
-            {
-                "camera": _CAM,
-                "grid": grid,
-                "image_width": IMG_W,
-                "image_height": IMG_H,
-            },
-        )
-        assert status == 200
-        assert "reference_elevated" in data
-        assert "z_offset" in data
-        assert data["z_offset"] == pytest.approx(0.9)
-        assert len(data["reference_elevated"]) == 2
-        # Elevated should differ from ground reference
-        assert data["reference_elevated"] != pytest.approx(data["reference"], abs=1.0)
-
-    def test_project_no_elevated_when_z_offset_zero(self, live_server) -> None:
-        _, base = live_server
-        status, data = _post_json(
-            base,
-            "/api/wizard/project",
-            {
-                "camera": _CAM,
-                "grid": _GRID,
-                "image_width": IMG_W,
-                "image_height": IMG_H,
-            },
-        )
-        assert status == 200
-        assert "reference_elevated" not in data
-        assert "z_offset" not in data
-
-    def test_project_handles_null_offsets(self, live_server) -> None:
-        """Grid offsets sent as null (from stale session) should not crash."""
-        _, base = live_server
-        grid = {**_GRID, "x_offset": None, "y_offset": None, "z_offset": None}
-        status, data = _post_json(
-            base,
-            "/api/wizard/project",
-            {
-                "camera": _CAM,
-                "grid": grid,
-                "image_width": IMG_W,
-                "image_height": IMG_H,
-            },
-        )
-        assert status == 200
-        assert "corners" in data
-
-    def test_project_handles_missing_offsets(self, live_server) -> None:
-        """Grid without offset keys should default to 0."""
-        _, base = live_server
-        grid = {"width": 10.0, "depth": 6.0}
-        status, data = _post_json(
-            base,
-            "/api/wizard/project",
-            {
-                "camera": _CAM,
-                "grid": grid,
-                "image_width": IMG_W,
-                "image_height": IMG_H,
-            },
-        )
-        assert status == 200
-        assert "corners" in data
-
-    def test_project_missing_camera_returns_400(self, live_server) -> None:
-        _, base = live_server
-        status, data = _post_json(
-            base,
-            "/api/wizard/project",
-            {
-                "grid": _GRID,
-                "image_width": IMG_W,
-                "image_height": IMG_H,
-            },
-        )
-        assert status == 400
-        assert "error" in data
-
-    def test_project_corners_form_convex_quad(self, live_server) -> None:
-        """Projected corners should form a valid convex quadrilateral."""
-        _, base = live_server
-        status, data = _post_json(
-            base,
-            "/api/wizard/project",
-            {
-                "camera": _CAM,
-                "grid": _GRID,
-                "image_width": IMG_W,
-                "image_height": IMG_H,
-            },
-        )
-        assert status == 200
-        c = data["corners"]
-        # All corners should be within image bounds
-        for name in ["DSL", "DSR", "USR", "USL"]:
-            x, y = c[name]
-            assert 0 <= x <= IMG_W, f"{name} x={x} out of bounds"
-            assert 0 <= y <= IMG_H, f"{name} y={y} out of bounds"
-
-    def test_stage_left_corners_project_to_image_right(self, live_server) -> None:
-        """Stage-left corners (DSL/USL) land on the right of a front-of-house image.
-
-        PSN ``+X`` is stage left, and a centred front-of-house camera shows the
-        audience's view, where stage left is on the right (audience right). So
-        the stage-left corners must project to a larger image-x than their
-        stage-right counterparts. This pins the convention the wizard labels and
-        DLT solve depend on (stage left / audience right), not the projection math.
-        """
-        _, base = live_server
-        status, data = _post_json(
-            base,
-            "/api/wizard/project",
-            {
-                "camera": _CAM,
-                "grid": _GRID,
-                "image_width": IMG_W,
-                "image_height": IMG_H,
-            },
-        )
-        assert status == 200
-        c = data["corners"]
-        assert c["DSL"][0] > c["DSR"][0], "DSL (stage left) must be right of DSR (stage right)"
-        assert c["USL"][0] > c["USR"][0], "USL (stage left) must be right of USR (stage right)"
-        # Downstage corners sit lower in the image (larger y) than upstage ones.
-        assert c["DSL"][1] > c["USL"][1], "DSL (downstage) must be below USL (upstage)"
-        assert c["DSR"][1] > c["USR"][1], "DSR (downstage) must be below USR (upstage)"
-
-    # Camera sitting inside the grid footprint, nearly level: the two front
-    # corners fall at/behind the camera plane and project to NaN.
-    _CAM_CORNER_BEHIND = {
-        "pos_x": 0.0,
-        "pos_y": 3.0,
-        "pos_z": 1.6,
-        "pitch": -1.0,
-        "yaw": 0.0,
-        "roll": 0.0,
-        "fov": 60.0,
-    }
-
-    def test_project_corner_behind_camera_returns_400(self, live_server) -> None:
-        """A corner behind the camera must yield a clean 400, not NaN corners.
-
-        Regression: ``project_points`` returns NaN for such a corner, the
-        default ``json.dumps`` wrote literal ``NaN`` tokens, the browser's
-        ``r.json()`` threw, and the un-caught rejection silently dropped the
-        Corner Pinning overlay (feed visible, no corner markers, no error).
-        """
-        _, base = live_server
-        status, data = _post_json(
-            base,
-            "/api/wizard/project",
-            {
-                "camera": self._CAM_CORNER_BEHIND,
-                "grid": _GRID,
-                "image_width": IMG_W,
-                "image_height": IMG_H,
-            },
-        )
-        assert status == 400
-        assert "error" in data
-        assert "corners" not in data
-
-    def test_project_never_emits_invalid_json_for_degenerate_camera(self, live_server) -> None:
-        """The response must be strict JSON (no NaN/Infinity) even when degenerate.
-
-        ``json.loads`` accepts ``NaN``; the browser's ``JSON.parse`` does not.
-        Parse the raw body with ``parse_constant`` rejecting non-finite tokens
-        to mirror the browser and prove the overlay can't be silently dropped.
-        """
-        _, base = live_server
-        status, raw = _post_raw(
-            base,
-            "/api/wizard/project",
-            {
-                "camera": self._CAM_CORNER_BEHIND,
-                "grid": _GRID,
-                "image_width": IMG_W,
-                "image_height": IMG_H,
-            },
-        )
-        assert status == 400
-        assert "NaN" not in raw and "Infinity" not in raw
-        # Strict parse (browser-equivalent) must succeed.
-        json.loads(raw, parse_constant=_reject_non_finite)
-
-
-@integration
-class TestWizardUnprojectEndpoint:
-    def test_unproject_single_point(self, live_server) -> None:
-        _, base = live_server
-        # First project a known world point to get a screen point
-        params = _cam_params()
-        world_pt = np.array([[0, 0, 0]], dtype=np.float64)
-        screen_pt = project_points(params, world_pt, IMG_W, IMG_H)
-
-        status, data = _post_json(
-            base,
-            "/api/wizard/unproject",
-            {
-                "camera": _CAM,
-                "screen_points": screen_pt.tolist(),
-                "image_width": IMG_W,
-                "image_height": IMG_H,
-                "plane_z": 0.0,
-            },
-        )
-        assert status == 200
-        assert "world_points" in data
-        wp = data["world_points"]
-        assert len(wp) == 1
-        assert wp[0][0] == pytest.approx(0.0, abs=0.1)
-        assert wp[0][1] == pytest.approx(0.0, abs=0.1)
-
-    def test_unproject_two_points_returns_delta(self, live_server) -> None:
-        _, base = live_server
-        params = _cam_params()
-        world_pts = np.array([[0, 0, 0], [2, 3, 0]], dtype=np.float64)
-        screen_pts = project_points(params, world_pts, IMG_W, IMG_H)
-
-        status, data = _post_json(
-            base,
-            "/api/wizard/unproject",
-            {
-                "camera": _CAM,
-                "screen_points": screen_pts.tolist(),
-                "image_width": IMG_W,
-                "image_height": IMG_H,
-                "plane_z": 0.0,
-            },
-        )
-        assert status == 200
-        assert "delta" in data
-        assert data["delta"]["x"] == pytest.approx(2.0, abs=0.1)
-        assert data["delta"]["y"] == pytest.approx(3.0, abs=0.1)
-
-    def test_unproject_on_elevated_plane(self, live_server) -> None:
-        _, base = live_server
-        params = _cam_params()
-        world_pt = np.array([[1, 2, 0.9]], dtype=np.float64)
-        screen_pt = project_points(params, world_pt, IMG_W, IMG_H)
-
-        status, data = _post_json(
-            base,
-            "/api/wizard/unproject",
-            {
-                "camera": _CAM,
-                "screen_points": screen_pt.tolist(),
-                "image_width": IMG_W,
-                "image_height": IMG_H,
-                "plane_z": 0.9,
-            },
-        )
-        assert status == 200
-        wp = data["world_points"]
-        assert wp[0][0] == pytest.approx(1.0, abs=0.1)
-        assert wp[0][1] == pytest.approx(2.0, abs=0.1)
-
-    def test_unproject_missing_camera_returns_400(self, live_server) -> None:
-        _, base = live_server
-        status, data = _post_json(
-            base,
-            "/api/wizard/unproject",
-            {
-                "screen_points": [[960, 540]],
-                "image_width": IMG_W,
-                "image_height": IMG_H,
-            },
-        )
-        assert status == 400
-        assert "error" in data
-
-
-@integration
-class TestWizardSolveEndpoint:
-    def _project_corners(self, cam: dict | None = None, grid: dict | None = None) -> tuple[list, list]:
-        """Project world corners to screen, return (world_list, screen_list)."""
-        params = _cam_params(cam)
-        world = _world_corners(grid)
-        screen = project_points(params, world, IMG_W, IMG_H)
-        return world.tolist(), screen.tolist()
-
-    @pytest.mark.parametrize("corner_key", ["world_corners", "screen_corners"])
-    def test_solve_rejects_non_finite_corner(self, live_server, corner_key: str) -> None:
-        # A NaN coord must 400 (caught in the route), not 500 from numpy's solve.
-        _, base = live_server
-        body: dict = {
-            "world_corners": [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]],
-            "screen_corners": [[0, 0], [1, 0], [1, 1], [0, 1]],
-            "image_width": IMG_W,
-            "image_height": IMG_H,
-        }
-        body[corner_key][0][0] = float("nan")
-        status, data = _post_json(base, "/api/wizard/solve", body)
-        assert status == 400
-        assert "error" in data
-
-    def test_solve_returns_camera_and_reprojected(self, live_server) -> None:
-        _, base = live_server
-        world, screen = self._project_corners()
-
-        status, data = _post_json(
-            base,
-            "/api/wizard/solve",
-            {
-                "world_corners": world,
-                "screen_corners": screen,
-                "image_width": IMG_W,
-                "image_height": IMG_H,
-            },
-        )
-        assert status == 200
-        assert "camera" in data
-        assert "reprojected_corners" in data
-        cam = data["camera"]
-        for key in ["pos_x", "pos_y", "pos_z", "pitch", "yaw", "roll", "fov"]:
-            assert key in cam
-
-    def test_solve_reprojection_is_accurate(self, live_server) -> None:
-        _, base = live_server
-        world, screen = self._project_corners()
-
-        status, data = _post_json(
-            base,
-            "/api/wizard/solve",
-            {
-                "world_corners": world,
-                "screen_corners": screen,
-                "image_width": IMG_W,
-                "image_height": IMG_H,
-            },
-        )
-        assert status == 200
-
-        # Reprojected corners should be close to input screen corners
-        rp = data["reprojected_corners"]
-        for i in range(4):
-            assert rp[i][0] == pytest.approx(screen[i][0], abs=2.0)
-            assert rp[i][1] == pytest.approx(screen[i][1], abs=2.0)
-
-    def test_solve_with_z_offset(self, live_server) -> None:
-        _, base = live_server
-        grid = {**_GRID, "z_offset": 0.9}
-        world, screen = self._project_corners(grid=grid)
-
-        status, data = _post_json(
-            base,
-            "/api/wizard/solve",
-            {
-                "world_corners": world,
-                "screen_corners": screen,
-                "image_width": IMG_W,
-                "image_height": IMG_H,
-            },
-        )
-        assert status == 200
-        assert "camera" in data
-
-    def test_solve_with_offsets(self, live_server) -> None:
-        _, base = live_server
-        grid = {**_GRID, "x_offset": 1.5, "y_offset": 4.0}
-        world, screen = self._project_corners(grid=grid)
-
-        status, data = _post_json(
-            base,
-            "/api/wizard/solve",
-            {
-                "world_corners": world,
-                "screen_corners": screen,
-                "image_width": IMG_W,
-                "image_height": IMG_H,
-            },
-        )
-        assert status == 200
-        rp = data["reprojected_corners"]
-        for i in range(4):
-            assert rp[i][0] == pytest.approx(screen[i][0], abs=2.0)
-            assert rp[i][1] == pytest.approx(screen[i][1], abs=2.0)
-
-    def test_solve_degenerate_corners_returns_422(self, live_server) -> None:
-        _, base = live_server
-        world = _world_corners().tolist()
-        # All screen corners at the same point – degenerate
-        screen = [[500, 500]] * 4
-
-        status, data = _post_json(
-            base,
-            "/api/wizard/solve",
-            {
-                "world_corners": world,
-                "screen_corners": screen,
-                "image_width": IMG_W,
-                "image_height": IMG_H,
-            },
-        )
-        assert status == 422
-        assert "error" in data
-
-    def test_solve_missing_fields_returns_400(self, live_server) -> None:
-        _, base = live_server
-        status, data = _post_json(
-            base,
-            "/api/wizard/solve",
-            {
-                "world_corners": [[0, 0, 0]],
-            },
-        )
-        assert status == 400
-        assert "error" in data
-
-
-# ===========================================================================
-# Integration tests – malformed input edge cases (regression guard)
-# ===========================================================================
-#
-# These tests lock in 400-on-bad-input across all wizard endpoints
-# so a future refactor can't silently regress invalid input handling.
-
-
-@integration
-class TestWizardProjectBadInput:
-    def test_project_partial_camera_returns_400(self, live_server) -> None:
-        _, base = live_server
-        partial_cam = {"pos_x": 0.0, "pos_y": -10.0}  # missing pos_z/pitch/etc.
-        status, data = _post_json(
-            base,
-            "/api/wizard/project",
-            {
-                "camera": partial_cam,
-                "grid": _GRID,
-                "image_width": IMG_W,
-                "image_height": IMG_H,
-            },
-        )
-        assert status == 400
-        assert "error" in data
-
-    def test_project_non_numeric_camera_returns_400(self, live_server) -> None:
-        _, base = live_server
-        bad_cam = {**_CAM, "pitch": "not-a-number"}
-        status, data = _post_json(
-            base,
-            "/api/wizard/project",
-            {
-                "camera": bad_cam,
-                "grid": _GRID,
-                "image_width": IMG_W,
-                "image_height": IMG_H,
-            },
-        )
-        assert status == 400
-        assert "error" in data
-
-    def test_project_missing_grid_dimensions_returns_400(self, live_server) -> None:
-        _, base = live_server
-        bad_grid = {"spacing": 1.0}  # missing width/depth
-        status, data = _post_json(
-            base,
-            "/api/wizard/project",
-            {
-                "camera": _CAM,
-                "grid": bad_grid,
-                "image_width": IMG_W,
-                "image_height": IMG_H,
-            },
-        )
-        assert status == 400
-        assert "error" in data
-
-    def test_project_non_object_camera_returns_400(self, live_server) -> None:
-        _, base = live_server
-        status, data = _post_json(
-            base,
-            "/api/wizard/project",
-            {
-                "camera": [1, 2, 3],
-                "grid": _GRID,
-                "image_width": IMG_W,
-                "image_height": IMG_H,
-            },
-        )
-        assert status == 400
-        assert "error" in data
-
-    def test_project_zero_fov_returns_400_not_500(self, live_server) -> None:
-        # A degenerate fov used to reach the solver and raise ZeroDivisionError
-        # (HTTP 500). It must be rejected as a 400 instead.
-        _, base = live_server
-        status, data = _post_json(
-            base,
-            "/api/wizard/project",
-            {
-                "camera": {**_CAM, "fov": 0.0},
-                "grid": _GRID,
-                "image_width": IMG_W,
-                "image_height": IMG_H,
-            },
-        )
-        assert status == 400
-        assert "error" in data
-
-    def test_project_zero_canvas_height_returns_400_not_500(self, live_server) -> None:
-        _, base = live_server
-        status, data = _post_json(
-            base,
-            "/api/wizard/project",
-            {
-                "camera": _CAM,
-                "grid": _GRID,
-                "image_width": IMG_W,
-                "image_height": 0.0,
-            },
-        )
-        assert status == 400
-        assert "error" in data
-
-    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), 1e170, 20_000.0])
-    def test_project_non_finite_canvas_returns_400_not_500(self, live_server, bad: float) -> None:
-        # json.dumps emits NaN/Infinity and the server's json parser accepts
-        # them; a bare ``<= 0`` guard lets them through (``NaN <= 0`` is False),
-        # so the route must reject non-finite dims with a 400, not a 500 / a
-        # non-standard-JSON "NaN" response.
-        _, base = live_server
-        status, data = _post_json(
-            base,
-            "/api/wizard/project",
-            {
-                "camera": _CAM,
-                "grid": _GRID,
-                "image_width": bad,
-                "image_height": IMG_H,
-            },
-        )
-        assert status == 400
-        assert "error" in data
-
-
-@integration
-class TestWizardUnprojectBadInput:
-    def test_unproject_partial_camera_returns_400(self, live_server) -> None:
-        _, base = live_server
-        status, data = _post_json(
-            base,
-            "/api/wizard/unproject",
-            {
-                "camera": {"pos_x": 0.0},  # missing the other six fields
-                "screen_points": [[100, 100]],
-                "image_width": IMG_W,
-                "image_height": IMG_H,
-            },
-        )
-        assert status == 400
-        assert "error" in data
-
-    def test_unproject_empty_screen_points_returns_400(self, live_server) -> None:
-        _, base = live_server
-        status, data = _post_json(
-            base,
-            "/api/wizard/unproject",
-            {
-                "camera": _CAM,
-                "screen_points": [],
-                "image_width": IMG_W,
-                "image_height": IMG_H,
-            },
-        )
-        assert status == 400
-        assert "error" in data
-
-    def test_unproject_malformed_screen_point_returns_400(self, live_server) -> None:
-        _, base = live_server
-        status, data = _post_json(
-            base,
-            "/api/wizard/unproject",
-            {
-                "camera": _CAM,
-                "screen_points": [[1, 2, 3]],  # 3D point, should be 2D
-                "image_width": IMG_W,
-                "image_height": IMG_H,
-            },
-        )
-        assert status == 400
-        assert "error" in data
-
-    def test_unproject_non_numeric_screen_point_returns_400(self, live_server) -> None:
-        """Non-numeric coordinates must be caught before np.array() runs."""
-        _, base = live_server
-        status, data = _post_json(
-            base,
-            "/api/wizard/unproject",
-            {
-                "camera": _CAM,
-                "screen_points": [["a", "b"]],
-                "image_width": IMG_W,
-                "image_height": IMG_H,
-            },
-        )
-        assert status == 400
-        assert "error" in data
-
-    def test_unproject_zero_fov_returns_400_not_500(self, live_server) -> None:
-        _, base = live_server
-        status, data = _post_json(
-            base,
-            "/api/wizard/unproject",
-            {
-                "camera": {**_CAM, "fov": 0.0},
-                "screen_points": [[960, 540]],
-                "image_width": IMG_W,
-                "image_height": IMG_H,
-            },
-        )
-        assert status == 400
-        assert "error" in data
-
-    def test_unproject_zero_canvas_returns_400_not_500(self, live_server) -> None:
-        _, base = live_server
-        status, data = _post_json(
-            base,
-            "/api/wizard/unproject",
-            {
-                "camera": _CAM,
-                "screen_points": [[960, 540]],
-                "image_width": 0.0,
-                "image_height": IMG_H,
-            },
-        )
-        assert status == 400
-        assert "error" in data
-
-
-@integration
-class TestWizardSolveBadInput:
-    def test_solve_three_corners_returns_400(self, live_server) -> None:
-        _, base = live_server
-        status, data = _post_json(
-            base,
-            "/api/wizard/solve",
-            {
-                "world_corners": [[0, 0, 0], [1, 0, 0], [1, 1, 0]],
-                "screen_corners": [[0, 0], [100, 0], [100, 100]],
-                "image_width": IMG_W,
-                "image_height": IMG_H,
-            },
-        )
-        assert status == 400
-        assert "error" in data
-
-    def test_solve_mismatched_corner_counts_returns_400(self, live_server) -> None:
-        _, base = live_server
-        world = _world_corners().tolist()
-        status, data = _post_json(
-            base,
-            "/api/wizard/solve",
-            {
-                "world_corners": world,
-                "screen_corners": [[0, 0], [100, 0], [100, 100]],  # only 3
-                "image_width": IMG_W,
-                "image_height": IMG_H,
-            },
-        )
-        assert status == 400
-        assert "error" in data
-
-    def test_solve_2d_world_corner_returns_400(self, live_server) -> None:
-        _, base = live_server
-        status, data = _post_json(
-            base,
-            "/api/wizard/solve",
-            {
-                "world_corners": [[0, 0], [1, 0], [1, 1], [0, 1]],  # missing z
-                "screen_corners": [[0, 0], [100, 0], [100, 100], [0, 100]],
-                "image_width": IMG_W,
-                "image_height": IMG_H,
-            },
-        )
-        assert status == 400
-        assert "error" in data
-
-    def test_solve_non_numeric_screen_corner_returns_400(self, live_server) -> None:
-        _, base = live_server
-        world = _world_corners().tolist()
-        status, data = _post_json(
-            base,
-            "/api/wizard/solve",
-            {
-                "world_corners": world,
-                "screen_corners": [["a", "b"], [100, 0], [100, 100], [0, 100]],
-                "image_width": IMG_W,
-                "image_height": IMG_H,
-            },
-        )
-        assert status == 400
-        assert "error" in data
-
-    def test_solve_zero_canvas_returns_400_not_500(self, live_server) -> None:
-        _, base = live_server
-        world = _world_corners().tolist()
-        status, data = _post_json(
-            base,
-            "/api/wizard/solve",
-            {
-                "world_corners": world,
-                "screen_corners": [[0, 0], [100, 0], [100, 100], [0, 100]],
-                "image_width": 0.0,
-                "image_height": IMG_H,
-            },
-        )
-        assert status == 400
-        assert "error" in data
-
-
-# ===========================================================================
-# Unit test – wizard template contains required safety patterns
-# ===========================================================================
-#
-# The wizard's JS is embedded in a Bottle template, so we have no JS test
-# toolchain here. These checks assert key safety patterns stay present:
-#   - URL.revokeObjectURL is called on the previous blob snapshot URL
-#   - applyAndFinish() inspects response.ok before redirecting
-
-
-# An integer JSON carries exactly but no float holds: float() raises OverflowError on it.
-_TOO_BIG = 10**400
-
-
-def _set_path(body: dict, path: tuple) -> dict:
-    """``body`` with the value at ``path`` replaced by :data:`_TOO_BIG`."""
-    out = json.loads(json.dumps(body))
-    target = out
-    for key in path[:-1]:
-        target = target[key]
-    target[path[-1]] = _TOO_BIG
-    return out
-
-
-@integration
-class TestWizardNumbersTooLargeForAFloat:
-    """Every number the three wizard routes read is a 400 when no float holds it, never a 500."""
-
-    @staticmethod
-    def _bodies() -> dict[str, dict]:
-        world = _world_corners().tolist()
-        screen = project_points(_cam_params(None), _world_corners(), IMG_W, IMG_H).tolist()
-        size = {"image_width": IMG_W, "image_height": IMG_H}
-        return {
-            "/api/wizard/project": {"camera": _CAM, "grid": _GRID, **size},
-            "/api/wizard/unproject": {"camera": _CAM, "screen_points": [[960.0, 700.0]], **size},
-            "/api/wizard/solve": {"world_corners": world, "screen_corners": screen, "camera": _CAM, **size},
-        }
+        assert buttons == [(str(i), str(i), f"{i + 1}. {titles[key]}") for i, key in enumerate(steps)]
+        assert "window.WIZ_STEPS = [" + ", ".join(f"'{key}'" for key in steps) + "];" in body
+        assert f"var LENS_ENABLED = {'true' if lens else 'false'};" in body
+        # Every step the script can show has its content; a linear wizard is a nav landmark, not a tablist.
+        for key in steps:
+            assert f'<div class="wizard-content" id="wizard-step-{key}">' in body
+        assert 'role="tablist"' not in WIZARD_TEMPLATE.read_text(encoding="utf-8")
+        assert "btn.setAttribute('aria-current', s === step ? 'step' : 'false');" in _wizard_script(body)
 
     @pytest.mark.parametrize(
-        ("path", "where"),
+        ("step", "help_id"),
         [
-            ("/api/wizard/project", ("image_width",)),
-            ("/api/wizard/project", ("grid", "width")),
-            ("/api/wizard/project", ("grid", "z_offset")),
-            ("/api/wizard/project", ("camera", "pitch")),
-            ("/api/wizard/unproject", ("screen_points", 0, 1)),
-            ("/api/wizard/unproject", ("plane_z",)),
-            ("/api/wizard/unproject", ("camera", "fov")),
-            ("/api/wizard/solve", ("image_width",)),
-            ("/api/wizard/solve", ("screen_corners", 2, 0)),
-            ("/api/wizard/solve", ("world_corners", 1, 2)),
+            ("video", "wizard-video"),
+            ("lens", "wizard-lens"),
+            ("calib", "wizard-calibration-simple"),
+            ("review", "wizard-review"),
         ],
     )
-    def test_is_a_400(self, live_server, path: str, where: tuple) -> None:
+    def test_each_step_opens_its_own_help(self, live_server, step: str, help_id: str) -> None:
         _, base = live_server
-        good = self._bodies()[path]
-        assert _post_json(base, path, good)[0] == 200
-        status, raw = _post_raw(base, path, _set_path(good, where))
-        assert status == 400
-        assert "error" in json.loads(raw)
+        _, body = _get(base, "/wizard")
+        opened = re.findall(r'data-help-open="([\w-]+)"', _wizard_step(body, step))
+        assert opened == [help_id]
+        assert _get(base, f"/help/{help_id}.html")[0] == 200
+
+    def test_camera_calibration_opens_the_help_of_its_mode(self, live_server) -> None:
+        _, base = live_server
+        _, body = _get(base, "/wizard")
+        assert "var helpId = 'wizard-calibration-' + S.mode;" in _wizard_script(body)
+        assert re.findall(r'<input type="radio" name="cal_mode" value="(\w+)"', body) == ["simple", "advanced"]
+        for mode in ("simple", "advanced"):
+            assert _get(base, f"/help/wizard-calibration-{mode}.html")[0] == 200
+
+    @pytest.mark.parametrize("lens", [True, False], ids=["lens on", "lens off"])
+    def test_every_element_the_script_looks_up_is_on_the_page(self, tmp_path, monkeypatch, lens: bool) -> None:
+        with _lens_station(tmp_path, monkeypatch, lens=lens) as (_, base):
+            _, body = _get(base, "/wizard")
+        script = _wizard_script(body)
+        looked_up = set(re.findall(r"(?:\$|getElementById)\('([\w-]+)'\)", script))
+        built_by_script = set(re.findall(r'id="([\w-]+)"', script))
+        on_page = set(re.findall(r'\bid="([\w-]+)"', _without_scripts(body)))
+        # Both modes' panels, the picture's layers and the menu are among them.
+        assert {
+            "cal-simple",
+            "cal-advanced",
+            "cal-advanced-points",
+            "cal-simple-corners",
+            "pin-menu",
+            "cal-pins",
+        } <= looked_up
+        assert looked_up - built_by_script - on_page == set()
+
+    def test_the_three_pictures_go_full_screen(self, live_server) -> None:
+        _, base = live_server
+        _, body = _get(base, "/wizard")
+
+        class Buttons(HTMLParser):
+            """Each full-screen button with the ids of the divs around it."""
+
+            def __init__(self) -> None:
+                super().__init__()
+                self.divs: list[str] = []
+                self.found: dict[str, list[str]] = {}
+
+            def handle_starttag(self, tag: str, attrs: list) -> None:
+                a = dict(attrs)
+                if tag == "div":
+                    self.divs.append(a.get("id") or "")
+                elif tag == "button" and "data-fs" in a:
+                    assert a["aria-label"] == "Full screen" and a["class"] == "fs-btn"
+                    self.found[a["data-fs"]] = list(self.divs)
+
+            def handle_endtag(self, tag: str) -> None:
+                if tag == "div":
+                    self.divs.pop()
+
+        parser = Buttons()
+        parser.feed(_without_scripts(body))
+        assert set(parser.found) == {"lens", "cal", "review"}
+        # The shell takes the picture from ``<key>-container``.
+        for key, around in parser.found.items():
+            assert around[-1] == f"{key}-container", key
+        assert re.search(r'<div id="fs-shell" class="fs-shell" hidden role="dialog" aria-modal="true"', body)
+
+    def test_the_lens_step_loads_and_saves_lens_calibrations(self, live_server) -> None:
+        _, base = live_server
+        _, body = _get(base, "/wizard")
+        step = _wizard_step(body, "lens")
+        assert (
+            '<button type="button" class="secondary" onclick="lensLoadDialog()">Load lens calibration&hellip;</button>'
+            in step
+        )
+        # Saving waits for a lens worth keeping.
+        assert re.search(
+            r'<button type="button" class="secondary" id="lens-save" onclick="lensSaveDialog\(\)" disabled>', step
+        )
+        script = _wizard_script(body)
+        assert "window.lensLoadDialog = function" in script and "window.lensSaveDialog = function" in script
+
+    def test_the_page_names_no_route_or_field_the_station_lacks(self, live_server) -> None:
+        _, base = live_server
+        _, body = _get(base, "/wizard")
+        for text in (WIZARD_TEMPLATE.read_text(encoding="utf-8"), body):
+            for gone in ("calibration_points", "corner_pins", "/api/wizard/project", "/unproject"):
+                assert gone not in text, gone
 
 
 @unit
-class TestWizardTemplateSafetyPatterns:
-    def _wizard_tpl(self) -> str:
-        from pathlib import Path
+class TestWizardNameFields:
+    """A field a name is typed into is never one a browser or a password manager fills with the operator's name."""
 
-        path = Path(__file__).resolve().parent.parent / "openfollow" / "web" / "templates" / "wizard.tpl"
-        return path.read_text(encoding="utf-8")
+    @staticmethod
+    def _inputs(pattern: str) -> list[str]:
+        return re.findall(pattern, WIZARD_TEMPLATE.read_text(encoding="utf-8"))
 
-    def test_the_unverified_point_notice_is_at_its_chips_level(self) -> None:
-        """The notice explains the Unverified chip, a caution: one level for one state."""
-        src = self._wizard_tpl()
-        assert "unverified: ['stat-chip warn', 'Unverified']" in src
-        assert '<div id="calib-notice" class="notice warning"' in src
+    def test_point_fields_are_labelled_point_and_never_named_name(self) -> None:
+        fields = self._inputs(r'<label for="([^"]+)">Point</label><input ([^>]*)>')
+        assert [f[0] for f in fields] == ["pl-' + id + '", "pm-point"]
+        for target, attrs in fields:
+            assert f'id="{target}"' in attrs
+            assert not re.search(r'\b(?:id|name)="[^"]*name', attrs, re.I), attrs
+        assert not re.search(r">\s*Name\s*<", WIZARD_TEMPLATE.read_text(encoding="utf-8"))
 
-    def test_snapshot_revokes_previous_blob_url(self) -> None:
-        src = self._wizard_tpl()
-        assert "URL.revokeObjectURL" in src, "loadSnapshot() must revoke the previous blob URL to avoid memory leaks."
-
-    def test_apply_and_finish_checks_response_ok(self) -> None:
-        src = self._wizard_tpl()
-        # Extract the applyAndFinish function body and assert the check
-        # lives *inside* it, not somewhere unrelated in the file.
-        import re
-
-        match = re.search(
-            r"window\.applyAndFinish\s*=\s*function\s*\([^)]*\)\s*\{(.*?)\n  \};",
-            src,
-            re.DOTALL,
-        )
-        assert match is not None, "applyAndFinish() function not found in wizard.tpl"
-        body = match.group(1)
-        assert "entry.response.ok" in body, (
-            "applyAndFinish() must check entry.response.ok before clearing session storage."
-        )
-        assert "saveError.show(reviewBox, await saveError.fromResponse(entry.response)" in body, (
-            "applyAndFinish() must show why a config POST failed on the Review step."
-        )
-
-    def test_wizard_nav_uses_nav_landmark(self) -> None:
-        """The step list is a navigation landmark, not a tablist.
-
-        Prior ``role=\"tablist\"`` markup was missing aria-selected/aria-controls/
-        role=tabpanel/aria-labelledby. Using the nav landmark with aria-current=step
-        is the lighter-weight correct semantics for a linear wizard.
-        """
-        src = self._wizard_tpl()
-        assert '<nav class="wizard-steps"' in src
-        assert 'role="tablist"' not in src
-
-    def test_camera_step_draws_vertical_fov_footprint(self) -> None:
-        """The Camera Position step draws the vertical FOV as a ground footprint.
-
-        The earlier illustration only drew the horizontal FOV (a single width
-        line at the centre sight distance), so the operator could not tell
-        whether the camera covered the full depth of the grid. The footprint is
-        the view frustum intersected with the grid plane: a shaded quad plus the
-        four frustum edges, with the vertical FOV derived from the horizontal
-        one on a 16:9 frame.
-        """
-        src = self._wizard_tpl()
-        # Footprint quad + four frustum edges.
-        assert 'id="cp-fov-area"' in src
-        for edge in ("cp-fov-bl", "cp-fov-br", "cp-fov-tl", "cp-fov-tr"):
-            assert f'id="{edge}"' in src, f"missing frustum edge {edge}"
-        # The horizontal-only markup must be gone so it can't silently return.
-        for old in ("cp-fov-left", "cp-fov-right", "cp-fov-line"):
-            assert old not in src, f"stale horizontal-only FOV element {old}"
-        # VFOV is derived from HFOV on a 16:9 frame, not read independently.
-        assert "9 / 16" in src, "vertical FOV must follow from the 16:9 aspect ratio"
-        assert "var vfov" in src
-        # The FOV readout reports both axes (degree sign + H and + V).
-        assert "\\u00b0H" in src and "\\u00b0V" in src
+    def test_every_text_field_is_kept_from_autofill(self) -> None:
+        fields = self._inputs(r'<input type="text" ([^>]*)>')
+        assert {re.search(r'id="([^"]+)"', f).group(1) for f in fields} == {"pl-' + id + '", "pm-point", "ls-name"}
+        for attrs in fields:
+            assert 'autocomplete="off"' in attrs and " data-1p-ignore " in attrs and 'data-lpignore="true"' in attrs
 
 
-_CAM_LENS = {**_CAM, "lens_k1": -0.2, "lens_k2": 0.02}
+# ---------------------------------------------------------------------------
+# The saved calibration the wizard starts from
+# ---------------------------------------------------------------------------
+
+
+def _corner(mark_id: int, name: str, x: float, y: float, pin: list[float]) -> CalibrationMarkConfig:
+    return CalibrationMarkConfig(id=mark_id, name=name, kind="known", x=x, y=y, z=0.0, pin=pin)
+
+
+# The default grid's corners: 10 x 6 with its downstage edge on Y 0.
+_SIMPLE_MARKS = (
+    _corner(1, "DSL", 5.0, 0.0, [0.81, 0.94]),
+    _corner(2, "DSR", -5.0, 0.0, [0.14, 0.95]),
+    _corner(3, "USR", -5.0, 6.0, [0.37, 0.61]),
+    _corner(4, "USL", 5.0, 6.0, [0.66, 0.6]),
+)
+_ADVANCED_MARKS = (
+    _corner(1, "DSL", 6.5, 0.0, [0.8, 0.85]),
+    _corner(2, "DSR", -5.5, 0.0, [0.2, 0.85]),
+    CalibrationMarkConfig(id=3, name="Truss leg", kind="known", x=0.0, y=10.0, z=1.2),
+    CalibrationMarkConfig(
+        id=4, name="Spike", kind="triangulated", z=0.0, from_a=1, from_b=2, distance_a=7.0, distance_b=7.5,
+        pin=[0.5, 0.6], position=[0.4, 5.1, 0.0],
+    ),
+)  # fmt: skip
+
+
+def _as_saved(mark: CalibrationMarkConfig) -> dict:
+    keys = ("id", "name", "kind", "x", "y", "z", "from_a", "from_b", "distance_a", "distance_b", "pin", "position")
+    return {key: getattr(mark, key) for key in keys}
 
 
 @integration
-class TestWizardLensDistortion:
-    """The corner-pinning preview bows to match the lens, and the solve
-    undistorts the pinned corners before the pinhole DLT."""
+class TestWizardSavedCalibration:
+    @pytest.mark.parametrize(("mode", "marks"), [("simple", _SIMPLE_MARKS), ("advanced", _ADVANCED_MARKS)])
+    def test_the_page_starts_from_the_stations_marks(self, tmp_path, monkeypatch, mode: str, marks: tuple) -> None:
+        with _lens_station(tmp_path, monkeypatch, mode=mode, marks=marks) as (server, base):
+            _, body = _get(base, "/wizard")
+            kept = load_config(server.config_path).camera.calibration_marks
+        assert len(kept) == len(marks)
+        saved = _saved(body)
+        # Pins stay fractions of the snapshot; the page scales them once it has one.
+        assert saved["marks"] == [_as_saved(m) for m in marks]
+        assert saved["mode"] == mode
+        grid = GridConfig()
+        assert saved["grid"] == {
+            k: getattr(grid, k) for k in ("width", "depth", "spacing", "x_offset", "y_offset", "z_offset")
+        }
+        assert (saved["fov"], saved["lens"], saved["max_marks"]) == (CameraConfig().fov, [-0.21, 0.03], 12)
 
-    def test_project_warps_corners_when_lens_set(self, live_server) -> None:
-        _, base = live_server
-        body = {"grid": _GRID, "image_width": IMG_W, "image_height": IMG_H}
-        _, plain = _post_json(base, "/api/wizard/project", {**body, "camera": _CAM})
-        _, warped = _post_json(base, "/api/wizard/project", {**body, "camera": _CAM_LENS})
-        # A non-zero k bows the projected overlay, so the corners shift.
-        moved = any(
-            abs(plain["corners"][n][0] - warped["corners"][n][0]) > 1.0
-            or abs(plain["corners"][n][1] - warped["corners"][n][1]) > 1.0
-            for n in ("DSL", "DSR", "USR", "USL")
-        )
-        assert moved
+    def test_without_a_calibration_the_page_starts_empty(self, live_server) -> None:
+        _, body = _get(live_server[1], "/wizard")
+        saved = _saved(body)
+        assert (saved["mode"], saved["marks"], saved["lens"]) == ("simple", [], [0.0, 0.0])
 
-    def test_project_reads_a_folding_pair_as_a_save_would_keep_it(self, live_server) -> None:
-        """The slider's earlier end stop folds; the preview bows with the pair a save would keep."""
-        _, base = live_server
-        body = {"grid": _GRID, "image_width": IMG_W, "image_height": IMG_H}
-        kept = CameraConfig(lens_k1=-0.4, lens_k2=0.0)
-        _, folding = _post_json(
-            base, "/api/wizard/project", {**body, "camera": {**_CAM, "lens_k1": -0.4, "lens_k2": 0.0}}
-        )
-        _, pulled = _post_json(
-            base, "/api/wizard/project", {**body, "camera": {**_CAM, "lens_k1": kept.lens_k1, "lens_k2": kept.lens_k2}}
-        )
-        _, plain = _post_json(base, "/api/wizard/project", {**body, "camera": _CAM})
-        assert folding["corners"] == pulled["corners"]
-        assert folding["corners"] != plain["corners"]
+    def test_with_lens_distortion_off_the_page_starts_pinhole(self, tmp_path, monkeypatch) -> None:
+        with _lens_station(tmp_path, monkeypatch, lens=False) as (_, base):
+            _, body = _get(base, "/wizard")
+        assert _saved(body)["lens"] == [0.0, 0.0]
+        assert re.search(r'id="wiz_lens_k1" step="0.005"\s+value="0.0"', body)
 
-    def test_project_zero_lens_matches_no_lens_key(self, live_server) -> None:
-        _, base = live_server
-        body = {"grid": _GRID, "image_width": IMG_W, "image_height": IMG_H}
-        _, no_key = _post_json(base, "/api/wizard/project", {**body, "camera": _CAM})
-        _, zero = _post_json(base, "/api/wizard/project", {**body, "camera": {**_CAM, "lens_k1": 0.0, "lens_k2": 0.0}})
-        for n in ("DSL", "DSR", "USR", "USL"):
-            assert zero["corners"][n] == pytest.approx(no_key["corners"][n], abs=1e-6)
 
-    def test_project_returns_bowed_outline_when_lens_set(self, live_server) -> None:
-        # The wizard quad must bow like the HUD grid: the boundary is returned
-        # subdivided (many points) and distorted, not just the 4 corners.
-        _, base = live_server
-        body = {"grid": _GRID, "image_width": IMG_W, "image_height": IMG_H}
-        _, warped = _post_json(base, "/api/wizard/project", {**body, "camera": _CAM_LENS})
-        assert "outline" in warped
-        assert len(warped["outline"]) > 4  # subdivided edges, not a 4-corner quad
-        # The outline starts at the first (DSL) corner.
-        assert warped["outline"][0] == pytest.approx(warped["corners"]["DSL"], abs=1e-6)
-        # A mid point on the first edge bows off the straight DSL->DSR chord.
-        dsl, dsr = warped["corners"]["DSL"], warped["corners"]["DSR"]
-        mid = warped["outline"][len(warped["outline"]) // 16]
-        cross = (mid[0] - dsl[0]) * (dsr[1] - dsl[1]) - (mid[1] - dsl[1]) * (dsr[0] - dsl[0])
-        assert abs(cross) > 1.0
+# ---------------------------------------------------------------------------
+# Apply & Finish: the grid, then the camera, and only then leave
+# ---------------------------------------------------------------------------
 
-    def test_project_outline_is_four_corners_when_lens_zero(self, live_server) -> None:
-        _, base = live_server
-        body = {"grid": _GRID, "image_width": IMG_W, "image_height": IMG_H}
-        _, plain = _post_json(base, "/api/wizard/project", {**body, "camera": _CAM})
-        # No distortion -> boundary is just the four corners (a straight quad).
-        assert len(plain["outline"]) == 4
+_SOLVED = {"pos_x": 0.4, "pos_y": -11.2, "pos_z": 6.1, "pitch": -22.5, "yaw": 0.3, "roll": 0.1, "fov": 61.0}
+# A 12 x 7 rectangle centred at X 0.5, Y 3.5: its corners DSL, DSR, USR, USL.
+_RECT = {"w": 12.0, "d": 7.0, "cx": 0.5, "cy": 3.5, "z": 0.0, "spacing": 1.0}
+_RECT_CORNERS = [[6.5, 0.0, 0.0], [-5.5, 0.0, 0.0], [-5.5, 7.0, 0.0], [6.5, 7.0, 0.0]]
+_SIMPLE_PINS = [[1536.0, 1015.2], [288.0, 1015.2], [672.0, 658.8], [1248.0, 648.0]]
+_SIMPLE_STATE = {
+    "mode": "simple",
+    "solve": {
+        "cam": _SOLVED,
+        "worst": 0.8,
+        "positions": {},
+        "marks": [
+            {"id": i + 1, "name": name, "kind": "known", "pos": pos, "pin": pin, "problem": ""}
+            for i, (name, pos, pin) in enumerate(
+                zip(("DSL", "DSR", "USR", "USL"), _RECT_CORNERS, _SIMPLE_PINS, strict=True)
+            )
+        ],
+    },
+}
+_ADVANCED_STATE = {
+    "mode": "advanced",
+    "solve": {
+        "cam": _SOLVED,
+        "worst": 2.4,
+        "positions": {"4": [0.4, 5.1, 0.0]},
+        "marks": [
+            {"id": 1, "name": "DSL", "kind": "known", "pos": [6.5, 0.0, 0.0], "pin": [1536.0, 918.0], "problem": ""},
+            {"id": 2, "name": "DSR", "kind": "known", "pos": [-5.5, 0.0, 0.0], "pin": [384.0, 918.0], "problem": ""},
+            {"id": 3, "name": "Truss leg", "kind": "known", "pos": [0.0, 10.0, 1.2], "pin": None, "problem": ""},
+            {"id": 4, "name": "Spike", "kind": "triangulated", "a": 1, "b": 2, "da": 7.0, "db": 7.5, "z": 0.0,
+             "pin": [960.0, 648.0], "problem": ""},
+            {"id": 5, "name": "P5", "kind": "known", "pin": [10.0, 10.0], "problem": "Enter its X, Y and Z."},
+        ],
+    },
+}  # fmt: skip
 
-    def test_unproject_undistorts_input_when_lens_set(self, live_server) -> None:
-        _, base = live_server
-        params = _cam_params()
-        screen = project_points(params, np.array([[2.0, 3.0, 0.0]]), IMG_W, IMG_H)
-        body = {"screen_points": screen.tolist(), "image_width": IMG_W, "image_height": IMG_H, "plane_z": 0.0}
-        _, plain = _post_json(base, "/api/wizard/unproject", {**body, "camera": _CAM})
-        _, warped = _post_json(base, "/api/wizard/unproject", {**body, "camera": _CAM_LENS})
-        # Undistorting the same screen point before unprojecting moves the world hit.
-        assert plain["world_points"][0] != pytest.approx(warped["world_points"][0], abs=1e-3)
+_APPLY_PAGE = """
+var calls = [], shown = [], removed = [];
+var STORAGE_KEY = 'openfollow:wizard', imageWidth = 1920, imageHeight = 1080;
+var window = { location: { href: '/wizard' }, OpenFollow: { saveError: {
+  show: function(box, err, title) { shown.push([err.error, title]); },
+  fromResponse: function(r) { return Promise.resolve({ error: 'Refused with ' + r.status + '.' }); },
+  UNREACHABLE: { error: 'Unreachable.' } } } };
+var document = { querySelector: function() { return {}; } };
+var sessionStorage = { removeItem: function(key) { removed.push(key); } };
+function fetch(url, opts) {
+  calls.push([url, JSON.parse(opts.body)]);
+  var a = answers[url];
+  if (a === 'down') return Promise.reject(new TypeError('Failed to fetch'));
+  return Promise.resolve({ ok: a === 200, status: a });
+}
+function wizLensPairValid() { return pairValid; }
+function wizReadLensCoeff(id) { return id === 'wiz_lens_k1' ? -0.21 : 0.03; }
+function calibGrid() { return RECT; }
+"""
 
-    def test_solve_undistorts_pinned_corners_round_trip(self, live_server) -> None:
-        # Pin corners on a *distorted* video: project pinhole, then warp forward.
-        _, base = live_server
-        params = _cam_params()
-        world = _world_corners()
-        pinhole_screen = project_points(params, world, IMG_W, IMG_H)
-        k1, k2 = _CAM_LENS["lens_k1"], _CAM_LENS["lens_k2"]
-        distorted_screen = apply_overlay_distortion(pinhole_screen, IMG_W, IMG_H, k1, k2)
 
-        status, data = _post_json(
-            base,
-            "/api/wizard/solve",
-            {
-                "world_corners": world.tolist(),
-                "screen_corners": distorted_screen.tolist(),
-                "image_width": IMG_W,
-                "image_height": IMG_H,
-                "camera": {"lens_k1": k1, "lens_k2": k2},
-            },
-        )
-        assert status == 200
-        # Undistort-then-solve recovers the true pinhole camera.
-        cam = data["camera"]
-        assert cam["pos_y"] == pytest.approx(_CAM["pos_y"], abs=0.5)
-        assert cam["pos_z"] == pytest.approx(_CAM["pos_z"], abs=0.5)
-        assert cam["fov"] == pytest.approx(_CAM["fov"], abs=2.0)
-        # Reprojected corners are re-distorted, so they land on the pinned positions.
-        rp = data["reprojected_corners"]
-        for i in range(4):
-            assert rp[i][0] == pytest.approx(distorted_screen[i][0], abs=2.0)
-            assert rp[i][1] == pytest.approx(distorted_screen[i][1], abs=2.0)
+def _apply(
+    state: dict, *, grid=200, camera=200, lens: bool = True, pair_valid: bool = True, pending: bool = False
+) -> dict:
+    """Press Apply & Finish on a page in ``state``, the station answering each write with its status."""
+    return run_wizard_js(
+        "(async function() { window.applyAndFinish(); await new Promise(function(r) { setImmediate(r); });"
+        " return { calls: calls, shown: shown, removed: removed, href: window.location.href }; })()",
+        prelude=_APPLY_PAGE + wizard_function("applyBlocked") + wizard_window_function("applyAndFinish"),
+        variables=("APPLY_MAX_PX",),
+        S=state,
+        LENS_ENABLED=lens,
+        RECT=_RECT,
+        answers={"/api/config/grid": grid, "/api/config/camera": camera},
+        pairValid=pair_valid,
+        solvePending=pending,
+    )
+
+
+@needs_node
+@unit
+class TestWizardApply:
+    def test_simple_writes_its_rectangle_as_the_grid_then_the_camera_then_leaves(self) -> None:
+        out = _apply(_SIMPLE_STATE)
+        assert [url for url, _ in out["calls"]] == ["/api/config/grid", "/api/config/camera"]
+        assert out["calls"][0][1] == {"width": 12.0, "depth": 7.0, "x_offset": 0.5, "y_offset": 3.5, "z_offset": 0.0}
+        camera = out["calls"][1][1]
+        assert {k: camera[k] for k in _SOLVED} == _SOLVED
+        assert (camera["calibration_mode"], camera["lens_k1"], camera["lens_k2"]) == ("simple", -0.21, 0.03)
+        assert camera["calibration_marks"] == [
+            {"id": i + 1, "name": n, "kind": "known", "pin": [x / IMG_W, y / IMG_H], "x": p[0], "y": p[1], "z": p[2]}
+            for i, (n, p, (x, y)) in enumerate(
+                zip(("DSL", "DSR", "USR", "USL"), _RECT_CORNERS, _SIMPLE_PINS, strict=True)
+            )
+        ]
+        assert (out["shown"], out["removed"], out["href"]) == ([], ["openfollow:wizard"], "/")
+
+    def test_advanced_leaves_the_grid_and_saves_the_marks_it_can_use(self) -> None:
+        out = _apply(_ADVANCED_STATE)
+        assert [url for url, _ in out["calls"]] == ["/api/config/camera"]
+        marks = out["calls"][0][1]["calibration_marks"]
+        assert [m["id"] for m in marks] == [1, 2, 3, 4]
+        assert marks[2]["pin"] == []
+        assert marks[3] == {
+            "id": 4, "name": "Spike", "kind": "triangulated", "pin": [0.5, 0.6], "from_a": 1, "from_b": 2,
+            "distance_a": 7.0, "distance_b": 7.5, "z": 0.0, "position": [0.4, 5.1, 0.0],
+        }  # fmt: skip
+        assert (out["calls"][0][1]["calibration_mode"], out["href"]) == ("advanced", "/")
+
+    @pytest.mark.parametrize(
+        ("answers", "sent", "said"),
+        [
+            ({"grid": 400}, ["/api/config/grid"], ["Refused with 400.", "The grid settings were not applied."]),
+            (
+                {"camera": 400},
+                ["/api/config/grid", "/api/config/camera"],
+                ["Refused with 400.", "The camera settings were not applied."],
+            ),
+            ({"grid": "down"}, ["/api/config/grid"], ["Unreachable.", "Not applied."]),
+            ({"camera": "down"}, ["/api/config/grid", "/api/config/camera"], ["Unreachable.", "Not applied."]),
+        ],
+        ids=["grid refused", "camera refused", "grid unreachable", "camera unreachable"],
+    )
+    def test_a_write_that_fails_says_so_and_stays(self, answers: dict, sent: list[str], said: list[str]) -> None:
+        out = _apply(_SIMPLE_STATE, **answers)
+        # The camera waits for the grid's answer: its pins would not survive a grid write after it.
+        assert [url for url, _ in out["calls"]] == sent
+        assert out["shown"] == [said]
+        assert (out["removed"], out["href"]) == ([], "/wizard")
+
+    def test_a_folding_lens_pair_sends_nothing(self) -> None:
+        out = _apply(_SIMPLE_STATE, pair_valid=False)
+        assert out["calls"] == [] and out["href"] == "/wizard"
+        assert out["shown"] == [["The lens pair folds the overlay inside the frame.", "Not applied."]]
+
+    def test_with_lens_distortion_off_no_lens_pair_is_sent(self) -> None:
+        out = _apply(_SIMPLE_STATE, lens=False, pair_valid=False)
+        camera = out["calls"][1][1]
+        assert "lens_k1" not in camera and "lens_k2" not in camera and out["href"] == "/"
+
+    @pytest.mark.parametrize(("worst", "sent"), [(19.9, True), (20.1, False)])
+    def test_a_solve_with_a_point_far_off_its_pin_is_not_applied(self, worst: float, sent: bool) -> None:
+        out = _apply({**_SIMPLE_STATE, "solve": {**_SIMPLE_STATE["solve"], "worst": worst}})
+        assert bool(out["calls"]) is sent and (out["href"] == "/") is sent
+
+    def test_while_a_solve_is_still_running_nothing_is_sent(self) -> None:
+        out = _apply(_SIMPLE_STATE, pending=True)
+        assert out == {"calls": [], "shown": [], "removed": [], "href": "/wizard"}
+
+    def test_without_a_solve_nothing_is_sent(self) -> None:
+        out = _apply({"mode": "simple", "solve": {"marks": [], "need": ["4 more pinned points"]}})
+        assert out == {"calls": [], "shown": [], "removed": [], "href": "/wizard"}
+
+
+@needs_node
+@integration
+def test_what_apply_sends_is_what_the_station_keeps_and_the_wizard_starts_from(live_server) -> None:
+    server, base = live_server
+    calls = _apply(_SIMPLE_STATE)["calls"]
+    for url, body in calls:
+        assert _post_json(base, url, body)[0] == 200, url
+    cfg = load_config(server.config_path)
+    assert (cfg.grid.width, cfg.grid.depth, cfg.grid.x_offset, cfg.grid.y_offset) == (12.0, 7.0, 0.5, 3.5)
+    assert cfg.camera.calibration_mode == "simple" and (cfg.camera.pos_x, cfg.camera.fov) == (0.4, 61.0)
+    sent = calls[1][1]["calibration_marks"]
+    assert [m.pin for m in cfg.camera.calibration_marks] == [m["pin"] for m in sent]
+    _, page = _get(base, "/wizard")
+    assert [m["pin"] for m in _saved(page)["marks"]] == [m["pin"] for m in sent]
+
+
+@needs_node
+@integration
+def test_a_settings_file_the_station_exports_loads_its_lens(live_server_lens) -> None:
+    _, base = live_server_lens
+    status, text = _get(base, "/api/config/export")
+    assert status == 200
+    out = run_wizard_js(
+        "lensFromSettings(text)",
+        functions=("wizLensFoldRadius", "wizLensIsValid", "lensFromSettings"),
+        text=text,
+    )
+    assert out == {"k1": -0.21, "k2": 0.03}
 
 
 @unit
-class TestWizardLensCoeffs:
-    """Direct coverage of the lens-coefficient extraction helper's edge cases."""
+@pytest.mark.parametrize("k1,k2", [(5.0, -5.0), (-0.4, -0.2), (-0.4, 0.0), (-0.1, 0.02)])
+def test_a_lens_pair_a_request_names_reads_as_the_saved_config_reads_it(k1: float, k2: float) -> None:
+    """A folding pair is pulled back toward the fold, never dropped to pinhole, exactly as a save is."""
+    from openfollow.web.routes import _wizard_lens_coeffs
 
-    def test_non_dict_camera_yields_zero(self) -> None:
-        from openfollow.web.routes import _wizard_lens_coeffs
-
-        assert _wizard_lens_coeffs(None) == (0.0, 0.0)
-        assert _wizard_lens_coeffs("not a dict") == (0.0, 0.0)
-
-    def test_non_numeric_and_non_finite_fall_back_to_zero(self) -> None:
-        from openfollow.web.routes import _wizard_lens_coeffs
-
-        assert _wizard_lens_coeffs({"lens_k1": "abc"}) == (0.0, 0.0)
-        assert _wizard_lens_coeffs({"lens_k1": float("inf"), "lens_k2": float("nan")}) == (0.0, 0.0)
-
-    @pytest.mark.parametrize("k1,k2", [(5.0, -5.0), (-0.4, -0.2), (-0.4, 0.0), (-0.1, 0.02)])
-    def test_a_pair_reads_as_the_saved_config_reads_it(self, k1: float, k2: float) -> None:
-        """A folding pair is pulled back toward the fold, never dropped to pinhole, exactly as a save is."""
-        from openfollow.web.routes import _wizard_lens_coeffs
-
-        saved = CameraConfig(lens_k1=k1, lens_k2=k2)
-        assert _wizard_lens_coeffs({"lens_k1": k1, "lens_k2": k2}) == (saved.lens_k1, saved.lens_k2)
-        assert _wizard_lens_coeffs({"lens_k1": k1, "lens_k2": k2}) != (0.0, 0.0)
-        # A wide lens outside the old +-0.4 / +-0.2 box passes through unclamped.
-        assert _wizard_lens_coeffs({"lens_k1": -0.47, "lens_k2": 0.25}) == pytest.approx((-0.47, 0.25))
+    saved = CameraConfig(lens_k1=k1, lens_k2=k2)
+    assert _wizard_lens_coeffs({"lens_k1": k1, "lens_k2": k2}) == (saved.lens_k1, saved.lens_k2)
+    assert _wizard_lens_coeffs({"lens_k1": k1, "lens_k2": k2}) != (0.0, 0.0)
+    # A wide lens passes through unclamped.
+    assert _wizard_lens_coeffs({"lens_k1": -0.47, "lens_k2": 0.25}) == pytest.approx((-0.47, 0.25))
 
 
 # ---------------------------------------------------------------------------
 # Lens step: lines that are straight in reality -> k1 / k2
 # ---------------------------------------------------------------------------
-
-
-def _lens_station(
-    tmp_path,
-    monkeypatch,
-    *,
-    developer_mode: bool = False,
-    experimental: bool = False,
-    points: tuple = (),
-    corner_pins: list | None = None,
-    unit_system: str = "metric",
-):
-    """A station with a stored lens pair for the wizard's Lens step."""
-    from openfollow.configuration import AppConfig, save_config
-
-    monkeypatch.setattr(discovery_module.BeaconSender, "start", lambda self: None)
-    monkeypatch.setattr(discovery_module.BeaconSender, "stop", lambda self: None)
-    monkeypatch.setattr(discovery_module.BeaconReceiver, "start", lambda self: None)
-    monkeypatch.setattr(discovery_module.BeaconReceiver, "stop", lambda self: None)
-
-    # Its own file, so a test holding several fixtures keeps the plain station plain.
-    config_path = tmp_path / ("config_lens_dev.toml" if developer_mode else "config_lens.toml")
-    cfg = AppConfig()
-    # ``experimental`` turns the calibration points on; lens distortion is on by default.
-    cfg.ui.shown_features = [*cfg.ui.shown_features, "calibration_points"] if experimental else cfg.ui.shown_features
-    cfg.ui.developer_mode = developer_mode
-    cfg.camera.lens_k1 = -0.21
-    cfg.camera.lens_k2 = 0.03
-    cfg.camera.calibration_points = list(points)
-    cfg.camera.corner_pins = list(corner_pins or [])
-    cfg.ui.unit_system = unit_system
-    save_config(cfg, str(config_path))
-    return live_on_free_port(
-        lambda port: ConfigWebServer(
-            config_path=str(config_path),
-            host="127.0.0.1",
-            port=port,
-            system_name="WizardLensTest",
-        )
-    )
-
-
-@pytest.fixture()
-def live_server_lens(tmp_path, monkeypatch):
-    with _lens_station(tmp_path, monkeypatch) as (server, base):
-        yield server, base
-
-
-@pytest.fixture()
-def live_server_lens_dev(tmp_path, monkeypatch):
-    """The Lens station in developer mode, which adds the edge view."""
-    with _lens_station(tmp_path, monkeypatch, developer_mode=True) as (server, base):
-        yield server, base
 
 
 def _stripe_image(w: int = 1920, h: int = 1080) -> np.ndarray:
@@ -2070,80 +1087,23 @@ class TestWizardLensFitEndpoint:
 class TestWizardScriptParses:
     """The page's own script, rendered with every toggle: an edit that breaks its syntax stops the whole wizard."""
 
-    @pytest.mark.parametrize(("experimental", "developer"), [(False, False), (True, False), (True, True)])
-    def test_every_inline_script_parses(self, tmp_path, monkeypatch, experimental: bool, developer: bool) -> None:
-        with _lens_station(tmp_path, monkeypatch, developer_mode=developer, experimental=experimental) as (_, base):
+    @pytest.mark.parametrize(("lens", "developer"), [(True, False), (False, False), (True, True)])
+    def test_every_inline_script_parses(self, tmp_path, monkeypatch, lens: bool, developer: bool) -> None:
+        with _lens_station(tmp_path, monkeypatch, developer_mode=developer, lens=lens) as (_, base):
             status, page = _get(base, "/wizard")
         assert status == 200
         scripts = re.findall(r"<script>(.*?)</script>", page, re.S)
-        assert len(scripts) >= 2
+        assert len(scripts) >= 3
         for i, source in enumerate(scripts):
             assert_script_parses(source, tmp_path / f"wizard-{i}.js")
 
 
 @integration
-class TestLensChangeAfterPinning:
-    """The pins are undistorted with whatever pair is current, so a new pair solves again from them."""
-
-    def test_solving_again_with_the_measured_pair_recovers_the_camera(self, live_server) -> None:
-        _, base = live_server
-        k1, k2 = -0.3, 0.05
-        world = _world_corners()
-        pins = apply_overlay_distortion(project_points(_cam_params(), world, IMG_W, IMG_H), IMG_W, IMG_H, k1, k2)
-        body = {
-            "world_corners": world.tolist(),
-            "screen_corners": pins.tolist(),
-            "image_width": IMG_W,
-            "image_height": IMG_H,
-        }
-        _, before = _post_json(base, "/api/wizard/solve", {**body, "camera": {"lens_k1": 0.0, "lens_k2": 0.0}})
-        _, after = _post_json(base, "/api/wizard/solve", {**body, "camera": {"lens_k1": k1, "lens_k2": k2}})
-        # Without the lens the pins solve to the wrong pose; with it they come back to the truth.
-        assert after["camera"]["fov"] == pytest.approx(_CAM["fov"], abs=1.0)
-        assert after["camera"]["pos_z"] == pytest.approx(_CAM["pos_z"], abs=0.3)
-        assert abs(before["camera"]["fov"] - after["camera"]["fov"]) > 1.0
-
-    def test_a_wide_lens_pair_outside_the_old_box_is_honoured(self, live_server) -> None:
-        _, base = live_server
-        k1, k2 = -0.47, 0.25
-        world = _world_corners()
-        pins = apply_overlay_distortion(project_points(_cam_params(), world, IMG_W, IMG_H), IMG_W, IMG_H, k1, k2)
-        body = {
-            "world_corners": world.tolist(),
-            "screen_corners": pins.tolist(),
-            "image_width": IMG_W,
-            "image_height": IMG_H,
-        }
-        status, data = _post_json(base, "/api/wizard/solve", {**body, "camera": {"lens_k1": k1, "lens_k2": k2}})
-        assert status == 200
-        assert data["camera"]["fov"] == pytest.approx(_CAM["fov"], abs=1.0)
-
-
-@integration
 class TestWizardLensStepPage:
-    @pytest.mark.parametrize("experimental", [False, True])
-    def test_the_lens_step_ignores_the_calibration_points_feature(
-        self, tmp_path, monkeypatch, experimental: bool
-    ) -> None:
-        with _lens_station(tmp_path, monkeypatch, experimental=experimental) as (_, base):
-            status, body = _get(base, "/wizard")
-        assert status == 200
-        assert body.count('class="wizard-step-btn') == 8
-        assert 'id="wizard-step-lens"' in body
-        assert "lens: 3" in body.split("window.WIZ = {")[1].split("};")[0]
-        assert 'type="hidden" id="wiz_lens_k1"' not in body
-        assert 'id="review-lens-rating"' in body and 'id="review-lens-caution"' in body
-
-    def test_the_lens_step_sits_after_video_source(self, live_server_lens) -> None:
+    def test_the_lens_step_carries_the_stored_pair_under_fine_tune(self, live_server_lens) -> None:
         _, base = live_server_lens
         status, body = _get(base, "/wizard")
         assert status == 200
-        assert body.count('class="wizard-step-btn') == 8
-        assert "3. Video Source" in body and "4. Lens" in body and "5. Camera Position" in body
-        assert "8. Review" in body
-        step_map = body.split("window.WIZ = {")[1].split("};")[0]
-        assert "lens: 3" in step_map and "camera: 4" in step_map and "review: 7" in step_map
-        assert 'id="wizard-step-lens"' in body
         assert 'id="wiz_lens_k1"' in body and 'type="hidden" id="wiz_lens_k1"' not in body
         # The sliders carry the stored pair and sit under the result as Fine-tune.
         assert 'id="wiz_lens_k1" step="0.005"' in body
@@ -2154,8 +1114,6 @@ class TestWizardLensStepPage:
 
     def test_the_operator_never_sees_a_coefficient_name(self, live_server_lens) -> None:
         """The pair is Barrel / fisheye and Edge fit everywhere an operator reads: never k1 or k2."""
-        import re
-
         _, base = live_server_lens
         _, page = _get(base, "/wizard")
         # The script keeps the coefficient names; what the page shows and says must not.
@@ -2164,9 +1122,10 @@ class TestWizardLensStepPage:
         for leak in ("(k1)", "(k2)", "Lens k1", "Lens k2", "k1 or k2", "k2 not"):
             assert leak not in wizard, leak
         for text in (
-            "' · Barrel / fisheye '",
-            "' · Edge fit '",
-            "'not measured'",
+            "'Barrel / fisheye ' + fmt(k1, 3) + ' · Edge fit '",
+            "' \\u2013 barrel / fisheye '",
+            "', edge fit '",
+            "'0 (not measured)'",
             "Bring either lens value closer to 0",
         ):
             assert text in page, text
@@ -2194,30 +1153,27 @@ class TestWizardLensStepPage:
 @unit
 class TestWizardLensTemplate:
     def _src(self) -> str:
-        from pathlib import Path
-
-        return (Path(__file__).resolve().parent.parent / "openfollow" / "web" / "templates" / "wizard.tpl").read_text(
-            encoding="utf-8"
-        )
+        return WIZARD_TEMPLATE.read_text(encoding="utf-8")
 
     def test_no_script_or_button_carries_a_step_number(self) -> None:
-        import re
-
         src = self._src()
         assert "window.WIZ = {" in src and "window.WIZ_STEPS" in src
         assert not re.search(r"wizard-step-\d", src)
         # Only the generated nav buttons call wizardGo with an index; every other button steps relatively.
         assert re.findall(r'onclick="wizardGo\((\d+|\{\{_i\}\})\)"', src) == ["{{_i}}"]
         assert "wizardNext()" in src and "wizardPrev()" in src
-        assert "_stepKey" in src
+        # A session names its step by key, so a page with another set of steps restores the right one.
+        assert "stepKey: WIZ_STEPS[currentStep]" in src
+
+    def test_snapshot_revokes_previous_blob_url(self) -> None:
+        load = wizard_window_function("loadSnapshot")
+        assert "revokeSnapshotUrl(previousUrl);" in load and "revokeSnapshotUrl(nextUrl);" in load
 
     def test_band_columns_mirror_the_server(self) -> None:
         # One column per step pixels of the chord, both ends included: edge_snap.band_columns.
         assert "Math.ceil(len / step) + 1" in self._src()
 
     def test_suggestions_are_requested_for_the_lens_step_and_tapped_into_lines(self) -> None:
-        import re
-
         src = self._src()
         assert "'/api/wizard/lens/edges'" in src
         assert "if (currentStep === WIZ.lens) lensRequestEdges();" in src
@@ -2236,51 +1192,26 @@ class TestWizardLensTemplate:
 
     def test_lines_persist_in_the_session_and_clear_on_a_resolution_change(self) -> None:
         src = self._src()
-        assert "state._lensLines = lensLines;" in src
-        assert "Array.isArray(state._lensLines)" in src
+        assert "lensLines: lensLines," in wizard_function("saveToSession")
+        assert "raw.lensLines.filter(lensRestoredLine)" in wizard_function("restoreFromSession")
         assert "lensImageSize[0] !== imageWidth || lensImageSize[1] !== imageHeight" in src
         assert "resolution changed" in src
 
     def test_a_click_on_a_point_keeps_the_keys_on_it(self) -> None:
         """Rebuilding the handles on pointer-up must not drop the focus the keys need."""
-        import re
-
         src = self._src()
         render = re.search(r"function renderLens\(\) \{(.*?)\n  \}\n", src, re.S)
         assert render is not None
         body = render.group(1)
         assert body.index("g.contains(document.activeElement)") < body.index("g.innerHTML = ''")
-        assert body.rstrip().endswith("if (hadFocus) lensFocusSelected();")
+        assert body.index("g.innerHTML = ''") < body.index("if (hadFocus) lensFocusSelected();")
         focus = re.search(r"function lensFocusSelected\(\) \{(.*?)\n  \}\n", src, re.S)
         assert focus is not None and "focus({ preventScroll: true })" in focus.group(1)
         # The handler that selects a point by pointer relies on the same helper.
         down = re.search(r"overlay\.addEventListener\('pointerdown', function\(e\) \{(.*?)\n    \}\);", src, re.S)
         assert down is not None and "lensFocusSelected();" in down.group(1)
 
-    def test_a_lens_change_solves_again_from_the_pins(self) -> None:
-        import re
-
-        src = self._src()
-        changed = re.search(r"function onLensCoeffChanged\(\) \{(.*?)\n  \}\n", src, re.S)
-        assert changed and "solveFromPinnedCorners" in changed.group(1)
-        assert "if (!pinnedCorners" in changed.group(1)
-        # Both the fit and the sliders go through it.
-        fit = re.search(r"function runLensFit\(\) \{(.*?)\n  \}\n", src, re.S)
-        assert fit and "onLensCoeffChanged()" in fit.group(1)
-        slider = re.search(r"window\.onWizardLensInput = function\(.*?\) \{(.*?)\n  \};\n", src, re.S)
-        assert slider and "onLensCoeffChanged()" in slider.group(1)
-        # Pins taken on a snapshot of another size solve nothing.
-        again = re.search(r"function solveFromPinnedCorners\(\) \{(.*?)\n  \}\n", src, re.S)
-        assert again and "pins.size[0] !== imageWidth || pins.size[1] !== imageHeight" in again.group(1)
-        # Review's caution follows the pair the pose was solved with, pins or not, so a
-        # failed or pending solve from the pins leaves it up.
-        caution = re.search(r"function lensChangedSinceSolve\(\) \{(.*?)\n  \}\n", src, re.S)
-        assert caution and "pinnedCorners" not in caution.group(1)
-        assert "'review-lens-caution').style.display = lensChangedSinceSolve()" in src
-
     def test_only_the_latest_fit_and_an_unmoved_line_take_an_answer(self) -> None:
-        import re
-
         src = self._src()
         fit = re.search(r"function runLensFit\(\) \{(.*?)\n  \}\n", src, re.S)
         assert fit and "var seq = ++lensFitSeq;" in fit.group(1)
@@ -2293,8 +1224,6 @@ class TestWizardLensTemplate:
         assert "JSON.stringify([line.p0, line.p1, line.mids]) !== sent) return;" in snap.group(1)
 
     def test_a_low_fit_is_shown_and_not_applied(self) -> None:
-        import re
-
         src = self._src()
         fit = re.search(r"function runLensFit\(\) \{(.*?)\n  \}\n", src, re.S)
         assert fit
@@ -2302,92 +1231,29 @@ class TestWizardLensTemplate:
         assert fit.group(1).rfind("if (lensFitApplies(lensFit)) {", 0, written) != -1
         assert "if (lensFitApplies(lensFit)) onLensCoeffChanged();" in fit.group(1)
         assert "function lensFitApplies(fit) { return fit.rating !== 'low'; }" in src
-        assert "Not applied until the coverage improves" in src
+        assert "(lensFitApplies(lensFit) ? '' : ' \\u2013 not applied')" in src
         # Review rates the pair only while it is the fit's own.
-        review = re.search(r"function populateReviewLens\(cam\) \{(.*?)\n  \}\n", src, re.S)
-        assert review and "lensPairIsTheFits(Number(cam.lens_k1), Number(cam.lens_k2))" in review.group(1)
-        assert "'Fine-tuned'" in review.group(1)
+        review = wizard_function("reviewLensCoverage")
+        assert "if (lensPairIsTheFits(k1, k2)) {" in review and "'Fine-tuned'" in review
 
     def test_a_tap_is_judged_in_screen_pixels_and_a_cancel_traces_nothing(self) -> None:
         src = self._src()
-        assert "Math.hypot(e.clientX - lensDrag.client[0], e.clientY - lensDrag.client[1]) > LENS_TAP_SLOP_PX" in src
+        assert "var far = Math.hypot(e.clientX - lensDrag.client[0], e.clientY - lensDrag.client[1]);" in src
+        assert "if (far > LENS_TAP_SLOP_PX) lensDrag.moved = true;" in src
         assert "if (!drag.moved && e.type !== 'pointercancel') lensTraceClick(" in src
 
     def test_a_written_pair_widens_its_slider(self) -> None:
-        import re
-
         src = self._src()
         write = re.search(r"function wizWriteLensCoeff\(id, value\) \{(.*?)\n  \}\n", src, re.S)
         assert write and "range.min = Math.min(parseFloat(range.min), v);" in write.group(1)
         assert "range.max = Math.max(parseFloat(range.max), v);" in write.group(1)
 
-    def test_every_solve_lands_in_the_form_through_one_path(self) -> None:
-        import re
-
-        src = self._src()
-        for name in ("solveFromCorners", "applyCoarseOffset", "solveFromPinnedCorners"):
-            body = re.search(r"function " + name + r"\(.*?\) \{(.*?)\n  \}\n", src, re.S)
-            assert body, name
-            assert "var seq = ++poseSeq;" in body.group(1), name
-            assert "seq !== poseSeq" in body.group(1), name
-            assert "applySolvedPose(data.camera, " in body.group(1), name
-            # The pair recorded is the one the request undistorted the pins with.
-            assert "var body = wizardSolveBody(" in body.group(1), name
-        pose = re.search(
-            r"function applySolvedPose\(camera, screenCorners, body, pointAnswers\) \{(.*?)\n  \}\n", src, re.S
-        )
-        assert pose and "lensSolvedWith = { k1: body.camera.lens_k1, k2: body.camera.lens_k2 };" in pose.group(1)
-        # Review and Apply read the form every solve writes, so a later edit is what they save.
-        assert "solvedCamera" not in src
-        assert "var cam = state.camera;" in src and "var camData = state.camera;" in src
-
-    def test_a_reset_restores_the_pose_with_its_lens_and_pins(self) -> None:
-        import re
-
-        src = self._src()
-        restore = re.search(r"function restorePose\(pose\) \{(.*?)\n  \}\n", src, re.S)
-        assert restore
-        for line in (
-            "poseSeq++;",
-            "wizardApplySolvedCamera(pose.camera);",
-            "lensSolvedWith = pose.lensSolvedWith;",
-            "pinnedCorners = pose.pins;",
-        ):
-            assert line in restore.group(1)
-        for name, snapshot in (
-            ("resetCornerPinning", "preCornerPinningPose"),
-            ("resetCoarseCalibration", "preCoarsePose"),
-        ):
-            body = re.search(r"window\." + name + r" = function\(\) \{(.*?)\n  \};\n", src, re.S)
-            assert body and f"restorePose({snapshot})" in body.group(1), name
-
-    def test_drag_handlers_are_bound_once_at_page_load(self) -> None:
-        import re
-
-        src = self._src()
-        # A handler bound per projection acted once for every projection so far: one arrow press moved a corner N px.
-        for name, group in (("setupCornerDragging", "fine-corners"), ("setupRefDragging", "coarse-ref")):
-            calls = re.findall(name + r"\((.*?)\);", src)
-            assert calls == [f"document.getElementById('{group}')"], name
-        for name in ("renderCornerMarkers", "renderRefMarker"):
-            body = re.search(r"function " + name + r"\(.*?\) \{(.*?)\n  \}\n", src, re.S)
-            assert body and "setup" not in body.group(1), name
-            # A redraw under a keyboard nudge keeps the focus on the handle.
-            assert "focus({ preventScroll: true })" in body.group(1), name
-
     def test_a_session_from_another_page_keeps_its_values(self) -> None:
-        import re
-
-        src = self._src()
-        body = re.search(r"function restoreFromSession\(\) \{(.*?)\n  \}\n", src, re.S)
-        assert body
-        # Restored values never count as a fresh visit, whose Y Offset default would overwrite them.
-        assert body.group(1).rstrip().endswith("return true;\n    } catch(e) { return false; }")
-        assert "state._lensLines.filter(lensRestoredLine)" in body.group(1)
+        body = wizard_function("restoreFromSession")
+        # A restored session is never a fresh visit, whose defaults would overwrite it.
+        assert body.rstrip().endswith("return true;\n    } catch (e) { return false; }\n  }")
 
     def test_suggestions_and_points_work_from_the_keyboard(self) -> None:
-        import re
-
         src = self._src()
         assert "svgEl('g', { tabindex: '0', role: 'button', 'aria-label': 'Suggested edge ' + (i + 1) })" in src
         keys = re.search(r"overlay\.addEventListener\('keydown', function\(e\) \{(.*?)\n    \}\);", src, re.S)
@@ -2396,46 +1262,21 @@ class TestWizardLensTemplate:
         assert "e.key === 'Enter' || e.key === ' '" in candidate and "lensAddCandidate(" in candidate
         # Every point says what it is.
         assert "'Line ' + (i + 1) + (j === 0 ? ', start' : j === 4 ? ', end' : ', middle point ' + j)" in src
-        assert "group.setAttribute('aria-label', 'Corner ' + name);" in src
-        assert "handle.setAttribute('aria-label', 'Reference Point');" in src
         # A point reached with Tab is the selected one, so the toolbar acts on what has the focus.
         focus = re.search(r"overlay\.addEventListener\('focusin', function\(e\) \{(.*?)\n    \}\);", src, re.S)
         assert focus and "lensSelected = { line: line, point: point };" in focus.group(1)
-        # Delete leaves the keys on the line that took its place, or on the picture when none is left.
-        delete = re.search(r"window\.lensDeleteSelectedLine = function\(\) \{(.*?)\n  \};", src, re.S)
-        assert delete
-        assert "point: 0 } : null;" in delete.group(1)
-        assert "document.getElementById('lens-overlay').focus({ preventScroll: true })" in delete.group(1)
+        # Delete leaves the keys on the picture.
+        delete = wizard_window_function("lensDeleteSelectedLine")
+        assert "document.getElementById('lens-overlay').focus({ preventScroll: true })" in delete
 
     def test_handles_and_labels_are_sized_in_css_pixels(self) -> None:
-        import re
-
         src = self._src()
         # The viewBox is the snapshot's own resolution, which a phone shows a 1080p frame at a fifth of.
-        handle = re.search(r"function pointHandle\(pos, r, px\) \{(.*?)\n  \}\n", src, re.S)
-        assert handle and "width: 44 * px, height: 44 * px" in handle.group(1)
-        calls = [line for line in src.splitlines() if "pointHandle(" in line and "function pointHandle" not in line]
-        assert len(calls) == 4 and all(line.rstrip().endswith(", px);") for line in calls)
-        assert "imageWidth / width" in src
-        assert "x: sx * 14 * px, y: sy * 14 * px" in src and "'font-size': 13 * px" in src
-        assert "'font-size': 11 * px" in src
+        assert "width: 44 * px, height: 44 * px" in wizard_function("pointHandle")
+        assert "pointHandle(lensPointPos(line, j), j === 0 || j === 4 ? 4 : 3.5, px)" in wizard_function("lensHandle")
+        assert "imageWidth / width" in src and "'font-size': 11 * px" in src
         # A rotated phone or a resized window draws them again at the new size.
         assert "window.addEventListener('resize'" in src
-
-    def test_a_unit_switch_waits_for_lengths_that_read(self) -> None:
-        import re
-
-        src = self._src()
-        handler = re.search(
-            r"getElementById\('wizard-unit-system'\)\.addEventListener\('change', function\(\) \{(.*?)\n  \}\);",
-            src,
-            re.S,
-        )
-        assert handler
-        body = handler.group(1)
-        # The session carries the lengths across the reload; one that does not read would arrive as 0.
-        assert body.index("var badLen = invalidLengthFields();") < body.index("saveToSession();")
-        assert "if (badLen.length) {\n      return keepCurrent(" in body
 
     def test_middle_points_move_across_the_line_only(self) -> None:
         src = self._src()
@@ -2454,360 +1295,9 @@ class TestWizardLensTemplate:
         assert "wizWriteLensCoeff('wiz_lens_k1', shown[0])" in src
         assert "Point off" in src and "Delete line" in src and "Clear lines" in src
 
-    def test_a_folding_pair_blocks_apply_with_a_reason(self) -> None:
-        import re
-
-        src = self._src()
-        body = re.search(r"window\.applyAndFinish\s*=\s*function\s*\([^)]*\)\s*\{(.*?)\n  \};", src, re.S)
-        assert body and "if (!wizLensPairValid())" in body.group(1)
-        assert "folds the overlay" in body.group(1)
-
     def test_rating_levels_follow_the_status_language(self) -> None:
         src = self._src()
         levels = "{ low: 'caution', medium: 'caution', okay: 'info', good: 'success', excellent: 'success' }"
         assert "LENS_RATING_LEVEL = " + levels in src
         assert "LENS_RATING_SEGMENTS = { low: 1, medium: 2, okay: 3, good: 4, excellent: 5 }" in src
         assert "This line doesn't fit the others – is it really straight?" in src
-
-
-# ---------------------------------------------------------------------------
-# /api/wizard/solve with calibration points
-# ---------------------------------------------------------------------------
-
-
-def _wizard_order_corners() -> np.ndarray:
-    """The four corners as the Setup Wizard sends them: DSL, DSR, USR, USL (X is stage left)."""
-    g = _GRID
-    hw, hd, oy = g["width"] / 2, g["depth"] / 2, g["y_offset"]
-    return np.array([[hw, oy - hd, 0.0], [-hw, oy - hd, 0.0], [-hw, oy + hd, 0.0], [hw, oy + hd, 0.0]])
-
-
-def _laser_point(where, a="DSR", b="DSL", *, err=0.0, distort=None) -> dict:
-    corners = dict(zip(("DSL", "DSR", "USR", "USL"), _wizard_order_corners(), strict=True))
-    place = np.array([where[0], where[1], 0.0])
-    pin = project_points(_cam_params(), place[None], IMG_W, IMG_H)
-    if distort:
-        pin = apply_overlay_distortion(pin, IMG_W, IMG_H, *distort)
-    return {
-        "corner_a": a,
-        "corner_b": b,
-        "distance_a": float(np.linalg.norm(place - corners[a])) + err,
-        "distance_b": float(np.linalg.norm(place - corners[b])) + err,
-        "height": 0.0,
-        "pin": pin[0].tolist(),
-    }
-
-
-def _solve_body(points, distort=None) -> dict:
-    world = _wizard_order_corners()
-    screen = project_points(_cam_params(), world, IMG_W, IMG_H)
-    body = {
-        "world_corners": world.tolist(),
-        "screen_corners": screen.tolist(),
-        "image_width": IMG_W,
-        "image_height": IMG_H,
-    }
-    if distort:
-        body["screen_corners"] = apply_overlay_distortion(screen, IMG_W, IMG_H, *distort).tolist()
-        body["camera"] = {"lens_k1": distort[0], "lens_k2": distort[1]}
-    if points is not None:
-        body["calibration_points"] = points
-    return body
-
-
-def _camera_vector(cam: dict) -> np.ndarray:
-    return np.array([cam[k] for k in ("pos_x", "pos_y", "pos_z", "pitch", "yaw", "roll", "fov")])
-
-
-@integration
-class TestWizardSolveWithCalibrationPoints:
-    def test_exact_points_give_back_the_camera_and_their_places(self, live_server) -> None:
-        _, base = live_server
-        points = [_laser_point((2.0, 14.0)), _laser_point((-3.0, 18.0))]
-        status, data = _post_json(base, "/api/wizard/solve", _solve_body(points))
-        assert status == 200
-        assert np.allclose(_camera_vector(data["camera"]), _cam_params(), atol=1e-5)
-        assert [p["status"] for p in data["calibration_points"]] == ["ok", "ok"]
-        assert np.allclose([p["position"] for p in data["calibration_points"]], [[2, 14, 0], [-3, 18, 0]], atol=1e-5)
-        assert np.allclose([p["seen"] for p in data["calibration_points"]], [p["pin"] for p in points], atol=1e-3)
-        assert data["corner_residual"] == pytest.approx(0.0, abs=1e-3)
-
-    @pytest.mark.parametrize("with_points", [True, False], ids=["joint fit", "corners only"])
-    def test_a_solve_older_than_one_already_asked_for_is_dropped(self, live_server, with_points) -> None:
-        _, base = live_server
-        page, other = f"page-{uuid.uuid4().hex[:8]}", f"page-{uuid.uuid4().hex[:8]}"
-        points = [_laser_point((2.0, 14.0)), _laser_point((-3.0, 18.0))] if with_points else None
-        newer = {**_solve_body(points), "solve_page": page, "solve_seq": 7}
-        older = {**_solve_body(points), "solve_page": page, "solve_seq": 6}
-        other_page = {**_solve_body(points), "solve_page": other, "solve_seq": 1}
-        assert _post_json(base, "/api/wizard/solve", newer)[0] == 200
-        status, data = _post_json(base, "/api/wizard/solve", older)
-        assert (status, data) == (409, {"error": "A newer solve was asked for."})
-        assert _post_json(base, "/api/wizard/solve", other_page)[0] == 200
-
-    @pytest.mark.parametrize("body", [[], "x", 5, None], ids=["array", "string", "number", "null"])
-    def test_a_body_that_is_not_an_object_is_refused_not_a_crash(self, live_server, body) -> None:
-        _, base = live_server
-        status, _ = _post_raw(base, "/api/wizard/solve", body)
-        assert status == 400
-
-    @pytest.mark.parametrize(
-        "malformed",
-        ["a point", "the corners", "the canvas"],
-    )
-    def test_a_newer_solve_refused_as_malformed_still_supersedes_the_older(self, live_server, malformed) -> None:
-        _, base = live_server
-        page = f"page-{uuid.uuid4().hex[:8]}"
-        points = [_laser_point((2.0, 14.0))]
-        broken = {
-            "a point": {"calibration_points": [{**points[0], "distance_a": 500.0}]},
-            "the corners": {"screen_corners": [[0, 0]] * 3},
-            "the canvas": {"image_width": 0},
-        }[malformed]
-        bad = {**_solve_body(points), **broken, "solve_page": page, "solve_seq": 8}
-        assert _post_json(base, "/api/wizard/solve", bad)[0] == 400
-        status, _ = _post_json(base, "/api/wizard/solve", {**_solve_body(points), "solve_page": page, "solve_seq": 7})
-        assert status == 409
-
-    def test_a_fit_overtaken_while_it_runs_is_dropped(self, live_server, monkeypatch) -> None:
-        import openfollow.scene.calibration_points as cp
-
-        _, base = live_server
-        page = f"page-{uuid.uuid4().hex[:8]}"
-        points = [_laser_point((2.0, 14.0)), _laser_point((-3.0, 18.0))]
-        real = cp.solve_with_points
-        newer: list[int] = []
-
-        def overtaken(*args, **kwargs):
-            if not newer:
-                newer.append(0)
-                body = {**_solve_body(points), "solve_page": page, "solve_seq": 8}
-                newer[0] = _post_json(base, "/api/wizard/solve", body)[0]
-            return real(*args, **kwargs)
-
-        monkeypatch.setattr(cp, "solve_with_points", overtaken)
-        older = {**_solve_body(points), "solve_page": page, "solve_seq": 7}
-        status, data = _post_json(base, "/api/wizard/solve", older)
-        assert (status, data) == (409, {"error": "A newer solve was asked for."})
-        assert newer == [200]
-
-    def test_a_page_pushed_out_by_sixty_four_newer_ones_is_forgotten(self, live_server) -> None:
-        _, base = live_server
-        first = f"page-{uuid.uuid4().hex[:8]}"
-        body = {**_solve_body(None), "solve_page": first, "solve_seq": 9}
-        assert _post_json(base, "/api/wizard/solve", body)[0] == 200
-        for n in range(64):
-            body = {**_solve_body(None), "solve_page": f"{first}-{n}", "solve_seq": 1}
-            assert _post_json(base, "/api/wizard/solve", body)[0] == 200
-        # Its newest is forgotten, so an older number solves rather than being refused.
-        body = {**_solve_body(None), "solve_page": first, "solve_seq": 1}
-        assert _post_json(base, "/api/wizard/solve", body)[0] == 200
-
-    @pytest.mark.parametrize(
-        "change",
-        [
-            {"solve_page": 3, "solve_seq": 1},
-            {"solve_page": "", "solve_seq": 1},
-            {"solve_page": "x" * 65, "solve_seq": 1},
-            {"solve_page": "page", "solve_seq": "1"},
-            {"solve_page": "page", "solve_seq": True},
-            {"solve_page": "page", "solve_seq": 1.5},
-            {"solve_page": "page"},
-            {"solve_seq": 1},
-        ],
-    )
-    def test_a_malformed_solve_sequence_is_refused(self, live_server, change) -> None:
-        _, base = live_server
-        status, _ = _post_json(base, "/api/wizard/solve", {**_solve_body([_laser_point((2.0, 14.0))]), **change})
-        assert status == 400
-
-    def test_points_pinned_on_a_curved_lens_are_straightened_first(self, live_server) -> None:
-        _, base = live_server
-        lens = (-0.2, 0.05)
-        points = [_laser_point((2.0, 14.0), distort=lens), _laser_point((-3.0, 18.0), distort=lens)]
-        status, data = _post_json(base, "/api/wizard/solve", _solve_body(points, distort=lens))
-        assert status == 200
-        assert np.allclose(_camera_vector(data["camera"]), _cam_params(), atol=1e-3)
-        assert np.allclose([p["seen"] for p in data["calibration_points"]], [p["pin"] for p in points], atol=1e-2)
-
-    def test_a_point_that_disagrees_is_reported_and_left_out(self, live_server) -> None:
-        _, base = live_server
-        points = [_laser_point((2.0, 14.0), err=2.0), _laser_point((-3.0, 18.0)), _laser_point((0.0, 16.0))]
-        status, data = _post_json(base, "/api/wizard/solve", _solve_body(points))
-        assert status == 200
-        answer = data["calibration_points"]
-        assert [p["status"] for p in answer] == ["flagged", "ok", "ok"]
-        assert answer[0]["reason"] == "It disagrees with the corners and the other points."
-        assert np.allclose(_camera_vector(data["camera"]), _cam_params(), atol=1e-5)
-
-    def test_distances_that_place_a_point_nowhere_carry_no_position(self, live_server) -> None:
-        _, base = live_server
-        nowhere = {**_laser_point((2.0, 14.0)), "distance_a": 1.0, "distance_b": 30.0}
-        status, data = _post_json(base, "/api/wizard/solve", _solve_body([nowhere, _laser_point((-3.0, 18.0))]))
-        assert status == 200
-        first = data["calibration_points"][0]
-        assert (first["status"], first["position"], first["seen"], first["residual"]) == ("flagged", None, None, None)
-
-    @pytest.mark.parametrize("points", [None, []])
-    def test_without_points_the_answer_is_the_corner_solve(self, live_server, points) -> None:
-        _, base = live_server
-        status, data = _post_json(base, "/api/wizard/solve", _solve_body(points))
-        assert status == 200
-        assert set(data) == {"camera", "reprojected_corners"}
-        assert np.allclose(_camera_vector(data["camera"]), _cam_params(), atol=1e-4)
-
-    @pytest.mark.parametrize(
-        "change",
-        [
-            lambda p: "not a list",
-            lambda p: [p] * 7,
-            lambda p: ["DSL"],
-            lambda p: [{**p, "corner_a": "FOH"}],
-            lambda p: [{**p, "corner_b": p["corner_a"]}],
-            lambda p: [{**p, "corner_a": 3}],
-            lambda p: [{**p, "distance_a": True}],
-            lambda p: [{**p, "distance_a": "21.4"}],
-            lambda p: [{**p, "distance_b": None}],
-            lambda p: [{**p, "distance_a": 0}],
-            lambda p: [{**p, "distance_b": 201}],
-            lambda p: [{**p, "height": 11}],
-            lambda p: [{**p, "height": "0"}],
-            lambda p: [{**p, "pin": [1.0]}],
-            lambda p: [{**p, "pin": "960,540"}],
-            lambda p: [{k: v for k, v in p.items() if k != "pin"}],
-        ],
-    )
-    def test_a_malformed_point_is_refused(self, live_server, change) -> None:
-        _, base = live_server
-        status, data = _post_json(base, "/api/wizard/solve", _solve_body(change(_laser_point((2.0, 14.0)))))
-        assert status == 400
-        assert "error" in data
-
-    @pytest.mark.parametrize("pin", [[-500.0, 99999.0], [IMG_W + 1.0, 10.0], [10.0, -0.5]])
-    def test_a_pin_off_the_snapshot_is_refused_as_the_config_would(self, live_server, pin) -> None:
-        _, base = live_server
-        status, data = _post_json(base, "/api/wizard/solve", _solve_body([{**_laser_point((2.0, 14.0)), "pin": pin}]))
-        assert (status, data) == (400, {"error": "calibration point 1 needs its pin on the snapshot"})
-
-    @pytest.mark.parametrize("bad", [float("nan"), float("inf")])
-    def test_a_non_finite_pin_is_refused(self, live_server, bad) -> None:
-        _, base = live_server
-        point = {**_laser_point((2.0, 14.0)), "pin": [bad, 540.0]}
-        status, data = _post_json(base, "/api/wizard/solve", _solve_body([point]))
-        assert status == 400
-        assert "pin" in data["error"]
-
-
-# ---------------------------------------------------------------------------
-# Calibration points on the pages
-# ---------------------------------------------------------------------------
-
-
-def _saved_points() -> tuple:
-    from openfollow.configuration import CalibrationPointConfig
-
-    return (
-        CalibrationPointConfig("DSR", "DSL", 18.5, 19.25, 0.0, 0.4, 0.2, [2.5, -14.0, 0.0]),
-        CalibrationPointConfig("USR", "DSL", 30.0, 31.5, 1.2, 0.625, 0.125),
-    )
-
-
-@integration
-class TestCalibrationPointsPages:
-    def test_the_section_comes_with_the_toggle_and_starts_from_the_saved_points(self, tmp_path, monkeypatch) -> None:
-        pins = [[0.81, 0.94], [0.14, 0.95], [0.37, 0.61], [0.66, 0.6]]
-        with _lens_station(tmp_path, monkeypatch, experimental=True, points=_saved_points(), corner_pins=pins) as (
-            _server,
-            base,
-        ):
-            _, body = _get(base, "/wizard")
-        saved_pins = re.search(r"var CALIB_SAVED_CORNERS = (.*);  //", body)
-        assert saved_pins and json.loads(saved_pins.group(1)) == pins
-        step = _wizard_step(body, "corners")
-        assert 'id="calib-section"' in step and 'id="calib-add"' in step and 'id="fine-calib"' in step
-        assert "var CALIB_ENABLED = true;" in body and "var CALIB_MAX = 6;" in body
-        saved = re.search(r"var CALIB_SAVED = (.*);", body)
-        assert saved and json.loads(saved.group(1)) == [
-            {
-                "corner_a": "DSR",
-                "corner_b": "DSL",
-                "distance_a": 18.5,
-                "distance_b": 19.25,
-                "height": 0.0,
-                "pin": [0.4, 0.2],
-                "position": [2.5, -14.0, 0.0],
-            },
-            {
-                "corner_a": "USR",
-                "corner_b": "DSL",
-                "distance_a": 30.0,
-                "distance_b": 31.5,
-                "height": 1.2,
-                "pin": [0.625, 0.125],
-                "position": [],
-            },
-        ]
-        assert 'id="review-calib"' in _wizard_step(body, "review")
-
-    def test_without_the_toggle_the_wizard_has_no_section(self, tmp_path, monkeypatch) -> None:
-        with _lens_station(tmp_path, monkeypatch, experimental=False, points=_saved_points()) as (_server, base):
-            _, body = _get(base, "/wizard")
-        assert 'id="calib-section"' not in body and 'id="calib-add"' not in body
-        assert "var CALIB_ENABLED = false;" in body
-
-    @staticmethod
-    def _rows(camera: str) -> list[list[str]]:
-        start = camera.index('<div class="group" id="camera-calibration-points" data-feature="calibration_points">')
-        group = camera[start : camera.index("</table>", start)]
-        assert "<input" not in group and "<select" not in group
-        assert re.findall(r'<th scope="col">(.*?)</th>', group) == [
-            "Point",
-            "First corner<br>Distance",
-            "Second corner<br>Distance",
-            "Height above stage",
-            "Position",
-        ]
-        body = group[group.index("<tbody>") :]
-        return [re.findall(r"<t[hd][^>]*>(.*?)</t[hd]>", row) for row in re.findall(r"<tr>(.*?)</tr>", body, re.S)]
-
-    def test_the_camera_form_lists_the_saved_points_read_only(self, tmp_path, monkeypatch) -> None:
-        with _lens_station(tmp_path, monkeypatch, experimental=True, points=_saved_points()) as (_server, base):
-            _, camera = _get(base, "/section/camera")
-        assert self._rows(camera) == [
-            ["1", "DSR<br>18.500 m", "DSL<br>19.250 m", "0.000 m", "X = 2.500 m<br>Y = -14.000 m<br>Z = 0.000 m"],
-            ["2", "USR<br>30.000 m", "DSL<br>31.500 m", "1.200 m", "–"],
-        ]
-
-    def test_the_camera_form_lists_them_in_the_unit_system_shown(self, tmp_path, monkeypatch) -> None:
-        with _lens_station(
-            tmp_path, monkeypatch, experimental=True, points=_saved_points(), unit_system="imperial"
-        ) as (_server, base):
-            _, camera = _get(base, "/section/camera")
-        assert self._rows(camera)[0] == [
-            "1",
-            "DSR<br>60 ft 8.35 in",
-            "DSL<br>63 ft 1.87 in",
-            "0.00 in",
-            "X = 8 ft 2.43 in<br>Y = -45 ft 11.18 in<br>Z = 0.00 in",
-        ]
-
-    def test_without_points_the_camera_form_has_no_group(self, live_server) -> None:
-        _, camera = _get(live_server[1], "/section/camera")
-        assert "camera-calibration-points" not in camera
-
-
-@unit
-def test_a_point_the_solved_camera_cannot_see_has_no_place_on_the_picture() -> None:
-    from openfollow.scene.calibration_points import PointFit
-    from openfollow.web.routes import _point_answer
-
-    # The camera stands at Y -10 looking upstage, so Y -40 is behind it.
-    behind = PointFit((0.0, -40.0, 0.0), "flagged", "It disagrees with the corners.")
-    answer = _point_answer(behind, _cam_params(), IMG_W, IMG_H, 0.0, 0.0)
-    assert answer == {
-        "status": "flagged",
-        "reason": "It disagrees with the corners.",
-        "residual": None,
-        "position": [0.0, -40.0, 0.0],
-        "seen": None,
-    }

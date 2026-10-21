@@ -16,7 +16,7 @@ The five-step rating says how well the lines pin the lens down. A **Low** result
 
 **Load lens calibration** sets the lens from a calibration saved on this station, or from the lens values of an exported `.ofsettings` file; nothing else in the file is applied. Use it when the picture has no straight edge to trace, with the same camera and lens at the same zoom. Loading removes the traced lines; the Fine-tune values can still be changed afterwards.
 
-**Save lens calibration** stores the current values on this station under a name, for this camera and lens later. A name that is already saved is replaced.
+**Save lens calibration** stores the current values on this station under a name, for this camera and lens later, together with the snapshot's size. The values are relative to the picture's diagonal, so they carry over to another resolution of the same picture shape but not to another shape or zoom; the list says when a calibration was measured on a picture of another shape. A name that is already saved is replaced.
 
 ## Full screen
 

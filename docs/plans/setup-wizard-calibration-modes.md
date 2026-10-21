@@ -298,7 +298,7 @@ measured value.
 One caution (`.notice.warning`) in Camera Calibration and Review, headed
 "Something might be wrong", listing every reason that applies and ending
 "The camera still applies. Check the measurements, then pin again." It blocks
-Apply only while a pin is more than 20 px off (see Point far off).
+Apply only while a pin is more than 20 px off or behind the camera (see Point far off).
 
 | Reason | Fires when | Text |
 |---|---|---|
@@ -309,7 +309,7 @@ Apply only while a pin is more than 20 px off (see Point far off).
 | Floor | Camera below the lowest point | The solved camera is below the floor. |
 | Up | Pitch above 0 | The solved camera looks upward. |
 | Point disagrees | A pin's error over 5 px | P2 disagrees with the other points by N px. |
-| Point far off | A pin's error over 20 px (`APPLY_MAX_PX`): Apply & Finish is disabled, as 0.4.3 refused such a solve; the closing line reads "Apply stays off while a point is more than 20 px off. Check the measurements, then pin again." | P2 disagrees with the other points by N px. |
+| Point far off | A pin's error over 20 px (`APPLY_MAX_PX`), or a pinned point the camera puts behind itself: Apply & Finish is disabled, as 0.4.3 refused such a solve; the closing line reads "Apply stays off while a point is more than 20 px off or behind the camera. Check the measurements, then pin again." | P2 disagrees with the other points by N px. / P2 lies behind the solved camera. |
 | Floor reach | Four or more pinned known points at one height and another point: across the picture, within reach of the points, the fit puts the floor more than twice as far or as near (`FLOOR_REACH` 2) as those points' homography alone | The solved camera puts the far floor more than twice as far, or as near, as the floor points alone do. |
 | Distances | A triangulated point's distance error over 3 σ (12 cm) | P4's distances disagree with the picture by N cm (in in Imperial). |
 

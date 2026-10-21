@@ -47,6 +47,8 @@ def test_a_saved_calibration_lists_with_the_version_that_wrote_it(store: Path) -
         "k1": -0.2,
         "k2": 0.03,
         "saved": "2026-10-21",
+        "width": None,
+        "height": None,
         "openfollow_version": "0.6.0",
     }
     assert [p.name for p in store.iterdir()] == [path.name]  # no temporary file left behind
@@ -199,3 +201,67 @@ def test_the_list_is_newest_saved_first_then_by_name_ignoring_case(store: Path) 
     for name, day in (("Beta", 1), ("alpha", 1), ("gamma", 3), ("Delta", 2), ("alpha 2", 3)):
         lc.save_calibration(store, name, -0.1, 0.0, "0.6.0", datetime.date(2026, 10, day))
     assert [c.name for c in lc.list_calibrations(store)] == ["alpha 2", "gamma", "Delta", "alpha", "Beta"]
+
+
+# --- the snapshot size --------------------------------------------------------
+
+
+def test_a_calibration_saved_with_its_snapshot_size_lists_with_it(store: Path) -> None:
+    saved = lc.save_calibration(store, "Zoom wide", -0.2, 0.03, "0.6.0", DAY, width=1920, height=1080)
+    assert (saved.width, saved.height) == (1920, 1080)
+    assert lc.list_calibrations(store) == [saved]
+    (path,) = _files(store)
+    body = json.loads(path.read_text(encoding="utf-8"))
+    assert (body["width"], body["height"]) == (1920, 1080)
+
+
+@pytest.mark.parametrize(("width", "height"), [(1, 1), (1920, 1080), (lc.MAX_SIDE, lc.MAX_SIDE)])
+def test_a_snapshot_size_within_the_bound_is_kept(width: int, height: int) -> None:
+    assert lc.size_problem(width, height) == ""
+
+
+_SIZE_PROBLEM = "The picture size must be two whole numbers from 1 to 16384."
+
+
+@pytest.mark.parametrize(
+    ("width", "height"),
+    [(None, 1080), (1920, None), ("1920", 1080), ("abc", 1080), (True, 1080), (1920, False), (1920.5, 1080), ([1], 1)],
+)
+def test_a_snapshot_size_of_the_wrong_type_is_refused(width: object, height: object, store: Path) -> None:
+    assert lc.size_problem(width, height) == _SIZE_PROBLEM
+    with pytest.raises(ValueError, match=_SIZE_PROBLEM):
+        lc.save_calibration(store, "Zoom", -0.2, 0.03, "0.6.0", DAY, width=width, height=height)  # type: ignore[arg-type]
+    assert not store.exists() or _files(store) == []
+
+
+@pytest.mark.parametrize(
+    ("width", "height"), [(0, 1080), (1920, 0), (-1920, 1080), (1920, -1), (16385, 1080), (1920, 10**400)]
+)
+def test_a_snapshot_size_out_of_range_is_refused(width: int, height: int, store: Path) -> None:
+    assert lc.size_problem(width, height) == _SIZE_PROBLEM
+    with pytest.raises(ValueError, match=_SIZE_PROBLEM):
+        lc.save_calibration(store, "Zoom", -0.2, 0.03, "0.6.0", DAY, width=width, height=height)
+    assert not store.exists() or _files(store) == []
+
+
+_SIZE_UNREAD = {
+    "no size": {},
+    "width only": {"width": 1920},
+    "width null": {"width": None, "height": 1080},
+    "width text": {"width": "1920", "height": 1080},
+    "height bool": {"width": 1920, "height": True},
+    "width zero": {"width": 0, "height": 1080},
+    "height negative": {"width": 1920, "height": -1080},
+    "width over the bound": {"width": 16385, "height": 1080},
+    "width a float": {"width": 1920.5, "height": 1080},
+}
+
+
+@pytest.mark.parametrize("size", list(_SIZE_UNREAD.values()), ids=list(_SIZE_UNREAD))
+def test_a_file_without_a_usable_size_still_lists_without_one(size: dict, store: Path, caplog) -> None:
+    store.mkdir(parents=True)
+    body = {"name": "Old", "k1": -0.1, "k2": 0.0, "saved": "2026-01-02", "openfollow_version": "0.5.0", **size}
+    (store / "old.json").write_text(json.dumps(body), encoding="utf-8")
+    with caplog.at_level(logging.WARNING, logger="openfollow.web.lens_calibrations"):
+        assert lc.list_calibrations(store) == [lc.LensCalibration("Old", -0.1, 0.0, "2026-01-02", "0.5.0", None, None)]
+    assert caplog.records == []

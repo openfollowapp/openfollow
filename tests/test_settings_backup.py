@@ -8,6 +8,7 @@ import errno
 import json
 import os
 import pwd
+import shutil
 import stat
 import subprocess
 import tarfile
@@ -20,12 +21,14 @@ import pytest
 import openfollow
 from openfollow.privilege import settings_backup
 from openfollow.privilege.settings_backup import archive_name, list_archives, read_record, run_backup, station_label
+from openfollow.web import lens_calibrations
 
 pytestmark = pytest.mark.unit
 
 _REPO_ROOT = Path(openfollow.__file__).resolve().parent.parent
 _DEBIAN = _REPO_ROOT / "packaging" / "debian"
 _NOW = datetime(2026, 9, 29, 18, 0, 0, tzinfo=timezone.utc)
+_LENS = '{"name": "Zoom wide", "k1": -0.2, "k2": 0.03, "saved": "2026-09-28", "openfollow_version": "0.6.0"}\n'
 
 
 def _station(tmp_path: Path, config: str = 'psn_system_name = "OpenFollow brave-otter"\n') -> Path:
@@ -36,6 +39,8 @@ def _station(tmp_path: Path, config: str = 'psn_system_name = "OpenFollow brave-
     (state / "templates" / "user" / "grid.oftemplate").write_text("grid", encoding="utf-8")
     (state / "templates" / "system").mkdir()
     (state / "templates" / "system" / "stock.oftemplate").write_text("stock", encoding="utf-8")
+    (state / "lens-calibrations").mkdir()
+    (state / "lens-calibrations" / "zoom-wide.json").write_text(_LENS, encoding="utf-8")
     return state
 
 
@@ -106,14 +111,21 @@ def test_archive_name_is_stamped_in_utc() -> None:
 # --- archive contents ---------------------------------------------------------
 
 
-def test_the_archive_holds_the_three_sources_and_a_manifest(tmp_path: Path) -> None:
+def test_the_archive_holds_the_four_sources_and_a_manifest(tmp_path: Path) -> None:
     state = _station(tmp_path)
     record = run_backup(state, "0.4.3", "0.4.4", now=_NOW)
     assert record.error == ""
     assert record.archive == "brave-otter-v0.4.3-20260929T180000Z.ofbackup"
     members = _members(state / "backups" / record.archive)
-    assert set(members) == {"config.toml", "markers.toml", "templates/user/grid.oftemplate", "manifest.json"}
+    assert set(members) == {
+        "config.toml",
+        "markers.toml",
+        "templates/user/grid.oftemplate",
+        "lens-calibrations/zoom-wide.json",
+        "manifest.json",
+    }
     assert members["config.toml"] == (state / "config.toml").read_bytes()
+    assert members["lens-calibrations/zoom-wide.json"] == _LENS.encode()
     manifest = json.loads(members["manifest.json"])
     assert manifest["from"] == "0.4.3"
     assert manifest["to"] == "0.4.4"
@@ -144,7 +156,7 @@ def test_an_absolute_marker_catalog_path_is_used_as_is(tmp_path: Path) -> None:
     assert _members(state / "backups" / record.archive)["markers.toml"] == b"abs"
 
 
-@pytest.mark.parametrize("missing", ["config.toml", "markers.toml", "templates/user"])
+@pytest.mark.parametrize("missing", ["config.toml", "markers.toml", "templates/user", "lens-calibrations"])
 def test_a_missing_source_is_skipped_and_listed(tmp_path: Path, missing: str) -> None:
     state = _station(tmp_path)
     target = state / missing
@@ -181,6 +193,99 @@ def test_a_symlinked_source_is_not_followed(tmp_path: Path) -> None:
     record = run_backup(state, "0.4.3", "0.4.4", now=_NOW)
     members = _members(state / "backups" / record.archive)
     assert b"secret" not in members.values()
+
+
+def test_an_empty_lens_folder_is_archived_as_a_folder(tmp_path: Path) -> None:
+    state = _station(tmp_path)
+    (state / "lens-calibrations" / "zoom-wide.json").unlink()
+    record = run_backup(state, "0.4.3", "0.4.4", now=_NOW)
+    with tarfile.open(state / "backups" / record.archive, "r:gz") as tar:
+        assert tar.getmember("lens-calibrations").isdir()
+        assert not [m for m in tar.getnames() if m.startswith("lens-calibrations/")]
+    assert json.loads(_members(state / "backups" / record.archive)["manifest.json"])["missing"] == {}
+
+
+def test_a_lens_folder_holding_more_than_files_is_still_archived(tmp_path: Path) -> None:
+    secret = tmp_path / "secret"
+    secret.write_text("secret", encoding="utf-8")
+    state = _station(tmp_path)
+    lens = state / "lens-calibrations"
+    (lens / "nested").mkdir()
+    (lens / "nested" / "copy.json").write_text("{}", encoding="utf-8")
+    (lens / "linked.json").symlink_to(secret)
+    os.mkfifo(lens / "pipe")
+    record = run_backup(state, "0.4.3", "0.4.4", now=_NOW)
+    assert record.error == ""
+    members = _members(state / "backups" / record.archive)
+    assert members["lens-calibrations/zoom-wide.json"] == _LENS.encode()
+    assert members["lens-calibrations/nested/copy.json"] == b"{}"
+    assert b"secret" not in members.values()
+
+
+def test_a_lens_path_that_is_a_symlink_is_not_followed(tmp_path: Path) -> None:
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "secret.json").write_text("secret", encoding="utf-8")
+    state = _station(tmp_path)
+    shutil.rmtree(state / "lens-calibrations")
+    (state / "lens-calibrations").symlink_to(elsewhere)
+    record = run_backup(state, "0.4.3", "0.4.4", now=_NOW)
+    members = _members(state / "backups" / record.archive)
+    assert not any(name.startswith("lens-calibrations") for name in members)
+    assert "lens-calibrations" in json.loads(members["manifest.json"])["missing"]
+
+
+# --- restoring by hand --------------------------------------------------------
+
+# The command docs/PACKAGING.md gives, run as the service user.
+_RESTORE = ["tar", "-xzf", "{archive}", "-C", "{state}", "--exclude=manifest.json", "--exclude=markers.toml"]
+
+
+def _restore(archive: Path, state: Path) -> subprocess.CompletedProcess[str]:
+    args = [a.format(archive=archive, state=state) for a in _RESTORE]
+    return subprocess.run(args, capture_output=True, text=True, timeout=30, check=False)
+
+
+def test_the_restore_command_is_the_one_documented() -> None:
+    packaging = (_REPO_ROOT / "docs" / "PACKAGING.md").read_text(encoding="utf-8")
+    documented = " ".join(_RESTORE).format(
+        archive="/var/lib/openfollow/backups/<file>.ofbackup", state="/var/lib/openfollow"
+    )
+    assert f"sudo -u openfollow {documented}" in packaging
+
+
+def test_a_restore_brings_the_saved_lenses_back(tmp_path: Path) -> None:
+    state = _station(tmp_path)
+    store = lens_calibrations.calibrations_dir(state / "config.toml")
+    lens_calibrations.save_calibration(store, "Zoom tele", -0.05, 0.0, "0.6.0", _NOW.date(), width=1920, height=1080)
+    record = run_backup(state, "0.4.3", "0.4.4", now=_NOW)
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    result = _restore(state / "backups" / record.archive, fresh)
+    assert result.returncode == 0, result.stderr
+    assert (fresh / "config.toml").read_bytes() == (state / "config.toml").read_bytes()
+    assert (fresh / "templates" / "user" / "grid.oftemplate").read_text(encoding="utf-8") == "grid"
+    listed = lens_calibrations.list_calibrations(lens_calibrations.calibrations_dir(fresh / "config.toml"))
+    assert [(c.name, c.width) for c in listed] == [("Zoom tele", 1920), ("Zoom wide", None)]
+    assert not (fresh / "manifest.json").exists()
+    assert not (fresh / "markers.toml").exists()
+
+
+def test_a_backup_made_before_lenses_were_saved_still_restores(tmp_path: Path) -> None:
+    state = _station(tmp_path)
+    old = tmp_path / "old.ofbackup"
+    with tarfile.open(old, "w:gz") as tar:
+        tar.add(state / "config.toml", arcname="config.toml")
+        tar.add(state / "markers.toml", arcname="markers.toml")
+        tar.add(state / "templates" / "user", arcname="templates/user")
+        tar.add(state / "config.toml", arcname="manifest.json")
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    result = _restore(old, fresh)
+    assert result.returncode == 0, result.stderr
+    assert (fresh / "config.toml").read_bytes() == (state / "config.toml").read_bytes()
+    assert (fresh / "templates" / "user" / "grid.oftemplate").read_text(encoding="utf-8") == "grid"
+    assert not (fresh / "lens-calibrations").exists()
 
 
 # --- secrets ------------------------------------------------------------------
@@ -608,6 +713,7 @@ def test_a_web_backup_holds_the_settings_before_the_change(tmp_path: Path) -> No
     assert members["config.toml"] == b'psn_system_name = "OpenFollow brave-otter"\n'
     assert members["markers.toml"] == b"[[markers]]\nid = 1\n"
     assert members["templates/user/grid.oftemplate"] == b"grid"
+    assert members["lens-calibrations/zoom-wide.json"] == _LENS.encode()
     manifest = json.loads(members["manifest.json"])
     assert {key: manifest[key] for key in ("kind", "version", "created")} == {
         "kind": "import",

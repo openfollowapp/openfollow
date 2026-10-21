@@ -305,7 +305,7 @@ class TestWizard:
         cfg.ui.shown_features = []
         save_config(cfg, server.config_path)
         _, body = _get(base, "/wizard")
-        assert "window.WIZ_STEPS = ['prep', 'grid', 'video', 'camera'," in body
+        assert "window.WIZ_STEPS = ['video', 'calib', 'review'];" in body
         assert 'id="wiz_lens_k1" step="0.005"\n                   value="0.0"' in body
         assert "var LENS_ENABLED = false;" in body
 
@@ -315,7 +315,7 @@ class TestWizard:
         cfg.camera.lens_k1 = -0.2
         save_config(cfg, server.config_path)
         _, body = _get(base, "/wizard")
-        assert "'video', 'lens', 'camera'" in body
+        assert "window.WIZ_STEPS = ['video', 'lens', 'calib', 'review'];" in body
         assert 'value="-0.2"' in body
         assert "var LENS_ENABLED = true;" in body
 

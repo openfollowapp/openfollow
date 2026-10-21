@@ -26,9 +26,11 @@ Takes a new snapshot, for when someone stood on a mark or the stage changed. The
 
 ## Something might be wrong
 
-The solve still applies. The caution lists what looks implausible or went unchecked: a camera far from the entered position, an unusual field of view, a camera below the floor or looking up, a point that disagrees with the others.
+The solve still applies, unless a point is more than 20 px off or behind the camera: then **Apply & Finish** stays off until it is fixed. The caution lists what looks implausible or went unchecked: a camera far from the entered position, an unusual field of view, a camera below the floor or looking up, a point that disagrees with the others.
 
 It also says when the lens was not measured: nothing was measured, loaded or fine-tuned in this run of the Setup Wizard, and the station's saved **Barrel / fisheye** and **Edge fit** are both 0. Four corners fit exactly whatever the lens, so the corners look right while the camera behind them is off. A camera without visible barrel distortion needs no lens measurement.
+
+When the station already had a lens and nothing was measured in this run, a note says the station's lens is used. It is not a caution: the lens is the one measured before.
 
 ## Full screen
 

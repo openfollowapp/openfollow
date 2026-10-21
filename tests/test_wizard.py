@@ -411,6 +411,54 @@ class TestWizardPage:
                 assert gone not in text, gone
 
 
+@integration
+class TestWizardReviewPage:
+    def test_the_pin_menu_is_a_group_of_buttons_not_a_menu(self, live_server) -> None:
+        # The arrow keys move the menu's spot, so it promises no menu keys between its items.
+        _, body = _get(live_server[1], "/wizard")
+        assert '<div class="pin-menu" id="pin-menu" role="group" aria-label="Place here" hidden></div>' in body
+        assert 'role="menu' not in body
+
+    def test_review_lists_incomplete_points_in_an_error_notice(self, live_server) -> None:
+        _, body = _get(live_server[1], "/wizard")
+        assert '<div id="review-incomplete" class="notice error" role="alert" hidden></div>' in _wizard_step(
+            body, "review"
+        )
+
+    def test_review_without_a_feed_promises_no_values(self, live_server) -> None:
+        _, body = _get(live_server[1], "/wizard")
+        no_feed = re.search(r'<div id="review-no-feed"[^>]*>(.*?)</div>', body)
+        assert no_feed is not None
+        # After a reload with no feed nothing has solved, so the values below are dashes.
+        assert "still valid" not in no_feed.group(1)
+        assert no_feed.group(1) == (
+            "No video feed available, so the visual review is unavailable. The camera is solved from a snapshot:"
+            " configure a video source in the Video Source step, then return here."
+        )
+
+
+@unit
+class TestWizardHelpCopy:
+    @staticmethod
+    def _help(name: str) -> str:
+        return (WIZARD_TEMPLATE.parent.parent / "help" / f"{name}.md").read_text(encoding="utf-8")
+
+    def test_simple_starts_the_rectangle_from_the_entered_position_first(self) -> None:
+        text = self._help("wizard-calibration-simple")
+        order = ("**Camera Position**", "**Where is your camera located?**", "in front of the stage")
+        assert [text.index(s) for s in order] == sorted(text.index(s) for s in order)
+
+    def test_simple_says_every_corner_becomes_a_point_in_advanced(self) -> None:
+        assert "All four corners become known points" in self._help("wizard-calibration-simple")
+
+    def test_the_advanced_caution_list_names_the_distances(self) -> None:
+        caution = self._help("wizard-calibration-advanced").split("## Something might be wrong")[1]
+        assert "a triangulated point whose distances disagree with the picture" in caution
+
+    def test_review_says_apply_waits_for_incomplete_points(self) -> None:
+        assert "stays off while a point is not complete" in self._help("wizard-review")
+
+
 @unit
 class TestWizardNameFields:
     """A field a name is typed into is never one a browser or a password manager fills with the operator's name."""
@@ -531,7 +579,6 @@ _ADVANCED_STATE = {
             {"id": 3, "name": "Truss leg", "kind": "known", "pos": [0.0, 10.0, 1.2], "pin": None, "problem": ""},
             {"id": 4, "name": "Spike", "kind": "triangulated", "a": 1, "b": 2, "da": 7.0, "db": 7.5, "z": 0.0,
              "pin": [960.0, 648.0], "problem": ""},
-            {"id": 5, "name": "P5", "kind": "known", "pin": [10.0, 10.0], "problem": "Enter its X, Y and Z."},
         ],
     },
 }  # fmt: skip
@@ -564,7 +611,10 @@ def _apply(
     return run_wizard_js(
         "(async function() { window.applyAndFinish(); await new Promise(function(r) { setImmediate(r); });"
         " return { calls: calls, shown: shown, removed: removed, href: window.location.href }; })()",
-        prelude=_APPLY_PAGE + wizard_function("applyBlocked") + wizard_window_function("applyAndFinish"),
+        prelude=_APPLY_PAGE
+        + wizard_function("applyBlocked")
+        + wizard_function("marksIncomplete")
+        + wizard_window_function("applyAndFinish"),
         variables=("APPLY_MAX_PX",),
         S=state,
         LENS_ENABLED=lens,
@@ -593,7 +643,7 @@ class TestWizardApply:
         ]
         assert (out["shown"], out["removed"], out["href"]) == ([], ["openfollow:wizard"], "/")
 
-    def test_advanced_leaves_the_grid_and_saves_the_marks_it_can_use(self) -> None:
+    def test_advanced_leaves_the_grid_and_saves_every_mark(self) -> None:
         out = _apply(_ADVANCED_STATE)
         assert [url for url, _ in out["calls"]] == ["/api/config/camera"]
         marks = out["calls"][0][1]["calibration_marks"]
@@ -643,6 +693,23 @@ class TestWizardApply:
 
     def test_while_a_solve_is_still_running_nothing_is_sent(self) -> None:
         out = _apply(_SIMPLE_STATE, pending=True)
+        assert out == {"calls": [], "shown": [], "removed": [], "href": "/wizard"}
+
+    @pytest.mark.parametrize(
+        ("state", "problem"),
+        [
+            (_ADVANCED_STATE, "Enter its X, Y and Z."),
+            (_ADVANCED_STATE, "Pin it on the picture: its two distances allow two places, mirrored across the line."),
+            (_ADVANCED_STATE, "A distance is shorter than the height between the two points."),
+            (_SIMPLE_STATE, "rect"),
+        ],
+        ids=["a value missing", "no pin", "the station's reason", "simple rectangle"],
+    )
+    def test_a_point_with_a_problem_sends_nothing(self, state: dict, problem: str) -> None:
+        marks = [dict(m) for m in state["solve"]["marks"]]
+        marks[-1]["problem"] = problem
+        out = _apply({**state, "solve": {**state["solve"], "marks": marks}})
+        # Review's Points and Pinned count every mark: Apply writes all of them or none.
         assert out == {"calls": [], "shown": [], "removed": [], "href": "/wizard"}
 
     def test_without_a_solve_nothing_is_sent(self) -> None:

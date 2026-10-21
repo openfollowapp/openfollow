@@ -6,7 +6,7 @@ The four corners of a measured rectangle. Its width, depth, centre and height al
 
 **Point of origin** is the 0/0/0 every position this station sends is measured from, so it must match the origin of the console or tracking system. By default it sits midway between DSL and DSR. With **Custom**, enter where the rectangle's centre is, measured from the origin: X towards stage left, Y upstage, Z up. The origin is drawn on the picture as 0/0/0; check it lands on the console's origin mark.
 
-Once its size is entered, the rectangle is drawn so each corner starts on the right side of the picture: as a camera at the location chosen in **Where is your camera located?** would see it, or, with none chosen, one in front of the stage. It is drawn at most half the picture's width and height, so every corner starts clear of the frame's edge. Drag every corner onto its tape mark: the camera solves only when all four have been moved.
+Once its size is entered, the rectangle is drawn so each corner starts on the right side of the picture: as a camera at the position entered in the **Camera Position** box would see it, else one at the location chosen in **Where is your camera located?**, else one in front of the stage. It is drawn at most half the picture's width and height, so every corner starts clear of the frame's edge. Drag every corner onto its tape mark: the camera solves only when all four have been moved.
 
 The blue hint names the next thing to do and sits above the part it is about: the location, the rectangle, the point of origin, or the picture.
 
@@ -38,4 +38,4 @@ The button in the picture's top right corner shows it on the whole screen, with 
 
 ## Switching to Advanced
 
-The corners become known points with their pins, so you can add points to them.
+All four corners become known points, so you can add points to them. Placed corners keep their pins. A corner gets the X, Y and Z the rectangle gives it; a value the rectangle does not give yet, such as Y without a depth, stays empty for you to enter.

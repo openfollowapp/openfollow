@@ -981,3 +981,584 @@ def test_a_pin_behind_the_solved_camera_keeps_apply_off() -> None:
         s={"cam": {"fov": 60}, "worst": 0.4, "behind": 1},
     )
     assert out == [True, ["P2 lies behind the solved camera."]]
+
+
+# ---------------------------------------------------------------------------
+# Points with a problem: what each needs, what Review lists, and Apply waiting for them
+# ---------------------------------------------------------------------------
+
+# Every element the page asks for, created on first use; ``els`` holds what the page wrote.
+_DOM = """
+var els = {};
+function $(id) {
+  if (!els[id]) els[id] = { id: id, hidden: false, disabled: false, innerHTML: '', textContent: '', className: '',
+    value: '', style: {}, open: false, lastChild: {}, appendChild: function() {}, setAttribute: function() {},
+    getBoundingClientRect: function() { return { width: 0 }; }, classList: { toggle: function() {} } };
+  return els[id];
+}
+var document = { getElementById: $, querySelector: function() { return null; },
+  querySelectorAll: function() { return []; } };
+"""
+_MARK_FUNCTIONS = (
+    "len",
+    "lenField",
+    "lenRough",
+    "lenLimit",
+    "andList",
+    "rectVals",
+    "rectProblem",
+    "cornerXYZ",
+    "currentMarks",
+    "orderMarks",
+    "marksIncomplete",
+    "incompleteLines",
+)
+_MARK_VARS = ("exactLen", "CORNERS", "PIN_PROBLEM", "DISTANCE_SIGMA")
+_RECT = {"w": "12", "d": "6", "origin": "dsc", "cx": "", "cy": "", "z": ""}
+
+
+def _known(pid: int, x: str, y: str, z: str, pin: list | None = None) -> dict:
+    return {"id": pid, "name": f"P{pid}", "kind": "known", "x": x, "y": y, "z": z, "pin": pin}
+
+
+def _tri(pid: int, a: object, b: object, da: str = "7", db: str = "7", z: str = "", pin: list | None = None) -> dict:
+    return {
+        "id": pid,
+        "name": f"P{pid}",
+        "kind": "triangulated",
+        "a": a,
+        "b": b,
+        "da": da,
+        "db": db,
+        "z": z,
+        "pin": pin,
+    }
+
+
+_BASE_POINTS = [_known(1, "6", "0", "0", [100, 900]), _known(2, "-6", "0", "0", [1800, 900])]
+
+
+def _incomplete(points: list, system: str = "metric") -> list:
+    return run_wizard_js(
+        "(function() { var s = { marks: currentMarks() }; orderMarks(s.marks);"
+        " return [incompleteLines(s), marksIncomplete(s)]; })()",
+        functions=_MARK_FUNCTIONS,
+        variables=_MARK_VARS,
+        prelude=length_page(system, {})
+        + f"\nvar S = {json.dumps({'mode': 'advanced', 'points': points, 'rect': _RECT})};",
+    )
+
+
+@pytest.mark.parametrize(
+    ("point", "line"),
+    [
+        (_known(3, "", "4", "0"), "P3 needs its X."),
+        (_known(3, "1", "", ""), "P3 needs its Y and Z."),
+        (_known(3, "", "", ""), "P3 needs its X, Y and Z."),
+        (_known(3, "20000", "0", "0"), "P3 needs X, Y and Z within 10000.0 m of the point of origin."),
+        (_tri(3, "", ""), "P3 needs the two points its distances are measured from."),
+        (_tri(3, 1, 1), "P3 needs two different points to measure from."),
+        (_tri(3, 1, 2, da=""), "P3 needs both distances, between 0 and 200 m."),
+        (_tri(3, 1, 2, da="250"), "P3 needs both distances, between 0 and 200 m."),
+        (_tri(3, 1, 2, z="abc", pin=[900, 500]), "P3 needs its Z."),
+        (_tri(3, 1, 2), "P3 needs a pin."),
+        (_tri(3, 1, 9, pin=[900, 500]), "P3: One of its points was deleted."),
+    ],
+    ids=[
+        "X",
+        "Y and Z",
+        "all three",
+        "out of reach",
+        "no From",
+        "same From",
+        "no distance",
+        "distance too long",
+        "Z",
+        "pin",
+        "From deleted",
+    ],
+)
+def test_review_names_each_incomplete_point_and_what_it_needs(point: dict, line: str) -> None:
+    assert _incomplete([*_BASE_POINTS, point]) == [[line], True]
+
+
+def test_complete_points_leave_nothing_to_name() -> None:
+    points = [*_BASE_POINTS, _known(3, "0", "8", "1.2"), _tri(4, 1, 2, pin=[900, 500])]
+    assert _incomplete(points) == [[], False]
+
+
+def test_what_a_point_needs_is_worded_in_the_active_unit() -> None:
+    assert _incomplete([*_BASE_POINTS, _tri(3, 1, 2, da="")], "imperial")[0] == [
+        "P3 needs both distances, between 0 and 656 ft."
+    ]
+
+
+def test_simples_rectangle_problem_keeps_apply_off_without_a_line() -> None:
+    # The no-solve notice already names what the rectangle needs.
+    out = run_wizard_js(
+        "(function() { var s = { marks: currentMarks() }; return [incompleteLines(s), marksIncomplete(s)]; })()",
+        functions=_MARK_FUNCTIONS,
+        variables=_MARK_VARS,
+        prelude=length_page("metric", {}) + "\nvar S = { mode: 'simple', rect: { w: '12', d: '', origin: 'dsc' },"
+        " cornerMoved: { DSL: true, DSR: true, USR: true, USL: true },"
+        " cornerPins: { DSL: [1, 1], DSR: [2, 2], USR: [3, 3], USL: [4, 4] } };",
+    )
+    assert out == [[], True]
+
+
+def test_the_stations_reason_for_a_point_is_listed_by_name() -> None:
+    out = run_wizard_js(
+        "(function() { var s = solveFromAnswer(marks, 200, data); return incompleteLines(s); })()",
+        functions=(*_REASON_FUNCTIONS, "solveFromAnswer", "incompleteLines"),
+        prelude=_reason_page(),
+        marks=[
+            {"id": 1, "name": "DSL", "pin": [1, 1], "problem": ""},
+            {"id": 5, "name": "P5", "pin": [5, 5], "problem": ""},
+        ],
+        data={
+            "camera": {"fov": 60},
+            "largest_error": 0.4,
+            "marks": [
+                {"id": 1, "error": 0.4},
+                {"id": 5, "reason": "A distance is shorter than the height between the two points."},
+            ],
+        },
+    )
+    assert out == ["P5: A distance is shorter than the height between the two points."]
+
+
+_REVIEW_STUBS = """
+var imageWidth = 0, imageHeight = 0, CAM_PRESETS = [], LENS_ENABLED = true;
+function overlayUnit() { return 1; } function calibGrid() { return { w: 1, d: 1, spacing: 1, cx: 0, cy: 0, z: 0 }; }
+function gridLines() { return []; } function poly() { return ''; } function originMarkup() { return ''; }
+function originPixel() { return null; } function projectShown() { return null; }
+function solvedParamsHtml() { return ''; }
+function wizReadLensCoeff() { return 0; } function fmt() { return ''; } function reviewLensCoverage() { return ''; }
+function pairsFor() { return []; } function distTable() { return ''; } function lenText() { return ''; }
+function renderFsBar() {} function stationLensOnly() { return false; } function cautionHtml() { return 'caution'; }
+"""
+_REVIEW_FUNCTIONS = (
+    "esc",
+    "paramRows",
+    "applyBlocked",
+    "marksIncomplete",
+    "incompleteLines",
+    "incompleteHtml",
+    "renderReview",
+)
+_COMPLETE = [
+    {"id": 1, "name": "DSL", "kind": "known", "pin": [1, 1], "problem": ""},
+    {"id": 2, "name": "DSR", "kind": "known", "pin": [2, 2], "problem": ""},
+    {"id": 3, "name": "Truss leg", "kind": "known", "pin": None, "problem": ""},
+]
+
+
+def _review(marks: list, *, pending: bool = False) -> dict:
+    solve = {"cam": {"fov": 60}, "worst": 0.4, "reasons": [], "positions": {}, "marks": marks}
+    return run_wizard_js(
+        "(function() { renderReview(); return { apply: $('btn-apply-finish').disabled,"
+        " hidden: $('review-incomplete').hidden,"
+        " incomplete: $('review-incomplete').innerHTML, calib: $('review-calib').innerHTML }; })()",
+        functions=_REVIEW_FUNCTIONS,
+        variables=("APPLY_MAX_PX",),
+        prelude=_DOM + _REVIEW_STUBS,
+        S={"mode": "advanced", "cam": None, "solve": solve},
+        solvePending=pending,
+    )
+
+
+def test_review_turns_apply_on_for_a_finished_solve_of_complete_points() -> None:
+    out = _review(_COMPLETE)
+    assert (out["apply"], out["hidden"]) == (False, True)
+
+
+def test_review_keeps_apply_off_while_a_solve_is_still_running() -> None:
+    assert _review(_COMPLETE, pending=True)["apply"] is True
+
+
+def test_review_lists_the_incomplete_points_and_keeps_apply_off() -> None:
+    marks = [
+        *_COMPLETE,
+        {"id": 5, "name": "P5", "kind": "triangulated", "pin": None, "problem": "Pin it.", "need": "a pin"},
+        {"id": 6, "name": "P6", "kind": "known", "pin": [6, 6], "problem": "Enter its X, Y and Z.", "need": "its X"},
+    ]
+    out = _review(marks)
+    assert (out["apply"], out["hidden"]) == (True, False)
+    assert out["incomplete"] == (
+        'Some points are not complete.<div class="notice-sub"><ul class="caution-list"><li>P5 needs a pin.</li>'
+        "<li>P6 needs its X.</li></ul>Complete or delete them in Camera Calibration.</div>"
+    )
+    # Points and Pinned count what Apply writes: every point, once each is complete.
+    assert '<span class="param-label">Points</span><span class="param-value">5</span>' in out["calib"]
+    assert '<span class="param-label">Pinned</span><span class="param-value">3</span>' in out["calib"]
+
+
+# ---------------------------------------------------------------------------
+# A pin behind the solved camera, and the pinned count the status line names
+# ---------------------------------------------------------------------------
+
+_ANSWER_MARKS = [
+    {"id": 1, "name": "DSL", "pin": [1, 1], "problem": ""},
+    {"id": 2, "name": "DSR", "pin": [2, 2], "problem": ""},
+    {"id": 3, "name": "P3", "pin": [3, 3], "problem": ""},
+    {"id": 4, "name": "P4", "pin": [4, 4], "problem": ""},
+    {"id": 5, "name": "P5", "pin": [5, 5], "problem": ""},
+    {"id": 6, "name": "P6", "pin": None, "problem": ""},
+    {"id": 7, "name": "P7", "pin": [7, 7], "problem": "Enter its Z."},
+]
+_ANSWER = {
+    "camera": {"fov": 60},
+    "largest_error": 0.6,
+    "count": 4,
+    "marks": [{"id": i, "error": 0.5, "seen": [i, i]} for i in (1, 2, 3, 4)] + [{"id": 5, "error": None}, {"id": 6}],
+}
+
+
+def test_the_solve_counts_the_pins_the_page_sent_and_names_the_one_behind() -> None:
+    out = run_wizard_js(
+        "(function() { var s = solveFromAnswer(marks, 200, data);"
+        " return [s.pinned, s.behind, s.behindIds, s.reasons]; })()",
+        functions=(*_REASON_FUNCTIONS, "solveFromAnswer"),
+        prelude=_reason_page(),
+        marks=_ANSWER_MARKS,
+        data=_ANSWER,
+    )
+    # P7 was not sent; P5 was, and the camera puts it behind itself: Review's Pinned counts it too.
+    assert out == [5, 1, {"5": True}, ["P5 lies behind the solved camera."]]
+
+
+_CHIP_FUNCTIONS = ("lenSmall", "pinBehind", "pinFlagged", "chipFor")
+
+
+@pytest.mark.parametrize(
+    ("mark_id", "chip", "flagged"),
+    [
+        (5, '<span class="stat-chip warn">Behind the camera</span>', True),
+        (1, '<span class="stat-chip ok">0.5 px</span>', False),
+        (2, '<span class="stat-chip warn">6.0 px</span>', True),
+    ],
+    ids=["behind", "on its pin", "off its pin"],
+)
+def test_a_pin_behind_the_camera_is_chipped_and_drawn_as_off(mark_id: int, chip: str, flagged: bool) -> None:
+    solve = {
+        "cam": {"fov": 60},
+        "res": {"1": {"px": 0.5}, "2": {"px": 6.0}, "5": {"px": None}},
+        "behindIds": {"5": True},
+    }
+    out = run_wizard_js(
+        "[chipFor({ id: id, kind: 'known', pin: [1, 1], problem: '' }, solve), pinFlagged(solve, id)]",
+        functions=_CHIP_FUNCTIONS,
+        variables=("DISTANCE_SIGMA",),
+        prelude=length_page("metric", {}),
+        solve=solve,
+        id=mark_id,
+    )
+    assert out == [chip, flagged]
+
+
+def test_a_pin_behind_the_camera_is_drawn_flagged_on_the_picture() -> None:
+    out = run_wizard_js(
+        '(function() { renderCalibOverlay(); return $(\'cal-pins\').innerHTML.match(/<g class="[^"]*"/g); })()',
+        functions=("esc", "pinBehind", "pinFlagged", "renderCalibOverlay"),
+        variables=("DISTANCE_SIGMA",),
+        prelude=_DOM + _REVIEW_STUBS + "imageWidth = 1920; imageHeight = 1080;"
+        " var S = { mode: 'advanced', pair: 0, selPin: null, selCorner: null, pinMenu: null };"
+        " S.solve = { cam: { fov: 60 }, res: { 1: { px: 0.5 }, 5: { px: null } }, behindIds: { 5: true } };"
+        " function currentMarks() {"
+        " return [{ id: 1, name: 'DSL', pin: [10, 10] }, { id: 5, name: 'P5', pin: [50, 50] }]; }",
+    )
+    assert out == ['<g class="pin-handle"', '<g class="pin-handle flag"']
+
+
+def test_the_status_line_names_the_pins_the_page_sent() -> None:
+    out = run_wizard_js(
+        "(function() { renderCalibResult(); return $('cal-status').textContent; })()",
+        functions=("renderCalibResult",),
+        prelude=_DOM + _REVIEW_STUBS + "var S = { mode: 'advanced', pair: 0 }; function lensMeasured() { return true; }"
+        " S.solve = { cam: { fov: 60 }, worst: 0.6, pinned: 5, count: 4, reasons: [], marks: [] };",
+    )
+    assert out == "Solved from 5 pinned points, largest error 0.6 px."
+
+
+# ---------------------------------------------------------------------------
+# Solving: an answer to the state before an edit is dropped
+# ---------------------------------------------------------------------------
+
+
+def test_an_edit_drops_the_answer_to_a_solve_already_in_flight() -> None:
+    out = run_wizard_js(
+        "(async function() { runSolve(); solveSoon();"
+        " answer({ status: 200, json: function() { return Promise.resolve({ camera: {} }); } });"
+        " await new Promise(function(r) { setImmediate(r); }); return [S.solve, solvePending]; })()",
+        functions=("solveSoon", "runSolve"),
+        prelude=_DOM + "var S = { solve: 'before the edit' }, solveSeq = 0, solveTimer = null, solvePending = false;"
+        " var imageWidth = 1920;"
+        " var answer; function fetch() { return new Promise(function(r) { answer = r; }); }"
+        " function setTimeout() { return 1; } function clearTimeout() {} function renderCalibOverlay() {}"
+        " function solveState() { return { marks: [], usable: [{ id: 1 }] }; } function solveBody() { return {}; }"
+        " function solveFromAnswer() { return 'for the old state'; } function afterSolve() {}",
+    )
+    # The debounced solve for the edit is still to run.
+    assert out == ["before the edit", True]
+
+
+# ---------------------------------------------------------------------------
+# Session: pins are stored as fractions of the snapshot they are in
+# ---------------------------------------------------------------------------
+
+_SESSION_PAGE = """
+var stored = null;
+var sessionStorage = { setItem: function(k, v) { stored = JSON.parse(v); }, getItem: function() { return raw; } };
+var STORAGE_KEY = 'openfollow:wizard', WIZ_STEPS = ['video', 'lens', 'calib', 'review'];
+var WIZ = { video: 0, lens: 1, calib: 2, review: 3 };
+var currentStep = 2, lensLines = [], lensImageSize = null, lensFit = null, LENS_ENABLED = false, CAM_PRESETS = [];
+function wizReadLensCoeff() { return 0; } function wizWriteLensCoeff() {}
+function lensRestoredLine() { return true; } function lensRestoredPair() { return false; }
+"""
+
+
+def test_a_snapshot_of_another_size_stores_the_pins_as_the_same_fractions() -> None:
+    out = run_wizard_js(
+        "(function() { imageWidth = 1280; imageHeight = 720;"
+        " showSnapshotOnCurrentStep('blob:x', {}); return stored; })()",
+        functions=("pinsToSnapshot", "saveToSession", "showSnapshotOnCurrentStep"),
+        variables=("CORNERS",),
+        prelude=length_page("metric", {})
+        + _DOM
+        + _SESSION_PAGE
+        + "var imageWidth = 1920, imageHeight = 1080, snapshotCanvas = null, FS = false;"
+        " document.createElement = function() {"
+        " return { getContext: function() { return { drawImage: function() {} }; } }; };"
+        " function setPreviewVisibility() {} function placeStartQuad() {} function renderCalibOverlay() {}"
+        " function runSolve() {}"
+        # The Lens step stores the session the moment it has the new snapshot.
+        " function lensOnSnapshot() { saveToSession(); }"
+        " var S = { mode: 'advanced', simpleLoc: '', rect: {}, pinSize: [1920, 1080], nextId: 2,"
+        " cornerPins: { DSL: null, DSR: null, USR: null, USL: null },"
+        " cornerMoved: { DSL: false, DSR: false, USR: false, USL: false },"
+        " points: [{ id: 1, name: 'P1', kind: 'known', x: '0', y: '0', z: '0', pin: [960, 270] }],"
+        " lensTouched: false, lensLoaded: null };",
+    )
+    assert out["points"][0]["pin"] == [0.5, 0.25]
+
+
+def test_pins_are_stored_as_fractions_of_the_snapshot_they_are_in() -> None:
+    # Between a new snapshot's size arriving and the pins following it, they are still the old snapshot's pixels.
+    out = run_wizard_js(
+        "(function() { saveToSession(); return [stored.points[0].pin, stored.cornerPins.DSL]; })()",
+        functions=("saveToSession",),
+        variables=("CORNERS",),
+        prelude=length_page("metric", {}) + _DOM + _SESSION_PAGE + "var imageWidth = 1280, imageHeight = 720;"
+        " var S = { mode: 'advanced', simpleLoc: '', rect: {}, pinSize: [1920, 1080], nextId: 2,"
+        " cornerPins: { DSL: [480, 540], DSR: null, USR: null, USL: null },"
+        " cornerMoved: { DSL: true, DSR: false, USR: false, USL: false },"
+        " points: [{ id: 1, name: 'P1', kind: 'known', x: '0', y: '0', z: '0', pin: [960, 270] }],"
+        " lensTouched: false, lensLoaded: null };",
+    )
+    assert out == [[0.5, 0.25], [0.25, 0.5]]
+
+
+@pytest.mark.parametrize(
+    ("pin", "kept"),
+    [([0.5, 0.25], True), ([0.0, 1.0], True), ([1.2, 0.5], False), ([0.5, -0.01], False), ([960, 540], False)],
+    ids=["inside", "on the edge", "right of it", "above it", "pixels"],
+)
+def test_a_restored_pin_must_lie_on_the_snapshot(pin: list, kept: bool) -> None:
+    raw = {
+        "units": "metric",
+        "mode": "advanced",
+        "stepKey": "calib",
+        "rect": {},
+        "nextId": 3,
+        "cornerPins": {"DSL": pin},
+        "cornerMoved": {"DSL": True},
+        "points": [{"id": 1, "name": "P1", "kind": "known", "x": "0", "y": "0", "z": "0", "pin": pin}],
+    }
+    out = run_wizard_js(
+        "(function() { restoreFromSession(); return [S.points[0].pin, S.cornerPins.DSL, S.cornerMoved.DSL]; })()",
+        functions=("pairOk", "fracPinOk", "restoreFromSession"),
+        variables=("CORNERS",),
+        prelude=length_page("metric", {}) + _DOM + _SESSION_PAGE + f"var raw = {json.dumps(json.dumps(raw))};"
+        " var S = { mode: 'simple', rect: { origin: 'dsc' }, cornerPins: {}, cornerMoved: {}, points: [], nextId: 1 };",
+    )
+    assert out == ([pin, pin, True] if kept else [None, None, False])
+
+
+# ---------------------------------------------------------------------------
+# The saved lens list: a list that could not be read says so
+# ---------------------------------------------------------------------------
+
+_SAVE_ERROR = """
+var window = { OpenFollow: { saveError: { UNREACHABLE: { error: 'The station did not answer.' },
+  fromResponse: function(r) { return Promise.resolve({ error: 'Refused with ' + r.status + '.' }); } } } };
+"""
+
+
+def _fetch_answering(answer: str) -> str:
+    return {
+        "list": "function fetch() { return Promise.resolve({ ok: true, json: function() {"
+        " return Promise.resolve({ calibrations: [{ name: 'Main', k1: -0.1, k2: 0.02, saved: '2026-09-12' }] });"
+        " } }); }",
+        "empty": "function fetch() { return Promise.resolve({ ok: true, json: function() {"
+        " return Promise.resolve({ calibrations: [] }); } }); }",
+        "refused": "function fetch() { return Promise.resolve({ ok: false, status: 500 }); }",
+        "not json": "function fetch() { return Promise.resolve({ ok: true, json: function() {"
+        " return Promise.reject(new SyntaxError('x')); } }); }",
+        "no list": "function fetch() { return Promise.resolve({ ok: true, json: function() {"
+        " return Promise.resolve({ error: 'x' }); } }); }",
+        "down": "function fetch() { return Promise.reject(new TypeError('Failed to fetch')); }",
+    }[answer]
+
+
+@pytest.mark.parametrize(
+    ("answer", "got"),
+    [
+        ("list", {"list": [{"name": "Main", "k1": -0.1, "k2": 0.02, "saved": "2026-09-12"}]}),
+        ("empty", {"list": []}),
+        ("refused", {"error": "Refused with 500."}),
+        ("not json", {"error": ""}),
+        ("no list", {"error": ""}),
+        ("down", {"error": "The station did not answer."}),
+    ],
+)
+def test_the_saved_list_or_why_it_could_not_be_read(answer: str, got: dict) -> None:
+    out = run_wizard_js("lensSavedList()", functions=("lensSavedList",), prelude=_SAVE_ERROR + _fetch_answering(answer))
+    assert out == got
+
+
+_DIALOG_PAGE = """
+var body = null, lensLines = [], imageWidth = 1920, imageHeight = 1080;
+function openModal(o) { body = o.bodyHTML; }
+function lensMeasured() { return true; } function wizLensPairValid() { return true; }
+function wizReadLensCoeff() { return -0.1; }
+"""
+_DIALOG_FUNCTIONS = (
+    "esc",
+    "fmt",
+    "lensVals",
+    "lensSize",
+    "lensSized",
+    "lensShapeWarning",
+    "lensOption",
+    "lensSavedList",
+    "lensListFailed",
+)
+_UNREAD = "The saved lens calibrations could not be read."
+
+
+@pytest.mark.parametrize(("answer", "failed"), [("empty", False), ("refused", True), ("down", True)])
+def test_the_load_dialog_says_when_the_saved_list_could_not_be_read(answer: str, failed: bool) -> None:
+    out = run_wizard_js(
+        "(async function() { lensLoadDialog(); await new Promise(function(r) { setImmediate(r); }); return body; })()",
+        functions=_DIALOG_FUNCTIONS,
+        prelude=_SAVE_ERROR
+        + _DOM
+        + _DIALOG_PAGE
+        + _fetch_answering(answer)
+        + "\n"
+        + wizard_window_function("lensLoadDialog")
+        + "\nvar lensLoadDialog = window.lensLoadDialog;",
+    )
+    assert (_UNREAD in out) is failed
+    assert ("No lens calibrations are saved on this station." in out) is not failed
+
+
+@pytest.mark.parametrize(("answer", "failed"), [("list", False), ("refused", True), ("down", True)])
+def test_the_save_dialog_warns_that_it_may_replace_when_the_list_could_not_be_read(answer: str, failed: bool) -> None:
+    out = run_wizard_js(
+        "(async function() { lensSaveDialog(); await new Promise(function(r) { setImmediate(r); }); return body; })()",
+        functions=_DIALOG_FUNCTIONS,
+        prelude=_SAVE_ERROR
+        + _DOM
+        + _DIALOG_PAGE
+        + _fetch_answering(answer)
+        + "\n"
+        + wizard_window_function("lensSaveDialog")
+        + "\nvar lensSaveDialog = window.lensSaveDialog;",
+    )
+    warning = (
+        '<div class="notice error" id="lens-list-error" role="alert">'
+        + _UNREAD
+        + '<div class="notice-sub">'
+        + {"refused": "Refused with 500.", "down": "The station did not answer.", "list": ""}[answer]
+        + " If a calibration with this name is saved on this station, saving replaces it.</div></div>"
+    )
+    assert (warning in out) is failed
+
+
+# ---------------------------------------------------------------------------
+# Rough amounts in the active unit
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("system", "simple", "advanced", "hint"),
+    [
+        ("metric", "About 1.0 m off", "within roughly 2.0 m per axis", "Roughly 2.0 m per axis is good enough."),
+        ("imperial", "About 3.3 ft off", "within roughly 6.6 ft per axis", "Roughly 6.6 ft per axis is good enough."),
+    ],
+)
+def test_the_camera_estimate_is_worded_in_the_active_unit(system: str, simple: str, advanced: str, hint: str) -> None:
+    out = run_wizard_js(
+        "(function() { var said = [];"
+        " S.mode = 'simple'; renderCamGroup(); said.push($('cam-intro').innerHTML);"
+        " S.mode = 'advanced'; renderCamGroup(); said.push($('cam-intro').innerHTML);"
+        " renderReq(); said.push(shown); return said; })()",
+        functions=(*_MARK_FUNCTIONS, "esc", "lenSuffix", "renderCamGroup", "renderReq"),
+        variables=_MARK_VARS,
+        prelude=length_page(system, {})
+        + _DOM
+        + "var S = { mode: 'simple', cam: null, camPartial: false, points: [], rect: {} };"
+        " var SAVED = { max_marks: 12 }, shown = null;"
+        " function showHint(area, h, sub) { shown = sub; }",
+    )
+    assert simple in out[0] and advanced in out[1] and out[2] == hint
+
+
+# ---------------------------------------------------------------------------
+# Simple to Advanced: every corner becomes a known point
+# ---------------------------------------------------------------------------
+
+
+def _to_advanced(rect: dict) -> list:
+    return run_wizard_js(
+        "(function() { switchMode('advanced'); var s = { marks: currentMarks() };"
+        " return [S.points.map(function(p) { return [p.name, p.x, p.y, p.z, p.pin]; }), incompleteLines(s)]; })()",
+        functions=(*_MARK_FUNCTIONS, "switchMode"),
+        variables=_MARK_VARS,
+        prelude=length_page("metric", {})
+        + _DOM
+        + "function renderCalibPanels() {} function solveSoon() {} function saveToSession() {}"
+        f" var S = {{ mode: 'simple', rect: {json.dumps(rect)}, points: [], nextId: 1,"
+        " cornerMoved: { DSL: true, DSR: false, USR: false, USL: false },"
+        " cornerPins: { DSL: [100, 900], DSR: [1800, 900], USR: [1500, 400], USL: [400, 400] } };",
+    )
+
+
+def test_a_rectangle_that_reads_gives_every_corner_its_position() -> None:
+    points, lines = _to_advanced(_RECT)
+    assert points == [
+        ["DSL", "6", "0", "0", [100, 900]],
+        ["DSR", "-6", "0", "0", None],
+        ["USR", "-6", "6", "0", None],
+        ["USL", "6", "6", "0", None],
+    ]
+    assert lines == []
+
+
+@pytest.mark.parametrize(
+    ("rect", "xyz", "need"),
+    [
+        ({**_RECT, "d": ""}, [["6", "", "0"], ["-6", "", "0"]], "its Y"),
+        ({**_RECT, "w": "", "d": ""}, [["", "", "0"], ["", "", "0"]], "its X and Y"),
+        ({**_RECT, "w": "300"}, [["", "0", "0"], ["", "0", "0"]], "its X"),
+    ],
+    ids=["no depth", "no size", "width out of range"],
+)
+def test_a_rectangle_that_does_not_read_leaves_the_corners_to_complete(rect: dict, xyz: list, need: str) -> None:
+    points, lines = _to_advanced(rect)
+    assert [p[0] for p in points] == ["DSL", "DSR", "USR", "USL"]
+    assert [p[1:4] for p in points[:2]] == xyz
+    # Placed corners keep their pins; the others are points to pin.
+    assert [p[4] for p in points] == [[100, 900], None, None, None]
+    assert lines == [f"{c} needs {need}." for c in ("DSL", "DSR", "USR", "USL")]

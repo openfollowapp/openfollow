@@ -30,7 +30,7 @@ Computed from the typed and solved positions, for every pair of points except th
 
 ## Something might be wrong
 
-The solve still applies, unless a point is more than 20 px off or behind the camera: then **Apply & Finish** stays off until it is fixed. The caution lists what looks implausible or went unchecked: a camera far from the entered position, an unusual field of view, a camera below the floor or looking up, a camera that puts the far floor more than twice as far or as near as the floor points alone do, a point that disagrees with the others.
+The solve still applies, unless a point is more than 20 px off or behind the camera: then **Apply & Finish** stays off until it is fixed. The caution lists what looks implausible or went unchecked: a camera far from the entered position, an unusual field of view, a camera below the floor or looking up, a camera that puts the far floor more than twice as far or as near as the floor points alone do, a point that disagrees with the others, a triangulated point whose distances disagree with the picture.
 
 ## Full screen
 

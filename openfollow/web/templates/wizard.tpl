@@ -588,7 +588,7 @@
         <g id="cal-pins"></g>
       </svg>
       <div class="wizard-loupe" aria-hidden="true"><canvas width="240" height="240"></canvas></div>
-      <div class="pin-menu" id="pin-menu" role="menu" aria-label="Place a point here" hidden></div>
+      <div class="pin-menu" id="pin-menu" role="group" aria-label="Place here" hidden></div>
       <button type="button" class="fs-btn" data-fs="cal" aria-label="Full screen">{{!_fs_icon}}</button>
     </div>
     <div id="cal-no-feed" class="wizard-no-feed" style="display:none;">No video feed available. Configure a video source in the Video Source step, then return here and press <strong>Refresh Image</strong>.</div>
@@ -652,9 +652,10 @@
       </svg>
       <button type="button" class="fs-btn" data-fs="review" aria-label="Full screen">{{!_fs_icon}}</button>
     </div>
-    <div id="review-no-feed" class="wizard-no-feed" style="display:none;">No video feed available. Values below are still valid, but the visual review is unavailable.</div>
+    <div id="review-no-feed" class="wizard-no-feed" style="display:none;">No video feed available, so the visual review is unavailable. The camera is solved from a snapshot: configure a video source in the Video Source step, then return here.</div>
 
     <div id="review-status" class="notice error" role="alert" hidden></div>
+    <div id="review-incomplete" class="notice error" role="alert" hidden></div>
     <div id="review-caution" class="notice warning" role="status" hidden></div>
     <div id="review-lens-note" class="notice" role="status" hidden>Using the station's lens. It was not measured in this run.</div>
     <div class="group">
@@ -966,14 +967,14 @@
     if (S.rect.origin === 'custom') return { w: w, d: d, cx: len(S.rect.cx), cy: len(S.rect.cy), z: len(S.rect.z) };
     return { w: w, d: d, cx: 0, cy: d / 2, z: 0 };
   }
+  function andList(l) { return l.length > 1 ? l.slice(0, -1).join(', ') + ' and ' + l[l.length - 1] : l[0]; }
   // Names exactly what is missing; the Simple hint shows it.
   function rectProblem() {
     var r = rectVals();
-    var and = function(l) { return l.length > 1 ? l.slice(0, -1).join(', ') + ' and ' + l[l.length - 1] : l[0]; };
     var size = [['width', r.w], ['depth', r.d]].filter(function(q) { return isNaN(q[1]); }).map(function(q) { return q[0]; });
-    if (size.length) return 'Enter the rectangle\'s ' + and(size) + '.';
+    if (size.length) return 'Enter the rectangle\'s ' + andList(size) + '.';
     var at = [['X', r.cx], ['Y', r.cy], ['Z', r.z]].filter(function(q) { return isNaN(q[1]); }).map(function(q) { return q[0]; });
-    if (at.length) return 'Enter the ' + and(at) + ' of the rectangle\'s centre, measured from the point of origin.';
+    if (at.length) return 'Enter the ' + andList(at) + ' of the rectangle\'s centre, measured from the point of origin.';
     if (r.w <= 0 || r.d <= 0 || r.w > 200 || r.d > 200) return 'Width and depth must be between 0 and ' + lenLimit() + '.';
     return '';
   }
@@ -981,7 +982,8 @@
     var hw = r.w / 2, hd = r.d / 2;
     return { DSL: [r.cx + hw, r.cy - hd, r.z], DSR: [r.cx - hw, r.cy - hd, r.z], USR: [r.cx - hw, r.cy + hd, r.z], USL: [r.cx + hw, r.cy + hd, r.z] }[name];
   }
-  // The marks both modes solve: Simple's corners have ids 1 to 4 in CORNERS order.
+  // The marks both modes solve: Simple's corners have ids 1 to 4 in CORNERS order. ``need`` words a
+  // problem for Review's list of incomplete points.
   function currentMarks() {
     if (S.mode === 'simple') {
       var ok = !rectProblem(), r = rectVals();
@@ -992,17 +994,17 @@
     return S.points.map(function(p) {
       var m = { id: p.id, name: p.name || ('P' + p.id), kind: p.kind, pin: p.pin, problem: '' };
       if (p.kind === 'known') {
-        var x = len(p.x), y = len(p.y), z = len(p.z);
-        if ([x, y, z].some(isNaN)) m.problem = 'Enter its X, Y and Z.';
-        else if ([x, y, z].some(function(v) { return Math.abs(v) > MARK_REACH_M; })) m.problem = 'Enter X, Y and Z within ' + lenRough(MARK_REACH_M) + ' of the point of origin.';
+        var x = len(p.x), y = len(p.y), z = len(p.z), missing = [['X', x], ['Y', y], ['Z', z]].filter(function(q) { return isNaN(q[1]); }).map(function(q) { return q[0]; });
+        if (missing.length) { m.problem = 'Enter its X, Y and Z.'; m.need = 'its ' + andList(missing); }
+        else if ([x, y, z].some(function(v) { return Math.abs(v) > MARK_REACH_M; })) { m.problem = 'Enter X, Y and Z within ' + lenRough(MARK_REACH_M) + ' of the point of origin.'; m.need = 'X, Y and Z within ' + lenRough(MARK_REACH_M) + ' of the point of origin'; }
         else m.pos = [x, y, z];
       } else {
         m.a = p.a; m.b = p.b; m.da = len(p.da); m.db = len(p.db); m.z = p.z === '' ? 0 : len(p.z);
-        if (!m.a || !m.b) m.problem = 'Choose the two points its distances are measured from.';
-        else if (m.a === m.b) m.problem = 'Choose two different points.';
-        else if (!(m.da > 0 && m.da <= 200) || !(m.db > 0 && m.db <= 200)) m.problem = 'Enter both distances, between 0 and ' + lenLimit() + '.';
-        else if (isNaN(m.z) || Math.abs(m.z) > MARK_REACH_M) m.problem = 'Enter its Z.';
-        else if (!m.pin) m.problem = PIN_PROBLEM;
+        if (!m.a || !m.b) { m.problem = 'Choose the two points its distances are measured from.'; m.need = 'the two points its distances are measured from'; }
+        else if (m.a === m.b) { m.problem = 'Choose two different points.'; m.need = 'two different points to measure from'; }
+        else if (!(m.da > 0 && m.da <= 200) || !(m.db > 0 && m.db <= 200)) { m.problem = 'Enter both distances, between 0 and ' + lenLimit() + '.'; m.need = 'both distances, between 0 and ' + lenLimit(); }
+        else if (isNaN(m.z) || Math.abs(m.z) > MARK_REACH_M) { m.problem = 'Enter its Z.'; m.need = 'its Z'; }
+        else if (!m.pin) { m.problem = PIN_PROBLEM; m.need = 'a pin'; }
       }
       return m;
     });
@@ -1103,7 +1105,8 @@
       })
     };
   }
-  function solveSoon() { clearTimeout(solveTimer); renderCalibOverlay(); solveTimer = setTimeout(runSolve, 40); }
+  // An answer still in flight is for the state before this change: it is dropped.
+  function solveSoon() { clearTimeout(solveTimer); solveSeq++; renderCalibOverlay(); solveTimer = setTimeout(runSolve, 40); }
   // Every solve counts here; an answer to an older one is dropped, and the station stops working on it.
   function runSolve(then) {
     clearTimeout(solveTimer);
@@ -1135,7 +1138,7 @@
     });
   }
   function solveFromAnswer(marks, status, data) {
-    var byId = {};
+    var byId = {}, sent = marks.filter(function(m) { return m.pin && !m.problem; }).length;
     marks.forEach(function(m) { byId[m.id] = m; });
     (data.marks || []).forEach(function(a) { if (a.reason && byId[a.id] && !byId[a.id].problem) byId[a.id].problem = a.reason; });
     if (status === 422 && Array.isArray(data.need)) return { marks: marks, need: data.need };
@@ -1148,7 +1151,9 @@
     });
     // A pin the camera puts behind itself has no error to measure, and is as wrong as one far off.
     var behind = marks.filter(function(m) { return m.pin && !m.problem && res[m.id] && res[m.id].px == null; }).map(function(m) { return { kind: 'behind', id: m.id }; });
-    return { marks: marks, cam: data.camera, positions: positions, res: res, worst: data.largest_error, count: data.count, behind: behind.length,
+    var behindIds = {};
+    behind.forEach(function(b) { behindIds[b.id] = true; });
+    return { marks: marks, cam: data.camera, positions: positions, res: res, worst: data.largest_error, pinned: sent, behind: behind.length, behindIds: behindIds,
       reasons: wordReasons((data.reasons || []).concat(behind), marks) };
   }
   function afterSolve(then) {
@@ -1197,6 +1202,18 @@
   // As 0.4.3 refused such a solve, a pin this far off keeps Apply off.
   var APPLY_MAX_PX = 20;
   function applyBlocked(s) { return !!(s && s.cam && (s.worst > APPLY_MAX_PX || s.behind > 0)); }
+  function pinBehind(s, id) { return !!(s && s.cam && s.behindIds && s.behindIds[id]); }
+  function pinFlagged(s, id) { var r = s && s.res && s.res[id]; return !!(r && r.px > FLAG_PX) || pinBehind(s, id); }
+  // Apply writes every point, so a point with a problem keeps it off; Simple's rectangle problem leaves no solve to apply.
+  function marksIncomplete(s) { return !!(s && s.marks && s.marks.some(function(m) { return m.problem; })); }
+  function incompleteLines(s) {
+    return (s && s.marks || []).filter(function(m) { return m.problem && m.problem !== 'rect'; }).map(function(m) {
+      return m.need ? m.name + ' needs ' + m.need + '.' : m.name + ': ' + m.problem;
+    });
+  }
+  function incompleteHtml(lines) {
+    return 'Some points are not complete.<div class="notice-sub"><ul class="caution-list">' + lines.map(function(l) { return '<li>' + esc(l) + '</li>'; }).join('') + '</ul>Complete or delete them in Camera Calibration.</div>';
+  }
   // Simple keeps the station's pair without measuring one: said, but not a caution.
   function stationLensOnly() {
     return S.mode === 'simple' && LENS_ENABLED && !S.lensTouched && (SAVED.lens[0] !== 0 || SAVED.lens[1] !== 0);
@@ -2161,12 +2178,26 @@
     lensShowNotice('');
     renderLens(); renderLensResult(); onLensCoeffChanged();
   }
+  // The saved list, or why it could not be read: ``{ list }`` or ``{ error }`` (the station's reason, '' without one).
+  function lensSavedList() {
+    var saveError = window.OpenFollow.saveError;
+    return fetch('/api/wizard/lens/calibrations').then(function(r) {
+      if (!r.ok) return saveError.fromResponse(r).then(function(info) { return { error: info.error || '' }; });
+      return r.json().then(function(data) {
+        return data && Array.isArray(data.calibrations) ? { list: data.calibrations } : { error: '' };
+      }, function() { return { error: '' }; });
+    }, function() { return { error: saveError.UNREACHABLE.error }; });
+  }
+  function lensListFailed(reason, saving) {
+    var sub = [reason, saving ? 'If a calibration with this name is saved on this station, saving replaces it.' : ''].filter(Boolean).join(' ');
+    return '<div class="notice error" id="lens-list-error" role="alert">The saved lens calibrations could not be read.' + (sub ? '<div class="notice-sub">' + esc(sub) + '</div>' : '') + '</div>';
+  }
   window.lensLoadDialog = function() {
-    var fromFile = null, saved = [];
+    var fromFile = null, saved = [], failed = null;
     function render() {
       var lines = lensLines;
       return '<div id="ll-body"><div class="lens-dlg-title">Saved on this station</div>' +
-        (saved.length ? '<div class="tier-list" role="radiogroup" aria-label="Saved lens calibrations">' + saved.map(function(c, i) { return lensOption(i, c.name, lensVals(c.k1, c.k2) + ' · ' + c.saved + (lensSized(c) ? ' · ' + lensSize(c.width, c.height) : ''), false, lensShapeWarning(c)); }).join('') + '</div>'
+        (failed !== null ? lensListFailed(failed, false) : saved.length ? '<div class="tier-list" role="radiogroup" aria-label="Saved lens calibrations">' + saved.map(function(c, i) { return lensOption(i, c.name, lensVals(c.k1, c.k2) + ' · ' + c.saved + (lensSized(c) ? ' · ' + lensSize(c.width, c.height) : ''), false, lensShapeWarning(c)); }).join('') + '</div>'
           : '<p>No lens calibrations are saved on this station.</p>') +
         '<div class="lens-dlg-sep"></div><div class="lens-dlg-title">From a settings file</div>' +
         '<p>Only the lens values of an exported <code>.ofsettings</code> file are loaded.</p>' +
@@ -2212,19 +2243,20 @@
       };
       $('ll-file-btn').onclick = function() { $('ll-file').click(); };
     }
-    fetch('/api/wizard/lens/calibrations').then(function(r) { return r.ok ? r.json() : { calibrations: [] }; })
-      .then(function(data) { saved = Array.isArray(data.calibrations) ? data.calibrations : []; open(); })
-      .catch(function() { open(); });
+    lensSavedList().then(function(got) { saved = got.list || []; failed = got.list ? null : got.error; open(); });
   };
+  // The dialog opens once the saved list is in, so the same-name warning is never missing; a list that
+  // could not be read says so, and that saving may replace a calibration of that name.
   window.lensSaveDialog = function() {
     if (!lensMeasured() || !wizLensPairValid()) return;
-    var k1 = wizReadLensCoeff('wiz_lens_k1'), k2 = wizReadLensCoeff('wiz_lens_k2'), saved = [], saving = false;
+    var k1 = wizReadLensCoeff('wiz_lens_k1'), k2 = wizReadLensCoeff('wiz_lens_k2'), saved = [], failed = null, saving = false;
     function open() {
       openModal({
         title: 'Save Lens Calibration',
         bodyHTML: '<label for="ls-name">Calibration name</label>' +
           '<input type="text" id="ls-name" maxlength="60" placeholder="Main stage – FOH wide" autocomplete="off" data-1p-ignore data-lpignore="true">' +
           '<p style="margin-top:0.7rem;">' + esc(lensVals(k1, k2)) + '</p>' +
+          (failed !== null ? lensListFailed(failed, true) : '') +
           '<div class="notice warning" id="ls-exists" role="status" hidden>A calibration with this name is saved on this station. Saving replaces it.</div>',
         footerButtons: [
           { label: 'Cancel', onClick: function() { closeModal(); } },
@@ -2256,9 +2288,7 @@
       inp.oninput = sync;
       inp.onkeydown = function(e) { if (e.key === 'Enter' && !ok.disabled) { e.preventDefault(); ok.click(); } };
     }
-    fetch('/api/wizard/lens/calibrations').then(function(r) { return r.ok ? r.json() : { calibrations: [] }; })
-      .then(function(data) { saved = Array.isArray(data.calibrations) ? data.calibrations : []; open(); })
-      .catch(function() { open(); });
+    lensSavedList().then(function(got) { saved = got.list || []; failed = got.list ? null : got.error; open(); });
   };
 
   // ---------------------------------------------------------------
@@ -2331,8 +2361,8 @@
     if (simple && (S.cam || S.camPartial)) $('simple-cam-box').open = true;
     $('cam-title').hidden = simple;
     $('cam-intro').innerHTML = simple
-      ? 'Estimate where the camera\'s lens is from the point of origin, in <span class="u-len">' + esc(lenSuffix()) + '</span>: X = stage left, Y = upstage, Z = up. About a metre off is close enough. The solved camera is checked against it, which catches a skipped lens step or a wrong rectangle size.'
-      : '<strong>Where is your camera?</strong> Its lens, from the point of origin, in <span class="u-len">' + esc(lenSuffix()) + '</span>: X = stage left, Y = upstage, Z = up. An estimate within roughly 2 m per axis is good enough.';
+      ? 'Estimate where the camera\'s lens is from the point of origin, in <span class="u-len">' + esc(lenSuffix()) + '</span>: X = stage left, Y = upstage, Z = up. About ' + esc(lenRough(1)) + ' off is close enough. The solved camera is checked against it, which catches a skipped lens step or a wrong rectangle size.'
+      : '<strong>Where is your camera?</strong> Its lens, from the point of origin, in <span class="u-len">' + esc(lenSuffix()) + '</span>: X = stage left, Y = upstage, Z = up. An estimate within roughly ' + esc(lenRough(2)) + ' per axis is good enough.';
     $('cam-error').textContent = simple ? 'Enter all three values, or leave all three empty.' : 'Enter all three values.';
   }
   function renderCalibPanels() {
@@ -2358,6 +2388,7 @@
   function chipFor(m, solve) {
     if (m.problem && m.problem !== 'rect' && !(m.kind === 'triangulated' && !m.pin)) return '<span class="stat-chip off">Not placed</span>';
     if (!m.pin) return '<span class="stat-chip">Not pinned</span>';
+    if (pinBehind(solve, m.id)) return '<span class="stat-chip warn">Behind the camera</span>';
     var r = solve && solve.res && solve.res[m.id];
     if (!r || r.px == null) return '<span class="stat-chip">Pinned</span>';
     var bad = r.px > FLAG_PX || (r.dist != null && r.dist > 3 * DISTANCE_SIGMA);
@@ -2469,7 +2500,7 @@
     // A triangulated point always needs its pin; a known point only until four points are pinned.
     var toPin = points.filter(function(m) { return !m.pin && (m.kind === 'triangulated' || pinned < 4); })[0];
     var h, sub, area = 'image';
-    if (!S.cam) { h = 'Enter the rough camera position first.'; sub = 'Roughly 2 m per axis is good enough.'; area = 'cam'; }
+    if (!S.cam) { h = 'Enter the rough camera position first.'; sub = 'Roughly ' + lenRough(2) + ' per axis is good enough.'; area = 'cam'; }
     else if (known.length < 2) { h = 'Enter two points with known coordinates far apart, like the DSL and DSR corners.'; sub = 'Click where one is on the picture, choose New point and type its X/Y/Z. ' + known.length + ' of 2 entered.'; }
     else if (points.length < 4) {
       h = points.length === 3 ? 'Enter one more known point or triangulated point.' : 'Enter two more known points or triangulated points.';
@@ -2514,7 +2545,7 @@
     if (s.waiting) { st.className = 'wizard-status waiting'; st.textContent = s.waiting; }
     else if (s.need) { st.className = 'wizard-status waiting'; st.textContent = 'To solve the camera, add ' + s.need.join(' and ') + '.'; st.hidden = S.mode === 'advanced'; }
     else if (s.error) { st.className = 'wizard-status error'; st.textContent = s.error; }
-    else { st.className = 'wizard-status ok'; st.textContent = 'Solved from ' + s.count + ' pinned points, largest error ' + s.worst.toFixed(1) + ' px.'; }
+    else { st.className = 'wizard-status ok'; st.textContent = 'Solved from ' + s.pinned + ' pinned points, largest error ' + s.worst.toFixed(1) + ' px.'; }
     var ok = !!s.cam;
     $('cal-solved').hidden = !ok;
     if (ok) $('cal-solved').innerHTML = solvedParamsHtml(s.cam) + (LENS_ENABLED ? '<div class="wizard-solved-param"><span class="param-label">Lens</span><span class="param-value"' +
@@ -2570,7 +2601,7 @@
     var key = function(m) { return S.mode === 'simple' ? m.name : m.id; };
     $('cal-pins').innerHTML = quad + originMarkup(originPixel(s), u) + marks.map(function(m) {
       if (!m.pin) return '';
-      var r = s && s.res && s.res[m.id], at = r && r.at, flag = r && r.px > FLAG_PX;
+      var r = s && s.res && s.res[m.id], at = r && r.at, flag = pinFlagged(s, m.id);
       var rep = at ? '<circle class="reproj" cx="' + at[0] + '" cy="' + at[1] + '" r="' + (3 * u) + '"/>' : '';
       return '<g class="pin-handle' + (S.selPin === key(m) ? ' active' : '') + (flag ? ' flag' : '') + (m.unmoved ? ' unmoved' : '') + '" tabindex="0" role="button" data-mark="' + esc(key(m)) + '" aria-label="' + esc(m.name) + ' pin">' +
         '<circle class="pin-dot" cx="' + m.pin[0] + '" cy="' + m.pin[1] + '" r="' + (9 * u) + '"/>' +
@@ -2657,10 +2688,10 @@
     var m = $('pin-menu');
     m.classList.remove('form');
     m.innerHTML = pinMenuHead('Place here') + open.map(function(q) {
-      return '<button type="button" class="pm-item" role="menuitem" data-place="' + q.id + '"><span>' + esc(q.name || ('P' + q.id)) + '</span><span class="kind">' + (q.kind === 'known' ? 'Known' : 'Triangulated') + '</span></button>';
+      return '<button type="button" class="pm-item" data-place="' + q.id + '"><span>' + esc(q.name || ('P' + q.id)) + '</span><span class="kind">' + (q.kind === 'known' ? 'Known' : 'Triangulated') + '</span></button>';
     }).join('') + (open.length ? '<hr>' : '') +
-      '<button type="button" class="pm-item" role="menuitem" data-place="new-known"' + (full ? ' disabled' : '') + '><span>New point</span><span class="kind">X/Y/Z</span></button>' +
-      '<button type="button" class="pm-item" role="menuitem" data-place="new-tri"' + (knownN < 2 || full ? ' disabled' : '') + '><span>New triangulated point</span>' + (knownN < 2 ? '<span class="kind">Needs two known points</span>' : '') + '</button>';
+      '<button type="button" class="pm-item" data-place="new-known"' + (full ? ' disabled' : '') + '><span>New point</span><span class="kind">X/Y/Z</span></button>' +
+      '<button type="button" class="pm-item" data-place="new-tri"' + (knownN < 2 || full ? ' disabled' : '') + '><span>New triangulated point</span>' + (knownN < 2 ? '<span class="kind">Needs two known points</span>' : '') + '</button>';
     m.hidden = false;
     positionPinMenu();
     renderCalibOverlay();
@@ -2673,8 +2704,8 @@
     var m = $('pin-menu');
     m.classList.remove('form');
     m.innerHTML = pinMenuHead((q.name || ('P' + id)) + (q.kind === 'known' ? ' · Known' : ' · Triangulated')) +
-      '<button type="button" class="pm-item" role="menuitem" data-pm="unpin"><span>Remove pin</span><span class="kind">Keeps the point</span></button>' +
-      '<button type="button" class="pm-item danger" role="menuitem" data-pm="delete"><span>Delete point</span></button>';
+      '<button type="button" class="pm-item" data-pm="unpin"><span>Remove pin</span><span class="kind">Keeps the point</span></button>' +
+      '<button type="button" class="pm-item danger" data-pm="delete"><span>Delete point</span></button>';
     m.hidden = false;
     positionPinMenu();
     renderCalibOverlay();
@@ -2773,11 +2804,12 @@
   function switchMode(to) {
     if (to === S.mode) return;
     if (to === 'advanced') {
-      var r = rectVals(), ok = !rectProblem();
+      // Every corner becomes a known point; an axis the rectangle does not give yet stays empty for its row to ask.
+      var r = rectVals(), has = [r.w > 0 && r.w <= 200 && !isNaN(r.cx), r.d > 0 && r.d <= 200 && !isNaN(r.cy), !isNaN(r.z)];
       S.nextId = 1;
-      S.points = CORNERS.filter(function(c) { return ok || S.cornerMoved[c]; }).map(function(c) {
-        var P = ok ? cornerXYZ(c, r) : null;
-        return { id: S.nextId++, name: c, kind: 'known', x: P ? lenField(P[0]) : '', y: P ? lenField(P[1]) : '', z: P ? lenField(P[2]) : '', pin: S.cornerMoved[c] ? S.cornerPins[c] : null };
+      S.points = CORNERS.map(function(c) {
+        var P = cornerXYZ(c, r), v = function(i) { return has[i] ? lenField(P[i]) : ''; };
+        return { id: S.nextId++, name: c, kind: 'known', x: v(0), y: v(1), z: v(2), pin: S.cornerMoved[c] ? S.cornerPins[c] : null };
       });
       S.mode = 'advanced'; S.selPin = null; S.pair = 0; S.solve = null;
       renderCalibPanels(); solveSoon(); saveToSession();
@@ -2960,7 +2992,10 @@
     var ok = !!s.cam;
     $('review-status').hidden = ok;
     if (!ok) $('review-status').innerHTML = 'No camera solve yet.<div class="notice-sub">' + esc(s.need ? 'To solve the camera, add ' + s.need.join(' and ') + '. Go back to Camera Calibration to finish it.' : s.waiting ? s.waiting : s.error ? s.error : 'Pin the points in Camera Calibration.') + '</div>';
-    $('btn-apply-finish').disabled = !ok || applyBlocked(s);
+    var incomplete = incompleteLines(s);
+    $('review-incomplete').hidden = !incomplete.length;
+    if (incomplete.length) $('review-incomplete').innerHTML = incompleteHtml(incomplete);
+    $('btn-apply-finish').disabled = !ok || solvePending || applyBlocked(s) || marksIncomplete(s);
     $('review-caution').hidden = !(ok && s.reasons.length);
     if (ok && s.reasons.length) $('review-caution').innerHTML = cautionHtml(s);
     $('review-lens-note').hidden = !(ok && stationLensOnly());
@@ -3003,13 +3038,13 @@
   window.applyAndFinish = function() {
     var saveError = window.OpenFollow.saveError, reviewBox = document.querySelector('#wizard-step-review .section');
     var s = S.solve;
-    if (!s || !s.cam || solvePending || applyBlocked(s)) return;
+    if (!s || !s.cam || solvePending || applyBlocked(s) || marksIncomplete(s)) return;
     if (LENS_ENABLED && !wizLensPairValid()) {
       saveError.show(reviewBox, { error: 'The lens pair folds the overlay inside the frame.', action: 'Bring either lens value closer to 0 on the Lens step before finishing.' }, 'Not applied.');
       return;
     }
     var headers = { 'Content-Type': 'application/json' }, frac = function(p) { return p ? [p[0] / imageWidth, p[1] / imageHeight] : []; };
-    var marks = s.marks.filter(function(m) { return !m.problem || m.problem === 'rect'; }).map(function(m) {
+    var marks = s.marks.map(function(m) {
       var out = { id: m.id, name: m.name, kind: m.kind, pin: frac(m.pin) };
       if (m.kind === 'known') { out.x = m.pos[0]; out.y = m.pos[1]; out.z = m.pos[2]; }
       else { out.from_a = +m.a; out.from_b = +m.b; out.distance_a = m.da; out.distance_b = m.db; out.z = m.z; out.position = s.positions[m.id] || []; }
@@ -3230,8 +3265,9 @@
   // ---------------------------------------------------------------
   function saveToSession() {
     try {
-      var frac = function(p) { return p && imageWidth ? [p[0] / imageWidth, p[1] / imageHeight] : null; };
       var keepPins = S.pinSize === null;  // still fractions: the snapshot has not loaded
+      // Pixels of the snapshot the pins are in, which a new snapshot's size may not be yet.
+      var frac = function(p) { return p && !keepPins ? [p[0] / S.pinSize[0], p[1] / S.pinSize[1]] : null; };
       var corners = {};
       CORNERS.forEach(function(c) { corners[c] = keepPins ? S.cornerPins[c] : frac(S.cornerPins[c]); });
       sessionStorage.setItem(STORAGE_KEY, JSON.stringify({
@@ -3246,6 +3282,8 @@
     } catch (e) {}
   }
   function pairOk(p) { return Array.isArray(p) && p.length === 2 && isFinite(p[0]) && isFinite(p[1]); }
+  // A pin is stored as fractions of the snapshot: anything outside it is not one this page wrote.
+  function fracPinOk(p) { return pairOk(p) && p[0] >= 0 && p[0] <= 1 && p[1] >= 0 && p[1] <= 1; }
   // Only state in the shape this page draws: a session saved by another version must not stop the wizard from opening.
   function restoreFromSession() {
     var raw;
@@ -3266,11 +3304,11 @@
         if (raw.rect && typeof raw.rect === 'object') ['w', 'd', 'cx', 'cy', 'z'].forEach(function(k) { if (typeof raw.rect[k] === 'string') S.rect[k] = raw.rect[k]; });
         if (raw.rect && (raw.rect.origin === 'dsc' || raw.rect.origin === 'custom')) S.rect.origin = raw.rect.origin;
         CORNERS.forEach(function(c) {
-          S.cornerPins[c] = raw.cornerPins && pairOk(raw.cornerPins[c]) ? raw.cornerPins[c] : null;
+          S.cornerPins[c] = raw.cornerPins && fracPinOk(raw.cornerPins[c]) ? raw.cornerPins[c] : null;
           S.cornerMoved[c] = !!(raw.cornerMoved && raw.cornerMoved[c] && S.cornerPins[c]);
         });
         if (Array.isArray(raw.points)) S.points = raw.points.filter(function(p) { return p && isFinite(p.id) && (p.kind === 'known' || p.kind === 'triangulated'); }).map(function(p) {
-          return Object.assign({}, p, { pin: pairOk(p.pin) ? p.pin : null });
+          return Object.assign({}, p, { pin: fracPinOk(p.pin) ? p.pin : null });
         });
         S.nextId = Math.max(isFinite(raw.nextId) ? raw.nextId : 1, 1 + Math.max.apply(null, [0].concat(S.points.map(function(p) { return p.id; }))));
         if (Array.isArray(raw.cam)) ['x', 'y', 'z'].forEach(function(k, i) { if (typeof raw.cam[i] === 'string') $('cam_pos_' + k).value = raw.cam[i]; });

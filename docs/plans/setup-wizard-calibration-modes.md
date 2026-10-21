@@ -73,7 +73,7 @@ For screens where the picture is too small to work on.
 | Shell | The picture moves into a full-screen shell with one toolbar line, and back on exit. The shell asks the browser for full screen; where it refuses (iPhone Safari, a framed page), the shell fills the window |
 | Picture | Keeps the snapshot's aspect ratio: as wide as the space below the toolbar allows without being taller, centred on black |
 | Toolbar | Step title (Calibration adds "· Simple" / "· Advanced"), the current hint, a status, the step's action, **?**, **Exit full screen**. On a phone (≤ 640 px) only the hint and the buttons |
-| Hint | Lens: "Tap a dashed suggestion, or click the start and the end of a straight edge." with no lines, "Click the other end of the straight edge." with a line started, else the lens result. Calibration: the hint box's heading. Review: "The green grid is the one the Operator Screen will draw." or "No camera solve yet." |
+| Hint | Lens: "Use or reject each dashed suggestion, or click the start and the end of a straight edge." with no lines, "Click the other end of the straight edge." with a line started, else the lens result. Calibration: the hint box's heading. Review: "The green grid is the one the Operator Screen will draw." or "No camera solve yet." |
 | Status | Calibration: "Largest error N px", plus "· Something might be wrong" in the caution colour when the caution has reasons. Lens: "A line does not fit the others" in the caution colour |
 | Action | Lens only: **Point off** and **Delete line**, each disabled without a selected point or line |
 | Inside | Everything works as on the page: dragging, selecting, the Advanced menus and forms, the loupe |
@@ -85,7 +85,7 @@ for the picture, each ending with "**?** Show or hide this help":
 
 | Picture | Sentences | Keys |
 |---|---|---|
-| Lens | "Tap a dashed suggestion that is straight in reality, or click the start and the end of a straight edge. Click a line to select it; drag a point to correct it." | Tab: Select the next point · Arrows: Nudge the selected point 1 px · Shift + arrow: Nudge it 10 px · Enter: Confirm the point · Space: Switch a middle point off or on · Delete or Backspace: Remove the selected line, or cancel a started one · Esc: End full screen (cancels active selection) |
+| Lens | "Check each dashed suggestion: the check uses it, the cross removes it. Or click the start and the end of a straight edge. Click a line to select it; drag a point to correct it." | Tab: Next suggestion bubble or point · Arrows: Nudge the selected point 1 px · Shift + arrow: Nudge it 10 px · Enter: Confirm the point · Space: Switch a middle point off or on · Delete or Backspace: Remove the selected line, or cancel a started one · Esc: End full screen (cancels active selection) |
 | Calibration, Simple | "Drag each corner onto its tape mark; the loupe shows the picture at 4×. Click a corner to select it." | Tab: Select the next corner · Arrows: Nudge the selected corner 1 px · Shift + arrow: Nudge it 10 px · Enter: Place the corner where the crosshair is · Esc: End full screen (cancels active selection) |
 | Calibration, Advanced | "Click the picture where a point is and choose it from the menu, or make a New point or New triangulated point there. Click a pin to remove it or delete the point; drag a pin to correct it." | Arrows: With the menu open: move its spot 1 px. On a pin: nudge it · Shift + arrow: 10 px · Tab: Next menu item, field or pin · Enter: Choose the menu item, or place the new point · Esc: End full screen (cancels active selection) |
 | Review | "The picture shows the solved grid, the points and 0/0/0, as the Operator Screen will draw them. Nothing can be changed here." | Esc: End full screen |
@@ -104,11 +104,13 @@ five-step rating, Refresh Image, Clear lines. Changed:
 
 | Topic | Decision |
 |---|---|
+| Suggestions | Each dashed suggestion carries a bubble beside it with a pointer to a dot on the line: a circle with a check (**Use this line**) and a circle with a cross (**Reject this line**). Bubbles sit at the line's middle when there is room, else further along it or on its other side, clear of the frame's edge and of each other. Pointing at a bubble (hover or Tab) lights up its line and pointer and dims the others; pointing at a line lights up its bubble. A used line loses its bubble and becomes a traced line (select it, Delete removes it); a rejected line disappears with its bubble, from the picture and the fit, until **Refresh Image** suggests the lines again. After a choice by keyboard the focus moves on to the next bubble. A click on a dashed line still uses it. Lines traced by hand get no bubble |
+| Coverage hint | When an edge band is still empty but the lines already agree (at least 4 lines, none flagged, the points within 2 px RMS of their fitted curves, rated Medium or better): "The result may already be good. A line near the top edge would confirm it." Otherwise the station's hint as today ("Add a line near the top edge.") |
 | Selecting a line | A click anywhere along a traced line selects the whole line, drawn in the text colour. A line just added (a tapped suggestion or a traced edge) is selected |
 | Deleting | **Delete** or **Backspace** removes the selected line wherever the focus is, except in a field or with a dialog open; with a line started, the key cancels it instead. **Delete line** does the same |
 | Points | As [Selecting a point](#selecting-a-point). **Point off** and **Space** switch a middle point off or on, as today: a middle point that found no edge starts off |
 | Buttons | **Refresh Image**, **Point off**, **Delete line**, **Clear lines**, **Load lens calibration…**, **Save lens calibration…** in one row under the picture |
-| Result line | A fit: "Okay – barrel / fisheye −0.200, edge fit 0.029" (the rating, then the pair), as the loaded line below reads |
+| Result line | A fit: "Okay – barrel / fisheye −0.200, edge fit 0.029" (the rating, then the pair), as the loaded line below reads. An edge fit the lines did not measure reads "edge fit 0 (not measured)"; a Low fit adds " – not applied" |
 | Tip | "Click a point or use Tab to select it; the loupe stays on it and the arrow keys nudge it (Shift for bigger steps). Press Enter when the crosshair is in the right spot; Esc or a click elsewhere ends the selection. Space switches a middle point off or on, Delete or Backspace removes the selected line, Esc cancels a started line. Skipping this step keeps the current values." |
 
 ### Load lens calibration
@@ -118,7 +120,7 @@ the same zoom. A dialog, **Load Lens Calibration**:
 
 | Part | Decision |
 |---|---|
-| Saved on this station | A radio list (`.tier-list`): the name, then "Barrel / fisheye −0.118 · Edge fit 0.021 · 2026-09-12 · 1920 × 1080". Empty: "No lens calibrations are saved on this station." |
+| Saved on this station | A radio list (`.tier-list`): the name, then "Barrel / fisheye −0.118 · Edge fit 0.021 · 2026-09-12 · 1920 × 1080". Empty: "No lens calibrations are saved on this station." A list that cannot be read: a `.notice.error` "The saved lens calibrations could not be read." with the station's reason; the settings file still loads |
 | Other picture shape | An entry measured on a snapshot of another aspect ratio (over 1 % apart) carries a caution line: "Measured on a 1920 × 1080 picture, this one is 1280 × 1024. The values only carry over at the same picture shape." It can still be loaded. A settings file records no size, so it never warns |
 | From a settings file | "Only the lens values of an exported `.ofsettings` file are loaded." and **Choose settings file…** (accepts `.ofsettings` and `.openfollowsettings`). The file is read in the browser; only `camera.lens_k1` / `camera.lens_k2` are used |
 | A good file | Becomes an entry under the button, selected: the file name and its values. The button then reads **Choose another file…** |
@@ -137,7 +139,7 @@ upgraded station can name the lens it has):
 |---|---|
 | Field | **Calibration name**, at most 60 characters, placeholder "Main stage – FOH wide", `autocomplete="off"` and the password-manager ignore attributes |
 | Values | "Barrel / fisheye x · Edge fit y" under the field |
-| Same name | A name already saved (trimmed, ignoring case) shows the warning "A calibration with this name is saved on this station. Saving replaces it." |
+| Same name | A name already saved (trimmed, ignoring case) shows the warning "A calibration with this name is saved on this station. Saving replaces it." The dialog opens once the list is in; a list that cannot be read shows a `.notice.error` "The saved lens calibrations could not be read." with the station's reason and "If a calibration with this name is saved on this station, saving replaces it.", and Save stays possible |
 | Buttons | **Cancel**, **Save** (disabled while the name is empty); **Enter** in the field saves |
 | Saving | Stored on the station at once as its own file (see [Config](#config)), with the OpenFollow version that saved it and the snapshot's size, independent of Apply & Finish. A success notice under the buttons: "Saved “name” on this station." |
 
@@ -155,7 +157,7 @@ to Imperial** / **Metric** (small, left of the **?**), **?**.
 | Units | **Switch units** changes the station's unit system (the setting in General) and converts every length already entered. Imperial reads ft / in text (`26' 3"`, `26 ft 3 in`, a bare number as feet) with the "Stored:" metric echo under each field |
 | Refresh Image | Takes a new snapshot (someone stood on a mark). The pins stay; a snapshot of another resolution moves them with the picture. Success notice for 4 s: "New snapshot loaded. The pins stay where they are." |
 | Reset Pins | Simple: every corner back to the drawn rectangle. Advanced: every pin removed, the points kept |
-| Status line | Under the picture: the waiting text, "Solved from N pinned points, largest error N px." (success) or "No camera fits these points. Check the pins and the measurements." (error) |
+| Status line | Under the picture: the waiting text, "Solved from N pinned points, largest error N px." (success; N counts the pinned points the page sent, a pin behind the camera included, as Review's Pinned does) or "No camera fits these points. Check the pins and the measurements." (error) |
 | Solved values | Pos X / Y / Z, pitch, yaw, roll, FOV, and **Lens**: the pair in use, or **Not measured** in the caution colour |
 | Next | With one or two camera position fields filled: the field error, the box opened (Simple), no step change |
 
@@ -186,11 +188,11 @@ Top to bottom:
 | Topic | Decision |
 |---|---|
 | Location | Orients the starting rectangle only, as a camera at Front of House 0 / -20 / 8, Front Truss 0 / -2 / 8, Back Truss 0 / 9 / 7, Stage Left 10 / 4 / 6, Stage Right -10 / 4 / 6 m. Review lists it as Camera location |
-| Camera position | Optional: "Estimate where the camera's lens is from the point of origin, in m: X = stage left, Y = upstage, Z = up. About a metre off is close enough. The solved camera is checked against it, which catches a skipped lens step or a wrong rectangle size." Fields Pos X (stage left +), Pos Y (upstage +), Pos Z (height). Partly filled: "Enter all three values, or leave all three empty." The box opens by itself when a value is in it |
+| Camera position | Optional: "Estimate where the camera's lens is from the point of origin, in m: X = stage left, Y = upstage, Z = up. About 1.0 m off is close enough. The solved camera is checked against it, which catches a skipped lens step or a wrong rectangle size." The amount is in the active units (3.3 ft in Imperial). Fields Pos X (stage left +), Pos Y (upstage +), Pos Z (height). Partly filled: "Enter all three values, or leave all three empty." The box opens by itself when a value is in it |
 | Diagonals note | Under Width / Depth, always shown. Before both are entered: "**Optional:** measure the two diagonals between opposite corner marks. If both are the same, you have a true rectangle. Skip this for a rectangle you know is true, such as the edges of stage decks." After: the middle sentence reads "If both are 13.42 m, the marks are right and form a true rectangle." (the computed diagonal, in the active units). Four corners always fit, so a wrong mark cannot show after the solve |
 | Starting rectangle | Once the size reads: projected from a camera at the entered position, else at the chosen location, else 15 m in front of the rectangle's front edge and 8 m above, looking at the rectangle's centre with the saved FOV. Scaled to at most 50 % of the picture's width and height (a projection under 20 % in both is scaled up to that), kept 5 % inside the frame, bent by the lens pair, outlined dashed until the solve. A corner not yet placed follows every input change; a placed one stays |
 | Corners | Dragged or selected and confirmed (see [Selecting a point](#selecting-a-point)). Unplaced corners are drawn dashed |
-| Corner list | Below the picture. Each row: DSL / DSR / USR / USL, "Downstage left" etc., a chip (Not drawn, Not placed, Placed, then the pixel error), and the corner's X / Y / Z |
+| Corner list | Below the picture. Each row: DSL / DSR / USR / USL, "Downstage left" etc., a chip (Not drawn, Not placed, Placed, then the pixel error, or Behind the camera), and the corner's X / Y / Z |
 | Corner positions | Centre (cx, cy, z): DSL cx + w/2, cy - d/2; DSR cx - w/2, cy - d/2; USR cx - w/2, cy + d/2; USL cx + w/2, cy + d/2; all at z |
 | Solve | Only once all four corners are placed |
 | 0/0/0 | The origin is drawn on the picture: through the corners' homography before the solve, through the solved camera after it, and in Review |
@@ -222,17 +224,17 @@ never touches the grid.
 
 | Topic | Decision |
 |---|---|
-| Camera position | Required and first: "**Where is your camera?** Its lens, from the point of origin, in m: X = stage left, Y = upstage, Z = up. An estimate within roughly 2 m per axis is good enough." Partly filled: "Enter all three values." |
+| Camera position | Required and first: "**Where is your camera?** Its lens, from the point of origin, in m: X = stage left, Y = upstage, Z = up. An estimate within roughly 2.0 m per axis is good enough." (6.6 ft in Imperial) Partly filled: "Enter all three values." |
 | Kinds | **Known**: X / Y / Z typed. **Triangulated**: the distances to two other points (known or triangulated) and its Z, default 0 |
 | Rules | The camera position, at least two known points, at least four pinned points. A known point may stay unpinned (a point outside the picture still counts as one to measure from); a triangulated point must be pinned (two distances leave two places mirrored across the line between its points). No point measured from itself through others. **Add triangulated point** and **New triangulated point** appear once two known points read |
 | Picture | Over the picture the loupe follows the pointer. A click opens **Place here** at that spot (a dashed ring marks it): the unpinned points (name, Known / Triangulated), a separator, **New point** (X/Y/Z), **New triangulated point** (disabled with "Needs two known points" until then). Choosing a point pins it there |
-| The menu | Placed 12 px right of and below the spot, flipped to stay inside the picture; its first item takes the focus. **×**, Esc or a press outside the menu and the picture close it. While it is open the loupe stays on the spot (clear of the menu) and the arrow keys move the spot 1 px (Shift 10) unless a field has the focus |
+| The menu | A labelled group of buttons, not an ARIA menu (the arrow keys move the spot, not between items). Placed 12 px right of and below the spot, flipped to stay inside the picture; its first item takes the focus. **×**, Esc or a press outside the menu and the picture close it. While it is open the loupe stays on the spot (clear of the menu) and the arrow keys move the spot 1 px (Shift 10) unless a field has the focus |
 | New point | The menu becomes a form: **Point** (prefilled P<n>), X / Y / Z (Z prefilled 0), **Back**, **Place point** (disabled until X / Y / Z read) |
 | New triangulated point | **Point**, two pairs of **From** + **Distance**, **Z** (empty means 0); **Place point** once both From differ and both distances are above 0. Each From list leaves out the point chosen in the other |
 | While a form is open | A click on the picture moves the spot |
 | A pin | Dragging moves it. A click on it opens its menu, titled "P1 · Known": **Remove pin** ("Keeps the point") and **Delete point** (error colour) |
 | Point list | Below the picture. Each row: name, kind chip, status chip, for a triangulated point its X / Y / Z, **Remove pin** (when pinned), **Delete**. Fields: **Point** (never labelled "Name": browsers and password managers fill in the operator's own name; `autocomplete="off"` and the ignore attributes), then X / Y / Z, or Z and From / Distance / From / Distance. A reason line under a row with a problem. "No points yet." while empty. **Add known point** (for a point outside the picture) and **Add triangulated point** under the list |
-| Status chips | Not placed (a problem), Not pinned, Pinned, then "0.4 px" or "0.4 px · 3 cm" (warning when over the caution limits) |
+| Status chips | Not placed (a problem), Not pinned, Pinned, then "0.4 px" or "0.4 px · 3 cm" (warning when over the caution limits), or "Behind the camera" (warning) for a pin the solved camera puts behind itself, its pin drawn flagged like one far off |
 | Triangulated X / Y / Z | Shown before any solve, by trilateration, once its two points have positions and it and both of them are pinned. Of the two mirrored places, the pin's side of the line between its two points' pins picks one (the image's y runs down, so seen from above the floor the sides swap). The solve then refines it. Dashes until then |
 | Deleting | Removes the point from every From that named it |
 | Tip | "Click the picture where a point is and choose it from the menu, or make a New point or New triangulated point there. Click a pin to remove it or delete the point. While a menu is open, the loupe stays on its spot and the arrow keys move it (Shift for bigger steps). Drag a pin to correct it." |
@@ -242,7 +244,7 @@ The Advanced hint, first match wins:
 
 | When | Above | Heading | Sub-line |
 |---|---|---|---|
-| No camera position | Camera Position | Enter the rough camera position first. | Roughly 2 m per axis is good enough. |
+| No camera position | Camera Position | Enter the rough camera position first. | Roughly 2.0 m per axis is good enough. (6.6 ft in Imperial) |
 | Fewer than two known points | the picture | Enter two points with known coordinates far apart, like the DSL and DSR corners. | Click where one is on the picture, choose New point and type its X/Y/Z. N of 2 entered. |
 | Fewer than four points | the picture | Enter one more / two more known points or triangulated points. | Click where it is on the picture and choose New point or New triangulated point. |
 | A point to pin (a triangulated one always, a known one until four are pinned) | the picture | Pin P3 on the picture. | Click where it is on the picture, then choose it from the menu. N of at least 4 pinned. |
@@ -278,7 +280,7 @@ measured value.
 
 | From | Decision |
 |---|---|
-| Simple → Advanced | The corners become known points named DSL, DSR, USR, USL with their X / Y / Z (when the rectangle reads) and their pins (when placed). The camera position carries over |
+| Simple → Advanced | All four corners become known points named DSL, DSR, USR, USL with their pins (when placed). Each axis the rectangle gives is filled (X needs the width and the centre X, Y the depth and the centre Y, Z the centre Z); one it does not give stays empty, so the point has a problem ("DSL needs its Y.") until it is entered. The camera position carries over |
 | Advanced → Simple | With points: the shared modal "Switch to Simple?", "Simple uses the four corners of a rectangle. Switching clears all N points and their pins.", **Cancel** / **Clear points and switch** (only the confirm is red) |
 
 ## Solve
@@ -319,15 +321,17 @@ Apply only while a pin is more than 20 px off or behind the camera (see Point fa
 |---|---|
 | Picture | The grid through the solved camera, each placed point as a ring with its name, 0/0/0; the full-screen button |
 | No solve | A red `.notice.error`: "No camera solve yet." with "To solve the camera, add … Go back to Camera Calibration to finish it.", or the solve's error. **Apply & Finish** is disabled |
+| Incomplete points | A red `.notice.error`: "Some points are not complete." with a list naming each point with a problem and what it needs ("P5 needs a pin.", "P6 needs its X.", or the point's reason line, "P5: Its distances lead back to itself."), ending "Complete or delete them in Camera Calibration." **Apply & Finish** is disabled while any point has a problem; Simple's rectangle problem leaves no solve, so it is not listed |
+| No feed | "No video feed available, so the visual review is unavailable. The camera is solved from a snapshot: configure a video source in the Video Source step, then return here." |
 | Caution | As above |
 | Camera | Pos X / Y / Z, Pitch, Yaw, Roll, FOV |
 | Lens | Barrel / fisheye, Edge fit, Lens coverage: the meter and its rating, "Fine-tuned", "Loaded: name" (", fine-tuned" after a change), "The station's lens" or "Not measured" |
-| Station's lens | Simple, the station's pair kept, nothing measured in this run: an info `.notice` in Camera Calibration and Review, "Using the station's lens. It was not measured in this run." It is not a caution reason |
-| Calibration | Mode, Points, Pinned, Largest error, Entered position (or "Not entered"), and in Simple the Camera location (or "Not chosen") |
+| Station's lens | Simple, the station's pair kept, nothing measured in this run, with a solved camera (as the caution): an info `.notice` in Camera Calibration and Review, "Using the station's lens. It was not measured in this run." It is not a caution reason |
+| Calibration | Mode, Points, Pinned (both count what Apply writes: every point), Largest error, Entered position (or "Not entered"), and in Simple the Camera location (or "Not chosen") |
 | Distances to check | Advanced only, the same table, not clickable |
 | Grid | Width, Depth, Spacing, X / Y / Z Offset, and Change: "From the rectangle" (Simple) or "Unchanged" (Advanced) |
 | Buttons | **Back**, **Discard & Leave** (the modal "Discard the Setup Wizard?", "Nothing from this run is saved. The station keeps its current camera, lens and grid.", **Cancel** / **Discard & Leave**), **Apply & Finish** |
-| Apply | Writes the camera, the lens pair, the mode and the marks with their pins, and in Simple the grid before the camera; each response's `.ok` is checked. Help: "Apply saves the camera, the lens and the points. In Simple mode it also saves the rectangle as the grid. The green grid is the one the Operator Screen will draw." |
+| Apply | Disabled while a solve is still running, a point is far off or behind the camera, or a point has a problem. Writes the camera, the lens pair, the mode and every mark with its pin, and in Simple the grid before the camera; each response's `.ok` is checked. Help: "Apply saves the camera, the lens and the points. In Simple mode it also saves the rectangle as the grid. The green grid is the one the Operator Screen will draw." |
 
 ## Help drawer
 

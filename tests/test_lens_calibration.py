@@ -9,8 +9,10 @@ from functools import cache
 import numpy as np
 import pytest
 
+from openfollow.scene.edge_chains import find_edge_candidates
 from openfollow.scene.solver import apply_overlay_distortion, invert_overlay_distortion
-from tests._lens_scene import FLOOR, H, Scene, Strip, W, calibrate, deck_scene, render, stage_scene
+from tests._lens_band import scaled_luma
+from tests._lens_scene import FLOOR, H, Scene, Strip, W, calibrate, deck_scene, render, riser_scene, stage_scene
 
 pytestmark = pytest.mark.unit
 
@@ -139,6 +141,19 @@ def test_one_pixel_deck_seams_at_720p_pin_the_pair(lens: tuple[float, float]) ->
         if np.ptp(pts[:, 1]) < 6.0 and min(abs(float(np.mean(pts[:, 1])) - y) for y in (280.0, 410.0, 540.0)) < 6.0:
             seams += 1
     assert seams >= 2
+
+
+def test_a_seam_running_on_up_a_riser_is_not_offered_as_one_line() -> None:
+    """The deck seam and the riser seam beside it are two lines: no suggestion steps from one to the other."""
+    lens = LENSES["stage-camera"]
+    img = render(riser_scene(), lens, size=(960, 540), noise=2.0)
+    found = find_edge_candidates(scaled_luma(img, 1), 1, 960, 540).candidates
+    for candidate in found:
+        pinhole = invert_overlay_distortion(np.asarray(candidate.points), 960, 540, *lens)
+        rel = pinhole - pinhole.mean(axis=0)
+        normal = np.linalg.svd(rel)[2][1]
+        assert float(np.max(np.abs(rel @ normal))) < 1.5, candidate.points
+    assert_recovered(calibrate(img).fit, lens)
 
 
 def test_a_single_bowed_edge_already_tells_the_pair() -> None:

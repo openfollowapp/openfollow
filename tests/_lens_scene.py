@@ -99,6 +99,27 @@ def deck_scene() -> Scene:
     return Scene(strips, [Disc((640.0, 400.0), 300.0, FLOOR + 30.0, soft=1.0)])
 
 
+def riser_scene(shift: float = 4.0) -> Scene:
+    """A 960 x 540 stage whose deck seams run on up a riser: each riser seam ``shift`` pixels beside its deck seam."""
+    front = ((50.0, 480.0), (910.0, 480.0))
+    back = ((210.0, 90.0), (750.0, 90.0))
+    strips = [
+        Strip(front[0], front[1], 3.0, 210.0),
+        Strip(back[0], back[1], 2.0, 150.0),
+        Strip(front[0], back[0], 2.5, 120.0),
+        Strip(front[1], back[1], 2.5, 120.0),
+    ]
+    for f in np.linspace(0.15, 0.85, 5):
+        p0 = np.array([front[0][0] + f * 860.0, front[0][1]])
+        p1 = np.array([back[0][0] + f * 540.0, back[0][1]])
+        d = (p1 - p0) / float(np.linalg.norm(p1 - p0))
+        beside = shift * np.array([-d[1], d[0]])
+        mid = 0.5 * (p0 + p1)
+        strips.append(Strip(tuple(p0), tuple(mid - 6.0 * d), 1.0, 110.0))
+        strips.append(Strip(tuple(mid + 6.0 * d + beside), tuple(p1 + beside), 1.0, 110.0))
+    return Scene(strips)
+
+
 def render(
     scene: Scene,
     lens: tuple[float, float],

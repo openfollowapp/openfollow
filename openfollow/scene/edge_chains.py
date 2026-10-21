@@ -51,6 +51,9 @@ _SMOOTH_RMS = 1.0
 _JOIN_GAP_FRACTION = 0.03
 _JOIN_COSINE = math.cos(math.radians(20.0))
 _JOIN_MIN_POINTS = 8
+# Scaled pixels a piece may step aside where it continues another: a thin line's crest and flanks lie
+# within it, a riser's seam continuing a deck's seam lies beyond it.
+_JOIN_OFFSET = 1.75
 # The sharpest bend a straight line takes through a lens, as curvature times the scaled width:
 # about 2 for a 100 degree lens, while a spotlight's rim is 20 and more.
 _MAX_CURVATURE_WIDTH = 4.0
@@ -259,14 +262,17 @@ def _arc_length(chain: npt.NDArray[np.float64]) -> float:
     return float(np.sum(np.linalg.norm(np.diff(chain, axis=0), axis=1))) if len(chain) > 1 else 0.0
 
 
-def _bows_like_a_line(chain: npt.NDArray[np.float64], max_curvature: float) -> bool:
-    """Whether the chain follows one quartic, bent and bowed no more than a lens bends a straight line."""
-    centre = chain.mean(axis=0)
-    rel = chain - centre
+def _along_across(chain: npt.NDArray[np.float64]) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """The chain's points along its main axis and across it."""
+    rel = chain - chain.mean(axis=0)
     _values, vectors = np.linalg.eigh(rel.T @ rel)
     axis = vectors[:, -1]
-    u = rel @ axis
-    v = rel @ np.array([-axis[1], axis[0]])
+    return rel @ axis, rel @ np.array([-axis[1], axis[0]])
+
+
+def _bows_like_a_line(chain: npt.NDArray[np.float64], max_curvature: float) -> bool:
+    """Whether the chain follows one quartic, bent and bowed no more than a lens bends a straight line."""
+    u, v = _along_across(chain)
     design = np.column_stack([u**k for k in range(5)])
     coefficients, *_ = np.linalg.lstsq(design, v, rcond=None)
     fitted = design @ coefficients
@@ -279,6 +285,14 @@ def _bows_like_a_line(chain: npt.NDArray[np.float64], max_curvature: float) -> b
     span = float(u[last] - u[first])
     chord = fitted[first] + (u - u[first]) * (fitted[last] - fitted[first]) / span
     return float(np.max(np.abs(fitted - chord))) <= _MAX_SAG_FRACTION * span + _SMOOTH_RMS
+
+
+def _join_offset(chain: npt.NDArray[np.float64], joint: int) -> float:
+    """How far the chain steps aside at point ``joint``: the step one quartic through it needs there."""
+    u, v = _along_across(chain)
+    design = np.column_stack([u**k for k in range(5)] + [(np.arange(len(chain)) >= joint).astype(np.float64)])
+    coefficients, *_ = np.linalg.lstsq(design, v, rcond=None)
+    return abs(float(coefficients[5]))
 
 
 def _close_pairs(pts: npt.NDArray[np.float64], radius: float) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]:
@@ -313,8 +327,8 @@ def _join_across_gaps(
     """Pieces joined end to end where one continues another across a short gap.
 
     Two ends are linked when they lie within ``gap``, each piece runs on toward the
-    other, and the two together still bow like a line. Nearest links first, each end
-    linked once, never into a ring.
+    other, and the two together bow like one line that does not step aside where they
+    meet. Nearest links first, each end linked once, never into a ring.
     """
     pieces = [piece for piece in pieces if len(piece) >= _JOIN_MIN_POINTS]
     n = len(pieces)
@@ -353,7 +367,8 @@ def _join_across_gaps(
         # Oriented so each piece runs into the gap: a's piece ends at a, b's piece starts at b.
         first = pieces[pa] if a % 2 == 1 else pieces[pa][::-1]
         second = pieces[pb] if b % 2 == 0 else pieces[pb][::-1]
-        if not _bows_like_a_line(np.concatenate([first, second]), max_curvature):
+        both = np.concatenate([first, second])
+        if _join_offset(both, len(first)) > _JOIN_OFFSET or not _bows_like_a_line(both, max_curvature):
             continue
         link[a] = b
         link[b] = a

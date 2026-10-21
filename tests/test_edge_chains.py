@@ -18,6 +18,7 @@ from openfollow.scene.edge_chains import (
 )
 from openfollow.scene.edge_snap import LINE_SAMPLE_FRACTIONS, end_search_radius, snap_line_to_edges
 from tests._lens_band import cut_band, scaled_luma
+from tests._lens_scene import Scene, Strip, render
 from tests.test_edge_snap import BARREL, BRIGHT, DARK, STRAIGHT, H, W, distance_to_strip_centre, strip_frame
 
 pytestmark = pytest.mark.unit
@@ -181,6 +182,46 @@ def test_pieces_offset_sideways_are_not_joined() -> None:
     found = find(img)
     assert len(found) == 2
     assert all(c.length < 800.0 for c in found)
+
+
+SMALL = (960, 540)
+LENSES = {"pinhole": (0.0, 0.0), "stage-camera": (-0.26, 0.05), "wide-lens": (-0.47, 0.25)}
+
+
+def find_through(lens: tuple[float, float], *strips: Strip):
+    """The suggestions for the strips seen through ``lens`` in a small picture."""
+    img = render(Scene(list(strips)), lens, size=SMALL, noise=2.0)
+    scale = edge_map_scale(SMALL[0])
+    return find_edge_candidates(scaled_luma(img, scale), scale, *SMALL).candidates
+
+
+@pytest.mark.parametrize(
+    ("lens", "angle"),
+    [("pinhole", 21.0), ("stage-camera", 0.0), ("stage-camera", 29.0), ("wide-lens", 13.0)],
+)
+def test_a_slanted_line_through_a_lens_is_joined_across_an_occlusion(lens: str, angle: float) -> None:
+    """A slanted line bowed by the lens and cut by an occlusion: its pixel staircase is no step aside."""
+    centre = np.array([480.0, 330.0])
+    d = np.array([np.cos(np.radians(angle)), np.sin(np.radians(angle))])
+    found = find_through(
+        LENSES[lens],
+        Strip(tuple(centre - 380.0 * d), tuple(centre - 3.0 * d), 1.5, BRIGHT),
+        Strip(tuple(centre + 3.0 * d), tuple(centre + 380.0 * d), 1.5, BRIGHT),
+    )
+    assert len(found) == 1
+    assert found[0].length > 600.0
+
+
+@pytest.mark.parametrize("lens", list(LENSES))
+def test_a_line_running_on_beside_another_is_not_joined_to_it(lens: str) -> None:
+    """A deck seam and the riser seam that runs on a few pixels beside it, beyond a small gap, are two lines."""
+    found = find_through(
+        LENSES[lens],
+        Strip((100.0, 400.0), (470.0, 400.0), 1.5, BRIGHT),
+        Strip((482.0, 406.0), (862.0, 406.0), 1.5, BRIGHT),
+    )
+    assert len(found) == 2
+    assert all(c.length < 450.0 for c in found)
 
 
 def test_a_u_shape_is_cut_into_its_three_straight_sides() -> None:

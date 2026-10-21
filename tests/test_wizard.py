@@ -434,7 +434,7 @@ class TestWizardReviewPage:
         # After a reload with no feed nothing has solved, so the values below are dashes.
         assert "still valid" not in no_feed.group(1)
         assert no_feed.group(1) == (
-            "No video feed available, so the visual review is unavailable. The camera is solved from a snapshot:"
+            "No video feed available, so the visual review is unavailable. The camera is calculated from a snapshot:"
             " configure a video source in the Video Source step, then return here."
         )
 
@@ -1202,7 +1202,8 @@ class TestWizardLensStepPage:
             assert text in page, text
         assert "edge fit" not in page.lower()
         _, camera = _get(base, "/section/camera")
-        assert "<label>Barrel / fisheye</label>" in camera and "<label>Edge fit</label>" in camera
+        assert "<label>Barrel / fisheye</label>" in camera and "<label>Corner correction</label>" in camera
+        assert 'aria-label="Corner correction slider"' in camera and "edge fit" not in camera.lower()
         assert "(k1)" not in camera and "(k2)" not in camera
 
     def test_the_lens_step_speaks_to_a_screen_reader(self, live_server_lens) -> None:
@@ -1456,3 +1457,15 @@ class TestWizardLensTemplateBubbles:
                 "Shift</kbd> + arrow" not in text and "**Shift** for" not in text and "Shift</strong> for" not in text
             )
             assert "\u2014" not in text
+
+
+@unit
+def test_no_page_or_help_text_names_the_old_lens_and_point_labels() -> None:
+    """The pair is Barrel / fisheye and Corner correction, the kinds Known point and Distance point, everywhere."""
+    web = WIZARD_TEMPLATE.parent.parent
+    files = [*web.glob("templates/**/*.tpl"), *web.glob("help/*.md"), *web.glob("static/js/*.js")]
+    assert len(files) > 20
+    for path in files:
+        text = path.read_text(encoding="utf-8")
+        for old in ("Edge fit", "edge fit", "Triangulated", "triangulated point", "New triangulated"):
+            assert old not in text, (path.name, old)

@@ -137,7 +137,7 @@
                 <span id="camera-lens-k1-error" class="field-error"></span>
             </div>
             <div class="field">
-                <label>Edge fit</label>
+                <label>Corner correction</label>
                 <input type="number" id="camera-lens-k2" name="lens_k2" value="{{config.camera.lens_k2}}" step="0.005"
                        oninput="var s=document.getElementById('camera-lens-k2-range'); if (s) s.value=this.value;"
                        hx-get="/api/validate/camera/lens_k2"
@@ -145,7 +145,7 @@
                        hx-target="#camera-lens-k2-error" hx-swap="innerHTML" hx-include="closest form"
                        aria-describedby="camera-lens-k2-error" aria-invalid="false">
                 <input type="range" id="camera-lens-k2-range" min="{{min(-0.4, config.camera.lens_k2)}}" max="{{max(0.4, config.camera.lens_k2)}}" step="0.005" value="{{config.camera.lens_k2}}"
-                       aria-label="Edge fit slider"
+                       aria-label="Corner correction slider"
                        oninput="var n=document.getElementById('camera-lens-k2'); n.value=this.value;">
                 <span id="camera-lens-k2-error" class="field-error"></span>
             </div>
@@ -171,7 +171,7 @@
                 % _at = [_m.x, _m.y, _m.z] if _m.kind == "known" else _m.position
                 <tr>
                     <th scope="row">{{_m.name}}</th>
-                    <td>{{"Known" if _m.kind == "known" else "Triangulated"}}</td>
+                    <td>{{"Known point" if _m.kind == "known" else "Distance point"}}</td>
                     % if _at:
                     <td>X = {{format_length(_at[0], _us)}}<br>Y = {{format_length(_at[1], _us)}}<br>Z = {{format_length(_at[2], _us)}}</td>
                     % else:

@@ -30,7 +30,7 @@ Which network interface SRT, RTSP and RTP use is set under **Network Interface A
 - **Change** (Pi Camera) – names the **Camera module** and **Connector** in the Pi's boot configuration. **Automatic** leaves it to the Pi, which recognises Raspberry Pi camera modules on a regular Pi but never on a Compute Module. Raspberry Pi's own modules are listed first by name, other sensors below. A camera named while none was loaded at boot starts at once and is checked again a few seconds later; one the station booted with changes at the next restart, shown as **Takes effect after the next restart** beside what runs now, with a **Restart now** button. A camera line added to `config.txt` by hand is replaced (kept, commented out) when another camera is applied here. **No camera found on this station** opens this choice by itself.
 - **Media Gallery** – a device-local library of images and looping clips, managed entirely from the browser (the on-display menu can select this source but not change its content). Click a tile to make it the source; the selected tile has an amber border. The bundled **Stage**, **Arena**, **Concert** and **Grey** items can't be deleted; per-tile buttons download or delete your own media. **Upload** accepts JPEG/PNG/WebP images (normalised to ≤1080p JPEG) and **VP8 WebM** clips (≤1080p, ≤30 fps, ≤60 s, audio ignored); other codecs are rejected. Every other source shows a **Capture frame** button that saves the current clean frame into the gallery at its native resolution. A selection that no longer resolves (deleted media, an imported config from another station) falls back to Stage.
 
-  **Arena** is an arena seen from a truss above the stage, through a lens that bows straight lines the way a wide lens does: the Lens step measures it as Barrel / fisheye `-0.15` and Edge fit `0.02`. The tape on the stage marks a 10 × 1 m grid with the Reference Point at the middle of its downstage edge. The four pink marks on mic stands in the aisles sit at stage level, for triangulated points in the Setup Wizard's Advanced Camera Calibration:
+  **Arena** is an arena seen from a truss above the stage, through a lens that bows straight lines the way a wide lens does: the Lens step measures it as Barrel / fisheye `-0.15` and Corner correction `0.02`. The tape on the stage marks a 10 × 1 m grid with the Reference Point at the middle of its downstage edge. The four pink marks on mic stands in the aisles sit at stage level, for distance points in the Setup Wizard's Advanced Camera Calibration:
 
   | Mark | From DSL | From DSR |
   |---|---|---|
@@ -49,7 +49,7 @@ Which network interface SRT, RTSP and RTP use is set under **Network Interface A
   | Roll | 0° |
   | Horizontal Field of View | 70° |
   | Barrel / fisheye | -0.2 |
-  | Edge fit | 0.03 |
+  | Corner correction | 0.03 |
 
   Clips are not transcoded on-device – prepare a conforming VP8 WebM on a workstation, e.g.:
 

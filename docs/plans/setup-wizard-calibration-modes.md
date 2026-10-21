@@ -332,7 +332,7 @@ corners again." (Simple) / "… then pin the points again." (Advanced). It block
 | Picture | The grid through the solved camera, each placed point as a ring with its name, 0/0/0; the full-screen button |
 | No solve | A red `.notice.error`: "The camera is not calculated yet." with "To calculate the camera, add … Go back to Camera Calibration to finish it.", or the solve's error. **Save and finish** is disabled |
 | Incomplete points | A red `.notice.error`: "Some points are not complete." with a list naming each point with a problem and what it needs ("P5 needs a pin.", "P6 needs its X.", or the point's reason line, "P5: It is measured from itself, through other points."), ending "Complete or delete them in Camera Calibration." **Save and finish** is disabled while any point has a problem; Simple's rectangle problem leaves no solve, so it is not listed |
-| No feed | "No video feed available, so the visual review is unavailable. The camera is solved from a snapshot: configure a video source in the Video Source step, then return here." |
+| No feed | "No video feed available, so the visual review is unavailable. The camera is calculated from a snapshot: configure a video source in the Video Source step, then return here." |
 | Caution | As above |
 | Camera | Pos X / Y / Z, Pitch, Yaw, Roll, FOV |
 | Lens | Barrel / fisheye, Corner correction, Lens rating: the meter and its rating, "Adjusted by hand", "Loaded: name" (", adjusted by hand" after a change), "The station's lens" or "Not measured" |

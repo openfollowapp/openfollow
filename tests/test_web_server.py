@@ -2279,20 +2279,20 @@ def test_the_camera_tab_lists_the_calibration_marks_read_only(live_server, mode:
     assert status == 200
     shown_title, rows = _calibration_rows(html_text)
     assert shown_title == title
-    assert rows[0] == ["DSL", "Known", "X = 5.000 m<br>Y = 0.000 m<br>Z = 0.000 m", "–", "Yes"]
-    assert rows[1] == ["DSR", "Known", "X = -5.000 m<br>Y = 0.000 m<br>Z = 0.000 m", "–", "No"]
+    assert rows[0] == ["DSL", "Known point", "X = 5.000 m<br>Y = 0.000 m<br>Z = 0.000 m", "–", "Yes"]
+    assert rows[1] == ["DSR", "Known point", "X = -5.000 m<br>Y = 0.000 m<br>Z = 0.000 m", "–", "No"]
     assert len(rows) == (4 if mode == "simple" else 5)
     if mode == "advanced":
         assert rows[4] == [
             "P5",
-            "Triangulated",
+            "Distance point",
             "X = 2.500 m<br>Y = 9.000 m<br>Z = 0.000 m",
             "DSL 21.400 m<br>DSR 23.900 m",
             "Yes",
         ]
 
 
-def test_the_camera_tab_shows_a_triangulated_mark_no_solve_placed_without_a_position(live_server) -> None:
+def test_the_camera_tab_shows_a_distance_point_no_solve_placed_without_a_position(live_server) -> None:
     server, base = live_server
     save_config(AppConfig(camera=_held_camera("advanced")), server.config_path)
     _, rows = _calibration_rows(_get(base, "/section/camera")[1])

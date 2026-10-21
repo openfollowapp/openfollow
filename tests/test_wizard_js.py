@@ -2116,3 +2116,62 @@ def _simple_hint(rect: dict, loc: str = "") -> list:
 )  # fmt: skip
 def test_the_simple_hint_sits_above_the_step_it_is_about(rect: dict, loc: str, shown: list) -> None:
     assert _simple_hint(rect, loc) == shown
+
+
+# ---------------------------------------------------------------------------
+# Lens: a new line is selected as a whole line, so Delete takes it back
+# ---------------------------------------------------------------------------
+
+_NEW_LINE_PAGE = """
+var imageWidth = 1920, imageHeight = 1080, lensLines = [], lensPending = null, lensSelected = null, lensHold = false;
+var lensCandidates = [{ samples: [[100, 100], [300, 105], [500, 110], [700, 115], [900, 120]], used: false,
+  rejected: false }];
+var snapped = 0, changed = 0, window = {};
+function renderLens() {} function lensShowNotice() {} function lensSnapLine() { snapped++; } function lensHotCand() {}
+function dropLensPoint() { lensHold = false; } function lensChanged() { changed++; }
+var focused = { contains: function() { return false; }, focus: function() {} };
+var document = { getElementById: function() { return focused; } };
+function lensFrame(line) {
+  var dx = line.p1[0] - line.p0[0], dy = line.p1[1] - line.p0[1], len = Math.sqrt(dx * dx + dy * dy) || 1;
+  return { dx: dx, dy: dy, len: len, nx: -dy / len, ny: dx / len };
+}
+"""
+
+
+@pytest.mark.parametrize(
+    "add",
+    ["lensTraceClick([100, 500]); lensTraceClick([900, 520]);", "lensAddCandidate(0);"],
+    ids=["a drawn line", "a used suggestion"],
+)
+def test_a_new_line_is_selected_whole_and_delete_takes_it_back(add: str) -> None:
+    out = run_wizard_js(
+        "(function() { " + add + " var after = [lensSelected, lensHold, lensLines.length, snapped];"
+        " window.lensDeleteSelectedLine(); window.lensToggleSelectedPoint();"
+        " return [after, lensLines.length, lensSelected]; })()",
+        functions=(
+            "lensClamp",
+            "lensTraceClick",
+            "lensSetMidsFromPositions",
+            "lensAddCandidate",
+            "lensReleaseCandidate",
+        ),
+        variables=("LENS_T", "LENS_MIN_LINE_PX"),
+        prelude=_NEW_LINE_PAGE
+        + wizard_window_function("lensDeleteSelectedLine")
+        + wizard_window_function("lensToggleSelectedPoint"),
+    )
+    after, left, selected = out
+    # No point held and no loupe: the hint moves on, and Delete or Backspace removes the line just added.
+    assert after == [{"line": 0, "point": None}, False, 1, 1]
+    assert (left, selected) == (0, None)
+
+
+def test_switching_a_point_off_needs_a_middle_point_selected() -> None:
+    out = run_wizard_js(
+        "(function() { lensSelected = { line: 0, point: null }; window.lensToggleSelectedPoint();"
+        " lensSelected = { line: 0, point: 2 }; window.lensToggleSelectedPoint(); return lensLines[0].mids[1].on; })()",
+        prelude=_NEW_LINE_PAGE
+        + "lensLines = [{ mids: [{ on: true }, { on: true }, { on: true }] }];"
+        + wizard_window_function("lensToggleSelectedPoint"),
+    )
+    assert out is False

@@ -680,7 +680,7 @@
       </svg>
       <button type="button" class="fs-btn" data-fs="review" aria-label="Full screen">{{!_fs_icon}}</button>
     </div>
-    <div id="review-no-feed" class="wizard-no-feed" style="display:none;">No video feed available, so the visual review is unavailable. The camera is solved from a snapshot: configure a video source in the Video Source step, then return here.</div>
+    <div id="review-no-feed" class="wizard-no-feed" style="display:none;">No video feed available, so the visual review is unavailable. The camera is calculated from a snapshot: configure a video source in the Video Source step, then return here.</div>
 
     <div id="review-status" class="notice error" role="alert" hidden></div>
     <div id="review-incomplete" class="notice error" role="alert" hidden></div>
@@ -1040,7 +1040,7 @@
       return m;
     });
   }
-  // Triangulated marks after the marks they are measured from; a loop or a broken one leaves a mark out.
+  // Distance points after the points they are measured from; a loop or a broken one leaves a point out.
   function orderMarks(marks) {
     var byId = {}, order = [], state = {};
     marks.forEach(function(m) { byId[m.id] = m; });
@@ -1066,7 +1066,7 @@
   function hintPos() { var c = S.cam; return c ? [c.x, c.y, c.z] : null; }
 
   // ---------------------------------------------------------------
-  // Triangulated points placed from their measurements alone, before the camera solves
+  // Distance points placed from their measurements alone, before the camera solves
   // ---------------------------------------------------------------
   // The two places at height z at the measured distances from A and B: c1 on the right of A to B seen from above.
   function wizTrilaterate(A, dA, B, dB, z) {
@@ -1549,7 +1549,7 @@
     };
     lensPending = null;
     lensLines.push(line);
-    lensSelected = { line: lensLines.length - 1, point: 4 };
+    lensSelected = { line: lensLines.length - 1, point: null };
     lensShowNotice('');
     renderLens();
     lensSnapLine(line);
@@ -1639,7 +1639,7 @@
     cand.used = true;
     lensPending = null;
     lensLines.push(line);
-    lensSelected = { line: lensLines.length - 1, point: 4 };
+    lensSelected = { line: lensLines.length - 1, point: null };
     renderLens();
     lensSnapLine(line);
   }
@@ -2082,7 +2082,7 @@
     scheduleLensFit();
   }
   window.lensToggleSelectedPoint = function() {
-    if (!lensSelected || lensSelected.point === 0 || lensSelected.point === 4) return;
+    if (!lensSelected || lensSelected.point == null || lensSelected.point === 0 || lensSelected.point === 4) return;
     var m = lensLines[lensSelected.line].mids[lensSelected.point - 1];
     m.on = !m.on;
     lensChanged();

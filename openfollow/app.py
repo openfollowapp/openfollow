@@ -329,10 +329,12 @@ class OpenFollowApp:
         self._psn_source_resolved_ip: str = ""
         self._psn_source_status: str = ""
         self._psn_source_banner: str = ""
+        self._psn_source_step: str = ""
 
         self._settings_menu_active: bool = False
         self._settings_menu_index: int = 0
         self._settings_menu_banner: str = ""
+        self._settings_menu_banner_action: str = ""
         # Newest pushed-settings warning pending when the Settings menu opened.
         self._settings_pushed_upto: int | None = None
         self._settings_key_pressed: bool = False
@@ -502,7 +504,7 @@ class OpenFollowApp:
                 )
                 # Prompt only when ambiguous (≥2 candidates); single-NIC has one answer.
                 if len(candidates) >= 2:
-                    self._enter_settings_menu(banner=banner)
+                    self._enter_settings_menu(banner=banner, action=self._psn_source_step)
 
         # Arm disconnect-banner deadline for startup (prompts if receiver never connects).
         import time as _time
@@ -514,10 +516,15 @@ class OpenFollowApp:
         self._run_native_loop()
 
     def _refresh_psn_source_advisory(self) -> str:
-        """Recompute PSN-source advisory from active iface pin (single source of truth)."""
+        """Recompute PSN-source advisory from active iface pin (single source of truth).
+
+        Sets the banner and its one next step (``""`` when there is none) that the
+        Settings menu and the web UI's PSN section both show; returns the banner.
+        """
         from openfollow.net_utils import resolve_source_ip
 
         pinned_iface = self._config.psn_source_iface
+        self._psn_source_step = ""
         if not pinned_iface:
             # Auto-detect: nothing pinned, nothing to surface.
             self._psn_source_resolved_ip = ""
@@ -535,7 +542,8 @@ class OpenFollowApp:
         if resolved:
             banner += f"Using auto-detected {resolved}."
         else:
-            banner += "No usable interface – pick one to continue."
+            banner += "No usable interface."
+            self._psn_source_step = "Pick one to continue."
         self._psn_source_banner = banner
         return banner
 
@@ -738,8 +746,8 @@ class OpenFollowApp:
     def _process_field_choice_picker_input(self) -> None:
         runtime_process_field_choice_picker_input(self)
 
-    def _enter_settings_menu(self, *, banner: str = "") -> None:
-        runtime_enter_settings_menu(self, banner=banner)
+    def _enter_settings_menu(self, *, banner: str = "", action: str = "") -> None:
+        runtime_enter_settings_menu(self, banner=banner, action=action)
 
     def _exit_settings_menu(self) -> None:
         runtime_exit_settings_menu(self)

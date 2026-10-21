@@ -3101,8 +3101,8 @@ def test_a_switch_that_could_not_be_saved_is_saved_by_switching_again_once_the_f
     good = AppConfig(video_source_type="ndi", ndi_source_name="CAM-HOST (Camera 1)", rtsp_url="rtsp://192.0.2.20/a")
     save_config(good, path)
     app = _app_on_file(path)
-    banners: list[str] = []
-    app._enter_settings_menu = lambda **kw: banners.append(kw.get("banner", ""))
+    banners: list[tuple[str, str]] = []
+    app._enter_settings_menu = lambda **kw: banners.append((kw.get("banner", ""), kw.get("action", "")))
     app._enter_url_editor = lambda **_kw: None
     app._available_source_types = [("rtsp", "RTSP")]
     app._selected_source_type_index = 0
@@ -3111,8 +3111,10 @@ def test_a_switch_that_could_not_be_saved_is_saved_by_switching_again_once_the_f
     app_modes.confirm_source_type_selection(app)
     assert app._config.video_source_type == "rtsp"
     assert banners == [
-        "RTSP is live but could not be saved. The settings file could not be read. "
-        "Import a settings file to replace it, then switch again."
+        (
+            "RTSP is live but could not be saved. The settings file could not be read.",
+            "Import a settings file to replace it, then switch again.",
+        )
     ]
 
     save_config(good, path, replace_unreadable=True)  # the operator repairs it

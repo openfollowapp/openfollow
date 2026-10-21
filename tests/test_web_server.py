@@ -5787,6 +5787,30 @@ def test_psn_section_renders_source_advisory_when_pin_missed(
         # apostrophes around the iface name (``&#039;``) in the live body.
         assert "is not available. Using auto-detected 192.168.178.61." in body
         assert 'class="notice warning"' in body
+        assert 'class="notice-sub"' not in body
+    finally:
+        server.stop()
+
+
+def test_psn_section_puts_the_advisory_step_on_its_second_line(tmp_path, monkeypatch) -> None:
+    server, base = _live_server_with_zone_providers(
+        tmp_path,
+        monkeypatch,
+        psn_source_advisory_provider=lambda: {
+            "status": "none",
+            "banner": "Pinned network interface 'eth9' is not available. No usable interface.",
+            "step": "Pick one to continue.",
+            "resolved_ip": "",
+        },
+    )
+    try:
+        status, body = _get(base, "/section/psn")
+        assert status == 200
+        box = re.search(r'<div class="notice warning" role="status">(.*?)</div>\s*</div>', body, re.S)
+        assert box is not None
+        lead, sub = re.fullmatch(r'(.*?)<div class="notice-sub">(.*)', box.group(1), re.S).groups()
+        assert html.unescape(lead).strip() == "Pinned network interface 'eth9' is not available. No usable interface."
+        assert sub == "Pick one to continue."
     finally:
         server.stop()
 
@@ -5805,6 +5829,7 @@ def test_get_psn_source_advisory_empty_without_provider(tmp_path) -> None:
     assert server.get_psn_source_advisory() == {
         "status": "",
         "banner": "",
+        "step": "",
         "resolved_ip": "",
     }
 
@@ -5862,6 +5887,7 @@ def test_get_psn_source_advisory_swallows_provider_error(tmp_path) -> None:
     assert server.get_psn_source_advisory() == {
         "status": "",
         "banner": "",
+        "step": "",
         "resolved_ip": "",
     }
 

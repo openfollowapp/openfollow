@@ -646,8 +646,8 @@ class ConfigWebServer:
             return ApplyResult(ok=False, message=str(exc))
 
     def get_psn_source_advisory(self) -> dict[str, str]:
-        """Startup advisory when pinned PSN source iface unavailable; returns status/banner/resolved_ip."""
-        empty = {"status": "", "banner": "", "resolved_ip": ""}
+        """Startup advisory when pinned PSN source iface unavailable; returns status/banner/step/resolved_ip."""
+        empty = {"status": "", "banner": "", "step": "", "resolved_ip": ""}
         if self._psn_source_advisory_provider is None:
             return empty
         try:

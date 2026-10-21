@@ -65,6 +65,10 @@ def _always_enabled() -> bool:
     return True
 
 
+def _always_complete() -> bool:
+    return True
+
+
 def _bare_name(iface: str) -> str:
     return iface
 
@@ -94,6 +98,10 @@ class Plane:
     # interface pins it and the routing table chooses. Such a plane is never
     # touched and never alerts – it is not broken.
     enabled: Callable[[], bool] = _always_enabled
+    # False while a part of a bound plane is not up beside it (PSN input next to
+    # PSN output): rebound like an unbound plane, so its failure is reported and
+    # retried with the backoff.
+    complete: Callable[[], bool] = _always_complete
     # Identity across polls when labels repeat or change; defaults to the label.
     key: str = ""
 
@@ -307,7 +315,7 @@ class NetworkPlaneObserver:
         # Compare against the live binding, not the previous resolution: the
         # runtime may already have bound this correctly at startup, and
         # something else may have rebound it since.
-        if plane.current() == address and not state.saw_outage:
+        if plane.current() == address and plane.complete() and not state.saw_outage:
             state.suspended = False
             self._clear_failure(state)
             return

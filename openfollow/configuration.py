@@ -412,7 +412,12 @@ def _coerce_bool(value: Any, default: bool) -> bool:
 
 
 CALIBRATION_CORNERS = ("DSL", "DSR", "USR", "USL")
-MAX_CALIBRATION_POINTS = 6
+CALIBRATION_MODES = ("simple", "advanced")
+MARK_KINDS = ("known", "triangulated")
+MAX_CALIBRATION_MARKS = 12
+MAX_MARK_NAME = 60
+MARK_REACH_M = 10_000.0  # a typed coordinate further out is a typing slip
+MAX_MARK_DISTANCE_M = 200.0
 
 
 def _coerce_measured(value: Any) -> float:
@@ -420,46 +425,81 @@ def _coerce_measured(value: Any) -> float:
     return math.nan if isinstance(value, bool) else _coerce_float(value, math.nan)
 
 
-@dataclass
-class CalibrationPointConfig:
-    """A far point measured with a laser from two grid corners, for the Setup Wizard's camera solve.
+def _coerce_mark_id(value: Any) -> int:
+    """A whole number of 1 or more, else 0, which no mark may carry."""
+    if isinstance(value, bool):
+        return 0
+    number = _coerce_float(value, 0.0)
+    return int(number) if number.is_integer() and number >= 1 else 0
 
-    ``position`` is where the solve the camera pose came from put it, kept with the pose; like the
-    pose, it does not follow a later grid edit. The measurements are what the next solve reads.
+
+@dataclass
+class CalibrationMarkConfig:
+    """A point of the Setup Wizard's camera solve: typed (known) or measured from two others (triangulated).
+
+    ``pin`` is where it is on the snapshot, as fractions of its width and height; empty when not pinned.
+    ``position`` is where the solve the camera pose came from put a triangulated point, kept with the pose.
+    A value the kind does not read is stored as 0, so a kept mark holds finite numbers only.
     """
 
-    # A missing corner or pin is no measurement: problem() refuses these defaults.
-    corner_a: str = ""
-    corner_b: str = ""
-    distance_a: float = 0.0  # m from corner_a's mark
-    distance_b: float = 0.0
-    height: float = 0.0  # m above stage level
-    pin_x: float = math.nan  # where it is on the snapshot, as a fraction of its width / height
-    pin_y: float = math.nan
+    # A missing coordinate or distance is no measurement: problem() refuses these defaults.
+    id: int = 0
+    name: str = ""
+    kind: str = "known"
+    x: float = math.nan  # known only
+    y: float = math.nan
+    z: float = math.nan
+    from_a: int = 0  # triangulated only: the ids its two distances are measured from
+    from_b: int = 0
+    distance_a: float = math.nan  # m
+    distance_b: float = math.nan
+    pin: list[float] = field(default_factory=list)
     position: list[float] = field(default_factory=list)  # x, y, z in m; empty when no solve placed it
 
     def __post_init__(self) -> None:
-        self.corner_a = _coerce_choice(self.corner_a, CALIBRATION_CORNERS, "")
-        self.corner_b = _coerce_choice(self.corner_b, CALIBRATION_CORNERS, "")
-        self.distance_a = _coerce_measured(self.distance_a)
-        self.distance_b = _coerce_measured(self.distance_b)
-        self.height = _coerce_measured(self.height)
-        self.pin_x = _coerce_measured(self.pin_x)
-        self.pin_y = _coerce_measured(self.pin_y)
-        coords = [_coerce_measured(v) for v in self.position] if isinstance(self.position, list | tuple) else []
-        self.position = coords if len(coords) == 3 and all(math.isfinite(c) for c in coords) else []
+        self.id = _coerce_mark_id(self.id)
+        name = self.name.strip() if isinstance(self.name, str) else ""
+        self.name = name[:MAX_MARK_NAME] or (f"P{self.id}" if self.id else "")
+        self.kind = _coerce_choice(self.kind, MARK_KINDS, "")
+        known = self.kind == "known"
+        self.x = _coerce_measured(self.x) if known else 0.0
+        self.y = _coerce_measured(self.y) if known else 0.0
+        self.z = _coerce_measured(self.z)
+        self.from_a = 0 if known else _coerce_mark_id(self.from_a)
+        self.from_b = 0 if known else _coerce_mark_id(self.from_b)
+        self.distance_a = 0.0 if known else _coerce_measured(self.distance_a)
+        self.distance_b = 0.0 if known else _coerce_measured(self.distance_b)
+        self.pin = _coerce_fixed_list(self.pin, 2)
+        position = _coerce_fixed_list(self.position, 3)
+        self.position = position if not known else []
 
     def problem(self) -> str:
-        """Why the point cannot be used, or ``""``. A measurement is dropped, never clamped."""
-        if not self.corner_a or not self.corner_b or self.corner_a == self.corner_b:
-            return "needs two different grid corners"
-        if not (0.0 < self.distance_a <= 200.0 and 0.0 < self.distance_b <= 200.0):
-            return "needs both distances between 0 and 200 m"
-        if not -10.0 <= self.height <= 10.0:
-            return "needs a height within 10 m of stage level"
-        if not (0.0 <= self.pin_x <= 1.0 and 0.0 <= self.pin_y <= 1.0):
+        """Why the mark cannot be used, or ``""``. A measurement is dropped, never clamped."""
+        if not self.id:
+            return "needs an id of 1 or more"
+        if not self.kind:
+            return "needs a kind of known or triangulated"
+        if not -MARK_REACH_M <= self.z <= MARK_REACH_M:
+            return "needs its Z"
+        if self.kind == "known":
+            if not (-MARK_REACH_M <= self.x <= MARK_REACH_M and -MARK_REACH_M <= self.y <= MARK_REACH_M):
+                return "needs its X and Y"
+        else:
+            if not self.from_a or not self.from_b or len({self.from_a, self.from_b, self.id}) < 3:
+                return "needs two other marks to be measured from"
+            if not (0.0 < self.distance_a <= MAX_MARK_DISTANCE_M and 0.0 < self.distance_b <= MAX_MARK_DISTANCE_M):
+                return f"needs both distances between 0 and {MAX_MARK_DISTANCE_M:g} m"
+            if not self.pin:
+                return "needs its pin: two distances allow two places"
+        if self.pin and not all(0.0 <= c <= 1.0 for c in self.pin):
             return "needs its pin on the snapshot"
         return ""
+
+
+def _coerce_fixed_list(value: Any, size: int) -> list[float]:
+    """``size`` finite numbers, else empty."""
+    numbers = [_coerce_measured(v) for v in value] if isinstance(value, list | tuple) else []
+    return numbers if len(numbers) == size and all(math.isfinite(n) for n in numbers) else []
 
 
 @dataclass
@@ -481,10 +521,9 @@ class CameraConfig:
     # video frame is never warped. 0/0 = pinhole (no curvature).
     lens_k1: float = 0.0
     lens_k2: float = 0.0
-    calibration_points: list[CalibrationPointConfig] = field(default_factory=list)
-    # The Setup Wizard's corner pins (DSL, DSR, USR, USL) the pose was solved from with the points, as
-    # fractions of the snapshot; empty when it has none. Kept with the pose, like the points' positions.
-    corner_pins: list[list[float]] = field(default_factory=list)
+    # The Setup Wizard's last calibration: Simple's four corners or Advanced's points, with their pins.
+    calibration_mode: str = "simple"
+    calibration_marks: list[CalibrationMarkConfig] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         # These feed ``project_points`` via a numpy float array. Clamp fov out
@@ -509,15 +548,12 @@ class CameraConfig:
                 f"lens_k1={k1} / lens_k2={k2} folds the overlay warp inside the frame; "
                 f"using {self.lens_k1:.6g} / {self.lens_k2:.6g}",
             )
-        self.calibration_points = _coerce_calibration_points(self.calibration_points)
-        self.corner_pins = _coerce_corner_pins(self.corner_pins)
+        self.calibration_mode = _coerce_choice(self.calibration_mode, CALIBRATION_MODES, "simple")
+        self.calibration_marks = _coerce_calibration_marks(self.calibration_marks)
 
 
 # The warnings last reported, by field: every load_config builds the camera again, so a file says it once.
 _reported_drops: dict[str, str] = {}
-
-# A grid corner may sit off the snapshot, never this many snapshot widths or heights from it.
-CORNER_PIN_REACH = 10.0
 
 
 def _report_drops(name: str, said: str) -> None:
@@ -532,48 +568,129 @@ def _report_once(name: str, said: str) -> None:
         logger.warning("%s: %s", name, said)
 
 
-def _coerce_calibration_points(value: Any) -> list[CalibrationPointConfig]:
-    """Entries as dataclasses; an entry that cannot be used is dropped with one warning, past the cap too."""
-    points: list[CalibrationPointConfig] = []
+def calibration_mark_drops(marks: list[CalibrationMarkConfig]) -> tuple[list[CalibrationMarkConfig], list[str]]:
+    """The marks a solve can read: a triangulated one needs both marks it is measured from, without a loop."""
+    dropped: list[str] = []
+    while True:
+        by_id = {m.id: m for m in marks}
+        orphans = [m for m in marks if m.kind == "triangulated" and not (m.from_a in by_id and m.from_b in by_id)]
+        if not orphans:
+            break
+        dropped += [f"mark {m.id} is measured from a mark that is not there" for m in orphans]
+        marks = [m for m in marks if m not in orphans]
+    by_id = {m.id: m for m in marks}
+    looping: set[int] = set()
+    for mark in marks:
+        seen, todo = set(), [mark.id]
+        while todo:
+            current = by_id[todo.pop()]
+            if current.kind != "triangulated":
+                continue
+            for parent in (current.from_a, current.from_b):
+                if parent == mark.id:
+                    looping.add(mark.id)
+                elif parent not in seen:
+                    seen.add(parent)
+                    todo.append(parent)
+    dropped += [f"mark {i} is measured from itself through others" for i in sorted(looping)]
+    if not looping:
+        return marks, dropped
+    kept, more = calibration_mark_drops([m for m in marks if m.id not in looping])
+    return kept, dropped + more
+
+
+def _coerce_calibration_marks(value: Any) -> list[CalibrationMarkConfig]:
+    """Entries as dataclasses; one that cannot be used is dropped with one warning, past the cap too."""
+    marks: list[CalibrationMarkConfig] = []
     entries = value if isinstance(value, list) else []
     dropped: list[str] = [] if isinstance(value, list) else ["is not a list of tables"]
     for i, entry in enumerate(entries, start=1):
-        if len(points) == MAX_CALIBRATION_POINTS:
-            dropped.append(f"entries from {i} on, past the first {MAX_CALIBRATION_POINTS} usable")
+        if len(marks) == MAX_CALIBRATION_MARKS:
+            dropped.append(f"entries from {i} on, past the first {MAX_CALIBRATION_MARKS} usable")
             break
         if isinstance(entry, dict):
-            entry = CalibrationPointConfig(**_filter_known(CalibrationPointConfig, entry))
-        if not isinstance(entry, CalibrationPointConfig):
+            entry = CalibrationMarkConfig(**_filter_known(CalibrationMarkConfig, entry))
+        if not isinstance(entry, CalibrationMarkConfig):
             dropped.append(f"entry {i} is not a table")
             continue
         problem = entry.problem()
+        if not problem and any(m.id == entry.id for m in marks):
+            problem = f"repeats id {entry.id}"
         if problem:
             dropped.append(f"entry {i} {problem}")
             continue
-        points.append(entry)
+        marks.append(entry)
+    marks, unreadable = calibration_mark_drops(marks)
+    dropped += unreadable
     if dropped:
         _report_drops(
-            "camera.calibration_points",
+            "camera.calibration_marks",
             "; ".join(dropped[:3]) + (f"; {len(dropped) - 3} more" if len(dropped) > 3 else ""),
         )
-    return points
+    return marks
 
 
-def _coerce_corner_pins(value: Any) -> list[list[float]]:
-    """Four [x, y] fractions of the snapshot, or none; anything else is dropped with one warning."""
-    if isinstance(value, list) and not value:
-        return []
-    pins = (
-        [[_coerce_measured(v) for v in pin] if isinstance(pin, list | tuple) else [] for pin in value]
-        if isinstance(value, list | tuple)
-        else []
-    )
-    if len(pins) == 4 and all(
-        len(pin) == 2 and all(math.isfinite(c) and abs(c) <= CORNER_PIN_REACH for c in pin) for pin in pins
-    ):
-        return pins
-    _report_drops("camera.corner_pins", "needs four [x, y] pairs on or near the snapshot")
-    return []
+def grid_corner_positions(width: float, depth: float, x: float, y: float, z: float) -> list[list[float]]:
+    """DSL, DSR, USR, USL of a grid whose centre is at ``x``, ``y`` (stage left +X, upstage +Y), at ``z``."""
+    hw, hd = width / 2.0, depth / 2.0
+    return [[x + hw, y - hd, z], [x - hw, y - hd, z], [x - hw, y + hd, z], [x + hw, y + hd, z]]
+
+
+def migrate_calibration_keys(camera: dict[str, Any], grid: Any) -> None:
+    """Read the Setup Wizard's former ``calibration_points`` / ``corner_pins`` as marks, once; drop the old keys.
+
+    Points made it Advanced: the grid's corners become known marks pinned at the corner pins, each point a
+    triangulated mark measured from its two corners at their level plus its height. Corner pins alone are
+    Simple's four corners. A config that already has ``calibration_marks`` keeps them.
+    """
+    points = camera.pop("calibration_points", None)
+    pins = camera.pop("corner_pins", None)
+    if "calibration_marks" in camera or not (points or pins):
+        return
+    g = grid if isinstance(grid, dict) else {}
+    defaults = GridConfig()
+    size = [_coerce_float(g.get(k, getattr(defaults, k)), getattr(defaults, k)) for k in _GRID_PLACEMENT]
+    corners = grid_corner_positions(*size)
+    pin_list = pins if isinstance(pins, list) and len(pins) == 4 else [None] * 4
+    marks: list[dict[str, Any]] = []
+    for n, (name, place, pin) in enumerate(zip(CALIBRATION_CORNERS, corners, pin_list, strict=True), start=1):
+        # A corner pinned off the snapshot (the former pins could be) is left to pin again.
+        xy = _coerce_fixed_list(pin, 2)
+        on = bool(xy) and all(0.0 <= c <= 1.0 for c in xy)
+        marks.append(
+            {
+                "id": n,
+                "name": name,
+                "kind": "known",
+                "x": place[0],
+                "y": place[1],
+                "z": place[2],
+                "pin": xy if on else [],
+            }
+        )
+    for entry in points if isinstance(points, list) else []:
+        if not isinstance(entry, dict) or entry.get("corner_a") not in CALIBRATION_CORNERS:
+            continue
+        if entry.get("corner_b") not in CALIBRATION_CORNERS:
+            continue
+        marks.append(
+            {
+                "id": len(marks) + 1,
+                "kind": "triangulated",
+                "from_a": CALIBRATION_CORNERS.index(entry["corner_a"]) + 1,
+                "from_b": CALIBRATION_CORNERS.index(entry["corner_b"]) + 1,
+                "distance_a": entry.get("distance_a"),
+                "distance_b": entry.get("distance_b"),
+                "z": size[4] + _coerce_measured(entry.get("height", 0.0)),
+                "pin": [entry.get("pin_x"), entry.get("pin_y")],
+                "position": entry.get("position", []),
+            }
+        )
+    camera["calibration_mode"] = "advanced" if len(marks) > 4 else "simple"
+    camera["calibration_marks"] = marks
+
+
+_GRID_PLACEMENT = ("width", "depth", "x_offset", "y_offset", "z_offset")
 
 
 _GRID_COLOR_DEFAULT = "#545454"
@@ -2639,12 +2756,9 @@ FEATURE_KEYS: tuple[str, ...] = (
     "rttrpm",
     "paths",
     "ground_grid",
-    "calibration_points",
     "touch_remote",
 )
-EXPERIMENTAL_FEATURES: frozenset[str] = frozenset(
-    {"detection", "rttrpm", "paths", "ground_grid", "calibration_points", "touch_remote"}
-)
+EXPERIMENTAL_FEATURES: frozenset[str] = frozenset({"detection", "rttrpm", "paths", "ground_grid", "touch_remote"})
 DEFAULT_SHOWN_FEATURES: tuple[str, ...] = tuple(key for key in FEATURE_KEYS if key not in EXPERIMENTAL_FEATURES)
 # Gated like any feature but not offered: no Features row, no web route turns one on.
 # Only ``shown_features`` in config.toml (or an import or push carrying it) does.
@@ -3370,6 +3484,10 @@ def _config_from_data(path: str, data: dict[str, Any]) -> AppConfig:
     _ui = data.get("ui")
     if isinstance(_ui, dict):
         migrate_ui_keys(_ui)
+
+    _camera = data.get("camera")
+    if isinstance(_camera, dict):
+        migrate_calibration_keys(_camera, data.get("grid"))
 
     # Back-compat: OTP output used to pin a raw ``source_ip``; it now pins the
     # interface by name (``source_iface``), like PSN. Convert an existing IP to

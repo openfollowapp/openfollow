@@ -152,31 +152,37 @@
         </div>
     </div>
 
-    % if config.camera.calibration_points:
-    <div class="group" id="camera-calibration-points" data-feature="calibration_points">
-        <h3 class="group-title">Calibration points <span class="badge-experimental">Experimental</span></h3>
+    % if config.camera.calibration_marks:
+    % _marks = {m.id: m for m in config.camera.calibration_marks}
+    <div class="group" id="camera-calibration-marks">
+        <h3 class="group-title">Calibration ({{"Simple" if config.camera.calibration_mode == "simple" else "Advanced"}})</h3>
         <table class="data-table">
             <thead>
                 <tr>
                     <th scope="col">Point</th>
-                    <th scope="col">First corner<br>Distance</th>
-                    <th scope="col">Second corner<br>Distance</th>
-                    <th scope="col">Height above stage</th>
+                    <th scope="col">Kind</th>
                     <th scope="col">Position</th>
+                    <th scope="col">Measured from</th>
+                    <th scope="col">Pinned</th>
                 </tr>
             </thead>
             <tbody>
-            % for _n, _p in enumerate(config.camera.calibration_points, 1):
+            % for _m in config.camera.calibration_marks:
+                % _at = [_m.x, _m.y, _m.z] if _m.kind == "known" else _m.position
                 <tr>
-                    <th scope="row">{{_n}}</th>
-                    <td>{{_p.corner_a}}<br>{{format_length(_p.distance_a, _us)}}</td>
-                    <td>{{_p.corner_b}}<br>{{format_length(_p.distance_b, _us)}}</td>
-                    <td>{{format_length(_p.height, _us)}}</td>
-                    % if _p.position:
-                    <td>X = {{format_length(_p.position[0], _us)}}<br>Y = {{format_length(_p.position[1], _us)}}<br>Z = {{format_length(_p.position[2], _us)}}</td>
+                    <th scope="row">{{_m.name}}</th>
+                    <td>{{"Known" if _m.kind == "known" else "Triangulated"}}</td>
+                    % if _at:
+                    <td>X = {{format_length(_at[0], _us)}}<br>Y = {{format_length(_at[1], _us)}}<br>Z = {{format_length(_at[2], _us)}}</td>
                     % else:
                     <td>–</td>
                     % end
+                    % if _m.kind == "triangulated":
+                    <td>{{_marks[_m.from_a].name}} {{format_length(_m.distance_a, _us)}}<br>{{_marks[_m.from_b].name}} {{format_length(_m.distance_b, _us)}}</td>
+                    % else:
+                    <td>–</td>
+                    % end
+                    <td>{{"Yes" if _m.pin else "No"}}</td>
                 </tr>
             % end
             </tbody>

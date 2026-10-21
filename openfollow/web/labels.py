@@ -57,11 +57,6 @@ FEATURE_LABELS: dict[str, FeatureLabel] = {
         "Lets markers follow raised floor areas such as risers and stairs.",
         "markers no longer follow raised floor areas.",
     ),
-    "calibration_points": FeatureLabel(
-        "Calibration points",
-        "Adds measured points to the Setup Wizard's camera calibration.",
-        "the calibration points are hidden; the saved points still count.",
-    ),
     "touch_remote": FeatureLabel(
         "Touch remote",
         "Drives a marker from a tablet or phone in the web UI.",

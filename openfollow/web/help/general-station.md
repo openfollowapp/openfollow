@@ -33,5 +33,4 @@ The table at the end of **Advanced Settings** lists what this station uses: one 
 - **Person detection** – the Person Detection tab. Off, detection does not run.
 - **RTTrPM output** – the RTTrPM Output section and its Interface Assignment row. Off, nothing is sent.
 - **Ground grid** – the Ground Grid section. Off, it is neither drawn nor drops markers onto its height.
-- **Calibration points** – the Camera tab's calibration points and the Setup Wizard's Advanced section in Corner Pinning. Off, they are only hidden: the saved points still count.
 - **Touch remote** – the Touch Remote section and its launcher. Off, every remote lets go of its marker.

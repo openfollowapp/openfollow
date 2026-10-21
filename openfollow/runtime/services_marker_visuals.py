@@ -67,7 +67,7 @@ _HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 # currently declares – no silent desync if GridConfig defaults change later.
 _GRID_DEFAULTS = GridConfig()
 
-# The one status row for every marker this station and another one both control.
+# One status row for all the markers this station and another one both control.
 CONTROL_CONFLICT_ROW = "Control conflict: Marker {marker}"
 CONTROL_CONFLICT_NAMED_ROW = "Control conflict: Marker {marker} ({name})"
 CONTROL_CONFLICT_LIST_ROW = "Control conflict: Markers {markers}"

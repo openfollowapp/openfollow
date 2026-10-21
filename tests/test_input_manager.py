@@ -552,8 +552,25 @@ def test_update_isolates_keyboard_failure(monkeypatch) -> None:
     assert app._server.get_marker(10).pos == pytest.approx((1.0, 0.0, 0.0))
 
 
-def test_update_isolates_osc_flush_failure(monkeypatch) -> None:
-    """A raising OSC flush must not drop the gamepad result."""
+def test_a_repeating_keyboard_failure_is_logged_throttled(monkeypatch, caplog) -> None:
+    monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
+    monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
+    app = _DummyApp()
+    manager = InputManager(app)
+
+    def _boom(_dt: float) -> None:
+        raise RuntimeError("kbd boom")
+
+    manager.keyboard_handler.update = _boom
+    with caplog.at_level("ERROR", logger="openfollow.input.input_manager"):
+        for _ in range(60):
+            manager.update(1 / 60)
+
+    assert [r.getMessage() for r in caplog.records].count("Keyboard update failed this tick.") == 1
+
+
+def test_update_isolates_osc_flush_failure(monkeypatch, caplog) -> None:
+    """A raising OSC flush must not drop the gamepad result, and repeating it is logged once."""
     monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
     monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
     _FakeGamepadHandler.next_update = GamepadUpdate(settings_open_pressed=True)
@@ -567,9 +584,11 @@ def test_update_isolates_osc_flush_failure(monkeypatch) -> None:
 
     manager.osc_handler = _BoomOsc()
 
-    result = manager.update(0.016)
+    with caplog.at_level("ERROR", logger="openfollow.input.input_manager"):
+        results = [manager.update(1 / 60) for _ in range(60)]
 
-    assert result.settings_open_pressed is True
+    assert all(result.settings_open_pressed for result in results)
+    assert [r.getMessage() for r in caplog.records].count("OSC flush/apply failed this tick.") == 1
 
 
 def test_update_drives_mouse_when_enabled(monkeypatch) -> None:
@@ -1287,6 +1306,23 @@ def test_every_osc_position_write_is_traced_at_debug(monkeypatch, caplog) -> Non
     assert [r.getMessage() for r in caplog.records if r.levelno == logging.DEBUG] == [
         "OSC jump: marker 10 → (3.000, 4.000, 5.000)"
     ] * 3
+
+
+class _UnwritableMarker(Marker):
+    def set_pos(self, x: float, y: float, z: float, *, status: float | None = None) -> None:
+        raise RuntimeError("marker boom")
+
+
+def test_a_failing_osc_write_leaves_the_other_markers_written(monkeypatch, caplog) -> None:
+    app, manager, clock = _osc_station(monkeypatch, {10: {"x": 3.0}, 11: {"x": -1.0}})
+    app._server.markers[10] = _UnwritableMarker(10, "Marker 10")
+
+    with caplog.at_level("ERROR", logger="openfollow.input.input_manager"):
+        _stream(manager, clock, seconds=1.0, rate_hz=60.0)
+
+    assert app._server.get_marker(11).pos == pytest.approx((-1.0, 0.0, 0.0))
+    # Repeating every frame, it is logged once, throttled.
+    assert [r.getMessage() for r in caplog.records].count("OSC flush/apply failed this tick.") == 1
 
 
 def test_an_osc_stream_on_a_restarted_listener_logs_again(monkeypatch, caplog) -> None:

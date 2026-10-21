@@ -338,16 +338,20 @@ The `.deb`'s drop-in
 (`/usr/lib/systemd/system/NetworkManager-wait-online.service.d/10-openfollow-timeout.conf`)
 runs `/usr/share/openfollow/nm-wait-online.sh 20` instead. Once a second it
 succeeds when `nm-online -s` does, or when at least one device is activating
-and every activating device (loopback aside) holds an IPv4 address, a lease or
-the link-local fallback. Requiring an activating device keeps the start of a
-boot, before any carrier, waiting for startup as before, so a NIC that will get
-a lease is not raced. After 20 s with a device still addressless the unit
-fails, as it should: the station has no address there. On a cable-less boot
-nothing activates, and the wait passes as soon as startup completes.
+and every activating device (loopback aside) holds an IPv4 address. A lease
+counts at once. A device holding only its 169.254 fallback counts once it has
+held it for 3 s of consecutive polls (`grace` in the script), and starts over
+if it loses it, so a DHCP server that answers within 3 s of the fallback still
+gives the station its lease before the app starts. Requiring an activating
+device keeps the start of a boot, before any carrier, waiting for startup as
+before, so a NIC that will get a lease is not raced. After 20 s with a device
+still addressless, or on a fallback held for less than the grace, the unit
+fails, as it should: the station has no settled address there. On a cable-less
+boot nothing activates, and the wait passes as soon as startup completes.
 
-On a LAN whose DHCP answers slower than the fallback appears, the wait can pass
-on the 169.254 address. The app rebinds each plane when its address changes,
-so the lease that follows is picked up as on any replug.
+On a LAN whose DHCP answers later than the grace, the wait passes on the
+169.254 address. The app rebinds each plane when its address changes, so the
+lease that follows is picked up as on any replug.
 
 **Single account.** `rpi-image-gen`'s `rpi-user-credentials` layer creates the
 `openfollow` login user (password `openfollow`, **passwordless sudo**, in the

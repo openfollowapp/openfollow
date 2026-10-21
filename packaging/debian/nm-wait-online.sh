@@ -3,8 +3,8 @@
 # Copyright (C) 2026 OpenFollow Project
 # NetworkManager-wait-online for a station: succeeds once NetworkManager's
 # startup is complete (nm-online -s), or once every device it is still
-# activating holds an IPv4 address, a lease or the link-local fallback. Fails
-# after $1 seconds (default 20) with a device still addressless.
+# activating holds an IPv4 address: a lease at once, the link-local fallback
+# once held for $grace seconds. Fails after $1 seconds (default 20) without.
 #
 # nm-online -s alone never succeeds on a LAN without DHCP: the infinite
 # dhcp-timeout (10-openfollow-dhcp-fallback.conf) keeps that activation running
@@ -14,15 +14,46 @@
 set -u
 export LC_ALL=C
 cap="${1:-20}"
+# A lease arriving this soon after the 169.254 fallback still wins.
+grace=3
+
+# Each poll lasts about a second (nm-online's --timeout=1), so the cap and the
+# grace count polls. $held lists "device:polls" for each activating device seen
+# holding only its fallback on consecutive polls; a device missing from a poll
+# starts over.
+held=""
+
+held_polls() {
+    for entry in $held; do
+        [ "${entry%:*}" = "$1" ] && echo "${entry##*:}" && return
+    done
+    echo -1
+}
 
 activating_devices_addressed() {
     found=1
+    waiting=0
+    now_held=""
     for dev in $(nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null |
         awk -F: '$2 != "loopback" && $3 ~ /^connecting/ { print $1 }'); do
-        ip -4 -o addr show dev "$dev" 2>/dev/null | grep -v ' inet 127\.' | grep -q ' inet ' || return 1
         found=0
+        case "$(ip -4 -o addr show dev "$dev" 2>/dev/null | awk '
+            $3 != "inet" || $4 ~ /^127\./ { next }
+            $4 !~ /^169\.254\./ { lease = 1 }
+            { any = 1 }
+            END { print lease ? "lease" : any ? "fallback" : "none" }')" in
+        lease) ;;
+        fallback)
+            polls_held=$(($(held_polls "$dev") + 1))
+            now_held="$now_held $dev:$polls_held"
+            [ "$polls_held" -ge "$grace" ] || waiting=1
+            ;;
+        *) waiting=1 ;;
+        esac
     done
-    return "$found"
+    held="$now_held"
+    [ "$waiting" -eq 0 ] && return "$found"
+    return 1
 }
 
 polls=0

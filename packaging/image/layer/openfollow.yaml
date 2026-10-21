@@ -280,8 +280,8 @@ mmdebstrap:
     # 5. Network-online wait is already bounded: the kiosk unit waits on
     #    network-online.target (so it binds a real IP, not loopback), and the .deb
     #    ships a NetworkManager-wait-online drop-in (10-openfollow-timeout.conf)
-    #    that passes once every activating device has an address and caps the
-    #    wait at 20s. Now that NM is the active stack, that drop-in applies as-is –
+    #    that passes once every activating device has a lease, or its link-local
+    #    fallback for 3s, and caps the wait at 20s. Now that NM is the active stack, that drop-in applies as-is –
     #    no networkd-specific override is needed here.
 
     # 6. The kiosk owns the display – keep a login getty off tty1.

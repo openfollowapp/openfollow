@@ -62,7 +62,7 @@ class _RenamingMarker(Marker):
     """
 
     def __init__(self, marker_id: int, base: str) -> None:
-        super().__init__(marker_id, base)
+        super().__init__(marker_id, base, clock=lambda: 1_000_000)
         self._base = base
         self._reads = 0
 
@@ -79,7 +79,8 @@ class _RenamingMarker(Marker):
 def _markers(count: int, name_template: str = "Marker {}") -> list[Marker]:
     markers = []
     for index in range(1, count + 1):
-        marker = Marker(index, name_template.format(index))
+        # One frozen instant: a slow host must not age a marker into the stale window mid-test.
+        marker = Marker(index, name_template.format(index), clock=lambda: 1_000_000)
         marker.set_pos(1.5, -2.5, 3.5)
         markers.append(marker)
     return markers

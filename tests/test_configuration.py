@@ -9630,6 +9630,62 @@ def test_former_corner_pins_that_do_not_read_make_no_marks_and_say_so(
     assert "former calibration does not read" in caplog.text
 
 
+@pytest.mark.parametrize("points", ['calibration_points = "abc"\n', "calibration_points = [1, 2]\n"])
+def test_former_points_that_do_not_read_make_no_marks_and_say_so(
+    points, temp_config_path, caplog, fresh_drop_reports
+) -> None:
+    temp_config_path.write_text(_old_camera(None, points), encoding="utf-8")
+    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
+        camera = load_config(str(temp_config_path)).camera
+    assert (camera.calibration_mode, camera.calibration_marks) == ("simple", [])
+    assert "former calibration does not read" in caplog.text
+
+
+def test_former_points_with_pins_that_are_not_four_pairs_leave_the_corners_to_pin_again_and_say_so(
+    temp_config_path, caplog, fresh_drop_reports
+) -> None:
+    temp_config_path.write_text(_old_camera(_OLD_PINS[:3], _old_point()), encoding="utf-8")
+    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
+        camera = load_config(str(temp_config_path)).camera
+    assert camera.calibration_mode == "advanced"
+    assert [m.pin for m in camera.calibration_marks[:4]] == [[], [], [], []]
+    assert "not four [x, y] pairs" in caplog.text
+
+
+def test_a_former_point_without_two_grid_corners_is_left_out_and_said(
+    temp_config_path, caplog, fresh_drop_reports
+) -> None:
+    temp_config_path.write_text(_old_camera(_OLD_PINS, _old_point() + _old_point("CENTRE")), encoding="utf-8")
+    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
+        camera = load_config(str(temp_config_path)).camera
+    assert [m.kind for m in camera.calibration_marks] == ["known"] * 4 + ["triangulated"]
+    assert "1 former point(s) without two grid corners left out" in caplog.text
+
+
+def test_simple_corners_written_for_another_grid_follow_the_files_grid_unpinned(temp_config_path) -> None:
+    """A grid edited by hand: the corners go with it, and their pins, taken on the old grid, go."""
+    marks = "".join(
+        f'[[camera.calibration_marks]]\nid = {i + 1}\nname = "{n}"\nkind = "known"\n'
+        f"x = {x}\ny = {y}\nz = 0.5\npin = [0.5, 0.5]\n"
+        for i, (n, (x, y)) in enumerate(
+            zip(("DSL", "DSR", "USR", "USL"), [(5.0, 1.0), (-3.0, 1.0), (-3.0, 7.0), (5.0, 7.0)], strict=True)
+        )
+    )
+    temp_config_path.write_text('[camera]\ncalibration_mode = "simple"\n' + marks + _OLD_GRID, encoding="utf-8")
+    camera = load_config(str(temp_config_path)).camera
+    assert [(m.x, m.y, m.z, m.pin) for m in camera.calibration_marks] == [(*c, []) for c in _OLD_CORNERS]
+
+
+@pytest.mark.parametrize("pin", ['"0.5, 0.5"', "{ x = 0.5, y = 0.5 }", "true"])
+def test_a_pin_that_is_no_list_drops_the_mark(pin, temp_config_path) -> None:
+    temp_config_path.write_text(
+        '[camera]\ncalibration_mode = "advanced"\n[[camera.calibration_marks]]\n'
+        f'id = 1\nkind = "known"\nx = 1.0\ny = 2.0\nz = 0.0\npin = {pin}\n',
+        encoding="utf-8",
+    )
+    assert load_config(str(temp_config_path)).camera.calibration_marks == []
+
+
 @pytest.mark.parametrize(
     ("grid", "dsl"),
     [

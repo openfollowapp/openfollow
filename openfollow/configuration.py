@@ -470,7 +470,7 @@ class CalibrationMarkConfig:
         self.from_b = 0 if known else _coerce_mark_id(self.from_b)
         self.distance_a = 0.0 if known else _coerce_measured(self.distance_a)
         self.distance_b = 0.0 if known else _coerce_measured(self.distance_b)
-        given = isinstance(self.pin, list | tuple) and len(self.pin) > 0
+        given = not (isinstance(self.pin, list | tuple) and not self.pin)
         self.pin = _coerce_fixed_list(self.pin, 2)
         self._unread_pin = given and not self.pin
         position = _coerce_fixed_list(self.position, 3)
@@ -495,7 +495,7 @@ class CalibrationMarkConfig:
                 return f"needs both distances between 0 and {MAX_MARK_DISTANCE_M:g} m"
             if not self.pin:
                 return "needs its pin: two distances allow two places"
-        if getattr(self, "_unread_pin", False) or (self.pin and not all(0.0 <= c <= 1.0 for c in self.pin)):
+        if self._unread_pin or (self.pin and not all(0.0 <= c <= 1.0 for c in self.pin)):
             return "needs its pin on the snapshot"
         return ""
 
@@ -645,6 +645,18 @@ def grid_corner_positions(width: float, depth: float, x: float, y: float, z: flo
     return [[x + hw, y - hd, z], [x - hw, y - hd, z], [x - hw, y + hd, z], [x + hw, y + hd, z]]
 
 
+def reconcile_simple_corners(cfg: Any) -> None:
+    """Simple's corners are the grid's: a corner the grid has moved goes with it and loses its pin."""
+    if cfg.camera.calibration_mode != "simple":
+        return
+    corners = grid_corner_positions(*(getattr(cfg.grid, k) for k in _GRID_PLACEMENT))
+    for mark in cfg.camera.calibration_marks:
+        place = corners[mark.id - 1]
+        if any(abs(a - b) > 1e-3 for a, b in zip((mark.x, mark.y, mark.z), place, strict=True)):
+            mark.x, mark.y, mark.z = place
+            mark.pin = []
+
+
 def migrate_calibration_keys(camera: dict[str, Any], grid: Any) -> None:
     """Read the Setup Wizard's former ``calibration_points`` / ``corner_pins`` as marks, once; drop the old keys.
 
@@ -666,7 +678,9 @@ def migrate_calibration_keys(camera: dict[str, Any], grid: Any) -> None:
     size = [getattr(clamped, k) for k in _GRID_PLACEMENT]
     corners = grid_corner_positions(*size)
     off: list[str] = []
-    pin_list = pins if isinstance(pins, list) and len(pins) == 4 else [None] * 4
+    pin_list = pins if pins_read else [None] * 4
+    if pins and not pins_read:
+        _report_drops("camera.corner_pins", "not four [x, y] pairs, the corners to be pinned again")
     marks: list[dict[str, Any]] = []
     for n, (name, place, pin) in enumerate(zip(CALIBRATION_CORNERS, corners, pin_list, strict=True), start=1):
         # A corner pinned off the snapshot is left to pin again.
@@ -685,10 +699,13 @@ def migrate_calibration_keys(camera: dict[str, Any], grid: Any) -> None:
                 "pin": xy if on else [],
             }
         )
+    unknown = 0
     for entry in points if isinstance(points, list) else []:
-        if not isinstance(entry, dict) or entry.get("corner_a") not in CALIBRATION_CORNERS:
-            continue
-        if entry.get("corner_b") not in CALIBRATION_CORNERS:
+        corners_named = isinstance(entry, dict) and {entry.get("corner_a"), entry.get("corner_b")} <= set(
+            CALIBRATION_CORNERS
+        )
+        if not corners_named:
+            unknown += 1
             continue
         marks.append(
             {
@@ -705,6 +722,8 @@ def migrate_calibration_keys(camera: dict[str, Any], grid: Any) -> None:
         )
     if off:
         _report_drops("camera.corner_pins", f"{', '.join(off)} pinned off the snapshot, to be pinned again")
+    if unknown:
+        _report_drops("camera.calibration_points", f"{unknown} former point(s) without two grid corners left out")
     camera["calibration_mode"] = "advanced" if len(marks) > 4 else "simple"
     camera["calibration_marks"] = marks
 
@@ -3100,6 +3119,7 @@ class AppConfig:
         self.station_fqdn = normalize_fqdn(self.station_fqdn)
         self.network_mode = _coerce_network_mode(self)
         enforce_network_mode(self)
+        reconcile_simple_corners(self)
         # Strip ``psn_source_iface`` so whitespace doesn't look like a value
         # change each load and trigger a needless rebind cycle.
         if not isinstance(self.psn_source_iface, str):

@@ -82,13 +82,10 @@ def _file_name(name: str) -> str:
 def _read(path: Path) -> LensCalibration | None:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        calibration = LensCalibration(
-            name=str(data["name"]).strip(),
-            k1=data["k1"],
-            k2=data["k2"],
-            saved=str(data.get("saved", "")),
-            openfollow_version=str(data.get("openfollow_version", "")),
-        )
+        texts = [data["name"], data.get("saved", ""), data.get("openfollow_version", "")]
+        if not all(isinstance(t, str) for t in texts):
+            raise TypeError("a text field is not text")
+        calibration = LensCalibration(texts[0].strip(), data["k1"], data["k2"], texts[1], texts[2])
     except (OSError, ValueError, TypeError, KeyError, AttributeError):
         calibration = None
     if calibration is None or name_problem(calibration.name) or pair_problem(calibration.k1, calibration.k2):

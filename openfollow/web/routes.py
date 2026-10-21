@@ -89,13 +89,13 @@ from openfollow.configuration import (
     effective_lens,
     enforce_network_mode,
     feature_gated,
-    grid_corner_positions,
     load_config_for_save,
     migrate_calibration_keys,
     migrate_ui_keys,
     path_name_from,
     plane_pin_key,
     plane_pins,
+    reconcile_simple_corners,
     save_config,
     viewed_with_controlled,
 )
@@ -1657,37 +1657,18 @@ def _interface_assignment_rows(
 
 # The grid fields that place its corners; a change under this (m) is a length re-read from how a form shows it.
 _GRID_CORNER_FIELDS = ("width", "depth", "x_offset", "y_offset", "z_offset")
-_GRID_CORNER_TOLERANCE_M = 1e-3
-
-
-def _grid_corner_placement(cfg: AppConfig) -> tuple[float, ...]:
-    return tuple(float(getattr(cfg.grid, name)) for name in _GRID_CORNER_FIELDS)
-
-
-def _forget_corner_pins_off_grid(cfg: AppConfig, before: tuple[float, ...]) -> None:
-    """In Simple, move the corner marks with the grid and unpin them once its corners moved from ``before``.
-
-    Simple's corners are the grid's, so their pins stop meaning anything; Advanced's marks are the operator's own.
-    """
-    after = _grid_corner_placement(cfg)
-    if cfg.camera.calibration_mode != "simple":
-        return
-    if any(abs(a - b) > _GRID_CORNER_TOLERANCE_M for a, b in zip(before, after, strict=True)):
-        corners = grid_corner_positions(*after)
-        for mark in cfg.camera.calibration_marks:
-            mark.x, mark.y, mark.z = corners[mark.id - 1]
-            mark.pin = []
 
 
 def apply_section_data(cfg: AppConfig, section: str, data: Mapping[str, Any]) -> bool:
     """Apply section updates in-place. Returns False for unknown sections.
 
-    A station in Simple keeps no per-plane pin, whichever section a POST names. A grid write that
-    moves the grid's corners unpins Simple's corner marks, so a write that brings pins for the new grid
+    A station in Simple keeps no per-plane pin, whichever section a POST names. Simple's corner marks
+    follow the grid, and one the grid moved loses its pin, so a write that brings pins for the new grid
     applies the grid first.
     """
     applied = _apply_section(cfg, section, data)
     enforce_network_mode(cfg)
+    reconcile_simple_corners(cfg)
     return applied
 
 
@@ -1832,7 +1813,6 @@ def _apply_section(cfg: AppConfig, section: str, data: Mapping[str, Any]) -> boo
     if parser_map is None:  # pragma: no cover
         return False
     target = getattr(cfg, section_attr)
-    corners_before = _grid_corner_placement(cfg)
     if section == "camera" and ("calibration_points" in data or "corner_pins" in data):
         # A station on an earlier release sends the former keys; they read as marks on this grid.
         data = dict(data)
@@ -1853,7 +1833,6 @@ def _apply_section(cfg: AppConfig, section: str, data: Mapping[str, Any]) -> boo
         cfg.mouse3d.__post_init__()
     elif section == "grid":
         cfg.grid.__post_init__()
-        _forget_corner_pins_off_grid(cfg, corners_before)
     elif section == "ground_grid":
         cfg.ground_grid.__post_init__()
     elif section == "camera":
@@ -3440,7 +3419,7 @@ def _apply_import_data(current_cfg: AppConfig, data: dict[str, Any]) -> AppConfi
     if isinstance(data.get("camera"), dict):
         data = {**data, "camera": dict(data["camera"])}
         own = {name: getattr(cfg.grid, name) for name in _GRID_CORNER_FIELDS}
-        migrate_calibration_keys(data["camera"], data["grid"] if isinstance(data.get("grid"), dict) else own)
+        migrate_calibration_keys(data["camera"], {**own, **data["grid"]} if isinstance(data.get("grid"), dict) else own)
 
     # Sections that are always live-reloadable. The grid goes before the camera, whose Simple pins it drops.
     for section in (
@@ -9400,8 +9379,11 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
             with _config_write_lock:
                 cfg = _config_for_save(server)
-                cfg.camera = CameraConfig(**tpl.payload["camera"])
+                camera = dict(tpl.payload["camera"])
+                migrate_calibration_keys(camera, tpl.payload["grid"])
+                cfg.camera = CameraConfig(**camera)
                 cfg.grid = GridConfig(**tpl.payload["grid"])
+                reconcile_simple_corners(cfg)
                 if "ground_grid" in tpl.payload:
                     cfg.ground_grid = GroundGridConfig(**tpl.payload["ground_grid"])
                 save_config(cfg, server.config_path)

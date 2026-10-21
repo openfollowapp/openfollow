@@ -4099,6 +4099,68 @@ def test_an_import_in_the_former_keys_without_a_grid_reads_on_this_stations_grid
     assert [(m.x, m.y, m.z, m.pin) for m in imported.camera.calibration_marks][0] == (7.0, 1.0, 0.5, _CORNER_PINS[0])
 
 
+def test_an_import_in_the_former_keys_with_part_of_a_grid_reads_on_the_grid_it_ends_up_with() -> None:
+    from openfollow.web.routes import _apply_import_data
+
+    imported = _apply_import_data(_station(), {"camera": {"corner_pins": _CORNER_PINS}, "grid": {"visible": True}})
+    assert (imported.grid.width, imported.grid.x_offset) == (12.0, 1.0)
+    assert [(m.x, m.y, m.z) for m in imported.camera.calibration_marks][0] == (7.0, 1.0, 0.5)
+
+
+def _simple_marks_at(width: float) -> list[dict]:
+    hw = width / 2.0
+    places = [(1.0 + hw, 1.0), (1.0 - hw, 1.0), (1.0 - hw, 7.0), (1.0 + hw, 7.0)]
+    names = ("DSL", "DSR", "USR", "USL")
+    return [
+        {"id": i + 1, "name": n, "kind": "known", "x": x, "y": y, "z": 0.5, "pin": _CORNER_PINS[i]}
+        for i, (n, (x, y)) in enumerate(zip(names, places, strict=True))
+    ]
+
+
+def test_simple_corners_follow_a_grid_write_and_lose_their_pins() -> None:
+    cfg = _station()
+    assert apply_section_data(
+        cfg, "camera", {"calibration_mode": "simple", "calibration_marks": _simple_marks_at(12.0)}
+    )
+    assert [m.pin for m in cfg.camera.calibration_marks] == _CORNER_PINS
+    assert apply_section_data(cfg, "grid", {"width": 10.0})
+    assert [(m.x, m.y, m.pin) for m in cfg.camera.calibration_marks] == [
+        (6.0, 1.0, []),
+        (-4.0, 1.0, []),
+        (-4.0, 7.0, []),
+        (6.0, 7.0, []),
+    ]
+
+
+def test_a_grid_write_that_keeps_the_corners_keeps_their_pins() -> None:
+    cfg = _station()
+    assert apply_section_data(
+        cfg, "camera", {"calibration_mode": "simple", "calibration_marks": _simple_marks_at(12.0)}
+    )
+    assert apply_section_data(cfg, "grid", {"spacing": 2.0})
+    assert [m.pin for m in cfg.camera.calibration_marks] == _CORNER_PINS
+
+
+def test_a_camera_write_with_corners_off_this_grid_moves_them_and_unpins_them() -> None:
+    """A push from a station with another grid: its corners are this grid's, pinned on nothing here."""
+    cfg = _station()
+    assert apply_section_data(cfg, "camera", {"calibration_mode": "simple", "calibration_marks": _simple_marks_at(8.0)})
+    assert [(m.x, m.pin) for m in cfg.camera.calibration_marks] == [(7.0, []), (-5.0, []), (-5.0, []), (7.0, [])]
+
+
+def test_advanced_marks_never_follow_the_grid() -> None:
+    cfg = _station()
+    marks = [{**m, "kind": "known"} for m in _simple_marks_at(8.0)]
+    assert apply_section_data(cfg, "camera", {"calibration_mode": "advanced", "calibration_marks": marks})
+    assert apply_section_data(cfg, "grid", {"width": 10.0})
+    assert [(m.x, m.pin) for m in cfg.camera.calibration_marks] == [
+        (5.0, _CORNER_PINS[0]),
+        (-3.0, _CORNER_PINS[1]),
+        (-3.0, _CORNER_PINS[2]),
+        (5.0, _CORNER_PINS[3]),
+    ]
+
+
 def test_an_import_never_writes_the_former_keys_back() -> None:
     from openfollow.web.routes import _apply_import_data
 

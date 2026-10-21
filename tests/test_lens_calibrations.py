@@ -147,6 +147,10 @@ _UNREADABLE = {
     "folding pair": json.dumps({"name": "Zoom", "k1": -0.4, "k2": 0.0}),
     "empty name": json.dumps({"name": " ", "k1": -0.2, "k2": 0.03}),
     "name too long": json.dumps({"name": "x" * 61, "k1": -0.2, "k2": 0.03}),
+    "name null": json.dumps({"name": None, "k1": -0.2, "k2": 0.03}),
+    "name a number": json.dumps({"name": 7, "k1": -0.2, "k2": 0.03}),
+    "saved a number": json.dumps({"name": "Zoom", "k1": -0.2, "k2": 0.03, "saved": 20261021}),
+    "version a list": json.dumps({"name": "Zoom", "k1": -0.2, "k2": 0.03, "openfollow_version": ["0.6"]}),
 }
 
 

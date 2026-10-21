@@ -832,6 +832,29 @@ class TestApplyCameraGrid:
         assert cfg.camera.pos_x == 2.5
         assert cfg.grid.width == 20.0
 
+    def test_a_template_in_the_former_calibration_keys_applies_as_marks_on_its_grid(self, live_server) -> None:
+        _, base, cfg_path = live_server
+        pins = [[0.1, 0.2], [0.9, 0.2], [0.9, 0.8], [0.1, 0.8]]
+        write_user_template(
+            _templates_root(cfg_path),
+            "camera_grid",
+            "Earlier",
+            {
+                "camera": {"fov": 55.0, "calibration_points": [], "corner_pins": pins},
+                "grid": {"width": 10.0, "depth": 4.0},
+            },
+        )
+        status, _ = _post_empty(base, "/api/templates/camera_grid.earlier.oftemplate/apply?confirm=1")
+        assert status == 200
+        camera = load_config(cfg_path).camera
+        assert camera.calibration_mode == "simple"
+        assert [(m.name, m.x, m.pin) for m in camera.calibration_marks] == [
+            ("DSL", 5.0, pins[0]),
+            ("DSR", -5.0, pins[1]),
+            ("USR", -5.0, pins[2]),
+            ("USL", 5.0, pins[3]),
+        ]
+
     def test_a_template_with_a_ground_grid_replaces_this_station_s(self, live_server) -> None:
         _, base, cfg_path = live_server
         write_user_template(

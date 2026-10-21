@@ -1979,48 +1979,99 @@ class TestMissingControllerSurfaces:
 
 
 class TestControlConflictSurfaces:
-    """A marker another station controls too: a red status row naming both, and a red card."""
+    """Markers another station controls too: one red status row for all of them, and each card red."""
 
     @staticmethod
-    def _app(controlled: list[int]) -> SimpleNamespace:
-        return _build_app(
+    def _app(controlled: list[int], names: dict[int, str] | None = None) -> SimpleNamespace:
+        app = _build_app(
             controlled=controlled,
             viewer=controlled,
             server_markers={mid: _FakeMarker(mid) for mid in controlled},
             input_manager=_FakeInputManager(),
         )
+        if names is not None:
+            entries = {mid: SimpleNamespace(name=name, color="#ff0000") for mid, name in names.items()}
+            app._marker_catalog = SimpleNamespace(get=entries.get)
+        return app
 
-    def test_the_row_names_the_marker_and_the_other_station(self) -> None:
-        conflict = ControlConflict(marker_id=3, stations=("Stage Left",), this_station=True)
-        state = _build(self._app([3]), control_conflicts=(conflict,))
-        assert ("control_conflict_3", "Marker 3 also controlled by Stage Left", "error") in state.status_flags
+    @staticmethod
+    def _conflicts(*marker_ids: int, this_station: bool = True) -> tuple[ControlConflict, ...]:
+        return tuple(
+            ControlConflict(marker_id=mid, stations=("Stage Left",), this_station=this_station) for mid in marker_ids
+        )
+
+    @staticmethod
+    def _conflict_rows(state: OverlayState) -> list[tuple[str, str, str]]:
+        return [row for row in state.status_flags if row[0].startswith("control_conflict")]
+
+    def test_one_marker_reads_its_id_and_catalog_name(self) -> None:
+        state = _build(self._app([3], {3: "Lead"}), control_conflicts=self._conflicts(3))
+        assert self._conflict_rows(state) == [("control_conflict", "Control conflict: Marker 3 (Lead)", "error")]
         cr = FakeCairo()
         draw_status_badge(FakeRenderer(state=state), cr, state, 1920, 1080)
-        assert "Marker 3 also controlled by Stage Left" in " ".join(cr.show_text_strings())
+        assert "Control conflict: Marker 3 (Lead)" in " ".join(cr.show_text_strings())
 
-    def test_the_row_names_every_other_station(self) -> None:
-        conflict = ControlConflict(marker_id=3, stations=("FOH", "Stage Left"), this_station=True)
-        state = _build(self._app([3]), control_conflicts=(conflict,))
-        assert ("control_conflict_3", "Marker 3 also controlled by FOH, Stage Left", "error") in state.status_flags
+    @pytest.mark.parametrize(
+        "names",
+        [
+            pytest.param(None, id="no-catalog"),
+            pytest.param({}, id="no-entry"),
+            pytest.param({3: ""}, id="empty-name"),
+            pytest.param({3: "   "}, id="blank-name"),
+        ],
+    )
+    def test_one_marker_without_a_catalog_name_reads_its_id(self, names: dict[int, str] | None) -> None:
+        state = _build(self._app([3], names), control_conflicts=self._conflicts(3))
+        assert self._conflict_rows(state) == [("control_conflict", "Control conflict: Marker 3", "error")]
+
+    @pytest.mark.parametrize(
+        ("marker_ids", "row"),
+        [
+            pytest.param((5, 3, 4), "Control conflict: Markers 3, 4, 5", id="adjacent"),
+            # A set of these iterates 9, 3, 12, so only a sort puts them in order.
+            pytest.param((12, 3, 9), "Control conflict: Markers 3, 9, 12", id="set-order-differs"),
+        ],
+    )
+    def test_several_markers_share_one_row_in_ascending_order(self, marker_ids: tuple[int, ...], row: str) -> None:
+        names = {mid: f"Lead {mid}" for mid in marker_ids}
+        state = _build(self._app(sorted(marker_ids), names), control_conflicts=self._conflicts(*marker_ids))
+        assert self._conflict_rows(state) == [("control_conflict", row, "error")]
+
+    @pytest.mark.parametrize(
+        ("marker_ids", "row"),
+        [
+            pytest.param([1, 2, 3, 4, 5, 6], "Control conflict: Markers 1, 2, 3, 4, 5, 6", id="fits-exactly"),
+            pytest.param([1, 2, 3, 4, 5, 6, 7], "Control conflict: Markers 1, 2, 3, 4, 5, …", id="one-too-many"),
+            pytest.param(list(range(10, 21)), "Control conflict: Markers 10, 11, 12, …", id="two-digit-ids"),
+            pytest.param([1, 2, 3, 4, 5, 60000], "Control conflict: Markers 1, 2, 3, 4, 5, …", id="long-last-id"),
+            pytest.param([10000, 20000, 30000], "Control conflict: Markers 10000, 20000, …", id="five-digit-ids"),
+        ],
+    )
+    def test_a_long_list_is_cut_to_the_badge_width(self, marker_ids: list[int], row: str) -> None:
+        state = _build(self._app(marker_ids), control_conflicts=self._conflicts(*marker_ids))
+        assert self._conflict_rows(state) == [("control_conflict", row, "error")]
 
     def test_a_conflict_between_two_other_stations_raises_no_row_here(self) -> None:
-        conflict = ControlConflict(marker_id=3, stations=("FOH", "Stage Left"), this_station=False)
-        state = _build(self._app([3]), control_conflicts=(conflict,))
+        state = _build(self._app([3], {3: "Lead"}), control_conflicts=self._conflicts(3, this_station=False))
         assert state.status_flags == []
         assert state.markers[0].control_conflict is False
 
-    def test_the_card_of_the_conflicting_marker_turns_red(self) -> None:
-        conflict = ControlConflict(marker_id=3, stations=("Stage Left",), this_station=True)
-        state = _build(self._app([3, 4]), control_conflicts=(conflict,))
+    def test_only_this_stations_conflicts_are_listed(self) -> None:
+        conflicts = (*self._conflicts(3), *self._conflicts(4, this_station=False))
+        state = _build(self._app([3, 4], {3: "Lead"}), control_conflicts=conflicts)
+        assert self._conflict_rows(state) == [("control_conflict", "Control conflict: Marker 3 (Lead)", "error")]
+
+    def test_the_card_of_every_conflicting_marker_turns_red(self) -> None:
+        state = _build(self._app([3, 4, 5]), control_conflicts=self._conflicts(3, 4))
         fills: dict[int, bool] = {}
         for marker in state.markers:
             cr = FakeCairo()
             draw_marker_card(FakeRenderer(state=state), cr, x=0, y=0, w=180, h=64, t=marker, selected=False)
             fills[marker.marker_id] = ("rgba", *COLOR_WARNING_FILL) in cr.calls
             assert (("rgb", *COLOR_BG_BASE) in cr.calls) is not fills[marker.marker_id]
-        assert fills == {3: True, 4: False}
+        assert fills == {3: True, 4: True, 5: False}
 
-    def test_a_conflict_row_comes_after_network_outages_and_before_missing_controllers(self) -> None:
+    def test_the_conflict_row_comes_after_network_outages_and_before_missing_controllers(self) -> None:
         missing = {
             "controller_index": 0,
             "name": "",
@@ -2030,14 +2081,13 @@ class TestControlConflictSurfaces:
             "effective_speed": 1.0,
             "backend": "joystick",
         }
-        app = self._app([3])
+        app = self._app([3, 4])
         app._input_manager = _FakeInputManager(controller_info=[missing])
         app._runtime_services = SimpleNamespace(_status_flags={"midi_unavailable": ("info", "MIDI off")})
-        conflict = ControlConflict(marker_id=3, stations=("Stage Left",), this_station=True)
-        state = _build(app, network_alerts=["PSN: eth0 is down"], control_conflicts=(conflict,))
+        state = _build(app, network_alerts=["PSN: eth0 is down"], control_conflicts=self._conflicts(3, 4))
         assert [key for key, _message, _level in state.status_flags] == [
             "network_down_0",
-            "control_conflict_3",
+            "control_conflict",
             "controller_missing_0",
             "midi_unavailable",
         ]

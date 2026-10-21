@@ -67,8 +67,12 @@ _HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 # currently declares – no silent desync if GridConfig defaults change later.
 _GRID_DEFAULTS = GridConfig()
 
-# The status row for a marker this station and another one both control.
-CONTROL_CONFLICT_ROW = "Marker {marker} also controlled by {stations}"
+# The one status row for every marker this station and another one both control.
+CONTROL_CONFLICT_ROW = "Control conflict: Marker {marker}"
+CONTROL_CONFLICT_NAMED_ROW = "Control conflict: Marker {marker} ({name})"
+CONTROL_CONFLICT_LIST_ROW = "Control conflict: Markers {markers}"
+# Characters of an id list row that fit one line of the badge in its bold UI font; more ids end in "…".
+CONTROL_CONFLICT_ROW_MAX_CHARS = 42
 
 
 def _soft_int(value: Any, default: int, *, lo: int | None = None) -> int:
@@ -203,6 +207,23 @@ def _resolve_marker_name(app: Any, marker_id: int) -> str:
     if entry is None:
         return ""
     return str(entry.name)
+
+
+def _control_conflict_row(app: Any, marker_ids: Sequence[int]) -> str:
+    """The row for *marker_ids*, ascending: one marker with its catalog name, or the ids cut to fit."""
+    if len(marker_ids) == 1:
+        name = _resolve_marker_name(app, marker_ids[0]).strip()
+        if name:
+            return CONTROL_CONFLICT_NAMED_ROW.format(marker=marker_ids[0], name=name)
+        return CONTROL_CONFLICT_ROW.format(marker=marker_ids[0])
+    shown = [str(marker_ids[0])]
+    for index, marker_id in enumerate(marker_ids[1:], start=2):
+        tail = ", …" if index < len(marker_ids) else ""
+        row = CONTROL_CONFLICT_LIST_ROW.format(markers=", ".join([*shown, str(marker_id)]) + tail)
+        if len(row) > CONTROL_CONFLICT_ROW_MAX_CHARS:
+            return CONTROL_CONFLICT_LIST_ROW.format(markers=", ".join(shown) + ", …")
+        shown.append(str(marker_id))
+    return CONTROL_CONFLICT_LIST_ROW.format(markers=", ".join(shown))
 
 
 def sync_marker_config(state: OverlayState, cfg: Any) -> None:
@@ -479,8 +500,7 @@ def build_marker_visual_state(
     the velocity each controlled marker broadcasts.
     """
     controlled_set = set(app._controlled_ids)
-    own_conflicts = [conflict for conflict in control_conflicts if conflict.this_station]
-    conflict_ids = {conflict.marker_id for conflict in own_conflicts}
+    conflict_ids = sorted({conflict.marker_id for conflict in control_conflicts if conflict.this_station})
     marker_speeds = app._input_manager.get_marker_gamepad_speeds() if app._input_manager is not None else {}
 
     # Every controlled marker is broadcast on PSN, so every controlled marker
@@ -947,9 +967,8 @@ def build_marker_visual_state(
         state.status_flags.append((f"network_down_{i}", alert, "error"))
 
     # Every output carries a controlled marker, so another station's sends make it jump at every receiver.
-    for conflict in own_conflicts:
-        row = CONTROL_CONFLICT_ROW.format(marker=conflict.marker_id, stations=", ".join(conflict.stations))
-        state.status_flags.append((f"control_conflict_{conflict.marker_id}", row, "error"))
+    if conflict_ids:
+        state.status_flags.append(("control_conflict", _control_conflict_row(app, conflict_ids), "error"))
 
     # One row per missing controller, so it is seen even for a marker with no card.
     for info in controller_info:

@@ -338,6 +338,10 @@ attributes, so it spells the token's value.
   status row is caution today: the HUD shows faults, progress and results, and
   a limitation worth knowing lives on the web UI and the on-screen Network
   screen.
+- The markers this station controls that another station controls too are
+  one error row for all of them: "Control conflict: Marker 3 (Lead)" for one,
+  "Control conflict: Markers 3, 4, 5" for several, cut with "…" so it stays on
+  one line. Each of those markers' cards turns red.
 - Settings another station pushed here are an info row naming the newest push
   ("Settings pushed from Stage Left (+1 more)"), held until the warning is
   removed, on the web UI or from the Settings menu, whose first entry is

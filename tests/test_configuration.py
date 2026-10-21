@@ -2006,6 +2006,26 @@ def test_apply_runtime_network_backend_propagates_to_config() -> None:
     assert app._web_commands.restart_requested is False
 
 
+def test_apply_runtime_leaves_the_update_and_time_sync_settings_for_the_next_start() -> None:
+    """The updater and the online-sync worker read them off the running config, so a saved
+    change (an import) waits for the next start rather than reaching one of them only."""
+    app = _DummyApp(AppConfig())
+    new_config = AppConfig(
+        update_github_repo="stage-crew/openfollow",
+        update_include_prereleases=True,
+        auto_update_check=False,
+        auto_time_sync=False,
+        time_sync_server="ntp.example.com",
+    )
+
+    apply_runtime_config_changes(app, new_config)
+
+    kept = app._config
+    assert (kept.update_github_repo, kept.update_include_prereleases) == ("openfollowapp/openfollow", False)
+    assert (kept.auto_update_check, kept.auto_time_sync, kept.time_sync_server) == (True, True, "ptbtime1.ptb.de")
+    assert app._web_commands.restart_requested is False
+
+
 def test_apply_runtime_osc_multicast_group_threads_into_restart() -> None:
     """An ``[osc] multicast_group`` change reaches ``InputManager.restart_osc``."""
     app = _DummyApp(AppConfig())

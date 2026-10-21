@@ -4550,18 +4550,6 @@ def test_api_config_reset_refuses_a_cross_origin_form_post(live_server) -> None:
 # Export, Restore Defaults, import
 # ---------------------------------------------------------------------------
 
-# What an export carries and an import leaves as it is: the update, time-sync and network-backend
-# settings, read at startup, and whether this station draws paths, which is its own.
-_NOT_RESTORED_BY_IMPORT = frozenset(
-    {
-        "update_include_prereleases",
-        "auto_update_check",
-        "auto_time_sync",
-        "time_sync_server",
-        "network.backend",
-        "paths.show_paths",
-    }
-)
 # What a file import restores and a push leaves as it is.
 _RESTORED_BY_A_FILE_ONLY = (
     "controlled_marker_ids",
@@ -4581,6 +4569,12 @@ _RESTORED_BY_A_FILE_ONLY = (
     "controller.swap_triggers",
     "controller.mapped_controller_guid",
     "ui.developer_mode",
+    "paths.show_paths",
+    "network.backend",
+    "update_include_prereleases",
+    "auto_update_check",
+    "auto_time_sync",
+    "time_sync_server",
 )
 _CHANGED_STRINGS = ("Cam 2", "192.0.2.10", "#336699", "imperial", "replace", "bottom", "nm", "H265", "720p", "x")
 # Settings the web UI checks harder than a config.toml load does.
@@ -4676,7 +4670,7 @@ def test_an_export_restore_defaults_import_round_trip_restores_every_exported_se
     _save_every_setting_changed(server.config_path, defaults)
     exported = _export(base)
     changed = {path for path, value in _leaves(defaults) if _at(exported, path) != value}
-    assert set(_RESTORED_BY_A_FILE_ONLY) | _NOT_RESTORED_BY_IMPORT <= changed
+    assert set(_RESTORED_BY_A_FILE_ONLY) <= changed
 
     assert _post_json(base, "/api/config/reset", {})[0] == 200
     assert _export(base)["controlled_marker_ids"] == []
@@ -4684,8 +4678,7 @@ def test_an_export_restore_defaults_import_round_trip_restores_every_exported_se
 
     assert (status, body["success"]) == (200, True)
     restored = _export(base)
-    lost = {path for path, _ in _leaves(defaults) if _at(restored, path) != _at(exported, path)}
-    assert lost == _NOT_RESTORED_BY_IMPORT
+    assert [path for path, _ in _leaves(defaults) if _at(restored, path) != _at(exported, path)] == []
 
 
 def test_a_push_leaves_what_only_a_file_import_restores(live_server) -> None:
@@ -5623,6 +5616,52 @@ def test_deb_update_check_returns_json_available(live_server, monkeypatch) -> No
     assert body["ok"] is True
     assert body["available"] is True
     assert body["latest"] == "99.0.0"
+
+
+_SAVED_UPDATE_SOURCE = AppConfig(update_github_repo="stage-crew/openfollow", update_include_prereleases=True)
+
+
+def _check_asks_for(base: str, monkeypatch) -> tuple[str, bool]:
+    import openfollow.runtime.deb_update as deb_update_mod
+
+    asked: list[tuple[str, bool]] = []
+
+    def _fetch(repo, *, include_prereleases=False):
+        asked.append((repo, include_prereleases))
+        return {"tag_name": "v0.0.1", "assets": []}
+
+    monkeypatch.setattr(deb_update_mod, "_fetch_latest_release", _fetch)
+    # A pre-release build always asks for pre-releases.
+    monkeypatch.setattr(openfollow, "__version__", "1.0.0")
+    status, body = _get_json(base, "/section/general/deb-update/check")
+    assert (status, body["ok"]) == (200, True)
+    return asked[0]
+
+
+def test_deb_update_check_asks_for_what_the_station_started_with(tmp_path, monkeypatch) -> None:
+    """A saved change (an import) waits for the next start, as it does for the installer."""
+    for beacon in (discovery_module.BeaconSender, discovery_module.BeaconReceiver):
+        monkeypatch.setattr(beacon, "start", lambda self: None)
+        monkeypatch.setattr(beacon, "stop", lambda self: None)
+    config_path = tmp_path / "config.toml"
+    save_config(_SAVED_UPDATE_SOURCE, str(config_path))
+    with live_on_free_port(
+        lambda port: ConfigWebServer(
+            config_path=str(config_path),
+            host="127.0.0.1",
+            port=port,
+            system_name="TestSystem",
+            update_source_provider=lambda: ("openfollowapp/openfollow", False),
+        )
+    ) as (_, base):
+        assert _check_asks_for(base, monkeypatch) == ("openfollowapp/openfollow", False)
+
+
+def test_deb_update_check_unwired_asks_for_the_saved_settings(live_server, monkeypatch) -> None:
+    server, base = live_server
+    save_config(_SAVED_UPDATE_SOURCE, server.config_path)
+
+    assert _check_asks_for(base, monkeypatch) == ("stage-crew/openfollow", True)
 
 
 def test_deb_update_check_surfaces_error_as_json(live_server, monkeypatch) -> None:

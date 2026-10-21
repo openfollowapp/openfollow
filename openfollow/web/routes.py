@@ -3406,14 +3406,18 @@ def _backup_before(config_path: str, kind: str, named_by: AppConfig | None = Non
 
 
 # Sub-config fields only a file import restores, normalised by the sub-config's ``__post_init__``
-# as a config.toml load does: none of them has a section form that applies it.
+# as a config.toml load does: no section form the import goes through applies them.
 _FILE_IMPORT_FIELDS: dict[str, tuple[str, ...]] = {
     "detection": ("masks", "masks_enabled"),
     "controller": ("button_raw_indices", "swap_triggers", "mapped_controller_name", "mapped_controller_guid"),
     "midi": ("patches",),
     "virtual_faders": ("faders",),
     "ui": ("developer_mode",),
+    "paths": ("show_paths",),
+    "network": ("backend",),
 }
+# Read once at startup: the reload never applies them, so an import takes effect at the next start.
+_STARTUP_ONLY_FIELDS = ("update_include_prereleases", "auto_update_check", "auto_time_sync", "time_sync_server")
 
 
 def _apply_file_import_data(cfg: AppConfig, data: dict[str, Any]) -> None:
@@ -3421,7 +3425,9 @@ def _apply_file_import_data(cfg: AppConfig, data: dict[str, Any]) -> None:
 
     That is this station's own setup: its marker selection, detection masks, the
     fields of every video input rather than only the running one's, its 3D Mouse,
-    operator messages, MIDI patches, virtual faders and gamepad mapping.
+    operator messages, MIDI patches, virtual faders, gamepad mapping and whether it
+    draws paths, and the settings read at startup (network backend, update and
+    time sync).
     """
     for name in ("controlled_marker_ids", "viewer_marker_ids"):
         if name in data:
@@ -3447,6 +3453,11 @@ def _apply_file_import_data(cfg: AppConfig, data: dict[str, Any]) -> None:
             if name in raw:
                 setattr(target, name, raw[name])
         target.__post_init__()
+
+    for name in _STARTUP_ONLY_FIELDS:
+        if name in data:
+            setattr(cfg, name, data[name])
+    cfg.normalise_startup_settings()
 
 
 def _apply_import_data(current_cfg: AppConfig, data: dict[str, Any], *, pushed: bool = False) -> AppConfig:
@@ -7478,13 +7489,10 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         from openfollow.runtime.deb_update import check_for_update
 
         cfg = _last_whole_config(server)
+        repo, include_prereleases = server.update_source(cfg.update_github_repo, cfg.update_include_prereleases)
         response.content_type = "application/json"
         try:
-            info = check_for_update(
-                cfg.update_github_repo,
-                openfollow.__version__,
-                include_prereleases=cfg.update_include_prereleases,
-            )
+            info = check_for_update(repo, openfollow.__version__, include_prereleases=include_prereleases)
             return json.dumps({"ok": True, **info})
         except Exception as exc:  # surface any network/API error as feedback
             return json.dumps({"ok": False, "error": str(exc)})

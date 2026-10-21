@@ -3017,12 +3017,7 @@ class AppConfig:
             self.rtsp_password = ""
         if not isinstance(self.srt_passphrase, str):
             self.srt_passphrase = ""
-        # Auto online-sync knobs: normalise so a hand-edited TOML can't feed a
-        # non-bool / non-string into the worker.
-        self.update_include_prereleases = _coerce_bool(self.update_include_prereleases, False)
-        self.auto_update_check = _coerce_bool(self.auto_update_check, True)
-        self.auto_time_sync = _coerce_bool(self.auto_time_sync, True)
-        self.time_sync_server = _coerce_str(self.time_sync_server, "ptbtime1.ptb.de").strip() or "ptbtime1.ptb.de"
+        self.normalise_startup_settings()
         # TOML produces ``dict[str, Any]``; the runtime contract is
         # ``dict[int, float]`` keyed by marker_id. Drop pairs with a non-int
         # key or non-finite/negative value.
@@ -3057,6 +3052,14 @@ class AppConfig:
                 continue
             coerced[key] = value
         self.marker_move_speeds = coerced
+
+    def normalise_startup_settings(self) -> None:
+        """Coerce the update and time-sync settings read at startup, so a hand-edited TOML or an
+        import can't feed a non-bool / non-string into the updater or the online-sync worker."""
+        self.update_include_prereleases = _coerce_bool(self.update_include_prereleases, False)
+        self.auto_update_check = _coerce_bool(self.auto_update_check, True)
+        self.auto_time_sync = _coerce_bool(self.auto_time_sync, True)
+        self.time_sync_server = _coerce_str(self.time_sync_server, "ptbtime1.ptb.de").strip() or "ptbtime1.ptb.de"
 
 
 # ---------------------------------------------------------------------------

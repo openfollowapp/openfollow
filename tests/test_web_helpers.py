@@ -1271,25 +1271,39 @@ def test_an_import_without_a_marker_selection_keeps_this_stations() -> None:
 
 
 @pytest.mark.parametrize(
-    ("section", "field", "raw", "read_as"),
+    ("path", "current", "raw", "read_as"),
     [
-        ("detection", "masks", "abc", []),
-        ("detection", "masks_enabled", "abc", False),
-        ("midi", "patches", 3, []),
-        ("controller", "button_raw_indices", "abc", {}),
-        ("controller", "swap_triggers", None, False),
-        ("controller", "mapped_controller_guid", 3, ""),
-        ("ui", "developer_mode", "abc", False),
+        ("detection.masks", [{"name": "Stage", "vertices": [[0.1, 0.1], [0.9, 0.1], [0.5, 0.9]]}], "abc", []),
+        ("detection.masks_enabled", True, "abc", False),
+        ("midi.patches", [{"id": 2, "alias": "Desk"}], 3, []),
+        ("controller.button_raw_indices", {"A": 3}, "abc", {}),
+        ("controller.swap_triggers", True, None, False),
+        ("controller.mapped_controller_guid", "0300abcd", 3, ""),
+        ("ui.developer_mode", True, "abc", False),
+        ("paths.show_paths", False, "abc", True),
+        ("network.backend", "nm", 3, "auto"),
+        ("network.backend", "nm", "wifi", "auto"),
+        ("update_include_prereleases", True, "abc", False),
+        ("auto_update_check", False, None, True),
+        ("auto_time_sync", False, 3, True),
+        ("time_sync_server", "ntp.example.com", "  ", "ptbtime1.ptb.de"),
     ],
 )
 def test_an_imported_station_setting_of_the_wrong_type_reads_as_a_load_reads_it(
-    section: str, field: str, raw: object, read_as: object
+    path: str, current: object, raw: object, read_as: object
 ) -> None:
     from openfollow.web.routes import _apply_import_data
 
-    new = _apply_import_data(AppConfig(), {section: {field: raw}})
+    *section, name = path.split(".")
+    station = AppConfig()
+    owner = getattr(station, section[0]) if section else station
+    setattr(owner, name, current)
+    owner.__post_init__()
+    assert getattr(owner, name) != read_as
 
-    assert getattr(getattr(new, section), field) == read_as
+    new = _apply_import_data(station, {section[0]: {name: raw}} if section else {name: raw})
+
+    assert getattr(getattr(new, section[0]) if section else new, name) == read_as
 
 
 def test_imported_virtual_faders_of_the_wrong_type_read_as_unmapped() -> None:

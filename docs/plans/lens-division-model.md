@@ -419,14 +419,17 @@ top, bottom and a diagonal 53.9 -> 3.5 / 6.2; four edges and a diagonal at
 - `_Lines.undistort` is the closed form with the centre: no Newton per grid
   cell. The seeding grid costs one division per point per cell.
 - `_K_BOUND` goes from 1.0 to 2.0, the span §3 allows for k1.
-- **Corner uncertainty** (`_corner_uncertainty_px`, the rating): the predicted
-  sigma of the screen position at each frame corner, from the covariance of
-  the free parameters (two, three or four), propagated through the screen
-  Jacobian at the corner, with the pinhole picture's translation (the
-  undistorted frame centre's own movement) removed; the largest over the four
-  corners. With `c = 0` and the pair only it reduces to
-  `D * sqrt(c11 + c22 + 2 c12) / (1 - k1 - 3 k2)` (today's formula drops the
-  `1 / P(1)` factor that the polynomial did not have).
+- **Corner uncertainty** (`_corner_uncertainty_px`, the rating), measured
+  where today's rating measures it: at the **pinhole corners** (pinhole
+  radius 1, the frame corners of the pinhole picture). For each of the four,
+  the predicted sigma of where that fixed pinhole point lands on screen, from
+  the covariance of the free parameters only (two, three or four: a centre or
+  a k2 the gates dropped takes no part), with the pinhole picture's own shift
+  (the screen movement of the pinhole centre) removed; the largest of the
+  four. With `c = 0` and the pair only it is
+  `D * sqrt(J C J^T)`, `J = (r s, r s^2) / P(s)` at the screen radius `r`
+  (`s = r^2`) that pinhole radius 1 lands on. `RATING_THRESHOLDS_PX` stay
+  2.5 / 5 / 10 / 20 (see "The rating" below).
 - **Rival spread** (`_rival_spread_px`): `d1 r^3 + d2 r^5` is the polynomial's
   displacement. Replace it by the exact screen gap between the fit and each
   rival minimum of the same stage (the stage kept): for screen points over the
@@ -438,19 +441,55 @@ top, bottom and a diagonal 53.9 -> 3.5 / 6.2; four edges and a diagonal at
   0.05 moves the corner by about 55 px / `P(1)`. With screen-pixel residuals
   its sigma changes scale, so it is re-derived by re-running
   `scripts/lens_fit_simulation.py` (its `LENSES` move to the §5 pairs plus
-  decentred ones, its scenarios gain the centre) and kept or retuned with
-  `RATING_THRESHOLDS_PX` from the table; the table lands in the PR
-  description. Real lenses have a large k2, so a gate that fits k2 more
+  decentred ones, its scenarios gain the centre) and kept or retuned from the
+  table; the table lands in the PR description. Real lenses have a large k2, so a gate that fits k2 more
   readily is a likely outcome (the 150° fisheye above already asks for it).
-- **The rating shifts and must be retuned, not only checked.** On the
-  mockup's concert lines (seven straight suggestions, none near a corner) the
-  division fit lands on the picture's pair (`-0.208 / -0.059` against
-  `-0.20 / -0.07`), but the corner uncertainty rises from 10.6 px with the
-  polynomial to 24.4 px, which today's thresholds rate Not usable: the
-  division model's corner term is freer, so lines that stay away from the
-  corners say less about it. The retune of `RATING_THRESHOLDS_PX` lands with
-  the simulation table; the mockup keeps today's thresholds until then and
-  rates its demo lines one step lower than before.
+
+### The rating
+
+An earlier version of this plan measured the rating at the **screen** corner
+(`D * sqrt(c11 + c22 + 2 c12) / (1 - k1 - 3 k2)`). Mockup v101 built that, and
+the concert picture's seven straight suggestions dropped from Poor (10.6 px) to
+Not usable (24.4 px). Decomposed on those seven lines (scratch:
+`decomp.py`, `decomp2.py`, `gridcheck.py`):
+
+| Change from today's rating | Corner sigma, px |
+|---|---|
+| Today: polynomial, pinhole-pixel residuals, at pinhole radius 1 | 10.6 |
+| Division model, same residuals, same point | 10.6 (the model: +0.0) |
+| Same, at the screen corner (the earlier formula) | 24.4 (x2.3) |
+| Polynomial at the screen corner, for comparison | 27.5 |
+| Wider seed grid | +0.0 (same minimum, `-0.208 / -0.059`, with either grid) |
+| Centre in the covariance although the gate drops it | 10.6 -> 11.3 at pinhole radius 1 (24.4 -> 27.3 at the screen corner) |
+| Screen-pixel residuals instead of pinhole pixels | 10.6 -> 12.2 (pair) |
+| k2 gate after the centre decision, screen pixels: k2's sigma 0.058 > 0.05, k2 dropped | 12.2 -> 11.0 (k1 only) |
+
+**Root cause: the evaluation point moved.** Today's `_corner_uncertainty_px`
+measures at `r == 1` of the polynomial, which is the **pinhole** radius: under
+barrel distortion that point lands inside the frame (screen radius
+`≈ 1 + k1 + k2`, 0.83 on the concert lens). The earlier formula measured at
+the screen corner, 2.3-2.6 times further out in uncertainty for **both**
+models on these lines (24.4 division, 27.5 polynomial). The division model
+itself, the seed grid and the gates add nothing that explains the drop.
+
+**Fix**: the rating stays at the pinhole corners, which is the point the
+thresholds were derived for, so `RATING_THRESHOLDS_PX` keep their meaning and
+are not re-derived. With the corrected method (screen-pixel residuals, only the
+kept parameters in the covariance, the k2 gate after the centre decision) the
+mockup rates (old mockup / new):
+
+| Lines | Old: pair, rating | New: lens, rating |
+|---|---|---|
+| Seven straight suggestions | -0.208 / 0.036 (polynomial), 10.6 px, Poor | -0.237 / 0 (k2 not measured), 11.0 px, Poor |
+| All twelve suggestions (two flagged as not fitting) | -0.171 / -0.004, 11.6 px, Poor | -0.074 / -0.361, 14.7 px, Poor |
+| Seven plus four lines reaching the corners | -0.205 / 0.032, 8.6 px, Fair | -0.204 / -0.064, 9.1 px, Fair |
+
+What remains is a property today's rating already has: under a strong barrel
+lens the pinhole corners land well inside the frame (screen radius about 0.71
+on a 2.3 mm-like `-0.53 / -0.07`), so the rating speaks for that radius, not
+for the frame's corners. Rating at the screen corner would be the more honest
+number, but it needs thresholds derived for it and rates every barrel lens
+lower: open question 4.
 - `curve()` uses `apply_overlay_distortion` with the centre (now the iterative
   direction): 24 samples a line, negligible.
 - The hint and `MAX_LINES` are model-free. The result gains `cx`, `cy` and
@@ -673,7 +712,9 @@ Each step lands with its tests; targeted tests while iterating, one
 - [x] Mockup: lens model (`limitRadius` / `distort` / `undistort` /
       `distortRadius` to the division model with the centre, `lensValid` to
       §3), fit grid (its residuals stay in pinhole pixels and its centre is
-      faked from the lines: a stand-in, not the §7 fit), predicted curves, slider
+      faked from the lines from ten lines on; screen-pixel residuals, the k2
+      gate after the centre decision, the rating at the pinhole corners from
+      the kept parameters only), predicted curves, slider
       attributes, error copy (items 4, 4a, 4b, 6), the lens centre row, the
       result line, the Load list, help text; rebuilt with `build.py`,
       `node harness.js` exits 0 (2026-10-22).
@@ -752,11 +793,13 @@ Each step lands with its tests; targeted tests while iterating, one
       -0.07` lens offset by (80, 50) px keeps the centre in at least 11 of 12
       trials and lands within 12 px at the worst corner (four edges and a
       diagonal, 1 px), and a centred lens keeps it in at most 2 of 12.
-- [ ] Corner uncertainty over the four corners from the full covariance,
+- [ ] Corner uncertainty at the four pinhole corners from the covariance of
+      the kept parameters,
       translation removed; exact rival spread; misfit with the centre held.
 - [ ] Simulation `LENSES` to the §5 pairs plus decentred ones (offsets 0,
       (20, -12), (40, -25), (80, 50), (120, 80)); scenarios as today; re-run;
-      keep or retune `K2_SIGMA_GATE` and `RATING_THRESHOLDS_PX` from the
+      keep or retune `K2_SIGMA_GATE` (the thresholds stay; the table shows
+      that each scenario rates as before) from the
       table (the 150° fisheye's k2).
 - [ ] `fit_result_to_dict`: `cx`, `cy`, `centre_fitted`.
 - [ ] Timed on pi59 (one fit route call with 12 lines), number in the PR.
@@ -897,6 +940,10 @@ Each step lands with its tests; targeted tests while iterating, one
 3. The Camera tab: the two pixel fields of §12 (disabled without video), or
    no fields there (the centre set only by the Setup Wizard and shown
    read-only)?
+4. The rating stays at the pinhole corners, as today (§7, The rating). Should
+   a later change rate at the screen corners instead, with thresholds derived
+   for that point? Every barrel lens would rate lower than today for the same
+   lines.
 
 ## Later: OpenCV calibration import (`.xml`), its own PR
 

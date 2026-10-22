@@ -7,8 +7,8 @@ camera at the station's own Operator Screen, the station flashes the screen
 black and white, watches for each change in the decoded video and reports the
 round trip.
 
-Simulation of both candidate methods (flash and timecode bars, no camera): the
-artifact linked from the issue. Flash won: it reads the picture as one average
+Both candidate methods (flash and timecode bars) were compared in a browser
+simulation with no camera. Flash won: it reads the picture as one average
 brightness, so it needs no framing, survives blur, low detail, stage light and
 auto exposure, and has no wrap-around limit. Timecode bars were faster and saw
 dropped frames, but failed first under poor framing or focus and read a wrong,

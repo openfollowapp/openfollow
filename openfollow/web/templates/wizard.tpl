@@ -428,6 +428,7 @@
       <div class="section-actions"><button type="button" class="section-help-btn" data-help-open="wizard-lens" aria-label="Open help for this section">?</button></div>
     </div>
 
+    <p class="wizard-help" id="lens-intro">Most camera lenses bend the picture: edges that are straight on stage look curved, most of all near the edges of the picture. This step measures how much your lens bends it, so that the grid and the markers sit exactly on the stage everywhere in the picture. Do it once for each camera and lens, and again after you change the zoom.</p>
     <div class="notice" id="lens-hint" role="status" aria-live="polite" hidden></div>
     <div id="lens-container" class="wizard-preview-container" style="display:none;">
       <img id="lens-image" alt="">

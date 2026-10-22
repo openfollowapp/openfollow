@@ -1281,6 +1281,11 @@ class TestWizardLensStepPage:
         )
         assert adjust.group(1) == "Adjust by hand (optional)" and 'id="wiz_lens_k2"' in adjust.group(2)
         assert "Fine-tune" not in body
+        # A short intro says what the step measures and why, above the hint.
+        intro = re.search(
+            r'<p class="wizard-help" id="lens-intro">(.*?)</p>\s*<div class="notice" id="lens-hint"', body, re.S
+        )
+        assert intro.group(1).startswith("Most camera lenses bend the picture") and "\u2014" not in intro.group(1)
         # No step is referred to by number anywhere, since the Lens step shifts the numbering.
         assert re.search(r"Step \d", body) is None
 

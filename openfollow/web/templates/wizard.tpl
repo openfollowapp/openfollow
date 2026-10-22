@@ -3752,14 +3752,13 @@
   }
   function renderFsBar() {
     if (!FS) return;
-    var title, hint = '', status = '', warn = false, actions = '';
+    var title, hint = '', status = '', warn = false, actions = [];
     if (FS.key === 'lens') {
       title = 'Lens';
       hint = lensHintText;
       if (lensLines.some(function(l) { return l.misfit; })) { status = 'A line does not fit the others'; warn = true; }
       var mid = lensSelected && lensSelected.point > 0 && lensSelected.point < 4;
-      actions = '<button type="button" class="secondary small" data-fs-act="point-off"' + (mid ? '' : ' disabled') + '>' + esc($('lens-toggle-point').textContent) + '</button>' +
-        '<button type="button" class="secondary small" data-fs-act="delete-line"' + (lensSelected ? '' : ' disabled') + '>Delete line</button>';
+      actions = [{ act: 'point-off', label: $('lens-toggle-point').textContent, off: !mid }, { act: 'delete-line', label: 'Delete line', off: !lensSelected }];
     } else if (FS.key === 'cal') {
       title = 'Camera Calibration · ' + (S.mode === 'simple' ? 'Simple' : 'Advanced');
       hint = hintText;
@@ -3772,7 +3771,23 @@
     $('fs-title').textContent = title;
     setLive($('fs-hint'), esc(hint));
     $('fs-status').textContent = status; $('fs-status').classList.toggle('warn', warn);
-    $('fs-actions').innerHTML = actions;
+    fsActions(actions);
+  }
+  // The buttons are patched, not rebuilt: a button replaced between its press and release gets no click, and a
+  // focused one drops the focus. A focused button that is switched off hands the focus to the picture.
+  function fsActions(list) {
+    var bar = $('fs-actions'), acts = list.map(function(a) { return a.act; }).join(' ');
+    if (bar.dataset.acts !== acts) {
+      bar.innerHTML = list.map(function(a) { return '<button type="button" class="secondary small" data-fs-act="' + a.act + '"></button>'; }).join('');
+      bar.dataset.acts = acts;
+    }
+    var btns = bar.querySelectorAll('[data-fs-act]');
+    list.forEach(function(a, i) {
+      var b = btns[i], lost = a.off && document.activeElement === b;
+      if (b.textContent !== a.label) b.textContent = a.label;
+      b.disabled = a.off;
+      if (lost) $(FS.key + '-overlay').focus({ preventScroll: true });
+    });
   }
   function fsInit() {
     document.querySelectorAll('[data-fs]').forEach(function(b) { b.addEventListener('click', function() { openFull(b.dataset.fs); }); });

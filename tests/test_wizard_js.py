@@ -2141,10 +2141,36 @@ def test_the_lens_hint_names_the_one_next_thing_to_do(state: dict, heading: str,
     assert out == [f'{heading}<div class="notice-sub">{sub}</div>', heading]
 
 
+# The full-screen toolbar: markup written into it becomes new buttons, and a focused button that is replaced or
+# switched off leaves the focus on the body, as the browser does.
+_FS_TOOLBAR = r"""
+function fsToolbar(doc) {
+  var bar = { dataset: {}, buttons: [], on: {} };
+  bar.addEventListener = function(t, f) { bar.on[t] = f; };
+  bar.querySelectorAll = function() { return bar.buttons; };
+  Object.defineProperty(bar, 'innerHTML', { set: function(html) {
+    if (bar.buttons.indexOf(doc.activeElement) >= 0) doc.activeElement = doc.body;
+    bar.buttons = [];
+    html.replace(/<button[^>]*data-fs-act="([^"]+)"([^>]*)>([^<]*)<\/button>/g, function(m, act, rest, label) {
+      var off = / disabled/.test(rest), b = { dataset: { fsAct: act }, textContent: label };
+      b.closest = function() { return b; };
+      b.focus = function() { doc.activeElement = b; };
+      Object.defineProperty(b, 'disabled', { get: function() { return off; },
+        set: function(v) { off = !!v; if (off && doc.activeElement === b) doc.activeElement = doc.body; } });
+      bar.buttons.push(b);
+    });
+  } });
+  return bar;
+}
+"""
+
 # The hint box and the full-screen bar, on a page that counts every write to their words.
-_LIVE_PAGE = """
-var els = {}, writes = {};
+_LIVE_PAGE = (
+    _FS_TOOLBAR
+    + """
+var els = {}, writes = {}, document = { activeElement: null, body: {} };
 function $(id) {
+  if (id === 'fs-actions') return els[id] = els[id] || fsToolbar(document);
   if (!els[id]) {
     var words = { innerHTML: '', textContent: '' };
     els[id] = { classList: { toggle: function() {} }, style: {} };
@@ -2162,7 +2188,8 @@ function hideLoupe() { loupe = 'hidden'; }
 var S = { lensLoaded: null }, lensPending = null, lensHold = true, lensSelected = { line: 0, point: 2 };
 var lensLines = [{ misfit: false }], lensFit = null;
 """
-_LIVE = ("esc", "setLive", "renderLensHint", "renderFsBar", "dropLensPoint")
+)
+_LIVE = ("esc", "setLive", "renderLensHint", "renderFsBar", "fsActions", "dropLensPoint")
 
 
 @pytest.mark.parametrize("full_screen", [True, False], ids=["full screen", "on the page"])
@@ -2192,6 +2219,133 @@ def test_the_hint_and_the_full_screen_bar_are_only_rewritten_when_their_words_ch
     )
     # Both are polite live regions: a redraw with the same words is not read out again.
     assert out == [[1, 1], [1, 1], [2, 2], [2, 2]]
+
+
+# A full-screen Lens session: the page's press listeners, the toolbar's, and its buttons' actions.
+_FS_LENS_PAGE = (
+    _FS_TOOLBAR
+    + """
+var window = globalThis, docOn = [];
+var overlay = { focus: function() { document.activeElement = overlay; } };
+var document = { activeElement: null, body: {}, getElementById: function(id) { return $(id); },
+  addEventListener: function(t, f, capture) { docOn.push([t, f, !!capture]); } };
+var els = { 'fs-actions': fsToolbar(document), 'lens-overlay': overlay,
+  'lens-lines': { contains: function(el) { return false; } } };
+function $(id) {
+  return els[id] = els[id] || { classList: { toggle: function() {} }, style: {}, textContent: '', innerHTML: '' };
+}
+var FS = { key: 'lens' }, lensHintText = 'Check the line.', hintText = '', lensFit = null;
+function renderLensHint() {} function hideLoupe() {} function lensReleaseCandidate() {}
+function lensMeasured() { return false; } function wizLensPairValid() { return true; }
+function lensChanged() { renderLensToolbar(); renderFsBar(); }
+function line() { return { misfit: false, mids: [{ on: true }, { on: true }, { on: true }] }; }
+var lensLines = [line(), line()], lensSelected = null, lensHold = false;
+function fire(type, target) {
+  var e = { type: type, target: target, pointerType: 'mouse' };
+  docOn.filter(function(l) { return l[0] === type && l[2]; }).forEach(function(l) { l[1](e); });
+  if (els['fs-actions'].on[type]) els['fs-actions'].on[type](e);
+  docOn.filter(function(l) { return l[0] === type && !l[2]; }).forEach(function(l) { l[1](e); });
+}
+function button(act) { return els['fs-actions'].buttons.filter(function(b) { return b.dataset.fsAct === act; })[0]; }
+// A mouse press focuses the button; its click comes only if the button it pressed is still there on release.
+function mouseClick(b) {
+  fire('pointerdown', b); document.activeElement = b; fire('pointerup', b);
+  if (els['fs-actions'].buttons.indexOf(b) >= 0) fire('click', b);
+}
+// Enter clicks the focused button, if a button has the focus.
+function enter() { var t = document.activeElement; if (t && t.dataset) fire('click', t); }
+function select(sel, held) { lensSelected = sel; lensHold = held; renderLensToolbar(); renderFsBar(); }
+function focusName() {
+  var b = els['fs-actions'].buttons.indexOf(document.activeElement);
+  return b >= 0 ? document.activeElement.dataset.fsAct : document.activeElement === overlay ? 'picture' : 'body';
+}
+"""
+)
+
+
+def _fs_lens(expression: str, **inputs) -> list:
+    listeners = "\n".join(
+        wizard_block(start)
+        for start in (
+            "document.addEventListener('pointerdown', function() { clearTimeout(lensPressTimer)",
+            "document.addEventListener('pointerup', function(e) {",
+            "['click', 'pointercancel', 'contextmenu'].forEach(",
+            "document.addEventListener('pointerdown', function(e) { if (lensHold",
+            "$('fs-actions').addEventListener('click', function(e) {",
+        )
+    )
+    actions = "\n".join(wizard_window_function(f) for f in ("lensToggleSelectedPoint", "lensDeleteSelectedLine"))
+    return run_wizard_js(
+        f"(function() {{ {listeners}\n{actions}\n{expression} }})()",
+        functions=("esc", "setLive", "renderFsBar", "fsActions", "renderLensToolbar", "dropLensPoint", "lensPressEnd"),
+        variables=("lensPress",),
+        prelude=_FS_LENS_PAGE,
+        **inputs,
+    )
+
+
+@pytest.mark.parametrize("held", [False, True], ids=["line selected", "point held"])
+def test_a_mouse_click_on_delete_line_in_full_screen_deletes_the_line(held: bool) -> None:
+    out = _fs_lens(
+        "select({ line: 0, point: held ? 2 : null }, held); var b = button('delete-line'); mouseClick(b);"
+        " return [button('delete-line') === b, lensLines.length, lensSelected, lensHold, b.disabled];",
+        held=held,
+    )
+    # The press and its release redraw the toolbar: the pressed button stays, so its click still lands.
+    assert out == [True, 1, None, False, True]
+
+
+@pytest.mark.parametrize("held", [False, True], ids=["point selected", "point held"])
+def test_a_mouse_click_on_point_off_in_full_screen_switches_the_point_off(held: bool) -> None:
+    out = _fs_lens(
+        "select({ line: 0, point: 2 }, held); var b = button('point-off'), seen = [b.textContent]; mouseClick(b);"
+        " seen.push(button('point-off') === b, lensLines[0].mids[1].on, b.textContent, b.disabled); mouseClick(b);"
+        " seen.push(lensLines[0].mids[1].on, b.textContent); return seen;",
+        held=held,
+    )
+    assert out == ["Point off", True, False, "Point on", False, True, "Point off"]
+
+
+def test_enter_on_point_off_in_full_screen_keeps_the_focus_on_the_button() -> None:
+    out = _fs_lens(
+        "select({ line: 0, point: 2 }, false); var b = button('point-off'); b.focus(); enter();"
+        " var seen = [focusName(), lensLines[0].mids[1].on]; enter();"
+        " return seen.concat([focusName(), lensLines[0].mids[1].on, document.activeElement === b]);"
+    )
+    # Enter again switches it back on: the keys stay on the toolbar.
+    assert out == ["point-off", False, "point-off", True, True]
+
+
+@pytest.mark.parametrize("press", ["enter", "mouse"])
+def test_a_focused_full_screen_button_switched_off_hands_the_focus_to_the_picture(press: str) -> None:
+    out = _fs_lens(
+        "select({ line: 1, point: 2 }, false); var b = button('delete-line');"
+        " if (press === 'enter') { b.focus(); enter(); } else mouseClick(b);"
+        " return [focusName(), lensLines.length, button('point-off').disabled, b.disabled];",
+        press=press,
+    )
+    # Delete line leaves nothing selected: both buttons are off, and the arrow keys and Tab start from the picture.
+    assert out == ["picture", 1, True, True]
+
+
+def test_a_full_screen_button_keeps_the_focus_when_it_stays_on() -> None:
+    out = _fs_lens(
+        "select({ line: 0, point: 2 }, false); button('delete-line').focus();"
+        " select({ line: 0, point: null }, false); return [focusName(), button('point-off').disabled];"
+    )
+    # Only the switched-off button gives the focus away.
+    assert out == ["delete-line", True]
+
+
+@pytest.mark.parametrize("key", ["cal", "review"])
+def test_the_full_screen_bar_has_no_buttons_outside_the_lens_step(key: str) -> None:
+    out = _fs_lens(
+        "select({ line: 0, point: 2 }, false); FS = { key: key }; S = { mode: 'simple', solve: null };"
+        " renderFsBar(); var n = els['fs-actions'].buttons.length; FS = { key: 'lens' }; renderFsBar();"
+        " return [n, els['fs-actions'].buttons.map(function(b) { return b.dataset.fsAct; })];",
+        key=key,
+    )
+    assert out == [0, ["point-off", "delete-line"]]
 
 
 @pytest.mark.parametrize(

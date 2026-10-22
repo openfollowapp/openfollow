@@ -1610,3 +1610,17 @@ def test_the_served_wizard_names_each_picture_once(live_server) -> None:
         assert re.findall(r'<img id="[^"]+" alt="([^"]*)"', block) == [""], key
         assert re.findall(r'<svg id="[^"]+"[^>]*aria-label="([^"]+)"', block) == ["Camera snapshot"], key
     assert '<div id="cam-error" class="wizard-field-error" role="alert" hidden>' in body
+
+
+@integration
+def test_the_served_wizard_has_one_point_menu_and_its_panel_slot_under_the_picture(live_server) -> None:
+    _, base = live_server
+    status, body = _get(base, "/wizard")
+    assert status == 200
+    page = _without_scripts(body)
+    start, slot = page.index('<div id="cal-container"'), page.index('<div id="pin-menu-slot"></div>')
+    # The menu starts in the picture; the slot a phone's panel moves it to follows the closed picture frame.
+    assert page.count('id="pin-menu"') == 1 and start < page.index('id="pin-menu"') < slot
+    between = page[start:slot]
+    assert between.count("<div") == between.count("</div>")
+    assert slot < page.index('id="cal-refresh"')

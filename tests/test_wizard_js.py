@@ -3277,23 +3277,24 @@ def test_the_pin_menu_scrolls_inside_the_picture_it_cannot_outgrow() -> None:
 
 
 @pytest.mark.parametrize("size", [(260, 120), (288, 184)], ids=["the list", "a form at its tallest"])
-def test_the_pin_menu_is_placed_inside_a_phones_picture(size: tuple) -> None:
-    # A 390 px wide phone: the picture is 358 x 201 px, and the menu at most 16 px less high.
+def test_the_pin_menu_is_placed_inside_the_smallest_picture_that_keeps_it(size: tuple) -> None:
+    # A 16:9 picture keeps the popup from 640 x 360 CSS px; the menu is at most 16 px less high.
     out = run_wizard_js(
         "(function() { var out = []; for (var x = 0; x <= 1920; x += 160) for (var y = 0; y <= 1080; y += 90) {"
         " S.pinMenu = { p: [x, y] }; positionPinMenu();"
         " out.push([parseFloat(m.style.left), parseFloat(m.style.top)]); }"
         " return out; })()",
-        functions=("positionPinMenu",),
-        prelude="var imageWidth = 1920, S = {}; function menuLoupe() {}"
-        f" var m = {{ offsetWidth: {size[0]}, offsetHeight: {size[1]}, style: {{}} }};"
-        " var box = { getBoundingClientRect: function() { return { width: 358, height: 201.375 }; } };"
+        functions=("pinMenuAsPanel", "positionPinMenu"),
+        prelude="var imageWidth = 1920, S = {}, FS = null; function menuLoupe() {} function renderCalibOverlay() {}"
+        " var box = { getBoundingClientRect: function() { return { width: 640, height: 360 }; } };"
+        f" var m = {{ offsetWidth: {size[0]}, offsetHeight: {size[1]}, style: {{}}, parentNode: box,"
+        " classList: { toggle: function() {} } };"
         " function $(id) { return id === 'pin-menu' ? m : box; }",
     )
     w, h = size
     for left, top in out:
-        assert left >= 8 and left + w <= 358 - 8, (left, top)
-        assert top >= 8 and top + h <= 201.375 - 8, (left, top)
+        assert left >= 8 and left + w <= 640 - 8, (left, top)
+        assert top >= 8 and top + h <= 360 - 8, (left, top)
 
 
 # ---------------------------------------------------------------------------
@@ -4189,20 +4190,21 @@ els['cal-container'] = Object.assign(fakeEl('cal-container'),
   { getBoundingClientRect: function() { return { width: 960 }; } });
 els['cal-overlay'] = Object.assign(fakeEl('cal-overlay'), { setPointerCapture: function() {} });
 els['pin-menu'] = Object.assign(fakeEl('pin-menu'), { hidden: true,
-  classList: { add: function() {}, remove: function() {} },
+  classList: { add: function() {}, remove: function() {}, contains: function() { return false; } },
   querySelector: function() { return { focus: function() {} }; } });
 function svgPoint(s, e) { return [e.clientX * 2, e.clientY * 2]; }
 function showLoupe() {} function positionPinMenu() {} function currentMarks() { return []; }
 // What a press, a key or a click lands on: a pin, the bare picture, or a menu item ({ pm } or { place }).
 function pin(id) {
-  return { closest: function(sel) {
+  return { isConnected: true, closest: function(sel) {
     if (sel.indexOf('.pin-handle') >= 0) return { dataset: { mark: String(id) } };
     return sel === '#cal-overlay' ? {} : null; }, matches: function() { return false; } };
 }
-var picture = { closest: function(sel) { return sel === '#cal-hit' || sel === '#cal-overlay' ? {} : null; },
+var picture = { isConnected: true,
+  closest: function(sel) { return sel === '#cal-hit' || sel === '#cal-overlay' ? {} : null; },
   matches: function(sel) { return sel === '#cal-hit'; } };
 function item(data) {
-  return { closest: function(sel) {
+  return { isConnected: true, closest: function(sel) {
     if (sel === '[data-pm]') return data.pm ? { dataset: { pm: data.pm } } : null;
     if (sel === '[data-place]') return data.place ? { dataset: { place: data.place }, disabled: false } : null;
     return sel.indexOf('#pin-menu') >= 0 ? {} : null; } };
@@ -4528,3 +4530,288 @@ def test_a_click_away_from_its_press_is_no_tap_even_without_a_reported_move(type
         at=at,
     )
     assert out == taps
+
+
+# ---------------------------------------------------------------------------
+# On a picture under 480 x 360 CSS px the Advanced menu is a panel under the picture, in full screen a sheet
+# ---------------------------------------------------------------------------
+
+_PANEL_PAGE = """
+// The picture's CSS size decides where the one menu goes; every element keeps its parent, so a move shows.
+var view = { w: 960, h: 540 }, scrolls = [];
+function setTimeout(f) { f(); return 0; } function clearTimeout() {}
+var window = { addEventListener: function(t, f) { listeners.push(['window', t, f, false]); } };
+var resizeTimer = null; function renderLens() {} function renderReview() {} function renderFsBar() {}
+function classes() {
+  var on = {};
+  return { add: function(c) { on[c] = true; }, remove: function(c) { delete on[c]; },
+    toggle: function(c, f) { if (f) on[c] = true; else delete on[c]; }, contains: function(c) { return !!on[c]; },
+    list: function() { return Object.keys(on).sort(); } };
+}
+function adopt(parent, child) {
+  if (child.parentNode) child.parentNode.kids.splice(child.parentNode.kids.indexOf(child), 1);
+  child.parentNode = parent; parent.kids.push(child);
+}
+function box(id, extra) {
+  els[id] = Object.assign(fakeEl(id), { kids: [], appendChild: function(c) { adopt(this, c); },
+    insertBefore: function(c, ref) { adopt(this, c); this.before = ref; }, querySelector: function() { return null; } },
+    extra || {});
+}
+var fsBtn = { id: 'fs-btn' };
+box('pin-menu-slot'); box('fs-shell');
+box('fs-stage', { getBoundingClientRect: function() { return { width: 844, height: 348 }; } });
+box('cal-container', { getBoundingClientRect: function() { return { width: view.w, height: view.h }; },
+  querySelector: function(sel) { return sel === '.fs-btn' ? fsBtn : null; } });
+els['pin-menu'] = Object.assign(fakeEl('pin-menu'), { hidden: true, classList: classes(), offsetWidth: 260,
+  offsetHeight: 180, scrollIntoView: function(o) { scrolls.push(o.block); },
+  querySelector: function() { return { focus: function() { focused = 'first item'; } }; } });
+els['cal-container'].appendChild(els['pin-menu']);
+function where() {
+  var m = $('pin-menu');
+  return [m.parentNode.id, m.classList.list(), !!m.style.left];
+}
+var away = { isConnected: true, nodeType: 1, closest: function() { return null; },
+  matches: function() { return false; } };
+var AXIS_NOTE = { x: '', y: '', z: '' }; function lenSuffix() { return 'm'; } function lenInput() { return ''; }
+function lenField() { return '0'; } function pointOptions() { return ''; } function refreshEchoes() {}
+els['pm-point'] = Object.assign(fakeEl('pm-point'), { select: function() {} });
+"""
+_PANEL_FUNCTIONS = (
+    *_PIN_TAP_FUNCTIONS,
+    "pinMenuAsPanel",
+    "positionPinMenu",
+    "menuLoupe",
+    "fsLayout",
+    "fsRender",
+    "nudgeMenuSpot",
+    "pinMenuForm",
+)
+
+
+def _panel(expression: str, **inputs) -> list:
+    return run_wizard_js(
+        "(function() { calibInit();" + expression + " })()",
+        functions=_PANEL_FUNCTIONS,
+        prelude=_MENU_PAGE + _PIN_TAP_PAGE + _PANEL_PAGE,
+        **inputs,
+    )
+
+
+@pytest.mark.parametrize(
+    ("size", "panel"),
+    [
+        ((358, 201.4), True),
+        ((620, 348.8), True),
+        ((479.9, 400), True),
+        ((480, 359.9), True),
+        ((480, 360), False),
+        ((990, 557), False),
+        ((1200, 675), False),
+    ],
+    ids=[
+        "portrait phone",
+        "landscape phone",
+        "just under 480 wide",
+        "just under 360 high",
+        "480 x 360",
+        "1024 x 768 tablet",
+        "desktop",
+    ],
+)
+def test_the_menu_is_a_panel_on_a_picture_under_480_by_360(size: tuple, panel: bool) -> None:
+    out = _panel("view = { w: size[0], h: size[1] }; openPinMenu([960, 540]); return where();", size=size)
+    # A panel sits in the slot under the picture, full width; the popup stays in the picture, before its button.
+    assert out == (["pin-menu-slot", ["as-panel"], False] if panel else ["cal-container", [], True])
+
+
+def test_a_panel_opens_under_the_picture_and_scrolls_into_view() -> None:
+    out = _panel(
+        "view = { w: 358, h: 201 }; openPinMenu([960, 540]); var opened = [where(), scrolls.slice(), focused];"
+        " S.pinMenu.p = [10, 10]; positionPinMenu(); var moved = scrolls.length;"
+        " placeFromMenu('new-known'); var formed = scrolls.length;"
+        " closePinMenu(); openPinMenu([5, 5]); closePinMenu(); openPointMenu(2);"
+        " return [opened, moved, formed, scrolls.length];"
+    )
+    # It opens out of the clipping picture and into view; moving its spot does not scroll, a new form and
+    # each opening in the slot it already sits in do.
+    assert out == [[["pin-menu-slot", ["as-panel"], False], ["nearest"], "first item"], 1, 2, 4]
+
+
+def test_the_popup_never_scrolls_the_page() -> None:
+    out = _panel("openPinMenu([960, 540]); openPointMenu(2); return scrolls;")
+    assert out == []
+
+
+@pytest.mark.parametrize(("panel", "cross"), [(False, False), (True, True)], ids=["popup", "panel"])
+def test_a_panels_spot_is_marked_with_a_crosshair(panel: bool, cross: bool) -> None:
+    out = run_wizard_js(
+        "(function() { var shown = []; $('pin-menu').classList = { contains: function(c) {"
+        " return panel && c === 'as-panel'; } };"
+        " [{ p: [100, 50], pin: null }, { p: [10, 10], pin: 1 }, null].forEach(function(m) {"
+        " S.pinMenu = m; renderCalibOverlay(); var h = $('cal-pins').innerHTML;"
+        " function n(c) { return (h.match(new RegExp('class=\"' + c + '\"', 'g')) || []).length; }"
+        " shown.push([n('pin-pending'), n('pin-pending-cross')]); });"
+        " return shown; })()",
+        functions=("esc", "pinBehind", "pinFlagged", "pinLabel", "pendingMark", "renderCalibOverlay"),
+        variables=("DISTANCE_SIGMA",),
+        prelude=_DOM + _REVIEW_STUBS + "imageWidth = 1920; imageHeight = 1080;"
+        " var S = { mode: 'advanced', pair: 0, selPin: null, selCorner: null, pinMenu: null, solve: null };"
+        " function currentMarks() { return [{ id: 1, name: 'DSL', pin: [10, 10] }]; }",
+        panel=panel,
+    )
+    # A spot's menu marks the spot (the panel adds a crosshair, as no menu points at it); a pin's menu has its pin.
+    assert out == [[1, 1 if cross else 0], [0, 0], [0, 0]]
+
+
+def test_a_pins_menu_shows_its_pin_selected() -> None:
+    out = _panel("view = { w: 358, h: 201 }; openPointMenu(3); return [S.selPin, where()[0]];")
+    assert out == [3, "pin-menu-slot"]
+
+
+_KEYS_AND_FOCUS = (
+    "view = layout === 'panel' ? { w: 358, h: 201 } : { w: 960, h: 540 }; eval(escKey); var seen = [];"
+    " function key(k) { dispatch('page', 'keydown', away, { key: k, nodeType: 1 }); }"
+    " openPinMenu([100, 100]); document.activeElement = { inside: 'pin-menu' }; seen.push(focused);"
+    " key('ArrowRight'); key('ArrowDown'); seen.push(S.pinMenu.p);"
+    " key('Escape'); seen.push(focused, S.pinMenu);"
+    " openPointMenu(2); document.activeElement = { inside: 'pin-menu' }; seen.push(focused);"
+    " dispatch('pin-menu', 'pointerdown', item({ pm: 'close' })); dispatch('pin-menu', 'click', item({ pm: 'close' }));"
+    " seen.push(focused, S.pinMenu);"
+    " openPinMenu([5, 5]); fire('document', 'focusin', { target: away }); seen.push(S.pinMenu);"
+    " return seen;"
+)
+
+
+@pytest.mark.parametrize("layout", ["popup", "panel"])
+def test_a_panel_takes_the_same_keys_and_focus_as_the_popup(layout: str) -> None:
+    esc_key = wizard_block("document.addEventListener('keydown', function(e) {\n    if (e.key !== 'Escape') return;")
+    out = _panel(_KEYS_AND_FOCUS, layout=layout, escKey=esc_key)
+    # Its first item takes the focus, the arrows move the spot, Esc and x give the focus back, Tab out closes it.
+    assert out == ["first item", [101, 101], "cal-overlay", None, "first item", "pin 2", None, None]
+
+
+@pytest.mark.parametrize("layout", ["popup", "panel"])
+def test_a_panel_ignores_the_clicks_of_the_gesture_that_opened_it(layout: str) -> None:
+    out = _panel(
+        "view = layout === 'panel' ? { w: 358, h: 201 } : { w: 960, h: 540 };"
+        " var del = item({ pm: 'delete' }), seen = [];"
+        " dispatch('cal-overlay', 'pointerdown', pin(2)); dispatch('cal-overlay', 'pointerup', pin(2));"
+        " clickAt(pin(2), del); seen.push(state(), where()[0]);"
+        " dispatch('pin-menu', 'pointerdown', del); dispatch('pin-menu', 'click', del);"
+        " seen.push(state()); return seen;",
+        layout=layout,
+    )
+    home = "pin-menu-slot" if layout == "panel" else "cal-container"
+    assert out == [[2, _BOTH_PINNED], home, [None, ["3:pinned"]]]
+
+
+@pytest.mark.parametrize(
+    ("layout", "event", "target", "closed"),
+    [
+        ("popup", "pointerdown", "away", True),
+        ("panel", "pointerdown", "away", False),
+        ("panel", "click", "away", True),
+        ("panel", "click", "detached", False),
+        ("panel", "click", "menu", False),
+        ("panel", "click", "picture", False),
+    ],
+    ids=[
+        "popup: a press elsewhere",
+        "panel: the press of a swipe",
+        "panel: a click elsewhere",
+        "panel: a rebuilt menu's item",
+        "panel: inside the panel",
+        "panel: on the picture",
+    ],
+)
+def test_a_panel_closes_on_a_click_elsewhere_not_on_a_press(layout: str, event: str, target: str, closed: bool) -> None:
+    out = _panel(
+        "view = layout === 'panel' ? { w: 358, h: 201 } : { w: 960, h: 540 }; openPinMenu([100, 100]);"
+        " var t = { away: away, detached: Object.assign({}, away, { isConnected: false }),"
+        " menu: item({ pm: 'none' }), picture: picture }[target];"
+        " dispatch('page', event, t); return S.pinMenu === null;",
+        layout=layout,
+        event=event,
+        target=target,
+    )
+    # A swipe that scrolls the page down to the panel starts with a press, and makes no click.
+    assert out is closed
+
+
+def test_full_screen_shows_the_menu_as_a_sheet_with_the_picture_above_it() -> None:
+    out = _panel(
+        "FS = { key: 'cal', cont: { style: {} }, pad: 0 }; view = { w: 390, h: 219 };"
+        " openPinMenu([960, 540]);"
+        " var open = [where(), $('fs-stage').style.paddingBottom, FS.cont.style.width, scrolls];"
+        " placeFromMenu('new-known'); open.push(scrolls.length);"
+        " closePinMenu(); return [open, $('fs-stage').style.paddingBottom, FS.cont.style.width];"
+    )
+    # The sheet takes the shell's bottom 180 px: the picture fits the 168 px above it, and is whole again once closed.
+    # A sheet never scrolls the page behind the shell, not even for a form.
+    assert out == [[["fs-shell", ["as-panel", "as-sheet"], False], "180px", "298px", [], 0], "", "618px"]
+
+
+def test_full_screen_on_a_tablet_keeps_the_popup() -> None:
+    out = _panel(
+        "FS = { key: 'cal', cont: { style: {} }, pad: 0 }; view = { w: 990, h: 557 };"
+        " openPinMenu([960, 540]); return [where()[0], where()[1], $('fs-stage').style.paddingBottom || ''];"
+    )
+    assert out == ["cal-container", [], ""]
+
+
+@pytest.mark.parametrize(
+    ("first", "then", "home"),
+    [("popup", "panel", "pin-menu-slot"), ("panel", "popup", "cal-container")],
+    ids=["turned to portrait", "turned to landscape"],
+)
+def test_a_resize_moves_an_open_menu_and_keeps_its_focus(first: str, then: str, home: str) -> None:
+    out = _panel(
+        "var sizes = { popup: { w: 990, h: 557 }, panel: { w: 358, h: 201 } }; view = sizes[first]; eval(onResize);"
+        " openPinMenu([960, 540]); var base = renderCalibOverlay, drawnAs = null;"
+        " renderCalibOverlay = function() { base(); drawnAs = $('pin-menu').classList.contains('as-panel'); };"
+        " document.activeElement = { inside: 'pin-menu', focus: function() { focused = 'kept'; } };"
+        " view = sizes[then]; fire('window', 'resize', {});"
+        " return [where(), $(home).before === fsBtn, focused, drawnAs, S.pinMenu.p];",
+        first=first,
+        then=then,
+        home=home,
+        onResize=wizard_block("window.addEventListener('resize'"),
+    )
+    # Moving the element drops its focus: it is given back. The spot's marker is drawn for the new layout.
+    # The popup goes back before the picture's full-screen button, its place in the Tab order.
+    placed = [home, ["as-panel"], False] if then == "panel" else [home, [], True]
+    assert out == [placed, then == "popup", "kept", then == "panel", [960, 540]]
+
+
+def test_a_panel_is_full_width_and_never_scrolls_inside() -> None:
+    src = WIZARD_TEMPLATE.read_text(encoding="utf-8")
+    panel = re.search(r"\n  \.pin-menu\.as-panel \{([^}]*)\}", src).group(1)
+    for decl in ("position: static", "width: auto", "max-width: none", "max-height: none", "overflow: visible"):
+        assert decl in panel, decl
+    sheet = re.search(r"\n  \.pin-menu\.as-sheet \{([^}]*)\}", src).group(1)
+    for decl in ("position: absolute", "left: 0", "right: 0", "bottom: 0", "max-height: 50%", "overflow-y: auto"):
+        assert decl in sheet, decl
+    # The layout classes come after the popup's own width for a form, so they win.
+    assert src.index(".pin-menu.as-panel {") > src.index(".pin-menu.form {")
+
+
+def test_the_panel_slot_is_under_the_picture_outside_its_clipping_frame() -> None:
+    src = WIZARD_TEMPLATE.read_text(encoding="utf-8")
+    start, slot = src.index('<div id="cal-container"'), src.index('<div id="pin-menu-slot"></div>')
+    between = src[start:slot]
+    # The picture's container is closed before the slot, and the Refresh Image row follows it.
+    assert between.count("<div") == between.count("</div>")
+    assert re.match(r'\s*<div id="cal-no-feed"', src[slot + len('<div id="pin-menu-slot"></div>') :])
+    assert slot < src.index('id="cal-refresh"')
+    assert src.count('id="pin-menu"') == 1
+
+
+@pytest.mark.parametrize(("size", "avoided"), [((358, 201), False), ((960, 540), True)], ids=["panel", "popup"])
+def test_the_loupe_keeps_clear_only_of_a_menu_on_the_picture(size: tuple, avoided: bool) -> None:
+    out = _panel(
+        "var avoid = 'none'; showLoupe = function(c, o, p, a) { avoid = a; };"
+        " view = { w: size[0], h: size[1] }; openPinMenu([960, 540]); return avoid === $('pin-menu');",
+        size=size,
+    )
+    # A panel under the picture covers none of it; its offsets are not the picture's.
+    assert out is avoided

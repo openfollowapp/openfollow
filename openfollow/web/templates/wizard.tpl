@@ -263,6 +263,7 @@
   .pin-cross { stroke: var(--text); stroke-width: 1; vector-effect: non-scaling-stroke; pointer-events: none; }
   .pin-label { fill: var(--text); stroke: var(--bg-deep); font-weight: 700; paint-order: stroke; pointer-events: none; }
   .pin-pending { fill: none; stroke: var(--accent); stroke-width: 2; stroke-dasharray: 4 3; vector-effect: non-scaling-stroke; pointer-events: none; }
+  .pin-pending-cross { fill: none; stroke: var(--accent); stroke-width: 2; vector-effect: non-scaling-stroke; pointer-events: none; }
   .reproj { fill: none; stroke: var(--success-mark); stroke-width: 1.5; vector-effect: non-scaling-stroke; pointer-events: none; }
   .origin-mark { fill: none; stroke: var(--info-text); stroke-width: 2.5; vector-effect: non-scaling-stroke; pointer-events: none; }
   .origin-label { fill: var(--info-text); stroke: var(--bg-deep); font-weight: 700; paint-order: stroke; pointer-events: none; }
@@ -306,6 +307,9 @@
   .pin-menu .kind { font-size: 0.72rem; font-weight: 500; color: var(--muted); }
   .pin-menu hr { border: 0; border-top: 1px solid var(--border-soft); margin: 0.3rem 0; }
   .pin-menu.form { width: 18rem; max-width: calc(100% - 16px); }
+  /* On a picture under 480 x 360 CSS px: a panel under the picture, in full screen a sheet at the shell's bottom. */
+  .pin-menu.as-panel { position: static; width: auto; min-width: 0; max-width: none; max-height: none; overflow: visible; margin-top: 0.5rem; box-shadow: none; }
+  .pin-menu.as-sheet { position: absolute; left: 0; right: 0; bottom: 0; z-index: 7; max-height: 50%; overflow-y: auto; margin: 0; border-width: 1px 0 0; border-radius: 0.8rem 0.8rem 0 0; padding-bottom: calc(0.35rem + env(safe-area-inset-bottom)); }
   .pm-form { padding: 0 0.5rem 0.4rem; }
   .pm-form .field { min-width: 0; margin-bottom: 0.5rem; }
   .pm-form label { font-size: 0.66rem; }
@@ -625,6 +629,7 @@
       <div class="pin-menu" id="pin-menu" role="group" aria-label="Which point is here?" hidden></div>
       <button type="button" class="fs-btn" data-fs="cal" aria-label="Full screen">{{!_fs_icon}}</button>
     </div>
+    <div id="pin-menu-slot"></div>
     <div id="cal-no-feed" class="wizard-no-feed" style="display:none;">No video feed available. Configure a video source in the Video Source step, then return here and press <strong>Refresh Image</strong>.</div>
     <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
       <button type="button" class="secondary" id="cal-refresh" onclick="loadSnapshot(0, true)">Refresh Image</button>
@@ -2982,7 +2987,7 @@
         '<line class="pin-cross" x1="' + (m.pin[0] - 5 * u) + '" y1="' + m.pin[1] + '" x2="' + (m.pin[0] + 5 * u) + '" y2="' + m.pin[1] + '"/><line class="pin-cross" x1="' + m.pin[0] + '" y1="' + (m.pin[1] - 5 * u) + '" x2="' + m.pin[0] + '" y2="' + (m.pin[1] + 5 * u) + '"/>' +
         '<circle cx="' + m.pin[0] + '" cy="' + m.pin[1] + '" r="' + (18 * u) + '" fill="transparent"/>' + rep +
         pinLabel(m.pin, m.name, [13, 12], u) + '</g>';
-    }).join('') + (S.pinMenu && !S.pinMenu.pin ? '<circle class="pin-pending" cx="' + S.pinMenu.p[0] + '" cy="' + S.pinMenu.p[1] + '" r="' + (9 * u) + '"/>' : '');
+    }).join('') + (S.pinMenu && !S.pinMenu.pin ? pendingMark(S.pinMenu.p, u) : '');
     if (S.selCorner != null) holdCorner();
     else if (keep != null) {
       var el = document.querySelector('#cal-pins [data-mark="' + keep + '"]');
@@ -3064,6 +3069,14 @@
   // ---------------------------------------------------------------
   // Advanced: a click on the picture asks which unpinned point goes there, or makes a new point there
   // ---------------------------------------------------------------
+  // The spot of an open menu; a panel away from the picture adds a crosshair, as no menu points at it.
+  function pendingMark(p, u) {
+    var x = p[0], y = p[1], ring = '<circle class="pin-pending" cx="' + x + '" cy="' + y + '" r="' + (9 * u) + '"/>';
+    if (!$('pin-menu').classList.contains('as-panel')) return ring;
+    var a = 4 * u, b = 14 * u;
+    return ring + '<path class="pin-pending-cross" d="M' + (x - b) + ' ' + y + 'H' + (x - a) + 'M' + (x + a) + ' ' + y + 'H' + (x + b) +
+      'M' + x + ' ' + (y - b) + 'V' + (y - a) + 'M' + x + ' ' + (y + a) + 'V' + (y + b) + '"/>';
+  }
   function pinMenuHead(title) {
     $('pin-menu').setAttribute('aria-label', title);
     return '<div class="pin-menu-head"><div class="pin-menu-title">' + esc(title) + '</div><button type="button" class="pm-close" data-pm="close" aria-label="Close">&times;</button></div>';
@@ -3083,35 +3096,59 @@
       '<button type="button" class="pm-item" data-place="new-known"' + (full ? ' disabled' : '') + '><span>New known point</span><span class="kind">X/Y/Z</span></button>' +
       '<button type="button" class="pm-item" data-place="new-tri"' + (knownN < 2 || full ? ' disabled' : '') + '><span>New distance point</span>' + (knownN < 2 ? '<span class="kind">Needs two known points</span>' : '') + '</button>';
     m.hidden = false;
-    positionPinMenu();
+    positionPinMenu(true);
     renderCalibOverlay();
     setTimeout(function() { var first = m.querySelector('.pm-item:not(:disabled)'); if (first) first.focus({ preventScroll: true }); });
   }
   // A click on a pin: fix a misclick by removing the pin or deleting the point.
   function openPointMenu(id) {
     var q = S.points.filter(function(x) { return x.id === id; })[0]; if (!q || !q.pin) return;
-    S.pinMenu = { p: q.pin, form: null, pin: id }; menuGesture = gestureSeq;
+    S.pinMenu = { p: q.pin, form: null, pin: id }; S.selPin = id; menuGesture = gestureSeq;
     var m = $('pin-menu');
     m.classList.remove('form');
     m.innerHTML = pinMenuHead((q.name || ('P' + id)) + (q.kind === 'known' ? ' · Known point' : ' · Distance point')) +
       '<button type="button" class="pm-item" data-pm="unpin"><span>Remove pin</span><span class="kind">Keeps the point</span></button>' +
       '<button type="button" class="pm-item danger" data-pm="delete"><span>Delete point</span></button>';
     m.hidden = false;
-    positionPinMenu();
+    positionPinMenu(true);
     renderCalibOverlay();
     setTimeout(function() { m.querySelector('.pm-item').focus({ preventScroll: true }); });
   }
   // With the menu open, the loupe stays on its spot; arrow keys move the spot (or the pin) a pixel at a time.
-  function menuLoupe() { if (S.pinMenu) showLoupe('cal-container', 'cal-overlay', S.pinMenu.p, $('pin-menu')); }
+  function menuLoupe() {
+    var m = $('pin-menu');
+    if (S.pinMenu) showLoupe('cal-container', 'cal-overlay', S.pinMenu.p, m.classList.contains('as-panel') ? null : m);
+  }
   function nudgeMenuSpot(d) {
     var q = [Math.max(0, Math.min(imageWidth - 1, S.pinMenu.p[0] + d[0])), Math.max(0, Math.min(imageHeight - 1, S.pinMenu.p[1] + d[1]))];
     S.pinMenu.p = q;
     if (S.pinMenu.pin) { setPin(S.pinMenu.pin, q); solveSoon(); saveToSession(); }
     renderCalibOverlay(); menuLoupe();
   }
-  function positionPinMenu() {
-    var m = $('pin-menu'), p = S.pinMenu.p;
-    var rect = $('cal-container').getBoundingClientRect(), k = rect.width / imageWidth, x = p[0] * k + 12, y = p[1] * k + 12;
+  // The popup needs a picture of at least 480 x 360 CSS px; on a smaller one (a phone) the menu is a panel.
+  function pinMenuAsPanel(rect) { return rect.width < 480 || rect.height < 360; }
+  // The one menu moves between the picture, the panel slot under it and, in full screen, the shell's bottom.
+  // ``reveal`` scrolls a panel into view: on opening, and when it changes content or place.
+  function positionPinMenu(reveal) {
+    var m = $('pin-menu'), p = S.pinMenu.p, cont = $('cal-container');
+    var rect = cont.getBoundingClientRect(), panel = pinMenuAsPanel(rect), home = !panel ? cont : FS ? $('fs-shell') : $('pin-menu-slot');
+    var moved = m.parentNode !== home;
+    if (moved) {
+      // Moving an element drops its focus.
+      var a = m.contains(document.activeElement) ? document.activeElement : null;
+      if (panel) home.appendChild(m); else cont.insertBefore(m, cont.querySelector('.fs-btn'));
+      if (a) a.focus({ preventScroll: true });
+    }
+    m.classList.toggle('as-panel', panel); m.classList.toggle('as-sheet', panel && !!FS);
+    if (FS && (panel ? m.offsetHeight : 0) !== FS.pad) { fsLayout(); return; }
+    if (moved) renderCalibOverlay();
+    if (panel) {
+      m.style.left = ''; m.style.top = '';
+      if ((reveal || moved) && !FS) m.scrollIntoView({ block: 'nearest' });
+      menuLoupe();
+      return;
+    }
+    var k = rect.width / imageWidth, x = p[0] * k + 12, y = p[1] * k + 12;
     if (x + m.offsetWidth > rect.width - 8) x = p[0] * k - m.offsetWidth - 12;
     if (y + m.offsetHeight > rect.height - 8) y = Math.max(8, p[1] * k - m.offsetHeight - 12);
     m.style.left = Math.max(8, x) + 'px'; m.style.top = y + 'px';
@@ -3134,7 +3171,7 @@
     m.innerHTML = pinMenuHead(kind === 'known' ? 'New known point' : 'New distance point') +
       '<form class="pm-form" novalidate><div class="field"><label for="pm-point">Point</label><input type="text" id="pm-point" maxlength="60" autocomplete="off" data-1p-ignore data-lpignore="true" value="' + esc(name) + '"></div>' + f +
       '<div class="pm-actions"><button type="button" class="secondary small" data-pm="back">Back</button><button type="submit" class="btn-primary small" id="pm-ok" disabled>Place point</button></div></form>';
-    positionPinMenu();
+    positionPinMenu(true);
     pinMenuCheck();
     var n = $('pm-point'); n.focus({ preventScroll: true }); n.select();
   }
@@ -3169,6 +3206,7 @@
     var had = back !== undefined && $('pin-menu').contains(document.activeElement);
     S.pinMenu = null; $('pin-menu').hidden = true;
     hideLoupe('cal-container');
+    if (FS && FS.pad) fsLayout();
     renderCalibOverlay();
     if (had) focusCalPin(back);
   }
@@ -3409,7 +3447,12 @@
     $('pin-menu').addEventListener('change', pinMenuCheck);
     $('pin-menu').addEventListener('submit', function(e) { e.preventDefault(); placeNewFromMenu(); });
     // A press anywhere but the menu or the picture closes it; a click on the picture opens it there instead.
-    document.addEventListener('pointerdown', function(e) { if (S.pinMenu && !e.target.closest('#pin-menu') && !e.target.closest('#cal-overlay')) closePinMenu(); });
+    // A panel waits for the click, so a swipe that scrolls the page keeps it; a rebuilt menu's item is detached.
+    function outsideMenu(e, panel) {
+      return S.pinMenu && $('pin-menu').classList.contains('as-panel') === panel && !e.target.closest('#pin-menu') && !e.target.closest('#cal-overlay');
+    }
+    document.addEventListener('pointerdown', function(e) { if (outsideMenu(e, false)) closePinMenu(); });
+    document.addEventListener('click', function(e) { if (e.target.isConnected && outsideMenu(e, true)) closePinMenu(); });
     // Choosing a row only moves the highlight: a rebuilt table would drop the focus.
     function choosePair(r) {
       S.pair = +r.dataset.pair;
@@ -3578,7 +3621,7 @@
     cont.parentNode.insertBefore(ph, cont);
     dropCorner(); dropLensPoint();
     $('fs-stage').appendChild(cont);
-    FS = { key: key, cont: cont, ph: ph };
+    FS = { key: key, cont: cont, ph: ph, pad: 0 };
     $('fs-shell').hidden = false; document.body.style.overflow = 'hidden';
     var sh = $('fs-shell');
     if (sh.requestFullscreen) { try { var pr = sh.requestFullscreen(); if (pr && pr.catch) pr.catch(function() {}); } catch (e) { /* refused: the window-filling shell stays */ } }
@@ -3602,10 +3645,14 @@
     } else back();
   }
   // The picture keeps its aspect ratio: as wide as the stage allows without being taller than it.
+  // An open menu sheet takes the stage's bottom, so the picture fits above it.
   function fsLayout() {
     if (!FS || !imageWidth) return;
-    var st = $('fs-stage').getBoundingClientRect();
-    FS.cont.style.width = Math.floor(Math.min(st.width, st.height * imageWidth / imageHeight)) + 'px';
+    var m = $('pin-menu'), stage = $('fs-stage');
+    FS.pad = S.pinMenu && m.classList.contains('as-sheet') ? m.offsetHeight : 0;
+    stage.style.paddingBottom = FS.pad ? FS.pad + 'px' : '';
+    var st = stage.getBoundingClientRect();
+    FS.cont.style.width = Math.floor(Math.min(st.width, (st.height - FS.pad) * imageWidth / imageHeight)) + 'px';
     fsRender(FS.key); renderFsBar();
   }
   function fsRender(key) {
@@ -3863,7 +3910,7 @@
     resizeTimer = setTimeout(function() {
       if (!imageWidth) return;
       if (FS) { fsLayout(); return; }
-      renderLens(); renderCalibOverlay(); if (currentStep === WIZ.review) renderReview();
+      renderLens(); renderCalibOverlay(); if (S.pinMenu) positionPinMenu(); if (currentStep === WIZ.review) renderReview();
     }, 200);
   });
   wizardGo(restored ? currentStep : 0, true);

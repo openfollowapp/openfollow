@@ -87,7 +87,8 @@ class TestProject:
         _camera(config_path, k1=-0.2)
         line = [[-4.0, 2.0, 0.0], [4.0, 2.0, 0.0]]
         data = _call(base, "/api/scene/project", {"w": _W, "h": _H, "polylines": [line], "points": line})[1]
-        assert len(data["polylines"][0]) == 13
+        # One segment in 24 chords, as the Operator Screen draws it.
+        assert len(data["polylines"][0]) == 25
         assert len(data["points"]) == 2
         assert data["polylines"][0][0] == data["points"][0]
 
@@ -123,6 +124,13 @@ class TestProject:
         base, _ = live
         line = [[float(i), 0.0, 0.0] for i in range(5000)]
         assert _call(base, "/api/scene/project", {"w": _W, "h": _H, "polylines": [line]})[0] == 400
+
+    @pytest.mark.parametrize(("count", "status"), [(1666, 200), (1667, 400)])
+    def test_a_request_may_carry_1666_points(self, live, count: int, status: int) -> None:  # noqa: ANN001
+        base, config_path = live
+        _camera(config_path, k1=-0.2)
+        line = [[0.001 * i, 3.0, 0.0] for i in range(count)]
+        assert _call(base, "/api/scene/project", {"w": _W, "h": _H, "polylines": [line]})[0] == status
 
     def test_a_body_that_is_not_an_object_is_refused(self, live) -> None:  # noqa: ANN001
         base, _ = live

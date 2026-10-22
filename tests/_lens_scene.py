@@ -122,19 +122,19 @@ def riser_scene(shift: float = 4.0) -> Scene:
 
 def render(
     scene: Scene,
-    lens: tuple[float, float],
+    lens: tuple[float, ...],
     *,
     size: tuple[int, int] = (W, H),
     floor: float = FLOOR,
     noise: float = 3.0,
     seed: int = 0,
 ) -> np.ndarray:
-    """The scene as seen through ``lens``: luma ``(height, width)``, the strips and discs on a floor."""
-    k1, k2 = lens
+    """The scene as seen through ``lens``, ``(k1, k2)`` or ``(k1, k2, cx, cy)``: luma ``(height, width)``."""
+    k1, k2, cx, cy = (*lens, 0.0, 0.0) if len(lens) == 2 else lens
     width, height = size
     yy, xx = np.mgrid[0:height, 0:width]
     pixels = np.column_stack([xx.ravel(), yy.ravel()]).astype(np.float64)
-    u = invert_overlay_distortion(pixels, width, height, k1, k2, 0.0, 0.0)
+    u = invert_overlay_distortion(pixels, width, height, k1, k2, cx, cy)
     img = np.full(u.shape[0], floor)
     for disc in scene.discs:
         d = np.hypot(u[:, 0] - disc.centre[0], u[:, 1] - disc.centre[1])

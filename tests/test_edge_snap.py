@@ -148,6 +148,16 @@ def test_a_strongly_bowed_edge_is_followed_along_its_length(lens) -> None:
     np.testing.assert_allclose(np.abs(distance), 7.0, atol=1.0)
 
 
+@pytest.mark.parametrize("lens", [(-0.9, 0.0), (-0.74, -0.152)], ids=["barrel-slider-end", "150-degree"])
+def test_an_edge_bowed_by_a_lens_near_the_slider_end_is_followed(lens) -> None:
+    """Below the centre such a lens bows a line by some 160-180 px: the corridor still holds it."""
+    p0, p1 = (90.0, 700.0), (1830.0, 690.0)
+    assert chord_sag(p0, p1, lens) > 150.0
+    pts = snap(strip_frame(p0, p1, lens), p0, p1)
+    assert all(p.snapped for p in pts)
+    np.testing.assert_allclose(np.abs(edge_distances(pts, p0, p1, lens)), 7.0, atol=1.5)
+
+
 def test_a_line_off_the_image_centre_keeps_the_bow_asymmetry() -> None:
     p0, p1 = (150.0, 200.0), (260.0, 1000.0)
     pts = snap(strip_frame(p0, p1, BARREL), p0, p1)
@@ -202,10 +212,10 @@ def test_an_edge_beyond_the_ends_reach_is_not_taken_at_the_ends() -> None:
 
 
 def test_an_end_stays_within_its_reach_of_the_click_beside_a_stronger_edge() -> None:
-    """A brighter strip a little further off must not pull the clicked ends over to it."""
+    """A brighter strip further off than the corridor must not pull the line over to it."""
     p0, p1 = (200.0, 500.0), (1700.0, 540.0)
     img = strip_frame(p0, p1, STRAIGHT, bright=110.0)
-    img = np.maximum(img, strip_frame((p0[0], p0[1] + 30.0), (p1[0], p1[1] + 30.0), STRAIGHT, bright=240.0))
+    img = np.maximum(img, strip_frame((p0[0], p0[1] + 60.0), (p1[0], p1[1] + 60.0), STRAIGHT, bright=240.0))
     clicks = (p0[0], p0[1] - 7.0 + 2.0), (p1[0], p1[1] - 7.0 - 2.0)
     pts = snap(img, *clicks)
     reach = end_search_radius(W)
@@ -288,7 +298,8 @@ def test_the_image_border_is_no_edge() -> None:
 
 
 def test_an_edge_that_bows_out_of_the_picture_is_unsnapped_there() -> None:
-    p0, p1 = (90.0, 1060.0), (1830.0, 1040.0)
+    # The strip's middle runs below the picture's bottom edge, its quarter points inside it.
+    p0, p1 = (90.0, 1025.0), (1830.0, 1015.0)
     pts = snap(strip_frame(p0, p1, BARREL), p0, p1)
     assert [p.snapped for p in pts] == [True, True, False, True, True]
     assert pts[2].y > H - 1

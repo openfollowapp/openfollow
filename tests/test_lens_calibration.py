@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import math
 from functools import cache
 
 import numpy as np
@@ -19,13 +20,16 @@ pytestmark = pytest.mark.unit
 LENSES = {
     "pinhole": (0.0, 0.0),
     "mild-barrel": (-0.15, 0.0),
-    "stage-camera": (-0.26, 0.05),
-    "wide-lens": (-0.47, 0.25),
+    "stage-camera": (-0.2, -0.03),
+    # A 126 degree lens (2.3 mm on 1920 x 1080).
+    "wide-lens": (-0.527, -0.069),
+    "corner-heavy": (-0.3, -0.3),
     "pincushion": (0.2, 0.0),
     "barrel-with-edge-fit": (-0.3, 0.1),
 }
 # How far either recovered coefficient may sit from the lens the picture was made with.
 K_TOLERANCE = 0.01
+HALF_DIAG = 0.5 * math.hypot(W, H)
 
 
 @cache
@@ -39,6 +43,7 @@ def assert_recovered(fit, lens: tuple[float, float]) -> None:
     assert fit.k1 == pytest.approx(lens[0], abs=K_TOLERANCE), (fit.k1, fit.k2)
     assert fit.k2 == pytest.approx(lens[1], abs=K_TOLERANCE), (fit.k1, fit.k2)
     assert fit.k2_fitted
+    assert (fit.cx, fit.cy, fit.centre_fitted) == (0.0, 0.0, False)
     assert fit.rating in ("okay", "good", "excellent")
     assert not any(line.misfit for line in fit.lines)
 
@@ -143,6 +148,20 @@ def test_one_pixel_deck_seams_at_720p_pin_the_pair(lens: tuple[float, float]) ->
     assert seams >= 2
 
 
+@pytest.mark.parametrize(("offset", "lens"), [((80.0, 50.0), "wide-lens"), ((-40.0, 25.0), "corner-heavy")])
+def test_a_lens_centre_off_the_picture_centre_is_measured(offset: tuple[float, float], lens: str) -> None:
+    """The lens bends the stage about a point off the picture's centre; the suggested lines find it."""
+    k1, k2 = LENSES[lens]
+    truth = (k1, k2, offset[0] / HALF_DIAG, offset[1] / HALF_DIAG)
+    fit = calibrate(render(stage_scene(), truth, noise=3.0)).fit
+    assert fit.centre_fitted
+    assert fit.cx * HALF_DIAG == pytest.approx(offset[0], abs=5.0)
+    assert fit.cy * HALF_DIAG == pytest.approx(offset[1], abs=5.0)
+    assert fit.k1 == pytest.approx(k1, abs=K_TOLERANCE)
+    assert fit.k2 == pytest.approx(k2, abs=K_TOLERANCE)
+    assert fit.rating in ("okay", "good", "excellent")
+
+
 def test_a_seam_running_on_up_a_riser_is_not_offered_as_one_line() -> None:
     """The deck seam and the riser seam beside it are two lines: no suggestion steps from one to the other."""
     lens = LENSES["stage-camera"]
@@ -156,13 +175,16 @@ def test_a_seam_running_on_up_a_riser_is_not_offered_as_one_line() -> None:
     assert_recovered(calibrate(img).fit, lens)
 
 
-def test_a_single_bowed_edge_already_tells_the_pair() -> None:
-    lens = LENSES["stage-camera"]
+def test_a_single_bowed_edge_measures_barrel_and_asks_for_a_corner() -> None:
+    """One edge across the picture shows the barrel; the corner correction needs a line into a corner."""
+    lens = LENSES["wide-lens"]
     front = Scene([Strip((100.0, 960.0), (1820.0, 960.0), 6.0, 210.0)])
     cal = calibrate(render(front, lens))
     assert len(cal.lines) == 1
-    assert cal.fit.k1 == pytest.approx(lens[0], abs=K_TOLERANCE)
-    assert cal.fit.k2 == pytest.approx(lens[1], abs=K_TOLERANCE)
+    assert cal.fit.k1 < -0.4
+    assert (cal.fit.k2, cal.fit.k2_fitted, cal.fit.centre_fitted) == (0.0, False, False)
+    assert cal.fit.lines[0].rms_px < 0.5
+    assert cal.fit.hint == "Add a second line in another part of the picture."
 
 
 def test_the_arena_default_gives_back_the_lens_it_was_drawn_with() -> None:

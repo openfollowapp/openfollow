@@ -24,6 +24,9 @@ from dataclasses import dataclass
 import numpy as np
 import numpy.typing as npt
 
+from openfollow.lens_model import C_BOUND, pull_back_to_valid
+from openfollow.scene.solver import distort_normalised_radius
+
 # The scaled luma is at most this wide; the scale is what brings the snapshot under it. A
 # soft 720p camera keeps its one-pixel deck seams only at full size.
 EDGE_MAP_WIDTH = 1280
@@ -43,7 +46,7 @@ _CORNER_ANGLE = math.radians(30.0)
 # the corner cut cannot see within its window of the end.
 _END_TRIM = _CORNER_WINDOW
 _MIN_LENGTH_FRACTION = 0.08
-# Scaled pixels a chain may stray from the quartic through it (a parabola misses the r^4 wave).
+# Scaled pixels a chain may stray from the quartic through it (a parabola misses the wave a corner term puts in a line).
 _SMOOTH_RMS = 1.0
 # Collinear pieces (directions within the angle, the gap along them) this close, as a share of
 # the scaled width, are one edge interrupted by a crossing or a cable: the tape grid's lines
@@ -57,9 +60,21 @@ _JOIN_OFFSET = 1.75
 # The sharpest bend a straight line takes through a lens, as curvature times the scaled width:
 # about 2 for a 100 degree lens, while a spotlight's rim is 20 and more.
 _MAX_CURVATURE_WIDTH = 4.0
-# How far a straight line through a lens strays from its own chord, as a share of the chord: a
-# few percent, while a wide arc (a round truss, a curved stage front) strays a quarter of it.
-_MAX_SAG_FRACTION = 0.1
+# How far a straight line strays from its own chord depends on where it runs: little near the
+# centre, up to a quarter of the chord along the edge of a wide lens. The bound is what the
+# slider ends (k1 = -1.0 or 0.5, k2 = -0.8 or 0.3) bend that chord, with the lens centre at the
+# frame centre or on the edge of its bound, each pulled back to a valid lens, times the margin.
+# A wide arc (a round truss, a curved stage front) away from the frame edge strays further.
+_SAG_LENSES = np.array(
+    [
+        pull_back_to_valid(k1, k2, C_BOUND * x, C_BOUND * y)
+        for k1, k2 in ((-1.0, 0.0), (0.0, -0.8), (0.5, 0.0), (0.0, 0.3))
+        for x in (-1.0, 0.0, 1.0)
+        for y in (-1.0, 0.0, 1.0)
+    ]
+)
+_SAG_MARGIN = 1.25
+_SAG_SAMPLES = 17
 # A chain with this share of its points within the distance (snapshot pixels) of an accepted one repeats it.
 _DUPLICATE_DISTANCE = 16.0
 _DUPLICATE_FRACTION = 0.5
@@ -270,8 +285,38 @@ def _along_across(chain: npt.NDArray[np.float64]) -> tuple[npt.NDArray[np.float6
     return rel @ axis, rel @ np.array([-axis[1], axis[0]])
 
 
-def _bows_like_a_line(chain: npt.NDArray[np.float64], max_curvature: float) -> bool:
-    """Whether the chain follows one quartic, bent and bowed no more than a lens bends a straight line."""
+@dataclass(frozen=True)
+class _Picture:
+    """The snapshot the scaled luma comes from: its scale and size in snapshot pixels."""
+
+    scale: int
+    width: float
+    height: float
+
+    def straight_sag(self, a: npt.NDArray[np.float64], b: npt.NDArray[np.float64]) -> float:
+        """Scaled pixels a straight line seen from ``a`` to ``b`` (scaled) may stray from its chord, at most."""
+        ends = (np.array([a, b]) + 0.5) * self.scale - 0.5
+        half_diag = 0.5 * math.hypot(self.width, self.height)
+        k1, k2, cx, cy = (_SAG_LENSES[:, i, None] for i in range(4))
+        # The lens model's closed-form undistortion of both ends, then the straight line between them.
+        vx = (ends[:, 0] - self.width / 2.0) / half_diag - cx
+        vy = (ends[:, 1] - self.height / 2.0) / half_diag - cy
+        s = vx * vx + vy * vy
+        g = 1.0 / (1.0 + k1 * s + k2 * s * s)
+        t = np.linspace(0.0, 1.0, _SAG_SAMPLES)
+        qx = (vx * g)[:, :1] + t * np.diff(vx * g, axis=1)
+        qy = (vy * g)[:, :1] + t * np.diff(vy * g, axis=1)
+        r_u = np.hypot(qx, qy)
+        scale = np.divide(distort_normalised_radius(r_u, k1, k2), r_u, out=np.ones_like(r_u), where=r_u > 0.0)
+        px = (cx + qx * scale) * half_diag + self.width / 2.0 - ends[0, 0]
+        py = (cy + qy * scale) * half_diag + self.height / 2.0 - ends[0, 1]
+        chord = ends[1] - ends[0]
+        across = (px * chord[1] - py * chord[0]) / max(float(np.hypot(*chord)), 1e-9)
+        return _SAG_MARGIN * float(np.max(np.abs(across))) / self.scale
+
+
+def _bows_like_a_line(chain: npt.NDArray[np.float64], max_curvature: float, picture: _Picture) -> bool:
+    """Whether the chain follows one quartic, bent and bowed no more than a lens bends a straight line there."""
     u, v = _along_across(chain)
     design = np.column_stack([u**k for k in range(5)])
     coefficients, *_ = np.linalg.lstsq(design, v, rcond=None)
@@ -284,7 +329,8 @@ def _bows_like_a_line(chain: npt.NDArray[np.float64], max_curvature: float) -> b
     first, last = int(np.argmin(u)), int(np.argmax(u))
     span = float(u[last] - u[first])
     chord = fitted[first] + (u - u[first]) * (fitted[last] - fitted[first]) / span
-    return float(np.max(np.abs(fitted - chord))) <= _MAX_SAG_FRACTION * span + _SMOOTH_RMS
+    sag = float(np.max(np.abs(fitted - chord)))
+    return sag <= _SMOOTH_RMS or sag <= picture.straight_sag(chain[first], chain[last]) + _SMOOTH_RMS
 
 
 def _join_offset(chain: npt.NDArray[np.float64], joint: int) -> float:
@@ -322,7 +368,7 @@ def _close_pairs(pts: npt.NDArray[np.float64], radius: float) -> tuple[npt.NDArr
 
 
 def _join_across_gaps(
-    pieces: list[npt.NDArray[np.float64]], gap: float, max_curvature: float
+    pieces: list[npt.NDArray[np.float64]], gap: float, max_curvature: float, picture: _Picture
 ) -> list[npt.NDArray[np.float64]]:
     """Pieces joined end to end where one continues another across a short gap.
 
@@ -368,7 +414,7 @@ def _join_across_gaps(
         first = pieces[pa] if a % 2 == 1 else pieces[pa][::-1]
         second = pieces[pb] if b % 2 == 0 else pieces[pb][::-1]
         both = np.concatenate([first, second])
-        if _join_offset(both, len(first)) > _JOIN_OFFSET or not _bows_like_a_line(both, max_curvature):
+        if _join_offset(both, len(first)) > _JOIN_OFFSET or not _bows_like_a_line(both, max_curvature, picture):
             continue
         link[a] = b
         link[b] = a
@@ -455,16 +501,17 @@ def find_edge_candidates(
     crowd = _CROWD_DISTANCE_FRACTION * w
     centre = np.array([(w - 1) / 2.0, (h - 1) / 2.0])
     half_diagonal = float(np.hypot(*centre))
+    picture = _Picture(scale, canvas_w, canvas_h)
 
     pieces = []
     for channel in ((edges, mag, etx, ety), (ridges, ridge, rtx, rty)):
         for chain in _trace_chains(*channel):
             for piece in _split_at_corners(chain):
                 piece = piece[_END_TRIM : len(piece) - _END_TRIM]
-                if len(piece) >= _JOIN_MIN_POINTS and _bows_like_a_line(piece, max_curvature):
+                if len(piece) >= _JOIN_MIN_POINTS and _bows_like_a_line(piece, max_curvature, picture):
                     pieces.append(piece)
     scored: list[tuple[float, npt.NDArray[np.float64], float, float]] = []
-    for piece in _join_across_gaps(pieces, _JOIN_GAP_FRACTION * w, max_curvature):
+    for piece in _join_across_gaps(pieces, _JOIN_GAP_FRACTION * w, max_curvature, picture):
         length = _arc_length(piece)
         if length < min_length:
             continue

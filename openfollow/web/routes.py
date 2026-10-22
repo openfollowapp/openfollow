@@ -5084,9 +5084,9 @@ def _camera_view(cfg: AppConfig) -> tuple[Any, tuple[float, float, float, float]
 
 
 # Chords per straight world segment when the lens bows it, as on the Operator Screen.
-_PICTURE_SUBDIVISIONS = 12
-# Upper bound on the world points one picture request projects.
-_PICTURE_MAX_POINTS = 20000
+_PICTURE_SUBDIVISIONS = 24
+# Upper bound on the world points one picture request projects once subdivided: 1666 points a request.
+_PICTURE_MAX_POINTS = 40000
 
 
 def _picture_points(
@@ -10809,7 +10809,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     @app.post("/api/wizard/lens/fit")
     def api_wizard_lens_fit() -> Any:
-        """Fit k1 / k2 to the traced lines; returns the rating and each line's predicted curve."""
+        """Fit the lens (k1, k2 and the lens centre) to the traced lines; returns the rating and each line's
+        predicted curve."""
         response.content_type = "application/json"
         data = _load_json_body()
         if data is None:

@@ -1,21 +1,25 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""Measure the lens coefficients from lines that are straight in reality.
+"""Measure the lens from lines that are straight in reality.
 
 The plumb-line method: the operator traces features that are straight on
-stage (a stage edge, a gaffa line, truss). Under the right ``k1`` / ``k2`` the
-traced points become collinear once undistorted, so the fit minimises each
-line's perpendicular residuals about its own total-least-squares line.
+stage (a stage edge, a gaffa line, truss). Under the right lens the traced
+points become collinear once undistorted, so the fit minimises each line's
+perpendicular residuals about its own total-least-squares line, mapped back to
+screen pixels, where the placement noise lives.
 
-A coarse grid over both coefficients seeds a damped Gauss-Newton refinement,
-because a start at zero diverges on strong barrel distortion. ``k2`` is kept
-at zero unless the lines determine it: its predicted uncertainty has to fall
-under :data:`K2_SIGMA_GATE`, which in practice needs lines in the outer
-corners. The rating is the predicted uncertainty of the warp at the frame
-corner in pixels, one number that captures how many lines there are, how much
-of the frame they cover and how precisely their points were placed. A second
-pair that fits the lines about as well widens it to how far the two warps
-disagree, since the local uncertainty sees only the minimum it sits in.
+A coarse grid over ``k1`` / ``k2`` seeds a damped Gauss-Newton refinement,
+because a start at zero diverges on strong barrel distortion. The lens centre
+is then fitted with the pair and kept only when it lowers the cost by more
+than noise would (:data:`CENTRE_LR_GATE`); ``k2`` is kept when its predicted
+uncertainty moves the frame corner by less than :data:`K2_SIGMA_GATE` would
+without a lens, which in practice needs lines in the outer corners, or when
+the lines reject ``k2 = 0``. The rating is the predicted uncertainty of where
+the pinhole frame's corners land on screen, in pixels, one number that
+captures how many lines there are, how much of the frame they cover and how
+precisely their points were placed. Another lens that fits the lines about as
+well widens it to how far the two warps disagree, since the local uncertainty
+sees only the minimum it sits in.
 """
 
 from __future__ import annotations
@@ -29,36 +33,43 @@ import numpy as np
 import numpy.typing as npt
 
 from openfollow.lens_model import lens_warp_is_valid
-from openfollow.scene.solver import _limit_radius, apply_overlay_distortion, distort_normalised_radius
+from openfollow.scene.solver import _limit_radius, apply_overlay_distortion, invert_overlay_distortion
 
 FloatArray = npt.NDArray[np.float64]
 
-# Seed grid. Wide enough for a 100 degree lens on 16:9 (k1 about -0.5). The
-# cost valley is a thin curved ridge, narrow in k2 (0.05 moves a corner by
-# 55 px), so k2 is scanned finely and the refinement starts from several of
-# the best cells rather than one.
-_K1_SCAN = np.arange(-0.8, 0.8001, 0.05)
-_K2_SCAN = np.arange(-0.5, 0.5001, 0.02)
+# Seed grid, over the pairs the sliders reach and a margin. The cost valley is a thin
+# curved ridge, narrow in k2 (0.05 moves a corner by up to 55 px), so k2 is scanned
+# finely and the refinement starts from several of the best cells rather than one.
+_K1_SCAN = np.arange(-1.2, 0.6001, 0.05)
+_K2_SCAN = np.arange(-1.0, 0.4001, 0.02)
 _SEEDS = 4
+# Grid cells after the best that the full lens is also refined from, centre 0.
+_CENTRE_SEEDS = 2
 # Beyond this the model describes no real lens; keeps a one-line fit bounded.
-_K_BOUND = 1.0
+_K_BOUND = 2.0
 _LM_ITERS = 40
 _JACOBIAN_EPS = 1e-4
 # Placement precision nobody beats; keeps a lucky fit from reporting zero uncertainty.
 _SIGMA_FLOOR_PX = 1.0
-# k2 is fitted only when its predicted uncertainty is below this.
+# The lens centre is kept when the full lens lowers the cost by more than this many
+# residual variances: the 95 % point of two parameters, once the variance is well
+# measured (see :func:`_significant`).
+CENTRE_LR_GATE = 6.0
+# k2 is fitted only when its predicted uncertainty moves the frame corner by less than
+# this much k2 moves it without a lens, about 55 px at 1080p. Through a lens the corner
+# moves by ``1 / P(1)`` of that, so the bound on the uncertainty grows by ``P(1)``.
 K2_SIGMA_GATE = 0.05
 # Another minimum the lines cannot rule out: its cost within this many residual
 # variances of the best, the 95 % region of a two-parameter fit.
 _RIVAL_MARGIN = 6.0
-# Pinhole radii, out to the pinhole frame's corner, where two pairs' screen points are compared.
-_RIVAL_RADII = np.linspace(0.0, 1.0, 65)
-# A line does not fit the others when, with k1 refitted without it, its RMS is
+# Fractions of the frame where two lenses' screen points are compared (see :func:`_rated_points`).
+_RIVAL_GRID = np.linspace(0.0, 1.0, 9, dtype=np.float64)
+# A line does not fit the others when, with the lens refitted without it, its RMS is
 # above both an absolute floor and a multiple of the other lines' RMS.
 _MISFIT_MIN_PX = 3.0
 _MISFIT_RATIO = 3.0
-# Smallest eigenvalue (px^2 per unit k^2) of the information matrix below which
-# the lines constrain nothing; a real line sits many orders above it.
+# Smallest eigenvalue (px^2 per unit parameter^2) of the information matrix below
+# which the lines constrain nothing; a real line sits many orders above it.
 _SINGULAR_INFORMATION = 1e-9
 _MIN_POINTS_PER_LINE = 3
 # The wizard sends at most five points a line; the seeding grid costs memory per point.
@@ -76,6 +87,12 @@ _CORNER_RADIUS = 0.8
 # Lines that already agree: at least this many, none misfit, their points this close (RMS px) to the fit.
 _AGREE_MIN_LINES = 4
 _AGREE_RMS_PX = 1.5
+
+# Free parameters of the lens ``(k1, k2, cx, cy)`` in each model.
+_PAIR: tuple[int, ...] = (0, 1)
+_FULL: tuple[int, ...] = (0, 1, 2, 3)
+_K1_ONLY: tuple[int, ...] = (0,)
+_K1_CENTRE: tuple[int, ...] = (0, 2, 3)
 
 # Predicted corner uncertainty (px) below which each rating applies, best first.
 RATING_THRESHOLDS_PX: tuple[tuple[float, str], ...] = (
@@ -102,6 +119,10 @@ class LensFitResult:
     k1: float
     k2: float
     k2_fitted: bool
+    # The lens centre, in half-diagonals; 0 unless ``centre_fitted``.
+    cx: float
+    cy: float
+    centre_fitted: bool
     rms_px: float
     uncertainty_px: float
     rating: str
@@ -120,20 +141,24 @@ def rate_uncertainty(uncertainty_px: float) -> str:
 
 
 class _Lines:
-    """The traced points as flat arrays, normalised to the half-diagonal."""
+    """The traced points as flat arrays, normalised to the half-diagonal about the frame centre."""
 
     def __init__(self, pts: FloatArray, idx: npt.NDArray[np.int64], canvas_w: float, canvas_h: float) -> None:
         self.pts = pts
         self.idx = idx
         self.n = pts.shape[0]
         self.count = int(idx.max()) + 1 if self.n else 0
+        self.width = canvas_w
+        self.height = canvas_h
         self.half_diag = 0.5 * math.hypot(canvas_w, canvas_h)
-        self.cx = canvas_w / 2.0
-        self.cy = canvas_h / 2.0
-        self.dx = (pts[:, 0] - self.cx) / self.half_diag
-        self.dy = (pts[:, 1] - self.cy) / self.half_diag
-        self.rd = np.hypot(self.dx, self.dy)
+        self.fx = canvas_w / 2.0
+        self.fy = canvas_h / 2.0
+        self.dx = (pts[:, 0] - self.fx) / self.half_diag
+        self.dy = (pts[:, 1] - self.fy) / self.half_diag
         self.members = [np.flatnonzero(idx == i) for i in range(self.count)]
+        self.sizes = np.bincount(idx, minlength=self.count).astype(np.float64)
+        self.first = np.array([rows[0] for rows in self.members], dtype=np.int64)
+        self.last = np.array([rows[-1] for rows in self.members], dtype=np.int64)
 
     @classmethod
     def from_lines(cls, lines: Sequence[Sequence[Sequence[float]]], canvas_w: float, canvas_h: float) -> _Lines:
@@ -157,30 +182,32 @@ class _Lines:
             idx.extend([i] * arr.shape[0])
         return cls(np.vstack(rows), np.asarray(idx, dtype=np.int64), canvas_w, canvas_h)
 
-    def without(self, line: int) -> _Lines:
-        """The same points minus one line, for the leave-one-out check."""
-        keep = self.idx != line
-        idx = self.idx[keep]
-        idx = np.where(idx > line, idx - 1, idx)
-        return _Lines(self.pts[keep], idx, 2.0 * self.cx, 2.0 * self.cy)
+    def subset(self, keep: Sequence[int]) -> _Lines:
+        """The same points, of the lines ``keep`` only, numbered in that order."""
+        number = np.full(self.count, -1, dtype=np.int64)
+        number[list(keep)] = np.arange(len(keep))
+        rows = number[self.idx] >= 0
+        return _Lines(self.pts[rows], number[self.idx][rows], self.width, self.height)
 
-    def undistort(self, k1: npt.ArrayLike, k2: npt.ArrayLike) -> tuple[FloatArray, FloatArray]:
-        """Pinhole positions (normalised) of every point; a grid of ``k`` broadcasts on a trailing axis."""
+    def undistort(
+        self, k1: npt.ArrayLike, k2: npt.ArrayLike, cx: float = 0.0, cy: float = 0.0
+    ) -> tuple[FloatArray, FloatArray]:
+        """Pinhole positions (normalised) of every point; a grid of pairs broadcasts on a trailing axis."""
         a = np.asarray(k1, dtype=np.float64)
         b = np.asarray(k2, dtype=np.float64)
-        s: FloatArray = self.rd * self.rd
-        dx: FloatArray = self.dx
-        dy: FloatArray = self.dy
+        vx: FloatArray = self.dx - cx
+        vy: FloatArray = self.dy - cy
+        s: FloatArray = vx * vx + vy * vy
         if a.ndim:
-            s, dx, dy = s[:, None], dx[:, None], dy[:, None]
+            s, vx, vy = s[:, None], vx[:, None], vy[:, None]
             a, b = a[None, :], b[None, :]
-        # The lens model's closed-form screen-to-pinhole direction, about the frame centre.
+        # The lens model's closed-form screen-to-pinhole direction.
         scale = 1.0 / (1.0 + a * s + b * s * s)
-        return dx * scale, dy * scale
+        return vx * scale, vy * scale
 
-    def grid_cost(self, k1: FloatArray, k2: FloatArray) -> FloatArray:
-        """Sum over lines of the squared perpendicular residuals, for every grid cell."""
-        ux, uy = self.undistort(k1, k2)
+    def grid_cost(self, k1: FloatArray, k2: FloatArray, cx: float = 0.0, cy: float = 0.0) -> FloatArray:
+        """Sum over lines of the squared perpendicular residuals in the pinhole picture, for every grid cell."""
+        ux, uy = self.undistort(k1, k2, cx, cy)
         cost = np.zeros(k1.shape)
         for rows in self.members:
             x = ux[rows] - ux[rows].mean(axis=0)
@@ -194,29 +221,56 @@ class _Lines:
         return cost
 
     def _tls(
-        self, ux: FloatArray, uy: FloatArray, rows: npt.NDArray[np.int64]
-    ) -> tuple[FloatArray, FloatArray, FloatArray]:
-        """Centroid, direction and centred points of one line's TLS fit.
+        self, ux: FloatArray, uy: FloatArray, weight: FloatArray
+    ) -> tuple[FloatArray, FloatArray, FloatArray, FloatArray]:
+        """Every point less its line's weighted centroid, and each line's weighted TLS direction.
 
-        The direction runs from the line's first point toward its last. The SVD
-        picks its sign freely, and a sign that flips between two nearby ``k``
-        flips every residual, which the Jacobian's central difference reads as a
-        slope thousands of times too steep.
+        The direction runs from the line's first point toward its last. Its sign
+        is otherwise free, and a sign that flips between two nearby lenses flips
+        every residual, which the Jacobian's central difference reads as a slope
+        thousands of times too steep.
         """
-        centre = np.array([ux[rows].mean(), uy[rows].mean()])
-        q = np.column_stack([ux[rows], uy[rows]]) - centre
-        _, _, vt = np.linalg.svd(q, full_matrices=False)
-        direction = np.asarray(vt[0], dtype=np.float64)
-        return centre, -direction if direction @ (q[-1] - q[0]) < 0.0 else direction, q
+        idx = self.idx
+        total = np.bincount(idx, weight, self.count)
+        x = ux - (np.bincount(idx, weight * ux, self.count) / total)[idx]
+        y = uy - (np.bincount(idx, weight * uy, self.count) / total)[idx]
+        sxx = np.bincount(idx, weight * x * x, self.count)
+        syy = np.bincount(idx, weight * y * y, self.count)
+        sxy = np.bincount(idx, weight * x * y, self.count)
+        theta = 0.5 * np.arctan2(2.0 * sxy, sxx - syy)
+        tx, ty = np.cos(theta), np.sin(theta)
+        flip = tx * (x[self.last] - x[self.first]) + ty * (y[self.last] - y[self.first]) < 0.0
+        return x, y, np.where(flip, -tx, tx), np.where(flip, -ty, ty)
+
+    def _screen_lines(self, k: FloatArray) -> tuple[FloatArray, FloatArray, FloatArray, FloatArray, FloatArray]:
+        """Each line's TLS line in the pinhole picture, weighted to screen pixels, and each point's gain.
+
+        A point's distance from its line in the pinhole picture is its screen
+        distance times ``|J^T n|``, ``J`` the undistortion's Jacobian at the point
+        and ``n`` the line's normal. The line is fitted once unweighted, then
+        again with each point weighted by ``1 / |J^T n|^2``, so it is the line
+        the screen distances themselves favour.
+        """
+        k1, k2, cx, cy = (float(v) for v in k)
+        ux, uy = self.undistort(k1, k2, cx, cy)
+        vx, vy = self.dx - cx, self.dy - cy
+        s = vx * vx + vy * vy
+        g = 1.0 / (1.0 + k1 * s + k2 * s * s)
+        # J = g I + 2 g'(s) v v^T with g' = dg/ds, symmetric: J^T n = g n + 2 g' (v . n) v.
+        slope = -2.0 * (k1 + 2.0 * k2 * s) * g * g
+        weight = np.ones(self.n)
+        for _ in range(2):
+            x, y, tx, ty = self._tls(ux, uy, weight)
+            nx, ny = -ty[self.idx], tx[self.idx]
+            along = slope * (vx * nx + vy * ny)
+            gain = np.hypot(g * nx + along * vx, g * ny + along * vy)
+            weight = 1.0 / (gain * gain)
+        return x, y, tx, ty, gain
 
     def residuals(self, k: FloatArray) -> FloatArray:
-        """Perpendicular residual of every point about its line's TLS line, in pixels."""
-        ux, uy = self.undistort(float(k[0]), float(k[1]))
-        out = np.empty(self.n)
-        for rows in self.members:
-            _, direction, q = self._tls(ux, uy, rows)
-            out[rows] = q @ np.array([-direction[1], direction[0]])
-        return out * self.half_diag
+        """Perpendicular distance of every point from its line, in screen pixels."""
+        x, y, tx, ty, gain = self._screen_lines(k)
+        return np.asarray((y * tx[self.idx] - x * ty[self.idx]) / gain * self.half_diag, dtype=np.float64)
 
     def line_rms(self, k: FloatArray) -> list[float]:
         res = self.residuals(k)
@@ -224,23 +278,28 @@ class _Lines:
 
     def curve(self, k: FloatArray, line: int) -> tuple[tuple[float, float], ...]:
         """The curve the lens predicts for a line: its TLS line, re-distorted."""
-        ux, uy = self.undistort(float(k[0]), float(k[1]))
-        centre, direction, q = self._tls(ux, uy, self.members[line])
-        t = q @ direction
+        k1, k2, cx, cy = (float(v) for v in k)
+        ux, uy = self.undistort(k1, k2, cx, cy)
+        x, y, tx, ty, _gain = self._screen_lines(k)
+        rows = self.members[line]
+        # Any point less its offset from the centroid is the centroid.
+        centre = np.array([ux[rows[0]] - x[rows[0]], uy[rows[0]] - y[rows[0]]])
+        direction = np.array([tx[line], ty[line]])
+        t = x[rows] * direction[0] + y[rows] * direction[1]
         ts = np.linspace(t.min(), t.max(), _CURVE_SAMPLES)
         straight = centre[None, :] + ts[:, None] * direction[None, :]
         straight_px = np.column_stack(
-            [self.cx + straight[:, 0] * self.half_diag, self.cy + straight[:, 1] * self.half_diag]
+            [self.fx + straight[:, 0] * self.half_diag, self.fy + straight[:, 1] * self.half_diag]
         )
-        bowed = apply_overlay_distortion(straight_px, 2.0 * self.cx, 2.0 * self.cy, float(k[0]), float(k[1]), 0.0, 0.0)
+        bowed = apply_overlay_distortion(straight_px, self.width, self.height, k1, k2, cx, cy)
         return tuple((float(x), float(y)) for x, y in bowed)
 
 
 def _in_bounds(k: FloatArray) -> bool:
-    return bool(abs(k[0]) <= _K_BOUND and abs(k[1]) <= _K_BOUND and lens_warp_is_valid(k[0], k[1], 0.0, 0.0))
+    return bool(abs(k[0]) <= _K_BOUND and abs(k[1]) <= _K_BOUND and lens_warp_is_valid(*(float(v) for v in k)))
 
 
-def _jacobian(lines: _Lines, k: FloatArray, free: Sequence[int] = (0, 1)) -> FloatArray:
+def _jacobian(lines: _Lines, k: FloatArray, free: Sequence[int]) -> FloatArray:
     cols = []
     for i in free:
         kp = k.copy()
@@ -251,25 +310,25 @@ def _jacobian(lines: _Lines, k: FloatArray, free: Sequence[int] = (0, 1)) -> Flo
     return np.column_stack(cols)
 
 
-def _refine(lines: _Lines, k0: FloatArray, fit_k2: bool) -> FloatArray:
-    """Damped Gauss-Newton (Levenberg-Marquardt) from ``k0``, kept inside the valid region."""
+def _refine(lines: _Lines, k0: FloatArray, free: Sequence[int]) -> FloatArray:
+    """Damped Gauss-Newton (Levenberg-Marquardt) on the ``free`` parameters from ``k0``, inside the valid region."""
     k: FloatArray = k0.copy()
     res = lines.residuals(k)
     cost = float(res @ res)
     lam = 1e-3
-    free = [0, 1] if fit_k2 else [0]
+    index = list(free)
     for _ in range(_LM_ITERS):
-        jac = _jacobian(lines, k, free)
+        jac = _jacobian(lines, k, index)
         normal = jac.T @ jac
         grad = jac.T @ res
-        delta: FloatArray = np.zeros(len(free))
+        delta: FloatArray = np.zeros(len(index))
         improved = False
         for _attempt in range(12):
             # The damping term keeps this invertible however flat the residuals are.
             damped = normal + lam * np.diag(np.diag(normal) + 1e-12)
             delta = np.asarray(-np.linalg.solve(damped, grad), dtype=np.float64)
             cand: FloatArray = k.copy()
-            cand[free] += delta
+            cand[index] += delta
             if not _in_bounds(cand):
                 lam *= 10.0
                 continue
@@ -286,6 +345,11 @@ def _refine(lines: _Lines, k0: FloatArray, fit_k2: bool) -> FloatArray:
     return k
 
 
+def _cost(lines: _Lines, k: FloatArray) -> float:
+    res = lines.residuals(k)
+    return float(res @ res)
+
+
 def _residual_variance(lines: _Lines, k: FloatArray, n_params: int) -> float:
     """Variance of one point's residual at ``k``, floored at one pixel."""
     res = lines.residuals(k)
@@ -293,36 +357,72 @@ def _residual_variance(lines: _Lines, k: FloatArray, n_params: int) -> float:
     return max(float(res @ res) / dof, _SIGMA_FLOOR_PX**2)
 
 
-def _covariance(lines: _Lines, k: FloatArray, n_params: int) -> FloatArray:
-    """Covariance of ``(k1, k2)`` at ``k`` from the residual scatter, floored at one pixel."""
-    sigma2 = _residual_variance(lines, k, n_params)
-    jac = _jacobian(lines, k)
+def _covariance(lines: _Lines, k: FloatArray, free: Sequence[int]) -> FloatArray:
+    """Covariance of the ``free`` parameters at ``k`` from the residual scatter, floored at one pixel."""
+    sigma2 = _residual_variance(lines, k, len(free))
+    jac = _jacobian(lines, k, free)
     normal = jac.T @ jac
     # A line through the centre moves along itself under the warp, so no
-    # coefficient changes a residual: the pair is then unbounded, not merely loose.
+    # parameter changes a residual: the lens is then unbounded, not merely loose.
     if float(np.linalg.eigvalsh(normal).min()) <= _SINGULAR_INFORMATION:
-        return np.full((2, 2), np.inf)
+        return np.full((len(free), len(free)), np.inf)
     return np.asarray(sigma2 * np.linalg.inv(normal), dtype=np.float64)
 
 
-def _corner_uncertainty_px(cov: FloatArray, k: FloatArray, half_diag: float) -> float:
-    """Predicted sigma of where the pinhole frame's corner (pinhole radius 1) lands on screen.
+def _rated_points(lines: _Lines, k: FloatArray, fractions: FloatArray) -> FloatArray:
+    """Pinhole points (px) where the rating measures the lens, on a grid of ``fractions`` of the frame.
 
-    The screen radius ``r`` it lands on moves by ``(r s, r s^2) / P(s)`` per unit of
+    The pinhole frame's own points, where the rating thresholds were set; one that
+    lands outside the picture (a pincushion lens) is taken where the picture ends
+    instead, since no line can reach past it.
+    """
+    gx, gy = np.meshgrid(fractions * lines.width, fractions * lines.height)
+    grid = np.column_stack([gx.ravel(), gy.ravel()])
+    k1, k2, cx, cy = (float(v) for v in k)
+    seen = apply_overlay_distortion(grid, lines.width, lines.height, k1, k2, cx, cy)
+    beyond = np.any((seen < 0.0) | (seen > np.array([lines.width, lines.height])), axis=1)
+    if not beyond.any():
+        return grid
+    edge = invert_overlay_distortion(grid[beyond], lines.width, lines.height, k1, k2, cx, cy)
+    grid[beyond] = edge
+    return grid
+
+
+def _seen_from_centre(lines: _Lines, pinhole: FloatArray, k: FloatArray) -> FloatArray:
+    """Where pinhole points land on screen, less where the pinhole centre lands: the shift the camera absorbs."""
+    k1, k2, cx, cy = (float(v) for v in k)
+    seen = apply_overlay_distortion(pinhole, lines.width, lines.height, k1, k2, cx, cy)
+    return np.asarray(seen - [lines.fx + cx * lines.half_diag, lines.fy + cy * lines.half_diag], dtype=np.float64)
+
+
+def _corner_uncertainty_px(lines: _Lines, k: FloatArray, cov: FloatArray, free: Sequence[int]) -> float:
+    """Predicted sigma of where the pinhole frame's corners land on screen, the largest of the four.
+
+    The corners are rated points (:func:`_rated_points`); the covariance is that
+    of the ``free`` parameters only. With the centre at 0 and the pair free, a
+    corner's screen radius ``r`` moves by ``(r s, r s^2) / P(s)`` per unit of
     ``(k1, k2)``, ``s = r^2``, ``P`` the lens model's slope term.
     """
-    r = float(distort_normalised_radius(1.0, float(k[0]), float(k[1])))
-    s = r * r
-    with np.errstate(divide="ignore", invalid="ignore"):
-        jac = np.array([r * s, r * s * s]) / (1.0 - k[0] * s - 3.0 * k[1] * s * s)
-        var = float(jac @ cov @ jac)
-    if not math.isfinite(var):
+    corners = _rated_points(lines, k, np.array([0.0, 1.0]))
+    cols = []
+    for i in free:
+        kp = k.copy()
+        km = k.copy()
+        kp[i] += _JACOBIAN_EPS
+        km[i] -= _JACOBIAN_EPS
+        cols.append(
+            (_seen_from_centre(lines, corners, kp) - _seen_from_centre(lines, corners, km)) / (2 * _JACOBIAN_EPS)
+        )
+    jac = np.stack(cols, axis=-1)
+    with np.errstate(invalid="ignore", over="ignore"):
+        var = np.einsum("caf,fg,cag->c", jac, cov, jac)
+    if not np.all(np.isfinite(var)):
         return math.inf
-    return half_diag * math.sqrt(max(var, 0.0))
+    return math.sqrt(max(float(var.max()), 0.0))
 
 
-def _seeds(lines: _Lines, k2_zero: bool) -> list[FloatArray]:
-    """The lowest-cost grid cells, at most one per k1 column so the starts differ."""
+def _seeds(lines: _Lines, k2_zero: bool, cx: float = 0.0, cy: float = 0.0) -> list[FloatArray]:
+    """The lowest-cost grid cells about a fixed centre, at most one per k1 column so the starts differ."""
     if k2_zero:
         k1: FloatArray = np.asarray(_K1_SCAN, dtype=np.float64)
         k2: FloatArray = np.zeros_like(k1)
@@ -330,97 +430,143 @@ def _seeds(lines: _Lines, k2_zero: bool) -> list[FloatArray]:
         g1, g2 = np.meshgrid(_K1_SCAN, _K2_SCAN, indexing="ij")
         k1 = np.asarray(g1.ravel(), dtype=np.float64)
         k2 = np.asarray(g2.ravel(), dtype=np.float64)
-    valid = _limit_radius(k1, k2) > 1.0
+    valid = _limit_radius(k1, k2) > 1.0 + math.hypot(cx, cy)
     k1, k2 = k1[valid], k2[valid]
-    cost = lines.grid_cost(k1, k2)
+    cost = lines.grid_cost(k1, k2, cx, cy)
     best_per_column: dict[float, int] = {}
     for i in np.argsort(cost):
         best_per_column.setdefault(float(k1[i]), int(i))
-    return [np.array([k1[i], k2[i]]) for i in list(best_per_column.values())[:_SEEDS]]
+    return [np.array([k1[i], k2[i], cx, cy]) for i in list(best_per_column.values())[:_SEEDS]]
+
+
+Minima = tuple[tuple[FloatArray, float], ...]
 
 
 @dataclass(frozen=True)
 class _Solution:
     k: FloatArray
-    k2_fitted: bool
+    free: tuple[int, ...]
     cov: FloatArray
-    # Every minimum the seeds reached, the best included, with its cost.
-    minima: tuple[tuple[FloatArray, float], ...]
+    # Every minimum this model's starts reached, the best included, with its cost.
+    minima: Minima
+
+    @property
+    def k2_fitted(self) -> bool:
+        return 1 in self.free
+
+    @property
+    def centre_fitted(self) -> bool:
+        return 2 in self.free
 
 
-def _fit(lines: _Lines, fit_k2: bool) -> tuple[FloatArray, tuple[tuple[FloatArray, float], ...]]:
-    """Refine from every seed; the lowest-cost pair and every minimum reached."""
+def _fit(lines: _Lines, starts: Sequence[FloatArray], free: Sequence[int]) -> tuple[FloatArray, Minima]:
+    """Refine from every start; the lowest-cost lens and every minimum reached."""
     minima = []
-    for seed in _seeds(lines, k2_zero=not fit_k2):
-        k = _refine(lines, seed, fit_k2=fit_k2)
-        res = lines.residuals(k)
-        minima.append((k, float(res @ res)))
+    for start in starts:
+        k = _refine(lines, start, free)
+        minima.append((k, _cost(lines, k)))
     return min(minima, key=lambda m: m[1])[0], tuple(minima)
 
 
+def _significant(lines: _Lines, drop: float, k: FloatArray, n_params: int) -> bool:
+    """Whether a cost ``drop`` from the extra parameters of the lens ``k`` is more than noise.
+
+    The F test's 95 % point for two extra parameters, ``d (e^(G / d) - 1)``
+    residual variances with ``d`` the residual degrees of freedom of the larger
+    model and ``G`` :data:`CENTRE_LR_GATE`, its limit as ``d`` grows: the
+    variance measured on few points is itself loose. Never without a residual
+    degree of freedom.
+    """
+    dof = lines.n - n_params - 2 * lines.count
+    if dof < 1:
+        return False
+    return drop > dof * math.expm1(CENTRE_LR_GATE / dof) * _residual_variance(lines, k, n_params)
+
+
 def _solve(lines: _Lines) -> _Solution:
-    """Fit, deciding whether the lines determine ``k2``."""
-    k, minima = _fit(lines, fit_k2=True)
-    cov = _covariance(lines, k, 2)
-    if math.sqrt(max(float(cov[1, 1]), 0.0)) < K2_SIGMA_GATE:
-        return _Solution(k, True, cov, minima)
-    k, minima = _fit(lines, fit_k2=False)
-    return _Solution(k, False, _covariance(lines, k, 1), minima)
+    """Fit the pair, then the full lens; keep the centre, then ``k2``, only where the lines determine it."""
+    seeds = _seeds(lines, k2_zero=False)
+    k, minima = _fit(lines, seeds, _PAIR)
+    pair_cost = min(cost for _, cost in minima)
+    k_full, full_minima = _fit(lines, [k, *seeds[1 : 1 + _CENTRE_SEEDS]], _FULL)
+    free = _PAIR
+    if _significant(lines, pair_cost - min(cost for _, cost in full_minima), k_full, len(_FULL)):
+        k, minima, free = k_full, full_minima, _FULL
+    cov = _covariance(lines, k, free)
+    slope = 1.0 - float(k[0]) - 3.0 * float(k[1])
+    if math.sqrt(max(float(cov[1, 1]), 0.0)) < K2_SIGMA_GATE * slope:
+        return _Solution(k, free, cov, minima)
+    k_free, k_minima, k_cov = k, minima, cov
+    drop_free = _K1_CENTRE if 2 in free else _K1_ONLY
+    k, minima = _fit(lines, _seeds(lines, k2_zero=True, cx=float(k[2]), cy=float(k[3])), drop_free)
+    # Lines that reject k2 = 0 keep it however loose it is: dropped, the answer would be
+    # wrong by more than its own uncertainty says.
+    if _significant(lines, _cost(lines, k) - _cost(lines, k_free), k_free, len(free)):
+        return _Solution(k_free, free, k_cov, k_minima)
+    return _Solution(k, drop_free, _covariance(lines, k, drop_free), minima)
 
 
 def _rival_spread_px(lines: _Lines, solution: _Solution) -> float:
-    """How far apart the fit and a pair fitting the lines about as well put a point, out to the corner.
+    """How far apart the fit and a lens fitting the lines about as well put a point of the pinhole frame.
 
     With a strong lens traced only along the top and bottom edges, the cost
-    valley has two minima a pixel of placement noise cannot tell apart, about
-    25 px apart at the frame's edge, and each is sharp enough to rate excellent.
+    valley has two minima a pixel of placement noise cannot tell apart, tens of
+    pixels apart at the frame's corners, and each is sharp enough to rate
+    excellent. The shift between the two pinhole pictures is the camera's, so it
+    is removed.
     """
-    n_params = 2 if solution.k2_fitted else 1
-    margin = _RIVAL_MARGIN * _residual_variance(lines, solution.k, n_params)
+    margin = _RIVAL_MARGIN * _residual_variance(lines, solution.k, len(solution.free))
     best = min(cost for _, cost in solution.minima)
-    seen = distort_normalised_radius(_RIVAL_RADII, float(solution.k[0]), float(solution.k[1]))
+    pinhole = _rated_points(lines, solution.k, _RIVAL_GRID)
+    seen = _seen_from_centre(lines, pinhole, solution.k)
     spread = 0.0
     for other, cost in solution.minima:
         if cost - best <= margin:
-            rival = distort_normalised_radius(_RIVAL_RADII, float(other[0]), float(other[1]))
-            spread = max(spread, float(np.max(np.abs(rival - seen))))
-    return lines.half_diag * spread
+            gap = _seen_from_centre(lines, pinhole, other) - seen
+            spread = max(spread, float(np.max(np.hypot(gap[:, 0], gap[:, 1]))))
+    return spread
 
 
-def _k1_variance(lines: _Lines, k: FloatArray) -> float:
-    """Variance of ``k1`` fitted alone at ``k``, from the residual scatter floored at one pixel."""
-    sigma2 = _residual_variance(lines, k, 1)
-    column = _jacobian(lines, k, (0,))[:, 0]
-    information = float(column @ column)
-    if information <= _SINGULAR_INFORMATION:
-        return math.inf
-    return sigma2 / information
-
-
-def _misfits(lines: _Lines, k: FloatArray) -> list[bool]:
-    """Leave-one-out: a line that only fits while it is pulling the fit its way.
-
-    ``k1`` is refitted without the line from the full solution, ``k2`` held, so
-    two remaining lines cannot be overfitted into agreeing with anything. The
-    line's residual is judged against what the refit's own uncertainty predicts
-    at that line: the longest, most curved line moves the most when it is left
-    out, and that is the rest's ignorance, not the line's fault.
-    """
-    if lines.count < _MIN_LINES_FOR_MISFIT:
-        return [False] * lines.count
-    flags = []
+def _misfit_excess(lines: _Lines, k: FloatArray, refit: Sequence[int]) -> list[float]:
+    """Each line's RMS under the others' fit over what would still count as fitting; above 1 it does not fit."""
+    excess = []
     for i in range(lines.count):
-        rest = lines.without(i)
-        k_rest = _refine(rest, k, fit_k2=False)
-        variance = _k1_variance(rest, k_rest)
-        if not math.isfinite(variance):
-            flags.append(False)
+        rest = lines.subset([j for j in range(lines.count) if j != i])
+        k_rest = _refine(rest, k, refit)
+        cov = _covariance(rest, k_rest, refit)
+        if not np.all(np.isfinite(cov)):
+            excess.append(0.0)
             continue
         rms_rest = float(np.sqrt(np.mean(rest.residuals(k_rest) ** 2)))
         rms_line = lines.line_rms(k_rest)[i]
-        sensitivity = _jacobian(lines, k_rest, (0,))[lines.idx == i, 0]
-        predicted = float(np.sqrt(variance * np.mean(sensitivity**2)))
-        flags.append(rms_line > max(_MISFIT_MIN_PX, _MISFIT_RATIO * rms_rest, _MISFIT_RATIO * predicted))
+        sensitivity = _jacobian(lines, k_rest, refit)[lines.idx == i]
+        predicted = float(np.sqrt(np.mean(np.einsum("pf,fg,pg->p", sensitivity, cov, sensitivity))))
+        excess.append(rms_line / max(_MISFIT_MIN_PX, _MISFIT_RATIO * rms_rest, _MISFIT_RATIO * predicted))
+    return excess
+
+
+def _misfits(lines: _Lines, k: FloatArray, free: Sequence[int]) -> list[bool]:
+    """Leave-one-out: a line that only fits while it is pulling the fit its way.
+
+    ``k1``, and the centre when it was kept, are refitted without the line from
+    the full solution, ``k2`` held, so two remaining lines cannot be overfitted
+    into agreeing with anything. The line's residual is judged against what the
+    refit's own uncertainty predicts at that line: the longest, most curved line
+    moves the most when it is left out, and that is the rest's ignorance, not
+    the line's fault. A kept centre can bend a line through the middle as a
+    lens bends one at the edge, so a bent line there drags the others off too:
+    the worst line is set aside and the rest judged again without it, until
+    every line left fits.
+    """
+    refit = _K1_CENTRE if 2 in free else _K1_ONLY
+    kept = list(range(lines.count))
+    flags = [False] * lines.count
+    while len(kept) >= _MIN_LINES_FOR_MISFIT:
+        excess = _misfit_excess(lines.subset(kept), k, refit)
+        worst = int(np.argmax(excess))
+        if excess[worst] <= 1.0:
+            break
+        flags[kept.pop(worst)] = True
     return flags
 
 
@@ -488,7 +634,7 @@ def coverage_hint(
 
 
 def fit_lens_from_lines(lines: Sequence[Sequence[Sequence[float]]], canvas_w: float, canvas_h: float) -> LensFitResult:
-    """Fit ``k1`` / ``k2`` to the traced lines (active points only, image pixels).
+    """Fit the lens to the traced lines (active points only, image pixels).
 
     Raises ``ValueError`` when the input cannot be fitted: no line, more than
     ``MAX_LINES``, a line with fewer than three points or more than
@@ -499,22 +645,31 @@ def fit_lens_from_lines(lines: Sequence[Sequence[Sequence[float]]], canvas_w: fl
         raise ValueError("canvas must be finite and positive")
     data = _Lines.from_lines(lines, canvas_w, canvas_h)
     solution = _solve(data)
-    k, k2_fitted = solution.k, solution.k2_fitted
+    k = solution.k
     res = data.residuals(k)
     rms = [float(np.sqrt(np.mean(res[rows] ** 2))) for rows in data.members]
-    uncertainty = max(_corner_uncertainty_px(solution.cov, k, data.half_diag), _rival_spread_px(data, solution))
+    uncertainty = max(_corner_uncertainty_px(data, k, solution.cov, solution.free), _rival_spread_px(data, solution))
     rating = rate_uncertainty(uncertainty)
-    flags = _misfits(data, k)
+    flags = _misfits(data, k, solution.free)
     rms_all = float(np.sqrt(np.mean(res**2)))
     return LensFitResult(
         k1=float(k[0]),
         k2=float(k[1]),
-        k2_fitted=k2_fitted,
+        k2_fitted=solution.k2_fitted,
+        cx=float(k[2]),
+        cy=float(k[3]),
+        centre_fitted=solution.centre_fitted,
         rms_px=rms_all,
         uncertainty_px=uncertainty,
         rating=rating,
         hint=coverage_hint(
-            lines, canvas_w, canvas_h, rating=rating, k2_fitted=k2_fitted, rms_px=rms_all, misfit=any(flags)
+            lines,
+            canvas_w,
+            canvas_h,
+            rating=rating,
+            k2_fitted=solution.k2_fitted,
+            rms_px=rms_all,
+            misfit=any(flags),
         ),
         lines=tuple(LensLineFit(rms_px=rms[i], misfit=flags[i], curve=data.curve(k, i)) for i in range(data.count)),
     )
@@ -526,6 +681,9 @@ def fit_result_to_dict(result: LensFitResult) -> dict[str, Any]:
         "k1": result.k1,
         "k2": result.k2,
         "k2_fitted": result.k2_fitted,
+        "cx": result.cx,
+        "cy": result.cy,
+        "centre_fitted": result.centre_fitted,
         "rms_px": result.rms_px,
         "uncertainty_px": result.uncertainty_px if math.isfinite(result.uncertainty_px) else None,
         "rating": result.rating,

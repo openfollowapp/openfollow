@@ -17,6 +17,7 @@ from openfollow.scene.edge_chains import (
     find_edge_candidates,
 )
 from openfollow.scene.edge_snap import LINE_SAMPLE_FRACTIONS, end_search_radius, snap_line_to_edges
+from openfollow.scene.solver import apply_overlay_distortion, invert_overlay_distortion
 from tests._lens_band import cut_band, scaled_luma
 from tests._lens_scene import Scene, Strip, render
 from tests.test_edge_snap import BARREL, BRIGHT, DARK, STRAIGHT, H, W, distance_to_strip_centre, strip_frame
@@ -24,6 +25,7 @@ from tests.test_edge_snap import BARREL, BRIGHT, DARK, STRAIGHT, H, W, distance_
 pytestmark = pytest.mark.unit
 
 SCALE = edge_map_scale(W)
+HALF_DIAG = 0.5 * float(np.hypot(W, H))
 
 
 def find(img, **kwargs):
@@ -318,6 +320,36 @@ def test_a_spotlight_rim_is_not_offered() -> None:
     yy, xx = np.mgrid[0:H, 0:W]
     disc = np.where(np.hypot(xx - 900.0, yy - 500.0) <= 150.0, BRIGHT, DARK)
     assert find(disc) == []
+
+
+def _off_curve(points, curve: np.ndarray) -> np.ndarray:
+    """Each point's distance (px) from the polyline ``curve``."""
+    pts = np.asarray(points, dtype=np.float64)
+    a, d = curve[:-1], np.diff(curve, axis=0)
+    t = np.clip(np.einsum("pij,ij->pi", pts[:, None, :] - a, d) / np.einsum("ij,ij->i", d, d), 0.0, 1.0)
+    return np.linalg.norm(pts[:, None, :] - a - t[:, :, None] * d, axis=2).min(axis=1)
+
+
+@pytest.mark.parametrize(
+    "lens",
+    [(-0.527, -0.069, 0.0, 0.0), (-0.3, -0.3, 0.0, 0.0), (-0.527, -0.069, 80.0 / HALF_DIAG, 50.0 / HALF_DIAG)],
+    ids=["126-degree", "corner-heavy", "126-degree-off-centre"],
+)
+def test_a_line_along_the_top_edge_of_a_wide_lens_is_offered_and_snapped(lens) -> None:
+    """Across the whole picture just under its top edge the line sags a tenth of its chord and more."""
+    mid = invert_overlay_distortion(np.array([[960.0, 30.0]]), W, H, *lens)[0]
+    img = render(Scene([Strip((mid[0] - 6000.0, mid[1]), (mid[0] + 6000.0, mid[1]), 4.0, BRIGHT)]), lens, noise=3.0)
+    xs = np.linspace(mid[0] - 6000.0, mid[0] + 6000.0, 20001)
+    curve = apply_overlay_distortion(np.column_stack([xs, np.full_like(xs, mid[1])]), W, H, *lens)
+    found = find(img)
+    assert len(found) == 1
+    assert found[0].length > 1900.0
+    assert np.all(_off_curve(found[0].points, curve) < 6.0)
+    samples = candidate_sample_points(found[0].points, LINE_SAMPLE_FRACTIONS)
+    pts = snap_line_to_edges(samples[0], samples[4], cut_band(img, samples[0], samples[4]), W, H)
+    on = [(p.x, p.y) for p in pts if p.snapped]
+    assert len(on) >= 4
+    assert np.all(_off_curve(on, curve) < 6.0)
 
 
 @pytest.mark.parametrize(("radius", "span_deg"), [(1000.0, 110.0), (800.0, 120.0), (1500.0, 80.0)])

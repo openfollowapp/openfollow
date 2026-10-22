@@ -7,12 +7,11 @@ full-resolution snapshot and rectified so the chord runs along its middle row:
 one column every ``step`` pixels of the chord, one row per pixel across it,
 ``half`` rows to either side. A straight edge seen through a lens is bowed, by
 far more than any search around the chord's own points could cover, and with a
-strong lens the bow is not even one arc (the r^4 term pushes the ends of a
-line near the frame edge out while the r^2 term pulls its middle in). So the
-band is searched for the highest-scoring smooth path through all its columns,
-the path is smoothed by the shape a straight line can take through a radial
-lens (the bows of the r^2 and r^4 terms plus a shift of either end, fitted by
-least squares), and each point then takes the edge peak nearest that curve.
+strong lens the bow is not even one arc. So the band is searched for the
+highest-scoring smooth path through all its columns, the path is smoothed by
+the shape a straight line can take through a radial lens (the bows of the two
+lens terms plus a shift of either end, fitted by least squares), and each point
+then takes the edge peak nearest that curve.
 Every point of a line snaps to one edge polarity (the same dark-to-light
 direction), otherwise a strip of gaffa tape would put one point on its top edge
 and the next on its bottom edge and the tape's width would read as curvature.
@@ -50,17 +49,18 @@ _PATH_SLOPE = 0.5
 _PATH_BEND_PENALTY = 1.0
 # Luma per row an end sits from its click: of two edges alike, the one the operator clicked nearer wins.
 _END_PULL = 1.0
-# The lenses the two reference bows are drawn with. Pincushion, because a barrel
-# reference folds before it reaches the corners and a line ending there could not
-# be undistorted; the fitted factors carry the sign.
+# The lenses the two reference bows are drawn with, about the frame centre; the fitted
+# factors carry the sign. Pincushion, which fits the bows of strong barrel lenses
+# slightly better than a barrel pair.
 _REFERENCE_K1 = 0.2
 _REFERENCE_K2 = 0.2
 # Keeps the bow factors at zero for a line the lens barely bends.
 _BOW_RIDGE = 1e-3
 # The path may leave the chord by the clicks' reach plus this many reference bows: the
-# bow of any lens the fit accepts, so a parallel edge further off is never taken.
-_CORRIDOR_K1 = 3.0
-_CORRIDOR_K2 = 2.0
+# bow of the slider ends, k1 = -1.0 and k2 = -0.8, inside the picture and the band, so
+# a parallel edge further off is never taken.
+_CORRIDOR_K1 = 15.0
+_CORRIDOR_K2 = 6.6
 _CORRIDOR_MARGIN = 2.0
 # How far a clicked end may move, as a fraction of the snapshot width: the click
 # says which of two parallel edges is meant, so an end only settles onto the nearest.

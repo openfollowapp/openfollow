@@ -324,8 +324,8 @@ class TestLensDistortion:
         state.lens_k2 = 0.04
         cr = FakeCairo()
         draw_zones(FakeRenderer(), cr, state, 1920, 1080)
-        # 4 edges x 12 chords = 48 outline points: move_to + 47 line_to + close.
-        assert len(cr.line_tos) == 47
+        # 4 edges x 24 chords = 96 outline points: move_to + 95 line_to + close.
+        assert len(cr.line_tos) == 95
         assert cr.closes == 1
 
     def test_subdivided_edge_behind_camera_skips_whole_zone(self, monkeypatch) -> None:

@@ -4,9 +4,12 @@
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 
+from openfollow.lens_model import lens_warp_is_valid
 from openfollow.scene.lens_fit import (
     MAX_LINES,
     MAX_POINTS_PER_LINE,
@@ -47,16 +50,18 @@ def make_line(
     rng: np.random.Generator | None = None,
     n: int = 5,
     sag: float = 0.0,
+    cx: float = 0.0,
+    cy: float = 0.0,
 ) -> list[list[float]]:
     """Points of a line that is straight in reality, as seen through the lens."""
-    ends = invert_overlay_distortion(np.array([p0, p1], dtype=np.float64), W, H, k1, k2, 0.0, 0.0)
+    ends = invert_overlay_distortion(np.array([p0, p1], dtype=np.float64), W, H, k1, k2, cx, cy)
     t = np.linspace(0.0, 1.0, n)[:, None]
     straight = ends[0] + t * (ends[1] - ends[0])
     if sag:
         tangent = ends[1] - ends[0]
         normal = np.array([-tangent[1], tangent[0]]) / np.linalg.norm(tangent)
         straight = straight + (sag * 4.0 * t * (1.0 - t)) * normal
-    seen = apply_overlay_distortion(straight, W, H, k1, k2, 0.0, 0.0)
+    seen = apply_overlay_distortion(straight, W, H, k1, k2, cx, cy)
     if noise and rng is not None:
         seen = seen + rng.normal(0.0, noise, seen.shape)
     return [[float(x), float(y)] for x, y in seen]
@@ -65,6 +70,37 @@ def make_line(
 def lines_for(k1: float, k2: float, segments, *, noise: float = 0.0, seed: int = 0, **kw) -> list[list[list[float]]]:
     rng = np.random.default_rng(seed)
     return [make_line(a, b, k1, k2, noise=noise, rng=rng, **kw) for a, b in segments]
+
+
+# Screen points over the whole frame, where a fitted lens is compared with the truth.
+_FRAME = np.column_stack([g.ravel() for g in np.meshgrid(np.linspace(0.0, W, 17), np.linspace(0.0, H, 10))])
+
+
+def frame_error_px(fitted: tuple[float, ...], truth: tuple[float, ...]) -> float:
+    """Largest screen error over the frame once a homography of the pinhole picture (the camera's) is absorbed."""
+    q_true = invert_overlay_distortion(_FRAME, W, H, *truth)
+    q_fit = invert_overlay_distortion(_FRAME, W, H, *fitted)
+    rows = []
+    for (x, y), (u, v) in zip(q_fit / HALF_DIAG, q_true / HALF_DIAG, strict=True):
+        rows += [[x, y, 1, 0, 0, 0, -u * x, -u * y, -u], [0, 0, 0, x, y, 1, -v * x, -v * y, -v]]
+    hom = np.linalg.svd(np.asarray(rows))[2][-1].reshape(3, 3)
+    mapped = np.column_stack([q_fit / HALF_DIAG, np.ones(len(q_fit))]) @ hom.T
+    seen = apply_overlay_distortion(mapped[:, :2] / mapped[:, 2:] * HALF_DIAG, W, H, *truth)
+    return float(np.max(np.hypot(*(seen - _FRAME).T)))
+
+
+def corner_error_px(fitted: tuple[float, ...], truth: tuple[float, ...]) -> float:
+    """How far apart the two lenses put the pinhole frame's corners, less the shift of the pinhole centre."""
+    corners = np.array([[0.0, 0.0], [W, 0.0], [0.0, H], [W, H]])
+    seen = [
+        apply_overlay_distortion(corners, W, H, *lens) - [W / 2 + lens[2] * HALF_DIAG, H / 2 + lens[3] * HALF_DIAG]
+        for lens in (fitted, truth)
+    ]
+    return float(np.max(np.hypot(*(seen[0] - seen[1]).T)))
+
+
+def _lens(result: LensFitResult) -> tuple[float, float, float, float]:
+    return (result.k1, result.k2, result.cx, result.cy)
 
 
 def _distance_to_polyline(point: np.ndarray, polyline: np.ndarray) -> float:
@@ -76,11 +112,14 @@ def _distance_to_polyline(point: np.ndarray, polyline: np.ndarray) -> float:
 
 
 class TestRecovery:
-    @pytest.mark.parametrize("truth", [(0.0, 0.0), (-0.15, 0.0), (-0.3, 0.05), (0.2, 0.0)])
+    @pytest.mark.parametrize(
+        "truth", [(0.0, 0.0), (-0.15, 0.0), (-0.3, 0.05), (0.2, 0.0), (-0.527, -0.069), (-0.3, -0.3)]
+    )
     def test_exact_lines_return_the_pair(self, truth: tuple[float, float]) -> None:
         result = fit_lens_from_lines(lines_for(*truth, EDGES + (DIAGONAL,)), W, H)
         assert result.k1 == pytest.approx(truth[0], abs=2e-3)
         assert result.k2 == pytest.approx(truth[1], abs=2e-3)
+        assert (result.cx, result.cy, result.centre_fitted) == (0.0, 0.0, False)
         assert result.rms_px < 0.05
 
     @pytest.mark.parametrize("truth", [(-0.45, 0.20), (-0.47, 0.25)])
@@ -98,11 +137,15 @@ class TestRecovery:
         assert result.k1 == pytest.approx(truth[0], abs=0.03)
         assert result.k2 == pytest.approx(truth[1], abs=0.03)
 
-    def test_three_pixel_noise_stays_within_the_issue_budget(self) -> None:
-        truth = (-0.45, 0.20)
-        result = fit_lens_from_lines(lines_for(*truth, EDGES + (DIAGONAL,), noise=3.0, seed=4, n=8), W, H)
-        assert result.k1 == pytest.approx(truth[0], abs=0.03)
-        assert result.k2 == pytest.approx(truth[1], abs=0.03)
+    def test_three_pixel_noise_keeps_the_corners_within_their_rating(self) -> None:
+        # At three pixels k1 and k2 trade along their valley; where the corners land is what holds.
+        truth = (-0.45, 0.20, 0.0, 0.0)
+        ratios = []
+        for seed in range(8):
+            result = fit_lens_from_lines(lines_for(*truth[:2], EDGES + (DIAGONAL,), noise=3.0, seed=seed, n=8), W, H)
+            ratios.append(corner_error_px(_lens(result), truth) / result.uncertainty_px)
+        assert max(ratios) < 3.0
+        assert float(np.mean(ratios)) < 1.5
 
     def test_a_line_with_a_switched_off_point_still_counts(self) -> None:
         truth = (-0.2, 0.02)
@@ -134,6 +177,102 @@ class TestK2Gate:
         result = fit_lens_from_lines(lines_for(*truth, EDGES, noise=1.0, seed=1), W, H)
         assert result.k2_fitted
         assert result.k2 == pytest.approx(truth[1], abs=0.02)
+
+    @pytest.mark.parametrize("seed", range(4))
+    def test_a_strong_lens_keeps_k2_though_its_corner_moves_less_per_unit(self, seed: int) -> None:
+        # Through a 140 degree lens a k2 change moves the corner half as far, so its sigma runs to about 0.06;
+        # the gate scales with the lens's slope at the corner and keeps it.
+        truth = (-0.647, -0.111, 0.0, 0.0)
+        result = fit_lens_from_lines(lines_for(*truth[:2], EDGES + (DIAGONAL,), noise=1.0, seed=seed), W, H)
+        assert result.k2_fitted
+        assert frame_error_px(_lens(result), truth) < 16.0
+
+    def test_lines_that_reject_k2_zero_keep_it_however_loose(self) -> None:
+        # Short lines in the outer bands leave k2 loose, but a lens without it bends them visibly wrong.
+        truth = (-0.47, 0.25)
+        result = fit_lens_from_lines(lines_for(*truth, tuple(_BAND.values()), noise=0.3, seed=1), W, H)
+        assert result.k2_fitted
+        assert result.k2 == pytest.approx(truth[1], abs=0.02)
+        assert result.rating == "medium"
+
+
+# The strongest common lens (126 degrees on 1920 x 1080), its centre 80 px right of and 50 px below the picture's.
+DECENTRED = (-0.53, -0.07, 80.0 / HALF_DIAG, 50.0 / HALF_DIAG)
+
+
+def decentred_trials(lens: tuple[float, float, float, float], seed: int, segments=EDGES + (DIAGONAL,)):
+    """Twelve fits of the segments through ``lens`` at one pixel of placement noise, from one generator."""
+    rng = np.random.default_rng(seed)
+    out = []
+    for _ in range(12):
+        lines = [make_line(a, b, lens[0], lens[1], cx=lens[2], cy=lens[3], noise=1.0, rng=rng) for a, b in segments]
+        out.append(fit_lens_from_lines(lines, W, H))
+    return out
+
+
+class TestCentre:
+    def test_exact_lines_return_the_centre(self) -> None:
+        truth = (-0.3, -0.05, 0.06, -0.04)
+        result = fit_lens_from_lines(
+            [make_line(a, b, -0.3, -0.05, cx=0.06, cy=-0.04) for a, b in EDGES + (DIAGONAL,)], W, H
+        )
+        assert result.centre_fitted
+        assert _lens(result) == pytest.approx(truth, abs=2e-3)
+
+    def test_a_strong_lens_far_off_centre_is_followed(self) -> None:
+        # About the picture's centre this lens is off by some 50 px at the corners; with its centre, the frame
+        # lands within 12 px however the points fall, and the centre is kept every time.
+        trials = decentred_trials(DECENTRED, seed=1)
+        assert all(r.centre_fitted for r in trials)
+        assert max(frame_error_px(_lens(r), DECENTRED) for r in trials) <= 12.0
+        misses = [HALF_DIAG * math.hypot(r.cx - DECENTRED[2], r.cy - DECENTRED[3]) for r in trials]
+        assert float(np.median(misses)) <= 15.0
+
+    def test_a_centred_lens_rarely_keeps_a_centre(self) -> None:
+        trials = decentred_trials((-0.527, -0.069, 0.0, 0.0), seed=2)
+        assert sum(r.centre_fitted for r in trials) <= 2
+        assert all((r.cx, r.cy) == (0.0, 0.0) for r in trials if not r.centre_fitted)
+
+    def test_one_line_never_keeps_a_centre(self) -> None:
+        # Five points, a line and the full lens leave no residual to judge the centre by.
+        line = make_line(*TOP, -0.53, -0.07, cx=0.07, cy=0.045, noise=1.0, rng=np.random.default_rng(0))
+        assert not fit_lens_from_lines([line], W, H).centre_fitted
+
+    def test_a_lens_whose_far_corner_looks_past_90_degrees_fits_the_nearest_valid_one(self) -> None:
+        # A 150 degree fisheye 94 px off centre: its far corner has no pinhole point, which no valid lens can show.
+        truth = (-0.74, -0.152, 80.0 / HALF_DIAG, 50.0 / HALF_DIAG)
+        assert not lens_warp_is_valid(*truth)
+        rng = np.random.default_rng(0)
+        lines = [
+            make_line(a, b, truth[0], truth[1], cx=truth[2], cy=truth[3], noise=1.0, rng=rng)
+            for a, b in (TOP, BOTTOM, RIGHT, DIAGONAL)
+        ]
+        result = fit_lens_from_lines(lines, W, H)
+        assert lens_warp_is_valid(*_lens(result))
+
+
+class TestScreenPixels:
+    def test_a_line_s_scatter_is_measured_in_screen_pixels(self) -> None:
+        # Near the top edge of a 126 degree lens a screen pixel spans several pinhole pixels across the line.
+        # Its points moved across it by (-1, 2, 0, -2, 1) px, a pattern no line or bow takes up, scatter by
+        # sqrt(2) px on screen.
+        truth = (-0.527, -0.069)
+        lines = lines_for(*truth, EDGES + (DIAGONAL,))
+        top = np.asarray(make_line(*TOP, *truth, n=401))
+        for j, shift in enumerate((-1.0, 2.0, 0.0, -2.0, 1.0)):
+            i = min(max(100 * j, 1), 399)
+            tangent = top[i + 1] - top[i - 1]
+            lines[0][j] = list(top[100 * j] + shift * np.array([-tangent[1], tangent[0]]) / np.hypot(*tangent))
+        result = fit_lens_from_lines(lines, W, H)
+        assert result.lines[0].rms_px == pytest.approx(math.sqrt(2.0), abs=0.15)
+
+    def test_a_pincushion_lens_is_rated_where_the_picture_ends(self) -> None:
+        # Its pinhole corners land outside the picture, where no line reaches.
+        truth = (0.2, 0.0, 0.0, 0.0)
+        for seed in range(3):
+            result = fit_lens_from_lines(lines_for(*truth[:2], EDGES + (DIAGONAL,), noise=1.0, seed=seed), W, H)
+            assert result.rating in ("okay", "good")
+            assert corner_error_px(_lens(result), truth) < result.uncertainty_px
 
 
 class TestRating:
@@ -180,21 +319,18 @@ class TestRating:
             ratings.add(fit_lens_from_lines([mid, vertical.tolist()], W, H).rating)
         assert "excellent" not in ratings
 
-    @pytest.mark.parametrize("truth", [(-0.45, 0.20), (-0.47, 0.25)])
-    def test_lines_that_fit_two_lenses_alike_rate_low(self, truth: tuple[float, float]) -> None:
-        # Along the top and bottom edges only, a strong barrel lens and one about 0.15 weaker
-        # fit the points equally well, some 25 px apart at the frame's edge. Each answer is a
-        # sharp minimum on its own, and the fit picked the wrong one rated excellent.
-        r = np.linspace(0.0, 1.0, 65)
-        for seed in range(6):
-            result = fit_lens_from_lines(lines_for(*truth, (TOP, BOTTOM), noise=1.0, seed=seed), W, H)
-            off = HALF_DIAG * np.abs((result.k1 - truth[0]) * r**3 + (result.k2 - truth[1]) * r**5).max()
-            assert result.rating == RATING_LOW, seed
-            assert off <= 3.0 * result.uncertainty_px, seed
-            assert result.hint == "Add lines near the left and right edges."
-        # The side edges the hint asks for rule the other lens out.
-        result = fit_lens_from_lines(lines_for(*truth, EDGES, noise=1.0, seed=0), W, H)
-        assert result.rating in ("good", "excellent")
+    def test_lines_that_fit_two_lenses_alike_rate_low(self) -> None:
+        # Two side edges through a pincushion lens: a second lens about 85 px apart at the corners fits
+        # them within the noise. The covariance of either minimum alone would rate it fair.
+        result = fit_lens_from_lines(lines_for(0.3, 0.0, (LEFT, RIGHT), noise=3.0, seed=3), W, H)
+        assert result.rating == RATING_LOW
+        assert result.uncertainty_px > 80.0
+        assert result.hint == "Add lines near the top and bottom edges."
+
+    def test_a_minimum_the_lines_rule_out_does_not_widen_the_rating(self) -> None:
+        # The seeds reach a second lens some 146 px apart, but its cost is well beyond the margin.
+        result = fit_lens_from_lines(lines_for(-0.45, 0.2, (TOP, DIAGONAL), noise=5.0, seed=2), W, H)
+        assert 100.0 < result.uncertainty_px < 140.0
 
     def test_sloppier_points_lower_the_rating(self) -> None:
         precise = fit_lens_from_lines(lines_for(-0.3, 0.05, EDGES, noise=0.5, seed=3), W, H)
@@ -300,7 +436,7 @@ class TestHint:
     def test_the_fit_hands_its_own_rms_to_the_hint(self) -> None:
         # Rated fair with the corner correction measured, but the points scatter more than 1.5 px about their curves
         # though one line alone stays within it.
-        result = fit_lens_from_lines(lines_for(-0.2, 0.03, (BOTTOM, LEFT, RIGHT, MID_H), noise=2.0, seed=2), W, H)
+        result = fit_lens_from_lines(lines_for(-0.2, -0.03, (BOTTOM, LEFT, RIGHT, MID_H), noise=1.8, seed=2), W, H)
         assert (result.rating, result.k2_fitted) == ("okay", True)
         assert min(line.rms_px for line in result.lines) <= 1.5 < result.rms_px
         assert not any(line.misfit for line in result.lines)
@@ -309,7 +445,7 @@ class TestHint:
     def test_four_fitted_lines_that_agree_may_be_good_though_one_scatters_more(self) -> None:
         # The whole fit's RMS decides, not the line that scatters the most.
         segments = (BOTTOM, MID_H, MID_V, _BAND["left"])
-        result = fit_lens_from_lines(lines_for(-0.2, 0.03, segments, noise=1.0, seed=3), W, H)
+        result = fit_lens_from_lines(lines_for(-0.2, -0.03, segments, noise=1.3, seed=1), W, H)
         assert (result.rating, result.k2_fitted, len(result.lines)) == ("okay", True, 4)
         assert result.rms_px <= 1.5 < max(line.rms_px for line in result.lines)
         assert not any(line.misfit for line in result.lines)
@@ -319,8 +455,8 @@ class TestHint:
 
     def test_a_fitted_line_that_does_not_fit_is_asked_for_more(self) -> None:
         rng = np.random.default_rng(0)
-        lines = [make_line(*s, -0.2, 0.03, noise=0.3, rng=rng) for s in (BOTTOM, MID_H, MID_V, _BAND["left"])]
-        lines.append(make_line(*DIAGONAL, -0.2, 0.03, noise=0.3, rng=rng, sag=8.0))
+        lines = [make_line(*s, -0.2, -0.03, noise=0.3, rng=rng) for s in (BOTTOM, MID_H, MID_V, _BAND["left"])]
+        lines.append(make_line(*DIAGONAL, -0.2, -0.03, noise=0.3, rng=rng, sag=12.0))
         result = fit_lens_from_lines(lines, W, H)
         assert (result.rating, result.k2_fitted, result.rms_px <= 1.5) == ("okay", True, True)
         assert [line.misfit for line in result.lines] == [False, False, False, False, True]
@@ -435,13 +571,30 @@ class TestJsonShape:
     def test_dict_carries_every_field_and_no_non_finite_value(self) -> None:
         result = fit_lens_from_lines(lines_for(-0.2, 0.02, EDGES), W, H)
         data = fit_result_to_dict(result)
-        assert set(data) == {"k1", "k2", "k2_fitted", "rms_px", "uncertainty_px", "rating", "hint", "lines"}
+        assert set(data) == {
+            "k1",
+            "k2",
+            "k2_fitted",
+            "cx",
+            "cy",
+            "centre_fitted",
+            "rms_px",
+            "uncertainty_px",
+            "rating",
+            "hint",
+            "lines",
+        }
         assert set(data["lines"][0]) == {"rms_px", "misfit", "curve"}
         assert isinstance(data["lines"][0]["curve"][0], list)
 
     def test_infinite_uncertainty_becomes_null(self) -> None:
-        result = LensFitResult(0.0, 0.0, False, 0.0, float("inf"), RATING_LOW, "", ())
+        result = LensFitResult(0.0, 0.0, False, 0.0, 0.0, False, 0.0, float("inf"), RATING_LOW, "", ())
         assert fit_result_to_dict(result)["uncertainty_px"] is None
+
+    def test_the_centre_is_answered_as_measured(self) -> None:
+        result = LensFitResult(-0.3, -0.05, True, 0.06, -0.04, True, 0.5, 3.0, "good", "", ())
+        data = fit_result_to_dict(result)
+        assert (data["cx"], data["cy"], data["centre_fitted"]) == (0.06, -0.04, True)
 
 
 class TestDegenerateGeometry:

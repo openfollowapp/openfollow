@@ -904,12 +904,12 @@ def _snap_band(img: np.ndarray, p0, p1) -> dict:
     return band_payload(cut_band(img, p0, p1))
 
 
-def _warped_line(p0, p1, k1: float, k2: float, n: int = 5) -> list[list[float]]:
+def _warped_line(p0, p1, k1: float, k2: float, n: int = 5, *, cx: float = 0.0, cy: float = 0.0) -> list[list[float]]:
     from openfollow.scene.solver import invert_overlay_distortion
 
-    ends = invert_overlay_distortion(np.array([p0, p1], dtype=np.float64), IMG_W, IMG_H, k1, k2, 0.0, 0.0)
+    ends = invert_overlay_distortion(np.array([p0, p1], dtype=np.float64), IMG_W, IMG_H, k1, k2, cx, cy)
     t = np.linspace(0.0, 1.0, n)[:, None]
-    seen = apply_overlay_distortion(ends[0] + t * (ends[1] - ends[0]), IMG_W, IMG_H, k1, k2, 0.0, 0.0)
+    seen = apply_overlay_distortion(ends[0] + t * (ends[1] - ends[0]), IMG_W, IMG_H, k1, k2, cx, cy)
     return seen.tolist()
 
 
@@ -1165,6 +1165,7 @@ class TestWizardLensFitEndpoint:
         assert data["k1"] == pytest.approx(k1, abs=5e-3)
         assert data["k2"] == pytest.approx(k2, abs=5e-3)
         assert data["k2_fitted"] is True
+        assert (data["cx"], data["cy"], data["centre_fitted"]) == (0.0, 0.0, False)
         assert data["rating"] in ("low", "medium", "okay", "good", "excellent")
         assert isinstance(data["hint"], str)
         assert data["uncertainty_px"] is not None
@@ -1173,6 +1174,20 @@ class TestWizardLensFitEndpoint:
             assert line["misfit"] is False
             assert line["rms_px"] < 0.1
             assert len(line["curve"]) == 24
+
+    def test_fit_answers_the_lens_centre_it_measured(self, live_server) -> None:
+        _, base = live_server
+        lens = {"k1": -0.3, "k2": -0.05, "cx": 0.06, "cy": -0.04}
+        lines = [{"points": _warped_line(a, b, **lens)} for a, b in _LENS_EDGE_LINES]
+        status, data = _post_json(
+            base, "/api/wizard/lens/fit", {"image_width": IMG_W, "image_height": IMG_H, "lines": lines}
+        )
+        assert status == 200
+        assert data["centre_fitted"] is True
+        assert data["cx"] == pytest.approx(0.06, abs=2e-3)
+        assert data["cy"] == pytest.approx(-0.04, abs=2e-3)
+        assert data["k1"] == pytest.approx(-0.3, abs=5e-3)
+        assert data["k2"] == pytest.approx(-0.05, abs=5e-3)
 
     def test_bare_point_lists_are_accepted(self, live_server) -> None:
         _, base = live_server

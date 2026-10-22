@@ -43,9 +43,10 @@ def grid_line_count(length: float, spacing: float) -> int:
 # Chords per straight world line when lens distortion is active. A straight
 # world line stays straight under the pinhole projection; only the radial warp
 # bows it, so we subdivide and warp each chord endpoint to approximate the
-# curve. 1 (no subdivision) when the lens pair is 0: the lens centre alone only
-# shifts a line, and the pinhole path is byte-for-byte unchanged.
-_DISTORTION_SUBDIVISIONS = 12
+# curve: 24 keep a line along the frame edge of a 126 degree lens within about
+# a pixel of its curve. 1 (no subdivision) when the lens pair is 0: the lens
+# centre alone only shifts a line, and the pinhole path is byte-for-byte unchanged.
+_DISTORTION_SUBDIVISIONS = 24
 
 
 def project(

@@ -832,7 +832,7 @@ Each step lands with its tests; targeted tests while iterating, one
   That polygonises visibly, so §8's rule says raise it; not raised in this
   step because `routes._PICTURE_SUBDIVISIONS` mirrors it and multiplies the
   scene route's `_PICTURE_MAX_POINTS` cap. Product owner: 24 for both, with
-  the cap raised to match, or the HUD only?
+  the cap raised to match (done in step 6).
 - Note, phase 1 adaptation of the fit (step 5 replaces it): `_Lines.undistort`
   is the division model's closed form about the frame centre, the seed grid
   filters by `_limit_radius`, `_in_bounds` passes a 0 centre, the rating's
@@ -854,8 +854,8 @@ Each step lands with its tests; targeted tests while iterating, one
   one); step 5's tests must cover them again.
 
 ### 5. The fit (`openfollow/scene/lens_fit.py`, `scripts/lens_fit_simulation.py`)
-- [ ] Closed-form `undistort` with the centre, new grid and `_K_BOUND`.
-- [ ] **The strong decentred lens** (§7): screen-pixel residuals (`|J^T n|`),
+- [x] Closed-form `undistort` with the centre, new grid and `_K_BOUND`.
+- [x] **The strong decentred lens** (§7): screen-pixel residuals (`|J^T n|`),
       the full four-parameter fit before any gate (seeds: the pair's result
       and its next two seeds, centre 0), `CENTRE_LR_GATE = 6.0` on the cost
       drop, no sigma gate on the centre, the k2 gate on the model kept,
@@ -863,32 +863,115 @@ Each step lands with its tests; targeted tests while iterating, one
       -0.07` lens offset by (80, 50) px keeps the centre in at least 11 of 12
       trials and lands within 12 px at the worst corner (four edges and a
       diagonal, 1 px), and a centred lens keeps it in at most 2 of 12.
-- [ ] Corner uncertainty at the four pinhole corners from the covariance of
+- [x] Corner uncertainty at the four pinhole corners from the covariance of
       the kept parameters,
       translation removed; exact rival spread; misfit with the centre held.
-- [ ] Simulation `LENSES` to the §5 pairs plus decentred ones (offsets 0,
+- [x] Simulation `LENSES` to the §5 pairs plus decentred ones (offsets 0,
       (20, -12), (40, -25), (80, 50), (120, 80)); scenarios as today; re-run;
       keep or retune `K2_SIGMA_GATE` (the thresholds stay; the table shows
       that each scenario rates as before) from the
       table (the 150° fisheye's k2).
-- [ ] `fit_result_to_dict`: `cx`, `cy`, `centre_fitted`.
+- [x] `fit_result_to_dict`: `cx`, `cy`, `centre_fitted`.
 - [ ] Timed on pi59 (one fit route call with 12 lines), number in the PR.
-- [ ] `tests/test_lens_fit.py`, `tests/_lens_scene.py`,
+      Mac: 34-49 ms median, 53 ms at worst (12 lines, centred and offset 2.3 mm).
+- [x] `tests/test_lens_fit.py`, `tests/_lens_scene.py`,
       `tests/test_lens_calibration.py`: synthetic stages through 2.3 mm-like
       and corner-heavy pairs, pair back within 0.01; a decentred strong lens
       gives its centre back within 15 px and the frame within the threshold
       above; a centred lens reports `centre_fitted` false on a fixed seed;
       a lens whose far corner is past 90° returns a valid lens.
+- Note, how the fit differs from the steps above (each found in the
+  simulation, scratch `gate.py`, `lrdist.py`, `variant.py`, `honesty.py`):
+  - **The line is weighted too.** Each line's TLS line is refitted with every
+    point weighted by `1 / |J^T n|^2`, so the line itself is the one the
+    screen distances favour. With it the pair's cost at the true lens sits
+    two variances above its minimum and the centre's cost drop follows
+    chi-square with two degrees of freedom (120 trials each on centred
+    0 / -0.10 / 2.3 mm lenses: mean 2.0, 2-6 % above 6).
+  - **Both likelihood tests are corrected for few points**:
+    `_significant` keeps an extra pair of parameters when the cost drops by
+    more than `d (e^(6 / d) - 1)` residual variances, `d` the larger
+    model's residual degrees of freedom, the F test's 95 % point, which is 6
+    as `d` grows; never with `d < 1`. Without it one line of five points
+    (no residual left once the line and the full lens are fitted) kept the
+    centre and a wild pair whenever its pair cost passed 6.
+  - **The k2 gate is `sigma(k2) < 0.05 P(1)`**, `P(1) = 1 - k1 - 3 k2` of
+    the model kept: a k2 change moves the corner by `1 / P(1)` of what it
+    does without a lens, so this keeps the gate's meaning (about 55 px of
+    corner). With a flat 0.05 the 2.1 mm and 150° lenses lost k2 in most
+    trials with every line traced and were rated excellent 14-20 px off.
+    And **k2 is kept however loose when the lines reject k2 = 0**
+    (`_significant` on the cost the drop adds): a 2.3 mm stage traced on
+    the suggested lines dropped k2 and fitted `-0.31` for `-0.47 / 0.25`.
+  - **Misfit refits the centre with k1 when the centre was kept, and sets the
+    worst line aside before judging the rest again.** A kept centre bends a
+    line through the middle as a lens bends one at the edge: with the centre
+    held, a diagonal bowed 20 px among four edges was absorbed and nothing
+    was flagged; refitted in one pass, the straight middle line was flagged
+    with it. A bowed line among lines that cannot pin the centre (bottom
+    edge, two middle lines, a short left one) fits a decentred lens and is
+    not flagged; its test now bows the line 12 px.
+  - **A rated point that lands outside the picture is taken where the picture
+    ends** (`_rated_points`): a pincushion lens's pinhole corners lie beyond
+    the frame, and rated there a perfect `0.2 / 0` fit read Not usable
+    (31 px). The rival spread compares the same points.
+  - Ratings against the polynomial build: the comparison runs each old
+    polynomial lens against its division equivalent out to pinhole radius 1.
+    On the pinhole lens (the two models agree) every 1 px scenario rates as
+    before and medians match within 0.1 px; at 3 px two scenarios move by a
+    grade. On barrel lenses the equivalents are other lenses (up to 28 px
+    apart), so the ratings are compared by honesty instead: predicted
+    against the empirical corner error over 24 trials agree within about
+    25 % at 1 px for every lens up to 2.3 mm, centred or offset.
+  - Open: on the 2.1 mm and 150° lenses at 3 px, and the 150° at 1 px on
+    four edges, the gates still drop k2 and the k1-only answer claims
+    1-2 px while it is 15-30 px off: the rating does not see model bias.
+    At 3 px the predicted corner sigma of strong lenses runs about half the
+    empirical one. The acceptance case lands 12.6 px worst in the
+    simulation's own stream (4.0 median, centre 12/12, every fit's cost below
+    the true lens's: noise, not convergence) and 9.3-12.4 px in other
+    12-trial blocks.
 
 ### 6. Edge snap and suggestions
-- [ ] `scene/edge_snap.py`: reference comment, corridor constants from the
+- [x] `scene/edge_snap.py`: reference comment, corridor constants from the
       slider ends.
-- [ ] `scene/edge_chains.py`: sag bound from the widest lens, centre up to
+- [x] `scene/edge_chains.py`: sag bound from the widest lens, centre up to
       `C_BOUND` off, at the chord's position.
-- [ ] `tests/test_edge_snap.py`, `tests/test_edge_chains.py`: a straight line
+- [x] `tests/test_edge_snap.py`, `tests/test_edge_chains.py`: a straight line
       along the top edge of a 2.3 mm-like, a corner-heavy and a decentred
       picture is suggested and snapped; a curved stage front is still
       rejected; a brighter parallel edge outside the corridor is not taken.
+- Note: `_CORRIDOR_K1 = 15.0`, `_CORRIDOR_K2 = 6.6` are the largest ratios,
+  over 142 chords across the frame and every point inside the picture and
+  the band, of the bow of `(-1.0, 0)` (or `(0, -0.8)`) less the reach and
+  margin to the matching reference bow; the k1 end is set by a full-width line 75 px below
+  the centre (160 px of bow). Both are far wider than before, so the
+  parallel-edge test's brighter strip moves from 30 to 60 px off (the
+  corridor there is 49 px). Decentred lenses are not covered: a long line
+  through the middle of a 2.3 mm-like picture whose centre is 80-120 px off
+  bows 40-90 px past the corridor (the reference bows are about the frame
+  centre); the synthetic offset stages still calibrate (the suggested lines
+  snap), but a long middle line can come back with its middle unsnapped.
+  The snap band (192 px at 1080p) is a second limit: a full-width line under
+  the top edge of a 150° lens bows 300 px and does not snap at all.
+- Note: the sag bound is `_SAG_MARGIN = 1.25` times the largest sag of the
+  chord through the four slider ends, each with the centre at 0 and on the
+  eight points of its `C_BOUND` square, pulled back to valid (36 lenses, one
+  vectorised call). The edge-snap test of a strip bowing out of the picture
+  moves its chord to `y = 1025 / 1015`: through the division `-0.47 / 0.25`
+  the old chord's quarter points left the picture too.
+- Note: `_DISTORTION_SUBDIVISIONS` and `routes._PICTURE_SUBDIVISIONS` are 24,
+  `_PICTURE_MAX_POINTS` 40000 (1666 points a request, as before). A ground
+  line along the bottom edge of a 2.3 mm-like lens: 3.8 px off its curve at
+  12 chords, 1.0 px at 24 (pinned). `hud_bench.py --compare` against
+  916f56a7 on the Mac: bench lens -2 to +9 % per picture across three runs
+  (eight markers 4.39-4.52 ms against 4.21-4.29); `-0.527 / -0.069` with a
+  centre: -8 to +2 % (eight markers 3.95 against 4.21). Within run-to-run
+  noise; the Pi number is owed (step 10).
+- Deferred to step 9: `test_lens_calibration.py::test_the_arena_default_gives_back_the_lens_it_was_drawn_with`
+  fails until the arena picture is rendered with the division pair (the fit
+  reads today's picture as `-0.141 / -0.037`, within 0.01 of the new
+  `-0.15 / -0.03`; the test still names `-0.15 / 0.02`).
 
 ### 7. Web UI
 - [ ] `partials/camera.tpl`: slider spans (items 1, 2), the Lens centre row

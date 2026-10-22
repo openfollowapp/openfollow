@@ -675,7 +675,8 @@ def migrate_calibration_keys(camera: dict[str, Any], grid: Any) -> None:
 
     Points made it Advanced: the grid's corners become known marks pinned at the corner pins, each point a
     triangulated mark measured from its two corners at their level plus its height. Corner pins alone are
-    Simple's four corners. A config that already has ``calibration_marks`` keeps them.
+    Simple's four corners. Either way the camera height goes: one held with other marks does not hold for
+    these. A config that already has ``calibration_marks`` keeps them.
     """
     points = camera.pop("calibration_points", None)
     pins = camera.pop("corner_pins", None)
@@ -739,6 +740,7 @@ def migrate_calibration_keys(camera: dict[str, Any], grid: Any) -> None:
         _report_drops("camera.calibration_points", f"{unknown} former point(s) without two grid corners left out")
     camera["calibration_mode"] = "advanced" if len(marks) > 4 else "simple"
     camera["calibration_marks"] = marks
+    camera["calibration_height"] = None
 
 
 _GRID_PLACEMENT = ("width", "depth", "x_offset", "y_offset", "z_offset")

@@ -9676,6 +9676,15 @@ def test_a_former_corner_pin_off_the_snapshot_reads_as_not_pinned_and_says_so(
     ]
 
 
+@pytest.mark.parametrize("points", ["", _OLD_POINT], ids=["corner pins", "points"])
+def test_former_keys_read_as_marks_without_a_camera_height(points: str, temp_config_path) -> None:
+    text = _old_camera(_OLD_PINS, points).replace("fov = 55.0", "fov = 55.0\ncalibration_height = 7.0")
+    temp_config_path.write_text(text, encoding="utf-8")
+    camera = load_config(str(temp_config_path)).camera
+    assert camera.calibration_marks
+    assert camera.calibration_height is None
+
+
 def test_without_former_points_or_corner_pins_nothing_is_made_up(temp_config_path) -> None:
     temp_config_path.write_text(_old_camera([], "calibration_points = []\n"), encoding="utf-8")
     camera = load_config(str(temp_config_path)).camera

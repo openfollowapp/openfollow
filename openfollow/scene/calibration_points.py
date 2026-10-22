@@ -39,6 +39,9 @@ SEED_FOVS = (40.0, 90.0)  # tried beside the saved FOV from a camera position
 # straight down there is none: the seed at the saved FOV is tried a quarter turn apart as well.
 STEEP_SEED_PITCH = -60.0
 STEEP_TURNS = (0.0, 90.0, 180.0, 270.0)
+# Without a camera position, and without four level marks seeding a camera less steep than STEEP_PITCH, the camera
+# is also tried above the known marks looking almost straight down, where their homography decomposes to noise.
+NADIR_PITCH = -89.0
 # Every seed and mirror side gets this many iterations; only the best goes on to the full fit.
 SCOUT_ITERATIONS = 25
 FIT_ITERATIONS = 300
@@ -58,6 +61,7 @@ REASON_DIFFER = "The difference between the two distances is larger than the dis
 REASON_SHORT = "The two distances together are shorter than the distance between its two points."
 REASON_UNPLACED_FROM = "It is measured from a point that cannot be placed."
 NO_FIT = "No camera fits these points. Check the pins and the measurements."
+NO_FIT_AT_HEIGHT = "No camera fits at this camera height. Check the camera height and the measurements."
 
 Kind = Literal["known", "triangulated"]
 
@@ -97,7 +101,7 @@ class MarkSolve:
     camera: CameraConfig | None
     marks: tuple[MarkFit, ...]
     error: str = ""
-    floor_off: bool = False  # the fit's floor fails :func:`_floor_holds` against the level marks' camera
+    floor_off: bool = False  # :func:`_floor_holds` fails against the level marks' camera, neither one steep
     steep: bool = False  # pitch below STEEP_PITCH, where flat marks cannot tell the height from the FOV
 
 
@@ -218,13 +222,33 @@ def _level_camera(
     return None if seeded is None else (camera_params(seeded), quad)
 
 
+def _above_marks(
+    marks: Sequence[Mark], canvas_w: float, saved_fov: float, height: float | None
+) -> tuple[float, float, float] | None:
+    """Over the pinned known marks' centre: at ``height``, else as high as their spread in the pins says at the
+    saved FOV looking straight down. None without two pinned known marks apart on the snapshot."""
+    pinned = [m for m in marks if m.kind == "known" and m.pin is not None and m.position is not None]
+    world = np.array([[*m.position, m.z] for m in pinned if m.position], dtype=np.float64).reshape(-1, 3)
+    pins = np.array([m.pin for m in pinned], dtype=np.float64).reshape(-1, 2)
+    i, j = np.triu_indices(len(pinned), 1)
+    apart_px = np.linalg.norm(pins[i] - pins[j], axis=1)
+    if not (apart_px > 1.0).any():
+        return None
+    if height is None:
+        focal_px = canvas_w / 2.0 / math.tan(math.radians(saved_fov) / 2.0)
+        apart_m = np.linalg.norm(world[i, :2] - world[j, :2], axis=1)
+        height = float(world[:, 2].mean() + focal_px * apart_m.sum() / apart_px.sum())
+    return float(world[:, 0].mean()), float(world[:, 1].mean()), height
+
+
 def _seeds(
     hint: Sequence[float] | None,
     saved_fov: float,
     level: npt.NDArray[np.float64] | None,
     height: float | None = None,
+    above: tuple[float, float, float] | None = None,
 ) -> list[npt.NDArray[np.float64]]:
-    """Every seed at ``height`` when one is entered."""
+    """Every seed at ``height`` when one is entered; ``above`` is :func:`_above_marks`."""
     seeds = []
     if hint is not None:
         at = (hint[0], hint[1], hint[2] if height is None else height)
@@ -235,6 +259,8 @@ def _seeds(
                 seeds.append(np.array([*at, pitch, yaw + turn, 0.0, fov], dtype=np.float64))
     if level is not None:
         seeds.append(level if height is None else np.concatenate([level[:2], [height], level[3:]]))
+    if above is not None and hint is None and (level is None or float(level[3]) < STEEP_PITCH):
+        seeds += [np.array([*above, NADIR_PITCH, turn, 0.0, saved_fov], dtype=np.float64) for turn in STEEP_TURNS]
     return seeds
 
 
@@ -406,20 +432,25 @@ def solve_marks(
     is the camera's exact height in m, or None: every seed starts at it, and the fit holds it.
 
     Every seed (the hint at the saved FOV, 40° and 90°, looking at 0/0/0, at the saved FOV also turned a
-    quarter at a time when that look is steep; the homography of four pinned known marks at one height) is
-    fitted briefly twice: with each triangulated mark on the side its pin picks as the
-    seed sees it, and with all of them on the other side. An upright camera (at or above the lowest mark, not
-    looking up) beats one that is not, then the one that placed more marks, then the lower cost. The fitted
-    camera of the winner places again what its seed could not, and only that one is fitted to the end; when that
-    fit fails or ranks lower, the winner's brief fit answers.
+    quarter at a time when that look is steep; the homography of four pinned known marks at one height; without
+    the hint and with no such homography or a steep one, above the known marks looking down at
+    :data:`NADIR_PITCH`, a quarter turn apart) is fitted briefly twice: with each triangulated mark on the side
+    its pin picks as the seed sees it, and with all of them on the other side. An upright camera (at or above the
+    lowest mark, not looking up) beats one that is not, then the one that placed more marks, then the lower cost.
+    The fitted camera of the winner places again what its seed could not, and only that one is fitted to the end;
+    when that fit fails or ranks lower, the winner's brief fit answers.
+    With ``height`` given, no fit, or a height not above the lowest pinned mark, answers :data:`NO_FIT_AT_HEIGHT`.
     ``stale`` is asked before every iteration; once it answers True the solve raises :class:`SolveSuperseded`.
     """
     canvas = (canvas_w, canvas_h)
     ordered = _order(marks)
+    if height is not None and height <= min((m.z for m in ordered if m.pin is not None), default=-math.inf):
+        return MarkSolve(None, tuple(MarkFit(m.id, None) for m in marks), NO_FIT_AT_HEIGHT)
     triangulated = [m for m in ordered if m.kind == "triangulated"]
     known = {m.id: np.array([m.position[0], m.position[1], m.z]) for m in ordered if m.position is not None}
     level = _level_camera(ordered, canvas_w, canvas_h)
-    seeds = _seeds(hint, saved_fov, None if level is None else level[0], height)
+    above = _above_marks(ordered, canvas_w, saved_fov, height)
+    seeds = _seeds(hint, saved_fov, None if level is None else level[0], height, above)
 
     def place_marks(
         placed: dict[int, npt.NDArray[np.float64]], params: npt.NDArray[np.float64], flip: bool
@@ -484,7 +515,8 @@ def solve_marks(
         if refined is not None and rank(refined) >= rank(best):
             best = refined
     if best is None:
-        return MarkSolve(None, tuple(MarkFit(m.id, None, reasons.get(m.id, "")) for m in marks), NO_FIT)
+        error = NO_FIT if height is None else NO_FIT_AT_HEIGHT
+        return MarkSolve(None, tuple(MarkFit(m.id, None, reasons.get(m.id, "")) for m in marks), error)
     x = best["x"]
     pitch, yaw, roll = _upright_angles(float(x[3]), float(x[4]), float(x[5]))
     camera = CameraConfig(
@@ -493,7 +525,9 @@ def solve_marks(
     params = camera_params(camera)
     places = best["places"]
     floor_off = False
-    if level is not None and any(mark_id not in {m.id for m in level[1]} for mark_id in places):
+    # Steeper, the level marks' camera is noise: the entered height holds the fit instead.
+    compared = level is not None and min(pitch, float(level[0][3])) >= STEEP_PITCH
+    if compared and level is not None and any(mark_id not in {m.id for m in level[1]} for mark_id in places):
         plane_z = float(np.mean([m.z for m in level[1]]))
         floor_off = not _floor_holds(level[0], params, plane_z, np.array(list(places.values())), *canvas)
     fits = []

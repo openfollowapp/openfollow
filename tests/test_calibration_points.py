@@ -69,8 +69,11 @@ def _pose(camera: CameraConfig) -> np.ndarray:
 
 
 def _assert_true_camera(camera: CameraConfig | None, tol: float = 1e-4) -> None:
+    """Angles compared a whole turn apart or not: yaw 180 and -179.99999 are one bearing."""
     assert camera is not None
-    np.testing.assert_allclose(_pose(camera), TRUE, atol=tol)
+    off = _pose(camera) - TRUE
+    off[3:6] = (off[3:6] + 180.0) % 360.0 - 180.0
+    np.testing.assert_allclose(off, np.zeros(7), atol=tol)
 
 
 def _simple(*, off_px: tuple[float, float] = (0.0, 0.0)) -> list[Mark]:
@@ -182,20 +185,18 @@ class TestSimple:
             assert fit.distance_error is None
             assert fit.reason == ""
 
-    @pytest.mark.parametrize(("z", "seeds"), [(0.009, True), (0.011, False)])
-    def test_only_corners_within_1_cm_of_one_height_seed_without_a_camera_position(self, z, seeds) -> None:
+    @pytest.mark.parametrize("z", [0.0, 0.5])
+    def test_known_corners_at_different_heights_give_the_camera_without_a_camera_position(self, z) -> None:
+        """Seeded from above the marks when no four of them are level."""
         marks = [*_simple()[:3], _known(4, (USL[0], USL[1], z))]
-        solved = solve_marks(marks, W, H)
-        if seeds:
-            _assert_true_camera(solved.camera)
-        else:
-            assert (solved.camera, solved.error) == (None, cp.NO_FIT)
+        _assert_true_camera(solve_marks(marks, W, H).camera)
 
-    def test_a_camera_too_narrow_to_be_one_fits_nothing(self) -> None:
+    @pytest.mark.parametrize(("height", "error"), [(None, cp.NO_FIT), (75.0, cp.NO_FIT_AT_HEIGHT)])
+    def test_a_camera_too_narrow_to_be_one_fits_nothing(self, height, error) -> None:
         tele = np.array([0.0, 100.0, 75.0, -36.9, 180.0, 0.0, 7.0])
         marks = [Mark(i, "known", 0.0, (p[0], p[1]), pin=_pin(p, tele)) for i, p in enumerate((DSL, DSR, USR, USL), 1)]
-        solved = solve_marks(marks, W, H, hint=tuple(tele[:3]))
-        assert (solved.camera, solved.error) == (None, cp.NO_FIT)
+        solved = solve_marks(marks, W, H, hint=tuple(tele[:3]), height=height)
+        assert (solved.camera, solved.error) == (None, error)
 
     @pytest.mark.parametrize("full_fit", ["fails", "sinks below the floor"])
     def test_the_brief_fit_answers_when_the_full_fit_ranks_lower(
@@ -545,6 +546,61 @@ class TestCameraHeight:
             np.testing.assert_allclose(jac[-1], expected, atol=1e-6)
 
 
+# 13 m up over an 8 x 5 m rectangle; each corner pinned under half a pixel off.
+_BELOW = ((4.0, -2.0, 0.0), (-4.0, -2.0, 0.0), (-4.0, 3.0, 0.0), (4.0, 3.0, 0.0))
+_UNDER_HALF_PX = ((0.4, -0.3), (-0.5, 0.2), (0.3, 0.4), (-0.2, -0.4))
+
+
+def _corners_below(pitch: float, yaw: float, off=_UNDER_HALF_PX) -> tuple[np.ndarray, list[Mark]]:
+    camera = np.array([0.3, 0.7, 13.0, pitch, yaw, 0.0, 75.0])
+    pins = [_pin(p, camera) for p in _BELOW]
+    marks = [
+        Mark(i, "known", p[2], (p[0], p[1]), pin=(pin[0] + dx, pin[1] + dy))
+        for i, (p, pin, (dx, dy)) in enumerate(zip(_BELOW, pins, off, strict=True), start=1)
+    ]
+    assert all(0.0 < m.pin[0] < W and 0.0 < m.pin[1] < H for m in marks if m.pin)
+    return camera, marks
+
+
+class TestStraightDown:
+    """Simple without a camera position, its four level corners' homography no seed: tried from above."""
+
+    @pytest.mark.parametrize("pitch", [-90.0, -89.9])
+    @pytest.mark.parametrize("height", [None, 13.0], ids=["no height", "height"])
+    def test_simple_without_a_camera_position_gives_a_camera(self, pitch: float, height: float | None) -> None:
+        down, marks = _corners_below(pitch, 30.0)
+        solved = solve_marks(marks, W, H, height=height)
+        assert solved.camera is not None and solved.error == ""
+        assert solved.steep is True
+        for mark, fit in zip(marks, solved.marks, strict=True):
+            assert fit.seen == pytest.approx(mark.pin, abs=2.0)
+        if height is not None:
+            assert solved.camera.pos_z == pytest.approx(13.0, abs=0.01)
+            np.testing.assert_allclose(_pose(solved.camera)[:2], down[:2], atol=0.15)
+            assert solved.camera.fov == pytest.approx(75.0, abs=0.5)
+
+    def test_corners_whose_steep_homography_fits_nothing_are_tried_from_above_as_well(self) -> None:
+        _, marks = _corners_below(-88.0, 90.0, off=_HALF_PX)
+        solved = solve_marks(marks, W, H)
+        assert solved.camera is not None and solved.steep is True
+
+
+# Four level corners pinned a few pixels off, three more known marks pinned exactly, the height entered.
+_SPREAD = ((-1.0, 1.0), (1.0, 1.0), (1.0, -1.0), (-1.0, -1.0))
+_MORE_KNOWN = ((0.0, 1.0, 1.5), (2.0, 0.0, 0.0), (-3.0, 2.0, 0.8))
+
+
+def _steep_with_off_corners(pitch: float, off: tuple[tuple[float, float], ...]) -> tuple[np.ndarray, list[Mark]]:
+    camera = np.array([0.0, 1.0, 12.0, pitch, 180.0, 0.0, 70.0])
+    pins = [_pin(p, camera) for p in _UNDER_IT]
+    corners = [
+        Mark(i, "known", p[2], (p[0], p[1]), pin=(pin[0] + dx, pin[1] + dy))
+        for i, (p, pin, (dx, dy)) in enumerate(zip(_UNDER_IT, pins, off, strict=True), start=1)
+    ]
+    more = [Mark(i, "known", p[2], (p[0], p[1]), pin=_pin(p, camera)) for i, p in enumerate(_MORE_KNOWN, start=5)]
+    return camera, corners + more
+
+
 class TestFloorReach:
     """A mark typed at the wrong height bends the camera; four level corners alone put the floor elsewhere."""
 
@@ -567,6 +623,31 @@ class TestFloorReach:
         reasons = plausibility(solved.camera, solved.marks, {}, None, per_axis=True, floor_off=solved.floor_off)
         assert ("reach" in _kinds(reasons)) is off
 
+    @pytest.mark.parametrize(
+        ("pitch", "off"),
+        [
+            (-89.0, _HALF_PX),  # both steep
+            (-86.0, tuple((4.0 * x, 4.0 * y) for x, y in _SPREAD)),  # the corners' camera at -77°
+            (-80.0, tuple((-4.0 * x, -4.0 * y) for x, y in _SPREAD)),  # the corners' camera at -89°
+        ],
+        ids=["both steep", "fit steep", "corners steep"],
+    )
+    def test_a_correct_fit_is_not_compared_with_the_corners_when_either_is_steep(self, pitch, off) -> None:
+        """Steeper than STEEP_PITCH a pixel moves the corners' camera metres; the entered height holds the fit."""
+        camera, marks = _steep_with_off_corners(pitch, off)
+        solved = solve_marks(marks, W, H, hint=(0.0, 2.0, 10.0), height=12.0)
+        assert solved.camera is not None
+        np.testing.assert_allclose(_pose(solved.camera)[:3], camera[:3], atol=0.05)
+        assert solved.floor_off is False
+        reasons = plausibility(solved.camera, solved.marks, {}, None, per_axis=True, floor_off=solved.floor_off)
+        assert "reach" not in _kinds(reasons)
+
+    @pytest.mark.parametrize(("z", "compared"), [(0.009, True), (0.011, False)])
+    def test_only_corners_within_1_cm_of_one_height_are_compared(self, z, compared) -> None:
+        mistyped = _known(5, (0.0, 7.0, 4.0), typed=(0.0, 7.0, 0.0))
+        marks = [*_simple()[:3], _known(4, (USL[0], USL[1], z)), mistyped]
+        assert solve_marks(marks, W, H, hint=(0.0, 13.0, 12.0)).floor_off is compared
+
     def test_without_four_level_known_marks_nothing_is_compared(self) -> None:
         marks = [*_simple()[:3], _known(4, (USL[0], USL[1], 0.5)), _known(5, (0.0, 6.0, 2.0), typed=(0.0, 6.0, 4.0))]
         solved = solve_marks(marks, W, H, hint=(0.0, 13.0, 12.0))
@@ -580,16 +661,27 @@ class TestFloorReach:
 
 
 class TestNoCamera:
-    def test_without_a_camera_position_or_four_level_known_marks_nothing_seeds_the_fit(self) -> None:
-        solved = solve_marks(_advanced(), W, H)
+    def test_without_a_camera_position_or_two_pinned_known_marks_nothing_seeds_the_fit(self) -> None:
+        marks = [
+            _known(1, REF),
+            _known(2, DSL, pinned=False),
+            _triangulated(3, P3, (1, REF), (2, DSL)),
+            _triangulated(4, P4, (3, P3), (1, REF)),
+            _triangulated(5, (1.0, 2.0, 0.0), (4, P4), (1, REF)),
+        ]
+        solved = solve_marks(marks, W, H)
         assert (solved.camera, solved.error) == (None, cp.NO_FIT)
-        assert [(f.id, f.position) for f in solved.marks] == [(1, None), (2, None), (3, None), (4, None)]
-
-    def test_four_known_marks_at_different_heights_seed_nothing_without_a_camera_position(self) -> None:
-        """Only a level four seeds through a homography; a tilted one would seed a wrong camera."""
-        marks = [_known(1, DSL), _known(2, DSR), _known(3, USR), _known(4, (6.0, 6.0, 1.0))]
-        assert solve_marks(marks, W, H).error == cp.NO_FIT
+        assert [f.position for f in solved.marks] == [None] * 5
         _assert_true_camera(solve_marks(marks, W, H, hint=(0.0, 13.0, 12.0)).camera)
+
+    def test_two_pinned_known_marks_seed_from_above_without_a_camera_position(self) -> None:
+        _assert_true_camera(solve_marks(_advanced(), W, H).camera)
+
+    @pytest.mark.parametrize("height", [0.0, -3.0, -0.01])
+    def test_a_camera_height_not_above_the_lowest_pinned_mark_names_the_height(self, height: float) -> None:
+        solved = solve_marks(_simple(), W, H, hint=(0.0, 13.0, 12.0), height=height)
+        assert (solved.camera, solved.error) == (None, cp.NO_FIT_AT_HEIGHT)
+        assert [f.position for f in solved.marks] == [None] * 4
 
     def test_fewer_than_four_pins_fit_no_camera(self) -> None:
         marks = [*_simple()[:3], _known(4, USL, pinned=False)]

@@ -58,6 +58,8 @@ def name_problem(name: Any) -> str:
         return f"A name has at most {MAX_NAME} characters."
     if any(ord(c) < 0x20 or c == "\x7f" for c in name):
         return "A name cannot hold control characters."
+    if any(0xD800 <= ord(c) <= 0xDFFF for c in name):  # a lone surrogate from a JSON escape: no UTF-8 for it
+        return "A name cannot hold unpaired surrogates."
     return ""
 
 

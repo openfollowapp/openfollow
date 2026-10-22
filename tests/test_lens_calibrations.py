@@ -98,6 +98,8 @@ def test_a_name_like_a_path_still_writes_inside_the_store(name: str, store: Path
         ("Zoom\nwide", "A name cannot hold control characters."),
         ("Zoom\x00", "A name cannot hold control characters."),
         ("Zoom\x7f", "A name cannot hold control characters."),
+        ("Zoom\ud800", "A name cannot hold unpaired surrogates."),
+        ("\udfffZoom", "A name cannot hold unpaired surrogates."),
     ],
 )
 def test_a_name_that_cannot_name_a_calibration_is_refused(name: object, problem: str, store: Path) -> None:
@@ -151,6 +153,7 @@ _UNREADABLE = {
     "name too long": json.dumps({"name": "x" * 61, "k1": -0.2, "k2": 0.03}),
     "name null": json.dumps({"name": None, "k1": -0.2, "k2": 0.03}),
     "name a number": json.dumps({"name": 7, "k1": -0.2, "k2": 0.03}),
+    "name with a lone surrogate": json.dumps({"name": "Zoom\ud800", "k1": -0.2, "k2": 0.03}),
     "saved a number": json.dumps({"name": "Zoom", "k1": -0.2, "k2": 0.03, "saved": 20261021}),
     "version a list": json.dumps({"name": "Zoom", "k1": -0.2, "k2": 0.03, "openfollow_version": ["0.6"]}),
 }

@@ -201,11 +201,11 @@ _UNDER_IT = [(6.0, -1.0, 0.0), (-6.0, -1.0, 0.0), (-6.0, 3.0, 0.0), (6.0, 3.0, 0
 _HALF_PX = [(0.6, -0.4), (-0.5, 0.5), (0.4, 0.6), (-0.6, -0.3)]
 
 
-def _straight_down_marks() -> list[dict[str, Any]]:
-    seen = project_points(_STRAIGHT_DOWN, np.array(_UNDER_IT), W, H)
+def _straight_down_marks(camera: np.ndarray = _STRAIGHT_DOWN, under=_UNDER_IT, off=_HALF_PX) -> list[dict[str, Any]]:
+    seen = project_points(camera, np.array(under), W, H)
     return [
         {"id": i, "kind": "known", "x": p[0], "y": p[1], "z": p[2], "pin": [float(q[0]) + d[0], float(q[1]) + d[1]]}
-        for i, (p, q, d) in enumerate(zip(_UNDER_IT, seen, _HALF_PX, strict=True), start=1)
+        for i, (p, q, d) in enumerate(zip(under, seen, off, strict=True), start=1)
     ]
 
 
@@ -229,6 +229,23 @@ def test_the_camera_height_holds_a_camera_straight_down(base: str) -> None:
     assert data["steep"] is True
     assert data["camera"]["pos_z"] == pytest.approx(12.0, abs=0.01)
     np.testing.assert_allclose(_camera_vector(data["camera"])[:3], _STRAIGHT_DOWN[:3], atol=0.08)
+
+
+def test_without_a_camera_position_the_camera_height_holds_a_camera_looking_exactly_down(base: str) -> None:
+    exactly_down = np.array([0.3, 0.7, 13.0, -90.0, 30.0, 0.0, 75.0])
+    under = [(4.0, -2.0, 0.0), (-4.0, -2.0, 0.0), (-4.0, 3.0, 0.0), (4.0, 3.0, 0.0)]
+    off = [(0.4, -0.3), (-0.5, 0.2), (0.3, 0.4), (-0.2, -0.4)]
+    status, data = _solve(base, _body(marks=_straight_down_marks(exactly_down, under, off), camera_height=13.0))
+    assert status == 200
+    assert data["steep"] is True
+    assert data["camera"]["pos_z"] == pytest.approx(13.0, abs=0.01)
+
+
+@pytest.mark.parametrize("height", [0.0, -2.5])
+def test_a_camera_height_not_above_the_marks_is_named(base: str, height: float) -> None:
+    status, data = _solve(base, _body(hint=HINT, camera_height=height))
+    assert status == 422
+    assert data["error"] == cp.NO_FIT_AT_HEIGHT
 
 
 def test_a_camera_looking_at_the_stage_is_not_steep(base: str) -> None:
@@ -567,6 +584,7 @@ _BAD_LENS = {
     "name number": {"name": 5, "k1": -0.2, "k2": 0.03},
     "name too long": {"name": "x" * 61, "k1": -0.2, "k2": 0.03},
     "name with a newline": {"name": "Zoom\nwide", "k1": -0.2, "k2": 0.03},
+    "name with a lone surrogate": {"name": "Zoom\ud800", "k1": -0.2, "k2": 0.03},
     "name missing": {"k1": -0.2, "k2": 0.03},
     "k1 text": {"name": "Zoom", "k1": "-0.2", "k2": 0.03},
     "k1 bool": {"name": "Zoom", "k1": True, "k2": 0.03},

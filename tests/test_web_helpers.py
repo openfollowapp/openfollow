@@ -4134,6 +4134,23 @@ def test_an_import_in_the_former_keys_reads_as_marks_on_the_imports_grid() -> No
     ]
 
 
+@pytest.mark.parametrize("how", ["import", "camera write"])
+def test_the_former_keys_drop_this_stations_camera_height(how: str) -> None:
+    """The height was held with this station's marks; the former keys replace those marks."""
+    from openfollow.web.routes import _apply_import_data
+
+    station = _station()
+    station.camera.calibration_height = 9.5
+    old = {"corner_pins": _CORNER_PINS}
+    if how == "import":
+        camera = _apply_import_data(station, {"camera": old}).camera
+    else:
+        assert apply_section_data(station, "camera", old)
+        camera = station.camera
+    assert camera.calibration_marks
+    assert camera.calibration_height is None
+
+
 def test_an_import_in_the_former_keys_without_a_grid_reads_on_this_stations_grid() -> None:
     from openfollow.web.routes import _apply_import_data
 

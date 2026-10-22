@@ -358,6 +358,28 @@ def test_the_stronger_parallel_edge_is_taken_when_it_is_clicked() -> None:
     np.testing.assert_allclose(offsets(pts), 16.0, atol=1.0)
 
 
+def test_the_clicked_edge_is_kept_on_a_stair_of_stronger_ones() -> None:
+    # Three rising edges within the reach: the weak one clicked, two stronger 8 and 14 px below.
+    img = np.full((H, W), 30.0)
+    img[yy >= chord_y(xx)] = 50.0
+    img[yy >= chord_y(xx) + 8.0] = 140.0
+    img[yy >= chord_y(xx) + 14.0] = 230.0
+    pts = snap(noisy(img), (200.0, chord_y(200.0) + 1.0), (1700.0, chord_y(1700.0) - 1.0))
+    assert all(p.snapped for p in pts)
+    np.testing.assert_allclose(offsets(pts), 0.0, atol=1.0)
+
+
+def test_marks_at_the_clicks_are_no_line_beside_the_edge_that_runs_on() -> None:
+    # Two short scuffs right at the clicks; the line itself runs 10 px below them, end to end.
+    img = np.full((H, W), 40.0)
+    img[yy >= chord_y(xx) + 10.0] = 160.0
+    for x0, x1 in ((180, 230), (1670, 1720)):
+        img[(xx >= x0) & (xx < x1) & (yy >= chord_y(xx)) & (yy < chord_y(xx) + 3.0)] = 160.0
+    pts = snap(noisy(img), (200.0, chord_y(200.0)), (1700.0, chord_y(1700.0)))
+    assert all(p.snapped for p in pts)
+    np.testing.assert_allclose(offsets(pts), 10.0, atol=1.0)
+
+
 def tape_frame() -> np.ndarray:
     """White tape 8 px wide on a floor that is darker below it, so its lower edge is the stronger."""
     img = np.full((H, W), 90.0)
@@ -432,6 +454,19 @@ def test_a_suggestion_s_samples_settle_onto_the_edge_beside_them() -> None:
     pts = snap_near(bright_tape_frame(), lower_tape_edge_samples(shift=2.0), -1)
     assert all(p.snapped for p in pts)
     np.testing.assert_allclose(offsets(pts), 3.0, atol=1.0)
+
+
+def test_where_a_suggestion_s_edge_breaks_off_its_point_takes_no_edge_beside_it() -> None:
+    # In the middle third the edge steps 4 px aside: another edge, not this one.
+    img = np.full((H, W), 40.0)
+    img[yy >= chord_y(xx)] = 160.0
+    middle = (xx > 700) & (xx < 1200)
+    img[middle] = 40.0
+    img[middle & (yy >= chord_y(xx) + 4.0)] = 160.0
+    samples = line_sample_points((200.0, chord_y(200.0) + 0.5), (1700.0, chord_y(1700.0) + 0.5))
+    pts = snap_near(noisy(img), samples, 1)
+    assert [p.snapped for p in pts] == [True, True, False, True, True]
+    np.testing.assert_allclose(offsets(pts), 0.0, atol=1.0)
 
 
 def test_a_suggestion_on_the_weak_chord_never_takes_the_strong_one() -> None:

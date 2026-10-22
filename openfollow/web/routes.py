@@ -100,7 +100,7 @@ from openfollow.configuration import (
     viewed_with_controlled,
 )
 from openfollow.input.mouse3d_status import status_key
-from openfollow.lens_model import C_BOUND, pull_back_to_valid
+from openfollow.lens_model import pull_back_to_valid
 
 # Module-level so handler closures resolve ``save_catalog`` from this
 # namespace at call time (tests monkeypatch it for persist-failure paths).
@@ -3621,8 +3621,6 @@ def _parse_lens_snap_body(
         if not isinstance(samples, list) or len(samples) != len(LINE_SAMPLE_FRACTIONS):
             raise ValueError(f"near points must be a list of {len(LINE_SAMPLE_FRACTIONS)} points")
         polarity = _json_int(raw.get("polarity", 0), "near polarity")
-        if polarity not in (-1, 0, 1):
-            raise ValueError("near polarity must be -1, 0 or 1")
         near = NearEdge(tuple((p[0], p[1]) for p in (_json_point(q, "near point") for q in samples)), polarity)
     return img_w, img_h, ends[0], ends[1], LumaBand(step, half, luma), near
 
@@ -10857,8 +10855,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                     raise ValueError("each line needs a points list")
                 lines.append([_json_point(p, "point") for p in pts])
             cx, cy = (_json_number(data[key], key) if key in data else 0.0 for key in ("cx", "cy"))
-            if max(abs(cx), abs(cy)) > C_BOUND:
-                raise ValueError(f"cx and cy must be within -{C_BOUND:g}..{C_BOUND:g}")
         except (KeyError, TypeError, ValueError) as exc:
             response.status = 400
             return json.dumps({"error": str(exc)})

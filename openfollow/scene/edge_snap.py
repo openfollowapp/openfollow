@@ -92,8 +92,11 @@ _MIN_END_RADIUS = 4
 # looked for, as a fraction of the snapshot width: another edge further off is another line.
 _WINDOW_DIVISOR = 480
 _MIN_WINDOW = 4
-# A peak this far (px) off the fitted curve is another edge and does not shape it.
+# A peak this far (px) off the fitted curve is another edge and does not shape it; a
+# point takes its peak within the point tolerance of the curve, or stays unsnapped (the
+# reference bows draw the widest lenses to about 3 px).
 _TRACK_TOLERANCE = 1.5
+_POINT_TOLERANCE = 2.5
 
 
 @dataclass(frozen=True)
@@ -234,7 +237,7 @@ class _Band:
         return min(max(int(round(fraction * self.length / self.step)), 0), cols - 1)
 
     def peak(self, profile: FloatArray, lo: int, hi: int) -> float | None:
-        """Sub-pixel row offset of the strongest peak of ``profile`` within ``lo..hi``, if one stands as an edge.
+        """Sub-pixel row offset of the strongest peak of ``profile`` within ``lo..hi`` that stands as an edge.
 
         The window's own end on the flank of a peak beyond it is no peak.
         """
@@ -242,13 +245,13 @@ class _Band:
         lo, hi = max(1, lo), min(rows - 2, hi)
         if lo > hi:
             return None
-        window = profile[lo : hi + 1]
-        if not np.isfinite(window).any():
-            return None
-        j = lo + int(np.nanargmax(window))
         known = np.where(np.isfinite(profile), profile, -np.inf)
-        if known[j] < self.min_strength or known[j] < max(known[j - 1], known[j + 1]):
+        rows_in = np.arange(lo, hi + 1)
+        here = known[lo : hi + 1]
+        crest = (here >= self.min_strength) & (here >= known[lo - 1 : hi]) & (here >= known[lo + 1 : hi + 2])
+        if not crest.any():
             return None
+        j = int(rows_in[crest][np.argmax(here[crest])])
         return j - self.half + _subpixel_peak(known, j)
 
     def fit(self, offsets: FloatArray, weights: FloatArray, reach: float) -> FloatArray:
@@ -264,8 +267,9 @@ class _Band:
     def track(self, curve: FloatArray, polarity: float, window: int, reach: float) -> FloatArray | None:
         """The curve refitted to the edge peaks of ``polarity`` within ``window`` of ``curve``, column by column.
 
-        A peak the refitted curve misses by more than :data:`_TRACK_TOLERANCE` is another
-        edge crossing this one, and the curve is fitted again without it.
+        A stretch where another edge runs beside this one pulls a least-squares curve
+        halfway over, so the curve is fitted again to the half of the peaks it fits best,
+        and then to every peak within :data:`_TRACK_TOLERANCE` of that.
         """
         profile = polarity * self.grad
         rows, cols = profile.shape
@@ -281,8 +285,10 @@ class _Band:
         if np.count_nonzero(seen) < 4:
             return None
         offsets = np.where(seen, found, 0.0)
-        fitted = self.fit(offsets, weight, reach)
-        kept = np.where(np.abs(offsets - fitted) <= _TRACK_TOLERANCE, weight, 0.0)
+        miss = np.abs(offsets - self.fit(offsets, weight, reach))
+        best = np.where(seen & (miss <= np.median(miss[seen])), weight, 0.0)
+        miss = np.abs(offsets - self.fit(offsets, best, reach))
+        kept = np.where(seen & (miss <= _TRACK_TOLERANCE), weight, 0.0)
         if np.count_nonzero(kept) < 4:
             return None
         return self.fit(offsets, kept, reach)
@@ -476,9 +482,10 @@ def snap_line_to_edges(
     if anchored is None:
         return [SnappedPoint(float(x), float(y), False) for x, y in fallback]
     curve, polarity = anchored
-    # Twice: the first fit draws the curve onto the edge, the second fits it to the edge.
+    # Twice: the first fit draws the curve onto the edge, the second fits it to the edge. The
+    # curve is already on its edge, so a parallel one at the points' window is out of reach.
     for _ in range(2):
-        tracked = data.track(curve, polarity, window, reach)
+        tracked = data.track(curve, polarity, window - 1, reach)
         if tracked is None:
             break
         curve = tracked
@@ -488,7 +495,8 @@ def snap_line_to_edges(
     for i, fraction in enumerate(fractions):
         col = data.column(float(fraction))
         centre = float(np.interp(fraction, data.t, curve))
-        lo, hi = round(centre) - window, round(centre) + window
+        # The strongest peak close enough to the curve to be its edge; another further off is another edge.
+        lo, hi = math.ceil(centre - _POINT_TOLERANCE - 1e-9), math.floor(centre + _POINT_TOLERANCE + 1e-9)
         if anchors is not None:
             # A suggestion's point stays on the suggestion's own edge.
             sample = round(float(anchors[i]))

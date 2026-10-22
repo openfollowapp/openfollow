@@ -1411,7 +1411,7 @@ class TestWizardLensTemplate:
         src = self._src()
         assert "var far = Math.hypot(e.clientX - lensDrag.client[0], e.clientY - lensDrag.client[1]);" in src
         assert "if (lensDrag.trace) { if (far >= lensDrag.slop) lensDrag.moved = true; return; }" in src
-        assert "if (!drag.moved && e.type !== 'pointercancel') lensTraceClick(" in src
+        assert "if (!drag.moved && e.type !== 'pointercancel') traceTap = drag;" in src
 
     def test_a_written_pair_widens_its_slider(self) -> None:
         src = self._src()

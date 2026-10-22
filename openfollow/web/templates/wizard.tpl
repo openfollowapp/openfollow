@@ -1949,7 +1949,16 @@
   }
 
   // ---- the hint: always the one next thing to do, above the picture ----
+  // A press keeps the hint's words until its click: a box changing height moves the picture and the controls,
+  // and a tap's click lands on whatever is under the finger by then. A mouse's click goes where it pressed.
+  var lensPress = false, lensPressTimer = null;
+  function lensPressEnd() {
+    clearTimeout(lensPressTimer);
+    if (!lensPress) return;
+    lensPress = false; renderLensHint(); renderFsBar();
+  }
   function renderLensHint() {
+    if (lensPress) return;
     var fit = lensFit, open = lensOpenCandidates().length, lines = lensLines.length, h, sub;
     var applied = fit && lensFitApplies(fit), hint = fit && fit.hint || '', cov = hint ? ' ' + hint : '';
     var agree = /^The result may already be good\. /;
@@ -1963,7 +1972,10 @@
     else if (applied && agree.test(hint)) { h = 'The result may already be good.'; sub = hint.replace(agree, '') + ' Or press Next.'; }
     else if (applied) { h = 'Improve the lines, or add more.'; sub = 'Select a point and move it exactly onto the edge. Lines near the edges and corners of the picture help the most.' + cov; }
     else { h = 'Draw more straight lines.'; sub = 'Click the start and the end of a straight edge. Then move its points exactly onto the edge.' + cov; }
-    setLive($('lens-hint'), esc(h) + '<div class="notice-sub">' + esc(sub) + '</div>');
+    // A started line keeps the box's height, so the picture stays put between the line's two taps.
+    var box = $('lens-hint');
+    box.style.minHeight = lensPending ? box.style.minHeight || box.offsetHeight + 'px' : '';
+    setLive(box, esc(h) + '<div class="notice-sub">' + esc(sub) + '</div>');
     lensHintText = h;
   }
 
@@ -2284,11 +2296,17 @@
     if (lensHold && e.target.isConnected && !e.target.closest('#lens-lines .lens-point')) dropLensPoint();
   }
   function lensInit() {
-    var overlay = document.getElementById('lens-overlay');
+    var overlay = document.getElementById('lens-overlay'), traceTap = null;
+    document.addEventListener('pointerdown', function() { clearTimeout(lensPressTimer); lensPress = true; }, true);
+    // A tap that ends in no click (a drag) lets the hint go shortly after.
+    document.addEventListener('pointerup', function(e) {
+      if (e.pointerType === 'mouse') lensPressEnd(); else { clearTimeout(lensPressTimer); lensPressTimer = setTimeout(lensPressEnd, 300); }
+    });
+    ['click', 'pointercancel', 'contextmenu'].forEach(function(t) { document.addEventListener(t, lensPressEnd); });
     overlay.addEventListener('pointerdown', function(e) {
+      traceTap = null;
       var handle = e.target.closest ? e.target.closest('.lens-point') : null;
       var candidate = e.target.closest ? e.target.closest('.lens-candidate') : null;
-      var pt = lensSvgPoint(e.clientX, e.clientY);
       if (candidate) {
         e.preventDefault();
         lensAddCandidate(+candidate.dataset.candidate);
@@ -2301,14 +2319,13 @@
         renderLens();
         lensFocusSelected();
         showLoupe('lens-container', 'lens-overlay', lensPointPos(lensDrag.line, lensDrag.point));
-      } else if (e.target.closest && e.target.closest('[data-line-hit]')) {
+      } else if (e.target.closest && e.target.closest('[data-line-hit]') && !lensPending) {
         e.preventDefault();
-        // With a line started, the click ends it there instead.
-        if (lensPending) { lensTraceClick(pt); return; }
         lensHold = false;
         lensSelected = { line: +e.target.closest('[data-line-hit]').dataset.lineHit, point: null };
         renderLens();
-      } else if (e.target.id === 'lens-hit') {
+      } else if (e.target.id === 'lens-hit' || (e.target.closest && e.target.closest('[data-line-hit]'))) {
+        // With a line started, a click on a line ends it there.
         e.preventDefault();
         lensDrag = { trace: true, client: [e.clientX, e.clientY], slop: tapSlop(e.pointerType), moved: false };
         overlay.setPointerCapture(e.pointerId);
@@ -2334,7 +2351,7 @@
       hideLoupe('lens-container');
       try { overlay.releasePointerCapture(e.pointerId); } catch (err) {}
       if (drag.trace) {
-        if (!drag.moved && e.type !== 'pointercancel') lensTraceClick(lensSvgPoint(e.clientX, e.clientY));
+        if (!drag.moved && e.type !== 'pointercancel') traceTap = drag;
         return;
       }
       lensHold = true;
@@ -2342,6 +2359,12 @@
     }
     overlay.addEventListener('pointerup', endDrag);
     overlay.addEventListener('pointercancel', endDrag);
+    // A line starts and ends on the click, as on the Calibration picture: the hint above the picture changes,
+    // and a picture moved before the click would hand the click to the control then under the finger.
+    overlay.addEventListener('click', function(e) {
+      var t = traceTap; traceTap = null;
+      if (t && Math.hypot(e.clientX - t.client[0], e.clientY - t.client[1]) < t.slop) lensTraceClick(lensSvgPoint(e.clientX, e.clientY));
+    });
     // On the HTML container: Chrome makes an SVG element with a focus listener a Tab stop of its own.
     $('lens-container').addEventListener('focusin', lensPointFocusIn);
     overlay.addEventListener('keydown', function(e) {
@@ -3057,7 +3080,14 @@
     if (document.activeElement !== el) el.focus({ preventScroll: true });
     showLoupe('cal-container', 'cal-overlay', q);
   }
-  function dropCorner() { if (S.selCorner == null) return; S.selCorner = null; hideLoupe('cal-container'); }
+  // Ending the hold ends the selection, as Enter places only a selected corner; the corner keeps the focus.
+  function dropCorner() {
+    if (S.selCorner == null) return;
+    var c = S.selCorner, el = document.querySelector('#cal-pins [data-mark="' + c + '"]');
+    S.selCorner = null; if (S.selPin === c) S.selPin = null;
+    if (el) el.classList.remove('active');
+    hideLoupe('cal-container');
+  }
   var calRefocus = false;
   // Enter places the selected corner where it is; the corner keeps the focus, so the next Tab moves on from it.
   function cornerEnterKey(e) {
@@ -3084,7 +3114,7 @@
   }
   // A gesture is one press and its click, or one key from down to up. The menu ignores the clicks of the
   // gesture that opened it: opened under a finger, it would take that tap's click.
-  var gestureSeq = 0, menuGesture = -1;
+  var gestureSeq = 0, menuGesture = -1, pressSeq = -1;
   function openPinMenu(p) {
     S.pinMenu = { p: p, form: null, pin: null }; S.selPin = null; menuGesture = gestureSeq;
     var knownN = currentMarks().filter(function(m) { return m.kind === 'known' && !m.problem; }).length;
@@ -3180,7 +3210,9 @@
     var v = function(id) { var el = $(id); return el ? el.value : ''; };
     return { name: v('pm-point').trim(), x: v('pm-x'), y: v('pm-y'), z: v('pm-z'), a: v('pm-a'), b: v('pm-b'), da: v('pm-da'), db: v('pm-db') };
   }
+  // A field's change event may come after its menu closed.
   function pinMenuCheck(e) {
+    if (!S.pinMenu) return false;
     var v = pinMenuVals(), ok;
     if (e && (e.target.id === 'pm-a' || e.target.id === 'pm-b')) {
       var o = e.target.id === 'pm-a' ? 'b' : 'a';
@@ -3202,13 +3234,15 @@
     renderAdvRows(); solveSoon(); saveToSession();
   }
   // With `back` (a pin id, or null for none), a focus in the menu goes to that pin, or to the picture without it.
-  // A pin's menu closed without giving the focus back leaves its pin unselected.
-  function closePinMenu(back) {
+  // A pin's menu closed without giving the focus back leaves its pin unselected. `held` leaves the picture as
+  // drawn: a press closing the menu must not rebuild the pin under it, as a detached pin gets no click.
+  function closePinMenu(back, held) {
     if (!S.pinMenu) return;
     var had = back !== undefined && $('pin-menu').contains(document.activeElement);
     if (S.pinMenu.pin != null && !had) S.selPin = null;
     S.pinMenu = null; $('pin-menu').hidden = true;
     hideLoupe('cal-container');
+    if (held) return;
     if (FS && FS.pad) fsLayout();
     renderCalibOverlay();
     if (had) focusCalPin(back);
@@ -3302,8 +3336,8 @@
       if (drag) { drag.move(p); showLoupe(container, svgId, drag.pos()); return; }
       if (opts.hover) opts.hover(p);
     });
-    // A drag's end may hand back what its click does.
-    function end(e) { if (!drag) return; hideLoupe(container); var d = drag; drag = null; var a = d.end(); if (e.type === 'pointerup' && a) pinTap = a; }
+    // A released press's end may hand back what its click does.
+    function end(e) { if (!drag) return; hideLoupe(container); var d = drag, up = e.type === 'pointerup'; drag = null; var a = d.end(up); pinTap = up && a || null; }
     svg.addEventListener('pointerup', end);
     svg.addEventListener('pointercancel', end);
     svg.addEventListener('pointerleave', function() { if (!drag && opts.leave) opts.leave(); });
@@ -3371,16 +3405,19 @@
     $('adv-rows').addEventListener('change', function(e) { if (e.target.dataset.f === 'name') { renderAdvRows(); renderCalibOverlay(); } });
     bindDrag('cal-overlay', 'cal-container', '#cal-hit', {
       start: function(h, p, tap) {
-        var id = S.mode === 'simple' ? h.dataset.mark : +h.dataset.mark;
-        closePinMenu(); S.selPin = id;
+        var id = S.mode === 'simple' ? h.dataset.mark : +h.dataset.mark, stale = !!S.pinMenu;
+        closePinMenu(undefined, true); S.selPin = id;
         // A press on a pin that does not move it is a click: Simple selects the corner, Advanced opens the pin's menu on the click.
         var moved = false, slop = tap * imageWidth / $('cal-container').getBoundingClientRect().width;
         return {
           pos: function() { return getPin(id); },
           move: function(q) { if (!moved && Math.hypot(q[0] - p[0], q[1] - p[1]) < slop) return; moved = true; setPin(id, q); renderCalibOverlay(); },
-          end: function() {
-            if (S.mode === 'simple') { S.selCorner = id; if (moved) { solveSoon(); saveToSession(); } else selectCorner(id); }
-            else if (moved) { solveSoon(); saveToSession(); focusCalPin(id); } else return function() { openPointMenu(id); };
+          end: function(released) {
+            if (S.mode === 'simple') { S.selCorner = id; if (moved) { solveSoon(); saveToSession(); } else selectCorner(id); return; }
+            if (!moved && released) return function() { openPointMenu(id); };
+            // The menu the press closed leaves the picture now; the click's own menu draws it otherwise.
+            if (stale) { if (FS && FS.pad) fsLayout(); renderCalibOverlay(); }
+            if (moved) { solveSoon(); saveToSession(); focusCalPin(id); }
           }
         };
       },
@@ -3419,11 +3456,14 @@
       var h = e.target.closest('#cal-pins .pin-handle');
       if (S.mode === 'simple' && h && !calRefocus && S.selCorner !== h.dataset.mark) selectCorner(h.dataset.mark);
     });
-    // A menu left by Tab closes, so the arrow keys never move a spot nobody is looking at.
-    document.addEventListener('focusin', function(e) { if (S.pinMenu && !e.target.closest('#pin-menu') && !e.target.closest('#cal-overlay')) closePinMenu(); });
+    // A menu left by Tab closes, so the arrow keys never move a spot nobody is looking at. A press's focus leaves
+    // it to the press: closed by the focus, a panel would move the pressed control from under the tap.
+    document.addEventListener('focusin', function(e) {
+      if (S.pinMenu && pressSeq !== gestureSeq && !e.target.closest('#pin-menu') && !e.target.closest('#cal-overlay')) closePinMenu();
+    });
     document.addEventListener('keydown', cornerEnterKey);
     // A held key's repeats belong to its press.
-    document.addEventListener('pointerdown', function() { gestureSeq++; }, true);
+    document.addEventListener('pointerdown', function() { pressSeq = ++gestureSeq; }, true);
     document.addEventListener('keydown', function(e) { if (!e.repeat) gestureSeq++; }, true);
     document.addEventListener('keyup', function() { gestureSeq++; }, true);
     document.addEventListener('click', function() { gestureSeq++; });
@@ -3451,12 +3491,15 @@
     $('pin-menu').addEventListener('change', pinMenuCheck);
     $('pin-menu').addEventListener('submit', function(e) { e.preventDefault(); placeNewFromMenu(); });
     // A press anywhere but the menu or the picture closes it; a click on the picture opens it there instead.
-    // A panel waits for the click, so a swipe that scrolls the page keeps it; a rebuilt menu's item is detached.
+    // A panel waits for the click, so a swipe that scrolls the page keeps it, and closes once the click's own
+    // target has acted; where the click began is read first, as a rebuilt menu item is detached by then.
     function outsideMenu(e, panel) {
       return S.pinMenu && $('pin-menu').classList.contains('as-panel') === panel && !e.target.closest('#pin-menu') && !e.target.closest('#cal-overlay');
     }
+    var clickOutside = false;
     document.addEventListener('pointerdown', function(e) { if (outsideMenu(e, false)) closePinMenu(); });
-    document.addEventListener('click', function(e) { if (e.target.isConnected && outsideMenu(e, true)) closePinMenu(); });
+    document.addEventListener('click', function(e) { clickOutside = !!outsideMenu(e, true); }, true);
+    document.addEventListener('click', function() { if (clickOutside) { clickOutside = false; closePinMenu(); } });
     // Choosing a row only moves the highlight: a rebuilt table would drop the focus.
     function choosePair(r) {
       S.pair = +r.dataset.pair;
@@ -3621,11 +3664,14 @@
   function openFull(key) {
     if (FS) return;
     closeHelp();
-    var cont = fsContainer(key), ph = document.createComment('fs');
+    // The placeholder keeps the picture's room and the page comes back where it was, read before scroll
+    // anchoring follows the picture into the shell.
+    var x = window.scrollX, y = window.scrollY, cont = fsContainer(key), ph = document.createElement('div'), cs = getComputedStyle(cont);
+    ph.style.height = cont.getBoundingClientRect().height + 'px'; ph.style.margin = cs.margin;
     cont.parentNode.insertBefore(ph, cont);
     dropCorner(); dropLensPoint();
     $('fs-stage').appendChild(cont);
-    FS = { key: key, cont: cont, ph: ph, pad: 0 };
+    FS = { key: key, cont: cont, ph: ph, pad: 0, x: x, y: y };
     $('fs-shell').hidden = false; document.body.style.overflow = 'hidden';
     var sh = $('fs-shell');
     if (sh.requestFullscreen) { try { var pr = sh.requestFullscreen(); if (pr && pr.catch) pr.catch(function() {}); } catch (e) { /* refused: the window-filling shell stays */ } }
@@ -3643,7 +3689,11 @@
     $('fs-shell').hidden = true; document.body.style.overflow = ''; $('fs-hint').liveHtml = null;
     fsRender(f.key);
     // The page outside the full-screen element takes no focus until the browser has left full screen.
-    var b = f.cont.querySelector('.fs-btn'), back = function() { if (b && !FS) b.focus({ preventScroll: true }); };
+    var b = f.cont.querySelector('.fs-btn'), back = function() {
+      if (FS) return;
+      window.scrollTo(f.x, f.y);
+      if (b) b.focus({ preventScroll: true });
+    };
     if (document.fullscreenElement && document.exitFullscreen) {
       try { var pr = document.exitFullscreen(); if (pr && pr.then) pr.then(back, back); else back(); } catch (e) { back(); }
     } else back();

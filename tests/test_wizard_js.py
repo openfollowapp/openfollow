@@ -1935,8 +1935,9 @@ def test_enter_or_esc_ends_the_hold_and_leaves_the_focus_on_the_point() -> None:
 
 _POINT_FOCUS_PAGE = """
 var els = {};
-function $(id) { if (!els[id]) els[id] = { innerHTML: '' }; return els[id]; }
-var lensHintText = '', lensHintHtml = '', S = { lensLoaded: null }, lensPending = null, lensFit = null;
+function $(id) { if (!els[id]) els[id] = { innerHTML: '', style: {} }; return els[id]; }
+var lensHintText = '', lensHintHtml = '', lensPress = false, S = { lensLoaded: null };
+var lensPending = null, lensFit = null;
 var lensLines = [{}, {}];
 function lensFitApplies() { return true; } function lensOpenCandidates() { return []; }
 var currentStep = 1, WIZ = { lens: 1 }, renders = 0;
@@ -2030,8 +2031,8 @@ def test_a_redraw_gives_the_focus_back_to_the_selection_without_selecting_anew(
 
 _HINT_PAGE = """
 var els = {};
-function $(id) { if (!els[id]) els[id] = { innerHTML: '' }; return els[id]; }
-var lensHintText = '', lensHintHtml = '';
+function $(id) { if (!els[id]) els[id] = { innerHTML: '', style: {} }; return els[id]; }
+var lensHintText = '', lensHintHtml = '', lensPress = false;
 function lensFitApplies(fit) { return fit.rating !== 'low'; }
 function lensOpenCandidates() { return state.open; }
 var S = { lensLoaded: state.loaded }, lensPending = state.pending, lensHold = state.hold, lensSelected = state.sel;
@@ -2146,7 +2147,7 @@ var els = {}, writes = {};
 function $(id) {
   if (!els[id]) {
     var words = { innerHTML: '', textContent: '' };
-    els[id] = { classList: { toggle: function() {} } };
+    els[id] = { classList: { toggle: function() {} }, style: {} };
     ['innerHTML', 'textContent'].forEach(function(k) {
       Object.defineProperty(els[id], k, { get: function() { return words[k]; },
         set: function(v) { words[k] = v; writes[id] = (writes[id] || 0) + 1; } });
@@ -2154,7 +2155,7 @@ function $(id) {
   }
   return els[id];
 }
-var lensHintText = '', lensHintHtml = '', FS = { key: 'lens' }, loupe = 'shown';
+var lensHintText = '', lensHintHtml = '', lensPress = false, FS = { key: 'lens' }, loupe = 'shown';
 function lensFitApplies(fit) { return fit.rating !== 'low'; }
 function lensOpenCandidates() { return []; }
 function hideLoupe() { loupe = 'hidden'; }
@@ -2450,7 +2451,7 @@ def test_the_hint_box_is_rewritten_only_when_its_words_or_its_place_change() -> 
 _CORNER_ENTER_PAGE = """
 var S = { selCorner: 'DSR', cornerMoved: { DSL: true, DSR: false, USR: false, USL: false } };
 var solves = 0, blurs = 0, prevented = 0;
-var document = { activeElement: { blur: function() { blurs++; } } };
+var document = { activeElement: { blur: function() { blurs++; } }, querySelector: function() { return null; } };
 function hideLoupe() {} function solveSoon() { solves++; } function saveToSession() {}
 """
 
@@ -2854,7 +2855,8 @@ var shell = { hidden: false };
 function $() { return shell; }
 var btn = { focus: function() { focused.push(document.fullscreenElement ? 'behind full screen' : 'on the page'); } };
 var FS = { key: 'cal', cont: { style: {}, querySelector: function() { return btn; } },
-  ph: { parentNode: { insertBefore: function() {}, removeChild: function() {} } } };
+  ph: { parentNode: { insertBefore: function() {}, removeChild: function() {} } }, x: 0, y: 0 };
+var window = { scrollTo: function() {} };
 var document = { body: { style: {} }, fullscreenElement: null,
   exitFullscreen: function() { return new Promise(function(ok, no) {
     setTimeout(function() { document.fullscreenElement = null; if (refused) no(); else ok(); }, 0); }); } };
@@ -3167,7 +3169,7 @@ def test_a_press_off_the_pins_drops_the_selection(where: str, selected, result: 
 def test_a_dragged_pin_takes_the_focus(moved: bool, focus: list) -> None:
     out = run_wizard_js(
         "(function() { calibInit(); var d = drags['cal-overlay'].start({ dataset: { mark: '3' } }, [6, 6], 3);"
-        " if (moved) d.move([60, 60]); var click = d.end(), released = focused; if (click) click();"
+        " if (moved) d.move([60, 60]); var click = d.end(true), released = focused; if (click) click();"
         " return [released, focused, S.selPin]; })()",
         functions=_MENU_FUNCTIONS,
         prelude=_MENU_PAGE + "var drags = {}; function bindDrag(id, c, hit, o) { drags[id] = o; }"
@@ -4385,6 +4387,7 @@ function lensMovePoint() { moves++; } function lensClamp(p) { return p; } functi
 function lensPointPos() { return [0, 0]; } function showLoupe() {} function hideLoupe() {} function renderLens() {}
 function lensFocusSelected() {} function lensChanged() {} function lensPointFocusIn() {}
 function lensTabKey() {} function lensFocusElsewhere() {} function renderLensBubbles() {} function renderLensResult() {}
+function lensPressEnd() {}
 var hit = { id: 'lens-hit', closest: function() { return null; } };
 var handle = { id: '', closest: function(sel) {
   return sel === '.lens-point' ? { dataset: { line: '0', point: '1' } } : null; } };
@@ -4423,14 +4426,15 @@ def test_the_lens_picture_takes_the_same_tap_slop(kind: str, path: tuple, result
         " preventDefault: function() {} }; }"
         " on.pointerdown(ev('pointerdown'));"
         " path[1].forEach(function(q) { x = q; on.pointermove(ev('pointermove')); });"
-        " on.pointerup(ev('pointerup')); return [traced, moves > 0 ? 1 : 0]; })()",
+        " on.pointerup(ev('pointerup')); var released = traced; on.click(ev('click'));"
+        " return [released, traced, moves > 0 ? 1 : 0]; })()",
         functions=("tapSlop", "lensInit"),
         prelude=_LENS_TAP_PAGE,
         kind=kind,
         path=list(path),
     )
-    # One slop on every picture: 3 CSS px for a mouse, 8 for a finger or a pen.
-    assert out == result
+    # One slop on every picture: 3 CSS px for a mouse, 8 for a finger or a pen. A line starts on the click.
+    assert out == [0, *result]
 
 
 def test_every_button_class_in_the_wizard_has_a_style() -> None:
@@ -4781,7 +4785,7 @@ def test_a_panel_ignores_the_clicks_of_the_gesture_that_opened_it(layout: str) -
         ("popup", "pointerdown", "away", True),
         ("panel", "pointerdown", "away", False),
         ("panel", "click", "away", True),
-        ("panel", "click", "detached", False),
+        ("panel", "click", "rebuilt", False),
         ("panel", "click", "menu", False),
         ("panel", "click", "picture", False),
     ],
@@ -4797,8 +4801,9 @@ def test_a_panel_ignores_the_clicks_of_the_gesture_that_opened_it(layout: str) -
 def test_a_panel_closes_on_a_click_elsewhere_not_on_a_press(layout: str, event: str, target: str, closed: bool) -> None:
     out = _panel(
         "view = layout === 'panel' ? { w: 358, h: 201 } : { w: 960, h: 540 }; openPinMenu([100, 100]);"
-        " var t = { away: away, detached: Object.assign({}, away, { isConnected: false }),"
-        " menu: item({ pm: 'none' }), picture: picture }[target];"
+        " var t = { away: away, rebuilt: item({ pm: 'none' }), menu: item({ pm: 'none' }), picture: picture }[target];"
+        " if (target === 'rebuilt') listeners.push(['page', 'click', function() {"
+        " t.isConnected = false; t.closest = function() { return null; }; }, false]);"
         " dispatch('page', event, t); return S.pinMenu === null;",
         layout=layout,
         event=event,
@@ -4885,3 +4890,246 @@ def test_the_loupe_keeps_clear_only_of_a_menu_on_the_picture(size: tuple, avoide
     )
     # A panel under the picture covers none of it; its offsets are not the picture's.
     assert out is avoided
+
+
+# ---------------------------------------------------------------------------
+# A press never moves what it pressed before its click
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("layout", ["popup", "panel"])
+@pytest.mark.parametrize(
+    ("kind", "gesture", "result"),
+    [
+        ("mouse", "tap", [3, [6, 6]]),
+        ("touch", "tap", [3, [6, 6]]),
+        ("pen", "tap", [3, [6, 6]]),
+        ("mouse", "drag", [None, [80, 20]]),
+        ("touch", "drag", [None, [80, 20]]),
+        ("touch", "cancel", [None, [6, 6]]),
+    ],
+    ids=["a mouse click", "a tap", "a pen tap", "a mouse drag", "a finger drag", "a cancelled press"],
+)
+def test_a_press_on_another_pin_with_a_menu_open_acts_as_on_a_closed_one(
+    layout: str, kind: str, gesture: str, result: list
+) -> None:
+    out = _panel(
+        "view = layout === 'panel' ? { w: 358, h: 201 } : { w: 960, h: 540 }; openPinMenu([100, 100]);"
+        " var base = renderCalibOverlay, gen = 0, ring = true;"
+        " renderCalibOverlay = function() { gen++; ring = !!(S.pinMenu && !S.pinMenu.pin); base(); };"
+        " var pressed = pin(3), at = gen, x = 10;"
+        " function send(type) { dispatch('cal-overlay', type, pressed, { pointerType: kind, clientX: x }); }"
+        " send('pointerdown'); var during = [ring, gen === at];"
+        " if (gesture === 'drag') { x = 40; send('pointermove'); }"
+        " send(gesture === 'cancel' ? 'pointercancel' : 'pointerup');"
+        # A mouse's click goes to the pressed element, and none comes once it was rebuilt; a tap's is aimed anew.
+        " if (gesture === 'tap' && (kind !== 'mouse' || gen === at)) send('click');"
+        " return [during, S.pinMenu && S.pinMenu.pin, ring, S.points[1].pin];",
+        layout=layout,
+        kind=kind,
+        gesture=gesture,
+    )
+    # The press closes the menu and leaves the picture as drawn: the closed menu's ring goes once the press ends.
+    menu, pinned = result
+    assert out == [[True, True], menu, False, pinned]
+
+
+# A page whose full-screen shell takes the picture; scroll anchoring moves the page as the picture leaves it.
+_FULL_SCROLL_PAGE = """
+var seen = [], scroll = 745, FS = null, lensSelected = null, lensPending = null;
+var window = { scrollX: 0, scrollTo: function(x, y) { scroll = y; } };
+Object.defineProperty(window, 'scrollY', { get: function() { return scroll; } });
+var placeholder = { style: {} };
+var page = { insertBefore: function(n) { n.parentNode = page; }, removeChild: function() {} };
+var btn = { focus: function() { seen.push(scroll); } };
+var cont = { style: {}, parentNode: page, getBoundingClientRect: function() { return { height: 435 }; },
+  querySelector: function() { return btn; } };
+function getComputedStyle() { return { margin: '0px 0px 16px' }; }
+var shell = { hidden: true, requestFullscreen: function() {
+  if (full) document.fullscreenElement = shell; return Promise.resolve(); } };
+var els = { 'fs-stage': { appendChild: function(c) { c.parentNode = this; scroll = 1182; } }, 'fs-shell': shell,
+  'fs-exit': { focus: function() {} }, 'fs-hint': {} };
+function $(id) { return els[id]; } function fsContainer() { return cont; }
+var document = { body: { style: {} }, fullscreenElement: null, createElement: function() { return placeholder; },
+  exitFullscreen: function() {
+    return Promise.resolve().then(function() { document.fullscreenElement = null; scroll = 300; }); } };
+function closeHelp() {} function dropCorner() {} function dropLensPoint() {} function fsLayout() {}
+function toggleFsHelp() {} function closePinMenu() {} function fsRender() {}
+"""
+
+
+@pytest.mark.parametrize("full", [True, False], ids=["full screen", "window-filling shell"])
+def test_leaving_full_screen_brings_the_page_back_where_it_was(full: bool) -> None:
+    out = run_wizard_js(
+        "(async function() { openFull('cal'); var held = [placeholder.style.height, placeholder.style.margin];"
+        " closeFull(); await new Promise(function(r) { setTimeout(r, 5); }); return [held, seen]; })()",
+        functions=("openFull", "closeFull"),
+        prelude=_FULL_SCROLL_PAGE,
+        full=full,
+    )
+    # The placeholder keeps the picture's room; the page is back at its scroll before the button takes the focus.
+    assert out == [["435px", "0px 0px 16px"], [745]]
+
+
+# The Lens picture's listeners and the page's, with the hint box above the picture.
+_LENS_PRESS_PAGE = (
+    _LENS_TAP_PAGE
+    + """
+var docOn = [], timers = [], box = { style: {}, offsetHeight: 126, innerHTML: '' };
+document.addEventListener = function(t, f, capture) { docOn.push([t, f, !!capture]); };
+function $(id) { return id === 'lens-hint' ? box : { addEventListener: function() {} }; }
+function setTimeout(f) { timers.push(f); return timers.length; }
+function clearTimeout(id) { if (id) timers[id - 1] = null; }
+function lensFitApplies() { return false; } function lensOpenCandidates() { return []; } function renderFsBar() {}
+var lensFit = null, lensHintText = '', S = { lensLoaded: null };
+renderLens = lensChanged = function() { renderLensHint(); };
+lensTraceClick = function(p) {
+  traced++; if (lensPending) { lensPending = null; lensLines.push({}); } else lensPending = p; renderLensHint(); };
+// The page's capture listeners, the picture's own, then the page's bubble listeners, as the browser runs them.
+function send(type, target, kind, x) {
+  var e = { type: type, target: target, pointerType: kind, pointerId: 1, clientX: x, clientY: 10,
+    preventDefault: function() {} };
+  docOn.filter(function(l) { return l[0] === type && l[2]; }).forEach(function(l) { l[1](e); });
+  if (on[type]) on[type](e);
+  docOn.filter(function(l) { return l[0] === type && !l[2]; }).forEach(function(l) { l[1](e); });
+}
+function words() { return lensHintText; }
+"""
+)
+_LENS_PRESS_FUNCTIONS = ("tapSlop", "lensInit", "esc", "setLive", "renderLensHint", "lensPressEnd")
+_DRAW_MORE = "Draw more straight lines."
+_OTHER_END = "Click the other end of the straight edge."
+_MOVE_POINT = "Move the point exactly onto the edge."
+
+
+@pytest.mark.parametrize(
+    ("kind", "pressed", "path", "result"),
+    [
+        ("touch", "hit", [10], [_DRAW_MORE, _DRAW_MORE, _OTHER_END]),
+        ("mouse", "hit", [10], [_DRAW_MORE, _DRAW_MORE, _OTHER_END]),
+        ("touch", "handle", [10], [_DRAW_MORE, _DRAW_MORE, _MOVE_POINT]),
+        ("pen", "handle", [10], [_DRAW_MORE, _DRAW_MORE, _MOVE_POINT]),
+        ("mouse", "handle", [10], [_DRAW_MORE, _MOVE_POINT, _MOVE_POINT]),
+        ("touch", "handle", [40], [_DRAW_MORE, _DRAW_MORE, _MOVE_POINT]),
+    ],
+    ids=[
+        "a tap on the picture",
+        "a mouse click on it",
+        "a tap on a point",
+        "a pen tap on a point",
+        "a mouse click on a point",
+        "a finger drag of a point",
+    ],  # fmt: skip
+)
+def test_the_lens_hint_keeps_its_words_until_a_tap_has_clicked(
+    kind: str, pressed: str, path: list, result: list
+) -> None:
+    out = run_wizard_js(
+        "(function() { lensInit(); renderLensHint(); var t = pressed === 'hit' ? hit : handle, seen = [], x = 10;"
+        " send('pointerdown', t, kind, x); path.forEach(function(q) { x = q; send('pointermove', t, kind, x); });"
+        " seen.push(words()); send('pointerup', t, kind, x); seen.push(words());"
+        # A finger that moved makes no click: the hint follows shortly after its release.
+        " if (x === 10) send('click', t, kind, x); else timers.forEach(function(f) { if (f) f(); });"
+        " seen.push(words()); return seen; })()",
+        functions=_LENS_PRESS_FUNCTIONS,
+        variables=("lensPress",),
+        prelude=_LENS_PRESS_PAGE,
+        kind=kind,
+        pressed=pressed,
+        path=path,
+    )
+    # A box changing height before a tap's click moves the picture, and the click lands on what is then there.
+    assert out == result
+
+
+def test_a_started_line_keeps_the_lens_hint_box_height_until_it_ends() -> None:
+    out = run_wizard_js(
+        "(function() { lensInit(); renderLensHint(); var seen = [];"
+        " function tap(x) { send('pointerdown', hit, 'touch', x); send('pointerup', hit, 'touch', x);"
+        " send('click', hit, 'touch', x); box.offsetHeight = 65; seen.push([words(), box.style.minHeight, traced]); }"
+        " tap(10); tap(200); return seen; })()",
+        functions=_LENS_PRESS_FUNCTIONS,
+        variables=("lensPress",),
+        prelude=_LENS_PRESS_PAGE,
+    )
+    # The shorter words of a started line sit in the box's earlier height, so its second tap hits the same picture.
+    assert out == [[_OTHER_END, "126px", 1], [_DRAW_MORE, "", 2]]
+
+
+@pytest.mark.parametrize(
+    ("layout", "target", "result"),
+    [
+        ("panel", "field", ["open", "open", "closed"]),
+        ("panel", "rebuilt", ["open", "open", "closed"]),
+        ("popup", "field", ["closed", "closed", "closed"]),
+    ],
+    ids=["panel: a field below it", "panel: Delete, which rebuilds its row", "popup: a field below the picture"],
+)
+def test_a_tap_below_a_panel_acts_before_the_panel_closes(layout: str, target: str, result: list) -> None:
+    out = _panel(
+        "view = layout === 'panel' ? { w: 358, h: 201 } : { w: 960, h: 540 }; openPointMenu(2); var seen = [];"
+        " function state() { seen.push(S.pinMenu ? 'open' : 'closed'); }"
+        " var t = Object.assign({}, away);"
+        " listeners.push(['page', 'click', function() { state();"
+        " if (target === 'rebuilt') t.isConnected = false; }, false]);"
+        # The press focuses the control, then its click acts.
+        " dispatch('page', 'pointerdown', t); fire('document', 'focusin', { target: t }); state();"
+        " dispatch('page', 'click', t); state(); return seen;",
+        layout=layout,
+        target=target,
+    )
+    # Closed by the focus, a panel moves the control up from under the finger, and the tap's click is lost.
+    assert out == result
+
+
+def test_tab_out_of_a_panel_still_closes_it() -> None:
+    out = _panel(
+        "view = { w: 358, h: 201 }; openPointMenu(2); dispatch('pin-menu', 'pointerdown', item({ pm: 'none' }));"
+        " dispatch('pin-menu', 'click', item({ pm: 'none' })); var open = !!S.pinMenu;"
+        " dispatch('page', 'keydown', away, { key: 'Tab' }); fire('document', 'focusin', { target: away });"
+        " return [open, S.pinMenu];"
+    )
+    assert out == [True, None]
+
+
+def test_a_change_after_the_menu_closed_is_ignored() -> None:
+    out = run_wizard_js(
+        "(function() { var e = { target: { id: 'pm-x' } }, seen = [];"
+        " S.pinMenu = { form: 'known' }; seen.push(pinMenuCheck(e)); S.pinMenu = null; seen.push(pinMenuCheck(e));"
+        " return seen; })()",
+        functions=("pinMenuCheck", "pinMenuVals"),
+        prelude="var S = {}, els = { 'pm-ok': {} }; function $(id) { return els[id] || { value: '1' }; }"
+        " function len(t) { return +t; } function refreshEchoes() {} function pointOptions() { return ''; }",
+    )
+    # A field's late change event finds no menu: nothing to check, and no error.
+    assert out == [True, False]
+
+
+@pytest.mark.parametrize(
+    ("key", "result"),
+    [("Escape", [None, None, ["pin-handle"], True, False, 0]), ("Enter", [None, None, ["pin-handle"], True, True, 1])],
+    ids=["Esc", "Enter"],
+)
+def test_ending_a_corners_hold_ends_its_selection_and_keeps_its_focus(key: str, result: list) -> None:
+    esc_key = wizard_block("document.addEventListener('keydown', function(e) {\n    if (e.key !== 'Escape') return;")
+    out = run_wizard_js(
+        "(function() { eval(escKey); var e = { key: key, preventDefault: function() {} };"
+        " if (key === 'Escape') onKey(e); cornerEnterKey(e); cornerEnterKey(e);"
+        " return [S.selCorner, S.selPin, handle.classes, document.activeElement === handle, S.cornerMoved.DSR, solves];"
+        " })()",
+        functions=("dropCorner", "cornerEnterKey"),
+        prelude="var onKey, solves = 0;"
+        " var handle = { classes: ['pin-handle', 'active'], classList: { remove: function(c) {"
+        " handle.classes = handle.classes.filter(function(x) { return x !== c; }); } } };"
+        " var document = { activeElement: handle, body: { classList: { contains: function() { return false; } } },"
+        " addEventListener: function(t, f) { onKey = f; },"
+        " querySelector: function(sel) { return sel === '#cal-pins [data-mark=\"DSR\"]' ? handle : null; } };"
+        " function $() { return { hidden: true }; }"
+        " var FS = null, lensHold = false, lensPending = null, currentStep = 2, WIZ = { lens: 1 };"
+        " var S = { mode: 'simple', pinMenu: null, selCorner: 'DSR', selPin: 'DSR', cornerMoved: { DSR: false } };"
+        " function hideLoupe() {} function solveSoon() { solves++; } function saveToSession() {}",
+        key=key,
+        escKey=esc_key,
+    )
+    # No longer drawn as selected once Enter would not place it; Esc places nothing, Enter places it once.
+    assert out == result

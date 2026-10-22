@@ -4160,6 +4160,34 @@ def test_a_pins_name_moves_left_of_the_full_screen_button_and_the_edge(
     assert out == [left, pytest.approx(x), pytest.approx(pin[1] - 12 * u)]
 
 
+@pytest.mark.parametrize("u", [1, 5.36], ids=["desktop", "phone"])
+@pytest.mark.parametrize("y", [0, 5, 22.9, 23, 40, 540, 1060, 1079], ids=lambda y: f"y={y}")
+def test_a_pins_name_stays_inside_the_top_and_bottom_of_the_picture(y: float, u: float) -> None:
+    out = run_wizard_js(
+        "(function() { return [[13, 12], [9, 9]].map(function(off) {"
+        ' return +/ y="([^"]+)"/.exec(pinLabel([960, y], "DSR", off, u))[1]; }); })()',
+        functions=("esc", "pinLabel"),
+        prelude="var imageWidth = 1920, imageHeight = 1080, FS = null;",
+        y=y,
+        u=u,
+    )
+    # A 14 px name rises 11 px above its baseline and drops 4 below it. Above its pin unless that leaves the top.
+    for baseline, off in zip(out, (12, 9), strict=True):
+        assert baseline - 11 * u >= 0 and baseline + 4 * u <= 1080, (baseline, off)
+        above = y - (off + 11) * u >= 0
+        assert baseline == pytest.approx(y - off * u if above else y + (off + 11) * u)
+
+
+def test_a_name_below_a_pin_in_the_top_right_still_moves_left_of_the_full_screen_button() -> None:
+    out = run_wizard_js(
+        "(function() { var t = pinLabel([1880, 10], 'DSR', [13, 12], 1);"
+        ' return [/text-anchor="end"/.test(t), +/ y="([^"]+)"/.exec(t)[1]]; })()',
+        functions=("esc", "pinLabel"),
+        prelude="var imageWidth = 1920, imageHeight = 1080, FS = null;",
+    )
+    assert out == [True, 33]
+
+
 def test_both_pictures_place_their_names_clear_of_the_full_screen_button() -> None:
     out = run_wizard_js(
         "(function() { renderCalibOverlay(); renderReview();"
@@ -4666,6 +4694,48 @@ def test_a_panels_spot_is_marked_with_a_crosshair(panel: bool, cross: bool) -> N
 def test_a_pins_menu_shows_its_pin_selected() -> None:
     out = _panel("view = { w: 358, h: 201 }; openPointMenu(3); return [S.selPin, where()[0]];")
     assert out == [3, "pin-menu-slot"]
+
+
+@pytest.mark.parametrize(
+    ("layout", "gesture", "result"),
+    [
+        ("popup", "press elsewhere", ["closed", None, None]),
+        ("panel", "press elsewhere", [2, 2, None]),
+        ("panel", "click elsewhere", ["closed", None, None]),
+        ("panel", "x", ["closed", 2, "pin 2"]),
+        ("panel", "x, focus elsewhere", ["closed", None, None]),
+        ("panel", "tap on the picture", [None, None, "first item"]),
+        ("panel", "press on another pin", ["closed", 3, None]),
+        ("popup", "press on another pin", ["closed", 3, None]),
+    ],
+    ids=[
+        "popup: a press elsewhere closes it",
+        "panel: the press of a swipe",
+        "panel: a click elsewhere closes it",
+        "panel: x gives the pin the focus",
+        "panel: x with the focus elsewhere",
+        "panel: a tap on the picture opens a spot's menu",
+        "panel: a press on another pin",
+        "popup: a press on another pin",
+    ],
+)
+def test_a_pin_stays_selected_while_its_menu_is_open_and_focused(layout: str, gesture: str, result: list) -> None:
+    out = _panel(
+        "view = layout === 'panel' ? { w: 358, h: 201 } : { w: 960, h: 540 }; openPointMenu(2);"
+        " document.activeElement = gesture === 'x, focus elsewhere' ? null : { inside: 'pin-menu' }; focused = null;"
+        " if (gesture.indexOf('elsewhere') >= 0 && gesture[0] !== 'x') dispatch('page', 'pointerdown', away);"
+        " if (gesture === 'click elsewhere') dispatch('page', 'click', away);"
+        " if (gesture[0] === 'x') { dispatch('pin-menu', 'pointerdown', item({ pm: 'close' }));"
+        " dispatch('pin-menu', 'click', item({ pm: 'close' })); }"
+        " if (gesture === 'tap on the picture') { dispatch('cal-overlay', 'pointerdown', picture);"
+        " dispatch('cal-overlay', 'click', picture); }"
+        " if (gesture === 'press on another pin') dispatch('cal-overlay', 'pointerdown', pin(3));"
+        " return [S.pinMenu ? S.pinMenu.pin : 'closed', S.selPin, focused];",
+        layout=layout,
+        gesture=gesture,
+    )
+    # A pin is selected only while its menu is open or it has the focus; a swipe keeps a panel and its pin.
+    assert out == result
 
 
 _KEYS_AND_FOCUS = (

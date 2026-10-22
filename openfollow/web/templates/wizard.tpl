@@ -2948,12 +2948,13 @@
       '<line class="origin-mark" x1="' + q[0] + '" y1="' + (q[1] - 14 * u) + '" x2="' + q[0] + '" y2="' + (q[1] + 14 * u) + '"/>' +
       '<text class="origin-label" x="' + (q[0] + 12 * u) + '" y="' + (q[1] + 22 * u) + '" font-size="' + (13 * u) + '" stroke-width="' + (4 * u) + '">0/0/0</text></g>';
   }
-  // A pin's name, right of it; one that would run off the picture or under the full-screen button (the top right
-  // 46 CSS px, not shown in full screen) goes left.
+  // A pin's name, above and right of it; one that would leave the top goes below, one that would run off the
+  // picture or under the full-screen button (the top right 46 CSS px, not shown in full screen) goes left.
   function pinLabel(q, name, off, u) {
+    var below = q[1] - (off[1] + 11) * u < 0, top = below ? q[1] + off[1] * u : q[1] - (off[1] + 11) * u;
     var right = q[0] + (off[0] + 9 * String(name).length) * u;
-    var under = right > imageWidth || (!FS && right > imageWidth - 46 * u && q[1] - (off[1] + 11) * u < 46 * u);
-    return '<text class="pin-label" x="' + (q[0] + (under ? -off[0] : off[0]) * u) + '" y="' + (q[1] - off[1] * u) + '"' + (under ? ' text-anchor="end"' : '') +
+    var under = right > imageWidth || (!FS && right > imageWidth - 46 * u && top < 46 * u);
+    return '<text class="pin-label" x="' + (q[0] + (under ? -off[0] : off[0]) * u) + '" y="' + (top + 11 * u) + '"' + (under ? ' text-anchor="end"' : '') +
       ' font-size="' + (14 * u) + '" stroke-width="' + (4 * u) + '">' + esc(name) + '</text>';
   }
   function renderCalibOverlay() {
@@ -3085,7 +3086,7 @@
   // gesture that opened it: opened under a finger, it would take that tap's click.
   var gestureSeq = 0, menuGesture = -1;
   function openPinMenu(p) {
-    S.pinMenu = { p: p, form: null, pin: null }; menuGesture = gestureSeq;
+    S.pinMenu = { p: p, form: null, pin: null }; S.selPin = null; menuGesture = gestureSeq;
     var knownN = currentMarks().filter(function(m) { return m.kind === 'known' && !m.problem; }).length;
     var open = S.points.filter(function(q) { return !q.pin; }), full = S.points.length >= SAVED.max_marks;
     var m = $('pin-menu');
@@ -3201,9 +3202,11 @@
     renderAdvRows(); solveSoon(); saveToSession();
   }
   // With `back` (a pin id, or null for none), a focus in the menu goes to that pin, or to the picture without it.
+  // A pin's menu closed without giving the focus back leaves its pin unselected.
   function closePinMenu(back) {
     if (!S.pinMenu) return;
     var had = back !== undefined && $('pin-menu').contains(document.activeElement);
+    if (S.pinMenu.pin != null && !had) S.selPin = null;
     S.pinMenu = null; $('pin-menu').hidden = true;
     hideLoupe('cal-container');
     if (FS && FS.pad) fsLayout();
@@ -3368,8 +3371,8 @@
     $('adv-rows').addEventListener('change', function(e) { if (e.target.dataset.f === 'name') { renderAdvRows(); renderCalibOverlay(); } });
     bindDrag('cal-overlay', 'cal-container', '#cal-hit', {
       start: function(h, p, tap) {
-        var id = S.mode === 'simple' ? h.dataset.mark : +h.dataset.mark; S.selPin = id;
-        closePinMenu();
+        var id = S.mode === 'simple' ? h.dataset.mark : +h.dataset.mark;
+        closePinMenu(); S.selPin = id;
         // A press on a pin that does not move it is a click: Simple selects the corner, Advanced opens the pin's menu on the click.
         var moved = false, slop = tap * imageWidth / $('cal-container').getBoundingClientRect().width;
         return {
@@ -3399,9 +3402,10 @@
       }
     });
     document.addEventListener('pointerdown', function(e) { pointerIsMouse = e.pointerType === 'mouse'; }, true);
-    // A press elsewhere may leave the focus on nothing, which no focusin reports.
+    // A press elsewhere may leave the focus on nothing, which no focusin reports. A panel stays open through a
+    // press (a swipe), and so does its pin's selection; closing it drops that.
     document.addEventListener('pointerdown', function(e) {
-      if (e.target.closest('#cal-pins .pin-handle, #pin-menu')) return;
+      if (e.target.closest('#cal-pins .pin-handle, #pin-menu') || (S.pinMenu && $('pin-menu').classList.contains('as-panel'))) return;
       dropCorner();
       if (S.selPin != null) { S.selPin = null; renderCalibOverlay(); }
     }, true);

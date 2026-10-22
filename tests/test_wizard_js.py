@@ -39,6 +39,7 @@ from tests._wizard_js import (
     needs_node,
     run_wizard_js,
     wizard_block,
+    wizard_var,
     wizard_window_function,
 )
 
@@ -1028,6 +1029,8 @@ _MARK_FUNCTIONS = (
     "incompleteLines",
 )
 _MARK_VARS = ("exactLen", "CORNERS", "PIN_PROBLEM", "DISTANCE_SIGMA")
+# What the hints read of a partly filled camera.
+_CAM_HINT_FUNCTIONS = ("camFields", "camPartialNamed")
 _RECT = {"w": "12", "d": "6", "origin": "dsc", "cx": "", "cy": "", "z": ""}
 
 
@@ -1142,7 +1145,7 @@ def test_the_stations_reason_for_a_point_is_listed_by_name() -> None:
 
 
 _REVIEW_STUBS = """
-var imageWidth = 0, imageHeight = 0, CAM_PRESETS = [], LENS_ENABLED = true;
+var imageWidth = 0, imageHeight = 0, CAM_PRESETS = [], LENS_ENABLED = true, FS = null;
 function overlayUnit() { return 1; } function calibGrid() { return { w: 1, d: 1, spacing: 1, cx: 0, cy: 0, z: 0 }; }
 function gridLines() { return []; } function poly() { return ''; } function originMarkup() { return ''; }
 function originPixel() { return null; } function projectShown() { return null; }
@@ -1532,8 +1535,8 @@ def test_the_camera_estimate_is_worded_in_the_active_unit(system: str, simple: s
         " S.mode = 'simple'; renderCamGroup(); said.push($('cam-intro').innerHTML);"
         " S.mode = 'advanced'; renderCamGroup(); said.push($('cam-intro').innerHTML);"
         " renderReq(); said.push(shown); return said; })()",
-        functions=(*_MARK_FUNCTIONS, "esc", "lenSuffix", "renderCamGroup", "renderReq"),
-        variables=_MARK_VARS,
+        functions=(*_MARK_FUNCTIONS, *_CAM_HINT_FUNCTIONS, "esc", "lenSuffix", "renderCamGroup", "renderReq"),
+        variables=(*_MARK_VARS, "camNamed"),
         prelude=length_page(system, {})
         + _DOM
         + "var S = { mode: 'simple', cam: null, camPartial: false, points: [], rect: {} };"
@@ -2359,8 +2362,8 @@ def test_a_station_keeps_the_origin_its_saved_rectangle_gives(marks: list, grid:
 def _simple_hint(rect: dict, loc: str = "") -> list:
     return run_wizard_js(
         "(function() { renderSimpleReq(); return shown; })()",
-        functions=(*_MARK_FUNCTIONS, "esc", "lenText", "fmt", "renderSimpleReq"),
-        variables=(*_MARK_VARS, "CORNER_TITLES"),
+        functions=(*_MARK_FUNCTIONS, *_CAM_HINT_FUNCTIONS, "esc", "lenText", "fmt", "renderSimpleReq"),
+        variables=(*_MARK_VARS, "CORNER_TITLES", "camNamed"),
         prelude=length_page("metric", {})
         + _DOM
         + "var shown = null; function showHint(area, h, sub) { shown = [area, h, sub]; }"
@@ -2477,7 +2480,7 @@ def test_enter_on_a_corner_places_it_and_leaves_it_the_focus(key: str, selected,
 
 
 _REDRAW_FOCUS_PAGE = """
-var made = {}, focusinSelects = 0;
+var made = {}, focusinSelects = 0, FS = null;
 function handle(mark) {
   return { mark: mark, focused: 0, getAttribute: function() { return mark; },
     closest: function(sel) { return sel === '#cal-pins .pin-handle' ? this : null; },
@@ -2957,13 +2960,13 @@ _MENU_PAGE = """
 var listeners = [], focused = null, drawn = {}, renders = 0;
 function fakeEl(id) {
   return { id: id, hidden: false, style: {}, focus: function() { focused = id; }, setAttribute: function() {},
-    addEventListener: function(t, f) { listeners.push([id, t, f]); },
+    addEventListener: function(t, f, capture) { listeners.push([id, t, f, !!capture]); },
     contains: function(x) { return !!x && x.inside === id; } };
 }
 var els = { 'modal-root': Object.assign(fakeEl('modal-root'), { hidden: true }) };
 function $(id) { return els[id] || (els[id] = fakeEl(id)); }
 var document = { activeElement: null, body: { classList: { contains: function() { return false; } } },
-  addEventListener: function(t, f) { listeners.push(['document', t, f]); },
+  addEventListener: function(t, f, capture) { listeners.push(['document', t, f, !!capture]); },
   querySelectorAll: function() { return []; },
   querySelector: function(sel) {
     var m = /#cal-pins \\[data-mark="(\\w+)"\\]/.exec(sel);
@@ -2978,13 +2981,13 @@ function renderCalibOverlay() {
 function renderSimpleLoc() {} function bindDrag() {} function hideLoupe() {} function renderAdvRows() {}
 function solveSoon() {} function saveToSession() {} function dropCorner() {}
 function camChanged() {} function cornerEnterKey() {} function pinMenuCheck() {}
-var results = 0; function renderHeightGroup() { results++; }
+var results = 0, reqs = 0; function renderHeightGroup() { results++; } function renderReq() { reqs++; }
 var FS = null, lensHold = false, lensPending = null, currentStep = 2, WIZ = { lens: 1 };
 var S = { mode: 'advanced', selPin: null, selCorner: null, pinMenu: null,
   points: [{ id: 2, name: 'DSR', pin: [5, 5] }, { id: 3, name: 'USR', pin: [6, 6] }] };
 drawn = { 2: true, 3: true };
-"""
-_MENU_FUNCTIONS = ("closePinMenu", "focusCalPin", "setPin", "deletePoint", "calibInit")
+""" + wizard_var("gestureSeq")
+_MENU_FUNCTIONS = ("closePinMenu", "focusCalPin", "setPin", "deletePoint", "camFields", "calibInit")
 
 
 def _menu_click(act: str) -> str:
@@ -3158,11 +3161,14 @@ def test_a_press_off_the_pins_drops_the_selection(where: str, selected, result: 
     assert out == result
 
 
-@pytest.mark.parametrize(("moved", "focus"), [(True, "pin 3"), (False, "menu 3")], ids=["dragged", "clicked"])
-def test_a_dragged_pin_takes_the_focus(moved: bool, focus: str) -> None:
+@pytest.mark.parametrize(
+    ("moved", "focus"), [(True, ["pin 3", "pin 3"]), (False, [None, "menu 3"])], ids=["dragged", "clicked"]
+)
+def test_a_dragged_pin_takes_the_focus(moved: bool, focus: list) -> None:
     out = run_wizard_js(
-        "(function() { calibInit(); var d = drags['cal-overlay'].start({ dataset: { mark: '3' } }, [6, 6]);"
-        " if (moved) d.move([60, 60]); d.end(); return [focused, S.selPin]; })()",
+        "(function() { calibInit(); var d = drags['cal-overlay'].start({ dataset: { mark: '3' } }, [6, 6], 3);"
+        " if (moved) d.move([60, 60]); var click = d.end(), released = focused; if (click) click();"
+        " return [released, focused, S.selPin]; })()",
         functions=_MENU_FUNCTIONS,
         prelude=_MENU_PAGE + "var drags = {}; function bindDrag(id, c, hit, o) { drags[id] = o; }"
         " function openPointMenu(id) { focused = 'menu ' + id; } var imageWidth = 1920, imageHeight = 1080;"
@@ -3170,8 +3176,8 @@ def test_a_dragged_pin_takes_the_focus(moved: bool, focus: str) -> None:
         " { getBoundingClientRect: function() { return { width: 960 }; } });",
         moved=moved,
     )
-    # Selected, it has the focus: the arrow keys move it.
-    assert out == [focus, 3]
+    # Selected, it has the focus: the arrow keys move it. A click opens the menu on its click, not on the release.
+    assert out == [*focus, 3]
 
 
 def test_the_height_field_is_looked_at_again_once_left() -> None:
@@ -3703,44 +3709,82 @@ function press(kind, type, x, y) {
   on.pointerdown({ target: target(kind), pointerType: type, pointerId: 1, clientX: x, clientY: y,
     preventDefault: function() {} });
 }
+function move(type, x, y) { on.pointermove({ pointerType: type, pointerId: 1, clientX: x, clientY: y }); }
 function click(x, y) { on.click({ target: target('hit'), clientX: x, clientY: y }); }
 """
 
 
 @pytest.mark.parametrize(
-    ("pressed", "at", "taps"),
+    ("pressed", "path", "taps"),
     [
-        (("hit", "touch"), [10, 10], [[20, 20]]),
-        (("hit", "mouse"), [10, 10], [[20, 20]]),
-        (("hit", "touch"), [30, 10], [[20, 20]]),
-        (("hit", "mouse"), [14, 10], []),
-        (("pin", "mouse"), [10, 10], []),
-        (("elsewhere", "mouse"), [10, 10], []),
-        (None, [10, 10], []),
+        (("hit", "touch"), [[10, 10]], [[20, 20]]),
+        (("hit", "mouse"), [[10, 10]], [[20, 20]]),
+        (("hit", "pen"), [[10, 10]], [[20, 20]]),
+        (("hit", "touch"), [[17, 10]], [[20, 20]]),
+        (("hit", "touch"), [[18, 10]], []),
+        (("hit", "touch"), [[30, 10], [10, 10]], []),
+        (("hit", "mouse"), [[12, 10]], [[20, 20]]),
+        (("hit", "mouse"), [[13, 10]], []),
+        (("hit", "pen"), [[17, 10]], [[20, 20]]),
+        (("hit", "pen"), [[20, 10]], []),
+        (("pin", "mouse"), [[10, 10]], []),
+        (("elsewhere", "mouse"), [[10, 10]], []),
+        (None, [[10, 10]], []),
     ],
     ids=[
         "a tap",
         "a mouse click",
-        "a tap the browser allowed to move",
+        "a pen tap",
+        "a finger within the slop",
+        "a finger past the slop",
+        "a finger that came back",
+        "a mouse within the slop",
         "a mouse that moved",
+        "a pen within the slop",
+        "a pen drag",
         "a pin",
         "off the hit area",
         "no press",
     ],
 )
-def test_a_press_on_the_picture_acts_once_on_its_click(pressed, at: list, taps: list) -> None:
+def test_a_press_on_the_picture_acts_once_on_its_click(pressed, path: list, taps: list) -> None:
     out = run_wizard_js(
         "(function() { bindDrag('cal-overlay', 'cal-container', '#cal-hit',"
         " { start: function() { starts++; return null; }, tap: function(p) { taps.push(p); } });"
-        " if (pressed) press(pressed[0], pressed[1], 10, 10); var early = taps.length;"
-        " click(at[0], at[1]); click(at[0], at[1]); return [early, taps]; })()",
-        functions=("bindDrag",),
+        " var type = pressed ? pressed[1] : 'mouse'; if (pressed) press(pressed[0], type, 10, 10);"
+        " path.forEach(function(q) { move(type, q[0], q[1]); }); var early = taps.length;"
+        " var at = path[path.length - 1]; click(at[0], at[1]); click(at[0], at[1]); return [early, taps]; })()",
+        functions=("bindDrag", "tapSlop"),
         prelude=_DRAG_PAGE,
         pressed=list(pressed) if pressed else None,
-        at=at,
+        path=path,
     )
     # Nothing opens on the press: under a finger, a menu opened then would take the same tap's click.
+    # A mouse may move 3 CSS px, a finger or a pen 8, and stay a tap.
     assert out == [0, taps]
+
+
+@pytest.mark.parametrize(
+    ("ends", "opened"),
+    [(["pointerup", "click"], [1, 1]), (["pointercancel", "click"], [0, 0]), (["pointerup"], [0, 1])],
+    ids=["a click", "a cancelled press", "the release alone"],
+)
+def test_a_press_on_a_pin_acts_on_its_click_not_its_release(ends: list, opened: list) -> None:
+    out = run_wizard_js(
+        "(function() { var opens = 0;"
+        " bindDrag('cal-overlay', 'cal-container', '#cal-hit', { tap: function() { taps.push(1); }, start: function() {"
+        " return { pos: function() { return [0, 0]; }, move: function() {},"
+        " end: function() { return function() { opens++; }; } }; } });"
+        " press('pin', 'touch', 10, 10);"
+        " ends.forEach(function(t) { if (t === 'click') click(10, 10);"
+        " else on[t]({ type: t, pointerId: 1, clientX: 10, clientY: 10 }); });"
+        " var after = opens; click(10, 10); return [after, opens, taps.length]; })()",
+        functions=("bindDrag", "tapSlop"),
+        prelude=_DRAG_PAGE,
+        ends=ends,
+    )
+    # The next click acts once at most, and never as a tap on the picture.
+    assert out == [*opened, 0]
 
 
 # ---------------------------------------------------------------------------
@@ -3748,28 +3792,34 @@ def test_a_press_on_the_picture_acts_once_on_its_click(pressed, at: list, taps: 
 # ---------------------------------------------------------------------------
 
 _PAIRS_PAGE = """
-var rebuilt = 0; function renderCalibResult() { rebuilt++; }
-var rows = [0, 1, 2].map(function(i) { return { dataset: { pair: String(i) }, on: i === 0 }; });
-rows.forEach(function(r) { r.classList = { toggle: function(c, v) { if (c === 'on') r.on = v; } }; });
+var rebuilt = 0, prevented = 0; function renderCalibResult() { rebuilt++; }
+var rows = [0, 1, 2].map(function(i) {
+  return { dataset: { pair: String(i) }, on: i === 0, attrs: { 'aria-current': String(i === 0) } };
+});
+rows.forEach(function(r) {
+  r.classList = { toggle: function(c, v) { if (c === 'on') r.on = v; } };
+  r.setAttribute = function(k, v) { r.attrs[k] = v; };
+});
 els['cal-dist-table'] = Object.assign(fakeEl('cal-dist-table'), { innerHTML: 'the table',
   querySelectorAll: function(sel) { return sel === '[data-pair]' ? rows : []; } });
 function rowEvent(type, i, key) {
-  fire('cal-dist-table', type, { key: key, target: { closest: function(sel) {
-    return sel === '[data-pair]' ? rows[i] : null; } } });
+  fire('cal-dist-table', type, { key: key, preventDefault: function() { prevented++; },
+    target: { closest: function(sel) { return sel === '[data-pair]' ? rows[i] : null; } } });
 }
 """
 
 
 @pytest.mark.parametrize(
     ("event", "key", "chosen"),
-    [("click", None, 2), ("keydown", "Enter", 1), ("keydown", "Tab", None)],
-    ids=["a click", "Enter", "another key"],
+    [("click", None, 2), ("keydown", "Enter", 1), ("keydown", " ", 2), ("keydown", "Tab", None)],
+    ids=["a click", "Enter", "Space", "another key"],
 )
 def test_choosing_a_distance_moves_only_the_highlight(event: str, key, chosen) -> None:
     out = run_wizard_js(
         "(function() { S.pair = 0; calibInit(); renders = 0; rowEvent(event, chosen == null ? 1 : chosen, key);"
-        " return [S.pair, rows.map(function(r) { return r.on; }), renders, rebuilt,"
-        " $('cal-dist-table').innerHTML, focused]; })()",
+        " return [S.pair, rows.map(function(r) { return r.on; }),"
+        " rows.map(function(r) { return r.attrs['aria-current']; }),"
+        " renders, rebuilt, $('cal-dist-table').innerHTML, focused, prevented]; })()",
         functions=_MENU_FUNCTIONS,
         prelude=_MENU_PAGE + _PAIRS_PAGE,
         event=event,
@@ -3777,8 +3827,31 @@ def test_choosing_a_distance_moves_only_the_highlight(event: str, key, chosen) -
         chosen=chosen,
     )
     pair = 0 if chosen is None else chosen
-    # The table is not rebuilt, so the row keeps the focus; only the picture draws the new distance.
-    assert out == [pair, [i == pair for i in range(3)], 0 if chosen is None else 1, 0, "the table", None]
+    # The table is not rebuilt, so the row keeps the focus; only the picture draws the new distance. The chosen row
+    # is the current one; a key that chose it does not also scroll the page.
+    assert out == [
+        pair,
+        [i == pair for i in range(3)],
+        [str(i == pair).lower() for i in range(3)],
+        0 if chosen is None else 1,
+        0,
+        "the table",
+        None,
+        1 if event == "keydown" and chosen is not None else 0,
+    ]
+
+
+@pytest.mark.parametrize(("interactive", "current"), [(True, ["false", "true", "false"]), (False, [])])
+def test_the_chosen_distance_row_is_the_current_one(interactive: bool, current: list) -> None:
+    html = run_wizard_js(
+        "distTable([0, 1, 2].map(function(i) { return { label: 'P' + i, A: [0, 0, 0], B: [i, 0, 0] }; }), interactive)",
+        functions=("esc", "dist3", "distTable"),
+        prelude="var S = { pair: 1 }; function lenText(m) { return m + ' m'; }",
+        interactive=interactive,
+    )
+    # Only the Camera Calibration table is chosen from; the Review table has no current row.
+    assert re.findall(r'<tr class="[^"]*"[^>]*?aria-current="(\w+)"', html) == current
+    assert html.count("<tr") == 4
 
 
 # ---------------------------------------------------------------------------
@@ -3874,8 +3947,8 @@ def test_the_camera_error_is_an_alert() -> None:
 def test_the_advanced_hint_names_a_partly_filled_camera(partial: bool, heading: str) -> None:
     out = run_wizard_js(
         "(function() { renderReq(); return shown; })()",
-        functions=(*_MARK_FUNCTIONS, "esc", "renderReq"),
-        variables=_MARK_VARS,
+        functions=(*_MARK_FUNCTIONS, *_CAM_HINT_FUNCTIONS, "esc", "renderReq"),
+        variables=(*_MARK_VARS, "camNamed"),
         prelude=length_page("metric", {})
         + _DOM
         + f"var S = {{ mode: 'advanced', cam: null, camPartial: {json.dumps(partial)}, points: [], rect: {{}} }};"
@@ -3921,8 +3994,8 @@ def test_the_advanced_hint_names_a_partly_filled_camera(partial: bool, heading: 
 def test_the_simple_hint_names_a_partly_filled_camera(loc: str, rect: dict, shown: list) -> None:
     out = run_wizard_js(
         "(function() { S.camPartial = true; renderSimpleReq(); return shown; })()",
-        functions=(*_MARK_FUNCTIONS, "esc", "lenText", "fmt", "renderSimpleReq"),
-        variables=(*_MARK_VARS, "CORNER_TITLES"),
+        functions=(*_MARK_FUNCTIONS, *_CAM_HINT_FUNCTIONS, "esc", "lenText", "fmt", "renderSimpleReq"),
+        variables=(*_MARK_VARS, "CORNER_TITLES", "camNamed"),
         prelude=length_page("metric", {})
         + _DOM
         + "var shown = null; function showHint(area, h, sub) { shown = [area, h, sub]; }"
@@ -4036,15 +4109,21 @@ def test_each_picture_is_named_once() -> None:
 
 
 @pytest.mark.parametrize(
-    ("pin", "name", "u", "left"),
+    ("pin", "name", "u", "fs", "left"),
     [
-        ([1880, 40], "DSR", 1, True),
-        ([1780, 30], "Truss left", 1, True),
-        ([1780, 30], "DSR", 1, False),
-        ([1880, 80], "DSR", 1, False),
-        ([40, 40], "DSL", 1, False),
-        ([1700, 150], "DSR", 5.36, True),
-        ([1700, 400], "DSR", 5.36, False),
+        ([1880, 40], "DSR", 1, False, True),
+        ([1780, 30], "Truss left", 1, False, True),
+        ([1780, 30], "DSR", 1, False, False),
+        ([1880, 80], "DSR", 1, False, False),
+        ([40, 40], "DSL", 1, False, False),
+        ([1700, 150], "DSR", 5.36, False, True),
+        ([1700, 400], "DSR", 5.36, False, False),
+        ([1890, 400], "DSR", 1, False, True),
+        ([1850, 600], "Truss left", 1, False, True),
+        ([1750, 600], "DSR", 5.36, False, True),
+        ([1880, 40], "DSR", 1, True, False),
+        ([1700, 150], "DSR", 5.36, True, False),
+        ([1890, 40], "DSR", 1, True, True),
     ],
     ids=[
         "top right",
@@ -4054,9 +4133,17 @@ def test_each_picture_is_named_once() -> None:
         "top left",
         "a phone",
         "below it on a phone",
+        "at the right edge",
+        "a long name past the right edge",
+        "past the right edge on a phone",
+        "full screen, where the button was",
+        "full screen on a phone",
+        "full screen at the right edge",
     ],
 )
-def test_a_pins_name_moves_left_of_the_full_screen_button(pin: list, name: str, u: float, left: bool) -> None:
+def test_a_pins_name_moves_left_of_the_full_screen_button_and_the_edge(
+    pin: list, name: str, u: float, fs: bool, left: bool
+) -> None:
     out = run_wizard_js(
         "(function() { var t = pinLabel(pin, name, [13, 12], u);"
         ' return [/text-anchor="end"/.test(t), +/ x="([^"]+)"/.exec(t)[1], +/ y="([^"]+)"/.exec(t)[1]]; })()',
@@ -4065,7 +4152,9 @@ def test_a_pins_name_moves_left_of_the_full_screen_button(pin: list, name: str, 
         pin=pin,
         name=name,
         u=u,
+        FS={"key": "cal"} if fs else None,
     )
+    # Full screen hides the button: only the picture's edge sends a name left there.
     x = pin[0] - 13 * u if left else pin[0] + 13 * u
     assert out == [left, pytest.approx(x), pytest.approx(pin[1] - 12 * u)]
 
@@ -4088,3 +4177,354 @@ def test_both_pictures_place_their_names_clear_of_the_full_screen_button() -> No
         labels = re.findall(r'<text class="pin-label"[^>]*>(\w+)</text>', html)
         assert labels == ["DSR", "DSL"], html
         assert html.count('text-anchor="end"') == 1 and re.search(r'text-anchor="end"[^>]*>DSR<', html), html
+
+
+# ---------------------------------------------------------------------------
+# A tap on a pin opens its menu on its click; the menu ignores the clicks of the gesture that opened it
+# ---------------------------------------------------------------------------
+
+_PIN_TAP_PAGE = """
+var imageWidth = 1920, imageHeight = 1080, SAVED = { max_marks: 12 };
+els['cal-container'] = Object.assign(fakeEl('cal-container'),
+  { getBoundingClientRect: function() { return { width: 960 }; } });
+els['cal-overlay'] = Object.assign(fakeEl('cal-overlay'), { setPointerCapture: function() {} });
+els['pin-menu'] = Object.assign(fakeEl('pin-menu'), { hidden: true,
+  classList: { add: function() {}, remove: function() {} },
+  querySelector: function() { return { focus: function() {} }; } });
+function svgPoint(s, e) { return [e.clientX * 2, e.clientY * 2]; }
+function showLoupe() {} function positionPinMenu() {} function currentMarks() { return []; }
+// What a press, a key or a click lands on: a pin, the bare picture, or a menu item ({ pm } or { place }).
+function pin(id) {
+  return { closest: function(sel) {
+    if (sel.indexOf('.pin-handle') >= 0) return { dataset: { mark: String(id) } };
+    return sel === '#cal-overlay' ? {} : null; }, matches: function() { return false; } };
+}
+var picture = { closest: function(sel) { return sel === '#cal-hit' || sel === '#cal-overlay' ? {} : null; },
+  matches: function(sel) { return sel === '#cal-hit'; } };
+function item(data) {
+  return { closest: function(sel) {
+    if (sel === '[data-pm]') return data.pm ? { dataset: { pm: data.pm } } : null;
+    if (sel === '[data-place]') return data.place ? { dataset: { place: data.place }, disabled: false } : null;
+    return sel.indexOf('#pin-menu') >= 0 ? {} : null; } };
+}
+// Document capture listeners, the element's own, then document bubble listeners, as the browser runs them.
+function dispatch(on, type, target, extra) {
+  var e = Object.assign({ type: type, target: target, pointerId: 1, pointerType: 'touch', clientX: 10, clientY: 10,
+    key: '', repeat: false, preventDefault: function() {} }, extra || {});
+  function run(id, capture) {
+    listeners.filter(function(l) {
+      return l[0] === id && l[1] === type && (capture === undefined || l[3] === capture);
+    }).forEach(function(l) { l[2](e); });
+  }
+  run('document', true); run(on); run('document', false);
+}
+// A click lands on what is under the pointer: the menu once it covers the spot, else the picture.
+function clickAt(target, menuItem) {
+  dispatch(S.pinMenu ? 'pin-menu' : 'cal-overlay', 'click', S.pinMenu ? menuItem : target);
+}
+function state() {
+  return [S.pinMenu && S.pinMenu.pin, S.points.map(function(p) { return p.id + ':' + (p.pin ? 'pinned' : '-'); })];
+}
+"""
+_PIN_TAP_FUNCTIONS = (
+    *_MENU_FUNCTIONS,
+    "bindDrag",
+    "tapSlop",
+    "getPin",
+    "esc",
+    "pinMenuHead",
+    "openPinMenu",
+    "openPointMenu",
+    "placeFromMenu",
+)
+_BOTH_PINNED = ["2:pinned", "3:pinned"]
+
+
+def _pin_tap(expression: str, **inputs) -> list:
+    return run_wizard_js(
+        "(function() { calibInit();" + expression + " })()",
+        functions=_PIN_TAP_FUNCTIONS,
+        prelude=_MENU_PAGE + _PIN_TAP_PAGE,
+        **inputs,
+    )
+
+
+@pytest.mark.parametrize(
+    ("kind", "dx", "released", "clicked"),
+    [
+        ("touch", 0, [None, _BOTH_PINNED], [2, _BOTH_PINNED]),
+        ("touch", 7, [None, _BOTH_PINNED], [2, _BOTH_PINNED]),
+        ("mouse", 0, [None, _BOTH_PINNED], [2, _BOTH_PINNED]),
+        ("mouse", 3, [None, _BOTH_PINNED], [None, _BOTH_PINNED]),
+        ("pen", 0, [None, _BOTH_PINNED], [2, _BOTH_PINNED]),
+        ("pen", 10, [None, _BOTH_PINNED], [None, _BOTH_PINNED]),
+    ],
+    ids=["a tap", "a finger within the slop", "a mouse click", "a mouse drag", "a pen tap", "a pen drag"],
+)
+def test_a_pin_opens_its_menu_on_the_click_of_a_press_that_did_not_move(
+    kind: str, dx: int, released: list, clicked: list
+) -> None:
+    out = _pin_tap(
+        "dispatch('cal-overlay', 'pointerdown', pin(2), { pointerType: kind });"
+        " if (dx) dispatch('cal-overlay', 'pointermove', pin(2), { pointerType: kind, clientX: 10 + dx });"
+        " dispatch('cal-overlay', 'pointerup', pin(2), { pointerType: kind, clientX: 10 + dx });"
+        " var r = state(); clickAt(pin(2), item({ pm: 'delete' })); return [r, state()];",
+        kind=kind,
+        dx=dx,
+    )
+    # The release opens nothing, so the tap's click lands on the pin, not on a menu item over it.
+    assert out == [released, clicked]
+
+
+def test_a_tap_on_a_pin_whose_menu_covers_it_deletes_nothing_and_the_next_tap_acts() -> None:
+    out = _pin_tap(
+        "var seen = [];"
+        " dispatch('cal-overlay', 'pointerdown', pin(2)); dispatch('cal-overlay', 'pointerup', pin(2));"
+        " clickAt(pin(2), item({ pm: 'delete' })); seen.push(state());"
+        " clickAt(pin(2), item({ pm: 'delete' })); seen.push(state());"
+        " dispatch('pin-menu', 'pointerdown', item({ pm: 'delete' })); clickAt(pin(2), item({ pm: 'delete' }));"
+        " seen.push(state()); return seen;"
+    )
+    # A click with no press of its own (assistive technology) is a gesture too, once the opening click is over.
+    assert out == [[2, _BOTH_PINNED], [None, ["3:pinned"]], [None, ["3:pinned"]]]
+
+
+@pytest.mark.parametrize(
+    ("opening", "then", "result"),
+    [
+        ("press", "click", [2, _BOTH_PINNED]),
+        ("press", "press and click", [None, ["3:pinned"]]),
+        ("press", "click after a click", [None, ["3:pinned"]]),
+        ("Enter", "held Enter", [2, _BOTH_PINNED]),
+        ("Enter", "Enter released, Enter", [None, ["3:pinned"]]),
+        ("Enter", "press and click", [None, ["3:pinned"]]),
+        ("Enter", "click once the key is up", [None, ["3:pinned"]]),
+    ],
+    ids=[
+        "the opening press's click",
+        "the next press",
+        "a click after the opening click",
+        "a held Enter's repeat",
+        "the next Enter",
+        "a press after Enter",
+        "a click after Enter was released",
+    ],
+)
+def test_the_pin_menu_ignores_the_clicks_of_the_gesture_that_opened_it(opening: str, then: str, result: list) -> None:
+    out = _pin_tap(
+        "var del = item({ pm: 'delete' });"
+        " if (opening === 'press') { dispatch('document', 'pointerdown', pin(2)); openPointMenu(2); }"
+        " else dispatch('cal-overlay', 'keydown', pin(2), { key: 'Enter' });"
+        " var opened = S.pinMenu && S.pinMenu.pin;"
+        " if (then === 'press and click') dispatch('pin-menu', 'pointerdown', del);"
+        " if (then === 'click after a click') dispatch('pin-menu', 'click', del);"
+        " if (then === 'held Enter') dispatch('pin-menu', 'keydown', del, { key: 'Enter', repeat: true });"
+        " if (then === 'click once the key is up') dispatch('cal-overlay', 'keyup', pin(2), { key: 'Enter' });"
+        " if (then === 'Enter released, Enter') { dispatch('cal-overlay', 'keyup', pin(2), { key: 'Enter' });"
+        " dispatch('pin-menu', 'keydown', del, { key: 'Enter' }); }"
+        " dispatch('pin-menu', 'click', del); return [opened, state()];",
+        opening=opening,
+        then=then,
+    )
+    # Whatever opened the menu, a click of that same press or key never chooses an item; the next gesture does.
+    assert out == [2, result]
+
+
+def test_a_tap_on_the_picture_opens_the_menu_and_its_item_takes_the_next_tap() -> None:
+    out = _pin_tap(
+        "S.points[1].pin = null; var seen = [];"
+        " dispatch('cal-overlay', 'pointerdown', picture); seen.push(!!S.pinMenu);"
+        " clickAt(picture, item({ place: '3' })); seen.push(S.pinMenu && S.pinMenu.p);"
+        " dispatch('pin-menu', 'pointerdown', item({ place: '3' })); clickAt(picture, item({ place: '3' }));"
+        " seen.push(S.pinMenu, S.points[1].pin); return seen;"
+    )
+    # Opened on the click at [20, 20]; the next tap pins USR there.
+    assert out == [False, [20, 20], None, [20, 20]]
+
+
+_LENS_TAP_PAGE = """
+var on = {}, traced = 0, moves = 0;
+var overlay = { addEventListener: function(t, f) { on[t] = f; }, setPointerCapture: function() {},
+  releasePointerCapture: function() {} };
+var document = { getElementById: function(id) { return id === 'lens-overlay' ? overlay : null; },
+  addEventListener: function() {} };
+function $() { return { addEventListener: function() {} }; }
+var lensDrag = null, lensHold = false, lensSelected = null, lensPending = null, lensLines = [{}];
+function lensSvgPoint(x, y) { return [x, y]; } function lensTraceClick() { traced++; }
+function lensMovePoint() { moves++; } function lensClamp(p) { return p; } function lensUpdateLineGeometry() {}
+function lensPointPos() { return [0, 0]; } function showLoupe() {} function hideLoupe() {} function renderLens() {}
+function lensFocusSelected() {} function lensChanged() {} function lensPointFocusIn() {}
+function lensTabKey() {} function lensFocusElsewhere() {} function renderLensBubbles() {} function renderLensResult() {}
+var hit = { id: 'lens-hit', closest: function() { return null; } };
+var handle = { id: '', closest: function(sel) {
+  return sel === '.lens-point' ? { dataset: { line: '0', point: '1' } } : null; } };
+"""
+
+
+@pytest.mark.parametrize(
+    ("kind", "path", "result"),
+    [
+        ("hit", ("mouse", [12]), [1, 0]),
+        ("hit", ("mouse", [13]), [0, 0]),
+        ("hit", ("touch", [17]), [1, 0]),
+        ("hit", ("touch", [18]), [0, 0]),
+        ("hit", ("pen", [30, 10]), [0, 0]),
+        ("point", ("mouse", [12]), [0, 0]),
+        ("point", ("mouse", [13]), [0, 1]),
+        ("point", ("touch", [17]), [0, 0]),
+        ("point", ("touch", [18]), [0, 1]),
+    ],
+    ids=[
+        "a mouse click starts a line",
+        "a mouse drag starts none",
+        "a finger tap starts a line",
+        "a finger drag starts none",
+        "a pen that came back starts none",
+        "a mouse click moves no point",
+        "a mouse drag moves the point",
+        "a finger tap moves no point",
+        "a finger drag moves the point",
+    ],
+)
+def test_the_lens_picture_takes_the_same_tap_slop(kind: str, path: tuple, result: list) -> None:
+    out = run_wizard_js(
+        "(function() { lensInit(); var type = path[0], x = 10, target = kind === 'hit' ? hit : handle;"
+        " function ev(t) { return { type: t, target: target, pointerType: type, pointerId: 1, clientX: x, clientY: 10,"
+        " preventDefault: function() {} }; }"
+        " on.pointerdown(ev('pointerdown'));"
+        " path[1].forEach(function(q) { x = q; on.pointermove(ev('pointermove')); });"
+        " on.pointerup(ev('pointerup')); return [traced, moves > 0 ? 1 : 0]; })()",
+        functions=("tapSlop", "lensInit"),
+        prelude=_LENS_TAP_PAGE,
+        kind=kind,
+        path=list(path),
+    )
+    # One slop on every picture: 3 CSS px for a mouse, 8 for a finger or a pen.
+    assert out == result
+
+
+def test_every_button_class_in_the_wizard_has_a_style() -> None:
+    src = WIZARD_TEMPLATE.read_text(encoding="utf-8")
+    base = (WIZARD_TEMPLATE.parent / "base.tpl").read_text(encoding="utf-8")
+    styles = "".join(re.findall(r"<style[^>]*>(.*?)</style>", base + src, re.S))
+    classes = {c for attr in re.findall(r'<button[^>]*\bclass="([\w -]+)"', src) for c in attr.split()}
+    # A button styled by a class no stylesheet defines falls back to the browser's own look.
+    assert "btn-primary" in classes and "small" in classes
+    assert {c for c in classes if not re.search(rf"\.{re.escape(c)}(?![\w-])", styles)} == set()
+
+
+# ---------------------------------------------------------------------------
+# The hint names a partly filled camera only once Next showed the error or the focus left the fields
+# ---------------------------------------------------------------------------
+
+# Each step: [camera partly filled, the field with the focus, the error shown].
+_CAM_STEPS = [
+    [True, "cam_pos_x", False],
+    [True, "rect_w", False],
+    [True, "cam_pos_y", False],
+    [False, "cam_pos_z", False],
+    [True, "cam_pos_z", False],
+    [True, "cam_pos_z", True],
+]
+_CAM_STEP_IDS = "typing, focus left, back in a field, completed, typed again, Next"
+_CAM_STEP_JS = (
+    "steps.map(function(st) { S.camPartial = st[0]; document.activeElement = $(st[1]); $('cam-error').hidden = !st[2];"
+    " draw(); return shown; })"
+)
+
+
+def test_the_simple_hint_names_a_partly_filled_camera_only_once_the_typing_is_done() -> None:
+    out = run_wizard_js(
+        "(function() { function draw() { renderSimpleReq(); } return " + _CAM_STEP_JS + "; })()",
+        functions=(*_MARK_FUNCTIONS, *_CAM_HINT_FUNCTIONS, "esc", "lenText", "fmt", "renderSimpleReq"),
+        variables=(*_MARK_VARS, "CORNER_TITLES", "camNamed"),
+        prelude=length_page("metric", {}) + _DOM + "var shown = null; function showHint(area) { shown = area; }"
+        f" var S = {{ simpleLoc: 'back', rect: {json.dumps(_READY)}, solve: null,"
+        " cornerMoved: { DSL: false, DSR: false, USR: false, USL: false } };",
+        steps=_CAM_STEPS,
+    )
+    # Above the location only once named, then until the camera is complete: typing never moves the hint.
+    assert dict(zip(_CAM_STEP_IDS.split(", "), out, strict=True)) == {
+        "typing": "image",
+        "focus left": "sloc",
+        "back in a field": "sloc",
+        "completed": "image",
+        "typed again": "image",
+        "Next": "sloc",
+    }
+
+
+def test_the_advanced_hint_names_a_partly_filled_camera_only_once_the_typing_is_done() -> None:
+    out = run_wizard_js(
+        "(function() { function draw() { renderReq(); } return " + _CAM_STEP_JS + "; })()",
+        functions=(*_MARK_FUNCTIONS, *_CAM_HINT_FUNCTIONS, "esc", "renderReq"),
+        variables=(*_MARK_VARS, "camNamed"),
+        prelude=length_page("metric", {})
+        + _DOM
+        + "var S = { mode: 'advanced', cam: null, camPartial: false, points: [], rect: {} };"
+        " var SAVED = { max_marks: 12 }, shown = null;"
+        " function showHint(area, h) { shown = h; } function lockSimpleSteps() {}",
+        steps=_CAM_STEPS,
+    )
+    named, first = "Enter all three values of the camera position.", "Enter the rough camera position first."
+    # The heading is not rewritten (and read out again) while the first value is typed.
+    assert out == [first, named, named, first, first, named]
+
+
+@pytest.mark.parametrize(
+    ("left", "to", "drawn"),
+    [("cam_pos_x", "cam_pos_y", 0), ("cam_pos_z", "rect_w", 1), ("cam_pos_x", None, 1), ("rect_w", "cam_pos_x", 0)],
+    ids=["to the next camera field", "out of the fields", "to nothing", "into the fields"],
+)
+def test_leaving_the_camera_fields_draws_the_hint_again(left: str, to, drawn: int) -> None:
+    out = run_wizard_js(
+        "(function() { calibInit(); reqs = 0;"
+        " fire('document', 'focusout', { target: $(left), relatedTarget: to && $(to) }); return reqs; })()",
+        functions=_MENU_FUNCTIONS,
+        prelude=_MENU_PAGE,
+        left=left,
+        to=to,
+    )
+    assert out == drawn
+
+
+@pytest.mark.parametrize(("values", "drawn"), [(["1", "", ""], 1), (["1", "2", "3"], 0)], ids=["partly", "complete"])
+def test_next_with_a_partly_filled_camera_draws_the_hint_with_its_error(values: list, drawn: int) -> None:
+    out = run_wizard_js(
+        "(function() { S.mode = 'simple'; fill(values); window.calibNext(); return [reqs, $('cam-error').hidden]; })()",
+        functions=_CAM_FUNCTIONS,
+        variables=("exactLen", "DISTANCE_SIGMA"),
+        prelude=length_page("metric", {})
+        + _CAM_PAGE
+        + "var reqs = 0; function renderReq() { reqs++; }"
+        + wizard_window_function("calibNext"),
+        values=values,
+        S={"mode": "simple"},
+    )
+    # The hint follows the error the same moment: it names the camera above the location.
+    assert out == [drawn, not drawn]
+
+
+def test_a_menu_opened_at_a_spot_ignores_the_click_of_its_press() -> None:
+    out = _pin_tap(
+        "S.points[1].pin = null; var seen = [], usr = item({ place: '3' });"
+        " dispatch('cal-overlay', 'pointerdown', picture); openPinMenu([7, 7]);"
+        " dispatch('pin-menu', 'click', usr); seen.push(state());"
+        " dispatch('pin-menu', 'pointerdown', usr); dispatch('pin-menu', 'click', usr); seen.push(state());"
+        " return seen;"
+    )
+    assert out == [[None, ["2:pinned", "3:-"]], [None, _BOTH_PINNED]]
+
+
+@pytest.mark.parametrize(("type", "at", "taps"), [("mouse", 13, 0), ("pen", 18, 0), ("touch", 17, 1)])
+def test_a_click_away_from_its_press_is_no_tap_even_without_a_reported_move(type: str, at: int, taps: int) -> None:
+    out = run_wizard_js(
+        "(function() { bindDrag('cal-overlay', 'cal-container', '#cal-hit',"
+        " { start: function() { return null; }, tap: function(p) { taps.push(p); } });"
+        " press('hit', type, 10, 10); click(at, 10); return taps.length; })()",
+        functions=("bindDrag", "tapSlop"),
+        prelude=_DRAG_PAGE,
+        type=type,
+        at=at,
+    )
+    assert out == taps

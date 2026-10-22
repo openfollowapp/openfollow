@@ -1395,6 +1395,8 @@
   var snapshotCanvas = null;
   // The loupe sits beside the point: close to a mouse pointer, a finger's width away from a touch.
   var pointerIsMouse = true;
+  // CSS pixels a press may move and still be a click, on every picture: a finger or a pen wanders more than a mouse.
+  function tapSlop(pointerType) { return pointerType === 'mouse' ? 3 : 8; }
   function showLoupe(containerId, overlayId, pos, avoid) {
     var cont = $(containerId), loupe = cont && cont.querySelector('.wizard-loupe');
     if (!loupe || !snapshotCanvas || !imageWidth) return;
@@ -1446,8 +1448,6 @@
   var LENS_MIN_LINE_PX = 20;
   // Mirror lens_fit._MIN_LINE_SPAN_PX: a line spanning less carries no direction to fit.
   var LENS_MIN_SPAN_PX = 10;
-  // CSS pixels a finger may wander before a tap counts as a drag.
-  var LENS_TAP_SLOP_PX = 6;
   var lensFitSeq = 0;        // every fit request counts; an answer to an older one is dropped
   var LENS_RATING_LEVEL = { low: 'caution', medium: 'caution', okay: 'info', good: 'success', excellent: 'success' };
   var LENS_RATING_SEGMENTS = { low: 1, medium: 2, okay: 3, good: 4, excellent: 5 };
@@ -2291,7 +2291,7 @@
         e.preventDefault();
         lensHold = false;
         lensSelected = { line: +handle.dataset.line, point: +handle.dataset.point };
-        lensDrag = { line: lensLines[lensSelected.line], point: lensSelected.point, client: [e.clientX, e.clientY], moved: false };
+        lensDrag = { line: lensLines[lensSelected.line], point: lensSelected.point, client: [e.clientX, e.clientY], slop: tapSlop(e.pointerType), moved: false };
         overlay.setPointerCapture(e.pointerId);
         renderLens();
         lensFocusSelected();
@@ -2305,7 +2305,7 @@
         renderLens();
       } else if (e.target.id === 'lens-hit') {
         e.preventDefault();
-        lensDrag = { trace: true, client: [e.clientX, e.clientY], moved: false };
+        lensDrag = { trace: true, client: [e.clientX, e.clientY], slop: tapSlop(e.pointerType), moved: false };
         overlay.setPointerCapture(e.pointerId);
       }
     });
@@ -2313,9 +2313,9 @@
       if (!lensDrag) return;
       var pt = lensSvgPoint(e.clientX, e.clientY);
       var far = Math.hypot(e.clientX - lensDrag.client[0], e.clientY - lensDrag.client[1]);
-      if (lensDrag.trace) { if (far > LENS_TAP_SLOP_PX) lensDrag.moved = true; return; }
-      // A press that moves less than 3 CSS px is a click: it selects the point and moves nothing.
-      if (!lensDrag.moved && far < 3) return;
+      if (lensDrag.trace) { if (far >= lensDrag.slop) lensDrag.moved = true; return; }
+      // A press that stays within the tap slop is a click: it selects the point and moves nothing.
+      if (!lensDrag.moved && far < lensDrag.slop) return;
       lensDrag.moved = true;
       e.preventDefault();
       lensMovePoint(lensDrag.line, lensDrag.point, lensClamp(pt));
@@ -2611,6 +2611,7 @@
     showCamError(partial);
     if (partial && S.mode === 'simple') $('simple-cam-box').open = true;
     if (partial) {
+      renderReq();
       camFields().filter(camUnusable)[0].focus({ preventScroll: true });
       $('cal-camera').scrollIntoView({ block: 'center', behavior: 'smooth' });
       return;
@@ -2625,6 +2626,14 @@
       if (on) el.setAttribute('aria-describedby', 'cam-error'); else el.removeAttribute('aria-describedby');
       el.setAttribute('aria-invalid', on && camUnusable(el) ? 'true' : 'false');
     });
+  }
+  // The hint names a partly filled camera once Next showed the error or the focus left the fields, then until the
+  // camera is complete or empty: the hint never moves while a value is typed.
+  var camNamed = false;
+  function camPartialNamed() {
+    if (!S.camPartial) camNamed = false;
+    else if (!$('cam-error').hidden || camFields().indexOf(document.activeElement) < 0) camNamed = true;
+    return camNamed;
   }
   function camChanged() {
     readCam();
@@ -2822,7 +2831,7 @@
     var sized = !rectProblem(), anyRect = ['w', 'd'].some(function(k) { return S.rect[k] !== ''; });
     var todo = CORNERS.filter(function(c) { return !S.cornerMoved[c]; }), s = S.solve;
     if (!S.simpleLoc && !anyRect) showHint('sloc', 'Choose where your camera is located.', 'The location decides on which side of the picture each corner of the rectangle starts.');
-    else if (S.camPartial) showHint('sloc', 'Enter all three values of the camera position, or leave all three empty.', 'An estimate within about ' + lenRough(1) + ' is good enough.');
+    else if (camPartialNamed()) showHint('sloc', 'Enter all three values of the camera position, or leave all three empty.', 'An estimate within about ' + lenRough(1) + ' is good enough.');
     else if (!sized) {
       var rv = rectVals(), inRange = rectSized(rv), atCentre = inRange && S.rect.origin === 'custom' && [rv.cx, rv.cy, rv.z].some(isNaN);
       if (inRange && !S.rect.origin) showHint('origin-q', 'Choose the point of origin.', 'All position data that the station sends is measured from this point (0/0/0). It must match the point of origin of your console or tracking system.');
@@ -2844,7 +2853,7 @@
     // A distance point always needs its pin; a known point only until four points are pinned.
     var toPin = points.filter(function(m) { return !m.pin && (m.kind === 'triangulated' || pinned < 4); })[0];
     var h, sub, area = 'image';
-    if (!S.cam) { h = S.camPartial ? 'Enter all three values of the camera position.' : 'Enter the rough camera position first.'; sub = 'An estimate within about ' + lenRough(2) + ' per axis is good enough.'; area = 'cam'; }
+    if (!S.cam) { h = camPartialNamed() ? 'Enter all three values of the camera position.' : 'Enter the rough camera position first.'; sub = 'An estimate within about ' + lenRough(2) + ' per axis is good enough.'; area = 'cam'; }
     else if (known.length < 2) { h = 'Enter two known points that are far apart, such as the DSL and DSR corners.'; sub = 'Click where one of them is on the picture, choose New known point and type its X/Y/Z. ' + known.length + ' of 2 entered.'; }
     else if (points.length < 4) {
       h = points.length === 3 ? 'Enter one more known point or distance point.' : 'Enter two more known points or distance points.';
@@ -2871,7 +2880,7 @@
   function dist3(A, B) { return Math.hypot(A[0] - B[0], A[1] - B[1], A[2] - B[2]); }
   function distTable(pairs, interactive) {
     return '<thead><tr><th>Points</th><th style="text-align:right">Distance</th></tr></thead><tbody>' + pairs.map(function(p, i) {
-      return '<tr class="' + (interactive ? 'pair' : '') + (interactive && i === S.pair ? ' on' : '') + '"' + (interactive ? ' data-pair="' + i + '" tabindex="0"' : '') + '><td>' + esc(p.label) + '</td><td class="num">' + lenText(dist3(p.A, p.B), 2) + '</td></tr>';
+      return '<tr class="' + (interactive ? 'pair' : '') + (interactive && i === S.pair ? ' on' : '') + '"' + (interactive ? ' data-pair="' + i + '" tabindex="0" aria-current="' + (i === S.pair) + '"' : '') + '><td>' + esc(p.label) + '</td><td class="num">' + lenText(dist3(p.A, p.B), 2) + '</td></tr>';
     }).join('') + '</tbody>';
   }
   function solvedParamsHtml(cam) {
@@ -2934,9 +2943,11 @@
       '<line class="origin-mark" x1="' + q[0] + '" y1="' + (q[1] - 14 * u) + '" x2="' + q[0] + '" y2="' + (q[1] + 14 * u) + '"/>' +
       '<text class="origin-label" x="' + (q[0] + 12 * u) + '" y="' + (q[1] + 22 * u) + '" font-size="' + (13 * u) + '" stroke-width="' + (4 * u) + '">0/0/0</text></g>';
   }
-  // A pin's name, right of it; one that would run under the full-screen button (the top right 46 CSS px) goes left.
+  // A pin's name, right of it; one that would run off the picture or under the full-screen button (the top right
+  // 46 CSS px, not shown in full screen) goes left.
   function pinLabel(q, name, off, u) {
-    var under = q[0] + (off[0] + 9 * String(name).length) * u > imageWidth - 46 * u && q[1] - (off[1] + 11) * u < 46 * u;
+    var right = q[0] + (off[0] + 9 * String(name).length) * u;
+    var under = right > imageWidth || (!FS && right > imageWidth - 46 * u && q[1] - (off[1] + 11) * u < 46 * u);
     return '<text class="pin-label" x="' + (q[0] + (under ? -off[0] : off[0]) * u) + '" y="' + (q[1] - off[1] * u) + '"' + (under ? ' text-anchor="end"' : '') +
       ' font-size="' + (14 * u) + '" stroke-width="' + (4 * u) + '">' + esc(name) + '</text>';
   }
@@ -3057,8 +3068,11 @@
     $('pin-menu').setAttribute('aria-label', title);
     return '<div class="pin-menu-head"><div class="pin-menu-title">' + esc(title) + '</div><button type="button" class="pm-close" data-pm="close" aria-label="Close">&times;</button></div>';
   }
+  // A gesture is one press and its click, or one key from down to up. The menu ignores the clicks of the
+  // gesture that opened it: opened under a finger, it would take that tap's click.
+  var gestureSeq = 0, menuGesture = -1;
   function openPinMenu(p) {
-    S.pinMenu = { p: p, form: null, pin: null };
+    S.pinMenu = { p: p, form: null, pin: null }; menuGesture = gestureSeq;
     var knownN = currentMarks().filter(function(m) { return m.kind === 'known' && !m.problem; }).length;
     var open = S.points.filter(function(q) { return !q.pin; }), full = S.points.length >= SAVED.max_marks;
     var m = $('pin-menu');
@@ -3076,7 +3090,7 @@
   // A click on a pin: fix a misclick by removing the pin or deleting the point.
   function openPointMenu(id) {
     var q = S.points.filter(function(x) { return x.id === id; })[0]; if (!q || !q.pin) return;
-    S.pinMenu = { p: q.pin, form: null, pin: id };
+    S.pinMenu = { p: q.pin, form: null, pin: id }; menuGesture = gestureSeq;
     var m = $('pin-menu');
     m.classList.remove('form');
     m.innerHTML = pinMenuHead((q.name || ('P' + id)) + (q.kind === 'known' ? ' · Known point' : ' · Distance point')) +
@@ -3119,7 +3133,7 @@
     m.classList.add('form');
     m.innerHTML = pinMenuHead(kind === 'known' ? 'New known point' : 'New distance point') +
       '<form class="pm-form" novalidate><div class="field"><label for="pm-point">Point</label><input type="text" id="pm-point" maxlength="60" autocomplete="off" data-1p-ignore data-lpignore="true" value="' + esc(name) + '"></div>' + f +
-      '<div class="pm-actions"><button type="button" class="secondary small" data-pm="back">Back</button><button type="submit" class="primary small" id="pm-ok" disabled>Place point</button></div></form>';
+      '<div class="pm-actions"><button type="button" class="secondary small" data-pm="back">Back</button><button type="submit" class="btn-primary small" id="pm-ok" disabled>Place point</button></div></form>';
     positionPinMenu();
     pinMenuCheck();
     var n = $('pm-point'); n.focus({ preventScroll: true }); n.select();
@@ -3220,31 +3234,35 @@
   // Dragging on the picture
   // ---------------------------------------------------------------
   function bindDrag(svgId, container, hitSel, opts) {
-    var svg = $(svgId), drag = null, press = null;
+    var svg = $(svgId), drag = null, press = null, pinTap = null;
+    function far(e, t) { return Math.hypot(e.clientX - t.x, e.clientY - t.y) >= t.slop; }
     svg.addEventListener('pointerdown', function(e) {
       var h = e.target.closest('.pin-handle');
       var p = svgPoint(svg, e);
-      press = null;
+      press = null; pinTap = null;
       if (h) {
         e.preventDefault();
-        drag = opts.start(h, p);
+        drag = opts.start(h, p, tapSlop(e.pointerType));
         if (drag) { svg.setPointerCapture(e.pointerId); showLoupe(container, svgId, drag.pos()); }
         return;
       }
-      if (e.target.closest(hitSel) || e.target.matches(hitSel)) press = { p: p, x: e.clientX, y: e.clientY, mouse: e.pointerType === 'mouse' };
+      if (e.target.closest(hitSel) || e.target.matches(hitSel)) press = { p: p, x: e.clientX, y: e.clientY, slop: tapSlop(e.pointerType), moved: false };
     });
-    // A press on the picture acts on its click: a menu opened by the press would sit under a finger and take the tap's click.
-    // A mouse that moved is a drag, not a click; a touch the browser calls a tap is one.
+    // A press on the picture or a pin acts on its click: a menu opened by the press or the release would sit
+    // under a finger and take the tap's click. A press that moved is a drag, not a click.
     svg.addEventListener('click', function(e) {
-      var t = press; press = null;
-      if (t && (!t.mouse || Math.hypot(e.clientX - t.x, e.clientY - t.y) < 3)) opts.tap(t.p, e);
+      var t = press, a = pinTap; press = null; pinTap = null;
+      if (a) a();
+      else if (t && !t.moved && !far(e, t)) opts.tap(t.p, e);
     });
     svg.addEventListener('pointermove', function(e) {
       var p = svgPoint(svg, e);
+      if (press && far(e, press)) press.moved = true;
       if (drag) { drag.move(p); showLoupe(container, svgId, drag.pos()); return; }
       if (opts.hover) opts.hover(p);
     });
-    function end() { if (!drag) return; hideLoupe(container); var d = drag; drag = null; d.end(); }
+    // A drag's end may hand back what its click does.
+    function end(e) { if (!drag) return; hideLoupe(container); var d = drag; drag = null; var a = d.end(); if (e.type === 'pointerup' && a) pinTap = a; }
     svg.addEventListener('pointerup', end);
     svg.addEventListener('pointercancel', end);
     svg.addEventListener('pointerleave', function() { if (!drag && opts.leave) opts.leave(); });
@@ -3262,7 +3280,10 @@
     $('cam_height').addEventListener('input', function() { readHeight(); renderCalibResult(); solveSoon(); saveToSession(); });
     // An empty field the camera does not ask for goes once the focus leaves it; only the field's group is
     // drawn, as a rebuilt control would lose the focus Tab is moving to it.
-    document.addEventListener('focusout', function(e) { if (e.target === $('cam_height')) renderHeightGroup(); });
+    document.addEventListener('focusout', function(e) {
+      if (e.target === $('cam_height')) renderHeightGroup();
+      if (camFields().indexOf(e.target) >= 0 && camFields().indexOf(e.relatedTarget) < 0) renderReq();
+    });
     $('unit-switch').addEventListener('click', function() {
       var to = WUNIT.isImperial() ? 'metric' : 'imperial', box = document.querySelector('#wizard-step-calib .section');
       var body = new FormData(); body.append('unit_system', to);
@@ -3308,17 +3329,17 @@
     });
     $('adv-rows').addEventListener('change', function(e) { if (e.target.dataset.f === 'name') { renderAdvRows(); renderCalibOverlay(); } });
     bindDrag('cal-overlay', 'cal-container', '#cal-hit', {
-      start: function(h, p) {
+      start: function(h, p, tap) {
         var id = S.mode === 'simple' ? h.dataset.mark : +h.dataset.mark; S.selPin = id;
         closePinMenu();
-        // A press on a pin that does not move it is a click: Simple selects the corner, Advanced opens the pin's menu.
-        var moved = false, slop = 3 * imageWidth / $('cal-container').getBoundingClientRect().width;
+        // A press on a pin that does not move it is a click: Simple selects the corner, Advanced opens the pin's menu on the click.
+        var moved = false, slop = tap * imageWidth / $('cal-container').getBoundingClientRect().width;
         return {
           pos: function() { return getPin(id); },
           move: function(q) { if (!moved && Math.hypot(q[0] - p[0], q[1] - p[1]) < slop) return; moved = true; setPin(id, q); renderCalibOverlay(); },
           end: function() {
             if (S.mode === 'simple') { S.selCorner = id; if (moved) { solveSoon(); saveToSession(); } else selectCorner(id); }
-            else if (moved) { solveSoon(); saveToSession(); focusCalPin(id); } else openPointMenu(id);
+            else if (moved) { solveSoon(); saveToSession(); focusCalPin(id); } else return function() { openPointMenu(id); };
           }
         };
       },
@@ -3359,7 +3380,13 @@
     // A menu left by Tab closes, so the arrow keys never move a spot nobody is looking at.
     document.addEventListener('focusin', function(e) { if (S.pinMenu && !e.target.closest('#pin-menu') && !e.target.closest('#cal-overlay')) closePinMenu(); });
     document.addEventListener('keydown', cornerEnterKey);
+    // A held key's repeats belong to its press.
+    document.addEventListener('pointerdown', function() { gestureSeq++; }, true);
+    document.addEventListener('keydown', function(e) { if (!e.repeat) gestureSeq++; }, true);
+    document.addEventListener('keyup', function() { gestureSeq++; }, true);
+    document.addEventListener('click', function() { gestureSeq++; });
     $('pin-menu').addEventListener('click', function(e) {
+      if (gestureSeq === menuGesture) return;
       var b = e.target.closest('[data-place]'); if (b && !b.disabled) placeFromMenu(b.dataset.place);
       var pm = e.target.closest('[data-pm]'), act = pm && pm.dataset.pm;
       if (act === 'back') openPinMenu(S.pinMenu.p);
@@ -3386,11 +3413,11 @@
     // Choosing a row only moves the highlight: a rebuilt table would drop the focus.
     function choosePair(r) {
       S.pair = +r.dataset.pair;
-      $('cal-dist-table').querySelectorAll('[data-pair]').forEach(function(t) { t.classList.toggle('on', t === r); });
+      $('cal-dist-table').querySelectorAll('[data-pair]').forEach(function(t) { t.classList.toggle('on', t === r); t.setAttribute('aria-current', t === r ? 'true' : 'false'); });
       renderCalibOverlay();
     }
     $('cal-dist-table').addEventListener('click', function(e) { var r = e.target.closest('[data-pair]'); if (r) choosePair(r); });
-    $('cal-dist-table').addEventListener('keydown', function(e) { var r = e.target.closest('[data-pair]'); if (r && e.key === 'Enter') choosePair(r); });
+    $('cal-dist-table').addEventListener('keydown', function(e) { var r = e.target.closest('[data-pair]'); if (r && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); choosePair(r); } });
   }
 
   // ---------------------------------------------------------------

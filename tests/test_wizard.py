@@ -1410,7 +1410,7 @@ class TestWizardLensTemplate:
     def test_a_tap_is_judged_in_screen_pixels_and_a_cancel_traces_nothing(self) -> None:
         src = self._src()
         assert "var far = Math.hypot(e.clientX - lensDrag.client[0], e.clientY - lensDrag.client[1]);" in src
-        assert "if (far > LENS_TAP_SLOP_PX) lensDrag.moved = true;" in src
+        assert "if (lensDrag.trace) { if (far >= lensDrag.slop) lensDrag.moved = true; return; }" in src
         assert "if (!drag.moved && e.type !== 'pointercancel') lensTraceClick(" in src
 
     def test_a_written_pair_widens_its_slider(self) -> None:

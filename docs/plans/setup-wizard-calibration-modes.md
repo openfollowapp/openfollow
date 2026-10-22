@@ -215,7 +215,7 @@ The Simple hint, first match wins:
 | When | Above | Heading | Sub-line |
 |---|---|---|---|
 | No location and no width / depth | the location | Choose where your camera is located. | The location decides on which side of the picture each corner of the rectangle starts. |
-| Camera position partly filled | the location | Enter all three values of the camera position, or leave all three empty. | An estimate within about 1.0 m is good enough. (3.3 ft in Imperial) |
+| Camera position partly filled, once Next showed the error or the focus left the camera fields (then until the values are complete or empty, so the hint never moves while a value is typed) | the location | Enter all three values of the camera position, or leave all three empty. | An estimate within about 1.0 m is good enough. (3.3 ft in Imperial) |
 | Nothing of the rectangle entered | the rectangle text | Enter the size of the rectangle you marked on stage. | Only the corners need a mark, such as a tape cross. The Setup Wizard then draws the rectangle on the picture. |
 | Something missing | the rectangle text, or the custom-centre question when only the centre is missing | "Enter the rectangle's width / depth / width and depth.", "Enter the X, Y and Z of the rectangle's centre, measured from the point of origin." (naming exactly the missing ones), "Width and depth must be between 0 and 200 m." | as above |
 | A corner not placed | the picture | Drag DSL onto its tape mark. | Downstage left. N of 4 corners are on their marks. Click a corner to select it and move it with the arrow keys. Press Enter when the crosshair is in the right place. |
@@ -240,12 +240,12 @@ never touches the grid.
 | Partly filled, both modes | Next shows the error under the fields (an alert), which then describes all three; the ones without a usable value are marked invalid and the first of them takes the focus. Completing or clearing the values removes it; a value typed again shows no error until the next Next |
 | Kinds | **Known point**: X / Y / Z typed. **Distance point** (stored as kind `triangulated`): found from its distances to two other points (known points or distance points) and its Z, default 0 |
 | Rules | The camera position, at least two known points, at least four pinned points. A known point may stay unpinned (a point outside the picture still counts as one to measure from); a distance point must be pinned (two distances leave two places mirrored across the line between its points). No point measured from itself through others. **Add distance point** and **New distance point** appear once two known points read |
-| Picture | Over the picture the loupe follows the pointer. A click opens **Which point is here?** at that spot (a dashed ring marks it), on the click, not the press: on a phone a menu opened by the press would sit under the finger and take the same tap. A mouse that moved between press and release opens nothing: the unpinned points (name, Known point / Distance point), a separator, **New known point** (X/Y/Z), **New distance point** (disabled with "Needs two known points" until then). Choosing a point pins it there |
-| The menu | A labelled group of buttons, not an ARIA menu (the arrow keys move the spot, not between items). Placed 12 px right of and below the spot, flipped to stay inside the picture; its first item takes the focus. **×**, Esc or a press outside the menu and the picture close it. While it is open the loupe stays on the spot (clear of the menu) and the arrow keys move the spot 1 px (Shift 10) unless a field has the focus |
+| Picture | Over the picture the loupe follows the pointer. A click opens **Which point is here?** at that spot (a dashed ring marks it), on the click, not the press: on a phone a menu opened by the press would sit under the finger and take the same tap. A press that moved between press and release opens nothing (3 CSS px for a mouse, 8 for a finger or a pen; the same on every picture and pin): the unpinned points (name, Known point / Distance point), a separator, **New known point** (X/Y/Z), **New distance point** (disabled with "Needs two known points" until then). Choosing a point pins it there |
+| The menu | A labelled group of buttons, not an ARIA menu (the arrow keys move the spot, not between items). It ignores the clicks of the press or key that opened it. Placed 12 px right of and below the spot, flipped to stay inside the picture; its first item takes the focus. **×**, Esc or a press outside the menu and the picture close it. While it is open the loupe stays on the spot (clear of the menu) and the arrow keys move the spot 1 px (Shift 10) unless a field has the focus |
 | New known point | The menu becomes a form: **Point** (prefilled P<n>), X / Y / Z (Z prefilled 0), **Back**, **Place point** (disabled until X / Y / Z read) |
 | New distance point | **Point**, two pairs of **Measured from** + **Distance**, **Z** (empty means 0); **Place point** once both Measured from choices differ and both distances are above 0. Each Measured from list leaves out the point chosen in the other |
 | While a form is open | A click on the picture moves the spot |
-| A pin | Dragging moves it. A click on it opens its menu, titled "P1 · Known point": **Remove pin** ("Keeps the point") and **Delete point** (error colour) |
+| A pin | Dragging moves it. A click on it opens its menu (on the click, as on the picture), titled "P1 · Known point": **Remove pin** ("Keeps the point") and **Delete point** (error colour) |
 | Point list | Below the picture. Each row: name, kind chip, status chip, for a distance point its X / Y / Z, **Remove pin** (when pinned), **Delete**. Fields: **Point** (never labelled "Name": browsers and password managers fill in the operator's own name; `autocomplete="off"` and the ignore attributes), then X / Y / Z, or Z and Measured from / Distance / Measured from / Distance. A reason line under a row with a problem. "No points yet." while empty. **Add known point** (for a point outside the picture) and **Add distance point** under the list |
 | Status chips | Not placed (a problem), Not pinned, Pinned, then "0.4 px" or "0.4 px · 3 cm" (warning when over the caution limits), or "Behind the camera" (warning) for a pin the solved camera puts behind itself, its pin drawn flagged like one far off |
 | Distance point X / Y / Z | Shown before any solve, by trilateration, once its two points have positions and it and both of them are pinned. Of the two mirrored places, the pin's side of the line between its two points' pins picks one (the image's y runs down, so seen from above the floor the sides swap). The solve then refines it. Dashes until then |
@@ -258,7 +258,7 @@ The Advanced hint, first match wins:
 | When | Above | Heading | Sub-line |
 |---|---|---|---|
 | No camera position | Camera Position | Enter the rough camera position first. | An estimate within about 2.0 m per axis is good enough. (6.6 ft in Imperial) |
-| Camera position partly filled | Camera Position | Enter all three values of the camera position. | as above |
+| Camera position partly filled, once Next showed the error or the focus left the camera fields (as in Simple) | Camera Position | Enter all three values of the camera position. | as above |
 | Fewer than two known points | the picture | Enter two known points that are far apart, such as the DSL and DSR corners. | Click where one of them is on the picture, choose New known point and type its X/Y/Z. N of 2 entered. |
 | Fewer than four points | the picture | Enter one more / two more known points or distance points. | Click where it is on the picture and choose New known point or New distance point. |
 | A point to pin (a distance point always, a known point until four are pinned) | the picture | Pin P3 on the picture. | Click where it is on the picture, then choose it from the menu. N of at least 4 pinned. |
@@ -286,8 +286,9 @@ A point's reason line, as the first problem found:
 stage. If a distance is different, a typed or measured value is wrong. The
 distances from a distance point to the two points it is measured from are not listed." A table (Points, Distance) of every pair of
 placed points except those, computed from the typed and solved positions in
-the active units. A click or Enter on a row draws that pair on the picture as
-a labelled line through the solved camera; the row keeps the focus. Display only, no field for the
+the active units. A click, Enter or Space on a row draws that pair on the picture as
+a labelled line through the solved camera; the row keeps the focus and is
+marked as the current one (`aria-current`). Display only, no field for the
 measured value.
 
 ### Switching modes
@@ -356,7 +357,7 @@ corners again." (Simple) / "… then pin the points again." (Advanced). It block
 
 | Part | Decision |
 |---|---|
-| Picture | The grid through the solved camera, each placed point as a ring with its name, 0/0/0; the full-screen button. A name that would run under the button is drawn left of its point, on the Camera Calibration picture too |
+| Picture | The grid through the solved camera, each placed point as a ring with its name, 0/0/0; the full-screen button. A name that would run under the button (outside full screen) or off the picture's right edge is drawn left of its point, on the Camera Calibration picture too |
 | No solve | A red `.notice.error`: "The camera is not calculated yet." with "To calculate the camera, add … Go back to Camera Calibration to finish it.", or the solve's error. **Save and finish** is disabled |
 | Incomplete points | A red `.notice.error`: "Some points are not complete." with a list naming each point with a problem and what it needs ("P5 needs a pin.", "P6 needs its X.", or the point's reason line, "P5: It is measured from itself, through other points."), ending "Complete or delete them in Camera Calibration." **Save and finish** is disabled while any point has a problem; Simple's rectangle problem leaves no solve, so it is not listed |
 | No feed | "No video feed available, so the visual review is unavailable. The camera is calculated from a snapshot: configure a video source in the Video Source step, then return here." |

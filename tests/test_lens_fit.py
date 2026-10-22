@@ -17,6 +17,7 @@ from openfollow.scene.lens_fit import (
     RATING_THRESHOLDS_PX,
     RATINGS,
     LensFitResult,
+    LensLineFit,
     coverage_hint,
     fit_lens_from_lines,
     fit_result_to_dict,
@@ -116,10 +117,12 @@ class TestRecovery:
         "truth", [(0.0, 0.0), (-0.15, 0.0), (-0.3, 0.05), (0.2, 0.0), (-0.527, -0.069), (-0.3, -0.3)]
     )
     def test_exact_lines_return_the_pair(self, truth: tuple[float, float]) -> None:
+        # The gentle prior toward no lens may slide the pair along the valley it lies in, never the frame.
         result = fit_lens_from_lines(lines_for(*truth, EDGES + (DIAGONAL,)), W, H)
-        assert result.k1 == pytest.approx(truth[0], abs=2e-3)
-        assert result.k2 == pytest.approx(truth[1], abs=2e-3)
-        assert (result.cx, result.cy, result.centre_fitted) == (0.0, 0.0, False)
+        assert result.k1 == pytest.approx(truth[0], abs=0.015)
+        assert result.k2 == pytest.approx(truth[1], abs=0.015)
+        assert frame_error_px(_lens(result), (*truth, 0.0, 0.0)) < 1.0
+        assert (result.cx, result.cy) == (0.0, 0.0)
         assert result.rms_px < 0.05
 
     @pytest.mark.parametrize("truth", [(-0.45, 0.20), (-0.47, 0.25)])
@@ -164,7 +167,7 @@ class TestRecovery:
         assert np.isfinite(result.k1) and np.isfinite(result.k2)
 
 
-class TestK2Gate:
+class TestK2:
     def test_k2_stays_zero_without_corner_coverage(self) -> None:
         truth = (-0.3, 0.05)
         result = fit_lens_from_lines(lines_for(*truth, (MID_H, MID_V), noise=1.0, seed=1), W, H)
@@ -187,56 +190,98 @@ class TestK2Gate:
         assert result.k2_fitted
         assert frame_error_px(_lens(result), truth) < 16.0
 
-    def test_lines_that_reject_k2_zero_keep_it_however_loose(self) -> None:
+    def test_lines_that_say_more_than_the_prior_keep_a_loose_k2(self) -> None:
         # Short lines in the outer bands leave k2 loose, but a lens without it bends them visibly wrong.
-        truth = (-0.47, 0.25)
-        result = fit_lens_from_lines(lines_for(*truth, tuple(_BAND.values()), noise=0.3, seed=1), W, H)
+        truth = (-0.47, 0.25, 0.0, 0.0)
+        result = fit_lens_from_lines(lines_for(*truth[:2], tuple(_BAND.values()), noise=0.3, seed=1), W, H)
         assert result.k2_fitted
         assert result.k2 == pytest.approx(truth[1], abs=0.02)
+        assert corner_error_px(_lens(result), truth) < 2.0
         assert result.rating == "medium"
+
+    def test_the_prior_weighs_against_the_points_own_scatter(self) -> None:
+        # Placed to a pixel, these lines leave a loose k2 that the prior draws toward 0; placed to a
+        # tenth of one, the same lines keep it.
+        truth = (-0.47, 0.25)
+        rough = fit_lens_from_lines(lines_for(*truth, tuple(_BAND.values()), noise=1.0, seed=1), W, H)
+        fine = fit_lens_from_lines(lines_for(*truth, tuple(_BAND.values()), noise=0.1, seed=1), W, H)
+        assert fine.k2 == pytest.approx(truth[1], abs=0.01)
+        assert rough.k2 < fine.k2 - 0.03
+
+    def test_lines_near_the_corners_measure_k2_rather_than_trading_it_into_k1(self) -> None:
+        # Risers in the four corners: k1 and k2 trade along a ridge there. Dropping k2 put all of
+        # the corners' bend into k1 (about -0.48 for this lens), and bent the middle wrong.
+        truth = (-0.21, -0.21, 0.0, 0.0)
+        risers = (
+            ((180.0, 1030.0), (240.0, 810.0)),
+            ((250.0, 925.0), (440.0, 965.0)),
+            ((1745.0, 820.0), (1790.0, 1040.0)),
+            ((1545.0, 965.0), (1750.0, 928.0)),
+            ((500.0, 1018.0), (770.0, 1050.0)),
+        )
+        result = fit_lens_from_lines(lines_for(*truth[:2], risers, noise=0.5, seed=3), W, H)
+        assert result.k2_fitted
+        assert result.k1 > -0.33
+        assert frame_error_px(_lens(result), truth) < 25.0
 
 
 # The strongest common lens (126 degrees on 1920 x 1080), its centre 80 px right of and 50 px below the picture's.
 DECENTRED = (-0.53, -0.07, 80.0 / HALF_DIAG, 50.0 / HALF_DIAG)
 
 
-def decentred_trials(lens: tuple[float, float, float, float], seed: int, segments=EDGES + (DIAGONAL,)):
-    """Twelve fits of the segments through ``lens`` at one pixel of placement noise, from one generator."""
+def decentred_trials(lens: tuple[float, float, float, float], seed: int, given: tuple[float, float]):
+    """Twelve fits of the four edges and a diagonal through ``lens`` at one pixel of placement noise,
+    about the centre ``given``."""
     rng = np.random.default_rng(seed)
     out = []
     for _ in range(12):
+        segments = EDGES + (DIAGONAL,)
         lines = [make_line(a, b, lens[0], lens[1], cx=lens[2], cy=lens[3], noise=1.0, rng=rng) for a, b in segments]
-        out.append(fit_lens_from_lines(lines, W, H))
+        out.append(fit_lens_from_lines(lines, W, H, cx=given[0], cy=given[1]))
     return out
 
 
-class TestCentre:
-    def test_exact_lines_return_the_centre(self) -> None:
+class TestGivenCentre:
+    def test_exact_lines_return_the_pair_about_the_given_centre(self) -> None:
         truth = (-0.3, -0.05, 0.06, -0.04)
-        result = fit_lens_from_lines(
-            [make_line(a, b, -0.3, -0.05, cx=0.06, cy=-0.04) for a, b in EDGES + (DIAGONAL,)], W, H
-        )
-        assert result.centre_fitted
+        lines = [make_line(a, b, -0.3, -0.05, cx=0.06, cy=-0.04) for a, b in EDGES + (DIAGONAL,)]
+        result = fit_lens_from_lines(lines, W, H, cx=0.06, cy=-0.04)
         assert _lens(result) == pytest.approx(truth, abs=2e-3)
+        assert result.rms_px < 0.05
 
-    def test_a_strong_lens_far_off_centre_is_followed(self) -> None:
-        # About the picture's centre this lens is off by some 50 px at the corners; with its centre, the frame
-        # lands within 12 px however the points fall, and the centre is kept every time.
-        trials = decentred_trials(DECENTRED, seed=1)
-        assert all(r.centre_fitted for r in trials)
-        assert max(frame_error_px(_lens(r), DECENTRED) for r in trials) <= 12.0
-        misses = [HALF_DIAG * math.hypot(r.cx - DECENTRED[2], r.cy - DECENTRED[3]) for r in trials]
-        assert float(np.median(misses)) <= 15.0
+    def test_a_strong_lens_off_centre_is_followed_with_its_centre_given(self) -> None:
+        trials = decentred_trials(DECENTRED, seed=1, given=DECENTRED[2:])
+        assert max(frame_error_px(_lens(r), DECENTRED) for r in trials) <= 8.0
+        assert all(r.rating in ("good", "excellent") for r in trials)
 
-    def test_a_centred_lens_rarely_keeps_a_centre(self) -> None:
-        trials = decentred_trials((-0.527, -0.069, 0.0, 0.0), seed=2)
-        assert sum(r.centre_fitted for r in trials) <= 2
-        assert all((r.cx, r.cy) == (0.0, 0.0) for r in trials if not r.centre_fitted)
+    def test_a_missing_centre_shows_in_the_rating(self) -> None:
+        # About the picture's centre this lens is off by some 45 px; no trial may claim better than poor.
+        trials = decentred_trials(DECENTRED, seed=1, given=(0.0, 0.0))
+        errors = [frame_error_px(_lens(r), DECENTRED) for r in trials]
+        assert min(errors) > 40.0
+        assert all(r.rating in ("low", "medium") for r in trials)
+        assert all(error < 3.0 * r.uncertainty_px for error, r in zip(errors, trials, strict=True))
 
-    def test_one_line_never_keeps_a_centre(self) -> None:
-        # Five points, a line and the full lens leave no residual to judge the centre by.
-        line = make_line(*TOP, -0.53, -0.07, cx=0.07, cy=0.045, noise=1.0, rng=np.random.default_rng(0))
-        assert not fit_lens_from_lines([line], W, H).centre_fitted
+    @pytest.mark.parametrize("centre", [(0.0, 0.0), (0.1, -0.05), (-0.25, 0.25)])
+    def test_the_fit_never_moves_the_given_centre(self, centre: tuple[float, float]) -> None:
+        # Lines whose own bows say nothing true about a centre: real edges bend a little.
+        rng = np.random.default_rng(4)
+        lines = [
+            make_line(a, b, -0.2, -0.03, noise=1.0, rng=rng, sag=float(rng.uniform(-3.0, 3.0)))
+            for a, b in EDGES + (DIAGONAL, MID_H, MID_V)
+        ]
+        result = fit_lens_from_lines(lines, W, H, cx=centre[0], cy=centre[1])
+        assert (result.cx, result.cy) == centre
+        assert all(np.isfinite(_lens(result)))
+
+    @pytest.mark.parametrize(
+        "centre",
+        [(0.26, 0.0), (0.0, -0.3), (float("nan"), 0.0), (0.0, float("inf"))],
+        ids=["x-past-the-bound", "y-past-the-bound", "nan", "infinite"],
+    )
+    def test_a_centre_beyond_its_bound_is_an_error(self, centre: tuple[float, float]) -> None:
+        with pytest.raises(ValueError, match="lens centre"):
+            fit_lens_from_lines(lines_for(-0.2, 0.0, EDGES), W, H, cx=centre[0], cy=centre[1])
 
     def test_a_lens_whose_far_corner_looks_past_90_degrees_fits_the_nearest_valid_one(self) -> None:
         # A 150 degree fisheye 94 px off centre: its far corner has no pinhole point, which no valid lens can show.
@@ -247,8 +292,9 @@ class TestCentre:
             make_line(a, b, truth[0], truth[1], cx=truth[2], cy=truth[3], noise=1.0, rng=rng)
             for a, b in (TOP, BOTTOM, RIGHT, DIAGONAL)
         ]
-        result = fit_lens_from_lines(lines, W, H)
+        result = fit_lens_from_lines(lines, W, H, cx=truth[2], cy=truth[3])
         assert lens_warp_is_valid(*_lens(result))
+        assert (result.cx, result.cy) == truth[2:]
 
 
 class TestScreenPixels:
@@ -325,12 +371,13 @@ class TestRating:
         result = fit_lens_from_lines(lines_for(0.3, 0.0, (LEFT, RIGHT), noise=3.0, seed=3), W, H)
         assert result.rating == RATING_LOW
         assert result.uncertainty_px > 80.0
-        assert result.hint == "Add lines near the top and bottom edges."
+        assert result.hint == "If possible, add lines near the top and bottom edges."
 
     def test_a_minimum_the_lines_rule_out_does_not_widen_the_rating(self) -> None:
         # The seeds reach a second lens some 146 px apart, but its cost is well beyond the margin.
         result = fit_lens_from_lines(lines_for(-0.45, 0.2, (TOP, DIAGONAL), noise=5.0, seed=2), W, H)
-        assert 100.0 < result.uncertainty_px < 140.0
+        assert result.rating == RATING_LOW
+        assert 20.0 < result.uncertainty_px < 100.0
 
     def test_sloppier_points_lower_the_rating(self) -> None:
         precise = fit_lens_from_lines(lines_for(-0.3, 0.05, EDGES, noise=0.5, seed=3), W, H)
@@ -377,15 +424,15 @@ class TestHint:
 
     def test_a_line_into_a_corner_moves_on_to_the_edges(self) -> None:
         hint = _hint((*_CENTRE, _CORNER_REACH), rating="low", k2_fitted=False)
-        assert hint.startswith("Add lines near")
+        assert hint.startswith("If possible, add lines near")
 
     @pytest.mark.parametrize(
         ("weak", "said"),
         [
-            (("bottom",), "Add a line near the bottom edge."),
-            (("top", "bottom"), "Add lines near the top and bottom edges."),
-            (("top", "left", "bottom"), "Add lines near the top, bottom and left edges."),
-            (("top", "bottom", "left", "right"), "Add lines near all edges of the picture."),
+            (("bottom",), "If possible, add a line near the bottom edge."),
+            (("top", "bottom"), "If possible, add lines near the top and bottom edges."),
+            (("top", "left", "bottom"), "If possible, add lines near the top, bottom and left edges."),
+            (("top", "bottom", "left", "right"), "If possible, add lines near all edges of the picture."),
         ],
         ids=["one", "two", "three", "four"],
     )
@@ -397,13 +444,18 @@ class TestHint:
         top_few = ((700.0, 40.0), (1200.0, 45.0))
         lines = [*lines_for(0.0, 0.0, _all_but("top", "left")), make_line(*top_few, 0.0, 0.0, n=3)]
         hint = coverage_hint(lines, W, H, rating="medium", k2_fitted=True, rms_px=1.0, misfit=False)
-        assert hint == "Add lines near the left and top edges."
+        assert hint == "If possible, add lines near the left and top edges."
 
     @pytest.mark.parametrize("points", [4, 5])
     def test_a_band_needs_five_points(self, points: int) -> None:
         lines = [*lines_for(0.0, 0.0, _all_but("bottom")), make_line(*_BAND["bottom"], 0.0, 0.0, n=points)]
         hint = coverage_hint(lines, W, H, rating="medium", k2_fitted=True, rms_px=1.0, misfit=False)
-        assert hint == ("Add a line near the bottom edge." if points < 5 else "")
+        assert hint == ("If possible, add a line near the bottom edge." if points < 5 else "")
+
+    @pytest.mark.parametrize("rating", ["low", "medium", "okay"])
+    def test_below_good_an_edge_line_is_asked_for_only_if_possible(self, rating: str) -> None:
+        # A picture may show nothing straight near an edge: a crowd, rows of seats.
+        assert _hint(_all_but("bottom"), rating=rating, rms_px=2.0) == "If possible, add a line near the bottom edge."
 
     @pytest.mark.parametrize("rating", ["good", "excellent"])
     def test_good_or_better_asks_only_to_confirm(self, rating: str) -> None:
@@ -431,7 +483,7 @@ class TestHint:
     )
     def test_lines_that_do_not_agree_are_asked_for_more(self, segments, change: dict) -> None:  # noqa: ANN001
         kw = {"rating": "okay", "rms_px": 1.0, **change}
-        assert _hint(segments, **kw) == "Add a line near the top edge."
+        assert _hint(segments, **kw) == "If possible, add a line near the top edge."
 
     def test_the_fit_hands_its_own_rms_to_the_hint(self) -> None:
         # Rated fair with the corner correction measured, but the points scatter more than 1.5 px about their curves
@@ -440,7 +492,7 @@ class TestHint:
         assert (result.rating, result.k2_fitted) == ("okay", True)
         assert min(line.rms_px for line in result.lines) <= 1.5 < result.rms_px
         assert not any(line.misfit for line in result.lines)
-        assert result.hint == "Add a line near the top edge."
+        assert result.hint == "If possible, add a line near the top edge."
 
     def test_four_fitted_lines_that_agree_may_be_good_though_one_scatters_more(self) -> None:
         # The whole fit's RMS decides, not the line that scatters the most.
@@ -460,7 +512,7 @@ class TestHint:
         result = fit_lens_from_lines(lines, W, H)
         assert (result.rating, result.k2_fitted, result.rms_px <= 1.5) == ("okay", True, True)
         assert [line.misfit for line in result.lines] == [False, False, False, False, True]
-        assert result.hint == "Add lines near the top and right edges."
+        assert result.hint == "If possible, add lines near the top and right edges."
 
 
 class TestMisfit:
@@ -473,6 +525,14 @@ class TestMisfit:
         flags = [line.misfit for line in result.lines]
         assert flags[-1] is True
         assert not any(flags[:-1])
+
+    def test_a_line_the_lens_would_bend_for_is_flagged(self) -> None:
+        # Bowed 6 px among lines placed to a third of a pixel: 2 px off, under the old 3 px floor.
+        truth = (-0.3, 0.05)
+        lines = lines_for(*truth, EDGES + (MID_H,), noise=0.3, seed=8)
+        lines.append(make_line(*DIAGONAL, *truth, noise=0.3, rng=np.random.default_rng(9), sag=6.0))
+        result = fit_lens_from_lines(lines, W, H)
+        assert [line.misfit for line in result.lines] == [False] * 5 + [True]
 
     def test_the_only_line_with_curvature_is_not_flagged(self) -> None:
         """Without it the rest pin k1 down on nothing, so its misfit under their fit means nothing."""
@@ -514,6 +574,37 @@ class TestMisfit:
             result = fit_lens_from_lines(lines_for(-0.3, 0.05, EDGES + (MID_H, DIAGONAL), noise=3.0, seed=seed), W, H)
             flagged += sum(line.misfit for line in result.lines)
         assert flagged <= 2
+
+
+class TestStrays:
+    @staticmethod
+    def _moved(seed: int, *, line: int = 1, point: int = 2, by: float = 8.0) -> list[list[list[float]]]:
+        """Edges and a diagonal with one point moved across its line: snapped to the other side of a tape."""
+        lines = lines_for(-0.3, 0.05, EDGES + (DIAGONAL,), noise=0.5, seed=seed)
+        p = np.asarray(lines[line])
+        t = p[-1] - p[0]
+        lines[line][point] = list(p[point] + by * np.array([-t[1], t[0]]) / np.hypot(*t))
+        return lines
+
+    @pytest.mark.parametrize("seed", range(3))
+    def test_a_point_that_left_its_line_is_set_aside_before_the_lens_is_fitted(self, seed: int) -> None:
+        result = fit_lens_from_lines(self._moved(seed), W, H)
+        assert [line.dropped for line in result.lines] == [(), (2,), (), (), ()]
+        # Kept, it bent the lens some 4 px across the frame.
+        assert frame_error_px(_lens(result), (-0.3, 0.05, 0.0, 0.0)) < 1.5
+        assert not any(line.misfit for line in result.lines)
+
+    def test_straight_lines_keep_every_point(self) -> None:
+        for seed in range(12):
+            result = fit_lens_from_lines(lines_for(-0.3, 0.05, EDGES + (DIAGONAL, MID_H), noise=1.0, seed=seed), W, H)
+            assert all(line.dropped == () for line in result.lines)
+
+    def test_a_line_of_four_points_keeps_them_all(self) -> None:
+        # Set one aside and three are left, which any lens bends through.
+        lines = self._moved(0)
+        lines[1] = lines[1][:4]
+        result = fit_lens_from_lines(lines, W, H)
+        assert result.lines[1].dropped == ()
 
 
 class TestCurves:
@@ -577,24 +668,29 @@ class TestJsonShape:
             "k2_fitted",
             "cx",
             "cy",
-            "centre_fitted",
             "rms_px",
             "uncertainty_px",
             "rating",
             "hint",
             "lines",
         }
-        assert set(data["lines"][0]) == {"rms_px", "misfit", "curve"}
+        assert set(data["lines"][0]) == {"rms_px", "misfit", "curve", "dropped"}
+        assert data["lines"][0]["dropped"] == []
         assert isinstance(data["lines"][0]["curve"][0], list)
 
     def test_infinite_uncertainty_becomes_null(self) -> None:
-        result = LensFitResult(0.0, 0.0, False, 0.0, 0.0, False, 0.0, float("inf"), RATING_LOW, "", ())
+        result = LensFitResult(0.0, 0.0, False, 0.0, 0.0, 0.0, float("inf"), RATING_LOW, "", ())
         assert fit_result_to_dict(result)["uncertainty_px"] is None
 
-    def test_the_centre_is_answered_as_measured(self) -> None:
-        result = LensFitResult(-0.3, -0.05, True, 0.06, -0.04, True, 0.5, 3.0, "good", "", ())
+    def test_the_centre_is_answered_as_given(self) -> None:
+        result = fit_lens_from_lines(lines_for(-0.2, 0.0, EDGES), W, H, cx=0.06, cy=-0.04)
         data = fit_result_to_dict(result)
-        assert (data["cx"], data["cy"], data["centre_fitted"]) == (0.06, -0.04, True)
+        assert (data["cx"], data["cy"]) == (0.06, -0.04)
+
+    def test_a_point_set_aside_is_answered_by_its_index_in_its_line(self) -> None:
+        line = LensLineFit(rms_px=0.5, misfit=False, curve=((0.0, 0.0), (1.0, 1.0)), dropped=(2,))
+        result = LensFitResult(-0.3, -0.05, True, 0.0, 0.0, 0.5, 3.0, "good", "", (line,))
+        assert fit_result_to_dict(result)["lines"][0]["dropped"] == [2]
 
 
 class TestDegenerateGeometry:

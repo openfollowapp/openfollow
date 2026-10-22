@@ -16,7 +16,7 @@ from openfollow.scene.edge_chains import (
     edge_map_size,
     find_edge_candidates,
 )
-from openfollow.scene.edge_snap import LINE_SAMPLE_FRACTIONS, end_search_radius, snap_line_to_edges
+from openfollow.scene.edge_snap import LINE_SAMPLE_FRACTIONS, NearEdge, end_search_radius, snap_line_to_edges
 from openfollow.scene.solver import apply_overlay_distortion, invert_overlay_distortion
 from tests._lens_band import cut_band, scaled_luma
 from tests._lens_scene import Scene, Strip, render
@@ -309,6 +309,35 @@ def test_a_step_edge_has_no_line_beside_it() -> None:
     assert len(result.candidates) == 1
     ys, xs = np.nonzero(result.edge_map)
     assert np.all(np.abs(ys - (360.0 + 0.05 * xs)) <= 2.0)
+
+
+@pytest.mark.parametrize(("upper", "lower"), [(60.0, 180.0), (180.0, 60.0)], ids=["darker-above", "brighter-above"])
+def test_a_step_edge_is_offered_with_its_contrast_side(upper: float, lower: float) -> None:
+    """The snap keeps a used suggestion on its own side of the contrast: luma rising or falling along the
+    normal of the chord from its first point to its last."""
+    yy, xx = np.mgrid[0:H720, 0:W720]
+    img = np.where(yy < 360 + 0.05 * xx, upper, lower)
+    (found,) = find_edge_candidates(img, 1, W720, H720).candidates
+    a, b = ends_of(found)
+    tangent = (b - a) / np.linalg.norm(b - a)
+    normal = np.array([-tangent[1], tangent[0]])
+    mid = np.asarray(candidate_sample_points(found.points, LINE_SAMPLE_FRACTIONS)[2])
+    before, after = (img[int(round(p[1])), int(round(p[0]))] for p in (mid - 6.0 * normal, mid + 6.0 * normal))
+    assert found.polarity == int(np.sign(after - before))
+
+
+@pytest.mark.parametrize("contrast", [40.0, -40.0], ids=["bright-seam", "dark-seam"])
+def test_a_used_seam_snaps_onto_one_side_of_it(contrast: float) -> None:
+    img = one_pixel_lines(contrast)
+    across = max(find_720(img), key=lambda c: abs(ends_of(c)[1][0] - ends_of(c)[0][0]))
+    samples = candidate_sample_points(across.points, LINE_SAMPLE_FRACTIONS)
+    near = NearEdge(tuple(samples), across.polarity)
+    band = cut_band(img, samples[0], samples[4])
+    pts = snap_line_to_edges(samples[0], samples[4], band, W720, H720, near=near)
+    assert all(p.snapped for p in pts)
+    off = np.array([p.y - (400.0 + 0.03 * p.x) for p in pts])
+    assert np.all(np.abs(off) < 1.5)
+    assert np.ptp(off) < 0.6
 
 
 # --------------------------------------------------------------------------- #

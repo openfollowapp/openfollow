@@ -3,14 +3,16 @@
 # Copyright (C) 2026 OpenFollow Project
 """Simulate the straight-line lens fit over coverage scenarios, lens strengths and lens centres.
 
-This is where the coverage rating thresholds (``RATING_THRESHOLDS_PX``), the
-k2 gate and the centre gate come from: synthetic lines are placed on the
-distorted image the way an operator clicks them, warped with the real overlay
-functions, jittered by the given placement noise, and fitted. The table lists,
-per scenario, how far k1 / k2 land from the truth, the predicted corner
-uncertainty the rating is read from, how often k2 and the centre were kept, and
-the largest screen error over the frame once the camera solve has absorbed
-what it can (a free homography of the pinhole picture).
+This is where the coverage rating thresholds (``RATING_THRESHOLDS_PX``) and the
+priors on k1 / k2 come from: synthetic lines are placed on the distorted image
+the way an operator clicks them, warped with the real overlay functions,
+jittered by the given placement noise, and fitted about a given lens centre.
+A lens whose centre sits off the frame centre is fitted twice: with its centre
+given, and with the centre given as 0, which shows what a missing centre costs.
+The table lists, per scenario, how far k1 / k2 land from the truth, the
+predicted corner uncertainty the rating is read from, how often k2 was
+measured, and the largest screen error over the frame once the camera solve has
+absorbed what it can (a free homography of the pinhole picture).
 
     poetry run python scripts/lens_fit_simulation.py [--noise 1 3] [--trials 12] [--only 2.3mm]
 """
@@ -23,7 +25,7 @@ from collections import Counter
 
 import numpy as np
 
-from openfollow.scene.lens_fit import RATINGS, fit_lens_from_lines
+from openfollow.scene.lens_fit import RATING_THRESHOLDS_PX, RATINGS, fit_lens_from_lines
 from openfollow.scene.solver import apply_overlay_distortion, invert_overlay_distortion
 
 W, H = 1920.0, 1080.0
@@ -71,11 +73,14 @@ DECENTRED = [("weak", -0.10, 0.0), ("corner-heavy", -0.27, -0.09), ("2.3 mm", -0
 _GRID = np.column_stack([g.ravel() for g in np.meshgrid(np.linspace(0.0, W, 17), np.linspace(0.0, H, 10))])
 
 
-def lenses() -> list[tuple[str, tuple[float, float, float, float]]]:
-    out = [(name, (k1, k2, 0.0, 0.0)) for name, k1, k2 in CENTRED]
+def lenses() -> list[tuple[str, tuple[float, float, float, float], tuple[float, float]]]:
+    """``(name, lens, centre the fit is given)`` for every case."""
+    out = [(name, (k1, k2, 0.0, 0.0), (0.0, 0.0)) for name, k1, k2 in CENTRED]
     for name, k1, k2 in DECENTRED:
         for ox, oy in OFFSETS:
-            out.append((f"{name} at ({ox:+.0f}, {oy:+.0f}) px", (k1, k2, ox / HALF_DIAG, oy / HALF_DIAG)))
+            lens = (k1, k2, ox / HALF_DIAG, oy / HALF_DIAG)
+            out.append((f"{name} at ({ox:+.0f}, {oy:+.0f}) px, centre given", lens, lens[2:]))
+            out.append((f"{name} at ({ox:+.0f}, {oy:+.0f}) px, centre given as 0", lens, (0.0, 0.0)))
     return out
 
 
@@ -115,6 +120,12 @@ def frame_error_px(fitted, truth) -> float:
     return float(np.max(np.hypot(*(seen - _GRID).T)))
 
 
+def overclaimed(rating: str, error: float) -> bool:
+    """Whether the frame error is more than twice what the rating promises."""
+    bound = {name: limit for limit, name in RATING_THRESHOLDS_PX}.get(rating)
+    return bound is not None and error > 2.0 * bound
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--noise", type=float, nargs="+", default=[1.0, 3.0], help="placement noise in px")
@@ -124,7 +135,7 @@ def main() -> None:
     parser.add_argument("--scenarios", nargs="+", default=list(SCENARIOS), help="scenario names to run")
     args = parser.parse_args()
     rng = np.random.default_rng(args.seed)
-    for name, lens in lenses():
+    for name, lens, given in lenses():
         if args.only not in name:
             continue
         k1, k2, cx, cy = lens
@@ -134,20 +145,19 @@ def main() -> None:
                 rows = []
                 for _ in range(args.trials):
                     lines = [make_line(*SEGMENTS[key], lens, noise, rng) for key in SCENARIOS[scenario]]
-                    r = fit_lens_from_lines(lines, W, H)
+                    r = fit_lens_from_lines(lines, W, H, cx=given[0], cy=given[1])
                     error = frame_error_px((r.k1, r.k2, r.cx, r.cy), lens)
-                    kept = (r.k2_fitted, r.centre_fitted)
-                    rows.append((abs(r.k1 - k1), abs(r.k2 - k2), r.uncertainty_px, *kept, r.rating, error))
-                errors = [x[6] for x in rows]
-                counts = Counter(x[5] for x in rows)
+                    rows.append((abs(r.k1 - k1), abs(r.k2 - k2), r.uncertainty_px, r.k2_fitted, r.rating, error))
+                errors = [x[5] for x in rows]
+                counts = Counter(x[4] for x in rows)
                 ratings = " ".join(f"{rating} {counts[rating]}" for rating in reversed(RATINGS) if counts[rating])
                 sigma = float(np.median([x[2] for x in rows]))
                 print(
                     f"  {scenario:20s} noise {noise:3.1f} px | max dk1 {max(x[0] for x in rows):6.3f} "
                     f"max dk2 {max(x[1] for x in rows):6.3f} | corner sigma median {sigma:8.1f} px | "
-                    f"k2 {sum(x[3] for x in rows):2d}/{args.trials} "
-                    f"centre {sum(x[4] for x in rows):2d}/{args.trials} | "
-                    f"frame error {float(np.median(errors)):6.1f} / {max(errors):6.1f} px | {ratings}"
+                    f"k2 {sum(x[3] for x in rows):2d}/{args.trials} | "
+                    f"frame error {float(np.median(errors)):6.1f} / {max(errors):6.1f} px | "
+                    f"overclaimed {sum(overclaimed(x[-2], x[-1]) for x in rows):2d} | {ratings}"
                 )
 
 

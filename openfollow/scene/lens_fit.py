@@ -8,13 +8,16 @@ points become collinear once undistorted, so the fit minimises each line's
 perpendicular residuals about its own total-least-squares line, mapped back to
 screen pixels, where the placement noise lives.
 
-A coarse grid over ``k1`` / ``k2`` seeds a damped Gauss-Newton refinement,
-because a start at zero diverges on strong barrel distortion. The lens centre
-is then fitted with the pair and kept only when it lowers the cost by more
-than noise would (:data:`CENTRE_LR_GATE`); ``k2`` is kept when its predicted
-uncertainty moves the frame corner by less than :data:`K2_SIGMA_GATE` would
-without a lens, which in practice needs lines in the outer corners, or when
-the lines reject ``k2 = 0``. The rating is the predicted uncertainty of where
+The lens centre is never measured here: it is given (typed or imported, 0 by
+default) and ``k1`` / ``k2`` are fitted about it. A coarse grid over
+``k1`` / ``k2`` seeds a damped Gauss-Newton refinement, because a start at zero
+diverges on strong barrel distortion. A gentle prior (:data:`K1_PRIOR`,
+:data:`K2_PRIOR`) draws the pair toward no lens where the lines leave it open.
+``k2`` is measured where the lines say more about it than its prior does, or
+reject ``k2 = 0``; otherwise it stays 0 and the rating still counts how loose it
+is. A point that left its line (a snap onto another
+edge) is set aside before the lens is fitted, and a line that does not fit the
+others is flagged. The rating is the predicted uncertainty of where
 the pinhole frame's corners land on screen, in pixels, one number that
 captures how many lines there are, how much of the frame they cover and how
 precisely their points were placed. Another lens that fits the lines about as
@@ -32,7 +35,7 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
-from openfollow.lens_model import lens_warp_is_valid
+from openfollow.lens_model import C_BOUND, lens_warp_is_valid
 from openfollow.scene.solver import _limit_radius, apply_overlay_distortion, invert_overlay_distortion
 
 FloatArray = npt.NDArray[np.float64]
@@ -43,22 +46,24 @@ FloatArray = npt.NDArray[np.float64]
 _K1_SCAN = np.arange(-1.2, 0.6001, 0.05)
 _K2_SCAN = np.arange(-1.0, 0.4001, 0.02)
 _SEEDS = 4
-# Grid cells after the best that the full lens is also refined from, centre 0.
-_CENTRE_SEEDS = 2
 # Beyond this the model describes no real lens; keeps a one-line fit bounded.
 _K_BOUND = 2.0
 _LM_ITERS = 40
 _JACOBIAN_EPS = 1e-4
 # Placement precision nobody beats; keeps a lucky fit from reporting zero uncertainty.
 _SIGMA_FLOOR_PX = 1.0
-# The lens centre is kept when the full lens lowers the cost by more than this many
-# residual variances: the 95 % point of two parameters, once the variance is well
-# measured (see :func:`_significant`).
-CENTRE_LR_GATE = 6.0
-# k2 is fitted only when its predicted uncertainty moves the frame corner by less than
-# this much k2 moves it without a lens, about 55 px at 1080p. Through a lens the corner
-# moves by ``1 / P(1)`` of that, so the bound on the uncertainty grows by ``P(1)``.
-K2_SIGMA_GATE = 0.05
+# k2 is kept however loose when dropping it raises the cost by more than this many
+# residual variances, once the variance is well measured (see :func:`_significant`).
+_LR_GATE = 6.0
+# A gentle prior toward no lens, the sigma of each coefficient: real lenses keep k2 within
+# a few tenths, so where the lines say little about a coefficient it is drawn toward 0
+# rather than left to the noise. Where they say less about k2 than its prior, k2 is not
+# measured and stays 0.
+K1_PRIOR = 0.25
+K2_PRIOR = 0.2
+_PRIOR = (K1_PRIOR, K2_PRIOR)
+# The least scatter the prior is weighed against: exact lines still feel it, barely.
+_PRIOR_FLOOR_PX = 0.1
 # Another minimum the lines cannot rule out: its cost within this many residual
 # variances of the best, the 95 % region of a two-parameter fit.
 _RIVAL_MARGIN = 6.0
@@ -66,8 +71,13 @@ _RIVAL_MARGIN = 6.0
 _RIVAL_GRID = np.linspace(0.0, 1.0, 9, dtype=np.float64)
 # A line does not fit the others when, with the lens refitted without it, its RMS is
 # above both an absolute floor and a multiple of the other lines' RMS.
-_MISFIT_MIN_PX = 3.0
+_MISFIT_MIN_PX = 1.5
 _MISFIT_RATIO = 3.0
+# A point is set aside when it misses the line through its line's other points by more
+# than this many sigmas of that miss (the placement noise floored at a pixel); at most one
+# a line, of a line of at least the points, so a line that bends throughout is flagged instead.
+_STRAY_SIGMAS = 4.0
+_STRAY_MIN_POINTS = 5
 # Smallest eigenvalue (px^2 per unit parameter^2) of the information matrix below
 # which the lines constrain nothing; a real line sits many orders above it.
 _SINGULAR_INFORMATION = 1e-9
@@ -88,11 +98,9 @@ _CORNER_RADIUS = 0.8
 _AGREE_MIN_LINES = 4
 _AGREE_RMS_PX = 1.5
 
-# Free parameters of the lens ``(k1, k2, cx, cy)`` in each model.
+# Free parameters of the lens ``(k1, k2, cx, cy)`` in each model; the centre is given.
 _PAIR: tuple[int, ...] = (0, 1)
-_FULL: tuple[int, ...] = (0, 1, 2, 3)
 _K1_ONLY: tuple[int, ...] = (0,)
-_K1_CENTRE: tuple[int, ...] = (0, 2, 3)
 
 # Predicted corner uncertainty (px) below which each rating applies, best first.
 RATING_THRESHOLDS_PX: tuple[tuple[float, str], ...] = (
@@ -107,11 +115,12 @@ RATINGS: tuple[str, ...] = (RATING_LOW, "medium", "okay", "good", "excellent")
 
 @dataclass(frozen=True)
 class LensLineFit:
-    """One traced line's share of the result."""
+    """One traced line's share of the result: ``dropped`` are the points set aside, by index."""
 
     rms_px: float
     misfit: bool
     curve: tuple[tuple[float, float], ...]
+    dropped: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -119,10 +128,9 @@ class LensFitResult:
     k1: float
     k2: float
     k2_fitted: bool
-    # The lens centre, in half-diagonals; 0 unless ``centre_fitted``.
+    # The lens centre the pair was fitted about, in half-diagonals, as given.
     cx: float
     cy: float
-    centre_fitted: bool
     rms_px: float
     uncertainty_px: float
     rating: str
@@ -151,6 +159,8 @@ class _Lines:
         self.width = canvas_w
         self.height = canvas_h
         self.half_diag = 0.5 * math.hypot(canvas_w, canvas_h)
+        # Pixels of scatter the prior is weighed against (see :func:`_solve`).
+        self.prior_px = _SIGMA_FLOOR_PX
         self.fx = canvas_w / 2.0
         self.fy = canvas_h / 2.0
         self.dx = (pts[:, 0] - self.fx) / self.half_diag
@@ -187,7 +197,9 @@ class _Lines:
         number = np.full(self.count, -1, dtype=np.int64)
         number[list(keep)] = np.arange(len(keep))
         rows = number[self.idx] >= 0
-        return _Lines(self.pts[rows], number[self.idx][rows], self.width, self.height)
+        out = _Lines(self.pts[rows], number[self.idx][rows], self.width, self.height)
+        out.prior_px = self.prior_px
+        return out
 
     def undistort(
         self, k1: npt.ArrayLike, k2: npt.ArrayLike, cx: float = 0.0, cy: float = 0.0
@@ -299,21 +311,30 @@ def _in_bounds(k: FloatArray) -> bool:
     return bool(abs(k[0]) <= _K_BOUND and abs(k[1]) <= _K_BOUND and lens_warp_is_valid(*(float(v) for v in k)))
 
 
-def _jacobian(lines: _Lines, k: FloatArray, free: Sequence[int]) -> FloatArray:
+def _residuals(lines: _Lines, k: FloatArray, free: Sequence[int]) -> FloatArray:
+    """The points' residuals, and the prior's on each free coefficient, in pixels of placement noise."""
+    prior = [lines.prior_px * float(k[i]) / _PRIOR[i] for i in free]
+    return np.append(lines.residuals(k), prior)
+
+
+def _jacobian(lines: _Lines, k: FloatArray, free: Sequence[int], *, prior: bool = True) -> FloatArray:
     cols = []
     for i in free:
         kp = k.copy()
         km = k.copy()
         kp[i] += _JACOBIAN_EPS
         km[i] -= _JACOBIAN_EPS
-        cols.append((lines.residuals(kp) - lines.residuals(km)) / (2.0 * _JACOBIAN_EPS))
+        if prior:
+            cols.append((_residuals(lines, kp, free) - _residuals(lines, km, free)) / (2.0 * _JACOBIAN_EPS))
+        else:
+            cols.append((lines.residuals(kp) - lines.residuals(km)) / (2.0 * _JACOBIAN_EPS))
     return np.column_stack(cols)
 
 
 def _refine(lines: _Lines, k0: FloatArray, free: Sequence[int]) -> FloatArray:
     """Damped Gauss-Newton (Levenberg-Marquardt) on the ``free`` parameters from ``k0``, inside the valid region."""
     k: FloatArray = k0.copy()
-    res = lines.residuals(k)
+    res = _residuals(lines, k, free)
     cost = float(res @ res)
     lam = 1e-3
     index = list(free)
@@ -332,7 +353,7 @@ def _refine(lines: _Lines, k0: FloatArray, free: Sequence[int]) -> FloatArray:
             if not _in_bounds(cand):
                 lam *= 10.0
                 continue
-            cand_res = lines.residuals(cand)
+            cand_res = _residuals(lines, cand, free)
             cand_cost = float(cand_res @ cand_res)
             if cand_cost < cost:
                 k, res, cost = cand, cand_res, cand_cost
@@ -345,8 +366,9 @@ def _refine(lines: _Lines, k0: FloatArray, free: Sequence[int]) -> FloatArray:
     return k
 
 
-def _cost(lines: _Lines, k: FloatArray) -> float:
-    res = lines.residuals(k)
+def _cost(lines: _Lines, k: FloatArray, free: Sequence[int] = ()) -> float:
+    """The points' squared residuals, plus the prior's when ``k2`` is among ``free``."""
+    res = _residuals(lines, k, free)
     return float(res @ res)
 
 
@@ -357,16 +379,22 @@ def _residual_variance(lines: _Lines, k: FloatArray, n_params: int) -> float:
     return max(float(res @ res) / dof, _SIGMA_FLOOR_PX**2)
 
 
-def _covariance(lines: _Lines, k: FloatArray, free: Sequence[int]) -> FloatArray:
-    """Covariance of the ``free`` parameters at ``k`` from the residual scatter, floored at one pixel."""
+def _covariance(lines: _Lines, k: FloatArray, free: Sequence[int], *, prior: bool = True) -> FloatArray:
+    """Covariance of the ``free`` parameters at ``k`` from the residual scatter, floored at one pixel.
+
+    With ``prior`` it is the posterior's, the prior on ``k2`` included; without, the lines' own.
+    """
     sigma2 = _residual_variance(lines, k, len(free))
-    jac = _jacobian(lines, k, free)
+    jac = _jacobian(lines, k, free, prior=False)
     normal = jac.T @ jac
     # A line through the centre moves along itself under the warp, so no
     # parameter changes a residual: the lens is then unbounded, not merely loose.
     if float(np.linalg.eigvalsh(normal).min()) <= _SINGULAR_INFORMATION:
         return np.full((len(free), len(free)), np.inf)
-    return np.asarray(sigma2 * np.linalg.inv(normal), dtype=np.float64)
+    information = normal / sigma2
+    if prior:
+        information += np.diag([1.0 / _PRIOR[i] ** 2 for i in free])
+    return np.asarray(np.linalg.inv(information), dtype=np.float64)
 
 
 def _rated_points(lines: _Lines, k: FloatArray, fractions: FloatArray) -> FloatArray:
@@ -449,14 +477,13 @@ class _Solution:
     cov: FloatArray
     # Every minimum this model's starts reached, the best included, with its cost.
     minima: Minima
+    # With k2 not measured, the pair and its posterior covariance: the corners are no
+    # surer than the loose k2 leaves them, though k2 is reported as 0.
+    loose: tuple[FloatArray, FloatArray] | None = None
 
     @property
     def k2_fitted(self) -> bool:
         return 1 in self.free
-
-    @property
-    def centre_fitted(self) -> bool:
-        return 2 in self.free
 
 
 def _fit(lines: _Lines, starts: Sequence[FloatArray], free: Sequence[int]) -> tuple[FloatArray, Minima]:
@@ -464,46 +491,84 @@ def _fit(lines: _Lines, starts: Sequence[FloatArray], free: Sequence[int]) -> tu
     minima = []
     for start in starts:
         k = _refine(lines, start, free)
-        minima.append((k, _cost(lines, k)))
+        minima.append((k, _cost(lines, k, free)))
     return min(minima, key=lambda m: m[1])[0], tuple(minima)
 
 
 def _significant(lines: _Lines, drop: float, k: FloatArray, n_params: int) -> bool:
-    """Whether a cost ``drop`` from the extra parameters of the lens ``k`` is more than noise.
+    """Whether a cost ``drop`` from an extra parameter of the lens ``k`` is more than noise.
 
-    The F test's 95 % point for two extra parameters, ``d (e^(G / d) - 1)``
-    residual variances with ``d`` the residual degrees of freedom of the larger
-    model and ``G`` :data:`CENTRE_LR_GATE`, its limit as ``d`` grows: the
-    variance measured on few points is itself loose. Never without a residual
-    degree of freedom.
+    ``d (e^(G / d) - 1)`` residual variances with ``d`` the residual degrees of
+    freedom of the larger model and ``G`` :data:`_LR_GATE`, its limit as ``d``
+    grows: the variance measured on few points is itself loose. Never without a
+    residual degree of freedom.
     """
     dof = lines.n - n_params - 2 * lines.count
     if dof < 1:
         return False
-    return drop > dof * math.expm1(CENTRE_LR_GATE / dof) * _residual_variance(lines, k, n_params)
+    return drop > dof * math.expm1(_LR_GATE / dof) * _residual_variance(lines, k, n_params)
 
 
-def _solve(lines: _Lines) -> _Solution:
-    """Fit the pair, then the full lens; keep the centre, then ``k2``, only where the lines determine it."""
-    seeds = _seeds(lines, k2_zero=False)
-    k, minima = _fit(lines, seeds, _PAIR)
-    pair_cost = min(cost for _, cost in minima)
-    k_full, full_minima = _fit(lines, [k, *seeds[1 : 1 + _CENTRE_SEEDS]], _FULL)
-    free = _PAIR
-    if _significant(lines, pair_cost - min(cost for _, cost in full_minima), k_full, len(_FULL)):
-        k, minima, free = k_full, full_minima, _FULL
-    cov = _covariance(lines, k, free)
-    slope = 1.0 - float(k[0]) - 3.0 * float(k[1])
-    if math.sqrt(max(float(cov[1, 1]), 0.0)) < K2_SIGMA_GATE * slope:
-        return _Solution(k, free, cov, minima)
-    k_free, k_minima, k_cov = k, minima, cov
-    drop_free = _K1_CENTRE if 2 in free else _K1_ONLY
-    k, minima = _fit(lines, _seeds(lines, k2_zero=True, cx=float(k[2]), cy=float(k[3])), drop_free)
+def _solve(lines: _Lines, cx: float, cy: float) -> _Solution:
+    """Fit the pair about the given centre, ``k2`` drawn toward 0 by its prior; keep ``k2`` where the lines
+    tell more about it than the prior does.
+
+    The prior is a belief about lenses, the residuals are pixels: it weighs against the
+    points' own scatter, so lines placed to a tenth of a pixel are barely drawn toward 0.
+    """
+    k, minima = _fit(lines, _seeds(lines, k2_zero=False, cx=cx, cy=cy), _PAIR)
+    res = lines.residuals(k)
+    dof = max(lines.n - len(_PAIR) - 2 * lines.count, 1)
+    lines.prior_px = max(math.sqrt(float(res @ res) / dof), _PRIOR_FLOOR_PX)
+    k, minima = _fit(lines, [m for m, _cost in minima], _PAIR)
+    told = _covariance(lines, k, _PAIR, prior=False)
+    if math.sqrt(max(float(told[1, 1]), 0.0)) < K2_PRIOR:
+        return _Solution(k, _PAIR, _covariance(lines, k, _PAIR), minima)
+    k_free, k_minima = k, minima
+    k, minima = _fit(lines, _seeds(lines, k2_zero=True, cx=cx, cy=cy), _K1_ONLY)
     # Lines that reject k2 = 0 keep it however loose it is: dropped, the answer would be
     # wrong by more than its own uncertainty says.
-    if _significant(lines, _cost(lines, k) - _cost(lines, k_free), k_free, len(free)):
-        return _Solution(k_free, free, k_cov, k_minima)
-    return _Solution(k, drop_free, _covariance(lines, k, drop_free), minima)
+    if _significant(lines, _cost(lines, k) - _cost(lines, k_free), k_free, len(_PAIR)):
+        return _Solution(k_free, _PAIR, _covariance(lines, k_free, _PAIR), k_minima)
+    loose = (k_free, _covariance(lines, k_free, _PAIR))
+    return _Solution(k, _K1_ONLY, _covariance(lines, k, _K1_ONLY), minima, loose)
+
+
+def _strays(lines: _Lines, k: FloatArray) -> list[int]:
+    """Rows of the points that left their line under the lens ``k``, the worst of each line at most.
+
+    Each point is measured against the line through its line's other points in the
+    pinhole picture, in screen pixels, and judged against the noise that miss would
+    have from placement alone: the points' own scatter (a robust sigma, so the strays
+    do not hide themselves) inflated by how far the others' line is extrapolated.
+    """
+    x, y, _tx, _ty, gain = lines._screen_lines(k)
+    res = lines.residuals(k)
+    sizes = lines.sizes
+    dof = max(float(np.sum(sizes - 2.0)), 1.0)
+    sigma = max(_SIGMA_FLOOR_PX, 1.4826 * float(np.median(np.abs(res))) * math.sqrt(lines.n / dof))
+    found = []
+    for rows in lines.members:
+        if len(rows) < _STRAY_MIN_POINTS:
+            continue
+        worst, worst_z = -1, _STRAY_SIGMAS
+        for row in rows:
+            others = rows[rows != row]
+            weight = 1.0 / (gain[others] * gain[others])
+            mx, my = np.average(x[others], weights=weight), np.average(y[others], weights=weight)
+            ox, oy = x[others] - mx, y[others] - my
+            theta = 0.5 * math.atan2(2.0 * float(np.sum(weight * ox * oy)), float(np.sum(weight * (ox * ox - oy * oy))))
+            tx, ty = math.cos(theta), math.sin(theta)
+            miss = abs((y[row] - my) * tx - (x[row] - mx) * ty) / gain[row] * lines.half_diag
+            along = ox * tx + oy * ty
+            at = (x[row] - mx) * tx + (y[row] - my) * ty
+            leverage = 1.0 / len(others) + at * at / max(float(np.sum(along * along)), 1e-18)
+            z = miss / (sigma * math.sqrt(1.0 + leverage))
+            if z > worst_z:
+                worst, worst_z = int(row), z
+        if worst >= 0:
+            found.append(worst)
+    return found
 
 
 def _rival_spread_px(lines: _Lines, solution: _Solution) -> float:
@@ -539,26 +604,24 @@ def _misfit_excess(lines: _Lines, k: FloatArray, refit: Sequence[int]) -> list[f
             continue
         rms_rest = float(np.sqrt(np.mean(rest.residuals(k_rest) ** 2)))
         rms_line = lines.line_rms(k_rest)[i]
-        sensitivity = _jacobian(lines, k_rest, refit)[lines.idx == i]
+        sensitivity = _jacobian(lines, k_rest, refit, prior=False)[lines.idx == i]
         predicted = float(np.sqrt(np.mean(np.einsum("pf,fg,pg->p", sensitivity, cov, sensitivity))))
         excess.append(rms_line / max(_MISFIT_MIN_PX, _MISFIT_RATIO * rms_rest, _MISFIT_RATIO * predicted))
     return excess
 
 
-def _misfits(lines: _Lines, k: FloatArray, free: Sequence[int]) -> list[bool]:
+def _misfits(lines: _Lines, k: FloatArray) -> list[bool]:
     """Leave-one-out: a line that only fits while it is pulling the fit its way.
 
-    ``k1``, and the centre when it was kept, are refitted without the line from
-    the full solution, ``k2`` held, so two remaining lines cannot be overfitted
-    into agreeing with anything. The line's residual is judged against what the
-    refit's own uncertainty predicts at that line: the longest, most curved line
-    moves the most when it is left out, and that is the rest's ignorance, not
-    the line's fault. A kept centre can bend a line through the middle as a
-    lens bends one at the edge, so a bent line there drags the others off too:
-    the worst line is set aside and the rest judged again without it, until
-    every line left fits.
+    ``k1`` is refitted without the line from the full solution, ``k2`` held, so
+    two remaining lines cannot be overfitted into agreeing with anything. The
+    line's residual is judged against what the refit's own uncertainty predicts
+    at that line: the longest, most curved line moves the most when it is left
+    out, and that is the rest's ignorance, not the line's fault. A bent line
+    drags the others off too, so the worst line is set aside and the rest judged
+    again without it, until every line left fits.
     """
-    refit = _K1_CENTRE if 2 in free else _K1_ONLY
+    refit = _K1_ONLY
     kept = list(range(lines.count))
     flags = [False] * lines.count
     while len(kept) >= _MIN_LINES_FOR_MISFIT:
@@ -604,9 +667,11 @@ def coverage_hint(
 ) -> str:
     """One sentence naming what would improve or confirm the fit, empty when nothing is missing.
 
-    Rated good or better the weak edges only confirm it. Below that, lines that
-    already agree may be right; a corner line is required for that, because
-    lines that never reach a corner agree with a wrong lens just as well.
+    A line near an edge is asked for only if possible at every rating: a picture may
+    show nothing straight there (a crowd, rows of seats). Rated good or better it
+    only confirms the fit. Below that, lines that already agree may be right; a
+    corner line is required for that, because lines that never reach a corner
+    agree with a wrong lens just as well.
     """
     if len(lines) < 2:
         return "Add a second line in another part of the picture."
@@ -630,35 +695,60 @@ def coverage_hint(
     )
     if agree:
         return f"The result may already be good. If possible, add {where} to confirm it."
-    return f"Add {where}."
+    return f"If possible, add {where}."
 
 
-def fit_lens_from_lines(lines: Sequence[Sequence[Sequence[float]]], canvas_w: float, canvas_h: float) -> LensFitResult:
-    """Fit the lens to the traced lines (active points only, image pixels).
+def fit_lens_from_lines(
+    lines: Sequence[Sequence[Sequence[float]]],
+    canvas_w: float,
+    canvas_h: float,
+    *,
+    cx: float = 0.0,
+    cy: float = 0.0,
+) -> LensFitResult:
+    """Fit ``k1`` / ``k2`` to the traced lines (active points only, image pixels) about the lens centre ``cx`` /
+    ``cy`` (half-diagonals), which the fit takes as given.
 
     Raises ``ValueError`` when the input cannot be fitted: no line, more than
     ``MAX_LINES``, a line with fewer than three points or more than
-    ``MAX_POINTS_PER_LINE``, a non-finite point, or a line too short to carry
-    a direction.
+    ``MAX_POINTS_PER_LINE``, a non-finite point, a line too short to carry
+    a direction, or a centre beyond ``C_BOUND``.
     """
     if not (math.isfinite(canvas_w) and math.isfinite(canvas_h) and canvas_w > 0.0 and canvas_h > 0.0):
         raise ValueError("canvas must be finite and positive")
+    if not (math.isfinite(cx) and math.isfinite(cy) and max(abs(cx), abs(cy)) <= C_BOUND):
+        raise ValueError(f"the lens centre must be within -{C_BOUND:g}..{C_BOUND:g}")
     data = _Lines.from_lines(lines, canvas_w, canvas_h)
-    solution = _solve(data)
+    solution = _solve(data, cx, cy)
+    # A point that left its line is set aside and the lens fitted again, once per line at most.
+    kept = np.ones(data.n, dtype=bool)
+    for _ in range(2):
+        rows = np.flatnonzero(kept)
+        fitted = _Lines(data.pts[rows], data.idx[rows], canvas_w, canvas_h)
+        strays = [rows[r] for r in _strays(fitted, solution.k) if np.all(kept[data.members[data.idx[rows[r]]]])]
+        if not strays:
+            break
+        kept[strays] = False
+        solution = _solve(_Lines(data.pts[kept], data.idx[kept], canvas_w, canvas_h), cx, cy)
+    data_kept = _Lines(data.pts[kept], data.idx[kept], canvas_w, canvas_h)
     k = solution.k
-    res = data.residuals(k)
-    rms = [float(np.sqrt(np.mean(res[rows] ** 2))) for rows in data.members]
-    uncertainty = max(_corner_uncertainty_px(data, k, solution.cov, solution.free), _rival_spread_px(data, solution))
+    res = data_kept.residuals(k)
+    rms = [float(np.sqrt(np.mean(res[rows] ** 2))) for rows in data_kept.members]
+    uncertainty = max(
+        _corner_uncertainty_px(data_kept, k, solution.cov, solution.free), _rival_spread_px(data_kept, solution)
+    )
+    if solution.loose is not None:
+        uncertainty = max(uncertainty, _corner_uncertainty_px(data_kept, *solution.loose, _PAIR))
     rating = rate_uncertainty(uncertainty)
-    flags = _misfits(data, k, solution.free)
+    flags = _misfits(data_kept, k)
     rms_all = float(np.sqrt(np.mean(res**2)))
+    dropped = [tuple(int(j) for j in np.flatnonzero(~kept[rows])) for rows in data.members]
     return LensFitResult(
         k1=float(k[0]),
         k2=float(k[1]),
         k2_fitted=solution.k2_fitted,
         cx=float(k[2]),
         cy=float(k[3]),
-        centre_fitted=solution.centre_fitted,
         rms_px=rms_all,
         uncertainty_px=uncertainty,
         rating=rating,
@@ -671,7 +761,10 @@ def fit_lens_from_lines(lines: Sequence[Sequence[Sequence[float]]], canvas_w: fl
             rms_px=rms_all,
             misfit=any(flags),
         ),
-        lines=tuple(LensLineFit(rms_px=rms[i], misfit=flags[i], curve=data.curve(k, i)) for i in range(data.count)),
+        lines=tuple(
+            LensLineFit(rms_px=rms[i], misfit=flags[i], curve=data_kept.curve(k, i), dropped=dropped[i])
+            for i in range(data.count)
+        ),
     )
 
 
@@ -683,13 +776,17 @@ def fit_result_to_dict(result: LensFitResult) -> dict[str, Any]:
         "k2_fitted": result.k2_fitted,
         "cx": result.cx,
         "cy": result.cy,
-        "centre_fitted": result.centre_fitted,
         "rms_px": result.rms_px,
         "uncertainty_px": result.uncertainty_px if math.isfinite(result.uncertainty_px) else None,
         "rating": result.rating,
         "hint": result.hint,
         "lines": [
-            {"rms_px": line.rms_px, "misfit": line.misfit, "curve": [list(p) for p in line.curve]}
+            {
+                "rms_px": line.rms_px,
+                "misfit": line.misfit,
+                "curve": [list(p) for p in line.curve],
+                "dropped": list(line.dropped),
+            }
             for line in result.lines
         ],
     }

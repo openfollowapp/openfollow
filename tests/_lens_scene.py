@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from openfollow.scene.edge_chains import candidate_sample_points, edge_map_scale, find_edge_candidates
-from openfollow.scene.edge_snap import LINE_SAMPLE_FRACTIONS, snap_line_to_edges
+from openfollow.scene.edge_snap import LINE_SAMPLE_FRACTIONS, NearEdge, snap_line_to_edges
 from openfollow.scene.lens_fit import LensFitResult, fit_lens_from_lines
 from openfollow.scene.solver import invert_overlay_distortion
 from tests._lens_band import cut_band, scaled_luma
@@ -164,8 +164,9 @@ class Calibration:
     fit: LensFitResult
 
 
-def calibrate(img: np.ndarray) -> Calibration:
-    """Run the step as the wizard does: suggest, tap each suggestion, snap it, fit the pair."""
+def calibrate(img: np.ndarray, centre: tuple[float, float] = (0.0, 0.0)) -> Calibration:
+    """Run the step as the wizard does: suggest, tap each suggestion, snap it onto its own edge, fit the pair
+    about the lens centre given."""
     h, w = img.shape
     scale = edge_map_scale(w)
     found = find_edge_candidates(scaled_luma(img, scale), scale, w, h)
@@ -173,10 +174,11 @@ def calibrate(img: np.ndarray) -> Calibration:
     unsnapped = 0
     for candidate in found.candidates:
         samples = candidate_sample_points(candidate.points, LINE_SAMPLE_FRACTIONS)
-        points = snap_line_to_edges(samples[0], samples[4], cut_band(img, samples[0], samples[4]), w, h)
+        near = NearEdge(tuple(samples), candidate.polarity)
+        points = snap_line_to_edges(samples[0], samples[4], cut_band(img, samples[0], samples[4]), w, h, near=near)
         # The wizard starts a middle point that found no edge switched off; the ends always count.
         active = [[p.x, p.y] for j, p in enumerate(points) if j in (0, 4) or p.snapped]
         unsnapped += sum(1 for p in points if not p.snapped)
         if len(active) >= 3:
             lines.append(active)
-    return Calibration(lines, unsnapped, fit_lens_from_lines(lines, w, h))
+    return Calibration(lines, unsnapped, fit_lens_from_lines(lines, w, h, cx=centre[0], cy=centre[1]))

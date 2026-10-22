@@ -86,6 +86,9 @@ _OUTPUT_SPACING = 8
 _BLUR = np.array([1.0, 4.0, 6.0, 4.0, 1.0]) / 16.0
 # The lighter blur the ridges are found in: the edge blur flattens a one-pixel line away.
 _RIDGE_BLUR = np.array([1.0, 2.0, 1.0]) / 4.0
+# A chain is a step edge, with a contrast side, when its gradient across the chord averages
+# at least this share of its magnitude; a thin line's crest carries no gradient.
+_STEP_SHARE = 0.5
 # Puts a thin line's ridge strength beside a step edge's gradient: a line and an edge of
 # the same contrast then score alike.
 _RIDGE_TO_EDGE = 0.6
@@ -95,11 +98,17 @@ _NEIGHBOURS = tuple((dx, dy) for dy in (-1, 0, 1) for dx in (-1, 0, 1) if dx or 
 
 @dataclass(frozen=True)
 class EdgeCandidate:
-    """One suggested edge: its polyline in snapshot pixels, its length there, its mean gradient."""
+    """One suggested edge: its polyline in snapshot pixels, its length there, its mean gradient.
+
+    ``polarity`` is +1 where luma rises along the normal ``(-ty, tx)`` of the unit chord
+    ``t`` from the first point to the last, -1 where it falls, and 0 for a thin line,
+    which is brighter or darker than both its sides.
+    """
 
     points: list[tuple[float, float]]
     length: float
     strength: float
+    polarity: int
 
 
 @dataclass(frozen=True)
@@ -165,6 +174,22 @@ def _thin_edges(luma: npt.NDArray[np.float64]) -> Channel:
     mag = np.hypot(gx, gy)
     safe = np.where(mag > 0.0, mag, 1.0)
     return _suppress_across(mag, gx, gy), mag, -gy / safe, gx / safe
+
+
+def _polarity(
+    piece: npt.NDArray[np.float64],
+    mag: npt.NDArray[np.float64],
+    tx: npt.NDArray[np.float64],
+    ty: npt.NDArray[np.float64],
+) -> int:
+    """Which way luma steps across the chord of ``piece``, from the gradient ``mag * (ty, -tx)`` along it."""
+    chord = piece[-1] - piece[0]
+    nx, ny = -chord[1], chord[0]
+    x, y = piece[:, 0].astype(int), piece[:, 1].astype(int)
+    across = mag[y, x] * (ty[y, x] * nx - tx[y, x] * ny) / max(float(np.hypot(*chord)), 1e-9)
+    if abs(float(across.mean())) < _STEP_SHARE * float(mag[y, x].mean()):
+        return 0
+    return 1 if across.mean() > 0.0 else -1
 
 
 def _thin_ridges(luma: npt.NDArray[np.float64], gradient: npt.NDArray[np.float64]) -> Channel:
@@ -537,7 +562,7 @@ def find_edge_candidates(
         index = np.unique(np.append(np.arange(0, len(piece), _OUTPUT_SPACING), len(piece) - 1))
         full = (piece[index] + 0.5) * scale - 0.5
         points = [(float(x), float(y)) for x, y in full]
-        candidates.append(EdgeCandidate(points, length * scale, mean))
+        candidates.append(EdgeCandidate(points, length * scale, mean, _polarity(piece, mag, etx, ety)))
     return EdgeCandidates(candidates, edge_map)
 
 

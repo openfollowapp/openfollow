@@ -1022,6 +1022,77 @@ class TestWizardLensSnapEndpoint:
         p0, p1 = (200.0, 596.0), (1700.0, 627.0)
         return {"image_width": 1920, "image_height": 1080, "p0": p0, "p1": p1, "band": _snap_band(img, p0, p1)}
 
+    @staticmethod
+    def _near_body(polarity) -> dict:  # noqa: ANN001
+        # The stripe's lower edge, bright to dark downwards: luma falls along the chord's normal.
+        img = _stripe_image()
+        samples = [[x, 600.0 + 0.02 * x + 7.5] for x in (200.0, 575.0, 950.0, 1325.0, 1700.0)]
+        body = {"image_width": 1920, "image_height": 1080, "p0": samples[0], "p1": samples[4]}
+        return {
+            **body,
+            "band": _snap_band(img, samples[0], samples[4]),
+            "near": {"points": samples, "polarity": polarity},
+        }
+
+    def test_a_used_suggestion_keeps_its_own_edge(self, live_server) -> None:
+        _, base = live_server
+        status, data = _post_json(base, "/api/wizard/lens/snap", self._near_body(-1))
+        assert status == 200
+        for p in data["points"]:
+            assert p["snapped"] is True
+            assert abs(p["y"] - (600.0 + 0.02 * p["x"] + 7.5)) < 0.75
+
+    def test_a_suggestion_s_polarity_may_be_left_out(self, live_server) -> None:
+        _, base = live_server
+        body = self._near_body(-1)
+        del body["near"]["polarity"]
+        status, data = _post_json(base, "/api/wizard/lens/snap", body)
+        assert status == 200
+        assert all(p["snapped"] for p in data["points"])
+
+    def test_a_null_near_snaps_as_a_traced_line(self, live_server) -> None:
+        _, base = live_server
+        status, data = _post_json(base, "/api/wizard/lens/snap", {**self._good_body(), "near": None})
+        assert status == 200
+        assert len(data["points"]) == 5
+
+    @pytest.mark.parametrize(
+        "mutate",
+        [
+            lambda b: b.update(near="samples"),
+            lambda b: b["near"].pop("points"),
+            lambda b: b["near"].update(points="abc"),
+            lambda b: b["near"].update(points=b["near"]["points"][:4]),
+            lambda b: b["near"]["points"].__setitem__(2, ["x", 1.0]),
+            lambda b: b["near"]["points"].__setitem__(2, [float("nan"), 1.0]),
+            lambda b: b["near"]["points"].__setitem__(2, [950.0, 100.0]),
+            lambda b: b["near"].update(polarity=2),
+            lambda b: b["near"].update(polarity=True),
+            lambda b: b["near"].update(polarity="-1"),
+            lambda b: b["near"].update(polarity=0.5),
+        ],
+        ids=[
+            "near-not-an-object",
+            "no-points",
+            "points-not-a-list",
+            "four-points",
+            "string-coordinate",
+            "nan-coordinate",
+            "point-beyond-the-band",
+            "polarity-two",
+            "boolean-polarity",
+            "string-polarity",
+            "fractional-polarity",
+        ],
+    )
+    def test_a_malformed_near_returns_400(self, live_server, mutate) -> None:
+        _, base = live_server
+        body = self._near_body(-1)
+        mutate(body)
+        status, data = _post_json(base, "/api/wizard/lens/snap", body)
+        assert status == 400, data
+        assert "error" in data
+
     @pytest.mark.parametrize(
         "mutate",
         [
@@ -1133,6 +1204,7 @@ class TestWizardLensEdgesEndpoint:
         for x, y in best["samples"]:
             assert abs(abs(y - (600.0 + 0.02 * x)) - 7.0) < 3.0
         assert best["length"] > 1500.0 and best["strength"] > 8.0
+        assert best["polarity"] in (-1, 0, 1)
 
     def test_the_developer_map_is_returned_on_request(self, live_server) -> None:
         _, base = live_server
@@ -1228,7 +1300,7 @@ class TestWizardLensFitEndpoint:
         assert data["k1"] == pytest.approx(k1, abs=5e-3)
         assert data["k2"] == pytest.approx(k2, abs=5e-3)
         assert data["k2_fitted"] is True
-        assert (data["cx"], data["cy"], data["centre_fitted"]) == (0.0, 0.0, False)
+        assert (data["cx"], data["cy"]) == (0.0, 0.0)
         assert data["rating"] in ("low", "medium", "okay", "good", "excellent")
         assert isinstance(data["hint"], str)
         assert data["uncertainty_px"] is not None
@@ -1237,20 +1309,52 @@ class TestWizardLensFitEndpoint:
             assert line["misfit"] is False
             assert line["rms_px"] < 0.1
             assert len(line["curve"]) == 24
+            assert line["dropped"] == []
 
-    def test_fit_answers_the_lens_centre_it_measured(self, live_server) -> None:
+    def test_fit_takes_the_lens_centre_it_is_given(self, live_server) -> None:
         _, base = live_server
         lens = {"k1": -0.3, "k2": -0.05, "cx": 0.06, "cy": -0.04}
         lines = [{"points": _warped_line(a, b, **lens)} for a, b in _LENS_EDGE_LINES]
+        body = {"image_width": IMG_W, "image_height": IMG_H, "lines": lines, "cx": 0.06, "cy": -0.04}
+        status, data = _post_json(base, "/api/wizard/lens/fit", body)
+        assert status == 200
+        assert (data["cx"], data["cy"]) == (0.06, -0.04)
+        assert data["k1"] == pytest.approx(-0.3, abs=5e-3)
+        assert data["k2"] == pytest.approx(-0.05, abs=5e-3)
+
+    def test_a_fit_without_a_centre_fits_about_the_picture_s_centre(self, live_server) -> None:
+        # The page sends the centre it holds; a page that sends none gets the pair about 0.
+        _, base = live_server
+        lines = [{"points": _warped_line(a, b, -0.3, -0.05, cx=0.06, cy=-0.04)} for a, b in _LENS_EDGE_LINES]
         status, data = _post_json(
             base, "/api/wizard/lens/fit", {"image_width": IMG_W, "image_height": IMG_H, "lines": lines}
         )
         assert status == 200
-        assert data["centre_fitted"] is True
-        assert data["cx"] == pytest.approx(0.06, abs=2e-3)
-        assert data["cy"] == pytest.approx(-0.04, abs=2e-3)
-        assert data["k1"] == pytest.approx(-0.3, abs=5e-3)
-        assert data["k2"] == pytest.approx(-0.05, abs=5e-3)
+        assert (data["cx"], data["cy"]) == (0.0, 0.0)
+        assert data["rms_px"] > 0.5
+
+    @pytest.mark.parametrize(
+        "centre",
+        [
+            {"cx": None},
+            {"cx": "0.1"},
+            {"cy": True},
+            {"cx": [0.1]},
+            {"cx": 0.26},
+            {"cy": -0.3},
+            {"cx": float("nan")},
+            {"cy": float("inf")},
+            {"cx": 10**400},
+        ],
+        ids=["null", "string", "boolean", "list", "x-past-bound", "y-past-bound", "nan", "infinite", "huge-integer"],
+    )
+    def test_a_bad_lens_centre_returns_400(self, live_server, centre: dict) -> None:
+        _, base = live_server
+        lines = [{"points": _warped_line(a, b, -0.2, 0.0)} for a, b in _LENS_EDGE_LINES]
+        body = {"image_width": IMG_W, "image_height": IMG_H, "lines": lines, **centre}
+        status, data = _post_json(base, "/api/wizard/lens/fit", body)
+        assert status == 400, data
+        assert "error" in data
 
     def test_bare_point_lists_are_accepted(self, live_server) -> None:
         _, base = live_server

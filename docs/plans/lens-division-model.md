@@ -48,11 +48,15 @@ a centre, its gates and seeds), the gallery equivalents.
 7. **The Camera tab gets the two pixel fields of §12**, disabled with "No
    video" when there is none; Save keeps the saved centre then.
 8. **The Lens step never calculates the lens centre; it is typed or
-   imported, and the fit holds it fixed.** The OpenCV calibration import
-   follows in its own PR right after this one. This supersedes the
-   centre-fitting parts of §7 and step 5 (kept below for the record) and the
-   result-line wording "when one was measured" in §12 and decision 6: the
-   result line and Review name the centre in use when one is set.
+   imported, and the fit holds it fixed.** A centre is typed (Adjust by hand,
+   Camera tab) or imported (a saved lens calibration, a settings file, later an
+   OpenCV import); the fit takes it as given and fits `k1` / `k2` about it. On
+   real photos the fitted centre followed placement noise and the real bends of
+   stage edges, not the lens. The OpenCV calibration import follows in its own
+   PR right after this one. This supersedes the centre-fitting parts of §7 and
+   step 5 (kept below for the record) and the result-line wording "when one was
+   measured" in §12 and decision 6: the result line and Review name the centre
+   in use when one is set.
 
 ## 1. The model
 
@@ -985,9 +989,56 @@ Each step lands with its tests; targeted tests while iterating, one
   centre: -8 to +2 % (eight markers 3.95 against 4.21). Within run-to-run
   noise; the Pi number is owed (step 10).
 - Deferred to step 9: `test_lens_calibration.py::test_the_arena_default_gives_back_the_lens_it_was_drawn_with`
-  fails until the arena picture is rendered with the division pair (the fit
-  reads today's picture as `-0.141 / -0.037`, within 0.01 of the new
-  `-0.15 / -0.03`; the test still names `-0.15 / 0.02`).
+  fails until the arena picture is rendered with the division pair (the test
+  still names `-0.15 / 0.02`). With a used suggestion kept on its own edge
+  (6b), two of today's arena suggestions follow the bottoms of a row of seat
+  backs, which are not straight (3.2 and 1.8 px RMS under the true lens), and
+  the fit reads `-0.088 / -0.092`, 8.5 px off; the re-rendered picture needs
+  its suggestions checked.
+
+### 6b. The Lens step on real photos
+Two photos run through the page's own band and suggestion path: a hall from
+the back with almost no distortion, and a concert from a back truss with a
+clear barrel; dense traced edges (16 sub-pixel points each) as the reference.
+- [x] **A used suggestion keeps its own edge** (`NearEdge`): the snap looks
+      for each point within `point_window` (4 px at 1080p) of the
+      suggestion's own sample, on its own contrast side (`polarity`, from the
+      edges route; 0 picks the stronger at the samples). Before, its snap took
+      the other side of white tape (3-8 px), a truss's other chord (16 px) or
+      the opposite-contrast boundary (15-20 px).
+- [x] **A hand-traced line follows one edge**: the curve is the lens shape
+      (two reference bows plus the end shifts), never a free path. Each end is
+      anchored on an edge peak within its reach of the click; the bows range
+      over what the strongest plausible lenses (`-0.74 / -0.152` and `0.3 / 0`)
+      give that chord; curves are scored by the share of columns with an
+      edge peak on them (a straight edge runs on, clutter only crosses it);
+      of the curves scoring at least half the best, the one anchored nearest
+      the clicks wins. The curve is then fitted to the peaks within the window
+      and every point takes the peak within the window of it. Worst case
+      (a full-width line under the top edge over noise) 0.22 s on the Mac.
+- [x] An unsnapped point stays on the curve, inside the picture.
+- [x] **Strays**: a point that misses the line through its line's other
+      points (pinhole picture, screen px) by more than 4 sigmas of that miss
+      is set aside before the lens is fitted, one a line, from lines of at
+      least five points; `LensLineFit.dropped` names it. A line's misfit
+      floor drops from 3 to 1.5 px.
+- [x] **A gentle prior toward no lens**: `k1 ~ N(0, 0.25)`, `k2 ~ N(0, 0.2)`,
+      weighed against the points' own scatter (floored at 0.1 px), so it only
+      decides along a ridge the lines leave open. k2 is measured when the
+      lines say more about it than its prior does; otherwise it stays 0 and
+      the rating comes from the pair's posterior, since the corners are no
+      surer than the loose k2 leaves them.
+- [x] Hints ask for a line near an edge "If possible" at every rating.
+- Note, acceptance with the centre at 0 (traced edges' RMS about their own
+  straight line; reference = the traced edges' own fit, centre 0):
+  hall, suggestions + drawn: 1.11 px (no lens 1.14), 4.9 px from no lens
+  across the frame (before: 1.96 px, k1 -0.12); concert, suggestions + drawn:
+  0.58 px, 0.7 px from the reference within 0.8 of the half-diagonal (before:
+  0.76 px, k2 dropped); concert, suggestions only: k1 -0.311 (before -0.42).
+  The simulation's overclaims (frame error over twice what the rating
+  promises) fall from 770 to 79 trials of 4752; the median frame error is
+  better in 212 rows and worse in 24, almost all of them one or two centre
+  lines, rated Not usable either way.
 
 ### 7. Web UI
 - [x] `partials/camera.tpl`: slider spans (items 1, 2), the Lens centre row

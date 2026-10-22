@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""Edge snap on synthetic frames: a bowed edge is followed as a whole, one polarity per line."""
+"""Edge snap on synthetic frames: a bowed edge is followed as a whole, one edge and one polarity per line."""
 
 from __future__ import annotations
 
@@ -13,11 +13,13 @@ from openfollow.scene.edge_snap import (
     MAX_BAND_STEP,
     MIN_BAND_HALF,
     LumaBand,
+    NearEdge,
     band_columns,
     band_half_size,
     band_step,
     end_search_radius,
     line_sample_points,
+    point_window,
     snap_line_to_edges,
 )
 from openfollow.scene.solver import apply_overlay_distortion, invert_overlay_distortion
@@ -302,7 +304,164 @@ def test_an_edge_that_bows_out_of_the_picture_is_unsnapped_there() -> None:
     p0, p1 = (90.0, 1025.0), (1830.0, 1015.0)
     pts = snap(strip_frame(p0, p1, BARREL), p0, p1)
     assert [p.snapped for p in pts] == [True, True, False, True, True]
-    assert pts[2].y > H - 1
+    # The unsnapped point stays where the page can show it and drag it: on the picture's edge.
+    assert pts[2].y == H - 1
+
+
+def test_an_unsnapped_end_stays_inside_the_picture() -> None:
+    # The strip leaves the picture above its ends; the curve through its middle runs on out there.
+    img = strip_frame((90.0, -12.0), (1830.0, -12.0), PINCUSHION, half_width=4.0)
+    pts = snap(img, (90.0, 1.0), (1830.0, 1.0))
+    assert [p.snapped for p in pts] == [False, True, True, True, False]
+    assert all(0.0 <= p.x <= W - 1 and 0.0 <= p.y <= H - 1 for p in pts)
+
+
+# --------------------------------------------------------------------------- #
+# One edge: never the parallel one
+# --------------------------------------------------------------------------- #
+
+yy, xx = np.mgrid[0:H, 0:W]
+
+
+def chord_y(x, y0: float = 500.0):
+    """A line across the picture, gently tilted."""
+    return y0 + 0.02 * x
+
+
+def noisy(img: np.ndarray, sigma: float = 3.0) -> np.ndarray:
+    return np.clip(img + np.random.default_rng(0).normal(0.0, sigma, img.shape), 0, 255)
+
+
+def offsets(pts) -> list[float]:
+    """Each point's offset below the line ``chord_y``."""
+    return [p.y - chord_y(p.x) for p in pts]
+
+
+def stepped_frame() -> np.ndarray:
+    """Two edges of one polarity 16 px apart, the upper one weak: a truss's two chords."""
+    img = np.full((H, W), 30.0)
+    img[yy >= chord_y(xx)] = 70.0
+    img[yy >= chord_y(xx) + 16.0] = 230.0
+    return noisy(img)
+
+
+@pytest.mark.parametrize("dy", [-2.0, 2.0])
+def test_of_two_parallel_edges_the_clicked_one_is_kept(dy: float) -> None:
+    pts = snap(stepped_frame(), (200.0, chord_y(200.0) + dy), (1700.0, chord_y(1700.0) - dy))
+    assert all(p.snapped for p in pts)
+    np.testing.assert_allclose(offsets(pts), 0.0, atol=1.0)
+
+
+def test_the_stronger_parallel_edge_is_taken_when_it_is_clicked() -> None:
+    pts = snap(stepped_frame(), (200.0, chord_y(200.0) + 15.0), (1700.0, chord_y(1700.0) + 17.0))
+    assert all(p.snapped for p in pts)
+    np.testing.assert_allclose(offsets(pts), 16.0, atol=1.0)
+
+
+def tape_frame() -> np.ndarray:
+    """White tape 8 px wide on a floor that is darker below it, so its lower edge is the stronger."""
+    img = np.full((H, W), 90.0)
+    img[np.abs(yy - chord_y(xx)) <= 4.0] = 200.0
+    img[yy > chord_y(xx) + 4.0] = 10.0
+    return noisy(img)
+
+
+def test_a_tape_keeps_the_side_its_ends_were_clicked_on() -> None:
+    pts = snap(tape_frame(), (200.0, chord_y(200.0) - 5.0), (1700.0, chord_y(1700.0) - 3.0))
+    assert all(p.snapped for p in pts)
+    np.testing.assert_allclose(offsets(pts), -4.0, atol=1.0)
+
+
+def test_clutter_beside_a_weak_edge_does_not_pull_the_line_off_it() -> None:
+    # Bright boxes 6 px below the edge, over 40 % of its length: far more gradient, but no line.
+    img = np.full((H, W), 60.0)
+    img[yy >= chord_y(xx)] = 85.0
+    for x0 in range(250, 1700, 250):
+        img[(xx >= x0) & (xx < x0 + 100) & (yy >= chord_y(xx) + 6.0) & (yy < chord_y(xx) + 30.0)] = 230.0
+    pts = snap(noisy(img), (200.0, chord_y(200.0) + 1.0), (1700.0, chord_y(1700.0) - 1.0))
+    assert all(p.snapped for p in pts)
+    np.testing.assert_allclose(offsets(pts), 0.0, atol=1.0)
+
+
+# --------------------------------------------------------------------------- #
+# A used suggestion keeps its own edge
+# --------------------------------------------------------------------------- #
+
+
+def bright_tape_frame() -> np.ndarray:
+    """Tape 6 px wide, black above and grey below: its upper edge is the stronger."""
+    img = np.full((H, W), 20.0)
+    img[np.abs(yy - chord_y(xx)) <= 3.0] = 200.0
+    img[yy < chord_y(xx) - 3.0] = 0.0
+    img[yy > chord_y(xx) + 3.0] = 120.0
+    return noisy(img, 2.0)
+
+
+def snap_near(img: np.ndarray, samples, polarity: int):
+    samples = tuple((float(x), float(y)) for x, y in samples)
+    band = cut_band(img, samples[0], samples[-1])
+    return snap_line_to_edges(samples[0], samples[-1], band, W, H, near=NearEdge(samples, polarity))
+
+
+def lower_tape_edge_samples(shift: float = 0.0):
+    return line_sample_points((200.0, chord_y(200.0) + 3.5 + shift), (1700.0, chord_y(1700.0) + 3.5 + shift))
+
+
+def test_a_suggestion_on_the_weaker_side_of_a_tape_stays_there() -> None:
+    # Bright to grey downwards: luma falls along the chord's normal, which points down here.
+    pts = snap_near(bright_tape_frame(), lower_tape_edge_samples(), -1)
+    assert all(p.snapped for p in pts)
+    np.testing.assert_allclose(offsets(pts), 3.0, atol=1.0)
+
+
+def test_a_suggestion_s_own_contrast_side_is_never_swapped_for_the_other() -> None:
+    # Told the other polarity, the point finds no edge of it within its window: none snaps.
+    pts = snap_near(bright_tape_frame(), lower_tape_edge_samples(), 1)
+    assert not any(p.snapped for p in pts)
+    np.testing.assert_allclose([[p.x, p.y] for p in pts], lower_tape_edge_samples())
+
+
+def test_a_suggestion_without_a_polarity_takes_the_one_at_its_samples() -> None:
+    pts = snap_near(bright_tape_frame(), lower_tape_edge_samples(), 0)
+    assert all(p.snapped for p in pts)
+    np.testing.assert_allclose(offsets(pts), 3.0, atol=1.0)
+
+
+def test_a_suggestion_s_samples_settle_onto_the_edge_beside_them() -> None:
+    # The suggestions come from a map at half size: their samples sit a pixel or two off.
+    pts = snap_near(bright_tape_frame(), lower_tape_edge_samples(shift=2.0), -1)
+    assert all(p.snapped for p in pts)
+    np.testing.assert_allclose(offsets(pts), 3.0, atol=1.0)
+
+
+def test_a_suggestion_on_the_weak_chord_never_takes_the_strong_one() -> None:
+    samples = line_sample_points((200.0, chord_y(200.0) + 0.5), (1700.0, chord_y(1700.0) + 0.5))
+    pts = snap_near(stepped_frame(), samples, 1)
+    assert all(p.snapped for p in pts)
+    np.testing.assert_allclose(offsets(pts), 0.0, atol=1.0)
+
+
+@pytest.mark.parametrize(
+    ("samples", "polarity", "match"),
+    [
+        (line_sample_points((200.0, 600.0), (1700.0, 630.0))[:4], 1, "5 finite points"),
+        (np.vstack([line_sample_points((200.0, 600.0), (1700.0, 630.0))[:4], [[np.nan, 600.0]]]), 1, "finite"),
+        (line_sample_points((200.0, 600.0), (1700.0, 630.0)), 2, "polarity"),
+        (line_sample_points((200.0, 600.0), (1700.0, 630.0)) + [0.0, 300.0], 1, "along the line"),
+        (np.vstack([line_sample_points((200.0, 600.0), (1700.0, 630.0))[:4], [[2500.0, 640.0]]]), 1, "along"),
+    ],
+    ids=["four-points", "nan-point", "polarity-two", "beyond-the-band", "beyond-the-end"],
+)
+def test_a_suggestion_that_does_not_lie_along_its_line_is_refused(samples, polarity: int, match: str) -> None:
+    img = np.full((H, W), DARK)
+    band = cut_band(img, (200.0, 600.0), (1700.0, 630.0))
+    near = NearEdge(tuple((float(x), float(y)) for x, y in samples), polarity)
+    with pytest.raises(ValueError, match=match):
+        snap_line_to_edges((200.0, 600.0), (1700.0, 630.0), band, W, H, near=near)
+
+
+def test_the_point_window_scales_with_the_snapshot() -> None:
+    assert [point_window(w) for w in (640, 1920, 2160, 3840)] == [4, 4, 4, 8]
 
 
 # --------------------------------------------------------------------------- #

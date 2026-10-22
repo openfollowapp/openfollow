@@ -100,7 +100,7 @@ from openfollow.configuration import (
     viewed_with_controlled,
 )
 from openfollow.input.mouse3d_status import status_key
-from openfollow.lens_model import pull_back_to_valid
+from openfollow.lens_model import C_BOUND, pull_back_to_valid
 
 # Module-level so handler closures resolve ``save_catalog`` from this
 # namespace at call time (tests monkeypatch it for persist-failure paths).
@@ -132,7 +132,7 @@ from openfollow.palette import AUTO_PICK_ORDER
 from openfollow.privilege import settings_backup
 from openfollow.privilege.camera_config import AUTOMATIC
 from openfollow.runtime.diagnostics_export import WEB, ExportStatus, status_lines
-from openfollow.scene.edge_snap import LumaBand
+from openfollow.scene.edge_snap import LumaBand, NearEdge
 from openfollow.station_fqdn import canonical_host, fqdn_problem
 from openfollow.templates import (
     TEMPLATE_FILE_SUFFIX,
@@ -3588,9 +3588,11 @@ def _json_luma(pixels: Any, rows: int, cols: int, name: str) -> Any:
     return np.frombuffer(buf, dtype=np.uint8).reshape(rows, cols).astype(np.float64)
 
 
-def _parse_lens_snap_body(data: Any) -> tuple[float, float, list[float], list[float], LumaBand]:
+def _parse_lens_snap_body(
+    data: Any,
+) -> tuple[float, float, list[float], list[float], LumaBand, NearEdge | None]:
     """Validate a ``/api/wizard/lens/snap`` body; raises for the endpoint's 400."""
-    from openfollow.scene.edge_snap import MAX_BAND_HALF, MAX_BAND_STEP, MIN_BAND_HALF
+    from openfollow.scene.edge_snap import LINE_SAMPLE_FRACTIONS, MAX_BAND_HALF, MAX_BAND_STEP, MIN_BAND_HALF
 
     if not isinstance(data, dict):
         raise TypeError("body must be an object")
@@ -3609,7 +3611,20 @@ def _parse_lens_snap_body(data: Any) -> tuple[float, float, list[float], list[fl
     if not 2 <= cols <= _LENS_BAND_MAX_COLUMNS:
         raise ValueError(f"band columns must be within 2..{_LENS_BAND_MAX_COLUMNS}")
     luma = _json_luma(band["data"], rows, cols, "band data")
-    return img_w, img_h, ends[0], ends[1], LumaBand(step, half, luma)
+    # A used suggestion names its own edge: its samples and its contrast side.
+    near = None
+    if data.get("near") is not None:
+        raw = data["near"]
+        if not isinstance(raw, dict):
+            raise TypeError("near must be an object")
+        samples = raw["points"]
+        if not isinstance(samples, list) or len(samples) != len(LINE_SAMPLE_FRACTIONS):
+            raise ValueError(f"near points must be a list of {len(LINE_SAMPLE_FRACTIONS)} points")
+        polarity = _json_int(raw.get("polarity", 0), "near polarity")
+        if polarity not in (-1, 0, 1):
+            raise ValueError("near polarity must be -1, 0 or 1")
+        near = NearEdge(tuple((p[0], p[1]) for p in (_json_point(q, "near point") for q in samples)), polarity)
+    return img_w, img_h, ends[0], ends[1], LumaBand(step, half, luma), near
 
 
 # The scaled luma the edge suggestions are found in, at most (a snapshot scaled to the map width).
@@ -10773,7 +10788,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         if data is None:
             return json.dumps({"error": "Invalid JSON"})
         try:
-            img_w, img_h, p0, p1, band = _parse_lens_snap_body(data)
+            img_w, img_h, p0, p1, band, near = _parse_lens_snap_body(data)
         except (KeyError, TypeError, ValueError) as exc:
             response.status = 400
             return json.dumps({"error": str(exc)})
@@ -10781,7 +10796,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         from openfollow.scene.edge_snap import snap_line_to_edges
 
         try:
-            points = snap_line_to_edges(p0, p1, band, img_w, img_h)
+            points = snap_line_to_edges(p0, p1, band, img_w, img_h, near=near)
         except ValueError as exc:
             response.status = 400
             return json.dumps({"error": str(exc)})
@@ -10810,6 +10825,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 "samples": [[x, y] for x, y in candidate_sample_points(c.points, LINE_SAMPLE_FRACTIONS)],
                 "length": c.length,
                 "strength": c.strength,
+                "polarity": c.polarity,
             }
             for c in found.candidates
         ]
@@ -10821,8 +10837,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     @app.post("/api/wizard/lens/fit")
     def api_wizard_lens_fit() -> Any:
-        """Fit the lens (k1, k2 and the lens centre) to the traced lines; returns the rating and each line's
-        predicted curve."""
+        """Fit k1 and k2 to the traced lines about the lens centre given (0 when absent); returns the rating and
+        each line's predicted curve."""
         response.content_type = "application/json"
         data = _load_json_body()
         if data is None:
@@ -10840,6 +10856,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 if not isinstance(pts, list):
                     raise ValueError("each line needs a points list")
                 lines.append([_json_point(p, "point") for p in pts])
+            cx, cy = (_json_number(data[key], key) if key in data else 0.0 for key in ("cx", "cy"))
+            if max(abs(cx), abs(cy)) > C_BOUND:
+                raise ValueError(f"cx and cy must be within -{C_BOUND:g}..{C_BOUND:g}")
         except (KeyError, TypeError, ValueError) as exc:
             response.status = 400
             return json.dumps({"error": str(exc)})
@@ -10847,7 +10866,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         from openfollow.scene.lens_fit import fit_lens_from_lines, fit_result_to_dict
 
         try:
-            result = fit_lens_from_lines(lines, img_w, img_h)
+            result = fit_lens_from_lines(lines, img_w, img_h, cx=cx, cy=cy)
         except ValueError as exc:
             response.status = 400
             return json.dumps({"error": str(exc)})

@@ -1596,3 +1596,17 @@ def test_the_settings_pages_source_type_label_names_its_select(live_server) -> N
     assert status == 200
     found = re.search(r'<label for="([^"]+)">Source Type</label>\s*<select name="video_source_type" id="([^"]+)"', body)
     assert found is not None and found.group(1) == found.group(2) == "video-source-type"
+
+
+@integration
+def test_the_served_wizard_names_each_picture_once(live_server) -> None:
+    _, base = live_server
+    status, body = _get(base, "/wizard")
+    assert status == 200
+    for key in ("lens", "cal", "review"):
+        start = body.index(f'id="{key}-container"')
+        block = body[start : body.index('class="fs-btn"', start)]
+        # The snapshot itself is decorative; only the drawing over it is named, so an empty drawing is no second image.
+        assert re.findall(r'<img id="[^"]+" alt="([^"]*)"', block) == [""], key
+        assert re.findall(r'<svg id="[^"]+"[^>]*aria-label="([^"]+)"', block) == ["Camera snapshot"], key
+    assert '<div id="cam-error" class="wizard-field-error" role="alert" hidden>' in body

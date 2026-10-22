@@ -1275,7 +1275,7 @@ def test_a_pin_behind_the_camera_is_chipped_and_drawn_as_off(mark_id: int, chip:
 def test_a_pin_behind_the_camera_is_drawn_flagged_on_the_picture() -> None:
     out = run_wizard_js(
         '(function() { renderCalibOverlay(); return $(\'cal-pins\').innerHTML.match(/<g class="[^"]*"/g); })()',
-        functions=("esc", "pinBehind", "pinFlagged", "renderCalibOverlay"),
+        functions=("esc", "pinBehind", "pinFlagged", "pinLabel", "renderCalibOverlay"),
         variables=("DISTANCE_SIGMA",),
         prelude=_DOM + _REVIEW_STUBS + "imageWidth = 1920; imageHeight = 1080;"
         " var S = { mode: 'advanced', pair: 0, selPin: null, selCorner: null, pinMenu: null };"
@@ -2515,7 +2515,7 @@ def test_a_redraw_gives_a_focused_pin_its_focus_back_without_selecting_it(focus,
     out = run_wizard_js(
         "(function() { if (focus) document.activeElement = handle(focus); S.selCorner = selected; renderCalibOverlay();"
         " return [made.DSR ? made.DSR.focused : 0, focusinSelects, held]; })()",
-        functions=("esc", "renderCalibOverlay"),
+        functions=("esc", "pinLabel", "renderCalibOverlay"),
         variables=("calRefocus", "CORNERS"),
         prelude=_REDRAW_FOCUS_PAGE,
         focus=focus,
@@ -2665,7 +2665,7 @@ def test_the_note_is_in_the_active_unit() -> None:
 def test_the_field_reads_as_metres_or_none(system: str, typed: str, height) -> None:
     out = run_wizard_js(
         f"(function() {{ $('cam_height').value = {json.dumps(typed)}; readHeight(); return S.height; }})()",
-        functions=("len", "lenRough", "readHeight"),
+        functions=("len", "lenRough", "refreshEchoes", "readHeight"),
         variables=("exactLen", "DISTANCE_SIGMA"),
         prelude=length_page(system, {}) + _DOM + "var S = { height: 'before' };",
     )
@@ -2708,7 +2708,7 @@ def test_a_height_that_cannot_be_used_says_why_under_the_field(system: str, type
         f"(function() {{ {fill} readHeight();"
         " var e = $('cam-height-error');"
         " return [e.textContent, e.hidden, $('cam_height').invalid, S.height === null]; })()",
-        functions=("len", "lenRough", "readHeight"),
+        functions=("len", "lenRough", "refreshEchoes", "readHeight"),
         variables=("exactLen", "DISTANCE_SIGMA"),
         prelude=length_page(system, {}) + _DOM + "var S = { height: 'before' };"
         " $('cam_height').setAttribute = function(k, v) { if (k === 'aria-invalid') this.invalid = v; };",
@@ -2787,7 +2787,7 @@ def test_a_unit_switch_keeps_the_height_it_converts() -> None:
         "(function() { $('cam_height').value = '9.8'; readHeight(); setUnitSystem('imperial');"
         " var shown = $('cam_height').value; setUnitSystem('metric');"
         " return [shown, $('cam_height').value, S.height]; })()",
-        functions=("len", "lenField", "readCam", "readHeight", "setUnitSystem"),
+        functions=("len", "lenField", "camFields", "camUnusable", "readCam", "readHeight", "setUnitSystem"),
         variables=("exactLen", "DISTANCE_SIGMA"),
         prelude=length_page("metric", {}) + _DOM + "var S = { rect: {}, points: [], height: null };"
         " function applyUnitMarkup() {} function refreshEchoes() {} function renderCalibPanels() {}"
@@ -3248,14 +3248,20 @@ def test_each_step_heading_can_take_the_focus() -> None:
         assert re.search(r"<h2[^>]*>", step).group(0) == '<h2 tabindex="-1">', key
 
 
-def test_the_focusable_pictures_are_named_and_show_their_focus_inside_their_frame() -> None:
+def test_the_focusable_pictures_can_take_the_focus() -> None:
     src = WIZARD_TEMPLATE.read_text(encoding="utf-8")
     for el_id in ("lens-overlay", "cal-overlay"):
-        tag = re.search(rf'<svg id="{el_id}"[^>]*>', src).group(0)
-        assert 'tabindex="-1"' in tag and 'aria-label="Picture"' in tag, el_id
-    # The picture's container clips: the ring is drawn inside the picture's edge.
+        assert 'tabindex="-1"' in re.search(rf'<svg id="{el_id}"[^>]*>', src).group(0), el_id
+
+
+def test_the_focus_ring_is_drawn_inside_the_pictures_rounded_frame() -> None:
+    src = WIZARD_TEMPLATE.read_text(encoding="utf-8")
     rule = re.search(r"\.wizard-overlay:focus-visible \{([^}]*)\}", src).group(1)
+    # The container clips with its radius: the ring sits inside the edge and follows the same corners.
     assert "outline: 2px solid var(--accent)" in rule and "outline-offset: -2px" in rule
+    assert "border-radius: inherit" in rule
+    container = re.search(r"\n  \.wizard-preview-container \{([^}]*)\}", src).group(1)
+    assert "border-radius: 0.75rem" in container and "overflow: hidden" in container
 
 
 def test_the_pin_menu_scrolls_inside_the_picture_it_cannot_outgrow() -> None:
@@ -3675,3 +3681,410 @@ def test_a_switched_off_middle_point_says_so_in_its_name(on: list, labels: list)
         line={"mids": [{"on": v} for v in on], "snapped": [True] * 5},
     )
     assert out == labels
+
+
+# ---------------------------------------------------------------------------
+# A press on the picture acts on its click
+# ---------------------------------------------------------------------------
+
+# One picture whose listeners are kept; a press and a click as a mouse or a finger sends them.
+_DRAG_PAGE = """
+var on = {}, taps = [], starts = 0;
+var svg = { addEventListener: function(t, f) { on[t] = f; }, setPointerCapture: function() {} };
+function $() { return svg; }
+function svgPoint(s, e) { return [e.clientX * 2, e.clientY * 2]; }
+function showLoupe() {} function hideLoupe() {}
+function target(kind) {
+  return { closest: function(sel) {
+      return (kind === 'pin' && sel === '.pin-handle') || (kind === 'hit' && sel === '#cal-hit') ? {} : null; },
+    matches: function() { return false; } };
+}
+function press(kind, type, x, y) {
+  on.pointerdown({ target: target(kind), pointerType: type, pointerId: 1, clientX: x, clientY: y,
+    preventDefault: function() {} });
+}
+function click(x, y) { on.click({ target: target('hit'), clientX: x, clientY: y }); }
+"""
+
+
+@pytest.mark.parametrize(
+    ("pressed", "at", "taps"),
+    [
+        (("hit", "touch"), [10, 10], [[20, 20]]),
+        (("hit", "mouse"), [10, 10], [[20, 20]]),
+        (("hit", "touch"), [30, 10], [[20, 20]]),
+        (("hit", "mouse"), [14, 10], []),
+        (("pin", "mouse"), [10, 10], []),
+        (("elsewhere", "mouse"), [10, 10], []),
+        (None, [10, 10], []),
+    ],
+    ids=[
+        "a tap",
+        "a mouse click",
+        "a tap the browser allowed to move",
+        "a mouse that moved",
+        "a pin",
+        "off the hit area",
+        "no press",
+    ],
+)
+def test_a_press_on_the_picture_acts_once_on_its_click(pressed, at: list, taps: list) -> None:
+    out = run_wizard_js(
+        "(function() { bindDrag('cal-overlay', 'cal-container', '#cal-hit',"
+        " { start: function() { starts++; return null; }, tap: function(p) { taps.push(p); } });"
+        " if (pressed) press(pressed[0], pressed[1], 10, 10); var early = taps.length;"
+        " click(at[0], at[1]); click(at[0], at[1]); return [early, taps]; })()",
+        functions=("bindDrag",),
+        prelude=_DRAG_PAGE,
+        pressed=list(pressed) if pressed else None,
+        at=at,
+    )
+    # Nothing opens on the press: under a finger, a menu opened then would take the same tap's click.
+    assert out == [0, taps]
+
+
+# ---------------------------------------------------------------------------
+# Distances to check: choosing a row keeps the focus on it
+# ---------------------------------------------------------------------------
+
+_PAIRS_PAGE = """
+var rebuilt = 0; function renderCalibResult() { rebuilt++; }
+var rows = [0, 1, 2].map(function(i) { return { dataset: { pair: String(i) }, on: i === 0 }; });
+rows.forEach(function(r) { r.classList = { toggle: function(c, v) { if (c === 'on') r.on = v; } }; });
+els['cal-dist-table'] = Object.assign(fakeEl('cal-dist-table'), { innerHTML: 'the table',
+  querySelectorAll: function(sel) { return sel === '[data-pair]' ? rows : []; } });
+function rowEvent(type, i, key) {
+  fire('cal-dist-table', type, { key: key, target: { closest: function(sel) {
+    return sel === '[data-pair]' ? rows[i] : null; } } });
+}
+"""
+
+
+@pytest.mark.parametrize(
+    ("event", "key", "chosen"),
+    [("click", None, 2), ("keydown", "Enter", 1), ("keydown", "Tab", None)],
+    ids=["a click", "Enter", "another key"],
+)
+def test_choosing_a_distance_moves_only_the_highlight(event: str, key, chosen) -> None:
+    out = run_wizard_js(
+        "(function() { S.pair = 0; calibInit(); renders = 0; rowEvent(event, chosen == null ? 1 : chosen, key);"
+        " return [S.pair, rows.map(function(r) { return r.on; }), renders, rebuilt,"
+        " $('cal-dist-table').innerHTML, focused]; })()",
+        functions=_MENU_FUNCTIONS,
+        prelude=_MENU_PAGE + _PAIRS_PAGE,
+        event=event,
+        key=key,
+        chosen=chosen,
+    )
+    pair = 0 if chosen is None else chosen
+    # The table is not rebuilt, so the row keeps the focus; only the picture draws the new distance.
+    assert out == [pair, [i == pair for i in range(3)], 0 if chosen is None else 1, 0, "the table", None]
+
+
+# ---------------------------------------------------------------------------
+# A partly filled camera position
+# ---------------------------------------------------------------------------
+
+_CAM_PAGE = """
+var focused = null, nexted = 0, scrolled = 0;
+function field(id) {
+  return { id: id, value: '', attrs: {}, setAttribute: function(k, v) { this.attrs[k] = v; },
+    removeAttribute: function(k) { delete this.attrs[k]; }, focus: function(o) { focused = id; } };
+}
+var els = { 'cal-next': { disabled: false }, 'cam-error': { hidden: true }, 'simple-cam-box': { open: false },
+  'cal-camera': { scrollIntoView: function() { scrolled++; } } };
+['x', 'y', 'z'].forEach(function(k) { els['cam_pos_' + k] = field('cam_pos_' + k); });
+$ = function(id) { return els[id]; };
+function wizardNext() { nexted++; }
+function placeStartQuad() {} function renderReq() {} function solveSoon() {} function saveToSession() {}
+function fill(v) { ['x', 'y', 'z'].forEach(function(k, i) { els['cam_pos_' + k].value = v[i]; }); }
+function attrsOf() { return ['x', 'y', 'z'].map(function(k) { return Object.assign({}, els['cam_pos_' + k].attrs); }); }
+"""
+_CAM_FUNCTIONS = ("len", "camFields", "camUnusable", "readCam", "showCamError", "camChanged")
+
+
+def _cam_js(expression: str, **inputs) -> list:
+    return run_wizard_js(
+        expression,
+        functions=_CAM_FUNCTIONS,
+        variables=("exactLen", "DISTANCE_SIGMA"),
+        prelude=length_page("metric", {}) + _CAM_PAGE + wizard_window_function("calibNext"),
+        **inputs,
+    )
+
+
+_DESCRIBED = {"aria-describedby": "cam-error", "aria-invalid": "false"}
+_INVALID = {"aria-describedby": "cam-error", "aria-invalid": "true"}
+_PLAIN = {"aria-invalid": "false"}
+
+
+@pytest.mark.parametrize(
+    ("values", "mode", "result"),
+    [
+        (["0", "", ""], "advanced", ["cam_pos_y", False, [_DESCRIBED, _INVALID, _INVALID], 0, False]),
+        (["", "-20", "8"], "simple", ["cam_pos_x", False, [_INVALID, _DESCRIBED, _DESCRIBED], 0, True]),
+        (["0", "-20", "20000"], "advanced", ["cam_pos_z", False, [_DESCRIBED, _DESCRIBED, _INVALID], 0, False]),
+        (["0", "abc", "8"], "advanced", ["cam_pos_y", False, [_DESCRIBED, _INVALID, _DESCRIBED], 0, False]),
+        (["0", "-20", "8"], "advanced", [None, True, [_PLAIN, _PLAIN, _PLAIN], 1, False]),
+        (["", "", ""], "simple", [None, True, [_PLAIN, _PLAIN, _PLAIN], 1, False]),
+    ],
+    ids=["two empty", "one empty, Simple", "out of reach", "unreadable", "complete", "empty, Simple"],
+)
+def test_next_with_a_partly_filled_camera_points_at_the_first_missing_value(
+    values: list, mode: str, result: list
+) -> None:
+    out = _cam_js(
+        "(function() { S.mode = mode; fill(values); window.calibNext();"
+        " return [focused, $('cam-error').hidden, attrsOf(), nexted, $('simple-cam-box').open]; })()",
+        values=values,
+        mode=mode,
+        S={"mode": "advanced"},
+    )
+    assert out == result
+
+
+def test_the_camera_error_follows_the_values_typed_after_it() -> None:
+    out = _cam_js(
+        "(function() { var seen = []; fill(['0', '', '']); window.calibNext();"
+        " fill(['0', '1', '']); camChanged(); seen.push([$('cam-error').hidden, attrsOf()]);"
+        " fill(['0', '1', '2']); camChanged(); seen.push([$('cam-error').hidden, attrsOf()]);"
+        " fill(['0', '', '']); camChanged(); seen.push([$('cam-error').hidden, attrsOf()]); return seen; })()",
+        S={"mode": "advanced"},
+    )
+    # Completed, it goes; a value typed again before the next Next shows no error yet.
+    assert out == [
+        [False, [_DESCRIBED, _DESCRIBED, _INVALID]],
+        [True, [_PLAIN, _PLAIN, _PLAIN]],
+        [True, [_PLAIN, _PLAIN, _PLAIN]],
+    ]
+
+
+def test_the_camera_error_is_an_alert() -> None:
+    src = WIZARD_TEMPLATE.read_text(encoding="utf-8")
+    assert re.search(r'<div id="cam-error"[^>]*>', src).group(0) == (
+        '<div id="cam-error" class="wizard-field-error" role="alert" hidden>'
+    )
+
+
+@pytest.mark.parametrize(
+    ("partial", "heading"),
+    [(True, "Enter all three values of the camera position."), (False, "Enter the rough camera position first.")],
+    ids=["partly filled", "empty"],
+)
+def test_the_advanced_hint_names_a_partly_filled_camera(partial: bool, heading: str) -> None:
+    out = run_wizard_js(
+        "(function() { renderReq(); return shown; })()",
+        functions=(*_MARK_FUNCTIONS, "esc", "renderReq"),
+        variables=_MARK_VARS,
+        prelude=length_page("metric", {})
+        + _DOM
+        + f"var S = {{ mode: 'advanced', cam: null, camPartial: {json.dumps(partial)}, points: [], rect: {{}} }};"
+        " var SAVED = { max_marks: 12 }, shown = null;"
+        " function showHint(area, h, sub) { shown = [area, h, sub]; } function lockSimpleSteps() {}",
+    )
+    assert out == ["cam", heading, "An estimate within about 2.0 m per axis is good enough."]
+
+
+@pytest.mark.parametrize(
+    ("loc", "rect", "shown"),
+    [
+        (
+            "back",
+            _READY,
+            [
+                "sloc",
+                "Enter all three values of the camera position, or leave all three empty.",
+                "An estimate within about 1.0 m is good enough.",
+            ],
+        ),
+        (
+            "back",
+            _EMPTY,
+            [
+                "sloc",
+                "Enter all three values of the camera position, or leave all three empty.",
+                "An estimate within about 1.0 m is good enough.",
+            ],
+        ),
+        (
+            "",
+            _EMPTY,
+            [
+                "sloc",
+                "Choose where your camera is located.",
+                "The location decides on which side of the picture each corner of the rectangle starts.",
+            ],
+        ),
+    ],
+    ids=["corners to place", "no rectangle yet", "no location yet"],
+)
+def test_the_simple_hint_names_a_partly_filled_camera(loc: str, rect: dict, shown: list) -> None:
+    out = run_wizard_js(
+        "(function() { S.camPartial = true; renderSimpleReq(); return shown; })()",
+        functions=(*_MARK_FUNCTIONS, "esc", "lenText", "fmt", "renderSimpleReq"),
+        variables=(*_MARK_VARS, "CORNER_TITLES"),
+        prelude=length_page("metric", {})
+        + _DOM
+        + "var shown = null; function showHint(area, h, sub) { shown = [area, h, sub]; }"
+        f" var S = {{ simpleLoc: '{loc}', rect: {json.dumps(rect)}, solve: null,"
+        " cornerMoved: { DSL: false, DSR: false, USR: false, USL: false } };",
+    )
+    assert out == shown
+
+
+# ---------------------------------------------------------------------------
+# The Stored echo of a field with an error
+# ---------------------------------------------------------------------------
+
+_ECHO_PAGE = """
+var echo = { dataset: { echo: 'cam_height' }, hidden: true, textContent: '' };
+var height = { value: '', attrs: {}, setAttribute: function(k, v) { this.attrs[k] = v; },
+  getAttribute: function(k) { return k in this.attrs ? this.attrs[k] : null; } };
+var els = { cam_height: height };
+function $(id) {
+  return els[id] || (els[id] = { hidden: false, textContent: '', setAttribute: function() {} });
+}
+var document = { querySelectorAll: function(sel) { return sel === '#wizard-step-calib [data-echo]' ? [echo] : []; } };
+var S = { height: null };
+"""
+
+
+@pytest.mark.parametrize(
+    ("typed", "echo"),
+    [("40000 ft", None), ("40000", None), ("abc", None), ("30 ft", "Stored: 9.144 m"), ("", None)],
+    ids=["too far up", "too far up in bare feet", "unreadable", "valid", "empty"],
+)
+def test_a_height_with_an_error_echoes_no_stored_value(typed: str, echo) -> None:
+    out = run_wizard_js(
+        "(function() { height.value = typed; readHeight(); return echo.hidden ? null : echo.textContent; })()",
+        functions=("len", "lenRough", "refreshEchoes", "readHeight"),
+        variables=("exactLen", "DISTANCE_SIGMA"),
+        prelude=length_page("imperial", {}) + _ECHO_PAGE,
+        typed=typed,
+    )
+    assert out == echo
+
+
+def test_a_later_echo_refresh_keeps_the_error_fields_echo_hidden() -> None:
+    out = run_wizard_js(
+        "(function() { height.value = '40000 ft'; readHeight(); refreshEchoes(); var kept = echo.hidden;"
+        " height.value = '30 ft'; readHeight(); return [kept, echo.hidden]; })()",
+        functions=("len", "lenRough", "refreshEchoes", "readHeight"),
+        variables=("exactLen", "DISTANCE_SIGMA"),
+        prelude=length_page("imperial", {}) + _ECHO_PAGE,
+    )
+    assert out == [True, False]
+
+
+# ---------------------------------------------------------------------------
+# New snapshot loaded: read out each time it shows
+# ---------------------------------------------------------------------------
+
+
+def test_the_new_snapshot_notice_is_written_each_time_it_shows() -> None:
+    out = run_wizard_js(
+        "(function() { var el = $('cal-refreshed'), seen = []; el.hidden = true;"
+        " showRefreshed(); seen.push([el.hidden, writes['cal-refreshed']]);"
+        " showRefreshed(); seen.push([el.hidden, writes['cal-refreshed']]);"
+        " timer(); seen.push([el.hidden, writes['cal-refreshed']]);"
+        " showRefreshed(); seen.push([el.hidden, writes['cal-refreshed']]); return [seen, cleared, el.innerHTML]; })()",
+        functions=("setLive", "showLive", "showRefreshed"),
+        variables=("refreshedTimer",),
+        prelude=_COUNTING_DOM
+        + "var timer = null, cleared = 0; function setTimeout(f, ms) { timer = ms === 4000 ? f : null; return 1; }"
+        " function clearTimeout() { cleared++; } $('cal-refreshed').innerHTML = 'New snapshot loaded.'; writes = {};",
+    )
+    # A second snapshot while the notice still shows is a new event: written again, and its 4 s start over.
+    assert out == [[[False, 1], [False, 2], [True, 2], [False, 3]], 3, "New snapshot loaded."]
+
+
+# ---------------------------------------------------------------------------
+# Each picture is named once; a pin's name stays clear of the full-screen button
+# ---------------------------------------------------------------------------
+
+
+class _PictureNames(HTMLParser):
+    """Within each picture's container, the elements that name it for a screen reader."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.names: dict[str, list] = {}
+        self._in: str | None = None
+
+    def handle_starttag(self, tag: str, attrs: list) -> None:
+        a = dict(attrs)
+        if a.get("id") in ("lens-container", "cal-container", "review-container"):
+            self._in = a["id"]
+            self.names[self._in] = []
+        elif self._in and tag == "img":
+            self.names[self._in].append(("img", a.get("alt")))
+        elif self._in and tag == "svg" and a.get("aria-hidden") != "true":
+            self.names[self._in].append(("svg", a.get("role"), a.get("aria-label")))
+        elif self._in and tag == "button" and a.get("class") == "fs-btn":
+            self._in = None
+
+
+def test_each_picture_is_named_once() -> None:
+    parser = _PictureNames()
+    parser.feed(WIZARD_TEMPLATE.read_text(encoding="utf-8"))
+    # The snapshot is decorative; the drawing over it carries the name, so an empty drawing is no second image.
+    assert parser.names == {
+        "lens-container": [("img", ""), ("svg", None, "Camera snapshot")],
+        "cal-container": [("img", ""), ("svg", None, "Camera snapshot")],
+        "review-container": [("img", ""), ("svg", "img", "Camera snapshot")],
+    }
+
+
+@pytest.mark.parametrize(
+    ("pin", "name", "u", "left"),
+    [
+        ([1880, 40], "DSR", 1, True),
+        ([1780, 30], "Truss left", 1, True),
+        ([1780, 30], "DSR", 1, False),
+        ([1880, 80], "DSR", 1, False),
+        ([40, 40], "DSL", 1, False),
+        ([1700, 150], "DSR", 5.36, True),
+        ([1700, 400], "DSR", 5.36, False),
+    ],
+    ids=[
+        "top right",
+        "a long name reaching it",
+        "a short name clear of it",
+        "below it",
+        "top left",
+        "a phone",
+        "below it on a phone",
+    ],
+)
+def test_a_pins_name_moves_left_of_the_full_screen_button(pin: list, name: str, u: float, left: bool) -> None:
+    out = run_wizard_js(
+        "(function() { var t = pinLabel(pin, name, [13, 12], u);"
+        ' return [/text-anchor="end"/.test(t), +/ x="([^"]+)"/.exec(t)[1], +/ y="([^"]+)"/.exec(t)[1]]; })()',
+        functions=("esc", "pinLabel"),
+        prelude="var imageWidth = 1920;",
+        pin=pin,
+        name=name,
+        u=u,
+    )
+    x = pin[0] - 13 * u if left else pin[0] + 13 * u
+    assert out == [left, pytest.approx(x), pytest.approx(pin[1] - 12 * u)]
+
+
+def test_both_pictures_place_their_names_clear_of_the_full_screen_button() -> None:
+    out = run_wizard_js(
+        "(function() { renderCalibOverlay(); renderReview();"
+        " return [$('cal-pins').innerHTML, $('review-pins').innerHTML]; })()",
+        functions=(*_REVIEW_FUNCTIONS, "pinBehind", "pinFlagged", "pinLabel", "renderCalibOverlay"),
+        variables=("DISTANCE_SIGMA", "APPLY_MAX_PX"),
+        prelude=_DOM
+        + _REVIEW_STUBS
+        + "imageWidth = 1920; imageHeight = 1080; var solvePending = false; function projectShown(c, P) { return P; }"
+        " var S = { mode: 'advanced', pair: 0, selPin: null, selCorner: null, pinMenu: null };"
+        " S.solve = { cam: { fov: 60 }, res: {}, reasons: [], worst: 0.4, positions: { 1: [1880, 40], 2: [40, 40] },"
+        " marks: [{ id: 1, name: 'DSR', pin: [1880, 40] }, { id: 2, name: 'DSL', pin: [40, 40] }] };"
+        " function currentMarks() { return S.solve.marks; }",
+    )
+    for html in out:
+        labels = re.findall(r'<text class="pin-label"[^>]*>(\w+)</text>', html)
+        assert labels == ["DSR", "DSL"], html
+        assert html.count('text-anchor="end"') == 1 and re.search(r'text-anchor="end"[^>]*>DSR<', html), html

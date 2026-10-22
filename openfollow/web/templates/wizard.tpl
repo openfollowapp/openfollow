@@ -127,9 +127,9 @@
     pointer-events: none;
     touch-action: none;
   }
-  /* Inset: the picture's container clips anything outside it. */
+  /* Inset and rounded as the picture's container, which clips anything outside it. */
   .wizard-overlay:focus { outline: none; }
-  .wizard-overlay:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .wizard-overlay:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: inherit; }
   /* A step's heading takes the focus only so a step change is announced and Tab starts there. */
   .wizard-content h2[tabindex="-1"]:focus { outline: none; }
   .wizard-overlay .handle {
@@ -424,9 +424,9 @@
 
     <div class="notice" id="lens-hint" role="status" aria-live="polite" hidden></div>
     <div id="lens-container" class="wizard-preview-container" style="display:none;">
-      <img id="lens-image" alt="Camera snapshot">
+      <img id="lens-image" alt="">
       <canvas id="lens-edges" class="lens-edges" aria-hidden="true"></canvas>
-      <svg id="lens-overlay" class="wizard-overlay" tabindex="-1" aria-label="Picture" xmlns="http://www.w3.org/2000/svg">
+      <svg id="lens-overlay" class="wizard-overlay" tabindex="-1" aria-label="Camera snapshot" xmlns="http://www.w3.org/2000/svg">
         <rect id="lens-hit" class="lens-hit" x="0" y="0" width="100%" height="100%" fill="transparent"/>
         <g id="lens-candidates"></g>
         <g id="lens-lines"></g>
@@ -606,7 +606,7 @@
               <small class="metric-echo" data-echo="cam_pos_z" hidden></small>
             </div>
           </div>
-          <div id="cam-error" class="wizard-field-error" hidden></div>
+          <div id="cam-error" class="wizard-field-error" role="alert" hidden></div>
         </div>
       </div>
     </div>
@@ -614,8 +614,8 @@
     <p class="wizard-help only-simple" id="corners-q"><strong>4. Place the corners on the picture</strong></p>
     <div id="hint-slot-image"></div>
     <div id="cal-container" class="wizard-preview-container" style="display:none;">
-      <img id="cal-image" alt="Camera snapshot">
-      <svg id="cal-overlay" class="wizard-overlay" tabindex="-1" aria-label="Picture" xmlns="http://www.w3.org/2000/svg">
+      <img id="cal-image" alt="">
+      <svg id="cal-overlay" class="wizard-overlay" tabindex="-1" aria-label="Camera snapshot" xmlns="http://www.w3.org/2000/svg">
         <rect id="cal-hit" class="cal-hit" x="0" y="0" width="100%" height="100%" fill="transparent"/>
         <g id="cal-grid"></g>
         <g id="cal-dist"></g>
@@ -691,8 +691,8 @@
     </div>
 
     <div id="review-container" class="wizard-preview-container" style="display:none;">
-      <img id="review-image" alt="Camera snapshot">
-      <svg id="review-overlay" class="wizard-overlay" xmlns="http://www.w3.org/2000/svg">
+      <img id="review-image" alt="">
+      <svg id="review-overlay" class="wizard-overlay" role="img" aria-label="Camera snapshot" xmlns="http://www.w3.org/2000/svg">
         <g id="review-grid"></g>
         <g id="review-pins"></g>
       </svg>
@@ -1353,10 +1353,12 @@
     if (FS) fsLayout();
   }
   var refreshedTimer = null;
+  // Written each time it shows, so every new snapshot is read out, one taken while the notice still shows too.
   function showRefreshed() {
-    $('cal-refreshed').hidden = false;
+    var el = $('cal-refreshed');
+    el.hidden = false; setLive(el, el.innerHTML, true);
     clearTimeout(refreshedTimer);
-    refreshedTimer = setTimeout(function() { $('cal-refreshed').hidden = true; }, 4000);
+    refreshedTimer = setTimeout(function() { showLive(el, '', false); }, 4000);
   }
 
   function svgEl(tag, attrs) {
@@ -2584,9 +2586,10 @@
   // ---------------------------------------------------------------
   // Camera Calibration: the panels
   // ---------------------------------------------------------------
+  function camUnusable(el) { var v = len(el.value); return isNaN(v) || Math.abs(v) > MARK_REACH_M; }
   function readCam() {
     var x = len($('cam_pos_x').value), y = len($('cam_pos_y').value), z = len($('cam_pos_z').value);
-    S.cam = [x, y, z].some(function(v) { return isNaN(v) || Math.abs(v) > MARK_REACH_M; }) ? null : { x: x, y: y, z: z };
+    S.cam = camFields().some(camUnusable) ? null : { x: x, y: y, z: z };
     S.camPartial = !S.cam && ['x', 'y', 'z'].some(function(k) { return $('cam_pos_' + k).value.trim() !== ''; });
   }
   // A typed height that cannot be used says why under the field; an empty one is no error. A number field
@@ -2599,19 +2602,33 @@
     $('cam-height-error').textContent = problem;
     $('cam-height-error').hidden = !problem;
     $('cam_height').setAttribute('aria-invalid', problem ? 'true' : 'false');
+    refreshEchoes();
   }
   window.calibNext = function() {
     if ($('cal-next').disabled) return;
     readCam();
     var partial = S.camPartial;
-    $('cam-error').hidden = !partial;
+    showCamError(partial);
     if (partial && S.mode === 'simple') $('simple-cam-box').open = true;
-    if (partial) { $('cal-camera').scrollIntoView({ block: 'center', behavior: 'smooth' }); return; }
+    if (partial) {
+      camFields().filter(camUnusable)[0].focus({ preventScroll: true });
+      $('cal-camera').scrollIntoView({ block: 'center', behavior: 'smooth' });
+      return;
+    }
     wizardNext();
   };
+  function camFields() { return ['x', 'y', 'z'].map(function(k) { return $('cam_pos_' + k); }); }
+  // The error describes the three fields while it shows; the ones without a usable value are invalid.
+  function showCamError(on) {
+    $('cam-error').hidden = !on;
+    camFields().forEach(function(el) {
+      if (on) el.setAttribute('aria-describedby', 'cam-error'); else el.removeAttribute('aria-describedby');
+      el.setAttribute('aria-invalid', on && camUnusable(el) ? 'true' : 'false');
+    });
+  }
   function camChanged() {
     readCam();
-    if (!S.camPartial) $('cam-error').hidden = true;
+    showCamError(!$('cam-error').hidden && S.camPartial);
     if (S.mode === 'simple') placeStartQuad();
     renderReq(); solveSoon(); saveToSession();
   }
@@ -2620,10 +2637,11 @@
       return '<option value="' + p[0] + '"' + (S.simpleLoc === p[0] ? ' selected' : '') + '>' + esc(p[1]) + '</option>';
     }).join('');
   }
+  // A field showing an error echoes nothing: the value is not stored.
   function refreshEchoes() {
     document.querySelectorAll('#wizard-step-calib [data-echo]').forEach(function(e) {
       var el = $(e.dataset.echo), m = el ? len(el.value) : NaN;
-      e.hidden = !WUNIT.isImperial() || isNaN(m);
+      e.hidden = !WUNIT.isImperial() || isNaN(m) || el.getAttribute('aria-invalid') === 'true';
       if (!e.hidden) e.textContent = 'Stored: ' + WUNIT.metricEcho(m);
     });
   }
@@ -2804,6 +2822,7 @@
     var sized = !rectProblem(), anyRect = ['w', 'd'].some(function(k) { return S.rect[k] !== ''; });
     var todo = CORNERS.filter(function(c) { return !S.cornerMoved[c]; }), s = S.solve;
     if (!S.simpleLoc && !anyRect) showHint('sloc', 'Choose where your camera is located.', 'The location decides on which side of the picture each corner of the rectangle starts.');
+    else if (S.camPartial) showHint('sloc', 'Enter all three values of the camera position, or leave all three empty.', 'An estimate within about ' + lenRough(1) + ' is good enough.');
     else if (!sized) {
       var rv = rectVals(), inRange = rectSized(rv), atCentre = inRange && S.rect.origin === 'custom' && [rv.cx, rv.cy, rv.z].some(isNaN);
       if (inRange && !S.rect.origin) showHint('origin-q', 'Choose the point of origin.', 'All position data that the station sends is measured from this point (0/0/0). It must match the point of origin of your console or tracking system.');
@@ -2825,7 +2844,7 @@
     // A distance point always needs its pin; a known point only until four points are pinned.
     var toPin = points.filter(function(m) { return !m.pin && (m.kind === 'triangulated' || pinned < 4); })[0];
     var h, sub, area = 'image';
-    if (!S.cam) { h = 'Enter the rough camera position first.'; sub = 'An estimate within about ' + lenRough(2) + ' per axis is good enough.'; area = 'cam'; }
+    if (!S.cam) { h = S.camPartial ? 'Enter all three values of the camera position.' : 'Enter the rough camera position first.'; sub = 'An estimate within about ' + lenRough(2) + ' per axis is good enough.'; area = 'cam'; }
     else if (known.length < 2) { h = 'Enter two known points that are far apart, such as the DSL and DSR corners.'; sub = 'Click where one of them is on the picture, choose New known point and type its X/Y/Z. ' + known.length + ' of 2 entered.'; }
     else if (points.length < 4) {
       h = points.length === 3 ? 'Enter one more known point or distance point.' : 'Enter two more known points or distance points.';
@@ -2915,6 +2934,12 @@
       '<line class="origin-mark" x1="' + q[0] + '" y1="' + (q[1] - 14 * u) + '" x2="' + q[0] + '" y2="' + (q[1] + 14 * u) + '"/>' +
       '<text class="origin-label" x="' + (q[0] + 12 * u) + '" y="' + (q[1] + 22 * u) + '" font-size="' + (13 * u) + '" stroke-width="' + (4 * u) + '">0/0/0</text></g>';
   }
+  // A pin's name, right of it; one that would run under the full-screen button (the top right 46 CSS px) goes left.
+  function pinLabel(q, name, off, u) {
+    var under = q[0] + (off[0] + 9 * String(name).length) * u > imageWidth - 46 * u && q[1] - (off[1] + 11) * u < 46 * u;
+    return '<text class="pin-label" x="' + (q[0] + (under ? -off[0] : off[0]) * u) + '" y="' + (q[1] - off[1] * u) + '"' + (under ? ' text-anchor="end"' : '') +
+      ' font-size="' + (14 * u) + '" stroke-width="' + (4 * u) + '">' + esc(name) + '</text>';
+  }
   function renderCalibOverlay() {
     var svg = $('cal-overlay'); if (!imageWidth) return;
     svg.setAttribute('viewBox', '0 0 ' + imageWidth + ' ' + imageHeight);
@@ -2945,7 +2970,7 @@
         '<circle class="pin-dot" cx="' + m.pin[0] + '" cy="' + m.pin[1] + '" r="' + (9 * u) + '"/>' +
         '<line class="pin-cross" x1="' + (m.pin[0] - 5 * u) + '" y1="' + m.pin[1] + '" x2="' + (m.pin[0] + 5 * u) + '" y2="' + m.pin[1] + '"/><line class="pin-cross" x1="' + m.pin[0] + '" y1="' + (m.pin[1] - 5 * u) + '" x2="' + m.pin[0] + '" y2="' + (m.pin[1] + 5 * u) + '"/>' +
         '<circle cx="' + m.pin[0] + '" cy="' + m.pin[1] + '" r="' + (18 * u) + '" fill="transparent"/>' + rep +
-        '<text class="pin-label" x="' + (m.pin[0] + 13 * u) + '" y="' + (m.pin[1] - 12 * u) + '" font-size="' + (14 * u) + '" stroke-width="' + (4 * u) + '">' + esc(m.name) + '</text></g>';
+        pinLabel(m.pin, m.name, [13, 12], u) + '</g>';
     }).join('') + (S.pinMenu && !S.pinMenu.pin ? '<circle class="pin-pending" cx="' + S.pinMenu.p[0] + '" cy="' + S.pinMenu.p[1] + '" r="' + (9 * u) + '"/>' : '');
     if (S.selCorner != null) holdCorner();
     else if (keep != null) {
@@ -3195,17 +3220,24 @@
   // Dragging on the picture
   // ---------------------------------------------------------------
   function bindDrag(svgId, container, hitSel, opts) {
-    var svg = $(svgId), drag = null;
+    var svg = $(svgId), drag = null, press = null;
     svg.addEventListener('pointerdown', function(e) {
       var h = e.target.closest('.pin-handle');
       var p = svgPoint(svg, e);
+      press = null;
       if (h) {
         e.preventDefault();
         drag = opts.start(h, p);
         if (drag) { svg.setPointerCapture(e.pointerId); showLoupe(container, svgId, drag.pos()); }
         return;
       }
-      if (e.target.closest(hitSel) || e.target.matches(hitSel)) opts.tap(p, e);
+      if (e.target.closest(hitSel) || e.target.matches(hitSel)) press = { p: p, x: e.clientX, y: e.clientY, mouse: e.pointerType === 'mouse' };
+    });
+    // A press on the picture acts on its click: a menu opened by the press would sit under a finger and take the tap's click.
+    // A mouse that moved is a drag, not a click; a touch the browser calls a tap is one.
+    svg.addEventListener('click', function(e) {
+      var t = press; press = null;
+      if (t && (!t.mouse || Math.hypot(e.clientX - t.x, e.clientY - t.y) < 3)) opts.tap(t.p, e);
     });
     svg.addEventListener('pointermove', function(e) {
       var p = svgPoint(svg, e);
@@ -3349,10 +3381,16 @@
     $('pin-menu').addEventListener('input', pinMenuCheck);
     $('pin-menu').addEventListener('change', pinMenuCheck);
     $('pin-menu').addEventListener('submit', function(e) { e.preventDefault(); placeNewFromMenu(); });
-    // A press anywhere but the menu or the picture closes it; a press on the picture opens it there instead.
+    // A press anywhere but the menu or the picture closes it; a click on the picture opens it there instead.
     document.addEventListener('pointerdown', function(e) { if (S.pinMenu && !e.target.closest('#pin-menu') && !e.target.closest('#cal-overlay')) closePinMenu(); });
-    $('cal-dist-table').addEventListener('click', function(e) { var r = e.target.closest('[data-pair]'); if (r) { S.pair = +r.dataset.pair; renderCalibResult(); renderCalibOverlay(); } });
-    $('cal-dist-table').addEventListener('keydown', function(e) { var r = e.target.closest('[data-pair]'); if (r && e.key === 'Enter') { S.pair = +r.dataset.pair; renderCalibResult(); renderCalibOverlay(); } });
+    // Choosing a row only moves the highlight: a rebuilt table would drop the focus.
+    function choosePair(r) {
+      S.pair = +r.dataset.pair;
+      $('cal-dist-table').querySelectorAll('[data-pair]').forEach(function(t) { t.classList.toggle('on', t === r); });
+      renderCalibOverlay();
+    }
+    $('cal-dist-table').addEventListener('click', function(e) { var r = e.target.closest('[data-pair]'); if (r) choosePair(r); });
+    $('cal-dist-table').addEventListener('keydown', function(e) { var r = e.target.closest('[data-pair]'); if (r && e.key === 'Enter') choosePair(r); });
   }
 
   // ---------------------------------------------------------------
@@ -3376,7 +3414,7 @@
     $('review-pins').innerHTML = ok && imageWidth ? originMarkup(originPixel(s), u) + s.marks.map(function(m) {
       var P = s.positions[m.id]; if (!P) return '';
       var q = projectShown(s.cam, P); if (!q) return '';
-      return '<circle class="reproj" cx="' + q[0] + '" cy="' + q[1] + '" r="' + (5 * u) + '"/><text class="pin-label" x="' + (q[0] + 9 * u) + '" y="' + (q[1] - 9 * u) + '" font-size="' + (14 * u) + '" stroke-width="' + (4 * u) + '">' + esc(m.name) + '</text>';
+      return '<circle class="reproj" cx="' + q[0] + '" cy="' + q[1] + '" r="' + (5 * u) + '"/>' + pinLabel(q, m.name, [9, 9], u);
     }).join('') : '';
     $('review-camera').innerHTML = ok ? solvedParamsHtml(s.cam) : paramRows([['Camera', '–']]);
     var k1 = wizReadLensCoeff('wiz_lens_k1'), k2 = wizReadLensCoeff('wiz_lens_k2');

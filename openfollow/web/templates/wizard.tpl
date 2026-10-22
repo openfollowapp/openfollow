@@ -492,7 +492,7 @@
       <div id="wiz-lens-error" class="wizard-field-error" style="display:none;">With these two values, the overlay folds over itself inside the picture. Set one of the values closer to 0.</div>
     </div>
 
-    <p class="wizard-tip">Click a point or press <strong>Tab</strong> to select it. The loupe stays on it, and the <strong>arrow keys</strong> move it by one pixel. <strong>Tab</strong> selects the next point of the same line. Press <strong>Enter</strong> when the crosshair is in the right place. <strong>Esc</strong> or a click somewhere else ends the selection. <strong>Space</strong> switches a middle point off or on. <strong>Delete</strong> or <strong>Backspace</strong> removes the selected line. <strong>Esc</strong> cancels a line you have started. If you skip this step, the current lens values stay.</p>
+    <p class="wizard-tip">Click a point or press <strong>Tab</strong> to select it. The loupe stays on it, and the <strong>arrow keys</strong> move it by one pixel. <strong>Tab</strong> selects the next point of the same line, and after its last point it moves on. Press <strong>Enter</strong> when the crosshair is in the right place. <strong>Esc</strong> or a click somewhere else ends the selection. <strong>Space</strong> switches a middle point off or on. <strong>Delete</strong> or <strong>Backspace</strong> removes the selected line. <strong>Esc</strong> cancels a line you have started. If you skip this step, the current lens values stay.</p>
 
     <div class="wizard-nav">
       <button type="button" class="secondary" onclick="wizardPrev()">Back</button>
@@ -653,8 +653,9 @@
       <div class="row">
         <div class="field">
           <label for="cam_height">Camera height (<span class="u-len">{{_len}}</span>) <span class="axis-note">(Z from the point of origin)</span></label>
-          <input type="{{_len_type}}"{{!_len_step}} id="cam_height" data-len>
+          <input type="{{_len_type}}"{{!_len_step}} id="cam_height" data-len aria-describedby="cam-height-error" aria-invalid="false">
           <small class="metric-echo" data-echo="cam_height" hidden></small>
+          <div id="cam-height-error" class="wizard-field-error" hidden></div>
         </div>
       </div>
       <div class="notice" id="cal-height-note" role="status" hidden></div>
@@ -1010,15 +1011,16 @@
     return { w: w, d: d, cx: NaN, cy: NaN, z: NaN };
   }
   function andList(l) { return l.length > 1 ? l.slice(0, -1).join(', ') + ' and ' + l[l.length - 1] : l[0]; }
-  // Names exactly what is missing; the Simple hint shows it.
+  function rectSized(r) { return r.w > 0 && r.d > 0 && r.w <= 200 && r.d <= 200; }
+  // Names exactly what is missing, in the order the steps ask for it; the Simple hint shows it.
   function rectProblem() {
     var r = rectVals();
     var size = [['width', r.w], ['depth', r.d]].filter(function(q) { return isNaN(q[1]); }).map(function(q) { return q[0]; });
     if (size.length) return 'Enter the rectangle\'s ' + andList(size) + '.';
+    if (!rectSized(r)) return 'Width and depth must be between 0 and ' + lenLimit() + '.';
     if (!S.rect.origin) return 'Choose the point of origin.';
     var at = [['X', r.cx], ['Y', r.cy], ['Z', r.z]].filter(function(q) { return isNaN(q[1]); }).map(function(q) { return q[0]; });
     if (at.length) return 'Enter the ' + andList(at) + ' of the rectangle\'s centre, measured from the point of origin.';
-    if (r.w <= 0 || r.d <= 0 || r.w > 200 || r.d > 200) return 'Width and depth must be between 0 and ' + lenLimit() + '.';
     return '';
   }
   function cornerXYZ(name, r) {
@@ -2239,13 +2241,18 @@
   }
 
   // ---- pointer + keyboard ----
-  // With a point selected, Tab and Shift+Tab step through the points of its own line, round from the last to the first.
+  // With a point held, Tab and Shift+Tab step through the points of its own line; past its last or first point
+  // the browser moves the focus on, so the keys never trap it on the picture.
   function lensTabKey(e) {
     if (e.key !== 'Tab' || !lensHold || !lensSelected || lensSelected.point == null || currentStep !== WIZ.lens || !lensLines[lensSelected.line]) return;
+    var to = lensSelected.point + (e.shiftKey ? -1 : 1);
+    if (to < 0 || to > 4) return;
     e.preventDefault(); e.stopPropagation();
-    lensSelected = { line: lensSelected.line, point: (lensSelected.point + (e.shiftKey ? 4 : 1)) % 5 };
+    lensSelected = { line: lensSelected.line, point: to };
     renderLens();
   }
+  // Enter or Esc ends a hold; the point keeps the focus and its selection, so the next Tab moves on from there.
+  function lensEndHold() { dropLensPoint(); renderLens(); }
   // A point reached with Tab is selected and held, as one clicked: the loupe shows it, and Tab steps along its line.
   function lensPointFocusIn(e) {
     var h = e.target.closest ? e.target.closest('.lens-point') : null;
@@ -2319,7 +2326,8 @@
     }
     overlay.addEventListener('pointerup', endDrag);
     overlay.addEventListener('pointercancel', endDrag);
-    overlay.addEventListener('focusin', lensPointFocusIn);
+    // On the HTML container: Chrome makes an SVG element with a focus listener a Tab stop of its own.
+    $('lens-container').addEventListener('focusin', lensPointFocusIn);
     overlay.addEventListener('keydown', function(e) {
       var handle = e.target.closest ? e.target.closest('.lens-point') : null;
       if (!handle) return;
@@ -2366,7 +2374,7 @@
         return;
       }
       if (!lensHold) return;
-      if (e.key === 'Enter') { e.preventDefault(); dropLensPoint(); lensSelected = null; document.activeElement.blur(); renderLens(); return; }
+      if (e.key === 'Enter') { e.preventDefault(); lensEndHold(); return; }
       var step = e.shiftKey ? 10 : 1, d = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[e.key];
       if (!d || !lensSelected || lensSelected.point == null) return;
       e.preventDefault();
@@ -2378,7 +2386,7 @@
       if (e.key !== 'Enter' || !lensHold || currentStep !== WIZ.lens) return;
       var t = e.target.closest ? e.target.closest('#lens-lines .lens-point') : null;
       if (!t) return;
-      e.preventDefault(); dropLensPoint(); lensSelected = null; t.blur(); renderLens();
+      e.preventDefault(); lensEndHold();
     });
     document.addEventListener('keydown', lensTabKey, true);
     document.addEventListener('pointerdown', function(e) { if (lensHold && !e.target.closest('#lens-lines .lens-point')) dropLensPoint(); }, true);
@@ -2572,9 +2580,16 @@
     S.cam = [x, y, z].some(function(v) { return isNaN(v) || Math.abs(v) > MARK_REACH_M; }) ? null : { x: x, y: y, z: z };
     S.camPartial = !S.cam && ['x', 'y', 'z'].some(function(k) { return $('cam_pos_' + k).value.trim() !== ''; });
   }
+  // A typed height that cannot be used says why under the field; an empty one is no error. A number field
+  // holding text it cannot read reports an empty value and badInput.
   function readHeight() {
-    var v = len($('cam_height').value);
-    S.height = isNaN(v) || Math.abs(v) > MARK_REACH_M ? null : v;
+    var el = $('cam_height'), typed = el.value.trim() !== '' || !!(el.validity && el.validity.badInput), v = len(el.value);
+    var problem = !typed ? '' : isNaN(v) ? 'Enter the height of the camera\'s lens.'
+      : Math.abs(v) > MARK_REACH_M ? 'Enter a height within ' + lenRough(MARK_REACH_M) + ' of the point of origin.' : '';
+    S.height = typed && !problem ? v : null;
+    $('cam-height-error').textContent = problem;
+    $('cam-height-error').hidden = !problem;
+    $('cam_height').setAttribute('aria-invalid', problem ? 'true' : 'false');
   }
   window.calibNext = function() {
     if ($('cal-next').disabled) return;
@@ -2744,11 +2759,12 @@
   }
 
   // The hint box: always the one next thing to do, above the part of the page it is about.
-  var hintText = '';
+  var hintText = '', hintHtml = '';
   function showHint(area, h, sub) {
-    var slot = $('hint-slot-' + area);
-    if ($('wiz-hint').parentNode !== slot) slot.appendChild($('wiz-hint'));
-    $('wiz-hint').innerHTML = esc(h) + '<div class="notice-sub">' + esc(sub) + '</div>';
+    var slot = $('hint-slot-' + area), html = esc(h) + '<div class="notice-sub">' + esc(sub) + '</div>';
+    // A polite live region: rewritten only when its words or its place change, so a redraw is not read out again.
+    if ($('wiz-hint').parentNode !== slot) { slot.appendChild($('wiz-hint')); hintHtml = ''; }
+    if (html !== hintHtml) { $('wiz-hint').innerHTML = html; hintHtml = html; }
     hintText = h;
     renderFsBar();
   }
@@ -2756,7 +2772,7 @@
   // rectangle already entered (a reopened Setup Wizard) counts as the first step done.
   function lockSimpleSteps() {
     var simple = S.mode === 'simple', rv = rectVals(), anyRect = ['w', 'd'].some(function(k) { return S.rect[k] !== ''; });
-    var sized = rv.w > 0 && rv.d > 0 && rv.w <= 200 && rv.d <= 200;
+    var sized = rectSized(rv);
     var done1 = !!S.simpleLoc || anyRect, done2 = done1 && sized, done3 = done2 && !rectProblem();
     [['sstep-2', !done1], ['sstep-3', !done2], ['corners-q', !done3], ['cal-container', !done3], ['cal-simple-corners', !done3]].forEach(function(e) {
       var el = $(e[0]), locked = simple && e[1];
@@ -2780,8 +2796,8 @@
     var todo = CORNERS.filter(function(c) { return !S.cornerMoved[c]; }), s = S.solve;
     if (!S.simpleLoc && !anyRect) showHint('sloc', 'Choose where your camera is located.', 'The location decides on which side of the picture each corner of the rectangle starts.');
     else if (!sized) {
-      var rv = rectVals(), hasSize = !isNaN(rv.w) && !isNaN(rv.d), atCentre = hasSize && S.rect.origin === 'custom' && [rv.cx, rv.cy, rv.z].some(isNaN);
-      if (hasSize && !S.rect.origin) showHint('origin-q', 'Choose the point of origin.', 'All position data that the station sends is measured from this point (0/0/0). It must match the point of origin of your console or tracking system.');
+      var rv = rectVals(), inRange = rectSized(rv), atCentre = inRange && S.rect.origin === 'custom' && [rv.cx, rv.cy, rv.z].some(isNaN);
+      if (inRange && !S.rect.origin) showHint('origin-q', 'Choose the point of origin.', 'All position data that the station sends is measured from this point (0/0/0). It must match the point of origin of your console or tracking system.');
       else showHint(atCentre ? 'origin' : 'rect', anyRect ? rectProblem() : 'Enter the size of the rectangle you marked on stage.', 'Only the corners need a mark, such as a tape cross. The Setup Wizard then draws the rectangle on the picture.');
     }
     else if (todo.length) showHint('image', 'Drag ' + todo[0] + ' onto its tape mark.', CORNER_TITLES[todo[0]] + '. ' + (4 - todo.length) + ' of 4 corners are on their marks. Click a corner to select it and move it with the arrow keys. Press Enter when the crosshair is in the right place.');
@@ -2904,6 +2920,9 @@
       if (!(s && s.cam) && CORNERS.every(function(c) { return S.cornerPins[c]; })) quad = '<polygon class="start-quad" points="' + poly(CORNERS.map(function(c) { return S.cornerPins[c]; })) + '"/>';
     }
     var key = function(m) { return S.mode === 'simple' ? m.name : m.id; };
+    // Rebuilding the pins drops a focused one; it gets the focus back, so Tab moves on from there.
+    var a = document.activeElement, focused = a && a.closest && a.closest('#cal-pins .pin-handle');
+    var keep = focused ? focused.getAttribute('data-mark') : null;
     $('cal-pins').innerHTML = quad + originMarkup(originPixel(s), u) + marks.map(function(m) {
       if (!m.pin) return '';
       var r = s && s.res && s.res[m.id], at = r && r.at, flag = pinFlagged(s, m.id);
@@ -2915,6 +2934,11 @@
         '<text class="pin-label" x="' + (m.pin[0] + 13 * u) + '" y="' + (m.pin[1] - 12 * u) + '" font-size="' + (14 * u) + '" stroke-width="' + (4 * u) + '">' + esc(m.name) + '</text></g>';
     }).join('') + (S.pinMenu && !S.pinMenu.pin ? '<circle class="pin-pending" cx="' + S.pinMenu.p[0] + '" cy="' + S.pinMenu.p[1] + '" r="' + (9 * u) + '"/>' : '');
     if (S.selCorner != null) holdCorner();
+    else if (keep != null) {
+      var el = document.querySelector('#cal-pins [data-mark="' + keep + '"]');
+      calRefocus = true;
+      try { if (el) el.focus({ preventScroll: true }); } finally { calRefocus = false; }
+    }
   }
 
   // ---------------------------------------------------------------
@@ -2978,6 +3002,14 @@
     showLoupe('cal-container', 'cal-overlay', q);
   }
   function dropCorner() { if (S.selCorner == null) return; S.selCorner = null; hideLoupe('cal-container'); }
+  var calRefocus = false;
+  // Enter places the selected corner where it is; the corner keeps the focus, so the next Tab moves on from it.
+  function cornerEnterKey(e) {
+    if (e.key !== 'Enter' || S.selCorner == null) return;
+    e.preventDefault();
+    var c = S.selCorner; dropCorner();
+    if (!S.cornerMoved[c]) { S.cornerMoved[c] = true; solveSoon(); saveToSession(); }
+  }
 
   // ---------------------------------------------------------------
   // Advanced: a click on the picture asks which unpinned point goes there, or makes a new point there
@@ -3247,19 +3279,15 @@
     document.addEventListener('pointerdown', function(e) { if (S.selCorner != null && !e.target.closest('#cal-pins .pin-handle')) dropCorner(); }, true);
     // A focus that selected a corner redrew the pins: its event still reaches here from the old, detached handle.
     document.addEventListener('focusin', function(e) { if (S.selCorner != null && e.target.isConnected && !e.target.closest('#cal-pins .pin-handle')) dropCorner(); });
-    // A corner reached with Tab is selected, as one clicked.
-    $('cal-pins').addEventListener('focusin', function(e) {
-      var h = e.target.closest('.pin-handle');
-      if (S.mode === 'simple' && h && S.selCorner !== h.dataset.mark) selectCorner(h.dataset.mark);
+    // A corner reached with Tab is selected, as one clicked; a redraw giving the focus back selects nothing.
+    // On the HTML container: Chrome makes an SVG element with a focus listener a Tab stop of its own.
+    $('cal-container').addEventListener('focusin', function(e) {
+      var h = e.target.closest('#cal-pins .pin-handle');
+      if (S.mode === 'simple' && h && !calRefocus && S.selCorner !== h.dataset.mark) selectCorner(h.dataset.mark);
     });
     // A menu left by Tab closes, so the arrow keys never move a spot nobody is looking at.
     document.addEventListener('focusin', function(e) { if (S.pinMenu && !e.target.closest('#pin-menu') && !e.target.closest('#cal-overlay')) closePinMenu(); });
-    document.addEventListener('keydown', function(e) {
-      if (e.key !== 'Enter' || S.selCorner == null) return;
-      e.preventDefault();
-      var c = S.selCorner; dropCorner(); document.activeElement.blur();
-      if (!S.cornerMoved[c]) { S.cornerMoved[c] = true; solveSoon(); saveToSession(); }
-    });
+    document.addEventListener('keydown', cornerEnterKey);
     $('pin-menu').addEventListener('click', function(e) {
       var b = e.target.closest('[data-place]'); if (b && !b.disabled) placeFromMenu(b.dataset.place);
       var pm = e.target.closest('[data-pm]'), act = pm && pm.dataset.pm;
@@ -3493,7 +3521,7 @@
     var k = FS.key, intro, rows;
     if (k === 'lens') {
       intro = '<strong>Check each dashed suggested line</strong>: the check mark uses it, the cross removes it. Or click the start and the end of a straight edge. Click a line to select it. Drag a point to correct it.';
-      rows = [[['Tab'], 'Next suggestion bubble or point. With a point selected: the next point on its line'], ['<kbd>Shift</kbd> + <kbd>Tab</kbd>', 'The previous point on its line'],
+      rows = [[['Tab'], 'Next suggestion bubble or point. With a point selected: the next point on its line, after its last point onwards'], ['<kbd>Shift</kbd> + <kbd>Tab</kbd>', 'The previous point on its line, before its first point backwards'],
         [ARROWS, 'Move the selected point 1&nbsp;px'], [['Enter'], 'Confirm the point'], [['Space'], 'Switch a middle point off or on'],
         ['<kbd>Delete</kbd> or <kbd>Backspace</kbd>', 'Remove the selected line, or cancel a line you started'], FS_ESC];
     } else if (k === 'cal' && S.mode === 'simple') {
@@ -3699,8 +3727,8 @@
     // An open help drawer takes this Esc (base.tpl closes it).
     if (document.body.classList.contains('help-open')) return;
     if (S.pinMenu) closePinMenu();
-    else if (S.selCorner != null) { dropCorner(); document.activeElement.blur(); }
-    else if (lensHold) { dropLensPoint(); lensSelected = null; document.activeElement.blur(); renderLens(); }
+    else if (S.selCorner != null) dropCorner();
+    else if (lensHold) lensEndHold();
     else if (lensPending && currentStep === WIZ.lens) { lensPending = null; renderLens(); }
   });
 

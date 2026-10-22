@@ -54,6 +54,8 @@ The calibration the **Setup Wizard** applied last is listed read-only under **Ca
 - **Measured from** – a distance point's two points and the distance to each.
 - **Pinned** – whether it is placed on the picture.
 
+**Camera height: Fixed at …** under the list is the exact height of the camera's lens, entered in the Setup Wizard for a camera that looks almost straight down. From straight above, the height and the field of view cannot be told apart, so the calculation kept the camera at this height. The line is missing when no height was entered.
+
 In Simple the rectangle is the grid: a change to the grid's width, depth or offsets, on the Grid tab, from another station or by an import, moves the corners with it and unpins them, since they were pinned on the old grid. Advanced points stay as they are.
 
 ## Saving & sharing

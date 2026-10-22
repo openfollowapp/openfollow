@@ -4,7 +4,7 @@
 
 Simple uses the four corners of a measured rectangle. Its width, depth, centre and height also become the grid that the Operator Screen draws.
 
-The four questions open in order: each one is greyed out until the one before it is answered. A rectangle that is already entered counts as the first question answered.
+The four steps open in order: each one is greyed out until the one before it is done. A rectangle that is already entered counts as the first step done.
 
 **Point of origin** is the 0/0/0 point. Every position this station sends is measured from it, so it must be the same as the origin of the console or tracking system. **Default** puts it in the middle between DSL and DSR. With **Custom**, enter the position of the rectangle's centre, measured from the origin: X towards stage left, Y upstage, Z up. The picture shows the origin as 0/0/0. Check that it is on the console's origin mark.
 

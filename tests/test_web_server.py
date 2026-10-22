@@ -2302,16 +2302,32 @@ def test_the_camera_tab_shows_a_distance_point_no_solve_placed_without_a_positio
     assert rows[4][2] == "–"
 
 
-@pytest.mark.parametrize(("height", "shown"), [(9.8, "Camera height: Fixed at 9.800 m"), (None, None)])
-def test_the_camera_tab_shows_the_calibrations_camera_height_read_only(live_server, height, shown) -> None:
+@pytest.mark.parametrize(
+    ("units", "height", "shown"),
+    [
+        ("metric", 9.8, "Camera height: Fixed at 9.80 m"),
+        ("metric", 12.0, "Camera height: Fixed at 12.00 m"),
+        ("imperial", 9.8, "Camera height: Fixed at 32 ft 1.83 in"),
+        ("metric", None, None),
+    ],
+    ids=["metric", "whole metres", "imperial", "not entered"],
+)
+def test_the_camera_tab_shows_the_calibrations_camera_height_read_only(live_server, units, height, shown) -> None:
     server, base = live_server
     camera = _held_camera("advanced")
     camera.calibration_height = height
-    save_config(AppConfig(camera=camera), server.config_path)
+    cfg = AppConfig(camera=camera)
+    cfg.ui.unit_system = units
+    save_config(cfg, server.config_path)
     html_text = _get(base, "/section/camera")[1]
     group = html_text[html_text.index('id="camera-calibration-marks"') :]
     group = group[: group.index("</div>")]
-    found = re.search(r'<p id="camera-calibration-height">(.*?)</p>', group)
+    # As the Setup Wizard shows it (two decimals in metres), in the table's own size and padding.
+    found = re.search(
+        r'<p id="camera-calibration-height" style="margin:0;padding:0.4rem 0.6rem;font-size:var\(--btn-font-sm\);">'
+        r"(.*?)</p>",
+        group,
+    )
     assert (found.group(1) if found else None) == shown
 
 

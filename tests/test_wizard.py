@@ -462,6 +462,46 @@ class TestWizardHelpCopy:
     def test_review_says_apply_waits_for_incomplete_points(self) -> None:
         assert "stays off while a point is not complete" in self._help("wizard-review")
 
+    def test_tab_moves_on_past_a_lines_last_point_everywhere_it_is_explained(self) -> None:
+        src = WIZARD_TEMPLATE.read_text(encoding="utf-8")
+        texts = [
+            self._help("wizard-lens"),
+            src,
+            (WIZARD_TEMPLATE.parents[3] / "docs" / "plans" / "setup-wizard-calibration-modes.md").read_text(
+                encoding="utf-8"
+            ),
+        ]
+        for text in texts:
+            assert "starts again at the first" not in text and "round from the last to the first" not in text
+        assert "After the last point of a line, **Tab** moves on" in texts[0]
+        assert "After **Enter** or **Esc** the point keeps the focus, so **Tab** goes on from there." in texts[0]
+        assert (
+            "<strong>Tab</strong> selects the next point of the same line, and after its last point it moves on." in src
+        )
+        assert "'The previous point on its line, before its first point backwards'" in src
+        assert "the next point on its line, after its last point onwards'" in src
+
+    def test_simples_steps_are_called_steps(self) -> None:
+        # Step 4 places the corners: an instruction, not a question.
+        assert "The four steps open in order" in self._help("wizard-calibration-simple")
+        assert "question" not in self._help("wizard-calibration-simple")
+
+    def test_the_plan_never_calls_a_missing_height_a_warning(self) -> None:
+        plan = (WIZARD_TEMPLATE.parents[3] / "docs" / "plans" / "setup-wizard-calibration-modes.md").read_text(
+            encoding="utf-8"
+        )
+        assert "only warns" not in plan and "A missing height never blocks Save and finish." in plan
+
+    def test_the_camera_tab_help_explains_the_fixed_camera_height(self) -> None:
+        assert "**Camera height: Fixed at …** under the list is the exact height of the camera's lens" in self._help(
+            "camera"
+        )
+
+    def test_whats_new_names_the_exact_camera_height(self) -> None:
+        notes = (WIZARD_TEMPLATE.parents[1] / "whatsnew" / "whatsnew.md").read_text(encoding="utf-8")
+        wizard = notes.split("## The Setup Wizard has four steps")[1].split("\n## ")[0]
+        assert "the Setup Wizard asks for the exact height of the camera's lens" in wizard
+
 
 @unit
 class TestWizardNameFields:
@@ -563,8 +603,14 @@ class TestWizardSavedCalibration:
             f'Camera height (<span class="u-len">{suffix}</span>)'
             ' <span class="axis-note">(Z from the point of origin)</span>'
         )
-        assert re.search(r'<input type="(text|number)"[^>]* id="cam_height" data-len>', box)
+        assert re.search(
+            r'<input type="(text|number)"[^>]* id="cam_height" data-len'
+            r' aria-describedby="cam-height-error" aria-invalid="false">',
+            box,
+        )
         assert '<small class="metric-echo" data-echo="cam_height" hidden></small>' in box
+        # The wizard's field-error pattern, right under the field.
+        assert box.index('id="cam_height"') < box.index('<div id="cam-height-error" class="wizard-field-error" hidden>')
         assert '<div class="notice" id="cal-height-note" role="status" hidden></div>' in box
 
     def test_with_lens_distortion_off_the_page_starts_pinhole(self, tmp_path, monkeypatch) -> None:
@@ -1372,7 +1418,7 @@ class TestWizardLensTemplate:
         # Every point says what it is.
         assert "'Line ' + (i + 1) + (j === 0 ? ', start' : j === 4 ? ', end' : ', middle point ' + j)" in src
         # A point reached with Tab is selected and held, so the toolbar acts on what has the focus.
-        assert "overlay.addEventListener('focusin', lensPointFocusIn);" in src
+        assert "$('lens-container').addEventListener('focusin', lensPointFocusIn);" in src
         assert "document.addEventListener('focusin', lensFocusElsewhere);" in src
         # Delete leaves the keys on the picture.
         delete = wizard_window_function("lensDeleteSelectedLine")
@@ -1477,6 +1523,23 @@ class TestWizardLensTemplateBubbles:
             r"overlay\.addEventListener\('pointerdown', function\(e\) \{(.*?)\n    \}\);", self._src(), re.S
         )
         assert down and "lensAddCandidate(+candidate.dataset.candidate);" in down.group(1)
+
+    def test_no_svg_element_listens_for_focus(self) -> None:
+        src = self._src()
+        # Chrome makes an SVG element with a focus listener a Tab stop of its own, invisible on the page.
+        svg_ids = set(re.findall(r'<(?:svg|g|rect|polyline|circle)\b[^>]*\bid="([^"]+)"', src))
+        assert {"cal-pins", "cal-overlay", "lens-overlay", "lens-lines"} <= svg_ids
+        receivers = set(re.findall(r"([\w$.()'-]+)\.addEventListener\('(?:focus|focusin|focusout|blur)'", src))
+        assert receivers == {"document", "$('lens-container')", "$('cal-container')", "bubbles"}
+        assert "var bubbles = $('lens-bubbles')" in src and '<div id="lens-bubbles"' in src
+        assert not {r[3:-2] for r in receivers if r.startswith("$(")} & svg_ids
+
+    def test_ending_a_selection_never_drops_the_focus_to_the_page(self) -> None:
+        src = self._src()
+        # Enter and Esc leave the focus on the point or corner, so Tab goes on from there.
+        assert ".blur()" not in src
+        assert src.count("lensEndHold();") == 3
+        assert "document.addEventListener('keydown', cornerEnterKey);" in src
 
     def test_a_corner_selected_by_its_focus_is_not_dropped_by_the_redraw(self) -> None:
         # Selecting redraws the pins, so the focus event that selected reaches the document from a detached handle.

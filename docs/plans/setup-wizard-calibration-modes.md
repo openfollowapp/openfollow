@@ -62,7 +62,8 @@ Lens points and Simple corners behave alike:
   says "move", never "nudge", which reads oddly to non-native speakers.
 - **Enter** confirms it (Simple: places the corner where it is, also one that
   started on its mark). **Esc** or a press or focus anywhere else ends the
-  selection.
+  selection. After Enter or Esc the point keeps the focus, so the next Tab
+  moves on from it.
 
 ### Full screen
 
@@ -86,7 +87,7 @@ for the picture, each ending with "**?** Show or hide this help":
 
 | Picture | Sentences | Keys |
 |---|---|---|
-| Lens | "Check each dashed suggested line: the check mark uses it, the cross removes it. Or click the start and the end of a straight edge. Click a line to select it. Drag a point to correct it." | Tab: Next suggestion bubble or point. With a point selected: the next point on its line · Shift + Tab: The previous point on its line · Arrows: Move the selected point 1 px · Enter: Confirm the point · Space: Switch a middle point off or on · Delete or Backspace: Remove the selected line, or cancel a line you started · Esc: End full screen (also cancels the selection) |
+| Lens | "Check each dashed suggested line: the check mark uses it, the cross removes it. Or click the start and the end of a straight edge. Click a line to select it. Drag a point to correct it." | Tab: Next suggestion bubble or point. With a point selected: the next point on its line, after its last point onwards · Shift + Tab: The previous point on its line, before its first point backwards · Arrows: Move the selected point 1 px · Enter: Confirm the point · Space: Switch a middle point off or on · Delete or Backspace: Remove the selected line, or cancel a line you started · Esc: End full screen (also cancels the selection) |
 | Calibration, Simple | "Drag each corner onto its tape mark. The loupe shows the picture 4× larger. Click a corner to select it." | Tab: Select the next corner · Arrows: Move the selected corner 1 px · Enter: Place the corner where the crosshair is · Esc: End full screen (also cancels the selection) |
 | Calibration, Advanced | "Click the picture where a point is, and choose the point from the menu. Or create a New known point or a New distance point there. Click a pin to remove the pin or delete the point. Drag a pin to correct it." | Arrows: Menu open: move the spot 1 px. Pin selected: move the pin 1 px · Tab: Next menu item, field or pin · Enter: Choose the menu item, or place the new point · Esc: End full screen (also cancels the selection) |
 | Review | "The picture shows the calculated grid, the points and 0/0/0, as the Operator Screen will draw them. You cannot change anything here." | Esc: End full screen |
@@ -111,10 +112,10 @@ five-step rating, Refresh Image, Clear lines. Changed:
 | Rating hint | When an edge band is still weak but the lines already agree (at least 4 lines, none flagged, the points within 1.5 px RMS of their fitted curves, the corner correction measured and rated Fair or better: lines that never reach a corner agree with a wrong lens just as well): "The result may already be good. If possible, add a line near the top edge to confirm it." With several weak edges it names them all ("If possible, add lines near the top and bottom edges to confirm it."). Otherwise the weak-edges hint |
 | Selecting a line | A click anywhere along a traced line selects the whole line, drawn in the text colour. A line just added (a tapped suggestion or a traced edge) is selected |
 | Deleting | **Delete** or **Backspace** removes the selected line wherever the focus is, except in a field or with a dialog open; with a line started, the key cancels it instead. **Delete line** does the same |
-| Points | As [Selecting a point](#selecting-a-point), and with a point selected **Tab** moves on to the next point of the same line, **Shift+Tab** back, round from the last to the first (the loupe follows). **Point off** and **Space** switch a middle point off or on, as today: a middle point that found no edge starts off |
+| Points | As [Selecting a point](#selecting-a-point), and with a point selected **Tab** moves on to the next point of the same line, **Shift+Tab** back (the loupe follows). Past the last point Tab leaves the line in page order (the next line, the remaining bubbles, the buttons, **Next**), and Shift+Tab before the first point leaves it backwards, so the keys never trap the focus on the picture. **Enter** and **Esc** end the hold but leave the focus on the point, so the next Tab goes on from there. **Point off** and **Space** switch a middle point off or on, as today: a middle point that found no edge starts off |
 | Buttons | **Refresh Image**, **Point off**, **Delete line**, **Clear lines**, **Load lens calibration…**, **Save lens calibration…** in one row under the picture |
 | Result line | A fit: "Fair – barrel / fisheye −0.200, corner correction 0.029" (the rating, then the pair), as the loaded line below reads. A corner correction the lines did not measure reads "corner correction 0 (not measured)"; a Not usable fit adds " – not applied". The ratings, best to worst: Excellent (σ ≤ 2.5 px), Good (≤ 5 px), Fair (≤ 10 px), Poor (≤ 20 px), Not usable (above) |
-| Tip | "Click a point or press Tab to select it. The loupe stays on it, and the arrow keys move it by one pixel. Tab selects the next point of the same line. Press Enter when the crosshair is in the right place. Esc or a click somewhere else ends the selection. Space switches a middle point off or on. Delete or Backspace removes the selected line. Esc cancels a line you have started. If you skip this step, the current lens values stay." |
+| Tip | "Click a point or press Tab to select it. The loupe stays on it, and the arrow keys move it by one pixel. Tab selects the next point of the same line, and after its last point it moves on. Press Enter when the crosshair is in the right place. Esc or a click somewhere else ends the selection. Space switches a middle point off or on. Delete or Backspace removes the selected line. Esc cancels a line you have started. If you skip this step, the current lens values stay." |
 
 ### Load lens calibration
 
@@ -316,8 +317,11 @@ with a **Camera height** field (in the active units, "(Z from the point of
 origin)") under it. It is not a warning reason. An entered height holds the fit (a residual on the camera's Z with
 `HEIGHT_SIGMA` 0.01 m, and every seed starts at that height); the blue box then gives way to
 the note "The camera height is fixed at 9.80 m." The field stays
-while a value is in it. A missing height only warns; it never blocks Save and
-finish. The height is stored with the calibration (`camera.calibration_height`,
+while a value is in it. A typed height that cannot be read shows the field
+error "Enter the height of the camera's lens." under it, one farther than
+10 km "Enter a height within 10000.0 m of the point of origin." (32808.4 ft in
+Imperial); either counts as no height. A missing height never blocks Save and finish. The
+height is stored with the calibration (`camera.calibration_height`,
 m, empty when not entered), so a reopened Setup Wizard calculates the same
 camera, and Review lists "Camera height: Fixed at 9.80 m" or "Not entered"
 when the camera is that steep.

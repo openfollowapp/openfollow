@@ -1011,6 +1011,7 @@ _MARK_FUNCTIONS = (
     "lenLimit",
     "andList",
     "rectVals",
+    "rectSized",
     "rectProblem",
     "cornerXYZ",
     "currentMarks",
@@ -1879,14 +1880,43 @@ def test_the_lens_tab_key_steps_through_the_points_of_its_line() -> None:
         "(function() { var seen = [], stops = 0;"
         " function press(shift) { var e = { key: 'Tab', shiftKey: shift, preventDefault: function() { stops++; },"
         " stopPropagation: function() {} }; lensTabKey(e); seen.push(lensSelected.point); }"
-        " [false, false, false, true, true, true, true].forEach(press);"
+        " [false, false, false, true, true, true, true, true].forEach(press);"
         " lensHold = false; press(false); return [seen, stops]; })()",
         functions=("lensTabKey",),
         prelude="var lensHold = true, lensSelected = { line: 1, point: 2 }, currentStep = 1, WIZ = { lens: 1 };"
         " var lensLines = [{}, {}]; function renderLens() {}",
     )
-    # Round from the last point to the first and back; without a held point Tab is the browser's.
-    assert out == [[3, 4, 0, 4, 3, 2, 1, 1], 7]
+    # Past the last or the first point, and without a held point, Tab is the browser's: it leaves the line.
+    assert out == [[3, 4, 4, 3, 2, 1, 0, 0, 0], 6]
+
+
+@pytest.mark.parametrize(("point", "shift"), [(4, False), (0, True)], ids=["Tab on the end", "Shift+Tab on the start"])
+def test_tab_past_either_end_of_a_line_leaves_it_to_the_browser(point: int, shift: bool) -> None:
+    out = run_wizard_js(
+        "(function() { var e = { key: 'Tab', shiftKey: shift, defaultPrevented: false, stopped: false,"
+        " preventDefault: function() { this.defaultPrevented = true; },"
+        " stopPropagation: function() { this.stopped = true; } };"
+        " lensTabKey(e); return [e.defaultPrevented, e.stopped, lensSelected, renders]; })()",
+        functions=("lensTabKey",),
+        prelude=f"var lensHold = true, lensSelected = {{ line: 0, point: {point} }};"
+        " var currentStep = 1, WIZ = { lens: 1 };"
+        " var lensLines = [{}, {}], renders = 0; function renderLens() { renders++; }",
+        shift=shift,
+    )
+    # The browser moves the focus on in page order: the next line, the bubbles, the buttons, Next.
+    assert out == [False, False, {"line": 0, "point": point}, 0]
+
+
+def test_enter_or_esc_ends_the_hold_and_leaves_the_focus_on_the_point() -> None:
+    out = run_wizard_js(
+        "(function() { lensEndHold(); return [lensHold, lensSelected, drops, renders, blurs]; })()",
+        functions=("lensEndHold",),
+        prelude="var lensHold = true, lensSelected = { line: 1, point: 3 }, drops = 0, renders = 0, blurs = 0;"
+        " var document = { activeElement: { blur: function() { blurs++; } } };"
+        " function dropLensPoint() { drops++; lensHold = false; } function renderLens() { renders++; }",
+    )
+    # Still selected, so the redraw gives the point its focus back and the next Tab goes on from it.
+    assert out == [False, {"line": 1, "point": 3}, 1, 1, 0]
 
 
 _POINT_FOCUS_PAGE = """
@@ -1905,9 +1935,9 @@ var focusEvent = { target: { closest: function() { return handle; } } };
 @pytest.mark.parametrize(
     ("before", "selected", "held", "renders", "steps"),
     [
-        ("", {"line": 1, "point": 2}, True, 1, [3, 4, 0, 4]),
-        ("lensSelected = { line: 1, point: 2 };", {"line": 1, "point": 2}, True, 1, [3, 4, 0, 4]),
-        ("lensSelected = { line: 1, point: 2 }; lensHold = true;", {"line": 1, "point": 2}, True, 0, [3, 4, 0, 4]),
+        ("", {"line": 1, "point": 2}, True, 1, [3, 4, 4, 3]),
+        ("lensSelected = { line: 1, point: 2 };", {"line": 1, "point": 2}, True, 1, [3, 4, 4, 3]),
+        ("lensSelected = { line: 1, point: 2 }; lensHold = true;", {"line": 1, "point": 2}, True, 0, [3, 4, 4, 3]),
         ("lensSelected = { line: 1, point: null }; lensRefocus = true;", {"line": 1, "point": None}, False, 0, []),
         ("lensDrag = {};", None, False, 0, []),
     ],
@@ -1927,7 +1957,7 @@ def test_a_point_reached_with_tab_is_selected_and_held(
         prelude="var lensSelected = null, lensHold = false, lensRefocus = false, lensDrag = null;" + _POINT_FOCUS_PAGE,
     )
     hint = "Move the point exactly onto the edge." if held else ""
-    # Held as one clicked: the loupe and the hint are on it, and Tab steps along its line, round to the start.
+    # Held as one clicked: the loupe and the hint are on it, and Tab steps along its line to its end.
     assert out == [selected, held, renders, hint if renders else "", steps]
 
 
@@ -2262,8 +2292,19 @@ def test_advanced_locks_nothing_and_always_shows_reset_pins() -> None:
             "Enter the Y and Z of the rectangle's centre, measured from the point of origin.",
         ),
         ({**_EMPTY, "w": "12", "d": "6", "origin": "dsc"}, ""),
+        ({**_EMPTY, "w": "1200", "d": "600"}, "Width and depth must be between 0 and 200 m."),
+        ({**_EMPTY, "w": "0", "d": "6"}, "Width and depth must be between 0 and 200 m."),
+        ({**_EMPTY, "w": "12", "d": "600", "origin": "custom"}, "Width and depth must be between 0 and 200 m."),
     ],
-    ids=["size first", "then the origin", "then a custom centre", "complete"],
+    ids=[
+        "size first",
+        "then the origin",
+        "then a custom centre",
+        "complete",
+        "too large, no origin",
+        "zero, no origin",
+        "too deep, custom centre missing",
+    ],
 )
 def test_the_point_of_origin_is_an_active_choice(rect: dict, problem: str) -> None:
     out = run_wizard_js(
@@ -2347,11 +2388,130 @@ def _simple_hint(rect: dict, loc: str = "") -> list:
              "Downstage left. 0 of 4 corners are on their marks. Click a corner to select it and move it with the"
              " arrow keys. Press Enter when the crosshair is in the right place."],
         ),
+        (
+            {**_EMPTY, "w": "1200", "d": "600"},
+            "back",
+            ["rect", "Width and depth must be between 0 and 200 m.",
+             "Only the corners need a mark, such as a tape cross. The Setup Wizard then draws the rectangle on the"
+             " picture."],
+        ),
+        (
+            {**_EMPTY, "w": "12", "d": "600", "origin": "custom"},
+            "back",
+            ["rect", "Width and depth must be between 0 and 200 m.",
+             "Only the corners need a mark, such as a tape cross. The Setup Wizard then draws the rectangle on the"
+             " picture."],
+        ),
     ],
-    ids=["nothing", "the size", "the origin", "the corners"],
+    ids=["nothing", "the size", "the origin", "the corners", "a size out of range", "out of range, custom"],
 )  # fmt: skip
 def test_the_simple_hint_sits_above_the_step_it_is_about(rect: dict, loc: str, shown: list) -> None:
     assert _simple_hint(rect, loc) == shown
+
+
+_WIZ_HINT_PAGE = """
+var writes = [], renders = 0;
+var hint = { parentNode: null };
+Object.defineProperty(hint, 'innerHTML', { set: function(v) { writes.push(v); },
+  get: function() { return writes[writes.length - 1]; } });
+function slot() { return { appendChild: function(el) { el.parentNode = this; } }; }
+var slots = { 'hint-slot-rect': slot(), 'hint-slot-image': slot() };
+function $(id) { return id === 'wiz-hint' ? hint : slots[id]; }
+function renderFsBar() { renders++; }
+"""
+
+
+def test_the_hint_box_is_rewritten_only_when_its_words_or_its_place_change() -> None:
+    out = run_wizard_js(
+        "(function() { showHint('rect', 'A', 'a'); showHint('rect', 'A', 'a'); showHint('rect', 'B', 'a');"
+        " showHint('image', 'B', 'a'); showHint('image', 'B', 'a'); return [writes.length, hintText, renders]; })()",
+        functions=("esc", "showHint"),
+        variables=("hintText",),
+        prelude=_WIZ_HINT_PAGE,
+    )
+    # A polite live region: a redraw with the same words is not read out again; a new slot is.
+    assert out == [3, "B", 5]
+
+
+_CORNER_ENTER_PAGE = """
+var S = { selCorner: 'DSR', cornerMoved: { DSL: true, DSR: false, USR: false, USL: false } };
+var solves = 0, blurs = 0, prevented = 0;
+var document = { activeElement: { blur: function() { blurs++; } } };
+function hideLoupe() {} function solveSoon() { solves++; } function saveToSession() {}
+"""
+
+
+@pytest.mark.parametrize(
+    ("key", "selected", "result"),
+    [
+        ("Enter", "DSR", [None, True, 1, 1]),
+        ("Enter", "DSL", [None, False, 0, 1]),
+        ("Enter", None, [None, False, 0, 0]),
+        ("Tab", "DSR", ["DSR", False, 0, 0]),
+    ],
+    ids=["places an unplaced corner", "a placed corner", "nothing selected", "another key"],
+)
+def test_enter_on_a_corner_places_it_and_leaves_it_the_focus(key: str, selected, result: list) -> None:
+    out = run_wizard_js(
+        "(function() { S.selCorner = selected;"
+        " cornerEnterKey({ key: key, preventDefault: function() { prevented++; } });"
+        " return [S.selCorner, S.cornerMoved.DSR, solves, prevented, blurs]; })()",
+        functions=("dropCorner", "cornerEnterKey"),
+        prelude=_CORNER_ENTER_PAGE,
+        key=key,
+        selected=selected,
+    )
+    # The focus stays on the corner, so the next Tab moves on to the next one, not back to DSL.
+    assert out == [*result, 0]
+
+
+_REDRAW_FOCUS_PAGE = """
+var made = {}, focusinSelects = 0;
+function handle(mark) {
+  return { mark: mark, focused: 0, getAttribute: function() { return mark; },
+    closest: function(sel) { return sel === '#cal-pins .pin-handle' ? this : null; },
+    focus: function() {
+      this.focused++; if (!calRefocus && S.selCorner !== mark) focusinSelects++; document.activeElement = this; } };
+}
+var document = { activeElement: null, querySelector: function(sel) {
+  var m = /data-mark="([^"]+)"/.exec(sel); if (!m) return null; return made[m[1]] || (made[m[1]] = handle(m[1])); },
+  querySelectorAll: function() { return []; } };
+var els = {};
+function $(id) {
+  if (!els[id]) els[id] = { innerHTML: '', setAttribute: function() {}, classList: { toggle: function() {} },
+    getBoundingClientRect: function() { return { width: 0 }; } };
+  return els[id];
+}
+var imageWidth = 1920, imageHeight = 1080, held = 0;
+function holdCorner() { held++; } function overlayUnit() { return 1; } function pairsFor() { return []; }
+function originPixel() { return null; } function originMarkup() { return ''; } function pinFlagged() { return false; }
+function currentMarks() { return [{ id: 1, name: 'DSL' }, { id: 2, name: 'DSR' }]; }
+var S = { mode: 'simple', solve: null, selPin: null, selCorner: null, pinMenu: null, pair: 0,
+  cornerPins: { DSL: [10, 10], DSR: [50, 10] }, cornerMoved: { DSL: true, DSR: true } };
+"""
+
+
+@pytest.mark.parametrize(
+    ("focus", "selected", "result"),
+    [
+        ("DSR", None, [1, 0, 0]),
+        (None, None, [0, 0, 0]),
+        ("DSR", "DSR", [0, 0, 1]),
+    ],
+    ids=["a focused corner", "nothing focused", "a held corner"],
+)
+def test_a_redraw_gives_a_focused_pin_its_focus_back_without_selecting_it(focus, selected, result: list) -> None:
+    out = run_wizard_js(
+        "(function() { if (focus) document.activeElement = handle(focus); S.selCorner = selected; renderCalibOverlay();"
+        " return [made.DSR ? made.DSR.focused : 0, focusinSelects, held]; })()",
+        functions=("esc", "renderCalibOverlay"),
+        variables=("calRefocus", "CORNERS"),
+        prelude=_REDRAW_FOCUS_PAGE,
+        focus=focus,
+        selected=selected,
+    )
+    # The new handle takes the focus while calRefocus is up, so the focus listener selects nothing.
+    assert out == result
 
 
 # ---------------------------------------------------------------------------
@@ -2492,11 +2652,56 @@ def test_the_note_is_in_the_active_unit() -> None:
 def test_the_field_reads_as_metres_or_none(system: str, typed: str, height) -> None:
     out = run_wizard_js(
         f"(function() {{ $('cam_height').value = {json.dumps(typed)}; readHeight(); return S.height; }})()",
-        functions=("len", "readHeight"),
+        functions=("len", "lenRough", "readHeight"),
         variables=("exactLen", "DISTANCE_SIGMA"),
         prelude=length_page(system, {}) + _DOM + "var S = { height: 'before' };",
     )
     assert out == (None if height is None else pytest.approx(height))
+
+
+@pytest.mark.parametrize(
+    ("system", "typed", "error"),
+    [
+        ("metric", "9.8", ""),
+        ("metric", "", ""),
+        ("metric", "abc", "Enter the height of the camera's lens."),
+        ("metric", "9..8", "Enter the height of the camera's lens."),
+        ("metric", "10000.5", "Enter a height within 10000.0 m of the point of origin."),
+        ("metric", "-10000.5", "Enter a height within 10000.0 m of the point of origin."),
+        ("imperial", "32809 ft", "Enter a height within 32808.4 ft of the point of origin."),
+        ("imperial", "32 ft 2 in", ""),
+        ("metric", None, "Enter the height of the camera's lens."),
+    ],
+    ids=[
+        "valid",
+        "empty",
+        "unreadable",
+        "two points",
+        "too far up",
+        "too far down",
+        "too far in feet",
+        "feet",
+        "a number field it cannot read",
+    ],
+)
+def test_a_height_that_cannot_be_used_says_why_under_the_field(system: str, typed: str | None, error: str) -> None:
+    # A number field with text it cannot read reports an empty value and badInput.
+    fill = (
+        "$('cam_height').validity = { badInput: true };"
+        if typed is None
+        else f"$('cam_height').value = {json.dumps(typed)};"
+    )
+    out = run_wizard_js(
+        f"(function() {{ {fill} readHeight();"
+        " var e = $('cam-height-error');"
+        " return [e.textContent, e.hidden, $('cam_height').invalid, S.height === null]; })()",
+        functions=("len", "lenRough", "readHeight"),
+        variables=("exactLen", "DISTANCE_SIGMA"),
+        prelude=length_page(system, {}) + _DOM + "var S = { height: 'before' };"
+        " $('cam_height').setAttribute = function(k, v) { if (k === 'aria-invalid') this.invalid = v; };",
+    )
+    # An unusable height is no height: the camera is calculated without one, and the field says why.
+    assert out == [error, not error, "true" if error else "false", bool(error) or not typed]
 
 
 @pytest.mark.parametrize("height", [9.8, None])

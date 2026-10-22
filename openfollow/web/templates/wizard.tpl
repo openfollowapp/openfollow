@@ -378,7 +378,7 @@
     <div class="group">
       <div class="row">
         <div class="field">
-          <label>Source Type</label>
+          <label for="wizard-video-source-type">Source Type</label>
           <select id="wizard-video-source-type"
                   onchange="document.querySelectorAll('[data-wizard-input-type]').forEach(function(el){el.style.display=el.dataset.wizardInputType===this.value?'':'none';}.bind(this));">
             % for iid, iname in available_inputs:
@@ -610,7 +610,7 @@
     <div id="hint-slot-image"></div>
     <div id="cal-container" class="wizard-preview-container" style="display:none;">
       <img id="cal-image" alt="Camera snapshot">
-      <svg id="cal-overlay" class="wizard-overlay" xmlns="http://www.w3.org/2000/svg">
+      <svg id="cal-overlay" class="wizard-overlay" tabindex="-1" xmlns="http://www.w3.org/2000/svg">
         <rect id="cal-hit" class="cal-hit" x="0" y="0" width="100%" height="100%" fill="transparent"/>
         <g id="cal-grid"></g>
         <g id="cal-dist"></g>
@@ -786,6 +786,8 @@
   function lenSuffix() { return WUNIT.unitSuffixLength(); }
   function esc(s) { return String(s).replace(/[&<>"]/g, function(c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
   function $(id) { return document.getElementById(id); }
+  // A live region is rewritten only when its words change, so a redraw is not read out again; `force` rewrites it anyway.
+  function setLive(el, html, force) { if (force || el.liveHtml !== html) { el.liveHtml = html; el.innerHTML = html; } }
 
   // Lens coefficients: the one bound on the pair is that the warp must not fold
   // inside the frame (mirrors openfollow.lens_model.lens_warp_is_valid).
@@ -1165,15 +1167,17 @@
     // Until this answer lands, Save and finish would save the previous one.
     solvePending = true;
     $('btn-apply-finish').disabled = true;
+    var body = solveBody(st.usable, seq);
     fetch('/api/wizard/solve', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(solveBody(st.usable, seq)),
+      body: JSON.stringify(body),
     }).then(function(r) {
       return r.json().then(function(data) { return { status: r.status, data: data }; });
     }).then(function(res) {
       if (seq !== solveSeq || res.status === 409) return;
       solvePending = false;
       S.solve = solveFromAnswer(st.marks, res.status, res.data);
+      S.solve.withHeight = body.camera_height != null;
       afterSolve(then);
     }).catch(function() {
       if (seq !== solveSeq) return;
@@ -1445,7 +1449,6 @@
   var lensHot = -1;          // the suggestion pointed at, by its bubble or its line
   var lensFocusAfter = null; // after a choice by keyboard: {i, cls} of the bubble button that had the focus
   var lensHintText = '';
-  var lensHintHtml = '';
   var lensRefocus = false;   // a redraw is giving the focus back: no new selection
   var lensImageSize = null;  // [w, h] the lines were traced on
   var lensPending = null;    // first click of a line being traced
@@ -1535,14 +1538,14 @@
   function lensShowNotice(text) {
     var el = document.getElementById('lens-notice');
     if (!el) return;
-    el.textContent = text || '';
+    setLive(el, esc(text || ''));
     el.style.display = text ? '' : 'none';
   }
   function lensShowStatus(msg, ok) {
     var el = document.getElementById('lens-status');
     if (!el) return;
     el.style.display = msg ? 'block' : 'none';
-    el.textContent = msg || '';
+    setLive(el, esc(msg || ''));
     el.className = 'wizard-status ' + (ok ? 'ok' : 'error');
   }
 
@@ -1761,7 +1764,7 @@
   // ---- rendering ----
   function lensHandle(line, i, j, px) {
     var g = pointHandle(lensPointPos(line, j), j === 0 || j === 4 ? 4 : 3.5, px);
-    g.setAttribute('aria-label', 'Line ' + (i + 1) + (j === 0 ? ', start' : j === 4 ? ', end' : ', middle point ' + j));
+    g.setAttribute('aria-label', 'Line ' + (i + 1) + (j === 0 ? ', start' : j === 4 ? ', end' : ', middle point ' + j + (lensPointIsOn(line, j) ? '' : ' (off)')));
     var cls = 'handle lens-point';
     if (!lensPointIsOn(line, j)) cls += ' off';
     if (!line.snapped[j]) cls += ' unsnapped';
@@ -1945,9 +1948,7 @@
     else if (applied && agree.test(hint)) { h = 'The result may already be good.'; sub = hint.replace(agree, '') + ' Or press Next.'; }
     else if (applied) { h = 'Improve the lines, or add more.'; sub = 'Select a point and move it exactly onto the edge. Lines near the edges and corners of the picture help the most.' + cov; }
     else { h = 'Draw more straight lines.'; sub = 'Click the start and the end of a straight edge. Then move its points exactly onto the edge.' + cov; }
-    // A polite live region: rewritten only when its words change, so a redraw is not read out again.
-    var html = esc(h) + '<div class="notice-sub">' + esc(sub) + '</div>';
-    if (html !== lensHintHtml) { $('lens-hint').innerHTML = html; lensHintHtml = html; }
+    setLive($('lens-hint'), esc(h) + '<div class="notice-sub">' + esc(sub) + '</div>');
     lensHintText = h;
   }
 
@@ -2056,8 +2057,8 @@
     var bad = [];
     lensLines.forEach(function(line, i) { if (line.misfit) bad.push(i + 1); });
     el.style.display = bad.length ? '' : 'none';
-    el.innerHTML = bad.length ? esc((bad.length === 1 ? 'Line ' + bad[0] + ' does not' : 'Lines ' + andList(bad) + ' do not') + ' fit the others.') +
-      '<div class="notice-sub">Check that ' + (bad.length === 1 ? 'it is' : 'they are') + ' straight in reality, or delete ' + (bad.length === 1 ? 'it' : 'them') + '.</div>' : '';
+    setLive(el, bad.length ? esc((bad.length === 1 ? 'Line ' + bad[0] + ' does not' : 'Lines ' + andList(bad) + ' do not') + ' fit the others.') +
+      '<div class="notice-sub">Check that ' + (bad.length === 1 ? 'it is' : 'they are') + ' straight in reality, or delete ' + (bad.length === 1 ? 'it' : 'them') + '.</div>' : '');
   }
   function renderLensMeter(meter, rating) {
     if (!meter) return;
@@ -2074,8 +2075,8 @@
       var k1 = wizReadLensCoeff('wiz_lens_k1'), k2 = wizReadLensCoeff('wiz_lens_k2');
       var tuned = Math.abs(k1 - S.lensLoaded.k1) > 1e-9 || Math.abs(k2 - S.lensLoaded.k2) > 1e-9;
       box.style.display = ''; box.className = 'notice'; meter.style.display = 'none';
-      $('lens-result-text').textContent = 'Loaded \u201c' + S.lensLoaded.name + '\u201d \u2013 barrel / fisheye ' + fmt(k1, 3) + ', corner correction ' + fmt(k2, 3);
-      $('lens-result-hint').textContent = (tuned ? 'Adjusted by hand after loading. ' : '') + S.lensLoaded.src + '.';
+      setLive($('lens-result-text'), esc('Loaded \u201c' + S.lensLoaded.name + '\u201d \u2013 barrel / fisheye ' + fmt(k1, 3) + ', corner correction ' + fmt(k2, 3)));
+      setLive($('lens-result-hint'), esc((tuned ? 'Adjusted by hand after loading. ' : '') + S.lensLoaded.src + '.'));
       return;
     }
     meter.style.display = '';
@@ -2086,10 +2087,10 @@
     renderLensMeter(box.querySelector('.wizard-meter'), lensFit.rating);
     var text = (LENS_RATING_LABEL[lensFit.rating] || lensFit.rating) + ' \u2013 barrel / fisheye ' + fmt(Number(lensFit.k1), 3)
       + ', corner correction ' + (lensFit.k2_fitted ? fmt(Number(lensFit.k2), 3) : '0 (not measured)') + (lensFitApplies(lensFit) ? '' : ' \u2013 not applied');
-    document.getElementById('lens-result-text').textContent = text;
+    setLive($('lens-result-text'), esc(text));
     var tuned = lensFitApplies(lensFit) && !lensPairIsTheFits(wizReadLensCoeff('wiz_lens_k1'), wizReadLensCoeff('wiz_lens_k2'));
-    document.getElementById('lens-result-hint').textContent = (tuned ? 'Adjusted by hand after the calculation. ' : '') +
-      (lensFit.hint || (lensFitApplies(lensFit) ? '' : 'More lines near the edges give a better rating.'));
+    setLive($('lens-result-hint'), esc((tuned ? 'Adjusted by hand after the calculation. ' : '') +
+      (lensFit.hint || (lensFitApplies(lensFit) ? '' : 'More lines near the edges give a better rating.'))));
   }
 
   function lensFitApplies(fit) { return fit.rating !== 'low'; }
@@ -2723,12 +2724,12 @@
     // Rebuilding the rows drops the focused field: put the focus back on the field of that id.
     var focused = document.activeElement && $('adv-rows').contains(document.activeElement) ? document.activeElement.id : '';
     $('adv-rows').innerHTML = S.points.length ? S.points.map(function(p) {
-      var m = byId[p.id], id = p.id;
-      var head = '<div class="calib-row-head"><strong>' + esc(p.name || ('P' + id)) + '</strong><span class="stat-chip">' + (p.kind === 'known' ? 'Known point' : 'Distance point') + '</span><span id="chip-' + id + '">' + chipFor(m, solve) + '</span>' +
+      var m = byId[p.id], id = p.id, name = esc(p.name || ('P' + id));
+      var head = '<div class="calib-row-head"><strong id="pn-' + id + '">' + name + '</strong><span class="stat-chip">' + (p.kind === 'known' ? 'Known point' : 'Distance point') + '</span><span id="chip-' + id + '">' + chipFor(m, solve) + '</span>' +
         (p.kind === 'known' ? '' : '<span class="corner-xyz" id="xyz-' + id + '">' + triXYZ(id, pre) + '</span>') +
         '<span style="margin-left:' + (p.kind === 'known' ? 'auto' : '0.6rem') + ';display:flex;gap:0.4rem;flex-wrap:wrap;">' +
-        (p.pin ? '<button type="button" class="secondary small" data-unpin="' + id + '">Remove pin</button>' : '') +
-        '<button type="button" class="secondary small" data-del="' + id + '">Delete</button></span></div>';
+        (p.pin ? '<button type="button" class="secondary small" data-unpin="' + id + '" aria-label="Remove pin of ' + name + '">Remove pin</button>' : '') +
+        '<button type="button" class="secondary small" data-del="' + id + '" aria-label="Delete ' + name + '">Delete</button></span></div>';
       var f = '<div class="row"><div class="field"><label for="pl-' + id + '">Point</label><input type="text" id="pl-' + id + '" maxlength="60" autocomplete="off" data-1p-ignore data-lpignore="true" data-f="name" data-id="' + id + '" value="' + esc(p.name) + '"></div>';
       if (p.kind === 'known') {
         f += ['x', 'y', 'z'].map(function(k) { return '<div class="field"><label for="p' + k + '-' + id + '">' + k.toUpperCase() + ' (' + esc(lenSuffix()) + ')' + AXIS_NOTE[k] + '</label>' + lenInput('p' + k + '-' + id, k, id, p[k]) + '</div>'; }).join('');
@@ -2741,7 +2742,7 @@
           '<div class="field"><label for="pdb-' + id + '">Distance (' + esc(lenSuffix()) + ')</label>' + lenInput('pdb-' + id, 'db', id, p.db) + '</div></div>';
       }
       var reason = m && m.problem && m.problem !== 'rect' ? '<div class="calib-reason" id="reason-' + id + '">' + esc(m.problem) + '</div>' : '<div class="calib-reason" id="reason-' + id + '" hidden></div>';
-      return '<div class="calib-row" data-row="' + id + '">' + head + f + reason + '</div>';
+      return '<div class="calib-row" role="group" aria-labelledby="pn-' + id + '" data-row="' + id + '">' + head + f + reason + '</div>';
     }).join('') : '<p class="wizard-help" style="margin:0.5rem 0;">No points yet.</p>';
     $('adv-add-known').disabled = S.points.length >= SAVED.max_marks;
     if (focused && $(focused)) $(focused).focus({ preventScroll: true });
@@ -2759,12 +2760,12 @@
   }
 
   // The hint box: always the one next thing to do, above the part of the page it is about.
-  var hintText = '', hintHtml = '';
+  var hintText = '';
   function showHint(area, h, sub) {
-    var slot = $('hint-slot-' + area), html = esc(h) + '<div class="notice-sub">' + esc(sub) + '</div>';
-    // A polite live region: rewritten only when its words or its place change, so a redraw is not read out again.
-    if ($('wiz-hint').parentNode !== slot) { slot.appendChild($('wiz-hint')); hintHtml = ''; }
-    if (html !== hintHtml) { $('wiz-hint').innerHTML = html; hintHtml = html; }
+    var slot = $('hint-slot-' + area), moved = $('wiz-hint').parentNode !== slot;
+    // Moved above another part of the page, it is read out again.
+    if (moved) slot.appendChild($('wiz-hint'));
+    setLive($('wiz-hint'), esc(h) + '<div class="notice-sub">' + esc(sub) + '</div>', moved);
     hintText = h;
     renderFsBar();
   }
@@ -2851,29 +2852,34 @@
       return '<div class="wizard-solved-param"><span class="param-label">' + p[0] + '</span><span class="param-value">' + p[1] + '</span></div>';
     }).join('');
   }
+  // Set by a steep camera; cleared only by a camera solved without a height that is not steep.
+  var heightAsked = false;
   function renderCalibResult() {
     var s = S.solve, st = $('cal-status');
     if (!s) { st.hidden = true; return; }
     st.hidden = false;
     // Advanced says what the solve still needs right under the picture, where the points are placed.
     $('adv-need').hidden = !(S.mode === 'advanced' && s.need);
-    if (S.mode === 'advanced' && s.need) $('adv-need').textContent = 'To calculate the camera, add ' + s.need.join(' and ') + '.';
-    if (s.waiting) { st.className = 'wizard-status waiting'; st.textContent = s.waiting; }
-    else if (s.need) { st.className = 'wizard-status waiting'; st.textContent = 'To calculate the camera, add ' + s.need.join(' and ') + '.'; st.hidden = S.mode === 'advanced'; }
-    else if (s.error) { st.className = 'wizard-status error'; st.textContent = s.error; }
-    else { st.className = 'wizard-status ok'; st.textContent = 'Calculated from ' + s.pinned + (S.mode === 'simple' ? ' corners' : ' pinned points') + ', largest error ' + s.worst.toFixed(1) + ' px.'; }
+    if (S.mode === 'advanced' && s.need) setLive($('adv-need'), esc('To calculate the camera, add ' + s.need.join(' and ') + '.'));
+    if (s.waiting) { st.className = 'wizard-status waiting'; setLive(st, esc(s.waiting)); }
+    else if (s.need) { st.className = 'wizard-status waiting'; setLive(st, esc('To calculate the camera, add ' + s.need.join(' and ') + '.')); st.hidden = S.mode === 'advanced'; }
+    else if (s.error) { st.className = 'wizard-status error'; setLive(st, esc(s.error)); }
+    else { st.className = 'wizard-status ok'; setLive(st, esc('Calculated from ' + s.pinned + (S.mode === 'simple' ? ' corners' : ' pinned points') + ', largest error ' + s.worst.toFixed(1) + ' px.')); }
     var ok = !!s.cam;
     $('cal-solved').hidden = !ok;
     if (ok) $('cal-solved').innerHTML = solvedParamsHtml(s.cam) + (LENS_ENABLED ? '<div class="wizard-solved-param"><span class="param-label">Lens</span><span class="param-value"' +
       (lensMeasured() ? '>' + fmt(wizReadLensCoeff('wiz_lens_k1'), 3) + ' / ' + fmt(wizReadLensCoeff('wiz_lens_k2'), 3) : ' class="caution-text">Not measured') + '</span></div>' : '');
     $('cal-caution').hidden = !(ok && s.reasons.length);
-    if (ok && s.reasons.length) $('cal-caution').innerHTML = cautionHtml(s);
+    if (ok && s.reasons.length) setLive($('cal-caution'), cautionHtml(s));
     $('cal-lens-note').hidden = !(ok && stationLensOnly());
-    // Asked while the camera looks almost straight down; the field stays while it holds text.
-    $('cal-height').hidden = !((ok && s.steep) || $('cam_height').value.trim() !== '');
+    if (ok && s.steep) heightAsked = true;
+    else if (ok && !s.withHeight) heightAsked = false;
+    // Asked while the camera looks almost straight down; the field stays while it holds text or the focus.
+    var hf = $('cam_height');
+    $('cal-height').hidden = !(heightAsked || hf.value.trim() !== '' || !!(hf.validity && hf.validity.badInput) || hf === document.activeElement);
     $('cal-height-ask').hidden = S.height != null;
     $('cal-height-note').hidden = S.height == null;
-    if (S.height != null) $('cal-height-note').textContent = 'The camera height is fixed at ' + lenText(S.height, 2) + '.';
+    if (S.height != null) setLive($('cal-height-note'), esc('The camera height is fixed at ' + lenText(S.height, 2) + '.'));
     var pairs = pairsFor(s);
     if (S.pair >= pairs.length) S.pair = 0;
     $('cal-dist-group').hidden = !pairs.length;
@@ -3107,19 +3113,25 @@
     S.points.push(S.pinMenu.form === 'known'
       ? { id: id, name: name, kind: 'known', x: v.x, y: v.y, z: v.z, pin: p }
       : { id: id, name: name, kind: 'triangulated', a: +v.a, b: +v.b, da: v.da, db: v.db, z: v.z, pin: p });
-    closePinMenu();
-    S.selPin = id; renderAdvRows(); solveSoon(); saveToSession();
+    S.selPin = id; closePinMenu(id);
+    renderAdvRows(); solveSoon(); saveToSession();
   }
-  function closePinMenu() {
+  // With `back` (a pin id, or null for none), a focus in the menu goes to that pin, or to the picture without it.
+  function closePinMenu(back) {
     if (!S.pinMenu) return;
+    var had = back !== undefined && $('pin-menu').contains(document.activeElement);
     S.pinMenu = null; $('pin-menu').hidden = true;
     hideLoupe('cal-container');
     renderCalibOverlay();
+    if (had) focusCalPin(back);
+  }
+  function focusCalPin(id) {
+    var h = id != null && document.querySelector('#cal-pins [data-mark="' + id + '"]');
+    (h || $('cal-overlay')).focus({ preventScroll: true });
   }
   function placeFromMenu(what) {
     if (what === 'new-known' || what === 'new-tri') { pinMenuForm(what === 'new-known' ? 'known' : 'tri'); return; }
-    var p = S.pinMenu.p; closePinMenu();
-    setPin(+what, p); S.selPin = +what;
+    setPin(+what, S.pinMenu.p); S.selPin = +what; closePinMenu(+what);
     renderAdvRows(); solveSoon(); saveToSession();
   }
   function deletePoint(id) {
@@ -3134,9 +3146,12 @@
     var el = $('pl-' + id); if (el) el.focus();
   };
   window.calibResetPins = function() {
+    // Simple hides the button with no corner moved: its focus goes to the picture.
+    var had = S.mode === 'simple' && document.activeElement === $('cal-reset');
     if (S.mode === 'simple') clearCorners();
     else { S.points.forEach(function(p) { p.pin = null; }); renderAdvRows(); }
     S.selPin = null; solveSoon(); saveToSession();
+    if (had) $('cal-overlay').focus({ preventScroll: true });
   };
   function switchMode(to) {
     if (to === S.mode) return;
@@ -3279,6 +3294,8 @@
     document.addEventListener('pointerdown', function(e) { if (S.selCorner != null && !e.target.closest('#cal-pins .pin-handle')) dropCorner(); }, true);
     // A focus that selected a corner redrew the pins: its event still reaches here from the old, detached handle.
     document.addEventListener('focusin', function(e) { if (S.selCorner != null && e.target.isConnected && !e.target.closest('#cal-pins .pin-handle')) dropCorner(); });
+    // A pin shows as selected only while the focus is on a pin or in its menu.
+    document.addEventListener('focusin', function(e) { if (S.selPin != null && e.target.isConnected && !e.target.closest('#cal-pins .pin-handle, #pin-menu')) { S.selPin = null; renderCalibOverlay(); } });
     // A corner reached with Tab is selected, as one clicked; a redraw giving the focus back selects nothing.
     // On the HTML container: Chrome makes an SVG element with a focus listener a Tab stop of its own.
     $('cal-container').addEventListener('focusin', function(e) {
@@ -3292,11 +3309,11 @@
       var b = e.target.closest('[data-place]'); if (b && !b.disabled) placeFromMenu(b.dataset.place);
       var pm = e.target.closest('[data-pm]'), act = pm && pm.dataset.pm;
       if (act === 'back') openPinMenu(S.pinMenu.p);
-      else if (act === 'close') closePinMenu();
+      else if (act === 'close') closePinMenu(S.pinMenu.pin);
       else if (act === 'unpin' || act === 'delete') {
-        var id = S.pinMenu.pin; closePinMenu();
+        var id = S.pinMenu.pin;
         if (act === 'unpin') setPin(id, null); else deletePoint(id);
-        S.selPin = null; renderAdvRows(); solveSoon(); saveToSession();
+        S.selPin = null; closePinMenu(id); renderAdvRows(); solveSoon(); saveToSession();
       }
     });
     // Arrow keys move the menu's spot unless a field has the focus (a number field's arrows change its value).
@@ -3326,13 +3343,13 @@
     var s = S.solve || {}, svg = $('review-overlay'), u = overlayUnit(svg);
     var ok = !!s.cam;
     $('review-status').hidden = ok;
-    if (!ok) $('review-status').innerHTML = 'The camera is not calculated yet.<div class="notice-sub">' + esc(s.need ? 'To calculate the camera, add ' + s.need.join(' and ') + '. Go back to Camera Calibration to finish it.' : s.waiting ? s.waiting : s.error ? s.error : 'Pin the points in Camera Calibration.') + '</div>';
+    if (!ok) setLive($('review-status'), 'The camera is not calculated yet.<div class="notice-sub">' + esc(s.need ? 'To calculate the camera, add ' + s.need.join(' and ') + '. Go back to Camera Calibration to finish it.' : s.waiting ? s.waiting : s.error ? s.error : 'Pin the points in Camera Calibration.') + '</div>');
     var incomplete = incompleteLines(s);
     $('review-incomplete').hidden = !incomplete.length;
-    if (incomplete.length) $('review-incomplete').innerHTML = incompleteHtml(incomplete);
+    if (incomplete.length) setLive($('review-incomplete'), incompleteHtml(incomplete));
     $('btn-apply-finish').disabled = !ok || solvePending || applyBlocked(s) || marksIncomplete(s);
     $('review-caution').hidden = !(ok && s.reasons.length);
-    if (ok && s.reasons.length) $('review-caution').innerHTML = cautionHtml(s);
+    if (ok && s.reasons.length) setLive($('review-caution'), cautionHtml(s));
     $('review-lens-note').hidden = !(ok && stationLensOnly());
     var grid = calibGrid();
     if (imageWidth) svg.setAttribute('viewBox', '0 0 ' + imageWidth + ' ' + imageHeight);
@@ -3493,9 +3510,12 @@
     f.ph.parentNode.insertBefore(f.cont, f.ph); f.ph.parentNode.removeChild(f.ph);
     f.cont.style.width = '';
     $('fs-shell').hidden = true; document.body.style.overflow = '';
-    if (document.fullscreenElement && document.exitFullscreen) { try { var pr = document.exitFullscreen(); if (pr && pr.catch) pr.catch(function() {}); } catch (e) { /* already out */ } }
     fsRender(f.key);
-    var b = f.cont.querySelector('.fs-btn'); if (b) b.focus({ preventScroll: true });
+    // The page outside the full-screen element takes no focus until the browser has left full screen.
+    var b = f.cont.querySelector('.fs-btn'), back = function() { if (b && !FS) b.focus({ preventScroll: true }); };
+    if (document.fullscreenElement && document.exitFullscreen) {
+      try { var pr = document.exitFullscreen(); if (pr && pr.then) pr.then(back, back); else back(); } catch (e) { back(); }
+    } else back();
   }
   // The picture keeps its aspect ratio: as wide as the stage allows without being taller than it.
   function fsLayout() {
@@ -3565,7 +3585,7 @@
       hint = S.solve && S.solve.cam ? 'The green grid is the one the Operator Screen will draw.' : 'The camera is not calculated yet.';
     }
     $('fs-title').textContent = title;
-    if ($('fs-hint').textContent !== hint) $('fs-hint').textContent = hint;
+    setLive($('fs-hint'), esc(hint));
     $('fs-status').textContent = status; $('fs-status').classList.toggle('warn', warn);
     $('fs-actions').innerHTML = actions;
   }
@@ -3726,7 +3746,7 @@
     if (FS) { closeFull(); return; }
     // An open help drawer takes this Esc (base.tpl closes it).
     if (document.body.classList.contains('help-open')) return;
-    if (S.pinMenu) closePinMenu();
+    if (S.pinMenu) closePinMenu(S.pinMenu.pin);
     else if (S.selCorner != null) dropCorner();
     else if (lensHold) lensEndHold();
     else if (lensPending && currentStep === WIZ.lens) { lensPending = null; renderLens(); }

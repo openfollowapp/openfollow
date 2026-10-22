@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from html.parser import HTMLParser
 
 import numpy as np
 import pytest
@@ -32,7 +33,7 @@ from openfollow.scene.lens_fit import fit_lens_from_lines
 from openfollow.scene.solver import apply_overlay_distortion, invert_normalised_radius, project_points
 from openfollow.units import format_length
 from tests._lens_band import scaled_luma
-from tests._wizard_js import length_page, needs_node, run_wizard_js, wizard_window_function
+from tests._wizard_js import length_page, needs_node, run_wizard_js, wizard_block, wizard_window_function
 
 pytestmark = [pytest.mark.unit, needs_node]
 
@@ -1150,6 +1151,7 @@ _REVIEW_FUNCTIONS = (
     "marksIncomplete",
     "incompleteLines",
     "incompleteHtml",
+    "setLive",
     "renderReview",
 )
 _COMPLETE = [
@@ -1278,8 +1280,9 @@ def test_a_pin_behind_the_camera_is_drawn_flagged_on_the_picture() -> None:
 
 def test_the_status_line_names_the_pins_the_page_sent() -> None:
     out = run_wizard_js(
-        "(function() { renderCalibResult(); return $('cal-status').textContent; })()",
-        functions=("renderCalibResult",),
+        "(function() { renderCalibResult(); return $('cal-status').innerHTML; })()",
+        functions=("esc", "setLive", "renderCalibResult"),
+        variables=("heightAsked",),
         prelude=_DOM + _REVIEW_STUBS + "var S = { mode: 'advanced', pair: 0 }; function lensMeasured() { return true; }"
         " S.solve = { cam: { fov: 60 }, worst: 0.6, pinned: 5, count: 4, reasons: [], marks: [] };",
     )
@@ -1953,7 +1956,7 @@ def test_a_point_reached_with_tab_is_selected_and_held(
         " lensTabKey({ key: 'Tab', shiftKey: shift, preventDefault: function() {}, stopPropagation: function() {} });"
         " seq.push(lensSelected.point); });"
         " return got.concat([seq]); })()",
-        functions=("esc", "renderLensHint", "lensPointFocusIn", "lensTabKey"),
+        functions=("esc", "setLive", "renderLensHint", "lensPointFocusIn", "lensTabKey"),
         prelude="var lensSelected = null, lensHold = false, lensRefocus = false, lensDrag = null;" + _POINT_FOCUS_PAGE,
     )
     hint = "Move the point exactly onto the edge." if held else ""
@@ -2120,7 +2123,7 @@ def _hint_state(**kw: object) -> dict:
 def test_the_lens_hint_names_the_one_next_thing_to_do(state: dict, heading: str, sub: str) -> None:
     out = run_wizard_js(
         "(function() { renderLensHint(); return [$('lens-hint').innerHTML, lensHintText]; })()",
-        functions=("esc", "renderLensHint"),
+        functions=("esc", "setLive", "renderLensHint"),
         prelude="var state = " + json.dumps(state) + ";" + _HINT_PAGE,
     )
     assert out == [f'{heading}<div class="notice-sub">{sub}</div>', heading]
@@ -2147,14 +2150,14 @@ function hideLoupe() { loupe = 'hidden'; }
 var S = { lensLoaded: null }, lensPending = null, lensHold = true, lensSelected = { line: 0, point: 2 };
 var lensLines = [{ misfit: false }], lensFit = null;
 """
-_LIVE = ("esc", "renderLensHint", "renderFsBar", "dropLensPoint")
+_LIVE = ("esc", "setLive", "renderLensHint", "renderFsBar", "dropLensPoint")
 
 
 @pytest.mark.parametrize("full_screen", [True, False], ids=["full screen", "on the page"])
 def test_ending_a_hold_moves_the_hint_and_the_full_screen_bar_on(full_screen: bool) -> None:
     out = run_wizard_js(
-        "(function() { if (!fs) FS = null; renderLensHint(); renderFsBar(); var before = $('fs-hint').textContent;"
-        " dropLensPoint(); return [before, $('lens-hint').innerHTML, $('fs-hint').textContent, loupe]; })()",
+        "(function() { if (!fs) FS = null; renderLensHint(); renderFsBar(); var before = $('fs-hint').innerHTML;"
+        " dropLensPoint(); return [before, $('lens-hint').innerHTML, $('fs-hint').innerHTML, loupe]; })()",
         functions=_LIVE,
         prelude=_LIVE_PAGE,
         fs=full_screen,
@@ -2425,7 +2428,7 @@ def test_the_hint_box_is_rewritten_only_when_its_words_or_its_place_change() -> 
     out = run_wizard_js(
         "(function() { showHint('rect', 'A', 'a'); showHint('rect', 'A', 'a'); showHint('rect', 'B', 'a');"
         " showHint('image', 'B', 'a'); showHint('image', 'B', 'a'); return [writes.length, hintText, renders]; })()",
-        functions=("esc", "showHint"),
+        functions=("esc", "setLive", "showHint"),
         variables=("hintText",),
         prelude=_WIZ_HINT_PAGE,
     )
@@ -2579,7 +2582,7 @@ def test_switching_a_point_off_needs_a_middle_point_selected() -> None:
 
 _HEIGHT_RESULT = (
     "(function() { renderCalibResult(); return [$('cal-height').hidden, $('cal-height-ask').hidden,"
-    " $('cal-height-note').hidden, $('cal-height-note').textContent]; })()"
+    " $('cal-height-note').hidden, $('cal-height-note').innerHTML]; })()"
 )
 
 
@@ -2609,7 +2612,8 @@ _HEIGHT_RESULT = (
 def test_the_height_is_asked_while_steep_and_noted_once_entered(solve: dict, typed: str, height, shown: list) -> None:
     out = run_wizard_js(
         _HEIGHT_RESULT,
-        functions=("renderCalibResult", "lenText", "fmt"),
+        functions=("esc", "setLive", "renderCalibResult", "lenText", "fmt"),
+        variables=("heightAsked",),
         prelude=length_page("metric", {})
         + _DOM
         + _REVIEW_STUBS
@@ -2624,7 +2628,8 @@ def test_the_height_is_asked_while_steep_and_noted_once_entered(solve: dict, typ
 def test_the_note_is_in_the_active_unit() -> None:
     out = run_wizard_js(
         _HEIGHT_RESULT,
-        functions=("renderCalibResult", "lenText", "fmt"),
+        functions=("esc", "setLive", "renderCalibResult", "lenText", "fmt"),
+        variables=("heightAsked",),
         prelude=length_page("imperial", {})
         + _DOM
         + _REVIEW_STUBS
@@ -2824,3 +2829,501 @@ def test_a_reopened_wizard_fills_in_the_saved_height(system: str, marks: list, h
         " grid: { width: 12, depth: 6, x_offset: 0, y_offset: 3, z_offset: 0 } };",
     )
     assert out == field
+
+
+# ---------------------------------------------------------------------------
+# Focus: leaving full screen, the height field, the pin menu, Reset Corners
+# ---------------------------------------------------------------------------
+
+_CLOSE_FULL_PAGE = """
+var focused = [], lensSelected = null, lensPending = null;
+function toggleFsHelp() {} function closePinMenu() {} function dropCorner() {} function dropLensPoint() {}
+function fsRender() {}
+var shell = { hidden: false };
+function $() { return shell; }
+var btn = { focus: function() { focused.push(document.fullscreenElement ? 'behind full screen' : 'on the page'); } };
+var FS = { key: 'cal', cont: { style: {}, querySelector: function() { return btn; } },
+  ph: { parentNode: { insertBefore: function() {}, removeChild: function() {} } } };
+var document = { body: { style: {} }, fullscreenElement: null,
+  exitFullscreen: function() { return new Promise(function(ok, no) {
+    setTimeout(function() { document.fullscreenElement = null; if (refused) no(); else ok(); }, 0); }); } };
+"""
+
+
+@pytest.mark.parametrize(
+    ("full", "refused", "at_once"),
+    [(True, False, []), (True, True, []), (False, False, ["on the page"])],
+    ids=["full screen", "exit refused", "window-filling shell"],
+)
+def test_leaving_full_screen_gives_the_focus_to_the_steps_full_screen_button(
+    full: bool, refused: bool, at_once
+) -> None:
+    out = run_wizard_js(
+        "(function() { document.fullscreenElement = full ? shell : null; closeFull(); var now = focused.slice();"
+        " return new Promise(function(r) { setTimeout(function() { r([now, focused]); }, 5); }); })()",
+        functions=("closeFull",),
+        prelude=_CLOSE_FULL_PAGE,
+        full=full,
+        refused=refused,
+    )
+    # The page behind the full-screen element takes no focus: the button is focused once the browser is out.
+    assert out == [at_once, ["on the page"]]
+
+
+_ASKED = {"cam": {"fov": 60}, "steep": True, "withHeight": False}
+_NO_FIT = {"error": "No camera fits at this camera height.", "withHeight": True}
+_LEVEL = {"cam": {"fov": 60}, "steep": False, "withHeight": False}
+_LEVEL_AT_HEIGHT = {"cam": {"fov": 60}, "steep": False, "withHeight": True}
+
+
+@pytest.mark.parametrize(
+    ("steps", "shown"),
+    [
+        ([(_ASKED, ""), (_NO_FIT, "0"), (_NO_FIT, "")], [True, True, True]),
+        ([(_ASKED, ""), (_LEVEL_AT_HEIGHT, "12"), (_LEVEL_AT_HEIGHT, "")], [True, True, True]),
+        ([(_ASKED, ""), (_LEVEL, "")], [True, False]),
+        ([(_LEVEL, ""), (_NO_FIT, "")], [False, False]),
+    ],
+    ids=["no camera at the typed height", "level at the typed height", "level without a height", "never asked"],
+)
+def test_the_height_stays_asked_until_a_camera_without_a_height_is_not_steep(steps: list, shown: list) -> None:
+    out = run_wizard_js(
+        "(function() { return steps.map(function(st) {"
+        " S.solve = Object.assign({ worst: 0.4, pinned: 4, reasons: [], marks: [] }, st[0]);"
+        " $('cam_height').value = st[1]; renderCalibResult(); return !$('cal-height').hidden; }); })()",
+        functions=("esc", "setLive", "renderCalibResult", "lenText", "fmt"),
+        variables=("heightAsked",),
+        prelude=length_page("metric", {})
+        + _DOM
+        + _REVIEW_STUBS
+        + "function lensMeasured() { return true; } var S = { mode: 'simple', pair: 0, height: null };",
+        steps=steps,
+    )
+    # Clearing a height no camera fits never hides the field being typed in.
+    assert out == shown
+
+
+@pytest.mark.parametrize(
+    ("focus", "bad", "shown"),
+    [(True, False, True), (False, True, True), (False, False, False)],
+    ids=["focused", "unreadable text", "neither"],
+)
+def test_an_empty_height_field_stays_while_it_has_the_focus_or_unreadable_text(
+    focus: bool, bad: bool, shown: bool
+) -> None:
+    out = run_wizard_js(
+        "(function() { var f = $('cam_height'); f.validity = { badInput: bad }; if (focus) document.activeElement = f;"
+        " renderCalibResult(); return !$('cal-height').hidden; })()",
+        functions=("esc", "setLive", "renderCalibResult", "lenText", "fmt"),
+        variables=("heightAsked",),
+        prelude=length_page("metric", {})
+        + _DOM
+        + _REVIEW_STUBS
+        + "function lensMeasured() { return true; } var S = { mode: 'simple', pair: 0, height: null };"
+        " S.solve = { cam: { fov: 60 }, steep: false, worst: 0.4, pinned: 4, reasons: [], marks: [] };",
+        focus=focus,
+        bad=bad,
+    )
+    assert out is shown
+
+
+@pytest.mark.parametrize("height", [9.8, None])
+def test_a_solve_remembers_whether_it_was_sent_with_a_height(height) -> None:
+    out = run_wizard_js(
+        "(async function() { runSolve();"
+        " answer({ status: 200, json: function() { return Promise.resolve({ camera: {} }); } });"
+        " await new Promise(function(r) { setImmediate(r); }); return S.solve.withHeight; })()",
+        functions=("runSolve",),
+        prelude=_DOM + "var S = { solve: null }, solveSeq = 0, solveTimer = null, solvePending = false;"
+        " var imageWidth = 1920;"
+        " var answer; function fetch() { return new Promise(function(r) { answer = r; }); }"
+        " function clearTimeout() {} function solveState() { return { marks: [], usable: [{ id: 1 }] }; }"
+        " function solveFromAnswer() { return {}; } function afterSolve() {}"
+        f" function solveBody() {{ return {{ camera_height: {json.dumps(height)} }}; }}",
+    )
+    assert out is (height is not None)
+
+
+# A page whose elements record every focus, and every listener the wizard adds.
+_MENU_PAGE = """
+var listeners = [], focused = null, drawn = {}, renders = 0;
+function fakeEl(id) {
+  return { id: id, hidden: false, style: {}, focus: function() { focused = id; }, setAttribute: function() {},
+    addEventListener: function(t, f) { listeners.push([id, t, f]); },
+    contains: function(x) { return !!x && x.inside === id; } };
+}
+var els = { 'modal-root': Object.assign(fakeEl('modal-root'), { hidden: true }) };
+function $(id) { return els[id] || (els[id] = fakeEl(id)); }
+var document = { activeElement: null, body: { classList: { contains: function() { return false; } } },
+  addEventListener: function(t, f) { listeners.push(['document', t, f]); },
+  querySelectorAll: function() { return []; },
+  querySelector: function(sel) {
+    var m = /#cal-pins \\[data-mark="(\\w+)"\\]/.exec(sel);
+    return m && drawn[m[1]] ? { focus: function() { focused = 'pin ' + m[1]; } } : null;
+  } };
+function fire(id, type, ev) {
+  listeners.filter(function(l) { return l[0] === id && l[1] === type; }).forEach(function(l) { l[2](ev); });
+}
+function renderCalibOverlay() {
+  renders++; drawn = {}; S.points.forEach(function(p) { if (p.pin) drawn[p.id] = true; });
+}
+function renderSimpleLoc() {} function bindDrag() {} function hideLoupe() {} function renderAdvRows() {}
+function solveSoon() {} function saveToSession() {} function dropCorner() {}
+function camChanged() {} function cornerEnterKey() {} function pinMenuCheck() {}
+var FS = null, lensHold = false, lensPending = null, currentStep = 2, WIZ = { lens: 1 };
+var S = { mode: 'advanced', selPin: null, selCorner: null, pinMenu: null,
+  points: [{ id: 2, name: 'DSR', pin: [5, 5] }, { id: 3, name: 'USR', pin: [6, 6] }] };
+drawn = { 2: true, 3: true };
+"""
+_MENU_FUNCTIONS = ("closePinMenu", "focusCalPin", "setPin", "deletePoint", "calibInit")
+
+
+def _menu_click(act: str) -> str:
+    return (
+        f"fire('pin-menu', 'click', {{ target: {{ closest: function(sel) {{"
+        f" return sel === '[data-pm]' ? {{ dataset: {{ pm: {json.dumps(act)} }} }} : null; }} }} }})"
+    )
+
+
+@pytest.mark.parametrize(
+    ("menu_pin", "act", "in_menu", "focus"),
+    [
+        (2, "close", True, "pin 2"),
+        (None, "close", True, "cal-overlay"),
+        (2, "unpin", True, "cal-overlay"),
+        (2, "delete", True, "cal-overlay"),
+        (2, "close", False, None),
+    ],
+    ids=["x on a pin's menu", "x on a spot's menu", "remove pin", "delete point", "focus already elsewhere"],
+)
+def test_closing_the_pin_menu_gives_its_focus_to_the_pin_or_the_picture(
+    menu_pin, act: str, in_menu: bool, focus
+) -> None:
+    out = run_wizard_js(
+        "(function() { calibInit(); S.pinMenu = { p: [1, 1], form: null, pin: menu_pin };"
+        " document.activeElement = in_menu ? { inside: 'pin-menu' } : null; "
+        + _menu_click(act)
+        + "; return [focused, S.pinMenu]; })()",
+        functions=_MENU_FUNCTIONS,
+        prelude=_MENU_PAGE,
+        menu_pin=menu_pin,
+        in_menu=in_menu,
+    )
+    assert out == [focus, None]
+
+
+@pytest.mark.parametrize(("menu_pin", "focus"), [(2, "pin 2"), (None, "cal-overlay")], ids=["pin", "spot"])
+def test_esc_in_the_pin_menu_gives_its_focus_back(menu_pin, focus: str) -> None:
+    out = run_wizard_js(
+        "(function() { eval(escKey); S.pinMenu = { p: [1, 1], form: null, pin: menu_pin };"
+        " document.activeElement = { inside: 'pin-menu' }; fire('document', 'keydown', { key: 'Escape' });"
+        " return [focused, S.pinMenu]; })()",
+        functions=_MENU_FUNCTIONS,
+        prelude=_MENU_PAGE,
+        menu_pin=menu_pin,
+        escKey=wizard_block("document.addEventListener('keydown', function(e) {\n    if (e.key !== 'Escape') return;"),
+    )
+    assert out == [focus, None]
+
+
+@pytest.mark.parametrize(
+    ("place", "focus"), [("3", "pin 3"), ("new", "pin 4")], ids=["an existing point", "a new point"]
+)
+def test_a_point_placed_from_the_menu_takes_the_focus(place: str, focus: str) -> None:
+    out = run_wizard_js(
+        "(function() { S.points[1].pin = null; delete drawn[3]; S.nextId = 4;"
+        " S.pinMenu = { p: [9, 9], form: place === 'new' ? 'known' : null, pin: null };"
+        " document.activeElement = { inside: 'pin-menu' };"
+        " if (place === 'new') placeNewFromMenu(); else placeFromMenu(place); return [focused, S.selPin]; })()",
+        functions=(*_MENU_FUNCTIONS, "placeFromMenu", "placeNewFromMenu"),
+        prelude=_MENU_PAGE + "function pinMenuCheck() { return true; }"
+        " function pinMenuVals() { return { name: 'Truss', x: '1', y: '2', z: '0' }; }",
+        place=place,
+    )
+    assert out == [focus, int(focus.split()[1])]
+
+
+@pytest.mark.parametrize(
+    ("where", "kept"), [("pin", True), ("menu", True), ("elsewhere", False)], ids=["a pin", "its menu", "elsewhere"]
+)
+def test_a_pin_shows_as_selected_only_while_the_focus_is_on_the_pins(where: str, kept: bool) -> None:
+    out = run_wizard_js(
+        "(function() { calibInit(); S.selPin = 'USL'; renders = 0;"
+        " fire('document', 'focusin', { target: { isConnected: true, closest: function(sel) {"
+        " return (where === 'pin' && sel.indexOf('.pin-handle') >= 0)"
+        " || (where === 'menu' && sel.indexOf('#pin-menu') >= 0) ? {} : null; } } });"
+        " return [S.selPin, renders]; })()",
+        functions=_MENU_FUNCTIONS,
+        prelude=_MENU_PAGE,
+        where=where,
+    )
+    # The last corner a Tab leaves is drawn as any other: its selection would look like the focus.
+    assert out == (["USL", 0] if kept else [None, 1])
+
+
+@pytest.mark.parametrize(
+    ("mode", "on_button", "focus"),
+    [("simple", True, "cal-overlay"), ("simple", False, None), ("advanced", True, None)],
+    ids=["simple, from the button", "simple, focus elsewhere", "advanced keeps its button"],
+)
+def test_reset_corners_gives_the_focus_of_its_hidden_button_to_the_picture(mode: str, on_button: bool, focus) -> None:
+    out = run_wizard_js(
+        "(function() { S.mode = mode; document.activeElement = on_button ? $('cal-reset') : null;"
+        " window.calibResetPins(); return focused; })()",
+        prelude="var window = {};"
+        + _MENU_PAGE
+        + "function clearCorners() {}\n"
+        + wizard_window_function("calibResetPins"),
+        mode=mode,
+        on_button=on_button,
+    )
+    assert out == focus
+
+
+# ---------------------------------------------------------------------------
+# Live regions: rewritten only when their words change
+# ---------------------------------------------------------------------------
+
+# The fake DOM counts every write of an element's words.
+_COUNTING_DOM = """
+var els = {}, writes = {};
+function $(id) {
+  if (!els[id]) {
+    var el = { id: id, hidden: false, disabled: false, className: '', value: '', style: {}, open: false,
+      setAttribute: function() {}, getBoundingClientRect: function() { return { width: 0 }; },
+      classList: { toggle: function() {} }, querySelector: function() { return { style: {} }; },
+      querySelectorAll: function() { return []; } };
+    ['innerHTML', 'textContent'].forEach(function(k) {
+      var v = '';
+      Object.defineProperty(el, k, { get: function() { return v; },
+        set: function(x) { v = x; writes[id] = (writes[id] || 0) + 1; } });
+    });
+    els[id] = el;
+  }
+  return els[id];
+}
+var document = { getElementById: $, querySelector: function() { return null; },
+  querySelectorAll: function() { return []; } };
+"""
+
+
+def _live_writes(draw: str, ids: list[str], **kw) -> dict:
+    """``draw`` three times: the writes each live region in ``ids`` took."""
+    return run_wizard_js(
+        f"(function() {{ for (var i = 0; i < 3; i++) {{ {draw} }} var out = {{}};"
+        f" {json.dumps(ids)}.forEach(function(id) {{ out[id] = writes[id] || 0; }}); return out; }})()",
+        **kw,
+    )
+
+
+def test_set_live_writes_only_new_words_unless_forced() -> None:
+    out = run_wizard_js(
+        "(function() { var el = $('r'); setLive(el, 'a'); setLive(el, 'a'); setLive(el, 'b'); setLive(el, 'b', true);"
+        " return [writes.r, el.innerHTML]; })()",
+        functions=("setLive",),
+        prelude=_COUNTING_DOM,
+    )
+    assert out == [3, "b"]
+
+
+@pytest.mark.parametrize(
+    ("mode", "solve", "height", "regions"),
+    [
+        ("advanced", {"need": ["2 more pinned points"]}, None, ["adv-need", "cal-status"]),
+        (
+            "simple",
+            {"cam": {"fov": 60}, "steep": True, "worst": 0.4, "pinned": 4, "reasons": [{"kind": "fov"}]},
+            9.8,
+            ["cal-status", "cal-caution", "cal-height-note"],
+        ),
+        ("simple", {"error": "No camera fits these corners."}, None, ["cal-status"]),
+        ("simple", {"waiting": "Drag each corner onto its tape mark."}, None, ["cal-status"]),
+    ],
+    ids=["advanced needs points", "solved", "error", "waiting"],
+)
+def test_the_calibration_live_regions_are_written_once_for_the_same_words(mode, solve, height, regions) -> None:
+    out = _live_writes(
+        "renderCalibResult();",
+        regions,
+        functions=("esc", "setLive", "renderCalibResult", "lenText", "fmt"),
+        variables=("heightAsked",),
+        prelude=length_page("metric", {})
+        + _COUNTING_DOM
+        + _REVIEW_STUBS
+        + "function lensMeasured() { return true; }"
+        + f" var S = {{ mode: {json.dumps(mode)}, pair: 0, height: {json.dumps(height)} }};"
+        + f" S.solve = Object.assign({{ marks: [] }}, {json.dumps(solve)});",
+    )
+    assert out == dict.fromkeys(regions, 1)
+
+
+@pytest.mark.parametrize(
+    ("solve", "regions"),
+    [
+        (
+            {"marks": [{"id": 5, "name": "P5", "problem": "Pin it.", "need": "a pin"}]},
+            ["review-status", "review-incomplete"],
+        ),
+        (
+            {"cam": {"fov": 60}, "worst": 0.4, "reasons": [{"kind": "fov"}], "positions": {}, "marks": []},
+            ["review-caution"],
+        ),
+    ],
+    ids=["not calculated", "something might be wrong"],
+)
+def test_the_review_live_regions_are_written_once_for_the_same_words(solve: dict, regions: list) -> None:
+    out = _live_writes(
+        "renderReview();",
+        regions,
+        functions=_REVIEW_FUNCTIONS,
+        variables=("APPLY_MAX_PX",),
+        prelude=_COUNTING_DOM + _REVIEW_STUBS,
+        S={"mode": "advanced", "cam": None, "solve": solve, "height": None},
+        solvePending=False,
+    )
+    assert out == dict.fromkeys(regions, 1)
+
+
+_LENS_RESULT_PAGE = """
+function wizReadLensCoeff() { return -0.12; } function fmt(v, d) { return Number(v).toFixed(d); }
+function renderLensMeter() {} function lensPairIsTheFits() { return true; }
+"""
+
+
+@pytest.mark.parametrize(
+    ("state", "regions"),
+    [
+        (
+            "lensFit = { rating: 'okay', k1: -0.12, k2: 0, k2_fitted: false, hint: 'Add a line near the top edge.' };",
+            ["lens-result-text", "lens-result-hint"],
+        ),
+        (
+            "S.lensLoaded = { name: 'Wide', k1: -0.12, k2: 0, src: 'Saved on this station' };",
+            ["lens-result-text", "lens-result-hint"],
+        ),
+    ],
+    ids=["measured", "loaded"],
+)
+def test_the_lens_result_is_written_once_for_the_same_words(state: str, regions: list) -> None:
+    out = _live_writes(
+        "renderLensResult();",
+        regions,
+        functions=("esc", "setLive", "lensFitApplies", "renderLensResult"),
+        variables=("LENS_RATING_LEVEL", "LENS_RATING_LABEL"),
+        prelude=_COUNTING_DOM
+        + _LENS_RESULT_PAGE
+        + "var S = { lensLoaded: null }, lensFit = null, lensLines = [];"
+        + state,
+    )
+    assert out == dict.fromkeys(regions, 1)
+
+
+def test_the_misfit_notice_and_the_lens_status_are_written_once_for_the_same_words() -> None:
+    out = _live_writes(
+        "renderLensMisfit(); lensShowStatus('The lens could not be measured.', false);"
+        " lensShowNotice('The lines were removed.');",
+        ["lens-misfit", "lens-status", "lens-notice"],
+        functions=("esc", "andList", "setLive", "renderLensMisfit", "lensShowStatus", "lensShowNotice"),
+        prelude=_COUNTING_DOM + "var lensLines = [{ misfit: true }, { misfit: false }, { misfit: true }];",
+    )
+    assert out == {"lens-misfit": 1, "lens-status": 1, "lens-notice": 1}
+
+
+# ---------------------------------------------------------------------------
+# Names for assistive technology
+# ---------------------------------------------------------------------------
+
+
+class _Rows(HTMLParser):
+    """Each ``role="group"`` row: the words of its label, and its buttons as (name, visible words)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.rows: list[dict] = []
+        self.ids: dict[str, str] = {}
+        self._open: list[tuple[str, str | None]] = []
+        self._button: dict | None = None
+
+    def handle_starttag(self, tag: str, attrs: list) -> None:
+        a = dict(attrs)
+        if a.get("role") == "group":
+            self.rows.append({"label": a.get("aria-labelledby"), "buttons": []})
+        if tag == "button":
+            self._button = {"name": a.get("aria-label"), "words": ""}
+            self.rows[-1]["buttons"].append(self._button)
+        self._open.append((tag, a.get("id")))
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "button":
+            self._button = None
+        while self._open and self._open.pop()[0] != tag:
+            pass
+
+    def handle_data(self, data: str) -> None:
+        if self._button is not None:
+            self._button["words"] += data
+        for _, el_id in self._open:
+            if el_id:
+                self.ids[el_id] = self.ids.get(el_id, "") + data
+
+
+def test_each_point_row_is_a_group_named_by_its_point_and_names_its_buttons() -> None:
+    html = run_wizard_js(
+        "(function() { renderAdvRows(); return $('adv-rows').innerHTML; })()",
+        functions=("esc", "renderAdvRows"),
+        variables=("AXIS_NOTE",),
+        prelude=_DOM
+        + "function currentMarks() { return []; } function triPlaced() { return {}; } function chipFor() { return ''; }"
+        " function triXYZ() { return ''; } function lenInput() { return ''; } function lenSuffix() { return 'm'; }"
+        " function pointOptions() { return ''; } function renderReq() {} var SAVED = { max_marks: 32 };"
+        " var S = { solve: null, points: [{ id: 1, name: 'DSL', kind: 'known', pin: [1, 1] },"
+        " { id: 2, name: '<b>\"Truss\"', kind: 'triangulated', pin: null },"
+        " { id: 3, name: '', kind: 'known', pin: [3, 3] }] };",
+    )
+    parsed = _Rows()
+    parsed.feed(html)
+    named = [(parsed.ids[r["label"]], [(b["name"], b["words"]) for b in r["buttons"]]) for r in parsed.rows]
+    # The buttons keep their visible words; their names start with them, then say which point.
+    assert named == [
+        ("DSL", [("Remove pin of DSL", "Remove pin"), ("Delete DSL", "Delete")]),
+        ('<b>"Truss"', [('Delete <b>"Truss"', "Delete")]),
+        ("P3", [("Remove pin of P3", "Remove pin"), ("Delete P3", "Delete")]),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("on", "labels"),
+    [
+        (
+            [True, True, True],
+            [
+                "Line 2, start",
+                "Line 2, middle point 1",
+                "Line 2, middle point 2",
+                "Line 2, middle point 3",
+                "Line 2, end",
+            ],
+        ),
+        (
+            [True, False, True],
+            [
+                "Line 2, start",
+                "Line 2, middle point 1",
+                "Line 2, middle point 2 (off)",
+                "Line 2, middle point 3",
+                "Line 2, end",
+            ],
+        ),
+    ],
+    ids=["all on", "one switched off"],
+)
+def test_a_switched_off_middle_point_says_so_in_its_name(on: list, labels: list) -> None:
+    out = run_wizard_js(
+        "[0, 1, 2, 3, 4].map(function(j) { return lensHandle(line, 1, j, 1).attrs['aria-label']; })",
+        functions=("lensPointIsOn", "lensHandle"),
+        prelude="var lensSelected = null; function lensPointPos() { return [0, 0]; }"
+        " function pointHandle() {"
+        " return { attrs: {}, dataset: {}, setAttribute: function(k, v) { this.attrs[k] = v; } }; }",
+        line={"mids": [{"on": v} for v in on], "snapped": [True] * 5},
+    )
+    assert out == labels

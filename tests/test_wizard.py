@@ -246,6 +246,14 @@ class TestWizardPage:
         assert len(body) > 1000
         assert '<div id="wizard-video-saved" class="notice success" role="status" style="display:none">' in body
 
+    def test_the_source_type_label_names_its_select(self, live_server) -> None:
+        _, base = live_server
+        status, body = _get(base, "/wizard")
+        assert status == 200
+        step = _wizard_step(body, "video")
+        found = re.search(r'<label for="([^"]+)">Source Type</label>\s*<select id="([^"]+)"', step)
+        assert found is not None and found.group(1) == found.group(2) == "wizard-video-source-type"
+
     def test_save_and_next_advances_only_after_save_resolves(self, live_server) -> None:
         # Save & Next must not advance while the old source is still active: the
         # onclick chains wizardNext() onto the save promise's .then, and
@@ -496,6 +504,13 @@ class TestWizardHelpCopy:
         assert "**Camera height: Fixed at …** under the list is the exact height of the camera's lens" in self._help(
             "camera"
         )
+
+    @pytest.mark.parametrize(
+        "name",
+        ["wizard-video", "wizard-lens", "wizard-calibration-simple", "wizard-calibration-advanced", "wizard-review"],
+    )
+    def test_a_negative_number_has_the_minus_sign_the_page_shows(self, name: str) -> None:
+        assert re.findall(r"(?<![\w.-])-\d", self._help(name)) == []
 
     def test_whats_new_names_the_exact_camera_height(self) -> None:
         notes = (WIZARD_TEMPLATE.parents[1] / "whatsnew" / "whatsnew.md").read_text(encoding="utf-8")
@@ -1416,7 +1431,10 @@ class TestWizardLensTemplate:
         assert '\'<button type="button" class="lb-reject" aria-label="Reject this line"' in src
         assert "tabindex" not in wizard_function("renderLensCandidates")
         # Every point says what it is.
-        assert "'Line ' + (i + 1) + (j === 0 ? ', start' : j === 4 ? ', end' : ', middle point ' + j)" in src
+        assert (
+            "'Line ' + (i + 1) + (j === 0 ? ', start' : j === 4 ? ', end'"
+            " : ', middle point ' + j + (lensPointIsOn(line, j) ? '' : ' (off)'))" in src
+        )
         # A point reached with Tab is selected and held, so the toolbar acts on what has the focus.
         assert "$('lens-container').addEventListener('focusin', lensPointFocusIn);" in src
         assert "document.addEventListener('focusin', lensFocusElsewhere);" in src

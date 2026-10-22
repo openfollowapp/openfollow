@@ -18,7 +18,7 @@ To calculate the camera, the Setup Wizard needs the camera position, two known p
 
 ## Camera height
 
-From almost straight above, the camera's height and its field of view cannot be told apart: a higher camera with a narrower lens sees flat points the same way as a lower camera with a wider lens. A calculated camera that looks down steeper than -82.5° can be metres too high or too low, without a larger error on any point. So then a blue box asks for the exact height of the camera's lens, measured as Z from the point of origin. The calculation then keeps the camera at this height, and a note shows the height. A missing height is not a warning, and **Save and finish** stays on without it. The height is saved with the calibration, so the Setup Wizard starts from it the next time.
+From almost straight above, the camera's height and its field of view cannot be told apart: a higher camera with a narrower lens sees flat points the same way as a lower camera with a wider lens. A calculated camera that looks down steeper than −82.5° can be metres too high or too low, without a larger error on any point. So then a blue box asks for the exact height of the camera's lens, measured as Z from the point of origin. The calculation then keeps the camera at this height, and a note shows the height. A missing height is not a warning, and **Save and finish** stays on without it. The height is saved with the calibration, so the Setup Wizard starts from it the next time.
 
 ## Units
 

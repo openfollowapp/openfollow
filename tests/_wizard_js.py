@@ -52,6 +52,24 @@ def wizard_window_function(name: str) -> str:
     raise ValueError(f"unbalanced braces in {name}")
 
 
+def wizard_block(start: str) -> str:
+    """The wizard's one statement that begins with ``start`` (a listener or a call taking a function), to ``});``."""
+    src = WIZARD_TEMPLATE.read_text(encoding="utf-8")
+    begin = src.index(start)
+    if src.find(start, begin + 1) != -1:
+        raise ValueError(f"more than one statement begins with {start!r}")
+    depth = 0
+    for i in range(src.index("{", begin), len(src)):
+        if src[i] == "{":
+            depth += 1
+        elif src[i] == "}":
+            depth -= 1
+            if depth == 0:
+                end = src.index(";", i)
+                return src[begin : end + 1]
+    raise ValueError(f"unbalanced braces after {start!r}")
+
+
 def wizard_var(name: str) -> str:
     """The wizard's one-line ``var name = ...;`` declaration."""
     match = re.search(rf"^\s*var {name} = [^\n]*;$", WIZARD_TEMPLATE.read_text(encoding="utf-8"), re.M)

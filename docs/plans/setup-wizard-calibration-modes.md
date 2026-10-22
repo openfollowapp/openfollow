@@ -317,7 +317,8 @@ with a **Camera height** field (in the active units, "(Z from the point of
 origin)") under it. It is not a warning reason. An entered height holds the fit (a residual on the camera's Z with
 `HEIGHT_SIGMA` 0.01 m, and every seed starts at that height); the blue box then gives way to
 the note "The camera height is fixed at 9.80 m." The field stays
-while a value is in it. A typed height that cannot be read shows the field
+while a value is in it or it has the focus, and once asked until a camera calculated
+without a height is no longer that steep. A typed height that cannot be read shows the field
 error "Enter the height of the camera's lens." under it, one farther than
 10 km "Enter a height within 10000.0 m of the point of origin." (32808.4 ft in
 Imperial); either counts as no height. A missing height never blocks Save and finish. The

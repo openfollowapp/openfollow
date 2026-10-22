@@ -189,7 +189,7 @@
         </table>
         % if config.camera.calibration_height is not None:
         % _h = config.camera.calibration_height
-        <p id="camera-calibration-height" style="margin:0;padding:0.4rem 0.6rem;font-size:var(--btn-font-sm);">Camera height: Fixed at {{format_length(_h, _us) if _imp else "%.2f m" % _h}}</p>
+        <p id="camera-calibration-height" style="margin:0;padding:0.4rem 0.6rem;font-size:var(--btn-font-sm);">Camera height: Fixed at {{format_length(_h, _us)}}</p>
         % end
     </div>
     % end

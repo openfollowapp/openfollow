@@ -2305,8 +2305,8 @@ def test_the_camera_tab_shows_a_distance_point_no_solve_placed_without_a_positio
 @pytest.mark.parametrize(
     ("units", "height", "shown"),
     [
-        ("metric", 9.8, "Camera height: Fixed at 9.80 m"),
-        ("metric", 12.0, "Camera height: Fixed at 12.00 m"),
+        ("metric", 9.8, "Camera height: Fixed at 9.800 m"),
+        ("metric", 12.0, "Camera height: Fixed at 12.000 m"),
         ("imperial", 9.8, "Camera height: Fixed at 32 ft 1.83 in"),
         ("metric", None, None),
     ],
@@ -2322,7 +2322,7 @@ def test_the_camera_tab_shows_the_calibrations_camera_height_read_only(live_serv
     html_text = _get(base, "/section/camera")[1]
     group = html_text[html_text.index('id="camera-calibration-marks"') :]
     group = group[: group.index("</div>")]
-    # As the Setup Wizard shows it (two decimals in metres), in the table's own size and padding.
+    # In the precision and the size of the table above it.
     found = re.search(
         r'<p id="camera-calibration-height" style="margin:0;padding:0.4rem 0.6rem;font-size:var\(--btn-font-sm\);">'
         r"(.*?)</p>",

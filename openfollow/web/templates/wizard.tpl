@@ -3159,7 +3159,7 @@
   // The popup needs a picture of at least 480 x 360 CSS px; on a smaller one (a phone) the menu is a panel.
   function pinMenuAsPanel(rect) { return rect.width < 480 || rect.height < 360; }
   // The one menu moves between the picture, the panel slot under it and, in full screen, the shell's bottom.
-  // ``reveal`` scrolls a panel into view: on opening, and when it changes content or place.
+  // ``reveal`` scrolls the menu into view: on opening, and when it changes content (a panel also when it moves).
   function positionPinMenu(reveal) {
     var m = $('pin-menu'), p = S.pinMenu.p, cont = $('cal-container');
     var rect = cont.getBoundingClientRect(), panel = pinMenuAsPanel(rect), home = !panel ? cont : FS ? $('fs-shell') : $('pin-menu-slot');
@@ -3183,6 +3183,7 @@
     if (x + m.offsetWidth > rect.width - 8) x = p[0] * k - m.offsetWidth - 12;
     if (y + m.offsetHeight > rect.height - 8) y = Math.max(8, p[1] * k - m.offsetHeight - 12);
     m.style.left = Math.max(8, x) + 'px'; m.style.top = y + 'px';
+    if (reveal && !FS) m.scrollIntoView({ block: 'nearest' });
     menuLoupe();
   }
   function pinMenuForm(kind) {

@@ -4823,9 +4823,17 @@ def test_a_panel_opens_under_the_picture_and_scrolls_into_view() -> None:
     assert out == [[["pin-menu-slot", ["as-panel"], False], ["nearest"], "first item"], 1, 2, 4]
 
 
-def test_the_popup_never_scrolls_the_page() -> None:
-    out = _panel("openPinMenu([960, 540]); openPointMenu(2); return scrolls;")
-    assert out == []
+def test_the_popup_scrolls_into_view_as_it_opens_or_changes() -> None:
+    out = _panel(
+        "openPinMenu([960, 540]); var opened = scrolls.length; S.pinMenu.p = [10, 10]; positionPinMenu();"
+        " var moved = scrolls.length; placeFromMenu('new-known'); var formed = scrolls.length;"
+        " closePinMenu(); openPointMenu(2); var pinned = scrolls.length;"
+        " closePinMenu(); FS = { key: 'cal', pad: 0 }; openPinMenu([5, 5]);"
+        " return [opened, moved, formed, pinned, scrolls];"
+    )
+    # A menu opened from the keyboard near the bottom of a tall window is brought on screen; moving its spot
+    # does not scroll, and full screen never does.
+    assert out == [1, 1, 2, 3, ["nearest", "nearest", "nearest"]]
 
 
 @pytest.mark.parametrize(("panel", "cross"), [(False, False), (True, True)], ids=["popup", "panel"])

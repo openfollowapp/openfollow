@@ -1013,9 +1013,11 @@ clear barrel; dense traced edges (16 sub-pixel points each) as the reference.
       give that chord; curves are scored by the share of columns with an
       edge peak on them (a straight edge runs on, clutter only crosses it);
       of the curves scoring at least half the best, the one anchored nearest
-      the clicks wins. The curve is then fitted to the peaks within the window
-      and every point takes the peak within the window of it. Worst case
-      (a full-width line under the top edge over noise) 0.22 s on the Mac.
+      the clicks wins. The curve is then fitted to the peaks within 3 px of it
+      (1080p), first to the half it fits best, so a stretch where another edge
+      runs beside the line cannot pull it over, and every point takes the
+      strongest peak within 2.5 px of the curve. Worst case (a full-width line
+      under the top edge over noise) 0.21 s on the Mac.
 - [x] An unsnapped point stays on the curve, inside the picture.
 - [x] **Strays**: a point that misses the line through its line's other
       points (pinhole picture, screen px) by more than 4 sigmas of that miss
@@ -1031,10 +1033,14 @@ clear barrel; dense traced edges (16 sub-pixel points each) as the reference.
 - [x] Hints ask for a line near an edge "If possible" at every rating.
 - Note, acceptance with the centre at 0 (traced edges' RMS about their own
   straight line; reference = the traced edges' own fit, centre 0):
-  hall, suggestions + drawn: 1.11 px (no lens 1.14), 4.9 px from no lens
+  hall, suggestions + drawn: 1.12 px (no lens 1.14), 5.0 px from no lens
   across the frame (before: 1.96 px, k1 -0.12); concert, suggestions + drawn:
-  0.58 px, 0.7 px from the reference within 0.8 of the half-diagonal (before:
-  0.76 px, k2 dropped); concert, suggestions only: k1 -0.311 (before -0.42).
+  0.60 px, 1.5 px from the reference within 0.8 of the half-diagonal (before:
+  0.76 px, k2 dropped); concert, suggestions only: k1 -0.28 (before -0.42).
+  Open: a hand-traced truss chord over lit boxes still bows onto the boxes'
+  edge 3-4 px below the tube in its middle, and is the line that moves the
+  hall's lens most; a seam drawn as a white line between two dark borders
+  has same-polarity edges 2-3 px apart, and its points may take either.
   The simulation's overclaims (frame error over twice what the rating
   promises) fall from 770 to 79 trials of 4752; the median frame error is
   better in 212 rows and worse in 24, almost all of them one or two centre

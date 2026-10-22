@@ -306,7 +306,7 @@ class TestWizard:
         save_config(cfg, server.config_path)
         _, body = _get(base, "/wizard")
         assert "window.WIZ_STEPS = ['video', 'calib', 'review'];" in body
-        assert 'id="wiz_lens_k1" step="0.005"\n                   value="0.0"' in body
+        assert re.search(r'id="wiz_lens_k1" step="0.005"\s+value="0.0"', body)
         assert "var LENS_ENABLED = false;" in body
 
     def test_lens_on_keeps_the_step_and_the_saved_pair(self, live_server) -> None:

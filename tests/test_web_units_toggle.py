@@ -311,7 +311,8 @@ class TestWizardUnitInjection:
             functions=("$", "len", "refreshEchoes"),
             variables=("exactLen",),
             prelude=length_page(system, {"rect_w": {"value": typed}, "rect_d": {"value": ""}})
-            + "\ndocument.querySelectorAll = function() { return echoes; };",
+            + "\ndocument.querySelectorAll = function() { return echoes; };"
+            + "\nObject.keys(fields).forEach(function(k) { fields[k].getAttribute = function() { return null; }; });",
             echoes=[{"dataset": {"echo": "rect_w"}, "hidden": True}, {"dataset": {"echo": "rect_d"}, "hidden": True}],
         )
         # An empty field shows nothing; a metric station shows the metres in the field itself.

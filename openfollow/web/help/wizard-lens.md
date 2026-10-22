@@ -18,7 +18,7 @@ The rating has five steps. It shows how exactly the lines measure the lens. A **
 
 ## Load and save
 
-**Load lens calibration** sets the lens from a calibration saved on this station, or from an exported `.ofsettings` file. Only the lens values of the file are used. Use it when the picture has no straight edge to draw a line on. The calibration must come from the same camera and lens at the same zoom. Loading removes the lines on the picture. You can still change the values under **Adjust by hand** afterwards.
+**Load lens calibration** sets the lens from a calibration saved on this station, or from an exported `.ofsettings` file. Only the lens values of the file are used. Use it when the picture has no straight edge to draw a line on. The calibration must come from the same camera and lens at the same zoom. Loading removes the lines on the picture. You can still change the values afterwards under **Adjust by hand (optional)**.
 
 **Save lens calibration** saves the current values on this station under a name, so you can load them later for this camera and lens. The size of the snapshot is saved with them. The values are relative to the diagonal of the picture, so they also fit another resolution of the same picture shape, but not another shape or zoom. The list says when a calibration was measured on a picture of another shape. If the name already exists, the saved calibration is replaced.
 

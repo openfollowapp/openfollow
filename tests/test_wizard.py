@@ -1273,10 +1273,14 @@ class TestWizardLensStepPage:
         status, body = _get(base, "/wizard")
         assert status == 200
         assert 'id="wiz_lens_k1"' in body and 'type="hidden" id="wiz_lens_k1"' not in body
-        # The sliders carry the stored pair and sit under the result as Adjust by hand.
+        # The sliders carry the stored pair and sit under the result, folded away as Adjust by hand (optional).
         assert 'id="wiz_lens_k1" step="0.005"' in body
         assert 'value="-0.21"' in body and 'value="0.03"' in body
-        assert '<div class="group-title">Adjust by hand</div>' in body and "Fine-tune" not in body
+        adjust = re.search(
+            r'<details class="inline-advanced" id="lens-adjust">\s*<summary>(.*?)</summary>(.*?)</details>', body, re.S
+        )
+        assert adjust.group(1) == "Adjust by hand (optional)" and 'id="wiz_lens_k2"' in adjust.group(2)
+        assert "Fine-tune" not in body
         # No step is referred to by number anywhere, since the Lens step shifts the numbering.
         assert re.search(r"Step \d", body) is None
 

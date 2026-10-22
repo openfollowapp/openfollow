@@ -312,7 +312,7 @@ def test_a_slider_edit_counts_as_a_measured_lens(saved: list[float], before: boo
         " var document = { getElementById: function(id) { return fields[id] || null; } };"
         " function wizWriteLensCoeff() {} function wizLensPairValid() { return true; }"
         " function lensRecomputeCurves() {} function renderLens() {} function renderLensResult() {}"
-        " function onLensCoeffChanged() {}\n"
+        " function onLensCoeffChanged() {} function wizShowLensFold() {}\n"
         + wizard_window_function("onWizardLensInput")
         + "\nvar onWizardLensInput = window.onWizardLensInput;",
     )
@@ -2058,13 +2058,15 @@ def _hint_state(**kw: object) -> dict:
         (
             _hint_state(sel={"line": 0, "point": 2}, lines=[_LINE], open=[1]),
             "Check the suggested lines.",
-            "Use each one that is straight in reality. Reject the others, such as a curtain, a cloth or a cable."
+            "Confirm each of the lines that is straight in reality by pressing ✔. Reject the others, such as a curtain,"
+            " a cloth or a cable, by pressing ✖."
             " 1 left to check. Or load a saved lens calibration.",
         ),
         (
             _hint_state(open=[1, 4, 7]),
             "Check the suggested lines.",
-            "Use each one that is straight in reality. Reject the others, such as a curtain, a cloth or a cable."
+            "Confirm each of the lines that is straight in reality by pressing ✔. Reject the others, such as a curtain,"
+            " a cloth or a cable, by pressing ✖."
             " 3 left to check. Or load a saved lens calibration.",
         ),
         (
@@ -4561,7 +4563,7 @@ function lensMovePoint() { moves++; } function lensClamp(p) { return p; } functi
 function lensPointPos() { return [0, 0]; } function showLoupe() {} function hideLoupe() {} function renderLens() {}
 function lensFocusSelected() {} function lensChanged() {} function lensPointFocusIn() {}
 function lensTabKey() {} function lensFocusElsewhere() {} function renderLensBubbles() {} function renderLensResult() {}
-function lensPressEnd() {}
+function lensPressEnd() {} function wizShowLensFold() {}
 var hit = { id: 'lens-hit', closest: function() { return null; } };
 var handle = { id: '', closest: function(sel) {
   return sel === '.lens-point' ? { dataset: { line: '0', point: '1' } } : null; } };
@@ -4660,6 +4662,26 @@ def test_the_simple_hint_names_a_partly_filled_camera_only_once_the_typing_is_do
         "typed again": "image",
         "Next": "sloc",
     }
+
+
+@pytest.mark.parametrize(
+    ("valid", "was_open", "result"),
+    [(False, False, ["block", True]), (True, False, ["none", False]), (True, True, ["none", True])],
+    ids=["a folding pair", "a valid pair", "a valid pair, opened by hand"],
+)
+def test_a_folding_lens_pair_opens_adjust_by_hand(valid: bool, was_open: bool, result: list) -> None:
+    out = run_wizard_js(
+        "(function() { els['lens-adjust'].open = was_open; wizShowLensFold();"
+        " return [els['wiz-lens-error'].style.display, els['lens-adjust'].open]; })()",
+        functions=("wizShowLensFold",),
+        prelude="var els = { 'wiz-lens-error': { style: { display: '' } }, 'lens-adjust': {} };"
+        " var document = { getElementById: function(id) { return els[id]; } };"
+        " function wizLensPairValid() { return valid; }",
+        valid=valid,
+        was_open=was_open,
+    )
+    # The fold error is never folded away; a valid pair leaves the section as the operator left it.
+    assert out == result
 
 
 _NO_SOLVE = {"marks": [], "error": "No camera fits."}

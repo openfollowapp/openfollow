@@ -340,6 +340,8 @@
   .fs-keys td { padding: 0.3rem 0; border-top: 1px solid var(--border-soft); border-bottom: 0; vertical-align: top; }
   .fs-keys td:first-child { white-space: nowrap; padding-right: 0.75rem; }
   .fs-keys kbd { display: inline-block; min-width: 1.4rem; padding: 0 0.35rem; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 0.35rem; background: var(--bg-deep); font: inherit; font-size: 0.8rem; text-align: center; }
+  /* A disclosure that is a group's whole content takes the group's own frame. */
+  .group > .inline-advanced:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
   @media (max-width: 680px) {
     .wizard-step-btn { padding: 0.35rem 0.5rem; font-size: 0.72rem; }
   }
@@ -475,30 +477,34 @@
     </div>
 
     <div class="group" style="margin-top:0.72rem;">
-      <div class="group-title">Adjust by hand</div>
-      <div class="row">
-        <div class="field" style="flex:1;min-width:200px;">
-          <label for="wiz_lens_k1">Barrel / fisheye</label>
-          <div style="display:flex;gap:0.5rem;align-items:center;">
-            <input type="range" id="wiz_lens_k1_range" min="-0.6" max="0.6" step="0.005"
-                   value="{{_lens_k1}}" style="flex:1;" oninput="onWizardLensInput('k1', 'range')"
-                   aria-label="Barrel / fisheye slider">
-            <input type="number" id="wiz_lens_k1" step="0.005"
-                   value="{{_lens_k1}}" style="width:6rem;" oninput="onWizardLensInput('k1', 'number')">
+      <details class="inline-advanced" id="lens-adjust">
+        <summary>Adjust by hand (optional)</summary>
+        <div class="inline-advanced-content">
+          <div class="row">
+            <div class="field" style="flex:1;min-width:200px;">
+              <label for="wiz_lens_k1">Barrel / fisheye</label>
+              <div style="display:flex;gap:0.5rem;align-items:center;">
+                <input type="range" id="wiz_lens_k1_range" min="-0.6" max="0.6" step="0.005"
+                       value="{{_lens_k1}}" style="flex:1;" oninput="onWizardLensInput('k1', 'range')"
+                       aria-label="Barrel / fisheye slider">
+                <input type="number" id="wiz_lens_k1" step="0.005"
+                       value="{{_lens_k1}}" style="width:6rem;" oninput="onWizardLensInput('k1', 'number')">
+              </div>
+            </div>
+            <div class="field" style="flex:1;min-width:200px;">
+              <label for="wiz_lens_k2">Corner correction</label>
+              <div style="display:flex;gap:0.5rem;align-items:center;">
+                <input type="range" id="wiz_lens_k2_range" min="-0.4" max="0.4" step="0.005"
+                       value="{{_lens_k2}}" style="flex:1;" oninput="onWizardLensInput('k2', 'range')"
+                       aria-label="Corner correction slider">
+                <input type="number" id="wiz_lens_k2" step="0.005"
+                       value="{{_lens_k2}}" style="width:6rem;" oninput="onWizardLensInput('k2', 'number')">
+              </div>
+            </div>
           </div>
+          <div id="wiz-lens-error" class="wizard-field-error" style="display:none;">With these two values, the overlay folds over itself inside the picture. Set one of the values closer to 0.</div>
         </div>
-        <div class="field" style="flex:1;min-width:200px;">
-          <label for="wiz_lens_k2">Corner correction</label>
-          <div style="display:flex;gap:0.5rem;align-items:center;">
-            <input type="range" id="wiz_lens_k2_range" min="-0.4" max="0.4" step="0.005"
-                   value="{{_lens_k2}}" style="flex:1;" oninput="onWizardLensInput('k2', 'range')"
-                   aria-label="Corner correction slider">
-            <input type="number" id="wiz_lens_k2" step="0.005"
-                   value="{{_lens_k2}}" style="width:6rem;" oninput="onWizardLensInput('k2', 'number')">
-          </div>
-        </div>
-      </div>
-      <div id="wiz-lens-error" class="wizard-field-error" style="display:none;">With these two values, the overlay folds over itself inside the picture. Set one of the values closer to 0.</div>
+      </details>
     </div>
 
     <p class="wizard-tip">Click a point or press <strong>Tab</strong> to select it. The loupe stays on it, and the <strong>arrow keys</strong> move it by one pixel. <strong>Tab</strong> selects the next point of the same line, and after its last point it moves on. Press <strong>Enter</strong> when the crosshair is in the right place. <strong>Esc</strong> or a click somewhere else ends the selection. <strong>Space</strong> switches a middle point off or on. <strong>Delete</strong> or <strong>Backspace</strong> removes the selected line. <strong>Esc</strong> cancels a line you have started. If you skip this step, the current lens values stay.</p>
@@ -847,6 +853,12 @@
     range.value = value;
   }
 
+  // A folding pair shows its error and opens Adjust by hand, so the error is never folded away.
+  function wizShowLensFold() {
+    var ok = wizLensPairValid(), err = document.getElementById('wiz-lens-error');
+    if (err) err.style.display = ok ? 'none' : 'block';
+    if (!ok) document.getElementById('lens-adjust').open = true;
+  }
   // A slider or number edit on the Lens step: mirror the pair, flag a folding
   // pair, redraw the predicted curves, and persist.
   window.onWizardLensInput = function(which, source) {
@@ -855,8 +867,7 @@
     if (num && range) {
       if (source === 'range') num.value = range.value; else wizWriteLensCoeff('wiz_lens_' + which, num.value);
     }
-    var err = document.getElementById('wiz-lens-error');
-    if (err) err.style.display = wizLensPairValid() ? 'none' : 'block';
+    wizShowLensFold();
     lensRecomputeCurves();
     S.lensTouched = true;
     renderLens();
@@ -1964,7 +1975,7 @@
     var agree = /^The result may already be good\. /;
     if (lensPending) { h = 'Click the other end of the straight edge.'; sub = 'Esc cancels the line.'; }
     else if (lensHold && lensSelected && lensSelected.point != null) { h = 'Move the point exactly onto the edge.'; sub = 'Drag it, or use the arrow keys while the loupe shows the edge. Press Enter when it is in the right place.'; }
-    else if (open) { h = 'Check the suggested lines.'; sub = 'Use each one that is straight in reality. Reject the others, such as a curtain, a cloth or a cable. ' + open + ' left to check. Or load a saved lens calibration.'; }
+    else if (open) { h = 'Check the suggested lines.'; sub = 'Confirm each of the lines that is straight in reality by pressing ✔. Reject the others, such as a curtain, a cloth or a cable, by pressing ✖. ' + open + ' left to check. Or load a saved lens calibration.'; }
     else if (!lines && S.lensLoaded) { h = 'A saved lens calibration is loaded.'; sub = 'Press Next, or draw straight lines to measure the lens again.'; }
     else if (!lines) { h = 'Draw straight lines on the picture.'; sub = 'Click the start and the end of an edge that is straight in reality, such as a stage edge, a tape line or a truss. Then move its points exactly onto the edge. Or load a saved lens calibration.'; }
     else if (lensLines.some(function(l) { return l.misfit; })) { h = 'Check the line that does not fit.'; sub = 'It is drawn in the warning colour. Move its points onto the edge, or delete it if it is not straight in reality.'; }
@@ -2446,8 +2457,7 @@
     cands.addEventListener('mouseout', function(e) { if (!e.relatedTarget || !e.relatedTarget.closest || !e.relatedTarget.closest('#lens-candidates [data-candidate]')) lensHotCand(-1); });
     // The bubbles are placed in CSS pixels of the picture as shown, known once it has its size.
     $('lens-image').addEventListener('load', renderLensBubbles);
-    var err = document.getElementById('wiz-lens-error');
-    if (err) err.style.display = wizLensPairValid() ? 'none' : 'block';
+    wizShowLensFold();
     renderLens();
     renderLensResult();
   }

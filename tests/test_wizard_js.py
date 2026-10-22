@@ -33,7 +33,14 @@ from openfollow.scene.lens_fit import fit_lens_from_lines
 from openfollow.scene.solver import apply_overlay_distortion, invert_normalised_radius, project_points
 from openfollow.units import format_length
 from tests._lens_band import scaled_luma
-from tests._wizard_js import length_page, needs_node, run_wizard_js, wizard_block, wizard_window_function
+from tests._wizard_js import (
+    WIZARD_TEMPLATE,
+    length_page,
+    needs_node,
+    run_wizard_js,
+    wizard_block,
+    wizard_window_function,
+)
 
 pytestmark = [pytest.mark.unit, needs_node]
 
@@ -1152,6 +1159,7 @@ _REVIEW_FUNCTIONS = (
     "incompleteLines",
     "incompleteHtml",
     "setLive",
+    "showLive",
     "renderReview",
 )
 _COMPLETE = [
@@ -1281,7 +1289,7 @@ def test_a_pin_behind_the_camera_is_drawn_flagged_on_the_picture() -> None:
 def test_the_status_line_names_the_pins_the_page_sent() -> None:
     out = run_wizard_js(
         "(function() { renderCalibResult(); return $('cal-status').innerHTML; })()",
-        functions=("esc", "setLive", "renderCalibResult"),
+        functions=("esc", "setLive", "showLive", "renderHeightGroup", "renderCalibResult"),
         variables=("heightAsked",),
         prelude=_DOM + _REVIEW_STUBS + "var S = { mode: 'advanced', pair: 0 }; function lensMeasured() { return true; }"
         " S.solve = { cam: { fov: 60 }, worst: 0.6, pinned: 5, count: 4, reasons: [], marks: [] };",
@@ -2589,7 +2597,7 @@ _HEIGHT_RESULT = (
 @pytest.mark.parametrize(
     ("solve", "typed", "height", "shown"),
     [
-        ({"cam": {"fov": 60}, "steep": False}, "", None, [True, False, True, ""]),
+        ({"cam": {"fov": 60}, "steep": False}, "", None, [True, True, True, ""]),
         ({"cam": {"fov": 60}, "steep": True}, "", None, [False, False, True, ""]),
         (
             {"cam": {"fov": 60}, "steep": True},
@@ -2604,15 +2612,15 @@ _HEIGHT_RESULT = (
             [False, True, False, "The camera height is fixed at 9.80 m."],
         ),
         ({"error": "No camera fits."}, "9.8", 9.8, [False, True, False, "The camera height is fixed at 9.80 m."]),
-        ({"cam": {"fov": 60}, "steep": False}, "9.", None, [False, False, True, ""]),
-        ({"error": "No camera fits.", "steep": True}, "", None, [True, False, True, ""]),
+        ({"cam": {"fov": 60}, "steep": False}, "9.", None, [False, True, True, ""]),
+        ({"error": "No camera fits.", "steep": True}, "", None, [True, True, True, ""]),
     ],
     ids=["not steep", "steep", "steep, entered", "no longer steep", "no solve", "half typed", "no camera"],
 )
 def test_the_height_is_asked_while_steep_and_noted_once_entered(solve: dict, typed: str, height, shown: list) -> None:
     out = run_wizard_js(
         _HEIGHT_RESULT,
-        functions=("esc", "setLive", "renderCalibResult", "lenText", "fmt"),
+        functions=("esc", "setLive", "showLive", "renderHeightGroup", "renderCalibResult", "lenText", "fmt"),
         variables=("heightAsked",),
         prelude=length_page("metric", {})
         + _DOM
@@ -2628,7 +2636,7 @@ def test_the_height_is_asked_while_steep_and_noted_once_entered(solve: dict, typ
 def test_the_note_is_in_the_active_unit() -> None:
     out = run_wizard_js(
         _HEIGHT_RESULT,
-        functions=("esc", "setLive", "renderCalibResult", "lenText", "fmt"),
+        functions=("esc", "setLive", "showLive", "renderHeightGroup", "renderCalibResult", "lenText", "fmt"),
         variables=("heightAsked",),
         prelude=length_page("imperial", {})
         + _DOM
@@ -2891,7 +2899,7 @@ def test_the_height_stays_asked_until_a_camera_without_a_height_is_not_steep(ste
         "(function() { return steps.map(function(st) {"
         " S.solve = Object.assign({ worst: 0.4, pinned: 4, reasons: [], marks: [] }, st[0]);"
         " $('cam_height').value = st[1]; renderCalibResult(); return !$('cal-height').hidden; }); })()",
-        functions=("esc", "setLive", "renderCalibResult", "lenText", "fmt"),
+        functions=("esc", "setLive", "showLive", "renderHeightGroup", "renderCalibResult", "lenText", "fmt"),
         variables=("heightAsked",),
         prelude=length_page("metric", {})
         + _DOM
@@ -2914,7 +2922,7 @@ def test_an_empty_height_field_stays_while_it_has_the_focus_or_unreadable_text(
     out = run_wizard_js(
         "(function() { var f = $('cam_height'); f.validity = { badInput: bad }; if (focus) document.activeElement = f;"
         " renderCalibResult(); return !$('cal-height').hidden; })()",
-        functions=("esc", "setLive", "renderCalibResult", "lenText", "fmt"),
+        functions=("esc", "setLive", "showLive", "renderHeightGroup", "renderCalibResult", "lenText", "fmt"),
         variables=("heightAsked",),
         prelude=length_page("metric", {})
         + _DOM
@@ -2970,6 +2978,7 @@ function renderCalibOverlay() {
 function renderSimpleLoc() {} function bindDrag() {} function hideLoupe() {} function renderAdvRows() {}
 function solveSoon() {} function saveToSession() {} function dropCorner() {}
 function camChanged() {} function cornerEnterKey() {} function pinMenuCheck() {}
+var results = 0; function renderHeightGroup() { results++; }
 var FS = null, lensHold = false, lensPending = null, currentStep = 2, WIZ = { lens: 1 };
 var S = { mode: 'advanced', selPin: null, selCorner: null, pinMenu: null,
   points: [{ id: 2, name: 'DSR', pin: [5, 5] }, { id: 3, name: 'USR', pin: [6, 6] }] };
@@ -3080,6 +3089,201 @@ def test_reset_corners_gives_the_focus_of_its_hidden_button_to_the_picture(mode:
     assert out == focus
 
 
+# The rows under the picture: each row's first control and its Delete button record the focus they take.
+_ROWS_PAGE = """
+els['adv-rows'] = Object.assign(fakeEl('adv-rows'), { querySelector: function(sel) {
+  var m = /^\\[data-(del|row)="(\\d+)"\\]$/.exec(sel);
+  if (!m || !S.points.some(function(p) { return p.id === +m[2]; })) return null;
+  if (m[1] === 'del') return { focus: function() { focused = 'delete ' + m[2]; } };
+  return { querySelector: function(s) {
+    return s === 'button, input, select' ? { focus: function() { focused = 'row ' + m[2]; } } : null; } };
+} });
+function rowClick(attr, id) {
+  fire('adv-rows', 'click', { target: { closest: function(sel) {
+    var data = {}; data[attr] = String(id);
+    return sel === '[data-' + attr + ']' ? { dataset: data } : null;
+  } } });
+}
+"""
+
+
+@pytest.mark.parametrize(
+    ("ids", "act", "focus"),
+    [
+        ([2, 3, 4], ("unpin", 3), "delete 3"),
+        ([2, 3, 4], ("del", 3), "row 4"),
+        ([2, 3, 4], ("del", 4), "row 3"),
+        ([2], ("del", 2), "adv-add-known"),
+    ],
+    ids=["remove pin", "delete, a row after", "delete the last row", "delete the only row"],
+)
+def test_a_row_button_hands_its_focus_on(ids: list, act: list, focus: str) -> None:
+    out = run_wizard_js(
+        "(function() { S.points = ids.map(function(id) { return { id: id, name: 'P' + id, pin: [id, id] }; });"
+        " calibInit(); rowClick(act[0], act[1]);"
+        " return [focused, S.points.map(function(p) { return [p.id, p.pin]; })]; })()",
+        functions=_MENU_FUNCTIONS,
+        prelude=_MENU_PAGE + _ROWS_PAGE,
+        ids=ids,
+        act=list(act),
+    )
+    kind, gone = act
+    left = [[i, None if kind == "unpin" and i == gone else [i, i]] for i in ids if kind == "unpin" or i != gone]
+    assert out == [focus, left]
+
+
+@pytest.mark.parametrize(
+    ("where", "selected", "result"),
+    [
+        ("elsewhere", "USL", [None, 1, 1]),
+        ("elsewhere", None, [None, 0, 1]),
+        ("a pin", "USL", ["USL", 0, 0]),
+        ("its menu", 2, [2, 0, 0]),
+    ],
+    ids=["a selected pin", "nothing selected", "a pin", "the pin menu"],
+)
+def test_a_press_off_the_pins_drops_the_selection(where: str, selected, result: list) -> None:
+    out = run_wizard_js(
+        "(function() { calibInit(); S.selPin = selected; renders = 0;"
+        " fire('document', 'pointerdown', { pointerType: 'mouse', target: { closest: function(sel) {"
+        " return (where === 'a pin' && sel.indexOf('.pin-handle') >= 0)"
+        " || (where === 'its menu' && sel.indexOf('#pin-menu') >= 0) ? {} : null; } } });"
+        " return [S.selPin, renders, dropped]; })()",
+        functions=_MENU_FUNCTIONS,
+        prelude=_MENU_PAGE + "var dropped = 0; function dropCorner() { dropped++; }",
+        where=where,
+        selected=selected,
+    )
+    # A press on nothing focusable moves the focus to no element, so no focusin clears the selection.
+    assert out == result
+
+
+@pytest.mark.parametrize(("moved", "focus"), [(True, "pin 3"), (False, "menu 3")], ids=["dragged", "clicked"])
+def test_a_dragged_pin_takes_the_focus(moved: bool, focus: str) -> None:
+    out = run_wizard_js(
+        "(function() { calibInit(); var d = drags['cal-overlay'].start({ dataset: { mark: '3' } }, [6, 6]);"
+        " if (moved) d.move([60, 60]); d.end(); return [focused, S.selPin]; })()",
+        functions=_MENU_FUNCTIONS,
+        prelude=_MENU_PAGE + "var drags = {}; function bindDrag(id, c, hit, o) { drags[id] = o; }"
+        " function openPointMenu(id) { focused = 'menu ' + id; } var imageWidth = 1920, imageHeight = 1080;"
+        " els['cal-container'] = Object.assign(fakeEl('cal-container'),"
+        " { getBoundingClientRect: function() { return { width: 960 }; } });",
+        moved=moved,
+    )
+    # Selected, it has the focus: the arrow keys move it.
+    assert out == [focus, 3]
+
+
+def test_the_height_field_is_looked_at_again_once_left() -> None:
+    out = run_wizard_js(
+        "(function() { calibInit(); results = 0; fire('document', 'focusout', { target: $('cam_height') });"
+        " var left = results; fire('document', 'focusout', { target: $('cam_pos_x') }); return [left, results]; })()",
+        functions=_MENU_FUNCTIONS,
+        prelude=_MENU_PAGE,
+    )
+    assert out == [1, 1]
+
+
+@pytest.mark.parametrize(
+    ("asked", "typed", "focus", "shown"),
+    [
+        (False, "", True, [True, False]),
+        (False, "9.", False, [True, False]),
+        (True, "", False, [False, False]),
+        (True, "", True, [False, False]),
+    ],
+    ids=["level, focused", "level, half typed", "steep", "steep, focused"],
+)
+def test_the_steep_camera_notice_shows_only_while_the_height_is_asked(
+    asked: bool, typed: str, focus: bool, shown: list
+) -> None:
+    out = run_wizard_js(
+        "(function() { var f = $('cam_height'); f.value = typed; if (focus) document.activeElement = f;"
+        " renderCalibResult(); return [$('cal-height-ask').hidden, $('cal-height').hidden]; })()",
+        functions=("esc", "setLive", "showLive", "renderHeightGroup", "renderCalibResult", "lenText", "fmt"),
+        variables=("heightAsked",),
+        prelude=length_page("metric", {})
+        + _DOM
+        + _REVIEW_STUBS
+        + "function lensMeasured() { return true; } var S = { mode: 'simple', pair: 0, height: null };"
+        + f" S.solve = {{ cam: {{ fov: 60 }}, steep: {json.dumps(asked)}, worst: 0.4, pinned: 4,"
+        " reasons: [], marks: [] };",
+        typed=typed,
+        focus=focus,
+    )
+    assert out == shown
+
+
+@pytest.mark.parametrize(
+    ("step", "focus"),
+    [
+        ("inStep('lens')", "calib heading"),
+        ("document.body", "calib heading"),
+        ("null", "calib heading"),
+        ("{ step: null, closest: function() { return null; } }", None),
+        ("inStep('calib')", None),
+    ],
+    ids=["from the step left", "from the body", "from no element", "from the step list", "from the step entered"],
+)
+def test_a_step_change_gives_a_lost_focus_to_the_new_steps_heading(step: str, focus) -> None:
+    out = run_wizard_js(
+        f"(function() {{ document.activeElement = {step}; window.wizardGo(2); return focused; }})()",
+        prelude=_STEPS_PAGE + wizard_window_function("wizardGo"),
+    )
+    assert out == focus
+
+
+def test_opening_the_wizard_leaves_the_focus_where_it_is() -> None:
+    out = run_wizard_js(
+        "(function() { document.activeElement = document.body; window.wizardGo(1, true); return focused; })()",
+        prelude=_STEPS_PAGE + wizard_window_function("wizardGo"),
+    )
+    assert out is None
+
+
+def test_each_step_heading_can_take_the_focus() -> None:
+    src = WIZARD_TEMPLATE.read_text(encoding="utf-8")
+    for key in ("video", "lens", "calib", "review"):
+        step = src[src.index(f'id="wizard-step-{key}"') :]
+        assert re.search(r"<h2[^>]*>", step).group(0) == '<h2 tabindex="-1">', key
+
+
+def test_the_focusable_pictures_are_named_and_show_their_focus_inside_their_frame() -> None:
+    src = WIZARD_TEMPLATE.read_text(encoding="utf-8")
+    for el_id in ("lens-overlay", "cal-overlay"):
+        tag = re.search(rf'<svg id="{el_id}"[^>]*>', src).group(0)
+        assert 'tabindex="-1"' in tag and 'aria-label="Picture"' in tag, el_id
+    # The picture's container clips: the ring is drawn inside the picture's edge.
+    rule = re.search(r"\.wizard-overlay:focus-visible \{([^}]*)\}", src).group(1)
+    assert "outline: 2px solid var(--accent)" in rule and "outline-offset: -2px" in rule
+
+
+def test_the_pin_menu_scrolls_inside_the_picture_it_cannot_outgrow() -> None:
+    src = WIZARD_TEMPLATE.read_text(encoding="utf-8")
+    rule = re.search(r"\n  \.pin-menu \{([^}]*)\}", src).group(1)
+    assert "max-height: calc(100% - 16px)" in rule and "overflow-y: auto" in rule
+
+
+@pytest.mark.parametrize("size", [(260, 120), (288, 184)], ids=["the list", "a form at its tallest"])
+def test_the_pin_menu_is_placed_inside_a_phones_picture(size: tuple) -> None:
+    # A 390 px wide phone: the picture is 358 x 201 px, and the menu at most 16 px less high.
+    out = run_wizard_js(
+        "(function() { var out = []; for (var x = 0; x <= 1920; x += 160) for (var y = 0; y <= 1080; y += 90) {"
+        " S.pinMenu = { p: [x, y] }; positionPinMenu();"
+        " out.push([parseFloat(m.style.left), parseFloat(m.style.top)]); }"
+        " return out; })()",
+        functions=("positionPinMenu",),
+        prelude="var imageWidth = 1920, S = {}; function menuLoupe() {}"
+        f" var m = {{ offsetWidth: {size[0]}, offsetHeight: {size[1]}, style: {{}} }};"
+        " var box = { getBoundingClientRect: function() { return { width: 358, height: 201.375 }; } };"
+        " function $(id) { return id === 'pin-menu' ? m : box; }",
+    )
+    w, h = size
+    for left, top in out:
+        assert left >= 8 and left + w <= 358 - 8, (left, top)
+        assert top >= 8 and top + h <= 201.375 - 8, (left, top)
+
+
 # ---------------------------------------------------------------------------
 # Live regions: rewritten only when their words change
 # ---------------------------------------------------------------------------
@@ -3129,7 +3333,7 @@ def test_set_live_writes_only_new_words_unless_forced() -> None:
 @pytest.mark.parametrize(
     ("mode", "solve", "height", "regions"),
     [
-        ("advanced", {"need": ["2 more pinned points"]}, None, ["adv-need", "cal-status"]),
+        ("advanced", {"need": ["2 more pinned points"]}, None, ["adv-need"]),
         (
             "simple",
             {"cam": {"fov": 60}, "steep": True, "worst": 0.4, "pinned": 4, "reasons": [{"kind": "fov"}]},
@@ -3145,7 +3349,7 @@ def test_the_calibration_live_regions_are_written_once_for_the_same_words(mode, 
     out = _live_writes(
         "renderCalibResult();",
         regions,
-        functions=("esc", "setLive", "renderCalibResult", "lenText", "fmt"),
+        functions=("esc", "setLive", "showLive", "renderHeightGroup", "renderCalibResult", "lenText", "fmt"),
         variables=("heightAsked",),
         prelude=length_page("metric", {})
         + _COUNTING_DOM
@@ -3227,6 +3431,150 @@ def test_the_misfit_notice_and_the_lens_status_are_written_once_for_the_same_wor
         prelude=_COUNTING_DOM + "var lensLines = [{ misfit: true }, { misfit: false }, { misfit: true }];",
     )
     assert out == {"lens-misfit": 1, "lens-status": 1, "lens-notice": 1}
+
+
+def test_a_hidden_live_region_forgets_its_words() -> None:
+    out = run_wizard_js(
+        "(function() { var el = $('r'), seen = []; [true, true, false, true].forEach(function(on) {"
+        " showLive(el, 'a', on); seen.push(el.hidden); }); return [writes.r, seen, el.innerHTML]; })()",
+        functions=("setLive", "showLive"),
+        prelude=_COUNTING_DOM,
+    )
+    # Shown again with the same words, it is written again, so a screen reader reads it.
+    assert out == [2, [False, False, True, False], "a"]
+
+
+_SOLVED = {"cam": {"fov": 60}, "steep": False, "worst": 0.4, "pinned": 4, "reasons": [{"kind": "fov"}], "marks": []}
+_SOLVED_CLEAN = {**_SOLVED, "reasons": []}
+
+
+@pytest.mark.parametrize(
+    ("mode", "shown", "hidden", "region"),
+    [
+        ("advanced", {"need": ["2 more pinned points"], "marks": []}, _SOLVED_CLEAN, "adv-need"),
+        ("simple", _SOLVED, _SOLVED_CLEAN, "cal-caution"),
+        ("simple", _SOLVED_CLEAN, None, "cal-status"),
+    ],
+    ids=["what Advanced needs", "something might be wrong", "the solve's status"],
+)
+def test_a_calibration_region_shown_again_is_written_again(mode: str, shown: dict, hidden, region: str) -> None:
+    out = run_wizard_js(
+        "(function() { var seen = []; [shown, hidden, shown].forEach(function(s) { S.solve = s; renderCalibResult();"
+        " seen.push($(region).hidden); }); return [writes[region] || 0, seen]; })()",
+        functions=("esc", "setLive", "showLive", "renderHeightGroup", "renderCalibResult", "lenText", "fmt"),
+        variables=("heightAsked",),
+        prelude=length_page("metric", {})
+        + _COUNTING_DOM
+        + _REVIEW_STUBS
+        + "function lensMeasured() { return true; }"
+        + f" var S = {{ mode: {json.dumps(mode)}, pair: 0, height: null }};",
+        shown=shown,
+        hidden=hidden,
+        region=region,
+    )
+    assert out == [2, [False, True, False]]
+
+
+_REVIEW_SOLVED = {"cam": {"fov": 60}, "worst": 0.4, "reasons": [], "positions": {}, "marks": []}
+
+
+@pytest.mark.parametrize(
+    ("shown", "hidden", "region"),
+    [
+        ({**_REVIEW_SOLVED, "reasons": [{"kind": "fov"}]}, _REVIEW_SOLVED, "review-caution"),
+        ({"error": "No camera fits.", "marks": []}, _REVIEW_SOLVED, "review-status"),
+        (
+            {**_REVIEW_SOLVED, "marks": [{"id": 5, "name": "P5", "problem": "Pin it.", "need": "a pin"}]},
+            _REVIEW_SOLVED,
+            "review-incomplete",
+        ),
+    ],
+    ids=["something might be wrong", "not calculated", "incomplete points"],
+)
+def test_a_review_region_shown_again_is_written_again(shown: dict, hidden: dict, region: str) -> None:
+    out = run_wizard_js(
+        "(function() { var seen = []; [shown, hidden, shown].forEach(function(s) { S.solve = s; renderReview();"
+        " seen.push($(region).hidden); }); return [writes[region] || 0, seen]; })()",
+        functions=_REVIEW_FUNCTIONS,
+        variables=("APPLY_MAX_PX",),
+        prelude=_COUNTING_DOM + _REVIEW_STUBS,
+        S={"mode": "advanced", "cam": None, "solve": None, "height": None},
+        solvePending=False,
+        shown=shown,
+        hidden=hidden,
+        region=region,
+    )
+    assert out == [2, [False, True, False]]
+
+
+def test_the_lens_result_shown_again_is_written_again() -> None:
+    out = run_wizard_js(
+        "(function() { var fit = { rating: 'okay', k1: -0.12, k2: 0, k2_fitted: false, hint: 'Add a line.' };"
+        " [fit, null, fit].forEach(function(f) { lensFit = f; renderLensResult(); });"
+        " return [writes['lens-result-text'], writes['lens-result-hint']]; })()",
+        functions=("esc", "setLive", "lensFitApplies", "renderLensResult"),
+        variables=("LENS_RATING_LEVEL", "LENS_RATING_LABEL"),
+        prelude=_COUNTING_DOM + _LENS_RESULT_PAGE + "var S = { lensLoaded: null }, lensFit = null, lensLines = [];",
+    )
+    assert out == [2, 2]
+
+
+@pytest.mark.parametrize(("visible", "kept"), [(True, "words"), (False, None)], ids=["picture", "no picture"])
+def test_the_lens_hint_hidden_with_the_picture_forgets_its_words(visible: bool, kept) -> None:
+    out = run_wizard_js(
+        "(function() { $('lens-hint').liveHtml = 'words'; setPreviewVisibility(visible);"
+        " return [$('lens-hint').liveHtml, $('lens-hint').hidden]; })()",
+        functions=("setPreviewVisibility",),
+        prelude=_COUNTING_DOM,
+        visible=visible,
+    )
+    assert out == [kept, not visible]
+
+
+def test_leaving_full_screen_forgets_the_full_screen_hint() -> None:
+    out = run_wizard_js(
+        "(function() { closeFull(); return hint.liveHtml; })()",
+        functions=("closeFull",),
+        prelude=_CLOSE_FULL_PAGE + "var refused = false, hint = { liveHtml: 'words' };"
+        " function $(id) { return id === 'fs-hint' ? hint : shell; }",
+    )
+    assert out is None
+
+
+# Four steps, each with two live regions holding words, a heading, and a focus that is recorded.
+_STEPS_PAGE = """
+var focused = null, steps = {}, WIZ_STEPS = ['video', 'lens', 'calib', 'review'], currentStep = 0;
+WIZ_STEPS.forEach(function(key) {
+  steps['wizard-step-' + key] = { key: key, regions: [{ liveHtml: 'words' }, { liveHtml: 'words' }],
+    classList: { toggle: function() {} },
+    querySelectorAll: function(sel) {
+      return ['[role="status"]', '[role="alert"]', '[aria-live]'].every(function(s) { return sel.indexOf(s) >= 0; })
+        ? this.regions : [];
+    },
+    querySelector: function(sel) {
+      return sel === 'h2' ? { focus: function() { focused = key + ' heading'; } } : null; },
+    contains: function(x) { return !!x && x.step === key; } };
+});
+function $(id) { return steps[id] || null; }
+var window = { scrollTo: function() {} };
+var document = { body: { step: null }, activeElement: null,
+  querySelectorAll: function(sel) { return sel === '.wizard-content' ? Object.values(steps) : []; } };
+function inStep(key) { return { step: key, closest: function(sel) { return sel === '.wizard-content' ? {} : null; } }; }
+function closePinMenu() {} function dropCorner() {} function dropLensPoint() {} function saveToSession() {}
+function loadSnapshot() {} function placeStartQuad() {} function renderCalibPanels() {} function runSolve() {}
+function renderReview() {}
+var S = { mode: 'advanced' };
+"""
+
+
+def test_a_step_entered_reads_out_its_live_regions_again() -> None:
+    out = run_wizard_js(
+        "(function() { window.wizardGo(2); var out = {}; WIZ_STEPS.forEach(function(k) {"
+        " out[k] = steps['wizard-step-' + k].regions.map(function(r) { return r.liveHtml; }); }); return out; })()",
+        prelude=_STEPS_PAGE + wizard_window_function("wizardGo"),
+    )
+    kept = ["words", "words"]
+    assert out == {"video": kept, "lens": kept, "calib": [None, None], "review": kept}
 
 
 # ---------------------------------------------------------------------------

@@ -127,6 +127,11 @@
     pointer-events: none;
     touch-action: none;
   }
+  /* Inset: the picture's container clips anything outside it. */
+  .wizard-overlay:focus { outline: none; }
+  .wizard-overlay:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  /* A step's heading takes the focus only so a step change is announced and Tab starts there. */
+  .wizard-content h2[tabindex="-1"]:focus { outline: none; }
   .wizard-overlay .handle {
     pointer-events: all;
     cursor: grab;
@@ -290,7 +295,7 @@
   .step-locked { opacity: 0.4; filter: grayscale(0.6); transition: opacity 150ms; }
   @media (prefers-reduced-motion: reduce) { .step-locked { transition: none; } }
   /* The menu a click on the picture opens in Advanced. */
-  .pin-menu { position: absolute; z-index: 5; min-width: 13rem; max-width: 18rem; padding: 0.35rem; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 0.6rem; box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45); line-height: 1.3; }
+  .pin-menu { position: absolute; z-index: 5; min-width: 13rem; max-width: 18rem; max-height: calc(100% - 16px); overflow-y: auto; overscroll-behavior: contain; padding: 0.35rem; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 0.6rem; box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45); line-height: 1.3; }
   .pin-menu-head { display: flex; align-items: center; justify-content: space-between; gap: 0.4rem; }
   .pin-menu-title { font-size: 0.68rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); padding: 0.3rem 0.5rem; }
   .pin-menu .pm-close { width: 1.7rem; height: 1.7rem; padding: 0; border-radius: 0.45rem; background: transparent; color: var(--muted); font-size: 1.1rem; line-height: 1; }
@@ -368,7 +373,7 @@
 <div class="wizard-content" id="wizard-step-video">
   <div class="section">
     <div class="section-head">
-      <h2>Video Source</h2>
+      <h2 tabindex="-1">Video Source</h2>
       <span class="section-note">Select and configure the camera input</span>
       <div class="section-actions"><button type="button" class="section-help-btn" data-help-open="wizard-video" aria-label="Open help for this section">?</button></div>
     </div>
@@ -412,7 +417,7 @@
 <div class="wizard-content" id="wizard-step-lens">
   <div class="section">
     <div class="section-head">
-      <h2>Lens</h2>
+      <h2 tabindex="-1">Lens</h2>
       <span class="section-note">Measure the lens from edges that are straight in reality</span>
       <div class="section-actions"><button type="button" class="section-help-btn" data-help-open="wizard-lens" aria-label="Open help for this section">?</button></div>
     </div>
@@ -421,7 +426,7 @@
     <div id="lens-container" class="wizard-preview-container" style="display:none;">
       <img id="lens-image" alt="Camera snapshot">
       <canvas id="lens-edges" class="lens-edges" aria-hidden="true"></canvas>
-      <svg id="lens-overlay" class="wizard-overlay" tabindex="-1" xmlns="http://www.w3.org/2000/svg">
+      <svg id="lens-overlay" class="wizard-overlay" tabindex="-1" aria-label="Picture" xmlns="http://www.w3.org/2000/svg">
         <rect id="lens-hit" class="lens-hit" x="0" y="0" width="100%" height="100%" fill="transparent"/>
         <g id="lens-candidates"></g>
         <g id="lens-lines"></g>
@@ -505,7 +510,7 @@
 <div class="wizard-content" id="wizard-step-calib">
   <div class="section" id="step-calib">
     <div class="section-head">
-      <h2>Camera Calibration</h2>
+      <h2 tabindex="-1">Camera Calibration</h2>
       <span class="section-note"><span class="only-simple">Drag four corners onto their tape marks</span><span class="only-advanced">Place measured points on the picture</span></span>
       <div class="section-actions"><button type="button" class="secondary small" id="unit-switch">Switch units to {{'Metric' if _imp else 'Imperial'}}</button><button type="button" class="section-help-btn" id="calib-help-btn" data-help-open="wizard-calibration-simple" aria-label="Open help for this section">?</button></div>
     </div>
@@ -610,7 +615,7 @@
     <div id="hint-slot-image"></div>
     <div id="cal-container" class="wizard-preview-container" style="display:none;">
       <img id="cal-image" alt="Camera snapshot">
-      <svg id="cal-overlay" class="wizard-overlay" tabindex="-1" xmlns="http://www.w3.org/2000/svg">
+      <svg id="cal-overlay" class="wizard-overlay" tabindex="-1" aria-label="Picture" xmlns="http://www.w3.org/2000/svg">
         <rect id="cal-hit" class="cal-hit" x="0" y="0" width="100%" height="100%" fill="transparent"/>
         <g id="cal-grid"></g>
         <g id="cal-dist"></g>
@@ -680,7 +685,7 @@
 <div class="wizard-content" id="wizard-step-review">
   <div class="section">
     <div class="section-head">
-      <h2>Review</h2>
+      <h2 tabindex="-1">Review</h2>
       <span class="section-note">Check all values before saving</span>
       <div class="section-actions"><button type="button" class="section-help-btn" data-help-open="wizard-review" aria-label="Open help for this section">?</button></div>
     </div>
@@ -788,6 +793,8 @@
   function $(id) { return document.getElementById(id); }
   // A live region is rewritten only when its words change, so a redraw is not read out again; `force` rewrites it anyway.
   function setLive(el, html, force) { if (force || el.liveHtml !== html) { el.liveHtml = html; el.innerHTML = html; } }
+  // Hidden, a region forgets its words: shown again with the same words, it is read out again.
+  function showLive(el, html, on) { el.hidden = !on; if (on) setLive(el, html); else el.liveHtml = null; }
 
   // Lens coefficients: the one bound on the pair is that the warp must not fold
   // inside the frame (mirrors openfollow.lens_model.lens_warp_is_valid).
@@ -1327,6 +1334,7 @@
       $(pair[1]).style.display = visible ? 'none' : 'block';
     });
     $('lens-hint').hidden = !visible;
+    if (!visible) $('lens-hint').liveHtml = null;
   }
   function showNoFeed() { setPreviewVisibility(false); }
   function showSnapshotOnCurrentStep(url, img) {
@@ -2080,7 +2088,7 @@
       return;
     }
     meter.style.display = '';
-    if (!lensFit) { box.style.display = 'none'; return; }
+    if (!lensFit) { box.style.display = 'none'; $('lens-result-text').liveHtml = $('lens-result-hint').liveHtml = null; return; }
     var level = LENS_RATING_LEVEL[lensFit.rating] || 'caution';
     box.style.display = '';
     box.className = 'notice' + (level === 'caution' ? ' warning' : level === 'success' ? ' success' : '');
@@ -2856,35 +2864,35 @@
   var heightAsked = false;
   function renderCalibResult() {
     var s = S.solve, st = $('cal-status');
-    if (!s) { st.hidden = true; return; }
-    st.hidden = false;
+    if (!s) { showLive(st, '', false); return; }
+    var need = s.need && esc('To calculate the camera, add ' + s.need.join(' and ') + '.');
     // Advanced says what the solve still needs right under the picture, where the points are placed.
-    $('adv-need').hidden = !(S.mode === 'advanced' && s.need);
-    if (S.mode === 'advanced' && s.need) setLive($('adv-need'), esc('To calculate the camera, add ' + s.need.join(' and ') + '.'));
-    if (s.waiting) { st.className = 'wizard-status waiting'; setLive(st, esc(s.waiting)); }
-    else if (s.need) { st.className = 'wizard-status waiting'; setLive(st, esc('To calculate the camera, add ' + s.need.join(' and ') + '.')); st.hidden = S.mode === 'advanced'; }
-    else if (s.error) { st.className = 'wizard-status error'; setLive(st, esc(s.error)); }
-    else { st.className = 'wizard-status ok'; setLive(st, esc('Calculated from ' + s.pinned + (S.mode === 'simple' ? ' corners' : ' pinned points') + ', largest error ' + s.worst.toFixed(1) + ' px.')); }
+    showLive($('adv-need'), need, !!(S.mode === 'advanced' && need));
+    if (s.waiting) { st.className = 'wizard-status waiting'; showLive(st, esc(s.waiting), true); }
+    else if (need) { st.className = 'wizard-status waiting'; showLive(st, need, S.mode !== 'advanced'); }
+    else if (s.error) { st.className = 'wizard-status error'; showLive(st, esc(s.error), true); }
+    else { st.className = 'wizard-status ok'; showLive(st, esc('Calculated from ' + s.pinned + (S.mode === 'simple' ? ' corners' : ' pinned points') + ', largest error ' + s.worst.toFixed(1) + ' px.'), true); }
     var ok = !!s.cam;
     $('cal-solved').hidden = !ok;
     if (ok) $('cal-solved').innerHTML = solvedParamsHtml(s.cam) + (LENS_ENABLED ? '<div class="wizard-solved-param"><span class="param-label">Lens</span><span class="param-value"' +
       (lensMeasured() ? '>' + fmt(wizReadLensCoeff('wiz_lens_k1'), 3) + ' / ' + fmt(wizReadLensCoeff('wiz_lens_k2'), 3) : ' class="caution-text">Not measured') + '</span></div>' : '');
-    $('cal-caution').hidden = !(ok && s.reasons.length);
-    if (ok && s.reasons.length) setLive($('cal-caution'), cautionHtml(s));
+    showLive($('cal-caution'), ok && s.reasons.length && cautionHtml(s), !!(ok && s.reasons.length));
     $('cal-lens-note').hidden = !(ok && stationLensOnly());
     if (ok && s.steep) heightAsked = true;
     else if (ok && !s.withHeight) heightAsked = false;
-    // Asked while the camera looks almost straight down; the field stays while it holds text or the focus.
-    var hf = $('cam_height');
-    $('cal-height').hidden = !(heightAsked || hf.value.trim() !== '' || !!(hf.validity && hf.validity.badInput) || hf === document.activeElement);
-    $('cal-height-ask').hidden = S.height != null;
-    $('cal-height-note').hidden = S.height == null;
-    if (S.height != null) setLive($('cal-height-note'), esc('The camera height is fixed at ' + lenText(S.height, 2) + '.'));
+    renderHeightGroup();
     var pairs = pairsFor(s);
     if (S.pair >= pairs.length) S.pair = 0;
     $('cal-dist-group').hidden = !pairs.length;
     $('cal-dist-table').innerHTML = distTable(pairs, true);
     $('cal-hit').classList.toggle('idle', S.mode !== 'advanced');
+  }
+  // Asked while the camera looks almost straight down; the field stays while it holds text or the focus.
+  function renderHeightGroup() {
+    var hf = $('cam_height');
+    $('cal-height').hidden = !(heightAsked || hf.value.trim() !== '' || !!(hf.validity && hf.validity.badInput) || hf === document.activeElement);
+    $('cal-height-ask').hidden = !(heightAsked && S.height == null);
+    showLive($('cal-height-note'), S.height != null && esc('The camera height is fixed at ' + lenText(S.height, 2) + '.'), S.height != null);
   }
   function calibGrid() {
     var g = SAVED.grid;
@@ -3220,6 +3228,9 @@
     $('simple-loc').addEventListener('change', function(e) { S.simpleLoc = e.target.value; placeStartQuad(); renderReq(); solveSoon(); saveToSession(); });
     ['cam_pos_x', 'cam_pos_y', 'cam_pos_z'].forEach(function(id) { $(id).addEventListener('input', camChanged); });
     $('cam_height').addEventListener('input', function() { readHeight(); renderCalibResult(); solveSoon(); saveToSession(); });
+    // An empty field the camera does not ask for goes once the focus leaves it; only the field's group is
+    // drawn, as a rebuilt control would lose the focus Tab is moving to it.
+    document.addEventListener('focusout', function(e) { if (e.target === $('cam_height')) renderHeightGroup(); });
     $('unit-switch').addEventListener('click', function() {
       var to = WUNIT.isImperial() ? 'metric' : 'imperial', box = document.querySelector('#wizard-step-calib .section');
       var body = new FormData(); body.append('unit_system', to);
@@ -3248,8 +3259,14 @@
     });
     $('adv-rows').addEventListener('click', function(e) {
       var u = e.target.closest('[data-unpin]'), d = e.target.closest('[data-del]');
-      if (u) { setPin(+u.dataset.unpin, null); renderAdvRows(); solveSoon(); saveToSession(); }
-      if (d) { deletePoint(+d.dataset.del); renderAdvRows(); solveSoon(); saveToSession(); }
+      if (u) { setPin(+u.dataset.unpin, null); renderAdvRows(); solveSoon(); saveToSession(); $('adv-rows').querySelector('[data-del="' + u.dataset.unpin + '"]').focus(); }
+      if (d) {
+        // The focus goes to the next row, else the one before, else to adding a point.
+        var i = S.points.map(function(p) { return p.id; }).indexOf(+d.dataset.del);
+        deletePoint(+d.dataset.del); renderAdvRows(); solveSoon(); saveToSession();
+        var to = S.points[i] || S.points[i - 1], row = to && $('adv-rows').querySelector('[data-row="' + to.id + '"]');
+        (row ? row.querySelector('button, input, select') : $('adv-add-known')).focus();
+      }
     });
     $('adv-rows').addEventListener('input', function(e) {
       var t = e.target, id = +t.dataset.id, f = t.dataset.f; if (!f) return;
@@ -3269,7 +3286,7 @@
           move: function(q) { if (!moved && Math.hypot(q[0] - p[0], q[1] - p[1]) < slop) return; moved = true; setPin(id, q); renderCalibOverlay(); },
           end: function() {
             if (S.mode === 'simple') { S.selCorner = id; if (moved) { solveSoon(); saveToSession(); } else selectCorner(id); }
-            else if (moved) { solveSoon(); saveToSession(); } else openPointMenu(id);
+            else if (moved) { solveSoon(); saveToSession(); focusCalPin(id); } else openPointMenu(id);
           }
         };
       },
@@ -3291,7 +3308,12 @@
       }
     });
     document.addEventListener('pointerdown', function(e) { pointerIsMouse = e.pointerType === 'mouse'; }, true);
-    document.addEventListener('pointerdown', function(e) { if (S.selCorner != null && !e.target.closest('#cal-pins .pin-handle')) dropCorner(); }, true);
+    // A press elsewhere may leave the focus on nothing, which no focusin reports.
+    document.addEventListener('pointerdown', function(e) {
+      if (e.target.closest('#cal-pins .pin-handle, #pin-menu')) return;
+      dropCorner();
+      if (S.selPin != null) { S.selPin = null; renderCalibOverlay(); }
+    }, true);
     // A focus that selected a corner redrew the pins: its event still reaches here from the old, detached handle.
     document.addEventListener('focusin', function(e) { if (S.selCorner != null && e.target.isConnected && !e.target.closest('#cal-pins .pin-handle')) dropCorner(); });
     // A pin shows as selected only while the focus is on a pin or in its menu.
@@ -3342,14 +3364,11 @@
   function renderReview() {
     var s = S.solve || {}, svg = $('review-overlay'), u = overlayUnit(svg);
     var ok = !!s.cam;
-    $('review-status').hidden = ok;
-    if (!ok) setLive($('review-status'), 'The camera is not calculated yet.<div class="notice-sub">' + esc(s.need ? 'To calculate the camera, add ' + s.need.join(' and ') + '. Go back to Camera Calibration to finish it.' : s.waiting ? s.waiting : s.error ? s.error : 'Pin the points in Camera Calibration.') + '</div>');
+    showLive($('review-status'), !ok && 'The camera is not calculated yet.<div class="notice-sub">' + esc(s.need ? 'To calculate the camera, add ' + s.need.join(' and ') + '. Go back to Camera Calibration to finish it.' : s.waiting ? s.waiting : s.error ? s.error : 'Pin the points in Camera Calibration.') + '</div>', !ok);
     var incomplete = incompleteLines(s);
-    $('review-incomplete').hidden = !incomplete.length;
-    if (incomplete.length) setLive($('review-incomplete'), incompleteHtml(incomplete));
+    showLive($('review-incomplete'), incomplete.length && incompleteHtml(incomplete), !!incomplete.length);
     $('btn-apply-finish').disabled = !ok || solvePending || applyBlocked(s) || marksIncomplete(s);
-    $('review-caution').hidden = !(ok && s.reasons.length);
-    if (ok && s.reasons.length) setLive($('review-caution'), cautionHtml(s));
+    showLive($('review-caution'), ok && s.reasons.length && cautionHtml(s), !!(ok && s.reasons.length));
     $('review-lens-note').hidden = !(ok && stationLensOnly());
     var grid = calibGrid();
     if (imageWidth) svg.setAttribute('viewBox', '0 0 ' + imageWidth + ' ' + imageHeight);
@@ -3509,7 +3528,7 @@
     var f = FS; FS = null;
     f.ph.parentNode.insertBefore(f.cont, f.ph); f.ph.parentNode.removeChild(f.ph);
     f.cont.style.width = '';
-    $('fs-shell').hidden = true; document.body.style.overflow = '';
+    $('fs-shell').hidden = true; document.body.style.overflow = ''; $('fs-hint').liveHtml = null;
     fsRender(f.key);
     // The page outside the full-screen element takes no focus until the browser has left full screen.
     var b = f.cont.querySelector('.fs-btn'), back = function() { if (b && !FS) b.focus({ preventScroll: true }); };
@@ -3716,13 +3735,17 @@
   // ---------------------------------------------------------------
   // Step navigation
   // ---------------------------------------------------------------
-  window.wizardGo = function(step) {
+  window.wizardGo = function(step, atLoad) {
     closePinMenu(); dropCorner(); dropLensPoint();
     saveToSession();
     if (!(step >= 0 && step < WIZ_STEPS.length)) step = 0;
     currentStep = step;
-    var key = WIZ_STEPS[step];
-    document.querySelectorAll('.wizard-content').forEach(function(el) { el.classList.toggle('active', el.id === 'wizard-step-' + key); });
+    var key = WIZ_STEPS[step], to = $('wizard-step-' + key), a = document.activeElement;
+    // A focus on the page's body, or in the step being left, goes to the new step's heading.
+    var lost = !atLoad && (!a || a === document.body || !!(a.closest && a.closest('.wizard-content') && !to.contains(a)));
+    document.querySelectorAll('.wizard-content').forEach(function(el) { el.classList.toggle('active', el === to); });
+    // Its regions are read out as the step shows them.
+    to.querySelectorAll('[role="status"], [role="alert"], [aria-live]').forEach(function(el) { el.liveHtml = null; });
     document.querySelectorAll('.wizard-step-btn').forEach(function(btn) {
       var s = parseInt(btn.dataset.step);
       btn.classList.toggle('active', s === step);
@@ -3733,6 +3756,7 @@
     if (key === 'calib') { if (S.mode === 'simple') placeStartQuad(); renderCalibPanels(); runSolve(); }
     if (key === 'review') runSolve(renderReview);
     saveToSession();
+    if (lost) to.querySelector('h2').focus({ preventScroll: true });
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
   window.wizardNext = function() { wizardGo(Math.min(currentStep + 1, WIZ_STEPS.length - 1)); };
@@ -3777,7 +3801,7 @@
       renderLens(); renderCalibOverlay(); if (currentStep === WIZ.review) renderReview();
     }, 200);
   });
-  wizardGo(restored ? currentStep : 0);
+  wizardGo(restored ? currentStep : 0, true);
 
 })();
 </script>

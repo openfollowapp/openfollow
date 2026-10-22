@@ -1587,3 +1587,12 @@ def test_no_page_or_help_text_names_the_old_lens_and_point_labels() -> None:
         text = path.read_text(encoding="utf-8")
         for old in ("Edge fit", "edge fit", "Triangulated", "triangulated point", "New triangulated"):
             assert old not in text, (path.name, old)
+
+
+@integration
+def test_the_settings_pages_source_type_label_names_its_select(live_server) -> None:
+    _, base = live_server
+    status, body = _get(base, "/")
+    assert status == 200
+    found = re.search(r'<label for="([^"]+)">Source Type</label>\s*<select name="video_source_type" id="([^"]+)"', body)
+    assert found is not None and found.group(1) == found.group(2) == "video-source-type"

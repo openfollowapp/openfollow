@@ -7486,6 +7486,15 @@ def test_each_lens_value_is_checked_again_when_the_lens_centre_changes(video_ser
         }
 
 
+def test_the_lens_number_fields_take_any_value(video_server) -> None:
+    # A step grid counts from the saved value: after the wizard saves -0.3302, a typed -0.3 would be a step
+    # mismatch and the browser would refuse to submit the form. The sliders keep their 0.005 steps.
+    _, base, _ = video_server
+    _, body = _get(base, "/section/camera")
+    assert [_attr(_tag(body, f"camera-lens-{k}"), "step") for k in ("k1", "k2")] == ["any", "any"]
+    assert [_attr(_tag(body, f"camera-lens-{k}-range"), "step") for k in ("k1", "k2")] == ["0.005", "0.005"]
+
+
 def test_validate_endpoint_advisory_note(live_server) -> None:
     """Cross-field auto-correct surfaces as a ``field-note-msg`` span."""
     _, base = live_server

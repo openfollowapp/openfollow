@@ -131,7 +131,7 @@
         <div class="row">
             <div class="field">
                 <label>Barrel / fisheye</label>
-                <input type="number" id="camera-lens-k1" name="lens_k1" value="{{config.camera.lens_k1}}" step="0.005"
+                <input type="number" id="camera-lens-k1" name="lens_k1" value="{{config.camera.lens_k1}}" step="any"
                        oninput="var s=document.getElementById('camera-lens-k1-range'); if (s) s.value=this.value;"
                        hx-get="/api/validate/camera/lens_k1"
                        hx-trigger="blur changed delay:200ms, change from:#camera-lens-k1-range, change from:#camera-lens-k2, change from:#camera-lens-k2-range, change from:#camera-lens-cx-px, change from:#camera-lens-cy-px"
@@ -144,7 +144,7 @@
             </div>
             <div class="field">
                 <label>Corner correction</label>
-                <input type="number" id="camera-lens-k2" name="lens_k2" value="{{config.camera.lens_k2}}" step="0.005"
+                <input type="number" id="camera-lens-k2" name="lens_k2" value="{{config.camera.lens_k2}}" step="any"
                        oninput="var s=document.getElementById('camera-lens-k2-range'); if (s) s.value=this.value;"
                        hx-get="/api/validate/camera/lens_k2"
                        hx-trigger="blur changed delay:200ms, change from:#camera-lens-k2-range, change from:#camera-lens-k1, change from:#camera-lens-k1-range, change from:#camera-lens-cx-px, change from:#camera-lens-cy-px"

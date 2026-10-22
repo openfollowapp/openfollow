@@ -1,5 +1,11 @@
+% import math
+% from openfollow.lens_model import C_BOUND
 % from openfollow.units import UnitSystem, format_length, metric_echo, unit_suffix_length
 % _us = UnitSystem(config.ui.unit_system)
+% # The lens centre fields count in pixels of the live video; without one they are off and the saved centre stays.
+% _vs = get('video_size')
+% _hd = 0.5 * math.hypot(*_vs) if _vs else 0.0
+% _cmax = math.floor(C_BOUND * _hd)
 % _imp = _us is UnitSystem.IMPERIAL
 % _len = unit_suffix_length(_us)
 <form id="camera-section" class="section {{'saved' if defined('saved') and saved else ''}}" data-fold-key="camera" data-help="camera"
@@ -128,10 +134,10 @@
                 <input type="number" id="camera-lens-k1" name="lens_k1" value="{{config.camera.lens_k1}}" step="0.005"
                        oninput="var s=document.getElementById('camera-lens-k1-range'); if (s) s.value=this.value;"
                        hx-get="/api/validate/camera/lens_k1"
-                       hx-trigger="blur changed delay:200ms, change from:#camera-lens-k1-range, change from:#camera-lens-k2, change from:#camera-lens-k2-range"
+                       hx-trigger="blur changed delay:200ms, change from:#camera-lens-k1-range, change from:#camera-lens-k2, change from:#camera-lens-k2-range, change from:#camera-lens-cx-px, change from:#camera-lens-cy-px"
                        hx-target="#camera-lens-k1-error" hx-swap="innerHTML" hx-include="closest form"
                        aria-describedby="camera-lens-k1-error" aria-invalid="false">
-                <input type="range" id="camera-lens-k1-range" min="{{min(-0.6, config.camera.lens_k1)}}" max="{{max(0.6, config.camera.lens_k1)}}" step="0.005" value="{{config.camera.lens_k1}}"
+                <input type="range" id="camera-lens-k1-range" min="{{min(-1.0, config.camera.lens_k1)}}" max="{{max(0.5, config.camera.lens_k1)}}" step="0.005" value="{{config.camera.lens_k1}}"
                        aria-label="Barrel / fisheye slider"
                        oninput="var n=document.getElementById('camera-lens-k1'); n.value=this.value;">
                 <span id="camera-lens-k1-error" class="field-error"></span>
@@ -141,14 +147,45 @@
                 <input type="number" id="camera-lens-k2" name="lens_k2" value="{{config.camera.lens_k2}}" step="0.005"
                        oninput="var s=document.getElementById('camera-lens-k2-range'); if (s) s.value=this.value;"
                        hx-get="/api/validate/camera/lens_k2"
-                       hx-trigger="blur changed delay:200ms, change from:#camera-lens-k2-range, change from:#camera-lens-k1, change from:#camera-lens-k1-range"
+                       hx-trigger="blur changed delay:200ms, change from:#camera-lens-k2-range, change from:#camera-lens-k1, change from:#camera-lens-k1-range, change from:#camera-lens-cx-px, change from:#camera-lens-cy-px"
                        hx-target="#camera-lens-k2-error" hx-swap="innerHTML" hx-include="closest form"
                        aria-describedby="camera-lens-k2-error" aria-invalid="false">
-                <input type="range" id="camera-lens-k2-range" min="{{min(-0.4, config.camera.lens_k2)}}" max="{{max(0.4, config.camera.lens_k2)}}" step="0.005" value="{{config.camera.lens_k2}}"
+                <input type="range" id="camera-lens-k2-range" min="{{min(-0.8, config.camera.lens_k2)}}" max="{{max(0.3, config.camera.lens_k2)}}" step="0.005" value="{{config.camera.lens_k2}}"
                        aria-label="Corner correction slider"
                        oninput="var n=document.getElementById('camera-lens-k2'); n.value=this.value;">
                 <span id="camera-lens-k2-error" class="field-error"></span>
             </div>
+        </div>
+        <div class="lens-centre" role="group" aria-labelledby="camera-lens-centre-title">
+            <div class="lens-centre-title" id="camera-lens-centre-title">Lens centre</div>
+            <div class="row">
+                <div class="field">
+                    <label for="camera-lens-cx-px">Right of the picture centre (px)</label>
+                    <input type="number" id="camera-lens-cx-px" step="1" data-hidden="camera-lens-cx" data-half-diag="{{_hd}}"
+                           {{!('min="%d" max="%d" value="%d"' % (-_cmax, _cmax, round(config.camera.lens_cx * _hd))) if _vs else 'disabled placeholder="No video" value=""'}}
+                           oninput="cameraLensCentreInput(this)"
+                           hx-get="/api/validate/camera/lens_cx"
+                           hx-trigger="blur changed delay:200ms, change from:#camera-lens-cy-px, change from:#camera-lens-k1, change from:#camera-lens-k1-range, change from:#camera-lens-k2, change from:#camera-lens-k2-range"
+                           hx-target="#camera-lens-cx-error" hx-swap="innerHTML" hx-include="closest form"
+                           hx-on::before-request="cameraLensCentreChecked(this, event)"
+                           aria-describedby="camera-lens-cx-error" aria-invalid="false">
+                    <span id="camera-lens-cx-error" class="field-error"></span>
+                </div>
+                <div class="field">
+                    <label for="camera-lens-cy-px">Above the picture centre (px)</label>
+                    <input type="number" id="camera-lens-cy-px" step="1" data-hidden="camera-lens-cy" data-half-diag="{{_hd}}"
+                           {{!('min="%d" max="%d" value="%d"' % (-_cmax, _cmax, round(-config.camera.lens_cy * _hd))) if _vs else 'disabled placeholder="No video" value=""'}}
+                           oninput="cameraLensCentreInput(this)"
+                           hx-get="/api/validate/camera/lens_cy"
+                           hx-trigger="blur changed delay:200ms, change from:#camera-lens-cx-px, change from:#camera-lens-k1, change from:#camera-lens-k1-range, change from:#camera-lens-k2, change from:#camera-lens-k2-range"
+                           hx-target="#camera-lens-cy-error" hx-swap="innerHTML" hx-include="closest form"
+                           hx-on::before-request="cameraLensCentreChecked(this, event)"
+                           aria-describedby="camera-lens-cy-error" aria-invalid="false">
+                    <span id="camera-lens-cy-error" class="field-error"></span>
+                </div>
+            </div>
+            <input type="hidden" id="camera-lens-cx" name="lens_cx" value="{{config.camera.lens_cx}}">
+            <input type="hidden" id="camera-lens-cy" name="lens_cy" value="{{config.camera.lens_cy}}">
         </div>
     </div>
 
@@ -265,6 +302,28 @@
             setStale(true);
         };
 
+        // A lens centre field's pixels, or null when it holds no number within its bound.
+        function lensCentrePx(el) {
+            var text = String(el.value).trim(), v = text === '' ? NaN : Number(text);
+            return Math.abs(v) <= parseFloat(el.max) ? v : null;
+        }
+        // Each field writes its hidden lens_cx / lens_cy in half-diagonals of the video it was shown for; up is -y.
+        window.cameraLensCentreInput = function(el) {
+            var px = lensCentrePx(el), hidden = document.getElementById(el.dataset.hidden);
+            if (px === null || !hidden) return;
+            var v = px / parseFloat(el.dataset.halfDiag);
+            hidden.value = String(el.dataset.hidden === 'camera-lens-cy' ? -v || 0 : v);
+        };
+        // A field without a number in range says so in pixels and keeps its hidden value; the station checks the rest.
+        window.cameraLensCentreChecked = function(el, event) {
+            if (el.disabled || lensCentrePx(el) !== null) return;
+            event.preventDefault();
+            var span = document.getElementById(el.getAttribute('aria-describedby'));
+            span.innerHTML = '<span class="field-error-msg" role="alert" aria-live="assertive">Must be a number from -' + el.max + ' to ' + el.max + '.</span>';
+            el.setAttribute('aria-invalid', 'true');
+            refreshFormGate(el.form);
+        };
+
         function init() {
             var sel = document.getElementById('camera_panel_sensor');
             if (!sel || sel.options.length) return;
@@ -297,6 +356,8 @@
     <style>
     .lens-helper-stale, .lens-helper-stale label,
     .lens-helper-stale input, .lens-helper-stale select { opacity: 0.55; }
+    .lens-centre { margin-top: 0.9rem; }
+    .lens-centre-title { margin-bottom: 0.45rem; color: var(--text); font-size: 0.85rem; font-weight: 600; }
     </style>
 
     <div class="actions">

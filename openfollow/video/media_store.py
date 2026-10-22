@@ -3,9 +3,9 @@
 """Device-local media store for the Media Gallery video source.
 
 Holds operator-uploaded still images and short looping clips, plus the
-read-only bundled defaults (Stage, Arena, Concert, Grey). This module is the single source of
-truth for the storage layout, id rules, hard caps, and upload validation shared
-by the gallery plugin (``video/inputs/testpattern.py``) and the web routes.
+read-only bundled defaults (Stage, Arena, Concert, Festival, Grey). This module
+is the single source of truth for the storage layout, id rules, hard caps, and
+upload validation shared by the gallery plugin (``video/inputs/testpattern.py``) and the web routes.
 
 The storage directory is device-local *by construction* (resolved per host,
 never a config field), so nothing here ever crosses machines.
@@ -53,9 +53,16 @@ _store_lock = threading.Lock()
 DEFAULT_STAGE_ID = "default:stage"
 DEFAULT_ARENA_ID = "default:arena"
 DEFAULT_CONCERT_ID = "default:concert"
+DEFAULT_FESTIVAL_ID = "default:festival"
 DEFAULT_GREY_ID = "default:grey"
 # Ordered for display: defaults always render first in the grid.
-DEFAULT_IDS: tuple[str, ...] = (DEFAULT_STAGE_ID, DEFAULT_ARENA_ID, DEFAULT_CONCERT_ID, DEFAULT_GREY_ID)
+DEFAULT_IDS: tuple[str, ...] = (
+    DEFAULT_STAGE_ID,
+    DEFAULT_ARENA_ID,
+    DEFAULT_CONCERT_ID,
+    DEFAULT_FESTIVAL_ID,
+    DEFAULT_GREY_ID,
+)
 # The AppConfig default for ``testpattern_selected_media``.
 DEFAULT_SELECTED_MEDIA = DEFAULT_STAGE_ID
 
@@ -76,6 +83,8 @@ STAGE_ASSET_SVG = STAGE_ASSET_JPG.with_suffix(".svg")
 ARENA_ASSET_JPG = STAGE_ASSET_JPG.with_name("arena_default.jpg")
 # A concert stage from the back truss, rendered by scripts/gen_concert_default.py.
 CONCERT_ASSET_JPG = STAGE_ASSET_JPG.with_name("concert_default.jpg")
+# A festival stage from the front truss, rendered by scripts/gen_festival_default.py.
+FESTIVAL_ASSET_JPG = STAGE_ASSET_JPG.with_name("festival_default.jpg")
 
 # -- Hard caps ----------------------------------------------------------------
 
@@ -237,6 +246,8 @@ def _default_item(media_id: str) -> MediaItem | None:
         return _bundled_image(DEFAULT_ARENA_ID, ARENA_ASSET_JPG, "Arena")
     if media_id == DEFAULT_CONCERT_ID:
         return _bundled_image(DEFAULT_CONCERT_ID, CONCERT_ASSET_JPG, "Concert")
+    if media_id == DEFAULT_FESTIVAL_ID:
+        return _bundled_image(DEFAULT_FESTIVAL_ID, FESTIVAL_ASSET_JPG, "Festival")
     asset = stage_asset_path()
     size = asset.stat().st_size if asset is not None else 0
     return MediaItem(DEFAULT_STAGE_ID, "stage", True, asset, size, "Stage")

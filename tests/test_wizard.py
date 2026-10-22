@@ -21,6 +21,7 @@ import pytest
 
 import openfollow.web.discovery as discovery_module
 from openfollow.configuration import CalibrationMarkConfig, CameraConfig, GridConfig, load_config
+from openfollow.lens_model import C_BOUND
 from openfollow.scene.solver import apply_overlay_distortion, project_points
 from openfollow.web.server import ConfigWebServer
 from tests._ports import live_on_free_port
@@ -133,7 +134,7 @@ def _lens_station(
     marks: tuple = (),
     height: float | None = None,
 ):
-    """A station with a stored lens pair and, when given, a saved calibration."""
+    """A station with a stored lens, its centre off the picture's, and, when given, a saved calibration."""
     from openfollow.configuration import AppConfig, save_config
 
     _quiet_discovery(monkeypatch)
@@ -145,6 +146,8 @@ def _lens_station(
     cfg.ui.developer_mode = developer_mode
     cfg.camera.lens_k1 = -0.21
     cfg.camera.lens_k2 = 0.03
+    cfg.camera.lens_cx = 0.02
+    cfg.camera.lens_cy = -0.01
     cfg.camera.calibration_mode = mode
     cfg.camera.calibration_marks = list(marks)
     cfg.camera.calibration_height = height
@@ -593,12 +596,17 @@ class TestWizardSavedCalibration:
         assert saved["grid"] == {
             k: getattr(grid, k) for k in ("width", "depth", "spacing", "x_offset", "y_offset", "z_offset")
         }
-        assert (saved["fov"], saved["lens"], saved["max_marks"]) == (CameraConfig().fov, [-0.21, 0.03], 12)
+        assert (saved["fov"], saved["lens"], saved["max_marks"]) == (CameraConfig().fov, [-0.21, 0.03, 0.02, -0.01], 12)
 
     def test_without_a_calibration_the_page_starts_empty(self, live_server) -> None:
         _, body = _get(live_server[1], "/wizard")
         saved = _saved(body)
-        assert (saved["mode"], saved["marks"], saved["lens"], saved["height"]) == ("simple", [], [0.0, 0.0], None)
+        assert (saved["mode"], saved["marks"], saved["lens"], saved["height"]) == (
+            "simple",
+            [],
+            [0.0, 0.0, 0.0, 0.0],
+            None,
+        )
 
     def test_the_page_starts_from_the_stations_camera_height(self, tmp_path, monkeypatch) -> None:
         with _lens_station(tmp_path, monkeypatch, marks=_SIMPLE_MARKS, height=9.8) as (_, base):
@@ -635,7 +643,7 @@ class TestWizardSavedCalibration:
     def test_with_lens_distortion_off_the_page_starts_pinhole(self, tmp_path, monkeypatch) -> None:
         with _lens_station(tmp_path, monkeypatch, lens=False) as (_, base):
             _, body = _get(base, "/wizard")
-        assert _saved(body)["lens"] == [0.0, 0.0]
+        assert _saved(body)["lens"] == [0.0, 0.0, 0.0, 0.0]
         assert re.search(r'id="wiz_lens_k1" step="0.005"\s+value="0.0"', body)
 
 
@@ -693,7 +701,7 @@ function fetch(url, opts) {
   if (a === 'down') return Promise.reject(new TypeError('Failed to fetch'));
   return Promise.resolve({ ok: a === 200, status: a });
 }
-function wizLensPairValid() { return pairValid; }
+function wizLensValid() { return pairValid; }
 function wizReadLensCoeff(id) { return id === 'wiz_lens_k1' ? -0.21 : 0.03; }
 function calibGrid() { return RECT; }
 """
@@ -711,7 +719,7 @@ def _apply(
         + wizard_function("marksIncomplete")
         + wizard_window_function("applyAndFinish"),
         variables=("APPLY_MAX_PX",),
-        S=state,
+        S={"lensCentre": [0.02, -0.01], **state},
         LENS_ENABLED=lens,
         RECT=_RECT,
         answers={"/api/config/grid": grid, "/api/config/camera": camera},
@@ -729,7 +737,8 @@ class TestWizardApply:
         assert out["calls"][0][1] == {"width": 12.0, "depth": 7.0, "x_offset": 0.5, "y_offset": 3.5, "z_offset": 0.0}
         camera = out["calls"][1][1]
         assert {k: camera[k] for k in _SOLVED} == _SOLVED
-        assert (camera["calibration_mode"], camera["lens_k1"], camera["lens_k2"]) == ("simple", -0.21, 0.03)
+        lens = [camera[k] for k in ("lens_k1", "lens_k2", "lens_cx", "lens_cy")]
+        assert (camera["calibration_mode"], lens) == ("simple", [-0.21, 0.03, 0.02, -0.01])
         assert camera["calibration_marks"] == [
             {"id": i + 1, "name": n, "kind": "known", "pin": [x / IMG_W, y / IMG_H], "x": p[0], "y": p[1], "z": p[2]}
             for i, (n, p, (x, y)) in enumerate(
@@ -779,17 +788,17 @@ class TestWizardApply:
         assert out["shown"] == [said]
         assert (out["removed"], out["href"]) == ([], "/wizard")
 
-    def test_a_folding_lens_pair_sends_nothing(self) -> None:
+    def test_a_lens_that_cannot_follow_the_picture_sends_nothing(self) -> None:
         out = _apply(_SIMPLE_STATE, pair_valid=False)
         assert out["calls"] == [] and out["href"] == "/wizard"
         assert out["shown"] == [
-            ["With these lens values, the overlay folds over itself inside the picture.", "Not saved."]
+            ["With these lens values, the overlay cannot follow the picture out to its corners.", "Not saved."]
         ]
 
     def test_with_lens_distortion_off_no_lens_pair_is_sent(self) -> None:
         out = _apply(_SIMPLE_STATE, lens=False, pair_valid=False)
         camera = out["calls"][1][1]
-        assert "lens_k1" not in camera and "lens_k2" not in camera and out["href"] == "/"
+        assert not {"lens_k1", "lens_k2", "lens_cx", "lens_cy"} & set(camera) and out["href"] == "/"
 
     @pytest.mark.parametrize(("worst", "sent"), [(19.9, True), (20.1, False)])
     def test_a_solve_with_a_point_far_off_its_pin_is_not_applied(self, worst: float, sent: bool) -> None:
@@ -832,6 +841,8 @@ def test_what_apply_sends_is_what_the_station_keeps_and_the_wizard_starts_from(l
     cfg = load_config(server.config_path)
     assert (cfg.grid.width, cfg.grid.depth, cfg.grid.x_offset, cfg.grid.y_offset) == (12.0, 7.0, 0.5, 3.5)
     assert cfg.camera.calibration_mode == "simple" and (cfg.camera.pos_x, cfg.camera.fov) == (0.4, 61.0)
+    lens = (cfg.camera.lens_k1, cfg.camera.lens_k2, cfg.camera.lens_cx, cfg.camera.lens_cy)
+    assert lens == (-0.21, 0.03, 0.02, -0.01)
     sent = calls[1][1]["calibration_marks"]
     assert [m.pin for m in cfg.camera.calibration_marks] == [m["pin"] for m in sent]
     _, page = _get(base, "/wizard")
@@ -846,10 +857,62 @@ def test_a_settings_file_the_station_exports_loads_its_lens(live_server_lens) ->
     assert status == 200
     out = run_wizard_js(
         "lensFromSettings(text)",
-        functions=("wizLensFoldRadius", "wizLensIsValid", "lensFromSettings"),
+        functions=("wizLensRoot", "wizLensLimitRadius", "wizLensIsValid", "lensFromSettings"),
+        LENS_C_BOUND=C_BOUND,
         text=text,
     )
-    assert out == {"k1": -0.21, "k2": 0.03}
+    assert out == {"k1": -0.21, "k2": 0.03, "cx": 0.02, "cy": -0.01}
+
+
+_SAVE_LENS_PAGE = """
+var window = { OpenFollow: { saveError: { show: function(box, info) { refused = info; } } } };
+var els = {}, body = null, buttons = null, posted = null, refused = null, imageWidth = 1920, imageHeight = 1080;
+function $(id) { return els[id] = els[id] || { value: '', hidden: false, textContent: '', style: {}, lastChild: {} }; }
+var document = { getElementById: $, querySelector: function() { return {}; } };
+function openModal(o) { body = o.bodyHTML; buttons = o.footerButtons; } function closeModal() {}
+function lensMeasured() { return true; } function wizLensValid() { return true; }
+function wizLens() { return LENS; }
+function fetch(url, opts) {
+  if (opts) { posted = JSON.parse(opts.body); return Promise.resolve({ ok: true }); }
+  return Promise.resolve({ ok: true, json: function() { return Promise.resolve({ calibrations: [] }); } });
+}
+"""
+
+
+@needs_node
+@integration
+def test_a_lens_calibration_the_wizard_saves_is_kept_with_its_centre(live_server) -> None:
+    _, base = live_server
+    lens = [-0.31, -0.01, 28 / 1101.45, -16 / 1101.45]
+    posted = run_wizard_js(
+        "(async function() { lensSaveDialog(); await new Promise(function(r) { setImmediate(r); });"
+        " $('ls-name').value = 'Festival 2.8 mm'; buttons[1].onClick({});"
+        " await new Promise(function(r) { setImmediate(r); }); return posted; })()",
+        functions=(
+            "esc",
+            "fmt",
+            "lensVals",
+            "lensSavedList",
+            "lensListFailed",
+            "wizHalfDiag",
+            "wizLensCentrePx",
+            "wizLensCentreText",
+        ),  # fmt: skip
+        prelude=_SAVE_LENS_PAGE
+        + wizard_window_function("lensSaveDialog")
+        + "\nvar lensSaveDialog = window.lensSaveDialog;",
+        LENS=lens,
+    )
+    # The body the page sends is one the station takes, and the list hands the centre back.
+    assert _post_json(base, "/api/wizard/lens/calibrations", posted)[0] == 200
+    _, listed = _get(base, "/api/wizard/lens/calibrations")
+    saved = json.loads(listed)["calibrations"][0]
+    assert [saved[k] for k in ("name", "k1", "k2", "cx", "cy", "width", "height")] == [
+        "Festival 2.8 mm",
+        *lens,
+        1920,
+        1080,
+    ]
 
 
 @unit
@@ -1327,6 +1390,31 @@ class TestWizardLensStepPage:
         # No step is referred to by number anywhere, since the Lens step shifts the numbering.
         assert re.search(r"Step \d", body) is None
 
+    def test_adjust_by_hand_spans_the_sliders_and_holds_the_lens_centre_row(self, live_server_lens) -> None:
+        _, base = live_server_lens
+        _, body = _get(base, "/wizard")
+        adjust = re.search(r'<details class="inline-advanced" id="lens-adjust">(.*?)</details>', body, re.S).group(1)
+        assert re.search(r'id="wiz_lens_k1_range" min="-1" max="0.5" step="0.005"', adjust)
+        assert re.search(r'id="wiz_lens_k2_range" min="-0.8" max="0.3" step="0.005"', adjust)
+        pair_error = re.search(r'<div id="wiz-lens-error" [^>]*>(.*?)</div>', adjust).group(1)
+        assert pair_error == (
+            "With these two values, the overlay cannot follow the picture out to its corners."
+            " Set one of the values closer to 0."
+        )
+        # The centre's row comes after the pair's error, its own error under it.
+        row = adjust[adjust.index('<div class="lens-centre"') : adjust.index('<div id="wiz-lens-centre-error"')]
+        assert '<div class="lens-centre-title" id="wiz-lens-centre-title">Lens centre</div>' in row
+        assert re.findall(r'<label for="(wiz_lens_c[xy])">(.*?)</label>', row) == [
+            ("wiz_lens_cx", "Right of the picture centre (px)"),
+            ("wiz_lens_cy", "Above the picture centre (px)"),
+        ]
+        for field in ("wiz_lens_cx", "wiz_lens_cy"):
+            assert re.search(
+                rf'<input type="number" id="{field}" step="1" [^>]*aria-describedby="wiz-lens-centre-error"', row
+            )
+        # The bound comes from the station's own, never a copy.
+        assert f"var LENS_C_BOUND = {C_BOUND};" in body
+
     def test_the_operator_never_sees_a_coefficient_name(self, live_server_lens) -> None:
         """The pair is Barrel / fisheye and Corner correction everywhere an operator reads: never k1 or k2."""
         _, base = live_server_lens
@@ -1452,7 +1540,7 @@ class TestWizardLensTemplate:
         assert "(lensFitApplies(lensFit) ? '' : ' \\u2013 not applied')" in src
         # Review rates the pair only while it is the fit's own.
         review = wizard_function("reviewLensCoverage")
-        assert "if (lensPairIsTheFits(k1, k2)) {" in review and "'Adjusted by hand'" in review
+        assert "if (lensIsTheFits(l)) {" in review and "'Adjusted by hand'" in review
 
     def test_a_tap_is_judged_in_screen_pixels_and_a_cancel_traces_nothing(self) -> None:
         src = self._src()
@@ -1511,8 +1599,11 @@ class TestWizardLensTemplate:
         src = self._src()
         assert "setTimeout(runLensFit, LENS_FIT_DEBOUNCE_MS)" in src
         assert "'/api/wizard/lens/fit'" in src and "'/api/wizard/lens/snap'" in src
-        assert "wizLensShownPair(Number(res.data.k1), Number(res.data.k2))" in src
-        assert "wizWriteLensCoeff('wiz_lens_k1', shown[0])" in src
+        # The pair is measured about the lens centre in use, which the fit sends and never writes.
+        fit = wizard_function("runLensFit")
+        assert "cx: centre[0]," in fit and "cy: centre[1]," in fit and "wizSetLensCentre" not in fit
+        assert "wizLensShownPair(Number(res.data.k1), Number(res.data.k2), centre[0], centre[1])" in fit
+        assert "wizWriteLensCoeff('wiz_lens_k1', shown[0])" in fit
         assert "Point off" in src and "Delete line" in src and "Clear lines" in src
 
     def test_rating_levels_follow_the_status_language(self) -> None:

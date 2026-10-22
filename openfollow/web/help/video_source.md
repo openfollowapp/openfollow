@@ -13,7 +13,7 @@ Pick the protocol or device for your setup; the fields below update to match.
 - **RTP** – tightly controlled local pipelines you generate yourself (FFmpeg, hardware encoder).
 - **USB Camera** – UVC webcams and USB capture cards.
 - **Pi Camera** – CSI camera modules and HDMI/SDI-to-CSI adapters on the ribbon-cable port.
-- **Media Gallery** – play a stored still image or short looping clip, or capture a frame from a live source; ships with a Stage scene, an Arena and a Grey card for bench-testing calibration, lens correction and detection without a camera.
+- **Media Gallery** – play a stored still image or short looping clip, or capture a frame from a live source; ships with a Stage scene, an Arena, a Concert, a Festival and a Grey card for bench-testing calibration, lens correction and detection without a camera.
 
 Which network interface SRT, RTSP and RTP use is set under **Network Interface Assignment**, in the Video input row. In Simple network mode they use the station interface.
 
@@ -28,9 +28,9 @@ Which network interface SRT, RTSP and RTP use is set under **Network Interface A
 - **USB Camera** – pick the **Device** (Scan to re-enumerate), then choose a **Render resolution** and **FPS** (default 30). The camera is read at its own native resolution and scaled to the render size: pick a preset (`2160p` / `1080p` / `720p`, default `1080p`) to downscale for lower CPU, or `Native size` to keep the device's full resolution. This works with any input, including capture cards that only output the incoming signal's resolution (e.g. a 4K HDMI feed) – those failed to connect when a fixed size was forced.
 - **Pi Camera** – the **Camera** row shows the camera the station uses: its Raspberry Pi module name and sensor (*Camera Module 3 (imx708)*), the connector it is named on (CAM/DISP 0 or 1, as printed on the board), or *found automatically* when the Pi recognised it by itself; *set in config.txt* marks a camera named there by hand. With more than one camera found, the row is a choice of which one to stream, saved with the section. **Width** / **Height** (default 1920×1080) and **FPS** (default 30) set the stream.
 - **Change** (Pi Camera) – names the **Camera module** and **Connector** in the Pi's boot configuration. **Automatic** leaves it to the Pi, which recognises Raspberry Pi camera modules on a regular Pi but never on a Compute Module. Raspberry Pi's own modules are listed first by name, other sensors below. A camera named while none was loaded at boot starts at once and is checked again a few seconds later; one the station booted with changes at the next restart, shown as **Takes effect after the next restart** beside what runs now, with a **Restart now** button. A camera line added to `config.txt` by hand is replaced (kept, commented out) when another camera is applied here. **No camera found on this station** opens this choice by itself.
-- **Media Gallery** – a device-local library of images and looping clips, managed entirely from the browser (the on-display menu can select this source but not change its content). Click a tile to make it the source; the selected tile has an amber border. The bundled **Stage**, **Arena**, **Concert** and **Grey** items can't be deleted; per-tile buttons download or delete your own media. **Upload** accepts JPEG/PNG/WebP images (normalised to ≤1080p JPEG) and **VP8 WebM** clips (≤1080p, ≤30 fps, ≤60 s, audio ignored); other codecs are rejected. Every other source shows a **Capture frame** button that saves the current clean frame into the gallery at its native resolution. A selection that no longer resolves (deleted media, an imported config from another station) falls back to Stage.
+- **Media Gallery** – a device-local library of images and looping clips, managed entirely from the browser (the on-display menu can select this source but not change its content). Click a tile to make it the source; the selected tile has an amber border. The bundled **Stage**, **Arena**, **Concert**, **Festival** and **Grey** items can't be deleted; per-tile buttons download or delete your own media. **Upload** accepts JPEG/PNG/WebP images (normalised to ≤1080p JPEG) and **VP8 WebM** clips (≤1080p, ≤30 fps, ≤60 s, audio ignored); other codecs are rejected. Every other source shows a **Capture frame** button that saves the current clean frame into the gallery at its native resolution. A selection that no longer resolves (deleted media, an imported config from another station) falls back to Stage.
 
-  **Arena** is an arena seen from a truss above the stage, through a lens that bows straight lines the way a wide lens does: the Lens step measures it as Barrel / fisheye `-0.15` and Corner correction `0.02`. The tape on the stage marks a 10 × 1 m grid with the Reference Point at the middle of its downstage edge. The four pink marks on mic stands in the aisles sit at stage level, for distance points in the Setup Wizard's Advanced Camera Calibration:
+  **Arena** is an arena seen from a truss above the stage, through a lens that bows straight lines the way a wide lens does. It was drawn with Barrel / fisheye `-0.15` and Corner correction `-0.03`; the Lens step may name other values that bend the picture the same way to within a few pixels. The tape on the stage marks a 10 × 1 m grid with the Reference Point at the middle of its downstage edge. The four pink marks on mic stands in the aisles sit at stage level, for distance points in the Setup Wizard's Advanced Camera Calibration:
 
   | Mark | From DSL | From DSR |
   |---|---|---|
@@ -49,7 +49,21 @@ Which network interface SRT, RTSP and RTP use is set under **Network Interface A
   | Roll | 0° |
   | Horizontal Field of View | 70° |
   | Barrel / fisheye | -0.2 |
-  | Corner correction | 0.03 |
+  | Corner correction | -0.07 |
+
+  **Festival** is a festival stage seen from a camera on the front truss over the crowd barrier, looking steeply down onto the stage through a 2.8 mm lens whose centre sits off the centre of the picture. It was drawn with this camera, which puts the grid on the tape; its lens centre is set by hand, under Lens centre on the Camera tab or in the Lens step's Adjust by hand. The tape on the stage marks a 12 × 6 m grid with the Reference Point at the middle of its downstage edge; the stage decks are 2 m across and 1 m deep.
+
+  | Camera setting | Value |
+  |---|---|
+  | Position X / Y / Z | 0 / -4 / 9.3 m |
+  | Pitch | -42° |
+  | Yaw | 0° |
+  | Roll | 0° |
+  | Horizontal Field of View | 84.2° |
+  | Barrel / fisheye | -0.31 |
+  | Corner correction | -0.01 |
+  | Lens centre, right of the picture centre | 28 px |
+  | Lens centre, above the picture centre | 16 px |
 
   Clips are not transcoded on-device – prepare a conforming VP8 WebM on a workstation, e.g.:
 

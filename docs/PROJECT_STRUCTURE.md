@@ -15,7 +15,7 @@ openfollow/              # Single unified package
 │   ├── geometry.py      # A path's curve: straight runs, rounded corners
 │   ├── network.py       # Junctions between active paths, walking a locked marker
 │   └── engine.py        # Locked markers: pull, slide, switch, record
-├── lens_model.py        # The lens pair's fold check (stdlib-only; config, web and solver read it)
+├── lens_model.py        # The division lens model's validity rule and pull-back (stdlib-only; config, web and solver read it)
 ├── keyboard_layout.py   # Kiosk session keyboard layout resolver (stdlib-only; also the .deb helper)
 ├── window.py            # GTK native sink window wrapper
 ├── psn/                 # PSN protocol subpackage
@@ -26,7 +26,7 @@ openfollow/              # Single unified package
 ├── scene/               # Camera model + calibration math
 │   ├── camera.py
 │   ├── ground_grid.py   # Grid lines clipped to the ground-grid polygon (HUD + web)
-│   ├── solver.py        # Projection, homography, DLT camera solve + the radial overlay warp and its inverse
+│   ├── solver.py        # Projection, homography, DLT camera solve + the division-model overlay warp about the lens centre, both ways
 │   ├── calibration_points.py # The Setup Wizard's camera solve from known and triangulated marks
 │   ├── lens_fit.py      # k1 / k2 from traced straight lines (the Setup Wizard's Lens step)
 │   ├── edge_snap.py     # Snap a traced line's points onto a brightness edge

@@ -1290,8 +1290,8 @@ def test_bidi_isolates_and_c1_controls_are_refused_and_stripped(value: str) -> N
     assert _default_sanitiser(value) == "Lighting"
 
 
-def test_each_lens_field_is_checked_again_when_its_slider_or_the_other_value_changes() -> None:
-    # A slider writes its number field without a blur, and a fold fixed from the other
+def test_each_lens_field_is_checked_again_when_its_slider_or_another_lens_value_changes() -> None:
+    # A slider writes its number field without a blur, and a lens fixed from another
     # field would otherwise leave this one's error, and the disabled Save, behind.
     import re
     from pathlib import Path
@@ -1308,6 +1308,8 @@ def test_each_lens_field_is_checked_again_when_its_slider_or_the_other_value_cha
             f"change from:#camera-lens-{own}-range",
             f"change from:#camera-lens-{other}",
             f"change from:#camera-lens-{other}-range",
+            "change from:#camera-lens-cx-px",
+            "change from:#camera-lens-cy-px",
         }
 
 

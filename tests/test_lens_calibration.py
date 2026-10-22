@@ -14,6 +14,7 @@ from openfollow.scene.edge_chains import find_edge_candidates
 from openfollow.scene.solver import apply_overlay_distortion, invert_overlay_distortion
 from tests._lens_band import scaled_luma
 from tests._lens_scene import FLOOR, H, Scene, Strip, W, calibrate, deck_scene, render, riser_scene, stage_scene
+from tests.test_lens_fit import frame_error_px
 
 pytestmark = pytest.mark.unit
 
@@ -187,10 +188,19 @@ def test_a_single_bowed_edge_measures_barrel_and_asks_for_a_corner() -> None:
     assert cal.fit.hint == "Add a second line in another part of the picture."
 
 
-def test_the_arena_default_gives_back_the_lens_it_was_drawn_with() -> None:
-    """The Media Gallery's Arena demonstrates the Lens step; the help drawer names the pair it measures."""
+def _gallery_fit(picture):
     cv2 = pytest.importorskip("cv2", reason="decoding the picture needs the detection extra")
+    return calibrate(cv2.imread(str(picture), cv2.IMREAD_GRAYSCALE).astype(np.float64)).fit
+
+
+def test_the_arena_default_gives_back_the_lens_it_was_drawn_with() -> None:
+    """The Media Gallery's Arena demonstrates the Lens step; the help drawer names the pair it was drawn with."""
     from openfollow.video import media_store
 
-    img = cv2.imread(str(media_store.ARENA_ASSET_JPG), cv2.IMREAD_GRAYSCALE).astype(np.float64)
-    assert_recovered(calibrate(img).fit, (-0.15, 0.02))
+    fit = _gallery_fit(media_store.ARENA_ASSET_JPG)
+    # The arena's lines trade the two values along a valley; the bend they measure is the drawn one.
+    assert frame_error_px((fit.k1, fit.k2, fit.cx, fit.cy), (-0.15, -0.03, 0.0, 0.0)) < 5.0
+    assert fit.k2_fitted
+    assert not fit.centre_fitted
+    assert fit.rating in ("good", "excellent")
+    assert not any(line.misfit for line in fit.lines)

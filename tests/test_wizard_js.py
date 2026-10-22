@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 from openfollow.configuration import CameraConfig
-from openfollow.lens_model import lens_limit_radius, lens_warp_is_valid
+from openfollow.lens_model import C_BOUND, lens_limit_radius, lens_warp_is_valid
 from openfollow.scene.calibration_points import (
     DISTANCE_SIGMA,
     FLAG_PX,
@@ -30,7 +30,12 @@ from openfollow.scene.calibration_points import (
 from openfollow.scene.edge_chains import edge_map_scale
 from openfollow.scene.edge_snap import band_half_size, band_step
 from openfollow.scene.lens_fit import fit_lens_from_lines
-from openfollow.scene.solver import apply_overlay_distortion, project_points
+from openfollow.scene.solver import (
+    apply_overlay_distortion,
+    distort_normalised_radius,
+    invert_overlay_distortion,
+    project_points,
+)
 from openfollow.units import format_length
 from tests._lens_band import scaled_luma
 from tests._wizard_js import (
@@ -39,24 +44,23 @@ from tests._wizard_js import (
     needs_node,
     run_wizard_js,
     wizard_block,
+    wizard_function,
     wizard_var,
     wizard_window_function,
 )
 
 pytestmark = [pytest.mark.unit, needs_node]
 
-_LENS_FUNCTIONS = (
-    "wizLensFoldRadius",
-    "wizLensIsValid",
-    "wizApplyDistortion",
-    "wizInvertRadius",
-    "wizInvertDistortion",
-)
-_LENS_VARS = ("DISTORTION_INVERT_ITERS", "DISTORTION_INVERT_SETTLED", "DISTORTION_INVERT_R_CAP")
+_LENS_MODEL = ("wizLensRoot", "wizLensLimitRadius", "wizLensIsValid")
+_LENS_FUNCTIONS = (*_LENS_MODEL, "wizHalfDiag", "wizDistortRadius", "wizApplyDistortion", "wizInvertDistortion")
 _W, _H = 1920, 1080
+_D = 0.5 * math.hypot(_W, _H)
 
-# Pairs across the valid region: pinhole, barrel, a 100 degree lens, pincushion, mixed signs.
-_PAIRS = [(0.0, 0.0), (-0.1, 0.0), (-0.26, 0.05), (-0.47, 0.25), (0.2, 0.0), (0.1, -0.05), (-0.3, 0.12)]
+# Lenses across the valid region: pinhole, barrel, a 100 degree lens, a 126 degree one, a corner-heavy one,
+# pincushion, mixed signs; with the centre at the picture's centre and off it.
+_PAIRS = [(0.0, 0.0), (-0.1, 0.0), (-0.333, -0.025), (-0.527, -0.069), (0.0, -0.6), (0.2, 0.0), (0.1, -0.05)]
+_CENTRES = [(0.0, 0.0), (0.06, -0.04), (-0.12, 0.09)]
+_LENSES = [(a, b, x, y) for a, b in _PAIRS for x, y in _CENTRES if lens_warp_is_valid(a, b, x, y)]
 
 
 # ---------------------------------------------------------------------------
@@ -64,28 +68,37 @@ _PAIRS = [(0.0, 0.0), (-0.1, 0.0), (-0.26, 0.05), (-0.47, 0.25), (0.2, 0.0), (0.
 # ---------------------------------------------------------------------------
 
 
-def test_fold_radius_and_validity_are_the_servers() -> None:
-    k1s = np.round(np.arange(-0.8, 0.81, 0.04), 2).tolist()
-    k2s = np.round(np.arange(-0.4, 0.41, 0.04), 2).tolist()
-    pairs = [(a, b) for a in k1s for b in k2s] + [(-1e200, 1e200), (2e3, 0.0)]
+def test_limit_radius_and_validity_are_the_servers() -> None:
+    k1s = np.round(np.arange(-1.2, 1.21, 0.06), 2).tolist()
+    k2s = np.round(np.arange(-0.9, 0.51, 0.05), 2).tolist()
+    centres = [[0.0, 0.0], [0.1, -0.05], [-0.2, 0.15], [C_BOUND, -C_BOUND], [C_BOUND + 1e-9, 0.0], [0.0, -0.3]]
+    lenses = [[a, b, *c] for a in k1s for b in k2s for c in centres] + [[-1e200, 1e200, 0, 0], [2e3, 0.0, 0, 0]]
     out = run_wizard_js(
-        "pairs.map(function(p) { return [wizLensFoldRadius(p[0], p[1]), wizLensIsValid(p[0], p[1])]; })",
-        functions=("wizLensFoldRadius", "wizLensIsValid"),
-        pairs=[list(p) for p in pairs],
+        "lenses.map(function(l) { return [wizLensLimitRadius(l[0], l[1]), wizLensIsValid(l[0], l[1], l[2], l[3])]; })",
+        functions=_LENS_MODEL,
+        LENS_C_BOUND=C_BOUND,
+        lenses=lenses,
     )
-    for (radius, valid), (a, b) in zip(out, pairs, strict=True):
+    for (radius, valid), (a, b, x, y) in zip(out, lenses, strict=True):
         expected = lens_limit_radius(a, b)
         assert (radius is None) == math.isinf(expected), (a, b)
         if radius is not None:
             assert radius == pytest.approx(expected, rel=1e-9), (a, b)
-        assert valid == lens_warp_is_valid(a, b, 0.0, 0.0), (a, b)
+        assert valid == lens_warp_is_valid(a, b, x, y), (a, b, x, y)
+    # Both answers occur, with the centre deciding some.
+    flags = [v for _, v in out]
+    assert any(flags) and not all(flags)
+    assert any(v != lens_warp_is_valid(a, b, 0.0, 0.0) for v, (a, b, _, _) in zip(flags, lenses, strict=True)), (
+        "no lens whose centre decides"
+    )
 
 
 @pytest.mark.parametrize(("k1", "k2"), [(-0.33, 1e-15), (-0.33, -1e-15), (-0.3, 1e-12), (0.4, 1e-14)])
-def test_fold_radius_is_the_servers_when_the_edge_term_is_tiny(k1: float, k2: float) -> None:
+def test_limit_radius_is_the_servers_when_the_edge_term_is_tiny(k1: float, k2: float) -> None:
     radius, valid = run_wizard_js(
-        "[wizLensFoldRadius(k1, k2), wizLensIsValid(k1, k2)]",
-        functions=("wizLensFoldRadius", "wizLensIsValid"),
+        "[wizLensLimitRadius(k1, k2), wizLensIsValid(k1, k2, 0.05, 0)]",
+        functions=_LENS_MODEL,
+        LENS_C_BOUND=C_BOUND,
         k1=k1,
         k2=k2,
     )
@@ -93,76 +106,240 @@ def test_fold_radius_is_the_servers_when_the_edge_term_is_tiny(k1: float, k2: fl
     assert (radius is None) == math.isinf(expected)
     if radius is not None:
         assert radius == pytest.approx(expected, rel=1e-9)
-    assert valid == lens_warp_is_valid(k1, k2, 0.0, 0.0)
+    assert valid == lens_warp_is_valid(k1, k2, 0.05, 0.0)
 
 
-# Just above k2 = 9 k1^2 / 20, where Newton creeps.
-_SLOW_PAIRS = [(k1, 9.0 * k1 * k1 / 20.0 * (1.0 + 1e-9)) for k1 in (-0.8, -0.47, -0.38, -0.19)]
-
-
-@pytest.mark.parametrize(("k1", "k2"), _PAIRS + _SLOW_PAIRS)
-def test_inverse_radius_is_the_servers(k1: float, k2: float) -> None:
-    radii = np.linspace(0.0, 1.0, 41).tolist()
+@pytest.mark.parametrize(("k1", "k2"), _PAIRS[1:] + [(-0.951, -0.251), (0.0, 0.3)])
+def test_distorted_radius_is_the_servers(k1: float, k2: float) -> None:
+    # Out to three corners, and far past the frame: under barrel every pinhole radius has one, past a fold none.
+    radii = [*np.linspace(0.0, 3.0, 61).tolist(), 50.0, 1000.0]
     out = run_wizard_js(
-        "radii.map(function(r) { return wizInvertRadius(r, k1, k2); })",
-        functions=("wizLensFoldRadius", "wizInvertRadius"),
-        variables=_LENS_VARS,
+        "radii.map(function(r) { return wizDistortRadius(r, k1, k2); })",
+        functions=("wizLensRoot", "wizLensLimitRadius", "wizDistortRadius"),
         radii=radii,
         k1=k1,
         k2=k2,
     )
-    r_d = np.array(radii)
-    np.testing.assert_allclose(out, r_d / (1.0 + k1 * r_d**2 + k2 * r_d**4), atol=1e-12)
+    expected = distort_normalised_radius(np.array(radii), k1, k2)
+    # At a fold the root is double, so both solves stop within about the square root of their tolerance there.
+    at_fold = expected > lens_limit_radius(k1, k2) * (1.0 - 1e-6)
+    np.testing.assert_allclose(np.array(out)[~at_fold], expected[~at_fold], rtol=0, atol=1e-12)
+    np.testing.assert_allclose(np.array(out)[at_fold], expected[at_fold], rtol=0, atol=1e-8)
 
 
-@pytest.mark.parametrize(("k1", "k2"), _PAIRS)
-def test_bowing_and_unbowing_a_point_are_the_servers(k1: float, k2: float) -> None:
-    points = [[0.0, 0.0], [960.0, 540.0], [1919.0, 1079.0], [300.0, 900.0], [1700.0, 100.0]]
+@pytest.mark.parametrize(("k1", "k2", "cx", "cy"), _LENSES)
+def test_bowing_and_unbowing_a_point_are_the_servers(k1: float, k2: float, cx: float, cy: float) -> None:
+    points = [[0.0, 0.0], [960.0, 540.0], [1920.0, 1080.0], [0.0, 1080.0], [300.0, 900.0], [1700.0, 100.0]]
     bowed, unbowed = run_wizard_js(
-        "[points.map(function(p) { return wizApplyDistortion(p, k1, k2); }),"
-        " points.map(function(p) { return wizInvertDistortion(p, k1, k2); })]",
+        "[points.map(function(p) { return wizApplyDistortion(p, k1, k2, cx, cy); }),"
+        " points.map(function(p) { return wizInvertDistortion(p, k1, k2, cx, cy); })]",
         functions=_LENS_FUNCTIONS,
-        variables=_LENS_VARS,
         imageWidth=_W,
         imageHeight=_H,
         points=points,
         k1=k1,
         k2=k2,
+        cx=cx,
+        cy=cy,
     )
-    np.testing.assert_allclose(bowed, apply_overlay_distortion(np.array(points), _W, _H, k1, k2, 0.0, 0.0), atol=1e-9)
-    # The inverse bows back onto the click wherever the warp reaches it.
-    np.testing.assert_allclose(apply_overlay_distortion(np.array(unbowed), _W, _H, k1, k2, 0.0, 0.0), points, atol=1e-6)
+    pts = np.array(points)
+    np.testing.assert_allclose(bowed, apply_overlay_distortion(pts, _W, _H, k1, k2, cx, cy), rtol=0, atol=1e-9)
+    np.testing.assert_allclose(unbowed, invert_overlay_distortion(pts, _W, _H, k1, k2, cx, cy), rtol=0, atol=1e-9)
+
+
+def test_the_lens_centre_moves_the_picture_by_its_own_offset() -> None:
+    # k = (-0.2, 0), centre 0.1 half-diagonals right: the lens centre's own pixel is the picture centre's pinhole
+    # point, and 0.5 half-diagonals right of it lands 0.5 / 0.95 right of the picture centre.
+    centre_px = [960.0 + 0.1 * _D, 540.0]
+    out = run_wizard_js(
+        "[wizInvertDistortion(a, -0.2, 0, 0.1, 0), wizInvertDistortion(b, -0.2, 0, 0.1, 0),"
+        " wizApplyDistortion([960, 540], 0, 0, 0, -0.1)]",
+        functions=_LENS_FUNCTIONS,
+        imageWidth=_W,
+        imageHeight=_H,
+        a=centre_px,
+        b=[centre_px[0] + 0.5 * _D, 540.0],
+    )
+    assert out[0] == pytest.approx([960.0, 540.0], abs=1e-9)
+    assert out[1] == pytest.approx([960.0 + 0.5 / 0.95 * _D, 540.0], abs=1e-9)
+    # A centre above the picture's (cy negative, y down) moves the picture up with it.
+    assert out[2] == pytest.approx([960.0, 540.0 - 0.1 * _D], abs=1e-9)
+
+
+def test_a_point_past_the_limit_has_no_pinhole_point() -> None:
+    # (-0.8, -0.4) reaches its pole at 1.0 half-diagonals: the frame corner has no pinhole point, the server's NaN.
+    corner = [[1920.0, 1080.0]]
+    out = run_wizard_js(
+        "wizInvertDistortion(p, -0.8, -0.4, 0, 0)",
+        functions=_LENS_FUNCTIONS,
+        imageWidth=_W,
+        imageHeight=_H,
+        p=corner[0],
+    )
+    assert out == [None, None]
+    assert np.isnan(invert_overlay_distortion(np.array(corner), _W, _H, -0.8, -0.4, 0.0, 0.0)).all()
 
 
 @pytest.mark.parametrize(
-    ("k1", "k2", "shown"),
+    ("lens", "shown"),
     [
-        (-0.3, 0.02, ["-0.3000", "0.0200"]),
-        # Four decimals would put the pair on the fold.
-        (-0.5, 0.10001, ["-0.5", "0.10001"]),
+        ((-0.3, 0.02, 0.0, 0.0), ["-0.3000", "0.0200"]),
+        # Four decimals would put the pair past the limit with this centre, though not without one.
+        ((-0.5, -0.26979, 0.1, 0.0), ["-0.5", "-0.26979"]),
     ],
 )
-def test_a_fitted_pair_is_shown_as_a_valid_pair(k1: float, k2: float, shown: list[str]) -> None:
+def test_a_fitted_lens_is_shown_as_a_valid_lens(lens: tuple[float, ...], shown: list[str]) -> None:
+    k1, k2, cx, cy = lens
+    assert lens_warp_is_valid(k1, k2, cx, cy)
     out = run_wizard_js(
-        "wizLensShownPair(k1, k2)",
-        functions=("wizLensFoldRadius", "wizLensIsValid", "wizLensShownPair"),
+        "wizLensShownPair(k1, k2, cx, cy)",
+        functions=(*_LENS_MODEL, "wizLensShownPair"),
+        LENS_C_BOUND=C_BOUND,
         k1=k1,
         k2=k2,
+        cx=cx,
+        cy=cy,
     )
     assert out == shown
-    assert lens_warp_is_valid(float(out[0]), float(out[1]), 0.0, 0.0)
+    assert lens_warp_is_valid(float(out[0]), float(out[1]), cx, cy)
 
 
-@pytest.mark.parametrize(("k1", "k2"), [(-0.3, 0.02), (-0.5, 0.10001)])
-def test_the_pair_a_fit_wrote_reads_as_the_fits(k1: float, k2: float) -> None:
+_FIT_LENS = ("lensFitApplies", "lensSame", "lensIsTheFits")
+
+
+@pytest.mark.parametrize(
+    ("centre", "lens", "same"),
+    [
+        ([0.0, 0.0], [-0.3, 0.02, 0.0, 0.0], True),
+        ([0.03, -0.01], [-0.3, 0.02, 0.03, -0.01], True),
+        ([0.03, -0.01], [-0.3, 0.02, 0.0, 0.0], False),
+        ([0.0, 0.0], [-0.3, 0.02, 0.0, 0.001], False),
+        ([0.0, 0.0], [-0.3, 0.021, 0.0, 0.0], False),
+        ([0.1, 0.0], [-0.5, -0.26979, 0.1, 0], True),
+    ],
+    ids=["pinhole centre", "a centre", "centre moved after", "centre set after", "pair moved after", "unrounded"],
+)
+def test_the_lens_a_fit_wrote_reads_as_the_fits(centre: list, lens: list[float], same: bool) -> None:
+    k1, k2 = (-0.5, -0.26979) if centre == [0.1, 0.0] else (-0.3, 0.02)
+    fit = {"k1": k1, "k2": k2, "rating": "good", "centre": centre}
     out = run_wizard_js(
-        "(function() { var s = wizLensShownPair(k1, k2); return lensPairIsTheFits(Number(s[0]), Number(s[1])); })()",
-        functions=("wizLensFoldRadius", "wizLensIsValid", "wizLensShownPair", "lensFitApplies", "lensPairIsTheFits"),
-        prelude=f"var lensFit = {{ k1: {k1!r}, k2: {k2!r}, rating: 'good' }};",
-        k1=k1,
-        k2=k2,
+        "lensIsTheFits(lens)",
+        functions=(*_LENS_MODEL, "wizLensShownPair", *_FIT_LENS),
+        prelude=f"var lensFit = {json.dumps(fit)};",
+        LENS_C_BOUND=C_BOUND,
+        lens=lens,
     )
-    assert out is True
+    # The fit's pair holds about the centre it was sent; a centre changed since is not the fit's lens.
+    assert out is same
+
+
+_ANSWER_FETCH = (
+    "function settled(v) { return { then: function(f) { var r = f(v); return r && r.then ? r : settled(r); },"
+    " catch: function() { return this; } }; }"
+    " function fetch(url, opts) { sent = JSON.parse(opts.body); return settled({ ok: true,"
+    " json: function() { return settled({ k1: -0.3123, k2: -0.0123, k2_fitted: true, rating: 'good', hint: '',"
+    " lines: [{ curve: [], rms_px: 0.4, misfit: false }] }); } }); }"
+)
+
+
+def test_a_fit_measures_the_pair_about_the_lens_centre_in_use_and_keeps_it() -> None:
+    out = run_wizard_js(
+        "(function() { runLensFit(); return [sent.cx, sent.cy, written, S.lensCentre, lensFit.centre]; })()",
+        functions=(*_LENS_MODEL, "wizLensShownPair", "lensFitApplies", "runLensFit"),
+        prelude=_ANSWER_FETCH + _FIT_PAGE + " var sent = null, written = {}, S = { lensCentre: [0.0254, -0.0145] };"
+        " function wizWriteLensCoeff(id, v) { written[id] = v; } function wizShowLensLimit() {}"
+        " function onLensCoeffChanged() {}",
+        LENS_C_BOUND=C_BOUND,
+    )
+    assert out == [0.0254, -0.0145, {"wiz_lens_k1": "-0.3123", "wiz_lens_k2": "-0.0123"}, [0.0254, -0.0145],
+                   [0.0254, -0.0145]]  # fmt: skip
+
+
+@pytest.mark.parametrize(("lines", "refit"), [(True, True), (False, False)], ids=["traced lines", "no lines"])
+def test_a_new_lens_centre_measures_the_traced_lines_again(lines: bool, refit: bool) -> None:
+    out = run_wizard_js(
+        "(function() { $('wiz_lens_cx').value = '13'; $('wiz_lens_cy').value = '9';"
+        " window.onWizardLensCentreInput(); return fits; })()",
+        functions=_CENTRE_PX,
+        prelude=_LIMIT_PAGE + f"var window = {{}}, fits = 0, lensLines = [{{}}].slice(0, {int(lines)}),"
+        " S = { lensCentre: [0, 0], lensCentreBad: false };"
+        " function wizLensEdited() {} function lensLineCounts() { return true; }"
+        " function scheduleLensFit() { fits++; }\n" + wizard_window_function("onWizardLensCentreInput"),
+        LENS_C_BOUND=C_BOUND,
+    )
+    assert out == int(refit)
+
+
+# ---------------------------------------------------------------------------
+# The lens centre in pixels of the snapshot
+# ---------------------------------------------------------------------------
+
+_CENTRE_PX = ("wizHalfDiag", "wizLensCentrePxMax", "wizLensCentrePx", "wizLensCentreText", "wizLensCentreFromPx")
+
+
+@pytest.mark.parametrize(("w", "h", "bound"), [(1920, 1080, 275), (3840, 2160, 550), (1280, 720, 183)])
+def test_the_centre_fields_span_the_stations_bound_in_pixels(w: int, h: int, bound: int) -> None:
+    out = run_wizard_js(
+        "[wizLensCentrePxMax(w, h), wizLensCentreFromPx(String(b), String(-b), w, h),"
+        " wizLensCentreFromPx(String(b + 1), '0', w, h), wizLensCentreFromPx('0', String(-b - 1), w, h)]",
+        functions=_CENTRE_PX,
+        LENS_C_BOUND=C_BOUND,
+        w=w,
+        h=h,
+        b=bound,
+    )
+    d = 0.5 * math.hypot(w, h)
+    assert out[0] == bound == math.floor(C_BOUND * d)
+    assert out[1] == pytest.approx([bound / d, bound / d]) and max(map(abs, out[1])) <= C_BOUND
+    assert out[2] is None and out[3] is None
+
+
+def test_a_centre_42_px_right_and_18_px_up_is_stored_in_half_diagonals() -> None:
+    out = run_wizard_js(
+        "[wizLensCentreFromPx('42', '18', 1920, 1080), wizLensCentreFromPx(' -42 ', '-18', 1920, 1080)]",
+        functions=_CENTRE_PX,
+        LENS_C_BOUND=C_BOUND,
+    )
+    # Up is positive on the field and negative in image axes (y down).
+    assert out == [pytest.approx([42 / _D, -18 / _D]), pytest.approx([-42 / _D, 18 / _D])]
+    # The station reads them back to the same pixels.
+    assert CameraConfig(lens_cx=out[0][0], lens_cy=out[0][1]).lens_cx * _D == pytest.approx(42.0)
+
+
+@pytest.mark.parametrize("text", ["", "  ", "abc", "1e400", "NaN", "Infinity"])
+def test_a_centre_field_without_a_number_gives_no_centre(text: str) -> None:
+    out = run_wizard_js(
+        "[wizLensCentreFromPx(t, '0', 1920, 1080), wizLensCentreFromPx('0', t, 1920, 1080)]",
+        functions=_CENTRE_PX,
+        LENS_C_BOUND=C_BOUND,
+        t=text,
+    )
+    assert out == [None, None]
+
+
+@pytest.mark.parametrize(
+    ("centre_px", "text"),
+    [
+        ((42, 18), "42 px right, 18 px up"),
+        ((-13, 9), "13 px left, 9 px up"),
+        ((0, -7), "7 px down"),
+        ((5, 0), "5 px right"),
+        ((0.4, -0.4), ""),
+        ((0, 0), ""),
+    ],
+)
+def test_the_centre_is_named_in_whole_pixels_and_an_axis_at_0_is_left_out(centre_px: tuple, text: str) -> None:
+    c = [centre_px[0] / _D, -centre_px[1] / _D]
+    out = run_wizard_js(
+        "[wizLensCentreText(c, 1920, 1080), wizLensCentrePx(c, 1920, 1080), wizLensCentreText(c, 0, 0)]",
+        functions=_CENTRE_PX,
+        LENS_C_BOUND=C_BOUND,
+        c=c,
+    )
+    assert out[0] == text
+    assert out[1] == [round(centre_px[0]), round(centre_px[1])]
+    # Without a snapshot there are no pixels to name.
+    assert out[2] == ""
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +444,7 @@ def test_a_failed_fit_leaves_no_earlier_fit_standing() -> None:
         functions=("runLensFit", "lensFitFailed"),
         prelude=_SYNC_FETCH
         + " var lensFitSeq = 0, imageWidth = 1920, imageHeight = 1080, shown = 'unset', status = null;"
+        " var S = { lensCentre: [0, 0] };"
         " var lensFit = { k1: -0.2, k2: 0, rating: 'good' };"
         " var lensLines = [{ points: 5 }];"
         " function lensLineCounts() { return true; } function lensActivePoints() { return []; }"
@@ -277,7 +455,7 @@ def test_a_failed_fit_leaves_no_earlier_fit_standing() -> None:
 
 
 _FIT_PAGE = (
-    " var lensFitSeq = 0, imageWidth = 1920, imageHeight = 1080, drawn = 0, saved = 0;"
+    " var lensFitSeq = 0, imageWidth = 1920, imageHeight = 1080, drawn = 0, saved = 0, S = { lensCentre: [0, 0] };"
     " var lensFit = { k1: -0.2, k2: 0, rating: 'good' };"
     " var lensLines = [{ points: 5 }];"
     " function lensLineCounts() { return true; } function lensActivePoints() { return []; }"
@@ -311,9 +489,10 @@ def test_a_slider_edit_counts_as_a_measured_lens(saved: list[float], before: boo
         f" var SAVED = {{ lens: {json.dumps(saved)} }};"
         " var fields = { wiz_lens_k1: { value: '-0.2' }, wiz_lens_k1_range: { value: '-0.2' } };"
         " var document = { getElementById: function(id) { return fields[id] || null; } };"
-        " function wizWriteLensCoeff() {} function wizLensPairValid() { return true; }"
+        " function wizWriteLensCoeff() {}"
         " function lensRecomputeCurves() {} function renderLens() {} function renderLensResult() {}"
-        " function onLensCoeffChanged() {} function wizShowLensFold() {}\n"
+        " function onLensCoeffChanged() {} function wizShowLensLimit() {}\n"
+        + wizard_function("wizLensEdited")
         + wizard_window_function("onWizardLensInput")
         + "\nvar onWizardLensInput = window.onWizardLensInput;",
     )
@@ -325,19 +504,36 @@ def test_a_slider_edit_counts_as_a_measured_lens(saved: list[float], before: boo
 # Lens values from an exported settings file
 # ---------------------------------------------------------------------------
 
-_LENS_FILE_FUNCTIONS = ("wizLensFoldRadius", "wizLensIsValid", "lensFromSettings")
+_LENS_FILE_FUNCTIONS = (*_LENS_MODEL, "lensFromSettings")
 _NOT_SETTINGS = "This is not an OpenFollow settings file."
 _NO_LENS = "This settings file has no lens calibration."
-_FOLDS = "With the lens values of this file, the overlay folds over itself inside the picture."
+_LIMIT = "With the lens values of this file, the overlay cannot follow the picture out to its corners."
+LIMIT_CENTRE = (
+    "With this lens centre, the overlay cannot follow the picture out to its corners. Set the lens centre closer to 0."
+)
 
 
-def _settings(k1: object, k2: object) -> str:
-    return json.dumps({"psn_system_name": "Stage", "camera": {"fov": 60.0, "lens_k1": k1, "lens_k2": k2}})
+def _settings(k1: object, k2: object, **centre: object) -> str:
+    camera = {"fov": 60.0, "lens_k1": k1, "lens_k2": k2, **{f"lens_{k}": v for k, v in centre.items()}}
+    return json.dumps({"psn_system_name": "Stage", "camera": camera})
 
 
-def test_a_settings_file_gives_its_lens_pair() -> None:
-    out = run_wizard_js("lensFromSettings(text)", functions=_LENS_FILE_FUNCTIONS, text=_settings(-0.21, 0.03))
-    assert out == {"k1": -0.21, "k2": 0.03}
+def _lens_from_settings(text: str) -> dict:
+    return run_wizard_js("lensFromSettings(text)", functions=_LENS_FILE_FUNCTIONS, LENS_C_BOUND=C_BOUND, text=text)
+
+
+def test_a_settings_file_gives_its_lens() -> None:
+    assert _lens_from_settings(_settings(-0.21, 0.03, cx=0.02, cy=-0.01)) == {
+        "k1": -0.21,
+        "k2": 0.03,
+        "cx": 0.02,
+        "cy": -0.01,
+    }
+
+
+def test_a_settings_file_without_a_centre_reads_it_as_0_as_the_station_does() -> None:
+    assert _lens_from_settings(_settings(-0.21, 0.03)) == {"k1": -0.21, "k2": 0.03, "cx": 0, "cy": 0}
+    assert (CameraConfig().lens_cx, CameraConfig().lens_cy) == (0.0, 0.0)
 
 
 @pytest.mark.parametrize(
@@ -356,7 +552,14 @@ def test_a_settings_file_gives_its_lens_pair() -> None:
         (_settings("-0.2", 0.0), _NO_LENS),
         (_settings(None, 0.0), _NO_LENS),
         ('{"camera": {"lens_k1": 1e400, "lens_k2": 0}}', _NO_LENS),
-        (_settings(-0.6, 0.0), _FOLDS),
+        (_settings(-1.0, 0.0), _LIMIT),
+        (_settings(-0.2, 0.0, cx=True), _NO_LENS),
+        (_settings(-0.2, 0.0, cy="0.1"), _NO_LENS),
+        (_settings(-0.2, 0.0, cx=None), _NO_LENS),
+        ('{"camera": {"lens_k1": -0.2, "lens_k2": 0, "lens_cy": -1e400}}', _NO_LENS),
+        (_settings(-0.2, 0.0, cx=C_BOUND + 1e-9), _LIMIT),
+        (_settings(-0.2, 0.0, cy=-0.26), _LIMIT),
+        (_settings(-0.6, -0.1, cx=0.2, cy=0.2), _LIMIT),
     ],
     ids=[
         "not json",
@@ -372,25 +575,39 @@ def test_a_settings_file_gives_its_lens_pair() -> None:
         "a string",
         "a null value",
         "infinite",
-        "a folding pair",
+        "a pair past the limit",
+        "a bool centre",
+        "a string centre",
+        "a null centre",
+        "an infinite centre",
+        "a centre past its bound",
+        "a centre far past its bound",
+        "a centre that takes the lens past the limit",
     ],
 )
-def test_a_settings_file_without_a_usable_pair_says_why(text: str, error: str) -> None:
-    assert run_wizard_js("lensFromSettings(text)", functions=_LENS_FILE_FUNCTIONS, text=text) == {"error": error}
+def test_a_settings_file_without_a_usable_lens_says_why(text: str, error: str) -> None:
+    assert _lens_from_settings(text) == {"error": error}
 
 
-def test_a_settings_file_pair_is_taken_exactly_when_the_station_would_take_it() -> None:
-    pairs = [
-        (float(a), float(b))
-        for a in np.round(np.arange(-0.8, 0.81, 0.05), 2)
-        for b in np.round(np.arange(-0.4, 0.41, 0.05), 2)
+def test_a_settings_file_lens_is_taken_exactly_when_the_station_keeps_it() -> None:
+    lenses = [
+        (float(a), float(b), x, y)
+        for a in np.round(np.arange(-1.0, 0.51, 0.1), 2)
+        for b in np.round(np.arange(-0.8, 0.31, 0.1), 2)
+        for x, y in ((0.0, 0.0), (0.1, -0.08), (-0.24, 0.2), (0.3, 0.0))
     ]
     out = run_wizard_js(
         "texts.map(function(t) { return !lensFromSettings(t).error; })",
         functions=_LENS_FILE_FUNCTIONS,
-        texts=[_settings(a, b) for a, b in pairs],
+        LENS_C_BOUND=C_BOUND,
+        texts=[_settings(a, b, cx=x, cy=y) for a, b, x, y in lenses],
     )
-    assert out == [lens_warp_is_valid(a, b, 0.0, 0.0) for a, b in pairs]
+
+    def kept(lens: tuple[float, float, float, float]) -> bool:
+        cam = CameraConfig(lens_k1=lens[0], lens_k2=lens[1], lens_cx=lens[2], lens_cy=lens[3])
+        return (cam.lens_k1, cam.lens_k2, cam.lens_cx, cam.lens_cy) == lens
+
+    assert out == [kept(lens) for lens in lenses]
     assert any(out) and not all(out)
 
 
@@ -1151,7 +1368,8 @@ function overlayUnit() { return 1; } function calibGrid() { return { w: 1, d: 1,
 function gridLines() { return []; } function poly() { return ''; } function originMarkup() { return ''; }
 function originPixel() { return null; } function projectShown() { return null; }
 function solvedParamsHtml() { return ''; }
-function wizReadLensCoeff() { return 0; } function fmt() { return ''; } function reviewLensCoverage() { return ''; }
+function wizReadLensCoeff() { return 0; } function wizLens() { return [0, 0, 0, 0]; }
+function wizLensCentreText() { return ''; } function fmt() { return ''; } function reviewLensCoverage() { return ''; }
 function pairsFor() { return []; } function distTable() { return ''; } function lenText() { return ''; }
 function renderFsBar() {} function stationLensOnly() { return false; } function cautionHtml() { return 'caution'; }
 """
@@ -1451,8 +1669,8 @@ def test_the_saved_list_or_why_it_could_not_be_read(answer: str, got: dict) -> N
 _DIALOG_PAGE = """
 var body = null, lensLines = [], imageWidth = 1920, imageHeight = 1080;
 function openModal(o) { body = o.bodyHTML; }
-function lensMeasured() { return true; } function wizLensPairValid() { return true; }
-function wizReadLensCoeff() { return -0.1; }
+function lensMeasured() { return true; } function wizLensValid() { return true; }
+function wizLens() { return [-0.1, -0.1, 0, 0]; } function wizLensCentreText() { return ''; }
 """
 _DIALOG_FUNCTIONS = (
     "esc",
@@ -2390,7 +2608,7 @@ function $(id) {
 }
 var FS = { key: 'lens' }, lensHintText = 'Check the line.', hintText = '', lensFit = null;
 function renderLensHint() {} function hideLoupe() {} function lensReleaseCandidate() {}
-function lensMeasured() { return false; } function wizLensPairValid() { return true; }
+function lensMeasured() { return false; } function wizLensValid() { return true; }
 function lensChanged() { renderLensToolbar(); renderFsBar(); }
 function line() { return { misfit: false, mids: [{ on: true }, { on: true }, { on: true }] }; }
 var lensLines = [line(), line()], lensSelected = null, lensHold = false;
@@ -3034,11 +3252,14 @@ def test_the_solve_carries_the_height_or_null(height) -> None:
     out = run_wizard_js(
         "solveBody([], 7)",
         functions=("solveBody",),
-        prelude=f"var S = {{ mode: 'simple', height: {json.dumps(height)} }}, SAVED = {{ fov: 60 }};"
-        " var imageWidth = 1920, imageHeight = 1080, WIZ_SOLVE_PAGE = 'p';"
-        " function hintPos() { return null; } function wizReadLensCoeff() { return 0; }",
+        prelude=f"var S = {{ mode: 'simple', height: {json.dumps(height)}, lensCentre: [0.02, -0.01] }};"
+        " var SAVED = { fov: 60 }, imageWidth = 1920, imageHeight = 1080, WIZ_SOLVE_PAGE = 'p';"
+        " function hintPos() { return null; }"
+        " function wizReadLensCoeff(id) { return id === 'wiz_lens_k1' ? -0.2 : 0.01; }",
     )
     assert "camera_height" in out and out["camera_height"] == height
+    # The pins are undistorted with the whole lens, its centre included.
+    assert out["camera"] == {"lens_k1": -0.2, "lens_k2": 0.01, "lens_cx": 0.02, "lens_cy": -0.01}
 
 
 @pytest.mark.parametrize(("answered", "steep"), [({"steep": True}, True), ({"steep": False}, False), ({}, False)])
@@ -3712,8 +3933,9 @@ def test_the_review_live_regions_are_written_once_for_the_same_words(solve: dict
 
 
 _LENS_RESULT_PAGE = """
-function wizReadLensCoeff() { return -0.12; } function fmt(v, d) { return Number(v).toFixed(d); }
-function renderLensMeter() {} function lensPairIsTheFits() { return true; }
+function fmt(v, d) { return Number(v).toFixed(d); } function wizLens() { return [-0.12, 0, 0, 0]; }
+function renderLensMeter() {} function lensIsTheFits() { return true; } function lensSame() { return true; }
+function lensCentreSuffix() { return ''; }
 """
 
 
@@ -3725,7 +3947,7 @@ function renderLensMeter() {} function lensPairIsTheFits() { return true; }
             ["lens-result-text", "lens-result-hint"],
         ),
         (
-            "S.lensLoaded = { name: 'Wide', k1: -0.12, k2: 0, src: 'Saved on this station' };",
+            "S.lensLoaded = { name: 'Wide', k1: -0.12, k2: 0, cx: 0, cy: 0, src: 'Saved on this station' };",
             ["lens-result-text", "lens-result-hint"],
         ),
     ],
@@ -4715,7 +4937,7 @@ function lensMovePoint() { moves++; } function lensClamp(p) { return p; } functi
 function lensPointPos() { return [0, 0]; } function showLoupe() {} function hideLoupe() {} function renderLens() {}
 function lensFocusSelected() {} function lensChanged() {} function lensPointFocusIn() {}
 function lensTabKey() {} function lensFocusElsewhere() {} function renderLensBubbles() {} function renderLensResult() {}
-function lensPressEnd() {} function wizShowLensFold() {}
+function lensPressEnd() {} function wizShowLensCentre() {} function wizShowLensLimit() {}
 var hit = { id: 'lens-hit', closest: function() { return null; } };
 var handle = { id: '', closest: function(sel) {
   return sel === '.lens-point' ? { dataset: { line: '0', point: '1' } } : null; } };
@@ -4816,24 +5038,81 @@ def test_the_simple_hint_names_a_partly_filled_camera_only_once_the_typing_is_do
     }
 
 
+_LIMIT_PAGE = """
+var els = {};
+function $(id) {
+  return els[id] = els[id] || { style: {}, textContent: '', setAttribute: function(k, v) { this[k] = v; } };
+}
+var document = { getElementById: $ };
+var imageWidth = 1920, imageHeight = 1080;
+"""
+
+
 @pytest.mark.parametrize(
-    ("valid", "was_open", "result"),
-    [(False, False, ["block", True]), (True, False, ["none", False]), (True, True, ["none", True])],
-    ids=["a folding pair", "a valid pair", "a valid pair, opened by hand"],
+    ("lens", "bad_field", "was_open", "pair", "centre"),
+    [
+        ((-1.0, 0.0, 0.0, 0.0), False, False, "block", ""),
+        # The centre is not named while the pair alone already fails.
+        ((-1.0, 0.0, 0.2, 0.2), True, False, "block", ""),
+        ((-0.6, -0.1, 0.2, 0.2), False, False, "none", LIMIT_CENTRE),
+        ((-0.2, 0.0, 0.0, 0.0), True, False, "none", "Enter a number from \u2212275 to 275."),
+        ((-0.2, 0.0, 0.2, 0.2), False, False, "none", ""),
+        ((-0.2, 0.0, 0.2, 0.2), False, True, "none", ""),
+    ],
+    ids=["the pair", "the pair, a centre field too", "the centre", "a centre field", "valid", "valid, opened by hand"],
 )
-def test_a_folding_lens_pair_opens_adjust_by_hand(valid: bool, was_open: bool, result: list) -> None:
+def test_a_lens_past_its_limit_says_which_value_and_opens_adjust_by_hand(
+    lens: tuple[float, ...], bad_field: bool, was_open: bool, pair: str, centre: str
+) -> None:
     out = run_wizard_js(
-        "(function() { els['lens-adjust'].open = was_open; wizShowLensFold();"
-        " return [els['wiz-lens-error'].style.display, els['lens-adjust'].open]; })()",
-        functions=("wizShowLensFold",),
-        prelude="var els = { 'wiz-lens-error': { style: { display: '' } }, 'lens-adjust': {} };"
-        " var document = { getElementById: function(id) { return els[id]; } };"
-        " function wizLensPairValid() { return valid; }",
-        valid=valid,
+        "(function() { $('wiz_lens_k1').value = String(lens[0]); $('wiz_lens_k2').value = String(lens[1]);"
+        " $('lens-adjust').open = was_open; wizShowLensLimit();"
+        " return [$('wiz-lens-error').style.display, $('wiz-lens-centre-error').style.display,"
+        " $('wiz-lens-centre-error').textContent, $('wiz_lens_cx')['aria-invalid'], $('lens-adjust').open]; })()",
+        functions=(
+            *_LENS_MODEL,
+            "wizHalfDiag",
+            "wizLensCentrePxMax",
+            "wizReadLensCoeff",
+            "wizLens",
+            "wizShowLensLimit",
+        ),
+        variables=("LENS_CENTRE_LIMIT_ERROR",),
+        prelude=_LIMIT_PAGE
+        + f"var S = {{ lensCentre: [{lens[2]}, {lens[3]}], lensCentreBad: {json.dumps(bad_field)} }};",
+        LENS_C_BOUND=C_BOUND,
+        lens=list(lens),
         was_open=was_open,
     )
-    # The fold error is never folded away; a valid pair leaves the section as the operator left it.
-    assert out == result
+    shown = pair == "block" or bool(centre)
+    # An error is never folded away; a valid lens leaves the section as the operator left it.
+    assert out == [pair, "block" if centre else "none", centre, "true" if centre else "false", shown or was_open]
+    assert lens_warp_is_valid(lens[0], lens[1], 0.0, 0.0) is (pair == "none")
+
+
+@pytest.mark.parametrize(
+    ("right", "above", "centre", "bad"),
+    [("42", "18", [42 / _D, -18 / _D], False), ("-275", "275", [-275 / _D, -275 / _D], False), ("276", "0", None, True),
+     ("", "3", None, True), ("3", "abc", None, True)],
+    ids=["in range", "at the bound", "past the bound", "empty", "not a number"],
+)  # fmt: skip
+def test_a_centre_field_edit_takes_the_centre_only_while_both_fields_hold_one(
+    right: str, above: str, centre: list | None, bad: bool
+) -> None:
+    out = run_wizard_js(
+        "(function() { $('wiz_lens_cx').value = right; $('wiz_lens_cy').value = above;"
+        " window.onWizardLensCentreInput(); return [S.lensCentre, S.lensCentreBad, edited]; })()",
+        functions=_CENTRE_PX,
+        prelude=_LIMIT_PAGE
+        + "var window = {}, edited = 0, lensLines = [], S = { lensCentre: [0.01, 0.02], lensCentreBad: false };"
+        + " function wizLensEdited() { edited++; } function lensLineCounts() { return true; }\n"
+        + wizard_window_function("onWizardLensCentreInput"),
+        LENS_C_BOUND=C_BOUND,
+        right=right,
+        above=above,
+    )
+    # A field without a number in range keeps the last centre, flagged so nothing saves it as if shown.
+    assert out == [pytest.approx(centre) if centre else [0.01, 0.02], bad, 1]
 
 
 _NO_SOLVE = {"marks": [], "error": "No camera fits."}
@@ -5571,3 +5850,199 @@ def test_ending_a_corners_hold_ends_its_selection_and_keeps_its_focus(key: str, 
     )
     # No longer drawn as selected once Enter would not place it; Esc places nothing, Enter places it once.
     assert out == result
+
+
+# ---------------------------------------------------------------------------
+# The lens centre through the Lens step: the result line, Load, Save, Review and the session
+# ---------------------------------------------------------------------------
+
+# A centre 42 px right and 18 px up on 1920 x 1080, in image axes.
+_C42 = [42 / _D, -18 / _D]
+_LINE_FUNCTIONS = ("esc", "fmt", "setLive", "lensFitApplies", "lensSame", "lensCentreSuffix")
+_GOOD = "Good \u2013 barrel / fisheye \u22120.198, corner correction \u22120.071"
+_RESULT_PAGE = """
+var imageWidth = 1920, imageHeight = 1080, lensLines = [];
+function renderLensMeter() {} function lensIsTheFits() { return true; } function wizLens() { return [0, 0, 0, 0]; }
+"""
+
+
+@pytest.mark.parametrize(
+    ("centre", "text"),
+    [
+        (_C42, _GOOD + ", lens centre 42 px right, 18 px up"),
+        ([0.0, 0.0], _GOOD),
+        ([0.4 / _D, _C42[1]], _GOOD + ", lens centre 18 px up"),
+    ],
+    ids=["a centre set", "no centre", "an axis under half a pixel"],
+)  # fmt: skip
+def test_the_result_line_names_the_lens_centre_the_fit_held(centre: list, text: str) -> None:
+    out = run_wizard_js(
+        "(function() { renderLensResult(); return $('lens-result-text').innerHTML; })()",
+        functions=(*_LINE_FUNCTIONS, *_CENTRE_PX, "renderLensResult"),
+        variables=("LENS_RATING_LEVEL", "LENS_RATING_LABEL"),
+        prelude=_DOM
+        + _RESULT_PAGE
+        + "document.getElementById = function(id) { var el = $(id); el.querySelector = function() { return $('m'); };"
+        " return el; };"
+        + "var S = { lensLoaded: null }, lensFit = "
+        + json.dumps({"rating": "good", "k1": -0.198, "k2": -0.071, "k2_fitted": True, "hint": "", "centre": centre})
+        + ";",
+        LENS_C_BOUND=C_BOUND,
+    )
+    assert out == text
+
+
+def test_the_loaded_line_names_the_centre_in_use() -> None:
+    out = run_wizard_js(
+        "(function() { renderLensResult();"
+        " return [$('lens-result-text').innerHTML, $('lens-result-hint').innerHTML]; })()",
+        functions=(*_LINE_FUNCTIONS, *_CENTRE_PX, "renderLensResult"),
+        variables=("LENS_RATING_LEVEL", "LENS_RATING_LABEL"),
+        prelude=_DOM
+        + _RESULT_PAGE
+        + "document.getElementById = function(id) { var el = $(id); el.querySelector = function() { return $('m'); };"
+        " return el; };"
+        + f"var lensFit = null, S = {{ lensLoaded: {{ name: 'Wide', src: 'Saved on this station on 2026-10-14',"
+        f" k1: -0.2, k2: -0.07, cx: {_C42[0]}, cy: {_C42[1]} }} }};"
+        + f" wizLens = function() {{ return [-0.2, -0.07, {_C42[0]}, 5 / {_D}]; }};",
+        LENS_C_BOUND=C_BOUND,
+    )
+    # The centre moved by hand after loading: the line names the one in use and says it was adjusted.
+    assert out == [
+        "Loaded “Wide” – barrel / fisheye −0.200, corner correction −0.070, lens centre 42 px right, 5 px down",
+        "Adjusted by hand after loading. Saved on this station on 2026-10-14.",
+    ]
+
+
+_LOAD_PAGE = """
+var imageWidth = 1920, imageHeight = 1080, lensLines = [], lensSelected = null, lensPending = null, lensFit = null;
+var lensFitSeq = 0, written = {};
+var S = { lensCentre: [0, 0], lensCentreBad: true, lensTouched: false, lensLoaded: null };
+function lensReleaseCandidate() {} function dropLensPoint() {} function lensShowNotice() {} function renderLens() {}
+function renderLensResult() {} function onLensCoeffChanged() {} function wizShowLensLimit() {}
+function wizWriteLensCoeff(id, v) { written[id] = v; }
+"""
+
+
+def test_loading_a_calibration_sets_its_centre_and_shows_it_in_pixels() -> None:
+    out = run_wizard_js(
+        "(function() { lensApplyLoaded(c, 'Saved on this station on 2026-10-14');"
+        " return [written, S.lensCentre, S.lensCentreBad, S.lensLoaded, $('wiz_lens_cx').value, $('wiz_lens_cy').value,"
+        " $('wiz_lens_cx').max, $('wiz_lens_cy').min]; })()",
+        functions=(
+            *_LENS_MODEL,
+            "wizLensShownPair",
+            *_CENTRE_PX,
+            "wizShowLensCentre",
+            "wizSetLensCentre",
+            "lensApplyLoaded",
+        ),
+        prelude=_DOM + _LOAD_PAGE,
+        LENS_C_BOUND=C_BOUND,
+        c={"name": "Wide", "k1": -0.2, "k2": -0.07, "cx": _C42[0], "cy": _C42[1]},
+    )
+    assert out[0] == {"wiz_lens_k1": "-0.2000", "wiz_lens_k2": "-0.0700"}
+    assert out[1] == pytest.approx(_C42) and out[2] is False
+    assert out[3] == {"name": "Wide", "src": "Saved on this station on 2026-10-14", "k1": -0.2, "k2": -0.07,
+                      "cx": pytest.approx(_C42[0]), "cy": pytest.approx(_C42[1])}  # fmt: skip
+    assert out[4:] == [42, 18, 275, -275]
+
+
+def test_without_a_snapshot_the_centre_fields_are_off_and_say_so() -> None:
+    out = run_wizard_js(
+        "(function() { wizSetLensCentre(c); return [$('wiz_lens_cx').disabled, $('wiz_lens_cx').placeholder,"
+        " $('wiz_lens_cy').value, S.lensCentre]; })()",
+        functions=(*_CENTRE_PX, "wizShowLensCentre", "wizSetLensCentre"),
+        prelude=_DOM + "var imageWidth = 0, imageHeight = 0, S = { lensCentre: [0, 0], lensCentreBad: false };",
+        LENS_C_BOUND=C_BOUND,
+        c=_C42,
+    )
+    # The centre is kept in half-diagonals, so a snapshot arriving later shows it in its own pixels.
+    assert out[:3] == [True, "No video", ""] and out[3] == pytest.approx(_C42)
+
+
+def test_the_load_list_names_a_saved_lens_centre() -> None:
+    saved = [
+        {"name": "Wide", "k1": -0.2, "k2": -0.07, "cx": _C42[0], "cy": -_C42[1], "saved": "2026-10-14",
+         "width": 1920, "height": 1080},
+        {"name": "Tele", "k1": -0.05, "k2": 0.0, "cx": 0.0, "cy": 0.0, "saved": "2026-10-02",
+         "width": 1920, "height": 1080},
+    ]  # fmt: skip
+    out = run_wizard_js(
+        "(async function() { lensLoadDialog(); await new Promise(function(r) { setImmediate(r); }); return body; })()",
+        functions=(*_DIALOG_FUNCTIONS, *_CENTRE_PX),
+        prelude=_SAVE_ERROR
+        + _DOM
+        + _DIALOG_PAGE
+        + "function fetch() { return Promise.resolve({ ok: true, json: function() {"
+        + f" return Promise.resolve({{ calibrations: {json.dumps(saved)} }}); }} }}); }}\n"
+        + wizard_window_function("lensLoadDialog")
+        + "\nvar lensLoadDialog = window.lensLoadDialog;",
+        LENS_C_BOUND=C_BOUND,
+    )
+    assert (
+        "<small>Barrel / fisheye −0.200 · Corner correction −0.070 · Lens centre 42 px right, 18 px down"
+        " · 2026-10-14 · 1920 × 1080</small>" in out
+    )
+    assert "<small>Barrel / fisheye −0.050 · Corner correction 0.000 · 2026-10-02 · 1920 × 1080</small>" in out
+
+
+def test_save_sends_the_lens_centre_with_the_pair() -> None:
+    out = run_wizard_js(
+        "(async function() { lensSaveDialog(); await new Promise(function(r) { setImmediate(r); });"
+        " $('ls-name').value = 'Wide'; buttons[1].onClick({ disabled: false });"
+        " await new Promise(function(r) { setImmediate(r); }); return [body, posted]; })()",
+        functions=(*_DIALOG_FUNCTIONS, *_CENTRE_PX),
+        prelude=_SAVE_ERROR
+        + _DOM
+        + _DIALOG_PAGE
+        + f"function wizLens() {{ return [-0.2, -0.07, {_C42[0]}, {_C42[1]}]; }}"
+        + " var buttons = null, posted = null;"
+        + " openModal = function(o) { body = o.bodyHTML; buttons = o.footerButtons; }; function closeModal() {}"
+        + " function fetch(url, opts) {"
+        + " if (opts) { posted = JSON.parse(opts.body); return Promise.resolve({ ok: true }); }"
+        + " return Promise.resolve({ ok: true, json: function() {"
+        + " return Promise.resolve({ calibrations: [] }); } }); }\n"
+        + wizard_window_function("lensSaveDialog")
+        + "\nvar lensSaveDialog = window.lensSaveDialog;",
+        LENS_C_BOUND=C_BOUND,
+    )
+    assert "Barrel / fisheye −0.200 · Corner correction −0.070 · Lens centre 42 px right, 18 px up" in out[0]
+    assert out[1] == {"name": "Wide", "k1": -0.2, "k2": -0.07, "cx": pytest.approx(_C42[0]),
+                      "cy": pytest.approx(_C42[1]), "width": 1920, "height": 1080}  # fmt: skip
+
+
+@pytest.mark.parametrize(("centre", "row"), [(_C42, ["Lens centre", "42 px right, 18 px up"]), ([0.0, 0.0], None)])
+def test_review_names_the_lens_centre_in_use(centre: list, row: list | None) -> None:
+    out = run_wizard_js(
+        "(function() { renderReview(); return $('review-lens').innerHTML; })()",
+        functions=(*_REVIEW_FUNCTIONS, *_CENTRE_PX),
+        variables=("APPLY_MAX_PX",),
+        prelude=_COUNTING_DOM
+        + _REVIEW_STUBS
+        + " imageWidth = 1920; imageHeight = 1080;"
+        + f" function wizLens() {{ return [-0.2, -0.07, {centre[0]}, {centre[1]}]; }}"
+        " fmt = function(v, d) { return Number(v).toFixed(d); };",
+        LENS_C_BOUND=C_BOUND,
+        S={"mode": "advanced", "cam": None, "solve": _REVIEW_SOLVED, "height": None},
+        solvePending=False,
+    )
+    rows = re.findall(r'<span class="param-label">(.*?)</span><span class="param-value">(.*?)</span>', out)
+    expected = [("Barrel / fisheye", "-0.200"), ("Corner correction", "-0.070")]
+    assert rows == [*expected, *([tuple(row)] if row else []), ("Lens rating", "")]
+
+
+def test_the_session_keeps_the_lens_centre() -> None:
+    out = run_wizard_js(
+        "(function() { S.lensCentre = c; saveToSession(); raw = JSON.stringify(stored); S.lensCentre = [0, 0];"
+        " LENS_ENABLED = true; restoreFromSession(); return [stored.lensCentre, S.lensCentre]; })()",
+        functions=("pairOk", "fracPinOk", "saveToSession", "restoreFromSession"),
+        variables=("CORNERS",),
+        prelude=length_page("metric", {}) + _DOM + _SESSION_PAGE + "var raw = null;"
+        " var S = { mode: 'simple', simpleLoc: '', rect: { origin: 'dsc' }, pinSize: null, nextId: 1,"
+        " cornerPins: { DSL: null, DSR: null, USR: null, USL: null },"
+        " cornerMoved: { DSL: false, DSR: false, USR: false, USL: false }, points: [],"
+        " lensTouched: true, lensLoaded: null };",
+        c=_C42,
+    )
+    assert out == [pytest.approx(_C42), pytest.approx(_C42)]

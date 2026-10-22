@@ -43,8 +43,8 @@ ASSET = ROOT / "openfollow" / "video" / "inputs" / "assets" / "concert_default.j
 W, H = 1920.0, 1080.0
 # Back truss upstage of the riser: pos_x, pos_y, pos_z, pitch, yaw, roll, horizontal fov.
 CAMERA = np.array([0.0, 13.0, 12.0, -48.0, 180.0, 0.0, 70.0])
-K1, K2 = -0.2, 0.03
-# Pinhole geometry is cut to this box before the lens bows it.
+K1, K2 = -0.2, -0.07  # barrel / fisheye, corner correction
+# Pinhole geometry is cut to this box before the lens bows it, which keeps the SVG small.
 CLIP = (-0.25 * W, -0.25 * H, 1.25 * W, 1.25 * H)
 STEP_PX = 6.0  # edges are split this finely, so a straight edge bows like the lens bows it
 
@@ -505,7 +505,7 @@ def main() -> None:
     picture().save(ASSET, quality=90, optimize=True)
     pos = ", ".join(f"{v:g}" for v in CAMERA[:3])
     print(f"Camera: pos=({pos}) pitch={CAMERA[3]:g} yaw={CAMERA[4]:g} roll={CAMERA[5]:g} hfov={CAMERA[6]:g}")
-    print(f"Lens:   barrel / fisheye {K1:g}, edge fit {K2:g}")
+    print(f"Lens:   barrel / fisheye {K1:g}, corner correction {K2:g}")
     print(f"Grid:   {GRID_W:g} x {GRID_D:g} m, x_offset 0, y_offset {GRID_D / 2:g}, z_offset 0")
     for name, corner in CORNERS.items():
         x, y = lens(pinhole([corner]))[0]

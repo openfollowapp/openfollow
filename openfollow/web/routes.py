@@ -2709,6 +2709,15 @@ def _osc_binding_marker_label(token: str, catalog: Any) -> str:
     return _catalog_marker_label(int(token), catalog)
 
 
+def _camera_video_size(server: ConfigWebServer) -> tuple[int, int] | None:
+    """The live video's size, which the Camera form's lens centre fields count in; ``None`` before any video."""
+    size = (server.get_runtime_stats().get("video") or {}).get("resolution") or {}
+    width, height = size.get("width"), size.get("height")
+    if isinstance(width, int) and isinstance(height, int) and width > 0 and height > 0:
+        return width, height
+    return None
+
+
 def _mouse3d_status_view(server: ConfigWebServer) -> dict[str, Any]:
     """The 3D Mouse status block from the main loop's latest stats snapshot."""
     return dict(server.get_runtime_stats().get("mouse3d") or {})
@@ -6097,6 +6106,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             local=local,
             station_down=server.station_interface_down,
             stats=server.get_runtime_stats(),
+            camera_video_size=_camera_video_size(server),
             controller_slots=_controller_slots_view(server),
             local_ips=_get_local_ips(),
             update_status=server.get_update_status(),
@@ -7160,6 +7170,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             extra["detection_started"] = server.is_button_detection_active()
         elif name == "keyboard":
             extra["keyboard_layout"] = build_keyboard_layout_view(config)
+        elif name == "camera":
+            extra["video_size"] = _camera_video_size(server)
         # ``detection`` is intentionally NOT handled here – it has a
         # dedicated ``@app.get("/section/detection")`` route that
         # builds the extras-status / install-job state needed by the
@@ -7491,7 +7503,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     def update_camera() -> Any:
         """Update camera settings."""
         cfg = _save_section_from_form("camera")
-        return template("partials/camera", config=cfg, saved=True)
+        return template("partials/camera", config=cfg, saved=True, video_size=_camera_video_size(server))
 
     @app.post("/section/grid")
     def update_grid() -> Any:
@@ -9638,14 +9650,14 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                     f'aria-live="assertive">'
                     f"{html_mod.escape(unit_err, quote=True)}</span>"
                 )
-        # Only the lens pair's fold check reads the TOML config (a sibling left
+        # Only the lens's limit check reads the TOML config (a sibling left
         # empty keeps its saved value); skip the per-keystroke parse for every
         # other rule (see ``validation.needs_cfg``). The request-scoped cache reuses the
         # parse from ``_check_auth``'s PIN read so blur validation doesn't
         # duplicate disk I/O.
         cfg = _request_scoped_config() if needs_cfg(section, field_name) else None
         # ``request.query`` is a MultiDict; flatten siblings into a plain
-        # dict so the cross-field rules (the lens fold check, the ``max_speed``
+        # dict so the cross-field rules (the lens limit check, the ``max_speed``
         # advisory) can read the rest of the form without seeing the field
         # being validated as its own context entry.
         context = {k: request.query.get(k, "") for k in request.query if k != field_name}

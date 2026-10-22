@@ -7,9 +7,11 @@
 % _len_step = '' if _imp else ' step="0.01"'
 % import json
 % from openfollow.configuration import MAX_CALIBRATION_MARKS
-% # With Lens distortion off the wizard solves pinhole, skips the Lens step and never writes the saved pair.
+% from openfollow.lens_model import C_BOUND
+% # With Lens distortion off the wizard solves pinhole, skips the Lens step and never writes the saved lens.
 % _lens_on = config.ui.feature_on('lens_distortion')
-% _lens_k1, _lens_k2 = (config.camera.lens_k1, config.camera.lens_k2) if _lens_on else (0.0, 0.0)
+% _cam = config.camera
+% _lens_k1, _lens_k2, _lens_cx, _lens_cy = (_cam.lens_k1, _cam.lens_k2, _cam.lens_cx, _cam.lens_cy) if _lens_on else (0.0, 0.0, 0.0, 0.0)
 % _g = config.grid
 % _saved = {
 %   'mode': config.camera.calibration_mode,
@@ -17,7 +19,7 @@
 %   'grid': {'width': _g.width, 'depth': _g.depth, 'spacing': _g.spacing, 'x_offset': _g.x_offset, 'y_offset': _g.y_offset, 'z_offset': _g.z_offset},
 %   'fov': config.camera.fov,
 %   'height': config.camera.calibration_height,
-%   'lens': [_lens_k1, _lens_k2],
+%   'lens': [_lens_k1, _lens_k2, _lens_cx, _lens_cy],
 %   'max_marks': MAX_CALIBRATION_MARKS,
 % }
 
@@ -285,6 +287,9 @@
   .calib-row-head strong { font-size: 0.95rem; }
   .calib-fit { color: var(--muted); }
   .calib-reason { color: var(--error-text); margin-top: 0.35rem; }
+  /* Adjust by hand: the lens centre's two fields under the sliders, under one name. */
+  .lens-centre { margin-top: 0.9rem; }
+  .lens-centre-title { margin-bottom: 0.45rem; color: var(--text); font-size: 0.85rem; font-weight: 600; }
   .corner-xyz { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--text); font-size: 0.88rem; }
   .caution-list { margin: 0.3rem 0 0; padding-left: 1.1rem; }
   .caution-text { color: var(--caution-text); }
@@ -485,7 +490,7 @@
             <div class="field" style="flex:1;min-width:200px;">
               <label for="wiz_lens_k1">Barrel / fisheye</label>
               <div style="display:flex;gap:0.5rem;align-items:center;">
-                <input type="range" id="wiz_lens_k1_range" min="-0.6" max="0.6" step="0.005"
+                <input type="range" id="wiz_lens_k1_range" min="-1" max="0.5" step="0.005"
                        value="{{_lens_k1}}" style="flex:1;" oninput="onWizardLensInput('k1', 'range')"
                        aria-label="Barrel / fisheye slider">
                 <input type="number" id="wiz_lens_k1" step="0.005"
@@ -495,7 +500,7 @@
             <div class="field" style="flex:1;min-width:200px;">
               <label for="wiz_lens_k2">Corner correction</label>
               <div style="display:flex;gap:0.5rem;align-items:center;">
-                <input type="range" id="wiz_lens_k2_range" min="-0.4" max="0.4" step="0.005"
+                <input type="range" id="wiz_lens_k2_range" min="-0.8" max="0.3" step="0.005"
                        value="{{_lens_k2}}" style="flex:1;" oninput="onWizardLensInput('k2', 'range')"
                        aria-label="Corner correction slider">
                 <input type="number" id="wiz_lens_k2" step="0.005"
@@ -503,7 +508,21 @@
               </div>
             </div>
           </div>
-          <div id="wiz-lens-error" class="wizard-field-error" style="display:none;">With these two values, the overlay folds over itself inside the picture. Set one of the values closer to 0.</div>
+          <div id="wiz-lens-error" class="wizard-field-error" style="display:none;">With these two values, the overlay cannot follow the picture out to its corners. Set one of the values closer to 0.</div>
+          <div class="lens-centre" role="group" aria-labelledby="wiz-lens-centre-title">
+            <div class="lens-centre-title" id="wiz-lens-centre-title">Lens centre</div>
+            <div class="row">
+              <div class="field" style="flex:1;min-width:200px;">
+                <label for="wiz_lens_cx">Right of the picture centre (px)</label>
+                <input type="number" id="wiz_lens_cx" step="1" value="0" style="width:6rem;" aria-describedby="wiz-lens-centre-error" oninput="onWizardLensCentreInput()">
+              </div>
+              <div class="field" style="flex:1;min-width:200px;">
+                <label for="wiz_lens_cy">Above the picture centre (px)</label>
+                <input type="number" id="wiz_lens_cy" step="1" value="0" style="width:6rem;" aria-describedby="wiz-lens-centre-error" oninput="onWizardLensCentreInput()">
+              </div>
+            </div>
+          </div>
+          <div id="wiz-lens-centre-error" class="wizard-field-error" style="display:none;"></div>
         </div>
       </details>
     </div>
@@ -808,30 +827,37 @@
   // Hidden, a region forgets its words: shown again with the same words, it is read out again.
   function showLive(el, html, on) { el.hidden = !on; if (on) setLive(el, html); else el.liveHtml = null; }
 
-  // Lens coefficients: the one bound on the pair is that the warp must not fold
-  // inside the frame (mirrors openfollow.lens_model.lens_warp_is_valid).
-  function wizLensFoldRadius(k1, k2) {
-    if (k2 === 0) return k1 < 0 ? Math.sqrt(-1 / (3 * k1)) : Infinity;
-    var disc = 9 * k1 * k1 - 20 * k2;
+  // The lens: Barrel / fisheye and Corner correction in their fields, the lens centre in S.lensCentre (half-diagonals
+  // from the picture centre, x right, y down), shown in whole pixels of the snapshot. Mirrors openfollow.lens_model.
+  var LENS_C_BOUND = {{C_BOUND}};
+  // Smallest positive root of 1 + b s + a s^2, Infinity when none.
+  function wizLensRoot(a, b) {
+    if (a === 0) return b < 0 ? -1 / b : Infinity;
+    var disc = b * b - 4 * a;
     if (disc < 0) return Infinity;
-    // The q form keeps both roots exact when k2 is tiny against k1.
-    var q = -0.5 * (3 * k1 + (k1 < 0 ? -1 : 1) * Math.sqrt(disc));
+    // The q form keeps both roots exact when a is tiny against b.
+    var q = -0.5 * (b + (b < 0 ? -1 : 1) * Math.sqrt(disc));
     var s = Infinity;
-    [q / (5 * k2), q !== 0 ? 1 / q : Infinity].forEach(function(r) { if (r > 0 && r < s) s = r; });
-    return Math.sqrt(s);
+    [q / a, 1 / q].forEach(function(r) { if (r > 0 && r < s) s = r; });
+    return s;
   }
-  // Mirror lens_model.lens_warp_is_valid, its bound on a lens's size included.
-  function wizLensIsValid(k1, k2) {
-    return isFinite(k1) && isFinite(k2) && Math.max(Math.abs(k1), Math.abs(k2)) <= 1e3 && wizLensFoldRadius(k1, k2) > 1;
+  // Screen radius about the lens centre where the map stops rising: its pole or its fold.
+  function wizLensLimitRadius(k1, k2) { return Math.sqrt(Math.min(wizLensRoot(k2, k1), wizLensRoot(-3 * k2, -k1))); }
+  // Mirror lens_model.lens_warp_is_valid: the corner farthest from the lens centre is at most 1 + |c| from it.
+  function wizLensIsValid(k1, k2, cx, cy) {
+    if (![k1, k2, cx, cy].every(function(v) { return typeof v === 'number' && isFinite(v); })) return false;
+    if (Math.max(Math.abs(k1), Math.abs(k2)) > 1e3 || Math.abs(cx) > LENS_C_BOUND || Math.abs(cy) > LENS_C_BOUND) return false;
+    return wizLensLimitRadius(k1, k2) > 1 + Math.hypot(cx, cy);
   }
-  // The fitted pair as the fields show it: four decimals, unless rounding tips a pair fitted against the fold over it.
-  function wizLensShownPair(k1, k2) {
+  // A fitted pair as the fields show it: four decimals, unless rounding tips a pair fitted against the limit over it.
+  function wizLensShownPair(k1, k2, cx, cy) {
     var r1 = k1.toFixed(4), r2 = k2.toFixed(4);
-    return wizLensIsValid(Number(r1), Number(r2)) ? [r1, r2] : [String(k1), String(k2)];
+    return wizLensIsValid(Number(r1), Number(r2), cx, cy) ? [r1, r2] : [String(k1), String(k2)];
   }
-  function wizLensPairValid() {
-    return wizLensIsValid(wizReadLensCoeff('wiz_lens_k1'), wizReadLensCoeff('wiz_lens_k2'));
-  }
+  // [k1, k2, cx, cy] in use.
+  function wizLens() { return [wizReadLensCoeff('wiz_lens_k1'), wizReadLensCoeff('wiz_lens_k2'), S.lensCentre[0], S.lensCentre[1]]; }
+  // False while a lens centre field holds no number in range, so nothing saves a centre the fields do not show.
+  function wizLensValid() { var l = wizLens(); return !S.lensCentreBad && wizLensIsValid(l[0], l[1], l[2], l[3]); }
 
   function wizReadLensCoeff(id) {
     var el = document.getElementById(id);
@@ -854,73 +880,123 @@
     range.value = value;
   }
 
-  // A folding pair shows its error and opens Adjust by hand, so the error is never folded away.
-  function wizShowLensFold() {
-    var ok = wizLensPairValid(), err = document.getElementById('wiz-lens-error');
-    if (err) err.style.display = ok ? 'none' : 'block';
-    if (!ok) document.getElementById('lens-adjust').open = true;
+  // The lens centre in pixels of a w x h picture: right of and above its centre, rounded to whole pixels.
+  function wizHalfDiag(w, h) { return 0.5 * Math.sqrt(w * w + h * h); }
+  function wizLensCentrePxMax(w, h) { return Math.floor(LENS_C_BOUND * wizHalfDiag(w, h)); }
+  function wizLensCentrePx(c, w, h) { var d = wizHalfDiag(w, h); return [Math.round(c[0] * d) || 0, Math.round(-c[1] * d) || 0]; }
+  // "42 px right, 18 px up"; an axis that rounds to 0 px is left out, a centre at 0 (or no picture size) says nothing.
+  function wizLensCentreText(c, w, h) {
+    if (!(w > 0 && h > 0)) return '';
+    var px = wizLensCentrePx(c, w, h), parts = [];
+    if (px[0]) parts.push(Math.abs(px[0]) + ' px ' + (px[0] > 0 ? 'right' : 'left'));
+    if (px[1]) parts.push(Math.abs(px[1]) + ' px ' + (px[1] > 0 ? 'up' : 'down'));
+    return parts.join(', ');
   }
-  // A slider or number edit on the Lens step: mirror the pair, flag a folding
-  // pair, redraw the predicted curves, and persist.
+  // The two pixel fields' text as a centre in half-diagonals; null when either is not a number within the bound.
+  function wizLensCentreFromPx(right, above, w, h) {
+    var max = wizLensCentrePxMax(w, h), d = wizHalfDiag(w, h);
+    var read = function(t) { var s = String(t).trim(); return s === '' ? NaN : Number(s); };
+    var x = read(right), y = read(above);
+    if (!(Math.abs(x) <= max && Math.abs(y) <= max)) return null;
+    return [x / d, -y / d];
+  }
+  // The pixel fields show S.lensCentre in the snapshot's pixels; without a snapshot they are off.
+  function wizShowLensCentre() {
+    var on = imageWidth > 0 && imageHeight > 0, px = on ? wizLensCentrePx(S.lensCentre, imageWidth, imageHeight) : null;
+    var max = on ? wizLensCentrePxMax(imageWidth, imageHeight) : 0;
+    ['wiz_lens_cx', 'wiz_lens_cy'].forEach(function(id, i) {
+      var el = $(id);
+      if (!el) return;
+      el.disabled = !on;
+      el.placeholder = on ? '' : 'No video';
+      el.min = on ? -max : '';
+      el.max = on ? max : '';
+      el.value = on ? px[i] : '';
+    });
+    S.lensCentreBad = false;
+  }
+  function wizSetLensCentre(c) { S.lensCentre = [Number(c[0]) || 0, Number(c[1]) || 0]; wizShowLensCentre(); }
+
+  // The pair's error while the pair alone cannot follow the picture out to its corners, else the centre's;
+  // either opens Adjust by hand, so the error is never folded away.
+  var LENS_CENTRE_LIMIT_ERROR = 'With this lens centre, the overlay cannot follow the picture out to its corners. Set the lens centre closer to 0.';
+  function wizShowLensLimit() {
+    var l = wizLens(), pairBad = !wizLensIsValid(l[0], l[1], 0, 0);
+    var centreBad = !pairBad && (S.lensCentreBad || !wizLensIsValid(l[0], l[1], l[2], l[3]));
+    var err = $('wiz-lens-error'), cerr = $('wiz-lens-centre-error');
+    if (err) err.style.display = pairBad ? 'block' : 'none';
+    if (cerr) {
+      cerr.style.display = centreBad ? 'block' : 'none';
+      var max = wizLensCentrePxMax(imageWidth, imageHeight);
+      cerr.textContent = !centreBad ? '' : S.lensCentreBad ? 'Enter a number from −' + max + ' to ' + max + '.' : LENS_CENTRE_LIMIT_ERROR;
+    }
+    ['wiz_lens_cx', 'wiz_lens_cy'].forEach(function(id) { var el = $(id); if (el) el.setAttribute('aria-invalid', centreBad ? 'true' : 'false'); });
+    if (pairBad || centreBad) $('lens-adjust').open = true;
+  }
+  // A new lens from the sliders, the number fields or the centre fields: flag a lens that cannot follow the picture,
+  // redraw the predicted curves, and persist.
+  function wizLensEdited() {
+    wizShowLensLimit();
+    lensRecomputeCurves();
+    S.lensTouched = true;
+    renderLens();
+    renderLensResult();
+    onLensCoeffChanged();
+  }
   window.onWizardLensInput = function(which, source) {
     var num = document.getElementById('wiz_lens_' + which);
     var range = document.getElementById('wiz_lens_' + which + '_range');
     if (num && range) {
       if (source === 'range') num.value = range.value; else wizWriteLensCoeff('wiz_lens_' + which, num.value);
     }
-    wizShowLensFold();
-    lensRecomputeCurves();
-    S.lensTouched = true;
-    renderLens();
-    renderLensResult();
-    onLensCoeffChanged();
+    wizLensEdited();
+  };
+  window.onWizardLensCentreInput = function() {
+    var c = wizLensCentreFromPx($('wiz_lens_cx').value, $('wiz_lens_cy').value, imageWidth, imageHeight);
+    S.lensCentreBad = !c;
+    if (c) S.lensCentre = c;
+    wizLensEdited();
+    // The fit holds the centre fixed, so traced lines are measured again about the new one.
+    if (c && lensLines.some(lensLineCounts)) scheduleLensFit();
   };
 
   // The overlay warp and its inverse (mirror scene/solver apply_overlay_distortion / invert_overlay_distortion).
-  var DISTORTION_INVERT_ITERS = 40;
-  var DISTORTION_INVERT_SETTLED = 1e-14;
-  var DISTORTION_INVERT_R_CAP = 4;
-
-  function wizApplyDistortion(pt, k1, k2) {
-    if (k1 === 0 && k2 === 0) return [pt[0], pt[1]];
-    var cx = imageWidth / 2, cy = imageHeight / 2;
-    var halfDiag = 0.5 * Math.sqrt(imageWidth * imageWidth + imageHeight * imageHeight);
-    var dx = (pt[0] - cx) / halfDiag;
-    var dy = (pt[1] - cy) / halfDiag;
-    var r2 = dx * dx + dy * dy;
-    var f = 1 + k1 * r2 + k2 * r2 * r2;
-    return [cx + dx * f * halfDiag, cy + dy * f * halfDiag];
-  }
-
-  // Solve r_u * f(r_u) = r_d by bracketed Newton steps, as the server does
-  // (scene.solver.invert_normalised_radius); a radius the warp never reaches
-  // lands on the fold radius.
-  function wizInvertRadius(rd, k1, k2) {
-    var rMax = Math.min(wizLensFoldRadius(k1, k2), DISTORTION_INVERT_R_CAP);
-    var lo = 0, hi = rMax, r = Math.min(rd, rMax);
-    for (var i = 0; i < DISTORTION_INVERT_ITERS; i++) {
-      var r2 = r * r;
-      var h = r * (1 + k1 * r2 + k2 * r2 * r2) - rd;
-      var slope = 1 + 3 * k1 * r2 + 5 * k2 * r2 * r2;
-      if (h < 0) lo = r; else if (h > 0) hi = r;
-      var cand = slope > 1e-12 ? r - h / slope : r;
-      var moved = (cand < lo || cand > hi || slope <= 1e-12) ? 0.5 * (lo + hi) : cand;
-      var settled = Math.abs(moved - r) <= DISTORTION_INVERT_SETTLED;
+  // Pinhole radius to screen radius about the lens centre (distort_normalised_radius): closed form for k2 = 0, else
+  // bracketed Newton on h(r) = r_u (1 + k1 r^2 + k2 r^4) - r; a pinhole radius past a fold lands on the fold radius.
+  function wizDistortRadius(ru, k1, k2) {
+    var sPole = wizLensRoot(k2, k1), sFold = wizLensRoot(-3 * k2, -k1), sLim = Math.min(sPole, sFold), lim = Math.sqrt(sLim);
+    if (sFold < sPole) ru = Math.min(ru, lim / (1 + k1 * sLim + k2 * sLim * sLim));
+    var r = 2 * ru / (1 + Math.sqrt(Math.max(1 - 4 * k1 * ru * ru, 0)));
+    if (k2 === 0) return r;
+    var lo = 0, hi = lim;
+    r = Math.min(Math.max(r, 0), lim);
+    for (var i = 0; i < 80; i++) {
+      var s = r * r, h = ru * ((k2 * s + k1) * s + 1) - r, step = h / (ru * r * (4 * k2 * s + 2 * k1) - 1);
+      if (h > 0) lo = r; else if (h < 0) hi = r;
+      var cand = r - step, moved = cand >= lo && cand <= hi ? cand : 0.5 * (lo + hi), settled = Math.abs(moved - r) <= 1e-13;
       r = moved;
       if (settled) break;
     }
     return r;
   }
-
-  function wizInvertDistortion(pt, k1, k2) {
-    if (k1 === 0 && k2 === 0) return [pt[0], pt[1]];
-    var cx = imageWidth / 2, cy = imageHeight / 2;
-    var halfDiag = 0.5 * Math.sqrt(imageWidth * imageWidth + imageHeight * imageHeight);
-    var dx = (pt[0] - cx) / halfDiag;
-    var dy = (pt[1] - cy) / halfDiag;
-    var rd = Math.sqrt(dx * dx + dy * dy);
-    var scale = rd > 0 ? wizInvertRadius(rd, k1, k2) / rd : 1;
-    return [cx + dx * scale * halfDiag, cy + dy * scale * halfDiag];
+  function wizApplyDistortion(pt, k1, k2, cx, cy) {
+    if (k1 === 0 && k2 === 0 && cx === 0 && cy === 0) return [pt[0], pt[1]];
+    var fx = imageWidth / 2, fy = imageHeight / 2, d = wizHalfDiag(imageWidth, imageHeight);
+    var ox = fx + cx * d, oy = fy + cy * d, dx = pt[0] - fx, dy = pt[1] - fy;
+    if (k1 === 0 && k2 === 0) return [pt[0] + (ox - fx), pt[1] + (oy - fy)];
+    var ru = Math.hypot(dx, dy) / d;
+    // The slope at the lens centre is 1, so the centre's own scale is 1.
+    var scale = ru > 0 ? wizDistortRadius(ru, k1, k2) / ru : 1;
+    return [ox + dx * scale, oy + dy * scale];
+  }
+  // Closed form; a point at or past the limit radius has no single pinhole point (NaN), which a valid lens keeps off the frame.
+  function wizInvertDistortion(pt, k1, k2, cx, cy) {
+    if (k1 === 0 && k2 === 0 && cx === 0 && cy === 0) return [pt[0], pt[1]];
+    var fx = imageWidth / 2, fy = imageHeight / 2, d = wizHalfDiag(imageWidth, imageHeight);
+    var dx = pt[0] - (fx + cx * d), dy = pt[1] - (fy + cy * d), s = (dx * dx + dy * dy) / (d * d), lim = wizLensLimitRadius(k1, k2);
+    if (!(s < lim * lim)) return [NaN, NaN];
+    var scale = 1 / ((k2 * s + k1) * s + 1);
+    return [fx + dx * scale, fy + dy * scale];
   }
 
   // ---------------------------------------------------------------
@@ -952,7 +1028,8 @@
   // On the snapshot as shown: through the camera, then bowed by the lens pair in use.
   function projectShown(cam, P) {
     var q = wizProject(camParams(cam), P, imageWidth, imageHeight);
-    return q && wizApplyDistortion(q, wizReadLensCoeff('wiz_lens_k1'), wizReadLensCoeff('wiz_lens_k2'));
+    var l = wizLens();
+    return q && wizApplyDistortion(q, l[0], l[1], l[2], l[3]);
   }
   function worldPolyline(cam, A, B, n) {
     var out = [];
@@ -1025,7 +1102,8 @@
     pinSize: null,  // the snapshot size the pins are in; null while they are fractions of it
     cam: null, camPartial: false, height: null,
     solve: null, selPin: null, selCorner: null, pinMenu: null, pair: 0,
-    lensTouched: false, lensLoaded: null
+    lensTouched: false, lensLoaded: null,
+    lensCentre: [SAVED.lens[2], SAVED.lens[3]], lensCentreBad: false
   };
   var solveSeq = 0, solveTimer = null, solvePending = false;
 
@@ -1166,7 +1244,7 @@
   function solveBody(usable, seq) {
     return {
       image_width: imageWidth, image_height: imageHeight, mode: S.mode, hint: hintPos(), saved_fov: SAVED.fov, camera_height: S.height,
-      camera: { lens_k1: wizReadLensCoeff('wiz_lens_k1'), lens_k2: wizReadLensCoeff('wiz_lens_k2') },
+      camera: { lens_k1: wizReadLensCoeff('wiz_lens_k1'), lens_k2: wizReadLensCoeff('wiz_lens_k2'), lens_cx: S.lensCentre[0], lens_cy: S.lensCentre[1] },
       solve_page: WIZ_SOLVE_PAGE, solve_seq: seq,
       marks: usable.map(function(m) {
         var out = { id: m.id, kind: m.kind, pin: m.pin ? [m.pin[0], m.pin[1]] : null };
@@ -1293,7 +1371,7 @@
   }
   // Simple keeps the station's pair without measuring one: said, but not a caution.
   function stationLensOnly() {
-    return S.mode === 'simple' && LENS_ENABLED && !S.lensTouched && (SAVED.lens[0] !== 0 || SAVED.lens[1] !== 0);
+    return S.mode === 'simple' && LENS_ENABLED && !S.lensTouched && SAVED.lens.some(function(v) { return v !== 0; });
   }
 
   // ---------------------------------------------------------------
@@ -1556,6 +1634,9 @@
     if (lensImageSize && (lensImageSize[0] !== imageWidth || lensImageSize[1] !== imageHeight)) lensRejected = [];
     lensImageSize = [imageWidth, imageHeight];
     lensCandidates = [];
+    // The centre fields count in this snapshot's pixels.
+    wizShowLensCentre();
+    wizShowLensLimit();
     renderLens();
     renderLensResult();
     saveToSession();
@@ -2090,7 +2171,7 @@
     toggle.textContent = mid && !mid.mids[lensSelected.point - 1].on ? 'Point on' : 'Point off';
     del.disabled = !lensSelected;
     clear.disabled = !lensLines.length;
-    $('lens-save').disabled = !(lensMeasured() && wizLensPairValid());
+    $('lens-save').disabled = !(lensMeasured() && wizLensValid());
   }
   function renderLensMisfit() {
     var el = document.getElementById('lens-misfit');
@@ -2113,10 +2194,10 @@
     var meter = box.querySelector('.wizard-meter');
     // A loaded calibration, until lines are traced again.
     if (!lensFit && S.lensLoaded && !lensLines.length) {
-      var k1 = wizReadLensCoeff('wiz_lens_k1'), k2 = wizReadLensCoeff('wiz_lens_k2');
-      var tuned = Math.abs(k1 - S.lensLoaded.k1) > 1e-9 || Math.abs(k2 - S.lensLoaded.k2) > 1e-9;
+      var l = wizLens(), ld = S.lensLoaded;
+      var tuned = !lensSame(l, [ld.k1, ld.k2, ld.cx, ld.cy]);
       box.style.display = ''; box.className = 'notice'; meter.style.display = 'none';
-      setLive($('lens-result-text'), esc('Loaded \u201c' + S.lensLoaded.name + '\u201d \u2013 barrel / fisheye ' + fmt(k1, 3) + ', corner correction ' + fmt(k2, 3)));
+      setLive($('lens-result-text'), esc('Loaded \u201c' + ld.name + '\u201d \u2013 barrel / fisheye ' + fmt(l[0], 3) + ', corner correction ' + fmt(l[1], 3) + lensCentreSuffix([l[2], l[3]])));
       setLive($('lens-result-hint'), esc((tuned ? 'Adjusted by hand after loading. ' : '') + S.lensLoaded.src + '.'));
       return;
     }
@@ -2127,20 +2208,24 @@
     box.className = 'notice' + (level === 'caution' ? ' warning' : level === 'success' ? ' success' : '');
     renderLensMeter(box.querySelector('.wizard-meter'), lensFit.rating);
     var text = (LENS_RATING_LABEL[lensFit.rating] || lensFit.rating) + ' \u2013 barrel / fisheye ' + fmt(Number(lensFit.k1), 3)
-      + ', corner correction ' + (lensFit.k2_fitted ? fmt(Number(lensFit.k2), 3) : '0 (not measured)') + (lensFitApplies(lensFit) ? '' : ' \u2013 not applied');
+      + ', corner correction ' + (lensFit.k2_fitted ? fmt(Number(lensFit.k2), 3) : '0 (not measured)') + lensCentreSuffix(lensFit.centre)
+      + (lensFitApplies(lensFit) ? '' : ' \u2013 not applied');
     setLive($('lens-result-text'), esc(text));
-    var tuned = lensFitApplies(lensFit) && !lensPairIsTheFits(wizReadLensCoeff('wiz_lens_k1'), wizReadLensCoeff('wiz_lens_k2'));
+    var tuned = lensFitApplies(lensFit) && !lensIsTheFits(wizLens());
     setLive($('lens-result-hint'), esc((tuned ? 'Adjusted by hand after the calculation. ' : '') +
       (lensFit.hint || (lensFitApplies(lensFit) ? '' : 'More lines near the edges give a better rating.'))));
   }
 
   function lensFitApplies(fit) { return fit.rating !== 'low'; }
-  // Whether the pair is the one the fit wrote.
-  function lensPairIsTheFits(k1, k2) {
+  function lensSame(a, b) { return a.every(function(v, i) { return Math.abs(v - Number(b[i])) < 1e-9; }); }
+  // Whether the lens [k1, k2, cx, cy] is the one the fit wrote: its pair about the centre it was sent.
+  function lensIsTheFits(l) {
     if (!lensFit || !lensFitApplies(lensFit)) return false;
-    var shown = wizLensShownPair(Number(lensFit.k1), Number(lensFit.k2));
-    return Math.abs(k1 - Number(shown[0])) < 1e-9 && Math.abs(k2 - Number(shown[1])) < 1e-9;
+    var c = lensFit.centre, shown = wizLensShownPair(Number(lensFit.k1), Number(lensFit.k2), c[0], c[1]);
+    return lensSame(l, [shown[0], shown[1], c[0], c[1]]);
   }
+  // ", lens centre 13 px left, 9 px up" in the snapshot's pixels; nothing for a centre at 0.
+  function lensCentreSuffix(c) { var t = wizLensCentreText(c, imageWidth, imageHeight); return t ? ', lens centre ' + t : ''; }
 
   // ---- edits ----
   function lensMovePoint(line, j, pos) {
@@ -2188,7 +2273,7 @@
   }
   function runLensFit() {
     var seq = ++lensFitSeq;
-    var lines = lensLines.filter(lensLineCounts);
+    var lines = lensLines.filter(lensLineCounts), centre = S.lensCentre.slice();
     lensLines.forEach(function(l) { l.curve = null; l.rms = null; l.misfit = false; });
     if (!lines.length) {
       lensFit = null;
@@ -2204,6 +2289,9 @@
       body: JSON.stringify({
         image_width: imageWidth,
         image_height: imageHeight,
+        // The fit measures the pair about the lens centre in use; it never measures the centre.
+        cx: centre[0],
+        cy: centre[1],
         lines: lines.map(function(l) { return { points: lensActivePoints(l) }; }),
       }),
     }).then(function(r) {
@@ -2216,6 +2304,7 @@
       }
       lensShowStatus('', true);
       lensFit = res.data;
+      lensFit.centre = centre;
       lines.forEach(function(l, i) {
         var r = res.data.lines[i];
         l.curve = r.curve;
@@ -2226,11 +2315,10 @@
       if (lensFitApplies(lensFit)) {
         S.lensTouched = true;
         S.lensLoaded = null;
-        var shown = wizLensShownPair(Number(res.data.k1), Number(res.data.k2));
+        var shown = wizLensShownPair(Number(res.data.k1), Number(res.data.k2), centre[0], centre[1]);
         wizWriteLensCoeff('wiz_lens_k1', shown[0]);
         wizWriteLensCoeff('wiz_lens_k2', shown[1]);
-        var err = document.getElementById('wiz-lens-error');
-        if (err) err.style.display = 'none';
+        wizShowLensLimit();
       }
       renderLensResult();
       renderLens();
@@ -2251,10 +2339,10 @@
 
   // The curve a lens pair predicts for a line: the straight line through the
   // undistorted active points, bowed again. Drawn live while a slider moves.
-  function lensPredictCurve(line, k1, k2) {
+  function lensPredictCurve(line, k1, k2, lcx, lcy) {
     var pts = lensActivePoints(line);
-    if (pts.length < 2 || !wizLensIsValid(k1, k2)) return null;
-    var u = pts.map(function(p) { return wizInvertDistortion(p, k1, k2); });
+    if (pts.length < 2 || !wizLensIsValid(k1, k2, lcx, lcy)) return null;
+    var u = pts.map(function(p) { return wizInvertDistortion(p, k1, k2, lcx, lcy); });
     var cx = 0, cy = 0;
     u.forEach(function(p) { cx += p[0]; cy += p[1]; });
     cx /= u.length; cy /= u.length;
@@ -2267,13 +2355,13 @@
     var out = [];
     for (var i = 0; i < 24; i++) {
       var t = tMin + (tMax - tMin) * i / 23;
-      out.push(wizApplyDistortion([cx + t * dx, cy + t * dy], k1, k2));
+      out.push(wizApplyDistortion([cx + t * dx, cy + t * dy], k1, k2, lcx, lcy));
     }
     return out;
   }
   function lensRecomputeCurves() {
-    var k1 = wizReadLensCoeff('wiz_lens_k1'), k2 = wizReadLensCoeff('wiz_lens_k2');
-    lensLines.forEach(function(line) { line.curve = lensLineCounts(line) ? lensPredictCurve(line, k1, k2) : null; });
+    var l = wizLens();
+    lensLines.forEach(function(line) { line.curve = lensLineCounts(line) ? lensPredictCurve(line, l[0], l[1], l[2], l[3]) : null; });
   }
 
   // A new lens pair, from the fit, a load or a slider: Camera Calibration solves with it the next time it is shown.
@@ -2466,7 +2554,8 @@
     cands.addEventListener('mouseout', function(e) { if (!e.relatedTarget || !e.relatedTarget.closest || !e.relatedTarget.closest('#lens-candidates [data-candidate]')) lensHotCand(-1); });
     // The bubbles are placed in CSS pixels of the picture as shown, known once it has its size.
     $('lens-image').addEventListener('load', renderLensBubbles);
-    wizShowLensFold();
+    wizShowLensCentre();
+    wizShowLensLimit();
     renderLens();
     renderLensResult();
   }
@@ -2476,9 +2565,13 @@
   // ---------------------------------------------------------------
   // Whether the lens has values worth trusting: measured, loaded or adjusted by hand in this run, or a pair the station already had.
   function lensMeasured() {
-    return S.lensTouched || SAVED.lens[0] !== 0 || SAVED.lens[1] !== 0;
+    return S.lensTouched || SAVED.lens.some(function(v) { return v !== 0; });
   }
-  function lensVals(k1, k2) { return 'Barrel / fisheye ' + fmt(k1, 3) + ' · Corner correction ' + fmt(k2, 3); }
+  // A lens as its list line names it, the centre in pixels of a w x h picture.
+  function lensVals(k1, k2, cx, cy, w, h) {
+    var t = wizLensCentreText([cx, cy], w, h);
+    return 'Barrel / fisheye ' + fmt(k1, 3) + ' · Corner correction ' + fmt(k2, 3) + (t ? ' · Lens centre ' + t : '');
+  }
   function lensSize(w, h) { return w + ' \u00d7 ' + h; }
   function lensSized(c) { return c.width > 0 && c.height > 0; }
   // The pair is relative to the half-diagonal, so it carries over to another size of the same picture shape only.
@@ -2488,16 +2581,19 @@
     if (Math.abs(c.width / c.height - here) <= 0.01 * here) return '';
     return 'Measured on a ' + lensSize(c.width, c.height) + ' picture, this one is ' + lensSize(imageWidth, imageHeight) + '. The values only carry over at the same picture shape.';
   }
-  // Only camera.lens_k1 / lens_k2 of an exported settings file are read.
+  // Only camera.lens_k1 / lens_k2 / lens_cx / lens_cy of an exported settings file are read; a missing centre is 0,
+  // as the station reads it, and a lens the station would clamp or pull back is refused.
   function lensFromSettings(text) {
     var cfg;
     try { cfg = JSON.parse(text); } catch (e) { return { error: 'This is not an OpenFollow settings file.' }; }
     var cam = cfg && typeof cfg === 'object' ? cfg.camera : null;
     if (!cam || typeof cam !== 'object') return { error: 'This is not an OpenFollow settings file.' };
     var k1 = cam.lens_k1, k2 = cam.lens_k2;
-    if (typeof k1 !== 'number' || typeof k2 !== 'number' || !isFinite(k1) || !isFinite(k2)) return { error: 'This settings file has no lens calibration.' };
-    if (!wizLensIsValid(k1, k2)) return { error: 'With the lens values of this file, the overlay folds over itself inside the picture.' };
-    return { k1: k1, k2: k2 };
+    var cx = cam.lens_cx === undefined ? 0 : cam.lens_cx, cy = cam.lens_cy === undefined ? 0 : cam.lens_cy;
+    var numbers = [k1, k2, cx, cy].every(function(v) { return typeof v === 'number' && isFinite(v); });
+    if (!numbers) return { error: 'This settings file has no lens calibration.' };
+    if (!wizLensIsValid(k1, k2, cx, cy)) return { error: 'With the lens values of this file, the overlay cannot follow the picture out to its corners.' };
+    return { k1: k1, k2: k2, cx: cx, cy: cy };
   }
   function lensOption(i, name, sub, checked, warn) {
     return '<label class="tier-option"><input type="radio" name="lens_src" value="' + i + '"' + (checked ? ' checked' : '') + '><span><strong>' + esc(name) + '</strong><small>' + esc(sub) + '</small>' +
@@ -2507,12 +2603,13 @@
     lensLines.forEach(lensReleaseCandidate);
     lensLines = []; lensSelected = null; lensPending = null; lensFit = null; lensFitSeq++;
     dropLensPoint();
-    var shown = wizLensShownPair(Number(c.k1), Number(c.k2));
+    var cx = Number(c.cx), cy = Number(c.cy), shown = wizLensShownPair(Number(c.k1), Number(c.k2), cx, cy);
     wizWriteLensCoeff('wiz_lens_k1', shown[0]);
     wizWriteLensCoeff('wiz_lens_k2', shown[1]);
-    var err = $('wiz-lens-error'); if (err) err.style.display = 'none';
+    wizSetLensCentre([cx, cy]);
+    wizShowLensLimit();
     S.lensTouched = true;
-    S.lensLoaded = { name: c.name, src: src, k1: Number(shown[0]), k2: Number(shown[1]) };
+    S.lensLoaded = { name: c.name, src: src, k1: Number(shown[0]), k2: Number(shown[1]), cx: cx, cy: cy };
     $('lens-saved').style.display = 'none';
     lensShowNotice('');
     renderLens(); renderLensResult(); onLensCoeffChanged();
@@ -2536,7 +2633,7 @@
     function render() {
       var lines = lensLines;
       return '<div id="ll-body"><div class="lens-dlg-title">Saved on this station</div>' +
-        (failed !== null ? lensListFailed(failed, false) : saved.length ? '<div class="tier-list" role="radiogroup" aria-label="Saved lens calibrations">' + saved.map(function(c, i) { return lensOption(i, c.name, lensVals(c.k1, c.k2) + ' · ' + c.saved + (lensSized(c) ? ' · ' + lensSize(c.width, c.height) : ''), false, lensShapeWarning(c)); }).join('') + '</div>'
+        (failed !== null ? lensListFailed(failed, false) : saved.length ? '<div class="tier-list" role="radiogroup" aria-label="Saved lens calibrations">' + saved.map(function(c, i) { return lensOption(i, c.name, lensVals(c.k1, c.k2, c.cx, c.cy, imageWidth || c.width, imageHeight || c.height) + ' · ' + c.saved + (lensSized(c) ? ' · ' + lensSize(c.width, c.height) : ''), false, lensShapeWarning(c)); }).join('') + '</div>'
           : '<p>No lens calibrations are saved on this station.</p>') +
         '<div class="lens-dlg-sep"></div><div class="lens-dlg-title">From a settings file</div>' +
         '<p>Only the lens values of an exported <code>.ofsettings</code> file are loaded.</p>' +
@@ -2572,9 +2669,9 @@
           var res = lensFromSettings(String(rd.result)), err = $('ll-file-error');
           err.hidden = !res.error; err.textContent = res.error || '';
           if (res.error) { e.target.value = ''; return; }
-          fromFile = { name: f.name.replace(/\.(ofsettings|openfollowsettings)$/i, ''), file: f.name, k1: res.k1, k2: res.k2 };
+          fromFile = { name: f.name.replace(/\.(ofsettings|openfollowsettings)$/i, ''), file: f.name, k1: res.k1, k2: res.k2, cx: res.cx, cy: res.cy };
           var box = $('ll-file-opt'); box.hidden = false;
-          box.innerHTML = lensOption('file', f.name, lensVals(res.k1, res.k2), true);
+          box.innerHTML = lensOption('file', f.name, lensVals(res.k1, res.k2, res.cx, res.cy, imageWidth, imageHeight), true);
           $('ll-file-btn').textContent = 'Choose another file…';
           sync();
         };
@@ -2587,14 +2684,14 @@
   // The dialog opens once the saved list is in, so the same-name warning is never missing; a list that
   // could not be read says so, and that saving may replace a calibration of that name.
   window.lensSaveDialog = function() {
-    if (!lensMeasured() || !wizLensPairValid()) return;
-    var k1 = wizReadLensCoeff('wiz_lens_k1'), k2 = wizReadLensCoeff('wiz_lens_k2'), saved = [], failed = null, saving = false;
+    if (!lensMeasured() || !wizLensValid()) return;
+    var l = wizLens(), saved = [], failed = null, saving = false;
     function open() {
       openModal({
         title: 'Save Lens Calibration',
         bodyHTML: '<label for="ls-name">Calibration name</label>' +
           '<input type="text" id="ls-name" maxlength="60" placeholder="Main stage – FOH wide" autocomplete="off" data-1p-ignore data-lpignore="true">' +
-          '<p style="margin-top:0.7rem;">' + esc(lensVals(k1, k2)) + '</p>' +
+          '<p style="margin-top:0.7rem;">' + esc(lensVals(l[0], l[1], l[2], l[3], imageWidth, imageHeight)) + '</p>' +
           (failed !== null ? lensListFailed(failed, true) : '') +
           '<div class="notice warning" id="ls-exists" role="status" hidden>A calibration with this name is saved on this station. Saving replaces it.</div>',
         footerButtons: [
@@ -2605,7 +2702,7 @@
             var saveError = window.OpenFollow.saveError, card = document.querySelector('#modal-root .modal-card');
             fetch('/api/wizard/lens/calibrations', {
               method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(imageWidth && imageHeight ? { name: name, k1: k1, k2: k2, width: imageWidth, height: imageHeight } : { name: name, k1: k1, k2: k2 }),
+              body: JSON.stringify(Object.assign({ name: name, k1: l[0], k2: l[1], cx: l[2], cy: l[3] }, imageWidth && imageHeight ? { width: imageWidth, height: imageHeight } : {})),
             }).then(async function(r) {
               saving = false;
               if (!r.ok) { btn.disabled = false; saveError.show(card, await saveError.fromResponse(r), 'Not saved.'); return; }
@@ -2980,10 +3077,10 @@
   function originPixel(solve) {
     if (solve && solve.cam) return projectShown(solve.cam, [0, 0, 0]);
     if (S.mode !== 'simple' || rectProblem() || !CORNERS.every(function(c) { return S.cornerPins[c]; })) return null;
-    var r = rectVals(), k1 = wizReadLensCoeff('wiz_lens_k1'), k2 = wizReadLensCoeff('wiz_lens_k2');
+    var r = rectVals(), l = wizLens();
     var q = wizHomographyPoint(CORNERS.map(function(c) { var P = cornerXYZ(c, r); return [P[0], P[1]]; }),
-      CORNERS.map(function(c) { return wizInvertDistortion(S.cornerPins[c], k1, k2); }), [0, 0]);
-    return q && wizApplyDistortion(q, k1, k2);
+      CORNERS.map(function(c) { return wizInvertDistortion(S.cornerPins[c], l[0], l[1], l[2], l[3]); }), [0, 0]);
+    return q && wizApplyDistortion(q, l[0], l[1], l[2], l[3]);
   }
   function originMarkup(q, u) {
     if (!q || q[0] < 0 || q[0] > imageWidth || q[1] < 0 || q[1] > imageHeight) return '';
@@ -3058,8 +3155,8 @@
       var la = wizLookAt(cams[i], centre), p = [cams[i][0], cams[i][1], cams[i][2], la.pitch, la.yaw, 0, SAVED.fov];
       var q = CORNERS.map(function(c) { return wizProject(p, cornerXYZ(c, r), imageWidth, imageHeight); });
       if (q.every(Boolean)) {
-        var k1 = wizReadLensCoeff('wiz_lens_k1'), k2 = wizReadLensCoeff('wiz_lens_k2');
-        return wizFitQuad(q, imageWidth, imageHeight).map(function(pt) { return wizApplyDistortion(pt, k1, k2); });
+        var l = wizLens();
+        return wizFitQuad(q, imageWidth, imageHeight).map(function(pt) { return wizApplyDistortion(pt, l[0], l[1], l[2], l[3]); });
       }
     }
     return null;
@@ -3558,8 +3655,9 @@
       return '<circle class="reproj" cx="' + q[0] + '" cy="' + q[1] + '" r="' + (5 * u) + '"/>' + pinLabel(q, m.name, [9, 9], u);
     }).join('') : '';
     $('review-camera').innerHTML = ok ? solvedParamsHtml(s.cam) : paramRows([['Camera', '–']]);
-    var k1 = wizReadLensCoeff('wiz_lens_k1'), k2 = wizReadLensCoeff('wiz_lens_k2');
-    $('review-lens').innerHTML = paramRows([['Barrel / fisheye', fmt(k1, 3)], ['Corner correction', fmt(k2, 3)], ['Lens rating', reviewLensCoverage(k1, k2)]]);
+    var l = wizLens(), centre = wizLensCentreText([l[2], l[3]], imageWidth, imageHeight);
+    $('review-lens').innerHTML = paramRows([['Barrel / fisheye', fmt(l[0], 3)], ['Corner correction', fmt(l[1], 3)]]
+      .concat(centre ? [['Lens centre', esc(centre)]] : []).concat([['Lens rating', reviewLensCoverage(l)]]));
     var marks = s.marks || [], pinnedN = marks.filter(function(m) { return m.pin; }).length;
     $('review-calib').innerHTML = paramRows([['Mode', S.mode === 'simple' ? 'Simple' : 'Advanced'], ['Points', String(marks.length)], ['Pinned', String(pinnedN)], ['Largest error (px)', ok ? s.worst.toFixed(1) : '–'],
       ['Your camera position', S.cam ? esc(lenText(S.cam.x, 2) + ' / ' + lenText(S.cam.y, 2) + ' / ' + lenText(S.cam.z, 2)) : 'Not entered']].concat(S.height != null || (ok && s.steep)
@@ -3572,13 +3670,13 @@
     renderFsBar();
   }
   // The rating while the pair is the fit's own; a loaded calibration by its name; else whether it was adjusted by hand.
-  function reviewLensCoverage(k1, k2) {
-    if (lensPairIsTheFits(k1, k2)) {
+  function reviewLensCoverage(l) {
+    if (lensIsTheFits(l)) {
       var level = LENS_RATING_LEVEL[lensFit.rating] || 'caution', n = LENS_RATING_SEGMENTS[lensFit.rating] || 0;
       return '<span class="wizard-meter" data-level="' + level + '" aria-hidden="true">' + [0, 1, 2, 3, 4].map(function(i) { return '<span class="wizard-meter-seg' + (i < n ? ' filled' : '') + '"></span>'; }).join('') + '</span> ' + (LENS_RATING_LABEL[lensFit.rating] || '');
     }
     if (S.lensLoaded) {
-      var same = Math.abs(k1 - S.lensLoaded.k1) < 1e-9 && Math.abs(k2 - S.lensLoaded.k2) < 1e-9;
+      var ld = S.lensLoaded, same = lensSame(l, [ld.k1, ld.k2, ld.cx, ld.cy]);
       return 'Loaded: ' + esc(S.lensLoaded.name) + (same ? '' : ', adjusted by hand');
     }
     if (lensFit && lensFitApplies(lensFit)) return 'Adjusted by hand';
@@ -3590,8 +3688,8 @@
     var saveError = window.OpenFollow.saveError, reviewBox = document.querySelector('#wizard-step-review .section');
     var s = S.solve;
     if (!s || !s.cam || solvePending || applyBlocked(s) || marksIncomplete(s)) return;
-    if (LENS_ENABLED && !wizLensPairValid()) {
-      saveError.show(reviewBox, { error: 'With these lens values, the overlay folds over itself inside the picture.', action: 'Set one of the lens values closer to 0 in the Lens step before you finish.' }, 'Not saved.');
+    if (LENS_ENABLED && !wizLensValid()) {
+      saveError.show(reviewBox, { error: 'With these lens values, the overlay cannot follow the picture out to its corners.', action: 'Set one of the lens values closer to 0 in the Lens step before you finish.' }, 'Not saved.');
       return;
     }
     var headers = { 'Content-Type': 'application/json' }, frac = function(p) { return p ? [p[0] / imageWidth, p[1] / imageHeight] : []; };
@@ -3603,7 +3701,7 @@
     });
     var camera = { pos_x: s.cam.pos_x, pos_y: s.cam.pos_y, pos_z: s.cam.pos_z, pitch: s.cam.pitch, yaw: s.cam.yaw, roll: s.cam.roll, fov: s.cam.fov,
       calibration_mode: S.mode, calibration_marks: marks, calibration_height: S.height };
-    if (LENS_ENABLED) { camera.lens_k1 = wizReadLensCoeff('wiz_lens_k1'); camera.lens_k2 = wizReadLensCoeff('wiz_lens_k2'); }
+    if (LENS_ENABLED) { camera.lens_k1 = wizReadLensCoeff('wiz_lens_k1'); camera.lens_k2 = wizReadLensCoeff('wiz_lens_k2'); camera.lens_cx = S.lensCentre[0]; camera.lens_cy = S.lensCentre[1]; }
     var g = calibGrid();
     var gridWrite = S.mode === 'simple'
       ? fetch('/api/config/grid', { method: 'POST', headers: headers, body: JSON.stringify({ width: g.w, depth: g.d, x_offset: g.cx, y_offset: g.cy, z_offset: g.z }) })
@@ -3855,7 +3953,7 @@
       sessionStorage.setItem(STORAGE_KEY, JSON.stringify({
         stepKey: WIZ_STEPS[currentStep],
         lensLines: lensLines, lensImage: lensImageSize, lensFit: lensFit, lensRejected: lensRejected,
-        k1: wizReadLensCoeff('wiz_lens_k1'), k2: wizReadLensCoeff('wiz_lens_k2'),
+        k1: wizReadLensCoeff('wiz_lens_k1'), k2: wizReadLensCoeff('wiz_lens_k2'), lensCentre: S.lensCentre,
         mode: S.mode, simpleLoc: S.simpleLoc, rect: S.rect, cornerPins: corners, cornerMoved: S.cornerMoved,
         points: S.points.map(function(p) { return Object.assign({}, p, { pin: keepPins ? p.pin : frac(p.pin) }); }), nextId: S.nextId,
         cam: ['x', 'y', 'z'].map(function(k) { return $('cam_pos_' + k).value; }), height: $('cam_height').value, units: WUNIT.isImperial() ? 'imperial' : 'metric',
@@ -3877,10 +3975,11 @@
       if (Array.isArray(raw.lensLines)) lensLines = raw.lensLines.filter(lensRestoredLine);
       if (lensRestoredPair(raw.lensImage)) lensImageSize = raw.lensImage;
       if (Array.isArray(raw.lensRejected)) lensRejected = raw.lensRejected.filter(function(r) { return Array.isArray(r) && r.length === 2 && lensRestoredPair(r[0]) && lensRestoredPair(r[1]); });
-      if (raw.lensFit && typeof raw.lensFit.rating === 'string' && isFinite(raw.lensFit.k1) && isFinite(raw.lensFit.k2)) lensFit = raw.lensFit;
+      if (raw.lensFit && typeof raw.lensFit.rating === 'string' && isFinite(raw.lensFit.k1) && isFinite(raw.lensFit.k2) && pairOk(raw.lensFit.centre)) lensFit = raw.lensFit;
       if (LENS_ENABLED && isFinite(raw.k1) && isFinite(raw.k2)) { wizWriteLensCoeff('wiz_lens_k1', raw.k1); wizWriteLensCoeff('wiz_lens_k2', raw.k2); }
+      if (LENS_ENABLED && pairOk(raw.lensCentre)) S.lensCentre = raw.lensCentre.slice();
       S.lensTouched = raw.lensTouched === true;
-      if (raw.lensLoaded && typeof raw.lensLoaded.name === 'string' && isFinite(raw.lensLoaded.k1)) S.lensLoaded = raw.lensLoaded;
+      if (raw.lensLoaded && typeof raw.lensLoaded.name === 'string' && [raw.lensLoaded.k1, raw.lensLoaded.k2, raw.lensLoaded.cx, raw.lensLoaded.cy].every(isFinite)) S.lensLoaded = raw.lensLoaded;
       if (sameUnits && (raw.mode === 'simple' || raw.mode === 'advanced')) {
         S.mode = raw.mode;
         S.simpleLoc = CAM_PRESETS.some(function(p) { return p[0] === raw.simpleLoc; }) ? raw.simpleLoc : '';

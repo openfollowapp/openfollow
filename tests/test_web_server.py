@@ -15,6 +15,7 @@ import io
 import json
 import os
 import re
+import subprocess
 import sys
 import tarfile
 import time
@@ -39,6 +40,7 @@ from openfollow.web import diagnostics, peer_auth
 from openfollow.web import whats_new as whats_new_module
 from openfollow.web.server import ConfigWebServer
 from tests._ports import live_on_free_port, start_on_free_port
+from tests._wizard_js import NODE, needs_node
 
 pytestmark = pytest.mark.integration
 
@@ -7278,6 +7280,212 @@ def test_a_crafted_camera_post_saves_the_lens_centre_as_a_hand_edited_file_would
     assert (camera.lens_k1, camera.lens_k2, camera.lens_cx, camera.lens_cy) == pytest.approx(saved)
 
 
+# The Camera form's lens centre: two pixel fields of the live video writing hidden lens_cx / lens_cy.
+_HD_1080 = 0.5 * (1920**2 + 1080**2) ** 0.5
+_CENTRE = (28 / _HD_1080, -16 / _HD_1080)
+
+
+@pytest.fixture()
+def video_server(tmp_path, monkeypatch):
+    """A station whose live video is 1920 x 1080, its lens centre 28 px right and 16 px up."""
+    for cls in (discovery_module.BeaconSender, discovery_module.BeaconReceiver):
+        monkeypatch.setattr(cls, "start", lambda self: None)
+        monkeypatch.setattr(cls, "stop", lambda self: None)
+    cfg = AppConfig()
+    cfg.camera.lens_k1, cfg.camera.lens_k2 = -0.31, -0.01
+    cfg.camera.lens_cx, cfg.camera.lens_cy = _CENTRE
+    save_config(cfg, str(tmp_path / "config.toml"))
+    stats: dict = {"video": {"resolution": {"width": 1920, "height": 1080}}}
+    with live_on_free_port(
+        lambda port: ConfigWebServer(
+            config_path=str(tmp_path / "config.toml"),
+            host="127.0.0.1",
+            port=port,
+            system_name="TestSystem",
+            runtime_stats_provider=lambda: stats,
+        )
+    ) as (server, base):
+        yield server, base, stats
+
+
+def _tag(body: str, element_id: str) -> str:
+    match = re.search(rf'<input [^>]*id="{element_id}"[^>]*>', body)
+    assert match is not None, element_id
+    return match.group(0)
+
+
+def _attr(tag: str, name: str) -> str | None:
+    match = re.search(rf'\s{name}="([^"]*)"', tag)
+    return match.group(1) if match else None
+
+
+@pytest.mark.parametrize("path", ["/section/camera", "/"])
+def test_the_camera_form_shows_the_lens_centre_in_pixels_of_the_live_video(video_server, path: str) -> None:
+    _, base, _ = video_server
+    _, body = _get(base, path)
+    right, above = _tag(body, "camera-lens-cx-px"), _tag(body, "camera-lens-cy-px")
+    # Up is positive on the field, y runs down in the config.
+    assert [_attr(right, "value"), _attr(above, "value")] == ["28", "16"]
+    for tag in (right, above):
+        assert (_attr(tag, "min"), _attr(tag, "max"), _attr(tag, "step")) == ("-275", "275", "1")
+        assert "disabled" not in tag and _attr(tag, "name") is None
+    # The hidden fields carry the saved centre exactly, not the rounded pixels.
+    assert float(_attr(_tag(body, "camera-lens-cx"), "value")) == _CENTRE[0]
+    assert float(_attr(_tag(body, "camera-lens-cy"), "value")) == _CENTRE[1]
+    group = body[body.index('<div class="lens-centre" role="group" aria-labelledby="camera-lens-centre-title">') :]
+    labels = re.findall(
+        r'<label for="camera-lens-(c[xy])-px">(.*?)</label>', group[: group.index("</div>\n    </div>")]
+    )
+    assert labels == [("cx", "Right of the picture centre (px)"), ("cy", "Above the picture centre (px)")]
+
+
+def test_the_camera_form_spans_the_sliders_as_the_setup_wizard_does(video_server) -> None:
+    _, base, _ = video_server
+    _, body = _get(base, "/section/camera")
+    k1, k2 = _tag(body, "camera-lens-k1-range"), _tag(body, "camera-lens-k2-range")
+    assert (_attr(k1, "min"), _attr(k1, "max"), _attr(k2, "min"), _attr(k2, "max")) == ("-1.0", "0.5", "-0.8", "0.3")
+
+
+@pytest.mark.parametrize("resolution", [{"width": 0, "height": 0}, None], ids=["no size", "no video stats"])
+def test_without_video_the_lens_centre_fields_are_off_and_save_keeps_the_saved_centre(video_server, resolution) -> None:
+    server, base, stats = video_server
+    stats["video"] = {"resolution": resolution} if resolution else {}
+    _, body = _get(base, "/section/camera")
+    for axis in ("cx", "cy"):
+        tag = _tag(body, f"camera-lens-{axis}-px")
+        assert "disabled" in tag and _attr(tag, "placeholder") == "No video" and _attr(tag, "value") == ""
+    # The form posts its named fields: the hidden centre goes back as it came.
+    form = {
+        "lens_k1": "-0.3",
+        "lens_k2": "-0.01",
+        "lens_cx": _attr(_tag(body, "camera-lens-cx"), "value"),
+        "lens_cy": _attr(_tag(body, "camera-lens-cy"), "value"),
+    }
+    status, saved_body = _post_form(base, "/section/camera", form)
+    assert status == 200
+    camera = load_config(server.config_path).camera
+    assert (camera.lens_k1, camera.lens_cx, camera.lens_cy) == (-0.3, *_CENTRE)
+    assert "disabled" in _tag(saved_body, "camera-lens-cx-px")
+
+
+def _camera_script(body: str) -> str:
+    return next(s for s in re.findall(r"<script>(.*?)</script>", body, re.S) if "cameraLensCentreInput" in s)
+
+
+_CAMERA_PAGE = """
+var window = {}, gated = 0, prevented = 0;
+var els = { 'camera-lens-cx': { value: 'saved-cx' }, 'camera-lens-cy': { value: 'saved-cy' },
+  'camera-lens-cx-error': { innerHTML: '' }, 'camera-lens-cy-error': { innerHTML: '' } };
+var document = { getElementById: function(id) { return els[id] || null; }, body: { addEventListener: function() {} } };
+function refreshFormGate() { gated++; }
+function field(axis, value) {
+  return { value: value, max: '275', disabled: false, form: {},
+    dataset: { hidden: 'camera-lens-' + axis, halfDiag: HD },
+    attrs: {}, setAttribute: function(k, v) { this.attrs[k] = v; },
+    getAttribute: function(k) { return k === 'aria-describedby' ? 'camera-lens-' + axis + '-error' : null; } };
+}
+"""
+
+
+@needs_node
+@pytest.mark.parametrize(
+    ("right", "above", "centre"),
+    [
+        ("42", "18", (42 / _HD_1080, -18 / _HD_1080)),
+        ("-275", "-275", (-275 / _HD_1080, 275 / _HD_1080)),
+        ("0", "0", (0, 0)),
+    ],
+)
+def test_a_lens_centre_typed_in_pixels_saves_in_half_diagonals(video_server, right, above, centre) -> None:
+    server, base, _ = video_server
+    _, body = _get(base, "/section/camera")
+    hd = _attr(_tag(body, "camera-lens-cx-px"), "data-half-diag")
+    written = _run_node(
+        _CAMERA_PAGE
+        + f"var HD = {json.dumps(hd)};\n"
+        + _camera_script(body)
+        + f"\nwindow.cameraLensCentreInput(field('cx', {json.dumps(right)}));"
+        + f" window.cameraLensCentreInput(field('cy', {json.dumps(above)}));"
+        + " process.stdout.write(JSON.stringify([els['camera-lens-cx'].value, els['camera-lens-cy'].value]));"
+    )
+    assert _post_form(base, "/section/camera", {"lens_cx": written[0], "lens_cy": written[1]})[0] == 200
+    camera = load_config(server.config_path).camera
+    assert (camera.lens_cx, camera.lens_cy) == pytest.approx(centre)
+
+
+@needs_node
+@pytest.mark.parametrize(
+    ("value", "refused"), [("276", True), ("-276", True), ("", True), ("12", False), ("-275", False)]
+)
+def test_a_lens_centre_field_out_of_range_says_so_in_pixels_and_writes_nothing(video_server, value, refused) -> None:
+    _, base, _ = video_server
+    _, body = _get(base, "/section/camera")
+    out = _run_node(
+        _CAMERA_PAGE
+        + f"var HD = {json.dumps(str(_HD_1080))};\n"
+        + _camera_script(body)
+        + f"\nvar el = field('cx', {json.dumps(value)});"
+        + " window.cameraLensCentreInput(el);"
+        + " window.cameraLensCentreChecked(el, { preventDefault: function() { prevented++; } });"
+        + " process.stdout.write(JSON.stringify([els['camera-lens-cx'].value, els['camera-lens-cx-error'].innerHTML,"
+        + " el.attrs['aria-invalid'] || null, prevented, gated]));"
+    )
+    if refused:
+        # The station is not asked: its own bound is in half-diagonals, the field counts pixels.
+        assert out == [
+            "saved-cx",
+            '<span class="field-error-msg" role="alert" aria-live="assertive">'
+            "Must be a number from -275 to 275.</span>",
+            "true",
+            1,
+            1,
+        ]
+    else:
+        assert out[0] != "saved-cx" and out[1:] == ["", None, 0, 0]
+
+
+@needs_node
+def test_a_disabled_lens_centre_field_lets_the_station_check_the_saved_centre(video_server) -> None:
+    _, base, _ = video_server
+    _, body = _get(base, "/section/camera")
+    out = _run_node(
+        _CAMERA_PAGE
+        + "var HD = '0';\n"
+        + _camera_script(body)
+        + "\nvar el = field('cx', ''); el.disabled = true; el.max = '';"
+        + " window.cameraLensCentreChecked(el, { preventDefault: function() { prevented++; } });"
+        + " process.stdout.write(JSON.stringify([prevented, els['camera-lens-cx-error'].innerHTML]));"
+    )
+    assert out == [0, ""]
+
+
+def _run_node(source: str) -> Any:
+    assert NODE is not None
+    done = subprocess.run([NODE, "-e", source], capture_output=True, text=True, timeout=60, check=True)
+    return json.loads(done.stdout)
+
+
+def test_each_lens_value_is_checked_again_when_the_lens_centre_changes(video_server) -> None:
+    # A centre that makes the lens invalid shows under the pair's fields as well, and a fixed one clears them.
+    _, base, _ = video_server
+    _, body = _get(base, "/section/camera")
+    for own in ("k1", "k2"):
+        trigger = _attr(_tag(body, f"camera-lens-{own}"), "hx-trigger") or ""
+        assert {"change from:#camera-lens-cx-px", "change from:#camera-lens-cy-px"} <= {
+            p.strip() for p in trigger.split(",")
+        }
+    for own, other in (("cx", "cy"), ("cy", "cx")):
+        tag = _tag(body, f"camera-lens-{own}-px")
+        assert {p.strip() for p in (_attr(tag, "hx-trigger") or "").split(",")} == {
+            "blur changed delay:200ms",
+            f"change from:#camera-lens-{other}-px",
+            "change from:#camera-lens-k1",
+            "change from:#camera-lens-k1-range",
+            "change from:#camera-lens-k2",
+            "change from:#camera-lens-k2-range",
+        }
+
+
 def test_validate_endpoint_advisory_note(live_server) -> None:
     """Cross-field auto-correct surfaces as a ``field-note-msg`` span."""
     _, base = live_server
@@ -8181,7 +8389,7 @@ def test_gallery_list_shows_defaults(gallery_server) -> None:
     assert status == 200
     assert 'id="gallery-grid"' in body
     titles = re.findall(r'class="gallery-select" type="button" title="([^"]+)"', body)
-    assert titles == ["Stage", "Arena", "Concert", "Grey"]
+    assert titles == ["Stage", "Arena", "Concert", "Festival", "Grey"]
     assert "gallery-label" not in body  # no visible per-tile labels
     assert 'title="Stage"' in body  # name kept as hover/aria name only
 
@@ -8287,7 +8495,12 @@ def test_gallery_thumb_stage_serves_asset(gallery_server) -> None:
 
 
 @pytest.mark.parametrize(
-    ("media_id", "asset"), [("default:arena", "ARENA_ASSET_JPG"), ("default:concert", "CONCERT_ASSET_JPG")]
+    ("media_id", "asset"),
+    [
+        ("default:arena", "ARENA_ASSET_JPG"),
+        ("default:concert", "CONCERT_ASSET_JPG"),
+        ("default:festival", "FESTIVAL_ASSET_JPG"),
+    ],
 )
 def test_gallery_thumb_of_a_bundled_picture_serves_it(gallery_server, media_id: str, asset: str) -> None:
     from openfollow.video import media_store
@@ -8304,7 +8517,10 @@ def test_gallery_thumb_grey_has_none(gallery_server) -> None:
     assert status == 404
 
 
-@pytest.mark.parametrize(("media_id", "label"), [("default:arena", "Arena"), ("default:concert", "Concert")])
+@pytest.mark.parametrize(
+    ("media_id", "label"),
+    [("default:arena", "Arena"), ("default:concert", "Concert"), ("default:festival", "Festival")],
+)
 def test_gallery_select_a_bundled_picture_persists(gallery_server, media_id: str, label: str) -> None:
     server, base, _ = gallery_server
     status, body = _post_form(base, f"{_GP}/select", {"media_id": media_id})

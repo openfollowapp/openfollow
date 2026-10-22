@@ -47,6 +47,12 @@ a centre, its gates and seeds), the gallery equivalents.
    as the result line does; the Camera Calibration chip shows the pair only.
 7. **The Camera tab gets the two pixel fields of §12**, disabled with "No
    video" when there is none; Save keeps the saved centre then.
+8. **The Lens step never calculates the lens centre; it is typed or
+   imported, and the fit holds it fixed.** The OpenCV calibration import
+   follows in its own PR right after this one. This supersedes the
+   centre-fitting parts of §7 and step 5 (kept below for the record) and the
+   result-line wording "when one was measured" in §12 and decision 6: the
+   result line and Review name the centre in use when one is set.
 
 ## 1. The model
 
@@ -315,6 +321,12 @@ The default `(0, 0, 0, 0)` draws exactly what a pinhole camera sees.
   weighting in this PR, §7, because its gates depend on it.)
 
 ## 7. The lens fit from lines (`scene/lens_fit.py`)
+
+> **Superseded in part by decision 8:** the fit never measures the lens
+> centre; it holds the centre the request names fixed and fits the pair (and
+> the k2 gate) about it. The centre gate, the four-parameter fit, the centre
+> in the rating's covariance and the misfit's centre refit below no longer
+> apply; the analysis stays for the record.
 
 The fit measures `k1`, `k2` and the lens centre from the traced lines and
 keeps each extra term only when the lines show it.
@@ -725,7 +737,7 @@ Each step lands with its tests; targeted tests while iterating, one
       attributes, error copy (items 4, 4a, 4b, 6), the lens centre row, the
       result line, the Load list, help text; rebuilt with `build.py`,
       `node harness.js` exits 0 (2026-10-22).
-- [ ] Mockup `concert.jpg` and `marks.py` to `(-0.20, -0.07)` from step 9
+- [x] Mockup `concert.jpg` and `marks.py` to `(-0.20, -0.07)` from step 9
       (the mockup picture is today's render until then, within 1.3 px).
 - [x] Product owner decides Options A and B (2026-10-22: centre now, OpenCV
       import later).
@@ -854,6 +866,10 @@ Each step lands with its tests; targeted tests while iterating, one
   one); step 5's tests must cover them again.
 
 ### 5. The fit (`openfollow/scene/lens_fit.py`, `scripts/lens_fit_simulation.py`)
+- Superseded in part by decision 8: the items and notes below that fit, gate
+  or report a lens centre (`CENTRE_LR_GATE`, the full four-parameter fit,
+  `centre_fitted`) are replaced by a fit that holds the request's centre
+  fixed, in its own change; the rest stands.
 - [x] Closed-form `undistort` with the centre, new grid and `_K_BOUND`.
 - [x] **The strong decentred lens** (§7): screen-pixel residuals (`|J^T n|`),
       the full four-parameter fit before any gate (seeds: the pair's result
@@ -974,40 +990,61 @@ Each step lands with its tests; targeted tests while iterating, one
   `-0.15 / -0.03`; the test still names `-0.15 / 0.02`).
 
 ### 7. Web UI
-- [ ] `partials/camera.tpl`: slider spans (items 1, 2), the Lens centre row
+- [x] `partials/camera.tpl`: slider spans (items 1, 2), the Lens centre row
       (item 12) with its helper script and the "No video" state.
-- [ ] `wizard.tpl`: slider spans, `wizLensLimitRadius`, `wizLensIsValid`
+- [x] `wizard.tpl`: slider spans, `wizLensLimitRadius`, `wizLensIsValid`
       (four values), `wizApplyDistortion` (table-free bracketed Newton is
       enough in the browser, plus the translation), `wizInvertDistortion`
       (closed form), the Lens centre row and its errors (items 4a, 4b, 10),
       the result line and the Load list (item 11), copy (items 4, 6), the
       constants block, the saved calibration's centre.
-- [ ] `tests/test_wizard_js.py` (runs in node on GitHub Linux only): limit
+- [x] `tests/test_wizard_js.py` (runs in node on GitHub Linux only): limit
       radius and validity equal the server's with and without a centre, the
       inverse equals the server's on a grid of lenses, a fitted lens shown as
       valid, the settings-file lens taken exactly when the station would
       (missing centre 0, out of bounds refused), px to half-diagonal
       conversion and its sign (a centre 42 px up stores `-42 / D`).
+- Note (step 7): the wizard keeps the centre in half-diagonals
+  (`S.lensCentre`) and shows it in whole pixels of the snapshot; a centre
+  field without a number in range keeps the lens from being saved. Every fit
+  request sends `cx` / `cy` and an applied fit writes only the pair (decision
+  8); a centre typed while lines are traced measures them again. The Camera
+  tab's fields write hidden `lens_cx` / `lens_cy` through the live video's
+  half-diagonal (`_camera_video_size`), say "Must be a number from -275 to
+  275." themselves (the station's bound is in half-diagonals) and are off
+  with "No video" without a video size. Review adds a **Lens centre** row
+  when the centre is not 0.
 
 ### 8. Help and docs
-- [ ] `docs/architecture/web.md` (Lens distortion section: model, centre,
+- [x] `docs/architecture/web.md` (Lens distortion section: model, centre,
       rule, inverse, the fit and its gates, snap corridor, sag rule),
       `docs/architecture/video.md` (gallery pairs),
       `docs/architecture/config.md` (calibration files: the four values, the
       validity check), `docs/PROJECT_STRUCTURE.md` (`lens_model.py`,
       `solver.py` lines), `docs/plans/setup-wizard-calibration-modes.md` copy
       rows.
-- [ ] Help drawer: `openfollow/web/help/camera.md` (item 8),
+- [x] Help drawer: `openfollow/web/help/camera.md` (item 8),
       `openfollow/web/help/wizard-lens.md` (item 13).
-- [ ] Sweep: `grep -rn "fold\|r\^4\|1 + k1" openfollow docs scripts tests`
+- [x] Sweep: `grep -rn "fold\|r\^4\|1 + k1" openfollow docs scripts tests`
       for leftovers; no em-dash.
 
 ### 9. Media Gallery
-- [ ] `scripts/gen_arena_default.py`, `scripts/gen_concert_default.py`: new
+- [x] `scripts/gen_arena_default.py`, `scripts/gen_concert_default.py`: new
       `K1, K2`, `pull_back_to_valid` assert, `CLIP` comment; re-run; new
       `arena_default.jpg/.toml`, `concert_default.jpg/.toml`.
-- [ ] `tests/test_gallery_calibration.py` green (tape test needs the detection
+- [x] `tests/test_gallery_calibration.py` green (tape test needs the detection
       extra locally).
+- [x] Festival, a fourth gallery picture (`scripts/gen_festival_default.py`,
+      `festival_default.jpg/.toml`, `default:festival`): a 2.8 mm M12 lens,
+      `-0.31 / -0.01`, lens centre 28 px right and 16 px up; the mockup's Lens
+      step shows it.
+- Note: the arena's lines trade the pair along a valley: its picture fits
+  `-0.12 / -0.06`, 3.6 px from the drawn lens over the frame (the old pair
+  36 px), so its test compares the bend, not the numbers, and the help drawer
+  names the drawn pair. The concert fits Poor, as before. The Festival's
+  centre is set by hand (the Lens step never measures one); its suggestions
+  fit `-0.313 / -0.020`, Good, about a centre of 0. The
+  gallery TOMLs record a centre only where the picture has one.
 
 ### 10. Verify
 - [ ] `make ci-remote` green on pi59.

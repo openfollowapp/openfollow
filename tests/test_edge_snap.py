@@ -27,7 +27,7 @@ pytestmark = pytest.mark.unit
 
 W, H = 1920, 1080
 DARK, BRIGHT = 40.0, 200.0
-# A wide lens whose warp reaches the frame corners (k1 alone at -0.3 folds inside the picture).
+# A strong lens with a large corner term.
 BARREL = (-0.47, 0.25)
 PINCUSHION = (0.3, 0.0)
 STRAIGHT = (0.0, 0.0)

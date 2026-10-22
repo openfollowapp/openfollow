@@ -132,6 +132,7 @@ class TestImageChain:
         [
             (media_store.DEFAULT_ARENA_ID, "ARENA_ASSET_JPG"),
             (media_store.DEFAULT_CONCERT_ID, "CONCERT_ASSET_JPG"),
+            (media_store.DEFAULT_FESTIVAL_ID, "FESTIVAL_ASSET_JPG"),
         ],
     )
     def test_a_bundled_picture_plays_its_jpeg(self, media_id: str, asset: str) -> None:
@@ -146,6 +147,7 @@ class TestImageChain:
         [
             (media_store.DEFAULT_ARENA_ID, "ARENA_ASSET_JPG"),
             (media_store.DEFAULT_CONCERT_ID, "CONCERT_ASSET_JPG"),
+            (media_store.DEFAULT_FESTIVAL_ID, "FESTIVAL_ASSET_JPG"),
         ],
     )
     def test_a_bundled_picture_without_its_file_plays_stage(
@@ -486,6 +488,7 @@ class TestConfigAndLabels:
         [
             (media_store.DEFAULT_STAGE_ID, "Media Gallery (Stage)"),
             (media_store.DEFAULT_ARENA_ID, "Media Gallery (Arena)"),
+            (media_store.DEFAULT_FESTIVAL_ID, "Media Gallery (Festival)"),
             (media_store.DEFAULT_GREY_ID, "Media Gallery (Grey)"),
         ],
     )

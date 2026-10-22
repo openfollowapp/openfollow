@@ -734,39 +734,72 @@ Each step lands with its tests; targeted tests while iterating, one
       the centre, Camera tab pixel fields).
 
 ### 1. The rule (`openfollow/lens_model.py`, stdlib-only)
-- [ ] Docstring: the model with the lens centre, normalisation, sign, both
+- [x] Docstring: the model with the lens centre, normalisation, sign, both
       limits, the `1 + |c|` radius.
-- [ ] `C_BOUND`, `lens_limit_radius`, `lens_warp_is_valid(k1, k2, cx, cy)`,
+- [x] `C_BOUND`, `lens_limit_radius`, `lens_warp_is_valid(k1, k2, cx, cy)`,
       `pull_back_to_valid` (centre clamped first, closed-form `t*` out to
       `R^2`), `PULL_BACK_MARGIN` kept.
-- [ ] `tests/test_lens_model.py` rewritten (see Tests).
+- [x] `tests/test_lens_model.py` rewritten (see Tests).
+- Note: the valid region at `c = 0` reaches further than §3 says: `k1` up to
+  `6 + 4 sqrt(3)` (12.93) and `k2` down to about -13.93, along a thin sliver
+  where `P` has no real root and `D(1)` stays just above 0 (e.g. `12.9 /
+  -13.88` is valid). The lower `k1` (-1.99) and upper `k2` (0.99) ends match.
+  The rule still bounds the pair; only the quoted box is too small. The
+  `D`-side vertex of the closed-form pull-back is never the deciding term
+  (the `P`-side end dominates wherever it lies inside `[0, R^2]`); it stays
+  for clarity.
 
 ### 2. The warp (`openfollow/scene/solver.py`)
-- [ ] `invert_overlay_distortion`: closed form with the centre;
+- [x] `invert_overlay_distortion`: closed form with the centre;
       `apply_overlay_distortion`: `distort_normalised_radius` (closed form for
       k2 = 0, table-seeded Newton, bracketed fallback, fold clamp) plus the
       translation; `cx, cy` required in both; drop the Newton helpers and
       constants.
-- [ ] `project` and the overlay helpers that take the pair take the centre.
-- [ ] `screen_axes_at` comment.
-- [ ] `tests/test_solver_distortion.py` rewritten; `tests/test_solver.py`
+- [x] `project` and the overlay helpers that take the pair take the centre.
+- [x] `screen_axes_at` comment.
+- [x] `tests/test_solver_distortion.py` rewritten; `tests/test_solver.py`
       lens cases.
-- [ ] Timing check against §9 (scratch bench, numbers in the PR).
+- [x] Timing check against §9 (scratch bench, numbers in the PR).
+- Note: `invert_overlay_distortion` answers NaN at or past the limit radius
+  (no single pinhole point there); a valid lens keeps the frame inside it.
+  The polish's convergence test is the size of the second Newton step
+  (`<= 1e-8`, leaving about its square); the bracketed solve stops at
+  `1e-13`. `project`, `_project_segments`, `_draw_world_lines` and
+  `screen_axes_at` take `cx, cy` after `k1, k2`; `project` and
+  `screen_axes_at` keep their pinhole defaults. The HUD passes
+  `*OverlayState.lens`. Mac timings (numpy 2.2, one call, per call):
+  today's polynomial 9.5-11 µs (1-300 points); division `k2 = 0` 15-18 µs;
+  table seed 26-42 µs (1-300 points), 138 µs at 2000; a centre alone 3 µs;
+  the closed-form screen-to-pinhole 11-14 µs against today's 131-269 µs.
+  `hud_bench.py --compare` against the polynomial (8e94251f) on the Mac, the bench
+  scenes with `-0.145 / -0.033` and a centre: +1 to +7 % per picture (eight
+  markers 4.18 ms against 4.01); with `-0.527 / -0.069` and a centre 0.06 /
+  -0.04: +0.5 to +6.5 % (eight markers 4.18 against 3.99). The Pi number is
+  still owed (step 10).
 
 ### 3. Config and web plumbing (`add-config-field` for `lens_cx`, `lens_cy`)
-- [ ] `configuration.py`: `CameraConfig` fields and comment, `__post_init__`
+- [x] `configuration.py`: `CameraConfig` fields and comment, `__post_init__`
       (clamp, `pull_back_to_valid` on the four), the WARNING text ("cannot
       follow the picture out to its corners"), `effective_lens` returns four.
-- [ ] `web/validation.py`: `FIELD_RULES` for both, `_LENS_FIELDS` to four,
+- [x] `web/validation.py`: `FIELD_RULES` for both, `_LENS_FIELDS` to four,
       `_LENS_LIMIT_ERROR` copy (items 5, 5a).
-- [ ] `web/lens_calibrations.py`: `cx`, `cy`, `lens_problem`, reason text
+- [x] `web/lens_calibrations.py`: `cx`, `cy`, `lens_problem`, reason text
       (item 7); the save route takes the centre.
-- [ ] `web/routes.py`: `_wizard_lens_coeffs` (four values, docstring,
-      pull-back), the fit route's answer with the centre.
-- [ ] Export, import, push and Restore defaults carry / reset the centre with
+- [x] `web/routes.py`: `_wizard_lens_coeffs` (four values, docstring,
+      pull-back). The fit route's answer with the centre waits for the fit
+      to measure one (step 5, `fit_result_to_dict`).
+- [x] Export, import, push and Restore defaults carry / reset the centre with
       the pair (config guide's field lists unchanged: not device-local, not
       identity).
-- [ ] Tests: `test_configuration.py` (per field: wrong type `None` / `"abc"` /
+- Note: the hidden fields' `human_error` is "Must be a number from -0.25 to
+  0.25." in half-diagonals; step 7's pixel fields show their own range (item
+  4b), and the Camera tab's px fields need copy for this bound too. A
+  boolean in TOML or a JSON body reads as 1 (then clamped), as for every
+  `_coerce_float` field. The Setup Wizard's JS still saves calibrations
+  without `cx` / `cy`, which the save route now refuses with 400 until step 7
+  sends them; until then the Camera tab form posts no centre and keeps the
+  saved one.
+- [x] Tests: `test_configuration.py` (per field: wrong type `None` / `"abc"` /
       `True`, NaN, inf, `1e400`, each bound and a hair past it; out-of-region
       lenses pulled back to the closed-form point for a given centre, the
       centre kept; both limits; hot reload of a centre change),
@@ -778,18 +811,47 @@ Each step lands with its tests; targeted tests while iterating, one
       huge integer, out of bounds), `test_template_validation_consistency.py`.
 
 ### 4. Consumers (verify and adjust)
-- [ ] `input/mouse.py`, `services.py`, `runtime/services_detection_pin.py`,
+- [x] `input/mouse.py`, `services.py`, `runtime/services_detection_pin.py`,
       `runtime/services_marker_visuals.py`, `runtime/overlay_state.py`,
       `runtime/overlay_draw_scene.py`, `overlay_draw_zones.py`,
       `overlay_draw_paths.py`, `runtime/overlay_picture.py` comment,
       `input/control_frame.py`.
-- [ ] Tests: `test_input_mouse.py` (a corner click under a decentred strong
+- [x] Tests: `test_input_mouse.py` (a corner click under a decentred strong
       lens lands under the cursor's stage point),
       `test_services_detection_pin.py`, `test_services_zone_orchestration.py`,
       `test_overlay_draw_*`, `test_services_marker_visuals.py` (input to
       overlay), `_hud_scenes.py` lenses; HUD cost tests unchanged in call
       counts.
-- [ ] `_DISTORTION_SUBDIVISIONS` measured on the strongest lens (§8).
+- [x] `_DISTORTION_SUBDIVISIONS` measured on the strongest lens (§8).
+- Note, `_DISTORTION_SUBDIVISIONS` (scratch `subdiv.py`, a straight line
+  drawn edge to edge across 1920x1080, chords equal in the pinhole frame):
+  the 12-chord polyline sits 4.8 px off the curve along the top edge of a
+  2.3 mm-like `-0.527 / -0.069` (5.3 px with a centre 0.06 / -0.04 off),
+  9.1-11.0 px on `0 / -0.8`, the 150° fisheye and `-0.99 / 0`; under 1.2 px
+  near the side edges. 16 chords: 2.8 / 5.2-6.4 px; 24: 1.2 / 2.4-2.9 px.
+  That polygonises visibly, so §8's rule says raise it; not raised in this
+  step because `routes._PICTURE_SUBDIVISIONS` mirrors it and multiplies the
+  scene route's `_PICTURE_MAX_POINTS` cap. Product owner: 24 for both, with
+  the cap raised to match, or the HUD only?
+- Note, phase 1 adaptation of the fit (step 5 replaces it): `_Lines.undistort`
+  is the division model's closed form about the frame centre, the seed grid
+  filters by `_limit_radius`, `_in_bounds` passes a 0 centre, the rating's
+  corner Jacobian is `(r s, r s^2) / P(s)` at pinhole radius 1 and the rival
+  spread is the exact screen gap (both the `c = 0` case of §7). The fit
+  tests that encode the polynomial's lenses still fail and move to step 5:
+  `test_lens_fit.py` (three-pixel noise on `-0.45 / 0.20`, the two
+  "two lenses alike" cases, two hint ratings), `test_lens_calibration.py`
+  (pincushion rated low at pinhole radius 1, the riser seam and the single
+  bowed edge with `-0.26 / 0.05`, and the arena picture, step 9),
+  `test_edge_snap.py` (the edge that bows out of the picture: the corridor,
+  step 6), `test_gallery_calibration.py` (both tape tests, step 9) and the
+  wizard JS mirrors in `test_wizard_js.py` (step 7). The HUD scenes'
+  `LENS` is the division equivalent of the old one, `-0.145 / -0.033`
+  (0.1 px apart), with a centre 0.02 / -0.01. With those tests failing,
+  two branches of the fit lose coverage: `_refine` running all `_LM_ITERS`
+  and `_rival_spread_px` skipping a minimum outside the margin (only the
+  `0 / -0.8` corner-heavy lens, outside today's seed grid, still reaches
+  one); step 5's tests must cover them again.
 
 ### 5. The fit (`openfollow/scene/lens_fit.py`, `scripts/lens_fit_simulation.py`)
 - [ ] Closed-form `undistort` with the centre, new grid and `_K_BOUND`.

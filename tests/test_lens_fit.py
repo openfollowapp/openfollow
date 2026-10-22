@@ -49,14 +49,14 @@ def make_line(
     sag: float = 0.0,
 ) -> list[list[float]]:
     """Points of a line that is straight in reality, as seen through the lens."""
-    ends = invert_overlay_distortion(np.array([p0, p1], dtype=np.float64), W, H, k1, k2)
+    ends = invert_overlay_distortion(np.array([p0, p1], dtype=np.float64), W, H, k1, k2, 0.0, 0.0)
     t = np.linspace(0.0, 1.0, n)[:, None]
     straight = ends[0] + t * (ends[1] - ends[0])
     if sag:
         tangent = ends[1] - ends[0]
         normal = np.array([-tangent[1], tangent[0]]) / np.linalg.norm(tangent)
         straight = straight + (sag * 4.0 * t * (1.0 - t)) * normal
-    seen = apply_overlay_distortion(straight, W, H, k1, k2)
+    seen = apply_overlay_distortion(straight, W, H, k1, k2, 0.0, 0.0)
     if noise and rng is not None:
         seen = seen + rng.normal(0.0, noise, seen.shape)
     return [[float(x), float(y)] for x, y in seen]

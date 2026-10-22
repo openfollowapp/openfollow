@@ -1864,3 +1864,39 @@ class TestApplyPathsSection:
         cfg = self._cfg()
         apply_section_data(cfg, "paths", {"paths": [{"name": "cross"}, {"name": raw}]})
         assert [p.name for p in cfg.paths.paths] == ["cross", "path-2"]
+
+
+# --------------------------------------------------------------------------- #
+# The lens centre travels with the camera and resets with it
+# --------------------------------------------------------------------------- #
+
+
+class TestLensCentreTransfer:
+    """The lens centre belongs to the camera and lens: not device-local, not device identity."""
+
+    @staticmethod
+    def _station() -> AppConfig:
+        from openfollow.configuration import CameraConfig
+
+        return AppConfig(camera=CameraConfig(lens_k1=-0.3, lens_k2=-0.02, lens_cx=0.05, lens_cy=-0.02))
+
+    def test_an_export_carries_the_lens_centre(self) -> None:
+        camera = routes_module._config_dict_redacted(self._station())["camera"]
+        assert (camera["lens_cx"], camera["lens_cy"]) == (0.05, -0.02)
+
+    def test_an_import_takes_the_lens_centre(self) -> None:
+        out = _apply_import_data(AppConfig(), {"camera": {"lens_k1": -0.3, "lens_cx": 0.05, "lens_cy": -0.02}})
+        assert (out.camera.lens_k1, out.camera.lens_cx, out.camera.lens_cy) == (-0.3, 0.05, -0.02)
+
+    def test_an_imported_lens_centre_is_clamped_as_a_hand_edited_file_is(self) -> None:
+        out = _apply_import_data(AppConfig(), {"camera": {"lens_cx": 9.0, "lens_cy": "abc"}})
+        assert (out.camera.lens_cx, out.camera.lens_cy) == (0.25, 0.0)
+
+    def test_a_push_carries_the_lens_centre(self) -> None:
+        section = {"lens_k1": -0.3, "lens_cx": 0.05, "lens_cy": -0.02}
+        assert strip_device_local_fields("camera", section) == section
+        assert routes_module._without_station_name(section) == section
+
+    def test_restore_defaults_resets_the_lens_centre_with_the_pair(self) -> None:
+        camera = routes_module.reset_config_to_defaults(self._station()).camera
+        assert (camera.lens_k1, camera.lens_k2, camera.lens_cx, camera.lens_cy) == (0.0, 0.0, 0.0, 0.0)

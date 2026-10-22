@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 from openfollow.configuration import CameraConfig
-from openfollow.lens_model import lens_fold_radius, lens_warp_is_valid
+from openfollow.lens_model import lens_limit_radius, lens_warp_is_valid
 from openfollow.scene.calibration_points import (
     DISTANCE_SIGMA,
     FLAG_PX,
@@ -30,7 +30,7 @@ from openfollow.scene.calibration_points import (
 from openfollow.scene.edge_chains import edge_map_scale
 from openfollow.scene.edge_snap import band_half_size, band_step
 from openfollow.scene.lens_fit import fit_lens_from_lines
-from openfollow.scene.solver import apply_overlay_distortion, invert_normalised_radius, project_points
+from openfollow.scene.solver import apply_overlay_distortion, project_points
 from openfollow.units import format_length
 from tests._lens_band import scaled_luma
 from tests._wizard_js import (
@@ -74,11 +74,11 @@ def test_fold_radius_and_validity_are_the_servers() -> None:
         pairs=[list(p) for p in pairs],
     )
     for (radius, valid), (a, b) in zip(out, pairs, strict=True):
-        expected = lens_fold_radius(a, b)
+        expected = lens_limit_radius(a, b)
         assert (radius is None) == math.isinf(expected), (a, b)
         if radius is not None:
             assert radius == pytest.approx(expected, rel=1e-9), (a, b)
-        assert valid == lens_warp_is_valid(a, b), (a, b)
+        assert valid == lens_warp_is_valid(a, b, 0.0, 0.0), (a, b)
 
 
 @pytest.mark.parametrize(("k1", "k2"), [(-0.33, 1e-15), (-0.33, -1e-15), (-0.3, 1e-12), (0.4, 1e-14)])
@@ -89,11 +89,11 @@ def test_fold_radius_is_the_servers_when_the_edge_term_is_tiny(k1: float, k2: fl
         k1=k1,
         k2=k2,
     )
-    expected = lens_fold_radius(k1, k2)
+    expected = lens_limit_radius(k1, k2)
     assert (radius is None) == math.isinf(expected)
     if radius is not None:
         assert radius == pytest.approx(expected, rel=1e-9)
-    assert valid == lens_warp_is_valid(k1, k2)
+    assert valid == lens_warp_is_valid(k1, k2, 0.0, 0.0)
 
 
 # Just above k2 = 9 k1^2 / 20, where Newton creeps.
@@ -111,7 +111,8 @@ def test_inverse_radius_is_the_servers(k1: float, k2: float) -> None:
         k1=k1,
         k2=k2,
     )
-    np.testing.assert_allclose(out, invert_normalised_radius(np.array(radii), k1, k2), atol=1e-12)
+    r_d = np.array(radii)
+    np.testing.assert_allclose(out, r_d / (1.0 + k1 * r_d**2 + k2 * r_d**4), atol=1e-12)
 
 
 @pytest.mark.parametrize(("k1", "k2"), _PAIRS)
@@ -128,9 +129,9 @@ def test_bowing_and_unbowing_a_point_are_the_servers(k1: float, k2: float) -> No
         k1=k1,
         k2=k2,
     )
-    np.testing.assert_allclose(bowed, apply_overlay_distortion(np.array(points), _W, _H, k1, k2), atol=1e-9)
+    np.testing.assert_allclose(bowed, apply_overlay_distortion(np.array(points), _W, _H, k1, k2, 0.0, 0.0), atol=1e-9)
     # The inverse bows back onto the click wherever the warp reaches it.
-    np.testing.assert_allclose(apply_overlay_distortion(np.array(unbowed), _W, _H, k1, k2), points, atol=1e-6)
+    np.testing.assert_allclose(apply_overlay_distortion(np.array(unbowed), _W, _H, k1, k2, 0.0, 0.0), points, atol=1e-6)
 
 
 @pytest.mark.parametrize(
@@ -149,7 +150,7 @@ def test_a_fitted_pair_is_shown_as_a_valid_pair(k1: float, k2: float, shown: lis
         k2=k2,
     )
     assert out == shown
-    assert lens_warp_is_valid(float(out[0]), float(out[1]))
+    assert lens_warp_is_valid(float(out[0]), float(out[1]), 0.0, 0.0)
 
 
 @pytest.mark.parametrize(("k1", "k2"), [(-0.3, 0.02), (-0.5, 0.10001)])
@@ -389,7 +390,7 @@ def test_a_settings_file_pair_is_taken_exactly_when_the_station_would_take_it() 
         functions=_LENS_FILE_FUNCTIONS,
         texts=[_settings(a, b) for a, b in pairs],
     )
-    assert out == [lens_warp_is_valid(a, b) for a, b in pairs]
+    assert out == [lens_warp_is_valid(a, b, 0.0, 0.0) for a, b in pairs]
     assert any(out) and not all(out)
 
 

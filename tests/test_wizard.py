@@ -849,16 +849,35 @@ def test_a_settings_file_the_station_exports_loads_its_lens(live_server_lens) ->
 
 
 @unit
-@pytest.mark.parametrize("k1,k2", [(5.0, -5.0), (-0.4, -0.2), (-0.4, 0.0), (-0.1, 0.02)])
-def test_a_lens_pair_a_request_names_reads_as_the_saved_config_reads_it(k1: float, k2: float) -> None:
-    """A folding pair is pulled back toward the fold, never dropped to pinhole, exactly as a save is."""
+@pytest.mark.parametrize(
+    "lens",
+    [
+        (-1.5, 0.0, 0.0, 0.0),
+        (-0.6, -0.4, 0.0, 0.0),
+        (-0.9, 0.0, 0.1, 0.0),
+        (-0.53, -0.07, 0.9, -0.4),
+        (-0.1, 0.02, 0.0, 0.0),
+    ],
+)
+def test_a_lens_a_request_names_reads_as_the_saved_config_reads_it(lens: tuple[float, float, float, float]) -> None:
+    """A lens short of a corner is pulled back, its centre clamped, never dropped to pinhole, exactly as a save is."""
     from openfollow.web.routes import _wizard_lens_coeffs
 
-    saved = CameraConfig(lens_k1=k1, lens_k2=k2)
-    assert _wizard_lens_coeffs({"lens_k1": k1, "lens_k2": k2}) == (saved.lens_k1, saved.lens_k2)
-    assert _wizard_lens_coeffs({"lens_k1": k1, "lens_k2": k2}) != (0.0, 0.0)
-    # A wide lens passes through unclamped.
-    assert _wizard_lens_coeffs({"lens_k1": -0.47, "lens_k2": 0.25}) == pytest.approx((-0.47, 0.25))
+    k1, k2, cx, cy = lens
+    saved = CameraConfig(lens_k1=k1, lens_k2=k2, lens_cx=cx, lens_cy=cy)
+    body = {"lens_k1": k1, "lens_k2": k2, "lens_cx": cx, "lens_cy": cy}
+    assert _wizard_lens_coeffs(body) == (saved.lens_k1, saved.lens_k2, saved.lens_cx, saved.lens_cy)
+    assert _wizard_lens_coeffs(body)[:2] != (0.0, 0.0)
+
+
+@unit
+def test_a_lens_a_request_leaves_out_reads_as_pinhole_value_by_value() -> None:
+    from openfollow.web.routes import _wizard_lens_coeffs
+
+    assert _wizard_lens_coeffs(None) == (0.0, 0.0, 0.0, 0.0)
+    assert _wizard_lens_coeffs({}) == (0.0, 0.0, 0.0, 0.0)
+    assert _wizard_lens_coeffs({"lens_k1": -0.527, "lens_cy": 0.02}) == (-0.527, 0.0, 0.0, 0.02)
+    assert _wizard_lens_coeffs({"lens_k2": -0.069, "lens_cx": -0.03}) == (0.0, -0.069, -0.03, 0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -884,9 +903,9 @@ def _snap_band(img: np.ndarray, p0, p1) -> dict:
 def _warped_line(p0, p1, k1: float, k2: float, n: int = 5) -> list[list[float]]:
     from openfollow.scene.solver import invert_overlay_distortion
 
-    ends = invert_overlay_distortion(np.array([p0, p1], dtype=np.float64), IMG_W, IMG_H, k1, k2)
+    ends = invert_overlay_distortion(np.array([p0, p1], dtype=np.float64), IMG_W, IMG_H, k1, k2, 0.0, 0.0)
     t = np.linspace(0.0, 1.0, n)[:, None]
-    seen = apply_overlay_distortion(ends[0] + t * (ends[1] - ends[0]), IMG_W, IMG_H, k1, k2)
+    seen = apply_overlay_distortion(ends[0] + t * (ends[1] - ends[0]), IMG_W, IMG_H, k1, k2, 0.0, 0.0)
     return seen.tolist()
 
 

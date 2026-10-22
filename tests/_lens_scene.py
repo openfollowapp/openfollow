@@ -134,7 +134,7 @@ def render(
     width, height = size
     yy, xx = np.mgrid[0:height, 0:width]
     pixels = np.column_stack([xx.ravel(), yy.ravel()]).astype(np.float64)
-    u = invert_overlay_distortion(pixels, width, height, k1, k2)
+    u = invert_overlay_distortion(pixels, width, height, k1, k2, 0.0, 0.0)
     img = np.full(u.shape[0], floor)
     for disc in scene.discs:
         d = np.hypot(u[:, 0] - disc.centre[0], u[:, 1] - disc.centre[1])

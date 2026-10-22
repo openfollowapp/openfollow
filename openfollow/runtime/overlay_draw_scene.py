@@ -43,8 +43,8 @@ def grid_line_count(length: float, spacing: float) -> int:
 # Chords per straight world line when lens distortion is active. A straight
 # world line stays straight under the pinhole projection; only the radial warp
 # bows it, so we subdivide and warp each chord endpoint to approximate the
-# curve. 1 (no subdivision) when distortion is off – the pinhole path is then
-# byte-for-byte unchanged.
+# curve. 1 (no subdivision) when the lens pair is 0: the lens centre alone only
+# shifts a line, and the pinhole path is byte-for-byte unchanged.
 _DISTORTION_SUBDIVISIONS = 12
 
 
@@ -55,14 +55,16 @@ def project(
     h: int,
     k1: float = 0.0,
     k2: float = 0.0,
+    cx: float = 0.0,
+    cy: float = 0.0,
 ) -> npt.NDArray[Any]:
     # Return NaN when camera missing; downstream np.isfinite filters handle it.
     if cam is None:  # pragma: no cover
         return np.full((np.asarray(pts_psn, dtype=np.float64).reshape(-1, 3).shape[0], 2), np.nan)
     arr = np.asarray(pts_psn, dtype=np.float64).reshape(-1, 3)
     scr = project_points(cam, arr, float(w), float(h))
-    # Identity when k1 == k2 == 0, so the pinhole overlay path is unchanged.
-    return apply_overlay_distortion(scr, float(w), float(h), k1, k2)
+    # Identity without a lens, so the pinhole overlay path is unchanged.
+    return apply_overlay_distortion(scr, float(w), float(h), k1, k2, cx, cy)
 
 
 def _project_segments(
@@ -72,6 +74,8 @@ def _project_segments(
     h: int,
     k1: float,
     k2: float,
+    cx: float,
+    cy: float,
     n: int,
 ) -> npt.NDArray[Any]:
     """Project + warp ``segments`` (M, 2, 3) as ``n``-chord polylines.
@@ -81,7 +85,7 @@ def _project_segments(
     on screen to match the lens.
     """
     world = _subdivided(segments, n)
-    scr = project(cam, world.reshape(-1, 3), w, h, k1, k2)
+    scr = project(cam, world.reshape(-1, 3), w, h, k1, k2, cx, cy)
     return scr.reshape(world.shape[0], n + 1, 2)
 
 
@@ -133,6 +137,8 @@ def _draw_world_lines(
     h: int,
     k1: float,
     k2: float,
+    cx: float,
+    cy: float,
 ) -> bool:
     """Path straight world segments, bowing them to match the lens when
     distortion is active. Returns whether any line was drawn so the caller can
@@ -140,7 +146,7 @@ def _draw_world_lines(
     after, so several segment groups can share one stroke.
     """
     n = _DISTORTION_SUBDIVISIONS if (k1 or k2) else 1
-    polys = _project_segments(cam, segments, w, h, k1, k2, n)
+    polys = _project_segments(cam, segments, w, h, k1, k2, cx, cy, n)
     drew = False
     for poly in polys:
         if _stroke_polyline(cr, poly):
@@ -184,7 +190,7 @@ def draw_grid(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> No
         idx += 2
 
     segments = buf[:idx].reshape(-1, 2, 3)
-    _draw_world_lines(cr, cam, segments, w, h, state.lens_k1, state.lens_k2)
+    _draw_world_lines(cr, cam, segments, w, h, *state.lens)
     cr.stroke()
 
 
@@ -220,7 +226,7 @@ def draw_ground_grid(cr: Any, state: OverlayState, w: int, h: int) -> None:
     r, g, b = parse_hex(state.grid_color)
     cr.set_source_rgba(r, g, b, state.grid_transparency)
     cr.set_line_width(float(state.grid_thickness))
-    if _draw_world_lines(cr, state.camera_params, segments, w, h, state.lens_k1, state.lens_k2):
+    if _draw_world_lines(cr, state.camera_params, segments, w, h, *state.lens):
         cr.stroke()
 
 
@@ -258,8 +264,7 @@ class GridCache:
             state.grid_transparency,
             state.grid_thickness,
             tuple(float(v) for v in cam),
-            state.lens_k1,
-            state.lens_k2,
+            state.lens,
             w,
             h,
             scale,
@@ -350,7 +355,7 @@ def draw_origin(cr: Any, state: OverlayState, w: int, h: int) -> None:
     cr.set_line_width(thickness)
     for p_start, p_end, (r, g, b) in axes:
         cr.set_source_rgba(r, g, b, 1.0)
-        if _draw_world_lines(cr, cam, [(p_start, p_end)], w, h, state.lens_k1, state.lens_k2):
+        if _draw_world_lines(cr, cam, [(p_start, p_end)], w, h, *state.lens):
             cr.stroke()
 
 
@@ -483,7 +488,7 @@ def _cone_geometry(state: OverlayState, t: MarkerOverlayData, w: int, h: int) ->
     world[1 : n + 1] = np.column_stack([tx + r_base * cos_a, ty + r_base * sin_a, np.full(n, z_off)])
     world[n + 1] = (tx, ty, tz)
     world[n + 2 :] = np.column_stack([tx + r_top * cos_a, ty + r_top * sin_a, np.full(n, tz)])
-    scr = project(state.camera_params, world, w, h, state.lens_k1, state.lens_k2)
+    scr = project(state.camera_params, world, w, h, *state.lens)
     base_center, base_ring = scr[0], scr[1 : n + 1]
     top_center, top_ring = scr[n + 1], scr[n + 2 :]
     base_world, top_world = world[1 : n + 1], world[n + 2 :]
@@ -507,9 +512,7 @@ def _cone_geometry(state: OverlayState, t: MarkerOverlayData, w: int, h: int) ->
     lines = [np.vstack([base_ring[i], top_ring[j]]) for i, j in edges]
     if edges and (state.lens_k1 or state.lens_k2):
         segments = [(base_world[i], top_world[j]) for i, j in edges]
-        bowed = _project_segments(
-            state.camera_params, segments, w, h, state.lens_k1, state.lens_k2, _DISTORTION_SUBDIVISIONS
-        )
+        bowed = _project_segments(state.camera_params, segments, w, h, *state.lens, _DISTORTION_SUBDIVISIONS)
         lines = [line[np.all(np.isfinite(line), axis=1)] for line in bowed]
     return _ConeScreen(base_ring, top_ring, base_center, top_center, edges, lines)
 
@@ -639,13 +642,13 @@ def _draw_assist_ghost(
         ((tx, ty - cs, tz), (tx, ty + cs, tz)),
         ((tx, ty, tz - cs), (tx, ty, tz + cs)),
     ]
-    _draw_world_lines(cr, cam, axis_segments, w, h, state.lens_k1, state.lens_k2)
+    _draw_world_lines(cr, cam, axis_segments, w, h, *state.lens)
     cr.stroke()
 
     if state.grid_config:
         z_off = floor_z_at(state, tx, ty)
         gc_pts = ground_circle_world_ring(tx, ty, z_off, state.ground_circle_size)
-        gc_scr = project(cam, gc_pts, w, h, state.lens_k1, state.lens_k2)
+        gc_scr = project(cam, gc_pts, w, h, *state.lens)
         if _path_ring(cr, gc_scr[np.all(np.isfinite(gc_scr), axis=1)]):
             cr.set_source_rgba(r, g, b, _GHOST_ALPHA)
             cr.set_line_width(1.5)
@@ -695,8 +698,7 @@ class ConeCache:
             t.y,
             t.z,
             None if cam is None else tuple(float(v) for v in cam),
-            state.lens_k1,
-            state.lens_k2,
+            state.lens,
             tuple(state.grid_config),
             floor_z_at(state, t.x, t.y),
             state.cone_base_diameter,
@@ -787,9 +789,9 @@ def draw_marker(
         draw(cr, state, t, w, h, (r, g, b), _CONE_ALPHA, lw, fill_alpha, state.cone_shaded)
         return
 
-    k1, k2 = state.lens_k1, state.lens_k2
+    lens = state.lens
     if t.is_assist_ghost:
-        if np.all(np.isfinite(project(cam, [(tx, ty, tz)], w, h, k1, k2)[0])):
+        if np.all(np.isfinite(project(cam, [(tx, ty, tz)], w, h, *lens)[0])):
             _draw_assist_ghost(cr, state, t, w, h, (r, g, b))
         return
 
@@ -807,13 +809,13 @@ def draw_marker(
         ]
     if z_line:
         lines.append(((tx, ty, tz), (tx, ty, floor)))
-    n = _DISTORTION_SUBDIVISIONS if (k1 or k2) else 1
+    n = _DISTORTION_SUBDIVISIONS if (lens[0] or lens[1]) else 1
     world: list[npt.ArrayLike] = [np.array([(tx, ty, tz), (tx + t.radius, ty, tz)], dtype=np.float64)]
     if lines:
         world.append(_subdivided(lines, n).reshape(-1, 3))
     if ground_circle:
         world.append(ground_circle_world_ring(tx, ty, floor, state.ground_circle_size))
-    scr = project(cam, np.concatenate(world), w, h, k1, k2)
+    scr = project(cam, np.concatenate(world), w, h, *lens)
     if not np.all(np.isfinite(scr[0])):
         return
     polys = scr[2 : 2 + len(lines) * (n + 1)].reshape(len(lines), n + 1, 2)

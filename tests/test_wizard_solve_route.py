@@ -32,7 +32,9 @@ W, H = 1920, 1080
 TRUE = np.array([0.0, 13.0, 12.0, -48.0, 180.0, 0.0, 70.0])
 HINT = [0.0, 13.0, 12.0]
 CORNERS = [(6.0, 0.0, 0.0), (-6.0, 0.0, 0.0), (-6.0, 6.0, 0.0), (6.0, 6.0, 0.0)]
-LENS = (-0.2, 0.03)
+# A strong lens whose centre sits off the frame centre.
+LENS = (-0.3, -0.05, 0.05, -0.03)
+_PINHOLE = (0.0, 0.0, 0.0, 0.0)
 
 
 @pytest.fixture(scope="module")
@@ -82,17 +84,17 @@ def _solve(base: str, body: Any) -> tuple[int, Any]:
     return _send(base, "/api/wizard/solve", body)
 
 
-def _pin(place, lens=(0.0, 0.0)) -> list[float]:
+def _pin(place, lens=_PINHOLE) -> list[float]:
     seen = project_points(TRUE, np.array([place], dtype=np.float64), W, H)
     return apply_overlay_distortion(seen, W, H, *lens)[0].tolist()
 
 
-def _known(mark_id: int, place, lens=(0.0, 0.0), *, pinned: bool = True) -> dict[str, Any]:
+def _known(mark_id: int, place, lens=_PINHOLE, *, pinned: bool = True) -> dict[str, Any]:
     x, y, z = place
     return {"id": mark_id, "kind": "known", "x": x, "y": y, "z": z, "pin": _pin(place, lens) if pinned else None}
 
 
-def _triangulated(mark_id: int, place, a: tuple[int, tuple], b: tuple[int, tuple], lens=(0.0, 0.0)) -> dict[str, Any]:
+def _triangulated(mark_id: int, place, a: tuple[int, tuple], b: tuple[int, tuple], lens=_PINHOLE) -> dict[str, Any]:
     return {
         "id": mark_id,
         "kind": "triangulated",
@@ -105,14 +107,14 @@ def _triangulated(mark_id: int, place, a: tuple[int, tuple], b: tuple[int, tuple
     }
 
 
-def _simple_marks(lens=(0.0, 0.0)) -> list[dict[str, Any]]:
+def _simple_marks(lens=_PINHOLE) -> list[dict[str, Any]]:
     return [_known(n, place, lens) for n, place in enumerate(CORNERS, start=1)]
 
 
 P5, P6 = (2.0, 4.0, 0.0), (-3.0, 5.0, 0.5)
 
 
-def _advanced_marks(lens=(0.0, 0.0)) -> list[dict[str, Any]]:
+def _advanced_marks(lens=_PINHOLE) -> list[dict[str, Any]]:
     return [
         _known(1, CORNERS[0], lens),
         _known(2, CORNERS[1], lens),
@@ -121,7 +123,7 @@ def _advanced_marks(lens=(0.0, 0.0)) -> list[dict[str, Any]]:
     ]
 
 
-def _body(mode: str = "simple", marks=None, *, hint=None, lens=(0.0, 0.0), **extra: Any) -> dict[str, Any]:
+def _body(mode: str = "simple", marks=None, *, hint=None, lens=_PINHOLE, **extra: Any) -> dict[str, Any]:
     return {
         "image_width": W,
         "image_height": H,
@@ -129,7 +131,7 @@ def _body(mode: str = "simple", marks=None, *, hint=None, lens=(0.0, 0.0), **ext
         "hint": hint,
         "saved_fov": 60.0,
         "marks": _simple_marks(lens) if marks is None else marks,
-        "camera": {"lens_k1": lens[0], "lens_k2": lens[1]},
+        "camera": dict(zip(("lens_k1", "lens_k2", "lens_cx", "lens_cy"), lens, strict=True)),
         **extra,
     }
 
@@ -178,10 +180,24 @@ def test_errors_are_measured_on_the_curved_snapshot_as_shown(base: str) -> None:
 
 
 def test_simple_pins_on_a_curved_lens_read_as_pinhole_miss_the_camera(base: str) -> None:
-    """The pins are undistorted with the posted pair: without it the same pins give another camera."""
+    """The pins are undistorted with the posted lens: without it the same pins give another camera."""
     status, data = _solve(base, _body(marks=_simple_marks(LENS)))
     assert status == 200
     assert not np.allclose(_camera_vector(data["camera"]), TRUE, atol=0.1)
+
+
+def test_simple_pins_read_without_their_lens_centre_miss_the_camera(base: str) -> None:
+    status, data = _solve(base, _body(marks=_simple_marks(LENS), lens=(*LENS[:2], 0.0, 0.0)))
+    assert status == 200
+    assert not np.allclose(_camera_vector(data["camera"]), TRUE, atol=0.05)
+
+
+def test_a_lens_the_station_would_pull_back_is_solved_as_the_station_keeps_it(base: str) -> None:
+    """A centre past its bound is clamped and the pair pulled back, as CameraConfig does, never refused."""
+    kept = (-0.99 / 1.25**2, 0.0, 0.25, 0.0)  # 1 - 1.5 t s reaches 0 at the far corner, s = 1.25^2
+    status, data = _solve(base, _body(marks=_simple_marks(kept), lens=(-1.5, 0.0, 0.9, 0.0)))
+    assert status == 200
+    np.testing.assert_allclose(_camera_vector(data["camera"]), TRUE, atol=1e-3)
 
 
 def test_a_body_without_a_camera_reads_the_pins_as_pinhole(base: str) -> None:
@@ -413,6 +429,10 @@ _MALFORMED_TOP = {
     "lens_k1 text": {"camera": {"lens_k1": "-0.2", "lens_k2": 0.0}},
     "lens_k2 bool": {"camera": {"lens_k1": 0.0, "lens_k2": True}},
     "lens_k1 huge": {"camera": {"lens_k1": 10**400, "lens_k2": 0.0}},
+    "lens_cx text": {"camera": {"lens_k1": 0.0, "lens_cx": "0.1"}},
+    "lens_cy bool": {"camera": {"lens_k1": 0.0, "lens_cy": False}},
+    "lens_cx huge": {"camera": {"lens_cx": 10**400}},
+    "lens_cy none": {"camera": {"lens_cy": None}},
 }
 
 
@@ -565,10 +585,11 @@ def test_a_station_without_saved_lenses_lists_none(base: str, lens_dir: Path) ->
 
 
 def test_a_saved_lens_lands_beside_the_config_with_the_version(base: str, lens_dir: Path) -> None:
-    status, data = _send(base, "/api/wizard/lens/calibrations", {"name": "Zoom wide", "k1": -0.2, "k2": 0.03})
+    body = {"name": "Zoom wide", "k1": -0.2, "k2": 0.03, "cx": 0.04, "cy": -0.03}
+    status, data = _send(base, "/api/wizard/lens/calibrations", body)
     assert status == 200
     saved = data["saved"]
-    assert (saved["name"], saved["k1"], saved["k2"]) == ("Zoom wide", -0.2, 0.03)
+    assert (saved["name"], saved["k1"], saved["k2"], saved["cx"], saved["cy"]) == ("Zoom wide", -0.2, 0.03, 0.04, -0.03)
     assert saved["openfollow_version"] == openfollow.__version__
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", saved["saved"])
     (path,) = lens_dir.glob("*.json")
@@ -577,28 +598,35 @@ def test_a_saved_lens_lands_beside_the_config_with_the_version(base: str, lens_d
 
 
 def test_saving_a_name_again_ignoring_case_replaces_it(base: str, lens_dir: Path) -> None:
-    _send(base, "/api/wizard/lens/calibrations", {"name": "Zoom Wide", "k1": -0.2, "k2": 0.03})
-    _send(base, "/api/wizard/lens/calibrations", {"name": "zoom wide", "k1": -0.1, "k2": 0.0})
+    _send(base, "/api/wizard/lens/calibrations", {"name": "Zoom Wide", "k1": -0.2, "k2": 0.03, "cx": 0.0, "cy": 0.0})
+    _send(base, "/api/wizard/lens/calibrations", {"name": "zoom wide", "k1": -0.1, "k2": 0.0, "cx": 0.0, "cy": 0.0})
     _, data = _send(base, "/api/wizard/lens/calibrations")
     assert [(c["name"], c["k1"]) for c in data["calibrations"]] == [("zoom wide", -0.1)]
     assert len(list(lens_dir.glob("*.json"))) == 1
 
 
 _BAD_LENS = {
-    "empty name": {"name": "", "k1": -0.2, "k2": 0.03},
-    "blank name": {"name": "   ", "k1": -0.2, "k2": 0.03},
-    "name none": {"name": None, "k1": -0.2, "k2": 0.03},
-    "name number": {"name": 5, "k1": -0.2, "k2": 0.03},
-    "name too long": {"name": "x" * 61, "k1": -0.2, "k2": 0.03},
-    "name with a newline": {"name": "Zoom\nwide", "k1": -0.2, "k2": 0.03},
-    "name with a lone surrogate": {"name": "Zoom\ud800", "k1": -0.2, "k2": 0.03},
-    "name missing": {"k1": -0.2, "k2": 0.03},
-    "k1 text": {"name": "Zoom", "k1": "-0.2", "k2": 0.03},
-    "k1 bool": {"name": "Zoom", "k1": True, "k2": 0.03},
-    "k2 none": {"name": "Zoom", "k1": -0.2, "k2": None},
-    "k2 missing": {"name": "Zoom", "k1": -0.2},
-    "k1 huge": {"name": "Zoom", "k1": 10**400, "k2": 0.0},
-    "folding pair": {"name": "Zoom", "k1": -0.4, "k2": 0.0},
+    "empty name": {"name": "", "k1": -0.2, "k2": 0.03, "cx": 0.0, "cy": 0.0},
+    "blank name": {"name": "   ", "k1": -0.2, "k2": 0.03, "cx": 0.0, "cy": 0.0},
+    "name none": {"name": None, "k1": -0.2, "k2": 0.03, "cx": 0.0, "cy": 0.0},
+    "name number": {"name": 5, "k1": -0.2, "k2": 0.03, "cx": 0.0, "cy": 0.0},
+    "name too long": {"name": "x" * 61, "k1": -0.2, "k2": 0.03, "cx": 0.0, "cy": 0.0},
+    "name with a newline": {"name": "Zoom\nwide", "k1": -0.2, "k2": 0.03, "cx": 0.0, "cy": 0.0},
+    "name with a lone surrogate": {"name": "Zoom\ud800", "k1": -0.2, "k2": 0.03, "cx": 0.0, "cy": 0.0},
+    "name missing": {"k1": -0.2, "k2": 0.03, "cx": 0.0, "cy": 0.0},
+    "k1 text": {"name": "Zoom", "k1": "-0.2", "k2": 0.03, "cx": 0.0, "cy": 0.0},
+    "k1 bool": {"name": "Zoom", "k1": True, "k2": 0.03, "cx": 0.0, "cy": 0.0},
+    "k2 none": {"name": "Zoom", "k1": -0.2, "k2": None, "cx": 0.0, "cy": 0.0},
+    "k2 missing": {"name": "Zoom", "k1": -0.2, "cx": 0.0, "cy": 0.0},
+    "cx missing": {"name": "Zoom", "k1": -0.2, "k2": 0.03, "cy": 0.0},
+    "cy missing": {"name": "Zoom", "k1": -0.2, "k2": 0.03, "cx": 0.0},
+    "cx bool": {"name": "Zoom", "k1": -0.2, "k2": 0.03, "cx": True, "cy": 0.0},
+    "cy text": {"name": "Zoom", "k1": -0.2, "k2": 0.03, "cx": 0.0, "cy": "0"},
+    "cx huge": {"name": "Zoom", "k1": -0.2, "k2": 0.03, "cx": 10**400, "cy": 0.0},
+    "cy out of bounds": {"name": "Zoom", "k1": -0.2, "k2": 0.03, "cx": 0.0, "cy": -0.3},
+    "centre short of a corner": {"name": "Zoom", "k1": -0.9, "k2": 0.0, "cx": 0.1, "cy": 0.0},
+    "k1 huge": {"name": "Zoom", "k1": 10**400, "k2": 0.0, "cx": 0.0, "cy": 0.0},
+    "pair short of a corner": {"name": "Zoom", "k1": -1.2, "k2": 0.0, "cx": 0.0, "cy": 0.0},
 }
 
 
@@ -622,14 +650,24 @@ def test_a_lens_the_station_cannot_write_answers_500(
         raise PermissionError("read-only file system")
 
     monkeypatch.setattr(lens_calibrations, "save_calibration", refuse)
-    status, data = _send(base, "/api/wizard/lens/calibrations", {"name": "Zoom wide", "k1": -0.2, "k2": 0.03})
+    status, data = _send(
+        base, "/api/wizard/lens/calibrations", {"name": "Zoom wide", "k1": -0.2, "k2": 0.03, "cx": 0.0, "cy": 0.0}
+    )
     assert (status, data) == (500, {"error": "The station could not write the file."})
 
 
 def test_the_list_is_newest_first_and_leaves_out_what_does_not_read(base: str, lens_dir: Path) -> None:
     lens_dir.mkdir(exist_ok=True)
     for name, saved in (("Older", "2026-01-02"), ("Newest", "2026-10-20"), ("alpha", "2026-01-02")):
-        body = {"name": name, "k1": -0.1, "k2": 0.0, "saved": saved, "openfollow_version": "0.5.0"}
+        body = {
+            "name": name,
+            "k1": -0.1,
+            "k2": 0.0,
+            "cx": 0.0,
+            "cy": 0.0,
+            "saved": saved,
+            "openfollow_version": "0.5.0",
+        }
         (lens_dir / f"{name}.json").write_text(json.dumps(body), encoding="utf-8")
     (lens_dir / "broken.json").write_text('{"name": "Broken", "k1": 1' + "0" * 400 + ', "k2": 0}', "utf-8")
     status, data = _send(base, "/api/wizard/lens/calibrations")
@@ -642,7 +680,11 @@ def test_the_list_is_newest_first_and_leaves_out_what_does_not_read(base: str, l
 
 
 def test_a_saved_lens_never_travels_with_an_export(base: str, lens_dir: Path) -> None:
-    _send(base, "/api/wizard/lens/calibrations", {"name": "Unmistakable Lens", "k1": -0.2, "k2": 0.03})
+    _send(
+        base,
+        "/api/wizard/lens/calibrations",
+        {"name": "Unmistakable Lens", "k1": -0.2, "k2": 0.03, "cx": 0.0, "cy": 0.0},
+    )
     with urllib.request.urlopen(f"{base}/api/config/export", timeout=10) as r:
         exported = r.read().decode()
     assert "Unmistakable Lens" not in exported

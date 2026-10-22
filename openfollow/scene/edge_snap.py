@@ -164,11 +164,12 @@ def _reference_bow(
     k1: float,
     k2: float,
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-    """``(fractions, offsets)`` of the straight line through the ends, seen through the lens ``(k1, k2)``."""
-    ends = invert_overlay_distortion(np.array([a, b]), canvas_w, canvas_h, k1, k2)
+    """``(fractions, offsets)`` of the straight line through the ends, seen through the pair ``(k1, k2)`` about the
+    frame centre."""
+    ends = invert_overlay_distortion(np.array([a, b]), canvas_w, canvas_h, k1, k2, 0.0, 0.0)
     s = np.linspace(0.0, 1.0, samples)[:, None]
     straight = ends[0][None, :] * (1.0 - s) + ends[1][None, :] * s
-    rel = apply_overlay_distortion(straight, canvas_w, canvas_h, k1, k2) - a[None, :]
+    rel = apply_overlay_distortion(straight, canvas_w, canvas_h, k1, k2, 0.0, 0.0) - a[None, :]
     fractions = rel @ tangent / length
     offsets = rel @ normal
     order = np.argsort(fractions)

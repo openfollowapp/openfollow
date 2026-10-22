@@ -20,7 +20,7 @@ from tests._ports import live_on_free_port
 pytestmark = pytest.mark.integration
 
 _ROUTE = "/api/wizard/lens/calibrations"
-_LENS = {"name": "Zoom wide", "k1": -0.2, "k2": 0.03}
+_LENS = {"name": "Zoom wide", "k1": -0.2, "k2": 0.03, "cx": 0.0, "cy": 0.0}
 
 
 @pytest.fixture(scope="module")
@@ -112,7 +112,15 @@ def test_the_largest_snapshot_side_is_kept(base: str, lens_dir: Path) -> None:
 
 def test_a_stored_file_without_a_size_lists_with_none(base: str, lens_dir: Path) -> None:
     lens_dir.mkdir(exist_ok=True)
-    body = {"name": "Old", "k1": -0.1, "k2": 0.0, "saved": "2026-01-02", "openfollow_version": "0.5.0"}
+    body = {
+        "name": "Old",
+        "k1": -0.1,
+        "k2": 0.0,
+        "cx": 0.0,
+        "cy": 0.0,
+        "saved": "2026-01-02",
+        "openfollow_version": "0.5.0",
+    }
     (lens_dir / "old.json").write_text(json.dumps(body), encoding="utf-8")
     (lens_dir / "odd.json").write_text(json.dumps({**body, "name": "Odd", "width": "wide", "height": 0}), "utf-8")
     status, data = _send(base)

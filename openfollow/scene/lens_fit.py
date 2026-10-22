@@ -29,7 +29,7 @@ import numpy as np
 import numpy.typing as npt
 
 from openfollow.lens_model import lens_warp_is_valid
-from openfollow.scene.solver import _fold_radius, apply_overlay_distortion, invert_normalised_radius
+from openfollow.scene.solver import _limit_radius, apply_overlay_distortion, distort_normalised_radius
 
 FloatArray = npt.NDArray[np.float64]
 
@@ -51,6 +51,7 @@ K2_SIGMA_GATE = 0.05
 # Another minimum the lines cannot rule out: its cost within this many residual
 # variances of the best, the 95 % region of a two-parameter fit.
 _RIVAL_MARGIN = 6.0
+# Pinhole radii, out to the pinhole frame's corner, where two pairs' screen points are compared.
 _RIVAL_RADII = np.linspace(0.0, 1.0, 65)
 # A line does not fit the others when, with k1 refitted without it, its RMS is
 # above both an absolute floor and a multiple of the other lines' RMS.
@@ -167,14 +168,14 @@ class _Lines:
         """Pinhole positions (normalised) of every point; a grid of ``k`` broadcasts on a trailing axis."""
         a = np.asarray(k1, dtype=np.float64)
         b = np.asarray(k2, dtype=np.float64)
-        rd: FloatArray = self.rd
+        s: FloatArray = self.rd * self.rd
         dx: FloatArray = self.dx
         dy: FloatArray = self.dy
         if a.ndim:
-            rd, dx, dy = rd[:, None], dx[:, None], dy[:, None]
+            s, dx, dy = s[:, None], dx[:, None], dy[:, None]
             a, b = a[None, :], b[None, :]
-        ru = invert_normalised_radius(rd, a, b)
-        scale = np.where(rd > 0.0, ru / np.where(rd > 0.0, rd, 1.0), 1.0)
+        # The lens model's closed-form screen-to-pinhole direction, about the frame centre.
+        scale = 1.0 / (1.0 + a * s + b * s * s)
         return dx * scale, dy * scale
 
     def grid_cost(self, k1: FloatArray, k2: FloatArray) -> FloatArray:
@@ -231,12 +232,12 @@ class _Lines:
         straight_px = np.column_stack(
             [self.cx + straight[:, 0] * self.half_diag, self.cy + straight[:, 1] * self.half_diag]
         )
-        bowed = apply_overlay_distortion(straight_px, 2.0 * self.cx, 2.0 * self.cy, float(k[0]), float(k[1]))
+        bowed = apply_overlay_distortion(straight_px, 2.0 * self.cx, 2.0 * self.cy, float(k[0]), float(k[1]), 0.0, 0.0)
         return tuple((float(x), float(y)) for x, y in bowed)
 
 
 def _in_bounds(k: FloatArray) -> bool:
-    return bool(abs(k[0]) <= _K_BOUND and abs(k[1]) <= _K_BOUND and lens_warp_is_valid(k[0], k[1]))
+    return bool(abs(k[0]) <= _K_BOUND and abs(k[1]) <= _K_BOUND and lens_warp_is_valid(k[0], k[1], 0.0, 0.0))
 
 
 def _jacobian(lines: _Lines, k: FloatArray, free: Sequence[int] = (0, 1)) -> FloatArray:
@@ -304,9 +305,17 @@ def _covariance(lines: _Lines, k: FloatArray, n_params: int) -> FloatArray:
     return np.asarray(sigma2 * np.linalg.inv(normal), dtype=np.float64)
 
 
-def _corner_uncertainty_px(cov: FloatArray, half_diag: float) -> float:
-    """Predicted sigma of the warp's radial displacement at a frame corner (``r == 1``)."""
-    var = float(cov[0, 0] + cov[1, 1] + 2.0 * cov[0, 1])
+def _corner_uncertainty_px(cov: FloatArray, k: FloatArray, half_diag: float) -> float:
+    """Predicted sigma of where the pinhole frame's corner (pinhole radius 1) lands on screen.
+
+    The screen radius ``r`` it lands on moves by ``(r s, r s^2) / P(s)`` per unit of
+    ``(k1, k2)``, ``s = r^2``, ``P`` the lens model's slope term.
+    """
+    r = float(distort_normalised_radius(1.0, float(k[0]), float(k[1])))
+    s = r * r
+    with np.errstate(divide="ignore", invalid="ignore"):
+        jac = np.array([r * s, r * s * s]) / (1.0 - k[0] * s - 3.0 * k[1] * s * s)
+        var = float(jac @ cov @ jac)
     if not math.isfinite(var):
         return math.inf
     return half_diag * math.sqrt(max(var, 0.0))
@@ -321,7 +330,7 @@ def _seeds(lines: _Lines, k2_zero: bool) -> list[FloatArray]:
         g1, g2 = np.meshgrid(_K1_SCAN, _K2_SCAN, indexing="ij")
         k1 = np.asarray(g1.ravel(), dtype=np.float64)
         k2 = np.asarray(g2.ravel(), dtype=np.float64)
-    valid = _fold_radius(k1, k2) > 1.0
+    valid = _limit_radius(k1, k2) > 1.0
     k1, k2 = k1[valid], k2[valid]
     cost = lines.grid_cost(k1, k2)
     best_per_column: dict[float, int] = {}
@@ -369,12 +378,12 @@ def _rival_spread_px(lines: _Lines, solution: _Solution) -> float:
     n_params = 2 if solution.k2_fitted else 1
     margin = _RIVAL_MARGIN * _residual_variance(lines, solution.k, n_params)
     best = min(cost for _, cost in solution.minima)
-    r = _RIVAL_RADII
+    seen = distort_normalised_radius(_RIVAL_RADII, float(solution.k[0]), float(solution.k[1]))
     spread = 0.0
     for other, cost in solution.minima:
         if cost - best <= margin:
-            d = other - solution.k
-            spread = max(spread, float(np.max(np.abs(d[0] * r**3 + d[1] * r**5))))
+            rival = distort_normalised_radius(_RIVAL_RADII, float(other[0]), float(other[1]))
+            spread = max(spread, float(np.max(np.abs(rival - seen))))
     return lines.half_diag * spread
 
 
@@ -493,7 +502,7 @@ def fit_lens_from_lines(lines: Sequence[Sequence[Sequence[float]]], canvas_w: fl
     k, k2_fitted = solution.k, solution.k2_fitted
     res = data.residuals(k)
     rms = [float(np.sqrt(np.mean(res[rows] ** 2))) for rows in data.members]
-    uncertainty = max(_corner_uncertainty_px(solution.cov, data.half_diag), _rival_spread_px(data, solution))
+    uncertainty = max(_corner_uncertainty_px(solution.cov, k, data.half_diag), _rival_spread_px(data, solution))
     rating = rate_uncertainty(uncertainty)
     flags = _misfits(data, k)
     rms_all = float(np.sqrt(np.mean(res**2)))

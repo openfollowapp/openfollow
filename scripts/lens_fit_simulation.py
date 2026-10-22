@@ -50,9 +50,9 @@ LENSES = [(0.0, 0.0), (-0.15, 0.0), (-0.3, 0.05), (-0.45, 0.20), (-0.47, 0.25), 
 
 
 def make_line(p0, p1, k1: float, k2: float, noise: float, rng: np.random.Generator) -> list[list[float]]:
-    ends = invert_overlay_distortion(np.array([p0, p1], dtype=np.float64), W, H, k1, k2)
+    ends = invert_overlay_distortion(np.array([p0, p1], dtype=np.float64), W, H, k1, k2, 0.0, 0.0)
     t = np.linspace(0.0, 1.0, 5)[:, None]
-    seen = apply_overlay_distortion(ends[0] + t * (ends[1] - ends[0]), W, H, k1, k2)
+    seen = apply_overlay_distortion(ends[0] + t * (ends[1] - ends[0]), W, H, k1, k2, 0.0, 0.0)
     return (seen + rng.normal(0.0, noise, seen.shape)).tolist()
 
 

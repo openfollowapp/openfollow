@@ -7243,14 +7243,39 @@ def test_validate_endpoint_type_error(live_server) -> None:
     assert 'class="field-error-msg"' in body
 
 
-@pytest.mark.parametrize(("saved_k2", "folds"), [(0.0, True), (0.1, False)])
-def test_validate_endpoint_reads_an_empty_lens_sibling_as_its_saved_value(live_server, saved_k2, folds) -> None:
-    # The save keeps the saved value of a field left empty, so the blur check judges that pair.
+@pytest.mark.parametrize(("saved_k2", "short"), [(0.0, True), (0.3, False)])
+def test_validate_endpoint_reads_an_empty_lens_sibling_as_its_saved_value(live_server, saved_k2, short) -> None:
+    # The save keeps the saved value of a field left empty, so the blur check judges that lens.
     _, base = live_server
     assert _post_json(base, "/api/config/camera", {"lens_k1": 0.0, "lens_k2": saved_k2})[0] == 200
-    status, body = _get(base, "/api/validate/camera/lens_k1?lens_k1=-0.4&lens_k2=")
+    status, body = _get(base, "/api/validate/camera/lens_k1?lens_k1=-1.2&lens_k2=")
     assert status == 200
-    assert ("folds" in body) is folds
+    assert ("This pair cannot follow the picture out to its corners." in body) is short
+
+
+def test_validate_endpoint_names_a_lens_centre_that_stops_the_overlay_short(live_server) -> None:
+    _, base = live_server
+    status, body = _get(base, "/api/validate/camera/lens_cx?lens_cx=0.1&lens_k1=-0.9&lens_k2=0&lens_cy=0")
+    assert status == 200
+    assert "This lens centre stops the overlay short of the picture&#x27;s corners." in body
+
+
+@pytest.mark.parametrize(
+    ("posted", "saved"),
+    [
+        ({"lens_cx": "0.05", "lens_cy": "-0.02"}, (-0.3, 0.0, 0.05, -0.02)),
+        ({"lens_cx": "7", "lens_cy": "abc"}, (-0.3, 0.0, 0.25, 0.0)),
+        # Valid about the frame centre, not with this centre: the pair is pulled back
+        # (1 - 0.9 t s reaches 0 at s = 1.1^2), the centre kept.
+        ({"lens_k1": "-0.9", "lens_cx": "0.1"}, (-0.99 / 1.21, 0.0, 0.1, 0.0)),
+    ],
+)
+def test_a_crafted_camera_post_saves_the_lens_centre_as_a_hand_edited_file_would(live_server, posted, saved) -> None:
+    server, base = live_server
+    status, _ = _post_form(base, "/section/camera", {"lens_k1": "-0.3", "lens_k2": "0", **posted})
+    assert status == 200
+    camera = load_config(server.config_path).camera
+    assert (camera.lens_k1, camera.lens_k2, camera.lens_cx, camera.lens_cy) == pytest.approx(saved)
 
 
 def test_validate_endpoint_advisory_note(live_server) -> None:

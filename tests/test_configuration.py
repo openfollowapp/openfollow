@@ -42,13 +42,14 @@ from openfollow.configuration import (
     apply_runtime_config_changes,
     config_to_toml_dict,
     config_write_lock,
+    effective_lens,
     load_config,
     load_config_for_save,
     save_config,
     save_config_fields,
     viewed_with_controlled,
 )
-from openfollow.lens_model import lens_warp_is_valid
+from openfollow.lens_model import C_BOUND, lens_warp_is_valid
 
 _NEW_BUTTON_FIELDS = (
     "btn_next_marker",
@@ -3768,11 +3769,9 @@ def test_camera_config_preserves_optional_float_none() -> None:
 
 
 def test_camera_config_lens_distortion_defaults_to_pinhole() -> None:
-    # Existing configs (no lens_k1/lens_k2 in TOML) must render byte-for-byte
-    # as a pinhole overlay – both coefficients default to 0.0.
+    # A config without lens keys draws exactly what a pinhole camera sees.
     cfg = CameraConfig()
-    assert cfg.lens_k1 == 0.0
-    assert cfg.lens_k2 == 0.0
+    assert (cfg.lens_k1, cfg.lens_k2, cfg.lens_cx, cfg.lens_cy) == (0.0, 0.0, 0.0, 0.0)
 
 
 @pytest.mark.parametrize(
@@ -3780,11 +3779,12 @@ def test_camera_config_lens_distortion_defaults_to_pinhole() -> None:
     [
         (0.1, 0.1),
         ("0.15", 0.15),
-        (1.5, 1.5),  # pincushion never folds, so no box clamps it
+        (0.9, 0.9),  # pincushion, valid up to k1 = 1 without a corner term
         (None, 0.0),
         ("nope", 0.0),
         (float("inf"), 0.0),  # non-finite -> declared default
         (float("nan"), 0.0),
+        (10**400, 0.0),
     ],
 )
 def test_camera_config_coerces_lens_k1(bad_k: object, expected: float) -> None:
@@ -3797,11 +3797,12 @@ def test_camera_config_coerces_lens_k1(bad_k: object, expected: float) -> None:
     [
         (0.03, 0.03),
         ("0.04", 0.04),
-        (1.5, 1.5),
+        (-0.8, -0.8),
         (None, 0.0),
         ("nope", 0.0),
         (float("inf"), 0.0),
         (float("nan"), 0.0),
+        (10**400, 0.0),
     ],
 )
 def test_camera_config_coerces_lens_k2(bad_k: object, expected: float) -> None:
@@ -3809,85 +3810,181 @@ def test_camera_config_coerces_lens_k2(bad_k: object, expected: float) -> None:
     assert cfg.lens_k2 == expected
 
 
-# Pairs that fold, the end stops of the slider's earlier box (-0.4 / -0.2) among them.
-_FOLDING_LENS_PAIRS = [
-    (-0.4, 0.0),
-    (-0.35, 0.0),
-    (-0.38, 0.02),
-    (-0.4, -0.2),
-    (0.4, -1.0),
-    (-1.5, 0.0),
-    (0.0, -1.5),
-    (5.0, -5.0),
-    (-5e3, 0.0),
+@pytest.mark.parametrize("field", ["lens_cx", "lens_cy"])
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        (0.04, 0.04),
+        ("-0.03", -0.03),
+        (C_BOUND, C_BOUND),
+        (-C_BOUND, -C_BOUND),
+        (0.0, 0.0),
+    ],
+)
+def test_camera_config_keeps_a_lens_centre_inside_its_bound(field: str, value: object, expected: float) -> None:
+    assert getattr(CameraConfig(**{field: value}), field) == expected
+
+
+@pytest.mark.parametrize("field", ["lens_cx", "lens_cy"])
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        (C_BOUND + 1e-9, C_BOUND),
+        (-C_BOUND - 1e-9, -C_BOUND),
+        (3.0, C_BOUND),
+        ("-7", -C_BOUND),
+    ],
+)
+def test_camera_config_clamps_a_lens_centre_past_its_bound(field: str, value: object, expected: float) -> None:
+    assert getattr(CameraConfig(**{field: value}), field) == expected
+
+
+@pytest.mark.parametrize("field", ["lens_cx", "lens_cy"])
+@pytest.mark.parametrize("value", [None, "abc", [0.1], {"x": 0.1}, float("nan"), float("inf"), float("-inf"), 10**400])
+def test_camera_config_lens_centre_that_is_no_number_reads_as_0(field: str, value: object) -> None:
+    assert getattr(CameraConfig(**{field: value}), field) == 0.0
+
+
+@pytest.mark.parametrize("field", ["lens_cx", "lens_cy"])
+def test_camera_config_lens_centre_reads_a_boolean_as_the_number_it_is(field: str) -> None:
+    # float(True) is 1, past the bound, as for every float field read by _coerce_float.
+    assert getattr(CameraConfig(**{field: True}), field) == C_BOUND
+    assert getattr(CameraConfig(**{field: False}), field) == 0.0
+
+
+# Lenses whose map stops short of a frame corner, with and without a lens centre.
+_LENSES_SHORT_OF_A_CORNER = [
+    (-1.0, 0.0, 0.0, 0.0),  # the pole on the corner
+    (-0.6, -0.4, 0.0, 0.0),
+    (0.4, 0.2, 0.0, 0.0),  # the fold on the corner
+    (-1.5, 0.0, 0.0, 0.0),
+    (0.0, 1.5, 0.0, 0.0),
+    (4.0, -1.0, 0.0, 0.0),  # P dips inside the frame
+    (-5e3, 0.0, 0.0, 0.0),
+    (-0.9, 0.0, 0.1, 0.05),  # valid about the frame centre, not about this one
+    (-0.53, -0.4, -C_BOUND, C_BOUND),
 ]
 
 
-def _assert_pulled_back_toward_the_fold(old: tuple[float, float], new: tuple[float, float]) -> None:
-    """Valid, on the old pair's own ray short of it, and close to where that ray folds."""
+def _assert_pulled_back_toward_the_limit(old: tuple[float, ...], new: tuple[float, ...]) -> None:
+    """Valid, the centre kept, the pair on its own ray short of it, and close to where that ray stops."""
     assert lens_warp_is_valid(*new)
+    assert new[2:] == old[2:]
     scale = (new[0] * old[0] + new[1] * old[1]) / (old[0] ** 2 + old[1] ** 2)
     assert 0.0 < scale < 1.0
-    assert new == pytest.approx((scale * old[0], scale * old[1]), rel=1e-12, abs=1e-15)
-    assert not lens_warp_is_valid(old[0] * scale * 1.02, old[1] * scale * 1.02)
+    assert new[:2] == pytest.approx((scale * old[0], scale * old[1]), rel=1e-12, abs=1e-15)
+    assert not lens_warp_is_valid(old[0] * scale * 1.02, old[1] * scale * 1.02, *old[2:])
 
 
-@pytest.mark.parametrize("k1,k2", _FOLDING_LENS_PAIRS)
-def test_camera_config_pulls_a_folding_lens_pair_back_toward_the_fold(
-    k1: float, k2: float, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+def _lens_of(cfg: CameraConfig) -> tuple[float, float, float, float]:
+    return cfg.lens_k1, cfg.lens_k2, cfg.lens_cx, cfg.lens_cy
+
+
+@pytest.mark.parametrize("lens", _LENSES_SHORT_OF_A_CORNER)
+def test_camera_config_pulls_a_lens_back_until_it_reaches_every_corner(
+    lens: tuple[float, float, float, float], caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A pair an earlier release accepted keeps its lens, short of the fold, rather than going pinhole."""
     import openfollow.configuration as cfg_mod
 
     monkeypatch.setattr(cfg_mod, "_reported_drops", {})
+    k1, k2, cx, cy = lens
     with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
-        cfg = CameraConfig(lens_k1=k1, lens_k2=k2)
-    _assert_pulled_back_toward_the_fold((k1, k2), (cfg.lens_k1, cfg.lens_k2))
+        cfg = CameraConfig(lens_k1=k1, lens_k2=k2, lens_cx=cx, lens_cy=cy)
+    _assert_pulled_back_toward_the_limit(lens, _lens_of(cfg))
     [message] = [rec.getMessage() for rec in caplog.records]
-    assert f"lens_k1={float(k1)} / lens_k2={float(k2)} folds" in message
+    assert f"lens_k1={float(k1)} / lens_k2={float(k2)} with lens centre {cx:.6g} / {cy:.6g}" in message
+    assert "cannot follow the picture out to its corners" in message
     assert f"using {cfg.lens_k1:.6g} / {cfg.lens_k2:.6g}" in message
 
 
-def test_a_folding_lens_pair_is_reported_once_not_on_every_load(caplog, monkeypatch) -> None:
+def test_camera_config_pulls_back_to_the_closed_form_point() -> None:
+    # 1 - 1.2 t s with the far corner at s = 1.1^2: t* = 1 / (1.2 * 1.21), less the 1 % margin.
+    cfg = CameraConfig(lens_k1=-1.2, lens_k2=0.0, lens_cx=0.1, lens_cy=0.0)
+    assert _lens_of(cfg) == pytest.approx((-0.99 / 1.21, 0.0, 0.1, 0.0), rel=1e-12)
+
+
+def test_camera_config_clamps_the_centre_before_it_judges_the_pair() -> None:
+    # k1 = -0.7 reaches a corner 1.1 half-diagonals out, not the 1 + |c| of the clamped centre.
+    cfg = CameraConfig(lens_k1=-0.7, lens_cx=1.0, lens_cy=-1.0)
+    assert (cfg.lens_cx, cfg.lens_cy) == (C_BOUND, -C_BOUND)
+    assert lens_warp_is_valid(*_lens_of(cfg))
+    assert -0.7 < cfg.lens_k1 < 0.0
+
+
+def test_a_lens_short_of_a_corner_is_reported_once_not_on_every_load(caplog, monkeypatch) -> None:
     import openfollow.configuration as cfg_mod
 
     monkeypatch.setattr(cfg_mod, "_reported_drops", {})
     with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
         for _ in range(3):
-            CameraConfig(lens_k1=-0.4, lens_k2=0.0)
+            CameraConfig(lens_k1=-1.2, lens_k2=0.0)
     assert len(caplog.records) == 1
 
 
-def test_a_pulled_back_lens_pair_is_stable_across_a_save_and_load(temp_config_path) -> None:
-    temp_config_path.write_text("[camera]\nlens_k1 = -0.38\nlens_k2 = 0.02\n", encoding="utf-8")
+def test_the_report_names_the_centre_the_pair_was_judged_with(caplog, monkeypatch) -> None:
+    import openfollow.configuration as cfg_mod
+
+    monkeypatch.setattr(cfg_mod, "_reported_drops", {})
+    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
+        CameraConfig(lens_k1=-0.9, lens_cx=0.6, lens_cy=-9.0)
+    [message] = [rec.getMessage() for rec in caplog.records]
+    assert "with lens centre 0.25 / -0.25 cannot follow" in message
+
+
+def test_a_clamped_centre_alone_is_not_reported(caplog, monkeypatch) -> None:
+    import openfollow.configuration as cfg_mod
+
+    monkeypatch.setattr(cfg_mod, "_reported_drops", {})
+    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
+        CameraConfig(lens_k1=-0.2, lens_cx=0.9)
+    assert caplog.records == []
+
+
+def test_a_pulled_back_lens_is_stable_across_a_save_and_load(temp_config_path) -> None:
+    temp_config_path.write_text(
+        "[camera]\nlens_k1 = -0.9\nlens_k2 = -0.1\nlens_cx = 0.12\nlens_cy = -0.3\n", encoding="utf-8"
+    )
     loaded = load_config(str(temp_config_path))
-    _assert_pulled_back_toward_the_fold((-0.38, 0.02), (loaded.camera.lens_k1, loaded.camera.lens_k2))
+    _assert_pulled_back_toward_the_limit((-0.9, -0.1, 0.12, -C_BOUND), _lens_of(loaded.camera))
     save_config(loaded, str(temp_config_path))
     again = load_config(str(temp_config_path))
-    assert (again.camera.lens_k1, again.camera.lens_k2) == (loaded.camera.lens_k1, loaded.camera.lens_k2)
+    assert _lens_of(again.camera) == _lens_of(loaded.camera)
 
 
-@pytest.mark.parametrize("k1,k2", [(0.4, 0.2), (0.4, -0.2), (-0.3, 0.0), (-0.2, 0.05)])
-def test_camera_config_keeps_a_lens_pair_that_does_not_fold(k1: float, k2: float) -> None:
-    cfg = CameraConfig(lens_k1=k1, lens_k2=k2)
-    assert (cfg.lens_k1, cfg.lens_k2) == (k1, k2)
+@pytest.mark.parametrize(
+    "lens",
+    [
+        (0.4, 0.15, 0.0, 0.0),
+        (0.9, -0.2, 0.0, 0.0),
+        (-0.3, 0.0, 0.0, 0.0),
+        (-0.527, -0.069, 0.0, 0.0),  # an equidistant 2.3 mm lens
+        (-0.527, -0.069, 0.04, -0.03),
+        (0.0, -0.8, 0.0, 0.0),
+        (-0.2, 0.05, C_BOUND, -C_BOUND),
+    ],
+)
+def test_camera_config_keeps_a_lens_that_reaches_every_corner(lens: tuple[float, float, float, float]) -> None:
+    k1, k2, cx, cy = lens
+    assert _lens_of(CameraConfig(lens_k1=k1, lens_k2=k2, lens_cx=cx, lens_cy=cy)) == lens
 
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), "abc", None])
 def test_camera_config_lens_values_that_are_no_number_still_read_as_0(bad: object) -> None:
-    cfg = CameraConfig(lens_k1=bad, lens_k2=bad)  # type: ignore[arg-type]
-    assert (cfg.lens_k1, cfg.lens_k2) == (0.0, 0.0)
+    cfg = CameraConfig(lens_k1=bad, lens_k2=bad, lens_cx=bad, lens_cy=bad)  # type: ignore[arg-type]
+    assert _lens_of(cfg) == (0.0, 0.0, 0.0, 0.0)
 
 
-@pytest.mark.parametrize("k1,k2", [(-0.47, 0.25), (-0.45, 0.2), (0.6, 0.4), (-0.3, 0.0)])
-def test_camera_config_keeps_a_wide_lens_pair_outside_the_old_box(k1: float, k2: float) -> None:
-    cfg = CameraConfig(lens_k1=k1, lens_k2=k2)
-    assert (cfg.lens_k1, cfg.lens_k2) == (k1, k2)
+def test_camera_config_wrong_type_on_one_lens_value_keeps_the_others() -> None:
+    cfg = CameraConfig(lens_k1="abc", lens_k2=0.3, lens_cx=0.02, lens_cy=None)  # type: ignore[arg-type]
+    assert _lens_of(cfg) == (0.0, 0.3, 0.02, 0.0)
 
 
-def test_camera_config_wrong_type_on_one_coefficient_keeps_the_other() -> None:
-    cfg = CameraConfig(lens_k1="abc", lens_k2=0.3)  # type: ignore[arg-type]
-    assert (cfg.lens_k1, cfg.lens_k2) == (0.0, 0.3)
+def test_a_lens_centre_change_hot_reloads_onto_the_running_config() -> None:
+    app = _DummyApp(_with_features(AppConfig(camera=CameraConfig(lens_k1=-0.3)), "lens_distortion"))
+    new = _with_features(AppConfig(camera=CameraConfig(lens_k1=-0.3, lens_cx=0.05, lens_cy=-0.02)), "lens_distortion")
+    apply_runtime_config_changes(app, new)
+    assert effective_lens(app._config) == (-0.3, 0.0, 0.05, -0.02)
+    assert app._web_commands.restart_requested is False
 
 
 def test_camera_config_rejects_inf_fov_to_default() -> None:
@@ -8304,14 +8401,20 @@ class TestUiConfig:
 
     @pytest.mark.parametrize(
         "shown,expected",
-        [(["lens_distortion"], (0.12, -0.03)), ([], (0.0, 0.0))],
+        [(["lens_distortion"], (0.12, -0.03, 0.04, -0.02)), ([], (0.0, 0.0, 0.0, 0.0))],
     )
     def test_effective_lens_follows_lens_distortion(self, shown, expected) -> None:  # noqa: ANN001
         from openfollow.configuration import AppConfig, CameraConfig, UiConfig, effective_lens
 
-        cfg = AppConfig(camera=CameraConfig(lens_k1=0.12, lens_k2=-0.03), ui=UiConfig(shown_features=shown))
+        camera = CameraConfig(lens_k1=0.12, lens_k2=-0.03, lens_cx=0.04, lens_cy=-0.02)
+        cfg = AppConfig(camera=camera, ui=UiConfig(shown_features=shown))
         assert effective_lens(cfg) == expected
-        assert (cfg.camera.lens_k1, cfg.camera.lens_k2) == (0.12, -0.03)
+        assert (cfg.camera.lens_k1, cfg.camera.lens_k2, cfg.camera.lens_cx, cfg.camera.lens_cy) == (
+            0.12,
+            -0.03,
+            0.04,
+            -0.02,
+        )
 
     # developer_mode: config-only, shows the developer's views in the web UI.
     def test_developer_mode_default_is_false(self) -> None:

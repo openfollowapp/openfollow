@@ -213,7 +213,7 @@ class TestAssistGhost:
         state = _state_with_grid_offset(0.0, 0.0, 0.0)
         ghost = MarkerOverlayData(marker_id=1, x=1.0, y=1.0, z=0.0, color="#33ff99", is_assist_ghost=True)
 
-        def _fake_project(_cam, pts, _w, _h, _k1=0.0, _k2=0.0):
+        def _fake_project(_cam, pts, _w, _h, _k1=0.0, _k2=0.0, _cx=0.0, _cy=0.0):
             # Only the marker's own position lands on screen, so draw_marker reaches
             # the ghost path; the crosshair and ground ring project to non-finite,
             # so their segments are skipped and the ring is degenerate.
@@ -370,7 +370,7 @@ class TestLensDistortionWarp:
         state.show_origin = True
         state.origin_length = 3.0
 
-        def _fake_project(_cam, pts, _w, _h, _k1=0.0, _k2=0.0):
+        def _fake_project(_cam, pts, _w, _h, _k1=0.0, _k2=0.0, _cx=0.0, _cy=0.0):
             out = np.tile(np.array([[100.0, 100.0]]), (len(pts), 1)).astype(float)
             out[len(pts) // 2] = np.nan  # one sub-point behind the camera
             return out

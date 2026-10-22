@@ -63,7 +63,7 @@ def test_the_calibration_puts_the_grid_on_the_tape(picture: Path) -> None:
     x0, y0 = grid["x_offset"] - grid["width"] / 2, grid["y_offset"] - grid["depth"] / 2
     x1, y1 = x0 + grid["width"], y0 + grid["depth"]
     marks = np.array([(x1, y0, 0.0), (x0, y0, 0.0), (x0, y1, 0.0), (x1, y1, 0.0), (0.0, 0.0, 0.0)])
-    px = apply_overlay_distortion(project_points(params, marks, W, H), W, H, cam["lens_k1"], cam["lens_k2"])
+    px = apply_overlay_distortion(project_points(params, marks, W, H), W, H, cam["lens_k1"], cam["lens_k2"], 0.0, 0.0)
     img = cv2.imread(str(picture), cv2.IMREAD_GRAYSCALE).astype(float)
     for x, y in px:
         xi, yi = round(x), round(y)

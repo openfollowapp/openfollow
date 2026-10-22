@@ -52,8 +52,8 @@ def strip_frame(
     rng = np.random.default_rng(seed)
     yy, xx = np.mgrid[0:H, 0:W]
     pixels = np.column_stack([xx.ravel(), yy.ravel()]).astype(np.float64)
-    undistorted = invert_overlay_distortion(pixels, W, H, k1, k2)
-    ends = invert_overlay_distortion(np.array([p0, p1], dtype=np.float64), W, H, k1, k2)
+    undistorted = invert_overlay_distortion(pixels, W, H, k1, k2, 0.0, 0.0)
+    ends = invert_overlay_distortion(np.array([p0, p1], dtype=np.float64), W, H, k1, k2, 0.0, 0.0)
     d = ends[1] - ends[0]
     d /= np.hypot(*d)
     rel = undistorted - ends[0]
@@ -65,19 +65,19 @@ def strip_frame(
 def distance_to_strip_centre(points, p0, p1, lens) -> np.ndarray:
     """Signed distance of picture points from the strip's centre line, measured where the strip is straight."""
     k1, k2 = lens
-    ends = invert_overlay_distortion(np.array([p0, p1], dtype=np.float64), W, H, k1, k2)
+    ends = invert_overlay_distortion(np.array([p0, p1], dtype=np.float64), W, H, k1, k2, 0.0, 0.0)
     d = ends[1] - ends[0]
     d /= np.hypot(*d)
-    rel = invert_overlay_distortion(np.asarray(points, dtype=np.float64), W, H, k1, k2) - ends[0]
+    rel = invert_overlay_distortion(np.asarray(points, dtype=np.float64), W, H, k1, k2, 0.0, 0.0) - ends[0]
     return rel[:, 0] * d[1] - rel[:, 1] * d[0]
 
 
 def chord_sag(p0, p1, lens) -> float:
     """How far the strip's centre bows away from the straight chord, at most."""
     k1, k2 = lens
-    ends = invert_overlay_distortion(np.array([p0, p1], dtype=np.float64), W, H, k1, k2)
+    ends = invert_overlay_distortion(np.array([p0, p1], dtype=np.float64), W, H, k1, k2, 0.0, 0.0)
     s = np.linspace(0.0, 1.0, 400)[:, None]
-    seen = apply_overlay_distortion(ends[0] + s * (ends[1] - ends[0]), W, H, k1, k2)
+    seen = apply_overlay_distortion(ends[0] + s * (ends[1] - ends[0]), W, H, k1, k2, 0.0, 0.0)
     a, b = np.asarray(p0, float), np.asarray(p1, float)
     t = (b - a) / np.hypot(*(b - a))
     return float(np.max(np.abs((seen - a) @ np.array([-t[1], t[0]]))))

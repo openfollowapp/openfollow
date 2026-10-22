@@ -28,7 +28,10 @@ pytestmark = pytest.mark.unit
 _REPO_ROOT = Path(openfollow.__file__).resolve().parent.parent
 _DEBIAN = _REPO_ROOT / "packaging" / "debian"
 _NOW = datetime(2026, 9, 29, 18, 0, 0, tzinfo=timezone.utc)
-_LENS = '{"name": "Zoom wide", "k1": -0.2, "k2": 0.03, "saved": "2026-09-28", "openfollow_version": "0.6.0"}\n'
+_LENS = (
+    '{"name": "Zoom wide", "k1": -0.2, "k2": 0.03, "cx": 0.0, "cy": 0.0, '
+    '"saved": "2026-09-28", "openfollow_version": "0.6.0"}\n'
+)
 
 
 def _station(tmp_path: Path, config: str = 'psn_system_name = "OpenFollow brave-otter"\n') -> Path:
@@ -257,7 +260,9 @@ def test_the_restore_command_is_the_one_documented() -> None:
 def test_a_restore_brings_the_saved_lenses_back(tmp_path: Path) -> None:
     state = _station(tmp_path)
     store = lens_calibrations.calibrations_dir(state / "config.toml")
-    lens_calibrations.save_calibration(store, "Zoom tele", -0.05, 0.0, "0.6.0", _NOW.date(), width=1920, height=1080)
+    lens_calibrations.save_calibration(
+        store, "Zoom tele", -0.05, 0.0, 0.0, 0.0, "0.6.0", _NOW.date(), width=1920, height=1080
+    )
     record = run_backup(state, "0.4.3", "0.4.4", now=_NOW)
     fresh = tmp_path / "fresh"
     fresh.mkdir()

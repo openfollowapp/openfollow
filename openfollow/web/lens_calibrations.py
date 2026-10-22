@@ -40,6 +40,8 @@ class LensCalibration:
     name: str
     k1: float
     k2: float
+    cx: float  # the lens centre, half-diagonals from the frame centre (openfollow.lens_model)
+    cy: float
     saved: str  # ISO date
     openfollow_version: str
     width: int | None = None  # the snapshot it was measured on; None when unknown
@@ -63,18 +65,19 @@ def name_problem(name: Any) -> str:
     return ""
 
 
-def pair_problem(k1: Any, k2: Any) -> str:
-    """Why ``k1`` / ``k2`` are no lens pair to save, or ``""``."""
-    if not all(isinstance(v, int | float) and not isinstance(v, bool) for v in (k1, k2)):
+def lens_problem(k1: Any, k2: Any, cx: Any, cy: Any) -> str:
+    """Why ``k1`` / ``k2`` / ``cx`` / ``cy`` are no lens to save, or ``""``."""
+    if not all(isinstance(v, int | float) and not isinstance(v, bool) for v in (k1, k2, cx, cy)):
         return "The lens values must be numbers."
     try:
-        pair = (float(k1), float(k2))
+        lens = (float(k1), float(k2), float(cx), float(cy))
     except OverflowError:  # a JSON integer of hundreds of digits
         return "The lens values must be numbers."
-    if not all(math.isfinite(v) for v in pair):
+    if not all(math.isfinite(v) for v in lens):
         return "The lens values must be numbers."
-    if not lens_warp_is_valid(*pair):
-        return "These lens values fold the overlay inside the frame."
+    # The centre's bound is part of the rule.
+    if not lens_warp_is_valid(*lens):
+        return "These lens values cannot follow the picture out to its corners."
     return ""
 
 
@@ -98,10 +101,14 @@ def _read(path: Path) -> LensCalibration | None:
         texts = [data["name"], data.get("saved", ""), data.get("openfollow_version", "")]
         if not all(isinstance(t, str) for t in texts):
             raise TypeError("a text field is not text")
-        calibration = LensCalibration(texts[0].strip(), data["k1"], data["k2"], texts[1], texts[2])
+        calibration = LensCalibration(texts[0].strip(), data["k1"], data["k2"], data["cx"], data["cy"], *texts[1:])
     except (OSError, ValueError, TypeError, KeyError, AttributeError):
         calibration = None
-    if calibration is None or name_problem(calibration.name) or pair_problem(calibration.k1, calibration.k2):
+    if (
+        calibration is None
+        or name_problem(calibration.name)
+        or lens_problem(calibration.k1, calibration.k2, calibration.cx, calibration.cy)
+    ):
         if path.name not in _reported:
             _reported.add(path.name)
             logger.warning("lens calibration %s does not read as one; left out", path.name)
@@ -114,6 +121,8 @@ def _read(path: Path) -> LensCalibration | None:
         calibration.name,
         float(calibration.k1),
         float(calibration.k2),
+        float(calibration.cx),
+        float(calibration.cy),
         calibration.saved,
         calibration.openfollow_version,
         width,
@@ -136,24 +145,27 @@ def save_calibration(
     name: str,
     k1: float,
     k2: float,
+    cx: float,
+    cy: float,
     version: str,
     today: datetime.date,
     *,
     width: int | None = None,
     height: int | None = None,
 ) -> LensCalibration:
-    """Write ``name`` with the pair, the version and the snapshot size, if known; one already saved under that
+    """Write ``name`` with the lens, the version and the snapshot size, if known; one already saved under that
     name, ignoring case, is replaced.
 
-    The caller checks :func:`name_problem`, :func:`pair_problem` and :func:`size_problem` first; a bad one
+    The caller checks :func:`name_problem`, :func:`lens_problem` and :func:`size_problem` first; a bad one
     raises ValueError here. A size is both sides or neither.
     """
     sized = width is not None or height is not None
-    problem = name_problem(name) or pair_problem(k1, k2) or (size_problem(width, height) if sized else "")
+    problem = name_problem(name) or lens_problem(k1, k2, cx, cy) or (size_problem(width, height) if sized else "")
     if problem:
         raise ValueError(problem)
     name = name.strip()
-    calibration = LensCalibration(name, float(k1), float(k2), today.isoformat(), version, width, height)
+    lens = (float(k1), float(k2), float(cx), float(cy))
+    calibration = LensCalibration(name, *lens, today.isoformat(), version, width, height)
     directory.mkdir(parents=True, exist_ok=True)
     same = [
         p for p in directory.glob(f"*{_SUFFIX}") if (c := _read(p)) is not None and c.name.casefold() == name.casefold()
@@ -164,6 +176,8 @@ def save_calibration(
             "name": calibration.name,
             "k1": calibration.k1,
             "k2": calibration.k2,
+            "cx": calibration.cx,
+            "cy": calibration.cy,
             "saved": calibration.saved,
             "width": calibration.width,
             "height": calibration.height,

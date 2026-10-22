@@ -36,7 +36,7 @@ import numpy as np  # noqa: E402
 from gallery_calibration import camera_from, write_calibration  # noqa: E402
 from PIL import Image, ImageFilter  # noqa: E402
 
-from openfollow.lens_model import pull_back_to_fold  # noqa: E402
+from openfollow.lens_model import pull_back_to_valid  # noqa: E402
 from openfollow.scene.solver import apply_overlay_distortion, project_points  # noqa: E402
 
 ASSET = ROOT / "openfollow" / "video" / "inputs" / "assets" / "concert_default.jpg"
@@ -82,7 +82,7 @@ def pinhole(pts) -> np.ndarray:
 
 
 def lens(px: np.ndarray) -> np.ndarray:
-    return apply_overlay_distortion(px, W, H, K1, K2)
+    return apply_overlay_distortion(px, W, H, K1, K2, 0.0, 0.0)
 
 
 _PLANES = [(0, CLIP[0], 1), (0, CLIP[2], -1), (1, CLIP[1], 1), (1, CLIP[3], -1)]
@@ -501,7 +501,7 @@ def picture() -> Image.Image:
 
 
 def main() -> None:
-    assert pull_back_to_fold(K1, K2) == (K1, K2), "lens pair folds inside the frame"
+    assert pull_back_to_valid(K1, K2, 0.0, 0.0) == (K1, K2, 0.0, 0.0), "lens pair cannot reach the corners"
     picture().save(ASSET, quality=90, optimize=True)
     pos = ", ".join(f"{v:g}" for v in CAMERA[:3])
     print(f"Camera: pos=({pos}) pitch={CAMERA[3]:g} yaw={CAMERA[4]:g} roll={CAMERA[5]:g} hfov={CAMERA[6]:g}")

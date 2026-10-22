@@ -810,15 +810,15 @@ def test_screen_axes_at_the_picture_centre_line_match_the_camera_heading() -> No
     assert up == pytest.approx((0.0, 1.0), abs=1e-6)
 
 
-@pytest.mark.parametrize(("k1", "k2"), [(0.0, 0.0), (-0.2, 0.05)])
-def test_screen_axes_move_the_point_up_its_picture_column(k1: float, k2: float) -> None:
+@pytest.mark.parametrize("lens", [(0.0, 0.0, 0.0, 0.0), (-0.2, 0.05, 0.0, 0.0), (-0.53, -0.07, 0.06, -0.04)])
+def test_screen_axes_move_the_point_up_its_picture_column(lens: tuple[float, float, float, float]) -> None:
     params = _pose()
     point = (4.0, 2.0, 1.6)
-    axes = screen_axes_at(params, point, 1920.0, 1080.0, k1, k2)
+    axes = screen_axes_at(params, point, 1920.0, 1080.0, *lens)
     assert axes is not None
     _, (ux, uy) = axes
     step = np.array([point, (point[0] + 0.01 * ux, point[1] + 0.01 * uy, point[2])])
-    seen = apply_overlay_distortion(project_points(params, step, 1920.0, 1080.0), 1920.0, 1080.0, k1, k2)
+    seen = apply_overlay_distortion(project_points(params, step, 1920.0, 1080.0), 1920.0, 1080.0, *lens)
     assert seen[1, 0] == pytest.approx(seen[0, 0], abs=0.05)
     assert seen[1, 1] < seen[0, 1]
     # Off the centre line the column leans away from the camera.
@@ -840,19 +840,14 @@ def test_screen_axes_at_give_no_answer_off_the_usable_picture(pose, point) -> No
     assert screen_axes_at(_pose(**pose), point, 1920.0, 1080.0) is None
 
 
-@pytest.mark.parametrize(
-    "point",
-    [
-        (6.0, -6.0, 0.0),  # a step crosses the fold
-        (12.0, -6.0, 0.0),  # past the fold: drawn folded back into the picture
-        (12.0, 0.0, 0.0),
-    ],
-)
-def test_screen_axes_give_no_answer_past_a_barrel_lens_fold(point) -> None:  # noqa: ANN001
+@pytest.mark.parametrize("point", [(200.0, -10.0, 0.0), (2000.0, -10.9, 0.0)])
+def test_screen_axes_give_no_answer_where_a_step_leaves_the_lens_limit(point) -> None:  # noqa: ANN001
+    # Not a lens the config keeps: its pole lies inside the picture, and a step out from a point
+    # drawn just inside it has no pinhole point.
     params = _pose(fov=90.0)
-    assert screen_axes_at(params, point, 1920.0, 1080.0, -0.5, 0.0) is None
-    # Inside the fold the same lens still answers.
-    assert screen_axes_at(params, (4.0, 0.0, 0.0), 1920.0, 1080.0, -0.5, 0.0) is not None
+    assert screen_axes_at(params, point, 1920.0, 1080.0, -1.5, 0.0, 0.0, 0.0) is None
+    # Further in, the same lens still answers.
+    assert screen_axes_at(params, (60.0, -9.0, 0.0), 1920.0, 1080.0, -1.5, 0.0, 0.0, 0.0) is not None
 
 
 @pytest.mark.parametrize("roll", [100.0, 115.0, -115.0])

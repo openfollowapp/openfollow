@@ -739,10 +739,9 @@ def build_marker_visual_state(
     cam_params_buffer[5] = cam_cfg.roll
     cam_params_buffer[6] = cam_cfg.fov
     state.camera_params = cam_params_buffer.copy()
-    # Lens-distortion coefficients live on the app config (the Camera object is
-    # pinhole and doesn't carry them); read them straight from the live config so
-    # slider edits hot-reload onto the HUD.
-    state.lens_k1, state.lens_k2 = effective_lens(cfg)
+    # The lens lives on the app config (the Camera object is pinhole and doesn't
+    # carry it); read it straight from the live config so edits hot-reload onto the HUD.
+    state.lens_k1, state.lens_k2, state.lens_cx, state.lens_cy = effective_lens(cfg)
 
     state.selected_id = app._selected_id
 

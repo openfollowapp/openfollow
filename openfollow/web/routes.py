@@ -100,7 +100,7 @@ from openfollow.configuration import (
     viewed_with_controlled,
 )
 from openfollow.input.mouse3d_status import status_key
-from openfollow.lens_model import pull_back_to_fold
+from openfollow.lens_model import pull_back_to_valid
 
 # Module-level so handler closures resolve ``save_catalog`` from this
 # namespace at call time (tests monkeypatch it for persist-failure paths).
@@ -2223,6 +2223,8 @@ _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
         "focal_length_mm": _as_optional_float,
         "lens_k1": _as_float,
         "lens_k2": _as_float,
+        "lens_cx": _as_float,
+        "lens_cy": _as_float,
         "calibration_mode": _as_str,
         "calibration_marks": _as_json_list,
         "calibration_height": _as_optional_measured,
@@ -3541,19 +3543,21 @@ def _load_json_body() -> Any:
     return data
 
 
-def _wizard_lens_coeffs(cam: Any) -> tuple[float, float]:
-    """The lens pair a wizard request names; absent reads as pinhole, a value that is no number raises.
+_WIZARD_LENS_KEYS = ("lens_k1", "lens_k2", "lens_cx", "lens_cy")
 
-    A pair that folds the warp inside the frame is pulled back toward the fold, as
-    ``CameraConfig.__post_init__`` does.
+
+def _wizard_lens_coeffs(cam: Any) -> tuple[float, float, float, float]:
+    """The lens ``(k1, k2, cx, cy)`` a wizard request names; absent reads as pinhole, a value that is no number raises.
+
+    The centre is clamped and a pair that cannot follow the picture out to its corners is
+    pulled back, as ``CameraConfig.__post_init__`` does.
     """
     if cam is None:
-        return 0.0, 0.0
+        return 0.0, 0.0, 0.0, 0.0
     if not isinstance(cam, dict):
         raise TypeError("camera must be an object")
-    k1 = _json_number(cam["lens_k1"], "lens_k1") if "lens_k1" in cam else 0.0
-    k2 = _json_number(cam["lens_k2"], "lens_k2") if "lens_k2" in cam else 0.0
-    return pull_back_to_fold(k1, k2)
+    k1, k2, cx, cy = (_json_number(cam[key], key) if key in cam else 0.0 for key in _WIZARD_LENS_KEYS)
+    return pull_back_to_valid(k1, k2, cx, cy)
 
 
 # A band column per chord pixel at most, on a snapshot no wider than the wizard accepts.
@@ -5072,11 +5076,11 @@ def _json_error(status: int, message: str) -> str:
     return json.dumps({"error": message})
 
 
-def _camera_view(cfg: AppConfig) -> tuple[Any, float, float]:
+def _camera_view(cfg: AppConfig) -> tuple[Any, tuple[float, float, float, float]]:
     """The saved camera as the solver's parameter vector, with the lens it is drawn with."""
     from openfollow.scene.solver import camera_params
 
-    return camera_params(cfg.camera), *effective_lens(cfg)
+    return camera_params(cfg.camera), effective_lens(cfg)
 
 
 # Chords per straight world segment when the lens bows it, as on the Operator Screen.
@@ -5086,7 +5090,7 @@ _PICTURE_MAX_POINTS = 20000
 
 
 def _picture_points(
-    params: Any, k1: float, k2: float, w: float, h: float, points: Sequence[Sequence[float]]
+    params: Any, lens: tuple[float, float, float, float], w: float, h: float, points: Sequence[Sequence[float]]
 ) -> list[list[float] | None]:
     """World points as seen by the camera in a ``w`` x ``h`` picture, lens included; null behind it."""
     import numpy as np
@@ -5095,7 +5099,7 @@ def _picture_points(
 
     if not len(points):
         return []
-    screen = apply_overlay_distortion(project_points(params, np.asarray(points, dtype=np.float64), w, h), w, h, k1, k2)
+    screen = apply_overlay_distortion(project_points(params, np.asarray(points, dtype=np.float64), w, h), w, h, *lens)
     return [[float(x), float(y)] if np.isfinite(x) and np.isfinite(y) else None for x, y in screen]
 
 
@@ -5113,9 +5117,9 @@ def _subdivided(polyline: Sequence[Sequence[float]], n: int) -> list[list[float]
 
 def _picture_polylines(cfg: AppConfig, w: float, h: float, polylines: Sequence[Sequence[Sequence[float]]]) -> list[Any]:
     """World polylines as picture polylines in the saved camera, bowed like the Operator Screen draws them."""
-    params, k1, k2 = _camera_view(cfg)
-    n = _PICTURE_SUBDIVISIONS if (k1 or k2) else 1
-    return [_picture_points(params, k1, k2, w, h, _subdivided(line, n)) for line in polylines]
+    params, lens = _camera_view(cfg)
+    n = _PICTURE_SUBDIVISIONS if (lens[0] or lens[1]) else 1
+    return [_picture_points(params, lens, w, h, _subdivided(line, n)) for line in polylines]
 
 
 def _picture_size(data: Mapping[str, Any]) -> tuple[float, float]:
@@ -5210,8 +5214,8 @@ def _register_scene_routes(app: Bottle, server: ConfigWebServer) -> None:
         except (KeyError, TypeError, ValueError, OverflowError):
             return _json_error(400, "x, y, z, w and h must be numbers")
         cfg = _last_whole_config(server)
-        params, k1, k2 = _camera_view(cfg)
-        pinhole = invert_overlay_distortion(np.array([[x, y]], dtype=np.float64), w, h, k1, k2)
+        params, lens = _camera_view(cfg)
+        pinhole = invert_overlay_distortion(np.array([[x, y]], dtype=np.float64), w, h, *lens)
         world = unproject_to_plane(params, pinhole, w, h, z)[0]
         if not (np.isfinite(world[0]) and np.isfinite(world[1])):
             return _json_error(422, "That point of the picture does not reach the stage.")
@@ -5555,10 +5559,10 @@ def _register_path_routes(app: Bottle, server: ConfigWebServer) -> None:
         except (KeyError, TypeError, ValueError):
             return _json_error(400, "w and h must be the picture's size in pixels")
         cfg = _last_whole_config(server)
-        params, k1, k2 = _camera_view(cfg)
+        params, lens = _camera_view(cfg)
 
         def seen(points: list[tuple[float, float, float]]) -> list[list[float] | None]:
-            return _picture_points(params, k1, k2, w, h, points)
+            return _picture_points(params, lens, w, h, points)
 
         curves = [
             build_curve([PathPoint(p.x, p.y, p.z, p.radius) for p in path.points], path.closed)
@@ -10610,7 +10614,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 if abs(height) > MARK_REACH_M:
                     raise ValueError(f"camera_height must be within {MARK_REACH_M:g} m of the origin")
             marks = _wizard_marks(data.get("marks"), img_w, img_h, mode)
-            k1, k2 = _wizard_lens_coeffs(data.get("camera"))
+            lens = _wizard_lens_coeffs(data.get("camera"))
         except (KeyError, TypeError, ValueError, OverflowError) as exc:
             response.status = 400
             return json.dumps({"error": str(exc)})
@@ -10639,7 +10643,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # The pins were placed on the distorted snapshot; the solve is pinhole.
         raw_pins = {m.id: pin for m, pin in marks if pin is not None}
         ids = list(raw_pins)
-        flat = invert_overlay_distortion(np.array([raw_pins[i] for i in ids], dtype=np.float64), img_w, img_h, k1, k2)
+        flat = invert_overlay_distortion(np.array([raw_pins[i] for i in ids], dtype=np.float64), img_w, img_h, *lens)
         undistorted = {i: (float(p[0]), float(p[1])) for i, p in zip(ids, flat, strict=True)}
         solve_input = [
             Mark(
@@ -10665,7 +10669,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         for fit in solved.marks:
             seen = None
             if fit.seen is not None:
-                seen = apply_overlay_distortion(np.array([fit.seen]), img_w, img_h, k1, k2)[0].tolist()
+                seen = apply_overlay_distortion(np.array([fit.seen]), img_w, img_h, *lens)[0].tolist()
                 if fit.id in raw_pins:
                     errors[fit.id] = math.dist(seen, raw_pins[fit.id])
             answers.append(
@@ -10712,7 +10716,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     @app.post("/api/wizard/lens/calibrations")
     def api_wizard_lens_save() -> Any:
-        """Save the lens pair on this station under a name; a name already saved, ignoring case, is replaced."""
+        """Save the lens on this station under a name; a name already saved, ignoring case, is replaced."""
         response.content_type = "application/json"
         data = _load_json_body()
         if not isinstance(data, dict):
@@ -10723,7 +10727,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         width, height = data.get("width"), data.get("height")
         problem = (
             lens_calibrations.name_problem(data.get("name"))
-            or lens_calibrations.pair_problem(data.get("k1"), data.get("k2"))
+            or lens_calibrations.lens_problem(data.get("k1"), data.get("k2"), data.get("cx"), data.get("cy"))
             or (lens_calibrations.size_problem(width, height) if sized else "")
         )
         if problem:
@@ -10736,6 +10740,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 data["name"],
                 data["k1"],
                 data["k2"],
+                data["cx"],
+                data["cy"],
                 openfollow.__version__,
                 datetime.now().date(),
                 width=width,

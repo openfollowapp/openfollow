@@ -45,7 +45,7 @@ def assert_recovered(fit, lens: tuple[float, float]) -> None:
 
 def on_a_strip(points, scene: Scene, lens: tuple[float, float]) -> bool:
     """Whether every point, undistorted with the true lens, lies within a few pixels of one of the scene's strips."""
-    pinhole = invert_overlay_distortion(np.asarray(points, dtype=np.float64), W, H, *lens)
+    pinhole = invert_overlay_distortion(np.asarray(points, dtype=np.float64), W, H, *lens, 0.0, 0.0)
     for p in pinhole:
         nearest = min(
             float(np.linalg.norm(p - a - np.clip(((p - a) @ d) / float(d @ d), 0.0, 1.0) * d)) - strip.half_width
@@ -69,8 +69,8 @@ def test_a_strip_lies_in_the_picture_where_the_overlay_bows_it() -> None:
     strip = stage_scene().strips[0]
     s = np.linspace(0.05, 0.95, 30)[:, None]
     along = np.asarray(strip.p0) + s * (np.asarray(strip.p1) - np.asarray(strip.p0))
-    on = apply_overlay_distortion(along, W, H, *lens)
-    beside = apply_overlay_distortion(along + np.array([0.0, 14.0]), W, H, *lens)
+    on = apply_overlay_distortion(along, W, H, *lens, 0.0, 0.0)
+    beside = apply_overlay_distortion(along + np.array([0.0, 14.0]), W, H, *lens, 0.0, 0.0)
     assert np.all(img[on[:, 1].round().astype(int), on[:, 0].round().astype(int)] > 150.0)
     assert np.all(img[beside[:, 1].round().astype(int), beside[:, 0].round().astype(int)] < FLOOR + 25.0)
 
@@ -137,7 +137,7 @@ def test_one_pixel_deck_seams_at_720p_pin_the_pair(lens: tuple[float, float]) ->
     # At least two of the lines used are seams across the stage, flat in the pinhole frame.
     seams = 0
     for line in cal.lines:
-        pts = invert_overlay_distortion(np.asarray(line, dtype=np.float64), 1280, 720, *lens)
+        pts = invert_overlay_distortion(np.asarray(line, dtype=np.float64), 1280, 720, *lens, 0.0, 0.0)
         if np.ptp(pts[:, 1]) < 6.0 and min(abs(float(np.mean(pts[:, 1])) - y) for y in (280.0, 410.0, 540.0)) < 6.0:
             seams += 1
     assert seams >= 2
@@ -149,7 +149,7 @@ def test_a_seam_running_on_up_a_riser_is_not_offered_as_one_line() -> None:
     img = render(riser_scene(), lens, size=(960, 540), noise=2.0)
     found = find_edge_candidates(scaled_luma(img, 1), 1, 960, 540).candidates
     for candidate in found:
-        pinhole = invert_overlay_distortion(np.asarray(candidate.points), 960, 540, *lens)
+        pinhole = invert_overlay_distortion(np.asarray(candidate.points), 960, 540, *lens, 0.0, 0.0)
         rel = pinhole - pinhole.mean(axis=0)
         normal = np.linalg.svd(rel)[2][1]
         assert float(np.max(np.abs(rel @ normal))) < 1.5, candidate.points

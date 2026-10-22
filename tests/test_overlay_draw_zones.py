@@ -335,7 +335,7 @@ class TestLensDistortion:
         state.lens_k1 = -0.15
         state.lens_k2 = 0.04
 
-        def _nan_segments(_cam, segments, _w, _h, _k1, _k2, n):
+        def _nan_segments(_cam, segments, _w, _h, _k1, _k2, _cx, _cy, n):
             segs = np.asarray(segments, dtype=np.float64).reshape(-1, 2, 3)
             out = np.full((segs.shape[0], n + 1, 2), 100.0)
             out[0, n // 2] = np.nan  # one sub-point on the first edge behind camera
@@ -472,15 +472,13 @@ class TestZoneCache:
 
     @pytest.mark.parametrize("roll", [0.0, 90.0], ids=["too-wide", "too-tall"])
     def test_zones_too_large_for_cairo_to_measure_still_show(self, roll: float) -> None:
-        """Lens distortion throws a corner far enough out to wrap cairo's fixed point."""
+        """A corner a tenth of a millimetre in front of the lens lands far enough out to wrap cairo's fixed point."""
         camera = _camera_params()
         camera[5] = roll
         state = self._state(
             camera_params=camera,
-            lens_k1=-0.15,
-            lens_k2=0.02,
             zone_polygons=[
-                ([(-6.0, -5.9), (6.0, -5.9), (6.0, -2.9), (-6.0, -2.9)], "#ffaa00", "Front", False, 0),
+                ([(-6.0, -6.6698), (6.0, -6.6698), (6.0, -2.9), (-6.0, -2.9)], "#ffaa00", "Front", False, 0),
                 (_square(0.0, 3.0, 1.0), "#33aaff", "Pit", False, 0),
             ],
         )
@@ -547,6 +545,8 @@ class TestZoneCache:
             {"state": {"camera_params": np.array([0.2, -6.0, 2.5, -15.0, 0.0, 0.0, 60.0])}},
             {"state": {"lens_k1": 0.05}},
             {"state": {"lens_k2": 0.02}},
+            {"state": {"lens_cx": 0.03}},
+            {"state": {"lens_cy": -0.02}},
             {"size": (1280, 1080)},
             {"size": (1920, 720)},
             {"scale": 2.0},
@@ -562,6 +562,8 @@ class TestZoneCache:
             "camera",
             "k1",
             "k2",
+            "cx",
+            "cy",
             "width",
             "height",
             "scale",

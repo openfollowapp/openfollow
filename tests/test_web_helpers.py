@@ -299,15 +299,53 @@ def test_apply_section_data_camera_lens_distortion_roundtrips() -> None:
     assert config.camera.lens_k2 == pytest.approx(0.03)
 
 
-def test_apply_section_data_camera_lens_distortion_folding_pair_is_pulled_back() -> None:
+def test_apply_section_data_camera_lens_short_of_a_corner_is_pulled_back() -> None:
     config = AppConfig()
-    ok = apply_section_data(config, "camera", {"lens_k1": "5", "lens_k2": "-5"})
+    ok = apply_section_data(config, "camera", {"lens_k1": "-1.5", "lens_k2": "-1.5", "lens_cx": "0.1"})
     assert ok is True
-    # __post_init__ re-runs after the web save: a folding pair keeps its direction, short of the fold.
-    k1, k2 = config.camera.lens_k1, config.camera.lens_k2
-    assert lens_warp_is_valid(k1, k2)
-    assert 0.0 < k1 < 5.0 and k2 == pytest.approx(-k1)
-    assert not lens_warp_is_valid(k1 * 1.02, k2 * 1.02)
+    # __post_init__ re-runs after the web save: the pair keeps its direction, short of the limit; the centre stays.
+    k1, k2, cx = config.camera.lens_k1, config.camera.lens_k2, config.camera.lens_cx
+    assert cx == 0.1
+    assert lens_warp_is_valid(k1, k2, cx, 0.0)
+    assert -1.5 < k1 < 0.0 and k2 == pytest.approx(k1)
+    assert not lens_warp_is_valid(k1 * 1.02, k2 * 1.02, cx, 0.0)
+
+
+@pytest.mark.parametrize(
+    "posted,expected",
+    [
+        ({"lens_cx": "0.05", "lens_cy": "-0.02"}, (0.05, -0.02)),
+        ({"lens_cx": "0.9", "lens_cy": "-1e9"}, (0.25, -0.25)),  # clamped as a hand-edited file is
+        ({"lens_cx": "abc", "lens_cy": None}, (0.03, -0.04)),  # no number: the saved centre stays
+        ({"lens_cx": "nan", "lens_cy": "inf"}, (0.0, 0.0)),  # parsed, then refused to the default
+        ({"lens_cx": 10**400}, (0.03, -0.04)),
+        ({"lens_cx": True}, (0.25, -0.04)),  # a JSON true is the number 1, clamped
+        ({}, (0.03, -0.04)),  # a form without the centre keeps it
+    ],
+)
+def test_apply_section_data_camera_lens_centre(posted: dict, expected: tuple[float, float]) -> None:
+    config = AppConfig(camera=CameraConfig(lens_cx=0.03, lens_cy=-0.04))
+    assert apply_section_data(config, "camera", posted) is True
+    assert (config.camera.lens_cx, config.camera.lens_cy) == expected
+
+
+def test_a_lens_centre_from_the_camera_form_moves_what_the_overlay_draws() -> None:
+    import math
+
+    import numpy as np
+
+    from openfollow.configuration import effective_lens
+    from openfollow.runtime.overlay_draw_scene import project
+    from openfollow.scene.solver import camera_params, unproject_to_plane
+
+    config = AppConfig()
+    apply_section_data(config, "camera", {"lens_k1": "-0.3", "lens_k2": "0", "lens_cx": "0.05", "lens_cy": "-0.02"})
+    params = camera_params(config.camera)
+    # The floor point on the camera's axis is drawn at the lens centre: 0.05 D right and 0.02 D up.
+    on_axis = unproject_to_plane(params, np.array([[960.0, 540.0]]), 1920.0, 1080.0, 0.0)
+    drawn = project(params, on_axis, 1920, 1080, *effective_lens(config))[0]
+    half_diag = 0.5 * math.hypot(1920.0, 1080.0)
+    assert drawn == pytest.approx((960.0 + 0.05 * half_diag, 540.0 - 0.02 * half_diag), abs=1e-6)
 
 
 def test_apply_section_data_camera_lens_distortion_keeps_a_wide_lens() -> None:

@@ -1205,6 +1205,38 @@ def test_replace_pin_undistorts_screen_when_lens_set(monkeypatch) -> None:
     assert undist > raw
 
 
+def test_replace_pin_takes_the_lens_centre_off_the_screen_point(monkeypatch) -> None:
+    # A lens centre alone shifts the picture: the pinhole point is the pin less the centre's offset.
+    cfg = DetectionConfig(enabled=True, pin_mode="replace", smoothing=1.0)
+    app = _make_app(detection_cfg=cfg)
+    app._config.camera.lens_cx, app._config.camera.lens_cy = 0.05, -0.02
+    detector = _StubDetector(_StubDetection(0.6, 0.6, 0.8, 0.8))
+    cam, pt = _buffers()
+    recorded = _capture_unproject_screen(monkeypatch)
+
+    apply_detection_pin(app, person_detector=detector, unproject_cam_buffer=cam, screen_point_buffer=pt)
+
+    half_diag = 0.5 * np.hypot(1920.0, 1080.0)
+    assert recorded["screen"][0, 0] == pytest.approx(0.7 * 1920 - 0.05 * half_diag)
+    assert recorded["screen"][0, 1] == pytest.approx(0.6 * 1080 + 0.02 * half_diag)
+
+
+def test_assist_pin_takes_the_lens_centre_off_the_screen_point(monkeypatch) -> None:
+    cfg = _assist_cfg(assist_radius_m=50.0)
+    app = _assist_app(cfg)  # 1000x1000 canvas
+    app._config.camera.lens_cx, app._config.camera.lens_cy = -0.04, 0.03
+    _seed_anchor(app, 1.0, 2.0, 0.0)
+    detector = _AssistDetector([_det(0.7, 1, y1=0.6)])
+    recorded = _capture_unproject_screen(monkeypatch)
+
+    _run(app, detector)
+
+    w, h = app._video_receiver.resolution
+    half_diag = 0.5 * np.hypot(w, h)
+    assert recorded["screen"][0, 0] == pytest.approx(0.7 * w + 0.04 * half_diag)
+    assert recorded["screen"][0, 1] == pytest.approx(0.6 * h - 0.03 * half_diag)
+
+
 def test_assist_pin_undistorts_screen_when_lens_set(monkeypatch) -> None:
     # The assist path unprojects detection pin points through the same lens
     # inversion as replace, so a barrel-distorted pin is pushed outward.

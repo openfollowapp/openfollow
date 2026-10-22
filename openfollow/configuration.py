@@ -31,7 +31,7 @@ import tomli_w
 from openfollow.binding_conflicts import BindingMove, settle_duplicates
 from openfollow.keyboard_layout import LAYOUT_RE as XKB_LAYOUT_RE
 from openfollow.keyboard_layout import VARIANT_RE as XKB_VARIANT_RE
-from openfollow.lens_model import pull_back_to_fold
+from openfollow.lens_model import C_BOUND, pull_back_to_valid
 from openfollow.net_adapters import normalize_labels
 from openfollow.station_fqdn import normalize_fqdn
 from openfollow.units import UnitSystem
@@ -519,12 +519,14 @@ class CameraConfig:
     # the projection math; ``fov`` remains the source of truth.
     sensor_width_mm: float | None = None
     focal_length_mm: float | None = None
-    # Radial lens-distortion coefficients for the overlay-curvature correction.
-    # Bow the rendered HUD to match a fisheye / wide-angle lens via
-    # f = 1 + k1*r^2 + k2*r^4 (r normalised to the image half-diagonal). The
-    # video frame is never warped. 0/0 = pinhole (no curvature).
+    # The lens the HUD is bowed to match (openfollow.lens_model): the division
+    # pair k1 / k2 (barrel negative) and the lens centre's offset from the frame
+    # centre in half-diagonals (x right, y down). The video frame is never
+    # warped. All 0 = pinhole.
     lens_k1: float = 0.0
     lens_k2: float = 0.0
+    lens_cx: float = 0.0
+    lens_cy: float = 0.0
     # The Setup Wizard's last calibration: Simple's four corners or Advanced's points, with their pins.
     calibration_mode: str = "simple"
     calibration_marks: list[CalibrationMarkConfig] = field(default_factory=list)
@@ -542,16 +544,20 @@ class CameraConfig:
         self.fov = _coerce_float(self.fov, 60.0, lo=1.0, hi=179.0)
         self.sensor_width_mm = _coerce_optional_float(self.sensor_width_mm, None, lo=0.0)
         self.focal_length_mm = _coerce_optional_float(self.focal_length_mm, None, lo=0.0)
-        # The one bound on the pair is that the warp must not fold before the
-        # frame corner; a folding pair is pulled back along its own direction.
-        k1 = _coerce_float(self.lens_k1, 0.0)
-        k2 = _coerce_float(self.lens_k2, 0.0)
-        self.lens_k1, self.lens_k2 = pull_back_to_fold(k1, k2)
-        if (self.lens_k1, self.lens_k2) != (k1, k2):
+        # The centre is clamped; the pair's one bound is that the overlay reaches every
+        # frame corner, and a pair that does not is pulled back along its own direction.
+        lens = (
+            _coerce_float(self.lens_k1, 0.0),
+            _coerce_float(self.lens_k2, 0.0),
+            _coerce_float(self.lens_cx, 0.0, lo=-C_BOUND, hi=C_BOUND),
+            _coerce_float(self.lens_cy, 0.0, lo=-C_BOUND, hi=C_BOUND),
+        )
+        self.lens_k1, self.lens_k2, self.lens_cx, self.lens_cy = pull_back_to_valid(*lens)
+        if (self.lens_k1, self.lens_k2) != lens[:2]:
             _report_once(
                 "camera.lens",
-                f"lens_k1={k1} / lens_k2={k2} folds the overlay warp inside the frame; "
-                f"using {self.lens_k1:.6g} / {self.lens_k2:.6g}",
+                f"lens_k1={lens[0]} / lens_k2={lens[1]} with lens centre {lens[2]:.6g} / {lens[3]:.6g} "
+                f"cannot follow the picture out to its corners; using {self.lens_k1:.6g} / {self.lens_k2:.6g}",
             )
         self.calibration_mode = _coerce_choice(self.calibration_mode, CALIBRATION_MODES, "simple")
         self.calibration_marks = _coerce_calibration_marks(self.calibration_marks, self.calibration_mode)
@@ -2858,11 +2864,12 @@ def feature_gated(section: _SwitchedT, cfg: Any, key: str) -> _SwitchedT:
     return gated
 
 
-def effective_lens(cfg: Any) -> tuple[float, float]:
-    """The lens pair everything draws and maps with: none while Lens distortion is off."""
+def effective_lens(cfg: Any) -> tuple[float, float, float, float]:
+    """The lens everything draws and maps with, ``(k1, k2, cx, cy)``: none while Lens distortion is off."""
     if not feature_on(cfg, "lens_distortion"):
-        return 0.0, 0.0
-    return cfg.camera.lens_k1, cfg.camera.lens_k2
+        return 0.0, 0.0, 0.0, 0.0
+    cam = cfg.camera
+    return cam.lens_k1, cam.lens_k2, cam.lens_cx, cam.lens_cy
 
 
 @dataclass

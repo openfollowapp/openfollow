@@ -86,7 +86,7 @@ def pinhole(pts) -> np.ndarray:
 
 
 def lens(px: np.ndarray) -> np.ndarray:
-    return apply_overlay_distortion(px, W, H, K1, K2)
+    return apply_overlay_distortion(px, W, H, K1, K2, 0.0, 0.0)
 
 
 _PLANES = [(0, CLIP[0], 1), (0, CLIP[2], -1), (1, CLIP[1], 1), (1, CLIP[3], -1)]

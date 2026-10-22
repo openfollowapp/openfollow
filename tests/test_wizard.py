@@ -895,6 +895,7 @@ def test_a_lens_calibration_the_wizard_saves_is_kept_with_its_centre(live_server
             "lensSavedList",
             "lensListFailed",
             "wizHalfDiag",
+            "wizLensCentrePxMax",
             "wizLensCentrePx",
             "wizLensCentreText",
         ),  # fmt: skip
@@ -902,6 +903,7 @@ def test_a_lens_calibration_the_wizard_saves_is_kept_with_its_centre(live_server
         + wizard_window_function("lensSaveDialog")
         + "\nvar lensSaveDialog = window.lensSaveDialog;",
         LENS=lens,
+        LENS_C_BOUND=C_BOUND,
     )
     # The body the page sends is one the station takes, and the list hands the centre back.
     assert _post_json(base, "/api/wizard/lens/calibrations", posted)[0] == 200
@@ -1516,6 +1518,9 @@ class TestWizardLensStepPage:
             assert re.search(
                 rf'<input type="number" id="{field}" step="1" [^>]*aria-describedby="wiz-lens-centre-error"', row
             )
+        # Both errors announce themselves as the step's other field errors do.
+        for error in ("wiz-lens-error", "wiz-lens-centre-error", "cam-error"):
+            assert re.search(rf'<div id="{error}" class="wizard-field-error" role="alert"', body), error
         # The bound comes from the station's own, never a copy.
         assert f"var LENS_C_BOUND = {C_BOUND};" in body
 

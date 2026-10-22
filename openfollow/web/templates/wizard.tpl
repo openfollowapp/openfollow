@@ -508,7 +508,7 @@
               </div>
             </div>
           </div>
-          <div id="wiz-lens-error" class="wizard-field-error" style="display:none;">With these two values, the overlay cannot follow the picture out to its corners. Set one of the values closer to 0.</div>
+          <div id="wiz-lens-error" class="wizard-field-error" role="alert" style="display:none;">With these two values, the overlay cannot follow the picture out to its corners. Set one of the values closer to 0.</div>
           <div class="lens-centre" role="group" aria-labelledby="wiz-lens-centre-title">
             <div class="lens-centre-title" id="wiz-lens-centre-title">Lens centre</div>
             <div class="row">
@@ -522,7 +522,7 @@
               </div>
             </div>
           </div>
-          <div id="wiz-lens-centre-error" class="wizard-field-error" style="display:none;"></div>
+          <div id="wiz-lens-centre-error" class="wizard-field-error" role="alert" style="display:none;"></div>
         </div>
       </details>
     </div>
@@ -856,7 +856,7 @@
   }
   // [k1, k2, cx, cy] in use.
   function wizLens() { return [wizReadLensCoeff('wiz_lens_k1'), wizReadLensCoeff('wiz_lens_k2'), S.lensCentre[0], S.lensCentre[1]]; }
-  // False while a lens centre field holds no number in range, so nothing saves a centre the fields do not show.
+  // False while the centre fields show a centre not in use, so nothing saves a centre the fields do not show.
   function wizLensValid() { var l = wizLens(); return !S.lensCentreBad && wizLensIsValid(l[0], l[1], l[2], l[3]); }
 
   function wizReadLensCoeff(id) {
@@ -880,10 +880,15 @@
     range.value = value;
   }
 
-  // The lens centre in pixels of a w x h picture: right of and above its centre, rounded to whole pixels.
+  // The lens centre in pixels of a w x h picture: right of and above its centre, in whole pixels within the fields'
+  // bound, which a centre at the bound can round past.
   function wizHalfDiag(w, h) { return 0.5 * Math.sqrt(w * w + h * h); }
   function wizLensCentrePxMax(w, h) { return Math.floor(LENS_C_BOUND * wizHalfDiag(w, h)); }
-  function wizLensCentrePx(c, w, h) { var d = wizHalfDiag(w, h); return [Math.round(c[0] * d) || 0, Math.round(-c[1] * d) || 0]; }
+  function wizLensCentrePx(c, w, h) {
+    var d = wizHalfDiag(w, h), max = wizLensCentrePxMax(w, h);
+    var px = function(v) { return Math.max(-max, Math.min(max, Math.round(v * d))) || 0; };
+    return [px(c[0]), px(-c[1])];
+  }
   // "42 px right, 18 px up"; an axis that rounds to 0 px is left out, a centre at 0 (or no picture size) says nothing.
   function wizLensCentreText(c, w, h) {
     if (!(w > 0 && h > 0)) return '';
@@ -892,12 +897,16 @@
     if (px[1]) parts.push(Math.abs(px[1]) + ' px ' + (px[1] > 0 ? 'up' : 'down'));
     return parts.join(', ');
   }
-  // The two pixel fields' text as a centre in half-diagonals; null when either is not a number within the bound.
+  // A centre field's text as whole pixels within max, else NaN.
+  function wizLensCentreField(t, max) {
+    var s = String(t).trim(), v = s === '' ? NaN : Number(s);
+    return Number.isInteger(v) && Math.abs(v) <= max ? v : NaN;
+  }
+  // The two pixel fields' text as a centre in half-diagonals; null when either is not whole pixels within the bound.
   function wizLensCentreFromPx(right, above, w, h) {
     var max = wizLensCentrePxMax(w, h), d = wizHalfDiag(w, h);
-    var read = function(t) { var s = String(t).trim(); return s === '' ? NaN : Number(s); };
-    var x = read(right), y = read(above);
-    if (!(Math.abs(x) <= max && Math.abs(y) <= max)) return null;
+    var x = wizLensCentreField(right, max), y = wizLensCentreField(above, max);
+    if (isNaN(x) || isNaN(y)) return null;
     return [x / d, -y / d];
   }
   // The pixel fields show S.lensCentre in the snapshot's pixels; without a snapshot they are off.
@@ -920,18 +929,35 @@
   // The pair's error while the pair alone cannot follow the picture out to its corners, else the centre's;
   // either opens Adjust by hand, so the error is never folded away.
   var LENS_CENTRE_LIMIT_ERROR = 'With this lens centre, the overlay cannot follow the picture out to its corners. Set the lens centre closer to 0.';
+  // A range error marks the field that holds no whole pixels in range; the limit error marks both.
   function wizShowLensLimit() {
     var l = wizLens(), pairBad = !wizLensIsValid(l[0], l[1], 0, 0);
     var centreBad = !pairBad && (S.lensCentreBad || !wizLensIsValid(l[0], l[1], l[2], l[3]));
+    var max = wizLensCentrePxMax(imageWidth, imageHeight), ids = ['wiz_lens_cx', 'wiz_lens_cy'];
+    var offRange = ids.map(function(id) { var el = $(id); return S.lensCentreBad && !!el && isNaN(wizLensCentreField(el.value, max)); });
+    var range = offRange[0] || offRange[1];
     var err = $('wiz-lens-error'), cerr = $('wiz-lens-centre-error');
     if (err) err.style.display = pairBad ? 'block' : 'none';
     if (cerr) {
       cerr.style.display = centreBad ? 'block' : 'none';
-      var max = wizLensCentrePxMax(imageWidth, imageHeight);
-      cerr.textContent = !centreBad ? '' : S.lensCentreBad ? 'Enter a number from −' + max + ' to ' + max + '.' : LENS_CENTRE_LIMIT_ERROR;
+      var text = !centreBad ? '' : range ? 'Enter a number from −' + max + ' to ' + max + '.' : LENS_CENTRE_LIMIT_ERROR;
+      // Rewritten only when it changes, so the alert is not read out again on every keystroke.
+      if (cerr.textContent !== text) cerr.textContent = text;
     }
-    ['wiz_lens_cx', 'wiz_lens_cy'].forEach(function(id) { var el = $(id); if (el) el.setAttribute('aria-invalid', centreBad ? 'true' : 'false'); });
+    ids.forEach(function(id, i) {
+      var el = $(id);
+      if (el) el.setAttribute('aria-invalid', centreBad && (!range || offRange[i]) ? 'true' : 'false');
+    });
     if (pairBad || centreBad) $('lens-adjust').open = true;
+  }
+  // Take the centre fields' centre unless they hold no whole pixels in range or it is the centre that stops the
+  // lens short of the corners; the last centre then stays, flagged. True when taken.
+  function wizTakeLensCentre() {
+    var c = wizLensCentreFromPx($('wiz_lens_cx').value, $('wiz_lens_cy').value, imageWidth, imageHeight), l = wizLens();
+    var taken = !!c && (!wizLensIsValid(l[0], l[1], 0, 0) || wizLensIsValid(l[0], l[1], c[0], c[1]));
+    S.lensCentreBad = !taken;
+    if (taken) S.lensCentre = c;
+    return taken;
   }
   // A new lens from the sliders, the number fields or the centre fields: flag a lens that cannot follow the picture,
   // redraw the predicted curves, and persist.
@@ -949,15 +975,15 @@
     if (num && range) {
       if (source === 'range') num.value = range.value; else wizWriteLensCoeff('wiz_lens_' + which, num.value);
     }
+    // A centre the last pair could not take may suit this one.
+    if (S.lensCentreBad) wizTakeLensCentre();
     wizLensEdited();
   };
   window.onWizardLensCentreInput = function() {
-    var c = wizLensCentreFromPx($('wiz_lens_cx').value, $('wiz_lens_cy').value, imageWidth, imageHeight);
-    S.lensCentreBad = !c;
-    if (c) S.lensCentre = c;
+    var taken = wizTakeLensCentre();
     wizLensEdited();
     // The fit holds the centre fixed, so traced lines are measured again about the new one.
-    if (c && lensLines.some(lensLineCounts)) scheduleLensFit();
+    if (taken && lensLines.some(lensLineCounts)) scheduleLensFit();
   };
 
   // The overlay warp and its inverse (mirror scene/solver apply_overlay_distortion / invert_overlay_distortion).

@@ -7415,9 +7415,13 @@ def test_a_lens_centre_typed_in_pixels_saves_in_half_diagonals(video_server, rig
 
 @needs_node
 @pytest.mark.parametrize(
-    ("value", "refused"), [("276", True), ("-276", True), ("", True), ("12", False), ("-275", False)]
-)
-def test_a_lens_centre_field_out_of_range_says_so_in_pixels_and_writes_nothing(video_server, value, refused) -> None:
+    ("value", "refused"),
+    [("276", True), ("-276", True), ("", True), ("12.5", True), ("-0.5", True), ("12", False), ("12.0", False),
+     ("-275", False)],
+)  # fmt: skip
+def test_a_lens_centre_field_without_whole_pixels_in_range_says_so_and_writes_nothing(
+    video_server, value, refused
+) -> None:
     _, base, _ = video_server
     _, body = _get(base, "/section/camera")
     out = _run_node(
@@ -7442,6 +7446,21 @@ def test_a_lens_centre_field_out_of_range_says_so_in_pixels_and_writes_nothing(v
         ]
     else:
         assert out[0] != "saved-cx" and out[1:] == ["", None, 0, 0]
+
+
+@pytest.mark.parametrize(("width", "height", "bound"), [(1280, 720, 183), (3840, 2160, 550)])
+def test_a_lens_centre_at_the_bound_shows_within_its_fields_bound(video_server, width, height, bound) -> None:
+    server, base, stats = video_server
+    assert _post_form(base, "/section/camera", {"lens_cx": "0.25", "lens_cy": "-0.25"})[0] == 200
+    stats["video"] = {"resolution": {"width": width, "height": height}}
+    _, body = _get(base, "/section/camera")
+    right, above = _tag(body, "camera-lens-cx-px"), _tag(body, "camera-lens-cy-px")
+    # Rounded alone, 0.25 half-diagonals lands half a pixel past the bound and the field fails itself.
+    assert round(0.25 * 0.5 * (width**2 + height**2) ** 0.5) == bound + 1
+    assert [_attr(right, "value"), _attr(above, "value")] == [str(bound), str(bound)]
+    assert _attr(right, "max") == str(bound)
+    # The hidden fields keep the saved centre exactly.
+    assert float(_attr(_tag(body, "camera-lens-cx"), "value")) == 0.25
 
 
 @needs_node

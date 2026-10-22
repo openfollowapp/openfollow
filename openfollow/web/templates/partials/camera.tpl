@@ -6,6 +6,8 @@
 % _vs = get('video_size')
 % _hd = 0.5 * math.hypot(*_vs) if _vs else 0.0
 % _cmax = math.floor(C_BOUND * _hd)
+% # Whole pixels within the fields' bound, which a centre at the bound can round past.
+% _cpx = lambda v: max(-_cmax, min(_cmax, round(v * _hd)))
 % _imp = _us is UnitSystem.IMPERIAL
 % _len = unit_suffix_length(_us)
 <form id="camera-section" class="section {{'saved' if defined('saved') and saved else ''}}" data-fold-key="camera" data-help="camera"
@@ -162,7 +164,7 @@
                 <div class="field">
                     <label for="camera-lens-cx-px">Right of the picture centre (px)</label>
                     <input type="number" id="camera-lens-cx-px" step="1" data-hidden="camera-lens-cx" data-half-diag="{{_hd}}"
-                           {{!('min="%d" max="%d" value="%d"' % (-_cmax, _cmax, round(config.camera.lens_cx * _hd))) if _vs else 'disabled placeholder="No video" value=""'}}
+                           {{!('min="%d" max="%d" value="%d"' % (-_cmax, _cmax, _cpx(config.camera.lens_cx))) if _vs else 'disabled placeholder="No video" value=""'}}
                            oninput="cameraLensCentreInput(this)"
                            hx-get="/api/validate/camera/lens_cx"
                            hx-trigger="blur changed delay:200ms, change from:#camera-lens-cy-px, change from:#camera-lens-k1, change from:#camera-lens-k1-range, change from:#camera-lens-k2, change from:#camera-lens-k2-range"
@@ -174,7 +176,7 @@
                 <div class="field">
                     <label for="camera-lens-cy-px">Above the picture centre (px)</label>
                     <input type="number" id="camera-lens-cy-px" step="1" data-hidden="camera-lens-cy" data-half-diag="{{_hd}}"
-                           {{!('min="%d" max="%d" value="%d"' % (-_cmax, _cmax, round(-config.camera.lens_cy * _hd))) if _vs else 'disabled placeholder="No video" value=""'}}
+                           {{!('min="%d" max="%d" value="%d"' % (-_cmax, _cmax, _cpx(-config.camera.lens_cy))) if _vs else 'disabled placeholder="No video" value=""'}}
                            oninput="cameraLensCentreInput(this)"
                            hx-get="/api/validate/camera/lens_cy"
                            hx-trigger="blur changed delay:200ms, change from:#camera-lens-cx-px, change from:#camera-lens-k1, change from:#camera-lens-k1-range, change from:#camera-lens-k2, change from:#camera-lens-k2-range"
@@ -302,10 +304,10 @@
             setStale(true);
         };
 
-        // A lens centre field's pixels, or null when it holds no number within its bound.
+        // A lens centre field's pixels, or null when it holds no whole number within its bound.
         function lensCentrePx(el) {
             var text = String(el.value).trim(), v = text === '' ? NaN : Number(text);
-            return Math.abs(v) <= parseFloat(el.max) ? v : null;
+            return Number.isInteger(v) && Math.abs(v) <= parseFloat(el.max) ? v : null;
         }
         // Each field writes its hidden lens_cx / lens_cy in half-diagonals of the video it was shown for; up is -y.
         window.cameraLensCentreInput = function(el) {

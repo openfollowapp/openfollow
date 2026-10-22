@@ -728,7 +728,8 @@ it; built 2026-10-22):
 14. **Corner correction left open, result line** (decision 9): "corner
     correction 0 (not measured)" to **"corner correction −0.183
     (estimated)"**, the fit's own value; the help drawer's Rating paragraph
-    says the estimate stays close to 0 and is applied.
+    says the estimate is what the other lines show of it, drawn toward 0
+    only as far as they leave it open, and that it is applied.
 
 The approved Setup Wizard plan (`docs/plans/setup-wizard-calibration-modes.md`)
 quotes item 6's old text and the fold wording in its copy tables; those rows
@@ -1076,6 +1077,49 @@ clear barrel; dense traced edges (16 sub-pixel points each) as the reference.
   Open: under such a lens the pinhole corners, where the rating is read,
   land at 0.66 of the half-diagonal; lines in the lower half alone leave
   1-12 px between 0.66 and 0.8 that the rating does not see (open question 4).
+- [x] **Reach guard** (until open question 4 moves the rated points): the
+      rating is held at Poor unless points beyond 0.5 of the half-diagonal
+      from the lens centre lie on two of its four sides (right, up, left,
+      down). In the simulation (9072 trials, seed 0) it lowers 37 trials,
+      all one or two middle lines on a 2.3 mm-like lens 144 px off centre,
+      centre given, rated Fair 30-150 px off; no row without an overclaim
+      changes, and the radius makes no difference anywhere from 0.5 to 0.7.
+      0.5, not 0.6: the six 150-degree frames' lines reach 0.56-0.59 and stay
+      Good. Three upright lines in the left part only are capped too; they are
+      honest there up to a 2.3 mm-like lens, 4 of 12 trials past twice Fair on
+      the 150-degree one.
+- [x] **Misfit by the line's own degrees of freedom**: the 1.5 px floor
+      flagged a straight line in 3 % of fits at 1 px (40 of 1280), the noise
+      real snapshots show. A line now misfits past the F test of its scatter
+      against the others' at 1e-3, past 3 sigmas of the refit's uncertainty,
+      and past 2 px:
+      3 of 1280 at 1 px, 4 of 180 at 3 px (before 6). A stray is set aside
+      only while the line's other points lie on a line within the points' own
+      scatter, so a bow keeps its points (a 12 px bowed diagonal among four
+      edges at 1 px: caught 28 of 40, before 23, which a dropped end had
+      straightened), and of the lines that do not fit, the one set aside is
+      the one that misses most among those without which the rest agree
+      about as well as without any. The stray change moves 78 fitted lenses
+      of the 9072 (most with a decentred lens's centre given as 0, by 1-2 px)
+      and five ratings. The on-screen graphic is still flagged on
+      two of the three frames that show it; on the third the frame's other
+      lines scatter 1.2 px and its 2.7 px is a one-in-300 chance there.
+- Note, the concert picture: of its 12 suggestions five run along the
+  drapes, curved 4.5-15 px in the hall. They bend alike on both sides and
+  agree with a lens of their own (`-0.10 / -0.35`, Fair, 107 px off at the
+  corners); the lines that contradict them, through the middle, move by
+  0.4-0.7 px, within placement noise, so no line test can tell them apart.
+  The drapes rejected: `-0.217 / -0.030`, Not usable (21.8 px), 12.6 px off
+  at the corners and 0.1 px within 0.8 of the half-diagonal; with the two
+  white rails at the bottom corners drawn as well, `-0.205 / -0.064`, Poor,
+  1.1 px.
+- Note, the estimated corner correction is the lines' own where they are
+  placed to a fraction of a pixel (Festival, pairs of suggestions under the
+  top edge: up to -0.19, 33-37 px off at the corners, where the same k1 with
+  a k2 of 0 is 84-101 px off). A `K2_PRIOR` of 0.1 lowers the simulation's estimated trials' median
+  error (24 to 14 px; its lenses mostly have a small k2) but spreads the six
+  150-degree frames from 1.5 to 5.2 px and estimates every one of them, so
+  the prior stays and the help says what the estimate is.
 
 ### 7. Web UI
 - [x] `partials/camera.tpl`: slider spans (items 1, 2), the Lens centre row

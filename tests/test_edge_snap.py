@@ -469,6 +469,18 @@ def test_where_a_suggestion_s_edge_breaks_off_its_point_takes_no_edge_beside_it(
     np.testing.assert_allclose(offsets(pts), 0.0, atol=1.0)
 
 
+def test_a_suggestion_s_points_stay_within_the_window_of_its_samples() -> None:
+    # The samples sit 2.5 px off their edge (the map at half size); a stronger edge of the
+    # same polarity runs 4 px beyond it and draws the curve over. No point follows it there.
+    img = np.full((H, W), 30.0)
+    img[yy >= 502.5] = 90.0
+    img[yy >= 506.5] = 230.0
+    samples = line_sample_points((200.0, 500.0), (1700.0, 500.0))
+    pts = snap_near(noisy(img, 2.0), samples, 1)
+    assert any(p.snapped for p in pts)
+    assert np.all(np.abs([p.y - 500.0 for p in pts]) <= point_window(W) + 0.5)
+
+
 def test_a_suggestion_on_the_weak_chord_never_takes_the_strong_one() -> None:
     samples = line_sample_points((200.0, chord_y(200.0) + 0.5), (1700.0, chord_y(1700.0) + 0.5))
     pts = snap_near(stepped_frame(), samples, 1)

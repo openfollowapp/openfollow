@@ -11,6 +11,8 @@ import pytest
 
 from openfollow.lens_model import lens_warp_is_valid
 from openfollow.scene.lens_fit import (
+    K1_PRIOR,
+    K2_PRIOR,
     MAX_LINES,
     MAX_POINTS_PER_LINE,
     RATING_LOW,
@@ -18,6 +20,7 @@ from openfollow.scene.lens_fit import (
     RATINGS,
     LensFitResult,
     LensLineFit,
+    _f_upper,
     coverage_hint,
     fit_lens_from_lines,
     fit_result_to_dict,
@@ -415,6 +418,75 @@ class TestRating:
         assert sloppy.uncertainty_px > precise.uncertainty_px
         assert RATINGS.index(sloppy.rating) <= RATINGS.index(precise.rating)
 
+    @pytest.mark.parametrize("seed", range(3))
+    def test_the_prior_bounds_the_rating_where_the_lines_say_nothing(self, seed: int) -> None:
+        # One line through the middle leaves the pair to its prior: the corners are never
+        # rated looser than the prior alone puts them, though the line alone puts them nowhere.
+        result = fit_lens_from_lines(lines_for(-0.333, -0.025, (MID_H,), noise=1.0, seed=seed), W, H)
+        corners = np.array([[0.0, 0.0], [W, 0.0], [0.0, H], [W, H]])
+        eps = 1e-5
+        jac = np.stack(
+            [
+                (
+                    apply_overlay_distortion(corners, W, H, result.k1 + d1, result.k2 + d2, 0.0, 0.0)
+                    - apply_overlay_distortion(corners, W, H, result.k1 - d1, result.k2 - d2, 0.0, 0.0)
+                )
+                / (2.0 * eps)
+                for d1, d2 in ((eps, 0.0), (0.0, eps))
+            ],
+            axis=-1,
+        )
+        prior_alone = np.sqrt(np.einsum("caf,f,caf->c", jac, np.array([K1_PRIOR**2, K2_PRIOR**2]), jac).max())
+        assert result.rating == RATING_LOW
+        assert result.uncertainty_px <= prior_alone
+
+    # A 2.3 mm-like lens whose centre is 120 px right of and 80 px below the picture's.
+    _OFF_CENTRE = (-0.53, -0.07, 120.0 / HALF_DIAG, 80.0 / HALF_DIAG)
+
+    @pytest.mark.parametrize(
+        ("segments", "seed"), [((MID_H,), 0), ((MID_H,), 1), ((MID_H, MID_V), 0), ((MID_H, MID_V), 2)]
+    )
+    def test_lines_near_the_lens_centre_rate_poor_at_best(self, segments, seed: int) -> None:  # noqa: ANN001
+        # Off the lens centre a middle line bows enough to rate fair by its number, but
+        # only its left end reaches out: the frame's corners are 30-150 px off.
+        k1, k2, cx, cy = self._OFF_CENTRE
+        lines = lines_for(k1, k2, segments, noise=1.0, seed=seed, cx=cx, cy=cy)
+        result = fit_lens_from_lines(lines, W, H, cx=cx, cy=cy)
+        assert rate_uncertainty(result.uncertainty_px) == "okay"
+        assert result.rating == "medium"
+
+    def test_lines_reaching_out_on_one_side_only_rate_poor_at_best(self) -> None:
+        # Three upright lines in the left part of the picture: exact, and fair by their number.
+        left = (LEFT, ((250.0, 120.0), (240.0, 960.0)), ((420.0, 200.0), (410.0, 880.0)))
+        result = fit_lens_from_lines(lines_for(-0.53, -0.07, left), W, H)
+        assert rate_uncertainty(result.uncertainty_px) == "okay"
+        assert result.rating == "medium"
+
+    @pytest.mark.parametrize(
+        ("segments", "truth"),
+        [
+            # A stage seen from the front truss through a 150-degree class lens: its lines
+            # reach 0.59 of the half-diagonal, left and right of the centre.
+            (
+                (
+                    ((470.0, 909.0), (1420.0, 904.0)),
+                    ((560.0, 788.0), (1330.0, 782.0)),
+                    ((560.0, 660.0), (1330.0, 654.0)),
+                    ((432.0, 666.0), (382.0, 846.0)),
+                    ((1446.0, 628.0), (1510.0, 844.0)),
+                ),
+                (-0.71, -0.17),
+            ),
+            # One line from corner to corner reaches out on both sides of the centre.
+            ((TOP,), (-0.2, -0.03)),
+        ],
+        ids=["stage-from-the-front-truss", "top-edge"],
+    )
+    def test_lines_reaching_out_on_two_sides_keep_their_rating(self, segments, truth) -> None:  # noqa: ANN001
+        result = fit_lens_from_lines(lines_for(*truth, segments, noise=0.5, seed=1), W, H)
+        assert result.rating in ("okay", "good")
+        assert result.rating == rate_uncertainty(result.uncertainty_px)
+
 
 # A short line in each outer band: (x0, y0), (x1, y1) inside the outer 15 % of that side.
 _BAND = {
@@ -538,7 +610,7 @@ class TestHint:
     def test_a_fitted_line_that_does_not_fit_is_asked_for_more(self) -> None:
         rng = np.random.default_rng(0)
         lines = [make_line(*s, -0.2, -0.03, noise=0.3, rng=rng) for s in (BOTTOM, MID_H, MID_V, _BAND["left"])]
-        lines.append(make_line(*DIAGONAL, -0.2, -0.03, noise=0.3, rng=rng, sag=12.0))
+        lines.append(make_line(*DIAGONAL, -0.2, -0.03, noise=0.3, rng=rng, sag=7.0))
         result = fit_lens_from_lines(lines, W, H)
         assert (result.rating, result.k2_fitted, result.rms_px <= 1.5) == ("okay", True, True)
         assert [line.misfit for line in result.lines] == [False, False, False, False, True]
@@ -557,17 +629,67 @@ class TestMisfit:
         assert not any(flags[:-1])
 
     def test_a_line_the_lens_would_bend_for_is_flagged(self) -> None:
-        # Bowed 6 px among lines placed to a third of a pixel: 2 px off, under the old 3 px floor.
+        # Bowed 7 px among lines placed to a third of a pixel: some 2.4 px off, past the 2 px floor.
         truth = (-0.3, 0.05)
         lines = lines_for(*truth, EDGES + (MID_H,), noise=0.3, seed=8)
-        lines.append(make_line(*DIAGONAL, *truth, noise=0.3, rng=np.random.default_rng(9), sag=6.0))
+        lines.append(make_line(*DIAGONAL, *truth, noise=0.3, rng=np.random.default_rng(9), sag=7.0))
         result = fit_lens_from_lines(lines, W, H)
         assert [line.misfit for line in result.lines] == [False] * 5 + [True]
 
-    @pytest.mark.parametrize("seed", range(3))
-    def test_a_graphic_drawn_over_the_picture_is_flagged(self, seed: int) -> None:
+    @pytest.mark.parametrize(("sag", "flagged"), [(5.0, False), (7.0, True)])
+    def test_a_line_within_two_pixels_of_the_others_fits_however_many_points_it_has(
+        self, sag: float, flagged: bool
+    ) -> None:
+        # Sixteen points would make 1.7 px significant against a third of a pixel; placement
+        # nobody beats keeps it fitting.
+        truth = (-0.3, 0.05)
+        lines = lines_for(*truth, EDGES + (MID_H,), noise=0.3, seed=8)
+        lines.append(make_line(*DIAGONAL, *truth, noise=0.3, rng=np.random.default_rng(9), sag=sag, n=16))
+        result = fit_lens_from_lines(lines, W, H)
+        assert [line.misfit for line in result.lines] == [False] * 5 + [flagged]
+
+    @pytest.mark.parametrize(
+        ("truth", "segments", "seed"),
+        [
+            ((-0.333, -0.025), EDGES + (DIAGONAL,), 41),
+            ((-0.333, -0.025), EDGES + (DIAGONAL,), 51),
+            ((-0.333, -0.025), EDGES + (DIAGONAL,), 92),
+            ((-0.527, -0.069), EDGES + (MID_H, MID_V), 51),
+            ((-0.527, -0.069), EDGES + (MID_H, MID_V), 54),
+            ((-0.527, -0.069), EDGES + (MID_H, MID_V), 92),
+        ],
+    )
+    def test_straight_lines_at_one_pixel_noise_are_not_flagged(self, truth, segments, seed: int) -> None:  # noqa: ANN001
+        # Placements where one straight line lands 1.6-2.1 px off the others' fit: chance at
+        # this noise, which real snapshots show, judged by the line's own five points.
+        result = fit_lens_from_lines(lines_for(*truth, segments, noise=1.0, seed=seed), W, H)
+        assert not any(line.misfit for line in result.lines)
+
+    @pytest.mark.parametrize("seed", [1, 2, 5])
+    def test_a_line_that_bends_throughout_keeps_its_points_and_is_flagged(self, seed: int) -> None:
+        # Setting an end of a bow aside straightens the rest of it.
+        truth = (-0.333, -0.025)
+        lines = lines_for(*truth, EDGES, noise=1.0, seed=seed)
+        lines.append(make_line(*DIAGONAL, *truth, noise=1.0, rng=np.random.default_rng(seed + 50), sag=12.0))
+        result = fit_lens_from_lines(lines, W, H)
+        assert [line.dropped for line in result.lines] == [()] * 5
+        assert [line.misfit for line in result.lines] == [False] * 4 + [True]
+
+    def test_a_line_the_bent_one_leans_on_is_not_flagged_for_it(self) -> None:
+        # Without the bottom edge the bowed diagonal sets the lens and the bottom edge misses
+        # it by far more than the diagonal misses the rest, but the others then scatter.
+        rng = np.random.default_rng(0)
+        lines = [make_line(*s, -0.2, -0.03, noise=0.3, rng=rng) for s in (BOTTOM, MID_H, MID_V, _BAND["left"])]
+        lines.append(make_line(*DIAGONAL, -0.2, -0.03, noise=0.3, rng=rng, sag=12.0))
+        result = fit_lens_from_lines(lines, W, H)
+        assert [line.misfit for line in result.lines] == [False, False, False, False, True]
+
+    @pytest.mark.parametrize(("noise", "seed"), [(0.5, 0), (0.5, 1), (0.5, 2), (1.0, 18)])
+    def test_a_graphic_drawn_over_the_picture_is_flagged(self, noise: float, seed: int) -> None:
         # Another system's on-screen display: straight in the picture itself, alone near its top,
-        # where it alone sets k2. Only a refit of both coefficients without it sees it bent.
+        # where it alone sets k2. Only a refit of both coefficients without it sees it bent. At
+        # 1 px the stage lip misses too, and the others agree alike without either; the graphic
+        # misses more.
         truth = (-0.71, -0.17)
         stage = (
             ((470.0, 909.0), (1420.0, 904.0)),
@@ -576,7 +698,7 @@ class TestMisfit:
             ((432.0, 666.0), (382.0, 846.0)),
             ((1446.0, 628.0), (1510.0, 844.0)),
         )
-        lines = lines_for(*truth, stage, noise=0.5, seed=seed)
+        lines = lines_for(*truth, stage, noise=noise, seed=seed)
         lines.append([[float(x), 10.0] for x in np.linspace(32.0, 310.0, 5)])
         result = fit_lens_from_lines(lines, W, H)
         assert [line.misfit for line in result.lines] == [False] * 5 + [True]
@@ -621,6 +743,23 @@ class TestMisfit:
             result = fit_lens_from_lines(lines_for(-0.3, 0.05, EDGES + (MID_H, DIAGONAL), noise=3.0, seed=seed), W, H)
             flagged += sum(line.misfit for line in result.lines)
         assert flagged <= 2
+
+
+class TestStatistics:
+    @pytest.mark.parametrize(
+        ("d1", "d2", "tail", "point"),
+        [
+            (1, 10, 1e-3, 21.04),
+            (2, 30, 0.05, 3.316),
+            (3, 14, 1e-3, 9.729),
+            (2, 1000, 1e-3, 6.956),
+            (3, 10**6, 1e-3, 16.266 / 3),
+            (14, 30, 1e-3, 3.825),
+        ],
+    )
+    def test_the_f_points_are_the_tabulated_ones(self, d1: int, d2: int, tail: float, point: float) -> None:
+        # The misfit and stray tests read their thresholds here; no scipy on a station.
+        assert _f_upper(d1, d2, tail) == pytest.approx(point, rel=2e-3)
 
 
 class TestStrays:

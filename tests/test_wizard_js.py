@@ -277,7 +277,7 @@ def test_a_new_lens_centre_measures_the_traced_lines_again(lines: bool, refit: b
     out = run_wizard_js(
         "(function() { $('wiz_lens_cx').value = '13'; $('wiz_lens_cy').value = '9';"
         " window.onWizardLensCentreInput(); return fits; })()",
-        functions=_CENTRE_PX,
+        functions=(*_LENS_MODEL, *_CENTRE_PX, "wizReadLensCoeff", "wizLens", "wizTakeLensCentre"),
         prelude=_LIMIT_PAGE + f"var window = {{}}, fits = 0, lensLines = [{{}}].slice(0, {int(lines)}),"
         " S = { lensCentre: [0, 0], lensCentreBad: false };"
         " function wizLensEdited() {} function lensLineCounts() { return true; }"
@@ -291,7 +291,14 @@ def test_a_new_lens_centre_measures_the_traced_lines_again(lines: bool, refit: b
 # The lens centre in pixels of the snapshot
 # ---------------------------------------------------------------------------
 
-_CENTRE_PX = ("wizHalfDiag", "wizLensCentrePxMax", "wizLensCentrePx", "wizLensCentreText", "wizLensCentreFromPx")
+_CENTRE_PX = (
+    "wizHalfDiag",
+    "wizLensCentrePxMax",
+    "wizLensCentrePx",
+    "wizLensCentreText",
+    "wizLensCentreField",
+    "wizLensCentreFromPx",
+)
 
 
 @pytest.mark.parametrize(("w", "h", "bound"), [(1920, 1080, 275), (3840, 2160, 550), (1280, 720, 183)])
@@ -5226,6 +5233,7 @@ def test_a_lens_past_its_limit_says_which_value_and_opens_adjust_by_hand(
             *_LENS_MODEL,
             "wizHalfDiag",
             "wizLensCentrePxMax",
+            "wizLensCentreField",
             "wizReadLensCoeff",
             "wizLens",
             "wizShowLensLimit",
@@ -5246,8 +5254,10 @@ def test_a_lens_past_its_limit_says_which_value_and_opens_adjust_by_hand(
 @pytest.mark.parametrize(
     ("right", "above", "centre", "bad"),
     [("42", "18", [42 / _D, -18 / _D], False), ("-275", "275", [-275 / _D, -275 / _D], False), ("276", "0", None, True),
-     ("", "3", None, True), ("3", "abc", None, True)],
-    ids=["in range", "at the bound", "past the bound", "empty", "not a number"],
+     ("", "3", None, True), ("3", "abc", None, True), ("12.5", "3", None, True), ("3", "-0.5", None, True),
+     ("12.0", "3", [12 / _D, -3 / _D], False)],
+    ids=["in range", "at the bound", "past the bound", "empty", "not a number", "half a pixel", "half a pixel below",
+         "whole pixels written with a point"],
 )  # fmt: skip
 def test_a_centre_field_edit_takes_the_centre_only_while_both_fields_hold_one(
     right: str, above: str, centre: list | None, bad: bool
@@ -5255,7 +5265,7 @@ def test_a_centre_field_edit_takes_the_centre_only_while_both_fields_hold_one(
     out = run_wizard_js(
         "(function() { $('wiz_lens_cx').value = right; $('wiz_lens_cy').value = above;"
         " window.onWizardLensCentreInput(); return [S.lensCentre, S.lensCentreBad, edited]; })()",
-        functions=_CENTRE_PX,
+        functions=(*_LENS_MODEL, *_CENTRE_PX, "wizReadLensCoeff", "wizLens", "wizTakeLensCentre"),
         prelude=_LIMIT_PAGE
         + "var window = {}, edited = 0, lensLines = [], S = { lensCentre: [0.01, 0.02], lensCentreBad: false };"
         + " function wizLensEdited() { edited++; } function lensLineCounts() { return true; }\n"
@@ -5266,6 +5276,121 @@ def test_a_centre_field_edit_takes_the_centre_only_while_both_fields_hold_one(
     )
     # A field without a number in range keeps the last centre, flagged so nothing saves it as if shown.
     assert out == [pytest.approx(centre) if centre else [0.01, 0.02], bad, 1]
+
+
+_RANGE_CENTRE = "Enter a number from \u2212275 to 275."
+_SHOW_LIMIT = (*_LENS_MODEL, *_CENTRE_PX, "wizReadLensCoeff", "wizLens", "wizLensValid", "wizShowLensLimit")
+
+
+@pytest.mark.parametrize(
+    ("pair", "applied", "bad", "fields", "text", "invalid"),
+    [
+        ((-0.2, 0.0), (0.0, 0.0), True, ("12", "300"), _RANGE_CENTRE, ["false", "true"]),
+        ((-0.2, 0.0), (0.0, 0.0), True, ("12.5", "3"), _RANGE_CENTRE, ["true", "false"]),
+        ((-0.2, 0.0), (0.0, 0.0), True, ("abc", "-276"), _RANGE_CENTRE, ["true", "true"]),
+        ((-0.6, -0.1), (0.0, 0.0), True, ("220", "220"), LIMIT_CENTRE, ["true", "true"]),
+        ((-0.6, -0.1), (0.2, -0.2), False, ("220", "220"), LIMIT_CENTRE, ["true", "true"]),
+    ],
+    ids=["right in range, above past it", "half a pixel right", "both off", "a typed centre not taken",
+         "the centre in use, after a pair edit"],
+)  # fmt: skip
+def test_a_range_error_marks_only_its_field_and_the_limit_error_marks_both(
+    pair: tuple, applied: tuple, bad: bool, fields: tuple, text: str, invalid: list
+) -> None:
+    out = run_wizard_js(
+        "(function() { $('wiz_lens_k1').value = String(pair[0]); $('wiz_lens_k2').value = String(pair[1]);"
+        " $('wiz_lens_cx').value = fields[0]; $('wiz_lens_cy').value = fields[1]; wizShowLensLimit();"
+        " return [$('wiz-lens-centre-error').style.display, $('wiz-lens-centre-error').textContent,"
+        " $('wiz_lens_cx')['aria-invalid'], $('wiz_lens_cy')['aria-invalid']]; })()",
+        functions=_SHOW_LIMIT,
+        variables=("LENS_CENTRE_LIMIT_ERROR",),
+        prelude=_LIMIT_PAGE + f"var S = {{ lensCentre: {list(applied)}, lensCentreBad: {json.dumps(bad)} }};",
+        LENS_C_BOUND=C_BOUND,
+        pair=list(pair),
+        fields=list(fields),
+    )
+    assert out == ["block", text, *invalid]
+
+
+def test_the_centre_error_is_written_again_only_when_its_words_change() -> None:
+    out = run_wizard_js(
+        "(function() { $('wiz_lens_k1').value = '-0.2'; $('wiz_lens_cx').value = '300'; $('wiz_lens_cy').value = '0';"
+        " wizShowLensLimit(); wizShowLensLimit(); $('wiz_lens_cx').value = '301'; wizShowLensLimit();"
+        " var once = writes; S.lensCentreBad = false; wizShowLensLimit(); return [once, writes, err.textContent]; })()",
+        functions=_SHOW_LIMIT,
+        variables=("LENS_CENTRE_LIMIT_ERROR",),
+        prelude=_LIMIT_PAGE
+        + "var writes = 0, S = { lensCentre: [0, 0], lensCentreBad: true };"
+        + " var err = els['wiz-lens-centre-error'] = { style: {}, words: '',"
+        + " get textContent() { return this.words; }, set textContent(v) { writes++; this.words = v; } };",
+        LENS_C_BOUND=C_BOUND,
+    )
+    # An alert rewritten with the same words is read out again on every keystroke.
+    assert out == [1, 2, ""]
+
+
+_TAKE_PAGE = (
+    _LIMIT_PAGE
+    + "var window = {}, edited = 0, fits = 0, lensLines = [{}], S = { lensCentre: [0.01, 0.02], lensCentreBad: false };"
+    + " function wizLensEdited() { edited++; wizShowLensLimit(); } function lensLineCounts() { return true; }"
+    + " function scheduleLensFit() { fits++; }\n"
+    + wizard_window_function("onWizardLensCentreInput")
+    + wizard_window_function("onWizardLensInput")
+)
+_TAKE = (*_SHOW_LIMIT, "wizWriteLensCoeff", "wizTakeLensCentre")
+
+
+def test_a_centre_that_stops_the_lens_short_keeps_the_last_one_until_a_pair_can_take_it() -> None:
+    out = run_wizard_js(
+        "(function() { $('wiz_lens_k1').value = '-0.6'; $('wiz_lens_k2').value = '-0.1';"
+        " $('wiz_lens_cx').value = '220'; $('wiz_lens_cy').value = '220'; window.onWizardLensCentreInput();"
+        " var held = [S.lensCentre.slice(), S.lensCentreBad, wizLensValid(), fits, edited,"
+        " $('wiz-lens-centre-error').textContent, $('wiz_lens_cx')['aria-invalid'], $('wiz_lens_cy')['aria-invalid']];"
+        " $('wiz_lens_k1').value = '-0.2'; $('wiz_lens_k2').value = '0'; window.onWizardLensInput('k1', 'number');"
+        " return [held, [S.lensCentre, S.lensCentreBad, wizLensValid(), fits, $('wiz-lens-centre-error').style.display,"
+        " $('wiz_lens_cx')['aria-invalid']]]; })()",
+        functions=_TAKE,
+        variables=("LENS_CENTRE_LIMIT_ERROR",),
+        prelude=_TAKE_PAGE,
+        LENS_C_BOUND=C_BOUND,
+    )
+    # Not taken: the last centre stays, nothing is fitted about the typed one, and nothing saves.
+    assert out[0] == [[0.01, 0.02], True, False, 0, 1, LIMIT_CENTRE, "true", "true"]
+    # A pair that follows the picture with the typed centre takes it, as typed by hand: no refit.
+    assert out[1] == [pytest.approx([220 / _D, -220 / _D]), False, True, 0, "none", "false"]
+
+
+def test_a_centre_typed_while_the_pair_alone_fails_is_taken() -> None:
+    out = run_wizard_js(
+        "(function() { $('wiz_lens_k1').value = '-1.0'; $('wiz_lens_k2').value = '0';"
+        " $('wiz_lens_cx').value = '42'; $('wiz_lens_cy').value = '18'; window.onWizardLensCentreInput();"
+        " return [S.lensCentre, S.lensCentreBad, fits, $('wiz-lens-error').style.display,"
+        " $('wiz-lens-centre-error').style.display]; })()",
+        functions=_TAKE,
+        variables=("LENS_CENTRE_LIMIT_ERROR",),
+        prelude=_TAKE_PAGE,
+        LENS_C_BOUND=C_BOUND,
+    )
+    # The centre does not make the lens fail, so it is the one in use; the pair's error is the one shown.
+    assert out == [pytest.approx([42 / _D, -18 / _D]), False, 1, "block", "none"]
+
+
+@pytest.mark.parametrize(("w", "h"), [(1920, 1080), (1280, 720), (3840, 2160)])
+def test_a_centre_at_the_bound_shows_within_its_fields_bound(w: int, h: int) -> None:
+    out = run_wizard_js(
+        "(function() { var max = wizLensCentrePxMax(w, h), a = wizLensCentrePx([b, -b], w, h),"
+        " z = wizLensCentrePx([-b, b], w, h);"
+        " return [max, a, z, wizLensCentreFromPx(String(a[0]), String(a[1]), w, h) !== null,"
+        " wizLensCentreFromPx(String(z[0]), String(z[1]), w, h) !== null]; })()",
+        functions=_CENTRE_PX,
+        LENS_C_BOUND=C_BOUND,
+        w=w,
+        h=h,
+        b=C_BOUND,
+    )
+    # Rounded alone, the bound lands half a pixel past the fields' bound at 720p and 2160p.
+    assert out == [out[0], [out[0], out[0]], [-out[0], -out[0]], True, True]
+    assert out[0] == math.floor(C_BOUND * 0.5 * math.hypot(w, h))
 
 
 _NO_SOLVE = {"marks": [], "error": "No camera fits."}

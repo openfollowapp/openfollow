@@ -7,6 +7,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from openfollow.lens_model import C_BOUND, pull_back_to_valid
 from openfollow.scene.edge_chains import (
     EDGE_MAP_WIDTH,
     MAX_CANDIDATES,
@@ -392,6 +393,45 @@ def test_a_wide_arc_is_never_offered_whole(radius: float, span_deg: float) -> No
     on_arc = (np.abs(np.hypot(xx - 960.0, yy - centre_y) - radius) <= 7.0) & (np.abs(angle) <= span_deg / 2)
     arc_length = radius * np.radians(span_deg)
     assert all(c.length < 0.3 * arc_length for c in find(np.where(on_arc, BRIGHT, DARK)))
+
+
+def _widest_straight_sag(a, b) -> float:
+    """How far (px) a straight line seen from ``a`` to ``b`` strays from its chord through the slider ends,
+    each with its lens centre at the picture's centre or on the edge of its bound, pulled back to valid."""
+    a, b = np.asarray(a, dtype=np.float64), np.asarray(b, dtype=np.float64)
+    normal = np.array([a[1] - b[1], b[0] - a[0]]) / np.hypot(*(b - a))
+    widest = 0.0
+    for k1, k2 in ((-1.0, 0.0), (0.0, -0.8), (0.5, 0.0), (0.0, 0.3)):
+        for x in (-1.0, 0.0, 1.0):
+            for y in (-1.0, 0.0, 1.0):
+                lens = pull_back_to_valid(k1, k2, C_BOUND * x, C_BOUND * y)
+                ends = invert_overlay_distortion(np.array([a, b]), W, H, *lens)
+                t = np.linspace(0.0, 1.0, 401)[:, None]
+                seen = apply_overlay_distortion(ends[0] + t * (ends[1] - ends[0]), W, H, *lens)
+                widest = max(widest, float(np.max(np.abs((seen - a) @ normal))))
+    return widest
+
+
+@pytest.mark.parametrize(("share", "offered"), [(0.9, True), (1.1, False)])
+def test_an_arc_near_the_frame_edge_is_offered_up_to_the_margin_over_the_widest_lens(
+    share: float, offered: bool
+) -> None:
+    # Near the top right corner a pincushion slider end with its centre off at the bound
+    # bends a straight line the most; an arc bowing toward the centre by a share of that
+    # times the margin is offered within it and not past it.
+    a, b = np.array([1000.0, 30.0]), np.array([1880.0, 300.0])
+    sag = share * 1.25 * _widest_straight_sag(a, b)
+    chord = float(np.hypot(*(b - a)))
+    inward = np.array([a[1] - b[1], b[0] - a[0]]) / chord
+    inward *= np.sign(inward @ (np.array([W / 2.0, H / 2.0]) - (a + b) / 2.0))
+    radius = (chord * chord / 4.0 + sag * sag) / (2.0 * sag)
+    centre = (a + b) / 2.0 + inward * (sag - radius)
+    yy, xx = np.mgrid[0:H, 0:W]
+    rel_x, rel_y = xx - centre[0], yy - centre[1]
+    angle = np.arctan2(rel_x * inward[1] - rel_y * inward[0], rel_x * inward[0] + rel_y * inward[1])
+    on_arc = (np.abs(np.hypot(rel_x, rel_y) - radius) <= 4.0) & (np.abs(angle) <= np.arcsin(chord / 2.0 / radius))
+    found = find(np.where(on_arc, BRIGHT, DARK))
+    assert (len(found) == 1 and found[0].length > chord) is offered
 
 
 def test_a_wavy_edge_is_not_offered() -> None:

@@ -22,11 +22,14 @@ the pinhole frame's corners land on screen, in pixels, one number that
 captures how many lines there are, how much of the frame they cover and how
 precisely their points were placed. Another lens that fits the lines about as
 well widens it to how far the two warps disagree, since the local uncertainty
-sees only the minimum it sits in.
+sees only the minimum it sits in. Lines that stay near the lens centre, or reach
+out on one side of it only, leave the frame beyond them extrapolated, so they
+rate Poor at best whatever the number says.
 """
 
 from __future__ import annotations
 
+import functools
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -65,15 +68,19 @@ _PRIOR_FLOOR_PX = 0.1
 _RIVAL_MARGIN = 6.0
 # Fractions of the frame where two lenses' screen points are compared (see :func:`_rated_points`).
 _RIVAL_GRID = np.linspace(0.0, 1.0, 9, dtype=np.float64)
-# A line does not fit the others when, with the lens refitted without it, its RMS is
-# above both an absolute floor and a multiple of the other lines' RMS.
-_MISFIT_MIN_PX = 1.5
+# A line does not fit the others when, with the lens refitted without it, its RMS is above
+# what placement noise gives a straight line once in a thousand, above _MISFIT_RATIO sigmas
+# of the refit's own uncertainty at the line, and above the floor.
+_MISFIT_TAIL = 1e-3
+_MISFIT_MIN_PX = 2.0
 _MISFIT_RATIO = 3.0
 # A point is set aside when it misses the line through its line's other points by more
 # than this many sigmas of that miss (the placement noise floored at a pixel); at most one
-# a line, of a line of at least the points, so a line that bends throughout is flagged instead.
+# a line, of a line of at least the points, and only while those others lie on a line within
+# the points' own scatter (an F test at this tail), so a line that bends throughout is flagged instead.
 _STRAY_SIGMAS = 4.0
 _STRAY_MIN_POINTS = 5
+_STRAY_STRAIGHT_TAIL = 0.05
 # Smallest eigenvalue (px^2 per unit parameter^2) of the information matrix below
 # which the lines constrain nothing; a real line sits many orders above it.
 _SINGULAR_INFORMATION = 1e-9
@@ -93,6 +100,12 @@ _CORNER_RADIUS = 0.8
 # Lines that already agree: at least this many, none misfit, their points this close (RMS px) to the fit.
 _AGREE_MIN_LINES = 4
 _AGREE_RMS_PX = 1.5
+# The rating is read at the pinhole frame's corners. Unless points beyond this radius (half-diagonals)
+# from the lens centre lie on two of its four sides (right, up, left, down), the lines leave the
+# frame beyond them to extrapolation, and the rating is held at Poor at best.
+_REACH_RADIUS = 0.5
+_REACH_SIDES = 2
+_UNREACHED_BEST = "medium"
 
 # Free parameters of the lens ``(k1, k2, cx, cy)`` in each model; the centre is given.
 _PAIR: tuple[int, ...] = (0, 1)
@@ -362,16 +375,64 @@ def _refine(lines: _Lines, k0: FloatArray, free: Sequence[int]) -> FloatArray:
 
 
 def _cost(lines: _Lines, k: FloatArray, free: Sequence[int] = ()) -> float:
-    """The points' squared residuals, plus the prior's when ``k2`` is among ``free``."""
+    """The points' squared residuals, plus the prior's on each coefficient in ``free``."""
     res = _residuals(lines, k, free)
     return float(res @ res)
+
+
+def _residual_dof(lines: _Lines, n_params: int) -> int:
+    """Degrees of freedom of the residuals: the points less each line's own two and the lens's."""
+    return max(lines.n - n_params - 2 * lines.count, 1)
 
 
 def _residual_variance(lines: _Lines, k: FloatArray, n_params: int) -> float:
     """Variance of one point's residual at ``k``, floored at one pixel."""
     res = lines.residuals(k)
-    dof = max(lines.n - n_params - 2 * lines.count, 1)
-    return max(float(res @ res) / dof, _SIGMA_FLOOR_PX**2)
+    return max(float(res @ res) / _residual_dof(lines, n_params), _SIGMA_FLOOR_PX**2)
+
+
+def _beta_fraction(a: float, b: float, x: float) -> float:
+    """The continued fraction of the regularised incomplete beta function (modified Lentz)."""
+    tiny = 1e-300
+    c, d = 1.0, 1.0 - (a + b) * x / (a + 1.0)
+    d = 1.0 / (d if abs(d) > tiny else tiny)
+    h = d
+    for m in range(1, 400):
+        for num in (
+            m * (b - m) * x / ((a + 2 * m - 1) * (a + 2 * m)),
+            -(a + m) * (a + b + m) * x / ((a + 2 * m) * (a + 2 * m + 1)),
+        ):
+            d = 1.0 + num * d
+            d = 1.0 / (d if abs(d) > tiny else tiny)
+            c = 1.0 + num / c
+            c = c if abs(c) > tiny else tiny
+            h *= d * c
+        if abs(d * c - 1.0) < 1e-14:
+            break
+    return h
+
+
+def _beta_regularised(a: float, b: float, x: float) -> float:
+    """The regularised incomplete beta function ``I_x(a, b)``."""
+    if x <= 0.0:
+        return 0.0
+    if x >= 1.0:
+        return 1.0
+    front = math.exp(math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b) + a * math.log(x) + b * math.log1p(-x))
+    if x < (a + 1.0) / (a + b + 2.0):
+        return front * _beta_fraction(a, b, x) / a
+    return 1.0 - front * _beta_fraction(b, a, 1.0 - x) / b
+
+
+@functools.lru_cache(maxsize=1024)
+def _f_upper(d1: int, d2: int, tail: float) -> float:
+    """The point of the F distribution with ``d1`` / ``d2`` degrees of freedom that ``tail`` of it lies above."""
+    lo, hi = 0.0, 1e7
+    for _ in range(80):
+        f = math.sqrt(lo * hi) if lo > 0.0 else hi / 1e6
+        above = 1.0 - _beta_regularised(d1 / 2.0, d2 / 2.0, d1 * f / (d1 * f + d2))
+        lo, hi = (f, hi) if above > tail else (lo, f)
+    return hi
 
 
 def _covariance(lines: _Lines, k: FloatArray, free: Sequence[int], *, prior: bool = True) -> FloatArray:
@@ -411,11 +472,10 @@ def _rated_points(lines: _Lines, k: FloatArray, fractions: FloatArray) -> FloatA
     return grid
 
 
-def _seen_from_centre(lines: _Lines, pinhole: FloatArray, k: FloatArray) -> FloatArray:
-    """Where pinhole points land on screen, less where the pinhole centre lands: the shift the camera absorbs."""
+def _seen(lines: _Lines, pinhole: FloatArray, k: FloatArray) -> FloatArray:
+    """Where pinhole points land on screen under the lens ``k``."""
     k1, k2, cx, cy = (float(v) for v in k)
-    seen = apply_overlay_distortion(pinhole, lines.width, lines.height, k1, k2, cx, cy)
-    return np.asarray(seen - [lines.fx + cx * lines.half_diag, lines.fy + cy * lines.half_diag], dtype=np.float64)
+    return np.asarray(apply_overlay_distortion(pinhole, lines.width, lines.height, k1, k2, cx, cy), dtype=np.float64)
 
 
 def _corner_uncertainty_px(lines: _Lines, k: FloatArray, cov: FloatArray, free: Sequence[int]) -> float:
@@ -433,9 +493,7 @@ def _corner_uncertainty_px(lines: _Lines, k: FloatArray, cov: FloatArray, free: 
         km = k.copy()
         kp[i] += _JACOBIAN_EPS
         km[i] -= _JACOBIAN_EPS
-        cols.append(
-            (_seen_from_centre(lines, corners, kp) - _seen_from_centre(lines, corners, km)) / (2 * _JACOBIAN_EPS)
-        )
+        cols.append((_seen(lines, corners, kp) - _seen(lines, corners, km)) / (2 * _JACOBIAN_EPS))
     jac = np.stack(cols, axis=-1)
     with np.errstate(invalid="ignore", over="ignore"):
         var = np.einsum("caf,fg,cag->c", jac, cov, jac)
@@ -491,8 +549,7 @@ def _solve(lines: _Lines, cx: float, cy: float) -> _Solution:
     """
     k, minima = _fit(lines, _seeds(lines, cx, cy), _PAIR)
     res = lines.residuals(k)
-    dof = max(lines.n - len(_PAIR) - 2 * lines.count, 1)
-    lines.prior_px = max(math.sqrt(float(res @ res) / dof), _PRIOR_FLOOR_PX)
+    lines.prior_px = max(math.sqrt(float(res @ res) / _residual_dof(lines, len(_PAIR))), _PRIOR_FLOOR_PX)
     k, minima = _fit(lines, [m for m, _cost in minima], _PAIR)
     told = _covariance(lines, k, _PAIR, prior=False)
     measured = math.sqrt(max(float(told[1, 1]), 0.0)) < K2_PRIOR
@@ -506,17 +563,20 @@ def _strays(lines: _Lines, k: FloatArray) -> list[int]:
     pinhole picture, in screen pixels, and judged against the noise that miss would
     have from placement alone: the points' own scatter (a robust sigma, so the strays
     do not hide themselves) inflated by how far the others' line is extrapolated.
+    Where the others bend too, the line bends throughout: setting its end aside would
+    straighten it, so nothing is.
     """
     x, y, _tx, _ty, gain = lines._screen_lines(k)
     res = lines.residuals(k)
     sizes = lines.sizes
     dof = max(float(np.sum(sizes - 2.0)), 1.0)
-    sigma = max(_SIGMA_FLOOR_PX, 1.4826 * float(np.median(np.abs(res))) * math.sqrt(lines.n / dof))
+    scatter = 1.4826 * float(np.median(np.abs(res))) * math.sqrt(lines.n / dof)
+    sigma = max(_SIGMA_FLOOR_PX, scatter)
     found = []
     for rows in lines.members:
         if len(rows) < _STRAY_MIN_POINTS:
             continue
-        worst, worst_z = -1, _STRAY_SIGMAS
+        worst, worst_z, worst_bend = -1, _STRAY_SIGMAS, 0.0
         for row in rows:
             others = rows[rows != row]
             weight = 1.0 / (gain[others] * gain[others])
@@ -530,8 +590,12 @@ def _strays(lines: _Lines, k: FloatArray) -> list[int]:
             leverage = 1.0 / len(others) + at * at / max(float(np.sum(along * along)), 1e-18)
             z = miss / (sigma * math.sqrt(1.0 + leverage))
             if z > worst_z:
-                worst, worst_z = int(row), z
-        if worst >= 0:
+                bend = float(np.sum(((oy * tx - ox * ty) / gain[others] * lines.half_diag) ** 2))
+                worst, worst_z, worst_bend = int(row), z, bend
+        # Against the scatter itself, not its floor: a bow among lines placed to a third of a pixel shows.
+        free = len(rows) - 3
+        straight = _f_upper(free, round(dof), _STRAY_STRAIGHT_TAIL) * max(scatter, _PRIOR_FLOOR_PX) ** 2
+        if worst >= 0 and worst_bend / free <= straight:
             found.append(worst)
     return found
 
@@ -542,36 +606,46 @@ def _rival_spread_px(lines: _Lines, solution: _Solution) -> float:
     With a strong lens traced only along the top and bottom edges, the cost
     valley has two minima a pixel of placement noise cannot tell apart, tens of
     pixels apart at the frame's corners, and each is sharp enough to rate
-    excellent. The shift between the two pinhole pictures is the camera's, so it
-    is removed.
+    excellent.
     """
     margin = _RIVAL_MARGIN * _residual_variance(lines, solution.k, len(solution.free))
     best = min(cost for _, cost in solution.minima)
     pinhole = _rated_points(lines, solution.k, _RIVAL_GRID)
-    seen = _seen_from_centre(lines, pinhole, solution.k)
+    seen = _seen(lines, pinhole, solution.k)
     spread = 0.0
     for other, cost in solution.minima:
         if cost - best <= margin:
-            gap = _seen_from_centre(lines, pinhole, other) - seen
+            gap = _seen(lines, pinhole, other) - seen
             spread = max(spread, float(np.max(np.hypot(gap[:, 0], gap[:, 1]))))
     return spread
 
 
-def _misfit_excess(lines: _Lines, k: FloatArray) -> list[float]:
-    """Each line's RMS under the others' fit over what would still count as fitting; above 1 it does not fit."""
+def _misfit_excess(lines: _Lines, k: FloatArray) -> list[tuple[float, float, int]]:
+    """Each line's RMS under the others' fit over what would still count as fitting (above 1 it does not
+    fit), and the others' residual variance under that fit with its degrees of freedom.
+
+    Placement noise is judged by the line's own degrees of freedom (its points less
+    its own line's two), an F test against the others' scatter. The floor sits a little
+    above what the test asks where the scatter is at the 1 px placement floor.
+    """
     excess = []
     for i in range(lines.count):
         rest = lines.subset([j for j in range(lines.count) if j != i])
         k_rest = _refine(rest, k, _PAIR)
         cov = _covariance(rest, k_rest, _PAIR)
         if not np.all(np.isfinite(cov)):
-            excess.append(0.0)
+            excess.append((0.0, math.inf, 1))
             continue
-        rms_rest = float(np.sqrt(np.mean(rest.residuals(k_rest) ** 2)))
         rms_line = lines.line_rms(k_rest)[i]
         sensitivity = _jacobian(lines, k_rest, _PAIR, prior=False)[lines.idx == i]
         predicted = float(np.sqrt(np.mean(np.einsum("pf,fg,pg->p", sensitivity, cov, sensitivity))))
-        excess.append(rms_line / max(_MISFIT_MIN_PX, _MISFIT_RATIO * rms_rest, _MISFIT_RATIO * predicted))
+        size = int(lines.sizes[i])
+        free = size - 2
+        res = rest.residuals(k_rest)
+        dof = _residual_dof(rest, len(_PAIR))
+        variance = float(res @ res) / dof
+        noise = math.sqrt(free / size * _f_upper(free, dof, _MISFIT_TAIL) * variance)
+        excess.append((rms_line / max(_MISFIT_MIN_PX, noise, _MISFIT_RATIO * predicted), variance, dof))
     return excess
 
 
@@ -584,18 +658,33 @@ def _misfits(lines: _Lines, k: FloatArray) -> list[bool]:
     coefficients sees it bent. The line's residual is judged against what the
     refit's own uncertainty predicts at that line: the longest, most curved line
     moves the most when it is left out, and that is the rest's ignorance, not the
-    line's fault. A bent line drags the others off too, so the worst line is set
-    aside and the rest judged again without it, until every line left fits.
+    line's fault. A bent line drags the others off too, so one line is set aside and
+    the rest judged again without it, until every line left fits: of
+    the lines that do not fit, the one that misses most, among those without which
+    the others agree about as well as without any (an F test of their scatters).
+    Left out, a line a bent one leans on can miss more than the bent one, but the
+    others then scatter.
     """
     kept = list(range(lines.count))
     flags = [False] * lines.count
     while len(kept) >= _MIN_LINES_FOR_MISFIT:
-        excess = _misfit_excess(lines.subset(kept), k)
-        worst = int(np.argmax(excess))
-        if excess[worst] <= 1.0:
+        subset = lines.subset(kept)
+        judged = _misfit_excess(subset, k)
+        over = [j for j, (excess, _variance, _dof) in enumerate(judged) if excess > 1.0]
+        if not over:
             break
-        flags[kept.pop(worst)] = True
+        _excess, best, best_dof = min((judged[j] for j in over), key=lambda judgement: judgement[1])
+        agree = [j for j in over if judged[j][1] <= _f_upper(judged[j][2], best_dof, _MISFIT_TAIL) * best]
+        flags[kept.pop(max(agree, key=lambda j: judged[j][0]))] = True
     return flags
+
+
+def _reaches_out(lines: _Lines, cx: float, cy: float) -> bool:
+    """Whether points beyond :data:`_REACH_RADIUS` of the lens centre lie on :data:`_REACH_SIDES` of its sides."""
+    vx, vy = lines.dx - cx, lines.dy - cy
+    far = np.hypot(vx, vy) > _REACH_RADIUS
+    sides = np.floor((np.degrees(np.arctan2(-vy[far], vx[far])) + 45.0) / 90.0) % 4
+    return len(np.unique(sides)) >= _REACH_SIDES
 
 
 def _weak_edges(pts: FloatArray, canvas_w: float, canvas_h: float) -> list[str]:
@@ -703,6 +792,8 @@ def fit_lens_from_lines(
         _corner_uncertainty_px(data_kept, k, solution.cov, solution.free), _rival_spread_px(data_kept, solution)
     )
     rating = rate_uncertainty(uncertainty)
+    if RATINGS.index(rating) > RATINGS.index(_UNREACHED_BEST) and not _reaches_out(data_kept, cx, cy):
+        rating = _UNREACHED_BEST
     flags = _misfits(data_kept, k)
     rms_all = float(np.sqrt(np.mean(res**2)))
     dropped = [tuple(int(j) for j in np.flatnonzero(~kept[rows])) for rows in data.members]

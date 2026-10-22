@@ -90,6 +90,20 @@ def frame_error_px(fitted: tuple[float, ...], truth: tuple[float, ...]) -> float
     return float(np.max(np.hypot(*(seen - _FRAME).T)))
 
 
+def inner_error_px(fitted: tuple[float, ...], truth: tuple[float, ...]) -> float:
+    """:func:`frame_error_px` within 0.8 of the half-diagonal, short of where a strong lens's pole runs off."""
+    inner = np.hypot(_FRAME[:, 0] - W / 2, _FRAME[:, 1] - H / 2) / HALF_DIAG <= 0.8
+    q_true = invert_overlay_distortion(_FRAME[inner], W, H, *truth)
+    q_fit = invert_overlay_distortion(_FRAME[inner], W, H, *fitted)
+    rows = []
+    for (x, y), (u, v) in zip(q_fit / HALF_DIAG, q_true / HALF_DIAG, strict=True):
+        rows += [[x, y, 1, 0, 0, 0, -u * x, -u * y, -u], [0, 0, 0, x, y, 1, -v * x, -v * y, -v]]
+    hom = np.linalg.svd(np.asarray(rows))[2][-1].reshape(3, 3)
+    mapped = np.column_stack([q_fit / HALF_DIAG, np.ones(len(q_fit))]) @ hom.T
+    seen = apply_overlay_distortion(mapped[:, :2] / mapped[:, 2:] * HALF_DIAG, W, H, *truth)
+    return float(np.max(np.hypot(*(seen - _FRAME[inner]).T)))
+
+
 def corner_error_px(fitted: tuple[float, ...], truth: tuple[float, ...]) -> float:
     """How far apart the two lenses put the pinhole frame's corners, less the shift of the pinhole centre."""
     corners = np.array([[0.0, 0.0], [W, 0.0], [0.0, H], [W, H]])
@@ -168,12 +182,28 @@ class TestRecovery:
 
 
 class TestK2:
-    def test_k2_stays_zero_without_corner_coverage(self) -> None:
+    def test_without_corner_coverage_k2_is_the_prior_s_and_rated_so(self) -> None:
         truth = (-0.3, 0.05)
         result = fit_lens_from_lines(lines_for(*truth, (MID_H, MID_V), noise=1.0, seed=1), W, H)
         assert not result.k2_fitted
-        assert result.k2 == 0.0
+        assert abs(result.k2) < 0.1
+        assert result.rating == RATING_LOW
         assert "corner" in result.hint
+
+    @pytest.mark.parametrize("seed", range(3))
+    def test_a_loose_k2_is_kept_as_drawn_not_traded_into_k1(self, seed: int) -> None:
+        # The stage lip and the deck's two sides under a 150 degree lens say less about k2 than its
+        # prior does; dropped to 0, the corners' bend went into k1.
+        truth = (-0.71, -0.17, 0.0, 0.0)
+        segments = (
+            ((470.0, 909.0), (1420.0, 904.0)),
+            ((432.0, 666.0), (382.0, 846.0)),
+            ((1446.0, 628.0), (1510.0, 844.0)),
+        )
+        result = fit_lens_from_lines(lines_for(*truth[:2], segments, noise=1.0, seed=seed), W, H)
+        assert not result.k2_fitted
+        assert result.k2 < -0.05
+        assert inner_error_px(_lens(result), truth) < 12.0
 
     def test_k2_is_fitted_once_lines_reach_the_corners(self) -> None:
         truth = (-0.3, 0.05)
@@ -531,6 +561,23 @@ class TestMisfit:
         truth = (-0.3, 0.05)
         lines = lines_for(*truth, EDGES + (MID_H,), noise=0.3, seed=8)
         lines.append(make_line(*DIAGONAL, *truth, noise=0.3, rng=np.random.default_rng(9), sag=6.0))
+        result = fit_lens_from_lines(lines, W, H)
+        assert [line.misfit for line in result.lines] == [False] * 5 + [True]
+
+    @pytest.mark.parametrize("seed", range(3))
+    def test_a_graphic_drawn_over_the_picture_is_flagged(self, seed: int) -> None:
+        # Another system's on-screen display: straight in the picture itself, alone near its top,
+        # where it alone sets k2. Only a refit of both coefficients without it sees it bent.
+        truth = (-0.71, -0.17)
+        stage = (
+            ((470.0, 909.0), (1420.0, 904.0)),
+            ((560.0, 788.0), (1330.0, 782.0)),
+            ((560.0, 660.0), (1330.0, 654.0)),
+            ((432.0, 666.0), (382.0, 846.0)),
+            ((1446.0, 628.0), (1510.0, 844.0)),
+        )
+        lines = lines_for(*truth, stage, noise=0.5, seed=seed)
+        lines.append([[float(x), 10.0] for x in np.linspace(32.0, 310.0, 5)])
         result = fit_lens_from_lines(lines, W, H)
         assert [line.misfit for line in result.lines] == [False] * 5 + [True]
 

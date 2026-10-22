@@ -13,9 +13,9 @@ default) and ``k1`` / ``k2`` are fitted about it. A coarse grid over
 ``k1`` / ``k2`` seeds a damped Gauss-Newton refinement, because a start at zero
 diverges on strong barrel distortion. A gentle prior (:data:`K1_PRIOR`,
 :data:`K2_PRIOR`) draws the pair toward no lens where the lines leave it open.
-``k2`` is measured where the lines say more about it than its prior does, or
-reject ``k2 = 0``; otherwise it stays 0 and the rating still counts how loose it
-is. A point that left its line (a snap onto another
+``k2`` counts as measured where the lines say more about it than its prior
+does; otherwise it is mostly the prior's, and the rating says how loose it is.
+A point that left its line (a snap onto another
 edge) is set aside before the lens is fitted, and a line that does not fit the
 others is flagged. The rating is the predicted uncertainty of where
 the pinhole frame's corners land on screen, in pixels, one number that
@@ -52,13 +52,9 @@ _LM_ITERS = 40
 _JACOBIAN_EPS = 1e-4
 # Placement precision nobody beats; keeps a lucky fit from reporting zero uncertainty.
 _SIGMA_FLOOR_PX = 1.0
-# k2 is kept however loose when dropping it raises the cost by more than this many
-# residual variances, once the variance is well measured (see :func:`_significant`).
-_LR_GATE = 6.0
 # A gentle prior toward no lens, the sigma of each coefficient: real lenses keep k2 within
 # a few tenths, so where the lines say little about a coefficient it is drawn toward 0
-# rather than left to the noise. Where they say less about k2 than its prior, k2 is not
-# measured and stays 0.
+# rather than left to the noise or dropped, which trades the corners' bend into k1.
 K1_PRIOR = 0.25
 K2_PRIOR = 0.2
 _PRIOR = (K1_PRIOR, K2_PRIOR)
@@ -100,7 +96,6 @@ _AGREE_RMS_PX = 1.5
 
 # Free parameters of the lens ``(k1, k2, cx, cy)`` in each model; the centre is given.
 _PAIR: tuple[int, ...] = (0, 1)
-_K1_ONLY: tuple[int, ...] = (0,)
 
 # Predicted corner uncertainty (px) below which each rating applies, best first.
 RATING_THRESHOLDS_PX: tuple[tuple[float, str], ...] = (
@@ -449,15 +444,11 @@ def _corner_uncertainty_px(lines: _Lines, k: FloatArray, cov: FloatArray, free: 
     return math.sqrt(max(float(var.max()), 0.0))
 
 
-def _seeds(lines: _Lines, k2_zero: bool, cx: float = 0.0, cy: float = 0.0) -> list[FloatArray]:
+def _seeds(lines: _Lines, cx: float, cy: float) -> list[FloatArray]:
     """The lowest-cost grid cells about a fixed centre, at most one per k1 column so the starts differ."""
-    if k2_zero:
-        k1: FloatArray = np.asarray(_K1_SCAN, dtype=np.float64)
-        k2: FloatArray = np.zeros_like(k1)
-    else:
-        g1, g2 = np.meshgrid(_K1_SCAN, _K2_SCAN, indexing="ij")
-        k1 = np.asarray(g1.ravel(), dtype=np.float64)
-        k2 = np.asarray(g2.ravel(), dtype=np.float64)
+    g1, g2 = np.meshgrid(_K1_SCAN, _K2_SCAN, indexing="ij")
+    k1: FloatArray = np.asarray(g1.ravel(), dtype=np.float64)
+    k2: FloatArray = np.asarray(g2.ravel(), dtype=np.float64)
     valid = _limit_radius(k1, k2) > 1.0 + math.hypot(cx, cy)
     k1, k2 = k1[valid], k2[valid]
     cost = lines.grid_cost(k1, k2, cx, cy)
@@ -477,13 +468,8 @@ class _Solution:
     cov: FloatArray
     # Every minimum this model's starts reached, the best included, with its cost.
     minima: Minima
-    # With k2 not measured, the pair and its posterior covariance: the corners are no
-    # surer than the loose k2 leaves them, though k2 is reported as 0.
-    loose: tuple[FloatArray, FloatArray] | None = None
-
-    @property
-    def k2_fitted(self) -> bool:
-        return 1 in self.free
+    # Whether the lines, not the prior, set k2.
+    k2_fitted: bool
 
 
 def _fit(lines: _Lines, starts: Sequence[FloatArray], free: Sequence[int]) -> tuple[FloatArray, Minima]:
@@ -495,43 +481,22 @@ def _fit(lines: _Lines, starts: Sequence[FloatArray], free: Sequence[int]) -> tu
     return min(minima, key=lambda m: m[1])[0], tuple(minima)
 
 
-def _significant(lines: _Lines, drop: float, k: FloatArray, n_params: int) -> bool:
-    """Whether a cost ``drop`` from an extra parameter of the lens ``k`` is more than noise.
-
-    ``d (e^(G / d) - 1)`` residual variances with ``d`` the residual degrees of
-    freedom of the larger model and ``G`` :data:`_LR_GATE`, its limit as ``d``
-    grows: the variance measured on few points is itself loose. Never without a
-    residual degree of freedom.
-    """
-    dof = lines.n - n_params - 2 * lines.count
-    if dof < 1:
-        return False
-    return drop > dof * math.expm1(_LR_GATE / dof) * _residual_variance(lines, k, n_params)
-
-
 def _solve(lines: _Lines, cx: float, cy: float) -> _Solution:
-    """Fit the pair about the given centre, ``k2`` drawn toward 0 by its prior; keep ``k2`` where the lines
-    tell more about it than the prior does.
+    """Fit the pair about the given centre, drawn toward no lens by its prior.
 
     The prior is a belief about lenses, the residuals are pixels: it weighs against the
     points' own scatter, so lines placed to a tenth of a pixel are barely drawn toward 0.
+    A loose k2 is kept as drawn, never dropped: dropped, the corners' bend goes into k1,
+    and the middle of the picture bends wrong.
     """
-    k, minima = _fit(lines, _seeds(lines, k2_zero=False, cx=cx, cy=cy), _PAIR)
+    k, minima = _fit(lines, _seeds(lines, cx, cy), _PAIR)
     res = lines.residuals(k)
     dof = max(lines.n - len(_PAIR) - 2 * lines.count, 1)
     lines.prior_px = max(math.sqrt(float(res @ res) / dof), _PRIOR_FLOOR_PX)
     k, minima = _fit(lines, [m for m, _cost in minima], _PAIR)
     told = _covariance(lines, k, _PAIR, prior=False)
-    if math.sqrt(max(float(told[1, 1]), 0.0)) < K2_PRIOR:
-        return _Solution(k, _PAIR, _covariance(lines, k, _PAIR), minima)
-    k_free, k_minima = k, minima
-    k, minima = _fit(lines, _seeds(lines, k2_zero=True, cx=cx, cy=cy), _K1_ONLY)
-    # Lines that reject k2 = 0 keep it however loose it is: dropped, the answer would be
-    # wrong by more than its own uncertainty says.
-    if _significant(lines, _cost(lines, k) - _cost(lines, k_free), k_free, len(_PAIR)):
-        return _Solution(k_free, _PAIR, _covariance(lines, k_free, _PAIR), k_minima)
-    loose = (k_free, _covariance(lines, k_free, _PAIR))
-    return _Solution(k, _K1_ONLY, _covariance(lines, k, _K1_ONLY), minima, loose)
+    measured = math.sqrt(max(float(told[1, 1]), 0.0)) < K2_PRIOR
+    return _Solution(k, _PAIR, _covariance(lines, k, _PAIR), minima, measured)
 
 
 def _strays(lines: _Lines, k: FloatArray) -> list[int]:
@@ -592,19 +557,19 @@ def _rival_spread_px(lines: _Lines, solution: _Solution) -> float:
     return spread
 
 
-def _misfit_excess(lines: _Lines, k: FloatArray, refit: Sequence[int]) -> list[float]:
+def _misfit_excess(lines: _Lines, k: FloatArray) -> list[float]:
     """Each line's RMS under the others' fit over what would still count as fitting; above 1 it does not fit."""
     excess = []
     for i in range(lines.count):
         rest = lines.subset([j for j in range(lines.count) if j != i])
-        k_rest = _refine(rest, k, refit)
-        cov = _covariance(rest, k_rest, refit)
+        k_rest = _refine(rest, k, _PAIR)
+        cov = _covariance(rest, k_rest, _PAIR)
         if not np.all(np.isfinite(cov)):
             excess.append(0.0)
             continue
         rms_rest = float(np.sqrt(np.mean(rest.residuals(k_rest) ** 2)))
         rms_line = lines.line_rms(k_rest)[i]
-        sensitivity = _jacobian(lines, k_rest, refit, prior=False)[lines.idx == i]
+        sensitivity = _jacobian(lines, k_rest, _PAIR, prior=False)[lines.idx == i]
         predicted = float(np.sqrt(np.mean(np.einsum("pf,fg,pg->p", sensitivity, cov, sensitivity))))
         excess.append(rms_line / max(_MISFIT_MIN_PX, _MISFIT_RATIO * rms_rest, _MISFIT_RATIO * predicted))
     return excess
@@ -613,19 +578,19 @@ def _misfit_excess(lines: _Lines, k: FloatArray, refit: Sequence[int]) -> list[f
 def _misfits(lines: _Lines, k: FloatArray) -> list[bool]:
     """Leave-one-out: a line that only fits while it is pulling the fit its way.
 
-    ``k1`` is refitted without the line from the full solution, ``k2`` held, so
-    two remaining lines cannot be overfitted into agreeing with anything. The
-    line's residual is judged against what the refit's own uncertainty predicts
-    at that line: the longest, most curved line moves the most when it is left
-    out, and that is the rest's ignorance, not the line's fault. A bent line
-    drags the others off too, so the worst line is set aside and the rest judged
-    again without it, until every line left fits.
+    The pair is refitted without the line from the full solution, its prior keeping
+    two remaining lines from being overfitted into agreeing with anything; a line
+    alone in its part of the picture sets k2 there, and only a refit of both
+    coefficients sees it bent. The line's residual is judged against what the
+    refit's own uncertainty predicts at that line: the longest, most curved line
+    moves the most when it is left out, and that is the rest's ignorance, not the
+    line's fault. A bent line drags the others off too, so the worst line is set
+    aside and the rest judged again without it, until every line left fits.
     """
-    refit = _K1_ONLY
     kept = list(range(lines.count))
     flags = [False] * lines.count
     while len(kept) >= _MIN_LINES_FOR_MISFIT:
-        excess = _misfit_excess(lines.subset(kept), k, refit)
+        excess = _misfit_excess(lines.subset(kept), k)
         worst = int(np.argmax(excess))
         if excess[worst] <= 1.0:
             break
@@ -737,8 +702,6 @@ def fit_lens_from_lines(
     uncertainty = max(
         _corner_uncertainty_px(data_kept, k, solution.cov, solution.free), _rival_spread_px(data_kept, solution)
     )
-    if solution.loose is not None:
-        uncertainty = max(uncertainty, _corner_uncertainty_px(data_kept, *solution.loose, _PAIR))
     rating = rate_uncertainty(uncertainty)
     flags = _misfits(data_kept, k)
     rms_all = float(np.sqrt(np.mean(res**2)))

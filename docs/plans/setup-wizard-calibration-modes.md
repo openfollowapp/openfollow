@@ -299,11 +299,11 @@ measured value.
 |---|---|
 | One fit | Both modes go through one Levenberg-Marquardt fit: the 7 camera values plus each distance point's X / Y, against the pins (`PIXEL_SIGMA` 1 px) and the distance points' distances (`DISTANCE_SIGMA` 0.04 m). Pins are undistorted with the lens pair first. Every pin counts the same, and no point is left out automatically: one that disagrees is named in the caution |
 | Needs | Four pinned points: 7 camera unknowns, 2 equations per pin; a distance point's two distances fix its own X / Y |
-| Seeds | With a camera position: that position looking at 0/0/0, roll 0, at the saved FOV, 40° and 90°. With four pinned known points at one height (within 1 cm, no three in a line): the homography decomposition. Simple always has the second; Advanced always has the first |
+| Seeds | With a camera position: that position looking at 0/0/0, roll 0, at the saved FOV, 40° and 90°. With four pinned known points at one height (within 1 cm, no three in a line): the homography decomposition. Simple has the second unless its decomposition gives none; Advanced always has the first. Without a camera position, when that decomposition gives none or a camera steeper than -82.5°, the camera is also seeded above the pinned known points' centre (at the entered camera height, else as high as the pins' spread says at the saved FOV), looking down at -89° at four bearings. A hint seed steeper than -60° is also tried turned by a quarter, a half and three quarters |
 | Distance points | Start at their trilateration, chained after the points they are measured from, the mirror place picked by the pin as seen from the seed. Two distances that miss by up to `3 √2 · DISTANCE_SIGMA` meet halfway; more leaves the point unplaced with its reason |
 | Mirror sides | Every seed is fitted twice, with the pin-picked places and with all of them flipped. An upright camera (at or above the lowest point, pitch ≤ 0) beats one that is not, then the lowest cost wins |
 | Answer | Camera, per point: status, reason, pixel error, distance error, position; largest error; the caution reasons |
-| Unsolvable | No finite fit or a FOV outside 10-170°: "No camera fits these points. Check the pins and the measurements." (Simple: "No camera fits these corners. Check the corners and the measurements.") |
+| Unsolvable | No finite fit or a FOV outside 10-170°: "No camera fits these points. Check the pins and the measurements." (Simple: "No camera fits these corners. Check the corners and the measurements."). With a camera height at or below the lowest pinned point, or one no camera fits: "No camera fits at this camera height. Check the camera height and the measurements." |
 
 ### Camera height (both modes)
 
@@ -344,7 +344,7 @@ corners again." (Simple) / "… then pin the points again." (Advanced). It block
 | Up | Pitch above 0 | The calculated camera points upwards. |
 | Point disagrees | A pin's error over 5 px | P2 disagrees with the other points by N px. |
 | Point far off | A pin's error over 20 px (`APPLY_MAX_PX`), or a pinned point the camera puts behind itself: **Save and finish** is disabled, as 0.4.3 refused such a solve; the closing line reads "Save and finish stays off while a point is more than 20 px off or behind the camera. Check the measurements, then pin the points again." | P2 disagrees with the other points by N px. / P2 lies behind the calculated camera. |
-| Floor reach | Four or more pinned known points at one height and another point: across the picture, within reach of the points, the fit puts the floor more than twice as far or as near (`FLOOR_REACH` 2) as those points' homography alone | The calculated camera puts the far floor more than twice as far, or as near, as the floor points alone do. |
+| Floor reach | Four or more pinned known points at one height and another point: across the picture, within reach of the points, the fit puts the floor more than twice as far or as near (`FLOOR_REACH` 2) as those points' homography alone. Skipped when the fit or that homography camera is steeper than -82.5°, where the reference is noise and the camera height prompt takes over | The calculated camera puts the far floor more than twice as far, or as near, as the floor points alone do. |
 | Distances | A distance point's distance error over 3 σ (12 cm) | P4's distances disagree with the picture by N cm (in in Imperial). |
 
 ## Review

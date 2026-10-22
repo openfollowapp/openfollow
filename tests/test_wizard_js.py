@@ -255,6 +255,23 @@ def test_a_fit_measures_the_pair_about_the_lens_centre_in_use_and_keeps_it() -> 
                    [0.0254, -0.0145]]  # fmt: skip
 
 
+def test_a_fit_that_leaves_the_corner_correction_open_applies_its_estimate() -> None:
+    # The answer's k2 is the pair's, drawn toward no lens; a point the fit set aside changes nothing on the page.
+    fetch = _ANSWER_FETCH.replace("k2: -0.0123, k2_fitted: true", "k2: -0.1834, k2_fitted: false").replace(
+        "misfit: false }", "misfit: false, dropped: [2] }"
+    )
+    assert fetch != _ANSWER_FETCH
+    out = run_wizard_js(
+        "(function() { runLensFit(); return [written, lensLines[0].rms, lensFit.k2_fitted]; })()",
+        functions=(*_LENS_MODEL, "wizLensShownPair", "lensFitApplies", "runLensFit"),
+        prelude=fetch + _FIT_PAGE + " var sent = null, written = {}, S = { lensCentre: [0, 0] };"
+        " function wizWriteLensCoeff(id, v) { written[id] = v; } function wizShowLensLimit() {}"
+        " function onLensCoeffChanged() {}",
+        LENS_C_BOUND=C_BOUND,
+    )
+    assert out == [{"wiz_lens_k1": "-0.3123", "wiz_lens_k2": "-0.1834"}, 0.4, False]
+
+
 @pytest.mark.parametrize(("lines", "refit"), [(True, True), (False, False)], ids=["traced lines", "no lines"])
 def test_a_new_lens_centre_measures_the_traced_lines_again(lines: bool, refit: bool) -> None:
     out = run_wizard_js(
@@ -3089,6 +3106,9 @@ def test_a_new_line_is_selected_whole_and_delete_takes_it_back(add: str) -> None
             "lensClamp",
             "lensTraceClick",
             "lensSetMidsFromPositions",
+            "lensBandHalf",
+            "lensPointWindow",
+            "lensNearFits",
             "lensAddCandidate",
             "lensReleaseCandidate",
         ),
@@ -3112,6 +3132,139 @@ def test_switching_a_point_off_needs_a_middle_point_selected() -> None:
         + wizard_window_function("lensToggleSelectedPoint"),
     )
     assert out is False
+
+
+# ---------------------------------------------------------------------------
+# Lens: a used suggestion is snapped onto its own edge
+# ---------------------------------------------------------------------------
+
+_SUGGESTION = [[100.0, 100.0], [300.0, 108.0], [500.0, 112.0], [700.0, 114.0], [900.0, 115.0]]
+_SNAP_PAGE = """
+var imageWidth = 1920, imageHeight = 1080, lensLines = [], lensPending = null, lensSelected = null, lensCanvas = {};
+var bodies = [], changed = 0;
+function renderLens() {} function lensShowNotice() {} function lensHotCand() {} function lensChanged() { changed++; }
+function lensBand() { return { step: 4, half: 192, cols: 2, rows: 385, data: '' }; }
+function fetch(url, opts) {
+  bodies.push(JSON.parse(opts.body));
+  return { then: function() { return this; }, catch: function() { return this; } };
+}
+"""
+_SNAP_FUNCTIONS = (
+    "lensFrame",
+    "lensClamp",
+    "lensSetMidsFromPositions",
+    "lensSetMidFromPos",
+    "lensMovePoint",
+    "lensBandHalf",
+    "lensPointWindow",
+    "lensNearFits",
+    "lensSnapLine",
+    "lensTraceClick",
+    "lensAddCandidate",
+)
+
+
+@pytest.mark.parametrize(
+    ("steps", "near"),
+    [
+        ("lensAddCandidate(0);", {"points": _SUGGESTION, "polarity": -1}),
+        ("lensTraceClick([100, 500]); lensTraceClick([900, 520]);", None),
+        ("lensAddCandidate(0); lensMovePoint(lensLines[0], 4, [950, 130]); lensSnapLine(lensLines[0]);", None),
+        ("lensAddCandidate(0); lensMovePoint(lensLines[0], 2, [500, 120]); lensSnapLine(lensLines[0]);", None),
+    ],
+    ids=["a used suggestion", "a drawn line", "an end moved since", "a middle point moved since"],
+)
+def test_only_a_suggestion_just_used_is_snapped_near_its_own_edge(steps: str, near) -> None:
+    out = run_wizard_js(
+        "(function() { " + steps + " return bodies[bodies.length - 1]; })()",
+        functions=_SNAP_FUNCTIONS,
+        variables=("LENS_T", "LENS_MIN_LINE_PX"),
+        prelude=_SNAP_PAGE + f"var lensCandidates = [{{ samples: {json.dumps(_SUGGESTION)}, polarity: -1, used: false,"
+        " rejected: false }];",
+    )
+    assert out.get("near") == near
+    if near is not None:
+        # The chord runs between the suggestion's own ends, the band the station searches around it.
+        assert (out["p0"], out["p1"]) == (_SUGGESTION[0], _SUGGESTION[4])
+
+
+def test_a_suggestion_bowed_past_its_band_keeps_its_samples_unsnapped() -> None:
+    bowed = [[100.0, 100.0], [300.0, 260.0], [500.0, 300.0], [700.0, 260.0], [900.0, 100.0]]
+    out = run_wizard_js(
+        "(function() { lensAddCandidate(0); return [bodies.length, changed, [0, 1, 2, 3, 4].map(function(j) {"
+        " return lensPointPos(lensLines[0], j).map(Math.round); })]; })()",
+        functions=(*_SNAP_FUNCTIONS, "lensPointPos"),
+        variables=("LENS_T", "LENS_MIN_LINE_PX"),
+        prelude=_SNAP_PAGE
+        + f"var lensCandidates = [{{ samples: {json.dumps(bowed)}, polarity: 1, used: false, rejected: false }}];",
+    )
+    # No request the station would refuse: the line stays where the suggestion was, as after a refusal.
+    assert out == [0, 1, bowed]
+
+
+@pytest.mark.parametrize("width", [640, 1920, 2160, 3840])
+def test_the_page_sends_near_only_when_the_station_takes_it(width: int) -> None:
+    from openfollow.scene.edge_snap import NearEdge, point_window, snap_line_to_edges
+    from tests._lens_band import cut_band
+
+    height = width * 9 // 16
+    limit = band_half_size(width) - point_window(width) - 1
+    a, b = [0.1 * width, 0.5 * height], [0.9 * width, 0.5 * height]
+    span = b[0] - a[0]
+    cases = [
+        [a, [a[0] + 0.25 * span, a[1] - off], [a[0] + 0.5 * span, a[1] + sag], [a[0] + 0.75 * span, a[1]], b]
+        for sag in (limit - 1.0, limit - 0.25, limit + 0.25, limit + 1.0)
+        for off in (0.0, sag)
+    ] + [
+        [a, [a[0] + f * span, a[1]], [a[0] + 0.5 * span, a[1]], [a[0] + 0.75 * span, a[1]], b]
+        for f in (-0.02, -0.005, 1.005, 1.02)
+    ]
+    sent = run_wizard_js(
+        "cases.map(lensNearFits)",
+        functions=("lensBandHalf", "lensPointWindow", "lensNearFits"),
+        prelude=f"var imageWidth = {width};",
+        cases=cases,
+    )
+    blank = np.zeros((height, width))
+    taken = []
+    for samples in cases:
+        try:
+            snap_line_to_edges(a, b, cut_band(blank, a, b), width, height, near=NearEdge(tuple(map(tuple, samples)), 0))
+            taken.append(True)
+        except ValueError as exc:
+            assert "near points must lie along the line" in str(exc)
+            taken.append(False)
+    # Never a body the station refuses; the page rounds the point window up where the station rounds half to even.
+    assert not any(s and not t for s, t in zip(sent, taken, strict=True))
+    assert any(sent) and not all(taken)
+    if width != 2160:
+        assert sent == taken
+
+
+def test_the_suggestions_keep_their_contrast_side() -> None:
+    answer = {
+        "candidates": [
+            {"points": [], "samples": _SUGGESTION, "polarity": 1},
+            {"points": [], "samples": _SUGGESTION, "polarity": -1},
+            {"points": [], "samples": _SUGGESTION, "polarity": 0},
+            {"points": [], "samples": _SUGGESTION, "polarity": "1"},
+            {"points": [], "samples": _SUGGESTION},
+        ]
+    }
+    out = run_wizard_js(
+        "(function() { lensRequestEdges(); return lensCandidates.map(function(c) { return c.polarity; }); })()",
+        functions=("lensEdgeScale", "lensEdgeSize", "lensScaledLuma", "lensBase64", "lensRequestEdges", "lensSameEnds"),
+        prelude="var LENS_DEV = false, imageWidth = 8, imageHeight = 4, lensCandidates = [], lensRejected = [];"
+        " var lensLines = [], lensCanvas = { getContext: function() { return { getImageData: function() {"
+        " return { data: new Uint8Array(8 * 4 * 4) }; } }; } };"
+        " function renderLens() {} function lensPaintEdges() {} function lensCandidateOf() {}"
+        " function settled(v) { return { then: function(f) { var r = f(v); return r && r.then ? r : settled(r); },"
+        " catch: function() { return this; } }; }"
+        " function fetch() { return settled({ ok: true, json: function() {"
+        f" return settled({json.dumps(answer)}); }} }}); }}",
+    )
+    # Only a known side is sent back; anything else is a thin line's, 0.
+    assert out == [1, -1, 0, 0, 0]
 
 
 # ---------------------------------------------------------------------------
@@ -5886,6 +6039,33 @@ def test_the_result_line_names_the_lens_centre_the_fit_held(centre: list, text: 
         " return el; };"
         + "var S = { lensLoaded: null }, lensFit = "
         + json.dumps({"rating": "good", "k1": -0.198, "k2": -0.071, "k2_fitted": True, "hint": "", "centre": centre})
+        + ";",
+        LENS_C_BOUND=C_BOUND,
+    )
+    assert out == text
+
+
+@pytest.mark.parametrize(
+    ("k2_fitted", "text"),
+    [
+        (True, "Good \u2013 barrel / fisheye \u22120.198, corner correction \u22120.183"),
+        (False, "Good \u2013 barrel / fisheye \u22120.198, corner correction \u22120.183 (estimated)"),
+    ],
+    ids=["measured", "left open by the lines"],
+)
+def test_a_corner_correction_the_lines_left_open_reads_as_estimated(k2_fitted: bool, text: str) -> None:
+    out = run_wizard_js(
+        "(function() { renderLensResult(); return $('lens-result-text').innerHTML; })()",
+        functions=(*_LINE_FUNCTIONS, *_CENTRE_PX, "renderLensResult"),
+        variables=("LENS_RATING_LEVEL", "LENS_RATING_LABEL"),
+        prelude=_DOM
+        + _RESULT_PAGE
+        + "document.getElementById = function(id) { var el = $(id); el.querySelector = function() { return $('m'); };"
+        " return el; };"
+        + "var S = { lensLoaded: null }, lensFit = "
+        + json.dumps(
+            {"rating": "good", "k1": -0.198, "k2": -0.183, "k2_fitted": k2_fitted, "hint": "", "centre": [0.0, 0.0]}
+        )
         + ";",
         LENS_C_BOUND=C_BOUND,
     )

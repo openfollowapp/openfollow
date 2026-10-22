@@ -1532,7 +1532,7 @@ class TestWizardLensStepPage:
             "'Barrel / fisheye ' + fmt(k1, 3) + ' · Corner correction '",
             "' \\u2013 barrel / fisheye '",
             "', corner correction '",
-            "'0 (not measured)'",
+            "' (estimated)'",
             "Set one of the lens values closer to 0",
         ):
             assert text in page, text
@@ -1629,7 +1629,7 @@ class TestWizardLensTemplate:
         # Lines cleared by a resolution change take no answer meant for the old ones.
         snapshot = re.search(r"function lensOnSnapshot\(\) \{(.*?)\n  \}\n", src, re.S)
         assert snapshot and "lensFitSeq++;" in snapshot.group(1)
-        snap = re.search(r"function lensSnapLine\(line\) \{(.*?)\n  \}\n", src, re.S)
+        snap = re.search(r"function lensSnapLine\(line, near\) \{(.*?)\n  \}\n", src, re.S)
         assert snap and "var sent = JSON.stringify([line.p0, line.p1, line.mids]);" in snap.group(1)
         assert "JSON.stringify([line.p0, line.p1, line.mids]) !== sent) return;" in snap.group(1)
 

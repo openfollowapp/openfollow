@@ -187,19 +187,33 @@ def test_a_single_bowed_edge_measures_barrel_and_asks_for_a_corner() -> None:
     assert cal.fit.hint == "Add a second line in another part of the picture."
 
 
-def _gallery_fit(picture):
+def _gallery_calibration(picture, keep=None):
     cv2 = pytest.importorskip("cv2", reason="decoding the picture needs the detection extra")
-    return calibrate(cv2.imread(str(picture), cv2.IMREAD_GRAYSCALE).astype(np.float64)).fit
+    return calibrate(cv2.imread(str(picture), cv2.IMREAD_GRAYSCALE).astype(np.float64), keep=keep)
+
+
+ARENA_LENS = (-0.15, -0.03)
+
+
+def straight_in_the_hall(points) -> bool:
+    """Whether a suggestion runs along an edge that is straight in the hall: its polyline, undistorted with the
+    lens the picture was drawn with, stays within 2 px of a straight line (the edge map is quantised to 2 px)."""
+    pinhole = invert_overlay_distortion(np.asarray(points, dtype=np.float64), W, H, *ARENA_LENS, 0.0, 0.0)
+    rel = pinhole - pinhole.mean(axis=0)
+    return float(np.max(np.abs(rel @ np.linalg.svd(rel)[2][1]))) < 2.0
 
 
 def test_the_arena_default_gives_back_the_lens_it_was_drawn_with() -> None:
     """The Media Gallery's Arena demonstrates the Lens step; the help drawer names the pair it was drawn with."""
     from openfollow.video import media_store
 
-    fit = _gallery_fit(media_store.ARENA_ASSET_JPG)
-    # The arena's lines trade the two values along a valley; the bend they measure is the drawn one.
-    assert frame_error_px((fit.k1, fit.k2, fit.cx, fit.cy), (-0.15, -0.03, 0.0, 0.0)) < 5.0
+    # The operator rejects the suggestions along the staggered chair backs and the aisle's chair corners.
+    cal = _gallery_calibration(media_store.ARENA_ASSET_JPG, keep=straight_in_the_hall)
+    assert cal.rejected >= 2
+    assert len(cal.lines) >= 6
+    fit = cal.fit
+    assert frame_error_px((fit.k1, fit.k2, fit.cx, fit.cy), (*ARENA_LENS, 0.0, 0.0)) < 5.0
     assert fit.k2_fitted
-    assert not fit.centre_fitted
+    assert (fit.cx, fit.cy) == (0.0, 0.0)
     assert fit.rating in ("good", "excellent")
     assert not any(line.misfit for line in fit.lines)

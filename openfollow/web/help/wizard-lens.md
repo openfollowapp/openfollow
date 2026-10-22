@@ -14,7 +14,7 @@ When you click or drag a point, it stays selected and the loupe stays on it. The
 
 ## Rating
 
-The rating has five steps. It shows how exactly the lines measure the lens. A **Not usable** result is shown but not applied. **Corner correction** is the extra correction near the corners of the picture. It is only measured when a line reaches a corner of the picture. **Lens centre** is the point that the lens bends the picture around. On many cameras it is a little off the centre of the picture. The Lens step does not measure it: type it under **Adjust by hand**, or load a calibration that has one. Barrel / fisheye and Corner correction are measured around it.
+The rating has five steps. It shows how exactly the lines measure the lens. A **Not usable** result is shown but not applied. **Corner correction** is the extra correction near the corners of the picture. Lines that reach toward the corners measure it. Without them, the result shows an estimate that stays close to 0, marked **(estimated)**, and that estimate is applied with Barrel / fisheye. **Lens centre** is the point that the lens bends the picture around. On many cameras it is a little off the centre of the picture. The Lens step does not measure it: type it under **Adjust by hand**, or load a calibration that has one. Barrel / fisheye and Corner correction are measured around it.
 
 ## Adjust by hand
 

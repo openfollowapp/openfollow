@@ -10,6 +10,7 @@ bows precisely the way the overlay functions bow it.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -157,22 +158,30 @@ def render(
 
 @dataclass(frozen=True)
 class Calibration:
-    """What the Lens step would hold after tapping every suggestion."""
+    """What the Lens step would hold after tapping every suggestion kept."""
 
     lines: list[list[list[float]]]
     unsnapped: int
+    rejected: int
     fit: LensFitResult
 
 
-def calibrate(img: np.ndarray, centre: tuple[float, float] = (0.0, 0.0)) -> Calibration:
-    """Run the step as the wizard does: suggest, tap each suggestion, snap it onto its own edge, fit the pair
-    about the lens centre given."""
+def calibrate(
+    img: np.ndarray,
+    centre: tuple[float, float] = (0.0, 0.0),
+    keep: Callable[[list[tuple[float, float]]], bool] | None = None,
+) -> Calibration:
+    """Run the step as the wizard does: suggest, tap each suggestion ``keep`` passes (its polyline; every one
+    when None) and reject the rest, snap it onto its own edge, fit the pair about the lens centre given."""
     h, w = img.shape
     scale = edge_map_scale(w)
     found = find_edge_candidates(scaled_luma(img, scale), scale, w, h)
     lines = []
-    unsnapped = 0
+    unsnapped = rejected = 0
     for candidate in found.candidates:
+        if keep is not None and not keep(candidate.points):
+            rejected += 1
+            continue
         samples = candidate_sample_points(candidate.points, LINE_SAMPLE_FRACTIONS)
         near = NearEdge(tuple(samples), candidate.polarity)
         points = snap_line_to_edges(samples[0], samples[4], cut_band(img, samples[0], samples[4]), w, h, near=near)
@@ -181,4 +190,4 @@ def calibrate(img: np.ndarray, centre: tuple[float, float] = (0.0, 0.0)) -> Cali
         unsnapped += sum(1 for p in points if not p.snapped)
         if len(active) >= 3:
             lines.append(active)
-    return Calibration(lines, unsnapped, fit_lens_from_lines(lines, w, h, cx=centre[0], cy=centre[1]))
+    return Calibration(lines, unsnapped, rejected, fit_lens_from_lines(lines, w, h, cx=centre[0], cy=centre[1]))

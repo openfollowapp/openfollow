@@ -1549,7 +1549,7 @@
   var LENS_RATING_LABEL = { low: 'Not usable', medium: 'Poor', okay: 'Fair', good: 'Good', excellent: 'Excellent' };
   var LENS_DEV = {{'true' if config.ui.developer_mode else 'false'}};
   var lensLines = [];        // [{p0, p1, mids: [{t, off, on}], snapped: [bool x5], curve, rms, misfit, candidate}]
-  var lensCandidates = [];   // suggested edges of the current snapshot: [{points, samples, used, rejected}]
+  var lensCandidates = [];   // suggested edges of the current snapshot: [{points, samples, polarity, used, rejected}]
   var lensRejected = [];     // the ends of every rejected suggestion, until Refresh Image: [[x, y], [x, y]]
   var lensHot = -1;          // the suggestion pointed at, by its bubble or its line
   var lensFocusAfter = null; // after a choice by keyboard: {i, cls} of the bubble button that had the focus
@@ -1732,7 +1732,10 @@
     }).then(function(res) {
       if (snapshot !== lensCanvas || !res.ok || !Array.isArray(res.data.candidates)) return;
       lensCandidates = res.data.candidates.map(function(c) {
-        return { points: c.points, samples: c.samples, used: false, rejected: lensRejected.some(function(r) { return lensSameEnds(c.samples, r[0], r[1]); }) };
+        return {
+          points: c.points, samples: c.samples, polarity: c.polarity === 1 || c.polarity === -1 ? c.polarity : 0,
+          used: false, rejected: lensRejected.some(function(r) { return lensSameEnds(c.samples, r[0], r[1]); }),
+        };
       });
       lensLines.forEach(function(line) { line.candidate = lensCandidateOf(line); });
       if (res.data.edges) lensPaintEdges(res.data.edges);
@@ -1768,7 +1771,9 @@
     lensLines.push(line);
     lensSelected = { line: lensLines.length - 1, point: null };
     renderLens();
-    lensSnapLine(line);
+    // Snapped onto the suggestion's own edge; one bowed past its band keeps its samples, as a refused snap would.
+    if (lensNearFits(pts)) lensSnapLine(line, { points: pts, polarity: cand.polarity });
+    else lensChanged();
   }
   function lensReleaseCandidate(line) {
     if (line.candidate !== undefined && lensCandidates[line.candidate]) lensCandidates[line.candidate].used = false;
@@ -1817,6 +1822,18 @@
   // Mirror edge_snap.band_half_size / band_step: the band grows with the snapshot.
   function lensBandHalf() { return Math.max(48, Math.min(256, Math.round(imageWidth / 10))); }
   function lensBandStep() { return Math.max(1, Math.min(8, Math.round(imageWidth / 480))); }
+  // Mirror edge_snap.point_window, rounding up where it rounds half to even.
+  function lensPointWindow() { return Math.max(4, Math.round(imageWidth / 480)); }
+  // Mirror snap_line_to_edges: a suggestion's samples lie along its chord, inside the band the station searches.
+  function lensNearFits(s) {
+    var dx = s[4][0] - s[0][0], dy = s[4][1] - s[0][1], len = Math.hypot(dx, dy);
+    if (!(len >= 1)) return false;
+    var tx = dx / len, ty = dy / len, reach = lensBandHalf() - lensPointWindow() - 1;
+    return s.every(function(p) {
+      var rx = p[0] - s[0][0], ry = p[1] - s[0][1], f = (rx * tx + ry * ty) / len;
+      return f >= -0.01 && f <= 1.01 && Math.abs(ry * tx - rx * ty) <= reach;
+    });
+  }
   // The luma along the chord p0 -> p1, rectified so the chord runs along the middle
   // row: one column per step pixels of the chord, one row per pixel across it.
   function lensBand(p0, p1) {
@@ -1842,15 +1859,18 @@
     }
     return { step: step, half: half, cols: cols, rows: rows, data: lensBase64(luma) };
   }
-  function lensSnapLine(line) {
+  // near ({points, polarity}) only for a suggestion just taken: its points stay on that suggestion's edge.
+  function lensSnapLine(line, near) {
     if (!lensCanvas) { lensChanged(); return; }
     var band = lensBand(line.p0, line.p1);
     if (!band) { lensChanged(); return; }
     var sent = JSON.stringify([line.p0, line.p1, line.mids]);
+    var body = { image_width: imageWidth, image_height: imageHeight, p0: line.p0, p1: line.p1, band: band };
+    if (near) body.near = near;
     fetch('/api/wizard/lens/snap', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image_width: imageWidth, image_height: imageHeight, p0: line.p0, p1: line.p1, band: band }),
+      body: JSON.stringify(body),
     }).then(function(r) {
       return r.json().then(function(data) { return { ok: r.ok, data: data }; });
     }).then(function(res) {
@@ -2208,7 +2228,7 @@
     box.className = 'notice' + (level === 'caution' ? ' warning' : level === 'success' ? ' success' : '');
     renderLensMeter(box.querySelector('.wizard-meter'), lensFit.rating);
     var text = (LENS_RATING_LABEL[lensFit.rating] || lensFit.rating) + ' \u2013 barrel / fisheye ' + fmt(Number(lensFit.k1), 3)
-      + ', corner correction ' + (lensFit.k2_fitted ? fmt(Number(lensFit.k2), 3) : '0 (not measured)') + lensCentreSuffix(lensFit.centre)
+      + ', corner correction ' + fmt(Number(lensFit.k2), 3) + (lensFit.k2_fitted ? '' : ' (estimated)') + lensCentreSuffix(lensFit.centre)
       + (lensFitApplies(lensFit) ? '' : ' \u2013 not applied');
     setLive($('lens-result-text'), esc(text));
     var tuned = lensFitApplies(lensFit) && !lensIsTheFits(wizLens());

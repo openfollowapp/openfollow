@@ -57,6 +57,10 @@ a centre, its gates and seeds), the gallery equivalents.
    step 5 (kept below for the record) and the result-line wording "when one was
    measured" in §12 and decision 6: the result line and Review name the centre
    in use when one is set.
+9. **A corner correction the lines leave open is applied as estimated.** When
+   the fit answers `k2_fitted` false, its `k2` (the pair drawn toward no lens
+   by the prior) is applied with `k1`, and the result line reads "corner
+   correction −0.183 (estimated)" instead of "0 (not measured)" (item 14).
 
 ## 1. The model
 
@@ -721,6 +725,10 @@ it; built 2026-10-22):
     video, disabled with "No video" without one (§12; not in the mockup).
 13. Help drawer `wizard-lens.md`: the lens centre under Rating and the new
     Adjust by hand paragraph (§12).
+14. **Corner correction left open, result line** (decision 9): "corner
+    correction 0 (not measured)" to **"corner correction −0.183
+    (estimated)"**, the fit's own value; the help drawer's Rating paragraph
+    says the estimate stays close to 0 and is applied.
 
 The approved Setup Wizard plan (`docs/plans/setup-wizard-calibration-modes.md`)
 quotes item 6's old text and the fold wording in its copy tables; those rows
@@ -988,13 +996,13 @@ Each step lands with its tests; targeted tests while iterating, one
   (eight markers 4.39-4.52 ms against 4.21-4.29); `-0.527 / -0.069` with a
   centre: -8 to +2 % (eight markers 3.95 against 4.21). Within run-to-run
   noise; the Pi number is owed (step 10).
-- Deferred to step 9: `test_lens_calibration.py::test_the_arena_default_gives_back_the_lens_it_was_drawn_with`
-  fails until the arena picture is rendered with the division pair (the test
-  still names `-0.15 / 0.02`). With a used suggestion kept on its own edge
-  (6b), two of today's arena suggestions follow the bottoms of a row of seat
-  backs, which are not straight (3.2 and 1.8 px RMS under the true lens), and
-  the fit reads `-0.088 / -0.092`, 8.5 px off; the re-rendered picture needs
-  its suggestions checked.
+- Step 9: the arena test runs the step as an operator does, rejecting the
+  suggestions that are not straight in the hall (a polyline more than 2 px
+  off a straight line under the drawn lens): of the re-rendered picture's 12,
+  the two along the staggered floor-chair backs and the two along the aisle's
+  chair corners go; the stage lip, the front chair rows and the tiers' seat
+  rows stay (8 lines). The fit gives `-0.150 / -0.030`, 0.03 px from the drawn
+  lens over the frame, Good (all 12: `-0.144 / -0.036`, 0.9 px).
 
 ### 6b. The Lens step on real photos
 Two photos run through the page's own band and suggestion path: a hall from
@@ -1035,6 +1043,15 @@ clear barrel; dense traced edges (16 sub-pixel points each) as the reference.
       on-screen graphic, straight on the screen) sets k2 there and is only
       seen bent that way.
 - [x] Hints ask for a line near an edge "If possible" at every rating.
+- [x] **The page**: the edges answer's `polarity` is kept with each
+      suggestion (anything but -1 / 1 reads 0); using a suggestion snaps the
+      chord between its first and last sample with `near` (all five samples,
+      its polarity), checked first against the station's rule (samples along
+      the chord, inside the band less the point window), so a suggestion
+      bowed past its band keeps its samples unsnapped, as after a refusal; a
+      drawn line, and any later snap of a line, sends no `near`. Each fitted
+      line's `dropped` is not shown. A `k2_fitted` false answer applies its
+      `k2` and the result line marks it "(estimated)" (decision 9).
 - Note, acceptance with the centre at 0 (traced edges' RMS about their own
   straight line; reference = the traced edges' own fit, centre 0):
   hall, suggestions + drawn: 1.12 px (no lens 1.14), 5.0 px from no lens
@@ -1109,10 +1126,10 @@ clear barrel; dense traced edges (16 sub-pixel points each) as the reference.
       `festival_default.jpg/.toml`, `default:festival`): a 2.8 mm M12 lens,
       `-0.31 / -0.01`, lens centre 28 px right and 16 px up; the mockup's Lens
       step shows it.
-- Note: the arena's lines trade the pair along a valley: its picture fits
-  `-0.12 / -0.06`, 3.6 px from the drawn lens over the frame (the old pair
-  36 px), so its test compares the bend, not the numbers, and the help drawer
-  names the drawn pair. The concert fits Poor, as before. The Festival's
+- Note: the arena's lines trade the pair along a valley, so its test compares
+  the bend, not the numbers, and the help drawer names the drawn pair; with
+  the suggestions that are not straight in the hall rejected, the fit lands
+  on the drawn pair (step 6 note). The concert fits Poor, as before. The Festival's
   centre is set by hand (the Lens step never measures one); its suggestions
   fit `-0.313 / -0.020`, Good, about a centre of 0. The
   gallery TOMLs record a centre only where the picture has one.

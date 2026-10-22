@@ -40,6 +40,13 @@ a centre, its gates and seeds), the gallery equivalents.
    Its analysis is kept under Later.
 4. **Media Gallery:** today's look, with the nearest division pairs: arena
    `-0.15 / -0.03`, concert `-0.20 / -0.07` (§10).
+5. **The UI list is approved as mockup v102 shows it:** the slider spans
+   (-1.0..0.5 and -0.8..0.3), the lens centre row and its labels, the result
+   line, the Load list and the error texts.
+6. **Review names the lens centre** in its lens line when one was measured,
+   as the result line does; the Camera Calibration chip shows the pair only.
+7. **The Camera tab gets the two pixel fields of §12**, disabled with "No
+   video" when there is none; Save keeps the saved centre then.
 
 ## 1. The model
 
@@ -722,8 +729,9 @@ Each step lands with its tests; targeted tests while iterating, one
       (the mockup picture is today's render until then, within 1.3 px).
 - [x] Product owner decides Options A and B (2026-10-22: centre now, OpenCV
       import later).
-- [ ] Product owner approves the UI list, including the lens centre (items
-      10-13) and the Camera tab design.
+- [x] Product owner approves the UI list, including the lens centre (items
+      10-13) and the Camera tab design (2026-10-22: mockup v102, Review names
+      the centre, Camera tab pixel fields).
 
 ### 1. The rule (`openfollow/lens_model.py`, stdlib-only)
 - [ ] Docstring: the model with the lens centre, normalisation, sign, both
@@ -932,18 +940,10 @@ Each step lands with its tests; targeted tests while iterating, one
 
 ## Open questions for the product owner
 
-1. Approve the slider spans (-1.0..0.5 and -0.8..0.3), the off-centre zero
-   they bring, and the error texts (items 4-7 with 4a, 4b, 5a, 6a).
-2. The lens centre UI: the Adjust by hand row and its labels, the result
-   line and the Load list (items 10, 11). Review and the Camera Calibration
-   chip show the pair only: right, or should Review name the centre too?
-3. The Camera tab: the two pixel fields of §12 (disabled without video), or
-   no fields there (the centre set only by the Setup Wizard and shown
-   read-only)?
-4. The rating stays at the pinhole corners, as today (§7, The rating). Should
+1. The rating stays at the pinhole corners, as today (§7, The rating). Should
    a later change rate at the screen corners instead, with thresholds derived
    for that point? Every barrel lens would rate lower than today for the same
-   lines.
+   lines. Not part of this change.
 
 ## Later: OpenCV calibration import (`.xml`), its own PR
 

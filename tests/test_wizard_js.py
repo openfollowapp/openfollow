@@ -4528,6 +4528,26 @@ def test_a_tap_on_the_picture_opens_the_menu_and_its_item_takes_the_next_tap() -
     assert out == [False, [20, 20], None, [20, 20]]
 
 
+@pytest.mark.parametrize(
+    ("form", "detail", "spot"),
+    [(False, 2, [20, 20]), (False, 1, [20, 92]), (True, 2, [20, 20]), (True, 1, [20, 92])],
+    ids=["double-click", "a second click", "double-click on a form", "a second click on a form"],
+)
+def test_a_double_clicks_second_click_on_the_picture_repeats_nothing(form: bool, detail: int, spot: list) -> None:
+    out = _pin_tap(
+        "dispatch('cal-overlay', 'pointerdown', picture); dispatch('cal-overlay', 'click', picture);"
+        " if (form) S.pinMenu.form = 'known';"
+        # The menu scrolled the page: the second press lands 36 CSS px lower on the picture.
+        " var low = { clientY: 46, detail: detail };"
+        " dispatch('cal-overlay', 'pointerdown', picture, low); dispatch('cal-overlay', 'click', picture, low);"
+        " return S.pinMenu.p;",
+        form=form,
+        detail=detail,
+    )
+    # A double-click leaves the menu (or the new point's form) where its first click put it.
+    assert out == spot
+
+
 _LENS_TAP_PAGE = """
 var on = {}, traced = 0, moves = 0;
 var overlay = { addEventListener: function(t, f) { on[t] = f; }, setPointerCapture: function() {},
@@ -4640,6 +4660,88 @@ def test_the_simple_hint_names_a_partly_filled_camera_only_once_the_typing_is_do
         "typed again": "image",
         "Next": "sloc",
     }
+
+
+_NO_SOLVE = {"marks": [], "error": "No camera fits."}
+
+
+@pytest.mark.parametrize(
+    ("solve", "shown"),
+    [
+        (
+            {**_NO_SOLVE, "withHeight": True},
+            [
+                "image",
+                "The camera cannot be calculated at this camera height.",
+                "Check the camera height, the size of the rectangle, and that each corner is on its tape mark.",
+            ],
+        ),
+        (
+            {**_NO_SOLVE, "withHeight": False},
+            [
+                "image",
+                "The camera cannot be calculated from these corners.",
+                "Check the size of the rectangle, and check that each corner is on its tape mark.",
+            ],
+        ),
+    ],
+    ids=["at an entered camera height", "without one"],
+)
+def test_the_simple_hint_names_the_camera_height_when_no_camera_fits_at_it(solve: dict, shown: list) -> None:
+    out = run_wizard_js(
+        "(function() { renderSimpleReq(); return shown; })()",
+        functions=(*_MARK_FUNCTIONS, *_CAM_HINT_FUNCTIONS, "esc", "lenText", "fmt", "renderSimpleReq"),
+        variables=(*_MARK_VARS, "CORNER_TITLES", "camNamed"),
+        prelude=length_page("metric", {})
+        + _DOM
+        + "var shown = null; function showHint(area, h, sub) { shown = [area, h, sub]; }"
+        f" var S = {{ simpleLoc: 'back', rect: {json.dumps(_READY)}, solve: {json.dumps(solve)},"
+        " cornerMoved: { DSL: true, DSR: true, USR: true, USL: true } };",
+    )
+    # The hint and the status line under the picture name the same cause.
+    assert out == shown
+
+
+@pytest.mark.parametrize(
+    ("solve", "shown"),
+    [
+        (
+            {**_NO_SOLVE, "withHeight": True},
+            [
+                "The camera cannot be calculated at this camera height.",
+                "Check the camera height, the pins and the measurements.",
+            ],
+        ),
+        (
+            {**_NO_SOLVE, "withHeight": False},
+            ["The camera cannot be calculated from these points.", "Check the pins and the measurements."],
+        ),
+        (
+            {"marks": [], "cam": {"fov": 60}, "withHeight": True},
+            [
+                "Check the result.",
+                "Check the grid on the picture and the Distances to check. Then press Next. More known points or"
+                " distance points give a better result.",
+            ],
+        ),
+    ],
+    ids=["at an entered camera height", "without one", "solved at a height"],
+)
+def test_the_advanced_hint_names_the_camera_height_when_no_camera_fits_at_it(solve: dict, shown: list) -> None:
+    out = run_wizard_js(
+        "(function() { currentMarks = function() { return [1, 2, 3, 4].map(function(i) {"
+        " return { id: i, kind: 'known', name: 'P' + i, pin: [i, i] }; }); };"
+        " renderReq(); return shown; })()",
+        functions=(*_MARK_FUNCTIONS, *_CAM_HINT_FUNCTIONS, "esc", "renderReq"),
+        variables=(*_MARK_VARS, "camNamed"),
+        prelude=length_page("metric", {})
+        + _DOM
+        + "var S = { mode: 'advanced', cam: { x: 0, y: 10, z: 8 }, camPartial: false, points: [], rect: {},"
+        f" solve: {json.dumps(solve)} }};"
+        " var SAVED = { max_marks: 12 }, shown = null;"
+        " function showHint(area, h, sub) { shown = [h, sub]; } function lockSimpleSteps() {}",
+    )
+    assert out == shown
 
 
 def test_the_advanced_hint_names_a_partly_filled_camera_only_once_the_typing_is_done() -> None:

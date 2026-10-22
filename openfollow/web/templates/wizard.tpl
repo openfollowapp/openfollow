@@ -2867,6 +2867,7 @@
     }
     else if (todo.length) showHint('image', 'Drag ' + todo[0] + ' onto its tape mark.', CORNER_TITLES[todo[0]] + '. ' + (4 - todo.length) + ' of 4 corners are on their marks. Click a corner to select it and move it with the arrow keys. Press Enter when the crosshair is in the right place.');
     else if (s && s.cam) showHint('image', 'Check the result.', 'The grid on the picture should match the tape marks. Then press Next.');
+    else if (s && s.withHeight) showHint('image', 'The camera cannot be calculated at this camera height.', 'Check the camera height, the size of the rectangle, and that each corner is on its tape mark.');
     else showHint('image', 'The camera cannot be calculated from these corners.', 'Check the size of the rectangle, and check that each corner is on its tape mark.');
   }
   function renderReq() {
@@ -2889,6 +2890,7 @@
     }
     else if (toPin) { h = 'Pin ' + toPin.name + ' on the picture.'; sub = 'Click where it is on the picture, then choose it from the menu. ' + pinned + ' of at least 4 pinned.'; }
     else if (solved) { h = 'Check the result.'; sub = 'Check the grid on the picture and the Distances to check. Then press Next. More known points or distance points give a better result.'; }
+    else if (S.solve && S.solve.withHeight) { h = 'The camera cannot be calculated at this camera height.'; sub = 'Check the camera height, the pins and the measurements.'; }
     else { h = 'The camera cannot be calculated from these points.'; sub = 'Check the pins and the measurements.'; }
     showHint(area, h, sub);
   }
@@ -3422,7 +3424,9 @@
           }
         };
       },
-      tap: function(p) {
+      tap: function(p, e) {
+        // A double-click's second click repeats its first; the menu that one opened may have scrolled the page under it.
+        if (e.detail > 1) return;
         // While a new point is being typed, a click on the picture moves where it goes.
         if (S.pinMenu && S.pinMenu.form) { S.pinMenu.p = p; positionPinMenu(); renderCalibOverlay(); return; }
         if (S.mode === 'advanced') openPinMenu(p);

@@ -1890,36 +1890,187 @@ def test_a_new_snapshots_suggestion_is_matched_to_a_rejection_by_its_ends(sample
     assert out is same
 
 
-def test_the_lens_tab_key_steps_through_the_points_of_its_line() -> None:
+def test_the_lens_tab_key_goes_round_the_points_of_its_line() -> None:
     out = run_wizard_js(
         "(function() { var seen = [], stops = 0;"
         " function press(shift) { var e = { key: 'Tab', shiftKey: shift, preventDefault: function() { stops++; },"
         " stopPropagation: function() {} }; lensTabKey(e); seen.push(lensSelected.point); }"
-        " [false, false, false, true, true, true, true, true].forEach(press);"
+        " [false, false, false, true, true, true].forEach(press);"
         " lensHold = false; press(false); return [seen, stops]; })()",
         functions=("lensTabKey",),
-        prelude="var lensHold = true, lensSelected = { line: 1, point: 2 }, currentStep = 1, WIZ = { lens: 1 };"
+        prelude="var lensHold = true, lensSelected = { line: 1, point: 3 }, currentStep = 1, WIZ = { lens: 1 };"
         " var lensLines = [{}, {}]; function renderLens() {}",
     )
-    # Past the last or the first point, and without a held point, Tab is the browser's: it leaves the line.
-    assert out == [[3, 4, 4, 3, 2, 1, 0, 0, 0], 6]
+    # After the last point comes the first, before the first the last; without a held point, Tab is the browser's.
+    assert out == [[4, 0, 1, 0, 4, 3, 3], 6]
 
 
-@pytest.mark.parametrize(("point", "shift"), [(4, False), (0, True)], ids=["Tab on the end", "Shift+Tab on the start"])
-def test_tab_past_either_end_of_a_line_leaves_it_to_the_browser(point: int, shift: bool) -> None:
+# Two traced lines between a control before the picture and a suggestion bubble after it, drawn by ``lensHandle``.
+# ``key`` runs the Lens step's Tab and Enter handlers, then the browser's own Tab: the next element in page order
+# whose tabindex is 0. Each focus runs the step's focus handlers; one that moves is logged with the hold it left.
+_TAB_PAGE = r"""
+var currentStep = 1, WIZ = { lens: 1 }, lensSelected = null, lensHold = false, lensRefocus = false, lensDrag = null;
+var lensLines = [0, 1].map(function() {
+  return { mids: [{ on: true }, { on: true }, { on: true }], snapped: [true, true, true, true, true] };
+});
+var page = [], log = [], keydowns = [];
+function lensPointPos() { return [0, 0]; }
+function showLoupe() {} function hideLoupe() {} function renderLensHint() {} function renderFsBar() {}
+function el(name, point) {
+  return { name: name, attrs: {}, dataset: {}, isConnected: true,
+    setAttribute: function(k, v) { this.attrs[k] = String(v); }, appendChild: function() {},
+    closest: function() { return this.attrs['class'] && this.attrs['class'].indexOf('lens-point') >= 0 ? this : null; },
+    focus: function() { focusOn(this); } };
+}
+function svgEl(tag, attrs) {
+  var e = el(tag);
+  Object.keys(attrs || {}).forEach(function(k) { e.setAttribute(k, attrs[k]); });
+  return e;
+}
+var before = el('before'), bubble = el('bubble');
+before.attrs.tabindex = bubble.attrs.tabindex = '0';
+function name(e) { return e && e.dataset.line != null ? 'L' + e.dataset.line + 'P' + e.dataset.point : e && e.name; }
+function build() {
+  page = [before];
+  lensLines.forEach(function(line, i) { for (var j = 0; j < 5; j++) page.push(lensHandle(line, i, j, 1)); });
+  page.push(bubble);
+}
+var document = {
+  activeElement: null,
+  addEventListener: function(t, f) { if (t === 'keydown') keydowns.push(f); },
+  querySelector: function(sel) {
+    var m = /data-line="(\d+)"\]\[data-point="(\d+)"/.exec(sel);
+    return page.filter(function(e) { return e.dataset.line == m[1] && e.dataset.point == m[2]; })[0] || null;
+  }
+};
+function focusOn(e) {
+  var moved = name(e) !== name(document.activeElement);
+  document.activeElement = e;
+  lensPointFocusIn({ target: e }); lensFocusElsewhere({ target: e });
+  if (moved) log.push([name(e), lensHold]);
+}
+function renderLens() {
+  var had = document.activeElement && document.activeElement.dataset.line != null;
+  build();
+  if (had) lensFocusSelected();
+  if (lensHold) holdLensPoint();
+}
+function key(k, shift) {
+  log = [];
+  var e = { key: k, shiftKey: !!shift, target: document.activeElement, defaultPrevented: false,
+    preventDefault: function() { this.defaultPrevented = true; }, stopPropagation: function() {} };
+  lensTabKey(e);
+  keydowns.forEach(function(f) { f(e); });
+  if (k === 'Tab' && !e.defaultPrevented) {
+    var d = shift ? -1 : 1;
+    for (var i = page.indexOf(document.activeElement) + d; i >= 0 && i < page.length; i += d) {
+      if (page[i].attrs.tabindex === '0') { focusOn(page[i]); break; }
+    }
+  }
+  var sel = lensSelected || {};
+  return [name(document.activeElement), sel.line, sel.point, lensHold, log];
+}
+build();
+"""
+_TAB_FUNCTIONS = (
+    "pointHandle",
+    "lensPointIsOn",
+    "lensHandle",
+    "lensTabKey",
+    "lensEndHold",
+    "lensPointFocusIn",
+    "lensFocusElsewhere",
+    "holdLensPoint",
+    "dropLensPoint",
+    "lensFocusSelected",
+    "lensFocusEl",
+)
+
+
+_ENTER_ON_A_POINT = "document.addEventListener('keydown', function(e) {\n      if (e.key !== 'Enter'"
+
+
+def _tab_through(keys: list) -> list:
+    return run_wizard_js(
+        "(function() { document.activeElement = before; return ks.map(function(k) { return key(k[0], k[1]); }); })()",
+        functions=_TAB_FUNCTIONS,
+        prelude=_TAB_PAGE + wizard_block(_ENTER_ON_A_POINT),
+        ks=keys,
+    )
+
+
+def test_each_traced_line_is_one_tab_stop_its_first_point() -> None:
     out = run_wizard_js(
-        "(function() { var e = { key: 'Tab', shiftKey: shift, defaultPrevented: false, stopped: false,"
-        " preventDefault: function() { this.defaultPrevented = true; },"
-        " stopPropagation: function() { this.stopped = true; } };"
-        " lensTabKey(e); return [e.defaultPrevented, e.stopped, lensSelected, renders]; })()",
-        functions=("lensTabKey",),
-        prelude=f"var lensHold = true, lensSelected = {{ line: 0, point: {point} }};"
-        " var currentStep = 1, WIZ = { lens: 1 };"
-        " var lensLines = [{}, {}], renders = 0; function renderLens() { renders++; }",
+        "page.map(function(e) { return [name(e), e.attrs.tabindex]; })", functions=_TAB_FUNCTIONS, prelude=_TAB_PAGE
+    )
+    assert out[1:-1] == [[f"L{i}P{j}", "0" if j == 0 else "-1"] for i in (0, 1) for j in range(5)]
+
+
+def test_tab_reaches_a_lines_first_point_and_holds_it() -> None:
+    out = _tab_through([["Tab", False]])
+    assert out == [["L0P0", 0, 0, True, [["L0P0", True]]]]
+
+
+def test_a_held_point_tabs_round_its_line_both_ways() -> None:
+    out = _tab_through([["Tab", False]] + [["Tab", False]] * 5 + [["Tab", True]] * 2)
+    # The focus follows the selection round the line and never leaves it while the point is held.
+    assert [o[:4] for o in out[1:]] == [
+        ["L0P1", 0, 1, True],
+        ["L0P2", 0, 2, True],
+        ["L0P3", 0, 3, True],
+        ["L0P4", 0, 4, True],
+        ["L0P0", 0, 0, True],
+        ["L0P4", 0, 4, True],
+        ["L0P3", 0, 3, True],
+    ]
+
+
+def test_enter_ends_the_hold_and_tab_then_reaches_the_next_lines_first_point() -> None:
+    out = _tab_through([["Tab", False], ["Tab", False], ["Tab", False], ["Enter", False], ["Tab", False]])
+    enter, tab = out[3], out[4]
+    # The focus stays on the point.
+    assert enter == ["L0P2", 0, 2, False, []]
+    assert tab == ["L1P0", 1, 0, True, [["L1P0", True]]]
+
+
+def test_shift_tab_after_enter_moves_back_past_the_line_without_holding_its_first_point() -> None:
+    tab, enter, back = ["Tab", False], ["Enter", False], ["Tab", True]
+    out = _tab_through([tab, enter, tab, tab, tab, enter, back])
+    # The line's own Tab stop takes the focus unheld, and the browser's Shift+Tab goes on from it.
+    assert out[-1] == ["L0P0", 0, 0, True, [["L1P0", False], ["L0P0", True]]]
+
+
+@pytest.mark.parametrize(
+    ("keys", "result"),
+    [
+        ([["Tab", False], ["Enter", False], ["Tab", True]], ["before", 0, 0, False, [["before", False]]]),
+        (
+            [["Tab", False], ["Enter", False], ["Tab", False], ["Enter", False], ["Tab", False]],
+            ["bubble", 1, 0, False, [["bubble", False]]],
+        ),
+        (
+            [["Tab", False], ["Enter", False], ["Tab", False], ["Enter", False], ["Tab", False], ["Tab", True]],
+            ["L1P0", 1, 0, True, [["L1P0", True]]],
+        ),
+    ],
+    ids=["Shift+Tab from a first point", "Tab past the last line", "Shift+Tab from a bubble"],
+)
+def test_the_browser_moves_the_focus_off_and_onto_the_lines(keys: list, result: list) -> None:
+    assert _tab_through(keys)[-1] == result
+
+
+@pytest.mark.parametrize("shift", [False, True], ids=["Tab", "Shift+Tab"])
+def test_the_lens_tab_key_leaves_the_bubbles_to_the_browser(shift: bool) -> None:
+    out = run_wizard_js(
+        "(function() { lensSelected = { line: 1, point: 2 }; document.activeElement = bubble;"
+        " var e = { key: 'Tab', shiftKey: shift, target: bubble, defaultPrevented: false,"
+        " preventDefault: function() { this.defaultPrevented = true; }, stopPropagation: function() {} };"
+        " lensTabKey(e); return [e.defaultPrevented, name(document.activeElement), lensSelected, log]; })()",
+        functions=_TAB_FUNCTIONS,
+        prelude=_TAB_PAGE,
         shift=shift,
     )
-    # The browser moves the focus on in page order: the next line, the bubbles, the buttons, Next.
-    assert out == [False, False, {"line": 0, "point": point}, 0]
+    assert out == [False, "bubble", {"line": 1, "point": 2}, []]
 
 
 def test_enter_or_esc_ends_the_hold_and_leaves_the_focus_on_the_point() -> None:
@@ -1951,9 +2102,9 @@ var focusEvent = { target: { closest: function() { return handle; } } };
 @pytest.mark.parametrize(
     ("before", "selected", "held", "renders", "steps"),
     [
-        ("", {"line": 1, "point": 2}, True, 1, [3, 4, 4, 3]),
-        ("lensSelected = { line: 1, point: 2 };", {"line": 1, "point": 2}, True, 1, [3, 4, 4, 3]),
-        ("lensSelected = { line: 1, point: 2 }; lensHold = true;", {"line": 1, "point": 2}, True, 0, [3, 4, 4, 3]),
+        ("", {"line": 1, "point": 2}, True, 1, [3, 4, 0, 4]),
+        ("lensSelected = { line: 1, point: 2 };", {"line": 1, "point": 2}, True, 1, [3, 4, 0, 4]),
+        ("lensSelected = { line: 1, point: 2 }; lensHold = true;", {"line": 1, "point": 2}, True, 0, [3, 4, 0, 4]),
         ("lensSelected = { line: 1, point: null }; lensRefocus = true;", {"line": 1, "point": None}, False, 0, []),
         ("lensDrag = {};", None, False, 0, []),
     ],
@@ -1973,7 +2124,7 @@ def test_a_point_reached_with_tab_is_selected_and_held(
         prelude="var lensSelected = null, lensHold = false, lensRefocus = false, lensDrag = null;" + _POINT_FOCUS_PAGE,
     )
     hint = "Move the point exactly onto the edge." if held else ""
-    # Held as one clicked: the loupe and the hint are on it, and Tab steps along its line to its end.
+    # Held as one clicked: the loupe and the hint are on it, and Tab goes round its line.
     assert out == [selected, held, renders, hint if renders else "", steps]
 
 

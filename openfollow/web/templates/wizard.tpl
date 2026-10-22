@@ -508,7 +508,7 @@
       </details>
     </div>
 
-    <p class="wizard-tip">Click a point or press <strong>Tab</strong> to select it. The loupe stays on it, and the <strong>arrow keys</strong> move it by one pixel. <strong>Tab</strong> selects the next point of the same line, and after its last point it moves on. Press <strong>Enter</strong> when the crosshair is in the right place. <strong>Esc</strong> or a click somewhere else ends the selection. <strong>Space</strong> switches a middle point off or on. <strong>Delete</strong> or <strong>Backspace</strong> removes the selected line. <strong>Esc</strong> cancels a line you have started. If you skip this step, the current lens values stay.</p>
+    <p class="wizard-tip">Click a point or press <strong>Tab</strong> to select it. The loupe stays on it, and the <strong>arrow keys</strong> move it by one pixel. While a point is selected, <strong>Tab</strong> goes round the points of its line. Press <strong>Enter</strong> when the crosshair is in the right place; then <strong>Tab</strong> moves on to the next line. <strong>Esc</strong> or a click somewhere else ends the selection. <strong>Space</strong> switches a middle point off or on. <strong>Delete</strong> or <strong>Backspace</strong> removes the selected line. <strong>Esc</strong> cancels a line you have started. If you skip this step, the current lens values stay.</p>
 
     <div class="wizard-nav">
       <button type="button" class="secondary" onclick="wizardPrev()">Back</button>
@@ -1791,6 +1791,8 @@
   // ---- rendering ----
   function lensHandle(line, i, j, px) {
     var g = pointHandle(lensPointPos(line, j), j === 0 || j === 4 ? 4 : 3.5, px);
+    // Each line is one Tab stop, its first point.
+    g.setAttribute('tabindex', j ? '-1' : '0');
     g.setAttribute('aria-label', 'Line ' + (i + 1) + (j === 0 ? ', start' : j === 4 ? ', end' : ', middle point ' + j + (lensPointIsOn(line, j) ? '' : ' (off)')));
     var cls = 'handle lens-point';
     if (!lensPointIsOn(line, j)) cls += ' off';
@@ -2281,15 +2283,21 @@
   }
 
   // ---- pointer + keyboard ----
-  // With a point held, Tab and Shift+Tab step through the points of its own line; past its last or first point
-  // the browser moves the focus on, so the keys never trap it on the picture.
+  // With a point held, Tab and Shift+Tab go round the points of its line until Enter ends the hold; then Tab
+  // moves on to the next line and Shift+Tab back past this one.
   function lensTabKey(e) {
-    if (e.key !== 'Tab' || !lensHold || !lensSelected || lensSelected.point == null || currentStep !== WIZ.lens || !lensLines[lensSelected.line]) return;
-    var to = lensSelected.point + (e.shiftKey ? -1 : 1);
-    if (to < 0 || to > 4) return;
-    e.preventDefault(); e.stopPropagation();
-    lensSelected = { line: lensSelected.line, point: to };
-    renderLens();
+    if (e.key !== 'Tab' || currentStep !== WIZ.lens) return;
+    if (lensHold && lensSelected && lensSelected.point != null && lensLines[lensSelected.line]) {
+      e.preventDefault(); e.stopPropagation();
+      lensSelected = { line: lensSelected.line, point: (lensSelected.point + (e.shiftKey ? 4 : 1)) % 5 };
+      renderLens();
+      return;
+    }
+    var h = e.shiftKey && e.target && e.target.closest ? e.target.closest('#lens-lines .lens-point') : null;
+    if (!h || +h.dataset.point === 0) return;
+    // From the line's own Tab stop, focused without holding it, the browser's Shift+Tab leaves the line.
+    var first = document.querySelector('#lens-lines .lens-point[data-line="' + h.dataset.line + '"][data-point="0"]');
+    if (first) lensFocusEl(first);
   }
   // Enter or Esc ends a hold; the point keeps the focus and its selection, so the next Tab moves on from there.
   function lensEndHold() { dropLensPoint(); renderLens(); }
@@ -3742,8 +3750,8 @@
     var k = FS.key, intro, rows;
     if (k === 'lens') {
       intro = '<strong>Check each dashed suggested line</strong>: the check mark uses it, the cross removes it. Or click the start and the end of a straight edge. Click a line to select it. Drag a point to correct it.';
-      rows = [[['Tab'], 'Next suggestion bubble or point. With a point selected: the next point on its line, after its last point onwards'], ['<kbd>Shift</kbd> + <kbd>Tab</kbd>', 'The previous point on its line, before its first point backwards'],
-        [ARROWS, 'Move the selected point 1&nbsp;px'], [['Enter'], 'Confirm the point'], [['Space'], 'Switch a middle point off or on'],
+      rows = [[['Tab'], 'Next suggestion bubble or line. With a point selected: the next point on its line, after the last the first again'], ['<kbd>Shift</kbd> + <kbd>Tab</kbd>', 'The previous point on its line, before the first the last again'],
+        [ARROWS, 'Move the selected point 1&nbsp;px'], [['Enter'], 'Confirm the point and end the selection'], [['Space'], 'Switch a middle point off or on'],
         ['<kbd>Delete</kbd> or <kbd>Backspace</kbd>', 'Remove the selected line, or cancel a line you started'], FS_ESC];
     } else if (k === 'cal' && S.mode === 'simple') {
       intro = '<strong>Drag each corner</strong> onto its tape mark. The loupe shows the picture 4&times; larger. Click a corner to select it.';

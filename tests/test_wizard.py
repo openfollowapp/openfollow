@@ -470,24 +470,28 @@ class TestWizardHelpCopy:
     def test_review_says_apply_waits_for_incomplete_points(self) -> None:
         assert "stays off while a point is not complete" in self._help("wizard-review")
 
-    def test_tab_moves_on_past_a_lines_last_point_everywhere_it_is_explained(self) -> None:
+    def test_tab_goes_round_a_lines_points_everywhere_it_is_explained(self) -> None:
         src = WIZARD_TEMPLATE.read_text(encoding="utf-8")
-        texts = [
-            self._help("wizard-lens"),
-            src,
-            (WIZARD_TEMPLATE.parents[3] / "docs" / "plans" / "setup-wizard-calibration-modes.md").read_text(
-                encoding="utf-8"
-            ),
-        ]
-        for text in texts:
-            assert "starts again at the first" not in text and "round from the last to the first" not in text
-        assert "After the last point of a line, **Tab** moves on" in texts[0]
-        assert "After **Enter** or **Esc** the point keeps the focus, so **Tab** goes on from there." in texts[0]
-        assert (
-            "<strong>Tab</strong> selects the next point of the same line, and after its last point it moves on." in src
+        plan = (WIZARD_TEMPLATE.parents[3] / "docs" / "plans" / "setup-wizard-calibration-modes.md").read_text(
+            encoding="utf-8"
         )
-        assert "'The previous point on its line, before its first point backwards'" in src
-        assert "the next point on its line, after its last point onwards'" in src
+        help_text = self._help("wizard-lens")
+        for text in (help_text, src, plan):
+            assert "after its last point onwards" not in text and "after its last point it moves on" not in text
+        assert "each line is one stop, and **Tab** selects its first point." in help_text
+        assert "round and round: after the last point comes the first." in help_text
+        assert "and **Shift**+**Tab** moves back past the line." in help_text
+        assert "After **Enter** or **Esc** the point keeps the focus, so **Tab** goes on from there." in help_text
+        assert (
+            "While a point is selected, <strong>Tab</strong> goes round the points of its line. Press <strong>Enter"
+            "</strong> when the crosshair is in the right place; then <strong>Tab</strong> moves on to the next line."
+            in src
+        )
+        assert "the next point on its line, after the last the first again'" in src
+        assert "'The previous point on its line, before the first the last again'" in src
+        assert "[['Enter'], 'Confirm the point and end the selection']" in src
+        assert "Each traced line is one Tab stop, its first point" in plan
+        assert "Enter: Confirm the point and end the selection" in plan
 
     def test_simples_steps_are_called_steps(self) -> None:
         # Step 4 places the corners: an instruction, not a question.

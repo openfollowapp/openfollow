@@ -1026,10 +1026,14 @@ clear barrel; dense traced edges (16 sub-pixel points each) as the reference.
       floor drops from 3 to 1.5 px.
 - [x] **A gentle prior toward no lens**: `k1 ~ N(0, 0.25)`, `k2 ~ N(0, 0.2)`,
       weighed against the points' own scatter (floored at 0.1 px), so it only
-      decides along a ridge the lines leave open. k2 is measured when the
-      lines say more about it than its prior does; otherwise it stays 0 and
-      the rating comes from the pair's posterior, since the corners are no
-      surer than the loose k2 leaves them.
+      decides along a ridge the lines leave open. The pair it draws is always
+      the answer, never k2 dropped to 0 (which trades the corners' bend into
+      k1); `k2_fitted` says whether the lines or the prior set k2, and the
+      rating is read from the posterior.
+- [x] **Misfit refits both coefficients** without the line, the prior keeping
+      the rest from overfitting: a line alone in its part of the picture (an
+      on-screen graphic, straight on the screen) sets k2 there and is only
+      seen bent that way.
 - [x] Hints ask for a line near an edge "If possible" at every rating.
 - Note, acceptance with the centre at 0 (traced edges' RMS about their own
   straight line; reference = the traced edges' own fit, centre 0):
@@ -1041,10 +1045,20 @@ clear barrel; dense traced edges (16 sub-pixel points each) as the reference.
   edge 3-4 px below the tube in its middle, and is the line that moves the
   hall's lens most; a seam drawn as a white line between two dark borders
   has same-polarity edges 2-3 px apart, and its points may take either.
+  Six frames of one camera from the front truss (a 150-degree class view,
+  six lighting states, one other set), suggestions plus the lip and two deck
+  seams: k1 -0.690 to -0.724, k2 -0.149 to -0.204, all frames within 1.5 px
+  of each other within 0.8 of the half-diagonal (before: up to 64 px, a
+  centre fitted 80-100 px off on two frames); straightened, the lip, the
+  seams, the LED wall's frame and the truss (in no line) run straight.
   The simulation's overclaims (frame error over twice what the rating
-  promises) fall from 770 to 79 trials of 4752; the median frame error is
-  better in 212 rows and worse in 24, almost all of them one or two centre
-  lines, rated Not usable either way.
+  promises) fall from 1054 to 107 trials of 5616; the median frame error is
+  better in 216 rows and worse in 33, mostly one or two centre lines or the
+  top edge alone on the strongest lenses, now rated Poor or Not usable where
+  they rated Excellent.
+  Open: under such a lens the pinhole corners, where the rating is read,
+  land at 0.66 of the half-diagonal; lines in the lower half alone leave
+  1-12 px between 0.66 and 0.8 that the rating does not see (open question 4).
 
 ### 7. Web UI
 - [x] `partials/camera.tpl`: slider spans (items 1, 2), the Lens centre row

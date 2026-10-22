@@ -10638,13 +10638,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
         # The pins were placed on the distorted snapshot; the solve is pinhole.
         raw_pins = {m.id: pin for m, pin in marks if pin is not None}
-        undistorted = {}
-        if raw_pins:
-            ids = list(raw_pins)
-            flat = invert_overlay_distortion(
-                np.array([raw_pins[i] for i in ids], dtype=np.float64), img_w, img_h, k1, k2
-            )
-            undistorted = {i: (float(p[0]), float(p[1])) for i, p in zip(ids, flat, strict=True)}
+        ids = list(raw_pins)
+        flat = invert_overlay_distortion(np.array([raw_pins[i] for i in ids], dtype=np.float64), img_w, img_h, k1, k2)
+        undistorted = {i: (float(p[0]), float(p[1])) for i, p in zip(ids, flat, strict=True)}
         solve_input = [
             Mark(
                 id=m.id,

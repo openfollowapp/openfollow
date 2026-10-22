@@ -70,6 +70,17 @@ def test_replacing_removes_the_old_file_under_any_file_name(store: Path) -> None
     assert [c.name for c in lc.list_calibrations(store)] == ["Zoom wide"]
 
 
+def test_a_save_that_cannot_land_raises_and_leaves_no_temporary_file(store: Path) -> None:
+    lc.save_calibration(store, "Zoom wide", -0.2, 0.03, "0.6.0", DAY)
+    (path,) = _files(store)
+    path.unlink()
+    path.mkdir()  # a directory where the file goes: the rename onto it fails
+    (path / "keep").write_text("", "utf-8")
+    with pytest.raises(OSError):
+        lc.save_calibration(store, "Zoom wide", -0.1, 0.01, "0.6.0", DAY)
+    assert [p.name for p in store.iterdir()] == [path.name]
+
+
 def test_saving_another_name_keeps_the_first(store: Path) -> None:
     lc.save_calibration(store, "Zoom wide", -0.2, 0.03, "0.6.0", DAY)
     lc.save_calibration(store, "Zoom tele", -0.05, 0.0, "0.6.0", DAY)

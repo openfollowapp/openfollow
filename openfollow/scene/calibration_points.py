@@ -312,13 +312,10 @@ class _Problem:
             placed[mark.id] = np.array([x[7 + 2 * i], x[8 + 2 * i], mark.z])
         return placed
 
-    def jacobian(self, x: npt.NDArray[np.float64]) -> npt.NDArray[np.float64] | None:
+    def jacobian(self, x: npt.NDArray[np.float64], rows: int) -> npt.NDArray[np.float64] | None:
         """Camera columns by central differences, the height row's too; each mark's x, y in closed form beside one
-        projection call."""
-        r0 = self.residuals(x)
-        if r0 is None:
-            return None
-        jac = np.zeros((r0.size, x.size))
+        projection call. ``x`` is one :meth:`residuals` answered, with ``rows`` residuals."""
+        jac = np.zeros((rows, x.size))
         for k in range(7):
             step = 1e-6 * (1.0 + abs(x[k]))
             up, down = x.copy(), x.copy()
@@ -338,10 +335,7 @@ class _Problem:
             hx, hy = 1e-6 * (1.0 + abs(at[0])), 1e-6 * (1.0 + abs(at[1]))
             steps.append((hx, hy))
             probes += [at + (hx, 0, 0), at - (hx, 0, 0), at + (0, hy, 0), at - (0, hy, 0)]
-        try:
-            seen = project_points(x[:7], np.array(probes), *self.canvas)
-        except ValueError:
-            return None
+        seen = project_points(x[:7], np.array(probes), *self.canvas)
         pin_row = {m.id: 2 * i for i, m in enumerate(self.pinned)}
         for i, mark in enumerate(self.live):
             if mark.id in pin_row:
@@ -397,7 +391,7 @@ def _fit(
     for iteration in range(iterations):
         if stale is not None and stale():
             raise SolveSuperseded
-        jac = problem.jacobian(x)
+        jac = problem.jacobian(x, r.size)
         if jac is None:
             return None if iteration == 0 else (x, float(r @ r))
         normal = jac.T @ jac

@@ -172,7 +172,8 @@ class TestSimple:
         _assert_true_camera(solved.camera)
         assert solved.error == ""
 
-    @pytest.mark.parametrize("hint", [(0.0, 13.0, 12.0), (5.0, 9.0, 9.0), (0.0, -13.0, 12.0)])
+    # The last has the upstage corners behind it: its seeds project nothing and fit nothing.
+    @pytest.mark.parametrize("hint", [(0.0, 13.0, 12.0), (5.0, 9.0, 9.0), (0.0, -13.0, 12.0), (0.0, 3.0, 1.0)])
     def test_a_camera_position_good_or_far_off_still_gives_the_camera(self, hint) -> None:
         _assert_true_camera(solve_marks(_simple(), W, H, hint=hint).camera)
 
@@ -414,6 +415,32 @@ class TestAdvanced:
         fit = {f.id: f for f in solve_marks(marks, W, H, hint=(0.0, 13.0, 12.0)).marks}[7]
         assert (fit.position, fit.reason) == (None, cp.REASON_UNPLACED_FROM)
 
+    def test_a_mark_measured_from_a_mark_that_is_not_there_says_so(self) -> None:
+        orphan = Mark(5, "triangulated", 0.0, from_a=1, from_b=9, distance_a=3.0, distance_b=3.0, pin=(800.0, 500.0))
+        solved = solve_marks([*_advanced(), orphan], W, H, hint=(0.0, 13.0, 12.0))
+        _assert_true_camera(solved.camera)
+        fit = {f.id: f for f in solved.marks}[5]
+        assert (fit.position, fit.reason) == (None, cp.REASON_UNPLACED_FROM)
+
+    def test_a_triangulated_mark_without_a_pin_is_placed_by_its_distances_alone(self) -> None:
+        place = (1.0, 2.0, 0.0)
+        to_ref, to_dsl = math.dist(place, REF), math.dist(place, DSL)
+        unpinned = Mark(5, "triangulated", 0.0, from_a=1, from_b=2, distance_a=to_ref, distance_b=to_dsl)
+        solved = solve_marks([*_advanced(), unpinned], W, H, hint=(0.0, 13.0, 12.0))
+        _assert_true_camera(solved.camera)
+        fit = {f.id: f for f in solved.marks}[5]
+        assert fit.distance_error == pytest.approx(0.0, abs=1e-6)
+        assert fit.position is not None
+        assert abs(fit.position[1]) == pytest.approx(2.0, abs=1e-6)  # either side of the line from REF to DSL
+        assert (fit.position[0], fit.position[2]) == pytest.approx((1.0, 0.0), abs=1e-6)
+
+    def test_a_mark_measured_0_m_from_a_mark_sits_on_it(self) -> None:
+        solved = solve_marks([*_advanced(), _triangulated(5, REF, (1, REF), (2, DSL))], W, H, hint=(0.0, 13.0, 12.0))
+        _assert_true_camera(solved.camera)
+        fit = {f.id: f for f in solved.marks}[5]
+        assert fit.position == pytest.approx(REF, abs=1e-6)
+        assert fit.distance_error == pytest.approx(0.0, abs=1e-6)
+
 
 def _turned(place: tuple[float, float, float], turn: float) -> tuple[float, float, float]:
     """``place`` turned about 0/0/0 so that its bearing turns by ``turn`` degrees."""
@@ -528,7 +555,9 @@ class TestCameraHeight:
         places = [np.array(P3), np.array(P4)]
         problem = cp._Problem(known, live, marks, (W, H), height)
         x = np.concatenate([TRUE + np.array([0.3, -0.2, 0.4, 1.0, -1.5, 0.5, 2.0]), *[p[:2] + 0.1 for p in places]])
-        jac = problem.jacobian(x)
+        r = problem.residuals(x)
+        assert r is not None
+        jac = problem.jacobian(x, r.size)
         assert jac is not None
         numeric = np.zeros_like(jac)
         for k in range(x.size):
@@ -646,6 +675,13 @@ class TestFloorReach:
     def test_only_corners_within_1_cm_of_one_height_are_compared(self, z, compared) -> None:
         mistyped = _known(5, (0.0, 7.0, 4.0), typed=(0.0, 7.0, 0.0))
         marks = [*_simple()[:3], _known(4, (USL[0], USL[1], z)), mistyped]
+        assert solve_marks(marks, W, H, hint=(0.0, 13.0, 12.0)).floor_off is compared
+
+    @pytest.mark.parametrize(("more", "compared"), [((), False), ((USR,), True)])
+    def test_level_marks_with_three_in_a_line_are_not_compared(self, more, compared) -> None:
+        """REF, DSL and DSR lie on one line: with USL they make no four to compare, with USR as well they do."""
+        level = [_known(i, place) for i, place in enumerate((REF, DSL, DSR, USL, *more), start=1)]
+        marks = [*level, _known(9, (0.0, 6.0, 2.0), typed=(0.0, 6.0, 4.0))]
         assert solve_marks(marks, W, H, hint=(0.0, 13.0, 12.0)).floor_off is compared
 
     def test_without_four_level_known_marks_nothing_is_compared(self) -> None:

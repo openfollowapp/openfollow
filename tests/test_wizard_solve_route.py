@@ -22,6 +22,7 @@ import openfollow
 import openfollow.web.discovery as discovery_module
 from openfollow.scene import calibration_points as cp
 from openfollow.scene.solver import apply_overlay_distortion, project_points
+from openfollow.web import lens_calibrations
 from openfollow.web.server import ConfigWebServer
 from tests._ports import live_on_free_port
 
@@ -181,6 +182,12 @@ def test_simple_pins_on_a_curved_lens_read_as_pinhole_miss_the_camera(base: str)
     status, data = _solve(base, _body(marks=_simple_marks(LENS)))
     assert status == 200
     assert not np.allclose(_camera_vector(data["camera"]), TRUE, atol=0.1)
+
+
+def test_a_body_without_a_camera_reads_the_pins_as_pinhole(base: str) -> None:
+    status, data = _solve(base, _with({"camera": _DROP}))
+    assert status == 200
+    np.testing.assert_allclose(_camera_vector(data["camera"]), TRUE, atol=1e-3)
 
 
 def test_advanced_gives_the_camera_and_each_triangulated_place(base: str) -> None:
@@ -606,6 +613,17 @@ def test_a_lens_that_cannot_be_saved_is_refused_and_nothing_is_written(base: str
 @pytest.mark.parametrize("raw", [b"[]", b'"Zoom"', b"5", b"null", b"{not json"])
 def test_a_lens_body_that_is_not_an_object_is_refused(base: str, lens_dir: Path, raw: bytes) -> None:
     assert _send(base, "/api/wizard/lens/calibrations", raw=raw)[0] == 400
+
+
+def test_a_lens_the_station_cannot_write_answers_500(
+    base: str, lens_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse(*args: Any, **kwargs: Any) -> None:
+        raise PermissionError("read-only file system")
+
+    monkeypatch.setattr(lens_calibrations, "save_calibration", refuse)
+    status, data = _send(base, "/api/wizard/lens/calibrations", {"name": "Zoom wide", "k1": -0.2, "k2": 0.03})
+    assert (status, data) == (500, {"error": "The station could not write the file."})
 
 
 def test_the_list_is_newest_first_and_leaves_out_what_does_not_read(base: str, lens_dir: Path) -> None:

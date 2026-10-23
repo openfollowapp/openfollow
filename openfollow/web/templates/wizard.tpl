@@ -3757,18 +3757,18 @@
     $('review-grid-params').innerHTML = paramRows([['Width', lenText(grid.w, 2)], ['Depth', lenText(grid.d, 2)], ['Spacing', lenText(grid.spacing, 2)], ['X Offset', lenText(grid.cx, 2)], ['Y Offset', lenText(grid.cy, 2)], ['Z Offset', lenText(grid.z, 2)], ['Grid', S.mode === 'simple' ? 'From the rectangle' : 'Kept']]);
     renderFsBar();
   }
-  // The rating while the pair is the fit's own; a loaded calibration by its name; else whether values were typed under User input.
+  // The rating while the pair is the fit's own, User input once typed over; a loaded calibration by its name; else whether values were typed.
   function reviewLensCoverage(l) {
     var applies = lensFit && lensFitApplies(lensFit);
     if (lensIsTheFits(l) || (lensFit && !applies && !lensHandTuned())) {
       var shown = lensShownRating(lensFit), level = applies ? LENS_RATING_LEVEL[shown] || 'caution' : 'caution', n = LENS_RATING_SEGMENTS[shown] || 0;
       return '<span class="wizard-meter" data-level="' + level + '" aria-hidden="true">' + [0, 1, 2, 3, 4].map(function(i) { return '<span class="wizard-meter-seg' + (i < n ? ' filled' : '') + '"></span>'; }).join('') + '</span> ' + (LENS_RATING_LABEL[shown] || '') + (applies ? '' : ', not applied');
     }
+    if (lensFit) return 'User input';
     if (S.lensLoaded) {
       var ld = S.lensLoaded, same = lensSame(l, [ld.k1, ld.k2, ld.cx, ld.cy]);
       return 'Loaded: ' + esc(S.lensLoaded.name) + (same ? '' : ', changed by user input');
     }
-    if (lensFit && lensFitApplies(lensFit)) return 'User input';
     if (S.lensTouched) return 'User input';
     return lensMeasured() ? 'The station\'s lens' : 'Not measured';
   }

@@ -6914,11 +6914,14 @@ _LOADED = {"name": "Wide", "k1": -0.3, "k2": 0.01, "cx": 0, "cy": 0}
         ({"rating": "good", "lines": []}, None, [-0.25, -0.05, 0, 0], True, [0, 0, 0, 0], "User input"),
         (None, _LOADED, [-0.3, 0.01, 0, 0], True, [0, 0, 0, 0], "Loaded: Wide"),
         (None, _LOADED, [-0.3, 0.01, 0.002, 0], True, [0, 0, 0, 0], "Loaded: Wide, changed by user input"),
+        ({"rating": "low", "lines": [], "kept": [-0.3, 0.01, 0, 0]}, _LOADED, [-0.25, 0.01, 0, 0], True, [0, 0, 0, 0],
+         "User input"),
         (None, None, [-0.1, 0, 0, 0], True, [0, 0, 0, 0], "User input"),
         (None, None, [-0.1, 0, 0, 0], False, [-0.1, 0, 0, 0], "The station's lens"),
         (None, None, [0, 0, 0, 0], False, [0, 0, 0, 0], "Not measured"),
     ],
-    ids=["fit", "fit, then typed", "loaded", "loaded, then typed", "typed, no lines", "the station's", "nothing"],
+    ids=["fit", "fit, then typed", "loaded", "loaded, then typed", "loaded, a fit not applied, then typed",
+         "typed, no lines", "the station's", "nothing"],
 )  # fmt: skip
 def test_review_names_where_the_lens_came_from(
     fit: dict | None, loaded: dict | None, lens: list, touched: bool, station: list, label: str

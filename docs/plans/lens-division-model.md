@@ -44,7 +44,7 @@ a centre, its gates and seeds), the gallery equivalents.
 7. **The Camera tab gets the two pixel fields of §12**, disabled with "No
    video" when there is none; Save keeps the saved centre then.
 8. **The Lens step never calculates the lens centre; it is typed or
-   imported, and the fit holds it fixed.** A centre is typed (Adjust by hand,
+   imported, and the fit holds it fixed.** A centre is typed (User input,
    Camera tab) or imported (a saved lens calibration, a settings file, later an
    OpenCV import); the fit takes it as given and fits `k1` / `k2` about it. On
    real photos the fitted centre followed placement noise and the real bends of
@@ -634,7 +634,7 @@ step 9 has run.
 
 **Setup Wizard, Lens step** (in the mockup):
 
-- **Adjust by hand (optional)**: under the two sliders, a row **Lens centre**
+- **User input (optional)**: under the two sliders, a row **Lens centre**
   with two number fields, **Right of the picture centre (px)** and **Above
   the picture centre (px)**: whole pixels of the snapshot (the station's
   video), signed (left and below are negative), default 0, step 1, range
@@ -648,7 +648,7 @@ step 9 has run.
   The loaded-calibration line names a non-zero centre the same way.
 - **Load lens calibration**: each saved calibration's line adds
   "· Lens centre 42 px right, 18 px up" when its centre is not 0.
-- **Errors** under Adjust by hand: the pair's error (UI item 4) when the pair
+- **Errors** under User input: the pair's error (UI item 4) when the pair
   alone is invalid; else, when the centre makes it invalid, "With this lens
   centre, the overlay cannot follow the picture out to its corners. Set the
   lens centre closer to 0." (item 4a); a centre field outside its range or not
@@ -688,7 +688,7 @@ paragraph under Rating, "**Lens centre** is the point the lens bends the
 picture around. On many cameras it is a little off the centre of the
 picture. It is only measured when the lines show it clearly; otherwise it
 stays at the centre of the picture and the result does not name it.", and
-one under a new heading **Adjust by hand** for the two fields.
+one under a new heading **User input** for the two fields.
 
 ## UI changes for approval
 
@@ -696,7 +696,7 @@ Against the mockup (`~/.claude/plans/wizard-calibration-mockup/mock/template.htm
 whose own JS lens model, fit grid, predicted curves and sliders change with
 it; built 2026-10-22):
 
-1. Barrel / fisheye slider: -0.6..0.6 to **-1.0..0.5** (wizard Adjust by hand
+1. Barrel / fisheye slider: -0.6..0.6 to **-1.0..0.5** (wizard User input
    and Camera tab); zero is no longer centred.
 2. Corner correction slider: -0.4..0.4 to **-0.8..0.3** (both places); zero is
    no longer centred.
@@ -731,7 +731,7 @@ it; built 2026-10-22):
    (§12).
 9. Media Gallery arena and concert pictures re-rendered (at most 1.5 px
    different) with new printed values.
-10. **Lens centre, Adjust by hand**: the row **Lens centre** with **Right of
+10. **Lens centre, User input**: the row **Lens centre** with **Right of
     the picture centre (px)** and **Above the picture centre (px)**, step 1,
     ±275 px at 1080p, default 0 (§12).
 11. **Lens centre, result line**: ", lens centre 42 px right, 18 px up" when
@@ -740,7 +740,7 @@ it; built 2026-10-22):
 12. **Lens centre, Camera tab**: the same two fields in pixels of the live
     video, disabled with "No video" without one (§12; not in the mockup).
 13. Help drawer `wizard-lens.md`: the lens centre under Rating and the new
-    Adjust by hand paragraph (§12).
+    User input paragraph (§12).
 14. **Corner correction left open, result line** (decision 9): "corner
     correction 0 (not measured)" to **"corner correction −0.183
     (estimated)"**, the fit's own value; the help drawer's Rating paragraph
@@ -1204,7 +1204,7 @@ clear barrel; dense traced edges (16 sub-pixel points each) as the reference.
   the bend, not the numbers, and the help drawer names the drawn pair; with
   the suggestions that are not straight in the hall rejected, the fit lands
   on the drawn pair (step 6 note). The concert fits Poor, as before. The Festival's
-  centre is set by hand (the Lens step never measures one); its suggestions
+  centre is typed in (the Lens step never measures one); its suggestions
   fit `-0.313 / -0.020`, Good, about a centre of 0. The
   gallery TOMLs record a centre only where the picture has one.
 
@@ -1212,7 +1212,7 @@ clear barrel; dense traced edges (16 sub-pixel points each) as the reference.
 - [ ] `make ci-remote` green on pi59.
 - [ ] Station check on pi66 (ask the operator; check `.overlay-ref` first):
       Media Gallery concert picture, grid on the tape, mouse drags a marker to
-      the cursor in a corner with a centre set by hand, HUD bench with eight
+      the cursor in a corner with a typed centre, HUD bench with eight
       cone markers within §9.
 - [ ] Setup Wizard Lens step on synthetic 2.3 mm pictures (rendered with
       `_lens_scene`), centred and offset by (80, 50) px: suggestions along the
@@ -1295,7 +1295,7 @@ Decided 2026-10-22: after this PR. The analysis stays here for that PR.
 
 Decided 2026-10-23, the imported state: an imported profile replaces the
 lines. Importing deletes every traced line and suggestion, the step offers no
-drawing and hides **Adjust by hand**; the values show read-only in the result.
+drawing and hides **User input**; the values show read-only in the result.
 
 - Result line: "Imported lens profile applied – barrel / fisheye x, corner
   correction y, lens centre …"; below it: "It is correct if the profile was

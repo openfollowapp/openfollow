@@ -287,7 +287,7 @@
   .calib-row-head strong { font-size: 0.95rem; }
   .calib-fit { color: var(--muted); }
   .calib-reason { color: var(--error-text); margin-top: 0.35rem; }
-  /* Adjust by hand: the lens centre's two fields under the sliders, under one name. */
+  /* User input: the lens centre's two fields under the sliders, under one name. */
   .lens-centre { margin-top: 0.9rem; }
   .lens-centre-title { margin-bottom: 0.45rem; color: var(--text); font-size: 0.85rem; font-weight: 600; }
   .corner-xyz { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--text); font-size: 0.88rem; }
@@ -482,7 +482,7 @@
 
     <div class="group" style="margin-top:0.72rem;">
       <details class="inline-advanced" id="lens-adjust">
-        <summary>Adjust by hand (optional)</summary>
+        <summary>User input (optional)</summary>
         <div class="inline-advanced-content">
           <div class="row">
             <div class="field" style="flex:1;min-width:200px;">
@@ -928,7 +928,7 @@
   function wizSetLensCentre(c) { S.lensCentre = [Number(c[0]) || 0, Number(c[1]) || 0]; wizShowLensCentre(); }
 
   // The pair's error while the pair alone cannot follow the picture out to its corners, else the centre's;
-  // either opens Adjust by hand, so the error is never folded away.
+  // either opens User input, so the error is never folded away.
   var LENS_CENTRE_LIMIT_ERROR = 'With this lens centre, the overlay cannot follow the picture out to its corners. Set the lens centre closer to 0.';
   function wizLensCentreRangeError(max) { return 'Enter a whole number from −' + max + ' to ' + max + '.'; }
   // The centre field being typed in, whose range error waits until it is left or committed.
@@ -2264,7 +2264,7 @@
       var tuned = !lensSame(l, [ld.k1, ld.k2, ld.cx, ld.cy]);
       box.style.display = ''; box.className = 'notice'; meter.style.display = 'none';
       setLive($('lens-result-text'), esc('Loaded \u201c' + ld.name + '\u201d \u2013 barrel / fisheye ' + fmt(l[0], 3) + ', corner correction ' + fmt(l[1], 3) + lensCentreSuffix([l[2], l[3]])));
-      setLive($('lens-result-hint'), esc((tuned ? 'Adjusted by hand after loading. ' : '') + S.lensLoaded.src + '.'));
+      setLive($('lens-result-hint'), esc((tuned ? 'Changed by user input after loading. ' : '') + S.lensLoaded.src + '.'));
       return;
     }
     meter.style.display = '';
@@ -2289,14 +2289,14 @@
       + (lensFitApplies(lensFit) ? '' : ' \u2013 not applied');
     setLive($('lens-result-text'), esc(text));
     // The coverage hint is the hint box's alone.
-    setLive($('lens-result-hint'), esc((lensHandTuned() ? 'Adjusted by hand after the calculation. ' : '') +
+    setLive($('lens-result-hint'), esc((lensHandTuned() ? 'Changed by user input after the calculation. ' : '') +
       (middle ? LENS_MIDDLE.result : lensFitApplies(lensFit) ? '' : lensFitMisfit(lensFit) ? 'It is applied once the line that does not fit is corrected or deleted.' : 'More lines near the edges give a better rating.')));
   }
 
   function lensFitMisfit(fit) { return (fit.lines || []).some(function(l) { return !!(l && l.misfit); }); }
   // A Not usable fit, or one with a line that does not fit the others, is shown and not applied: the lens stays as it was.
   function lensFitApplies(fit) { return fit.rating !== 'low' && !lensFitMisfit(fit); }
-  // Whether the lens was edited by hand since the fit: away from the fit's pair, or from the one a fit not applied kept.
+  // Whether the lens was changed under User input since the fit: away from the fit's pair, or from the one a fit not applied kept.
   function lensHandTuned() {
     if (!lensFit) return false;
     if (lensFitApplies(lensFit)) return !lensIsTheFits(wizLens());
@@ -2651,7 +2651,7 @@
   // ---------------------------------------------------------------
   // Lens calibrations saved on this station, and a settings file's lens values
   // ---------------------------------------------------------------
-  // Whether the lens has values worth trusting: measured, loaded or adjusted by hand in this run, or a pair the station already had.
+  // Whether the lens has values worth trusting: measured, loaded or typed under User input in this run, or a pair the station already had.
   function lensMeasured() {
     return S.lensTouched || SAVED.lens.some(function(v) { return v !== 0; });
   }
@@ -3757,7 +3757,7 @@
     $('review-grid-params').innerHTML = paramRows([['Width', lenText(grid.w, 2)], ['Depth', lenText(grid.d, 2)], ['Spacing', lenText(grid.spacing, 2)], ['X Offset', lenText(grid.cx, 2)], ['Y Offset', lenText(grid.cy, 2)], ['Z Offset', lenText(grid.z, 2)], ['Grid', S.mode === 'simple' ? 'From the rectangle' : 'Kept']]);
     renderFsBar();
   }
-  // The rating while the pair is the fit's own; a loaded calibration by its name; else whether it was adjusted by hand.
+  // The rating while the pair is the fit's own; a loaded calibration by its name; else whether values were typed under User input.
   function reviewLensCoverage(l) {
     var applies = lensFit && lensFitApplies(lensFit);
     if (lensIsTheFits(l) || (lensFit && !applies && !lensHandTuned())) {
@@ -3766,10 +3766,10 @@
     }
     if (S.lensLoaded) {
       var ld = S.lensLoaded, same = lensSame(l, [ld.k1, ld.k2, ld.cx, ld.cy]);
-      return 'Loaded: ' + esc(S.lensLoaded.name) + (same ? '' : ', adjusted by hand');
+      return 'Loaded: ' + esc(S.lensLoaded.name) + (same ? '' : ', changed by user input');
     }
-    if (lensFit && lensFitApplies(lensFit)) return 'Adjusted by hand';
-    if (S.lensTouched) return 'Adjusted by hand';
+    if (lensFit && lensFitApplies(lensFit)) return 'User input';
+    if (S.lensTouched) return 'User input';
     return lensMeasured() ? 'The station\'s lens' : 'Not measured';
   }
   // Why Save and finish refuses a lens that cannot be saved, named by what is wrong with it.

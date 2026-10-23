@@ -34,7 +34,7 @@ Takes a new snapshot, for example when someone stood on a mark or the stage chan
 
 You can still save the result, unless a point is more than 20 px off or behind the camera: then **Save and finish** stays off until it is corrected. The warning lists what looks wrong or could not be checked: a camera far from the entered position, an unusual field of view, a camera below the floor or pointing upwards, or a point that disagrees with the others.
 
-It also tells you when the lens was not measured: nothing was measured, loaded or adjusted by hand in this run of the Setup Wizard, and the station's saved **Barrel / fisheye** and **Corner correction** are both 0. Four corners always fit exactly, whatever the lens is. So the corners look correct, but the calculated camera is wrong. A camera without visible barrel distortion does not need a lens measurement.
+It also tells you when the lens was not measured: nothing was measured, loaded or typed in under **User input** in this run of the Setup Wizard, and the station's saved **Barrel / fisheye** and **Corner correction** are both 0. Four corners always fit exactly, whatever the lens is. So the corners look correct, but the calculated camera is wrong. A camera without visible barrel distortion does not need a lens measurement.
 
 When the station already had a lens and nothing was measured in this run, a note says that the station's lens is used. This is not a warning: the lens is the one measured before.
 

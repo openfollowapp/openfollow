@@ -51,7 +51,7 @@ Which network interface SRT, RTSP and RTP use is set under **Network Interface A
   | Barrel / fisheye | -0.2 |
   | Corner correction | -0.07 |
 
-  **Festival** is a festival stage seen from a camera on the front truss over the crowd barrier, looking steeply down onto the stage through a 2.8 mm lens whose centre sits off the centre of the picture. It was drawn with this camera, which puts the grid on the tape; its lens centre is set by hand, under Lens centre on the Camera tab or in the Lens step's Adjust by hand. The tape on the stage marks a 12 × 6 m grid with the Reference Point at the middle of its downstage edge; the stage decks are 2 m across and 1 m deep.
+  **Festival** is a festival stage seen from a camera on the front truss over the crowd barrier, looking steeply down onto the stage through a 2.8 mm lens whose centre sits off the centre of the picture. It was drawn with this camera, which puts the grid on the tape; its lens centre is typed in, under Lens centre on the Camera tab or under User input in the Lens step. The tape on the stage marks a 12 × 6 m grid with the Reference Point at the middle of its downstage edge; the stage decks are 2 m across and 1 m deep.
 
   | Camera setting | Value |
   |---|---|

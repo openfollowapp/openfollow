@@ -1513,19 +1513,19 @@ class TestWizardScriptParses:
 
 @integration
 class TestWizardLensStepPage:
-    def test_the_lens_step_carries_the_stored_pair_under_adjust_by_hand(self, live_server_lens) -> None:
+    def test_the_lens_step_carries_the_stored_pair_under_user_input(self, live_server_lens) -> None:
         _, base = live_server_lens
         status, body = _get(base, "/wizard")
         assert status == 200
         assert 'id="wiz_lens_k1"' in body and 'type="hidden" id="wiz_lens_k1"' not in body
-        # The sliders carry the stored pair and sit under the result, folded away as Adjust by hand (optional).
+        # The sliders carry the stored pair and sit under the result, folded away as User input (optional).
         # The number fields take any value typed; only the sliders step.
         assert 'id="wiz_lens_k1" step="any"' in body and 'id="wiz_lens_k2" step="any"' in body
         assert 'value="-0.21"' in body and 'value="0.03"' in body
         adjust = re.search(
             r'<details class="inline-advanced" id="lens-adjust">\s*<summary>(.*?)</summary>(.*?)</details>', body, re.S
         )
-        assert adjust.group(1) == "Adjust by hand (optional)" and 'id="wiz_lens_k2"' in adjust.group(2)
+        assert adjust.group(1) == "User input (optional)" and 'id="wiz_lens_k2"' in adjust.group(2)
         assert "Fine-tune" not in body
         # A short intro says what the step measures and why, above the hint.
         intro = re.search(
@@ -1535,7 +1535,7 @@ class TestWizardLensStepPage:
         # No step is referred to by number anywhere, since the Lens step shifts the numbering.
         assert re.search(r"Step \d", body) is None
 
-    def test_adjust_by_hand_spans_the_sliders_and_holds_the_lens_centre_row(self, live_server_lens) -> None:
+    def test_user_input_spans_the_sliders_and_holds_the_lens_centre_row(self, live_server_lens) -> None:
         _, base = live_server_lens
         _, body = _get(base, "/wizard")
         adjust = re.search(r'<details class="inline-advanced" id="lens-adjust">(.*?)</details>', body, re.S).group(1)
@@ -1688,7 +1688,7 @@ class TestWizardLensTemplate:
         # Review rates the pair while it is the fit's own, or a fit not applied left it untouched.
         review = wizard_function("reviewLensCoverage")
         assert "if (lensIsTheFits(l) || (lensFit && !applies && !lensHandTuned())) {" in review
-        assert "'Adjusted by hand'" in review
+        assert "'User input'" in review
 
     def test_a_tap_is_judged_in_screen_pixels_and_a_cancel_traces_nothing(self) -> None:
         src = self._src()

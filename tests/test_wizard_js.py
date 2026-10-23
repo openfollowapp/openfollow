@@ -5400,9 +5400,9 @@ var imageWidth = 1920, imageHeight = 1080;
         ((-0.2, 0.0, 0.2, 0.2), False, False, "none", ""),
         ((-0.2, 0.0, 0.2, 0.2), False, True, "none", ""),
     ],
-    ids=["the pair", "the pair, a centre field too", "the centre", "a centre field", "valid", "valid, opened by hand"],
+    ids=["the pair", "the pair, a centre field too", "the centre", "a centre field", "valid", "valid, already open"],
 )
-def test_a_lens_past_its_limit_says_which_value_and_opens_adjust_by_hand(
+def test_a_lens_past_its_limit_says_which_value_and_opens_user_input(
     lens: tuple[float, ...], bad_field: bool, was_open: bool, pair: str, centre: str
 ) -> None:
     out = run_wizard_js(
@@ -5548,7 +5548,7 @@ def test_a_centre_that_stops_the_lens_short_keeps_the_last_one_until_a_pair_can_
     )
     # Not taken: the last centre stays, nothing is fitted about the typed one, and nothing saves.
     assert out[0] == [[0.01, 0.02], True, False, 0, 1, LIMIT_CENTRE, "true", "true"]
-    # A pair that follows the picture with the typed centre takes it, as typed by hand: no refit.
+    # A pair that follows the picture with the typed centre takes it as typed: no refit.
     assert out[1] == [pytest.approx([220 / _D, -220 / _D]), False, True, 0, "none", "false"]
 
 
@@ -6630,10 +6630,10 @@ def test_the_loaded_line_names_the_centre_in_use() -> None:
         + f" wizLens = function() {{ return [-0.2, -0.07, {_C42[0]}, 5 / {_D}]; }};",
         LENS_C_BOUND=C_BOUND,
     )
-    # The centre moved by hand after loading: the line names the one in use and says it was adjusted.
+    # The centre typed after loading: the line names the one in use and says user input changed it.
     assert out == [
         "Loaded “Wide” – barrel / fisheye −0.200, corner correction −0.070, lens centre 42 px right, 5 px down",
-        "Adjusted by hand after loading. Saved on this station on 2026-10-14.",
+        "Changed by user input after loading. Saved on this station on 2026-10-14.",
     ]
 
 
@@ -6869,9 +6869,9 @@ def test_a_fit_with_a_line_that_does_not_fit_keeps_the_lens_as_it_was(misfit: bo
         ({"rating": "good", "lines": _MISFIT_LINES, "kept": [-0.2, 0, 0, 0]}, [-0.2, 0, 0, 0], False,
          "Good, not applied"),
         ({"rating": "low", "lines": [], "kept": [-0.2, 0, 0, 0]}, [-0.2, 0, 0, 0], False, "Not usable, not applied"),
-        # Edited by hand after a fit that was not applied: the lens is the operator's.
+        # Typed after a fit that was not applied: the lens is the operator's.
         ({"rating": "good", "lines": _MISFIT_LINES, "kept": [-0.2, 0, 0, 0]}, [-0.25, 0, 0, 0], True,
-         "Adjusted by hand"),
+         "User input"),
     ],
     ids=["a line does not fit", "not usable", "edited after"],
 )  # fmt: skip
@@ -6892,7 +6892,84 @@ def test_review_names_a_fit_that_was_not_applied(fit: dict, lens: list, touched:
         f" function wizLens() {{ return {json.dumps(lens)}; }} function lensMeasured() {{ return true; }}"
         f" var S = {{ lensLoaded: null, lensTouched: {json.dumps(touched)} }}, lensFit = {json.dumps(fit)};",
     )
-    assert out.endswith(label) and ("wizard-meter" in out) is (label != "Adjusted by hand")
+    assert out.endswith(label) and ("wizard-meter" in out) is (label != "User input")
     # A fit that is not applied is a caution in Review too, whatever its rating.
-    if label != "Adjusted by hand":
+    if label != "User input":
         assert 'data-level="caution"' in out
+
+
+_GOOD_METER = (
+    '<span class="wizard-meter" data-level="success" aria-hidden="true">'
+    + '<span class="wizard-meter-seg filled"></span>' * 4
+    + '<span class="wizard-meter-seg"></span></span> Good'
+)
+_FIT_PAIR = [-0.2, -0.05, 0, 0]
+_LOADED = {"name": "Wide", "k1": -0.3, "k2": 0.01, "cx": 0, "cy": 0}
+
+
+@pytest.mark.parametrize(
+    ("fit", "loaded", "lens", "touched", "station", "label"),
+    [
+        ({"rating": "good", "lines": []}, None, _FIT_PAIR, True, [0, 0, 0, 0], _GOOD_METER),
+        ({"rating": "good", "lines": []}, None, [-0.25, -0.05, 0, 0], True, [0, 0, 0, 0], "User input"),
+        (None, _LOADED, [-0.3, 0.01, 0, 0], True, [0, 0, 0, 0], "Loaded: Wide"),
+        (None, _LOADED, [-0.3, 0.01, 0.002, 0], True, [0, 0, 0, 0], "Loaded: Wide, changed by user input"),
+        (None, None, [-0.1, 0, 0, 0], True, [0, 0, 0, 0], "User input"),
+        (None, None, [-0.1, 0, 0, 0], False, [-0.1, 0, 0, 0], "The station's lens"),
+        (None, None, [0, 0, 0, 0], False, [0, 0, 0, 0], "Not measured"),
+    ],
+    ids=["fit", "fit, then typed", "loaded", "loaded, then typed", "typed, no lines", "the station's", "nothing"],
+)  # fmt: skip
+def test_review_names_where_the_lens_came_from(
+    fit: dict | None, loaded: dict | None, lens: list, touched: bool, station: list, label: str
+) -> None:
+    out = run_wizard_js(
+        f"reviewLensCoverage({json.dumps(lens)})",
+        functions=(
+            "esc",
+            "lensMiddleOnly",
+            "lensShownRating",
+            "lensFitApplies",
+            "lensFitMisfit",
+            "lensSame",
+            "lensHandTuned",
+            "lensMeasured",
+            "reviewLensCoverage",
+        ),  # fmt: skip
+        variables=("LENS_RATING_LEVEL", "LENS_RATING_SEGMENTS", "LENS_RATING_LABEL"),
+        prelude=f"function lensIsTheFits(l) {{ return !!lensFit && lensSame(l, {json.dumps(_FIT_PAIR)}); }}"
+        f" function wizLens() {{ return {json.dumps(lens)}; }} var SAVED = {{ lens: {json.dumps(station)} }};"
+        f" var S = {{ lensLoaded: {json.dumps(loaded)}, lensTouched: {json.dumps(touched)} }},"
+        f" lensFit = {json.dumps(fit)};",
+    )
+    assert out == label
+
+
+@pytest.mark.parametrize(
+    ("tuned", "hint"),
+    [(True, "Changed by user input after the calculation. "), (False, "")],
+    ids=["typed after the fit", "the fit's own"],
+)
+def test_the_result_hint_says_user_input_changed_the_fit(tuned: bool, hint: str) -> None:
+    out = run_wizard_js(
+        "(function() { renderLensResult(); return $('lens-result-hint').innerHTML; })()",
+        functions=(
+            *_LINE_FUNCTIONS,
+            *_CENTRE_PX,
+            "lensMiddleOnly",
+            "lensShownRating",
+            "lensHandTuned",
+            "renderLensResult",
+        ),
+        variables=("LENS_RATING_LEVEL", "LENS_RATING_LABEL"),
+        prelude=_DOM
+        + _RESULT_PAGE
+        + f"lensIsTheFits = function() {{ return {json.dumps(not tuned)}; }};"
+        + "document.getElementById = function(id) { var el = $(id); el.querySelector = function() { return $('m'); };"
+        " return el; };"
+        + "var S = { lensLoaded: null }, lensFit = "
+        + json.dumps({"rating": "good", "k1": -0.198, "k2": -0.071, "k2_fitted": True, "hint": "", "centre": [0, 0]})
+        + ";",
+        LENS_C_BOUND=C_BOUND,
+    )
+    assert out == hint

@@ -392,12 +392,17 @@ def _residual_variance(lines: _Lines, k: FloatArray, n_params: int) -> float:
 
 
 def _beta_fraction(a: float, b: float, x: float) -> float:
-    """The continued fraction of the regularised incomplete beta function (modified Lentz)."""
+    """The continued fraction of the regularised incomplete beta function (modified Lentz).
+
+    Called only for ``x <= (a + 1) / (a + b + 2)``, where it converges within a few dozen terms.
+    """
     tiny = 1e-300
     c, d = 1.0, 1.0 - (a + b) * x / (a + 1.0)
     d = 1.0 / (d if abs(d) > tiny else tiny)
     h = d
-    for m in range(1, 400):
+    m = 0
+    while True:
+        m += 1
         for num in (
             m * (b - m) * x / ((a + 2 * m - 1) * (a + 2 * m)),
             -(a + m) * (a + b + m) * x / ((a + 2 * m) * (a + 2 * m + 1)),
@@ -408,16 +413,11 @@ def _beta_fraction(a: float, b: float, x: float) -> float:
             c = c if abs(c) > tiny else tiny
             h *= d * c
         if abs(d * c - 1.0) < 1e-14:
-            break
-    return h
+            return h
 
 
 def _beta_regularised(a: float, b: float, x: float) -> float:
-    """The regularised incomplete beta function ``I_x(a, b)``."""
-    if x <= 0.0:
-        return 0.0
-    if x >= 1.0:
-        return 1.0
+    """The regularised incomplete beta function ``I_x(a, b)``, for ``0 < x < 1``."""
     front = math.exp(math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b) + a * math.log(x) + b * math.log1p(-x))
     if x < (a + 1.0) / (a + b + 2.0):
         return front * _beta_fraction(a, b, x) / a

@@ -9,7 +9,7 @@ import math
 import numpy as np
 import pytest
 
-from openfollow.lens_model import lens_warp_is_valid
+from openfollow.lens_model import lens_limit_radius, lens_warp_is_valid
 from openfollow.scene.lens_fit import (
     K1_PRIOR,
     K2_PRIOR,
@@ -336,6 +336,15 @@ class TestGivenCentre:
         result = fit_lens_from_lines(lines, W, H, cx=truth[2], cy=truth[3])
         assert lens_warp_is_valid(*_lens(result))
         assert (result.cx, result.cy) == truth[2:]
+
+    def test_a_lens_on_the_edge_of_the_valid_ones_is_fitted_there(self) -> None:
+        # Left out in turn, a line leaves a refit that creeps on past the refinement's iteration budget.
+        truth = (-1.0, 0.0)
+        assert lens_limit_radius(*truth) == pytest.approx(1.0)
+        result = fit_lens_from_lines(lines_for(*truth, (LEFT, DIAGONAL, MID_V), noise=1.0, seed=1), W, H)
+        assert lens_warp_is_valid(*_lens(result))
+        assert lens_limit_radius(result.k1, result.k2) == pytest.approx(1.0, abs=1e-4)
+        assert not any(line.misfit for line in result.lines)
 
 
 class TestScreenPixels:
@@ -891,6 +900,12 @@ class TestStrays:
         result = fit_lens_from_lines(lines, W, H)
         assert [line.dropped for line in result.lines] == [(), (), (2,), ()]
         assert not any(line.misfit for line in result.lines)
+
+    def test_a_point_off_a_line_alone_is_set_aside(self) -> None:
+        # With no other line to refit the lens from, the line is judged under its own fit.
+        line = [[200.0 + 190.0 * i, 300.0 + (25.0 if i == 7 else 0.0)] for i in range(9)]
+        result = fit_lens_from_lines([line], W, H)
+        assert result.lines[0].dropped == (7,)
 
     def test_a_line_of_four_points_keeps_them_all(self) -> None:
         # Set one aside and three are left, which any lens bends through.

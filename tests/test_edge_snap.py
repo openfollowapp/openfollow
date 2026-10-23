@@ -167,6 +167,14 @@ def test_a_line_off_the_image_centre_keeps_the_bow_asymmetry() -> None:
     np.testing.assert_allclose(np.abs(edge_distances(pts, p0, p1, BARREL)), 7.0, atol=1.0)
 
 
+def test_a_line_through_the_image_centre_is_snapped_onto_its_edge() -> None:
+    # No lens bows a line through the centre: the chord is the only curve it can follow.
+    p0, p1 = (200.0, H / 2), (1700.0, H / 2)
+    pts = snap(strip_frame(p0, p1, BARREL), p0, p1)
+    assert all(p.snapped for p in pts)
+    np.testing.assert_allclose(np.abs(edge_distances(pts, p0, p1, BARREL)), 7.0, atol=1.0)
+
+
 def test_a_straight_edge_stays_straight_to_the_sub_pixel() -> None:
     p0, p1 = (200.0, 300.3), (1700.0, 330.3)
     pts = snap(strip_frame(p0, p1, STRAIGHT, noise=1.0), p0, p1)

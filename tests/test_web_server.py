@@ -7439,7 +7439,7 @@ def test_a_lens_centre_field_without_whole_pixels_in_range_says_so_and_writes_no
         assert out == [
             "saved-cx",
             '<span class="field-error-msg" role="alert" aria-live="assertive">'
-            "Must be a number from -275 to 275.</span>",
+            "Must be a whole number from -275 to 275.</span>",
             "true",
             1,
             1,

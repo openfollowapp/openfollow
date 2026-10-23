@@ -61,6 +61,23 @@ a centre, its gates and seeds), the gallery equivalents.
    the fit answers `k2_fitted` false, its `k2` (the pair drawn toward no lens
    by the prior) is applied with `k1`, and the result line reads "corner
    correction −0.183 (estimated)" instead of "0 (not measured)" (item 14).
+10. **Lines that stay near the middle measure the middle, and the result says
+    so** (2026-10-23). The rating stays at the pinhole corners with the same
+    thresholds, and the reach guard's cap at Poor is gone: the lens is applied
+    as its rating allows. The fit answers `edges_measured` false unless two
+    lines reach beyond 0.5 of the half-diagonal from the lens centre on two
+    different of its four sides (counted per line: one line through the middle
+    is one line, whatever its two ends reach). The page then names the rating
+    "Good in the middle", shows "The lines stay near the middle of the
+    picture, so its edges are not measured. That is fine if you only need the
+    middle. To measure the edges, add lines near them." in place of the other
+    hints, and at Good or better the hint box "The middle of the picture is
+    measured." / "If possible, add lines near the edges of the picture to
+    measure them too.", mirrored in the full-screen toolbar; lower ratings keep
+    their hints. The help drawer: "When the lines stay near the middle of the
+    picture, the rating only covers the middle; the result says that the edges
+    are not measured. That can be enough when you only need the middle of the
+    stage." This replaces rating such lines at the screen corners.
 
 ## 1. The model
 
@@ -516,7 +533,7 @@ lens the pinhole corners land well inside the frame (screen radius about 0.71
 on a 2.3 mm-like `-0.53 / -0.07`), so the rating speaks for that radius, not
 for the frame's corners. Rating at the screen corner would be the more honest
 number, but it needs thresholds derived for it and rates every barrel lens
-lower: open question 4.
+lower: open question 1.
 - `curve()` uses `apply_overlay_distortion` with the centre (now the iterative
   direction): 24 samples a line, negligible.
 - The hint and `MAX_LINES` are model-free. The result gains `cx`, `cy` and
@@ -638,8 +655,9 @@ step 9 has run.
   alone is invalid; else, when the centre makes it invalid, "With this lens
   centre, the overlay cannot follow the picture out to its corners. Set the
   lens centre closer to 0." (item 4a); a centre field outside its range or not
-  a number, "Enter a number from −275 to 275." with the snapshot's bound
-  (item 4b).
+  a whole number, "Enter a whole number from −275 to 275." with the snapshot's
+  bound (item 4b), shown once the field is left or committed; the limit error
+  shows while typing.
 - Review and the Camera Calibration step's Lens chip are unchanged (they show
   the pair only).
 
@@ -693,8 +711,9 @@ it; built 2026-10-22):
    - 4a. New, the centre makes the lens invalid: **"With this lens centre,
      the overlay cannot follow the picture out to its corners. Set the lens
      centre closer to 0."**
-   - 4b. New, a centre field out of range or empty: **"Enter a number from
-     −275 to 275."** (the bound of the snapshot's size).
+   - 4b. New, a centre field out of range, empty or not whole pixels:
+     **"Enter a whole number from −275 to 275."** (the bound of the
+     snapshot's size).
 5. Camera tab field error: "This pair folds the overlay inside the frame.
    Bring either value closer to 0." to **"This pair cannot follow the picture
    out to its corners. Bring either value closer to 0."**
@@ -1076,26 +1095,31 @@ clear barrel; dense traced edges (16 sub-pixel points each) as the reference.
   they rated Excellent.
   Open: under such a lens the pinhole corners, where the rating is read,
   land at 0.66 of the half-diagonal; lines in the lower half alone leave
-  1-12 px between 0.66 and 0.8 that the rating does not see (open question 4).
-- [x] **Reach guard** (until open question 4 moves the rated points): the
-      rating is held at Poor unless points beyond 0.5 of the half-diagonal
-      from the lens centre lie on two of its four sides (right, up, left,
-      down). In the simulation (9072 trials, seed 0) it lowers 37 trials,
-      all one or two middle lines on a 2.3 mm-like lens 144 px off centre,
-      centre given, rated Fair 30-150 px off; no row without an overclaim
-      changes, and the radius makes no difference anywhere from 0.5 to 0.7.
-      0.5, not 0.6: the six 150-degree frames' lines reach 0.56-0.59 and stay
-      Good. Three upright lines in the left part only are capped too; they are
-      honest there up to a 2.3 mm-like lens, 4 of 12 trials past twice Fair on
-      the 150-degree one.
+  1-12 px between 0.66 and 0.8 that the rating does not see (open question 1).
+- [x] **Edges measured** (decision 10): `edges_measured` is false unless two
+      lines reach beyond 0.5 of the half-diagonal from the lens centre on two
+      different of its four sides (right, up, left, down); the rating is not
+      capped. 0.5, not 0.6: the six 150-degree frames' lines reach 0.56-0.59.
+      In the simulation's scenarios (all 63 lenses and centres, 6 trials at
+      1 and 3 px each) it is false in every trial of one or two centre lines
+      and of the top edge alone, and in none of the others. Without the cap,
+      41 trials of one or two middle lines on a 2.3 mm-like lens 144 px off
+      centre, centre given, rate Fair again (overclaims at the frame 37 to 42,
+      all with `edges_measured` false); the whole simulation's overclaims go
+      from 312 to 313 of 9072. Random middle lines (ends within 0.65 of the
+      half-diagonal, 40 trials each on three strong lenses): one line is
+      false in 120 of 120; two lines in 87 of 120. The other 33 are two
+      lines that each reach out, on different sides; 25 of them rate Fair or
+      Good and 25 overclaim at the frame. The hall, the concert and the six
+      150-degree frames answer true and rate as before.
 - [x] **Misfit by the line's own degrees of freedom**: the 1.5 px floor
       flagged a straight line in 3 % of fits at 1 px (40 of 1280), the noise
       real snapshots show. A line now misfits past the F test of its scatter
       against the others' at 1e-3, past 3 sigmas of the refit's uncertainty,
       and past 2 px:
       3 of 1280 at 1 px, 4 of 180 at 3 px (before 6). A stray is set aside
-      only while the line's other points lie on a line within the points' own
-      scatter, so a bow keeps its points (a 12 px bowed diagonal among four
+      only while the line's other points lie on a line under the lens the
+      other lines agree on, so a bow keeps its points (a 12 px bowed diagonal among four
       edges at 1 px: caught 28 of 40, before 23, which a dropped end had
       straightened), and of the lines that do not fit, the one set aside is
       the one that misses most among those without which the rest agree
@@ -1104,6 +1128,14 @@ clear barrel; dense traced edges (16 sub-pixel points each) as the reference.
       and five ratings. The on-screen graphic is still flagged on
       two of the three frames that show it; on the third the frame's other
       lines scatter 1.2 px and its 2.7 px is a one-in-300 chance there.
+      The other points are judged with the lens refitted without the line,
+      the refit's own uncertainty at them added to the scatter: judged under
+      the lens the bow pulled its way, a bow's other points ran straight, an
+      end was set aside and a straight edge flagged in its place (a 10 px
+      bowed top edge among four at 0.3 px: 9 of 20 fits before, 0 after; a
+      12 px bowed bottom edge on a 6 mm-like lens at 0.5 px: 10 of 20 before,
+      1 after). One point moved 8 px is still set aside in 209 of 360 fits
+      (222 before).
 - Note, the concert picture: of its 12 suggestions five run along the
   drapes, curved 4.5-15 px in the hall. They bend alike on both sides and
   agree with a lens of their own (`-0.10 / -0.35`, Fair, 107 px off at the
@@ -1138,12 +1170,17 @@ clear barrel; dense traced edges (16 sub-pixel points each) as the reference.
       conversion and its sign (a centre 42 px up stores `-42 / D`).
 - Note (step 7): the wizard keeps the centre in half-diagonals
   (`S.lensCentre`) and shows it in whole pixels of the snapshot; a centre
-  field without a number in range keeps the lens from being saved. Every fit
+  field without a whole number in range keeps the lens from being saved: the
+  last centre taken stays in use, the field keeps its text and its flag across
+  a snapshot of the same size, and Save and finish refuses with "A lens centre
+  field does not hold a whole number from −275 to 275." (or, for a centre that
+  stops the lens short, "With this lens centre, the overlay cannot follow the
+  picture out to its corners."). Every fit
   request sends `cx` / `cy` and an applied fit writes only the pair (decision
   8); a centre typed while lines are traced measures them again. The Camera
   tab's fields write hidden `lens_cx` / `lens_cy` through the live video's
-  half-diagonal (`_camera_video_size`), say "Must be a number from -275 to
-  275." themselves (the station's bound is in half-diagonals) and are off
+  half-diagonal (`_camera_video_size`), say "Must be a whole number from -275
+  to 275." themselves (the station's bound is in half-diagonals) and are off
   with "No video" without a video size. Review adds a **Lens centre** row
   when the centre is not 0.
 
@@ -1257,7 +1294,8 @@ clear barrel; dense traced edges (16 sub-pixel points each) as the reference.
 1. The rating stays at the pinhole corners, as today (§7, The rating). Should
    a later change rate at the screen corners instead, with thresholds derived
    for that point? Every barrel lens would rate lower than today for the same
-   lines. Not part of this change.
+   lines. Not part of this change. Lines that do not reach out are answered
+   by decision 10 without moving the rating.
 
 ## Later: OpenCV calibration import (`.xml`), its own PR
 

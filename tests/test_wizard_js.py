@@ -255,6 +255,43 @@ def test_a_fit_measures_the_pair_about_the_lens_centre_in_use_and_keeps_it() -> 
                    [0.0254, -0.0145]]  # fmt: skip
 
 
+@pytest.mark.parametrize(
+    ("answer", "taken"),
+    [("k1: -0.3123, k2: -0.0123", True), ("k1: -0.6, k2: -0.1", False)],
+    ids=["fits", "still short"],
+)
+def test_a_fit_takes_a_centre_the_last_pair_could_not(answer: str, taken: bool) -> None:
+    fetch = _ANSWER_FETCH.replace("k1: -0.3123, k2: -0.0123", answer)
+    out = run_wizard_js(
+        "(function() { $('wiz_lens_k1').value = '-0.6'; $('wiz_lens_k2').value = '-0.1';"
+        " $('wiz_lens_cx').value = '220'; $('wiz_lens_cy').value = '220'; runLensFit();"
+        " return [S.lensCentre, S.lensCentreBad, fits]; })()",
+        functions=(
+            *_LENS_MODEL,
+            *_CENTRE_PX,
+            "wizReadLensCoeff",
+            "wizLens",
+            "wizLensShownPair",
+            "lensFitApplies",
+            "wizWriteLensCoeff",
+            "wizSyncLensRange",
+            "wizTakeLensCentre",
+            "runLensFit",
+        ),
+        prelude=_LIMIT_PAGE
+        + fetch
+        + _FIT_PAGE
+        + " var sent = null, fits = 0, S = { lensCentre: [0.01, 0.02], lensCentreBad: true };"
+        " function wizShowLensLimit() {} function onLensCoeffChanged() {} function scheduleLensFit() { fits++; }",
+        LENS_C_BOUND=C_BOUND,
+    )
+    # Taken, the lines are measured again about it; still short, the last centre stays, flagged.
+    if taken:
+        assert out == [pytest.approx([220 / _D, -220 / _D]), False, 1]
+    else:
+        assert out == [[0.01, 0.02], True, 0]
+
+
 def test_a_fit_that_leaves_the_corner_correction_open_applies_its_estimate() -> None:
     # The answer's k2 is the pair's, drawn toward no lens; a point the fit set aside changes nothing on the page.
     fetch = _ANSWER_FETCH.replace("k2: -0.0123, k2_fitted: true", "k2: -0.1834, k2_fitted: false").replace(
@@ -522,6 +559,62 @@ def test_a_slider_edit_counts_as_a_measured_lens(saved: list[float], before: boo
     )
     # A station's saved pair counts as measured; a pinhole one only once it is edited.
     assert out == [before, True]
+
+
+# A number field as a browser keeps it: the text as typed, its value empty while the text is no number yet.
+_TYPED_FIELDS = r"""
+function numberField(text) {
+  return { text: text, writes: 0,
+    get value() { return /^-?(\d+(\.\d+)?|\.\d+)([eE][-+]?\d+)?$/.test(this.text) ? this.text : ''; },
+    set value(v) { this.writes++; this.text = String(v); } };
+}
+var fields = { wiz_lens_k1: numberField('0'), wiz_lens_k2: numberField('0'),
+  wiz_lens_k1_range: { value: '0', min: '-1', max: '0.5' },
+  wiz_lens_k2_range: { value: '0', min: '-0.8', max: '0.3' } };
+var document = { getElementById: function(id) { return fields[id] || null; } };
+var window = {}, S = { lensCentreBad: false };
+function wizLensEdited() {} function wizTakeLensCentre() {}
+"""
+
+
+@pytest.mark.parametrize(
+    ("which", "typed", "span"),
+    [("k1", "-0.25", [-1, 0.5]), ("k2", "-0.125", [-0.8, 0.3]), ("k1", "-1.5", [-1.5, 0.5]),
+     ("k2", "0.4", [-0.8, 0.4])],
+)  # fmt: skip
+def test_a_value_typed_key_by_key_stays_as_typed_and_the_slider_follows(which: str, typed: str, span: list) -> None:
+    out = run_wizard_js(
+        "(function() { var id = 'wiz_lens_' + which, seen = [];"
+        " for (var i = 1; i <= typed.length; i++) { fields[id].text = typed.slice(0, i);"
+        " window.onWizardLensInput(which, 'number');"
+        " seen.push([fields[id].text, Number(fields[id + '_range'].value)]); }"
+        " return [seen, fields[id].writes, Number(fields[id + '_range'].min), Number(fields[id + '_range'].max)]; })()",
+        functions=("wizSyncLensRange",),
+        prelude=_TYPED_FIELDS + wizard_window_function("onWizardLensInput"),
+        which=which,
+        typed=typed,
+    )
+    seen, writes, low, high = out
+    # Every key leaves the text as typed: a part-typed "-" or "-0." is never written back as empty.
+    assert [text for text, _ in seen] == [typed[:i] for i in range(1, len(typed) + 1)] and writes == 0
+    # The slider follows each prefix that reads as a number and keeps its place while one does not.
+    slider, expected = [v for _, v in seen], []
+    for i in range(1, len(typed) + 1):
+        prefix = typed[:i]
+        number = re.fullmatch(r"-?(\d+(\.\d+)?|\.\d+)", prefix)
+        expected.append(float(prefix) if number else (expected[-1] if expected else 0.0))
+    assert slider == pytest.approx(expected) and slider[-1] == pytest.approx(float(typed))
+    assert [low, high] == pytest.approx(span)
+
+
+def test_a_slider_drag_writes_the_number_field() -> None:
+    out = run_wizard_js(
+        "(function() { fields.wiz_lens_k2_range.value = '-0.245'; window.onWizardLensInput('k2', 'range');"
+        " return [fields.wiz_lens_k2.text, fields.wiz_lens_k2.writes]; })()",
+        functions=("wizSyncLensRange",),
+        prelude=_TYPED_FIELDS + wizard_window_function("onWizardLensInput"),
+    )
+    assert out == ["-0.245", 1]
 
 
 # ---------------------------------------------------------------------------
@@ -2362,7 +2455,7 @@ def test_a_point_reached_with_tab_is_selected_and_held(
         " lensTabKey({ key: 'Tab', shiftKey: shift, preventDefault: function() {}, stopPropagation: function() {} });"
         " seq.push(lensSelected.point); });"
         " return got.concat([seq]); })()",
-        functions=("esc", "setLive", "renderLensHint", "lensPointFocusIn", "lensTabKey"),
+        functions=("esc", "setLive", "lensEdgesMeasured", "renderLensHint", "lensPointFocusIn", "lensTabKey"),
         prelude="var lensSelected = null, lensHold = false, lensRefocus = false, lensDrag = null;" + _POINT_FOCUS_PAGE,
     )
     hint = "Move the point exactly onto the edge." if held else ""
@@ -2433,6 +2526,8 @@ var S = { lensLoaded: state.loaded }, lensPending = state.pending, lensHold = st
 var lensLines = state.lines, lensFit = state.fit;
 """
 _LINE = {"misfit": False}
+_MIDDLE_HINT = "The middle of the picture is measured."
+_MIDDLE_SUB = "If possible, add lines near the edges of the picture to measure them too."
 _AGREE = "The result may already be good. If possible, add a line near the top edge to confirm it."
 
 
@@ -2494,6 +2589,34 @@ def _hint_state(**kw: object) -> dict:
             "Press Next. If possible, add lines near the top and left edges to confirm it.",
         ),
         (
+            _hint_state(
+                lines=[_LINE] * 4,
+                fit={
+                    "rating": "excellent",
+                    "hint": "If possible, add lines near the top and left edges to confirm it.",
+                    "edges_measured": False,
+                },
+            ),
+            _MIDDLE_HINT,
+            _MIDDLE_SUB,
+        ),
+        (
+            _hint_state(lines=[_LINE] * 4, fit={"rating": "good", "hint": "", "edges_measured": False}),
+            _MIDDLE_HINT,
+            _MIDDLE_SUB,
+        ),
+        (
+            _hint_state(lines=[_LINE] * 4, fit={"rating": "good", "hint": "", "edges_measured": True}),
+            "The lens is measured.",
+            "Press Next.",
+        ),
+        (
+            _hint_state(lines=[_LINE] * 3, fit={"rating": "okay", "hint": "Add a line.", "edges_measured": False}),
+            "Improve the lines, or add more.",
+            "Select a point and move it exactly onto the edge. Lines near the edges and corners of the picture help"
+            " the most. Add a line.",
+        ),
+        (
             _hint_state(lines=[_LINE] * 4, fit={"rating": "okay", "hint": _AGREE}),
             "The result may already be good.",
             "If possible, add a line near the top edge to confirm it. Or press Next.",
@@ -2523,6 +2646,10 @@ def _hint_state(**kw: object) -> dict:
         "misfit",
         "measured",
         "measured with weak edges",
+        "only the middle, excellent",
+        "only the middle, good",
+        "the edges measured",
+        "only the middle, fair",
         "lines agree",
         "applied",
         "not usable",
@@ -2531,7 +2658,8 @@ def _hint_state(**kw: object) -> dict:
 def test_the_lens_hint_names_the_one_next_thing_to_do(state: dict, heading: str, sub: str) -> None:
     out = run_wizard_js(
         "(function() { renderLensHint(); return [$('lens-hint').innerHTML, lensHintText]; })()",
-        functions=("esc", "setLive", "renderLensHint"),
+        functions=("esc", "setLive", "lensEdgesMeasured", "renderLensHint"),
+        variables=("LENS_MIDDLE",),
         prelude="var state = " + json.dumps(state) + ";" + _HINT_PAGE,
     )
     assert out == [f'{heading}<div class="notice-sub">{sub}</div>', heading]
@@ -2585,7 +2713,7 @@ var S = { lensLoaded: null }, lensPending = null, lensHold = true, lensSelected 
 var lensLines = [{ misfit: false }], lensFit = null;
 """
 )
-_LIVE = ("esc", "setLive", "renderLensHint", "renderFsBar", "fsActions", "dropLensPoint")
+_LIVE = ("esc", "setLive", "lensEdgesMeasured", "renderLensHint", "renderFsBar", "fsActions", "dropLensPoint")
 
 
 @pytest.mark.parametrize("full_screen", [True, False], ids=["full screen", "on the page"])
@@ -2603,6 +2731,20 @@ def test_ending_a_hold_moves_the_hint_and_the_full_screen_bar_on(full_screen: bo
     assert hint.startswith("Draw more straight lines.<div")
     assert bar == ("Draw more straight lines." if full_screen else "")
     assert loupe == "hidden"
+
+
+@pytest.mark.parametrize(("edges", "heading"), [(False, _MIDDLE_HINT), (None, "The lens is measured.")])
+def test_the_full_screen_bar_says_when_only_the_middle_is_measured(edges: bool | None, heading: str) -> None:
+    out = run_wizard_js(
+        "(function() { lensHold = false; lensSelected = null; lensFit = { rating: 'good', hint: '' };"
+        " if (edges !== null) lensFit.edges_measured = edges; renderLensHint(); renderFsBar();"
+        " return [$('fs-hint').innerHTML, $('lens-hint').innerHTML]; })()",
+        functions=_LIVE,
+        variables=("LENS_MIDDLE",),
+        prelude=_LIVE_PAGE,
+        edges=edges,
+    )
+    assert out[0] == heading and out[1].startswith(heading + "<div")
 
 
 def test_the_hint_and_the_full_screen_bar_are_only_rewritten_when_their_words_change() -> None:
@@ -4117,7 +4259,7 @@ def test_the_lens_result_is_written_once_for_the_same_words(state: str, regions:
     out = _live_writes(
         "renderLensResult();",
         regions,
-        functions=("esc", "setLive", "lensFitApplies", "renderLensResult"),
+        functions=("esc", "setLive", "lensFitApplies", "lensEdgesMeasured", "renderLensResult"),
         variables=("LENS_RATING_LEVEL", "LENS_RATING_LABEL"),
         prelude=_COUNTING_DOM
         + _LENS_RESULT_PAGE
@@ -4217,7 +4359,7 @@ def test_the_lens_result_shown_again_is_written_again() -> None:
         "(function() { var fit = { rating: 'okay', k1: -0.12, k2: 0, k2_fitted: false, hint: 'Add a line.' };"
         " [fit, null, fit].forEach(function(f) { lensFit = f; renderLensResult(); });"
         " return [writes['lens-result-text'], writes['lens-result-hint']]; })()",
-        functions=("esc", "setLive", "lensFitApplies", "renderLensResult"),
+        functions=("esc", "setLive", "lensFitApplies", "lensEdgesMeasured", "renderLensResult"),
         variables=("LENS_RATING_LEVEL", "LENS_RATING_LABEL"),
         prelude=_COUNTING_DOM + _LENS_RESULT_PAGE + "var S = { lensLoaded: null }, lensFit = null, lensLines = [];",
     )
@@ -5215,7 +5357,7 @@ var imageWidth = 1920, imageHeight = 1080;
         # The centre is not named while the pair alone already fails.
         ((-1.0, 0.0, 0.2, 0.2), True, False, "block", ""),
         ((-0.6, -0.1, 0.2, 0.2), False, False, "none", LIMIT_CENTRE),
-        ((-0.2, 0.0, 0.0, 0.0), True, False, "none", "Enter a number from \u2212275 to 275."),
+        ((-0.2, 0.0, 0.0, 0.0), True, False, "none", "Enter a whole number from \u2212275 to 275."),
         ((-0.2, 0.0, 0.2, 0.2), False, False, "none", ""),
         ((-0.2, 0.0, 0.2, 0.2), False, True, "none", ""),
     ],
@@ -5236,9 +5378,11 @@ def test_a_lens_past_its_limit_says_which_value_and_opens_adjust_by_hand(
             "wizLensCentreField",
             "wizReadLensCoeff",
             "wizLens",
+            "wizLensCentreRangeError",
+            "wizLensProblem",
             "wizShowLensLimit",
         ),
-        variables=("LENS_CENTRE_LIMIT_ERROR",),
+        variables=("LENS_CENTRE_LIMIT_ERROR", "wizLensCentreTyping"),
         prelude=_LIMIT_PAGE
         + f"var S = {{ lensCentre: [{lens[2]}, {lens[3]}], lensCentreBad: {json.dumps(bad_field)} }};",
         LENS_C_BOUND=C_BOUND,
@@ -5278,8 +5422,17 @@ def test_a_centre_field_edit_takes_the_centre_only_while_both_fields_hold_one(
     assert out == [pytest.approx(centre) if centre else [0.01, 0.02], bad, 1]
 
 
-_RANGE_CENTRE = "Enter a number from \u2212275 to 275."
-_SHOW_LIMIT = (*_LENS_MODEL, *_CENTRE_PX, "wizReadLensCoeff", "wizLens", "wizLensValid", "wizShowLensLimit")
+_RANGE_CENTRE = "Enter a whole number from \u2212275 to 275."
+_SHOW_LIMIT = (
+    *_LENS_MODEL,
+    *_CENTRE_PX,
+    "wizReadLensCoeff",
+    "wizLens",
+    "wizLensValid",
+    "wizLensCentreRangeError",
+    "wizLensProblem",
+    "wizShowLensLimit",
+)
 
 
 @pytest.mark.parametrize(
@@ -5303,7 +5456,7 @@ def test_a_range_error_marks_only_its_field_and_the_limit_error_marks_both(
         " return [$('wiz-lens-centre-error').style.display, $('wiz-lens-centre-error').textContent,"
         " $('wiz_lens_cx')['aria-invalid'], $('wiz_lens_cy')['aria-invalid']]; })()",
         functions=_SHOW_LIMIT,
-        variables=("LENS_CENTRE_LIMIT_ERROR",),
+        variables=("LENS_CENTRE_LIMIT_ERROR", "wizLensCentreTyping"),
         prelude=_LIMIT_PAGE + f"var S = {{ lensCentre: {list(applied)}, lensCentreBad: {json.dumps(bad)} }};",
         LENS_C_BOUND=C_BOUND,
         pair=list(pair),
@@ -5318,7 +5471,7 @@ def test_the_centre_error_is_written_again_only_when_its_words_change() -> None:
         " wizShowLensLimit(); wizShowLensLimit(); $('wiz_lens_cx').value = '301'; wizShowLensLimit();"
         " var once = writes; S.lensCentreBad = false; wizShowLensLimit(); return [once, writes, err.textContent]; })()",
         functions=_SHOW_LIMIT,
-        variables=("LENS_CENTRE_LIMIT_ERROR",),
+        variables=("LENS_CENTRE_LIMIT_ERROR", "wizLensCentreTyping"),
         prelude=_LIMIT_PAGE
         + "var writes = 0, S = { lensCentre: [0, 0], lensCentreBad: true };"
         + " var err = els['wiz-lens-centre-error'] = { style: {}, words: '',"
@@ -5337,7 +5490,7 @@ _TAKE_PAGE = (
     + wizard_window_function("onWizardLensCentreInput")
     + wizard_window_function("onWizardLensInput")
 )
-_TAKE = (*_SHOW_LIMIT, "wizWriteLensCoeff", "wizTakeLensCentre")
+_TAKE = (*_SHOW_LIMIT, "wizWriteLensCoeff", "wizSyncLensRange", "wizTakeLensCentre")
 
 
 def test_a_centre_that_stops_the_lens_short_keeps_the_last_one_until_a_pair_can_take_it() -> None:
@@ -5350,7 +5503,7 @@ def test_a_centre_that_stops_the_lens_short_keeps_the_last_one_until_a_pair_can_
         " return [held, [S.lensCentre, S.lensCentreBad, wizLensValid(), fits, $('wiz-lens-centre-error').style.display,"
         " $('wiz_lens_cx')['aria-invalid']]]; })()",
         functions=_TAKE,
-        variables=("LENS_CENTRE_LIMIT_ERROR",),
+        variables=("LENS_CENTRE_LIMIT_ERROR", "wizLensCentreTyping"),
         prelude=_TAKE_PAGE,
         LENS_C_BOUND=C_BOUND,
     )
@@ -5367,7 +5520,7 @@ def test_a_centre_typed_while_the_pair_alone_fails_is_taken() -> None:
         " return [S.lensCentre, S.lensCentreBad, fits, $('wiz-lens-error').style.display,"
         " $('wiz-lens-centre-error').style.display]; })()",
         functions=_TAKE,
-        variables=("LENS_CENTRE_LIMIT_ERROR",),
+        variables=("LENS_CENTRE_LIMIT_ERROR", "wizLensCentreTyping"),
         prelude=_TAKE_PAGE,
         LENS_C_BOUND=C_BOUND,
     )
@@ -5391,6 +5544,112 @@ def test_a_centre_at_the_bound_shows_within_its_fields_bound(w: int, h: int) -> 
     # Rounded alone, the bound lands half a pixel past the fields' bound at 720p and 2160p.
     assert out == [out[0], [out[0], out[0]], [-out[0], -out[0]], True, True]
     assert out[0] == math.floor(C_BOUND * 0.5 * math.hypot(w, h))
+
+
+def _type(field: str, text: str) -> str:
+    """Keystrokes into a centre field: each prefix of ``text`` with its input event, the error after each."""
+    return (
+        f"(function() {{ var el = $('{field}'), seen = []; el.id = '{field}';"
+        f" for (var i = 0; i <= {len(text)}; i++) {{ el.value = {json.dumps(text)}.slice(0, i);"
+        " window.onWizardLensCentreInput(el); var e = $('wiz-lens-centre-error');"
+        " seen.push([e.style.display, e.textContent]); } return seen; })()"
+    )
+
+
+@pytest.mark.parametrize("text", ["-12", "300", "-0.5"], ids=["a number on its way", "past the bound", "a decimal"])
+def test_a_centre_range_error_waits_until_its_field_is_left(text: str) -> None:
+    out = run_wizard_js(
+        "(function() { $('wiz_lens_k1').value = '-0.2'; $('wiz_lens_k2').value = '0';"
+        " $('wiz_lens_cy').value = '0'; var typing = " + _type("wiz_lens_cx", text) + ";"
+        " var cleared = " + _type("wiz_lens_cx", "") + ";"
+        " window.onWizardLensCentreSettled(); var e = $('wiz-lens-centre-error');"
+        " return [typing, cleared, e.style.display, e.textContent, $('wiz_lens_cx')['aria-invalid']]; })()",
+        functions=_TAKE,
+        variables=("LENS_CENTRE_LIMIT_ERROR", "wizLensCentreTyping"),
+        prelude=_TAKE_PAGE + wizard_window_function("onWizardLensCentreSettled"),
+        LENS_C_BOUND=C_BOUND,
+    )
+    typing, cleared, display, words, invalid = out
+    # Nothing is announced while the field is typed in, an emptied field included.
+    assert all(seen == ["none", ""] for seen in typing + cleared)
+    # Left empty, the field says what it needs.
+    assert [display, words, invalid] == ["block", _RANGE_CENTRE, "true"]
+
+
+def test_the_lens_centre_limit_is_checked_while_typing() -> None:
+    out = run_wizard_js(
+        "(function() { $('wiz_lens_k1').value = '-0.6'; $('wiz_lens_k2').value = '-0.1';"
+        " $('wiz_lens_cy').value = '100';"
+        " return " + _type("wiz_lens_cx", "220") + "; })()",
+        functions=_TAKE,
+        variables=("LENS_CENTRE_LIMIT_ERROR", "wizLensCentreTyping"),
+        prelude=_TAKE_PAGE,
+        LENS_C_BOUND=C_BOUND,
+    )
+    # "2" and "22" still follow the picture with the pair; "220" does not, and says so at once.
+    assert out[1:] == [["none", ""], ["none", ""], ["block", LIMIT_CENTRE]]
+
+
+_SNAPSHOT_PAGE = (
+    "var snapshotCanvas = {}, lensCanvas = null, lensFitSeq = 0, lensFit = null, lensSelected = null,"
+    " lensPending = null, lensRejected = [], lensCandidates = [], currentStep = 0, WIZ = { lens: 1 }, notices = [];"
+    " function lensShowNotice(t) { notices.push(t); } function renderLens() {} function renderLensResult() {}"
+    " function saveToSession() {} function lensRequestEdges() {}\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("w", "h", "typed", "taken"), [(1920, 1080, "300", 30), (1280, 720, "208", 20), (1920, 1080, "275", 27)]
+)
+def test_a_centre_field_left_invalid_survives_a_new_snapshot_and_keeps_the_lens_from_being_saved(
+    w: int, h: int, typed: str, taken: int
+) -> None:
+    pair = "'-0.6', '-0.1'" if typed == "275" else "'-0.2', '0'"
+    out = run_wizard_js(
+        "(function() { imageWidth = w; imageHeight = h; lensImageSize = [w, h]; wizShowLensCentre();"
+        f" var p = [{pair}]; $('wiz_lens_k1').value = p[0]; $('wiz_lens_k2').value = p[1];"
+        " $('wiz_lens_cy').value = '0';"
+        " $('wiz_lens_cx').id = 'wiz_lens_cx';"
+        " for (var i = 1; i <= typed.length; i++) { $('wiz_lens_cx').value = typed.slice(0, i);"
+        " window.onWizardLensCentreInput($('wiz_lens_cx')); }"
+        " window.onWizardLensCentreSettled(); lensOnSnapshot();"
+        " return [$('wiz_lens_cx').value, S.lensCentre[0], S.lensCentreBad, wizLensValid(),"
+        " $('wiz-lens-centre-error').textContent, wizLensSaveError(wizLensProblem()).error]; })()",
+        functions=(*_TAKE, "wizShowLensCentre", "wizLensSaveError", "lensOnSnapshot"),
+        variables=("LENS_CENTRE_LIMIT_ERROR", "wizLensCentreTyping"),
+        prelude=_TAKE_PAGE
+        + _SNAPSHOT_PAGE
+        + "var lensImageSize = null;"
+        + wizard_window_function("onWizardLensCentreSettled"),
+        LENS_C_BOUND=C_BOUND,
+        w=w,
+        h=h,
+        typed=typed,
+    )
+    bound = math.floor(C_BOUND * 0.5 * math.hypot(w, h))
+    field, centre, bad, valid, words, refusal = out
+    # The field keeps what was typed and its flag; the centre in use is the last one taken, which nothing saves.
+    assert [field, bad, valid] == [typed, True, False]
+    assert centre == pytest.approx(taken / (0.5 * math.hypot(w, h)))
+    if typed == "275":
+        assert words == LIMIT_CENTRE
+        assert refusal == "With this lens centre, the overlay cannot follow the picture out to its corners."
+    else:
+        assert words == f"Enter a whole number from \u2212{bound} to {bound}."
+        assert refusal == f"A lens centre field does not hold a whole number from \u2212{bound} to {bound}."
+
+
+def test_a_snapshot_of_another_size_shows_the_centre_in_use_again() -> None:
+    out = run_wizard_js(
+        "(function() { lensImageSize = [1280, 720]; $('wiz_lens_cx').value = '300'; $('wiz_lens_cy').value = '0';"
+        " S.lensCentreBad = true; lensOnSnapshot(); return [$('wiz_lens_cx').value, S.lensCentreBad]; })()",
+        functions=(*_TAKE, "wizShowLensCentre", "lensOnSnapshot"),
+        variables=("LENS_CENTRE_LIMIT_ERROR", "wizLensCentreTyping"),
+        prelude=_TAKE_PAGE + _SNAPSHOT_PAGE + "var lensImageSize = null;",
+        LENS_C_BOUND=C_BOUND,
+    )
+    # The typed pixels counted in the old picture's size: the fields show the centre in use, in the new one's.
+    assert out == [round(0.01 * _D), False]
 
 
 _NO_SOLVE = {"marks": [], "error": "No camera fits."}
@@ -5991,7 +6250,7 @@ function send(type, target, kind, x) {
 function words() { return lensHintText; }
 """
 )
-_LENS_PRESS_FUNCTIONS = ("tapSlop", "lensInit", "esc", "setLive", "renderLensHint", "lensPressEnd")
+_LENS_PRESS_FUNCTIONS = ("tapSlop", "lensInit", "esc", "setLive", "lensEdgesMeasured", "renderLensHint", "lensPressEnd")
 _DRAW_MORE = "Draw more straight lines."
 _OTHER_END = "Click the other end of the straight edge."
 _MOVE_POINT = "Move the point exactly onto the edge."
@@ -6156,7 +6415,7 @@ function renderLensMeter() {} function lensIsTheFits() { return true; } function
 def test_the_result_line_names_the_lens_centre_the_fit_held(centre: list, text: str) -> None:
     out = run_wizard_js(
         "(function() { renderLensResult(); return $('lens-result-text').innerHTML; })()",
-        functions=(*_LINE_FUNCTIONS, *_CENTRE_PX, "renderLensResult"),
+        functions=(*_LINE_FUNCTIONS, *_CENTRE_PX, "lensEdgesMeasured", "renderLensResult"),
         variables=("LENS_RATING_LEVEL", "LENS_RATING_LABEL"),
         prelude=_DOM
         + _RESULT_PAGE
@@ -6181,7 +6440,7 @@ def test_the_result_line_names_the_lens_centre_the_fit_held(centre: list, text: 
 def test_a_corner_correction_the_lines_left_open_reads_as_estimated(k2_fitted: bool, text: str) -> None:
     out = run_wizard_js(
         "(function() { renderLensResult(); return $('lens-result-text').innerHTML; })()",
-        functions=(*_LINE_FUNCTIONS, *_CENTRE_PX, "renderLensResult"),
+        functions=(*_LINE_FUNCTIONS, *_CENTRE_PX, "lensEdgesMeasured", "renderLensResult"),
         variables=("LENS_RATING_LEVEL", "LENS_RATING_LABEL"),
         prelude=_DOM
         + _RESULT_PAGE
@@ -6197,11 +6456,52 @@ def test_a_corner_correction_the_lines_left_open_reads_as_estimated(k2_fitted: b
     assert out == text
 
 
+_MIDDLE_RESULT = (
+    "The lines stay near the middle of the picture, so its edges are not measured. That is fine if you only need the"
+    " middle. To measure the edges, add lines near them."
+)
+
+
+@pytest.mark.parametrize(
+    ("rating", "edges", "text", "hint"),
+    [
+        ("good", False, "Good in the middle \u2013 barrel / fisheye \u22120.310, corner correction \u22120.020",
+         _MIDDLE_RESULT),
+        ("good", True, "Good \u2013 barrel / fisheye \u22120.310, corner correction \u22120.020",
+         "If possible, add a line near the top edge to confirm it."),
+        ("good", None, "Good \u2013 barrel / fisheye \u22120.310, corner correction \u22120.020",
+         "If possible, add a line near the top edge to confirm it."),
+        ("low", False, "Not usable in the middle \u2013 barrel / fisheye \u22120.310, corner correction \u22120.020"
+         " \u2013 not applied", _MIDDLE_RESULT),
+    ],
+    ids=["only the middle", "the edges measured", "an answer without the field", "not usable, only the middle"],
+)  # fmt: skip
+def test_a_fit_whose_lines_stay_in_the_middle_says_its_edges_are_not_measured(
+    rating: str, edges: bool | None, text: str, hint: str
+) -> None:
+    fit = {"rating": rating, "k1": -0.31, "k2": -0.02, "k2_fitted": True, "centre": [0.0, 0.0],
+           "hint": "If possible, add a line near the top edge to confirm it."}  # fmt: skip
+    if edges is not None:
+        fit["edges_measured"] = edges
+    out = run_wizard_js(
+        "(function() { renderLensResult(); return [$('lens-result-text').innerHTML, $('lens-result-hint').innerHTML];"
+        " })()",
+        functions=(*_LINE_FUNCTIONS, *_CENTRE_PX, "lensEdgesMeasured", "renderLensResult"),
+        variables=("LENS_RATING_LEVEL", "LENS_RATING_LABEL", "LENS_MIDDLE"),
+        prelude=_DOM
+        + _RESULT_PAGE
+        + "document.getElementById = function(id) { var el = $(id); el.querySelector = function() { return $('m'); };"
+        " return el; };" + f"var S = {{ lensLoaded: null }}, lensFit = {json.dumps(fit)};",
+        LENS_C_BOUND=C_BOUND,
+    )
+    assert out == [text, hint]
+
+
 def test_the_loaded_line_names_the_centre_in_use() -> None:
     out = run_wizard_js(
         "(function() { renderLensResult();"
         " return [$('lens-result-text').innerHTML, $('lens-result-hint').innerHTML]; })()",
-        functions=(*_LINE_FUNCTIONS, *_CENTRE_PX, "renderLensResult"),
+        functions=(*_LINE_FUNCTIONS, *_CENTRE_PX, "lensEdgesMeasured", "renderLensResult"),
         variables=("LENS_RATING_LEVEL", "LENS_RATING_LABEL"),
         prelude=_DOM
         + _RESULT_PAGE

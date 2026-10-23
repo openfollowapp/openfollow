@@ -644,7 +644,7 @@ class TestWizardSavedCalibration:
         with _lens_station(tmp_path, monkeypatch, lens=False) as (_, base):
             _, body = _get(base, "/wizard")
         assert _saved(body)["lens"] == [0.0, 0.0, 0.0, 0.0]
-        assert re.search(r'id="wiz_lens_k1" step="0.005"\s+value="0.0"', body)
+        assert re.search(r'id="wiz_lens_k1" step="any"\s+value="0.0"', body)
 
 
 # ---------------------------------------------------------------------------
@@ -687,10 +687,10 @@ _ADVANCED_STATE = {
 }  # fmt: skip
 
 _APPLY_PAGE = """
-var calls = [], shown = [], removed = [];
+var calls = [], shown = [], removed = [], actions = [];
 var STORAGE_KEY = 'openfollow:wizard', imageWidth = 1920, imageHeight = 1080;
 var window = { location: { href: '/wizard' }, OpenFollow: { saveError: {
-  show: function(box, err, title) { shown.push([err.error, title]); },
+  show: function(box, err, title) { shown.push([err.error, title]); actions.push(err.action); },
   fromResponse: function(r) { return Promise.resolve({ error: 'Refused with ' + r.status + '.' }); },
   UNREACHABLE: { error: 'Unreachable.' } } } };
 var document = { querySelector: function() { return {}; } };
@@ -702,19 +702,32 @@ function fetch(url, opts) {
   return Promise.resolve({ ok: a === 200, status: a });
 }
 function wizLensValid() { return pairValid; }
+function wizLensProblem() { return { kind: problem, off: [false, problem === 'range'], max: 183 }; }
 function wizReadLensCoeff(id) { return id === 'wiz_lens_k1' ? -0.21 : 0.03; }
 function calibGrid() { return RECT; }
 """
 
 
 def _apply(
-    state: dict, *, grid=200, camera=200, lens: bool = True, pair_valid: bool = True, pending: bool = False
+    state: dict,
+    *,
+    grid=200,
+    camera=200,
+    lens: bool = True,
+    pair_valid: bool = True,
+    pending: bool = False,
+    problem: str = "pair",
 ) -> dict:
-    """Press Apply & Finish on a page in ``state``, the station answering each write with its status."""
-    return run_wizard_js(
+    """Press Apply & Finish on a page in ``state``, the station answering each write with its status.
+
+    ``problem`` is what keeps the lens from being saved while ``pair_valid`` is false; each shown error's
+    action is under ``actions`` when one was shown.
+    """
+    out = run_wizard_js(
         "(async function() { window.applyAndFinish(); await new Promise(function(r) { setImmediate(r); });"
-        " return { calls: calls, shown: shown, removed: removed, href: window.location.href }; })()",
+        " return { calls: calls, shown: shown, removed: removed, href: window.location.href, actions: actions }; })()",
         prelude=_APPLY_PAGE
+        + wizard_function("wizLensSaveError")
         + wizard_function("applyBlocked")
         + wizard_function("marksIncomplete")
         + wizard_window_function("applyAndFinish"),
@@ -725,7 +738,11 @@ def _apply(
         answers={"/api/config/grid": grid, "/api/config/camera": camera},
         pairValid=pair_valid,
         solvePending=pending,
+        problem=problem,
     )
+    if not out["actions"]:
+        del out["actions"]
+    return out
 
 
 @needs_node
@@ -788,12 +805,33 @@ class TestWizardApply:
         assert out["shown"] == [said]
         assert (out["removed"], out["href"]) == ([], "/wizard")
 
-    def test_a_lens_that_cannot_follow_the_picture_sends_nothing(self) -> None:
-        out = _apply(_SIMPLE_STATE, pair_valid=False)
+    @pytest.mark.parametrize(
+        ("problem", "error", "action"),
+        [
+            (
+                "pair",
+                "With these lens values, the overlay cannot follow the picture out to its corners.",
+                "Set one of the lens values closer to 0 in the Lens step before you finish.",
+            ),
+            (
+                "range",
+                "A lens centre field does not hold a whole number from \u2212183 to 183.",
+                "Correct it in the Lens step before you finish.",
+            ),
+            (
+                "centre",
+                "With this lens centre, the overlay cannot follow the picture out to its corners.",
+                "Set the lens centre closer to 0 in the Lens step before you finish.",
+            ),
+        ],
+        ids=["the pair", "a centre field", "the centre"],
+    )
+    def test_a_lens_that_cannot_be_saved_sends_nothing_and_says_why(
+        self, problem: str, error: str, action: str
+    ) -> None:
+        out = _apply(_SIMPLE_STATE, pair_valid=False, problem=problem)
         assert out["calls"] == [] and out["href"] == "/wizard"
-        assert out["shown"] == [
-            ["With these lens values, the overlay cannot follow the picture out to its corners.", "Not saved."]
-        ]
+        assert (out["shown"], out["actions"]) == ([[error, "Not saved."]], [action])
 
     def test_with_lens_distortion_off_no_lens_pair_is_sent(self) -> None:
         out = _apply(_SIMPLE_STATE, lens=False, pair_valid=False)
@@ -1481,7 +1519,8 @@ class TestWizardLensStepPage:
         assert status == 200
         assert 'id="wiz_lens_k1"' in body and 'type="hidden" id="wiz_lens_k1"' not in body
         # The sliders carry the stored pair and sit under the result, folded away as Adjust by hand (optional).
-        assert 'id="wiz_lens_k1" step="0.005"' in body
+        # The number fields take any value typed; only the sliders step.
+        assert 'id="wiz_lens_k1" step="any"' in body and 'id="wiz_lens_k2" step="any"' in body
         assert 'value="-0.21"' in body and 'value="0.03"' in body
         adjust = re.search(
             r'<details class="inline-advanced" id="lens-adjust">\s*<summary>(.*?)</summary>(.*?)</details>', body, re.S
@@ -1658,10 +1697,10 @@ class TestWizardLensTemplate:
         assert "if (!drag.moved && e.type !== 'pointercancel') traceTap = drag;" in src
 
     def test_a_written_pair_widens_its_slider(self) -> None:
-        src = self._src()
-        write = re.search(r"function wizWriteLensCoeff\(id, value\) \{(.*?)\n  \}\n", src, re.S)
-        assert write and "range.min = Math.min(parseFloat(range.min), v);" in write.group(1)
-        assert "range.max = Math.max(parseFloat(range.max), v);" in write.group(1)
+        assert "wizSyncLensRange(id, value);" in wizard_function("wizWriteLensCoeff")
+        sync = wizard_function("wizSyncLensRange")
+        assert "range.min = Math.min(parseFloat(range.min), v);" in sync
+        assert "range.max = Math.max(parseFloat(range.max), v);" in sync
 
     def test_a_session_from_another_page_keeps_its_values(self) -> None:
         body = wizard_function("restoreFromSession")

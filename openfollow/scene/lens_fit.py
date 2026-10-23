@@ -23,8 +23,8 @@ captures how many lines there are, how much of the frame they cover and how
 precisely their points were placed. Another lens that fits the lines about as
 well widens it to how far the two warps disagree, since the local uncertainty
 sees only the minimum it sits in. Lines that stay near the lens centre, or reach
-out on one side of it only, leave the frame beyond them extrapolated, so they
-rate Poor at best whatever the number says.
+out on one side of it only, leave the edges of the picture unmeasured; the
+result says so (``edges_measured``) and keeps its rating for the middle.
 """
 
 from __future__ import annotations
@@ -76,8 +76,8 @@ _MISFIT_MIN_PX = 2.0
 _MISFIT_RATIO = 3.0
 # A point is set aside when it misses the line through its line's other points by more
 # than this many sigmas of that miss (the placement noise floored at a pixel); at most one
-# a line, of a line of at least the points, and only while those others lie on a line within
-# the points' own scatter (an F test at this tail), so a line that bends throughout is flagged instead.
+# a line, of a line of at least the points, and only while those others lie on a line under the
+# lens the other lines agree on (an F test at this tail), so a line that bends throughout is flagged instead.
 _STRAY_SIGMAS = 4.0
 _STRAY_MIN_POINTS = 5
 _STRAY_STRAIGHT_TAIL = 0.05
@@ -100,12 +100,10 @@ _CORNER_RADIUS = 0.8
 # Lines that already agree: at least this many, none misfit, their points this close (RMS px) to the fit.
 _AGREE_MIN_LINES = 4
 _AGREE_RMS_PX = 1.5
-# The rating is read at the pinhole frame's corners. Unless points beyond this radius (half-diagonals)
-# from the lens centre lie on two of its four sides (right, up, left, down), the lines leave the
-# frame beyond them to extrapolation, and the rating is held at Poor at best.
+# The edges are measured once two lines reach beyond this radius (half-diagonals) from the lens
+# centre on two different of its four sides (right, up, left, down).
 _REACH_RADIUS = 0.5
 _REACH_SIDES = 2
-_UNREACHED_BEST = "medium"
 
 # Free parameters of the lens ``(k1, k2, cx, cy)`` in each model; the centre is given.
 _PAIR: tuple[int, ...] = (0, 1)
@@ -144,6 +142,8 @@ class LensFitResult:
     rating: str
     hint: str
     lines: tuple[LensLineFit, ...]
+    # Whether the lines reach out far enough to measure the picture's edges, not only its middle.
+    edges_measured: bool
 
 
 def rate_uncertainty(uncertainty_px: float) -> str:
@@ -556,6 +556,54 @@ def _solve(lines: _Lines, cx: float, cy: float) -> _Solution:
     return _Solution(k, _PAIR, _covariance(lines, k, _PAIR), minima, measured)
 
 
+def _refit_variance(lines: _Lines, k_rest: FloatArray, cov: FloatArray, rows: npt.NDArray[np.int64]) -> float:
+    """Mean variance (px^2) of the residuals at ``rows`` that the uncertainty ``cov`` of a refit ``k_rest`` gives."""
+    sensitivity = _jacobian(lines, k_rest, _PAIR, prior=False)[rows]
+    return float(np.mean(np.einsum("pf,fg,pg->p", sensitivity, cov, sensitivity)))
+
+
+def _through(
+    x: FloatArray, y: FloatArray, gain: FloatArray, rows: npt.NDArray[np.int64]
+) -> tuple[float, float, float, float, FloatArray, FloatArray]:
+    """The line through ``rows`` that their screen distances favour: centroid, direction, and their offsets."""
+    weight = 1.0 / (gain[rows] * gain[rows])
+    mx, my = float(np.average(x[rows], weights=weight)), float(np.average(y[rows], weights=weight))
+    ox, oy = x[rows] - mx, y[rows] - my
+    theta = 0.5 * math.atan2(2.0 * float(np.sum(weight * ox * oy)), float(np.sum(weight * (ox * ox - oy * oy))))
+    return mx, my, math.cos(theta), math.sin(theta), ox, oy
+
+
+def _line_runs_straight(lines: _Lines, k: FloatArray, row: int) -> bool:
+    """Whether the other points of ``row``'s line lie on a line, under the lens the other lines agree on.
+
+    The test is an F test of their bend against the others' scatter (floored at
+    :data:`_PRIOR_FLOOR_PX`) plus the refit's own uncertainty at those points.
+    Judged under the lens the line itself pulled its way, a bowed line's other
+    points run straight, and a straight line elsewhere takes the blame.
+    """
+    i = int(lines.idx[row])
+    rows = lines.members[i]
+    others = rows[rows != row]
+    # A line alone is judged under its own fit; lines that pin the lens nowhere add no spread.
+    rest, k_rest, spread = lines, k, 0.0
+    if lines.count >= 2:
+        rest = lines.subset([j for j in range(lines.count) if j != i])
+        k_rest = _refine(rest, k, _PAIR)
+        cov = _covariance(rest, k_rest, _PAIR)
+        if np.all(np.isfinite(cov)):
+            spread = _refit_variance(lines, k_rest, cov, others)
+    x, y, _tx, _ty, gain = lines._screen_lines(k_rest)
+    _mx, _my, tx, ty, ox, oy = _through(x, y, gain, others)
+    bend = float(np.sum(((oy * tx - ox * ty) / gain[others] * lines.half_diag) ** 2))
+    res = rest.residuals(k_rest)
+    dof = max(float(np.sum(rest.sizes - 2.0)), 1.0)
+    scatter = 1.4826 * float(np.median(np.abs(res))) * math.sqrt(rest.n / dof)
+    free = len(others) - 2
+    return bend / free <= _f_upper(free, round(dof), _STRAY_STRAIGHT_TAIL) * (
+        max(scatter, _PRIOR_FLOOR_PX) ** 2 + spread
+    )
+
+
 def _strays(lines: _Lines, k: FloatArray) -> list[int]:
     """Rows of the points that left their line under the lens ``k``, the worst of each line at most.
 
@@ -564,38 +612,27 @@ def _strays(lines: _Lines, k: FloatArray) -> list[int]:
     have from placement alone: the points' own scatter (a robust sigma, so the strays
     do not hide themselves) inflated by how far the others' line is extrapolated.
     Where the others bend too, the line bends throughout: setting its end aside would
-    straighten it, so nothing is.
+    straighten it, so nothing is (:func:`_line_runs_straight`).
     """
     x, y, _tx, _ty, gain = lines._screen_lines(k)
     res = lines.residuals(k)
-    sizes = lines.sizes
-    dof = max(float(np.sum(sizes - 2.0)), 1.0)
-    scatter = 1.4826 * float(np.median(np.abs(res))) * math.sqrt(lines.n / dof)
-    sigma = max(_SIGMA_FLOOR_PX, scatter)
+    dof = max(float(np.sum(lines.sizes - 2.0)), 1.0)
+    sigma = max(_SIGMA_FLOOR_PX, 1.4826 * float(np.median(np.abs(res))) * math.sqrt(lines.n / dof))
     found = []
     for rows in lines.members:
         if len(rows) < _STRAY_MIN_POINTS:
             continue
-        worst, worst_z, worst_bend = -1, _STRAY_SIGMAS, 0.0
+        worst, worst_z = -1, _STRAY_SIGMAS
         for row in rows:
-            others = rows[rows != row]
-            weight = 1.0 / (gain[others] * gain[others])
-            mx, my = np.average(x[others], weights=weight), np.average(y[others], weights=weight)
-            ox, oy = x[others] - mx, y[others] - my
-            theta = 0.5 * math.atan2(2.0 * float(np.sum(weight * ox * oy)), float(np.sum(weight * (ox * ox - oy * oy))))
-            tx, ty = math.cos(theta), math.sin(theta)
+            mx, my, tx, ty, ox, oy = _through(x, y, gain, rows[rows != row])
             miss = abs((y[row] - my) * tx - (x[row] - mx) * ty) / gain[row] * lines.half_diag
             along = ox * tx + oy * ty
             at = (x[row] - mx) * tx + (y[row] - my) * ty
-            leverage = 1.0 / len(others) + at * at / max(float(np.sum(along * along)), 1e-18)
+            leverage = 1.0 / (len(rows) - 1) + at * at / max(float(np.sum(along * along)), 1e-18)
             z = miss / (sigma * math.sqrt(1.0 + leverage))
             if z > worst_z:
-                bend = float(np.sum(((oy * tx - ox * ty) / gain[others] * lines.half_diag) ** 2))
-                worst, worst_z, worst_bend = int(row), z, bend
-        # Against the scatter itself, not its floor: a bow among lines placed to a third of a pixel shows.
-        free = len(rows) - 3
-        straight = _f_upper(free, round(dof), _STRAY_STRAIGHT_TAIL) * max(scatter, _PRIOR_FLOOR_PX) ** 2
-        if worst >= 0 and worst_bend / free <= straight:
+                worst, worst_z = int(row), z
+        if worst >= 0 and _line_runs_straight(lines, k, worst):
             found.append(worst)
     return found
 
@@ -621,12 +658,14 @@ def _rival_spread_px(lines: _Lines, solution: _Solution) -> float:
 
 
 def _misfit_excess(lines: _Lines, k: FloatArray) -> list[tuple[float, float, int]]:
-    """Each line's RMS under the others' fit over what would still count as fitting (above 1 it does not
-    fit), and the others' residual variance under that fit with its degrees of freedom.
+    """Per line, how far it misses the lens the others agree on, and how much those others scatter.
 
-    Placement noise is judged by the line's own degrees of freedom (its points less
-    its own line's two), an F test against the others' scatter. The floor sits a little
-    above what the test asks where the scatter is at the 1 px placement floor.
+    Each entry is the line's RMS under the others' fit over what would still count as
+    fitting (above 1 it does not fit), and the others' residual variance under that fit
+    with its degrees of freedom. Placement noise is judged by the line's own degrees of
+    freedom (its points less its own line's two), an F test against the others' scatter.
+    The floor sits a little above what the test asks where the scatter is at the 1 px
+    placement floor.
     """
     excess = []
     for i in range(lines.count):
@@ -637,8 +676,7 @@ def _misfit_excess(lines: _Lines, k: FloatArray) -> list[tuple[float, float, int
             excess.append((0.0, math.inf, 1))
             continue
         rms_line = lines.line_rms(k_rest)[i]
-        sensitivity = _jacobian(lines, k_rest, _PAIR, prior=False)[lines.idx == i]
-        predicted = float(np.sqrt(np.mean(np.einsum("pf,fg,pg->p", sensitivity, cov, sensitivity))))
+        predicted = math.sqrt(_refit_variance(lines, k_rest, cov, lines.members[i]))
         size = int(lines.sizes[i])
         free = size - 2
         res = rest.residuals(k_rest)
@@ -680,11 +718,19 @@ def _misfits(lines: _Lines, k: FloatArray) -> list[bool]:
 
 
 def _reaches_out(lines: _Lines, cx: float, cy: float) -> bool:
-    """Whether points beyond :data:`_REACH_RADIUS` of the lens centre lie on :data:`_REACH_SIDES` of its sides."""
-    vx, vy = lines.dx - cx, lines.dy - cy
-    far = np.hypot(vx, vy) > _REACH_RADIUS
-    sides = np.floor((np.degrees(np.arctan2(-vy[far], vx[far])) + 45.0) / 90.0) % 4
-    return len(np.unique(sides)) >= _REACH_SIDES
+    """Whether two lines reach beyond :data:`_REACH_RADIUS` of the lens centre on two different of its sides.
+
+    Counted per line: the two ends of one line through the middle are one line.
+    """
+    reached: set[int] = set()
+    reaching = 0
+    for rows in lines.members:
+        vx, vy = lines.dx[rows] - cx, lines.dy[rows] - cy
+        far = np.hypot(vx, vy) > _REACH_RADIUS
+        if far.any():
+            reaching += 1
+            reached.update(int(v) for v in np.floor((np.degrees(np.arctan2(-vy[far], vx[far])) + 45.0) / 90.0) % 4)
+    return reaching >= _REACH_SIDES and len(reached) >= _REACH_SIDES
 
 
 def _weak_edges(pts: FloatArray, canvas_w: float, canvas_h: float) -> list[str]:
@@ -792,8 +838,6 @@ def fit_lens_from_lines(
         _corner_uncertainty_px(data_kept, k, solution.cov, solution.free), _rival_spread_px(data_kept, solution)
     )
     rating = rate_uncertainty(uncertainty)
-    if RATINGS.index(rating) > RATINGS.index(_UNREACHED_BEST) and not _reaches_out(data_kept, cx, cy):
-        rating = _UNREACHED_BEST
     flags = _misfits(data_kept, k)
     rms_all = float(np.sqrt(np.mean(res**2)))
     dropped = [tuple(int(j) for j in np.flatnonzero(~kept[rows])) for rows in data.members]
@@ -819,6 +863,7 @@ def fit_lens_from_lines(
             LensLineFit(rms_px=rms[i], misfit=flags[i], curve=data_kept.curve(k, i), dropped=dropped[i])
             for i in range(data.count)
         ),
+        edges_measured=_reaches_out(data_kept, cx, cy),
     )
 
 
@@ -834,6 +879,7 @@ def fit_result_to_dict(result: LensFitResult) -> dict[str, Any]:
         "uncertainty_px": result.uncertainty_px if math.isfinite(result.uncertainty_px) else None,
         "rating": result.rating,
         "hint": result.hint,
+        "edges_measured": result.edges_measured,
         "lines": [
             {
                 "rms_px": line.rms_px,

@@ -321,7 +321,7 @@
             if (el.disabled || lensCentrePx(el) !== null) return;
             event.preventDefault();
             var span = document.getElementById(el.getAttribute('aria-describedby'));
-            span.innerHTML = '<span class="field-error-msg" role="alert" aria-live="assertive">Must be a number from -' + el.max + ' to ' + el.max + '.</span>';
+            span.innerHTML = '<span class="field-error-msg" role="alert" aria-live="assertive">Must be a whole number from -' + el.max + ' to ' + el.max + '.</span>';
             el.setAttribute('aria-invalid', 'true');
             refreshFormGate(el.form);
         };

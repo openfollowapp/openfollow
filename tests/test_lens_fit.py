@@ -71,6 +71,14 @@ def make_line(
     return [[float(x), float(y)] for x, y in seen]
 
 
+def bowed(line: list[list[float]], sag: float) -> list[list[float]]:
+    """Traced points bowed off their chord on screen, ``sag`` px at the middle."""
+    p = np.asarray(line)
+    chord = p[-1] - p[0]
+    normal = np.array([-chord[1], chord[0]]) / np.hypot(*chord)
+    return [[float(x), float(y)] for x, y in p + sag * np.sin(np.pi * np.linspace(0.0, 1.0, len(p)))[:, None] * normal]
+
+
 def lines_for(k1: float, k2: float, segments, *, noise: float = 0.0, seed: int = 0, **kw) -> list[list[list[float]]]:
     rng = np.random.default_rng(seed)
     return [make_line(a, b, k1, k2, noise=noise, rng=rng, **kw) for a, b in segments]
@@ -440,52 +448,86 @@ class TestRating:
         assert result.rating == RATING_LOW
         assert result.uncertainty_px <= prior_alone
 
+
+class TestEdgesMeasured:
     # A 2.3 mm-like lens whose centre is 120 px right of and 80 px below the picture's.
     _OFF_CENTRE = (-0.53, -0.07, 120.0 / HALF_DIAG, 80.0 / HALF_DIAG)
 
     @pytest.mark.parametrize(
         ("segments", "seed"), [((MID_H,), 0), ((MID_H,), 1), ((MID_H, MID_V), 0), ((MID_H, MID_V), 2)]
     )
-    def test_lines_near_the_lens_centre_rate_poor_at_best(self, segments, seed: int) -> None:  # noqa: ANN001
-        # Off the lens centre a middle line bows enough to rate fair by its number, but
-        # only its left end reaches out: the frame's corners are 30-150 px off.
+    def test_lines_near_the_lens_centre_leave_the_edges_unmeasured(self, segments, seed: int) -> None:  # noqa: ANN001
+        # Off the lens centre a middle line bows enough to rate fair, and the rating keeps that.
         k1, k2, cx, cy = self._OFF_CENTRE
         lines = lines_for(k1, k2, segments, noise=1.0, seed=seed, cx=cx, cy=cy)
         result = fit_lens_from_lines(lines, W, H, cx=cx, cy=cy)
-        assert rate_uncertainty(result.uncertainty_px) == "okay"
-        assert result.rating == "medium"
+        assert result.rating == rate_uncertainty(result.uncertainty_px) == "okay"
+        assert result.edges_measured is False
+        assert fit_result_to_dict(result)["edges_measured"] is False
 
-    def test_lines_reaching_out_on_one_side_only_rate_poor_at_best(self) -> None:
+    def test_lines_reaching_out_on_one_side_only_leave_the_edges_unmeasured(self) -> None:
         # Three upright lines in the left part of the picture: exact, and fair by their number.
         left = (LEFT, ((250.0, 120.0), (240.0, 960.0)), ((420.0, 200.0), (410.0, 880.0)))
         result = fit_lens_from_lines(lines_for(-0.53, -0.07, left), W, H)
-        assert rate_uncertainty(result.uncertainty_px) == "okay"
-        assert result.rating == "medium"
+        assert result.rating == "okay"
+        assert result.edges_measured is False
 
     @pytest.mark.parametrize(
-        ("segments", "truth"),
+        "segments",
         [
+            # One line from corner to corner: its two ends are still one line.
+            (TOP,),
+            (MID_H,),
+            # A second line that stays near the centre adds no side.
+            (TOP, ((860.0, 500.0), (1060.0, 520.0))),
+        ],
+        ids=["top-edge-alone", "middle-line-alone", "top-edge-and-a-short-middle-line"],
+    )
+    def test_one_line_reaching_out_leaves_the_edges_unmeasured(self, segments) -> None:  # noqa: ANN001
+        assert fit_lens_from_lines(lines_for(-0.2, -0.03, segments, noise=0.5, seed=1), W, H).edges_measured is False
+
+    @pytest.mark.parametrize(
+        "segments",
+        [
+            (TOP, BOTTOM),
+            # Each reaches out on one side only, but the two sides differ.
+            (((40.0, 400.0), (45.0, 700.0)), ((W - 40.0, 400.0), (W - 45.0, 700.0))),
             # A stage seen from the front truss through a 150-degree class lens: its lines
             # reach 0.59 of the half-diagonal, left and right of the centre.
             (
-                (
-                    ((470.0, 909.0), (1420.0, 904.0)),
-                    ((560.0, 788.0), (1330.0, 782.0)),
-                    ((560.0, 660.0), (1330.0, 654.0)),
-                    ((432.0, 666.0), (382.0, 846.0)),
-                    ((1446.0, 628.0), (1510.0, 844.0)),
-                ),
-                (-0.71, -0.17),
+                ((470.0, 909.0), (1420.0, 904.0)),
+                ((560.0, 788.0), (1330.0, 782.0)),
+                ((560.0, 660.0), (1330.0, 654.0)),
+                ((432.0, 666.0), (382.0, 846.0)),
+                ((1446.0, 628.0), (1510.0, 844.0)),
             ),
-            # One line from corner to corner reaches out on both sides of the centre.
-            ((TOP,), (-0.2, -0.03)),
         ],
-        ids=["stage-from-the-front-truss", "top-edge"],
+        ids=["top-and-bottom-edges", "left-and-right-bands", "stage-from-the-front-truss"],
     )
-    def test_lines_reaching_out_on_two_sides_keep_their_rating(self, segments, truth) -> None:  # noqa: ANN001
-        result = fit_lens_from_lines(lines_for(*truth, segments, noise=0.5, seed=1), W, H)
-        assert result.rating in ("okay", "good")
+    def test_two_lines_reaching_out_on_two_sides_measure_the_edges(self, segments) -> None:  # noqa: ANN001
+        result = fit_lens_from_lines(lines_for(-0.71, -0.17, segments, noise=0.5, seed=1), W, H)
+        assert result.edges_measured is True
         assert result.rating == rate_uncertainty(result.uncertainty_px)
+
+    # Short lines 540-660 px left and right of the picture centre, at its height and near its top.
+    _LEVEL = (((300.0, 540.0), (420.0, 540.0)), ((1500.0, 540.0), (1620.0, 540.0)))
+    _HIGH = (((320.0, 100.0), (440.0, 100.0)), ((1480.0, 100.0), (1600.0, 100.0)))
+
+    @pytest.mark.parametrize(
+        ("segments", "cx", "cy", "measured"),
+        [
+            (_LEVEL, 0.0, 0.0, True),
+            # 110 px right of the picture centre, the right line is under 550 px (half the half-diagonal) away.
+            (_LEVEL, 0.1, 0.0, False),
+            (_HIGH, 0.0, 0.0, True),
+            # 220 px below the picture centre, both lines lie above the lens centre: one side.
+            (_HIGH, 0.0, 0.2, False),
+            (_HIGH, 0.0, -0.2, True),
+        ],
+    )
+    def test_reach_is_measured_from_the_lens_centre(self, segments, cx: float, cy: float, measured: bool) -> None:  # noqa: ANN001
+        result = fit_lens_from_lines(lines_for(0.0, 0.0, segments, cx=cx, cy=cy), W, H, cx=cx, cy=cy)
+        assert result.edges_measured is measured
 
 
 # A short line in each outer band: (x0, y0), (x1, y1) inside the outer 15 % of that side.
@@ -648,6 +690,16 @@ class TestMisfit:
         result = fit_lens_from_lines(lines, W, H)
         assert [line.misfit for line in result.lines] == [False] * 5 + [flagged]
 
+    @pytest.mark.parametrize(("sag", "flagged"), [(7.5, False), (9.0, True)])
+    def test_a_bowed_line_is_judged_by_its_own_degrees_of_freedom(self, sag: float, flagged: bool) -> None:
+        # Five points leave three to show a bow: one more or one fewer moves the F test's
+        # threshold past one of these two bows.
+        truth = (-0.3, 0.05)
+        lines = lines_for(*truth, EDGES, noise=1.0, seed=1)
+        lines.append(make_line(*DIAGONAL, *truth, noise=1.0, rng=np.random.default_rng(101), sag=sag))
+        result = fit_lens_from_lines(lines, W, H)
+        assert [line.misfit for line in result.lines] == [False] * 4 + [flagged]
+
     @pytest.mark.parametrize(
         ("truth", "segments", "seed"),
         [
@@ -674,6 +726,19 @@ class TestMisfit:
         result = fit_lens_from_lines(lines, W, H)
         assert [line.dropped for line in result.lines] == [()] * 5
         assert [line.misfit for line in result.lines] == [False] * 4 + [True]
+
+    @pytest.mark.parametrize("seed", [5, 10, 18])
+    def test_only_the_lines_that_miss_are_weighed_against_each_other(self, seed: int) -> None:
+        # Two short bowed lines miss; without the long, gently bowed middle line, which fits,
+        # the rest scatter least. Weighed against that, neither bowed line would be set aside.
+        truth = (-0.333, -0.025)
+        rng = np.random.default_rng(seed)
+        layout = ((RIGHT, 16, 0.5, 0.0), (MID_V, 4, 0.5, 18.0), (MID_H, 16, 0.5, 6.0), (BOTTOM, 4, 1.5, 18.0))
+        lines = [
+            bowed(make_line(*segment, *truth, noise=noise, rng=rng, n=n), sag) for segment, n, noise, sag in layout
+        ]
+        result = fit_lens_from_lines(lines, W, H)
+        assert [line.misfit for line in result.lines] == [False, True, False, True]
 
     def test_a_line_the_bent_one_leans_on_is_not_flagged_for_it(self) -> None:
         # Without the bottom edge the bowed diagonal sets the lens and the bottom edge misses
@@ -785,6 +850,45 @@ class TestStrays:
             result = fit_lens_from_lines(lines_for(-0.3, 0.05, EDGES + (DIAGONAL, MID_H), noise=1.0, seed=seed), W, H)
             assert all(line.dropped == () for line in result.lines)
 
+    @pytest.mark.parametrize(
+        ("truth", "segments", "noise", "seed", "bent", "sag"),
+        [
+            ((-0.097, -0.002), EDGES + (MID_H, MID_V), 0.5, 171, 1, 12.0),
+            ((-0.527, -0.069), EDGES, 0.3, 579, 0, 13.25),
+            ((0.0, 0.0), (TOP, BOTTOM, LEFT), 1.0, 812, 0, 9.2),
+        ],
+        ids=["6mm-bottom-edge", "2.3mm-top-edge", "pinhole-top-edge-of-three"],
+    )
+    def test_a_bowed_line_keeps_its_points_and_takes_the_blame(
+        self, truth: tuple[float, float], segments: tuple, noise: float, seed: int, bent: int, sag: float
+    ) -> None:
+        # Judged under the lens the bowed line pulled its way, its other points ran straight:
+        # an end was set aside, and a straight line flagged in its place or nothing at all.
+        lines = lines_for(*truth, segments, noise=noise, seed=seed)
+        lines[bent] = bowed(lines[bent], sag)
+        result = fit_lens_from_lines(lines, W, H)
+        assert [line.dropped for line in result.lines] == [()] * len(segments)
+        assert [line.misfit for line in result.lines] == [i == bent for i in range(len(segments))]
+
+    def test_a_bowed_line_beside_one_through_the_centre_keeps_its_points(self) -> None:
+        # The line through the centre pins the lens nowhere: judged under its unbounded
+        # refit, any bow would pass for straight and an end of this one was set aside.
+        bowed = make_line(*MID_H, -0.3, 0.05, noise=0.5, rng=np.random.default_rng(2), sag=12.0)
+        radial = [[W / 2 + t * 700.0, H / 2 + t * 350.0] for t in (-1.0, -0.5, 0.0, 0.5, 1.0)]
+        result = fit_lens_from_lines([bowed, radial], W, H)
+        assert [line.dropped for line in result.lines] == [(), ()]
+
+    def test_a_point_off_a_strong_lens_edge_is_set_aside(self) -> None:
+        # Judged with neither the refit's own uncertainty nor the refit, the edge's other
+        # points looked bent and the edge was flagged instead.
+        lines = lines_for(-0.527, -0.069, EDGES, noise=0.5, seed=643)
+        p = np.asarray(lines[2])
+        chord = p[-1] - p[0]
+        lines[2][2] = list(p[2] + 8.0 * np.array([-chord[1], chord[0]]) / np.hypot(*chord))
+        result = fit_lens_from_lines(lines, W, H)
+        assert [line.dropped for line in result.lines] == [(), (), (2,), ()]
+        assert not any(line.misfit for line in result.lines)
+
     def test_a_line_of_four_points_keeps_them_all(self) -> None:
         # Set one aside and three are left, which any lens bends through.
         lines = self._moved(0)
@@ -858,14 +962,16 @@ class TestJsonShape:
             "uncertainty_px",
             "rating",
             "hint",
+            "edges_measured",
             "lines",
         }
+        assert data["edges_measured"] is True
         assert set(data["lines"][0]) == {"rms_px", "misfit", "curve", "dropped"}
         assert data["lines"][0]["dropped"] == []
         assert isinstance(data["lines"][0]["curve"][0], list)
 
     def test_infinite_uncertainty_becomes_null(self) -> None:
-        result = LensFitResult(0.0, 0.0, False, 0.0, 0.0, 0.0, float("inf"), RATING_LOW, "", ())
+        result = LensFitResult(0.0, 0.0, False, 0.0, 0.0, 0.0, float("inf"), RATING_LOW, "", (), True)
         assert fit_result_to_dict(result)["uncertainty_px"] is None
 
     def test_the_centre_is_answered_as_given(self) -> None:
@@ -875,7 +981,7 @@ class TestJsonShape:
 
     def test_a_point_set_aside_is_answered_by_its_index_in_its_line(self) -> None:
         line = LensLineFit(rms_px=0.5, misfit=False, curve=((0.0, 0.0), (1.0, 1.0)), dropped=(2,))
-        result = LensFitResult(-0.3, -0.05, True, 0.0, 0.0, 0.5, 3.0, "good", "", (line,))
+        result = LensFitResult(-0.3, -0.05, True, 0.0, 0.0, 0.5, 3.0, "good", "", (line,), True)
         assert fit_result_to_dict(result)["lines"][0]["dropped"] == [2]
 
 

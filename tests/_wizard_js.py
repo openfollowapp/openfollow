@@ -71,10 +71,10 @@ def wizard_block(start: str) -> str:
 
 
 def wizard_var(name: str) -> str:
-    """The wizard's one-line ``var name = ...;`` declaration."""
+    """The wizard's ``var name = ...;`` declaration: one line, or an object literal over several."""
     match = re.search(rf"^\s*var {name} = [^\n]*;$", WIZARD_TEMPLATE.read_text(encoding="utf-8"), re.M)
     if match is None:
-        raise ValueError(f"no var {name}")
+        return wizard_block(f"var {name} = {{")
     return match.group(0).strip()
 
 

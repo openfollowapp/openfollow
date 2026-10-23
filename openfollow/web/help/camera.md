@@ -31,8 +31,6 @@ OpenFollow only needs the **horizontal** field of view; the sensor and focal-len
 
 ## Lens distortion
 
-Shown with the **Lens distortion** feature on (General tab, Features); off, everything works as if the lens were straight and these values are kept.
-
 Wide-angle and fisheye lenses bow straight lines, so the pinhole overlay (grid, markers, zones) no longer sits on top of the curved video. Two values and the lens centre bow the **overlay** to match the lens. The video frame itself is never warped (warping every pixel would be too slow on a Pi), so there is no performance cost when all of them are `0`.
 
 - **Barrel / fisheye** – the main correction. Negative hugs a wide-angle / fisheye image (lines curve inward); positive corrects a pincushion lens (lines curve outward).

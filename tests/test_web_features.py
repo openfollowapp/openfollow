@@ -177,8 +177,8 @@ class TestTransfer:
     @pytest.mark.parametrize(
         ("body", "expected"),
         [
-            ({"rttrpm": True, "zones": False}, ["midi", "lens_distortion", "psn_input", "rttrpm"]),
-            ({"detection": "on", "midi": "off"}, ["zones", "lens_distortion", "psn_input", "detection"]),
+            ({"rttrpm": True, "zones": False}, ["midi", "psn_input", "rttrpm"]),
+            ({"detection": "on", "midi": "off"}, ["zones", "psn_input", "detection"]),
             ({"warp_drive": True}, list(DEFAULT_SHOWN_FEATURES)),
         ],
     )
@@ -297,27 +297,29 @@ class TestConfigOnly:
         assert body_class.search(_get(base, "/")[1]).group(1).split() == ["feature-paths"]
 
 
-class TestWizard:
-    def test_lens_off_drops_the_lens_step_and_starts_pinhole(self, live_server) -> None:
+class TestLens:
+    @pytest.mark.parametrize("shown", [[], list(FEATURE_KEYS)], ids=["no features", "every feature"])
+    def test_the_wizard_always_has_the_lens_step_with_the_saved_pair(self, live_server, shown) -> None:  # noqa: ANN001
         server, base = live_server
         cfg = load_config(server.config_path)
         cfg.camera.lens_k1, cfg.camera.lens_k2 = -0.2, 0.05
-        cfg.ui.shown_features = []
-        save_config(cfg, server.config_path)
-        _, body = _get(base, "/wizard")
-        assert "window.WIZ_STEPS = ['video', 'calib', 'review'];" in body
-        assert re.search(r'id="wiz_lens_k1" step="any"\s+value="0.0"', body)
-        assert "var LENS_ENABLED = false;" in body
-
-    def test_lens_on_keeps_the_step_and_the_saved_pair(self, live_server) -> None:
-        server, base = live_server
-        cfg = load_config(server.config_path)
-        cfg.camera.lens_k1 = -0.2
+        cfg.ui.shown_features = shown
         save_config(cfg, server.config_path)
         _, body = _get(base, "/wizard")
         assert "window.WIZ_STEPS = ['video', 'lens', 'calib', 'review'];" in body
-        assert 'value="-0.2"' in body
-        assert "var LENS_ENABLED = true;" in body
+        assert re.search(r'id="wiz_lens_k1" step="any"\s+value="-0.2"', body)
+        assert re.search(r'<div class="group">\s*<div class="group-title">Lens</div>', body)
+
+    @pytest.mark.parametrize("shown", [[], list(FEATURE_KEYS)], ids=["no features", "every feature"])
+    def test_the_camera_tab_always_shows_the_lens_group(self, live_server, shown) -> None:  # noqa: ANN001
+        server, base = live_server
+        cfg = load_config(server.config_path)
+        cfg.ui.shown_features = shown
+        save_config(cfg, server.config_path)
+        _, body = _get(base, "/section/camera")
+        heading = body.index('<h3 class="group-title">Lens distortion</h3>')
+        assert body[:heading].rsplit("<div", 1)[1].strip() == 'class="group">'
+        assert 'id="camera-lens-k1"' in body
 
 
 class TestTouchRemote:

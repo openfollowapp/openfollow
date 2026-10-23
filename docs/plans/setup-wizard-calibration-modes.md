@@ -30,7 +30,7 @@ pinning. That is mostly harmless and partly not:
 
 ## Steps of the Setup Wizard
 
-1 Video Source, 2 Lens (only with `lens_distortion` on, as today), 3 Camera
+1 Video Source, 2 Lens, 3 Camera
 Calibration, 4 Review. Preparation, Grid Setup, Camera Position and Reference
 Mapping go; Corner Pinning becomes Camera Calibration.
 
@@ -347,7 +347,7 @@ corners again." (Simple) / "… then pin the points again." (Advanced). It block
 
 | Reason | Fires when | Text |
 |---|---|---|
-| Lens not measured | Simple, `lens_distortion` on, the lens has no values from this run (not fitted, loaded or typed under User input) and the station had no pair | The lens was not measured. Four corners fit with any lens, so a missing lens measurement does not show in their errors. Measure the lens in the Lens step, unless straight lines in the picture already look straight. |
+| Lens not measured | Simple, the lens has no values from this run (not fitted, loaded or typed under User input) and the station had no pair | The lens was not measured. Four corners fit with any lens, so a missing lens measurement does not show in their errors. Measure the lens in the Lens step, unless straight lines in the picture already look straight. |
 | Camera far from the position (Simple) | A position was entered and the camera is further from it than max(1 m, 10 % of its distance to the points' centre) | The calculated camera is 2.5 m above the camera position you entered (… in total, limit 1.6 m). Each axis carrying at least a quarter of the gap, in stage words, in the active units. With a Custom origin it adds: Was the camera measured from the same point of origin as the rectangle's centre? |
 | Camera far from the position (Advanced) | Any axis off by more than max(2.5 m, 10 % of that distance), headroom over the promised 2 m | As above, "limit 2.5 m per axis" |
 | Field of view | Outside 20-120° | The calculated field of view, N°, is outside the usual range for cameras. |

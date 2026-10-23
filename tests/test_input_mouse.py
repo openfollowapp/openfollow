@@ -1134,7 +1134,7 @@ class TestLensDistortionInput:
         # Undistorting a barrel-distorted click pushes it outward.
         assert r_undist > r_cursor
 
-    def test_a_lens_with_its_feature_off_leaves_the_cursor_alone(self, monkeypatch) -> None:
+    def test_the_lens_undistorts_the_cursor_with_no_feature_on(self, monkeypatch) -> None:
         from openfollow.input import mouse as mouse_module
 
         captured: dict[str, np.ndarray] = {}
@@ -1150,7 +1150,8 @@ class TestLensDistortionInput:
         app._config.ui.shown_features = []
         monkeypatch.setattr(mouse_module, "unproject_to_plane", _spy)
         handler.on_pointer_move(1200, 600)
-        assert (captured["screen"][0, 0], captured["screen"][0, 1]) == (1200.0, 600.0)
+        s = captured["screen"][0]
+        assert math.hypot(s[0] - 640.0, s[1] - 360.0) > math.hypot(1200.0 - 640.0, 600.0 - 360.0)
 
 
 class TestHitTestLensDistortion:

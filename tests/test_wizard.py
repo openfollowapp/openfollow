@@ -128,21 +128,21 @@ def _lens_station(
     monkeypatch,
     *,
     developer_mode: bool = False,
-    lens: bool = True,
+    features: tuple[str, ...] | None = None,
     unit_system: str = "metric",
     mode: str = "simple",
     marks: tuple = (),
     height: float | None = None,
 ):
-    """A station with a stored lens, its centre off the picture's, and, when given, a saved calibration."""
+    """A station with a stored lens, its centre off the picture's, and, when given, its features and a calibration."""
     from openfollow.configuration import AppConfig, save_config
 
     _quiet_discovery(monkeypatch)
     # Its own file, so a test holding several fixtures keeps the plain station plain.
     config_path = tmp_path / ("config_lens_dev.toml" if developer_mode else "config_lens.toml")
     cfg = AppConfig()
-    if not lens:
-        cfg.ui.shown_features = [f for f in cfg.ui.shown_features if f != "lens_distortion"]
+    if features is not None:
+        cfg.ui.shown_features = list(features)
     cfg.ui.developer_mode = developer_mode
     cfg.camera.lens_k1 = -0.21
     cfg.camera.lens_k2 = 0.03
@@ -297,16 +297,10 @@ class TestWizardPage:
         assert poll
         assert 'hx-get="/section/video_source/failure"' in poll.group(0)
 
-    @pytest.mark.parametrize(
-        ("lens", "steps"),
-        [
-            (True, ["video", "lens", "calib", "review"]),
-            (False, ["video", "calib", "review"]),
-        ],
-        ids=["lens on", "lens off"],
-    )
-    def test_the_steps_in_order(self, tmp_path, monkeypatch, lens: bool, steps: list[str]) -> None:
-        with _lens_station(tmp_path, monkeypatch, lens=lens) as (_, base):
+    @pytest.mark.parametrize("features", [None, ()], ids=["default features", "no features"])
+    def test_the_steps_in_order(self, tmp_path, monkeypatch, features: tuple[str, ...] | None) -> None:
+        steps = ["video", "lens", "calib", "review"]
+        with _lens_station(tmp_path, monkeypatch, features=features) as (_, base):
             status, body = _get(base, "/wizard")
         assert status == 200
         titles = {"video": "Video Source", "lens": "Lens", "calib": "Camera Calibration", "review": "Review"}
@@ -319,7 +313,6 @@ class TestWizardPage:
         )
         assert buttons == [(str(i), str(i), f"{i + 1}. {titles[key]}") for i, key in enumerate(steps)]
         assert "window.WIZ_STEPS = [" + ", ".join(f"'{key}'" for key in steps) + "];" in body
-        assert f"var LENS_ENABLED = {'true' if lens else 'false'};" in body
         # Every step the script can show has its content; a linear wizard is a nav landmark, not a tablist.
         for key in steps:
             assert f'<div class="wizard-content" id="wizard-step-{key}">' in body
@@ -350,9 +343,11 @@ class TestWizardPage:
         for mode in ("simple", "advanced"):
             assert _get(base, f"/help/wizard-calibration-{mode}.html")[0] == 200
 
-    @pytest.mark.parametrize("lens", [True, False], ids=["lens on", "lens off"])
-    def test_every_element_the_script_looks_up_is_on_the_page(self, tmp_path, monkeypatch, lens: bool) -> None:
-        with _lens_station(tmp_path, monkeypatch, lens=lens) as (_, base):
+    @pytest.mark.parametrize("features", [None, ()], ids=["default features", "no features"])
+    def test_every_element_the_script_looks_up_is_on_the_page(
+        self, tmp_path, monkeypatch, features: tuple[str, ...] | None
+    ) -> None:
+        with _lens_station(tmp_path, monkeypatch, features=features) as (_, base):
             _, body = _get(base, "/wizard")
         script = _wizard_script(body)
         looked_up = set(re.findall(r"(?:\$|getElementById)\('([\w-]+)'\)", script))
@@ -640,11 +635,11 @@ class TestWizardSavedCalibration:
         assert box.index('id="cam_height"') < box.index('<div id="cam-height-error" class="wizard-field-error" hidden>')
         assert '<div class="notice" id="cal-height-note" role="status" hidden></div>' in box
 
-    def test_with_lens_distortion_off_the_page_starts_pinhole(self, tmp_path, monkeypatch) -> None:
-        with _lens_station(tmp_path, monkeypatch, lens=False) as (_, base):
+    def test_with_no_feature_on_the_page_starts_from_the_stations_lens(self, tmp_path, monkeypatch) -> None:
+        with _lens_station(tmp_path, monkeypatch, features=()) as (_, base):
             _, body = _get(base, "/wizard")
-        assert _saved(body)["lens"] == [0.0, 0.0, 0.0, 0.0]
-        assert re.search(r'id="wiz_lens_k1" step="any"\s+value="0.0"', body)
+        assert _saved(body)["lens"] == [-0.21, 0.03, 0.02, -0.01]
+        assert re.search(r'id="wiz_lens_k1" step="any"\s+value="-0.21"', body)
 
 
 # ---------------------------------------------------------------------------
@@ -713,7 +708,6 @@ def _apply(
     *,
     grid=200,
     camera=200,
-    lens: bool = True,
     pair_valid: bool = True,
     pending: bool = False,
     problem: str = "pair",
@@ -733,7 +727,6 @@ def _apply(
         + wizard_window_function("applyAndFinish"),
         variables=("APPLY_MAX_PX",),
         S={"lensCentre": [0.02, -0.01], **state},
-        LENS_ENABLED=lens,
         RECT=_RECT,
         answers={"/api/config/grid": grid, "/api/config/camera": camera},
         pairValid=pair_valid,
@@ -832,11 +825,6 @@ class TestWizardApply:
         out = _apply(_SIMPLE_STATE, pair_valid=False, problem=problem)
         assert out["calls"] == [] and out["href"] == "/wizard"
         assert (out["shown"], out["actions"]) == ([[error, "Not saved."]], [action])
-
-    def test_with_lens_distortion_off_no_lens_pair_is_sent(self) -> None:
-        out = _apply(_SIMPLE_STATE, lens=False, pair_valid=False)
-        camera = out["calls"][1][1]
-        assert not {"lens_k1", "lens_k2", "lens_cx", "lens_cy"} & set(camera) and out["href"] == "/"
 
     @pytest.mark.parametrize(("worst", "sent"), [(19.9, True), (20.1, False)])
     def test_a_solve_with_a_point_far_off_its_pin_is_not_applied(self, worst: float, sent: bool) -> None:
@@ -1500,9 +1488,11 @@ class TestWizardLensFitEndpoint:
 class TestWizardScriptParses:
     """The page's own script, rendered with every toggle: an edit that breaks its syntax stops the whole wizard."""
 
-    @pytest.mark.parametrize(("lens", "developer"), [(True, False), (False, False), (True, True)])
-    def test_every_inline_script_parses(self, tmp_path, monkeypatch, lens: bool, developer: bool) -> None:
-        with _lens_station(tmp_path, monkeypatch, developer_mode=developer, lens=lens) as (_, base):
+    @pytest.mark.parametrize(("features", "developer"), [(None, False), ((), False), (None, True)])
+    def test_every_inline_script_parses(
+        self, tmp_path, monkeypatch, features: tuple[str, ...] | None, developer: bool
+    ) -> None:
+        with _lens_station(tmp_path, monkeypatch, developer_mode=developer, features=features) as (_, base):
             status, page = _get(base, "/wizard")
         assert status == 200
         scripts = re.findall(r"<script>(.*?)</script>", page, re.S)

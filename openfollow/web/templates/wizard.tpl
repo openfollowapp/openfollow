@@ -8,10 +8,8 @@
 % import json
 % from openfollow.configuration import MAX_CALIBRATION_MARKS
 % from openfollow.lens_model import C_BOUND
-% # With Lens distortion off the wizard solves pinhole, skips the Lens step and never writes the saved lens.
-% _lens_on = config.ui.feature_on('lens_distortion')
 % _cam = config.camera
-% _lens_k1, _lens_k2, _lens_cx, _lens_cy = (_cam.lens_k1, _cam.lens_k2, _cam.lens_cx, _cam.lens_cy) if _lens_on else (0.0, 0.0, 0.0, 0.0)
+% _lens_k1, _lens_k2, _lens_cx, _lens_cy = _cam.lens_k1, _cam.lens_k2, _cam.lens_cx, _cam.lens_cy
 % _g = config.grid
 % _saved = {
 %   'mode': config.camera.calibration_mode,
@@ -366,7 +364,6 @@
 % # The order is published to the page script as WIZ (key -> index), so no
 % # button or script carries a step number.
 % _steps = [('video', 'Video Source'), ('lens', 'Lens'), ('calib', 'Camera Calibration'), ('review', 'Review')]
-% _steps = [step for step in _steps if _lens_on or step[0] != 'lens']
 % _keys_js = ', '.join("'" + k + "'" for k, _ in _steps)
 <script>
   window.WIZ = {
@@ -743,7 +740,7 @@
       <div class="group-title">Camera</div>
       <div class="wizard-solved-params" id="review-camera"></div>
     </div>
-    <div class="group" data-feature="lens_distortion">
+    <div class="group">
       <div class="group-title">Lens</div>
       <div class="wizard-solved-params" id="review-lens"></div>
     </div>
@@ -791,7 +788,6 @@
   'use strict';
 
   var WUNIT = window.OpenFollow.units;
-  var LENS_ENABLED = {{'true' if _lens_on else 'false'}};
   var SAVED = window.WIZ_SAVED;
   // Names this page to the solve route, which stops a fit once the page asks for a newer one.
   var WIZ_SOLVE_PAGE = Math.random().toString(36).slice(2, 12) || 'page';
@@ -1384,7 +1380,7 @@
   function wordReasons(reasons, marks) {
     var names = {}, out = [];
     marks.forEach(function(m) { names[m.id] = m.name; });
-    if (S.mode === 'simple' && LENS_ENABLED && !lensMeasured()) out.push('The lens was not measured. Four corners fit with any lens, so a missing lens measurement does not show in their errors. Measure the lens in the Lens step, unless straight lines in the picture already look straight.');
+    if (S.mode === 'simple' && !lensMeasured()) out.push('The lens was not measured. Four corners fit with any lens, so a missing lens measurement does not show in their errors. Measure the lens in the Lens step, unless straight lines in the picture already look straight.');
     (reasons || []).forEach(function(r) {
       if (r.kind === 'offset') out.push(offsetReason(r.delta, r.off, r.allowed, r.per_axis));
       else if (r.kind === 'fov') out.push('The calculated field of view, ' + r.fov.toFixed(1) + '°, is outside the usual range for cameras.');
@@ -1419,7 +1415,7 @@
   }
   // Simple keeps the station's pair without measuring one: said, but not a caution.
   function stationLensOnly() {
-    return S.mode === 'simple' && LENS_ENABLED && !S.lensTouched && SAVED.lens.some(function(v) { return v !== 0; });
+    return S.mode === 'simple' && !S.lensTouched && SAVED.lens.some(function(v) { return v !== 0; });
   }
 
   // ---------------------------------------------------------------
@@ -3162,8 +3158,8 @@
     else { st.className = 'wizard-status ok'; showLive(st, esc('Calculated from ' + s.pinned + (S.mode === 'simple' ? ' corners' : ' pinned points') + ', largest error ' + s.worst.toFixed(1) + ' px.'), true); }
     var ok = !!s.cam;
     $('cal-solved').hidden = !ok;
-    if (ok) $('cal-solved').innerHTML = solvedParamsHtml(s.cam) + (LENS_ENABLED ? '<div class="wizard-solved-param"><span class="param-label">Lens</span><span class="param-value"' +
-      (lensMeasured() ? '>' + fmt(wizReadLensCoeff('wiz_lens_k1'), 3) + ' / ' + fmt(wizReadLensCoeff('wiz_lens_k2'), 3) : ' class="caution-text">Not measured') + '</span></div>' : '');
+    if (ok) $('cal-solved').innerHTML = solvedParamsHtml(s.cam) + '<div class="wizard-solved-param"><span class="param-label">Lens</span><span class="param-value"' +
+      (lensMeasured() ? '>' + fmt(wizReadLensCoeff('wiz_lens_k1'), 3) + ' / ' + fmt(wizReadLensCoeff('wiz_lens_k2'), 3) : ' class="caution-text">Not measured') + '</span></div>';
     showLive($('cal-caution'), ok && s.reasons.length && cautionHtml(s), !!(ok && s.reasons.length));
     $('cal-lens-note').hidden = !(ok && stationLensOnly());
     if (ok && s.steep) heightAsked = true;
@@ -3809,7 +3805,7 @@
     var saveError = window.OpenFollow.saveError, reviewBox = document.querySelector('#wizard-step-review .section');
     var s = S.solve;
     if (!s || !s.cam || solvePending || applyBlocked(s) || marksIncomplete(s)) return;
-    if (LENS_ENABLED && !wizLensValid()) {
+    if (!wizLensValid()) {
       saveError.show(reviewBox, wizLensSaveError(wizLensProblem()), 'Not saved.');
       return;
     }
@@ -3821,8 +3817,8 @@
       return out;
     });
     var camera = { pos_x: s.cam.pos_x, pos_y: s.cam.pos_y, pos_z: s.cam.pos_z, pitch: s.cam.pitch, yaw: s.cam.yaw, roll: s.cam.roll, fov: s.cam.fov,
-      calibration_mode: S.mode, calibration_marks: marks, calibration_height: S.height };
-    if (LENS_ENABLED) { camera.lens_k1 = wizReadLensCoeff('wiz_lens_k1'); camera.lens_k2 = wizReadLensCoeff('wiz_lens_k2'); camera.lens_cx = S.lensCentre[0]; camera.lens_cy = S.lensCentre[1]; }
+      calibration_mode: S.mode, calibration_marks: marks, calibration_height: S.height,
+      lens_k1: wizReadLensCoeff('wiz_lens_k1'), lens_k2: wizReadLensCoeff('wiz_lens_k2'), lens_cx: S.lensCentre[0], lens_cy: S.lensCentre[1] };
     var g = calibGrid();
     var gridWrite = S.mode === 'simple'
       ? fetch('/api/config/grid', { method: 'POST', headers: headers, body: JSON.stringify({ width: g.w, depth: g.d, x_offset: g.cx, y_offset: g.cy, z_offset: g.z }) })
@@ -4100,8 +4096,8 @@
       if (lensRestoredPair(raw.lensImage)) lensImageSize = raw.lensImage;
       if (Array.isArray(raw.lensRejected)) lensRejected = raw.lensRejected.filter(function(r) { return Array.isArray(r) && r.length === 2 && lensRestoredPair(r[0]) && lensRestoredPair(r[1]); });
       if (raw.lensFit && typeof raw.lensFit.rating === 'string' && isFinite(raw.lensFit.k1) && isFinite(raw.lensFit.k2) && pairOk(raw.lensFit.centre)) lensFit = raw.lensFit;
-      if (LENS_ENABLED && isFinite(raw.k1) && isFinite(raw.k2)) { wizWriteLensCoeff('wiz_lens_k1', raw.k1); wizWriteLensCoeff('wiz_lens_k2', raw.k2); }
-      if (LENS_ENABLED && pairOk(raw.lensCentre)) S.lensCentre = raw.lensCentre.slice();
+      if (isFinite(raw.k1) && isFinite(raw.k2)) { wizWriteLensCoeff('wiz_lens_k1', raw.k1); wizWriteLensCoeff('wiz_lens_k2', raw.k2); }
+      if (pairOk(raw.lensCentre)) S.lensCentre = raw.lensCentre.slice();
       S.lensTouched = raw.lensTouched === true;
       if (raw.lensLoaded && typeof raw.lensLoaded.name === 'string' && [raw.lensLoaded.k1, raw.lensLoaded.k2, raw.lensLoaded.cx, raw.lensLoaded.cy].every(isFinite)) S.lensLoaded = raw.lensLoaded;
       if (sameUnits && (raw.mode === 'simple' || raw.mode === 'advanced')) {

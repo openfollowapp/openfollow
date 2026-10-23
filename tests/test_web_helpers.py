@@ -1573,6 +1573,21 @@ def test_apply_import_data_applies_ui_section() -> None:
     assert new.ui.unit_system == "imperial"
 
 
+def test_apply_import_data_naming_lens_distortion_drops_it_and_applies_the_lens() -> None:
+    """A file or push from a station that listed a Lens distortion feature: the key drops, the lens applies."""
+    from openfollow.configuration import effective_lens
+    from openfollow.web.routes import _apply_import_data
+
+    imported = {
+        "camera": {"lens_k1": -0.2, "lens_k2": 0.05, "lens_cx": 0.03, "lens_cy": -0.01},
+        "ui": {"shown_features": ["zones", "lens_distortion", "psn_input"]},
+    }
+    new = _apply_import_data(AppConfig(), imported)
+
+    assert new.ui.shown_features == ["zones", "psn_input"]
+    assert effective_lens(new) == pytest.approx((-0.2, 0.05, 0.03, -0.01))
+
+
 def test_apply_import_data_ui_round_trips_through_export_dict() -> None:
     """End-to-end: the export payload of a configured device imports cleanly
     on a default device, carrying the ``ui`` preferences across."""

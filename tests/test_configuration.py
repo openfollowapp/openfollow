@@ -20,6 +20,7 @@ import pytest
 
 from openfollow.configuration import (
     DEFAULT_UPDATE_SERVICE_NAME,
+    FEATURE_KEYS,
     MOUSE3D_AXES,
     RESERVED_MOVEMENT_KEYS,
     AppConfig,
@@ -3980,8 +3981,8 @@ def test_camera_config_wrong_type_on_one_lens_value_keeps_the_others() -> None:
 
 
 def test_a_lens_centre_change_hot_reloads_onto_the_running_config() -> None:
-    app = _DummyApp(_with_features(AppConfig(camera=CameraConfig(lens_k1=-0.3)), "lens_distortion"))
-    new = _with_features(AppConfig(camera=CameraConfig(lens_k1=-0.3, lens_cx=0.05, lens_cy=-0.02)), "lens_distortion")
+    app = _DummyApp(AppConfig(camera=CameraConfig(lens_k1=-0.3)))
+    new = AppConfig(camera=CameraConfig(lens_k1=-0.3, lens_cx=0.05, lens_cy=-0.02))
     apply_runtime_config_changes(app, new)
     assert effective_lens(app._config) == (-0.3, 0.0, 0.05, -0.02)
     assert app._web_commands.restart_requested is False
@@ -8307,7 +8308,18 @@ class TestUiConfig:
         from openfollow.configuration import EXPERIMENTAL_FEATURES, FEATURE_KEYS, UiConfig
 
         assert UiConfig().shown_features == [key for key in FEATURE_KEYS if key not in EXPERIMENTAL_FEATURES]
-        assert UiConfig().shown_features == ["zones", "midi", "lens_distortion", "psn_input"]
+        assert UiConfig().shown_features == ["zones", "midi", "psn_input"]
+
+    def test_shown_features_naming_lens_distortion_loads_without_it(self, temp_config_path) -> None:  # noqa: ANN001
+        from openfollow.configuration import effective_lens, load_config
+
+        temp_config_path.write_text(
+            "[camera]\nlens_k1 = -0.2\nlens_k2 = 0.05\nlens_cx = 0.03\nlens_cy = -0.01\n"
+            '[ui]\nshown_features = ["zones", "lens_distortion", "psn_input"]\n'
+        )
+        loaded = load_config(str(temp_config_path))
+        assert loaded.ui.shown_features == ["zones", "psn_input"]
+        assert effective_lens(loaded) == (-0.2, 0.05, 0.03, -0.01)
 
     def test_shown_features_keeps_known_keys_in_list_order(self) -> None:
         from openfollow.configuration import UiConfig
@@ -8399,22 +8411,13 @@ class TestUiConfig:
         assert feature_on(SimpleNamespace(), "zones")
         assert not feature_on(SimpleNamespace(), "paths")
 
-    @pytest.mark.parametrize(
-        "shown,expected",
-        [(["lens_distortion"], (0.12, -0.03, 0.04, -0.02)), ([], (0.0, 0.0, 0.0, 0.0))],
-    )
-    def test_effective_lens_follows_lens_distortion(self, shown, expected) -> None:  # noqa: ANN001
+    @pytest.mark.parametrize("shown", [[], ["zones"], list(FEATURE_KEYS)], ids=["none", "one", "all"])
+    def test_effective_lens_is_the_cameras_whatever_the_features(self, shown) -> None:  # noqa: ANN001
         from openfollow.configuration import AppConfig, CameraConfig, UiConfig, effective_lens
 
         camera = CameraConfig(lens_k1=0.12, lens_k2=-0.03, lens_cx=0.04, lens_cy=-0.02)
         cfg = AppConfig(camera=camera, ui=UiConfig(shown_features=shown))
-        assert effective_lens(cfg) == expected
-        assert (cfg.camera.lens_k1, cfg.camera.lens_k2, cfg.camera.lens_cx, cfg.camera.lens_cy) == (
-            0.12,
-            -0.03,
-            0.04,
-            -0.02,
-        )
+        assert effective_lens(cfg) == (0.12, -0.03, 0.04, -0.02)
 
     # developer_mode: config-only, shows the developer's views in the web UI.
     def test_developer_mode_default_is_false(self) -> None:
@@ -8446,7 +8449,7 @@ class TestUiConfig:
         save_config(AppConfig(ui=UiConfig(developer_mode=True)), str(temp_config_path))
         loaded = load_config(str(temp_config_path))
         assert loaded.ui.developer_mode is True
-        assert loaded.ui.shown_features == ["zones", "midi", "lens_distortion", "psn_input"]
+        assert loaded.ui.shown_features == ["zones", "midi", "psn_input"]
 
 
 class TestTriggerZonesConfigDropsNonObjectZones:

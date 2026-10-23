@@ -2809,7 +2809,6 @@ class DisplayConfig:
 FEATURE_KEYS: tuple[str, ...] = (
     "zones",
     "midi",
-    "lens_distortion",
     "psn_input",
     "detection",
     "rttrpm",
@@ -2865,9 +2864,7 @@ def feature_gated(section: _SwitchedT, cfg: Any, key: str) -> _SwitchedT:
 
 
 def effective_lens(cfg: Any) -> tuple[float, float, float, float]:
-    """The lens everything draws and maps with, ``(k1, k2, cx, cy)``: none while Lens distortion is off."""
-    if not feature_on(cfg, "lens_distortion"):
-        return 0.0, 0.0, 0.0, 0.0
+    """The lens everything draws and maps with, ``(k1, k2, cx, cy)``."""
     cam = cfg.camera
     return cam.lens_k1, cam.lens_k2, cam.lens_cx, cam.lens_cy
 

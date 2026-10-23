@@ -28,7 +28,6 @@ The table at the end of **Advanced Settings** lists what this station uses: one 
 
 - **Trigger zones** – the Trigger Zones and Zone Editor sections and the Toggle Zones bindings. Off, zones neither fire nor show on the Operator Screen.
 - **MIDI** – the MIDI patches and each virtual fader's MIDI source. Off, no MIDI device is opened.
-- **Lens distortion** – the Camera tab's Lens distortion values and the Setup Wizard's Lens step. Off, the Operator Screen, mouse, person detection and zones all work as if the lens were straight, and the wizard leaves the saved values alone. A camera pinned with a lens needs its corners pinned again before a show.
 - **PSN input** – receiving other stations' markers. Off, they are neither shown nor counted by zones. Nothing is hidden.
 - **Person detection** – the Person Detection tab. Off, detection does not run.
 - **RTTrPM output** – the RTTrPM Output section and its Interface Assignment row. Off, nothing is sent.

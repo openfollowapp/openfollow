@@ -128,7 +128,7 @@
         </p>
     </div>
 
-    <div class="group" data-feature="lens_distortion">
+    <div class="group">
         <h3 class="group-title">Lens distortion</h3>
         <div class="row">
             <div class="field">

@@ -1155,12 +1155,12 @@ def test_a_point_measured_from_a_triangulated_point_is_placed_after_it() -> None
 _REASON_FUNCTIONS = ("lenRough", "lenSmall", "lensMeasured", "offsetReason", "wordReasons")
 
 
-def _reason_page(system: str = "metric", *, mode: str = "advanced", origin: str = "dsc", lens: bool = True,
+def _reason_page(system: str = "metric", *, mode: str = "advanced", origin: str = "dsc",
                  touched: bool = False, saved: tuple = (0.0, 0.0)) -> str:  # fmt: skip
     return length_page(system, {}) + (
         f"\nvar S = {{ mode: {json.dumps(mode)}, rect: {{ origin: {json.dumps(origin)} }},"
         f" lensTouched: {json.dumps(touched)} }};"
-        f" var LENS_ENABLED = {json.dumps(lens)}; var SAVED = {{ lens: {json.dumps(list(saved))} }};"
+        f" var SAVED = {{ lens: {json.dumps(list(saved))} }};"
     )
 
 
@@ -1251,11 +1251,10 @@ _UNMEASURED = (
     [
         ({"mode": "simple"}, True),
         ({"mode": "advanced"}, False),
-        ({"mode": "simple", "lens": False}, False),
         ({"mode": "simple", "touched": True}, False),
         ({"mode": "simple", "saved": (-0.2, 0.0)}, False),
     ],
-    ids=["simple", "advanced", "lens step off", "measured here", "saved pair"],
+    ids=["simple", "advanced", "measured here", "saved pair"],
 )
 def test_simple_names_a_lens_never_measured(page: dict, named: bool) -> None:
     out = run_wizard_js("wordReasons([], [])", functions=_REASON_FUNCTIONS, prelude=_reason_page(**page))
@@ -1268,10 +1267,9 @@ def test_simple_names_a_lens_never_measured(page: dict, named: bool) -> None:
         ({"mode": "simple", "saved": (-0.1, 0.02)}, True, False),
         ({"mode": "simple", "saved": (0.0, 0.0)}, False, True),
         ({"mode": "simple", "saved": (-0.1, 0.02), "touched": True}, False, False),
-        ({"mode": "simple", "saved": (-0.1, 0.02), "lens": False}, False, False),
         ({"mode": "advanced", "saved": (-0.1, 0.02)}, False, False),
     ],
-    ids=["station's pair", "no pair", "measured here", "lens step off", "advanced"],
+    ids=["station's pair", "no pair", "measured here", "advanced"],
 )
 def test_simple_notes_the_stations_lens_kept_without_measuring(page: dict, noted: bool, cautioned: bool) -> None:
     out = run_wizard_js(
@@ -1496,7 +1494,7 @@ def test_the_stations_reason_for_a_point_is_listed_by_name() -> None:
 
 
 _REVIEW_STUBS = """
-var imageWidth = 0, imageHeight = 0, CAM_PRESETS = [], LENS_ENABLED = true, FS = null;
+var imageWidth = 0, imageHeight = 0, CAM_PRESETS = [], FS = null;
 function overlayUnit() { return 1; } function calibGrid() { return { w: 1, d: 1, spacing: 1, cx: 0, cy: 0, z: 0 }; }
 function gridLines() { return []; } function poly() { return ''; } function originMarkup() { return ''; }
 function originPixel() { return null; } function projectShown() { return null; }
@@ -1683,7 +1681,7 @@ var stored = null;
 var sessionStorage = { setItem: function(k, v) { stored = JSON.parse(v); }, getItem: function() { return raw; } };
 var STORAGE_KEY = 'openfollow:wizard', WIZ_STEPS = ['video', 'lens', 'calib', 'review'];
 var WIZ = { video: 0, lens: 1, calib: 2, review: 3 };
-var currentStep = 2, lensLines = [], lensImageSize = null, lensFit = null, lensRejected = [], LENS_ENABLED = false;
+var currentStep = 2, lensLines = [], lensImageSize = null, lensFit = null, lensRejected = [];
 var lensLast = null;
 var CAM_PRESETS = [];
 function wizReadLensCoeff() { return 0; } function wizWriteLensCoeff() {}
@@ -7589,7 +7587,7 @@ def test_review_names_the_lens_centre_in_use(centre: list, row: list | None) -> 
 def test_the_session_keeps_the_lens_centre() -> None:
     out = run_wizard_js(
         "(function() { S.lensCentre = c; saveToSession(); raw = JSON.stringify(stored); S.lensCentre = [0, 0];"
-        " LENS_ENABLED = true; restoreFromSession(); return [stored.lensCentre, S.lensCentre]; })()",
+        " restoreFromSession(); return [stored.lensCentre, S.lensCentre]; })()",
         functions=("pairOk", "fracPinOk", "saveToSession", "restoreFromSession"),
         variables=("CORNERS",),
         prelude=length_page("metric", {}) + _DOM + _SESSION_PAGE + "var raw = null;"

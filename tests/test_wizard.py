@@ -1734,11 +1734,8 @@ class TestWizardLensTemplate:
         # A rotated phone or a resized window draws them again at the new size.
         assert "window.addEventListener('resize'" in src
 
-    def test_middle_points_move_across_the_line_only(self) -> None:
+    def test_lens_points_take_the_arrow_space_and_delete_keys(self) -> None:
         src = self._src()
-        # Dragging a middle point sets its perpendicular offset; the keyboard keeps only the nudge's perpendicular part.
-        assert "function lensSetMidFromPos(line, j, pos)" in src
-        assert "line.mids[j - 1].off += dx * f.nx + dy * f.ny;" in src
         for key in ("ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Delete", "Escape"):
             assert f"'{key}'" in src
         assert "e.key === ' '" in src

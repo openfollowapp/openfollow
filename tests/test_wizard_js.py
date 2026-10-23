@@ -3275,6 +3275,7 @@ def test_a_new_line_is_selected_whole_and_delete_takes_it_back(add: str) -> None
             "lensClamp",
             "lensTraceClick",
             "lensSetMidsFromPositions",
+            "lensSetMidFromPos",
             "lensBandHalf",
             "lensPointWindow",
             "lensNearFits",
@@ -5326,6 +5327,80 @@ def test_the_lens_picture_takes_the_same_tap_slop(kind: str, path: tuple, result
     )
     # One slop on every picture: 3 CSS px for a mouse, 8 for a finger or a pen. A line starts on the click.
     assert out == [0, *result]
+
+
+_LENS_LINE = (
+    "{ p0: [100, 500], p1: [900, 500], mids: [{ t: 0.25, off: 0, on: true }, { t: 0.5, off: 0, on: true },"
+    " { t: 0.75, off: 0, on: true }], snapped: [true, true, true, true, true] }"
+)
+_LENS_POINT_MOVES = ("lensFrame", "lensPointPos", "lensSetMidFromPos", "lensMovePoint", "lensClamp")
+
+
+@pytest.mark.parametrize(
+    ("to", "landed"),
+    [([620, 470], [620, 470]), ([380, 500], [380, 500]), ([2500, -40], [1919, 0])],
+    ids=["along and across the line", "along the line only", "past the picture"],
+)
+def test_a_dragged_middle_point_lands_where_it_is_dragged(to: list, landed: list) -> None:
+    out = run_wizard_js(
+        "(function() { lensInit(); lensLines = [line]; handle.closest = function(sel) {"
+        " return sel === '.lens-point' ? { dataset: { line: '0', point: '2' } } : null; };"
+        " function ev(t, x, y) { return { type: t, target: handle, pointerType: 'mouse', pointerId: 1, clientX: x,"
+        " clientY: y, preventDefault: function() {} }; }"
+        " on.pointerdown(ev('pointerdown', 500, 500)); on.pointermove(ev('pointermove', to[0], to[1]));"
+        " on.pointerup(ev('pointerup', to[0], to[1])); return lensPointPos(lensLines[0], 2); })()",
+        functions=("tapSlop", "lensInit", *_LENS_POINT_MOVES),
+        prelude=_LENS_TAP_PAGE + f"var imageWidth = 1920, imageHeight = 1080, line = {_LENS_LINE};",
+        to=to,
+    )
+    # Its place along the line moves with it, so a point whose spot is covered can slide to a clear one.
+    assert out == [pytest.approx(landed[0]), pytest.approx(landed[1])]
+
+
+@pytest.mark.parametrize(
+    ("key", "shift", "landed"),
+    [("ArrowRight", False, [501, 500]), ("ArrowLeft", True, [490, 500]), ("ArrowUp", False, [500, 499])],
+    ids=["right along the line", "Shift left along the line", "up across the line"],
+)
+def test_an_arrow_key_moves_a_middle_point_in_any_direction(key: str, shift: bool, landed: list) -> None:
+    out = run_wizard_js(
+        "(function() { lensInit(); lensLines = [line]; handle.closest = function(sel) {"
+        " return sel === '.lens-point' ? { dataset: { line: '0', point: '2' } } : null; };"
+        " on.keydown({ key: key, shiftKey: shift, target: handle, preventDefault: function() {} });"
+        " return lensPointPos(lensLines[0], 2); })()",
+        functions=("tapSlop", "lensInit", *_LENS_POINT_MOVES),
+        prelude=_LENS_TAP_PAGE + f"var imageWidth = 1920, imageHeight = 1080, line = {_LENS_LINE};"
+        " function saveToSession() {} function scheduleLensFit() {}",
+        key=key,
+        shift=shift,
+    )
+    assert out == [pytest.approx(landed[0]), pytest.approx(landed[1])]
+
+
+def test_the_session_keeps_a_middle_point_moved_along_its_line() -> None:
+    out = run_wizard_js(
+        "(function() { lensLines = [line]; lensMovePoint(line, 2, [620, 470]); saveToSession();"
+        " raw = JSON.stringify(stored); lensLines = []; restoreFromSession();"
+        " return lensPointPos(lensLines[0], 2); })()",
+        functions=(
+            "pairOk",
+            "fracPinOk",
+            "saveToSession",
+            "restoreFromSession",
+            "lensRestoredPair",
+            "lensRestoredLine",
+            *_LENS_POINT_MOVES,
+        ),
+        variables=("CORNERS",),
+        prelude=length_page("metric", {}) + _DOM + _SESSION_PAGE + "var raw = null;"
+        " var imageWidth = 1920, imageHeight = 1080;"
+        " var S = { mode: 'simple', simpleLoc: '', rect: { origin: 'dsc' }, pinSize: null, nextId: 1,"
+        " cornerPins: { DSL: null, DSR: null, USR: null, USL: null },"
+        " cornerMoved: { DSL: false, DSR: false, USR: false, USL: false }, points: [],"
+        " lensTouched: true, lensLoaded: null };"
+        f" var line = {_LENS_LINE};",
+    )
+    assert out == [pytest.approx(620), pytest.approx(470)]
 
 
 def test_every_button_class_in_the_wizard_has_a_style() -> None:

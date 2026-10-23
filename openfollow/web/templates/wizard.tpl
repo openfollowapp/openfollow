@@ -1580,8 +1580,8 @@
   // ---------------------------------------------------------------
   // A line keeps its endpoints p0 / p1 (image px) and its three middle points
   // in the line's own frame as (t, off): t along the chord, off along its
-  // perpendicular. Moving an endpoint keeps every middle point's offset; a
-  // middle point only ever moves along the perpendicular.
+  // perpendicular. Moving an endpoint keeps every middle point's (t, off); a
+  // middle point goes wherever it is moved.
   var LENS_T = [0.25, 0.5, 0.75];
   var LENS_FIT_DEBOUNCE_MS = 300;
   var LENS_MIN_LINE_PX = 20;
@@ -1650,17 +1650,12 @@
       && line.mids.length === 3 && Array.isArray(line.snapped) && line.snapped.length === 5;
   }
   function lensSetMidFromPos(line, j, pos) {
-    var f = lensFrame(line), m = line.mids[j - 1];
-    var bx = line.p0[0] + m.t * f.dx, by = line.p0[1] + m.t * f.dy;
-    m.off = (pos[0] - bx) * f.nx + (pos[1] - by) * f.ny;
+    var f = lensFrame(line), m = line.mids[j - 1], rx = pos[0] - line.p0[0], ry = pos[1] - line.p0[1];
+    m.t = (rx * f.dx + ry * f.dy) / (f.len * f.len);
+    m.off = rx * f.nx + ry * f.ny;
   }
   function lensSetMidsFromPositions(line, positions) {
-    var f = lensFrame(line);
-    for (var j = 1; j <= 3; j++) {
-      var m = line.mids[j - 1], rx = positions[j][0] - line.p0[0], ry = positions[j][1] - line.p0[1];
-      m.t = (rx * f.dx + ry * f.dy) / (f.len * f.len);
-      m.off = rx * f.nx + ry * f.ny;
-    }
+    for (var j = 1; j <= 3; j++) lensSetMidFromPos(line, j, positions[j]);
   }
   function lensClamp(pt) {
     return [Math.max(0, Math.min(imageWidth - 1, pt[0])), Math.max(0, Math.min(imageHeight - 1, pt[1]))];
@@ -2583,13 +2578,7 @@
       else return;
       e.preventDefault();
       var pos = lensPointPos(line, j);
-      if (j === 0 || j === 4) {
-        lensMovePoint(line, j, lensClamp([pos[0] + dx, pos[1] + dy]));
-      } else {
-        // A middle point only moves across the line: keep the move's perpendicular part.
-        var f = lensFrame(line);
-        line.mids[j - 1].off += dx * f.nx + dy * f.ny;
-      }
+      lensMovePoint(line, j, lensClamp([pos[0] + dx, pos[1] + dy]));
       lensUpdateLineGeometry(i);
       lensHold = true;
       showLoupe('lens-container', 'lens-overlay', lensPointPos(line, j));

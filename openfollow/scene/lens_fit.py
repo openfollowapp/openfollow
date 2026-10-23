@@ -400,8 +400,9 @@ def _beta_fraction(a: float, b: float, x: float) -> float:
     c, d = 1.0, 1.0 - (a + b) * x / (a + 1.0)
     d = 1.0 / (d if abs(d) > tiny else tiny)
     h = d
-    m = 0
-    while True:
+    # Capped, and a NaN ends it too: the comparison is False for it.
+    m, step = 0, 0.0
+    while m < 400 and abs(step - 1.0) >= 1e-14:
         m += 1
         for num in (
             m * (b - m) * x / ((a + 2 * m - 1) * (a + 2 * m)),
@@ -412,8 +413,8 @@ def _beta_fraction(a: float, b: float, x: float) -> float:
             c = 1.0 + num / c
             c = c if abs(c) > tiny else tiny
             h *= d * c
-        if abs(d * c - 1.0) < 1e-14:
-            return h
+        step = d * c
+    return h
 
 
 def _beta_regularised(a: float, b: float, x: float) -> float:

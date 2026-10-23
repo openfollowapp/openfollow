@@ -440,6 +440,24 @@ def test_example_config_matches_current_schema() -> None:
     assert cfg.osc_destinations.get(first.id) is first
 
 
+def test_example_config_seeds_the_default_features_and_names_the_experimental_ones() -> None:
+    """A new station is seeded from the example, so its list is the default one and its comment the other keys."""
+    import re
+    from pathlib import Path
+
+    from openfollow.configuration import DEFAULT_SHOWN_FEATURES, EXPERIMENTAL_FEATURES
+
+    text = (Path(__file__).resolve().parents[1] / "config.example.toml").read_text(encoding="utf-8")
+    assert tomllib.loads(text)["ui"]["shown_features"] == list(DEFAULT_SHOWN_FEATURES)
+    lines = text.splitlines()
+    end = next(i for i, line in enumerate(lines) if line.startswith("shown_features"))
+    start = end
+    while lines[start - 1].startswith("#"):
+        start -= 1
+    named = re.findall(r'"([a-z_0-9]+)"', "\n".join(lines[start:end]))
+    assert sorted(named) == sorted(EXPERIMENTAL_FEATURES)
+
+
 @pytest.mark.parametrize(("section", "defaults"), [("controller", ControllerConfig()), ("mouse3d", Mouse3DConfig())])
 def test_example_config_binds_nothing_the_defaults_leave_unbound(section: str, defaults: object) -> None:
     """A station seeded from the example must not start with a binding a fresh config leaves unbound."""

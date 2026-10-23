@@ -2809,8 +2809,8 @@ class DisplayConfig:
 FEATURE_KEYS: tuple[str, ...] = (
     "zones",
     "midi",
-    "lens_suggestions",
     "psn_input",
+    "lens_suggestions",
     "detection",
     "rttrpm",
     "paths",

@@ -261,8 +261,8 @@ The centre, per the `add-config-field` skill:
 - **Not device-local, not device-identity**: the centre belongs to the camera
   and lens, like the pair, so it travels with export, import and a push, and
   Restore defaults resets it to 0 with the pair.
-- **Gated by the Lens distortion feature like the pair**: `effective_lens`
-  returns `(0, 0, 0, 0)` while the feature is off.
+- **Always applied, like the pair**: `effective_lens` returns the four as
+  stored.
 - `apply_section_data` re-runs `__post_init__`, so a crafted
   `POST /section/camera` gets the same clamp and pull-back.
 - **`FIELD_RULES`** (`web/validation.py`): `lens_cx`, `lens_cy` as

@@ -28,8 +28,8 @@ The table at the end of **Advanced Settings** lists what this station uses: one 
 
 - **Trigger zones** – the Trigger Zones and Zone Editor sections and the Toggle Zones bindings. Off, zones neither fire nor show on the Operator Screen.
 - **MIDI** – the MIDI patches and each virtual fader's MIDI source. Off, no MIDI device is opened.
-- **Lens line suggestions** – the dashed suggested lines in the Setup Wizard's Lens step. Off, the Lens step suggests no lines, and lines are drawn by hand.
 - **PSN input** – receiving other stations' markers. Off, they are neither shown nor counted by zones. Nothing is hidden.
+- **Lens line suggestions** – the dashed suggested lines in the Setup Wizard's Lens step. Off, the Lens step suggests no lines, and lines are drawn by hand.
 - **Person detection** – the Person Detection tab. Off, detection does not run.
 - **RTTrPM output** – the RTTrPM Output section and its Interface Assignment row. Off, nothing is sent.
 - **Ground grid** – the Ground Grid section. Off, it is neither drawn nor drops markers onto its height.

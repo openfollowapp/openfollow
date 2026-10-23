@@ -179,7 +179,7 @@ class TestTransfer:
         [
             ({"rttrpm": True, "zones": False}, ["midi", "psn_input", "rttrpm"]),
             ({"detection": "on", "midi": "off"}, ["zones", "psn_input", "detection"]),
-            ({"lens_suggestions": True}, ["zones", "midi", "lens_suggestions", "psn_input"]),
+            ({"lens_suggestions": True}, ["zones", "midi", "psn_input", "lens_suggestions"]),
             ({"warp_drive": True}, list(DEFAULT_SHOWN_FEATURES)),
         ],
     )

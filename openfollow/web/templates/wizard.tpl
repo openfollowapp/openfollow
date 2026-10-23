@@ -2308,10 +2308,15 @@
   function lensCentreSuffix(c) { var t = wizLensCentreText(c, imageWidth, imageHeight); return t ? ', lens centre ' + t : ''; }
 
   // ---- edits ----
+  // A middle point placed by hand is on the edge: it switches on. Returns whether it did, for a redraw.
   function lensMovePoint(line, j, pos) {
     if (j === 0) line.p0 = pos;
     else if (j === 4) line.p1 = pos;
-    else lensSetMidFromPos(line, j, pos);
+    else {
+      lensSetMidFromPos(line, j, pos);
+      if (!line.mids[j - 1].on) { line.mids[j - 1].on = true; return true; }
+    }
+    return false;
   }
   function lensChanged() {
     renderLens();
@@ -2531,8 +2536,9 @@
       if (!lensDrag.moved && far < lensDrag.slop) return;
       lensDrag.moved = true;
       e.preventDefault();
-      lensMovePoint(lensDrag.line, lensDrag.point, lensClamp(pt));
+      var switched = lensMovePoint(lensDrag.line, lensDrag.point, lensClamp(pt));
       lensUpdateLineGeometry(lensLines.indexOf(lensDrag.line));
+      if (switched) renderLens();
       showLoupe('lens-container', 'lens-overlay', lensPointPos(lensDrag.line, lensDrag.point));
     });
     function endDrag(e) {
@@ -2578,9 +2584,10 @@
       else return;
       e.preventDefault();
       var pos = lensPointPos(line, j);
-      lensMovePoint(line, j, lensClamp([pos[0] + dx, pos[1] + dy]));
+      var switched = lensMovePoint(line, j, lensClamp([pos[0] + dx, pos[1] + dy]));
       lensUpdateLineGeometry(i);
       lensHold = true;
+      if (switched) renderLens();
       showLoupe('lens-container', 'lens-overlay', lensPointPos(line, j));
       saveToSession();
       scheduleLensFit();

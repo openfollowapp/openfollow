@@ -5377,6 +5377,131 @@ def test_an_arrow_key_moves_a_middle_point_in_any_direction(key: str, shift: boo
     assert out == [pytest.approx(landed[0]), pytest.approx(landed[1])]
 
 
+_LENS_OFF_LINE = _LENS_LINE.replace("{ t: 0.5, off: 0, on: true }", "{ t: 0.5, off: 0, on: false }")
+# The document's keydown listeners land in docKeys; each redraw notes in drawn whether middle point 2 is on.
+_LENS_HAND_PAGE = (
+    _LENS_TAP_PAGE
+    + f"var imageWidth = 1920, imageHeight = 1080, line = {_LENS_OFF_LINE}, drawn = null, docKeys = [];"
+    + " lensLines = [line]; var currentStep = 2, WIZ = { lens: 2 };"
+    + " document.addEventListener = function(t, f, capture) { if (t === 'keydown' && !capture) docKeys.push(f); };"
+    + " function $() { return { addEventListener: function() {}, hidden: true }; }"
+    + " function renderLens() { drawn = lensPointIsOn(lensLines[0], 2); } function lensChanged() { renderLens(); }"
+    + " function saveToSession() {} function scheduleLensFit() {}"
+    + " var page = { nodeType: 1, matches: function() { return false; }, closest: function() { return null; } };"
+    + " function pick(j) { handle.closest = function(sel) {"
+    + " return sel === '.lens-point' ? { dataset: { line: '0', point: String(j) } } : null; }; }"
+    + " function ev(t, x, y) { return { type: t, target: handle, pointerType: 'mouse', pointerId: 1, clientX: x,"
+    + " clientY: y, preventDefault: function() {} }; }"
+    + " function key(k, shift, target) {"
+    + " return { key: k, shiftKey: shift, target: target, preventDefault: function() {} }; }"
+    + " function held(j) { lensSelected = { line: 0, point: j }; lensHold = true; }"
+)
+_LENS_HAND_FUNCTIONS = ("tapSlop", "lensInit", "lensPointIsOn", "lensActivePoints", *_LENS_POINT_MOVES)
+# Each way a hand moves middle point 2: a drag, an arrow key on its handle, an arrow key once its handle lost focus.
+_LENS_HAND_MOVES = {
+    "drag": "pick(2); on.pointerdown(ev('pointerdown', 500, 500)); on.pointermove(ev('pointermove', 520, 490));",
+    "tap": "pick(2); on.pointerdown(ev('pointerdown', 500, 500)); on.pointermove(ev('pointermove', 502, 500));",
+    "handle key": "pick(2); on.keydown(key('ArrowRight', false, handle));",
+    "handle Shift key": "pick(2); on.keydown(key('ArrowUp', true, handle));",
+    "held key": "held(2); docKeys[0](key('ArrowRight', false, page));",
+    "held Shift key": "held(2); docKeys[0](key('ArrowLeft', true, page));",
+}
+
+
+@pytest.mark.parametrize(
+    ("move", "on"),
+    [
+        ("drag", True),
+        ("tap", False),
+        ("handle key", True),
+        ("handle Shift key", True),
+        ("held key", True),
+        ("held Shift key", True),
+    ],
+    ids=[
+        "a drag",
+        "a tap within the slop",
+        "an arrow key",
+        "Shift and an arrow key",
+        "an arrow key on a held point",
+        "Shift and an arrow key on a held point",
+    ],
+)
+def test_a_middle_point_moved_by_hand_switches_on(move: str, on: bool) -> None:
+    out = run_wizard_js(
+        "(function() { lensInit(); lensLines = [line]; "
+        + _LENS_HAND_MOVES[move]
+        + " return [lensPointIsOn(line, 2), lensActivePoints(line).length, drawn]; })()",
+        functions=_LENS_HAND_FUNCTIONS,
+        prelude=_LENS_HAND_PAGE,
+    )
+    # A point placed by hand marks the edge: it counts, and is drawn on while the hand is still on it.
+    assert out == [on, 5 if on else 4, on]
+
+
+@pytest.mark.parametrize(
+    ("key", "shift", "landed"),
+    [("ArrowRight", False, [501, 500]), ("ArrowLeft", True, [490, 500]), ("ArrowUp", False, [500, 499])],
+    ids=["right along the line", "Shift left along the line", "up across the line"],
+)
+def test_an_arrow_key_moves_a_held_middle_point_after_its_handle_lost_focus(
+    key: str, shift: bool, landed: list
+) -> None:
+    out = run_wizard_js(
+        "(function() { lensInit(); lensLines = [line]; lensSelected = { line: 0, point: 2 }; lensHold = true;"
+        " docKeys[0]({ key: k, shiftKey: shift, target: page, preventDefault: function() {} });"
+        " return lensPointPos(lensLines[0], 2); })()",
+        functions=_LENS_HAND_FUNCTIONS,
+        prelude=_LENS_HAND_PAGE,
+        k=key,
+        shift=shift,
+    )
+    assert out == [pytest.approx(landed[0]), pytest.approx(landed[1])]
+
+
+@pytest.mark.parametrize(
+    "move",
+    [
+        "lensMovePoint(line, 0, [80, 520]); lensMovePoint(line, 4, [940, 470]);",
+        "pick(0); on.pointerdown(ev('pointerdown', 100, 500)); on.pointermove(ev('pointermove', 80, 520));"
+        " on.pointerup(ev('pointerup', 80, 520));",
+        "pick(4); on.keydown(key('ArrowLeft', true, handle));",
+        "held(0); docKeys[0](key('ArrowDown', false, page));",
+    ],
+    ids=["both ends moved", "an end dragged", "an arrow key on an end", "an arrow key on a held end"],
+)
+def test_moving_an_end_leaves_an_off_middle_point_off(move: str) -> None:
+    out = run_wizard_js(
+        "(function() { lensInit(); lensLines = [line]; " + move + " return lensPointIsOn(line, 2); })()",
+        functions=_LENS_HAND_FUNCTIONS,
+        prelude=_LENS_HAND_PAGE,
+    )
+    assert out is False
+
+
+def test_a_snap_leaves_a_middle_point_that_found_no_edge_off() -> None:
+    points = [
+        {"x": 100, "y": 502, "snapped": True},
+        {"x": 300, "y": 503, "snapped": True},
+        {"x": 500, "y": 504, "snapped": False},
+        {"x": 700, "y": 503, "snapped": True},
+        {"x": 900, "y": 502, "snapped": True},
+    ]
+    out = run_wizard_js(
+        "(function() { lensLines = [line]; lensSnapLine(line);"
+        " return new Promise(function(done) { setTimeout(done, 0); }).then(function() {"
+        " return [[0, 1, 2].map(function(k) { return line.mids[k].on; }), lensPointPos(line, 2)]; }); })()",
+        functions=(*_SNAP_FUNCTIONS, "lensPointPos"),
+        variables=("LENS_T", "LENS_MIN_LINE_PX"),
+        prelude=_SNAP_PAGE.replace("function fetch(", "function unusedFetch(")
+        + f"var line = {_LENS_OFF_LINE}, answer = {json.dumps({'points': points})};"
+        " var reply = Promise.resolve({ ok: true, json: function() { return Promise.resolve(answer); } });"
+        " function fetch() { return reply; }",
+    )
+    # The point moved onto the snap's curve, yet stays off: only a hand placing it switches it on.
+    assert out == [[True, False, True], [pytest.approx(500), pytest.approx(504)]]
+
+
 def test_the_session_keeps_a_middle_point_moved_along_its_line() -> None:
     out = run_wizard_js(
         "(function() { lensLines = [line]; lensMovePoint(line, 2, [620, 470]); saveToSession();"

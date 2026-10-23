@@ -1592,6 +1592,7 @@
   // Mirror lens_fit._MIN_LINE_SPAN_PX: a line spanning less carries no direction to fit.
   var LENS_MIN_SPAN_PX = 10;
   var lensFitSeq = 0;        // every fit request counts; an answer to an older one is dropped
+  var lensFitAsk = null;     // the lensFitSeq of the fit due or sent and not yet answered
   var LENS_RATING_LEVEL = { low: 'caution', medium: 'caution', okay: 'info', good: 'success', excellent: 'success' };
   var LENS_RATING_SEGMENTS = { low: 1, medium: 2, okay: 3, good: 4, excellent: 5 };
   var LENS_RATING_LABEL = { low: 'Not usable', medium: 'Poor', okay: 'Fair', good: 'Good', excellent: 'Excellent' };
@@ -1612,6 +1613,7 @@
   var lensHot = -1;          // the suggestion pointed at, by its bubble
   var lensFocusAfter = null; // after a choice by keyboard: {i, cls} of the bubble button that had the focus
   var lensHintText = '';
+  var lensHintLines = null;  // [heading, sub] the lines and the last answer gave, kept while a refit is awaited
   var lensRefocus = false;   // a redraw is giving the focus back: no new selection
   var lensImageSize = null;  // [w, h] the lines were traced on
   var lensPending = null;    // first click of a line being traced
@@ -2106,7 +2108,7 @@
     var to = open.filter(function(i) { return i > keep.i; })[0];
     return to != null ? to : open.length ? open[0] : null;
   }
-  // Pointing at a bubble or a suggestion lights up that line and its pointer and dims the others.
+  // Pointing at or focusing a bubble lights up that line and its pointer and dims the others.
   function lensHotCand(i) {
     if (lensHot === i) return;
     lensHot = i;
@@ -2129,22 +2131,30 @@
   function lensMisfitText(n) {
     return n.length > 1 ? 'Lines ' + n.slice(0, -1).join(', ') + ' and ' + n[n.length - 1] + ' do not fit the others' : 'Line ' + n[0] + ' does not fit the others';
   }
+  // What the lines and the fit say. The misfit marks stay with their lines; the rest of the old fit no longer
+  // matches the lines once they change, so its words stay until the refit answers.
+  function lensLinesHint() {
+    var fit = lensFit, misfit = lensMisfitLines(), many = misfit.length > 1;
+    var applied = fit && lensFitApplies(fit), hint = fit && fit.hint || '', cov = hint ? ' ' + hint : '';
+    var agree = /^The result may already be good\. /;
+    if (misfit.length) return [lensMisfitText(misfit) + '.', (many ? 'They are' : 'It is') + ' marked in the warning colour. Move ' + (many ? 'their' : 'its') + ' points onto the edge, or delete ' + (many ? 'them if they are' : 'it if it is') + ' not straight in reality.'];
+    if (lensHintLines && lensFitAsk === lensFitSeq) return lensHintLines;
+    if (lensMiddleOnly(fit)) return [LENS_MIDDLE.hint, LENS_MIDDLE.hintSub];
+    if (applied && (fit.rating === 'good' || fit.rating === 'excellent')) return ['The lens is measured.', /^If possible/.test(hint) ? 'Press Next. ' + hint : 'Press Next.'];
+    if (applied && agree.test(hint)) return ['The result may already be good.', hint.replace(agree, '') + ' Or press Next.'];
+    if (applied) return ['Improve the lines, or add more.', 'Select a point and move it exactly onto the edge. Lines near the edges and corners of the picture help the most.' + cov];
+    return ['Draw more straight lines.', 'Click the start and the end of a straight edge. Then move its points exactly onto the edge.' + cov];
+  }
   function renderLensHint() {
     if (lensPress) return;
-    var fit = lensFit, open = lensOpenCandidates().length, lines = lensLines.length, h, sub;
-    var applied = fit && lensFitApplies(fit), hint = fit && fit.hint || '', cov = hint ? ' ' + hint : '';
-    var agree = /^The result may already be good\. /, misfit = lensMisfitLines(), many = misfit.length > 1;
+    var open = lensOpenCandidates().length, lines = lensLines.length, h, sub;
+    lensHintLines = lines ? lensLinesHint() : null;
     if (lensPending) { h = 'Click the other end of the straight edge.'; sub = 'Esc cancels the line.'; }
     else if (lensHold && lensSelected && lensSelected.point != null) { h = 'Move the point exactly onto the edge.'; sub = 'Drag it, or use the arrow keys while the loupe shows the edge. Press Enter when it is in the right place.'; }
     else if (open) { h = 'Check the suggested lines.'; sub = 'Confirm each of the lines that is straight in reality by pressing ✔. Reject the others, such as a curtain, a cloth or a cable, by pressing ✖. ' + open + ' left to check. Or load a saved lens calibration.'; }
     else if (!lines && S.lensLoaded) { h = 'A saved lens calibration is loaded.'; sub = 'Press Next, or draw straight lines to measure the lens again.'; }
     else if (!lines) { h = 'Draw straight lines on the picture.'; sub = 'Click the start and the end of an edge that is straight in reality, such as a stage edge, a tape line or a truss. Then move its points exactly onto the edge. Or load a saved lens calibration.'; }
-    else if (misfit.length) { h = lensMisfitText(misfit) + '.'; sub = (many ? 'They are' : 'It is') + ' marked in the warning colour. Move ' + (many ? 'their' : 'its') + ' points onto the edge, or delete ' + (many ? 'them if they are' : 'it if it is') + ' not straight in reality.'; }
-    else if (lensMiddleOnly(fit)) { h = LENS_MIDDLE.hint; sub = LENS_MIDDLE.hintSub; }
-    else if (applied && (fit.rating === 'good' || fit.rating === 'excellent')) { h = 'The lens is measured.'; sub = /^If possible/.test(hint) ? 'Press Next. ' + hint : 'Press Next.'; }
-    else if (applied && agree.test(hint)) { h = 'The result may already be good.'; sub = hint.replace(agree, '') + ' Or press Next.'; }
-    else if (applied) { h = 'Improve the lines, or add more.'; sub = 'Select a point and move it exactly onto the edge. Lines near the edges and corners of the picture help the most.' + cov; }
-    else { h = 'Draw more straight lines.'; sub = 'Click the start and the end of a straight edge. Then move its points exactly onto the edge.' + cov; }
+    else { h = lensHintLines[0]; sub = lensHintLines[1]; }
     // A started line keeps the box's height, so the picture stays put between the line's two taps.
     var box = $('lens-hint');
     box.style.minHeight = lensPending ? box.style.minHeight || box.offsetHeight + 'px' : '';
@@ -2342,9 +2352,9 @@
     return false;
   }
   function lensChanged() {
+    scheduleLensFit();
     renderLens();
     saveToSession();
-    scheduleLensFit();
   }
   window.lensDeleteSelectedLine = function() {
     if (!lensSelected) return;
@@ -2369,7 +2379,7 @@
 
   // ---- fit ----
   function scheduleLensFit() {
-    lensFitSeq++;
+    lensFitAsk = ++lensFitSeq;
     clearTimeout(lensFitTimer);
     lensFitTimer = setTimeout(runLensFit, LENS_FIT_DEBOUNCE_MS);
   }
@@ -2387,6 +2397,7 @@
       saveToSession();
       return;
     }
+    lensFitAsk = seq;
     fetch('/api/wizard/lens/fit', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2402,6 +2413,7 @@
       return r.json().then(function(data) { return { ok: r.ok, data: data }; });
     }).then(function(res) {
       if (seq !== lensFitSeq) return;
+      lensFitAsk = null;
       if (!res.ok || !res.data || res.data.error) {
         lensFitFailed((res.data && res.data.error) || 'Could not fit the lens.');
         return;
@@ -2433,7 +2445,9 @@
       if (lensFitApplies(lensFit)) onLensCoeffChanged();
       else saveToSession();
     }).catch(function() {
-      if (seq === lensFitSeq) lensFitFailed('Could not fit the lens.');
+      if (seq !== lensFitSeq) return;
+      lensFitAsk = null;
+      lensFitFailed('Could not fit the lens.');
     });
   }
   function lensClearMisfit() { lensLines.forEach(function(l) { l.misfit = false; }); }

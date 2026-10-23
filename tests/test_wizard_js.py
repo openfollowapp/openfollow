@@ -2441,6 +2441,7 @@ _POINT_FOCUS_PAGE = """
 var els = {};
 function $(id) { if (!els[id]) els[id] = { innerHTML: '', style: {} }; return els[id]; }
 var lensHintText = '', lensHintHtml = '', lensPress = false, S = { lensLoaded: null };
+var lensHintLines = null, lensFitAsk = null, lensFitSeq = 0;
 var lensPending = null, lensFit = null;
 var lensLines = [{}, {}];
 function lensFitApplies() { return true; } function lensOpenCandidates() { return []; }
@@ -2478,6 +2479,7 @@ def test_a_point_reached_with_tab_is_selected_and_held(
             "lensMiddleOnly",
             "lensShownRating",
             "lensMisfitLines",
+            "lensLinesHint",
             "renderLensHint",
             "lensPointFocusIn",
             "lensTabKey",
@@ -2548,6 +2550,7 @@ function $(id) { if (!els[id]) els[id] = { innerHTML: '', style: {} }; return el
 var lensHintText = '', lensHintHtml = '', lensPress = false;
 function lensFitApplies(fit) { return fit.rating !== 'low'; }
 function lensOpenCandidates() { return state.open; }
+var lensHintLines = null, lensFitAsk = null, lensFitSeq = 0;
 var S = { lensLoaded: state.loaded }, lensPending = state.pending, lensHold = state.hold, lensSelected = state.sel;
 var lensLines = state.lines, lensFit = state.fit;
 """
@@ -2708,6 +2711,7 @@ def test_the_lens_hint_names_the_one_next_thing_to_do(state: dict, heading: str,
             "lensShownRating",
             "lensMisfitLines",
             "lensMisfitText",
+            "lensLinesHint",
             "renderLensHint",
         ),
         variables=("LENS_MIDDLE",),
@@ -2757,6 +2761,7 @@ function $(id) {
   return els[id];
 }
 var lensHintText = '', lensHintHtml = '', lensPress = false, FS = { key: 'lens' }, loupe = 'shown';
+var lensHintLines = null, lensFitAsk = null, lensFitSeq = 0;
 function lensFitApplies(fit) { return fit.rating !== 'low'; }
 function lensOpenCandidates() { return []; }
 function hideLoupe() { loupe = 'hidden'; }
@@ -2771,6 +2776,7 @@ _LIVE = (
     "lensShownRating",
     "lensMisfitLines",
     "lensMisfitText",
+    "lensLinesHint",
     "renderLensHint",
     "renderFsBar",
     "fsActions",
@@ -2971,6 +2977,7 @@ _MISFIT_FIT_PAGE = (
 var S = { lensCentre: [0, 0], lensLoaded: null }, imageWidth = 1920, imageHeight = 1080, lensFitSeq = 0;
 var lensFit = { rating: 'good', hint: '', lines: [{ misfit: false }, { misfit: true }, { misfit: false }] };
 var lensHold = false, lensPress = false, lensHintText = '', sent = null;
+var lensHintLines = null, lensFitAsk = null;
 var hintBox = { style: {} };
 function $() { return hintBox; }
 function lensOpenCandidates() { return []; }
@@ -2993,6 +3000,7 @@ _MISFIT_FIT_FUNCTIONS = (
     "lensMiddleOnly",
     "lensMisfitLines",
     "lensMisfitText",
+    "lensLinesHint",
     "renderLensHint",
     "runLensFit",
 )
@@ -3054,6 +3062,61 @@ def test_a_misfit_mark_stays_until_the_next_fit_answers(stale: bool, after: list
     assert out[1:] == [after, heading]
 
 
+# The Delete key's path: the line goes, the refit waits out its debounce, then its request, answered or lost.
+_DELETE_REFIT_PAGE = (
+    _MISFIT_FIT_PAGE
+    + """
+var window = globalThis, timers = [], lensFitTimer = null, settle = null;
+function fetch(url, opts) { sent = JSON.parse(opts.body); return new Promise(function(ok, no) { settle = [ok, no]; }); }
+function answer(data) {
+  if (!data) settle[1](new Error('down'));
+  else settle[0]({ ok: true, json: function() { return Promise.resolve(data); } });
+  return new Promise(function(r) { require('timers').setTimeout(r, 0); });
+}
+function setTimeout(f) { timers.push(f); return timers.length; } function clearTimeout() {}
+function hideLoupe() {} function lensReleaseCandidate() {}
+function wizLensShownPair(k1, k2) { return [k1, k2]; } function wizWriteLensCoeff() {} function wizShowLensLimit() {}
+"""
+    + wizard_window_function("lensDeleteSelectedLine")
+)
+_LINE_3 = "Line 3 does not fit the others."
+_ANSWER_GOOD = {"k1": -0.3123, "k2": -0.0123, "k2_fitted": True, "rating": "good", "hint": "", "lines": _fit_lines(-1)}
+
+
+@pytest.mark.parametrize(
+    ("misfit", "held", "answer", "seen"),
+    [
+        ([2], False, _ANSWER_GOOD, [_LINE_3, _LINE_3, "The lens is measured."]),
+        ([2], True, _ANSWER_GOOD, ["Move the point exactly onto the edge.", _LINE_3, "The lens is measured."]),
+        ([2], False, None, [_LINE_3, _LINE_3, "Draw more straight lines."]),
+        ([2, 3], False, _ANSWER_GOOD, ["Lines 3 and 4 do not fit the others.", _LINE_3, "The lens is measured."]),
+    ],
+    ids=["line selected", "point held", "fit lost", "another line still marked"],
+)
+def test_the_lens_hint_keeps_its_words_until_the_refit_after_a_delete_answers(
+    misfit: list, held: bool, answer: dict | None, seen: list
+) -> None:
+    out = run_wizard_js(
+        "(function() { lensLines.forEach(function(l, i) { l.misfit = misfit.indexOf(i) >= 0; });"
+        " lensSelected = { line: 2, point: held ? 1 : null }; lensHold = held; renderLens();"
+        " var box = function() { return [lensHintText, hintBox.innerHTML]; }, seen = [box()];"
+        " lensDeleteSelectedLine(); seen.push(box()); timers.pop()(); renderLens(); seen.push(box());"
+        " return answer(reply).then(function() { seen.push(box()); return seen; });"
+        " })()",
+        functions=(*_MISFIT_FIT_FUNCTIONS, "dropLensPoint", "lensChanged", "scheduleLensFit"),
+        variables=(*_MISFIT_FIT_VARS, "LENS_FIT_DEBOUNCE_MS"),
+        prelude=_DELETE_REFIT_PAGE,
+        misfit=misfit,
+        held=held,
+        reply=answer and {**answer, "lines": answer["lines"][:2]},
+    )
+    before, deleted, sent, answered = out
+    # Until the refit answers, the hint says what the last answer said, never that more lines are needed;
+    # a line the last answer marked keeps its mark and its new number.
+    assert deleted == sent
+    assert [before[0], deleted[0], answered[0]] == seen
+
+
 @pytest.mark.parametrize("fetch_stub", [_SYNC_FETCH, _FAILED_FETCH], ids=["refused", "unreachable"])
 def test_a_failed_fit_or_too_few_lines_clear_the_misfit_marks(fetch_stub: str) -> None:
     out = run_wizard_js(
@@ -3069,10 +3132,10 @@ def test_a_failed_fit_or_too_few_lines_clear_the_misfit_marks(fetch_stub: str) -
 @pytest.mark.parametrize(
     ("misfit", "heading"),
     [(True, "Draw more straight lines."), (False, "The lens is measured.")],
-    ids=["its misfit line deleted", "every line fits"],
+    ids=["its misfit line gone", "every line fits"],
 )
 def test_a_fit_not_applied_never_says_the_lens_is_measured(misfit: bool, heading: str) -> None:
-    # The misfit line is deleted before the refit answers: the result still says the fit is not applied.
+    # No line carries the fit's misfit mark any more and no words are kept: it still says the fit is not applied.
     fit = {"rating": "good", "hint": "", "lines": [{"misfit": False}, {"misfit": misfit}, {"misfit": False}]}
     out = run_wizard_js(
         "(function() { renderLensHint(); return lensHintText; })()",
@@ -3085,6 +3148,7 @@ def test_a_fit_not_applied_never_says_the_lens_is_measured(misfit: bool, heading
             "lensShownRating",
             "lensMisfitLines",
             "lensMisfitText",
+            "lensLinesHint",
             "renderLensHint",
         ),
         variables=("LENS_MIDDLE",),
@@ -7032,6 +7096,7 @@ function setTimeout(f) { timers.push(f); return timers.length; }
 function clearTimeout(id) { if (id) timers[id - 1] = null; }
 function lensFitApplies() { return false; } function lensOpenCandidates() { return []; } function renderFsBar() {}
 var lensFit = null, lensHintText = '', S = { lensLoaded: null };
+var lensHintLines = null, lensFitAsk = null, lensFitSeq = 0;
 renderLens = lensChanged = function() { renderLensHint(); };
 lensTraceClick = function(p) {
   traced++; if (lensPending) { lensPending = null; lensLines.push({}); } else lensPending = p; renderLensHint(); };
@@ -7054,6 +7119,7 @@ _LENS_PRESS_FUNCTIONS = (
     "lensMiddleOnly",
     "lensShownRating",
     "lensMisfitLines",
+    "lensLinesHint",
     "renderLensHint",
     "lensPressEnd",
 )

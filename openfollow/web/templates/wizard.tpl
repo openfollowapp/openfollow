@@ -198,7 +198,7 @@
   /* Lens step: traced lines, their points and the curve the fitted lens predicts. */
   .lens-hit { pointer-events: all; cursor: crosshair; }
   /* Strokes in CSS pixels: the viewBox is the snapshot's own resolution, which a phone shows at a fifth. */
-  .lens-chord, .lens-curve, .lens-halo, .lens-pending, .lens-candidate-line, .lens-candidate-hit,
+  .lens-chord, .lens-curve, .lens-halo, .lens-pending, .lens-candidate-line,
   .lens-point .dot, .wizard-point .dot { vector-effect: non-scaling-stroke; }
   .lens-chord { fill: none; stroke: var(--accent); stroke-width: 1.5; stroke-opacity: 0.7; }
   .lens-curve { fill: none; stroke: var(--success-line); stroke-width: 2; stroke-dasharray: 6 4; }
@@ -226,10 +226,9 @@
   }
   .wizard-loupe canvas { width: 100%; height: 100%; display: block; }
   .lens-result-main { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
-  /* Suggested edges: faint and dashed until tapped, with a wide invisible stroke to tap. */
+  /* Suggested edges: faint and dashed; only their bubbles take them, a press on one draws as anywhere else. */
   .lens-candidate-line { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-opacity: 0.6; stroke-dasharray: 8 6; pointer-events: none; }
-  .lens-candidate-hit { fill: none; stroke: transparent; stroke-width: 24; pointer-events: stroke; cursor: pointer; }
-  .lens-candidate:hover .lens-candidate-line, .lens-candidate.hot .lens-candidate-line { stroke-opacity: 1; stroke-width: 5; filter: drop-shadow(0 0 3px var(--bg-deep)); }
+  .lens-candidate.hot .lens-candidate-line { stroke-opacity: 1; stroke-width: 5; filter: drop-shadow(0 0 3px var(--bg-deep)); }
   #lens-candidates.has-hot .lens-candidate:not(.hot) .lens-candidate-line { stroke-opacity: 0.2; }
   /* One use / reject bubble per suggestion, pointing at its line; in CSS pixels over the picture. */
   .lens-tails, .lens-bubbles { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
@@ -1611,7 +1610,7 @@
   var lensLines = [];        // [{p0, p1, mids: [{t, off, on}], snapped: [bool x5], curve, rms, misfit, candidate}]
   var lensCandidates = [];   // suggested edges of the current snapshot: [{points, samples, polarity, used, rejected}]
   var lensRejected = [];     // the ends of every rejected suggestion, until Refresh Image: [[x, y], [x, y]]
-  var lensHot = -1;          // the suggestion pointed at, by its bubble or its line
+  var lensHot = -1;          // the suggestion pointed at, by its bubble
   var lensFocusAfter = null; // after a choice by keyboard: {i, cls} of the bubble button that had the focus
   var lensHintText = '';
   var lensRefocus = false;   // a redraw is giving the focus back: no new selection
@@ -1966,16 +1965,11 @@
     g.innerHTML = '';
     if (lensHot >= 0 && lensOpenCandidates().indexOf(lensHot) < 0) lensHot = -1;
     g.classList.toggle('has-hot', lensHot >= 0);
-    // The keyboard reaches a suggestion through its bubble; a click on the line still uses it.
     lensCandidates.forEach(function(cand, i) {
       if (cand.used || cand.rejected) return;
       var group = svgEl('g');
       group.setAttribute('class', 'lens-candidate' + (lensHot === i ? ' hot' : ''));
       group.dataset.candidate = i;
-      var hit = svgEl('polyline');
-      hit.setAttribute('class', 'lens-candidate-hit');
-      hit.setAttribute('points', lensPointsAttr(cand.points));
-      group.appendChild(hit);
       var line = svgEl('polyline');
       line.setAttribute('class', 'lens-candidate-line');
       line.setAttribute('points', lensPointsAttr(cand.points));
@@ -2529,11 +2523,7 @@
     overlay.addEventListener('pointerdown', function(e) {
       traceTap = null;
       var handle = e.target.closest ? e.target.closest('.lens-point') : null;
-      var candidate = e.target.closest ? e.target.closest('.lens-candidate') : null;
-      if (candidate) {
-        e.preventDefault();
-        lensAddCandidate(+candidate.dataset.candidate);
-      } else if (handle) {
+      if (handle) {
         e.preventDefault();
         lensHold = false;
         lensSelected = { line: +handle.dataset.line, point: +handle.dataset.point };
@@ -2651,7 +2641,7 @@
     document.addEventListener('pointerdown', function(e) { if (lensHold && !e.target.closest('#lens-lines .lens-point')) dropLensPoint(); }, true);
     document.addEventListener('focusin', lensFocusElsewhere);
     // The bubbles: the check uses its suggestion, the cross rejects it; pointing at one lights up its line.
-    var bubbles = $('lens-bubbles'), cands = $('lens-candidates');
+    var bubbles = $('lens-bubbles');
     bubbles.addEventListener('click', function(e) {
       var b = e.target.closest('button'), g = b && b.closest('[data-candidate]'); if (!g) return;
       var i = +g.dataset.candidate, use = b.classList.contains('lb-use');
@@ -2662,8 +2652,6 @@
     bubbles.addEventListener('mouseleave', function() { lensHotCand(-1); });
     bubbles.addEventListener('focusin', function(e) { var g = e.target.closest('[data-candidate]'); if (g) lensHotCand(+g.dataset.candidate); });
     bubbles.addEventListener('focusout', function(e) { if (!e.relatedTarget || !bubbles.contains(e.relatedTarget)) lensHotCand(-1); });
-    cands.addEventListener('mouseover', function(e) { var g = e.target.closest('[data-candidate]'); if (g) lensHotCand(+g.dataset.candidate); });
-    cands.addEventListener('mouseout', function(e) { if (!e.relatedTarget || !e.relatedTarget.closest || !e.relatedTarget.closest('#lens-candidates [data-candidate]')) lensHotCand(-1); });
     // The bubbles are placed in CSS pixels of the picture as shown, known once it has its size.
     $('lens-image').addEventListener('load', renderLensBubbles);
     wizShowLensCentre();

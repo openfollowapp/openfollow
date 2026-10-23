@@ -1625,13 +1625,11 @@ class TestWizardLensTemplate:
         # One column per step pixels of the chord, both ends included: edge_snap.band_columns.
         assert "Math.ceil(len / step) + 1" in self._src()
 
-    def test_suggestions_are_requested_for_the_lens_step_and_tapped_into_lines(self) -> None:
+    def test_suggestions_are_requested_for_the_lens_step_and_given_back_by_a_deleted_line(self) -> None:
         src = self._src()
         assert "'/api/wizard/lens/edges'" in src
         assert "if (currentStep === WIZ.lens) lensRequestEdges();" in src
         assert 'id="lens-candidates"' in src
-        down = re.search(r"overlay\.addEventListener\('pointerdown', function\(e\) \{(.*?)\n    \}\);", src, re.S)
-        assert down is not None and "lensAddCandidate(+candidate.dataset.candidate)" in down.group(1)
         # A deleted or cleared line gives its suggestion back.
         for name in ("lensDeleteSelectedLine", "lensClearLines"):
             body = re.search(r"window\." + name + r" = function\(\) \{(.*?)\n  \};\n", src, re.S)
@@ -1825,12 +1823,6 @@ class TestWizardLensTemplateBubbles:
         assert '<p class="wizard-help" style="margin-top:0.72rem;">' not in src
         # Full screen mirrors it.
         assert "hint = lensHintText;" in wizard_function("renderFsBar")
-
-    def test_a_click_on_a_dashed_line_still_uses_it(self) -> None:
-        down = re.search(
-            r"overlay\.addEventListener\('pointerdown', function\(e\) \{(.*?)\n    \}\);", self._src(), re.S
-        )
-        assert down and "lensAddCandidate(+candidate.dataset.candidate);" in down.group(1)
 
     def test_no_svg_element_listens_for_focus(self) -> None:
         src = self._src()

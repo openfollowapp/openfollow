@@ -3479,6 +3479,161 @@ def test_switching_a_point_off_needs_a_middle_point_selected() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Lens: a suggestion is taken only by its bubble
+# ---------------------------------------------------------------------------
+
+_STYLE = re.search(r"<style>(.*?)</style>", WIZARD_TEMPLATE.read_text(encoding="utf-8"), re.S)
+
+
+def _declared(cls: str, prop: str) -> str | None:
+    """The last ``prop`` the page's stylesheet gives an element of class ``cls``, hover rules left out."""
+    assert _STYLE is not None
+    value = None
+    css = re.sub(r"/\*.*?\*/", "", _STYLE.group(1), flags=re.S)
+    for selectors, body in re.findall(r"([^{}]+)\{([^{}]*)\}", css):
+        targets = [s.split()[-1] for s in selectors.split(",") if s.strip() and ":hover" not in s]
+        if any(re.search(rf"\.{re.escape(cls)}(?![\w-])", t) for t in targets):
+            found = re.findall(rf"(?<![\w-]){prop}:\s*([^;]+);", body)
+            value = found[-1].strip() if found else value
+    return value
+
+
+def _rendered_suggestions() -> list[dict]:
+    """Each element the page draws for the open suggestion: its tag, its class and its ancestors' classes."""
+    return run_wizard_js(
+        "(function() { renderLensCandidates(); var out = [];"
+        " (function walk(el, chain) { el.children.forEach(function(c) { var cls = [c.attrs['class'].split(' ')[0]];"
+        " out.push({ tag: c.tag, chain: cls.concat(chain) }); walk(c, cls.concat(chain)); }); })(root,"
+        " ['lens-candidates']); return out; })()",
+        functions=("svgEl", "lensPointsAttr", "lensOpenCandidates", "renderLensCandidates"),
+        prelude="""
+function node(tag) { return { tag: tag, attrs: {}, children: [], dataset: {}, classList: { toggle: function() {} },
+  setAttribute: function(k, v) { this.attrs[k] = v; }, appendChild: function(c) { this.children.push(c); } }; }
+var root = node(), lensHot = -1;
+var document = { getElementById: function() { return root; },
+  createElementNS: function(ns, tag) { return node(tag); } };
+var lensCandidates = [{ points: [[100, 100], [500, 110], [900, 120]], used: false, rejected: false },
+  { points: [[100, 600], [900, 620]], used: true, rejected: false }];
+""",
+    )
+
+
+def _takes_pointer(drawn: dict) -> bool:
+    # A group paints nothing; SVG's default lets a painted stroke take the pointer; pointer-events is inherited.
+    if drawn["tag"] == "g":
+        return False
+    for cls in drawn["chain"]:
+        value = _declared(cls, "pointer-events")
+        if value is not None:
+            return value != "none"
+    return True
+
+
+def test_a_suggested_line_takes_no_pointer() -> None:
+    drawn = _rendered_suggestions()
+    assert [(d["tag"], d["chain"][0]) for d in drawn] == [("g", "lens-candidate"), ("polyline", "lens-candidate-line")]
+    # Every press on a suggestion reaches the picture beneath; nothing on it shows the pointer hand.
+    assert not [d for d in drawn if _takes_pointer(d)]
+    assert {_declared(d["chain"][0], "cursor") for d in drawn} == {None}
+
+
+# A press on the picture: the overlay's own press, release and click listeners, the line drawn for real.
+_PRESS_PAGE = (
+    _NEW_LINE_PAGE
+    + """
+var on = {}, traceTap = null, lensDrag = null, lensRejected = [], saved = 0;
+var overlay = { addEventListener: function(t, f) { on[t] = f; }, setPointerCapture: function() {},
+  releasePointerCapture: function() {} };
+function lensSvgPoint(x, y) { return [x, y]; } function hideLoupe() {} function showLoupe() {}
+function saveToSession() { saved++; }
+var group = { dataset: { candidate: '0' } };
+// The element the browser hands the press: the picture, or a suggestion element that takes the pointer.
+function pressed(onSuggestion) {
+  if (!onSuggestion) return { id: 'lens-hit', closest: function() { return null; } };
+  return { id: '', closest: function(sel) {
+    return sel === '.lens-candidate' || sel === '[data-candidate]' ? group : null; } };
+}
+function press(at, onSuggestion) {
+  var e = { target: pressed(onSuggestion), clientX: at[0], clientY: at[1], pointerType: 'mouse', pointerId: 1,
+    type: 'pointerdown', preventDefault: function() {} };
+  on.pointerdown(e); e.type = 'pointerup'; on.pointerup(e); e.type = 'click'; on.click(e);
+}
+function state() {
+  return { pending: lensPending, lines: lensLines.map(function(l) { return [l.p0, l.p1]; }),
+    used: lensCandidates[0].used, rejected: lensCandidates[0].rejected };
+}
+"""
+)
+_PRESS_FUNCTIONS = (
+    "tapSlop",
+    "lensClamp",
+    "lensTraceClick",
+    "lensSetMidsFromPositions",
+    "lensSetMidFromPos",
+    "lensBandHalf",
+    "lensPointWindow",
+    "lensNearFits",
+    "lensAddCandidate",
+    "lensRejectCandidate",
+    "endDrag",
+)
+
+
+def _press(steps: str, on_suggestion: bool) -> dict:
+    listeners = "\n".join(
+        wizard_block(start)
+        for start in (
+            "overlay.addEventListener('pointerdown', function(e) {",
+            "overlay.addEventListener('click', function(e) {",
+        )
+    )
+    listeners += "\noverlay.addEventListener('pointerup', endDrag);"
+    return run_wizard_js(
+        f"(function() {{ {listeners}\n{steps} return state(); }})()",
+        functions=_PRESS_FUNCTIONS,
+        variables=("LENS_T", "LENS_MIN_LINE_PX"),
+        prelude=_PRESS_PAGE + f"var onSuggestion = {json.dumps(on_suggestion)};",
+    )
+
+
+@pytest.mark.parametrize(
+    ("steps", "pending", "lines"),
+    [
+        ("press([500, 105], onSuggestion);", [500, 105], []),
+        ("press([500, 105], onSuggestion); press([500, 700], false);", None, [[[500, 105], [500, 700]]]),
+        ("press([500, 700], false); press([500, 105], onSuggestion);", None, [[[500, 700], [500, 105]]]),
+    ],
+    ids=["starts a line", "and the end elsewhere", "ends a line"],
+)
+def test_a_press_on_a_suggested_line_draws_a_line_of_your_own(steps: str, pending, lines: list) -> None:
+    # The browser hands the press to the suggestion only if one of its elements takes the pointer.
+    on_suggestion = any(_takes_pointer(d) for d in _rendered_suggestions())
+    out = _press(steps, on_suggestion)
+    assert out == {"pending": pending, "lines": lines, "used": False, "rejected": False}
+
+
+@pytest.mark.parametrize(
+    ("button", "used", "rejected", "lines"),
+    [("lb-use", True, False, 1), ("lb-reject", False, True, 0)],
+    ids=["the check mark uses it", "the cross rejects it"],
+)
+def test_the_bubble_takes_or_rejects_its_suggestion(button: str, used: bool, rejected: bool, lines: int) -> None:
+    listener = wizard_block("bubbles.addEventListener('click', function(e) {")
+    out = run_wizard_js(
+        "(function() { var lensFocusAfter = null, bubbles = overlay;"
+        f" {listener}\n"
+        f" var b = {{ classList: {{ contains: function(c) {{ return c === {json.dumps(button)}; }} }},"
+        "   closest: function(sel) { return sel === '[data-candidate]' ? group : null; } };"
+        " on.click({ detail: 1, target: { closest: function(sel) { return sel === 'button' ? b : null; } } });"
+        " return state(); })()",
+        functions=_PRESS_FUNCTIONS,
+        variables=("LENS_T", "LENS_MIN_LINE_PX"),
+        prelude=_PRESS_PAGE,
+    )
+    assert (out["used"], out["rejected"], len(out["lines"]), out["pending"]) == (used, rejected, lines, None)
+
+
+# ---------------------------------------------------------------------------
 # Lens: a used suggestion is snapped onto its own edge
 # ---------------------------------------------------------------------------
 

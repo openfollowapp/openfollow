@@ -10,6 +10,7 @@
 % from openfollow.lens_model import C_BOUND
 % _cam = config.camera
 % _lens_k1, _lens_k2, _lens_cx, _lens_cy = _cam.lens_k1, _cam.lens_k2, _cam.lens_cx, _cam.lens_cy
+% _suggest_on = config.ui.feature_on('lens_suggestions')
 % _g = config.grid
 % _saved = {
 %   'mode': config.camera.calibration_mode,
@@ -471,7 +472,7 @@
       <button type="button" class="secondary" id="lens-save" onclick="lensSaveDialog()" disabled>Save lens calibration&hellip;</button>
     </div>
     <div id="lens-saved" class="notice success" role="status" style="display:none;margin-top:0.72rem;"></div>
-% if config.ui.developer_mode:
+% if config.ui.developer_mode and _suggest_on:
     <div class="field checkbox-field lens-dev">
       <label for="lens-show-edges">Edge map</label>
       <div class="checkbox-wrap checkbox-field inline">
@@ -1603,6 +1604,7 @@
   function lensMiddleOnly(fit) { return !!fit && (fit.rating === 'good' || fit.rating === 'excellent') && fit.edges_measured === false; }
   function lensShownRating(fit) { return lensMiddleOnly(fit) ? 'okay' : fit.rating; }
   var LENS_DEV = {{'true' if config.ui.developer_mode else 'false'}};
+  var LENS_SUGGEST = {{'true' if _suggest_on else 'false'}};
   var lensLines = [];        // [{p0, p1, mids: [{t, off, on}], snapped: [bool x5], curve, rms, misfit, candidate}]
   var lensCandidates = [];   // suggested edges of the current snapshot: [{points, samples, polarity, used, rejected}]
   var lensRejected = [];     // the ends of every rejected suggestion, until Refresh Image: [[x, y], [x, y]]
@@ -1769,7 +1771,7 @@
     return out;
   }
   function lensRequestEdges() {
-    if (!lensCanvas) return;
+    if (!LENS_SUGGEST || !lensCanvas) return;
     var size = lensEdgeSize();
     var rgba = lensCanvas.getContext('2d').getImageData(0, 0, imageWidth, imageHeight).data;
     var luma = lensScaledLuma(rgba, imageWidth, imageHeight, size.scale);
@@ -3964,7 +3966,7 @@
   function fsHelpHtml() {
     var k = FS.key, intro, rows;
     if (k === 'lens') {
-      intro = '<strong>Check each dashed suggested line</strong>: the check mark uses it, the cross removes it. Or click the start and the end of a straight edge. Click a line to select it. Drag a point to correct it.';
+      intro = (lensCandidates.length ? '<strong>Check each dashed suggested line</strong>: the check mark uses it, the cross removes it. Or click' : 'Click') + ' the start and the end of a straight edge. Click a line to select it. Drag a point to correct it.';
       rows = [[['Tab'], 'Next suggestion bubble or line. With a point selected: the next point on its line, after the last the first again'], ['<kbd>Shift</kbd> + <kbd>Tab</kbd>', 'The previous point on its line, before the first the last again'],
         [ARROWS, 'Move the selected point 1&nbsp;px, with Shift 10&nbsp;px'], [['Enter'], 'Confirm the point and end the selection'],
         ['<kbd>Delete</kbd> or <kbd>Backspace</kbd>', 'Remove the selected line, or cancel a line you started'], FS_ESC];

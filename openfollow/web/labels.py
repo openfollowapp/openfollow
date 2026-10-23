@@ -26,6 +26,11 @@ FEATURE_LABELS: dict[str, FeatureLabel] = {
         "Opens MIDI devices for virtual faders and button bindings.",
         "MIDI devices are closed, so nothing played on them reaches this station.",
     ),
+    "lens_suggestions": FeatureLabel(
+        "Lens line suggestions",
+        "Suggests straight edges in the Setup Wizard's Lens step, to use or reject.",
+        "the Lens step suggests no lines; lines are drawn by hand.",
+    ),
     "psn_input": FeatureLabel(
         "PSN input",
         "Shows the markers other stations send over PSN.",

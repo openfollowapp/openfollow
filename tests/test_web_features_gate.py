@@ -107,11 +107,12 @@ def test_the_camera_tabs_lens_is_not_gated() -> None:
     assert "data-feature" not in group
 
 
-def test_every_feature_but_psn_input_hides_something() -> None:
+def test_every_feature_but_psn_input_and_lens_suggestions_hides_something() -> None:
     texts = "\n".join(_template_texts())
     # Binding rows pass their feature through a helper; the interface row through routes.
+    # Off, Lens line suggestions are never requested, so the Lens step has nothing to hide.
     hidden = {key for key in FEATURE_KEYS if f'data-feature="{key}"' in texts or f"feature='{key}'" in texts}
-    assert set(FEATURE_KEYS) - hidden == {"psn_input"}
+    assert set(FEATURE_KEYS) - hidden == {"psn_input", "lens_suggestions"}
 
 
 def test_nothing_carries_the_retired_gate_class() -> None:

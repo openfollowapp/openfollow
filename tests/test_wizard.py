@@ -68,6 +68,27 @@ def live_server(tmp_path, monkeypatch):
         yield server, base
 
 
+@pytest.fixture()
+def live_server_suggest(tmp_path, monkeypatch):
+    """A station with Lens line suggestions on."""
+    from openfollow.configuration import AppConfig, save_config
+
+    _quiet_discovery(monkeypatch)
+    config_path = tmp_path / "config.toml"
+    cfg = AppConfig()
+    cfg.ui.shown_features = [*cfg.ui.shown_features, "lens_suggestions"]
+    save_config(cfg, str(config_path))
+    with live_on_free_port(
+        lambda port: ConfigWebServer(
+            config_path=str(config_path),
+            host="127.0.0.1",
+            port=port,
+            system_name="WizardTest",
+        )
+    ) as (server, base):
+        yield server, base
+
+
 # ---------------------------------------------------------------------------
 # HTTP helpers
 # ---------------------------------------------------------------------------
@@ -171,8 +192,8 @@ def live_server_lens(tmp_path, monkeypatch):
 
 @pytest.fixture()
 def live_server_lens_dev(tmp_path, monkeypatch):
-    """The Lens station in developer mode, which adds the edge view."""
-    with _lens_station(tmp_path, monkeypatch, developer_mode=True) as (server, base):
+    """The Lens station in developer mode with Lens line suggestions on, which adds the edge view."""
+    with _lens_station(tmp_path, monkeypatch, developer_mode=True, features=("lens_suggestions",)) as (server, base):
         yield server, base
 
 
@@ -343,7 +364,7 @@ class TestWizardPage:
         for mode in ("simple", "advanced"):
             assert _get(base, f"/help/wizard-calibration-{mode}.html")[0] == 200
 
-    @pytest.mark.parametrize("features", [None, ()], ids=["default features", "no features"])
+    @pytest.mark.parametrize("features", [None, ("lens_suggestions",)], ids=["suggestions off", "suggestions on"])
     def test_every_element_the_script_looks_up_is_on_the_page(
         self, tmp_path, monkeypatch, features: tuple[str, ...] | None
     ) -> None:
@@ -640,6 +661,14 @@ class TestWizardSavedCalibration:
             _, body = _get(base, "/wizard")
         assert _saved(body)["lens"] == [-0.21, 0.03, 0.02, -0.01]
         assert re.search(r'id="wiz_lens_k1" step="any"\s+value="-0.21"', body)
+
+    @pytest.mark.parametrize(("features", "on"), [(None, False), (("lens_suggestions",), True)])
+    def test_the_page_offers_suggestions_only_with_their_feature(
+        self, tmp_path, monkeypatch, features: tuple[str, ...] | None, on: bool
+    ) -> None:
+        with _lens_station(tmp_path, monkeypatch, features=features) as (_, base):
+            _, body = _get(base, "/wizard")
+        assert f"var LENS_SUGGEST = {'true' if on else 'false'};" in _wizard_script(body)
 
 
 # ---------------------------------------------------------------------------
@@ -1221,8 +1250,14 @@ class TestWizardLensEdgesEndpoint:
         scale = edge_map_scale(1920)
         return edges_payload(scaled_luma(_stripe_image(), scale), scale, 1920, 1080, with_map=with_map)
 
-    def test_suggests_the_stripe_with_five_sample_points(self, live_server) -> None:
+    def test_refuses_while_lens_line_suggestions_are_off(self, live_server) -> None:
         _, base = live_server
+        status, data = _post_json(base, "/api/wizard/lens/edges", self._body())
+        assert status == 403
+        assert data == {"error": "Lens line suggestions are switched off on this station."}
+
+    def test_suggests_the_stripe_with_five_sample_points(self, live_server_suggest) -> None:
+        _, base = live_server_suggest
         status, data = _post_json(base, "/api/wizard/lens/edges", self._body())
         assert status == 200
         assert data["edges"] is None
@@ -1234,8 +1269,8 @@ class TestWizardLensEdgesEndpoint:
         assert best["length"] > 1500.0 and best["strength"] > 8.0
         assert best["polarity"] in (-1, 0, 1)
 
-    def test_the_developer_map_is_returned_on_request(self, live_server) -> None:
-        _, base = live_server
+    def test_the_developer_map_is_returned_on_request(self, live_server_suggest) -> None:
+        _, base = live_server_suggest
         status, data = _post_json(base, "/api/wizard/lens/edges", self._body(with_map=True))
         assert status == 200
         edges = data["edges"]
@@ -1243,8 +1278,8 @@ class TestWizardLensEdgesEndpoint:
         assert len(base64.b64decode(edges["data"])) == 960 * 540
 
     @pytest.mark.parametrize("with_map", ["false", 1, "yes"])
-    def test_only_true_asks_for_the_developer_map(self, live_server, with_map) -> None:
-        _, base = live_server
+    def test_only_true_asks_for_the_developer_map(self, live_server_suggest, with_map) -> None:
+        _, base = live_server_suggest
         status, data = _post_json(base, "/api/wizard/lens/edges", {**self._body(), "with_map": with_map})
         assert status == 200
         assert data["edges"] is None
@@ -1289,21 +1324,21 @@ class TestWizardLensEdgesEndpoint:
             "unscaled-snapshot",
         ],
     )
-    def test_malformed_body_returns_400(self, live_server, mutate) -> None:
-        _, base = live_server
+    def test_malformed_body_returns_400(self, live_server_suggest, mutate) -> None:
+        _, base = live_server_suggest
         body = self._body()
         mutate(body)
         status, data = _post_json(base, "/api/wizard/lens/edges", body)
         assert status == 400, data
         assert "error" in data
 
-    def test_non_object_body_returns_400(self, live_server) -> None:
-        _, base = live_server
+    def test_non_object_body_returns_400(self, live_server_suggest) -> None:
+        _, base = live_server_suggest
         status, _ = _post_json(base, "/api/wizard/lens/edges", [1, 2, 3])  # type: ignore[arg-type]
         assert status == 400
 
-    def test_invalid_json_returns_400(self, live_server) -> None:
-        _, base = live_server
+    def test_invalid_json_returns_400(self, live_server_suggest) -> None:
+        _, base = live_server_suggest
         req = urllib.request.Request(
             f"{base}/api/wizard/lens/edges",
             data=b"{not json",
@@ -1313,6 +1348,28 @@ class TestWizardLensEdgesEndpoint:
         with pytest.raises(urllib.error.HTTPError) as exc:
             urllib.request.urlopen(req, timeout=5)
         assert exc.value.code == 400
+
+
+@integration
+class TestWizardLensWithoutSuggestions:
+    """A line drawn by hand is snapped and fitted whether Lens line suggestions are on or off."""
+
+    def test_snap_and_fit_answer_with_lens_line_suggestions_off(self, live_server) -> None:
+        server, base = live_server
+        assert not load_config(server.config_path).ui.feature_on("lens_suggestions")
+        img = _stripe_image()
+        p0, p1 = (200.0, 597.0), (1700.0, 627.0)
+        status, data = _post_json(
+            base,
+            "/api/wizard/lens/snap",
+            {"image_width": 1920, "image_height": 1080, "p0": p0, "p1": p1, "band": _snap_band(img, p0, p1)},
+        )
+        assert status == 200 and len(data["points"]) == 5
+        lines = [{"points": _warped_line(a, b, -0.3, 0.05)} for a, b in _LENS_EDGE_LINES]
+        status, data = _post_json(
+            base, "/api/wizard/lens/fit", {"image_width": IMG_W, "image_height": IMG_H, "lines": lines}
+        )
+        assert status == 200 and data["k1"] == pytest.approx(-0.3, abs=5e-3)
 
 
 @integration
@@ -1488,10 +1545,9 @@ class TestWizardLensFitEndpoint:
 class TestWizardScriptParses:
     """The page's own script, rendered with every toggle: an edit that breaks its syntax stops the whole wizard."""
 
-    @pytest.mark.parametrize(("features", "developer"), [(None, False), ((), False), (None, True)])
-    def test_every_inline_script_parses(
-        self, tmp_path, monkeypatch, features: tuple[str, ...] | None, developer: bool
-    ) -> None:
+    @pytest.mark.parametrize(("suggestions", "developer"), [(False, False), (True, False), (False, True), (True, True)])
+    def test_every_inline_script_parses(self, tmp_path, monkeypatch, suggestions: bool, developer: bool) -> None:
+        features = ("lens_suggestions",) if suggestions else None
         with _lens_station(tmp_path, monkeypatch, developer_mode=developer, features=features) as (_, base):
             status, page = _get(base, "/wizard")
         assert status == 200
@@ -1590,6 +1646,11 @@ class TestWizardLensStepPage:
         assert 'id="lens-show-edges"' in dev and "Show edges" in dev and "var LENS_DEV = true;" in dev
         assert 'id="lens-edges"' in dev
         assert 'id="lens-show-edges"' not in plain and "var LENS_DEV = false;" in plain
+
+    def test_the_edge_view_needs_the_suggestions_it_is_picked_from(self, tmp_path, monkeypatch) -> None:
+        with _lens_station(tmp_path, monkeypatch, developer_mode=True) as (_, base):
+            _, body = _get(base, "/wizard")
+        assert "var LENS_DEV = true;" in body and 'id="lens-show-edges"' not in body
 
 
 @unit

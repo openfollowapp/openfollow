@@ -9,14 +9,14 @@ Own PR from `main`.
 
 | Topic | Decision |
 |---|---|
-| Entries | `zones` (Trigger zones + Zone editor), `midi` (MIDI section + virtual faders' MIDI source), `psn_input` (markers received from other stations; no UI is hidden), `detection` (whole Person Detection tab: model, tracking, masks), `rttrpm` (RTTrPM output + its interface row), `paths` (Paths, Path editor, Pathfinder / Toggle Paths bindings, OSC path commands, the touch remote's Pathfinder button), `ground_grid` (Ground Grid section), `calibration_points` (Camera group + the wizard's Corner Pinning Advanced section and Review group), `touch_remote` (Touch remote section, launcher and card). The Toggle Zones bindings go with `zones` |
-| Experimental | `detection`, `rttrpm`, `paths`, `ground_grid`, `calibration_points`, `touch_remote` carry the badge, default off. `zones`, `midi`, `psn_input` are not experimental, default on |
+| Entries | `zones` (Trigger zones + Zone editor), `midi` (MIDI section + virtual faders' MIDI source), `lens_suggestions` (the dashed suggested lines in the wizard's Lens step; no UI is hidden, the step never asks for them), `psn_input` (markers received from other stations; no UI is hidden), `detection` (whole Person Detection tab: model, tracking, masks), `rttrpm` (RTTrPM output + its interface row), `paths` (Paths, Path editor, Pathfinder / Toggle Paths bindings, OSC path commands, the touch remote's Pathfinder button), `ground_grid` (Ground Grid section), `calibration_points` (Camera group + the wizard's Corner Pinning Advanced section and Review group), `touch_remote` (Touch remote section, launcher and card). The Toggle Zones bindings go with `zones` |
+| Experimental | `lens_suggestions`, `detection`, `rttrpm`, `paths`, `ground_grid`, `calibration_points`, `touch_remote` carry the badge, default off. `zones`, `midi`, `psn_input` are not experimental, default on |
 | Zones | No longer experimental: the warning in `help/trigger_zones.md` goes |
-| Lens | Not a feature: the Camera group, the wizard's Lens step and every lens reader always apply the camera's lens |
+| Lens | Not a feature: the Camera group, the wizard's Lens step and every lens reader always apply the camera's lens. `lens_suggestions` is experimental, default off. Off: the Lens step requests no suggestions (`/api/wizard/lens/edges` answers 403), shows no dashed lines or bubbles, and lines are drawn by hand; snap and fit stay available |
 | OTP | Not in the list; unchanged (its help still says experimental) |
 | Config | `[ui] shown_features: list[str]`, entries from a fixed enum, unknown / duplicate / non-string entries dropped, stored in `FEATURE_KEYS` order. Missing key ⇒ default (`["zones", "midi", "psn_input"]`) |
 | Migration | Old `show_experimental_features = true` with no `shown_features` ⇒ defaults + every experiment; `false` or missing ⇒ defaults. The old key is read once on load and never written again. `touch_remote` needs no special case: no release with it has shipped |
-| Off means | Hidden in UI + runtime gate: subsystems ask `cfg.ui.feature_on(key)`; no cascade writes. The PSN receiver not started, MIDI devices not opened, faders' MIDI source inert, detection / zones / RTTrPM not running, the paths engine disabled, the ground grid neither drawn nor dropping markers, every touch remote route answers 403 |
+| Off means | Hidden in UI + runtime gate: subsystems ask `cfg.ui.feature_on(key)`; no cascade writes. No lens line suggestions, the PSN receiver not started, MIDI devices not opened, faders' MIDI source inert, detection / zones / RTTrPM not running, the paths engine disabled, the ground grid neither drawn nor dropping markers, every touch remote route answers 403 |
 | PSN input | Off stops the receiver: other stations' markers are neither drawn, nor counted by zones, nor reported online. The viewed-markers setting stays visible and is kept |
 | Calibration points | Off hides them only: the saved points stay in the config and the solver keeps using them, as today |
 | Two-level gates | `detection`, `rttrpm`, `ground_grid`, `touch_remote` keep their own `enabled` switch; a subsystem runs only when its entry is on **and** its switch is on |
@@ -94,7 +94,8 @@ Own PR from `main`.
       mouse, Ground Grid section, Camera calibration points group, wizard
       `calib-section` and `review-calib`, Touch remote section.
 - [x] `wizard.tpl`: `_show_calib` reads `feature_on("calibration_points")`;
-      the Lens step always shows.
+      `LENS_SUGGEST` reads `feature_on("lens_suggestions")`, and the Lens
+      step requests no suggestions while it is false.
 - [x] Client toggle flips the body class immediately (no reload), as today.
 - [x] Tests (`tests/test_web_features.py`, `tests/test_web_features_gate.py`,
       replacing `test_web_experimental_toggle.py` / `test_web_experimental_gate.py`):
@@ -104,7 +105,7 @@ Own PR from `main`.
       still passes; checkbox label rule.
 - [x] Help: `general-station.md` "Features" section (what each one is, that
       off also stops it, settings kept, calibration points are only hidden,
-      the lens always applies);
+      Lens line suggestions off leaves lines to be drawn by hand);
       replace "experimental features on/off" wording in `paths.md`,
       `path_editor.md`, `ground_grid.md`, `osc.md`, `keyboard.md`,
       `gamepad.md`, `mouse3d.md`, `camera.md`, `touch_remote.md`; drop the
@@ -127,7 +128,8 @@ Own PR from `main`.
 - [x] `make ci-remote` green on a testing Pi. Manual on a station, every
       feature switched off and on again through the Save: zones and paths
       sections hidden and back with their zones and paths unchanged, the zone
-      outline gone from the Operator Screen; MIDI patches group hidden; PSN receiver socket closed and
+      outline gone from the Operator Screen; MIDI patches group hidden; no
+      suggested lines in the Lens step; PSN receiver socket closed and
       reopened; Person Detection tab hidden; RTTrPM packets stop at the
       receiver and resume; ground grid not drawn with its settings kept;
       calibration points hidden with the saved points kept; touch remote

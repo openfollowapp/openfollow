@@ -179,6 +179,7 @@ class TestTransfer:
         [
             ({"rttrpm": True, "zones": False}, ["midi", "psn_input", "rttrpm"]),
             ({"detection": "on", "midi": "off"}, ["zones", "psn_input", "detection"]),
+            ({"lens_suggestions": True}, ["zones", "midi", "lens_suggestions", "psn_input"]),
             ({"warp_drive": True}, list(DEFAULT_SHOWN_FEATURES)),
         ],
     )
@@ -209,7 +210,7 @@ class TestPage:
         form = form[: form.index("</table>")]
         assert re.search(r'name="detection"[^>]*\s+checked', form)
         assert not re.search(r'name="zones"[^>]*\s+checked', form)
-        assert form.count('class="badge-experimental"') == len(EXPERIMENTAL_FEATURES & set(OFFERED_FEATURES)) == 4
+        assert form.count('class="badge-experimental"') == len(EXPERIMENTAL_FEATURES & set(OFFERED_FEATURES)) == 5
 
     def test_the_table_has_one_row_per_feature_with_its_title_and_description(self, live_server) -> None:
         _, base = live_server
@@ -230,6 +231,25 @@ class TestPage:
             assert f'<label for="{box_id}">{html_escape(label.title)}</label>' in row
             description = html_escape(label.description)
             assert f'<td id="{box_id}-description" class="feature-description">{description}</td>' in row
+
+    def test_lens_line_suggestions_have_an_experimental_row_and_lens_distortion_none(self, live_server) -> None:
+        _, base = live_server
+        _, body = _get(base, "/")
+        form = body[body.index('<div id="features-section"') :]
+        form = form[: form.index("</table>")]
+        rows = re.findall(r"<tr>\s*<td class=\"feature-check\">(.*?)</tr>", form, re.S)
+        (row,) = [r for r in rows if 'name="lens_suggestions"' in r]
+        assert not re.search(r'name="lens_suggestions"[^>]*\s+checked', row)
+        assert (
+            '<label for="features-lens-suggestions">Lens line suggestions</label>'
+            ' <span class="badge-experimental">Experimental</span>'
+        ) in row
+        assert (
+            '<td id="features-lens-suggestions-description" class="feature-description">'
+            "Suggests straight edges in the Setup Wizard&#039;s Lens step, to use or reject.</td>"
+        ) in row
+        assert 'data-off="the Lens step suggests no lines; lines are drawn by hand."' in row
+        assert "Lens distortion" not in form and "lens_distortion" not in form
 
 
 class TestConfigOnly:

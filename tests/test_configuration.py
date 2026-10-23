@@ -8310,6 +8310,13 @@ class TestUiConfig:
         assert UiConfig().shown_features == [key for key in FEATURE_KEYS if key not in EXPERIMENTAL_FEATURES]
         assert UiConfig().shown_features == ["zones", "midi", "psn_input"]
 
+    def test_lens_line_suggestions_are_experimental_and_offered(self) -> None:
+        from openfollow.configuration import EXPERIMENTAL_FEATURES, OFFERED_FEATURES, UiConfig
+
+        assert "lens_suggestions" in EXPERIMENTAL_FEATURES and "lens_suggestions" in OFFERED_FEATURES
+        assert not UiConfig().feature_on("lens_suggestions")
+        assert UiConfig(shown_features=["lens_suggestions"]).feature_on("lens_suggestions")
+
     def test_shown_features_naming_lens_distortion_loads_without_it(self, temp_config_path) -> None:  # noqa: ANN001
         from openfollow.configuration import effective_lens, load_config
 

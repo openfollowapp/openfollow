@@ -2809,6 +2809,7 @@ class DisplayConfig:
 FEATURE_KEYS: tuple[str, ...] = (
     "zones",
     "midi",
+    "lens_suggestions",
     "psn_input",
     "detection",
     "rttrpm",
@@ -2816,7 +2817,9 @@ FEATURE_KEYS: tuple[str, ...] = (
     "ground_grid",
     "touch_remote",
 )
-EXPERIMENTAL_FEATURES: frozenset[str] = frozenset({"detection", "rttrpm", "paths", "ground_grid", "touch_remote"})
+EXPERIMENTAL_FEATURES: frozenset[str] = frozenset(
+    {"lens_suggestions", "detection", "rttrpm", "paths", "ground_grid", "touch_remote"}
+)
 DEFAULT_SHOWN_FEATURES: tuple[str, ...] = tuple(key for key in FEATURE_KEYS if key not in EXPERIMENTAL_FEATURES)
 # Gated like any feature but not offered: no Features row, no web route turns one on.
 # Only ``shown_features`` in config.toml (or an import or push carrying it) does.

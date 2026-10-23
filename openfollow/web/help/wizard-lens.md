@@ -4,7 +4,7 @@ A wide lens makes straight lines look curved. The Lens step measures how much, s
 
 ## Suggestions
 
-The station finds edges in the snapshot and shows them as dashed suggested lines. Each suggested line has a bubble that points at it. The check mark uses the line, the cross removes it. Only the bubble does: a click on the dashed line itself starts or ends a line of your own, as anywhere else on the picture. When the pointer is on a bubble, its line is highlighted. Use only lines that are straight on the stage. A curtain, a cloth or a cable is curved. Two edges that only look joined are two separate lines. A suggested line that you use becomes a normal line, the same as a line you draw yourself. **Refresh Image** takes a new snapshot and suggests the lines again.
+With the experimental **Lens line suggestions** feature on (General tab, Features), the station finds edges in the snapshot and shows them as dashed suggested lines. Each suggested line has a bubble that points at it. The check mark uses the line, the cross removes it. Only the bubble does: a click on the dashed line itself starts or ends a line of your own, as anywhere else on the picture. When the pointer is on a bubble, its line is highlighted. Use only lines that are straight on the stage. A curtain, a cloth or a cable is curved. Two edges that only look joined are two separate lines. A suggested line that you use becomes a normal line, the same as a line you draw yourself. **Refresh Image** takes a new snapshot and suggests the lines again.
 
 ## Lines
 

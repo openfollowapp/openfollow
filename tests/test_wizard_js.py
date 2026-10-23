@@ -3160,7 +3160,7 @@ def test_the_full_screen_help_says_shift_moves_a_lens_point_ten_pixels() -> None
         "fsHelpHtml()",
         functions=("fsKeys", "fsHelpHtml"),
         variables=("ARROWS", "FS_ESC"),
-        prelude="var FS = { key: 'lens' }, S = { mode: 'simple' };",
+        prelude="var FS = { key: 'lens' }, S = { mode: 'simple' }, lensCandidates = [];",
     )
     assert "<td>Move the selected point 1&nbsp;px, with Shift 10&nbsp;px</td>" in out
 
@@ -3952,7 +3952,8 @@ def test_the_suggestions_keep_their_contrast_side() -> None:
     out = run_wizard_js(
         "(function() { lensRequestEdges(); return lensCandidates.map(function(c) { return c.polarity; }); })()",
         functions=("lensEdgeScale", "lensEdgeSize", "lensScaledLuma", "lensBase64", "lensRequestEdges", "lensSameEnds"),
-        prelude="var LENS_DEV = false, imageWidth = 8, imageHeight = 4, lensCandidates = [], lensRejected = [];"
+        prelude="var LENS_SUGGEST = true, LENS_DEV = false, imageWidth = 8, imageHeight = 4, lensCandidates = [];"
+        " var lensRejected = [];"
         " var lensLines = [], lensCanvas = { getContext: function() { return { getImageData: function() {"
         " return { data: new Uint8Array(8 * 4 * 4) }; } }; } };"
         " function renderLens() {} function lensPaintEdges() {} function lensCandidateOf() {}"
@@ -3963,6 +3964,70 @@ def test_the_suggestions_keep_their_contrast_side() -> None:
     )
     # Only a known side is sent back; anything else is a thin line's, 0.
     assert out == [1, -1, 0, 0, 0]
+
+
+# The Lens step entered on a page with or without Lens line suggestions: the request, the bubbles, the hint
+# and the full-screen help, with a station that would answer one suggestion and its edge map.
+_SUGGEST_PAGE = (
+    "var traced = 0;"
+    + _BUBBLE_PAGE.replace("function lensOpenCandidates() { return open; }\n", "")
+    + r"""
+els['lens-hint'] = { innerHTML: '', style: {}, offsetHeight: 40 };
+var lensRejected = [], lensLines = [], lensPress = false, lensPending = null, lensHold = false, lensHintLines = null;
+var lensHintText = '', S = { lensLoaded: null, mode: 'simple' }, FS = { key: 'lens' }, LENS_DEV = false;
+var fetched = [], painted = 0;
+var lensCanvas = { getContext: function() { return { getImageData: function() {
+  return { data: new Uint8Array(1080 * 608 * 4) }; } }; } };
+function renderLens() {} function lensPaintEdges() { painted++; } function lensCandidateOf() {}
+function settled(v) { return { then: function(f) { var r = f(v); return r && r.then ? r : settled(r); },
+  catch: function() { return this; } }; }
+function fetch(url) { fetched.push(url); return settled({ ok: true, json: function() { return settled(answer); } }); }
+"""
+)
+
+
+@pytest.mark.parametrize("on", [False, True], ids=["suggestions off", "suggestions on"])
+def test_the_lens_step_asks_for_and_shows_suggestions_only_with_their_feature(on: bool) -> None:
+    answer = {
+        "candidates": [{"points": _FLAT, "samples": _SUGGESTION, "polarity": 1}],
+        "edges": {"width": 1, "height": 1, "data": "AA=="},
+    }
+    out = run_wizard_js(
+        "(function() { lensRequestEdges(); renderLensBubbles(); renderLensHint();"
+        " return { fetched: fetched, painted: painted, bubbles: bubbles, hint: lensHintText,"
+        " help: fsHelpHtml() }; })()",
+        functions=(
+            "lensEdgeScale",
+            "lensEdgeSize",
+            "lensScaledLuma",
+            "lensBase64",
+            "lensRequestEdges",
+            "lensSameEnds",
+            "lensOpenCandidates",
+            "esc",
+            "setLive",
+            "renderLensHint",
+            "fsKeys",
+            "fsHelpHtml",
+            *_BUBBLE_DOM,
+        ),
+        variables=("LENS_BUBBLE", "LENS_CHECK_SVG", "LENS_CROSS_SVG", "ARROWS", "FS_ESC"),
+        prelude=_SUGGEST_PAGE,
+        LENS_SUGGEST=on,
+        answer=answer,
+    )
+    intro = re.search(r"<p>(.*?)</p>", out["help"]).group(1)
+    if on:
+        assert (out["fetched"], out["painted"], out["bubbles"]) == (["/api/wizard/lens/edges"], 1, [0])
+        assert out["hint"] == "Check the suggested lines."
+        assert intro.startswith(
+            "<strong>Check each dashed suggested line</strong>: the check mark uses it, the cross removes it."
+            " Or click the start and the end of a straight edge."
+        )
+    else:
+        assert (out["fetched"], out["painted"], out["bubbles"]) == ([], 0, [])
+        assert out["hint"] == "Draw straight lines on the picture."
+        assert intro.startswith("Click the start and the end of a straight edge. Click a line to select it.")
 
 
 # ---------------------------------------------------------------------------

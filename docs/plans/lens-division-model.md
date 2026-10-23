@@ -11,13 +11,9 @@ lenses of those fields of view, the polynomial is off by 2-3 px on a 4.0 mm,
 12-23 px on a 2.8 mm and 96-204 px on a 2.3 mm, with a band at the corners it
 cannot reach at all (the `lens_model.py` docstring already notes the band).
 The two-term **division model** is off by 0.0-0.6 px on all three, and by
-1.8 px on an equisolid fisheye of 126°. Received OpenCV calibrations of
-2.3-16 mm M12 lenses (local, not in the repo) confirm the ranking in screen
-space: the division model is at least as good as the polynomial on every lens
-and several times better on the 2.3-3.2 mm ones. Several of them also put the
-lens centre well off the frame centre, and on the 6-8 mm lenses that offset is
-the whole remaining error, so the model bends about a **lens centre** that the
-Setup Wizard measures.
+1.8 px on an equisolid fisheye of 126°. Real M12 lenses often sit a little off the
+frame centre as well, so the model bends about a **lens centre**, typed or
+imported (the Setup Wizard does not measure it).
 
 This plan replaces the polynomial with the division model, with a lens centre,
 in this branch. By product-owner decision it is a clean break: no saved pairs
@@ -231,9 +227,7 @@ Rejected alternative, noted for the record: allow the pole inside the frame
 (a fisheye whose corners look past 90° then has corners with no pinhole point,
 clicks there give nothing and the pole circle shows in the HUD). On synthetic
 equidistant fisheyes it matters only past about 155° horizontal (160°: 1.4 px
-with the pole inside, 13.6 px without). On the received 2.3 mm calibrations the
-strict rule costs nothing measurable (the constrained fit is as good as the
-free one). It would add a NaN region to every consumer, a new pin refusal in
+with the pole inside, 13.6 px without). It would add a NaN region to every consumer, a new pin refusal in
 the Setup Wizard and a pull-back that is no longer star-shaped. Not done. With
 a lens centre the same edge moves in: a 150° fisheye whose centre sits 94 px
 off along the diagonal has its far corner past 90° (§7 measures it); the fit
@@ -259,8 +253,8 @@ The centre, per the `add-config-field` skill:
 | `camera.lens_cy` | half-diagonals, + down | `0.0` | `-0.25 <= v <= 0.25` | as `lens_cx` |
 
 - `C_BOUND = 0.25` lives in `lens_model.py` beside `PULL_BACK_MARGIN`: 275 px
-  at 1080p, 550 px at 4K, per axis. It covers every received calibration with
-  margin; a centre further off is a broken or cropped camera, not a lens.
+  at 1080p, 550 px at 4K, per axis. It is far beyond a normal lens mount's
+  offset; a centre further off is a broken or cropped camera, not a lens.
 - **Resolution-free like the pair**, so a saved calibration and an exported
   settings file fit any resolution of the same picture shape. The UI shows
   whole pixels of the station's video (§12); the conversion is the UI's.
@@ -304,16 +298,14 @@ through the true lens; `k1+k2` = both fitted, `k1` = k2 held at 0):
 | Equidistant fisheye | 150° | -0.740 / -0.152 | 1.5 | – | – | – | – |
 | Equidistant fisheye | 170° | -0.951 / -0.251 | 1.3 (fitted under 85° off axis; corners past 90°) | – | – | – | – |
 
-Real lenses carry a much stronger corner term than these idealised ones: at
-the wide end the received calibrations of 2.3-16 mm lenses (local, not in the
-repo) need several times the Corner correction of any lens in the table, while
-their Barrel / fisheye stays inside the table's span. The ranges below cover
-both with margin.
+Real lenses can carry a much stronger corner term than these idealised ones,
+while their Barrel / fisheye stays inside the table's span. The ranges below
+cover both with margin.
 
 | Control | Today | Proposed | Why |
 |---|---|---|---|
 | Barrel / fisheye slider | -0.6 to 0.6, step 0.005 | **-1.0 to 0.5**, step 0.005 | covers the 170° synthetic fisheye; `k1 = -1` is the k2-free pole at the corner. Pincushion lenses are rare and fold at `k1 = 1`, so the positive side is half as long |
-| Corner correction slider | -0.4 to 0.4, step 0.005 | **-0.8 to 0.3**, step 0.005 | covers the received wide-angle calibrations with margin; `k2 = 1/3` folds at the corner with `k1 = 0` |
+| Corner correction slider | -0.4 to 0.4, step 0.005 | **-0.8 to 0.3**, step 0.005 | covers strong wide-angle corner terms with margin; `k2 = 1/3` folds at the corner with `k1 = 0` |
 | Number fields | any valid pair, step 0.005 | unchanged | |
 | Slider widening for an out-of-span value (`wizWriteLensCoeff`, `min()` / `max()` in `camera.tpl`) | yes | unchanged | |
 | Lens centre (two number fields, new) | – | whole pixels of the station's video, step 1, `±floor(C_BOUND * D)` per axis (±275 at 1080p), default 0 | §4, §12 |
@@ -1271,8 +1263,7 @@ clear barrel; dense traced edges (16 sub-pixel points each) as the reference.
   module run); every surviving mutant gets a test or a reason in the PR.
 - **Hermetic and fast**: no real window, no wall clock in assertions, timing
   only in the scratch bench, never in the suite.
-- **Synthetic lenses only.** No received calibration or value derived from one
-  in any test, fixture, doc or commit.
+- **Synthetic lenses only** in every test, fixture, doc and commit.
 
 ## Review plan
 
@@ -1301,6 +1292,17 @@ clear barrel; dense traced edges (16 sub-pixel points each) as the reference.
 ## Later: OpenCV calibration import (`.xml`), its own PR
 
 Decided 2026-10-22: after this PR. The analysis stays here for that PR.
+
+Decided 2026-10-23, the imported state: an imported profile replaces the
+lines. Importing deletes every traced line and suggestion, the step offers no
+drawing and hides **Adjust by hand**; the values show read-only in the result.
+
+- Result line: "Imported lens profile applied – barrel / fisheye x, corner
+  correction y, lens centre …"; below it: "It is correct if the profile was
+  made for this camera and lens."
+- A **Remove the imported profile** button clears it; the step starts again
+  with suggestions and drawing.
+- The hint box wording is mocked up with that PR.
 
 Through the existing **Load lens calibration...** dialog: its file chooser
 also accepts `.xml`; the file's text goes to a new
@@ -1343,8 +1345,7 @@ a saved calibration (`S.lensLoaded`), then can be saved by name.
   the refusal texts, and the help drawer paragraph; whether another aspect is
   refused outright or offered as a centred crop.
 
-All tests use synthetic lenses and synthetic XML written by the tests; no
-received file or value from one enters the repo.
+All tests use synthetic lenses and synthetic XML written by the tests.
 
 ## Out of scope
 

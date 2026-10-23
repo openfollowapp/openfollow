@@ -2538,6 +2538,8 @@ _LINE = {"misfit": False}
 _MIDDLE_HINT = "The result may already be good in the middle."
 _MIDDLE_SUB = "If possible, add lines near the edges of the picture to measure them too. Or press Next."
 _AGREE = "The result may already be good. If possible, add a line near the top edge to confirm it."
+# The station's coverage hint below Good (lens_fit.coverage_hint).
+_TOP_EDGE = "If possible, add a line near the top edge."
 
 
 def _hint_state(**kw: object) -> dict:
@@ -2620,10 +2622,10 @@ def _hint_state(**kw: object) -> dict:
             "Press Next.",
         ),
         (
-            _hint_state(lines=[_LINE] * 3, fit={"rating": "okay", "hint": "Add a line.", "edges_measured": False}),
+            _hint_state(lines=[_LINE] * 3, fit={"rating": "okay", "hint": _TOP_EDGE, "edges_measured": False}),
             "Improve the lines, or add more.",
             "Select a point and move it exactly onto the edge. Lines near the edges and corners of the picture help"
-            " the most. Add a line.",
+            " the most. If possible, add a line near the top edge.",
         ),
         (
             _hint_state(lines=[_LINE] * 4, fit={"rating": "okay", "hint": _AGREE}),
@@ -2631,10 +2633,10 @@ def _hint_state(**kw: object) -> dict:
             "If possible, add a line near the top edge to confirm it. Or press Next.",
         ),
         (
-            _hint_state(lines=[_LINE] * 3, fit={"rating": "okay", "hint": "Add a line near the top edge."}),
+            _hint_state(lines=[_LINE] * 3, fit={"rating": "okay", "hint": _TOP_EDGE}),
             "Improve the lines, or add more.",
             "Select a point and move it exactly onto the edge. Lines near the edges and corners of the picture help"
-            " the most. Add a line near the top edge.",
+            " the most. If possible, add a line near the top edge.",
         ),
         (
             _hint_state(
@@ -4263,7 +4265,8 @@ function lensCentreSuffix() { return ''; }
     ("state", "regions"),
     [
         (
-            "lensFit = { rating: 'okay', k1: -0.12, k2: 0, k2_fitted: false, hint: 'Add a line near the top edge.' };",
+            "lensFit = { rating: 'okay', k1: -0.12, k2: 0, k2_fitted: false,"
+            " hint: 'If possible, add a line near the top edge.' };",
             ["lens-result-text", "lens-result-hint"],
         ),
         (
@@ -4382,7 +4385,8 @@ def test_a_review_region_shown_again_is_written_again(shown: dict, hidden: dict,
 
 def test_the_lens_result_shown_again_is_written_again() -> None:
     out = run_wizard_js(
-        "(function() { var fit = { rating: 'okay', k1: -0.12, k2: 0, k2_fitted: false, hint: 'Add a line.' };"
+        "(function() { var fit = { rating: 'okay', k1: -0.12, k2: 0, k2_fitted: false,"
+        " hint: 'If possible, add a line near the top edge.' };"
         " [fit, null, fit].forEach(function(f) { lensFit = f; renderLensResult(); });"
         " return [writes['lens-result-text'], writes['lens-result-hint']]; })()",
         functions=(

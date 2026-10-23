@@ -2461,6 +2461,7 @@ def test_a_point_reached_with_tab_is_selected_and_held(
             "setLive",
             "lensMiddleOnly",
             "lensShownRating",
+            "lensMisfitLines",
             "renderLensHint",
             "lensPointFocusIn",
             "lensTabKey",
@@ -2535,6 +2536,7 @@ var S = { lensLoaded: state.loaded }, lensPending = state.pending, lensHold = st
 var lensLines = state.lines, lensFit = state.fit;
 """
 _LINE = {"misfit": False}
+_MISFIT = {"misfit": True}
 _MIDDLE_HINT = "The result may already be good in the middle."
 _MIDDLE_SUB = "If possible, add lines near the edges of the picture to measure them too. Or press Next."
 _AGREE = "The result may already be good. If possible, add a line near the top edge to confirm it."
@@ -2581,10 +2583,22 @@ def _hint_state(**kw: object) -> dict:
             " or a truss. Then move its points exactly onto the edge. Or load a saved lens calibration.",
         ),
         (
-            _hint_state(lines=[_LINE, {"misfit": True}], fit={"rating": "good", "hint": ""}),
-            "Check the line that does not fit.",
-            "It is drawn in the warning colour. Move its points onto the edge, or delete it if it is not straight"
+            _hint_state(lines=[_LINE, _LINE, _LINE, _MISFIT], fit={"rating": "good", "hint": ""}),
+            "Line 4 does not fit the others.",
+            "It is marked in the warning colour. Move its points onto the edge, or delete it if it is not straight"
             " in reality.",
+        ),
+        (
+            _hint_state(lines=[_LINE, _MISFIT, _LINE, _MISFIT], fit={"rating": "good", "hint": ""}),
+            "Lines 2 and 4 do not fit the others.",
+            "They are marked in the warning colour. Move their points onto the edge, or delete them if they are not"
+            " straight in reality.",
+        ),
+        (
+            _hint_state(lines=[_MISFIT, _MISFIT, _MISFIT, _LINE], fit={"rating": "low", "hint": ""}),
+            "Lines 1, 2 and 3 do not fit the others.",
+            "They are marked in the warning colour. Move their points onto the edge, or delete them if they are not"
+            " straight in reality.",
         ),
         (
             _hint_state(lines=[_LINE] * 4, fit={"rating": "excellent", "hint": ""}),
@@ -2654,7 +2668,9 @@ def _hint_state(**kw: object) -> dict:
         "suggestions left",
         "loaded",
         "no lines",
-        "misfit",
+        "one line does not fit",
+        "two lines do not fit",
+        "three lines do not fit",
         "measured",
         "measured with weak edges",
         "only the middle, excellent",
@@ -2669,7 +2685,15 @@ def _hint_state(**kw: object) -> dict:
 def test_the_lens_hint_names_the_one_next_thing_to_do(state: dict, heading: str, sub: str) -> None:
     out = run_wizard_js(
         "(function() { renderLensHint(); return [$('lens-hint').innerHTML, lensHintText]; })()",
-        functions=("esc", "setLive", "lensMiddleOnly", "lensShownRating", "renderLensHint"),
+        functions=(
+            "esc",
+            "setLive",
+            "lensMiddleOnly",
+            "lensShownRating",
+            "lensMisfitLines",
+            "lensMisfitText",
+            "renderLensHint",
+        ),
         variables=("LENS_MIDDLE",),
         prelude="var state = " + json.dumps(state) + ";" + _HINT_PAGE,
     )
@@ -2729,6 +2753,8 @@ _LIVE = (
     "setLive",
     "lensMiddleOnly",
     "lensShownRating",
+    "lensMisfitLines",
+    "lensMisfitText",
     "renderLensHint",
     "renderFsBar",
     "fsActions",
@@ -2777,6 +2803,145 @@ def test_the_hint_and_the_full_screen_bar_are_only_rewritten_when_their_words_ch
     )
     # Both are polite live regions: a redraw with the same words is not read out again.
     assert out == [[1, 1], [1, 1], [2, 2], [2, 2]]
+
+
+@pytest.mark.parametrize(
+    ("misfit", "status"),
+    [
+        ([], ""),
+        ([3], "Line 4 does not fit the others"),
+        ([1, 3], "Lines 2 and 4 do not fit the others"),
+        ([0, 1, 2], "Lines 1, 2 and 3 do not fit the others"),
+    ],
+    ids=["every line fits", "one", "two", "three"],
+)
+def test_the_full_screen_bar_names_the_lines_that_do_not_fit(misfit: list, status: str) -> None:
+    out = run_wizard_js(
+        "(function() { var warn = null; $('fs-status').classList.toggle = function(c, on) { warn = on; };"
+        " lensHold = false; lensSelected = null; lensFit = { rating: 'good', hint: '' };"
+        " lensLines = [0, 1, 2, 3].map(function(i) { return { misfit: misfit.indexOf(i) >= 0 }; });"
+        " renderLensHint(); renderFsBar(); return [$('fs-status').textContent, warn]; })()",
+        functions=_LIVE,
+        variables=("LENS_MIDDLE",),
+        prelude=_LIVE_PAGE,
+        misfit=misfit,
+    )
+    assert out == [status, bool(misfit)]
+
+
+# The Lens step's traced lines, drawn by ``renderLens`` into elements that keep their attributes and children,
+# at 2 snapshot pixels per CSS pixel.
+_LINES_PAGE = r"""
+function el(tag) {
+  var e = { tag: tag, attrs: {}, dataset: {}, children: [], textContent: '' };
+  e.setAttribute = function(k, v) { e.attrs[k] = String(v); };
+  e.appendChild = function(c) { e.children.push(c); return c; };
+  e.contains = function() { return false; };
+  e.querySelectorAll = function(sel) {
+    var out = [];
+    (function walk(n) { n.children.forEach(function(c) {
+      if ((' ' + (c.attrs['class'] || '') + ' ').indexOf(' ' + sel.slice(1) + ' ') >= 0) out.push(c);
+      walk(c);
+    }); })(e);
+    return out;
+  };
+  e.querySelector = function(sel) { return e.querySelectorAll(sel)[0] || null; };
+  Object.defineProperty(e, 'innerHTML', { set: function() { e.children = []; } });
+  return e;
+}
+function svgEl(tag, attrs) {
+  var e = el(tag);
+  Object.keys(attrs || {}).forEach(function(k) { e.setAttribute(k, attrs[k]); });
+  return e;
+}
+var linesEl = el('g'), pendingEl = el('g');
+var document = {
+  activeElement: null,
+  getElementById: function(id) { return id === 'lens-lines' ? linesEl : pendingEl; },
+  querySelector: function(sel) {
+    var m = /data-line="(\d+)"/.exec(sel);
+    return linesEl.children.filter(function(g) { return String(g.dataset.line) === m[1]; })[0] || null;
+  }
+};
+function overlayPx() { return 2; }
+function renderLensCandidates() {} function renderLensBubbles() {} function renderLensToolbar() {}
+function renderLensHint() {} function renderFsBar() {} function lensFocusSelected() {} function holdLensPoint() {}
+var lensSelected = null, lensHold = false, lensPending = null;
+function traced(p0, p1, misfit, on2) {
+  return { p0: p0, p1: p1, misfit: misfit, curve: null, snapped: [true, true, true, true, true],
+    mids: [{ t: 0.25, off: 0, on: true }, { t: 0.5, off: 4, on: on2 }, { t: 0.75, off: 0, on: true }] };
+}
+var lensLines = [traced([100, 100], [500, 100], false, true), traced([100, 600], [100, 200], true, false)];
+function drawn(i) {
+  var g = linesEl.children[i], pick = function(cls) { return g.querySelector('.' + cls); };
+  var tag = pick('lens-tag'), label = pick('lens-label');
+  return {
+    group: g.attrs['class'],
+    order: g.children.map(function(c) { return (c.attrs['class'] || c.tag).split(' ')[0]; }),
+    halo: pick('lens-halo').attrs.points, chord: pick('lens-chord').attrs.points,
+    active: lensPointsAttr(lensActivePoints(lensLines[i])),
+    label: label && [label.textContent, label.attrs.x, label.attrs.y, label.attrs['font-size']],
+    tag: tag && [tag.attrs.transform, tag.children[0].attrs, tag.children[1].textContent, tag.children[1].attrs]
+  };
+}
+"""
+_LINES_FUNCTIONS = (
+    "lensFrame",
+    "lensPointPos",
+    "lensPointIsOn",
+    "lensActivePoints",
+    "lensPointsAttr",
+    "pointHandle",
+    "lensHandle",
+    "lensLabel",
+    "lensTag",
+    "renderLens",
+    "lensUpdateLineGeometry",
+)
+_PILL = {"x": "12", "y": "-48", "width": "60", "height": "36", "rx": "18"}
+_PILL_TEXT = {"x": "42", "y": "-21", "font-size": "24", "text-anchor": "middle"}
+
+
+def test_a_line_that_does_not_fit_glows_and_its_number_becomes_a_pill() -> None:
+    fits, misfit = run_wizard_js(
+        "(function() { renderLens(); return [drawn(0), drawn(1)]; })()", functions=_LINES_FUNCTIONS, prelude=_LINES_PAGE
+    )
+    handles = ["handle"] * 5
+    # The halo lies under the chord, through the same active points; only a misfit line's halo is styled.
+    assert fits["group"] == "lens-line"
+    assert fits["order"] == ["lens-halo", "lens-chord", "lens-label", "lens-line-hit", *handles]
+    assert fits["halo"] == fits["chord"] == fits["active"]
+    assert fits["label"] == ["1", "116", "84", "22"]
+    assert fits["tag"] is None
+    assert misfit["group"] == "lens-line misfit"
+    assert misfit["order"] == ["lens-halo", "lens-chord", "lens-tag", "lens-line-hit", *handles]
+    assert misfit["halo"] == misfit["chord"] == misfit["active"] == "100,600 100,500 100,300 100,200"
+    assert misfit["label"] is None
+    assert misfit["tag"] == ["translate(100,600)", _PILL, "! 2", _PILL_TEXT]
+
+
+def test_dragging_a_point_moves_the_glow_and_the_pill_with_its_line() -> None:
+    fits, misfit = run_wizard_js(
+        "(function() { renderLens(); lensLines.forEach(function(l) { l.p0 = [l.p0[0] + 30, l.p0[1] - 20]; });"
+        " lensLines[1].mids[0].off = 9; lensUpdateLineGeometry(0); lensUpdateLineGeometry(1);"
+        " return [drawn(0), drawn(1)]; })()",
+        functions=_LINES_FUNCTIONS,
+        prelude=_LINES_PAGE,
+    )
+    assert fits["halo"] == fits["chord"] == fits["active"]
+    assert fits["label"] == ["1", "146", "64", "22"]
+    assert misfit["halo"] == misfit["chord"] == misfit["active"]
+    assert misfit["halo"].startswith("130,580 ")
+    assert misfit["tag"] == ["translate(130,580)", _PILL, "! 2", _PILL_TEXT]
+
+
+def test_only_a_misfit_lines_glow_is_painted_and_it_never_takes_a_click() -> None:
+    style = WIZARD_TEMPLATE.read_text(encoding="utf-8")
+    halo = re.search(r"\n\s*\.lens-halo \{([^}]*)\}", style)
+    assert halo is not None
+    assert "stroke: none" in halo.group(1) and "pointer-events: none" in halo.group(1)
+    assert re.search(r"\.lens-line\.misfit \.lens-halo \{ stroke: var\(--caution-line\);", style)
+    assert re.search(r"\.lens-tag \{ pointer-events: none; \}", style)
 
 
 # A full-screen Lens session: the page's press listeners, the toolbar's, and its buttons' actions.
@@ -2835,7 +3000,16 @@ def _fs_lens(expression: str, **inputs) -> list:
     actions = "\n".join(wizard_window_function(f) for f in ("lensToggleSelectedPoint", "lensDeleteSelectedLine"))
     return run_wizard_js(
         f"(function() {{ {listeners}\n{actions}\n{expression} }})()",
-        functions=("esc", "setLive", "renderFsBar", "fsActions", "renderLensToolbar", "dropLensPoint", "lensPressEnd"),
+        functions=(
+            "esc",
+            "setLive",
+            "lensMisfitLines",
+            "renderFsBar",
+            "fsActions",
+            "renderLensToolbar",
+            "dropLensPoint",
+            "lensPressEnd",
+        ),
         variables=("lensPress",),
         prelude=_FS_LENS_PAGE,
         **inputs,
@@ -6572,6 +6746,7 @@ _LENS_PRESS_FUNCTIONS = (
     "setLive",
     "lensMiddleOnly",
     "lensShownRating",
+    "lensMisfitLines",
     "renderLensHint",
     "lensPressEnd",
 )

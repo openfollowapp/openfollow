@@ -191,7 +191,7 @@ holds the line.
 
 | Element | Look |
 |---|---|
-| A traced Lens line that does not fit the others (Setup Wizard) | `--caution-line` stroke; a fitting one is the accent, its predicted curve `--success-line` |
+| A traced Lens line that does not fit the others (Setup Wizard) | `--caution-line` stroke over a 16 px `--caution-line` glow at 40%, its number a `--caution-line` pill reading `! N` in `--bg-deep`; a fitting one is the accent with no glow and a plain number, its predicted curve `--success-line` |
 | A pin that disagrees with the other points (Setup Wizard) | `--caution-line` stroke on its dot; where the solved camera sees each point, a `--success-mark` ring |
 | Failed / successful save | 2px ring for 0.55 s in `--error-line` / `--success-line` |
 | Invalid field, a control marked unresolved, or a binding another field took | `--error-line` border plus a 1px `--error-line` shadow |

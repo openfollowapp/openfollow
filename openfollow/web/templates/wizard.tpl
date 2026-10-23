@@ -198,12 +198,15 @@
   /* Lens step: traced lines, their points and the curve the fitted lens predicts. */
   .lens-hit { pointer-events: all; cursor: crosshair; }
   /* Strokes in CSS pixels: the viewBox is the snapshot's own resolution, which a phone shows at a fifth. */
-  .lens-chord, .lens-curve, .lens-pending, .lens-candidate-line, .lens-candidate-hit,
+  .lens-chord, .lens-curve, .lens-halo, .lens-pending, .lens-candidate-line, .lens-candidate-hit,
   .lens-point .dot, .wizard-point .dot { vector-effect: non-scaling-stroke; }
   .lens-chord { fill: none; stroke: var(--accent); stroke-width: 1.5; stroke-opacity: 0.7; }
   .lens-curve { fill: none; stroke: var(--success-line); stroke-width: 2; stroke-dasharray: 6 4; }
   .lens-line.misfit .lens-curve, .lens-line.misfit .lens-chord { stroke: var(--caution-line); }
   .lens-line.selected .lens-chord { stroke: var(--text); stroke-opacity: 1; stroke-width: 3; }
+  /* A line that does not fit glows behind its chord, and its number becomes a caution pill. */
+  .lens-halo { fill: none; stroke: none; stroke-width: 16; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
+  .lens-line.misfit .lens-halo { stroke: var(--caution-line); stroke-opacity: 0.4; }
   /* A traced line is selected by a click anywhere along it. */
   .lens-line-hit { fill: none; stroke: transparent; stroke-width: 22; pointer-events: stroke; cursor: pointer; }
   .lens-point .dot, .wizard-point .dot { fill: var(--accent); stroke: var(--accent); stroke-width: 1.5; }
@@ -212,6 +215,9 @@
   .lens-point.selected .dot { stroke-width: 3; }
   .lens-pending { fill: none; stroke: var(--accent); stroke-width: 2; stroke-dasharray: 3 3; }
   .lens-label { fill: var(--text); font-weight: 600; pointer-events: none; }
+  .lens-tag { pointer-events: none; }
+  .lens-tag rect { fill: var(--caution-line); }
+  .lens-tag text { fill: var(--bg-deep); font-weight: 700; }
   .wizard-grid-line { fill: none; stroke: var(--accent); stroke-opacity: 0.4; stroke-width: 1; vector-effect: non-scaling-stroke; pointer-events: none; }
   #review-grid .wizard-grid-line { stroke: var(--success-mark); stroke-opacity: 0.5; }
   .wizard-loupe {
@@ -2122,17 +2128,22 @@
     if (!lensPress) return;
     lensPress = false; renderLensHint(); renderFsBar();
   }
+  // The 1-based numbers drawn on the picture of the lines that do not fit, and "Line 4 does not fit the others".
+  function lensMisfitLines() { return lensLines.reduce(function(n, l, i) { return l.misfit ? n.concat(i + 1) : n; }, []); }
+  function lensMisfitText(n) {
+    return n.length > 1 ? 'Lines ' + n.slice(0, -1).join(', ') + ' and ' + n[n.length - 1] + ' do not fit the others' : 'Line ' + n[0] + ' does not fit the others';
+  }
   function renderLensHint() {
     if (lensPress) return;
     var fit = lensFit, open = lensOpenCandidates().length, lines = lensLines.length, h, sub;
     var applied = fit && lensFitApplies(fit), hint = fit && fit.hint || '', cov = hint ? ' ' + hint : '';
-    var agree = /^The result may already be good\. /;
+    var agree = /^The result may already be good\. /, misfit = lensMisfitLines(), many = misfit.length > 1;
     if (lensPending) { h = 'Click the other end of the straight edge.'; sub = 'Esc cancels the line.'; }
     else if (lensHold && lensSelected && lensSelected.point != null) { h = 'Move the point exactly onto the edge.'; sub = 'Drag it, or use the arrow keys while the loupe shows the edge. Press Enter when it is in the right place.'; }
     else if (open) { h = 'Check the suggested lines.'; sub = 'Confirm each of the lines that is straight in reality by pressing ✔. Reject the others, such as a curtain, a cloth or a cable, by pressing ✖. ' + open + ' left to check. Or load a saved lens calibration.'; }
     else if (!lines && S.lensLoaded) { h = 'A saved lens calibration is loaded.'; sub = 'Press Next, or draw straight lines to measure the lens again.'; }
     else if (!lines) { h = 'Draw straight lines on the picture.'; sub = 'Click the start and the end of an edge that is straight in reality, such as a stage edge, a tape line or a truss. Then move its points exactly onto the edge. Or load a saved lens calibration.'; }
-    else if (lensLines.some(function(l) { return l.misfit; })) { h = 'Check the line that does not fit.'; sub = 'It is drawn in the warning colour. Move its points onto the edge, or delete it if it is not straight in reality.'; }
+    else if (misfit.length) { h = lensMisfitText(misfit) + '.'; sub = (many ? 'They are' : 'It is') + ' marked in the warning colour. Move ' + (many ? 'their' : 'its') + ' points onto the edge, or delete ' + (many ? 'them if they are' : 'it if it is') + ' not straight in reality.'; }
     else if (lensMiddleOnly(fit)) { h = LENS_MIDDLE.hint; sub = LENS_MIDDLE.hintSub; }
     else if (fit && (fit.rating === 'good' || fit.rating === 'excellent')) { h = 'The lens is measured.'; sub = /^If possible/.test(hint) ? 'Press Next. ' + hint : 'Press Next.'; }
     else if (applied && agree.test(hint)) { h = 'The result may already be good.'; sub = hint.replace(agree, '') + ' Or press Next.'; }
@@ -2156,6 +2167,10 @@
       var group = svgEl('g');
       group.setAttribute('class', 'lens-line' + (line.misfit ? ' misfit' : '') + (lensSelected && lensSelected.line === i ? ' selected' : ''));
       group.dataset.line = i;
+      var halo = svgEl('polyline');
+      halo.setAttribute('class', 'lens-halo');
+      halo.setAttribute('points', lensPointsAttr(lensActivePoints(line)));
+      group.appendChild(halo);
       if (line.curve && line.curve.length) {
         var curve = svgEl('polyline');
         curve.setAttribute('class', 'lens-curve');
@@ -2166,9 +2181,7 @@
       chord.setAttribute('class', 'lens-chord');
       chord.setAttribute('points', lensPointsAttr(lensActivePoints(line)));
       group.appendChild(chord);
-      var label = svgEl('text', { class: 'lens-label', x: line.p0[0] + 8 * px, y: line.p0[1] - 8 * px, 'font-size': 11 * px });
-      label.textContent = String(i + 1);
-      group.appendChild(label);
+      group.appendChild(line.misfit ? lensTag(line, i, px) : lensLabel(line, i, px));
       // A click anywhere along the line selects it.
       var hit = svgEl('polyline');
       hit.setAttribute('class', 'lens-line-hit');
@@ -2194,6 +2207,20 @@
     if (hadFocus) lensFocusSelected();
     if (lensHold) holdLensPoint();
     renderFsBar();
+  }
+  function lensLabel(line, i, px) {
+    var label = svgEl('text', { class: 'lens-label', x: line.p0[0] + 8 * px, y: line.p0[1] - 8 * px, 'font-size': 11 * px });
+    label.textContent = String(i + 1);
+    return label;
+  }
+  // A pill above the line's start, in CSS pixels; a drag moves it by its transform.
+  function lensTag(line, i, px) {
+    var tag = svgEl('g', { class: 'lens-tag', transform: 'translate(' + line.p0[0] + ',' + line.p0[1] + ')' });
+    tag.appendChild(svgEl('rect', { x: 6 * px, y: -24 * px, width: 30 * px, height: 18 * px, rx: 9 * px }));
+    var text = svgEl('text', { x: 21 * px, y: -10.5 * px, 'font-size': 12 * px, 'text-anchor': 'middle' });
+    text.textContent = '! ' + (i + 1);
+    tag.appendChild(text);
+    return tag;
   }
   // A clicked or dragged point stays selected: it keeps the focus, so the arrow keys move it, and the loupe
   // stays on it until Enter, Esc, or a press or focus anywhere else.
@@ -2225,11 +2252,11 @@
       var pos = lensPointPos(line, +h.dataset.point);
       h.setAttribute('transform', 'translate(' + pos[0] + ',' + pos[1] + ')');
     });
-    group.querySelector('.lens-chord').setAttribute('points', lensPointsAttr(lensActivePoints(line)));
-    group.querySelector('.lens-line-hit').setAttribute('points', lensPointsAttr(lensActivePoints(line)));
-    var label = group.querySelector('.lens-label');
-    label.setAttribute('x', line.p0[0] + 8 * overlayPx());
-    label.setAttribute('y', line.p0[1] - 8 * overlayPx());
+    var pts = lensPointsAttr(lensActivePoints(line));
+    ['.lens-halo', '.lens-chord', '.lens-line-hit'].forEach(function(sel) { group.querySelector(sel).setAttribute('points', pts); });
+    var label = group.querySelector('.lens-label'), tag = group.querySelector('.lens-tag');
+    if (label) { label.setAttribute('x', line.p0[0] + 8 * overlayPx()); label.setAttribute('y', line.p0[1] - 8 * overlayPx()); }
+    if (tag) tag.setAttribute('transform', 'translate(' + line.p0[0] + ',' + line.p0[1] + ')');
   }
   function renderLensToolbar() {
     var toggle = document.getElementById('lens-toggle-point');
@@ -3970,7 +3997,8 @@
     if (FS.key === 'lens') {
       title = 'Lens';
       hint = lensHintText;
-      if (lensLines.some(function(l) { return l.misfit; })) { status = 'A line does not fit the others'; warn = true; }
+      var misfit = lensMisfitLines();
+      if (misfit.length) { status = lensMisfitText(misfit); warn = true; }
       var mid = lensSelected && lensSelected.point > 0 && lensSelected.point < 4;
       actions = [{ act: 'point-off', label: $('lens-toggle-point').textContent, off: !mid }, { act: 'delete-line', label: 'Delete line', off: !lensSelected }];
     } else if (FS.key === 'cal') {

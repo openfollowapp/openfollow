@@ -3761,7 +3761,7 @@
   function reviewLensCoverage(l) {
     var applies = lensFit && lensFitApplies(lensFit);
     if (lensIsTheFits(l) || (lensFit && !applies && !lensHandTuned())) {
-      var shown = lensShownRating(lensFit), level = LENS_RATING_LEVEL[shown] || 'caution', n = LENS_RATING_SEGMENTS[shown] || 0;
+      var shown = lensShownRating(lensFit), level = applies ? LENS_RATING_LEVEL[shown] || 'caution' : 'caution', n = LENS_RATING_SEGMENTS[shown] || 0;
       return '<span class="wizard-meter" data-level="' + level + '" aria-hidden="true">' + [0, 1, 2, 3, 4].map(function(i) { return '<span class="wizard-meter-seg' + (i < n ? ' filled' : '') + '"></span>'; }).join('') + '</span> ' + (LENS_RATING_LABEL[shown] || '') + (applies ? '' : ', not applied');
     }
     if (S.lensLoaded) {

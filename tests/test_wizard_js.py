@@ -6889,3 +6889,6 @@ def test_review_names_a_fit_that_was_not_applied(fit: dict, lens: list, touched:
         f" var S = {{ lensLoaded: null, lensTouched: {json.dumps(touched)} }}, lensFit = {json.dumps(fit)};",
     )
     assert out.endswith(label) and ("wizard-meter" in out) is (label != "Adjusted by hand")
+    # A fit that is not applied is a caution in Review too, whatever its rating.
+    if label != "Adjusted by hand":
+        assert 'data-level="caution"' in out

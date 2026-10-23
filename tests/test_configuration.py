@@ -8335,7 +8335,7 @@ class TestUiConfig:
         assert not UiConfig().feature_on("lens_suggestions")
         assert UiConfig(shown_features=["lens_suggestions"]).feature_on("lens_suggestions")
 
-    def test_shown_features_naming_lens_distortion_loads_without_it(self, temp_config_path) -> None:  # noqa: ANN001
+    def test_shown_features_drops_an_unknown_key_on_load_and_the_lens_applies(self, temp_config_path) -> None:  # noqa: ANN001
         from openfollow.configuration import effective_lens, load_config
 
         temp_config_path.write_text(

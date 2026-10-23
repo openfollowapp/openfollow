@@ -232,7 +232,7 @@ class TestPage:
             description = html_escape(label.description)
             assert f'<td id="{box_id}-description" class="feature-description">{description}</td>' in row
 
-    def test_lens_line_suggestions_have_an_experimental_row_and_lens_distortion_none(self, live_server) -> None:
+    def test_lens_line_suggestions_have_an_experimental_row_and_the_lens_no_row(self, live_server) -> None:
         _, base = live_server
         _, body = _get(base, "/")
         form = body[body.index('<div id="features-section"') :]

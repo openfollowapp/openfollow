@@ -3158,11 +3158,31 @@ def test_a_fit_not_applied_never_says_the_lens_is_measured(misfit: bool, heading
 def test_the_full_screen_help_says_shift_moves_a_lens_point_ten_pixels() -> None:
     out = run_wizard_js(
         "fsHelpHtml()",
-        functions=("fsKeys", "fsHelpHtml"),
+        functions=("fsKeys", "fsHelpHtml", "lensOpenCandidates"),
         variables=("ARROWS", "FS_ESC"),
         prelude="var FS = { key: 'lens' }, S = { mode: 'simple' }, lensCandidates = [];",
     )
     assert "<td>Move the selected point 1&nbsp;px, with Shift 10&nbsp;px</td>" in out
+
+
+@pytest.mark.parametrize(
+    "candidates",
+    [
+        [{"used": True}, {"used": True}],
+        [{"rejected": True}],
+        [{"used": True}, {"rejected": True}],
+    ],
+    ids=["all used", "all rejected", "used and rejected"],
+)
+def test_the_full_screen_lens_help_asks_for_lines_once_no_suggestion_is_left(candidates: list) -> None:
+    out = run_wizard_js(
+        "fsHelpHtml()",
+        functions=("fsKeys", "fsHelpHtml", "lensOpenCandidates"),
+        variables=("ARROWS", "FS_ESC"),
+        prelude="var FS = { key: 'lens' }, S = { mode: 'simple' }, lensCandidates = " + json.dumps(candidates) + ";",
+    )
+    intro = re.search(r"<p>(.*?)</p>", out).group(1)
+    assert intro.startswith("Click the start and the end of a straight edge. Click a line to select it.")
 
 
 # A full-screen Lens session: the page's press listeners, the toolbar's, and its buttons' actions.

@@ -3966,7 +3966,7 @@
   function fsHelpHtml() {
     var k = FS.key, intro, rows;
     if (k === 'lens') {
-      intro = (lensCandidates.length ? '<strong>Check each dashed suggested line</strong>: the check mark uses it, the cross removes it. Or click' : 'Click') + ' the start and the end of a straight edge. Click a line to select it. Drag a point to correct it.';
+      intro = (lensOpenCandidates().length ? '<strong>Check each dashed suggested line</strong>: the check mark uses it, the cross removes it. Or click' : 'Click') + ' the start and the end of a straight edge. Click a line to select it. Drag a point to correct it.';
       rows = [[['Tab'], 'Next suggestion bubble or line. With a point selected: the next point on its line, after the last the first again'], ['<kbd>Shift</kbd> + <kbd>Tab</kbd>', 'The previous point on its line, before the first the last again'],
         [ARROWS, 'Move the selected point 1&nbsp;px, with Shift 10&nbsp;px'], [['Enter'], 'Confirm the point and end the selection'],
         ['<kbd>Delete</kbd> or <kbd>Backspace</kbd>', 'Remove the selected line, or cancel a line you started'], FS_ESC];

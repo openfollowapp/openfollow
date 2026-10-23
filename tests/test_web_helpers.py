@@ -1573,8 +1573,8 @@ def test_apply_import_data_applies_ui_section() -> None:
     assert new.ui.unit_system == "imperial"
 
 
-def test_apply_import_data_naming_lens_distortion_drops_it_and_applies_the_lens() -> None:
-    """A file or push from a station that listed a Lens distortion feature: the key drops, the lens applies."""
+def test_apply_import_data_drops_an_unknown_feature_key_and_applies_the_lens() -> None:
+    """An imported feature list with an unknown key keeps the known ones; the lens applies."""
     from openfollow.configuration import effective_lens
     from openfollow.web.routes import _apply_import_data
 

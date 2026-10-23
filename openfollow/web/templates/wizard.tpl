@@ -435,6 +435,13 @@
 
     <p class="wizard-help" id="lens-intro">Most camera lenses bend the picture: edges that are straight on stage look curved, most of all near the edges of the picture. This step measures how much your lens bends it, so that the grid and the markers sit exactly on the stage everywhere in the picture. Do it once for each camera and lens, and again after you change the zoom.</p>
     <div class="notice" id="lens-hint" role="status" aria-live="polite" hidden></div>
+    <div id="lens-result" class="notice" role="status" style="display:none;margin-top:0.5rem;">
+      <div class="lens-result-main">
+        <span class="wizard-meter" aria-hidden="true"><span class="wizard-meter-seg"></span><span class="wizard-meter-seg"></span><span class="wizard-meter-seg"></span><span class="wizard-meter-seg"></span><span class="wizard-meter-seg"></span></span>
+        <span id="lens-result-text"></span>
+      </div>
+      <div class="notice-sub" id="lens-result-hint"></div>
+    </div>
     <div id="lens-container" class="wizard-preview-container" style="display:none;">
       <img id="lens-image" alt="">
       <canvas id="lens-edges" class="lens-edges" aria-hidden="true"></canvas>
@@ -453,7 +460,6 @@
 
     <div id="lens-notice" class="notice" role="status" style="display:none;"></div>
     <div id="lens-status" class="wizard-status" role="alert" style="display:none;"></div>
-    <div id="lens-misfit" class="notice warning" role="status" style="display:none;"></div>
 
     <div style="margin-top:0.72rem;display:flex;gap:0.5rem;flex-wrap:wrap;">
       <button type="button" class="secondary" onclick="lensRefreshImage()">Refresh Image</button>
@@ -473,14 +479,6 @@
       </div>
     </div>
 % end
-
-    <div id="lens-result" class="notice" role="status" style="display:none;margin-top:0.72rem;">
-      <div class="lens-result-main">
-        <span class="wizard-meter" aria-hidden="true"><span class="wizard-meter-seg"></span><span class="wizard-meter-seg"></span><span class="wizard-meter-seg"></span><span class="wizard-meter-seg"></span><span class="wizard-meter-seg"></span></span>
-        <span id="lens-result-text"></span>
-      </div>
-      <div class="notice-sub" id="lens-result-hint"></div>
-    </div>
 
     <div class="group" style="margin-top:0.72rem;">
       <details class="inline-advanced" id="lens-adjust">
@@ -2197,7 +2195,6 @@
       pending.appendChild(c);
     }
     renderLensToolbar();
-    renderLensMisfit();
     renderLensHint();
     if (hadFocus) lensFocusSelected();
     if (lensHold) holdLensPoint();
@@ -2251,18 +2248,9 @@
     clear.disabled = !lensLines.length;
     $('lens-save').disabled = !(lensMeasured() && wizLensValid());
   }
-  function renderLensMisfit() {
-    var el = document.getElementById('lens-misfit');
-    if (!el) return;
-    var bad = [];
-    lensLines.forEach(function(line, i) { if (line.misfit) bad.push(i + 1); });
-    el.style.display = bad.length ? '' : 'none';
-    setLive(el, bad.length ? esc((bad.length === 1 ? 'Line ' + bad[0] + ' does not' : 'Lines ' + andList(bad) + ' do not') + ' fit the others.') +
-      '<div class="notice-sub">Check that ' + (bad.length === 1 ? 'it is' : 'they are') + ' straight in reality, or delete ' + (bad.length === 1 ? 'it' : 'them') + '.</div>' : '');
-  }
-  function renderLensMeter(meter, rating) {
+  function renderLensMeter(meter, rating, level) {
     if (!meter) return;
-    meter.dataset.level = LENS_RATING_LEVEL[rating] || 'caution';
+    meter.dataset.level = level || LENS_RATING_LEVEL[rating] || 'caution';
     var n = LENS_RATING_SEGMENTS[rating] || 0;
     meter.querySelectorAll('.wizard-meter-seg').forEach(function(seg, i) { seg.classList.toggle('filled', i < n); });
   }
@@ -2290,10 +2278,11 @@
       return;
     }
     if (!lensFit) { box.style.display = 'none'; $('lens-result-text').liveHtml = $('lens-result-hint').liveHtml = null; return; }
-    var shown = lensShownRating(lensFit), level = LENS_RATING_LEVEL[shown] || 'caution';
+    // A result that is not applied is a caution, whatever its rating.
+    var shown = lensShownRating(lensFit), level = lensFitApplies(lensFit) ? LENS_RATING_LEVEL[shown] || 'caution' : 'caution';
     box.style.display = '';
     box.className = 'notice' + (level === 'caution' ? ' warning' : level === 'success' ? ' success' : '');
-    renderLensMeter(box.querySelector('.wizard-meter'), shown);
+    renderLensMeter(box.querySelector('.wizard-meter'), shown, level);
     var middle = lensMiddleOnly(lensFit);
     var text = (LENS_RATING_LABEL[shown] || shown) + (middle ? LENS_MIDDLE.rating : '') + ' \u2013 barrel / fisheye ' + fmt(Number(lensFit.k1), 3)
       + ', corner correction ' + fmt(Number(lensFit.k2), 3) + (lensFit.k2_fitted ? '' : ' (estimated)') + lensCentreSuffix(lensFit.centre)

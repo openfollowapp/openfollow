@@ -1588,9 +1588,8 @@ class TestWizardLensStepPage:
 
     def test_the_lens_step_speaks_to_a_screen_reader(self, live_server_lens) -> None:
         _, body = _get(live_server_lens[1], "/wizard")
-        # A failed fit interrupts; a rating or a misfit waits its turn.
+        # A failed fit interrupts; a rating waits its turn.
         assert re.search(r'<div id="lens-status"[^>]*role="alert"', body)
-        assert re.search(r'<div id="lens-misfit"[^>]*role="status"', body)
         assert re.search(r'<div id="lens-result"[^>]*role="status"', body)
         # Deleting the last line leaves the keys on the picture.
         assert re.search(r'<svg id="lens-overlay"[^>]*tabindex="-1"', body)
@@ -1760,7 +1759,14 @@ class TestWizardLensTemplate:
         levels = "{ low: 'caution', medium: 'caution', okay: 'info', good: 'success', excellent: 'success' }"
         assert "LENS_RATING_LEVEL = " + levels in src
         assert "LENS_RATING_SEGMENTS = { low: 1, medium: 2, okay: 3, good: 4, excellent: 5 }" in src
-        assert "' fit the others.'" in wizard_function("renderLensMisfit")
+
+    def test_the_lens_rating_sits_under_the_hint_above_the_picture(self, live_server_lens) -> None:
+        _, body = _get(live_server_lens[1], "/wizard")
+        hint, result = body.index('id="lens-hint"'), body.index('id="lens-result"')
+        assert hint < result < body.index('id="lens-container"')
+        assert "margin-top:0.5rem;" in body[result : body.index(">", result)]
+        # The hint and the result's "not applied" line say a line does not fit; no notice of its own.
+        assert 'id="lens-misfit"' not in body
 
 
 @integration

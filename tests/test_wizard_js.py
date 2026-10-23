@@ -4296,15 +4296,14 @@ def test_the_lens_result_is_written_once_for_the_same_words(state: str, regions:
     assert out == dict.fromkeys(regions, 1)
 
 
-def test_the_misfit_notice_and_the_lens_status_are_written_once_for_the_same_words() -> None:
+def test_the_lens_status_and_notice_are_written_once_for_the_same_words() -> None:
     out = _live_writes(
-        "renderLensMisfit(); lensShowStatus('The lens could not be measured.', false);"
-        " lensShowNotice('The lines were removed.');",
-        ["lens-misfit", "lens-status", "lens-notice"],
-        functions=("esc", "andList", "setLive", "renderLensMisfit", "lensShowStatus", "lensShowNotice"),
-        prelude=_COUNTING_DOM + "var lensLines = [{ misfit: true }, { misfit: false }, { misfit: true }];",
+        "lensShowStatus('The lens could not be measured.', false); lensShowNotice('The lines were removed.');",
+        ["lens-status", "lens-notice"],
+        functions=("esc", "setLive", "lensShowStatus", "lensShowNotice"),
+        prelude=_COUNTING_DOM,
     )
-    assert out == {"lens-misfit": 1, "lens-status": 1, "lens-notice": 1}
+    assert out == {"lens-status": 1, "lens-notice": 1}
 
 
 def test_a_hidden_live_region_forgets_its_words() -> None:
@@ -6803,22 +6802,27 @@ _MISFIT_LINES = [{"misfit": False}, {"misfit": True}, {"misfit": False}]
 
 
 @pytest.mark.parametrize(
-    ("rating", "lines", "text", "hint"),
+    ("rating", "lines", "text", "hint", "level"),
     [
         ("good", _MISFIT_LINES, "Good" + _PAIR_TEXT + " \u2013 not applied",
-         "It is applied once the line that does not fit is corrected or deleted."),
+         "It is applied once the line that does not fit is corrected or deleted.", "caution"),
+        ("okay", _MISFIT_LINES, "Fair" + _PAIR_TEXT + " \u2013 not applied",
+         "It is applied once the line that does not fit is corrected or deleted.", "caution"),
         ("low", _MISFIT_LINES, "Not usable" + _PAIR_TEXT + " \u2013 not applied",
-         "It is applied once the line that does not fit is corrected or deleted."),
-        ("good", [{"misfit": False}] * 3, "Good" + _PAIR_TEXT, ""),
+         "It is applied once the line that does not fit is corrected or deleted.", "caution"),
+        ("good", [{"misfit": False}] * 3, "Good" + _PAIR_TEXT, "", "success"),
     ],
-    ids=["good, a line does not fit", "not usable, a line does not fit", "every line fits"],
+    ids=["good, a line does not fit", "fair, a line does not fit", "not usable, a line does not fit",
+         "every line fits"],
 )  # fmt: skip
-def test_a_fit_with_a_line_that_does_not_fit_is_not_applied(rating: str, lines: list, text: str, hint: str) -> None:
+def test_a_fit_with_a_line_that_does_not_fit_is_not_applied(
+    rating: str, lines: list, text: str, hint: str, level: str
+) -> None:
     fit = {"rating": rating, "k1": -0.31, "k2": -0.02, "k2_fitted": True, "centre": [0.0, 0.0], "hint": _TOP_HINT,
            "lines": lines}  # fmt: skip
     out = run_wizard_js(
         "(function() { renderLensResult(); return [$('lens-result-text').innerHTML, $('lens-result-hint').innerHTML,"
-        " lensFitApplies(lensFit)]; })()",
+        " lensFitApplies(lensFit), meterLevel, $('lens-result').className]; })()",
         functions=(
             *_LINE_FUNCTIONS,
             "lensFitMisfit",
@@ -6831,12 +6835,14 @@ def test_a_fit_with_a_line_that_does_not_fit_is_not_applied(rating: str, lines: 
         variables=("LENS_RATING_LEVEL", "LENS_RATING_LABEL", "LENS_MIDDLE"),
         prelude=_DOM
         + _RESULT_PAGE
+        + "var meterLevel = null; renderLensMeter = function(m, r, level) { meterLevel = level; };"
         + "document.getElementById = function(id) { var el = $(id); el.querySelector = function() { return $('m'); };"
         " return el; };" + f"var S = {{ lensLoaded: null }}, lensFit = {json.dumps(fit)};",
         LENS_C_BOUND=C_BOUND,
     )
-    # The coverage hint is the hint box's: the result's own line never repeats it.
-    assert out == [text, hint, hint == ""]
+    # The coverage hint is the hint box's: the result's own line never repeats it. Not applied is a caution.
+    box = {"caution": "notice warning", "success": "notice success"}[level]
+    assert out == [text, hint, hint == "", level, box]
 
 
 @pytest.mark.parametrize("misfit", [True, False], ids=["a line does not fit", "every line fits"])

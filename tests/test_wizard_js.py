@@ -1684,6 +1684,7 @@ var sessionStorage = { setItem: function(k, v) { stored = JSON.parse(v); }, getI
 var STORAGE_KEY = 'openfollow:wizard', WIZ_STEPS = ['video', 'lens', 'calib', 'review'];
 var WIZ = { video: 0, lens: 1, calib: 2, review: 3 };
 var currentStep = 2, lensLines = [], lensImageSize = null, lensFit = null, lensRejected = [], LENS_ENABLED = false;
+var lensLast = null;
 var CAM_PRESETS = [];
 function wizReadLensCoeff() { return 0; } function wizWriteLensCoeff() {}
 function lensRestoredLine() { return true; } function lensRestoredPair() { return false; }
@@ -2881,7 +2882,7 @@ var document = {
 function overlayPx() { return 2; }
 function renderLensCandidates() {} function renderLensBubbles() {} function renderLensToolbar() {}
 function renderLensHint() {} function renderFsBar() {} function lensFocusSelected() {} function holdLensPoint() {}
-var lensSelected = null, lensHold = false, lensPending = null;
+var lensSelected = null, lensHold = false, lensPending = null, lensLast = null;
 function traced(p0, p1, misfit, on2) {
   return { p0: p0, p1: p1, misfit: misfit, curve: null, snapped: [true, true, true, true, true],
     mids: [{ t: 0.25, off: 0, on: true }, { t: 0.5, off: 4, on: on2 }, { t: 0.75, off: 0, on: true }] };
@@ -3579,6 +3580,7 @@ def test_a_redraw_gives_a_focused_pin_its_focus_back_without_selecting_it(focus,
 
 _NEW_LINE_PAGE = """
 var imageWidth = 1920, imageHeight = 1080, lensLines = [], lensPending = null, lensSelected = null, lensHold = false;
+var lensLast = null;
 var lensCandidates = [{ samples: [[100, 100], [300, 105], [500, 110], [700, 115], [900, 120]], used: false,
   rejected: false }];
 var snapped = 0, changed = 0, window = {};
@@ -3798,6 +3800,7 @@ def test_the_bubble_takes_or_rejects_its_suggestion(button: str, used: bool, rej
 _SUGGESTION = [[100.0, 100.0], [300.0, 108.0], [500.0, 112.0], [700.0, 114.0], [900.0, 115.0]]
 _SNAP_PAGE = """
 var imageWidth = 1920, imageHeight = 1080, lensLines = [], lensPending = null, lensSelected = null, lensCanvas = {};
+var lensLast = null;
 var bodies = [], changed = 0;
 function renderLens() {} function lensShowNotice() {} function lensHotCand() {} function lensChanged() { changed++; }
 function lensBand() { return { step: 4, half: 192, cols: 2, rows: 385, data: '' }; }
@@ -5760,7 +5763,7 @@ var overlay = { addEventListener: function(t, f) { on[t] = f; }, setPointerCaptu
 var document = { getElementById: function(id) { return id === 'lens-overlay' ? overlay : null; },
   addEventListener: function() {} };
 function $() { return { addEventListener: function() {} }; }
-var lensDrag = null, lensHold = false, lensSelected = null, lensPending = null, lensLines = [{}];
+var lensDrag = null, lensHold = false, lensSelected = null, lensPending = null, lensLines = [{}], lensLast = null;
 function lensSvgPoint(x, y) { return [x, y]; } function lensTraceClick() { traced++; }
 function lensMovePoint() { moves++; } function lensClamp(p) { return p; } function lensUpdateLineGeometry() {}
 function lensPointPos() { return [0, 0]; } function showLoupe() {} function hideLoupe() {} function renderLens() {}
@@ -7754,3 +7757,245 @@ def test_the_result_hint_says_user_input_changed_the_fit(tuned: bool, hint: str)
         LENS_C_BOUND=C_BOUND,
     )
     assert out == hint
+
+
+# ---------------------------------------------------------------------------
+# Lens: Tab enters the picture at the line drawn or changed last
+# ---------------------------------------------------------------------------
+
+# Four traced lines drawn by ``renderLens``; ``stops`` lists each line's Tab stop and number in page order.
+_ENTRY_PAGE = (
+    _LINES_PAGE
+    + r"""
+lensLines = [0, 1, 2, 3].map(function(i) { return traced([100, 100 + 200 * i], [900, 100 + 200 * i], false, true); });
+var gone = traced([50, 50], [800, 60], false, true);
+function stops() {
+  return linesEl.children.map(function(g) {
+    var first = g.children.filter(function(c) { return c.attrs.tabindex === '0'; });
+    var label = g.querySelector('.lens-label').textContent;
+    return [g.dataset.line, first.length === 1 && first[0].attrs['aria-label'], label];
+  });
+}
+"""
+)
+
+
+def _stops(lines: list[int]) -> list:
+    return [[i, f"Line {i + 1}, start", str(i + 1)] for i in lines]
+
+
+@pytest.mark.parametrize(
+    ("last", "lines"),
+    [
+        ("null", [0, 1, 2, 3]),
+        ("lensLines[0]", [0, 1, 2, 3]),
+        ("lensLines[1]", [1, 2, 3, 0]),
+        ("lensLines[2]", [2, 3, 0, 1]),
+        ("lensLines[3]", [3, 0, 1, 2]),
+        ("gone", [0, 1, 2, 3]),
+    ],
+    ids=["nothing changed", "line 1", "line 2", "line 3", "line 4", "a line no longer drawn"],
+)
+def test_tab_enters_at_the_line_changed_last_and_wraps_round_in_number_order(last: str, lines: list) -> None:
+    out = run_wizard_js(
+        f"(function() {{ lensLast = {last}; renderLens(); return stops(); }})()",
+        functions=_LINES_FUNCTIONS,
+        prelude=_ENTRY_PAGE,
+    )
+    # Only the order of the stops changes: each line keeps its number, its label and its first point's stop.
+    assert out == _stops(lines)
+
+
+_NEW_ENTRY_FUNCTIONS = (
+    *_LINES_FUNCTIONS,
+    "lensClamp",
+    "lensTraceClick",
+    "lensSetMidsFromPositions",
+    "lensSetMidFromPos",
+    "lensBandHalf",
+    "lensPointWindow",
+    "lensNearFits",
+    "lensAddCandidate",
+)
+
+
+@pytest.mark.parametrize(
+    "add",
+    ["lensTraceClick([100, 980]); lensTraceClick([900, 990]);", "lensAddCandidate(0);"],
+    ids=["a drawn line", "a used suggestion"],
+)
+def test_a_new_line_is_where_tab_enters_the_picture(add: str) -> None:
+    out = run_wizard_js(
+        f"(function() {{ lensLast = lensLines[1]; {add} return stops(); }})()",
+        functions=_NEW_ENTRY_FUNCTIONS,
+        variables=("LENS_T", "LENS_MIN_LINE_PX"),
+        prelude=_ENTRY_PAGE
+        + "var imageWidth = 1920, imageHeight = 1080; function lensShowNotice() {} function lensSnapLine() {}"
+        " function lensHotCand() {} function lensChanged() { renderLens(); }"
+        " var lensCandidates = [{ samples: [[100, 980], [300, 982], [500, 984], [700, 986], [900, 988]],"
+        " polarity: 1, used: false, rejected: false }];",
+    )
+    assert out == _stops([4, 0, 1, 2, 3])
+
+
+@pytest.mark.parametrize(
+    ("move", "entry"),
+    [
+        ("drag", 0),
+        ("tap", 1),
+        ("handle key", 0),
+        ("handle Shift key", 0),
+        ("held key", 0),
+        ("held Shift key", 0),
+    ],
+    ids=[
+        "a drag",
+        "a tap within the slop",
+        "an arrow key",
+        "Shift and an arrow key",
+        "an arrow key on a held point",
+        "Shift and an arrow key on a held point",
+    ],
+)
+def test_a_point_moved_by_hand_makes_its_line_where_tab_enters(move: str, entry: int) -> None:
+    out = run_wizard_js(
+        "(function() { lensInit(); var other = JSON.parse(JSON.stringify(line)); lensLines = [line, other];"
+        " lensLast = other; "
+        + _LENS_HAND_MOVES[move]
+        + " on.pointerup(ev('pointerup', 502, 500)); return lensLines.indexOf(lensLast); })()",
+        functions=_LENS_HAND_FUNCTIONS,
+        prelude=_LENS_HAND_PAGE,
+    )
+    assert out == entry
+
+
+@pytest.mark.parametrize(("point", "entry"), [(2, 1), (0, 0), (None, 0)], ids=["a middle point", "an end", "none"])
+def test_switching_a_point_off_or_on_makes_its_line_where_tab_enters(point, entry: int) -> None:
+    out = run_wizard_js(
+        "(function() { lensLines = [0, 1].map(function() {"
+        " return { mids: [{ on: true }, { on: true }, { on: true }] }; });"
+        " lensLast = lensLines[0]; lensSelected = { line: 1, point: point }; window.lensToggleSelectedPoint();"
+        " return lensLines.indexOf(lensLast); })()",
+        prelude=_NEW_LINE_PAGE + wizard_window_function("lensToggleSelectedPoint"),
+        point=point,
+    )
+    assert out == entry
+
+
+@pytest.mark.parametrize(("deleted", "lines"), [(2, [0, 1, 2]), (0, [1, 2, 0])], ids=["the entry line", "another line"])
+def test_deleting_the_entry_line_falls_back_to_number_order(deleted: int, lines: list) -> None:
+    out = run_wizard_js(
+        f"(function() {{ lensLast = lensLines[2]; lensSelected = {{ line: {deleted}, point: null }};"
+        " window.lensDeleteSelectedLine(); return stops(); })()",
+        functions=_LINES_FUNCTIONS,
+        prelude=_ENTRY_PAGE + "var window = {}; function dropLensPoint() {} function lensReleaseCandidate() {}"
+        " function lensChanged() { renderLens(); }" + wizard_window_function("lensDeleteSelectedLine"),
+    )
+    # The entry follows its line, not its number; once it is gone, no other line takes its place.
+    assert out == _stops(lines)
+
+
+def test_a_snap_answer_leaves_tab_entering_where_it_did() -> None:
+    points = [{"x": 100 + 200 * k, "y": 503, "snapped": True} for k in range(5)]
+    out = run_wizard_js(
+        "(function() { var other = JSON.parse(JSON.stringify(line)); lensLines = [other, line]; lensLast = other;"
+        " lensSnapLine(line); return new Promise(function(done) { setTimeout(done, 0); }).then(function() {"
+        " return [lensLines.indexOf(lensLast), line.p0]; }); })()",
+        functions=(*_SNAP_FUNCTIONS, "lensPointPos"),
+        variables=("LENS_T", "LENS_MIN_LINE_PX"),
+        prelude=_SNAP_PAGE.replace("function fetch(", "function unusedFetch(")
+        + f"var line = {_LENS_LINE}, answer = {json.dumps({'points': points})};"
+        " var reply = Promise.resolve({ ok: true, json: function() { return Promise.resolve(answer); } });"
+        " function fetch() { return reply; }",
+    )
+    # The answer moved the line it snapped, yet the entry stays on the line the hand changed.
+    assert out == [0, [100, 503]]
+
+
+def test_a_fit_answer_leaves_tab_entering_where_it_did() -> None:
+    out = run_wizard_js(
+        "(function() { lensLast = lensLines[2]; runLensFit();"
+        " return answer({ k1: -0.3123, k2: -0.0123, k2_fitted: true, rating: 'good', hint: '', lines: lines })"
+        ".then(function() { return [lensLines.indexOf(lensLast), linesEl.children.map(function(g) {"
+        " return g.dataset.line; })]; }); })()",
+        functions=_MISFIT_FIT_FUNCTIONS,
+        variables=_MISFIT_FIT_VARS,
+        prelude=_HELD_FETCH + _MISFIT_FIT_PAGE,
+        lines=_fit_lines(-1),
+    )
+    assert out == [2, [2, 3, 0, 1]]
+
+
+_ENTRY_SESSION_FUNCTIONS = (
+    "pairOk",
+    "fracPinOk",
+    "saveToSession",
+    "restoreFromSession",
+    "lensRestoredPair",
+    "lensRestoredLine",
+)
+_ENTRY_SESSION_PAGE = (
+    length_page("metric", {}) + _DOM + _SESSION_PAGE + "var raw = null;"
+    " var S = { mode: 'simple', simpleLoc: '', rect: { origin: 'dsc' }, pinSize: null, nextId: 1,"
+    " cornerPins: { DSL: null, DSR: null, USR: null, USL: null },"
+    " cornerMoved: { DSL: false, DSR: false, USR: false, USL: false }, points: [],"
+    " lensTouched: true, lensLoaded: null };"
+    f" function traced() {{ return {_LENS_LINE}; }}"
+)
+
+
+@pytest.mark.parametrize(
+    ("last", "stored"),
+    [("lensLines[1]", 1), ("null", -1), ("traced()", -1)],
+    ids=["line 2", "nothing changed", "a deleted line"],
+)
+def test_the_session_keeps_the_line_tab_enters_at(last: str, stored: int) -> None:
+    out = run_wizard_js(
+        f"(function() {{ lensLines = [traced(), traced(), traced()]; lensLast = {last}; saveToSession();"
+        " raw = JSON.stringify(stored); lensLines = []; lensLast = null; restoreFromSession();"
+        " return [stored.lensLast, lensLines.length, lensLines.indexOf(lensLast)]; })()",
+        functions=_ENTRY_SESSION_FUNCTIONS,
+        variables=("CORNERS",),
+        prelude=_ENTRY_SESSION_PAGE,
+    )
+    assert out == [stored, 3, stored]
+
+
+_GOOD_LINE = {"p0": [100, 500], "p1": [900, 500], "mids": [{}, {}, {}], "snapped": [True] * 5}
+
+
+@pytest.mark.parametrize(
+    ("lines", "last", "entry"),
+    [
+        ([_GOOD_LINE] * 3, 3, -1),
+        ([_GOOD_LINE] * 3, -1, -1),
+        ([_GOOD_LINE] * 3, "1", -1),
+        ([_GOOD_LINE] * 3, 1.5, -1),
+        ([_GOOD_LINE] * 3, True, -1),
+        ([_GOOD_LINE] * 3, None, -1),
+        ([None, _GOOD_LINE, _GOOD_LINE], 2, 1),
+        ([None, _GOOD_LINE, _GOOD_LINE], 0, -1),
+    ],
+    ids=[
+        "past the lines",
+        "negative",
+        "a string",
+        "a fraction",
+        "a boolean",
+        "null",
+        "after a dropped line",
+        "a dropped line",
+    ],
+)
+def test_a_restored_entry_must_name_a_restored_line(lines: list, last, entry: int) -> None:
+    out = run_wizard_js(
+        "(function() { raw = JSON.stringify({ lensLines: lines, lensLast: last }); restoreFromSession();"
+        " return [lensLines.length, lensLines.indexOf(lensLast)]; })()",
+        functions=_ENTRY_SESSION_FUNCTIONS,
+        variables=("CORNERS",),
+        prelude=_ENTRY_SESSION_PAGE,
+        lines=[dict(line) if line else None for line in lines],
+        last=last,
+    )
+    # A value this page did not write leaves Tab entering at line 1.
+    assert out == [sum(1 for line in lines if line), entry]

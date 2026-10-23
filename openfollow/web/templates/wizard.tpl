@@ -1617,6 +1617,7 @@
   var lensImageSize = null;  // [w, h] the lines were traced on
   var lensPending = null;    // first click of a line being traced
   var lensSelected = null;   // {line, point} with point 0..4
+  var lensLast = null;       // the line drawn or changed last: Tab enters the picture there
   var lensFit = null;        // the last fit response
   var lensCanvas = null;     // the snapshot at full resolution, for the luma band
   var lensFitTimer = null;
@@ -1731,6 +1732,7 @@
     };
     lensPending = null;
     lensLines.push(line);
+    lensLast = line;
     lensSelected = { line: lensLines.length - 1, point: null };
     lensShowNotice('');
     renderLens();
@@ -1824,6 +1826,7 @@
     cand.used = true;
     lensPending = null;
     lensLines.push(line);
+    lensLast = line;
     lensSelected = { line: lensLines.length - 1, point: null };
     renderLens();
     // Snapped onto the suggestion's own edge; one bowed past its band keeps its samples, as a refused snap would.
@@ -2157,7 +2160,7 @@
     var hadFocus = g.contains(document.activeElement);
     var px = overlayPx();
     g.innerHTML = '';
-    lensLines.forEach(function(line, i) {
+    var groups = lensLines.map(function(line, i) {
       var group = svgEl('g');
       group.setAttribute('class', 'lens-line' + (line.misfit ? ' misfit' : '') + (lensSelected && lensSelected.line === i ? ' selected' : ''));
       group.dataset.line = i;
@@ -2183,8 +2186,11 @@
       hit.dataset.lineHit = i;
       group.appendChild(hit);
       for (var j = 0; j < 5; j++) group.appendChild(lensHandle(line, i, j, px));
-      g.appendChild(group);
+      return group;
     });
+    // Tab enters at the line drawn or changed last, goes on in number order and wraps round.
+    var k = lensLines.indexOf(lensLast);
+    (k > 0 ? groups.slice(k).concat(groups.slice(0, k)) : groups).forEach(function(group) { g.appendChild(group); });
     renderLensBubbles();
     var pending = document.getElementById('lens-pending');
     pending.innerHTML = '';
@@ -2331,6 +2337,7 @@
   // ---- edits ----
   // A middle point placed by hand is on the edge: it switches on. Returns whether it did, for a redraw.
   function lensMovePoint(line, j, pos) {
+    lensLast = line;
     if (j === 0) line.p0 = pos;
     else if (j === 4) line.p1 = pos;
     else {
@@ -2346,7 +2353,8 @@
   }
   window.lensToggleSelectedPoint = function() {
     if (!lensSelected || lensSelected.point == null || lensSelected.point === 0 || lensSelected.point === 4) return;
-    var m = lensLines[lensSelected.line].mids[lensSelected.point - 1];
+    lensLast = lensLines[lensSelected.line];
+    var m = lensLast.mids[lensSelected.point - 1];
     m.on = !m.on;
     lensChanged();
   };
@@ -4065,7 +4073,7 @@
       CORNERS.forEach(function(c) { corners[c] = keepPins ? S.cornerPins[c] : frac(S.cornerPins[c]); });
       sessionStorage.setItem(STORAGE_KEY, JSON.stringify({
         stepKey: WIZ_STEPS[currentStep],
-        lensLines: lensLines, lensImage: lensImageSize, lensFit: lensFit, lensRejected: lensRejected,
+        lensLines: lensLines, lensLast: lensLines.indexOf(lensLast), lensImage: lensImageSize, lensFit: lensFit, lensRejected: lensRejected,
         k1: wizReadLensCoeff('wiz_lens_k1'), k2: wizReadLensCoeff('wiz_lens_k2'), lensCentre: S.lensCentre,
         mode: S.mode, simpleLoc: S.simpleLoc, rect: S.rect, cornerPins: corners, cornerMoved: S.cornerMoved,
         points: S.points.map(function(p) { return Object.assign({}, p, { pin: keepPins ? p.pin : frac(p.pin) }); }), nextId: S.nextId,
@@ -4085,7 +4093,11 @@
     try {
       // Lengths were typed in the units the session was saved in; another unit system starts the calibration afresh.
       var sameUnits = raw.units === (WUNIT.isImperial() ? 'imperial' : 'metric');
-      if (Array.isArray(raw.lensLines)) lensLines = raw.lensLines.filter(lensRestoredLine);
+      if (Array.isArray(raw.lensLines)) {
+        lensLines = raw.lensLines.filter(lensRestoredLine);
+        var last = Number.isInteger(raw.lensLast) ? raw.lensLines[raw.lensLast] : null;
+        lensLast = lensLines.indexOf(last) >= 0 ? last : null;
+      }
       if (lensRestoredPair(raw.lensImage)) lensImageSize = raw.lensImage;
       if (Array.isArray(raw.lensRejected)) lensRejected = raw.lensRejected.filter(function(r) { return Array.isArray(r) && r.length === 2 && lensRestoredPair(r[0]) && lensRestoredPair(r[1]); });
       if (raw.lensFit && typeof raw.lensFit.rating === 'string' && isFinite(raw.lensFit.k1) && isFinite(raw.lensFit.k2) && pairOk(raw.lensFit.centre)) lensFit = raw.lensFit;

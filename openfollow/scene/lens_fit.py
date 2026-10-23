@@ -22,9 +22,9 @@ the pinhole frame's corners land on screen, in pixels, one number that
 captures how many lines there are, how much of the frame they cover and how
 precisely their points were placed. Another lens that fits the lines about as
 well widens it to how far the two warps disagree, since the local uncertainty
-sees only the minimum it sits in. Lines that stay near the lens centre, or reach
-out on one side of it only, leave the edges of the picture unmeasured; the
-result says so (``edges_measured``) and keeps its rating for the middle.
+sees only the minimum it sits in. Lines whose points do not reach out toward the
+corners on two sides of the lens centre leave the edges of the picture unmeasured;
+the result says so (``edges_measured``) and keeps its rating for the middle.
 """
 
 from __future__ import annotations
@@ -100,9 +100,9 @@ _CORNER_RADIUS = 0.8
 # Lines that already agree: at least this many, none misfit, their points this close (RMS px) to the fit.
 _AGREE_MIN_LINES = 4
 _AGREE_RMS_PX = 1.5
-# The edges are measured once two lines reach beyond this radius (half-diagonals) from the lens
-# centre on two different of its four sides (right, up, left, down).
-_REACH_RADIUS = 0.5
+# The edges are measured once points reach beyond this radius (half-diagonals) from the lens
+# centre on two different of its four sides (right, up, left, down); one line may reach both.
+_REACH_RADIUS = 0.8
 _REACH_SIDES = 2
 
 # Free parameters of the lens ``(k1, k2, cx, cy)`` in each model; the centre is given.
@@ -718,19 +718,11 @@ def _misfits(lines: _Lines, k: FloatArray) -> list[bool]:
 
 
 def _reaches_out(lines: _Lines, cx: float, cy: float) -> bool:
-    """Whether two lines reach beyond :data:`_REACH_RADIUS` of the lens centre on two different of its sides.
-
-    Counted per line: the two ends of one line through the middle are one line.
-    """
-    reached: set[int] = set()
-    reaching = 0
-    for rows in lines.members:
-        vx, vy = lines.dx[rows] - cx, lines.dy[rows] - cy
-        far = np.hypot(vx, vy) > _REACH_RADIUS
-        if far.any():
-            reaching += 1
-            reached.update(int(v) for v in np.floor((np.degrees(np.arctan2(-vy[far], vx[far])) + 45.0) / 90.0) % 4)
-    return reaching >= _REACH_SIDES and len(reached) >= _REACH_SIDES
+    """Whether points reach beyond :data:`_REACH_RADIUS` of the lens centre on two different of its sides."""
+    vx, vy = lines.dx - cx, lines.dy - cy
+    far = np.hypot(vx, vy) > _REACH_RADIUS
+    sides = np.floor((np.degrees(np.arctan2(-vy[far], vx[far])) + 45.0) / 90.0) % 4
+    return len(set(sides.astype(int).tolist())) >= _REACH_SIDES
 
 
 def _weak_edges(pts: FloatArray, canvas_w: float, canvas_h: float) -> list[str]:

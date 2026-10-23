@@ -64,20 +64,25 @@ a centre, its gates and seeds), the gallery equivalents.
 10. **Lines that stay near the middle measure the middle, and the result says
     so** (2026-10-23). The rating stays at the pinhole corners with the same
     thresholds, and the reach guard's cap at Poor is gone: the lens is applied
-    as its rating allows. The fit answers `edges_measured` false unless two
-    lines reach beyond 0.5 of the half-diagonal from the lens centre on two
-    different of its four sides (counted per line: one line through the middle
-    is one line, whatever its two ends reach). The page then names the rating
-    "Good in the middle", shows "The lines stay near the middle of the
-    picture, so its edges are not measured. That is fine if you only need the
-    middle. To measure the edges, add lines near them." in place of the other
-    hints, and at Good or better the hint box "The middle of the picture is
-    measured." / "If possible, add lines near the edges of the picture to
-    measure them too.", mirrored in the full-screen toolbar; lower ratings keep
-    their hints. The help drawer: "When the lines stay near the middle of the
-    picture, the rating only covers the middle; the result says that the edges
-    are not measured. That can be enough when you only need the middle of the
-    stage." This replaces rating such lines at the screen corners.
+    as its rating allows. The fit answers `edges_measured` false unless points
+    reach beyond 0.8 of the half-diagonal from the lens centre on two
+    different of its four sides; one line may reach both. A fit rated Good or
+    Excellent with `edges_measured` false is shown as Fair (its colour and
+    meter, on the Lens step and in Review; the saved lens is the same):
+    "Fair, but might already be good in the middle – …", the sub-line "The
+    lines stay near the middle of the picture, so its edges are not measured.
+    That is fine if you only need the middle. To measure the full image, add
+    lines near the edges.", and the hint box "The result may already be good
+    in the middle." / "If possible, add lines near the edges of the picture to
+    measure them too. Or press Next.", mirrored in the full-screen toolbar.
+    Fair and lower keep their own result and hints. The help drawer: "When the
+    lines stay near the middle of the picture, the edges are not measured.
+    They are measured once lines reach out toward the corners on two sides of
+    the picture; one long line can do that. Without that, a result that would
+    be Good or Excellent is shown as Fair, and the result says that it might
+    already be good in the middle. That can be enough when you only need the
+    middle of the stage." This replaces rating such lines at the screen
+    corners.
 
 ## 1. The model
 
@@ -1096,22 +1101,18 @@ clear barrel; dense traced edges (16 sub-pixel points each) as the reference.
   Open: under such a lens the pinhole corners, where the rating is read,
   land at 0.66 of the half-diagonal; lines in the lower half alone leave
   1-12 px between 0.66 and 0.8 that the rating does not see (open question 1).
-- [x] **Edges measured** (decision 10): `edges_measured` is false unless two
-      lines reach beyond 0.5 of the half-diagonal from the lens centre on two
-      different of its four sides (right, up, left, down); the rating is not
-      capped. 0.5, not 0.6: the six 150-degree frames' lines reach 0.56-0.59.
-      In the simulation's scenarios (all 63 lenses and centres, 6 trials at
-      1 and 3 px each) it is false in every trial of one or two centre lines
-      and of the top edge alone, and in none of the others. Without the cap,
-      41 trials of one or two middle lines on a 2.3 mm-like lens 144 px off
-      centre, centre given, rate Fair again (overclaims at the frame 37 to 42,
-      all with `edges_measured` false); the whole simulation's overclaims go
-      from 312 to 313 of 9072. Random middle lines (ends within 0.65 of the
-      half-diagonal, 40 trials each on three strong lenses): one line is
-      false in 120 of 120; two lines in 87 of 120. The other 33 are two
-      lines that each reach out, on different sides; 25 of them rate Fair or
-      Good and 25 overclaim at the frame. The hall, the concert and the six
-      150-degree frames answer true and rate as before.
+- [x] **Edges measured** (decision 10): `edges_measured` is false unless
+      points reach beyond 0.8 of the half-diagonal from the lens centre on two
+      different of its four sides (right, up, left, down); one line may reach
+      both, and the rating is not capped. On 3600 random line sets over the
+      gallery pictures' visible edges, 110 rated Good: two lines reaching
+      past 0.5 called 103 of them measured, 41 of which missed Good's 5 px
+      outside the middle; past 0.8 calls 47 measured, 3 of which miss (a
+      bottom stage edge with no line near a top corner, 6 to 12 px). It shows
+      24 lenses that are within 5 px everywhere as Fair. Requiring two mostly
+      vertical and two mostly horizontal lines, or a horizontal line in each
+      half, cut the misses further but withheld Good from most sets that had
+      earned it.
 - [x] **Misfit by the line's own degrees of freedom**: the 1.5 px floor
       flagged a straight line in 3 % of fits at 1 px (40 of 1280), the noise
       real snapshots show. A line now misfits past the F test of its scatter

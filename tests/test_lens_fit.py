@@ -475,23 +475,10 @@ class TestEdgesMeasured:
     @pytest.mark.parametrize(
         "segments",
         [
-            # One line from corner to corner: its two ends are still one line.
-            (TOP,),
             (MID_H,),
-            # A second line that stays near the centre adds no side.
-            (TOP, ((860.0, 500.0), (1060.0, 520.0))),
-        ],
-        ids=["top-edge-alone", "middle-line-alone", "top-edge-and-a-short-middle-line"],
-    )
-    def test_one_line_reaching_out_leaves_the_edges_unmeasured(self, segments) -> None:  # noqa: ANN001
-        assert fit_lens_from_lines(lines_for(-0.2, -0.03, segments, noise=0.5, seed=1), W, H).edges_measured is False
-
-    @pytest.mark.parametrize(
-        "segments",
-        [
-            (TOP, BOTTOM),
-            # Each reaches out on one side only, but the two sides differ.
-            (((40.0, 400.0), (45.0, 700.0)), ((W - 40.0, 400.0), (W - 45.0, 700.0))),
+            (MID_H, MID_V),
+            # Two long lines, each out to 0.7 of the half-diagonal on its own side: still the middle.
+            (((190.0, 560.0), (960.0, 560.0)), ((960.0, 600.0), (1730.0, 600.0))),
             # A stage seen from the front truss through a 150-degree class lens: its lines
             # reach 0.59 of the half-diagonal, left and right of the centre.
             (
@@ -502,27 +489,43 @@ class TestEdgesMeasured:
                 ((1446.0, 628.0), (1510.0, 844.0)),
             ),
         ],
-        ids=["top-and-bottom-edges", "left-and-right-bands", "stage-from-the-front-truss"],
+        ids=["middle-line", "middle-cross", "two-lines-out-to-0.7", "stage-from-the-front-truss"],
     )
-    def test_two_lines_reaching_out_on_two_sides_measure_the_edges(self, segments) -> None:  # noqa: ANN001
+    def test_lines_short_of_the_corners_leave_the_edges_unmeasured(self, segments) -> None:  # noqa: ANN001
+        assert fit_lens_from_lines(lines_for(-0.71, -0.17, segments, noise=0.5, seed=1), W, H).edges_measured is False
+
+    @pytest.mark.parametrize(
+        "segments",
+        [
+            (TOP, BOTTOM),
+            # One line from corner to corner reaches out on both of its sides.
+            (TOP,),
+            # Each reaches out on one side only, but the two sides differ.
+            (((40.0, 400.0), (45.0, 700.0)), ((W - 40.0, 400.0), (W - 45.0, 700.0))),
+        ],
+        ids=["top-and-bottom-edges", "top-edge-alone", "left-and-right-bands"],
+    )
+    def test_points_reaching_out_on_two_sides_measure_the_edges(self, segments) -> None:  # noqa: ANN001
         result = fit_lens_from_lines(lines_for(-0.71, -0.17, segments, noise=0.5, seed=1), W, H)
         assert result.edges_measured is True
         assert result.rating == rate_uncertainty(result.uncertainty_px)
 
-    # Short lines 540-660 px left and right of the picture centre, at its height and near its top.
-    _LEVEL = (((300.0, 540.0), (420.0, 540.0)), ((1500.0, 540.0), (1620.0, 540.0)))
-    _HIGH = (((320.0, 100.0), (440.0, 100.0)), ((1480.0, 100.0), (1600.0, 100.0)))
+    # Short lines 810-930 px left and right of the picture centre, at its height; and near two
+    # opposite corners, 860-940 px out.
+    _LEVEL = (((30.0, 540.0), (150.0, 540.0)), ((1770.0, 540.0), (1890.0, 540.0)))
+    _CORNERS = (((150.0, 60.0), (250.0, 60.0)), ((1670.0, 1020.0), (1770.0, 1020.0)))
 
     @pytest.mark.parametrize(
         ("segments", "cx", "cy", "measured"),
         [
             (_LEVEL, 0.0, 0.0, True),
-            # 110 px right of the picture centre, the right line is under 550 px (half the half-diagonal) away.
+            # 110 px right of the picture centre, the right line is under 0.8 of the half-diagonal away.
             (_LEVEL, 0.1, 0.0, False),
-            (_HIGH, 0.0, 0.0, True),
-            # 220 px below the picture centre, both lines lie above the lens centre: one side.
-            (_HIGH, 0.0, 0.2, False),
-            (_HIGH, 0.0, -0.2, True),
+            (_LEVEL, -0.1, 0.0, False),
+            (_CORNERS, 0.0, 0.0, True),
+            # 220 px below the picture centre, the bottom right line is too close; above it, the top left one.
+            (_CORNERS, 0.0, 0.2, False),
+            (_CORNERS, 0.0, -0.2, False),
         ],
     )
     def test_reach_is_measured_from_the_lens_centre(self, segments, cx: float, cy: float, measured: bool) -> None:  # noqa: ANN001

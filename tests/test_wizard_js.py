@@ -238,7 +238,7 @@ _ANSWER_FETCH = (
     " catch: function() { return this; } }; }"
     " function fetch(url, opts) { sent = JSON.parse(opts.body); return settled({ ok: true,"
     " json: function() { return settled({ k1: -0.3123, k2: -0.0123, k2_fitted: true, rating: 'good', hint: '',"
-    " lines: [{ curve: [], rms_px: 0.4, misfit: false }] }); } }); }"
+    " lines: [{ curve: [], rms_px: 0.4, misfit: false }, { curve: [], rms_px: 0.4, misfit: false }] }); } }); }"
 )
 
 
@@ -507,7 +507,7 @@ def test_a_failed_fit_leaves_no_earlier_fit_standing() -> None:
         + " var lensFitSeq = 0, imageWidth = 1920, imageHeight = 1080, shown = 'unset', status = null;"
         " var S = { lensCentre: [0, 0] };"
         " var lensFit = { k1: -0.2, k2: 0, rating: 'good' };"
-        " var lensLines = [{ points: 5 }];"
+        " var lensLines = [{ points: 5 }, { points: 5 }];"
         " function lensLineCounts() { return true; } function lensActivePoints() { return []; }"
         " function lensShowStatus(text, ok) { status = [text, ok]; }"
         " function renderLensResult() { shown = lensFit; } function renderLens() {} function saveToSession() {}",
@@ -518,7 +518,7 @@ def test_a_failed_fit_leaves_no_earlier_fit_standing() -> None:
 _FIT_PAGE = (
     " var lensFitSeq = 0, imageWidth = 1920, imageHeight = 1080, drawn = 0, saved = 0, S = { lensCentre: [0, 0] };"
     " var lensFit = { k1: -0.2, k2: 0, rating: 'good' };"
-    " var lensLines = [{ points: 5 }];"
+    " var lensLines = [{ points: 5 }, { points: 5 }];"
     " function lensLineCounts() { return true; } function lensActivePoints() { return []; }"
     " function lensShowStatus() {} function renderLensResult() {}"
     " function renderLens() { drawn++; } function saveToSession() { saved++; }"
@@ -2455,7 +2455,15 @@ def test_a_point_reached_with_tab_is_selected_and_held(
         " lensTabKey({ key: 'Tab', shiftKey: shift, preventDefault: function() {}, stopPropagation: function() {} });"
         " seq.push(lensSelected.point); });"
         " return got.concat([seq]); })()",
-        functions=("esc", "setLive", "lensEdgesMeasured", "renderLensHint", "lensPointFocusIn", "lensTabKey"),
+        functions=(
+            "esc",
+            "setLive",
+            "lensMiddleOnly",
+            "lensShownRating",
+            "renderLensHint",
+            "lensPointFocusIn",
+            "lensTabKey",
+        ),
         prelude="var lensSelected = null, lensHold = false, lensRefocus = false, lensDrag = null;" + _POINT_FOCUS_PAGE,
     )
     hint = "Move the point exactly onto the edge." if held else ""
@@ -2526,8 +2534,8 @@ var S = { lensLoaded: state.loaded }, lensPending = state.pending, lensHold = st
 var lensLines = state.lines, lensFit = state.fit;
 """
 _LINE = {"misfit": False}
-_MIDDLE_HINT = "The middle of the picture is measured."
-_MIDDLE_SUB = "If possible, add lines near the edges of the picture to measure them too."
+_MIDDLE_HINT = "The result may already be good in the middle."
+_MIDDLE_SUB = "If possible, add lines near the edges of the picture to measure them too. Or press Next."
 _AGREE = "The result may already be good. If possible, add a line near the top edge to confirm it."
 
 
@@ -2658,7 +2666,7 @@ def _hint_state(**kw: object) -> dict:
 def test_the_lens_hint_names_the_one_next_thing_to_do(state: dict, heading: str, sub: str) -> None:
     out = run_wizard_js(
         "(function() { renderLensHint(); return [$('lens-hint').innerHTML, lensHintText]; })()",
-        functions=("esc", "setLive", "lensEdgesMeasured", "renderLensHint"),
+        functions=("esc", "setLive", "lensMiddleOnly", "lensShownRating", "renderLensHint"),
         variables=("LENS_MIDDLE",),
         prelude="var state = " + json.dumps(state) + ";" + _HINT_PAGE,
     )
@@ -2713,7 +2721,16 @@ var S = { lensLoaded: null }, lensPending = null, lensHold = true, lensSelected 
 var lensLines = [{ misfit: false }], lensFit = null;
 """
 )
-_LIVE = ("esc", "setLive", "lensEdgesMeasured", "renderLensHint", "renderFsBar", "fsActions", "dropLensPoint")
+_LIVE = (
+    "esc",
+    "setLive",
+    "lensMiddleOnly",
+    "lensShownRating",
+    "renderLensHint",
+    "renderFsBar",
+    "fsActions",
+    "dropLensPoint",
+)
 
 
 @pytest.mark.parametrize("full_screen", [True, False], ids=["full screen", "on the page"])
@@ -4259,7 +4276,7 @@ def test_the_lens_result_is_written_once_for_the_same_words(state: str, regions:
     out = _live_writes(
         "renderLensResult();",
         regions,
-        functions=("esc", "setLive", "lensFitApplies", "lensEdgesMeasured", "renderLensResult"),
+        functions=("esc", "setLive", "lensFitApplies", "lensMiddleOnly", "lensShownRating", "renderLensResult"),
         variables=("LENS_RATING_LEVEL", "LENS_RATING_LABEL"),
         prelude=_COUNTING_DOM
         + _LENS_RESULT_PAGE
@@ -4359,7 +4376,7 @@ def test_the_lens_result_shown_again_is_written_again() -> None:
         "(function() { var fit = { rating: 'okay', k1: -0.12, k2: 0, k2_fitted: false, hint: 'Add a line.' };"
         " [fit, null, fit].forEach(function(f) { lensFit = f; renderLensResult(); });"
         " return [writes['lens-result-text'], writes['lens-result-hint']]; })()",
-        functions=("esc", "setLive", "lensFitApplies", "lensEdgesMeasured", "renderLensResult"),
+        functions=("esc", "setLive", "lensFitApplies", "lensMiddleOnly", "lensShownRating", "renderLensResult"),
         variables=("LENS_RATING_LEVEL", "LENS_RATING_LABEL"),
         prelude=_COUNTING_DOM + _LENS_RESULT_PAGE + "var S = { lensLoaded: null }, lensFit = null, lensLines = [];",
     )
@@ -6250,7 +6267,16 @@ function send(type, target, kind, x) {
 function words() { return lensHintText; }
 """
 )
-_LENS_PRESS_FUNCTIONS = ("tapSlop", "lensInit", "esc", "setLive", "lensEdgesMeasured", "renderLensHint", "lensPressEnd")
+_LENS_PRESS_FUNCTIONS = (
+    "tapSlop",
+    "lensInit",
+    "esc",
+    "setLive",
+    "lensMiddleOnly",
+    "lensShownRating",
+    "renderLensHint",
+    "lensPressEnd",
+)
 _DRAW_MORE = "Draw more straight lines."
 _OTHER_END = "Click the other end of the straight edge."
 _MOVE_POINT = "Move the point exactly onto the edge."
@@ -6415,7 +6441,7 @@ function renderLensMeter() {} function lensIsTheFits() { return true; } function
 def test_the_result_line_names_the_lens_centre_the_fit_held(centre: list, text: str) -> None:
     out = run_wizard_js(
         "(function() { renderLensResult(); return $('lens-result-text').innerHTML; })()",
-        functions=(*_LINE_FUNCTIONS, *_CENTRE_PX, "lensEdgesMeasured", "renderLensResult"),
+        functions=(*_LINE_FUNCTIONS, *_CENTRE_PX, "lensMiddleOnly", "lensShownRating", "renderLensResult"),
         variables=("LENS_RATING_LEVEL", "LENS_RATING_LABEL"),
         prelude=_DOM
         + _RESULT_PAGE
@@ -6440,7 +6466,7 @@ def test_the_result_line_names_the_lens_centre_the_fit_held(centre: list, text: 
 def test_a_corner_correction_the_lines_left_open_reads_as_estimated(k2_fitted: bool, text: str) -> None:
     out = run_wizard_js(
         "(function() { renderLensResult(); return $('lens-result-text').innerHTML; })()",
-        functions=(*_LINE_FUNCTIONS, *_CENTRE_PX, "lensEdgesMeasured", "renderLensResult"),
+        functions=(*_LINE_FUNCTIONS, *_CENTRE_PX, "lensMiddleOnly", "lensShownRating", "renderLensResult"),
         variables=("LENS_RATING_LEVEL", "LENS_RATING_LABEL"),
         prelude=_DOM
         + _RESULT_PAGE
@@ -6458,50 +6484,84 @@ def test_a_corner_correction_the_lines_left_open_reads_as_estimated(k2_fitted: b
 
 _MIDDLE_RESULT = (
     "The lines stay near the middle of the picture, so its edges are not measured. That is fine if you only need the"
-    " middle. To measure the edges, add lines near them."
+    " middle. To measure the full image, add lines near the edges."
 )
+_PAIR_TEXT = " \u2013 barrel / fisheye \u22120.310, corner correction \u22120.020"
+_TOP_HINT = "If possible, add a line near the top edge to confirm it."
 
 
 @pytest.mark.parametrize(
-    ("rating", "edges", "text", "hint"),
+    ("rating", "edges", "text", "hint", "shown", "box"),
     [
-        ("good", False, "Good in the middle \u2013 barrel / fisheye \u22120.310, corner correction \u22120.020",
-         _MIDDLE_RESULT),
-        ("good", True, "Good \u2013 barrel / fisheye \u22120.310, corner correction \u22120.020",
-         "If possible, add a line near the top edge to confirm it."),
-        ("good", None, "Good \u2013 barrel / fisheye \u22120.310, corner correction \u22120.020",
-         "If possible, add a line near the top edge to confirm it."),
-        ("low", False, "Not usable in the middle \u2013 barrel / fisheye \u22120.310, corner correction \u22120.020"
-         " \u2013 not applied", _MIDDLE_RESULT),
+        ("good", False, "Fair, but might already be good in the middle" + _PAIR_TEXT, _MIDDLE_RESULT, "okay", "notice"),
+        ("excellent", False, "Fair, but might already be good in the middle" + _PAIR_TEXT, _MIDDLE_RESULT, "okay",
+         "notice"),
+        ("good", True, "Good" + _PAIR_TEXT, _TOP_HINT, "good", "notice success"),
+        ("good", None, "Good" + _PAIR_TEXT, _TOP_HINT, "good", "notice success"),
+        ("okay", False, "Fair" + _PAIR_TEXT, _TOP_HINT, "okay", "notice"),
+        ("low", False, "Not usable" + _PAIR_TEXT + " \u2013 not applied", _TOP_HINT, "low", "notice warning"),
     ],
-    ids=["only the middle", "the edges measured", "an answer without the field", "not usable, only the middle"],
+    ids=["good, only the middle", "excellent, only the middle", "the edges measured", "an answer without the field",
+         "fair, only the middle", "not usable, only the middle"],
 )  # fmt: skip
-def test_a_fit_whose_lines_stay_in_the_middle_says_its_edges_are_not_measured(
-    rating: str, edges: bool | None, text: str, hint: str
+def test_a_good_fit_whose_lines_stay_in_the_middle_is_shown_as_fair(
+    rating: str, edges: bool | None, text: str, hint: str, shown: str, box: str
 ) -> None:
-    fit = {"rating": rating, "k1": -0.31, "k2": -0.02, "k2_fitted": True, "centre": [0.0, 0.0],
-           "hint": "If possible, add a line near the top edge to confirm it."}  # fmt: skip
+    fit = {"rating": rating, "k1": -0.31, "k2": -0.02, "k2_fitted": True, "centre": [0.0, 0.0], "hint": _TOP_HINT}
     if edges is not None:
         fit["edges_measured"] = edges
     out = run_wizard_js(
-        "(function() { renderLensResult(); return [$('lens-result-text').innerHTML, $('lens-result-hint').innerHTML];"
-        " })()",
-        functions=(*_LINE_FUNCTIONS, *_CENTRE_PX, "lensEdgesMeasured", "renderLensResult"),
+        "(function() { renderLensResult(); return [$('lens-result-text').innerHTML, $('lens-result-hint').innerHTML,"
+        " meter, $('lens-result').className]; })()",
+        functions=(*_LINE_FUNCTIONS, *_CENTRE_PX, "lensMiddleOnly", "lensShownRating", "renderLensResult"),
         variables=("LENS_RATING_LEVEL", "LENS_RATING_LABEL", "LENS_MIDDLE"),
         prelude=_DOM
         + _RESULT_PAGE
+        + "var meter = null; renderLensMeter = function(m, r) { meter = r; };"
         + "document.getElementById = function(id) { var el = $(id); el.querySelector = function() { return $('m'); };"
         " return el; };" + f"var S = {{ lensLoaded: null }}, lensFit = {json.dumps(fit)};",
         LENS_C_BOUND=C_BOUND,
     )
-    assert out == [text, hint]
+    # The saved lens is the fit's whatever it is shown as: only the words, the meter and the colour change.
+    assert out == [text, hint, shown, box]
+
+
+def test_one_line_asks_for_a_second_instead_of_a_rating() -> None:
+    out = run_wizard_js(
+        "(function() { renderLensResult(); return [$('lens-result').style.display, $('lens-result').className,"
+        " $('lens-result-text').innerHTML, $('lens-result-hint').innerHTML, meter, $('m').dataset.level]; })()",
+        functions=(*_LINE_FUNCTIONS, *_CENTRE_PX, "lensMiddleOnly", "lensShownRating", "renderLensResult"),
+        variables=("LENS_RATING_LEVEL", "LENS_RATING_LABEL", "LENS_MIDDLE"),
+        prelude=_DOM
+        + _RESULT_PAGE
+        + "var meter = null; renderLensMeter = function(m, r) { meter = r; }; lensLines = [{ misfit: false }];"
+        + " $('m').dataset = { level: 'success' };"
+        + "document.getElementById = function(id) { var el = $(id); el.querySelector = function() { return $('m'); };"
+        " return el; }; var S = { lensLoaded: null }, lensFit = null;",
+        LENS_C_BOUND=C_BOUND,
+    )
+    assert out == ["", "notice", "Draw at least two lines.", "", "", ""]
+
+
+@pytest.mark.parametrize(("lines", "fitted"), [(1, False), (2, True)])
+def test_the_lens_is_fitted_from_two_lines(lines: int, fitted: bool) -> None:
+    out = run_wizard_js(
+        "(function() { runLensFit(); return [sent !== null, lensFit]; })()",
+        functions=(*_LENS_MODEL, "wizLensShownPair", "lensFitApplies", "runLensFit"),
+        prelude=_ANSWER_FETCH + _FIT_PAGE + " var sent = null;"
+        " function wizWriteLensCoeff() {} function wizShowLensLimit() {} function onLensCoeffChanged() {}"
+        f" lensLines = lensLines.slice(0, {lines});",
+        LENS_C_BOUND=C_BOUND,
+    )
+    assert out[0] is fitted
+    assert (out[1] is not None) is fitted
 
 
 def test_the_loaded_line_names_the_centre_in_use() -> None:
     out = run_wizard_js(
         "(function() { renderLensResult();"
         " return [$('lens-result-text').innerHTML, $('lens-result-hint').innerHTML]; })()",
-        functions=(*_LINE_FUNCTIONS, *_CENTRE_PX, "lensEdgesMeasured", "renderLensResult"),
+        functions=(*_LINE_FUNCTIONS, *_CENTRE_PX, "lensMiddleOnly", "lensShownRating", "renderLensResult"),
         variables=("LENS_RATING_LEVEL", "LENS_RATING_LABEL"),
         prelude=_DOM
         + _RESULT_PAGE
@@ -6651,3 +6711,27 @@ def test_the_session_keeps_the_lens_centre() -> None:
         c=_C42,
     )
     assert out == [pytest.approx(_C42), pytest.approx(_C42)]
+
+
+@pytest.mark.parametrize(
+    ("rating", "edges", "label", "level", "filled"),
+    [
+        ("good", False, "Fair", "info", 3),
+        ("excellent", False, "Fair", "info", 3),
+        ("good", True, "Good", "success", 4),
+        ("medium", False, "Poor", "caution", 2),
+    ],
+)
+def test_review_names_a_good_fit_on_middle_lines_fair(
+    rating: str, edges: bool, label: str, level: str, filled: int
+) -> None:
+    out = run_wizard_js(
+        "reviewLensCoverage([0, 0, 0, 0])",
+        functions=("lensMiddleOnly", "lensShownRating", "reviewLensCoverage"),
+        variables=("LENS_RATING_LEVEL", "LENS_RATING_SEGMENTS", "LENS_RATING_LABEL"),
+        prelude="function lensIsTheFits() { return true; }"
+        f" var lensFit = {{ rating: {json.dumps(rating)}, edges_measured: {json.dumps(edges)} }};",
+    )
+    assert out.endswith("</span> " + label)
+    assert f'data-level="{level}"' in out
+    assert out.count("wizard-meter-seg filled") == filled

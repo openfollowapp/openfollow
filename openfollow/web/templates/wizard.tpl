@@ -1593,15 +1593,16 @@
   var LENS_RATING_LEVEL = { low: 'caution', medium: 'caution', okay: 'info', good: 'success', excellent: 'success' };
   var LENS_RATING_SEGMENTS = { low: 1, medium: 2, okay: 3, good: 4, excellent: 5 };
   var LENS_RATING_LABEL = { low: 'Not usable', medium: 'Poor', okay: 'Fair', good: 'Good', excellent: 'Excellent' };
-  // The words for a fit whose lines stay near the middle of the picture, so its edges are not measured.
+  // A fit rated Good or better whose lines stay near the middle of the picture: shown as Fair, since its edges are not measured.
   var LENS_MIDDLE = {
-    rating: ' in the middle',
-    result: 'The lines stay near the middle of the picture, so its edges are not measured. That is fine if you only need the middle. To measure the edges, add lines near them.',
-    hint: 'The middle of the picture is measured.',
-    hintSub: 'If possible, add lines near the edges of the picture to measure them too.'
+    rating: ', but might already be good in the middle',
+    result: 'The lines stay near the middle of the picture, so its edges are not measured. That is fine if you only need the middle. To measure the full image, add lines near the edges.',
+    hint: 'The result may already be good in the middle.',
+    hintSub: 'If possible, add lines near the edges of the picture to measure them too. Or press Next.'
   };
   // An answer without the field (a session saved before it) counts as measuring the edges.
-  function lensEdgesMeasured(fit) { return !fit || fit.edges_measured !== false; }
+  function lensMiddleOnly(fit) { return !!fit && (fit.rating === 'good' || fit.rating === 'excellent') && fit.edges_measured === false; }
+  function lensShownRating(fit) { return lensMiddleOnly(fit) ? 'okay' : fit.rating; }
   var LENS_DEV = {{'true' if config.ui.developer_mode else 'false'}};
   var lensLines = [];        // [{p0, p1, mids: [{t, off, on}], snapped: [bool x5], curve, rms, misfit, candidate}]
   var lensCandidates = [];   // suggested edges of the current snapshot: [{points, samples, polarity, used, rejected}]
@@ -2139,7 +2140,7 @@
     else if (!lines && S.lensLoaded) { h = 'A saved lens calibration is loaded.'; sub = 'Press Next, or draw straight lines to measure the lens again.'; }
     else if (!lines) { h = 'Draw straight lines on the picture.'; sub = 'Click the start and the end of an edge that is straight in reality, such as a stage edge, a tape line or a truss. Then move its points exactly onto the edge. Or load a saved lens calibration.'; }
     else if (lensLines.some(function(l) { return l.misfit; })) { h = 'Check the line that does not fit.'; sub = 'It is drawn in the warning colour. Move its points onto the edge, or delete it if it is not straight in reality.'; }
-    else if (fit && (fit.rating === 'good' || fit.rating === 'excellent') && !lensEdgesMeasured(fit)) { h = LENS_MIDDLE.hint; sub = LENS_MIDDLE.hintSub; }
+    else if (lensMiddleOnly(fit)) { h = LENS_MIDDLE.hint; sub = LENS_MIDDLE.hintSub; }
     else if (fit && (fit.rating === 'good' || fit.rating === 'excellent')) { h = 'The lens is measured.'; sub = /^If possible/.test(hint) ? 'Press Next. ' + hint : 'Press Next.'; }
     else if (applied && agree.test(hint)) { h = 'The result may already be good.'; sub = hint.replace(agree, '') + ' Or press Next.'; }
     else if (applied) { h = 'Improve the lines, or add more.'; sub = 'Select a point and move it exactly onto the edge. Lines near the edges and corners of the picture help the most.' + cov; }
@@ -2279,13 +2280,22 @@
       return;
     }
     meter.style.display = '';
+    // One line is not fitted: the lens is measured from two.
+    if (!lensFit && lensLines.length) {
+      box.style.display = ''; box.className = 'notice';
+      renderLensMeter(meter, '');
+      meter.dataset.level = '';
+      setLive($('lens-result-text'), 'Draw at least two lines.');
+      setLive($('lens-result-hint'), '');
+      return;
+    }
     if (!lensFit) { box.style.display = 'none'; $('lens-result-text').liveHtml = $('lens-result-hint').liveHtml = null; return; }
-    var level = LENS_RATING_LEVEL[lensFit.rating] || 'caution';
+    var shown = lensShownRating(lensFit), level = LENS_RATING_LEVEL[shown] || 'caution';
     box.style.display = '';
     box.className = 'notice' + (level === 'caution' ? ' warning' : level === 'success' ? ' success' : '');
-    renderLensMeter(box.querySelector('.wizard-meter'), lensFit.rating);
-    var middle = !lensEdgesMeasured(lensFit);
-    var text = (LENS_RATING_LABEL[lensFit.rating] || lensFit.rating) + (middle ? LENS_MIDDLE.rating : '') + ' \u2013 barrel / fisheye ' + fmt(Number(lensFit.k1), 3)
+    renderLensMeter(box.querySelector('.wizard-meter'), shown);
+    var middle = lensMiddleOnly(lensFit);
+    var text = (LENS_RATING_LABEL[shown] || shown) + (middle ? LENS_MIDDLE.rating : '') + ' \u2013 barrel / fisheye ' + fmt(Number(lensFit.k1), 3)
       + ', corner correction ' + fmt(Number(lensFit.k2), 3) + (lensFit.k2_fitted ? '' : ' (estimated)') + lensCentreSuffix(lensFit.centre)
       + (lensFitApplies(lensFit) ? '' : ' \u2013 not applied');
     setLive($('lens-result-text'), esc(text));
@@ -2353,7 +2363,7 @@
     var seq = ++lensFitSeq;
     var lines = lensLines.filter(lensLineCounts), centre = S.lensCentre.slice();
     lensLines.forEach(function(l) { l.curve = null; l.rms = null; l.misfit = false; });
-    if (!lines.length) {
+    if (lines.length < 2) {
       lensFit = null;
       lensShowStatus('', true);
       renderLensResult();
@@ -3752,8 +3762,8 @@
   // The rating while the pair is the fit's own; a loaded calibration by its name; else whether it was adjusted by hand.
   function reviewLensCoverage(l) {
     if (lensIsTheFits(l)) {
-      var level = LENS_RATING_LEVEL[lensFit.rating] || 'caution', n = LENS_RATING_SEGMENTS[lensFit.rating] || 0;
-      return '<span class="wizard-meter" data-level="' + level + '" aria-hidden="true">' + [0, 1, 2, 3, 4].map(function(i) { return '<span class="wizard-meter-seg' + (i < n ? ' filled' : '') + '"></span>'; }).join('') + '</span> ' + (LENS_RATING_LABEL[lensFit.rating] || '');
+      var shown = lensShownRating(lensFit), level = LENS_RATING_LEVEL[shown] || 'caution', n = LENS_RATING_SEGMENTS[shown] || 0;
+      return '<span class="wizard-meter" data-level="' + level + '" aria-hidden="true">' + [0, 1, 2, 3, 4].map(function(i) { return '<span class="wizard-meter-seg' + (i < n ? ' filled' : '') + '"></span>'; }).join('') + '</span> ' + (LENS_RATING_LABEL[shown] || '');
     }
     if (S.lensLoaded) {
       var ld = S.lensLoaded, same = lensSame(l, [ld.k1, ld.k2, ld.cx, ld.cy]);

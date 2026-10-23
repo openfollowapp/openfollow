@@ -2299,12 +2299,20 @@
       + ', corner correction ' + fmt(Number(lensFit.k2), 3) + (lensFit.k2_fitted ? '' : ' (estimated)') + lensCentreSuffix(lensFit.centre)
       + (lensFitApplies(lensFit) ? '' : ' \u2013 not applied');
     setLive($('lens-result-text'), esc(text));
-    var tuned = lensFitApplies(lensFit) && !lensIsTheFits(wizLens());
-    setLive($('lens-result-hint'), esc((tuned ? 'Adjusted by hand after the calculation. ' : '') +
-      (middle ? LENS_MIDDLE.result : lensFit.hint || (lensFitApplies(lensFit) ? '' : 'More lines near the edges give a better rating.'))));
+    // The coverage hint is the hint box's alone.
+    setLive($('lens-result-hint'), esc((lensHandTuned() ? 'Adjusted by hand after the calculation. ' : '') +
+      (middle ? LENS_MIDDLE.result : lensFitApplies(lensFit) ? '' : lensFitMisfit(lensFit) ? 'It is applied once the line that does not fit is corrected or deleted.' : 'More lines near the edges give a better rating.')));
   }
 
-  function lensFitApplies(fit) { return fit.rating !== 'low'; }
+  function lensFitMisfit(fit) { return (fit.lines || []).some(function(l) { return !!(l && l.misfit); }); }
+  // A Not usable fit, or one with a line that does not fit the others, is shown and not applied: the lens stays as it was.
+  function lensFitApplies(fit) { return fit.rating !== 'low' && !lensFitMisfit(fit); }
+  // Whether the lens was edited by hand since the fit: away from the fit's pair, or from the one a fit not applied kept.
+  function lensHandTuned() {
+    if (!lensFit) return false;
+    if (lensFitApplies(lensFit)) return !lensIsTheFits(wizLens());
+    return !!lensFit.kept && !lensSame(wizLens(), lensFit.kept);
+  }
   function lensSame(a, b) { return a.every(function(v, i) { return Math.abs(v - Number(b[i])) < 1e-9; }); }
   // Whether the lens [k1, k2, cx, cy] is the one the fit wrote: its pair about the centre it was sent.
   function lensIsTheFits(l) {
@@ -2393,6 +2401,7 @@
       lensShowStatus('', true);
       lensFit = res.data;
       lensFit.centre = centre;
+      if (!lensFitApplies(lensFit)) lensFit.kept = wizLens();
       lines.forEach(function(l, i) {
         var r = res.data.lines[i];
         l.curve = r.curve;
@@ -3761,9 +3770,10 @@
   }
   // The rating while the pair is the fit's own; a loaded calibration by its name; else whether it was adjusted by hand.
   function reviewLensCoverage(l) {
-    if (lensIsTheFits(l)) {
+    var applies = lensFit && lensFitApplies(lensFit);
+    if (lensIsTheFits(l) || (lensFit && !applies && !lensHandTuned())) {
       var shown = lensShownRating(lensFit), level = LENS_RATING_LEVEL[shown] || 'caution', n = LENS_RATING_SEGMENTS[shown] || 0;
-      return '<span class="wizard-meter" data-level="' + level + '" aria-hidden="true">' + [0, 1, 2, 3, 4].map(function(i) { return '<span class="wizard-meter-seg' + (i < n ? ' filled' : '') + '"></span>'; }).join('') + '</span> ' + (LENS_RATING_LABEL[shown] || '');
+      return '<span class="wizard-meter" data-level="' + level + '" aria-hidden="true">' + [0, 1, 2, 3, 4].map(function(i) { return '<span class="wizard-meter-seg' + (i < n ? ' filled' : '') + '"></span>'; }).join('') + '</span> ' + (LENS_RATING_LABEL[shown] || '') + (applies ? '' : ', not applied');
     }
     if (S.lensLoaded) {
       var ld = S.lensLoaded, same = lensSame(l, [ld.k1, ld.k2, ld.cx, ld.cy]);

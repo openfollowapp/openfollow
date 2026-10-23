@@ -1684,11 +1684,12 @@ class TestWizardLensTemplate:
         written = fit.group(1).index("wizWriteLensCoeff('wiz_lens_k1'")
         assert fit.group(1).rfind("if (lensFitApplies(lensFit)) {", 0, written) != -1
         assert "if (lensFitApplies(lensFit)) onLensCoeffChanged();" in fit.group(1)
-        assert "function lensFitApplies(fit) { return fit.rating !== 'low'; }" in src
+        assert "function lensFitApplies(fit) { return fit.rating !== 'low' && !lensFitMisfit(fit); }" in src
         assert "(lensFitApplies(lensFit) ? '' : ' \\u2013 not applied')" in src
-        # Review rates the pair only while it is the fit's own.
+        # Review rates the pair while it is the fit's own, or a fit not applied left it untouched.
         review = wizard_function("reviewLensCoverage")
-        assert "if (lensIsTheFits(l)) {" in review and "'Adjusted by hand'" in review
+        assert "if (lensIsTheFits(l) || (lensFit && !applies && !lensHandTuned())) {" in review
+        assert "'Adjusted by hand'" in review
 
     def test_a_tap_is_judged_in_screen_pixels_and_a_cancel_traces_nothing(self) -> None:
         src = self._src()

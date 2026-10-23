@@ -2597,7 +2597,8 @@
     document.addEventListener('keydown', function(e) {
       if (currentStep !== WIZ.lens || !$('modal-root').hidden) return;
       var t = e.target.nodeType === 1 ? e.target : document.body;
-      if (t.matches('input, select, textarea') || t.closest('#lens-lines .lens-point')) return;
+      // A target the redraw detached was a handle whose own key handler already ran.
+      if (!t.isConnected || t.matches('input, select, textarea') || t.closest('#lens-lines .lens-point')) return;
       if (e.key === 'Delete' || e.key === 'Backspace') {
         if (!lensSelected && !lensPending) return;
         e.preventDefault();

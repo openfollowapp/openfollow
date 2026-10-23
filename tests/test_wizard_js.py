@@ -5385,16 +5385,24 @@ _LENS_HAND_PAGE = (
     + " lensLines = [line]; var currentStep = 2, WIZ = { lens: 2 };"
     + " document.addEventListener = function(t, f, capture) { if (t === 'keydown' && !capture) docKeys.push(f); };"
     + " function $() { return { addEventListener: function() {}, hidden: true }; }"
-    + " function renderLens() { drawn = lensPointIsOn(lensLines[0], 2); } function lensChanged() { renderLens(); }"
-    + " function saveToSession() {} function scheduleLensFit() {}"
-    + " var page = { nodeType: 1, matches: function() { return false; }, closest: function() { return null; } };"
-    + " function pick(j) { handle.closest = function(sel) {"
-    + " return sel === '.lens-point' ? { dataset: { line: '0', point: String(j) } } : null; }; }"
+    + " function renderLens() { drawn = lensLines[0] ? lensPointIsOn(lensLines[0], 2) : null;"
+    + " handle.isConnected = false; }"
+    + " function lensChanged() { renderLens(); } function saveToSession() {} function scheduleLensFit() {}"
+    + " function lensDeleteSelectedLine() { lensLines.splice(lensSelected.line, 1); lensSelected = null;"
+    + " renderLens(); }"
+    + " function lensEndHold() { lensHold = false; renderLens(); }"
+    + " var page = { nodeType: 1, isConnected: true, matches: function() { return false; },"
+    + " closest: function() { return null; } };"
+    + " function pick(j) { handle.nodeType = 1; handle.isConnected = true;"
+    + " handle.matches = function() { return false; }; handle.closest = function(sel) {"
+    + " if (sel === '.lens-point') return { dataset: { line: '0', point: String(j) } };"
+    + " return sel === '#lens-lines .lens-point' && handle.isConnected ? handle : null; }; }"
     + " function ev(t, x, y) { return { type: t, target: handle, pointerType: 'mouse', pointerId: 1, clientX: x,"
     + " clientY: y, preventDefault: function() {} }; }"
-    + " function key(k, shift, target) {"
-    + " return { key: k, shiftKey: shift, target: target, preventDefault: function() {} }; }"
+    + " function key(k, shift, target) { var e = { key: k, shiftKey: shift, target: target, defaultPrevented: false };"
+    + " e.preventDefault = function() { e.defaultPrevented = true; }; return e; }"
     + " function held(j) { lensSelected = { line: 0, point: j }; lensHold = true; }"
+    + " function bubble(e) { on.keydown(e); docKeys.forEach(function(f) { f(e); }); }"
 )
 _LENS_HAND_FUNCTIONS = ("tapSlop", "lensInit", "lensPointIsOn", "lensActivePoints", *_LENS_POINT_MOVES)
 # Each way a hand moves middle point 2: a drag, an arrow key on its handle, an arrow key once its handle lost focus.
@@ -5457,6 +5465,74 @@ def test_an_arrow_key_moves_a_held_middle_point_after_its_handle_lost_focus(
         shift=shift,
     )
     assert out == [pytest.approx(landed[0]), pytest.approx(landed[1])]
+
+
+@pytest.mark.parametrize(
+    ("on", "key", "shift", "landed"),
+    [
+        (False, "ArrowRight", False, [501, 500]),
+        (False, "ArrowUp", True, [500, 490]),
+        (True, "ArrowRight", False, [501, 500]),
+        (True, "ArrowUp", True, [500, 490]),
+    ],
+    ids=["an off point", "Shift on an off point", "an on point", "Shift on an on point"],
+)
+def test_an_arrow_key_on_a_handle_moves_its_point_once(on: bool, key: str, shift: bool, landed: list) -> None:
+    # The key bubbles on to the document, as in the browser, after the overlay may have redrawn the handle.
+    out = run_wizard_js(
+        "(function() { lensInit(); line.mids[1].on = lit; lensLines = [line]; pick(2);"
+        " bubble(key(k, shift, handle)); return lensPointPos(lensLines[0], 2); })()",
+        functions=_LENS_HAND_FUNCTIONS,
+        prelude=_LENS_HAND_PAGE,
+        lit=on,
+        k=key,
+        shift=shift,
+    )
+    assert out == [pytest.approx(landed[0]), pytest.approx(landed[1])]
+
+
+@pytest.mark.parametrize(
+    ("focus", "started", "k", "kept"),
+    [
+        ("handle", True, "Delete", [None, 1]),
+        ("handle", False, "Delete", [None, 0]),
+        ("elsewhere", True, "Delete", [None, 1]),
+        ("elsewhere", False, "Delete", [None, 0]),
+        ("elsewhere", False, "Backspace", [None, 0]),
+    ],
+    ids=[
+        "a started line, on the handle",
+        "on the handle",
+        "a started line, focus elsewhere",
+        "focus elsewhere",
+        "Backspace, focus elsewhere",
+    ],
+)
+def test_delete_cancels_a_started_line_before_it_removes_the_selected_one(
+    focus: str, started: bool, k: str, kept: list
+) -> None:
+    out = run_wizard_js(
+        "(function() { lensInit(); lensLines = [line]; pick(2); held(2); if (started) lensPending = [10, 10];"
+        " bubble(key(k, false, focus === 'handle' ? handle : page)); return [lensPending, lensLines.length]; })()",
+        functions=_LENS_HAND_FUNCTIONS,
+        prelude=_LENS_HAND_PAGE,
+        focus=focus,
+        started=started,
+        k=k,
+    )
+    assert out == kept
+
+
+@pytest.mark.parametrize("focus", ["handle", "elsewhere"])
+def test_enter_ends_the_hold_on_a_point(focus: str) -> None:
+    out = run_wizard_js(
+        "(function() { lensInit(); lensLines = [line]; pick(2); held(2);"
+        " bubble(key('Enter', false, focus === 'handle' ? handle : page)); return lensHold; })()",
+        functions=_LENS_HAND_FUNCTIONS,
+        prelude=_LENS_HAND_PAGE,
+        focus=focus,
+    )
+    assert out is False
 
 
 @pytest.mark.parametrize(

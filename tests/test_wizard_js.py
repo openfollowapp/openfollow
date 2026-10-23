@@ -3156,7 +3156,7 @@ def _fs_lens(expression: str, **inputs) -> list:
             "$('fs-actions').addEventListener('click', function(e) {",
         )
     )
-    actions = "\n".join(wizard_window_function(f) for f in ("lensToggleSelectedPoint", "lensDeleteSelectedLine"))
+    actions = wizard_window_function("lensDeleteSelectedLine")
     return run_wizard_js(
         f"(function() {{ {listeners}\n{actions}\n{expression} }})()",
         functions=(
@@ -3186,46 +3186,25 @@ def test_a_mouse_click_on_delete_line_in_full_screen_deletes_the_line(held: bool
     assert out == [True, 1, None, False, True]
 
 
-@pytest.mark.parametrize("held", [False, True], ids=["point selected", "point held"])
-def test_a_mouse_click_on_point_off_in_full_screen_switches_the_point_off(held: bool) -> None:
-    out = _fs_lens(
-        "select({ line: 0, point: 2 }, held); var b = button('point-off'), seen = [b.textContent]; mouseClick(b);"
-        " seen.push(button('point-off') === b, lensLines[0].mids[1].on, b.textContent, b.disabled); mouseClick(b);"
-        " seen.push(lensLines[0].mids[1].on, b.textContent); return seen;",
-        held=held,
-    )
-    assert out == ["Point off", True, False, "Point on", False, True, "Point off"]
-
-
-def test_enter_on_point_off_in_full_screen_keeps_the_focus_on_the_button() -> None:
-    out = _fs_lens(
-        "select({ line: 0, point: 2 }, false); var b = button('point-off'); b.focus(); enter();"
-        " var seen = [focusName(), lensLines[0].mids[1].on]; enter();"
-        " return seen.concat([focusName(), lensLines[0].mids[1].on, document.activeElement === b]);"
-    )
-    # Enter again switches it back on: the keys stay on the toolbar.
-    assert out == ["point-off", False, "point-off", True, True]
-
-
 @pytest.mark.parametrize("press", ["enter", "mouse"])
 def test_a_focused_full_screen_button_switched_off_hands_the_focus_to_the_picture(press: str) -> None:
     out = _fs_lens(
         "select({ line: 1, point: 2 }, false); var b = button('delete-line');"
         " if (press === 'enter') { b.focus(); enter(); } else mouseClick(b);"
-        " return [focusName(), lensLines.length, button('point-off').disabled, b.disabled];",
+        " return [focusName(), lensLines.length, b.disabled];",
         press=press,
     )
-    # Delete line leaves nothing selected: both buttons are off, and the arrow keys and Tab start from the picture.
-    assert out == ["picture", 1, True, True]
+    # Delete line leaves nothing selected: the button is off, and the arrow keys and Tab start from the picture.
+    assert out == ["picture", 1, True]
 
 
 def test_a_full_screen_button_keeps_the_focus_when_it_stays_on() -> None:
     out = _fs_lens(
         "select({ line: 0, point: 2 }, false); button('delete-line').focus();"
-        " select({ line: 0, point: null }, false); return [focusName(), button('point-off').disabled];"
+        " select({ line: 0, point: null }, false); return [focusName(), button('delete-line').disabled];"
     )
-    # Only the switched-off button gives the focus away.
-    assert out == ["delete-line", True]
+    # Another selection redraws the bar; the button stays on and keeps the focus.
+    assert out == ["delete-line", False]
 
 
 @pytest.mark.parametrize("key", ["cal", "review"])
@@ -3236,7 +3215,17 @@ def test_the_full_screen_bar_has_no_buttons_outside_the_lens_step(key: str) -> N
         " return [n, els['fs-actions'].buttons.map(function(b) { return b.dataset.fsAct; })];",
         key=key,
     )
-    assert out == [0, ["point-off", "delete-line"]]
+    assert out == [0, ["delete-line"]]
+
+
+@pytest.mark.parametrize("lit", [True, False], ids=["an on point", "an off point"])
+def test_the_full_screen_lens_bar_offers_only_delete_line(lit: bool) -> None:
+    out = _fs_lens(
+        "lensLines[0].mids[1].on = lit; select({ line: 0, point: 2 }, true);"
+        " return els['fs-actions'].buttons.map(function(b) { return [b.textContent, b.disabled]; });",
+        lit=lit,
+    )
+    assert out == [["Delete line", False]]
 
 
 @pytest.mark.parametrize(
@@ -3603,7 +3592,7 @@ function lensFrame(line) {
 def test_a_new_line_is_selected_whole_and_delete_takes_it_back(add: str) -> None:
     out = run_wizard_js(
         "(function() { " + add + " var after = [lensSelected, lensHold, lensLines.length, snapped];"
-        " window.lensDeleteSelectedLine(); window.lensToggleSelectedPoint();"
+        " window.lensDeleteSelectedLine();"
         " return [after, lensLines.length, lensSelected]; })()",
         functions=(
             "lensClamp",
@@ -3617,25 +3606,12 @@ def test_a_new_line_is_selected_whole_and_delete_takes_it_back(add: str) -> None
             "lensReleaseCandidate",
         ),
         variables=("LENS_T", "LENS_MIN_LINE_PX"),
-        prelude=_NEW_LINE_PAGE
-        + wizard_window_function("lensDeleteSelectedLine")
-        + wizard_window_function("lensToggleSelectedPoint"),
+        prelude=_NEW_LINE_PAGE + wizard_window_function("lensDeleteSelectedLine"),
     )
     after, left, selected = out
     # No point held and no loupe: the hint moves on, and Delete or Backspace removes the line just added.
     assert after == [{"line": 0, "point": None}, False, 1, 1]
     assert (left, selected) == (0, None)
-
-
-def test_switching_a_point_off_needs_a_middle_point_selected() -> None:
-    out = run_wizard_js(
-        "(function() { lensSelected = { line: 0, point: null }; window.lensToggleSelectedPoint();"
-        " lensSelected = { line: 0, point: 2 }; window.lensToggleSelectedPoint(); return lensLines[0].mids[1].on; })()",
-        prelude=_NEW_LINE_PAGE
-        + "lensLines = [{ mids: [{ on: true }, { on: true }, { on: true }] }];"
-        + wizard_window_function("lensToggleSelectedPoint"),
-    )
-    assert out is False
 
 
 # ---------------------------------------------------------------------------
@@ -6013,6 +5989,21 @@ def test_delete_cancels_a_started_line_before_it_removes_the_selected_one(
     assert out == kept
 
 
+@pytest.mark.parametrize("lit", [True, False], ids=["an on point", "an off point"])
+@pytest.mark.parametrize("focus", ["handle", "elsewhere"])
+def test_space_on_a_held_middle_point_leaves_it_as_it_is(focus: str, lit: bool) -> None:
+    out = run_wizard_js(
+        "(function() { lensInit(); line.mids[1].on = lit; lensLines = [line]; pick(2); held(2); drawn = null;"
+        " bubble(key(' ', false, focus === 'handle' ? handle : page));"
+        " return [lensPointIsOn(line, 2), lensLines.length, lensHold, drawn]; })()",
+        functions=_LENS_HAND_FUNCTIONS,
+        prelude=_LENS_HAND_PAGE,
+        focus=focus,
+        lit=lit,
+    )
+    assert out == [lit, 1, True, None]
+
+
 @pytest.mark.parametrize("focus", ["handle", "elsewhere"])
 def test_enter_ends_the_hold_on_a_point(focus: str) -> None:
     out = run_wizard_js(
@@ -7865,19 +7856,6 @@ def test_a_point_moved_by_hand_makes_its_line_where_tab_enters(move: str, entry:
         + " on.pointerup(ev('pointerup', 502, 500)); return lensLines.indexOf(lensLast); })()",
         functions=_LENS_HAND_FUNCTIONS,
         prelude=_LENS_HAND_PAGE,
-    )
-    assert out == entry
-
-
-@pytest.mark.parametrize(("point", "entry"), [(2, 1), (0, 0), (None, 0)], ids=["a middle point", "an end", "none"])
-def test_switching_a_point_off_or_on_makes_its_line_where_tab_enters(point, entry: int) -> None:
-    out = run_wizard_js(
-        "(function() { lensLines = [0, 1].map(function() {"
-        " return { mids: [{ on: true }, { on: true }, { on: true }] }; });"
-        " lensLast = lensLines[0]; lensSelected = { line: 1, point: point }; window.lensToggleSelectedPoint();"
-        " return lensLines.indexOf(lensLast); })()",
-        prelude=_NEW_LINE_PAGE + wizard_window_function("lensToggleSelectedPoint"),
-        point=point,
     )
     assert out == entry
 

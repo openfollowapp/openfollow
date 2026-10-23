@@ -1747,7 +1747,7 @@ class TestWizardLensTemplate:
         assert "cx: centre[0]," in fit and "cy: centre[1]," in fit and "wizSetLensCentre" not in fit
         assert "wizLensShownPair(Number(res.data.k1), Number(res.data.k2), centre[0], centre[1])" in fit
         assert "wizWriteLensCoeff('wiz_lens_k1', shown[0])" in fit
-        assert "Point off" in src and "Delete line" in src and "Clear lines" in src
+        assert "Delete line" in src and "Clear lines" in src
 
     def test_rating_levels_follow_the_status_language(self) -> None:
         src = self._src()
@@ -1762,6 +1762,18 @@ class TestWizardLensTemplate:
         assert "margin-top:0.5rem;" in body[result : body.index(">", result)]
         # The hint and the result's "not applied" line say a line does not fit; no notice of its own.
         assert 'id="lens-misfit"' not in body
+
+    def test_the_lens_toolbar_holds_the_image_line_and_calibration_buttons(self, live_server_lens) -> None:
+        _, body = _get(live_server_lens[1], "/wizard")
+        bar = body[body.index('id="lens-status"') : body.index('id="lens-saved"')]
+        labels = re.findall(r"<button [^>]*>([^<]*)</button>", bar)
+        assert labels == [
+            "Refresh Image",
+            "Delete line",
+            "Clear lines",
+            "Load lens calibration&hellip;",
+            "Save lens calibration&hellip;",
+        ]
 
 
 @integration

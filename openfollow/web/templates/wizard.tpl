@@ -468,7 +468,6 @@
 
     <div style="margin-top:0.72rem;display:flex;gap:0.5rem;flex-wrap:wrap;">
       <button type="button" class="secondary" onclick="lensRefreshImage()">Refresh Image</button>
-      <button type="button" class="secondary" id="lens-toggle-point" onclick="lensToggleSelectedPoint()" disabled>Point off</button>
       <button type="button" class="secondary" id="lens-delete-line" onclick="lensDeleteSelectedLine()" disabled>Delete line</button>
       <button type="button" class="secondary" id="lens-clear" onclick="lensClearLines()" disabled>Clear lines</button>
       <button type="button" class="secondary" onclick="lensLoadDialog()">Load lens calibration&hellip;</button>
@@ -532,7 +531,7 @@
       </details>
     </div>
 
-    <p class="wizard-tip">Click a point or press <strong>Tab</strong> to select it. The loupe stays on it, and the <strong>arrow keys</strong> move it by one pixel. While a point is selected, <strong>Tab</strong> goes round the points of its line. Press <strong>Enter</strong> when the crosshair is in the right place; then <strong>Tab</strong> moves on to the next line. <strong>Esc</strong> or a click somewhere else ends the selection. <strong>Space</strong> switches a middle point off or on. <strong>Delete</strong> or <strong>Backspace</strong> removes the selected line. <strong>Esc</strong> cancels a line you have started. If you skip this step, the current lens values stay.</p>
+    <p class="wizard-tip">Click a point or press <strong>Tab</strong> to select it. The loupe stays on it, and the <strong>arrow keys</strong> move it by one pixel. While a point is selected, <strong>Tab</strong> goes round the points of its line. Press <strong>Enter</strong> when the crosshair is in the right place; then <strong>Tab</strong> moves on to the next line. <strong>Esc</strong> or a click somewhere else ends the selection. <strong>Delete</strong> or <strong>Backspace</strong> removes the selected line. <strong>Esc</strong> cancels a line you have started. If you skip this step, the current lens values stay.</p>
 
     <div class="wizard-nav">
       <button type="button" class="secondary" onclick="wizardPrev()">Back</button>
@@ -2259,13 +2258,9 @@
     if (tag) tag.setAttribute('transform', 'translate(' + line.p0[0] + ',' + line.p0[1] + ')');
   }
   function renderLensToolbar() {
-    var toggle = document.getElementById('lens-toggle-point');
     var del = document.getElementById('lens-delete-line');
     var clear = document.getElementById('lens-clear');
-    if (!toggle) return;
-    var mid = lensSelected && lensSelected.point > 0 && lensSelected.point < 4 ? lensLines[lensSelected.line] : null;
-    toggle.disabled = !mid;
-    toggle.textContent = mid && !mid.mids[lensSelected.point - 1].on ? 'Point on' : 'Point off';
+    if (!del) return;
     del.disabled = !lensSelected;
     clear.disabled = !lensLines.length;
     $('lens-save').disabled = !(lensMeasured() && wizLensValid());
@@ -2351,13 +2346,6 @@
     saveToSession();
     scheduleLensFit();
   }
-  window.lensToggleSelectedPoint = function() {
-    if (!lensSelected || lensSelected.point == null || lensSelected.point === 0 || lensSelected.point === 4) return;
-    lensLast = lensLines[lensSelected.line];
-    var m = lensLast.mids[lensSelected.point - 1];
-    m.on = !m.on;
-    lensChanged();
-  };
   window.lensDeleteSelectedLine = function() {
     if (!lensSelected) return;
     dropLensPoint();
@@ -2610,7 +2598,6 @@
         if (lensPending) { lensPending = null; renderLens(); } else lensDeleteSelectedLine();
         return;
       }
-      else if (e.key === ' ') { e.preventDefault(); lensToggleSelectedPoint(); return; }
       else return;
       e.preventDefault();
       var pos = lensPointPos(line, j);
@@ -3969,7 +3956,7 @@
     if (k === 'lens') {
       intro = '<strong>Check each dashed suggested line</strong>: the check mark uses it, the cross removes it. Or click the start and the end of a straight edge. Click a line to select it. Drag a point to correct it.';
       rows = [[['Tab'], 'Next suggestion bubble or line. With a point selected: the next point on its line, after the last the first again'], ['<kbd>Shift</kbd> + <kbd>Tab</kbd>', 'The previous point on its line, before the first the last again'],
-        [ARROWS, 'Move the selected point 1&nbsp;px, with Shift 10&nbsp;px'], [['Enter'], 'Confirm the point and end the selection'], [['Space'], 'Switch a middle point off or on'],
+        [ARROWS, 'Move the selected point 1&nbsp;px, with Shift 10&nbsp;px'], [['Enter'], 'Confirm the point and end the selection'],
         ['<kbd>Delete</kbd> or <kbd>Backspace</kbd>', 'Remove the selected line, or cancel a line you started'], FS_ESC];
     } else if (k === 'cal' && S.mode === 'simple') {
       intro = '<strong>Drag each corner</strong> onto its tape mark. The loupe shows the picture 4&times; larger. Click a corner to select it.';
@@ -4000,8 +3987,7 @@
       hint = lensHintText;
       var misfit = lensMisfitLines();
       if (misfit.length) { status = lensMisfitText(misfit); warn = true; }
-      var mid = lensSelected && lensSelected.point > 0 && lensSelected.point < 4;
-      actions = [{ act: 'point-off', label: $('lens-toggle-point').textContent, off: !mid }, { act: 'delete-line', label: 'Delete line', off: !lensSelected }];
+      actions = [{ act: 'delete-line', label: 'Delete line', off: !lensSelected }];
     } else if (FS.key === 'cal') {
       title = 'Camera Calibration · ' + (S.mode === 'simple' ? 'Simple' : 'Advanced');
       hint = hintText;
@@ -4038,8 +4024,7 @@
     $('fs-help-btn').addEventListener('click', function() { toggleFsHelp(); });
     $('fs-help').addEventListener('click', function(e) { if (e.target.closest('[data-fs-help-close]')) { toggleFsHelp(false); $('fs-help-btn').focus(); } });
     $('fs-actions').addEventListener('click', function(e) {
-      var b = e.target.closest('[data-fs-act]'); if (!b) return;
-      if (b.dataset.fsAct === 'delete-line') lensDeleteSelectedLine(); else lensToggleSelectedPoint();
+      var b = e.target.closest('[data-fs-act]'); if (b && b.dataset.fsAct === 'delete-line') lensDeleteSelectedLine();
     });
     // Tab stays inside the full-screen view: the page behind it is not reachable.
     $('fs-shell').addEventListener('keydown', function(e) {

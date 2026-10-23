@@ -245,7 +245,14 @@ _ANSWER_FETCH = (
 def test_a_fit_measures_the_pair_about_the_lens_centre_in_use_and_keeps_it() -> None:
     out = run_wizard_js(
         "(function() { runLensFit(); return [sent.cx, sent.cy, written, S.lensCentre, lensFit.centre]; })()",
-        functions=(*_LENS_MODEL, "wizLensShownPair", "lensFitApplies", "lensFitMisfit", "runLensFit"),
+        functions=(
+            *_LENS_MODEL,
+            "wizLensShownPair",
+            "lensFitApplies",
+            "lensFitMisfit",
+            "lensClearMisfit",
+            "runLensFit",
+        ),
         prelude=_ANSWER_FETCH + _FIT_PAGE + " var sent = null, written = {}, S = { lensCentre: [0.0254, -0.0145] };"
         " function wizWriteLensCoeff(id, v) { written[id] = v; } function wizShowLensLimit() {}"
         " function onLensCoeffChanged() {}",
@@ -274,6 +281,7 @@ def test_a_fit_takes_a_centre_the_last_pair_could_not(answer: str, taken: bool) 
             "wizLensShownPair",
             "lensFitApplies",
             "lensFitMisfit",
+            "lensClearMisfit",
             "wizWriteLensCoeff",
             "wizSyncLensRange",
             "wizTakeLensCentre",
@@ -301,7 +309,14 @@ def test_a_fit_that_leaves_the_corner_correction_open_applies_its_estimate() -> 
     assert fetch != _ANSWER_FETCH
     out = run_wizard_js(
         "(function() { runLensFit(); return [written, lensLines[0].rms, lensFit.k2_fitted]; })()",
-        functions=(*_LENS_MODEL, "wizLensShownPair", "lensFitApplies", "lensFitMisfit", "runLensFit"),
+        functions=(
+            *_LENS_MODEL,
+            "wizLensShownPair",
+            "lensFitApplies",
+            "lensFitMisfit",
+            "lensClearMisfit",
+            "runLensFit",
+        ),
         prelude=fetch + _FIT_PAGE + " var sent = null, written = {}, S = { lensCentre: [0, 0] };"
         " function wizWriteLensCoeff(id, v) { written[id] = v; } function wizShowLensLimit() {}"
         " function onLensCoeffChanged() {}",
@@ -503,7 +518,7 @@ _SYNC_FETCH = (
 def test_a_failed_fit_leaves_no_earlier_fit_standing() -> None:
     out = run_wizard_js(
         "(function() { runLensFit(); return [lensFit, shown, status]; })()",
-        functions=("runLensFit", "lensFitFailed"),
+        functions=("runLensFit", "lensFitFailed", "lensClearMisfit"),
         prelude=_SYNC_FETCH
         + " var lensFitSeq = 0, imageWidth = 1920, imageHeight = 1080, shown = 'unset', status = null;"
         " var S = { lensCentre: [0, 0] };"
@@ -535,7 +550,7 @@ _FAILED_FETCH = (
 def test_a_failed_fit_redraws_and_stores_no_fit(fetch_stub: str) -> None:
     out = run_wizard_js(
         "(function() { runLensFit(); return [lensFit, drawn, saved]; })()",
-        functions=("runLensFit", "lensFitFailed"),
+        functions=("runLensFit", "lensFitFailed", "lensClearMisfit"),
         prelude=fetch_stub + _FIT_PAGE,
     )
     assert out[0] is None
@@ -2940,8 +2955,151 @@ def test_only_a_misfit_lines_glow_is_painted_and_it_never_takes_a_click() -> Non
     halo = re.search(r"\n\s*\.lens-halo \{([^}]*)\}", style)
     assert halo is not None
     assert "stroke: none" in halo.group(1) and "pointer-events: none" in halo.group(1)
-    assert re.search(r"\.lens-line\.misfit \.lens-halo \{ stroke: var\(--caution-line\);", style)
+    assert "stroke-width: 16;" in halo.group(1)
+    assert re.search(
+        r"\.lens-line\.misfit \.lens-halo \{ stroke: var\(--caution-line\); stroke-opacity: 0\.4; \}", style
+    )
     assert re.search(r"\.lens-tag \{ pointer-events: none; \}", style)
+
+
+# A fit sent from a page of traced lines, whose answer ``renderLens`` draws and the hint names. The second line is too
+# short to count, so it is not sent: the answer's second line is the page's third.
+_MISFIT_FIT_PAGE = (
+    _LINES_PAGE
+    + r"""
+var S = { lensCentre: [0, 0], lensLoaded: null }, imageWidth = 1920, imageHeight = 1080, lensFitSeq = 0;
+var lensFit = { rating: 'good', hint: '', lines: [{ misfit: false }, { misfit: true }, { misfit: false }] };
+var lensHold = false, lensPress = false, lensHintText = '', sent = null;
+var hintBox = { style: {} };
+function $() { return hintBox; }
+function lensOpenCandidates() { return []; }
+function wizLens() { return [0, 0, 0, 0]; }
+function lensShowStatus() {} function renderLensResult() {} function saveToSession() {} function onLensCoeffChanged() {}
+lensLines = [traced([100, 100], [500, 100], true, true), traced([700, 700], [702, 701], true, true),
+  traced([100, 600], [100, 200], false, true), traced([900, 100], [900, 900], false, true)];
+function marks() { return lensLines.map(function(l) { return l.misfit; }); }
+"""
+)
+_MISFIT_FIT_FUNCTIONS = (
+    *_LINES_FUNCTIONS,
+    "esc",
+    "setLive",
+    "lensLineCounts",
+    "lensFitApplies",
+    "lensFitMisfit",
+    "lensClearMisfit",
+    "lensFitFailed",
+    "lensMiddleOnly",
+    "lensMisfitLines",
+    "lensMisfitText",
+    "renderLensHint",
+    "runLensFit",
+)
+_MISFIT_FIT_VARS = ("LENS_MIN_SPAN_PX", "LENS_MIDDLE")
+
+
+def _fit_lines(misfit: int) -> list[dict]:
+    return [{"curve": [], "rms_px": 0.4, "misfit": i == misfit} for i in range(3)]
+
+
+def test_a_fits_answer_marks_the_line_that_does_not_fit_on_the_picture_and_in_the_hint() -> None:
+    old = "lines: [{ curve: [], rms_px: 0.4, misfit: false }, { curve: [], rms_px: 0.4, misfit: false }] }"
+    fetch = _ANSWER_FETCH.replace(old, f"lines: {json.dumps(_fit_lines(1))} }}")
+    assert fetch != _ANSWER_FETCH
+    out = run_wizard_js(
+        "(function() { runLensFit(); return [sent.lines.length, marks(), drawn(2).tag && drawn(2).tag[2],"
+        " [0, 1, 3].map(function(i) { return drawn(i).tag; }), lensHintText]; })()",
+        functions=_MISFIT_FIT_FUNCTIONS,
+        variables=_MISFIT_FIT_VARS,
+        prelude=fetch + _MISFIT_FIT_PAGE,
+    )
+    # The short line and the first one lose the marks an earlier answer left on them.
+    assert out == [3, [False, False, True, False], "! 3", [None, None, None], "Line 3 does not fit the others."]
+
+
+# A fetch answered only when the test releases it, with a real promise chain.
+_HELD_FETCH = (
+    "var release = null;"
+    " function fetch(url, opts) { sent = JSON.parse(opts.body); return new Promise(function(r) { release = r; }); }"
+    " function answer(data) { release({ ok: true, json: function() { return Promise.resolve(data); } });"
+    " return new Promise(function(r) { setTimeout(r, 0); }); }"
+)
+
+
+@pytest.mark.parametrize(
+    ("stale", "after", "heading"),
+    [
+        (False, [False, False, False, True], "Line 4 does not fit the others."),
+        (True, [False, False, True, False], "Line 3 does not fit the others."),
+    ],
+    ids=["its answer", "an answer to an older fit"],
+)
+def test_a_misfit_mark_stays_until_the_next_fit_answers(stale: bool, after: list, heading: str) -> None:
+    out = run_wizard_js(
+        "(function() { lensLines.forEach(function(l, i) { l.misfit = i === 2; }); runLensFit(); renderLens();"
+        " var before = [marks(), drawn(2).group, drawn(2).tag[2], lensHintText];"
+        " if (stale) lensFitSeq++;"
+        " return answer({ k1: -0.3123, k2: -0.0123, k2_fitted: true, rating: 'good', hint: '', lines: lines })"
+        ".then(function() { renderLens(); return [before, marks(), lensHintText]; });"
+        " })()",
+        functions=_MISFIT_FIT_FUNCTIONS,
+        variables=_MISFIT_FIT_VARS,
+        prelude=_HELD_FETCH + _MISFIT_FIT_PAGE,
+        stale=stale,
+        lines=_fit_lines(2),
+    )
+    # A redraw between the nudge's fit and its answer still shows the line the last answer named.
+    assert out[0] == [[False, False, True, False], "lens-line misfit", "! 3", "Line 3 does not fit the others."]
+    assert out[1:] == [after, heading]
+
+
+@pytest.mark.parametrize("fetch_stub", [_SYNC_FETCH, _FAILED_FETCH], ids=["refused", "unreachable"])
+def test_a_failed_fit_or_too_few_lines_clear_the_misfit_marks(fetch_stub: str) -> None:
+    out = run_wizard_js(
+        "(function() { runLensFit(); var failed = marks(); lensLines.forEach(function(l) { l.misfit = true; });"
+        " lensLines.splice(2, 2); runLensFit(); return [failed, marks(), lensFit]; })()",
+        functions=_MISFIT_FIT_FUNCTIONS,
+        variables=_MISFIT_FIT_VARS,
+        prelude=fetch_stub + _MISFIT_FIT_PAGE,
+    )
+    assert out == [[False] * 4, [False, False], None]
+
+
+@pytest.mark.parametrize(
+    ("misfit", "heading"),
+    [(True, "Draw more straight lines."), (False, "The lens is measured.")],
+    ids=["its misfit line deleted", "every line fits"],
+)
+def test_a_fit_not_applied_never_says_the_lens_is_measured(misfit: bool, heading: str) -> None:
+    # The misfit line is deleted before the refit answers: the result still says the fit is not applied.
+    fit = {"rating": "good", "hint": "", "lines": [{"misfit": False}, {"misfit": misfit}, {"misfit": False}]}
+    out = run_wizard_js(
+        "(function() { renderLensHint(); return lensHintText; })()",
+        functions=(
+            "esc",
+            "setLive",
+            "lensFitApplies",
+            "lensFitMisfit",
+            "lensMiddleOnly",
+            "lensShownRating",
+            "lensMisfitLines",
+            "lensMisfitText",
+            "renderLensHint",
+        ),
+        variables=("LENS_MIDDLE",),
+        prelude="var state = " + json.dumps(_hint_state(lines=[_LINE] * 2, fit=fit)) + ";" + _HINT_PAGE,
+    )
+    assert out == heading
+
+
+def test_the_full_screen_help_says_shift_moves_a_lens_point_ten_pixels() -> None:
+    out = run_wizard_js(
+        "fsHelpHtml()",
+        functions=("fsKeys", "fsHelpHtml"),
+        variables=("ARROWS", "FS_ESC"),
+        prelude="var FS = { key: 'lens' }, S = { mode: 'simple' };",
+    )
+    assert "<td>Move the selected point 1&nbsp;px, with Shift 10&nbsp;px</td>" in out
 
 
 # A full-screen Lens session: the page's press listeners, the toolbar's, and its buttons' actions.
@@ -7204,7 +7362,14 @@ def test_one_line_asks_for_a_second_instead_of_a_rating() -> None:
 def test_the_lens_is_fitted_from_two_lines(lines: int, fitted: bool) -> None:
     out = run_wizard_js(
         "(function() { runLensFit(); return [sent !== null, lensFit]; })()",
-        functions=(*_LENS_MODEL, "wizLensShownPair", "lensFitApplies", "lensFitMisfit", "runLensFit"),
+        functions=(
+            *_LENS_MODEL,
+            "wizLensShownPair",
+            "lensFitApplies",
+            "lensFitMisfit",
+            "lensClearMisfit",
+            "runLensFit",
+        ),
         prelude=_ANSWER_FETCH + _FIT_PAGE + " var sent = null;"
         " function wizWriteLensCoeff() {} function wizShowLensLimit() {} function onLensCoeffChanged() {}"
         f" lensLines = lensLines.slice(0, {lines});",
@@ -7459,7 +7624,14 @@ def test_a_fit_with_a_line_that_does_not_fit_is_not_applied(
 def test_a_fit_with_a_line_that_does_not_fit_keeps_the_lens_as_it_was(misfit: bool) -> None:
     out = run_wizard_js(
         "(function() { runLensFit(); return [written, lensFit.kept || null]; })()",
-        functions=(*_LENS_MODEL, "wizLensShownPair", "lensFitApplies", "lensFitMisfit", "runLensFit"),
+        functions=(
+            *_LENS_MODEL,
+            "wizLensShownPair",
+            "lensFitApplies",
+            "lensFitMisfit",
+            "lensClearMisfit",
+            "runLensFit",
+        ),
         prelude=_ANSWER_FETCH.replace("misfit: false }]", f"misfit: {json.dumps(misfit)} }}]")
         + _FIT_PAGE
         + " var written = {}; function wizWriteLensCoeff(id, v) { written[id] = v; } function wizShowLensLimit() {}"

@@ -2139,7 +2139,7 @@
     else if (!lines) { h = 'Draw straight lines on the picture.'; sub = 'Click the start and the end of an edge that is straight in reality, such as a stage edge, a tape line or a truss. Then move its points exactly onto the edge. Or load a saved lens calibration.'; }
     else if (misfit.length) { h = lensMisfitText(misfit) + '.'; sub = (many ? 'They are' : 'It is') + ' marked in the warning colour. Move ' + (many ? 'their' : 'its') + ' points onto the edge, or delete ' + (many ? 'them if they are' : 'it if it is') + ' not straight in reality.'; }
     else if (lensMiddleOnly(fit)) { h = LENS_MIDDLE.hint; sub = LENS_MIDDLE.hintSub; }
-    else if (fit && (fit.rating === 'good' || fit.rating === 'excellent')) { h = 'The lens is measured.'; sub = /^If possible/.test(hint) ? 'Press Next. ' + hint : 'Press Next.'; }
+    else if (applied && (fit.rating === 'good' || fit.rating === 'excellent')) { h = 'The lens is measured.'; sub = /^If possible/.test(hint) ? 'Press Next. ' + hint : 'Press Next.'; }
     else if (applied && agree.test(hint)) { h = 'The result may already be good.'; sub = hint.replace(agree, '') + ' Or press Next.'; }
     else if (applied) { h = 'Improve the lines, or add more.'; sub = 'Select a point and move it exactly onto the edge. Lines near the edges and corners of the picture help the most.' + cov; }
     else { h = 'Draw more straight lines.'; sub = 'Click the start and the end of a straight edge. Then move its points exactly onto the edge.' + cov; }
@@ -2380,9 +2380,11 @@
   function runLensFit() {
     var seq = ++lensFitSeq;
     var lines = lensLines.filter(lensLineCounts), centre = S.lensCentre.slice();
-    lensLines.forEach(function(l) { l.curve = null; l.rms = null; l.misfit = false; });
+    // A line keeps its misfit mark until the answer, so a redraw before it still shows which line does not fit.
+    lensLines.forEach(function(l) { l.curve = null; l.rms = null; });
     if (lines.length < 2) {
       lensFit = null;
+      lensClearMisfit();
       lensShowStatus('', true);
       renderLensResult();
       renderLens();
@@ -2412,6 +2414,7 @@
       lensFit = res.data;
       lensFit.centre = centre;
       if (!lensFitApplies(lensFit)) lensFit.kept = wizLens();
+      lensClearMisfit();
       lines.forEach(function(l, i) {
         var r = res.data.lines[i];
         l.curve = r.curve;
@@ -2437,9 +2440,11 @@
       if (seq === lensFitSeq) lensFitFailed('Could not fit the lens.');
     });
   }
+  function lensClearMisfit() { lensLines.forEach(function(l) { l.misfit = false; }); }
   // The lines have changed since the last fit, so nothing of it stays on screen.
   function lensFitFailed(message) {
     lensFit = null;
+    lensClearMisfit();
     renderLensResult();
     renderLens();
     saveToSession();
@@ -3956,7 +3961,7 @@
     if (k === 'lens') {
       intro = '<strong>Check each dashed suggested line</strong>: the check mark uses it, the cross removes it. Or click the start and the end of a straight edge. Click a line to select it. Drag a point to correct it.';
       rows = [[['Tab'], 'Next suggestion bubble or line. With a point selected: the next point on its line, after the last the first again'], ['<kbd>Shift</kbd> + <kbd>Tab</kbd>', 'The previous point on its line, before the first the last again'],
-        [ARROWS, 'Move the selected point 1&nbsp;px'], [['Enter'], 'Confirm the point and end the selection'], [['Space'], 'Switch a middle point off or on'],
+        [ARROWS, 'Move the selected point 1&nbsp;px, with Shift 10&nbsp;px'], [['Enter'], 'Confirm the point and end the selection'], [['Space'], 'Switch a middle point off or on'],
         ['<kbd>Delete</kbd> or <kbd>Backspace</kbd>', 'Remove the selected line, or cancel a line you started'], FS_ESC];
     } else if (k === 'cal' && S.mode === 'simple') {
       intro = '<strong>Drag each corner</strong> onto its tape mark. The loupe shows the picture 4&times; larger. Click a corner to select it.';

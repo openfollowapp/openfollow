@@ -44,7 +44,7 @@ dependencies = [
     # Pure-Python, no native deps (safe on the Pi). ``escape=True`` (see
     # ``openfollow/web/_md.py``) keeps the rendered fragment inert, so no HTML
     # sanitiser dependency is needed.
-    "mistune>=3.3.4",
+    "mistune>=3.4.0",
     # The GL Operator Screen's OpenGL ES calls. Pure Python over the system libEGL and
     # libGLESv2 (both .deb Depends); imported only when the GL display starts.
     "PyOpenGL>=3.1.7",
@@ -93,12 +93,12 @@ include = [
 # This is the only ruff version in the repo: the pre-commit hook runs it out of
 # the poetry env rather than fetching its own at a ``rev``, so a second pin
 # cannot drift from this one.
-ruff = "0.16.9"
+ruff = "0.17.1"
 pytest = "^9.1.1"
 pytest-cov = "^7.1"
 coverage = { extras = ["toml"], version = "^7.16" }
 pre-commit = "^4.6.2"
-mypy = "^2.3"
+mypy = "^2.4"
 
 # Static type checking: mypy --strict for all openfollow.* modules.
 # Third-party stubs without type info use ignore_missing_imports.
@@ -122,7 +122,7 @@ optional = true
 
 [tool.poetry.group.package-macos.dependencies]
 pyinstaller = ">=6.22.3"
-pyinstaller-hooks-contrib = ">=2026.8"
+pyinstaller-hooks-contrib = ">=2026.9"
 
 # Mutation testing, optional: mutmut pulls in setproctitle, which pytest-xdist
 # then uses to retitle its workers on every test.

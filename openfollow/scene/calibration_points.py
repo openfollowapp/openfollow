@@ -1,13 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""Calibration points: far correspondences measured with a laser from two grid corners.
+"""The Setup Wizard's camera solve from marks: known points with a typed position, and triangulated points
+measured by their distances to two other marks plus their height.
 
-A point's place in the stage frame is fixed by its distances from two grid corners and its height
-above stage level, and the operator pins it on the snapshot. The camera is fitted to the corner pins,
-the point pins and the distances together: each point's x, y is an unknown of the fit, every
-observation is weighted by its own expected error. A laser fixes a far point's depth well and its
-width poorly (the width comes from the difference of two long distances), the pin the other way
-round, so neither is reduced to a position before the fit.
+One fit adjusts the 7 camera values and every triangulated point's x, y against the pins, the distances and
+an entered camera height, each residual in its own expected error. Every pin counts the same, and no mark is
+left out: one that disagrees shows in its error and in :func:`plausibility`.
 """
 
 from __future__ import annotations
@@ -15,50 +13,57 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 import numpy as np
 import numpy.typing as npt
 
 from openfollow.configuration import CameraConfig
 from openfollow.scene.solver import (
-    POSE_FOV_RANGE_DEG,
-    POSE_PITCH_LIMIT_DEG,
     camera_params,
+    compute_homography,
+    decompose_homography,
     project_points,
-    solve_camera_dlt,
     unproject_to_plane,
 )
 
-PIXEL_SIGMA = 1.0  # px: a careful pin on a calibration point's mark, native snapshot pixels
-CORNER_SIGMA = 3.0  # px: a pin on a grid corner, whose mark on the stage floor is seldom that sharp
-DISTANCE_SIGMA = 0.04  # m: a hand-held laser on the corner mark, a plumb stand
-FLAG_SIGMA = 3.0  # a normalised residual past this flags the point it belongs to
-# Over the picture, a fit with points may put the floor at most this many times as far, or as near,
-# as the corners alone put it; a point that bends the camera further is left out.
+PIXEL_SIGMA = 1.0  # px: a careful pin on a mark, native snapshot pixels
+DISTANCE_SIGMA = 0.04  # m: a hand-held laser or tape on a mark
+HEIGHT_SIGMA = 0.01  # m: an entered camera height, measured to the lens
+# Steeper than this, flat marks cannot tell the camera's height from its field of view.
+STEEP_PITCH = -82.5
+FLAG_PX = 5.0  # a pin further than this from where the camera sees its mark is named
+FLAG_DISTANCE_M = 3.0 * DISTANCE_SIGMA
+SEED_FOVS = (40.0, 90.0)  # tried beside the saved FOV from a camera position
+# Looking at 0/0/0 steeper than this, a camera position 2 m off turns the bearing 20° or more from 10 m up, and
+# straight down there is none: the seed at the saved FOV is tried a quarter turn apart as well.
+STEEP_SEED_PITCH = -60.0
+STEEP_TURNS = (0.0, 90.0, 180.0, 270.0)
+# Without a camera position, and without four level marks seeding a camera less steep than STEEP_PITCH, the camera
+# is also tried above the known marks looking almost straight down, where their homography decomposes to noise.
+NADIR_PITCH = -89.0
+# Every seed and mirror side gets this many iterations; only the best goes on to the full fit.
+SCOUT_ITERATIONS = 25
+FIT_ITERATIONS = 300
+# Two measured circles may miss each other by this much and still be one point: the noise of two distances.
+MEET_TOLERANCE = 3.0 * math.sqrt(2.0) * DISTANCE_SIGMA
+# Four pinned known marks within this of one height, every triangle of them at least this large, seed the solve.
+_LEVEL_M = 0.01
+_MIN_TRIANGLE_M2 = 0.05
+# Over the picture, within reach of the marks, the fit may put the floor at most this many times as far, or as
+# near, as the homography of four level marks alone.
 FLOOR_REACH = 2.0
 _FLOOR_PROBES = np.array([[x, y] for y in np.linspace(0.0, 1.0, 7) for x in np.linspace(0.0, 1.0, 9)])
 
-# Two measured circles may miss each other by this much and still be one point: the noise of
-# two distances. A point straight off the end of its baseline lies on that edge.
-_MEET_TOLERANCE = 3.0 * math.sqrt(2.0) * DISTANCE_SIGMA
-# Points pinned this close (snapshot px), or placed this close (m), are one spot measured twice:
-# they count once when points check each other.
-SAME_SPOT_PX = 3.0
-SAME_SPOT_M = 0.05
+REASON_HEIGHT = "A distance is shorter than the height difference between the points."
+REASON_SAME_PLACE = "Its two points are at the same place."
+REASON_DIFFER = "The difference between the two distances is larger than the distance between its two points."
+REASON_SHORT = "The two distances together are shorter than the distance between its two points."
+REASON_UNPLACED_FROM = "It is measured from a point that cannot be placed."
+NO_FIT = "No camera fits these points. Check the pins and the measurements."
+NO_FIT_AT_HEIGHT = "No camera fits at this camera height. Check the camera height and the measurements."
 
-REASON_DIFFER = "The two distances differ by more than the corners are apart."
-REASON_SHORT = "The two distances add up to less than the corners are apart."
-REASON_HEIGHT = "A distance is shorter than the point's height."
-REASON_BEHIND = "Neither place the distances allow is in front of the camera."
-REASON_DISAGREES = "It disagrees with the corners and the other points."
-REASON_DISAGREES_CORNERS = "It disagrees with the corners."
-REASON_PAIR = "The two points disagree, and two cannot tell which one is wrong."
-REASON_FLOOR = "It moves the far floor too far from where the corners put it."
-REASON_SAME_PLACE = "Its two corners are at the same place."
-REASON_RANGE = "It tilts the camera or changes its lens past what the corners can solve."
-
-Status = Literal["ok", "unverified", "flagged"]
+Kind = Literal["known", "triangulated"]
 
 
 class SolveSuperseded(Exception):
@@ -66,56 +71,65 @@ class SolveSuperseded(Exception):
 
 
 @dataclass(frozen=True)
-class CalibrationPoint:
-    """One point as measured; the corners in world coordinates, the pin on the pinhole snapshot."""
+class Mark:
+    """One mark as the solve reads it. ``pin`` is on the pinhole (undistorted) snapshot, None when not pinned."""
 
-    corner_a: tuple[float, float, float]
-    corner_b: tuple[float, float, float]
-    distance_a: float
-    distance_b: float
-    height: float
-    pin: tuple[float, float]
+    id: int
+    kind: Kind
+    z: float
+    position: tuple[float, float] | None = None  # known: x, y
+    from_a: int = 0
+    from_b: int = 0
+    distance_a: float = 0.0
+    distance_b: float = 0.0
+    pin: tuple[float, float] | None = None
 
 
 @dataclass(frozen=True)
-class PointFit:
-    """What the solve made of one point. ``position`` is None when the distances place it nowhere."""
+class MarkFit:
+    """What the solve made of one mark. ``seen`` is where the camera puts it on the pinhole snapshot."""
 
+    id: int
     position: tuple[float, float, float] | None
-    status: Status
     reason: str = ""
-    residual: float = math.nan  # largest normalised residual of its observations, in sigma
+    seen: tuple[float, float] | None = None
+    distance_error: float | None = None  # m, the larger of a triangulated point's two
 
 
 @dataclass(frozen=True)
-class CalibrationSolve:
-    camera: CameraConfig
-    points: tuple[PointFit, ...]
-    corner_residual: float  # largest normalised residual of the corner pins, in sigma
+class MarkSolve:
+    camera: CameraConfig | None
+    marks: tuple[MarkFit, ...]
+    error: str = ""
+    floor_off: bool = False  # :func:`_floor_holds` fails against the level marks' camera, neither one steep
+    steep: bool = False  # pitch below STEEP_PITCH, where flat marks cannot tell the height from the FOV
 
 
 def trilaterate(
-    a: Sequence[float], b: Sequence[float], distance_a: float, distance_b: float, height: float
+    a: Sequence[float] | npt.NDArray[np.float64],
+    b: Sequence[float] | npt.NDArray[np.float64],
+    distance_a: float,
+    distance_b: float,
+    z: float,
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]] | str:
-    """The two places at ``height`` above corner level that lie at the measured distances from ``a``
-    and ``b``, mirror images across the line between them; or the reason there are none.
+    """The two places at height ``z`` that lie at the measured distances from ``a`` and ``b``, mirror
+    images across the line between them; or the reason there are none.
 
-    Circles that miss each other by no more than the noise of two distances meet at their closest
-    approach, so a point on the line through both corners still has a place.
+    Circles that miss each other by no more than :data:`MEET_TOLERANCE` meet at their closest approach.
     """
-    za = float(a[2])
-    if distance_a < abs(height) or distance_b < abs(height + za - float(b[2])):
+    ra2 = distance_a**2 - (z - float(a[2])) ** 2
+    rb2 = distance_b**2 - (z - float(b[2])) ** 2
+    if ra2 < 0.0 or rb2 < 0.0:
         return REASON_HEIGHT
-    ra = math.sqrt(distance_a**2 - height**2)
-    rb = math.sqrt(distance_b**2 - (height + za - float(b[2])) ** 2)
+    ra, rb = math.sqrt(ra2), math.sqrt(rb2)
     pa = np.array(a[:2], dtype=np.float64)
     pb = np.array(b[:2], dtype=np.float64)
     d = float(np.linalg.norm(pb - pa))
-    if d == 0.0:
+    if d < 0.05:
         return REASON_SAME_PLACE
-    if abs(ra - rb) > d + _MEET_TOLERANCE:
+    if abs(ra - rb) > d + MEET_TOLERANCE:
         return REASON_DIFFER
-    if ra + rb < d - _MEET_TOLERANCE:
+    if ra + rb < d - MEET_TOLERANCE:
         return REASON_SHORT
     if ra + rb < d:  # apart: midway between the facing edges
         along, across = (ra + d - rb) / 2.0, 0.0
@@ -128,30 +142,126 @@ def trilaterate(
         across = math.sqrt(max(ra**2 - along**2, 0.0))
     ex = (pb - pa) / d
     ey = np.array([-ex[1], ex[0]])
-    z = za + height
     first = pa + along * ex + across * ey
     second = pa + along * ex - across * ey
     return np.array([first[0], first[1], z]), np.array([second[0], second[1], z])
 
 
+def look_at(position: Sequence[float], target: Sequence[float]) -> tuple[float, float]:
+    """Pitch and yaw in degrees of a camera at ``position`` looking at ``target``, roll 0."""
+    dx, dy, dz = (float(target[i]) - float(position[i]) for i in range(3))
+    return math.degrees(math.atan2(dz, math.hypot(dx, dy))), math.degrees(math.atan2(dx, dy))
+
+
 def _wrap_degrees(angle: float) -> float:
-    """``angle`` in (-180, 180], the corner solve's range: the fit moves freely across +/-180."""
+    """``angle`` in (-180, 180]: the fit moves freely across +/-180."""
     return 180.0 - (180.0 - angle) % 360.0
 
 
-def _pick_by_pin(
-    places: tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]],
-    pin: tuple[float, float],
-    params: npt.NDArray[np.float64],
-    canvas_w: float,
-    canvas_h: float,
-) -> npt.NDArray[np.float64] | None:
-    """The mirror image that projects nearer the pin; None when neither is in front of the camera."""
-    seen = project_points(params, np.array(places), canvas_w, canvas_h)
-    gaps = np.linalg.norm(seen - np.array(pin, dtype=np.float64), axis=1)
-    if not np.isfinite(gaps).any():
+def _upright_angles(pitch: float, yaw: float, roll: float) -> tuple[float, float, float]:
+    """The same view with pitch in [-90, 90] and yaw, roll in (-180, 180]: a pitch past 90 is the view turned
+    half round in yaw and roll."""
+    pitch = _wrap_degrees(pitch)
+    if abs(pitch) > 90.0:
+        pitch, yaw, roll = math.copysign(180.0, pitch) - pitch, yaw + 180.0, roll + 180.0
+    return pitch, _wrap_degrees(yaw), _wrap_degrees(roll)
+
+
+def _order(marks: Sequence[Mark]) -> list[Mark]:
+    """Triangulated marks after the marks they are measured from; the caller has checked there is no loop."""
+    by_id = {m.id: m for m in marks}
+    done: dict[int, bool] = {}
+    order: list[Mark] = []
+
+    def visit(mark: Mark) -> None:
+        if mark.id in done:
+            return
+        done[mark.id] = True
+        for parent in (mark.from_a, mark.from_b) if mark.kind == "triangulated" else ():
+            if parent in by_id:
+                visit(by_id[parent])
+        order.append(mark)
+
+    for mark in marks:
+        visit(mark)
+    return order
+
+
+def _level_quad(known: Sequence[Mark]) -> list[Mark] | None:
+    """Four pinned known marks at one height, no three in a line: they seed the solve through a homography."""
+
+    def area(p: Mark, q: Mark, r: Mark) -> float:
+        assert p.position and q.position and r.position
+        (ax, ay), (bx, by), (cx, cy) = p.position, q.position, r.position
+        return abs((bx - ax) * (cy - ay) - (by - ay) * (cx - ax)) / 2.0
+
+    n = len(known)
+    for i in range(n):
+        for j in range(i + 1, n):
+            for k in range(j + 1, n):
+                for m in range(k + 1, n):
+                    quad = [known[i], known[j], known[k], known[m]]
+                    if any(abs(q.z - quad[0].z) >= _LEVEL_M for q in quad):
+                        continue
+                    triangles = ((0, 1, 2), (0, 1, 3), (0, 2, 3), (1, 2, 3))
+                    if all(area(quad[a], quad[b], quad[c]) > _MIN_TRIANGLE_M2 for a, b, c in triangles):
+                        return quad
+    return None
+
+
+def _level_camera(
+    marks: Sequence[Mark], canvas_w: float, canvas_h: float
+) -> tuple[npt.NDArray[np.float64], list[Mark]] | None:
+    """The camera of four pinned known marks at one height alone, through their homography, and those marks."""
+    quad = _level_quad([m for m in marks if m.kind == "known" and m.pin is not None])
+    if quad is None:
         return None
-    return places[int(np.nanargmin(gaps))]
+    plane = np.array([q.position for q in quad if q.position], dtype=np.float64)
+    screen = np.array([q.pin for q in quad if q.pin], dtype=np.float64)
+    seeded = decompose_homography(compute_homography(plane, screen), canvas_w, canvas_h, quad[0].z)
+    return None if seeded is None else (camera_params(seeded), quad)
+
+
+def _above_marks(
+    marks: Sequence[Mark], canvas_w: float, saved_fov: float, height: float | None
+) -> tuple[float, float, float] | None:
+    """Over the pinned known marks' centre: at ``height``, else as high as their spread in the pins says at the
+    saved FOV looking straight down. None without two pinned known marks apart on the snapshot."""
+    pinned = [m for m in marks if m.kind == "known" and m.pin is not None and m.position is not None]
+    world = np.array([[*m.position, m.z] for m in pinned if m.position], dtype=np.float64).reshape(-1, 3)
+    pins = np.array([m.pin for m in pinned], dtype=np.float64).reshape(-1, 2)
+    i, j = np.triu_indices(len(pinned), 1)
+    apart_px = np.linalg.norm(pins[i] - pins[j], axis=1)
+    if not (apart_px > 1.0).any():
+        return None
+    if height is None:
+        focal_px = canvas_w / 2.0 / math.tan(math.radians(saved_fov) / 2.0)
+        apart_m = np.linalg.norm(world[i, :2] - world[j, :2], axis=1)
+        height = float(world[:, 2].mean() + focal_px * apart_m.sum() / apart_px.sum())
+    return float(world[:, 0].mean()), float(world[:, 1].mean()), height
+
+
+def _seeds(
+    hint: Sequence[float] | None,
+    saved_fov: float,
+    level: npt.NDArray[np.float64] | None,
+    height: float | None = None,
+    above: tuple[float, float, float] | None = None,
+) -> list[npt.NDArray[np.float64]]:
+    """Every seed at ``height`` when one is entered; ``above`` is :func:`_above_marks`."""
+    seeds = []
+    if hint is not None:
+        at = (hint[0], hint[1], hint[2] if height is None else height)
+        pitch, yaw = look_at(at, (0.0, 0.0, 0.0))
+        turns = STEEP_TURNS if pitch < STEEP_SEED_PITCH else (0.0,)
+        for fov in (saved_fov, *SEED_FOVS):
+            for turn in turns if fov == saved_fov else (0.0,):
+                seeds.append(np.array([*at, pitch, yaw + turn, 0.0, fov], dtype=np.float64))
+    if level is not None:
+        seeds.append(level if height is None else np.concatenate([level[:2], [height], level[3:]]))
+    if above is not None and hint is None and (level is None or float(level[3]) < STEEP_PITCH):
+        seeds += [np.array([*above, NADIR_PITCH, turn, 0.0, saved_fov], dtype=np.float64) for turn in STEEP_TURNS]
+    return seeds
 
 
 def _floor_holds(
@@ -162,10 +272,10 @@ def _floor_holds(
     canvas_w: float,
     canvas_h: float,
 ) -> bool:
-    """Whether ``camera`` puts the floor where ``reference`` (the corners alone) does, within FLOOR_REACH.
+    """Whether ``camera`` puts the floor where ``reference`` does, within FLOOR_REACH.
 
-    Only the picture the reference puts on the floor within reach of the points is asked about, so a
-    horizon in the picture, or floor far beyond the points, decides nothing.
+    Only the picture the reference puts on the floor within reach of the marks is asked about, so a horizon in
+    the picture, or floor far beyond the marks, decides nothing.
     """
     probes = _FLOOR_PROBES * np.array([canvas_w, canvas_h])
     ref = unproject_to_plane(reference, probes, canvas_w, canvas_h, plane_z)
@@ -178,97 +288,112 @@ def _floor_holds(
     return bool(np.all((ratio <= FLOOR_REACH) & (ratio >= 1.0 / FLOOR_REACH)))
 
 
-def _spots(
-    ids: Sequence[int], points: Sequence[CalibrationPoint], places: dict[int, npt.NDArray[np.float64]]
-) -> dict[int, int]:
-    """Each id's spot: the smallest id it is linked to by pins within SAME_SPOT_PX or places within SAME_SPOT_M."""
-    spot = {i: i for i in ids}
-
-    def root(i: int) -> int:
-        while spot[i] != i:
-            i = spot[i]
-        return i
-
-    for n, i in enumerate(ids):
-        for j in ids[n + 1 :]:
-            pin_gap = math.dist(points[i].pin, points[j].pin)
-            if pin_gap <= SAME_SPOT_PX or float(np.linalg.norm(places[i] - places[j])) <= SAME_SPOT_M:
-                a, b = root(i), root(j)
-                spot[max(a, b)] = min(a, b)
-    return {i: root(i) for i in ids}
-
-
-def _in_range(x: npt.NDArray[np.float64]) -> bool:
-    """Whether the fitted pitch and field of view are ones the corner solve could have given."""
-    return abs(float(x[3])) <= POSE_PITCH_LIMIT_DEG and POSE_FOV_RANGE_DEG[0] <= float(x[6]) <= POSE_FOV_RANGE_DEG[1]
-
-
 class _Problem:
-    """The joint adjustment: camera (7) and each point's x, y; residuals normalised by their sigma."""
+    """The joint adjustment: camera (7) and each live triangulated mark's x, y; residuals in their sigma."""
 
     def __init__(
         self,
-        corner_world: npt.NDArray[np.float64],
-        corner_screen: npt.NDArray[np.float64],
-        points: Sequence[CalibrationPoint],
-        canvas_w: float,
-        canvas_h: float,
+        known: dict[int, npt.NDArray[np.float64]],
+        live: Sequence[Mark],
+        pinned: Sequence[Mark],
+        canvas: tuple[float, float],
+        height: float | None = None,
     ) -> None:
-        self.corner_world = corner_world
-        self.corner_screen = corner_screen
-        self.n = len(points)
-        self.z = np.array([p.corner_a[2] + p.height for p in points], dtype=np.float64)
-        self.a = np.array([p.corner_a for p in points], dtype=np.float64).reshape(self.n, 3)
-        self.b = np.array([p.corner_b for p in points], dtype=np.float64).reshape(self.n, 3)
-        self.da = np.array([p.distance_a for p in points], dtype=np.float64)
-        self.db = np.array([p.distance_b for p in points], dtype=np.float64)
-        self.pins = np.array([p.pin for p in points], dtype=np.float64).reshape(self.n, 2)
-        self.canvas = (canvas_w, canvas_h)
+        self.known = known
+        self.live = list(live)
+        self.pinned = list(pinned)
+        self.canvas = canvas
+        self.height = height
+        self.pins = np.array([m.pin for m in self.pinned], dtype=np.float64).reshape(len(self.pinned), 2)
+
+    def places(self, x: npt.NDArray[np.float64]) -> dict[int, npt.NDArray[np.float64]]:
+        placed = dict(self.known)
+        for i, mark in enumerate(self.live):
+            placed[mark.id] = np.array([x[7 + 2 * i], x[8 + 2 * i], mark.z])
+        return placed
+
+    def jacobian(self, x: npt.NDArray[np.float64], rows: int) -> npt.NDArray[np.float64] | None:
+        """Camera columns by central differences, the height row's too; each mark's x, y in closed form beside one
+        projection call. ``x`` is one :meth:`residuals` answered, with ``rows`` residuals."""
+        jac = np.zeros((rows, x.size))
+        for k in range(7):
+            step = 1e-6 * (1.0 + abs(x[k]))
+            up, down = x.copy(), x.copy()
+            up[k] += step
+            down[k] -= step
+            r_up, r_down = self.residuals(up), self.residuals(down)
+            if r_up is None or r_down is None:
+                return None
+            jac[:, k] = (r_up - r_down) / (2.0 * step)
+        if not self.live:
+            return jac
+        placed = self.places(x)
+        column = {m.id: 7 + 2 * i for i, m in enumerate(self.live)}
+        steps, probes = [], []
+        for mark in self.live:
+            at = placed[mark.id]
+            hx, hy = 1e-6 * (1.0 + abs(at[0])), 1e-6 * (1.0 + abs(at[1]))
+            steps.append((hx, hy))
+            probes += [at + (hx, 0, 0), at - (hx, 0, 0), at + (0, hy, 0), at - (0, hy, 0)]
+        seen = project_points(x[:7], np.array(probes), *self.canvas)
+        pin_row = {m.id: 2 * i for i, m in enumerate(self.pinned)}
+        for i, mark in enumerate(self.live):
+            if mark.id in pin_row:
+                row, (hx, hy), d = pin_row[mark.id], steps[i], seen[4 * i : 4 * i + 4]
+                jac[row : row + 2, column[mark.id]] = (d[0] - d[1]) / (2.0 * hx * PIXEL_SIGMA)
+                jac[row : row + 2, column[mark.id] + 1] = (d[2] - d[3]) / (2.0 * hy * PIXEL_SIGMA)
+        base = 2 * len(self.pinned)
+        for i, mark in enumerate(self.live):
+            for k, parent in enumerate((mark.from_a, mark.from_b)):
+                diff = placed[mark.id] - placed[parent]
+                length = float(np.linalg.norm(diff))
+                if length == 0.0:
+                    continue
+                grad = diff[:2] / (length * DISTANCE_SIGMA)
+                row = base + 2 * i + k
+                jac[row, column[mark.id] : column[mark.id] + 2] += grad
+                if parent in column:
+                    jac[row, column[parent] : column[parent] + 2] -= grad
+        return jac if bool(np.isfinite(jac).all()) else None
 
     def residuals(self, x: npt.NDArray[np.float64]) -> npt.NDArray[np.float64] | None:
-        """Corner pins (8), then per point its pin (2) and its distances (2); None off the valid range."""
-        cam = x[:7]
-        places = np.column_stack([x[7:].reshape(self.n, 2), self.z])
+        """Per pin (2), then per triangulated mark its two distances, then the entered height; None off the valid
+        range."""
+        placed = self.places(x)
+        world = np.array([placed[m.id] for m in self.pinned])
         try:
-            corners = (project_points(cam, self.corner_world, *self.canvas) - self.corner_screen) / CORNER_SIGMA
-            pins = (project_points(cam, places, *self.canvas) - self.pins) / PIXEL_SIGMA
+            seen = project_points(x[:7], world, *self.canvas)
         except ValueError:
             return None
-        to_a = (np.linalg.norm(places - self.a, axis=1) - self.da) / DISTANCE_SIGMA
-        to_b = (np.linalg.norm(places - self.b, axis=1) - self.db) / DISTANCE_SIGMA
-        r = np.concatenate([corners.ravel(), np.column_stack([pins, to_a, to_b]).ravel()])
+        pins = ((seen - self.pins) / PIXEL_SIGMA).ravel()
+        lengths = [
+            (float(np.linalg.norm(placed[m.id] - placed[parent])) - measured) / DISTANCE_SIGMA
+            for m in self.live
+            for parent, measured in ((m.from_a, m.distance_a), (m.from_b, m.distance_b))
+        ]
+        if self.height is not None:
+            lengths.append((float(x[2]) - self.height) / HEIGHT_SIGMA)
+        r = np.concatenate([pins, np.array(lengths, dtype=np.float64)])
         return r if bool(np.isfinite(r).all()) else None
-
-    def per_point(self, r: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
-        return np.abs(r[8:]).reshape(self.n, 4).max(axis=1) if self.n else np.zeros(0)
 
 
 def _fit(
-    problem: _Problem,
-    x0: npt.NDArray[np.float64],
-    iterations: int = 100,
-    stale: Callable[[], bool] | None = None,
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]] | None:
-    """Levenberg-Marquardt from ``x0``; None when the start or a derivative probe is off the valid range.
+    problem: _Problem, x0: npt.NDArray[np.float64], stale: Callable[[], bool] | None, iterations: int
+) -> tuple[npt.NDArray[np.float64], float] | None:
+    """Levenberg-Marquardt from ``x0``. None when the start or its first derivatives are off the valid range;
+    once a step was taken, a later failed derivative ends the fit where it is.
     ``stale`` is asked before every iteration and raises :class:`SolveSuperseded` once it answers True."""
     x = x0.copy()
     r = problem.residuals(x)
     if r is None:
         return None
     damping = 1e-3
-    for _ in range(iterations):
+    for iteration in range(iterations):
         if stale is not None and stale():
             raise SolveSuperseded
-        jac = np.empty((r.size, x.size))
-        for k in range(x.size):
-            step = 1e-6 * (1.0 + abs(x[k]))
-            up, down = x.copy(), x.copy()
-            up[k] += step
-            down[k] -= step
-            r_up, r_down = problem.residuals(up), problem.residuals(down)
-            if r_up is None or r_down is None:
-                return None
-            jac[:, k] = (r_up - r_down) / (2.0 * step)
+        jac = problem.jacobian(x, r.size)
+        if jac is None:
+            return None if iteration == 0 else (x, float(r @ r))
         normal = jac.T @ jac
         gradient = jac.T @ r
         cost = float(r @ r)
@@ -280,126 +405,195 @@ def _fit(
                 break
             damping *= 4.0
         else:
-            return x, r
+            return x, cost
         x, r = x + delta, trial
         damping = max(damping / 3.0, 1e-12)
         if float(np.max(np.abs(delta) / (1.0 + np.abs(x)))) < 1e-12:
             break
-    return x, r
+    return x, float(r @ r)
 
 
-def solve_with_points(
-    corner_world: Sequence[Sequence[float]],
-    corner_screen: Sequence[Sequence[float]],
-    points: Sequence[CalibrationPoint],
+def solve_marks(
+    marks: Sequence[Mark],
     canvas_w: float,
     canvas_h: float,
+    hint: Sequence[float] | None = None,
+    saved_fov: float = 60.0,
     stale: Callable[[], bool] | None = None,
-) -> CalibrationSolve | None:
-    """The camera from the four corners and the calibration points; None when the corners give none.
-    When no point is used, the camera is exactly the corners' own solve. ``stale`` is asked before every
-    iteration of every fit; once it answers True the solve raises :class:`SolveSuperseded`.
+    height: float | None = None,
+) -> MarkSolve:
+    """The camera from the marks; ``hint`` is the camera position the operator estimated, or None; ``height``
+    is the camera's exact height in m, or None: every seed starts at it, and the fit holds it.
 
-    A point the distances place nowhere is flagged and left out. When a point's residual passes
-    :data:`FLAG_SIGMA`, three or more points drop the one whose removal leaves the others the best fit,
-    and fit again; two points that disagree are both left out, since from a narrow stage strip neither
-    can show the other wrong; a lone point that disagrees with the corners, a corner pin's residual
-    included, is left out. A fit that passes is still left out the same way when it moves the floor
-    across the picture past :data:`FLOOR_REACH` from where the corners alone put it, or leaves the pitch and
-    field of view the corner solve keeps a camera in. A point that is the
-    only one in the fit cannot be cross-checked: ``unverified``. Points of one spot (pins within
-    :data:`SAME_SPOT_PX`, or places within :data:`SAME_SPOT_M`) count once in all of that, and are
-    left out together.
+    Every seed (the hint at the saved FOV, 40° and 90°, looking at 0/0/0, at the saved FOV also turned a
+    quarter at a time when that look is steep; the homography of four pinned known marks at one height; without
+    the hint and with no such homography or a steep one, above the known marks looking down at
+    :data:`NADIR_PITCH`, a quarter turn apart) is fitted briefly twice: with each triangulated mark on the side
+    its pin picks as the seed sees it, and with all of them on the other side. An upright camera (at or above the
+    lowest mark, not looking up) beats one that is not, then the one that placed more marks, then the lower cost.
+    The fitted camera of the winner places again what its seed could not, and only that one is fitted to the end;
+    when that fit fails or ranks lower, the winner's brief fit answers.
+    With ``height`` given, no fit, or a height not above the lowest pinned mark, answers :data:`NO_FIT_AT_HEIGHT`.
+    ``stale`` is asked before every iteration; once it answers True the solve raises :class:`SolveSuperseded`.
     """
-    world = np.array(corner_world, dtype=np.float64)
-    screen = np.array(corner_screen, dtype=np.float64)
-    seed = solve_camera_dlt([tuple(p) for p in world], [(float(p[0]), float(p[1])) for p in screen], canvas_w, canvas_h)
-    if seed is None:
-        return None
-    seed_params = camera_params(seed)
+    canvas = (canvas_w, canvas_h)
+    ordered = _order(marks)
+    if height is not None and height <= min((m.z for m in ordered if m.pin is not None), default=-math.inf):
+        return MarkSolve(None, tuple(MarkFit(m.id, None) for m in marks), NO_FIT_AT_HEIGHT)
+    triangulated = [m for m in ordered if m.kind == "triangulated"]
+    known = {m.id: np.array([m.position[0], m.position[1], m.z]) for m in ordered if m.position is not None}
+    level = _level_camera(ordered, canvas_w, canvas_h)
+    above = _above_marks(ordered, canvas_w, saved_fov, height)
+    seeds = _seeds(hint, saved_fov, None if level is None else level[0], height, above)
 
-    fits: list[PointFit | None] = [None] * len(points)
-    places: dict[int, npt.NDArray[np.float64]] = {}
-    for i, point in enumerate(points):
-        found = trilaterate(point.corner_a, point.corner_b, point.distance_a, point.distance_b, point.height)
-        if isinstance(found, str):
-            fits[i] = PointFit(None, "flagged", found)
-            continue
-        place = _pick_by_pin(found, point.pin, seed_params, canvas_w, canvas_h)
-        if place is None:
-            fits[i] = PointFit(None, "flagged", REASON_BEHIND)
-            continue
-        places[i] = place
+    def place_marks(
+        placed: dict[int, npt.NDArray[np.float64]], params: npt.NDArray[np.float64], flip: bool
+    ) -> dict[int, str]:
+        """Trilaterates into ``placed`` each triangulated mark not in it yet; answers the reasons of the rest."""
+        failed: dict[int, str] = {}
+        for mark in triangulated:
+            if mark.id in placed:
+                continue
+            if mark.from_a not in placed or mark.from_b not in placed:
+                failed[mark.id] = REASON_UNPLACED_FROM
+                continue
+            found = trilaterate(placed[mark.from_a], placed[mark.from_b], mark.distance_a, mark.distance_b, mark.z)
+            if isinstance(found, str):
+                failed[mark.id] = found
+                continue
+            seen = project_points(params, np.array(found), canvas_w, canvas_h)
+            gaps = np.linalg.norm(seen - np.array(mark.pin, dtype=np.float64), axis=1)
+            nearer = 1 if np.isfinite(gaps).any() and np.nanargmin(gaps) == 1 else 0
+            placed[mark.id] = found[1 - nearer if flip else nearer]
+        return failed
 
-    def fit(ids: list[int]) -> tuple[_Problem, npt.NDArray[np.float64], npt.NDArray[np.float64]] | None:
-        problem = _Problem(world, screen, [points[i] for i in ids], canvas_w, canvas_h)
-        x0 = np.concatenate([seed_params, np.array([places[i][:2] for i in ids]).ravel()])
-        fitted = _fit(problem, x0, stale=stale)
-        return None if fitted is None else (problem, *fitted)
+    def fitted(
+        camera: npt.NDArray[np.float64],
+        placed: dict[int, npt.NDArray[np.float64]],
+        failed: dict[int, str],
+        iterations: int,
+    ) -> dict[str, Any] | None:
+        live = [m for m in triangulated if m.id in placed]
+        pinned = [m for m in ordered if m.pin is not None and m.id in placed]
+        if len(pinned) < 4:
+            return None
+        problem = _Problem(known, live, pinned, canvas, height)
+        result = _fit(problem, np.concatenate([camera[:7], *[placed[m.id][:2] for m in live]]), stale, iterations)
+        if result is None or not 10.0 < float(result[0][6]) < 170.0:
+            return None
+        x, cost = result
+        places = problem.places(x)
+        floor = min(float(p[2]) for p in places.values())
+        upright = bool(x[2] >= floor and _upright_angles(x[3], x[4], x[5])[0] <= 0.0)
+        return {"x": x, "cost": cost, "upright": upright, "places": places, "failed": failed}
 
-    def leave_out(ids: list[int], reason: str, residuals: npt.NDArray[np.float64]) -> None:
-        for i, residual in zip(ids, residuals, strict=True):
-            seen = places[i]
-            fits[i] = PointFit((float(seen[0]), float(seen[1]), float(seen[2])), "flagged", reason, float(residual))
-            active.remove(i)
+    def rank(c: dict[str, Any]) -> tuple[bool, int, float]:
+        return c["upright"], -len(c["failed"]), -c["cost"]
 
-    active = sorted(places)
-    spot_of = _spots(active, points, places)
-    solved = None
-    while active:
-        result = fit(active)
-        if result is None:
-            # No camera fits these points with the corners: they are left out, not the solve.
-            leave_out(active[:], REASON_DISAGREES_CORNERS, np.full(len(active), math.nan))
-            continue
-        problem, x, r = result
-        worst = problem.per_point(r)
-        spots = sorted({spot_of[i] for i in active})
-        # A lone spot can bend the camera off the corners while fitting itself, so they count too.
-        # With more, the spots check each other: corners a few px off would throw good points away.
-        alone = len(spots) == 1 and float(np.abs(r[:8]).max()) > FLAG_SIGMA
-        reason = ""
-        if float(worst.max()) <= FLAG_SIGMA and not alone:
-            fitted = np.column_stack([x[7:].reshape(len(active), 2), problem.z])
-            if not _in_range(x):
-                reason = REASON_RANGE
-            elif _floor_holds(seed_params, x[:7], float(world[:, 2].mean()), fitted, canvas_w, canvas_h):
-                solved = result
-                break
-            else:
-                reason = REASON_FLOOR
-        if len(spots) == 1:
-            leave_out(active[:], reason or REASON_DISAGREES_CORNERS, worst)
-        elif len(spots) == 2:
-            leave_out(active[:], reason or REASON_PAIR, worst)
-        else:
-            costs = {}
-            for spot in spots:
-                rest = fit([j for j in active if spot_of[j] != spot])
-                costs[spot] = math.inf if rest is None else float(rest[2] @ rest[2])
-            out = [i for i in active if spot_of[i] == min(costs, key=lambda k: costs[k])]
-            leave_out(out, reason or REASON_DISAGREES, worst[[active.index(i) for i in out]])
+    best: dict[str, Any] | None = None
+    reasons: dict[int, str] = {}
+    for seed in seeds:
+        for flip in (False, True) if triangulated else (False,):
+            placed = dict(known)
+            failed = place_marks(placed, seed, flip)
+            for mark_id, reason in failed.items():
+                reasons.setdefault(mark_id, reason)
+            scout = fitted(seed, placed, failed, SCOUT_ITERATIONS)
+            if scout is not None and (best is None or rank(scout) > rank(best)):
+                best = scout
 
-    if solved is None:
-        # No point is used, so none may move the pose: it is the corners' own solve.
-        corners = (project_points(seed_params, world, canvas_w, canvas_h) - screen) / CORNER_SIGMA
-        return CalibrationSolve(seed, tuple(f for f in fits if f is not None), float(np.abs(corners).max()))
-
-    problem, x, r = solved
-    status: Status = "ok" if len({spot_of[i] for i in active}) > 1 else "unverified"
-    xy = x[7:].reshape(len(active), 2)
-    for j, i in enumerate(active):
-        fits[i] = PointFit((float(xy[j, 0]), float(xy[j, 1]), float(problem.z[j])), status, "", float(worst[j]))
-
-    cam = x[:7]
+    if best is not None:
+        # Chained from the seed a child inherits its parent's error; from the fitted places it may meet.
+        placed = dict(best["places"])
+        refined = fitted(best["x"], placed, place_marks(placed, best["x"][:7], False), FIT_ITERATIONS)
+        if refined is not None and rank(refined) >= rank(best):
+            best = refined
+    if best is None:
+        error = NO_FIT if height is None else NO_FIT_AT_HEIGHT
+        return MarkSolve(None, tuple(MarkFit(m.id, None, reasons.get(m.id, "")) for m in marks), error)
+    x = best["x"]
+    pitch, yaw, roll = _upright_angles(float(x[3]), float(x[4]), float(x[5]))
     camera = CameraConfig(
-        pos_x=float(cam[0]),
-        pos_y=float(cam[1]),
-        pos_z=float(cam[2]),
-        pitch=float(cam[3]),
-        yaw=_wrap_degrees(float(cam[4])),
-        roll=_wrap_degrees(float(cam[5])),
-        fov=float(cam[6]),
+        pos_x=float(x[0]), pos_y=float(x[1]), pos_z=float(x[2]), pitch=pitch, yaw=yaw, roll=roll, fov=float(x[6])
     )
-    corner_residual = float(np.abs(r[:8]).max())
-    return CalibrationSolve(camera, tuple(f for f in fits if f is not None), corner_residual)
+    params = camera_params(camera)
+    places = best["places"]
+    floor_off = False
+    # Steeper, the level marks' camera is noise: the entered height holds the fit instead.
+    compared = level is not None and min(pitch, float(level[0][3])) >= STEEP_PITCH
+    if compared and level is not None and any(mark_id not in {m.id for m in level[1]} for mark_id in places):
+        plane_z = float(np.mean([m.z for m in level[1]]))
+        floor_off = not _floor_holds(level[0], params, plane_z, np.array(list(places.values())), *canvas)
+    fits = []
+    for mark in marks:
+        if mark.id not in places:
+            fits.append(MarkFit(mark.id, None, best["failed"].get(mark.id, "")))
+            continue
+        place = places[mark.id]
+        seen = project_points(params, place.reshape(1, 3), canvas_w, canvas_h)[0]
+        distance_error = None
+        if mark.kind == "triangulated":
+            distance_error = max(
+                abs(float(np.linalg.norm(place - places[parent])) - measured)
+                for parent, measured in ((mark.from_a, mark.distance_a), (mark.from_b, mark.distance_b))
+            )
+        fits.append(
+            MarkFit(
+                mark.id,
+                (float(place[0]), float(place[1]), float(place[2])),
+                "",
+                (float(seen[0]), float(seen[1])) if np.isfinite(seen).all() else None,
+                distance_error,
+            )
+        )
+    return MarkSolve(camera, tuple(fits), floor_off=floor_off, steep=pitch < STEEP_PITCH)
+
+
+def plausibility(
+    camera: CameraConfig,
+    fits: Sequence[MarkFit],
+    errors: dict[int, float],
+    hint: Sequence[float] | None,
+    per_axis: bool,
+    *,
+    floor_off: bool = False,
+) -> list[dict[str, Any]]:
+    """What looks implausible about a solve, as data for the page to word in its units.
+
+    ``errors`` is each pinned mark's distance from where the camera sees it, on the snapshot as shown.
+    ``per_axis`` is Advanced's check of the camera position: any axis off by more than max(2.5 m, 10 % of the
+    camera's distance to the marks); Simple checks the whole gap against max(1 m, 10 %).
+    ``floor_off`` is :attr:`MarkSolve.floor_off`.
+    """
+    placed = [f.position for f in fits if f.position is not None]
+    cam = np.array([camera.pos_x, camera.pos_y, camera.pos_z])
+    out: list[dict[str, Any]] = []
+    if hint is not None and placed:
+        delta = cam - np.array(hint, dtype=np.float64)
+        off = float(np.linalg.norm(delta))
+        span = float(np.linalg.norm(cam - np.mean(np.array(placed), axis=0)))
+        allowed = max(2.5 if per_axis else 1.0, 0.1 * span)
+        if (float(np.abs(delta).max()) if per_axis else off) > allowed:
+            out.append(
+                {
+                    "kind": "offset",
+                    "delta": [float(v) for v in delta],
+                    "off": off,
+                    "allowed": allowed,
+                    "per_axis": per_axis,
+                }
+            )
+    if camera.fov < 20.0 or camera.fov > 120.0:
+        out.append({"kind": "fov", "fov": camera.fov})
+    if placed and camera.pos_z < min(p[2] for p in placed):
+        out.append({"kind": "below"})
+    if camera.pitch > 0.0:
+        out.append({"kind": "up"})
+    if floor_off:
+        out.append({"kind": "reach"})
+    for fit in fits:
+        if errors.get(fit.id, 0.0) > FLAG_PX:
+            out.append({"kind": "pixel", "id": fit.id, "px": errors[fit.id]})
+        if fit.distance_error is not None and fit.distance_error > FLAG_DISTANCE_M:
+            out.append({"kind": "distance", "id": fit.id, "m": fit.distance_error})
+    return out

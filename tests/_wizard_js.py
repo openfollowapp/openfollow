@@ -52,11 +52,29 @@ def wizard_window_function(name: str) -> str:
     raise ValueError(f"unbalanced braces in {name}")
 
 
+def wizard_block(start: str) -> str:
+    """The wizard's one statement that begins with ``start`` (a listener or a call taking a function), to ``});``."""
+    src = WIZARD_TEMPLATE.read_text(encoding="utf-8")
+    begin = src.index(start)
+    if src.find(start, begin + 1) != -1:
+        raise ValueError(f"more than one statement begins with {start!r}")
+    depth = 0
+    for i in range(src.index("{", begin), len(src)):
+        if src[i] == "{":
+            depth += 1
+        elif src[i] == "}":
+            depth -= 1
+            if depth == 0:
+                end = src.index(";", i)
+                return src[begin : end + 1]
+    raise ValueError(f"unbalanced braces after {start!r}")
+
+
 def wizard_var(name: str) -> str:
-    """The wizard's one-line ``var name = ...;`` declaration."""
+    """The wizard's ``var name = ...;`` declaration: one line, or an object literal over several."""
     match = re.search(rf"^\s*var {name} = [^\n]*;$", WIZARD_TEMPLATE.read_text(encoding="utf-8"), re.M)
     if match is None:
-        raise ValueError(f"no var {name}")
+        return wizard_block(f"var {name} = {{")
     return match.group(0).strip()
 
 
@@ -72,13 +90,15 @@ def run_wizard_js(
 
     ``prelude`` runs first: the globals a function reads from the page (``document``, ``WUNIT``).
     ``Infinity`` and ``NaN`` inputs survive (``json.dumps`` writes them as JS literals); the
-    result comes back through ``JSON.stringify``, where they read as ``null``.
+    result comes back through ``JSON.stringify``, where they read as ``null``. An expression
+    that is a promise is read once it settles.
     """
     assert NODE is not None
     parts = [prelude] + [wizard_var(v) for v in variables] + [wizard_function(f) for f in functions]
     parts += [f"var {key} = {json.dumps(value)};" for key, value in inputs.items()]
-    parts.append(f"process.stdout.write(JSON.stringify({expression}));")
-    done = subprocess.run([NODE, "-e", "\n".join(parts)], capture_output=True, text=True, timeout=60, check=True)
+    parts.append(f"Promise.resolve({expression}).then(function(v) {{ process.stdout.write(JSON.stringify(v)); }});")
+    # On stdin: Linux caps one argument at 128 KiB, and a grid of inputs passes that.
+    done = subprocess.run([NODE, "-"], input="\n".join(parts), capture_output=True, text=True, timeout=60, check=True)
     return json.loads(done.stdout)
 
 

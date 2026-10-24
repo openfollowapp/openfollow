@@ -156,7 +156,7 @@ def _load_config(config_path: Path) -> dict[str, object]:
 
 
 def _sources(config_path: Path, config: dict[str, object]) -> list[tuple[str, Path]]:
-    """``(arcname, path)`` for each source; the catalog and templates sit beside ``config_path``."""
+    """``(arcname, path)`` for each source; the catalog, templates and saved lenses sit beside ``config_path``."""
     state_dir = config_path.parent
     raw = config.get("markers_catalog_path")
     catalog = Path(raw) if isinstance(raw, str) and raw else Path("markers.toml")
@@ -166,6 +166,7 @@ def _sources(config_path: Path, config: dict[str, object]) -> list[tuple[str, Pa
         ("config.toml", config_path),
         ("markers.toml", catalog),
         ("templates/user", state_dir / "templates" / "user"),
+        ("lens-calibrations", state_dir / "lens-calibrations"),
     ]
 
 

@@ -126,10 +126,12 @@ class OverlayState:
     selected_id: int | None = None
     # Camera: [pos_x, pos_y, pos_z, pitch, yaw, roll, fov]
     camera_params: npt.NDArray[Any] | None = None
-    # Radial lens-distortion coefficients bowing the overlay to match the lens.
-    # 0/0 = pinhole (no curvature) – the renderer fast-paths to straight lines.
+    # The lens the overlay is bowed to match (openfollow.lens_model): the pair and
+    # the lens centre. A 0 pair draws straight lines; a centre alone shifts them.
     lens_k1: float = 0.0
     lens_k2: float = 0.0
+    lens_cx: float = 0.0
+    lens_cy: float = 0.0
     # Grid: (width, depth, spacing, x_offset, y_offset, z_offset)
     grid_config: tuple[float, float, float, float, float, float] | None = None
     grid_visible: bool = True
@@ -316,3 +318,8 @@ class OverlayState:
     ] = field(default_factory=list)
     # Where a locked marker can turn at a nearby junction: a short (tail, tip) stretch along each way.
     path_arrows: list[tuple[tuple[float, float, float], tuple[float, float, float]]] = field(default_factory=list)
+
+    @property
+    def lens(self) -> tuple[float, float, float, float]:
+        """``(k1, k2, cx, cy)``, in the order the warp functions take them."""
+        return self.lens_k1, self.lens_k2, self.lens_cx, self.lens_cy

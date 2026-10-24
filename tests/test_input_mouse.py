@@ -1134,7 +1134,7 @@ class TestLensDistortionInput:
         # Undistorting a barrel-distorted click pushes it outward.
         assert r_undist > r_cursor
 
-    def test_a_lens_with_its_feature_off_leaves_the_cursor_alone(self, monkeypatch) -> None:
+    def test_the_lens_undistorts_the_cursor_with_no_feature_on(self, monkeypatch) -> None:
         from openfollow.input import mouse as mouse_module
 
         captured: dict[str, np.ndarray] = {}
@@ -1150,7 +1150,8 @@ class TestLensDistortionInput:
         app._config.ui.shown_features = []
         monkeypatch.setattr(mouse_module, "unproject_to_plane", _spy)
         handler.on_pointer_move(1200, 600)
-        assert (captured["screen"][0, 0], captured["screen"][0, 1]) == (1200.0, 600.0)
+        s = captured["screen"][0]
+        assert math.hypot(s[0] - 640.0, s[1] - 360.0) > math.hypot(1200.0 - 640.0, 600.0 - 360.0)
 
 
 class TestHitTestLensDistortion:
@@ -1175,7 +1176,7 @@ class TestHitTestLensDistortion:
         world = np.array([[8.0, 6.0, 0.0]], dtype=np.float64)
         pinhole = project_points(buf, world, float(w), float(h))[0]
         bowed = mouse_module.apply_overlay_distortion(
-            project_points(buf, world, float(w), float(h)), float(w), float(h), -0.3, 0.0
+            project_points(buf, world, float(w), float(h)), float(w), float(h), -0.3, 0.0, 0.0, 0.0
         )[0]
         # Guard against a vacuous test: the warp must move the centre clear of
         # the touch radius, otherwise both clicks would hit regardless.
@@ -1185,6 +1186,47 @@ class TestHitTestLensDistortion:
         assert MouseHandler(app).on_pointer_down(float(bowed[0]), float(bowed[1]), 1) is True
         # Clicking the raw pinhole centre (where the circle is NOT drawn) misses.
         assert MouseHandler(app).on_pointer_down(float(pinhole[0]), float(pinhole[1]), 1) is False
+
+
+class TestDecentredStrongLens:
+    """Input to overlay under a strong lens whose centre is off the frame centre."""
+
+    @pytest.mark.parametrize("corner", [(1240.0, 650.0), (40.0, 700.0), (1270.0, 715.0)])
+    def test_a_marker_dragged_into_a_corner_is_drawn_under_the_cursor(self, corner: tuple[float, float]) -> None:
+        from openfollow.configuration import effective_lens
+        from openfollow.runtime.overlay_draw_scene import project
+
+        app = _DummyApp()
+        app._config.marker.ground_circle = False
+        handler = MouseHandler(app)
+        assert _grab(handler, app)
+        camera = app._config.camera
+        camera.lens_k1, camera.lens_k2, camera.lens_cx, camera.lens_cy = -0.53, -0.07, 0.06, -0.04
+        handler.on_pointer_move(*corner)
+        handler.update()
+        w, h = _canvas_size(app)
+        drawn = project(_cam_buffer(app), [app._server.get_marker(1).pos], w, h, *effective_lens(app._config))[0]
+        assert drawn == pytest.approx(corner, abs=1e-6)
+        # The lens moves the stage point: read as pinhole, the cursor names another one.
+        pinhole = project(_cam_buffer(app), [app._server.get_marker(1).pos], w, h)[0]
+        assert math.dist(pinhole, corner) > 50.0
+
+    def test_a_marker_is_grabbed_where_the_decentred_lens_draws_it(self) -> None:
+        from openfollow.configuration import effective_lens
+        from openfollow.input import mouse as mouse_module
+        from openfollow.runtime.overlay_draw_scene import project
+
+        app = _DummyApp()
+        app._config.marker.ground_circle = False
+        camera = app._config.camera
+        camera.lens_k1, camera.lens_k2, camera.lens_cx, camera.lens_cy = 0.0, 0.0, 0.06, -0.04
+        w, h = _canvas_size(app)
+        world = [app._server.get_marker(1).pos]
+        drawn = project(_cam_buffer(app), world, w, h, *effective_lens(app._config))[0]
+        pinhole = project(_cam_buffer(app), world, w, h)[0]
+        assert math.dist(drawn, pinhole) > mouse_module._MIN_GRAB_PX
+        assert MouseHandler(app).on_pointer_down(float(pinhole[0]), float(pinhole[1]), 1) is False
+        assert MouseHandler(app).on_pointer_down(float(drawn[0]), float(drawn[1]), 1) is True
 
 
 class TestLockedOnAPath:

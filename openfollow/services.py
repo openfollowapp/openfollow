@@ -3775,8 +3775,8 @@ class AppRuntimeServices:
         from openfollow.scene.solver import invert_overlay_distortion, unproject_to_plane
 
         cam_cfg = app._camera.to_config()
-        # Lens-distortion coefficients live on the config (the pinhole Camera
-        # doesn't carry them), so read them straight from there.
+        # The lens lives on the config (the pinhole Camera doesn't carry it),
+        # so read it straight from there.
         lens = effective_lens(app._config)
         params = self._zone_cam_buffer
         params[0] = cam_cfg.pos_x

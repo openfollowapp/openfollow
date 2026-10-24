@@ -9,7 +9,7 @@ yaw = 180.0
 roll = 0.0
 fov = 65.8
 lens_k1 = -0.15
-lens_k2 = 0.02
+lens_k2 = -0.03
 
 [grid]
 width = 10.0

@@ -443,10 +443,12 @@ class TestWizardPage:
 @integration
 class TestWizardReviewPage:
     def test_the_pin_menu_is_a_group_of_buttons_not_a_menu(self, live_server) -> None:
-        # The arrow keys move the menu's spot, so it promises no menu keys between its items.
+        # The arrow keys move the menu's spot, so it promises no menu keys between its items. It takes the focus
+        # itself (tabindex -1, never a Tab stop), so Enter keeps a pin the arrows moved.
         _, body = _get(live_server[1], "/wizard")
         assert (
-            '<div class="pin-menu" id="pin-menu" role="group" aria-label="Which point is here?" hidden></div>' in body
+            '<div class="pin-menu" id="pin-menu" role="group" aria-label="Which point is here?" tabindex="-1" hidden>'
+            "</div>" in body
         )
         assert 'role="menu' not in body
 

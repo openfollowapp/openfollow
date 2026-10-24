@@ -4697,6 +4697,157 @@ def test_api_config_reset_refuses_a_cross_origin_form_post(live_server) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Export, Restore Defaults, import
+# ---------------------------------------------------------------------------
+
+# What a file import restores and a push leaves as it is.
+_RESTORED_BY_A_FILE_ONLY = (
+    "controlled_marker_ids",
+    "viewer_marker_ids",
+    "detection.masks",
+    "detection.masks_enabled",
+    "ndi_source_name",
+    "rtsp_url",
+    "picam_camera_name",
+    "v4l2_device",
+    "avf_unique_id",
+    "mouse3d.enabled",
+    "operator_messages.enabled",
+    "midi.patches",
+    "virtual_faders.faders",
+    "controller.button_raw_indices",
+    "controller.swap_triggers",
+    "controller.mapped_controller_guid",
+    "ui.developer_mode",
+    "paths.show_paths",
+    "network.backend",
+    "update_include_prereleases",
+    "auto_update_check",
+    "auto_time_sync",
+    "time_sync_server",
+)
+_CHANGED_STRINGS = ("Cam 2", "192.0.2.10", "#336699", "imperial", "replace", "bottom", "nm", "H265", "720p", "x")
+# Settings the web UI checks harder than a config.toml load does.
+_CHANGED_VALUES = {"update_github_repo": "stage-crew/openfollow", "update_service_name": "openfollow-stage"}
+
+
+def _leaves(tree: dict[str, Any], prefix: tuple[str, ...] = ()) -> Any:
+    for key, value in tree.items():
+        if isinstance(value, dict) and value:
+            yield from _leaves(value, (*prefix, key))
+        else:
+            yield ".".join((*prefix, key)), value
+
+
+def _at(tree: dict[str, Any], path: str) -> Any:
+    for key in path.split("."):
+        tree = tree[key]
+    return tree
+
+
+def _put(tree: dict[str, Any], path: str, value: Any) -> None:
+    *parents, name = path.split(".")
+    for key in parents:
+        tree = tree[key]
+    tree[name] = value
+
+
+def _changed(value: Any) -> list[Any]:
+    if isinstance(value, bool):
+        return [not value]
+    if isinstance(value, int):
+        return [value + 1, 2, 0]
+    if isinstance(value, float):
+        return [value + 0.5, value / 2 + 0.01, 0.3]
+    if isinstance(value, str):
+        return [s for s in _CHANGED_STRINGS if s != value]
+    return []
+
+
+def _without_none(tree: Any) -> Any:
+    if isinstance(tree, dict):
+        return {k: _without_none(v) for k, v in tree.items() if v is not None}
+    if isinstance(tree, list):
+        return [_without_none(v) for v in tree]
+    return tree
+
+
+def _export(base: str) -> dict[str, Any]:
+    with urllib.request.urlopen(f"{base}/api/config/export", timeout=5) as resp:
+        return json.loads(resp.read().decode())
+
+
+def _save_every_setting_changed(config_path: str, defaults: dict[str, Any]) -> None:
+    """Write a config.toml whose every exported setting differs from ``defaults`` where a load keeps the change."""
+    import copy
+    from dataclasses import asdict
+
+    import tomli_w
+
+    data = copy.deepcopy(defaults)
+    data["controlled_marker_ids"] = [3, 5]
+    data["viewer_marker_ids"] = [3, 5, 7]
+    data["detection"]["masks"] = [{"name": "Stage", "vertices": [[0.1, 0.1], [0.9, 0.1], [0.5, 0.9]], "enabled": False}]
+    data["midi"]["patches"] = [{"id": 2, "alias": "Desk", "serial": "", "port_name": "Desk", "product": "Desk"}]
+    data["virtual_faders"]["faders"][0]["name"] = "Iris"
+    data["controller"]["button_raw_indices"] = {"A": 3}
+    data["osc"]["allowed_sender_ips"] = ["192.0.2.7"]
+    # The input stays one every host offers; the others are the ones a station remembers.
+    pending = {
+        path: [_CHANGED_VALUES[path]] if path in _CHANGED_VALUES else options
+        for path, value in _leaves(defaults)
+        if path != "video_source_type" and (options := _changed(value))
+    }
+    while pending:
+        for path, options in pending.items():
+            _put(data, path, options[0])
+        Path(config_path).write_text(tomli_w.dumps(_without_none(data)), encoding="utf-8")
+        kept = asdict(load_config(config_path, strict=True))
+        for path in list(pending):
+            if _at(kept, path) == pending[path][0]:
+                del pending[path]
+                continue
+            pending[path].pop(0)
+            if not pending[path]:
+                _put(data, path, _at(defaults, path))
+                del pending[path]
+    Path(config_path).write_text(tomli_w.dumps(_without_none(data)), encoding="utf-8")
+
+
+def test_an_export_restore_defaults_import_round_trip_restores_every_exported_setting(live_server) -> None:
+    server, base = live_server
+    defaults = _export(base)
+    _save_every_setting_changed(server.config_path, defaults)
+    exported = _export(base)
+    changed = {path for path, value in _leaves(defaults) if _at(exported, path) != value}
+    assert set(_RESTORED_BY_A_FILE_ONLY) <= changed
+
+    assert _post_json(base, "/api/config/reset", {})[0] == 200
+    assert _export(base)["controlled_marker_ids"] == []
+    status, body = _post_json(base, "/api/config/import", exported)
+
+    assert (status, body["success"]) == (200, True)
+    restored = _export(base)
+    assert [path for path, _ in _leaves(defaults) if _at(restored, path) != _at(exported, path)] == []
+
+
+def test_a_push_leaves_what_only_a_file_import_restores(live_server) -> None:
+    server, base = live_server
+    defaults = _export(base)
+    _save_every_setting_changed(server.config_path, defaults)
+    sent = _export(base)
+    save_config(AppConfig(), server.config_path)
+    before = _export(base)
+
+    status, _ = _push(base, "/api/config/import", sent)
+
+    assert status == 200
+    after = _export(base)
+    assert after["camera"] == sent["camera"]
+    assert [path for path in _RESTORED_BY_A_FILE_ONLY if _at(after, path) != _at(before, path)] == []
+
+
+# ---------------------------------------------------------------------------
 # Auth hook: HX-Redirect for browser htmx requests, body-size cap, cookie
 # ---------------------------------------------------------------------------
 
@@ -5357,6 +5508,52 @@ def test_deb_update_check_returns_json_available(live_server, monkeypatch) -> No
     assert body["ok"] is True
     assert body["available"] is True
     assert body["latest"] == "99.0.0"
+
+
+_SAVED_UPDATE_SOURCE = AppConfig(update_github_repo="stage-crew/openfollow", update_include_prereleases=True)
+
+
+def _check_asks_for(base: str, monkeypatch) -> tuple[str, bool]:
+    import openfollow.runtime.deb_update as deb_update_mod
+
+    asked: list[tuple[str, bool]] = []
+
+    def _fetch(repo, *, include_prereleases=False):
+        asked.append((repo, include_prereleases))
+        return {"tag_name": "v0.0.1", "assets": []}
+
+    monkeypatch.setattr(deb_update_mod, "_fetch_latest_release", _fetch)
+    # A pre-release build always asks for pre-releases.
+    monkeypatch.setattr(openfollow, "__version__", "1.0.0")
+    status, body = _get_json(base, "/section/general/deb-update/check")
+    assert (status, body["ok"]) == (200, True)
+    return asked[0]
+
+
+def test_deb_update_check_asks_for_what_the_station_started_with(tmp_path, monkeypatch) -> None:
+    """A saved change (an import) waits for the next start, as it does for the installer."""
+    for beacon in (discovery_module.BeaconSender, discovery_module.BeaconReceiver):
+        monkeypatch.setattr(beacon, "start", lambda self: None)
+        monkeypatch.setattr(beacon, "stop", lambda self: None)
+    config_path = tmp_path / "config.toml"
+    save_config(_SAVED_UPDATE_SOURCE, str(config_path))
+    with live_on_free_port(
+        lambda port: ConfigWebServer(
+            config_path=str(config_path),
+            host="127.0.0.1",
+            port=port,
+            system_name="TestSystem",
+            update_source_provider=lambda: ("openfollowapp/openfollow", False),
+        )
+    ) as (_, base):
+        assert _check_asks_for(base, monkeypatch) == ("openfollowapp/openfollow", False)
+
+
+def test_deb_update_check_unwired_asks_for_the_saved_settings(live_server, monkeypatch) -> None:
+    server, base = live_server
+    save_config(_SAVED_UPDATE_SOURCE, server.config_path)
+
+    assert _check_asks_for(base, monkeypatch) == ("stage-crew/openfollow", True)
 
 
 def test_deb_update_check_surfaces_error_as_json(live_server, monkeypatch) -> None:

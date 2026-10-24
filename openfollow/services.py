@@ -3030,6 +3030,10 @@ class AppRuntimeServices:
             # Live per-marker move speeds; the ``dict(...)`` copy is the
             # mutation-isolation boundary so the web thread never holds the live dict.
             marker_move_speeds_provider=lambda: dict(self._app._config.marker_move_speeds),
+            update_source_provider=lambda: (
+                self._app._config.update_github_repo,
+                self._app._config.update_include_prereleases,
+            ),
             full_snapshot_provider=self._snapshot_provider.get_snapshot,
             mouse3d_button_provider=self._mouse3d_latest_button,
             # Diagnostics + conflict-probe hooks. ``init_web_server`` runs

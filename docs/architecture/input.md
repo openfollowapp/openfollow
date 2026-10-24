@@ -147,6 +147,9 @@ stays tidy after the operator removes a marker via the web UI. In-memory
 entries are not pruned at runtime (a brief live-reload remove-and-re-add
 keeps the operator's per-marker speed).
 
+The speeds are device-local: an export leaves them out, and an import
+keeps this station's live ones (see [config](config.md#config-transfer-export--import--restore-defaults)).
+
 ## Marker card → controller binding
 Each `MarkerOverlayData` carries `controller_idx`, `controller_connected`,
 and `is_controlled`, populated by reverse-mapping

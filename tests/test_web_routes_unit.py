@@ -502,7 +502,9 @@ class TestApplyImportData:
         assert out.touch_remote.stick_curve == 1.5
         assert out.touch_remote.z_notch_px == 30
 
-    def test_paths_import_with_this_station_s_active_flags_and_visibility(self) -> None:
+    @pytest.mark.parametrize(("pushed", "show_paths"), [(False, True), (True, False)], ids=["file", "push"])
+    def test_paths_import_with_this_station_s_active_flags_and_visibility(self, pushed: bool, show_paths: bool) -> None:
+        """A file import restores whether paths are drawn; a push leaves it, and both keep the active flags."""
         from openfollow.configuration import PathConfig, PathsConfig
 
         current = AppConfig(paths=PathsConfig(show_paths=False, paths=[PathConfig(name="cross", active=True)]))
@@ -518,11 +520,12 @@ class TestApplyImportData:
                     ],
                 }
             },
+            pushed=pushed,
         )
         assert [(p.name, p.active) for p in out.paths.paths] == [("cross", True), ("loop", False)]
         assert [p.x for p in out.paths.paths[0].points] == [1.0, 3.0]
         assert out.paths.slide_time == 2.0
-        assert out.paths.show_paths is False
+        assert out.paths.show_paths is show_paths
 
     @staticmethod
     def _experimental_station() -> AppConfig:

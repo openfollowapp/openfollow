@@ -97,7 +97,8 @@ def run_wizard_js(
     parts = [prelude] + [wizard_var(v) for v in variables] + [wizard_function(f) for f in functions]
     parts += [f"var {key} = {json.dumps(value)};" for key, value in inputs.items()]
     parts.append(f"Promise.resolve({expression}).then(function(v) {{ process.stdout.write(JSON.stringify(v)); }});")
-    done = subprocess.run([NODE, "-e", "\n".join(parts)], capture_output=True, text=True, timeout=60, check=True)
+    # On stdin: Linux caps one argument at 128 KiB, and a grid of inputs passes that.
+    done = subprocess.run([NODE, "-"], input="\n".join(parts), capture_output=True, text=True, timeout=60, check=True)
     return json.loads(done.stdout)
 
 

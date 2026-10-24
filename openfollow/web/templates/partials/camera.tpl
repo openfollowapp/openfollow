@@ -92,40 +92,13 @@
         <div class="row">
             <div class="field">
                 <label>Horizontal Field of View (°)</label>
-                <input type="number" id="camera_panel_fov" name="fov" value="{{config.camera.fov}}" min="1" max="179" step="any" oninput="cameraPanelHfovEdited()"
+                <input type="number" name="fov" value="{{config.camera.fov}}" min="1" max="179" step="any"
                        hx-get="/api/validate/camera/fov" hx-trigger="blur changed delay:200ms"
                        hx-target="#camera-fov-error" hx-swap="innerHTML" hx-include="closest form"
                        aria-describedby="camera-fov-error" aria-invalid="false">
                 <span id="camera-fov-error" class="field-error"></span>
             </div>
-            <div class="field" id="camera_panel_sensor_field">
-                <label>Sensor Size</label>
-                <select id="camera_panel_sensor" onchange="cameraPanelSensorOrFocalChanged()"></select>
-            </div>
-            <div class="field" id="camera_panel_sensor_custom_field" style="display:none;">
-                <label>Sensor Width (mm)</label>
-                <input type="number" name="sensor_width_mm" id="camera_panel_sensor_custom" step="0.01" min="0" oninput="cameraPanelSensorOrFocalChanged()"
-                       hx-get="/api/validate/camera/sensor_width_mm" hx-trigger="blur changed delay:200ms"
-                       hx-target="#camera-sensor-width-mm-error" hx-swap="innerHTML" hx-include="closest form"
-                       aria-describedby="camera-sensor-width-mm-error" aria-invalid="false">
-                <span id="camera-sensor-width-mm-error" class="field-error"></span>
-            </div>
-            <div class="field">
-                <label>Focal Length (mm)</label>
-                <input type="number" name="focal_length_mm" id="camera_panel_focal"
-                       value="{{config.camera.focal_length_mm if config.camera.focal_length_mm is not None else ''}}"
-                       step="0.1" min="0" oninput="cameraPanelSensorOrFocalChanged()"
-                       hx-get="/api/validate/camera/focal_length_mm" hx-trigger="blur changed delay:200ms"
-                       hx-target="#camera-focal-length-mm-error" hx-swap="innerHTML" hx-include="closest form"
-                       aria-describedby="camera-focal-length-mm-error" aria-invalid="false">
-                <span id="camera-focal-length-mm-error" class="field-error"></span>
-            </div>
-            <input type="hidden" id="camera_panel_sensor_initial"
-                   value="{{config.camera.sensor_width_mm if config.camera.sensor_width_mm is not None else ''}}">
         </div>
-        <p class="hint" style="margin:0.4rem 0 0 0;font-size:0.8rem;color:var(--muted);">
-            FOV is horizontal (as printed on camera datasheets). Pick your sensor size and focal length and we'll compute FOV automatically.
-        </p>
     </div>
 
     <div class="group">
@@ -235,74 +208,8 @@
 
     <script>
     (function() {
-        if (window.__cameraPanelLensHelperInstalled) return;
-        window.__cameraPanelLensHelperInstalled = true;
-
-        var SENSOR_SIZES = [
-            { id: '1/4',    label: '1/4" (3.6 mm)',              width_mm: 3.6  },
-            { id: '1/3',    label: '1/3" (4.8 mm)',              width_mm: 4.8  },
-            { id: '1/2.8',  label: '1/2.8" (5.37 mm)',           width_mm: 5.37 },
-            { id: '1/2.5',  label: '1/2.5" (5.76 mm)',           width_mm: 5.76 },
-            { id: '1/2',    label: '1/2" (6.4 mm)',              width_mm: 6.4  },
-            { id: '1/1.8',  label: '1/1.8" (7.18 mm)',           width_mm: 7.18 },
-            { id: '1/1.7',  label: '1/1.7" (7.6 mm)',            width_mm: 7.6  },
-            { id: '2/3',    label: '2/3" (8.8 mm)',              width_mm: 8.8  },
-            { id: '1',      label: '1" (13.2 mm)',               width_mm: 13.2 },
-            { id: 'mft',    label: 'Micro Four Thirds (17.3 mm)', width_mm: 17.3 },
-            { id: 'apsc',   label: 'APS-C (23.6 mm)',            width_mm: 23.6 },
-            { id: 'super35',label: 'Super 35 (24.89 mm)',        width_mm: 24.89 },
-            { id: 'ff',     label: 'Full Frame 35 mm (36 mm)',   width_mm: 36   },
-            { id: 'custom', label: 'Custom…',                    width_mm: null },
-            { id: '',       label: '– choose –',                 width_mm: null },
-        ];
-        window.__CAMERA_PANEL_SENSORS = SENSOR_SIZES;
-
-        function getSensorWidth() {
-            var sel = document.getElementById('camera_panel_sensor');
-            if (!sel) return null;
-            if (sel.value === 'custom') {
-                var v = parseFloat(document.getElementById('camera_panel_sensor_custom').value);
-                return isFinite(v) && v > 0 ? v : null;
-            }
-            var entry = SENSOR_SIZES.find(function(s) { return s.id === sel.value; });
-            return entry && entry.width_mm ? entry.width_mm : null;
-        }
-
-        function hfovFromSensor(sw, fl) {
-            if (!sw || !fl) return null;
-            return 2 * Math.atan(sw / (2 * fl)) * 180 / Math.PI;
-        }
-
-        function setStale(stale) {
-            ['camera_panel_sensor_field', 'camera_panel_sensor_custom_field', 'camera_panel_focal'].forEach(function(id) {
-                var el = document.getElementById(id);
-                if (el) el.classList.toggle('lens-helper-stale', stale);
-            });
-        }
-
-        window.cameraPanelSensorOrFocalChanged = function() {
-            var sel = document.getElementById('camera_panel_sensor');
-            var customField = document.getElementById('camera_panel_sensor_custom_field');
-            var customInput = document.getElementById('camera_panel_sensor_custom');
-            if (sel && customField) {
-                customField.style.display = sel.value === 'custom' ? '' : 'none';
-            }
-            // Mirror the resolved sensor width into the posted hidden/custom input,
-            // so the value reaches the server regardless of preset vs. custom.
-            var sw = getSensorWidth();
-            if (customInput && sel && sel.value !== 'custom') {
-                customInput.value = sw !== null ? String(sw) : '';
-            }
-            var hfov = hfovFromSensor(sw, parseFloat(document.getElementById('camera_panel_focal').value));
-            if (hfov !== null && isFinite(hfov)) {
-                document.getElementById('camera_panel_fov').value = hfov.toFixed(2);
-                setStale(false);
-            }
-        };
-
-        window.cameraPanelHfovEdited = function() {
-            setStale(true);
-        };
+        if (window.__cameraPanelLensCentreInstalled) return;
+        window.__cameraPanelLensCentreInstalled = true;
 
         // A lens centre field's pixels, or null when it holds no whole number within its bound.
         function lensCentrePx(el) {
@@ -325,39 +232,9 @@
             el.setAttribute('aria-invalid', 'true');
             refreshFormGate(el.form);
         };
-
-        function init() {
-            var sel = document.getElementById('camera_panel_sensor');
-            if (!sel || sel.options.length) return;
-            SENSOR_SIZES.forEach(function(s) {
-                var opt = document.createElement('option');
-                opt.value = s.id;
-                opt.textContent = s.label;
-                sel.appendChild(opt);
-            });
-            sel.value = '';
-            var initialSw = parseFloat(document.getElementById('camera_panel_sensor_initial').value);
-            if (isFinite(initialSw) && initialSw > 0) {
-                var match = SENSOR_SIZES.find(function(s) {
-                    return s.width_mm && Math.abs(s.width_mm - initialSw) < 0.05;
-                });
-                if (match) {
-                    sel.value = match.id;
-                } else {
-                    sel.value = 'custom';
-                    document.getElementById('camera_panel_sensor_custom').value = initialSw;
-                    document.getElementById('camera_panel_sensor_custom_field').style.display = '';
-                }
-            }
-        }
-        init();
-        // Re-init after HTMX swaps the camera form back in (save → re-render).
-        document.body.addEventListener('htmx:afterSwap', init);
     })();
     </script>
     <style>
-    .lens-helper-stale, .lens-helper-stale label,
-    .lens-helper-stale input, .lens-helper-stale select { opacity: 0.55; }
     .lens-centre { margin-top: 0.9rem; }
     .lens-centre-title { margin-bottom: 0.45rem; color: var(--text); font-size: 0.85rem; font-weight: 600; }
     </style>

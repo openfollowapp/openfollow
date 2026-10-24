@@ -14,7 +14,7 @@ branches in the coercion + validation helpers that:
 
 Targeted helpers:
 
-* ``_as_float`` / ``_as_optional_float`` / ``_as_int`` / ``_as_positive_int``
+* ``_as_float`` / ``_as_int`` / ``_as_positive_int``
   OverflowError + None / blank-string branches.
 * ``_as_int_list`` ValueError on malformed CSV + tuple input.
 * ``_parse_vertices`` malformed entries (non-list root, short pair,
@@ -47,7 +47,6 @@ from openfollow.web.routes import (
     _as_float_or_zero,
     _as_int,
     _as_int_list,
-    _as_optional_float,
     _as_positive_int,
     _config_to_toml,
     _find_by_id,
@@ -114,7 +113,7 @@ class TestSwapForDirection:
 
 
 # --------------------------------------------------------------------------- #
-# _as_float / _as_optional_float / _as_int / _as_positive_int
+# _as_float / _as_int / _as_positive_int
 # --------------------------------------------------------------------------- #
 
 
@@ -187,23 +186,6 @@ class TestAsFloatOrZero:
         the prior value was non-zero."""
         assert _as_float_or_zero("0", default=4.0) == 0.0
         assert _as_float_or_zero(0.0, default=4.0) == 0.0
-
-
-class TestAsOptionalFloat:
-    def test_none_returns_none_regardless_of_default(self) -> None:
-        assert _as_optional_float(None, default=5.0) is None
-
-    def test_blank_string_returns_none(self) -> None:
-        assert _as_optional_float("   ", default=5.0) is None
-
-    def test_malformed_string_falls_back_to_default(self) -> None:
-        assert _as_optional_float("abc", default=5.0) == 5.0
-
-    def test_overflow_falls_back_to_default(self) -> None:
-        assert _as_optional_float(10**5000, default=5.0) == 5.0
-
-    def test_valid_number_is_returned_as_float(self) -> None:
-        assert _as_optional_float(42, default=5.0) == 42.0
 
 
 class TestAsIntEdgeCases:

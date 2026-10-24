@@ -1709,6 +1709,23 @@ def test_apply_import_data_drops_an_unknown_feature_key_and_applies_the_lens() -
     assert effective_lens(new) == pytest.approx((-0.2, 0.05, 0.03, -0.01))
 
 
+@pytest.mark.parametrize("path", ["section", "import"])
+def test_camera_sensor_and_focal_keys_are_dropped(path: str) -> None:
+    """A POST /section/camera or an import that still carries the two keys applies like one without them."""
+    from openfollow.web.routes import _apply_import_data
+
+    camera = {"fov": "52.5", "pos_z": "7.0"}
+
+    def apply(data: dict[str, str]) -> AppConfig:
+        if path == "import":
+            return _apply_import_data(AppConfig(), {"camera": data})
+        cfg = AppConfig()
+        assert apply_section_data(cfg, "camera", data) is True
+        return cfg
+
+    assert apply({**camera, "sensor_width_mm": "6.17", "focal_length_mm": "4.0"}) == apply(camera)
+
+
 def test_apply_import_data_ui_round_trips_through_export_dict() -> None:
     """End-to-end: the export payload of a configured device imports cleanly
     on a default device, carrying the ``ui`` preferences across."""
@@ -1928,7 +1945,7 @@ def test_reset_config_to_defaults_leaves_the_source_config_alone() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _as_bool / _as_positive_int / _as_optional_float helpers – full branch coverage
+# _as_bool / _as_positive_int helpers – full branch coverage
 # ---------------------------------------------------------------------------
 
 
@@ -1992,29 +2009,6 @@ def test_as_positive_int_clamps_zero_and_negative_to_one() -> None:
     assert _as_positive_int("bogus", 5) == 5  # falls back to default first
     # 0 as default is also clamped up – a divide-by-zero could happen otherwise.
     assert _as_positive_int("bogus", 0) == 1
-
-
-def test_as_optional_float_returns_none_for_none_and_blank() -> None:
-    from openfollow.web.routes import _as_optional_float
-
-    assert _as_optional_float(None, 1.0) is None
-    assert _as_optional_float("", 1.0) is None
-    assert _as_optional_float("   ", 1.0) is None
-
-
-def test_as_optional_float_parses_numeric_strings() -> None:
-    from openfollow.web.routes import _as_optional_float
-
-    assert _as_optional_float("3.14", 0.0) == pytest.approx(3.14)
-    assert _as_optional_float("1e3", 0.0) == pytest.approx(1000.0)
-
-
-def test_as_optional_float_falls_back_on_non_numeric() -> None:
-    from openfollow.web.routes import _as_optional_float
-
-    assert _as_optional_float("not a number", 1.5) == pytest.approx(1.5)
-    # OverflowError path: int(10**5000) coerced to float.
-    assert _as_optional_float(10**5000, 1.5) == pytest.approx(1.5)
 
 
 # ---------------------------------------------------------------------------

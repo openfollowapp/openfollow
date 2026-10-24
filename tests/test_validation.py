@@ -474,15 +474,6 @@ def test_validate_inference_size_below_min() -> None:
     assert err is not None
 
 
-def test_validate_optional_float_uncoercible() -> None:
-    err = validate("camera", "sensor_width_mm", "abc")
-    assert err is not None
-
-
-def test_validate_optional_float_valid() -> None:
-    assert validate("camera", "sensor_width_mm", "10") is None
-
-
 # ---------------------------------------------------------------------------
 # note(): cross-field advisories.
 # ---------------------------------------------------------------------------

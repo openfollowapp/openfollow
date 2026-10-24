@@ -59,7 +59,7 @@ def _paint_switch_arrows(cr: Any, state: OverlayState, w: int, h: int) -> None:
     cr.set_source_rgba(*COLOR_PATH_LOCKED)
     cr.set_line_width(PATH_LINE_WIDTH)
     for tail, tip in state.path_arrows:
-        (tx, ty), (px, py) = project(state.camera_params, [tail, tip], w, h, state.lens_k1, state.lens_k2)
+        (tx, ty), (px, py) = project(state.camera_params, [tail, tip], w, h, *state.lens)
         length = math.hypot(px - tx, py - ty)
         if not (math.isfinite(length) and length > 0.0):
             continue
@@ -75,10 +75,10 @@ def _path_shapes(state: OverlayState, w: int, h: int, lines: list[Any]) -> list[
     shapes = []
     for curve, ends, locked in lines:
         # The curve is drawn finely enough that projecting its points bows it with the lens.
-        line = project(cam, curve, w, h, state.lens_k1, state.lens_k2)
+        line = project(cam, curve, w, h, *state.lens)
         on_screen = []
         for at, inside, releases in ends:
-            (ex, ey), (ix, iy) = project(cam, [at, inside], w, h, state.lens_k1, state.lens_k2)
+            (ex, ey), (ix, iy) = project(cam, [at, inside], w, h, *state.lens)
             on_screen.append((float(ex), float(ey), float(ix), float(iy), releases))
         shapes.append(_Path(line, on_screen, locked))
     return shapes
@@ -131,7 +131,7 @@ class PathCache:
         cam = state.camera_params
         if cam is None:
             return
-        view = (tuple(float(v) for v in cam), state.lens_k1, state.lens_k2, w, h, cr.get_target().get_device_scale())
+        view = (tuple(float(v) for v in cam), state.lens, w, h, cr.get_target().get_device_scale())
         self._paste(cr, state, w, h, view, state.path_lines, locked=False)
         on = [line for line in state.path_lines if line[2]]
         if on:

@@ -9,7 +9,6 @@ POST parsing, and blur validation.
 
 from __future__ import annotations
 
-import html
 import json
 import re
 import urllib.error
@@ -273,79 +272,90 @@ class TestSharedUnitJsInjection:
 
 
 class TestWizardUnitInjection:
-    """The camera setup wizard renders lengths in the active unit
+    """The Setup Wizard renders lengths in the active unit
     (angles and the /api/wizard/* wire stay metric/degrees)."""
 
-    def test_wizard_imperial_labels_and_echo(self, live_server) -> None:
+    @staticmethod
+    def _labels(body: str) -> list[str]:
+        return [re.sub(r"<[^>]+>", "", label) for label in re.findall(r"<label for=\"[^\"]+\">(.*?)</label>", body)]
+
+    def test_wizard_imperial_labels(self, live_server) -> None:
         server, base = live_server
         _set_unit_system(base, "imperial")
         status, body = _get(base, "/wizard")
         assert status == 200
-        assert "Width (ft / in)" in body
-        assert "Pos X (ft / in)" in body
-        # Server-rendered metric echo elements (imperial only).
-        assert 'id="grid_width-echo"' in body
-        assert 'id="cam_pos_x-echo"' in body
+        labels = self._labels(body)
+        assert "Width (ft / in)" in labels
+        assert "Pos X (ft / in) (stage left +)" in labels
         # The wizard uses the shared JS helper for live readouts/parsing.
         assert "window.OpenFollow.units" in body
 
-    def test_wizard_metric_has_no_echo(self, live_server) -> None:
+    def test_wizard_metric_labels(self, live_server) -> None:
         server, base = live_server  # default metric
         status, body = _get(base, "/wizard")
         assert status == 200
-        assert "Width (m)" in body
-        # No imperial echo elements are rendered in metric mode. (The
-        # "Stored:" string itself lives in the always-present JS helper, so
-        # assert on the server-rendered element id instead.)
-        assert 'id="grid_width-echo"' not in body
-        assert ' data-meters="' not in body
+        labels = self._labels(body)
+        assert "Width (m)" in labels and "Pos X (m) (stage left +)" in labels
+
+    @needs_node
+    @pytest.mark.parametrize(("system", "typed"), [("imperial", "40 ft"), ("metric", "12")])
+    def test_the_stored_metres_show_only_in_imperial(self, live_server, system, typed) -> None:
+        server, base = live_server
+        _set_unit_system(base, system)
+        _status, body = _get(base, "/wizard")
+        step = body[body.index('id="wizard-step-calib"') : body.index('id="wizard-step-review"')]
+        echoes = re.findall(r'<small class="metric-echo" data-echo="([\w-]+)" hidden></small>', step)
+        assert {"rect_w", "rect_d", "rect_cx", "cam_pos_x", "cam_pos_z"} <= set(echoes)
+        shown = run_wizard_js(
+            "(function() { refreshEchoes(); return echoes.map(function(e) { return [e.hidden, e.textContent]; }); })()",
+            functions=("$", "len", "refreshEchoes"),
+            variables=("exactLen",),
+            prelude=length_page(system, {"rect_w": {"value": typed}, "rect_d": {"value": ""}})
+            + "\ndocument.querySelectorAll = function() { return echoes; };"
+            + "\nObject.keys(fields).forEach(function(k) { fields[k].getAttribute = function() { return null; }; });",
+            echoes=[{"dataset": {"echo": "rect_w"}, "hidden": True}, {"dataset": {"echo": "rect_d"}, "hidden": True}],
+        )
+        # An empty field shows nothing; a metric station shows the metres in the field itself.
+        expected = [[False, "Stored: 12.192 m"], [True, None]] if system == "imperial" else [[True, None], [True, None]]
+        assert shown == expected
 
     @needs_node
     def test_imperial_lengths_read_as_the_metres_saved(self, live_server) -> None:
         server, base = live_server
         _set_unit_system(base, "imperial")
         # Each shows as ft / in rounded to 0.01 in; read back from that text, 0.5 m was 0.500126 m.
-        assert _post_json(base, "/api/config/grid", {"width": 7.5, "spacing": 0.5, "x_offset": -1.23}) == 200
-        assert _post_json(base, "/api/config/camera", {"pos_x": 0.3, "pos_y": -11.07, "pos_z": 5.5}) == 200
+        assert (
+            _post_json(base, "/api/config/grid", {"width": 7.5, "depth": 6.3, "spacing": 0.5, "x_offset": -1.23}) == 200
+        )
         cfg = load_config(server.config_path)
-        saved = {f"grid_{k}": getattr(cfg.grid, k) for k in ("width", "depth", "spacing", "x_offset", "y_offset")}
-        saved |= {"grid_z_offset": cfg.grid.z_offset}
-        saved |= {f"cam_{k}": getattr(cfg.camera, k) for k in ("pos_x", "pos_y", "pos_z")}
         _status, body = _get(base, "/wizard")
-        fields = {}
-        for field_id in saved:
-            tag = re.search(rf'<input\b[^>]*\bid="{field_id}"[^>]*>', body)
-            assert tag, field_id
-            value = re.search(r'\bvalue="([^"]*)"', tag.group(0))
-            meters = re.search(r'\bdata-meters="([^"]*)"', tag.group(0))
-            assert value and meters, field_id
-            fields[field_id] = {"value": html.unescape(value.group(1)), "dataset": {"meters": meters.group(1)}}
+        saved = json.loads(re.search(r"window\.WIZ_SAVED = (.*);\n", body).group(1))["grid"]
+        assert saved["width"] == cfg.grid.width and saved["x_offset"] == cfg.grid.x_offset
         read = run_wizard_js(
-            "ids.map(function(id) { return wizReadLen(id); })",
-            functions=("wizReadLen",),
-            prelude=length_page("imperial", fields),
-            ids=list(saved),
+            "values.map(function(m) { return len(lenField(m)); })",
+            functions=("len", "lenField"),
+            variables=("exactLen",),
+            prelude=length_page("imperial", {}),
+            values=list(saved.values()),
         )
         assert read == list(saved.values())
 
-    @pytest.mark.parametrize("system", ["metric", "imperial"])
-    def test_grid_setup_opens_on_the_unit_choice(self, live_server, system) -> None:
+    @pytest.mark.parametrize(("system", "other"), [("metric", "Imperial"), ("imperial", "Metric")])
+    def test_camera_calibration_offers_the_other_unit_system(self, live_server, system, other) -> None:
         server, base = live_server
         _set_unit_system(base, system)
         status, body = _get(base, "/wizard")
         assert status == 200
-
-        step = body[body.index('id="wizard-step-grid"') : body.index('id="wizard-step-video"')]
-        first_control = re.search(r"<(?:select|input)\b[^>]*>", step)
-        assert first_control
-        assert 'id="wizard-unit-system"' in first_control.group(0)
-        assert f'<option value="{system}" selected>' in step
+        step = body[body.index('id="wizard-step-calib"') : body.index('id="wizard-step-review"')]
+        assert (
+            f'<button type="button" class="secondary small" id="unit-switch">Switch units to {other}</button>' in step
+        )
 
     def test_the_wizard_unit_choice_saves_through_the_settings_route(self, live_server) -> None:
         server, base = live_server
         _status, body = _get(base, "/wizard")
         assert "fetch('/settings/unit-system'" in body
-        assert "body.append('unit_system', select.value)" in body
+        assert "body.append('unit_system', to)" in body
         # The route the wizard posts to persists the choice.
         _set_unit_system(base, "imperial")
         assert load_config(server.config_path).ui.unit_system == "imperial"

@@ -557,6 +557,12 @@ def collect_runtime_state(p: DiagnosticsProviders) -> list[str]:
             rows.append(f"         key {item['port_key']}")
         if item.get("notes"):
             rows.append(f"         notes {', '.join(item['notes'])}")
+    conflicts = stats.get("marker_conflicts") or []
+    rows.append(f"  Marker conflicts:       {len(conflicts) or '(none)'}")
+    for conflict in conflicts:
+        stations = ", ".join(str(name) for name in conflict.get("stations") or [])
+        owners = f"this station, {stations}" if conflict.get("this_station") else stations
+        rows.append(f"    marker {conflict.get('marker_id', '?'):<4} controlled by {owners}")
     system = stats.get("system") or {}
     out_res = system.get("output_resolution")
     rows.append(f"  Output resolution:      {_fmt_resolution(out_res) if out_res else '- (no canvas)'}")

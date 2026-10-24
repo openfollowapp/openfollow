@@ -56,11 +56,11 @@ def _zone_outlines(state: OverlayState, w: int, h: int) -> list[_Zone]:
         # from subdivided edges; otherwise the vertex projection is the outline.
         n = _DISTORTION_SUBDIVISIONS if (state.lens_k1 or state.lens_k2) else 1
         if n == 1:
-            outline = project(cam, pts, w, h, state.lens_k1, state.lens_k2)
+            outline = project(cam, pts, w, h, *state.lens)
         else:
             loop = pts + [pts[0]]
             edges = [(loop[i], loop[i + 1]) for i in range(len(pts))]
-            polys = _project_segments(cam, edges, w, h, state.lens_k1, state.lens_k2, n)
+            polys = _project_segments(cam, edges, w, h, *state.lens, n)
             # Drop each edge's last point – it repeats the next edge's first.
             outline = np.vstack([poly[:-1] for poly in polys])
 
@@ -150,8 +150,7 @@ class ZoneCache:
             ),
             state.zone_z_offset,
             tuple(float(v) for v in cam),
-            state.lens_k1,
-            state.lens_k2,
+            state.lens,
             w,
             h,
             scale,

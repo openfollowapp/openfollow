@@ -23,6 +23,8 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import tomllib
+
 __all__ = [
     "DEFAULT_LAYOUT",
     "LAYOUT_RE",
@@ -148,11 +150,9 @@ def read_system_keyboard(path: Path | None = None) -> dict[str, str]:
 def read_configured(config_path: Path) -> tuple[str, str]:
     """The station's layout and variant from its config; blank when unset or unreadable."""
     try:
-        import tomllib  # noqa: PLC0415 - Python 3.10 has none; the kiosk session never runs there
-
         with config_path.open("rb") as handle:
             data = tomllib.load(handle)
-    except (ImportError, OSError, ValueError):  # ValueError: TOML syntax or not UTF-8
+    except (OSError, ValueError):  # ValueError: TOML syntax or not UTF-8
         return "", ""
     controller = data.get("controller")
     if not isinstance(controller, dict):

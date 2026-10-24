@@ -7,6 +7,7 @@ from __future__ import annotations
 import math
 import re
 import time
+from collections.abc import Sequence
 from typing import Any
 
 import numpy.typing as npt
@@ -21,6 +22,7 @@ from openfollow.configuration import (
 )
 from openfollow.input.touch_remote import STATUS_FLAG as REMOTE_FLAG
 from openfollow.input.touch_remote import status_row as remote_row
+from openfollow.marker_catalog.control_conflicts import ControlConflict
 from openfollow.network.validate import is_link_local
 from openfollow.palette import AUTO_PICK_ORDER as _PALETTE_AUTO_PICK_ORDER
 from openfollow.runtime.marker_velocity import MarkerVelocityState, estimate_marker_velocity
@@ -64,6 +66,13 @@ _HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 # ``GridConfig.__post_init__`` still fall back to whatever the dataclass
 # currently declares – no silent desync if GridConfig defaults change later.
 _GRID_DEFAULTS = GridConfig()
+
+# One status row for all the markers this station and another one both control.
+CONTROL_CONFLICT_ROW = "Control conflict: Marker {marker}"
+CONTROL_CONFLICT_NAMED_ROW = "Control conflict: Marker {marker} ({name})"
+CONTROL_CONFLICT_LIST_ROW = "Control conflict: Markers {markers}"
+# Characters of an id list row that fit one line of the badge in its bold UI font; more ids end in "…".
+CONTROL_CONFLICT_ROW_MAX_CHARS = 42
 
 
 def _soft_int(value: Any, default: int, *, lo: int | None = None) -> int:
@@ -198,6 +207,23 @@ def _resolve_marker_name(app: Any, marker_id: int) -> str:
     if entry is None:
         return ""
     return str(entry.name)
+
+
+def _control_conflict_row(app: Any, marker_ids: Sequence[int]) -> str:
+    """The row for *marker_ids*, ascending: one marker with its catalog name, or the ids cut to fit."""
+    if len(marker_ids) == 1:
+        name = _resolve_marker_name(app, marker_ids[0]).strip()
+        if name:
+            return CONTROL_CONFLICT_NAMED_ROW.format(marker=marker_ids[0], name=name)
+        return CONTROL_CONFLICT_ROW.format(marker=marker_ids[0])
+    shown = [str(marker_ids[0])]
+    for index, marker_id in enumerate(marker_ids[1:], start=2):
+        tail = ", …" if index < len(marker_ids) else ""
+        row = CONTROL_CONFLICT_LIST_ROW.format(markers=", ".join([*shown, str(marker_id)]) + tail)
+        if len(row) > CONTROL_CONFLICT_ROW_MAX_CHARS:
+            return CONTROL_CONFLICT_LIST_ROW.format(markers=", ".join(shown) + ", …")
+        shown.append(str(marker_id))
+    return CONTROL_CONFLICT_LIST_ROW.format(markers=", ".join(shown))
 
 
 def sync_marker_config(state: OverlayState, cfg: Any) -> None:
@@ -465,6 +491,7 @@ def build_marker_visual_state(
     cam_params_buffer: npt.NDArray[Any],
     dt: float,
     network_alerts: list[str] | None = None,
+    control_conflicts: Sequence[ControlConflict] = (),
 ) -> OverlayState:
     """Build a new OverlayState for the renderer; it is never changed once handed over.
 
@@ -473,6 +500,7 @@ def build_marker_visual_state(
     the velocity each controlled marker broadcasts.
     """
     controlled_set = set(app._controlled_ids)
+    conflict_ids = sorted({conflict.marker_id for conflict in control_conflicts if conflict.this_station})
     marker_speeds = app._input_manager.get_marker_gamepad_speeds() if app._input_manager is not None else {}
 
     # Every controlled marker is broadcast on PSN, so every controlled marker
@@ -722,6 +750,7 @@ def build_marker_visual_state(
                 controller_connected=ctrl_conn,
                 identify_flash=marker_id == flash_marker,
                 is_controlled=is_controlled,
+                control_conflict=marker_id in conflict_ids,
                 name=name,
                 marker_fader=marker_fader,
             )
@@ -741,10 +770,9 @@ def build_marker_visual_state(
     cam_params_buffer[5] = cam_cfg.roll
     cam_params_buffer[6] = cam_cfg.fov
     state.camera_params = cam_params_buffer.copy()
-    # Lens-distortion coefficients live on the app config (the Camera object is
-    # pinhole and doesn't carry them); read them straight from the live config so
-    # slider edits hot-reload onto the HUD.
-    state.lens_k1, state.lens_k2 = effective_lens(cfg)
+    # The lens lives on the app config (the Camera object is pinhole and doesn't
+    # carry it); read it straight from the live config so edits hot-reload onto the HUD.
+    state.lens_k1, state.lens_k2, state.lens_cx, state.lens_cy = effective_lens(cfg)
 
     state.selected_id = app._selected_id
 
@@ -938,6 +966,10 @@ def build_marker_visual_state(
     # data, and the rows past the badge's visible few collapse into "+N more".
     for i, alert in enumerate(state.network_alerts):
         state.status_flags.append((f"network_down_{i}", alert, "error"))
+
+    # Every output carries a controlled marker, so another station's sends make it jump at every receiver.
+    if conflict_ids:
+        state.status_flags.append(("control_conflict", _control_conflict_row(app, conflict_ids), "error"))
 
     # One row per missing controller, so it is seen even for a marker with no card.
     for info in controller_info:

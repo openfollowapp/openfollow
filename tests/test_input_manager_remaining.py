@@ -527,6 +527,51 @@ class TestRestartOsc:
         assert any("OSC input restart failed" in rec.message for rec in caplog.records)
 
 
+class TestResumeOsc:
+    """The network observer's retry of OSC input that is not running."""
+
+    def test_rebuilds_from_the_live_config(self) -> None:
+        app = _DummyApp(osc_enabled=True)
+        manager = InputManager(app)
+        first = manager.osc_handler
+        app._config.osc.port = 9010
+        app._config.osc.multicast_group = "239.1.2.3"
+
+        manager.resume_osc()
+
+        assert first is not None and first.stopped is True
+        handler = _FakeOscHandler.instances[-1]
+        assert manager.osc_handler is handler
+        assert (handler.port, handler.allowed_sender_ips, handler.multicast_group) == (
+            9010,
+            ["10.0.0.1"],
+            "239.1.2.3",
+        )
+        assert handler.started is True
+        assert manager.path_osc_handler is not None
+
+    def test_raises_while_the_listener_cannot_bind(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The observer reads a return as recovery, so a bind failure must reach it."""
+        app = _DummyApp(osc_enabled=True)
+        app._config.operator_messages.enabled = True
+        manager = InputManager(app)
+
+        class _FailingOscHandler(_FakeOscHandler):
+            def start(self) -> None:
+                raise OSError("port 9001 already in use")
+
+        monkeypatch.setattr(input_manager_module, "OscMarkerAdapter", _FailingOscHandler)
+        store = app._runtime_services._operator_message_store
+        store.add("Standby")
+        with pytest.raises(OSError, match="already in use"):
+            manager.resume_osc()
+        assert manager.osc_handler is None
+        assert manager.path_osc_handler is None
+        assert manager.operator_message_handler is None
+        # No listener, so no card it brought in stays on screen.
+        assert store.snapshot() == []
+
+
 # --------------------------------------------------------------------------- #
 # stop
 # --------------------------------------------------------------------------- #

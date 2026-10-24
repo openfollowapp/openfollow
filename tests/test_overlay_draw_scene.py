@@ -16,7 +16,9 @@ import numpy as np
 import pytest
 
 from openfollow.runtime.overlay_draw_scene import (
+    _DISTORTION_SUBDIVISIONS,
     _MAX_GRID_LINES_PER_AXIS,
+    _project_segments,
     draw_grid,
     draw_marker,
     draw_origin,
@@ -24,6 +26,7 @@ from openfollow.runtime.overlay_draw_scene import (
     project,
 )
 from openfollow.runtime.overlay_state import MarkerOverlayData, OverlayState
+from openfollow.scene.solver import invert_overlay_distortion, unproject_to_plane
 from tests._fake_cairo import FakeCairo, FakeRenderer
 
 pytestmark = pytest.mark.unit
@@ -213,7 +216,7 @@ class TestAssistGhost:
         state = _state_with_grid_offset(0.0, 0.0, 0.0)
         ghost = MarkerOverlayData(marker_id=1, x=1.0, y=1.0, z=0.0, color="#33ff99", is_assist_ghost=True)
 
-        def _fake_project(_cam, pts, _w, _h, _k1=0.0, _k2=0.0):
+        def _fake_project(_cam, pts, _w, _h, _k1=0.0, _k2=0.0, _cx=0.0, _cy=0.0):
             # Only the marker's own position lands on screen, so draw_marker reaches
             # the ghost path; the crosshair and ground ring project to non-finite,
             # so their segments are skipped and the ring is degenerate.
@@ -278,17 +281,32 @@ class TestLensDistortionWarp:
     def test_grid_subdivides_when_distortion_active(self) -> None:
         cr = FakeCairo()
         draw_grid(FakeRenderer(), cr, _grid_state(k1=-0.15, k2=0.04), 1920, 1080)
-        # Same number of lines, each subdivided into 12 chords.
+        # Same number of lines, each subdivided into 24 chords.
         assert len(cr.move_tos) == 7 + 11
-        assert len(cr.line_tos) == (7 + 11) * 12
+        assert len(cr.line_tos) == (7 + 11) * 24
+
+    def test_a_line_along_the_frame_edge_of_a_wide_lens_stays_on_its_curve(self) -> None:
+        # A ground line seen along the bottom edge through a 126 degree lens bows most;
+        # its chords stay within a pixel and a half of the curve they stand for.
+        lens = (-0.527, -0.069, 0.0, 0.0)
+        cam = _camera_params()
+        ends = invert_overlay_distortion(np.array([[52.0, 1062.0], [1868.0, 1062.0]]), 1920, 1080, *lens)
+        segment = unproject_to_plane(cam, ends, 1920, 1080)[None, :, :]
+        drawn = _project_segments(cam, segment, 1920, 1080, *lens, _DISTORTION_SUBDIVISIONS)[0]
+        curve = _project_segments(cam, segment, 1920, 1080, *lens, 960)[0]
+        a, d = drawn[:-1], np.diff(drawn, axis=0)
+        t = np.clip(np.einsum("cij,ij->ci", curve[:, None, :] - a, d) / np.einsum("ij,ij->i", d, d), 0.0, 1.0)
+        gap = np.linalg.norm(curve[:, None, :] - a - t[:, :, None] * d, axis=2).min(axis=1)
+        assert len(drawn) == 25
+        assert float(gap.max()) < 1.5
 
     def test_grid_line_actually_bows(self) -> None:
         # A straight world line must render curved: its mid sub-point is not
         # collinear with the endpoints once distortion is applied.
         cr = FakeCairo()
         draw_grid(FakeRenderer(), cr, _grid_state(k1=-0.15, k2=0.04), 1920, 1080)
-        pts = [cr.move_tos[0], *cr.line_tos[:12]]  # 13 points of the first line
-        p0, pm, pe = pts[0], pts[6], pts[12]
+        pts = [cr.move_tos[0], *cr.line_tos[:24]]  # 25 points of the first line
+        p0, pm, pe = pts[0], pts[12], pts[24]
         cross = (pm[0] - p0[0]) * (pe[1] - p0[1]) - (pm[1] - p0[1]) * (pe[0] - p0[0])
         assert abs(cross) > 1.0
 
@@ -304,7 +322,7 @@ class TestLensDistortionWarp:
         on_state.show_ground_circle = False
         on = FakeCairo()
         draw_marker(on, on_state, marker, 1920, 1080)
-        # 3 crosshair axes + 1 Z line each subdivide 12x when distortion is on;
+        # 3 crosshair axes + 1 Z line each subdivide 24x when distortion is on;
         # the ball arc count is unchanged.
         assert len(on.line_tos) > len(off.line_tos) * 5
         assert len(on.arcs) == len(off.arcs)
@@ -345,8 +363,8 @@ class TestLensDistortionWarp:
         state.origin_length = 3.0
         cr = FakeCairo()
         draw_origin(cr, state, 1920, 1080)
-        # 3 axes, each subdivided into 12 chords.
-        assert len(cr.line_tos) == 3 * 12
+        # 3 axes, each subdivided into 24 chords.
+        assert len(cr.line_tos) == 3 * 24
 
     def test_assist_ghost_subdivides(self) -> None:
         ghost = MarkerOverlayData(marker_id=1, x=1.0, y=1.0, z=0.0, color="#33ff99", is_assist_ghost=True)
@@ -370,7 +388,7 @@ class TestLensDistortionWarp:
         state.show_origin = True
         state.origin_length = 3.0
 
-        def _fake_project(_cam, pts, _w, _h, _k1=0.0, _k2=0.0):
+        def _fake_project(_cam, pts, _w, _h, _k1=0.0, _k2=0.0, _cx=0.0, _cy=0.0):
             out = np.tile(np.array([[100.0, 100.0]]), (len(pts), 1)).astype(float)
             out[len(pts) // 2] = np.nan  # one sub-point behind the camera
             return out

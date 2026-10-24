@@ -497,6 +497,62 @@ class TestCatalogPolling:
         assert peers[0]["controlled_ids"] == [1]
 
 
+@pytest.fixture
+def live_server_with_stats(tmp_path, monkeypatch):
+    """A server whose runtime stats the test sets, as the frame loop publishes them."""
+    monkeypatch.setattr(discovery_module.BeaconSender, "start", lambda self: None)
+    monkeypatch.setattr(discovery_module.BeaconSender, "stop", lambda self: None)
+    monkeypatch.setattr(discovery_module.BeaconReceiver, "start", lambda self: None)
+    monkeypatch.setattr(discovery_module.BeaconReceiver, "stop", lambda self: None)
+    catalog = MarkerCatalog()
+    sync = _FakeSync()
+    stats: dict = {}
+    with live_on_free_port(
+        lambda port: ConfigWebServer(
+            config_path=str(tmp_path / "config.toml"),
+            host="127.0.0.1",
+            port=port,
+            system_name="OpenFollow test",
+            marker_catalog_provider=lambda: catalog,
+            marker_catalog_sync_provider=lambda: sync,
+            runtime_stats_provider=lambda: stats,
+        )
+    ) as (_server, base):
+        yield base, catalog, sync, stats
+
+
+class TestCatalogConflicts:
+    """The table flags the conflicts the runtime decided, never a count of its own."""
+
+    def test_the_runtimes_conflicts_reach_the_table(self, live_server_with_stats) -> None:
+        base, catalog, _, stats = live_server_with_stats
+        catalog.upsert(3, "Lead", "#ff0000")
+        conflict = {"marker_id": 3, "stations": ["Stage Left"], "this_station": True}
+        stats["marker_conflicts"] = [conflict]
+        status, body = _request(base, "/api/markers/catalog")
+        assert status == 200
+        assert json.loads(body)["marker_conflicts"] == [conflict]
+
+    def test_a_shared_marker_the_runtime_has_not_flagged_is_no_conflict(self, live_server_with_stats) -> None:
+        """A peer's beacon alone does not make a conflict here: the runtime's publish decides it."""
+        base, catalog, sync, stats = live_server_with_stats
+        catalog.upsert(1, "A", "#ff0000")
+        sync.peers.append(
+            PeerSelection(station_id="peer-x", station_name="Stage Left", controlled_ids=[1], last_seen=time.time())
+        )
+        stats["marker_conflicts"] = []
+        _, body = _request(base, "/api/markers/catalog")
+        assert json.loads(body)["marker_conflicts"] == []
+
+    @pytest.mark.parametrize("published", [{}, {"marker_conflicts": None}], ids=["no-stats", "null"])
+    def test_no_published_decision_reads_as_no_conflict(self, live_server_with_stats, published) -> None:
+        base, catalog, _, stats = live_server_with_stats
+        catalog.upsert(1, "A", "#ff0000")
+        stats.update(published)
+        _, body = _request(base, "/api/markers/catalog")
+        assert json.loads(body)["marker_conflicts"] == []
+
+
 class TestMarkersPageRetired:
     def test_standalone_route_returns_404(self, live_server) -> None:
         """The standalone ``/markers`` page was retired in favour of
@@ -537,6 +593,7 @@ class TestCatalogUnavailable:
         data = json.loads(body)
         assert data["entries"] == []
         assert data["peer_selections"] == []
+        assert data["marker_conflicts"] == []
         assert "next_free_id" not in data
 
     def test_put_503_when_catalog_absent(self, live_server_no_providers) -> None:

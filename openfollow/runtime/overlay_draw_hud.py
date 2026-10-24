@@ -1410,9 +1410,10 @@ def draw_marker_card(
         cr.push_group()
     try:
         # Solid background; border uses marker color for per-card identity. A
-        # card whose controller is missing turns red so it reads across a room.
+        # card whose controller is missing, or whose marker another station
+        # controls too, turns red so it reads across a room.
         missing = t.is_controlled and t.controller_idx is not None and not t.controller_connected
-        if missing:
+        if missing or (t.is_controlled and t.control_conflict):
             cr.set_source_rgba(*COLOR_WARNING_FILL)
         else:
             cr.set_source_rgb(*COLOR_BG_BASE)

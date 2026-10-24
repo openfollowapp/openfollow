@@ -244,6 +244,7 @@ class OpenFollowApp:
         self._config_mtime: float = self._get_config_mtime()
         self._last_config_check: float = 0.0
         self._config_blank_warned_mtime: float | None = None
+        self._config_error_warned_mtime: float | None = None
         self._web_commands: WebCommandQueue = WebCommandQueue()
         self._runtime_services: AppRuntimeServices = AppRuntimeServices(self)
         # Markers locked onto paths; rebuilt whenever the paths or the Paths feature change.

@@ -39,9 +39,6 @@ _GATED_ROOTS = [
     # The detection partial gates itself so it hides even outside its tab.
     ("partials/detection.tpl", 'id="detection-section"', "detection"),
     ("partials/rttrpm_output.tpl", 'id="rttrpm-output-section"', "rttrpm"),
-    ("partials/camera.tpl", 'id="camera-calibration-points"', "calibration_points"),
-    ("wizard.tpl", 'id="calib-section"', "calibration_points"),
-    ("wizard.tpl", 'id="review-calib"', "calibration_points"),
     ("partials/trigger_zones.tpl", 'id="trigger-zones-section"', "zones"),
     ("partials/zone_editor.tpl", 'id="zone-editor-section"', "zones"),
     ("partials/paths.tpl", 'id="paths-section"', "paths"),
@@ -61,7 +58,6 @@ def test_section_root_carries_its_feature(rel: str, anchor: str, feature: str) -
 @pytest.mark.parametrize(
     ("rel", "heading", "feature"),
     [
-        ("partials/camera.tpl", '<h3 class="group-title">Lens distortion</h3>', "lens_distortion"),
         ("partials/midi.tpl", '<h3 class="group-title">MIDI Patches</h3>', "midi"),
     ],
 )
@@ -73,15 +69,13 @@ def test_group_above_its_heading_carries_its_feature(rel: str, heading: str, fea
 
 # Each experimental section's header carries the Experimental badge. The
 # Person Detection page has no single header: every collapsible box carries its
-# own badge. Review's calibration-point list has none: it lists what the badged Advanced section edits.
+# own badge.
 _BADGED_HEADERS = [
     ("partials/detection.tpl", "<h2>Tracking"),
     ("partials/detection.tpl", "<h2>Detection Model"),
     ("partials/detection.tpl", "<h2>Sensitivity &amp; Overlay"),
     ("partials/detection_mask_editor.tpl", "<h2>Detection Masks"),
     ("partials/rttrpm_output.tpl", "<h2>RTTrPM Output"),
-    ("partials/camera.tpl", '<h3 class="group-title">Calibration points'),
-    ("wizard.tpl", "<summary>Advanced"),
 ]
 
 
@@ -100,11 +94,25 @@ def test_every_data_feature_names_a_known_feature() -> None:
     assert named <= set(FEATURE_KEYS)
 
 
-def test_every_feature_but_psn_input_hides_something() -> None:
+def test_the_camera_tabs_calibration_marks_are_not_gated() -> None:
+    """Advanced calibration is always available, so the marks it saved always show."""
+    line = _line_with(_read("partials/camera.tpl"), 'id="camera-calibration-marks"')
+    assert "data-feature" not in line
+    assert "badge-experimental" not in _line_with(_read("partials/camera.tpl"), "Calibration (")
+
+
+def test_the_camera_tabs_lens_is_not_gated() -> None:
+    text = _read("partials/camera.tpl")
+    group = text[: text.index('<h3 class="group-title">Lens distortion</h3>')].rsplit("<div", 1)[1]
+    assert "data-feature" not in group
+
+
+def test_every_feature_but_psn_input_and_lens_suggestions_hides_something() -> None:
     texts = "\n".join(_template_texts())
     # Binding rows pass their feature through a helper; the interface row through routes.
+    # Off, Lens line suggestions are never requested, so the Lens step has nothing to hide.
     hidden = {key for key in FEATURE_KEYS if f'data-feature="{key}"' in texts or f"feature='{key}'" in texts}
-    assert set(FEATURE_KEYS) - hidden == {"psn_input"}
+    assert set(FEATURE_KEYS) - hidden == {"psn_input", "lens_suggestions"}
 
 
 def test_nothing_carries_the_retired_gate_class() -> None:

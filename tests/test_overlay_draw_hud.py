@@ -1655,6 +1655,16 @@ class TestMarkerCardRendering:
         badge = next(d for d in cr.texts if d.text == "C2 missing")
         assert badge.rgba[:3] == COLOR_TEXT
 
+    @pytest.mark.parametrize(("is_controlled", "red"), [(True, True), (False, False)])
+    def test_a_marker_another_station_controls_too_turns_its_card_red(self, is_controlled: bool, red: bool) -> None:
+        """Only a card this station drives: a viewed marker's conflict is the controllers' own."""
+        cr = FakeCairo()
+        marker = _marker(controller_idx=0, controller_connected=True, is_controlled=is_controlled)
+        marker.control_conflict = True
+        draw_marker_card(FakeRenderer(), cr, x=0, y=0, w=180, h=64, t=marker, selected=False, state=None)
+        assert (("rgba", *COLOR_WARNING_FILL) in cr.calls) is red
+        assert (("rgb", *COLOR_BG_BASE) in cr.calls) is not red
+
     @staticmethod
     def _missing_card(name: str) -> tuple[FakeCairo, Any, Any]:
         cr = FakeCairo()

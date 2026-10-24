@@ -34,6 +34,7 @@ from openfollow.configuration import (
 )
 from openfollow.input import InputManager
 from openfollow.input.mouse3d import idle_mouse3d_status
+from openfollow.marker_catalog.control_conflicts import ControlConflict, find_control_conflicts
 from openfollow.net_adapters import display_name
 from openfollow.net_egress import Egress, is_loopback_host, resolve_egress
 from openfollow.net_utils import ResolveStatus, interface_present, plane_source_iface
@@ -748,6 +749,8 @@ class AppRuntimeServices:
         self._last_runtime_stats_publish = 0.0
         self._runtime_stats_lock = threading.Lock()
         self._runtime_stats_snapshot: dict[str, Any] = self._default_runtime_stats_snapshot()
+        # Decided at each stats publish; the HUD, /api/stats and the web marker table all read this.
+        self._control_conflicts: tuple[ControlConflict, ...] = ()
         # Cache the detection-deps probe so the 4Hz stats loop doesn't call
         # importlib.util.find_spec() on every publish; invalidated by TTL and
         # by any change to the detection config signature.
@@ -1258,8 +1261,17 @@ class AppRuntimeServices:
             self.apply_psn_source_ip_change(address)
 
         def _current_psn() -> str | None:
+            # The output's address; the input's alone when the output never started.
             server = self._app._server
-            return server.bound_source_ip() if server is not None else None
+            if server is not None:
+                return server.bound_source_ip()
+            receiver = self._app._psn_receiver
+            return receiver.bound_source_ip() if receiver is not None else None
+
+        def _psn_complete() -> bool:
+            # PSN input belongs to the plane: one that did not bind beside the output is a failure to retry.
+            receiver = self._app._psn_receiver
+            return receiver is None or not receiver.enabled or receiver.bound_source_ip() == _current_psn()
 
         def _suspend_psn() -> None:
             # Both directions, and both attempted even if the first raises:
@@ -1350,6 +1362,11 @@ class AppRuntimeServices:
                 return False
             return bool(plane_source_iface(cfg.source_iface, self._app._config.psn_source_iface))
 
+        def _start_osc_listener() -> None:
+            # A failed restart leaves no listener: rebuild it from the config, raising while it cannot bind.
+            if self._osc_service.listener_status()["port"] is None and self._app._input_manager is not None:
+                self._app._input_manager.resume_osc()
+
         def _apply_osc_input(address: str) -> None:
             # Rebinds the listener so the group follows the interface. The
             # membership cannot be dropped once the address it was taken on is
@@ -1360,6 +1377,7 @@ class AppRuntimeServices:
             # as success - it clears the outage, logs that the output resumed
             # and starts the poll again with no backoff - so swallowing the
             # False would retry once a second forever while reporting health.
+            _start_osc_listener()
             cfg = self._app._config
             if not self._osc_service.set_multicast_iface(
                 address, plane_source_iface(cfg.osc.listen_iface, cfg.psn_source_iface)
@@ -1374,19 +1392,18 @@ class AppRuntimeServices:
             return None if iface is None else str(iface)
 
         def _suspend_osc_input() -> None:
+            # Unicast and broadcast keep arriving without the membership.
+            _start_osc_listener()
             self._osc_service.set_multicast_iface(None)
 
         def _osc_input_pinned() -> bool:
-            # Three things have to be true before this is a plane. Unpinned, the
-            # membership is the routing table's to choose and there is no
-            # interface to follow; with no group configured the pin governs
-            # nothing; and with no listener running there is no socket to move a
-            # membership on, so polling would retry once a second forever
-            # against a port that is in use.
+            # Config only. Unpinned, the membership is the routing table's to
+            # choose and there is no interface to follow; with no group
+            # configured the pin governs nothing. A listener that is not running
+            # stays a plane, so its failure is reported and retried.
             cfg = self._app._config.osc
             pinned = plane_source_iface(cfg.listen_iface, self._app._config.psn_source_iface)
-            listening = self._osc_service.listener_status()["port"] is not None
-            return bool(cfg.enabled and cfg.multicast_group and pinned and listening)
+            return bool(cfg.enabled and cfg.multicast_group and pinned)
 
         return [
             Plane(
@@ -1395,6 +1412,7 @@ class AppRuntimeServices:
                 current=_current_psn,
                 apply=_apply_psn,
                 suspend=_suspend_psn,
+                complete=_psn_complete,
             ),
             Plane(
                 label="OTP output",
@@ -3673,6 +3691,7 @@ class AppRuntimeServices:
             cam_params_buffer=self._cam_params_buffer,
             dt=dt,
             network_alerts=self.network_alerts(),
+            control_conflicts=self._control_conflicts,
         )
 
         # Replaced on the main thread; a state the render thread received at a refresh is never changed.
@@ -3779,8 +3798,8 @@ class AppRuntimeServices:
         from openfollow.scene.solver import invert_overlay_distortion, unproject_to_plane
 
         cam_cfg = app._camera.to_config()
-        # Lens-distortion coefficients live on the config (the pinhole Camera
-        # doesn't carry them), so read them straight from there.
+        # The lens lives on the config (the pinhole Camera doesn't carry it),
+        # so read it straight from there.
         lens = effective_lens(app._config)
         params = self._zone_cam_buffer
         params[0] = cam_cfg.pos_x
@@ -4059,7 +4078,15 @@ class AppRuntimeServices:
             },
             # Filled once the Operator Screen has drawn for a window (``HudMetrics``); None headless.
             "hud": None,
+            "marker_conflicts": [],
         }
+
+    def _find_control_conflicts(self) -> tuple[ControlConflict, ...]:
+        """Markers two or more stations control, this one included, from the peers' catalog-sync beacons."""
+        sync = getattr(self._app, "_marker_catalog_sync", None)
+        if sync is None:
+            return ()
+        return find_control_conflicts(self._app._controlled_ids, sync.get_peer_selections())
 
     def _detection_pin_status(self) -> float | None:
         """The PSN tracker status the detection pin last wrote, or None when it drives nothing.
@@ -4219,6 +4246,7 @@ class AppRuntimeServices:
                 )
 
         playback_snapshot = self._frame_metrics.snapshot()
+        self._control_conflicts = self._find_control_conflicts()
 
         detection_snapshot: dict[str, Any] = {
             "enabled": bool(self.detection_config().enabled),
@@ -4273,6 +4301,7 @@ class AppRuntimeServices:
             "playback": playback_snapshot,
             "tracking": detection_snapshot,
             "hud": self._hud_render.stats() if self._hud_render is not None else None,
+            "marker_conflicts": [conflict.to_dict() for conflict in self._control_conflicts],
         }
 
         with self._runtime_stats_lock:

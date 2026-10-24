@@ -6,6 +6,7 @@ sync, guard and restore are exercised with real ``rsync`` and ``git``."""
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shlex
 import shutil
@@ -25,29 +26,46 @@ pytestmark = pytest.mark.integration
 
 _SCRIPT = Path(openfollow.__file__).resolve().parent.parent / "scripts" / "ci-remote.sh"
 
-# Drops ssh's options and destination, then runs the command the way sshd would.
-_FAKE_SSH = """#!/usr/bin/env bash
-while [ $# -gt 0 ]; do
-  case "$1" in
-    -o|-l|-p|-i|-F) shift 2 ;;
-    -*) shift ;;
-    *) break ;;
-  esac
-done
-shift
-exec bash -c "$*"
+# Drops ssh's options and destination, then runs the command the way sshd would: in a
+# session of its own, so a signal to the caller's process group stops this "ssh" and not
+# the "remote" command, and the command outlives a connection that goes away.
+_FAKE_SSH = f"""#!{sys.executable} -I
+import os, signal, sys
+signal.signal(signal.SIGINT, signal.SIG_DFL)
+args = sys.argv[1:]
+while args and args[0].startswith("-"):
+    args = args[2:] if args[0] in ("-o", "-l", "-p", "-i", "-F") else args[1:]
+child = os.fork()
+if child == 0:
+    os.setsid()
+    os.environ["FAKE_SSH_PID"] = str(os.getppid())
+    os.execvp("bash", ["bash", "-c", " ".join(args[1:])])
+code = os.waitstatus_to_exitcode(os.waitpid(child, 0)[1])
+sys.exit(code if code >= 0 else 128 - code)
 """
 
-# The long step marks itself running only once SIGINT is fatal to it. A marker the shell
-# touched before forking `sleep` could let the signal land before the exec and be lost.
+# A long gate step on the Pi: records its pid once it can be stopped, and on SIGTERM
+# whether the synced tree was still in place (the checkout not yet restored under it).
 _LONG_STEP = (
-    "import pathlib, signal, sys, time; signal.signal(signal.SIGINT, signal.SIG_DFL); "
-    "pathlib.Path(sys.argv[1]).touch(); time.sleep(60)"
+    "import os, pathlib, signal, sys, time\n"
+    "def stop(*_):\n"
+    "    pathlib.Path(sys.argv[2]).write_text(str(os.path.exists('branch_only.txt')))\n"
+    "    sys.exit(143)\n"
+    "signal.signal(signal.SIGTERM, stop)\n"
+    "pathlib.Path(sys.argv[1] + '.tmp').write_text(str(os.getpid()))\n"
+    "os.replace(sys.argv[1] + '.tmp', sys.argv[1])\n"
+    "time.sleep(60)\n"
 )
+
+
+def _long_step(running: Path, stopped: Path) -> str:
+    return " ".join(shlex.quote(a) for a in (sys.executable, "-I", "-c", _LONG_STEP, str(running), str(stopped)))
+
 
 # Stands in for hud_bench.py --compare: the bench's own exit code, which make would turn into 2.
 _FAKE_POETRY = """#!/usr/bin/env bash
 [ "$3 $4" = "scripts/hw_validation/hud_bench.py --compare" ] || exit 99
+if [ -n "${FAKE_PERF_HOOK:-}" ]; then eval "$FAKE_PERF_HOOK"; fi
 echo "bench against: $(cat "$5/openfollow/video/overlay.py")" >> "$FAKE_MAKE_LOG"
 echo "$5" > "$FAKE_MAKE_LOG.base"
 exit "${FAKE_PERF_STATUS:-0}"
@@ -279,28 +297,116 @@ def test_a_failed_restore_fails_the_run(tmp_path: Path, make_status: str) -> Non
     assert "could not be restored" in result.stderr
 
 
-def test_an_interrupted_gate_still_restores_the_pi(tmp_path: Path) -> None:
-    station = _station(tmp_path)
-    running = tmp_path / "make.running"
+def _await(path: Path, proc: subprocess.Popen[str]) -> int:
+    """The pid a long step wrote to ``path`` once it is running on the Pi."""
+    deadline = time.monotonic() + 30
+    while not path.exists() and proc.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert path.exists(), "the gate never started"
+    return int(path.read_text(encoding="utf-8"))
 
-    hook = f"exec {shlex.quote(sys.executable)} -I -c {shlex.quote(_LONG_STEP)} {shlex.quote(str(running))}"
-    proc = station.start(FAKE_MAKE_HOOK=hook)
+
+def _gone(pid: int, *, group: bool = False) -> bool:
     try:
-        deadline = time.monotonic() + 30
-        while not running.exists() and proc.poll() is None and time.monotonic() < deadline:
-            time.sleep(0.02)
-        assert running.exists(), "the gate never started"
-        os.killpg(proc.pid, signal.SIGINT)
+        (os.killpg if group else os.kill)(pid, 0)
+    except ProcessLookupError:
+        return True
+    return False
+
+
+def _end(proc: subprocess.Popen[str], step_pid: int, stopped: Path) -> None:
+    """Kill what this test started and is still running: the script's own process group,
+    and a long step that never got its SIGTERM (it exits on one, so its pid is not reused)."""
+    if proc.poll() is None:
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait()
+    if step_pid and not stopped.exists():
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(step_pid, signal.SIGKILL)
+
+
+@pytest.mark.parametrize("step", ["make ci", "drawing comparison"])
+@pytest.mark.parametrize("interrupt", ["ctrl-c", "sigterm", "dropped connection"])
+def test_an_interrupted_gate_is_stopped_on_the_pi_before_its_checkout_is_restored(
+    tmp_path: Path, interrupt: str, step: str
+) -> None:
+    station = _station(tmp_path, local_git="repo")
+    station.commit("openfollow/video/overlay.py", "branch")
+    running, stopped = tmp_path / "step.running", tmp_path / "step.stopped"
+    hook = _long_step(running, stopped)
+    if interrupt == "dropped connection":
+        # Dropped once the step runs: dropping it first can stop the step before it starts.
+        wait = f"while [ ! -e {shlex.quote(str(running))} ]; do sleep 0.05; done"
+        hook = f'( {wait}; kill -KILL "$FAKE_SSH_PID" ) & {hook}'
+    # Another gate on the same Pi, in its own session: never this run's to stop.
+    other = subprocess.Popen(
+        [sys.executable, "-I", "-c", "import time; time.sleep(60)", "make", "ci"], start_new_session=True
+    )
+    proc = station.start(**{"FAKE_MAKE_HOOK" if step == "make ci" else "FAKE_PERF_HOOK": hook})
+    pid = 0
+    try:
+        pid = _await(running, proc)
+        if interrupt != "dropped connection":
+            os.killpg(proc.pid, signal.SIGINT if interrupt == "ctrl-c" else signal.SIGTERM)
         _, stderr = proc.communicate(timeout=30)
+        other_survived = other.poll() is None
     finally:
-        if proc.poll() is None:
-            os.killpg(proc.pid, signal.SIGKILL)
-            proc.wait()
+        _end(proc, pid, stopped)
+        other.kill()
+        other.wait()
 
     assert proc.returncode != 0
     assert "CI PASSED" not in stderr
+    # Stopped while the synced tree was still in place, then the checkout restored.
+    assert stopped.read_text(encoding="utf-8") == "True"
+    assert other_survived
     assert station.git("rev-parse", "HEAD") == station.orig_ref
     assert station.git("status", "--porcelain") == ""
+
+
+def test_a_gate_left_running_on_the_pi_holds_off_the_next_until_it_ends(tmp_path: Path) -> None:
+    station = _station(tmp_path)
+    running, stopped = tmp_path / "step.running", tmp_path / "step.stopped"
+    first = station.start(FAKE_MAKE_HOOK=_long_step(running, stopped))
+    pid = 0
+    try:
+        pid = _await(running, first)
+        # The workstation went away mid-gate: no trap ran, the Pi run carries on.
+        os.killpg(first.pid, signal.SIGKILL)
+        first.wait()
+        refused = station.run(OPENFOLLOW_CI_FORCE="1")
+        survived = not _gone(pid)
+        # The run ends on its own: TERM lets the long step say it was stopped.
+        group = os.getpgid(pid)
+        os.killpg(group, signal.SIGTERM)
+        deadline = time.monotonic() + 30
+        while not _gone(group, group=True) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        after = station.run(OPENFOLLOW_CI_FORCE="1")
+    finally:
+        _end(first, pid, stopped)
+        if first.stderr is not None:
+            first.stderr.close()
+
+    assert refused.returncode == 2
+    assert "an earlier gate is still running" in refused.stderr
+    assert survived
+    assert after.returncode == 0, after.stderr
+    assert station.made() == ["make ci", "make ci"]
+    assert station.git("rev-parse", "HEAD") == station.orig_ref
+    assert station.git("status", "--porcelain") == ""
+
+
+@pytest.mark.parametrize("record", ["1", "0", "01", "-1", "", "abc"])
+def test_a_run_record_naming_no_gate_neither_blocks_nor_stops_anything(tmp_path: Path, record: str) -> None:
+    """kill reads group 0 or 1 as "every process", so such a record names no run."""
+    station = _station(tmp_path)
+    (station.pi / ".git" / "ci-remote.pid").write_text(record, encoding="utf-8")
+
+    result = station.run()
+
+    assert result.returncode == 0, result.stderr
+    assert station.made() == ["make ci"]
 
 
 # --------------------------------------------------------------------------- #

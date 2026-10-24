@@ -30,14 +30,15 @@ import numpy as np  # noqa: E402
 from gallery_calibration import camera_from, write_calibration  # noqa: E402
 from PIL import Image  # noqa: E402
 
+from openfollow.lens_model import pull_back_to_valid  # noqa: E402
 from openfollow.scene.solver import apply_overlay_distortion, project_points  # noqa: E402
 
 ASSET = ROOT / "openfollow" / "video" / "inputs" / "assets" / "arena_default.jpg"
 W, H = 1920.0, 1080.0
 # Truss above the stage: pos_x, pos_y, pos_z, pitch, yaw, roll, horizontal fov.
 CAMERA = np.array([0.0, 9.8, 7.6, -21.5, 180.0, 0.0, 65.8])
-K1, K2 = -0.15, 0.02  # barrel / fisheye, edge fit
-# Pinhole geometry is cut to this box before the lens bows it; far outside it the warp folds back.
+K1, K2 = -0.15, -0.03  # barrel / fisheye, corner correction
+# Pinhole geometry is cut to this box before the lens bows it, which keeps the SVG small.
 CLIP = (-0.25 * W, -0.25 * H, 1.25 * W, 1.25 * H)
 STEP_PX = 6.0  # edges are split this finely, so a straight edge bows like the lens bows it
 
@@ -86,7 +87,7 @@ def pinhole(pts) -> np.ndarray:
 
 
 def lens(px: np.ndarray) -> np.ndarray:
-    return apply_overlay_distortion(px, W, H, K1, K2)
+    return apply_overlay_distortion(px, W, H, K1, K2, 0.0, 0.0)
 
 
 _PLANES = [(0, CLIP[0], 1), (0, CLIP[2], -1), (1, CLIP[1], 1), (1, CLIP[3], -1)]
@@ -346,11 +347,12 @@ def build_svg() -> str:
 
 
 def main() -> None:
+    assert pull_back_to_valid(K1, K2, 0.0, 0.0) == (K1, K2, 0.0, 0.0), "lens pair cannot reach the corners"
     png = subprocess.run(["rsvg-convert", "-f", "png"], input=build_svg().encode(), capture_output=True, check=True)
     Image.open(io.BytesIO(png.stdout)).convert("RGB").save(ASSET, quality=90, optimize=True)
     pos = ", ".join(f"{v:g}" for v in CAMERA[:3])
     print(f"Camera: pos=({pos}) pitch={CAMERA[3]:g} yaw={CAMERA[4]:g} roll={CAMERA[5]:g} hfov={CAMERA[6]:g}")
-    print(f"Lens:   barrel / fisheye {K1:g}, edge fit {K2:g}")
+    print(f"Lens:   barrel / fisheye {K1:g}, corner correction {K2:g}")
     print(f"Grid:   {GRID_W:g} x {GRID_D:g} m, x_offset 0, y_offset {GRID_D / 2:g}, z_offset 0")
     print(f"Stage front at y {LIP_Y:g}, {-FLOOR_Z:g} m above the arena floor")
     for name, corner in CORNERS.items():

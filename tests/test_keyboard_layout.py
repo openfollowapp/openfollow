@@ -354,13 +354,6 @@ def test_the_package_depends_on_the_xkb_catalog() -> None:
     assert re.search(r"\bxkb-data\b", depends)
 
 
-def test_without_a_toml_reader_the_station_setting_reads_as_unset(monkeypatch, files) -> None:
-    """Python 3.10 has no ``tomllib``; the app still imports this module there."""
-    files["config"].write_text('[controller]\nkeyboard_layout = "de"\n')
-    monkeypatch.setitem(sys.modules, "tomllib", None)
-    assert kl.read_configured(files["config"]) == ("", "")
-
-
 def test_no_test_sees_the_hosts_keyboard() -> None:
     """A station's xkb data, keyboard file or kiosk session would leak into any test that renders the row."""
     assert kl.read_catalog() == kl.XkbCatalog()

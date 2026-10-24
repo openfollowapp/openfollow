@@ -30,7 +30,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib import metadata
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -87,6 +87,17 @@ _VID_3DCONNEXION = 0x256F
 _VID_LOGITECH_LEGACY = 0x046D
 _SPACEMOUSE_PID_LO = 0xC600
 _SPACEMOUSE_PID_HI = 0xC6FF
+# The HID usage a 6DOF puck declares: Generic Desktop / Multi-axis Controller.
+_PUCK_USAGE = (0x01, 0x08)
+
+# Models pyspacemouse has no profile for, read with a sibling's profile under
+# their own IDs and name: (vid, pid) -> (name, sibling (vid, pid)).
+_LOCAL_PROFILES: dict[tuple[int, int], tuple[str, tuple[int, int]]] = {
+    (0x046D, 0xC628): ("SpaceNavigatorForNotebooks", (0x046D, 0xC626)),
+    (0x256F, 0xC62F): ("SpaceMouseWirelessReceiver", (0x256F, 0xC62E)),
+    (0x256F, 0xC631): ("SpaceMouseProWirelessCabled", (0x256F, 0xC632)),
+    (0x256F, 0xC636): ("SpaceMouseModule", (0x256F, 0xC635)),
+}
 
 # How often the manager re-enumerates connected pucks (hotplug), seconds.
 _ENUMERATE_INTERVAL_S = 1.5
@@ -103,32 +114,27 @@ def _platform_supported() -> bool:
 
 @functools.cache
 def _backend_version() -> str:
-    """The installed pyspacemouse, which decides the models that have a profile."""
+    """The installed pyspacemouse version, reported in the status."""
     try:
         return metadata.version("pyspacemouse")
     except metadata.PackageNotFoundError:
         return ""
 
 
-def _looks_like_puck(vendor_id: int, product_id: int) -> bool:
-    """True for a USB VID/PID in the 3Dconnexion range.
-
-    Recognition only: it says the device is a 3Dconnexion one, not that the
-    backend can read it. :func:`_is_supported_puck` answers that.
-    """
+def _in_3dconnexion_range(vendor_id: int, product_id: int) -> bool:
+    """True for a USB VID/PID 3Dconnexion ships its devices under, pucks or not."""
     if vendor_id == _VID_3DCONNEXION:
         return True
     return vendor_id == _VID_LOGITECH_LEGACY and _SPACEMOUSE_PID_LO <= product_id <= _SPACEMOUSE_PID_HI
 
 
 @functools.cache
-def _backend_puck_ids() -> frozenset[tuple[int, int]] | None:
-    """``(vid, pid)`` pairs the backend holds a device profile for.
+def _device_profiles() -> dict[tuple[int, int], Any] | None:
+    """``(vid, pid)`` -> how to open that model: ``None`` for a built-in profile, else the local spec.
 
-    ``None`` when the table can't be read, which is the signal to fall back to
-    the VID/PID range. Cached because a *failed* import is not cached by Python
-    the way a successful one is, so an uncachable answer would otherwise be
-    re-attempted once per HID device per enumeration pass.
+    ``None`` overall when the backend's table can't be read. Cached because a
+    *failed* import is not cached by Python the way a successful one is, so an
+    uncachable answer would otherwise be re-attempted on every enumeration pass.
     """
     try:
         from pyspacemouse import get_device_specs  # lazy: imports the HID backend
@@ -136,25 +142,21 @@ def _backend_puck_ids() -> frozenset[tuple[int, int]] | None:
         logger.debug("3D Mouse device profiles unavailable: %s", exc)
         return None
     try:
-        specs = get_device_specs()
+        builtin = {(int(spec.vendor_id), int(spec.product_id)): spec for spec in get_device_specs().values()}
     except Exception as exc:  # noqa: BLE001 - an unreadable table must not stop enumeration
         logger.debug("3D Mouse device profiles unreadable: %s", exc)
         return None
-    return frozenset((int(spec.vendor_id), int(spec.product_id)) for spec in specs.values())
-
-
-def _is_supported_puck(vendor_id: int, product_id: int) -> bool:
-    """True for a puck the backend holds a device profile for.
-
-    The backend refuses to open a device it has no profile for, so its own
-    table is the only honest answer to "can this be driven". The VID/PID range
-    stands in only while that table is unreadable, which is the case during
-    enumeration on a host where the HID backend won't import.
-    """
-    ids = _backend_puck_ids()
-    if ids is None:
-        return _looks_like_puck(vendor_id, product_id)
-    return (vendor_id, product_id) in ids
+    profiles: dict[tuple[int, int], Any] = dict.fromkeys(builtin)
+    for ids, (name, sibling) in _LOCAL_PROFILES.items():
+        # A built-in profile wins. Built-in specs are in the LEGACY axis
+        # convention the built-in open applies, so a copy reads like its sibling.
+        if ids in profiles or sibling not in builtin:
+            continue
+        try:
+            profiles[ids] = replace(builtin[sibling], name=name, vendor_id=ids[0], product_id=ids[1])
+        except Exception as exc:  # noqa: BLE001 - a spec this code can't copy leaves that model unprofiled
+            logger.debug("3D Mouse local profile %s not built: %s", name, exc)
+    return profiles
 
 
 @dataclass(frozen=True)
@@ -168,7 +170,7 @@ class Mouse3DDeviceInfo:
     product_id: int = 0
     # The socket the puck is plugged into (see controller_identity), or None.
     port_key: str | None = None
-    # False for a 3Dconnexion device the backend holds no profile for; never opened.
+    # False for a puck with no device profile; never opened.
     profiled: bool = True
 
 
@@ -183,18 +185,23 @@ class Mouse3DBackend(Protocol):
 class _PySpaceMouseBackend:
     """Real backend over ``pyspacemouse`` (2.x) + ``easyhid``.
 
-    ``easyhid`` reports one entry per HID collection, so a single puck appears
-    several times at the same ``/dev/hidraw*`` node; we dedup by path and open
-    each unique node once with ``open_by_path``.
+    ``easyhid`` reports one entry per HID top-level collection, so a single puck
+    appears several times at the same ``/dev/hidraw*`` node; each node is
+    classified across all its entries and opened once with ``open_by_path``.
     """
 
     def __init__(self) -> None:
-        # Devices already reported as undrivable, so a puck the backend has no
-        # profile for is named once rather than on every enumeration pass.
+        # Devices already reported as undrivable, so a puck with no profile is
+        # named once rather than on every enumeration pass.
         self._unprofiled_warned: set[tuple[int, int]] = set()
 
     def enumerate(self) -> list[Mouse3DDeviceInfo]:
         """Every attached puck, profiled or not, one per hidraw node.
+
+        A node is a puck when one of its entries declares the Multi-axis
+        Controller usage under a 3Dconnexion VID/PID. Without a readable profile
+        table every such puck counts as profiled, so a broken table surfaces as
+        an open error rather than a silently missing puck.
 
         Raises when the HID library won't load or can't list devices, so that
         is never mistaken for nothing being plugged in. Without libhidapi,
@@ -203,39 +210,42 @@ class _PySpaceMouseBackend:
         """
         from easyhid import Enumeration  # lazy: dlopens libhidapi
 
-        by_path: dict[str, Mouse3DDeviceInfo] = {}
+        nodes: dict[str, list[Any]] = {}
         for dev in Enumeration().find():
-            vid = int(getattr(dev, "vendor_id", 0) or 0)
-            pid = int(getattr(dev, "product_id", 0) or 0)
-            profiled = _is_supported_puck(vid, pid)
-            if not profiled:
-                if not _looks_like_puck(vid, pid):
-                    continue
-                self._note_unprofiled(vid, pid, dev)
-            path = getattr(dev, "path", None)
-            if isinstance(path, bytes):
-                path = path.decode("utf-8", "replace")
-            if not path or path in by_path:
+            path = _hid_path(dev)
+            if path:
+                nodes.setdefault(path, []).append(dev)
+        profiles = _device_profiles()
+        infos: list[Mouse3DDeviceInfo] = []
+        for path in sorted(nodes):
+            dev = _puck_entry(nodes[path], profiles)
+            if dev is None:
                 continue
-            by_path[path] = Mouse3DDeviceInfo(
-                path=path,
-                product_name=str(getattr(dev, "product_string", "") or ""),
-                serial=str(getattr(dev, "serial_number", "") or ""),
-                vendor_id=vid,
-                product_id=pid,
-                port_key=resolve_key(path),
-                profiled=profiled,
+            vid, pid = _hid_ids(dev)
+            profiled = profiles is None or (vid, pid) in profiles
+            if not profiled:
+                self._note_unprofiled(vid, pid, dev)
+            infos.append(
+                Mouse3DDeviceInfo(
+                    path=path,
+                    product_name=str(getattr(dev, "product_string", "") or ""),
+                    serial=str(getattr(dev, "serial_number", "") or ""),
+                    vendor_id=vid,
+                    product_id=pid,
+                    port_key=resolve_key(path),
+                    profiled=profiled,
+                )
             )
-        return [by_path[p] for p in sorted(by_path)]
+        return infos
 
     def _note_unprofiled(self, vendor_id: int, product_id: int, dev: Any) -> None:
-        """Name a 3Dconnexion device the backend holds no profile for, once."""
+        """Name a puck with no device profile, once."""
         key = (vendor_id, product_id)
         if key in self._unprofiled_warned:
             return
         self._unprofiled_warned.add(key)
         logger.warning(
-            "3D Mouse %04x:%04x (%s) has no device profile in the installed pyspacemouse, so it is skipped.",
+            "3D Mouse %04x:%04x (%s) has no device profile, so it is skipped.",
             vendor_id,
             product_id,
             str(getattr(dev, "product_string", "") or "unnamed"),
@@ -249,14 +259,62 @@ class _PySpaceMouseBackend:
         """
         import pyspacemouse  # lazy
 
+        local_spec = _local_spec_at(path)
         try:
             # ``open_by_path`` prints to stdout on success; keep the log clean.
             with contextlib.redirect_stdout(io.StringIO()):
-                return pyspacemouse.open_by_path(path)
+                if local_spec is None:
+                    return pyspacemouse.open_by_path(path)
+                return pyspacemouse.open_by_path(path, device_spec=local_spec)
         except Exception as exc:
             if os.path.exists(path) and not os.access(path, os.R_OK | os.W_OK):
                 raise PermissionError(f"{path} is not readable and writable by this process") from exc
             raise
+
+
+def _local_spec_at(path: str) -> Any | None:
+    """The local spec for the device at ``path`` now, ``None`` for any other.
+
+    Read from the node's current IDs, never remembered from an enumeration:
+    a custom spec skips pyspacemouse's own ID check, and a hidraw node can be
+    handed to another device between two passes.
+    """
+    profiles = _device_profiles()
+    if profiles is None:
+        return None
+    from easyhid import Enumeration  # lazy: dlopens libhidapi
+
+    for dev in Enumeration().find():
+        if _hid_path(dev) == path:
+            return profiles.get(_hid_ids(dev))
+    return None
+
+
+def _hid_path(dev: Any) -> str | None:
+    path = getattr(dev, "path", None)
+    if isinstance(path, bytes):
+        return path.decode("utf-8", "replace")
+    return path
+
+
+def _hid_ids(dev: Any) -> tuple[int, int]:
+    return int(getattr(dev, "vendor_id", 0) or 0), int(getattr(dev, "product_id", 0) or 0)
+
+
+def _hid_usage(dev: Any) -> tuple[int, int]:
+    return int(getattr(dev, "usage_page", 0) or 0), int(getattr(dev, "usage", 0) or 0)
+
+
+def _puck_entry(entries: list[Any], profiles: dict[tuple[int, int], Any] | None) -> Any | None:
+    """The entry that makes one hidraw node a puck, or ``None`` when it is not one."""
+    for dev in entries:
+        if _hid_usage(dev) == _PUCK_USAGE and _in_3dconnexion_range(*_hid_ids(dev)):
+            return dev
+    if any(_hid_usage(dev) != (0, 0) for dev in entries):
+        return None
+    # An older hidapi reports no usage for any collection: only a profile vouches for the node.
+    dev = entries[0]
+    return dev if profiles is not None and _hid_ids(dev) in profiles else None
 
 
 def check_mouse3d_dependencies() -> list[str]:

@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 import types
+from dataclasses import dataclass
 from types import SimpleNamespace
 
 import pytest
@@ -29,7 +30,6 @@ from openfollow.input.mouse3d import (
     Mouse3DHandler,
     Mouse3DManager,
     Mouse3DUpdate,
-    _is_supported_puck,
     _PySpaceMouseBackend,
     check_mouse3d_dependencies,
 )
@@ -40,11 +40,11 @@ pytestmark = pytest.mark.unit
 
 # Captured before the autouse stub below replaces the module attribute, so the
 # tests that exercise the real lookup can still reach it.
-_REAL_BACKEND_PUCK_IDS = mouse3d_module._backend_puck_ids
+_REAL_DEVICE_PROFILES = mouse3d_module._device_profiles
 
-# The two pucks the enumeration fixtures use, standing in for the backend's
-# profile table.
-_STUB_PROFILE_IDS = frozenset({(0x256F, 0xC635), (0x046D, 0xC626)})
+# The two built-in profiles the enumeration fixtures use, standing in for the
+# backend's profile table.
+_STUB_PROFILES = {(0x256F, 0xC635): None, (0x046D, 0xC626): None}
 
 
 @pytest.fixture(autouse=True)
@@ -54,10 +54,10 @@ def _stub_backend_profiles(monkeypatch):  # noqa: ANN001, ANN201
     The lookup is cached, so it is cleared either side of every test: a table
     stubbed by one test must not answer another's.
     """
-    _REAL_BACKEND_PUCK_IDS.cache_clear()
-    monkeypatch.setattr(mouse3d_module, "_backend_puck_ids", lambda: _STUB_PROFILE_IDS)
+    _REAL_DEVICE_PROFILES.cache_clear()
+    monkeypatch.setattr(mouse3d_module, "_device_profiles", lambda: _STUB_PROFILES)
     yield
-    _REAL_BACKEND_PUCK_IDS.cache_clear()
+    _REAL_DEVICE_PROFILES.cache_clear()
 
 
 # --------------------------------------------------------------------------- #
@@ -1736,20 +1736,6 @@ def _seed_manager(mgr: Mouse3DManager, handlers_by_path: dict) -> None:  # noqa:
     mgr._handlers = dict(handlers_by_path)
 
 
-@pytest.mark.parametrize(
-    "vid,pid,ok",
-    [
-        (0x256F, 0xC635, True),  # 3Dconnexion vendor
-        (0x046D, 0xC626, True),  # Logitech legacy, PID in the SpaceMouse range
-        (0x046D, 0xC628, False),  # in the VID/PID range, but no profile to drive it
-        (0x046D, 0xC700, False),  # Logitech legacy, PID out of range
-        (0x1234, 0xC626, False),  # unknown vendor
-    ],
-)
-def test_is_supported_puck(vid: int, pid: int, ok: bool) -> None:
-    assert _is_supported_puck(vid, pid) is ok
-
-
 def test_manager_status_accessors_report_connected_puck() -> None:
     mgr = Mouse3DManager(_cfg(enabled=True), backend=_FakeBackend([], {}))
     _seed_manager(mgr, {"/dev/hidraw2": _connected_handler(path="/dev/hidraw2")})
@@ -1891,8 +1877,17 @@ def test_resolve_backend_uses_injected_or_defaults_to_pyspacemouse() -> None:
     assert isinstance(Mouse3DManager(_cfg(enabled=True))._resolve_backend(), _PySpaceMouseBackend)
 
 
-def _fake_hid_device(vid, pid, path, name="Nav", serial="S"):  # noqa: ANN001, ANN202
-    return SimpleNamespace(vendor_id=vid, product_id=pid, path=path, product_string=name, serial_number=serial)
+def _fake_hid_device(vid, pid, path, name="Nav", serial="S", usage=(0x01, 0x08)):  # noqa: ANN001, ANN202
+    """One hidapi entry: a top-level collection, declaring a Multi-axis Controller by default."""
+    return SimpleNamespace(
+        vendor_id=vid,
+        product_id=pid,
+        path=path,
+        product_string=name,
+        serial_number=serial,
+        usage_page=usage[0],
+        usage=usage[1],
+    )
 
 
 def test_pyspacemouse_backend_enumerate_filters_dedups_and_sorts(monkeypatch) -> None:  # noqa: ANN001
@@ -1952,7 +1947,8 @@ def test_pyspacemouse_backend_open_delegates_to_open_by_path(monkeypatch) -> Non
     fake_ps = types.ModuleType("pyspacemouse")
     fake_ps.open_by_path = _open_by_path
     monkeypatch.setitem(sys.modules, "pyspacemouse", fake_ps)
-    assert _PySpaceMouseBackend().open("/dev/hidraw2") == "DEVICE"
+    backend = _enumerate_with(monkeypatch, [_fake_hid_device(0x046D, 0xC626, "/dev/hidraw2")])
+    assert backend.open("/dev/hidraw2") == "DEVICE"
     assert opened["path"] == "/dev/hidraw2"
 
 
@@ -2125,41 +2121,69 @@ def test_control_frame_leaves_mouse3d_reset_absolute(wired) -> None:  # noqa: AN
 
 
 # --------------------------------------------------------------------------- #
-# Backend device profiles: what the backend can actually drive
+# Device profiles: what the backend can drive, built in or carried locally
 # --------------------------------------------------------------------------- #
 
 
-def _fake_spec(vid, pid):  # noqa: ANN001, ANN202
-    return SimpleNamespace(vendor_id=vid, product_id=pid)
+@dataclass(frozen=True)
+class _FakeSpec:
+    """Stands in for ``pyspacemouse.DeviceInfo``, a frozen dataclass."""
+
+    name: str
+    vendor_id: int
+    product_id: int
+    mappings: str = ""
 
 
-def _fake_pyspacemouse(specs):  # noqa: ANN001, ANN202
+def _fake_spec(vid, pid, name="Spec"):  # noqa: ANN001, ANN202
+    return _FakeSpec(name=name, vendor_id=vid, product_id=pid, mappings=f"{name} axes")
+
+
+# The built-in siblings of the locally profiled models, as pyspacemouse 2.1.0 names them.
+_SIBLING_SPECS = {
+    "SpaceNavigator": _fake_spec(0x046D, 0xC626, "SpaceNavigator"),
+    "SpaceMouseWireless": _fake_spec(0x256F, 0xC62E, "SpaceMouseWireless"),
+    "SpaceMouseProWireless": _fake_spec(0x256F, 0xC632, "SpaceMouseProWireless"),
+    "SpaceMouseCompact": _fake_spec(0x256F, 0xC635, "SpaceMouseCompact"),
+}
+
+
+def _fake_pyspacemouse(specs, opened=None):  # noqa: ANN001, ANN202
+    """A ``pyspacemouse`` holding ``specs``; ``open_by_path`` records each call's keyword arguments."""
     fake = types.ModuleType("pyspacemouse")
     fake.get_device_specs = lambda: specs
+
+    def _open_by_path(path, **kwargs):  # noqa: ANN001, ANN003, ANN202
+        if opened is not None:
+            opened.append((path, kwargs))
+        return f"DEVICE {path}"
+
+    fake.open_by_path = _open_by_path
     return fake
 
 
-def test_is_supported_puck_falls_back_to_range_without_profiles(monkeypatch) -> None:  # noqa: ANN001
-    # With no profile table to consult, enumeration must still find pucks, so
-    # the VID/PID range stands in - including for the PID it cannot vouch for.
-    monkeypatch.setattr(mouse3d_module, "_backend_puck_ids", lambda: None)
-    assert _is_supported_puck(0x046D, 0xC628) is True
-    assert _is_supported_puck(0x256F, 0x0001) is True
-    assert _is_supported_puck(0x1234, 0xC626) is False
+def _use_real_profiles(monkeypatch, specs, opened=None):  # noqa: ANN001, ANN202
+    """Resolve profiles through the real lookup against a fake installed table."""
+    monkeypatch.setitem(sys.modules, "pyspacemouse", _fake_pyspacemouse(specs, opened))
+    monkeypatch.setattr(mouse3d_module, "_device_profiles", _REAL_DEVICE_PROFILES)
 
 
-def test_backend_puck_ids_reads_the_profile_table(monkeypatch) -> None:  # noqa: ANN001
-    specs = {"Nav": _fake_spec(0x046D, 0xC626), "Explorer": _fake_spec(0x256F, 0xC635)}
+def test_device_profiles_reads_the_built_in_table(monkeypatch) -> None:  # noqa: ANN001
+    specs = {"Nav": _fake_spec(0x046D, 0xC626), "Explorer": _fake_spec(0x046D, 0xC627)}
     monkeypatch.setitem(sys.modules, "pyspacemouse", _fake_pyspacemouse(specs))
-    assert _REAL_BACKEND_PUCK_IDS() == frozenset({(0x046D, 0xC626), (0x256F, 0xC635)})
+    # Only the SpaceNavigator's sibling is installed, so only its local model joins.
+    profiles = _REAL_DEVICE_PROFILES()
+    assert set(profiles) == {(0x046D, 0xC626), (0x046D, 0xC627), (0x046D, 0xC628)}
+    assert profiles[(0x046D, 0xC626)] is None
+    assert profiles[(0x046D, 0xC627)] is None
 
 
-def test_backend_puck_ids_none_when_package_missing(monkeypatch) -> None:  # noqa: ANN001
+def test_device_profiles_none_when_package_missing(monkeypatch) -> None:  # noqa: ANN001
     monkeypatch.setitem(sys.modules, "pyspacemouse", None)  # `from ... import` -> ImportError
-    assert _REAL_BACKEND_PUCK_IDS() is None
+    assert _REAL_DEVICE_PROFILES() is None
 
 
-def test_backend_puck_ids_none_when_import_raises_oserror(monkeypatch) -> None:  # noqa: ANN001
+def test_device_profiles_none_when_import_raises_oserror(monkeypatch) -> None:  # noqa: ANN001
     # easyhid dlopens libhidapi at import, so a missing library raises OSError
     # rather than ImportError.
     fake = types.ModuleType("pyspacemouse")
@@ -2169,17 +2193,17 @@ def test_backend_puck_ids_none_when_import_raises_oserror(monkeypatch) -> None: 
 
     fake.__getattr__ = _getattr
     monkeypatch.setitem(sys.modules, "pyspacemouse", fake)
-    assert _REAL_BACKEND_PUCK_IDS() is None
+    assert _REAL_DEVICE_PROFILES() is None
 
 
-def test_backend_puck_ids_none_when_table_unreadable(monkeypatch) -> None:  # noqa: ANN001
+def test_device_profiles_none_when_table_unreadable(monkeypatch) -> None:  # noqa: ANN001
     fake = types.ModuleType("pyspacemouse")
     fake.get_device_specs = lambda: (_ for _ in ()).throw(RuntimeError("bad toml"))
     monkeypatch.setitem(sys.modules, "pyspacemouse", fake)
-    assert _REAL_BACKEND_PUCK_IDS() is None
+    assert _REAL_DEVICE_PROFILES() is None
 
 
-def test_backend_puck_ids_is_cached(monkeypatch) -> None:  # noqa: ANN001
+def test_device_profiles_is_cached(monkeypatch) -> None:  # noqa: ANN001
     calls = []
     fake = types.ModuleType("pyspacemouse")
 
@@ -2189,16 +2213,120 @@ def test_backend_puck_ids_is_cached(monkeypatch) -> None:  # noqa: ANN001
 
     fake.get_device_specs = _specs
     monkeypatch.setitem(sys.modules, "pyspacemouse", fake)
-    assert _REAL_BACKEND_PUCK_IDS() == _REAL_BACKEND_PUCK_IDS()
+    assert _REAL_DEVICE_PROFILES() == _REAL_DEVICE_PROFILES()
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize(
+    "vid,pid,name,sibling",
+    [
+        (0x046D, 0xC628, "SpaceNavigatorForNotebooks", "SpaceNavigator"),
+        (0x256F, 0xC62F, "SpaceMouseWirelessReceiver", "SpaceMouseWireless"),
+        (0x256F, 0xC631, "SpaceMouseProWirelessCabled", "SpaceMouseProWireless"),
+        (0x256F, 0xC636, "SpaceMouseModule", "SpaceMouseCompact"),
+    ],
+)
+def test_a_locally_profiled_model_opens_with_its_siblings_profile(monkeypatch, vid, pid, name, sibling) -> None:  # noqa: ANN001
+    opened: list = []
+    _use_real_profiles(monkeypatch, dict(_SIBLING_SPECS), opened)
+    backend = _enumerate_with(monkeypatch, [_fake_hid_device(vid, pid, "/dev/hidraw4", name="Puck")])
+    (info,) = backend.enumerate()
+    assert info.profiled is True
+    assert backend.open("/dev/hidraw4") == "DEVICE /dev/hidraw4"
+    # The sibling's axes and buttons, under the model's own IDs and name.
+    spec = _FakeSpec(name=name, vendor_id=vid, product_id=pid, mappings=f"{sibling} axes")
+    assert opened == [("/dev/hidraw4", {"device_spec": spec})]
+
+
+def test_a_built_in_model_opens_without_a_device_spec(monkeypatch) -> None:  # noqa: ANN001
+    opened: list = []
+    _use_real_profiles(monkeypatch, dict(_SIBLING_SPECS), opened)
+    backend = _enumerate_with(
+        monkeypatch,
+        [
+            _fake_hid_device(0x046D, 0xC626, "/dev/hidraw2"),
+            _fake_hid_device(0x046D, 0xC628, "/dev/hidraw3"),
+        ],
+    )
+    assert [i.profiled for i in backend.enumerate()] == [True, True]
+    backend.open("/dev/hidraw2")
+    assert opened == [("/dev/hidraw2", {})]
+
+
+def test_a_built_in_profile_wins_over_a_local_one(monkeypatch) -> None:  # noqa: ANN001
+    # Once pyspacemouse profiles a model itself, its own profile is the one used.
+    opened: list = []
+    specs = {**_SIBLING_SPECS, "SpaceMouseWirelessReceiver": _fake_spec(0x256F, 0xC62F, "SpaceMouseWirelessReceiver")}
+    _use_real_profiles(monkeypatch, specs, opened)
+    backend = _enumerate_with(monkeypatch, [_fake_hid_device(0x256F, 0xC62F, "/dev/hidraw4")])
+    (info,) = backend.enumerate()
+    assert info.profiled is True
+    backend.open("/dev/hidraw4")
+    assert opened == [("/dev/hidraw4", {})]
+
+
+def test_open_reads_the_spec_from_the_device_at_the_node_now(monkeypatch) -> None:  # noqa: ANN001
+    # A hidraw node handed to another model between two passes opens as that model.
+    opened: list = []
+    _use_real_profiles(monkeypatch, dict(_SIBLING_SPECS), opened)
+    devices = [_fake_hid_device(0x256F, 0xC636, "/dev/hidraw4", name="Module")]
+    backend = _enumerate_with(monkeypatch, devices)
+    backend.enumerate()
+    devices[:] = [
+        _fake_hid_device(0x256F, 0xC636, "/dev/hidraw3", name="Module"),
+        _fake_hid_device(0x256F, 0xC635, "/dev/hidraw4", name="Compact"),
+    ]
+    backend.open("/dev/hidraw4")
+    devices[:] = []
+    backend.open("/dev/hidraw4")
+    assert opened == [("/dev/hidraw4", {}), ("/dev/hidraw4", {})]
+
+
+def test_a_locally_profiled_node_reporting_no_usage_is_kept_and_opened(monkeypatch) -> None:  # noqa: ANN001
+    opened: list = []
+    _use_real_profiles(monkeypatch, dict(_SIBLING_SPECS), opened)
+    backend = _enumerate_with(monkeypatch, [_fake_hid_device(0x256F, 0xC636, b"/dev/hidraw4", usage=(0, 0))])
+    assert [(i.path, i.profiled) for i in backend.enumerate()] == [("/dev/hidraw4", True)]
+    backend.open("/dev/hidraw4")
+    ((path, kwargs),) = opened
+    assert (path, kwargs["device_spec"].product_id) == ("/dev/hidraw4", 0xC636)
+
+
+@dataclass(frozen=True)
+class _NamelessSpec:
+    """A built-in spec with no ``name`` field, so a local copy cannot be made of it."""
+
+    vendor_id: int
+    product_id: int
+
+
+def test_a_spec_that_cannot_be_copied_leaves_only_its_local_model_unprofiled(monkeypatch) -> None:  # noqa: ANN001
+    _use_real_profiles(monkeypatch, {"SpaceMouseCompact": _NamelessSpec(0x256F, 0xC635)})
+    backend = _enumerate_with(
+        monkeypatch,
+        [
+            _fake_hid_device(0x256F, 0xC635, "/dev/hidraw3", name="Compact"),
+            _fake_hid_device(0x256F, 0xC636, "/dev/hidraw4", name="Module"),
+        ],
+    )
+    assert [(i.path, i.profiled) for i in backend.enumerate()] == [("/dev/hidraw3", True), ("/dev/hidraw4", False)]
+
+
+def test_a_local_model_without_its_sibling_has_no_profile(monkeypatch) -> None:  # noqa: ANN001
+    specs = {k: v for k, v in _SIBLING_SPECS.items() if k != "SpaceMouseCompact"}
+    _use_real_profiles(monkeypatch, specs)
+    backend = _enumerate_with(monkeypatch, [_fake_hid_device(0x256F, 0xC636, "/dev/hidraw4", name="Module")])
+    assert [(i.path, i.profiled) for i in backend.enumerate()] == [("/dev/hidraw4", False)]
+
+
 # --------------------------------------------------------------------------- #
-# Skipping an undrivable puck says so
+# A puck is what declares itself one: Multi-axis Controller under a 3Dconnexion ID
 # --------------------------------------------------------------------------- #
 
 
-def _enumerate_with(monkeypatch, devices):  # noqa: ANN001, ANN202
+def _install_fake_easyhid(monkeypatch, devices):  # noqa: ANN001, ANN202
+    """An ``easyhid`` listing ``devices``; the list is read again on every enumeration."""
+
     class _Enum:
         def find(self):  # noqa: ANN202
             return list(devices)
@@ -2206,30 +2334,184 @@ def _enumerate_with(monkeypatch, devices):  # noqa: ANN001, ANN202
     fake_easyhid = types.ModuleType("easyhid")
     fake_easyhid.Enumeration = _Enum
     monkeypatch.setitem(sys.modules, "easyhid", fake_easyhid)
+
+
+def _enumerate_with(monkeypatch, devices):  # noqa: ANN001, ANN202
+    _install_fake_easyhid(monkeypatch, devices)
     return _PySpaceMouseBackend()
 
 
+_VENDOR_DEFINED = (0xFF00, 0x01)
+
+
+@pytest.mark.parametrize(
+    "usage,puck",
+    [
+        ((0x01, 0x08), True),
+        ((0x01, 0x02), False),
+        ((0x01, 0x06), False),
+        ((0x01, 0x05), False),
+        ((0x02, 0x08), False),
+        (_VENDOR_DEFINED, False),
+    ],
+    ids=["multi-axis", "mouse", "keyboard", "game-pad", "multi-axis-on-another-page", "vendor-defined-only"],
+)
+def test_a_3dconnexion_node_is_a_puck_only_by_its_declared_usage(monkeypatch, usage, puck) -> None:  # noqa: ANN001
+    backend = _enumerate_with(monkeypatch, [_fake_hid_device(0x256F, 0xC635, "/dev/hidraw4", usage=usage)])
+    assert [i.path for i in backend.enumerate()] == (["/dev/hidraw4"] if puck else [])
+
+
+@pytest.mark.parametrize(
+    "vid,pid,puck",
+    [
+        (0x256F, 0xC635, True),
+        (0x256F, 0xC650, True),
+        (0x046D, 0xC626, True),
+        (0x046D, 0xC600, True),
+        (0x046D, 0xC6FF, True),
+        (0x1234, 0xC626, False),
+        (0x046D, 0xC5FF, False),
+        (0x046D, 0xC700, False),
+    ],
+    ids=[
+        "3dconnexion",
+        "3dconnexion-unlisted-pid",
+        "logitech-era",
+        "logitech-range-low-end",
+        "logitech-range-high-end",
+        "another-vendor",
+        "logitech-below-the-range",
+        "logitech-above-the-range",
+    ],
+)
+def test_a_declared_puck_counts_only_under_a_3dconnexion_id(monkeypatch, vid, pid, puck) -> None:  # noqa: ANN001
+    backend = _enumerate_with(monkeypatch, [_fake_hid_device(vid, pid, "/dev/hidraw4")])
+    assert [i.path for i in backend.enumerate()] == (["/dev/hidraw4"] if puck else [])
+
+
+def test_any_entry_of_a_node_can_declare_the_puck(monkeypatch) -> None:  # noqa: ANN001
+    # hidapi lists one entry per top-level collection; a puck's vendor-defined
+    # collections can come first at the same node.
+    backend = _enumerate_with(
+        monkeypatch,
+        [
+            _fake_hid_device(0x046D, 0xC626, "/dev/hidraw2", name="Vendor", usage=_VENDOR_DEFINED),
+            _fake_hid_device(0x046D, 0xC626, "/dev/hidraw2", name="Vendor", usage=(0xFF00, 0x3A)),
+            _fake_hid_device(0x046D, 0xC626, "/dev/hidraw2", name="SpaceNavigator"),
+        ],
+    )
+    assert [(i.path, i.product_name) for i in backend.enumerate()] == [("/dev/hidraw2", "SpaceNavigator")]
+
+
+def test_the_universal_receivers_mouse_node_is_skipped_and_its_puck_kept(monkeypatch) -> None:  # noqa: ANN001
+    backend = _enumerate_with(
+        monkeypatch,
+        [
+            _fake_hid_device(0x256F, 0xC652, "/dev/hidraw5", name="Receiver", usage=(0x01, 0x02)),
+            _fake_hid_device(0x256F, 0xC652, "/dev/hidraw6", name="Receiver", usage=_VENDOR_DEFINED),
+            _fake_hid_device(0x256F, 0xC652, "/dev/hidraw6", name="Receiver"),
+        ],
+    )
+    assert [i.path for i in backend.enumerate()] == ["/dev/hidraw6"]
+
+
+@pytest.mark.parametrize(
+    "vid,pid,puck",
+    [
+        (0x256F, 0xC635, True),
+        (0x046D, 0xC626, True),
+        (0x256F, 0xC650, False),
+        (0x256F, 0x0001, False),
+    ],
+    ids=["profiled", "profiled-logitech-era", "unprofiled-3dconnexion", "unprofiled-3dconnexion-low-pid"],
+)
+def test_a_node_reporting_no_usage_is_a_puck_only_with_a_profile(monkeypatch, vid, pid, puck) -> None:  # noqa: ANN001
+    # Older hidapi builds report usage 0/0 for every collection.
+    entries = [
+        _fake_hid_device(vid, pid, "/dev/hidraw4", usage=(0, 0)),
+        _fake_hid_device(vid, pid, "/dev/hidraw4", usage=(0, 0)),
+    ]
+    backend = _enumerate_with(monkeypatch, entries)
+    assert [(i.path, i.profiled) for i in backend.enumerate()] == ([("/dev/hidraw4", True)] if puck else [])
+
+
+def test_a_node_with_any_declared_usage_never_falls_back_to_its_profile(monkeypatch) -> None:  # noqa: ANN001
+    # A profiled ID whose node declares only a mouse is a mouse, even beside an unreported collection.
+    entries = [
+        _fake_hid_device(0x256F, 0xC635, "/dev/hidraw4", usage=(0, 0)),
+        _fake_hid_device(0x256F, 0xC635, "/dev/hidraw4", usage=(0x01, 0x02)),
+    ]
+    assert _enumerate_with(monkeypatch, entries).enumerate() == []
+
+
+def test_a_missing_profile_table_admits_only_declared_pucks(monkeypatch) -> None:  # noqa: ANN001
+    # No table is no reason to claim every 3Dconnexion device: a CadMouse and an
+    # unreported node stay out, a declared puck is kept and tried.
+    monkeypatch.setattr(mouse3d_module, "_device_profiles", lambda: None)
+    opened: list = []
+    monkeypatch.setitem(sys.modules, "pyspacemouse", _fake_pyspacemouse({}, opened))
+    backend = _enumerate_with(
+        monkeypatch,
+        [
+            _fake_hid_device(0x256F, 0xC650, "/dev/hidraw3", name="CadMouse", usage=(0x01, 0x02)),
+            _fake_hid_device(0x256F, 0xC635, "/dev/hidraw4", name="Unreported", usage=(0, 0)),
+            _fake_hid_device(0x256F, 0xC62F, "/dev/hidraw5", name="Receiver"),
+        ],
+    )
+    assert [(i.path, i.profiled) for i in backend.enumerate()] == [("/dev/hidraw5", True)]
+    backend.open("/dev/hidraw5")
+    assert opened == [("/dev/hidraw5", {})]
+
+
+# --------------------------------------------------------------------------- #
+# Skipping an undrivable puck says so
+# --------------------------------------------------------------------------- #
+
+
 def test_enumerate_names_an_unprofiled_puck_once(monkeypatch, caplog) -> None:  # noqa: ANN001
-    backend = _enumerate_with(monkeypatch, [_fake_hid_device(0x046D, 0xC628, "/dev/hidraw4", name="Notebooks")])
+    backend = _enumerate_with(monkeypatch, [_fake_hid_device(0x046D, 0xC603, "/dev/hidraw4", name="Plus XT")])
     with caplog.at_level(logging.WARNING, logger="openfollow.input.mouse3d"):
         first = backend.enumerate()
         second = backend.enumerate()  # a second pass must not repeat the log line
     # Reported, flagged, never dropped: the status names it.
-    assert [(i.path, i.product_name, i.profiled) for i in first] == [("/dev/hidraw4", "Notebooks", False)]
+    assert [(i.path, i.product_name, i.profiled) for i in first] == [("/dev/hidraw4", "Plus XT", False)]
     assert second == first
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert len(warnings) == 1
-    assert "046d:c628" in warnings[0].getMessage()
-    assert "Notebooks" in warnings[0].getMessage()
+    assert "046d:c603" in warnings[0].getMessage()
+    assert "Plus XT" in warnings[0].getMessage()
 
 
-def test_enumerate_stays_quiet_about_devices_that_are_not_pucks(monkeypatch, caplog) -> None:  # noqa: ANN001
-    # Every HID device on the host comes past this filter; only a 3Dconnexion
-    # one that cannot be driven is worth a line.
-    backend = _enumerate_with(monkeypatch, [_fake_hid_device(0x1234, 0x0001, "/dev/hidraw9", name="Keyboard")])
+@pytest.mark.parametrize(
+    "dev",
+    [
+        _fake_hid_device(0x1234, 0x0001, "/dev/hidraw9", name="Keyboard", usage=(0x01, 0x06)),
+        _fake_hid_device(0x256F, 0xC650, "/dev/hidraw9", name="CadMouse", usage=(0x01, 0x02)),
+        _fake_hid_device(0x256F, 0xC650, "/dev/hidraw9", name="Unreported", usage=(0, 0)),
+    ],
+    ids=["another-vendor", "3dconnexion-mouse", "3dconnexion-unreported-usage"],
+)
+def test_enumerate_stays_quiet_about_devices_that_are_not_pucks(monkeypatch, caplog, dev) -> None:  # noqa: ANN001
+    # Every HID device on the host comes past this filter; only a puck that
+    # cannot be driven is worth a line.
+    backend = _enumerate_with(monkeypatch, [dev])
     with caplog.at_level(logging.WARNING, logger="openfollow.input.mouse3d"):
         assert backend.enumerate() == []
     assert [r for r in caplog.records if r.levelno == logging.WARNING] == []
+
+
+def test_an_unprofiled_puck_is_reported_by_the_manager_and_never_opened(monkeypatch) -> None:  # noqa: ANN001
+    _fast_manager(monkeypatch)
+    opened: list = []
+    monkeypatch.setitem(sys.modules, "pyspacemouse", _fake_pyspacemouse({}, opened))
+    backend = _enumerate_with(monkeypatch, [_fake_hid_device(0x046D, 0xC603, "/dev/hidraw4", name="Plus XT")])
+    mgr = Mouse3DManager(_cfg(enabled=True), backend=backend)
+    mgr.start()
+    try:
+        assert _wait_until(lambda: _states(mgr) == {"/dev/hidraw4": ("no_profile", "")})
+        assert opened == []
+    finally:
+        mgr.stop(wait=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -2894,7 +3176,7 @@ def test_status_neither_enumerates_nor_probes_the_installation(monkeypatch) -> N
         raise AssertionError("status must not probe")
 
     monkeypatch.setattr(mouse3d_module, "check_mouse3d_dependencies", _forbidden)
-    monkeypatch.setattr(mouse3d_module, "_backend_puck_ids", _forbidden)
+    monkeypatch.setattr(mouse3d_module, "_device_profiles", _forbidden)
     # A cold cache, so a version lookup on this path would reach the package metadata.
     mouse3d_module._backend_version.cache_clear()
     monkeypatch.setattr(mouse3d_module.metadata, "version", _forbidden)
@@ -3003,6 +3285,7 @@ def _install_open_by_path(monkeypatch, open_by_path):  # noqa: ANN001, ANN202
     fake = types.ModuleType("pyspacemouse")
     fake.open_by_path = open_by_path
     monkeypatch.setitem(sys.modules, "pyspacemouse", fake)
+    _install_fake_easyhid(monkeypatch, [])
 
 
 def test_open_names_a_node_this_process_may_not_use(monkeypatch, tmp_path) -> None:  # noqa: ANN001

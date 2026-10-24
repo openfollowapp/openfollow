@@ -1529,6 +1529,7 @@ def test_collect_usb_linux_reads_the_hosts_disks_only_with_the_hosts_sysfs(tmp_p
     bus, block = _usb_sysfs(tmp_path)
     monkeypatch.setattr(diag, "_USB_SYSFS", bus)
     monkeypatch.setattr(diag, "_BLOCK_SYSFS", block)
+    monkeypatch.setattr(diag, "_V4L_SYSFS", tmp_path / "no-video4linux")
     by_default = {d.pid: d.disks for d in diag.collect_usb_devices_linux()}
     # A caller's own tree (a test's) reads no disks unless it names them, so the host's never leak in.
     own_tree = {d.pid: d.disks for d in diag.collect_usb_devices_linux(sysfs_root=bus)}
@@ -1539,6 +1540,104 @@ def test_collect_usb_linux_lists_devices_without_disks_when_block_is_unreadable(
     bus, _ = _usb_sysfs(tmp_path)
     devices = diag.collect_usb_devices_linux(sysfs_root=bus, block_root=tmp_path / "missing")
     assert [(d.pid, d.disks) for d in devices] == [("5581", ()), ("0002", ())]
+
+
+def _usb_camera_sysfs(tmp_path: Path) -> tuple[Path, Path]:
+    """A virtual machine's USB camera, mouse and keyboard on one hub, and a camera on no USB device at all."""
+    usb = tmp_path / "devices" / "pci0000:00" / "usb1"
+    usb.mkdir(parents=True)
+    (usb / "idVendor").write_text("1d6b")
+    (usb / "idProduct").write_text("0009")
+    (usb / "bDeviceClass").write_text("09")
+    bus, v4l = tmp_path / "bus", tmp_path / "video4linux"
+    bus.mkdir()
+    v4l.mkdir()
+    (bus / "usb1").symlink_to(usb)
+    for port, pid, product in [
+        ("1-1", "0001", "Virtual Camera"),
+        ("1-2", "0002", "Virtual Mouse"),
+        ("1-3", "0003", "Virtual Keyboard"),
+    ]:
+        device = usb / port
+        device.mkdir()
+        (device / "idVendor").write_text("80ee")
+        (device / "idProduct").write_text(pid)
+        (device / "product").write_text(product)
+        (bus / port).symlink_to(device)
+    # A UVC camera has a capture node and a metadata node, both named after it.
+    for node in ("video0", "video1"):
+        target = usb / "1-1" / "1-1:1.0" / "video4linux" / node
+        target.mkdir(parents=True)
+        (target / "name").write_text("Virtual Camera\n")
+        (v4l / node).symlink_to(target)
+    csi = tmp_path / "devices" / "platform" / "unicam" / "video4linux" / "video2"
+    csi.mkdir(parents=True)
+    (csi / "name").write_text("unicam-image")
+    (v4l / "video2").symlink_to(csi)
+    return bus, v4l
+
+
+def test_collect_usb_linux_names_the_cameras_each_device_carries(tmp_path) -> None:
+    bus, v4l = _usb_camera_sysfs(tmp_path)
+    devices = {d.pid: d.cameras for d in diag.collect_usb_devices_linux(sysfs_root=bus, v4l_root=v4l)}
+    # The root hub above the camera carries none, and the platform camera belongs to no USB device.
+    assert devices == {"0009": (), "0001": ("Virtual Camera",), "0002": (), "0003": ()}
+
+
+def test_a_camera_with_an_empty_name_is_named_by_its_node_as_the_input_names_it(tmp_path) -> None:
+    bus, v4l = _usb_camera_sysfs(tmp_path)
+    for node in ("video0", "video1"):
+        (v4l / node / "name").write_text("")
+    devices = {d.pid: d.cameras for d in diag.collect_usb_devices_linux(sysfs_root=bus, v4l_root=v4l)}
+    assert devices["0001"] == ("video0", "video1")
+
+
+def test_collect_usb_linux_reads_the_hosts_cameras_only_with_the_hosts_sysfs(tmp_path, monkeypatch) -> None:
+    bus, v4l = _usb_camera_sysfs(tmp_path)
+    monkeypatch.setattr(diag, "_USB_SYSFS", bus)
+    monkeypatch.setattr(diag, "_BLOCK_SYSFS", tmp_path / "no-block")
+    monkeypatch.setattr(diag, "_V4L_SYSFS", v4l)
+    by_default = {d.pid: d.cameras for d in diag.collect_usb_devices_linux()}
+    own_tree = {d.pid: d.cameras for d in diag.collect_usb_devices_linux(sysfs_root=bus)}
+    assert (by_default["0001"], own_tree["0001"]) == (("Virtual Camera",), ())
+
+
+def test_collect_usb_linux_lists_devices_without_cameras_when_video4linux_is_unreadable(tmp_path) -> None:
+    bus, _ = _usb_camera_sysfs(tmp_path)
+    devices = diag.collect_usb_devices_linux(sysfs_root=bus, v4l_root=tmp_path / "missing")
+    assert {d.pid: d.cameras for d in devices} == {"0009": (), "0001": (), "0002": (), "0003": ()}
+
+
+def test_a_camera_claims_only_its_own_usb_device(tmp_path) -> None:
+    """Every device here shares the word "Virtual" with the camera's name; only the camera's own row is a camera."""
+    bus, v4l = _usb_camera_sysfs(tmp_path)
+    devices = diag.collect_usb_devices_linux(sysfs_root=bus, v4l_root=v4l)
+    rows = diag.render_usb_table(devices, midi_ports=[], gamepads=[], cameras=["Virtual Camera"])
+    by_name = {
+        name: row for row in rows for name in ("Virtual Camera", "Virtual Mouse", "Virtual Keyboard") if name in row
+    }
+    assert by_name["Virtual Camera"].endswith("camera: Virtual Camera")
+    assert "camera:" not in by_name["Virtual Mouse"]
+    assert "camera:" not in by_name["Virtual Keyboard"]
+    total = next(r for r in rows if r.startswith("  Total:"))
+    assert "1 camera," in total
+
+
+def test_a_camera_on_no_usb_device_is_still_matched_by_name() -> None:
+    devices = [
+        diag.UsbDevice(vid="80ee", pid="0001", name="Virtual Camera", cameras=("Virtual Camera",)),
+        diag.UsbDevice(vid="046d", pid="0892", name="HD Pro Webcam C920", manufacturer="Logitech"),
+    ]
+    rows = diag.render_usb_table(devices, midi_ports=[], gamepads=[], cameras=["Virtual Camera", "Logitech C920"])
+    assert [r.split("  ")[-1] for r in rows[2:4]] == ["camera: Virtual Camera", "camera: Logitech C920"]
+
+
+def test_a_video_device_openfollow_does_not_list_is_not_a_camera() -> None:
+    """The column says what OpenFollow picks up: sysfs only says which USB device a listed camera is."""
+    devices = [diag.UsbDevice(vid="80ee", pid="0001", name="Virtual Camera", cameras=("Virtual Camera",))]
+    for cameras in ([], None, ["Another Camera"]):
+        rows = diag.render_usb_table(devices, midi_ports=[], gamepads=[], cameras=cameras)
+        assert "camera:" not in rows[2]
 
 
 def test_walk_macos_names_the_disks_under_a_storage_device() -> None:

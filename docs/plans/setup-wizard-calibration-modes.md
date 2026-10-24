@@ -446,41 +446,41 @@ version first needs one; until then the files only record the version.
 ## Implementation steps
 
 ### 1. Config (`add-config-field` skill) and the lens calibration files
-- [ ] `CameraConfig.calibration_mode` and `calibration_marks:
+- [x] `CameraConfig.calibration_mode` and `calibration_marks:
       list[CalibrationMarkConfig]` as above.
-- [ ] `problem()` per mark and per list (kinds, From exist and differ, no
+- [x] `problem()` per mark and per list (kinds, From exist and differ, no
       loop, distances in `(0, 200]` m, pins inside the snapshot reach,
       counts); a rejected entry is dropped with one WARNING per distinct set,
       never clamped.
-- [ ] The saved lens calibrations store (`openfollow/web/lens_calibrations.py`):
+- [x] The saved lens calibrations store (`openfollow/web/lens_calibrations.py`):
       list, read one, save (atomic write, replace by name ignoring case),
       each file with `openfollow_version`; a file name derived from the
       name, never from client input as a path.
-- [ ] Migration of `calibration_points` / `corner_pins` in `load_config`,
+- [x] Migration of `calibration_points` / `corner_pins` in `load_config`,
       before `_filter_known` (also for import and push payloads).
-- [ ] A grid write in Simple mode drops the corner pins (generalise
+- [x] A grid write in Simple mode drops the corner pins (generalise
       `_forget_corner_pins_off_grid`); Advanced marks are left alone.
-- [ ] `FIELD_RULES` for every editable field, matching the server bounds.
-- [ ] Tests (`tests/test_configuration.py`): valid lists, wrong type, range,
+- [x] `FIELD_RULES` for every editable field, matching the server bounds.
+- [x] Tests (`tests/test_configuration.py`): valid lists, wrong type, range,
       enum, dangling / self / looping From, distance point unpinned, fewer than
       two known, more than the cap, TOML round trip, migration both ways
       (with / without points, with / without pins).
-- [ ] Tests for the lens store (`tests/test_lens_calibrations.py`): save and
+- [x] Tests for the lens store (`tests/test_lens_calibrations.py`): save and
       list round trip with the version recorded, replace ignoring case, names
       empty / too long / path-like (`../x`, `a/b`), a lens that cannot follow the picture out to its corners, a broken
       or hand-edited file left out with one WARNING, many files, export and
       push never carrying them.
 
 ### 2. Solver (`scene/calibration_points.py`)
-- [ ] Generalise `solve_with_points` to marks: known points fixed,
+- [x] Generalise `solve_with_points` to marks: known points fixed,
       distance points free in X / Y at their Z, chained trilateration
       with `_pick_by_pin`, both mirror sides per seed, upright before cost.
-- [ ] Seeds: the camera position at three FOVs and the coplanar homography;
+- [x] Seeds: the camera position at three FOVs and the coplanar homography;
       Simple goes through the same entry point.
-- [ ] Pre-solve placement of distance points from their pins (the
+- [x] Pre-solve placement of distance points from their pins (the
       image-side rule), for the rows.
-- [ ] Per-mark answer: status, reason, pixel error, distance error, position.
-- [ ] `plausibility(solve, hint, mode, lens_measured, origin_custom)`
+- [x] Per-mark answer: status, reason, pixel error, distance error, position.
+- [x] `plausibility(solve, hint, mode, lens_measured, origin_custom)`
       returning the reasons with the axis wording; thresholds as above.
 - [ ] Tests (`tests/test_calibration_points.py`, `tests/test_solver.py`):
       the Concert picture's camera and a front-of-house camera through known
@@ -490,57 +490,57 @@ version first needs one; until then the files only record the version.
       and not firing, the axis wording; mutation-check every regression test.
 
 ### 3. Routes (`web/routes.py`)
-- [ ] `/api/wizard/solve` takes `marks`, `mode`, `hint`; strict number
+- [x] `/api/wizard/solve` takes `marks`, `mode`, `hint`; strict number
       reading, 400 on malformed, 409 when superseded, 422 when unsolvable.
-- [ ] Saving a lens calibration (`name`, `k1`, `k2`): 400 on a malformed
+- [x] Saving a lens calibration (`name`, `k1`, `k2`): 400 on a malformed
       body, an empty or too long name or a lens that cannot follow the picture out to its corners; replaces a name
       already saved. The saved list reaches the page with the wizard.
-- [ ] `/api/wizard/project` drops the reference point; remove
+- [x] `/api/wizard/project` drops the reference point; remove
       `/api/wizard/unproject` if nothing calls it.
-- [ ] Tests (`tests/test_wizard.py`): malformed bodies per failure mode,
+- [x] Tests (`tests/test_wizard.py`): malformed bodies per failure mode,
       the answers' shape, the superseded turn, saving and replacing a lens.
 
 ### 4. Setup Wizard (`web/templates/wizard.tpl`)
-- [ ] Four steps; Preparation, Grid Setup, Camera Position and Reference
+- [x] Four steps; Preparation, Grid Setup, Camera Position and Reference
       Mapping removed with their state, overlays and session keys (bump the
       session schema).
-- [ ] The help drawer on every step, per mode in Camera Calibration.
-- [ ] The loupe placement, point selection and full screen (shell, toolbar,
+- [x] The help drawer on every step, per mode in Camera Calibration.
+- [x] The loupe placement, point selection and full screen (shell, toolbar,
       help panel, Esc) shared by every picture.
-- [ ] Lens: line selection, Delete / Backspace, point selection, the Load
+- [x] Lens: line selection, Delete / Backspace, point selection, the Load
       and Save dialogs, the loaded state in the result box and Review.
-- [ ] Camera Calibration, Simple: location, optional position box,
+- [x] Camera Calibration, Simple: location, optional position box,
       rectangle with the diagonals note, point of origin with Custom, the
       starting rectangle, corner drag and selection, the "all four placed"
       gate, the corner list, the 0/0/0 mark, the hints.
-- [ ] Camera Calibration, Advanced: camera position first, the picture
+- [x] Camera Calibration, Advanced: camera position first, the picture
       menus and forms, the point list, pre-solve distance point positions, the
       hints and the "To calculate the camera, add …" line, Distances to check.
-- [ ] Unit switch converting every entered length; the status line, the
+- [x] Unit switch converting every entered length; the status line, the
       caution, the solved values with Lens.
-- [ ] Mode switch rules and the Advanced → Simple confirmation.
-- [ ] Review and Save and finish as decided.
+- [x] Mode switch rules and the Advanced → Simple confirmation.
+- [x] Review and Save and finish as decided.
 - [ ] Tests: `tests/test_wizard_js.py` for the pure functions (starting
       rectangle, diagonal, pre-solve placement and side rule, From
       exclusion, settings-file lens reading, unit conversion on switch),
       `tests/test_wizard.py` for the page.
 
 ### 5. Camera tab and feature list
-- [ ] The Camera form lists the mode and the marks read-only.
-- [ ] Remove `calibration_points` from `FEATURE_KEYS` / the experimental set
+- [x] The Camera form lists the mode and the marks read-only.
+- [x] Remove `calibration_points` from `FEATURE_KEYS` / the experimental set
       and every `data-feature="calibration_points"`.
 
 ### 6. Docs
-- [ ] The help drawer files listed above; `help/camera.md` and `help/grid.md`
+- [x] The help drawer files listed above; `help/camera.md` and `help/grid.md`
       point to the Setup Wizard.
-- [ ] `docs/architecture/web.md` Setup Wizard section,
+- [x] `docs/architecture/web.md` Setup Wizard section,
       `docs/architecture/config.md` (the marks, the lens calibration files
       and why they stay on the station).
-- [ ] What's new entry (operator action changed).
+- [x] What's new entry (operator action changed).
 
 ### 7. Verification
-- [ ] `make ci-remote` on pi59.
-- [ ] Station check on pi66: the Concert picture with its stored
+- [x] `make ci-remote` on the gate Pi.
+- [ ] Station check on the display test station: the Concert picture with its stored
       calibration reproduced in both modes, metric and imperial; a real
       camera, tape-measured distances against the computed ones; the
       caution with a deliberately wrong camera position and with the lens

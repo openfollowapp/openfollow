@@ -453,7 +453,7 @@ top, bottom and a diagonal 53.9 -> 3.5 / 6.2; four edges and a diagonal at
   where the kept k2 gives 15-20 px: input to the k2-gate retune below.
 - **Cost**: the prototype fit (steps 1-6, without the misfit and rival checks)
   takes 50-110 ms median, 0.4 s at worst, on the Mac. The real fit adds the
-  leave-one-out and rival work; it is timed on pi59 in the PR.
+  leave-one-out and rival work; it is timed on the gate Pi in the PR.
 
 ### The rest of the fit
 
@@ -754,7 +754,7 @@ are updated with the approval.
 ## Checklist
 
 Each step lands with its tests; targeted tests while iterating, one
-`make ci-remote` at the end (pi59).
+`make ci-remote` at the end, on the gate Pi.
 
 ### 0. Approval
 - [x] Mockup: lens model (`limitRadius` / `distort` / `undistort` /
@@ -917,7 +917,7 @@ Each step lands with its tests; targeted tests while iterating, one
       that each scenario rates as before) from the
       table (the 150° fisheye's k2).
 - [x] `fit_result_to_dict`: `cx`, `cy`, `centre_fitted`.
-- [ ] Timed on pi59 (one fit route call with 12 lines), number in the PR.
+- [x] Timed on the gate Pi (one fit route call with 12 lines), number in the PR.
       Mac: 34-49 ms median, 53 ms at worst (12 lines, centred and offset 2.3 mm).
 - [x] `tests/test_lens_fit.py`, `tests/_lens_scene.py`,
       `tests/test_lens_calibration.py`: synthetic stages through 2.3 mm-like
@@ -1209,12 +1209,12 @@ clear barrel; dense traced edges (16 sub-pixel points each) as the reference.
   gallery TOMLs record a centre only where the picture has one.
 
 ### 10. Verify
-- [ ] `make ci-remote` green on pi59.
-- [ ] Station check on pi66 (ask the operator; check `.overlay-ref` first):
+- [x] `make ci-remote` green on the gate Pi.
+- [ ] Station check on the display test station (ask the operator):
       Media Gallery concert picture, grid on the tape, mouse drags a marker to
       the cursor in a corner with a typed centre, HUD bench with eight
       cone markers within §9.
-- [ ] Setup Wizard Lens step on synthetic 2.3 mm pictures (rendered with
+- [x] Setup Wizard Lens step on synthetic 2.3 mm pictures (rendered with
       `_lens_scene`), centred and offset by (80, 50) px: suggestions along the
       edges, fit within 0.01 and the centre named in the result line only for
       the offset picture, Review.

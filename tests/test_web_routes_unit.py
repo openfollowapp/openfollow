@@ -34,12 +34,8 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-try:
-    import tomllib
-except ImportError:  # Python 3.10 – project floor is >=3.10 (tomllib is 3.11+)
-    import tomli as tomllib  # type: ignore[no-redef]
-
 import pytest
+import tomllib
 
 import openfollow.web.routes as routes_module
 from openfollow.configuration import AppConfig, DetectionMaskConfig, TriggerZoneConfig

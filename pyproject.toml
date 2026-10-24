@@ -14,11 +14,10 @@ authors = [
 ]
 # Upper cap tracks upstream wheel availability: torch/scipy/onnxruntime ship no
 # cp314 wheels yet, so detection/export break on 3.14. Bump to <3.15 once they do.
-requires-python = ">=3.10,<3.14"
+requires-python = ">=3.13,<3.14"
 dependencies = [
     "pypsn @ git+https://github.com/open-stage/python-psn.git",
     "numpy>=1.24",
-    "tomli>=1.2.0; python_version<'3.11'",
     "tomli-w>=1.0",
     "bottle>=0.12",
     "pygame-ce>=2.5.8",
@@ -133,7 +132,7 @@ optional = true
 mutmut = "^3.8"
 
 # Linting: ruff check/format (faster pyflakes/pycodestyle/isort/pyupgrade bundle).
-# line-length=120 matches old flake8 setting. target-version=py310 matches requires-python.
+# line-length=120 matches old flake8 setting.
 [tool.ruff]
 line-length = 120
 target-version = "py310"
@@ -168,7 +167,6 @@ module = [
     "psutil",
     "pypsn.*",
     "multicast_expert.*",
-    "tomli",
     "tomli_w",
     "cv2",
     "onnxruntime",

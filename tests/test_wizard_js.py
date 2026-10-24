@@ -8339,6 +8339,7 @@ _CURRENT_FUNCTIONS = ("lensHasCurrent", "lensMeasured", "renderLensCurrent", "le
 def _current(expression: str, station: list, start: str = "", **inputs) -> dict:
     return run_wizard_js(
         "(function() {" + expression + " return { current: $('lens-current').hidden, asking: $('lens-current').asking,"
+        " backup: $('lens-current-backup').hidden,"
         " notices: $('lens-notices').hidden, work: $('lens-work').hidden, next: $('lens-next').hidden,"
         " values: $('lens-current-values').textContent, checked: radios.filter(function(r) { return r.checked; })"
         ".map(function(r) { return r.value; }), measured: lensMeasured(), choice: S.lensChoice, written: written,"
@@ -8370,8 +8371,9 @@ def test_a_camera_with_a_lens_calibration_asks_first_what_to_do_with_it(station,
     # Unanswered, everything below the choices and Next are hidden; kept, all of it stays hidden; loaded, only its
     # notices show; cleared, the picture comes back.
     assert [out["current"], out["notices"], out["work"], out["next"]] == shown
-    # The choices are primary buttons only while none is chosen.
-    assert out["asking"] is (station != [0, 0, 0, 0] and not choice)
+    # The choices are primary buttons, and the backup Save shows, only while none is chosen.
+    asking = station != [0, 0, 0, 0] and not choice
+    assert [out["asking"], out["backup"]] == [asking, not asking]
     if station != [0, 0, 0, 0]:
         assert out["values"] == "Barrel / fisheye -0.31 · Corner correction -0.01."
         assert out["checked"] == ([choice] if choice else [])

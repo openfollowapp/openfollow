@@ -453,8 +453,10 @@
         <label class="tier-option"><input type="radio" name="lens_current" value="clear"><span><strong>Clear it and measure the lens again</strong><small>Trace new lines on the picture below.</small></span></label>
         <label class="tier-option"><input type="radio" name="lens_current" value="load"><span><strong>Load another lens calibration</strong><small>Saved on this station or in a settings file.</small></span></label>
       </div>
-      <button type="button" class="secondary" style="margin-top:0.72rem;" onclick="lensSaveCurrent()">Save lens calibration&hellip;</button>
-      <div id="lens-current-saved" class="notice success" role="status" style="display:none;margin-top:0.72rem;"></div>
+      <div id="lens-current-backup">
+        <button type="button" class="secondary" style="margin-top:0.72rem;" onclick="lensSaveCurrent()">Save lens calibration&hellip;</button>
+        <div id="lens-current-saved" class="notice success" role="status" style="display:none;margin-top:0.72rem;"></div>
+      </div>
     </div>
     <div id="lens-notices">
     <div class="notice" id="lens-hint" role="status" aria-live="polite" hidden></div>
@@ -2712,6 +2714,8 @@
     var cur = lensHasCurrent(), ask = cur && !S.lensChoice;
     $('lens-current').hidden = !cur;
     $('lens-current').classList.toggle('asking', ask);
+    // The backup is for before the calibration changes: it goes with the first choice.
+    $('lens-current-backup').hidden = !ask;
     if (cur) {
       $('lens-current-values').textContent = lensVals(SAVED.lens[0], SAVED.lens[1], SAVED.lens[2], SAVED.lens[3], imageWidth, imageHeight) + '.';
       document.querySelectorAll('input[name="lens_current"]').forEach(function(r) { r.checked = r.value === S.lensChoice; });

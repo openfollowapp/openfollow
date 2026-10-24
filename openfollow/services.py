@@ -3099,7 +3099,6 @@ class AppRuntimeServices:
         return {
             "status": str(getattr(self._app, "_psn_source_status", "")),
             "banner": str(getattr(self._app, "_psn_source_banner", "")),
-            "step": str(getattr(self._app, "_psn_source_step", "")),
             "resolved_ip": str(getattr(self._app, "_psn_source_resolved_ip", "")),
         }
 

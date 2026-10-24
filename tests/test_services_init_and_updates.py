@@ -2717,15 +2717,13 @@ class TestInitOscTransmitters:
     ) -> None:
         """The web provider mirrors the app's degraded-state surface for
         rendering the PSN interface unavailability advisory."""
-        services._app._psn_source_status = "none"
-        services._app._psn_source_banner = "Pinned network interface 'ghost0' is not available. No usable interface."
-        services._app._psn_source_step = "Pick one to continue."
-        services._app._psn_source_resolved_ip = ""
+        services._app._psn_source_status = "primary"
+        services._app._psn_source_banner = "iface gone – using 10.0.0.5"
+        services._app._psn_source_resolved_ip = "10.0.0.5"
         assert services._psn_source_advisory() == {
-            "status": "none",
-            "banner": "Pinned network interface 'ghost0' is not available. No usable interface.",
-            "step": "Pick one to continue.",
-            "resolved_ip": "",
+            "status": "primary",
+            "banner": "iface gone – using 10.0.0.5",
+            "resolved_ip": "10.0.0.5",
         }
 
     def test_psn_source_advisory_empty_when_unset(
@@ -2737,7 +2735,6 @@ class TestInitOscTransmitters:
         assert services._psn_source_advisory() == {
             "status": "",
             "banner": "",
-            "step": "",
             "resolved_ip": "",
         }
 

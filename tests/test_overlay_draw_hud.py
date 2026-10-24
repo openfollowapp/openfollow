@@ -3060,30 +3060,6 @@ class TestVideoFailureReachesTheDeviceSurfaces:
         assert step.rgba == COLOR_TEXT_MUTED
         assert step.y > cr.find_texts("RTSP is live")[0].y
 
-    def test_the_pinned_interface_warning_draws_its_step_on_the_second_line(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from openfollow import net_utils
-        from openfollow.app import OpenFollowApp
-
-        monkeypatch.setattr(net_utils, "resolve_source_ip", lambda _iface: ("", "none"))
-        app = SimpleNamespace(_config=SimpleNamespace(psn_source_iface="eth1"))
-        OpenFollowApp._refresh_psn_source_advisory(app)
-        state = self._state(sentence="")
-        state.settings_menu_banner = app._psn_source_banner
-        state.settings_menu_banner_action = app._psn_source_step
-        cr = FakeCairo()
-        draw_settings_menu(FakeRenderer(), cr, state, 1920, 1080)
-        drawn = " ".join(cr.show_text_strings())
-
-        assert "Pinned network interface 'eth1' is not available. No usable interface. Pick" in drawn
-        lead = cr.find_texts("Pinned network interface")[0]
-        step = cr.find_texts("Pick one to continue.")[0]
-        assert step.text == "Pick one to continue."
-        assert (lead.bold, step.bold) == (True, False)
-        assert step.rgba == COLOR_TEXT_MUTED
-        assert step.y > lead.y
-
     def test_a_banner_without_a_step_does_not_borrow_the_videos(self) -> None:
         state = self._state(sentence="Nothing answered at X.", action="Check the camera is powered.")
         state.settings_menu_banner = "Pinned network interface 'eth1' is not available."

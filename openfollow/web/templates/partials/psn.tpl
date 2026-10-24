@@ -42,11 +42,7 @@
                 %# auto-detected working IP. Rendered only when pin missed.
                 % _adv = psn_source_advisory if defined('psn_source_advisory') and psn_source_advisory else {}
                 % if _adv.get('banner'):
-                <div class="notice warning" role="status">{{_adv['banner']}}
-                    % if _adv.get('step'):
-                    <div class="notice-sub">{{_adv['step']}}</div>
-                    % end
-                </div>
+                <div class="notice warning" role="status">{{_adv['banner']}}</div>
                 % end
                 % if _advanced:
                 <div class="ia-pointer">

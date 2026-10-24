@@ -846,6 +846,45 @@ class InputManager:
         The operator-message adapter is torn down and rebuilt alongside the
         marker adapter, since it subscribes on that listener.
         """
+        try:
+            self._rebuild_osc(
+                enabled,
+                port,
+                allowed_sender_ips,
+                multicast_group=multicast_group,
+                listen_iface=listen_iface,
+            )
+        except OSError as exc:
+            logger.error(
+                "OSC input restart failed on port %d: %s. OSC input disabled.",
+                port,
+                exc,
+            )
+
+    def resume_osc(self) -> None:
+        """Rebuild OSC input from the live config; raises ``OSError`` while its listener cannot bind.
+
+        For the network observer, which retries on its own backoff and has to
+        see the failure rather than a logged no-op.
+        """
+        cfg = self.app._config.osc
+        self._rebuild_osc(
+            cfg.enabled,
+            cfg.port,
+            list(cfg.allowed_sender_ips),
+            multicast_group=cfg.multicast_group,
+            listen_iface=cfg.listen_iface,
+        )
+
+    def _rebuild_osc(
+        self,
+        enabled: bool,
+        port: int,
+        allowed_sender_ips: list[str] | None,
+        *,
+        multicast_group: str,
+        listen_iface: str,
+    ) -> None:
         # Drop the operator-message adapter before tearing the listener down.
         self._stop_operator_message_handler()
         self._stop_path_osc_handler()
@@ -853,29 +892,24 @@ class InputManager:
             self.osc_handler.stop()
             self.osc_handler = None
         self._osc_last_write.clear()
-        if enabled:
-            self.osc_handler = OscMarkerAdapter(
-                self.app._runtime_services._osc_service,
-                port=port,
-                allowed_sender_ips=list(allowed_sender_ips or []),
-                multicast_group=multicast_group,
-                multicast_iface=resolve_osc_multicast_iface(
-                    listen_iface,
-                    self.app._config.psn_source_iface,
-                ),
-                multicast_iface_name=plane_source_iface(listen_iface, self.app._config.psn_source_iface),
-            )
-            try:
-                self.osc_handler.start()
-            except OSError as exc:
-                logger.error(
-                    "OSC input restart failed on port %d: %s. OSC input disabled.",
-                    port,
-                    exc,
+        try:
+            if enabled:
+                handler = OscMarkerAdapter(
+                    self.app._runtime_services._osc_service,
+                    port=port,
+                    allowed_sender_ips=list(allowed_sender_ips or []),
+                    multicast_group=multicast_group,
+                    multicast_iface=resolve_osc_multicast_iface(
+                        listen_iface,
+                        self.app._config.psn_source_iface,
+                    ),
+                    multicast_iface_name=plane_source_iface(listen_iface, self.app._config.psn_source_iface),
                 )
-                self.osc_handler = None
-        self._rebuild_operator_message_handler()
-        self._rebuild_path_osc_handler()
+                handler.start()
+                self.osc_handler = handler
+        finally:
+            self._rebuild_operator_message_handler()
+            self._rebuild_path_osc_handler()
 
     def restart_mouse3d(self, config: Mouse3DConfig) -> None:
         """Live-apply a 3D Mouse config change.

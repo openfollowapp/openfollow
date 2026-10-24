@@ -5,7 +5,8 @@ land in the image. A **visual aid** – it doesn't change tracking; only
 calibration sets the maths.
 
 Easiest to set with the **Setup Wizard** (Open Setup Wizard on the General or
-Camera & Grid tab). All distances are in **metres**, relative to the
+Camera & Grid tab): its Simple Camera Calibration saves the measured rectangle
+as the grid, keeping the spacing. All distances are in **metres**, relative to the
 **Reference Point** – the (0, 0, 0) of your show (see Core Concepts).
 
 ## Display
@@ -43,9 +44,10 @@ Use when the Reference Point isn't at the grid centre.
 - **Z Offset** – height of the grid plane above the Reference Point. `0` sits it
   on the floor; raise it for a stage deck or riser.
 
-Saving a new width, depth or offset forgets the corner pins the Setup Wizard
-saved with the camera, since they were placed on the old grid; the next run of
-the Setup Wizard pins the corners again.
+With a Simple calibration from the Setup Wizard, the grid is its rectangle:
+saving a new width, depth or offset moves the rectangle's corners with it and
+unpins them, since they were pinned on the old grid; the next run of the Setup
+Wizard pins them again. An Advanced calibration's points stay as they are.
 
 ## Origin Marker
 

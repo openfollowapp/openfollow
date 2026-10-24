@@ -19,6 +19,7 @@ import pytest
 
 import openfollow.web.discovery as discovery_module
 from openfollow.configuration import (
+    CameraConfig,
     TriggerZoneConfig,
     load_config,
     save_config,
@@ -467,27 +468,37 @@ class TestSaveCameraGrid:
         assert entry.template.payload["ground_grid"]["z_offset"] == -1.2
         assert entry.template.payload["ground_grid"]["vertices"] == [[0.0, 0.0], [2.0, 0.0], [2.0, 2.0]]
 
-    def test_the_calibration_points_travel_with_the_camera(self, live_server) -> None:
-        from openfollow.configuration import CalibrationPointConfig
-
+    def test_the_calibration_travels_with_the_camera(self, live_server) -> None:
         _, base, cfg_path = live_server
-        point = CalibrationPointConfig("DSR", "DSL", 18.5, 19.25, 0.5, 0.4, 0.2)
-        pins = [[0.81, 0.94], [0.14, 0.95], [0.37, 0.61], [0.66, 0.6]]
+        marks = [
+            {"id": 1, "kind": "known", "x": 5.0, "y": 0.0, "z": 0.0, "pin": [0.81, 0.94]},
+            {"id": 2, "kind": "known", "x": -5.0, "y": 0.0, "z": 0.0, "pin": []},
+            {
+                "id": 3,
+                "kind": "triangulated",
+                "from_a": 1,
+                "from_b": 2,
+                "distance_a": 18.5,
+                "distance_b": 19.25,
+                "z": 0.5,
+                "pin": [0.4, 0.2],
+            },
+        ]
         cfg = load_config(cfg_path)
-        cfg.camera.calibration_points = [point]
-        cfg.camera.corner_pins = pins
+        cfg.camera = CameraConfig(calibration_mode="advanced", calibration_marks=marks, calibration_height=9.8)  # type: ignore[arg-type]
+        expected = cfg.camera.calibration_marks
         save_config(cfg, cfg_path)
         status, body = _post_json(base, "/api/templates/camera_grid/save", {"name": "Far Field"})
         assert status == 200
         filename = json.loads(body)["filename"]
         cfg = load_config(cfg_path)
-        cfg.camera.calibration_points = []
-        cfg.camera.corner_pins = []
+        cfg.camera.calibration_mode, cfg.camera.calibration_marks, cfg.camera.calibration_height = "simple", [], None
         save_config(cfg, cfg_path)
         status, _ = _post_empty(base, f"/api/templates/{filename}/apply?confirm=1")
         assert status == 200
         applied = load_config(cfg_path).camera
-        assert (applied.calibration_points, applied.corner_pins) == ([point], pins)
+        assert (applied.calibration_mode, applied.calibration_marks) == ("advanced", expected)
+        assert applied.calibration_height == 9.8
 
 
 class TestSaveZones:
@@ -821,6 +832,29 @@ class TestApplyCameraGrid:
         cfg = load_config(cfg_path)
         assert cfg.camera.pos_x == 2.5
         assert cfg.grid.width == 20.0
+
+    def test_a_template_in_the_former_calibration_keys_applies_as_marks_on_its_grid(self, live_server) -> None:
+        _, base, cfg_path = live_server
+        pins = [[0.1, 0.2], [0.9, 0.2], [0.9, 0.8], [0.1, 0.8]]
+        write_user_template(
+            _templates_root(cfg_path),
+            "camera_grid",
+            "Earlier",
+            {
+                "camera": {"fov": 55.0, "calibration_points": [], "corner_pins": pins},
+                "grid": {"width": 10.0, "depth": 4.0},
+            },
+        )
+        status, _ = _post_empty(base, "/api/templates/camera_grid.earlier.oftemplate/apply?confirm=1")
+        assert status == 200
+        camera = load_config(cfg_path).camera
+        assert camera.calibration_mode == "simple"
+        assert [(m.name, m.x, m.pin) for m in camera.calibration_marks] == [
+            ("DSL", 5.0, pins[0]),
+            ("DSR", -5.0, pins[1]),
+            ("USR", -5.0, pins[2]),
+            ("USL", 5.0, pins[3]),
+        ]
 
     def test_a_template_with_a_ground_grid_replaces_this_station_s(self, live_server) -> None:
         _, base, cfg_path = live_server

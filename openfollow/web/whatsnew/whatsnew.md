@@ -24,3 +24,7 @@ The **Show experimental features** switch is now a **Features** table under **Ge
 ## Control frame replaces Invert control direction
 
 Under **Markers & Zones → Marker Movement**, **Invert control direction** is now **Control frame**. A station with it ticked keeps its inverted controls as **Fixed heading** 180°; every other station steers in **Stage axes**, as before.
+
+## The Setup Wizard has four steps
+
+The **Setup Wizard** now runs Video Source, Lens, **Camera Calibration** and Review, and calculates the camera from marks pinned on the picture: **Simple** uses the four corners of a measured rectangle, **Advanced** known points and distance points. In Simple, **Save and finish** also saves the rectangle as the grid, with the point of origin you choose: centred between DSL and DSR, or **Custom**. Check that it matches the console's origin before saving. For a camera that looks almost straight down, the Setup Wizard asks for the exact height of the camera's lens.

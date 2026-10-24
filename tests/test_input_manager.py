@@ -768,23 +768,24 @@ def test_screen_axes_that_cancel_a_diagonal_leave_the_marker_still(monkeypatch) 
     assert app._server.get_marker(10).pos == pytest.approx((0.0, 0.0, 0.5))
 
 
-@pytest.mark.parametrize(("shown", "lens"), [(["lens_distortion"], (-0.2, 0.05)), ([], (0.0, 0.0))])
-def test_screen_frame_reads_the_lens_only_with_its_feature(monkeypatch, shown, lens) -> None:  # noqa: ANN001
+@pytest.mark.parametrize("shown", [[], ["zones"]], ids=["no features", "zones"])
+def test_screen_frame_reads_the_cameras_lens_whatever_the_features(monkeypatch, shown) -> None:  # noqa: ANN001
     import openfollow.input.control_frame as control_frame_module
 
-    seen: list[tuple[float, float]] = []
+    seen: list[tuple[float, float, float, float]] = []
 
-    def _spy(params, pos, w, h, k1, k2):  # noqa: ANN001, ANN202
-        seen.append((k1, k2))
+    def _spy(params, pos, w, h, k1, k2, cx, cy):  # noqa: ANN001, ANN202
+        seen.append((k1, k2, cx, cy))
         return ((1.0, 0.0), (0.0, 1.0))
 
     monkeypatch.setattr(control_frame_module, "screen_axes_at", _spy)
     app = _with_camera(_DummyApp())
     app._config.marker.control_frame = "screen"
-    app._config.camera.lens_k1, app._config.camera.lens_k2 = -0.2, 0.05
+    camera = app._config.camera
+    camera.lens_k1, camera.lens_k2, camera.lens_cx, camera.lens_cy = -0.2, 0.05, 0.03, -0.01
     app._config.ui.shown_features = shown
     _keyboard_step(monkeypatch, app, (0.0, 1.0, 0.0))
-    assert seen and set(seen) == {lens}
+    assert seen and set(seen) == {(-0.2, 0.05, 0.03, -0.01)}
 
 
 _PICTURE_CAMERAS = [

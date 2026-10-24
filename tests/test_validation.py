@@ -18,7 +18,8 @@ from __future__ import annotations
 
 import pytest
 
-from openfollow.configuration import AppConfig
+from openfollow.configuration import AppConfig, CameraConfig
+from openfollow.lens_model import C_BOUND
 from openfollow.web import validation
 from openfollow.web.routes import (
     _SECTION_FIELD_PARSERS,
@@ -168,19 +169,37 @@ def test_validate_range_high() -> None:
     assert "FOV" in err
 
 
+_PAIR_ERROR = "This pair cannot follow the picture out to its corners. Bring either value closer to 0."
+_CENTRE_ERROR = "This lens centre stops the overlay short of the picture's corners. Bring it closer to 0."
+
+
 @pytest.mark.parametrize(
     "field,raw,context",
     [
-        ("lens_k1", "-0.5", None),  # folds against the implied k2 = 0
-        ("lens_k1", "-0.5", {"lens_k2": "0"}),
-        ("lens_k2", "-0.3", {"lens_k1": "-0.2"}),
-        ("lens_k1", "-0.4", {"lens_k2": "-0.2"}),  # the old box's far corner folds
+        ("lens_k1", "-1.0", None),  # the pole on the corner against the implied k2 = 0
+        ("lens_k1", "-0.6", {"lens_k2": "-0.4"}),
+        ("lens_k2", "0.2", {"lens_k1": "0.4"}),  # the fold on the corner
+        ("lens_k2", "1.5", None),
+        # The pair alone falls short, so a centre field names the pair, whatever the centre.
+        ("lens_cx", "0.1", {"lens_k1": "-1.2"}),
+        ("lens_cy", "0", {"lens_k1": "-1.2", "lens_cx": "0"}),
     ],
 )
-def test_validate_lens_distortion_folding_pair(field: str, raw: str, context: dict[str, str] | None) -> None:
-    err = validate("camera", field, raw, context=context)
-    assert err is not None
-    assert "folds" in err
+def test_validate_lens_a_pair_short_of_a_corner(field: str, raw: str, context: dict[str, str] | None) -> None:
+    assert validate("camera", field, raw, context=context) == _PAIR_ERROR
+
+
+@pytest.mark.parametrize(
+    "field,raw,context",
+    [
+        ("lens_cx", "0.1", {"lens_k1": "-0.9"}),  # the pole at 1.054, the far corner at 1.1
+        ("lens_k1", "-0.9", {"lens_cx": "0.1"}),
+        ("lens_cy", "-0.2", {"lens_k1": "-0.75"}),
+        ("lens_k2", "-0.069", {"lens_k1": "-0.6", "lens_cx": "0.2", "lens_cy": "0.2"}),
+    ],
+)
+def test_validate_lens_a_centre_that_stops_the_overlay_short(field: str, raw: str, context: dict[str, str]) -> None:
+    assert validate("camera", field, raw, context=context) == _CENTRE_ERROR
 
 
 @pytest.mark.parametrize(
@@ -188,30 +207,71 @@ def test_validate_lens_distortion_folding_pair(field: str, raw: str, context: di
     [
         ("lens_k1", "0.1", None),
         ("lens_k2", "-0.03", None),
-        ("lens_k1", "5", None),  # pincushion never folds: no box
-        ("lens_k1", "-0.5", {"lens_k2": "0.25"}),  # the sibling keeps the pair valid
-        ("lens_k2", "0.25", {"lens_k1": "-0.47"}),
-        # A sibling that is no finite number carries its own error; the pair is not judged on it.
-        ("lens_k1", "-0.5", {"lens_k2": "abc"}),
-        ("lens_k1", "-0.5", {"lens_k2": "nan"}),
+        ("lens_k1", "0.9", None),
+        ("lens_k2", "-0.8", None),
+        ("lens_k1", "-1.2", {"lens_k2": "0.3"}),  # the sibling keeps the pair valid
+        ("lens_cx", "0.04", {"lens_k1": "-0.527", "lens_k2": "-0.069", "lens_cy": "-0.03"}),
+        ("lens_cy", "0.25", None),
+        # A centre sibling past its bound is judged clamped, as the save keeps it; its own field shows its error.
+        ("lens_k1", "-0.6", {"lens_cx": "0.9"}),
+        # A sibling that is no finite number carries its own error; the lens is not judged on it.
+        ("lens_k1", "-1.2", {"lens_k2": "abc"}),
+        ("lens_k1", "-1.2", {"lens_k2": "nan"}),
+        ("lens_k1", "-0.9", {"lens_cx": "abc"}),
+        ("lens_cx", "0.1", {"lens_k1": "inf"}),
+        ("lens_cx", "0.1", {"lens_k1": "-0.9", "lens_cy": "x"}),
     ],
 )
-def test_validate_lens_distortion_valid_pair_ok(field: str, raw: str, context: dict[str, str] | None) -> None:
+def test_validate_lens_that_reaches_every_corner_ok(field: str, raw: str, context: dict[str, str] | None) -> None:
     assert validate("camera", field, raw, context=context) is None
 
 
+_SAVED_LENS = {"lens_k1": -0.8, "lens_k2": -0.05, "lens_cx": 0.0, "lens_cy": 0.05}
+
+
 @pytest.mark.parametrize("blank", ["", "   "])
-@pytest.mark.parametrize(("saved_k2", "folds"), [(0.0, True), (0.25, False)])
-def test_validate_lens_reads_an_empty_sibling_as_its_saved_value(saved_k2: float, folds: bool, blank: str) -> None:
+@pytest.mark.parametrize("sibling", ["lens_k1", "lens_k2", "lens_cy"])
+def test_validate_lens_reads_an_empty_sibling_as_its_saved_value(sibling: str, blank: str) -> None:
+    # The saved lens is valid with lens_cx = 0 and not with 0.07; read as 0, any blank sibling
+    # would make 0.07 valid too.
     cfg = AppConfig()
-    cfg.camera.lens_k2 = saved_k2
-    err = validate("camera", "lens_k1", "-0.5", cfg=cfg, context={"lens_k2": blank})
-    assert (err is not None and "folds" in err) is folds
+    for name, value in _SAVED_LENS.items():
+        setattr(cfg.camera, name, value)
+    context = {name: str(value) for name, value in _SAVED_LENS.items() if name != "lens_cx"}
+    context[sibling] = blank
+    assert validate("camera", "lens_cx", "0", cfg=cfg, context=context) is None
+    assert validate("camera", "lens_cx", "0.07", cfg=cfg, context=context) == _CENTRE_ERROR
 
 
-@pytest.mark.parametrize("field,raw", [("lens_k1", "abc"), ("lens_k2", "nan"), ("lens_k1", "inf")])
+@pytest.mark.parametrize("field", ["lens_k1", "lens_k2", "lens_cx", "lens_cy"])
+def test_validate_lens_without_a_config_reads_an_empty_sibling_as_0(field: str) -> None:
+    value = {"lens_k1": "-0.99", "lens_k2": "-0.99", "lens_cx": "0.25", "lens_cy": "0.25"}[field]
+    assert validate("camera", field, value, context={}) is None
+
+
+@pytest.mark.parametrize("field,raw", [("lens_k1", "abc"), ("lens_k2", "nan"), ("lens_k1", "inf"), ("lens_cx", "x")])
 def test_validate_lens_distortion_wrong_type(field: str, raw: str) -> None:
-    assert validate("camera", field, raw) == "Must be a number."
+    assert validate("camera", field, raw) is not None
+    assert "number" in validate("camera", field, raw)
+
+
+@pytest.mark.parametrize("field", ["lens_cx", "lens_cy"])
+@pytest.mark.parametrize("raw", ["0.2500001", "-0.26", "1", "-3e2"])
+def test_validate_lens_centre_past_its_bound(field: str, raw: str) -> None:
+    assert validate("camera", field, raw) == "Must be a number from -0.25 to 0.25."
+
+
+@pytest.mark.parametrize("field", ["lens_cx", "lens_cy"])
+def test_the_lens_centre_rule_is_the_configs_bound(field: str) -> None:
+    rule = FIELD_RULES["camera"][field]
+    assert (rule.lo, rule.hi) == (-C_BOUND, C_BOUND)
+    # What the blur accepts the save keeps, and what it refuses the save clamps.
+    for raw in ("0.25", "-0.25", "0.1"):
+        assert validate("camera", field, raw) is None
+        assert getattr(CameraConfig(**{field: raw}), field) == float(raw)
+    for raw in ("0.26", "-0.3"):
+        assert validate("camera", field, raw) is not None
+        assert getattr(CameraConfig(**{field: raw}), field) != float(raw)
 
 
 @pytest.mark.parametrize("section", ["grid", "marker"])
@@ -1177,15 +1237,16 @@ def test_mouse3d_button_validation(raw: str, expect_error: bool) -> None:
     assert (err is not None) is expect_error
 
 
-def test_needs_cfg_only_for_the_lens_pair() -> None:
-    """Only the lens pair's fold check reads ``AppConfig`` (a sibling left empty
-    keeps its saved value), so the ``/api/validate`` fast-path skips the
-    per-keystroke TOML parse for every other field."""
+def test_needs_cfg_only_for_the_lens() -> None:
+    """Only the lens rule reads ``AppConfig`` (a sibling left empty keeps its
+    saved value), so the ``/api/validate`` fast-path skips the per-keystroke
+    TOML parse for every other field."""
     from openfollow.web.validation import needs_cfg
 
+    lens = {("camera", name) for name in ("lens_k1", "lens_k2", "lens_cx", "lens_cy")}
     for section, rules in FIELD_RULES.items():
         for field_name in rules:
-            expected = (section, field_name) in (("camera", "lens_k1"), ("camera", "lens_k2"))
+            expected = (section, field_name) in lens
             assert needs_cfg(section, field_name) is expected, f"{section}.{field_name}"
     assert needs_cfg("camera", "no_such_field") is False
 
@@ -1229,8 +1290,8 @@ def test_bidi_isolates_and_c1_controls_are_refused_and_stripped(value: str) -> N
     assert _default_sanitiser(value) == "Lighting"
 
 
-def test_each_lens_field_is_checked_again_when_its_slider_or_the_other_value_changes() -> None:
-    # A slider writes its number field without a blur, and a fold fixed from the other
+def test_each_lens_field_is_checked_again_when_its_slider_or_another_lens_value_changes() -> None:
+    # A slider writes its number field without a blur, and a lens fixed from another
     # field would otherwise leave this one's error, and the disabled Save, behind.
     import re
     from pathlib import Path
@@ -1247,6 +1308,8 @@ def test_each_lens_field_is_checked_again_when_its_slider_or_the_other_value_cha
             f"change from:#camera-lens-{own}-range",
             f"change from:#camera-lens-{other}",
             f"change from:#camera-lens-{other}-range",
+            "change from:#camera-lens-cx-px",
+            "change from:#camera-lens-cy-px",
         }
 
 

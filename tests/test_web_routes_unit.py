@@ -21,9 +21,6 @@ Targeted helpers:
   non-numeric coord).
 * ``_apply_zone_fields`` vertex/field interaction + ``__post_init__``
   re-run.
-* ``_wizard_camera_params`` error surface (non-dict, missing key,
-  non-numeric value) – each raises a distinct exception that the
-  ``/api/wizard/*`` routes translate to HTTP 400.
 * ``_apply_import_data`` applying every section from one import.
 
 ``_is_private_peer_ip`` and ``_load_json_body`` already have parametrised
@@ -42,7 +39,6 @@ try:
 except ImportError:  # Python 3.10 – project floor is >=3.10 (tomllib is 3.11+)
     import tomli as tomllib  # type: ignore[no-redef]
 
-import numpy as np
 import pytest
 
 import openfollow.web.routes as routes_module
@@ -61,7 +57,6 @@ from openfollow.web.routes import (
     _find_by_id,
     _parse_vertices,
     _swap_for_direction,
-    _wizard_camera_params,
     apply_section_data,
     build_interface_assignment_rows,
     strip_device_local_fields,
@@ -440,50 +435,6 @@ class TestApplyMaskFields:
         mask = DetectionMaskConfig(vertices=[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]])
         _apply_mask_fields(mask, {"vertices": None})
         assert mask.vertices == [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]
-
-
-# --------------------------------------------------------------------------- #
-# _wizard_camera_params – error matrix (maps to HTTP 400 at the route layer)
-# --------------------------------------------------------------------------- #
-
-
-class TestWizardCameraParams:
-    def test_non_dict_raises_typeerror(self) -> None:
-        with pytest.raises(TypeError):
-            _wizard_camera_params("not a dict")
-
-    def test_missing_key_raises_keyerror(self) -> None:
-        bad = {"pos_x": 0, "pos_y": 0, "pos_z": 0, "pitch": 0, "yaw": 0, "roll": 0}
-        with pytest.raises(KeyError):
-            _wizard_camera_params(bad)
-
-    def test_non_numeric_value_raises_valueerror(self) -> None:
-        with pytest.raises((TypeError, ValueError)):
-            _wizard_camera_params(
-                {
-                    "pos_x": "abc",
-                    "pos_y": 0,
-                    "pos_z": 0,
-                    "pitch": 0,
-                    "yaw": 0,
-                    "roll": 0,
-                    "fov": 60,
-                }
-            )
-
-    def test_valid_input_returns_float64_vector(self) -> None:
-        cam = {
-            "pos_x": 1.0,
-            "pos_y": 2.0,
-            "pos_z": 3.0,
-            "pitch": 4.0,
-            "yaw": 5.0,
-            "roll": 6.0,
-            "fov": 60.0,
-        }
-        vec = _wizard_camera_params(cam)
-        assert vec.dtype == np.float64
-        assert vec.tolist() == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 60.0]
 
 
 # --------------------------------------------------------------------------- #
@@ -1913,3 +1864,39 @@ class TestApplyPathsSection:
         cfg = self._cfg()
         apply_section_data(cfg, "paths", {"paths": [{"name": "cross"}, {"name": raw}]})
         assert [p.name for p in cfg.paths.paths] == ["cross", "path-2"]
+
+
+# --------------------------------------------------------------------------- #
+# The lens centre travels with the camera and resets with it
+# --------------------------------------------------------------------------- #
+
+
+class TestLensCentreTransfer:
+    """The lens centre belongs to the camera and lens: not device-local, not device identity."""
+
+    @staticmethod
+    def _station() -> AppConfig:
+        from openfollow.configuration import CameraConfig
+
+        return AppConfig(camera=CameraConfig(lens_k1=-0.3, lens_k2=-0.02, lens_cx=0.05, lens_cy=-0.02))
+
+    def test_an_export_carries_the_lens_centre(self) -> None:
+        camera = routes_module._config_dict_redacted(self._station())["camera"]
+        assert (camera["lens_cx"], camera["lens_cy"]) == (0.05, -0.02)
+
+    def test_an_import_takes_the_lens_centre(self) -> None:
+        out = _apply_import_data(AppConfig(), {"camera": {"lens_k1": -0.3, "lens_cx": 0.05, "lens_cy": -0.02}})
+        assert (out.camera.lens_k1, out.camera.lens_cx, out.camera.lens_cy) == (-0.3, 0.05, -0.02)
+
+    def test_an_imported_lens_centre_is_clamped_as_a_hand_edited_file_is(self) -> None:
+        out = _apply_import_data(AppConfig(), {"camera": {"lens_cx": 9.0, "lens_cy": "abc"}})
+        assert (out.camera.lens_cx, out.camera.lens_cy) == (0.25, 0.0)
+
+    def test_a_push_carries_the_lens_centre(self) -> None:
+        section = {"lens_k1": -0.3, "lens_cx": 0.05, "lens_cy": -0.02}
+        assert strip_device_local_fields("camera", section) == section
+        assert routes_module._without_station_name(section) == section
+
+    def test_restore_defaults_resets_the_lens_centre_with_the_pair(self) -> None:
+        camera = routes_module.reset_config_to_defaults(self._station()).camera
+        assert (camera.lens_k1, camera.lens_k2, camera.lens_cx, camera.lens_cy) == (0.0, 0.0, 0.0, 0.0)

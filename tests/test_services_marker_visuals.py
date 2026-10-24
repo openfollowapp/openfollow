@@ -905,7 +905,7 @@ def _make_visual_app(marker: object, *, controlled: bool) -> SimpleNamespace:
         psn_system_name="OF",
         marker=_make_full_marker_config(),
         grid=_make_grid_config(),
-        camera=SimpleNamespace(lens_k1=0.0, lens_k2=0.0),
+        camera=SimpleNamespace(lens_k1=0.0, lens_k2=0.0, lens_cx=0.0, lens_cy=0.0),
         ui=SimpleNamespace(unit_system="metric"),
         controller=SimpleNamespace(
             enabled=False,
@@ -1014,13 +1014,15 @@ class TestBuildMarkerVisualStateTornRead:
         # since a correct consumer reads ``pos`` exactly once.
         assert (card.x, card.y, card.z) == (10.0, 20.0, 30.0)
 
-    def test_lens_coefficients_are_copied_from_config(self) -> None:
-        # The overlay warp reads k1/k2 off the live config (the Camera object is
-        # pinhole), so a slider edit must land on the state for the renderer.
+    def test_the_lens_is_copied_from_config(self) -> None:
+        # The overlay warp reads the lens off the live config (the Camera object is
+        # pinhole), so an edit must land on the state for the renderer.
         marker = _TornMarker([(0.0, 0.0, 0.0)])
         app = _make_visual_app(marker, controlled=False)
         app._config.camera.lens_k1 = -0.15
         app._config.camera.lens_k2 = 0.04
+        app._config.camera.lens_cx = 0.03
+        app._config.camera.lens_cy = -0.02
 
         state = build_marker_visual_state(
             app,
@@ -1030,8 +1032,7 @@ class TestBuildMarkerVisualStateTornRead:
             dt=1.0 / 60.0,
         )
 
-        assert state.lens_k1 == -0.15
-        assert state.lens_k2 == 0.04
+        assert state.lens == (-0.15, 0.04, 0.03, -0.02)
 
     @pytest.mark.parametrize("enabled", [True, False])
     def test_wheel_z_setting_reaches_the_help_overlay_state(self, enabled: bool) -> None:

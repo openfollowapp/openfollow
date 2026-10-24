@@ -7,7 +7,6 @@ behind-camera NaN clipping, and degenerate-fov/canvas rejection."""
 from __future__ import annotations
 
 import math
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -564,91 +563,6 @@ class TestCameraOrientationConvention:
         assert screen == pytest.approx(np.array(expected), abs=1e-4)
 
 
-class TestWizardIllustrationAgreement:
-    """The Setup Wizard's camera-position preview must match what gets drawn.
-
-    Step 4 sketches the ground footprint of the frustum client-side, from its
-    own copy of the camera model (``updateCamIllustration`` in ``wizard.tpl``).
-    Nothing links the two but this test, and a preview that disagrees with the
-    projection sends the operator chasing an overlay that never lines up.
-    """
-
-    # The formulas ``_tpl_footprint`` below mirrors. Pinning the template
-    # source is what makes the mirror trustworthy: without it, editing the JS
-    # leaves this suite green and the preview drifts off the projection again.
-    _TPL_CAMERA_MODEL = (
-        "var lookX = Math.cos(pitchR) * Math.sin(yawR);",
-        "var lookY = Math.cos(pitchR) * Math.cos(yawR);",
-        "var lookZ = Math.sin(pitchR);",
-        "var Rv = [Math.cos(yawR), -Math.sin(yawR), 0];",
-        "var Uv = [-Math.sin(yawR) * Math.sin(pitchR), -Math.cos(yawR) * Math.sin(pitchR), Math.cos(pitchR)];",
-        "var vfov = (2 * Math.atan(Math.tan((fov / 2) * rad) * 9 / 16)) / rad;",
-    )
-
-    @staticmethod
-    def _wizard_tpl() -> str:
-        path = Path(__file__).resolve().parent.parent / "openfollow" / "web" / "templates" / "wizard.tpl"
-        return path.read_text(encoding="utf-8")
-
-    def test_template_still_uses_the_mirrored_camera_model(self) -> None:
-        """The preview's own camera model is what the rest of this class mirrors.
-
-        Change one of these lines in ``wizard.tpl`` and the numeric agreement
-        test below silently stops describing the template, so pin them here and
-        update both together.
-        """
-        src = self._wizard_tpl()
-        for line in self._TPL_CAMERA_MODEL:
-            assert line in src, f"wizard.tpl no longer contains {line!r} – update _tpl_footprint to match"
-
-    @staticmethod
-    def _tpl_footprint(
-        pos: tuple[float, float, float],
-        pitch: float,
-        yaw: float,
-        hfov: float,
-    ) -> list[tuple[float, float]]:
-        """Ground footprint the way ``wizard.tpl`` computes it.
-
-        Mirrors the look vector, camera basis and 16:9 vertical FOV the
-        template derives, then intersects the four frustum corners with the
-        floor. Corner order is top-left, top-right, bottom-right, bottom-left.
-        """
-        cx, cy, cz = pos
-        p, y = math.radians(pitch), math.radians(yaw)
-        look = (math.cos(p) * math.sin(y), math.cos(p) * math.cos(y), math.sin(p))
-        right = (math.cos(y), -math.sin(y), 0.0)
-        up = (-math.sin(y) * math.sin(p), -math.cos(y) * math.sin(p), math.cos(p))
-        th = math.tan(math.radians(hfov) / 2.0)
-        tv = math.tan(math.atan(th * 9 / 16))
-
-        hits = []
-        for sx, sy in ((-1, 1), (1, 1), (1, -1), (-1, -1)):
-            d = tuple(look[i] + sx * th * right[i] + sy * tv * up[i] for i in range(3))
-            t = -cz / d[2]
-            hits.append((cx + d[0] * t, cy + d[1] * t))
-        return hits
-
-    @pytest.mark.parametrize(
-        ("pitch", "yaw"),
-        [(-45.0, 0.0), (-45.0, 180.0), (-50.0, 90.0), (-40.0, -60.0), (-65.0, 137.0)],
-    )
-    def test_footprint_matches_unprojected_frame_corners(self, pitch: float, yaw: float) -> None:
-        canvas_w, canvas_h = 1920.0, 1080.0
-        pos = (1.5, -2.0, 7.0)
-        hfov = 70.0
-        params = np.array([*pos, pitch, yaw, 0.0, hfov], dtype=np.float64)
-        frame_corners = np.array(
-            [(0.0, 0.0), (canvas_w, 0.0), (canvas_w, canvas_h), (0.0, canvas_h)],
-            dtype=np.float64,
-        )
-
-        world = unproject_to_plane(params, frame_corners, canvas_w, canvas_h, plane_z_psn=0.0)
-
-        assert np.all(np.isfinite(world))
-        assert world[:, :2] == pytest.approx(np.array(self._tpl_footprint(pos, pitch, yaw, hfov)), abs=1e-6)
-
-
 class TestSolveAtNonZeroYaw:
     """``solve_camera_dlt`` has to recover the pose it was handed.
 
@@ -896,15 +810,15 @@ def test_screen_axes_at_the_picture_centre_line_match_the_camera_heading() -> No
     assert up == pytest.approx((0.0, 1.0), abs=1e-6)
 
 
-@pytest.mark.parametrize(("k1", "k2"), [(0.0, 0.0), (-0.2, 0.05)])
-def test_screen_axes_move_the_point_up_its_picture_column(k1: float, k2: float) -> None:
+@pytest.mark.parametrize("lens", [(0.0, 0.0, 0.0, 0.0), (-0.2, 0.05, 0.0, 0.0), (-0.53, -0.07, 0.06, -0.04)])
+def test_screen_axes_move_the_point_up_its_picture_column(lens: tuple[float, float, float, float]) -> None:
     params = _pose()
     point = (4.0, 2.0, 1.6)
-    axes = screen_axes_at(params, point, 1920.0, 1080.0, k1, k2)
+    axes = screen_axes_at(params, point, 1920.0, 1080.0, *lens)
     assert axes is not None
     _, (ux, uy) = axes
     step = np.array([point, (point[0] + 0.01 * ux, point[1] + 0.01 * uy, point[2])])
-    seen = apply_overlay_distortion(project_points(params, step, 1920.0, 1080.0), 1920.0, 1080.0, k1, k2)
+    seen = apply_overlay_distortion(project_points(params, step, 1920.0, 1080.0), 1920.0, 1080.0, *lens)
     assert seen[1, 0] == pytest.approx(seen[0, 0], abs=0.05)
     assert seen[1, 1] < seen[0, 1]
     # Off the centre line the column leans away from the camera.
@@ -926,19 +840,14 @@ def test_screen_axes_at_give_no_answer_off_the_usable_picture(pose, point) -> No
     assert screen_axes_at(_pose(**pose), point, 1920.0, 1080.0) is None
 
 
-@pytest.mark.parametrize(
-    "point",
-    [
-        (6.0, -6.0, 0.0),  # a step crosses the fold
-        (12.0, -6.0, 0.0),  # past the fold: drawn folded back into the picture
-        (12.0, 0.0, 0.0),
-    ],
-)
-def test_screen_axes_give_no_answer_past_a_barrel_lens_fold(point) -> None:  # noqa: ANN001
+@pytest.mark.parametrize("point", [(200.0, -10.0, 0.0), (2000.0, -10.9, 0.0)])
+def test_screen_axes_give_no_answer_where_a_step_leaves_the_lens_limit(point) -> None:  # noqa: ANN001
+    # Not a lens the config keeps: its pole lies inside the picture, and a step out from a point
+    # drawn just inside it has no pinhole point.
     params = _pose(fov=90.0)
-    assert screen_axes_at(params, point, 1920.0, 1080.0, -0.5, 0.0) is None
-    # Inside the fold the same lens still answers.
-    assert screen_axes_at(params, (4.0, 0.0, 0.0), 1920.0, 1080.0, -0.5, 0.0) is not None
+    assert screen_axes_at(params, point, 1920.0, 1080.0, -1.5, 0.0, 0.0, 0.0) is None
+    # Further in, the same lens still answers.
+    assert screen_axes_at(params, (60.0, -9.0, 0.0), 1920.0, 1080.0, -1.5, 0.0, 0.0, 0.0) is not None
 
 
 @pytest.mark.parametrize("roll", [100.0, 115.0, -115.0])

@@ -226,9 +226,10 @@ def check_config_reload(app: OpenFollowApp) -> None:
             logger.warning("%s is empty – not reloaded.", app._config_path)
         return
     except Exception as error:
-        # Parse error; don't advance mtime so the next poll retries (mtime
-        # stays > _config_mtime regardless of further file changes).
-        logger.warning("Config reload error: %s", error)
+        # Parse error; mtime kept so the next poll retries, warned once per mtime like the empty file.
+        if app._config_error_warned_mtime != mtime:
+            app._config_error_warned_mtime = mtime
+            logger.warning("Config reload error: %s", error)
         return
 
     try:

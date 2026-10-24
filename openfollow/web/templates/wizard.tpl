@@ -300,9 +300,11 @@
   .mode-field { margin-bottom: 0.9rem; }
   .lens-current { margin: 0.9rem 0; }
   .lens-current-values { margin: 0.2rem 0 0.6rem; color: var(--muted); }
-  /* The choices are buttons: the secondary button's border, and none of a form label's capitals. */
+  /* The choices are buttons, without a form label's capitals: primary until one is chosen, then the chosen one
+     stays filled and the others turn secondary. */
   .lens-current .tier-option { text-transform: none; letter-spacing: normal; }
   .lens-current .tier-option > span { border-color: var(--btn-secondary-border); }
+  .lens-current.asking .tier-option > span { background: var(--btn-primary-bg); color: var(--btn-ink-dark); border-color: var(--btn-primary-bg); }
   .axis-note { font-weight: 400; text-transform: none; letter-spacing: 0; }
   #step-calib.mode-simple .only-advanced, #step-calib.mode-advanced .only-simple { display: none; }
   #wiz-hint, #lens-hint { margin: 0.2rem 0 0.9rem; }
@@ -2709,6 +2711,7 @@
   function renderLensCurrent() {
     var cur = lensHasCurrent(), ask = cur && !S.lensChoice;
     $('lens-current').hidden = !cur;
+    $('lens-current').classList.toggle('asking', ask);
     if (cur) {
       $('lens-current-values').textContent = lensVals(SAVED.lens[0], SAVED.lens[1], SAVED.lens[2], SAVED.lens[3], imageWidth, imageHeight) + '.';
       document.querySelectorAll('input[name="lens_current"]').forEach(function(r) { r.checked = r.value === S.lensChoice; });

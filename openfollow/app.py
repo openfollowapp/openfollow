@@ -536,7 +536,7 @@ class OpenFollowApp:
         if resolved:
             banner += f"Using auto-detected {resolved}."
         else:
-            banner += "No usable interface – pick one to continue."
+            banner += "No usable interface."
         self._psn_source_banner = banner
         return banner
 

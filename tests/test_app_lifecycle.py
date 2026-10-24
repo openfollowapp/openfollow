@@ -573,7 +573,7 @@ class TestRun:
         app.run()
         assert banners == []  # zero candidates → no Settings prompt
         assert app._psn_source_status == "none"
-        assert "No usable interface" in app._psn_source_banner
+        assert app._psn_source_banner == "Pinned network interface 'eth0' is not available. No usable interface."
 
     def test_iface_pin_resolves_and_skips_settings(
         self,

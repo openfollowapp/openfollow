@@ -20,13 +20,8 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
-try:
-    import tomllib
-except ImportError:
-    # Python 3.10 has no stdlib ``tomllib``; use the ``tomli`` backport.
-    import tomli as tomllib  # type: ignore[no-redef]
-
 import tomli_w
+import tomllib
 
 from openfollow.binding_conflicts import BindingMove, settle_duplicates
 from openfollow.keyboard_layout import LAYOUT_RE as XKB_LAYOUT_RE

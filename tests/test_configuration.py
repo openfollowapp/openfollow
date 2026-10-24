@@ -4,19 +4,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from types import SimpleNamespace
-
-try:
-    import tomllib
-except ImportError:
-    import tomli as tomllib  # type: ignore[no-redef]
-
 import logging
 import os
 from collections.abc import Callable
+from dataclasses import dataclass
+from types import SimpleNamespace
 
 import pytest
+import tomllib
 
 from openfollow.configuration import (
     DEFAULT_UPDATE_SERVICE_NAME,
@@ -570,75 +565,6 @@ def test_bootstrap_handles_bare_filename_with_no_directory(
 
     assert bootstrap_config_if_missing("config.toml") is True
     assert (tmp_path / "config.toml").read_text(encoding="utf-8") == 'foo = "bar"\n'
-
-
-def test_configuration_falls_back_to_tomli_when_tomllib_missing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """On Python 3.10 the stdlib ``tomllib`` module doesn't exist and
-    the module falls back to the ``tomli`` backport.  Force the
-    fallback via ``sys.modules`` injection so the branch is exercised
-    on every Python version.
-
-    Loads ``configuration.py`` as a fresh module under a different
-    name (``_configuration_tomli_fallback``) so we don't perturb the
-    canonical ``openfollow.configuration`` import that the rest of
-    the suite shares – reloading the canonical module would redefine
-    every dataclass and break dataclass-equality assertions in
-    sibling tests.
-
-    pyproject installs ``tomli`` only on Python <3.11, so on 3.11+
-    we inject a stub ``tomli`` so the fallback's ``import tomli``
-    itself doesn't fail.
-    """
-    import importlib.util
-    import pathlib
-    import sys
-    import types
-
-    # Block stdlib ``tomllib`` so the except arm fires inside the
-    # freshly-loaded module.
-    monkeypatch.setitem(sys.modules, "tomllib", None)
-    # Inject a stand-in ``tomli`` so the except body's
-    # ``import tomli as tomllib`` resolves on Python 3.11+ where the
-    # real backport isn't installed.
-    fake_tomli = types.ModuleType("tomli")
-    parsed: list[str] = []
-
-    def _loads(text: str) -> dict[str, str]:
-        parsed.append(text)
-        return {"stub": "ok"}
-
-    fake_tomli.loads = _loads  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "tomli", fake_tomli)
-
-    # Load configuration.py fresh under a throwaway module name so we
-    # don't touch the canonical ``openfollow.configuration`` cached
-    # in ``sys.modules`` (reloading it would invalidate every
-    # dataclass identity used by sibling tests).
-    config_path = pathlib.Path(__file__).resolve().parent.parent / "openfollow" / "configuration.py"
-    spec = importlib.util.spec_from_file_location(
-        "_configuration_tomli_fallback",
-        config_path,
-    )
-    assert spec is not None and spec.loader is not None
-    fresh = importlib.util.module_from_spec(spec)
-    # Register under its synthetic name so internal ``dataclass``
-    # machinery (which looks up ``cls.__module__`` in sys.modules)
-    # finds the freshly-loaded module while it executes. Removed in
-    # the finally block so we don't leak the throwaway module.
-    sys.modules[spec.name] = fresh
-    try:
-        spec.loader.exec_module(fresh)
-
-        # The freshly-loaded module's ``tomllib`` symbol points at the
-        # stub ``tomli`` because ``import tomllib`` raised ImportError
-        # at the top of the file.
-        assert fresh.tomllib is fake_tomli
-        assert fresh.tomllib.loads('foo = "bar"\n') == {"stub": "ok"}
-        assert parsed == ['foo = "bar"\n']
-    finally:
-        sys.modules.pop(spec.name, None)
 
 
 def test_load_config_malformed_toml_returns_defaults(temp_config_path, caplog) -> None:

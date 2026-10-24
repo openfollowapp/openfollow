@@ -4559,6 +4559,27 @@ def test_reset_corners_gives_the_focus_of_its_hidden_button_to_the_picture(mode:
     assert out == focus
 
 
+def test_another_camera_location_puts_every_corner_back_on_its_starting_rectangle() -> None:
+    out = run_wizard_js(
+        "(function() { calibInit(); S.simpleLoc = 'foh'; S.selPin = 'DSL';"
+        " S.cornerPins = { DSL: [500, 800], DSR: [10, 10], USR: [20, 20], USL: [30, 30] };"
+        " S.cornerMoved = { DSL: true, DSR: false, USR: true, USL: false };"
+        " fire('simple-loc', 'change', { target: { value: 'back' } });"
+        " return [S.cornerPins, S.cornerMoved, S.selPin, reqs]; })()",
+        functions=(*_MENU_FUNCTIONS, "placeStartQuad", "clearCorners"),
+        variables=("CORNERS",),
+        prelude=_MENU_PAGE
+        + "function startQuad() { return S.simpleLoc === 'back' ? [[1, 1], [2, 2], [3, 3], [4, 4]] : null; }",
+    )
+    # A corner already dragged starts again too: it was placed for the camera on the other side.
+    assert out == [
+        {"DSL": [1, 1], "DSR": [2, 2], "USR": [3, 3], "USL": [4, 4]},
+        {"DSL": False, "DSR": False, "USR": False, "USL": False},
+        None,
+        1,
+    ]
+
+
 # The rows under the picture: each row's first control and its Delete button record the focus they take.
 _ROWS_PAGE = """
 els['adv-rows'] = Object.assign(fakeEl('adv-rows'), { querySelector: function(sel) {

@@ -3581,7 +3581,7 @@
   }
   function calibInit() {
     renderSimpleLoc();
-    $('simple-loc').addEventListener('change', function(e) { S.simpleLoc = e.target.value; placeStartQuad(); renderReq(); solveSoon(); saveToSession(); });
+    $('simple-loc').addEventListener('change', function(e) { S.simpleLoc = e.target.value; clearCorners(); S.selPin = null; renderReq(); solveSoon(); saveToSession(); });
     ['cam_pos_x', 'cam_pos_y', 'cam_pos_z'].forEach(function(id) { $(id).addEventListener('input', camChanged); });
     $('cam_height').addEventListener('input', function() { readHeight(); renderCalibResult(); solveSoon(); saveToSession(); });
     // An empty field the camera does not ask for goes once the focus leaves it; only the field's group is

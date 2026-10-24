@@ -432,6 +432,24 @@ class TestWizardPage:
         script = _wizard_script(body)
         assert "window.lensLoadDialog = function" in script and "window.lensSaveDialog = function" in script
 
+    def test_the_lens_step_asks_what_to_do_with_the_cameras_calibration_above_the_picture(self, live_server) -> None:
+        _, body = _get(live_server[1], "/wizard")
+        step = _wizard_step(body, "lens")
+        choices = re.findall(
+            r'<input type="radio" name="lens_current" value="(\w+)"><span><strong>([^<]+)</strong>', step
+        )
+        assert choices == [
+            ("keep", "Keep the current calibration"),
+            ("clear", "Clear it and measure the lens again"),
+            ("load", "Load another lens calibration"),
+        ]
+        # The question sits above the notices, the notices above the picture, and the picture's controls end
+        # before the step's own Next.
+        order = [step.index(s) for s in ('id="lens-current"', 'id="lens-notices"', 'id="lens-hint"', 'id="lens-work"',
+                                         'id="lens-container"', 'class="wizard-tip"', 'id="lens-next"')]  # fmt: skip
+        assert order == sorted(order)
+        assert '<div class="lens-current" id="lens-current" hidden>' in step
+
     def test_the_page_names_no_route_or_field_the_station_lacks(self, live_server) -> None:
         _, base = live_server
         _, body = _get(base, "/wizard")
@@ -1575,9 +1593,11 @@ class TestWizardLensStepPage:
         )
         assert adjust.group(1) == "User input (optional)" and 'id="wiz_lens_k2"' in adjust.group(2)
         assert "Fine-tune" not in body
-        # A short intro says what the step measures and why, above the hint.
+        # A short intro says what the step measures and why, above the question about the camera's calibration.
         intro = re.search(
-            r'<p class="wizard-help" id="lens-intro">(.*?)</p>\s*<div class="notice" id="lens-hint"', body, re.S
+            r'<p class="wizard-help" id="lens-intro">(.*?)</p>\s*<div class="lens-current" id="lens-current"',
+            body,
+            re.S,
         )
         assert intro.group(1).startswith("Most camera lenses bend the picture") and "\u2014" not in intro.group(1)
         # No step is referred to by number anywhere, since the Lens step shifts the numbering.

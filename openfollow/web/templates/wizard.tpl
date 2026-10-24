@@ -298,6 +298,8 @@
   .caution-list { margin: 0.3rem 0 0; padding-left: 1.1rem; }
   .caution-text { color: var(--caution-text); }
   .mode-field { margin-bottom: 0.9rem; }
+  .lens-current { margin: 0.9rem 0; }
+  .lens-current-values { margin: 0.2rem 0 0.6rem; color: var(--muted); }
   .axis-note { font-weight: 400; text-transform: none; letter-spacing: 0; }
   #step-calib.mode-simple .only-advanced, #step-calib.mode-advanced .only-simple { display: none; }
   #wiz-hint, #lens-hint { margin: 0.2rem 0 0.9rem; }
@@ -438,6 +440,16 @@
     </div>
 
     <p class="wizard-help" id="lens-intro">Most camera lenses bend the picture: edges that are straight on stage look curved, most of all near the edges of the picture. This step measures how much your lens bends it, so that the grid and the markers sit exactly on the stage everywhere in the picture. Do it once for each camera and lens, and again after you change the zoom.</p>
+    <div class="lens-current" id="lens-current" hidden>
+      <div class="lens-dlg-title" id="lens-current-q">This camera has a lens calibration</div>
+      <p class="lens-current-values" id="lens-current-values"></p>
+      <div class="tier-list" role="radiogroup" aria-labelledby="lens-current-q">
+        <label class="tier-option"><input type="radio" name="lens_current" value="keep"><span><strong>Keep the current calibration</strong><small>Choose this if the camera, the lens and the zoom have not changed.</small></span></label>
+        <label class="tier-option"><input type="radio" name="lens_current" value="clear"><span><strong>Clear it and measure the lens again</strong><small>Trace new lines on the picture below.</small></span></label>
+        <label class="tier-option"><input type="radio" name="lens_current" value="load"><span><strong>Load another lens calibration</strong><small>Saved on this station or in a settings file.</small></span></label>
+      </div>
+    </div>
+    <div id="lens-notices">
     <div class="notice" id="lens-hint" role="status" aria-live="polite" hidden></div>
     <div id="lens-result" class="notice" role="status" style="display:none;margin-top:0.5rem;">
       <div class="lens-result-main">
@@ -446,6 +458,8 @@
       </div>
       <div class="notice-sub" id="lens-result-hint"></div>
     </div>
+    </div>
+    <div id="lens-work">
     <div id="lens-container" class="wizard-preview-container" style="display:none;">
       <img id="lens-image" alt="">
       <canvas id="lens-edges" class="lens-edges" aria-hidden="true"></canvas>
@@ -530,11 +544,12 @@
       </details>
     </div>
 
-    <p class="wizard-tip">Click a point or press <strong>Tab</strong> to select it. The loupe stays on it, and the <strong>arrow keys</strong> move it by one pixel. While a point is selected, <strong>Tab</strong> goes round the points of its line. Press <strong>Enter</strong> when the crosshair is in the right place; then <strong>Tab</strong> moves on to the next line. <strong>Esc</strong> or a click somewhere else ends the selection. <strong>Delete</strong> or <strong>Backspace</strong> removes the selected line. <strong>Esc</strong> cancels a line you have started. If you skip this step, the current lens values stay.</p>
+    <p class="wizard-tip">Click a point or press <strong>Tab</strong> to select it. The loupe stays on it, and the <strong>arrow keys</strong> move it by one pixel. While a point is selected, <strong>Tab</strong> goes round the points of its line. Press <strong>Enter</strong> when the crosshair is in the right place; then <strong>Tab</strong> moves on to the next line. <strong>Esc</strong> or a click somewhere else ends the selection. <strong>Delete</strong> or <strong>Backspace</strong> removes the selected line. <strong>Esc</strong> cancels a line you have started.</p>
+    </div>
 
     <div class="wizard-nav">
       <button type="button" class="secondary" onclick="wizardPrev()">Back</button>
-      <button type="button" class="save-btn" onclick="wizardNext()">Next</button>
+      <button type="button" class="save-btn" id="lens-next" onclick="wizardNext()">Next</button>
     </div>
   </div>
 </div>
@@ -1148,7 +1163,7 @@
     pinSize: null,  // the snapshot size the pins are in; null while they are fractions of it
     cam: null, camPartial: false, height: null,
     solve: null, selPin: null, selCorner: null, pinMenu: null, pair: 0,
-    lensTouched: false, lensLoaded: null,
+    lensTouched: false, lensLoaded: null, lensChoice: '',
     lensCentre: [SAVED.lens[2], SAVED.lens[3]], lensCentreBad: false
   };
   var solveSeq = 0, solveTimer = null, solvePending = false;
@@ -1417,7 +1432,7 @@
   }
   // Simple keeps the station's pair without measuring one: said, but not a caution.
   function stationLensOnly() {
-    return S.mode === 'simple' && !S.lensTouched && SAVED.lens.some(function(v) { return v !== 0; });
+    return S.mode === 'simple' && !S.lensTouched && lensMeasured();
   }
 
   // ---------------------------------------------------------------
@@ -1677,6 +1692,8 @@
   // ---- snapshot ----
   function lensOnSnapshot() {
     document.getElementById('lens-overlay').setAttribute('viewBox', '0 0 ' + imageWidth + ' ' + imageHeight);
+    // The current calibration's centre is named in pixels of the picture.
+    renderLensCurrent();
     lensCanvas = snapshotCanvas;
     var sameSize = !!lensImageSize && lensImageSize[0] === imageWidth && lensImageSize[1] === imageHeight;
     if (lensImageSize && (lensImageSize[0] !== imageWidth || lensImageSize[1] !== imageHeight) && lensLines.length) {
@@ -2151,7 +2168,7 @@
     if (lensPending) { h = 'Click the other end of the straight edge.'; sub = 'Esc cancels the line.'; }
     else if (lensHold && lensSelected && lensSelected.point != null) { h = 'Move the point exactly onto the edge.'; sub = 'Drag it, or use the arrow keys while the loupe shows the edge. Press Enter when it is in the right place.'; }
     else if (open) { h = 'Check the suggested lines.'; sub = 'Confirm each of the lines that is straight in reality by pressing ✔. Reject the others, such as a curtain, a cloth or a cable, by pressing ✖. ' + open + ' left to check. Or load a saved lens calibration.'; }
-    else if (!lines && S.lensLoaded) { h = 'A saved lens calibration is loaded.'; sub = 'Press Next, or draw straight lines to measure the lens again.'; }
+    else if (!lines && S.lensLoaded) { h = 'A saved lens calibration is loaded.'; sub = lensHasCurrent() ? 'Press Next, or choose Clear it and measure the lens again.' : 'Press Next, or draw straight lines to measure the lens again.'; }
     else if (!lines) { h = 'Draw straight lines on the picture.'; sub = 'Click the start and the end of an edge that is straight in reality, such as a stage edge, a tape line or a truss. Then move its points exactly onto the edge. Or load a saved lens calibration.'; }
     else { h = lensHintLines[0]; sub = lensHintLines[1]; }
     // A started line keeps the box's height, so the picture stays put between the line's two taps.
@@ -2678,7 +2695,48 @@
   // ---------------------------------------------------------------
   // Whether the lens has values worth trusting: measured, loaded or typed under User input in this run, or a pair the station already had.
   function lensMeasured() {
-    return S.lensTouched || SAVED.lens.some(function(v) { return v !== 0; });
+    return S.lensTouched || (lensHasCurrent() && S.lensChoice !== 'clear');
+  }
+  function lensHasCurrent() { return SAVED.lens.some(function(v) { return v !== 0; }); }
+  // A camera with a lens calibration asks first what to do with it; until then the step shows greyed out. Kept or
+  // loaded, the calibration is used as it is: the picture and its controls go (a loaded one keeps its notices),
+  // and only Clear brings them back.
+  function renderLensCurrent() {
+    var cur = lensHasCurrent(), ask = cur && !S.lensChoice;
+    $('lens-current').hidden = !cur;
+    if (cur) {
+      $('lens-current-values').textContent = lensVals(SAVED.lens[0], SAVED.lens[1], SAVED.lens[2], SAVED.lens[3], imageWidth, imageHeight) + '.';
+      document.querySelectorAll('input[name="lens_current"]').forEach(function(r) { r.checked = r.value === S.lensChoice; });
+    }
+    $('lens-notices').hidden = cur && S.lensChoice === 'keep';
+    $('lens-work').hidden = cur && (S.lensChoice === 'keep' || S.lensChoice === 'load');
+    ['lens-notices', 'lens-work'].forEach(function(id) { $(id).classList.toggle('step-locked', ask); $(id).inert = ask; });
+    $('lens-next').disabled = ask;
+  }
+  function lensCurrentInit() {
+    document.querySelectorAll('input[name="lens_current"]').forEach(function(r) { r.addEventListener('change', function() { chooseLensCurrent(r.value); }); });
+    renderLensCurrent();
+  }
+  function lensWriteAll(l) {
+    wizWriteLensCoeff('wiz_lens_k1', l[0]); wizWriteLensCoeff('wiz_lens_k2', l[1]);
+    wizSetLensCentre([l[2], l[3]]); wizShowLensLimit();
+  }
+  // Keep puts the camera's own calibration back, also after a load; Clear starts from the lines drawn after an
+  // earlier Clear, else from no lens. Load keeps the choice it had until a calibration is loaded.
+  function chooseLensCurrent(v) {
+    if (v === 'load') {
+      lensLoadDialog(function() { S.lensChoice = 'load'; renderLensCurrent(); saveToSession(); });
+      renderLensCurrent();
+      return;
+    }
+    // Nothing is measured until the lines' fit answers.
+    S.lensChoice = v; S.lensLoaded = null; S.lensTouched = false;
+    dropLensPoint(); lensSelected = null;
+    if (v === 'clear' && lensLines.length) { renderLensCurrent(); lensChanged(); return; }
+    // A fit still on its way must not replace the kept calibration.
+    lensFitSeq++;
+    lensWriteAll(v === 'keep' ? SAVED.lens : [0, 0, 0, 0]);
+    renderLensCurrent(); renderLens(); renderLensResult(); onLensCoeffChanged();
   }
   // A lens as its list line names it, the centre in pixels of a w x h picture.
   function lensVals(k1, k2, cx, cy, w, h) {
@@ -2741,7 +2799,7 @@
     var sub = [reason, saving ? 'If a calibration with this name is saved on this station, saving replaces it.' : ''].filter(Boolean).join(' ');
     return '<div class="notice error" id="lens-list-error" role="alert">The saved lens calibrations could not be read.' + (sub ? '<div class="notice-sub">' + esc(sub) + '</div>' : '') + '</div>';
   }
-  window.lensLoadDialog = function() {
+  window.lensLoadDialog = function(loaded) {
     var fromFile = null, saved = [], failed = null;
     function render() {
       var lines = lensLines;
@@ -2768,6 +2826,7 @@
             if (!c) return;
             closeModal();
             lensApplyLoaded(c, v === 'file' ? 'From the settings file ' + c.file : 'Saved on this station on ' + c.saved);
+            if (typeof loaded === 'function') loaded();
           } }
         ],
       });
@@ -3785,8 +3844,9 @@
     $('review-grid-params').innerHTML = paramRows([['Width', lenText(grid.w, 2)], ['Depth', lenText(grid.d, 2)], ['Spacing', lenText(grid.spacing, 2)], ['X Offset', lenText(grid.cx, 2)], ['Y Offset', lenText(grid.cy, 2)], ['Z Offset', lenText(grid.z, 2)], ['Grid', S.mode === 'simple' ? 'From the rectangle' : 'Kept']]);
     renderFsBar();
   }
-  // The rating while the pair is the fit's own, User input once typed over; a loaded calibration by its name; else whether values were typed.
+  // A kept calibration first; the rating while the pair is the fit's own, User input once typed over; a loaded calibration by its name; else whether values were typed.
   function reviewLensCoverage(l) {
+    if (lensHasCurrent() && S.lensChoice === 'keep') return 'Current calibration, kept';
     var applies = lensFit && lensFitApplies(lensFit);
     if (lensIsTheFits(l) || (lensFit && !applies && !lensHandTuned())) {
       var shown = lensShownRating(lensFit), level = applies ? LENS_RATING_LEVEL[shown] || 'caution' : 'caution', n = LENS_RATING_SEGMENTS[shown] || 0;
@@ -4079,7 +4139,7 @@
         mode: S.mode, simpleLoc: S.simpleLoc, rect: S.rect, cornerPins: corners, cornerMoved: S.cornerMoved,
         points: S.points.map(function(p) { return Object.assign({}, p, { pin: keepPins ? p.pin : frac(p.pin) }); }), nextId: S.nextId,
         cam: ['x', 'y', 'z'].map(function(k) { return $('cam_pos_' + k).value; }), height: $('cam_height').value, units: WUNIT.isImperial() ? 'imperial' : 'metric',
-        lensTouched: S.lensTouched, lensLoaded: S.lensLoaded
+        lensTouched: S.lensTouched, lensLoaded: S.lensLoaded, lensChoice: S.lensChoice
       }));
     } catch (e) {}
   }
@@ -4105,6 +4165,7 @@
       if (isFinite(raw.k1) && isFinite(raw.k2)) { wizWriteLensCoeff('wiz_lens_k1', raw.k1); wizWriteLensCoeff('wiz_lens_k2', raw.k2); }
       if (pairOk(raw.lensCentre)) S.lensCentre = raw.lensCentre.slice();
       S.lensTouched = raw.lensTouched === true;
+      if (['keep', 'clear', 'load'].indexOf(raw.lensChoice) >= 0 && lensHasCurrent()) S.lensChoice = raw.lensChoice;
       if (raw.lensLoaded && typeof raw.lensLoaded.name === 'string' && [raw.lensLoaded.k1, raw.lensLoaded.k2, raw.lensLoaded.cx, raw.lensLoaded.cy].every(isFinite)) S.lensLoaded = raw.lensLoaded;
       if (sameUnits && (raw.mode === 'simple' || raw.mode === 'advanced')) {
         S.mode = raw.mode;
@@ -4220,6 +4281,7 @@
   calibInit();
   fsInit();
   lensInit();
+  lensCurrentInit();
   renderCalibPanels();
   // Handles and labels are sized in CSS pixels of the preview's width at render time.
   var resizeTimer = null;

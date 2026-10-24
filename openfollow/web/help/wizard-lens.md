@@ -2,6 +2,10 @@
 
 A wide lens makes straight lines look curved. The Lens step measures how much, so the overlay on the Operator Screen curves in the same way.
 
+## The camera's current calibration
+
+When the camera already has a lens calibration, the Lens step first shows its values and asks what to do with it. Until you choose, the rest of the step is greyed out and **Next** stays off. **Keep the current calibration** uses it as it is. It is the right choice when the camera, the lens and the zoom have not changed, and the picture and its controls are then hidden. **Clear it and measure the lens again** sets the lens to no correction and opens the picture for new lines. **Load another lens calibration** opens the same list as **Load lens calibration**. The loaded calibration is used as it is, and only its notices stay on the page. You can choose again until you leave the step: **Keep** puts the camera's own calibration back, and lines drawn after **Clear** come back with the next **Clear**.
+
 ## Suggestions
 
 With the experimental **Lens line suggestions** feature on (General tab, Features), the station finds edges in the snapshot and shows them as dashed suggested lines. Each suggested line has a bubble that points at it. The check mark uses the line, the cross removes it. Only the bubble does: a click on the dashed line itself starts or ends a line of your own, as anywhere else on the picture. When the pointer is on a bubble, its line is highlighted. Use only lines that are straight on the stage. A curtain, a cloth or a cable is curved. Two edges that only look joined are two separate lines. A suggested line that you use becomes a normal line, the same as a line you draw yourself. **Refresh Image** takes a new snapshot and suggests the lines again.

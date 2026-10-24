@@ -561,7 +561,10 @@ def test_a_failed_fit_redraws_and_stores_no_fit(fetch_stub: str) -> None:
 def test_a_slider_edit_counts_as_a_measured_lens(saved: list[float], before: bool) -> None:
     out = run_wizard_js(
         "(function() { var was = lensMeasured(); onWizardLensInput('k1', 'range'); return [was, lensMeasured()]; })()",
-        functions=("lensMeasured",),
+        functions=(
+            "lensMeasured",
+            "lensHasCurrent",
+        ),
         prelude="var window = {}; var S = { lensTouched: false };"
         f" var SAVED = {{ lens: {json.dumps(saved)} }};"
         " var fields = { wiz_lens_k1: { value: '-0.2' }, wiz_lens_k1_range: { value: '-0.2' } };"
@@ -1152,7 +1155,7 @@ def test_a_point_measured_from_a_triangulated_point_is_placed_after_it() -> None
 # The station's reasons in the page's words
 # ---------------------------------------------------------------------------
 
-_REASON_FUNCTIONS = ("lenRough", "lenSmall", "lensMeasured", "offsetReason", "wordReasons")
+_REASON_FUNCTIONS = ("lenRough", "lenSmall", "lensMeasured", "lensHasCurrent", "offsetReason", "wordReasons")
 
 
 def _reason_page(system: str = "metric", *, mode: str = "advanced", origin: str = "dsc",
@@ -2496,6 +2499,7 @@ def test_a_point_reached_with_tab_is_selected_and_held(
             "lensMisfitLines",
             "lensLinesHint",
             "renderLensHint",
+            "lensHasCurrent",
             "lensPointFocusIn",
             "lensTabKey",
         ),
@@ -2567,7 +2571,7 @@ function lensFitApplies(fit) { return fit.rating !== 'low'; }
 function lensOpenCandidates() { return state.open; }
 var lensHintLines = null, lensFitAsk = null, lensFitSeq = 0;
 var S = { lensLoaded: state.loaded }, lensPending = state.pending, lensHold = state.hold, lensSelected = state.sel;
-var lensLines = state.lines, lensFit = state.fit;
+var lensLines = state.lines, lensFit = state.fit, SAVED = { lens: state.current };
 """
 _LINE = {"misfit": False}
 _MISFIT = {"misfit": True}
@@ -2579,7 +2583,10 @@ _TOP_EDGE = "If possible, add a line near the top edge."
 
 
 def _hint_state(**kw: object) -> dict:
-    return {"open": [], "loaded": None, "pending": None, "hold": False, "sel": None, "lines": [], "fit": None, **kw}
+    return {
+        "open": [], "loaded": None, "pending": None, "hold": False, "sel": None, "lines": [], "fit": None,
+        "current": [0, 0, 0, 0], **kw,
+    }  # fmt: skip
 
 
 @pytest.mark.parametrize(
@@ -2609,6 +2616,11 @@ def _hint_state(**kw: object) -> dict:
             _hint_state(loaded={"name": "FOH"}),
             "A saved lens calibration is loaded.",
             "Press Next, or draw straight lines to measure the lens again.",
+        ),
+        (
+            _hint_state(loaded={"name": "FOH"}, current=[-0.31, -0.01, 0, 0]),
+            "A saved lens calibration is loaded.",
+            "Press Next, or choose Clear it and measure the lens again.",
         ),
         (
             _hint_state(),
@@ -2701,6 +2713,7 @@ def _hint_state(**kw: object) -> dict:
         "point focused, not held",
         "suggestions left",
         "loaded",
+        "loaded over the camera's calibration",
         "no lines",
         "one line does not fit",
         "two lines do not fit",
@@ -2728,6 +2741,7 @@ def test_the_lens_hint_names_the_one_next_thing_to_do(state: dict, heading: str,
             "lensMisfitText",
             "lensLinesHint",
             "renderLensHint",
+            "lensHasCurrent",
         ),
         variables=("LENS_MIDDLE",),
         prelude="var state = " + json.dumps(state) + ";" + _HINT_PAGE,
@@ -2793,6 +2807,7 @@ _LIVE = (
     "lensMisfitText",
     "lensLinesHint",
     "renderLensHint",
+    "lensHasCurrent",
     "renderFsBar",
     "fsActions",
     "dropLensPoint",
@@ -3017,6 +3032,7 @@ _MISFIT_FIT_FUNCTIONS = (
     "lensMisfitText",
     "lensLinesHint",
     "renderLensHint",
+    "lensHasCurrent",
     "runLensFit",
 )
 _MISFIT_FIT_VARS = ("LENS_MIN_SPAN_PX", "LENS_MIDDLE")
@@ -3165,6 +3181,7 @@ def test_a_fit_not_applied_never_says_the_lens_is_measured(misfit: bool, heading
             "lensMisfitText",
             "lensLinesHint",
             "renderLensHint",
+            "lensHasCurrent",
         ),
         variables=("LENS_MIDDLE",),
         prelude="var state = " + json.dumps(_hint_state(lines=[_LINE] * 2, fit=fit)) + ";" + _HINT_PAGE,
@@ -4044,6 +4061,7 @@ def test_the_lens_step_asks_for_and_shows_suggestions_only_with_their_feature(on
             "esc",
             "setLive",
             "renderLensHint",
+            "lensHasCurrent",
             "fsKeys",
             "fsHelpHtml",
             *_BUBBLE_DOM,
@@ -6664,7 +6682,7 @@ _SNAPSHOT_PAGE = (
     "var snapshotCanvas = {}, lensCanvas = null, lensFitSeq = 0, lensFit = null, lensSelected = null,"
     " lensPending = null, lensRejected = [], lensCandidates = [], currentStep = 0, WIZ = { lens: 1 }, notices = [];"
     " function lensShowNotice(t) { notices.push(t); } function renderLens() {} function renderLensResult() {}"
-    " function saveToSession() {} function lensRequestEdges() {}\n"
+    " function saveToSession() {} function lensRequestEdges() {} function renderLensCurrent() {}\n"
 )
 
 
@@ -7332,6 +7350,7 @@ _LENS_PRESS_FUNCTIONS = (
     "lensMisfitLines",
     "lensLinesHint",
     "renderLensHint",
+    "lensHasCurrent",
     "lensPressEnd",
 )
 _DRAW_MORE = "Draw more straight lines."
@@ -7834,9 +7853,10 @@ def test_review_names_a_good_fit_on_middle_lines_fair(
             "lensFitMisfit",
             "lensHandTuned",
             "reviewLensCoverage",
+            "lensHasCurrent",
         ),
         variables=("LENS_RATING_LEVEL", "LENS_RATING_SEGMENTS", "LENS_RATING_LABEL"),
-        prelude="function lensIsTheFits() { return true; }"
+        prelude="function lensIsTheFits() { return true; } var SAVED = { lens: [0, 0, 0, 0] };"
         f" var lensFit = {{ rating: {json.dumps(rating)}, edges_measured: {json.dumps(edges)} }};",
     )
     assert out.endswith("</span> " + label)
@@ -7935,9 +7955,11 @@ def test_review_names_a_fit_that_was_not_applied(fit: dict, lens: list, touched:
             "lensSame",
             "lensHandTuned",
             "reviewLensCoverage",
+            "lensHasCurrent",
         ),  # fmt: skip
         variables=("LENS_RATING_LEVEL", "LENS_RATING_SEGMENTS", "LENS_RATING_LABEL"),
         prelude="function lensIsTheFits() { return false; } function esc(t) { return t; }"
+        " var SAVED = { lens: [0, 0, 0, 0] };"
         f" function wizLens() {{ return {json.dumps(lens)}; }} function lensMeasured() {{ return true; }}"
         f" var S = {{ lensLoaded: null, lensTouched: {json.dumps(touched)} }}, lensFit = {json.dumps(fit)};",
     )
@@ -7986,12 +8008,45 @@ def test_review_names_where_the_lens_came_from(
             "lensSame",
             "lensHandTuned",
             "lensMeasured",
+            "lensHasCurrent",
             "reviewLensCoverage",
         ),  # fmt: skip
         variables=("LENS_RATING_LEVEL", "LENS_RATING_SEGMENTS", "LENS_RATING_LABEL"),
         prelude=f"function lensIsTheFits(l) {{ return !!lensFit && lensSame(l, {json.dumps(_FIT_PAIR)}); }}"
         f" function wizLens() {{ return {json.dumps(lens)}; }} var SAVED = {{ lens: {json.dumps(station)} }};"
         f" var S = {{ lensLoaded: {json.dumps(loaded)}, lensTouched: {json.dumps(touched)} }},"
+        f" lensFit = {json.dumps(fit)};",
+    )
+    assert out == label
+
+
+@pytest.mark.parametrize(
+    ("choice", "fit", "lens", "label"),
+    [
+        ("keep", {"rating": "good", "lines": []}, [-0.1, 0, 0, 0], "Current calibration, kept"),
+        ("", None, [-0.1, 0, 0, 0], "The station's lens"),
+        ("clear", None, [0, 0, 0, 0], "Not measured"),
+    ],
+    ids=["kept, over lines drawn after a Clear", "not answered", "cleared, no lines"],
+)
+def test_review_names_the_cameras_own_calibration_by_the_choice_made(choice: str, fit, lens: list, label: str) -> None:
+    out = run_wizard_js(
+        f"reviewLensCoverage({json.dumps(lens)})",
+        functions=(
+            "esc",
+            "lensMiddleOnly",
+            "lensShownRating",
+            "lensFitApplies",
+            "lensFitMisfit",
+            "lensSame",
+            "lensHandTuned",
+            "lensMeasured",
+            "lensHasCurrent",
+            "reviewLensCoverage",
+        ),  # fmt: skip
+        variables=("LENS_RATING_LEVEL", "LENS_RATING_SEGMENTS", "LENS_RATING_LABEL"),
+        prelude="function lensIsTheFits() { return false; } var SAVED = { lens: [-0.1, 0, 0, 0] };"
+        f" var S = {{ lensLoaded: null, lensTouched: false, lensChoice: {json.dumps(choice)} }},"
         f" lensFit = {json.dumps(fit)};",
     )
     assert out == label
@@ -8254,3 +8309,128 @@ def test_a_restored_entry_must_name_a_restored_line(lines: list, last, entry: in
     )
     # A value this page did not write leaves Tab entering at line 1.
     assert out == [sum(1 for line in lines if line), entry]
+
+
+# ---------------------------------------------------------------------------
+# A camera with a lens calibration: keep it, clear it and measure again, or load another one
+# ---------------------------------------------------------------------------
+
+_CURRENT_PAGE = """
+var els = {}, radios = ['keep', 'clear', 'load'].map(function(v) { return { value: v, checked: false }; });
+function $(id) {
+  if (!els[id]) els[id] = { hidden: false, inert: false, disabled: false, textContent: '', locked: false,
+    classList: { toggle: function(c, on) { if (c === 'step-locked') els[id].locked = !!on; } } };
+  return els[id];
+}
+var document = { querySelectorAll: function(sel) {
+  return sel === 'input[name="lens_current"]' ? radios : []; } };
+var imageWidth = 1920, imageHeight = 1080, lensLines = [], lensSelected = null, lensFitSeq = 0;
+var written = [], calls = [], dialogDone = null;
+function lensVals(k1, k2) { return 'Barrel / fisheye ' + k1 + ' · Corner correction ' + k2; }
+function wizWriteLensCoeff(id, v) { written.push([id, v]); }
+function wizSetLensCentre(c) { written.push(['centre', c]); }
+function wizShowLensLimit() {} function dropLensPoint() {} function saveToSession() { calls.push('saved'); }
+function lensChanged() { calls.push('refit'); } function renderLens() {} function renderLensResult() {}
+function onLensCoeffChanged() {} function lensLoadDialog(done) { dialogDone = done; calls.push('dialog'); }
+"""
+_CURRENT_FUNCTIONS = ("lensHasCurrent", "lensMeasured", "renderLensCurrent", "lensWriteAll", "chooseLensCurrent")
+
+
+def _current(expression: str, station: list, start: str = "", **inputs) -> dict:
+    return run_wizard_js(
+        "(function() {" + expression + " return { current: $('lens-current').hidden,"
+        " notices: [$('lens-notices').hidden, $('lens-notices').locked, $('lens-notices').inert],"
+        " work: [$('lens-work').hidden, $('lens-work').locked, $('lens-work').inert], next: $('lens-next').disabled,"
+        " values: $('lens-current-values').textContent, checked: radios.filter(function(r) { return r.checked; })"
+        ".map(function(r) { return r.value; }), measured: lensMeasured(), choice: S.lensChoice, written: written,"
+        " calls: calls, touched: S.lensTouched, loaded: S.lensLoaded }; })()",
+        functions=_CURRENT_FUNCTIONS,
+        prelude=_CURRENT_PAGE
+        + f"var SAVED = {{ lens: {json.dumps(station)} }};"
+        + f" var S = {{ lensChoice: {json.dumps(start)}, lensTouched: false, lensLoaded: null }};",
+        **inputs,
+    )
+
+
+_STATION = [-0.31, -0.01, 0.025, -0.015]
+
+
+@pytest.mark.parametrize(
+    ("station", "choice", "shown"),
+    [
+        ([0, 0, 0, 0], "", [True, [False, False, False], [False, False, False], False]),
+        (_STATION, "", [False, [False, True, True], [False, True, True], True]),
+        (_STATION, "keep", [False, [True, False, False], [True, False, False], False]),
+        (_STATION, "load", [False, [False, False, False], [True, False, False], False]),
+        (_STATION, "clear", [False, [False, False, False], [False, False, False], False]),
+    ],
+    ids=["no calibration", "not answered", "kept", "loaded", "cleared"],
+)
+def test_a_camera_with_a_lens_calibration_asks_first_what_to_do_with_it(station, choice: str, shown: list) -> None:
+    out = _current("renderLensCurrent();", station, choice)
+    # Unanswered, the step is greyed out and Next is off; kept, all of it goes; loaded, only its notices stay.
+    assert [out["current"], out["notices"], out["work"], out["next"]] == shown
+    if station != [0, 0, 0, 0]:
+        assert out["values"] == "Barrel / fisheye -0.31 · Corner correction -0.01."
+        assert out["checked"] == ([choice] if choice else [])
+
+
+@pytest.mark.parametrize(
+    ("choice", "lines", "written", "calls", "measured"),
+    [
+        ("keep", 0, [["wiz_lens_k1", -0.31], ["wiz_lens_k2", -0.01], ["centre", [0.025, -0.015]]], [], True),
+        ("clear", 0, [["wiz_lens_k1", 0], ["wiz_lens_k2", 0], ["centre", [0, 0]]], [], False),
+        ("clear", 2, [], ["refit"], False),
+    ],
+    ids=["keep puts the camera's own values back", "clear starts from no lens", "clear refits the lines drawn"],
+)
+def test_keep_and_clear_set_the_lens_they_name(choice: str, lines: int, written: list, calls: list, measured) -> None:
+    out = _current(
+        "S.lensLoaded = { name: 'Wide' }; S.lensTouched = true; lensLines = new Array(n); chooseLensCurrent(choice);",
+        _STATION,
+        "load",
+        choice=choice,
+        n=lines,
+    )
+    assert [out["choice"], out["written"], out["calls"], out["loaded"]] == [choice, written, calls, None]
+    # Kept, the camera's own pair counts as measured; cleared, the lens is measured only by new lines.
+    assert out["measured"] is measured
+
+
+@pytest.mark.parametrize("loaded", [True, False], ids=["a calibration loaded", "the dialog cancelled"])
+def test_load_takes_effect_only_once_a_calibration_is_loaded(loaded: bool) -> None:
+    out = _current(
+        "chooseLensCurrent('load'); var open = radios.map(function(r) { return r.checked; });"
+        " if (loaded) dialogDone();",
+        _STATION,
+        "keep",
+        loaded=loaded,
+    )
+    # The dialog opens with the earlier choice still checked; Cancel leaves it, a load makes it Load.
+    assert out["calls"] == (["dialog", "saved"] if loaded else ["dialog"])
+    assert [out["choice"], out["checked"]] == (["load", ["load"]] if loaded else ["keep", ["keep"]])
+
+
+@pytest.mark.parametrize(
+    ("stored", "station", "restored"),
+    [("keep", _STATION, "keep"), ("load", _STATION, "load"), ("clear", _STATION, "clear"), ("maybe", _STATION, ""),
+     ("keep", [0, 0, 0, 0], "")],
+    ids=["kept", "loaded", "cleared", "not a choice", "the camera has no calibration now"],
+)  # fmt: skip
+def test_the_lens_choice_survives_a_reload_while_the_camera_has_a_calibration(stored, station, restored) -> None:
+    raw = {"units": "metric", "lensChoice": stored}
+    out = run_wizard_js(
+        "(function() { restoreFromSession(); var back = S.lensChoice; saveToSession();"
+        " return [back, stored.lensChoice]; })()",
+        functions=("pairOk", "fracPinOk", "restoreFromSession", "lensHasCurrent", "saveToSession"),
+        variables=("CORNERS",),
+        prelude=length_page("metric", {})
+        + _DOM
+        + _SESSION_PAGE
+        + f"var raw = {json.dumps(json.dumps(raw))}; var SAVED = {{ lens: {json.dumps(station)} }};"
+        " var imageWidth = 1920, imageHeight = 1080;"
+        " var S = { mode: 'simple', simpleLoc: '', rect: { origin: 'dsc' }, pinSize: null, nextId: 1, points: [],"
+        " cornerPins: {}, cornerMoved: {}, lensChoice: '', lensTouched: false, lensLoaded: null };",
+    )
+    # A choice made for the camera's calibration stays through a reload; it is saved with the session.
+    assert out == [restored, restored]

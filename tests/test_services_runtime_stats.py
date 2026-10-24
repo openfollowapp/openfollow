@@ -27,6 +27,8 @@ import openfollow.input.mouse3d as mouse3d_module
 import openfollow.services as services_module
 from openfollow.configuration import AppConfig
 from openfollow.input.mouse3d_status import DeviceState, Mouse3DDeviceStatus, Mouse3DStatus
+from openfollow.marker_catalog.sync import PeerSelection
+from openfollow.power_health import PowerState
 from openfollow.services import AppRuntimeServices
 from openfollow.video.failure import ConnectionPhase, SourceKind, VideoFailure
 
@@ -55,6 +57,7 @@ class _SystemStats:
     ram_percent: float = 42.0
     temperature: float | None = 55.5
     ip_address: str = "10.0.0.7"
+    power: PowerState = field(default_factory=PowerState)
 
 
 class _FakeSystemStatsCollector:
@@ -192,7 +195,18 @@ def services(monkeypatch: pytest.MonkeyPatch) -> AppRuntimeServices:
 class TestDefaultRuntimeStatsSnapshot:
     def test_payload_shape(self, services: AppRuntimeServices) -> None:
         snap = services._default_runtime_stats_snapshot()
-        assert set(snap) == {"timestamp", "system", "video", "controllers", "mouse3d", "playback", "tracking"}
+        assert set(snap) == {
+            "timestamp",
+            "system",
+            "video",
+            "controllers",
+            "mouse3d",
+            "playback",
+            "tracking",
+            "hud",
+            "marker_conflicts",
+        }
+        assert snap["marker_conflicts"] == []
         assert snap["system"]["cpu_percent"] == 0.0
         assert snap["video"]["connected"] is False
         assert snap["controllers"]["items"] == []
@@ -209,6 +223,9 @@ class TestDefaultRuntimeStatsSnapshot:
         assert snap["mouse3d"]["scanned"] is False
         assert snap["mouse3d"]["devices"] == []
         assert snap["tracking"]["enabled"] is False
+        # Nothing read yet: not available, never healthy.
+        assert snap["system"]["power"]["available"] is False
+        assert snap["system"]["power"]["under_voltage"] is None
 
     def test_reflects_video_source_type_from_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(services_module, "gst_runtime_available", lambda: True)
@@ -738,6 +755,27 @@ class TestPublishRuntimeStats:
         assert snap["system"]["hud_fps"] == 0.0
         # No overlay renderer ⇒ nothing is drawing ⇒ no canvas to report.
         assert snap["system"]["output_resolution"] is None
+        assert snap["system"]["power"] == PowerState().to_dict()
+
+    def test_the_power_reading_is_published(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        reading = PowerState(
+            under_voltage=False, throttled=True, under_voltage_since_boot=True, throttled_since_boot=True
+        )
+        services._system_stats = _FakeSystemStatsCollector(_SystemStats(power=reading))
+        import openfollow.video.detection as det
+
+        monkeypatch.setattr(det, "check_detection_dependencies", lambda cfg: [])
+
+        services.publish_runtime_stats(force=True)
+        assert services.get_runtime_stats_snapshot()["system"]["power"] == {
+            "available": True,
+            "under_voltage": False,
+            "throttled": True,
+            "under_voltage_since_boot": True,
+            "throttled_since_boot": True,
+        }
 
     def test_system_stats_with_none_temperature(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
@@ -752,6 +790,79 @@ class TestPublishRuntimeStats:
         services.publish_runtime_stats(force=True)
         snap = services.get_runtime_stats_snapshot()
         assert snap["system"]["temperature_c"] is None
+
+
+# --------------------------------------------------------------------------- #
+# Marker control conflicts: one decision for /api/stats and the HUD
+# --------------------------------------------------------------------------- #
+
+
+class _FakeCatalogSync:
+    def __init__(self, peers: list[PeerSelection]) -> None:
+        self._peers = peers
+
+    def get_peer_selections(self) -> list[PeerSelection]:
+        return list(self._peers)
+
+
+class TestMarkerConflicts:
+    @pytest.fixture(autouse=True)
+    def _no_dependency_probe(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import openfollow.video.detection as det
+
+        monkeypatch.setattr(det, "check_detection_dependencies", lambda cfg: [])
+
+    @staticmethod
+    def _station(services: AppRuntimeServices, controlled: list[int], peers: list[PeerSelection] | None) -> None:
+        services._app._controlled_ids = controlled  # type: ignore[attr-defined]
+        services._app._marker_catalog_sync = None if peers is None else _FakeCatalogSync(peers)  # type: ignore[attr-defined]
+
+    def test_a_marker_a_peer_controls_too_is_published(self, services: AppRuntimeServices) -> None:
+        self._station(services, [3, 4], [PeerSelection(station_id="p1", station_name="Stage Left", controlled_ids=[3])])
+        services.publish_runtime_stats(force=True)
+        assert services.get_runtime_stats_snapshot()["marker_conflicts"] == [
+            {"marker_id": 3, "stations": ["Stage Left"], "this_station": True}
+        ]
+
+    @pytest.mark.parametrize(
+        "peers",
+        [
+            pytest.param(None, id="no-catalog-sync"),
+            pytest.param([], id="no-peers"),
+            pytest.param([PeerSelection(station_id="p1", station_name="Stage Left", controlled_ids=[7])], id="other"),
+        ],
+    )
+    def test_no_shared_marker_publishes_none(
+        self, services: AppRuntimeServices, peers: list[PeerSelection] | None
+    ) -> None:
+        self._station(services, [3], peers)
+        services.publish_runtime_stats(force=True)
+        assert services.get_runtime_stats_snapshot()["marker_conflicts"] == []
+
+    def test_a_conflict_that_ends_is_withdrawn(self, services: AppRuntimeServices) -> None:
+        peer = PeerSelection(station_id="p1", station_name="Stage Left", controlled_ids=[3])
+        self._station(services, [3], [peer])
+        services.publish_runtime_stats(force=True)
+        peer.controlled_ids = [4]
+        services.publish_runtime_stats(force=True)
+        assert services.get_runtime_stats_snapshot()["marker_conflicts"] == []
+
+    def test_the_hud_is_handed_the_decision_the_stats_published(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._station(services, [3], [PeerSelection(station_id="p1", station_name="Stage Left", controlled_ids=[3])])
+        services.publish_runtime_stats(force=True)
+        handed: list[Any] = []
+
+        def _build(app: Any, **kwargs: Any) -> object:
+            handed.extend(kwargs["control_conflicts"])
+            return object()
+
+        monkeypatch.setattr(services_module, "build_marker_visual_state", _build)
+        monkeypatch.setattr(services, "network_alerts", list)
+        services.update_marker_visuals(1 / 60)
+        assert [c.to_dict() for c in handed] == services.get_runtime_stats_snapshot()["marker_conflicts"]
+        assert handed
 
 
 # --------------------------------------------------------------------------- #
@@ -972,6 +1083,26 @@ class TestDeviceFigures:
         monkeypatch.setattr(det, "check_detection_dependencies", lambda cfg: [])
         services.publish_runtime_stats(force=True)
         return services.get_runtime_stats_snapshot()
+
+    def test_without_an_operator_screen_there_are_no_hud_figures(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._prime(services, hud_fps=0.0, canvas=None)
+        services._hud_render = None
+        assert self._publish(services, monkeypatch)["hud"] is None
+
+    def test_the_operator_screen_s_figures_are_published_as_it_reports_them(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        figures = {"picture_ms": 9.5, "paint_ms": 1.25, "picture_refreshes": {"2": 60}, "render_thread_id": 4321}
+
+        class _Hud:
+            def stats(self) -> dict[str, Any]:
+                return dict(figures)
+
+        self._prime(services, hud_fps=30.0, canvas=_FakeSizedCanvas((1920, 1080)))
+        services._hud_render = _Hud()  # type: ignore[assignment]
+        assert self._publish(services, monkeypatch)["hud"] == figures
 
     def test_publishes_redraw_rate_and_live_canvas_under_device(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch

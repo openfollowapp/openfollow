@@ -39,6 +39,7 @@ from openfollow import keyboard_layout
 from openfollow.logging_setup import RingBufferLogHandler
 from openfollow.net_utils import HOST_RESOLVER, read_ipv4_routes
 from openfollow.network.validate import is_link_local
+from openfollow.power_health import THROTTLE_BIT_LABELS, parse_throttled
 from openfollow.privilege import settings_backup
 from openfollow.privilege.device_repair import full_hostname
 from openfollow.uri_redaction import redact_uri, redact_uris_in_text
@@ -318,20 +319,13 @@ _SHARED_GST_ELEMENTS: tuple[tuple[str, str], ...] = (
 
 # Decoders, in the order the pipeline prefers them. Absence is not a fault -
 # which one is present is the answer to "why is this Pi dropping frames".
-_DECODER_ELEMENTS: tuple[str, ...] = ("v4l2h264dec", "v4l2h265dec", "avdec_h264", "openh264dec")
-
-# ``vcgencmd get_throttled`` bit meanings. The low bits are live, the high
-# ones latch since boot - an operator chasing an intermittent freeze needs the
-# latched ones, which is the whole reason to read this.
-_THROTTLE_BITS: tuple[tuple[int, str], ...] = (
-    (0, "under-voltage NOW"),
-    (1, "ARM frequency capped NOW"),
-    (2, "currently throttled"),
-    (3, "soft temperature limit active"),
-    (16, "under-voltage has occurred since boot"),
-    (17, "ARM frequency capping has occurred since boot"),
-    (18, "throttling has occurred since boot"),
-    (19, "soft temperature limit has occurred since boot"),
+_DECODER_ELEMENTS: tuple[str, ...] = (
+    "v4l2h264dec",
+    "v4l2h265dec",
+    "v4l2slh265dec",
+    "avdec_h264",
+    "avdec_h265",
+    "openh264dec",
 )
 
 
@@ -352,15 +346,14 @@ def decode_throttled(raw: str) -> str:
     answer to the freezes and dropped USB devices that an undervolted supply
     causes.
     """
-    _, _, value = raw.strip().partition("=")
-    try:
-        bits = int(value, 16)
-    except ValueError:
+    bits = parse_throttled(raw)
+    if bits is None:
         return f"[unavailable: unrecognised reading {raw.strip()!r}]"
     if bits == 0:
         return "none (no under-voltage or throttling, now or since boot)"
-    flags = [label for bit, label in _THROTTLE_BITS if bits & (1 << bit)]
-    return f"{value} - {'; '.join(flags)}" if flags else f"{value} - no known flag set"
+    # The latched since-boot bits are what an intermittent freeze leaves behind.
+    flags = [label for bit, label in THROTTLE_BIT_LABELS if bits & (1 << bit)]
+    return f"{bits:#x} - {'; '.join(flags)}" if flags else f"{bits:#x} - no known flag set"
 
 
 # ---------------------------------------------------------------------------
@@ -564,6 +557,12 @@ def collect_runtime_state(p: DiagnosticsProviders) -> list[str]:
             rows.append(f"         key {item['port_key']}")
         if item.get("notes"):
             rows.append(f"         notes {', '.join(item['notes'])}")
+    conflicts = stats.get("marker_conflicts") or []
+    rows.append(f"  Marker conflicts:       {len(conflicts) or '(none)'}")
+    for conflict in conflicts:
+        stations = ", ".join(str(name) for name in conflict.get("stations") or [])
+        owners = f"this station, {stations}" if conflict.get("this_station") else stations
+        rows.append(f"    marker {conflict.get('marker_id', '?'):<4} controlled by {owners}")
     system = stats.get("system") or {}
     out_res = system.get("output_resolution")
     rows.append(f"  Output resolution:      {_fmt_resolution(out_res) if out_res else '- (no canvas)'}")
@@ -1705,7 +1704,11 @@ def collect_video_capability() -> list[str]:
     for name, used_for in _SHARED_GST_ELEMENTS:
         present = "present" if Gst.ElementFactory.find(name) else "MISSING"
         rows.append(f"    {name:<18}{present:<9}({used_for})")
-    found = [name for name in _DECODER_ELEMENTS if Gst.ElementFactory.find(name)]
+    found = []
+    for name in _DECODER_ELEMENTS:
+        factory = Gst.ElementFactory.find(name)
+        if factory:
+            found.append(f"{name} (ranked out)" if factory.get_rank() == Gst.Rank.NONE else name)
     rows.append(f"  Video decoders:       {', '.join(found) if found else 'none of the expected decoders'}")
     return rows
 

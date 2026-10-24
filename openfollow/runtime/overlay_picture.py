@@ -42,7 +42,7 @@ def ink_picture(
     if iw == 0 or ih == 0:
         return None, 0, 0
     if iw < 0 or ih < 0:
-        # Cairo's fixed point wraps an extent past 2**23 device pixels, which lens distortion reaches.
+        # Cairo's fixed point wraps an extent past 2**23 device pixels, which a point near the horizon reaches.
         x0, y0, x1, y1 = 0, 0, w, h
     else:
         # One pixel more: Quartz renders a glyph up to a pixel past the extents it measures.

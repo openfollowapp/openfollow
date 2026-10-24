@@ -376,6 +376,7 @@ class TestCheckConfigReload:
             _get_config_mtime=lambda: 200.0,
             _config=None,
             _config_blank_warned_mtime=None,
+            _config_error_warned_mtime=None,
         )
 
     def test_throttled_within_1_second(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -491,6 +492,31 @@ class TestCheckConfigReload:
 
         expected = f"{config_path} is empty – not reloaded."
         assert [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING] == [expected, expected]
+
+    def test_a_file_that_does_not_parse_is_reported_once_per_mtime_and_retried_every_poll(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        monkeypatch.setattr(orch.time, "monotonic", lambda: 10.0)
+        applied: list[object] = []
+        monkeypatch.setattr(orch, "apply_runtime_config_changes", lambda _app, cfg: applied.append(cfg) or True)
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[grid\n", encoding="utf-8")
+        app = self._app(str(config_path))
+
+        with caplog.at_level(logging.WARNING, logger=orch.logger.name):
+            for mtime in (200.0, 200.0, 200.0, 300.0, 300.0):
+                app._get_config_mtime = lambda mtime=mtime: mtime
+                app._last_config_check = 0.0
+                orch.check_config_reload(app)
+        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 2
+        assert all(w.startswith(f"Config reload error: Config file {config_path} could not be read") for w in warnings)
+
+        config_path.write_text("web_port = 8080\n", encoding="utf-8")  # the fix, within the same mtime tick
+        app._last_config_check = 0.0
+        orch.check_config_reload(app)
+        assert [cfg.web_port for cfg in applied] == [8080]
+        assert app._config_mtime == 300.0
 
     def test_a_file_emptied_after_an_earlier_read_is_not_reloaded(
         self, tmp_path, monkeypatch: pytest.MonkeyPatch

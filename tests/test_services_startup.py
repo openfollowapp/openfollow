@@ -1861,14 +1861,108 @@ def test_osc_input_is_only_a_plane_when_a_pin_governs_something(monkeypatch, lab
     assert _osc_plane(services, _RecordingOscService()).enabled() is False
 
 
-def test_osc_input_is_not_a_plane_while_the_listener_is_down(monkeypatch) -> None:
-    """A listener that never bound (port in use) has no socket to move a
-    membership on. Following it would call apply once a second forever, with no
-    backoff, because the failure never surfaces to the observer."""
+def test_osc_input_stays_a_plane_while_its_listener_is_down(monkeypatch) -> None:
+    """A listener that did not bind (port in use) is OSC input that is not
+    running. Dropping the plane then took it off every status surface and out of
+    every retry until the next OSC save."""
     services = _build_services_with_psutil_backend(monkeypatch)
     _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
     services._app._config.psn_source_iface = "eth0"
-    assert _osc_plane(services, _RecordingOscService(port=None)).enabled() is False
+    assert _osc_plane(services, _RecordingOscService(port=None)).enabled() is True
+
+
+class _ResumingInput:
+    """Stands in for ``InputManager`` on the OSC plane: ``resume_osc`` binds the
+    listener, with no membership yet, or raises like a port that is taken."""
+
+    def __init__(self, service: _RecordingOscService, error: OSError | None = None) -> None:
+        self.service = service
+        self.error = error
+        self.resumes = 0
+
+    def resume_osc(self) -> None:
+        self.resumes += 1
+        if self.error is not None:
+            raise self.error
+        self.service.port = 8765
+        self.service.iface = None
+
+
+def _osc_plane_with_listener_down(monkeypatch, error: OSError | None = None):
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth1": "10.0.0.9"})
+    services._app._config.osc.listen_iface = "eth1"
+    service = _RecordingOscService(port=None)
+    service.iface = None
+    manager = _ResumingInput(service, error)
+    services._app._input_manager = manager
+    return _osc_plane(services, service), service, manager
+
+
+def test_osc_input_plane_restarts_a_listener_that_is_down(monkeypatch) -> None:
+    plane, service, manager = _osc_plane_with_listener_down(monkeypatch)
+
+    plane.apply("10.0.0.9")
+
+    assert manager.resumes == 1
+    assert plane.current() == "10.0.0.9"
+
+
+def test_osc_input_plane_raises_while_its_listener_cannot_bind(monkeypatch) -> None:
+    plane, service, _manager = _osc_plane_with_listener_down(monkeypatch, OSError(98, "Address already in use"))
+
+    with pytest.raises(OSError, match="Address already in use"):
+        plane.apply("10.0.0.9")
+    assert service.listener_status()["port"] is None
+
+
+def test_osc_input_plane_restarts_its_listener_without_a_membership_while_down(monkeypatch) -> None:
+    """Fails closed on the group only: unicast and broadcast still arrive."""
+    plane, service, manager = _osc_plane_with_listener_down(monkeypatch)
+
+    plane.suspend()
+
+    assert manager.resumes == 1
+    assert service.listener_status()["port"] == 8765
+    assert plane.current() is None
+
+
+def test_osc_input_plane_leaves_a_running_listener_to_the_membership_move(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth1": "10.0.0.9"})
+    services._app._config.osc.listen_iface = "eth1"
+    service = _RecordingOscService()
+    manager = _ResumingInput(service)
+    services._app._input_manager = manager
+    plane = _osc_plane(services, service)
+
+    plane.apply("10.0.0.9")
+    plane.suspend()
+
+    assert manager.resumes == 0
+
+
+def test_osc_input_that_cannot_bind_is_reported_and_retried_with_the_backoff(monkeypatch) -> None:
+    """The failed restart is a failing row until the port frees up, then OSC
+    input is back with its membership, with no OSC save in between."""
+    from openfollow.runtime.network_observer import NetworkPlaneObserver
+
+    plane, service, manager = _osc_plane_with_listener_down(monkeypatch, OSError(98, "Address already in use"))
+    now = [0.0]
+    observer = NetworkPlaneObserver(planes=[plane], clock=lambda: now[0])
+
+    observer.poll()
+    assert observer.alerts() == ["OSC input: eth1 – [Errno 98] Address already in use"]
+    now[0] += 1.0
+    observer.poll()
+    assert manager.resumes == 1, "retried inside the backoff"
+
+    manager.error = None
+    now[0] += 120.0
+    observer.poll()
+    assert manager.resumes == 2
+    assert observer.alerts() == []
+    assert service.listener_status()["multicast_joined"] is True
 
 
 def test_osc_input_plane_reports_the_live_membership_not_the_pin(monkeypatch) -> None:
@@ -2266,6 +2360,94 @@ def test_applying_psn_routes_through_the_rebind_orchestrator(monkeypatch) -> Non
     assert applied == ["10.0.0.9"]
 
 
+class _PsnSide:
+    """A PSN server or receiver as the PSN plane sees and rebinds it."""
+
+    def __init__(self, bound: str | None, *, enabled: bool = True, bind_ok: bool = True) -> None:
+        self.bound = bound
+        self.enabled = enabled
+        self.bind_ok = bind_ok
+        # Built with the station address whether or not it bound, like the real ones.
+        self._source_ip = "192.168.1.5"
+        self._source_iface = "eth0"
+        self._mcast_ip = "236.10.10.10"
+        self.rebinds: list[str] = []
+
+    def bound_source_ip(self) -> str | None:
+        return self.bound
+
+    def rebind(self, source_ip: str, **_kwargs: object) -> None:
+        self.rebinds.append(source_ip)
+        self.bound = None
+        if not self.bind_ok:
+            raise OSError(f"PSN receiver failed to bind to source_ip={source_ip!r}")
+        self.bound = self._source_ip = source_ip
+
+    def stop(self) -> None:
+        self.bound = None
+
+
+def _psn_observer(monkeypatch, server: _PsnSide | None, receiver: _PsnSide | None):
+    from openfollow.runtime.network_observer import NetworkPlaneObserver
+
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+    services._app._config.psn_source_iface = "eth0"
+    services._app._server = server
+    services._app._psn_receiver = receiver
+    now = [0.0]
+    planes = [p for p in services._build_network_planes() if p.label == "PSN"]
+    return NetworkPlaneObserver(planes=planes, clock=lambda: now[0]), now
+
+
+def test_a_psn_receiver_that_never_bound_is_reported_and_retried(monkeypatch) -> None:
+    """The PSN plane covers its input: a receiver that failed to bind at startup
+    beside a running output used to read ``ok`` and never be started again."""
+    server = _PsnSide("192.168.1.5")
+    receiver = _PsnSide(None, bind_ok=False)
+    observer, now = _psn_observer(monkeypatch, server, receiver)
+
+    observer.poll()
+    assert observer.alerts() == ["PSN: eth0 – PSN receiver failed to bind to source_ip='192.168.1.5'"]
+    assert observer.snapshot()[0].state == "failing"
+    assert server.bound == "192.168.1.5", "a receiver failure stopped the output"
+    attempts = len(receiver.rebinds)
+    now[0] += 1.0
+    observer.poll()
+    assert len(receiver.rebinds) == attempts, "retried inside the backoff"
+
+    receiver.bind_ok = True
+    now[0] += 120.0
+    observer.poll()
+    assert observer.alerts() == []
+    assert receiver.bound == "192.168.1.5"
+
+
+def test_psn_input_switched_off_leaves_the_plane_whole(monkeypatch) -> None:
+    server = _PsnSide("192.168.1.5")
+    receiver = _PsnSide(None, enabled=False)
+    observer, _now = _psn_observer(monkeypatch, server, receiver)
+
+    observer.poll()
+
+    assert observer.alerts() == []
+    assert (server.rebinds, receiver.rebinds) == ([], [])
+
+
+def test_psn_input_without_an_output_is_left_bound(monkeypatch) -> None:
+    """PSN output that failed to start leaves the receiver as the whole plane:
+    a bound one is not torn down and rebound once a second."""
+    receiver = _PsnSide("192.168.1.5")
+    observer, now = _psn_observer(monkeypatch, None, receiver)
+
+    observer.poll()
+    now[0] += 1.0
+    observer.poll()
+
+    assert receiver.rebinds == []
+    assert observer.snapshot()[0].state == "ok"
+
+
 def test_suspending_psn_tolerates_a_service_that_never_started(monkeypatch) -> None:
     services = _build_services_with_psutil_backend(monkeypatch)
     services._app._server = None
@@ -2420,6 +2602,7 @@ def test_plane_current_reports_the_live_binding(monkeypatch) -> None:
             return "192.168.1.5"
 
     services._app._server = _Server()
+    services._app._psn_receiver = None
     services._app._otp_server = None
     planes = {p.label: p for p in services._build_network_planes()}
     assert planes["PSN"].current() == "192.168.1.5"

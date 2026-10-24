@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""GStreamer native sink receiver with HUD overlay via gtksink."""
+"""GStreamer receiver ending in a shared video sink: gtksink, or the GL display's own."""
 
 from __future__ import annotations
 
@@ -110,6 +110,9 @@ class GstNativeSinkReceiver:
         self._apply_policy_overrides()
         self._source_type = source_type
         self._input_config: dict[str, Any] = input_config or {}
+        # source_name's label, keyed on (pipeline builds, input class, config copy).
+        self._pipeline_builds = 0
+        self._source_label: tuple[tuple[int, type, dict[str, Any]], str] | None = None
 
         self._on_source_picked = on_source_picked
         self._reconnect_delay = max(0.1, reconnect_delay)
@@ -154,6 +157,8 @@ class GstNativeSinkReceiver:
 
         # Shared sink created lazily
         self._shared_sink = None
+        # Told of every frame that reaches the display sink, from its streaming thread.
+        self._display_frame_listener: Callable[[], None] | None = None
         # The gtksink is shared across pipeline rebuilds, and pad probes live
         # on its (persistent) sink pad – so attach them exactly once. Without
         # this guard every reconnect/heal rebuild would stack another pair of
@@ -200,11 +205,14 @@ class GstNativeSinkReceiver:
     # -- Shared sink management -----------------------------------------------
 
     def _create_shared_sink(self) -> Any:
-        """Create a single gtksink that will be reused across all pipelines."""
+        """The sink every pipeline ends in, the GL display's or a gtksink, watched for the frames reaching it."""
         Gst.init(None)
-        if self._display is not None:
-            return self._display.sink
+        sink = self._display.sink if self._display is not None else self._create_platform_sink()
+        if sink is not None:
+            sink.get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, self._on_display_frame)
+        return sink
 
+    def _create_platform_sink(self) -> Any:
         sink_name = self._select_sink_name()
         if sink_name is None:
             logger.error("No embeddable video sink available")
@@ -222,6 +230,16 @@ class GstNativeSinkReceiver:
 
         logger.info("Created shared %s element for all pipelines", sink_name)
         return sink
+
+    def set_display_frame_listener(self, listener: Callable[[], None] | None) -> None:
+        """Call ``listener`` (from the sink's streaming thread) for each frame that reaches the display."""
+        self._display_frame_listener = listener
+
+    def _on_display_frame(self, _pad: Any, _info: Any) -> Any:
+        listener = self._display_frame_listener
+        if listener is not None:
+            listener()
+        return Gst.PadProbeReturn.OK
 
     def _get_shared_sink(self) -> Any:
         """Get the shared sink, creating it if needed."""
@@ -279,8 +297,14 @@ class GstNativeSinkReceiver:
 
     @property
     def source_name(self) -> str:
-        """Return the active source label."""
-        return self._input.get_source_label(self._input_config)
+        """The active source's label; read every frame, so worked out only when input, config or pipeline change."""
+        current = (self._pipeline_builds, type(self._input), self._input_config)
+        cached = self._source_label
+        if cached is None or cached[0] != current:
+            # Key and label from one snapshot: the GTK thread may rebuild, swap or edit the config meanwhile.
+            builds, input_cls, config = current[0], current[1], dict(current[2])
+            cached = self._source_label = ((builds, input_cls, config), input_cls.get_source_label(config))
+        return cached[1]
 
     @property
     def source_kind(self) -> SourceKind:
@@ -601,7 +625,7 @@ class GstNativeSinkReceiver:
 
         old_detector = self._detector
         if old_detector is not None:
-            old_detector.stop()
+            old_detector.stop(wait=False)
 
         self._detector = new_detector
         self._pipeline_assembler.set_detector(new_detector)
@@ -616,6 +640,8 @@ class GstNativeSinkReceiver:
     def create_pipeline(self) -> None:
         """Build the GStreamer pipeline via the active input plugin."""
         Gst.init(None)
+        # The input resolves what it plays as it builds; the label follows it.
+        self._pipeline_builds += 1
         self._reset_video_flow_state()
         self._note_pin()
         available, reason = self._input.__class__.is_available()

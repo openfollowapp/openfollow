@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""Edge snap on synthetic frames: a bowed edge is followed as a whole, one polarity per line."""
+"""Edge snap on synthetic frames: a bowed edge is followed as a whole, one edge and one polarity per line."""
 
 from __future__ import annotations
 
@@ -13,11 +13,13 @@ from openfollow.scene.edge_snap import (
     MAX_BAND_STEP,
     MIN_BAND_HALF,
     LumaBand,
+    NearEdge,
     band_columns,
     band_half_size,
     band_step,
     end_search_radius,
     line_sample_points,
+    point_window,
     snap_line_to_edges,
 )
 from openfollow.scene.solver import apply_overlay_distortion, invert_overlay_distortion
@@ -27,7 +29,7 @@ pytestmark = pytest.mark.unit
 
 W, H = 1920, 1080
 DARK, BRIGHT = 40.0, 200.0
-# A wide lens whose warp reaches the frame corners (k1 alone at -0.3 folds inside the picture).
+# A strong lens with a large corner term.
 BARREL = (-0.47, 0.25)
 PINCUSHION = (0.3, 0.0)
 STRAIGHT = (0.0, 0.0)
@@ -52,8 +54,8 @@ def strip_frame(
     rng = np.random.default_rng(seed)
     yy, xx = np.mgrid[0:H, 0:W]
     pixels = np.column_stack([xx.ravel(), yy.ravel()]).astype(np.float64)
-    undistorted = invert_overlay_distortion(pixels, W, H, k1, k2)
-    ends = invert_overlay_distortion(np.array([p0, p1], dtype=np.float64), W, H, k1, k2)
+    undistorted = invert_overlay_distortion(pixels, W, H, k1, k2, 0.0, 0.0)
+    ends = invert_overlay_distortion(np.array([p0, p1], dtype=np.float64), W, H, k1, k2, 0.0, 0.0)
     d = ends[1] - ends[0]
     d /= np.hypot(*d)
     rel = undistorted - ends[0]
@@ -65,19 +67,19 @@ def strip_frame(
 def distance_to_strip_centre(points, p0, p1, lens) -> np.ndarray:
     """Signed distance of picture points from the strip's centre line, measured where the strip is straight."""
     k1, k2 = lens
-    ends = invert_overlay_distortion(np.array([p0, p1], dtype=np.float64), W, H, k1, k2)
+    ends = invert_overlay_distortion(np.array([p0, p1], dtype=np.float64), W, H, k1, k2, 0.0, 0.0)
     d = ends[1] - ends[0]
     d /= np.hypot(*d)
-    rel = invert_overlay_distortion(np.asarray(points, dtype=np.float64), W, H, k1, k2) - ends[0]
+    rel = invert_overlay_distortion(np.asarray(points, dtype=np.float64), W, H, k1, k2, 0.0, 0.0) - ends[0]
     return rel[:, 0] * d[1] - rel[:, 1] * d[0]
 
 
 def chord_sag(p0, p1, lens) -> float:
     """How far the strip's centre bows away from the straight chord, at most."""
     k1, k2 = lens
-    ends = invert_overlay_distortion(np.array([p0, p1], dtype=np.float64), W, H, k1, k2)
+    ends = invert_overlay_distortion(np.array([p0, p1], dtype=np.float64), W, H, k1, k2, 0.0, 0.0)
     s = np.linspace(0.0, 1.0, 400)[:, None]
-    seen = apply_overlay_distortion(ends[0] + s * (ends[1] - ends[0]), W, H, k1, k2)
+    seen = apply_overlay_distortion(ends[0] + s * (ends[1] - ends[0]), W, H, k1, k2, 0.0, 0.0)
     a, b = np.asarray(p0, float), np.asarray(p1, float)
     t = (b - a) / np.hypot(*(b - a))
     return float(np.max(np.abs((seen - a) @ np.array([-t[1], t[0]]))))
@@ -148,8 +150,26 @@ def test_a_strongly_bowed_edge_is_followed_along_its_length(lens) -> None:
     np.testing.assert_allclose(np.abs(distance), 7.0, atol=1.0)
 
 
+@pytest.mark.parametrize("lens", [(-0.9, 0.0), (-0.74, -0.152)], ids=["barrel-slider-end", "150-degree"])
+def test_an_edge_bowed_by_a_lens_near_the_slider_end_is_followed(lens) -> None:
+    """Below the centre such a lens bows a line by some 160-180 px: the corridor still holds it."""
+    p0, p1 = (90.0, 700.0), (1830.0, 690.0)
+    assert chord_sag(p0, p1, lens) > 150.0
+    pts = snap(strip_frame(p0, p1, lens), p0, p1)
+    assert all(p.snapped for p in pts)
+    np.testing.assert_allclose(np.abs(edge_distances(pts, p0, p1, lens)), 7.0, atol=1.5)
+
+
 def test_a_line_off_the_image_centre_keeps_the_bow_asymmetry() -> None:
     p0, p1 = (150.0, 200.0), (260.0, 1000.0)
+    pts = snap(strip_frame(p0, p1, BARREL), p0, p1)
+    assert all(p.snapped for p in pts)
+    np.testing.assert_allclose(np.abs(edge_distances(pts, p0, p1, BARREL)), 7.0, atol=1.0)
+
+
+def test_a_line_through_the_image_centre_is_snapped_onto_its_edge() -> None:
+    # No lens bows a line through the centre: the chord is the only curve it can follow.
+    p0, p1 = (200.0, H / 2), (1700.0, H / 2)
     pts = snap(strip_frame(p0, p1, BARREL), p0, p1)
     assert all(p.snapped for p in pts)
     np.testing.assert_allclose(np.abs(edge_distances(pts, p0, p1, BARREL)), 7.0, atol=1.0)
@@ -202,10 +222,10 @@ def test_an_edge_beyond_the_ends_reach_is_not_taken_at_the_ends() -> None:
 
 
 def test_an_end_stays_within_its_reach_of_the_click_beside_a_stronger_edge() -> None:
-    """A brighter strip a little further off must not pull the clicked ends over to it."""
+    """A brighter strip further off than the corridor must not pull the line over to it."""
     p0, p1 = (200.0, 500.0), (1700.0, 540.0)
     img = strip_frame(p0, p1, STRAIGHT, bright=110.0)
-    img = np.maximum(img, strip_frame((p0[0], p0[1] + 30.0), (p1[0], p1[1] + 30.0), STRAIGHT, bright=240.0))
+    img = np.maximum(img, strip_frame((p0[0], p0[1] + 60.0), (p1[0], p1[1] + 60.0), STRAIGHT, bright=240.0))
     clicks = (p0[0], p0[1] - 7.0 + 2.0), (p1[0], p1[1] - 7.0 - 2.0)
     pts = snap(img, *clicks)
     reach = end_search_radius(W)
@@ -288,10 +308,215 @@ def test_the_image_border_is_no_edge() -> None:
 
 
 def test_an_edge_that_bows_out_of_the_picture_is_unsnapped_there() -> None:
-    p0, p1 = (90.0, 1060.0), (1830.0, 1040.0)
+    # The strip's middle runs below the picture's bottom edge, its quarter points inside it.
+    p0, p1 = (90.0, 1025.0), (1830.0, 1015.0)
     pts = snap(strip_frame(p0, p1, BARREL), p0, p1)
     assert [p.snapped for p in pts] == [True, True, False, True, True]
-    assert pts[2].y > H - 1
+    # The unsnapped point stays where the page can show it and drag it: on the picture's edge.
+    assert pts[2].y == H - 1
+
+
+def test_an_unsnapped_end_stays_inside_the_picture() -> None:
+    # The strip leaves the picture above its ends; the curve through its middle runs on out there.
+    img = strip_frame((90.0, -12.0), (1830.0, -12.0), PINCUSHION, half_width=4.0)
+    pts = snap(img, (90.0, 1.0), (1830.0, 1.0))
+    assert [p.snapped for p in pts] == [False, True, True, True, False]
+    assert all(0.0 <= p.x <= W - 1 and 0.0 <= p.y <= H - 1 for p in pts)
+
+
+# --------------------------------------------------------------------------- #
+# One edge: never the parallel one
+# --------------------------------------------------------------------------- #
+
+yy, xx = np.mgrid[0:H, 0:W]
+
+
+def chord_y(x, y0: float = 500.0):
+    """A line across the picture, gently tilted."""
+    return y0 + 0.02 * x
+
+
+def noisy(img: np.ndarray, sigma: float = 3.0) -> np.ndarray:
+    return np.clip(img + np.random.default_rng(0).normal(0.0, sigma, img.shape), 0, 255)
+
+
+def offsets(pts) -> list[float]:
+    """Each point's offset below the line ``chord_y``."""
+    return [p.y - chord_y(p.x) for p in pts]
+
+
+def stepped_frame() -> np.ndarray:
+    """Two edges of one polarity 16 px apart, the upper one weak: a truss's two chords."""
+    img = np.full((H, W), 30.0)
+    img[yy >= chord_y(xx)] = 70.0
+    img[yy >= chord_y(xx) + 16.0] = 230.0
+    return noisy(img)
+
+
+@pytest.mark.parametrize("dy", [-2.0, 2.0])
+def test_of_two_parallel_edges_the_clicked_one_is_kept(dy: float) -> None:
+    pts = snap(stepped_frame(), (200.0, chord_y(200.0) + dy), (1700.0, chord_y(1700.0) - dy))
+    assert all(p.snapped for p in pts)
+    np.testing.assert_allclose(offsets(pts), 0.0, atol=1.0)
+
+
+def test_the_stronger_parallel_edge_is_taken_when_it_is_clicked() -> None:
+    pts = snap(stepped_frame(), (200.0, chord_y(200.0) + 15.0), (1700.0, chord_y(1700.0) + 17.0))
+    assert all(p.snapped for p in pts)
+    np.testing.assert_allclose(offsets(pts), 16.0, atol=1.0)
+
+
+def test_the_clicked_edge_is_kept_on_a_stair_of_stronger_ones() -> None:
+    # Three rising edges within the reach: the weak one clicked, two stronger 8 and 14 px below.
+    img = np.full((H, W), 30.0)
+    img[yy >= chord_y(xx)] = 50.0
+    img[yy >= chord_y(xx) + 8.0] = 140.0
+    img[yy >= chord_y(xx) + 14.0] = 230.0
+    pts = snap(noisy(img), (200.0, chord_y(200.0) + 1.0), (1700.0, chord_y(1700.0) - 1.0))
+    assert all(p.snapped for p in pts)
+    np.testing.assert_allclose(offsets(pts), 0.0, atol=1.0)
+
+
+def test_marks_at_the_clicks_are_no_line_beside_the_edge_that_runs_on() -> None:
+    # Two short scuffs right at the clicks; the line itself runs 10 px below them, end to end.
+    img = np.full((H, W), 40.0)
+    img[yy >= chord_y(xx) + 10.0] = 160.0
+    for x0, x1 in ((180, 230), (1670, 1720)):
+        img[(xx >= x0) & (xx < x1) & (yy >= chord_y(xx)) & (yy < chord_y(xx) + 3.0)] = 160.0
+    pts = snap(noisy(img), (200.0, chord_y(200.0)), (1700.0, chord_y(1700.0)))
+    assert all(p.snapped for p in pts)
+    np.testing.assert_allclose(offsets(pts), 10.0, atol=1.0)
+
+
+def tape_frame() -> np.ndarray:
+    """White tape 8 px wide on a floor that is darker below it, so its lower edge is the stronger."""
+    img = np.full((H, W), 90.0)
+    img[np.abs(yy - chord_y(xx)) <= 4.0] = 200.0
+    img[yy > chord_y(xx) + 4.0] = 10.0
+    return noisy(img)
+
+
+def test_a_tape_keeps_the_side_its_ends_were_clicked_on() -> None:
+    pts = snap(tape_frame(), (200.0, chord_y(200.0) - 5.0), (1700.0, chord_y(1700.0) - 3.0))
+    assert all(p.snapped for p in pts)
+    np.testing.assert_allclose(offsets(pts), -4.0, atol=1.0)
+
+
+def test_clutter_beside_a_weak_edge_does_not_pull_the_line_off_it() -> None:
+    # Bright boxes 6 px below the edge, over 40 % of its length: far more gradient, but no line.
+    img = np.full((H, W), 60.0)
+    img[yy >= chord_y(xx)] = 85.0
+    for x0 in range(250, 1700, 250):
+        img[(xx >= x0) & (xx < x0 + 100) & (yy >= chord_y(xx) + 6.0) & (yy < chord_y(xx) + 30.0)] = 230.0
+    pts = snap(noisy(img), (200.0, chord_y(200.0) + 1.0), (1700.0, chord_y(1700.0) - 1.0))
+    assert all(p.snapped for p in pts)
+    np.testing.assert_allclose(offsets(pts), 0.0, atol=1.0)
+
+
+# --------------------------------------------------------------------------- #
+# A used suggestion keeps its own edge
+# --------------------------------------------------------------------------- #
+
+
+def bright_tape_frame() -> np.ndarray:
+    """Tape 6 px wide, black above and grey below: its upper edge is the stronger."""
+    img = np.full((H, W), 20.0)
+    img[np.abs(yy - chord_y(xx)) <= 3.0] = 200.0
+    img[yy < chord_y(xx) - 3.0] = 0.0
+    img[yy > chord_y(xx) + 3.0] = 120.0
+    return noisy(img, 2.0)
+
+
+def snap_near(img: np.ndarray, samples, polarity: int):
+    samples = tuple((float(x), float(y)) for x, y in samples)
+    band = cut_band(img, samples[0], samples[-1])
+    return snap_line_to_edges(samples[0], samples[-1], band, W, H, near=NearEdge(samples, polarity))
+
+
+def lower_tape_edge_samples(shift: float = 0.0):
+    return line_sample_points((200.0, chord_y(200.0) + 3.5 + shift), (1700.0, chord_y(1700.0) + 3.5 + shift))
+
+
+def test_a_suggestion_on_the_weaker_side_of_a_tape_stays_there() -> None:
+    # Bright to grey downwards: luma falls along the chord's normal, which points down here.
+    pts = snap_near(bright_tape_frame(), lower_tape_edge_samples(), -1)
+    assert all(p.snapped for p in pts)
+    np.testing.assert_allclose(offsets(pts), 3.0, atol=1.0)
+
+
+def test_a_suggestion_s_own_contrast_side_is_never_swapped_for_the_other() -> None:
+    # Told the other polarity, the point finds no edge of it within its window: none snaps.
+    pts = snap_near(bright_tape_frame(), lower_tape_edge_samples(), 1)
+    assert not any(p.snapped for p in pts)
+    np.testing.assert_allclose([[p.x, p.y] for p in pts], lower_tape_edge_samples())
+
+
+def test_a_suggestion_without_a_polarity_takes_the_one_at_its_samples() -> None:
+    pts = snap_near(bright_tape_frame(), lower_tape_edge_samples(), 0)
+    assert all(p.snapped for p in pts)
+    np.testing.assert_allclose(offsets(pts), 3.0, atol=1.0)
+
+
+def test_a_suggestion_s_samples_settle_onto_the_edge_beside_them() -> None:
+    # The suggestions come from a map at half size: their samples sit a pixel or two off.
+    pts = snap_near(bright_tape_frame(), lower_tape_edge_samples(shift=2.0), -1)
+    assert all(p.snapped for p in pts)
+    np.testing.assert_allclose(offsets(pts), 3.0, atol=1.0)
+
+
+def test_where_a_suggestion_s_edge_breaks_off_its_point_takes_no_edge_beside_it() -> None:
+    # In the middle third the edge steps 4 px aside: another edge, not this one.
+    img = np.full((H, W), 40.0)
+    img[yy >= chord_y(xx)] = 160.0
+    middle = (xx > 700) & (xx < 1200)
+    img[middle] = 40.0
+    img[middle & (yy >= chord_y(xx) + 4.0)] = 160.0
+    samples = line_sample_points((200.0, chord_y(200.0) + 0.5), (1700.0, chord_y(1700.0) + 0.5))
+    pts = snap_near(noisy(img), samples, 1)
+    assert [p.snapped for p in pts] == [True, True, False, True, True]
+    np.testing.assert_allclose(offsets(pts), 0.0, atol=1.0)
+
+
+def test_a_suggestion_s_points_stay_within_the_window_of_its_samples() -> None:
+    # The samples sit 2.5 px off their edge (the map at half size); a stronger edge of the
+    # same polarity runs 4 px beyond it and draws the curve over. No point follows it there.
+    img = np.full((H, W), 30.0)
+    img[yy >= 502.5] = 90.0
+    img[yy >= 506.5] = 230.0
+    samples = line_sample_points((200.0, 500.0), (1700.0, 500.0))
+    pts = snap_near(noisy(img, 2.0), samples, 1)
+    assert any(p.snapped for p in pts)
+    assert np.all(np.abs([p.y - 500.0 for p in pts]) <= point_window(W) + 0.5)
+
+
+def test_a_suggestion_on_the_weak_chord_never_takes_the_strong_one() -> None:
+    samples = line_sample_points((200.0, chord_y(200.0) + 0.5), (1700.0, chord_y(1700.0) + 0.5))
+    pts = snap_near(stepped_frame(), samples, 1)
+    assert all(p.snapped for p in pts)
+    np.testing.assert_allclose(offsets(pts), 0.0, atol=1.0)
+
+
+@pytest.mark.parametrize(
+    ("samples", "polarity", "match"),
+    [
+        (line_sample_points((200.0, 600.0), (1700.0, 630.0))[:4], 1, "5 finite points"),
+        (np.vstack([line_sample_points((200.0, 600.0), (1700.0, 630.0))[:4], [[np.nan, 600.0]]]), 1, "finite"),
+        (line_sample_points((200.0, 600.0), (1700.0, 630.0)), 2, "polarity"),
+        (line_sample_points((200.0, 600.0), (1700.0, 630.0)) + [0.0, 300.0], 1, "along the line"),
+        (np.vstack([line_sample_points((200.0, 600.0), (1700.0, 630.0))[:4], [[2500.0, 640.0]]]), 1, "along"),
+    ],
+    ids=["four-points", "nan-point", "polarity-two", "beyond-the-band", "beyond-the-end"],
+)
+def test_a_suggestion_that_does_not_lie_along_its_line_is_refused(samples, polarity: int, match: str) -> None:
+    img = np.full((H, W), DARK)
+    band = cut_band(img, (200.0, 600.0), (1700.0, 630.0))
+    near = NearEdge(tuple((float(x), float(y)) for x, y in samples), polarity)
+    with pytest.raises(ValueError, match=match):
+        snap_line_to_edges((200.0, 600.0), (1700.0, 630.0), band, W, H, near=near)
+
+
+def test_the_point_window_scales_with_the_snapshot() -> None:
+    assert [point_window(w) for w in (640, 1920, 2160, 3840)] == [4, 4, 4, 8]
 
 
 # --------------------------------------------------------------------------- #

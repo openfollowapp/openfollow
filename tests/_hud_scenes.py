@@ -24,9 +24,9 @@ from openfollow.zones.geometry import point_in_polygon
 WIDTH, HEIGHT = 1920, 1080
 FRAMES = 60
 
-# A camera above and behind the audience, looking at the stage, with a mild barrel lens.
+# A camera above and behind the audience, looking at the stage, with a mild barrel lens a little off centre.
 CAMERA = (0.0, -10.0, 7.0, -28.0, 0.0, 0.0, 62.0)
-LENS = (-0.147, 0.018)
+LENS = (-0.145, -0.033, 0.02, -0.01)
 GRID = (12.0, 8.0, 1.0, 0.0, 0.5, 0.0)
 
 ZONES = [
@@ -128,6 +128,8 @@ def _base(t: float, *, markers: int, controlled: int, zones: int, **extra: Any) 
         "camera_params": np.array(CAMERA, dtype=np.float64),
         "lens_k1": LENS[0],
         "lens_k2": LENS[1],
+        "lens_cx": LENS[2],
+        "lens_cy": LENS[3],
         "grid_config": GRID,
         "grid_visible": False,
         "show_ground_circle": True,

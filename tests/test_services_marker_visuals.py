@@ -9,13 +9,18 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
+import openfollow.system_stats as stats_module
 from openfollow.configuration import Mouse3DConfig
+from openfollow.power_health import WARNING_HOLD_S, PowerMonitor
+from openfollow.runtime.overlay_draw_style import COLOR_WARNING_FILL
 from openfollow.runtime.overlay_state import OverlayState
+from openfollow.runtime.overlay_status_badge import draw_status_badge
 from openfollow.runtime.services_marker_visuals import (
     _populate_pi_network_overlay,
     _populate_zone_overlay,
@@ -25,8 +30,10 @@ from openfollow.runtime.services_marker_visuals import (
     sync_marker_config,
     sync_ui_config,
 )
+from openfollow.system_stats import SystemStats, SystemStatsCollector
 from openfollow.units import UnitSystem
 from openfollow.video.failure import VideoFailure
+from tests._fake_cairo import FakeCairo, FakeRenderer
 
 pytestmark = pytest.mark.unit
 
@@ -898,7 +905,7 @@ def _make_visual_app(marker: object, *, controlled: bool) -> SimpleNamespace:
         psn_system_name="OF",
         marker=_make_full_marker_config(),
         grid=_make_grid_config(),
-        camera=SimpleNamespace(lens_k1=0.0, lens_k2=0.0),
+        camera=SimpleNamespace(lens_k1=0.0, lens_k2=0.0, lens_cx=0.0, lens_cy=0.0),
         ui=SimpleNamespace(unit_system="metric"),
         controller=SimpleNamespace(
             enabled=False,
@@ -1007,13 +1014,15 @@ class TestBuildMarkerVisualStateTornRead:
         # since a correct consumer reads ``pos`` exactly once.
         assert (card.x, card.y, card.z) == (10.0, 20.0, 30.0)
 
-    def test_lens_coefficients_are_copied_from_config(self) -> None:
-        # The overlay warp reads k1/k2 off the live config (the Camera object is
-        # pinhole), so a slider edit must land on the state for the renderer.
+    def test_the_lens_is_copied_from_config(self) -> None:
+        # The overlay warp reads the lens off the live config (the Camera object is
+        # pinhole), so an edit must land on the state for the renderer.
         marker = _TornMarker([(0.0, 0.0, 0.0)])
         app = _make_visual_app(marker, controlled=False)
         app._config.camera.lens_k1 = -0.15
         app._config.camera.lens_k2 = 0.04
+        app._config.camera.lens_cx = 0.03
+        app._config.camera.lens_cy = -0.02
 
         state = build_marker_visual_state(
             app,
@@ -1023,8 +1032,7 @@ class TestBuildMarkerVisualStateTornRead:
             dt=1.0 / 60.0,
         )
 
-        assert state.lens_k1 == -0.15
-        assert state.lens_k2 == 0.04
+        assert state.lens == (-0.15, 0.04, 0.03, -0.02)
 
     @pytest.mark.parametrize("enabled", [True, False])
     def test_wheel_z_setting_reaches_the_help_overlay_state(self, enabled: bool) -> None:
@@ -1082,6 +1090,64 @@ class TestVideoFailureReachesTheTopRightBadge:
     def test_an_unconfigured_source_is_not_alarmed_about(self) -> None:
         """Nothing is broken; the operator has not finished setting up."""
         assert self._flags_after(VideoFailure.NOT_CONFIGURED)["video_failure"] is None
+
+
+class TestPowerWarningReachesTheTopRightBadge:
+    """A dip in the supply or a throttled CPU is an error row in the top right,
+    held past the last active reading so a single dip is still seen."""
+
+    def _collector(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, now: list[float]) -> SystemStatsCollector:
+        monkeypatch.setattr(stats_module.psutil, "cpu_percent", lambda interval=None: 0.0)
+        monkeypatch.setattr(stats_module.psutil, "virtual_memory", lambda: SimpleNamespace(percent=0.0))
+        monkeypatch.setattr(stats_module, "get_local_ipv4_addresses", lambda: set())
+        monkeypatch.setattr(stats_module, "get_primary_local_ipv4", lambda default="N/A": "N/A")
+        monkeypatch.setattr(stats_module, "get_iface_for_ip", lambda _ip: "")
+        hwmon = tmp_path / "hwmon0"
+        hwmon.mkdir()
+        (hwmon / "name").write_text("rpi_volt\n")
+        (hwmon / "in0_lcrit_alarm").write_text("1\n")
+        return SystemStatsCollector(power=PowerMonitor(hwmon_root=tmp_path), clock=lambda: now[0])
+
+    def _build(self, collector: object) -> OverlayState:
+        app = _make_visual_app(_TornMarker([(0.0, 0.0, 0.0)]), controlled=False)
+        app._runtime_services = SimpleNamespace(_status_flags={})
+        return build_marker_visual_state(
+            app,
+            system_stats=collector,
+            person_detector=None,
+            cam_params_buffer=np.zeros(7),
+            dt=1.0 / 60.0,
+        )
+
+    def test_the_row_shows_while_active_and_goes_after_the_hold(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        now = [10.0]
+        collector = self._collector(monkeypatch, tmp_path, now)
+        row = ("power", "Power supply under voltage", "error")
+        assert row in self._build(collector).status_flags
+
+        (tmp_path / "hwmon0" / "in0_lcrit_alarm").write_text("0\n")
+        now[0] = 10.0 + WARNING_HOLD_S - 1.0
+        assert row in self._build(collector).status_flags
+
+        now[0] = 10.0 + WARNING_HOLD_S
+        assert [r for r in self._build(collector).status_flags if r[0] == "power"] == []
+
+    def test_the_row_is_drawn_as_an_error_box(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        state = self._build(self._collector(monkeypatch, tmp_path, [10.0]))
+        cr = FakeCairo()
+        draw_status_badge(FakeRenderer(state=state), cr, state, 1920, 1080)
+        assert "Power supply under voltage" in cr.show_text_strings()
+        assert ("rgba", *COLOR_WARNING_FILL) in cr.calls
+
+    @pytest.mark.parametrize(
+        "collector",
+        [None, SimpleNamespace(update=lambda: SystemStats())],
+        ids=["no-collector", "not-a-pi"],
+    )
+    def test_a_host_without_a_reading_shows_nothing(self, collector: object) -> None:
+        assert [r for r in self._build(collector).status_flags if r[0] == "power"] == []
 
 
 class TestNetworkScreenHeadline:

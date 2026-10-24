@@ -5,7 +5,7 @@ sync the system clock (NTP) and check GitHub for a newer release.
 
 The show LAN normally has no uplink. When it briefly does (e.g. during setup),
 this opportunistically corrects the clock and surfaces an "update available"
-banner. Every network step fails silently offline – nothing here is on the
+box. Every network step fails silently offline – nothing here is on the
 data path, and the clock-set never prompts for a password (it runs only when
 the sudoers grant is already in place).
 

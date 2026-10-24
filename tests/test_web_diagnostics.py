@@ -3894,33 +3894,47 @@ def test_the_bundle_names_station_default_when_its_interface_is_down(down: bool,
     assert providers.iface_ip() == expected
 
 
-def test_the_bundle_carries_the_calibration_points_with_where_they_were_solved() -> None:
+def test_the_bundle_carries_the_calibration_marks_with_where_they_were_solved() -> None:
     import tomllib
 
-    from openfollow.configuration import AppConfig, CalibrationPointConfig
+    from openfollow.configuration import AppConfig, CalibrationMarkConfig
     from openfollow.web.routes import _build_diagnostics_providers
 
     cfg = AppConfig()
-    cfg.camera.calibration_points = [
-        CalibrationPointConfig("USR", "USL", 8.078, 3.905, 0.0, 0.6, 0.35, [2.5, 9.0, 0.0])
+    cfg.camera.calibration_mode = "advanced"
+    cfg.camera.calibration_marks = [
+        CalibrationMarkConfig(id=1, name="USR", kind="known", x=-5.0, y=6.0, z=0.0, pin=[0.81, 0.94]),
+        CalibrationMarkConfig(id=2, name="USL", kind="known", x=5.0, y=6.0, z=0.0),
+        CalibrationMarkConfig(
+            id=3,
+            kind="triangulated",
+            from_a=1,
+            from_b=2,
+            distance_a=8.078,
+            distance_b=3.905,
+            z=0.0,
+            pin=[0.6, 0.35],
+            position=[2.5, 9.0, 0.0],
+        ),
     ]
-    cfg.camera.corner_pins = [[0.81, 0.94], [0.14, 0.95], [0.37, 0.61], [0.66, 0.6]]
     providers = _build_diagnostics_providers(_io_server(), cfg)
     assert providers.config_redacted_toml is not None
     dumped = tomllib.loads(providers.config_redacted_toml())
-    assert dumped["camera"]["calibration_points"] == [
-        {
-            "corner_a": "USR",
-            "corner_b": "USL",
-            "distance_a": 8.078,
-            "distance_b": 3.905,
-            "height": 0.0,
-            "pin_x": 0.6,
-            "pin_y": 0.35,
-            "position": [2.5, 9.0, 0.0],
-        }
+    assert dumped["camera"]["calibration_mode"] == "advanced"
+    assert [
+        (m["id"], m["name"], m["kind"], m["pin"], m["position"]) for m in dumped["camera"]["calibration_marks"]
+    ] == [
+        (1, "USR", "known", [0.81, 0.94], []),
+        (2, "USL", "known", [], []),
+        (3, "P3", "triangulated", [0.6, 0.35], [2.5, 9.0, 0.0]),
     ]
-    assert dumped["camera"]["corner_pins"] == [[0.81, 0.94], [0.14, 0.95], [0.37, 0.61], [0.66, 0.6]]
+    assert (
+        dumped["camera"]["calibration_marks"][2]["distance_a"],
+        dumped["camera"]["calibration_marks"][2]["from_b"],
+    ) == (
+        8.078,
+        2,
+    )
 
 
 def test_build_diagnostics_providers_wires_io_fields() -> None:
@@ -4379,6 +4393,26 @@ def test_collect_runtime_state_names_what_each_controller_cannot_do() -> None:
     assert rows[first + 1] == "         notes cannot_identify"
     second = next(i for i, row in enumerate(rows) if "Xbox" in row)
     assert "notes" not in rows[second + 1]
+
+
+def test_collect_runtime_state_lists_every_marker_conflict() -> None:
+    stats = _stats()
+    stats["marker_conflicts"] = [
+        {"marker_id": 3, "stations": ["Stage Left"], "this_station": True},
+        {"marker_id": 12, "stations": ["Booth", "FOH"], "this_station": False},
+    ]
+    rows = diag.collect_runtime_state(diag.DiagnosticsProviders(runtime_stats=lambda: stats))
+    first = rows.index("  Marker conflicts:       2")
+    assert rows[first + 1 : first + 3] == [
+        "    marker 3    controlled by this station, Stage Left",
+        "    marker 12   controlled by Booth, FOH",
+    ]
+
+
+def test_collect_runtime_state_says_when_no_marker_conflicts() -> None:
+    assert "  Marker conflicts:       (none)" in diag.collect_runtime_state(
+        diag.DiagnosticsProviders(runtime_stats=_stats)
+    )
 
 
 def test_collect_runtime_state_reports_not_wired() -> None:
@@ -5350,6 +5384,27 @@ def test_collect_video_capability_reports_an_unreadable_registry(monkeypatch: py
 
     monkeypatch.setattr(inputs_module, "get_registry", lambda: (_ for _ in ()).throw(RuntimeError("registry gone")))
     assert "input registry" in diag.collect_video_capability()[0]
+
+
+def test_collect_video_capability_marks_a_ranked_out_decoder(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A decoder the station ranked out is present but never picked, which is the answer to "why software"."""
+    from types import SimpleNamespace
+
+    import gi.repository
+
+    ranks = {"v4l2slh265dec": 0, "avdec_h265": 256}
+    fake = SimpleNamespace(
+        init=lambda _args: None,
+        Rank=SimpleNamespace(NONE=0),
+        ElementFactory=SimpleNamespace(
+            find=lambda name: SimpleNamespace(get_rank=lambda: ranks[name]) if name in ranks else None
+        ),
+    )
+    monkeypatch.setattr(gi.repository, "Gst", fake, raising=False)
+
+    rows = diag.collect_video_capability()
+
+    assert rows[-1] == "  Video decoders:       v4l2slh265dec (ranked out), avdec_h265"
 
 
 def test_collect_detection_models_lists_what_is_on_disk(tmp_path: Path) -> None:

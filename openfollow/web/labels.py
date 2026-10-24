@@ -26,15 +26,15 @@ FEATURE_LABELS: dict[str, FeatureLabel] = {
         "Opens MIDI devices for virtual faders and button bindings.",
         "MIDI devices are closed, so nothing played on them reaches this station.",
     ),
-    "lens_distortion": FeatureLabel(
-        "Lens distortion",
-        "Bows the overlay to match a wide or fisheye lens.",
-        "the overlay, mouse, person detection and zones work as if the lens were straight.",
-    ),
     "psn_input": FeatureLabel(
         "PSN input",
         "Shows the markers other stations send over PSN.",
         "other stations' markers disappear and no longer count for zones.",
+    ),
+    "lens_suggestions": FeatureLabel(
+        "Lens line suggestions",
+        "Suggests straight edges in the Setup Wizard's Lens step, to use or reject.",
+        "the Lens step suggests no lines; lines are drawn by hand.",
     ),
     "detection": FeatureLabel(
         "Person detection",
@@ -56,11 +56,6 @@ FEATURE_LABELS: dict[str, FeatureLabel] = {
         "Ground grid",
         "Lets markers follow raised floor areas such as risers and stairs.",
         "markers no longer follow raised floor areas.",
-    ),
-    "calibration_points": FeatureLabel(
-        "Calibration points",
-        "Adds measured points to the Setup Wizard's camera calibration.",
-        "the calibration points are hidden; the saved points still count.",
     ),
     "touch_remote": FeatureLabel(
         "Touch remote",

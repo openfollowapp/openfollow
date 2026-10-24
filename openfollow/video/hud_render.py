@@ -19,6 +19,7 @@ import cairo
 from openfollow.logging_setup import ThrottledExceptionLogger
 from openfollow.runtime.overlay_layers import LayerContext, Layers
 from openfollow.runtime.overlay_state import OverlayState
+from openfollow.video.hud_metrics import HudMetrics
 
 if TYPE_CHECKING:
     from openfollow.video.overlay import CairoOverlayRenderer
@@ -101,10 +102,19 @@ class HudRenderThread:
     """
 
     def __init__(
-        self, renderer: CairoOverlayRenderer, clock: Callable[[], float] = time.monotonic, *, layered: bool = False
+        self,
+        renderer: CairoOverlayRenderer,
+        clock: Callable[[], float] = time.monotonic,
+        cpu_clock: Callable[[], float] = time.thread_time,
+        *,
+        layered: bool = False,
     ) -> None:
         self._renderer = renderer
         self._clock = clock
+        # CPU time of the calling thread, for what a picture and a repaint cost.
+        self._cpu_clock = cpu_clock
+        self.metrics = HudMetrics(clock())
+        self._thread_id: int | None = None
         # Layered: each picture is a ``Layers`` list for a compositor instead of one canvas-sized picture.
         self._layered = layered
         self._cond = threading.Condition()
@@ -157,6 +167,7 @@ class HudRenderThread:
                 self._report[0] += 1
                 self._report[1] += self._held > self._pacing.refreshes
                 self._pacing.shown(self._held, self._finished_at - self._started_at)
+            self.metrics.refresh(ready is not None)
             if not self._busy and self._ready is None and self._target is not None:
                 self._job = (self._target, self._renderer.state)
                 self._busy = True
@@ -167,9 +178,11 @@ class HudRenderThread:
 
     def paint(self, cr: Any, width: int, height: int) -> None:
         """GTK draw callback: paste the shown picture, and remember the canvas for the next one."""
+        start = self._cpu_clock()
         if isinstance(self._shown, cairo.ImageSurface):
             cr.set_source_surface(self._shown, 0, 0)
             cr.paint()
+        self.metrics.painted(self._cpu_clock() - start)
         self.set_canvas(width, height, cr.get_target().get_device_scale())
 
     def set_canvas(self, width: int, height: int, scale: tuple[float, float]) -> None:
@@ -195,7 +208,24 @@ class HudRenderThread:
         self._report = [0, 0]
         return shown, late, self._pacing.refreshes
 
+    def gl_rendered(self, cpu_s: float) -> None:
+        """The GL display rendered a refresh (video and HUD uploads, compositing) at this GTK main thread CPU cost."""
+        self.metrics.gl_rendered(cpu_s)
+
+    def video_frame(self) -> None:
+        """A video frame reached the display sink (its streaming thread)."""
+        self.metrics.video_frame()
+
+    def stats(self) -> dict[str, Any] | None:
+        """``HudMetrics.summary`` with the pacing interval and the render thread's id; None before the first window."""
+        summary = self.metrics.summary(self._clock(), self._pacing.refreshes)
+        if summary is None:
+            return None
+        summary["render_thread_id"] = self._thread_id
+        return summary
+
     def _run(self) -> None:
+        self._thread_id = threading.get_native_id()
         while (taken := self._take()) is not None:
             (canvas, state), picture = taken
             try:
@@ -224,15 +254,20 @@ class HudRenderThread:
 
     def _render_layers(self, canvas: _Canvas, state: OverlayState) -> Layers:
         width, height, scale = canvas
+        start = self._cpu_clock()
         cr = LayerContext(width, height, scale, _IMAGE_FONT_OPTIONS)
         self._renderer.draw(cr, width, height, state)
-        return cr.finish()
+        layers = cr.finish()
+        # Layers start empty: nothing to clear.
+        self.metrics.picture(None, self._cpu_clock() - start)
+        return layers
 
     def _render(
         self, picture: cairo.ImageSurface | Layers | None, canvas: _Canvas, state: OverlayState
     ) -> cairo.ImageSurface:
         width, height, (sx, sy) = canvas
         size = (math.ceil(width * sx), math.ceil(height * sy))
+        start = self._cpu_clock()
         if isinstance(picture, cairo.ImageSurface) and _fits(picture, size, (sx, sy)):
             clear = cairo.Context(picture)
             clear.set_operator(cairo.OPERATOR_CLEAR)
@@ -241,7 +276,9 @@ class HudRenderThread:
             # Drawn at the screen's device scale, so a HiDPI screen gets a sharp HUD.
             picture = cairo.ImageSurface(cairo.FORMAT_ARGB32, *size)
             picture.set_device_scale(sx, sy)
+        drawing = self._cpu_clock()
         self._renderer.draw(cairo.Context(picture), width, height, state)
+        self.metrics.picture(drawing - start, self._cpu_clock() - drawing)
         return picture
 
 

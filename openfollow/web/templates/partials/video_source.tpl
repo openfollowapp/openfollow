@@ -10,7 +10,7 @@
     <div class="group">
         <div class="row">
             <div class="field">
-                <label>Source Type</label>
+                <label for="video-source-type">Source Type</label>
                 <select name="video_source_type" id="video-source-type"
                         onchange="ofVideoSourceToggle(this.value)">
                     % for iid, iname in available_inputs:

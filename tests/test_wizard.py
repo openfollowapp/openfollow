@@ -449,6 +449,9 @@ class TestWizardPage:
                                          'id="lens-container"', 'class="wizard-tip"', 'id="lens-next"')]  # fmt: skip
         assert order == sorted(order)
         assert '<div class="lens-current" id="lens-current" hidden>' in step
+        # The choices read as buttons: the secondary button's border, without a form label's capitals.
+        assert ".lens-current .tier-option { text-transform: none; letter-spacing: normal; }" in body
+        assert ".lens-current .tier-option > span { border-color: var(--btn-secondary-border); }" in body
 
     def test_the_page_names_no_route_or_field_the_station_lacks(self, live_server) -> None:
         _, base = live_server

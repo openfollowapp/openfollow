@@ -300,6 +300,9 @@
   .mode-field { margin-bottom: 0.9rem; }
   .lens-current { margin: 0.9rem 0; }
   .lens-current-values { margin: 0.2rem 0 0.6rem; color: var(--muted); }
+  /* The choices are buttons: the secondary button's border, and none of a form label's capitals. */
+  .lens-current .tier-option { text-transform: none; letter-spacing: normal; }
+  .lens-current .tier-option > span { border-color: var(--btn-secondary-border); }
   .axis-note { font-weight: 400; text-transform: none; letter-spacing: 0; }
   #step-calib.mode-simple .only-advanced, #step-calib.mode-advanced .only-simple { display: none; }
   #wiz-hint, #lens-hint { margin: 0.2rem 0 0.9rem; }

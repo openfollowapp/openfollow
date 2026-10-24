@@ -147,8 +147,8 @@ Online*, *Install .ofupdate File*, or a hand-run `apt` / `dpkg`. The package's
 the release that introduces it.
 
 - **What goes in:** `config.toml`, the marker catalog (`markers.toml`, or
-  wherever `markers_catalog_path` points), `templates/user/`, and a
-  `manifest.json` recording each file's original path, the from / to versions
+  wherever `markers_catalog_path` points), `templates/user/`, the saved lens
+  calibrations (`lens-calibrations/`), and a `manifest.json` recording each file's original path, the from / to versions
   and the UTC time. A missing source is skipped and listed in the manifest. The
   Media Gallery and the detection models are left out: an update never rewrites
   them, and they are large.
@@ -176,11 +176,12 @@ The backup program is `openfollow/privilege/settings_backup.py`. Nothing from
 the package is on disk when the `preinst` runs, so `render-preinst.sh` inlines
 the program into `preinst.in` at build time; keep it standard-library only.
 
-To restore by hand:
+To restore by hand (the command restores whatever the archive holds, so an
+older archive without `lens-calibrations/` restores the same way):
 
 ```bash
 sudo systemctl stop openfollow
-sudo -u openfollow tar xzf /var/lib/openfollow/backups/<file>.ofbackup -C /var/lib/openfollow config.toml templates/user
+sudo -u openfollow tar -xzf /var/lib/openfollow/backups/<file>.ofbackup -C /var/lib/openfollow --exclude=manifest.json --exclude=markers.toml
 # markers.toml: copy it back to the path manifest.json names
 sudo systemctl start openfollow
 ```

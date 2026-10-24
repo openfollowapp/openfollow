@@ -21,6 +21,7 @@ from bottle import html_escape
 import openfollow.web.discovery as discovery_module
 from openfollow.configuration import (
     DEFAULT_SHOWN_FEATURES,
+    EXPERIMENTAL_FEATURES,
     FEATURE_KEYS,
     OFFERED_FEATURES,
     PathConfig,
@@ -176,8 +177,9 @@ class TestTransfer:
     @pytest.mark.parametrize(
         ("body", "expected"),
         [
-            ({"rttrpm": True, "zones": False}, ["midi", "lens_distortion", "psn_input", "rttrpm"]),
-            ({"detection": "on", "midi": "off"}, ["zones", "lens_distortion", "psn_input", "detection"]),
+            ({"rttrpm": True, "zones": False}, ["midi", "psn_input", "rttrpm"]),
+            ({"detection": "on", "midi": "off"}, ["zones", "psn_input", "detection"]),
+            ({"lens_suggestions": True}, ["zones", "midi", "psn_input", "lens_suggestions"]),
             ({"warp_drive": True}, list(DEFAULT_SHOWN_FEATURES)),
         ],
     )
@@ -208,7 +210,7 @@ class TestPage:
         form = form[: form.index("</table>")]
         assert re.search(r'name="detection"[^>]*\s+checked', form)
         assert not re.search(r'name="zones"[^>]*\s+checked', form)
-        assert form.count('class="badge-experimental"') == 5
+        assert form.count('class="badge-experimental"') == len(EXPERIMENTAL_FEATURES & set(OFFERED_FEATURES)) == 5
 
     def test_the_table_has_one_row_per_feature_with_its_title_and_description(self, live_server) -> None:
         _, base = live_server
@@ -229,6 +231,25 @@ class TestPage:
             assert f'<label for="{box_id}">{html_escape(label.title)}</label>' in row
             description = html_escape(label.description)
             assert f'<td id="{box_id}-description" class="feature-description">{description}</td>' in row
+
+    def test_lens_line_suggestions_have_an_experimental_row_and_the_lens_no_row(self, live_server) -> None:
+        _, base = live_server
+        _, body = _get(base, "/")
+        form = body[body.index('<div id="features-section"') :]
+        form = form[: form.index("</table>")]
+        rows = re.findall(r"<tr>\s*<td class=\"feature-check\">(.*?)</tr>", form, re.S)
+        (row,) = [r for r in rows if 'name="lens_suggestions"' in r]
+        assert not re.search(r'name="lens_suggestions"[^>]*\s+checked', row)
+        assert (
+            '<label for="features-lens-suggestions">Lens line suggestions</label>'
+            ' <span class="badge-experimental">Experimental</span>'
+        ) in row
+        assert (
+            '<td id="features-lens-suggestions-description" class="feature-description">'
+            "Suggests straight edges in the Setup Wizard&#039;s Lens step, to use or reject.</td>"
+        ) in row
+        assert 'data-off="the Lens step suggests no lines; lines are drawn by hand."' in row
+        assert "Lens distortion" not in form and "lens_distortion" not in form
 
 
 class TestConfigOnly:
@@ -296,27 +317,29 @@ class TestConfigOnly:
         assert body_class.search(_get(base, "/")[1]).group(1).split() == ["feature-paths"]
 
 
-class TestWizard:
-    def test_lens_off_drops_the_lens_step_and_starts_pinhole(self, live_server) -> None:
+class TestLens:
+    @pytest.mark.parametrize("shown", [[], list(FEATURE_KEYS)], ids=["no features", "every feature"])
+    def test_the_wizard_always_has_the_lens_step_with_the_saved_pair(self, live_server, shown) -> None:  # noqa: ANN001
         server, base = live_server
         cfg = load_config(server.config_path)
         cfg.camera.lens_k1, cfg.camera.lens_k2 = -0.2, 0.05
-        cfg.ui.shown_features = []
+        cfg.ui.shown_features = shown
         save_config(cfg, server.config_path)
         _, body = _get(base, "/wizard")
-        assert "window.WIZ_STEPS = ['prep', 'grid', 'video', 'camera'," in body
-        assert 'id="wiz_lens_k1" step="0.005"\n                   value="0.0"' in body
-        assert "var LENS_ENABLED = false;" in body
+        assert "window.WIZ_STEPS = ['video', 'lens', 'calib', 'review'];" in body
+        assert re.search(r'id="wiz_lens_k1" step="any"\s+value="-0.2"', body)
+        assert re.search(r'<div class="group">\s*<div class="group-title">Lens</div>', body)
 
-    def test_lens_on_keeps_the_step_and_the_saved_pair(self, live_server) -> None:
+    @pytest.mark.parametrize("shown", [[], list(FEATURE_KEYS)], ids=["no features", "every feature"])
+    def test_the_camera_tab_always_shows_the_lens_group(self, live_server, shown) -> None:  # noqa: ANN001
         server, base = live_server
         cfg = load_config(server.config_path)
-        cfg.camera.lens_k1 = -0.2
+        cfg.ui.shown_features = shown
         save_config(cfg, server.config_path)
-        _, body = _get(base, "/wizard")
-        assert "'video', 'lens', 'camera'" in body
-        assert 'value="-0.2"' in body
-        assert "var LENS_ENABLED = true;" in body
+        _, body = _get(base, "/section/camera")
+        heading = body.index('<h3 class="group-title">Lens distortion</h3>')
+        assert body[:heading].rsplit("<div", 1)[1].strip() == 'class="group">'
+        assert 'id="camera-lens-k1"' in body
 
 
 class TestTouchRemote:

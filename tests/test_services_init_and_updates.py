@@ -1278,6 +1278,22 @@ class TestInitWebServer:
         snapshot[9] = 4.0
         assert services._app._config.marker_move_speeds == {5: 2.7}
 
+    def test_wires_the_update_source_the_station_runs_with(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from openfollow import web
+
+        monkeypatch.setattr(web, "ConfigWebServer", _FakeWebServer)
+        services._preview_provider = SimpleNamespace(get_snapshot=lambda: None)
+        services._snapshot_provider = SimpleNamespace(get_snapshot=lambda: None)
+        services._app._config = replace(
+            services._app._config, update_github_repo="stage-crew/openfollow", update_include_prereleases=True
+        )
+
+        services.init_web_server()
+
+        assert services._app._web_server.kwargs["update_source_provider"]() == ("stage-crew/openfollow", True)
+
     def test_wires_the_network_bind_map_provider(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
     ) -> None:

@@ -20,18 +20,13 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
-try:
-    import tomllib
-except ImportError:
-    # Python 3.10 has no stdlib ``tomllib``; use the ``tomli`` backport.
-    import tomli as tomllib  # type: ignore[no-redef]
-
 import tomli_w
+import tomllib
 
 from openfollow.binding_conflicts import BindingMove, settle_duplicates
 from openfollow.keyboard_layout import LAYOUT_RE as XKB_LAYOUT_RE
 from openfollow.keyboard_layout import VARIANT_RE as XKB_VARIANT_RE
-from openfollow.lens_model import pull_back_to_fold
+from openfollow.lens_model import C_BOUND, pull_back_to_valid
 from openfollow.net_adapters import normalize_labels
 from openfollow.station_fqdn import normalize_fqdn
 from openfollow.units import UnitSystem
@@ -188,6 +183,15 @@ def _coerce_multicast_ipv4(value: Any, default: str = "") -> str:
     if not isinstance(ip, ipaddress.IPv4Address) or not ip.is_multicast:
         return default
     return addr
+
+
+def is_ipv4_literal(value: str) -> bool:
+    """Whether *value* is an IPv4 address in the dotted form a socket reports a sender in."""
+    try:
+        ipaddress.IPv4Address(value)
+    except ValueError:
+        return False
+    return True
 
 
 def _coerce_optional_float(
@@ -412,7 +416,13 @@ def _coerce_bool(value: Any, default: bool) -> bool:
 
 
 CALIBRATION_CORNERS = ("DSL", "DSR", "USR", "USL")
-MAX_CALIBRATION_POINTS = 6
+CALIBRATION_MODES = ("simple", "advanced")
+MARK_KINDS = ("known", "triangulated")
+MAX_CALIBRATION_MARKS = 12
+MAX_MARK_ID = 999
+MAX_MARK_NAME = 60
+MARK_REACH_M = 10_000.0  # a typed coordinate further out is a typing slip
+MAX_MARK_DISTANCE_M = 200.0
 
 
 def _coerce_measured(value: Any) -> float:
@@ -420,46 +430,84 @@ def _coerce_measured(value: Any) -> float:
     return math.nan if isinstance(value, bool) else _coerce_float(value, math.nan)
 
 
-@dataclass
-class CalibrationPointConfig:
-    """A far point measured with a laser from two grid corners, for the Setup Wizard's camera solve.
+def _coerce_mark_id(value: Any) -> int:
+    """A whole number from 1 to MAX_MARK_ID, else 0, which no mark may carry."""
+    if isinstance(value, bool):
+        return 0
+    number = _coerce_float(value, 0.0)
+    return int(number) if number.is_integer() and 1 <= number <= MAX_MARK_ID else 0
 
-    ``position`` is where the solve the camera pose came from put it, kept with the pose; like the
-    pose, it does not follow a later grid edit. The measurements are what the next solve reads.
+
+@dataclass
+class CalibrationMarkConfig:
+    """A point of the Setup Wizard's camera solve: typed (known) or measured from two others (triangulated).
+
+    ``pin`` is where it is on the snapshot, as fractions of its width and height; empty when not pinned.
+    ``position`` is where the solve the camera pose came from put a triangulated point, kept with the pose.
+    A value the kind does not read is stored as 0, so a kept mark holds finite numbers only.
     """
 
-    # A missing corner or pin is no measurement: problem() refuses these defaults.
-    corner_a: str = ""
-    corner_b: str = ""
-    distance_a: float = 0.0  # m from corner_a's mark
-    distance_b: float = 0.0
-    height: float = 0.0  # m above stage level
-    pin_x: float = math.nan  # where it is on the snapshot, as a fraction of its width / height
-    pin_y: float = math.nan
+    # A missing coordinate or distance is no measurement: problem() refuses these defaults.
+    id: int = 0
+    name: str = ""
+    kind: str = "known"
+    x: float = math.nan  # known only
+    y: float = math.nan
+    z: float = math.nan
+    from_a: int = 0  # triangulated only: the ids its two distances are measured from
+    from_b: int = 0
+    distance_a: float = math.nan  # m
+    distance_b: float = math.nan
+    pin: list[float] = field(default_factory=list)
     position: list[float] = field(default_factory=list)  # x, y, z in m; empty when no solve placed it
 
     def __post_init__(self) -> None:
-        self.corner_a = _coerce_choice(self.corner_a, CALIBRATION_CORNERS, "")
-        self.corner_b = _coerce_choice(self.corner_b, CALIBRATION_CORNERS, "")
-        self.distance_a = _coerce_measured(self.distance_a)
-        self.distance_b = _coerce_measured(self.distance_b)
-        self.height = _coerce_measured(self.height)
-        self.pin_x = _coerce_measured(self.pin_x)
-        self.pin_y = _coerce_measured(self.pin_y)
-        coords = [_coerce_measured(v) for v in self.position] if isinstance(self.position, list | tuple) else []
-        self.position = coords if len(coords) == 3 and all(math.isfinite(c) for c in coords) else []
+        self.id = _coerce_mark_id(self.id)
+        name = self.name.strip() if isinstance(self.name, str) else ""
+        self.name = name[:MAX_MARK_NAME] or (f"P{self.id}" if self.id else "")
+        self.kind = _coerce_choice(self.kind, MARK_KINDS, "")
+        known = self.kind == "known"
+        self.x = _coerce_measured(self.x) if known else 0.0
+        self.y = _coerce_measured(self.y) if known else 0.0
+        self.z = _coerce_measured(self.z)
+        self.from_a = 0 if known else _coerce_mark_id(self.from_a)
+        self.from_b = 0 if known else _coerce_mark_id(self.from_b)
+        self.distance_a = 0.0 if known else _coerce_measured(self.distance_a)
+        self.distance_b = 0.0 if known else _coerce_measured(self.distance_b)
+        given = self.pin is not None and not (isinstance(self.pin, list | tuple) and not self.pin)
+        self.pin = _coerce_fixed_list(self.pin, 2)
+        self._unread_pin = given and not self.pin
+        position = _coerce_fixed_list(self.position, 3)
+        reached = all(abs(c) <= MARK_REACH_M for c in position)
+        self.position = position if not known and reached else []
 
     def problem(self) -> str:
-        """Why the point cannot be used, or ``""``. A measurement is dropped, never clamped."""
-        if not self.corner_a or not self.corner_b or self.corner_a == self.corner_b:
-            return "needs two different grid corners"
-        if not (0.0 < self.distance_a <= 200.0 and 0.0 < self.distance_b <= 200.0):
-            return "needs both distances between 0 and 200 m"
-        if not -10.0 <= self.height <= 10.0:
-            return "needs a height within 10 m of stage level"
-        if not (0.0 <= self.pin_x <= 1.0 and 0.0 <= self.pin_y <= 1.0):
+        """Why the mark cannot be used, or ``""``. A measurement is dropped, never clamped."""
+        if not self.id:
+            return f"needs an id between 1 and {MAX_MARK_ID}"
+        if not self.kind:
+            return "needs a kind of known or triangulated"
+        if not -MARK_REACH_M <= self.z <= MARK_REACH_M:
+            return "needs its Z"
+        if self.kind == "known":
+            if not (-MARK_REACH_M <= self.x <= MARK_REACH_M and -MARK_REACH_M <= self.y <= MARK_REACH_M):
+                return "needs its X and Y"
+        else:
+            if not self.from_a or not self.from_b or len({self.from_a, self.from_b, self.id}) < 3:
+                return "needs two other marks to be measured from"
+            if not (0.0 < self.distance_a <= MAX_MARK_DISTANCE_M and 0.0 < self.distance_b <= MAX_MARK_DISTANCE_M):
+                return f"needs both distances between 0 and {MAX_MARK_DISTANCE_M:g} m"
+            if not self.pin:
+                return "needs its pin: two distances allow two places"
+        if self._unread_pin or (self.pin and not all(0.0 <= c <= 1.0 for c in self.pin)):
             return "needs its pin on the snapshot"
         return ""
+
+
+def _coerce_fixed_list(value: Any, size: int) -> list[float]:
+    """``size`` finite numbers, else empty."""
+    numbers = [_coerce_measured(v) for v in value] if isinstance(value, list | tuple) else []
+    return numbers if len(numbers) == size and all(math.isfinite(n) for n in numbers) else []
 
 
 @dataclass
@@ -475,16 +523,18 @@ class CameraConfig:
     # the projection math; ``fov`` remains the source of truth.
     sensor_width_mm: float | None = None
     focal_length_mm: float | None = None
-    # Radial lens-distortion coefficients for the overlay-curvature correction.
-    # Bow the rendered HUD to match a fisheye / wide-angle lens via
-    # f = 1 + k1*r^2 + k2*r^4 (r normalised to the image half-diagonal). The
-    # video frame is never warped. 0/0 = pinhole (no curvature).
+    # The lens the HUD is bowed to match (openfollow.lens_model): the division
+    # pair k1 / k2 (barrel negative) and the lens centre's offset from the frame
+    # centre in half-diagonals (x right, y down). The video frame is never
+    # warped. All 0 = pinhole.
     lens_k1: float = 0.0
     lens_k2: float = 0.0
-    calibration_points: list[CalibrationPointConfig] = field(default_factory=list)
-    # The Setup Wizard's corner pins (DSL, DSR, USR, USL) the pose was solved from with the points, as
-    # fractions of the snapshot; empty when it has none. Kept with the pose, like the points' positions.
-    corner_pins: list[list[float]] = field(default_factory=list)
+    lens_cx: float = 0.0
+    lens_cy: float = 0.0
+    # The Setup Wizard's last calibration: Simple's four corners or Advanced's points, with their pins.
+    calibration_mode: str = "simple"
+    calibration_marks: list[CalibrationMarkConfig] = field(default_factory=list)
+    calibration_height: float | None = None  # m: the camera's exact height the solve held; None when not entered
 
     def __post_init__(self) -> None:
         # These feed ``project_points`` via a numpy float array. Clamp fov out
@@ -498,26 +548,39 @@ class CameraConfig:
         self.fov = _coerce_float(self.fov, 60.0, lo=1.0, hi=179.0)
         self.sensor_width_mm = _coerce_optional_float(self.sensor_width_mm, None, lo=0.0)
         self.focal_length_mm = _coerce_optional_float(self.focal_length_mm, None, lo=0.0)
-        # The one bound on the pair is that the warp must not fold before the
-        # frame corner; a folding pair is pulled back along its own direction.
-        k1 = _coerce_float(self.lens_k1, 0.0)
-        k2 = _coerce_float(self.lens_k2, 0.0)
-        self.lens_k1, self.lens_k2 = pull_back_to_fold(k1, k2)
-        if (self.lens_k1, self.lens_k2) != (k1, k2):
+        # The centre is clamped; the pair's one bound is that the overlay reaches every
+        # frame corner, and a pair that does not is pulled back along its own direction.
+        lens = (
+            _coerce_float(self.lens_k1, 0.0),
+            _coerce_float(self.lens_k2, 0.0),
+            _coerce_float(self.lens_cx, 0.0, lo=-C_BOUND, hi=C_BOUND),
+            _coerce_float(self.lens_cy, 0.0, lo=-C_BOUND, hi=C_BOUND),
+        )
+        self.lens_k1, self.lens_k2, self.lens_cx, self.lens_cy = pull_back_to_valid(*lens)
+        if (self.lens_k1, self.lens_k2) != lens[:2]:
             _report_once(
                 "camera.lens",
-                f"lens_k1={k1} / lens_k2={k2} folds the overlay warp inside the frame; "
-                f"using {self.lens_k1:.6g} / {self.lens_k2:.6g}",
+                f"lens_k1={lens[0]} / lens_k2={lens[1]} with lens centre {lens[2]:.6g} / {lens[3]:.6g} "
+                f"cannot follow the picture out to its corners; using {self.lens_k1:.6g} / {self.lens_k2:.6g}",
             )
-        self.calibration_points = _coerce_calibration_points(self.calibration_points)
-        self.corner_pins = _coerce_corner_pins(self.corner_pins)
+        self.calibration_mode = _coerce_choice(self.calibration_mode, CALIBRATION_MODES, "simple")
+        self.calibration_marks = _coerce_calibration_marks(self.calibration_marks, self.calibration_mode)
+        self.calibration_height = _coerce_calibration_height(self.calibration_height)
+
+
+def _coerce_calibration_height(value: Any) -> float | None:
+    """A measured height within MARK_REACH_M, else None; an unreadable one is dropped, never clamped."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    height = _coerce_measured(value)
+    if abs(height) <= MARK_REACH_M:
+        return height
+    _report_drops("camera.calibration_height", f"{value!r} is not a height within {MARK_REACH_M:g} m")
+    return None
 
 
 # The warnings last reported, by field: every load_config builds the camera again, so a file says it once.
 _reported_drops: dict[str, str] = {}
-
-# A grid corner may sit off the snapshot, never this many snapshot widths or heights from it.
-CORNER_PIN_REACH = 10.0
 
 
 def _report_drops(name: str, said: str) -> None:
@@ -532,48 +595,92 @@ def _report_once(name: str, said: str) -> None:
         logger.warning("%s: %s", name, said)
 
 
-def _coerce_calibration_points(value: Any) -> list[CalibrationPointConfig]:
-    """Entries as dataclasses; an entry that cannot be used is dropped with one warning, past the cap too."""
-    points: list[CalibrationPointConfig] = []
+def calibration_mark_drops(marks: list[CalibrationMarkConfig]) -> tuple[list[CalibrationMarkConfig], list[str]]:
+    """The marks a solve can read: a triangulated one needs both marks it is measured from, without a loop."""
+    dropped: list[str] = []
+    while True:
+        by_id = {m.id: m for m in marks}
+        orphans = [m for m in marks if m.kind == "triangulated" and not (m.from_a in by_id and m.from_b in by_id)]
+        if not orphans:
+            break
+        dropped += [f"mark id {m.id} is measured from a mark that is not kept" for m in orphans]
+        marks = [m for m in marks if m not in orphans]
+    by_id = {m.id: m for m in marks}
+    looping: set[int] = set()
+    for mark in marks:
+        seen, todo = set(), [mark.id]
+        while todo:
+            current = by_id[todo.pop()]
+            if current.kind != "triangulated":
+                continue
+            for parent in (current.from_a, current.from_b):
+                if parent == mark.id:
+                    looping.add(mark.id)
+                elif parent not in seen:
+                    seen.add(parent)
+                    todo.append(parent)
+    dropped += [f"mark id {i} is measured from itself through others" for i in sorted(looping)]
+    if not looping:
+        return marks, dropped
+    kept, more = calibration_mark_drops([m for m in marks if m.id not in looping])
+    return kept, dropped + more
+
+
+def _coerce_calibration_marks(value: Any, mode: str = "advanced") -> list[CalibrationMarkConfig]:
+    """Entries as dataclasses; one that cannot be used is dropped with one warning, past the cap too.
+
+    Simple's marks are the rectangle's four corners: known marks with ids 1 to 4, in CALIBRATION_CORNERS order.
+    """
+    marks: list[CalibrationMarkConfig] = []
     entries = value if isinstance(value, list) else []
     dropped: list[str] = [] if isinstance(value, list) else ["is not a list of tables"]
     for i, entry in enumerate(entries, start=1):
-        if len(points) == MAX_CALIBRATION_POINTS:
-            dropped.append(f"entries from {i} on, past the first {MAX_CALIBRATION_POINTS} usable")
+        if len(marks) == MAX_CALIBRATION_MARKS:
+            dropped.append(f"entries from {i} on, past the first {MAX_CALIBRATION_MARKS} usable")
             break
         if isinstance(entry, dict):
-            entry = CalibrationPointConfig(**_filter_known(CalibrationPointConfig, entry))
-        if not isinstance(entry, CalibrationPointConfig):
+            entry = CalibrationMarkConfig(**_filter_known(CalibrationMarkConfig, entry))
+        if not isinstance(entry, CalibrationMarkConfig):
             dropped.append(f"entry {i} is not a table")
             continue
         problem = entry.problem()
+        if not problem and any(m.id == entry.id for m in marks):
+            problem = f"repeats id {entry.id}"
+        if not problem and mode == "simple" and (entry.kind != "known" or entry.id > len(CALIBRATION_CORNERS)):
+            problem = "is not one of Simple's four corners"
         if problem:
             dropped.append(f"entry {i} {problem}")
             continue
-        points.append(entry)
+        marks.append(entry)
+    marks, unreadable = calibration_mark_drops(marks)
+    dropped += unreadable
     if dropped:
         _report_drops(
-            "camera.calibration_points",
+            "camera.calibration_marks",
             "; ".join(dropped[:3]) + (f"; {len(dropped) - 3} more" if len(dropped) > 3 else ""),
         )
-    return points
+    return marks
 
 
-def _coerce_corner_pins(value: Any) -> list[list[float]]:
-    """Four [x, y] fractions of the snapshot, or none; anything else is dropped with one warning."""
-    if isinstance(value, list) and not value:
-        return []
-    pins = (
-        [[_coerce_measured(v) for v in pin] if isinstance(pin, list | tuple) else [] for pin in value]
-        if isinstance(value, list | tuple)
-        else []
-    )
-    if len(pins) == 4 and all(
-        len(pin) == 2 and all(math.isfinite(c) and abs(c) <= CORNER_PIN_REACH for c in pin) for pin in pins
-    ):
-        return pins
-    _report_drops("camera.corner_pins", "needs four [x, y] pairs on or near the snapshot")
-    return []
+def grid_corner_positions(width: float, depth: float, x: float, y: float, z: float) -> list[list[float]]:
+    """DSL, DSR, USR, USL of a grid whose centre is at ``x``, ``y`` (stage left +X, upstage +Y), at ``z``."""
+    hw, hd = width / 2.0, depth / 2.0
+    return [[x + hw, y - hd, z], [x - hw, y - hd, z], [x - hw, y + hd, z], [x + hw, y + hd, z]]
+
+
+def reconcile_simple_corners(cfg: Any) -> None:
+    """Simple's corners are the grid's: a corner the grid has moved goes with it and loses its pin."""
+    if cfg.camera.calibration_mode != "simple":
+        return
+    corners = grid_corner_positions(*(getattr(cfg.grid, k) for k in _GRID_PLACEMENT))
+    for mark in cfg.camera.calibration_marks:
+        place = corners[mark.id - 1]
+        if any(abs(a - b) > 1e-3 for a, b in zip((mark.x, mark.y, mark.z), place, strict=True)):
+            mark.x, mark.y, mark.z = place
+            mark.pin = []
+
+
+_GRID_PLACEMENT = ("width", "depth", "x_offset", "y_offset", "z_offset")
 
 
 _GRID_COLOR_DEFAULT = "#545454"
@@ -870,7 +977,7 @@ class DetectionConfig:
         # dereference ``mask.vertices`` without an AttributeError.
         self.masks = [
             DetectionMaskConfig(**_filter_known(DetectionMaskConfig, m)) if isinstance(m, dict) else m
-            for m in self.masks
+            for m in (self.masks if isinstance(self.masks, list) else [])
             if isinstance(m, (dict, DetectionMaskConfig))
         ]
 
@@ -881,7 +988,7 @@ class OscConfig:
     port: int = 8765
     # Source-IP allowlist for the ``/marker/{id} x y z`` receiver. Empty =
     # allow-all (the handler logs a startup warning). Each entry is a literal
-    # IPv4/IPv6 address; CIDR blocks are not supported.
+    # IPv4 address, the listener's only family; CIDR blocks are not supported.
     allowed_sender_ips: list[str] = field(default_factory=list)
     # IPv4 multicast group the listener joins; empty = off. Validated to
     # 224.0.0.0–239.255.255.255, else coerced to "".
@@ -905,7 +1012,10 @@ class OscConfig:
             candidates = list(raw)
         else:
             candidates = []
-        self.allowed_sender_ips = [entry.strip() for entry in candidates if isinstance(entry, str) and entry.strip()]
+        entries = [entry.strip() for entry in candidates if isinstance(entry, str) and entry.strip()]
+        # Only an IPv4 entry can match a sender. A list with none stays as written,
+        # so it admits nobody rather than reading as empty, which admits everybody.
+        self.allowed_sender_ips = [entry for entry in entries if is_ipv4_literal(entry)] or entries
         self.multicast_group = _coerce_multicast_ipv4(self.multicast_group)
 
 
@@ -1249,7 +1359,12 @@ class MidiConfig:
     patches: list[MidiPatch] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        self.patches = [MidiPatch(**_filter_known(MidiPatch, p)) if isinstance(p, dict) else p for p in self.patches]
+        patches = self.patches if isinstance(self.patches, list) else []
+        self.patches = [
+            MidiPatch(**_filter_known(MidiPatch, p)) if isinstance(p, dict) else p
+            for p in patches
+            if isinstance(p, (dict, MidiPatch))
+        ]
         # Guarantee every patch has a unique id >= 1 (id 0 / duplicates get the
         # next free sequential id) so binding foreign keys always resolve.
         seen: set[int] = set()
@@ -1365,9 +1480,11 @@ class VirtualFadersConfig:
     def __post_init__(self) -> None:
         # Coerce dicts to typed entries before padding so pad/trim sees
         # uniform values.
+        faders = self.faders if isinstance(self.faders, list) else []
         self.faders = [
             VirtualFaderConfig(**_filter_known(VirtualFaderConfig, f)) if isinstance(f, dict) else f
-            for f in self.faders
+            for f in faders
+            if isinstance(f, (dict, VirtualFaderConfig))
         ]
         while len(self.faders) < VIRTUAL_FADER_COUNT:
             self.faders.append(VirtualFaderConfig())
@@ -2412,6 +2529,9 @@ class ControllerConfig:
                 continue
             coerced_indices[str(raw_name)] = idx
         self.button_raw_indices = coerced_indices
+        self.swap_triggers = _coerce_bool(self.swap_triggers, False)
+        self.mapped_controller_name = _coerce_str(self.mapped_controller_name, "")
+        self.mapped_controller_guid = _coerce_str(self.mapped_controller_guid, "")
         for move in self.settle_bindings():
             _log_settled_binding("controller", move)
 
@@ -2633,17 +2753,16 @@ class DisplayConfig:
 FEATURE_KEYS: tuple[str, ...] = (
     "zones",
     "midi",
-    "lens_distortion",
     "psn_input",
+    "lens_suggestions",
     "detection",
     "rttrpm",
     "paths",
     "ground_grid",
-    "calibration_points",
     "touch_remote",
 )
 EXPERIMENTAL_FEATURES: frozenset[str] = frozenset(
-    {"detection", "rttrpm", "paths", "ground_grid", "calibration_points", "touch_remote"}
+    {"lens_suggestions", "detection", "rttrpm", "paths", "ground_grid", "touch_remote"}
 )
 DEFAULT_SHOWN_FEATURES: tuple[str, ...] = tuple(key for key in FEATURE_KEYS if key not in EXPERIMENTAL_FEATURES)
 # Gated like any feature but not offered: no Features row, no web route turns one on.
@@ -2691,11 +2810,10 @@ def feature_gated(section: _SwitchedT, cfg: Any, key: str) -> _SwitchedT:
     return gated
 
 
-def effective_lens(cfg: Any) -> tuple[float, float]:
-    """The lens pair everything draws and maps with: none while Lens distortion is off."""
-    if not feature_on(cfg, "lens_distortion"):
-        return 0.0, 0.0
-    return cfg.camera.lens_k1, cfg.camera.lens_k2
+def effective_lens(cfg: Any) -> tuple[float, float, float, float]:
+    """The lens everything draws and maps with, ``(k1, k2, cx, cy)``."""
+    cam = cfg.camera
+    return cam.lens_k1, cam.lens_k2, cam.lens_cx, cam.lens_cy
 
 
 @dataclass
@@ -2967,6 +3085,7 @@ class AppConfig:
         self.station_fqdn = normalize_fqdn(self.station_fqdn)
         self.network_mode = _coerce_network_mode(self)
         enforce_network_mode(self)
+        reconcile_simple_corners(self)
         # Strip ``psn_source_iface`` so whitespace doesn't look like a value
         # change each load and trigger a needless rebind cycle.
         if not isinstance(self.psn_source_iface, str):
@@ -3007,12 +3126,7 @@ class AppConfig:
             self.rtsp_password = ""
         if not isinstance(self.srt_passphrase, str):
             self.srt_passphrase = ""
-        # Auto online-sync knobs: normalise so a hand-edited TOML can't feed a
-        # non-bool / non-string into the worker.
-        self.update_include_prereleases = _coerce_bool(self.update_include_prereleases, False)
-        self.auto_update_check = _coerce_bool(self.auto_update_check, True)
-        self.auto_time_sync = _coerce_bool(self.auto_time_sync, True)
-        self.time_sync_server = _coerce_str(self.time_sync_server, "ptbtime1.ptb.de").strip() or "ptbtime1.ptb.de"
+        self.normalise_startup_settings()
         # TOML produces ``dict[str, Any]``; the runtime contract is
         # ``dict[int, float]`` keyed by marker_id. Drop pairs with a non-int
         # key or non-finite/negative value.
@@ -3047,6 +3161,14 @@ class AppConfig:
                 continue
             coerced[key] = value
         self.marker_move_speeds = coerced
+
+    def normalise_startup_settings(self) -> None:
+        """Coerce the update and time-sync settings read at startup, so a hand-edited TOML or an
+        import can't feed a non-bool / non-string into the updater or the online-sync worker."""
+        self.update_include_prereleases = _coerce_bool(self.update_include_prereleases, False)
+        self.auto_update_check = _coerce_bool(self.auto_update_check, True)
+        self.auto_time_sync = _coerce_bool(self.auto_time_sync, True)
+        self.time_sync_server = _coerce_str(self.time_sync_server, "ptbtime1.ptb.de").strip() or "ptbtime1.ptb.de"
 
 
 # ---------------------------------------------------------------------------
@@ -3191,6 +3313,28 @@ def _replace_file(target: Path, data: bytes) -> None:
 _LOGGED_UNVIEWED: set[tuple[str, tuple[int, ...]]] = set()
 
 
+def marker_id_list(raw: Any, *, path: str, field_name: str) -> list[int]:
+    """A selection list as it is kept: positive int marker ids in first-seen order.
+
+    Marker id 0 is reserved as "ignored" on the PSN wire, so it never gets past ``Marker.__init__``. A
+    duplicate would render two marker cards and register the marker twice with PSN / RTTrPM. Anything
+    but a list reads as ``[]``: ``init_markers`` iterates it. *path* names the source in the log.
+    """
+    if not isinstance(raw, list):
+        logger.warning("%s: %s is %s, not a list – coercing to []", path, field_name, type(raw).__name__)
+        return []
+    kept: list[int] = []
+    for value in raw:
+        if isinstance(value, bool) or not isinstance(value, int):
+            continue
+        if value < 1:
+            logger.warning("%s: dropping reserved marker id %r from %s", path, value, field_name)
+            continue
+        if value not in kept:
+            kept.append(value)
+    return kept
+
+
 def viewed_with_controlled(controlled: list[int], viewer: list[int]) -> list[int]:
     """The viewed markers with every controlled one added: a marker this station controls is always
     one it views, so it keeps its HUD card and counts in the trigger zones."""
@@ -3306,43 +3450,9 @@ def _config_from_data(path: str, data: dict[str, Any]) -> AppConfig:
         raw_controlled = data["controlled_marker_ids"]
         data["viewer_marker_ids"] = list(raw_controlled) if isinstance(raw_controlled, list) else []
 
-    # Marker id 0 is reserved as "ignored" on the PSN wire; strip it from the
-    # selection lists so a hand-edited config can't smuggle a 0 past
-    # ``Marker.__init__``. A non-list value coerces to ``[]`` (``init_markers``
-    # expects an iterable of ints). The backcompat block above guarantees both
-    # keys are present, so there's no missing-key case to guard.
+    # The backcompat block above guarantees both keys are present.
     for _field_name in ("controlled_marker_ids", "viewer_marker_ids"):
-        _raw = data[_field_name]
-        if not isinstance(_raw, list):
-            logger.warning(
-                "%s: %s is %s, not a list – coercing to [] so selection-list iteration can't crash startup",
-                path,
-                _field_name,
-                type(_raw).__name__,
-            )
-            data[_field_name] = []
-            continue
-        # Dedup, preserving first-seen order: a duplicate id would render two
-        # marker cards and double-register the marker with PSN / RTTrPM on hot
-        # reload.
-        _seen: set[int] = set()
-        _filtered: list[int] = []
-        for _v in _raw:
-            if isinstance(_v, bool) or not isinstance(_v, int):
-                continue
-            if _v < 1:
-                logger.warning(
-                    "%s: dropping reserved marker id %r from %s",
-                    path,
-                    _v,
-                    _field_name,
-                )
-                continue
-            if _v in _seen:
-                continue
-            _seen.add(_v)
-            _filtered.append(_v)
-        data[_field_name] = _filtered
+        data[_field_name] = marker_id_list(data[_field_name], path=path, field_name=_field_name)
     _unviewed = [mid for mid in data["controlled_marker_ids"] if mid not in data["viewer_marker_ids"]]
     if _unviewed and (path, tuple(_unviewed)) not in _LOGGED_UNVIEWED:
         _LOGGED_UNVIEWED.add((path, tuple(_unviewed)))

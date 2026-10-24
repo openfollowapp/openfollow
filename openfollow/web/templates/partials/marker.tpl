@@ -343,12 +343,8 @@
         return owners.map(o => o.self ? '<strong>' + o.name + '</strong>' : o.name).join('<br>+ ');
     }
 
-    function controlConflict(entry, thisStation, peers) {
-        let count = thisStation.controlled_ids.indexOf(entry.id) !== -1 ? 1 : 0;
-        for (const p of peers) {
-            if (p.controlled_ids.indexOf(entry.id) !== -1) count++;
-        }
-        return count > 1;
+    function controlConflict(entry, conflicts) {
+        return conflicts.some(function(c) { return c.marker_id === entry.id; });
     }
 
     // ---- DOM helpers: write only when value differs AND not focused.
@@ -530,8 +526,8 @@
         return tr;
     }
 
-    function updateCatalogRow(tr, entry, thisStation, peers) {
-        const conflict = controlConflict(entry, thisStation, peers);
+    function updateCatalogRow(tr, entry, thisStation, peers, conflicts) {
+        const conflict = controlConflict(entry, conflicts);
         tr.classList.toggle('conflict', conflict);
         setTextIfChanged(tr.querySelector('[data-cell="id"]'), String(entry.id));
         setInputIfChanged(tr.querySelector('[data-field="name"]'), entry.name || '');
@@ -723,13 +719,14 @@
         const thisStation = data.this_station ||
             {station_name: '', controlled_ids: [], viewer_ids: []};
         const peers = data.peer_selections || [];
+        const conflicts = data.marker_conflicts || [];
 
         const catalogBody = root.querySelector('[data-role="catalog-body"]');
         const addRow = catalogBody.querySelector('.add-row');
         reconcileBody(
             catalogBody, entries,
             function(id) { return createCatalogRow(id, root); },
-            function(tr, e) { updateCatalogRow(tr, e, thisStation, peers); },
+            function(tr, e) { updateCatalogRow(tr, e, thisStation, peers, conflicts); },
             addRow,
         );
         updateAddRow(addRow, entries, data.next_free_id);

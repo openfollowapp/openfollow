@@ -53,10 +53,13 @@ _RECONNECT_MIN_S = 0.5
 _RECONNECT_MAX_S = 5.0
 _IDLE_POLL_S = 0.005
 _POLL_S = 0.004
-# A 3D mouse reports only while deflected. This long a run of silent (no-report)
-# reads means it's centered, so a latched non-zero reading is a dropped
-# return-to-center report; re-zero it before the marker glides untouched.
+# A 3D mouse reports only while deflected (about every 8 ms, even held still).
+# This long a run of silent (no-report) reads means it's centered, so a latched
+# non-zero reading is a dropped return-to-center report; re-zero it before the
+# marker glides untouched.
 _RECENTER_AFTER_IDLE_S = 0.2
+# pyspacemouse's state stamp before the first report.
+_NO_REPORT_STAMP = -1.0
 # Identify: LED states played this far apart. The LED is lit while the puck is
 # in use, so the blink starts dark and ends lit again.
 _IDENTIFY_BLINKS = (False, True, False, True, False, True)
@@ -559,11 +562,10 @@ class Mouse3DHandler:
                     state = device.read()
                 except Exception:  # noqa: BLE001 - easyhid's HIDException is not an OSError
                     return None
-                if state is not None:
-                    buttons = tuple(int(bool(b)) for b in (getattr(state, "buttons", None) or ()))
-                    for idx, pressed in enumerate(buttons):
-                        if pressed:
-                            return idx
+                buttons = tuple(int(bool(b)) for b in (getattr(state, "buttons", None) or ()))
+                for idx, pressed in enumerate(buttons):
+                    if pressed:
+                        return idx
                 time.sleep(_DETECT_POLL_S)
             return None
         finally:
@@ -751,9 +753,9 @@ class Mouse3DHandler:
                 if stop.is_set() and self._has_led:
                     _set_led_quietly(device, False)
                 _safe_close(device)
-            # Reset the backoff only once a connection actually delivered a
-            # reading; an open that never reads (immediate read error) backs off
-            # like a failed open so a flaky device can't drive a tight reopen loop.
+            # Reset the backoff only once a read succeeded; an open whose first
+            # read fails backs off like a failed open, so a flaky device can't
+            # drive a tight reopen loop.
             if read_any:
                 backoff = _RECONNECT_MIN_S
             elif stop.wait(backoff):
@@ -823,12 +825,19 @@ class Mouse3DHandler:
     def _pump(self, device: Any, stop: threading.Event) -> bool:
         """Pump device readings into ``_snapshot`` until stop or disconnect.
 
-        Returns whether at least one reading was delivered, so the caller can
-        tell a healthy connection (reset backoff) from an open that immediately
-        failed to read (back off instead of tight-looping).
+        Returns whether a read succeeded, so the caller can tell a healthy
+        connection (reset backoff) from an open that immediately failed to read
+        (back off instead of tight-looping).
         """
         read_any = False
         idle_s = 0.0
+        # pyspacemouse returns the same state on every read and stamps ``t`` only
+        # when a report arrives, so an unchanged stamp is a silent read.
+        last_stamp: object = _NO_REPORT_STAMP
+        # Axes a recenter zeroed, by the value the backend still holds: it keeps
+        # an axis until a report of that axis's own channel, so a button report
+        # must not bring the dropped deflection back.
+        zeroed: dict[str, float] = {}
         while not stop.is_set():
             self._drive_identify(device)
             try:
@@ -837,7 +846,9 @@ class Mouse3DHandler:
                 # easyhid reports an unplugged puck as HIDException, not OSError.
                 logger.info("3D Mouse read failed (disconnect?): %r", exc)
                 return read_any
-            if state is None:
+            read_any = True
+            stamp = getattr(state, "t", None)
+            if stamp == last_stamp:
                 # Sustained silence means the puck is centered. Re-zero a latched
                 # non-zero reading (a dropped return-to-center report) so the
                 # marker can't glide with hands off the device; buttons are kept
@@ -847,19 +858,26 @@ class Mouse3DHandler:
                     with self._lock:
                         latched = self._snapshot
                         if latched is not None and not latched.is_centered():
+                            zeroed.update((axis, v) for axis in _AXIS_SOURCE.values() if (v := getattr(latched, axis)))
                             self._snapshot = _Snapshot(buttons=latched.buttons)
                 if stop.wait(_IDLE_POLL_S):
                     return read_any
                 continue
+            last_stamp = stamp
             idle_s = 0.0
-            read_any = True
+            axes = {axis: _finite_axis(getattr(state, axis, 0.0)) for axis in _AXIS_SOURCE.values()}
+            for axis, held in list(zeroed.items()):
+                if axes[axis] == held:
+                    axes[axis] = 0.0
+                else:
+                    del zeroed[axis]
             snapshot = _Snapshot(
-                x=_finite_axis(getattr(state, "x", 0.0)),
-                y=_finite_axis(getattr(state, "y", 0.0)),
-                z=_finite_axis(getattr(state, "z", 0.0)),
-                roll=_finite_axis(getattr(state, "roll", 0.0)),
-                pitch=_finite_axis(getattr(state, "pitch", 0.0)),
-                yaw=_finite_axis(getattr(state, "yaw", 0.0)),
+                x=axes["x"],
+                y=axes["y"],
+                z=axes["z"],
+                roll=axes["roll"],
+                pitch=axes["pitch"],
+                yaw=axes["yaw"],
                 buttons=tuple(int(bool(b)) for b in (getattr(state, "buttons", None) or ())),
             )
             # Detect button presses at read rate so a tap between two frames is
@@ -1195,11 +1213,10 @@ class Mouse3DManager:
                         state = device.read()
                     except Exception:  # noqa: BLE001 - easyhid's HIDException is not an OSError
                         continue
-                    if state is not None:
-                        buttons = tuple(int(bool(b)) for b in (getattr(state, "buttons", None) or ()))
-                        for idx, pressed in enumerate(buttons):
-                            if pressed:
-                                return idx
+                    buttons = tuple(int(bool(b)) for b in (getattr(state, "buttons", None) or ()))
+                    for idx, pressed in enumerate(buttons):
+                        if pressed:
+                            return idx
                 time.sleep(_DETECT_POLL_S)
             return None
         finally:

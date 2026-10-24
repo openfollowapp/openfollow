@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from openfollow.configuration import VALID_OSC_FRAMINGS as _VALID_OSC_FRAMINGS_TUPLE
+from openfollow.configuration import is_ipv4_literal
 from openfollow.net_egress import Egress, pin_socket_egress
 from openfollow.net_utils import IPV4_RESOLVER, join_multicast_group_on_iface
 from openfollow.osc.transport import TcpOscSender
@@ -49,10 +50,13 @@ _VALID_FRAMINGS: frozenset[str] = frozenset(_VALID_OSC_FRAMINGS_TUPLE)
 # uniform 4-tuple across transports (framing is a TCP-only concern).
 _UDP_FRAMING_PIN = "length_prefix"
 
-# How long a pinned target whose client could not be created waits before the
-# next attempt. The address a pin needs can lag the interface by an observer
-# debounce, so the failure is expected to clear on its own.
-_PINNED_CREATE_RETRY_S = 1.0
+# How long a target whose client could not be created waits before the next
+# attempt, so a name that does not resolve, or a refused pin, is not retried per
+# send. The address a pin needs can lag the interface by an observer debounce,
+# so that failure is expected to clear on its own.
+_CREATE_RETRY_S = 1.0
+# How often a target whose client still cannot be created is logged again.
+_CREATE_FAILURE_REMINDER_S = 60.0
 
 # One cached client per target and the interface it is pinned to.
 _CacheKey = tuple[str, int, str, str, Egress | None]
@@ -195,6 +199,14 @@ class ClientStats:
 
 
 @dataclass
+class _CreateFailure:
+    """A target's run of failed client creations, for its throttled log lines."""
+
+    logged_at: float
+    attempts: int = 1
+
+
+@dataclass
 class _ClientEntry:
     """Cached OSC client for a single ``(host, port, protocol, framing)`` target.
 
@@ -328,9 +340,10 @@ class OscService:
     def __init__(self, *, close_async: Callable[[list[Any]], None] = _close_clients_in_background) -> None:
         self._cache: dict[_CacheKey, _ClientEntry] = {}
         self._cache_lock = threading.Lock()
-        # Pinned targets whose client could not be created, and when to try
-        # again: a refused pin would otherwise be retried and logged per send.
+        # Targets whose client could not be created, and when to try again:
+        # each would otherwise be retried and logged per send.
         self._create_retry_at: dict[_CacheKey, float] = {}
+        self._create_failures: dict[_CacheKey, _CreateFailure] = {}
         self._close_async = close_async
 
         self._dispatcher: Any = _GuardedDispatcher() if _PYTHONOSC_AVAILABLE else None
@@ -515,18 +528,15 @@ class OscService:
         except (OSError, ValueError) as exc:
             # OSError: socket/DNS failure or a refused pin. ValueError:
             # malformed host string.
-            logger.error(
-                "Failed to create OSC client for %s://%s:%d – %s",
-                protocol,
-                host,
-                port,
-                exc,
-            )
-            if egress is not None:
-                with self._cache_lock:
-                    self._create_retry_at[key] = time.monotonic() + _PINNED_CREATE_RETRY_S
+            self._record_create_failure(key, exc)
             return None
         new_entry = _ClientEntry(client=client)
+        with self._cache_lock:
+            failure = self._create_failures.pop(key, None)
+        if failure is not None:
+            logger.info(
+                "Created OSC client for %s://%s:%d after %d failed attempts", protocol, host, port, failure.attempts
+            )
         with self._cache_lock:
             # Re-check under lock to resolve a duplicate-creation race.
             existing = self._cache.get(key)
@@ -536,6 +546,39 @@ class OscService:
                 return existing
             self._cache[key] = new_entry
             return new_entry
+
+    def _record_create_failure(self, key: _CacheKey, exc: Exception) -> None:
+        """Hold *key* back for the retry delay; log a streak's start, then once a minute."""
+        host, port, protocol = key[0], key[1], key[2]
+        now = time.monotonic()
+        with self._cache_lock:
+            self._create_retry_at[key] = now + _CREATE_RETRY_S
+            failure = self._create_failures.get(key)
+            if failure is None:
+                self._create_failures[key] = _CreateFailure(logged_at=now)
+            else:
+                failure.attempts += 1
+                if now - failure.logged_at < _CREATE_FAILURE_REMINDER_S:
+                    return
+                failure.logged_at = now
+        if failure is None:
+            logger.warning(
+                "Cannot create OSC client for %s://%s:%d, retrying every %gs: %s",
+                protocol,
+                host,
+                port,
+                _CREATE_RETRY_S,
+                exc,
+            )
+        else:
+            logger.warning(
+                "Still cannot create OSC client for %s://%s:%d after %d attempts: %s",
+                protocol,
+                host,
+                port,
+                failure.attempts,
+                exc,
+            )
 
     # ------------------------------------------------------------------
     # Inbound
@@ -709,7 +752,15 @@ class OscService:
                 if joined_group
                 else f"; NOT subscribed to multicast group {group}"
             )
-        if normalised_ips:
+        if normalised_ips and not any(is_ipv4_literal(ip) for ip in normalised_ips):
+            logger.warning(
+                "OSC input listening on UDP port %d; accepting no packets: the sender allowlist (%s) "
+                "holds no IPv4 address, and OSC input is IPv4 only%s",
+                port,
+                ", ".join(sorted(normalised_ips)),
+                group_note,
+            )
+        elif normalised_ips:
             logger.info(
                 "OSC input listening on UDP port %d; accepting packets only from %s%s",
                 port,

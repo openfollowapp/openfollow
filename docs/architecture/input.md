@@ -37,6 +37,9 @@ Relative input (keyboard, each gamepad, each 3D mouse) arrives as (right, up) an
 
 **Latch.** Each source, keyed with the marker it steers (`("keyboard", marker_id)`, `("gamepad", idx, marker_id)`, `("mouse3d", idx, marker_id)`), keeps the axes it took when its XY input left zero until that input returns to zero, or the source stops reporting for a frame (`begin_frame` prunes it at the top of `InputManager.update`); input returning from a modal (the same transition that clears held keys in `app_modes.process_input`) drops every latch via `release_all`. So a recalibration, a source swap or a web save never bends a move in progress, a marker newly taken over mid-hold gets its own directions, and in `screen` mode a held direction is a straight stage line. The setting is read per latch, so it applies live with no restart.
 
+## Failure isolation (`InputManager.update`, `update_touch_remote`)
+The 3D Mouse, mouse, MIDI hotplug, keyboard and OSC blocks of `InputManager.update` each run under their own guard, so one that raises never drops the gamepad result or the blocks after it. Inside a block each device or marker has its own guard, so one never costs the others their frame: each gamepad's move, each 3D Mouse puck's `_apply_mouse3d`, each OSC marker's write, and in `update_touch_remote` each held marker. These guards log through a `ThrottledExceptionLogger` (one traceback per interval, with a count of the rest), never a bare `logger.exception`; the MIDI hotplug poll throttles itself to its poll interval. A step that raises keeps what it already applied (a puck's button edges folded into `GamepadUpdate`, speed steps taken) and loses the rest of that device's frame; nothing is retried.
+
 ## Gamepad → marker routing (`InputManager._gamepad_marker_id`)
 Gamepad movement, reset, speed readout, and controller-info all go through
 `_gamepad_marker_id(controller_idx)` so every routing surface stays
@@ -113,6 +116,9 @@ a pad SDL can't rumble, read once at open with `SDL_JoystickHasRumble`, or a
 puck without an LED). Notes follow the controller while connected, never count
 as a slot-table change, stay on a missing slot and are cleared by `forget()`.
 
+## 3D Mouse read loop (`Mouse3DHandler._pump`)
+pyspacemouse's `read()` is non-blocking, never returns `None`, and hands back the same state object every time: a HID report updates only the fields its channel carries (the axes in one or two channels by model, the buttons in another) and restamps `t` (`-1.0` before the first report). An unchanged `t` is therefore a silent read, and only a new stamp publishes a snapshot. A puck reports only while deflected (measured on a SpaceNavigator): at rest it is silent, held off-centre it reports about every 8 ms even with the values still, and on release it reports down to an all-zero reading. So `_RECENTER_AFTER_IDLE_S` of silence re-zeroes a non-zero snapshot (a lost return-to-centre report), and the zeroed axes stay at rest until a report changes their value, since a later report of another channel (a button press) restamps the state with the stale axes still in it. Any successful read counts as a working connection for the reconnect backoff.
+
 ## 3D Mouse recognition (`input/mouse3d.py`)
 A puck is recognised by the HID usage it declares, not by an ID list. hidapi (0.14, as Debian trixie ships it) lists one entry per top-level collection, so one hidraw node shows up several times (a SpaceNavigator: Generic Desktop / Multi-axis Controller, usage 1/8, plus two vendor-defined collections). `_PySpaceMouseBackend.enumerate` groups the entries by node and keeps a node when **any** of its entries declares 1/8 under a 3Dconnexion VID/PID: vendor `0x256f`, or Logitech `0x046d` within `0xc600`-`0xc6ff`. A CadMouse (Mouse, 1/2), the 3Dconnexion keyboards and numpads (Keyboard, 1/6) and another vendor's multi-axis device are dropped without an exclusion list, and the Universal Receiver's mouse interface, its own node, is skipped while its multi-axis node is kept. A node whose every entry reports usage 0/0 (older hidapi builds) is kept only when its VID/PID has a device profile; a vendor range never admits a device on its own. A node that is not a puck is never logged.
 
@@ -158,6 +164,9 @@ stays tidy after the operator removes a marker via the web UI. In-memory
 entries are not pruned at runtime (a brief live-reload remove-and-re-add
 keeps the operator's per-marker speed).
 
+The speeds are device-local: an export leaves them out, and an import
+keeps this station's live ones (see [config](config.md#config-transfer-export--import--restore-defaults)).
+
 ## Marker card → controller binding
 Each `MarkerOverlayData` carries `controller_idx`, `controller_connected`,
 and `is_controlled`, populated by reverse-mapping
@@ -186,11 +195,12 @@ of the global golden accent, so each card is identifiable at a glance.
 `OscConfig.allowed_sender_ips` drives a `verify_request` filter in `_FilteredOSCUDPServer`:
 - Empty allowlist = allow-all + loud WARNING at `start()`.
 - Non-empty allowlist = drop packets from non-listed IPs (DEBUG-level drop log, rate-limit-friendly).
-- `__post_init__` on `OscConfig` normalises the field to `list[str]` so a hand-edited TOML can't feed a bare string or non-string entries into the runtime filter / web UI / HMAC flow.
-- `_as_ip_list` parser **fails closed**: a submission of `"192.168.1.999"` (all-invalid) preserves the existing value rather than becoming `[]` and silently disabling the filter. Explicit empty (`""`, `[]`, whitespace-only CSV) still clears.
+- **IPv4 only**, the listener's one family: an IPv6 entry could never match a sender. The form refuses one (`_validate_ip_list`, with its own message) and `_as_ip_list` drops it.
+- `__post_init__` on `OscConfig` normalises the field to `list[str]` so a hand-edited TOML can't feed a bare string or non-string entries into the runtime filter / web UI / HMAC flow, and keeps only the IPv4 entries. A list with none is kept as written, so it admits nobody; the listener logs that as a WARNING.
+- `_as_ip_list` parser **fails closed**: a submission with no IPv4 entry (`"192.168.1.999"`, `"2001:db8::1"`) preserves the existing value rather than becoming `[]` and silently disabling the filter. Explicit empty (`""`, `[]`, whitespace-only CSV) still clears.
 
 ## OSC position write logging (`InputManager.update`, `restart_osc`)
-`OscMarkerAdapter.flush_updates` merges every message since the last frame, so each frame applies at most one write per marker, traced at DEBUG only. One INFO line per marker marks the start of a stream: its first applied write, and the first after `_OSC_STREAM_GAP_S` without one. `restart_osc` resets the per-marker times, so a stream on a rebuilt listener logs its start again. A write for a marker the station does not control, or cannot resolve, is dropped before either line.
+`OscMarkerAdapter.flush_updates` merges every message since the last frame, so each frame applies at most one write per marker, traced at DEBUG only. One INFO line per marker marks the start of a stream: its first applied write, and the first after `_OSC_STREAM_GAP_S` without one. `restart_osc` and `resume_osc` (the network observer's retry of a listener that is not running, which raises while it cannot bind where `restart_osc` logs and carries on) reset the per-marker times, so a stream on a rebuilt listener logs its start again. A write for a marker the station does not control, or cannot resolve, is dropped before either line.
 
 ## Touch remote (`input/touch_remote.py`, `InputManager.update_touch_remote`)
 A setup tool in the web UI: a browser session holds one controlled marker and drives it. Web request threads write the thread-safe `TouchRemote` registry (`app._touch_remote`) through `/api/remote/*`; `animate` calls `InputManager.update_touch_remote` every frame after `update_paths`, outside `process_input`, so an open on-screen menu never stops a held marker's dead-man.

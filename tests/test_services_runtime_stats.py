@@ -27,6 +27,7 @@ import openfollow.input.mouse3d as mouse3d_module
 import openfollow.services as services_module
 from openfollow.configuration import AppConfig
 from openfollow.input.mouse3d_status import DeviceState, Mouse3DDeviceStatus, Mouse3DStatus
+from openfollow.marker_catalog.sync import PeerSelection
 from openfollow.power_health import PowerState
 from openfollow.services import AppRuntimeServices
 from openfollow.video.failure import ConnectionPhase, SourceKind, VideoFailure
@@ -190,7 +191,18 @@ def services(monkeypatch: pytest.MonkeyPatch) -> AppRuntimeServices:
 class TestDefaultRuntimeStatsSnapshot:
     def test_payload_shape(self, services: AppRuntimeServices) -> None:
         snap = services._default_runtime_stats_snapshot()
-        assert set(snap) == {"timestamp", "system", "video", "controllers", "mouse3d", "playback", "tracking", "hud"}
+        assert set(snap) == {
+            "timestamp",
+            "system",
+            "video",
+            "controllers",
+            "mouse3d",
+            "playback",
+            "tracking",
+            "hud",
+            "marker_conflicts",
+        }
+        assert snap["marker_conflicts"] == []
         assert snap["system"]["cpu_percent"] == 0.0
         assert snap["video"]["connected"] is False
         assert snap["controllers"]["items"] == []
@@ -738,6 +750,79 @@ class TestPublishRuntimeStats:
         services.publish_runtime_stats(force=True)
         snap = services.get_runtime_stats_snapshot()
         assert snap["system"]["temperature_c"] is None
+
+
+# --------------------------------------------------------------------------- #
+# Marker control conflicts: one decision for /api/stats and the HUD
+# --------------------------------------------------------------------------- #
+
+
+class _FakeCatalogSync:
+    def __init__(self, peers: list[PeerSelection]) -> None:
+        self._peers = peers
+
+    def get_peer_selections(self) -> list[PeerSelection]:
+        return list(self._peers)
+
+
+class TestMarkerConflicts:
+    @pytest.fixture(autouse=True)
+    def _no_dependency_probe(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import openfollow.video.detection as det
+
+        monkeypatch.setattr(det, "check_detection_dependencies", lambda cfg: [])
+
+    @staticmethod
+    def _station(services: AppRuntimeServices, controlled: list[int], peers: list[PeerSelection] | None) -> None:
+        services._app._controlled_ids = controlled  # type: ignore[attr-defined]
+        services._app._marker_catalog_sync = None if peers is None else _FakeCatalogSync(peers)  # type: ignore[attr-defined]
+
+    def test_a_marker_a_peer_controls_too_is_published(self, services: AppRuntimeServices) -> None:
+        self._station(services, [3, 4], [PeerSelection(station_id="p1", station_name="Stage Left", controlled_ids=[3])])
+        services.publish_runtime_stats(force=True)
+        assert services.get_runtime_stats_snapshot()["marker_conflicts"] == [
+            {"marker_id": 3, "stations": ["Stage Left"], "this_station": True}
+        ]
+
+    @pytest.mark.parametrize(
+        "peers",
+        [
+            pytest.param(None, id="no-catalog-sync"),
+            pytest.param([], id="no-peers"),
+            pytest.param([PeerSelection(station_id="p1", station_name="Stage Left", controlled_ids=[7])], id="other"),
+        ],
+    )
+    def test_no_shared_marker_publishes_none(
+        self, services: AppRuntimeServices, peers: list[PeerSelection] | None
+    ) -> None:
+        self._station(services, [3], peers)
+        services.publish_runtime_stats(force=True)
+        assert services.get_runtime_stats_snapshot()["marker_conflicts"] == []
+
+    def test_a_conflict_that_ends_is_withdrawn(self, services: AppRuntimeServices) -> None:
+        peer = PeerSelection(station_id="p1", station_name="Stage Left", controlled_ids=[3])
+        self._station(services, [3], [peer])
+        services.publish_runtime_stats(force=True)
+        peer.controlled_ids = [4]
+        services.publish_runtime_stats(force=True)
+        assert services.get_runtime_stats_snapshot()["marker_conflicts"] == []
+
+    def test_the_hud_is_handed_the_decision_the_stats_published(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._station(services, [3], [PeerSelection(station_id="p1", station_name="Stage Left", controlled_ids=[3])])
+        services.publish_runtime_stats(force=True)
+        handed: list[Any] = []
+
+        def _build(app: Any, **kwargs: Any) -> object:
+            handed.extend(kwargs["control_conflicts"])
+            return object()
+
+        monkeypatch.setattr(services_module, "build_marker_visual_state", _build)
+        monkeypatch.setattr(services, "network_alerts", list)
+        services.update_marker_visuals(1 / 60)
+        assert [c.to_dict() for c in handed] == services.get_runtime_stats_snapshot()["marker_conflicts"]
+        assert handed
 
 
 # --------------------------------------------------------------------------- #

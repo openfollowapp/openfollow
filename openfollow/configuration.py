@@ -676,79 +676,6 @@ def reconcile_simple_corners(cfg: Any) -> None:
             mark.pin = []
 
 
-def migrate_calibration_keys(camera: dict[str, Any], grid: Any) -> None:
-    """Read the Setup Wizard's former ``calibration_points`` / ``corner_pins`` as marks, once; drop the old keys.
-
-    Points made it Advanced: the grid's corners become known marks pinned at the corner pins, each point a
-    triangulated mark measured from its two corners at their level plus its height. Corner pins alone are
-    Simple's four corners. Either way the camera height goes: one held with other marks does not hold for
-    these. A config that already has ``calibration_marks`` keeps them.
-    """
-    points = camera.pop("calibration_points", None)
-    pins = camera.pop("corner_pins", None)
-    if "calibration_marks" in camera or not (points or pins):
-        return
-    # Keys that do not read as a calibration leave the station's marks alone.
-    pins_read = isinstance(pins, list) and len(pins) == 4 and all(_coerce_fixed_list(p, 2) for p in pins)
-    points_read = isinstance(points, list) and any(isinstance(e, dict) for e in points)
-    if not (pins_read or points_read):
-        _report_drops("camera.corner_pins", "the former calibration does not read; nothing taken from it")
-        return
-    clamped = GridConfig(**_filter_known(GridConfig, grid if isinstance(grid, dict) else {}))
-    size = [getattr(clamped, k) for k in _GRID_PLACEMENT]
-    corners = grid_corner_positions(*size)
-    off: list[str] = []
-    pin_list = pins if pins_read else [None] * 4
-    if pins and not pins_read:
-        _report_drops("camera.corner_pins", "not four [x, y] pairs, the corners to be pinned again")
-    marks: list[dict[str, Any]] = []
-    for n, (name, place, pin) in enumerate(zip(CALIBRATION_CORNERS, corners, pin_list, strict=True), start=1):
-        # A corner pinned off the snapshot is left to pin again.
-        xy = _coerce_fixed_list(pin, 2)
-        on = bool(xy) and all(0.0 <= c <= 1.0 for c in xy)
-        if xy and not on:
-            off.append(name)
-        marks.append(
-            {
-                "id": n,
-                "name": name,
-                "kind": "known",
-                "x": place[0],
-                "y": place[1],
-                "z": place[2],
-                "pin": xy if on else [],
-            }
-        )
-    unknown = 0
-    for entry in points if isinstance(points, list) else []:
-        corners_named = isinstance(entry, dict) and {entry.get("corner_a"), entry.get("corner_b")} <= set(
-            CALIBRATION_CORNERS
-        )
-        if not corners_named:
-            unknown += 1
-            continue
-        marks.append(
-            {
-                "id": len(marks) + 1,
-                "kind": "triangulated",
-                "from_a": CALIBRATION_CORNERS.index(entry["corner_a"]) + 1,
-                "from_b": CALIBRATION_CORNERS.index(entry["corner_b"]) + 1,
-                "distance_a": entry.get("distance_a"),
-                "distance_b": entry.get("distance_b"),
-                "z": size[4] + _coerce_measured(entry.get("height", 0.0)),
-                "pin": [entry.get("pin_x"), entry.get("pin_y")],
-                "position": entry.get("position", []),
-            }
-        )
-    if off:
-        _report_drops("camera.corner_pins", f"{', '.join(off)} pinned off the snapshot, to be pinned again")
-    if unknown:
-        _report_drops("camera.calibration_points", f"{unknown} former point(s) without two grid corners left out")
-    camera["calibration_mode"] = "advanced" if len(marks) > 4 else "simple"
-    camera["calibration_marks"] = marks
-    camera["calibration_height"] = None
-
-
 _GRID_PLACEMENT = ("width", "depth", "x_offset", "y_offset", "z_offset")
 
 
@@ -3545,10 +3472,6 @@ def _config_from_data(path: str, data: dict[str, Any]) -> AppConfig:
     _ui = data.get("ui")
     if isinstance(_ui, dict):
         migrate_ui_keys(_ui)
-
-    _camera = data.get("camera")
-    if isinstance(_camera, dict):
-        migrate_calibration_keys(_camera, data.get("grid"))
 
     # Back-compat: OTP output used to pin a raw ``source_ip``; it now pins the
     # interface by name (``source_iface``), like PSN. Convert an existing IP to

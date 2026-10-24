@@ -612,20 +612,6 @@ class TestCameraGridPayload:
                 {"camera": {}, "grid": []},
             )
 
-    def test_a_template_saved_with_the_former_calibration_keys_still_validates(self) -> None:
-        """Templates saved by 0.5.0-rc2 and later carry the camera as it was then, former keys included."""
-        validate_payload(
-            "camera_grid",
-            {
-                "camera": {
-                    "fov": 55.0,
-                    "calibration_points": [],
-                    "corner_pins": [[0.1, 0.2], [0.9, 0.2], [0.9, 0.8], [0.1, 0.8]],
-                },
-                "grid": {"width": 12.0, "depth": 6.0},
-            },
-        )
-
     def test_unknown_camera_field_rejected(self) -> None:
         # Unknown keys raise ``TypeError`` at the dataclass constructor;
         # the validator re-raises as ``TemplateValidationError`` to keep

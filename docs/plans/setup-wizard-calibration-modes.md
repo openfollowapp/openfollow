@@ -417,7 +417,7 @@ What the mockup cannot show, decided here:
 | Mode and marks | `camera.calibration_mode` (`"simple"` / `"advanced"`) and `camera.calibration_marks`: `id`, `name`, `kind` (`known` / `triangulated`), `x`, `y`, `z`, `from_a`, `from_b` (ids), `distance_a`, `distance_b`, `pin` (`[x, y]` as fractions of the snapshot, `[]` = not pinned), `position` (solved, triangulated only). At most 12 marks |
 | Saved lens calibrations | Not in `config.toml`: one small JSON file per calibration in a `lens-calibrations` directory beside it (as the web backups sit in `backups/web`), so they stay on the station and are never exported, imported or pushed. Each file holds `name` (1-60 characters, unique ignoring case), `k1`, `k2`, `cx`, `cy` (the lens rule), `saved` (date), `width` / `height` (the snapshot it was measured on) and `openfollow_version` (the `__version__` that wrote it), so a later version can tell old calibrations apart and warn about them. Saving a name that exists rewrites its file. No limit on the number of files. The list is filled only by **Save lens calibration**: a new station has none, and nothing ships or imports any A file that does not parse or fails the checks is left out of the list with one WARNING, never deleted. The on-station settings backup (`privilege/settings_backup.py`) holds the directory beside `config.toml` |
 | Calibration points feature | Retired: `calibration_points` leaves `FEATURE_KEYS` and the experimental set; Advanced is always available. A stored `shown_features` entry is dropped as unknown |
-| Migration | Old `camera.calibration_points` with entries ⇒ Advanced: the four grid corners become known points with `camera.corner_pins` as their pins, each old point a distance point measured from its two corners, `height` as its Z. Otherwise ⇒ Simple with `corner_pins` as the corner pins. The old keys are read once on load and never written |
+| Migration | None: `camera.calibration_points` and `camera.corner_pins` existed only in a release candidate; a clean break, as for the lens model (product owner, 2026-10-24). A file, import or write carrying them drops them as unknown keys |
 
 ## Simulation findings
 
@@ -457,15 +457,15 @@ version first needs one; until then the files only record the version.
       list, read one, save (atomic write, replace by name ignoring case),
       each file with `openfollow_version`; a file name derived from the
       name, never from client input as a path.
-- [x] Migration of `calibration_points` / `corner_pins` in `load_config`,
-      before `_filter_known` (also for import and push payloads).
+- [x] No migration of `calibration_points` / `corner_pins`: unknown keys,
+      dropped on load, import and push.
 - [x] A grid write in Simple mode drops the corner pins (generalise
       `_forget_corner_pins_off_grid`); Advanced marks are left alone.
 - [x] `FIELD_RULES` for every editable field, matching the server bounds.
 - [x] Tests (`tests/test_configuration.py`): valid lists, wrong type, range,
       enum, dangling / self / looping From, distance point unpinned, fewer than
-      two known, more than the cap, TOML round trip, migration both ways
-      (with / without points, with / without pins).
+      two known, more than the cap, TOML round trip, the release
+      candidate's keys dropped as unknown.
 - [x] Tests for the lens store (`tests/test_lens_calibrations.py`): save and
       list round trip with the version recorded, replace ignoring case, names
       empty / too long / path-like (`../x`, `a/b`), a lens that cannot follow the picture out to its corners, a broken
@@ -546,6 +546,6 @@ version first needs one; until then the files only record the version.
       camera, tape-measured distances against the computed ones; the
       caution with a deliberately wrong camera position and with the lens
       step skipped; a lens saved, loaded, and loaded from an exported
-      settings file; full screen on a low-resolution display; a migrated
-      config from the current release.
+      settings file; full screen on a low-resolution display; a config
+      from the current release.
 - [ ] Web UI checked in Safari (full screen included) and on a phone.

@@ -9718,154 +9718,9 @@ def test_a_hand_edited_calibration_height_is_read_through_load_config(tmp_path, 
     assert load_config(str(path)).camera.calibration_height == 7.25
 
 
-# ---------------------------------------------------------------------------
-# The Setup Wizard's former calibration_points / corner_pins read as marks
-# ---------------------------------------------------------------------------
-
-_OLD_PINS = [[0.81, 0.94], [0.14, 0.95], [0.37, 0.61], [0.66, 0.6]]
-_OLD_GRID = "[grid]\nwidth = 12.0\ndepth = 6.0\nx_offset = 1.0\ny_offset = 4.0\nz_offset = 0.5\n"
+_FILE_GRID = "[grid]\nwidth = 12.0\ndepth = 6.0\nx_offset = 1.0\ny_offset = 4.0\nz_offset = 0.5\n"
 # DSL, DSR, USR, USL of that grid
-_OLD_CORNERS = [(7.0, 1.0, 0.5), (-5.0, 1.0, 0.5), (-5.0, 7.0, 0.5), (7.0, 7.0, 0.5)]
-
-
-def _old_camera(pins: object = None, points: str = "") -> str:
-    lines = ["[camera]", "fov = 55.0"]
-    if pins is not None:
-        lines.append(f"corner_pins = {pins!r}")
-    return "\n".join(lines) + "\n" + points + "\n" + _OLD_GRID
-
-
-def _old_point(corner_a: str = "DSL", height: float = 1.2, position: str = "position = [2.5, 21.0, 1.7]\n") -> str:
-    return (
-        "[[camera.calibration_points]]\n"
-        f'corner_a = "{corner_a}"\ncorner_b = "DSR"\ndistance_a = 21.4\ndistance_b = 23.9\nheight = {height}\n'
-        f"pin_x = 0.41\npin_y = 0.22\n{position}"
-    )
-
-
-_OLD_POINT = _old_point()
-
-
-def _known_rows(marks: list) -> list[tuple]:
-    return [(m.id, m.name, m.kind, (m.x, m.y, m.z), m.pin) for m in marks if m.kind == "known"]
-
-
-def test_former_points_with_corner_pins_read_as_advanced_marks_on_the_files_grid(temp_config_path) -> None:
-    second = _old_point("USL", 0.0, position="")
-    temp_config_path.write_text(_old_camera(_OLD_PINS, _OLD_POINT + second), encoding="utf-8")
-    camera = load_config(str(temp_config_path)).camera
-    assert camera.calibration_mode == "advanced"
-    assert _known_rows(camera.calibration_marks) == [
-        (n, name, "known", corner, pin)
-        for n, name, corner, pin in zip(range(1, 5), ("DSL", "DSR", "USR", "USL"), _OLD_CORNERS, _OLD_PINS, strict=True)
-    ]
-    assert [
-        (m.id, m.kind, m.from_a, m.from_b, m.distance_a, m.distance_b, m.z, m.pin, m.position)
-        for m in camera.calibration_marks[4:]
-    ] == [
-        (5, "triangulated", 1, 2, 21.4, 23.9, 1.7, [0.41, 0.22], [2.5, 21.0, 1.7]),
-        (6, "triangulated", 4, 2, 21.4, 23.9, 0.5, [0.41, 0.22], []),
-    ]
-
-
-def test_former_corner_pins_alone_read_as_simple_corners(temp_config_path) -> None:
-    temp_config_path.write_text(_old_camera(_OLD_PINS), encoding="utf-8")
-    camera = load_config(str(temp_config_path)).camera
-    assert camera.calibration_mode == "simple"
-    assert _known_rows(camera.calibration_marks) == [
-        (n, name, "known", corner, pin)
-        for n, name, corner, pin in zip(range(1, 5), ("DSL", "DSR", "USR", "USL"), _OLD_CORNERS, _OLD_PINS, strict=True)
-    ]
-    assert len(camera.calibration_marks) == 4
-
-
-def test_former_points_without_corner_pins_leave_the_corners_to_pin_again(temp_config_path) -> None:
-    temp_config_path.write_text(_old_camera(None, _OLD_POINT), encoding="utf-8")
-    camera = load_config(str(temp_config_path)).camera
-    assert camera.calibration_mode == "advanced"
-    assert [(m.id, m.pin) for m in camera.calibration_marks] == [
-        (1, []),
-        (2, []),
-        (3, []),
-        (4, []),
-        (5, [0.41, 0.22]),
-    ]
-
-
-def test_a_former_corner_pin_off_the_snapshot_reads_as_not_pinned_and_says_so(
-    temp_config_path, caplog, fresh_drop_reports
-) -> None:
-    """The former pins could sit a little off the snapshot; a mark's pin cannot, so that corner is pinned again."""
-    pins = [[1.2, 0.94], [-0.3, 0.95], *_OLD_PINS[2:]]
-    temp_config_path.write_text(_old_camera(pins), encoding="utf-8")
-    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
-        camera = load_config(str(temp_config_path)).camera
-        load_config(str(temp_config_path))
-    assert [m.pin for m in camera.calibration_marks] == [[], [], *_OLD_PINS[2:]]
-    assert [r.getMessage() for r in caplog.records if "corner_pins" in r.getMessage()] == [
-        "camera.corner_pins: DSL, DSR pinned off the snapshot, to be pinned again; dropped"
-    ]
-
-
-@pytest.mark.parametrize("points", ["", _OLD_POINT], ids=["corner pins", "points"])
-def test_former_keys_read_as_marks_without_a_camera_height(points: str, temp_config_path) -> None:
-    text = _old_camera(_OLD_PINS, points).replace("fov = 55.0", "fov = 55.0\ncalibration_height = 7.0")
-    temp_config_path.write_text(text, encoding="utf-8")
-    camera = load_config(str(temp_config_path)).camera
-    assert camera.calibration_marks
-    assert camera.calibration_height is None
-
-
-def test_without_former_points_or_corner_pins_nothing_is_made_up(temp_config_path) -> None:
-    temp_config_path.write_text(_old_camera([], "calibration_points = []\n"), encoding="utf-8")
-    camera = load_config(str(temp_config_path)).camera
-    assert (camera.calibration_mode, camera.calibration_marks) == ("simple", [])
-
-
-@pytest.mark.parametrize("pins", [_OLD_PINS[:3], [*_OLD_PINS, [0.5, 0.5]], "0.8, 0.9", [["a", 0.1]] * 4])
-def test_former_corner_pins_that_do_not_read_make_no_marks_and_say_so(
-    pins, temp_config_path, caplog, monkeypatch
-) -> None:
-    import openfollow.configuration as cfg_mod
-
-    monkeypatch.setattr(cfg_mod, "_reported_drops", {})
-    temp_config_path.write_text(_old_camera(pins), encoding="utf-8")
-    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
-        camera = load_config(str(temp_config_path)).camera
-    assert (camera.calibration_mode, camera.calibration_marks) == ("simple", [])
-    assert "former calibration does not read" in caplog.text
-
-
-@pytest.mark.parametrize("points", ['calibration_points = "abc"\n', "calibration_points = [1, 2]\n"])
-def test_former_points_that_do_not_read_make_no_marks_and_say_so(
-    points, temp_config_path, caplog, fresh_drop_reports
-) -> None:
-    temp_config_path.write_text(_old_camera(None, points), encoding="utf-8")
-    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
-        camera = load_config(str(temp_config_path)).camera
-    assert (camera.calibration_mode, camera.calibration_marks) == ("simple", [])
-    assert "former calibration does not read" in caplog.text
-
-
-def test_former_points_with_pins_that_are_not_four_pairs_leave_the_corners_to_pin_again_and_say_so(
-    temp_config_path, caplog, fresh_drop_reports
-) -> None:
-    temp_config_path.write_text(_old_camera(_OLD_PINS[:3], _old_point()), encoding="utf-8")
-    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
-        camera = load_config(str(temp_config_path)).camera
-    assert camera.calibration_mode == "advanced"
-    assert [m.pin for m in camera.calibration_marks[:4]] == [[], [], [], []]
-    assert "not four [x, y] pairs" in caplog.text
-
-
-def test_a_former_point_without_two_grid_corners_is_left_out_and_said(
-    temp_config_path, caplog, fresh_drop_reports
-) -> None:
-    temp_config_path.write_text(_old_camera(_OLD_PINS, _old_point() + _old_point("CENTRE")), encoding="utf-8")
-    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
-        camera = load_config(str(temp_config_path)).camera
-    assert [m.kind for m in camera.calibration_marks] == ["known"] * 4 + ["triangulated"]
-    assert "1 former point(s) without two grid corners left out" in caplog.text
+_FILE_CORNERS = [(7.0, 1.0, 0.5), (-5.0, 1.0, 0.5), (-5.0, 7.0, 0.5), (7.0, 7.0, 0.5)]
 
 
 def test_simple_corners_written_for_another_grid_follow_the_files_grid_unpinned(temp_config_path) -> None:
@@ -9877,9 +9732,9 @@ def test_simple_corners_written_for_another_grid_follow_the_files_grid_unpinned(
             zip(("DSL", "DSR", "USR", "USL"), [(5.0, 1.0), (-3.0, 1.0), (-3.0, 7.0), (5.0, 7.0)], strict=True)
         )
     )
-    temp_config_path.write_text('[camera]\ncalibration_mode = "simple"\n' + marks + _OLD_GRID, encoding="utf-8")
+    temp_config_path.write_text('[camera]\ncalibration_mode = "simple"\n' + marks + _FILE_GRID, encoding="utf-8")
     camera = load_config(str(temp_config_path)).camera
-    assert [(m.x, m.y, m.z, m.pin) for m in camera.calibration_marks] == [(*c, []) for c in _OLD_CORNERS]
+    assert [(m.x, m.y, m.z, m.pin) for m in camera.calibration_marks] == [(*c, []) for c in _FILE_CORNERS]
 
 
 @pytest.mark.parametrize("pin", ['"0.5, 0.5"', "{ x = 0.5, y = 0.5 }", "true"])
@@ -9892,56 +9747,19 @@ def test_a_pin_that_is_no_list_drops_the_mark(pin, temp_config_path) -> None:
     assert load_config(str(temp_config_path)).camera.calibration_marks == []
 
 
-@pytest.mark.parametrize(
-    ("grid", "dsl"),
-    [
-        ('[grid]\nwidth = "abc"\ndepth = 6.0\n', (5.0, 0.0, 0.0)),
-        ("[grid]\nwidth = -5.0\ndepth = 6.0\n", (0.05, 0.0, 0.0)),
-        ("", (5.0, 0.0, 0.0)),
-    ],
-)
-def test_former_corner_pins_read_against_the_grid_the_file_ends_up_with(grid, dsl, temp_config_path) -> None:
-    """The corners are where the loaded grid puts them, never at a value the grid itself refuses."""
-    text = _old_camera(_OLD_PINS).replace(_OLD_GRID, grid)
-    temp_config_path.write_text(text, encoding="utf-8")
-    cfg = load_config(str(temp_config_path))
-    dsl_mark = cfg.camera.calibration_marks[0]
-    assert (dsl_mark.x, dsl_mark.y, dsl_mark.z) == dsl
-    assert (cfg.grid.x_offset + cfg.grid.width / 2, cfg.grid.y_offset - cfg.grid.depth / 2) == dsl[:2]
-
-
-def test_a_former_point_from_an_unknown_corner_is_left_out(temp_config_path) -> None:
-    temp_config_path.write_text(_old_camera(_OLD_PINS, _old_point("FOH")), encoding="utf-8")
-    camera = load_config(str(temp_config_path)).camera
-    assert (camera.calibration_mode, len(camera.calibration_marks)) == ("simple", 4)
-
-
-def test_marks_already_in_the_file_win_over_the_former_keys(temp_config_path) -> None:
-    marks = '[[camera.calibration_marks]]\nid = 9\nkind = "known"\nx = 1.0\ny = 2.0\nz = 0.0\n'
-    text = _old_camera(_OLD_PINS, _OLD_POINT + marks).replace("fov = 55.0", 'fov = 55.0\ncalibration_mode = "advanced"')
-    temp_config_path.write_text(text, encoding="utf-8")
-    camera = load_config(str(temp_config_path)).camera
-    assert camera.calibration_mode == "advanced"
-    assert [(m.id, m.x, m.y) for m in camera.calibration_marks] == [(9, 1.0, 2.0)]
-
-
-def test_a_camera_already_on_marks_is_left_as_it_is(temp_config_path) -> None:
-    save_config(
-        AppConfig(camera=CameraConfig(calibration_mode="advanced", calibration_marks=[_DSL, _DSR])),
-        str(temp_config_path),
+def test_unknown_camera_calibration_keys_are_dropped(temp_config_path) -> None:
+    temp_config_path.write_text(
+        "[camera]\nfov = 55.0\ncorner_pins = [[0.81, 0.94], [0.14, 0.95], [0.37, 0.61], [0.66, 0.6]]\n"
+        '[[camera.calibration_points]]\ncorner_a = "DSL"\ncorner_b = "DSR"\ndistance_a = 21.4\ndistance_b = 23.9\n'
+        "pin_x = 0.41\npin_y = 0.22\n" + _FILE_GRID,
+        encoding="utf-8",
     )
-    camera = load_config(str(temp_config_path)).camera
-    assert camera.calibration_mode == "advanced"
-    assert [m.id for m in camera.calibration_marks] == [1, 2]
-
-
-def test_the_former_keys_are_never_written_back(temp_config_path) -> None:
-    temp_config_path.write_text(_old_camera(_OLD_PINS, _OLD_POINT), encoding="utf-8")
-    save_config(load_config(str(temp_config_path)), str(temp_config_path))
+    cfg = load_config(str(temp_config_path))
+    assert (cfg.camera.fov, cfg.camera.calibration_mode, cfg.camera.calibration_marks) == (55.0, "simple", [])
+    save_config(cfg, str(temp_config_path))
     text = temp_config_path.read_text(encoding="utf-8")
-    assert "calibration_points" not in text
     assert "corner_pins" not in text
-    assert text.count("[[camera.calibration_marks]]") == 5
+    assert "calibration_points" not in text
 
 
 def test_a_stored_calibration_points_feature_is_dropped_as_unknown(temp_config_path) -> None:

@@ -2204,8 +2204,6 @@ _WIDE_CORNERS = [(6.0, 0.0, 0.0), (-6.0, 0.0, 0.0), (-6.0, 6.0, 0.0), (6.0, 6.0,
             {"width": 12.0},
             _corner_marks(_ITS_PINS, _WIDE_CORNERS),
         ),
-        # its own pins in the former key, read on its grid
-        ({"corner_pins": _ITS_PINS}, {"width": 12.0}, _corner_marks(_ITS_PINS, _WIDE_CORNERS)),
         # the same corners
         ({"pos_x": 1.0}, {"spacing": 0.5}, _corner_marks()),
     ],
@@ -2216,47 +2214,6 @@ def test_an_import_applies_the_grid_before_the_camera(live_server, camera, grid,
     status, _ = _post_json(base, "/api/config/import", {"camera": camera, "grid": grid})
     assert status == 200
     assert _held(load_config(server.config_path).camera) == [(m["id"], m["x"], m["y"], m["z"], m["pin"]) for m in marks]
-
-
-@pytest.mark.parametrize(
-    ("old", "mode", "count"),
-    [
-        ({"corner_pins": _ITS_PINS}, "simple", 4),
-        (
-            {
-                "corner_pins": _ITS_PINS,
-                "calibration_points": [
-                    {
-                        "corner_a": "DSL",
-                        "corner_b": "DSR",
-                        "distance_a": 21.4,
-                        "distance_b": 23.9,
-                        "height": 0.0,
-                        "pin_x": 0.4,
-                        "pin_y": 0.2,
-                    }
-                ],
-            },
-            "advanced",
-            5,
-        ),
-    ],
-)
-def test_a_camera_push_in_the_former_keys_reads_as_marks_on_this_stations_grid(live_server, old, mode, count) -> None:
-    """A station on an earlier release pushes the former keys; the corners are where this station has them."""
-    from openfollow.configuration import GridConfig
-
-    server, base = live_server
-    save_config(AppConfig(camera=_held_camera(), grid=GridConfig(width=12.0)), server.config_path)
-    status, _ = _post_json(base, "/api/config/camera", old)
-    assert status == 200
-    camera = load_config(server.config_path).camera
-    assert (camera.calibration_mode, len(camera.calibration_marks)) == (mode, count)
-    assert _held(camera)[:4] == [
-        (m["id"], m["x"], m["y"], m["z"], m["pin"]) for m in _corner_marks(_ITS_PINS, _WIDE_CORNERS)
-    ]
-    text = Path(server.config_path).read_text(encoding="utf-8")
-    assert "corner_pins" not in text and "calibration_points" not in text
 
 
 def _calibration_rows(camera_html: str) -> tuple[str, list[list[str]]]:

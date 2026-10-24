@@ -4116,15 +4116,6 @@ def test_a_calibration_height_travels_with_an_export_and_an_import() -> None:
 
 
 _CORNER_PINS = [[0.81, 0.94], [0.14, 0.95], [0.37, 0.61], [0.66, 0.6]]
-_OLD_POINT = {
-    "corner_a": "DSL",
-    "corner_b": "DSR",
-    "distance_a": 21.4,
-    "distance_b": 23.9,
-    "height": 1.0,
-    "pin_x": 0.4,
-    "pin_y": 0.2,
-}
 
 
 def _station(width: float = 12.0, z_offset: float = 0.5) -> AppConfig:
@@ -4132,29 +4123,6 @@ def _station(width: float = 12.0, z_offset: float = 0.5) -> AppConfig:
     cfg.grid.width, cfg.grid.depth, cfg.grid.x_offset, cfg.grid.y_offset = width, 6.0, 1.0, 4.0
     cfg.grid.z_offset = z_offset
     return cfg
-
-
-@pytest.mark.parametrize(
-    ("old", "mode", "count"),
-    [
-        ({"corner_pins": _CORNER_PINS}, "simple", 4),
-        ({"corner_pins": _CORNER_PINS, "calibration_points": [_OLD_POINT]}, "advanced", 5),
-    ],
-)
-def test_a_camera_write_in_the_former_keys_reads_as_marks_on_this_stations_grid(old, mode, count) -> None:
-    """A station on an earlier release sends the former keys; its corners are where this grid has them."""
-    cfg = _station()
-    assert apply_section_data(cfg, "camera", old)
-    marks = cfg.camera.calibration_marks
-    assert (cfg.camera.calibration_mode, len(marks)) == (mode, count)
-    assert [(m.name, m.x, m.y, m.z, m.pin) for m in marks[:4]] == [
-        ("DSL", 7.0, 1.0, 0.5, _CORNER_PINS[0]),
-        ("DSR", -5.0, 1.0, 0.5, _CORNER_PINS[1]),
-        ("USR", -5.0, 7.0, 0.5, _CORNER_PINS[2]),
-        ("USL", 7.0, 7.0, 0.5, _CORNER_PINS[3]),
-    ]
-    if count == 5:
-        assert (marks[4].kind, marks[4].from_a, marks[4].from_b, marks[4].z) == ("triangulated", 1, 2, 1.5)
 
 
 def test_calibration_marks_travel_with_an_export_and_an_import() -> None:
@@ -4167,56 +4135,6 @@ def test_calibration_marks_travel_with_an_export_and_an_import() -> None:
     imported = _apply_import_data(AppConfig(), json.loads(json.dumps(exported)))
     assert imported.camera.calibration_mode == "advanced"
     assert imported.camera.calibration_marks == camera.calibration_marks
-
-
-def test_an_import_in_the_former_keys_reads_as_marks_on_the_imports_grid() -> None:
-    from openfollow.web.routes import _apply_import_data
-
-    data = {
-        "camera": {"corner_pins": _CORNER_PINS},
-        "grid": {"width": 8.0, "depth": 4.0, "x_offset": 0.0, "y_offset": 2.0, "z_offset": 0.0},
-    }
-    imported = _apply_import_data(_station(), data)
-    assert (imported.grid.width, imported.grid.depth) == (8.0, 4.0)
-    assert imported.camera.calibration_mode == "simple"
-    assert [(m.x, m.y, m.z, m.pin) for m in imported.camera.calibration_marks] == [
-        (4.0, 0.0, 0.0, _CORNER_PINS[0]),
-        (-4.0, 0.0, 0.0, _CORNER_PINS[1]),
-        (-4.0, 4.0, 0.0, _CORNER_PINS[2]),
-        (4.0, 4.0, 0.0, _CORNER_PINS[3]),
-    ]
-
-
-@pytest.mark.parametrize("how", ["import", "camera write"])
-def test_the_former_keys_drop_this_stations_camera_height(how: str) -> None:
-    """The height was held with this station's marks; the former keys replace those marks."""
-    from openfollow.web.routes import _apply_import_data
-
-    station = _station()
-    station.camera.calibration_height = 9.5
-    old = {"corner_pins": _CORNER_PINS}
-    if how == "import":
-        camera = _apply_import_data(station, {"camera": old}).camera
-    else:
-        assert apply_section_data(station, "camera", old)
-        camera = station.camera
-    assert camera.calibration_marks
-    assert camera.calibration_height is None
-
-
-def test_an_import_in_the_former_keys_without_a_grid_reads_on_this_stations_grid() -> None:
-    from openfollow.web.routes import _apply_import_data
-
-    imported = _apply_import_data(_station(), {"camera": {"corner_pins": _CORNER_PINS}})
-    assert [(m.x, m.y, m.z, m.pin) for m in imported.camera.calibration_marks][0] == (7.0, 1.0, 0.5, _CORNER_PINS[0])
-
-
-def test_an_import_in_the_former_keys_with_part_of_a_grid_reads_on_the_grid_it_ends_up_with() -> None:
-    from openfollow.web.routes import _apply_import_data
-
-    imported = _apply_import_data(_station(), {"camera": {"corner_pins": _CORNER_PINS}, "grid": {"visible": True}})
-    assert (imported.grid.width, imported.grid.x_offset) == (12.0, 1.0)
-    assert [(m.x, m.y, m.z) for m in imported.camera.calibration_marks][0] == (7.0, 1.0, 0.5)
 
 
 def _simple_marks_at(width: float) -> list[dict]:
@@ -4273,10 +4191,21 @@ def test_advanced_marks_never_follow_the_grid() -> None:
     ]
 
 
-def test_an_import_never_writes_the_former_keys_back() -> None:
+@pytest.mark.parametrize("how", ["import", "camera write"])
+def test_unknown_camera_calibration_keys_are_dropped_by_a_write(how: str) -> None:
     from openfollow.web.routes import _apply_import_data
 
-    imported = _apply_import_data(AppConfig(), {"camera": {"corner_pins": _CORNER_PINS, "calibration_points": []}})
-    exported = _config_dict_redacted(imported)
+    station = _station()
+    station.camera.calibration_height = 9.5
+    point = {"corner_a": "DSL", "corner_b": "DSR", "distance_a": 21.4, "distance_b": 23.9, "pin_x": 0.4, "pin_y": 0.2}
+    sent = {"pos_x": 1.0, "corner_pins": _CORNER_PINS, "calibration_points": [point]}
+    if how == "import":
+        station = _apply_import_data(station, {"camera": sent})
+    else:
+        assert apply_section_data(station, "camera", sent)
+    camera = station.camera
+    assert (camera.pos_x, camera.calibration_mode, camera.calibration_marks) == (1.0, "simple", [])
+    assert camera.calibration_height == 9.5
+    exported = _config_dict_redacted(station)
     assert "corner_pins" not in exported["camera"]
     assert "calibration_points" not in exported["camera"]

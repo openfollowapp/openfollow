@@ -253,7 +253,6 @@ def validate_payload(template_type: str, payload: Mapping[str, Any]) -> None:
         GroundGridConfig,
         PathsConfig,
         TriggerZonesConfig,
-        migrate_calibration_keys,
     )
 
     if template_type == "osc_output":
@@ -338,10 +337,7 @@ def validate_payload(template_type: str, payload: Mapping[str, Any]) -> None:
                 f"camera_grid payload 'camera' must be object, got {type(camera_dict).__name__}",
             )
         try:
-            # A template saved by an earlier release names its calibration in the former keys.
-            migrated = dict(camera_dict)
-            migrate_calibration_keys(migrated, payload.get("grid"))
-            CameraConfig(**migrated)
+            CameraConfig(**camera_dict)
         except TypeError as exc:
             raise TemplateValidationError(
                 f"camera_grid payload 'camera' invalid: {exc}",

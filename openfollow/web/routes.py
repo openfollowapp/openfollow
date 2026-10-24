@@ -90,7 +90,6 @@ from openfollow.configuration import (
     enforce_network_mode,
     feature_gated,
     load_config_for_save,
-    migrate_calibration_keys,
     migrate_ui_keys,
     path_name_from,
     plane_pin_key,
@@ -1655,10 +1654,6 @@ def _interface_assignment_rows(
     return rows
 
 
-# The grid fields that place its corners; a change under this (m) is a length re-read from how a form shows it.
-_GRID_CORNER_FIELDS = ("width", "depth", "x_offset", "y_offset", "z_offset")
-
-
 def apply_section_data(cfg: AppConfig, section: str, data: Mapping[str, Any]) -> bool:
     """Apply section updates in-place. Returns False for unknown sections.
 
@@ -1813,10 +1808,6 @@ def _apply_section(cfg: AppConfig, section: str, data: Mapping[str, Any]) -> boo
     if parser_map is None:  # pragma: no cover
         return False
     target = getattr(cfg, section_attr)
-    if section == "camera" and ("calibration_points" in data or "corner_pins" in data):
-        # A station on an earlier release sends the former keys; they read as marks on this grid.
-        data = dict(data)
-        migrate_calibration_keys(data, {name: getattr(cfg.grid, name) for name in _GRID_CORNER_FIELDS})
     before = {name: getattr(target, name) for name in _BINDING_FIELDS_BY_ATTR.get(section_attr, ())}
     _apply_parsed_updates(target, data, parser_map)
     if before:
@@ -3433,12 +3424,6 @@ def _apply_import_data(current_cfg: AppConfig, data: dict[str, Any]) -> AppConfi
 
     # General section (top-level scalar fields)
     apply_section_data(cfg, "general", strip_device_local_fields("general", data))
-
-    # A file from an earlier release names its calibration in the former keys, on its own grid.
-    if isinstance(data.get("camera"), dict):
-        data = {**data, "camera": dict(data["camera"])}
-        own = {name: getattr(cfg.grid, name) for name in _GRID_CORNER_FIELDS}
-        migrate_calibration_keys(data["camera"], {**own, **data["grid"]} if isinstance(data.get("grid"), dict) else own)
 
     # Sections that are always live-reloadable. The grid goes before the camera, whose Simple pins it drops.
     for section in (
@@ -9415,9 +9400,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
             with _config_write_lock:
                 cfg = _config_for_save(server)
-                camera = dict(tpl.payload["camera"])
-                migrate_calibration_keys(camera, tpl.payload["grid"])
-                cfg.camera = CameraConfig(**camera)
+                cfg.camera = CameraConfig(**tpl.payload["camera"])
                 cfg.grid = GridConfig(**tpl.payload["grid"])
                 reconcile_simple_corners(cfg)
                 if "ground_grid" in tpl.payload:

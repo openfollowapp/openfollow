@@ -8434,3 +8434,25 @@ def test_the_lens_choice_survives_a_reload_while_the_camera_has_a_calibration(st
     )
     # A choice made for the camera's calibration stays through a reload; it is saved with the session.
     assert out == [restored, restored]
+
+
+@pytest.mark.parametrize(("button", "seen"), [("Load", ["applied Main", "called back"]), ("Cancel", [])])
+def test_the_load_dialog_calls_back_once_a_calibration_is_applied(button: str, seen: list) -> None:
+    out = run_wizard_js(
+        "(async function() { lensLoadDialog(function() { seen.push('called back'); });"
+        " await new Promise(function(r) { setImmediate(r); });"
+        " buttons.filter(function(b) { return b.label === which; })[0].onClick(); return seen; })()",
+        functions=_DIALOG_FUNCTIONS,
+        prelude=_SAVE_ERROR
+        + _DOM
+        + _DIALOG_PAGE
+        + _fetch_answering("list")
+        + "\nvar buttons = [], seen = []; openModal = function(o) { buttons = o.footerButtons; };"
+        " function closeModal() {} function lensApplyLoaded(c) { seen.push('applied ' + c.name); }"
+        " document.querySelector = function(sel) { return sel.indexOf('lens_src') >= 0 ? { value: '0' } : null; };\n"
+        + wizard_window_function("lensLoadDialog")
+        + "\nvar lensLoadDialog = window.lensLoadDialog;",
+        which=button,
+    )
+    # The Lens step's question takes Load as its choice only after the calibration is on the lens.
+    assert out == seen

@@ -5778,10 +5778,10 @@ _PIN_TAP_FUNCTIONS = (
 _BOTH_PINNED = ["2:pinned", "3:pinned"]
 
 
-def _pin_tap(expression: str, **inputs) -> list:
+def _pin_tap(expression: str, functions: tuple[str, ...] = _PIN_TAP_FUNCTIONS, **inputs) -> list:
     return run_wizard_js(
         "(function() { calibInit();" + expression + " })()",
-        functions=_PIN_TAP_FUNCTIONS,
+        functions=functions,
         prelude=_MENU_PAGE + _PIN_TAP_PAGE,
         **inputs,
     )
@@ -5866,6 +5866,32 @@ def test_the_pin_menu_ignores_the_clicks_of_the_gesture_that_opened_it(opening: 
     )
     # Whatever opened the menu, a click of that same press or key never chooses an item; the next gesture does.
     assert out == [2, result]
+
+
+@pytest.mark.parametrize(
+    ("menu", "result"),
+    [
+        ("pin", ["pin-menu", None, [6, 5], "pin 2", ["2:pinned", "3:pinned"]]),
+        ("spot", ["pin-menu", [5, 5], None, "pin-menu", ["2:-", "3:pinned"]]),
+    ],
+    ids=["a pin's menu", "a spot's menu"],
+)
+def test_enter_on_a_pin_menu_keeps_the_pin_where_the_arrow_keys_moved_it(menu: str, result: list) -> None:
+    out = _pin_tap(
+        "var m = Object.assign($('pin-menu'), { nodeType: 1, matches: function() { return false; },"
+        " closest: function(sel) { return sel.indexOf('#pin-menu') >= 0 ? {} : null; } });"
+        " if (menu === 'pin') openPointMenu(2); else { S.points[0].pin = null; openPinMenu([5, 5]); m.focus(); }"
+        " return new Promise(function(r) { setTimeout(r); }).then(function() {"
+        " var opened = focused; document.activeElement = { inside: 'pin-menu' };"
+        " if (menu === 'pin') dispatch('pin-menu', 'keydown', m, { key: 'ArrowRight' });"
+        " dispatch('pin-menu', 'keydown', m, { key: 'Enter' });"
+        " return [opened, S.pinMenu && S.pinMenu.p, S.points[0].pin, focused, state()[1]]; });",
+        menu=menu,
+        functions=(*_PIN_TAP_FUNCTIONS, "nudgeMenuSpot", "menuLoupe"),
+    )
+    # The menu holds the focus, so Enter keeps the moved pin and gives the focus back to it; a spot's menu
+    # leaves Enter to its items.
+    assert out == result
 
 
 def test_a_tap_on_the_picture_opens_the_menu_and_its_item_takes_the_next_tap() -> None:
@@ -6978,8 +7004,9 @@ _KEYS_AND_FOCUS = (
 def test_a_panel_takes_the_same_keys_and_focus_as_the_popup(layout: str) -> None:
     esc_key = wizard_block("document.addEventListener('keydown', function(e) {\n    if (e.key !== 'Escape') return;")
     out = _panel(_KEYS_AND_FOCUS, layout=layout, escKey=esc_key)
-    # Its first item takes the focus, the arrows move the spot, Esc and x give the focus back, Tab out closes it.
-    assert out == ["first item", [101, 101], "cal-overlay", None, "first item", "pin 2", None, None]
+    # A spot's menu focuses its first item, a pin's menu itself; the arrows move the spot, Esc and x give the
+    # focus back, Tab out closes it.
+    assert out == ["first item", [101, 101], "cal-overlay", None, "pin-menu", "pin 2", None, None]
 
 
 @pytest.mark.parametrize("layout", ["popup", "panel"])

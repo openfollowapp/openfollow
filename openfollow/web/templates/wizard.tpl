@@ -306,6 +306,7 @@
   @media (prefers-reduced-motion: reduce) { .step-locked { transition: none; } }
   /* The menu a click on the picture opens in Advanced. */
   .pin-menu { position: absolute; z-index: 5; min-width: 13rem; max-width: 18rem; max-height: calc(100% - 16px); overflow-y: auto; overscroll-behavior: contain; padding: 0.35rem; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 0.6rem; box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45); line-height: 1.3; }
+  .pin-menu:focus { outline: none; }
   .pin-menu-head { display: flex; align-items: center; justify-content: space-between; gap: 0.4rem; }
   .pin-menu-title { font-size: 0.68rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); padding: 0.3rem 0.5rem; }
   .pin-menu .pm-close { width: 1.7rem; height: 1.7rem; padding: 0; border-radius: 0.45rem; background: transparent; color: var(--muted); font-size: 1.1rem; line-height: 1; }
@@ -654,7 +655,7 @@
         <g id="cal-pins"></g>
       </svg>
       <div class="wizard-loupe" aria-hidden="true"><canvas width="240" height="240"></canvas></div>
-      <div class="pin-menu" id="pin-menu" role="group" aria-label="Which point is here?" hidden></div>
+      <div class="pin-menu" id="pin-menu" role="group" aria-label="Which point is here?" tabindex="-1" hidden></div>
       <button type="button" class="fs-btn" data-fs="cal" aria-label="Full screen">{{!_fs_icon}}</button>
     </div>
     <div id="pin-menu-slot"></div>
@@ -3373,7 +3374,8 @@
     m.hidden = false;
     positionPinMenu(true);
     renderCalibOverlay();
-    setTimeout(function() { m.querySelector('.pm-item').focus({ preventScroll: true }); });
+    // The menu takes the focus, not Remove pin: Enter then keeps a pin the arrow keys moved.
+    setTimeout(function() { m.focus({ preventScroll: true }); });
   }
   // With the menu open, the loupe stays on its spot; arrow keys move the spot (or the pin) a pixel at a time.
   function menuLoupe() {
@@ -3715,6 +3717,7 @@
     // Arrow keys move the menu's spot unless a field has the focus (a number field's arrows change its value).
     document.addEventListener('keydown', function(e) {
       if (!S.pinMenu) return;
+      if (e.key === 'Enter' && e.target === $('pin-menu') && S.pinMenu.pin != null) { e.preventDefault(); closePinMenu(S.pinMenu.pin); return; }
       var step = e.shiftKey ? 10 : 1, d = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[e.key];
       var t = e.target.nodeType === 1 ? e.target : document.body;
       if (!d || t.matches('input, select, textarea') || t.closest('.pin-handle')) return;
@@ -3975,7 +3978,7 @@
       rows = [[['Tab'], 'Select the next corner'], [ARROWS, 'Move the selected corner 1&nbsp;px'], [['Enter'], 'Place the corner where the crosshair is'], FS_ESC];
     } else if (k === 'cal') {
       intro = '<strong>Click the picture</strong> where a point is, and choose the point from the menu. Or create a <strong>New known point</strong> or a <strong>New distance point</strong> there. Click a pin to remove the pin or delete the point. Drag a pin to correct it.';
-      rows = [[ARROWS, 'Menu open: move the spot 1&nbsp;px. Pin selected: move the pin 1&nbsp;px'], [['Tab'], 'Next menu item, field or pin'], [['Enter'], 'Choose the menu item, or place the new point'], FS_ESC];
+      rows = [[ARROWS, 'Menu open: move the spot 1&nbsp;px. Pin selected: move the pin 1&nbsp;px'], [['Tab'], 'Next menu item, field or pin'], [['Enter'], 'Keep the moved pin, choose the menu item, or place the new point'], FS_ESC];
     } else {
       intro = 'The picture shows the calculated grid, the points and 0/0/0, as the Operator Screen will draw them. You cannot change anything here.';
       rows = [[['Esc'], 'End full screen']];

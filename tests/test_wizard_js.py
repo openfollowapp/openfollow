@@ -1642,12 +1642,29 @@ def test_a_pin_behind_the_camera_is_drawn_flagged_on_the_picture() -> None:
 def test_the_status_line_names_the_pins_the_page_sent() -> None:
     out = run_wizard_js(
         "(function() { renderCalibResult(); return $('cal-status').innerHTML; })()",
-        functions=("esc", "setLive", "showLive", "renderHeightGroup", "renderCalibResult"),
-        variables=("heightAsked",),
+        functions=("esc", "setLive", "showLive", "renderHeightGroup", "renderCalibResult", "applyBlocked"),
+        variables=("APPLY_MAX_PX", "heightAsked"),
         prelude=_DOM + _REVIEW_STUBS + "var S = { mode: 'advanced', pair: 0 }; function lensMeasured() { return true; }"
         " S.solve = { cam: { fov: 60 }, worst: 0.6, pinned: 5, count: 4, reasons: [], marks: [] };",
     )
     assert out == "Calculated from 5 pinned points, largest error 0.6 px."
+
+
+@pytest.mark.parametrize(
+    ("worst", "behind", "level"),
+    [(20.0, 0, "ok"), (20.1, 0, "error"), (0.4, 1, "error")],
+    ids=["at the limit", "a point past the limit", "a point behind the camera"],
+)
+def test_the_status_line_is_an_error_while_save_and_finish_is_off(worst: float, behind: int, level: str) -> None:
+    out = run_wizard_js(
+        "(function() { renderCalibResult(); return [$('cal-status').className, $('cal-status').innerHTML]; })()",
+        functions=("esc", "setLive", "showLive", "renderHeightGroup", "renderCalibResult", "applyBlocked"),
+        variables=("heightAsked", "APPLY_MAX_PX"),
+        prelude=_DOM + _REVIEW_STUBS + "var S = { mode: 'advanced', pair: 0 }; function lensMeasured() { return true; }"
+        f" S.solve = {{ cam: {{ fov: 60 }}, worst: {worst}, behind: {behind}, pinned: 4, reasons: [], marks: [] }};",
+    )
+    # A point that keeps Save and finish off makes the result an error, not a success; the words stay.
+    assert out == [f"wizard-status {level}", f"Calculated from 4 pinned points, largest error {worst:.1f} px."]
 
 
 # ---------------------------------------------------------------------------
@@ -4086,8 +4103,17 @@ _HEIGHT_RESULT = (
 def test_the_height_is_asked_while_steep_and_noted_once_entered(solve: dict, typed: str, height, shown: list) -> None:
     out = run_wizard_js(
         _HEIGHT_RESULT,
-        functions=("esc", "setLive", "showLive", "renderHeightGroup", "renderCalibResult", "lenText", "fmt"),
-        variables=("heightAsked",),
+        functions=(
+            "esc",
+            "setLive",
+            "showLive",
+            "renderHeightGroup",
+            "renderCalibResult",
+            "applyBlocked",
+            "lenText",
+            "fmt",
+        ),
+        variables=("APPLY_MAX_PX", "heightAsked"),
         prelude=length_page("metric", {})
         + _DOM
         + _REVIEW_STUBS
@@ -4102,8 +4128,17 @@ def test_the_height_is_asked_while_steep_and_noted_once_entered(solve: dict, typ
 def test_the_note_is_in_the_active_unit() -> None:
     out = run_wizard_js(
         _HEIGHT_RESULT,
-        functions=("esc", "setLive", "showLive", "renderHeightGroup", "renderCalibResult", "lenText", "fmt"),
-        variables=("heightAsked",),
+        functions=(
+            "esc",
+            "setLive",
+            "showLive",
+            "renderHeightGroup",
+            "renderCalibResult",
+            "applyBlocked",
+            "lenText",
+            "fmt",
+        ),
+        variables=("APPLY_MAX_PX", "heightAsked"),
         prelude=length_page("imperial", {})
         + _DOM
         + _REVIEW_STUBS
@@ -4369,8 +4404,17 @@ def test_the_height_stays_asked_until_a_camera_without_a_height_is_not_steep(ste
         "(function() { return steps.map(function(st) {"
         " S.solve = Object.assign({ worst: 0.4, pinned: 4, reasons: [], marks: [] }, st[0]);"
         " $('cam_height').value = st[1]; renderCalibResult(); return !$('cal-height').hidden; }); })()",
-        functions=("esc", "setLive", "showLive", "renderHeightGroup", "renderCalibResult", "lenText", "fmt"),
-        variables=("heightAsked",),
+        functions=(
+            "esc",
+            "setLive",
+            "showLive",
+            "renderHeightGroup",
+            "renderCalibResult",
+            "applyBlocked",
+            "lenText",
+            "fmt",
+        ),
+        variables=("APPLY_MAX_PX", "heightAsked"),
         prelude=length_page("metric", {})
         + _DOM
         + _REVIEW_STUBS
@@ -4392,8 +4436,17 @@ def test_an_empty_height_field_stays_while_it_has_the_focus_or_unreadable_text(
     out = run_wizard_js(
         "(function() { var f = $('cam_height'); f.validity = { badInput: bad }; if (focus) document.activeElement = f;"
         " renderCalibResult(); return !$('cal-height').hidden; })()",
-        functions=("esc", "setLive", "showLive", "renderHeightGroup", "renderCalibResult", "lenText", "fmt"),
-        variables=("heightAsked",),
+        functions=(
+            "esc",
+            "setLive",
+            "showLive",
+            "renderHeightGroup",
+            "renderCalibResult",
+            "applyBlocked",
+            "lenText",
+            "fmt",
+        ),
+        variables=("APPLY_MAX_PX", "heightAsked"),
         prelude=length_page("metric", {})
         + _DOM
         + _REVIEW_STUBS
@@ -4694,8 +4747,17 @@ def test_the_steep_camera_notice_shows_only_while_the_height_is_asked(
     out = run_wizard_js(
         "(function() { var f = $('cam_height'); f.value = typed; if (focus) document.activeElement = f;"
         " renderCalibResult(); return [$('cal-height-ask').hidden, $('cal-height').hidden]; })()",
-        functions=("esc", "setLive", "showLive", "renderHeightGroup", "renderCalibResult", "lenText", "fmt"),
-        variables=("heightAsked",),
+        functions=(
+            "esc",
+            "setLive",
+            "showLive",
+            "renderHeightGroup",
+            "renderCalibResult",
+            "applyBlocked",
+            "lenText",
+            "fmt",
+        ),
+        variables=("APPLY_MAX_PX", "heightAsked"),
         prelude=length_page("metric", {})
         + _DOM
         + _REVIEW_STUBS
@@ -4850,8 +4912,17 @@ def test_the_calibration_live_regions_are_written_once_for_the_same_words(mode, 
     out = _live_writes(
         "renderCalibResult();",
         regions,
-        functions=("esc", "setLive", "showLive", "renderHeightGroup", "renderCalibResult", "lenText", "fmt"),
-        variables=("heightAsked",),
+        functions=(
+            "esc",
+            "setLive",
+            "showLive",
+            "renderHeightGroup",
+            "renderCalibResult",
+            "applyBlocked",
+            "lenText",
+            "fmt",
+        ),
+        variables=("APPLY_MAX_PX", "heightAsked"),
         prelude=length_page("metric", {})
         + _COUNTING_DOM
         + _REVIEW_STUBS
@@ -4972,8 +5043,17 @@ def test_a_calibration_region_shown_again_is_written_again(mode: str, shown: dic
     out = run_wizard_js(
         "(function() { var seen = []; [shown, hidden, shown].forEach(function(s) { S.solve = s; renderCalibResult();"
         " seen.push($(region).hidden); }); return [writes[region] || 0, seen]; })()",
-        functions=("esc", "setLive", "showLive", "renderHeightGroup", "renderCalibResult", "lenText", "fmt"),
-        variables=("heightAsked",),
+        functions=(
+            "esc",
+            "setLive",
+            "showLive",
+            "renderHeightGroup",
+            "renderCalibResult",
+            "applyBlocked",
+            "lenText",
+            "fmt",
+        ),
+        variables=("APPLY_MAX_PX", "heightAsked"),
         prelude=length_page("metric", {})
         + _COUNTING_DOM
         + _REVIEW_STUBS

@@ -3158,7 +3158,8 @@
     if (s.waiting) { st.className = 'wizard-status waiting'; showLive(st, esc(s.waiting), true); }
     else if (need) { st.className = 'wizard-status waiting'; showLive(st, need, S.mode !== 'advanced'); }
     else if (s.error) { st.className = 'wizard-status error'; showLive(st, esc(s.error), true); }
-    else { st.className = 'wizard-status ok'; showLive(st, esc('Calculated from ' + s.pinned + (S.mode === 'simple' ? ' corners' : ' pinned points') + ', largest error ' + s.worst.toFixed(1) + ' px.'), true); }
+    // A point that keeps Save and finish off makes the result an error, not a success.
+    else { st.className = 'wizard-status ' + (applyBlocked(s) ? 'error' : 'ok'); showLive(st, esc('Calculated from ' + s.pinned + (S.mode === 'simple' ? ' corners' : ' pinned points') + ', largest error ' + s.worst.toFixed(1) + ' px.'), true); }
     var ok = !!s.cam;
     $('cal-solved').hidden = !ok;
     if (ok) $('cal-solved').innerHTML = solvedParamsHtml(s.cam) + '<div class="wizard-solved-param"><span class="param-label">Lens</span><span class="param-value"' +

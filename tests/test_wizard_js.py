@@ -8339,8 +8339,7 @@ _CURRENT_FUNCTIONS = ("lensHasCurrent", "lensMeasured", "renderLensCurrent", "le
 def _current(expression: str, station: list, start: str = "", **inputs) -> dict:
     return run_wizard_js(
         "(function() {" + expression + " return { current: $('lens-current').hidden,"
-        " notices: [$('lens-notices').hidden, $('lens-notices').locked, $('lens-notices').inert],"
-        " work: [$('lens-work').hidden, $('lens-work').locked, $('lens-work').inert], next: $('lens-next').disabled,"
+        " notices: $('lens-notices').hidden, work: $('lens-work').hidden, next: $('lens-next').hidden,"
         " values: $('lens-current-values').textContent, checked: radios.filter(function(r) { return r.checked; })"
         ".map(function(r) { return r.value; }), measured: lensMeasured(), choice: S.lensChoice, written: written,"
         " calls: calls, touched: S.lensTouched, loaded: S.lensLoaded }; })()",
@@ -8358,17 +8357,18 @@ _STATION = [-0.31, -0.01, 0.025, -0.015]
 @pytest.mark.parametrize(
     ("station", "choice", "shown"),
     [
-        ([0, 0, 0, 0], "", [True, [False, False, False], [False, False, False], False]),
-        (_STATION, "", [False, [False, True, True], [False, True, True], True]),
-        (_STATION, "keep", [False, [True, False, False], [True, False, False], False]),
-        (_STATION, "load", [False, [False, False, False], [True, False, False], False]),
-        (_STATION, "clear", [False, [False, False, False], [False, False, False], False]),
+        ([0, 0, 0, 0], "", [True, False, False, False]),
+        (_STATION, "", [False, True, True, True]),
+        (_STATION, "keep", [False, True, True, False]),
+        (_STATION, "load", [False, False, True, False]),
+        (_STATION, "clear", [False, False, False, False]),
     ],
     ids=["no calibration", "not answered", "kept", "loaded", "cleared"],
 )
 def test_a_camera_with_a_lens_calibration_asks_first_what_to_do_with_it(station, choice: str, shown: list) -> None:
     out = _current("renderLensCurrent();", station, choice)
-    # Unanswered, the step is greyed out and Next is off; kept, all of it goes; loaded, only its notices stay.
+    # Unanswered, everything below the choices and Next are hidden; kept, all of it stays hidden; loaded, only its
+    # notices show; cleared, the picture comes back.
     assert [out["current"], out["notices"], out["work"], out["next"]] == shown
     if station != [0, 0, 0, 0]:
         assert out["values"] == "Barrel / fisheye -0.31 · Corner correction -0.01."
@@ -8456,3 +8456,38 @@ def test_the_load_dialog_calls_back_once_a_calibration_is_applied(button: str, s
     )
     # The Lens step's question takes Load as its choice only after the calibration is on the lens.
     assert out == seen
+
+
+@pytest.mark.parametrize(
+    ("save", "note", "values"),
+    [
+        ("lensSaveCurrent()", "lens-current-saved", [-0.31, -0.01, 0.025, -0.015]),
+        ("lensSaveDialog()", "lens-saved", [-0.1, -0.1, 0, 0]),
+    ],
+    ids=["the camera's own, under the choices", "the fields', under the picture"],
+)
+def test_save_under_the_choices_backs_up_the_cameras_own_calibration(save: str, note: str, values: list) -> None:
+    out = run_wizard_js(
+        "(async function() { " + save + "; await new Promise(function(r) { setImmediate(r); });"
+        " $('ls-name').value = 'Backup'; buttons[1].onClick({}); await new Promise(function(r) { setImmediate(r); });"
+        " return [JSON.parse(sent), $(note).textContent, $(note).style.display]; })()",
+        functions=_DIALOG_FUNCTIONS,
+        prelude=_SAVE_ERROR
+        + _DOM
+        + _DIALOG_PAGE
+        + f"var note = {json.dumps(note)}, SAVED = {{ lens: {json.dumps(_STATION)} }}, buttons = [], sent = null;"
+        " openModal = function(o) { buttons = o.footerButtons; }; function closeModal() {}"
+        " document.querySelector = function() { return null; };"
+        " function fetch(url, o) {"
+        " if (o && o.method === 'POST') { sent = o.body; return Promise.resolve({ ok: true }); }"
+        " return Promise.resolve({ ok: true, json: function() { return Promise.resolve({ calibrations: [] }); } }); }\n"
+        + wizard_window_function("lensSaveDialog")
+        + "\n"
+        + wizard_window_function("lensSaveCurrent")
+        + "\nvar lensSaveDialog = window.lensSaveDialog, lensSaveCurrent = window.lensSaveCurrent;",
+    )
+    # The backup takes the camera's calibration even after Clear or Load changed the fields, and says so under
+    # the choices.
+    body, text, display = out
+    assert [body["k1"], body["k2"], body["cx"], body["cy"]] == values and body["name"] == "Backup"
+    assert [text, display] == ["Saved \u201cBackup\u201d on this station.", ""]

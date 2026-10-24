@@ -451,6 +451,8 @@
         <label class="tier-option"><input type="radio" name="lens_current" value="clear"><span><strong>Clear it and measure the lens again</strong><small>Trace new lines on the picture below.</small></span></label>
         <label class="tier-option"><input type="radio" name="lens_current" value="load"><span><strong>Load another lens calibration</strong><small>Saved on this station or in a settings file.</small></span></label>
       </div>
+      <button type="button" class="secondary" style="margin-top:0.72rem;" onclick="lensSaveCurrent()">Save lens calibration&hellip;</button>
+      <div id="lens-current-saved" class="notice success" role="status" style="display:none;margin-top:0.72rem;"></div>
     </div>
     <div id="lens-notices">
     <div class="notice" id="lens-hint" role="status" aria-live="polite" hidden></div>
@@ -2701,9 +2703,9 @@
     return S.lensTouched || (lensHasCurrent() && S.lensChoice !== 'clear');
   }
   function lensHasCurrent() { return SAVED.lens.some(function(v) { return v !== 0; }); }
-  // A camera with a lens calibration asks first what to do with it; until then the step shows greyed out. Kept or
-  // loaded, the calibration is used as it is: the picture and its controls go (a loaded one keeps its notices),
-  // and only Clear brings them back.
+  // A camera with a lens calibration asks first what to do with it; until then the rest of the step and Next are
+  // hidden. Kept or loaded, the calibration is used as it is: a loaded one shows its notices, and only Clear brings
+  // the picture and its controls back.
   function renderLensCurrent() {
     var cur = lensHasCurrent(), ask = cur && !S.lensChoice;
     $('lens-current').hidden = !cur;
@@ -2711,10 +2713,9 @@
       $('lens-current-values').textContent = lensVals(SAVED.lens[0], SAVED.lens[1], SAVED.lens[2], SAVED.lens[3], imageWidth, imageHeight) + '.';
       document.querySelectorAll('input[name="lens_current"]').forEach(function(r) { r.checked = r.value === S.lensChoice; });
     }
-    $('lens-notices').hidden = cur && S.lensChoice === 'keep';
-    $('lens-work').hidden = cur && (S.lensChoice === 'keep' || S.lensChoice === 'load');
-    ['lens-notices', 'lens-work'].forEach(function(id) { $(id).classList.toggle('step-locked', ask); $(id).inert = ask; });
-    $('lens-next').disabled = ask;
+    $('lens-notices').hidden = cur && S.lensChoice !== 'clear' && S.lensChoice !== 'load';
+    $('lens-work').hidden = cur && S.lensChoice !== 'clear';
+    $('lens-next').hidden = ask;
   }
   function lensCurrentInit() {
     document.querySelectorAll('input[name="lens_current"]').forEach(function(r) { r.addEventListener('change', function() { chooseLensCurrent(r.value); }); });
@@ -2858,9 +2859,11 @@
   };
   // The dialog opens once the saved list is in, so the same-name warning is never missing; a list that
   // could not be read says so, and that saving may replace a calibration of that name.
-  window.lensSaveDialog = function() {
-    if (!lensMeasured() || !wizLensValid()) return;
-    var l = wizLens(), saved = [], failed = null, saving = false;
+  // Under the question, Save backs up the camera's own calibration, whatever the fields show by then.
+  window.lensSaveCurrent = function() { lensSaveDialog(SAVED.lens, 'lens-current-saved'); };
+  window.lensSaveDialog = function(current, noteId) {
+    if (!current && (!lensMeasured() || !wizLensValid())) return;
+    var l = current || wizLens(), saved = [], failed = null, saving = false;
     function open() {
       openModal({
         title: 'Save Lens Calibration',
@@ -2882,7 +2885,7 @@
               saving = false;
               if (!r.ok) { btn.disabled = false; saveError.show(card, await saveError.fromResponse(r), 'Not saved.'); return; }
               closeModal();
-              var note = $('lens-saved');
+              var note = $(noteId || 'lens-saved');
               note.textContent = 'Saved “' + name + '” on this station.';
               note.style.display = '';
             }).catch(function() { saving = false; btn.disabled = false; saveError.show(card, saveError.UNREACHABLE, 'Not saved.'); });

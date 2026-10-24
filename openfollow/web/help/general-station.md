@@ -8,7 +8,7 @@ This station's name, web access and display units, plus the settings you set onc
 
 > Set a PIN on any station that is connected to a shared production network. Leaving it unset is acceptable only on isolated bench or point-to-point networks.
 
-**Displayed unit system** – choose **Metric (m, m/s)** or **Imperial (ft / in, ft/s)**. This controls what the web UI and the Operator Screen show and parse across Camera, Grid, Markers, Movement, Trigger Zones, and the Setup Wizard. Stored configuration and every wire protocol – OSC, PSN, RTTrPM, OTP – always stay metric regardless of this setting. The selection takes effect as soon as you change it; no Save is needed. The Setup Wizard's Grid Setup step offers the same choice.
+**Displayed unit system** – choose **Metric (m, m/s)** or **Imperial (ft / in, ft/s)**. This controls what the web UI and the Operator Screen show and parse across Camera, Grid, Markers, Movement, Trigger Zones, and the Setup Wizard. Stored configuration and every wire protocol – OSC, PSN, RTTrPM, OTP – always stay metric regardless of this setting. The selection takes effect as soon as you change it; no Save is needed. The Setup Wizard's **Switch units** in Camera Calibration changes the same setting.
 
 **Advanced Settings** – opens closed on every page load.
 
@@ -28,10 +28,9 @@ The table at the end of **Advanced Settings** lists what this station uses: one 
 
 - **Trigger zones** – the Trigger Zones and Zone Editor sections and the Toggle Zones bindings. Off, zones neither fire nor show on the Operator Screen.
 - **MIDI** – the MIDI patches and each virtual fader's MIDI source. Off, no MIDI device is opened.
-- **Lens distortion** – the Camera tab's Lens distortion values and the Setup Wizard's Lens step. Off, the Operator Screen, mouse, person detection and zones all work as if the lens were straight, and the wizard leaves the saved values alone. A camera pinned with a lens needs its corners pinned again before a show.
 - **PSN input** – receiving other stations' markers. Off, they are neither shown nor counted by zones. Nothing is hidden.
+- **Lens line suggestions** – the dashed suggested lines in the Setup Wizard's Lens step. Off, the Lens step suggests no lines, and lines are drawn by hand.
 - **Person detection** – the Person Detection tab. Off, detection does not run.
 - **RTTrPM output** – the RTTrPM Output section and its Interface Assignment row. Off, nothing is sent.
 - **Ground grid** – the Ground Grid section. Off, it is neither drawn nor drops markers onto its height.
-- **Calibration points** – the Camera tab's calibration points and the Setup Wizard's Advanced section in Corner Pinning. Off, they are only hidden: the saved points still count.
 - **Touch remote** – the Touch Remote section and its launcher. Off, every remote lets go of its marker.

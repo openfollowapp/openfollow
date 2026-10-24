@@ -141,14 +141,14 @@ web UI at `http://<host-ip>/`.
 ## Settings backups
 
 Every upgrade, reinstall and downgrade through the package manager archives the
-station's settings first, whichever route started it: *Check & Install
-Latest*, an offline `.ofupdate`, or a hand-run `apt` / `dpkg`. The package's
+station's settings first, whichever route started it: *Install Latest Version
+Online*, *Install .ofupdate File*, or a hand-run `apt` / `dpkg`. The package's
 `preinst` does it on `upgrade`, before the new files are unpacked, so it covers
 the release that introduces it.
 
 - **What goes in:** `config.toml`, the marker catalog (`markers.toml`, or
-  wherever `markers_catalog_path` points), `templates/user/`, and a
-  `manifest.json` recording each file's original path, the from / to versions
+  wherever `markers_catalog_path` points), `templates/user/`, the saved lens
+  calibrations (`lens-calibrations/`), and a `manifest.json` recording each file's original path, the from / to versions
   and the UTC time. A missing source is skipped and listed in the manifest. The
   Media Gallery and the detection models are left out: an update never rewrites
   them, and they are large.
@@ -176,11 +176,12 @@ The backup program is `openfollow/privilege/settings_backup.py`. Nothing from
 the package is on disk when the `preinst` runs, so `render-preinst.sh` inlines
 the program into `preinst.in` at build time; keep it standard-library only.
 
-To restore by hand:
+To restore by hand (the command restores whatever the archive holds, so an
+older archive without `lens-calibrations/` restores the same way):
 
 ```bash
 sudo systemctl stop openfollow
-sudo -u openfollow tar xzf /var/lib/openfollow/backups/<file>.ofbackup -C /var/lib/openfollow config.toml templates/user
+sudo -u openfollow tar -xzf /var/lib/openfollow/backups/<file>.ofbackup -C /var/lib/openfollow --exclude=manifest.json --exclude=markers.toml
 # markers.toml: copy it back to the path manifest.json names
 sudo systemctl start openfollow
 ```
@@ -470,11 +471,11 @@ is not a git checkout.)
 
 The in-app updater is the **GitHub Releases signed-bundle installer**
 ([`openfollow/runtime/deb_update.py`](../openfollow/runtime/deb_update.py)): the
-General → **Software Update** section's *Check & Install Latest* downloads the
-newest release's `openfollow_<version>_<arch>.ofupdate` bundle, and *Offline
-install* takes an operator-supplied `.ofupdate` over the LAN. Both paths verify
-the bundle's signature (against the on-device public key) and the `.deb`'s
-SHA-256 before installing, and fail closed otherwise. See
+General → **Software Update** section's *Install Latest Version Online*
+downloads the newest release's `openfollow_<version>_<arch>.ofupdate` bundle,
+and *Install .ofupdate File* takes an operator-supplied `.ofupdate` over the
+LAN. Both paths verify the bundle's signature (against the on-device public
+key) and the `.deb`'s SHA-256 before installing, and fail closed otherwise. See
 [`SERVICE.md`](./SERVICE.md#web-update-button) for the install/privilege details.
 
 ## macOS `.dmg` (developer build)

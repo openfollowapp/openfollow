@@ -87,10 +87,7 @@ Object.defineProperties(El.prototype, {
         set: function (v) { this.replaceChildren(); if (String(v)) this.appendChild(new Text(v)); },
     },
     innerHTML: {
-        set: function (v) {
-            if (v !== '') throw new Error('the fake DOM only clears innerHTML');
-            this.replaceChildren();
-        },
+        set: function (v) { this.replaceChildren(); parseHTML(String(v), this); },
     },
     children: { get: function () { return this.childNodes.filter(function (n) { return n.nodeType === 1; }); } },
     firstChild: { get: function () { return this.childNodes[0] || null; } },

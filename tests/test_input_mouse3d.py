@@ -1031,17 +1031,6 @@ def test_mouse3d_prev_and_zones_fold_when_sole_controller(wired) -> None:  # noq
     assert result.toggle_zones_pressed is True
 
 
-def test_apply_mouse3d_swallows_handler_error(wired) -> None:  # noqa: ANN001
-    manager, app = wired
-    app._config.mouse3d.enabled = True
-
-    def _boom(_dt):  # noqa: ANN001, ANN202
-        raise RuntimeError("handler blew up")
-
-    manager.mouse3d_manager.update = _boom
-    manager.update(0.016)  # logged, not raised
-
-
 def test_mouse3d_no_movement_when_disconnected(wired) -> None:  # noqa: ANN001
     manager, app = wired
     app._config.mouse3d.enabled = True
@@ -1542,6 +1531,49 @@ def test_two_pucks_route_to_fixed_slots(wired) -> None:  # noqa: ANN001
     # 2 pucks -> unified slots [mouse0, mouse1] -> controlled_ids[0]/[1] both move +2.
     assert app._server.get_marker(10).pos == pytest.approx((2.0, 0.0, 0.0))
     assert app._server.get_marker(11).pos == pytest.approx((2.0, 0.0, 0.0))
+
+
+def test_a_failing_puck_leaves_the_other_pucks_moving(wired, caplog) -> None:  # noqa: ANN001
+    manager, app = wired
+    app._config.mouse3d.enabled = True
+    manager.mouse3d_manager.devices = [
+        Mouse3DDeviceInfo(path="/dev/hidraw2", product_name="SpaceNavigator"),
+        Mouse3DDeviceInfo(path="/dev/hidraw3", product_name="SpaceExplorer"),
+    ]
+    manager.mouse3d_manager.next_update = Mouse3DUpdate(velocity=(1.0, 0.0, 0.0))
+    orient = manager.control_frame.orient
+
+    def first_puck_fails(key, vx, vy, pos):  # noqa: ANN001, ANN202
+        if key[:2] == ("mouse3d", 0):
+            raise RuntimeError("puck 0 boom")
+        return orient(key, vx, vy, pos)
+
+    manager.control_frame.orient = first_puck_fails
+    with caplog.at_level("ERROR", logger="openfollow.input.input_manager"):
+        for _ in range(3):
+            manager.update(1.0)
+    # The first puck's marker stays put; the second keeps moving every frame.
+    assert app._server.get_marker(10).pos == pytest.approx((0.0, 0.0, 0.0))
+    assert app._server.get_marker(11).pos == pytest.approx((6.0, 0.0, 0.0))
+    # Repeating every frame, it is logged once, throttled.
+    assert [r.getMessage() for r in caplog.records].count("3D Mouse update failed this tick.") == 1
+
+
+def test_a_failing_puck_manager_still_leaves_the_frame_running(wired, caplog) -> None:  # noqa: ANN001
+    manager, app = wired
+    app._config.mouse3d.enabled = True
+
+    def boom(_dt: float) -> dict:
+        raise RuntimeError("manager boom")
+
+    manager.mouse3d_manager.update = boom
+    # The keyboard runs after the 3D Mouse in the frame.
+    manager.keyboard_handler.update = lambda _dt: (1.0, 0.0, 0.0)
+    with caplog.at_level("ERROR", logger="openfollow.input.input_manager"):
+        for _ in range(3):
+            manager.update(1.0)
+    assert app._server.get_marker(10).pos == pytest.approx((3.0, 0.0, 0.0))
+    assert [r.getMessage() for r in caplog.records].count("3D Mouse update failed this tick.") == 1
 
 
 def test_two_pucks_controller_info_surfaces_each_device(wired) -> None:  # noqa: ANN001

@@ -567,9 +567,11 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
         return True
 
     def _render(self, area: Any) -> None:
-        started = time.perf_counter_ns()
+        started, cpu = time.perf_counter_ns(), time.thread_time()
         self._draw(area)
         self._took["render"].add((time.perf_counter_ns() - started) // 1000)
+        if self._hud is not None:
+            self._hud.gl_rendered(time.thread_time() - cpu)
 
     def _draw(self, area: Any) -> None:
         GL = self._gl

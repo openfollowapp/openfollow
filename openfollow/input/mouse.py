@@ -387,9 +387,9 @@ class MouseHandler:
         self._screen_buffer[0, 1] = y
         # The cursor lands on the (lens-distorted) video, so undistort it back to
         # the pinhole frame before unprojecting. Identity when no lens distortion
-        # is configured. k1/k2 live on the config (the Camera object is pinhole).
-        k1, k2 = effective_lens(self._app._config)
-        screen = invert_overlay_distortion(self._screen_buffer, float(w), float(h), k1, k2)
+        # is configured. The lens lives on the config (the Camera object is pinhole).
+        lens = effective_lens(self._app._config)
+        screen = invert_overlay_distortion(self._screen_buffer, float(w), float(h), *lens)
         plane_z = self._app._config.grid.z_offset if self._drag_floor_z is None else self._drag_floor_z
         world = unproject_to_plane(buf, screen, float(w), float(h), plane_z)
         if not np.all(np.isfinite(world[0])):
@@ -422,10 +422,10 @@ class MouseHandler:
             gc_size = cfg.marker.ground_circle_size
             ring_segments = GROUND_RING_SEGMENTS
         # Match the rendered circle: the overlay bows the projected ground circle
-        # by the lens coefficients, so the hit-test projects through the same
-        # warp (identity when no lens is configured) or the clickable region
-        # would drift from what the operator sees.
-        k1, k2 = effective_lens(cfg)
+        # by the lens, so the hit-test projects through the same warp (identity
+        # when no lens is configured) or the clickable region would drift from
+        # what the operator sees.
+        lens = effective_lens(cfg)
         best_marker_id: int | None = None
         best_dist = float("inf")
         for marker_id in app._controlled_ids:
@@ -438,8 +438,7 @@ class MouseHandler:
                 project_points(buf, np.array([[mx, my, z_off]], dtype=np.float64), float(w), float(h)),
                 float(w),
                 float(h),
-                k1,
-                k2,
+                *lens,
             )[0]
             if not np.all(np.isfinite(center)):
                 continue
@@ -452,8 +451,7 @@ class MouseHandler:
                     project_points(buf, np.array(ring, dtype=np.float64), float(w), float(h)),
                     float(w),
                     float(h),
-                    k1,
-                    k2,
+                    *lens,
                 )
                 finite = ring_scr[np.all(np.isfinite(ring_scr), axis=1)]
                 if len(finite) >= 3:

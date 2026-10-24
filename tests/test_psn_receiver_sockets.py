@@ -118,6 +118,7 @@ def _make_robust_receiver(
     instance.socket = socket_obj
     instance._gate = _ScriptedGate() if socket_obj is not None else None
     instance.callback = callback or (lambda _data, _sender: None)
+    instance._own_source = lambda: None
     return instance
 
 
@@ -330,7 +331,9 @@ class _FakeRecvThread:
     construct_raises: OSError | None = None
     instances: list[_FakeRecvThread] = []
 
-    def __init__(self, *, callback: Any, ip_addr: str, mcast_port: int, iface: str = "") -> None:
+    def __init__(
+        self, *, callback: Any, ip_addr: str, mcast_port: int, iface: str = "", own_source: Any = None
+    ) -> None:
         if _FakeRecvThread.construct_raises is not None:
             raise _FakeRecvThread.construct_raises
         self.callback = callback
@@ -714,3 +717,129 @@ class TestSetIgnoreIds:
         marker = recv.get_marker(7)
         assert marker is not None
         assert marker.pos == pytest.approx((1.0, 2.0, 3.0))
+
+
+# --------------------------------------------------------------------------- #
+# _RobustReceiver – this station's own output
+# --------------------------------------------------------------------------- #
+
+
+class _AddressedSocket:
+    """``recvfrom`` returns each scripted ``(data, (address, port))`` in turn."""
+
+    def __init__(self, script: list[tuple[bytes, tuple[str, int]]]) -> None:
+        self._script = list(script)
+
+    def recvfrom(self, _size: int) -> tuple[bytes, tuple[str, int]]:
+        return self._script.pop(0)
+
+    def settimeout(self, _timeout: float) -> None:
+        pass
+
+
+_OWN = ("192.0.2.10", 50000)
+_PEER = ("198.51.100.1", 56565)
+
+
+class TestOwnOutputIsNotDecoded:
+    def _run(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        script: list[tuple[bytes, tuple[str, int]]],
+        own: Any,
+        on_packet: Any = None,
+    ) -> list[bytes]:
+        """Feed ``script`` then a last packet from a peer; return what was decoded."""
+        decoded: list[bytes] = []
+        monkeypatch.setattr(receiver_module.pypsn, "parse_psn_packet", lambda data: decoded.append(data) or data)
+
+        def callback(data: bytes, _sender: str) -> None:
+            if on_packet is not None:
+                on_packet(data)
+            if data == b"last":
+                r._gate.stop()
+
+        r = _make_robust_receiver(socket_obj=_AddressedSocket([*script, (b"last", _PEER)]), callback=callback)
+        r._own_source = own
+        r.run()
+        return decoded
+
+    @pytest.mark.parametrize(
+        ("sender", "is_decoded"),
+        [(_OWN, False), (("192.0.2.10", 50001), True), (("192.0.2.11", 50000), True)],
+        ids=["own-address-and-port", "own-address-other-port", "other-address-own-port"],
+    )
+    def test_only_this_station_s_own_packets_are_dropped(
+        self, monkeypatch: pytest.MonkeyPatch, sender: tuple[str, int], is_decoded: bool
+    ) -> None:
+        decoded = self._run(monkeypatch, [(b"probe", sender)], lambda: _OWN)
+        assert decoded == ([b"probe", b"last"] if is_decoded else [b"last"])
+
+    def test_without_an_own_output_every_packet_is_decoded(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert self._run(monkeypatch, [(b"probe", _OWN)], lambda: None) == [b"probe", b"last"]
+
+    def test_a_rebuilt_output_socket_is_followed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        new = ("192.0.2.10", 50002)
+        current = {"own": _OWN}
+
+        def rebuild(data: bytes) -> None:
+            if data == b"rebuild":
+                current["own"] = new
+
+        script = [(b"old-before", _OWN), (b"rebuild", _PEER), (b"old-after", _OWN), (b"new", new)]
+        decoded = self._run(monkeypatch, script, lambda: current["own"], rebuild)
+        assert decoded == [b"rebuild", b"old-after", b"last"]
+
+
+class _ReadsThenStops(_ScriptedGate):
+    """Reports the socket readable ``reads`` times, then stops."""
+
+    def __init__(self, reads: int) -> None:
+        super().__init__()
+        self._reads = reads
+
+    def wait(self) -> bool:
+        self._reads -= 1
+        return self._reads >= 0
+
+
+class TestPsnReceiverHandsOwnSourceToItsReceiveThread:
+    @pytest.mark.parametrize("iface", ["", "eth1"], ids=["unpinned", "pinned"])
+    def test_its_station_s_own_packets_are_dropped(self, monkeypatch: pytest.MonkeyPatch, iface: str) -> None:
+        sock = _AddressedSocket([(b"own", _OWN), (b"peer", _PEER)])
+        monkeypatch.setattr(receiver_module.pypsn, "get_socket", lambda *_args: sock)
+        monkeypatch.setattr(receiver_module, "_pinned_socket", lambda *_args: sock)
+        started: list[_RobustReceiver] = []
+        monkeypatch.setattr(_RobustReceiver, "start", lambda self: started.append(self))
+        decoded: list[bytes] = []
+        monkeypatch.setattr(receiver_module.pypsn, "parse_psn_packet", lambda data: decoded.append(data) or data)
+
+        PsnReceiver(source_ip="10.0.0.5", source_iface=iface, own_source=lambda: _OWN).start()
+        (thread,) = started
+        thread._gate = _ReadsThenStops(2)
+        thread.run()
+        assert decoded == [b"peer"]
+
+    def test_a_departed_peer_is_forgotten_while_only_its_own_packets_arrive(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        clock = {"now": 0.0}
+        monkeypatch.setattr(receiver_module.time, "monotonic", lambda: clock["now"])
+        monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
+        packets = {b"peer": _FakeDataPacket([_PacketTracker(7, _Vec(1.0, 2.0, 3.0), _Vec(0.0, 0.0, 0.0))])}
+        monkeypatch.setattr(receiver_module.pypsn, "parse_psn_packet", packets.__getitem__)
+        sock = _AddressedSocket([(b"peer", _PEER), (b"own", _OWN)])
+        monkeypatch.setattr(receiver_module.pypsn, "get_socket", lambda *_args: sock)
+        started: list[_RobustReceiver] = []
+        monkeypatch.setattr(_RobustReceiver, "start", lambda self: started.append(self))
+
+        recv = PsnReceiver(source_ip="10.0.0.5", own_source=lambda: _OWN)
+        recv.start()
+        (thread,) = started
+        thread._gate = _ReadsThenStops(1)
+        thread.run()
+        assert recv.get_marker(7) is not None
+        clock["now"] = 100.0  # past the TTL; from here on only this station's own output arrives
+        thread._gate = _ReadsThenStops(1)
+        thread.run()
+        assert recv.get_marker(7) is None

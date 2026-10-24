@@ -7,6 +7,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from openfollow.lens_model import C_BOUND, pull_back_to_valid
 from openfollow.scene.edge_chains import (
     EDGE_MAP_WIDTH,
     MAX_CANDIDATES,
@@ -16,13 +17,16 @@ from openfollow.scene.edge_chains import (
     edge_map_size,
     find_edge_candidates,
 )
-from openfollow.scene.edge_snap import LINE_SAMPLE_FRACTIONS, end_search_radius, snap_line_to_edges
+from openfollow.scene.edge_snap import LINE_SAMPLE_FRACTIONS, NearEdge, end_search_radius, snap_line_to_edges
+from openfollow.scene.solver import apply_overlay_distortion, invert_overlay_distortion
 from tests._lens_band import cut_band, scaled_luma
+from tests._lens_scene import Scene, Strip, render
 from tests.test_edge_snap import BARREL, BRIGHT, DARK, STRAIGHT, H, W, distance_to_strip_centre, strip_frame
 
 pytestmark = pytest.mark.unit
 
 SCALE = edge_map_scale(W)
+HALF_DIAG = 0.5 * float(np.hypot(W, H))
 
 
 def find(img, **kwargs):
@@ -183,6 +187,46 @@ def test_pieces_offset_sideways_are_not_joined() -> None:
     assert all(c.length < 800.0 for c in found)
 
 
+SMALL = (960, 540)
+LENSES = {"pinhole": (0.0, 0.0), "stage-camera": (-0.26, 0.05), "wide-lens": (-0.47, 0.25)}
+
+
+def find_through(lens: tuple[float, float], *strips: Strip):
+    """The suggestions for the strips seen through ``lens`` in a small picture."""
+    img = render(Scene(list(strips)), lens, size=SMALL, noise=2.0)
+    scale = edge_map_scale(SMALL[0])
+    return find_edge_candidates(scaled_luma(img, scale), scale, *SMALL).candidates
+
+
+@pytest.mark.parametrize(
+    ("lens", "angle"),
+    [("pinhole", 21.0), ("stage-camera", 0.0), ("stage-camera", 29.0), ("wide-lens", 13.0)],
+)
+def test_a_slanted_line_through_a_lens_is_joined_across_an_occlusion(lens: str, angle: float) -> None:
+    """A slanted line bowed by the lens and cut by an occlusion: its pixel staircase is no step aside."""
+    centre = np.array([480.0, 330.0])
+    d = np.array([np.cos(np.radians(angle)), np.sin(np.radians(angle))])
+    found = find_through(
+        LENSES[lens],
+        Strip(tuple(centre - 380.0 * d), tuple(centre - 3.0 * d), 1.5, BRIGHT),
+        Strip(tuple(centre + 3.0 * d), tuple(centre + 380.0 * d), 1.5, BRIGHT),
+    )
+    assert len(found) == 1
+    assert found[0].length > 600.0
+
+
+@pytest.mark.parametrize("lens", list(LENSES))
+def test_a_line_running_on_beside_another_is_not_joined_to_it(lens: str) -> None:
+    """A deck seam and the riser seam that runs on a few pixels beside it, beyond a small gap, are two lines."""
+    found = find_through(
+        LENSES[lens],
+        Strip((100.0, 400.0), (470.0, 400.0), 1.5, BRIGHT),
+        Strip((482.0, 406.0), (862.0, 406.0), 1.5, BRIGHT),
+    )
+    assert len(found) == 2
+    assert all(c.length < 450.0 for c in found)
+
+
 def test_a_u_shape_is_cut_into_its_three_straight_sides() -> None:
     img = straight_strip((300.0, 200.0), (1600.0, 200.0))
     img = straight_strip((300.0, 200.0), (300.0, 900.0), base=img)
@@ -268,6 +312,35 @@ def test_a_step_edge_has_no_line_beside_it() -> None:
     assert np.all(np.abs(ys - (360.0 + 0.05 * xs)) <= 2.0)
 
 
+@pytest.mark.parametrize(("upper", "lower"), [(60.0, 180.0), (180.0, 60.0)], ids=["darker-above", "brighter-above"])
+def test_a_step_edge_is_offered_with_its_contrast_side(upper: float, lower: float) -> None:
+    """The snap keeps a used suggestion on its own side of the contrast: luma rising or falling along the
+    normal of the chord from its first point to its last."""
+    yy, xx = np.mgrid[0:H720, 0:W720]
+    img = np.where(yy < 360 + 0.05 * xx, upper, lower)
+    (found,) = find_edge_candidates(img, 1, W720, H720).candidates
+    a, b = ends_of(found)
+    tangent = (b - a) / np.linalg.norm(b - a)
+    normal = np.array([-tangent[1], tangent[0]])
+    mid = np.asarray(candidate_sample_points(found.points, LINE_SAMPLE_FRACTIONS)[2])
+    before, after = (img[int(round(p[1])), int(round(p[0]))] for p in (mid - 6.0 * normal, mid + 6.0 * normal))
+    assert found.polarity == int(np.sign(after - before))
+
+
+@pytest.mark.parametrize("contrast", [40.0, -40.0], ids=["bright-seam", "dark-seam"])
+def test_a_used_seam_snaps_onto_one_side_of_it(contrast: float) -> None:
+    img = one_pixel_lines(contrast)
+    across = max(find_720(img), key=lambda c: abs(ends_of(c)[1][0] - ends_of(c)[0][0]))
+    samples = candidate_sample_points(across.points, LINE_SAMPLE_FRACTIONS)
+    near = NearEdge(tuple(samples), across.polarity)
+    band = cut_band(img, samples[0], samples[4])
+    pts = snap_line_to_edges(samples[0], samples[4], band, W720, H720, near=near)
+    assert all(p.snapped for p in pts)
+    off = np.array([p.y - (400.0 + 0.03 * p.x) for p in pts])
+    assert np.all(np.abs(off) < 1.5)
+    assert np.ptp(off) < 0.6
+
+
 # --------------------------------------------------------------------------- #
 # What is not offered
 # --------------------------------------------------------------------------- #
@@ -277,6 +350,36 @@ def test_a_spotlight_rim_is_not_offered() -> None:
     yy, xx = np.mgrid[0:H, 0:W]
     disc = np.where(np.hypot(xx - 900.0, yy - 500.0) <= 150.0, BRIGHT, DARK)
     assert find(disc) == []
+
+
+def _off_curve(points, curve: np.ndarray) -> np.ndarray:
+    """Each point's distance (px) from the polyline ``curve``."""
+    pts = np.asarray(points, dtype=np.float64)
+    a, d = curve[:-1], np.diff(curve, axis=0)
+    t = np.clip(np.einsum("pij,ij->pi", pts[:, None, :] - a, d) / np.einsum("ij,ij->i", d, d), 0.0, 1.0)
+    return np.linalg.norm(pts[:, None, :] - a - t[:, :, None] * d, axis=2).min(axis=1)
+
+
+@pytest.mark.parametrize(
+    "lens",
+    [(-0.527, -0.069, 0.0, 0.0), (-0.3, -0.3, 0.0, 0.0), (-0.527, -0.069, 80.0 / HALF_DIAG, 50.0 / HALF_DIAG)],
+    ids=["126-degree", "corner-heavy", "126-degree-off-centre"],
+)
+def test_a_line_along_the_top_edge_of_a_wide_lens_is_offered_and_snapped(lens) -> None:
+    """Across the whole picture just under its top edge the line sags a tenth of its chord and more."""
+    mid = invert_overlay_distortion(np.array([[960.0, 30.0]]), W, H, *lens)[0]
+    img = render(Scene([Strip((mid[0] - 6000.0, mid[1]), (mid[0] + 6000.0, mid[1]), 4.0, BRIGHT)]), lens, noise=3.0)
+    xs = np.linspace(mid[0] - 6000.0, mid[0] + 6000.0, 20001)
+    curve = apply_overlay_distortion(np.column_stack([xs, np.full_like(xs, mid[1])]), W, H, *lens)
+    found = find(img)
+    assert len(found) == 1
+    assert found[0].length > 1900.0
+    assert np.all(_off_curve(found[0].points, curve) < 6.0)
+    samples = candidate_sample_points(found[0].points, LINE_SAMPLE_FRACTIONS)
+    pts = snap_line_to_edges(samples[0], samples[4], cut_band(img, samples[0], samples[4]), W, H)
+    on = [(p.x, p.y) for p in pts if p.snapped]
+    assert len(on) >= 4
+    assert np.all(_off_curve(on, curve) < 6.0)
 
 
 @pytest.mark.parametrize(("radius", "span_deg"), [(1000.0, 110.0), (800.0, 120.0), (1500.0, 80.0)])
@@ -290,6 +393,45 @@ def test_a_wide_arc_is_never_offered_whole(radius: float, span_deg: float) -> No
     on_arc = (np.abs(np.hypot(xx - 960.0, yy - centre_y) - radius) <= 7.0) & (np.abs(angle) <= span_deg / 2)
     arc_length = radius * np.radians(span_deg)
     assert all(c.length < 0.3 * arc_length for c in find(np.where(on_arc, BRIGHT, DARK)))
+
+
+def _widest_straight_sag(a, b) -> float:
+    """How far (px) a straight line seen from ``a`` to ``b`` strays from its chord through the slider ends,
+    each with its lens centre at the picture's centre or on the edge of its bound, pulled back to valid."""
+    a, b = np.asarray(a, dtype=np.float64), np.asarray(b, dtype=np.float64)
+    normal = np.array([a[1] - b[1], b[0] - a[0]]) / np.hypot(*(b - a))
+    widest = 0.0
+    for k1, k2 in ((-1.0, 0.0), (0.0, -0.8), (0.5, 0.0), (0.0, 0.3)):
+        for x in (-1.0, 0.0, 1.0):
+            for y in (-1.0, 0.0, 1.0):
+                lens = pull_back_to_valid(k1, k2, C_BOUND * x, C_BOUND * y)
+                ends = invert_overlay_distortion(np.array([a, b]), W, H, *lens)
+                t = np.linspace(0.0, 1.0, 401)[:, None]
+                seen = apply_overlay_distortion(ends[0] + t * (ends[1] - ends[0]), W, H, *lens)
+                widest = max(widest, float(np.max(np.abs((seen - a) @ normal))))
+    return widest
+
+
+@pytest.mark.parametrize(("share", "offered"), [(0.9, True), (1.1, False)])
+def test_an_arc_near_the_frame_edge_is_offered_up_to_the_margin_over_the_widest_lens(
+    share: float, offered: bool
+) -> None:
+    # Near the top right corner a pincushion slider end with its centre off at the bound
+    # bends a straight line the most; an arc bowing toward the centre by a share of that
+    # times the margin is offered within it and not past it.
+    a, b = np.array([1000.0, 30.0]), np.array([1880.0, 300.0])
+    sag = share * 1.25 * _widest_straight_sag(a, b)
+    chord = float(np.hypot(*(b - a)))
+    inward = np.array([a[1] - b[1], b[0] - a[0]]) / chord
+    inward *= np.sign(inward @ (np.array([W / 2.0, H / 2.0]) - (a + b) / 2.0))
+    radius = (chord * chord / 4.0 + sag * sag) / (2.0 * sag)
+    centre = (a + b) / 2.0 + inward * (sag - radius)
+    yy, xx = np.mgrid[0:H, 0:W]
+    rel_x, rel_y = xx - centre[0], yy - centre[1]
+    angle = np.arctan2(rel_x * inward[1] - rel_y * inward[0], rel_x * inward[0] + rel_y * inward[1])
+    on_arc = (np.abs(np.hypot(rel_x, rel_y) - radius) <= 4.0) & (np.abs(angle) <= np.arcsin(chord / 2.0 / radius))
+    found = find(np.where(on_arc, BRIGHT, DARK))
+    assert (len(found) == 1 and found[0].length > chord) is offered
 
 
 def test_a_wavy_edge_is_not_offered() -> None:

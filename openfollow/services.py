@@ -34,6 +34,7 @@ from openfollow.configuration import (
 )
 from openfollow.input import InputManager
 from openfollow.input.mouse3d import idle_mouse3d_status
+from openfollow.marker_catalog.control_conflicts import ControlConflict, find_control_conflicts
 from openfollow.net_adapters import display_name
 from openfollow.net_egress import Egress, is_loopback_host, resolve_egress
 from openfollow.net_utils import ResolveStatus, interface_present, plane_source_iface
@@ -748,6 +749,8 @@ class AppRuntimeServices:
         self._last_runtime_stats_publish = 0.0
         self._runtime_stats_lock = threading.Lock()
         self._runtime_stats_snapshot: dict[str, Any] = self._default_runtime_stats_snapshot()
+        # Decided at each stats publish; the HUD, /api/stats and the web marker table all read this.
+        self._control_conflicts: tuple[ControlConflict, ...] = ()
         # Cache the detection-deps probe so the 4Hz stats loop doesn't call
         # importlib.util.find_spec() on every publish; invalidated by TTL and
         # by any change to the detection config signature.
@@ -3684,6 +3687,7 @@ class AppRuntimeServices:
             cam_params_buffer=self._cam_params_buffer,
             dt=dt,
             network_alerts=self.network_alerts(),
+            control_conflicts=self._control_conflicts,
         )
 
         # Replaced on the main thread; a state the render thread received at a refresh is never changed.
@@ -4070,7 +4074,15 @@ class AppRuntimeServices:
             },
             # Filled once the Operator Screen has drawn for a window (``HudMetrics``); None headless.
             "hud": None,
+            "marker_conflicts": [],
         }
+
+    def _find_control_conflicts(self) -> tuple[ControlConflict, ...]:
+        """Markers two or more stations control, this one included, from the peers' catalog-sync beacons."""
+        sync = getattr(self._app, "_marker_catalog_sync", None)
+        if sync is None:
+            return ()
+        return find_control_conflicts(self._app._controlled_ids, sync.get_peer_selections())
 
     def _detection_pin_status(self) -> float | None:
         """The PSN tracker status the detection pin last wrote, or None when it drives nothing.
@@ -4230,6 +4242,7 @@ class AppRuntimeServices:
                 )
 
         playback_snapshot = self._frame_metrics.snapshot()
+        self._control_conflicts = self._find_control_conflicts()
 
         detection_snapshot: dict[str, Any] = {
             "enabled": bool(self.detection_config().enabled),
@@ -4284,6 +4297,7 @@ class AppRuntimeServices:
             "playback": playback_snapshot,
             "tracking": detection_snapshot,
             "hud": self._hud_render.stats() if self._hud_render is not None else None,
+            "marker_conflicts": [conflict.to_dict() for conflict in self._control_conflicts],
         }
 
         with self._runtime_stats_lock:

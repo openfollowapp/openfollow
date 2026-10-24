@@ -4656,6 +4656,7 @@ def _register_marker_catalog_routes(
                 {
                     "entries": [],
                     "peer_selections": [],
+                    "marker_conflicts": [],
                     "this_station": {
                         "station_id": cfg.station_id,
                         "station_name": cfg.psn_system_name,
@@ -4681,6 +4682,8 @@ def _register_marker_catalog_routes(
             {
                 "entries": entries,
                 "peer_selections": peer_selections,
+                # The runtime's decision, not one of this page's own, so the table and the Operator Screen agree.
+                "marker_conflicts": server.get_runtime_stats().get("marker_conflicts") or [],
                 "this_station": {
                     "station_id": cfg.station_id,
                     "station_name": cfg.psn_system_name,

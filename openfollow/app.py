@@ -334,6 +334,7 @@ class OpenFollowApp:
         self._settings_menu_active: bool = False
         self._settings_menu_index: int = 0
         self._settings_menu_banner: str = ""
+        self._settings_menu_banner_action: str = ""
         # Newest pushed-settings warning pending when the Settings menu opened.
         self._settings_pushed_upto: int | None = None
         self._settings_key_pressed: bool = False
@@ -536,7 +537,7 @@ class OpenFollowApp:
         if resolved:
             banner += f"Using auto-detected {resolved}."
         else:
-            banner += "No usable interface – pick one to continue."
+            banner += "No usable interface."
         self._psn_source_banner = banner
         return banner
 
@@ -739,8 +740,8 @@ class OpenFollowApp:
     def _process_field_choice_picker_input(self) -> None:
         runtime_process_field_choice_picker_input(self)
 
-    def _enter_settings_menu(self, *, banner: str = "") -> None:
-        runtime_enter_settings_menu(self, banner=banner)
+    def _enter_settings_menu(self, *, banner: str = "", action: str = "") -> None:
+        runtime_enter_settings_menu(self, banner=banner, action=action)
 
     def _exit_settings_menu(self) -> None:
         runtime_exit_settings_menu(self)

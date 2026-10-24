@@ -3056,6 +3056,28 @@ class TestVideoFailureReachesTheDeviceSurfaces:
         assert "Video source (rtsp) is not available." in drawn
         assert "Nothing answered at X." not in drawn
 
+    def test_a_banner_carries_its_own_next_step_and_not_the_videos(self) -> None:
+        state = self._state(sentence="Nothing answered at X.", action="Check the camera is powered.")
+        state.settings_menu_banner = "RTSP is live but could not be saved."
+        state.settings_menu_banner_action = "Check the station's storage, then switch again."
+        cr = FakeCairo()
+        draw_settings_menu(FakeRenderer(), cr, state, 1920, 1080)
+        drawn = " ".join(cr.show_text_strings())
+
+        assert "Check the camera is powered." not in drawn
+        step = cr.find_texts("Check the station's storage")[0]
+        assert step.bold is False
+        assert step.rgba == COLOR_TEXT_MUTED
+        assert step.y > cr.find_texts("RTSP is live")[0].y
+
+    def test_a_banner_without_a_step_does_not_borrow_the_videos(self) -> None:
+        state = self._state(sentence="Nothing answered at X.", action="Check the camera is powered.")
+        state.settings_menu_banner = "Pinned network interface 'eth1' is not available."
+        drawn = self._drawn(state)
+
+        assert "Pinned network interface 'eth1' is not available." in drawn
+        assert "Check the camera is powered." not in drawn
+
     def test_a_healthy_feed_draws_no_error_box(self) -> None:
         assert "ERROR" not in self._drawn(self._state(sentence="", error=""))
 

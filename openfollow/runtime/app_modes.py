@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any
 from openfollow.configuration import config_file_problem, config_problem_words, is_simple_mode, save_config_fields
 from openfollow.input.touch_remote import holds
 from openfollow.runtime import paths_runtime
-from openfollow.video.failure import SourceKind, VideoFailure, failure_sentence
+from openfollow.video.failure import SourceKind, VideoFailure, failure_action, failure_sentence
 
 if TYPE_CHECKING:
     from openfollow.app import OpenFollowApp
@@ -461,14 +461,16 @@ def _settings_menu_action(app: OpenFollowApp, index: int) -> str | None:
     return action
 
 
-def enter_settings_menu(app: OpenFollowApp, *, banner: str = "") -> None:
+def enter_settings_menu(app: OpenFollowApp, *, banner: str = "", action: str = "") -> None:
     """Open the Settings menu overlay.
 
     ``banner`` is stored on the app and rendered inside the menu's
     red-bordered error box (word-wrapped, bold body) – used by the
     startup auto-open and the runtime ``check_video_disconnect_banner``
-    so the operator sees *why* the menu auto-opened. The subtitle row
-    keeps its static "Open a sub-screen." text regardless.
+    so the operator sees *why* the menu auto-opened. ``action`` is the
+    banner's one next step, drawn under it (lighter); a banner never
+    carries the step in its own sentence. The subtitle row keeps its
+    static "Open a sub-screen." text regardless.
     """
     if app._settings_menu_active:
         return
@@ -476,6 +478,7 @@ def enter_settings_menu(app: OpenFollowApp, *, banner: str = "") -> None:
 
     app._settings_menu_active = True
     app._settings_menu_banner = banner
+    app._settings_menu_banner_action = action
     app._settings_pushed_upto = newest_pending(app)
     # Below the removal, where the highlight always starts: a reflexive press
     # (the menu also opens itself on a video failure) must not acknowledge a push.
@@ -485,6 +488,7 @@ def enter_settings_menu(app: OpenFollowApp, *, banner: str = "") -> None:
 def exit_settings_menu(app: OpenFollowApp) -> None:
     app._settings_menu_active = False
     app._settings_menu_banner = ""
+    app._settings_menu_banner_action = ""
     app._video_disconnect_menu_open = False
 
 
@@ -1179,7 +1183,8 @@ def confirm_source_type_selection(app: OpenFollowApp) -> None:
             )
             exit_source_type_selection(app)
             app._enter_settings_menu(
-                banner=(f"Couldn't switch to {display}: {error}. Configure it in the web UI, then try again."),
+                banner=f"Couldn't switch to {display}: {error}.",
+                action="Configure it in the web UI, then try again.",
             )
             return
         app._config.video_source_type = new_type
@@ -1187,25 +1192,36 @@ def confirm_source_type_selection(app: OpenFollowApp) -> None:
         logger.info("Video source type set to: %s (live)", new_type)
         if not saved:
             exit_source_type_selection(app)
-            app._enter_settings_menu(banner=_unsaved_banner(app, display, "switch again"))
+            _report_unsaved(app, display, "switch again")
             return
 
     exit_source_type_selection(app)
     _route_after_video_source_change(app, new_type)
 
 
-def _why_unsaved(app: OpenFollowApp, again: str) -> str:
-    """Why a save did not reach the settings file, and the one step before the operator tries *again*."""
+def _unsaved_reason(app: OpenFollowApp, again: str) -> tuple[str, str]:
+    """What is wrong with the settings file (``""`` if it reads), and the step before the operator tries *again*."""
     problem = config_file_problem(app._config_path)
     if problem is None:
-        return f"Check the station's storage, then {again}."
+        return "", f"Check the station's storage, then {again}."
     said, step = config_problem_words(problem)
-    return f"The settings file {said}. {step}, then {again}."
+    return f"The settings file {said}.", f"{step}, then {again}."
 
 
-def _unsaved_banner(app: OpenFollowApp, what: str, again: str) -> str:
+def _why_unsaved(app: OpenFollowApp, again: str) -> str:
+    """Why a save did not reach the settings file, and the one step before the operator tries *again*."""
+    return " ".join(part for part in _unsaved_reason(app, again) if part)
+
+
+def _enter_unsaved_menu(app: OpenFollowApp, lead: str, again: str) -> None:
+    """Open Settings on a save that did not reach the settings file, *lead* naming what."""
+    seen, step = _unsaved_reason(app, again)
+    app._enter_settings_menu(banner=f"{lead} {seen}".rstrip(), action=step)
+
+
+def _report_unsaved(app: OpenFollowApp, what: str, again: str) -> None:
     # A repaired file is reloaded at once and brings its own value back.
-    return f"{what} is live but could not be saved. {_why_unsaved(app, again)}"
+    _enter_unsaved_menu(app, f"{what} is live but could not be saved.", again)
 
 
 def save_source_pick(app: OpenFollowApp, field: str, value: str) -> None:
@@ -1213,7 +1229,7 @@ def save_source_pick(app: OpenFollowApp, field: str, value: str) -> None:
     setattr(app._config, field, value)
     if not _persist_config(app, field):
         what = f"The {_input_display_name(app._config.video_source_type)} source"
-        app._enter_settings_menu(banner=_unsaved_banner(app, what, "pick it again"))
+        _report_unsaved(app, what, "pick it again")
 
 
 def _input_display_name(source_type: str) -> str:
@@ -1236,7 +1252,7 @@ def _save_for_input_not_running(app: OpenFollowApp, field: str, value: str, labe
     if _persist_config(app, field):
         logger.info("Set %s to %r; its input is not running.", field, value)
         return
-    app._enter_settings_menu(banner=f"{label} could not be saved. {_why_unsaved(app, again)}")
+    _enter_unsaved_menu(app, f"{label} could not be saved.", again)
 
 
 # ---------------------------------------------------------------------------
@@ -1333,7 +1349,8 @@ def confirm_url_editor(app: OpenFollowApp) -> None:
         target = _input_display_name(source_type)
         exit_url_editor(app)
         app._enter_settings_menu(
-            banner=(f"Couldn't switch to {target}: {error}. Configure {label} in the web UI, then try again."),
+            banner=f"Couldn't switch to {target}: {error}.",
+            action=f"Configure {label} in the web UI, then try again.",
         )
         return
     setattr(app._config, field, new_value)
@@ -1343,7 +1360,7 @@ def confirm_url_editor(app: OpenFollowApp) -> None:
     exit_url_editor(app)
     if not saved:
         what, again = (_input_display_name(source_type), "switch again") if switching else (label, "enter it again")
-        app._enter_settings_menu(banner=_unsaved_banner(app, what, again))
+        _report_unsaved(app, what, again)
 
 
 def process_url_editor_input(app: OpenFollowApp) -> None:
@@ -1476,7 +1493,8 @@ def confirm_field_choice_picker(app: OpenFollowApp) -> None:
             target = _input_display_name(source_type)
             exit_field_choice_picker(app)
             app._enter_settings_menu(
-                banner=(f"Couldn't switch to {target}: {error}. Configure {label} in the web UI, then try again."),
+                banner=f"Couldn't switch to {target}: {error}.",
+                action=f"Configure {label} in the web UI, then try again.",
             )
             return
         logger.warning(
@@ -1488,7 +1506,8 @@ def confirm_field_choice_picker(app: OpenFollowApp) -> None:
         )
         exit_field_choice_picker(app)
         app._enter_settings_menu(
-            banner=(f"Couldn't apply {label} = {value!r}: {error}. Try a different value, or edit in the web UI."),
+            banner=f"Couldn't apply {label} = {value!r}: {error}.",
+            action="Try a different value, or edit in the web UI.",
         )
         return
     setattr(app._config, field_name, value)
@@ -1498,7 +1517,7 @@ def confirm_field_choice_picker(app: OpenFollowApp) -> None:
     exit_field_choice_picker(app)
     if not saved:
         what, again = (_input_display_name(source_type), "switch again") if switching else (label, "pick it again")
-        app._enter_settings_menu(banner=_unsaved_banner(app, what, again))
+        _report_unsaved(app, what, again)
 
 
 def process_field_choice_picker_input(app: OpenFollowApp) -> None:
@@ -1569,6 +1588,14 @@ def _video_disconnect_banner_text(app: OpenFollowApp) -> str:
     return f"Video source ({source_type}) is not available{label}."
 
 
+def _video_disconnect_action(app: OpenFollowApp) -> str:
+    """The video failure's one next step, drawn under its banner."""
+    receiver = app._video_receiver
+    failure = getattr(getattr(receiver, "status_marker", None), "failure", VideoFailure.NONE)
+    kind = getattr(receiver, "source_kind", SourceKind.REMOTE)
+    return failure_action(failure, kind=kind, simple=is_simple_mode(app._config))
+
+
 def check_video_disconnect_banner(app: OpenFollowApp) -> None:
     """Startup-only Settings-menu auto-open for a video source that
     never comes up. Replaces the standalone "No Signal" overlay;
@@ -1614,6 +1641,7 @@ def check_video_disconnect_banner(app: OpenFollowApp) -> None:
     # banner from current state so a stale source name can't linger.
     if app._video_disconnect_menu_open and app._settings_menu_active:
         app._settings_menu_banner = _video_disconnect_banner_text(app)
+        app._settings_menu_banner_action = _video_disconnect_action(app)
         return
 
     # Disconnected. Only the startup case (never connected) auto-opens;
@@ -1643,7 +1671,7 @@ def check_video_disconnect_banner(app: OpenFollowApp) -> None:
         "Video source %r never connected after startup – opening Settings.",
         app._config.video_source_type,
     )
-    app._enter_settings_menu(banner=_video_disconnect_banner_text(app))
+    app._enter_settings_menu(banner=_video_disconnect_banner_text(app), action=_video_disconnect_action(app))
 
 
 # Grace period between startup and the Settings-menu auto-open when
